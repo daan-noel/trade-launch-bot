@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
@@ -51,6 +51,51 @@ export function PortfolioPage() {
   const { data, isLoading, isFetching } = useGetPortfolioPerformanceQuery({ range, mode });
 
   const openMtm = summary?.total_unrealized_pnl_sol ?? null;
+
+  // Recompute the realized/win-rate/rules tiles over the table's own filtered
+  // cohort (search + column filters), the way a server summary tracks its table.
+  // `onFilteredRowsChange` fires with every matching row (pre-pagination). Only
+  // treated as "filtered" when it narrows the set, so the unfiltered view keeps
+  // the server's authoritative totals (which may include unattributed closes).
+  const [filteredRows, setFilteredRows] = useState<PortfolioRulePnl[] | null>(null);
+  const onFilteredRowsChange = useCallback((r: PortfolioRulePnl[]) => setFilteredRows(r), []);
+  const tiles = useMemo(() => {
+    const full = data?.by_rule.length ?? 0;
+    const isFiltered = filteredRows != null && full > 0 && filteredRows.length < full;
+    if (!isFiltered || !filteredRows) {
+      return data
+        ? {
+            filtered: false,
+            realized: data.realized_pnl_sol,
+            closed: data.closed,
+            win: data.win,
+            loss: data.loss,
+            winRate: data.win_rate,
+            rules: full,
+          }
+        : null;
+    }
+    let realized = 0;
+    let closed = 0;
+    let win = 0;
+    let loss = 0;
+    for (const r of filteredRows) {
+      realized += r.realized_pnl_sol;
+      closed += r.closed;
+      win += r.win;
+      loss += r.loss;
+    }
+    const decided = win + loss;
+    return {
+      filtered: true,
+      realized,
+      closed,
+      win,
+      loss,
+      winRate: decided > 0 ? (win / decided) * 100 : 0,
+      rules: filteredRows.length,
+    };
+  }, [data, filteredRows]);
 
   const columns: ColumnDef<PortfolioRulePnl>[] = useMemo(
     () => [
@@ -229,15 +274,15 @@ export function PortfolioPage() {
 
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
         <StatTile
-          label="Realized"
-          value={data ? `◎${formatSigned(data.realized_pnl_sol, 3)}` : '—'}
-          sub={data ? `${data.closed} closed` : undefined}
-          tone={signedStatTone(data?.realized_pnl_sol ?? null)}
+          label={tiles?.filtered ? 'Realized · filtered' : 'Realized'}
+          value={tiles ? `◎${formatSigned(tiles.realized, 3)}` : '—'}
+          sub={tiles ? `${tiles.closed} closed` : undefined}
+          tone={signedStatTone(tiles?.realized ?? null)}
         />
         <StatTile
           label="Win rate"
-          value={data && data.closed > 0 ? `${Math.round(data.win_rate)}%` : '—'}
-          sub={data ? `${data.win}W / ${data.loss}L` : undefined}
+          value={tiles && tiles.closed > 0 ? `${Math.round(tiles.winRate)}%` : '—'}
+          sub={tiles ? `${tiles.win}W / ${tiles.loss}L` : undefined}
         />
         <StatTile
           label="Open MTM"
@@ -247,8 +292,14 @@ export function PortfolioPage() {
         />
         <StatTile
           label="Rules traded"
-          value={data ? data.by_rule.length : '—'}
-          sub={isFetching ? 'refreshing…' : undefined}
+          value={tiles ? tiles.rules : '—'}
+          sub={
+            tiles?.filtered
+              ? `of ${data?.by_rule.length ?? 0} · filtered`
+              : isFetching
+                ? 'refreshing…'
+                : undefined
+          }
           tone="muted"
         />
       </div>
@@ -264,6 +315,7 @@ export function PortfolioPage() {
         defaultSort={{ col: 'pnl', dir: 'desc' }}
         tableId="portfolio-by-rule"
         emptyMessage="No closed trades in this window."
+        onFilteredRowsChange={onFilteredRowsChange}
         selectedKey={selectedRule}
         rowDetail={(r) => <PortfolioRuleDetail row={r} range={range} mode={mode} />}
         onSelect={(key) => {

@@ -8,7 +8,7 @@ import { tokenAmountColKeys, tokenNumericColKeys } from 'components/tokens/share
 import { simColumns, SIM_KEYS } from 'components/strategy/strategyColumns';
 import { episodeRowKey } from 'components/strategy/inspectTarget';
 import { TemporalSummary, type TemporalSelection } from 'components/strategy/TemporalSummary';
-import { fetchEngineSimPage, fetchEngineSimTimeSummary } from 'services/api';
+import { fetchEngineSimPage, fetchEngineSimSummary, fetchEngineSimTimeSummary } from 'services/api';
 import { toSummaryBody, toTableRequest, type TableRequestBody } from 'services/tableRequest';
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
 import type { TableQuery } from 'components/table/types';
@@ -17,7 +17,8 @@ import type {
   WallGrainChoice,
   WallTimeField,
 } from 'lib/strategy/temporalSummary';
-import type { SimulatedTokenResult, TemporalSummaryPayload } from 'types';
+import type { SimulatedSummary, SimulatedTokenResult, TemporalSummaryPayload } from 'types';
+import { SimSummary } from './SimSummary';
 
 const SIM_NUMERIC_COLS = tokenNumericColKeys(simColumns);
 const SIM_AMOUNT_COLS = tokenAmountColKeys(simColumns);
@@ -84,17 +85,37 @@ export function DryRunDetail({ runId }: { runId: string }) {
     [simQuery.search, simQuery.colFilters, simQuery.structuredFilters, applyNotFired],
   );
 
+  // KPI summary tracks the page cohort (search/column filters + temporal click),
+  // so the dry-run tiles update as the trades table is filtered — same as Simulate.
+  const simSummaryBody = useMemo(
+    () => toSummaryBody(pageQuery, SIM_NUMERIC_COLS, { amountCols: SIM_AMOUNT_COLS }),
+    [pageQuery],
+  );
+
   const fetchPage = useCallback(
     (body: unknown, signal: AbortSignal) =>
       fetchEngineSimPage(runId, body as TableRequestBody, signal),
     [runId],
   );
+  const fetchSummary = useCallback(
+    (body: unknown, signal: AbortSignal) =>
+      fetchEngineSimSummary(runId, body as TableRequestBody, signal),
+    [runId],
+  );
   const {
     items: rows,
     total,
+    summary,
     loading,
     error,
-  } = useServerTable<SimulatedTokenResult>(true, simBody, fetchPage, undefined, undefined, runId);
+  } = useServerTable<SimulatedTokenResult, SimulatedSummary>(
+    true,
+    simBody,
+    fetchPage,
+    fetchSummary,
+    simSummaryBody,
+    runId,
+  );
 
   // Clear the temporal cohort when the table's own filters change or the run switches.
   const baseFilterKey = JSON.stringify({
@@ -150,6 +171,7 @@ export function DryRunDetail({ runId }: { runId: string }) {
         <InlineAlert variant="error">{error}</InlineAlert>
       ) : (
         <>
+          {summary && <SimSummary summary={summary} />}
           {timeSummary && timeSummary.nFired > 0 && (
             <TemporalSummary
               data={{

@@ -14,12 +14,7 @@ import {
   type EngineRuleDraft,
   type FillModelId,
 } from 'lib/strategy/types';
-import type { SimulatedSummary } from 'types';
-import {
-  useStartEngineSimulationMutation,
-  useGetEngineSimSummaryMutation,
-} from '@lab/store/labEndpoints';
-import { SimSummary } from './SimSummary';
+import { useStartEngineSimulationMutation } from '@lab/store/labEndpoints';
 import { DryRunDetail } from './DryRunDetail';
 
 const WINDOWS = [
@@ -37,11 +32,11 @@ const WINDOWS = [
  */
 export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; canRun: boolean }) {
   const [start] = useStartEngineSimulationMutation();
-  const [fetchSummary] = useGetEngineSimSummaryMutation();
   const [running, setRunning] = useState(false);
-  const [summary, setSummary] = useState<SimulatedSummary | null>(null);
   // The finished run's id — lifted into state (not just the ref) so the per-token
   // detail table can page the same stored result. Only set once the run finishes.
+  // `DryRunDetail` owns the summary now (filter-aware), so the panel keeps no
+  // summary state — the run-finished SSE event is enough to reveal the detail.
   const [runId, setRunId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [windowHours, setWindowHours] = useState(24);
@@ -56,7 +51,6 @@ export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; 
   const run = async () => {
     if (!draft) return;
     setErr(null);
-    setSummary(null);
     setRunId(null);
     setRunning(true);
     const engineDraft: EngineRuleDraft = {
@@ -80,22 +74,13 @@ export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; 
       }).unwrap();
       runIdRef.current = res.run_id;
       handleRef.current?.close();
-      handleRef.current = connectSimulationFinished(async (ev) => {
+      handleRef.current = connectSimulationFinished((ev) => {
         if (ev.rule_id !== runIdRef.current) return;
         handleRef.current?.close();
         handleRef.current = null;
-        if (ev.cancelled) {
-          setRunning(false);
-          return;
-        }
-        try {
-          setSummary(await fetchSummary(res.run_id).unwrap());
-          setRunId(res.run_id);
-        } catch (e) {
-          setErr(apiErrorMessage(e as never) ?? 'summary failed');
-        } finally {
-          setRunning(false);
-        }
+        setRunning(false);
+        // The detail table (+ its filter-aware summary) pages the stored result.
+        if (!ev.cancelled) setRunId(res.run_id);
       });
     } catch (e) {
       setErr(apiErrorMessage(e as never) ?? 'simulate failed');
@@ -159,8 +144,7 @@ export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; 
         {!canRun && <span className="text-[11px] text-text-dim/70">fix the draft to enable</span>}
       </div>
       {err && <p className="mt-2 text-[11px] text-red">{err}</p>}
-      {summary && <SimSummary summary={summary} />}
-      {runId && summary && <DryRunDetail runId={runId} />}
+      {runId && <DryRunDetail runId={runId} />}
     </div>
   );
 }
