@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLaunchesQuery } from '@shared/store/endpoints';
 import { apiErrorMessage } from '@shared/store/baseApi';
@@ -35,26 +35,32 @@ const LAUNCH_COLUMNS: Column<LaunchListRow>[] = [
       ),
     filterValue: (l) => `${l.name ?? ''} ${l.symbol ?? ''}`,
     filterPlaceholder: 'name / symbol',
+    filterKey: 'token',
   },
   {
     header: 'Mint',
     render: (l) => <AddressDisplay value={l.mint_address} kind="token" />,
     filterValue: (l) => l.mint_address,
+    filterKey: 'mint',
   },
   {
     header: 'Launch',
     render: (l) => <StatusPill status={l.status} />,
     filterValue: (l) => l.status,
+    filterKey: 'status',
   },
   {
     header: 'Bundle',
     render: (l) => <StatusPill status={l.bundle_status ?? undefined} />,
     filterValue: (l) => l.bundle_status ?? '',
+    filterKey: 'bundle_status',
   },
   {
     header: 'Flags',
     render: (l) => <Flags l={l} />,
     filterValue: (l) => `${l.is_migrated ? 'migrated' : ''} ${l.is_dead ? 'dead' : ''}`,
+    filterPlaceholder: 'migrated / dead',
+    filterKey: 'flags',
   },
   {
     header: 'Trades',
@@ -62,6 +68,7 @@ const LAUNCH_COLUMNS: Column<LaunchListRow>[] = [
     render: (l) => <span className="mono">{formatCount(l.trade_count)}</span>,
     // Integer trade count.
     filterNumber: (l) => l.trade_count,
+    filterKey: 'trade_count',
   },
   {
     header: 'Mkt cap',
@@ -69,6 +76,7 @@ const LAUNCH_COLUMNS: Column<LaunchListRow>[] = [
     render: (l) => <span className="mono">{formatUsd(l.market_cap_usd)}</span>,
     // USD market cap.
     filterNumber: (l) => l.market_cap_usd,
+    filterKey: 'market_cap_usd',
   },
   {
     header: 'Holding',
@@ -88,6 +96,7 @@ const LAUNCH_COLUMNS: Column<LaunchListRow>[] = [
       l.holding_base && l.holding_base > 0
         ? l.holding_base / 10 ** (l.token_decimals ?? 6)
         : null,
+    filterKey: 'holding',
   },
   {
     header: 'Cost (SOL)',
@@ -103,6 +112,7 @@ const LAUNCH_COLUMNS: Column<LaunchListRow>[] = [
       l.holding_base && l.holding_base > 0 && l.holding_cost_quote != null
         ? l.holding_cost_quote / 10 ** (l.quote_decimals ?? 9)
         : null,
+    filterKey: 'cost_sol',
   },
   {
     header: 'Value (SOL)',
@@ -118,11 +128,13 @@ const LAUNCH_COLUMNS: Column<LaunchListRow>[] = [
       l.holding_base && l.holding_base > 0 && l.holding_value_quote != null
         ? l.holding_value_quote / 10 ** (l.quote_decimals ?? 9)
         : null,
+    filterKey: 'value_sol',
   },
   {
     header: 'Variant',
     render: (l) => <span className="mono text-xs muted">{l.variant}</span>,
     filterValue: (l) => l.variant,
+    filterKey: 'variant',
   },
   { header: 'Age', align: 'right', render: (l) => <AgeCell iso={l.created_at} /> },
   {
@@ -145,13 +157,35 @@ const LAUNCH_COLUMNS: Column<LaunchListRow>[] = [
   },
 ];
 
+/** Shallow equality over a flat filterKey→text map (order-insensitive). */
+function sameFilters(a: Record<string, string>, b: Record<string, string>): boolean {
+  const ak = Object.keys(a);
+  const bk = Object.keys(b);
+  return ak.length === bk.length && ak.every((k) => a[k] === b[k]);
+}
+
 export function LaunchesPage() {
   const [offset, setOffset] = useState(0);
+  // Active per-column filters (filterKey → raw grammar text), emitted by the
+  // DataTable in server mode and forwarded as query params. The backend filters
+  // BOTH the page and the count, so `total` reflects the filtered set.
+  const [filters, setFilters] = useState<Record<string, string>>({});
   const { data, isFetching, error, refetch } = useLaunchesQuery(
-    { limit: PAGE, offset },
+    { limit: PAGE, offset, filters },
     { pollingInterval: 15_000, skipPollingIfUnfocused: true },
   );
   const navigate = useNavigate();
+
+  // Adopt a new filter set only when it actually changed (the table re-emits on
+  // every debounce tick, incl. the empty map on mount).
+  const handleFilterChange = useCallback((next: Record<string, string>) => {
+    setFilters((prev) => (sameFilters(prev, next) ? prev : next));
+  }, []);
+  // Any filter change snaps back to page 1 — else we could sit past the filtered
+  // total and show an empty page.
+  useEffect(() => {
+    setOffset(0);
+  }, [filters]);
 
   const rows = data?.launches ?? [];
   const total = data?.total ?? 0;
@@ -197,6 +231,7 @@ export function LaunchesPage() {
           onRowClick={(l) => navigate(`/tokens/${l.mint_address}`)}
           pinning={pinning}
           filterable
+          serverFilter={{ onChange: handleFilterChange }}
         />
       </Card>
     </div>

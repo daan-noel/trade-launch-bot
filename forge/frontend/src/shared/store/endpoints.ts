@@ -174,8 +174,16 @@ export const api = baseApi.injectEndpoints({
     }),
 
     // ---- Launches ----
-    launches: build.query<LaunchesPage, { limit?: number; offset?: number } | void>({
-      query: (arg) => `/api/launches${q({ limit: arg?.limit, offset: arg?.offset })}`,
+    // `filters` is the allowlisted per-column map (filterKey → raw grammar text)
+    // the LaunchesPage DataTable emits in server mode; each key becomes a query
+    // param the backend applies to BOTH the page and the count. Empty values are
+    // dropped by `q()` so the cache key stays stable when a filter is cleared.
+    launches: build.query<
+      LaunchesPage,
+      { limit?: number; offset?: number; filters?: Record<string, string> } | void
+    >({
+      query: (arg) =>
+        `/api/launches${q({ limit: arg?.limit, offset: arg?.offset, ...(arg?.filters ?? {}) })}`,
       providesTags: ['Launches'],
     }),
     executeLaunch: build.mutation<

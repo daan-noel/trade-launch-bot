@@ -491,6 +491,222 @@ impl LaunchTemplateRepo {
     }
 }
 
+/// Allowlisted per-column filters for the launches list. Each field is the raw
+/// per-column text the DataTable's filter row emits: text columns substring-match
+/// (case-insensitive), numeric columns use the `>5` / `>=5` / `<10` / `=5` / `!=5`
+/// / `1..10` grammar (mirrors the frontend `numericFilter.ts`), with a substring
+/// fallback on the stringified value when the text isn't a recognized expression.
+/// Empty ⇒ that column is inactive. Only these fixed columns can be filtered, and
+/// every operand is a bound param — never interpolated (injection-safe by
+/// construction; see [`push_launch_filters`]).
+#[derive(Debug, Default, Clone)]
+pub struct LaunchListFilters {
+    /// Token name / symbol substring.
+    pub token: String,
+    /// Mint address substring.
+    pub mint: String,
+    /// Launch status substring (`pending` / `created` / `failed`).
+    pub status: String,
+    /// Bundle status substring.
+    pub bundle_status: String,
+    /// Flags: the tokens `migrated` and/or `dead` (each present ⇒ require that flag).
+    pub flags: String,
+    /// Launch variant substring.
+    pub variant: String,
+    /// Trade count (numeric grammar; present-or-0).
+    pub trade_count: String,
+    /// USD market cap (numeric grammar; nullable).
+    pub market_cap_usd: String,
+    /// Holding, human token amount (numeric grammar; nullable).
+    pub holding: String,
+    /// Holding cost, human SOL (numeric grammar; nullable).
+    pub cost_sol: String,
+    /// Holding value, human SOL (numeric grammar; nullable).
+    pub value_sol: String,
+}
+
+impl LaunchListFilters {
+    /// True when no column filter is active (every field blank) — lets the handler
+    /// skip building a filtered query entirely.
+    pub fn is_empty(&self) -> bool {
+        [
+            &self.token,
+            &self.mint,
+            &self.status,
+            &self.bundle_status,
+            &self.flags,
+            &self.variant,
+            &self.trade_count,
+            &self.market_cap_usd,
+            &self.holding,
+            &self.cost_sol,
+            &self.value_sol,
+        ]
+        .iter()
+        .all(|s| s.trim().is_empty())
+    }
+}
+
+/// A parsed numeric predicate over one column's `filterNumber` value — the SQL
+/// twin of `numericFilter.ts::parseNumericPredicate`.
+enum NumPred {
+    Range(f64, f64),
+    Gt(f64),
+    Ge(f64),
+    Lt(f64),
+    Le(f64),
+    Eq(f64),
+    Ne(f64),
+}
+
+/// Parse the `>5` / `1..10` / … grammar (whitespace-tolerant), matching the
+/// frontend regexes. `None` when the text isn't a recognized numeric expression
+/// (the caller then substring-matches the stringified column value).
+fn parse_num_pred(text: &str) -> Option<NumPred> {
+    let t = text.trim();
+    if let Some((lo, hi)) = t.split_once("..") {
+        let mut lo: f64 = lo.trim().parse().ok()?;
+        let mut hi: f64 = hi.trim().parse().ok()?;
+        if lo > hi {
+            std::mem::swap(&mut lo, &mut hi);
+        }
+        return Some(NumPred::Range(lo, hi));
+    }
+    // Longest operators first so `>=` isn't shadowed by `>`.
+    for (op, ctor) in [
+        (">=", NumPred::Ge as fn(f64) -> NumPred),
+        ("<=", NumPred::Le),
+        ("==", NumPred::Eq),
+        ("!=", NumPred::Ne),
+        (">", NumPred::Gt),
+        ("<", NumPred::Lt),
+        ("=", NumPred::Eq),
+    ] {
+        if let Some(rest) = t.strip_prefix(op) {
+            let v: f64 = rest.trim().parse().ok()?;
+            return Some(ctor(v));
+        }
+    }
+    None
+}
+
+/// Escape LIKE/ILIKE metacharacters so a literal `%`/`_`/`\` in the needle matches
+/// literally (paired with `ESCAPE '\'`).
+fn ilike_escape(needle: &str) -> String {
+    needle
+        .trim()
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// Append ` AND (<col> ILIKE '%needle%' [OR …])` for a case-insensitive substring
+/// over one or more code-chosen column expressions. The needle is bound; only the
+/// column expressions are literal SQL.
+fn push_ilike(qb: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>, cols: &[&str], needle: &str) {
+    let pat = format!("%{}%", ilike_escape(needle));
+    qb.push(" AND (");
+    for (i, col) in cols.iter().enumerate() {
+        if i > 0 {
+            qb.push(" OR ");
+        }
+        qb.push(*col).push(" ILIKE ").push_bind(pat.clone()).push(" ESCAPE '\\'");
+    }
+    qb.push(")");
+}
+
+/// Append a numeric-grammar predicate over `expr` (a code-chosen, possibly
+/// nullable numeric column expression). A NULL column fails every predicate
+/// (mirrors the frontend `n == null ⇒ false`). When the text isn't a numeric
+/// expression, fall back to a substring match on the stringified value.
+fn push_num(qb: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>, expr: &str, text: &str) {
+    match parse_num_pred(text) {
+        Some(NumPred::Range(lo, hi)) => {
+            qb.push(" AND (").push(expr).push(" IS NOT NULL AND ").push(expr).push(" >= ")
+                .push_bind(lo).push(" AND ").push(expr).push(" <= ").push_bind(hi).push(")");
+        }
+        Some(pred) => {
+            let (op, v) = match pred {
+                NumPred::Gt(v) => (">", v),
+                NumPred::Ge(v) => (">=", v),
+                NumPred::Lt(v) => ("<", v),
+                NumPred::Le(v) => ("<=", v),
+                NumPred::Eq(v) => ("=", v),
+                NumPred::Ne(v) => ("!=", v),
+                NumPred::Range(..) => unreachable!(),
+            };
+            qb.push(" AND (").push(expr).push(" IS NOT NULL AND ").push(expr).push(" ")
+                .push(op).push(" ").push_bind(v).push(")");
+        }
+        None => {
+            // Non-grammar text on a numeric column ⇒ substring on the stringified
+            // value (matches the frontend `String(n).includes(needle)`).
+            push_ilike(qb, &[&format!("COALESCE(({expr})::text, '')")], text);
+        }
+    }
+}
+
+/// Append every active column filter to the launches-list query as ` AND (...)`
+/// fragments (the query already ends in `WHERE TRUE`). Column expressions are the
+/// only literal SQL; every operand is bound. Shared by `list_page` + `count` so a
+/// filter narrows the rows AND the pager total identically.
+fn push_launch_filters(
+    qb: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>,
+    f: &LaunchListFilters,
+) {
+    if !f.token.trim().is_empty() {
+        push_ilike(qb, &["COALESCE(t.name, '')", "COALESCE(t.symbol, '')"], &f.token);
+    }
+    if !f.mint.trim().is_empty() {
+        push_ilike(qb, &["l.mint_address"], &f.mint);
+    }
+    if !f.status.trim().is_empty() {
+        push_ilike(qb, &["l.status"], &f.status);
+    }
+    if !f.bundle_status.trim().is_empty() {
+        push_ilike(qb, &["COALESCE(b.status, '')"], &f.bundle_status);
+    }
+    let flags = f.flags.to_lowercase();
+    if flags.contains("migrated") {
+        qb.push(" AND COALESCE(ov.is_migrated, false) = true");
+    }
+    if flags.contains("dead") {
+        qb.push(" AND COALESCE(ov.is_dead, false) = true");
+    }
+    if !f.variant.trim().is_empty() {
+        push_ilike(qb, &["l.variant"], &f.variant);
+    }
+    if !f.trade_count.trim().is_empty() {
+        push_num(qb, "COALESCE(ov.trade_count, 0)", &f.trade_count);
+    }
+    if !f.market_cap_usd.trim().is_empty() {
+        push_num(qb, "ov.market_cap_usd", &f.market_cap_usd);
+    }
+    // Holding (human token amount) / cost / value (human SOL) mirror the frontend
+    // cells' displayed-unit math so a numeric filter compares like-for-like.
+    if !f.holding.trim().is_empty() {
+        push_num(
+            qb,
+            "(pos.holding_base::float8 / power(10, COALESCE(ov.decimals, 6)))",
+            &f.holding,
+        );
+    }
+    if !f.cost_sol.trim().is_empty() {
+        push_num(
+            qb,
+            "(pos.holding_cost_quote::float8 / power(10, COALESCE(ov.quote_decimals, 9)))",
+            &f.cost_sol,
+        );
+    }
+    if !f.value_sol.trim().is_empty() {
+        push_num(
+            qb,
+            "((pos.holding_base::float8 * ov.current_price_quote) / power(10, COALESCE(ov.quote_decimals, 9)))",
+            &f.value_sol,
+        );
+    }
+}
+
 /// `launches` — executed launch records.
 pub struct LaunchRepo;
 
@@ -545,6 +761,23 @@ impl LaunchRepo {
         .await?)
     }
 
+    /// `FROM` + LEFT JOINs shared by [`Self::list_page`] and [`Self::count`] so the
+    /// filtered count matches the filtered page exactly. LEFT JOINs so a launch
+    /// still lists before its create tx is ingested (name / market / holdings then
+    /// `NULL`); all joins are to-one (`token_overview` / `tokens` / `bundles` are
+    /// keyed 1:1 per mint/id, `pos` is pre-aggregated per mint), so counting over
+    /// this FROM never multiplies launch rows.
+    const LIST_FROM: &'static str = "FROM launches l \
+             LEFT JOIN tokens t ON t.mint_address = l.mint_address \
+             LEFT JOIN token_overview ov ON ov.mint_address = l.mint_address \
+             LEFT JOIN bundles b ON b.id = l.bundle_id \
+             LEFT JOIN ( \
+                 SELECT mint_address, SUM(balance_base)::BIGINT AS holding_base, \
+                        SUM(cost_quote)::BIGINT AS holding_cost_quote \
+                 FROM token_positions WHERE status = 'open' \
+                 GROUP BY mint_address \
+             ) pos ON pos.mint_address = l.mint_address";
+
     /// Newest-first page of launches enriched for the "launched tokens" list —
     /// each launch LEFT JOINed to its `tokens` identity, the `token_overview`
     /// derived view (trade count / USD price / USD market cap — the SSOT for
@@ -554,15 +787,16 @@ impl LaunchRepo {
     /// the list shows what we still hold without a per-row fetch. The holdings sum is
     /// as-of the last on-chain reconcile (only the `/positions` endpoint reconciles;
     /// the list load never RPC-probes) — the balance is materialized, not live.
-    /// LEFT JOINs so a launch still lists before its create tx is ingested (name /
-    /// market / holdings are then `NULL`). Bounded by `limit`/`offset` — never an
-    /// unbounded scan.
+    /// `filters` layers the allowlisted per-column WHERE grammar (same operands the
+    /// count uses); every operand is bound, never interpolated. Bounded by
+    /// `limit`/`offset` — never an unbounded scan.
     pub async fn list_page(
         pool: &PgPool,
         limit: i64,
         offset: i64,
+        filters: &LaunchListFilters,
     ) -> anyhow::Result<Vec<crate::models::LaunchListRow>> {
-        Ok(sqlx::query_as::<_, crate::models::LaunchListRow>(
+        let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT l.id, l.template_id, l.mint_address, l.variant, l.status, \
                     l.create_signature, l.dev_buy_quote, l.bundle_id, \
                     b.status AS bundle_status, l.created_at, \
@@ -571,31 +805,27 @@ impl LaunchRepo {
                     ov.price_usd, ov.market_cap_usd, \
                     ov.decimals AS token_decimals, ov.quote_decimals, \
                     pos.holding_base, pos.holding_cost_quote, \
-                    (pos.holding_base * ov.current_price_quote) AS holding_value_quote \
-             FROM launches l \
-             LEFT JOIN tokens t ON t.mint_address = l.mint_address \
-             LEFT JOIN token_overview ov ON ov.mint_address = l.mint_address \
-             LEFT JOIN bundles b ON b.id = l.bundle_id \
-             LEFT JOIN ( \
-                 SELECT mint_address, SUM(balance_base)::BIGINT AS holding_base, \
-                        SUM(cost_quote)::BIGINT AS holding_cost_quote \
-                 FROM token_positions WHERE status = 'open' \
-                 GROUP BY mint_address \
-             ) pos ON pos.mint_address = l.mint_address \
-             ORDER BY l.created_at DESC \
-             LIMIT $1 OFFSET $2",
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(pool)
-        .await?)
+                    (pos.holding_base * ov.current_price_quote) AS holding_value_quote ",
+        );
+        qb.push(Self::LIST_FROM).push(" WHERE TRUE");
+        push_launch_filters(&mut qb, filters);
+        qb.push(" ORDER BY l.created_at DESC LIMIT ")
+            .push_bind(limit)
+            .push(" OFFSET ")
+            .push_bind(offset);
+        Ok(qb
+            .build_query_as::<crate::models::LaunchListRow>()
+            .fetch_all(pool)
+            .await?)
     }
 
-    /// Total launch count — pairs with [`Self::list_page`] for pagination.
-    pub async fn count(pool: &PgPool) -> anyhow::Result<i64> {
-        let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM launches")
-            .fetch_one(pool)
-            .await?;
+    /// Total launch count for the SAME filters as [`Self::list_page`] — pairs with
+    /// it for an honest pager total (filtered set, not the whole table).
+    pub async fn count(pool: &PgPool, filters: &LaunchListFilters) -> anyhow::Result<i64> {
+        let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT count(*) ");
+        qb.push(Self::LIST_FROM).push(" WHERE TRUE");
+        push_launch_filters(&mut qb, filters);
+        let (n,): (i64,) = qb.build_query_as().fetch_one(pool).await?;
         Ok(n)
     }
 
@@ -1246,5 +1476,76 @@ impl VolumeBotRepo {
         .execute(pool)
         .await?;
         Ok(r.rows_affected() > 0)
+    }
+}
+
+#[cfg(test)]
+mod launch_filter_tests {
+    use super::*;
+
+    #[test]
+    fn empty_filters_is_empty() {
+        assert!(LaunchListFilters::default().is_empty());
+        let f = LaunchListFilters { status: "  ".into(), ..Default::default() };
+        assert!(f.is_empty(), "whitespace-only is inactive");
+        let f = LaunchListFilters { status: "created".into(), ..Default::default() };
+        assert!(!f.is_empty());
+    }
+
+    #[test]
+    fn num_grammar_matches_frontend() {
+        assert!(matches!(parse_num_pred(">5"), Some(NumPred::Gt(v)) if v == 5.0));
+        assert!(matches!(parse_num_pred(">= 5"), Some(NumPred::Ge(v)) if v == 5.0));
+        assert!(matches!(parse_num_pred("<=10"), Some(NumPred::Le(v)) if v == 10.0));
+        assert!(matches!(parse_num_pred("!=5"), Some(NumPred::Ne(v)) if v == 5.0));
+        assert!(matches!(parse_num_pred("=5"), Some(NumPred::Eq(v)) if v == 5.0));
+        assert!(matches!(parse_num_pred("==5"), Some(NumPred::Eq(v)) if v == 5.0));
+        // Range is order-agnostic and inclusive.
+        assert!(matches!(parse_num_pred("10..1"), Some(NumPred::Range(lo, hi)) if lo == 1.0 && hi == 10.0));
+        // Not a numeric expression ⇒ None (caller substring-matches).
+        assert!(parse_num_pred("abc").is_none());
+        assert!(parse_num_pred("").is_none());
+    }
+
+    /// The active columns turn into bound `$n` placeholders (never interpolated) and
+    /// the count query is byte-identical in its WHERE to the page query.
+    #[test]
+    fn active_filters_bind_and_share_where() {
+        let f = LaunchListFilters {
+            token: "bonk".into(),
+            status: "created".into(),
+            flags: "migrated".into(),
+            trade_count: ">=100".into(),
+            market_cap_usd: "5..50".into(),
+            ..Default::default()
+        };
+
+        let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("WHERE TRUE");
+        push_launch_filters(&mut qb, &f);
+        let sql = qb.sql().to_string();
+
+        // Text/numeric operands are bound; flag is a constant (no bind).
+        assert!(sql.contains("ILIKE $1"), "token name: {sql}");
+        assert!(sql.contains("COALESCE(ov.is_migrated, false) = true"), "flag: {sql}");
+        assert!(sql.contains("COALESCE(ov.trade_count, 0) >= $"), "trade_count: {sql}");
+        assert!(sql.contains(">= $") && sql.contains("<= $"), "range: {sql}");
+        // No user value ever appears literally in the SQL string.
+        assert!(!sql.contains("bonk"));
+        assert!(!sql.contains("100"));
+
+        // The placeholder count == the number of bound operands: token(2: name+symbol)
+        // + status(1) + trade_count(1) + range(2) = 6. Flags bind nothing.
+        assert_eq!(sql.matches('$').count(), 6, "sql: {sql}");
+    }
+
+    #[test]
+    fn non_grammar_numeric_text_falls_back_to_substring() {
+        let f = LaunchListFilters { trade_count: "12".into(), ..Default::default() };
+        let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("WHERE TRUE");
+        push_launch_filters(&mut qb, &f);
+        let sql = qb.sql().to_string();
+        // "12" isn't a comparison ⇒ substring on the stringified value.
+        assert!(sql.contains("::text"), "fallback substring: {sql}");
+        assert!(sql.contains("ILIKE $1"), "bound needle: {sql}");
     }
 }

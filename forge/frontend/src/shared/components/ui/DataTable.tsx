@@ -26,6 +26,15 @@ export interface Column<T> {
   filterNumber?: (row: T) => number | null;
   /** Placeholder for this column's filter input (defaults per accessor kind). */
   filterPlaceholder?: string;
+  /**
+   * Backend filter identifier — REQUIRED for a column to be filterable when the
+   * table is in server mode (see {@link DataTable}'s `serverFilter`). The debounced
+   * input text is emitted under this key so the parent can forward it as a query
+   * param. Ignored in the default client-side mode (which keys off `filterValue` /
+   * `filterNumber`). Numeric columns should still declare `filterNumber` so the
+   * input shows the `>5` / `1..10` grammar hint even though the backend evaluates it.
+   */
+  filterKey?: string;
 }
 
 /**
@@ -55,6 +64,12 @@ export interface Column<T> {
  * empty filter cell. Default off — an existing table is byte-for-byte unchanged
  * unless it opts in AND at least one column declares a filter accessor. Pinned rows
  * always float above the (filtered) body, unaffected by the filter.
+ *
+ * Pass `serverFilter` to switch the filter row to **server mode**: a column is
+ * filterable iff it declares `filterKey`, `rows` are rendered verbatim (the backend
+ * already filtered/paged), and the debounced `{filterKey → text}` map is emitted via
+ * `serverFilter.onChange` for the parent to forward as query params. Use this for a
+ * server-paged table where client-side filtering would only narrow the current page.
  */
 export function DataTable<T>({
   columns,
@@ -66,6 +81,7 @@ export function DataTable<T>({
   maxHeight,
   pinning,
   filterable = false,
+  serverFilter,
 }: {
   columns: Column<T>[];
   rows: T[];
@@ -76,6 +92,7 @@ export function DataTable<T>({
   maxHeight?: number;
   pinning?: PinnedRows<T>;
   filterable?: boolean;
+  serverFilter?: { onChange: (filters: Record<string, string>) => void };
 }) {
   // Keep a stable click handler identity across renders so the memoized rows
   // don't re-render just because the parent handed a fresh inline `onRowClick`.
@@ -104,21 +121,48 @@ export function DataTable<T>({
     return () => clearTimeout(id);
   }, [filters]);
 
+  // Server mode: filtering happens on the backend; a column is filterable iff it
+  // declares a `filterKey`. Client mode keys off the value/number accessors.
+  const serverMode = !!serverFilter;
+  const canFilterCol = useCallback(
+    (c: Column<T>) => (serverMode ? !!c.filterKey : !!(c.filterValue || c.filterNumber)),
+    [serverMode],
+  );
+
   // The feature only exists when the caller opts in AND at least one column can
   // be filtered — otherwise the whole filter row is skipped (nothing to change).
-  const hasFilterable =
-    filterable && columns.some((c) => c.filterValue || c.filterNumber);
+  const hasFilterable = filterable && columns.some(canFilterCol);
 
-  // Resolve each active column filter once (not per row): a numeric column whose
-  // text parses as a comparison/range gets a numeric predicate; otherwise it's a
-  // substring needle on the column's displayed text (or stringified number).
+  // Whether any filter input holds text (drives the "no rows match" empty copy in
+  // both modes).
+  const hasActiveInput = useMemo(
+    () => Object.values(debouncedFilters).some((v) => v.trim().length > 0),
+    [debouncedFilters],
+  );
+
+  // Server mode: emit the debounced `{filterKey → text}` map to the parent. Ref the
+  // callback so a fresh inline `onChange` doesn't re-fire the effect on every render.
+  const serverChangeRef = useRef(serverFilter?.onChange);
+  serverChangeRef.current = serverFilter?.onChange;
+  useEffect(() => {
+    if (!serverMode) return;
+    const map: Record<string, string> = {};
+    for (const [idx, raw] of Object.entries(debouncedFilters)) {
+      const col = columns[Number(idx)];
+      const text = raw.trim();
+      if (col?.filterKey && text) map[col.filterKey] = text;
+    }
+    serverChangeRef.current?.(map);
+  }, [serverMode, debouncedFilters, columns]);
+
+  // Resolve each active column filter once (not per row) — CLIENT mode only.
   const activeFilters = useMemo(() => {
     const out: {
       col: Column<T>;
       needle: string;
       numeric: ((n: number) => boolean) | null;
     }[] = [];
-    if (!hasFilterable) return out;
+    if (!hasFilterable || serverMode) return out;
     for (const [idx, raw] of Object.entries(debouncedFilters)) {
       const text = raw.trim();
       if (!text) continue;
@@ -128,12 +172,13 @@ export function DataTable<T>({
       out.push({ col, needle: text.toLowerCase(), numeric });
     }
     return out;
-  }, [hasFilterable, debouncedFilters, columns]);
+  }, [hasFilterable, serverMode, debouncedFilters, columns]);
 
-  // Client-side body filter. Pinned rows are untouched (they float above from
+  // Client-side body filter. Server mode renders `rows` verbatim (already filtered
+  // + paged by the backend). Pinned rows are untouched (they float above from
   // snapshots); only the paged body reduces to the matching set.
   const displayRows = useMemo(() => {
-    if (activeFilters.length === 0) return rows;
+    if (serverMode || activeFilters.length === 0) return rows;
     return rows.filter((row) => {
       for (const { col, needle, numeric } of activeFilters) {
         if (numeric && col.filterNumber) {
@@ -150,7 +195,7 @@ export function DataTable<T>({
       }
       return true;
     });
-  }, [rows, activeFilters]);
+  }, [rows, serverMode, activeFilters]);
 
   return (
     <div className="overflow-auto rounded-lg border border-[var(--color-line)]" style={{ maxHeight }}>
@@ -168,7 +213,7 @@ export function DataTable<T>({
             <tr>
               {showPin && <th className="dt-filter-th dt-pin-col" aria-hidden="true" />}
               {columns.map((c, i) => {
-                const canFilter = !!(c.filterValue || c.filterNumber);
+                const canFilter = canFilterCol(c);
                 return (
                   <th key={i} className={clsx('dt-filter-th', c.className)}>
                     {canFilter && (
@@ -225,7 +270,7 @@ export function DataTable<T>({
           {!loading && displayRows.length === 0 && pinnedRows.length === 0 && (
             <tr>
               <td colSpan={colCount} className="muted py-6 text-center">
-                {activeFilters.length > 0 ? 'No rows match the filters.' : empty ?? 'No rows yet.'}
+                {hasActiveInput ? 'No rows match the filters.' : empty ?? 'No rows yet.'}
               </td>
             </tr>
           )}

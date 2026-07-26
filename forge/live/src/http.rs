@@ -53,8 +53,9 @@ fn job_busy() -> actix_web::Error {
 }
 
 use platform_core::storage::repositories::{
-    BundleRepo, LaunchRepo, LaunchTemplateRepo, LaunchpadRepo, ManageActionRepo, ManagedWalletRepo,
-    MetadataTemplateRepo, QuoteAssetRepo, SellLadderRepo, TokenRepo, TradeRepo, VolumeBotRepo,
+    BundleRepo, LaunchListFilters, LaunchRepo, LaunchTemplateRepo, LaunchpadRepo, ManageActionRepo,
+    ManagedWalletRepo, MetadataTemplateRepo, QuoteAssetRepo, SellLadderRepo, TokenRepo, TradeRepo,
+    VolumeBotRepo,
 };
 
 /// Map any error to a 500 with a GENERIC client body. The full detail (which can
@@ -1003,6 +1004,31 @@ struct LaunchesQuery {
     limit: i64,
     #[serde(default)]
     offset: i64,
+    // Allowlisted per-column filters (raw DataTable filter-row text). Each maps 1:1
+    // to a [`LaunchListFilters`] field; empty/absent ⇒ inactive. Names match the
+    // frontend column `filterKey`s.
+    #[serde(default)]
+    token: String,
+    #[serde(default)]
+    mint: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    bundle_status: String,
+    #[serde(default)]
+    flags: String,
+    #[serde(default)]
+    variant: String,
+    #[serde(default)]
+    trade_count: String,
+    #[serde(default)]
+    market_cap_usd: String,
+    #[serde(default)]
+    holding: String,
+    #[serde(default)]
+    cost_sol: String,
+    #[serde(default)]
+    value_sol: String,
 }
 fn default_launches_limit() -> i64 {
     100
@@ -1011,16 +1037,30 @@ fn default_launches_limit() -> i64 {
 /// Newest-first page of enriched launch rows for the "launched tokens" list +
 /// the total count (for pagination). One round trip: the page and count run
 /// concurrently. `limit` is clamped to a sane ceiling so a bad query param can't
-/// ask for an unbounded scan.
+/// ask for an unbounded scan. Per-column filters are applied server-side to BOTH
+/// the page and the count, so the pager total reflects the filtered set.
 async fn launches_list(
     pool: web::Data<PgPool>,
     q: web::Query<LaunchesQuery>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let limit = q.limit.clamp(1, 500);
     let offset = q.offset.max(0);
+    let filters = LaunchListFilters {
+        token: q.token.clone(),
+        mint: q.mint.clone(),
+        status: q.status.clone(),
+        bundle_status: q.bundle_status.clone(),
+        flags: q.flags.clone(),
+        variant: q.variant.clone(),
+        trade_count: q.trade_count.clone(),
+        market_cap_usd: q.market_cap_usd.clone(),
+        holding: q.holding.clone(),
+        cost_sol: q.cost_sol.clone(),
+        value_sol: q.value_sol.clone(),
+    };
     let (launches, total) = tokio::try_join!(
-        LaunchRepo::list_page(pool.get_ref(), limit, offset),
-        LaunchRepo::count(pool.get_ref()),
+        LaunchRepo::list_page(pool.get_ref(), limit, offset, &filters),
+        LaunchRepo::count(pool.get_ref(), &filters),
     )
     .map_err(e500)?;
     Ok(HttpResponse::Ok().json(serde_json::json!({ "launches": launches, "total": total })))
