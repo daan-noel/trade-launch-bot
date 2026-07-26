@@ -215,9 +215,10 @@ describe('status partition guard (mirrors backend PositionStatus)', () => {
     'BuySubmitted',
     'Holding',
     'ExitPending',
+    'ExitStuck',
     'ExitUnconfirmed',
     'End',
-    'ExitFailed',
+    'EntryFailed',
   ] as const;
 
   it('classifies every backend wire status as open XOR terminal', () => {
@@ -228,8 +229,8 @@ describe('status partition guard (mirrors backend PositionStatus)', () => {
     }
   });
 
-  it('terminal set is exactly End + ExitFailed', () => {
-    expect([...TERMINAL_STATUSES].sort()).toEqual(['End', 'ExitFailed']);
+  it('terminal set is exactly End + EntryFailed', () => {
+    expect([...TERMINAL_STATUSES].sort()).toEqual(['End', 'EntryFailed']);
   });
 
   it('OPEN and TERMINAL are disjoint', () => {

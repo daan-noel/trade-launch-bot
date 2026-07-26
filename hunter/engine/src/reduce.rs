@@ -32,8 +32,9 @@ use crate::state::{EngineState, PositionRef, TokenState};
 
 /// Bounded buy retries before an entry gives up (rolling its cap counters back).
 const MAX_ENTRY_ATTEMPTS: u32 = 3;
-/// Bounded sell retries before an exit is booked `ExitFailed`. Sells retry harder
-/// than buys — a stranded bag is worse than a missed entry.
+/// Bounded sell retries before an exit is booked `ExitStuck` (bag still held,
+/// reaper takes over). Sells retry harder than buys — a stranded bag is worse
+/// than a missed entry.
 const MAX_EXIT_ATTEMPTS: u32 = 5;
 
 /// The effect buffer one `reduce` call returns.
@@ -241,7 +242,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                             position,
                             rule: rule_id,
                             mint: mint.clone(),
-                            status: PositionStatus::ExitFailed,
+                            status: PositionStatus::EntryFailed,
                             fill: None,
                             reason: None,
                             intent: Some(intent),
@@ -269,6 +270,8 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                             intent: Some(intent),
                         }));
                     } else if reason == FillFailReason::Fatal || attempts >= MAX_EXIT_ATTEMPTS {
+                        // Sell gave up but the bag is still held — the position
+                        // stays open in PG (`ExitStuck`); the reaper owns it now.
                         decrement_open(state, rule_id);
                         state.positions.remove(&position);
                         token.arms.insert(rule_id, ArmState::Done);
@@ -276,7 +279,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                             position,
                             rule: rule_id,
                             mint: mint.clone(),
-                            status: PositionStatus::ExitFailed,
+                            status: PositionStatus::ExitStuck,
                             fill: None,
                             reason: Some(exit_reason),
                             intent: Some(intent),

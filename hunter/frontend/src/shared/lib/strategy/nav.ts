@@ -75,17 +75,20 @@ export const OPS_PARAMS = {
 
 export type OpsTab = 'waiting' | 'open' | 'attention' | 'recent';
 
-/** Map a notification status pill → Floor tab that holds that row. */
+/** Map a notification status pill → Floor tab that holds that row. Since the
+ *  status split, a stuck bag (`ExitStuck`) is OPEN·attention (defect #3 fix:
+ *  the deep link lands where the row actually is). */
 export function opsTabForNotifyStatus(status: string): OpsTab {
   switch (status) {
     case 'Armed':
     case 'Disarmed':
       return 'waiting';
-    case 'ExitFailed':
+    case 'ExitStuck':
     case 'ExitUnconfirmed':
     case 'ExitPending':
       return 'attention';
     case 'End':
+    case 'EntryFailed':
       return 'recent';
     default:
       return 'open';

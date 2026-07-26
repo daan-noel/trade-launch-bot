@@ -169,6 +169,10 @@ struct StrategyPositionDbRow {
     submitted_buy_signatures: Vec<String>,
     status: String,
     exit_reason: Option<String>,
+    origin: String,
+    manual_exit: Option<Json<Value>>,
+    exit_redrive_count: i32,
+    exit_parked: bool,
     extra: Json<Value>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -176,6 +180,12 @@ struct StrategyPositionDbRow {
 
 impl From<StrategyPositionDbRow> for StrategyPosition {
     fn from(r: StrategyPositionDbRow) -> Self {
+        // ONE derivation site for the B3 attention flag: a real BuySubmitted older
+        // than the review window with no adopted fill needs a manual Verify.
+        let needs_review = r.status == "BuySubmitted"
+            && r.mode == "real"
+            && (Utc::now() - r.updated_at).num_seconds()
+                > crate::config::constants::BUY_SUBMITTED_REVIEW_SECS as i64;
         Self {
             id: r.id,
             run_id: r.run_id,
@@ -203,6 +213,11 @@ impl From<StrategyPositionDbRow> for StrategyPosition {
             submitted_buy_signatures: r.submitted_buy_signatures,
             status: r.status,
             exit_reason: r.exit_reason,
+            origin: r.origin,
+            manual_exit: r.manual_exit.map(|j| j.0),
+            exit_redrive_count: r.exit_redrive_count,
+            exit_parked: r.exit_parked,
+            needs_review,
             extra: r.extra.0,
             created_at: r.created_at,
             updated_at: r.updated_at,
@@ -219,9 +234,9 @@ impl From<StrategyPositionDbRow> for StrategyPosition {
 pub struct RuleCounters {
     /// Entered positions (`entry_price IS NOT NULL`) → `total_positions`.
     pub total_positions: i64,
-    /// In the holding index (`Holding`/`Arming`/`BuySubmitted`) → `open_positions`.
+    /// Open-partition rows (not `End`/`EntryFailed`) → `open_positions`.
     pub open_positions: i64,
-    /// Armed but not yet filled (`Arming`/`BuySubmitted`) → `pending_positions`.
+    /// Buy in flight, not yet filled (`BuySubmitted`) → `pending_positions`.
     pub pending_positions: i64,
     pub win_count: i64,
     pub loss_count: i64,
@@ -302,15 +317,15 @@ struct RuleCountersRow {
 /// rule-counter queries — keep predicates identical to `positions_summary`.
 const RULE_COUNTERS_AGGS: &str = "\
     COUNT(p.*) FILTER (WHERE p.entry_price IS NOT NULL) AS total, \
-    COUNT(p.*) FILTER (WHERE p.status IN ('Holding','Arming','BuySubmitted')) AS open, \
-    COUNT(p.*) FILTER (WHERE p.status IN ('Arming','BuySubmitted')) AS pending, \
+    COUNT(p.*) FILTER (WHERE p.status NOT IN ('End','EntryFailed')) AS open, \
+    COUNT(p.*) FILTER (WHERE p.status = 'BuySubmitted') AS pending, \
     COUNT(p.*) FILTER (WHERE p.status = 'End' AND p.exit_lamports > p.entry_lamports) AS win, \
-    COUNT(p.*) FILTER (WHERE p.entry_price IS NOT NULL AND p.status IN ('End','ExitFailed') \
-                         AND NOT (p.status = 'End' AND p.exit_lamports > p.entry_lamports)) AS loss, \
+    COUNT(p.*) FILTER (WHERE p.entry_price IS NOT NULL AND p.status = 'End' \
+                         AND NOT (p.exit_lamports > p.entry_lamports)) AS loss, \
     COALESCE(SUM(COALESCE(p.exit_lamports,0) - p.entry_lamports) \
-             FILTER (WHERE p.entry_price IS NOT NULL AND p.status IN ('End','ExitFailed')), 0)::BIGINT AS total_pnl_lamports, \
+             FILTER (WHERE p.entry_price IS NOT NULL AND p.status = 'End'), 0)::BIGINT AS total_pnl_lamports, \
     COALESCE(SUM(p.entry_lamports) \
-             FILTER (WHERE p.entry_price IS NOT NULL AND p.status IN ('End','ExitFailed')), 0)::BIGINT AS closed_entry_lamports";
+             FILTER (WHERE p.entry_price IS NOT NULL AND p.status = 'End'), 0)::BIGINT AS closed_entry_lamports";
 
 const RULE_COUNTERS_SELECT: &str = "\
     l.rule_id AS rule_id, \
@@ -348,7 +363,9 @@ fn map_rule_counters(rows: Vec<RuleCountersRow>) -> HashMap<Uuid, RuleCounters> 
 /// can't drift from the `closed` they're reconciled against (a count scoped even
 /// slightly wider would exceed `closed` and drive the frontend's `Other` slice
 /// negative).
-const CLOSED_PRED: &str = "sp.entry_price IS NOT NULL AND sp.status IN ('End','ExitFailed')";
+// Realized PnL is `End`-only: an `EntryFailed` never deployed SOL (and its NULL
+// entry excludes it anyway); a stuck/unconfirmed exit is OPEN, not closed.
+const CLOSED_PRED: &str = "sp.entry_price IS NOT NULL AND sp.status = 'End'";
 
 /// (`exit_reason` value → result column) for the summary's per-reason counts.
 /// One list so the SQL, the row struct, and `ExitReasonCounts` stay in step.
@@ -444,7 +461,8 @@ const POSITION_COLS: &str = "id, run_id, strategy_id, rule_id, mode, mint_addres
     token_program_id, token_account, target_price, target_token_amount, target_time, target_tx, \
     entry_price, entry_token_amount, entry_lamports, entry_time, entry_tx_signatures, \
     exit_price, exit_token_amount, exit_lamports, exit_time, exit_tx_signatures, \
-    submitted_buy_signatures, status, exit_reason, extra, created_at, updated_at";
+    submitted_buy_signatures, status, exit_reason, origin, manual_exit, \
+    exit_redrive_count, exit_parked, extra, created_at, updated_at";
 
 /// `POSITION_COLS` qualified with the `sp` alias — for the paged read that JOINs
 /// `tokens` (so the server can sort/filter by token-enrichment columns too).
@@ -453,6 +471,7 @@ const POSITION_COLS_SP: &str = "sp.id, sp.run_id, sp.strategy_id, sp.rule_id, sp
     sp.target_time, sp.target_tx, sp.entry_price, sp.entry_token_amount, sp.entry_lamports, \
     sp.entry_time, sp.entry_tx_signatures, sp.exit_price, sp.exit_token_amount, sp.exit_lamports, \
     sp.exit_time, sp.exit_tx_signatures, sp.submitted_buy_signatures, sp.status, sp.exit_reason, \
+    sp.origin, sp.manual_exit, sp.exit_redrive_count, sp.exit_parked, \
     sp.extra, sp.created_at, sp.updated_at";
 
 /// `POSITION_COLS` qualified with the `p` alias — for reads that JOIN `wallet_dict`
@@ -462,6 +481,7 @@ const POSITION_COLS_P: &str = "p.id, p.run_id, p.strategy_id, p.rule_id, p.mode,
     p.target_time, p.target_tx, p.entry_price, p.entry_token_amount, p.entry_lamports, \
     p.entry_time, p.entry_tx_signatures, p.exit_price, p.exit_token_amount, p.exit_lamports, \
     p.exit_time, p.exit_tx_signatures, p.submitted_buy_signatures, p.status, p.exit_reason, \
+    p.origin, p.manual_exit, p.exit_redrive_count, p.exit_parked, \
     p.extra, p.created_at, p.updated_at";
 
 // ---------------------------------------------------------------------------
@@ -1097,9 +1117,10 @@ impl StrategyRepo {
                  target_price, target_token_amount, target_time, target_tx,
                  entry_price, entry_token_amount, entry_lamports, entry_time, entry_tx_signatures,
                  exit_price, exit_token_amount, exit_lamports, exit_time, exit_tx_signatures,
-                 submitted_buy_signatures, status, exit_reason, extra, created_at, updated_at)
+                 submitted_buy_signatures, status, exit_reason, origin, manual_exit, extra,
+                 created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                    $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+                    $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
             "#,
         )
         .bind(p.id)
@@ -1127,6 +1148,8 @@ impl StrategyRepo {
         .bind(&p.submitted_buy_signatures)
         .bind(&p.status)
         .bind(p.exit_reason.as_ref())
+        .bind(&p.origin)
+        .bind(p.manual_exit.as_ref().map(Json))
         .bind(Json(&p.extra))
         .bind(p.created_at)
         .bind(p.updated_at)
@@ -1163,7 +1186,9 @@ impl StrategyRepo {
                 submitted_buy_signatures = $23,
                 status = $24,
                 exit_reason = $25,
-                extra = $26,
+                origin = $26,
+                manual_exit = $27,
+                extra = $28,
                 updated_at = now()
             WHERE id = $1
             "#,
@@ -1193,6 +1218,8 @@ impl StrategyRepo {
         .bind(&p.submitted_buy_signatures)
         .bind(&p.status)
         .bind(p.exit_reason.as_ref())
+        .bind(&p.origin)
+        .bind(p.manual_exit.as_ref().map(Json))
         .bind(Json(&p.extra))
         .execute(&self.pool)
         .await?;
@@ -1226,7 +1253,7 @@ impl StrategyRepo {
              SET status = $2, \
                  exit_reason = COALESCE($3, exit_reason), \
                  updated_at = now() \
-             WHERE id = $1 AND status NOT IN ('End','ExitFailed','ExitUnconfirmed')",
+             WHERE id = $1 AND status NOT IN ('End','EntryFailed','ExitStuck','ExitUnconfirmed')",
         )
         .bind(id)
         .bind(status)
@@ -1486,16 +1513,16 @@ impl StrategyRepo {
     ) -> anyhow::Result<PositionsSummary> {
         // Predicates (kept in one place so the two summary views can't drift):
         //   entered  := entry_price IS NOT NULL
-        //   open     := status IN ('Holding','Arming','BuySubmitted')
-        //   closed   := entry_price IS NOT NULL AND status IN ('End','ExitFailed')
+        //   open     := status NOT IN ('End','EntryFailed')   (the open partition —
+        //               a stuck/unconfirmed exit still holds deployed SOL)
+        //   closed   := entry_price IS NOT NULL AND status = 'End'
         //   win      := status = 'End' AND exit_lamports > entry_lamports   (SOL basis)
-        // Realized SOL PnL = COALESCE(exit_lamports,0) - entry_lamports (lamports) —
-        // a failed exit (`ExitFailed`, no exit fill) books as a full loss of deployed
-        // capital. The headline return % is capital-weighted (Σ pnl / Σ entry, via
-        // `weighted_return_pct`), so it is sign-locked to the SOL total; `best_pct`/
-        // `worst_pct` are per-trade price extremes for the distribution tails, and a
-        // failed exit contributes −100% (its capital was lost) so the tails agree with
-        // the PnL sums instead of using the never-realized hypothetical exit price.
+        // Realized SOL PnL = COALESCE(exit_lamports,0) - entry_lamports (lamports),
+        // `End`-only: an `EntryFailed` never deployed SOL, and a stuck bag is open
+        // (unrealized) until written off or sold. The headline return % is
+        // capital-weighted (Σ pnl / Σ entry, via `weighted_return_pct`), so it is
+        // sign-locked to the SOL total; `best_pct`/`worst_pct` are per-trade price
+        // extremes for the distribution tails.
         // One `COUNT(*) FILTER` per known exit reason, generated from the single
         // `EXIT_REASON_COUNTS` list so a new reason is added in exactly one place.
         let metrics_pred = metrics_exit_sql_pred("sp.exit_reason");
@@ -1522,32 +1549,31 @@ impl StrategyRepo {
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(
             "SELECT \
                COUNT(*) FILTER (WHERE sp.entry_price IS NOT NULL) AS tokens, \
-               COUNT(*) FILTER (WHERE sp.status IN ('Holding','Arming','BuySubmitted')) AS open, \
+               COUNT(*) FILTER (WHERE sp.status NOT IN ('End','EntryFailed')) AS open, \
                COUNT(*) FILTER (WHERE sp.status = 'End' AND sp.exit_lamports > sp.entry_lamports) AS win, \
-               COUNT(*) FILTER (WHERE sp.entry_price IS NOT NULL AND sp.status IN ('End','ExitFailed') \
-                                  AND NOT (sp.status = 'End' AND sp.exit_lamports > sp.entry_lamports)) AS loss, \
+               COUNT(*) FILTER (WHERE sp.entry_price IS NOT NULL AND sp.status = 'End' \
+                                  AND NOT (sp.exit_lamports > sp.entry_lamports)) AS loss, \
                COALESCE(SUM(COALESCE(sp.exit_lamports,0) - sp.entry_lamports) \
-                        FILTER (WHERE sp.entry_price IS NOT NULL AND sp.status IN ('End','ExitFailed')), 0)::BIGINT AS total_pnl_lamports, \
+                        FILTER (WHERE sp.entry_price IS NOT NULL AND sp.status = 'End'), 0)::BIGINT AS total_pnl_lamports, \
                COALESCE(SUM(sp.entry_lamports) FILTER (WHERE sp.entry_price IS NOT NULL), 0)::BIGINT AS total_entry_lamports, \
-               COALESCE(SUM(sp.entry_lamports) FILTER (WHERE sp.status IN ('Holding','Arming','BuySubmitted')), 0)::BIGINT AS total_holding_lamports, \
+               COALESCE(SUM(sp.entry_lamports) FILTER (WHERE sp.entry_price IS NOT NULL \
+                                  AND sp.status NOT IN ('End','EntryFailed')), 0)::BIGINT AS total_holding_lamports, \
                COALESCE(SUM(COALESCE(sp.exit_lamports,0) - sp.entry_lamports) \
                         FILTER (WHERE sp.status = 'End' AND sp.exit_lamports > sp.entry_lamports), 0)::BIGINT AS total_gains_lamports, \
                COALESCE(SUM(sp.entry_lamports - COALESCE(sp.exit_lamports,0)) \
-                        FILTER (WHERE sp.entry_price IS NOT NULL AND sp.status IN ('End','ExitFailed') \
-                                  AND NOT (sp.status = 'End' AND sp.exit_lamports > sp.entry_lamports)), 0)::BIGINT AS total_losses_lamports, \
+                        FILTER (WHERE sp.entry_price IS NOT NULL AND sp.status = 'End' \
+                                  AND NOT (sp.exit_lamports > sp.entry_lamports)), 0)::BIGINT AS total_losses_lamports, \
                COALESCE(SUM(sp.entry_lamports) \
-                        FILTER (WHERE sp.entry_price IS NOT NULL AND sp.status IN ('End','ExitFailed')), 0)::BIGINT AS closed_entry_lamports, \
+                        FILTER (WHERE sp.entry_price IS NOT NULL AND sp.status = 'End'), 0)::BIGINT AS closed_entry_lamports, \
                COALESCE(SUM(EXTRACT(EPOCH FROM (sp.exit_time - sp.entry_time))) \
                         FILTER (WHERE sp.entry_time IS NOT NULL AND sp.exit_time IS NOT NULL \
-                                  AND sp.status IN ('End','ExitFailed')), 0)::DOUBLE PRECISION AS sum_hold_secs, \
-               MAX(CASE WHEN sp.status = 'ExitFailed' THEN -100.0 \
-                        ELSE (sp.exit_price - sp.entry_price) / sp.entry_price * 100.0 END) \
+                                  AND sp.status = 'End'), 0)::DOUBLE PRECISION AS sum_hold_secs, \
+               MAX((sp.exit_price - sp.entry_price) / sp.entry_price * 100.0) \
                         FILTER (WHERE sp.entry_price IS NOT NULL AND sp.entry_price > 0 \
-                                  AND sp.status IN ('End','ExitFailed'))::DOUBLE PRECISION AS best_pct, \
-               MIN(CASE WHEN sp.status = 'ExitFailed' THEN -100.0 \
-                        ELSE (sp.exit_price - sp.entry_price) / sp.entry_price * 100.0 END) \
+                                  AND sp.status = 'End')::DOUBLE PRECISION AS best_pct, \
+               MIN((sp.exit_price - sp.entry_price) / sp.entry_price * 100.0) \
                         FILTER (WHERE sp.entry_price IS NOT NULL AND sp.entry_price > 0 \
-                                  AND sp.status IN ('End','ExitFailed'))::DOUBLE PRECISION AS worst_pct, \
+                                  AND sp.status = 'End')::DOUBLE PRECISION AS worst_pct, \
                COUNT(*) FILTER (WHERE sp.entry_price IS NOT NULL AND i.is_migrated) AS migrated, \
                {exit_cols}\
                {metrics_split_cols}\
@@ -1556,7 +1582,7 @@ impl StrategyRepo {
                           'entry_price', sp.entry_price, \
                           'entry_lamports', sp.entry_lamports)) \
                         FILTER (WHERE sp.entry_price IS NOT NULL \
-                                  AND sp.status IN ('Holding','Arming','BuySubmitted')), '[]') AS open_marks \
+                                  AND sp.status NOT IN ('End','EntryFailed')), '[]') AS open_marks \
              FROM strategy_positions sp \
              LEFT JOIN tokens t ON t.mint_address = sp.mint_address \
              LEFT JOIN tokens_info i ON i.mint_address = sp.mint_address WHERE "
@@ -1711,7 +1737,7 @@ impl StrategyRepo {
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
     }
 
-    /// Page-bounded in-holding-index positions (`Arming`/`BuySubmitted`/`Holding`)
+    /// Page-bounded in-holding-index positions (`BuySubmitted`/`Holding`)
     /// for one mint within a strategy — the HTTP by-mint view.
     pub async fn find_holding_by_mint(
         &self,
@@ -1723,7 +1749,7 @@ impl StrategyRepo {
         let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             "SELECT {POSITION_COLS} FROM strategy_positions \
              WHERE strategy_id = $1 AND mint_address = $2 \
-               AND status IN ('Holding', 'Arming', 'BuySubmitted') \
+               AND status IN ('Holding', 'BuySubmitted') \
              ORDER BY created_at DESC LIMIT $3 OFFSET $4"
         ))
         .bind(strategy_id)
@@ -1747,7 +1773,7 @@ impl StrategyRepo {
         let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             "SELECT {POSITION_COLS} FROM strategy_positions \
              WHERE strategy_id = $1 AND wallet = $2 \
-               AND status IN ('Holding', 'Arming', 'BuySubmitted') \
+               AND status IN ('Holding', 'BuySubmitted') \
              ORDER BY created_at DESC LIMIT $3 OFFSET $4"
         ))
         .bind(strategy_id)
@@ -1762,14 +1788,15 @@ impl StrategyRepo {
     pub async fn find_open_positions(&self) -> anyhow::Result<Vec<StrategyPosition>> {
         let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             "SELECT {POSITION_COLS} FROM strategy_positions \
-             WHERE status NOT IN ('End', 'ExitFailed') ORDER BY created_at DESC"
+             WHERE status NOT IN ('End', 'EntryFailed') ORDER BY created_at DESC"
         ))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
     }
 
-    /// Most recent clean/failed closes across all rules — Ops Recent hydrate.
+    /// Most recent terminal closes (`End` / `EntryFailed`) across all rules —
+    /// Recent hydrate. A stuck/unconfirmed exit is OPEN and never lands here.
     /// Ordered by exit time (fallback `updated_at`), newest first. Bounded.
     pub async fn find_recent_closed(
         &self,
@@ -1778,7 +1805,7 @@ impl StrategyRepo {
         let limit = limit.clamp(1, 200);
         let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             "SELECT {POSITION_COLS} FROM strategy_positions \
-             WHERE status IN ('End', 'ExitFailed') \
+             WHERE status IN ('End', 'EntryFailed') \
              ORDER BY COALESCE(exit_time, updated_at) DESC \
              LIMIT $1"
         ))
@@ -1802,7 +1829,7 @@ impl StrategyRepo {
             "SELECT p.mint_address, p.rule_id, r.rule_name, p.status, p.mode \
              FROM strategy_positions p \
              LEFT JOIN strategy_rules r ON r.id = p.rule_id \
-             WHERE p.status NOT IN ('End', 'ExitFailed') \
+             WHERE p.status NOT IN ('End', 'EntryFailed') \
                AND ($1 = false OR p.mode = 'real') \
              ORDER BY p.created_at DESC",
         )
@@ -1855,44 +1882,36 @@ impl StrategyRepo {
             SELECT p.rule_id AS rule_id,
                    r.rule_name AS rule_name,
                    COUNT(*) FILTER (
-                     WHERE p.status IN ('End', 'ExitFailed')
-                       AND p.entry_lamports IS NOT NULL
+                     WHERE p.entry_lamports IS NOT NULL
                        AND p.exit_lamports IS NOT NULL
                    )::BIGINT AS closed,
                    COUNT(*) FILTER (
-                     WHERE p.status = 'End'
-                       AND p.entry_lamports IS NOT NULL
+                     WHERE p.entry_lamports IS NOT NULL
                        AND p.exit_lamports IS NOT NULL
                        AND (p.exit_lamports - p.entry_lamports) > 0
                    )::BIGINT AS win,
                    COUNT(*) FILTER (
-                     WHERE p.status IN ('End', 'ExitFailed')
-                       AND p.entry_lamports IS NOT NULL
+                     WHERE p.entry_lamports IS NOT NULL
                        AND p.exit_lamports IS NOT NULL
-                       AND NOT (
-                         p.status = 'End' AND (p.exit_lamports - p.entry_lamports) > 0
-                       )
+                       AND (p.exit_lamports - p.entry_lamports) <= 0
                    )::BIGINT AS loss,
                    COALESCE(SUM(p.exit_lamports - p.entry_lamports) FILTER (
-                     WHERE p.status IN ('End', 'ExitFailed')
-                       AND p.entry_lamports IS NOT NULL
+                     WHERE p.entry_lamports IS NOT NULL
                        AND p.exit_lamports IS NOT NULL
                    ), 0)::BIGINT AS total_pnl_lamports,
                    COALESCE(SUM(p.entry_lamports) FILTER (
-                     WHERE p.status IN ('End', 'ExitFailed')
-                       AND p.entry_lamports IS NOT NULL
+                     WHERE p.entry_lamports IS NOT NULL
                        AND p.exit_lamports IS NOT NULL
                    ), 0)::BIGINT AS total_entry_lamports
             FROM strategy_positions p
             LEFT JOIN strategy_rules r ON r.id = p.rule_id
             WHERE p.mode = $1
               AND p.rule_id IS NOT NULL
-              AND p.status IN ('End', 'ExitFailed')
+              AND p.status = 'End'
               AND ($2::timestamptz IS NULL OR p.exit_time >= $2)
             GROUP BY p.rule_id, r.rule_name
             HAVING COUNT(*) FILTER (
-              WHERE p.status IN ('End', 'ExitFailed')
-                AND p.entry_lamports IS NOT NULL
+              WHERE p.entry_lamports IS NOT NULL
                 AND p.exit_lamports IS NOT NULL
             ) > 0
             ORDER BY total_pnl_lamports DESC
@@ -1906,15 +1925,17 @@ impl StrategyRepo {
     }
 
     /// Distinct mints with an unsettled **real** position — every mint the wallet
-    /// could legitimately hold a bag for. Covers `Holding`/`Arming`/`BuySubmitted`/
-    /// `ExitPending`/`ExitFailed` (the last can still hold a bag whose sell failed),
-    /// across all strategies. Backs the boot wallet-reconcile sweep. Positive `IN`
-    /// over the unsettled statuses so the predicate stays index-servable.
+    /// could legitimately hold a bag for. Covers `Holding`/`BuySubmitted`/
+    /// `ExitPending`/`ExitStuck`/`ExitUnconfirmed` (the last two can still hold a
+    /// bag whose sell failed / never confirmed), across all strategies. Backs the
+    /// boot wallet-reconcile sweep. Positive `IN` over the unsettled statuses so
+    /// the predicate stays index-servable.
     pub async fn distinct_unsettled_real_mints(&self) -> anyhow::Result<Vec<String>> {
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT DISTINCT mint_address FROM strategy_positions \
              WHERE mode = 'real' \
-               AND status IN ('Holding', 'Arming', 'BuySubmitted', 'ExitPending', 'ExitFailed')",
+               AND status IN ('Holding', 'BuySubmitted', 'ExitPending', \
+                              'ExitStuck', 'ExitUnconfirmed')",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -2131,7 +2152,7 @@ impl StrategyRepo {
         let rows: Vec<(Uuid, String, i64)> = sqlx::query_as(
             "SELECT rule_id, mint_address, COUNT(*) FROM strategy_positions \
              WHERE mint_address = ANY($1) AND rule_id IS NOT NULL \
-               AND status IN ('End','ExitFailed','ExitUnconfirmed') \
+               AND status IN ('End','EntryFailed','ExitStuck','ExitUnconfirmed') \
              GROUP BY rule_id, mint_address",
         )
         .bind(mints)
@@ -2173,7 +2194,7 @@ impl StrategyRepo {
         let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             "SELECT {POSITION_COLS} FROM strategy_positions \
              WHERE wallet = $1 AND mint_address = $2 AND mode = 'real' AND id <> $3 \
-               AND status IN ('Holding','ExitPending','ExitFailed','ExitUnconfirmed') \
+               AND status IN ('Holding','ExitPending','ExitStuck','ExitUnconfirmed') \
                AND entry_price IS NOT NULL \
              ORDER BY created_at ASC"
         ))
@@ -2185,10 +2206,10 @@ impl StrategyRepo {
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
     }
 
-    /// Real `ExitFailed` rows whose wallet still shows a positive `trades` net on
+    /// Real `ExitStuck` rows whose wallet still shows a positive `trades` net on
     /// the mint (bag stranded). PG-only — no RPC. `threshold_raw` is the cleared
     /// floor (typically 0).
-    pub async fn find_exit_failed_with_bag(
+    pub async fn find_exit_stuck_bags(
         &self,
         threshold_raw: i64,
     ) -> anyhow::Result<Vec<StrategyPosition>> {
@@ -2197,7 +2218,7 @@ impl StrategyRepo {
             SELECT {POSITION_COLS_P}
             FROM strategy_positions p
             JOIN wallet_dict w ON w.address = p.wallet
-            WHERE p.mode = 'real' AND p.status = 'ExitFailed' AND p.entry_price IS NOT NULL
+            WHERE p.mode = 'real' AND p.status = 'ExitStuck' AND p.entry_price IS NOT NULL
               AND NOT p.exit_parked
               AND COALESCE((
                     SELECT SUM(CASE WHEN t.trade_type = 'buy'  THEN t.token_amount
@@ -2215,9 +2236,9 @@ impl StrategyRepo {
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
     }
 
-    /// Atomically increment the reaper's ExitFailed redrive counter, returning the
+    /// Atomically increment the reaper's ExitStuck redrive counter, returning the
     /// new count. A dedicated column (not `extra`) so the fold's full-row
-    /// `update_position` re-booking ExitFailed after a failed redrive can never
+    /// `update_position` re-booking ExitStuck after a failed redrive can never
     /// clobber it. See [`Self::set_exit_parked`] / migration 0012.
     pub async fn bump_exit_redrive(&self, id: Uuid) -> anyhow::Result<i32> {
         let (n,): (i32,) = sqlx::query_as(
@@ -2230,8 +2251,8 @@ impl StrategyRepo {
         Ok(n)
     }
 
-    /// Park (or un-park) an ExitFailed position. Parked ⇒ the reaper stops
-    /// auto-redriving it (retry cap hit); it stays ExitFailed and is surfaced for a
+    /// Park an ExitStuck position. Parked ⇒ the reaper stops auto-redriving it
+    /// (retry cap hit); it stays ExitStuck (open, attention lane) surfaced for a
     /// manual decision (retry / force-dump / write-off). Only a manual action or a
     /// bag-cleared heal resolves it from here.
     pub async fn set_exit_parked(&self, id: Uuid, parked: bool) -> anyhow::Result<()> {
@@ -2243,11 +2264,27 @@ impl StrategyRepo {
         Ok(())
     }
 
-    /// Real `ExitFailed` whose wallet mint net is already ≤ `threshold_raw` (bag
-    /// gone — book End without a sell). Requires a sell on record so a rolling-buffer
-    /// age-out of the buy alone cannot false-clear. PG-only.
-    pub async fn find_exit_failed_cleared(
+    /// Un-park after a manual Retry: clears the parked flag AND resets the redrive
+    /// counter so the position gets a fresh bounded auto-redrive budget.
+    pub async fn unpark_exit(&self, id: Uuid) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE strategy_positions SET exit_parked = false, exit_redrive_count = 0 \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Real rows in `status` whose wallet mint net is already ≤ `threshold_raw`
+    /// (bag gone — book End without a sell). Requires a sell on record so a
+    /// rolling-buffer age-out of the buy alone cannot false-clear. PG-only.
+    /// Drives the reaper's bag-cleared heals for `ExitStuck` and
+    /// `ExitUnconfirmed` (the on-demand Verify action reuses the same shape).
+    pub async fn find_cleared_by_status(
         &self,
+        status: &str,
         threshold_raw: i64,
     ) -> anyhow::Result<Vec<StrategyPosition>> {
         let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
@@ -2255,7 +2292,7 @@ impl StrategyRepo {
             SELECT {POSITION_COLS_P}
             FROM strategy_positions p
             JOIN wallet_dict w ON w.address = p.wallet
-            WHERE p.mode = 'real' AND p.status = 'ExitFailed' AND p.entry_price IS NOT NULL
+            WHERE p.mode = 'real' AND p.status = $2 AND p.entry_price IS NOT NULL
               AND EXISTS (
                     SELECT 1 FROM trades s
                     WHERE s.wallet_id = w.id AND s.mint_address = p.mint_address
@@ -2272,6 +2309,7 @@ impl StrategyRepo {
             "#
         ))
         .bind(threshold_raw)
+        .bind(status)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
@@ -2317,9 +2355,10 @@ impl StrategyRepo {
     /// The persisted `token_account` for any open position on the same
     /// `(wallet, mint)` in a mode — so a subsequent bot buy into a mint already
     /// held reuses that one account instead of the template pool minting a second.
-    /// Scans `Arming`/`BuySubmitted`/`Holding` rows (any in-flight or held
-    /// position), newest first, returning the first non-null account. `None` =
-    /// nothing held with a recorded account, so the buy proceeds as today.
+    /// Scans `BuySubmitted`/`Holding`/`ExitPending`/`ExitStuck` rows (any
+    /// in-flight, held, or stuck-bag position), newest first, returning the first
+    /// non-null account. `None` = nothing held with a recorded account, so the buy
+    /// proceeds as today.
     pub async fn find_reusable_token_account(
         &self,
         wallet: &str,
@@ -2329,7 +2368,7 @@ impl StrategyRepo {
         let acct: Option<String> = sqlx::query_scalar(
             "SELECT token_account FROM strategy_positions \
              WHERE wallet = $1 AND mint_address = $2 AND mode = $3 \
-               AND status IN ('Arming','BuySubmitted','Holding') \
+               AND status IN ('BuySubmitted','Holding','ExitPending','ExitStuck') \
                AND token_account IS NOT NULL \
              ORDER BY updated_at DESC LIMIT 1",
         )
@@ -2342,8 +2381,8 @@ impl StrategyRepo {
     }
 
     /// True if any OTHER position (excluding `exclude_id`) on this `(wallet, mint)` in
-    /// `mode` is still unsettled — `Arming`/`BuySubmitted`/`Holding`/`ExitPending`/
-    /// `ExitFailed`/`ExitUnconfirmed` — i.e. may still hold tokens in the SHARED
+    /// `mode` is still unsettled — `BuySubmitted`/`Holding`/`ExitPending`/
+    /// `ExitStuck`/`ExitUnconfirmed` — i.e. may still hold tokens in the SHARED
     /// token account (two positions on one mint intentionally reuse ONE account, see
     /// [`find_reusable_token_account`]). Gates the rent-reclaim `close_token_account`
     /// so one position's exit never closes the account out from under a sibling's bag
@@ -2361,8 +2400,8 @@ impl StrategyRepo {
             "SELECT EXISTS ( \
                  SELECT 1 FROM strategy_positions \
                  WHERE wallet = $1 AND mint_address = $2 AND mode = $3 AND id <> $4 \
-                   AND status IN ('Arming','BuySubmitted','Holding','ExitPending',\
-                                  'ExitFailed','ExitUnconfirmed') \
+                   AND status IN ('BuySubmitted','Holding','ExitPending',\
+                                  'ExitStuck','ExitUnconfirmed') \
              )",
         )
         .bind(wallet)
@@ -2374,45 +2413,64 @@ impl StrategyRepo {
         Ok(exists)
     }
 
-    /// Terminally fail positions stuck in `ExitPending` past `stale_after` (orphaned
-    /// mid-exit). Re-arming a half-done real exit risks a double-sell, so fail it.
-    /// Returns rows affected.
-    pub async fn fail_stale_exit_pending(
+    /// Flip **real** positions stuck in `ExitPending` past `stale_after` (orphaned
+    /// mid-exit) to `ExitStuck` — but ONLY those NOT eligible for the bag-cleared
+    /// heal (S4 fix: a landed-but-feed-lagged sell must be booked `End` by
+    /// `find_exit_pending_cleared` + book, never stamped as a stuck loss). A row is
+    /// heal-eligible when its wallet net is ≤ `threshold_raw` AND a sell is on
+    /// record; everything else stale flips to `ExitStuck` (open, attention lane —
+    /// the reaper's redrive/park machinery takes over). Returns rows affected.
+    pub async fn mark_stale_exit_pending_stuck(
         &self,
-        mode: &str,
         stale_after: std::time::Duration,
+        threshold_raw: i64,
     ) -> anyhow::Result<u64> {
         let cutoff = Utc::now() - chrono::Duration::from_std(stale_after)?;
         let res = sqlx::query(
-            "UPDATE strategy_positions SET status = 'ExitFailed', updated_at = now() \
-             WHERE status = 'ExitPending' AND mode = $1 AND updated_at < $2",
+            r#"
+            UPDATE strategy_positions p SET status = 'ExitStuck', updated_at = now()
+            FROM wallet_dict w
+            WHERE w.address = p.wallet
+              AND p.status = 'ExitPending' AND p.mode = 'real' AND p.updated_at < $1
+              AND NOT (
+                    EXISTS (
+                      SELECT 1 FROM trades s
+                      WHERE s.wallet_id = w.id AND s.mint_address = p.mint_address
+                        AND s.trade_type = 'sell'
+                    )
+                    AND COALESCE((
+                      SELECT SUM(CASE WHEN t.trade_type = 'buy'  THEN t.token_amount
+                                      WHEN t.trade_type = 'sell' THEN -t.token_amount
+                                      ELSE 0 END)
+                      FROM trades t
+                      WHERE t.wallet_id = w.id AND t.mint_address = p.mint_address
+                    ), 0)::bigint <= $2
+                  )
+            "#,
         )
-        .bind(mode)
         .bind(cutoff)
+        .bind(threshold_raw)
         .execute(&self.pool)
         .await?;
         Ok(res.rows_affected())
     }
 
-    /// Delete positions left `Arming` with no entry fill past `stale_after` — they
-    /// matched a rule but never sent a buy (no SOL, no tokens), so they're safe to
-    /// drop. Scoped to `Arming` only: a `BuySubmitted` row may own tokens and is the
-    /// buy-recovery reaper's responsibility. Returns rows deleted.
-    pub async fn delete_stale_unentered(
+    /// Stale **paper** `ExitPending` rows (crash mid-simulated-sell). Paper has no
+    /// on-chain bag to check — the reaper books these `End` directly.
+    pub async fn find_stale_paper_exit_pending(
         &self,
-        mode: &str,
         stale_after: std::time::Duration,
-    ) -> anyhow::Result<u64> {
+    ) -> anyhow::Result<Vec<StrategyPosition>> {
         let cutoff = Utc::now() - chrono::Duration::from_std(stale_after)?;
-        let res = sqlx::query(
-            "DELETE FROM strategy_positions \
-             WHERE status = 'Arming' AND entry_price IS NULL AND mode = $1 AND created_at < $2",
-        )
-        .bind(mode)
+        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+            "SELECT {POSITION_COLS} FROM strategy_positions \
+             WHERE status = 'ExitPending' AND mode = 'paper' AND updated_at < $1 \
+             ORDER BY updated_at ASC",
+        ))
         .bind(cutoff)
-        .execute(&self.pool)
+        .fetch_all(&self.pool)
         .await?;
-        Ok(res.rows_affected())
+        Ok(rows.into_iter().map(StrategyPosition::from).collect())
     }
 
     /// Distinct mints with an entry-recorded `Holding` real position whose net traded

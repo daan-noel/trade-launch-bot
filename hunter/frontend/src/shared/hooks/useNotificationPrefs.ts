@@ -11,7 +11,8 @@ export const ALL_NOTIFY_STATUSES = [
   'Holding',
   'ExitPending',
   'End',
-  'ExitFailed',
+  'EntryFailed',
+  'ExitStuck',
   'ExitUnconfirmed',
 ] as const;
 
@@ -21,7 +22,7 @@ export type NotifyStatus = (typeof ALL_NOTIFY_STATUSES)[number];
 export const CRITICAL_NOTIFY_STATUSES: readonly NotifyStatus[] = [
   'Holding',
   'ExitPending',
-  'ExitFailed',
+  'ExitStuck',
   'ExitUnconfirmed',
 ];
 
@@ -61,11 +62,13 @@ const DEFAULT_PREFS: NotificationPrefs = {
 
 const KNOWN = new Set<string>(ALL_NOTIFY_STATUSES);
 
-/** Map legacy `Arming` (pre-redesign position status) → `Armed`. */
+/** Map legacy keys: `Arming` → `Armed`; pre-split `ExitFailed` → `ExitStuck`. */
 function migrateStatuses(statuses: string[]): string[] {
-  return [...new Set(statuses.map((s) => (s === 'Arming' ? 'Armed' : s)))].filter((s) =>
-    KNOWN.has(s),
-  );
+  return [
+    ...new Set(
+      statuses.map((s) => (s === 'Arming' ? 'Armed' : s === 'ExitFailed' ? 'ExitStuck' : s)),
+    ),
+  ].filter((s) => KNOWN.has(s));
 }
 
 function statusesEqual(a: string[], b: string[]): boolean {

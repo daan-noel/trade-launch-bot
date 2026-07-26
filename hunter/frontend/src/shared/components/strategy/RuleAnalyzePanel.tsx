@@ -41,7 +41,8 @@ const posRowOverlay = markerRowOverlay(inspectFromPosition);
 const TABLE_RELOAD_STATUSES = new Set([
   'Holding',
   'End',
-  'ExitFailed',
+  'EntryFailed',
+  'ExitStuck',
   'ExitUnconfirmed',
 ]);
 
@@ -61,7 +62,7 @@ function holdingSecs(r: RulePositionRecord): number {
 }
 
 function toTemporalRow(r: RulePositionRecord): TemporalRow {
-  const open = !r.exit_time && r.status !== 'End' && r.status !== 'ExitFailed';
+  const open = !r.exit_time && r.status !== 'End' && r.status !== 'EntryFailed';
   return {
     mint_address: r.mint_address,
     fired: r.entry_price != null,

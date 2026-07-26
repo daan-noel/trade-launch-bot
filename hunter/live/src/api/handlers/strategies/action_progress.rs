@@ -68,9 +68,12 @@ pub fn spawn_stop_watcher(
                     status,
                     ..
                 }) if remaining.contains(&position_id) => {
+                    // "No longer draining": a clean close, a never-filled buy, or
+                    // an exit the engine handed off (stuck/unconfirmed — the row
+                    // stays open in the attention lane, but the stop is done with it).
                     let terminal = matches!(
                         status.as_str(),
-                        "End" | "ExitFailed" | "ExitUnconfirmed"
+                        "End" | "EntryFailed" | "ExitStuck" | "ExitUnconfirmed"
                     );
                     if !terminal {
                         continue;

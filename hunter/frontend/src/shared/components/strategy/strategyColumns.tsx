@@ -55,6 +55,7 @@ export function exitReasonBadge(
     case 'TimeStop':
       return <span className="font-bold text-info">{label}</span>;
     case 'ExitFailed':
+    case 'ExitStuck':
       return <span className="font-bold text-red">{label}</span>;
     case 'Manual':
     case 'ManualClose':
@@ -398,8 +399,9 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = (
     group: 'state',
     sortable: true,
     render: (r) => {
-      if (r.status === 'Arming') return <span className="italic text-text-dim">Arming</span>;
       if (r.status === 'BuySubmitted') return <span className="italic text-warning">Buying…</span>;
+      if (r.status === 'EntryFailed') return <span className="italic text-text-dim">No fill</span>;
+      if (r.status === 'ExitStuck') return <span className="font-bold text-red">Stuck</span>;
       // A sell is in flight (manual "Sell ALL", a rule Stop & close, or a ladder/time
       // exit): the position is marked ExitPending and the on-chain sell is running.
       // Amber "Selling…" so the row itself shows live progress, not just the button.

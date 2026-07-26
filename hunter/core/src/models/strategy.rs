@@ -102,18 +102,18 @@ pub struct StrategyRunMetrics {
 ///
 /// SOL fields are human SOL (f64) — the SQL sums lamports and the repo divides.
 /// A "win" is a clean `End` exit with positive realized SOL; every other closed
-/// position (incl. `ExitFailed` and breakeven) is a loss. `tokens` counts entered
-/// positions (a real entry landed); `open` counts holding-index rows
-/// (`Holding`/`Arming`/`BuySubmitted`).
+/// position (loss or breakeven) is a loss. `tokens` counts entered positions (a
+/// real entry landed); `open` counts open-partition rows (everything not
+/// `End`/`EntryFailed` — including stuck/unconfirmed exits still holding SOL).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PositionsSummary {
     /// Entered positions (a real entry fill landed) — the summary's "Tokens".
     pub tokens: i64,
-    /// Still in the holding index (`Holding`/`Arming`/`BuySubmitted`).
+    /// Open-partition rows (not `End`/`EntryFailed`).
     pub open: i64,
     /// Clean `End` exits with positive realized SOL.
     pub win: i64,
-    /// Every other closed position (loss/breakeven/`ExitFailed`).
+    /// Every other closed position (loss/breakeven).
     pub loss: i64,
     /// Closed positions = `win + loss` (the win-rate denominator).
     pub closed: i64,
@@ -160,8 +160,7 @@ pub struct PositionsSummary {
 /// Closed-position counts keyed by [`StrategyPosition::exit_reason`].
 ///
 /// Deliberately **not** exhaustive of `closed`: a position can close with no
-/// reason at all (`ExitFailed`, where no exit fill ever landed) or with a reason
-/// minted after this list. The frontend reconciles the difference against
+/// reason at all, or with a reason minted after this list. The frontend reconciles the difference against
 /// `closed` into a visible `Other` slice rather than having the parts silently
 /// fail to sum to the whole — so an unmodelled reason shows up as a number to
 /// investigate instead of quietly skewing the mix.
@@ -240,20 +239,46 @@ pub struct StrategyPosition {
     pub exit_tx_signatures: Value,
     /// Raw submitted buy signatures (`TEXT[]`).
     pub submitted_buy_signatures: Vec<String>,
-    /// `Arming` | `BuySubmitted` | `Holding` | `ExitPending` | `ExitUnconfirmed` |
-    /// `End` | `ExitFailed`.
+    /// `BuySubmitted` | `Holding` | `ExitPending` | `ExitUnconfirmed` |
+    /// `ExitStuck` | `End` | `EntryFailed`.
+    ///
+    /// Open partition: everything but `End`/`EntryFailed` — a row with SOL still
+    /// in it (`ExitStuck`, `ExitUnconfirmed`) is OPEN, never "recent closed".
     pub status: String,
     pub exit_reason: Option<String>,
+    /// `bot` (engine-armed) | `manual` (operator buy via the Console).
+    #[serde(default = "default_origin")]
+    pub origin: String,
+    /// Manual-position exit config (`{"tp_pct": .., "sl_pct": ..}`). `None` on bot
+    /// rows and on tracked-only manual rows (no auto-exit of any kind).
+    #[serde(default)]
+    pub manual_exit: Option<Value>,
+    /// Reaper redrive counter (mig 0012) — **read-only** in this model: the repo's
+    /// `insert_position`/`update_position` never write it (only `bump_exit_redrive`
+    /// / `set_exit_parked` / `unpark_exit` mutate it), so a full-row engine write
+    /// can never clobber the reaper's state.
+    #[serde(default)]
+    pub exit_redrive_count: i32,
+    /// Parked ⇒ the reaper stopped auto-redriving this `ExitStuck` bag (cap hit);
+    /// read-only here for the same reason as `exit_redrive_count`.
+    #[serde(default)]
+    pub exit_parked: bool,
+    /// Derived at DB-read time (not a column): a real `BuySubmitted` older than
+    /// the review window with no adopted fill (B3) — needs a manual Verify. The
+    /// ONE derivation site is the repo's row mapping; the UI renders it, never
+    /// infers it from timestamps.
+    #[serde(default)]
+    pub needs_review: bool,
     pub extra: Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 impl StrategyPosition {
-    /// In the runtime holding index: still arming, buy in flight, or held. These
-    /// are the states the exit gate and fill-adopt path scan by mint.
+    /// In the runtime holding index: buy in flight or held. These are the states
+    /// the exit gate and fill-adopt path scan by mint.
     pub fn is_in_holding_index(&self) -> bool {
-        matches!(self.status.as_str(), "Arming" | "BuySubmitted" | "Holding")
+        matches!(self.status.as_str(), "BuySubmitted" | "Holding")
     }
 
     /// Fully entered and currently held (SOL deployed, not yet exiting).
@@ -261,9 +286,10 @@ impl StrategyPosition {
         self.status == "Holding"
     }
 
-    /// Terminally closed — either a clean exit or a failed one.
+    /// Terminally closed — a confirmed exit or a buy that never filled. A stuck
+    /// or unconfirmed exit is NOT closed (the bag may still be held).
     pub fn is_closed(&self) -> bool {
-        matches!(self.status.as_str(), "End" | "ExitFailed")
+        matches!(self.status.as_str(), "End" | "EntryFailed")
     }
 
     /// A real entry landed (SOL deployed) — the gate for the cap counters.
@@ -297,9 +323,9 @@ impl StrategyPosition {
     // ── Lifecycle ctor + mutators (the unified-schema twin of the old `Position`
     //    in-memory API; pure, no DB) ───────────────────────────────────────────
 
-    /// A fresh `Arming` position within `run_id` (no fills yet). Mode/strategy are
-    /// copied from the owning rule; `wallet` is the bot wallet (real) or a sentinel
-    /// (paper).
+    /// A fresh `BuySubmitted` position within `run_id` (no fills yet). Mode/strategy
+    /// are copied from the owning rule; `wallet` is the bot wallet (real) or a
+    /// sentinel (paper).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         run_id: Uuid,
@@ -335,8 +361,13 @@ impl StrategyPosition {
             exit_time: None,
             exit_tx_signatures: json!([]),
             submitted_buy_signatures: Vec::new(),
-            status: "Arming".to_string(),
+            status: "BuySubmitted".to_string(),
             exit_reason: None,
+            origin: "bot".to_string(),
+            manual_exit: None,
+            exit_redrive_count: 0,
+            exit_parked: false,
+            needs_review: false,
             extra: json!({}),
             created_at: now,
             updated_at: now,
@@ -390,24 +421,31 @@ impl StrategyPosition {
         self.updated_at = Utc::now();
     }
 
-    /// Terminally mark the exit failed, recording the hypothetical exit price/time
-    /// (so the row still carries a PnL for analysis).
-    pub fn mark_exit_failed(&mut self, exit_price: f64, exit_time: DateTime<Utc>) {
-        self.exit_price = Some(exit_price);
-        self.exit_time = Some(exit_time);
-        self.status = "ExitFailed".to_string();
+    /// The buy never filled (entry exhausted / fatal) — terminal, no SOL deployed.
+    /// Deliberately stamps NO exit price/time: there was never a position, and a
+    /// hypothetical exit would pollute PnL surfaces (the row is excluded from
+    /// realized PnL by its NULL entry).
+    pub fn mark_entry_failed(&mut self) {
+        self.status = "EntryFailed".to_string();
         self.updated_at = Utc::now();
     }
 
-    /// Terminally (for automation) mark the exit **unconfirmed** (C1): the sell may
-    /// have landed — or may still land — but the trade feed never confirmed the clear
-    /// and the tx did **not** revert, so re-selling would risk a double-sell. The
-    /// position is NEVER auto-re-evaluated or re-sold; it's alarmed for manual review.
-    /// Distinct from `ExitFailed`, which asserts nothing sold (safe to book the loss).
-    /// Records the hypothetical exit price/time for context.
-    pub fn mark_exit_unconfirmed(&mut self, exit_price: f64, exit_time: DateTime<Utc>) {
-        self.exit_price = Some(exit_price);
-        self.exit_time = Some(exit_time);
+    /// The sell gave up and the bag is still held — the position stays OPEN as
+    /// `ExitStuck` (attention lane). No exit price is stamped (nothing sold; the
+    /// row keeps marking to market). The reaper re-drives it, then parks it for a
+    /// manual Retry / Dump / Write-off.
+    pub fn mark_exit_stuck(&mut self) {
+        self.status = "ExitStuck".to_string();
+        self.updated_at = Utc::now();
+    }
+
+    /// Mark the exit **unconfirmed** (C1): the sell may have landed — or may still
+    /// land — but the trade feed never confirmed the clear and the tx did **not**
+    /// revert, so re-selling automatically would risk a double-sell. The engine
+    /// NEVER auto-re-sells it; the row stays OPEN (attention lane) with manual
+    /// Verify / Re-sell / Write-off, plus the reaper's bag-cleared heal. No
+    /// hypothetical exit price is stamped.
+    pub fn mark_exit_unconfirmed(&mut self) {
         self.status = "ExitUnconfirmed".to_string();
         self.updated_at = Utc::now();
     }
@@ -442,6 +480,10 @@ impl StrategyPosition {
     pub fn exit_tx_sigs(&self) -> Vec<String> {
         json_str_array(&self.exit_tx_signatures)
     }
+}
+
+fn default_origin() -> String {
+    "bot".to_string()
 }
 
 /// Decode a JSON string-array `Value` into a `Vec<String>` (non-strings skipped).

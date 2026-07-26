@@ -73,7 +73,7 @@ export const liveApi = baseApi.injectEndpoints({
       query: (real = true) => `/api/portfolio/positions?real=${real}`,
       providesTags: ['WalletHoldings'],
     }),
-    /** Latest End/ExitFailed rows — Floor Recent hydrate (DB, not session SSE). */
+    /** Latest End/EntryFailed rows — Recent hydrate (DB, not session SSE). */
     getPortfolioRecentCloses: builder.query<RecentClosedPosition[], number | void>({
       query: (limit = 50) => `/api/portfolio/recent-closes?limit=${limit}`,
       providesTags: ['WalletHoldings'],
@@ -114,14 +114,27 @@ export const liveApi = baseApi.injectEndpoints({
     // the `strategy_position_update` SSE stream — live, reload-proof status. The backend
     // returns 202 as soon as the close begins; the terminal state arrives over SSE, so
     // no cache tag is invalidated here (the stream patches the row).
-    // `action` (default `retry`) selects how a failed/parked exit is resolved:
+    // `action` (default `retry`) selects how a stuck/unconfirmed row is resolved
+    // (legality is backend-enforced per status — see the close-action matrix):
     //   'dump'     — sell with NO slippage floor (accept dust); clears a rugged,
     //                near-drained pool that reverts every normal-slippage sell.
-    //   'writeoff' — book a parked `ExitFailed` position closed at a full loss with
+    //   'writeoff' — book a stuck/unconfirmed position closed at a full loss with
     //                NO on-chain sell (a pool with no sellable liquidity at all).
+    //   'verify'   — on-demand resolve: ExitUnconfirmed → PG-net heal-or-report;
+    //                BuySubmitted → the reaper's adopt-or-drop logic.
     closeRulePosition: builder.mutation<
-      { closing?: boolean; closed?: boolean; written_off?: boolean },
-      { strategy: string; positionId: string; action?: 'retry' | 'dump' | 'writeoff' }
+      {
+        closing?: boolean;
+        closed?: boolean;
+        written_off?: boolean;
+        verified?: boolean;
+        cleared?: boolean;
+        still_held?: boolean;
+        adopted?: boolean;
+        dropped?: boolean;
+        unresolved?: boolean;
+      },
+      { strategy: string; positionId: string; action?: 'retry' | 'dump' | 'writeoff' | 'verify' }
     >({
       query: ({ strategy, positionId, action }) => ({
         url: `/api/strategies/${strategy}/positions/${positionId}/close${

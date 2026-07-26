@@ -49,10 +49,15 @@ const STATUS_PILL: Record<
     inactive: 'border-white/6 bg-transparent text-text-dim',
     label: 'End',
   },
-  ExitFailed: {
+  EntryFailed: {
+    active: 'border-white/20 bg-white/8 text-text',
+    inactive: 'border-white/6 bg-transparent text-text-dim',
+    label: 'Entry failed',
+  },
+  ExitStuck: {
     active: 'border-red/40 bg-red/10 text-red',
     inactive: 'border-white/6 bg-transparent text-text-dim',
-    label: 'Exit failed',
+    label: 'Exit stuck',
   },
   ExitUnconfirmed: {
     active: 'border-red/40 bg-red/10 text-red',

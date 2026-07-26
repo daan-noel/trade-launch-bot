@@ -265,7 +265,7 @@ export interface StrategyPositionUpdateEvent {
   mint_address: string;
   position_id: string;
   /** `strategy_positions` lifecycle: `BuySubmitted` | `Holding` | `ExitPending` |
-   *  `End` | `ExitFailed` | `ExitUnconfirmed`. */
+   *  `End` | `EntryFailed` | `ExitStuck` | `ExitUnconfirmed`. */
   status: string;
   exit_reason?: string | null;
   entry_price?: number | null;
@@ -273,4 +273,6 @@ export interface StrategyPositionUpdateEvent {
   /** `"real"` | `"paper"` when the engine still has the rule loaded. */
   trade_mode?: string | null;
   rule_name?: string | null;
+  /** `true` on a stale unresolved BuySubmitted (B3) — needs manual Verify. */
+  needs_review?: boolean | null;
 }

@@ -9,17 +9,28 @@ import type {
 /** Cap on "recent closes" ring (SSE + DB hydrate). */
 const MAX_RECENT_CLOSED = 50;
 
-/** Statuses that count as open inventory (still actionable / in flight). */
+/**
+ * Statuses that count as open inventory (still actionable / in flight). A row
+ * with SOL possibly still in it (`ExitStuck` / `ExitUnconfirmed`) is OPEN — it
+ * must never land in the closed/actionless table. Mirrors the backend partition
+ * guard in `strategies/engine/sinks.rs`.
+ */
 export const OPEN_STATUSES = new Set([
-  'Arming',
   'BuySubmitted',
   'Holding',
   'ExitPending',
+  'ExitStuck',
   'ExitUnconfirmed',
 ]);
 
-/** Clean closes that leave inventory — `ExitUnconfirmed` stays in `open` (needs eyes). */
-export const TERMINAL_STATUSES = new Set(['End', 'ExitFailed']);
+/**
+ * The attention lane: stuck/unconfirmed exits always; a `BuySubmitted` joins it
+ * only when the backend flags `needs_review` (stale, unresolved buy).
+ */
+export const ATTENTION_STATUSES = new Set(['ExitStuck', 'ExitUnconfirmed']);
+
+/** Terminal closes: a confirmed exit or a buy that never filled. */
+export const TERMINAL_STATUSES = new Set(['End', 'EntryFailed']);
 
 export function armedKey(ruleId: string, mint: string): string {
   return `${ruleId}|${mint}`;
@@ -47,6 +58,13 @@ export interface LiveOpenRow {
   entrySol: number | null;
   entryTime: string | null;
   exitReason: string | null;
+  /** Backend-flagged stale unresolved BuySubmitted (B3) — needs manual Verify. */
+  needsReview: boolean;
+  /** `bot` | `manual` origin (snapshot-sourced; SSE deltas keep the prior value). */
+  origin: string;
+  /** ExitStuck redrive state (snapshot-sourced). */
+  exitParked: boolean;
+  exitRedriveCount: number;
   updatedAt: number;
 }
 
@@ -107,6 +125,10 @@ function openFromPortfolio(
     entrySol: p.entry_sol ?? null,
     entryTime: p.entry_time ?? null,
     exitReason: null,
+    needsReview: p.needs_review ?? false,
+    origin: p.origin ?? 'bot',
+    exitParked: p.exit_parked ?? false,
+    exitRedriveCount: p.exit_redrive_count ?? 0,
     updatedAt: Date.now(),
   };
 }
@@ -266,6 +288,10 @@ const liveStatusSlice = createSlice({
           entrySol: prev?.entrySol ?? null,
           entryTime: prev?.entryTime ?? null,
           exitReason: d.exit_reason ?? null,
+          needsReview: d.needs_review ?? prev?.needsReview ?? false,
+          origin: prev?.origin ?? 'bot',
+          exitParked: prev?.exitParked ?? false,
+          exitRedriveCount: prev?.exitRedriveCount ?? 0,
           updatedAt: now,
         };
         // Entered a position → drop matching armed waiting row.
@@ -334,8 +360,8 @@ export function selectRuleOpenCounts(s: { liveStatus: LiveStatusState }): Record
     if (!r.ruleId) continue;
     const row = out[r.ruleId] ?? { open: 0, pending: 0 };
     if (r.status === 'Holding' || r.status === 'ExitPending') row.open += 1;
-    else if (r.status === 'BuySubmitted' || r.status === 'Arming') row.pending += 1;
-    else if (r.status === 'ExitUnconfirmed') row.open += 1;
+    else if (r.status === 'BuySubmitted') row.pending += 1;
+    else if (r.status === 'ExitUnconfirmed' || r.status === 'ExitStuck') row.open += 1;
     out[r.ruleId] = row;
   }
   return out;

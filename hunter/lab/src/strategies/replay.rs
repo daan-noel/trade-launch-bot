@@ -596,9 +596,11 @@ impl Replay {
                     }
                 }
             }
-            // Terminal without a confirmed fill. An entry give-up (never `entered`)
-            // produces no row; an exit give-up books at the last known spot.
-            PositionStatus::ExitFailed | PositionStatus::ExitUnconfirmed => {
+            // No confirmed fill. An entry give-up (never `entered`) produces no
+            // row; a stuck/unconfirmed exit books at the last known spot.
+            PositionStatus::EntryFailed
+            | PositionStatus::ExitStuck
+            | PositionStatus::ExitUnconfirmed => {
                 if let Some(b) = self.builders.remove(&delta.position) {
                     if b.entered {
                         let mint = Mint::from(b.mint.as_str());

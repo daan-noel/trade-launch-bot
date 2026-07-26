@@ -52,7 +52,8 @@ const STATUS_COLOR: Record<string, string> = {
   Holding: '#22c55e',
   ExitPending: '#f59e0b',
   End: '#13ceaf',
-  ExitFailed: '#ef4444',
+  EntryFailed: '#64748b',
+  ExitStuck: '#ef4444',
   ExitUnconfirmed: '#f97316',
 };
 
@@ -64,14 +65,15 @@ const STATUS_LABEL: Record<string, string> = {
   Holding: 'Holding',
   ExitPending: 'Exiting',
   End: 'Closed',
-  ExitFailed: 'Exit failed',
+  EntryFailed: 'Buy failed',
+  ExitStuck: 'Exit stuck',
   ExitUnconfirmed: 'Unconfirmed',
 };
 
 const iconCache = new Map<string, string>();
 /** Failures always re-alert; Holding is the fill confirmation operators watch for. */
-const CRITICAL = new Set(['ExitFailed', 'ExitUnconfirmed']);
-const AUDIBLE = new Set(['Holding', 'ExitFailed', 'ExitUnconfirmed']);
+const CRITICAL = new Set(['ExitStuck', 'ExitUnconfirmed']);
+const AUDIBLE = new Set(['Holding', 'ExitStuck', 'ExitUnconfirmed']);
 
 /** Hold the per-event lock long enough for sibling tabs to see the same SSE frame. */
 const CLAIM_HOLD_MS = 750;
@@ -168,7 +170,12 @@ function fillRoundRect(
 /** Compact detail for the body — exit reasons use Ops badge vocabulary. */
 function formatDetail(status: string, detail: string | null | undefined): string | null {
   if (!detail) return null;
-  if (status === 'End' || status === 'ExitFailed' || status === 'ExitUnconfirmed') {
+  if (
+    status === 'End' ||
+    status === 'EntryFailed' ||
+    status === 'ExitStuck' ||
+    status === 'ExitUnconfirmed'
+  ) {
     return exitReasonLabel(detail);
   }
   return clip(detail, 36);
@@ -244,7 +251,8 @@ function drawStatusMark(ctx: CanvasRenderingContext2D, status: string): void {
       ctx.stroke();
       break;
     }
-    case 'ExitFailed': {
+    case 'EntryFailed':
+    case 'ExitStuck': {
       // X.
       ctx.beginPath();
       ctx.moveTo(42, 42);

@@ -156,9 +156,11 @@ impl Sink {
     /// Consume one `PositionUpdate`: persist the transition to PG, keep the
     /// registry current, and push the SSE delta.
     ///
-    /// Terminal handlers return whether the position was finalized. SSE is
-    /// emitted **before** `registry.remove` so clients always get a real
-    /// `position_id` (and entry price) on End / ExitFailed / ExitUnconfirmed.
+    /// Engine-final handlers return whether the registry row should be dropped
+    /// (the engine no longer owns the position — for `ExitStuck`/`ExitUnconfirmed`
+    /// the PG row stays OPEN and the reaper/manual actions own it from here). SSE
+    /// is emitted **before** `registry.remove` so clients always get a real
+    /// `position_id` (and entry price) on the final frame.
     pub async fn on_position_update(&mut self, delta: PositionDelta) {
         let finalized = match delta.status {
             PositionStatus::BuySubmitted => {
@@ -174,9 +176,10 @@ impl Sink {
                 false
             }
             PositionStatus::End => self.on_end(&delta).await,
-            PositionStatus::ExitFailed => self.on_terminal_no_fill(&delta, "ExitFailed").await,
+            PositionStatus::EntryFailed => self.on_entry_failed(&delta).await,
+            PositionStatus::ExitStuck => self.on_exit_no_fill(&delta, "ExitStuck").await,
             PositionStatus::ExitUnconfirmed => {
-                self.on_terminal_no_fill(&delta, "ExitUnconfirmed").await
+                self.on_exit_no_fill(&delta, "ExitUnconfirmed").await
             }
         };
         self.emit_position_sse(&delta);
@@ -398,13 +401,13 @@ impl Sink {
         true
     }
 
-    /// A terminal transition with no confirmed fill (ExitFailed / ExitUnconfirmed):
-    /// stamp a hypothetical exit price (last known spot) so the row still carries a
-    /// PnL for analysis, then persist. Also releases any SOL commitment (idempotent)
-    /// so an unentered buy that exhausted retries cannot strand the budget tracker.
+    /// The buy never filled (entry exhausted / fatal) — terminal `EntryFailed`.
+    /// Deliberately stamps NO hypothetical exit price (there was never a
+    /// position; the row is excluded from PnL). Releases the SOL commitment so
+    /// the unentered buy cannot strand the budget tracker.
     ///
     /// Returns `true` when finalized — caller emits SSE then drops the registry row.
-    async fn on_terminal_no_fill(&mut self, delta: &PositionDelta, status: &str) -> bool {
+    async fn on_entry_failed(&mut self, delta: &PositionDelta) -> bool {
         let Some(meta) = self.registry.get(delta.position) else {
             return false;
         };
@@ -412,16 +415,37 @@ impl Sink {
         if let Some(trader) = &self.trader {
             trader.release_sol_for_position(&meta.pg_id.to_string());
         }
-        let exit_price = self
-            .token_cache
-            .get(&meta.mint)
-            .and_then(|e| e.value().current_price)
-            .or(meta.entry_price)
-            .unwrap_or(0.0);
+        if let Ok(Some(mut pos)) = self.repo.find_position(meta.pg_id).await {
+            pos.mark_entry_failed();
+            if let Some(r) = delta.reason {
+                pos.exit_reason = Some(r.label().into_owned());
+            }
+            if let Err(e) = self.repo.update_position(&pos).await {
+                warn!(pg = %meta.pg_id, "engine sink: EntryFailed update failed: {e}");
+            }
+        }
+        self.release_held_pool(&meta.mint, meta.trade_mode, meta.pg_id)
+            .await;
+        true
+    }
+
+    /// An exit that ended without a confirmed fill (ExitStuck / ExitUnconfirmed):
+    /// the engine drops the arm (returns `true` → registry row removed) but the PG
+    /// row stays **open** — no exit price is stamped (nothing confirmed sold; the
+    /// row keeps marking to market) and the reaper / manual actions own it from
+    /// here. Releases any SOL commitment (idempotent).
+    async fn on_exit_no_fill(&mut self, delta: &PositionDelta, status: &str) -> bool {
+        let Some(meta) = self.registry.get(delta.position) else {
+            return false;
+        };
+        self.await_pending_pg(meta.pg_id).await;
+        if let Some(trader) = &self.trader {
+            trader.release_sol_for_position(&meta.pg_id.to_string());
+        }
         if let Ok(Some(mut pos)) = self.repo.find_position(meta.pg_id).await {
             match status {
-                "ExitUnconfirmed" => pos.mark_exit_unconfirmed(exit_price, Utc::now()),
-                _ => pos.mark_exit_failed(exit_price, Utc::now()),
+                "ExitUnconfirmed" => pos.mark_exit_unconfirmed(),
+                _ => pos.mark_exit_stuck(),
             }
             if let Some(r) = delta.reason {
                 pos.exit_reason = Some(r.label().into_owned());
@@ -592,6 +616,7 @@ impl Sink {
             rule_name: info
                 .map(|i| i.name.clone())
                 .filter(|n| !n.is_empty()),
+            needs_review: None,
         });
     }
 }
@@ -609,7 +634,8 @@ fn position_status_str(s: PositionStatus) -> &'static str {
         PositionStatus::Holding => "Holding",
         PositionStatus::ExitPending => "ExitPending",
         PositionStatus::End => "End",
-        PositionStatus::ExitFailed => "ExitFailed",
+        PositionStatus::EntryFailed => "EntryFailed",
+        PositionStatus::ExitStuck => "ExitStuck",
         PositionStatus::ExitUnconfirmed => "ExitUnconfirmed",
     }
 }
@@ -638,9 +664,11 @@ mod status_partition_guard {
 
     #[derive(Debug, PartialEq)]
     enum Class {
-        /// Snapshot-open partition (`find_open_positions`: NOT IN End/ExitFailed).
+        /// Snapshot-open partition (`find_open_positions`: NOT IN End/EntryFailed).
+        /// A row with SOL possibly still in it (`ExitStuck`/`ExitUnconfirmed`) is
+        /// OPEN — it must never land in a closed/actionless table.
         Open,
-        /// Closed partition (`find_recent_closed`: status IN End/ExitFailed).
+        /// Closed partition (`find_recent_closed`: status IN End/EntryFailed).
         Terminal,
     }
 
@@ -650,19 +678,21 @@ mod status_partition_guard {
             PositionStatus::BuySubmitted => ("BuySubmitted", Class::Open),
             PositionStatus::Holding => ("Holding", Class::Open),
             PositionStatus::ExitPending => ("ExitPending", Class::Open),
+            PositionStatus::ExitStuck => ("ExitStuck", Class::Open),
             PositionStatus::ExitUnconfirmed => ("ExitUnconfirmed", Class::Open),
             PositionStatus::End => ("End", Class::Terminal),
-            PositionStatus::ExitFailed => ("ExitFailed", Class::Terminal),
+            PositionStatus::EntryFailed => ("EntryFailed", Class::Terminal),
         }
     }
 
-    const ALL: [PositionStatus; 6] = [
+    const ALL: [PositionStatus; 7] = [
         PositionStatus::BuySubmitted,
         PositionStatus::Holding,
         PositionStatus::ExitPending,
+        PositionStatus::ExitStuck,
         PositionStatus::ExitUnconfirmed,
         PositionStatus::End,
-        PositionStatus::ExitFailed,
+        PositionStatus::EntryFailed,
     ];
 
     #[test]
@@ -673,9 +703,9 @@ mod status_partition_guard {
     }
 
     #[test]
-    fn only_end_and_exit_failed_are_terminal() {
+    fn only_end_and_entry_failed_are_terminal() {
         for s in ALL {
-            let expected_terminal = matches!(s, PositionStatus::End | PositionStatus::ExitFailed);
+            let expected_terminal = matches!(s, PositionStatus::End | PositionStatus::EntryFailed);
             let is_terminal = classify(s).1 == Class::Terminal;
             assert_eq!(is_terminal, expected_terminal, "partition drift for {s:?}");
         }

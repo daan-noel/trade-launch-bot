@@ -13,7 +13,8 @@ const STATUS_VARIANT: Record<string, ToastVariant> = {
   Holding: 'success',
   ExitPending: 'warning',
   End: 'neutral',
-  ExitFailed: 'danger',
+  EntryFailed: 'warning',
+  ExitStuck: 'danger',
   ExitUnconfirmed: 'danger',
 };
 
@@ -24,7 +25,8 @@ const STATUS_LABEL: Record<string, string> = {
   Holding: 'Holding',
   ExitPending: 'Exit pending',
   End: 'Closed',
-  ExitFailed: 'Exit failed',
+  EntryFailed: 'Buy never filled',
+  ExitStuck: 'Exit stuck',
   ExitUnconfirmed: 'Exit unconfirmed',
 };
 
@@ -99,7 +101,10 @@ export function usePositionNotifications() {
       const tradeHref = `/trade?mint=${encodeURIComponent(delta.mint_address)}`;
 
       const detail =
-        status === 'End' || status === 'ExitFailed' || status === 'ExitUnconfirmed'
+        status === 'End' ||
+        status === 'EntryFailed' ||
+        status === 'ExitStuck' ||
+        status === 'ExitUnconfirmed'
           ? delta.exit_reason
           : null;
 

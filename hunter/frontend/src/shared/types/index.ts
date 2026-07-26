@@ -164,8 +164,8 @@ export interface RuleRecord {
   /** Positions this rule currently holds open (drives the 'Draining (N)' badge
    *  and gates the Stop & close action). */
   open_positions: number;
-  /** Not-yet-filled positions this rule currently has armed or buy-in-flight
-   *  (`Arming` | `BuySubmitted`) — distinct from `open_positions` (`Holding` only). */
+  /** Not-yet-filled positions this rule currently has buy-in-flight
+   *  (`BuySubmitted`) — distinct from `open_positions` (`Holding` only). */
   pending_positions: number;
   /** Realized-performance stats from the runtime cache (all-time for real rules,
    *  current-run for paper). `total_positions` counts entered positions;
@@ -234,6 +234,15 @@ export interface RulePositionRecord extends TokenEnrichmentFields {
    * runs") view, where it drives the run column + per-run banding. null/absent on
    * the current-run/live paths (single run). */
   run_seq?: number | null;
+  /** `bot` | `manual` — who opened the position. */
+  origin?: string;
+  /** Manual-position TP/SL config (`{tp_pct, sl_pct}`); null on bot rows. */
+  manual_exit?: { tp_pct?: number | null; sl_pct?: number | null } | null;
+  /** Backend-derived B3 flag: stale unresolved BuySubmitted — needs Verify. */
+  needs_review?: boolean;
+  /** ExitStuck redrive state (mig 0012): parked ⇒ auto-retry stopped. */
+  exit_parked?: boolean;
+  exit_redrive_count?: number;
   created_at: string;
   updated_at: string;
   // Token enrichment fields (populated by the batch endpoint) come from
@@ -278,7 +287,7 @@ export interface PositionsSummary {
    *  `tokens`, independent of exit reason. */
   migrated: number;
   /** Closed-position counts by `exit_reason`. Deliberately not exhaustive of
-   *  `closed` — an `ExitFailed` position has no reason at all — so the summary
+   *  `closed` — a close can carry no reason at all — so the summary
    *  reconciles the remainder into a visible `Other` slice. Optional for older
    *  live binaries that predate the exits aggregate. */
   exits?: ExitReasonCounts;
@@ -578,7 +587,8 @@ export interface ManagedBy {
   mint_address: string;
   rule_id: string | null;
   rule_name: string | null;
-  /** `Arming` | `BuySubmitted` | `Holding` | `ExitPending`. */
+  /** Open-partition status (`BuySubmitted` | `Holding` | `ExitPending` |
+   *  `ExitStuck` | `ExitUnconfirmed`). */
   status: string;
   /** `real` | `paper` (Holdings only ever surfaces `real`). */
   mode: string;
@@ -655,6 +665,13 @@ export interface OpenStrategyPosition {
   entry_price?: number | null;
   entry_sol?: number | null;
   entry_time?: string | null;
+  /** `bot` | `manual` — who opened the position. */
+  origin?: string;
+  /** Backend-derived B3 flag: stale unresolved BuySubmitted, needs Verify. */
+  needs_review?: boolean;
+  /** ExitStuck redrive state (mig 0012). */
+  exit_parked?: boolean;
+  exit_redrive_count?: number;
 }
 
 /** Closed row from `GET /api/portfolio/recent-closes` (Floor Recent hydrate). */

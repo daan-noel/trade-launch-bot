@@ -204,8 +204,8 @@ async fn run_loop(
     // budget from zero and over-trade it (plan Ph4 restart caveat). PG-only.
     boot_seed_episodes(&strategy_repo, &mut state).await;
 
-    // Recovery reaper (buy adopt/drop + exit redrive + cleared Holding + ExitFailed
-    // bag + stale fail). Immediate first tick, then every 60 s.
+    // Recovery reaper (buy adopt/drop + exit redrive + cleared Holding + ExitStuck
+    // bag + stale ExitPending bag-check). Immediate first tick, then every 60 s.
     let _reaper = super::reapers::spawn_reaper(super::reapers::ReaperDeps {
         strategy_repo: strategy_repo.clone(),
         trade_repo: trade_repo.clone(),
@@ -216,6 +216,7 @@ async fn run_loop(
         registry: registry.clone(),
         fill_tx: fill_tx.clone(),
         settings: settings.clone(),
+        sse_tx: sse_tx.clone(),
     });
 
     let mut tick = tokio::time::interval(TICK);

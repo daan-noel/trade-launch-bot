@@ -517,7 +517,7 @@ fn entry_fill_failure_retries_then_gives_up() {
     // Third failure → give up (no more buys), book a terminal failure.
     let fx = reduce(&mut s, Event::FillFailed { intent, reason: FillFailReason::Reverted });
     assert!(buys(&fx).is_empty(), "gives up after MAX_ENTRY_ATTEMPTS");
-    assert_eq!(statuses(&fx), vec![PositionStatus::ExitFailed]);
+    assert_eq!(statuses(&fx), vec![PositionStatus::EntryFailed]);
     // Counters rolled back → the token is done, pruned.
     assert!(!s.tokens.contains_key(&m));
 }
@@ -531,7 +531,7 @@ fn entry_fatal_gives_up_without_retry() {
     let intent = buy_intent(&fx);
     let fx = reduce(&mut s, Event::FillFailed { intent, reason: FillFailReason::Fatal });
     assert!(buys(&fx).is_empty(), "Fatal must not retry");
-    assert_eq!(statuses(&fx), vec![PositionStatus::ExitFailed]);
+    assert_eq!(statuses(&fx), vec![PositionStatus::EntryFailed]);
     assert!(!s.tokens.contains_key(&m));
 }
 

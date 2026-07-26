@@ -21,7 +21,7 @@ pub struct ManagedMint {
     pub rule_id: Option<Uuid>,
     /// Human rule label (`None` if the rule was deleted out from under the position).
     pub rule_name: Option<String>,
-    /// `Arming` | `BuySubmitted` | `Holding` | `ExitPending` (never `End`/`ExitFailed`).
+    /// Open-partition status (never `End`/`EntryFailed`).
     pub status: String,
     /// Execution mode: `real` | `paper`.
     pub mode: String,

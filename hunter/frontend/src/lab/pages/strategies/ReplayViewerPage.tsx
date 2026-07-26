@@ -189,7 +189,11 @@ export function ReplayViewerPage() {
     for (const step of steps) {
       for (const fx of step.effects) {
         if (fx.effect !== 'PositionUpdate' || fx.mint !== focusMint || !fx.fill) continue;
-        const isExit = fx.status === 'End' || fx.status === 'ExitPending' || fx.status === 'ExitUnconfirmed';
+        const isExit =
+          fx.status === 'End' ||
+          fx.status === 'ExitPending' ||
+          fx.status === 'ExitStuck' ||
+          fx.status === 'ExitUnconfirmed';
         out.push({
           kind: isExit ? 'exit' : 'entry',
           time: fx.fill.at,

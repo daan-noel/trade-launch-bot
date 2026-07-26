@@ -59,8 +59,9 @@ pub async fn reconcile_wallet_holdings(
     let holdings = trader.get_all_token_accounts().await?;
 
     // The set of mints any open position could own tokens for, across ALL
-    // strategies. `distinct_unsettled_real_mints` covers Holding / Arming /
-    // BuySubmitted / ExitPending / ExitFailed (the last can still hold a bag whose
+    // strategies. `distinct_unsettled_real_mints` covers Holding /
+    // BuySubmitted / ExitPending / ExitStuck / ExitUnconfirmed (the last two can
+    // still hold a bag whose
     // sell failed), i.e. exactly the states where tokens may legitimately sit in
     // the wallet. The unified `strategy_positions` table makes this one query.
     let tracked: HashSet<String> =

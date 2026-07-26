@@ -201,12 +201,25 @@ pub async fn get_position(
     }
 }
 
-/// `?action=` selector for [`close_position`]:
+/// `?action=` selector for [`close_position`]. Legality matrix (backend-enforced;
+/// status alone determines what is legal — the UI renders, never infers):
+///
+/// | Status            | retry/sell | dump | writeoff | verify |
+/// |-------------------|------------|------|----------|--------|
+/// | Holding           | yes        | —    | —        | —      |
+/// | ExitPending       | — (busy)   | —    | —        | —      |
+/// | ExitStuck         | yes (un-parks) | yes | yes   | —      |
+/// | ExitUnconfirmed   | yes (re-sell, safe: a landed sell books NothingToSell→cleared) | yes | yes | yes |
+/// | BuySubmitted      | —          | —    | —        | yes (adopt-or-drop) |
+/// | End / EntryFailed | —          | —    | —        | —      |
+///
 /// - `retry` (default) — normal sell at the configured slippage.
 /// - `dump` — force sell with NO slippage floor (accept dust); for a rugged /
 ///   near-drained pool where the floor reverts every attempt.
-/// - `writeoff` — terminally book a **parked** `ExitFailed` position `Dead`
-///   (full loss) WITHOUT an on-chain sell, for a pool with no sellable liquidity.
+/// - `writeoff` — terminally book the position `Dead` (full loss) WITHOUT an
+///   on-chain sell, for a pool with no sellable liquidity. Manual-only, forever.
+/// - `verify` — on-demand resolve: `ExitUnconfirmed` → PG-net check (heal to End
+///   or report still-held); `BuySubmitted` → the reaper's adopt-or-drop logic.
 #[derive(Debug, Deserialize)]
 pub struct CloseParams {
     #[serde(default)]
@@ -215,12 +228,12 @@ pub struct CloseParams {
 
 /// POST /api/strategies/{strategy}/positions/{position_id}/close
 ///
-/// Force-close ONE open position now — backs the per-row "Sell ALL" button on Ops.
+/// Force-close / resolve ONE open position now — backs the Console row actions.
 /// Dual path (Helius-cheap):
 /// 1. Live engine registry hit → `ManualClose` (SSE Holding→ExitPending→…).
-/// 2. Registry miss (post-restart orphan) → direct `orphan_exit` sell via the same
-///    `run_exit` feed-confirm path, **or** PG book-close when `trades` net already
-///    shows the bag cleared (no sell RPC).
+/// 2. Registry miss (post-restart orphan / stuck / unconfirmed) → direct
+///    `orphan_exit` sell via the same `run_exit` feed-confirm path, **or** PG
+///    book-close when `trades` net already shows the bag cleared (no sell RPC).
 ///
 /// Never returns 202 on a silent no-op.
 pub async fn close_position(
@@ -249,124 +262,194 @@ pub async fn close_position(
             .json(serde_json::json!({"error": "Only real positions can be sold on-chain"}));
     }
 
-    // Write-off: terminally book a parked/failed exit `Dead` (full loss) with NO
-    // on-chain sell — for a rugged pool with no sellable liquidity. Restricted to
-    // `ExitFailed` so it can never race a live engine arm (those are never
-    // ExitFailed). Manual-only; the reaper never writes a position off.
-    if action == "writeoff" {
-        if pos.status != "ExitFailed" {
-            return HttpResponse::Conflict().json(serde_json::json!({
-                "error": format!(
-                    "write-off applies only to a failed/parked exit (status ExitFailed), not {}",
-                    pos.status
-                )
-            }));
-        }
-        let fill = Fill {
-            price: 0.0,
-            sol: 0.0,
-            token_amount: pos.entry_token_amount.unwrap_or(0),
-            at: chrono::Utc::now(),
-        };
-        return match orphan_exit::book_externally_cleared_pg(
-            &app_state.strategy_repo,
-            pos.id,
-            fill,
-            "Dead",
-        )
-        .await
-        {
-            Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "written_off": true })),
-            Err(e) => HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": format!("write-off failed: {e}")})),
-        };
-    }
-    let dump = action == "dump";
-
     let status = pos.status.as_str();
-    let retry_failed = status == "ExitFailed";
-    if matches!(status, "End" | "ExitUnconfirmed")
-        || (status == "ExitFailed" && {
-            // ExitFailed with bag already gone → just book if needed; with bag → retry.
-            let wallet = app_state.trader.wallet_pubkey();
-            matches!(
-                app_state
-                    .trade_repo()
-                    .net_token_amount_by_wallet_and_mint(&wallet, &pos.mint_address)
-                    .await,
-                Ok(net) if net <= BAG_CLEARED_THRESHOLD_RAW
-            )
-        })
-    {
-        if status == "ExitFailed" {
-            // Bag cleared — heal the row without a sell.
-            let wallet = app_state.trader.wallet_pubkey();
-            let fill = orphan_exit::fill_from_latest_sell(
-                &app_state.trade_repo(),
-                &wallet,
-                &pos,
-            )
-            .await;
-            let deps = orphan_deps_from_state(&app_state);
-            let _ = orphan_exit::book_externally_cleared(&deps, &pos, fill).await;
-            return HttpResponse::Ok().json(serde_json::json!({ "closed": true }));
-        }
+    if matches!(status, "End" | "EntryFailed") {
         return HttpResponse::Conflict().json(serde_json::json!({
             "error": format!("Position is already terminal ({status})")
         }));
     }
 
-    if !matches!(status, "Holding" | "ExitPending" | "ExitFailed") {
-        return HttpResponse::Conflict().json(serde_json::json!({
-            "error": format!("Cannot sell from status {status}")
-        }));
-    }
-
-    // Registry hit → engine ManualClose (live path).
-    if app_state.positions.engine_id(position_id).is_some() && !retry_failed {
-        if app_state.engine.manual_close(position_id).await {
-            return HttpResponse::Accepted().json(serde_json::json!({ "closing": true }));
-        }
-        return HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": "Engine shutting down"}));
-    }
-
-    // Bag already gone (Trade sell / sibling) — book closed, no sell RPC.
-    let wallet = app_state.trader.wallet_pubkey();
-    if let Ok(net) = app_state
-        .trade_repo()
-        .net_token_amount_by_wallet_and_mint(&wallet, &pos.mint_address)
-        .await
-    {
-        if net <= BAG_CLEARED_THRESHOLD_RAW {
-            let fill =
-                orphan_exit::fill_from_latest_sell(&app_state.trade_repo(), &wallet, &pos).await;
-            let deps = orphan_deps_from_state(&app_state);
-            match orphan_exit::book_externally_cleared(&deps, &pos, fill).await {
-                Ok(()) => {
-                    return HttpResponse::Ok().json(serde_json::json!({ "closed": true }));
-                }
-                Err(e) => {
-                    return HttpResponse::InternalServerError().json(serde_json::json!({
-                        "error": format!("Failed to book cleared position: {e}")
-                    }));
-                }
+    match action {
+        // Write-off: terminally book the bag `Dead` (full loss) with NO on-chain
+        // sell — for a rugged pool with no sellable liquidity. Allowed on the two
+        // attention statuses only, so it can never race a live engine arm.
+        // Manual-only; the reaper never writes a position off.
+        "writeoff" => {
+            if !matches!(status, "ExitStuck" | "ExitUnconfirmed") {
+                return HttpResponse::Conflict().json(serde_json::json!({
+                    "error": format!(
+                        "write-off applies only to a stuck/unconfirmed exit, not {status}"
+                    )
+                }));
+            }
+            let fill = Fill {
+                price: 0.0,
+                sol: 0.0,
+                token_amount: pos.entry_token_amount.unwrap_or(0),
+                at: chrono::Utc::now(),
+            };
+            match orphan_exit::book_externally_cleared_pg(
+                &app_state.strategy_repo,
+                pos.id,
+                fill,
+                "Dead",
+            )
+            .await
+            {
+                Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "written_off": true })),
+                Err(e) => HttpResponse::InternalServerError()
+                    .json(serde_json::json!({"error": format!("write-off failed: {e}")})),
             }
         }
-    }
 
-    // Orphan / ExitFailed retry — direct sell (feed confirm), never silent 202.
-    // `dump` forces no-floor slippage so a near-drained pool still clears.
-    let deps = orphan_deps_from_state(&app_state);
-    match orphan_exit::spawn_orphan_sell(&deps, pos, "Manual", dump) {
-        OrphanStart::Started => {
-            HttpResponse::Accepted().json(serde_json::json!({ "closing": true }))
+        // Verify: on-demand resolve, no sell.
+        "verify" => verify_position(&app_state, pos).await,
+
+        "retry" | "dump" => {
+            let dump = action == "dump";
+            if dump && !matches!(status, "ExitStuck" | "ExitUnconfirmed") {
+                return HttpResponse::Conflict().json(serde_json::json!({
+                    "error": format!("dump applies only to a stuck/unconfirmed exit, not {status}")
+                }));
+            }
+            if status == "ExitPending" {
+                return HttpResponse::Conflict().json(serde_json::json!({
+                    "error": "Exit already in flight (ExitPending)"
+                }));
+            }
+            if status == "BuySubmitted" {
+                return HttpResponse::Conflict().json(serde_json::json!({
+                    "error": "Buy still unresolved — use action=verify"
+                }));
+            }
+            // Manual Retry on a parked bag un-parks it (fresh auto-redrive budget).
+            if status == "ExitStuck" && pos.exit_parked {
+                if let Err(e) = app_state.strategy_repo.unpark_exit(pos.id).await {
+                    tracing::warn!(position_id = %pos.id, "unpark_exit failed: {e}");
+                }
+            }
+
+            // Registry hit → engine ManualClose (live path). Stuck/unconfirmed rows
+            // are never engine-owned (the arm was dropped), so this is Holding-only.
+            if status == "Holding" && app_state.positions.engine_id(position_id).is_some() {
+                if app_state.engine.manual_close(position_id).await {
+                    return HttpResponse::Accepted().json(serde_json::json!({ "closing": true }));
+                }
+                return HttpResponse::InternalServerError()
+                    .json(serde_json::json!({"error": "Engine shutting down"}));
+            }
+
+            // Bag already gone (Trade sell / sibling) — book closed, no sell RPC.
+            let wallet = app_state.trader.wallet_pubkey();
+            if let Ok(net) = app_state
+                .trade_repo()
+                .net_token_amount_by_wallet_and_mint(&wallet, &pos.mint_address)
+                .await
+            {
+                if net <= BAG_CLEARED_THRESHOLD_RAW {
+                    let fill =
+                        orphan_exit::fill_from_latest_sell(&app_state.trade_repo(), &wallet, &pos)
+                            .await;
+                    let deps = orphan_deps_from_state(&app_state);
+                    return match orphan_exit::book_externally_cleared(&deps, &pos, fill).await {
+                        Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "closed": true })),
+                        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+                            "error": format!("Failed to book cleared position: {e}")
+                        })),
+                    };
+                }
+            }
+
+            // Orphan / stuck / unconfirmed retry — direct sell (feed confirm), never
+            // silent 202. A re-sell of ExitUnconfirmed is safe: if the original sell
+            // landed, this one finds nothing to sell and the row books cleared.
+            // `dump` forces no-floor slippage so a near-drained pool still clears.
+            let deps = orphan_deps_from_state(&app_state);
+            match orphan_exit::spawn_orphan_sell(&deps, pos, "Manual", dump) {
+                OrphanStart::Started => {
+                    HttpResponse::Accepted().json(serde_json::json!({ "closing": true }))
+                }
+                OrphanStart::Busy => HttpResponse::Conflict().json(serde_json::json!({
+                    "error": "Exit already in flight for this position or mint"
+                })),
+                OrphanStart::NothingToSell => HttpResponse::Conflict().json(serde_json::json!({
+                    "error": "Position has zero token amount to sell"
+                })),
+            }
         }
-        OrphanStart::Busy => HttpResponse::Conflict().json(serde_json::json!({
-            "error": "Exit already in flight for this position or mint"
+
+        other => HttpResponse::BadRequest().json(serde_json::json!({
+            "error": format!("Unknown action '{other}' (retry | dump | writeoff | verify)")
         })),
-        OrphanStart::NothingToSell => HttpResponse::Conflict().json(serde_json::json!({
-            "error": "Position has zero token amount to sell"
+    }
+}
+
+/// `?action=verify` — resolve a row on demand without selling.
+///
+/// - `ExitUnconfirmed`: PG-net check — bag gone ⇒ heal to `End` (the sell DID
+///   land); bag present ⇒ report "still held" so the operator can Re-sell / Dump /
+///   Write off.
+/// - `BuySubmitted`: the reaper's adopt-or-drop logic, one shot (B3 resolve).
+async fn verify_position(
+    app_state: &web::Data<Arc<DeployState>>,
+    pos: StrategyPosition,
+) -> HttpResponse {
+    use crate::strategies::engine::orphan_exit::{self, BAG_CLEARED_THRESHOLD_RAW};
+    use crate::strategies::engine::reapers::{self, BuyResolution};
+
+    match pos.status.as_str() {
+        "ExitUnconfirmed" => {
+            let wallet = app_state.trader.wallet_pubkey();
+            let net = match app_state
+                .trade_repo()
+                .net_token_amount_by_wallet_and_mint(&wallet, &pos.mint_address)
+                .await
+            {
+                Ok(n) => n,
+                Err(e) => {
+                    return HttpResponse::InternalServerError()
+                        .json(serde_json::json!({"error": format!("net check failed: {e}")}));
+                }
+            };
+            if net <= BAG_CLEARED_THRESHOLD_RAW {
+                let fill =
+                    orphan_exit::fill_from_latest_sell(&app_state.trade_repo(), &wallet, &pos)
+                        .await;
+                let deps = orphan_deps_from_state(app_state);
+                match orphan_exit::book_externally_cleared(&deps, &pos, fill).await {
+                    Ok(()) => HttpResponse::Ok()
+                        .json(serde_json::json!({ "verified": true, "cleared": true })),
+                    Err(e) => HttpResponse::InternalServerError()
+                        .json(serde_json::json!({"error": format!("heal failed: {e}")})),
+                }
+            } else {
+                HttpResponse::Ok().json(serde_json::json!({
+                    "verified": true,
+                    "cleared": false,
+                    "still_held": true,
+                    "net_token_amount": net,
+                }))
+            }
+        }
+        "BuySubmitted" => {
+            let Some(_guard) = app_state.inflight.try_begin_entry(pos.id) else {
+                return HttpResponse::Conflict()
+                    .json(serde_json::json!({"error": "Buy resolve already in flight"}));
+            };
+            let deps = reaper_deps_from_state(app_state);
+            match reapers::resolve_buy_submitted(&deps, &pos).await {
+                BuyResolution::Adopted => HttpResponse::Ok()
+                    .json(serde_json::json!({ "verified": true, "adopted": true })),
+                BuyResolution::Dropped => HttpResponse::Ok()
+                    .json(serde_json::json!({ "verified": true, "dropped": true })),
+                BuyResolution::Wait => HttpResponse::Ok().json(serde_json::json!({
+                    "verified": true,
+                    "unresolved": true,
+                })),
+            }
+        }
+        other => HttpResponse::Conflict().json(serde_json::json!({
+            "error": format!("verify applies only to ExitUnconfirmed/BuySubmitted, not {other}")
         })),
     }
 }
@@ -383,5 +466,20 @@ fn orphan_deps_from_state(app_state: &DeployState) -> crate::strategies::engine:
         registry: app_state.positions.clone(),
         fill_tx: app_state.engine_fill_tx.clone(),
         settings: app_state.settings.subscribe(),
+    }
+}
+
+fn reaper_deps_from_state(app_state: &DeployState) -> crate::strategies::engine::reapers::ReaperDeps {
+    crate::strategies::engine::reapers::ReaperDeps {
+        strategy_repo: app_state.strategy_repo.clone(),
+        trade_repo: app_state.trade_repo(),
+        trader: app_state.trader.clone(),
+        token_cache: app_state.token_cache.clone(),
+        trade_signals: app_state.trade_signals.clone(),
+        inflight: app_state.inflight.clone(),
+        registry: app_state.positions.clone(),
+        fill_tx: app_state.engine_fill_tx.clone(),
+        settings: app_state.settings.subscribe(),
+        sse_tx: app_state.sse_tx.clone(),
     }
 }

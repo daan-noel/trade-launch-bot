@@ -370,10 +370,15 @@ pub enum PositionStatus {
     ExitPending,
     /// Confirmed exit fill — terminal.
     End,
-    /// The sell reverted / gave up with nothing sold — terminal, loss booked.
-    ExitFailed,
+    /// The buy never filled (entry exhausted / fatal) — terminal, no SOL was
+    /// deployed. Excluded from realized PnL (there was never a position).
+    EntryFailed,
+    /// The sell reverted / gave up and the bag is **still held** — engine-terminal
+    /// (the arm is dropped) but the position stays OPEN: the reaper re-drives it,
+    /// then parks it for a manual Retry / Dump / Write-off.
+    ExitStuck,
     /// The sell may or may not have cleared and the feed never confirmed —
-    /// terminal, alarmed for manual review, never auto-re-sold.
+    /// engine-terminal, OPEN + alarmed for manual review, never auto-re-sold.
     ExitUnconfirmed,
 }
 

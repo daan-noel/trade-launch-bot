@@ -129,7 +129,6 @@ pub fn spawn_orphan_sell(
 
     let repo = deps.strategy_repo.clone();
     let trade_repo = deps.trade_repo.clone();
-    let token_cache = deps.token_cache.clone();
     let registry = deps.registry.clone();
     let engine_fill_tx = deps.fill_tx.clone();
     let wallet = deps.trader.wallet_pubkey();
@@ -137,7 +136,6 @@ pub fn spawn_orphan_sell(
         .exit_reason
         .clone()
         .unwrap_or_else(|| default_reason.to_string());
-    let entry_price = position.entry_price;
     let mint = position.mint_address.clone();
     let pg_id = position.id;
 
@@ -189,12 +187,7 @@ pub fn spawn_orphan_sell(
             Some(Event::FillFailed { reason: FillFailReason::Unconfirmed, .. }) => {
                 if let Ok(Some(mut pos)) = repo.find_position(pg_id).await {
                     if pos.status == "ExitPending" || pos.status == "Holding" {
-                        let price = token_cache
-                            .get(&mint)
-                            .and_then(|e| e.value().current_price)
-                            .or(entry_price)
-                            .unwrap_or(0.0);
-                        pos.mark_exit_unconfirmed(price, Utc::now());
+                        pos.mark_exit_unconfirmed();
                         let _ = repo.update_position(&pos).await;
                     }
                 }
@@ -202,13 +195,11 @@ pub fn spawn_orphan_sell(
             Some(Event::FillFailed { reason: FillFailReason::Fatal, .. })
             | Some(Event::FillFailed { reason: FillFailReason::Reverted, .. }) => {
                 if let Ok(Some(mut pos)) = repo.find_position(pg_id).await {
-                    if matches!(pos.status.as_str(), "Holding" | "ExitPending" | "ExitFailed") {
-                        let price = token_cache
-                            .get(&mint)
-                            .and_then(|e| e.value().current_price)
-                            .or(entry_price)
-                            .unwrap_or(0.0);
-                        pos.mark_exit_failed(price, Utc::now());
+                    if matches!(
+                        pos.status.as_str(),
+                        "Holding" | "ExitPending" | "ExitStuck" | "ExitUnconfirmed"
+                    ) {
+                        pos.mark_exit_stuck();
                         if pos.exit_reason.is_none() {
                             pos.exit_reason = Some(exit_reason);
                         }

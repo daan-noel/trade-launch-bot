@@ -14,10 +14,10 @@ import type { LiveTrade } from 'types';
 const COALESCE_MS = 500;
 
 /** Statuses that imply the on-chain bag / PnL totals may have changed. */
-const BAG_CHANGING = new Set(['Holding', 'End', 'ExitFailed']);
+const BAG_CHANGING = new Set(['Holding', 'End', 'ExitStuck', 'ExitUnconfirmed']);
 
 /** Terminal closes that change *closed-trade* performance (both real + paper). */
-const PERF_CHANGING = new Set(['End', 'ExitFailed']);
+const PERF_CHANGING = new Set(['End', 'EntryFailed']);
 
 /**
  * Keep WalletHoldings-tagged RTK data (Home KPIs, Top Holdings, portfolio

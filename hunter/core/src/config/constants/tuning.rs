@@ -49,6 +49,12 @@ pub fn resolve_sell_slippage_bps(sell_setting: Option<u64>, request: Option<u64>
 /// backstop one layer down regardless.
 pub const MAX_MANUAL_BUY_SOL: f64 = 5.0;
 
+/// Age past which an unresolved real `BuySubmitted` needs manual review (B3):
+/// the reaper could neither adopt a fill nor prove every submitted sig reverted.
+/// SSOT for the reaper's flag, the SSE `needs_review` marker, and the
+/// `PositionResponse` derivation — one window everywhere.
+pub const BUY_SUBMITTED_REVIEW_SECS: u64 = 600;
+
 // ---------------------------------------------------------------------------
 // Strategy thresholds (hot path — read per-event; must stay as const)
 // ---------------------------------------------------------------------------

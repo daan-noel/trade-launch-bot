@@ -50,21 +50,35 @@ import type { WalletHolding } from 'types';
 /** Path segment only validates; armed-history is keyed by `rule_id` in the runtime. */
 const ARMED_HISTORY_STRATEGY = 'generic';
 
-const ATTENTION_STATUSES = new Set(['ExitPending', 'ExitFailed', 'ExitUnconfirmed']);
+const ATTENTION_STATUSES = new Set(['ExitPending', 'ExitStuck', 'ExitUnconfirmed']);
 
 type Tab = OpsTab;
 type ModeFilter = 'real' | 'paper' | 'all';
 
+/**
+ * Minimal shape the close endpoint needs, satisfied by BOTH an open row and a
+ * recent-closed row. Since the status split, a stuck bag (`ExitStuck`) is OPEN
+ * and lives in the attention lane with its actions; Recent holds only
+ * `End`/`EntryFailed` (no actions).
+ */
+type SellTarget = {
+  positionId: string;
+  strategyId?: string;
+  mint: string;
+  mode: string | null;
+  status: string;
+};
+
 const HOLDING_LABEL: Record<string, string> = {
-  Arming: 'Arming',
   Armed: 'Armed',
   Disarmed: 'Disarmed',
   BuySubmitted: 'Buy submitted',
   Holding: 'Holding',
   ExitPending: 'Exit pending',
   ExitUnconfirmed: 'Exit unconfirmed',
+  ExitStuck: 'Exit stuck',
   End: 'End',
-  ExitFailed: 'Exit failed',
+  EntryFailed: 'Entry failed',
 };
 
 function statusVariant(status: string): BadgeVariant {
@@ -75,11 +89,11 @@ function statusVariant(status: string): BadgeVariant {
     case 'Holding':
       return 'success';
     case 'BuySubmitted':
-    case 'Arming':
       return 'info';
     case 'End':
+    case 'EntryFailed':
       return 'neutral';
-    case 'ExitFailed':
+    case 'ExitStuck':
       return 'danger';
     default:
       return 'neutral';
@@ -271,7 +285,7 @@ export function OpsPage() {
   }, [recentRows]);
 
   const onSell = useCallback(
-    async (row: LiveOpenRow, action: 'retry' | 'dump' | 'writeoff' = 'retry') => {
+    async (row: SellTarget, action: 'retry' | 'dump' | 'writeoff' = 'retry') => {
       const mint = row.mint.slice(0, 8);
       const prompt =
         action === 'dump'
@@ -306,7 +320,7 @@ export function OpsPage() {
       !row ||
       row.status === 'ExitPending' ||
       row.status === 'End' ||
-      row.status === 'ExitFailed' ||
+      row.status === 'ExitStuck' ||
       row.status === 'ExitUnconfirmed'
     ) {
       setSellingId(null);
@@ -504,7 +518,9 @@ export function OpsPage() {
         const canSell =
           sseLive &&
           r.mode === 'real' &&
-          (r.status === 'Holding' || r.status === 'ExitFailed');
+          (r.status === 'Holding' ||
+            r.status === 'ExitStuck' ||
+            r.status === 'ExitUnconfirmed');
         return (
           <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
             <IconButton
@@ -516,21 +532,25 @@ export function OpsPage() {
               title={
                 !sseLive
                   ? 'SSE not live — status may be stale'
-                  : r.status === 'ExitFailed'
-                    ? 'Retry sell — prior exit failed; bag may still be in wallet'
-                    : canSell
-                      ? 'Sell ALL — force-close this strategy position'
-                      : 'Sell only when Holding or ExitFailed (real)'
+                  : r.status === 'ExitStuck'
+                    ? 'Retry sell — prior exit gave up; bag still in wallet'
+                    : r.status === 'ExitUnconfirmed'
+                      ? 'Re-sell — safe: if the original sell landed, this books the row cleared'
+                      : canSell
+                        ? 'Sell ALL — force-close this strategy position'
+                        : 'Sell only when Holding / ExitStuck / ExitUnconfirmed (real)'
               }
               aria-label="Sell ALL"
             >
-              {busy && r.status !== 'Holding' && r.status !== 'ExitFailed' ? (
+              {busy && r.status !== 'Holding' && r.status !== 'ExitStuck' ? (
                 <SpinnerIcon />
               ) : (
                 <SellIcon />
               )}
             </IconButton>
-            {sseLive && r.mode === 'real' && r.status === 'ExitFailed' && (
+            {sseLive &&
+              r.mode === 'real' &&
+              (r.status === 'ExitStuck' || r.status === 'ExitUnconfirmed') && (
               <>
                 <button
                   type="button"
@@ -712,6 +732,8 @@ export function OpsPage() {
       searchValue: () => '',
       filterNumber: (r) => Math.max(0, Math.floor((Date.now() - r.closedAt) / 1000)),
     },
+    // Since the status split, Recent holds only End/EntryFailed — a stuck bag is
+    // OPEN (attention lane) where its Retry/Dump/Write-off actions live.
   ];
 
   const recentDetail = (r: LiveClosedRow) => {
@@ -949,7 +971,7 @@ export function OpsPage() {
             tableId={tab === 'attention' ? 'floor-attention' : 'floor-open'}
             emptyMessage={
               tab === 'attention'
-                ? 'Nothing stuck — no ExitPending / ExitFailed / ExitUnconfirmed.'
+                ? 'Nothing stuck — no ExitPending / ExitStuck / ExitUnconfirmed.'
                 : 'No open positions.'
             }
             selectedKey={selectedKey}

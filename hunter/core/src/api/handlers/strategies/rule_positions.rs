@@ -87,6 +87,19 @@ pub struct PositionResponse {
     /// the multi-run views — where it drives the run column + banding; `None` on the
     /// current-run/live paths (single run) and SSE deltas.
     pub run_seq: Option<i64>,
+    /// `bot` | `manual` — who opened the position (Console origin dot / filter).
+    pub origin: String,
+    /// Manual-position TP/SL config (`{"tp_pct", "sl_pct"}`); `None` on bot rows
+    /// and tracked-only manual rows.
+    pub manual_exit: Option<serde_json::Value>,
+    /// True on a stale, unresolved `BuySubmitted` (no fill adopted, not proven
+    /// reverted, older than the review window) — the row needs a manual Verify
+    /// (B3). Derived server-side so the UI never infers it from timestamps.
+    pub needs_review: bool,
+    /// Reaper redrive state on an `ExitStuck` row: parked ⇒ auto-retry stopped
+    /// (cap hit), waiting on a manual Retry / Dump / Write-off.
+    pub exit_parked: bool,
+    pub exit_redrive_count: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// Token symbol (row-owned identity; excluded from the shared `token` flatten).
@@ -138,6 +151,11 @@ impl From<StrategyPosition> for PositionResponse {
             // Stamped by the paged handler from the run map; single-run views leave
             // it None.
             run_seq: None,
+            origin: p.origin,
+            manual_exit: p.manual_exit,
+            needs_review: p.needs_review,
+            exit_parked: p.exit_parked,
+            exit_redrive_count: p.exit_redrive_count,
             created_at: p.created_at,
             updated_at: p.updated_at,
             // Enrichment is attached by the paged handler (`enrich_position_responses`);

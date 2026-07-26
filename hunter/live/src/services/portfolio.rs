@@ -478,13 +478,15 @@ fn holding_pnl(
 }
 
 /// Rank open statuses by how much a manual sell would conflict with the bot's own
-/// action — `ExitPending` (sell in flight) is the sharpest double-sell risk.
+/// action — `ExitPending` (sell in flight) is the sharpest double-sell risk; a
+/// stuck/unconfirmed exit still owns a bag the reaper may re-sell.
 fn status_rank(status: &str) -> u8 {
     match status {
-        "ExitPending" => 3,
+        "ExitPending" => 4,
+        "ExitStuck" | "ExitUnconfirmed" => 3,
         "Holding" => 2,
         "BuySubmitted" => 1,
-        _ => 0, // Arming
+        _ => 0,
     }
 }
 
@@ -706,12 +708,13 @@ mod tests {
     }
 
     /// `status_rank` picks the sharpest double-sell risk: an in-flight exit
-    /// outranks a plain hold, which outranks a buy-in-flight / arming.
+    /// outranks a stuck bag, which outranks a plain hold and a buy-in-flight.
     #[test]
     fn status_rank_orders_by_double_sell_risk() {
-        assert!(status_rank("ExitPending") > status_rank("Holding"));
+        assert!(status_rank("ExitPending") > status_rank("ExitStuck"));
+        assert!(status_rank("ExitStuck") > status_rank("Holding"));
         assert!(status_rank("Holding") > status_rank("BuySubmitted"));
-        assert!(status_rank("BuySubmitted") > status_rank("Arming"));
+        assert!(status_rank("BuySubmitted") > status_rank("End"));
     }
 
     fn stub_holding(mint: &str, kind: AssetKind, ui: f64, value_usd: f64) -> PortfolioHolding {

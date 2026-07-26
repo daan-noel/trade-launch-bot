@@ -203,9 +203,10 @@ pub enum SseEvent {
     /// A generic-engine position transition, emitted by the engine's
     /// `PositionUpdate` sink. Mint-scoped. `status` is the `strategy_positions`
     /// lifecycle string (`BuySubmitted` | `Holding` | `ExitPending` | `End` |
-    /// `ExitFailed` | `ExitUnconfirmed`); `exit_reason` is set on exit statuses.
-    /// `trade_mode` / `rule_name` let notification toasts filter real vs paper
-    /// without a round-trip. The client patches the one position row in place.
+    /// `EntryFailed` | `ExitStuck` | `ExitUnconfirmed`); `exit_reason` is set on
+    /// exit statuses. `trade_mode` / `rule_name` let notification toasts filter
+    /// real vs paper without a round-trip. The client patches the one position
+    /// row in place.
     StrategyPositionUpdate {
         rule_id: uuid::Uuid,
         mint_address: String,
@@ -217,6 +218,11 @@ pub enum SseEvent {
         /// `"real"` | `"paper"` from the frozen position meta (fallback: rule table).
         trade_mode: Option<String>,
         rule_name: Option<String>,
+        /// `Some(true)` on a stale, unresolved `BuySubmitted` past the review
+        /// window (B3): the reaper could neither adopt a fill nor prove every sig
+        /// reverted — the row needs a manual Verify. `None` elsewhere.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        needs_review: Option<bool>,
     },
     /// A generic-engine (token, rule) arming transition — armed or disarmed —
     /// emitted by the engine's `ArmedChanged` sink. There is no legacy analogue
