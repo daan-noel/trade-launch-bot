@@ -95,9 +95,11 @@ function RuleEditorInner({
       take_profit: params.take_profit,
       stop_loss: params.stop_loss,
       reentry: params.reentry,
+      exclusive: params.exclusive,
+      priority: params.priority,
       ...rowsToSides(rows),
     }),
-    [params.take_profit, params.stop_loss, params.reentry, rows],
+    [params.take_profit, params.stop_loss, params.reentry, params.exclusive, params.priority, rows],
   );
   const [tab, setTab] = useState<'builder' | 'json'>('builder');
   const [jsonText, setJsonText] = useState(() =>
@@ -161,6 +163,8 @@ function RuleEditorInner({
         take_profit: parsed.take_profit,
         stop_loss: parsed.stop_loss,
         reentry: parsed.reentry,
+        exclusive: parsed.exclusive,
+        priority: parsed.priority,
       }));
       setRows(sidesToRows(parsed.entry, parsed.exit));
       setJsonError(null);
@@ -348,6 +352,34 @@ function RuleEditorInner({
               />
             </label>
           </>
+        )}
+      </div>
+
+      {/* Exclusivity (optional): skip entry while any other rule holds this token. */}
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex h-8 items-center gap-1.5 text-[11px] text-text-dim">
+          <input
+            type="checkbox"
+            checked={params.exclusive}
+            disabled={conditionsLocked}
+            onChange={(e) => setParams((p) => ({ ...p, exclusive: e.target.checked }))}
+            className="accent-accent"
+          />
+          <LabelTip tip={RULE_FIELD_HELP.exclusive}>Exclusive</LabelTip>
+        </label>
+        {params.exclusive && (
+          <label className="flex flex-col gap-1 text-[11px] text-text-dim">
+            <LabelTip tip={RULE_FIELD_HELP.exclusivePriority}>Priority</LabelTip>
+            <Input
+              fieldSize="sm"
+              numeric
+              integer
+              numericValue={params.priority}
+              onNumericChange={(n) => setParams((p) => ({ ...p, priority: n ?? 0 }))}
+              disabled={conditionsLocked}
+              className="w-20"
+            />
+          </label>
         )}
       </div>
 

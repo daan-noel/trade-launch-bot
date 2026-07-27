@@ -23,6 +23,8 @@ export function validateRuleParams(p: RuleParams, reg: StrategyRegistry | undefi
   validateSide('entry', p.entry, reg, errors);
   validateSide('exit', p.exit, reg, errors);
   validateReentry(p.reentry, errors);
+  // Mirror of the backend `parse_opt_priority`.
+  if (!Number.isInteger(p.priority)) errors.push('priority must be an integer');
   errors.push(...pnlSugarDuplicateErrors(p));
   return errors;
 }

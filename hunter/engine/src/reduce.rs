@@ -521,7 +521,19 @@ fn evaluate_token(
         }
     }
 
-    let rule_ids: SmallVec<[RuleId; 4]> = token.arms.keys().copied().collect();
+    let mut rule_ids: SmallVec<[RuleId; 4]> = token.arms.keys().copied().collect();
+    // `priority` is NOT a general scheduling concept — it only ever changes behavior
+    // when two `exclusive` rules want the same token on the same event. Arms are
+    // decided-and-applied one at a time below, so whoever is visited first is already
+    // `EntryPending` when the next arm is decided and therefore wins the claim. A
+    // non-exclusive rule never reads another arm, so reordering it is a no-op.
+    // Manual arms (no entry in `rules`) sort at the default 0.
+    rule_ids.sort_unstable_by_key(|id| {
+        (
+            std::cmp::Reverse(state.rules.get(id).map_or(0, |c| c.priority)),
+            *id,
+        )
+    });
     for rule_id in rule_ids {
         let (decision, buy_lamports, cap, max_total) = {
             let arm = &token.arms[&rule_id];
@@ -529,7 +541,7 @@ fn evaluate_token(
             // tracked-only manual arm has neither ⇒ no decision (no auto-exit).
             let Some(c) = state.rule_for(rule_id, arm_position(arm)) else { continue };
             (
-                decide_arm(c, arm, token, dead, now),
+                decide_arm(c, rule_id, arm, token, dead, now),
                 c.buy_amount_lamports,
                 c.concurrent_cap,
                 c.max_total,
@@ -550,12 +562,14 @@ fn arm_position(arm: &ArmState) -> Option<crate::event::PositionId> {
 }
 
 /// Decide one arm's fate. Priorities: armed side disarms (dead, then derived-unsat)
-/// before it enters; entry is gated by [`CompiledRule::can_enter`] (no buy while
-/// exit metrics already hold); the open side follows `Dead > exit_fired`, where
-/// `exit_fired` walks the desugared-TP/SL-then-authored exit reqs in order (so the
-/// legacy `SL > TP > Metrics` tiebreak is preserved inside the one loop).
+/// before it enters; an `exclusive` rule then stands down while another arm holds the
+/// token; entry is gated by [`CompiledRule::can_enter`] (no buy while exit metrics
+/// already hold); the open side follows `Dead > exit_fired`, where `exit_fired` walks
+/// the desugared-TP/SL-then-authored exit reqs in order (so the legacy
+/// `SL > TP > Metrics` tiebreak is preserved inside the one loop).
 fn decide_arm(
     c: &CompiledRule,
+    rule_id: RuleId,
     arm: &ArmState,
     token: &TokenState,
     dead: bool,
@@ -568,6 +582,17 @@ fn decide_arm(
             }
             if c.entry_unsatisfiable(&token.track, now) {
                 return ArmDecision::Disarm(DisarmReason::Unsatisfiable);
+            }
+            // Exclusivity: any other arm holding the token (in-flight buy/sell
+            // included, manual arms included) blocks this entry. Stays `Armed` so it
+            // retries once the holder lets go — deliberately not a Disarm.
+            if c.exclusive
+                && token
+                    .arms
+                    .iter()
+                    .any(|(rid, a)| *rid != rule_id && arm_position(a).is_some())
+            {
+                return ArmDecision::None;
             }
             if c.can_enter(&token.track, now) {
                 return ArmDecision::Enter;

@@ -226,6 +226,8 @@ fn compile_manual_exit_rule(rule: RuleId, exit: &ManualExit) -> CompiledRule {
         entry: None,
         exit: None,
         reentry: None,
+        exclusive: false,
+        priority: 0,
     };
     let loaded = LoadedRule {
         id: rule,

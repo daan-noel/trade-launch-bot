@@ -122,7 +122,7 @@ Consequences, all enforced in code:
 
 Not wired: **re-entry** (`RuleParams.reentry`). The sweep's `TokenOutcome` is one
 episode per (token, combo); multi-episode accumulation would change the outcome
-model, aggregation and persistence. Re-entry validates via simulate/replay instead.
+model, aggregation and persistence. Re-entry validates via simulate/replay instead. Same for **exclusivity** (`RuleParams.exclusive` / `priority`) — it needs cross-*rule* state at one instant, which the per-combo fan-out has no place to keep; recorded as divergence D4 in [../plans/sweep/sim-parity.md](../plans/sweep/sim-parity.md) and locked by a `guard.rs` test.
 
 ### Flow axes (`m_flow_split` / `m_flow_split_window`)
 

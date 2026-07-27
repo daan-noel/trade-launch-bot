@@ -75,11 +75,25 @@ export interface RuleParams {
   exit?: SideConditions;
   /** Re-entry lifecycle. `null`/absent ⇒ one-shot. */
   reentry?: ReEntry | null;
+  /** Skip entry while ANY other rule (manual buys included) already holds this
+   *  token. `false` = today's behavior: rules stack independently. */
+  exclusive: boolean;
+  /** Tiebreak between two contesting `exclusive` rules — higher wins, ties break by
+   *  rule id. Meaningless when `exclusive` is false. */
+  priority: number;
 }
 
 /** An empty rule (fingerprint-only, no TP/SL/conditions). */
 export function emptyRuleParams(): RuleParams {
-  return { take_profit: null, stop_loss: null, entry: {}, exit: {}, reentry: null };
+  return {
+    take_profit: null,
+    stop_loss: null,
+    entry: {},
+    exit: {},
+    reentry: null,
+    exclusive: false,
+    priority: 0,
+  };
 }
 
 /** Serialize form → canonical `params` JSON. Drops empty metric lists and no-op
@@ -105,6 +119,9 @@ export function ruleParamsToJson(p: RuleParams): Record<string, unknown> {
       max_episodes_per_token: re.max_episodes_per_token,
     };
   }
+  // Defaults stay off the wire so existing rules round-trip unchanged.
+  if (p.exclusive) root.exclusive = true;
+  if (Number.isFinite(p.priority) && p.priority !== 0) root.priority = p.priority;
   return root;
 }
 
@@ -148,6 +165,8 @@ export function ruleParamsFromJson(json: unknown, reg: StrategyRegistry | undefi
     entry: sideFromJson(obj.entry, reg) ?? {},
     exit: sideFromJson(obj.exit, reg) ?? {},
     reentry: reentryFromJson(obj.reentry),
+    exclusive: obj.exclusive === true,
+    priority: typeof obj.priority === 'number' && Number.isFinite(obj.priority) ? obj.priority : 0,
   };
 }
 

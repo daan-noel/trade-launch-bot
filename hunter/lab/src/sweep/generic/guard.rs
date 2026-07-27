@@ -166,7 +166,7 @@ fn exit_metric(group: MetricGroupId, metric: MetricId, op: Operator, value: f64)
     gc.metrics.insert(metric, vec![vec![Condition { operator: op, value }]]);
     let mut side = SideConditions::default();
     side.0.insert(group, vec![gc]);
-    RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(side), reentry: None }
+    RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(side), ..RuleParams::default() }
 }
 
 /// One side's conditions for a single windowed (dynamic-group) metric — e.g. the
@@ -393,7 +393,7 @@ fn corpus() -> Vec<(CorpusToken, ReplayToken)> {
 #[test]
 fn scan_matches_replay_tp_sl_rule() {
     // TP 50% OR SL 30%. Enter on arm (no entry conditions).
-    let params = RuleParams { take_profit: Some(50.0), stop_loss: Some(30.0), entry: None, exit: None, reentry: None };
+    let params = RuleParams { take_profit: Some(50.0), stop_loss: Some(30.0), entry: None, exit: None, ..RuleParams::default() };
     assert_parity("tp_sl", params, &corpus(), at(1000.0));
 }
 
@@ -412,14 +412,14 @@ fn scan_matches_replay_entry_gated_rule() {
     let mut entry = SideConditions::default();
     entry.0.insert(MetricGroupId::Snapshot, vec![gc]);
     let params =
-        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: Some(entry), exit: None, reentry: None };
+        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: Some(entry), exit: None, ..RuleParams::default() };
     assert_parity("entry_gate", params, &corpus(), at(1000.0));
 }
 
 #[test]
 fn scan_matches_replay_pure_dead_open_rule() {
     // No TP/SL/exit metrics: every fired token rides to Dead or Open.
-    let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, reentry: None };
+    let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, ..RuleParams::default() };
     assert_parity("dead_open", params, &corpus(), at(1000.0));
 }
 
@@ -471,7 +471,7 @@ fn scan_matches_replay_position_retrace_exit() {
             stop_loss: None,
             entry: None,
             exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0)),
-            reentry: None,
+            ..RuleParams::default()
         },
         &corpus(),
         at(1000.0),
@@ -483,7 +483,7 @@ fn scan_matches_replay_position_retrace_exit() {
             stop_loss: None,
             entry: None,
             exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0)),
-            reentry: None,
+            ..RuleParams::default()
         },
         &gappy_corpus(),
         at(100_000.0),
@@ -519,7 +519,7 @@ fn scan_matches_replay_tp_sl_plus_authored_metric() {
         stop_loss: Some(30.0),
         entry: None,
         exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0)),
-        reentry: None,
+        ..RuleParams::default()
     };
     assert_parity("tp_sl_plus_retrace", params, &corpus(), at(1000.0));
 }
@@ -530,7 +530,7 @@ fn scan_matches_replay_price_window_dip_entry() {
     // exit via TP. Exercises the windowed price-extrema entry column end-to-end.
     let entry = window_metric_side(MetricGroupId::PriceWindow, MetricId::WinTrail, 30.0, Operator::Gte, 12.0);
     let params =
-        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: Some(entry), exit: None, reentry: None };
+        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: Some(entry), exit: None, ..RuleParams::default() };
     assert_parity("pw_dip_entry", params, &pw_dip_corpus(), at(1000.0));
 }
 
@@ -550,7 +550,7 @@ fn position_retrace_actually_fires_the_trailing_stop() {
             12.0,
         )),
         exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0)),
-        reentry: None,
+        ..RuleParams::default()
     }));
     let cols = columns_for(&compiled);
     // The dip trigger IS a precomputed column; the position metric is NOT (it reads
@@ -599,7 +599,7 @@ fn scan_matches_replay_minimal_flow_scalper_core() {
     let entry = window_metric_side(MetricGroupId::PriceWindow, MetricId::WinTrail, 30.0, Operator::Gte, 12.0);
     let exit = static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0);
     let params =
-        RuleParams { take_profit: None, stop_loss: None, entry: Some(entry), exit: Some(exit), reentry: None };
+        RuleParams { take_profit: None, stop_loss: None, entry: Some(entry), exit: Some(exit), ..RuleParams::default() };
     assert_parity("flow_scalper_core", params, &pw_dip_corpus(), at(1000.0));
 }
 
@@ -646,7 +646,7 @@ fn gappy_corpus() -> Vec<(CorpusToken, ReplayToken)> {
 #[test]
 fn scan_matches_replay_gappy_dead_open() {
     // Enter-on-arm, no exits: dead_midgap → Dead mid-gap, revive/idle → Open.
-    let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, reentry: None };
+    let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, ..RuleParams::default() };
     assert_parity("gappy_dead_open", params, &gappy_corpus(), at(100_000.0));
 }
 
@@ -659,7 +659,7 @@ fn scan_matches_replay_time_gate_across_gap() {
     let mut entry = SideConditions::default();
     entry.0.insert(MetricGroupId::Snapshot, vec![gc]);
     let params =
-        RuleParams { take_profit: Some(5.0), stop_loss: None, entry: Some(entry), exit: None, reentry: None };
+        RuleParams { take_profit: Some(5.0), stop_loss: None, entry: Some(entry), exit: None, ..RuleParams::default() };
     assert_parity("time_gate_gap", params, &gappy_corpus(), at(100_000.0));
 }
 
@@ -697,7 +697,7 @@ fn shared_bind_matches_per_token_bind() {
             stop_loss: Some(30.0),
             entry: None,
             exit: None,
-            reentry: None,
+            ..RuleParams::default()
         },
     ];
 
@@ -738,7 +738,7 @@ fn scan_matches_replay_window_flow_across_gap() {
     let mut exit = SideConditions::default();
     exit.0.insert(MetricGroupId::FlowWindow, vec![gc]);
     let params =
-        RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(exit), reentry: None };
+        RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(exit), ..RuleParams::default() };
     assert_parity("flow_decay_gap", params, &gappy_corpus(), at(100_000.0));
 }
 
@@ -792,7 +792,7 @@ fn scan_matches_replay_flow_split_entry_and_window_exit() {
         stop_loss: None,
         entry: Some(entry),
         exit: Some(exit),
-        reentry: None,
+        ..RuleParams::default()
     };
     let patterns = vec![vec!["vol".to_string()]];
     assert_parity_with_flow(
@@ -869,17 +869,17 @@ fn simd_exit_scan_matches_scalar_across_paths() {
         gc.metrics.insert(MetricId::Time, vec![vec![Condition { operator: Operator::Gt, value: 2.0 }]]);
         let mut entry = SideConditions::default();
         entry.0.insert(MetricGroupId::Snapshot, vec![gc]);
-        RuleParams { take_profit: Some(20.0), stop_loss: Some(60.0), entry: Some(entry), exit: None, reentry: None }
+        RuleParams { take_profit: Some(20.0), stop_loss: Some(60.0), entry: Some(entry), exit: None, ..RuleParams::default() }
     };
 
     let rules = vec![
         // TP + SL together.
-        RuleParams { take_profit: Some(50.0), stop_loss: Some(30.0), entry: None, exit: None, reentry: None },
+        RuleParams { take_profit: Some(50.0), stop_loss: Some(30.0), entry: None, exit: None, ..RuleParams::default() },
         // TP only / SL only (one threshold absent → the `have_sl`/`have_tp` branches).
-        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: None, exit: None, reentry: None },
-        RuleParams { take_profit: None, stop_loss: Some(40.0), entry: None, exit: None, reentry: None },
+        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: None, exit: None, ..RuleParams::default() },
+        RuleParams { take_profit: None, stop_loss: Some(40.0), entry: None, exit: None, ..RuleParams::default() },
         // Neither → only Dead / Open can fire.
-        RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, reentry: None },
+        RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, ..RuleParams::default() },
         // Deferred entry (non-zero fill row).
         entry_gate,
         // Metrics exit → SIMD delegates to scalar; still must match.
@@ -947,7 +947,7 @@ fn tp_sl_rules_actually_reach_the_exit_index() {
             stop_loss: sl,
             entry: None,
             exit: None,
-            reentry: None,
+            ..RuleParams::default()
         }));
         // The shape the old gate got wrong: desugared reqs exist, so the pre-fix
         // branch would have refused the index here.
@@ -1000,15 +1000,15 @@ fn index_exit_scan_matches_scalar_across_paths() {
             stop_loss: Some(60.0),
             entry: Some(entry),
             exit: None,
-            reentry: None,
+            ..RuleParams::default()
         }
     };
 
     let rules = vec![
-        RuleParams { take_profit: Some(50.0), stop_loss: Some(30.0), entry: None, exit: None, reentry: None },
-        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: None, exit: None, reentry: None },
-        RuleParams { take_profit: None, stop_loss: Some(40.0), entry: None, exit: None, reentry: None },
-        RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, reentry: None },
+        RuleParams { take_profit: Some(50.0), stop_loss: Some(30.0), entry: None, exit: None, ..RuleParams::default() },
+        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: None, exit: None, ..RuleParams::default() },
+        RuleParams { take_profit: None, stop_loss: Some(40.0), entry: None, exit: None, ..RuleParams::default() },
+        RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, ..RuleParams::default() },
         entry_gate,
         // Metrics → index falls back to scalar; still must match.
         exit_metric(MetricGroupId::PriceLifetime, MetricId::Trail, Operator::Gt, 50.0),
@@ -1030,7 +1030,7 @@ fn index_exit_scan_matches_scalar_across_paths() {
                 Operator::Gte,
                 3.0,
             )),
-            reentry: None,
+            ..RuleParams::default()
         },
     ];
 
@@ -1150,7 +1150,7 @@ fn index_exit_scan_matches_scalar_on_randomized_walks() {
                 stop_loss: *sl,
                 entry: None,
                 exit: None,
-                reentry: None,
+                ..RuleParams::default()
             };
             let compiled = CompiledRule::compile(&loaded(params));
             let bound = BoundCombo::new(series.columns(), compiled);
@@ -1573,5 +1573,98 @@ fn held_frozen_tail_matches_across_exit_paths() {
     assert!(
         saw_frozen_close,
         "no token exercised the held frozen-tail close — the fixture proved nothing"
+    );
+}
+
+/// **Exclusivity is NOT enforced by the sweep** (documented divergence, alongside D2's
+/// stripped concurrency caps — `docs/plans/sweep/sim-parity.md`). The scan judges each
+/// combo/token independently in a parallel fan-out with no shared cross-combo state,
+/// while `exclusive` needs cross-*rule* state at the same instant. This test keeps the
+/// gap visible and re-verifiable rather than assumed away: the two exclusive rules both
+/// fire in the sweep, and only one of them does through `run_replay`.
+#[test]
+fn sweep_ignores_exclusivity_but_the_engine_enforces_it() {
+    use hunter_engine::event::{Effect, Event, Mint};
+    use hunter_engine::reduce::reduce;
+    use hunter_engine::EngineState;
+
+    let as_of = at(1000.0);
+    // One token, enter-on-arm, healthy — nothing but exclusivity can stop either rule.
+    let (corpus_tok, replay_tok) = token(
+        "excl",
+        vec![
+            ct(0.0, true, 1.0, 1.0, 100.0),
+            ct(1.0, true, 0.5, 1.05, 100.0),
+            ct(10.0, true, 0.5, 1.1, 100.0),
+        ],
+    );
+    let fp = fingerprint();
+    let pricing = pricing();
+
+    let excl_rule = |id: u128, tp: f64| LoadedRule {
+        id: RuleId(uuid::Uuid::from_u128(id)),
+        params: RuleParams { take_profit: Some(tp), exclusive: true, ..RuleParams::default() },
+        ..loaded(RuleParams::default())
+    };
+    let (a, b) = (excl_rule(0xA, 500.0), excl_rule(0xB, 900.0));
+
+    // Sweep: each combo is scanned on its own → BOTH enter, un-deconflicted.
+    for rule in [&a, &b] {
+        let compiled = CompiledRule::compile(rule);
+        let series = build_series_with_flow(
+            &corpus_tok,
+            columns_for(&compiled),
+            &sparse_grid_for(&compiled),
+            as_of,
+            None,
+        );
+        let outcome = scan(&corpus_tok.trades, &series, &compiled, &pricing);
+        assert!(
+            outcome.fired,
+            "sweep must still fire every exclusive combo independently ({:?})",
+            rule.id
+        );
+    }
+
+    // Engine: one shared fold over both rules → the lower-id rule claims the token and
+    // the other stands down. Driven through `reduce` rather than `run_replay` because
+    // the lab replay driver keys in-flight fills by *mint*, so it cannot carry two
+    // concurrent positions on one token regardless of what the engine decides.
+    let buys_under = |exclusive: bool| -> Vec<RuleId> {
+        let rules: Vec<LoadedRule> = [&a, &b]
+            .into_iter()
+            .map(|r| LoadedRule {
+                params: RuleParams { exclusive, ..r.params.clone() },
+                ..r.clone()
+            })
+            .collect();
+        let mut state = EngineState::new();
+        reduce(
+            &mut state,
+            Event::RulesReloaded { rules: rules.into(), fps: vec![fp.clone()].into() },
+        );
+        let fx = reduce(
+            &mut state,
+            Event::TokenCreated {
+                mint: Mint::from(replay_tok.mint.as_str()),
+                fp: Box::new(replay_tok.tf.clone()),
+                at: replay_tok.created_at,
+                creator_wallet_hash: None,
+            },
+        );
+        fx.iter()
+            .filter_map(|e| match e {
+                Effect::SubmitBuy { rule, .. } => Some(*rule),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(buys_under(true), vec![a.id], "reduce enforces exclusivity; the sweep does not");
+    // Non-vacuity: drop the flag and the same fold enters both — the single entry above
+    // is exclusivity, not a cap or a fingerprint quirk.
+    assert_eq!(
+        buys_under(false),
+        vec![a.id, b.id],
+        "without the flag both rules stack on the token"
     );
 }

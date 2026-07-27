@@ -104,6 +104,25 @@ describe('reentry round-trip (the silent-strip regression)', () => {
   });
 });
 
+describe('exclusivity round-trip', () => {
+  it('carries exclusive + priority through toJson → fromJson unchanged', () => {
+    const json = { take_profit: 50, exclusive: true, priority: -3 };
+    const form = ruleParamsFromJson(json, undefined);
+    expect(form.exclusive).toBe(true);
+    expect(form.priority).toBe(-3);
+    expect(ruleParamsJsonEqual(ruleParamsToJson(form), json)).toBe(true);
+  });
+
+  it('omits the defaults so existing rules round-trip unchanged', () => {
+    const form = emptyRuleParams();
+    expect(form.exclusive).toBe(false);
+    expect(form.priority).toBe(0);
+    const json = ruleParamsToJson(form);
+    expect('exclusive' in json).toBe(false);
+    expect('priority' in json).toBe(false);
+  });
+});
+
 describe('multi-window per group (the array-form round-trip)', () => {
   it('serializes one instance as an object, two as an array (mirrors the backend)', () => {
     const one = ruleParamsFromJson(

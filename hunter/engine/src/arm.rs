@@ -181,6 +181,13 @@ pub struct CompiledRule {
     /// (token, rule) forever (`Done`). `Some` ⇒ a normal strategy exit re-arms the
     /// token into [`ArmState::Cooldown`] up to the episode cap.
     pub reentry: Option<ReEntry>,
+    /// Skip entry while any OTHER arm on the token holds a position. See
+    /// [`RuleParams::exclusive`](crate::rule_params::RuleParams::exclusive).
+    pub exclusive: bool,
+    /// Visit order for [`crate::reduce`]'s per-event arm sweep (higher first) — the
+    /// tiebreak between two contesting `exclusive` rules. The **sweep ignores both**
+    /// (documented divergence, `docs/plans/sweep/sim-parity.md`).
+    pub priority: i32,
 }
 
 impl CompiledRule {
@@ -280,6 +287,8 @@ impl CompiledRule {
             price_windows,
             mono_kills,
             reentry: rule.params.reentry,
+            exclusive: rule.params.exclusive,
+            priority: rule.params.priority,
         }
     }
 

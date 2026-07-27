@@ -38,6 +38,21 @@ condition `eval`, `CompiledRule::compile`.
    `n_fired` / `total_pnl_sol` are therefore **upper bounds** vs. a live rule under its
    own caps. Caps make token outcomes order-dependent, which would serialize the rayon
    token fan-out.
+- **D4 · Single-position-per-token exclusivity ignored in sweep** (`RuleParams.exclusive`
+   / `priority`). `reduce` lets an `exclusive` rule stand down while ANY other arm on the
+   token holds a position, with `priority` deciding who claims it when two contest the
+   same event. The sweep enforces neither: `AxesModel::assemble` never sets the fields,
+   and each combo/token is scanned independently in a rayon fan-out with **no shared
+   cross-combo state** — exclusivity needs cross-*rule* state at the same instant, which
+   is D2's problem one level harder (it would require a globally time-ordered fold over
+   the whole corpus, exactly what the sparse-grid design avoids). So a sweep over
+   exclusive rules reports the same un-deconflicted upper bounds D2 already describes:
+   **re-run a promoted exclusive combo through simulate before trusting its PnL.**
+   Guard: `sweep_ignores_exclusivity_but_the_engine_enforces_it` — both exclusive combos
+   fire in `scan`, only the priority/id winner enters through `reduce` (with a
+   flag-dropped non-vacuity leg). It drives `reduce` directly rather than `run_replay`
+   because the lab replay driver keys in-flight fills by *mint* and so cannot carry two
+   concurrent positions on one token whatever the engine decides.
 - **D3 · Sketched quantiles.** Persisted sweep quantiles come from a 64-bucket DDSketch
    (~15% rel. error); `simulate` and the sweep drill-in compute exact ones. **Ranking is
    unaffected** — `score` is exact. O(1) memory per combo is the point.

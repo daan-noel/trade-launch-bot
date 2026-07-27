@@ -57,7 +57,8 @@ use crate::metrics::{
 };
 
 /// Typed, registry-checked `params`. See module docs for the JSON shape.
-#[derive(Debug, Clone, PartialEq)]
+/// `default()` is the legal empty rule (fingerprint-only, no TP/SL/conditions).
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RuleParams {
     /// Take-profit as % of entry price (e.g. `100` = +100%). `None` = off.
     pub take_profit: Option<f64>,
@@ -70,6 +71,17 @@ pub struct RuleParams {
     /// Re-entry lifecycle. `None` = one-shot (`Done` is terminal per (token, rule) —
     /// every stored rule's behavior). See [`ReEntry`].
     pub reentry: Option<ReEntry>,
+    /// Single-position-per-token exclusivity. `false` (default, every stored rule)
+    /// = today's behavior — this rule ignores what other rules hold. `true` = skip
+    /// entry while **any** other arm on the token holds a position (in-flight buys
+    /// and sells included, manual arms included), for rules meant to compete for an
+    /// opportunity rather than stack on it.
+    pub exclusive: bool,
+    /// Tiebreak when two `exclusive` rules would enter the same token on the same
+    /// event: higher wins (it is visited first, claims the token, and every later
+    /// exclusive rule then sees the claim). Ties fall back to rule-id order.
+    /// Meaningless on a non-exclusive rule.
+    pub priority: i32,
 }
 
 /// Optional re-entry lifecycle (plan Ph4). Absent ⇒ one-shot. Present ⇒ after a
@@ -165,6 +177,13 @@ impl RuleParams {
             );
             root.insert("reentry".into(), Value::Object(o));
         }
+        // Defaults stay absent so every stored rule round-trips byte-identically.
+        if self.exclusive {
+            root.insert("exclusive".into(), Value::Bool(true));
+        }
+        if self.priority != 0 {
+            root.insert("priority".into(), (self.priority as i64).into());
+        }
         Value::Object(root)
     }
 
@@ -175,7 +194,13 @@ impl RuleParams {
         for key in obj.keys() {
             if !matches!(
                 key.as_str(),
-                "take_profit" | "stop_loss" | "entry" | "exit" | "reentry"
+                "take_profit"
+                    | "stop_loss"
+                    | "entry"
+                    | "exit"
+                    | "reentry"
+                    | "exclusive"
+                    | "priority"
             ) {
                 return Err(format!("unknown params key '{key}'"));
             }
@@ -186,6 +211,8 @@ impl RuleParams {
             entry: parse_opt_side(obj.get("entry"), "entry")?,
             exit: parse_opt_side(obj.get("exit"), "exit")?,
             reentry: parse_opt_reentry(obj.get("reentry"))?,
+            exclusive: parse_opt_bool(obj.get("exclusive"), "exclusive")?,
+            priority: parse_opt_priority(obj.get("priority"))?,
         })
     }
 
@@ -243,6 +270,30 @@ fn parse_opt_reentry(v: Option<&Value>) -> Result<Option<ReEntry>, String> {
             }))
         }
         Some(_) => Err("reentry must be an object".into()),
+    }
+}
+
+fn parse_opt_bool(v: Option<&Value>, name: &str) -> Result<bool, String> {
+    match v {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err(format!("{name} must be a boolean")),
+    }
+}
+
+/// Parse the optional `priority` tiebreak. Validated inline (an integer in `i32`
+/// range) rather than in `validate()`, which handles the flat `f64` fields.
+fn parse_opt_priority(v: Option<&Value>) -> Result<i32, String> {
+    match v {
+        None | Some(Value::Null) => Ok(0),
+        Some(Value::Number(_)) => {
+            let n = v.and_then(Value::as_f64).unwrap_or(f64::NAN);
+            if !n.is_finite() || n.fract() != 0.0 || n < i32::MIN as f64 || n > i32::MAX as f64 {
+                return Err("priority must be an integer within i32 range".into());
+            }
+            Ok(n as i32)
+        }
+        Some(_) => Err("priority must be a number".into()),
     }
 }
 
@@ -834,6 +885,8 @@ mod tests {
             entry: Some(side),
             exit: None,
             reentry: None,
+            exclusive: false,
+            priority: 0,
         };
         let e = p.validate().unwrap_err();
         assert!(e.contains("must be finite"), "{e}");
@@ -860,6 +913,35 @@ mod tests {
             "reentry": { "cooldown_sec": 0, "max_episodes_per_token": 1 }
         }))
         .is_ok());
+    }
+
+    #[test]
+    fn exclusivity_parses_defaults_and_round_trips() {
+        // Absent ⇒ the stored-rule default: non-exclusive, priority 0.
+        let p = RuleParams::parse(&json!({})).unwrap();
+        assert!(!p.exclusive);
+        assert_eq!(p.priority, 0);
+        // ...and defaults never appear in the serialized shape (no migration).
+        let v = p.to_value();
+        assert!(v.get("exclusive").is_none() && v.get("priority").is_none());
+
+        let p = RuleParams::parse(&json!({ "exclusive": true, "priority": -3 })).unwrap();
+        assert!(p.exclusive);
+        assert_eq!(p.priority, -3);
+        assert_eq!(RuleParams::parse(&p.to_value()).unwrap(), p);
+    }
+
+    #[test]
+    fn exclusivity_rejects_bad_values() {
+        for (bad, needle) in [
+            (json!({ "exclusive": "yes" }), "must be a boolean"),
+            (json!({ "priority": 1.5 }), "integer within i32 range"),
+            (json!({ "priority": 1e18 }), "integer within i32 range"),
+            (json!({ "priority": "high" }), "must be a number"),
+        ] {
+            let e = RuleParams::parse(&bad).unwrap_err();
+            assert!(e.contains(needle), "expected '{needle}' in: {e}");
+        }
     }
 
     #[test]

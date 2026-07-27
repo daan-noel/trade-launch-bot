@@ -312,8 +312,9 @@ impl AxesModel {
     }
 
     fn assemble(&self, picks: &[usize]) -> RuleParams {
-        let mut rp =
-            RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, reentry: None };
+        // `reentry` / `exclusive` / `priority` are not sweepable axes — exclusivity is
+        // a documented sweep divergence (docs/plans/sweep/sim-parity.md).
+        let mut rp = RuleParams::default();
         for (axis, &pick) in self.axes.iter().zip(picks) {
             match axis {
                 ResolvedAxis::TakeProfit { values } => rp.take_profit = Some(values[pick]),

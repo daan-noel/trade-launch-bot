@@ -448,6 +448,89 @@ fn multi_rule_concurrent_entry_on_one_token() {
 }
 
 #[test]
+fn exclusive_rules_contest_a_token_and_the_loser_stays_armed() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    // Both exclusive, both enter-on-arm, equal (default) priority → rule-id order
+    // decides: rule 1 claims the token, rule 2 sees the claim and stands down.
+    let rules = vec![
+        rule(1, 1, json!({ "take_profit": 100, "exclusive": true })),
+        rule(2, 1, json!({ "take_profit": 200, "exclusive": true })),
+    ];
+    reduce(&mut s, reload(rules, vec![cu_fp(1)]));
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    assert_eq!(buys(&fx), vec![(rid(1), BUY)], "only the first exclusive rule enters");
+    assert_eq!(s.positions.len(), 1);
+    // Standing down is NOT a disarm — the loser must still be able to enter later.
+    assert!(disarms(&fx).is_empty());
+}
+
+#[test]
+fn higher_priority_wins_the_exclusive_claim_regardless_of_rule_id() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    // Rule 2 sorts last by id but carries the higher priority → it is visited first.
+    let rules = vec![
+        rule(1, 1, json!({ "take_profit": 100, "exclusive": true })),
+        rule(2, 1, json!({ "take_profit": 200, "exclusive": true, "priority": 5 })),
+    ];
+    reduce(&mut s, reload(rules, vec![cu_fp(1)]));
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    assert_eq!(buys(&fx), vec![(rid(2), BUY)], "priority beats rule-id order");
+}
+
+#[test]
+fn exclusivity_is_asymmetric_and_clears_when_the_holder_exits() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    // Rule 1 is NON-exclusive (it never checks anyone); rule 2 is exclusive and is
+    // blocked by rule 1's holding — the asymmetry is by design.
+    let rules = vec![
+        rule(1, 1, json!({ "take_profit": 100 })),
+        rule(2, 1, json!({ "take_profit": 200, "exclusive": true })),
+    ];
+    reduce(&mut s, reload(rules, vec![cu_fp(1)]));
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    assert_eq!(buys(&fx), vec![(rid(1), BUY)], "the non-exclusive rule holds; rule 2 waits");
+
+    // Rule 1's buy fills, then TPs out at 2x and the sell confirms.
+    let entry = buy_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 2.0, 40.0, 1.0) });
+    assert!(buys(&fx).is_empty(), "an in-flight sell (ExitPending) still blocks");
+    let exit = sell_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: exit, fill: fill(2.0, 1.1) });
+
+    // Nobody holds the token now → the blocked exclusive rule enters on the next event.
+    let fx = reduce(&mut s, Event::Tick { now: ts(2.0) });
+    assert_eq!(buys(&fx), vec![(rid(2), BUY)], "enters once the holder lets go");
+}
+
+#[test]
+fn a_manual_position_blocks_an_exclusive_rule() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    // Manual arms live in the same `token.arms` map under their own rule id, so
+    // "ANY rule holds this token" covers them with no special-casing.
+    reduce(
+        &mut s,
+        reload(vec![rule(1, 1, json!({ "take_profit": 100, "exclusive": true }))], vec![cu_fp(1)]),
+    );
+    let fx = reduce(
+        &mut s,
+        Event::ManualBuy { mint: m.clone(), rule: rid(9), lamports: BUY, at: ts(0.0), exit: None },
+    );
+    assert_eq!(buys(&fx), vec![(rid(9), BUY)]);
+    let manual_entry = buy_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: manual_entry, fill: fill(1.0, 0.1) });
+
+    // The token now matches the fingerprint and arms rule 1 — but the manual hold blocks it.
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(1.0), creator_wallet_hash: None });
+    assert!(buys(&fx).is_empty(), "a manual holding blocks the exclusive rule");
+    assert!(disarms(&fx).is_empty(), "blocked, not disarmed");
+}
+
+#[test]
 fn concurrent_cap_blocks_second_until_slot_frees() {
     let mut s = EngineState::new();
     let (a, b) = (Mint::from("tokA"), Mint::from("tokB"));

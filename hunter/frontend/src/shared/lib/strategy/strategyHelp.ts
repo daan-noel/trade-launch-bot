@@ -637,6 +637,32 @@ export const RULE_FIELD_HELP = {
       'Note this also becomes what the rule’s max-total cap counts (episodes, not tokens).',
     ].join('\n'),
   },
+  exclusive: {
+    title: 'Exclusive',
+    body: [
+      'Off ⇒ today’s behavior: rules hold positions independently, so several rules can',
+      'stack on the same token at once.',
+      '',
+      'On ⇒ skip entry while ANY other rule already holds this token — including an',
+      'in-flight buy or sell, and including a manual buy. Use it when rules are meant to',
+      'compete for the same opportunity rather than stack on it.',
+      '',
+      'Blocked is not disarmed: the rule stays armed and retries once the holder lets go.',
+      'Asymmetric by design — a non-exclusive rule never checks anyone, so it can still',
+      'enter a token an exclusive rule holds.',
+      '',
+      'The grouped sweep IGNORES this — sweep numbers stay un-deconflicted upper bounds.',
+    ].join('\n'),
+  },
+  exclusivePriority: {
+    title: 'Priority',
+    body: [
+      'Higher priority wins when two exclusive rules would enter the same token at once.',
+      'Default 0; ties break by rule ID.',
+      '',
+      'Only matters between two exclusive rules — it is not a general scheduling knob.',
+    ].join('\n'),
+  },
 } as const satisfies Record<string, HelpTip>;
 
 // ── Fingerprint fields ───────────────────────────────────────────────────────
