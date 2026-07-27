@@ -17,6 +17,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
 
+use crate::cap::Cap;
 use crate::fingerprint::{Fingerprint, FingerprintId};
 use crate::grouping::TokenFingerprint;
 use crate::metrics::evaluator::Operator;
@@ -293,12 +294,16 @@ pub struct LoadedRule {
 
 impl LoadedRule {
     /// Effective concurrency cap (`0` in the DB means the default of 1).
-    pub fn concurrent_cap(&self) -> u32 {
-        if self.max_concurrent_tokens == 0 {
-            1
-        } else {
-            self.max_concurrent_tokens
-        }
+    /// The ONE decode of that sentinel — see [`crate::cap::Cap`].
+    pub fn concurrent_cap(&self) -> Cap {
+        Cap::zero_defaults_to(self.max_concurrent_tokens, 1)
+    }
+
+    /// Effective lifetime cap (`0` in the DB means unlimited). The ONE decode of
+    /// that sentinel: every reader (the fold's cap check, the SSE/`strategy_runs`
+    /// snapshot) goes through here rather than re-deriving `!= 0`.
+    pub fn total_cap(&self) -> Cap {
+        Cap::zero_unlimited(self.max_total_tokens)
     }
 }
 

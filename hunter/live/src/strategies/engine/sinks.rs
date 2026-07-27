@@ -162,7 +162,9 @@ impl Sink {
                             .get(&r.id)
                             .map(|s| (*s).to_string())
                             .unwrap_or_default(),
-                        max_total: (r.max_total_tokens != 0).then_some(r.max_total_tokens as i64),
+                        // `None` = unlimited, decoded through the ONE reader (`Cap`)
+                        // rather than an ad-hoc `!= 0` here.
+                        max_total: r.total_cap().bounded().map(i64::from),
                         params: r.params.to_value(),
                     },
                 )

@@ -20,6 +20,7 @@
 //! * [`rule_params`] — typed, registry-checked `strategy_rules.params`.
 
 pub mod arm;
+pub mod cap;
 pub mod deadness;
 pub mod event;
 pub mod event_log;
@@ -30,6 +31,7 @@ pub mod reduce;
 pub mod rule_params;
 pub mod state;
 
+pub use cap::Cap;
 pub use event::{Effect, Event};
 pub use event_log::LoggedEvent;
 pub use reduce::reduce;

@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use smallvec::SmallVec;
 
 use crate::arm::{ArmState, CompiledRule};
+use crate::cap::Cap;
 use crate::deadness::{is_dead_verdict, DEAD_MEANINGFUL_TRADE_SOL};
 use crate::event::{
     ArmedDelta, ArmedStateTag, DisarmReason, Effect, Event, ExitReason, FillFailReason, Mint,
@@ -633,8 +634,8 @@ fn apply_decision(
     rule_id: RuleId,
     decision: ArmDecision,
     buy_lamports: u64,
-    cap: u32,
-    max_total: u32,
+    cap: Cap,
+    max_total: Cap,
     fx: &mut Effects,
 ) {
     match decision {
@@ -648,10 +649,7 @@ fn apply_decision(
             // wait (stay armed) and re-check on the next event.
             {
                 let counters = state.counters.entry(rule_id).or_default();
-                if counters.open >= cap {
-                    return;
-                }
-                if max_total != 0 && counters.total >= max_total {
+                if !cap.allows(counters.open) || !max_total.allows(counters.total) {
                     return;
                 }
                 counters.open += 1;

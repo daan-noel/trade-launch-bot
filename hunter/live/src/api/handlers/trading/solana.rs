@@ -3,7 +3,7 @@ use std::sync::Arc;
 use actix_web::{web, HttpResponse, Responder};
 use serde::Deserialize;
 
-use trading_core::config::constants::resolve_sell_slippage_bps;
+use trading_core::config::constants::{resolve_sell_slippage_bps, validate_slippage_bps};
 use trading_core::models::wallet::validate_solana_address;
 use crate::services::clients::jupiter;
 use crate::services::wallet_tokens;
@@ -32,8 +32,10 @@ pub struct SellRequest {
     /// the client — each account's live on-chain balance is sold in full.
     #[allow(dead_code)]
     pub token_account: Option<String>,
-    /// Optional per-trade slippage tolerance in basis points (100 = 1%). When
-    /// omitted, falls back to the persisted default, then the built-in constant.
+    /// Optional per-trade slippage tolerance in basis points (100 = 1%), used
+    /// **exactly as sent**. Omitted ⇒ the persisted sell setting, which itself
+    /// defaults to no floor (min_out = 1, "sell all"). `0` is a 400 — omit the
+    /// field to ask for no floor.
     pub slippage_bps: Option<u64>,
 }
 
@@ -95,6 +97,12 @@ pub async fn manual_sell(
     if let Err(e) = validate_solana_address(&body.mint_address) {
         return HttpResponse::BadRequest()
             .json(serde_json::json!({ "error": format!("invalid mint: {e}") }));
+    }
+    // Same door policy as the settings write: the value is honored literally, so a
+    // literal `0` (revert on any movement) can only be a mistake — omit the field
+    // for no floor.
+    if let Err(e) = validate_slippage_bps("slippage_bps", body.slippage_bps) {
+        return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
     }
 
     // N2 fix: claim the engine's per-mint exit lock for the whole sweep so a

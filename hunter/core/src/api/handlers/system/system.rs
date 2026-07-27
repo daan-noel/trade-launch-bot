@@ -4,8 +4,7 @@ use actix_web::{web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use crate::config::constants::{
-    SLIPPAGE_MAX_BPS, SLIPPAGE_MIN_BPS, WATCHDOG_CHECK_INTERVAL_FLOOR_SECS,
-    WATCHDOG_STALL_TIMEOUT_FLOOR_SECS,
+    validate_slippage_bps, WATCHDOG_CHECK_INTERVAL_FLOOR_SECS, WATCHDOG_STALL_TIMEOUT_FLOOR_SECS,
 };
 use crate::state::core_state::CoreState;
 use crate::storage::repositories::settings_repo::keys;
@@ -32,6 +31,20 @@ pub async fn get_sol_price(state: web::Data<Arc<CoreState>>) -> impl Responder {
     HttpResponse::Ok().json(SolPriceResponse { usd_rate })
 }
 
+/// Deserializer for a **three-state** PATCH field: `Option<Option<T>>` where the
+/// outer layer is "did the request mention this key" and the inner one is the
+/// nullable value. A plain `Option<T>` collapses absent and `null` into the same
+/// `None`, which makes a nullable setting impossible to *clear* — the handler
+/// can't tell "don't touch it" from "set it back to blank". Slippage needs the
+/// distinction because blank is a real state (buy ⇒ default, sell ⇒ no floor).
+fn patch_field<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Option::<T>::deserialize(de).map(Some)
+}
+
 /// Partial update for the settings document — omitted fields keep their value.
 #[derive(Debug, Deserialize)]
 pub struct UpdateSettingsRequest {
@@ -39,15 +52,17 @@ pub struct UpdateSettingsRequest {
     pub track_post_migration: Option<bool>,
     pub timezone: Option<String>,
     pub price_unit: Option<String>,
-    /// Default trade slippage in basis points (100 = 1%); clamped to
-    /// `[SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS]`. Present = set the global default.
-    pub slippage_bps: Option<u64>,
-    /// Buy-side slippage in bps; clamped to `[SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS]`.
-    /// Present = set the buy default (supersedes legacy `slippage_bps` on the buy path).
-    pub buy_slippage_bps: Option<u64>,
-    /// Sell-side slippage in bps; clamped to `[SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS]`.
-    /// Present = set the sell default. `0` = no floor (always fills).
-    pub sell_slippage_bps: Option<u64>,
+    /// Buy-side slippage in bps (100 = 1%), stored **exactly as sent** — the write
+    /// path no longer transforms it. Three-state on the wire (see [`patch_field`]):
+    /// absent = untouched, `null` = clear back to blank (⇒ the per-side default),
+    /// a number = set it. `0` is a 400.
+    #[serde(default, deserialize_with = "patch_field")]
+    pub buy_slippage_bps: Option<Option<u64>>,
+    /// Sell-side slippage in bps, stored **exactly as sent**, same three states.
+    /// `0` is a 400 — `null` (the field cleared in the UI) is how you say "no
+    /// floor / sell all".
+    #[serde(default, deserialize_with = "patch_field")]
+    pub sell_slippage_bps: Option<Option<u64>>,
     /// Persist raw transaction blobs. Present = flip the ingest raw-persist toggle.
     pub persist_raw: Option<bool>,
     /// Master switch for the ingest liveness watchdog.
@@ -79,7 +94,6 @@ pub async fn update_settings(
         track_post_migration,
         timezone,
         price_unit,
-        slippage_bps,
         buy_slippage_bps,
         sell_slippage_bps,
         persist_raw,
@@ -99,12 +113,20 @@ pub async fn update_settings(
         }
     }
 
-    // Clamp before both the DB row and the in-memory view see the value.
-    let slippage_clamped = slippage_bps.map(|v| v.clamp(SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS));
-    let buy_slippage_clamped =
-        buy_slippage_bps.map(|v| v.clamp(SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS));
-    let sell_slippage_clamped =
-        sell_slippage_bps.map(|v| v.clamp(SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS));
+    // Slippage is NOT clamped — a typed value is persisted exactly as sent, so
+    // nothing sits between the number the operator typed and the number the trader
+    // uses (a floor here once turned "accept any fill" into the tightest possible
+    // floor on the bot's own exits). Only `0` is refused, because with the value
+    // honored literally it would mean "revert on any movement at all"; `null`
+    // (blank) is how you say "no floor" / "use the default".
+    for (field, v) in [
+        ("buy_slippage_bps", buy_slippage_bps),
+        ("sell_slippage_bps", sell_slippage_bps),
+    ] {
+        if let Err(error) = validate_slippage_bps(field, v.flatten()) {
+            return HttpResponse::BadRequest().json(ErrorBody { error });
+        }
+    }
 
     // Watchdog clamps: floor the stall window (a too-short window restarts the
     // process on a normal lull), then floor the check cadence and cap it at the
@@ -132,13 +154,12 @@ pub async fn update_settings(
     if let Some(v) = &price_unit {
         entries.push((keys::PRICE_UNIT.key, json!(v)));
     }
-    if let Some(v) = slippage_clamped {
-        entries.push((keys::SLIPPAGE_BPS.key, json!(v)));
-    }
-    if let Some(v) = buy_slippage_clamped {
+    // `json!(None::<u64>)` is JSON `null`, which `pick` decodes back to `None` —
+    // so a cleared field round-trips as blank instead of being skipped.
+    if let Some(v) = buy_slippage_bps {
         entries.push((keys::BUY_SLIPPAGE_BPS.key, json!(v)));
     }
-    if let Some(v) = sell_slippage_clamped {
+    if let Some(v) = sell_slippage_bps {
         entries.push((keys::SELL_SLIPPAGE_BPS.key, json!(v)));
     }
     if let Some(v) = persist_raw {
@@ -191,14 +212,11 @@ pub async fn update_settings(
         if let Some(v) = price_unit {
             s.price_unit = Some(v);
         }
-        if let Some(v) = slippage_clamped {
-            s.slippage_bps = Some(v);
+        if let Some(v) = buy_slippage_bps {
+            s.buy_slippage_bps = v;
         }
-        if let Some(v) = buy_slippage_clamped {
-            s.buy_slippage_bps = Some(v);
-        }
-        if let Some(v) = sell_slippage_clamped {
-            s.sell_slippage_bps = Some(v);
+        if let Some(v) = sell_slippage_bps {
+            s.sell_slippage_bps = v;
         }
         if let Some(v) = persist_raw {
             s.persist_raw = v;

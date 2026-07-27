@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use chrono::{Duration, TimeZone, Utc};
 use hunter_engine::arm::ArmState;
+use hunter_engine::cap::Cap;
 use hunter_engine::event::{
     Effect, Event, Fill, FillFailReason, IntentId, LoadedRule, Mint, PositionId, RuleId, TradeMode,
 };
@@ -102,10 +103,10 @@ fn fps() -> Vec<Fingerprint> {
     vec![cu_fp(1), instant]
 }
 
-fn caps() -> BTreeMap<RuleId, (u32, u32)> {
+fn caps() -> BTreeMap<RuleId, (Cap, Cap)> {
     rules()
         .iter()
-        .map(|r| (r.id, (r.concurrent_cap(), r.max_total_tokens)))
+        .map(|r| (r.id, (r.concurrent_cap(), r.total_cap())))
         .collect()
 }
 
@@ -142,8 +143,17 @@ fn check_invariants(s: &EngineState, fx: &[Effect]) {
     let caps = caps();
     for (rule, c) in &s.counters {
         if let Some((cap, max_total)) = caps.get(rule) {
-            assert!(c.open <= *cap, "open {} > cap {} for {rule:?}", c.open, cap);
-            assert!(*max_total == 0 || c.total <= *max_total, "total exceeds max_total");
+            // `allows(n - 1)` ⇔ `n <= bound`; unlimited always passes.
+            assert!(
+                c.open == 0 || cap.allows(c.open - 1),
+                "open {} > cap {:?} for {rule:?}",
+                c.open,
+                cap.bounded()
+            );
+            assert!(
+                c.total == 0 || max_total.allows(c.total - 1),
+                "total exceeds max_total"
+            );
         }
         assert!(c.open <= c.total, "open must never exceed committed total");
     }

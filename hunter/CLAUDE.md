@@ -160,10 +160,17 @@ executor + `lake/` schema keep their own decoupled vocab.
 
 ## Zero-as-unbound (locked)
 
-`0` may mean "off / unbounded" **only where 0 is not a valid value of the domain** — caps and
-limits (`max_total_tokens`, `max_concurrent_tokens`, slippage bps: `0 = no floor`). Anything
-**measured** — a SOL amount, a count, a bucket edge, a width — uses `Option`/NULL for "not
-set", because 0 is a real observation there. Never fold the two: a fingerprint axis of `0`
+`0` may mean "off / unbounded" **only where 0 is not a valid value of the domain** — the
+governance caps `max_total_tokens` (`0 ⇒ unlimited`) and `max_concurrent_tokens` (`0 ⇒ the
+default of 1`; the API rejects `< 1`). Both decode through the ONE reader
+`hunter_engine::Cap` (`zero_unlimited` / `zero_defaults_to`, `UNLIMITED = u32::MAX` so
+`allows()` stays a single `<` on the hot path) — never a re-derived `!= 0` at a call site.
+**Slippage bps is NOT such a field**: a typed value is honored literally and `0` is a 400
+(`validate_slippage_bps`), because blank — not `0` — is what carries the per-side policy
+(buy ⇒ default, sell ⇒ no floor). See
+[docs/plans/trade-execution/slippage-logic-buy-sell.md](docs/plans/trade-execution/slippage-logic-buy-sell.md).
+Anything **measured** — a SOL amount, a count, a bucket edge, a width — uses `Option`/NULL
+for "not set", because 0 is a real observation there. Never fold the two: a fingerprint axis of `0`
 lamports is the bucket `[0, width)`, and only `None` drops the axis from the fingerprint's
 identity (`bucket_axis` / `IS NOT DISTINCT FROM` / the `∅` grouping sentinel all rely on it).
 **An empty collection is the same sentinel** — `ix_labels: Some([])` means "not set", so it
@@ -179,7 +186,11 @@ turns it into *matches every token in the window*. Both of the fixed bugs had th
 it saturates every positive amount into one bucket and arms on any non-zero value) and
 `ix_labels` (`is_some()` in the model vs empty-filtered in the engine). Locked by
 `has_any_criterion_agrees_with_engine` + `fingerprint_scope_sql_buckets_every_sol_axis_at_the_engine_width`.
-Where a sentinel stays, the UI marks it with the `Input` `blankZero` prop, never a truthiness check.
+The slippage bug was the third shape — a *writer* that clamped the sentinel away before any
+reader saw it, inverting `0` from "accept any fill" into the tightest possible floor on the
+bot's own exits (locked by `a_typed_percent_reaches_the_trader_unchanged`).
+Where a sentinel stays, the UI marks it with the `Input` `blankZero` prop, never a truthiness
+check — today that is exactly one field, the rule editor's **Max total** (blank/`∞`).
 
 ## Gotchas (hot-path landmines)
 

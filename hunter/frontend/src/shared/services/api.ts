@@ -18,11 +18,11 @@ export interface AppSettings {
   persist_raw: boolean;
   timezone: string | null;
   price_unit: 'SOL' | 'USD' | null;
-  /** Legacy combined slippage field; superseded by buy_slippage_bps / sell_slippage_bps. */
-  slippage_bps: number | null;
-  /** Buy-side slippage in bps (100 = 1%); null = use legacy slippage_bps then server default (5%). 0 = no floor. */
+  /** Buy-side slippage in bps (100 = 1%), used exactly as typed; null (blank) = the
+   *  server's buy default. `0` is rejected with a 400 — blank is how you say "no limit". */
   buy_slippage_bps: number | null;
-  /** Sell-side slippage in bps; null or 0 = no floor (always fills). Default is no floor. */
+  /** Sell-side slippage in bps, used exactly as typed; null (blank) = no floor
+   *  (min_out = 1, sell all). `0` is rejected with a 400. */
   sell_slippage_bps: number | null;
   /** Master switch for the ingest liveness watchdog (process-restart on stall). */
   watchdog_enabled: boolean;

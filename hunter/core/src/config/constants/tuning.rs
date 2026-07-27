@@ -4,43 +4,62 @@ use super::protocol::LAMPORTS_PER_SOL;
 // Trade slippage
 // ---------------------------------------------------------------------------
 
-/// Default trade slippage tolerance in basis points (100 = 1%) when neither the
-/// request nor the persisted `AppSettings.slippage_bps` specifies one. 500 = 5%.
-pub const DEFAULT_SLIPPAGE_BPS: u64 = 500;
-/// Hard ceiling applied to any client-supplied slippage, to guard against a
-/// fat-finger or hostile value. 5000 bps = 50%.
-pub const SLIPPAGE_MAX_BPS: u64 = 5_000;
-/// Hard floor applied to any client-supplied slippage. A `0` (or near-zero)
-/// tolerance means the trade reverts on any price movement at all — on a
-/// volatile meme coin that is a guaranteed revert + wasted base/priority fee,
-/// so an explicit sub-floor value is raised to this minimum. 10 bps = 0.1%.
-pub const SLIPPAGE_MIN_BPS: u64 = 10;
+// Slippage is a **blank-or-a-number** knob, one key per side, and a typed number
+// is honored LITERALLY — nothing sits between the percent the operator typed and
+// the `min_out` the trader encodes. Blank is what carries the per-side policy:
+//
+//   | field            | blank                     | a typed number    |
+//   | Buy slippage %   | `DEFAULT_SLIPPAGE_BPS`    | used as typed     |
+//   | Sell slippage %  | no floor (min_out = 1)    | used as typed     |
+//
+// The asymmetry is deliberate: a buy with no opinion still gets protection, a
+// sell with no opinion dumps (exits must clear during a rapid dump). `0` is NOT a
+// spelling of "no floor" — it is rejected with a 400 at every write door (see
+// [`validate_slippage_bps`]), because under literal handling `0` would mean
+// "revert on any movement at all".
 
-/// Resolve buy slippage: per-request → `buy_slippage_bps` → legacy
-/// `slippage_bps` → built-in 5% default. Returns `None` when the resolved
-/// value is `0` (explicit "no floor, accept any fill"); otherwise clamped
-/// to `[SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS]`.
-pub fn resolve_buy_slippage_bps(
-    buy_setting: Option<u64>,
-    legacy_setting: Option<u64>,
-    request: Option<u64>,
-) -> Option<u64> {
-    match request.or(buy_setting).or(legacy_setting) {
-        None => Some(DEFAULT_SLIPPAGE_BPS),
-        Some(0) => None,
-        Some(bps) => Some(bps.clamp(SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS)),
+/// Default buy-side slippage in basis points (100 = 1%), used only when the
+/// Settings buy field is **blank**. 2500 = 25% — an untouched setting still lands
+/// an entry on a fast-moving new token ("I have to buy even at some loss").
+pub const DEFAULT_SLIPPAGE_BPS: u64 = 2_500;
+/// Hard ceiling applied to any client-supplied slippage, to guard against a
+/// fat-finger or hostile value. 5000 bps = 50%. A ceiling only ever *loosens* a
+/// floor, so it can never turn a fill into a revert — which is why it survives
+/// while the old `SLIPPAGE_MIN_BPS` floor does not: that one inverted the meaning
+/// of `0` (from "accept any fill" into the tightest possible floor).
+pub const SLIPPAGE_MAX_BPS: u64 = 5_000;
+
+/// The ONE validator for a client-supplied slippage value, shared by the settings
+/// write and the manual trade endpoints. `Some(0)` is rejected: blank is how you
+/// say "no floor", so a literal `0` can only be a mistake. Returns the 400 body's
+/// message on rejection.
+pub fn validate_slippage_bps(field: &str, value: Option<u64>) -> Result<(), String> {
+    if value == Some(0) {
+        return Err(format!(
+            "{field} must be greater than 0 — leave it blank for no limit"
+        ));
     }
+    Ok(())
 }
 
-/// Resolve sell slippage: per-request → `sell_slippage_bps`. Returns `None`
-/// when unset or `0` — no floor, always fills (min_out = 1). The no-floor
-/// default ensures bot exits clear at any price during a rapid dump rather
-/// than stalling on repeated slippage reverts.
+/// Resolve buy slippage: per-request → `buy_slippage_bps` → [`DEFAULT_SLIPPAGE_BPS`].
+/// Always `Some` — a buy with no opinion still gets protection. Only the max
+/// ceiling is applied; the typed value is otherwise passed through untouched.
+pub fn resolve_buy_slippage_bps(buy_setting: Option<u64>, request: Option<u64>) -> Option<u64> {
+    Some(
+        request
+            .or(buy_setting)
+            .unwrap_or(DEFAULT_SLIPPAGE_BPS)
+            .min(SLIPPAGE_MAX_BPS),
+    )
+}
+
+/// Resolve sell slippage: per-request → `sell_slippage_bps` → **no floor**.
+/// `None` = `min_out = 1`, always fills — the default so bot exits clear at any
+/// price during a rapid dump rather than stalling on repeated slippage reverts.
+/// Only the max ceiling is applied to a typed value.
 pub fn resolve_sell_slippage_bps(sell_setting: Option<u64>, request: Option<u64>) -> Option<u64> {
-    match request.or(sell_setting) {
-        None | Some(0) => None,
-        Some(bps) => Some(bps.clamp(SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS)),
-    }
+    request.or(sell_setting).map(|bps| bps.min(SLIPPAGE_MAX_BPS))
 }
 
 /// Per-trade SOL ceiling on the manual buy API (`POST /api/solana/wallet/buy`).
@@ -173,3 +192,71 @@ pub const TOKEN_CACHE_EVICT_IDLE_SECONDS: i64 = 2700; // 45 min
 
 /// How often the background task refreshes the DB-backed token-list snapshot.
 pub const TOKEN_LIST_DB_REFRESH_SECS: u64 = 120;
+
+#[cfg(test)]
+mod slippage_tests {
+    use super::*;
+
+    /// The guard: what the operator types is what the trader uses. Nothing (no
+    /// floor, no rounding, no sentinel decode) may sit between the two. This test
+    /// fails the moment a `clamp`/`Some(0) => None` arm is reintroduced anywhere on
+    /// the resolve path.
+    #[test]
+    fn a_typed_percent_reaches_the_trader_unchanged() {
+        for pct in [0.01_f64, 0.1, 1.0, 5.0, 12.34, 50.0] {
+            // The frontend's percent → bps conversion (`Math.round(pct * 100)`).
+            let bps = (pct * 100.0).round() as u64;
+            assert!(validate_slippage_bps("buy_slippage_bps", Some(bps)).is_ok());
+            assert_eq!(
+                resolve_buy_slippage_bps(Some(bps), None),
+                Some(bps),
+                "buy {pct}% must resolve to exactly {bps} bps"
+            );
+            assert_eq!(
+                resolve_sell_slippage_bps(Some(bps), None),
+                Some(bps),
+                "sell {pct}% must resolve to exactly {bps} bps"
+            );
+        }
+    }
+
+    /// Blank is what carries the per-side policy — buy defaults, sell dumps.
+    #[test]
+    fn blank_buy_defaults_and_blank_sell_has_no_floor() {
+        assert_eq!(
+            resolve_buy_slippage_bps(None, None),
+            Some(DEFAULT_SLIPPAGE_BPS)
+        );
+        assert_eq!(resolve_sell_slippage_bps(None, None), None);
+    }
+
+    /// A per-request value (manual sell) still wins over the persisted setting.
+    #[test]
+    fn request_overrides_the_persisted_setting() {
+        assert_eq!(resolve_buy_slippage_bps(Some(100), Some(700)), Some(700));
+        assert_eq!(resolve_sell_slippage_bps(Some(100), Some(700)), Some(700));
+        assert_eq!(resolve_sell_slippage_bps(None, Some(700)), Some(700));
+    }
+
+    /// The ceiling only ever loosens a floor, so it stays; it can't cause a revert.
+    #[test]
+    fn only_the_max_ceiling_still_applies() {
+        assert_eq!(
+            resolve_buy_slippage_bps(Some(99_999), None),
+            Some(SLIPPAGE_MAX_BPS)
+        );
+        assert_eq!(
+            resolve_sell_slippage_bps(Some(99_999), None),
+            Some(SLIPPAGE_MAX_BPS)
+        );
+    }
+
+    /// `0` is retired as a sentinel: it is a 400 at every write door, never a
+    /// silently-rewritten value.
+    #[test]
+    fn zero_is_rejected_not_rewritten() {
+        assert!(validate_slippage_bps("sell_slippage_bps", Some(0)).is_err());
+        assert!(validate_slippage_bps("sell_slippage_bps", None).is_ok());
+        assert!(validate_slippage_bps("sell_slippage_bps", Some(1)).is_ok());
+    }
+}

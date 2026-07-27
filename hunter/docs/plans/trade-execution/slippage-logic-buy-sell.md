@@ -1,5 +1,51 @@
 # Slippage Logic in the Buy/Sell Flow
 
+## The settings contract (what the operator types)
+
+Slippage is a **blank-or-a-number** knob, one persisted key per side
+(`trade.buy_slippage_bps` / `trade.sell_slippage_bps`), and **a typed number is
+honored literally** — nothing sits between the percent typed in Settings and the
+`min_out` the trader encodes. Blank is what carries the per-side policy:
+
+| Field | Blank | A typed number |
+| --- | --- | --- |
+| Buy slippage % | `DEFAULT_SLIPPAGE_BPS` (2500 = 25%) | used exactly as typed |
+| Sell slippage % | **no floor** — `min_out = 1`, sell all | used exactly as typed |
+
+The asymmetry is deliberate and matches the operating intent: *a buy must land
+even at some loss; a sell must clear the whole bag with no specific slippage.* A
+buy with no opinion still gets protection; a sell with no opinion dumps.
+
+`0` is **not** a spelling of "no limit" — it is rejected with a **400** at every
+write door (`config::constants::validate_slippage_bps`, the ONE validator, called
+by the settings write and by `POST /api/solana/wallet/sell`). Under literal
+handling `0` would mean "revert on any movement at all", which is never intended;
+blank is how you say "no floor". A no-floor *buy* is not a distinct spelling
+either — type a large percent, bounded by `SLIPPAGE_MAX_BPS`.
+
+**Only `SLIPPAGE_MAX_BPS` (5000 = 50%) still applies to a typed value.** A ceiling
+only ever *loosens* a floor, so it can never turn a fill into a revert. The old
+`SLIPPAGE_MIN_BPS = 10` floor is **deleted**: it clamped `0` — then the documented
+"no floor" sentinel — up to `10`, the tightest possible non-zero floor, silently
+inverting the value's meaning on the bot's own buy AND sell paths (an exit meant
+to clear at any price during a dump instead reverted on 0.1% movement). A stored
+`10` could be a genuine 0.1% or a clamped `0` and the two are not distinguishable,
+so `0016_slippage_reset_and_retire_legacy.sql` resets both keys rather than
+attempting a repair.
+
+The legacy combined `trade.slippage_bps` key is **retired** by the same migration:
+the buy chain is now one key, so a blank buy field falls to the default instead of
+a stale legacy number.
+
+Wire note: the settings PATCH treats these two fields as **three-state** (absent =
+untouched, `null` = clear back to blank, number = set). A plain `Option<u64>`
+collapses absent and `null`, which would make blank — a real state here —
+unreachable once a number had been saved.
+
+Frontend: `TradingSection.tsx` uses `step`/`min` of `0.01`, because the percent →
+bps conversion is `Math.round(pct * 100)` and anything under 0.005% would round to
+a `0` the API now rejects.
+
 ## The two code paths
 
 The trader has two venues, each with its own slippage handling:
@@ -66,10 +112,15 @@ Two safety behaviors worth noting:
 
 ## PumpSwap AMM
 
-Same semantics as the curve: **`None` → `min_out = 1`** (no floor). There is no
-AMM-specific default slippage — `AMM_DEFAULT_SLIPPAGE_BPS` was removed as dead
-code. Manual buys always pass `Some(500)` (5%) via the API layer; bot/manual
-sells intentionally pass `None` (fill at any price) via `resolve_sell_slippage_bps`.
+Same semantics as the curve: **`None` → `min_out = 1`** (no floor), on **both**
+sides — verified 2026-07-27 at `amm.rs:71-72` (buy) and `:442-445` (sell). There is
+no AMM-specific default slippage; `AMM_DEFAULT_SLIPPAGE_BPS` was removed as dead
+code. (An earlier revision of this doc claimed "there is no AMM default; callers
+must pass `Some(bps)` explicitly" — that was **wrong**: `None` is accepted on both
+AMM sides and means exactly what it means on the curve.)
+
+Buys always arrive as `Some(bps)` because `resolve_buy_slippage_bps` never returns
+`None`; bot/manual sells pass `None` whenever the sell field is blank.
 
 The AMM accounts for the full fee stack —
 `lp_fee_bps + protocol_fee_bps + coin_creator_fee_bps` — read from on-chain
@@ -99,14 +150,24 @@ where `cp_amount_out` (`amm.rs:761`) is the standard constant-product output:
 
 ## Summary
 
-**`slippage_bps = None` means the same thing on both venues: `min_out = 1` (no
-floor).** There is no AMM default — the constant was removed. Callers that want
-a floor must pass `Some(bps)` explicitly; the API layer ensures manual buy/sell
-calls always supply one.
+**`slippage_bps = None` means the same thing on all four paths (curve buy, curve
+sell, AMM buy, AMM sell): `min_out = 1`, no floor.** Callers that want a floor
+pass `Some(bps)`.
 
-Note the **API layer floors the value before it reaches the trader**: the
-manual buy/sell endpoints (`resolve_slippage` in `api/handlers/trading/solana.rs`)
-and the settings write both `clamp(SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS)` (10 bps
-.. 5000 bps), so an explicit `Some(0)` — which would compute a `min_out` ≈
-`expected` and revert on any movement at all — can't be supplied through the
-HTTP API. `None` (no protection) is still distinct from `Some(0)` and unaffected.
+The **API layer no longer transforms the value** on its way to the trader. It only
+*rejects* `Some(0)` with a 400 (see "The settings contract" above) and caps a
+typed value at `SLIPPAGE_MAX_BPS`. `Option<u64>` remains the executor's contract,
+unchanged — forge's `MinOut::Unprotected` (`forge/orchestrator/src/provider.rs`) is
+exactly "pass `None`", so there is no cross-product blast radius from this work.
+
+### Accepted gap — the unprotected snipe fill
+
+A curve buy carrying a real floor still fills at `min_out = 1` when there is **no
+reserve snapshot in hand**: `buy.rs` logs `curve buy slippage: reserve read failed
+(…); using min_out=1` and proceeds. A snipe that arrives before a snapshot is
+therefore unprotected no matter what the settings layer says.
+
+This is **wanted**, not a hole — under "buys must land", blocking the entry to
+protect it defeats the point, and the alternative (an inline reserve read on the
+latency-critical snipe path) is a hot-path RPC. Documented here so it is not
+"fixed" later by accident.

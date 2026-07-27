@@ -37,7 +37,9 @@ pub mod keys {
         Setting::new("ingest.track_post_migration", || false);
     pub const TIMEZONE: Setting<Option<String>> = Setting::new("ui.timezone", || None);
     pub const PRICE_UNIT: Setting<Option<String>> = Setting::new("ui.price_unit", || None);
-    pub const SLIPPAGE_BPS: Setting<Option<u64>> = Setting::new("trade.slippage_bps", || None);
+    // Slippage is ONE key per side — the legacy combined `trade.slippage_bps` was
+    // retired by `0016_slippage_reset_and_retire_legacy.sql` so a blank buy field
+    // can't fall through to a stale legacy number instead of the default.
     pub const BUY_SLIPPAGE_BPS: Setting<Option<u64>> = Setting::new("trade.buy_slippage_bps", || None);
     pub const SELL_SLIPPAGE_BPS: Setting<Option<u64>> = Setting::new("trade.sell_slippage_bps", || None);
     pub const LIVE: Setting<bool> = Setting::new("ingest.live", || false);
@@ -89,17 +91,13 @@ pub struct AppSettings {
     pub timezone: Option<String>,
     /// Header price-unit preference ("SOL" | "USD"). `None` = never set.
     pub price_unit: Option<String>,
-    /// Legacy single slippage field — superseded by `buy_slippage_bps` /
-    /// `sell_slippage_bps`. Kept as a fallback: if the new buy field is unset,
-    /// `resolve_buy_slippage_bps` falls back to this value so existing
-    /// deployments that already set `slippage_bps` keep their behaviour.
-    pub slippage_bps: Option<u64>,
-    /// Buy-side slippage tolerance in bps (100 = 1%). `None` = use
-    /// `slippage_bps` fallback, then server default (5%). `Some(0)` = no floor.
+    /// Buy-side slippage tolerance in bps (100 = 1%), used **exactly as typed**.
+    /// `None` (blank) = `DEFAULT_SLIPPAGE_BPS`. `Some(0)` is rejected with a 400
+    /// on write, so it never reaches storage.
     pub buy_slippage_bps: Option<u64>,
-    /// Sell-side slippage tolerance in bps. `None` or `Some(0)` = no floor
-    /// (min_out = 1, always fills). Default is no floor so bot exits never
-    /// stall on a rapidly dumping token.
+    /// Sell-side slippage tolerance in bps, used **exactly as typed**. `None`
+    /// (blank) = no floor (min_out = 1, sell all) so bot exits never stall on a
+    /// rapidly dumping token. `Some(0)` is rejected with a 400 on write.
     pub sell_slippage_bps: Option<u64>,
     /// Live-mode toggle for the LaserStream ingest (live = connect, dead = paused).
     /// Persisted so a restart restores the operator's last on/off choice instead
@@ -146,7 +144,6 @@ impl AppSettings {
             track_post_migration: pick(map, &keys::TRACK_POST_MIGRATION),
             timezone: pick(map, &keys::TIMEZONE),
             price_unit: pick(map, &keys::PRICE_UNIT),
-            slippage_bps: pick(map, &keys::SLIPPAGE_BPS),
             buy_slippage_bps: pick(map, &keys::BUY_SLIPPAGE_BPS),
             sell_slippage_bps: pick(map, &keys::SELL_SLIPPAGE_BPS),
             live: pick(map, &keys::LIVE),
@@ -240,7 +237,6 @@ mod tests {
         assert!(!settings.persist_raw);
         assert_eq!(settings.timezone, None);
         assert_eq!(settings.price_unit, None);
-        assert_eq!(settings.slippage_bps, None);
         assert_eq!(settings.buy_slippage_bps, None);
         assert_eq!(settings.sell_slippage_bps, None);
         // Watchdog on by default, with the standard window/cadence.
@@ -256,7 +252,7 @@ mod tests {
         map.insert("ingest.live".to_string(), json!(true));
         map.insert("ingest.persist_raw".to_string(), json!(false));
         map.insert("ui.price_unit".to_string(), json!("USD"));
-        map.insert("trade.slippage_bps".to_string(), json!(250));
+        map.insert("trade.buy_slippage_bps".to_string(), json!(250));
 
         let settings = AppSettings::from_map(&map);
         assert!(!settings.track_mayhem); // overridden
@@ -264,7 +260,7 @@ mod tests {
         assert!(!settings.persist_raw); // overridden
         assert!(!settings.track_post_migration); // still default
         assert_eq!(settings.price_unit.as_deref(), Some("USD"));
-        assert_eq!(settings.slippage_bps, Some(250));
+        assert_eq!(settings.buy_slippage_bps, Some(250));
         assert_eq!(settings.timezone, None); // still default
     }
 

@@ -559,7 +559,7 @@ export const RULE_FIELD_HELP = {
     body: [
       'Lifetime number of entries allowed for the whole run of this rule.',
       '',
-      '0 = unlimited. After N successful entries, the rule stops taking new tokens.',
+      'Blank (∞) = unlimited. After N successful entries, the rule stops taking new tokens.',
     ].join('\n'),
   },
   fingerprint: {

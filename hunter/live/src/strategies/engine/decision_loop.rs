@@ -734,8 +734,7 @@ async fn boot_seed_episodes(strategy_repo: &StrategyRepo, state: &mut EngineStat
 }
 
 fn buy_slippage(settings: &watch::Receiver<AppSettings>) -> Option<u64> {
-    let s = settings.borrow();
-    resolve_buy_slippage_bps(s.buy_slippage_bps, s.slippage_bps, None)
+    resolve_buy_slippage_bps(settings.borrow().buy_slippage_bps, None)
 }
 
 fn sell_slippage(settings: &watch::Receiver<AppSettings>) -> Option<u64> {

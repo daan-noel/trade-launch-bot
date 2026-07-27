@@ -10,6 +10,7 @@
 
 use smallvec::SmallVec;
 
+use crate::cap::Cap;
 use crate::event::{
     DisarmReason, ExitReason, IntentId, LoadedRule, PositionId, RuleId, TradeMode,
 };
@@ -152,9 +153,10 @@ pub struct CompiledRule {
     pub fingerprint_id: FingerprintId,
     pub trade_mode: TradeMode,
     pub buy_amount_lamports: u64,
-    pub concurrent_cap: u32,
-    /// `0` ⇒ unlimited.
-    pub max_total: u32,
+    /// Both caps arrive **already decoded** out of their `0 = …` storage encoding
+    /// ([`Cap`]) — the fold never re-derives the sentinel, it just asks `allows`.
+    pub concurrent_cap: Cap,
+    pub max_total: Cap,
     /// Authoring sugar, kept for the sweep / FE / stored rules. The **fold** does
     /// not read these — `compile` desugars them into position `pnl` reqs prepended
     /// to [`exit_reqs`](Self::exit_reqs); this field is the sweep's parallel-impl
@@ -278,7 +280,7 @@ impl CompiledRule {
             trade_mode: rule.trade_mode,
             buy_amount_lamports: rule.buy_amount_lamports,
             concurrent_cap: rule.concurrent_cap(),
-            max_total: rule.max_total_tokens,
+            max_total: rule.total_cap(),
             take_profit: rule.params.take_profit,
             stop_loss: rule.params.stop_loss,
             entry_reqs,

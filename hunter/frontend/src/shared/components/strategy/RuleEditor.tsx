@@ -266,11 +266,17 @@ function RuleEditorInner({
           />
         </label>
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          <LabelTip tip={RULE_FIELD_HELP.maxTotal}>Max total (0=∞)</LabelTip>
+          <LabelTip tip={RULE_FIELD_HELP.maxTotal}>Max total</LabelTip>
+          {/* The one genuine `0 = off` sentinel left in the rule form: `blankZero`
+              renders the stored 0 as an empty field so "no lifetime cap" reads as
+              blank/∞ instead of "capped at zero". Display-only — an untouched 0
+              still saves as 0, which the engine decodes to `Cap::UNLIMITED`. */}
           <Input
             fieldSize="sm"
             numeric
             integer
+            blankZero
+            placeholder="∞"
             numericValue={maxTotal}
             onNumericChange={setMaxTotal}
             className="w-20"
