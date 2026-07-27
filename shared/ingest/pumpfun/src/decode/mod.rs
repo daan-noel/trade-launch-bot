@@ -29,13 +29,29 @@ pub use program_registry::program_friendly_name;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
-/// Which program family a tx's logs matched (compute-once in the transport task).
+/// Which program family a tx matched (computed once, in the transport task).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TxRelevance {
+    /// Bonding-curve tx that **creates** a token (`create` / `create_v2`).
+    ///
+    /// Decodes exactly like [`TxRelevance::Curve`] — the tag exists so downstream
+    /// routing can put a create ahead of unrelated swap volume. A create that is
+    /// missed here (and so arrives tagged `Curve`) costs a routing hint, never a
+    /// decoded event: both arms run the same decode.
+    Create,
     /// Bonding-curve (pump.fun program) tx.
     Curve,
     /// Post-migration PumpSwap (AMM) swap, resolved via the shared pool index.
     Amm,
+}
+
+impl TxRelevance {
+    /// `true` for the bonding-curve family (`Create` and `Curve`) — the two tags
+    /// that share one decode path. Keeps every `Create`-vs-`Curve` split in ONE
+    /// place instead of re-matching at each call site.
+    pub fn is_curve(self) -> bool {
+        matches!(self, TxRelevance::Create | TxRelevance::Curve)
+    }
 }
 
 // ── Decoder ───────────────────────────────────────────────────────────────────
@@ -78,8 +94,12 @@ impl Decoder {
         self
     }
 
-    /// Classify a tx by log messages (same logic as the transport pre-filter).
-    /// Returns `None` when the tx is not relevant to any tracked program.
+    /// Classify a tx by log messages. **Backfill only** — the live transport
+    /// pre-filter is [`Decoder::classify_accounts`], which reads the message
+    /// instead of substring-scanning every log line. Kept for the backfill path
+    /// (and as the parity reference the guard test measures the new classify
+    /// against). Returns `None` when the tx is not relevant to any tracked
+    /// program.
     pub(crate) fn classify_logs(&self, logs: &[String]) -> Option<TxRelevance> {
         let pump_id = &self.protocol.programs.pump_fun.base58;
         let swap_id = &self.protocol.programs.pump_swap.base58;

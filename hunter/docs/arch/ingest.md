@@ -26,6 +26,32 @@ Host adapter (live/src/ingest/):
 
 Channels: `update_tx` cap 4096 · `event_rx` cap 8192 · `db_tx` cap 16384 · `strategy_tx` cap 512 · `sse_tx` broadcast.
 
+**Classify (`Decoder::classify_accounts`) reads the message, not the logs.** The
+pre-filter runs on the single transport task that gates every create's arrival, so
+it must be cheap: it does 32-byte program-key compares over
+`account_keys ++ loaded_writable ++ loaded_readonly`, not a substring scan of every
+log line for a 44-char base58 program id. The scan it replaced re-derived what the
+subscription had already proven — `account_include` is the pump program + tracked
+pool PDAs. Same pass decides `Create` (see `TxRelevance` below). Zero alloc:
+`key_at` walks the three key slices by index instead of collecting like `LazyKeys`
+(guarded equal by `key_at_matches_lazykeys_ordering`). Two properties: **Curve wins
+over Amm** (a pool PDA can deliver an AMM tx, so the distinction is still made), and
+it is **strictly more complete** than the log scan — dropped/truncated logs hide the
+program id from `classify_logs` but not from the keys, so such a tx now reaches
+decode (which returns `Ignored` if there's nothing in it). `classify_logs` survives
+as the backfill classifier and as the parity reference in
+`account_key_classify_agrees_with_the_log_scan`.
+
+**`TxRelevance = Create | Curve | Amm`.** `Create` is `Curve` **plus a routing
+hint** — both arms run `decode_curve_pb`, single-sourced through
+`TxRelevance::is_curve()`, so the tag can never change what gets decoded and a
+missed create costs only the hint. Detection is the `create`/`create_v2`
+discriminator on a pump-program instruction, top-level **or** inner CPI (a bundled
+launch invokes `create` as a CPI, and those are exactly the creates worth routing
+first), via the same `is_create_disc` predicate the decode path uses. The tag is the
+prerequisite for a create fast lane (priority channel end-to-end); that lane is not
+built yet.
+
 **Backpressure:** money-critical writes (`Trade`/`Migration`/`Token`/`Wallet`) use
 non-blocking `try_send` on the hot `db_tx` (cap 16384) so a PG stall never
 awaits on the ingest consumer (create/trade pings stay unblocked). On Full the

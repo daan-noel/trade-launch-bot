@@ -39,6 +39,34 @@ struct LazyKeys<'a> {
     encoded: Vec<OnceCell<String>>,
 }
 
+/// Resolve account index `i` against the tx's key space **without allocating** —
+/// the same `account_keys ++ loaded_writable ++ loaded_readonly` ordering
+/// [`LazyKeys`] materialises, which is the order `program_id_index` indexes into.
+///
+/// Duplicated (not shared) on purpose: [`LazyKeys`] must collect, because it
+/// carries a parallel `OnceCell` per key for the base58 memoisation, and the
+/// pre-filter runs on **every** delivered tx on the single transport task, where
+/// a per-tx `Vec` of 40+ fat pointers is exactly the per-event alloc the hot-path
+/// rule forbids. `key_at_matches_lazykeys_ordering` guards the two against drift.
+fn key_at<'a>(
+    message: &'a scb::Message,
+    meta: &'a scb::TransactionStatusMeta,
+    i: usize,
+) -> Option<&'a [u8]> {
+    let n = message.account_keys.len();
+    if i < n {
+        return Some(message.account_keys[i].as_slice());
+    }
+    let i = i - n;
+    let n = meta.loaded_writable_addresses.len();
+    if i < n {
+        return Some(meta.loaded_writable_addresses[i].as_slice());
+    }
+    meta.loaded_readonly_addresses
+        .get(i - n)
+        .map(|k| k.as_slice())
+}
+
 impl<'a> LazyKeys<'a> {
     fn new(message: &'a scb::Message, meta: &'a scb::TransactionStatusMeta) -> Self {
         let raw: Vec<&[u8]> = message
@@ -101,10 +129,88 @@ impl Decoder {
         let message = match tx.message.as_ref() { Some(m) => m, None => return DecodeOutput::Ignored };
         let meta = match info.meta.as_ref() { Some(m) => m, None => return DecodeOutput::Ignored };
 
-        match relevance {
-            TxRelevance::Curve => self.decode_curve_pb(info, message, meta, update.slot, received_at),
-            TxRelevance::Amm => self.decode_amm_live_pb(info, message, meta, update.slot, received_at),
+        // `Create` is `Curve` plus a routing hint — one decode path, so the tag
+        // can never change what gets decoded.
+        if relevance.is_curve() {
+            self.decode_curve_pb(info, message, meta, update.slot, received_at)
+        } else {
+            self.decode_amm_live_pb(info, message, meta, update.slot, received_at)
         }
+    }
+
+    /// **Hot-path pre-filter.** Classify a delivered tx off its *message* —
+    /// 32-byte program-key compares — and decide in the same pass whether it is a
+    /// token `create`.
+    ///
+    /// Replaces a substring scan of every log line of every transaction for a
+    /// 44-char base58 program id ([`Decoder::classify_logs`]). That scan
+    /// re-derived what the subscription had already proven: `account_include` is
+    /// set to the pump program + tracked pool PDAs, so a delivered tx names one
+    /// of them by construction. The scan ran on the single transport task that
+    /// gates every create's arrival, ahead of everything else.
+    ///
+    /// Two behaviours to know:
+    /// - **Curve wins over Amm**, same precedence as the log scan: a tx that
+    ///   names both programs is `Curve`/`Create` (a pool PDA can deliver an AMM
+    ///   tx, so the distinction still has to be made).
+    /// - It is **strictly more complete** than the log scan: a validator that
+    ///   truncates or drops a tx's logs hides the program id from
+    ///   `classify_logs` but not from the account keys. Such a tx is now
+    ///   forwarded to decode, where it resolves to `Ignored` if there is nothing
+    ///   in it — no extra events, no extra `raw_txs` rows.
+    pub(crate) fn classify_accounts(
+        &self,
+        info: &SubscribeUpdateTransactionInfo,
+    ) -> Option<TxRelevance> {
+        let message = info.transaction.as_ref()?.message.as_ref()?;
+        let meta = info.meta.as_ref()?;
+
+        let pump = self.protocol.programs.pump_fun.bytes.as_slice();
+        let swap = self.protocol.programs.pump_swap.bytes.as_slice();
+
+        let mut has_swap = false;
+        for key in message
+            .account_keys
+            .iter()
+            .chain(meta.loaded_writable_addresses.iter())
+            .chain(meta.loaded_readonly_addresses.iter())
+        {
+            let key = key.as_slice();
+            if key == pump {
+                return Some(if self.has_create_ix(message, meta) {
+                    TxRelevance::Create
+                } else {
+                    TxRelevance::Curve
+                });
+            }
+            has_swap |= key == swap;
+        }
+        has_swap.then_some(TxRelevance::Amm)
+    }
+
+    /// Does this tx carry a pump.fun `create` / `create_v2` instruction?
+    ///
+    /// Scans top-level instructions *and* inner CPIs — a bundled/router launch
+    /// invokes `create` as an inner instruction, and those are precisely the
+    /// creates worth routing first. The 8-byte discriminator is tested before the
+    /// program-key lookup so the overwhelmingly common case (a buy or sell) exits
+    /// on a cheap byte compare. The discriminator rule itself is
+    /// [`is_create_disc`] — the same predicate the decode path uses, not a copy.
+    fn has_create_ix(&self, message: &scb::Message, meta: &scb::TransactionStatusMeta) -> bool {
+        let is_create = |data: &[u8]| is_create_disc(data, &self.protocol);
+        let pump = self.protocol.programs.pump_fun.bytes.as_slice();
+        let is_pump = |idx: u32| key_at(message, meta, idx as usize) == Some(pump);
+
+        message
+            .instructions
+            .iter()
+            .any(|ix| is_create(&ix.data) && is_pump(ix.program_id_index))
+            || meta.inner_instructions.iter().any(|group| {
+                group
+                    .instructions
+                    .iter()
+                    .any(|ix| is_create(&ix.data) && is_pump(ix.program_id_index))
+            })
     }
 
     /// AMM-only decode for explicit-pool backfill (token_sync AMM loop).
@@ -605,9 +711,17 @@ fn resolve_pump_accounts_pb(ix: &PbIx, keys: &LazyKeys) -> Vec<String> {
         .collect()
 }
 
-fn is_create_pb(ix: &PbIx, p: &Protocol) -> bool {
+/// Is this instruction data a pump.fun `create` / `create_v2`? The ONE reader of
+/// the create discriminators on the protobuf path — shared by the decode-side
+/// [`is_create_pb`] and by the transport pre-filter's `Decoder::has_create_ix`,
+/// so the "what counts as a create" rule cannot drift between classify and decode.
+fn is_create_disc(data: &[u8], p: &Protocol) -> bool {
     let d = &p.discriminators;
-    ix.data.len() >= 8 && (&ix.data[..8] == d.create_ix || &ix.data[..8] == d.create_v2_ix)
+    data.starts_with(&d.create_ix) || data.starts_with(&d.create_v2_ix)
+}
+
+fn is_create_pb(ix: &PbIx, p: &Protocol) -> bool {
+    is_create_disc(ix.data, p)
 }
 
 fn is_migrate_pb(ix: &PbIx, p: &Protocol) -> bool {
@@ -632,7 +746,310 @@ fn should_consult_inner_events(log_event_count: usize, logs_truncated: bool) -> 
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use super::should_consult_inner_events;
+    use crate::protocol::Protocol;
+    use std::sync::Arc;
+
+    // ── classify fixtures ─────────────────────────────────────────────────────
+
+    /// Decoder with a pool index attached, so `classify_logs`' Amm arm is live
+    /// and the two classifiers are compared on equal footing.
+    fn decoder() -> Decoder {
+        Decoder::new(Arc::new(Protocol::pump_fun()))
+            .with_pool_index(Arc::new(dashmap::DashMap::new()))
+    }
+
+    fn pump_key() -> Vec<u8> {
+        Protocol::pump_fun().programs.pump_fun.bytes.to_vec()
+    }
+    fn swap_key() -> Vec<u8> {
+        Protocol::pump_fun().programs.pump_swap.bytes.to_vec()
+    }
+    /// Any 32-byte key that is neither program.
+    fn other_key(seed: u8) -> Vec<u8> {
+        vec![seed; 32]
+    }
+
+    fn disc(name: &str) -> Vec<u8> {
+        let d = Protocol::pump_fun().discriminators;
+        let bytes = match name {
+            "create" => d.create_ix,
+            "create_v2" => d.create_v2_ix,
+            "buy" => d.buy,
+            "sell" => d.sell,
+            other => panic!("unknown discriminator {other}"),
+        };
+        // Discriminator + a little payload, like a real ix.
+        bytes.iter().copied().chain([0u8; 16]).collect()
+    }
+
+    #[derive(Default)]
+    struct Tx {
+        keys: Vec<Vec<u8>>,
+        loaded_writable: Vec<Vec<u8>>,
+        loaded_readonly: Vec<Vec<u8>>,
+        ixs: Vec<scb::CompiledInstruction>,
+        inner: Vec<scb::InnerInstructions>,
+        logs: Vec<String>,
+    }
+
+    impl Tx {
+        fn key(mut self, k: Vec<u8>) -> Self {
+            self.keys.push(k);
+            self
+        }
+        fn loaded_readonly(mut self, k: Vec<u8>) -> Self {
+            self.loaded_readonly.push(k);
+            self
+        }
+        fn ix(mut self, program_id_index: u32, data: Vec<u8>) -> Self {
+            self.ixs.push(scb::CompiledInstruction {
+                program_id_index,
+                accounts: vec![],
+                data,
+            });
+            self
+        }
+        fn inner_ix(mut self, program_id_index: u32, data: Vec<u8>) -> Self {
+            self.inner.push(scb::InnerInstructions {
+                index: 0,
+                instructions: vec![scb::InnerInstruction {
+                    program_id_index,
+                    accounts: vec![],
+                    data,
+                    stack_height: Some(2),
+                }],
+            });
+            self
+        }
+        /// A realistic `Program <id> invoke [1]` line — what the old classify scanned.
+        fn invoke_log(mut self, program: &[u8]) -> Self {
+            self.logs.push(format!(
+                "Program {} invoke [1]",
+                bs58::encode(program).into_string()
+            ));
+            self
+        }
+        fn build(self) -> SubscribeUpdateTransactionInfo {
+            SubscribeUpdateTransactionInfo {
+                signature: vec![7u8; 64],
+                is_vote: false,
+                transaction: Some(scb::Transaction {
+                    signatures: vec![vec![7u8; 64]],
+                    message: Some(scb::Message {
+                        account_keys: self.keys,
+                        instructions: self.ixs,
+                        ..Default::default()
+                    }),
+                }),
+                meta: Some(scb::TransactionStatusMeta {
+                    log_messages: self.logs,
+                    inner_instructions: self.inner,
+                    loaded_writable_addresses: self.loaded_writable,
+                    loaded_readonly_addresses: self.loaded_readonly,
+                    ..Default::default()
+                }),
+                index: 3,
+            }
+        }
+    }
+
+    fn logs_of(info: &SubscribeUpdateTransactionInfo) -> Vec<String> {
+        info.meta.as_ref().unwrap().log_messages.clone()
+    }
+
+    /// Collapse `Create` back to `Curve` — the axis on which the two classifiers
+    /// must agree. `Create` is a routing hint the log scan never produced.
+    fn family(r: Option<TxRelevance>) -> Option<TxRelevance> {
+        r.map(|r| {
+            if r.is_curve() {
+                TxRelevance::Curve
+            } else {
+                TxRelevance::Amm
+            }
+        })
+    }
+
+    /// **Parity guard for the log-scan → account-key classify swap.** Every
+    /// fixture is a shape the transport actually receives; on all of them the new
+    /// message-based classify must land on the same family the old log scan did,
+    /// so the swap cannot silently change what gets ingested.
+    #[test]
+    fn account_key_classify_agrees_with_the_log_scan() {
+        let d = decoder();
+        let corpus: Vec<(&str, SubscribeUpdateTransactionInfo)> = vec![
+            (
+                "curve buy",
+                Tx::default()
+                    .key(other_key(1))
+                    .key(pump_key())
+                    .ix(1, disc("buy"))
+                    .invoke_log(&pump_key())
+                    .build(),
+            ),
+            (
+                "curve sell",
+                Tx::default()
+                    .key(other_key(2))
+                    .key(pump_key())
+                    .ix(1, disc("sell"))
+                    .invoke_log(&pump_key())
+                    .build(),
+            ),
+            (
+                "top-level create",
+                Tx::default()
+                    .key(other_key(3))
+                    .key(pump_key())
+                    .ix(1, disc("create"))
+                    .invoke_log(&pump_key())
+                    .build(),
+            ),
+            (
+                "create_v2 via inner CPI (bundled launch)",
+                Tx::default()
+                    .key(other_key(4))
+                    .key(other_key(9))
+                    .key(pump_key())
+                    .ix(1, vec![0xAA; 12])
+                    .inner_ix(2, disc("create_v2"))
+                    .invoke_log(&pump_key())
+                    .build(),
+            ),
+            (
+                "amm swap",
+                Tx::default()
+                    .key(other_key(5))
+                    .key(swap_key())
+                    .ix(1, vec![0xBB; 12])
+                    .invoke_log(&swap_key())
+                    .build(),
+            ),
+            (
+                "both programs — curve wins",
+                Tx::default()
+                    .key(other_key(6))
+                    .key(swap_key())
+                    .key(pump_key())
+                    .ix(2, disc("buy"))
+                    .invoke_log(&swap_key())
+                    .invoke_log(&pump_key())
+                    .build(),
+            ),
+            (
+                "pump program only in an ALT-loaded readonly address",
+                Tx::default()
+                    .key(other_key(7))
+                    .loaded_readonly(pump_key())
+                    .ix(1, disc("buy"))
+                    .invoke_log(&pump_key())
+                    .build(),
+            ),
+            (
+                "unrelated program",
+                Tx::default()
+                    .key(other_key(8))
+                    .key(other_key(20))
+                    .ix(1, vec![0xCC; 12])
+                    .invoke_log(&other_key(20))
+                    .build(),
+            ),
+        ];
+
+        for (name, info) in &corpus {
+            let old = d.classify_logs(&logs_of(info));
+            let new = d.classify_accounts(info);
+            assert_eq!(
+                family(new),
+                old,
+                "{name}: account-key classify {new:?} disagrees with log scan {old:?}"
+            );
+        }
+    }
+
+    /// The create tag is the whole point of the rewrite: it must fire on the
+    /// create shapes and on nothing else. (A missed create only costs a routing
+    /// hint — but a create tag on a plain swap would mis-prioritise the lane.)
+    #[test]
+    fn create_is_tagged_only_on_actual_creates() {
+        let d = decoder();
+        let top_level = Tx::default()
+            .key(other_key(1))
+            .key(pump_key())
+            .ix(1, disc("create"))
+            .build();
+        let inner = Tx::default()
+            .key(other_key(1))
+            .key(pump_key())
+            .ix(1, vec![0xAA; 12])
+            .inner_ix(1, disc("create_v2"))
+            .build();
+        let buy = Tx::default()
+            .key(other_key(1))
+            .key(pump_key())
+            .ix(1, disc("buy"))
+            .build();
+        // A create discriminator on a NON-pump program is not our create.
+        let impostor = Tx::default()
+            .key(other_key(1))
+            .key(pump_key())
+            .key(other_key(30))
+            .ix(2, disc("create"))
+            .ix(1, disc("buy"))
+            .build();
+
+        assert_eq!(d.classify_accounts(&top_level), Some(TxRelevance::Create));
+        assert_eq!(d.classify_accounts(&inner), Some(TxRelevance::Create));
+        assert_eq!(d.classify_accounts(&buy), Some(TxRelevance::Curve));
+        assert_eq!(d.classify_accounts(&impostor), Some(TxRelevance::Curve));
+        // Both tags decode down the same path — the tag can never change output.
+        assert!(TxRelevance::Create.is_curve() && TxRelevance::Curve.is_curve());
+        assert!(!TxRelevance::Amm.is_curve());
+    }
+
+    /// Deliberate, documented divergence: a validator that truncates or drops a
+    /// tx's logs hides the program id from the log scan but not from the account
+    /// keys. The new classify keeps such a tx (decode then decides); the old one
+    /// dropped it before decode ever saw it.
+    #[test]
+    fn account_key_classify_survives_dropped_logs() {
+        let d = decoder();
+        let no_logs = Tx::default()
+            .key(other_key(1))
+            .key(pump_key())
+            .ix(1, disc("buy"))
+            .build();
+        assert_eq!(d.classify_logs(&logs_of(&no_logs)), None);
+        assert_eq!(d.classify_accounts(&no_logs), Some(TxRelevance::Curve));
+    }
+
+    /// `key_at` is a zero-alloc re-implementation of `LazyKeys`' index space.
+    /// Both must resolve every index — including the ALT-loaded tail — to the
+    /// same bytes, or `program_id_index` would mean different things in the
+    /// pre-filter and in the decoder.
+    #[test]
+    fn key_at_matches_lazykeys_ordering() {
+        let info = Tx::default()
+            .key(other_key(1))
+            .key(pump_key())
+            .loaded_readonly(swap_key())
+            .loaded_readonly(other_key(2))
+            .build();
+        let message = info
+            .transaction
+            .as_ref()
+            .unwrap()
+            .message
+            .as_ref()
+            .unwrap();
+        let meta = info.meta.as_ref().unwrap();
+        let lazy = LazyKeys::new(message, meta);
+        assert_eq!(lazy.raw.len(), 4);
+        for i in 0..lazy.raw.len() + 2 {
+            assert_eq!(key_at(message, meta, i), lazy.raw(i), "index {i}");
+        }
+    }
 
     /// Regression guard for the log-truncation dropped-legs fix: inner-CPI
     /// recovery must fire on PARTIAL truncation, not only on empty logs.

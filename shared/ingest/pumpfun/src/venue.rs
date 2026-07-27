@@ -66,17 +66,11 @@ impl IngestVenue for PumpFunVenue {
         accounts
     }
 
+    /// Thin adapter over [`Decoder::classify_accounts`] — the classify logic
+    /// lives next to the decode it feeds (and next to the protocol bytes it
+    /// compares), so `Curve`/`Create`/`Amm` is decided in exactly one place.
     fn classify(&self, update: &SubscribeUpdateTransaction) -> Option<TxRelevance> {
-        let meta = update.transaction.as_ref()?.meta.as_ref()?;
-        let pump_fun_id = self.protocol.programs.pump_fun.base58.as_str();
-        let pump_swap_id = self.protocol.programs.pump_swap.base58.as_str();
-        if meta.log_messages.iter().any(|l| l.contains(pump_fun_id)) {
-            Some(TxRelevance::Curve)
-        } else if meta.log_messages.iter().any(|l| l.contains(pump_swap_id)) {
-            Some(TxRelevance::Amm)
-        } else {
-            None
-        }
+        self.decoder.classify_accounts(update.transaction.as_ref()?)
     }
 
     fn decode(
