@@ -1,26 +1,35 @@
 import { CHART_COLORS } from './constants';
 import { formatAgePrecise } from 'utils/format';
 import { BarFlowFields } from './BarFlowFields';
+import { tooltipHorizontalStyle } from './tooltipPlacement';
 import type { ChartBarTooltipState } from './types';
+
+/** Box width cap — also what the edge flip is measured against, so it's set as a
+ *  style (one source) rather than a `max-w-[…]` class that could drift from it. */
+const MAX_W = 240;
 
 export function BarCrosshairTooltip({
   tooltip,
   formatVol,
   formatFlow,
   formatTime,
+  containerWidth,
 }: {
   tooltip: ChartBarTooltipState;
   formatVol: (value: number) => string;
   formatFlow: (value: number) => string;
   formatTime: (barTime: ChartBarTooltipState['barTime']) => string;
+  /** Width of the positioned chart panel; omit when unknown (no edge flip). */
+  containerWidth?: number;
 }) {
   const { point, barTime, ageSec } = tooltip;
 
   return (
     <div
-      className="pointer-events-none absolute z-20 max-w-[240px] rounded-md border px-2.5 py-2 font-mono text-[10px] leading-snug shadow-lg"
+      className="pointer-events-none absolute z-20 rounded-md border px-2.5 py-2 font-mono text-[10px] leading-snug shadow-lg"
       style={{
-        left: point.x + 14,
+        ...tooltipHorizontalStyle(point.x, MAX_W, containerWidth),
+        maxWidth: MAX_W,
         top: point.y - 10,
         borderColor: `${CHART_COLORS.crosshair}`,
         backgroundColor: '#0d0d0df0',

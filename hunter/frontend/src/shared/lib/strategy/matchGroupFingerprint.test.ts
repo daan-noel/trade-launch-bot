@@ -174,36 +174,62 @@ describe('findFingerprintForGroupKey', () => {
     expect(hit?.id).toBe('b');
   });
 
-  it('prefers a refined fingerprint (extra ix_labels) over a sparse duplicate', () => {
-    const sparse = fp({
-      id: 'sparse',
-      first_slot_buy_lamports: 19_500_000_000,
-      first_slot_sell_lamports: 0,
-      max_cost_lamports: 0,
-      bucket_size_amount: 0.5,
-    });
-    const refined = fp({
-      id: 'refined',
-      first_slot_buy_lamports: 19_500_000_000,
-      first_slot_sell_lamports: 0,
-      max_cost_lamports: 0,
-      bucket_size_amount: 0.5,
-      ix_labels: ['Pump.Fun: Create_v2', 'Associated Token: CreateIdempotent', 'Pump.Fun: Buy'],
-    });
-    const gk = {
-      cu_limit: '∅',
-      cu_price: '∅',
-      first_slot_buy_sol: '19.5–20.0',
-      first_slot_sell_sol: '0.0–0.5',
-      max_cost_lamports: '0.0–0.5',
-      spendable_lamports_in: '∅',
-    };
-    const hit = findFingerprintForGroupKey(gk, [sparse, refined], 0.5);
-    expect(hit?.id).toBe('refined');
+  const gkNoLabels = {
+    cu_limit: '∅',
+    cu_price: '∅',
+    first_slot_buy_sol: '19.5–20.0',
+    first_slot_sell_sol: '0.0–0.5',
+    max_cost_lamports: '0.0–0.5',
+    spendable_lamports_in: '∅',
+  };
+  const sparse = fp({
+    id: 'sparse',
+    first_slot_buy_lamports: 19_500_000_000,
+    first_slot_sell_lamports: 0,
+    max_cost_lamports: 0,
+    bucket_size_amount: 0.5,
+  });
+  const refinedA = fp({
+    id: 'refined-a',
+    first_slot_buy_lamports: 19_500_000_000,
+    first_slot_sell_lamports: 0,
+    max_cost_lamports: 0,
+    bucket_size_amount: 0.5,
+    ix_labels: ['Pump.Fun: Create_v2', 'Associated Token: CreateIdempotent', 'Pump.Fun: Buy'],
+  });
+  const refinedB = fp({
+    id: 'refined-b',
+    first_slot_buy_lamports: 19_500_000_000,
+    first_slot_sell_lamports: 0,
+    max_cost_lamports: 0,
+    bucket_size_amount: 0.5,
+    ix_labels: ['Pump.Fun: Create', 'Pump.Fun: Buy'],
   });
 
-  it('prefers the more-specific fingerprint when a sparse group key fits several', () => {
+  it('exact identity beats a refined sibling (extra ix_labels)', () => {
+    // The card IS `sparse`'s identity — badging the labeled sibling instead
+    // would conflate two saved fingerprints that differ only in ix_labels.
+    const hit = findFingerprintForGroupKey(gkNoLabels, [refinedA, sparse], 0.5);
+    expect(hit?.id).toBe('sparse');
+  });
+
+  it('exact identity beats a refined sibling in the sparse-key case too', () => {
+    // `b` is the exact identity of the card; `a` only refines it.
     const hit = findFingerprintForGroupKey({ cu_limit: '200000' }, library, 0.1);
-    expect(hit?.id).toBe('a');
+    expect(hit?.id).toBe('b');
+  });
+
+  it('badges a unique refinement when the exact identity is not saved', () => {
+    // The one deliberate superset case: the fingerprint this card was created
+    // from was later refined with manual ix_labels — keep its badge.
+    const hit = findFingerprintForGroupKey(gkNoLabels, [refinedA], 0.5);
+    expect(hit?.id).toBe('refined-a');
+  });
+
+  it('returns null when several refinements are compatible (ambiguous)', () => {
+    // Two fingerprints differ only in ix_labels the card did not group by —
+    // picking either would treat different fingerprints as the same one.
+    const hit = findFingerprintForGroupKey(gkNoLabels, [refinedA, refinedB], 0.5);
+    expect(hit).toBeNull();
   });
 });

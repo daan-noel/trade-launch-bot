@@ -1,5 +1,10 @@
 import { CHART_COLORS } from './constants';
+import { tooltipHorizontalStyle } from './tooltipPlacement';
 import type { ChartWalletMarkersTooltipState } from './types';
+
+/** Box width cap — also what the edge flip is measured against (see the twin
+ *  constant in {@link ./BarCrosshairTooltip}). */
+const MAX_W = 260;
 
 function shortAddr(address: string) {
   return `${address.slice(0, 5)}…${address.slice(-4)}`;
@@ -13,16 +18,20 @@ function formatSol(sol: number) {
 
 export function WalletMarkersTooltip({
   tooltip,
+  containerWidth,
 }: {
   tooltip: ChartWalletMarkersTooltipState;
+  /** Width of the positioned chart panel; omit when unknown (no edge flip). */
+  containerWidth?: number;
 }) {
   const { point, wallets } = tooltip;
 
   return (
     <div
-      className="pointer-events-none absolute z-30 min-w-[180px] max-w-[260px] rounded-md border px-2.5 py-2 font-mono text-[10px] leading-snug shadow-xl"
+      className="pointer-events-none absolute z-30 min-w-[180px] rounded-md border px-2.5 py-2 font-mono text-[10px] leading-snug shadow-xl"
       style={{
-        left: point.x + 14,
+        ...tooltipHorizontalStyle(point.x, MAX_W, containerWidth),
+        maxWidth: MAX_W,
         top: point.y - 10,
         borderColor: `${CHART_COLORS.crosshair}`,
         backgroundColor: '#0d0d0df5',

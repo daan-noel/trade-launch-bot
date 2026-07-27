@@ -546,6 +546,10 @@ export function TokenPriceChart({
   // chart creation (below); resize stays width-only, so this never feeds a
   // height->width->height loop (see the ResizeObserver note in the create effect).
   const [chartHeight, setChartHeight] = useState(() => fixedHeight ?? responsiveChartHeight(0));
+  /** Measured panel width — only so a crosshair tooltip can flip at the right edge
+   *  instead of spilling out of a narrow panel. Written from the same width-only
+   *  ResizeObserver below, so it changes at most once per real resize. */
+  const [chartWidth, setChartWidth] = useState(0);
 
   const initialPrefs = loadPrefs();
   const [groupMode, setGroupMode] = useState<ChartGroupMode>(initialPrefs.groupMode);
@@ -875,11 +879,13 @@ export function TokenPriceChart({
     // the fixed parent height and the inspect-modal scrollbar (content grows →
     // gutter appears → width/height thrash → visible vibration / style break).
     let lastWidth = Math.round(rect.width || el.clientWidth || 0);
+    setChartWidth(lastWidth);
     const ro = new ResizeObserver((entries) => {
       const width = Math.round(entries[0]?.contentRect.width ?? 0);
       if (width > 0 && width !== lastWidth) {
         lastWidth = width;
         chartRef.current?.applyOptions({ width });
+        setChartWidth(width);
       }
     });
     ro.observe(el);
@@ -1760,16 +1766,21 @@ export function TokenPriceChart({
             formatVol={formatVol}
             formatFlow={formatFlow}
             formatTime={formatBarTime}
+            containerWidth={chartWidth}
           />
         )}
         {walletMarkersTooltip && (
-          <WalletMarkersTooltip tooltip={walletMarkersTooltip} />
+          <WalletMarkersTooltip
+            tooltip={walletMarkersTooltip}
+            containerWidth={chartWidth}
+          />
         )}
         {rangeTooltip && (
           <RangeSelectTooltip
             tooltip={rangeTooltip}
             formatAmount={formatVol}
             formatPrice={formatChartValuePrice}
+            containerWidth={chartWidth}
           />
         )}
       </div>

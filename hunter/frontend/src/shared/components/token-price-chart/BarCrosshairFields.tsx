@@ -37,6 +37,17 @@ function FieldPair({
   );
 }
 
+/**
+ * How many rows the `inline` layout renders for a style. The toolbar pins its
+ * readout block to this height so hovering can't resize it (a resize there moves
+ * the chart canvas out from under the pointer and vibrates the tooltip on/off) —
+ * so this must be derived HERE, beside the JSX it counts, never re-guessed at the
+ * call site. Locked by `BarCrosshairFields.rows.test.tsx`.
+ */
+export function crosshairInlineRows(style: ChartStyle): number {
+  return style === 'candles' ? 3 : 2;
+}
+
 export function BarCrosshairFields({
   style,
   crosshair,

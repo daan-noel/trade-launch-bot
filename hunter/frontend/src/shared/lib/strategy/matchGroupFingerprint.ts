@@ -38,7 +38,8 @@ export function parseLoLamports(label: string): number | null {
  * stores — but {@link findFingerprintForGroupKey} treats absent keys as
  * unconstrained when falling back to compatible (superset) matching, so a
  * fingerprint later refined with extra axes (e.g. manual `ix_labels`) still
- * badges the card it was created from.
+ * badges the card it was created from — but only while that refinement is
+ * unambiguous (see {@link findFingerprintForGroupKey}).
  */
 export function fingerprintIdentityFromGroupKey(
   gk: Record<string, string>,
@@ -132,20 +133,6 @@ function ixLabelsEqual(rawA: string[] | null, rawB: string[] | null): boolean {
   return true;
 }
 
-/** How many match axes are configured on a fingerprint (for “most specific” pick). */
-function configuredAxisCount(fp: Fingerprint): number {
-  let n = 0;
-  if (fp.cu_limit != null) n += 1;
-  if (fp.cu_price != null) n += 1;
-  if (fp.init_buy_lamports != null) n += 1;
-  if (fp.max_cost_lamports != null) n += 1;
-  if (fp.spendable_lamports_in != null) n += 1;
-  if (fp.first_slot_buy_lamports != null) n += 1;
-  if (fp.first_slot_sell_lamports != null) n += 1;
-  if (configuredIxLabels(fp.ix_labels) != null) n += 1;
-  return n;
-}
-
 /** True when every `IDENTITY_WHERE` axis matches (`NULL` is a value). */
 export function fingerprintMatchesIdentity(fp: Fingerprint, id: FingerprintIdentity): boolean {
   return (
@@ -166,7 +153,9 @@ export function fingerprintMatchesIdentity(fp: Fingerprint, id: FingerprintIdent
  * fingerprint” badge: every axis **present** in `gk` must agree with `fp`
  * (`∅` ⇒ FP axis unset; a concrete value ⇒ exact equal). Axes only on the
  * fingerprint (e.g. manual `ix_labels` after a create that didn’t group by
- * labels) do not break the match — the FP is a refinement of the card.
+ * labels) do not break the match — the FP is a *candidate* refinement of the
+ * card; {@link findFingerprintForGroupKey} decides whether that candidacy is
+ * unambiguous enough to badge.
  *
  * Grouping-only keys are ignored. Bucket width must still agree.
  */
@@ -258,11 +247,18 @@ export function fingerprintCompatibleWithGroupKey(
 /**
  * Find the saved fingerprint for this group key.
  *
- * Prefers the most-specific fingerprint {@link fingerprintCompatibleWithGroupKey}
- * with the group key. Exact `IDENTITY_WHERE` identity is included in that set;
- * picking most-specific means a card that didn’t group by `ix_labels` still
- * badges a fingerprint later refined with labels (and Create stays hidden
- * instead of minting a sparse duplicate of the pre-refinement identity).
+ * 1. **Exact `IDENTITY_WHERE` identity wins** — the same comparison
+ *    `find_or_create` runs, so a card always badges the fingerprint it would
+ *    resolve to on create.
+ * 2. No exact hit ⇒ fall back to {@link fingerprintCompatibleWithGroupKey}
+ *    (superset) matching, but **only when exactly one** fingerprint is
+ *    compatible — that keeps a card badging the fingerprint it was created
+ *    from after a manual refinement (e.g. `ix_labels` added later).
+ * 3. Two or more compatible refinements ⇒ `null`: axes the card didn’t group
+ *    by (typically `ix_labels`) distinguish those fingerprints, so badging any
+ *    one of them would conflate genuinely different identities. The caller
+ *    then shows Create — safe, because the exact identity demonstrably isn’t
+ *    saved and `find_or_create` compares exact identity (no dupe risk).
  */
 export function findFingerprintForGroupKey(
   gk: Record<string, string>,
@@ -270,22 +266,13 @@ export function findFingerprintForGroupKey(
   bucketWidthSol: number,
 ): Fingerprint | null {
   const id = fingerprintIdentityFromGroupKey(gk, bucketWidthSol);
-  let best: Fingerprint | null = null;
-  let bestN = -1;
+  let compatible: Fingerprint | null = null;
+  let compatibleN = 0;
   for (const fp of fingerprints) {
     if (!fingerprintCompatibleWithGroupKey(fp, gk, bucketWidthSol)) continue;
-    const n = configuredAxisCount(fp);
-    // Prefer more axes; on a tie prefer exact identity (same as find_or_create).
-    if (
-      n > bestN ||
-      (n === bestN &&
-        best != null &&
-        fingerprintMatchesIdentity(fp, id) &&
-        !fingerprintMatchesIdentity(best, id))
-    ) {
-      best = fp;
-      bestN = n;
-    }
+    if (fingerprintMatchesIdentity(fp, id)) return fp;
+    compatible ??= fp;
+    compatibleN += 1;
   }
-  return best;
+  return compatibleN === 1 ? compatible : null;
 }

@@ -1,6 +1,11 @@
 import { CHART_COLORS } from './constants';
+import { tooltipHorizontalStyle } from './tooltipPlacement';
 import type { ChartRangeTooltipState } from './types';
 import { formatDecimalTrim } from 'utils/format';
+
+/** Box width cap — also what the edge flip is measured against (see the twin
+ *  constant in {@link ./BarCrosshairTooltip}). */
+const MAX_W = 260;
 
 /** Compact duration label (shared with the band's chip). */
 export function formatRangeDuration(ms: number): string {
@@ -15,12 +20,15 @@ export function RangeSelectTooltip({
   tooltip,
   formatAmount,
   formatPrice,
+  containerWidth,
 }: {
   tooltip: ChartRangeTooltipState;
   /** Format a SOL flow amount in the chart's display unit. */
   formatAmount: (sol: number) => string;
   /** Format a price magnitude (priceInSol) in the chart's display unit. */
   formatPrice: (priceInSol: number) => string;
+  /** Width of the positioned chart panel; omit when unknown (no edge flip). */
+  containerWidth?: number;
 }) {
   const { stats, point } = tooltip;
   const {
@@ -44,9 +52,10 @@ export function RangeSelectTooltip({
 
   return (
     <div
-      className="pointer-events-none absolute z-20 max-w-[260px] rounded-md border px-2.5 py-2 font-mono text-[10px] leading-snug shadow-lg"
+      className="pointer-events-none absolute z-20 rounded-md border px-2.5 py-2 font-mono text-[10px] leading-snug shadow-lg"
       style={{
-        left: point.x + 14,
+        ...tooltipHorizontalStyle(point.x, MAX_W, containerWidth),
+        maxWidth: MAX_W,
         top: point.y - 10,
         borderColor: `${accent}aa`,
         backgroundColor: '#0d0d0df0',

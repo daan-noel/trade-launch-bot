@@ -592,6 +592,7 @@ export function SimulatePage() {
         rows={visibleRules}
         rowKey={(r) => r.id}
         loading={isLoading}
+        pinnable
         searchable
         tableId="simulate-rules"
         emptyMessage="No rules yet — author one on the Rules page."

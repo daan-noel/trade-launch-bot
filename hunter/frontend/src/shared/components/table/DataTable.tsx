@@ -1096,6 +1096,23 @@ function TableRowInner<R>({
   pinnedLast,
   onTogglePin,
 }: TableRowProps<R>) {
+  const selected = isSelected && selectable;
+  // Selection and pinning must never read as the same thing. Selection rides the
+  // ACCENT hue (orange — identical in both app skins, and used nowhere by
+  // pinning): a solid left rail plus a full-width bottom edge. Pinning keeps its
+  // faint PRIMARY wash + the primary pin glyph, so at a glance the two are a
+  // different colour AND a different shape, not two strengths of one tint.
+  //
+  // Both accents live on the CELLS, not on the `<tr>`: with
+  // `border-collapse: collapse` a row-level `box-shadow` is never painted, so the
+  // old selected glow and the pinned-section divider were dead rules. Cell
+  // borders and inset shadows do render — that's how the column-group tints work.
+  const edgeCls = selected
+    ? 'border-b-2 border-b-accent/70'
+    : pinnedLast
+      ? 'border-b-2 border-b-primary/60'
+      : undefined;
+  const railCls = selected ? 'shadow-[inset_4px_0_0_0_var(--color-accent)]' : undefined;
   return (
     <Fragment>
       <tr
@@ -1120,9 +1137,11 @@ function TableRowInner<R>({
         className={cn(
           selectable && 'cursor-pointer',
           'transition-colors hover:bg-primary/12',
-          isSelected && selectable && 'bg-primary/18 shadow-[0_14px_32px_rgba(2,192,118,0.06)]',
           pinned && 'bg-primary/4.5',
-          pinnedLast && 'shadow-[inset_0_-2px_0_0_var(--color-primary)]',
+          // Ordered after `pinned` on purpose: `bg-*` collapses to one winner
+          // under tailwind-merge, so a pinned row that is ALSO selected has to
+          // resolve to the selection tint, not the (much fainter) pin wash.
+          selected && 'bg-accent/16 hover:bg-accent/22',
           rowClassName?.(row),
         )}
       >
@@ -1131,7 +1150,13 @@ function TableRowInner<R>({
           // the row number), so it needs no extra column — which would otherwise
           // shift the `nth-child` column-hover math and every column's group class.
           // Dim when unpinned (brightens on hover), primary when pinned.
-          <td className="border-b border-border px-2 py-1.5 text-[11px] text-text-dim">
+          <td
+            className={cn(
+              'border-b border-border px-2 py-1.5 text-[11px] text-text-dim',
+              edgeCls,
+              railCls,
+            )}
+          >
             <div className="flex items-center justify-center gap-1.5">
               <button
                 type="button"
@@ -1153,7 +1178,13 @@ function TableRowInner<R>({
             </div>
           </td>
         ) : (
-          <td className="border-b border-border px-2 py-1.5 text-center text-[11px] text-text-dim">
+          <td
+            className={cn(
+              'border-b border-border px-2 py-1.5 text-center text-[11px] text-text-dim',
+              edgeCls,
+              railCls,
+            )}
+          >
             {index + 1}
           </td>
         )}
@@ -1166,6 +1197,9 @@ function TableRowInner<R>({
               cellGroupClassName?.(col.group, row),
               valueTints?.get(`${rowKeyValue}\0${col.key}`),
               col.cellClassName?.(row),
+              // Last: `border-b-*` must outlive the group divider's `border-white/10`
+              // (a whole-border colour, which tailwind-merge would otherwise drop it for).
+              edgeCls,
             )}
           >
             {col.render(row)}
@@ -1176,6 +1210,7 @@ function TableRowInner<R>({
             className={cn(
               'border-b border-border px-2 py-1.5 text-center align-middle',
               actionsCellCls,
+              edgeCls,
             )}
             onClick={(e) => e.stopPropagation()}
           >
@@ -1186,7 +1221,12 @@ function TableRowInner<R>({
       {isSelected && rowDetail && (
         <tr className="bg-[rgba(15,23,42,0.88)]">
           <td colSpan={colCount} className="p-0">
-            <div id={`detail-${rowKeyValue}`} className="border-t border-white/6 bg-bg-panel p-3">
+            {/* The accent rail carries down the expanded detail, so the panel
+                reads as belonging to the selected row above it. */}
+            <div
+              id={`detail-${rowKeyValue}`}
+              className="border-t border-white/6 border-l-4 border-l-accent/70 bg-bg-panel p-3"
+            >
               {rowDetail(row)}
             </div>
           </td>

@@ -9,12 +9,16 @@ import {
   createChartPriceFormatter,
 } from './constants';
 import { FLOW_NON_VOL_LINE_COLOR, FLOW_VOL_LINE_COLOR } from 'lib/flow/flowChartData';
-import { BarCrosshairFields } from './BarCrosshairFields';
+import { BarCrosshairFields, crosshairInlineRows } from './BarCrosshairFields';
 import { Checkbox } from 'components/ui/Checkbox';
 import { cn } from 'lib/cn';
 import type { ChartMetric, ChartStyle, ChartToolbarProps } from './types';
 
 const CHART_METRICS: ChartMetric[] = ['price', 'mc'];
+
+/** Line box of one crosshair-readout row. Drives BOTH the row line-height and the
+ *  block's pinned height, so the reserved space can never drift from the content. */
+const CROSSHAIR_ROW_PX = 14;
 
 const CHART_METRIC_LABELS: Record<ChartMetric, string> = {
   price: 'Price',
@@ -348,6 +352,11 @@ export function ChartToolbar({
   const formatChartPrice = useMemo(() => createChartPriceFormatter(priceUnit), [priceUnit]);
   const formatVol = useMemo(() => createChartPriceFormatter('SOL'), []);
 
+  // Row count is a function of the CONFIG (style + flow availability), never of the
+  // hovered bar's values — see CROSSHAIR_ROW_PX below. The per-style part is owned by
+  // BarCrosshairFields, which renders those rows; only the flow row is ours.
+  const crosshairRows = crosshairInlineRows(style) + (flowLinesAvailable ? 1 : 0);
+
   const crosshairLine = crosshair ? (
     <>
       <BarCrosshairFields
@@ -357,7 +366,7 @@ export function ChartToolbar({
         formatVol={formatVol}
         layout="inline"
       />
-      {(crosshair.flowVol != null || crosshair.flowNonVol != null) && (
+      {flowLinesAvailable && (
         <div>
           <span style={{ color: FLOW_VOL_LINE_COLOR }}>
             <span className="font-semibold">VolMk</span>{' '}
@@ -415,18 +424,24 @@ export function ChartToolbar({
             </div>
           )}
         </div>
+        {/* Height is PINNED, never content-derived. This block sits above the chart
+            canvas, so any hover-driven height change moves the canvas out from under
+            the pointer — the crosshair then clears, the block shrinks back, and the
+            pointer is over the canvas again: a show/hide vibration loop. Two things
+            had to go: the placeholder's row count only matched the readout's by
+            coincidence, and in a narrow panel (the Console's 380px manual-trade
+            column) the readout wrapped to many more rows than it reserved. Fixed
+            rows × line-height + `whitespace-nowrap` makes both impossible; long
+            values clip instead of wrapping. */}
         <div
-          className="mt-0.5 overflow-hidden font-mono text-[11px] leading-[14px]"
+          className="mt-0.5 overflow-hidden whitespace-nowrap font-mono text-[11px]"
+          style={{
+            height: crosshairRows * CROSSHAIR_ROW_PX,
+            lineHeight: `${CROSSHAIR_ROW_PX}px`,
+          }}
           aria-live="polite"
         >
-          {crosshairLine ?? (
-            <div aria-hidden="true" className="invisible select-none">
-              <div>—</div>
-              <div>—</div>
-              {style === 'candles' && <div>—</div>}
-              <div>—</div>
-            </div>
-          )}
+          {crosshairLine}
         </div>
       </div>
 
