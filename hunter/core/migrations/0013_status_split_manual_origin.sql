@@ -12,7 +12,17 @@
 -- Also lays the P2 groundwork (same migration by design): `origin` marks manual
 -- buys as first-class positions, `manual_exit` holds their optional TP/SL config.
 
--- 1. Remap existing rows. ExitFailed with no entry fill was a failed BUY.
+-- 1. Widen the CHECK first (Postgres CHECK constraints validate immediately, not
+-- deferrable like FKs) so the remap UPDATEs below don't fail against a database
+-- that actually has ExitFailed/Arming rows — the exact case this migration exists
+-- to handle. Transiently allow both the old and new vocabulary; narrowed in step 3.
+ALTER TABLE strategy_positions DROP CONSTRAINT IF EXISTS strategy_positions_status_check;
+ALTER TABLE strategy_positions
+    ADD CONSTRAINT strategy_positions_status_check
+    CHECK (status IN ('Arming','BuySubmitted','Holding','ExitPending',
+                      'ExitUnconfirmed','ExitStuck','End','EntryFailed','ExitFailed'));
+
+-- 2. Remap existing rows. ExitFailed with no entry fill was a failed BUY.
 UPDATE strategy_positions SET status = 'EntryFailed'
     WHERE status = 'ExitFailed' AND entry_price IS NULL;
 UPDATE strategy_positions SET status = 'ExitStuck'
@@ -29,7 +39,7 @@ UPDATE strategy_positions SET status = 'Holding'
     WHERE status = 'Arming' AND entry_price IS NOT NULL;
 DELETE FROM strategy_positions WHERE status = 'Arming';
 
--- 2. New status domain (drop Arming + ExitFailed; add EntryFailed + ExitStuck).
+-- 3. New status domain (drop Arming + ExitFailed; add EntryFailed + ExitStuck).
 ALTER TABLE strategy_positions DROP CONSTRAINT IF EXISTS strategy_positions_status_check;
 ALTER TABLE strategy_positions
     ADD CONSTRAINT strategy_positions_status_check
