@@ -343,12 +343,20 @@ export function SimulatePage() {
           return next;
         });
       } catch {
-        /* batch failed — leave columns empty until a per-rule fetch succeeds */
+        /* batch failed — un-mark so a later pass can retry instead of pinning
+           the columns empty forever */
+        for (const rule of pending) hydratedIds.current.delete(rule.id);
       }
     })();
 
     return () => {
       cancelled = true;
+      // The ids were marked optimistically; this run is being abandoned, so give
+      // them back or the next pass computes an empty `pending` and no one ever
+      // fills `runs`. Bites on navigation-in (warm rules cache ⇒ the marking pass
+      // happens on mount, and StrictMode's remount is that abandonment), which is
+      // why the sim columns were blank only when arriving from another page.
+      for (const rule of pending) hydratedIds.current.delete(rule.id);
     };
   }, [rules, fetchSummaries]);
 
