@@ -158,7 +158,6 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
             .route("/solana/wallet/tokens", web::get().to(handlers::trading::get_wallet_tokens))
             .route("/solana/wallet/tokens/{mint}", web::get().to(handlers::trading::get_wallet_token))
             .route("/solana/prices", web::get().to(handlers::trading::get_prices))
-            .route("/solana/wallet/buy", web::post().to(handlers::trading::manual_buy))
             .route("/solana/wallet/sell", web::post().to(handlers::trading::manual_sell))
             .route(
                 "/solana/wallet/{wallet}/token/{mint}",

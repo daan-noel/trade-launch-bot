@@ -169,11 +169,25 @@ executor + `lake/` schema keep their own decoupled vocab.
   `pump-trader::trader::swap_retry::classify_swap_revert` is the one SSOT decision (route ×
   direction × error code) both crates use — `live`'s sell loop + curve-buy snipe retry import
   it, no local copy. See [docs/arch/trade-execution.md](docs/arch/trade-execution.md).
-- **One engine, no per-strategy clones.** The named tpsl1/tpsl2/swing1 decision stack was
-  retired in Phase 7; there is now ONE generic fold (`hunter-engine::reduce`) driven live by
-  `live/src/strategies/engine/` and in analysis by `lab`'s replay/sweep. A decision fix lands
-  in one place. Live position closes route through the engine (`EngineHandle::manual_close` /
-  `reconcile_cleared`), never a separate service.
+- **ONE decision kernel — live, paper, simulate are literally the same code; sweep is the
+  only sanctioned approximation (ROOT RULE).** Entry / exit / caps / re-entry / retries for
+  **live-real, live-paper, and single-rule simulate** are ALL decided inside
+  `hunter-engine::reduce` — real vs paper fork *only* at the fill layer (`exec_real` vs
+  `exec_paper`), simulate *only* at who feeds events (`lab`'s `replay.rs`). Never add a
+  second decision path or a per-strategy clone (the tpsl1/tpsl2/swing1 stack was retired in
+  Phase 7). A decision fix lands in exactly one place; live closes route through the engine
+  (`EngineHandle::manual_close` / `reconcile_cleared`), never a separate service. The
+  **grouped-sweep** is the ONE allowed re-implementation — a precomputed `MetricSeries` scan
+  (`lab/src/sweep/generic/strategy.rs`) that trades exactness for speed. Its hard contract:
+  **(a)** every fact it *can* share with the engine — deadness verdict, death-point, cost/PnL
+  kernel, leaf-condition `eval`, `CompiledRule::compile`, fill model, `TICK_MS` — is
+  single-sourced from `hunter-engine`/`core`, never copied; **(b)** every deliberate
+  divergence from `reduce` (bounded per-token tail, stripped concurrency caps, sketched
+  quantiles) is recorded in [docs/plans/sweep/sim-parity.md](docs/plans/sweep/sim-parity.md)
+  **and** locked by a `sweep/generic/guard.rs` parity test. **Simulate is the PnL authority;
+  a sweep result is a ranking screener, NOT a backtest — always re-run a promoted combo
+  through simulate before trusting its PnL** (the sweep's uncapped, per-token-tail numbers
+  are optimistic upper bounds).
 - **Analysis-only death-close (`ExitReason::Dead`):** sim/grouped-sweep no longer mislabel
   silent-death tokens as `Open` at a stale price — the shared deadness verdict
   (`hunter-engine::deadness` / `token_cache::is_dead_verdict` SSOT, via

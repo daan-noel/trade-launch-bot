@@ -3,7 +3,7 @@ use std::sync::Arc;
 use actix_web::{web, HttpResponse, Responder};
 use serde::Deserialize;
 
-use trading_core::config::constants::{resolve_buy_slippage_bps, resolve_sell_slippage_bps, MAX_MANUAL_BUY_SOL};
+use trading_core::config::constants::resolve_sell_slippage_bps;
 use trading_core::models::wallet::validate_solana_address;
 use crate::services::clients::jupiter;
 use crate::services::wallet_tokens;
@@ -22,18 +22,6 @@ const RECONCILE_MAX_ATTEMPTS: u32 = 6;
 const RECONCILE_RETRY_SECS: u64 = 2;
 
 #[derive(Deserialize)]
-pub struct BuyRequest {
-    pub mint_address: String,
-    pub amount_sol: f64,
-    /// Optional: when omitted (manual buy by mint), the backend resolves it
-    /// on-chain alongside the migration status.
-    pub token_program_id: Option<String>,
-    /// Optional per-trade slippage tolerance in basis points (100 = 1%). When
-    /// omitted, falls back to the persisted default, then the built-in constant.
-    pub slippage_bps: Option<u64>,
-}
-
-#[derive(Deserialize)]
 pub struct SellRequest {
     pub mint_address: String,
     /// Legacy hint of the wallet's token account for `mint` (row-triggered "Sell
@@ -44,8 +32,8 @@ pub struct SellRequest {
     /// the client — each account's live on-chain balance is sold in full.
     #[allow(dead_code)]
     pub token_account: Option<String>,
-    /// Optional per-trade slippage tolerance in basis points (100 = 1%). See
-    /// [`BuyRequest::slippage_bps`].
+    /// Optional per-trade slippage tolerance in basis points (100 = 1%). When
+    /// omitted, falls back to the persisted default, then the built-in constant.
     pub slippage_bps: Option<u64>,
 }
 
@@ -75,11 +63,6 @@ async fn resolve_buy_routing_retry(
     Err(last_err.expect("loop runs at least once"))
 }
 
-fn resolve_buy_slippage(app_state: &DeployState, request: Option<u64>) -> Option<u64> {
-    let s = app_state.settings();
-    resolve_buy_slippage_bps(s.buy_slippage_bps, s.slippage_bps, request)
-}
-
 fn resolve_sell_slippage(app_state: &DeployState, request: Option<u64>) -> Option<u64> {
     resolve_sell_slippage_bps(app_state.settings().sell_slippage_bps, request)
 }
@@ -92,180 +75,6 @@ fn resolve_sell_slippage(app_state: &DeployState, request: Option<u64>) -> Optio
 /// no-ops on the leftover dust.
 const SELL_ALL_MAX_PASSES: usize = 3;
 
-/// POST /api/solana/wallet/buy
-pub async fn manual_buy(
-    app_state: web::Data<Arc<DeployState>>,
-    body: web::Json<BuyRequest>,
-) -> impl Responder {
-    // Validate the client-supplied spend BEFORE any on-chain work — this is real
-    // SOL. Reject non-finite / non-positive (a NaN/∞ would cast to garbage
-    // lamports; <= 0 wastes the tip+fee on a 0-lamport buy) and cap at the
-    // per-trade ceiling so a fat-finger or hostile request can't drain the
-    // wallet. The pump-trader layer guards again as a backstop.
-    let amount_sol = body.amount_sol;
-    if !amount_sol.is_finite() || amount_sol <= 0.0 {
-        return HttpResponse::BadRequest()
-            .json(serde_json::json!({ "error": "amount_sol must be a finite, positive number" }));
-    }
-    if amount_sol > MAX_MANUAL_BUY_SOL {
-        return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": format!(
-                "amount_sol {amount_sol} exceeds the per-trade limit of {MAX_MANUAL_BUY_SOL} SOL"
-            )
-        }));
-    }
-    // Validate the mint format before any RPC — rejects a bad/log-injected mint
-    // up front instead of wasting a `resolve_buy_routing` round-trip on it.
-    if let Err(e) = validate_solana_address(&body.mint_address) {
-        return HttpResponse::BadRequest()
-            .json(serde_json::json!({ "error": format!("invalid mint: {e}") }));
-    }
-
-    // Resolve routing facts (creator, token program, migration status) from
-    // chain — the source of truth, so a typed-in mint the cache has never seen,
-    // a just-migrated token, or a Token-2022 mint all route correctly.
-    let routing = match resolve_buy_routing_retry(&app_state.trader, &body.mint_address).await {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!("manual_buy: resolve_buy_routing failed for {}: {e}", body.mint_address);
-            return HttpResponse::BadRequest()
-                .json(serde_json::json!({ "error": format!("Could not resolve token: {e}") }));
-        }
-    };
-
-    // Caller-supplied token program wins; otherwise use the on-chain owner.
-    let token_program_id = body
-        .token_program_id
-        .clone()
-        .unwrap_or_else(|| routing.token_program_id.clone());
-    let slippage = resolve_buy_slippage(&app_state, body.slippage_bps);
-
-    // Pre-buy consolidation: sweep any non-canonical accounts for this mint into
-    // the canonical ATA (and close them) BEFORE buying, so tokens always land in
-    // one place. Happy path (only the canonical ATA exists) is a single
-    // enumeration RPC and zero writes. Failure here is logged but non-fatal — the
-    // buy still proceeds; orphaned funds are caught by the next sweep-sell.
-    if let Err(e) = app_state
-        .trader
-        .consolidate_token_accounts(&body.mint_address, routing.token_program)
-        .await
-    {
-        tracing::warn!(
-            "manual_buy: pre-buy consolidation failed for {} (proceeding with buy): {e}",
-            body.mint_address
-        );
-    }
-
-    // Buy with bounded slippage-revert retry (B5) + confirm-timeout classification
-    // (B5b). AMM uses a recent blockhash (not a durable nonce), so a
-    // confirm-timeout there is always ambiguous — treat it as pending rather than
-    // surfacing a 500. Curve buys use a durable nonce whose signature is fixed at
-    // signing, so a `ConfirmTimeout` is similarly safe to surface as pending.
-    //
-    // Only retry HERE on a proven **buy slippage** revert — the retry decision folds
-    // onto the SSOT `pump_trader::classify_swap_revert(custom, route, Buy)`, the same
-    // classifier the snipe/sell loops use, so the slippage-code list lives in exactly
-    // one place (curve 6002/6042, AMM 6004/6040). A `Retry` verdict means no tokens
-    // were bought, so resending is safe; any other error → stop (a durable-nonce tx
-    // may have landed, re-sending risks a double-buy). The AMM path uses a
-    // recent-blockhash tx so a timeout truly is ambiguous; the curve path uses a
-    // durable nonce so the same caution applies.
-    //
-    // A stale-creator revert (2006) never reaches this loop in practice: both
-    // `buy_token` and `amm_buy` already self-heal it internally (refresh the
-    // creator/coin_creator cache + resend once with `confirm=true`) before
-    // returning — see `pump_trader`'s `buy.rs`/`amm.rs`. This loop is the
-    // caller-level backstop for the slippage codes that heal can't fix (a genuine
-    // price move, not a stale cache).
-    const BUY_MAX_ATTEMPTS: usize = 3;
-    // The route this buy uses — selects which slippage codes `classify_swap_revert`
-    // treats as retryable (curve vs AMM).
-    let buy_route = if routing.is_migrated {
-        pump_trader::SwapRoute::Amm
-    } else {
-        pump_trader::SwapRoute::Curve
-    };
-
-    let token_program = match &body.token_program_id {
-        Some(id) => pump_trader::TokenProgram::from_id(id),
-        None => routing.token_program,
-    };
-
-    let mut last_err: Option<pump_trader::TradeError> = None;
-    let mut sig_on_timeout: Option<String> = None;
-
-    'retry: for attempt in 0..BUY_MAX_ATTEMPTS {
-        if attempt > 0 {
-            tracing::info!("manual_buy: retry attempt {attempt} for {}", body.mint_address);
-        }
-        let result = if routing.is_migrated {
-            // Migrated → PumpSwap AMM (canonical pool derived).
-            app_state
-                .trader
-                .amm_buy(&body.mint_address, &token_program_id, amount_sol, None, slippage, true)
-                .await
-        } else {
-            // Still on the bonding curve.
-            app_state
-                .trader
-                .buy_token(&routing.mint, &routing.creator_pubkey, token_program, amount_sol, slippage, routing.cashback_enabled)
-                .await
-        };
-
-        match result {
-            Ok(sig) => {
-                return HttpResponse::Ok().json(serde_json::json!({ "success": true, "signature": sig }));
-            }
-            Err(pump_trader::TradeError::ConfirmTimeout) => {
-                // The tx was submitted but didn't confirm within the poll window.
-                // It may land later — do NOT retry (double-buy risk). Surface a
-                // pending response so the UI can show "submitted, confirming" instead
-                // of a hard 500.
-                //
-                // We don't have the signature here (confirm_transaction discards it
-                // after the timeout), but the UI can reconcile via wallet balance.
-                tracing::warn!("manual_buy: confirm timeout for {} (attempt {attempt})", body.mint_address);
-                sig_on_timeout = Some(String::new()); // sentinel: timed out
-                last_err = Some(pump_trader::TradeError::ConfirmTimeout);
-                break 'retry;
-            }
-            Err(pump_trader::TradeError::Reverted { custom })
-                if pump_trader::classify_swap_revert(
-                    custom,
-                    buy_route,
-                    pump_trader::SwapDirection::Buy,
-                ) == pump_trader::SwapRetryDecision::Retry =>
-            {
-                // Proven buy slippage revert with no tokens bought — safe to retry.
-                tracing::warn!(
-                    "manual_buy: slippage revert (error {custom:?}) on attempt {attempt} for {}",
-                    body.mint_address
-                );
-                last_err = Some(pump_trader::TradeError::Reverted { custom });
-                // continue to next attempt
-            }
-            Err(e) => {
-                // Any other error (structural revert, RPC failure, etc.) — stop.
-                tracing::warn!("manual_buy failed mint={}: {e}", body.mint_address);
-                return HttpResponse::InternalServerError()
-                    .json(serde_json::json!({ "error": e.to_string() }));
-            }
-        }
-    }
-
-    // Reached only on timeout or exhausted slippage retries.
-    if sig_on_timeout.is_some() {
-        return HttpResponse::Ok()
-            .json(serde_json::json!({ "success": false, "pending": true }));
-    }
-
-    // All slippage-revert attempts exhausted.
-    let err_msg = last_err
-        .map(|e| e.to_string())
-        .unwrap_or_else(|| "buy failed".to_string());
-    tracing::warn!("manual_buy: all {BUY_MAX_ATTEMPTS} attempts failed for {}: {err_msg}", body.mint_address);
-    HttpResponse::InternalServerError().json(serde_json::json!({ "error": err_msg }))
-}
 
 /// POST /api/solana/wallet/sell — "Sell All": clear the wallet's entire balance
 /// of `mint`, then reclaim rent by closing the now-empty token account.

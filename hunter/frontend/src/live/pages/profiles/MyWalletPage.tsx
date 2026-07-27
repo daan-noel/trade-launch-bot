@@ -25,7 +25,6 @@ import { toTableRequest, type TableRequestBody } from 'services/tableRequest';
 import {
   fetchHoldingsPage,
   fetchHoldingsSummary,
-  fetchHoldingByMint,
   type HoldingsTableSummary,
 } from 'services/api';
 import { connectTradeStream } from 'services/sse';
@@ -41,13 +40,12 @@ import {
 import {
   liveApi,
   useGetWalletPricesQuery,
-  useBuyTokenMutation,
+  useManualBuyPositionMutation,
   useSellTokenMutation,
 } from '@live/store/liveEndpoints';
 import { onPortfolioBagRefresh } from '@live/lib/portfolioBagRefresh';
 import type { AppDispatch } from '@live/store';
 import type { LiveTrade, ManagedBy, WalletHolding } from 'types';
-import { parseSlippageBps } from '@live/lib/slippage';
 
 /** SSE tip overlay for Price/Value/PnL until the next bag scan clears it. */
 interface MarkTip {
@@ -59,13 +57,13 @@ interface MarkTip {
 }
 
 /** Row-triggered buy dialog. Free-text manual trading moved to the Console —
- *  the old header modals (with their broken `mint` key, M4) are gone. */
+ *  the old header modals (with their broken `mint` key, M4) are gone. Posts
+ *  through the same `manual-buy` position path as Console (a full tracked
+ *  position, not the old fire-and-forget wallet buy) — no token-program-id or
+ *  per-trade slippage override, matching that path's contract. */
 interface BuyDialog {
   mint_address: string;
-  tokenProgramId?: string;
   solInput: string;
-  /// Slippage tolerance as a percent string; blank = use the global default.
-  slippageInput: string;
 }
 
 /// Below-this USD value a holding is treated as dust and hidden when the toggle is on.
@@ -81,7 +79,7 @@ const INITIAL_QUERY: TableQuery = {
 
 export function MyWalletPage() {
   const dispatch = useDispatch<AppDispatch>();
-  const [buyToken] = useBuyTokenMutation();
+  const [manualBuy] = useManualBuyPositionMutation();
   const [sellToken] = useSellTokenMutation();
   const [searchParams, setSearchParams] = useSearchParams();
   const mintFromUrl = searchParams.get('mint');
@@ -464,8 +462,8 @@ export function MyWalletPage() {
     void runSell(mint, tokenAccount, slippageBps, prevAmount);
   }, [pendingSell, runSell]);
 
-  const handleBuyOpen = useCallback((mint: string, tokenProgramId: string) => {
-    setBuyDialog({ mint_address: mint, tokenProgramId, solInput: '0.001', slippageInput: '' });
+  const handleBuyOpen = useCallback((mint: string) => {
+    setBuyDialog({ mint_address: mint, solInput: '0.001' });
   }, []);
 
   const handleBuySubmit = useCallback(async () => {
@@ -481,40 +479,19 @@ export function MyWalletPage() {
       return;
     }
 
-    // Slippage is entered as a percent; blank = let the backend use the global
-    // default. Convert to basis points (1% = 100 bps).
-    const { bps: slippageBps, error: slipError } = parseSlippageBps(buyDialog.slippageInput);
-    if (slipError) {
-      setActionError(slipError);
-      return;
-    }
-
-    // Snapshot the pre-buy balance (undefined for a token we don't hold yet) so
-    // the confirmation can tell when the new tokens have landed. Read from the
-    // current page if present, else the warm scan.
-    const prevAmount =
-      rowByMint.get(mint)?.amount ?? (await fetchHoldingByMint(mint).catch(() => null))?.amount;
-
     setActionError(null);
     setActionSuccess(null);
     setBuyDialog(null);
 
     try {
-      await buyToken({
-        mint_address: mint,
-        amount_sol: solAmount,
-        // Omit for manual buys — the backend resolves the token program on-chain.
-        ...(buyDialog.tokenProgramId ? { token_program_id: buyDialog.tokenProgramId } : {}),
-        ...(slippageBps !== undefined ? { slippage_bps: slippageBps } : {}),
-      }).unwrap();
-      setActionSuccess('Buy submitted — confirming on-chain…');
-      void confirmTrade(mint, prevAmount ?? undefined, 'Buy');
+      const res = await manualBuy({ mint_address: mint, amount_sol: solAmount }).unwrap();
+      setActionSuccess(`Buy submitted — position ${res.position_id.slice(0, 8)}… tracked in Console`);
     } catch (e) {
       setActionError(
         `Buy failed: ${apiErrorMessage(e as FetchBaseQueryError | SerializedError) ?? 'unknown error'}`,
       );
     }
-  }, [buyDialog, rowByMint, buyToken, confirmTrade]);
+  }, [buyDialog, manualBuy]);
 
   const columns = useMemo(
     () =>
@@ -657,24 +634,6 @@ export function MyWalletPage() {
                 value={buyDialog.solInput}
                 onChange={(e) =>
                   setBuyDialog((d) => (d ? { ...d, solInput: e.target.value } : d))
-                }
-                className="focus:shadow-[0_0_0_2px_rgba(19,206,175,0.15)]"
-              />
-            </label>
-            <label className="mb-4 flex flex-col gap-1.5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
-                Slippage % (optional)
-              </span>
-              <Input
-                type="number"
-                fieldSize="md"
-                min={0}
-                max={50}
-                step={0.1}
-                placeholder="Default"
-                value={buyDialog.slippageInput}
-                onChange={(e) =>
-                  setBuyDialog((d) => (d ? { ...d, slippageInput: e.target.value } : d))
                 }
                 className="focus:shadow-[0_0_0_2px_rgba(19,206,175,0.15)]"
               />

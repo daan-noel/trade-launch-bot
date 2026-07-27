@@ -11,15 +11,6 @@ import type {
 } from 'types';
 import type { ArmedEntry } from 'lib/strategy/types';
 
-export interface BuyTokenArgs {
-  mint_address: string;
-  amount_sol: number;
-  /// Omitted for manual buys — the backend resolves the token program on-chain.
-  token_program_id?: string;
-  /// Per-trade slippage in basis points; omit to use the global default.
-  slippage_bps?: number;
-}
-
 export interface SellTokenArgs {
   mint_address: string;
   /// Optional token-account hint (row "Sell All" supplies it to skip a wallet
@@ -101,9 +92,6 @@ export const liveApi = baseApi.injectEndpoints({
     getWalletPrices: builder.query<Record<string, WalletPrice>, string[]>({
       query: (mints) =>
         `/api/solana/prices?ids=${mints.map(encodeURIComponent).join(',')}`,
-    }),
-    buyToken: builder.mutation<{ success: boolean }, BuyTokenArgs>({
-      query: (body) => ({ url: '/api/solana/wallet/buy', method: 'POST', body }),
     }),
     // Console manual buy → a FULL tracked position (origin='manual'). 202
     // `{position_id}` returns immediately; the row appears as BuySubmitted and
@@ -216,7 +204,6 @@ export const {
   useGetPortfolioRecentClosesQuery,
   useGetPortfolioPerformanceQuery,
   useGetWalletPricesQuery,
-  useBuyTokenMutation,
   useManualBuyPositionMutation,
   useSetManualExitConfigMutation,
   useSellTokenMutation,
