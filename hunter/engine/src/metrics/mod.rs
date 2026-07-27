@@ -27,6 +27,7 @@ pub mod evaluator;
 pub mod flow_lifetime;
 pub mod flow_split;
 pub mod flow_window;
+pub mod grid;
 pub mod position;
 pub mod price_lifetime;
 pub mod price_window;

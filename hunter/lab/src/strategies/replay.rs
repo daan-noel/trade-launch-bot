@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
 
-use hunter_engine::deadness::DEAD_QUIET_SECS;
+use hunter_engine::deadness::{DEAD_QUIET_SECS, TAIL_MARGIN_SECS};
 use hunter_engine::event::{
     Effect, Event, ExitReason, Fill, FillFailReason, IntentId, LoadedRule, Mint, PositionId,
     PositionStatus, RuleId,
@@ -57,10 +57,6 @@ pub const TICK: Duration = Duration::milliseconds(hunter_engine::TICK_MS);
 /// `token_amount` is cosmetic (PnL is price-ratio based), so it only needs to be
 /// consistent across the paper-live and simulate fill models.
 const TOKEN_SCALE: f64 = 1_000_000.0;
-
-/// Margin past `DEAD_QUIET_SECS` to keep ticking the tail so the dead verdict (and
-/// any exit it drives) definitely lands before we stop.
-pub const TAIL_MARGIN_SECS: i64 = 60;
 
 /// One token to replay: the metadata a result row needs, its observed creation
 /// axes (built through the shared [`observed_axes`](trading_core::strategies::fingerprint_axes::observed_axes)

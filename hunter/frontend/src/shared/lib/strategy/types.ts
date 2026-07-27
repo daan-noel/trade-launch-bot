@@ -176,7 +176,13 @@ export interface MetricSeriesColumn {
 }
 
 /** `GET /api/tokens/{mint}/metric-series` response — every metric's value at every
- *  trade, as parallel arrays. Computed on demand (never persisted). Lab-only. */
+ *  **event**, as parallel arrays. Computed on demand (never persisted). Lab-only.
+ *
+ *  Events are trades *plus* engine `TICK_MS` grid ticks, because the time-decaying
+ *  metrics (`m_flow_window` decay, `m_price_window` extrema, `stall`/`time`,
+ *  deadness) only advance on a tick — a trade-only series silently reports a later
+ *  fire than the engine takes. Rows are therefore ∝ the token's lifespan, not its
+ *  trade count. */
 export interface MetricSeriesResponse {
   mint_address: string;
   /** RFC3339 timestamps aligned with every column's `values`. */
@@ -184,6 +190,12 @@ export interface MetricSeriesResponse {
   /** Spot price (SOL) at each event — aligned with `at`; non-finite ⇒ `null`. */
   price?: Array<number | null>;
   series: MetricSeriesColumn[];
+  /** The backend's row ceiling cut the series short: it covers only
+   *  `[first trade, covered_until]`. Rows that ARE present stay exact — only the
+   *  span is bounded — so surface it rather than silently drawing a partial token. */
+  truncated?: boolean;
+  /** Last instant the series reaches (RFC3339); null when there are no events. */
+  covered_until?: string | null;
 }
 
 /** Inline dry-run draft for `POST /api/strategies/simulate`. NOTE: this uses

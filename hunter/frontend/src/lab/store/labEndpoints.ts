@@ -80,8 +80,9 @@ export const labApi = baseApi.injectEndpoints({
       transformResponse: (r: { summaries: Record<string, SimulatedSummary> }) => r.summaries ?? {},
     }),
     // On-demand metric series for a token's chart panes (redesign 5.7) — every
-    // metric's value at every trade, recomputed from the lake + PG tail with the
-    // SAME engine compute the live/sweep paths use (never persisted).
+    // metric's value at every EVENT (trades + engine `TICK_MS` grid ticks),
+    // recomputed from the lake + PG tail with the SAME engine compute the
+    // live/sweep paths use (never persisted).
     getMetricSeries: builder.query<
       MetricSeriesResponse,
       {
@@ -92,15 +93,35 @@ export const labApi = baseApi.injectEndpoints({
          *  columns, which are position-scoped and omitted without it. */
         entryTime?: string | null;
         entryPrice?: number | null;
+        /** Largest `time` / `stall` condition value the caller will evaluate over the
+         *  series (secs). These size the backend's sparse tick grid: the two clocks are
+         *  monotone, so it only needs dense ticks up to the last instant they could
+         *  cross. Omit when the rule constrains neither — see `metricClockHorizons`. */
+        timeHorizonSec?: number | null;
+        stallHorizonSec?: number | null;
       }
     >({
-      query: ({ mint, windows, fingerprintId, entryTime, entryPrice }) => {
+      query: ({
+        mint,
+        windows,
+        fingerprintId,
+        entryTime,
+        entryPrice,
+        timeHorizonSec,
+        stallHorizonSec,
+      }) => {
         const params = new URLSearchParams();
         if (windows && windows.length) params.set('windows', windows.join(','));
         if (fingerprintId) params.set('fingerprint_id', fingerprintId);
         if (entryTime && entryPrice != null && Number.isFinite(entryPrice)) {
           params.set('entry_time', entryTime);
           params.set('entry_price', String(entryPrice));
+        }
+        if (timeHorizonSec != null && timeHorizonSec > 0) {
+          params.set('time_horizon_sec', String(timeHorizonSec));
+        }
+        if (stallHorizonSec != null && stallHorizonSec > 0) {
+          params.set('stall_horizon_sec', String(stallHorizonSec));
         }
         const q = params.toString();
         return `/api/tokens/${encodeURIComponent(mint)}/metric-series${q ? `?${q}` : ''}`;

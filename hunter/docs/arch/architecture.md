@@ -174,7 +174,7 @@ is built into its own SPA (`@live`/`@lab`) with a static nav. See [@arch/fronten
 | Handler file | Owns |
 | --- | --- |
 | `handlers/tokens/list.rs` | `list_tokens` (`GET /api/tokens`, in-RAM engine over a full snapshot) |
-| `handlers/tokens/metric_series.rs` | `GET /api/tokens/{mint}/metric-series` — every metric's value at every trade (rule-authoring chart panes) |
+| `handlers/tokens/metric_series.rs` | `GET /api/tokens/{mint}/metric-series` — every metric's value at every **event** (rule-authoring chart panes). Folds through the shared sparse tick grid (`hunter_engine::metrics::grid`), same as the sweep precompute: a trade-only fold mis-samples every time-decaying metric. Bounded by `MAX_SERIES_ROWS`, reporting `truncated`/`covered_until` |
 | `handlers/system/jobs.rs` | `job_status`, `cancel/result` for simulations |
 | `handlers/strategies/engine.rs` | generic `simulate` (detached → 202) + its result page/summary/matched (+ batch `POST …/simulate/summaries`) — one surface for every rule (`rule_id` or inline `draft`) |
 | `handlers/strategies/engine_crud.rs` | lab-side rule + fingerprint CRUD (`strategy_rules` / `fingerprints`, no live engine to ping). `list_rules` folds in the same `?score_scope=` position counters as the live twin (shared core fn), so the lab Rules list is a real scoreboard over traded results |

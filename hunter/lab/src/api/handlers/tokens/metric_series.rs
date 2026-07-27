@@ -1,9 +1,28 @@
 //! Metric-series endpoint (plan 5.7) — replay one token's trades through the
 //! engine's [`MetricSeries`](hunter_engine::metrics::series) on demand, returning
-//! the value of every metric at every trade event for chart panes. Metrics are
+//! the value of every metric at every event for chart panes. Metrics are
 //! **never persisted**; this recomputes them from the sealed lake + PG tail using
 //! the *same* compute the live engine + sweep use, so the overlay can never drift
 //! from a decision.
+//!
+//! **Events, not trades.** The fold runs through the shared sparse tick grid
+//! ([`hunter_engine::metrics::grid`]) — the same driver the sweep precompute and
+//! `run_replay` use — so rows land on the engine's `TICK_MS` decision grid, not
+//! only at trade instants. This is load-bearing, not a nicety: every time-decaying
+//! metric (`m_flow_window`/`m_flow_split_window` decay, `m_price_window` rolling
+//! extrema, `m_snapshot.stall`/`.time`, the dead verdict) advances *only* inside a
+//! tick, so a trade-only fold samples them exactly where a fresh trade has just
+//! been folded back in and never sees a between-trades crossing. That shipped: an
+//! `m_flow_window.buy < 5` exit drew 70 s after the one simulate booked, because
+//! the dip happened in a 1.3 s gap between two trades.
+//!
+//! Because the grid's density is set by what the caller will *evaluate* over the
+//! series, the rule's `time`/`stall` condition ceilings come in as query params
+//! ([`MetricSeriesQuery::time_horizon_sec`] / [`stall_horizon_sec`]); the trailing
+//! windows are already implied by `windows`. A horizon left at `0` only drops ticks
+//! in quiet gaps past every other horizon — never near a trade.
+//!
+//! [`stall_horizon_sec`]: MetricSeriesQuery::stall_horizon_sec
 
 use std::sync::Arc;
 
@@ -14,6 +33,7 @@ use uuid::Uuid;
 
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::flow_split::FlowPatterns;
+use hunter_engine::metrics::grid::{estimate_sparse_rows, fold_sparse, SparseGrid};
 use hunter_engine::metrics::position::PositionCtx;
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
 use hunter_engine::metrics::{
@@ -53,7 +73,26 @@ pub struct MetricSeriesQuery {
     /// `entry_time`; ignored unless both are present and the price is positive.
     #[serde(default)]
     pub entry_price: Option<f64>,
+    /// Largest `m_snapshot.time` condition value (+ `=`-tolerance) the caller will
+    /// evaluate over this series, in seconds. Sizes the sparse tick grid so the
+    /// monotone `time` clock is sampled densely up to the last instant it could
+    /// still cross. Omitted/`0` ⇒ `time` is assumed not to be evaluated.
+    #[serde(default)]
+    pub time_horizon_sec: Option<f64>,
+    /// Same, for the `m_price_lifetime.stall` clock (measured from the last trade).
+    #[serde(default)]
+    pub stall_horizon_sec: Option<f64>,
 }
+
+/// Row ceiling for one series response. The sparse grid keeps rows ∝ trades for a
+/// normally-traded token (the p99 local token lands ~47k), so this bites only on the
+/// extreme tail — a token that trades continuously for many hours. Hitting it
+/// **truncates in time** rather than coarsening the grid: every returned row stays
+/// bit-identical to the engine's `TICK_MS` decision grid (the entire point of the
+/// fix), and the response flags the short coverage so the UI can say so. Silently
+/// widening the tick instead would reintroduce exactly the class of drift this
+/// endpoint just stopped having.
+const MAX_SERIES_ROWS: usize = 40_000;
 
 /// One computed series in the response.
 #[derive(serde::Serialize)]
@@ -80,6 +119,14 @@ pub async fn token_metric_series(
 ) -> impl Responder {
     let mint = path.into_inner();
     let windows = parse_windows(query.windows.as_deref());
+    // The tick grid must stay dense wherever anything the caller evaluates can still
+    // move: the trailing windows (implied by `windows`) plus the two monotone clocks
+    // the caller declares. Deadness is covered unconditionally by the grid itself.
+    let grid = SparseGrid {
+        max_window_secs: windows.iter().cloned().fold(0.0_f64, f64::max),
+        time_horizon_secs: SparseGrid::clamp_secs(query.time_horizon_sec.unwrap_or(0.0)),
+        stall_horizon_secs: SparseGrid::clamp_secs(query.stall_horizon_sec.unwrap_or(0.0)),
+    };
     // Position-scoped metrics need the caller's entry fill; require both halves and a
     // sane price, else they stay omitted (the token-only replay can't compute them).
     let entry = match (query.entry_time, query.entry_price) {
@@ -108,11 +155,14 @@ pub async fn token_metric_series(
     if trades.is_empty() {
         return HttpResponse::Ok().json(serde_json::json!({
             "mint_address": mint, "at": [], "price": [], "series": [],
+            "truncated": false, "covered_until": serde_json::Value::Null,
         }));
     }
 
-    let result =
-        web::block(move || build_series(&mint, &trades, &windows, flow_ctx.as_ref(), entry)).await;
+    let result = web::block(move || {
+        build_series(&mint, &trades, &windows, &grid, flow_ctx.as_ref(), entry)
+    })
+    .await;
     match result {
         Ok(resp) => HttpResponse::Ok().json(resp),
         Err(e) => {
@@ -177,12 +227,15 @@ fn parse_windows(raw: Option<&str>) -> Vec<f64> {
     }
 }
 
-/// Build every metric's series over the token's trades. Creation time anchors at
-/// the first trade (the dev-buy slot), matching the replay driver's clock.
+/// Build every metric's series over the token's event stream. Creation time anchors
+/// at the first trade (the dev-buy slot), matching the replay driver's clock, and the
+/// fold runs through the shared sparse tick grid so rows land on the engine's
+/// decision grid rather than only at trades (see the module docs).
 fn build_series(
     mint: &str,
     trades: &[crate::sweep::projection::CorpusTrade],
     windows: &[f64],
+    grid: &SparseGrid,
     flow: Option<&FlowCtx>,
     entry: Option<(Ts, f64)>,
 ) -> serde_json::Value {
@@ -236,9 +289,28 @@ fn build_series(
     if let Some(ctx) = flow {
         series.ensure_flow(ctx.fp_id, &ctx.patterns, windows);
     }
-    for t in trades {
-        series.push_trade(to_trade_lite(t));
+    // `as_of` = now: the deadness clock advances toward the request instant exactly as
+    // a `run_replay` over this token would, so the tail ticks that book a Dead exit are
+    // present. The driver caps the tail at `last_trade + DEAD_QUIET + TAIL_MARGIN`.
+    let as_of = Utc::now();
+    // Admission: the estimate never under-counts, so a token that would blow the row
+    // ceiling is folded under a budget instead of allocating first and regretting it.
+    let estimated = estimate_sparse_rows(created_at, trades.iter().map(|t| t.block_time), grid, as_of);
+    let budget = (estimated > MAX_SERIES_ROWS).then_some(MAX_SERIES_ROWS);
+    if budget.is_some() {
+        tracing::warn!(
+            mint, estimated, cap = MAX_SERIES_ROWS,
+            "metric-series exceeds the row ceiling — truncating coverage in time",
+        );
     }
+    let fold = fold_sparse(
+        &mut series,
+        created_at,
+        trades.iter().map(|t| (to_trade_lite(t), None)),
+        grid,
+        as_of,
+        budget,
+    );
 
     let mut out: Vec<SeriesOut> = labels
         .iter()
@@ -276,6 +348,11 @@ fn build_series(
         "at": series.at,
         "price": price,
         "series": out,
+        // Coverage, never silent: `truncated` says the row ceiling cut the series
+        // short, `covered_until` is the last instant it reaches. Every returned row is
+        // still on the engine's decision grid — only the span is bounded.
+        "truncated": fold.truncated,
+        "covered_until": fold.covered_until,
     })
 }
 

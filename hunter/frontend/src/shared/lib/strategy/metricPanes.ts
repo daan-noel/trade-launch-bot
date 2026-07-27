@@ -27,6 +27,49 @@ export interface RuleMetricPrefs {
   paneKeys: string[];
 }
 
+/** The two monotone clocks whose sampling density the backend can't infer from
+ *  `windows` alone. Mirrors the Rust `sparse_grid_for`. */
+export interface MetricClockHorizons {
+  /** Largest `time` condition value (secs since creation), 0 when unconstrained. */
+  timeHorizonSec: number;
+  /** Largest `stall` condition value (secs since the last high), 0 when unconstrained. */
+  stallHorizonSec: number;
+}
+
+/** Metric names whose clocks run on wall time rather than on trades, keyed to the
+ *  sparse-grid horizon they size. `time` counts from creation, `stall` from the last
+ *  all-time high — the backend cannot derive either from the requested windows. */
+const CLOCK_METRICS = { time: 'timeHorizonSec', stall: 'stallHorizonSec' } as const;
+
+/**
+ * Largest authored condition value for each wall-clock metric — the horizons the
+ * metric-series endpoint needs to keep its sparse tick grid dense far enough for a
+ * `time`/`stall` crossing to land on a row.
+ *
+ * The backend defaults these to `0` (⇒ "not evaluated"), which only ever drops ticks
+ * in quiet gaps past every other horizon. Passing the rule's real ceilings is what
+ * makes a `stall > 120` marker land where the engine fires it. Mirrors the Rust
+ * `sparse_grid_for` ceiling walk; the `=`-tolerance margin is added backend-side.
+ */
+export function metricClockHorizons(params: RuleParams): MetricClockHorizons {
+  const out: MetricClockHorizons = { timeHorizonSec: 0, stallHorizonSec: 0 };
+  for (const side of [params.entry, params.exit]) {
+    if (!side) continue;
+    for (const [, group] of sideInstances(side)) {
+      for (const [metric, arms] of Object.entries(group.metrics)) {
+        const key = CLOCK_METRICS[metric as keyof typeof CLOCK_METRICS];
+        if (!key || !arms?.length) continue;
+        for (const arm of arms) {
+          for (const cond of arm) {
+            if (Number.isFinite(cond.value)) out[key] = Math.max(out[key], cond.value);
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
+
 /** Metrics + windows + default panes constrained by an (already-parsed) params
  *  form — the shared core of `extractRuleMetricPrefs`, also used for ad-hoc
  *  params without a saved rule (e.g. a sweep combo's blob). */

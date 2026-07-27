@@ -26,10 +26,16 @@ use rand::{Rng, SeedableRng};
 use uuid::Uuid;
 
 use hunter_engine::arm::{CompiledRule, MetricReq, ReqOrigin};
-use hunter_engine::deadness::DEAD_QUIET_SECS;
+use hunter_engine::deadness::{DEAD_QUIET_SECS, TAIL_MARGIN_SECS};
 use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::evaluator::{eval, Condition, Operator};
+use hunter_engine::metrics::grid::{estimate_sparse_rows as grid_estimate_rows, fold_sparse};
+/// The sparse tick grid moved to `hunter-engine` so the sweep precompute and the
+/// metric-series chart endpoint drive a `MetricSeries` through the ONE loop (a
+/// trade-only fold silently mis-samples every time-decaying metric). Re-exported
+/// here because the axes model and the discovery screen build one.
+pub use hunter_engine::metrics::grid::SparseGrid;
 use hunter_engine::metrics::position::{position_value, PositionCtx};
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
 use hunter_engine::metrics::{MetricId, TradeLite, Ts};
@@ -44,7 +50,6 @@ use trading_core::strategies::paper_fill::{
 use crate::sweep::corpus::CorpusToken;
 use crate::sweep::projection::CorpusTrade;
 use crate::sweep::strategy::{ParamSpace, Strategy, SweepMethod, TokenOutcome};
-use crate::strategies::replay::TAIL_MARGIN_SECS;
 
 use super::axes::AxesModel;
 
@@ -475,78 +480,6 @@ fn encode_picks(picks: &[usize], lens: &[usize]) -> usize {
 
 // ───────────────────────────── precompute ──────────────────────────────────
 
-/// The horizons that size a token's **sparse** tick grid (plan §P2). Between two
-/// trades the token state is almost entirely static — price, reserves, liquidity
-/// and trail are constant; only window flows (until a trade ages out of the
-/// largest window), the monotone `time`/`stall` clocks, and the one-shot dead
-/// verdict can change. So within a gap we only need dense 500 ms ticks up to the
-/// last instant any of those could still flip a swept condition; past it every
-/// tick is provably identical to its predecessor and is omitted. Every emitted
-/// tick lands on the same `created + k·TICK` grid the dense series used, so its
-/// values are bit-identical — the scan can never disagree with a full replay.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SparseGrid {
-    /// Largest registered trailing window (secs) across BOTH window families —
-    /// `m_flow_window`/`m_flow_split_window` and `m_price_window`; `0` if the rule
-    /// reads neither. A trade keeps changing windowed metrics until `trade + this`
-    /// (flows decay to 0; a rolling price high/low drops as the print ages out),
-    /// after which every windowed read is settled for that gap.
-    pub max_window_secs: f64,
-    /// Max swept `time` condition value + its `=`-tolerance (secs since creation);
-    /// `0` if `time` isn't swept. `time` is monotone, so past this every `time`
-    /// condition is settled forever.
-    pub time_horizon_secs: f64,
-    /// Max swept `stall` condition value + its `=`-tolerance (secs). `stall` grows
-    /// monotonically within a gap, so past `last_trade + this` every `stall`
-    /// condition is settled for that gap.
-    pub stall_horizon_secs: f64,
-}
-
-impl SparseGrid {
-    /// Hard ceiling on sparse-grid horizons (secs). A fat-fingered `time`/`stall`/
-    /// window axis (e.g. 1e12) must not turn `gap_horizon` into DateTime::MAX and
-    /// emit centuries of 500 ms ticks (the alloc that printed ~419 TB).
-    const MAX_HORIZON_SECS: f64 = 7.0 * 24.0 * 3600.0;
-
-    fn clamp_secs(s: f64) -> f64 {
-        if !s.is_finite() || s <= 0.0 {
-            0.0
-        } else {
-            s.min(Self::MAX_HORIZON_SECS)
-        }
-    }
-
-    /// The last grid instant in a gap at which any swept condition could still
-    /// change, given the trade state entering the gap: `last_trade_at` (the newest
-    /// folded trade, ≥ every metric clock's origin) and `last_meaningful_at` (the
-    /// deadness clock). Dense ticks are emitted up to here; ticks past it are all
-    /// provably static and skipped.
-    fn gap_horizon(&self, created: Ts, last_trade_at: Ts, last_meaningful_at: Ts) -> Ts {
-        let secs = |s: f64| {
-            let ms = (Self::clamp_secs(s) * 1000.0).ceil();
-            // chrono::Duration::milliseconds panics / overflows on absurd inputs —
-            // clamp to i64::MAX/2 ms (~3e8 years still, but finite adds).
-            let ms_i = if ms.is_finite() {
-                ms.min((i64::MAX / 2) as f64) as i64
-            } else {
-                0
-            };
-            Duration::milliseconds(ms_i.max(0))
-        };
-        let mut h = last_trade_at;
-        // Flow decay: a trade influences the largest window until `trade + window`.
-        h = h.max(last_trade_at + secs(self.max_window_secs));
-        // `time` is measured from creation.
-        h = h.max(created + secs(self.time_horizon_secs));
-        // `stall` is measured from the last all-time high (≤ last_trade_at); using
-        // last_trade_at is a safe upper bound (it only over-emits, never drops).
-        h = h.max(last_trade_at + secs(self.stall_horizon_secs));
-        // Dead flips once, at the first tick past the quiet window.
-        h = h.max(last_meaningful_at + Duration::seconds(DEAD_QUIET_SECS));
-        h
-    }
-}
-
 /// Build one token's [`MetricSeries`] over the same event stream a single-token
 /// `run_replay` folds: trades interleaved with 500 ms ticks on a grid anchored at
 /// `created_at + TICK`, then a tail up to `min(as_of, last_trade + DEAD_QUIET +
@@ -600,30 +533,11 @@ pub(crate) fn build_series_with_flow(
             series.ensure_flow(fp, patterns, &windows);
         }
     }
-    let trades = &token.trades;
-    if trades.is_empty() {
-        return series;
-    }
-    let tick = Duration::milliseconds(TICK_MS);
-    let mut next_tick = created + tick;
-    let mut last_trade_at = created;
-    for ct in trades.iter() {
-        let at = ct.block_time;
-        // Gap before this trade: dense ticks only up to the gap horizon, then jump
-        // straight to the trade (skipping the provably-static remainder).
-        let horizon = grid.gap_horizon(created, last_trade_at, series.last_meaningful_at());
-        emit_gap_ticks(&mut series, &mut next_tick, at, horizon, tick, created);
-        series.push_trade_at(trade_lite(ct), Some(ct.slot));
-        if at > last_trade_at {
-            last_trade_at = at;
-        }
-    }
-    // Tail: keep ticking so a quiet token books its dead verdict, but no further than
-    // the window past which every token is provably dead + pruned. The series stays
-    // capped at **this token's own** `last_trade + DEAD_QUIET + TAIL_MARGIN` — extending
-    // it to the corpus-wide horizon would cost the RAM the sparse-grid design exists to
-    // bound (and would fire exits a single-token replay never does, which
-    // `guard::scan_matches_replay_stall_eq_exit_across_gap` locks against).
+    // The tail cut stays at **this token's own** `last_trade + DEAD_QUIET + TAIL_MARGIN`
+    // (the shared driver's cap) — extending it to the corpus-wide horizon would cost the
+    // RAM the sparse-grid design exists to bound (and would fire exits a single-token
+    // replay never does, which `guard::scan_matches_replay_stall_eq_exit_across_gap`
+    // locks against).
     //
     // The D1 asymmetry this leaves — a still-liquid quiet token whose deterministic
     // `time`/`stall`/`held` clock crosses in the gap between this per-token cut and the
@@ -631,83 +545,30 @@ pub(crate) fn build_series_with_flow(
     // in [`resolve_frozen_tail`] (by an O(1) analytic crossing at the frozen price),
     // which the scan calls before reporting `Open`. So the series builder and the guard
     // are unchanged; the extra decision lives entirely on the scan side.
-    let cap = last_trade_at + Duration::seconds(DEAD_QUIET_SECS + TAIL_MARGIN_SECS);
-    let tail_end = as_of.min(cap);
-    let horizon = grid.gap_horizon(created, last_trade_at, series.last_meaningful_at());
-    emit_gap_ticks(&mut series, &mut next_tick, tail_end, horizon, tick, created);
+    //
+    // Unbounded (`max_rows: None`): the sweep admits by an up-front
+    // [`estimate_sparse_rows`] budget instead, so a truncated series never reaches a scan.
+    fold_sparse(
+        &mut series,
+        created,
+        token.trades.iter().map(|ct| (trade_lite(ct), Some(ct.slot))),
+        grid,
+        as_of,
+        None,
+    );
     series
 }
 
-/// Emit grid ticks in `[next_tick, stop)` but no further than `horizon`; then
-/// fast-forward `next_tick` onto the grid to the first tick ≥ `stop` **without**
-/// emitting the settled ticks in between (that arithmetic jump is what makes the
-/// grid sparse over long quiet gaps). Post-state matches the old dense loop's
-/// (`next_tick` = smallest grid tick ≥ `stop`) so the caller's next gap is unaffected.
-///
-/// Hard-capped at [`MAX_TICKS_PER_GAP`] so a corrupt timestamp / horizon cannot
-/// push billions of rows and abort with a multi-hundred-TB allocation.
-fn emit_gap_ticks(
-    series: &mut MetricSeries,
-    next_tick: &mut Ts,
-    stop: Ts,
-    horizon: Ts,
-    tick: Duration,
-    created: Ts,
-) {
-    /// ~2 days of 500 ms ticks — beyond the sparse-grid horizon clamp.
-    const MAX_TICKS_PER_GAP: usize = 2 * 24 * 3600 * 2;
-    let mut emitted = 0usize;
-    while *next_tick < stop && *next_tick <= horizon {
-        if emitted >= MAX_TICKS_PER_GAP {
-            // Jump to stop without further emits — decisions past the clamp are
-            // identical for settled monotone clocks under the horizon cap.
-            break;
-        }
-        series.push_tick(*next_tick);
-        *next_tick += tick;
-        emitted += 1;
-    }
-    if *next_tick < stop {
-        // Stopped at the horizon (or tick cap), not at `stop` — jump to the next
-        // on-grid tick ≥ stop.
-        let delta_ms = stop.signed_duration_since(created).num_milliseconds();
-        let k = (delta_ms + TICK_MS - 1) / TICK_MS; // ceil ⇒ smallest grid tick ≥ stop
-        *next_tick = created + Duration::milliseconds(k * TICK_MS);
-    }
-}
-
 /// Worst-case row count of a token's sparse series — the admission estimate
-/// (plan §P4). Upper-bounds each gap's dense span by the grid horizon so it never
-/// under-counts (which would defeat the guard), without building the series.
+/// (plan §P4). Thin wrapper over the shared [`estimate_sparse_rows`] in terms of a
+/// [`CorpusToken`]'s trade clock.
 pub(crate) fn estimate_sparse_rows(token: &CorpusToken, grid: &SparseGrid, as_of: Ts) -> usize {
-    let trades = &token.trades;
-    if trades.is_empty() {
-        return 0;
-    }
-    let created = token.created_at;
-    let tick_ms = TICK_MS.max(1);
-    let horizon_ms = ((SparseGrid::clamp_secs(grid.max_window_secs)
-        .max(SparseGrid::clamp_secs(grid.time_horizon_secs))
-        .max(SparseGrid::clamp_secs(grid.stall_horizon_secs))
-        + DEAD_QUIET_SECS as f64)
-        * 1000.0)
-        .ceil() as i64;
-    let mut rows = 0usize;
-    let mut prev = created;
-    // One row per trade, plus at most `horizon_ms / tick` dense ticks per gap.
-    for ct in trades.iter() {
-        let gap_ms = ct.block_time.signed_duration_since(prev).num_milliseconds().max(0);
-        let ticks = (gap_ms.min(horizon_ms).max(0) / tick_ms) as usize;
-        rows = rows.saturating_add(1).saturating_add(ticks);
-        if ct.block_time > prev {
-            prev = ct.block_time;
-        }
-    }
-    // Tail gap (bounded by DEAD_QUIET + TAIL_MARGIN as well as the run's `as_of`).
-    let tail_cap = prev + Duration::seconds(DEAD_QUIET_SECS + TAIL_MARGIN_SECS);
-    let tail_ms = as_of.min(tail_cap).signed_duration_since(prev).num_milliseconds().max(0);
-    rows = rows.saturating_add((tail_ms.min(horizon_ms).max(0) / tick_ms) as usize);
-    rows
+    grid_estimate_rows(
+        token.created_at,
+        token.trades.iter().map(|ct| ct.block_time),
+        grid,
+        as_of,
+    )
 }
 
 fn trade_lite(ct: &CorpusTrade) -> TradeLite {

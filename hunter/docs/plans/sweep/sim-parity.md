@@ -199,10 +199,26 @@ Both were mistaken for the D0 bug during its investigation, so they are recorded
   `Uuid::nil()`), so entry-gate behavior is not swept.
 - **Sweep has no row at the `TokenCreated` instant** — `build_series` starts at
   `created_at + TICK`.
-- **A third `MetricSeries` constructor** drives the charts
+- ~~**A third `MetricSeries` constructor** drives the charts
   (`api/handlers/tokens/metric_series.rs`), with no ticks and `created_at` anchored at
   `trades[0]`. Its doc claims parity with sweep/live: true of the values, false of the
-  sampling grid and clock origin.
+  sampling grid and clock origin.~~ **CLOSED 2026-07-27.** The no-ticks half was a live
+  bug, not just a caveat: with rows only at trade instants, every time-decaying metric is
+  sampled exactly where a fresh trade has just been folded back in, so a between-trades
+  crossing is invisible and the chart's condition-fire marker lands *late*. Measured on
+  `8HJNtq7k…hpump` under rule `promoted g0 c92432` (`m_flow_window@60 buy < 5`): the chart
+  drew the exit at 19:54:22, simulate booked it at 19:53:12 — **70 s** apart, because the
+  window dipped under 5 during a 1.3 s gap between two trades.
+  Fixed by extracting the sweep's sparse tick grid to `hunter_engine::metrics::grid`
+  (`SparseGrid` + `fold_sparse` + `estimate_sparse_rows`) and driving **both** the sweep
+  precompute and the chart endpoint through it — one loop, so a trade-only fold cannot be
+  reintroduced in one caller. The endpoint takes the rule's `time`/`stall` condition
+  ceilings as query params to size the grid (windows are implied by `windows`), and bounds
+  the response at `MAX_SERIES_ROWS`, reporting `truncated` / `covered_until` rather than
+  silently returning a short series. The clock origin stays at `trades[0]` (the dev-buy
+  slot) — same as the replay driver. Locked by
+  `grid::tests::ticks_expose_a_between_trades_window_dip_that_a_trade_only_fold_hides`;
+  every `scan_matches_replay_*` guard still passes, so the sweep is unchanged.
 
 ## Performance backlog (grouped sweep) — measured, closed
 

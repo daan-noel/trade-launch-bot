@@ -11,6 +11,7 @@ import {
   DEFAULT_WINDOWS,
   extractRuleMetricPrefs,
   findRuleFireMarkers,
+  metricClockHorizons,
   metricColKey,
   metricConditionStatesAt,
   metricPrefsFromParams,
@@ -22,6 +23,13 @@ import type { ChartEventMarker, ChartVisibleTimeRange } from 'components/token-p
 import type { MetricSeriesColumn } from 'lib/strategy/types';
 
 const PREF_KEY = 'mt:metric-panes';
+
+/** Wall-clock label for the truncation notice's `covered_until`. */
+function formatCoveredUntil(at: string | null | undefined): string {
+  if (!at) return 'the start of the token';
+  const ms = Date.parse(at);
+  return Number.isFinite(ms) ? new Date(ms).toLocaleTimeString() : at;
+}
 
 interface Prefs {
   panes: string[]; // column keys
@@ -132,6 +140,20 @@ export function MetricPanes({
       ? extractRuleMetricPrefs(selectedRule, registry).windows
       : prefs.windows;
 
+  const ruleParams: RuleParams | null = useMemo(() => {
+    if (overrideParams) return overrideParams;
+    return selectedRule && registry ? ruleParamsFromJson(selectedRule.params, registry) : null;
+  }, [overrideParams, selectedRule, registry]);
+
+  // The backend sizes its sparse tick grid from what we'll evaluate over the series.
+  // `windows` covers the trailing metrics; the two wall-clock metrics (`time` from
+  // creation, `stall` from the last high) have to be declared or their crossings can
+  // fall in a gap the grid skipped.
+  const clockHorizons = useMemo(
+    () => (ruleParams ? metricClockHorizons(ruleParams) : null),
+    [ruleParams],
+  );
+
   const { data, isFetching, error } = useGetMetricSeriesQuery(
     {
       mint,
@@ -139,6 +161,8 @@ export function MetricPanes({
       fingerprintId: ruleOverride ? ruleOverride.fingerprintId : selectedRule?.fingerprint_id ?? null,
       entryTime: positionEntry?.time ?? null,
       entryPrice: positionEntry?.price ?? null,
+      timeHorizonSec: clockHorizons?.timeHorizonSec ?? null,
+      stallHorizonSec: clockHorizons?.stallHorizonSec ?? null,
     },
     { skip: !mint },
   );
@@ -150,11 +174,6 @@ export function MetricPanes({
       /* ignore */
     }
   }, [prefs]);
-
-  const ruleParams: RuleParams | null = useMemo(() => {
-    if (overrideParams) return overrideParams;
-    return selectedRule && registry ? ruleParamsFromJson(selectedRule.params, registry) : null;
-  }, [overrideParams, selectedRule, registry]);
 
   /** Panes actually rendered: the override's own metrics until the user toggles. */
   const panes =
@@ -516,6 +535,14 @@ export function MetricPanes({
 
       {error && <p className="text-[12px] text-red">metric series unavailable for this token.</p>}
       {isFetching && <p className="text-[12px] text-text-dim">computing…</p>}
+      {/* Never draw a short series as if it were the whole token: the backend's row
+          ceiling truncates coverage in time (rows that ARE here stay exact). */}
+      {data?.truncated && (
+        <p className="text-[12px] text-warning">
+          Series truncated at the row ceiling — panes and condition markers cover only up
+          to {formatCoveredUntil(data.covered_until)}. Anything after that is not drawn.
+        </p>
+      )}
 
       {panes.length === 0 ? (
         <p className="text-[12px] text-text-dim/70">

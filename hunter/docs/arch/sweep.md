@@ -120,6 +120,21 @@ Consequences, all enforced in code:
   a rolling high decays as prints age out, so the decay-region ticks must be emitted
   exactly like a flow window's.
 
+### The sparse tick grid lives in `hunter-engine`, not here
+
+`SparseGrid` / `fold_sparse` / `estimate_sparse_rows` moved to
+`hunter_engine::metrics::grid` (2026-07-27); `generic/strategy.rs` re-exports
+`SparseGrid` and calls `fold_sparse` for its precompute. The move is not cosmetic —
+it makes the tick grid the **only** way to drive a `MetricSeries`. A trade-only fold
+is not a coarser view of the same series but a different one: `m_flow_window` decay,
+`m_price_window` extrema, `stall`/`time` and the dead verdict all advance solely
+inside `TokenTrack::on_tick`, so with no ticks they are sampled exactly where a fresh
+trade has just been folded back in. The chart endpoint had that bug and drew an exit
+70 s late; sharing the loop is what stops a second caller re-acquiring it. Callers
+declare what they will evaluate (`max_window_secs` + the `time`/`stall` ceilings) so
+the grid knows how far into each quiet gap it must stay dense. Every
+`guard.rs::scan_matches_replay_*` test covers the sweep's use of it unchanged.
+
 Not wired: **re-entry** (`RuleParams.reentry`). The sweep's `TokenOutcome` is one
 episode per (token, combo); multi-episode accumulation would change the outcome
 model, aggregation and persistence. Re-entry validates via simulate/replay instead. Same for **exclusivity** (`RuleParams.exclusive` / `priority`) — it needs cross-*rule* state at one instant, which the per-combo fan-out has no place to keep; recorded as divergence D4 in [../plans/sweep/sim-parity.md](../plans/sweep/sim-parity.md) and locked by a `guard.rs` test.

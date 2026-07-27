@@ -213,6 +213,13 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   and labeled thresholds (shape is secondary). Series from
   `GET /api/tokens/{mint}/metric-series` (optional `fingerprint_id`, per-event
   `price`). Helpers in `lib/strategy/metricPanes.ts`.
+  **Rows are per *event*, not per trade** — the backend folds over the engine's
+  `TICK_MS` grid, because the time-decaying metrics only advance on a tick and a
+  trade-only series draws the fire marker late (it once drew an exit 70 s off).
+  The panes must therefore declare what they'll evaluate: `windows` covers the
+  trailing metrics and `metricClockHorizons(params)` supplies the `time`/`stall`
+  ceilings that size the backend's sparse grid. A response can come back
+  `truncated` (row ceiling) — render the coverage notice, never a silent partial.
   The shared `TokenTradeChart`/`TokenPriceChart` take an optional `highlightWallet` — its
   markers render larger with a gold glow+ring (`ProfileWalletInfo.isHighlighted` →
   `walletMarkersPlugin`), and a non-tracked input address gets a synthetic marker entry.

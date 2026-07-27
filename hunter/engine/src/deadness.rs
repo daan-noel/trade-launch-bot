@@ -23,6 +23,12 @@ use crate::metrics::Ts;
 pub const DEAD_MAX_LIQUIDITY_SOL: f64 = 30.0;
 /// Signal 2 — no meaningful trade for this many seconds ⇒ silent.
 pub const DEAD_QUIET_SECS: i64 = 300; // 5 minutes
+/// Margin past [`DEAD_QUIET_SECS`] that a replay/precompute keeps ticking the tail
+/// for, so the dead verdict (and any exit it drives) definitely lands before the
+/// event stream stops. Lives here, next to the quiet window it extends, because
+/// both the replay driver and the sparse-grid precompute must cut the tail at the
+/// same instant or a dead-close lands in one and not the other.
+pub const TAIL_MARGIN_SECS: i64 = 60;
 /// SOL threshold below which a trade is dust and does NOT reset the quiet timer.
 pub const DEAD_MEANINGFUL_TRADE_SOL: f64 = 0.1;
 
