@@ -318,7 +318,7 @@ pub struct FpConfigFieldSpec {
 /// underlying quantity) and largely compose *across* families. The discovery
 /// pipeline's Layer 2 grids per family and then measures whether two families
 /// actually interact, instead of paying for one blind cross-product
-/// (`hunter/docs/roadmap/metric-combo-discovery.md` §3). The grouping mirrors the hue
+/// (see `hunter/docs/arch/sweep.md` "Metric-combo discovery pipeline"). The grouping mirrors the hue
 /// families the registry already keeps — promoted from a color convention to a real
 /// field so the pipeline reads it as data.
 ///

@@ -1,5 +1,5 @@
 //! Phase 3 — one-shot backtest validation for the flow-reversion "dip scalper"
-//! (`docs/roadmap/flow-scalper-implementation-plan.md` §3). Drives the REAL engine
+//! (results + verdict in `docs/roadmap/flow-reversion-scalper.md` "Phase 3"). Drives the REAL engine
 //! fold (`run_replay`) over the sealed Parquet lake for two rules — a 2-metric
 //! MINIMAL CORE and a GATED variant — and prints the acceptance-gate stats vs the
 //! family distributions in `docs/roadmap/flow-reversion-scalper.md`.

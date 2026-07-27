@@ -2,8 +2,9 @@
 
 Deep-dive for aggregate flow (`m_flow_lifetime` / `m_flow_window`) and the
 volume/organic split (`m_flow_split` / `m_flow_split_window`). High-level map:
-[`arch/strategies.md`](../../arch/strategies.md). Split origin roadmap (shipped):
-[`roadmap/volume-flow-split-plan.md`](../../roadmap/volume-flow-split-plan.md).
+[`arch/strategies.md`](../../arch/strategies.md). The split's origin roadmap
+(`roadmap/volume-flow-split-plan.md`) is deleted — fully shipped and superseded by
+this file.
 
 ## Aggregate flow (`m_flow_lifetime` / `m_flow_window`)
 
@@ -133,7 +134,15 @@ future work (gated on hand-label kit).
 
 ## Future toggles (not built)
 
-- Cross-token contagion (fingerprint-keyed bounded set in `EngineState`)
-- Baselines / since-entry metric variants
-- Transfer ingestion (SOL/token transfers)
-- Discovery auto-promote above score thresholds
+- **Cross-token contagion**: wallets tagged on token A pre-tagged on token B of the
+  same fingerprint. Needs a bounded shared set inside `EngineState` keyed by
+  fingerprint (size-capped, log-replayable). Powerful; risky (one false tag poisons a
+  whole group) — build only after v1 data shows rotation defeats per-token contagion.
+- **Baselines / since-entry variants**: anchor metrics to lifecycle moments (creator
+  first sell, entry fill). New metrics inside `flow_split.rs`, no structural change.
+- **Transfer ingestion**: direct wallet-linking via SOL/token transfers — a separate,
+  expensive ingest feature; only if the proxy demonstrably fails.
+- **Discovery auto-promote**: above a score threshold (likely `group_lift` +
+  `cross_token_recurrence` gates), write `volume_ix_patterns` without a toggle pass.
+  **Blocked on V4.4 hand-label kit.** Even then, default remains review-then-apply;
+  auto-promote is an opt-in mode on the discovery page, never a silent background job.

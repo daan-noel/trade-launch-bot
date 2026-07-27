@@ -21,8 +21,19 @@ anchors below are the permanent record.
 > cohort straight off the metric `REGISTRY` — measured through the engine's own
 > `MetricSeries`, not re-derived in SQL. The tables below stay as the recorded
 > ground truth for the 2026-07 lake and as the sanity check a generated menu is
-> compared against; a **new** metric no longer needs a hand-derivation pass. See
-> `docs/roadmap/metric-combo-discovery.md` §2.1.
+> compared against; a **new** metric no longer needs a hand-derivation pass. Module
+> map + architecture: [../../arch/sweep.md](../../arch/sweep.md) "Metric-combo
+> discovery pipeline" (`docs/roadmap/metric-combo-discovery.md`, which this section
+> used to point to, is deleted — its 6 build steps all shipped and are now covered
+> there).
+
+**Open decision carried forward (D1 — never pinned):** the discovery objective
+(`robust_profit × fire_rate × win_component × min_n_gate` in `discovery/objective.rs`)
+runs on tunable constants — `OPEN_HAIRCUT` (unrealized-mark discount), the
+`profit_factor` cap, `MIN_CLOSED` (the anti-overfit floor below which a combo scores
+zero), and the plateau-penalty weight. They're seeded from the percentile anchors below,
+not validated against real outcomes. Pin the final set here, in a new subsection, once a
+discovery run's picks are checked against live/paper results.
 
 Subsets used:
 - **ALL** - every curve trade moment.

@@ -213,6 +213,52 @@ CLI: `cargo run -p lab -- lake-export` (batch job; reads `SWEEP_LAKE_DIR`, defau
 
 **Full audit (all migrated except one narrow, accepted exception).** Every bulk trade-history read path under `lab/src/` is lake-sourced: grouped sweep, tpsl1/tpsl2/swing1 simulate, swing1-detect, the generic swing analyzer, and the three backtests. The only remaining PG touch on the `trades` table is `grouped_sweep.rs`'s `resolve_fill_signatures` (called from `list_token_results`): a bounded, indexed `(mint, slot, side)` lookup against `TradeRepo` that back-fills `entry_tx`/`exit_tx` Solscan links for a combo's fills, since the sweep loads `Selection::with_signatures = false` (see above) and its slim `CorpusTrade` never carries a signature. This is a deliberate keep — it's a handful of indexed point-lookups, not a bulk scan, and the alternative (threading `tx_signature` through every sweep row) costs ~88 B/row for a field only the drill-in view needs. Everything else PG still serves in `lab` (sweep run/group/combo/result metadata, `strategy_rules`/`strategy_runs`/`strategy_positions`, the `tokens`/`tokens_info` dimension + candidate scan, the token-list boot seed) is dimension/job state, not trade history, and was never a lake-migration candidate.
 
+## Metric-combo discovery pipeline (`lab/src/discovery/`)
+
+Lab-only, built entirely on top of the generic sweep engine above (no new engine) —
+an automated screen → family-grid → out-of-sample-validate pipeline that finds which
+metric/param combos actually make money for a cohort, ranked by a stability-weighted
+objective, then hands a one-click promote into the shared rule editor. Nothing ships to
+EC2; live/paper are untouched (an analysis aid that *outputs* combos, like the sweep).
+Registry-driven throughout: a metric added to `REGISTRY` needs no pipeline edit (family
+tag + unit/scope/monotonic flags are all it reads).
+
+| File | Role |
+| --- | --- |
+| `discovery/objective.rs` | `DiscoveryWeights` (tunable constants below) + `discovery_score(ComboStats) → Ranked \| BelowMinClosed \| NoFire` — a pure re-rank over persisted `ComboMetrics`, not a `checklist_score`/kernel edit (that stays the live/paper/sweep SSOT) |
+| `discovery/candidates.rs` | `screen_plan` (registry → screenable metrics + `SkipReason`) → `collect_percentiles` (measured `[p05..p99]` per metric, via the engine's own `MetricSeries` — deliberately **not** DuckDB SQL, else percentile semantics could drift from `hunter_engine`) → `build_menus` (`p10/p25/p50/p75/p90` + `off`, rounded by unit) → feeds `AxesModel` directly; the hand-derived table in [axis-value-candidates.md](../plans/sweep/axis-value-candidates.md) is now generated, not authored |
+| `discovery/screen.rs` | Layer 1: `ScreenStrategy`, an additive scan mode (`GenericSweepStrategy::share_precompute`) that sweeps every candidate metric alone against a fixed TP/SL baseline over **one** shared per-token precompute (~6N combos, not 6^N) → `Verdict{Keep\|DropNoEdge\|DropSpike\|DropThin\|DropNoBaseline}` per metric → ranked shortlist |
+| `discovery/family.rs` | Layer 2: `plan_families` groups the Layer-1 shortlist by the registry's `MetricFamily` tag (`price`/`flow`/`flow_split`/`liquidity-age`, mirrors the hue-wheel families), grids within each family, then runs an O(families²) pairwise interaction check (pin A's best, sweep B) → `Independent \| Interacting \| Inconclusive` per ordered pair, plus each family's `BestCombo` (canonical `RuleParams` JSON, ready to promote) |
+| `discovery/validate.rs` | Layer 3: `split_tokens` (age-based train/validate split) + `validate_candidates` re-scores each Layer-2 winner on the held-out slice via `simulate_one_combo` under the run's own `Pricing`/`as_of` → `ValidationVerdict{Holds\|Degraded\|Failed\|ThinValidate\|NoFireValidate\|UnrankableTrain}` (the two "can't tell" outcomes are never silently a pass) |
+| `discovery/pipeline.rs` | `run_pipeline` — splits the cohort first, fits Layers 1–2 on train, validates on the held-out slice (a degenerate split fits the whole cohort and reports `no_validation` rather than a vacuous pass) |
+| `discovery/dto.rs` + `api/handlers/strategies/metric_discovery.rs` | `PipelineDto` (report flattened to stable wire vocabulary) + `POST /api/strategies/metric-discovery` (+`/cancel`/`/last`/`/{run_id}`, SSE progress, single-flight mutually exclusive with sweep/flow-discovery, cohort scoping by fingerprint/`ix_labels`/field filters) |
+| `frontend/src/lab/pages/strategies/MetricDiscoveryPage.tsx` | shortlist → family winners + interaction map → validation verdicts, **Promote…** on any winner (builds a `PromotedRuleDraft` client-side from `params_json` — no dedicated promote endpoint) |
+
+**Objective (Layer 1's ranking core):** `robust_profit × fire_rate × win_component ×
+min_n_gate`, where `robust_profit` is median-anchored (not mean — one whale winner can't
+carry a combo) with an open-position mark discounted by `OPEN_HAIRCUT`, `win_component`
+blends `win_rate` with a capped `profit_factor`, and `min_n_gate` hard-zeroes any combo
+with `n_closed < MIN_CLOSED` (the anti-overfit backbone — no profit% lets a 4-trade
+"edge" rank). **Open (unpinned) constant:** `OPEN_HAIRCUT` / `profit_factor` cap /
+`MIN_CLOSED` / plateau-penalty weight are seeded from the `axis-value-candidates.md`
+anchors but never validated-and-pinned as a permanent tuning — revisit once a discovery
+run's picks are checked against live/paper outcomes.
+
+**Perf shape is scan/precompute-bound, not fold-bound** (few combos; cost is the corpus
+load + per-token `MetricSeries` build + the exit scan). A discovery run should therefore
+pick a **tighter RAM reserve** (bigger resident series wave, fewer precompute rebuilds)
+and **AVX-512 on in release builds** (2.2× on the pnl-bound exit scan every TP/SL
+baseline carries) rather than inherit the interactive sweep's defaults — see
+`discovery/screen.rs`'s knob table. The dominant lever regardless is precompute reuse:
+one corpus load + one series-union precompute shared across every metric screen, not
+N re-loads.
+
+**Data reality:** the fingerprint dimension (`tokens`/`tokens_info`) covers only ~7% of
+the tradable universe (a backfill gap, not a design choice) — this throttles Layer-2/3
+*grouping/scoping* only; Layer-1 metric-axis screening runs over the full trade corpus
+unaffected. Default to a tight single-regime cohort (one fingerprint scope or
+`ix_labels`-only) — widen only when a regime can't clear `MIN_CLOSED`.
+
 ## Adding a strategy
 
 `strategies/<x>.rs` (`Strategy`+`ParamSpace`+`AxesSpec`) + `registry.rs` arm (table triple + dispatch) + `<x>_grouped_sweep_*` tables in a `lab/migrations/` SQL file + frontend param-key list + axes defs. Engine, grouping, repo, handler, and page are reused unchanged.

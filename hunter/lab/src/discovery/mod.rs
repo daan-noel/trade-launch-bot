@@ -1,6 +1,7 @@
 //! Metric-combo **discovery** pipeline (lab-only) — the automated
 //! screen → family-grid → validate flow that finds the metric/param combos worth
-//! promoting for a token cohort. Plan: `docs/roadmap/metric-combo-discovery.md`.
+//! promoting for a token cohort. Architecture: `docs/arch/sweep.md` "Metric-combo
+//! discovery pipeline".
 //!
 //! Built in layers, each independently useful:
 //! * [`objective`] — the robust re-rank over persisted combo metrics (step 1).

@@ -91,7 +91,7 @@ function badgeVariant(tag: string): Variant {
  * interaction map, and out-of-sample verdicts. A validated winner promotes into
  * the shared rule editor (reuses the sweep's Promote modal) against a fingerprint.
  *
- * Plan: `hunter/docs/roadmap/metric-combo-discovery.md`.
+ * Architecture: `hunter/docs/arch/sweep.md` "Metric-combo discovery pipeline".
  */
 export function MetricDiscoveryPage() {
   const [stored, setConfig] = useLocalStorage<Config>('hunter.lab.metricDiscovery.config', DEFAULTS);

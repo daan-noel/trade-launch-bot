@@ -8,7 +8,7 @@
 //! load reuses the discovery library (`crate::discovery`) — this handler is just the
 //! corpus-scoping + orchestration edge.
 //!
-//! Plan: `hunter/docs/roadmap/metric-combo-discovery.md` §8 step 6.
+//! Architecture: `hunter/docs/arch/sweep.md` "Metric-combo discovery pipeline".
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;

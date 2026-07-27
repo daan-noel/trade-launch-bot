@@ -1,7 +1,7 @@
 //! Volume-flow structure discovery — score distinct trade `ix_labels` sequences
 //! inside sweep-style fingerprint groups so a user can toggle volume patterns.
 //!
-//! See `hunter/docs/roadmap/volume-flow-split-plan.md` §7.
+//! See `hunter/docs/plans/strategies/metrics-reference.md` "Discovery scoring".
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};

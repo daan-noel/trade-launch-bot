@@ -1,7 +1,7 @@
 //! Volume/organic flow split — SSOT hashes, classifier, and per-fingerprint state
 //! for `m_flow_split` (lifetime) + `m_flow_split_window` (trailing window).
 //!
-//! See `hunter/docs/roadmap/volume-flow-split-plan.md`.
+//! See `hunter/docs/plans/strategies/metrics-reference.md`.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
