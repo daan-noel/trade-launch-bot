@@ -5,10 +5,11 @@ import { IconButton } from 'components/ui/IconButton';
 import { SaveIcon, SpinnerIcon } from 'components/ui/icons';
 import { Button } from 'components/ui/Button';
 import { IxLabelsInput } from 'components/ui/IxLabelsInput';
-import { formatIxLabelsText, parseIxLabelsText } from 'lib/ixLabels';
+import { configuredIxLabels, formatIxLabelsText, parseIxLabelsText } from 'lib/ixLabels';
 import {
   lamportsToSol,
   solToLamports,
+  MIN_BUCKET_WIDTH_SOL,
   type Fingerprint,
   type FingerprintDraft,
 } from 'lib/strategy/types';
@@ -87,9 +88,16 @@ function toDraft(s: FormState): FingerprintDraft {
   };
 }
 
-/** How many match criteria the current form configures (mirrors the backend
- *  `has_any_criterion` — the create endpoint rejects a criterion-less draft). */
-function criterionCount(s: FormState): number {
+/**
+ * How many match criteria the current form configures — must agree with the
+ * backend `Fingerprint::has_any_criterion`, which rejects a criterion-less draft.
+ *
+ * `parsedLabels` is the *parsed* label list, never the raw textarea text: text
+ * like `[]` or `,` is non-empty but parses to no labels, and the backend folds
+ * an empty list to `None`. Counting the raw text enabled Create on a draft the
+ * server then rejected with a 400.
+ */
+function criterionCount(s: FormState, parsedLabels: string[] | null): number {
   const axes = [
     s.cu_limit,
     s.cu_price,
@@ -99,8 +107,19 @@ function criterionCount(s: FormState): number {
     s.first_slot_buy_sol,
     s.first_slot_sell_sol,
   ];
-  const labels = s.ix_labels.trim() ? 1 : 0;
-  return axes.filter((v) => v != null).length + labels;
+  // `v != null`, NOT truthiness — a `0` axis is a real bucket (`[0, width)`), so
+  // it counts. Only "not set" (`null`) drops out of the fingerprint's identity.
+  return axes.filter((v) => v != null).length + (configuredIxLabels(parsedLabels) ? 1 : 0);
+}
+
+/** Bucket-width problem, or `null` when the width is usable. Mirrors the backend
+ *  `Fingerprint::validate` so the form fails fast instead of on a 400. */
+function bucketWidthError(width: number | null): string | null {
+  if (width == null) return null; // blank ⇒ the 0.1 default is applied on save
+  if (!Number.isFinite(width) || width < MIN_BUCKET_WIDTH_SOL) {
+    return `bucket width must be at least ${MIN_BUCKET_WIDTH_SOL}◎ — 0 is not "no bucketing", it collapses every amount into one bucket`;
+  }
+  return null;
 }
 
 /**
@@ -121,9 +140,10 @@ export function FingerprintForm({
   const fpConfigGroups = groupsWithFingerprintConfig(registry);
 
   const ixParsed = useMemo(() => parseIxLabelsText(s.ix_labels), [s.ix_labels]);
-  const criteria = criterionCount(s);
+  const criteria = criterionCount(s, ixParsed.labels);
   const nameOk = s.name.trim().length > 0;
-  const canSubmit = criteria > 0 && nameOk && !submitting && !ixParsed.error;
+  const widthError = bucketWidthError(s.bucket_size_amount);
+  const canSubmit = criteria > 0 && nameOk && !submitting && !ixParsed.error && !widthError;
 
   const solField = (label: string, key: keyof FormState, tip: (typeof FINGERPRINT_FIELD_HELP)[keyof typeof FINGERPRINT_FIELD_HELP]) => (
     <label className="flex flex-col gap-1 text-[11px] text-text-dim">
@@ -185,6 +205,7 @@ export function FingerprintForm({
             fieldSize="sm"
             numeric
             unit="◎"
+            className={widthError ? 'border-red/60' : undefined}
             numericValue={s.bucket_size_amount}
             onNumericChange={(n) => set('bucket_size_amount', n)}
           />
@@ -219,7 +240,9 @@ export function FingerprintForm({
 
       <div className="flex items-center justify-between">
         <span className="text-[11px] text-text-dim/80">
-          {criteria === 0 ? (
+          {widthError ? (
+            <span className="text-red">{widthError}</span>
+          ) : criteria === 0 ? (
             <span className="text-red">needs ≥1 match criterion</span>
           ) : (
             `${criteria} criterion${criteria === 1 ? '' : 'a'} · matched by ${s.bucket_size_amount ?? 0.1}◎ bucket`

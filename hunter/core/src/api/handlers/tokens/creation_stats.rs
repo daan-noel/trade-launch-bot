@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
+use hunter_engine::fingerprint::configured_labels;
+
 use crate::api::table_query::TableRequest;
 use crate::state::core_state::CoreState;
-use crate::storage::repositories::creation_stats_repo::{
-    fingerprint_bucket_width, HeatCellRow, StatsFilter, TrendPointRow,
-};
+use crate::storage::repositories::creation_stats_repo::{HeatCellRow, StatsFilter, TrendPointRow};
 use crate::grouping::GroupField;
 
 use super::tokens::TokenSummary;
@@ -472,9 +472,12 @@ pub async fn get_grouped_creation_stats(
             to,
             segment,
             group_by: Vec::new(),
-            bucket_width: fingerprint_bucket_width(&fp),
+            // The fingerprint's OWN width, never the caller's and never a
+            // substituted default — the scoped card must report the same width
+            // the engine matcher grades this fingerprint at.
+            bucket_width: fp.bucket_size_amount,
             field_filters: serde_json::json!({}),
-            ix_labels_filter: fp.ix_labels.clone().filter(|v| !v.is_empty()),
+            ix_labels_filter: configured_labels(fp.ix_labels.as_deref()).map(<[String]>::to_vec),
             total,
             groups: data
                 .groups

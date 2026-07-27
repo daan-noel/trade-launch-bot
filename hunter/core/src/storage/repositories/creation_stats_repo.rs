@@ -2,6 +2,8 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::{json, Value as JsonValue};
 use sqlx::PgPool;
 
+use hunter_engine::fingerprint::configured_labels;
+
 use crate::config::constants::lamports_to_sol;
 use crate::grouping::{bucket_sol_label, decimals_for, GroupField};
 use crate::models::Fingerprint;
@@ -289,7 +291,7 @@ fn group_field_sql(f: GroupField, width: f64, ti_alias: &str) -> String {
 /// the scoped dashboard so the single `g = 0` card displays the fingerprint's
 /// axes as-is — including `ix_labels` — instead of an empty `{}` "ALL" key.
 pub fn group_key_from_fingerprint(fp: &Fingerprint) -> JsonValue {
-    let width = fingerprint_bucket_width(fp);
+    let width = fp.bucket_size_amount;
     let decimals = decimals_for(width);
     let mut map = serde_json::Map::new();
     if let Some(v) = fp.cu_limit {
@@ -328,22 +330,10 @@ pub fn group_key_from_fingerprint(fp: &Fingerprint) -> JsonValue {
             json!(bucket_sol_label(lamports_to_sol(l), width, decimals)),
         );
     }
-    if let Some(labels) = fp.ix_labels.as_ref().filter(|l| !l.is_empty()) {
+    if let Some(labels) = configured_labels(fp.ix_labels.as_deref()) {
         map.insert("ix_labels".into(), json!(labels.join(" | ")));
     }
     JsonValue::Object(map)
-}
-
-/// Effective bucket width (SOL) for a saved fingerprint's continuous SOL axes —
-/// its own `bucket_size_amount`, falling back to the shared default when unset
-/// (mirrors the sweep/discovery "scope by fingerprint" contract, which always
-/// groups/matches at the fingerprint's own width, never the caller's).
-pub fn fingerprint_bucket_width(fp: &Fingerprint) -> f64 {
-    if fp.bucket_size_amount > 0.0 {
-        fp.bucket_size_amount
-    } else {
-        crate::grouping::SOL_BUCKET_WIDTH
-    }
 }
 
 /// SQL predicate pinning a continuous SOL token expression to the SAME bucket
@@ -374,10 +364,20 @@ fn bucket_eq_clause(sol_expr: &str, fp_value_sol: f64, width: f64) -> String {
 ///
 /// An all-`None` fingerprint mirrors the engine matcher's guard (a fingerprint
 /// with no criteria never matches "everything") with a single `FALSE` clause.
-fn fingerprint_scope_clauses(fp: &Fingerprint, width: f64, ti_alias: &str) -> Vec<String> {
+///
+/// The bucket width is read off `fp` and is **deliberately not a parameter**:
+/// this is a second implementation of `hunter_engine::fingerprint::matches`, so
+/// any width substituted on this side (an "unset ⇒ default" fallback, a caller's
+/// own width) silently makes the dashboard's matched-token count disagree with
+/// what the live engine actually arms — the reassuring number wins and the
+/// divergence goes unnoticed. `Fingerprint::validate` + the `0014` CHECK
+/// guarantee the stored width is usable, so there is nothing left to substitute.
+/// `fingerprint_scope_sql_buckets_at_the_engine_width` locks the placement.
+fn fingerprint_scope_clauses(fp: &Fingerprint, ti_alias: &str) -> Vec<String> {
     if !fp.has_any_criterion() {
         return vec!["FALSE".to_string()];
     }
+    let width = fp.bucket_size_amount;
     let mut out = Vec::new();
     if let Some(v) = fp.cu_limit {
         out.push(format!("t.cu_limit = {v}"));
@@ -579,16 +579,16 @@ impl CreationStatsRepo {
         bucket_unit: &str,
         f: StatsFilter<'_>,
     ) -> anyhow::Result<GroupedCreation> {
-        let width = fingerprint_bucket_width(fp);
         let mut preds = String::new();
-        for clause in fingerprint_scope_clauses(fp, width, "ti") {
+        for clause in fingerprint_scope_clauses(fp, "ti") {
             preds.push_str(&format!("\n  AND {clause}"));
         }
         // ix_labels: ordered exact match over the unwrapped label sequence
         // (handles bare-array + `{instructions:[…]}`) — NOT `grouped()`'s
         // sorted-set-equality `ix_labels_filter`. Bound as `text[]`. Owned so
         // it can be re-bound across all three queries.
-        let ix_bind: Option<Vec<String>> = fp.ix_labels.clone().filter(|l| !l.is_empty());
+        let ix_bind: Option<Vec<String>> =
+            configured_labels(fp.ix_labels.as_deref()).map(<[String]>::to_vec);
         if ix_bind.is_some() {
             preds.push_str(&format!(
                 "\n  AND {}",
@@ -799,7 +799,6 @@ pub fn build_grouped_tokens_where_scoped(
 ) -> (String, Vec<crate::api::handlers::tokens::SqlArg>) {
     use crate::api::handlers::tokens::SqlArg;
 
-    let width = fingerprint_bucket_width(fp);
     let mut clauses: Vec<String> = Vec::new();
     let mut args: Vec<SqlArg> = Vec::new();
 
@@ -819,9 +818,9 @@ pub fn build_grouped_tokens_where_scoped(
 
     // Fingerprint scope — runs against `token_repo`'s query, which joins
     // `tokens_info` as `i` (NOT `grouped_scoped`'s `ti`; see `group_field_sql`).
-    clauses.extend(fingerprint_scope_clauses(fp, width, "i"));
-    if let Some(labels) = fp.ix_labels.as_ref().filter(|l| !l.is_empty()) {
-        args.push(SqlArg::StrArray(labels.clone()));
+    clauses.extend(fingerprint_scope_clauses(fp, "i"));
+    if let Some(labels) = configured_labels(fp.ix_labels.as_deref()) {
+        args.push(SqlArg::StrArray(labels.to_vec()));
         let ph = format!("${}", args.len());
         clauses.push(ix_labels_ordered_eq_sql("t.ix_labels", &ph));
     }
@@ -917,6 +916,152 @@ mod grouped_tokens_tests {
         assert_eq!(gk["cu_limit"], "200000");
         assert_eq!(gk["cu_price"], "1000");
         assert_eq!(gk["ix_labels"], "Pump.Fun: Create | Pump.Fun: Buy");
+    }
+
+    /// A fingerprint with no axis set, at `width`.
+    fn blank_fp(width: f64) -> Fingerprint {
+        let now = Utc::now();
+        Fingerprint {
+            id: uuid::Uuid::nil(),
+            name: "t".into(),
+            cu_limit: None,
+            cu_price: None,
+            init_buy_lamports: None,
+            max_cost_lamports: None,
+            spendable_lamports_in: None,
+            first_slot_buy_lamports: None,
+            first_slot_sell_lamports: None,
+            bucket_size_amount: width,
+            ix_labels: None,
+            metric_config: serde_json::json!({}),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Every bucket-matched SOL axis, as (setter, the token-side SQL expression the
+    /// clause builder buckets). All five share the row's ONE `bucket_size_amount`,
+    /// so the guard below has to walk all five — a per-axis width would be a bug in
+    /// itself. `ti_alias` is `"ti"` throughout (`grouped_scoped`'s join alias).
+    #[allow(clippy::type_complexity)]
+    const SOL_AXES: &[(fn(&mut Fingerprint, Option<i64>), &str)] = &[
+        (|fp, v| fp.init_buy_lamports = v, "t.initial_buy_lamports::float8 / 1e9"),
+        (
+            |fp, v| fp.max_cost_lamports = v,
+            "(t.initial_buy_instruction->>'max_cost_lamports')::float8 / 1e9",
+        ),
+        (
+            |fp, v| fp.spendable_lamports_in = v,
+            "(t.initial_buy_instruction->>'spendable_lamports_in')::float8 / 1e9",
+        ),
+        (|fp, v| fp.first_slot_buy_lamports = v, "ti.first_slot_buy_lamports::float8 / 1e9"),
+        (|fp, v| fp.first_slot_sell_lamports = v, "ti.first_slot_sell_lamports::float8 / 1e9"),
+    ];
+
+    /// One-axis fingerprint at `width`, for the `axis`-th entry of [`SOL_AXES`].
+    fn one_axis_fp(axis: usize, lamports: i64, width: f64) -> Fingerprint {
+        let mut fp = blank_fp(width);
+        SOL_AXES[axis].0(&mut fp, Some(lamports));
+        fp
+    }
+
+    /// SSOT guard (no DB): the "scope by saved fingerprint" SQL is a second
+    /// implementation of `hunter_engine::fingerprint::matches`, so **every** one of
+    /// the five bucket-matched SOL axes must bucket at the fingerprint's OWN
+    /// `bucket_size_amount` and place every value exactly where the engine does.
+    ///
+    /// This fails on a revert to the old `fingerprint_bucket_width` fallback
+    /// (`0 ⇒ 0.1`), on any drift in the `floor(v / w + eps)` form or the epsilon,
+    /// and on any axis quietly acquiring a width of its own — the two surfaces
+    /// would then disagree about which tokens a fingerprint matches, with the
+    /// dashboard showing the reassuring number.
+    #[test]
+    fn fingerprint_scope_sql_buckets_every_sol_axis_at_the_engine_width() {
+        use crate::grouping::{bucket_index, same_bucket, BUCKET_EPS};
+
+        // A 0-SOL axis is a REAL value (bucket `[0, width)`), not "unset" — it is
+        // in the matrix on purpose.
+        for (axis, (_, sol_expr)) in SOL_AXES.iter().enumerate() {
+            for width in [1e-6f64, 0.05, 0.1, 0.25, 1.0, 5.0] {
+                for fp_sol in [0.0f64, 0.1, 0.5, 1.0, 2.34, 8.0] {
+                    let lamports = (fp_sol * 1e9).round() as i64;
+                    let fp = one_axis_fp(axis, lamports, width);
+                    let clauses = fingerprint_scope_clauses(&fp, "ti");
+                    assert_eq!(clauses.len(), 1, "one configured axis ⇒ one clause");
+
+                    // The emitted literal must be the engine's own bucket index at
+                    // the fingerprint's own width — no substituted default. Compare
+                    // through the same lamports→SOL conversion the clause builder
+                    // uses so this tests the bucketing, not f64 round-tripping.
+                    let fp_sol = lamports_to_sol(lamports);
+                    let idx = bucket_index(fp_sol, width);
+                    let expected =
+                        format!("floor(({sol_expr}) / {width} + {BUCKET_EPS}) = {idx}");
+                    assert_eq!(clauses[0], expected, "axis={axis} width={width} fp={fp_sol}");
+
+                    // …and the SQL's arithmetic must agree with `same_bucket` on
+                    // which token values land in it (the predicate Postgres will
+                    // evaluate, replicated here in f64 exactly as the text reads).
+                    for tok_sol in [0.0, 0.05, 0.1, 0.3, 0.5, 1.0, 1.05, 2.34, 8.0] {
+                        let sql_hit = ((tok_sol / width) + BUCKET_EPS).floor() as i64 == idx;
+                        assert_eq!(
+                            sql_hit,
+                            same_bucket(tok_sol, fp_sol, width),
+                            "axis={axis} width={width} fp={fp_sol} tok={tok_sol}",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A zero-SOL axis must reach the SQL as a real `= 0` bucket on every axis,
+    /// never be skipped as "unset" — the mirror of the `Option` semantics the
+    /// engine matcher uses. `None` remains the only way to say "not configured".
+    #[test]
+    fn zero_sol_axis_emits_its_own_bucket_clause() {
+        for axis in 0..SOL_AXES.len() {
+            let fp = one_axis_fp(axis, 0, 1.0);
+            let clauses = fingerprint_scope_clauses(&fp, "ti");
+            assert_eq!(clauses.len(), 1, "axis {axis}: a 0-lamport axis must emit a clause");
+            assert!(clauses[0].ends_with("= 0"), "axis {axis}: expected bucket 0: {}", clauses[0]);
+        }
+        // …while an all-absent fingerprint is fenced off entirely rather than
+        // matching every token.
+        assert_eq!(
+            fingerprint_scope_clauses(&blank_fp(1.0), "ti"),
+            vec!["FALSE".to_string()],
+        );
+
+        // `Some([])` is the SAME state as `None` (see `configured_labels`), so it
+        // must fence too. It previously satisfied `has_any_criterion`, skipped the
+        // FALSE guard, and then emitted NO predicates — leaving the scoped
+        // dashboard matching every token in the window while the engine matcher
+        // (which does not count empty labels) matched none.
+        let mut empty_labels = blank_fp(1.0);
+        empty_labels.ix_labels = Some(vec![]);
+        assert_eq!(
+            fingerprint_scope_clauses(&empty_labels, "ti"),
+            vec!["FALSE".to_string()],
+            "an empty label list must never widen the scope to every token",
+        );
+    }
+
+    /// The `g = 0` scoped card labels its axes at the same width the clauses bucket
+    /// at, so the card a user reads describes the rows they were actually served.
+    #[test]
+    fn scoped_group_key_labels_at_the_fingerprint_width() {
+        let mut fp = blank_fp(1.0);
+        fp.spendable_lamports_in = Some(0);
+        fp.init_buy_lamports = Some(2_500_000_000); // 2.5 SOL @ 1.0 ⇒ [2, 3)
+        let gk = group_key_from_fingerprint(&fp);
+        assert_eq!(gk["spendable_lamports_in"], "0–1", "a 0 axis labels as its own bucket");
+        assert_eq!(gk["initial_buy_sol"], "2–3");
+
+        let mut fp = blank_fp(0.1);
+        fp.spendable_lamports_in = Some(1_050_000_000); // 1.05 SOL @ 0.1 ⇒ [1.0, 1.1)
+        let gk = group_key_from_fingerprint(&fp);
+        assert_eq!(gk["spendable_lamports_in"], "1.0–1.1");
     }
 
     #[test]

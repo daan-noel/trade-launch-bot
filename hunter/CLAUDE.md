@@ -158,6 +158,29 @@ follow the same rule. A new SOL column that skips the suffix is a bug (caused th
 `find_tx_by_fill` lamports-vs-SOL mismatch). Codified in `0009_sol_lamports_naming.sql`; the
 executor + `lake/` schema keep their own decoupled vocab.
 
+## Zero-as-unbound (locked)
+
+`0` may mean "off / unbounded" **only where 0 is not a valid value of the domain** — caps and
+limits (`max_total_tokens`, `max_concurrent_tokens`, slippage bps: `0 = no floor`). Anything
+**measured** — a SOL amount, a count, a bucket edge, a width — uses `Option`/NULL for "not
+set", because 0 is a real observation there. Never fold the two: a fingerprint axis of `0`
+lamports is the bucket `[0, width)`, and only `None` drops the axis from the fingerprint's
+identity (`bucket_axis` / `IS NOT DISTINCT FROM` / the `∅` grouping sentinel all rely on it).
+**An empty collection is the same sentinel** — `ix_labels: Some([])` means "not set", so it
+collapses to `None` via the ONE decider `hunter_engine::fingerprint::configured_labels`, and
+`from_json` folds `[]` → `None` at the wire boundary so the ambiguous state never reaches
+storage (normalized by `0015_fingerprint_empty_ix_labels_null.sql`).
+
+A *sentinel* field always needs ONE reader; two readers of the same sentinel is the bug, and
+it fails **in opposite directions** on the fingerprint path — the engine matcher turns
+"no criteria" into *matches nothing* (rules go silently dead) while `fingerprint_scope_clauses`
+turns it into *matches every token in the window*. Both of the fixed bugs had that shape:
+`bucket_size_amount` (`0 ⇒ default 0.1` in the SQL mirror vs literal `0` in the matcher, where
+it saturates every positive amount into one bucket and arms on any non-zero value) and
+`ix_labels` (`is_some()` in the model vs empty-filtered in the engine). Locked by
+`has_any_criterion_agrees_with_engine` + `fingerprint_scope_sql_buckets_every_sol_axis_at_the_engine_width`.
+Where a sentinel stays, the UI marks it with the `Input` `blankZero` prop, never a truthiness check.
+
 ## Gotchas (hot-path landmines)
 
 - **Deferred entry fingerprint gates:** a fingerprint axis whose source data isn't settled at

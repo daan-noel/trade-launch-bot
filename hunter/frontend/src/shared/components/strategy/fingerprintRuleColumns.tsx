@@ -8,6 +8,7 @@ import type { ColumnDef, SortValue } from 'components/table/types';
 import { MultiSortHeader } from 'components/table/MultiSortHeader';
 import { LinkIcon } from 'components/ui/icons';
 import {
+  configuredIxLabels,
   IX_LABELS_FILTER_PLACEHOLDER,
   IX_LABELS_FILTER_TITLE,
   isIxLabelJsonFilter,
@@ -84,7 +85,7 @@ const FP_SORT_AXES: FpSortAxis[] = [
   {
     key: 'fp_ix',
     label: 'ix',
-    sortValue: (fp) => fp?.ix_labels?.length ?? null,
+    sortValue: (fp) => configuredIxLabels(fp?.ix_labels)?.length ?? null,
   },
   {
     key: 'fp_bkt',

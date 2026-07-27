@@ -108,10 +108,8 @@ pub async fn create_fingerprint(
     body: web::Json<serde_json::Value>,
 ) -> impl Responder {
     let fp = Fingerprint::from_json(&body, Uuid::new_v4(), chrono::Utc::now());
-    if !fp.has_any_criterion() {
-        return HttpResponse::BadRequest().json(
-            serde_json::json!({ "error": "fingerprint must configure at least one match criterion" }),
-        );
+    if let Err(e) = fp.validate() {
+        return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
     }
     if let Err(e) = hunter_engine::metrics::flow_split::FlowPatterns::validate_metric_config(
         &fp.metric_config,
@@ -131,6 +129,9 @@ pub async fn update_fingerprint(
     body: web::Json<serde_json::Value>,
 ) -> impl Responder {
     let fp = Fingerprint::from_json(&body, path.into_inner(), chrono::Utc::now());
+    if let Err(e) = fp.validate() {
+        return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
+    }
     if let Err(e) = hunter_engine::metrics::flow_split::FlowPatterns::validate_metric_config(
         &fp.metric_config,
     ) {

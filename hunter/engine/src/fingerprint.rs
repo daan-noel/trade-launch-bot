@@ -120,8 +120,22 @@ impl Fingerprint {
     /// The configured ix-label sequence, treating `Some(empty)` as absent (mirrors
     /// the legacy `check_instruction_labels`: an empty rule label list is inert).
     fn configured_ix_labels(&self) -> Option<&[String]> {
-        self.ix_labels.as_deref().filter(|v| !v.is_empty())
+        configured_labels(self.ix_labels.as_deref())
     }
+}
+
+/// **The one place that decides whether a label axis is configured.** `Some(&[])`
+/// is a second spelling of "not set" — exactly like a `0` sentinel on a numeric
+/// axis — so it must collapse to `None` everywhere or two readers will disagree
+/// about whether the fingerprint has any criteria at all. That disagreement is
+/// not a cosmetic one: the matcher's `has_any_criterion` guard turns a
+/// criterion-less fingerprint into *matches nothing*, while the creation-stats
+/// SQL mirror turns one into *matches everything in the window*.
+///
+/// `hunter_core`'s `models::Fingerprint::has_any_criterion` calls this too — see
+/// the `has_any_criterion_agrees_with_engine` guard in that crate.
+pub fn configured_labels(labels: Option<&[String]>) -> Option<&[String]> {
+    labels.filter(|v| !v.is_empty())
 }
 
 /// Which axes a match judges. First-slot axes only settle after the creation

@@ -81,7 +81,11 @@ impl FingerprintRepo {
         Self { pool }
     }
 
+    /// Persist a new fingerprint. [`Fingerprint::validate`] runs first as the
+    /// backstop for non-HTTP writers (sweep promotion via [`Self::find_or_create`]),
+    /// so a bad `bucket_size_amount` can't reach the matcher through a side door.
     pub async fn insert(&self, fp: &Fingerprint) -> anyhow::Result<()> {
+        fp.validate().map_err(|e| anyhow::anyhow!("invalid fingerprint: {e}"))?;
         sqlx::query(
             r#"
             INSERT INTO fingerprints
@@ -110,7 +114,11 @@ impl FingerprintRepo {
         Ok(())
     }
 
+    /// Overwrite a fingerprint's axes. Validated exactly like [`Self::insert`] —
+    /// an edit can otherwise strip a live fingerprint to zero criteria (silently
+    /// killing every rule bound to it) or to a degenerate bucket width.
     pub async fn update(&self, fp: &Fingerprint) -> anyhow::Result<()> {
+        fp.validate().map_err(|e| anyhow::anyhow!("invalid fingerprint: {e}"))?;
         sqlx::query(
             r#"
             UPDATE fingerprints SET

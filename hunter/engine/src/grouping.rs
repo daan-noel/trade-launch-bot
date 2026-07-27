@@ -298,13 +298,13 @@ fn render_field(fp: &TokenFingerprint, f: GroupField, width: f64, decimals: usiz
             .first_slot_sell_sol
             .map(|v| bucket_sol_label(v, width, decimals))
             .unwrap_or_else(miss),
-        GroupField::IxLabels => {
-            if fp.ix_labels.is_empty() {
-                MISSING.to_string()
-            } else {
-                fp.ix_labels.join(" | ")
-            }
-        }
+        // Empty ≡ absent, decided by the same SSOT the fingerprint matcher uses —
+        // this group key is read back into a fingerprint identity (`∅` ⇒ axis
+        // unset), so the token side and the fingerprint side must agree.
+        GroupField::IxLabels => match crate::fingerprint::configured_labels(Some(&fp.ix_labels)) {
+            None => MISSING.to_string(),
+            Some(labels) => labels.join(" | "),
+        },
     }
 }
 

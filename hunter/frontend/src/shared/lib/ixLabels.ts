@@ -21,6 +21,26 @@ export const IX_LABELS_FILTER_PLACEHOLDER = '["Create","Buy"]  or  Buy';
 export const IX_LABELS_FILTER_TITLE =
   'JSON array/object = ordered exact match; otherwise newline/comma list matches any label substring';
 
+/**
+ * **The one place that decides whether a label axis is configured.** Mirrors Rust
+ * `hunter_engine::fingerprint::configured_labels`: an empty array is a second
+ * spelling of "not set" — exactly like a `0` sentinel on a numeric axis — so it
+ * collapses to `null` everywhere.
+ *
+ * Two readers disagreeing about this is not cosmetic: on the backend the engine
+ * matcher turns "no criteria" into *matches nothing* while the creation-stats SQL
+ * mirror turns it into *matches every token in the window*. Any UI that counts
+ * criteria must reach the same verdict as `Fingerprint::has_any_criterion`.
+ *
+ * Note the contrast with a SOL axis VALUE, where `0` is a real bucket
+ * (`[0, width)`) and only `null` drops the axis — don't fold the two rules.
+ */
+export function configuredIxLabels(
+  labels: string[] | null | undefined,
+): string[] | null {
+  return labels != null && labels.length > 0 ? labels : null;
+}
+
 /** Serialize labels for the textarea / display (pretty JSON array). Empty ⇒ `""`. */
 export function formatIxLabelsText(labels: string[] | null | undefined): string {
   const list = labels ?? [];

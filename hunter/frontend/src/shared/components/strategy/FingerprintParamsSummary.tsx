@@ -5,7 +5,7 @@
 
 import type { CSSProperties, ReactNode } from 'react';
 import { formatCompact, formatDecimalTrim } from 'utils/format';
-import { formatIxLabelsText } from 'lib/ixLabels';
+import { configuredIxLabels, formatIxLabelsText } from 'lib/ixLabels';
 import { metricColorStyle } from 'lib/strategy/metricColors';
 import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
 import { lamportsToSol, type Fingerprint } from 'lib/strategy/types';
@@ -91,7 +91,7 @@ export function flowStatusBadge(fp: Fingerprint): ReactNode {
 
 /** Axis chips only (no name) — set criteria + always-on bucket width. */
 export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
-  const ix = fp.ix_labels?.length ? fp.ix_labels : null;
+  const ix = configuredIxLabels(fp.ix_labels);
   const chips: ReactNode[] = [
     intChip('cu_limit', fp.cu_limit),
     intChip('cu_price', fp.cu_price),
@@ -124,9 +124,10 @@ export function fingerprintParamsSearchText(fp: Fingerprint | undefined, fallbac
   pushSol('spend', fp.spendable_lamports_in);
   pushSol('fs_buy', fp.first_slot_buy_lamports);
   pushSol('fs_sell', fp.first_slot_sell_lamports);
-  if (fp.ix_labels?.length) {
-    parts.push(`${fp.ix_labels.length}ix`);
-    parts.push(formatIxLabelsText(fp.ix_labels));
+  const ix = configuredIxLabels(fp.ix_labels);
+  if (ix) {
+    parts.push(`${ix.length}ix`);
+    parts.push(formatIxLabelsText(ix));
   }
   const flowCount = volumeIxPatternsFromConfig(fp.metric_config).length;
   // Match the `flowStatusBadge` pill text (`flow N` / `flow✗`) so filtering by
@@ -157,7 +158,7 @@ export function fingerprintIdentityKey(fp: Fingerprint | undefined, fallbackId?:
     fp.first_slot_buy_lamports ?? '',
     fp.first_slot_sell_lamports ?? '',
     fp.bucket_size_amount,
-    (fp.ix_labels ?? []).join(','),
+    (configuredIxLabels(fp.ix_labels) ?? []).join(','),
     flowCount,
   ].join('\u0001');
 }

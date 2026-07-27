@@ -4,6 +4,7 @@ import {
   findFingerprintForGroupKey,
   fingerprintCompatibleWithGroupKey,
   fingerprintIdentityFromGroupKey,
+  identityHasCriterion,
   parseLoLamports,
 } from './matchGroupFingerprint';
 
@@ -25,6 +26,40 @@ function fp(partial: Partial<Fingerprint> & Pick<Fingerprint, 'id'>): Fingerprin
     ...partial,
   };
 }
+
+describe('identityHasCriterion — must agree with backend has_any_criterion', () => {
+  const bare = {
+    cu_limit: null,
+    cu_price: null,
+    init_buy_lamports: null,
+    max_cost_lamports: null,
+    spendable_lamports_in: null,
+    first_slot_buy_lamports: null,
+    first_slot_sell_lamports: null,
+    bucket_size_amount: 0.1,
+    ix_labels: null,
+  };
+
+  it('does not count an empty label list', () => {
+    // `[]` is a second spelling of "not set" (Rust `configured_labels`). Counting
+    // it offered Create on a group the server rejects as criterion-less.
+    expect(identityHasCriterion({ ...bare, ix_labels: [] })).toBe(false);
+    expect(identityHasCriterion({ ...bare, ix_labels: ['A'] })).toBe(true);
+  });
+
+  it('counts a zero SOL axis — 0 is a real bucket, not "unset"', () => {
+    // Mirrors the Rust `a_zero_sol_axis_is_a_criterion_not_an_unset_field` guard:
+    // 0 lamports means the bucket [0, width), so it IS a configured criterion.
+    expect(identityHasCriterion({ ...bare, spendable_lamports_in: 0 })).toBe(true);
+    expect(identityHasCriterion({ ...bare, init_buy_lamports: 0 })).toBe(true);
+    expect(identityHasCriterion({ ...bare, cu_limit: 0 })).toBe(true);
+  });
+
+  it('an axis-free identity has no criterion (bucket width alone never counts)', () => {
+    expect(identityHasCriterion(bare)).toBe(false);
+    expect(identityHasCriterion({ ...bare, bucket_size_amount: 5 })).toBe(false);
+  });
+});
 
 describe('parseLoLamports', () => {
   it('takes the lower edge of an en-dash bucket label', () => {

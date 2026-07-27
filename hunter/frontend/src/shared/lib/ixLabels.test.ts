@@ -1,11 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import {
+  configuredIxLabels,
   formatIxLabelsText,
   isIxLabelJsonFilter,
   ixLabelsMatchFilter,
   parseIxLabelFilter,
   parseIxLabelsText,
 } from './ixLabels';
+
+describe('configuredIxLabels — mirrors Rust configured_labels', () => {
+  it('folds the two spellings of "not set" onto null', () => {
+    expect(configuredIxLabels([])).toBeNull();
+    expect(configuredIxLabels(null)).toBeNull();
+    expect(configuredIxLabels(undefined)).toBeNull();
+  });
+
+  it('passes a real label list through unchanged', () => {
+    const labels = ['Pump.Fun: Create', 'Pump.Fun: Buy'];
+    expect(configuredIxLabels(labels)).toBe(labels);
+    expect(configuredIxLabels([''])).toEqual(['']); // non-empty list; parse layer trims
+  });
+});
 
 describe('formatIxLabelsText', () => {
   it('pretty-prints a JSON array', () => {

@@ -23,6 +23,7 @@ import {
   useDeleteFingerprintMutation,
 } from 'store/sharedEndpoints';
 import {
+  configuredIxLabels,
   formatIxLabelsText,
   IX_LABELS_FILTER_PLACEHOLDER,
   IX_LABELS_FILTER_TITLE,
@@ -73,11 +74,17 @@ const COLOR_COLS: {
   { key: 'fs_sell', valueOf: (r) => solKey(r.first_slot_sell_lamports) },
   {
     key: 'ix_count',
-    valueOf: (r) => (r.ix_labels?.length ? String(r.ix_labels.length) : null),
+    valueOf: (r) => {
+      const labels = configuredIxLabels(r.ix_labels);
+      return labels ? String(labels.length) : null;
+    },
   },
   {
     key: 'ix_labels',
-    valueOf: (r) => (r.ix_labels?.length ? formatIxLabelsText(r.ix_labels) : null),
+    valueOf: (r) => {
+      const labels = configuredIxLabels(r.ix_labels);
+      return labels ? formatIxLabelsText(labels) : null;
+    },
   },
   { key: 'bucket', valueOf: (r) => formatDecimalTrim(tidySolDecimal(r.bucket_size_amount), 6) },
 ];
@@ -320,13 +327,13 @@ export function FingerprintsView({
         label: 'ix count',
         group: 'ix',
         render: (r) => {
-          const n = r.ix_labels?.length;
-          if (n == null || n === 0) return dash();
-          return <span className="font-mono tabular-nums">{n}</span>;
+          const labels = configuredIxLabels(r.ix_labels);
+          if (!labels) return dash();
+          return <span className="font-mono tabular-nums">{labels.length}</span>;
         },
-        searchValue: (r) => String(r.ix_labels?.length ?? ''),
-        sortValue: (r) => r.ix_labels?.length ?? null,
-        filterNumber: (r) => r.ix_labels?.length ?? null,
+        searchValue: (r) => String(configuredIxLabels(r.ix_labels)?.length ?? ''),
+        sortValue: (r) => configuredIxLabels(r.ix_labels)?.length ?? null,
+        filterNumber: (r) => configuredIxLabels(r.ix_labels)?.length ?? null,
         sortable: true,
         cellClassName: cellTint('ix_count'),
       },
@@ -335,9 +342,14 @@ export function FingerprintsView({
         label: 'ix_labels',
         group: 'ix',
         width: '220px',
-        render: (r) =>
-          r.ix_labels?.length ? <IxLabelsDisplay labels={r.ix_labels} copyJson /> : dash(),
-        searchValue: (r) => (r.ix_labels?.length ? formatIxLabelsText(r.ix_labels) : ''),
+        render: (r) => {
+          const labels = configuredIxLabels(r.ix_labels);
+          return labels ? <IxLabelsDisplay labels={labels} copyJson /> : dash();
+        },
+        searchValue: (r) => {
+          const labels = configuredIxLabels(r.ix_labels);
+          return labels ? formatIxLabelsText(labels) : '';
+        },
         filterMatch: (r, raw) => ixLabelsMatchFilter(r.ix_labels, raw),
         filterPlaceholder: IX_LABELS_FILTER_PLACEHOLDER,
         filterTitle: IX_LABELS_FILTER_TITLE,

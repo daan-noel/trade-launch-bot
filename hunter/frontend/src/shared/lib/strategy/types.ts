@@ -17,6 +17,19 @@ export function solToLamports(s: number | null | undefined): number | null {
   return s == null ? null : Math.round(s * LAMPORTS_PER_SOL);
 }
 
+/**
+ * Smallest legal fingerprint bucket width (SOL) — mirrors Rust
+ * `grouping::MIN_BUCKET_WIDTH_SOL`, enforced by `Fingerprint::validate` and the
+ * `fingerprints_bucket_size_amount_positive` CHECK.
+ *
+ * A width of `0` is **invalid**, not "unset": the matcher divides by it raw, so
+ * every positive amount saturates into one bucket and the fingerprint's SOL axes
+ * stop discriminating. Note the contrast with the axis VALUES on the same form —
+ * there `0` is a real bucket (`[0, width)`) and `null` means "not part of
+ * identity". Don't fold the two conventions together.
+ */
+export const MIN_BUCKET_WIDTH_SOL = 1e-6;
+
 /** A `fingerprints` row (response shape). All `*_lamports` axes are lamports. */
 export interface Fingerprint {
   id: string;

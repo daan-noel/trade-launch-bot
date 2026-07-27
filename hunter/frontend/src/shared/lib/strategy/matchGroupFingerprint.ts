@@ -4,6 +4,7 @@
 // (`is_cashback_enabled`, `token_program_id`) have no fingerprint field.
 
 import { solToLamports, type Fingerprint } from './types';
+import { configuredIxLabels } from 'lib/ixLabels';
 import { tidySolDecimal } from 'utils/format';
 
 /** Identity axes only — what `find_or_create` compares. */
@@ -110,11 +111,18 @@ export function identityHasCriterion(id: FingerprintIdentity): boolean {
     id.spendable_lamports_in != null ||
     id.first_slot_buy_lamports != null ||
     id.first_slot_sell_lamports != null ||
-    id.ix_labels != null
+    // An empty label list is "not set" — same verdict the backend reaches via
+    // `configured_labels`. A bare `!= null` here would offer Create on a group
+    // the server then rejects as criterion-less.
+    configuredIxLabels(id.ix_labels) != null
   );
 }
 
-function ixLabelsEqual(a: string[] | null, b: string[] | null): boolean {
+/** Label-axis equality with `[]` normalized to "not set" first, so the two
+ *  spellings of absent can never read as different identities. */
+function ixLabelsEqual(rawA: string[] | null, rawB: string[] | null): boolean {
+  const a = configuredIxLabels(rawA);
+  const b = configuredIxLabels(rawB);
   if (a == null && b == null) return true;
   if (a == null || b == null) return false;
   if (a.length !== b.length) return false;
@@ -134,7 +142,7 @@ function configuredAxisCount(fp: Fingerprint): number {
   if (fp.spendable_lamports_in != null) n += 1;
   if (fp.first_slot_buy_lamports != null) n += 1;
   if (fp.first_slot_sell_lamports != null) n += 1;
-  if (fp.ix_labels != null && fp.ix_labels.length > 0) n += 1;
+  if (configuredIxLabels(fp.ix_labels) != null) n += 1;
   return n;
 }
 
@@ -234,7 +242,7 @@ export function fingerprintCompatibleWithGroupKey(
       }
       case 'ix_labels': {
         if (missing) {
-          if (fp.ix_labels != null && fp.ix_labels.length > 0) return false;
+          if (configuredIxLabels(fp.ix_labels) != null) return false;
         } else if (!ixLabelsEqual(fp.ix_labels, raw.split(' | '))) {
           return false;
         }
