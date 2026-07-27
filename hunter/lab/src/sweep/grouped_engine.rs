@@ -936,11 +936,14 @@ mod tests {
     impl Strategy for Mock {
         type Entry = bool;
         type EntryKey = ();
+        type EntryCands = ();
         type TokenState = ();
         type BoundParams = ();
         type ExitCtx = ();
+        type ExitCtxKey = ();
         fn entry_key(&self, _p: &f64) {}
         fn bind_param(&self, _p: &f64) {}
+        fn exit_ctx_key(&self, _bound: &(), _entry: &bool) {}
         fn prepare_token(&self, _token: &crate::sweep::corpus::CorpusToken) {}
         fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), _bound: &(), _p: &f64) -> bool {
             !trades.is_empty()

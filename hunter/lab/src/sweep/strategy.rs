@@ -229,11 +229,11 @@ pub trait ParamSpace {
 
     /// Reorder the *final* combo set in place so combos sharing an entry-param
     /// identity ([`Strategy::entry_key`]) land **contiguously**. The engine keeps a
-    /// single-slot entry cache that only hits while consecutive combos share a key,
-    /// so a full `Grid` (entry knobs are the high-order digits ⇒ already
-    /// contiguous) resolves each entry once per tuple — but `Random`/`LatinHypercube`/
-    /// `refine` hand out a shuffled order, collapsing the cache to ~one entry
-    /// resolve per combo. A strategy whose entry is expensive overrides this to
+    /// single-slot cache of [`Strategy::EntryCands`] that only hits while consecutive
+    /// combos share a key, so a full `Grid` (entry knobs are the high-order digits ⇒
+    /// already contiguous) walks each entry class once — but `Random`/`LatinHypercube`/
+    /// `refine` hand out a shuffled order, collapsing the cache to ~one Stage-A walk
+    /// per combo. A strategy whose entry is expensive overrides this to
     /// stable-sort by its entry key, restoring the contiguous-block property under
     /// every sampler. Called once on the shared combo vec before the per-group
     /// sweeps, so `combo_id` (= position) stays consistent across groups. The
@@ -243,28 +243,51 @@ pub trait ParamSpace {
 }
 
 /// The pure black-box backtest, **factored into entry then exit** so the engine
-/// can resolve the (expensive) entry **once per distinct entry-param tuple per
-/// token** and reuse it across that tuple's whole exit sub-grid — see
+/// can hoist the expensive, *exit-independent* part of the entry to **once per
+/// distinct entry-param tuple per token** — see
 /// [`crate::sweep::engine::run_sweep`]. A new strategy owns its own entry/exit
 /// logic and just returns a [`TokenOutcome`]; the engine never inspects how.
 ///
-/// The split is sound because the resolved entry depends **only** on the entry
-/// params (the scalp gates), never on the exit ladder — so two combos with the
-/// same [`Strategy::entry_key`] resolve byte-identical entries on a given token.
-/// A strategy whose entry can't be separated (or is param-free) sets `EntryKey`
-/// to a unit-like constant so the entry resolves once per token regardless.
+/// **The entry is two-stage on purpose.** The *resolved* entry is NOT a function
+/// of the entry params alone: the engine's `can_enter` refuses to buy while the
+/// exit conditions already hold, so two combos sharing an
+/// [`Strategy::entry_key`] but differing on the exit side can legitimately enter
+/// on different rows. Caching the resolved entry by `entry_key` — what this trait
+/// used to do — silently donated the first combo's entered set to every sibling in
+/// its class (the entry-cache poisoning bug, 2026-07-26; mechanism and proof in
+/// `docs/plans/sweep/sim-parity.md`). So the engine caches only what is provably
+/// exit-independent:
+///
+/// * [`Strategy::entry_candidates`] (**Stage A**) — the expensive walk, run once
+///   per `entry_key` per token; its output is what the engine caches.
+/// * [`Strategy::resolve_entry_from`] (**Stage B**) — resolves *this* combo's entry
+///   out of those shared candidates, applying whatever exit-dependent veto the
+///   strategy has. Runs per combo, so it must be cheap.
+///
+/// [`Strategy::resolve_entry`] stays as the fused one-shot reference (Stage A+B in
+/// one call, no cache). The default Stage A/B bodies *are* that reference, so a
+/// strategy that opts out is correct by construction and merely re-walks per combo.
 pub trait Strategy: ParamSpace + Send + Sync {
-    /// The resolved per-token entry under one entry-param tuple (price/time, or a
-    /// "no entry" variant). Cached by the engine and passed into every
-    /// [`Strategy::resolve_exit`] sharing the same [`Strategy::entry_key`].
+    /// The resolved per-token entry for one combo (price/time, or a "no entry"
+    /// variant), passed into that combo's [`Strategy::resolve_exit`].
     type Entry;
 
-    /// The entry-param identity of a combo. Two combos with equal `EntryKey`
-    /// resolve the same entry on any token, so the engine resolves the entry once
-    /// per distinct key. `PartialEq` is all the engine needs (it keeps the last
-    /// resolved `(key, entry)` and recomputes only when the key changes — which,
-    /// on a grid, is once per contiguous exit-block).
+    /// The entry-param identity of a combo. Two combos with equal `EntryKey` share
+    /// the same [`Strategy::EntryCands`] on any token, so the engine runs Stage A
+    /// once per distinct key. `PartialEq` is all the engine needs (it keeps the last
+    /// key and recomputes only when it changes — which, on a grid, is once per
+    /// contiguous exit-block).
+    ///
+    /// Equal keys do **not** imply equal resolved entries — that is exactly the
+    /// assumption the poisoning bug rested on. See the trait doc.
     type EntryKey: PartialEq;
+
+    /// Stage A's output: the exit-**independent** entry work for one (token, entry
+    /// class), shared by every combo in that class. Reused in place across combos
+    /// and tokens (the engine keeps one instance per token scan), so a strategy
+    /// should recycle its buffers rather than reallocate. `()` for a strategy that
+    /// keeps the fused [`Strategy::resolve_entry`] default.
+    type EntryCands: Default + Send;
 
     /// Param-independent, **per-token** state the engine computes once before a
     /// token's combo loop and threads into every [`Strategy::resolve_entry`] on
@@ -282,13 +305,26 @@ pub trait Strategy: ParamSpace + Send + Sync {
     /// already the scan input.
     type BoundParams: Send + Sync;
 
-    /// Per-`(token, entry)` exit context rebuilt when the entry cache goes stale
+    /// Per-`(token, entry)` exit context rebuilt when the resolved entry moves
     /// (e.g. the generic engine's prefix-extrema [`ExitIndex`](crate::sweep::generic::exit_index::ExitIndex)).
     /// Unit `()` for strategies that resolve exits without shared entry-local state.
     /// Must be `Default` so the engine can recycle one instance per token scan.
     type ExitCtx: Default + Send;
 
-    /// The entry-param signature of a combo. Combos sharing it share an entry.
+    /// Identity of the [`Strategy::ExitCtx`] a `(bound combo, resolved entry)` pair
+    /// needs. The engine rebuilds the context only when this key changes — under
+    /// per-combo entries the context is no longer stale-once-per-entry-class, and
+    /// rebuilding it per combo would undo the point of caching it at all.
+    ///
+    /// The key must distinguish every context the strategy would build differently,
+    /// **including "no context wanted"** (else a combo that cleared the context
+    /// would keep a later combo from rebuilding it). It is an optimization key, not
+    /// a correctness one: a strategy's `resolve_exit` must still be correct given a
+    /// cleared/absent context, which is what makes a conservative key safe.
+    type ExitCtxKey: PartialEq;
+
+    /// The entry-param signature of a combo. Combos sharing it share Stage A's
+    /// [`Strategy::EntryCands`] — **not** necessarily a resolved entry.
     fn entry_key(&self, params: &Self::Params) -> Self::EntryKey;
 
     /// Bind one combo's [`Strategy::Params`] into [`Strategy::BoundParams`] once
@@ -301,9 +337,14 @@ pub trait Strategy: ParamSpace + Send + Sync {
     /// `created_at`; a strategy that resolves purely from trades reads `token.trades`.
     fn prepare_token(&self, token: &crate::sweep::corpus::CorpusToken) -> Self::TokenState;
 
+    /// The [`Strategy::ExitCtxKey`] this `(bound, entry)` pair induces — see the
+    /// associated type. No default: a wrong (too coarse) key silently disables a
+    /// rebuild the strategy needed, so every impl states its own.
+    fn exit_ctx_key(&self, bound: &Self::BoundParams, entry: &Self::Entry) -> Self::ExitCtxKey;
+
     /// Rebuild [`Strategy::ExitCtx`] for a freshly resolved entry. Called by the
-    /// engine exactly when the entry cache goes stale (same cadence as
-    /// [`Strategy::resolve_entry`]). Default is a no-op for unit `ExitCtx`.
+    /// engine exactly when [`Strategy::exit_ctx_key`] changes. Default is a no-op
+    /// for unit `ExitCtx`.
     fn build_exit_ctx(
         &self,
         _trades: &[CorpusTrade],
@@ -318,6 +359,10 @@ pub trait Strategy: ParamSpace + Send + Sync {
     /// Resolve the entry on one token's full trade history under a combo's **entry**
     /// params, given the pre-computed [`Strategy::TokenState`] and batch-bound
     /// [`Strategy::BoundParams`]. Pure — safe from many `rayon` threads.
+    ///
+    /// The fused Stage A+B reference. The engine's fold does **not** call this (it
+    /// runs the two stages so Stage A can be shared); single-combo callers and the
+    /// guards do, and the two-stage path is asserted equal to it in debug builds.
     fn resolve_entry(
         &self,
         trades: &[CorpusTrade],
@@ -325,6 +370,44 @@ pub trait Strategy: ParamSpace + Send + Sync {
         bound: &Self::BoundParams,
         params: &Self::Params,
     ) -> Self::Entry;
+
+    /// **Stage A** — compute the exit-independent entry candidates for one token
+    /// under this combo's *entry* params, into the engine's recycled `out`. Called
+    /// once per distinct [`Strategy::entry_key`] per token; every combo in that
+    /// class then resolves through [`Strategy::resolve_entry_from`].
+    ///
+    /// Must depend only on the entry side. Anything read off the exit params here
+    /// re-introduces the poisoning bug the two-stage split exists to kill.
+    ///
+    /// Default: a no-op, paired with the fused default below.
+    fn entry_candidates(
+        &self,
+        _trades: &[CorpusTrade],
+        _state: &Self::TokenState,
+        _bound: &Self::BoundParams,
+        _params: &Self::Params,
+        _out: &mut Self::EntryCands,
+    ) {
+    }
+
+    /// **Stage B** — resolve *this* combo's entry from the shared Stage-A
+    /// candidates, applying the exit-dependent veto. Runs per combo, so it must be
+    /// cheap; `cands` is `&mut` so a strategy can memoize per-candidate work
+    /// (e.g. one fill resolution shared by every combo landing on the same row)
+    /// across the class.
+    ///
+    /// Default: ignore the candidates and run the fused [`Strategy::resolve_entry`]
+    /// — correct, just uncached.
+    fn resolve_entry_from(
+        &self,
+        trades: &[CorpusTrade],
+        state: &Self::TokenState,
+        bound: &Self::BoundParams,
+        params: &Self::Params,
+        _cands: &mut Self::EntryCands,
+    ) -> Self::Entry {
+        self.resolve_entry(trades, state, bound, params)
+    }
 
     /// Resolve the exit + economics given a pre-resolved `entry` and its
     /// [`Strategy::ExitCtx`], under a combo's **exit** params / bound form.

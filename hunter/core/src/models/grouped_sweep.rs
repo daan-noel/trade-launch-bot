@@ -32,6 +32,15 @@ pub struct GroupedSweepRun {
     pub group_count: i32,
     pub combo_count: i32,
     pub corpus_hash: Option<String>,
+    /// Block time of the **newest trade in the corpus this run scanned** — how fresh
+    /// its data was. `None` on legacy rows / a trade-less corpus.
+    ///
+    /// The sweep reads the sealed Parquet lake only, while `simulate` splices the fresh
+    /// PG tail on top, so a stale lake export makes the two disagree without either
+    /// being wrong: the sweep freezes positions as `Open (est)` at old prices that a
+    /// simulate watches die. This is the number that makes that visible ("data through
+    /// HH:MM") — and it is the same instant the frozen-tail resolve anchors on.
+    pub corpus_last_trade_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     /// The exact-set instruction-label corpus filter the run used, as the JSON
     /// array the request sent (`None` = no filter / grouped by `ix_labels`).

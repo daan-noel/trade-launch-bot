@@ -89,6 +89,27 @@ impl Corpus {
     pub fn trade_count(&self) -> usize {
         self.tokens.iter().map(|t| t.trades.len()).sum()
     }
+
+    /// Block time of the **newest trade anywhere in the corpus** — how fresh the data
+    /// this run scanned actually is. `None` for a trade-less corpus.
+    ///
+    /// One definition, two readers: the frozen-tail resolve anchors its corpus-wide
+    /// horizon on it (`generic::strategy::frozen_tail_horizon`), and the run row stores
+    /// it so the UI can say "data through HH:MM" — a sweep reads the sealed lake only,
+    /// so a stale export is otherwise invisible next to a simulate that splices the
+    /// fresh PG tail.
+    ///
+    /// Canonical per-mint order is block-time-monotone, so a token's last trade carries
+    /// its own max — the corpus max is the max over those.
+    pub fn last_trade_at(&self) -> Option<DateTime<Utc>> {
+        Self::last_trade_at_of(&self.tokens)
+    }
+
+    /// [`Self::last_trade_at`] over a bare token slice (the sweep hands the strategy a
+    /// slice, not the `Corpus`).
+    pub fn last_trade_at_of(tokens: &[CorpusToken]) -> Option<DateTime<Utc>> {
+        tokens.iter().filter_map(|t| t.trades.last().map(|ct| ct.block_time)).max()
+    }
 }
 
 /// Which slice of a token's lifetime the per-mint cap keeps when the token has more
@@ -197,6 +218,59 @@ mod tests {
         assert_eq!(SWEEP_DEFAULT_PER_MINT_CAP, i64::MAX);
         std::env::remove_var("SWEEP_PER_MINT_CAP");
         assert_eq!(sweep_per_mint_cap(), SWEEP_DEFAULT_PER_MINT_CAP);
+    }
+
+    #[test]
+    fn last_trade_at_is_the_corpus_wide_max() {
+        use crate::models::trade::{Trade, TradeType};
+        use chrono::Duration;
+
+        let t0 = Utc::now() - Duration::seconds(1000);
+        let mint_at = |mint: &str, offsets: &[i64]| {
+            let trades: Vec<Trade> = offsets
+                .iter()
+                .map(|s| {
+                    Trade::new(
+                        mint.into(),
+                        "w".into(),
+                        TradeType::Buy,
+                        1.0,
+                        1,
+                        format!("sig{s}"),
+                        *s as u64,
+                        t0 + Duration::seconds(*s),
+                    )
+                })
+                .collect();
+            CorpusToken::from_trades(
+                mint.into(),
+                mint.into(),
+                t0,
+                TokenFingerprint::default(),
+                &trades,
+            )
+        };
+        // The freshest trade is NOT on the last token, and the busiest token is not the
+        // freshest — a max over per-token *last* trades, not a last-token read.
+        let corpus = Corpus {
+            tokens: vec![
+                mint_at("a", &[0, 10, 20]),
+                mint_at("b", &[5, 900]),
+                mint_at("c", &[1, 2, 3, 4]),
+            ],
+            hash: "h".into(),
+            has_fingerprints: false,
+            candidates_capped: false,
+        };
+        assert_eq!(corpus.last_trade_at(), Some(t0 + Duration::seconds(900)));
+        // A trade-less corpus has no freshness to report — never a fabricated `now`.
+        let empty = Corpus {
+            tokens: vec![],
+            hash: "h".into(),
+            has_fingerprints: false,
+            candidates_capped: false,
+        };
+        assert_eq!(empty.last_trade_at(), None);
     }
 
     #[test]

@@ -36,10 +36,10 @@ Ranked full list of sweep↔simulate divergences, including the not-yet-accepted
 | File | Owns |
 | --- | --- |
 | `mod.rs` | Module map |
-| `strategy.rs` | `Strategy` + `ParamSpace` traits; `SweepMethod` (Grid/Random/LHS/Refine); entry-cache reuse (`entry_key`, `prepare_token`, `resolve_entry`, `resolve_exit`). **Re-exports** `CostModel`/`round_trip_with_costs`/`ExitCode` from `trading_core::strategies::kernel` — the sweep keeps no second copy of the cost/exit math |
+| `strategy.rs` | `Strategy` + `ParamSpace` traits; `SweepMethod` (Grid/Random/LHS/Refine); the **two-stage entry** (`entry_key` → `entry_candidates` shared per class → `resolve_entry_from` per combo) plus `prepare_token`, `build_exit_ctx`/`exit_ctx_key`, `resolve_exit`. **Re-exports** `CostModel`/`round_trip_with_costs`/`ExitCode` from `trading_core::strategies::kernel` — the sweep keeps no second copy of the cost/exit math |
 | `projection.rs` | `SweepTrade` — slim per-trade row (wallet interned to `u32`); `WalletInterner`; `project_trades` |
 | `corpus.rs` | `CorpusSource` trait + the corpus model (`TokenTrades`, `Corpus`, slim `SweepTrade` projection via `from_trades`); `Selection` (cap + time window + curve_only); `sweep_per_mint_cap` — **uncapped by default** (`SWEEP_DEFAULT_PER_MINT_CAP = i64::MAX`): analysis runs over each token's **entire** history, so the grouped sweep matches single-rule simulate for high-volume tokens. `SWEEP_PER_MINT_CAP` (≥1) is an opt-in bound to cut corpus weight (`tokens × trades/token`) for a lighter run. The sole impl is `LakeSource` (see `lake/duck.rs`) — the old PG `DbSource` + Parquet corpus-cache + `attach_fingerprints` were deleted at the lake cutover |
-| `engine.rs` | `run_sweep` — rayon over tokens; entry-cache reuse per token; `SweepObserver` cancel; buffer recycling |
+| `engine.rs` | `run_sweep` — rayon over tokens; per-token reuse of the entry-**candidate** walk (never a resolved entry — see below); `SweepObserver` cancel; buffer recycling |
 | `progress.rs` | `SweepObserver` trait; `SweepProgress` (phase-tagged SSE); `NoopObserver` |
 | `aggregate.rs` | `ComboAgg` (a thin wrapper over the core kernel's `RunAgg`) → `ComboMetrics` (= core `RunMetrics` + `combo_id`, via `from_run`). O(1) per combo via the core `QuantileSketch` (~0.6 KB, ~15% rel. error for median/p90) — the sketch/robust-score/exit-index math lives once in `trading_core::strategies::kernel` |
 | `retention.rs` | `retained_combo_ids` — keeps per-metric-extreme combos + best_combo (~660 rows/group max); used write-time AND at compaction |
@@ -48,6 +48,36 @@ Ranked full list of sweep↔simulate divergences, including the not-yet-accepted
 | `obs.rs` | Process RSS + host RAM reads; sweep milestone clock |
 | `registry.rs` | `sweep_tables(strategy_id)` (one arm: `"generic"` → `grouped_sweep_*`), `run_grouped(...)`; `MAX_COMBOS`; resource fences (`bounded_threads` = cores/2 by default, host-RAM admission) |
 | `generic/` | `GenericSweepStrategy` — the one sweep family (Phase 7 retired the per-strategy tpsl/swing adapters). `axes.rs` = fingerprint + TP/SL + metric-condition axes → `RuleParams` combos; `strategy.rs` = `Strategy` impl (`TokenState = MetricSeries` precompute; `resolve_entry` mirrors `can_enter` / `resolve_exit` scan the series) + `Pricing` (notional + fill model + cost model) + `ExitClass` bind-time classification and its per-class / vector row finders; `exit_index.rs` = prefix-extrema hulls answering an arbitrary monotone predicate (`first_max_row` / `first_min_row`), plus the `at`-monotonicity flag a `held` binary search needs; `guard.rs` asserts scan ≡ `run_replay` (under every `FillModel`), index/SIMD ≡ scalar, and that a TP/SL rule actually *reaches* the index |
+
+### The entry is exit-dependent — the fold caches candidates, not entries
+
+The engine's `can_enter` gate refuses to buy **while the exit conditions already hold**,
+and `resolve_entry` mirrors it. So the resolved entry is a function of the *whole* rule,
+not just the entry axes: two combos with the same `entry_key` and different exits can
+legitimately enter on different rows. The fold's single-slot cache is keyed on
+`entry_key`, so caching the resolved entry there made the first combo of each class
+donate its entered set to every sibling — wrong `n_fired`, wrong entry rows and prices on
+any grouped sweep with **exit-side metric axes**. Found + fixed 2026-07-26 (mechanism,
+proof and blast radius in [../plans/sweep/sim-parity.md](../plans/sweep/sim-parity.md)).
+
+The fold now runs the entry in two stages:
+
+* **Stage A** `entry_candidates` — the exit-independent walk (dead check, mono-kills,
+  entry-condition eval), opened once per `entry_key` per token and **resumed** as combos
+  ask for deeper candidates, so the short-circuit at the first admissible row survives.
+* **Stage B** `resolve_entry_from` — per combo: walk the shared candidates applying that
+  combo's veto, then price the first admissible row through a per-class fill memo.
+
+Pure TP/SL sweeps (the 1M-combo shape) are untaxed: their exit reqs are position-scoped,
+read `NaN` before entry, and so can never veto (`BoundCombo::entry_veto_possible`), making
+Stage B a candidate lookup plus a memo hit. `ExitCtx` (the prefix-extrema hulls) is now
+rebuilt on `exit_ctx_key` — the resolved `fill_row` — not on entry-key staleness.
+Locked by `guard::fold_gives_each_exit_variant_its_own_entry` (fold ≡ per-combo `scan` ≡
+`run_replay`, both combo orders) and `engine::tests::fold_reresolves_entry_per_exit_variant_within_one_class`.
+
+**Stored runs predate the fix.** Any grouped run with exit-side metric axes recorded
+before 2026-07-26 carries poisoned aggregates for every combo that was not first in its
+entry class — re-run them, and expect the crown to move.
 
 ### Corpus scope: saved fingerprint vs manual filters
 
@@ -146,6 +176,15 @@ Start log includes cores, threads, wave, planned/shard-peak combos, RSS, host to
 ## Persistence + API
 
 Tables per strategy: `<strategy>_grouped_sweep_{runs,groups,combos,results}` — **lab-only**, defined in `lab/migrations/` and applied by `lab::storage::lab_migrations` (never on EC2/live; see [@arch/database.md](@arch/database.md)). Generic `grouped_sweep_repo.rs` (table-name-driven). Incremental writes: run header up front (`status='running'`), groups appended one at a time by a single DB-writer task fed over an unbounded channel, finalized on completion via `finalize_run`. Crash-recovery: `reconcile_orphaned_runs` at boot. Retention filter applied write-time so only ~660 rows/group are ever inserted.
+
+**Corpus freshness is stamped on the run.** `grouped_sweep_runs.corpus_last_trade_at`
+(lab migration `0011`) is the corpus-wide `max(block_time)` captured at corpus load —
+the same instant the frozen-tail resolve anchors on (one definition:
+`Corpus::last_trade_at`). The sweep is LakeSource-only while `simulate` splices the
+fresh PG tail, so a stale export is otherwise invisible: the sweep freezes positions as
+`Open (est)` at old prices that a simulate of the same rule watches die. The run panel
+renders it as a **Data through** row next to Pricing, warning when the lake was ≥1 h
+behind the run's start. `NULL` on rows written before the column existed ⇒ "unknown".
 
 **Terminal status is honest about partial persistence.** The writer task tracks the persisted-group tally + the first write error; `finalize_run` stamps `completed` only when every folded group actually committed, else `partial` (an engine-complete run whose DB writes fell short) — distinct from `cancelled` (user abort). The reason rides the `SweepFinished` SSE frame's `error` field so the client toasts it.
 

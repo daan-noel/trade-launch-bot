@@ -2,7 +2,7 @@
 
 Reference for *why* the grouped sweep and `simulate` can report different numbers for
 the same rule + token, which of those gaps are deliberate, and what is still open.
-Audit date **2026-07-19**. High-level summary lives in
+Audit date **2026-07-19**, extended 2026-07-26 (D0 + D1). High-level summary lives in
 [../../arch/sweep.md](../../arch/sweep.md); engine internals in
 [sweep-engine-detail.md](sweep-engine-detail.md).
 
@@ -47,6 +47,50 @@ condition `eval`, `CompiledRule::compile`.
 
 ### Fixed
 
+- **D0 · Entry-cache poisoning across exit variants — FIXED (2026-07-26).** This one was
+   a **bug, not a divergence**: the fold's single-slot entry cache
+   (`sweep/engine.rs::fill_outcomes_with_state`) is keyed by `AxesModel::entry_key` =
+   the *entry-axis picks only*, but `resolve_entry` mirrors the engine's `can_enter`
+   veto — never buy while the exit conditions already hold — so the resolved entry is
+   **exit-dependent**. With `order_for_entry_cache` making same-entry combos contiguous,
+   the first combo of every entry class resolved entries under *its own* exit veto and
+   every sibling silently inherited that entered set: wrong `n_fired`, wrong entry rows,
+   wrong prices, wrong crown.
+
+   *Proof (run `593844a2`, fp-scoped, 248 tokens):* combos 655360..79 share entry params
+   and all stored `n_fired = 55` — 655360's honest number (its `buy(30s)<3 | buy(60s)<1`
+   exits veto exactly the quiet-market rows its own entry needs). A fresh drill-in of the
+   promoted 655362 (exits `trail(5s)>30 | liq>85`, veto ~never) under the same
+   corpus/`as_of`/pricing gives **101 entered**, agreeing with an independent engine
+   simulate (100/250). First-in-class combos reproduce their stored rows exactly
+   (589824: 93↔93; 655360: 55↔55) — aggregate-vs-own-drill-in disagreement is the
+   signature. True numbers for the promoted combo: 101 fired / 19 closed / 82 open,
+   realized +0.219 vs stored 55 / 14 / 41, +0.246.
+
+   *Fix:* the fold caches only what is provably exit-independent. `Strategy` grew a
+   two-stage entry — `entry_candidates` (Stage A: the dead / mono-kill / entry-cond
+   walk, opened once per class per token and **resumed** on demand so the first-row
+   short-circuit survives) and `resolve_entry_from` (Stage B: per combo, walk the shared
+   candidates applying that combo's veto, then a per-class fill memo). `ExitCtx` is
+   rebuilt on the resolved `fill_row` (`Strategy::exit_ctx_key`) rather than on entry-key
+   staleness, which per-combo entries made unsound as well as wasteful. Pure TP/SL
+   sweeps are bit-for-bit untaxed: position-scoped exit reqs read `NaN` before entry and
+   can never veto (`BoundCombo::entry_veto_possible`), so Stage B is a candidate lookup
+   plus a memo hit. `resolve_entry` survives as the fused SSOT reference, and Stage B is
+   asserted equal to it on **every** resolution under `cfg(test)`.
+
+   *Why no guard caught it:* the whole suite drove one combo at a time, so the fold's
+   cache was invisible by construction. The new locks are
+   `guard::fold_gives_each_exit_variant_its_own_entry` (a real 3-combo `AxesModel`
+   through the real fold, both combo orders, each combo ≡ its own `scan` ≡ its own
+   `run_replay`, plus a non-vacuity assert that the three exit variants resolve three
+   different entries) and `engine::tests::fold_reresolves_entry_per_exit_variant_within_one_class`
+   (the same property for the strategy-agnostic fold). Both were confirmed to **fail**
+   with the old caching restored.
+
+   *Blast radius:* every stored grouped run with exit-side metric axes is suspect for
+   every combo that was not first in its entry class. The code fix does not repair them
+   — re-run, and expect rankings to move (that is the fix working).
 - **D1 · Bounded-tail asymmetry — CLOSED (2026-07-26).** The sweep still caps each
    token's series at its OWN `last_trade + DEAD_QUIET + TAIL_MARGIN` (that keeps every
    series short — extending the *tick grid* to the corpus horizon is the RAM cost the
@@ -92,7 +136,50 @@ condition `eval`, `CompiledRule::compile`.
   `scan_matches_replay_multi_token_frozen_tail` is the first multi-token guard — it
   compares the sweep aggregate against `run_replay` over a ≥3-token corpus and so covers
   the corpus-wide tail case (the D1 fix); caps stay `∞` on both sides there, so
-  concurrency ordering is still out of scope.
+  concurrency ordering is still out of scope. `fold_gives_each_exit_variant_its_own_entry`
+  is the first **multi-combo** guard (it drives the real fold, which every single-combo
+  fixture bypasses — that blind spot is what let D0 ship).
+
+### Comparison-context traps (workflow, not code)
+
+Two ways a sweep and a simulate of the same rule disagree without either being wrong.
+Both were mistaken for the D0 bug during its investigation, so they are recorded here:
+
+- **Notional × fixed per-leg cost.** Sweep defaults to `buy_amount_sol = 1.0`
+  (`registry::SWEEP_DEFAULT_BUY_AMOUNT_SOL`); a promoted rule may trade 0.01. Every cost
+  model except `frictionless` charges `fixed_cost_sol_per_leg` = `JITO_MIN_TIP_SOL` +
+  avg CU priority fee ≈ 0.001025 SOL/leg ≈ 0.00205 per round trip — **0.2 % of notional
+  at 1.0 SOL, 20.5 % at 0.01**. Breakeven gross move goes from ~+2.2 % to ~+22.6 %, which
+  alone flips win% and PnL sign. `pumpfun_fee_only` drops `slippage_bps`, never the fixed
+  cost. Sweep at the notional you intend to trade (this is residual 4b above).
+- **Different corpus / different pricing.** The sweep is LakeSource-only; `simulate`
+  splices the fresh PG tail (`sim_fetch::pg_tail_beyond_lake`), so a stale export leaves
+  the sweep holding `Open (est)` rows at hours-old prices that the sim watches die.
+  Re-export the lake before sweeping. `SimulatePage` also resets to
+  `worst_case` + `pumpfun_default` on every page load, so a rule simulated right after
+  promote can silently run under different fill/cost than the run that crowned it — check
+  the chips. **Surfaced (2026-07-26):** a run now stores its corpus-wide max
+  `block_time` (`corpus_last_trade_at`, lab migration `0011`, from the SSOT
+  `Corpus::last_trade_at` the frozen-tail horizon also reads) and the run panel shows a
+  **Data through** row — warning when the lake was ≥1 h behind the run's start — with the
+  `est` badge's tooltip pointing at it. Still open: have a simulate launched from a
+  promoted rule inherit the source run's fill/cost pair and warn when the notionals
+  differ (`SimulatePage` resets both on every page load).
+
+### Verifying a suspected sweep↔sim gap (the D0 method)
+
+1. Stored run config — pricing, corpus window, fingerprint scope — is on
+   `grouped_sweep_runs`; per-combo aggregates + params are `grouped_sweep_results` joined
+   to `grouped_sweep_combos`.
+2. Honest re-sim of one combo (no fold, no entry cache — threads the run's own pricing,
+   `as_of` and corpus):
+   `GET /api/strategies/sweeps/{run}/groups/{gid}/token-results?strategy_id=generic&combo_id=N`.
+3. Ground truth for a rule: `$SWEEP_LAKE_DIR/sim-results/{rule_id}.{meta,rows}.json`.
+4. Lake freshness: `$SWEEP_LAKE_DIR/trades/dt=*/_meta.json` `exported_at_utc` vs PG
+   `max(trades.block_time)`.
+5. **The tell:** a stored row that disagrees with its *own* drill-in is a fold bug; rows
+   that reproduce exactly but disagree with a simulate are a context/divergence issue
+   from the lists above.
 - **Fingerprint matching + first-slot gating are absent from sweep** (it compiles
   `Uuid::nil()`), so entry-gate behavior is not swept.
 - **Sweep has no row at the `TokenCreated` instant** — `build_series` starts at

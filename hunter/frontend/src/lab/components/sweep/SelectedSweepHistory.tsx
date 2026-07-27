@@ -43,6 +43,19 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
+/** Corpus lag past which the lake export was meaningfully behind the run — flag it.
+ *  Below this the sweep and a same-day Simulate see effectively the same tape. */
+const STALE_CORPUS_MS = 60 * 60 * 1000;
+
+/** A rounded "4h 32m" / "18m" for a millisecond gap (never negative). */
+function humanLag(ms: number): string {
+  const mins = Math.max(0, Math.round(ms / 60_000));
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
 /** Render the persisted per-field corpus filters as readable lines. Booleans are
  *  the cashback filter; everything else is a numeric value set. */
 function fieldFilterLines(filters: Record<string, (number | boolean)[]>): string[] {
@@ -113,6 +126,15 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
   // The pairing this whole selector exists to make visible: an explicit fill model
   // already prices execution slippage, so `pumpfun_default` charges it a second time.
   const doubleCounted = costModel === 'pumpfun_default';
+  // How fresh the corpus was. A sweep reads the sealed Parquet lake ONLY; Simulate
+  // splices the fresh PG tail on top. So an un-exported lake doesn't just make the run
+  // "a bit old" — it freezes positions as `Open (est)` at prices a simulate of the same
+  // rule watches die, and the two then disagree wildly with neither being wrong. The
+  // lag is measured against the run's own start, not "now", because that is the gap
+  // that existed when these numbers were computed.
+  const corpusThrough = run.corpus_last_trade_at ? new Date(run.corpus_last_trade_at) : null;
+  const corpusLagMs = corpusThrough ? new Date(run.created_at).getTime() - corpusThrough.getTime() : null;
+  const corpusStale = corpusLagMs != null && corpusLagMs >= STALE_CORPUS_MS;
 
   return (
     <div className="mb-4 bg-surface">
@@ -224,6 +246,38 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
                 : 'not comparable with a run under different models'}
             </span>
           </span>
+        </Row>
+        {/* Corpus freshness. Sits next to Pricing for the same reason Pricing does:
+            it changes what every PnL number below MEANS. A run swept over a lake that
+            was hours behind will carry frozen `Open (est)` rows a Simulate closes. */}
+        <Row label="Data through">
+          {corpusThrough ? (
+            <span className="flex flex-wrap items-center gap-1.5">
+              <Badge
+                variant={corpusStale ? 'warning' : 'info'}
+                title={
+                  corpusStale
+                    ? 'The lake export was behind when this run started, so its corpus ends here. ' +
+                      'Positions still open at this instant are frozen at these prices — a Simulate ' +
+                      'of the same rule splices the fresher PG tail and will close some of them. ' +
+                      'Re-export the lake (db-incremental-sync.ps1 -IncludeToday -ExportLake) and re-run to compare like for like.'
+                    : 'Newest trade in the corpus this run scanned. The sweep reads the sealed lake only; ' +
+                      'Simulate additionally splices the fresh PG tail.'
+                }
+              >
+                {corpusThrough.toLocaleString()}
+              </Badge>
+              {corpusLagMs != null && (
+                <span className={corpusStale ? 'text-[10px] text-warning' : 'text-[10px] text-text-dim/60'}>
+                  {corpusStale
+                    ? `lake was ${humanLag(corpusLagMs)} behind at run start — open rows are frozen here`
+                    : `${humanLag(corpusLagMs)} behind run start`}
+                </span>
+              )}
+            </span>
+          ) : (
+            <span className="text-text-dim/60">unknown (run predates this stamp)</span>
+          )}
         </Row>
         {run.fingerprint_id && (
           <Row label="Corpus scope">

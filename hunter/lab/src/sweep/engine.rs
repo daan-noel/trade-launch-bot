@@ -21,6 +21,16 @@ const CANCEL_CHECK_STRIDE: usize = 256;
 /// Resolve every combo's outcome for one token into `out` (cleared first), using
 /// a **precomputed** [`Strategy::TokenState`]. Shared by the wave driver (series
 /// once per token) and the legacy `fill_outcomes` wrapper.
+///
+/// **Every combo resolves its own entry** ([`Strategy::resolve_entry_from`]); only
+/// the exit-independent Stage-A candidates ([`Strategy::entry_candidates`]) are
+/// cached per [`Strategy::entry_key`]. Caching the *resolved* entry by that key —
+/// which this fn did until 2026-07-26 — was the entry-cache poisoning bug: the
+/// engine's `can_enter` veto ("never buy while the exit conditions already hold")
+/// makes the entry exit-dependent, so the first combo of each entry class donated
+/// its entered set to every sibling. See the [`Strategy`] trait doc and
+/// `docs/plans/sweep/sim-parity.md`; the lock is
+/// `generic::guard::fold_gives_each_exit_variant_its_own_entry`.
 pub(crate) fn fill_outcomes_with_state<S: Strategy>(
     strategy: &S,
     params: &[S::Params],
@@ -33,10 +43,17 @@ pub(crate) fn fill_outcomes_with_state<S: Strategy>(
     assert_eq!(params.len(), bound.len());
     out.clear();
     let trades: &[CorpusTrade] = &token.trades;
-    let mut entry_cache: Option<(S::EntryKey, S::Entry)> = None;
-    // Recycled per-token exit context (generic: prefix-extrema hulls). Rebuilt
-    // in place when the entry cache goes stale — same cadence as entry resolve.
+    // Recycled Stage-A candidates + the key they were computed for. Both are reused
+    // in place across the combo loop, so an entry class costs one walk, not one
+    // alloc per combo.
+    let mut cands = S::EntryCands::default();
+    let mut cands_key: Option<S::EntryKey> = None;
+    // Recycled per-token exit context (generic: prefix-extrema hulls). Rebuilt in
+    // place when the entry the combo resolved needs a different one — NOT when the
+    // entry key changes: entries now move within a class, and the hulls are anchored
+    // on the fill row.
     let mut exit_ctx = S::ExitCtx::default();
+    let mut ctx_key: Option<S::ExitCtxKey> = None;
     for (chunk_i, chunk) in params.chunks(CANCEL_CHECK_STRIDE).enumerate() {
         if observer.cancelled() {
             return Err(());
@@ -45,20 +62,20 @@ pub(crate) fn fill_outcomes_with_state<S: Strategy>(
         for (j, p) in chunk.iter().enumerate() {
             let i = base + j;
             let key = strategy.entry_key(p);
-            let stale = match &entry_cache {
-                Some((k, _)) => k != &key,
-                None => true,
-            };
-            if stale {
+            if cands_key.as_ref() != Some(&key) {
                 if observer.cancelled() {
                     return Err(());
                 }
-                let entry = strategy.resolve_entry(trades, token_state, &bound[i], p);
-                strategy.build_exit_ctx(trades, token_state, &bound[i], &entry, p, &mut exit_ctx);
-                entry_cache = Some((key, entry));
+                strategy.entry_candidates(trades, token_state, &bound[i], p, &mut cands);
+                cands_key = Some(key);
             }
-            let entry = &entry_cache.as_ref().unwrap().1;
-            out.push(strategy.resolve_exit(trades, token_state, &bound[i], entry, p, &exit_ctx));
+            let entry = strategy.resolve_entry_from(trades, token_state, &bound[i], p, &mut cands);
+            let key = strategy.exit_ctx_key(&bound[i], &entry);
+            if ctx_key.as_ref() != Some(&key) {
+                strategy.build_exit_ctx(trades, token_state, &bound[i], &entry, p, &mut exit_ctx);
+                ctx_key = Some(key);
+            }
+            out.push(strategy.resolve_exit(trades, token_state, &bound[i], &entry, p, &exit_ctx));
         }
     }
     Ok(())
@@ -589,11 +606,14 @@ mod tests {
         // and the engine resolves it once per token (exercises the entry cache).
         type Entry = bool;
         type EntryKey = ();
+        type EntryCands = ();
         type TokenState = ();
         type BoundParams = ();
         type ExitCtx = ();
+        type ExitCtxKey = ();
         fn entry_key(&self, _p: &f64) {}
         fn bind_param(&self, _p: &f64) {}
+        fn exit_ctx_key(&self, _bound: &(), _entry: &bool) {}
         fn prepare_token(&self, _token: &crate::sweep::corpus::CorpusToken) {}
         fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), _bound: &(), _p: &f64) -> bool {
             !trades.is_empty()
@@ -726,13 +746,16 @@ mod tests {
     impl Strategy for EntryMock {
         type Entry = i64;
         type EntryKey = i64;
+        type EntryCands = ();
         type TokenState = ();
         type BoundParams = ();
         type ExitCtx = ();
+        type ExitCtxKey = ();
         fn entry_key(&self, p: &(i64, f64)) -> i64 {
             p.0
         }
         fn bind_param(&self, _p: &(i64, f64)) {}
+        fn exit_ctx_key(&self, _bound: &(), _entry: &i64) {}
         fn prepare_token(&self, _token: &crate::sweep::corpus::CorpusToken) {}
         fn resolve_entry(&self, _trades: &[CorpusTrade], _state: &(), _bound: &(), p: &(i64, f64)) -> i64 {
             p.0
@@ -789,6 +812,145 @@ mod tests {
                 params[i].0
             );
         }
+    }
+
+    /// A strategy whose entry is **exit-dependent**: the entry candidates come from
+    /// the entry key (Stage A), but a combo's exit param vetoes the early ones
+    /// (Stage B) — the shape of the real `can_enter` veto. Combos here share one
+    /// `EntryKey` and must still resolve *different* entries.
+    struct VetoMock;
+    /// `(entry_key, veto_below)` — every candidate row `< veto_below` is vetoed.
+    type VetoParams = (i64, i64);
+    impl ParamSpace for VetoMock {
+        type Params = VetoParams;
+        fn sample(&self, _m: SweepMethod) -> Vec<VetoParams> {
+            vec![]
+        }
+    }
+    impl VetoMock {
+        /// Candidate rows for an entry class — exit-independent by construction.
+        fn cands_for(key: i64) -> Vec<i64> {
+            vec![key * 10, key * 10 + 1, key * 10 + 2]
+        }
+        /// The honest entry for one combo: first candidate the veto lets through.
+        fn honest(p: &VetoParams) -> i64 {
+            Self::cands_for(p.0).into_iter().find(|&c| c >= p.1).unwrap_or(-1)
+        }
+    }
+    impl Strategy for VetoMock {
+        type Entry = i64;
+        type EntryKey = i64;
+        type EntryCands = Vec<i64>;
+        type TokenState = ();
+        type BoundParams = ();
+        type ExitCtx = ();
+        type ExitCtxKey = i64;
+        fn entry_key(&self, p: &VetoParams) -> i64 {
+            p.0
+        }
+        fn bind_param(&self, _p: &VetoParams) {}
+        fn exit_ctx_key(&self, _bound: &(), entry: &i64) -> i64 {
+            *entry
+        }
+        fn prepare_token(&self, _token: &crate::sweep::corpus::CorpusToken) {}
+        fn resolve_entry(
+            &self,
+            _trades: &[CorpusTrade],
+            _state: &(),
+            _bound: &(),
+            p: &VetoParams,
+        ) -> i64 {
+            Self::honest(p)
+        }
+        fn entry_candidates(
+            &self,
+            _trades: &[CorpusTrade],
+            _state: &(),
+            _bound: &(),
+            p: &VetoParams,
+            out: &mut Vec<i64>,
+        ) {
+            out.clear();
+            out.extend(Self::cands_for(p.0));
+        }
+        fn resolve_entry_from(
+            &self,
+            _trades: &[CorpusTrade],
+            _state: &(),
+            _bound: &(),
+            p: &VetoParams,
+            cands: &mut Vec<i64>,
+        ) -> i64 {
+            cands.iter().copied().find(|&c| c >= p.1).unwrap_or(-1)
+        }
+        fn resolve_exit(
+            &self,
+            _trades: &[CorpusTrade],
+            _state: &(),
+            _bound: &(),
+            entry: &i64,
+            _p: &VetoParams,
+            _ctx: &(),
+        ) -> TokenOutcome {
+            TokenOutcome {
+                fired: true,
+                holding_secs: 0,
+                pnl_percent: 0.0,
+                pnl_sol: *entry as f32,
+                exit: ExitCode::TakeProfit,
+                entry_time: None,
+                entry_price: None,
+                entry_slot: None,
+                exit_time: None,
+                exit_price: None,
+                exit_slot: None,
+            }
+        }
+        fn params_json(&self, _p: &VetoParams) -> serde_json::Value {
+            serde_json::json!({})
+        }
+    }
+
+    /// **The entry-cache poisoning regression, at the engine layer.**
+    ///
+    /// Every combo below shares ONE `EntryKey` and differs only on the exit side,
+    /// which is precisely the class the old fold collapsed: it cached the first
+    /// combo's *resolved* entry and served it to all its siblings. With the
+    /// two-stage split the class shares only the candidates, so each combo's veto
+    /// still moves its own entry. (`generic::guard` locks the same property for the
+    /// real strategy against `scan`/`run_replay`; this one pins the generic fold
+    /// plumbing independent of any strategy.)
+    #[test]
+    fn fold_reresolves_entry_per_exit_variant_within_one_class() {
+        // key 7 ⇒ candidates [70, 71, 72]; the veto picks a different one each time.
+        let params: Vec<VetoParams> = vec![(7, 0), (7, 71), (7, 72), (7, 71), (7, 0)];
+        let corpus = Corpus {
+            tokens: vec![token("a", 1)],
+            hash: "h".into(),
+            has_fingerprints: false,
+            candidates_capped: false,
+        };
+        let (_stats, metrics) = run_sweep(
+            &VetoMock,
+            &params,
+            &corpus,
+            &crate::sweep::progress::NoopObserver,
+            params.len(),
+        )
+        .unwrap();
+        for (i, m) in metrics.iter().enumerate() {
+            assert_eq!(
+                m.total_pnl_sol,
+                VetoMock::honest(&params[i]) as f64,
+                "combo {i} {:?} inherited a sibling's entry (cache poisoning)",
+                params[i]
+            );
+        }
+        // Non-vacuity: the class really does resolve to more than one entry, so a
+        // fold that shared one entry per class would fail above.
+        let distinct: std::collections::BTreeSet<i64> =
+            params.iter().map(VetoMock::honest).collect();
+        assert!(distinct.len() > 1, "fixture must span several entries");
     }
 
     #[test]

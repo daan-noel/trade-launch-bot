@@ -964,6 +964,12 @@ async fn run_grouped_sweep_job(
 
     let corpus_hash = corpus.hash.clone();
     let token_count = corpus.token_count() as i32;
+    // How fresh this run's data actually is. The sweep is LakeSource-only while
+    // `simulate` splices the fresh PG tail, so a stale export silently makes the two
+    // disagree — the sweep freezing `Open (est)` rows at hours-old prices that a
+    // simulate watches die. Stamped on the run so the UI can say "data through HH:MM"
+    // instead of leaving the user to suspect the engine (sim-parity.md).
+    let corpus_last_trade_at = corpus.last_trade_at();
     let grouping_spec = serde_json::to_value(&b.group_by).unwrap_or_else(|_| serde_json::json!([]));
 
     // Phase 4 — write the run header up front (`status = "running"`) BEFORE the
@@ -989,6 +995,7 @@ async fn run_grouped_sweep_job(
         group_count: 0,
         combo_count: 0,
         corpus_hash: Some(corpus_hash),
+        corpus_last_trade_at,
         created_at: Utc::now(),
         status: "running".to_string(),
         groups_done: 0,

@@ -149,7 +149,7 @@ This means: the sweep continues computing while previous groups persist. DB writ
 
 1. **Corpus loaded once per run** — `DbSource::load()` pulls all tokens + their trade slices into `BacktestTradeCache` at the start. No DB queries during the simulate loop.
 
-2. **Entry cache reuse per token** — `Strategy::entry_key(params) -> EntryKey` maps params to a cache key. Tokens with the same entry params (e.g., same scalp gates) reuse the same entry result. For TPSL2: 14 params but entry varies on only 8 → 2^8 = 256 entry cache slots max per token, not 2^14.
+2. **Entry *candidate* reuse per token — never a resolved entry.** `Strategy::entry_key(params) -> EntryKey` maps params to a cache key, and combos sharing it share the **exit-independent** half of the entry walk (`entry_candidates`, Stage A). Each combo then resolves its own entry from those candidates (`resolve_entry_from`, Stage B), because the engine's `can_enter` veto makes the entry exit-dependent. Caching the *resolved* entry by `entry_key` — what this did until 2026-07-26 — silently donated the first combo of each class its entered set to every sibling (the poisoning bug; [sim-parity.md](sim-parity.md)).
 
 3. **Buffer recycling in `engine.rs`** — `Vec<SweepTrade>` per-combo buffers are taken from a pool and returned after use. No allocation in the hot loop except for the `ComboAgg` accumulators (allocated once per combo at the start of each token's sweep).
 
@@ -163,7 +163,8 @@ This means: the sweep continues computing while previous groups persist. DB writ
 
 ## Fold hot-path rules (engine.rs) — do not regress
 
-Three properties the wave-outer fold depends on. Each replaced a measured waste.
+Properties the wave-outer fold depends on. Each replaced a measured waste — or, for
+the two-stage entry (6–7), a measured *wrongness* that had to stay cheap.
 
 1. **Bind once per shard, never per wave.** `bound_all` is built *outside* the
    `corpus.tokens.chunks(wave)` loop in `run_sweep_unsharded`. Params don't vary with
@@ -206,11 +207,31 @@ Three properties the wave-outer fold depends on. Each replaced a measured waste.
    `drop` it holds `n_groups × n_combos` `ComboMetrics` resident straight through the
    memory-heaviest sweep.
 
-6. **Prefix-extrema exit index (default pure-TP/SL path).** Combos sharing an
-   `entry_key` share `fill_row` + `entry_price`, so walking the series once per combo
-   repeats work. When the engine entry cache goes stale, `Strategy::build_exit_ctx`
-   rebuilds an [`ExitIndex`](../../../lab/src/sweep/generic/exit_index.rs) into a
-   recycled scratch (`ExitCtx`):
+6. **The Stage-A walk is resumable, not eager.** `resolve_entry` stops at the first
+   row it can enter on; an entry condition that holds on thousands of rows must keep
+   that short-circuit, so `EntryCandidates` only *opens* the walk and Stage B drives it
+   one candidate at a time. The class shares the walk's **progress**: an unvetoed combo
+   walks exactly as far as the old cache did (to the first candidate), and a vetoing
+   combo's deeper walk is inherited by its siblings instead of being redone. Pre-computing
+   every candidate up front would trade the poisoning bug for a pathological scan.
+
+7. **The fill memo is what keeps Stage B O(1).** Combos in a class overwhelmingly land
+   on the same entry row, so `EntryCandidates::fill_at` memoizes `find_paper_entry_at`
+   by admissible row (capped at 32 distinct rows — past that the linear probe stops
+   being cheaper than the fill it saves). A pure-TP/SL combo's veto is vacuous
+   (`BoundCombo::entry_veto_possible == false`, since position-scoped reqs read `NaN`
+   before entry), so it costs one candidate lookup + one memo hit. That shape is the
+   1M-combo case and must stay untaxed.
+
+8. **Prefix-extrema exit index (default pure-TP/SL path).** Combos sharing an
+   `entry_key` usually share `fill_row` + `entry_price`, so walking the series once per
+   combo repeats work. `Strategy::build_exit_ctx` rebuilds an
+   [`ExitIndex`](../../../lab/src/sweep/generic/exit_index.rs) into a recycled scratch
+   (`ExitCtx`) whenever `Strategy::exit_ctx_key` changes — `Some(fill_row)` when the
+   combo wants an index, `None` when it doesn't, so a cleared context is a distinct key
+   and a later fast-exit combo on the same fill row still gets its rebuild. It is keyed
+   on the **resolved fill row**, not on `entry_key`: entries now move within a class,
+   and the hulls are anchored on the fill.
 
    | Field | Definition |
    | --- | --- |

@@ -331,12 +331,27 @@ impl ParamSpace for GenericSweepStrategy {
 impl Strategy for GenericSweepStrategy {
     type Entry = EntryResolution;
     type EntryKey = u64;
+    type EntryCands = EntryCandidates;
     type TokenState = MetricSeries;
     type BoundParams = BoundCombo;
     type ExitCtx = super::exit_index::ExitIndex;
+    /// The fill row the hulls are anchored on, or `None` when this combo wants no
+    /// index at all — the exact pair [`build_exit_ctx`](Self::build_exit_ctx)
+    /// branches on, so "cleared" is a distinct key and a later fast-exit combo on the
+    /// same fill row still gets its rebuild.
+    type ExitCtxKey = Option<usize>;
 
     fn entry_key(&self, params: &Self::Params) -> Self::EntryKey {
         self.model.entry_key(params.idx)
+    }
+
+    fn exit_ctx_key(&self, bound: &Self::BoundParams, entry: &Self::Entry) -> Self::ExitCtxKey {
+        match entry {
+            EntryResolution::Entered { fill_row, .. } if wants_exit_index(bound, entry) => {
+                Some(*fill_row)
+            }
+            _ => None,
+        }
     }
 
     fn bind_param(&self, params: &Self::Params) -> Self::BoundParams {
@@ -387,6 +402,28 @@ impl Strategy for GenericSweepStrategy {
         _params: &Self::Params,
     ) -> Self::Entry {
         resolve_entry(trades, series, bound, &self.pricing)
+    }
+
+    fn entry_candidates(
+        &self,
+        _trades: &[CorpusTrade],
+        series: &Self::TokenState,
+        bound: &Self::BoundParams,
+        _params: &Self::Params,
+        out: &mut Self::EntryCands,
+    ) {
+        entry_candidates(series, bound, out)
+    }
+
+    fn resolve_entry_from(
+        &self,
+        trades: &[CorpusTrade],
+        series: &Self::TokenState,
+        bound: &Self::BoundParams,
+        _params: &Self::Params,
+        cands: &mut Self::EntryCands,
+    ) -> Self::Entry {
+        resolve_entry_from(trades, series, bound, cands, &self.pricing)
     }
 
     fn resolve_exit(
@@ -824,6 +861,11 @@ pub struct BoundCombo {
     /// scalar walk for the entire rule: that walk is O(n) and must evaluate every
     /// req anyway, so resolving the others by index would only add work.
     pub(crate) fast_exit: bool,
+    /// `true` ⇔ some exit req could hold *before* entry and so veto it (the
+    /// `can_enter` gate). `false` ⇒ this combo's entry is a pure function of the
+    /// shared [`EntryCandidates`] — the pure-TP/SL shape, which the two-stage entry
+    /// must not tax. Computed conservatively at bind time; see [`BoundCombo::new`].
+    entry_veto_possible: bool,
 }
 
 impl BoundCombo {
@@ -834,7 +876,18 @@ impl BoundCombo {
         let mono_cols = rule.mono_kills.iter().map(|k| col_idx_mono(columns, k)).collect();
         let exit_classes: Vec<ExitClass> = rule.exit_reqs.iter().map(classify_exit_req).collect();
         let fast_exit = !exit_classes.iter().any(|c| matches!(c, ExitClass::General));
-        Self { rule, entry_cols, mono_cols, exit_cols, exit_classes, fast_exit }
+        // Can any exit req hold at a row *before* entry, i.e. veto it? Conservative
+        // by construction: a req that reads a recorded column might, and a req with
+        // no conditions is vacuously true even on the `NaN` an unrecorded column
+        // reads. Everything else — every position-scoped req under the sweep's own
+        // column set, which is what a pure TP/SL combo is made of — provably cannot,
+        // so those combos skip the veto eval entirely (see `resolve_entry_from`).
+        let entry_veto_possible = rule
+            .exit_reqs
+            .iter()
+            .zip(&exit_cols)
+            .any(|(r, &col)| col != MISSING_COL || eval(&r.conds, f64::NAN, r.tolerance));
+        Self { rule, entry_cols, mono_cols, exit_cols, exit_classes, fast_exit, entry_veto_possible }
     }
 }
 
@@ -1075,24 +1128,227 @@ pub(crate) fn resolve_entry(
             if has_exit_metrics && reqs_any_satisfied(series, &c.exit_reqs, exit_cols, i) {
                 continue;
             }
-            let Some(trigger_idx) = entry_trigger_trade_idx(series, i) else {
-                return EntryResolution::NoEntry;
-            };
-            let Some(fill) = find_paper_entry_at(trades, trigger_idx, true, pricing.fill_model)
-            else {
-                return EntryResolution::NoEntry;
-            };
-            let Some(fill_row) = series_row_for_trade_idx(series, fill.trade_idx) else {
-                return EntryResolution::NoEntry;
-            };
-            return EntryResolution::Entered {
-                fill_row,
-                price: fill.price,
-                at: fill.block_time,
-            };
+            return entry_fill_at(trades, series, i, pricing);
         }
     }
     EntryResolution::NoEntry
+}
+
+/// The fill half of an entry decision at series `row`: trigger trade → the run's
+/// [`FillModel`] fill → the series row it lands on. `NoEntry` when any of the three
+/// is unresolvable — a **terminal** answer for the token (that is what the walk in
+/// [`resolve_entry`] does at its first admissible row), not a reason to look at a
+/// later candidate.
+///
+/// Shared by the fused walk and Stage B so the two can never price an entry
+/// differently.
+fn entry_fill_at(
+    trades: &[CorpusTrade],
+    series: &MetricSeries,
+    row: usize,
+    pricing: &Pricing,
+) -> EntryResolution {
+    let Some(trigger_idx) = entry_trigger_trade_idx(series, row) else {
+        return EntryResolution::NoEntry;
+    };
+    let Some(fill) = find_paper_entry_at(trades, trigger_idx, true, pricing.fill_model) else {
+        return EntryResolution::NoEntry;
+    };
+    let Some(fill_row) = series_row_for_trade_idx(series, fill.trade_idx) else {
+        return EntryResolution::NoEntry;
+    };
+    EntryResolution::Entered { fill_row, price: fill.price, at: fill.block_time }
+}
+
+// ───────────────── two-stage entry (Stage A candidates / Stage B veto) ─────────────
+//
+// `resolve_entry` above is exit-**dependent**: the `can_enter` veto skips a row where
+// the combo's own exit conditions already hold. The fold's cache is keyed by entry
+// picks only, so caching the *resolved* entry made the first combo of each entry class
+// donate its entered set to every sibling — wrong counts, rows and prices on any sweep
+// with exit-side metric axes (the 2026-07-26 poisoning bug; `sim-parity.md`).
+//
+// Splitting the walk fixes it for near-free, because everything expensive in it is
+// exit-independent: the dead check, the mono-kill check and the entry-condition eval
+// all read entry-side state only. Only the veto reads the exit side, and only at rows
+// where the entry conditions already hold — few, for any selective entry.
+
+/// **Stage A** — the exit-independent half of the entry walk for one (token, entry
+/// class), shared by every combo in that class.
+///
+/// The walk is **resumable, not eager**. [`resolve_entry`] stops at the first row it
+/// can enter on, and a rule whose entry condition holds on thousands of rows must keep
+/// that short-circuit: pre-computing every candidate would trade one bug for a
+/// pathological scan. So Stage A only *opens* the walk; Stage B drives it one candidate
+/// at a time and the progress is what the class shares. A class where nothing is vetoed
+/// therefore walks exactly as far as the old cache did — to the first candidate — and a
+/// vetoing combo's deeper walk is inherited by its siblings instead of being redone.
+///
+/// Buffers are reused in place across combos, tokens and classes (the engine keeps one
+/// instance per token scan), so steady state allocates nothing.
+#[derive(Default)]
+pub struct EntryCandidates {
+    /// `true` ⇔ the rule enters on arm, so *every* examined row is a candidate.
+    /// Recording those as `rows` would cost one `u32` per series row to describe a
+    /// range the index arithmetic already does.
+    all_rows: bool,
+    /// Next row the shared walk will examine.
+    next_row: usize,
+    /// Candidate rows found so far (ascending). Unused when [`Self::all_rows`].
+    rows: Vec<u32>,
+    /// Where the walk ended: the first row that is dead or mono-killed (exactly where
+    /// [`resolve_entry`] returns `NoEntry`), or `n_rows` if it ran off the end. `None`
+    /// while the walk can still be resumed.
+    stopped_at: Option<usize>,
+    /// [`entry_fill_at`] memo, keyed by the admissible row that produced it. Combos in
+    /// a class overwhelmingly land on the same row, so this is what keeps Stage B at
+    /// O(1) once the first combo has paid for the fill. Capacity-capped: past
+    /// [`FILL_MEMO_CAP`] distinct rows the linear probe stops being cheaper than the
+    /// fill it saves, so extra rows simply re-resolve.
+    fills: Vec<(u32, EntryResolution)>,
+}
+
+/// Distinct admissible rows one entry class memoizes fills for. A class with more
+/// than this many *distinct* entry rows is already paying a deep veto walk per combo;
+/// keeping the probe short matters more there than saving the fill.
+const FILL_MEMO_CAP: usize = 32;
+
+impl EntryCandidates {
+    /// Begin a fresh entry class (buffers reused, nothing walked yet).
+    fn open(&mut self, enter_on_arm: bool) {
+        self.all_rows = enter_on_arm;
+        self.next_row = 0;
+        self.rows.clear();
+        self.stopped_at = None;
+        self.fills.clear();
+    }
+
+    /// Examine one more row of the shared walk. Reads `dead`, the mono-kills and the
+    /// entry reqs — **entry-side only**. An exit-side read here is exactly the
+    /// poisoning bug; see the section comment.
+    fn step(&mut self, series: &MetricSeries, b: &BoundCombo) {
+        let i = self.next_row;
+        if i >= series.n_rows() {
+            self.stopped_at = Some(i);
+            return;
+        }
+        if series.dead[i] || entry_unsatisfiable(series, &b.rule, &b.mono_cols, i) {
+            self.stopped_at = Some(i);
+            return;
+        }
+        if !self.all_rows && reqs_satisfied(series, &b.rule.entry_reqs, &b.entry_cols, i) {
+            self.rows.push(i as u32);
+        }
+        self.next_row = i + 1;
+    }
+
+    /// The `k`-th candidate row (ascending), resuming the shared walk as far as needed.
+    /// `None` once the walk has ended before reaching a `k`-th candidate.
+    ///
+    /// `b` must be a combo of the class this instance was [`opened`](Self::open) for —
+    /// combos sharing a `Strategy::entry_key` share their whole entry side, which is
+    /// what makes resuming another combo's walk sound.
+    fn nth(&mut self, k: usize, series: &MetricSeries, b: &BoundCombo) -> Option<usize> {
+        if self.all_rows {
+            while self.stopped_at.is_none() && self.next_row <= k {
+                self.step(series, b);
+            }
+            match self.stopped_at {
+                Some(stop) if k >= stop => None,
+                _ => Some(k),
+            }
+        } else {
+            while self.stopped_at.is_none() && self.rows.len() <= k {
+                self.step(series, b);
+            }
+            self.rows.get(k).map(|&r| r as usize)
+        }
+    }
+
+    /// Memoized [`entry_fill_at`] for one admissible row.
+    fn fill_at(&mut self, row: usize, compute: impl FnOnce() -> EntryResolution) -> EntryResolution {
+        let key = row as u32;
+        if let Some((_, hit)) = self.fills.iter().find(|(k, _)| *k == key) {
+            return *hit;
+        }
+        let resolved = compute();
+        if self.fills.len() < FILL_MEMO_CAP {
+            self.fills.push((key, resolved));
+        }
+        resolved
+    }
+}
+
+/// **Stage A** — open the shared, resumable entry walk for one (token, entry class).
+/// Called once per class per token; [`resolve_entry_from`] drives it.
+pub(crate) fn entry_candidates(series: &MetricSeries, b: &BoundCombo, out: &mut EntryCandidates) {
+    debug_assert_cols_match(series, b);
+    out.open(b.rule.enter_on_arm());
+}
+
+/// **Stage B** — this combo's entry, resolved out of the shared [`EntryCandidates`]
+/// by applying its own `can_enter` veto.
+///
+/// Byte-identical to [`resolve_entry`] by construction: it evaluates the same veto
+/// predicate at the same rows, in the same order, and prices the first admissible one
+/// through the same [`entry_fill_at`]. (Asserted, not assumed — see the `cfg(test)`
+/// check below, which runs in every guard.)
+///
+/// Cost per combo:
+/// * vacuous veto (pure TP/SL — position-scoped reqs read `NaN` before entry and can
+///   never fire): the class's first candidate + a memo hit, i.e. O(1) after the first
+///   combo. This is the 1M-combo shape, and it must stay untaxed.
+/// * token-scoped exit axes: one `reqs_any_satisfied` per vetoed candidate, plus
+///   whatever the shared walk still has to advance — work the old code did per combo
+///   too, only now it is shared and it lands on the *right* combo.
+pub(crate) fn resolve_entry_from(
+    trades: &[CorpusTrade],
+    series: &MetricSeries,
+    b: &BoundCombo,
+    cands: &mut EntryCandidates,
+    pricing: &Pricing,
+) -> EntryResolution {
+    debug_assert_cols_match(series, b);
+    let mut k = 0usize;
+    let resolved = loop {
+        let Some(row) = cands.nth(k, series, b) else { break EntryResolution::NoEntry };
+        // Mirror `CompiledRule::can_enter`: never buy while exit metrics already hold.
+        if b.entry_veto_possible && reqs_any_satisfied(series, &b.rule.exit_reqs, &b.exit_cols, row)
+        {
+            k += 1;
+            continue;
+        }
+        break cands.fill_at(row, || entry_fill_at(trades, series, row, pricing));
+    };
+    #[cfg(test)]
+    {
+        // The equivalence the split rests on, checked against the fused reference on
+        // every combo the tests fold. Deliberately `cfg(test)` and not `debug_assert`:
+        // the reference is the O(n) walk this stage exists to avoid, so re-running it
+        // per combo would make a plain debug `cargo run` sweep pay the very cost the
+        // cache removes — while the guards, which are what must catch a drift, still
+        // check every single resolution.
+        let reference = resolve_entry(trades, series, b, pricing);
+        assert!(
+            same_entry(&resolved, &reference),
+            "two-stage entry disagreed with the fused reference: {resolved:?} vs {reference:?}"
+        );
+    }
+    resolved
+}
+
+/// Exact [`EntryResolution`] equality (bitwise on the price, so an identical
+/// computation compares equal without tripping `clippy::float_cmp`).
+#[cfg(test)]
+fn same_entry(a: &EntryResolution, b: &EntryResolution) -> bool {
+    match (a, b) {
+        (EntryResolution::NoEntry, EntryResolution::NoEntry) => true,
+        (
+            EntryResolution::Entered { fill_row: r1, price: p1, at: t1 },
+            EntryResolution::Entered { fill_row: r2, price: p2, at: t2 },
+        ) => r1 == r2 && p1.to_bits() == p2.to_bits() && t1 == t2,
+        _ => false,
+    }
 }
 
 /// Class-directed exit resolution over a prebuilt [`super::exit_index::ExitIndex`]:
@@ -1298,9 +1554,10 @@ fn open_outcome(
 /// corpus-wide tail cap `run_replay` bounds its tick loop by, `min(as_of,
 /// corpus_last_trade + DEAD_QUIET + TAIL_MARGIN)`. `None` for a trade-less set.
 pub(crate) fn frozen_tail_horizon(as_of: Ts, tokens: &[CorpusToken]) -> Option<Ts> {
-    // Canonical order is block-time-monotone, so a token's last trade carries its own
-    // max block_time; the corpus max over those is `run_replay`'s `last_trade_at`.
-    let last = tokens.iter().filter_map(|t| t.trades.last().map(|ct| ct.block_time)).max()?;
+    // The corpus's newest trade — `run_replay`'s `last_trade_at`. Single-sourced with
+    // the freshness stamp the run row stores (`Corpus::last_trade_at`), so "data
+    // through HH:MM" in the UI names the very instant this horizon is built on.
+    let last = crate::sweep::corpus::Corpus::last_trade_at_of(tokens)?;
     Some(as_of.min(last + Duration::seconds(DEAD_QUIET_SECS + TAIL_MARGIN_SECS)))
 }
 

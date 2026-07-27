@@ -174,13 +174,21 @@ impl Strategy for AdditiveStrategy {
     /// Segment-qualified: two segments' sub-keys are unrelated, so a bare sub-key
     /// would let one segment's cached entry be served to another segment's combo.
     type EntryKey = (u32, <GenericSweepStrategy as Strategy>::EntryKey);
+    type EntryCands = <GenericSweepStrategy as Strategy>::EntryCands;
     type TokenState = <GenericSweepStrategy as Strategy>::TokenState;
     type BoundParams = <GenericSweepStrategy as Strategy>::BoundParams;
     type ExitCtx = <GenericSweepStrategy as Strategy>::ExitCtx;
+    type ExitCtxKey = <GenericSweepStrategy as Strategy>::ExitCtxKey;
 
     fn entry_key(&self, p: &Self::Params) -> Self::EntryKey {
         let (s, c) = self.inner(p);
         (p.segment, s.entry_key(&c))
+    }
+
+    fn exit_ctx_key(&self, bound: &Self::BoundParams, entry: &Self::Entry) -> Self::ExitCtxKey {
+        // Segment-independent: every segment shares one series/column layout, so the
+        // sub-strategy's key (fill row + wants-index) is the whole identity.
+        self.segments[0].exit_ctx_key(bound, entry)
     }
 
     fn bind_param(&self, p: &Self::Params) -> Self::BoundParams {
@@ -216,6 +224,30 @@ impl Strategy for AdditiveStrategy {
     ) -> Self::Entry {
         let (s, c) = self.inner(p);
         s.resolve_entry(trades, state, bound, &c)
+    }
+
+    fn entry_candidates(
+        &self,
+        trades: &[CorpusTrade],
+        state: &Self::TokenState,
+        bound: &Self::BoundParams,
+        p: &Self::Params,
+        out: &mut Self::EntryCands,
+    ) {
+        let (s, c) = self.inner(p);
+        s.entry_candidates(trades, state, bound, &c, out)
+    }
+
+    fn resolve_entry_from(
+        &self,
+        trades: &[CorpusTrade],
+        state: &Self::TokenState,
+        bound: &Self::BoundParams,
+        p: &Self::Params,
+        cands: &mut Self::EntryCands,
+    ) -> Self::Entry {
+        let (s, c) = self.inner(p);
+        s.resolve_entry_from(trades, state, bound, &c, cands)
     }
 
     fn resolve_exit(

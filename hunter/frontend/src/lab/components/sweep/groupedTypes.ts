@@ -77,6 +77,12 @@ export interface GroupedSweepRunRecord {
   group_count: number;
   combo_count: number;
   corpus_hash: string | null;
+  /** Block time of the newest trade in the corpus this run scanned — how fresh its
+   *  data was. `null` on legacy runs / a trade-less corpus. The sweep reads the
+   *  sealed lake only while Simulate splices the fresh PG tail, so a stale export
+   *  makes the two disagree without either being wrong: the sweep freezes `Open (est)`
+   *  rows at old prices that a simulate watches die. Surfaced as "data through". */
+  corpus_last_trade_at: string | null;
   created_at: string;
   /** Lifecycle: `running` | `completed` | `cancelled` (user abort, honestly
    *  partial) | `partial` (the run stopped early — a DB write error, or an

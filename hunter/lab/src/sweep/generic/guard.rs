@@ -31,6 +31,7 @@ use crate::sweep::projection::CorpusTrade;
 use crate::sweep::strategy::TokenOutcome;
 use crate::strategies::replay::{run_replay, PositionOutcome, ReplayConfig, ReplayToken};
 
+use super::axes::{AxisSide, AxisSpec};
 use super::strategy::{
     build_series_with_flow, columns_for, scan, sparse_grid_for, wants_exit_index, Pricing,
 };
@@ -1339,6 +1340,180 @@ fn scan_matches_replay_multi_token_frozen_tail() {
             (r.n_open, r.n_closed),
             "{fm:?}: control — the legacy per-token tail must diverge from simulate (D1)"
         );
+    }
+}
+
+// ───────────── fold ≡ per-combo scan — the entry-cache poisoning lock ─────────────
+//
+// Every guard above drives ONE combo at a time, so the fold's entry cache is invisible
+// to them by construction — which is exactly why the poisoning bug (2026-07-26) lived
+// through the whole guard suite. The engine's `can_enter` veto makes the resolved entry
+// **exit-dependent**, but the cache was keyed on the entry picks alone, so the first
+// combo of an entry class donated its entered set to every sibling: wrong `n_fired`,
+// wrong rows, wrong prices, on any sweep with exit-side metric axes.
+//
+// The lock below folds a real multi-combo `AxesModel` through the real fold
+// (`fill_outcomes_with_state`) and asserts every combo's outcome equals its own
+// single-combo `scan` AND its own `run_replay` — with a non-vacuity assert that the
+// two exit variants really do resolve to different entries, so the test can never pass
+// by measuring nothing.
+
+/// One token whose liquidity steps up mid-history: an exit bound between the two
+/// levels vetoes every early entry (the `can_enter` gate), while a looser bound on the
+/// same axis vetoes nothing. Reserves stay above `DEAD_MAX_LIQUIDITY_SOL` (30) so the
+/// two combos differ by the veto only, never by deadness.
+fn veto_corpus() -> Vec<(CorpusToken, ReplayToken)> {
+    vec![token(
+        "veto",
+        vec![
+            ct(0.0, true, 1.0, 1.0, 50.0),
+            ct(1.0, true, 0.5, 1.05, 50.0),
+            ct(5.0, true, 0.5, 1.1, 50.0),
+            ct(10.0, true, 0.5, 1.2, 150.0),
+            ct(20.0, true, 0.5, 1.3, 150.0),
+        ],
+    )]
+}
+
+fn metric_axis(
+    side: AxisSide,
+    group: &str,
+    metric: &str,
+    operator: Operator,
+    values: Vec<Option<f64>>,
+) -> AxisSpec {
+    AxisSpec {
+        kind: "metric".to_string(),
+        side: Some(side),
+        group: Some(group.to_string()),
+        metric: Some(metric.to_string()),
+        operator: Some(operator),
+        window: None,
+        values,
+    }
+}
+
+#[test]
+fn fold_gives_each_exit_variant_its_own_entry() {
+    use crate::sweep::engine::fill_outcomes_with_state;
+    use crate::sweep::generic::axes::{AxesModel, AxesRequest};
+    use crate::sweep::generic::strategy::{scan_with_horizon, GenericSweepStrategy};
+    use crate::sweep::progress::NoopObserver;
+    use crate::sweep::strategy::{ParamSpace, Strategy, SweepMethod};
+
+    let as_of = at(100_000.0);
+    let corpus = veto_corpus();
+
+    // One entry axis (`time >= 1`, satisfied on every row from 1 s on — so the veto has
+    // somewhere to move the entry TO) × one exit axis on a token-scoped metric. All
+    // combos therefore share an `entry_key` and differ only on the exit side: the class
+    // the old cache collapsed. The three exit picks veto at three different depths —
+    // `< 40` never, `< 100` until reserves step up at t=10, `< 200` forever (no entry at
+    // all) — so the class spans every shape the shared walk has to serve.
+    let model = AxesModel::resolve(&AxesRequest {
+        axes: vec![
+            metric_axis(AxisSide::Entry, "m_snapshot", "time", Operator::Gte, vec![Some(1.0)]),
+            metric_axis(
+                AxisSide::Exit,
+                "m_snapshot",
+                "liquidity",
+                Operator::Lt,
+                vec![Some(40.0), Some(100.0), Some(200.0)],
+            ),
+        ],
+    })
+    .expect("axes resolve");
+
+    for fm in FILL_MODELS {
+        let pricing = pricing_for(fm);
+        let strategy = GenericSweepStrategy::new(model.clone(), pricing, as_of, None);
+        let mut params = strategy.sample(SweepMethod::Grid);
+        strategy.order_for_entry_cache(&mut params);
+        assert_eq!(params.len(), 3, "one entry pick × three exit picks");
+        assert!(
+            params.iter().all(|p| strategy.entry_key(p) == strategy.entry_key(&params[0])),
+            "the fixture must put every combo in ONE entry class — otherwise the cache \
+             is never even consulted and this test proves nothing"
+        );
+
+        for (corpus_tok, replay_tok) in &corpus {
+            let series = strategy.prepare_token(corpus_tok);
+            let trades = &corpus_tok.trades;
+
+            // Fold the class BOTH ways. The shared walk is resumable state carried
+            // across the combo loop, so a leak between siblings (a stale candidate
+            // list, a sticky stop row) shows up as an order-dependent outcome — and
+            // the reversed order also drives the deepest-vetoing combo first, which is
+            // the case where later combos read candidates the walk already passed.
+            for order in ["forward", "reversed"] {
+                let params: Vec<_> = if order == "forward" {
+                    params.clone()
+                } else {
+                    params.iter().rev().copied().collect()
+                };
+                let bound: Vec<_> = params.iter().map(|p| strategy.bind_param(p)).collect();
+
+                // The real fold — the path a grouped sweep actually runs.
+                let mut folded = Vec::new();
+                fill_outcomes_with_state(
+                    &strategy,
+                    &params,
+                    &bound,
+                    corpus_tok,
+                    &series,
+                    &NoopObserver,
+                    &mut folded,
+                )
+                .expect("fold");
+                assert_eq!(folded.len(), params.len());
+
+                for (i, p) in params.iter().enumerate() {
+                    let rule = loaded(model.combo_params(p.idx));
+                    let compiled = CompiledRule::compile(&rule);
+                    let label = format!("{fm:?}/{}/{order}/combo{}", corpus_tok.mint, p.idx);
+
+                    // (a) fold ≡ the uncached single-combo scan (the drill-in's path).
+                    // The strategy carries no corpus horizon, so `None` is its tail too.
+                    let solo = scan_with_horizon(trades, &series, &compiled, &pricing, None);
+                    assert_outcomes_eq(&folded[i], &solo, &format!("{label}: fold vs scan"));
+
+                    // (b) fold ≡ the engine fold itself, on the same single-token stream.
+                    let replay_out = run_replay(
+                        std::slice::from_ref(&rule),
+                        std::slice::from_ref(&fingerprint()),
+                        vec![replay_tok.clone()],
+                        ReplayConfig { as_of, fill_model: fm },
+                    );
+                    let po = replay_out.iter().find(|o| o.mint == corpus_tok.mint);
+                    let (r_fired, r_exit, r_entry, _r_exit_price, r_pnl_sol, _) =
+                        replay_tuple(po, &pricing.cost);
+                    assert_eq!(folded[i].fired, r_fired, "{label}: fired vs replay");
+                    if r_fired {
+                        assert_eq!(folded[i].exit, r_exit, "{label}: exit code vs replay");
+                        let s_entry = folded[i].entry_price.unwrap_or(0.0);
+                        assert!(
+                            (s_entry - r_entry).abs() < 1e-9,
+                            "{label}: entry price (fold {s_entry} vs replay {r_entry}) — a \
+                             donated entry shows up here first"
+                        );
+                        assert_eq!(folded[i].pnl_sol, r_pnl_sol, "{label}: pnl vs replay");
+                    }
+                }
+
+                // Non-vacuity: the veto must actually move the entry across the class —
+                // one combo entering early, one late, one not at all. If this ever stops
+                // holding, the fixture no longer exercises the poisoning shape and every
+                // assert above is trivially satisfiable.
+                let entries: std::collections::BTreeSet<_> =
+                    folded.iter().map(|o| (o.fired, o.entry_time)).collect();
+                assert_eq!(
+                    entries.len(),
+                    3,
+                    "{fm:?}/{order}: the exit variants must resolve THREE different \
+                     entries for this guard to mean anything, got {entries:?}"
+                );
+            }
+        }
     }
 }
 

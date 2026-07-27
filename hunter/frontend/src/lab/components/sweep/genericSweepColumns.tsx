@@ -70,7 +70,9 @@ const SCREENER_OPEN_SHARE = 0.25;
 const SCREENER_ESTIMATE_TOOLTIP =
   'Screener estimate — re-simulate for PnL. A large share of fired positions are still ' +
   'open, so this realized total is computed over a thin closed sample; the sweep is also ' +
-  'uncapped vs a live rule (both optimistic). Promote + Simulate the combo for a trustworthy PnL.';
+  'uncapped vs a live rule (both optimistic). Promote + Simulate the combo for a trustworthy PnL. ' +
+  'Check “Data through” on the run above first: a stale lake export freezes these opens at ' +
+  'old prices that a Simulate (which splices the fresh PG tail) will close.';
 
 /** Realized-PnL cell with an "est" flag when the open share is high — a screener
  *  estimate to re-simulate. One renderer shared by the combo + group Total PnL cells. */
