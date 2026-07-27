@@ -43,9 +43,16 @@ use chrono::NaiveDate;
 /// the OS temp dir. Unlike the per-selection corpus *cache* (a pure optimisation),
 /// the lake is the durable immutable history, so a real deployment sets
 /// `SWEEP_LAKE_DIR` to a persistent path; the temp default keeps tests/dev zero-config.
+///
+/// A **relative** `SWEEP_LAKE_DIR` anchors to the loaded `.env`'s directory rather
+/// than the CWD ([`trading_core::config::env_paths`]) — `dotenvy` finds `hunter/.env`
+/// from any depth, so a CWD-relative `./lake-data` would otherwise point `hunter-lab`
+/// at a *different, empty* lake depending on where it was launched, and every sweep
+/// would silently return no trades instead of failing. The temp default is absolute,
+/// so it is unaffected.
 pub fn lake_root() -> PathBuf {
     std::env::var_os("SWEEP_LAKE_DIR")
-        .map(PathBuf::from)
+        .map(trading_core::config::resolve_path)
         .unwrap_or_else(|| std::env::temp_dir().join("pumpfun-lake"))
 }
 

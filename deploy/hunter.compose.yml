@@ -122,6 +122,15 @@ services:
       HOST: 0.0.0.0
       PORT: ${LIVE_API_PORT:-8130}
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — set it in the env-file, no default}@postgres:5432/${POSTGRES_DB:-hunter_bot}
+      # Absolute, and on a named volume: the strategy event log is what boot
+      # recovery replays to rebuild armed state, and a redeploy is exactly when
+      # that matters. Left at the .env's relative `./event_log` it would land in
+      # the container's writable layer (`/app/event_log`) and be destroyed by the
+      # very `up --build` it needs to survive. Overrides env_file (compose
+      # precedence: `environment` wins), so .env stays workstation-shaped.
+      EVENT_LOG_DIR: /var/lib/hunter/event_log
+    volumes:
+      - eventlog:/var/lib/hunter
     depends_on:
       postgres:
         condition: service_healthy
@@ -169,8 +178,13 @@ services:
       PORT: ${LAB_API_PORT:-8140}
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — set it in the env-file, no default}@postgres:5432/${POSTGRES_DB:-hunter_bot}
       SWEEP_LAKE_DIR: /lake
+      # Same absolute path live-api writes — the replay inspector (`/api/replay`)
+      # is a READER of that log, so it has to name the identical directory or it
+      # inspects an empty one. Mounted read-only: lab never writes the log.
+      EVENT_LOG_DIR: /var/lib/hunter/event_log
     volumes:
       - lakedata:/lake
+      - eventlog:/var/lib/hunter:ro
     ports:
       - "127.0.0.1:${LAB_API_PORT:-8140}:${LAB_API_PORT:-8140}"
     depends_on:
@@ -206,3 +220,7 @@ volumes:
     name: hunter-pgdata
   lakedata:
     name: hunter-lakedata
+  # Strategy event log (JSONL, daily rotation + EVENT_LOG_RETENTION_DAYS pruning).
+  # Must outlive the container so boot recovery can re-arm after a redeploy.
+  eventlog:
+    name: hunter-eventlog

@@ -26,7 +26,10 @@ use http_auth::{require_bearer_auth, ApiAuth};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
+    // Anchor relative `.env` paths (`EVENT_LOG_DIR`) to the `.env`'s directory so
+    // the replay inspector reads the exact dir the live recorder writes, whatever
+    // CWD either bin started in — see `config::env_paths`.
+    config::install_dotenv_anchor(dotenvy::dotenv().ok());
 
     tracing_subscriber::fmt()
         .with_env_filter(

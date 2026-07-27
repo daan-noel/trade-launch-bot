@@ -46,7 +46,7 @@ side-effects only.
 | `sinks.rs` | `PositionUpdate` → registry + SSE; `BuySubmitted` upserts registry then background `insert_position` (later transitions chain on the handle); `Holding` updates registry sync then backgrounds fill persist; `ExitPending` PG is fire-and-forget; terminal SSE emits **before** `registry.remove` (so `position_id` / frozen `trade_mode` stay on the wire); `warm_runs` on rule reload (`ensure_run` reuses latest still-`Running` DB run + collapses empty leading shells — does not mint a new `run_seq` on every restart); releases SOL on terminal unentered exits |
 | `reapers.rs` | Boot+60 s: buy orphan adopt/drop/wait (never re-send; stale ⇒ `needs_review` SSE); **externally-cleared Holding** book-close (PG `trades` net, no RPC); exit orphan nudge via `FillFailed` or shared `orphan_exit`; **ExitStuck-with-bag** redrive (PG-gated, backoff, bounded-then-park); `ExitStuck`/`ExitUnconfirmed` bag-gone heal → End; stale `ExitPending` bag-check → `ExitStuck` (real) / breakeven End (paper). Skips `InFlightGuards`-held rows/mints |
 | `orphan_exit.rs` | Shared direct-sell + PG book-close for registry-miss rows (Console close, ExitPending/ExitStuck reapers). Feed-confirm via `run_exit`; sibling mint clear → `ExternallyCleared` / PG End; boot adopts re-install manual TP/SL rules |
-| `event_log.rs` | JSONL recorder (daily rotation + retention) + **conservative** boot-recovery replay (`recover_armed` = re-arm only; held/filled mints excluded; effects discarded) |
+| `event_log.rs` | JSONL recorder (daily rotation + retention) + **conservative** boot-recovery replay (`recover_armed` = re-arm only; held/filled mints excluded; effects discarded). Dir = `EVENT_LOG_DIR` via `config::dir_from_env`: a relative value anchors to the loaded `.env`'s directory, never the CWD (see below) |
 | `convert.rs` | DB model ↔ engine type converters (re-exports `fingerprint_axes::{fp_to_engine, observed_axes, rule_to_loaded}`) |
 
 `EngineHandle` (held by the HTTP layer, enqueues commands only): `reload_rules`,
@@ -69,6 +69,19 @@ per-position one-off rule (`EngineState::manual_rules`) — without it, tracked-
 **Boot Holding adopt:** after event-log re-arm, PG `Holding` rows are loaded into
 the in-memory engine (`Entered`) + registry (PG-only, no RPC) so TP/SL/Dead and
 Ops `ManualClose` work after a process restart.
+
+**Where the log lives (one contract, three readers).** `EVENT_LOG_DIR` is resolved
+by [`config::env_paths`](../../core/src/config/env_paths.rs), installed after
+`dotenvy` in **both** bins' `main`: absolute ⇒ verbatim; relative ⇒ joined to the
+directory of the `.env` that was loaded; relative with no `.env` ⇒ CWD-relative.
+This matters because `dotenvy` searches *upward*, so a bare CWD-relative path let
+the same `.env` produce a different log directory per launch dir — the recorder,
+`recover_armed`, and the lab replay inspector (`replay_inspect::resolve_dir`) then
+disagreed, and a boot that started from the "wrong" folder silently re-armed
+nothing. In the container there is no `.env` (`.dockerignore` excludes it) and
+compose passes an absolute `/var/lib/hunter/event_log` backed by the
+`hunter-eventlog` volume — on the container's writable layer the log would be
+destroyed by the same `up --build` that boot recovery exists to survive.
 
 **Mint-level exit lock:** `InFlightGuards` serializes sells per mint (shared ATA).
 After a leader sell clears the wallet mint net (PG), siblings are booked

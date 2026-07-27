@@ -31,7 +31,10 @@ use hunter_engine::event::Event;
 use hunter_engine::event_log::LoggedEvent;
 use hunter_engine::metrics::Ts;
 
-/// Env: directory the event log is written to (created if missing).
+/// Env: directory the event log is written to (created if missing). A **relative**
+/// value is resolved against the loaded `.env`, not the CWD — see
+/// [`trading_core::config::env_paths`]; the lab replay inspector resolves the same
+/// key the same way, so writer and reader can't drift apart.
 const ENV_DIR: &str = "EVENT_LOG_DIR";
 /// Env: how many days of rotated logs to retain.
 const ENV_RETENTION: &str = "EVENT_LOG_RETENTION_DAYS";
@@ -55,7 +58,7 @@ impl EventLogRecorder {
     /// creating the directory. Returns `None` (logging disabled) if the directory
     /// can't be created — recording is best-effort, never fatal to trading.
     pub fn from_env() -> Option<Self> {
-        let dir = PathBuf::from(std::env::var(ENV_DIR).unwrap_or_else(|_| DEFAULT_DIR.to_string()));
+        let dir = trading_core::config::dir_from_env(ENV_DIR, DEFAULT_DIR);
         let retention_days = std::env::var(ENV_RETENTION)
             .ok()
             .and_then(|s| s.parse().ok())

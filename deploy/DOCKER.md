@@ -38,7 +38,7 @@ unchanged — only the compose files moved up into `deploy/`).
 | `-d` | Detached: run in the background. Omit to watch logs in the foreground. |
 | `--build` | Rebuild images from source first (use after code changes). |
 | `run --rm <svc> <cmd>` | Run a one-off command in a throwaway container, then remove it. |
-| `down -v` | Also delete volumes — ⚠️ **wipes the database and lake.** |
+| `down -v` | Also delete volumes — ⚠️ **wipes the database, lake, and event log.** |
 
 ---
 
@@ -160,7 +160,10 @@ zombie systemd units), see [EC2-DISK-HOUSEKEEPING.md](EC2-DISK-HOUSEKEEPING.md).
 # Remove stopped containers + dangling images (keeps named volumes)
 docker system prune
 
-# List volumes (your data: hunter-pgdata, hunter-lakedata, forge-pgdata, forge-lakedata)
+# List volumes (your data: hunter-pgdata, hunter-lakedata, hunter-eventlog,
+# forge-pgdata, forge-lakedata). hunter-eventlog holds the strategy event log that
+# boot recovery replays to re-arm — deleting it costs the armed state, not history.
+
 docker volume ls
 ```
 

@@ -94,6 +94,10 @@ ehthumbs.db
 desktop.ini
 
 # --- Logs ---
+# Strategy event log (JSONL, ~MBs/day of live trade events). Written by hunter-live
+# to $EVENT_LOG_DIR; the leading-slash-free pattern also catches a stray copy left
+# by an older CWD-relative run.
+event_log/
 *.log
 npm-debug.log*
 yarn-debug.log*

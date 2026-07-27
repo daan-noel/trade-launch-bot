@@ -47,7 +47,8 @@ use crate::strategies::replay::TICK;
 pub const DEFAULT_MAX_STEPS: usize = 10_000;
 
 /// Env: the directory the live recorder writes to (mirrors the live recorder's
-/// default so an inspection with no explicit `dir` reads the same place).
+/// default *and* its anchoring so an inspection with no explicit `dir` reads the
+/// same place — see [`resolve_dir`]).
 const ENV_DIR: &str = "EVENT_LOG_DIR";
 const DEFAULT_DIR: &str = "event_log";
 
@@ -68,10 +69,13 @@ pub struct InspectConfig {
 
 /// Resolve the log directory from the request (`None`/empty ⇒ `EVENT_LOG_DIR` env,
 /// else the `event_log` default) — the same resolution the live recorder uses.
+/// A relative path (from the request *or* the env) anchors to the loaded `.env`'s
+/// directory via [`trading_core::config::env_paths`], so the inspector reads the
+/// exact directory the live bin wrote regardless of either process's CWD.
 pub fn resolve_dir(req_dir: Option<&str>) -> PathBuf {
     match req_dir {
-        Some(d) if !d.trim().is_empty() => PathBuf::from(d.trim()),
-        _ => PathBuf::from(std::env::var(ENV_DIR).unwrap_or_else(|_| DEFAULT_DIR.to_string())),
+        Some(d) if !d.trim().is_empty() => trading_core::config::env_paths::resolve(d),
+        _ => trading_core::config::dir_from_env(ENV_DIR, DEFAULT_DIR),
     }
 }
 

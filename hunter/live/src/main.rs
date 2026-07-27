@@ -999,8 +999,11 @@ async fn run_unknown_programs(
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
-    // Load .env before anything else
-    dotenvy::dotenv().ok();
+    // Load .env before anything else. Keep the path it was found at: `dotenvy`
+    // walks *up* from the CWD, so relative paths in `.env` (`EVENT_LOG_DIR`) must
+    // anchor to the `.env`'s own directory, not the CWD the bin happened to start
+    // in — see `config::env_paths`.
+    config::install_dotenv_anchor(dotenvy::dotenv().ok());
 
     // Tracing / logging. Non-blocking writer: `fmt()`'s default sink does a
     // synchronous write to stdout on the calling task's worker thread, so a
