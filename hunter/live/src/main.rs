@@ -997,8 +997,34 @@ async fn run_unknown_programs(
     Ok(())
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
-async fn main() -> anyhow::Result<()> {
+/// Build the runtime, then run [`run`].
+///
+/// Was `#[tokio::main(worker_threads = 4)]` — a hardcoded 4 on the **2-vCPU**
+/// deploy box. Oversubscribing an IO-bound runtime doesn't add throughput; it
+/// adds scheduling latency for the task that is actually runnable, which on the
+/// snipe path is the one that matters. The default is now
+/// `available_parallelism()` (tokio's own default): 2 on EC2, the full core count
+/// on the workstation — no more one number that is wrong on both. `WORKER_THREADS`
+/// overrides it, so sizing is an env flip + restart to A/B against the landed-slot
+/// delta, not a rebuild.
+fn main() -> anyhow::Result<()> {
+    let worker_threads = std::env::var("WORKER_THREADS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(2)
+        });
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+async fn run() -> anyhow::Result<()> {
     // Load .env before anything else. Keep the path it was found at: `dotenvy`
     // walks *up* from the CWD, so relative paths in `.env` (`EVENT_LOG_DIR`) must
     // anchor to the `.env`'s own directory, not the CWD the bin happened to start
@@ -1008,7 +1034,7 @@ async fn main() -> anyhow::Result<()> {
     // Tracing / logging. Non-blocking writer: `fmt()`'s default sink does a
     // synchronous write to stdout on the calling task's worker thread, so a
     // stalled/full stdout pipe (docker log driver backpressure, disk pressure)
-    // would block that worker forever — with only 4 worker threads, a couple of
+    // would block that worker forever — on a 2-vCPU box a couple of
     // blocked log calls (one possibly holding a DB connection) is enough to wedge
     // the whole runtime, including unrelated background tasks. `_log_guard` must
     // outlive `main` (dropping it stops the flush thread).
@@ -1026,6 +1052,15 @@ async fn main() -> anyhow::Result<()> {
                 }),
         )
         .init();
+
+    // Echo the runtime sizing chosen in `main` — the knob is an env flip, so the
+    // log line is the only record of what a given run actually ran with.
+    tracing::info!(
+        worker_threads = tokio::runtime::Handle::current().metrics().num_workers(),
+        available_parallelism =
+            std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
+        "🧵 tokio runtime"
+    );
 
     // Config. Shared settings load for both bins; the live bin additionally
     // requires the Helius endpoints (fail fast at boot) and loads its own trading
