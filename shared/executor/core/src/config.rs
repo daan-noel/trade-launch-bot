@@ -112,6 +112,11 @@ impl Default for RetryCfg {
 pub struct NonceCfg {
     /// Maximum spin-wait iterations when all nonce slots are in use.
     pub max_wait_iters: usize,
+    /// Spin-wait cap for a **latency-critical entry** ([`crate::send::TxAnchor::Entry`]).
+    /// Far below `max_wait_iters`: past this the entry falls back to a recent
+    /// blockhash instead of blocking, because a snipe that lands seconds late is
+    /// worth less than no snipe.
+    pub entry_max_wait_iters: usize,
     /// Sleep between nonce spin-wait iterations, in milliseconds.
     pub wait_sleep_ms: u64,
     /// After a send, how many times the refresh re-reads the nonce account
@@ -130,6 +135,8 @@ impl Default for NonceCfg {
     fn default() -> Self {
         Self {
             max_wait_iters: 200,
+            // 2 x wait_sleep_ms = ~40 ms — a tenth of a slot, not four seconds.
+            entry_max_wait_iters: 2,
             wait_sleep_ms: 20,
             refresh_max_attempts: 4,
             refresh_retry_ms: 150,

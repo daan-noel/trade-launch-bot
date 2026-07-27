@@ -48,6 +48,6 @@ pub use retry::{
     CURVE_MISSING_USER_VOLUME_ACCUMULATOR, CURVE_OVERFLOW, CURVE_TOO_LITTLE_SOL_RECEIVED,
     CURVE_TOO_MUCH_SOL_REQUIRED,
 };
-pub use send::SigStatus;
+pub use send::{SigStatus, TxAnchor};
 pub use sim::{AccountDelta, SimOutcome};
 pub use venue::{Venue, VenueId};

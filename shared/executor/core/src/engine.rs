@@ -150,12 +150,26 @@ impl Engine {
         let jito_cfg = config.jito.clone();
 
         // Configured HTTP client (vs `Client::new()`): `tcp_nodelay` removes Nagle
-        // delay on the small JSON-RPC sends, and a generous `pool_idle_timeout`
-        // keeps keep-alive connections warm between trades. `initialize()` fires a
-        // warmup request to seed the pool.
+        // delay on the small JSON-RPC sends, and the pool keeps keep-alive
+        // connections warm between trades. `initialize()` fires a warmup request to
+        // seed the pool.
+        //
+        // A cold pool costs the hot-path POST a fresh TCP+TLS handshake — 1-2 extra
+        // RTTs to Europe, i.e. real slots — so the idle timeout must outlast the gap
+        // between trades. A *selective* rule can fire only a few times an hour, and
+        // the old 90 s timeout reaped the connection long before the next snipe.
+        // The two levers work as a pair: the long idle timeout keeps the connection,
+        // and HTTP/2 keep-alive PINGs (protocol-level — `reqwest` owns the timer, no
+        // hand-rolled pinger task) hold it open through NAT/LB idle reaping *and*
+        // evict it if the peer has gone away, so we never inherit a half-dead socket
+        // on the send. On an HTTP/1.1-negotiated endpoint the ping settings are
+        // simply inert.
         let http = reqwest::Client::builder()
             .tcp_nodelay(true)
-            .pool_idle_timeout(std::time::Duration::from_secs(90))
+            .pool_idle_timeout(std::time::Duration::from_secs(600))
+            .http2_keep_alive_interval(std::time::Duration::from_secs(20))
+            .http2_keep_alive_timeout(std::time::Duration::from_secs(10))
+            .http2_keep_alive_while_idle(true)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 

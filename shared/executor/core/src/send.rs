@@ -41,13 +41,39 @@ use tracing::{debug, info, warn};
 /// isn't bounded here — its caller already wraps the send in a timeout.)
 const FANOUT_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Cadence of the background rebroadcast ([`Engine::send_transaction_rebroadcast`]).
-const REBROADCAST_INTERVAL: Duration = Duration::from_millis(500);
-/// Total window over which a durable-nonce snipe is re-broadcast. Kept well under
-/// the nonce-refresh fallback window so we never re-post a tx whose slot has
-/// already been re-armed and handed to another buy — ~10 attempts across leader
-/// slots is plenty to catch the next few blocks on the best-effort tier.
+/// Gaps between background rebroadcasts ([`Engine::send_transaction_rebroadcast`]),
+/// in ms — **front-loaded on purpose**. A snipe's value decays within a slot or two
+/// (~400 ms each), so a flat 500 ms cadence spent its first three retries entirely
+/// after the window that still mattered. This schedule puts four re-posts inside the
+/// first second and then tapers to [`REBROADCAST_TAIL_INTERVAL_MS`] out to the
+/// deadline. Same bytes, same tip, same signature — the bank dedups, so the extra
+/// early attempts are free landing chances.
+const REBROADCAST_SCHEDULE_MS: [u64; 6] = [60, 120, 250, 400, 700, 1_000];
+/// Cadence once [`REBROADCAST_SCHEDULE_MS`] is exhausted, out to the deadline.
+const REBROADCAST_TAIL_INTERVAL_MS: u64 = 1_000;
+/// Total window over which a snipe is re-broadcast. Kept well under the
+/// nonce-refresh fallback window so we never re-post a tx whose slot has already
+/// been re-armed and handed to another buy — ~10 attempts across leader slots is
+/// plenty to catch the next few blocks on the best-effort tier.
 const REBROADCAST_WINDOW: Duration = Duration::from_secs(5);
+
+/// Per-call latency policy for [`Engine::build_trade_tx`], layered over the global
+/// [`crate::config::TraderConfig::durable_nonce`] flag.
+///
+/// The flag itself is global (buys and sells share one nonce pool), so "how long
+/// may this tx block waiting for a slot" cannot be a config value — it is a
+/// property of the *call site*. This enum is that property.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TxAnchor {
+    /// Wait the full `nonce.max_wait_iters` for a slot, and fail if none frees up.
+    /// Manual buys, sells, probes — correctness over latency.
+    Standard,
+    /// Latency-critical entry (the snipe buy). Waits at most
+    /// `nonce.entry_max_wait_iters` (~40 ms) and then signs against a recent
+    /// blockhash rather than blocking: a snipe that is seconds late is worth less
+    /// than no snipe.
+    Entry,
+}
 
 /// Solana's hard wire cap for a single serialized transaction (`PACKET_DATA_SIZE`).
 /// A tx over this can't land; the Helius sender rejects it with the opaque
@@ -113,21 +139,41 @@ impl Engine {
     ///   ONLY correct mode when the signer isn't the nonce pool's on-chain
     ///   authority, since a nonce tx it can't advance is silently dropped.
     ///
-    /// The signature is fixed the instant the tx is signed in both modes, so the
-    /// buy write-ahead hook works either way.
+    /// `anchor` overlays a per-call latency policy on top of that global flag —
+    /// see [`TxAnchor`]. The signature is fixed the instant the tx is signed in
+    /// every mode, so the buy write-ahead hook works either way.
     pub async fn build_trade_tx(
         &self,
         instructions: Vec<Instruction>,
         signer: &(dyn Signer + Send + Sync),
+        anchor: TxAnchor,
     ) -> Result<(Transaction, Option<Pubkey>)> {
         if self.config.durable_nonce {
-            let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
-            let tx = self.build_nonce_tx(instructions, &nonce_pubkey, nonce_hash, signer)?;
-            Ok((tx, Some(nonce_pubkey)))
-        } else {
-            let tx = self.build_recent_tx(instructions, signer).await?;
-            Ok((tx, None))
+            let wait_iters = match anchor {
+                TxAnchor::Standard => self.config.nonce.max_wait_iters,
+                TxAnchor::Entry => self.config.nonce.entry_max_wait_iters,
+            };
+            match self.acquire_nonce_bounded(wait_iters).await {
+                Ok((nonce_pubkey, nonce_hash)) => {
+                    let tx =
+                        self.build_nonce_tx(instructions, &nonce_pubkey, nonce_hash, signer)?;
+                    return Ok((tx, Some(nonce_pubkey)));
+                }
+                // Standard callers keep the old contract: no slot => no tx.
+                Err(e) if matches!(anchor, TxAnchor::Standard) => return Err(e),
+                Err(e) => {
+                    // Entry path: degrade instead of blocking. A recent blockhash
+                    // is valid for ~60 s, i.e. 12x the 5 s rebroadcast window, so
+                    // nothing downstream depends on the nonce here.
+                    warn!(
+                        "⏭️  Entry buy: no free nonce slot after {wait_iters} iters ({e}); \
+                         falling back to a recent blockhash"
+                    );
+                }
+            }
         }
+        let tx = self.build_recent_tx(instructions, signer).await?;
+        Ok((tx, None))
     }
 
     /// Build + sign a legacy tx against a recent blockhash (no durable nonce).
@@ -368,9 +414,11 @@ impl Engine {
     /// caller (the confirm loop starts polling the feed on the returned sig while
     /// the rebroadcast runs underneath).
     ///
-    /// Only valid for a **durable-nonce** tx: a recent-blockhash tx would expire
-    /// mid-window and a resend past expiry is a wasted round-trip. The snipe caller
-    /// gates on `self.config.durable_nonce`.
+    /// Valid for a recent-blockhash tx too: a blockhash is good for ~60 s, i.e.
+    /// 12x [`REBROADCAST_WINDOW`], so no re-post inside the window can land past
+    /// expiry. (The entry path can fall back to a blockhash when the nonce pool is
+    /// contended — see [`TxAnchor::Entry`] — and must keep rebroadcasting when it
+    /// does.)
     pub async fn send_transaction_rebroadcast(&self, tx: &Transaction) -> Result<String> {
         let body = self.encode_send_body(tx)?;
         let raw = Bytes::from(serde_json::to_vec(&body).context("serialize sendTransaction body")?);
@@ -381,8 +429,14 @@ impl Engine {
         let urls = self.config.helius_sender_urls.clone();
         tokio::spawn(async move {
             let deadline = tokio::time::Instant::now() + REBROADCAST_WINDOW;
+            let mut step = 0usize;
             loop {
-                tokio::time::sleep(REBROADCAST_INTERVAL).await;
+                let gap = REBROADCAST_SCHEDULE_MS
+                    .get(step)
+                    .copied()
+                    .unwrap_or(REBROADCAST_TAIL_INTERVAL_MS);
+                step += 1;
+                tokio::time::sleep(Duration::from_millis(gap)).await;
                 if tokio::time::Instant::now() >= deadline {
                     break;
                 }
@@ -753,10 +807,13 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn rebroadcast_re_posts_the_same_tx_multiple_times() {
-        // The first submission is synchronous and returns the sig; the detached
-        // loop then re-posts the identical tx every REBROADCAST_INTERVAL (500ms).
-        // After ~1.3s we must have seen the initial send + at least two re-posts.
+    async fn rebroadcast_is_front_loaded_into_the_first_slots() {
+        // A snipe's value decays within a slot or two (~400 ms each), so the
+        // re-posts that matter are the ones inside the first second.
+        // REBROADCAST_SCHEDULE_MS = [60,120,250,...] ⇒ cumulative 60/180/430 ms,
+        // i.e. 3 re-posts (+1 initial) before 500 ms. A flat 500 ms cadence — the
+        // behaviour this replaced — scores exactly 1 here, so this assertion is
+        // what pins the front-loading.
         let (url, count) = spawn_counting_mock(OK_BODY).await;
         let trader = trader_with(vec![url]);
         let sig = trader
@@ -764,9 +821,26 @@ mod tests {
             .await
             .unwrap();
         assert!(sig.starts_with("5xMock"), "got {sig}");
-        tokio::time::sleep(Duration::from_millis(1300)).await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
         let n = count.load(std::sync::atomic::Ordering::SeqCst);
-        assert!(n >= 3, "expected >=3 posts (1 initial + >=2 rebroadcasts), got {n}");
+        assert!(
+            n >= 4,
+            "expected >=4 posts (1 initial + 3 rebroadcasts) inside 600ms, got {n}"
+        );
+    }
+
+    #[test]
+    fn rebroadcast_schedule_fits_inside_the_window() {
+        // Every scheduled gap must be spendable inside REBROADCAST_WINDOW, else
+        // the tail entries are dead config that never fire.
+        let total: u64 = REBROADCAST_SCHEDULE_MS.iter().sum();
+        assert!(
+            total < REBROADCAST_WINDOW.as_millis() as u64,
+            "schedule sums to {total}ms, past the {:?} window",
+            REBROADCAST_WINDOW
+        );
+        // First gap under one slot (~400 ms) — the whole point of the schedule.
+        assert!(REBROADCAST_SCHEDULE_MS[0] < 400);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

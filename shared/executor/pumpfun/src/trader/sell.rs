@@ -8,7 +8,7 @@
 // assembles, signs, sends, and confirms one sell tx.
 // ============================================================
 
-use executor_core::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute};
+use executor_core::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute, TxAnchor};
 use super::{PumpFunTrader, TokenPDAs};
 use crate::error::{bail, Context, Result, TradeError};
 use crate::protocol;
@@ -397,7 +397,11 @@ impl PumpFunTrader {
             // (hunter) this acquires a slot held only across the build/send/confirm
             // below, always freed via `schedule_nonce_refresh`; in recent-blockhash
             // mode (forge's ephemeral wallets) there is no slot to hold.
-            let (tx, nonce_to_refresh) = self.build_trade_tx(ixs, signer).await?;
+            // `Standard`: a sell must not degrade off the durable nonce — a long
+            // hold is exactly the case a blockhash can't cover.
+            let (tx, nonce_to_refresh) = self
+                .build_trade_tx(ixs, signer, TxAnchor::Standard)
+                .await?;
             info!("🔁 Sell — token: {}", token_mint);
 
             let res: Result<Option<String>> = async {

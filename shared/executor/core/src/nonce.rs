@@ -33,13 +33,26 @@ pub struct NonceAuthCheck {
 }
 
 impl Engine {
-    /// Acquire the next available nonce slot (round-robin, spin-wait if all busy).
+    /// Acquire the next available nonce slot (round-robin, spin-wait if all busy),
+    /// waiting up to the configured `nonce.max_wait_iters`. The standard path
+    /// (manual buys, sells, probes) — a caller that must not block on contention
+    /// uses [`Self::acquire_nonce_bounded`] instead.
     pub async fn acquire_nonce(&self) -> Result<(Pubkey, Hash)> {
+        self.acquire_nonce_bounded(self.config.nonce.max_wait_iters)
+            .await
+    }
+
+    /// [`Self::acquire_nonce`] with a caller-chosen spin-wait cap.
+    ///
+    /// The ONE acquisition implementation; `max_wait_iters` is the only knob that
+    /// varies by caller, so the latency-critical entry path can bail in ~40 ms
+    /// (`nonce.entry_max_wait_iters`) and fall back to a recent blockhash instead
+    /// of blocking for `max_wait_iters x wait_sleep_ms` (200 x 20 ms = 4 s).
+    pub async fn acquire_nonce_bounded(&self, max_wait_iters: usize) -> Result<(Pubkey, Hash)> {
         if self.nonce_pubkeys.is_empty() {
             bail!("No nonce accounts configured");
         }
 
-        let max_wait_iters = self.config.nonce.max_wait_iters;
         let wait_sleep_ms = self.config.nonce.wait_sleep_ms;
         let mut waited = 0usize;
 

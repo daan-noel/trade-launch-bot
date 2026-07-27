@@ -7,7 +7,7 @@
 // and pool replenishment so the next buy starts warm.
 // ============================================================
 
-use executor_core::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute};
+use executor_core::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute, TxAnchor};
 use super::PumpFunTrader;
 use crate::error::{Context, Result, TradeError};
 use crate::protocol;
@@ -66,6 +66,7 @@ impl PumpFunTrader {
             cashback_enabled,
             None,
             0,
+            TxAnchor::Standard,
         )
         .await
     }
@@ -124,6 +125,8 @@ impl PumpFunTrader {
             cashback_enabled,
             user_token_account_override,
             tip_level,
+            // The ONE latency-critical buy: never block on nonce contention.
+            TxAnchor::Entry,
         )
         .await
     }
@@ -160,6 +163,10 @@ impl PumpFunTrader {
         // account via template (snipe) or the real ATA (manual) as below.
         user_token_account_override: Option<Pubkey>,
         tip_level: u8,
+        // Per-call nonce-wait policy. `Entry` on the snipe (bail to a recent
+        // blockhash in ~40 ms rather than spin up to 4 s); `Standard` on the
+        // manual/API buy, which has no slot budget to protect.
+        anchor: TxAnchor,
     ) -> Result<String> {
         let t0 = Instant::now();
         // Guard the real spend before any work: both curve public entries
@@ -338,7 +345,7 @@ impl PumpFunTrader {
                 // the build/send/confirm below, always freed via
                 // `schedule_nonce_refresh`; in recent-blockhash mode (forge's
                 // ephemeral wallets) there is no slot to hold.
-                let (tx, nonce_to_refresh) = self.build_trade_tx(ixs, signer).await?;
+                let (tx, nonce_to_refresh) = self.build_trade_tx(ixs, signer, anchor).await?;
                 let sent: Result<String> = async {
                     // Write-ahead persist (Phase 2): the signature is fixed the
                     // instant we sign — before any network round-trip — so hand it to
@@ -355,12 +362,14 @@ impl PumpFunTrader {
                         hook(sig).await;
                     }
                     // Snipe on the cheap best-effort Sender tier: keep re-posting
-                    // the identical durable-nonce tx in the background so it gets
-                    // multiple landing chances across leader slots (the bank dedups
-                    // on signature → at most one execution, tip paid once). The
-                    // manual/confirm path (and forge's recent-blockhash mode) send
-                    // once as before.
-                    let sig = if skip_confirm && self.config.durable_nonce {
+                    // the identical signed tx in the background so it gets multiple
+                    // landing chances across leader slots (the bank dedups on
+                    // signature → at most one execution, tip paid once). Gated on
+                    // the ENTRY anchor, not on `durable_nonce`: the entry can fall
+                    // back to a recent blockhash under nonce contention and must
+                    // keep rebroadcasting when it does (a blockhash outlives the 5 s
+                    // window ~12x). The manual/confirm path sends once as before.
+                    let sig = if matches!(anchor, TxAnchor::Entry) {
                         self.send_transaction_rebroadcast(&tx).await?
                     } else {
                         self.send_transaction(&tx).await?
