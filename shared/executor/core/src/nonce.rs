@@ -18,6 +18,26 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{info, warn};
 
+/// How many `signature -> nonce anchor` records to retain. Only the cold
+/// recovery path reads this, and a stuck exit is resolved within minutes, so a
+/// few thousand entries is far more history than any caller needs.
+const NONCE_TX_INDEX_CAP: usize = 4096;
+
+/// Whether a durable-nonce tx we sent can still execute.
+///
+/// The distinction matters because a durable-nonce tx never expires on its own:
+/// treating "we can't see it" as "it's gone" is how a double-sell happens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NonceTxState {
+    /// Not tracked (never recorded, or aged out of the index) — nothing is
+    /// proven, so a caller must assume the tx could still land.
+    Unknown,
+    /// The nonce moved past this tx's hash: it can never execute. Safe to resend.
+    Dead,
+    /// The nonce still holds this tx's hash: the tx remains executable.
+    Live,
+}
+
 /// Read-only audit result for one configured nonce account.
 pub struct NonceAuthCheck {
     pub pubkey: Pubkey,
@@ -296,6 +316,122 @@ impl Engine {
         };
         if rearmed {
             self.nonce_available.notify_one();
+        }
+    }
+
+    /// Record the durable-nonce anchor a just-sent tx was built on, so a later
+    /// recovery can decide whether that tx is still able to execute.
+    ///
+    /// Cheap and non-blocking: one `DashMap` insert plus a FIFO trim. Called from
+    /// the send paths right after a signature exists.
+    pub fn note_nonce_tx(&self, signature: &str, nonce_pubkey: Pubkey, nonce_hash: Hash) {
+        if self
+            .nonce_tx_index
+            .insert(signature.to_string(), (nonce_pubkey, nonce_hash))
+            .is_some()
+        {
+            return; // already tracked — don't double-push the FIFO
+        }
+        let mut order = self.nonce_tx_order.lock().unwrap_or_else(|p| p.into_inner());
+        order.push_back(signature.to_string());
+        while order.len() > NONCE_TX_INDEX_CAP {
+            if let Some(old) = order.pop_front() {
+                self.nonce_tx_index.remove(&old);
+            }
+        }
+    }
+
+    /// Can the tx behind `signature` still execute?
+    ///
+    /// [`NonceTxState::Dead`] is a **proof**: the nonce account this tx was
+    /// anchored to no longer holds the hash the tx signed over, so the runtime
+    /// will reject it forever. That is the precondition a caller needs before it
+    /// may safely re-send an equivalent tx. One account read; no tx, no SOL.
+    pub async fn nonce_tx_state(&self, signature: &str) -> NonceTxState {
+        let Some(entry) = self.nonce_tx_index.get(signature).map(|e| *e.value()) else {
+            return NonceTxState::Unknown;
+        };
+        let (nonce_pubkey, used_hash) = entry;
+        match self.read_nonce_hash(&nonce_pubkey).await {
+            Ok(current) if current == used_hash => NonceTxState::Live,
+            Ok(_) => NonceTxState::Dead,
+            // A failed read proves nothing — never report Dead on an RPC error,
+            // or a transient blip would green-light a double-sell.
+            Err(e) => {
+                warn!("nonce_tx_state read failed for {}: {}", nonce_pubkey, e);
+                NonceTxState::Unknown
+            }
+        }
+    }
+
+    /// Force the tx behind `signature` to become unexecutable by advancing its
+    /// nonce account, then re-verify.
+    ///
+    /// This is the primitive that makes "re-sell a stuck exit" safe: after it
+    /// returns [`NonceTxState::Dead`], at most one of {original, replacement} can
+    /// ever land. Off the hot path — a recent-blockhash, no-tip, single-ix tx.
+    /// Returns [`NonceTxState::Unknown`] if the tx isn't tracked or the burn
+    /// could not be confirmed; the caller must then NOT re-send.
+    pub async fn burn_nonce_tx(&self, signature: &str) -> NonceTxState {
+        match self.nonce_tx_state(signature).await {
+            // Already dead (the usual case — a busy wallet reuses the slot within
+            // seconds) or unprovable. Either way, no tx and no fee.
+            s @ (NonceTxState::Dead | NonceTxState::Unknown) => return s,
+            NonceTxState::Live => {}
+        }
+        let Some(entry) = self.nonce_tx_index.get(signature).map(|e| *e.value()) else {
+            return NonceTxState::Unknown;
+        };
+        let (nonce_pubkey, _) = entry;
+        let authority = self.config.signer.pubkey();
+
+        let ix = solana_sdk::system_instruction::advance_nonce_account(&nonce_pubkey, &authority);
+        let tx = match self.build_recent_tx(vec![ix], self.config.signer.as_ref()).await {
+            Ok(tx) => tx,
+            Err(e) => {
+                warn!("nonce burn: build failed for {}: {}", nonce_pubkey, e);
+                return NonceTxState::Unknown;
+            }
+        };
+        let sig = match self.rpc.send_transaction(&tx).await {
+            Ok(sig) => sig.to_string(),
+            Err(e) => {
+                warn!("nonce burn: send failed for {}: {}", nonce_pubkey, e);
+                return NonceTxState::Unknown;
+            }
+        };
+        if let Err(e) = self.confirm_transaction(&sig, self.config.retry.confirm_max_retries).await {
+            warn!("nonce burn: confirm failed for {}: {}", nonce_pubkey, e);
+            // Fall through to the re-read — the burn may have landed anyway.
+        }
+
+        // Invalidate the cached hash so the next `acquire_nonce` refetches rather
+        // than handing out the hash this burn just consumed.
+        {
+            let mut slots = self.nonce_slots.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(slot) = slots.get_mut(&nonce_pubkey) {
+                slot.cached_hash = None;
+            }
+        }
+
+        let state = self.nonce_tx_state(signature).await;
+        if state == NonceTxState::Dead {
+            info!("🔥 Nonce burned — {} can no longer execute", signature);
+        }
+        state
+    }
+
+    /// One `getAccount` + durable-nonce decode. Shared by the state check and the
+    /// burn's re-verify so there is a single decode path.
+    async fn read_nonce_hash(&self, nonce_pubkey: &Pubkey) -> Result<Hash> {
+        let account = self
+            .rpc
+            .get_account(nonce_pubkey)
+            .await
+            .with_context(|| format!("get_account failed for {nonce_pubkey}"))?;
+        match nonce_utils::state_from_account(&account)? {
+            State::Initialized(data) => Ok(data.blockhash()),
+            _ => bail!("Nonce account {nonce_pubkey} not initialized"),
         }
     }
 

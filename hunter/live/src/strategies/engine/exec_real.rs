@@ -164,6 +164,10 @@ pub struct BuyOrder {
     pub lamports: u64,
     pub cashback_enabled: bool,
     pub slippage_bps: Option<u64>,
+    /// Token account an earlier attempt for this position already funded, if any.
+    /// Passed back as the buy's account override so a retry cannot mint a second
+    /// seeded account and split this position's bag across two of them.
+    pub token_account: Option<String>,
 }
 
 /// Everything a sell submit needs, resolved by the loop from the position meta.
@@ -196,7 +200,11 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
     // or crash between sign and confirm) before sending again. First attempt
     // (empty journal) skips the PG round-trip entirely.
     if let Some(legs) = adopt_existing_fill(&deps, &wallet, &order).await {
-        emit_entry_filled(&deps, &order, legs.0, legs.1).await;
+        // Adopted a fill from a signature this position already sent — the account
+        // that buy funded is whatever the position recorded then (falls back to the
+        // per-mint cache inside `emit_entry_filled` when it recorded nothing).
+        let known_account = order.token_account.clone();
+        emit_entry_filled(&deps, &order, legs.0, known_account, legs.1).await;
         return;
     }
 
@@ -280,6 +288,17 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
     // risk a double-buy if the first tx is still in flight.
     let tip_level = deps.buy_journal.sigs(order.pg_id).len().min(u8::MAX as usize) as u8;
 
+    // Reuse the account a previous attempt for this position funded (if any), so a
+    // retry buys into the SAME account instead of drawing another seeded one. With
+    // nothing recorded, fall back to an account a *sibling* position on this mint
+    // already holds.
+    let reuse_account = match order.token_account.as_deref() {
+        Some(a) => std::str::FromStr::from_str(a).ok(),
+        None => resolve_sibling_account(&deps, &wallet, &order.mint)
+            .await
+            .and_then(|a| std::str::FromStr::from_str(&a).ok()),
+    };
+
     let submit = deps
         .trader
         .buy_token_snipe_write_ahead(
@@ -291,21 +310,33 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
             reserves,
             on_signed,
             order.cashback_enabled,
-            None,
+            reuse_account,
             tip_level,
         )
         .await;
 
-    let sig = signed.lock().unwrap().clone();
-    match (submit, sig) {
-        (Ok(sig), _) | (Err(_), Some(sig)) => {
+    let signed_sig = signed.lock().unwrap().clone();
+    // The account THIS buy funded. Authoritative — never re-read from the trader's
+    // per-mint cache, which a concurrent same-mint snipe overwrites (see `SnipeBuy`).
+    // The `Err(_) + signed` arm has no such fact in hand: fall back to whatever the
+    // position already knew, then the cache.
+    let funded_account = match &submit {
+        Ok(b) => Some(b.user_token_account.to_string()),
+        Err(_) => order.token_account.clone(),
+    };
+    let submitted_sig = match submit {
+        Ok(b) => Some(b.signature),
+        Err(_) => None,
+    };
+    match (submitted_sig, signed_sig) {
+        (Some(sig), _) | (None, Some(sig)) => {
             let outcome =
                 confirm_entry(&deps, &guard_sig, &wallet, &order.mint, &sig, ENTRY_FEED_WINDOW)
                     .await;
-            emit_entry_outcome(&deps, &order, sig, outcome).await;
+            emit_entry_outcome(&deps, &order, sig, funded_account, outcome).await;
         }
-        (Err(e), None) => {
-            warn!(mint = %order.mint, "real buy never signed ({e}); reporting revert for retry");
+        (None, None) => {
+            warn!(mint = %order.mint, "real buy never signed; reporting revert for retry");
             let _ = deps
                 .fill_tx
                 .send(Event::FillFailed {
@@ -313,6 +344,42 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
                     reason: FillFailReason::Reverted,
                 })
                 .await;
+        }
+    }
+}
+
+/// The token account an already-open position on this `(wallet, mint)` holds, so a
+/// second buy into a mint the wallet is already in lands in that same account
+/// instead of the template pool minting another one. Two positions sharing ONE
+/// account is the intended shape: each sells its own `token_amount`, and
+/// `has_other_open_position_on_mint` already gates the rent-reclaim close so
+/// neither closes it out from under the other.
+///
+/// **Skipped entirely unless the trader has already resolved an account for this
+/// mint in-process.** That check is a pure in-memory read, so the snipe path — a
+/// mint nobody has touched — pays nothing and reaches the send with no DB round
+/// trip. Only a re-buy into an already-traded mint pays the (indexed, local) query,
+/// and that is never the latency-critical case.
+///
+/// Best-effort by design, never load-bearing: a cold cache after a restart, or a
+/// sibling that settles and reclaims the account inside this window, just means the
+/// buy draws a fresh seeded account. Attribution stays correct either way because
+/// the position records the account its own buy returned (`SnipeBuy`).
+async fn resolve_sibling_account(
+    deps: &RealExecDeps,
+    wallet: &str,
+    mint: &str,
+) -> Option<String> {
+    deps.trader.cached_token_account(mint)?;
+    match deps.strategy_repo.find_reusable_token_account(wallet, mint, "real").await {
+        Ok(Some(acct)) => {
+            info!(mint = %mint, account = %acct, "re-buying into the account this mint is already held in");
+            Some(acct)
+        }
+        Ok(None) => None,
+        Err(e) => {
+            warn!(mint = %mint, "reusable-account lookup failed; drawing a fresh account: {e}");
+            None
         }
     }
 }
@@ -355,8 +422,18 @@ async fn adopt_existing_fill(
     None
 }
 
-async fn emit_entry_filled(deps: &RealExecDeps, order: &BuyOrder, sig: String, legs: SigLegs) {
-    let token_account = deps.trader.cached_token_account(&order.mint);
+async fn emit_entry_filled(
+    deps: &RealExecDeps,
+    order: &BuyOrder,
+    sig: String,
+    funded_account: Option<String>,
+    legs: SigLegs,
+) {
+    // The account this position's buy actually funded. Falls back to the per-mint
+    // cache only when the buy returned no fact (never-signed / adopt paths) — that
+    // cache is unreliable under concurrent same-mint snipes (see `SnipeBuy`).
+    let token_account =
+        funded_account.or_else(|| deps.trader.cached_token_account(&order.mint));
     deps.fill_sigs
         .put(order.intent.clone(), FillSigs { sigs: vec![sig], token_account });
     let _ = deps
@@ -377,10 +454,13 @@ async fn emit_entry_outcome(
     deps: &RealExecDeps,
     order: &BuyOrder,
     sig: String,
+    funded_account: Option<String>,
     outcome: EntryOutcome,
 ) {
     match outcome {
-        EntryOutcome::Filled(legs) => emit_entry_filled(deps, order, sig, legs).await,
+        EntryOutcome::Filled(legs) => {
+            emit_entry_filled(deps, order, sig, funded_account, legs).await
+        }
         EntryOutcome::Retry => {
             let _ = deps
                 .fill_tx
@@ -559,10 +639,17 @@ pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
         deps.token_info_repo.is_migrated(&order.mint).await.unwrap_or(false)
     };
 
+    // Route state OWNED BY THIS LOOP. Seeded from the durable flag, latched true by a
+    // 6005 revert (see `RerouteMigrated`). Deliberately NOT stored only in the token
+    // cache: `get_mut` returns `None` when the entry has aged out — which is exactly
+    // the long-hold case `durable_migrated` exists for — so a cache-only flip would be
+    // silently dropped and every remaining attempt would re-route to the dead curve.
+    let mut route_migrated = durable_migrated;
+
     for attempt in 0..SELL_ATTEMPTS {
-        // `durable_migrated` OR the live cache (which `RerouteMigrated` may flip true
-        // mid-loop) — so the FIRST attempt already routes to the AMM when migrated.
-        let is_migrated = durable_migrated
+        // Loop-owned latch OR the live cache (ingest may flip it true mid-hold) — so
+        // the FIRST attempt already routes to the AMM when migration is known.
+        let is_migrated = route_migrated
             || deps.token_cache.get(&order.mint).map(|e| e.value().is_migrated).unwrap_or(false);
 
         let submit = {
@@ -599,7 +686,7 @@ pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
             continue;
         };
 
-        let now_migrated = durable_migrated
+        let now_migrated = route_migrated
             || deps.token_cache.get(&order.mint).map(|e| e.value().is_migrated).unwrap_or(is_migrated);
         let state = deps.trader.signature_state_detailed(&sig).await;
         match classify_sell_confirm(&state, is_migrated, now_migrated) {
@@ -618,39 +705,21 @@ pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
                     return;
                 }
                 info!(mint = %order.mint, "sell unconfirmed after extended poll — not re-sending");
-                let _ = deps
-                    .fill_tx
-                    .send(Event::FillFailed {
-                        intent: order.intent.clone(),
-                        reason: FillFailReason::Unconfirmed,
-                    })
-                    .await;
+                fail_exit(&deps, &order, &sell_sigs, FillFailReason::Unconfirmed).await;
                 return;
             }
             SellConfirmAction::Reclassify(decision) => {
                 match decision {
                     SwapRetryDecision::StopFeeBurn => {
                         warn!(mint = %order.mint, attempt, "sell structural revert — Fatal");
-                        let _ = deps
-                            .fill_tx
-                            .send(Event::FillFailed {
-                                intent: order.intent.clone(),
-                                reason: FillFailReason::Fatal,
-                            })
-                            .await;
+                        fail_exit(&deps, &order, &sell_sigs, FillFailReason::Fatal).await;
                         return;
                     }
                     SwapRetryDecision::RefreshCreator => {
                         match deps.trader.refresh_curve_creator_vault(&order.mint).await {
                             Ok(Some(_)) => {}
                             Ok(None) | Err(_) => {
-                                let _ = deps
-                                    .fill_tx
-                                    .send(Event::FillFailed {
-                                        intent: order.intent.clone(),
-                                        reason: FillFailReason::Fatal,
-                                    })
-                                    .await;
+                                fail_exit(&deps, &order, &sell_sigs, FillFailReason::Fatal).await;
                                 return;
                             }
                         }
@@ -659,13 +728,7 @@ pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
                         match deps.trader.refresh_amm_pool_info(&order.mint, &base_program).await {
                             Ok(Some(_)) => {}
                             Ok(None) | Err(_) => {
-                                let _ = deps
-                                    .fill_tx
-                                    .send(Event::FillFailed {
-                                        intent: order.intent.clone(),
-                                        reason: FillFailReason::Fatal,
-                                    })
-                                    .await;
+                                fail_exit(&deps, &order, &sell_sigs, FillFailReason::Fatal).await;
                                 return;
                             }
                         }
@@ -679,35 +742,40 @@ pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
                                 }
                             }
                             Err(_) => {
-                                let _ = deps
-                                    .fill_tx
-                                    .send(Event::FillFailed {
-                                        intent: order.intent.clone(),
-                                        reason: FillFailReason::Fatal,
-                                    })
-                                    .await;
+                                fail_exit(&deps, &order, &sell_sigs, FillFailReason::Fatal).await;
                                 return;
                             }
                         }
                     }
                     SwapRetryDecision::RerouteMigrated => {
-                        match deps.trader.refresh_curve_facts(&order.mint).await {
-                            Ok(facts) if facts.is_migrated => {
-                                if let Some(mut e) = deps.token_cache.get_mut(&order.mint) {
-                                    e.is_migrated = true;
-                                }
-                            }
-                            _ => {
-                                let _ = deps
-                                    .fill_tx
-                                    .send(Event::FillFailed {
-                                        intent: order.intent.clone(),
-                                        reason: FillFailReason::Fatal,
-                                    })
-                                    .await;
-                                return;
-                            }
+                        // 6005 `BondingCurveComplete` IS the proof of migration — the
+                        // curve program itself refused the swap because the curve is
+                        // complete. Re-confirming it with an on-chain
+                        // `refresh_curve_facts` read bought no information and added a
+                        // failure mode: an RPC hiccup fell through to `Fatal` and
+                        // stranded a sellable bag (observed 2026-07-28, mint 57aJ…).
+                        // Latch the route and retry on the AMM — no RPC. The pool
+                        // address is a pure PDA derivation (`derive_amm_pool`), so
+                        // `amm_sell` needs no lookup to build the next attempt.
+                        warn!(
+                            mint = %order.mint, attempt,
+                            "curve sell reverted 6005 (BondingCurveComplete) — latching AMM route"
+                        );
+                        route_migrated = true;
+                        if let Some(mut e) = deps.token_cache.get_mut(&order.mint) {
+                            e.is_migrated = true;
                         }
+                        // Durable, monotonic (`is_migrated OR EXCLUDED`) so a later
+                        // exit / reaper redrive on a cold cache routes correctly even
+                        // across a restart. Off the hot path and best-effort: a write
+                        // failure must never strand the bag we are mid-sell on.
+                        let repo = deps.token_info_repo.clone();
+                        let mint = order.mint.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = repo.update_migration_status(&mint, true).await {
+                                warn!(mint = %mint, "durable is_migrated write failed: {e}");
+                            }
+                        });
                     }
                     SwapRetryDecision::Retry => {
                         // tip escalates on next attempt
@@ -723,7 +791,35 @@ pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
         FillFailReason::Unconfirmed
     };
     info!(mint = %order.mint, ?reason, "real sell unresolved after {SELL_ATTEMPTS} attempts");
-    let _ = deps.fill_tx.send(Event::FillFailed { intent: order.intent, reason }).await;
+    fail_exit(&deps, &order, &sell_sigs, reason).await;
+}
+
+/// Emit an exit `FillFailed` **after** stashing whatever sells were actually
+/// submitted. Previously `sell_sigs` was only persisted inside
+/// [`finish_cleared_sell`], so every failure path dropped it on the floor — a row
+/// could sit in `ExitUnconfirmed` with `exit_tx_signatures = []` despite having
+/// sent sells (observed 2026-07-28, mint 57aJ…). That is exactly the state where
+/// the signatures matter most: they are what a manual Verify, the reaper, and the
+/// `uq_strategy_positions_exit_sig0` dedup index need in order to tell "landed
+/// late" from "never landed".
+async fn fail_exit(
+    deps: &RealExecDeps,
+    order: &SellOrder,
+    sell_sigs: &[String],
+    reason: FillFailReason,
+) {
+    if !sell_sigs.is_empty() {
+        let token_account =
+            order.token_account.clone().or_else(|| deps.trader.cached_token_account(&order.mint));
+        deps.fill_sigs.put(
+            order.intent.clone(),
+            FillSigs { sigs: sell_sigs.to_vec(), token_account },
+        );
+    }
+    let _ = deps
+        .fill_tx
+        .send(Event::FillFailed { intent: order.intent.clone(), reason })
+        .await;
 }
 
 async fn finish_cleared_sell(
@@ -964,6 +1060,30 @@ mod tests {
         assert_eq!(
             classify_submitted_buy::<()>(&Ok(None)),
             BuyRecoveryVerdict::Wait
+        );
+    }
+
+    /// 6005 on a curve sell must resolve to `RerouteMigrated`, and the exit loop
+    /// must act on it WITHOUT re-confirming migration over RPC.
+    ///
+    /// Regression (2026-07-28, mint 57aJ…): the branch used to gate the reroute
+    /// on `refresh_curve_facts`, whose `Err(_)` fell through to `Fatal` — an RPC
+    /// blip turned a token that was merely migrated (and perfectly sellable on
+    /// the AMM) into a permanently stranded bag. `BondingCurveComplete` is the
+    /// curve program's own statement that the curve is done; there is nothing to
+    /// re-confirm, and the AMM pool address is a pure PDA derivation.
+    #[test]
+    fn curve_sell_6005_reroutes_to_amm_without_an_rpc_reconfirm() {
+        let state: Result<SigStatus, ()> =
+            Ok(SigStatus::Reverted { custom: Some(6005) });
+        assert_eq!(
+            classify_sell_confirm(&state, false, false),
+            SellConfirmAction::Reclassify(SwapRetryDecision::RerouteMigrated),
+        );
+        // And the same code on the AMM route is NOT a reroute (it would loop).
+        assert_eq!(
+            classify_swap_revert(Some(6005), SwapRoute::Amm, SwapDirection::Sell),
+            SwapRetryDecision::StopFeeBurn,
         );
     }
 

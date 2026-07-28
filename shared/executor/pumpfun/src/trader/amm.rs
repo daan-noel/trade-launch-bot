@@ -257,6 +257,9 @@ impl PumpFunTrader {
                     self.config.signer.as_ref(),
                 )?;
                 let sig = self.send_transaction(&tx).await?;
+                // Anchor record for the recovery path — see the note in
+                // `sell.rs::execute_sell` and `Engine::burn_nonce_tx`.
+                self.note_nonce_tx(&sig, nonce_pubkey, nonce_hash);
                 info!(
                     "📤 AMM sell sent — sig: {} | amount: {} | {}ms",
                     sig,

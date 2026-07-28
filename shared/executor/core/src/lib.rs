@@ -40,7 +40,7 @@ pub use config::{
 pub use engine::{buy_lamports_checked, Engine};
 pub use error::{Context, Result, TradeError};
 pub use ix_layout::{DecoStep, IxLayout, LayoutKind};
-pub use nonce::NonceAuthCheck;
+pub use nonce::{NonceAuthCheck, NonceTxState};
 pub use retry::{
     classify_swap_revert, pump_error_name, SwapDirection, SwapRetryDecision, SwapRoute,
     AMM_BUY_SLIPPAGE_BELOW_MIN_BASE, AMM_EXCEEDED_SLIPPAGE, AMM_INVALID_POOL_V2,

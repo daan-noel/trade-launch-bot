@@ -37,6 +37,26 @@ use tracing::{info, warn};
 pub type BuySignedHook =
     Box<dyn FnOnce(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
 
+/// What a snipe buy produced: the submitted signature **and** the token account
+/// that specific buy funded.
+///
+/// The account is returned rather than left to be re-read from
+/// [`PumpFunTrader::cached_token_account`] because that cache is keyed by mint
+/// only. Two concurrent snipes on the same mint each draw their own seeded
+/// account from the template pool, then both write that one key — last writer
+/// wins. The caller that read it back got the *other* buy's account, persisted it
+/// on its position, and its exit later sold from an account holding none of its
+/// tokens: a structural revert, `ExitStuck`, bag stranded in an account no row
+/// referenced. (Observed 2026-07-28 on mints 7cstqrt… and BW7nqMs… — two rules
+/// entering the same mint in the same slot.)
+///
+/// The account a buy funded is a fact about *that buy*, so it travels with it.
+#[derive(Debug, Clone)]
+pub struct SnipeBuy {
+    pub signature: String,
+    pub user_token_account: Pubkey,
+}
+
 impl PumpFunTrader {
     /// Manual/API curve buy. Takes already-parsed routing pubkeys (the manual
     /// path resolves them once in `resolve_buy_routing`) so nothing on this path
@@ -69,6 +89,7 @@ impl PumpFunTrader {
             TxAnchor::Standard,
         )
         .await
+        .map(|(sig, _account)| sig)
     }
 
     /// Latency-optimized write-ahead buy for fresh-token snipes. Identical to
@@ -108,7 +129,7 @@ impl PumpFunTrader {
         // Tip ladder level (0 = first attempt). Live retries after a confirmed
         // safe revert pass the journal length so the next send bids up.
         tip_level: u8,
-    ) -> Result<String> {
+    ) -> Result<SnipeBuy> {
         let mint = Pubkey::from_str(token_mint)?;
         let creator_pubkey = Pubkey::from_str(creator)?;
         let token_program = TokenProgram::from_id(token_program_id);
@@ -129,6 +150,7 @@ impl PumpFunTrader {
             TxAnchor::Entry,
         )
         .await
+        .map(|(signature, user_token_account)| SnipeBuy { signature, user_token_account })
     }
 
     // Trade-path fn — the buy needs every routing/slippage/skip input threaded in;
@@ -167,7 +189,7 @@ impl PumpFunTrader {
         // blockhash in ~40 ms rather than spin up to 4 s); `Standard` on the
         // manual/API buy, which has no slot budget to protect.
         anchor: TxAnchor,
-    ) -> Result<String> {
+    ) -> Result<(String, Pubkey)> {
         let t0 = Instant::now();
         // Guard the real spend before any work: both curve public entries
         // (`buy_token`, `buy_token_snipe_write_ahead`) funnel through here, so this single
@@ -229,7 +251,10 @@ impl PumpFunTrader {
                 (ata, None)
             };
 
-            // Cache for sell
+            // Convenience cache for cold/manual sells that have no account in hand.
+            // NOT the source of truth: it is keyed by mint, so concurrent buys on
+            // one mint overwrite each other. A position must persist the account
+            // returned in `SnipeBuy` and pass it back as `token_account_override`.
             self.user_token_accounts
                 .insert(mint_str.clone(), user_token_account);
 
@@ -418,11 +443,11 @@ impl PumpFunTrader {
                             }
                             // Unchanged creator or the refresh itself failed — stop
                             // rather than re-pay fees on a resend that can't fix anything.
-                            Ok(None) | Err(_) => return sent,
+                            Ok(None) | Err(_) => return sent.map(|s| (s, user_token_account)),
                         }
                     }
                 }
-                return sent;
+                return sent.map(|s| (s, user_token_account));
             }
         }
         .await

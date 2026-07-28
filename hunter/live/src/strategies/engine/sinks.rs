@@ -504,6 +504,16 @@ impl Sink {
         if let Some(trader) = &self.trader {
             trader.release_sol_for_position(&meta.pg_id.to_string());
         }
+        // Sells the executor actually submitted before giving up. Without these the
+        // row lands in the attention lane with `exit_tx_signatures = []`, and neither
+        // a manual Verify nor the reaper can tell "landed late" from "never landed".
+        let submitted_sells = delta
+            .intent
+            .as_ref()
+            .and_then(|i| self.fill_sigs.take(i))
+            .map(|fs| fs.sigs)
+            .unwrap_or_default();
+
         if let Ok(Some(mut pos)) = self.repo.find_position(meta.pg_id).await {
             match status {
                 "ExitUnconfirmed" => pos.mark_exit_unconfirmed(),
@@ -512,6 +522,7 @@ impl Sink {
             if let Some(r) = delta.reason {
                 pos.exit_reason = Some(r.label().into_owned());
             }
+            pos.add_submitted_exit_sigs(submitted_sells);
             if let Err(e) = self.repo.update_position(&pos).await {
                 warn!(pg = %meta.pg_id, "engine sink: {status} update failed: {e}");
             }

@@ -29,6 +29,16 @@ use hunter_engine::event::{Event, Fill, FillFailReason};
 
 use trading_core::config::constants::BUY_SUBMITTED_REVIEW_SECS;
 use trading_core::models::ingest::SseEvent;
+use trading_core::models::StrategyPosition;
+
+/// The ONE decoder for `EXIT_BAG_ONCHAIN_CHECK` (default **off** — it spends
+/// Helius credits). Both `ReaperDeps` construction sites call this so the flag
+/// cannot mean different things in the boot reaper and the manual-action path.
+pub fn onchain_bag_check_from_env() -> bool {
+    std::env::var("EXIT_BAG_ONCHAIN_CHECK")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
 use trading_core::state::token_cache::TokenCache;
 use trading_core::state::trade_signals::TradeSignals;
 use trading_core::storage::repositories::settings_repo::AppSettings;
@@ -36,6 +46,7 @@ use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 use trading_core::storage::repositories::trade_repo::TradeRepo;
 
 use crate::trader::PumpFunTrader;
+use pump_trader::NonceTxState;
 
 use super::exec_real::{self, BuyRecoveryVerdict};
 use super::orphan_exit::{self, OrphanExitDeps, OrphanStart, BAG_CLEARED_THRESHOLD_RAW};
@@ -69,6 +80,19 @@ pub struct ReaperDeps {
     /// SSE hub — used to push the `needs_review` flag on a stale BuySubmitted
     /// (B3: was log-only, invisible to the UI).
     pub sse_tx: broadcast::Sender<SseEvent>,
+    /// Opt-in on-chain bag check before a stranded row is parked
+    /// (`EXIT_BAG_ONCHAIN_CHECK`, default **off** — it spends Helius credits).
+    ///
+    /// Everything else in this reaper decides "is the bag gone?" from the
+    /// Postgres `trades` net, which is blind in two ways the 2026-07-28 review
+    /// found: a feed gap makes a landed sell invisible (PG says "still held"
+    /// forever), and a bag sitting in an account no row references is invisible
+    /// to any PG query at all. One `getTokenAccountsByOwner` answers both — it
+    /// returns *every* account for the mint with its balance.
+    ///
+    /// Bounded by construction: only rows about to be parked reach it (5 in the
+    /// 8 h sample), never the hot path.
+    pub onchain_bag_check: bool,
 }
 
 impl ReaperDeps {
@@ -96,6 +120,7 @@ pub fn spawn_reaper(deps: ReaperDeps) -> JoinHandle<()> {
         // try feed-adopt every tick, but don't burn signature_state RPC every 60s.
         let mut stuck_rpc_skip: HashMap<Uuid, u8> = HashMap::new();
         let mut exit_stuck_backoff: HashMap<Uuid, u8> = HashMap::new();
+        let mut exit_unconfirmed_backoff: HashMap<Uuid, u8> = HashMap::new();
         // Do NOT consume the immediate first tick — boot sweep runs right away.
         loop {
             tick.tick().await;
@@ -110,6 +135,9 @@ pub fn spawn_reaper(deps: ReaperDeps) -> JoinHandle<()> {
             // (the sell DID land, the feed just confirmed late) → book End.
             heal_cleared_by_status(&deps, "ExitStuck").await;
             heal_cleared_by_status(&deps, "ExitUnconfirmed").await;
+            // Runs AFTER its heal so a sell that merely confirmed late books End
+            // instead of being re-sent. What is left genuinely still holds a bag.
+            redrive_exit_unconfirmed(&deps, &mut exit_unconfirmed_backoff).await;
             // Stale ExitPending (real): bag-check first (S4) — the cleared heal
             // above already booked landed sells; what's left with a bag flips to
             // ExitStuck (open, attention) for the redrive/park machinery.
@@ -487,21 +515,203 @@ async fn redrive_exit_stuck(deps: &ReaperDeps, backoff: &mut HashMap<Uuid, u8>) 
                 // reaper stops auto-retrying (a dead/rugged pool would otherwise burn
                 // tip+fees forever) and it surfaces for a manual decision. Never
                 // auto-written-off.
-                match deps.strategy_repo.bump_exit_redrive(position.id).await {
-                    Ok(n) if n >= EXIT_REDRIVE_CAP => {
-                        match deps.strategy_repo.set_exit_parked(position.id, true).await {
-                            Ok(()) => info!(
-                                id = %position.id, mint = %position.mint_address, redrives = n,
-                                "reaper: ExitStuck hit redrive cap → parked for manual resolution"
-                            ),
-                            Err(e) => {
-                                warn!(id = %position.id, "reaper: park ExitStuck failed: {e}")
-                            }
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(e) => warn!(id = %position.id, "reaper: bump_exit_redrive failed: {e}"),
+                park_or_recover(deps, &position, "ExitStuck").await;
+            }
+            OrphanStart::Busy => {}
+            OrphanStart::NothingToSell => {
+                let wallet = deps.trader.wallet_pubkey();
+                let fill =
+                    orphan_exit::fill_from_latest_sell(&deps.trade_repo, &wallet, &position).await;
+                let _ = orphan_exit::book_externally_cleared(&orphan, &position, fill).await;
+            }
+        }
+    }
+}
+
+/// What the chain says about a stranded position's bag.
+enum OnChainBag {
+    /// Wallet holds nothing for this mint — the sell landed; the feed missed it.
+    Cleared,
+    /// Tokens are in an account other than the one on the row; the row was
+    /// re-pointed at it, so a redrive can now actually reach them.
+    Repointed,
+    /// The row already points at the account holding the bag, or the check is
+    /// disabled / failed. Nothing learned — fall through to normal handling.
+    Unchanged,
+}
+
+/// Opt-in on-chain reconciliation for a row that is about to be parked. See
+/// [`ReaperDeps::onchain_bag_check`] for why PG alone cannot answer this.
+/// One `getTokenAccountsByOwner`; never called on the hot path.
+async fn reconcile_bag_onchain(deps: &ReaperDeps, position: &StrategyPosition) -> OnChainBag {
+    if !deps.onchain_bag_check {
+        return OnChainBag::Unchanged;
+    }
+    let accounts = match deps
+        .trader
+        .get_all_token_accounts_for_mint(&position.mint_address)
+        .await
+    {
+        Ok(a) => a,
+        Err(e) => {
+            warn!(id = %position.id, mint = %position.mint_address,
+                  "reaper: on-chain bag check failed: {e}");
+            return OnChainBag::Unchanged;
+        }
+    };
+    let total: u64 = accounts.iter().map(|(_, amount)| *amount).sum();
+    if total == 0 {
+        info!(id = %position.id, mint = %position.mint_address,
+              "reaper: on-chain bag empty — sell landed, feed missed it");
+        return OnChainBag::Cleared;
+    }
+    // Point the row at the account actually holding the tokens, when that is not
+    // where it is looking. Largest balance wins: the position's own bag is the
+    // dominant holding in the account its buy funded.
+    let Some((holder, amount)) = accounts.into_iter().filter(|(_, a)| *a > 0).max_by_key(|(_, a)| *a)
+    else {
+        return OnChainBag::Unchanged;
+    };
+    let holder = holder.to_string();
+    if position.token_account.as_deref() == Some(holder.as_str()) {
+        return OnChainBag::Unchanged;
+    }
+    match deps.strategy_repo.set_token_account(position.id, &holder).await {
+        Ok(()) => {
+            warn!(
+                id = %position.id, mint = %position.mint_address,
+                was = ?position.token_account, now = %holder, amount,
+                "reaper: bag found in a different token account — row re-pointed"
+            );
+            OnChainBag::Repointed
+        }
+        Err(e) => {
+            warn!(id = %position.id, "reaper: set_token_account failed: {e}");
+            OnChainBag::Unchanged
+        }
+    }
+}
+
+/// Count this redrive and, at the cap, decide between parking and recovery.
+///
+/// Parking is the "stop burning tip+fees, a human should look" terminal for an
+/// open bag. Before accepting it, the opt-in on-chain check gets a say: the bag
+/// may already be gone (feed gap) or reachable at a different account, and both
+/// are recoverable without human involvement. Only a genuinely stuck bag parks.
+async fn park_or_recover(deps: &ReaperDeps, position: &StrategyPosition, status: &str) {
+    let n = match deps.strategy_repo.bump_exit_redrive(position.id).await {
+        Ok(n) => n,
+        Err(e) => {
+            warn!(id = %position.id, "reaper: bump_exit_redrive failed: {e}");
+            return;
+        }
+    };
+    if n < EXIT_REDRIVE_CAP {
+        return;
+    }
+    match reconcile_bag_onchain(deps, position).await {
+        OnChainBag::Cleared => {
+            let orphan = deps.orphan_deps();
+            let wallet = deps.trader.wallet_pubkey();
+            let fill = orphan_exit::fill_from_latest_sell(&deps.trade_repo, &wallet, position).await;
+            let _ = orphan_exit::book_externally_cleared(&orphan, position, fill).await;
+        }
+        OnChainBag::Repointed => {
+            // The redrives so far were aimed at the wrong account, so they are not
+            // evidence the bag is unsellable. Reset the budget and let the next
+            // tick try against the account that actually holds it.
+            if let Err(e) = deps.strategy_repo.unpark_exit(position.id).await {
+                warn!(id = %position.id, "reaper: redrive-budget reset failed: {e}");
+            }
+        }
+        OnChainBag::Unchanged => {
+            match deps.strategy_repo.set_exit_parked(position.id, true).await {
+                Ok(()) => info!(
+                    id = %position.id, mint = %position.mint_address, redrives = n, status,
+                    "reaper: hit redrive cap → parked for manual resolution"
+                ),
+                Err(e) => warn!(id = %position.id, "reaper: park {status} failed: {e}"),
+            }
+        }
+    }
+}
+
+/// `ExitUnconfirmed` rows that still hold a bag: prove the un-landed sell can
+/// never execute, then re-drive it.
+///
+/// Why this needs more than [`redrive_exit_stuck`]: `ExitUnconfirmed` means the
+/// sell neither cleared nor reverted. Those sells ride a **durable nonce**, which
+/// does not expire — `schedule_nonce_refresh` even re-arms the slot with the same
+/// hash when the send didn't land. So the original can still execute at any time,
+/// and a blind resend risks two landing sells; against a shared token account the
+/// second one eats a sibling position's bag. That is why the row was previously
+/// parked for a human forever (observed 2026-07-28, mint 57aJ… — migrated and
+/// sellable, but nothing would ever retry it).
+///
+/// [`Engine::burn_nonce_tx`] closes that hole: it returns `Dead` only once the
+/// nonce has moved past the tx's hash — usually already true (a busy wallet
+/// reuses the slot within seconds, costing nothing), otherwise it advances the
+/// nonce itself. **Every** recorded sell sig must be provably dead before we
+/// resend; anything `Unknown` (untracked, or aged out across a restart) leaves
+/// the row exactly as it is today, for manual Verify.
+async fn redrive_exit_unconfirmed(deps: &ReaperDeps, backoff: &mut HashMap<Uuid, u8>) {
+    let stranded = match deps
+        .strategy_repo
+        .find_bags_by_status("ExitUnconfirmed", BAG_CLEARED_THRESHOLD_RAW)
+        .await
+    {
+        Ok(p) => p,
+        Err(err) => {
+            warn!("reaper: load ExitUnconfirmed-with-bag failed: {err}");
+            return;
+        }
+    };
+    let live_ids: std::collections::HashSet<Uuid> = stranded.iter().map(|p| p.id).collect();
+    backoff.retain(|id, _| live_ids.contains(id));
+
+    let orphan = deps.orphan_deps();
+    for position in stranded {
+        if let Some(n) = backoff.get_mut(&position.id) {
+            if *n > 0 {
+                *n -= 1;
+                continue;
+            }
+        }
+        if deps.inflight.exit_held(position.id)
+            || deps.inflight.exit_mint_held(&position.mint_address)
+        {
+            continue;
+        }
+
+        // Safety gate. No recorded sig ⇒ nothing was ever sent under this row's
+        // exit, so there is no tx that could land behind our back and a resend is
+        // safe. Any recorded sig must be proven dead first.
+        let sigs = position.exit_tx_sigs();
+        let mut all_dead = true;
+        for sig in &sigs {
+            match deps.trader.burn_nonce_tx(sig).await {
+                NonceTxState::Dead => {}
+                state => {
+                    info!(
+                        id = %position.id, mint = %position.mint_address, sig = %sig, ?state,
+                        "reaper: ExitUnconfirmed sell not provably dead — leaving for manual Verify"
+                    );
+                    all_dead = false;
+                    break;
                 }
+            }
+        }
+        if !all_dead {
+            backoff.insert(position.id, EXIT_STUCK_BACKOFF_TICKS);
+            continue;
+        }
+
+        match orphan_exit::spawn_orphan_sell(&orphan, position.clone(), "Recovery", false) {
+            OrphanStart::Started => {
+                backoff.insert(position.id, EXIT_STUCK_BACKOFF_TICKS);
+                // Same bounded-then-park policy as ExitStuck: never burn tip+fees
+                // forever on a dead pool, and never auto-write-off.
+                park_or_recover(deps, &position, "ExitUnconfirmed").await;
             }
             OrphanStart::Busy => {}
             OrphanStart::NothingToSell => {

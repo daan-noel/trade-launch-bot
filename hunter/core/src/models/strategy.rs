@@ -471,6 +471,29 @@ impl StrategyPosition {
         self.updated_at = Utc::now();
     }
 
+    /// Record sells that were **submitted** but never confirmed as a fill, without
+    /// touching `exit_price`/`exit_time`/`status` (this is not a close).
+    ///
+    /// Unions into the existing array — a reaper redrive re-enters the same sink
+    /// path, and overwriting would erase the signatures an earlier attempt left
+    /// behind. Those signatures are the only durable evidence distinguishing "the
+    /// sell landed and the feed missed it" from "the sell never landed", which is
+    /// what `ExitUnconfirmed`/`ExitStuck` triage turns on.
+    pub fn add_submitted_exit_sigs(&mut self, sigs: impl IntoIterator<Item = String>) {
+        let mut have = json_str_array(&self.exit_tx_signatures);
+        let mut added = false;
+        for s in sigs {
+            if !have.contains(&s) {
+                have.push(s);
+                added = true;
+            }
+        }
+        if added {
+            self.exit_tx_signatures = json!(have);
+            self.updated_at = Utc::now();
+        }
+    }
+
     /// Entry fill signatures (the JSONB array decoded to a `Vec`).
     pub fn entry_tx_sigs(&self) -> Vec<String> {
         json_str_array(&self.entry_tx_signatures)
@@ -491,4 +514,48 @@ fn json_str_array(v: &Value) -> Vec<String> {
     v.as_array()
         .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod submitted_exit_sig_tests {
+    use super::*;
+
+    fn row() -> StrategyPosition {
+        StrategyPosition::new(
+            Uuid::new_v4(),
+            "generic".to_string(),
+            Uuid::new_v4(),
+            "real".to_string(),
+            "MINT".to_string(),
+            "WALLET".to_string(),
+        )
+    }
+
+    /// A sell that was submitted but never confirmed must still leave a trace.
+    /// Regression (2026-07-28, mint 57aJ…): the executor only persisted sell
+    /// signatures on the SUCCESS path, so a row could sit in `ExitUnconfirmed`
+    /// with an empty array despite having sent sells — destroying the only
+    /// evidence that separates "landed late" from "never landed".
+    #[test]
+    fn records_submitted_sells_without_closing_the_position() {
+        let mut p = row();
+        p.add_submitted_exit_sigs(["sigA".to_string()]);
+        assert_eq!(p.exit_tx_sigs(), vec!["sigA".to_string()]);
+        // Not a close: no fill fields, no status change.
+        assert!(p.exit_price.is_none());
+        assert!(p.exit_time.is_none());
+    }
+
+    /// A reaper redrive re-enters the same sink path; recording must union, or
+    /// each retry would erase the previous attempt's signatures.
+    #[test]
+    fn unions_across_redrives_and_ignores_duplicates() {
+        let mut p = row();
+        p.add_submitted_exit_sigs(["sigA".to_string(), "sigB".to_string()]);
+        p.add_submitted_exit_sigs(["sigB".to_string(), "sigC".to_string()]);
+        assert_eq!(
+            p.exit_tx_sigs(),
+            vec!["sigA".to_string(), "sigB".to_string(), "sigC".to_string()]
+        );
+    }
 }

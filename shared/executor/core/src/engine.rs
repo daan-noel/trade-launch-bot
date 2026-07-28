@@ -23,7 +23,7 @@ use solana_sdk::{
     commitment_config::CommitmentConfig, compute_budget::ComputeBudgetInstruction, hash::Hash,
     instruction::Instruction, pubkey::Pubkey,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -85,6 +85,22 @@ pub struct Engine {
     pub nonce_slots: Arc<std::sync::Mutex<HashMap<Pubkey, NonceSlot>>>,
     /// Signalled each time a nonce slot is refreshed back to free.
     pub nonce_available: Arc<Notify>,
+
+    /// `signature -> (nonce_account, nonce_hash)` for durable-nonce txs we sent.
+    ///
+    /// A durable-nonce tx does **not** expire: if it never lands, it stays
+    /// executable until that nonce account advances. `schedule_nonce_refresh`
+    /// even re-arms the slot with the *same* hash when the send didn't land, so
+    /// the tx can still execute later. That makes "resend the sell" unsafe in
+    /// general — two sells could both land and the second would eat a sibling
+    /// position's bag out of a shared token account.
+    ///
+    /// This index is what makes recovery decidable: with it,
+    /// [`Engine::nonce_tx_state`] can prove a tx is permanently dead (nonce moved
+    /// on) and [`Engine::burn_nonce_tx`] can *make* it dead. FIFO-bounded because
+    /// it is only consulted on the cold recovery path.
+    pub nonce_tx_index: Arc<DashMap<String, (Pubkey, Hash)>>,
+    pub(crate) nonce_tx_order: Arc<std::sync::Mutex<VecDeque<String>>>,
 
     // Diagnostic counters
     pub nonce_wait_events: AtomicUsize,
@@ -188,6 +204,8 @@ impl Engine {
             nonce_cursor: AtomicUsize::new(0),
             nonce_slots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             nonce_available: Arc::new(Notify::new()),
+            nonce_tx_index: Arc::new(DashMap::new()),
+            nonce_tx_order: Arc::new(std::sync::Mutex::new(VecDeque::new())),
             nonce_wait_events: AtomicUsize::new(0),
             nonce_wait_iters_total: AtomicUsize::new(0),
             token_account_space,

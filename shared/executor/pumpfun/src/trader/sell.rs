@@ -407,6 +407,14 @@ impl PumpFunTrader {
             let res: Result<Option<String>> = async {
                 let sig = self.send_transaction(&tx).await?;
 
+                // A durable-nonce sell that doesn't land stays executable until its
+                // nonce advances, so "just resend" is unsafe. Record the anchor here
+                // and the recovery path can PROVE this sell is dead (or make it dead)
+                // before sending another — see `Engine::burn_nonce_tx`.
+                if let Some(nonce_pubkey) = nonce_to_refresh {
+                    self.note_nonce_tx(&sig, nonce_pubkey, tx.message.recent_blockhash);
+                }
+
                 info!(
                     "📤 Sell sent — sig: {} | amount: {} | {}ms",
                     sig,

@@ -30,7 +30,7 @@
 | `Holding` | Open | entry filled, SOL deployed |
 | `ExitPending` | Open | sell in flight |
 | `ExitStuck` | Open · attention | sell gave up, **bag still held**; reaper redrives ×`EXIT_REDRIVE_CAP=2` then `exit_parked` (mig 0012 cols) |
-| `ExitUnconfirmed` | Open · attention | sell may/may-not have cleared; never auto-re-sold; bag-cleared reaper heal + manual Verify |
+| `ExitUnconfirmed` | Open · attention | sell may/may-not have cleared; auto-re-sold **only** once the original is proven unexecutable (§2.1); bag-cleared reaper heal + manual Verify |
 | `End` | Terminal | confirmed exit (incl. `Dead` write-off) |
 | `EntryFailed` | Terminal | buy never filled; **no hypothetical exit price stamped; excluded from realized PnL** (entry NULL) |
 
@@ -55,10 +55,57 @@ Reaper (`reapers.rs`, boot + 60 s):
 | `resolve_buy_submitted` (shared with Verify) | adopt indexed fill → Holding; drop only when EVERY sig confirmed-reverted; else wait. Past review window → `needs_review` SSE flag |
 | `heal_exit_pending_cleared` | ExitPending net ≤ dust (+ sell on record) → book End (runs BEFORE redrive) |
 | `redrive_orphaned_exit_pending` | nudge engine / orphan sell |
-| `redrive_exit_stuck` | ExitStuck-with-bag (`find_exit_stuck_bags`, excl. parked) → orphan sell + backoff; at cap → `exit_parked` |
+| `redrive_exit_stuck` | ExitStuck-with-bag (`find_bags_by_status`, excl. parked) → orphan sell + backoff; at cap → `park_or_recover` |
 | `heal_cleared_by_status("ExitStuck"/"ExitUnconfirmed")` | bag gone → book End (the ExitUnconfirmed heal that never existed pre-split) |
+| `redrive_exit_unconfirmed` | ExitUnconfirmed-with-bag → **only if every recorded sell sig is provably dead** (`burn_nonce_tx`) → orphan sell; else left for manual Verify. Runs AFTER its heal |
 | `mark_stale_exit_pending_stuck` | real ExitPending >300 s: bag-check first — heal-eligible rows are left to the heal; the rest flip `ExitStuck` (never a blind terminal stamp) |
 | `close_stale_paper_exit_pending` | paper crash artifact → book End at entry (breakeven) |
+
+### 2.1 Why a stranded bag needs more than "retry"
+
+Three invariants the 2026-07-28 review established. All three had produced stranded
+real bags; each is now closed at its source.
+
+**A durable-nonce sell never expires.** If it doesn't land, `schedule_nonce_refresh`
+re-arms the slot with the *same* hash, so it stays executable indefinitely. Blind
+resending can therefore land twice, and against a token account shared with a sibling
+position the second sell eats the sibling's bag. `Engine::{note_nonce_tx,
+nonce_tx_state, burn_nonce_tx}` (executor-core `nonce.rs`) make this decidable: the
+`signature → (nonce_account, hash)` index proves a tx is dead once the nonce moves
+past its hash, and `burn_nonce_tx` advances the nonce to *make* it dead. `Unknown`
+(untracked / aged out across a restart) is never treated as dead — those rows still
+go to manual Verify.
+
+**6005 `BondingCurveComplete` is proof of migration, not a hint.** The exit loop
+latches the AMM route on it and retries with zero RPC (the pool is a pure PDA
+derivation). It used to re-confirm via `refresh_curve_facts`, whose `Err(_)` fell
+through to `Fatal` — an RPC blip stranded a token that was merely migrated and
+perfectly sellable. The latch is a **loop-local** `route_migrated`, not the token
+cache: `get_mut` returns `None` on an aged-out entry, which is exactly the long-hold
+case, so a cache-only flip was silently dropped.
+
+**A position's token account is a fact about its own buy.** `SnipeBuy` returns the
+account the buy funded and the position records that. Reading it back from the
+trader's per-mint `user_token_accounts` cache was wrong: two concurrent snipes on one
+mint each draw their own seeded account, then both write that one key — the loser
+persisted its sibling's account and its exit sold from an account holding none of its
+tokens. A retry for the same position now also passes its known account back as the
+buy override, so one position can never split its bag across two accounts.
+
+Sharing one account across sibling positions is the *intended* shape (each sells its
+own `token_amount`; `has_other_open_position_on_mint` gates the rent-reclaim close so
+neither closes it under the other), and a buy with nothing recorded reaches for it via
+`find_reusable_token_account` — but only after `cached_token_account` proves the mint
+has been traded in-process, so a fresh-mint snipe never pays the query. Best-effort:
+a cold cache after restart just draws a new seeded account, which stays correctly
+attributed. Accounts that accumulated anyway are folded back with
+`probe consolidate-dryrun <mint> --into <the position's account> --execute`.
+
+Recovery of rows written before these fixes (and any future divergence) is the
+opt-in `EXIT_BAG_ONCHAIN_CHECK` (default **off** — Helius spend): before parking,
+one `getTokenAccountsByOwner` either books a row whose bag is genuinely gone (feed
+gap) or re-points it at the account actually holding the tokens and resets the
+redrive budget. PG-net alone cannot see either case.
 
 ## 3. Close-action matrix (backend-enforced)
 
@@ -71,6 +118,7 @@ Reaper (`reapers.rs`, boot + 60 s):
 | ExitPending | 409 busy | — | — | — |
 | ExitStuck | ✓ (un-parks: `unpark_exit` resets count) | ✓ | ✓ (`Dead`, manual-only forever) | — |
 | ExitUnconfirmed | ✓ re-sell (safe: landed original → NothingToSell → booked cleared) | ✓ | ✓ | ✓ PG-net check → heal or `{still_held}` |
+| ExitUnconfirmed (reaper, unattended) | ✓ **only** when every recorded sell sig is `NonceTxState::Dead` — see §2.1 | — | — | — |
 | BuySubmitted | 409 (use verify) | — | — | ✓ reaper adopt-or-drop, one shot |
 | End / EntryFailed | 409 terminal | — | — | — |
 

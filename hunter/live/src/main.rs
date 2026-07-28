@@ -9,6 +9,7 @@ use trading_core::{config, models};
 use config::constants;
 
 use anyhow::Context;
+use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -350,33 +351,69 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
             run_sim_matrix(trader, &args[1..]).await?;
         }
         "consolidate-dryrun" => {
-            // Zero-SOL verification of the pre-buy consolidation path: enumerate
-            // every account for the mint, derive the canonical ATA, and simulate the
-            // `[create_ata_idempotent, transfer_checked, close]` tx for each orphan
-            // against live chain state. No tx is sent.
+            // Fold every token account for a mint into ONE, closing the rest for rent.
+            // Simulate-only by default (zero SOL): enumerate the accounts, resolve the
+            // destination, and simulate the `[create_ata_idempotent?, transfer_checked,
+            // close]` tx per orphan against live chain state. `--execute` sends them.
+            //
+            // `--into <acct>` names the destination. WITHOUT it the destination is the
+            // canonical ATA, which hunter never trades from — every hunter buy lands in
+            // a seeded template account. So for a mint with an OPEN position, always
+            // pass `--into <the position's token_account>`; consolidating into the ATA
+            // would move the bag somewhere the position's exit cannot reach it.
             let mint = args
                 .get(1)
-                .context("usage: probe consolidate-dryrun <mint>")?;
+                .context("usage: probe consolidate-dryrun <mint> [--into <acct>] [--execute]")?;
+            let execute = args.iter().any(|a| a == "--execute");
+            let into: Option<Pubkey> = match args.iter().position(|a| a == "--into") {
+                Some(i) => Some(
+                    args.get(i + 1)
+                        .context("--into needs a token-account pubkey")?
+                        .parse()
+                        .context("--into is not a valid pubkey")?,
+                ),
+                None => None,
+            };
             let routing = trader.resolve_buy_routing(mint).await?;
             let accounts = trader.get_all_token_accounts_for_mint(mint).await?;
             println!(
-                "Accounts held for {mint} ({}): token_program={}",
+                "Accounts held for {mint} ({}): token_program={}, dest={}",
                 accounts.len(),
-                routing.token_program_id
+                routing.token_program_id,
+                match &into {
+                    Some(pk) => pk.to_string(),
+                    None => "canonical ATA".to_string(),
+                }
             );
             for (pk, bal) in &accounts {
                 println!("  acct={pk}  balance={bal} raw");
             }
             let sims = trader
-                .simulate_consolidation(mint, routing.token_program)
+                .simulate_consolidation(mint, routing.token_program, into)
                 .await?;
             if sims.is_empty() {
-                println!("✅ No orphans — only the canonical ATA (or nothing). Consolidation is a no-op.");
+                println!("✅ No orphans — only the destination account (or nothing). Consolidation is a no-op.");
             } else {
                 println!("Simulating {} orphan consolidation tx(s):", sims.len());
                 for (orphan, balance, outcome) in &sims {
                     println!("\n  orphan={orphan}  balance={balance} raw");
                     print_sim_outcome(outcome);
+                }
+                if execute {
+                    // Only send once every orphan simulated clean — a failing sim is a
+                    // failing tx, and a partial run leaves the wallet mid-consolidation.
+                    if !sims.iter().all(|(_, _, o)| o.success) {
+                        anyhow::bail!(
+                            "--execute refused: at least one orphan tx failed simulation (see above)"
+                        );
+                    }
+                    println!("\n--execute: sending {} consolidation tx(s)…", sims.len());
+                    trader
+                        .consolidate_token_accounts(mint, routing.token_program, into)
+                        .await?;
+                    println!("✅ consolidated — orphans drained and closed (rent reclaimed).");
+                } else {
+                    println!("\n(simulate-only — re-run with --execute to send)");
                 }
             }
         }
@@ -509,7 +546,8 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
         other => anyhow::bail!(
             "unknown probe '{other}'. Use: ladder | fanout | pin-senders | check-nonces | \
              simulate-buy | simulate-sell | simulate-amm-buy | simulate-amm-sell | sim-matrix | \
-             consolidate-dryrun | sweep-sell-dryrun | holdings | cashback-status | \
+             consolidate-dryrun [--into <acct>] [--execute] | \
+             sweep-sell-dryrun | holdings | cashback-status | \
              claim-cashback [--execute]"
         ),
     }
@@ -776,7 +814,7 @@ async fn run_sim_matrix(trader: &PumpFunTrader, args: &[String]) -> anyhow::Resu
 
     // 6) Consolidate dry-run (no-op when wallet holds nothing)
     match trader
-        .simulate_consolidation(&curve_mint, curve_routing.token_program)
+        .simulate_consolidation(&curve_mint, curve_routing.token_program, None)
         .await
     {
         Ok(sims) if sims.is_empty() => {

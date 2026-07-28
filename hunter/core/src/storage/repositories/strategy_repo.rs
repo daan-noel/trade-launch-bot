@@ -2277,12 +2277,25 @@ impl StrategyRepo {
         &self,
         threshold_raw: i64,
     ) -> anyhow::Result<Vec<StrategyPosition>> {
+        self.find_bags_by_status("ExitStuck", threshold_raw).await
+    }
+
+    /// Real, un-parked rows in `status` whose wallet still shows a positive
+    /// `trades` net on the mint — i.e. the bag is still held. PG-only, no RPC.
+    ///
+    /// The ONE stranded-bag query: `ExitStuck` and `ExitUnconfirmed` both need it
+    /// and their "is there still a bag" definition must not drift apart.
+    pub async fn find_bags_by_status(
+        &self,
+        status: &str,
+        threshold_raw: i64,
+    ) -> anyhow::Result<Vec<StrategyPosition>> {
         let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             r#"
             SELECT {POSITION_COLS_P}
             FROM strategy_positions p
             JOIN wallet_dict w ON w.address = p.wallet
-            WHERE p.mode = 'real' AND p.status = 'ExitStuck' AND p.entry_price IS NOT NULL
+            WHERE p.mode = 'real' AND p.status = $2 AND p.entry_price IS NOT NULL
               AND NOT p.exit_parked
               AND COALESCE((
                     SELECT SUM(CASE WHEN t.trade_type = 'buy'  THEN t.token_amount
@@ -2295,9 +2308,29 @@ impl StrategyRepo {
             "#
         ))
         .bind(threshold_raw)
+        .bind(status)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
+    /// Re-point an open position at the token account that actually holds its bag.
+    ///
+    /// Needed when the account recorded at entry is not where the tokens are —
+    /// historically caused by two concurrent same-mint buys overwriting one
+    /// per-mint cache entry, which left one position's sell aimed at an account
+    /// that had been drained by its sibling. The buy path now records the funded
+    /// account directly, so this is the *recovery* half: rows written before that
+    /// fix (and any future divergence) can be repaired from on-chain truth.
+    pub async fn set_token_account(&self, id: Uuid, token_account: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE strategy_positions SET token_account = $2, updated_at = now() WHERE id = $1",
+        )
+        .bind(id)
+        .bind(token_account)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// Atomically increment the reaper's ExitStuck redrive counter, returning the

@@ -217,6 +217,8 @@ async fn run_loop(
         fill_tx: fill_tx.clone(),
         settings: settings.clone(),
         sse_tx: sse_tx.clone(),
+        // Opt-in: this is the reaper's only Helius spend. Off unless asked for.
+        onchain_bag_check: super::reapers::onchain_bag_check_from_env(),
     });
 
     let mut tick = tokio::time::interval(TICK);
@@ -425,6 +427,10 @@ fn dispatch_buy(
                 lamports,
                 cashback_enabled: cashback,
                 slippage_bps,
+                // Set once an earlier attempt for THIS position funded an account:
+                // the retry then buys straight into it instead of minting a second
+                // seeded account for the same position.
+                token_account: meta.token_account.clone(),
             };
             tokio::spawn(super::exec_real::run_entry(real_deps.clone(), order));
         }
