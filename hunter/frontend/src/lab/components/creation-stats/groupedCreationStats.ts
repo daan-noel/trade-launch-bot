@@ -193,6 +193,25 @@ export const TOP_OPTIONS: { value: number; label: string }[] = [
 /** The `∅` sentinel the backend renders for a missing fingerprint value. */
 export const MISSING_VALUE = '∅';
 
+/**
+ * Attach an applied exact-set `ix_labels` filter onto a card's `group_key` when
+ * Instruction labels was **not** in group-by (so the key omitted that axis).
+ *
+ * Create-fingerprint / card display / identity matching all read `group_key`
+ * only — without this, a filtered-but-ungrouped Analyze silently drops
+ * `ix_labels` from the saved fingerprint. Prefer the backend fold (MODE of
+ * on-chain order) when present; this is the client-side belt that still works
+ * against an older lab binary. Never overwrites an existing `ix_labels` key.
+ */
+export function withIxLabelsFilter(
+  groupKey: Record<string, string>,
+  ixLabelsFilter: string[] | null | undefined,
+): Record<string, string> {
+  if (Object.prototype.hasOwnProperty.call(groupKey, 'ix_labels')) return groupKey;
+  if (!ixLabelsFilter || ixLabelsFilter.length === 0) return groupKey;
+  return { ...groupKey, ix_labels: ixLabelsFilter.join(' | ') };
+}
+
 /** Stable per-group color (rank-indexed) shared by the trend series + legend +
  *  heatmap card accents so a group reads as the same color everywhere. */
 export function groupColor(g: number): string {

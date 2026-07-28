@@ -64,6 +64,7 @@ import {
   groupColor,
   groupValueParts,
   drillTokenFilters,
+  withIxLabelsFilter,
   type GroupedCreationArgs,
   type GroupedCreationCell,
   type GroupedCreationGroup,
@@ -319,6 +320,13 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   // is also omitted for the default 0.1 case.
   const appliedBucketWidth = data?.bucket_width ?? applied?.bucketWidth ?? SOL_BUCKET_WIDTH;
 
+  // Applied exact-set ix_labels filter. Prefer the Analyze snapshot (`applied`)
+  // over the response echo so a in-flight refetch can't briefly drop the axis
+  // while previous data (no filter) is still on screen. When Instruction labels
+  // isn't in group-by, cards omit that axis unless the backend folded it —
+  // `withIxLabelsFilter` re-attaches it for identity / create / display.
+  const appliedIxLabels = applied?.ixLabelsFilter ?? data?.ix_labels_filter ?? null;
+
   // Per-group: the saved fingerprint whose identity matches this card's key (for
   // the "already a fingerprint" badge), and whether the key carries any criterion
   // (ALL / grouping-only cards can't become a fingerprint — hide Create then).
@@ -331,35 +339,30 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
         ? fingerprints.find((f) => f.id === applied.fingerprintId) ?? null
         : null;
     for (const g of groups) {
+      const gk = withIxLabelsFilter(g.group_key, appliedIxLabels);
       const matched =
-        scoped ?? findFingerprintForGroupKey(g.group_key, fingerprints, appliedBucketWidth);
+        scoped ?? findFingerprintForGroupKey(gk, fingerprints, appliedBucketWidth);
       const canCreate =
         matched == null &&
-        identityHasCriterion(fingerprintIdentityFromGroupKey(g.group_key, appliedBucketWidth));
+        identityHasCriterion(fingerprintIdentityFromGroupKey(gk, appliedBucketWidth));
       map.set(g.g, { matched, canCreate });
     }
     return map;
-  }, [groups, fingerprints, appliedBucketWidth, applied?.fingerprintId]);
+  }, [groups, fingerprints, appliedBucketWidth, applied?.fingerprintId, appliedIxLabels]);
 
-  // Save a group card as a fingerprint. Identity = the card's group_key axes
-  // only (same builder as the "already a fingerprint" badge) — so `ix_labels`
-  // is persisted iff Instruction labels is in the applied group-by. Plain
-  // fingerprint — no metric config; flow patterns are added later on Flow
-  // discovery. On success the card flips to its "fp" badge after refetch.
+  // Save a group card as a fingerprint. Identity = group_key axes, plus the
+  // applied ix_labels filter when that axis wasn't grouped (mutually exclusive
+  // with the filter in the picker — without this merge, create silently drops
+  // the labels the Analyze already pinned). Plain fingerprint — no metric
+  // config; flow patterns are added later on Flow discovery.
   async function createFingerprintFromGroup(group: GroupedCreationGroup) {
     setFpError(null);
     setFpBusyGroup(group.g);
     try {
-      const identity = fingerprintIdentityFromGroupKey(
-        group.group_key,
-        appliedBucketWidth,
-      );
+      const gk = withIxLabelsFilter(group.group_key, appliedIxLabels);
+      const identity = fingerprintIdentityFromGroupKey(gk, appliedBucketWidth);
       await createFingerprint({
-        name: fingerprintNameFromGroupKey(
-          group.group_key,
-          'c',
-          appliedBucketWidth,
-        ),
+        name: fingerprintNameFromGroupKey(gk, 'c', appliedBucketWidth),
         ...identity,
         metric_config: {},
       }).unwrap();
@@ -562,7 +565,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
                     className="inline-block h-2.5 w-2.5 rounded-sm"
                     style={{ background: groupColor(g.g) }}
                   />
-                  <GroupKeyInline group={g} />
+                  <GroupKeyInline group={g} ixLabelsFilter={appliedIxLabels} />
                   <span className="text-text-dim/70">
                     · {formatWithCommas(g.total)} tokens · {formatWithCommas(g.trades)} trades
                   </span>
@@ -591,6 +594,10 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
               // Selected = its tokens are showing in the shared drill-down below.
               const selected = targetingThisGroup;
               const fp = fpByGroup.get(g.g) ?? { matched: null, canCreate: false };
+              const gk = withIxLabelsFilter(g.group_key, appliedIxLabels);
+              const hasIxLabels =
+                Object.prototype.hasOwnProperty.call(gk, 'ix_labels') &&
+                gk.ix_labels !== MISSING_VALUE;
               return (
                 <div
                   key={g.g}
@@ -607,7 +614,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
                       style={{ background: groupColor(g.g) }}
                     />
                     <div className="min-w-0 flex-1">
-                      <GroupKeyBlock group={g} />
+                      <GroupKeyBlock group={g} ixLabelsFilter={appliedIxLabels} />
                     </div>
                     <div className="flex shrink-0 flex-col items-end gap-1.5">
                       <span className="text-[11px] text-text-dim">
@@ -635,10 +642,9 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
                             disabled={fpBusyGroup === g.g}
                             onClick={() => createFingerprintFromGroup(g)}
                             title={
-                              Object.prototype.hasOwnProperty.call(g.group_key, 'ix_labels') &&
-                              g.group_key.ix_labels !== MISSING_VALUE
+                              hasIxLabels
                                 ? 'Save this group as a fingerprint (includes ix_labels)'
-                                : 'Save this group as a fingerprint — only grouped axes are saved; add Instruction labels to the group-by to persist ix_labels'
+                                : 'Save this group as a fingerprint — only grouped axes are saved; add Instruction labels to the group-by (or pin an exact set filter) to persist ix_labels'
                             }
                           >
                             {fpBusyGroup === g.g ? 'Creating…' : 'Create fingerprint'}
@@ -684,7 +690,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
                   />
                   <span className="font-semibold text-text">Tokens</span>
                   <span className="text-text-dim">·</span>
-                  <GroupKeyInline group={drillGroup} />
+                  <GroupKeyInline group={drillGroup} ixLabelsFilter={appliedIxLabels} />
                   {drillTarget.dow != null && drillTarget.hour != null && (
                     <>
                       <span className="text-text-dim">·</span>
@@ -747,8 +753,14 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
 
 /** One-line group-key summary for the legend (field labels + values, ix_labels
  *  collapsed to a count). */
-function GroupKeyInline({ group }: { group: GroupedCreationGroup }) {
-  const entries = Object.entries(group.group_key);
+function GroupKeyInline({
+  group,
+  ixLabelsFilter,
+}: {
+  group: GroupedCreationGroup;
+  ixLabelsFilter?: string[] | null;
+}) {
+  const entries = Object.entries(withIxLabelsFilter(group.group_key, ixLabelsFilter));
   if (entries.length === 0) return <span className="text-text">ALL tokens</span>;
   return (
     <span className="text-text">
@@ -772,8 +784,14 @@ function GroupKeyInline({ group }: { group: GroupedCreationGroup }) {
 /** Full group-key block for a heatmap card (label/value grid; ix_labels shown
  *  as pretty JSON via `IxLabelsDisplay`, click-to-copy). Mirrors the sweep
  *  page's group-chip layout. */
-function GroupKeyBlock({ group }: { group: GroupedCreationGroup }) {
-  const entries = Object.entries(group.group_key);
+function GroupKeyBlock({
+  group,
+  ixLabelsFilter,
+}: {
+  group: GroupedCreationGroup;
+  ixLabelsFilter?: string[] | null;
+}) {
+  const entries = Object.entries(withIxLabelsFilter(group.group_key, ixLabelsFilter));
   if (entries.length === 0)
     return <span className="text-xs text-text-dim">ALL tokens</span>;
   return (
