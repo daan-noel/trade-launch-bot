@@ -17,6 +17,9 @@ interface RuleParamsJson {
   stop_loss?: number | null;
   entry?: Record<string, unknown>;
   exit?: Record<string, unknown>;
+  reentry?: { cooldown_sec?: number; max_episodes_per_token?: number } | null;
+  exclusive?: boolean;
+  priority?: number;
 }
 
 interface SideChip {
@@ -82,13 +85,24 @@ function parseParams(raw: unknown): {
   stop_loss: number | null;
   entry: SideChip[];
   exit: SideChip[];
+  reentry: { cooldown_sec: number; max_episodes_per_token: number } | null;
+  exclusive: boolean;
+  priority: number;
 } {
   const p = (raw && typeof raw === 'object' ? raw : {}) as RuleParamsJson;
+  const re = p.reentry;
+  const reentry =
+    re && typeof re.cooldown_sec === 'number' && typeof re.max_episodes_per_token === 'number'
+      ? { cooldown_sec: re.cooldown_sec, max_episodes_per_token: re.max_episodes_per_token }
+      : null;
   return {
     take_profit: typeof p.take_profit === 'number' ? p.take_profit : null,
     stop_loss: typeof p.stop_loss === 'number' ? p.stop_loss : null,
     entry: sideChips(p.entry),
     exit: sideChips(p.exit),
+    reentry,
+    exclusive: p.exclusive === true,
+    priority: typeof p.priority === 'number' ? p.priority : 0,
   };
 }
 
@@ -169,15 +183,26 @@ function SideBlock({
  *  Metric conditions stack one row per metric group; side label on the first
  *  row only so later groups stay indented under it. */
 export function ruleParamsCell(raw: unknown): ReactNode {
-  const { take_profit, stop_loss, entry, exit } = parseParams(raw);
+  const { take_profit, stop_loss, entry, exit, reentry, exclusive, priority } = parseParams(raw);
   const hasTpsl = take_profit != null || stop_loss != null;
-  const empty = !hasTpsl && entry.length === 0 && exit.length === 0;
+  const hasFlags = reentry != null || exclusive;
+  const empty = !hasTpsl && !hasFlags && entry.length === 0 && exit.length === 0;
   return (
     <div className="flex flex-col items-start gap-1 text-left">
       {hasTpsl && (
         <div className="flex flex-wrap items-center gap-1">
           {take_profit != null && chip(`TP ${formatDecimalTrim(take_profit, 1)}%`, 'text-green')}
           {stop_loss != null && chip(`SL ${formatDecimalTrim(stop_loss, 1)}%`, 'text-red')}
+        </div>
+      )}
+      {hasFlags && (
+        <div className="flex flex-wrap items-center gap-1">
+          {reentry != null &&
+            chip(
+              `Re-entry ${formatDecimalTrim(reentry.cooldown_sec, 1)}s/${reentry.max_episodes_per_token}`,
+              'text-accent',
+            )}
+          {exclusive && chip(`Exclusive P${priority}`, 'text-warning')}
         </div>
       )}
       <SideBlock side="in" chips={entry} labelCls="text-accent/70" />
@@ -189,10 +214,14 @@ export function ruleParamsCell(raw: unknown): ReactNode {
 
 /** Flat searchable text for table filters (metric names, ops, TP/SL). */
 export function ruleParamsSearchText(raw: unknown): string {
-  const { take_profit, stop_loss, entry, exit } = parseParams(raw);
+  const { take_profit, stop_loss, entry, exit, reentry, exclusive, priority } = parseParams(raw);
   const parts: string[] = [];
   if (take_profit != null) parts.push(`TP ${formatDecimalTrim(take_profit, 1)}%`);
   if (stop_loss != null) parts.push(`SL ${formatDecimalTrim(stop_loss, 1)}%`);
+  if (reentry != null) {
+    parts.push(`Re-entry ${formatDecimalTrim(reentry.cooldown_sec, 1)}s/${reentry.max_episodes_per_token}`);
+  }
+  if (exclusive) parts.push(`Exclusive P${priority}`);
   for (const c of entry) {
     if (c.orBefore) parts.push('|');
     parts.push(`in ${c.text}`);

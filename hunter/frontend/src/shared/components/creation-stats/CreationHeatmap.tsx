@@ -2,6 +2,7 @@ import { memo, useMemo } from 'react';
 import {
   DOW_ROWS,
   HOURS,
+  METRIC_KIND,
   formatPct,
   heatColor,
   metricValue,
@@ -32,6 +33,9 @@ const EMPTY_CELL: CreationHeatCell = {
   known: 0,
   migrated: 0,
   dead: 0,
+  trades: 0,
+  trades_avg: null,
+  trades_per_day: 0,
 };
 
 /**
@@ -39,10 +43,14 @@ const EMPTY_CELL: CreationHeatCell = {
  * charting dep (lightweight-charts can't do heatmaps). Folds all in-window
  * history onto the weekly cycle to expose cyclical creation bias.
  *
- * `count` view colors by share-of-total (so a rising volume trend doesn't drown
- * the cyclical pattern); the outcome views color by the rate itself (0..1). The
- * whole grid is memoized + recomputed only when `cells`/`metric`/`total` change,
- * so it never re-renders on a SOL/USD or live-trade tick.
+ * Normalization/label are driven by the active metric's `MetricKind` (see
+ * `creationStats.ts`): `magnitude` (`count`/`trades`/`trades_per_day`) colors
+ * by share-of-max (so a rising volume trend doesn't drown the cyclical
+ * pattern); `rate` (migrate %/dead %) colors by the rate itself, contrast-
+ * stretched across cells; `ratio` (trades/token) does the same but on a
+ * log1p scale (outlier-robustness without a server-side median). The whole
+ * grid is memoized + recomputed only when `cells`/`metric`/`total` change, so
+ * it never re-renders on a SOL/USD or live-trade tick.
  */
 export const CreationHeatmap = memo(function CreationHeatmap({
   cells,
@@ -51,29 +59,36 @@ export const CreationHeatmap = memo(function CreationHeatmap({
   onCellClick,
   selectedCell,
 }: CreationHeatmapProps) {
-  // For the rate views, shade by each cell's position within the observed
-  // min→max spread (contrast stretch), not by the absolute 0..1 rate. Nearly
-  // every token dies, so dead-rate clusters ~0.9–1.0 and migrate-rate ~0.0–0.1;
-  // absolute shading would paint the whole grid one flat tone and hide the
-  // cyclical pattern. `count` already normalizes against `maxCount` the same way.
-  const { lookup, maxCount, rateMin, rateSpan } = useMemo(() => {
+  // `magnitude` metrics normalize against the max value observed for the
+  // ACTIVE metric (share-of-max) — not always `count`, so a metric switch
+  // re-maxes too. `rate`/`ratio` metrics shade by each cell's position within
+  // the observed min→max spread (contrast stretch), not the absolute value.
+  // Nearly every token dies, so dead-rate clusters ~0.9–1.0 and migrate-rate
+  // ~0.0–0.1; absolute shading would paint the whole grid one flat tone and
+  // hide the cyclical pattern. `ratio` (trades_per_token) stretches on a
+  // log1p scale so one huge-trade-count token can't wash out the rest.
+  const kind = METRIC_KIND[metric];
+  const { lookup, maxValue, rateMin, rateSpan } = useMemo(() => {
     const map = new Map<number, CreationHeatCell>();
     let max = 0;
     let rMin = Infinity;
     let rMax = -Infinity;
     for (const c of cells) {
       map.set(c.dow * 24 + c.hour, c);
-      if (c.count > max) max = c.count;
-      if (metric !== 'count') {
-        const v = metricValue(c, metric);
-        if (v != null) {
+      if (kind === 'magnitude') {
+        const v = metricValue(c, metric) ?? 0;
+        if (v > max) max = v;
+      } else {
+        const raw = metricValue(c, metric);
+        if (raw != null) {
+          const v = kind === 'ratio' ? Math.log1p(raw) : raw;
           if (v < rMin) rMin = v;
           if (v > rMax) rMax = v;
         }
       }
     }
-    return { lookup: map, maxCount: max, rateMin: rMin, rateSpan: rMax > rMin ? rMax - rMin : 0 };
-  }, [cells, metric]);
+    return { lookup: map, maxValue: max, rateMin: rMin, rateSpan: rMax > rMin ? rMax - rMin : 0 };
+  }, [cells, metric, kind]);
 
   return (
     <div className="overflow-x-auto">
@@ -100,7 +115,8 @@ export const CreationHeatmap = memo(function CreationHeatmap({
             dow={row.dow}
             lookup={lookup}
             metric={metric}
-            maxCount={maxCount}
+            kind={kind}
+            maxValue={maxValue}
             rateMin={rateMin}
             rateSpan={rateSpan}
             total={total}
@@ -118,7 +134,8 @@ interface RowProps {
   dow: number;
   lookup: Map<number, CreationHeatCell>;
   metric: CreationMetric;
-  maxCount: number;
+  kind: 'magnitude' | 'rate' | 'ratio';
+  maxValue: number;
   rateMin: number;
   rateSpan: number;
   total: number;
@@ -131,7 +148,8 @@ function Row({
   dow,
   lookup,
   metric,
-  maxCount,
+  kind,
+  maxValue,
   rateMin,
   rateSpan,
   total,
@@ -147,25 +165,28 @@ function Row({
         const cell = lookup.get(dow * 24 + h) ?? { ...EMPTY_CELL, dow, hour: h };
         const value = metricValue(cell, metric);
         const norm =
-          metric === 'count'
-            ? maxCount > 0
-              ? cell.count / maxCount
+          kind === 'magnitude'
+            ? maxValue > 0
+              ? (value ?? 0) / maxValue
               : 0
             : value == null
-              ? null // no matured outcome → "no data" wash
+              ? null // no matured outcome / no trade coverage → "no data" wash
               : rateSpan > 0
-                ? (value - rateMin) / rateSpan // contrast-stretch across cells
+                ? ((kind === 'ratio' ? Math.log1p(value) : value) - rateMin) / rateSpan // contrast-stretch across cells
                 : 1; // every cell equal → flat full tone
         const share = total > 0 ? cell.count / total : 0;
-        // In-cell readout: compact count, or integer percent for the rate views.
+        // In-cell readout: compact number for magnitude views, integer percent
+        // for rate views, compact number (not a percent) for the ratio view.
         const cellLabel =
-          metric === 'count'
-            ? cell.count > 0
-              ? formatCompact(cell.count, 1)
+          kind === 'magnitude'
+            ? (value ?? 0) > 0
+              ? formatCompact(value ?? 0, 1)
               : ''
             : value == null
               ? ''
-              : `${Math.round(value * 100)}%`;
+              : kind === 'rate'
+                ? `${Math.round(value * 100)}%`
+                : formatCompact(value, 1);
         const clickable = onCellClick != null;
         const selected = selectedCell?.dow === dow && selectedCell?.hour === h;
         const title =
@@ -173,6 +194,7 @@ function Row({
           `Created: ${formatWithCommas(cell.count)} (${(share * 100).toFixed(1)}%)\n` +
           `Migrate: ${formatPct(metricValue(cell, 'migrate_rate'))}  ` +
           `Dead: ${formatPct(metricValue(cell, 'dead_rate'))}\n` +
+          `Trades: ${formatWithCommas(cell.trades)} (avg ${cell.trades_avg != null ? cell.trades_avg.toFixed(1) : '—'}/token) · ${cell.trades_per_day.toFixed(1)}/day, lifetime-to-last-sync\n` +
           `Coverage: ${cell.known}/${cell.matured} matured` +
           (clickable ? '\nClick to view tokens' : '');
         return (

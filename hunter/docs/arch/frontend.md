@@ -187,7 +187,15 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   the manual-trade panel, `?position=` focuses a row's detail modal), Rules/Fingerprints
   (+ `InputSyncStatus`, `wallet/` components; `usePositionNotifications`; `syncTokenSlice`).
 - **Lab (`@lab/pages`):** **Research home** (`LabHomePage` — shortcuts + recent sweeps
-  deep-linked with `?run=` + running jobs), Creation Stats (drill-down opens
+  deep-linked with `?run=` + running jobs), Creation Stats (heatmap/trend/grouped
+  metric toggle carries **3 outcome + 3 trade metrics** in one payload — `count`,
+  `migrate_rate`/`dead_rate` (rates), `trades`/`trades_per_day` (magnitudes, share-
+  of-max shading), `trades_per_token` (a ratio backed by the mean `trades_avg`,
+  log-scale contrast stretch — see `creationStats.ts`'s `MetricKind`); the metric
+  toggle never refetches. `GroupedCreationSection` additionally offers **Rank
+  by: Tokens / Trades / Trades per token** (`rank_by`, default unchanged =
+  token count) so a small elite fingerprint group can out-rank a big group of
+  mediocre launches. Drill-down opens
   `LazyLabTokenInspectModal` via `inspectFromMint` — same chart + metric panes as
   Tokens, not the live-only `TokenDetailModal`), Tokens (detail = chart +
   metric panes via `LabTokenInspect`), **TraderAnalysis**, Rules (authoring + dry-run

@@ -23,12 +23,28 @@ import type { TokenRecord } from 'types';
 export { GROUP_FIELDS, GROUP_FIELD_LABELS };
 export type { GroupField };
 
+/** Group ranking criterion: `count` (default, token count — unchanged) |
+ *  `trades` (raw `SUM(trade_count)`, still scales with group size like
+ *  `count`) | `trades_per_token` (the one that actually surfaces a small
+ *  elite group over a big group of mediocre launches). */
+export type GroupRankBy = 'count' | 'trades' | 'trades_per_token';
+
+export const RANK_BY_OPTIONS: { value: GroupRankBy; label: string }[] = [
+  { value: 'count', label: 'Tokens' },
+  { value: 'trades', label: 'Trades' },
+  { value: 'trades_per_token', label: 'Trades per token' },
+];
+
 /** One ranked group: `g` = 0-based rank (0 = largest), `group_key` = the
  *  fingerprint values (e.g. `{cu_limit:"200000", ix_labels:"A | B"}`). */
 export interface GroupedCreationGroup {
   g: number;
   group_key: Record<string, string>;
   total: number;
+  /** Lifetime-to-last-sync trade count summed over the group. */
+  trades: number;
+  /** `trades / total` — the per-token figure `rank_by=trades_per_token` ranks on. */
+  trades_avg: number;
 }
 
 /** One day-of-week × hour-of-day cell for group `g`. `dow`: 0=Sun … 6=Sat. */
@@ -59,6 +75,9 @@ export interface GroupedCreationResponse {
   field_filters: Record<string, string[]>;
   /** The applied exact instruction-label set filter, or `null` when none. */
   ix_labels_filter: string[] | null;
+  /** The applied (whitelisted) ranking criterion. Inert under a saved-fingerprint
+   *  scope — there's only ever one group there. */
+  rank_by: GroupRankBy;
   total: number;
   groups: GroupedCreationGroup[];
   cells: GroupedCreationCell[];
@@ -152,6 +171,10 @@ export interface GroupedCreationArgs {
   fieldFilters?: Record<string, string[]>;
   /** Exact instruction-label set filter (set-equality). Omitted ⇒ no filter. */
   ixLabelsFilter?: string[];
+  /** Group ranking criterion. Omitted when `count` so the default keeps a
+   *  stable RTK cache key (same trick `bucketWidth` uses). Inert under a
+   *  saved-fingerprint scope. */
+  rankBy?: GroupRankBy;
   /** Saved-fingerprint scope — same contract as the sweep's/flow discovery's
    *  `fingerprint_id`: when set, `groupBy`/`top`/`fieldFilters`/`ixLabelsFilter`
    *  above are all ignored; the corpus becomes the fingerprint's own

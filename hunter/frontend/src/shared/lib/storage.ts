@@ -54,6 +54,8 @@ export const STORAGE_KEYS = {
   // Grouped creation section draft controls
   groupedBy: `${PREFIX}dashboard.grouped.by`,
   groupedTop: `${PREFIX}dashboard.grouped.top`,
+  /** Grouped-section ranking criterion: `count` (default) | `trades` | `trades_per_token`. */
+  groupedRankBy: `${PREFIX}dashboard.grouped.rankBy`,
   groupedBucketWidth: `${PREFIX}dashboard.grouped.bucketWidth`,
   groupedBucket: `${PREFIX}dashboard.grouped.bucket`,
   groupedRange: `${PREFIX}dashboard.grouped.range`,

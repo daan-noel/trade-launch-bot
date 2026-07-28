@@ -40,8 +40,9 @@ fn peek_sim_rows(state: &LocalState, rule_id: Uuid) -> Result<Arc<Vec<serde_json
     }
 }
 
-/// Flattened `RunSummary` + sim-only extras (`computed_at`, `n_migrated`) — the
-/// wire shape the Simulate table columns and summary card both consume.
+/// Flattened `RunSummary` + sim-only extras (`computed_at`, `n_migrated`,
+/// `n_matched`) — the wire shape the Simulate table columns and summary card
+/// both consume.
 fn summary_json_from_rows(state: &LocalState, rule_id: Uuid, rows: &[Value]) -> Value {
     let metrics = crate::strategies::sim_query::summarize(rows);
     // Graduated-to-AMM count over **fired** rows only (NoEntry is matched-but-
@@ -60,6 +61,17 @@ fn summary_json_from_rows(state: &LocalState, rule_id: Uuid, rows: &[Value]) -> 
     if let Some(obj) = body.as_object_mut() {
         obj.insert("computed_at".into(), json!(state.sim_results.computed_at(&rule_id)));
         obj.insert("n_migrated".into(), json!(migrated));
+        // Distinct-token count, re-entry safe: a row is one **position** (a
+        // re-entry rule can emit several fired rows for the same mint — see
+        // `sim_query::count_matched`'s doc), so `rows.len()` would over-count.
+        // `rows` is already scoped to `req`'s search/filters by the caller, so
+        // this reads as "matched, under the current filters" (unlike the
+        // unfiltered `n_matched` the Simulate table columns get from
+        // `SimMeta::n_matched` via `summary_wire`).
+        obj.insert(
+            "n_matched".into(),
+            json!(crate::strategies::sim_query::count_matched(rows)),
+        );
         obj.insert("fill_model".into(), json!(state.sim_results.fill_model(&rule_id)));
         obj.insert("cost_model".into(), json!(state.sim_results.cost_model(&rule_id)));
     }

@@ -391,6 +391,18 @@ export interface SimulatedSummary extends RunSummary {
   /** Fired tokens that graduated to AMM (`is_migrated`), over the filtered
    *  cohort. Absent on legacy payloads → the Migrated tile is then hidden. */
   n_migrated?: number;
+  /** Distinct tokens whose creation axes matched this rule's fingerprint — the
+   *  candidate pool `realized.n_fired` positions are drawn from (entered one or
+   *  more times, or matched-but-never-entered `NoEntry`). Counted **once per
+   *  token**, unlike `realized.n_fired`/`n_closed`/`n_open`, which count
+   *  positions — a re-entry rule (`RuleParams.reentry`) can enter the same token
+   *  more than once, so `n_fired` can exceed `n_matched`. On the Simulate
+   *  table's per-rule hydrate this is the run's full unfiltered count
+   *  (`SimMeta::n_matched`); on the drill-in summary card it's scoped to the
+   *  table's current search/filters, like the other counts there. Absent on
+   *  legacy payloads computed before this field existed (re-run the simulation
+   *  to backfill). */
+  n_matched?: number;
   /** Which fill model priced this run's round-trips — rendered as the Simulate
    *  table's Fill column. Absent/null on legacy payloads → falls back to the
    *  default (worst-case) label. */

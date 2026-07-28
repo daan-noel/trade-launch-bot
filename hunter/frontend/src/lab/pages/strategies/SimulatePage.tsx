@@ -17,6 +17,7 @@ import {
   TrashIcon,
 } from 'components/ui/icons';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
+import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { InlineAlert } from 'components/ui/Modal';
 import { PageHeader } from 'components/ui/PageHeader';
@@ -131,6 +132,15 @@ const SIM_NUMERIC_COLS = tokenNumericColKeys(simColumns);
 const SIM_AMOUNT_COLS = tokenAmountColKeys(simColumns);
 const simRowOverlay = markerRowOverlay(inspectFromSim);
 
+/** `datetime-local` (browser-local, no timezone) -> UTC ISO, same convention as
+ *  the grouped-sweep "Created range" control — `since`/`until` bound the same
+ *  token creation-time window server-side (`collect_matching_tokens`). */
+function localInputToIso(local: string): string | undefined {
+  if (!local) return undefined;
+  const d = new Date(local.endsWith('Z') ? local : `${local}Z`);
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+}
+
 /** Hook-based `chartsGroupByMint` overlay for the sim positions table. The table
  *  is server-paged (20 rows/page by default) and NOT sorted by mint, so a rule's
  *  re-entry episodes of one mint essentially never co-occur on the same page —
@@ -216,14 +226,24 @@ export function SimulatePage() {
   // together. Default stays `pumpfun_default` (the historically hardcoded value)
   // so a user who never touches this control sees unchanged numbers.
   const [costModel, setCostModel] = useState<CostModelId>('pumpfun_default');
+  // Optional creation-time window bounding which tokens the run scans
+  // (`EngineSimRequest.since/until`, same semantics as the grouped sweep's
+  // "Created range") — blank on both ends means all history, unchanged from
+  // before this control existed.
+  const [since, setSince] = useState('');
+  const [until, setUntil] = useState('');
   // Read through a ref in the run handlers: `runRule` is captured inside the
   // memoized `columns` (deps: runs/fpById/fpTints), so a plain closure over
-  // `fillModel`/`costModel` would go stale until one of those changes. The refs
-  // are always current.
+  // `fillModel`/`costModel`/`since`/`until` would go stale until one of those
+  // changes. The refs are always current.
   const fillModelRef = useRef(fillModel);
   fillModelRef.current = fillModel;
   const costModelRef = useRef(costModel);
   costModelRef.current = costModel;
+  const sinceRef = useRef(since);
+  sinceRef.current = since;
+  const untilRef = useRef(until);
+  untilRef.current = until;
   const [selectedRuleId, setSelectedRuleId] = useSelectionSearchParam(STRATEGY_PARAMS.rule);
   const [inspect, setInspect] = useState<{
     key: string;
@@ -388,6 +408,8 @@ export function SimulatePage() {
     try {
       await start({
         rule_id: rule.id,
+        since: localInputToIso(sinceRef.current),
+        until: localInputToIso(untilRef.current),
         fill_model: fillModelRef.current,
         cost_model: costModelRef.current,
       }).unwrap();
@@ -413,6 +435,8 @@ export function SimulatePage() {
           try {
             await start({
               rule_id: rule.id,
+              since: localInputToIso(sinceRef.current),
+              until: localInputToIso(untilRef.current),
               fill_model: fillModelRef.current,
               cost_model: costModelRef.current,
             }).unwrap();
@@ -478,6 +502,27 @@ export function SimulatePage() {
         className="mb-0"
         actions={
           <>
+          <label
+            className="flex items-center gap-1.5 text-xs text-text-dim"
+            title="Only tokens created in this UTC window are scanned. Leave either end empty for all history."
+          >
+            <span>Created</span>
+            <Input
+              type="datetime-local"
+              fieldSize="sm"
+              className="w-44"
+              value={since}
+              onChange={(e) => setSince(e.target.value)}
+            />
+            <span className="text-text-dim/50">–</span>
+            <Input
+              type="datetime-local"
+              fieldSize="sm"
+              className="w-44"
+              value={until}
+              onChange={(e) => setUntil(e.target.value)}
+            />
+          </label>
           <label className="flex items-center gap-1.5 text-xs text-text-dim">
             <span>Fill</span>
             <Select
@@ -1229,15 +1274,32 @@ function buildColumns(
     // Mirrors the grouped-sweep combo table's stat columns (same metrics, same
     // formatters) so a rule reads identically in both places — including the
     // open cohort, which this table used to omit entirely (parity plan F1).
+    simMetric(
+      'sim_matched',
+      'Matched',
+      (s) => s.n_matched ?? 0,
+      (s) => (
+        <span className="tabular-nums text-text-dim">
+          {s.n_matched != null ? s.n_matched : DASH}
+        </span>
+      ),
+      {
+        tooltip:
+          "Distinct tokens whose creation axes matched this rule's fingerprint in the window — the candidate pool Entered is drawn from (includes tokens the rule never entered). Counted once per token even under a re-entry rule.",
+      },
+    ),
     simMetric('sim_entered', 'Entered', (s) => s.realized.n_fired, (s) => (
       <span className="tabular-nums text-text">{s.realized.n_fired}</span>
-    ), { tooltip: 'Tokens that took a position' }),
+    ), {
+      tooltip:
+        'Positions taken (entries) — a re-entry rule can enter the same token more than once, so this can exceed Matched',
+    }),
     simMetric('sim_closed', 'Closed', (s) => s.realized.n_closed, (s) => (
       <span className="tabular-nums text-text">{s.realized.n_closed}</span>
-    ), { tooltip: 'Tokens that closed a position' }),
+    ), { tooltip: 'Positions that closed (one per entry, not per token)' }),
     simMetric('sim_open', 'Open', (s) => s.realized.n_open, (s) => (
       <span className="tabular-nums text-text">{s.realized.n_open}</span>
-    ), { tooltip: 'Positions still open at the end of the run (unrealized)' }),
+    ), { tooltip: 'Positions still open at the end of the run (unrealized) — one per entry, not per token' }),
     simMetric(
       'sim_win_rate',
       'Win %',

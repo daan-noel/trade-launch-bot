@@ -12,6 +12,7 @@ import { STORAGE_KEYS } from 'lib/storage';
 import { CreationHeatmap } from 'components/creation-stats/CreationHeatmap';
 import { GroupedCreationSection } from '@lab/components/creation-stats/GroupedCreationSection';
 import {
+  METRIC_KIND,
   METRIC_OPTIONS,
   RANGE_OPTIONS,
   SEGMENT_OPTIONS,
@@ -123,7 +124,7 @@ export function CreationStatsPage() {
       </div>
 
       {/* Summary stats */}
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
         <StatCard
           label="Tokens created"
           value={heat.data ? formatWithCommas(heat.data.total) : '—'}
@@ -143,6 +144,10 @@ export function CreationStatsPage() {
             heat.data ? `${Math.round(heat.data.maturity_secs / 3600)}h` : '24h'
           }
         />
+        <StatCard
+          label="Trades"
+          value={heat.data ? formatWithCommas(heat.data.trades) : '—'}
+        />
       </div>
 
       {heat.isError && (
@@ -158,9 +163,11 @@ export function CreationStatsPage() {
             Weekly seasonality — day × hour
           </h3>
           <span className="text-[10px] text-text-dim">
-            {metric === 'count'
-              ? 'shade = share of total created'
-              : 'shade = rate, scaled across cells · label = actual %'}
+            {METRIC_KIND[metric] === 'magnitude'
+              ? 'shade = share of max'
+              : METRIC_KIND[metric] === 'rate'
+                ? 'shade = rate, scaled across cells · label = actual %'
+                : 'shade = avg per token (log-scaled), scaled across cells'}
           </span>
         </div>
         {heat.isLoading ? (
@@ -200,7 +207,7 @@ export function CreationStatsPage() {
           <Suspense
             fallback={<LoadingState variant="inline" label="Loading chart…" />}
           >
-            <CreationTrendChart points={trend.data.points} />
+            <CreationTrendChart points={trend.data.points} metric={metric} />
           </Suspense>
         ) : (
           <p className="text-text-dim">No tokens created in this window.</p>

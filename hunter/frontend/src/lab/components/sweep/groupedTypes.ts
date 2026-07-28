@@ -63,6 +63,8 @@ export const BUCKETED_GROUP_FIELDS: ReadonlySet<GroupField> = new Set<GroupField
 export interface GroupedSweepRunRecord {
   id: string;
   strategy_id: string;
+  /** Always `"db"` today (vestigial single-source tag) — carries no signal, not
+   *  worth surfacing in the UI. Kept typed only so the wire shape is complete. */
   source: string;
   method: string;
   created_after: string | null;
@@ -76,6 +78,9 @@ export interface GroupedSweepRunRecord {
   token_count: number;
   group_count: number;
   combo_count: number;
+  /** Hash of the corpus slice this run scanned — two runs with the same hash swept
+   *  the exact same tape (same selection + filters + lake export). `null` on a
+   *  trade-less / legacy corpus. Was already sent by the backend but unread here. */
   corpus_hash: string | null;
   /** Block time of the newest trade in the corpus this run scanned — how fresh its
    *  data was. `null` on legacy runs / a trade-less corpus. The sweep reads the

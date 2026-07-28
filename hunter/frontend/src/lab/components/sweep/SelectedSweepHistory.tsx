@@ -16,7 +16,8 @@ import {
   type GroupField,
   type GroupedSweepRunRecord,
 } from './groupedTypes';
-import { tidySolDecimal } from 'utils/format';
+import type { AxisSpecWire } from './genericAxes';
+import { formatDecimalTrim, tidySolDecimal } from 'utils/format';
 
 /** A read-only summary of the currently-selected sweep run's full launch config
  *  — what corpus/filters/grid it was swept over — so a saved run is legible at a
@@ -67,6 +68,34 @@ function fieldFilterLines(filters: Record<string, (number | boolean)[]>): string
     });
 }
 
+/** One `AxisSpecWire.values` entry as text — `null` is the metric-axis `off`
+ *  sentinel (that combo omits the condition entirely). */
+function fmtAxisValues(values: (number | null)[]): string {
+  return values.map((v) => (v == null ? 'off' : formatDecimalTrim(v, 4))).join(', ');
+}
+
+/** Render the persisted `axes_spec.axes` (the actual TP/SL values + metric
+ *  conditions this run swept over) as short readable lines — so what a saved run
+ *  swept is legible right here, without pushing it into the live editor via
+ *  "Use these settings" (which would also discard any unsaved draft there). */
+function axisSpecLines(axesSpec: unknown): string[] {
+  const axes = (axesSpec as { axes?: AxisSpecWire[] } | null | undefined)?.axes;
+  if (!Array.isArray(axes) || axes.length === 0) return [];
+  return axes.map((a) => {
+    if (a.kind === 'take_profit') return `TP: ${fmtAxisValues(a.values)} %`;
+    if (a.kind === 'stop_loss') return `SL: ${fmtAxisValues(a.values)} %`;
+    const window = a.window != null ? ` (${a.window}s)` : '';
+    return `${a.side ?? 'entry'} · ${a.group ?? '?'}.${a.metric ?? '?'}${window} ${a.operator ?? ''} ${fmtAxisValues(a.values)}`;
+  });
+}
+
+/** `volume_ix_patterns` (`string[][]`) as one line per pattern — the corpus-wide
+ *  ix-name sequences a flow-axis run classified volume by. */
+function volumeIxPatternLines(patterns: string[][] | null): string[] {
+  if (!patterns || patterns.length === 0) return [];
+  return patterns.map((p) => p.join(' → '));
+}
+
 export interface SelectedSweepHistoryProps {
   strategyId: string;
   run: GroupedSweepRunRecord;
@@ -108,6 +137,8 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
         }`
       : 'any';
   const fieldLines = run.field_filters ? fieldFilterLines(run.field_filters) : [];
+  const axisLines = axisSpecLines(run.axes_spec);
+  const flowLines = volumeIxPatternLines(run.volume_ix_patterns);
   // Name the scope fingerprint when it still exists; a deleted one keeps the run
   // honest by falling back to its id (the run row deliberately has no FK).
   const scopeFp = run.fingerprint_id
@@ -278,6 +309,14 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
           ) : (
             <span className="text-text-dim/60">unknown (run predates this stamp)</span>
           )}
+          {run.corpus_hash && (
+            <span
+              className="ml-1.5 text-[10px] text-text-dim/50"
+              title={`Hash of the exact corpus slice this run scanned (${run.corpus_hash}). Two runs sharing this hash swept the same tape.`}
+            >
+              corpus {run.corpus_hash.slice(0, 8)}
+            </span>
+          )}
         </Row>
         {run.fingerprint_id && (
           <Row label="Corpus scope">
@@ -297,6 +336,27 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
             <span className="flex flex-col">
               {fieldLines.map((l) => (
                 <span key={l}>{l}</span>
+              ))}
+            </span>
+          </Row>
+        )}
+        {/* The actual TP/SL + metric-condition grid this run swept over — read-only
+            here so it's legible without "Use these settings", which pushes it into
+            the live editor and discards any unsaved draft sitting there. */}
+        {axisLines.length > 0 && (
+          <Row label="Sweep axes">
+            <span className="flex flex-col">
+              {axisLines.map((l, i) => (
+                <span key={i}>{l}</span>
+              ))}
+            </span>
+          </Row>
+        )}
+        {flowLines.length > 0 && (
+          <Row label="Flow patterns">
+            <span className="flex flex-col">
+              {flowLines.map((l, i) => (
+                <span key={i}>{l}</span>
               ))}
             </span>
           </Row>

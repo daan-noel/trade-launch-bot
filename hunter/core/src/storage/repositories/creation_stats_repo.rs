@@ -35,6 +35,35 @@ pub struct StatsFilter<'a> {
     pub cashback: Option<bool>,
 }
 
+/// The outcome-maturity censoring predicate, shared **verbatim** by the outcome
+/// columns (`matured`/`known`/`migrated`/`dead`) and the trade-metric columns
+/// (`trades`/`trades_per_day`/`trades_avg`) in both [`CreationStatsRepo::heatmap`]
+/// and [`CreationStatsRepo::trend`] — a fresh token shouldn't read as inactive
+/// any more than it should read as dead (trade-counts plan §2). Defined once so
+/// a future edit to the censoring rule can't drift between the two column
+/// families; bound `$2` is `f.maturity_secs`.
+const MATURED_PRED: &str = "t.created_at < now() - make_interval(secs => $2)";
+
+/// The four trade-metric SELECT columns (`trades`/`volume_sol`/`trades_per_day`/
+/// `trades_avg`), byte-identical between [`CreationStatsRepo::heatmap`] and
+/// [`CreationStatsRepo::trend`] (trade-counts plan §3) — factored into one
+/// function so the two call sites can't drift, and so it's unit-testable
+/// without a DB. Every `FILTER` reuses [`MATURED_PRED`] verbatim.
+fn trade_metrics_sql() -> String {
+    format!(
+        r#"COALESCE(SUM(ti.trade_count) FILTER (WHERE {m}), 0)::bigint AS trades,
+                COALESCE(SUM(ti.volume_sol) FILTER (WHERE {m}), 0)::float8 AS volume_sol,
+                COALESCE(
+                    SUM(ti.trade_count / GREATEST(EXTRACT(EPOCH FROM (now() - t.created_at)) / 86400.0, 1))
+                        FILTER (WHERE {m}),
+                    0
+                )::float8 AS trades_per_day,
+                SUM(ti.trade_count) FILTER (WHERE {m})::float8
+                    / NULLIF(COUNT(*) FILTER (WHERE {m} AND ti.mint_address IS NOT NULL), 0) AS trades_avg"#,
+        m = MATURED_PRED,
+    )
+}
+
 /// One day-of-week × hour-of-day cell, folded over the whole window.
 /// `dow`: 0 = Sunday … 6 = Saturday (Postgres `EXTRACT(DOW)`). `hour`: 0..23.
 #[derive(sqlx::FromRow, Debug, Clone)]
@@ -49,6 +78,20 @@ pub struct HeatCellRow {
     pub known: i64,
     pub migrated: i64,
     pub dead: i64,
+    /// Lifetime-to-last-sync trade count, summed over matured+known tokens
+    /// (`tokens_info.trade_count`). See the trade-counts plan §2 for the age-bias
+    /// caveat — prefer `trades_per_day` when comparing cohorts of different ages.
+    pub trades: i64,
+    /// Lifetime-to-last-sync SOL volume, same censoring as `trades`.
+    pub volume_sol: f64,
+    /// Age-normalized `SUM(trade_count / age_days)` — composes across buckets
+    /// (a plain `SUM`), unlike `trades_avg`. The metric that answers "is this
+    /// cohort still actively traded, adjusted for how long it's had to trade".
+    pub trades_per_day: f64,
+    /// Mean trades per token (`SUM/COUNT`, not a median — see plan §1/§2).
+    /// `NULL` when the cell has no matured+known token (`NULLIF` on the
+    /// denominator), so the UI renders "no data" instead of a misleading 0.
+    pub trades_avg: Option<f64>,
 }
 
 /// One calendar bucket in absolute time. `bucket` is the **local** wall-clock
@@ -62,6 +105,14 @@ pub struct TrendPointRow {
     pub known: i64,
     pub migrated: i64,
     pub dead: i64,
+    /// See [`HeatCellRow::trades`].
+    pub trades: i64,
+    /// See [`HeatCellRow::volume_sol`].
+    pub volume_sol: f64,
+    /// See [`HeatCellRow::trades_per_day`].
+    pub trades_per_day: f64,
+    /// See [`HeatCellRow::trades_avg`].
+    pub trades_avg: Option<f64>,
 }
 
 /// TZ-aware time-bucket SQL expression for a (whitelisted) bucket tag. `ts_expr`
@@ -92,21 +143,22 @@ impl CreationStatsRepo {
         Self { pool }
     }
 
-    /// 7×24 seasonality fold (counts + censored outcome columns per cell).
+    /// 7×24 seasonality fold (counts + censored outcome + trade columns per cell).
     pub async fn heatmap(&self, f: StatsFilter<'_>) -> anyhow::Result<Vec<HeatCellRow>> {
-        let rows = sqlx::query_as::<_, HeatCellRow>(
+        let sql = format!(
             r#"
             SELECT
                 EXTRACT(DOW  FROM (t.created_at AT TIME ZONE $1))::int AS dow,
                 EXTRACT(HOUR FROM (t.created_at AT TIME ZONE $1))::int AS hour,
                 COUNT(*)::bigint AS total,
-                COUNT(*) FILTER (WHERE t.created_at < now() - make_interval(secs => $2))::bigint AS matured,
-                COUNT(*) FILTER (WHERE t.created_at < now() - make_interval(secs => $2)
+                COUNT(*) FILTER (WHERE {m})::bigint AS matured,
+                COUNT(*) FILTER (WHERE {m}
                                    AND ti.mint_address IS NOT NULL)::bigint AS known,
-                COUNT(*) FILTER (WHERE t.created_at < now() - make_interval(secs => $2)
+                COUNT(*) FILTER (WHERE {m}
                                    AND ti.is_migrated)::bigint AS migrated,
-                COUNT(*) FILTER (WHERE t.created_at < now() - make_interval(secs => $2)
-                                   AND ti.is_dead)::bigint AS dead
+                COUNT(*) FILTER (WHERE {m}
+                                   AND ti.is_dead)::bigint AS dead,
+                {trade_metrics}
             FROM tokens t
             LEFT JOIN tokens_info ti ON ti.mint_address = t.mint_address
             WHERE t.created_at >= $3 AND t.created_at < $4
@@ -114,15 +166,18 @@ impl CreationStatsRepo {
               AND ($6::bool IS NULL OR t.is_cashback_enabled = $6)
             GROUP BY 1, 2
             "#,
-        )
-        .bind(f.tz)
-        .bind(f.maturity_secs)
-        .bind(f.from)
-        .bind(f.to)
-        .bind(f.mayhem)
-        .bind(f.cashback)
-        .fetch_all(&self.pool)
-        .await?;
+            m = MATURED_PRED,
+            trade_metrics = trade_metrics_sql(),
+        );
+        let rows = sqlx::query_as::<_, HeatCellRow>(&sql)
+            .bind(f.tz)
+            .bind(f.maturity_secs)
+            .bind(f.from)
+            .bind(f.to)
+            .bind(f.mayhem)
+            .bind(f.cashback)
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(rows)
     }
@@ -143,13 +198,14 @@ impl CreationStatsRepo {
             SELECT
                 {bkt} AS bucket,
                 COUNT(*)::bigint AS total,
-                COUNT(*) FILTER (WHERE t.created_at < now() - make_interval(secs => $2))::bigint AS matured,
-                COUNT(*) FILTER (WHERE t.created_at < now() - make_interval(secs => $2)
+                COUNT(*) FILTER (WHERE {m})::bigint AS matured,
+                COUNT(*) FILTER (WHERE {m}
                                    AND ti.mint_address IS NOT NULL)::bigint AS known,
-                COUNT(*) FILTER (WHERE t.created_at < now() - make_interval(secs => $2)
+                COUNT(*) FILTER (WHERE {m}
                                    AND ti.is_migrated)::bigint AS migrated,
-                COUNT(*) FILTER (WHERE t.created_at < now() - make_interval(secs => $2)
-                                   AND ti.is_dead)::bigint AS dead
+                COUNT(*) FILTER (WHERE {m}
+                                   AND ti.is_dead)::bigint AS dead,
+                {trade_metrics}
             FROM tokens t
             LEFT JOIN tokens_info ti ON ti.mint_address = t.mint_address
             WHERE t.created_at >= $3 AND t.created_at < $4
@@ -158,6 +214,8 @@ impl CreationStatsRepo {
             GROUP BY 1
             ORDER BY 1
             "#,
+            m = MATURED_PRED,
+            trade_metrics = trade_metrics_sql(),
         );
         let rows = sqlx::query_as::<_, TrendPointRow>(&sql)
             .bind(f.tz)
@@ -185,6 +243,12 @@ pub struct GroupedGroupRow {
     pub g: i64,
     pub group_key: serde_json::Value,
     pub total: i64,
+    /// Lifetime-to-last-sync trade count summed over the group (count-only —
+    /// no maturity censoring, matching `total`'s own volume-view contract).
+    pub trades: i64,
+    /// `trades::float8 / total::float8` — the per-token figure `rank_by=
+    /// trades_per_token` ranks on; `total` is never 0 for a returned group.
+    pub trades_avg: f64,
 }
 
 /// One day-of-week × hour-of-day cell for group `g` (count only).
@@ -426,15 +490,38 @@ pub struct GroupedCreation {
     pub points: Vec<GroupedTrendPointRow>,
 }
 
+/// SQL `ORDER BY` fragment for the grouped-ranking tag — whitelisted by the
+/// handler's `normalize_rank_by`, never user free-text (same discipline as
+/// [`bucket_expr`]). `trade_count` is `base`'s own column (`ti.trade_count`,
+/// carried through the LEFT JOIN already in `base`'s SELECT), so ranking by
+/// trades costs nothing beyond the existing per-group fold — no new join/scan.
+/// `trades_per_token` is the one that actually fixes the grouped section's
+/// motivating example (a big group of mediocre launches out-ranking a small
+/// elite one) — raw `trades` still scales with group size exactly like
+/// `COUNT(*)` does (trade-counts plan §5).
+fn rank_by_order_sql(rank_by: &str) -> &'static str {
+    match rank_by {
+        "trades" => "COALESCE(SUM(trade_count), 0) DESC, gkey::text",
+        "trades_per_token" => {
+            "(COALESCE(SUM(trade_count), 0)::float8 / COUNT(*)::float8) DESC, gkey::text"
+        }
+        // Defensive: normalize_rank_by guarantees a known tag; fall back to count
+        // (the "default does not change" rule — trade-counts plan §5/§7).
+        _ => "COUNT(*) DESC, gkey::text",
+    }
+}
+
 impl CreationStatsRepo {
     /// Partition tokens by a compound fingerprint key (`fields`, in order), keep
-    /// the top-`top` groups by volume over the window, and return each group's
-    /// day×hour fold (`cells`) and calendar trend (`points`). Count only (no
-    /// outcome columns), but LEFT JOINs `tokens_info` so trade-derived group fields
-    /// (`first_slot_buy_sol`/`first_slot_sell_sol`) can key off it — the join is
-    /// one-to-one on `mint_address`, so it doesn't change group cardinality. Shares
-    /// the same TZ-aware bucketing + segment filter as
-    /// [`heatmap`]/[`trend`]; the window is caller-clamped so the scan is bounded.
+    /// the top-`top` groups by volume (or by `rank_by`) over the window, and
+    /// return each group's day×hour fold (`cells`) and calendar trend (`points`).
+    /// LEFT JOINs `tokens_info` for both the trade-derived group fields
+    /// (`first_slot_buy_sol`/`first_slot_sell_sol`) and the per-group `trades`/
+    /// `trades_avg` totals — the join is one-to-one on `mint_address`, so it
+    /// doesn't change group cardinality. Count-only outcome-wise (no
+    /// migrated/dead columns); shares the same TZ-aware bucketing + segment
+    /// filter as [`heatmap`]/[`trend`]; the window is caller-clamped so the scan
+    /// is bounded.
     // Each arg is an independent query dimension the handler already carries;
     // bundling them into a struct would only add indirection for one call site.
     #[allow(clippy::too_many_arguments)]
@@ -449,6 +536,9 @@ impl CreationStatsRepo {
         // grouped sweep uses, so the dashboard's group labels match a sweep at this
         // width ("swept = run"). Discrete fields ignore it.
         bucket_width: f64,
+        // Ranking criterion: "count" (default) | "trades" | "trades_per_token" —
+        // whitelisted by the handler's `normalize_rank_by`, never free text.
+        rank_by: &str,
         f: StatsFilter<'_>,
     ) -> anyhow::Result<GroupedCreation> {
         // Build the group-key JSON object expression from the selected fields.
@@ -496,13 +586,15 @@ impl CreationStatsRepo {
         // Bucket expression is interpolated (whitelisted tag), so the old `$2`
         // bucket slot is gone and the fixed binds shift up by one.
         let bkt = bucket_expr("(t.created_at AT TIME ZONE $1)", bucket_unit);
+        let order = rank_by_order_sql(rank_by);
         let cte = format!(
             r#"
             WITH base AS (
                 SELECT {gkey} AS gkey,
                        EXTRACT(DOW  FROM (t.created_at AT TIME ZONE $1))::int AS dow,
                        EXTRACT(HOUR FROM (t.created_at AT TIME ZONE $1))::int AS hour,
-                       {bkt} AS bkt
+                       {bkt} AS bkt,
+                       ti.trade_count AS trade_count
                 FROM tokens t
                 LEFT JOIN tokens_info ti ON ti.mint_address = t.mint_address
                 WHERE t.created_at >= $2 AND t.created_at < $3
@@ -511,10 +603,11 @@ impl CreationStatsRepo {
             ),
             ranked AS (
                 SELECT gkey, COUNT(*) AS total,
-                       (row_number() OVER (ORDER BY COUNT(*) DESC, gkey::text) - 1) AS g
+                       COALESCE(SUM(trade_count), 0)::bigint AS trades,
+                       (row_number() OVER (ORDER BY {order}) - 1) AS g
                 FROM base
                 GROUP BY gkey
-                ORDER BY total DESC, gkey::text
+                ORDER BY {order}
                 LIMIT $6
             )
             "#,
@@ -525,7 +618,8 @@ impl CreationStatsRepo {
         // outlive each statement. Bind the fixed params (renumbered) then the
         // per-field filter arrays; applied identically to all three sub-queries.
         let groups_sql = format!(
-            "{cte} SELECT g::bigint AS g, gkey AS group_key, total::bigint AS total \
+            "{cte} SELECT g::bigint AS g, gkey AS group_key, total::bigint AS total, \
+             trades::bigint AS trades, (trades::float8 / total::float8) AS trades_avg \
              FROM ranked ORDER BY g"
         );
         let cells_sql = format!(
@@ -602,7 +696,8 @@ impl CreationStatsRepo {
             WITH base AS (
                 SELECT EXTRACT(DOW  FROM (t.created_at AT TIME ZONE $1))::int AS dow,
                        EXTRACT(HOUR FROM (t.created_at AT TIME ZONE $1))::int AS hour,
-                       {bkt} AS bkt
+                       {bkt} AS bkt,
+                       ti.trade_count AS trade_count
                 FROM tokens t
                 LEFT JOIN tokens_info ti ON ti.mint_address = t.mint_address
                 WHERE t.created_at >= $2 AND t.created_at < $3
@@ -615,8 +710,14 @@ impl CreationStatsRepo {
         // [`group_key_from_fingerprint`] so the card shows the fingerprint axes
         // (incl. `ix_labels`) as-is. Ungrouped `HAVING` collapses to zero rows
         // when the corpus is empty (rather than one row reading `total = 0`).
-        let groups_sql =
-            format!("{cte} SELECT 0::bigint AS g, '{{}}'::jsonb AS group_key, COUNT(*)::bigint AS total FROM base HAVING COUNT(*) > 0");
+        // `trades`/`trades_avg` mirror `grouped()`'s ranked-group output — there's
+        // only ever one group here, so no ranking, just the same two columns.
+        let groups_sql = format!(
+            "{cte} SELECT 0::bigint AS g, '{{}}'::jsonb AS group_key, COUNT(*)::bigint AS total, \
+             COALESCE(SUM(trade_count), 0)::bigint AS trades, \
+             (COALESCE(SUM(trade_count), 0)::float8 / COUNT(*)::float8) AS trades_avg \
+             FROM base HAVING COUNT(*) > 0"
+        );
         let cells_sql = format!(
             "{cte} SELECT 0::bigint AS g, dow, hour, COUNT(*)::bigint AS count FROM base GROUP BY dow, hour"
         );
@@ -1180,5 +1281,52 @@ mod grouped_tokens_tests {
         let sql = build_grouped_tokens_order(&[("cu_limit".to_string(), true)]);
         assert!(sql.contains("t.cu_limit DESC NULLS LAST"));
         assert!(sql.ends_with("t.mint_address ASC"));
+    }
+
+    // -- trade-counts plan §7 guards -----------------------------------------
+
+    /// Every trade-metric column reuses [`MATURED_PRED`] verbatim — one filter
+    /// each for `trades`/`volume_sol`/`trades_per_day`, two for `trades_avg`
+    /// (numerator + `NULLIF` denominator) — so a future edit can't drift the
+    /// censoring between the outcome columns and the trade metrics
+    /// (trade-counts plan §2/§7). `heatmap()`/`trend()` both build their SQL
+    /// from this exact fragment (see `trade_metrics_sql`), so this one guard
+    /// covers both.
+    #[test]
+    fn trade_metrics_sql_reuses_the_matured_predicate() {
+        let sql = trade_metrics_sql();
+        assert_eq!(
+            sql.matches(MATURED_PRED).count(),
+            5,
+            "trades(1) + volume_sol(1) + trades_per_day(1) + trades_avg(2 — numerator & NULLIF) = 5: {sql}"
+        );
+        assert!(sql.contains("AS trades,"));
+        assert!(sql.contains("AS volume_sol,"));
+        assert!(sql.contains("AS trades_per_day,"));
+        assert!(sql.contains("AS trades_avg"));
+    }
+
+    /// `trades_avg` divides by `NULLIF(..., 0)`, never a bare `COUNT(*)` — a
+    /// future edit can't reintroduce a division-by-zero on an empty cell.
+    #[test]
+    fn trades_avg_divides_by_nullif_zero() {
+        assert!(
+            trade_metrics_sql().contains("NULLIF("),
+            "trades_avg must guard its denominator"
+        );
+    }
+
+    /// `rank_by=trades` / `rank_by=trades_per_token` emit the expected `ORDER BY`
+    /// fragment; an absent/unknown tag falls back to the existing `COUNT(*) DESC`
+    /// (the "default ranking does not change" rule).
+    #[test]
+    fn rank_by_order_sql_whitelists_and_defaults_to_count() {
+        assert_eq!(rank_by_order_sql("count"), "COUNT(*) DESC, gkey::text");
+        assert_eq!(rank_by_order_sql("bogus"), "COUNT(*) DESC, gkey::text");
+        assert_eq!(rank_by_order_sql("trades"), "COALESCE(SUM(trade_count), 0) DESC, gkey::text");
+        assert_eq!(
+            rank_by_order_sql("trades_per_token"),
+            "(COALESCE(SUM(trade_count), 0)::float8 / COUNT(*)::float8) DESC, gkey::text",
+        );
     }
 }

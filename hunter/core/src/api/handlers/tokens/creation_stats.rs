@@ -57,6 +57,13 @@ pub struct HeatCell {
     pub known: i64,
     pub migrated: i64,
     pub dead: i64,
+    /// Lifetime-to-last-sync trade count (see the trade-counts plan's age-bias
+    /// caveat — prefer `trades_per_day` across cohorts of different ages).
+    pub trades: i64,
+    /// Age-normalized `SUM(trade_count / age_days)` — composes across buckets.
+    pub trades_per_day: f64,
+    /// Mean trades per token (`SUM/COUNT`); `null` when no matured+known token.
+    pub trades_avg: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -69,6 +76,12 @@ pub struct TrendPoint {
     pub known: i64,
     pub migrated: i64,
     pub dead: i64,
+    /// See [`HeatCell::trades`].
+    pub trades: i64,
+    /// See [`HeatCell::trades_per_day`].
+    pub trades_per_day: f64,
+    /// See [`HeatCell::trades_avg`].
+    pub trades_avg: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -86,6 +99,11 @@ pub struct CreationStatsResponse {
     pub total: i64,
     pub matured: i64,
     pub known: i64,
+    /// Σ `trades` across the window — a plain sum, so (unlike `trades_avg`, which
+    /// is dropped here — see the trade-counts plan §3) it composes across buckets.
+    pub trades: i64,
+    /// Σ `trades_per_day` across the window.
+    pub trades_per_day: f64,
     /// Populated when `view=heatmap`, else empty.
     pub cells: Vec<HeatCell>,
     /// Populated when `view=trend`, else empty.
@@ -122,6 +140,17 @@ fn normalize_bucket(bucket: Option<&str>) -> &'static str {
         Some("12h") => "12h",
         Some("week") => "week",
         _ => "day",
+    }
+}
+
+/// Validate the grouped-ranking tag against the values we allow (defends the
+/// interpolated `ORDER BY` fragment — see `rank_by_order_sql`). Defaults to
+/// `count` — the "default ranking does not change" rule (trade-counts plan §6).
+fn normalize_rank_by(rank_by: Option<&str>) -> &'static str {
+    match rank_by {
+        Some("trades") => "trades",
+        Some("trades_per_token") => "trades_per_token",
+        _ => "count",
     }
 }
 
@@ -175,6 +204,9 @@ fn to_cell(r: HeatCellRow) -> HeatCell {
         known: r.known,
         migrated: r.migrated,
         dead: r.dead,
+        trades: r.trades,
+        trades_per_day: r.trades_per_day,
+        trades_avg: r.trades_avg,
     }
 }
 
@@ -186,6 +218,9 @@ fn to_point(r: TrendPointRow) -> TrendPoint {
         known: r.known,
         migrated: r.migrated,
         dead: r.dead,
+        trades: r.trades,
+        trades_per_day: r.trades_per_day,
+        trades_avg: r.trades_avg,
     }
 }
 
@@ -235,6 +270,8 @@ pub async fn get_creation_stats(
         total: 0,
         matured: 0,
         known: 0,
+        trades: 0,
+        trades_per_day: 0.0,
         cells: Vec::new(),
         points: Vec::new(),
     };
@@ -246,6 +283,8 @@ pub async fn get_creation_stats(
                     resp.total += r.total;
                     resp.matured += r.matured;
                     resp.known += r.known;
+                    resp.trades += r.trades;
+                    resp.trades_per_day += r.trades_per_day;
                 }
                 resp.points = rows.into_iter().map(to_point).collect();
             }
@@ -258,6 +297,8 @@ pub async fn get_creation_stats(
                     resp.total += r.total;
                     resp.matured += r.matured;
                     resp.known += r.known;
+                    resp.trades += r.trades;
+                    resp.trades_per_day += r.trades_per_day;
                 }
                 resp.cells = rows.into_iter().map(to_cell).collect();
             }
@@ -299,6 +340,11 @@ pub struct GroupedCreationQuery {
     /// Independent of `group_by`. Omitted/empty ⇒ no filter. `ix_labels` is handled
     /// by `ix_labels_filter` below (set-equality, not value-in).
     pub field_filters: Option<String>,
+    /// Group ranking criterion: `count` (default, unchanged) | `trades` | `trades_per_token`.
+    /// Whitelisted — see `normalize_rank_by`. `trades_per_token` is the one that
+    /// actually surfaces a small elite group over a big group of mediocre
+    /// launches (raw `trades` still scales with group size like `count` does).
+    pub rank_by: Option<String>,
     /// Exact instruction-label set filter as a JSON array (`["A","B"]`): keep only
     /// tokens whose `ix_labels` set equals these labels (order-independent).
     /// Omitted/empty ⇒ no filter.
@@ -321,6 +367,10 @@ pub struct GroupedGroup {
     /// `{"cu_limit":"200000","ix_labels":"A | B"}` — same shape as the sweep's group key.
     pub group_key: serde_json::Value,
     pub total: i64,
+    /// Lifetime-to-last-sync trade count summed over the group.
+    pub trades: i64,
+    /// `trades as f64 / total as f64` — the per-token figure `rank_by=trades_per_token` ranks on.
+    pub trades_avg: f64,
 }
 
 #[derive(Serialize)]
@@ -353,6 +403,10 @@ pub struct GroupedCreationResponse {
     pub field_filters: serde_json::Value,
     /// The applied exact instruction-label set filter, or `null` when none.
     pub ix_labels_filter: Option<Vec<String>>,
+    /// The applied (whitelisted) ranking criterion: `count` | `trades` | `trades_per_token`.
+    /// Inert (but still echoed) under a saved-fingerprint scope — there's only
+    /// ever one group there, so nothing to rank.
+    pub rank_by: String,
     /// Σ counts across the returned (top-N) groups.
     pub total: i64,
     pub groups: Vec<GroupedGroup>,
@@ -478,11 +532,20 @@ pub async fn get_grouped_creation_stats(
             bucket_width: fp.bucket_size_amount,
             field_filters: serde_json::json!({}),
             ix_labels_filter: configured_labels(fp.ix_labels.as_deref()).map(<[String]>::to_vec),
+            // Accepted-but-inert: one group here, so nothing to rank — mirrors how
+            // this path already ignores group_by/top/field_filters.
+            rank_by: normalize_rank_by(query.rank_by.as_deref()).to_string(),
             total,
             groups: data
                 .groups
                 .into_iter()
-                .map(|r| GroupedGroup { g: r.g, group_key: r.group_key, total: r.total })
+                .map(|r| GroupedGroup {
+                    g: r.g,
+                    group_key: r.group_key,
+                    total: r.total,
+                    trades: r.trades,
+                    trades_avg: r.trades_avg,
+                })
                 .collect(),
             cells: data
                 .cells
@@ -538,8 +601,19 @@ pub async fn get_grouped_creation_stats(
         cashback,
     };
 
+    let rank_by = normalize_rank_by(query.rank_by.as_deref());
+
     let data = match repo
-        .grouped(&fields, bucket, top, &field_filters, ix_labels_filter.as_deref(), bucket_width, filter)
+        .grouped(
+            &fields,
+            bucket,
+            top,
+            &field_filters,
+            ix_labels_filter.as_deref(),
+            bucket_width,
+            rank_by,
+            filter,
+        )
         .await
     {
         Ok(d) => d,
@@ -572,6 +646,7 @@ pub async fn get_grouped_creation_stats(
         bucket_width,
         field_filters: field_filters_json,
         ix_labels_filter,
+        rank_by: rank_by.to_string(),
         total,
         groups: data
             .groups
@@ -580,6 +655,8 @@ pub async fn get_grouped_creation_stats(
                 g: r.g,
                 group_key: r.group_key,
                 total: r.total,
+                trades: r.trades,
+                trades_avg: r.trades_avg,
             })
             .collect(),
         cells: data
@@ -965,6 +1042,14 @@ mod tests {
             Some(vec!["A".to_string(), "B".to_string()]),
         );
         assert!(parse_ix_labels_filter(Some("not json")).is_err());
+    }
+
+    #[test]
+    fn rank_by_defaults_and_whitelists() {
+        assert_eq!(normalize_rank_by(None), "count");
+        assert_eq!(normalize_rank_by(Some("bogus")), "count");
+        assert_eq!(normalize_rank_by(Some("trades")), "trades");
+        assert_eq!(normalize_rank_by(Some("trades_per_token")), "trades_per_token");
     }
 
     #[test]

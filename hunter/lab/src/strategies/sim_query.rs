@@ -138,6 +138,24 @@ pub fn summarize(rows: &[Value]) -> RunSummary {
     run_summary(outcomes.iter())
 }
 
+/// Distinct-token count over a sim's rows — the true "matched candidate pool"
+/// size, **not** `rows.len()`.
+///
+/// Rows are one per **position**, not per token: a re-entry rule
+/// (`RuleParams.reentry`) can re-arm and take several entries on the same mint,
+/// so [`super::replay::run_replay`] emits one [`super::replay::PositionOutcome`]
+/// (→ one row) per episode. `run_engine_backtest` then pads in exactly one
+/// `NoEntry` row per never-entered candidate. So every distinct `mint_address`
+/// among the rows is exactly one matched token — fired once, fired N times (N
+/// rows, same mint), or never fired (one `NoEntry` row) — and counting rows
+/// directly would overcount any mint with more than one episode.
+pub fn count_matched(rows: &[Value]) -> usize {
+    rows.iter()
+        .filter_map(|r| r.get("mint_address").and_then(Value::as_str))
+        .collect::<std::collections::HashSet<_>>()
+        .len()
+}
+
 // ── Temporal summary (hold bins + wall-clock heatmap) ─────────────────────────
 //
 // Wire shape mirrors `frontend/.../temporalSummary.ts` (`TemporalSummaryData`).
@@ -770,6 +788,25 @@ mod tests {
         assert_eq!(m.n_fired, 1);
         assert_eq!(m.n_closed, 1);
         assert!((m.total_pnl_sol - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn count_matched_dedupes_reentry_rows_but_not_n_fired() {
+        // A re-entry rule (`RuleParams.reentry`) can fire several episodes on the
+        // same mint — `run_replay` emits one row per episode. `n_fired` (a
+        // position count) rightly counts every entry; `count_matched` (a token
+        // count) must not — same mint, several rows, one matched token.
+        let rows = vec![
+            sim_row(1.0, 50.0, "TakeProfit", Some(10)),
+            sim_row(-1.0, -50.0, "StopLoss", Some(20)),
+            json!({
+                "mint_address": "other", "symbol": "S2",
+                "fired": false, "exit_reason": "NoEntry",
+                "pnl_sol": null, "pnl_percent": null, "holding_secs": null,
+            }),
+        ];
+        assert_eq!(summarize(&rows).realized.n_fired, 2, "two episodes, both counted");
+        assert_eq!(count_matched(&rows), 2, "two distinct mints, re-entry not double-counted");
     }
 
     #[test]

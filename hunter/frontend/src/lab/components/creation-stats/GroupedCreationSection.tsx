@@ -59,6 +59,7 @@ import {
   GROUP_FIELDS,
   GROUP_FIELD_LABELS,
   TOP_OPTIONS,
+  RANK_BY_OPTIONS,
   MISSING_VALUE,
   groupColor,
   groupValueParts,
@@ -68,6 +69,7 @@ import {
   type GroupedCreationGroup,
   type GroupedCreationTokensArgs,
   type GroupField,
+  type GroupRankBy,
 } from './groupedCreationStats';
 
 interface GroupedCreationSectionProps {
@@ -92,10 +94,23 @@ const SCALAR_FILTER_FIELDS: GroupField[] = [
   'first_slot_sell_sol',
 ];
 
-/** A `GroupedCreationCell` lacks the outcome fields `CreationHeatmap` reads; the
- *  count view never touches them, so zero-fill is safe (count = volume). */
+/** A `GroupedCreationCell` lacks the outcome/trade fields `CreationHeatmap`
+ *  reads; the count view never touches them, so zero-fill is safe (count =
+ *  volume). Per-cell trades are deferred (trade-counts plan §5) — the
+ *  small-multiple heatmaps here always show `metric="count"`. */
 function toHeatCell(c: GroupedCreationCell): CreationHeatCell {
-  return { dow: c.dow, hour: c.hour, count: c.count, matured: 0, known: 0, migrated: 0, dead: 0 };
+  return {
+    dow: c.dow,
+    hour: c.hour,
+    count: c.count,
+    matured: 0,
+    known: 0,
+    migrated: 0,
+    dead: 0,
+    trades: 0,
+    trades_avg: null,
+    trades_per_day: 0,
+  };
 }
 
 /** What the shared drill-down section is currently showing: one group card
@@ -146,6 +161,10 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
     [rawGroupBy],
   );
   const [top, setTop] = useLocalStorage<number>(STORAGE_KEYS.groupedTop, 8);
+  // Ranking criterion for the top-N — "trades per token" is the one that
+  // actually surfaces a small elite group over a big group of mediocre
+  // launches (raw "trades" still scales with group size like "count" does).
+  const [rankBy, setRankBy] = useLocalStorage<GroupRankBy>(STORAGE_KEYS.groupedRankBy, 'count');
   // Bucket width (SOL) for the continuous SOL group fields — the same knob the
   // grouped sweep uses, so this dashboard groups a corpus identically to a sweep.
   const [bucketWidth, setBucketWidth] = useLocalStorage<number>(STORAGE_KEYS.groupedBucketWidth, 0.1);
@@ -240,6 +259,8 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
       ...(!groupBy.includes('ix_labels') && ixFilter.labels
         ? { ixLabelsFilter: ixFilter.labels }
         : {}),
+      // Send only a non-default rank so the `count` case keeps a stable cache key.
+      ...(rankBy !== 'count' ? { rankBy } : {}),
     };
   }, [
     effBucket,
@@ -252,6 +273,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
     fieldFiltersText,
     cashbackFilter,
     ixFilter.labels,
+    rankBy,
     seedFingerprintId,
   ]);
 
@@ -437,6 +459,20 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
               </option>
             ))}
           </Select>
+          {/* Ranking criterion for the top-N. Inert (but still shown) under a
+              saved-fingerprint scope — there's only ever one group there. */}
+          <Select
+            value={rankBy}
+            onChange={(e) => setRankBy(e.target.value as GroupRankBy)}
+            title="Rank groups by"
+            className="max-w-[9rem]"
+          >
+            {RANK_BY_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                Rank by: {o.label}
+              </option>
+            ))}
+          </Select>
           <Button
             size="sm"
             variant={dirty ? 'primary' : 'subtle'}
@@ -527,7 +563,9 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
                     style={{ background: groupColor(g.g) }}
                   />
                   <GroupKeyInline group={g} />
-                  <span className="text-text-dim/70">· {formatWithCommas(g.total)}</span>
+                  <span className="text-text-dim/70">
+                    · {formatWithCommas(g.total)} tokens · {formatWithCommas(g.trades)} trades
+                  </span>
                 </button>
               );
             })}
@@ -573,7 +611,8 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
                     </div>
                     <div className="flex shrink-0 flex-col items-end gap-1.5">
                       <span className="text-[11px] text-text-dim">
-                        {formatWithCommas(g.total)} tokens
+                        {formatWithCommas(g.total)} tokens · {formatWithCommas(g.trades)} trades (
+                        {g.trades_avg.toFixed(1)}/token)
                       </span>
                       <div className="flex items-center gap-1.5">
                         {/* Already saved → link to it; else offer one-click save.

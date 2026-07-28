@@ -11,10 +11,21 @@ import {
 import { CHART_COLORS } from 'components/token-price-chart/constants';
 import { createChartTimeFormatters } from 'components/token-price-chart/chartTimezone';
 import { formatWithCommas } from 'utils/format';
-import type { CreationTrendPoint } from './creationStats';
+import {
+  METRIC_KIND,
+  METRIC_RGB,
+  metricValue,
+  type CreationMetric,
+  type CreationTrendPoint,
+} from './creationStats';
 
 interface CreationTrendChartProps {
   points: CreationTrendPoint[];
+  /** Drives the plotted field + bar color for the two `magnitude` metrics
+   *  (`count`/`trades`/`trades_per_day`); `rate`/`ratio` metrics keep plotting
+   *  `count` (a stretched rate/ratio is meaningless as a histogram). Defaults
+   *  to `count` (today's behavior) when omitted. */
+  metric?: CreationMetric;
   height?: number;
 }
 
@@ -29,13 +40,17 @@ function bucketToTime(bucket: string): UTCTimestamp {
 }
 
 /**
- * Panel A — absolute-calendar creation-count histogram (lightweight-charts).
- * Always plots the raw count (volume view); outcome bias lives in the heatmap.
- * Memoized; the chart instance is created once and only the series data is
- * swapped when `points` change, so it never churns on unrelated ticks.
+ * Panel A — absolute-calendar creation histogram (lightweight-charts). Plots
+ * `count` by default; when `metric` is a `magnitude` metric (`trades` /
+ * `trades_per_day`) it plots that instead (and re-colors to match) — `rate`/
+ * `ratio` metrics (migrate %, dead %, trades/token) always fall back to
+ * `count` (a stretched rate has no meaningful histogram bar height). Memoized;
+ * the chart instance is created once and only the series color/data are
+ * swapped when `points`/`metric` change, so it never churns on unrelated ticks.
  */
 export const CreationTrendChart = memo(function CreationTrendChart({
   points,
+  metric = 'count',
   height = 220,
 }: CreationTrendChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -44,6 +59,13 @@ export const CreationTrendChart = memo(function CreationTrendChart({
 
   // UTC formatters: the buckets are pre-shifted, so format them as-is.
   const formatters = useMemo(() => createChartTimeFormatters('UTC'), []);
+
+  // `rate`/`ratio` metrics (migrate %, dead %, trades/token) fall back to
+  // plotting `count` — a contrast-stretched rate has no meaningful histogram
+  // bar height. Only the two other `magnitude` metrics (trades, trades_per_day)
+  // actually swap the plotted field.
+  const plottedMetric: CreationMetric = METRIC_KIND[metric] === 'magnitude' ? metric : 'count';
+  const seriesColor = useMemo(() => `rgba(${METRIC_RGB[plottedMetric]},0.7)`, [plottedMetric]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -103,11 +125,15 @@ export const CreationTrendChart = memo(function CreationTrendChart({
   useEffect(() => {
     const series = seriesRef.current;
     if (!series) return;
+    series.applyOptions({ color: seriesColor });
     series.setData(
-      points.map((p) => ({ time: bucketToTime(p.bucket), value: p.count })),
+      points.map((p) => ({
+        time: bucketToTime(p.bucket),
+        value: metricValue(p, plottedMetric) ?? 0,
+      })),
     );
     chartRef.current?.timeScale().fitContent();
-  }, [points]);
+  }, [points, plottedMetric, seriesColor]);
 
   return <div ref={containerRef} className="w-full" style={{ height }} />;
 });

@@ -271,6 +271,7 @@ export const labApi = baseApi.injectEndpoints({
         bucketWidth,
         fieldFilters,
         ixLabelsFilter,
+        rankBy,
         fingerprintId,
       }) => {
         const p = new URLSearchParams();
@@ -279,8 +280,9 @@ export const labApi = baseApi.injectEndpoints({
         p.set('segment', segment);
         if (from) p.set('from', from);
         // Scoped by a saved fingerprint ⇒ the backend ignores group_by/top/
-        // field_filters/ix_labels_filter/bucket_width entirely (same contract
-        // as the sweep's/flow discovery's fingerprint_id) — don't send them.
+        // field_filters/ix_labels_filter/bucket_width/rank_by entirely (same
+        // contract as the sweep's/flow discovery's fingerprint_id) — don't
+        // send them.
         if (fingerprintId) {
           p.set('fingerprint_id', fingerprintId);
           return `/api/tokens/creation-stats/grouped?${p.toString()}`;
@@ -297,6 +299,9 @@ export const labApi = baseApi.injectEndpoints({
         if (ixLabelsFilter && ixLabelsFilter.length > 0) {
           p.set('ix_labels_filter', JSON.stringify(ixLabelsFilter));
         }
+        // Only attach a non-default rank so the cache key stays stable for the
+        // common `count` case; omitted ⇒ backend default.
+        if (rankBy && rankBy !== 'count') p.set('rank_by', rankBy);
         return `/api/tokens/creation-stats/grouped?${p.toString()}`;
       },
       keepUnusedDataFor: 120,
