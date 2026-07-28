@@ -52,6 +52,7 @@ use crate::metrics::evaluator::{
     check_expr_satisfiable, condition_expr_to_value, normalize_condition_expr,
     parse_condition_expr, ConditionExpr,
 };
+use crate::metrics::position::is_trailing;
 use crate::metrics::{
     group_by_name, group_spec, metric_spec, MetricGroupId, MetricId, MetricScope, REGISTRY,
 };
@@ -470,9 +471,15 @@ fn validate_group(
         }
     }
     for (name, v) in &group.strict {
-        if !v.is_finite() || *v <= 0.0 {
+        // `allows_zero` params take `>= 0` — `0` is a real value of their domain
+        // (`arm_above_pct: 0` = arm the trailing stop at break-even), distinct from
+        // the param being absent, which is what means "off".
+        let allows_zero = spec.strict_param_by_name(name).is_some_and(|p| p.allows_zero);
+        let ok = v.is_finite() && (*v > 0.0 || (allows_zero && *v == 0.0));
+        if !ok {
+            let bound = if allows_zero { ">= 0" } else { "> 0" };
             return Err(format!(
-                "{side_name}.{}.{name} must be a finite number > 0",
+                "{side_name}.{}.{name} must be a finite number {bound}",
                 spec.name
             ));
         }
@@ -481,6 +488,17 @@ fn validate_group(
     if group.metrics.is_empty() {
         return Err(format!(
             "{side_name}.{}: group has no metric conditions",
+            spec.name
+        ));
+    }
+    // `arm_above_pct` gates only the trailing metrics; authored without one it is a
+    // silent no-op. Same principle as an unknown metric name: fail the save.
+    if group.strict.contains_key("arm_above_pct")
+        && !group.metrics.keys().copied().any(is_trailing)
+    {
+        return Err(format!(
+            "{side_name}.{}: arm_above_pct gates the trailing metrics (retrace / bounce) \
+             — authored without one it does nothing",
             spec.name
         ));
     }
@@ -664,6 +682,59 @@ mod tests {
         }))
         .unwrap_err();
         assert!(e.contains("exit side only"), "{e}");
+    }
+
+    #[test]
+    fn arm_above_pct_parses_round_trips_and_rejects_no_ops() {
+        // The armed trailing stop: retrace 3% off the since-entry peak, but only
+        // once the position has cleared 2% (the pump.fun round-trip fee).
+        let p = RuleParams::parse(&json!({
+            "exit": { "m_position": {
+                "retrace": [{ "operator": ">=", "value": 3 }],
+                "arm_above_pct": 2
+            } }
+        }))
+        .expect("armed trailing stop is valid");
+        let g = &p.exit.as_ref().unwrap().0[&MetricGroupId::Position][0];
+        assert_eq!(g.strict_param("arm_above_pct"), Some(2.0));
+        assert_eq!(RuleParams::parse(&p.to_value()).unwrap(), p);
+
+        // `0` is a real value here (arm at break-even), so it must survive the
+        // strict-param validator that rejects `<= 0` everywhere else.
+        assert!(RuleParams::parse(&json!({
+            "exit": { "m_position": {
+                "retrace": [{ "operator": ">=", "value": 3 }], "arm_above_pct": 0
+            } }
+        }))
+        .is_ok());
+        // ...while `window_size_sec: 0` still is not.
+        let e = RuleParams::parse(&json!({
+            "entry": { "m_flow_window": {
+                "window_size_sec": 0, "gross_flow": [{ "operator": ">=", "value": 1 }]
+            } }
+        }))
+        .unwrap_err();
+        assert!(e.contains("must be a finite number > 0"), "{e}");
+
+        // Authored without a trailing metric it silently does nothing — reject it,
+        // the same way an unknown metric name is rejected rather than ignored.
+        let e = RuleParams::parse(&json!({
+            "exit": { "m_position": {
+                "pnl": [{ "operator": "<=", "value": -10 }], "arm_above_pct": 2
+            } }
+        }))
+        .unwrap_err();
+        assert!(e.contains("retrace / bounce"), "{e}");
+
+        // And it stays absent from the serialized shape when unset, so every stored
+        // rule round-trips byte-identically (no migration).
+        let plain = RuleParams::parse(&json!({
+            "exit": { "m_position": { "retrace": [{ "operator": ">=", "value": 3 }] } }
+        }))
+        .unwrap();
+        assert!(plain.to_value()["exit"]["m_position"]
+            .get("arm_above_pct")
+            .is_none());
     }
 
     #[test]

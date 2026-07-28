@@ -564,6 +564,122 @@ lookahead-tainted universe. The Phase-3 harness is right in principle - arm ever
 and let the metric gates filter - but its gates admit ~12x too many mints. Any validation
 must run over the full lake with a gate whose precision is measured against this table.
 
+## Re-derivation on a fresh 5-day window (2026-07-27) - logic CONFIRMED, knobs drifted
+
+The local DB was rebuilt: the old 07-20..07-22 window is gone; the new window is
+**2026-07-22 18:47 -> 07-27 16:08 UTC (~4.9 days, 6.48M trades, 67,806 mints)**. omego
+re-analyzed from scratch on it: **3,160 buys / 3,113 sells / 446 mints / 2,974 closed
+episodes** (3x the old sample; scripts re-run from the prior session's scratchpad +
+a new `omego_episodes.sql`). Everything structural replicates; a few knobs moved.
+
+**Headline (before fees/tips):** 59.1% win, **+108.4 SOL gross on 2,498 SOL cycled**,
+every day positive (07-24 +17.1, 07-25 +39.6, 07-26 +24.5, 07-27 +28.6). Median win
++8.5%, median loss -6.7%, p10 -14.3%. Est. costs (~1%/side fee ~51 SOL + tips ~6 SOL)
+put the true net around **+10..13 SOL/day** - same as the old estimate.
+
+**Confirmed unchanged (new-window numbers):**
+- 1 buy -> 1 full sell episodes: buys/sells per episode med AND p90 = 1 (max 4);
+  2,974 of 3,050 episodes fully closed.
+- Dip entry into sell pressure: entry dip vs 30s high med **-12.6%** (old -12.5);
+  others' net flow before entry negative (net_1s/2s/5s med -0.09/-0.25/-0.39,
+  p25 -2.7/-3.2/-4.5) and flips **+0.45 med in the 5s after**; reaction med **0.11s**
+  after the previous market trade.
+- Trail exit, no TP/SL: winners exit med **-2.97% off the episode peak** (p25 -6.1 /
+  p75 -2.4); losers -13.2% off peak, 68.8% of loss exits at the episode low; exits in
+  dense flow (med 0.10s since last market trade); winner and loser holds identical.
+- Near-ATH adoption: FIRST buy med **-15.2% off lifetime ATH** (p75 -7.8; old -15.1),
+  all-entries med -32.4% - re-entries ride the token down, unchanged.
+- Token pick = hottest alive: chosen mint med **rank 4** by 60s trades (45% top-3,
+  77% top-10 of an avg 49-mint alive pool); wallets60 med 54 vs 3 for skipped;
+  60s range 57.8% vs 2.7%. Selectivity 446/67,806 = **0.66%**.
+- Sizing is *literally* constant-impact: first-buy pct-of-vsol **p25 = med = p75 =
+  1.18%** (0.46 SOL @ vsol~36 -> 1.25 @ ~107; med 0.82 SOL).
+- Universe: vsol at entry p10-p90 48-100 (med 70); age med 15.8 min (first-entry med
+  6.3 min, p10 0.9 min); prior trades med 1,178; prior wallets med 389.
+- His mints vs skipped (peak vsol>=45): 1,326 vs 161 legs, 422 vs 64 wallets, 636 vs
+  96 SOL vol, life 53.8 vs 4.9 min, px multiple 9.2x vs 3.5x, 36% vs 15% reach
+  vsol>=110. First buy lands med 15% into the token's life.
+- Abandonment is cooling, not death (trades/60s 37 -> 15 at his last leg; the token
+  trades another 15.3 min).
+
+**Changed vs the 07-21/22 window:**
+- **Holds are longer:** med 22.5s (was 17.3), p75 98s, p90 249s. PnL by hold bucket:
+  >1min holds contribute over half the money (+56 of +108 SOL); sub-5s scalps are
+  878 eps for only +19 SOL. The trail is wider than first estimated: **~3% off peak**
+  (was read as 1-1.5%).
+- **Re-entry slower but deeper:** gap med 34.6s (was 24), p75 172s; episodes/mint med
+  5, **max 38**; concurrency med 3 / p90 4-5 / max 7-8; adopts 3.85 new mints/hour.
+- **NEW - re-entries do not decay, they improve:** episode #1 on a mint is his WORST
+  (53.4% win, +0.52% med) vs 2-3 (59.8%, +2.01), 4-8 (59.3%, +2.02), 9+ (61.2%,
+  +2.76). The first buy is a cheap probe; the money is in riding the confirmed runner
+  via re-entries. `max_episodes_per_token` should not be small - his edge concentrates
+  in episodes 4+.
+- **NEW - within the gated pool, entry moments look unpicked:** at gate-passing
+  moments (vsol 45-110, gross60>=10, dip30<=-12) his entered vs skipped moments are
+  nearly identical (trades60 110 vs 100, wallets60 72 vs 62, gross60 51.3 vs 51.0,
+  rank 3 vs 4, dip -18.9 vs -19.2). Beyond hot-list + dip there is no finer hidden
+  trigger visible - which qualifying dip he takes looks capacity-limited (he holds
+  only ~3-4 positions). Replication needs the gates + concurrency, not a magic signal.
+- Fingerprint mix drifted: the top-5 ix_labels sequences now cover only ~71% of his
+  entries ("other" is the largest single group at 902 entries / 127 mints) -
+  reinforces the do-NOT-scope-by-fingerprint conclusion. IX1 is still the thin-token
+  outlier (gross60 med 13.5 vs 33-56 for the rest; trail30 med 6.7 vs 14-16).
+- Engine-metric calibration drift (feeds the seed-rule knobs, see
+  [flow-scalper-fingerprint-rules.md](flow-scalper-fingerprint-rules.md)):
+  trail30 p25/med/p75 = 3.5/**12.6**/22.7 (was 6.1/14.6/24.5); gross60 p25 = **11.2**
+  (was 14.5); liquidity p25/p90 = 56.7/100.4; time p10 = 144s; net2 med -0.2 (an
+  `nf>=0` floor still excludes ~half his entries - it remains a backtest-derived
+  gate, not a mimic of his behavior).
+- Moment-level gate grid (60s snapshots, 270K moments): best lift is
+  `liq 55-115 + gross60>=40` -> 5.5% precision / 24.5% entry-moment recall (lift 6.4);
+  adding rise/trail gates LOWERS precision. Mint-level, `vsol>=55 & w60>=25 &
+  gross60>=10` -> 381/446 = 85% recall at 9.7% precision (was 92%/13.9%). The
+  unique-wallets gate stays the top engine gap.
+
+### Gate-payoff measurement (2026-07-28) - what a new metric would actually buy
+
+Before writing any engine metric, the candidate gates were measured directly in SQL on
+the new window: a 60s grid (270,027 mint-moments, 2,298 of them omego-entry moments =
+0.851% base rate), then a shared base of `vsol 45-110 & trail60 >= 12` (15,305 moments,
+670 omego, **4.38% precision**), then each candidate gate swept over that base.
+Script: `gate_payoff.sql` (session scratchpad).
+
+| gate | best precision (at recall) | verdict |
+| --- | --- | --- |
+| `gross_flow(60)` - what ships today | 4.24-4.46% at 25-88% recall | **dead** - precision is FLAT while recall collapses |
+| `unique_wallets(60)` - proposed | 4.51 -> 5.02 -> 5.07% at 94 -> 63 -> 47% recall | **worth building** - monotone lift, strictly dominates gross |
+| `trade_count(60)` - proposed | 4.56 -> 4.82% | **redundant** - corr 0.936 with unique_wallets |
+| `range(60)` - proposed | 4.27 -> 3.91 -> 3.11% as the floor rises | **DO NOT BUILD - it anti-selects** |
+
+Head-to-head at matched recall the crowd gate wins on *both* axes: `w60>=30` gives 71.9%
+recall at 4.86% precision where `gross60>=40` gives only 46.3% at 4.24%. Combining gates
+does not help (`w60>=30 & gross60>=20` = 4.82%, *worse* than `w60>=30` alone; adding
+range makes it 4.71%) - `gross_flow` is pure recall cost once wallets are counted.
+
+**The `range` reversal corrects an earlier claim in this doc.** The "his tokens run
+56-60% vs 2.6%" comparison (see "Missing engine metrics", item 2) was measured against
+*all* alive mints, most of which are dead. Conditioned on the base gate - already in the
+liquidity band, already dipping 12% - a **wide 60s range predicts the WRONG tokens**:
+precision falls 4.38 -> 3.11% as the floor rises 0 -> 90%. A token that already swung 90%
+in a minute is a blow-off he avoids. Item 2's "cheap and high-value" recommendation is
+**withdrawn**; `range` is cheap but negative-value here.
+
+**The ceiling this exposes.** The best single gate available tops out near **5.0%
+precision at ~63% recall** - a 1.15x lift on the 4.38% base, not the 5-6x hoped for.
+Combined with the earlier finding that entered vs skipped moments inside the gated pool
+are statistically identical, the conclusion is that **his token pick is not reproducible
+from window features at high precision.** No metric in reach separates his 0.66% from the
+qualifying pool. Replication therefore means trading a *superset* of his universe with
+his mechanics (dip entry, ~3% trail, aggressive re-entry, hard concurrency cap) and
+letting the concurrency cap do the rationing - not out-filtering him.
+
+**Consequent priority change.** The largest untested lever is not a metric at all: every
+backtest so far was **one-shot (no re-entry)**, and today's episode data shows episode 1
+is his *worst* (53.4% win / +0.52% median) while episodes 4+ carry the money (+2.0 to
++2.8% median). A one-shot backtest samples only the weakest part of the strategy. Re-entry
+already ships in the engine, so re-running the backtest with re-entry ON and the
+recalibrated knobs requires **zero engine changes** and should precede any new metric.
+
 ## Data caveats / next data steps
 - Window = one ~26h weekday slice; one wallet fully analyzed. Fees/tips estimated,
   not measured (amount_lamports is curve-side; pump.fun ~1%/side fee + ~0.001 tip/tx

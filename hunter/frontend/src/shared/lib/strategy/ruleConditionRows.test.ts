@@ -29,7 +29,7 @@ const REG: StrategyRegistry = {
       name: 'm_position',
       kind: 'static',
       scope: 'position',
-      strict_params: [],
+      strict_params: [{ name: 'arm_above_pct', required: false, allows_zero: true }],
       metrics: [{ name: 'retrace', unit: 'percent', eq_tolerance: 0.1, monotonic: false, hue: 15 }],
     },
   ],
@@ -153,5 +153,48 @@ describe('duplicateConditionRowError', () => {
       row({ group: 'm_price_window', metric: 'trail', window: '30', arms: [[{ operator: '>', value: 5 }]] }),
     ];
     expect(duplicateConditionRowError(rows)).toBeNull();
+  });
+});
+
+describe('non-window strict params', () => {
+  it('round-trips a strict param the editor has no control for', () => {
+    // `m_position.arm_above_pct` is authored by API/SQL today. Opening such a rule
+    // in the row editor and saving it again must NOT drop the param — the row model
+    // carries the whole strict bag, so new registry params survive by default.
+    const side = {
+      m_position: [
+        {
+          strict: { arm_above_pct: 2 },
+          metrics: { retrace: [[{ operator: '>=' as const, value: 3 }]] },
+        },
+      ],
+    };
+    const rows = sideToRows(side, 'exit');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].strict).toEqual({ arm_above_pct: 2 });
+    expect(rowsToSide(rows, 'exit')).toEqual(side);
+  });
+
+  it('keeps arm_above_pct: 0 distinct from the param being absent', () => {
+    const zero = sideToRows(
+      { m_position: [{ strict: { arm_above_pct: 0 }, metrics: { retrace: [[{ operator: '>=' as const, value: 3 }]] } }] },
+      'exit',
+    );
+    expect(rowsToSide(zero, 'exit').m_position[0].strict).toEqual({ arm_above_pct: 0 });
+
+    const absent = sideToRows(
+      { m_position: [{ strict: {}, metrics: { retrace: [[{ operator: '>=' as const, value: 3 }]] } }] },
+      'exit',
+    );
+    expect(rowsToSide(absent, 'exit').m_position[0].strict).toEqual({});
+  });
+
+  it('does not leak the window into the strict bag', () => {
+    const rows = sideToRows(
+      { m_price_window: [{ strict: { window_size_sec: 30 }, metrics: { trail: [[{ operator: '>=' as const, value: 12 }]] } }] },
+      'entry',
+    );
+    expect(rows[0].strict).toEqual({});
+    expect(rowsToSide(rows, 'entry').m_price_window[0].strict).toEqual({ window_size_sec: 30 });
   });
 });

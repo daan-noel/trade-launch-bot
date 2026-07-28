@@ -118,8 +118,15 @@ function validateSide(
       }
     }
     for (const [name, v] of Object.entries(group.strict)) {
-      if (v != null && (!Number.isFinite(v) || v <= 0)) {
-        errors.push(`${side}.${groupName}.${name} must be a finite number > 0`);
+      // Mirrors the Rust validator: `allows_zero` params take `>= 0` because 0 is a
+      // real value of their domain (`arm_above_pct: 0` = arm the trailing stop at
+      // break-even), not the param being unset.
+      const allowsZero = spec.strict_params.find((sp) => sp.name === name)?.allows_zero === true;
+      const ok = v == null || (Number.isFinite(v) && (v > 0 || (allowsZero && v === 0)));
+      if (!ok) {
+        errors.push(
+          `${side}.${groupName}.${name} must be a finite number ${allowsZero ? '>= 0' : '> 0'}`,
+        );
       }
     }
     for (const [metric, arms] of Object.entries(group.metrics)) {

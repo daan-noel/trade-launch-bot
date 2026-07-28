@@ -58,6 +58,30 @@ that group**; everything else is identical across the six rules.
 IX1's tokens are genuinely thinner (liq med 62 vs 72, gross60 med 16 vs ~39) - that is
 the only per-group difference the data supports, and it is why IX1 gets a looser gate.
 
+### Recalibration on the fresh 5-day window (2026-07-27) - knobs to update
+
+The DB was rebuilt (07-22 18:47 -> 07-27 16:08, 3,160 entries / 446 mints - 3x the
+sample; see the re-derivation section in
+[flow-reversion-scalper.md](flow-reversion-scalper.md)). The strategy's shape is
+unchanged, but several seed-rule values are now measurably stale:
+
+| knob | seeded | new p-value | update to |
+| --- | --- | --- | --- |
+| `m_price_window(30).trail >= 14` | 14 | med now **12.6** (p25 3.5) | **12** - at 14 the gate now cuts >50% of his entries |
+| `gross_flow(60) >= 14` | 14 | p25 now **11.2** | **11** |
+| `liquidity` band 55-105 | 55-105 | p25 56.7 / p90 100.4 | 55-100 (minor) |
+| `time >= 150` | 150 | p10 = 144s | keep |
+| `reentry` 5s / 12 eps | 12 | gap p25 6s / med 34.6s; eps/mint max **38** | cooldown keep; consider raising max_episodes - his PnL *improves* with episode index (ep 9+: 61.2% win vs ep 1: 53.4%) |
+| `max_concurrent_tokens: 4` | 4 | concurrency med 3 / p90 4-5 / max 7-8 | keep 4 (5 tolerable) |
+| `buy_amount_lamports` 1.0 SOL | fixed | his sizing is exactly **1.18% of vsol** at every depth | keep fixed 1.0 until Phase-5 pct-of-vsol sizing exists |
+
+Fingerprint drift warning: the six IX groups' hot-token counts shifted and the top-5
+sequences now cover only ~71% of his entries (the largest single group is "other").
+The per-group liq/gross floors above were calibrated on the dead 42h window; if the
+six-rule experiment has not started yet, re-derive the per-group p25/p90 from the new
+window before flipping `is_active` (IX1 is still the one thin outlier: gross60 med
+13.5 vs 33-56, trail30 med 6.7 vs 14-16 for the rest).
+
 ## The shared metric core
 
 ```json
@@ -91,12 +115,46 @@ Why each line, with its evidence:
 | `m_price_window(30).trail >= 14` | 14% | his entry dip vs 30 s high: p25 6.1 / **med 14.6** / p75 24.5 |
 | `gross_flow(60) >= 14` | 14 SOL | his gross60 p25 = 14.5. The old blueprint's `>= 10` was measured **non-binding** |
 | `net_flow(2) >= 0` | 0 | the single best lever in the Phase-3 probe (+0.61 / +0.51 SOL honest fee-only) |
-| `m_position.retrace >= 5` | 5% | winners' trail retrace med 4.7%; r5 was the robust winner under `first` and `signal` fills |
+| `m_position.retrace >= 5` | 5% | winners' trail retrace med 4.7%; r5 was the robust winner under `first` and `signal` fills. **SUPERSEDED 07-28 — see the exit-shape correction below** |
 | `m_price_lifetime.stall >= 15` | 15 s | measured to cut **losers**, not winners (dropping it: win% 44 -> 32) |
-| `stop_loss: 25` | -25% | desugars to `m_position.pnl <= -25`; his loss p10 is -25% |
+| `stop_loss: 25` | -25% | desugars to `m_position.pnl <= -25`; his loss p10 is -25%. **SUPERSEDED — with an unarmed trail this is dead code** |
 | `reentry` 5 s / 12 | | his re-entry gap p25 4 s / med 24 s; median 5 episodes/mint, max 31 |
 | `max_concurrent_tokens: 4` | | his p90 concurrency is 4 (max 6) |
 | `buy_amount_lamports` 1.0 SOL | | his entries are 0.43-1.34 SOL, med 0.87. Pct-of-vsol sizing is Phase 5, not built - use a fixed size and keep the liquidity band narrow so impact stays roughly constant |
+
+### Exit-shape correction (2026-07-28) - the trail must be ARMED
+
+The exit above is **wrong in a way the JSON does not show**. `m_position`'s peak
+seeds at the entry fill, so before the price rises `retrace` measures the drop *from
+entry*: an authored `retrace >= 5` is a 5% trailing stop after a run-up but a hard
+**-5% stop** before one. For a rule whose entry trigger is "price just fell 14%",
+that stops out on the continuation. A 1-day simulate of this core showed exactly
+that: **median hold 1.0 second**, median -2.2%, 28% win.
+
+Measured on omego's own 2,974 episodes (`docs/plans/strategies/armed-trailing-stop.md`):
+65.4% of his **winners** dip more than 3% off their running peak before winning, and
+replaying an unarmed trail over his episodes turns **21% of his winners into losers**,
+cutting the net edge from +2.75% to +0.84% per episode. **No trail width from 2 to 20
+fixes it** - the shape is wrong, not the number.
+
+The fix shipped 07-28 as the `m_position.arm_above_pct` strict param. Updated exit:
+
+```json
+"exit": {
+  "m_position":       { "retrace": [{"operator": ">=", "value": 4}], "arm_above_pct": 2 },
+  "m_price_lifetime": { "stall":   [{"operator": ">=", "value": 15}] }
+},
+"stop_loss": 12
+```
+
+| clause | why |
+| --- | --- |
+| `arm_above_pct: 2` | the trail only arms once the position clears the ~2 pp pump.fun round-trip fee, so it can never book a guaranteed loss. `0` (arm at break-even) is also legal and scores nearly as well |
+| `retrace >= 4` | best net in the counterfactual once armed; 3 and 5 are within noise |
+| `stop_loss: 12` | now it actually does something. Under an **unarmed** trail the stop is dead code (trail 3 gives identical results at stop 8 and stop 25). His winners' worst mark is only -0.81% median / -3.31% p25, so -12% clears nearly all of them while -25% never triggers |
+
+Author it via the API/SQL or the JSON view - the row-based rule editor has no control
+for `arm_above_pct` yet (it does round-trip it safely on re-save).
 
 ## Variants to A/B (run these on the broad control only)
 

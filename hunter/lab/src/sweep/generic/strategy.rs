@@ -36,7 +36,9 @@ use hunter_engine::metrics::grid::{estimate_sparse_rows as grid_estimate_rows, f
 /// trade-only fold silently mis-samples every time-decaying metric). Re-exported
 /// here because the axes model and the discovery screen build one.
 pub use hunter_engine::metrics::grid::SparseGrid;
-use hunter_engine::metrics::position::{position_value, PositionCtx};
+use hunter_engine::metrics::position::{
+    is_trailing, position_value, trailing_armed, PositionCtx,
+};
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
 use hunter_engine::metrics::{MetricId, TradeLite, Ts};
 use hunter_engine::TICK_MS;
@@ -693,6 +695,7 @@ fn col_idx_mono(columns: &[SeriesColumn], k: &hunter_engine::arm::MonoMetricKill
         conds: vec![],
         position_scoped: false,
         origin: hunter_engine::arm::ReqOrigin::Authored,
+        arm_above_pct: None,
     };
     col_idx_in(columns, &req)
 }
@@ -819,6 +822,13 @@ fn classify_exit_req(req: &MetricReq) -> ExitClass {
         // the scalar walk knows when they flip.
         return ExitClass::General;
     }
+    // An ARMED trailing req is not a prefix query: it fires at the first row where
+    // `retrace >= t` **and** `pnl >= gate`, a conjunction of two different running
+    // quantities that the extrema hulls do not index. Send it to the scalar walk
+    // rather than weaken the hull — a correct scalar walk beats a clever wrong index.
+    if req.arm_above_pct.is_some() && is_trailing(req.metric) {
+        return ExitClass::General;
+    }
     match req.metric {
         // A linear scan evaluates any condition shape correctly, so `retrace`
         // classifies unconditionally.
@@ -862,6 +872,7 @@ fn debug_assert_cols_match(series: &MetricSeries, c: &BoundCombo) {
                     conds: vec![],
                     position_scoped: false,
                     origin: hunter_engine::arm::ReqOrigin::Authored,
+                    arm_above_pct: None,
                 };
                 col == col_idx_of(series, &req)
             }),
@@ -919,6 +930,11 @@ fn exit_req_fires(
     row: usize,
     ctx: &PositionCtx,
 ) -> bool {
+    // Mirrors `CompiledRule::exit_fired`: a trailing req held off until the position
+    // is `arm_above_pct` in profit does not fire at all while disarmed.
+    if !trailing_armed(req.arm_above_pct, ctx, series.price[row]) {
+        return false;
+    }
     let reading = if req.position_scoped {
         position_value(req.metric, ctx, series.price[row], series.at[row])
     } else {

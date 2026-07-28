@@ -136,7 +136,12 @@ pub enum MetricId {
     Time,
     /// SOL reserves (`m_snapshot`).
     Liquidity,
-    /// Seconds since the price last moved (`m_price_lifetime`).
+    /// Seconds since the price last set a **new all-time high** (`m_price_lifetime`)
+    /// — NOT "since the last trade". Only a strictly higher price resets the clock,
+    /// so on a token trading actively below its peak `stall` keeps climbing. Read
+    /// [`price_lifetime`] before using it: as an **exit** it caps position lifetime
+    /// (and, through `can_enter`, doubles as an entry filter), which is a trap for a
+    /// dip-entry rule that is below its high by construction.
     Stall,
     /// Percent off the peak price (`m_price_lifetime`).
     Trail,
@@ -295,11 +300,19 @@ pub struct MetricSpec {
 }
 
 /// A strict (non-condition) group parameter, e.g. `m_flow_window`'s
-/// `window_size_sec`. Values must be finite and `> 0`.
+/// `window_size_sec`. Values must be finite and `> 0` unless
+/// [`allows_zero`](Self::allows_zero).
 #[derive(Debug, Clone, Copy)]
 pub struct StrictParamSpec {
     pub name: &'static str,
     pub required: bool,
+    /// Whether `0` is a legal **value** of this param's domain (`>= 0` instead of
+    /// `> 0`). This is NOT the "zero-as-unbound" sentinel — an *absent* optional
+    /// param is what means "off". `m_position.arm_above_pct = 0` is a real setting
+    /// (arm the trailing stop the moment the position is green) and must not be
+    /// confused with the param being unset, so the two stay distinguishable:
+    /// `None` ⇒ feature off, `Some(0.0)` ⇒ arm at break-even.
+    pub allows_zero: bool,
 }
 
 /// A fingerprint-side config field declared by a metric group (stored under
@@ -474,7 +487,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
         family: MetricFamily::Price,
-        strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
+        strict_params: &[StrictParamSpec { name: "window_size_sec", required: true, allows_zero: false }],
         fingerprint_config: &[],
         // Amber family (44–48), sharing the 40–62 price band with m_price_lifetime —
         // three views of one price path (lifetime extrema vs rolling extrema vs
@@ -555,7 +568,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
         family: MetricFamily::Flow,
-        strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
+        strict_params: &[StrictParamSpec { name: "window_size_sec", required: true, allows_zero: false }],
         fingerprint_config: &[],
         // Same violet/magenta family as m_flow_lifetime — the cross-group hue guard
         // exempts the sibling pair. `buy`/`sell` take the candle up/down hues
@@ -689,7 +702,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
         family: MetricFamily::FlowSplit,
-        strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
+        strict_params: &[StrictParamSpec { name: "window_size_sec", required: true, allows_zero: false }],
         // Reads the same fingerprint key as m_flow_split (one classifier, two views).
         fingerprint_config: &[],
         // Same teal family as m_flow_split (one classifier, two views) — the
@@ -775,7 +788,18 @@ pub const REGISTRY: &[GroupSpec] = &[
         kind: MetricKind::Static,
         scope: MetricScope::Position,
         family: MetricFamily::Price,
-        strict_params: &[],
+        // `arm_above_pct` gates the TRAILING metrics (`retrace`/`bounce`) on the
+        // position being at least this far in profit — see
+        // [`position::is_trailing`]. It exists because the exit combinator ORs
+        // across metrics, so "trail out, but only once the trade has cleared the
+        // fee" (`retrace >= 3 AND pnl >= 2`) is otherwise unauthorable. Absent ⇒
+        // today's behaviour (the peak seeds at the entry fill, so an unarmed
+        // `retrace` doubles as a hard stop from entry).
+        strict_params: &[StrictParamSpec {
+            name: "arm_above_pct",
+            required: false,
+            allows_zero: true,
+        }],
         fingerprint_config: &[],
         // Amber family (52–60), the third view in the price family
         // {m_price_lifetime, m_price_window, m_position} sharing the 40–62 band — the
@@ -872,7 +896,13 @@ pub fn registry_json() -> serde_json::Value {
             let strict: Vec<Value> = g
                 .strict_params
                 .iter()
-                .map(|p| json!({ "name": p.name, "required": p.required }))
+                .map(|p| {
+                    json!({
+                        "name": p.name,
+                        "required": p.required,
+                        "allows_zero": p.allows_zero,
+                    })
+                })
                 .collect();
             let metrics: Vec<Value> = g
                 .metrics

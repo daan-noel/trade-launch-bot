@@ -491,6 +491,49 @@ fn scan_matches_replay_position_retrace_exit() {
 }
 
 #[test]
+fn scan_matches_replay_armed_trailing_exit() {
+    // `m_position.arm_above_pct` — the trailing stop held off until the position is
+    // in profit. Two things must hold at once, which is why this is a parity test
+    // and not just an engine unit test:
+    //
+    //   1. the scan's `exit_req_fires` must skip a disarmed trailing req exactly as
+    //      `CompiledRule::exit_fired` does, and
+    //   2. an armed req must NOT take the `ExitClass::Trailing` prefix-extrema hull
+    //      — arming is a conjunction of retrace and pnl, which the hull does not
+    //      index, so `classify_exit_req` sends it to the scalar walk. If that
+    //      classification ever regresses the hull answers a question it cannot see
+    //      the gate on, and only a parity assertion catches it.
+    //
+    // Gates on both sides of the corpus's price path: 0 (arm at break-even) and a
+    // gate high enough that the trail never arms and the stop-loss has to close it.
+    for gate in [0.0, 5.0, 40.0] {
+        let mut gc = GroupConditions::default();
+        gc.metrics.insert(
+            MetricId::Retrace,
+            vec![vec![Condition { operator: Operator::Gte, value: 3.0 }]],
+        );
+        gc.strict.insert("arm_above_pct".into(), gate);
+        let mut side = SideConditions::default();
+        side.0.insert(MetricGroupId::Position, vec![gc]);
+
+        let params = RuleParams {
+            take_profit: None,
+            stop_loss: Some(20.0),
+            entry: None,
+            exit: Some(side),
+            ..RuleParams::default()
+        };
+        assert_parity(&format!("armed_trailing_gate_{gate}"), params.clone(), &corpus(), at(1000.0));
+        assert_parity(
+            &format!("armed_trailing_gappy_gate_{gate}"),
+            params,
+            &gappy_corpus(),
+            at(100_000.0),
+        );
+    }
+}
+
+#[test]
 fn scan_matches_replay_position_pnl_exit() {
     // Authored `m_position.pnl <= -20` — a metric stop (stamps Metrics, distinct from
     // the desugared `stop_loss` which stamps StopLoss). Position-scoped, so the scan

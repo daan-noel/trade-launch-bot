@@ -9,6 +9,18 @@
 -- Rule spec + how to run:
 --   hunter/docs/roadmap/flow-scalper-fingerprint-rules.md
 --
+-- !! STALE EXIT (2026-07-28) -- do not run this as-is for a real experiment.
+-- The `m_position.retrace >= 5` below is UNARMED: m_position's peak seeds at the
+-- entry fill, so before any run-up `retrace` measures the drop from entry and this
+-- is really a hard -5% stop. Against a rule that enters ON a 14% dip it stops out on
+-- the continuation (measured: median hold 1.0 s, median -2.2%). Replayed over
+-- omego's own 2,974 episodes an unarmed trail turns 21% of his winners into losers.
+-- The fix is the `m_position.arm_above_pct` strict param shipped 2026-07-28; see
+-- "Exit-shape correction" in flow-scalper-fingerprint-rules.md and the reference
+-- hunter/docs/plans/strategies/armed-trailing-stop.md. The per-group liquidity /
+-- gross-flow floors below are also pre-recalibration (top-5 IX sequences now cover
+-- only ~71% of his entries) -- re-derive them before trusting the A/B.
+--
 -- SAFE BY DEFAULT: every rule is inserted with trade_mode='paper' and is_active=false.
 -- The engine loads `WHERE is_active AND is_enabled` (core/src/storage/repositories/
 -- rule_repo.rs), so nothing fires until you flip is_active yourself.

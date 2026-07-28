@@ -30,6 +30,15 @@ export interface RuleConditionRow {
   /** The metric's DNF condition arms (the `ConditionInput` value). Empty = the
    *  row carries no constraint yet and is dropped on serialize. */
   arms: ConditionExpr;
+  /** Strict params of this row's group instance OTHER than `window_size_sec`
+   *  (which is the `window` field). Carried per row so the row model stays flat,
+   *  and merged back per instance on serialize.
+   *
+   *  This exists so the editor never silently DROPS a strict param it has no
+   *  dedicated control for: a rule authored with `m_position.arm_above_pct` and
+   *  then opened and re-saved in the UI must come back out unchanged. New registry
+   *  strict params round-trip for free; only an editing *control* is per-param work. */
+  strict?: Record<string, number>;
 }
 
 let rowSeq = 0;
@@ -134,6 +143,10 @@ export function rowsToSide(rows: RuleConditionRow[], side: RuleConditionSide): S
       if (w != null) inst.strict.window_size_sec = w;
       instances.push(inst);
     }
+    // Non-window strict params ride on the row so nothing the editor has no control
+    // for is lost on re-save. Rows of one instance agree (sideToRows copies the same
+    // bag onto each), so a later row merging in is a no-op rather than a conflict.
+    Object.assign(inst.strict, row.strict ?? {});
     inst.metrics[row.metric] = row.arms;
   }
   return out;
@@ -158,6 +171,10 @@ export function sideToRows(
     for (const inst of instances) {
       const w = inst.strict.window_size_sec;
       const windowText = typeof w === 'number' && w > 0 ? String(w) : '';
+      // Everything except the window, which the `window` field already owns.
+      const strict = Object.fromEntries(
+        Object.entries(inst.strict).filter(([k]) => k !== 'window_size_sec'),
+      );
       for (const [metric, arms] of Object.entries(inst.metrics)) {
         if (!arms?.length) continue;
         rows.push({
@@ -166,6 +183,7 @@ export function sideToRows(
           metric,
           window: windowText,
           arms,
+          strict,
         });
       }
     }

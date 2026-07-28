@@ -101,6 +101,31 @@ impl PositionCtx {
     }
 }
 
+/// Whether a metric is a **trailing** stop — anchored on a since-entry extreme
+/// rather than on the entry price itself. These are exactly the metrics the
+/// `m_position.arm_above_pct` strict param gates, and this is the ONE reader of
+/// that classification (the engine's `exit_fired` and the sweep's `req_fired`
+/// both call it, so the two can never disagree about what "arming" covers).
+///
+/// `pnl` and `held` are deliberately NOT trailing: `pnl` is where TP/SL desugar
+/// to, and gating a stop-loss on already being in profit would disable it.
+pub fn is_trailing(id: MetricId) -> bool {
+    matches!(id, MetricId::Retrace | MetricId::Bounce)
+}
+
+/// Whether a trailing exit req is **armed** at this reading — i.e. the position is
+/// at least `arm_above_pct` in profit. `None` (param unset) ⇒ always armed, which
+/// is the pre-`arm_above_pct` behaviour every stored rule has.
+pub fn trailing_armed(arm_above_pct: Option<f64>, ctx: &PositionCtx, price: f64) -> bool {
+    match arm_above_pct {
+        None => true,
+        // A non-finite pnl (non-positive entry price / non-finite mark) cannot be
+        // shown to clear the gate, so it stays disarmed — fail closed, matching the
+        // engine-wide "NaN satisfies no condition" convention.
+        Some(gate) => ctx.pnl(price) >= gate,
+    }
+}
+
 /// Value of one `m_position` metric given the position context, the current price,
 /// and `now`. Non-position ids yield `NaN` (unreachable — the fold routes by scope).
 pub fn position_value(id: MetricId, ctx: &PositionCtx, price: f64, now: Ts) -> f64 {

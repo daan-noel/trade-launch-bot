@@ -16,7 +16,7 @@ use crate::event::{
 };
 use crate::fingerprint::FingerprintId;
 use crate::metrics::evaluator::{eval, first_satisfied_cond, Condition, ConditionExpr, Operator};
-use crate::metrics::position::{position_value, PositionCtx};
+use crate::metrics::position::{is_trailing, position_value, trailing_armed, PositionCtx};
 use crate::metrics::track::TokenTrack;
 use crate::metrics::{
     group_of, group_spec, is_flow_metric, metric_spec, MetricGroupId, MetricId, MetricKind,
@@ -52,6 +52,11 @@ pub struct MetricReq {
     /// Provenance (drives the exit-reason label); `Authored` for everything but the
     /// desugared TP/SL reqs.
     pub origin: ReqOrigin,
+    /// `m_position.arm_above_pct` — set only on **trailing** exit reqs
+    /// ([`is_trailing`](crate::metrics::position::is_trailing)). The req is skipped
+    /// while position PnL is below this, so a trailing stop can be held off until
+    /// the trade is in profit. `None` on every other req and on every stored rule.
+    pub arm_above_pct: Option<f64>,
 }
 
 /// A derived monotonic upper bound from an **entry** condition arm: because a
@@ -352,6 +357,12 @@ impl CompiledRule {
     ) -> Option<ExitReason> {
         let price = track.current_price();
         for r in &self.exit_reqs {
+            // A trailing stop held off until the position is `arm_above_pct` in
+            // profit. Only ever set on trailing reqs, so TP/SL and every other exit
+            // metric are untouched.
+            if !trailing_armed(r.arm_above_pct, ctx, price) {
+                continue;
+            }
             let reading = if r.position_scoped {
                 position_value(r.metric, ctx, price, now)
             } else {
@@ -431,6 +442,9 @@ fn pnl_req(op: Operator, value: f64, origin: ReqOrigin) -> MetricReq {
         conds: vec![vec![Condition { operator: op, value }]],
         position_scoped: true,
         origin,
+        // TP/SL are `pnl` reqs, never trailing — a stop-loss gated on already being
+        // in profit would never fire.
+        arm_above_pct: None,
     }
 }
 
@@ -452,6 +466,8 @@ fn build_reqs(
             } else {
                 None
             };
+            // Attached below to this instance's trailing metrics only.
+            let arm_above = group.strict_param("arm_above_pct");
             for (metric_id, conds) in &group.metrics {
                 out.push(MetricReq {
                     metric: *metric_id,
@@ -461,6 +477,7 @@ fn build_reqs(
                     conds: conds.clone(),
                     position_scoped,
                     origin: ReqOrigin::Authored,
+                    arm_above_pct: is_trailing(*metric_id).then_some(arm_above).flatten(),
                 });
             }
         }
@@ -701,6 +718,104 @@ mod tests {
         let mut cold = TokenTrack::new(created);
         cold.on_trade(TradeLite { side: Side::Buy, sol: 1.0, price: 1.0, reserve_sol: 5.0, at: now , ..Default::default() });
         assert!(!compiled.exit_metrics_satisfied(&cold, now));
+    }
+
+    /// `arm_above_pct` holds the trailing stop off until the position is in profit.
+    ///
+    /// This is the whole reason the param exists: exit metrics OR across metrics, so
+    /// `retrace >= 3 AND pnl >= 2` is otherwise unauthorable, and an unarmed
+    /// `retrace` doubles as a hard −3% stop from entry (the peak seeds at the fill).
+    /// Measured on omego's own 2,974 episodes, that unarmed trail turns 21% of his
+    /// winners into losers — see `docs/roadmap/flow-scalper-build-plan.md`.
+    #[test]
+    fn arm_above_pct_holds_the_trailing_stop_until_in_profit() {
+        use crate::metrics::{Side, TradeLite};
+        use chrono::{Duration, TimeZone, Utc};
+
+        let params = |gate: serde_json::Value| {
+            let mut pos = serde_json::Map::new();
+            pos.insert("retrace".into(), json!([{"operator": ">=", "value": 3}]));
+            if !gate.is_null() {
+                pos.insert("arm_above_pct".into(), gate);
+            }
+            json!({ "stop_loss": 20, "exit": { "m_position": pos } })
+        };
+        let armed = CompiledRule::compile(&rule(params(json!(2))));
+        let unarmed = CompiledRule::compile(&rule(params(serde_json::Value::Null)));
+
+        // The gate rides on the trailing req only — never on the desugared stop-loss,
+        // which would otherwise be disabled by requiring profit first.
+        let trailing = armed.exit_reqs.iter().find(|r| r.metric == MetricId::Retrace);
+        assert_eq!(trailing.unwrap().arm_above_pct, Some(2.0));
+        let sl = armed.exit_reqs.iter().find(|r| r.origin == ReqOrigin::StopLoss);
+        assert_eq!(sl.unwrap().arm_above_pct, None);
+
+        let created = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        let now = created + Duration::seconds(10);
+        let mut track = TokenTrack::new(created);
+        track.on_trade(TradeLite {
+            side: Side::Buy, sol: 1.0, price: 1.0, reserve_sol: 60.0, at: now,
+            ..Default::default()
+        });
+
+        // Entered at 1.0, ran to 1.10, now back at 1.05: retrace 4.5% off the peak,
+        // and pnl +5% clears the gate → both rules sell.
+        let ctx = PositionCtx {
+            entry_price: 1.0, peak_price: 1.10, trough_price: 1.0, entered_at: created,
+        };
+        track.on_trade(TradeLite {
+            side: Side::Sell, sol: 1.0, price: 1.05, reserve_sol: 60.0, at: now,
+            ..Default::default()
+        });
+        assert!(matches!(armed.exit_fired(&track, &ctx, now), Some(ExitReason::Metrics { .. })));
+        assert!(matches!(unarmed.exit_fired(&track, &ctx, now), Some(ExitReason::Metrics { .. })));
+
+        // Entered at 1.0 and it only ever fell — the peak IS the fill, so retrace 4%
+        // = pnl −4%. The unarmed trail sells at a loss; the armed one holds, leaving
+        // the position to the stop-loss.
+        let sunk = PositionCtx {
+            entry_price: 1.0, peak_price: 1.0, trough_price: 0.96, entered_at: created,
+        };
+        let mut down = TokenTrack::new(created);
+        down.on_trade(TradeLite {
+            side: Side::Sell, sol: 1.0, price: 0.96, reserve_sol: 60.0, at: now,
+            ..Default::default()
+        });
+        assert!(matches!(
+            unarmed.exit_fired(&down, &sunk, now),
+            Some(ExitReason::Metrics { .. })
+        ));
+        assert_eq!(armed.exit_fired(&down, &sunk, now), None);
+
+        // ...and the stop-loss still fires through the gate at −20%.
+        let blown = PositionCtx {
+            entry_price: 1.0, peak_price: 1.0, trough_price: 0.75, entered_at: created,
+        };
+        let mut crash = TokenTrack::new(created);
+        crash.on_trade(TradeLite {
+            side: Side::Sell, sol: 1.0, price: 0.75, reserve_sol: 60.0, at: now,
+            ..Default::default()
+        });
+        assert_eq!(armed.exit_fired(&crash, &blown, now), Some(ExitReason::StopLoss));
+    }
+
+    /// `arm_above_pct: 0` means "arm at break-even", NOT "off" — the two must stay
+    /// distinguishable, so an absent param is the only thing that disables the gate.
+    #[test]
+    fn arm_above_pct_zero_is_a_real_setting_not_the_off_sentinel() {
+        let zero = CompiledRule::compile(&rule(json!({
+            "exit": { "m_position": {
+                "retrace": [{"operator": ">=", "value": 3}], "arm_above_pct": 0
+            } }
+        })));
+        let trailing = zero.exit_reqs.iter().find(|r| r.metric == MetricId::Retrace);
+        assert_eq!(trailing.unwrap().arm_above_pct, Some(0.0));
+
+        let absent = CompiledRule::compile(&rule(json!({
+            "exit": { "m_position": { "retrace": [{"operator": ">=", "value": 3}] } }
+        })));
+        let trailing = absent.exit_reqs.iter().find(|r| r.metric == MetricId::Retrace);
+        assert_eq!(trailing.unwrap().arm_above_pct, None);
     }
 
     #[test]

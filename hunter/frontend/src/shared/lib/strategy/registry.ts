@@ -33,6 +33,11 @@ export type MetricFamily = 'price' | 'flow' | 'flow_split' | 'liquidity_age' | '
 export interface StrictParamSpec {
   name: string;
   required: boolean;
+  /** Whether `0` is a legal value of this param's domain (`>= 0` instead of `> 0`).
+   *  Mirrors the Rust `StrictParamSpec.allows_zero`; optional so a pre-flag registry
+   *  payload still parses (absent ⇒ the old `> 0` rule). NOT a zero-as-unbound
+   *  sentinel — an absent optional param is what means "off". */
+  allows_zero?: boolean;
 }
 
 /** Fingerprint-side config field for a group (e.g. `volume_ix_patterns`). */
