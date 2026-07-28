@@ -16,10 +16,12 @@ use hunter_engine::metrics::group_spec;
 
 use super::family::{
     BestCombo, DropReason, FamilyReport, FamilyResult, Interaction, InteractionVerdict,
+    JointResult,
 };
 use super::objective::ScoreOutcome;
 use super::pipeline::{NoValidationReason, PipelineReport};
 use super::screen::{MetricResponse, ResponsePoint, ScreenReport, Verdict};
+use super::seed::{SeedCluster, SweepSeed};
 use super::validate::{
     CandidateValidation, SliceScore, ValidationReport, ValidationVerdict,
 };
@@ -36,10 +38,13 @@ pub struct PipelineDto {
     pub validation: Option<ValidationDto>,
     /// Present exactly when `validation` is `null`.
     pub no_validation: Option<String>,
+    /// Discovery → grouped-sweep handoff (`AxisSpec[]` ready for the generic form).
+    pub sweep_seed: SweepSeedDto,
 }
 
 impl PipelineDto {
     pub fn from_report(r: &PipelineReport) -> Self {
+        let seed = super::seed::build_sweep_seed(&r.screen, &r.family);
         Self {
             cohort_tokens: r.cohort_tokens,
             fit_tokens: r.fit_tokens,
@@ -47,6 +52,7 @@ impl PipelineDto {
             family: FamilyDto::from_report(&r.family),
             validation: r.validation.as_ref().map(ValidationDto::from_report),
             no_validation: r.no_validation.map(no_validation_tag),
+            sweep_seed: SweepSeedDto::from(&seed),
         }
     }
 }
@@ -208,6 +214,8 @@ pub struct FamilyDto {
     pub combos_scanned: usize,
     pub families: Vec<FamilyResultDto>,
     pub interactions: Vec<InteractionDto>,
+    /// Joint grids over interacting connected components.
+    pub joints: Vec<JointResultDto>,
 }
 
 impl FamilyDto {
@@ -216,6 +224,7 @@ impl FamilyDto {
             combos_scanned: r.combos_scanned,
             families: r.families.iter().map(FamilyResultDto::from).collect(),
             interactions: r.interactions.iter().map(InteractionDto::from).collect(),
+            joints: r.joints.iter().map(JointResultDto::from).collect(),
         }
     }
 }
@@ -333,6 +342,91 @@ impl From<&Interaction> for InteractionDto {
             given: i.given.clone(),
             score_alone: i.score_alone,
             score_given: i.score_given,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct JointResultDto {
+    pub families: Vec<String>,
+    pub combos: usize,
+    pub n_gated: usize,
+    pub members: Vec<FamilyMemberDto>,
+    pub dropped: Vec<DroppedMemberDto>,
+    pub best: Option<BestComboDto>,
+}
+
+impl From<&JointResult> for JointResultDto {
+    fn from(j: &JointResult) -> Self {
+        Self {
+            families: j.families.iter().map(|f| f.as_str().to_string()).collect(),
+            combos: j.combos,
+            n_gated: j.n_gated,
+            members: j
+                .members
+                .iter()
+                .map(|m| FamilyMemberDto {
+                    side: side_str(m.metric.side),
+                    group: group_spec(m.metric.group).name.to_string(),
+                    metric: m.metric.metric.name().to_string(),
+                    operator: m.operator.symbol().to_string(),
+                    values: m.values.clone(),
+                    lift: m.lift,
+                })
+                .collect(),
+            dropped: j
+                .dropped
+                .iter()
+                .map(|(m, reason)| DroppedMemberDto {
+                    metric: m.metric.metric.name().to_string(),
+                    reason: match reason {
+                        DropReason::AxisCap => "axis_cap",
+                        DropReason::ComboCap => "combo_cap",
+                    }
+                    .to_string(),
+                })
+                .collect(),
+            best: j.best.as_ref().map(BestComboDto::from),
+        }
+    }
+}
+
+// ───────────────────────────── sweep seed ──────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct SweepSeedDto {
+    pub axes: Vec<crate::sweep::generic::axes::AxisSpec>,
+    pub optional_axes: Vec<crate::sweep::generic::axes::AxisSpec>,
+    pub clusters: Vec<SeedClusterDto>,
+    pub combo_estimate: usize,
+    pub notes: Vec<String>,
+}
+
+impl From<&SweepSeed> for SweepSeedDto {
+    fn from(s: &SweepSeed) -> Self {
+        Self {
+            axes: s.axes.clone(),
+            optional_axes: s.optional_axes.clone(),
+            clusters: s.clusters.iter().map(SeedClusterDto::from).collect(),
+            combo_estimate: s.combo_estimate,
+            notes: s.notes.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct SeedClusterDto {
+    pub families: Vec<String>,
+    pub interacting: bool,
+    pub members: Vec<String>,
+}
+
+impl From<&SeedCluster> for SeedClusterDto {
+    fn from(c: &SeedCluster) -> Self {
+        Self {
+            families: c.families.clone(),
+            interacting: c.interacting,
+            members: c.members.clone(),
         }
     }
 }
@@ -482,8 +576,10 @@ mod tests {
             // Operators are JSON symbols, never enum Debug.
             assert!([">=", "<", ">", "<=", "=", "!="].contains(&r["operator"].as_str().unwrap()));
         }
-        // The family + validation branches are either fully-formed or an honest reason.
         assert!(j["family"]["families"].is_array());
+        assert!(j["family"]["joints"].is_array());
+        assert!(j["sweep_seed"]["axes"].is_array());
+        assert!(j["sweep_seed"]["combo_estimate"].is_number());
         if j["validation"].is_null() {
             assert!(j["no_validation"].is_string());
         } else {

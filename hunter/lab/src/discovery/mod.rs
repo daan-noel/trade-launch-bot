@@ -12,9 +12,10 @@
 //! * [`screen`] — Layer 1: the additive per-metric scan, its response curves, and
 //!   the ranked metric shortlist (step 3).
 //! * [`family`] — Layer 2: a grid per registry metric family over Layer 1's narrowed
-//!   ranges, plus the pairwise interaction check (step 4).
+//!   ranges, pairwise interaction, and joint grids over interacting components (step 4).
 //! * [`validate`] — Layer 3: the time-split out-of-sample re-score that turns a
 //!   fitted winner into a kept-or-overfit verdict (step 5).
+//! * [`seed`] — the discovery → grouped-sweep handoff (`SweepSeed` / `AxisSpec[]`).
 //!
 //! Everything here reads the metric [`REGISTRY`](hunter_engine::metrics) and the
 //! already-persisted `ComboMetrics` columns, so a metric added later flows through
@@ -27,6 +28,7 @@ pub mod family;
 pub mod objective;
 pub mod pipeline;
 pub mod screen;
+pub mod seed;
 pub mod validate;
 
 #[cfg(test)]

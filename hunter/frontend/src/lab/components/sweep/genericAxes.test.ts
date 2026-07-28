@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { StrategyRegistry } from 'lib/strategy/registry';
 import {
   axisRowError,
+  axesSpecToRows,
   comboCount,
   invalidValueFragments,
   newAxisRow,
@@ -262,5 +263,29 @@ describe('pnlAxisSugarDuplicateError', () => {
       }),
     ];
     expect(pnlAxisSugarDuplicateError(rows)).toBeNull();
+  });
+
+  it('axesSpecToRows round-trips discovery-style AxisSpec wire', () => {
+    const rows = axesSpecToRows([
+      {
+        kind: 'metric',
+        side: 'entry',
+        group: 'm_snapshot',
+        metric: 'time',
+        operator: '>=',
+        values: [null, 5, 30],
+      },
+      { kind: 'take_profit', values: [20, 30, 60] },
+      { kind: 'stop_loss', values: [10, 15, 25] },
+    ]);
+    expect(rows).toHaveLength(3);
+    expect(rows[0].kind).toBe('metric');
+    expect(rows[0].valuesText).toBe('off, 5, 30');
+    expect(rows[0].operator).toBe('>=');
+    expect(rows[1].kind).toBe('take_profit');
+    expect(rows[1].valuesText).toBe('20, 30, 60');
+    const wire = serializeAxisRows(rows, REG);
+    expect(wire[0].values).toEqual([null, 5, 30]);
+    expect(wire[1].values).toEqual([20, 30, 60]);
   });
 });

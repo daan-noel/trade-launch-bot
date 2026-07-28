@@ -51,7 +51,7 @@ use crate::sweep::generic::Pricing;
 use crate::sweep::progress::SweepObserver;
 use crate::sweep::registry::simulate_one_combo;
 
-use super::family::{FamilyReport, FamilyResult};
+use super::family::{FamilyReport, FamilyResult, JointResult};
 use super::objective::{discovery_score, ComboStats, DiscoveryWeights, ScoreOutcome};
 
 // ───────────────────────────── the split ───────────────────────────────────
@@ -140,11 +140,32 @@ impl Candidate {
             params_json: best.params_json.clone(),
         })
     }
+
+    /// The winner of one joint-cluster grid. `None` when nothing was rankable.
+    pub fn from_joint(j: &JointResult) -> Option<Self> {
+        let best = j.best.as_ref()?;
+        let names = j
+            .families
+            .iter()
+            .map(|f| f.as_str())
+            .collect::<Vec<_>>()
+            .join("+");
+        Some(Self {
+            label: format!("joint:{names}"),
+            params_json: best.params_json.clone(),
+        })
+    }
 }
 
-/// Every Layer-2 family winner, in report order — the default Layer-3 input.
+/// Every Layer-2 family winner **and** joint-cluster winner — the default Layer-3 input.
 pub fn candidates_from_family_report(report: &FamilyReport) -> Vec<Candidate> {
-    report.families.iter().filter_map(Candidate::from_family).collect()
+    let mut out: Vec<Candidate> = report.families.iter().filter_map(Candidate::from_family).collect();
+    for j in &report.joints {
+        if let Some(c) = Candidate::from_joint(j) {
+            out.push(c);
+        }
+    }
+    out
 }
 
 // ───────────────────────────── verdict tuning ──────────────────────────────
@@ -575,5 +596,48 @@ mod tests {
 
         let cands = vec![Candidate { label: "x".into(), params_json: serde_json::json!({}) }];
         assert!(call(&cands, &split.train, &[]).is_err());
+    }
+
+    #[test]
+    fn candidates_include_joint_winners() {
+        use hunter_engine::metrics::MetricFamily;
+        use super::super::family::{BestCombo, FamilyLimits, FamilyReport, FamilyResult, JointResult};
+        use super::super::screen::ScreenBaseline;
+
+        let best = BestCombo {
+            idx: 0,
+            picks: vec![Some(5.0)],
+            score: 1.0,
+            n_fired: 10,
+            n_closed: 10,
+            params_json: serde_json::json!({ "take_profit": 30.0 }),
+        };
+        let report = FamilyReport {
+            cohort_tokens: 10,
+            baseline: ScreenBaseline { take_profit_pct: Some(30.0), stop_loss_pct: Some(15.0) },
+            limits: FamilyLimits::default(),
+            families: vec![FamilyResult {
+                family: MetricFamily::Price,
+                members: vec![],
+                dropped: vec![],
+                combos: 1,
+                best: Some(best.clone()),
+                n_gated: 0,
+            }],
+            interactions: vec![],
+            joints: vec![JointResult {
+                families: vec![MetricFamily::Price, MetricFamily::Flow],
+                members: vec![],
+                dropped: vec![],
+                combos: 4,
+                best: Some(best),
+                n_gated: 0,
+            }],
+            combos_scanned: 0,
+        };
+        let cands = candidates_from_family_report(&report);
+        assert_eq!(cands.len(), 2);
+        assert_eq!(cands[0].label, "family:price");
+        assert_eq!(cands[1].label, "joint:price+flow");
     }
 }

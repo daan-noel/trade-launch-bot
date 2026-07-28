@@ -1,6 +1,6 @@
-//! **Layer 2 — the family grid + interaction check** (plan §3): combine only the
-//! metrics Layer 1 kept, and spend the combo budget on metrics that actually
-//! *interact* instead of on a blind cross-product.
+//! **Layer 2 — the family grid + interaction check + joint grids** (plan §3):
+//! combine only the metrics Layer 1 kept, and spend the combo budget on metrics
+//! that actually *interact* instead of on a blind cross-product.
 //!
 //! ## Why families
 //!
@@ -19,14 +19,15 @@
 //!    [`FamilyLimits`], and every member a bound drops is reported.
 //! 2. **A pairwise interaction check**: fix family A at its own best combo, re-sweep
 //!    family B on top. If B's best picks are unchanged the families are independent
-//!    and their grids compose; if B's best moves, they interact and Layer 3 should
-//!    grid them jointly. `O(families²)` tiny sweeps, not one exponential grid — the
-//!    measurement that replaces the guess.
+//!    and their grids compose; if B's best moves, they interact.
+//! 3. **Joint grids (L2b)**: connected components of undirected `Interacting` pairs
+//!    are product-gridded under the same [`FamilyLimits`] — the measurement that used
+//!    to be advisory-only now actually runs, and those winners feed Layer 3 + the
+//!    sweep seed.
 //!
-//! Both phases ride the [`additive`](super::additive) scan mode, so phase 1 is **one**
-//! sweep over one shared precompute regardless of family count, and so is phase 2.
-//! Two passes total, and they must be two: the interaction models are built *from*
-//! phase 1's winners.
+//! Phases 1–3 ride the [`additive`](super::additive) scan mode (one shared
+//! precompute per phase). Phase 2 models are built from phase 1 winners; phase 3
+//! models from the interacting components.
 
 use anyhow::Result;
 use hunter_engine::metrics::evaluator::Operator;
@@ -66,7 +67,7 @@ impl Default for FamilyLimits {
     }
 }
 
-/// One shortlisted `(metric, operator)` carried into a family grid.
+/// One shortlisted `(metric, operator)` carried into a family (or joint) grid.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FamilyMember {
     pub metric: ScreenMetric,
@@ -170,7 +171,23 @@ pub struct Interaction {
     pub verdict: InteractionVerdict,
 }
 
-/// The Layer-2 deliverable: the per-family winners plus the interaction map.
+/// One joint-cluster grid outcome (L2b) — the product over an interacting
+/// connected component of families.
+#[derive(Clone, Debug)]
+pub struct JointResult {
+    /// Families in this connected component (stable: registry order of first appearance).
+    pub families: Vec<MetricFamily>,
+    /// Members actually gridded (union of component families, lift-desc, then capped).
+    pub members: Vec<FamilyMember>,
+    /// Members a bound removed, with the reason — no silent caps.
+    pub dropped: Vec<(FamilyMember, DropReason)>,
+    pub combos: usize,
+    /// `None` when every combo was min-N gated or nothing fired.
+    pub best: Option<BestCombo>,
+    pub n_gated: usize,
+}
+
+/// The Layer-2 deliverable: per-family winners, the interaction map, and joint grids.
 #[derive(Clone, Debug)]
 pub struct FamilyReport {
     pub cohort_tokens: usize,
@@ -178,7 +195,9 @@ pub struct FamilyReport {
     pub limits: FamilyLimits,
     pub families: Vec<FamilyResult>,
     pub interactions: Vec<Interaction>,
-    /// Combos scanned across both phases (the honest budget).
+    /// Joint grids over interacting connected components (empty when none interact).
+    pub joints: Vec<JointResult>,
+    /// Combos scanned across all phases (the honest budget).
     pub combos_scanned: usize,
 }
 
@@ -189,6 +208,104 @@ impl FamilyReport {
             .iter()
             .filter(|i| i.verdict == InteractionVerdict::Interacting)
             .map(|i| (i.pinned, i.swept))
+    }
+}
+
+/// Undirected connected components of `Interacting` pairs. Singleton families and
+/// Independent/Inconclusive edges are ignored — only edges that force a joint grid.
+pub fn interacting_components(interactions: &[Interaction]) -> Vec<Vec<MetricFamily>> {
+    let mut nodes: Vec<MetricFamily> = Vec::new();
+    let mut edges: Vec<(MetricFamily, MetricFamily)> = Vec::new();
+    for i in interactions {
+        if i.verdict != InteractionVerdict::Interacting {
+            continue;
+        }
+        // Undirected: store once with sorted endpoints so A↔B collapses.
+        let (a, b) = if i.pinned.as_str() <= i.swept.as_str() {
+            (i.pinned, i.swept)
+        } else {
+            (i.swept, i.pinned)
+        };
+        if a == b {
+            continue;
+        }
+        if !nodes.contains(&a) {
+            nodes.push(a);
+        }
+        if !nodes.contains(&b) {
+            nodes.push(b);
+        }
+        if !edges.contains(&(a, b)) {
+            edges.push((a, b));
+        }
+    }
+    if nodes.is_empty() {
+        return Vec::new();
+    }
+
+    // BFS components.
+    let mut seen = vec![false; nodes.len()];
+    let mut out: Vec<Vec<MetricFamily>> = Vec::new();
+    for start in 0..nodes.len() {
+        if seen[start] {
+            continue;
+        }
+        let mut stack = vec![start];
+        seen[start] = true;
+        let mut comp = Vec::new();
+        while let Some(i) = stack.pop() {
+            comp.push(nodes[i]);
+            for &(a, b) in &edges {
+                let (ai, bi) = (
+                    nodes.iter().position(|n| *n == a).unwrap(),
+                    nodes.iter().position(|n| *n == b).unwrap(),
+                );
+                if ai == i && !seen[bi] {
+                    seen[bi] = true;
+                    stack.push(bi);
+                } else if bi == i && !seen[ai] {
+                    seen[ai] = true;
+                    stack.push(ai);
+                }
+            }
+        }
+        if comp.len() >= 2 {
+            comp.sort_by_key(|f| f.as_str());
+            out.push(comp);
+        }
+    }
+    out.sort_by(|a, b| a[0].as_str().cmp(b[0].as_str()));
+    out
+}
+
+/// Plan one joint grid over the union of `component` families' members.
+pub fn plan_joint(
+    families: &[FamilyResult],
+    component: &[MetricFamily],
+    limits: FamilyLimits,
+) -> JointResult {
+    let mut members: Vec<FamilyMember> = Vec::new();
+    for fam in component {
+        if let Some(f) = families.iter().find(|f| f.family == *fam) {
+            members.extend(f.members.iter().cloned());
+        }
+    }
+    members.sort_by(|a, b| b.lift.partial_cmp(&a.lift).unwrap_or(std::cmp::Ordering::Equal));
+    let mut dropped = Vec::new();
+    while members.len() > limits.max_axes.max(1) {
+        dropped.push((members.pop().expect("non-empty"), DropReason::AxisCap));
+    }
+    while members.len() > 1 && grid_combos(&members) > limits.max_combos.max(1) {
+        dropped.push((members.pop().expect("non-empty"), DropReason::ComboCap));
+    }
+    let combos = grid_combos(&members);
+    JointResult {
+        families: component.to_vec(),
+        members,
+        dropped,
+        combos,
+        best: None,
+        n_gated: 0,
     }
 }
 
@@ -270,6 +387,7 @@ pub fn run_family_layer(
             limits,
             families,
             interactions: Vec::new(),
+            joints: Vec::new(),
             combos_scanned,
         });
     }
@@ -300,57 +418,75 @@ pub fn run_family_layer(
             }
         }
     }
-    if pairs.is_empty() {
-        return Ok(FamilyReport {
-            cohort_tokens: corpus.token_count(),
-            baseline,
-            limits,
-            families,
-            interactions: Vec::new(),
-            combos_scanned,
-        });
+
+    let mut interactions = Vec::new();
+    if !pairs.is_empty() {
+        let check_models: Vec<AxesModel> = pairs
+            .iter()
+            .map(|(a, b)| {
+                interaction_model(
+                    &families[*a].members,
+                    families[*a].best.as_ref().expect("live"),
+                    &families[*b].members,
+                    &baseline,
+                )
+            })
+            .collect::<Result<_, String>>()
+            .map_err(|e| anyhow::anyhow!("interaction axes: {e}"))?;
+        let checks = AdditiveStrategy::new(check_models, pricing, as_of, cfg.flow_patterns.as_ref());
+        combos_scanned += checks.combos().len();
+        let check_rows = checks.run(corpus, observer)?;
+
+        interactions.reserve(pairs.len());
+        for (i, (a, b)) in pairs.iter().enumerate() {
+            let b_alone = families[*b].best.as_ref().expect("live");
+            let (best_given, _) = best_of(&checks, i, &check_rows[i], matched, weights);
+            // The pinned family's axes come first in the model (see `interaction_model`),
+            // so B's picks are the tail — compare like for like.
+            let given: Vec<Option<f64>> = best_given
+                .as_ref()
+                .map(|c| c.picks[c.picks.len() - b_alone.picks.len()..].to_vec())
+                .unwrap_or_default();
+            let verdict = match &best_given {
+                None => InteractionVerdict::Inconclusive,
+                Some(_) if given == b_alone.picks => InteractionVerdict::Independent,
+                Some(_) => InteractionVerdict::Interacting,
+            };
+            interactions.push(Interaction {
+                pinned: families[*a].family,
+                swept: families[*b].family,
+                alone: b_alone.picks.clone(),
+                given,
+                score_alone: b_alone.score,
+                score_given: best_given.as_ref().map(|c| c.score),
+                verdict,
+            });
+        }
     }
 
-    let check_models: Vec<AxesModel> = pairs
+    // ── phase 3 (L2b): joint grids over interacting connected components ────
+    let components = interacting_components(&interactions);
+    let mut joints: Vec<JointResult> = components
         .iter()
-        .map(|(a, b)| {
-            interaction_model(
-                &families[*a].members,
-                families[*a].best.as_ref().expect("live"),
-                &families[*b].members,
-                &baseline,
-            )
-        })
-        .collect::<Result<_, String>>()
-        .map_err(|e| anyhow::anyhow!("interaction axes: {e}"))?;
-    let checks = AdditiveStrategy::new(check_models, pricing, as_of, cfg.flow_patterns.as_ref());
-    combos_scanned += checks.combos().len();
-    let check_rows = checks.run(corpus, observer)?;
+        .map(|c| plan_joint(&families, c, limits))
+        .filter(|j| !j.members.is_empty())
+        .collect();
 
-    let mut interactions = Vec::with_capacity(pairs.len());
-    for (i, (a, b)) in pairs.iter().enumerate() {
-        let b_alone = families[*b].best.as_ref().expect("live");
-        let (best_given, _) = best_of(&checks, i, &check_rows[i], matched, weights);
-        // The pinned family's axes come first in the model (see `interaction_model`),
-        // so B's picks are the tail — compare like for like.
-        let given: Vec<Option<f64>> = best_given
-            .as_ref()
-            .map(|c| c.picks[c.picks.len() - b_alone.picks.len()..].to_vec())
-            .unwrap_or_default();
-        let verdict = match &best_given {
-            None => InteractionVerdict::Inconclusive,
-            Some(_) if given == b_alone.picks => InteractionVerdict::Independent,
-            Some(_) => InteractionVerdict::Interacting,
-        };
-        interactions.push(Interaction {
-            pinned: families[*a].family,
-            swept: families[*b].family,
-            alone: b_alone.picks.clone(),
-            given,
-            score_alone: b_alone.score,
-            score_given: best_given.as_ref().map(|c| c.score),
-            verdict,
-        });
+    if !joints.is_empty() {
+        let joint_models: Vec<AxesModel> = joints
+            .iter()
+            .map(|j| family_model(&j.members, &baseline))
+            .collect::<Result<_, String>>()
+            .map_err(|e| anyhow::anyhow!("joint grid axes: {e}"))?;
+        let joint_grids =
+            AdditiveStrategy::new(joint_models, pricing, as_of, cfg.flow_patterns.as_ref());
+        combos_scanned += joint_grids.combos().len();
+        let joint_rows = joint_grids.run(corpus, observer)?;
+        for (i, joint) in joints.iter_mut().enumerate() {
+            let (best, gated) = best_of(&joint_grids, i, &joint_rows[i], matched, weights);
+            joint.best = best;
+            joint.n_gated = gated;
+        }
     }
 
     Ok(FamilyReport {
@@ -359,6 +495,7 @@ pub fn run_family_layer(
         limits,
         families,
         interactions,
+        joints,
         combos_scanned,
     })
 }
@@ -645,6 +782,15 @@ mod tests {
             "Layer 2 must stay small: {}",
             out.combos_scanned
         );
+        // Joints only appear for Interacting components; each is promotable when crowned.
+        for j in &out.joints {
+            assert!(j.families.len() >= 2);
+            assert!(!j.members.is_empty());
+            if let Some(b) = &j.best {
+                hunter_engine::rule_params::RuleParams::parse(&b.params_json)
+                    .expect("joint winner is promotable");
+            }
+        }
         // Position metrics are exit-only, so any that survived sit in the price family.
         for f in &out.families {
             for m in &f.members {
@@ -694,5 +840,78 @@ mod tests {
             }
         }
         assert_eq!(out.families.is_empty(), out.combos_scanned == 0);
+    }
+
+    #[test]
+    fn interacting_components_are_undirected_connected() {
+        let mk = |pinned, swept, verdict| Interaction {
+            pinned,
+            swept,
+            alone: vec![],
+            given: vec![],
+            score_alone: 1.0,
+            score_given: Some(1.0),
+            verdict,
+        };
+        let interactions = vec![
+            mk(MetricFamily::Price, MetricFamily::Flow, InteractionVerdict::Interacting),
+            mk(MetricFamily::Flow, MetricFamily::Price, InteractionVerdict::Interacting),
+            mk(MetricFamily::Flow, MetricFamily::FlowSplit, InteractionVerdict::Interacting),
+            mk(
+                MetricFamily::LiquidityAge,
+                MetricFamily::Price,
+                InteractionVerdict::Independent,
+            ),
+        ];
+        let comps = interacting_components(&interactions);
+        assert_eq!(comps.len(), 1);
+        assert_eq!(
+            comps[0],
+            vec![MetricFamily::Flow, MetricFamily::FlowSplit, MetricFamily::Price]
+        );
+    }
+
+    #[test]
+    fn plan_joint_caps_drop_weakest_with_reason() {
+        let members_a = vec![FamilyMember {
+            metric: screen_metric(MetricId::Time, AxisSide::Entry),
+            operator: Operator::Gte,
+            values: vec![5.0, 30.0],
+            lift: 9.0,
+        }];
+        let members_b = vec![FamilyMember {
+            metric: screen_metric(MetricId::Trail, AxisSide::Entry),
+            operator: Operator::Gte,
+            values: vec![10.0, 20.0],
+            lift: 1.0,
+        }];
+        let families = vec![
+            FamilyResult {
+                family: MetricFamily::LiquidityAge,
+                members: members_a,
+                dropped: vec![],
+                combos: 3,
+                best: None,
+                n_gated: 0,
+            },
+            FamilyResult {
+                family: MetricFamily::Price,
+                members: members_b,
+                dropped: vec![],
+                combos: 3,
+                best: None,
+                n_gated: 0,
+            },
+        ];
+        let joint = plan_joint(
+            &families,
+            &[MetricFamily::LiquidityAge, MetricFamily::Price],
+            FamilyLimits { max_axes: 1, max_combos: 1_024 },
+        );
+        assert_eq!(joint.members.len(), 1);
+        assert_eq!(joint.members[0].metric.metric, MetricId::Time);
+        assert_eq!(joint.dropped.len(), 1);
+        assert_eq!(joint.dropped[0].1, DropReason::AxisCap);
+        assert_eq!(joint.families.len(), 2);
     }
 }

@@ -25,6 +25,8 @@ export const STORAGE_KEYS = {
   tokensLive: `${PREFIX}tokens.live`,
   swingCriteria: `${PREFIX}swing.criteria`,
   sweepConfig: `${PREFIX}sweep.config`,
+  /** Pending discovery → sweep seed (sessionStorage). Cleared once the sweep form applies it. */
+  sweepDiscoverySeed: `${PREFIX}sweep.discoverySeed`,
   /** Base key for persisted sweep run selection; append `.${strategyId}` for per-strategy key. */
   sweepSel: `${PREFIX}sweep.sel`,
   /** Sweep results "show not-fired tokens" toggle. */

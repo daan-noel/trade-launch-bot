@@ -36,17 +36,18 @@ import {
 import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 import {
   axisRowError,
+  axesSpecToRows,
   comboCount,
   newAxisRow,
   serializeAxisRows,
   pnlAxisSugarDuplicateError,
-  type AxisKind,
   type AxisSpecWire,
   type GenericAxisRow,
-  type MetricAxisSide,
 } from './genericAxes';
 import { SWEEP_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import { tidySolDecimal } from 'utils/format';
+import { STORAGE_KEYS } from 'lib/storage';
+import type { DiscoverySweepHandoff } from '@lab/lib/metricDiscoveryTypes';
 
 /** Backend `MAX_COMBOS` default + `HARD_MAX_COMBOS` backstop (mirror). */
 const DEFAULT_MAX_COMBOS = 100000;
@@ -219,18 +220,8 @@ function parseMethodTag(method: string): Pick<GenericSweepConfig, 'methodKind' |
 }
 
 /** Rebuild editor rows from a stored run's `axes_spec` (`{ axes: AxisSpec[] }`). */
-function axesSpecToRows(spec: unknown): GenericAxisRow[] {
-  const axes = (spec as { axes?: AxisSpecWire[] } | null | undefined)?.axes;
-  if (!Array.isArray(axes)) return [];
-  return axes.map((a) => ({
-    ...newAxisRow((a.kind as AxisKind) ?? 'metric'),
-    side: (a.side as MetricAxisSide) ?? 'entry',
-    group: a.group ?? '',
-    metric: a.metric ?? '',
-    operator: a.operator ?? '>',
-    window: a.window != null ? String(a.window) : '',
-    valuesText: (a.values ?? []).map((v) => (v == null ? 'off' : v)).join(', '),
-  }));
+function runAxesSpecToRows(spec: unknown): GenericAxisRow[] {
+  return axesSpecToRows(spec as { axes?: AxisSpecWire[] } | null | undefined);
 }
 
 function runToConfig(run: GroupedSweepRunRecord, defaults: GenericSweepConfig): GenericSweepConfig {
@@ -245,7 +236,7 @@ function runToConfig(run: GroupedSweepRunRecord, defaults: GenericSweepConfig): 
       fieldFiltersText[field] = vals.join(', ');
     }
   }
-  const rows = axesSpecToRows(run.axes_spec);
+  const rows = runAxesSpecToRows(run.axes_spec);
   return {
     ...defaults,
     createdAfter: isoToLocalInput(run.created_after),
@@ -304,6 +295,45 @@ export function GenericSweepConfigForm({
     setConfig(() => runToConfig(reuseRun, DEFAULTS));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reuseNonce]);
+
+  // Apply a one-shot discovery → sweep seed written by MetricDiscoveryPage.
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(STORAGE_KEYS.sweepDiscoverySeed);
+      if (!raw) return;
+      sessionStorage.removeItem(STORAGE_KEYS.sweepDiscoverySeed);
+      const handoff = JSON.parse(raw) as DiscoverySweepHandoff;
+      if (!handoff?.seed?.axes || !Array.isArray(handoff.seed.axes)) return;
+      const axes = handoff.includeOptional
+        ? [...handoff.seed.axes, ...(handoff.seed.optional_axes ?? [])]
+        : handoff.seed.axes;
+      const rows = axesSpecToRows(axes);
+      if (rows.length === 0) return;
+      setConfig((prev) => ({
+        ...DEFAULTS,
+        ...prev,
+        axisRows: rows,
+        createdAfter: handoff.createdAfter || prev.createdAfter || DEFAULTS.createdAfter,
+        createdBefore: handoff.createdBefore || prev.createdBefore || DEFAULTS.createdBefore,
+        curveOnly: handoff.curveOnly ?? prev.curveOnly,
+        tokenCap: Math.min(
+          MAX_TOKEN_CAP,
+          Math.max(1, handoff.tokenCap || prev.tokenCap || DEFAULTS.tokenCap),
+        ),
+        buyAmountSol: tidySolDecimal(handoff.buyAmountSol || prev.buyAmountSol || DEFAULTS.buyAmountSol),
+        volumeIxPatterns: handoff.volumeIxPatterns?.length
+          ? handoff.volumeIxPatterns
+          : prev.volumeIxPatterns,
+        ixLabelsFilter: handoff.ixLabelsFilter || prev.ixLabelsFilter || '',
+        seedFingerprintId: handoff.fingerprintId ?? prev.seedFingerprintId,
+        groupBy: handoff.fingerprintId ? [] : prev.groupBy ?? DEFAULTS.groupBy,
+        minTokens: handoff.fingerprintId ? 1 : prev.minTokens ?? DEFAULTS.minTokens,
+      }));
+    } catch {
+      /* ignore malformed handoff */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const config: GenericSweepConfig = {
     ...DEFAULTS,

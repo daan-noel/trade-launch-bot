@@ -230,24 +230,27 @@ CLI: `cargo run -p lab -- lake-export` (batch job; reads `SWEEP_LAKE_DIR`, defau
 
 ## Metric-combo discovery pipeline (`lab/src/discovery/`)
 
-Lab-only, built entirely on top of the generic sweep engine above (no new engine) —
-an automated screen → family-grid → out-of-sample-validate pipeline that finds which
-metric/param combos actually make money for a cohort, ranked by a stability-weighted
-objective, then hands a one-click promote into the shared rule editor. Nothing ships to
-EC2; live/paper are untouched (an analysis aid that *outputs* combos, like the sweep).
-Registry-driven throughout: a metric added to `REGISTRY` needs no pipeline edit (family
-tag + unit/scope/monotonic flags are all it reads).
+Lab-only, built entirely on top of the generic sweep engine above (no new engine)
+— an automated screen → family-grid → joint-interacting → out-of-sample-validate
+pipeline whose **primary deliverable is a grouped-sweep seed** (`SweepSeed` /
+`AxisSpec[]`): which metrics deserve axes, which narrowed value menus (incl. `off`)
+are worth gridding, and which families must be gridded jointly. Promote into the
+shared rule editor remains a secondary exit on OOS survivors. Nothing ships to
+EC2; live/paper are untouched. Registry-driven throughout: a metric added to
+`REGISTRY` needs no pipeline edit (family tag + unit/scope/monotonic flags are
+all it reads).
 
 | File | Role |
 | --- | --- |
 | `discovery/objective.rs` | `DiscoveryWeights` (tunable constants below) + `discovery_score(ComboStats) → Ranked \| BelowMinClosed \| NoFire` — a pure re-rank over persisted `ComboMetrics`, not a `checklist_score`/kernel edit (that stays the live/paper/sweep SSOT) |
 | `discovery/candidates.rs` | `screen_plan` (registry → screenable metrics + `SkipReason`) → `collect_percentiles` (measured `[p05..p99]` per metric, via the engine's own `MetricSeries` — deliberately **not** DuckDB SQL, else percentile semantics could drift from `hunter_engine`) → `build_menus` (`p10/p25/p50/p75/p90` + `off`, rounded by unit) → feeds `AxesModel` directly; the hand-derived table in [axis-value-candidates.md](../plans/sweep/axis-value-candidates.md) is now generated, not authored |
 | `discovery/screen.rs` | Layer 1: `ScreenStrategy`, an additive scan mode (`GenericSweepStrategy::share_precompute`) that sweeps every candidate metric alone against a fixed TP/SL baseline over **one** shared per-token precompute (~6N combos, not 6^N) → `Verdict{Keep\|DropNoEdge\|DropSpike\|DropThin\|DropNoBaseline}` per metric → ranked shortlist |
-| `discovery/family.rs` | Layer 2: `plan_families` groups the Layer-1 shortlist by the registry's `MetricFamily` tag (`price`/`flow`/`flow_split`/`liquidity-age`, mirrors the hue-wheel families), grids within each family, then runs an O(families²) pairwise interaction check (pin A's best, sweep B) → `Independent \| Interacting \| Inconclusive` per ordered pair, plus each family's `BestCombo` (canonical `RuleParams` JSON, ready to promote) |
-| `discovery/validate.rs` | Layer 3: `split_tokens` (age-based train/validate split) + `validate_candidates` re-scores each Layer-2 winner on the held-out slice via `simulate_one_combo` under the run's own `Pricing`/`as_of` → `ValidationVerdict{Holds\|Degraded\|Failed\|ThinValidate\|NoFireValidate\|UnrankableTrain}` (the two "can't tell" outcomes are never silently a pass) |
-| `discovery/pipeline.rs` | `run_pipeline` — splits the cohort first, fits Layers 1–2 on train, validates on the held-out slice (a degenerate split fits the whole cohort and reports `no_validation` rather than a vacuous pass) |
-| `discovery/dto.rs` + `api/handlers/strategies/metric_discovery.rs` | `PipelineDto` (report flattened to stable wire vocabulary) + `POST /api/strategies/metric-discovery` (+`/cancel`/`/last`/`/{run_id}`, SSE progress, single-flight mutually exclusive with sweep/flow-discovery, cohort scoping by fingerprint/`ix_labels`/field filters) |
-| `frontend/src/lab/pages/strategies/MetricDiscoveryPage.tsx` | shortlist → family winners + interaction map → validation verdicts, **Promote…** on any winner (builds a `PromotedRuleDraft` client-side from `params_json` — no dedicated promote endpoint) |
+| `discovery/family.rs` | Layer 2: `plan_families` groups the Layer-1 shortlist by the registry's `MetricFamily` tag (`price`/`flow`/`flow_split`/`liquidity-age`), grids within each family, then runs an O(families²) pairwise interaction check (pin A's best, sweep B) → `Independent \| Interacting \| Inconclusive`. **L2b** builds connected components of undirected `Interacting` pairs and product-grids them under `FamilyLimits` (no longer advisory-only) → `JointResult` winners |
+| `discovery/validate.rs` | Layer 3: `split_tokens` (age-based train/validate split) + `validate_candidates` re-scores each Layer-2 family **and** joint winner on the held-out slice via `simulate_one_combo` under the run's own `Pricing`/`as_of` → `ValidationVerdict{Holds\|Degraded\|Failed\|ThinValidate\|NoFireValidate\|UnrankableTrain}` (the two "can't tell" outcomes are never silently a pass) |
+| `discovery/seed.rs` | `build_sweep_seed` — Keep axes (`off` + narrowed) + TP/SL menus expanded ±1 rung on the canonical ladders + near-miss `optional_axes` (`DropNoEdge` with best score > 0) + cluster notes. Pure projection onto the same `AxisSpec` wire the generic sweep consumes |
+| `discovery/pipeline.rs` | `run_pipeline` — splits the cohort first, fits Layers 1–2 (+ L2b) on train, validates on the held-out slice (a degenerate split fits the whole cohort and reports `no_validation` rather than a vacuous pass) |
+| `discovery/dto.rs` + `api/handlers/strategies/metric_discovery.rs` | `PipelineDto` (incl. `sweep_seed`) + `POST /api/strategies/metric-discovery` (+`/cancel`/`/last`/`/{run_id}`, SSE progress, single-flight mutually exclusive with sweep/flow-discovery, cohort scoping by fingerprint/`ix_labels`/field filters) |
+| `frontend/src/lab/pages/strategies/MetricDiscoveryPage.tsx` | shortlist + curves/drop reasons → family winners + joint grids + interaction map → validation; primary **Open as sweep** writes a sessionStorage handoff that `GenericSweepConfigForm` applies once; **Promote…** secondary on winners |
 
 **Objective (Layer 1's ranking core):** `robust_profit × fire_rate × win_component ×
 min_n_gate`, where `robust_profit` is median-anchored (not mean — one whale winner can't
@@ -258,6 +261,10 @@ with `n_closed < MIN_CLOSED` (the anti-overfit backbone — no profit% lets a 4-
 `MIN_CLOSED` / plateau-penalty weight are seeded from the `axis-value-candidates.md`
 anchors but never validated-and-pinned as a permanent tuning — revisit once a discovery
 run's picks are checked against live/paper outcomes.
+
+**Honest L1 limit:** synergistic-only metrics (no univariate lift) never enter Keep /
+joint grids; they can only appear as seed `optional_axes` when they are
+`DropNoEdge` with a positive best score, or be added manually in the sweep form.
 
 **Perf shape is scan/precompute-bound, not fold-bound** (few combos; cost is the corpus
 load + per-token `MetricSeries` build + the exit scan). A discovery run should therefore

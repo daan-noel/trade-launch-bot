@@ -255,6 +255,21 @@ export function comboCount(rows: GenericAxisRow[], reg: StrategyRegistry | undef
   return specs.reduce((acc, a) => acc * a.values.length, 1);
 }
 
+/** Rebuild editor rows from a wire `{ axes: AxisSpec[] }` (sweep run or discovery seed). */
+export function axesSpecToRows(spec: { axes?: AxisSpecWire[] } | AxisSpecWire[] | null | undefined): GenericAxisRow[] {
+  const axes = Array.isArray(spec) ? spec : spec?.axes;
+  if (!Array.isArray(axes)) return [];
+  return axes.map((a) => ({
+    ...newAxisRow((a.kind as AxisKind) ?? 'metric'),
+    side: (a.side as MetricAxisSide) ?? 'entry',
+    group: a.group ?? '',
+    metric: a.metric ?? '',
+    operator: a.operator ?? '>',
+    window: a.window != null ? String(a.window) : '',
+    valuesText: (a.values ?? []).map((v) => (v == null ? 'off' : v)).join(', '),
+  }));
+}
+
 let rowSeq = 0;
 /** A fresh axis row with sensible defaults for its kind. The id mixes a counter
  *  with a random suffix so a freshly-added row can never collide with a row

@@ -42,7 +42,7 @@ pub enum AxisSide {
 }
 
 /// The raw wire form of one axis (from the request `axes.axes[]` array).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AxisSpec {
     /// `"metric"` (default), `"take_profit"`, or `"stop_loss"`.
     #[serde(default = "default_kind")]

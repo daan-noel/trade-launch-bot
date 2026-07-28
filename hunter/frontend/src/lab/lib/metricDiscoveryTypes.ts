@@ -2,6 +2,8 @@
 //! `hunter-lab`'s `discovery::dto::PipelineDto`. Every field is a plain string /
 //! number the Rust DTO already flattened, so nothing here recomputes.
 
+import type { AxisSpecWire } from '@lab/components/sweep/genericAxes';
+
 /** One point on a metric's Layer-1 response curve. */
 export interface ResponsePoint {
   value: number | null; // null = the `off` pick
@@ -84,10 +86,21 @@ export interface Interaction {
   score_given: number | null;
 }
 
+export interface JointResult {
+  families: string[];
+  combos: number;
+  n_gated: number;
+  members: FamilyMember[];
+  dropped: DroppedMember[];
+  best: BestCombo | null;
+}
+
 export interface FamilyDto {
   combos_scanned: number;
   families: FamilyResult[];
   interactions: Interaction[];
+  /** Present on new runs; older cached results may omit it. */
+  joints?: JointResult[];
 }
 
 export interface SliceScore {
@@ -125,6 +138,39 @@ export interface ValidationDto {
   candidates: CandidateValidation[];
 }
 
+export interface SeedCluster {
+  families: string[];
+  interacting: boolean;
+  members: string[];
+}
+
+/** Discovery → grouped-sweep handoff (mirrors `discovery::seed::SweepSeed`). */
+export interface SweepSeed {
+  axes: AxisSpecWire[];
+  optional_axes: AxisSpecWire[];
+  clusters: SeedCluster[];
+  combo_estimate: number;
+  notes: string[];
+}
+
+/**
+ * Payload written to sessionStorage when the user clicks "Open as sweep".
+ * The generic sweep form applies it once, then clears the key.
+ */
+export interface DiscoverySweepHandoff {
+  seed: SweepSeed;
+  /** When true, merge `optional_axes` into the axis rows. */
+  includeOptional: boolean;
+  createdAfter: string;
+  createdBefore: string;
+  curveOnly: boolean;
+  tokenCap: number;
+  fingerprintId: string | null;
+  buyAmountSol: number;
+  volumeIxPatterns: string[][];
+  ixLabelsFilter: string;
+}
+
 export interface PipelineDto {
   cohort_tokens: number;
   fit_tokens: number;
@@ -132,6 +178,8 @@ export interface PipelineDto {
   family: FamilyDto;
   validation: ValidationDto | null;
   no_validation: string | null;
+  /** Present on new runs; older cached `/last` results may omit it. */
+  sweep_seed?: SweepSeed;
 }
 
 /** `GET …/metric-discovery/{run_id}` and `/last` both return this envelope. */
