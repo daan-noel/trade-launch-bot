@@ -342,6 +342,116 @@ pub fn weighted_return_pct(sum_pnl_sol: f64, sum_capital_sol: f64) -> f64 {
     }
 }
 
+// ── Wallet trade reconstruction (Trader Analysis) ──────────────────────────────
+
+/// Avg-cost PnL reconstruction for one wallet's aggregate buy/sell activity on
+/// one mint within a window — the Trader Analysis page's per-token stats. NOT a
+/// FIFO episode ledger (that needs per-trade ordering, which this aggregate
+/// doesn't carry); the closed portion's cost basis is `avg_buy_price ×
+/// matched_tokens`, where `matched_tokens = min(buy_tokens, sell_tokens)`.
+///
+/// When the wallet sold more than it bought *in this window* (its opening buy
+/// predates the look-back window), the unmatched sell proceeds are apportioned
+/// by the matched fraction rather than guessed at, and `partial_data` flags the
+/// row so the UI can say so instead of presenting a precise-looking number.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WalletMintPnl {
+    /// `buy_sol / buy_token_amount` — `None` when the wallet never bought in the
+    /// window (a mint it only received/sold, e.g. an airdrop).
+    pub avg_buy_price: Option<f64>,
+    /// `sell_sol / sell_token_amount` — `None` when the wallet never sold.
+    pub avg_sell_price: Option<f64>,
+    /// `buy_token_amount − sell_token_amount`. Positive = still holding a bag on
+    /// this mint; negative means the wallet sold more than it bought in the
+    /// window (see `partial_data`), never an accounting error.
+    pub net_token_amount: i64,
+    /// Realized PnL on the matched (closed) portion, gross of the pump.fun fee —
+    /// `proceeds_of_matched − cost_basis_of_matched`.
+    pub realized_pnl_sol: f64,
+    /// Same as `realized_pnl_sol`, net of the measured pump.fun protocol fee
+    /// (`kernel::FEE_BPS_PER_LEG`, both legs) — no tip/priority-fee charge, since
+    /// those are OUR execution cost, not observable on someone else's trades.
+    pub realized_pnl_sol_net_of_fee: f64,
+    /// `realized_pnl_sol / cost_basis_of_matched × 100` — `None` when the matched
+    /// cost basis is zero (nothing to divide by: no buys, or the buy was free).
+    pub realized_pnl_pct: Option<f64>,
+    /// Mark-to-market PnL on the still-open bag (`net_token_amount > 0`), using
+    /// the token's current spot price — `None` when there's no open bag, or the
+    /// current price is unknown. Gross of fee (an unrealized mark, not an actual
+    /// exit — charging a hypothetical exit fee here would overstate the haircut
+    /// for a bag that might still be held when fees/slippage move).
+    pub unrealized_pnl_sol: Option<f64>,
+    /// `realized_pnl_sol + unrealized_pnl_sol.unwrap_or(0.0)` — the single
+    /// mark-to-market ranking number (Trader Analysis' "ranked by PnL" chart
+    /// sorts on this, not on `realized_pnl_sol` alone, so a wallet's still-open
+    /// runner isn't invisible to the ranking).
+    pub total_pnl_sol: f64,
+    /// `net_token_amount > 0` — still holding some of this mint.
+    pub is_open: bool,
+    /// The wallet sold more than it bought within the window — the cost basis on
+    /// the unmatched portion is unknown (a pre-window position), so every PnL
+    /// figure above is a partial-window estimate, not the wallet's true realized
+    /// result on this mint.
+    pub partial_data: bool,
+}
+
+/// Compute [`WalletMintPnl`] from one wallet's raw aggregate trade sums on one
+/// mint. `buy_sol`/`sell_sol` are the recorded curve-side amounts (pre-fee, see
+/// [`WalletMintPnl::realized_pnl_sol_net_of_fee`]'s doc); `current_price` is the
+/// token's current spot price (human SOL per raw token unit — the same
+/// convention `avg_buy_price`/`avg_sell_price` use), or `None` if unknown.
+pub fn wallet_mint_pnl(
+    buy_sol: f64,
+    sell_sol: f64,
+    buy_token_amount: i64,
+    sell_token_amount: i64,
+    current_price: Option<f64>,
+) -> WalletMintPnl {
+    let avg_buy_price = (buy_token_amount > 0).then(|| buy_sol / buy_token_amount as f64);
+    let avg_sell_price = (sell_token_amount > 0).then(|| sell_sol / sell_token_amount as f64);
+
+    let matched_tokens = buy_token_amount.min(sell_token_amount).max(0) as f64;
+    let cost_basis_matched = avg_buy_price.unwrap_or(0.0) * matched_tokens;
+    // Apportion sell proceeds by the matched fraction — a no-op (fraction = 1)
+    // in the common case `sell_token_amount <= buy_token_amount`.
+    let proceeds_matched = if sell_token_amount > 0 {
+        sell_sol * (matched_tokens / sell_token_amount as f64)
+    } else {
+        0.0
+    };
+
+    let realized_pnl_sol = proceeds_matched - cost_basis_matched;
+    let fee = FEE_BPS_PER_LEG / 10_000.0;
+    let realized_pnl_sol_net_of_fee =
+        proceeds_matched * (1.0 - fee) - cost_basis_matched * (1.0 + fee);
+    let realized_pnl_pct =
+        (cost_basis_matched > 0.0).then(|| realized_pnl_sol / cost_basis_matched * 100.0);
+
+    let net_token_amount = buy_token_amount - sell_token_amount;
+    let unrealized_pnl_sol = if net_token_amount > 0 {
+        match (avg_buy_price, current_price) {
+            (Some(abp), Some(cp)) => Some(net_token_amount as f64 * (cp - abp)),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let total_pnl_sol = realized_pnl_sol + unrealized_pnl_sol.unwrap_or(0.0);
+
+    WalletMintPnl {
+        avg_buy_price,
+        avg_sell_price,
+        net_token_amount,
+        realized_pnl_sol,
+        realized_pnl_sol_net_of_fee,
+        realized_pnl_pct,
+        unrealized_pnl_sol,
+        total_pnl_sol,
+        is_open: net_token_amount > 0,
+        partial_data: sell_token_amount > buy_token_amount,
+    }
+}
+
 // ── Run metrics ────────────────────────────────────────────────────────────────
 
 /// Rolled-up metrics for one run across a token corpus. Field-for-field the
@@ -1223,5 +1333,99 @@ mod tests {
         let half = checklist_score(5, 0, 10, 40.0, 1.0).unwrap();
         assert!((full - 40.0).abs() < 1e-9);
         assert!((half - 20.0).abs() < 1e-9);
+    }
+
+    // ── wallet_mint_pnl (Trader Analysis) ───────────────────────────────────
+
+    #[test]
+    fn wallet_pnl_fully_closed_round_trip() {
+        // Bought 100 tokens for 1 SOL (0.01/token), sold all 100 for 1.5 SOL.
+        let p = wallet_mint_pnl(1.0, 1.5, 100, 100, None);
+        assert_eq!(p.avg_buy_price, Some(0.01));
+        assert_eq!(p.avg_sell_price, Some(0.015));
+        assert_eq!(p.net_token_amount, 0);
+        assert!(!p.is_open);
+        assert!(!p.partial_data);
+        assert!((p.realized_pnl_sol - 0.5).abs() < 1e-12);
+        assert!((p.realized_pnl_pct.unwrap() - 50.0).abs() < 1e-9);
+        // Net of the 125bps/leg fee: 1.5*(1-0.0125) - 1.0*(1+0.0125) = 1.48125 - 1.0125.
+        assert!((p.realized_pnl_sol_net_of_fee - (1.5 * 0.9875 - 1.0 * 1.0125)).abs() < 1e-9);
+        assert!(p.realized_pnl_sol_net_of_fee < p.realized_pnl_sol, "fee must cost something");
+        assert_eq!(p.unrealized_pnl_sol, None);
+        assert!((p.total_pnl_sol - p.realized_pnl_sol).abs() < 1e-12);
+    }
+
+    #[test]
+    fn wallet_pnl_still_open_marks_to_market() {
+        // Bought 100 for 1 SOL, sold none; current price is 2x the entry.
+        let p = wallet_mint_pnl(1.0, 0.0, 100, 0, Some(0.02));
+        assert_eq!(p.net_token_amount, 100);
+        assert!(p.is_open);
+        assert!(!p.partial_data);
+        assert_eq!(p.avg_sell_price, None);
+        // Nothing matched yet, so realized is flat.
+        assert!((p.realized_pnl_sol - 0.0).abs() < 1e-12);
+        assert_eq!(p.realized_pnl_pct, None);
+        // Unrealized: 100 * (0.02 - 0.01) = 1.0 SOL.
+        assert!((p.unrealized_pnl_sol.unwrap() - 1.0).abs() < 1e-12);
+        assert!((p.total_pnl_sol - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn wallet_pnl_open_without_current_price_has_no_unrealized() {
+        let p = wallet_mint_pnl(1.0, 0.0, 100, 0, None);
+        assert!(p.is_open);
+        assert_eq!(p.unrealized_pnl_sol, None, "unknown price must not fabricate a mark");
+        assert!((p.total_pnl_sol - 0.0).abs() < 1e-12, "total falls back to realized-only");
+    }
+
+    #[test]
+    fn wallet_pnl_partially_closed_matches_only_the_sold_tokens() {
+        // Bought 100 for 1 SOL, sold only 40 for 0.8 SOL (2x). The other 60 stay
+        // an open bag, not folded into the realized figure.
+        let p = wallet_mint_pnl(1.0, 0.8, 100, 40, Some(0.02));
+        assert_eq!(p.net_token_amount, 60);
+        assert!(p.is_open);
+        assert!(!p.partial_data);
+        // Cost basis of the 40 matched tokens = 40 * 0.01 = 0.4 SOL.
+        assert!((p.realized_pnl_sol - (0.8 - 0.4)).abs() < 1e-12);
+        // Unrealized on the remaining 60: 60 * (0.02 - 0.01) = 0.6 SOL.
+        assert!((p.unrealized_pnl_sol.unwrap() - 0.6).abs() < 1e-12);
+        assert!((p.total_pnl_sol - (0.4 + 0.6)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn wallet_pnl_oversold_vs_window_flags_partial_data() {
+        // Sold 100 tokens but the window only saw a 60-token buy — the other 40
+        // tokens' cost basis predates the window. Only the matched 60 count.
+        let p = wallet_mint_pnl(0.6, 1.5, 60, 100, None);
+        assert!(p.partial_data, "selling more than bought in-window must be flagged");
+        assert_eq!(p.net_token_amount, -40);
+        assert!(!p.is_open, "a negative net amount is not an open bag");
+        // Proceeds apportioned to the matched 60/100 of the sale: 1.5 * 0.6 = 0.9.
+        // Cost basis of the matched 60 = 60 * 0.01 = 0.6.
+        assert!((p.realized_pnl_sol - (0.9 - 0.6)).abs() < 1e-9);
+        assert_eq!(p.unrealized_pnl_sol, None, "no open bag to mark");
+    }
+
+    #[test]
+    fn wallet_pnl_no_buys_in_window_has_no_avg_buy_price_or_realized_pct() {
+        // A mint only sold in the window (opening buy predates `since`).
+        let p = wallet_mint_pnl(0.0, 1.0, 0, 50, Some(0.01));
+        assert_eq!(p.avg_buy_price, None);
+        assert!(p.partial_data);
+        assert_eq!(p.realized_pnl_pct, None, "zero cost basis must not divide by zero");
+        assert!((p.realized_pnl_sol - 0.0).abs() < 1e-12, "no matched cost basis to net against");
+    }
+
+    #[test]
+    fn wallet_pnl_no_trades_is_all_zero_and_closed() {
+        let p = wallet_mint_pnl(0.0, 0.0, 0, 0, None);
+        assert!(!p.is_open);
+        assert!(!p.partial_data);
+        assert_eq!(p.avg_buy_price, None);
+        assert_eq!(p.avg_sell_price, None);
+        assert_eq!(p.realized_pnl_pct, None);
+        assert!((p.total_pnl_sol - 0.0).abs() < 1e-12);
     }
 }

@@ -370,10 +370,16 @@ export const labApi = baseApi.injectEndpoints({
     >({
       query: ({ wallet, days, limit }) =>
         `/api/wallets/${encodeURIComponent(wallet)}/tokens?days=${days}&limit=${limit}`,
-      // Pre-parse created_at to epoch-ms so the shared AgeCell reads it directly
-      // (mirrors the getTokensPage transform).
+      // Pre-parse created_at + the wallet trade timestamps to epoch-ms so the
+      // shared AgeCell and the PnL analytics panel (heatmap/equity-curve/scatter
+      // bucketing) never re-parse the ISO strings per render.
       transformResponse: (rows: TraderTokenRow[]) =>
-        rows.map((r) => ({ ...r, created_at_ms: Date.parse(r.created_at) })),
+        rows.map((r) => ({
+          ...r,
+          created_at_ms: Date.parse(r.created_at),
+          wallet_first_trade_at_ms: Date.parse(r.wallet_first_trade_at),
+          wallet_last_trade_at_ms: Date.parse(r.wallet_last_trade_at),
+        })),
       keepUnusedDataFor: 60,
     }),
     // Flow discovery — score trade ix-structures per fingerprint group (V4).

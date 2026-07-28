@@ -1086,7 +1086,11 @@ function RuleSimPositionsPanel({
  * backend now sends the two-band `RunSummary` and this just renders it.
  */
 function simSummaryStats(s: SimulatedSummary): { hero: SummaryStat[]; sections: SummarySection[] } {
-  return runSummarySections(s, { migrated: s.n_migrated });
+  return runSummarySections(s, {
+    matched: s.n_matched,
+    tokensEntered: s.n_tokens_entered,
+    migrated: s.n_migrated,
+  });
 }
 
 function buildColumns(
@@ -1285,15 +1289,43 @@ function buildColumns(
       ),
       {
         tooltip:
-          "Distinct tokens whose creation axes matched this rule's fingerprint in the window — the candidate pool Entered is drawn from (includes tokens the rule never entered). Counted once per token even under a re-entry rule.",
+          "Distinct tokens whose creation axes matched this rule's fingerprint in the window — the candidate pool Entries is drawn from (includes tokens the rule never entered). Counted once per token even under a re-entry rule.",
       },
     ),
-    simMetric('sim_entered', 'Entered', (s) => s.realized.n_fired, (s) => (
+    simMetric(
+      'sim_tokens_entered',
+      'Tokens',
+      (s) => s.n_tokens_entered ?? 0,
+      (s) => (
+        <span className="tabular-nums text-info">
+          {s.n_tokens_entered != null ? s.n_tokens_entered : DASH}
+        </span>
+      ),
+      {
+        tooltip:
+          'Distinct tokens actually entered (≥1 position) — narrower than Matched and, under a re-entry rule, smaller than Entries',
+      },
+    ),
+    simMetric('sim_entered', 'Entries', (s) => s.realized.n_fired, (s) => (
       <span className="tabular-nums text-text">{s.realized.n_fired}</span>
     ), {
       tooltip:
-        'Positions taken (entries) — a re-entry rule can enter the same token more than once, so this can exceed Matched',
+        'Positions taken (entries) — a re-entry rule can enter the same token more than once, so this can exceed Tokens',
     }),
+    simMetric(
+      'sim_reentries',
+      'Re-entries',
+      (s) => (s.n_tokens_entered != null ? Math.max(s.realized.n_fired - s.n_tokens_entered, 0) : 0),
+      (s) => {
+        if (s.n_tokens_entered == null) return DASH;
+        const n = Math.max(s.realized.n_fired - s.n_tokens_entered, 0);
+        return <span className={cn('tabular-nums', n > 0 ? 'text-secondary' : 'text-text-dim')}>{n}</span>;
+      },
+      {
+        tooltip:
+          'Entries beyond one per token (Entries − Tokens) — 0 for a one-shot rule, positive whenever a token fired more than once',
+      },
+    ),
     simMetric('sim_closed', 'Closed', (s) => s.realized.n_closed, (s) => (
       <span className="tabular-nums text-text">{s.realized.n_closed}</span>
     ), { tooltip: 'Positions that closed (one per entry, not per token)' }),

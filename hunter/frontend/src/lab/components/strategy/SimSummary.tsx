@@ -10,7 +10,13 @@ import type { SimulatedSummary } from 'types';
  */
 export function SimSummary({ summary }: { summary: SimulatedSummary }) {
   const { hero, sections } = useMemo(
-    () => runSummarySections(summary, { migrated: summary.n_migrated, extended: true }),
+    () =>
+      runSummarySections(summary, {
+        matched: summary.n_matched,
+        tokensEntered: summary.n_tokens_entered,
+        migrated: summary.n_migrated,
+        extended: true,
+      }),
     [summary],
   );
 

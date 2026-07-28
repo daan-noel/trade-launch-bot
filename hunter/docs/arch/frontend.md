@@ -431,6 +431,22 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   (`tokens/` → `table/`), asserted by `components/table/DataTable.boundary.test.ts`. **Every** token-row
   table now renders through `TokenTable`. (Trader Analysis keeps its always-on external `<TokenChartsGrid>`
   fed by the table's `onVisibleRowsChange` rather than the toggle, being chart-centric.)
+- **Trader Analysis wallet PnL analytics (`lab/components/analysis/`).** The per-mint rows returned by
+  `/api/wallets/:wallet/tokens` (`WalletTokenRow` in `lab/api/handlers/wallets.rs`, backed by
+  `strategies::kernel::wallet_mint_pnl` — an avg-cost reconstruction over that wallet's in-window trades on
+  the mint, with gross **and** fee-adjusted-net realized PnL plus mark-to-market unrealized PnL off
+  `current_price`) land on `TraderTokenRow` as `wallet_*` fields. `TraderAnalysisPage` feeds the table's
+  full **filtered** cohort (via `TokenTable`'s `onFilteredRowsChange`, not just the visible page) into
+  `<WalletAnalyticsPanel>`, a summary-stats row (`WalletPnlSummary`) plus a tabbed chart switcher: PnL
+  heatmap (day-of-week × hour, CSS grid, `WalletPnlHeatmap`), cumulative-PnL equity curve
+  (`WalletEquityCurveChart`, `lightweight-charts` `BaselineSeries`, lazy-mounted), tokens ranked best→worst
+  by total PnL (`WalletRankedPnlBars`), realized-PnL% distribution buckets (`WalletPnlDistribution`), and a
+  hold-time-vs-PnL% scatter (`WalletHoldScatter`, log-scaled SVG). All chart data is pure/DB-free —
+  `lab/components/analysis/walletPnlStats.ts` derives every shape from the current `TraderTokenRow[]`
+  cohort, unit-tested in `walletPnlStats.test.ts` — so filtering/re-sorting the table live-updates every
+  chart without a refetch. Every figure is a per-mint aggregate, not a per-episode ledger: a wallet that
+  re-entered a mint several times in the window collapses to one row (see the doc comment on
+  `kernel::wallet_mint_pnl`).
 - **One in-memory evaluator, in Rust only.** Token tables whose rows are RAM-resident on the backend (the
   lab Simulated table; the live Holdings composition) page/sort/filter through
   `trading_core::api::table_eval::apply_table_request` with a per-table `ColResolver` grammar; the shared

@@ -403,6 +403,15 @@ export interface SimulatedSummary extends RunSummary {
    *  legacy payloads computed before this field existed (re-run the simulation
    *  to backfill). */
   n_matched?: number;
+  /** Distinct tokens the rule actually **entered** (≥1 fired episode) — narrower
+   *  than `n_matched` (the whole candidate pool, entered or not) and different
+   *  from `realized.n_fired` (every entry; a re-entry rule's repeat visits to
+   *  one mint each add to it). `realized.n_fired - n_tokens_entered` is the
+   *  run's re-entry volume: `0` for a one-shot rule, positive whenever a mint
+   *  fired more than once. Same filtered/unfiltered scoping as `n_matched`.
+   *  Absent on legacy payloads computed before this field existed (re-run the
+   *  simulation to backfill). */
+  n_tokens_entered?: number;
   /** Which fill model priced this run's round-trips — rendered as the Simulate
    *  table's Fill column. Absent/null on legacy payloads → falls back to the
    *  default (worst-case) label. */
@@ -814,13 +823,54 @@ export interface TokenDetailRecord {
  *  renders through the same columns as the All Tokens table) plus the wallet's
  *  interaction stats on that mint. Returned by `GET /api/wallets/:wallet/tokens`,
  *  most-recent-trade first. */
+/**
+ * One Trader Analysis table row: the full token record plus the wallet's
+ * interaction stats AND a reconstructed avg-cost PnL on that mint (backend
+ * `wallets.rs::WalletTokenRow` / `kernel::wallet_mint_pnl` — see those doc
+ * comments for exactly how each figure is derived and what `wallet_partial_data`
+ * means). All scoped to the same look-back window, so a mint the wallet only
+ * *exited* can show 0 buys and every PnL figure flagged `wallet_partial_data`.
+ */
 export interface TraderTokenRow extends TokenRecord {
+  /** The wallet's first trade on this mint *within the window* — paired with
+   *  `wallet_last_trade_at` as a hold-duration proxy at this per-mint grain. */
+  wallet_first_trade_at: string;
+  /** `wallet_first_trade_at` pre-parsed to epoch-ms (see labEndpoints transform),
+   *  so the analytics panel never re-parses the ISO string per chart render. */
+  wallet_first_trade_at_ms?: number;
   /** The wallet's most-recent trade on this mint — the table's default sort. */
   wallet_last_trade_at: string;
+  wallet_last_trade_at_ms?: number;
   /** The wallet's buy/sell counts on this mint within the look-back window.
    *  Scoped to the window, so a mint the wallet only *exited* can show 0 buys. */
   wallet_buy_count: number;
   wallet_sell_count: number;
+  /** Σ SOL bought/sold in the window (recorded curve-side amount, pre-fee). */
+  wallet_buy_sol: number;
+  wallet_sell_sol: number;
+  /** SOL per raw token unit (same convention as `current_price`); `null` when
+   *  that side has no legs in the window. */
+  wallet_avg_buy_price: number | null;
+  wallet_avg_sell_price: number | null;
+  /** `buy_token_amount - sell_token_amount` (raw units). Positive = still
+   *  holding a bag; negative only when `wallet_partial_data` is true. */
+  wallet_net_token_amount: number;
+  /** Realized PnL on the matched (closed) portion, gross of the pump.fun fee. */
+  wallet_realized_pnl_sol: number;
+  /** Same, net of the measured ~125bps/leg pump.fun protocol fee. */
+  wallet_realized_pnl_sol_net_of_fee: number;
+  /** `null` when there's no matched cost basis to divide by (no buys). */
+  wallet_realized_pnl_pct: number | null;
+  /** Mark-to-market PnL on the still-open bag; `null` when there's no open bag
+   *  or the current price is unknown. */
+  wallet_unrealized_pnl_sol: number | null;
+  /** `realized_pnl_sol + (unrealized_pnl_sol ?? 0)` — the one ranking number. */
+  wallet_total_pnl_sol: number;
+  /** `net_token_amount > 0` — still holding some of this mint. */
+  wallet_is_open: boolean;
+  /** The wallet sold more than it bought in the window (opening buy predates the
+   *  window) — every PnL figure above is a partial-window estimate. */
+  wallet_partial_data: boolean;
 }
 
 /** Per-token live stats pushed alongside each trade (backend `live_stats`).

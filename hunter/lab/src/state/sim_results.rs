@@ -72,6 +72,15 @@ pub struct SimMeta {
     /// wire then reads as "not yet computed" until the rule is re-simulated.
     #[serde(default)]
     pub n_matched: Option<usize>,
+    /// Distinct-`mint_address` count over the run's **entered** rows only — how
+    /// many unique tokens the rule actually traded, vs. `n_matched` (the whole
+    /// candidate pool) or `summary.realized.n_fired` (every entry, so a re-entry
+    /// rule's repeats each add to it). `summary.realized.n_fired - n_tokens_entered`
+    /// is the run's re-entry volume. Surfaced on the wire as `n_tokens_entered`
+    /// (see [`summary_wire`]), the Simulate table's Tokens column. `None` on a
+    /// legacy meta (pre-field) until the rule is re-simulated.
+    #[serde(default)]
+    pub n_tokens_entered: Option<usize>,
     pub n_migrated: u64,
     /// Which fill model priced this run's round-trips — surfaced as the Simulate
     /// table's Fill column so a result reads with the pessimism band it was booked
@@ -215,6 +224,7 @@ impl SimResults {
                 let summary = sim_query::summarize(rows);
                 let n_migrated = count_migrated(rows);
                 let n_matched = sim_query::count_matched(rows);
+                let n_tokens_entered = sim_query::count_tokens_entered(rows);
                 let meta = SimMeta {
                     rule_id,
                     sim_key,
@@ -224,6 +234,7 @@ impl SimResults {
                     computed_at,
                     n_rows: rows.len(),
                     n_matched: Some(n_matched),
+                    n_tokens_entered: Some(n_tokens_entered),
                     n_migrated,
                     fill_model,
                     cost_model,
@@ -420,11 +431,12 @@ pub fn summary_wire(meta: &SimMeta) -> Value {
     if let Some(obj) = body.as_object_mut() {
         obj.insert("computed_at".into(), serde_json::json!(meta.computed_at));
         obj.insert("n_migrated".into(), serde_json::json!(meta.n_migrated));
-        // Distinct-token count (re-entry safe — see `SimMeta::n_matched`'s doc),
-        // unfiltered. The sibling `n_matched` `positions::summary_json_from_rows`
-        // computes is the same statistic over a search/filter-scoped row slice,
+        // Distinct-token counts (re-entry safe — see `SimMeta::n_matched`/
+        // `n_tokens_entered`'s docs), unfiltered. `positions::summary_json_from_rows`
+        // computes the same two statistics over a search/filter-scoped row slice,
         // for the drill-in summary card.
         obj.insert("n_matched".into(), serde_json::json!(meta.n_matched));
+        obj.insert("n_tokens_entered".into(), serde_json::json!(meta.n_tokens_entered));
         obj.insert("fill_model".into(), serde_json::json!(meta.fill_model));
         obj.insert("cost_model".into(), serde_json::json!(meta.cost_model));
     }
@@ -434,10 +446,7 @@ pub fn summary_wire(meta: &SimMeta) -> Value {
 fn count_migrated(rows: &[Value]) -> u64 {
     rows.iter()
         .filter(|r| {
-            let fired = r.get("fired").and_then(Value::as_bool).unwrap_or_else(|| {
-                r.get("exit_reason").and_then(Value::as_str) != Some("NoEntry")
-            });
-            fired && r.get("is_migrated").and_then(Value::as_bool).unwrap_or(false)
+            sim_query::row_is_fired(r) && r.get("is_migrated").and_then(Value::as_bool).unwrap_or(false)
         })
         .count() as u64
 }

@@ -138,6 +138,17 @@ pub fn summarize(rows: &[Value]) -> RunSummary {
     run_summary(outcomes.iter())
 }
 
+/// Whether a row is an entered position, not a matched-but-never-entered
+/// `NoEntry` pad. Prefers the explicit `fired` flag (new rows); falls back to
+/// `exit_reason` for any legacy resident payload that predated the field — the
+/// same fallback [`row_to_outcome`] uses, kept as one function so the two never
+/// drift onto different legacy heuristics.
+pub fn row_is_fired(row: &Value) -> bool {
+    row.get("fired")
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| row.get("exit_reason").and_then(Value::as_str) != Some("NoEntry"))
+}
+
 /// Distinct-token count over a sim's rows — the true "matched candidate pool"
 /// size, **not** `rows.len()`.
 ///
@@ -151,6 +162,20 @@ pub fn summarize(rows: &[Value]) -> RunSummary {
 /// directly would overcount any mint with more than one episode.
 pub fn count_matched(rows: &[Value]) -> usize {
     rows.iter()
+        .filter_map(|r| r.get("mint_address").and_then(Value::as_str))
+        .collect::<std::collections::HashSet<_>>()
+        .len()
+}
+
+/// Distinct-token count over a sim's **entered** rows only — how many unique
+/// mints the rule actually traded, as opposed to `count_matched` (the whole
+/// candidate pool, entered or not) or `n_fired` (every entry, so a re-entry
+/// rule's repeat visits to one mint each add to the count). `n_fired -
+/// count_tokens_entered` is therefore the run's re-entry volume: 0 for a
+/// one-shot rule, positive whenever a mint fired more than once.
+pub fn count_tokens_entered(rows: &[Value]) -> usize {
+    rows.iter()
+        .filter(|r| row_is_fired(r))
         .filter_map(|r| r.get("mint_address").and_then(Value::as_str))
         .collect::<std::collections::HashSet<_>>()
         .len()
@@ -807,6 +832,27 @@ mod tests {
         ];
         assert_eq!(summarize(&rows).realized.n_fired, 2, "two episodes, both counted");
         assert_eq!(count_matched(&rows), 2, "two distinct mints, re-entry not double-counted");
+        assert_eq!(
+            count_tokens_entered(&rows),
+            1,
+            "one mint fired twice is still one token entered",
+        );
+    }
+
+    #[test]
+    fn count_tokens_entered_excludes_no_entry_rows() {
+        // A matched-but-never-entered candidate must not count as a "token
+        // entered" — that distinction is the whole point of the two counters.
+        let rows = vec![
+            sim_row(1.0, 50.0, "TakeProfit", Some(10)),
+            json!({
+                "mint_address": "never", "symbol": "S2",
+                "fired": false, "exit_reason": "NoEntry",
+                "pnl_sol": null, "pnl_percent": null, "holding_secs": null,
+            }),
+        ];
+        assert_eq!(count_matched(&rows), 2, "both mints matched");
+        assert_eq!(count_tokens_entered(&rows), 1, "only one mint actually entered");
     }
 
     #[test]

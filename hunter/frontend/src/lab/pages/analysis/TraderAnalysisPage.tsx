@@ -4,9 +4,12 @@ import { tokenColumns } from 'components/tokens/tokenColumns';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
 import { LazyTokenChartsGrid } from 'components/tokens/LazyTokenChartsGrid';
+import { AmountCell, PriceCell } from 'components/tokens/priceCells';
+import { Badge } from 'components/ui/Badge';
 import { IconButton } from 'components/ui/IconButton';
 import { SearchIcon, SpinnerIcon } from 'components/ui/icons';
 import { Input } from 'components/ui/Input';
+import { WalletAnalyticsPanel } from '@lab/components/analysis/WalletAnalyticsPanel';
 import { Select } from 'components/ui/Select';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { useTimezone } from 'context/TimezoneContext';
@@ -65,10 +68,18 @@ const clampInt = (raw: string, fallback: number, min: number, max: number) => {
 /**
  * Trader Analysis — paste a wallet address and see every token it traded in the
  * look-back window as the standard full token table (client-side sort / filter /
- * search — identical columns to every other token table), plus a synced charts
- * grid below that mirrors the table's current sort/filter/page. Each chart card
- * carries the wallet-specific stats (buys / sells / last traded) so the trader
- * dimension never duplicates the token columns.
+ * search — identical columns to every other token table), a wallet-level PnL
+ * analytics panel (summary stats + heatmap/equity-curve/ranked/distribution/
+ * scatter, re-derived from the table's current filtered cohort — see
+ * `@lab/components/analysis/walletPnlStats.ts`), and a synced charts grid below
+ * that mirrors the table's current sort/filter/page. Each chart card carries the
+ * wallet-specific stats (buys/sells/last traded, reconstructed PnL, avg buy/sell
+ * price, open/partial-data flags) so the trader dimension never duplicates the
+ * token columns.
+ *
+ * Every PnL figure is an avg-cost reconstruction over this per-mint grain, NOT a
+ * true per-episode ledger (a wallet that re-entered a mint many times collapses
+ * to one row) — see the backend `kernel::wallet_mint_pnl` doc comment.
  *
  * Scope caveat: only tokens this box ingests appear — a coin the wallet traded
  * that was never tracked won't show. Charts are lazily mounted on scroll.
@@ -82,6 +93,11 @@ export function TraderAnalysisPage() {
   // The rows the table currently shows (after sort/filter/paging) — drives the
   // charts grid so both stay in sync. Fed by DataTable's onVisibleRowsChange.
   const [visibleRows, setVisibleRows] = useState<TraderTokenRow[]>(EMPTY_ROWS);
+  // The FULL filtered cohort (post search/column-filter, pre-pagination) — feeds
+  // the wallet PnL analytics panel (summary + heatmap/equity/ranked/distribution/
+  // scatter), so filtering the token table re-derives every chart for free
+  // instead of the analytics panel silently only covering page 1.
+  const [filteredRows, setFilteredRows] = useState<TraderTokenRow[]>(EMPTY_ROWS);
 
   // Tracked wallets from the shared profiles cache (same SSOT the chart markers
   // read) — a picker to fill the wallet input from a saved profile wallet.
@@ -128,8 +144,9 @@ export function TraderAnalysisPage() {
     run(address);
   };
 
-  // Stable identity so DataTable's memoized pageRows effect doesn't churn.
+  // Stable identity so DataTable's memoized pageRows/processed effects don't churn.
   const handleVisibleRows = useCallback((r: TraderTokenRow[]) => setVisibleRows(r), []);
+  const handleFilteredRows = useCallback((r: TraderTokenRow[]) => setFilteredRows(r), []);
 
   return (
     <div className="p-4">
@@ -227,11 +244,21 @@ export function TraderAnalysisPage() {
         </p>
       )}
 
+      {/* Wallet-level PnL analytics — summary stat row + a tabbed chart panel
+          (heatmap / equity curve / ranked / distribution / scatter). Driven by
+          the table's FULL filtered cohort, so a column filter/search here also
+          re-scopes every chart below. Lives above the table since this is the
+          "is this wallet good" answer, not a per-token drill-down. */}
+      {query && !isFetching && !error && (
+        <WalletAnalyticsPanel rows={filteredRows} timezone={timezone} />
+      )}
+
       {/* Token table — routed through the shared `TokenTable` (client mode: rows are
           the full set, `DataTable` pages in-browser). Standard shared token columns
           (append nothing — `tokenColumns()` already lays out the full set). Rows
           arrive recent-first from the backend (no defaultSort). The synced charts
-          grid below is fed by the table's current on-screen rows. */}
+          grid below is fed by the table's current on-screen rows; the analytics
+          panel above is fed by its full filtered cohort. */}
       {query && rows.length > 0 && (
         <TokenTable
           columns={columns}
@@ -245,13 +272,16 @@ export function TraderAnalysisPage() {
           loading={isFetching}
           tableId="trader_analysis_tokens"
           onVisibleRowsChange={handleVisibleRows}
+          onFilteredRowsChange={handleFilteredRows}
           emptyMessage="No tokens match the filters"
         />
       )}
 
       {/* Charts grid — the shared grid, mirroring the table's current sort/filter/
-          page. The per-wallet buys/sells/last stats ride the card-header slot so the
-          trader dimension never duplicates the token columns. */}
+          page. The per-wallet stats (buys/sells/last, PnL, avg prices, open/
+          partial flags) ride the card-header slot so the trader dimension never
+          duplicates the token columns (see `walletPnlStats.ts` / the wallet-level
+          analytics panel above for the aggregate view across every token). */}
       {visibleRows.length > 0 && query && (
         <LazyTokenChartsGrid
           rows={visibleRows}
@@ -259,12 +289,42 @@ export function TraderAnalysisPage() {
           highlightWallet={query.wallet}
           chartTableId="trader_analysis_trades"
           renderChartCardExtra={(row) => (
-            <span className="ml-auto inline-flex items-center gap-2 rounded-md border border-white/8 bg-white/3 px-2 py-0.5 text-[11px]">
-              <span className="font-bold uppercase tracking-wide text-text-dim">This wallet</span>
-              <span className="text-buy">{row.wallet_buy_count} buys</span>
-              <span className="text-sell">{row.wallet_sell_count} sells</span>
-              <span className="text-text-dim">
-                last {formatTimestampMs(Date.parse(row.wallet_last_trade_at), timezone)}
+            <span className="ml-auto flex flex-col items-end gap-1 rounded-md border border-white/8 bg-white/3 px-2 py-1 text-[11px]">
+              <span className="flex items-center gap-2">
+                <span className="font-bold uppercase tracking-wide text-text-dim">This wallet</span>
+                <span className="text-buy">{row.wallet_buy_count} buys</span>
+                <span className="text-sell">{row.wallet_sell_count} sells</span>
+                <span className="text-text-dim">
+                  last {formatTimestampMs(Date.parse(row.wallet_last_trade_at), timezone)}
+                </span>
+              </span>
+              <span className="flex items-center gap-2">
+                <span className={`font-bold ${row.wallet_total_pnl_sol >= 0 ? 'text-green' : 'text-red'}`}>
+                  <AmountCell sol={row.wallet_total_pnl_sol} /> PnL
+                </span>
+                <span className="text-text-dim">
+                  avg buy <PriceCell sol={row.wallet_avg_buy_price} />
+                  {row.wallet_avg_sell_price != null && (
+                    <>
+                      {' '}
+                      · sell <PriceCell sol={row.wallet_avg_sell_price} />
+                    </>
+                  )}
+                </span>
+                {row.wallet_is_open && (
+                  <Badge variant="info" size="sm">
+                    open
+                  </Badge>
+                )}
+                {row.wallet_partial_data && (
+                  <Badge
+                    variant="warning"
+                    size="sm"
+                    title="Sold more than bought in this window — the position predates the look-back, so this PnL is a partial estimate"
+                  >
+                    partial
+                  </Badge>
+                )}
               </span>
             </span>
           )}

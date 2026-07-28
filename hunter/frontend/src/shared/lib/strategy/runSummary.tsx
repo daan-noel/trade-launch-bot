@@ -470,6 +470,18 @@ function ExitMixBar({ slices }: { slices: ExitSlice[] }) {
 export function runSummarySections(
   s: RunSummary,
   extras: {
+    /** Distinct tokens whose creation axes matched the rule's fingerprint —
+     *  the candidate pool `n_fired` positions are drawn from (entered one or
+     *  more times, or never entered). Omit when the surface can't source it
+     *  (e.g. live/paper has no fingerprint-scan concept yet); the tile is then
+     *  hidden rather than shown as a misleading `0`. */
+    matched?: number;
+    /** Distinct tokens actually entered (≥1 fired episode) — narrower than
+     *  `matched` and, under a re-entry rule, smaller than `n_fired` (every
+     *  entry counts, so one mint's repeat visits each add to `n_fired` but not
+     *  to this). Pair with `n_fired` to show re-entry volume; omit when the
+     *  surface can't source it. */
+    tokensEntered?: number;
     /** Count of fired tokens that graduated off the bonding curve to AMM
      *  (`is_migrated`) — a token-quality signal orthogonal to how the rule
      *  exited, so it lives beside the position counts rather than in the exit
@@ -519,6 +531,23 @@ export function runSummarySections(
       title: 'Positions',
       hint: 'What the run did, before any PnL is counted',
       stats: [
+        // Candidate-pool / distinct-token tiles — only when the surface can
+        // source them (Simulate; not yet the sweep drill-in or live/paper).
+        // Kept ahead of `Fired` so the funnel reads left-to-right: matched →
+        // entered (tokens) → fired (positions, re-entries included).
+        ...(extras.matched != null
+          ? [{ label: 'Matched', value: String(extras.matched), cls: 'text-text-dim' } satisfies SummaryStat]
+          : []),
+        ...(extras.tokensEntered != null
+          ? [
+              { label: 'Tokens', value: String(extras.tokensEntered), cls: 'text-info' } satisfies SummaryStat,
+              {
+                label: 'Re-entries',
+                value: String(Math.max(nFired - extras.tokensEntered, 0)),
+                cls: nFired > extras.tokensEntered ? 'text-secondary' : 'text-text-dim',
+              } satisfies SummaryStat,
+            ]
+          : []),
         { label: 'Fired', value: String(nFired), cls: 'text-info' },
         { label: 'Closed', value: String(nClosed), cls: 'text-info' },
         { label: 'Open', value: String(nOpen), cls: nOpen > 0 ? tone : 'text-text-dim' },

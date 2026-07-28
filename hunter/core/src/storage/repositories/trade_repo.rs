@@ -556,12 +556,36 @@ impl TradeRepo {
         let Some(wallet_id) = WalletDictRepo::new(self.pool.clone()).id_for(wallet).await? else {
             return Ok(Vec::new());
         };
-        let rows: Vec<(String, DateTime<Utc>, i64, i64)> = sqlx::query_as(
+        // `amount_lamports`/`token_amount` sums per side feed the Trader Analysis
+        // page's avg-cost PnL reconstruction (`kernel::wallet_mint_pnl`) — both are
+        // exact-integer `SUM(...)::BIGINT` (never NULL: `COALESCE` guards the
+        // FILTER'd sum when a mint has only one side in the window). A named
+        // `FromRow` (rather than a 9-tuple) keeps every field labelled at the call
+        // site and avoids a positional mapping mistake as the column count grows.
+        #[derive(sqlx::FromRow)]
+        struct WalletTradedMintRow {
+            mint_address: String,
+            first_trade_at: DateTime<Utc>,
+            last_trade_at: DateTime<Utc>,
+            buy_count: i64,
+            sell_count: i64,
+            buy_lamports: i64,
+            sell_lamports: i64,
+            buy_token_amount: i64,
+            sell_token_amount: i64,
+        }
+
+        let rows: Vec<WalletTradedMintRow> = sqlx::query_as(
             r#"
             SELECT mint_address,
+                   MIN(block_time) AS first_trade_at,
                    MAX(block_time) AS last_trade_at,
                    COUNT(*) FILTER (WHERE trade_type = 'buy')  AS buy_count,
-                   COUNT(*) FILTER (WHERE trade_type = 'sell') AS sell_count
+                   COUNT(*) FILTER (WHERE trade_type = 'sell') AS sell_count,
+                   COALESCE(SUM(amount_lamports) FILTER (WHERE trade_type = 'buy'), 0)::BIGINT  AS buy_lamports,
+                   COALESCE(SUM(amount_lamports) FILTER (WHERE trade_type = 'sell'), 0)::BIGINT AS sell_lamports,
+                   COALESCE(SUM(token_amount) FILTER (WHERE trade_type = 'buy'), 0)::BIGINT  AS buy_token_amount,
+                   COALESCE(SUM(token_amount) FILTER (WHERE trade_type = 'sell'), 0)::BIGINT AS sell_token_amount
             FROM trades
             WHERE wallet_id = $1
               AND block_time >= $2
@@ -578,11 +602,16 @@ impl TradeRepo {
 
         Ok(rows
             .into_iter()
-            .map(|(mint_address, last_trade_at, buy_count, sell_count)| WalletTradedMint {
-                mint_address,
-                last_trade_at,
-                buy_count,
-                sell_count,
+            .map(|r| WalletTradedMint {
+                mint_address: r.mint_address,
+                first_trade_at: r.first_trade_at,
+                last_trade_at: r.last_trade_at,
+                buy_count: r.buy_count,
+                sell_count: r.sell_count,
+                buy_sol: lamports_to_sol(r.buy_lamports),
+                sell_sol: lamports_to_sol(r.sell_lamports),
+                buy_token_amount: r.buy_token_amount,
+                sell_token_amount: r.sell_token_amount,
             })
             .collect())
     }
@@ -959,15 +988,35 @@ pub struct AvgEntry {
 /// on that mint — the recent-first ordering key + the wallet-specific columns for
 /// the Trader Analysis token table ([`TradeRepo::wallet_traded_mints`]).
 ///
-/// `buy_count`/`sell_count` are scoped to the same `block_time >= since` window,
-/// so a mint the wallet only *exited* in the window can show `buy_count = 0` (its
-/// buys predate the window) — matches the "both buys and sells count" semantics.
+/// `buy_count`/`sell_count`/`buy_sol`/`sell_sol`/`*_token_amount` are all scoped to
+/// the same `block_time >= since` window, so a mint the wallet only *exited* in the
+/// window can show `buy_count = 0` (its buys predate the window) — the handler
+/// (`wallets.rs::list_wallet_tokens`) feeds `buy_sol`/`sell_sol`/`*_token_amount`
+/// into [`crate::strategies::kernel::wallet_mint_pnl`] to reconstruct an avg-cost
+/// PnL for the row, and treats that case as `partial_data` rather than guessing at
+/// the missing cost basis.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WalletTradedMint {
     pub mint_address: String,
+    /// The wallet's first trade on this mint *within the window* (not lifetime) —
+    /// paired with `last_trade_at` as a hold-duration proxy for the per-mint grain.
+    pub first_trade_at: DateTime<Utc>,
     pub last_trade_at: DateTime<Utc>,
     pub buy_count: i64,
     pub sell_count: i64,
+    /// Σ `amount_lamports` (→ human SOL) for `trade_type='buy'` legs in the window —
+    /// the recorded curve-side amount, i.e. **before** the pump.fun protocol fee
+    /// (see `kernel::FEE_BPS_PER_LEG`'s doc comment for how that was measured).
+    pub buy_sol: f64,
+    /// Σ `amount_lamports` (→ human SOL) for `trade_type='sell'` legs — likewise
+    /// pre-fee (the curve-side gross proceeds, before the fee taken on the way out).
+    pub sell_sol: f64,
+    /// Σ raw `token_amount` bought/sold in the window. Exact integers (never
+    /// negative on either side) — a negative `net_token_amount` downstream just
+    /// means the wallet sold more than it bought *in this window* (position
+    /// predates `since`), not that anything here underflowed.
+    pub buy_token_amount: i64,
+    pub sell_token_amount: i64,
 }
 
 impl SigLegs {
