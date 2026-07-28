@@ -1293,7 +1293,14 @@ pub(crate) fn resolve_exit_indexed(
 
     match best {
         Some((row, exit)) => close_at_fire(
-            trades, series, exit, entry_price, entry_at, fill_trade_slot(series, fill_row), row,
+            trades,
+            series,
+            exit,
+            entry_price,
+            entry_at,
+            fill_trade_slot(series, fill_row),
+            entry_depth(series, fill_row),
+            row,
             pricing,
         ),
         // Open by the series' per-token cut: first try the analytic frozen-tail
@@ -1355,14 +1362,30 @@ pub(crate) fn resolve_exit(
     for j in (fill_row + 1)..n {
         if series.dead[j] {
             return close_at_fire(
-                trades, series, ExitCode::Dead, entry_price, entry_at, entry_slot, j, pricing,
+                trades,
+                series,
+                ExitCode::Dead,
+                entry_price,
+                entry_at,
+                entry_slot,
+                entry_depth(series, fill_row),
+                j,
+                pricing,
             );
         }
         ctx.fold_price(series.price[j]);
         if has_exit_reqs {
             if let Some(exit) = first_exit_req_fired(series, &c.exit_reqs, exit_cols, j, &ctx) {
                 return close_at_fire(
-                    trades, series, exit, entry_price, entry_at, entry_slot, j, pricing,
+                    trades,
+                    series,
+                    exit,
+                    entry_price,
+                    entry_at,
+                    entry_slot,
+                    entry_depth(series, fill_row),
+                    j,
+                    pricing,
                 );
             }
         }
@@ -1381,6 +1404,13 @@ pub(crate) fn resolve_exit(
     open_outcome(series, fill_row, entry_price, entry_at, last_price, pricing)
 }
 
+/// SOL-side pool depth at the entry row, for [`CostModel::price_impact`]. `None`
+/// when the series has no reserve yet (pre-first-trade rows are `NaN`), which the
+/// cost model treats as "depth unknown" and charges no impact — never a guess.
+fn entry_depth(series: &MetricSeries, fill_row: usize) -> Option<f64> {
+    series.reserve_sol.get(fill_row).copied().filter(|r| r.is_finite() && *r > 0.0)
+}
+
 /// The still-`Open` outcome, marked to `last_price`. One copy shared by every exit
 /// path so the scalar / index / SIMD tails can't drift.
 fn open_outcome(
@@ -1391,8 +1421,13 @@ fn open_outcome(
     last_price: f64,
     pricing: &Pricing,
 ) -> TokenOutcome {
-    let (pnl_sol, pnl_pct) =
-        round_trip_with_costs(entry_price, last_price, pricing.buy_amount_sol, &pricing.cost);
+    let (pnl_sol, pnl_pct) = round_trip_with_costs(
+        entry_price,
+        last_price,
+        pricing.buy_amount_sol,
+        entry_depth(series, fill_row),
+        &pricing.cost,
+    );
     TokenOutcome {
         fired: true,
         holding_secs: 0,
@@ -1515,7 +1550,17 @@ fn resolve_frozen_tail(
         }
     }
     let entry_slot = fill_trade_slot(series, fill_row);
-    Some(close_at_fire(trades, series, exit?, entry_price, entry_at, entry_slot, last, pricing))
+    Some(close_at_fire(
+        trades,
+        series,
+        exit?,
+        entry_price,
+        entry_at,
+        entry_slot,
+        entry_depth(series, fill_row),
+        last,
+        pricing,
+    ))
 }
 
 /// The base reading of a **frozen-tail rate-1 clock** exit req at the series' last row,
@@ -1816,7 +1861,15 @@ pub(crate) fn resolve_exit_simd(
                 .unwrap_or(ExitCode::Metrics)
         };
         return close_at_fire(
-            trades, series, exit, entry_price, entry_at, entry_slot, j, pricing,
+            trades,
+            series,
+            exit,
+            entry_price,
+            entry_at,
+            entry_slot,
+            entry_depth(series, fill_row),
+            j,
+            pricing,
         );
     }
 
@@ -2250,6 +2303,7 @@ fn close_at_fire(
     entry_price: f64,
     entry_at: DateTime<Utc>,
     entry_slot: Option<u64>,
+    entry_reserve_sol: Option<f64>,
     fire_row: usize,
     pricing: &Pricing,
 ) -> TokenOutcome {
@@ -2270,6 +2324,7 @@ fn close_at_fire(
         entry_price,
         entry_at,
         entry_slot,
+        entry_reserve_sol,
         fill.price,
         fill.block_time,
         fill_trade_slot(series, exit_row),
@@ -2321,13 +2376,19 @@ fn closed(
     entry_price: f64,
     entry_at: DateTime<Utc>,
     entry_slot: Option<u64>,
+    entry_reserve_sol: Option<f64>,
     exit_price: f64,
     exit_at: DateTime<Utc>,
     exit_slot: Option<u64>,
     pricing: &Pricing,
 ) -> TokenOutcome {
-    let (pnl_sol, pnl_pct) =
-        round_trip_with_costs(entry_price, exit_price, pricing.buy_amount_sol, &pricing.cost);
+    let (pnl_sol, pnl_pct) = round_trip_with_costs(
+        entry_price,
+        exit_price,
+        pricing.buy_amount_sol,
+        entry_reserve_sol,
+        &pricing.cost,
+    );
     TokenOutcome {
         fired: true,
         holding_secs: (exit_at - entry_at).num_seconds(),

@@ -214,7 +214,8 @@ fn replay_tuple(po: Option<&PositionOutcome>, cost: &CostModel) -> (bool, ExitCo
         None => (false, ExitCode::NoEntry, 0.0, 0.0, 0.0, 0.0),
         Some(o) => {
             let exit_price = o.exit_price.unwrap_or(o.last_price);
-            let (pnl_sol, pnl_pct) = round_trip_with_costs(o.entry_price, exit_price, BUY_SOL, cost);
+            let (pnl_sol, pnl_pct) =
+                round_trip_with_costs(o.entry_price, exit_price, BUY_SOL, o.entry_reserve_sol, cost);
             (true, exit_code_of(o.exit_reason), o.entry_price, exit_price, pnl_sol as f32, pnl_pct as f32)
         }
     }
@@ -1269,7 +1270,8 @@ fn d1_time_corpus() -> Vec<(CorpusToken, ReplayToken)> {
 /// round-trip through the shared kernel (open ⇒ marked to last price, as the sweep does).
 fn replay_outcome_to_token(po: &PositionOutcome, cost: &CostModel) -> TokenOutcome {
     let exit_price = po.exit_price.unwrap_or(po.last_price);
-    let (pnl_sol, pnl_pct) = round_trip_with_costs(po.entry_price, exit_price, BUY_SOL, cost);
+    let (pnl_sol, pnl_pct) =
+        round_trip_with_costs(po.entry_price, exit_price, BUY_SOL, po.entry_reserve_sol, cost);
     TokenOutcome {
         fired: true,
         holding_secs: po.exit_time.map(|t| (t - po.entry_time).num_seconds()).unwrap_or(0),

@@ -120,11 +120,12 @@ const FILL_MODEL_VARIANT: Record<FillModelId, BadgeVariant> = {
   signal_price: 'success',
 };
 /** `pumpfun_default` double-counts slippage against an explicit fill model (see
- *  `COST_MODELS`), so it reads as the cautionary color; `pumpfun_fee_only` is the
- *  honest pairing. */
+ *  `COST_MODELS`), so it reads as the cautionary color; `pumpfun_impact` is the
+ *  honest pairing and `pumpfun_fee_only` the size-blind middle ground. */
 const COST_MODEL_VARIANT: Record<CostModelId, BadgeVariant> = {
   pumpfun_default: 'danger',
   pumpfun_fee_only: 'info',
+  pumpfun_impact: 'success',
 };
 const SIM_NUMERIC_COLS = tokenNumericColKeys(simColumns);
 const SIM_AMOUNT_COLS = tokenAmountColKeys(simColumns);

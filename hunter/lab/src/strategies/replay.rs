@@ -91,6 +91,10 @@ pub struct PositionOutcome {
     pub entry_token_amount: u64,
     pub entry_time: Ts,
     pub entry_tx: String,
+    /// SOL pool depth at the entry fill — priced by [`CostModel::price_impact`].
+    /// `None` when no trade had priced the token yet (enter-on-arm before the
+    /// first trade), which charges no impact rather than guessing one.
+    pub entry_reserve_sol: Option<f64>,
     pub exit_price: Option<f64>,
     pub exit_time: Option<Ts>,
     pub exit_tx: Option<String>,
@@ -171,6 +175,9 @@ struct Replay {
     last_sig: HashMap<Mint, String>,
     /// Per-mint last observed spot (open-position mark).
     last_price: HashMap<Mint, f64>,
+    /// Per-mint last observed SOL reserves — the pool depth an entry fills against,
+    /// which is what [`CostModel::price_impact`] prices our own order against.
+    last_reserve_sol: HashMap<Mint, f64>,
     /// Latest trade timestamp across the whole corpus (bounds the tail tick loop).
     last_trade_at: Option<Ts>,
     /// Buys awaiting a first finite price (enter-on-arm before any trade priced the
@@ -211,6 +218,7 @@ struct Builder {
     entry_token_amount: u64,
     entry_time: Ts,
     entry_tx: String,
+    entry_reserve_sol: Option<f64>,
     /// Set once the entry fills (`Holding`); an entry that gives up before filling
     /// stays `false` and produces no row (never entered).
     entered: bool,
@@ -231,6 +239,7 @@ impl Replay {
             last_trade_idx: HashMap::new(),
             last_sig: HashMap::new(),
             last_price: HashMap::new(),
+            last_reserve_sol: HashMap::new(),
             last_trade_at: None,
             pending_buys: HashMap::new(),
             deferred_fills: HashMap::new(),
@@ -343,6 +352,7 @@ impl Replay {
                     self.last_sig.insert(mint.clone(), sig.into());
                 }
                 self.last_price.insert(mint.clone(), trade.price);
+                self.last_reserve_sol.insert(mint.clone(), trade.reserve_sol);
                 if let Some(idx) = q.trade_idx {
                     self.last_trade_idx.insert(mint.clone(), idx);
                 }
@@ -568,6 +578,7 @@ impl Replay {
                         entry_token_amount: 0,
                         entry_time: Utc::now(),
                         entry_tx: String::new(),
+                        entry_reserve_sol: None,
                         entered: false,
                     },
                 );
@@ -579,6 +590,8 @@ impl Replay {
                     b.entry_price = fill.price;
                     b.entry_token_amount = fill.token_amount;
                     b.entry_time = fill.at;
+                    b.entry_reserve_sol =
+                        self.last_reserve_sol.get(&delta.mint).copied().filter(|r| *r > 0.0);
                     // Prefer the fill trade's sig (adverse print); fall back to the
                     // last folded trade's sig when the slim corpus omitted it.
                     b.entry_tx = sig;
@@ -721,6 +734,7 @@ fn outcome_from_builder(
         entry_token_amount: b.entry_token_amount,
         entry_time: b.entry_time,
         entry_tx: b.entry_tx,
+        entry_reserve_sol: b.entry_reserve_sol,
         exit_price,
         exit_time,
         exit_tx,
@@ -1015,6 +1029,7 @@ pub fn outcome_to_row(
         outcome.entry_price,
         exit_price_for_pnl,
         buy_amount_sol,
+        outcome.entry_reserve_sol,
         &cost_model.model(),
     );
 

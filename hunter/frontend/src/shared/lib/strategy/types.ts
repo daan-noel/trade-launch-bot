@@ -228,18 +228,28 @@ export const FILL_MODELS: ReadonlyArray<{ id: FillModelId; label: string; hint: 
 
 /** Which execution-cost model prices a simulated round-trip (backend
  *  `trading_core::strategies::kernel::CostModelKind`). */
-export type CostModelId = 'pumpfun_default' | 'pumpfun_fee_only';
+export type CostModelId = 'pumpfun_default' | 'pumpfun_fee_only' | 'pumpfun_impact';
 
 /** Selectable cost models. `pumpfun_default` charges `slippage_bps` on top of the
  *  fill price — which already prices slippage — so it DOUBLE-COUNTS execution cost
  *  whenever a fill model is chosen explicitly. It stays the default only so stored
  *  runs keep the meaning they were computed under; `pumpfun_fee_only` is the honest
- *  partner for any fill model, and the one the fill-sensitivity analysis reported. */
+ *  partner for any fill model, and the one the fill-sensitivity analysis reported.
+ *
+ *  `pumpfun_impact` is the only one whose cost varies with `buy_amount_sol`: the
+ *  other two are size-blind, so a run under them is a ZERO-IMPACT upper bound. On
+ *  the measured median pool (~70 SOL) a 1 SOL buy really costs 1.42%/leg against
+ *  the flat 1% the legacy model guesses. See flow-scalper-build-plan.md §2g. */
 export const COST_MODELS: ReadonlyArray<{ id: CostModelId; label: string; hint: string }> = [
+  {
+    id: 'pumpfun_impact',
+    label: 'Fee + real impact',
+    hint: 'Fee + tip + our own buy_amount/reserve_sol price impact — the honest model',
+  },
   {
     id: 'pumpfun_fee_only',
     label: 'Fee only',
-    hint: 'Fee + tip + priority — no slippage on top of the fill price (recommended)',
+    hint: 'Fee + tip + priority — no size impact, so an optimistic bound for large buys',
   },
   {
     id: 'pumpfun_default',

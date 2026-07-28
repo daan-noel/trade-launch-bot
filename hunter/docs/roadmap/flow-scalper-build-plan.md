@@ -516,9 +516,20 @@ included. Corrected, V0 is roughly −2.7%/ep at 1 SOL, not −0.03%.
 
 `CostModel` has `fee_bps_per_leg`, a flat `slippage_bps`, and `fixed_cost_sol_per_leg`
 — nothing that scales with size-vs-depth, and `pumpfun_fee_only` zeroes the slippage
-term entirely. **Fixing that is the one clearly-worthwhile piece of engineering left
-here**: it makes every future sim and sweep honest, and it is a small, exact change
-(`amount_sol / reserve_sol` at fill time).
+term entirely.
+
+**SHIPPED 2026-07-28.** `CostModel::price_impact` + `CostModelKind::PumpfunImpact`
+charge `buy_amount_sol / reserve_sol` per leg from the entry pool depth, which the
+sweep reads off `MetricSeries::reserve_sol` and simulate off the fill's `TradeLite`.
+Depth is `Option<f64>` — `None` charges nothing rather than guessing — and the two
+legacy kinds stay depth-blind so every stored run reprices identically.
+
+**Also corrected: `FEE_BPS_PER_LEG` 100 → 125.** The real pump.fun fee is 1.25%/leg,
+measured from dev-buy amounts clustering on `gross × 10000/10125` (16,544 of 56,908
+dev buys land on `0.987654` vs 310 on the `0.990099` a 100 bps fee implies). Every
+backtest run before this date is **0.5 pp/round-trip optimistic**; re-run anything
+whose margin was inside that. Repricing omego at the true rate moves his net from
+−12.02 to **−25.45 SOL**, so §2g's verdict strengthens rather than softens.
 
 ## 3. The plan
 

@@ -91,7 +91,23 @@ impl TokenOutcome {
 
 // ── Cost model (ported from lab sweep; Phase 4 collapses the duplicate) ────────
 
-const FEE_BPS_PER_LEG: f64 = 100.0;
+/// pump.fun's protocol fee, **measured, not assumed** (2026-07-28).
+///
+/// Dev-buy amounts cluster hard on `gross × 0.987654321` = `gross × 10000/10125`,
+/// which is the exact factor a 125 bps fee produces when the recorded
+/// `amount_lamports` is the *curve-side* amount: 16,544 of 56,908 dev buys land on
+/// that ratio against a round 0.1 SOL, versus 310 on the `0.990099` a 100 bps fee
+/// would give. (That `amount_lamports` excludes the fee is itself measured:
+/// `|Δreserve_lamports| / amount_lamports` = 1.00000 at p25/median/p75 over 5.6M
+/// legs — the ingest never decodes the `fee` IDL fields.)
+///
+/// This was `100.0` until 2026-07-28, i.e. **0.5 pp per round trip too cheap**, so
+/// every backtest run before that date is optimistic by that much. The constant is
+/// not persisted per run, so re-run anything whose margin was inside 0.5 pp.
+const FEE_BPS_PER_LEG: f64 = 125.0;
+/// Flat per-leg stand-in for execution slippage. Superseded by
+/// [`CostModel::price_impact`] wherever pool depth is available — see
+/// [`CostModelKind::PumpfunImpact`].
 const SLIPPAGE_BPS_PER_LEG: f64 = 100.0;
 
 /// Execution-cost model the kernel prices every round-trip with, so simulated
@@ -106,6 +122,21 @@ pub struct CostModel {
     pub fee_bps_per_leg: f64,
     pub slippage_bps: f64,
     pub fixed_cost_sol_per_leg: f64,
+    /// Charge **our own** constant-product price impact, `notional_sol /
+    /// reserve_sol` per leg, from the pool depth passed to
+    /// [`round_trip_with_costs`].
+    ///
+    /// This is orthogonal to the fill model and to `slippage_bps`:
+    /// a [`FillModel`](crate::strategies::paper_fill::FillModel) chooses **which
+    /// market print we transact against**, whereas impact is **how far our own
+    /// order moves the curve** — both are real and a live trade pays both.
+    /// `slippage_bps`, by contrast, is a flat per-leg stand-in for exactly this
+    /// effect, so the two must never be enabled together (see
+    /// [`CostModelKind::PumpfunImpact`]).
+    ///
+    /// Default `false` on every pre-existing constructor, so stored runs reprice
+    /// byte-identically.
+    pub price_impact: bool,
 }
 
 impl CostModel {
@@ -122,6 +153,35 @@ impl CostModel {
             fee_bps_per_leg: FEE_BPS_PER_LEG,
             slippage_bps: SLIPPAGE_BPS_PER_LEG,
             fixed_cost_sol_per_leg: tuning.fixed_cost_sol_per_leg(),
+            price_impact: false,
+        }
+    }
+
+    /// Fee + fixed per-leg cost + **real** constant-product price impact
+    /// (`notional_sol / reserve_sol` per leg), with **no** flat `slippage_bps`.
+    ///
+    /// This is the honest pairing with an explicit
+    /// [`FillModel`](crate::strategies::paper_fill::FillModel): the fill model
+    /// prices the market print, this prices our own footprint in the pool, and
+    /// nothing is counted twice. Prefer it over
+    /// [`pumpfun_default`](Self::pumpfun_default) whenever pool depth is available
+    /// — the flat `SLIPPAGE_BPS_PER_LEG` is only a guess at this quantity, and it
+    /// is wrong in **both** directions: it over-charges a small order in a deep
+    /// pool and under-charges a large one in a shallow pool.
+    ///
+    /// Measured on the 2026-07 corpus (median depth ~70 SOL): a 0.1 SOL buy really
+    /// costs 0.14%/leg and a 1.0 SOL buy 1.42%/leg, against the flat 1.00% this
+    /// replaces. See `docs/roadmap/flow-scalper-build-plan.md` §2g.
+    pub fn pumpfun_with_impact() -> Self {
+        Self::pumpfun_with_impact_with(&FeeTuning::current())
+    }
+
+    /// Impact variant of [`pumpfun_default_with`](Self::pumpfun_default_with).
+    pub fn pumpfun_with_impact_with(tuning: &FeeTuning) -> Self {
+        Self {
+            slippage_bps: 0.0,
+            price_impact: true,
+            ..Self::pumpfun_default_with(tuning)
         }
     }
 
@@ -143,7 +203,12 @@ impl CostModel {
     /// A frictionless model (no fees/slippage/fixed cost) — pure price-to-price,
     /// for analytic baselines and tests.
     pub fn frictionless() -> Self {
-        Self { fee_bps_per_leg: 0.0, slippage_bps: 0.0, fixed_cost_sol_per_leg: 0.0 }
+        Self {
+            fee_bps_per_leg: 0.0,
+            slippage_bps: 0.0,
+            fixed_cost_sol_per_leg: 0.0,
+            price_impact: false,
+        }
     }
 }
 
@@ -172,6 +237,16 @@ pub enum CostModelKind {
     /// for any run whose fill price already prices execution slippage.
     #[serde(alias = "fee_only")]
     PumpfunFeeOnly,
+    /// [`CostModel::pumpfun_with_impact`] — fee + fixed + **real** constant-product
+    /// impact from pool depth, no flat `slippage_bps`.
+    ///
+    /// The most faithful of the three, and the only one whose cost varies with
+    /// `buy_amount_sol`: the other two are size-blind, so a run under them is a
+    /// zero-impact upper bound. Requires the caller to supply depth to
+    /// [`round_trip_with_costs`] — without it no impact is charged and this
+    /// degrades to [`PumpfunFeeOnly`].
+    #[serde(alias = "impact")]
+    PumpfunImpact,
 }
 
 impl CostModelKind {
@@ -185,6 +260,7 @@ impl CostModelKind {
         match self {
             CostModelKind::PumpfunDefault => CostModel::pumpfun_default_with(tuning),
             CostModelKind::PumpfunFeeOnly => CostModel::pumpfun_fee_only_with(tuning),
+            CostModelKind::PumpfunImpact => CostModel::pumpfun_with_impact_with(tuning),
         }
     }
 }
@@ -193,10 +269,25 @@ impl CostModelKind {
 /// `notional_sol`, net of `costs`: symmetric slippage worsens both fills, a fee is
 /// charged on each leg's SOL value, and the fixed per-leg cost is subtracted twice.
 /// Returns `(pnl_sol, pnl_percent)`.
+///
+/// `reserve_sol` is the **SOL-side pool depth at entry**, used only when
+/// [`CostModel::price_impact`] is set. On a constant-product curve, spending
+/// `B` SOL against virtual reserves `(vsol, vtok)` yields
+/// `vtok·B/(vsol+B)` tokens, so the *average* price paid is `(vsol+B)/vtok` —
+/// exactly `(1 + B/vsol)` times the pre-trade spot `vsol/vtok`. The impact is
+/// therefore `B/vsol`, independent of `vtok`. (This is why a wallet that sizes at
+/// a fixed fraction of the pool shows a *constant* realised slippage.)
+///
+/// The same depth prices the exit leg, which slightly **over**-charges it whenever
+/// the pool grew during the hold — the common case on a winner, so the
+/// approximation errs toward pessimism on exactly the trades that matter most.
+/// Pass `None` when depth is unknown; no impact is charged and the result matches
+/// the pre-impact behavior.
 pub fn round_trip_with_costs(
     entry_price: f64,
     exit_price: f64,
     notional_sol: f64,
+    reserve_sol: Option<f64>,
     costs: &CostModel,
 ) -> (f64, f64) {
     if entry_price <= 0.0 || notional_sol <= 0.0 {
@@ -204,8 +295,14 @@ pub fn round_trip_with_costs(
     }
     let slip = costs.slippage_bps / 10_000.0;
     let fee = costs.fee_bps_per_leg / 10_000.0;
-    let eff_entry = entry_price * (1.0 + slip);
-    let eff_exit = exit_price * (1.0 - slip);
+    // Our own footprint in the pool. `filter` (not a bare `unwrap_or`) so a zero or
+    // negative depth cannot divide by ~0 and produce an absurd haircut.
+    let impact = match costs.price_impact {
+        true => reserve_sol.filter(|r| *r > 0.0).map_or(0.0, |r| notional_sol / r),
+        false => 0.0,
+    };
+    let eff_entry = entry_price * (1.0 + slip + impact);
+    let eff_exit = exit_price * (1.0 - slip - impact).max(0.0);
     let tokens = notional_sol / eff_entry;
     let gross_proceeds = tokens * eff_exit;
     let costs_sol = (notional_sol + gross_proceeds) * fee + costs.fixed_cost_sol_per_leg * 2.0;
@@ -849,16 +946,63 @@ mod tests {
     #[test]
     fn frictionless_round_trip_is_pure_price_delta() {
         // 2× exit, 1 SOL notional, no costs → +1 SOL, +100%.
-        let (sol, pct) = round_trip_with_costs(1.0, 2.0, 1.0, &CostModel::frictionless());
+        let (sol, pct) = round_trip_with_costs(1.0, 2.0, 1.0, None, &CostModel::frictionless());
         assert!((sol - 1.0).abs() < 1e-12);
         assert!((pct - 100.0).abs() < 1e-12);
     }
 
     #[test]
     fn costs_reduce_pnl_below_frictionless() {
-        let friction = round_trip_with_costs(1.0, 2.0, 1.0, &CostModel::pumpfun_default()).0;
-        let free = round_trip_with_costs(1.0, 2.0, 1.0, &CostModel::frictionless()).0;
+        let friction = round_trip_with_costs(1.0, 2.0, 1.0, None, &CostModel::pumpfun_default()).0;
+        let free = round_trip_with_costs(1.0, 2.0, 1.0, None, &CostModel::frictionless()).0;
         assert!(friction < free, "costs must drag PnL down");
+    }
+
+    // ── price impact (§2g) ──────────────────────────────────────────────────
+
+    #[test]
+    fn price_impact_is_notional_over_depth_and_scales_with_size() {
+        // Same trade, same pool, three sizes. Impact is B/vsol per leg, so the
+        // haircut must grow with size — the whole point the flat `slippage_bps`
+        // misses.
+        let m = CostModel::pumpfun_with_impact();
+        let depth = Some(70.0);
+        let small = round_trip_with_costs(1.0, 1.10, 0.1, depth, &m).1;
+        let mid = round_trip_with_costs(1.0, 1.10, 0.27, depth, &m).1;
+        let big = round_trip_with_costs(1.0, 1.10, 1.0, depth, &m).1;
+        assert!(big < mid && mid < small, "bigger order must cost more: {small} {mid} {big}");
+
+        // And the entry leg's markup is exactly B/vsol: 1 SOL into 70 SOL = 1.43%.
+        let free = CostModel { fee_bps_per_leg: 0.0, fixed_cost_sol_per_leg: 0.0, ..m };
+        let (_, pct) = round_trip_with_costs(1.0, 1.0, 1.0, Some(70.0), &free);
+        // entry paid ×(1+1/70), exit received ×(1−1/70) ⇒ ≈ −2×1/70.
+        assert!((pct - (-100.0 * (2.0 / 70.0))).abs() < 0.05, "got {pct}");
+    }
+
+    #[test]
+    fn price_impact_is_inert_without_depth_or_without_the_flag() {
+        // Depth unknown ⇒ degrades to fee-only, never a silent divide-by-zero.
+        let m = CostModel::pumpfun_with_impact();
+        let none = round_trip_with_costs(1.0, 1.10, 1.0, None, &m).1;
+        let zero = round_trip_with_costs(1.0, 1.10, 1.0, Some(0.0), &m).1;
+        let neg = round_trip_with_costs(1.0, 1.10, 1.0, Some(-5.0), &m).1;
+        assert!((none - zero).abs() < 1e-12 && (none - neg).abs() < 1e-12);
+        assert!(none.is_finite());
+
+        // The legacy kinds ignore depth entirely, so stored runs reprice identically.
+        for legacy in [CostModel::pumpfun_default(), CostModel::pumpfun_fee_only()] {
+            let a = round_trip_with_costs(1.0, 1.10, 1.0, None, &legacy).1;
+            let b = round_trip_with_costs(1.0, 1.10, 1.0, Some(70.0), &legacy).1;
+            assert!((a - b).abs() < 1e-12, "legacy model must be depth-blind");
+        }
+    }
+
+    #[test]
+    fn impact_model_drops_the_flat_slippage_so_it_cannot_double_count() {
+        let m = CostModel::pumpfun_with_impact();
+        assert_eq!(m.slippage_bps, 0.0, "flat slippage is the thing impact replaces");
+        assert!(m.price_impact);
+        assert_eq!(m.fee_bps_per_leg, CostModel::pumpfun_default().fee_bps_per_leg);
     }
 
     #[test]
@@ -867,9 +1011,11 @@ mod tests {
         for (name, want) in [
             ("pumpfun_default", CostModelKind::PumpfunDefault),
             ("pumpfun_fee_only", CostModelKind::PumpfunFeeOnly),
+            ("pumpfun_impact", CostModelKind::PumpfunImpact),
             // Short aliases, so a request can name the model the way the analysis does.
             ("default", CostModelKind::PumpfunDefault),
             ("fee_only", CostModelKind::PumpfunFeeOnly),
+            ("impact", CostModelKind::PumpfunImpact),
         ] {
             let got: CostModelKind = serde_json::from_value(json!(name)).unwrap();
             assert_eq!(got, want, "'{name}'");
@@ -893,10 +1039,10 @@ mod tests {
         assert_eq!(f.fee_bps_per_leg, d.fee_bps_per_leg);
         assert_eq!(f.fixed_cost_sol_per_leg, d.fixed_cost_sol_per_leg);
         // …and the double-count is not a constant offset: it scales with the move.
-        let small = round_trip_with_costs(1.0, 1.05, 1.0, &d).0
-            - round_trip_with_costs(1.0, 1.05, 1.0, &f).0;
-        let big = round_trip_with_costs(1.0, 3.0, 1.0, &d).0
-            - round_trip_with_costs(1.0, 3.0, 1.0, &f).0;
+        let small = round_trip_with_costs(1.0, 1.05, 1.0, None, &d).0
+            - round_trip_with_costs(1.0, 1.05, 1.0, None, &f).0;
+        let big = round_trip_with_costs(1.0, 3.0, 1.0, None, &d).0
+            - round_trip_with_costs(1.0, 3.0, 1.0, None, &f).0;
         assert!(big < small, "slippage haircut grows with the exit price");
     }
 

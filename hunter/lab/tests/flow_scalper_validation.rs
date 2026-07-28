@@ -352,9 +352,12 @@ fn run_with_fill(
         }
         let exited = o.exit_reason.is_some();
         let exit_price = o.exit_price.unwrap_or(o.last_price);
-        let (pnl_after, pct_after) = round_trip_with_costs(o.entry_price, exit_price, BUY_SOL, &costed);
-        let (pnl_feeonly, pct_feeonly) = round_trip_with_costs(o.entry_price, exit_price, BUY_SOL, &feeonly);
-        let (pnl_before, _) = round_trip_with_costs(o.entry_price, exit_price, BUY_SOL, &free);
+        let depth = o.entry_reserve_sol;
+        let (pnl_after, pct_after) =
+            round_trip_with_costs(o.entry_price, exit_price, BUY_SOL, depth, &costed);
+        let (pnl_feeonly, pct_feeonly) =
+            round_trip_with_costs(o.entry_price, exit_price, BUY_SOL, depth, &feeonly);
+        let (pnl_before, _) = round_trip_with_costs(o.entry_price, exit_price, BUY_SOL, depth, &free);
         if exited {
             let reason = o.exit_reason.map(|r| r.label().into_owned()).unwrap_or_default();
             *exit_mix.entry(reason).or_default() += 1;

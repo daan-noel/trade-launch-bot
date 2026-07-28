@@ -1704,10 +1704,13 @@ impl StrategyRepo {
                 let entry_price = m.entry_price.filter(|p| *p > 0.0)?;
                 let current = price_of(&m.mint_address).filter(|p| p.is_finite() && *p > 0.0)?;
                 let notional = lamports_to_sol(m.entry_lamports);
+                // `pumpfun_default` is depth-blind, so no reserve is threaded here —
+                // the open-mark row has no pool snapshot to supply one honestly.
                 let (pnl_sol, _) = round_trip_with_costs(
                     entry_price,
                     current,
                     notional,
+                    None,
                     &CostModel::pumpfun_default(),
                 );
                 Some(pnl_sol)
