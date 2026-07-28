@@ -288,6 +288,19 @@ export const METRIC_HELP: Record<string, HelpTip> = {
       'Example:  >=15   sell once price has bounced 15% off the since-entry low.',
     ].join('\n'),
   },
+  arm_above_pct: {
+    title: 'arm ≥ % — disarm the trail until you\'re this far in profit',
+    body: [
+      'retrace/bounce measure from the since-entry peak/trough, which starts AT your',
+      'entry fill. Unarmed, that makes retrace a hard stop from entry — it fires on the',
+      'normal dip you bought into, before any real run-up.',
+      '',
+      'Setting arm ≥ N%  disables retrace/bounce until pnl has reached N% — only then',
+      'does the trail start watching for a pullback off the real peak. 0 = arm at',
+      'break-even. Leave blank = unarmed (today\'s default, usually wrong for a dip-buy',
+      'entry).',
+    ].join('\n'),
+  },
   pnl: {
     title: 'pnl — profit/loss vs entry (%)  [exit only, advanced]',
     body: [

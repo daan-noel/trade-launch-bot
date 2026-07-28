@@ -68,6 +68,17 @@ export function ruleRowNeedsWindow(
   return rowGroup(row, reg)?.kind === 'dynamic';
 }
 
+/** The two trailing metrics `m_position.arm_above_pct` gates — mirrors the backend
+ *  SSOT `hunter_engine::metrics::position::is_trailing` (hardcoded there too; no
+ *  registry metadata flags "trailing" today). */
+const TRAILING_METRICS = new Set(['retrace', 'bounce']);
+
+/** True when a row is `m_position.retrace` / `.bounce` — the only metrics
+ *  `arm_above_pct` does anything to. Gates the arm-control's visibility. */
+export function ruleRowIsTrailing(row: RuleConditionRow): boolean {
+  return row.group === 'm_position' && TRAILING_METRICS.has(row.metric);
+}
+
 /** The parsed, positive window a row carries, or `null` (static / unset). */
 function rowWindow(row: RuleConditionRow): number | null {
   const w = Number(row.window);
@@ -100,6 +111,33 @@ export function ruleConditionRowError(
   if (!row.metric || !group.metrics.some((m) => m.name === row.metric)) return 'pick a metric';
   if (group.kind === 'dynamic' && rowWindow(row) == null) return 'window (s) > 0 required';
   if (row.arms.length === 0) return 'add a condition (e.g. > 10)';
+  const arm = row.strict?.arm_above_pct;
+  if (arm != null && (!Number.isFinite(arm) || arm < 0)) return 'arm ≥ % must be a number ≥ 0';
+  return null;
+}
+
+/**
+ * Cross-row check: `arm_above_pct` gates only the trailing metrics (`retrace` /
+ * `bounce`) on an `m_position` instance — authored without one it is a silent
+ * no-op, so the backend rejects it at save (`rule_params.rs`). Mirror that here
+ * so a rule imported via the JSON view surfaces the same problem before save.
+ */
+export function armAbovePctOrphanError(rows: RuleConditionRow[]): string | null {
+  const instances = new Map<string, { hasArm: boolean; hasTrailing: boolean }>();
+  for (const row of rows) {
+    if (row.group !== 'm_position') continue;
+    const key = `${row.side}|${rowWindow(row) ?? '∅'}`;
+    const inst = instances.get(key) ?? { hasArm: false, hasTrailing: false };
+    if (row.strict?.arm_above_pct != null) inst.hasArm = true;
+    if (ruleRowIsTrailing(row)) inst.hasTrailing = true;
+    instances.set(key, inst);
+  }
+  for (const [key, inst] of instances) {
+    if (inst.hasArm && !inst.hasTrailing) {
+      const [side] = key.split('|');
+      return `${side} m_position: arm_above_pct gates the trailing metrics (retrace / bounce) — add one or remove arm_above_pct`;
+    }
+  }
   return null;
 }
 

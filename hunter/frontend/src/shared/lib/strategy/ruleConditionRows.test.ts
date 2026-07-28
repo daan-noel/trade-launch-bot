@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { StrategyRegistry } from './registry';
 import {
+  armAbovePctOrphanError,
   duplicateConditionRowError,
   newRuleConditionRow,
   ruleConditionRowError,
+  ruleRowIsTrailing,
   rowsToSide,
   sideToRows,
   sidesToRows,
@@ -153,6 +155,67 @@ describe('duplicateConditionRowError', () => {
       row({ group: 'm_price_window', metric: 'trail', window: '30', arms: [[{ operator: '>', value: 5 }]] }),
     ];
     expect(duplicateConditionRowError(rows)).toBeNull();
+  });
+});
+
+describe('ruleRowIsTrailing', () => {
+  it('is true only for m_position.retrace / .bounce', () => {
+    expect(ruleRowIsTrailing(row({ group: 'm_position', metric: 'retrace' }))).toBe(true);
+    expect(ruleRowIsTrailing(row({ group: 'm_position', metric: 'bounce' }))).toBe(true);
+    expect(ruleRowIsTrailing(row({ group: 'm_position', metric: 'pnl' }))).toBe(false);
+    expect(ruleRowIsTrailing(row({ group: 'm_price_window', metric: 'trail' }))).toBe(false);
+  });
+});
+
+describe('arm_above_pct row validation', () => {
+  it('rejects a negative arm value', () => {
+    const r = row({
+      side: 'exit',
+      group: 'm_position',
+      metric: 'retrace',
+      arms: [[{ operator: '>=' as const, value: 3 }]],
+      strict: { arm_above_pct: -1 },
+    });
+    expect(ruleConditionRowError(r, REG)).toMatch(/arm ≥ %/);
+  });
+
+  it('accepts arm_above_pct: 0 (arm at break-even)', () => {
+    const r = row({
+      side: 'exit',
+      group: 'm_position',
+      metric: 'retrace',
+      arms: [[{ operator: '>=' as const, value: 3 }]],
+      strict: { arm_above_pct: 0 },
+    });
+    expect(ruleConditionRowError(r, REG)).toBeNull();
+  });
+});
+
+describe('armAbovePctOrphanError', () => {
+  it('flags arm_above_pct authored with no trailing metric in the instance', () => {
+    const rows: RuleConditionRow[] = [
+      row({
+        side: 'exit',
+        group: 'm_position',
+        metric: 'pnl',
+        arms: [[{ operator: '>=' as const, value: 2 }]],
+        strict: { arm_above_pct: 2 },
+      }),
+    ];
+    expect(armAbovePctOrphanError(rows)).toMatch(/arm_above_pct gates the trailing metrics/);
+  });
+
+  it('is null when a trailing metric shares the instance', () => {
+    const rows: RuleConditionRow[] = [
+      row({
+        side: 'exit',
+        group: 'm_position',
+        metric: 'retrace',
+        arms: [[{ operator: '>=' as const, value: 3 }]],
+        strict: { arm_above_pct: 2 },
+      }),
+    ];
+    expect(armAbovePctOrphanError(rows)).toBeNull();
   });
 });
 

@@ -19,9 +19,11 @@ import { metricColorStyle } from 'lib/strategy/metricColors';
 import { isPnlAdvancedMetric } from 'lib/strategy/validate';
 import { GROUP_HELP, METRIC_HELP, metricHelpBody, SIDE_HELP } from 'lib/strategy/strategyHelp';
 import {
+  armAbovePctOrphanError,
   duplicateConditionRowError,
   newRuleConditionRow,
   ruleConditionRowError,
+  ruleRowIsTrailing,
   ruleRowNeedsWindow,
   type RuleConditionRow,
   type RuleConditionSide,
@@ -41,6 +43,7 @@ export interface ConditionBuilderProps {
  */
 export function ConditionBuilder({ rows, onChange, registry, disabled }: ConditionBuilderProps) {
   const dupErr = duplicateConditionRowError(rows);
+  const armErr = armAbovePctOrphanError(rows);
 
   const setRow = (id: string, patch: Partial<RuleConditionRow>) =>
     onChange(rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -71,6 +74,7 @@ export function ConditionBuilder({ rows, onChange, registry, disabled }: Conditi
         ))}
       </div>
       {dupErr && <p className="text-[11px] text-red">{dupErr}</p>}
+      {armErr && <p className="text-[11px] text-red">{armErr}</p>}
     </div>
   );
 }
@@ -155,6 +159,21 @@ function ConditionRow({
   const group = registry.groups.find((g) => g.name === row.group);
   const metric = group?.metrics.find((m) => m.name === row.metric);
   const needsWindow = ruleRowNeedsWindow(row, registry);
+  const isTrailing = ruleRowIsTrailing(row);
+  const armValue = row.strict?.arm_above_pct;
+  const armText = armValue == null ? '' : String(armValue);
+
+  const onArm = (text: string) => {
+    if (text.trim() === '') {
+      if (!row.strict) return;
+      const { arm_above_pct: _drop, ...rest } = row.strict;
+      onPatch({ strict: rest });
+      return;
+    }
+    const v = Number(text);
+    if (!Number.isFinite(v)) return;
+    onPatch({ strict: { ...row.strict, arm_above_pct: v } });
+  };
   // Only drives the input's unit adornment; the field is disabled until a metric is
   // chosen, so the fallback is never user-visible.
   const unit: MetricUnit = metric?.unit ?? 'seconds';
@@ -246,6 +265,25 @@ function ConditionRow({
             disabled={disabled}
             onChange={(e) => onPatch({ window: e.target.value })}
             placeholder="10"
+            className="w-16"
+          />
+        </Cell>
+      )}
+
+      {isTrailing && (
+        <Cell
+          label="arm ≥ %"
+          tip={METRIC_HELP.arm_above_pct ? { title: METRIC_HELP.arm_above_pct.title, body: METRIC_HELP.arm_above_pct.body } : undefined}
+        >
+          <Input
+            fieldSize="sm"
+            type="number"
+            min={0}
+            step={0.5}
+            value={armText}
+            disabled={disabled}
+            onChange={(e) => onArm(e.target.value)}
+            placeholder="off"
             className="w-16"
           />
         </Cell>
