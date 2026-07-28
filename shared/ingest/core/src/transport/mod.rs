@@ -5,16 +5,19 @@
 //! to the decode task via a bounded `mpsc` channel. The decode task owns all
 //! interpretation.
 //!
-//! Reconnects automatically with exponential backoff. Replays from the last slot
-//! on normal disconnects; falls back to live on pipeline-backpressure or credit
-//! exhaustion to avoid self-reinforcing billing storms.
+//! Reconnects automatically with exponential backoff. When the host enables
+//! gap replay, resumes from a retained [`ReplayAnchor`] that OUTLIVES failed
+//! reconnect attempts — the whole point, since the attempt that has to carry the
+//! resume point is often not the one that succeeds. Falls back to live on
+//! pipeline-backpressure or credit exhaustion (self-reinforcing billing storms),
+//! on a gap wider than the operator's window, and after
+//! [`MAX_REPLAY_ATTEMPTS`] fruitless replays.
 //!
 //! Everything here is generic over `V: IngestVenue` (static dispatch): the venue
 //! supplies the subscription accounts, the filter-map key, the pre-filter, and
 //! the resubscribe signal. Nothing in this module knows about pump.fun.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,6 +46,17 @@ use crate::venue::IngestVenue;
 //   the inner run_once which receives them as references) ──────────────────────
 
 const REQUEST_QUEUE_CAP: usize = 16;
+
+/// Consecutive replay attempts that may make no progress before the anchor is
+/// dropped and the transport falls back to live.
+///
+/// Retaining the anchor across a no-progress attempt is what closes the gap (see
+/// [`ReplayAnchor`]) — but unbounded retention can wedge: a provider that refuses
+/// the `from_slot` outright (LaserStream only serves a few minutes of history)
+/// fails every attempt, and re-asking forever would keep the feed down instead of
+/// losing one window. Three attempts is enough to ride out a transient connect
+/// failure while still recovering to live in ~seconds.
+const MAX_REPLAY_ATTEMPTS: u32 = 3;
 
 // ── Push-feed hooks ───────────────────────────────────────────────────────────
 
@@ -136,6 +150,34 @@ impl ReconnectCounts {
             DisconnectReason::ConnectError => self.connect_error += 1,
         }
     }
+}
+
+/// Where a reconnect would resume from, and **when** that slot was actually
+/// observed.
+///
+/// Retained across reconnect attempts on purpose. An attempt that makes no
+/// progress — a connect failure, a subscribe rejection, or a stream that opens
+/// and then goes silent until the idle watchdog trips — must NOT discard the
+/// anchor: it is the only record of where the gap starts, and dropping it makes
+/// the next (successful) attempt subscribe live and lose the whole window
+/// permanently. That was the cause of a 2 min blackout on 2026-07-27 with
+/// `gap_replay_on_reconnect = true`.
+///
+/// `at` is when the transport last *saw* a slot advance, not when the attempt
+/// ended — the two differ by the whole idle timeout on a silently-dead stream,
+/// and it is `at` that makes `gap_replay_max_window_secs` mean anything.
+#[derive(Clone, Copy)]
+struct ReplayAnchor {
+    slot: u64,
+    at: Instant,
+}
+
+/// What a single stream attempt achieved.
+struct Attempt {
+    reason: DisconnectReason,
+    /// Highest slot seen on this attempt, and when it arrived. `None` ⇒ the
+    /// attempt made no progress at all (see [`ReplayAnchor`]).
+    progress: Option<ReplayAnchor>,
 }
 
 fn with_jitter(base: Duration) -> Duration {
@@ -295,8 +337,15 @@ impl Default for TransportConfig {
 /// `gap_replay_rx` carries `(gap_replay_on_reconnect, gap_replay_max_window_secs)`.
 /// When `gap_replay_on_reconnect` is false (default), reconnects always use live
 /// mode (no `from_slot`). When true, a `from_slot` is sent only if the gap since
-/// last progress is within `gap_replay_max_window_secs`; larger gaps re-subscribe
-/// live to avoid replaying a huge backlog.
+/// the last slot was *observed* is within `gap_replay_max_window_secs`; a larger
+/// gap re-subscribes live (and drops the anchor) rather than replay a backlog
+/// that would cost credits and re-backpressure the pipeline.
+///
+/// The replay anchor survives attempts that make no progress — see
+/// [`ReplayAnchor`]. It is dropped only when replaying would be wrong or futile:
+/// a billing-shaped disconnect (the backlog is what caused it), a gap wider than
+/// the operator's window, or [`MAX_REPLAY_ATTEMPTS`] consecutive attempts that
+/// got nowhere. Losing one window is always preferable to leaving the feed down.
 #[allow(clippy::too_many_arguments)]
 pub async fn run<V: IngestVenue>(
     endpoint: String,
@@ -308,10 +357,11 @@ pub async fn run<V: IngestVenue>(
     mut gap_replay_rx: watch::Receiver<(bool, u64)>,
     push: Arc<PushHooks>,
 ) {
-    let mut from_slot: Option<u64> = None;
+    let mut anchor: Option<ReplayAnchor> = None;
     let mut backoff = cfg.reconnect_base;
     let mut counts = ReconnectCounts::default();
-    let mut last_progress_at = Instant::now();
+    // Consecutive replay attempts that made no progress (see MAX_REPLAY_ATTEMPTS).
+    let mut replay_attempts: u32 = 0;
 
     loop {
         while !*live_rx.borrow() {
@@ -321,49 +371,68 @@ pub async fn run<V: IngestVenue>(
             }
         }
 
-        let last_slot = AtomicU64::new(0);
-        let reason = run_once(
+        // Resolve the resume point HERE, immediately before subscribing, so the
+        // window check measures the real age of the gap. (It used to be computed
+        // at the end of the previous iteration right after resetting the clock,
+        // which made `gap_replay_max_window_secs` unreachable.)
+        let (gap_replay_on, gap_max_secs) = *gap_replay_rx.borrow_and_update();
+        let from_slot = resolve_from_slot(&mut anchor, gap_replay_on, gap_max_secs);
+
+        let attempt = run_once(
             &endpoint,
             &auth,
             &venue,
             &event_tx,
             &mut live_rx,
             from_slot,
-            &last_slot,
             &cfg,
             &push,
         )
         .await;
+        let reason = attempt.reason;
 
-        let seen = last_slot.load(Ordering::Relaxed);
-        if seen > 0 {
-            last_progress_at = Instant::now();
+        // Advance the anchor only on real progress; an attempt that saw nothing
+        // KEEPS the previous anchor so the gap is still replayable next time —
+        // bounded by MAX_REPLAY_ATTEMPTS so a `from_slot` the provider refuses
+        // can never wedge the feed.
+        match attempt.progress {
+            Some(progress) => {
+                anchor = Some(progress);
+                replay_attempts = 0;
+            }
+            None if from_slot.is_some() => {
+                replay_attempts += 1;
+                if replay_attempts >= MAX_REPLAY_ATTEMPTS {
+                    warn!(
+                        replay_attempts,
+                        resume_slot = from_slot.unwrap_or_default(),
+                        reason = reason.label(),
+                        "LaserStream: replay made no progress in {MAX_REPLAY_ATTEMPTS} attempts \
+                         — falling back to live (that window is lost, feed stays up)"
+                    );
+                    anchor = None;
+                    replay_attempts = 0;
+                }
+            }
+            None => {}
         }
 
-        let is_billing_reason = matches!(
+        // Billing-shaped disconnects must never replay: the backlog is what
+        // caused them, so re-requesting it is self-reinforcing.
+        if matches!(
             reason,
             DisconnectReason::PipelineBackpressure
                 | DisconnectReason::StreamError(tonic::Code::ResourceExhausted)
-        );
-
-        let (gap_replay_on, gap_max_secs) = *gap_replay_rx.borrow_and_update();
-        let gap_secs = last_progress_at.elapsed().as_secs();
-
-        from_slot = if seen > 0 && !is_billing_reason && gap_replay_on && gap_secs <= gap_max_secs
-        {
-            Some(seen + 1)
-        } else {
-            if seen > 0 && !is_billing_reason && !gap_replay_on {
-                // gap-replay disabled by operator — reconnecting live
-            } else if gap_replay_on && gap_secs > gap_max_secs {
+        ) {
+            if anchor.take().is_some() {
                 warn!(
-                    gap_secs,
-                    gap_max_secs,
-                    "LaserStream: gap exceeds replay window — reconnecting live (no from_slot)"
+                    reason = reason.label(),
+                    "LaserStream: dropping the replay anchor — reconnecting live to avoid a \
+                     self-reinforcing backlog (slots since the last one are permanently missing)"
                 );
             }
-            None
-        };
+            replay_attempts = 0;
+        }
 
         counts.record(reason);
         if reason.is_terminal() {
@@ -393,7 +462,7 @@ pub async fn run<V: IngestVenue>(
             counts.connect_error,
         );
 
-        let delay = if seen > 0 {
+        let delay = if attempt.progress.is_some() {
             backoff = cfg.reconnect_base;
             cfg.reconnect_base
         } else {
@@ -407,6 +476,46 @@ pub async fn run<V: IngestVenue>(
     }
 }
 
+// ── Resume-point decision (the ONE place `from_slot` is decided) ──────────────
+
+/// Resolve the `from_slot` for the subscribe that is about to happen, given the
+/// retained `anchor` and the operator's live gap-replay settings.
+///
+/// Consumes the anchor (`take`) only when the gap is too wide to replay — that
+/// window is gone for good, and keeping the anchor would just re-log the same
+/// refusal on every later reconnect. A disabled toggle leaves the anchor intact
+/// so flipping it back on mid-outage still replays, subject to the same window.
+///
+/// Resumes at `slot + 1`, never `slot`: re-requesting the anchor slot would
+/// re-deliver its transactions, and nothing between here and the strategy fold
+/// dedups by signature (only the PG insert does, via `ON CONFLICT DO NOTHING`),
+/// so a replayed slot would double-count into the live volume/flow metrics. The
+/// residual cost is the tail of a slot the stream died mid-way through — bounded
+/// by one slot (~400 ms) against the minute-scale gap this exists to close.
+fn resolve_from_slot(
+    anchor: &mut Option<ReplayAnchor>,
+    gap_replay_on: bool,
+    gap_max_secs: u64,
+) -> Option<u64> {
+    let a = (*anchor)?;
+    if !gap_replay_on {
+        return None;
+    }
+    let gap_secs = a.at.elapsed().as_secs();
+    if gap_secs > gap_max_secs {
+        warn!(
+            gap_secs,
+            gap_max_secs,
+            resume_slot = a.slot + 1,
+            "LaserStream: gap exceeds replay window — reconnecting live; slots from resume_slot \
+             onward are permanently missing"
+        );
+        *anchor = None;
+        return None;
+    }
+    Some(a.slot + 1)
+}
+
 // ── Single connection attempt ─────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -417,10 +526,18 @@ async fn run_once<V: IngestVenue>(
     event_tx: &mpsc::Sender<(Arc<SubscribeUpdateTransaction>, V::Relevance, DateTime<Utc>)>,
     live_rx: &mut watch::Receiver<bool>,
     from_slot: Option<u64>,
-    last_slot: &AtomicU64,
     cfg: &TransportConfig,
     push: &PushHooks,
-) -> DisconnectReason {
+) -> Attempt {
+    // Highest slot seen on THIS attempt + when it arrived. Local (the attempt is
+    // single-tasked) and returned to the caller, which owns the durable anchor.
+    let mut progress: Option<ReplayAnchor> = None;
+    macro_rules! done {
+        ($reason:expr) => {
+            return Attempt { reason: $reason, progress }
+        };
+    }
+
     match from_slot {
         Some(slot) => info!("LaserStream: connecting to {endpoint} (replay from slot {slot})"),
         None => info!("LaserStream: connecting to {endpoint} (live)"),
@@ -429,7 +546,7 @@ async fn run_once<V: IngestVenue>(
         Ok(c) => c,
         Err(e) => {
             error!("LaserStream: connect failed — {e}");
-            return DisconnectReason::ConnectError;
+            done!(DisconnectReason::ConnectError);
         }
     };
 
@@ -447,14 +564,14 @@ async fn run_once<V: IngestVenue>(
     );
     if req_tx.send(initial).await.is_err() {
         error!("LaserStream: request channel closed before initial subscribe");
-        return DisconnectReason::ConnectError;
+        done!(DisconnectReason::ConnectError);
     }
 
     let response = match client.subscribe(ReceiverStream::new(req_rx)).await {
         Ok(r) => r,
         Err(status) => {
             error!("LaserStream: subscribe failed — {status}");
-            return DisconnectReason::StreamError(status.code());
+            done!(DisconnectReason::StreamError(status.code()));
         }
     };
     let mut stream = response.into_inner();
@@ -489,8 +606,13 @@ async fn run_once<V: IngestVenue>(
                             }
                         }
                         Some(UpdateOneof::Transaction(tx)) => {
-                            if tx.slot > last_slot.fetch_max(tx.slot, Ordering::Relaxed) {
-                                last_update = tokio::time::Instant::now();
+                            if progress.is_none_or(|p| tx.slot > p.slot) {
+                                let now = tokio::time::Instant::now();
+                                // `at` is the observation time of the newest slot —
+                                // the anchor timestamp the caller measures the gap
+                                // from (see `ReplayAnchor`).
+                                progress = Some(ReplayAnchor { slot: tx.slot, at: now });
+                                last_update = now;
                             }
                             if let Some(relevance) = venue.classify(&tx) {
                                 let received_at = Utc::now();
@@ -508,14 +630,14 @@ async fn run_once<V: IngestVenue>(
                                              {:?} — forcing reconnect (downstream stalled)",
                                             cfg.pipeline_send_timeout
                                         );
-                                        return DisconnectReason::PipelineBackpressure;
+                                        done!(DisconnectReason::PipelineBackpressure);
                                     }
                                     Err(mpsc::error::SendTimeoutError::Closed(_)) => {
                                         info!(
                                             "LaserStream: pipeline receiver dropped — stopping \
                                              (no reconnect)"
                                         );
-                                        return DisconnectReason::DownstreamClosed;
+                                        done!(DisconnectReason::DownstreamClosed);
                                     }
                                 }
                             }
@@ -525,11 +647,11 @@ async fn run_once<V: IngestVenue>(
                     }
                     Ok(None) => {
                         info!("LaserStream: server closed the stream");
-                        return DisconnectReason::Graceful;
+                        done!(DisconnectReason::Graceful);
                     }
                     Err(status) => {
                         error!("LaserStream: stream error — {status}");
-                        return DisconnectReason::StreamError(status.code());
+                        done!(DisconnectReason::StreamError(status.code()));
                     }
                 }
             }
@@ -550,18 +672,18 @@ async fn run_once<V: IngestVenue>(
                     push.account_filter(),
                 );
                 if req_tx.send(req).await.is_err() {
-                    return DisconnectReason::Graceful;
+                    done!(DisconnectReason::Graceful);
                 }
             }
 
             result = live_rx.changed() => {
                 if result.is_err() {
                     info!("LaserStream: live-mode sender dropped — stopping (no reconnect)");
-                    return DisconnectReason::DownstreamClosed;
+                    done!(DisconnectReason::DownstreamClosed);
                 }
                 if !*live_rx.borrow() {
                     info!("LaserStream: live mode disabled — closing stream");
-                    return DisconnectReason::Graceful;
+                    done!(DisconnectReason::Graceful);
                 }
             }
 
@@ -569,7 +691,7 @@ async fn run_once<V: IngestVenue>(
                 let idle = last_update.elapsed();
                 if idle >= cfg.idle_reconnect_timeout {
                     warn!("LaserStream: no transaction update for {idle:?} — forcing reconnect");
-                    return DisconnectReason::IdleTimeout;
+                    done!(DisconnectReason::IdleTimeout);
                 }
             }
         }
@@ -590,6 +712,75 @@ mod tests {
         assert_eq!(DisconnectReason::PipelineBackpressure.label(), "pipeline_backpressure");
         assert_eq!(DisconnectReason::ConnectError.label(), "connect_error");
         assert!(DisconnectReason::StreamError(tonic::Code::Unavailable).label().starts_with("stream_error"));
+    }
+
+    fn anchor(slot: u64, age_secs: u64) -> Option<ReplayAnchor> {
+        Some(ReplayAnchor {
+            slot,
+            at: Instant::now() - Duration::from_secs(age_secs),
+        })
+    }
+
+    /// Baseline: a fresh anchor with the toggle on resumes at `slot + 1` — never
+    /// at `slot`, which would re-deliver that slot's trades into the live metric
+    /// fold (nothing dedups by signature before the fold).
+    #[test]
+    fn a_fresh_anchor_resumes_one_slot_past_the_last_one_seen() {
+        let mut a = anchor(500, 1);
+        assert_eq!(resolve_from_slot(&mut a, true, 300), Some(501));
+        // Still armed — a resume does not consume the anchor.
+        assert!(a.is_some());
+    }
+
+    /// **The 2026-07-27 blackout.** A reconnect attempt that makes no progress
+    /// (connect failure, subscribe rejection, or a stream that opens then goes
+    /// silent until the idle watchdog trips) must NOT discard the anchor. It used
+    /// to: `from_slot` was recomputed from that attempt's own `last_slot`, so one
+    /// empty attempt zeroed it and the next successful attempt subscribed live,
+    /// losing the whole window permanently.
+    #[test]
+    fn a_no_progress_attempt_keeps_the_gap_replayable() {
+        let mut a = anchor(500, 1);
+        // Attempt 1 replays from 501 and dies having seen nothing → no progress,
+        // so the caller leaves `anchor` untouched.
+        assert_eq!(resolve_from_slot(&mut a, true, 300), Some(501));
+        // Attempt 2 must still ask for the SAME resume point, not go live.
+        assert_eq!(resolve_from_slot(&mut a, true, 300), Some(501));
+        assert_eq!(resolve_from_slot(&mut a, true, 300), Some(501));
+    }
+
+    /// `gap_replay_max_window_secs` is reachable. It used to be dead: the caller
+    /// reset the progress clock immediately before measuring against it, so the
+    /// measured gap was always ~0 and a multi-hour backlog would have been
+    /// requested in full. A refused gap also drops the anchor — that window is
+    /// gone, and keeping it would re-log the refusal on every later reconnect.
+    #[test]
+    fn a_gap_wider_than_the_window_reconnects_live_and_disarms() {
+        let mut a = anchor(500, 301);
+        assert_eq!(resolve_from_slot(&mut a, true, 300), None);
+        assert!(a.is_none(), "a refused gap must not be retried forever");
+        // Exactly at the window is still replayable (inclusive bound).
+        let mut edge = anchor(500, 300);
+        assert_eq!(resolve_from_slot(&mut edge, true, 300), Some(501));
+    }
+
+    /// Toggle off ⇒ live, but the anchor is RETAINED: flipping it back on
+    /// mid-outage still replays, subject to the same window check.
+    #[test]
+    fn the_toggle_gates_replay_without_forgetting_where_we_were() {
+        let mut a = anchor(500, 5);
+        assert_eq!(resolve_from_slot(&mut a, false, 300), None);
+        assert!(a.is_some());
+        assert_eq!(resolve_from_slot(&mut a, true, 300), Some(501));
+    }
+
+    /// Cold start (or after a billing-shaped disconnect dropped the anchor):
+    /// nothing to resume from, so live regardless of the toggle.
+    #[test]
+    fn no_anchor_means_live() {
+        let mut none = None;
+        assert_eq!(resolve_from_slot(&mut none, true, 300), None);
+        assert_eq!(resolve_from_slot(&mut none, false, 300), None);
     }
 
     /// The filter-map key is venue-supplied (was a hardcoded `"pumpfun"`); a

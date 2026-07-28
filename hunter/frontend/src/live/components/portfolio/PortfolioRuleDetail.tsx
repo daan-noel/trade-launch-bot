@@ -204,7 +204,9 @@ export function PortfolioRuleDetail({
                       >
                         {p.pnl_percent != null ? formatSignedPct(p.pnl_percent, 1) : '—'}
                       </td>
-                      <td className="px-2 py-1">{exitReasonBadge(p.exit_reason, p.pnl_sol)}</td>
+                      <td className="px-2 py-1">
+                        {exitReasonBadge(p.exit_reason, p.pnl_sol, p.last_entry_error)}
+                      </td>
                     </tr>
                   );
                 })}

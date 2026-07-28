@@ -32,7 +32,7 @@
 | `ExitStuck` | Open · attention | sell gave up, **bag still held**; reaper redrives ×`EXIT_REDRIVE_CAP=2` then `exit_parked` (mig 0012 cols) |
 | `ExitUnconfirmed` | Open · attention | sell may/may-not have cleared; auto-re-sold **only** once the original is proven unexecutable (§2.1); bag-cleared reaper heal + manual Verify |
 | `End` | Terminal | confirmed exit (incl. `Dead` write-off) |
-| `EntryFailed` | Terminal | buy never filled; **no hypothetical exit price stamped; excluded from realized PnL** (entry NULL) |
+| `EntryFailed` | Terminal | buy never filled; **no hypothetical exit price stamped; excluded from realized PnL** (entry NULL). Carries no `exit_reason` (nothing exited) — the cause is in `last_entry_error`, §2.2 |
 
 Partition SSOT guards: `sinks.rs::status_partition_guard` (Rust, compile-forcing) ⟷
 `liveStatusSlice.ts` `OPEN_STATUSES`/`ATTENTION_STATUSES`/`TERMINAL_STATUSES` (+ vitest).
@@ -107,6 +107,45 @@ one `getTokenAccountsByOwner` either books a row whose bag is genuinely gone (fe
 gap) or re-points it at the account actually holding the tokens and resets the
 redrive budget. PG-net alone cannot see either case.
 
+### 2.2 Why a buy failed — `last_entry_error` (mig 0017)
+
+An `EntryFailed` row used to explain nothing. `reduce.rs` emits the terminal delta
+with `reason: None` (there is no `ExitReason` for a position that never opened), and
+the real-exec adapter discarded the one fact that *did* explain it: the `TradeError`
+from the send — not even logged — and the Anchor custom code from the on-chain revert.
+On 2026-07-27 that cost a log-dig: 9 `EntryFailed` rows in an 8 h window, all with
+zero on-chain buys, with no way to tell a **slippage** revert (6002/6042 ⇒ the buy
+floor is too tight for the market — a *tuning* fix, and ~27 landed reverts of burnt
+fees hinge on it) from a structural one.
+
+`last_entry_error` is now written at every buy give-up / retry point:
+
+| Path | Recorded cause |
+|---|---|
+| pre-send migrated skip | `skipped before send: token already migrated (curve-only snipe)` |
+| send returned `Err` and nothing was signed | `buy send failed: <TradeError>` |
+| confirmed on-chain revert | `reverted on-chain, curve buy error <code>` — the code is the point |
+| revert with no Anchor code | `reverted on-chain, no Anchor code (account / funds error)` |
+| 2006 stale creator | refreshed-and-retrying, or `creator vault is unchanged` |
+| migrated during the buy window | `token migrated during the buy window (…)` |
+
+Semantics: **"the most recent buy attempt that did not fill"**, whatever the row's
+final status — not an `EntryFailed`-only field, and never cleared on success. A
+`Holding` row reading `reverted 6002` entered on a later attempt, and that is useful
+history. `Ambiguous` outcomes record nothing (the row stays `BuySubmitted` for the
+reaper; there is no verdict yet).
+
+Mechanically it follows the `exit_redrive_count` / `exit_parked` pattern (§2.1, mig
+0012): a **dedicated column, deliberately absent from `update_position`'s SET list**,
+because the executor writes it at the moment of failure and the sink's full-row
+terminal write lands *after* — a shared write path would clobber it.
+`note_last_entry_error` is the ONE writer; it returns `false` when no row matched
+(`insert_position` is async, so the pre-send skip can outrun its own insert) and the
+caller retries briefly, exactly as `mark_buy_submitted` does. The whole path is
+best-effort: a failed diagnostic write never changes the entry's outcome.
+Locked by `position_col_guard::writer_owned_columns_never_enter_the_full_row_write`,
+which also guards the 0012 columns (previously untested).
+
 ## 3. Close-action matrix (backend-enforced)
 
 `POST /api/strategies/{s}/positions/{id}/close?action=retry|dump|writeoff|verify`
@@ -121,6 +160,40 @@ redrive budget. PG-net alone cannot see either case.
 | ExitUnconfirmed (reaper, unattended) | ✓ **only** when every recorded sell sig is `NonceTxState::Dead` — see §2.1 | — | — | — |
 | BuySubmitted | 409 (use verify) | — | — | ✓ reaper adopt-or-drop, one shot |
 | End / EntryFailed | 409 terminal | — | — | — |
+
+### 3.1 Recovering bags the reaper will not take
+
+`find_bags_by_status(status, threshold_raw)` — the ONE stranded-bag query — filters
+`NOT p.exit_parked`, so a **parked** `ExitStuck` row is invisible to the reaper by
+design (parking IS the give-up state; auto-unparking would loop). Two ways out:
+
+- **Per row:** a manual `retry`, which calls `unpark_exit` and resets the counter.
+- **Per mint, sweeping:** `POST /api/trading/sell-all-by-mint` — the "Sell All by mint"
+  action in MyWallet ([trading/solana.rs](../../live/src/api/handlers/trading/solana.rs)).
+  It enumerates **every** token account for the mint, sells each using its own address
+  as the override, re-resolves curve-vs-AMM routing live per pass, and closes each
+  cleared account for rent. That covers both the orphaned-account case and a missed
+  migration in one shot, and needs no deploy. The reaper's `heal_cleared_by_status`
+  books the rows to `End` once the sells hit the feed.
+
+### 3.2 Deliberately NOT done — re-check before "fixing" these again
+
+Each of these looks like an obvious improvement and is a regression:
+
+- **Emitting a re-queue event from the two silent `run_exit` guard returns.** The
+  reaper's `redrive_orphaned_exit_pending` already owns that row at 60 s; emitting
+  immediately would spin `MAX_EXIT_ATTEMPTS` out in milliseconds. Strictly worse.
+- **Consolidation inside the reaper's unattended recovery path.** For real stranded
+  bags each position's whole bag sat in ONE account and the row merely pointed at the
+  wrong one — `reconcile_bag_onchain` re-pointing recovers 100%. A token-transfer tx
+  inside unattended recovery is new risk against a split-bag case with no evidence
+  behind it.
+- **Turning on `exclusive` for the real rules.** Multiple rules per mint is a strategy
+  choice and the executor is now safe under it (§2.1). Enabling it would cut coverage
+  to hide a bug that is fixed.
+- **Any new Helius spend on a default path.** `EXIT_BAG_ONCHAIN_CHECK` and the
+  consolidation sender are both opt-in / operator-invoked. Keep it that way (standing
+  rule in the super-root `CLAUDE.md`).
 
 ## 4. Manual positions (`origin='manual'`)
 

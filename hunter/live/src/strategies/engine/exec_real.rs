@@ -13,6 +13,7 @@
 //! `BuySubmitted`/`ExitPending` row for the recovery reaper — never a speculative
 //! resubmit.
 
+use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -66,6 +67,10 @@ const SELL_SEND_TIMEOUT: Duration = Duration::from_secs(15);
 const SELL_UNCONFIRMED_EXTENDED: Duration = Duration::from_secs(20);
 /// Dust threshold (raw units) below which the remaining balance counts as cleared.
 const PARTIAL_FILL_THRESHOLD: u64 = 0;
+/// Bounded wait for the asynchronous `insert_position` before giving up on the
+/// `last_entry_error` write (mig 0017) — same shape as `MARK_BUY_SUBMITTED_TIMEOUT`.
+const NOTE_ENTRY_ERROR_ATTEMPTS: u8 = 8;
+const NOTE_ENTRY_ERROR_BACKOFF: Duration = Duration::from_millis(25);
 
 /// Decision for a snipe buy that was sent but whose fill never appeared in the
 /// feed within the poll window. Funnel through `classify_swap_revert` (curve buy
@@ -219,6 +224,12 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
             "real buy skipped — token already migrated (curve snipe would revert)"
         );
         deps.trader.release_sol_for_position(&order.pg_id.to_string());
+        note_entry_error(
+            &deps,
+            &order,
+            "skipped before send: token already migrated (curve-only snipe)",
+        )
+        .await;
         let _ = deps
             .fill_tx
             .send(Event::FillFailed { intent: order.intent, reason: FillFailReason::Fatal })
@@ -324,6 +335,14 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
         Ok(b) => Some(b.user_token_account.to_string()),
         Err(_) => order.token_account.clone(),
     };
+    // The submit error used to be dropped on the floor — not even logged — which is
+    // half the reason the 2026-07-27 `EntryFailed` rows could not be explained. It
+    // is only the *fallback* cause: when the buy did get signed we still confirm
+    // on-chain below, and that verdict is more authoritative than the send error.
+    let send_error = match &submit {
+        Ok(_) => None,
+        Err(e) => Some(format!("buy send failed: {e}")),
+    };
     let submitted_sig = match submit {
         Ok(b) => Some(b.signature),
         Err(_) => None,
@@ -336,6 +355,9 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
             emit_entry_outcome(&deps, &order, sig, funded_account, outcome).await;
         }
         (None, None) => {
+            let cause = send_error
+                .unwrap_or_else(|| "buy was never signed (no signature to confirm)".to_string());
+            note_entry_error(&deps, &order, &cause).await;
             warn!(mint = %order.mint, "real buy never signed; reporting revert for retry");
             let _ = deps
                 .fill_tx
@@ -461,7 +483,8 @@ async fn emit_entry_outcome(
         EntryOutcome::Filled(legs) => {
             emit_entry_filled(deps, order, sig, funded_account, legs).await
         }
-        EntryOutcome::Retry => {
+        EntryOutcome::Retry(cause) => {
+            note_entry_error(deps, order, &cause).await;
             let _ = deps
                 .fill_tx
                 .send(Event::FillFailed {
@@ -470,7 +493,8 @@ async fn emit_entry_outcome(
                 })
                 .await;
         }
-        EntryOutcome::Fatal => {
+        EntryOutcome::Fatal(cause) => {
+            note_entry_error(deps, order, &cause).await;
             deps.trader.release_sol_for_position(&order.pg_id.to_string());
             let _ = deps
                 .fill_tx
@@ -487,10 +511,57 @@ async fn emit_entry_outcome(
     }
 }
 
+/// Persist why this buy attempt did not fill, and log it. The ONE call path into
+/// `last_entry_error` (mig 0017).
+///
+/// Failure path only — never the snipe hot path. Retries briefly on a row that
+/// hasn't landed yet: `insert_position` is asynchronous (Pass-1), so the
+/// already-migrated skip can outrun its own insert. Best-effort throughout; a
+/// failed diagnostic write must never change the entry's outcome.
+async fn note_entry_error(deps: &RealExecDeps, order: &BuyOrder, cause: &str) {
+    warn!(mint = %order.mint, pg = %order.pg_id, "real buy attempt did not fill: {cause}");
+    for _ in 0..NOTE_ENTRY_ERROR_ATTEMPTS {
+        match deps.strategy_repo.note_last_entry_error(order.pg_id, cause).await {
+            Ok(true) => return,
+            Ok(false) => tokio::time::sleep(NOTE_ENTRY_ERROR_BACKOFF).await,
+            Err(e) => {
+                warn!(pg = %order.pg_id, "note_last_entry_error failed: {e}");
+                return;
+            }
+        }
+    }
+    warn!(pg = %order.pg_id, "note_last_entry_error: row never appeared — cause is log-only");
+}
+
+/// Describe a `SigStatus` for `last_entry_error`. The Anchor custom code is the
+/// whole point: `6002`/`6042` mean the buy slippage floor is too tight for the
+/// current market (a TUNING fix), anything else points at code.
+fn describe_status<E: std::fmt::Display>(status: &Result<SigStatus, E>) -> Cow<'static, str> {
+    match status {
+        Ok(SigStatus::Reverted { custom: Some(code) }) => {
+            Cow::Owned(format!("reverted on-chain, curve buy error {code}"))
+        }
+        Ok(SigStatus::Reverted { custom: None }) => {
+            Cow::Borrowed("reverted on-chain, no Anchor code (account / funds error)")
+        }
+        Ok(SigStatus::Pending) => Cow::Borrowed("never landed (pending or dropped)"),
+        Ok(SigStatus::Succeeded) => Cow::Borrowed("tx succeeded but no own buy leg on the feed"),
+        Err(e) => Cow::Owned(format!("signature status unavailable: {e}")),
+    }
+}
+
+/// How a buy attempt ended. The non-fill arms carry the **cause** — the send
+/// error or the Anchor custom code — because it is the only fact that explains an
+/// `EntryFailed` row, and the engine has no `ExitReason` for a position that never
+/// opened. It is persisted to `last_entry_error` (mig 0017) so the
+/// slippage-revert-vs-structural question is answerable from the DB rather than
+/// from container logs on the box.
 enum EntryOutcome {
     Filled(SigLegs),
-    Retry,
-    Fatal,
+    Retry(Cow<'static, str>),
+    Fatal(Cow<'static, str>),
+    /// Submitted, neither a feed fill nor a proven revert — emits nothing and
+    /// leaves the `BuySubmitted` row for the reaper, so there is nothing to book.
     Ambiguous,
 }
 
@@ -514,26 +585,28 @@ async fn confirm_entry(
             mint = %mint,
             "buy unfilled and token migrated during window — giving up (curve-only snipe)"
         );
-        return EntryOutcome::Fatal;
+        return EntryOutcome::Fatal(Cow::Borrowed(
+            "token migrated during the buy window (a curve-only snipe cannot fill)",
+        ));
     }
     let status = deps.trader.signature_state_detailed(sig).await;
     match classify_silent_send(&status) {
-        SilentSendOutcome::Resend => EntryOutcome::Retry,
+        SilentSendOutcome::Resend => EntryOutcome::Retry(describe_status(&status)),
         SilentSendOutcome::RefreshCreatorThenResend => {
             match deps.trader.refresh_curve_creator_vault(mint).await {
                 Ok(Some(vault)) => {
                     warn!(mint = %mint, new_creator_vault = %vault,
                         "buy reverted 2006; refreshed creator — reporting retry");
-                    EntryOutcome::Retry
+                    EntryOutcome::Retry(Cow::Borrowed(
+                        "reverted 2006 (stale creator); creator refreshed, retrying",
+                    ))
                 }
-                Ok(None) => {
-                    warn!(mint = %mint, "buy reverted 2006 but creator unchanged — giving up");
-                    EntryOutcome::Fatal
-                }
-                Err(e) => {
-                    warn!(mint = %mint, "buy 2006 creator refresh failed ({e}) — giving up");
-                    EntryOutcome::Fatal
-                }
+                Ok(None) => EntryOutcome::Fatal(Cow::Borrowed(
+                    "reverted 2006 but the creator vault is unchanged",
+                )),
+                Err(e) => EntryOutcome::Fatal(Cow::Owned(format!(
+                    "reverted 2006 and the creator refresh failed: {e}"
+                ))),
             }
         }
         SilentSendOutcome::WaitThenSettle => {
@@ -545,7 +618,7 @@ async fn confirm_entry(
         SilentSendOutcome::GiveUp => match &status {
             // Pending/unknown → ambiguous (nonce may still land); structural revert → Fatal.
             Ok(SigStatus::Pending) | Err(_) => EntryOutcome::Ambiguous,
-            Ok(SigStatus::Reverted { .. }) => EntryOutcome::Fatal,
+            Ok(SigStatus::Reverted { .. }) => EntryOutcome::Fatal(describe_status(&status)),
             Ok(SigStatus::Succeeded) => EntryOutcome::Ambiguous,
         },
     }

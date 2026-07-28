@@ -173,6 +173,7 @@ struct StrategyPositionDbRow {
     manual_exit: Option<Json<Value>>,
     exit_redrive_count: i32,
     exit_parked: bool,
+    last_entry_error: Option<String>,
     extra: Json<Value>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -217,6 +218,7 @@ impl From<StrategyPositionDbRow> for StrategyPosition {
             manual_exit: r.manual_exit.map(|j| j.0),
             exit_redrive_count: r.exit_redrive_count,
             exit_parked: r.exit_parked,
+            last_entry_error: r.last_entry_error,
             needs_review,
             extra: r.extra.0,
             created_at: r.created_at,
@@ -457,12 +459,35 @@ struct OpenMark {
 const RUN_COLS: &str = "id, strategy_id, rule_id, mode, run_seq, status, params_snapshot, \
     max_total_tokens, started_at, finished_at";
 
+/// Cap on `last_entry_error` (mig 0017). A `TradeError` can stringify an entire
+/// RPC error payload; the column is a diagnostic, not a log sink.
+const MAX_ENTRY_ERROR_LEN: usize = 300;
+
+/// Truncate to at most `max` **chars** (never bytes — a byte slice can split a
+/// UTF-8 sequence and panic), marking the cut with an ASCII ellipsis. Stays ASCII
+/// because this is stored data, not a comment.
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max).collect();
+    out.push_str("...");
+    out
+}
+
+/// The `strategy_positions` read column list, in `StrategyPositionDbRow` field
+/// order (sqlx maps positionally, so order is load-bearing).
+///
+/// The two aliased variants below are hand-maintained copies — SQL has no way to
+/// prefix a list — and `position_col_lists_stay_aliased_copies` is the no-DB guard
+/// that keeps all three identical modulo the prefix. Add a column here and that
+/// test tells you exactly which copy you missed.
 const POSITION_COLS: &str = "id, run_id, strategy_id, rule_id, mode, mint_address, wallet, \
     token_program_id, token_account, target_price, target_token_amount, target_time, target_tx, \
     entry_price, entry_token_amount, entry_lamports, entry_time, entry_tx_signatures, \
     exit_price, exit_token_amount, exit_lamports, exit_time, exit_tx_signatures, \
     submitted_buy_signatures, status, exit_reason, origin, manual_exit, \
-    exit_redrive_count, exit_parked, extra, created_at, updated_at";
+    exit_redrive_count, exit_parked, last_entry_error, extra, created_at, updated_at";
 
 /// `POSITION_COLS` qualified with the `sp` alias — for the paged read that JOINs
 /// `tokens` (so the server can sort/filter by token-enrichment columns too).
@@ -471,7 +496,7 @@ const POSITION_COLS_SP: &str = "sp.id, sp.run_id, sp.strategy_id, sp.rule_id, sp
     sp.target_time, sp.target_tx, sp.entry_price, sp.entry_token_amount, sp.entry_lamports, \
     sp.entry_time, sp.entry_tx_signatures, sp.exit_price, sp.exit_token_amount, sp.exit_lamports, \
     sp.exit_time, sp.exit_tx_signatures, sp.submitted_buy_signatures, sp.status, sp.exit_reason, \
-    sp.origin, sp.manual_exit, sp.exit_redrive_count, sp.exit_parked, \
+    sp.origin, sp.manual_exit, sp.exit_redrive_count, sp.exit_parked, sp.last_entry_error, \
     sp.extra, sp.created_at, sp.updated_at";
 
 /// `POSITION_COLS` qualified with the `p` alias — for reads that JOIN `wallet_dict`
@@ -481,7 +506,7 @@ const POSITION_COLS_P: &str = "p.id, p.run_id, p.strategy_id, p.rule_id, p.mode,
     p.target_time, p.target_tx, p.entry_price, p.entry_token_amount, p.entry_lamports, \
     p.entry_time, p.entry_tx_signatures, p.exit_price, p.exit_token_amount, p.exit_lamports, \
     p.exit_time, p.exit_tx_signatures, p.submitted_buy_signatures, p.status, p.exit_reason, \
-    p.origin, p.manual_exit, p.exit_redrive_count, p.exit_parked, \
+    p.origin, p.manual_exit, p.exit_redrive_count, p.exit_parked, p.last_entry_error, \
     p.extra, p.created_at, p.updated_at";
 
 // ---------------------------------------------------------------------------
@@ -2333,6 +2358,37 @@ impl StrategyRepo {
         Ok(())
     }
 
+    /// Record why the most recent buy attempt did not fill — the ONE writer of
+    /// `last_entry_error` (mig 0017). Called by the real-exec adapter at each
+    /// give-up / retry point, where the `TradeError` or the Anchor custom code is
+    /// still in hand; without it an `EntryFailed` row explains nothing (the engine
+    /// has no `ExitReason` for a position that never opened) and the cause is only
+    /// recoverable from container logs on the box.
+    ///
+    /// A dedicated column, not `extra`, for the same reason as
+    /// [`Self::bump_exit_redrive`]: the sink's full-row `update_position` booking
+    /// the terminal status lands *after* this write and would clobber it.
+    ///
+    /// `cause` is truncated to `MAX_ENTRY_ERROR_LEN` — a `TradeError` can carry a
+    /// whole RPC payload and this column is a diagnostic, not a log.
+    ///
+    /// Returns `false` when no row matched. That is a real case, not an error: the
+    /// row is inserted asynchronously (Pass-1), so a buy that fails *before* any
+    /// network I/O — the already-migrated skip — can run ahead of its own insert.
+    /// The caller retries briefly on `false`, exactly as `mark_buy_submitted` does.
+    pub async fn note_last_entry_error(&self, id: Uuid, cause: &str) -> anyhow::Result<bool> {
+        let cause = truncate_chars(cause, MAX_ENTRY_ERROR_LEN);
+        let res = sqlx::query(
+            "UPDATE strategy_positions SET last_entry_error = $2, updated_at = now() \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(cause)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
     /// Atomically increment the reaper's ExitStuck redrive counter, returning the
     /// new count. A dedicated column (not `extra`) so the fold's full-row
     /// `update_position` re-booking ExitStuck after a failed redrive can never
@@ -2606,6 +2662,80 @@ impl StrategyRepo {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(m,)| m).collect())
+    }
+}
+
+#[cfg(test)]
+mod position_col_guard {
+    //! No-DB guard over the three `strategy_positions` read column lists. SQL has
+    //! no way to prefix a list, so the two aliased variants are hand-maintained
+    //! copies of `POSITION_COLS` — exactly the "same fact defined twice" shape the
+    //! super-root `CLAUDE.md` requires a guard for. sqlx maps
+    //! `StrategyPositionDbRow` **positionally**, so a copy that drifts by one
+    //! column decodes every later field into the wrong slot.
+    use super::*;
+
+    fn cols(list: &str) -> Vec<String> {
+        list.split(',').map(|c| c.trim().to_string()).collect()
+    }
+
+    #[test]
+    fn position_col_lists_stay_aliased_copies() {
+        let base = cols(POSITION_COLS);
+        assert!(base.len() > 30, "sanity: base list parsed as {} cols", base.len());
+        for (alias, list) in [("sp", POSITION_COLS_SP), ("p", POSITION_COLS_P)] {
+            let expected: Vec<String> = base.iter().map(|c| format!("{alias}.{c}")).collect();
+            assert_eq!(
+                cols(list),
+                expected,
+                "POSITION_COLS_{} drifted from POSITION_COLS (sqlx decodes positionally)",
+                alias.to_uppercase()
+            );
+        }
+    }
+
+    /// Three columns are READ by the full row but written ONLY by their dedicated
+    /// writer, because the engine sink's `update_position` lands *after* that
+    /// writer and a shared write path would clobber it (mig 0012 / 0017). That
+    /// invariant is what makes the reaper's redrive counter and the buy-failure
+    /// cause survive at all, and nothing tested it until now.
+    #[test]
+    fn writer_owned_columns_never_enter_the_full_row_write() {
+        const OWNED: [&str; 3] = ["exit_redrive_count", "exit_parked", "last_entry_error"];
+        // Slice out `update_position`'s SQL literal so the scan cannot be fooled by
+        // the dedicated writers' own `UPDATE`s elsewhere in this file.
+        let src = include_str!("strategy_repo.rs");
+        let from = src.find("pub async fn update_position").expect("update_position moved");
+        let set_list = &src[from..];
+        let set_list =
+            &set_list[..set_list.find("WHERE id = $1").expect("update_position SQL shape changed")];
+        for col in OWNED {
+            assert!(
+                !set_list.contains(col),
+                "{col} must never appear in update_position's SET list — its dedicated writer \
+                 would be clobbered (see migration 0012 / 0017)"
+            );
+            assert!(
+                cols(POSITION_COLS).iter().any(|c| c == col),
+                "{col} is written by a dedicated writer but must still be READ"
+            );
+        }
+    }
+
+    #[test]
+    fn a_long_cause_is_truncated_on_a_char_boundary() {
+        let long = "6002 ".repeat(200);
+        let out = truncate_chars(&long, MAX_ENTRY_ERROR_LEN);
+        assert_eq!(out.chars().count(), MAX_ENTRY_ERROR_LEN + 3);
+        assert!(out.ends_with("..."));
+        // Multi-byte input must not panic or split a sequence.
+        let wide = "é".repeat(MAX_ENTRY_ERROR_LEN + 50);
+        assert_eq!(
+            truncate_chars(&wide, MAX_ENTRY_ERROR_LEN).chars().count(),
+            MAX_ENTRY_ERROR_LEN + 3
+        );
+        // Short input is passed through untouched.
+        assert_eq!(truncate_chars("reverted 6002", MAX_ENTRY_ERROR_LEN), "reverted 6002");
     }
 }
 

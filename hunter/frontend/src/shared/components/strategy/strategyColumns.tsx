@@ -35,11 +35,25 @@ export { exitReasonLabel, exitReasonSearchText } from 'lib/strategy/exitReason';
 
 /** Render an exit reason as a compact colored badge, shared by the live-position
  * and simulation-result tables. Pass `pnlSol` so metric exits tint by outcome
- * (green / red), matching TP/SL glanceability. */
+ * (green / red), matching TP/SL glanceability.
+ *
+ * `entryError` (`last_entry_error`, mig 0017) covers the one row shape that has no
+ * exit reason to show: an `EntryFailed` position never exited, so the cell used to
+ * read as an ordinary blank and the actual cause — a slippage revert vs a
+ * structural one — was only in the container logs. Real positions only; a
+ * simulated row has no such field. */
 export function exitReasonBadge(
   reason: string | null | undefined,
   pnlSol?: number | null,
+  entryError?: string | null,
 ) {
+  if (!reason && entryError) {
+    return (
+      <span className="font-bold text-red" title={entryError}>
+        Entry failed
+      </span>
+    );
+  }
   const label = exitReasonLabel(reason, pnlSol);
   switch (reason) {
     case 'LiquidityExit':
@@ -418,10 +432,18 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = (
     label: 'Exit Reason',
     group: 'state',
     sortable: true,
-    render: (r) => exitReasonBadge(r.exit_reason, r.pnl_sol),
+    render: (r) => exitReasonBadge(r.exit_reason, r.pnl_sol, r.last_entry_error),
     sortValue: (r) => exitReasonLabel(r.exit_reason, r.pnl_sol),
-    searchValue: (r) => exitReasonSearchText(r.exit_reason, r.pnl_sol),
-    filterValue: (r) => exitReasonSearchText(r.exit_reason, r.pnl_sol),
+    // The cause is searchable/filterable so "6002" finds every slippage-reverted
+    // entry — the whole point of persisting it.
+    searchValue: (r) =>
+      [exitReasonSearchText(r.exit_reason, r.pnl_sol), r.last_entry_error ?? '']
+        .filter(Boolean)
+        .join(' '),
+    filterValue: (r) =>
+      [exitReasonSearchText(r.exit_reason, r.pnl_sol), r.last_entry_error ?? '']
+        .filter(Boolean)
+        .join(' '),
   },
 ] as ColumnDef<RulePositionRecord>[]
 ).map((c) => (POSITION_HIDDEN_KEYS.has(c.key) ? { ...c, defaultVisible: false } : c));

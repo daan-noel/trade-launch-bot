@@ -74,7 +74,7 @@ See `@plans/ingest/backpressure-watchdog.md`.
 | `config.rs` | `IngestConfig` (all tunables, no env reads), `Commitment` enum |
 | `error.rs` | `IngestError`, `Result<T>` alias |
 | `pool.rs` | PDA derivation (`derive_pool`), `register_pool`, `pool_for_mint`; `PoolIndex = Arc<DashMap<String, String>>` |
-| `transport/mod.rs` | gRPC producer: TLS auth, reconnect w/ backoff, replay from `last_slot`, idle-reconnect timer, backpressure guard; `connect`, `build_subscribe_request`, `TransportConfig` |
+| `transport/mod.rs` | gRPC producer: TLS auth, reconnect w/ backoff, gap replay from a retained `ReplayAnchor` (`resolve_from_slot` is the ONE decider — the anchor OUTLIVES a no-progress attempt, bounded by `MAX_REPLAY_ATTEMPTS`; resume is `slot + 1` because nothing dedups by signature before the strategy fold), idle-reconnect timer, backpressure guard; `connect`, `build_subscribe_request`, `TransportConfig`. Rules + the 2026-07-27 blackout RCA: `@plans/ingest/reconnect-restart-flow.md` |
 | `decode/mod.rs` | `Decoder` (+ `HeliusDecoder` back-compat alias), `TxRelevance`, `DecodeOutput` |
 | `decode/grpc.rs` | `decode_protobuf` (self-classify), `decode_relevant_pb` (hot path), `decode_amm_protobuf` (backfill); `LazyKeys`. **Curve TradeEvents: read "Program data:" logs first, but the validator truncates logs past a byte limit, so a multi-buy bundle can lose trailing legs — when logs are empty OR carry "Log truncated", re-decode from the complete inner-instruction self-CPI events and take the larger set. AMM path is still log-only (latent same risk).** |
 | `decode/trade.rs` | Borsh `RawTradeEvent`, trade helpers |

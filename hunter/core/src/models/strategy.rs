@@ -263,6 +263,18 @@ pub struct StrategyPosition {
     /// read-only here for the same reason as `exit_redrive_count`.
     #[serde(default)]
     pub exit_parked: bool,
+    /// Cause of the most recent buy attempt that did NOT fill — the send error or
+    /// the on-chain Anchor code (mig 0017). Read-only in this model for the same
+    /// reason as `exit_redrive_count`: the executor writes it at the moment of
+    /// failure (`note_last_entry_error`, the ONE writer) and the sink's full-row
+    /// terminal write lands after, so a shared write path would clobber it.
+    ///
+    /// Not `EntryFailed`-only and never cleared on success: on a `Holding` row it
+    /// is the history of the attempts it took to get in. This is what tells a
+    /// slippage revert (6002/6042 ⇒ tune the buy floor) from a structural one
+    /// without pulling logs off the box.
+    #[serde(default)]
+    pub last_entry_error: Option<String>,
     /// Derived at DB-read time (not a column): a real `BuySubmitted` older than
     /// the review window with no adopted fill (B3) — needs a manual Verify. The
     /// ONE derivation site is the repo's row mapping; the UI renders it, never
@@ -367,6 +379,7 @@ impl StrategyPosition {
             manual_exit: None,
             exit_redrive_count: 0,
             exit_parked: false,
+            last_entry_error: None,
             needs_review: false,
             extra: json!({}),
             created_at: now,

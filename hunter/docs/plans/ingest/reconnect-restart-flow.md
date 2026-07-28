@@ -4,9 +4,10 @@ Two separate mechanisms handle failures at different layers.
 
 ---
 
-## Mechanism 1 — gRPC Stream Reconnect (`client.rs`)
+## Mechanism 1 — gRPC Stream Reconnect (`shared/ingest/core/src/transport/mod.rs`)
 
-Runs inside the `producer_task` tokio task. **Never restarts the process** — drops and re-opens the gRPC subscription only.
+Runs inside the transport tokio task (was `client.rs` before the ingest crate split).
+**Never restarts the process** — drops and re-opens the gRPC subscription only.
 
 ### Flow
 
@@ -28,17 +29,67 @@ run() outer loop
   │     │     └─ idle_check.tick() [every 2s]
   │     │           └─ elapsed > 10s?       → return IdleTimeout
   │     └─ returns DisconnectReason
-  ├─ record last seen slot → set from_slot for replay
-  │     (exception: from_slot = None when reason = PipelineBackpressure or
-  │      StreamError(ResourceExhausted) — replay would re-trigger the same
-  │      condition, doubling Helius egress in a self-reinforcing cycle)
+  ├─ advance the ReplayAnchor — ONLY on progress (see "Replay anchor" below)
+  ├─ drop the anchor when replaying would be wrong or futile:
+  │     ├─ reason = PipelineBackpressure | StreamError(ResourceExhausted)
+  │     │     (replay re-triggers the same condition, doubling Helius egress
+  │     │      in a self-reinforcing cycle)
+  │     └─ MAX_REPLAY_ATTEMPTS consecutive replays that got nowhere
   ├─ log reason + running counters
   ├─ decide delay:
-  │     ├─ made progress (seen slot > 0): reset backoff to reconnect_interval, delay = reconnect_interval
+  │     ├─ made progress: reset backoff to reconnect_interval, delay = reconnect_interval
   │     └─ no progress: delay = current backoff, then backoff *= 2 (cap 30s)
   ├─ add 0–50% jitter to delay
   └─ sleep(delay) → loop back
 ```
+
+### Replay anchor — how a gap is (and was not) closed
+
+`from_slot` is resolved at the **top** of each iteration by `resolve_from_slot`, the
+one decider, from a retained `ReplayAnchor { slot, at }`:
+
+| Condition | `from_slot` | Anchor after |
+|---|---|---|
+| no anchor (cold start / dropped) | `None` (live) | `None` |
+| `gap_replay_on_reconnect = false` | `None` (live) | **kept** — flipping the toggle back on mid-outage still replays |
+| gap since `at` ≤ `gap_replay_max_window_secs` | `Some(slot + 1)` | kept |
+| gap since `at` > window | `None` (live) | **dropped** — that window is gone; keeping it would re-log the refusal forever |
+
+Three properties are load-bearing, and each was a bug:
+
+1. **The anchor outlives an attempt that makes no progress.** A connect failure, a
+   subscribe rejection, or a stream that opens and then goes silent until the idle
+   watchdog trips leaves `progress = None`, and the anchor is *not* advanced or
+   cleared. `from_slot` used to be recomputed from that attempt's own `last_slot`,
+   so one fruitless attempt zeroed it and the next (successful) attempt subscribed
+   live — permanently losing the window. **This is the 2026-07-27 20:11–20:12
+   blackout**: two minutes came back empty with `gap_replay_on_reconnect = true`,
+   and its blast radius was far wider than the feed (every strategy decision in the
+   window ran on incomplete data; two tokens were never flagged migrated or dead
+   because their trades vanished).
+2. **`at` is when the last slot was *observed*, not when the attempt ended.** The
+   two differ by the whole idle timeout on a silently-dead stream. `last_progress_at`
+   used to be reset immediately *before* the window was measured against it, so the
+   measured gap was always ~0 — `gap_replay_max_window_secs` was unreachable, the
+   "gap exceeds replay window" warning was dead code, and a multi-hour backlog would
+   have been requested in full.
+3. **Retention is bounded (`MAX_REPLAY_ATTEMPTS = 3`).** Retaining the anchor is what
+   closes the gap, but unbounded retention can wedge: LaserStream serves only a few
+   minutes of history, so a `from_slot` it refuses outright fails *every* attempt.
+   Losing one window is always preferable to leaving the feed down.
+
+**Resume is `slot + 1`, never `slot`** — deliberately. Re-requesting the anchor slot
+would re-deliver its transactions, and nothing between the transport and the strategy
+fold dedups by signature (only the PG insert does, via `ON CONFLICT DO NOTHING` on
+`(block_time, tx_signature, leg_index)`), so a replayed slot double-counts into the
+live volume/flow metrics. The residual cost is the tail of a slot the stream died
+mid-way through — one slot (~400 ms) against the minute-scale gap this closes. Do not
+"fix" it to `slot` without adding signature dedup ahead of the fold first.
+
+Locked by `transport::tests::{a_no_progress_attempt_keeps_the_gap_replayable,
+a_gap_wider_than_the_window_reconnects_live_and_disarms,
+the_toggle_gates_replay_without_forgetting_where_we_were,
+a_fresh_anchor_resumes_one_slot_past_the_last_one_seen, no_anchor_means_live}`.
 
 ### Timing constants (hardcoded in `client.rs`)
 

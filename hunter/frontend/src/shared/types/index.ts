@@ -243,6 +243,11 @@ export interface RulePositionRecord extends TokenEnrichmentFields {
   /** ExitStuck redrive state (mig 0012): parked ⇒ auto-retry stopped. */
   exit_parked?: boolean;
   exit_redrive_count?: number;
+  /** Why the most recent buy attempt did not fill — send error or Anchor code
+   *  (mig 0017). This is what explains an `EntryFailed` row, which carries no
+   *  `exit_reason` (nothing ever exited). Not cleared on a later success, so on a
+   *  `Holding` row it is the history of what it took to get in. */
+  last_entry_error?: string | null;
   created_at: string;
   updated_at: string;
   // Token enrichment fields (populated by the batch endpoint) come from
