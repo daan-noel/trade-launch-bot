@@ -1,8 +1,12 @@
 # Flow-scalper backtest ladder driver.
 #
 # Posts engine-simulate DRAFTS (no DB rule rows) to the running lab bin, polls each
-# run, and appends one CSV row per run. This is the measurement harness for
-# hunter/docs/roadmap/flow-scalper-build-plan.md phases A and B.
+# run, and appends one CSV row per run. Conclusions this harness produced live in
+# hunter/docs/plans/strategies/flow-scalper-findings.md; the raw rows are the CSV
+# below. READ THE FINDINGS FIRST - in particular the noise floor (per-episode sd is
+# 9-15%, i.e. a bigger standard error than most differences a ladder ranks) and the
+# fact that every row logged before 2026-07-28 was priced without our own market
+# impact and at a 100bps fee, so it understates cost by ~3pp/round-trip.
 #
 # Why a script and not the UI: the grouped sweep cannot score re-entry rules (see
 # docs/roadmap/grouped-sweep-reentry.md item C), so every re-entry knob has to be
@@ -25,7 +29,9 @@ param(
   # is why "broad" is spelled as one very wide bucket.
   [string]$FingerprintId = 'a23cf424-8d4c-45ae-aa51-37ba4f2fc6ca',
   [string]$OutCsv     = "$PSScriptRoot/../docs/roadmap/data/flow-scalper-ladder.csv",
-  [int]$TimeoutSec    = 3600
+  # Per-run, not per-ladder. A 5-day broad-universe fold is ~8 min, so 20 gives plenty
+  # of headroom while still surfacing a lost run in minutes rather than an hour.
+  [int]$TimeoutSec    = 1200
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,7 +48,7 @@ $headers = @{ Authorization = "Bearer $token" }
 
 # ---------------------------------------------------------------------------
 # The anchor rule: omego's mechanics with the knobs recalibrated on the fresh
-# 5-day window (docs/roadmap/flow-reversion-scalper.md, 2026-07-27 section).
+# 5-day window (docs/plans/strategies/wallet-analysis.md, 2026-07-27 section).
 # Each ladder entry is a scriptblock that mutates a clone of this.
 # ---------------------------------------------------------------------------
 function New-AnchorParams {
@@ -91,7 +97,7 @@ function Set-ArmAbove ($p, $v) {
   # this far in profit. Absent = today's behaviour, where the since-entry peak seeds
   # at the entry fill so `retrace` doubles as a hard stop from entry. Measured on
   # omego's own 2,974 episodes, that unarmed trail turns 21% of his winners into
-  # losers (docs/roadmap/flow-scalper-build-plan.md phase C1).
+  # losers (docs/plans/strategies/armed-trailing-stop.md).
   if ($null -eq $v) { $p.exit.m_position.Remove('arm_above_pct') }
   else { $p.exit.m_position.arm_above_pct = $v }
 }
@@ -113,6 +119,36 @@ function Set-Rise ($p, $v) {
   if ($null -eq $v) { $p.entry.m_price_window.Remove('rise') }
   else { $p.entry.m_price_window.rise = @(@{ operator = '<='; value = $v }) }
 }
+function Set-Liquidity ($p, $lo, $hi) {
+  $p.entry.m_snapshot.liquidity = @(
+    @{ operator = '>='; value = $lo }, @{ operator = '<='; value = $hi }
+  )
+}
+function Set-Gross ($p, $v) {
+  # The 60 s hot gate. Kept as element 0 of the multi-window array; element 1 is the
+  # 2 s net_flow floor (see `Remove-NetFlowGate`).
+  $p.entry.m_flow_window[0].gross_flow = @(@{ operator = '>='; value = $v })
+}
+function Set-Age ($p, $v) { $p.entry.m_snapshot.time = @(@{ operator = '>='; value = $v }) }
+
+function Use-64hpGeometry ($p) {
+  # `64hP97Bwr5...` - the SECOND scalper wallet, whose closed-episode economics clear
+  # the pump.fun fee by ~2.5pp where omego's are flat. Knobs from the 2026-07-28
+  # section of docs/plans/strategies/wallet-analysis.md (rule-ladder spec:
+  # docs/roadmap/flow-scalper-64hp-rules.md). Every one differs from the omego
+  # calibration this script was originally built around.
+  Set-Age       $p 45      # his med token age at first buy is 0.8 min, not 5.3
+  Set-Liquidity $p 36 70   # his first-buy vsol p25-p75; 40-55 is his sweet spot
+  Set-Dip       $p 18      # med entry dip -22.7%; his >-8% bucket is his ONLY loser
+  Set-Gross     $p 45      # his p25 gross60 is 45.6 SOL, med 85 - far hotter than omego
+  Set-Retrace   $p 7       # his measured trail is -6.8% off the since-entry peak
+  Set-ArmAbove  $p $null   # he trails UNARMED - the width is what makes it survivable
+  Set-StopLoss  $p $null   # stop overlays at 15..50 all make his book WORSE
+  Set-Stall     $p $null   # replaced by an honest `held` bound, below
+  Set-Held      $p 90      # his >90s cohort is net negative (-0.28%/ep)
+  Set-Episodes  $p 40      # ep9+ is his BEST cohort (65% win) - never cap this low
+}
+
 function Remove-NetFlowGate ($p) {
   # Drop the 2 s net_flow clause, keeping the 60 s hot gate. He enters AT the window
   # low (rise60 p25 = 1.2), so requiring a started reversal may be wrong.
@@ -148,6 +184,12 @@ function Invoke-SimRun {
   $runId = $post.run_id
   Write-Host ("[{0}] run {1} ..." -f $Label, $runId) -NoNewline
 
+  # The run registry is IN MEMORY. If the lab bin restarts mid-run - which happens
+  # when another session rebuilds it, and this box hosts exactly one on :8140 - the
+  # run id is gone for good and the summary 404s forever. Treating every failure as
+  # "still folding" turns that into a silent full-timeout stall (observed 2026-07-28:
+  # 40 wasted minutes polling a bin that no longer knew the run). So separate the
+  # three cases instead of swallowing them all.
   $summary = $null
   while (((Get-Date) - $start).TotalSeconds -lt $TimeoutSec) {
     Start-Sleep -Seconds 10
@@ -157,11 +199,23 @@ function Invoke-SimRun {
         -Headers $headers -ContentType 'application/json' -Body '{}'
       break
     } catch {
-      # 404 while the job is still folding - the one expected transient.
+      $code = $null
+      if ($_.Exception.Response) { $code = $_.Exception.Response.StatusCode.value__ }
+      if ($null -eq $code) {
+        # No HTTP response at all => the bin is down. Nothing to wait for.
+        throw "lab at $LabUrl stopped responding during run $runId ($($_.Exception.Message)). It was probably restarted; re-run this ladder."
+      }
+      if ($code -eq 401 -or $code -eq 403) { throw "auth rejected polling run $runId (HTTP $code)" }
+      # 404 while the job is still folding is the one expected transient.
       Write-Host '.' -NoNewline
     }
   }
-  if ($null -eq $summary) { throw "run $runId timed out after $TimeoutSec s" }
+  if ($null -eq $summary) {
+    throw ("run $runId produced no summary within $TimeoutSec s. A real run of this " +
+           "window takes ~8 min, so this is far more likely a lab RESTART (the in-memory " +
+           "run registry was lost and the id now 404s forever) than a slow fold. Check " +
+           "whether hunter-lab's PID changed, then re-run.")
+  }
 
   $elapsed = [math]::Round(((Get-Date) - $start).TotalSeconds, 1)
   $r = $summary.realized
@@ -461,6 +515,34 @@ $ladders = @{
     @{ name = 'B conc 4'; apply = {}; conc = 4 }
     @{ name = 'B conc 8'; apply = {}; conc = 8 }
   )
+  # The first HONEST baseline: 64hP's geometry priced under `pumpfun_impact` (which
+  # charges buy_amount/reserve_sol per leg) and the corrected 125 bps/leg fee. Every
+  # earlier ladder in this file ran zero-impact at 1.0 SOL under a 100 bps fee, so it
+  # understated cost by ~3pp/round-trip. Nothing here is comparable to those rows.
+  #
+  # Size: cost is U-shaped - the Jito tip is fixed SOL/leg so it dominates small
+  # orders, impact grows with big ones. Optimum is sqrt(fixed_per_leg * vsol);
+  # on his 36-70 vsol band (med ~45) that is ~0.21 SOL, NOT the 1.0 we tested at.
+  v64 = @(
+    @{ name = 'V64-0 base 0.2 impact'
+       apply = { param($p) Use-64hpGeometry $p }; buy = 0.2 }
+    # The size curve, same rule - this is the knob the sim could not see until today.
+    @{ name = 'V64-1 buy 0.1'; apply = { param($p) Use-64hpGeometry $p }; buy = 0.1 }
+    @{ name = 'V64-2 buy 0.4'; apply = { param($p) Use-64hpGeometry $p }; buy = 0.4 }
+    @{ name = 'V64-3 buy 1.0'; apply = { param($p) Use-64hpGeometry $p }; buy = 1.0 }
+    # Same run, old cost model: the gap IS the impact the ladder never charged.
+    @{ name = 'V64-4 base 0.2 FEE-ONLY (old model)'
+       apply = { param($p) Use-64hpGeometry $p }; buy = 0.2; cost = 'pumpfun_fee_only' }
+    # Does arming still pay once the trail is WIDE (7) instead of tight (3)?
+    @{ name = 'V64-5 armed g3'
+       apply = { param($p) Use-64hpGeometry $p; Set-ArmAbove $p 3 }; buy = 0.2 }
+    # Isolate the dip change: his -22.7% median vs the omego-calibrated 12.
+    @{ name = 'V64-6 dip 12 (omego depth)'
+       apply = { param($p) Use-64hpGeometry $p; Set-Dip $p 12 }; buy = 0.2 }
+    # The adversarial in-slot fill live paper books.
+    @{ name = 'V64-7 WORST fill'
+       apply = { param($p) Use-64hpGeometry $p }; buy = 0.2; fill = 'worst' }
+  )
 }
 
 if (-not $ladders.ContainsKey($Plan)) {
@@ -470,6 +552,14 @@ if (-not $ladders.ContainsKey($Plan)) {
 $outDir = Split-Path -Parent $OutCsv
 if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
 
+# Append each row the moment it lands, rather than batching at the end. The lab bin
+# is a shared singleton on :8140 and another session restarting it kills the in-flight
+# run - batching meant one such restart discarded every COMPLETED row too.
+function Add-LadderRow ($row) {
+  if (Test-Path $OutCsv) { $row | Export-Csv -Path $OutCsv -Append -NoTypeInformation -Encoding utf8 }
+  else                   { $row | Export-Csv -Path $OutCsv          -NoTypeInformation -Encoding utf8 }
+}
+
 $rows = @()
 foreach ($step in $ladders[$Plan]) {
   $p = New-AnchorParams
@@ -477,14 +567,18 @@ foreach ($step in $ladders[$Plan]) {
   $fill = if ($step.fill) { $step.fill } else { 'first' }
   $conc = if ($step.conc) { $step.conc } else { 4 }
   $buy  = if ($step.buy)  { $step.buy  } else { 1.0 }
-  # fee_only is the ONLY correct pairing with an explicit fill model - pumpfun_default
-  # charges slippage_bps on top of a fill that already priced it (double count).
-  $rows += Invoke-SimRun -Label $step.name -Params $p -Fill $fill `
-             -Cost 'pumpfun_fee_only' -Concurrency $conc -BuySol $buy
+  # `pumpfun_impact` is the honest default: it charges the 125 bps/leg fee, the fixed
+  # tip/priority, AND our own buy_amount/reserve_sol price impact, so the cost finally
+  # responds to `buy`. `pumpfun_fee_only` is size-blind (every pre-2026-07-28 row in the
+  # CSV used it, at 1.0 SOL, and is therefore ~3pp/round-trip optimistic); keep it only
+  # for an explicit old-vs-new comparison. `pumpfun_default` would double-count, since
+  # its flat slippage_bps is a stand-in for the impact we now compute exactly.
+  $cost = if ($step.cost) { $step.cost } else { 'pumpfun_impact' }
+  $row = Invoke-SimRun -Label $step.name -Params $p -Fill $fill `
+           -Cost $cost -Concurrency $conc -BuySol $buy
+  Add-LadderRow $row
+  $rows += $row
 }
 
 $rows | Format-Table label, n_closed, win_rate, total_pnl_sol, median_pnl_pct, median_hold_s -AutoSize
-
-if (Test-Path $OutCsv) { $rows | Export-Csv -Path $OutCsv -Append -NoTypeInformation -Encoding utf8 }
-else                   { $rows | Export-Csv -Path $OutCsv          -NoTypeInformation -Encoding utf8 }
 Write-Host "appended $($rows.Count) rows -> $OutCsv"

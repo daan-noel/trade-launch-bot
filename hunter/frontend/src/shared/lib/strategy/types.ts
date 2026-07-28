@@ -239,7 +239,7 @@ export type CostModelId = 'pumpfun_default' | 'pumpfun_fee_only' | 'pumpfun_impa
  *  `pumpfun_impact` is the only one whose cost varies with `buy_amount_sol`: the
  *  other two are size-blind, so a run under them is a ZERO-IMPACT upper bound. On
  *  the measured median pool (~70 SOL) a 1 SOL buy really costs 1.42%/leg against
- *  the flat 1% the legacy model guesses. See flow-scalper-build-plan.md §2g. */
+ *  the flat 1% the legacy model guesses. See docs/plans/strategies/execution-costs.md. */
 export const COST_MODELS: ReadonlyArray<{ id: CostModelId; label: string; hint: string }> = [
   {
     id: 'pumpfun_impact',

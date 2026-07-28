@@ -178,10 +178,10 @@ Notes:
   with 92 wallets / 3.5K trades) as natural volume-side patterns; the top
   routers by gross are Axiom (~37% across its shapes), Terminal, GMGN, direct
   Pump.Fun.
-- The blueprint's rolling-window dip metric and since-entry-peak retrace do not
-  exist yet (`trail` is lifetime-peak): until they land, `trail >` + the flow
-  gates are the closest expressible dip trigger. See
-  `docs/roadmap/flow-reversion-scalper.md`.
+- The blueprint's rolling-window dip metric and since-entry-peak retrace have since
+  shipped as `m_price_window`/`m_position`. See
+  `docs/plans/strategies/wallet-analysis.md` (moved 2026-07-28 from
+  `docs/roadmap/flow-reversion-scalper.md`).
 
 ## Fingerprint grouping set (the partition, not the sweep)
 

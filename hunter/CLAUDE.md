@@ -57,7 +57,11 @@ The frontend split is build-time (no runtime capability advertisement); the fron
 
 Deep-dive references: [docs/plans/database/lake-pg-read-paths.md](docs/plans/database/lake-pg-read-paths.md)
 (which trade reads hit the lake vs PG), [docs/plans/frontend/token-list-backend.md](docs/plans/frontend/token-list-backend.md)
-(`/api/tokens` differs by bin), plus the per-subsystem docs under `docs/plans/`.
+(`/api/tokens` differs by bin), [docs/plans/strategies/execution-costs.md](docs/plans/strategies/execution-costs.md)
+(**what a round trip costs — read before believing any backtest**),
+[docs/plans/strategies/wallet-analysis.md](docs/plans/strategies/wallet-analysis.md)
+(reverse-engineered external scalper wallets — the calibration source for the
+flow-scalper rule ladder), plus the per-subsystem docs under `docs/plans/`.
 
 **Active / unfinished plans** (WIP roadmaps — the strategy redesign, the audit) live in
 [`docs/roadmap/`](docs/roadmap/), kept separate from the permanent deep-dive references in
@@ -194,6 +198,25 @@ check — today that is exactly one field, the rule editor's **Max total** (blan
 
 ## Gotchas (hot-path landmines)
 
+- **A backtest is only as honest as its `CostModelKind`.** Default to
+  **`pumpfun_impact`** — it is the only kind that charges our own price impact
+  (`buy_amount_sol / reserve_sol` per leg), so the only one whose cost responds to buy
+  size at all. `pumpfun_fee_only` is size-blind (an optimistic bound) and
+  `pumpfun_default` double-counts against any explicit `FillModel`. Two corrections
+  landed 2026-07-28: the pump.fun fee is **125 bps/leg, not 100**, and nothing charged
+  impact before that — so **every run older than 2026-07-28 understates cost by up to
+  ~3 pp/round-trip** and does not compare to a new one (the constants are not persisted
+  per run). Cost is U-shaped in size — the Jito tip is fixed SOL/leg — so the optimal
+  fixed buy is `sqrt(fixed_per_leg × vsol)`, ~0.27 SOL on a 70 SOL pool, NOT 0.1 or 1.0.
+  Full derivation: [docs/plans/strategies/execution-costs.md](docs/plans/strategies/execution-costs.md).
+- **Exit conditions that do not do what they look like.** `m_price_lifetime.stall` is
+  *seconds since the last all-time HIGH* and resets only on a new high, so on a
+  dip-entry rule it silently caps every hold (~15 s measured) **and** doubles as an
+  entry filter, since `can_enter` refuses while an exit metric holds. Use
+  `m_position.held >= N` for a time stop. Likewise an authored `m_position.retrace >= N`
+  is a hard −N% stop from entry until the price rises, because `PositionCtx::at_fill`
+  seeds `peak = entry_price` — arm it with `arm_above_pct`. Both in
+  [docs/plans/strategies/flow-scalper-findings.md](docs/plans/strategies/flow-scalper-findings.md).
 - **Deferred entry fingerprint gates:** a fingerprint axis whose source data isn't settled at
   `TokenCreated` (`first_slot_{buy,sell}_lamports`) can't match synchronously. The engine arms
   it as `PendingFirstSlot` and resolves it on the `FirstSlotSettled` event (fired when the

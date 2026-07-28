@@ -3,8 +3,9 @@
 Deep-dive reference for the `m_position` strict param added 2026-07-28: what it
 does, why the exit grammar needed it, and the measurement that justified it.
 Overview of the group lives in [../../arch/strategies.md](../../arch/strategies.md);
-the strategy it was built for is
-[../../roadmap/flow-scalper-build-plan.md](../../roadmap/flow-scalper-build-plan.md).
+the investigation it was built for (and its verdict) is
+[flow-scalper-findings.md](flow-scalper-findings.md); the raw wallet mechanics behind
+the measurement below are in [wallet-analysis.md](wallet-analysis.md).
 
 ## The problem
 

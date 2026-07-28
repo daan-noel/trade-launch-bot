@@ -726,7 +726,7 @@ mod tests {
     /// `retrace >= 3 AND pnl >= 2` is otherwise unauthorable, and an unarmed
     /// `retrace` doubles as a hard −3% stop from entry (the peak seeds at the fill).
     /// Measured on omego's own 2,974 episodes, that unarmed trail turns 21% of his
-    /// winners into losers — see `docs/roadmap/flow-scalper-build-plan.md`.
+    /// winners into losers — see `docs/plans/strategies/armed-trailing-stop.md`.
     #[test]
     fn arm_above_pct_holds_the_trailing_stop_until_in_profit() {
         use crate::metrics::{Side, TradeLite};

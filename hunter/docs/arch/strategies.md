@@ -8,6 +8,15 @@ that produce events and consume effects. A decision fix lands in exactly one pla
 
 Deep-dive detail: flow metrics + classifier in
 [`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md);
+what a round trip **costs** (fee 125 bps/leg, our own `buy_amount/reserve_sol` impact,
+the U-shaped optimal buy size) in
+[`plans/strategies/execution-costs.md`](../plans/strategies/execution-costs.md);
+exit-condition traps that are invisible from the rule JSON — the unarmed `retrace`
+and the `stall` hold-cap — in
+[`plans/strategies/armed-trailing-stop.md`](../plans/strategies/armed-trailing-stop.md)
+and [`plans/strategies/flow-scalper-findings.md`](../plans/strategies/flow-scalper-findings.md);
+the external-wallet reverse-engineering behind all of the above in
+[`plans/strategies/wallet-analysis.md`](../plans/strategies/wallet-analysis.md);
 broader redesign history in [`docs/roadmap/`](../roadmap/).
 
 ## The pure engine — `hunter/engine` (crate `hunter-engine`)

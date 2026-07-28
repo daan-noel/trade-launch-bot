@@ -1,8 +1,9 @@
 //! Phase 3 — one-shot backtest validation for the flow-reversion "dip scalper"
-//! (results + verdict in `docs/roadmap/flow-reversion-scalper.md` "Phase 3"). Drives the REAL engine
-//! fold (`run_replay`) over the sealed Parquet lake for two rules — a 2-metric
+//! (results + verdict in `docs/plans/strategies/wallet-analysis.md` "Phase 3", moved
+//! there 2026-07-28 from `docs/roadmap/flow-reversion-scalper.md`). Drives the REAL
+//! engine fold (`run_replay`) over the sealed Parquet lake for two rules — a 2-metric
 //! MINIMAL CORE and a GATED variant — and prints the acceptance-gate stats vs the
-//! family distributions in `docs/roadmap/flow-reversion-scalper.md`.
+//! family distributions in `docs/plans/strategies/wallet-analysis.md`.
 //!
 //! Ignored by default (reads real lake data + runs the full fold — not a unit test).
 //! Run explicitly, single-threaded, with output:
@@ -13,6 +14,10 @@
 //! the plan's "no fee knob" premise): `CostModel::pumpfun_default()` already charges
 //! ~1%/leg fee + ~1%/leg slippage + tip + priority fee (~4%/round — more conservative
 //! than the plan's 2%/round), applied to realized PnL at close by `round_trip_with_costs`.
+//! CAUTION (2026-07-28): the fee constant used here is 100 bps/leg and this cost model
+//! charges no price impact — both since corrected, see
+//! `docs/plans/strategies/execution-costs.md`. Numbers from this harness predate that
+//! fix and are optimistic by the same margin as everything else pre-2026-07-28.
 
 use std::collections::HashMap;
 use std::sync::Arc;

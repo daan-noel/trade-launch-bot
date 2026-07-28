@@ -9,9 +9,10 @@ acceptance checks A/B never ran. `grouped-sweep-phase6.md` is deleted — its de
 rationale for A/B is superseded by the shipped code + arch doc; nothing here repeats
 it.
 
-Read [flow-reversion-scalper.md](flow-reversion-scalper.md) for the WHY and target
-numbers, and [../arch/sweep.md](../arch/sweep.md) for the current sweep architecture
-this work extends.
+Read [../plans/strategies/wallet-analysis.md](../plans/strategies/wallet-analysis.md)
+for the WHY and target numbers (moved there 2026-07-28 from
+`flow-reversion-scalper.md`), and [../arch/sweep.md](../arch/sweep.md) for the current
+sweep architecture this work extends.
 
 ## Anatomy (so you don't re-explore)
 

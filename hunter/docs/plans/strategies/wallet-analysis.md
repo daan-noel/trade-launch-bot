@@ -1,8 +1,32 @@
-# Flow-reversion scalper - external-wallet analysis + strategy blueprint (2026-07-21)
+# Wallet analysis - external scalper reverse-engineering (2026-07-21 -> 07-28)
 
-Reverse-engineering of three profitable scalper wallets the user tracks, from the local
-pump.fun curve firehose (PG `trades`, 2026-07-20 20:49 -> 07-21 22:47 UTC, ~26h,
-wallet-attributed). Goal: extract their logic and design a similar strategy for hunter.
+Reverse-engineering of profitable scalper wallets the user tracks, from the local
+pump.fun curve firehose (PG `trades`). Goal: extract their logic and design a similar
+strategy for hunter. Moved here from `docs/roadmap/` 2026-07-28 - this is now the
+permanent primary-source companion to the conclusions below, not an active plan.
+
+**Read this first if you want the verdict, not the investigation.** This file is the
+raw mechanical data (dip %, trail %, sizing %, entry timing, per-episode PnL by
+bucket) behind three durable conclusions, each in its own deep-dive:
+
+- [flow-scalper-findings.md](flow-scalper-findings.md) - **the headline**: omego's
+  gross edge (+1.81%/turnover) does not clear the 2.53% round-trip fee; his real
+  profit is an unclosed runner tranche the engine cannot express (no partial exits).
+  `64hP` (bottom of this file) is the wallet to build from instead.
+- [execution-costs.md](execution-costs.md) - what a round trip actually costs (fee,
+  tip, our own price impact) and the resulting optimal buy size. Read before trusting
+  any PnL number anywhere in this file older than 2026-07-28.
+- [armed-trailing-stop.md](armed-trailing-stop.md) - the `arm_above_pct` exit fix this
+  investigation produced, and the measurement that justified it.
+
+Current live work: `docs/roadmap/flow-scalper-64hp-rules.md` (the `fs2-*` rule ladder
+calibrated from the `64hP` section below).
+
+---
+
+Original scope note (2026-07-21): reverse-engineering of three profitable scalper
+wallets the user tracks, from the local pump.fun curve firehose (PG `trades`,
+2026-07-20 20:49 -> 07-21 22:47 UTC, ~26h, wallet-attributed).
 
 Wallets (user nicknames):
 - `omego` = omegoMAe1AMY5MFKQQr3JwXVy8F4eCvmBAfcpo8XAfq  <- fully analyzed (1,396 legs, 92 mints in window)
@@ -624,8 +648,10 @@ put the true net around **+10..13 SOL/day** - same as the old estimate.
   entries ("other" is the largest single group at 902 entries / 127 mints) -
   reinforces the do-NOT-scope-by-fingerprint conclusion. IX1 is still the thin-token
   outlier (gross60 med 13.5 vs 33-56 for the rest; trail30 med 6.7 vs 14-16).
-- Engine-metric calibration drift (feeds the seed-rule knobs, see
-  [flow-scalper-fingerprint-rules.md](flow-scalper-fingerprint-rules.md)):
+- Engine-metric calibration drift (fed the now-retired `fs-*` seed-rule knobs, see
+  `docs/roadmap/flow-scalper-64hp-rules.md` - the omego-calibrated fingerprint A/B was
+  superseded once [flow-scalper-findings.md](flow-scalper-findings.md) confirmed his
+  gross edge doesn't clear the fee):
   trail30 p25/med/p75 = 3.5/**12.6**/22.7 (was 6.1/14.6/24.5); gross60 p25 = **11.2**
   (was 14.5); liquidity p25/p90 = 56.7/100.4; time p10 = 144s; net2 med -0.2 (an
   `nf>=0` floor still excludes ~half his entries - it remains a backtest-derived
@@ -693,3 +719,187 @@ recalibrated knobs requires **zero engine changes** and should precede any new m
 - Helius spend is critically sensitive (user directive): no RPC fetches for analysis
   without explicit approval. Co6/trunoest cannot be characterized further from local
   data - they never touch the fresh-curve tokens our ingest tracks.
+
+## `64hP` - second scalper wallet, same family, better economics (2026-07-28)
+
+`64hP97Bwr5PubotcTeGgfhkFrGiLVVxT2kVo9M9b4AEz` - the "benchmark dip-reversion" wallet
+already flagged in the family-wide scan. Re-derived properly on the same rebuilt window
+as the omego re-derivation (2026-07-22 18:47 .. 07-27 16:08, 6.48M trades / 67,806
+mints). His slice: 13,326 legs / 6,765 buys / 2,581 mints / 6,742 episodes
+(2.3x omego's episode count, 5.8x his mint count).
+
+Same *family* as omego (dip-reversion, 1-buy-1-full-sell, pct-of-vsol sizing, unlimited
+re-entry), but every knob is set differently - and his per-episode economics clear the
+pump.fun fee where omego's do not.
+
+### Mechanical fingerprint (all impact-corrected)
+
+His own price impact is a constant +3.82% on entry / -3.7% on exit (a direct
+consequence of exact-fraction sizing), so raw entry/exit prices are biased; every number
+below uses the pre-trade market price.
+
+| Knob | `64hP` | omego (07-27 re-derivation) |
+| --- | --- | --- |
+| Sizing | **1.859% of vsol**, p25=p50=p75 identical | 1.18% of vsol |
+| Size cap | **exactly 1.5 SOL gross** (1.4810 net) | none observed |
+| vsol band at entry | **30.6 - 113** (hard floor + ceiling) | 45-110 |
+| vsol at *first* buy | med **44.5** (p25 36, p75 56) | med 73.5 |
+| Token age at first buy | med **0.8 min** | med 5.3 min |
+| Trades in prior 60s | med **135** | med 92 |
+| Unique wallets prior 60s | med 68 | med 66 |
+| Selectivity | **3.8%** of mints (2,573/67,806) | 0.66% |
+| Entry dip vs 30s high | med **-22.7%** (p25 -38.3, p75 -11.4) | med -12.6% |
+| Entry vs prior ATH | med **-36.3%** | med -15.2% |
+| Exit: retrace off since-entry peak | med **-6.8%** | ~-3% |
+| Hold | med **21.3s** (p75 47, p95 268) | med 22.5s |
+| Re-entry gap | med **30.5s** | med 34.6s |
+| Concurrency | med 2, p90 4, max 10 | med 3, max 7-8 |
+| Episodes/mint | med 2 (44% are one-and-done) | ~7 |
+
+Structure is identical to omego's: 6,742 opening buys vs 23 add-on buys, 6,539
+full-exit sells vs 22 partials. No scaling in or out, ever.
+
+**Exit is ONE rule, not three.** Bucketing exit-retrace by MFE shows a flat band of
+-4.9% .. -7.4% for every bucket with MFE >= 5%. Episodes that never rose exit at a
+median -7.16% vs entry - i.e. the same trailing stop with `peak` initialised to the
+entry price. There is no take-profit and no separate stop-loss. The -33% p10 tail on
+losers is gap risk, not a wider stop.
+
+Re-entries improve monotonically with index (ep1 52.0% win / +5.18% avg -> ep9+
+65.0% / +7.73%) - replicates the omego finding. Do not cap `max_episodes` low.
+
+### Economics - and the fee number that decides everything
+
+`amount_lamports` is the **net curve-side** SOL, *excluding* the pump.fun fee
+(`shared/ingest/pumpfun/src/decode/trade.rs:20-71` stores `TradeEvent.sol_amount`
+verbatim; the trailing `fee` / `fee_basis_points` IDL fields are never decoded). So raw
+`sell - buy` sums overstate PnL on both legs.
+
+The fee rate is measurable from our own data. First-buy (dev-buy) amounts cluster
+hard on `0.98765432 x round SOL` - and 0.98765432 = `10000/10125` exactly, matching the
+IDL's `net_sol = spendable * 10_000 / (10_000 + total_fee_bps)`:
+
+```
+3000000000 (3.0)   x5504     2962962962 (3.0 x .98765) x2083
+5000000000 (5.0)   x3806     4938271604 (5.0 x .98765) x2045
+1000000000 (1.0)   x2171      987654320 (1.0 x .98765) x2718
+                              1481481480 (1.5 x .98765) x473   <- his size cap
+```
+
+=> **total_fee_bps = 125 (1.25%/leg, 2.53% round trip).** This supersedes the sim
+kernel's `FEE_BPS_PER_LEG = 100.0` (`hunter/core/src/strategies/kernel.rs:94`), which is
+25 bps/leg too cheap - a 0.5pp round-trip understatement on every backtest run so far.
+
+Net-of-fee accounting over the window:
+
+| Cohort | eps | SOL deployed | SOL returned | net |
+| --- | --- | --- | --- | --- |
+| closed episodes | 6,515 | 6,632.6 | 6,801.2 | **+168.7** |
+| unclosed ("bags") | 227 | 250.9 | 25.7 | **-225.3** |
+
+Closed-episode edge = **+2.54% per SOL cycled, net of the 1.25%/leg fee**, 56.5% win,
+median episode +2.39% gross. This is the headline: unlike omego, his mechanics clear
+the fee with ~2.5pp to spare. Every day in the window is positive.
+
+### The bags - the dominant open question
+
+227 episodes (3.3%) have no recorded exit. The bag rate is constant across days
+(2.92 / 3.50 / 3.59 / 3.85%) including gap-free days, so these are *not* ingest-gap
+artifacts, and only 2/227 mints ever traded on AMM so they are not migrations.
+
+But they are also not rugs. Marking them to the market price at a fixed horizon
+after entry:
+
+| bail-out horizon | median px vs entry | bag cohort net |
+| --- | --- | --- |
+| +15s | **+0.2%** | +8.9 SOL |
+| +60s | -1.9% | +16.5 SOL |
+| +300s | -5.8% | +21.0 SOL |
+
+The tokens did not collapse - their trade stream simply stopped while price was still
+near his entry, and he never sold. At the stream end, 86/227 bag mints were still busy
+(>=10 trades in the last 60s) vs 12.6% for control mints, so a minority are our feed
+dropping the subscription (his sell then happened off-record). The other ~62% go
+genuinely cold.
+
+So the wallet's true result is bracketed:
+- bags marked to zero: **-56.6 SOL** (net negative)
+- bags exited on a dead-flow bailout: **~+180 SOL** over 4.2 days (see below)
+
+Actionable regardless of where the truth sits: the trading mechanics are profitable
+net of fees, and 100% of the downside risk is concentrated in "no mandatory exit when a
+token goes cold". A price-based hard stop does **not** substitute - overlaying stops at
+15/20/25/30/40/50% moves the total only from -56.6 to -43.0 SOL at best, because the
+stop shreds the right tail the strategy depends on. **Correction:** an earlier pass
+through this data recommended `m_price_lifetime.stall` for the bailout. That metric is
+seconds-since-the-last-**new-all-time-high**, not since the last trade, so on a
+dip-entry rule it is true by construction and just caps position lifetime - it is the
+same defect that pinned every `fs-*` hold to ~15s. Validated instead:
+`m_flow_window(30).gross_flow <= 3` replayed on these 227 bags fires on 146 of them,
+median 54.8s after entry at -11.5% vs entry, taking the cohort from -225.3 to -19.1 SOL
+(the `held >= 90` time cap closes the remaining 81). Seeded as `fs2-00`'s exit in
+`hunter/scripts/seed-flow-scalper-64hp-rules.sql`.
+
+### Where the edge actually lives (net-of-fee, per-episode)
+
+| dim | bucket | n | net SOL | net %/ep |
+| --- | --- | --- | --- | --- |
+| dip vs 30s high | > -8% | 1,167 | **-4.5** | **-0.81** |
+| | -8..-15% | 1,009 | +24.2 | +2.27 |
+| | -15..-25% | 1,366 | +28.6 | +1.92 |
+| | **-25..-40%** | 1,469 | **+77.1** | **+5.37** |
+| | < -40% | 1,503 | +43.1 | +3.79 |
+| rise off 30s low | **< 3%** | 1,599 | **+57.4** | **+3.96** |
+| | 3-10% | 1,029 | +31.1 | +3.08 |
+| | 10-25% | 1,316 | +48.5 | +3.71 |
+| | 25-60% | 1,440 | +23.3 | +1.66 |
+| | > 60% | 1,130 | +8.2 | +0.68 |
+| vsol at entry | < 40 | 1,472 | +22.3 | +2.35 |
+| | **40-55** | 2,105 | **+78.8** | **+4.23** |
+| | 55-75 | 1,864 | +33.2 | +1.47 |
+| | > 75 | 1,073 | +34.2 | +2.26 |
+| hold | < 90s | 5,690 | +159.2 | +2.4..+4.3 |
+| | **> 90s** | 824 | **+9.3** | **-0.28** |
+
+Reading: shallow dips are the only losing bucket he has (-0.81%/ep) - a >=15% dip
+gate would have removed 1,167 losing episodes; buying nearer the 30s low beats buying
+after a bounce (contradicting the naive read of the median +16.6% rise, which is where
+the *mass* is, not the *edge*); vsol 40-55 is the sweet spot; and holds beyond 90s stop
+paying despite carrying half the gross PnL.
+
+### Proposed knob deltas for the `fs-%` seed rules (retired - superseded by `fs2-*`)
+
+These deltas against the old omego-calibrated `fs-*` rules were carried out in full in
+`docs/roadmap/flow-scalper-64hp-rules.md`'s `fs2-*` ladder
+(`hunter/scripts/seed-flow-scalper-64hp-rules.sql`). Kept here as the original
+reasoning trail:
+
+Against the then-current values (trail30 12, gross60 11, liq band 55-100, retrace 5,
+stop_loss 25):
+
+| knob | now | proposed | why |
+| --- | --- | --- | --- |
+| `m_price_window(30).trail` | >= 12 | **>= 18** | his -8% bucket is his only losing cohort; -25..-40 is his best |
+| liquidity band | 55-100 | **36-70** | his first-buy vsol p25-p75; 40-55 is the sweet spot, 55-75 the worst |
+| `m_flow_window(60).gross` | >= 11 | **>= 45** | his p25 gross60 = 45.6 SOL, med 85 - far hotter than omego |
+| `m_position.retrace` exit | >= 5 | **>= 7** | his measured trail is 6.8%, not 3% |
+| buy size | 1.0 SOL flat | **1.86% of vsol, cap 1.5 SOL** | exact, and it is what makes impact constant |
+| max hold | (none) | **90s hard time-exit** | >90s is net negative for him |
+| stall exit | present | **keep, and treat as mandatory** | the single thing standing between his mechanics and his -225 SOL bag charge |
+| `stop_loss` | 25 | **drop or widen a lot** | stop overlays at every level 15-50 make his book *worse* |
+| `max_episodes` | 12 | **keep high** | ep9+ is his best cohort (65% win / +7.73%) |
+
+Untested here: whether entering at token age <1 min (his profile) survives *our*
+latency. He is at median 0.8 min age / 135 trades per prior 60s; that is a much faster
+adoption than the omego-calibrated rules assume.
+
+### Caveats
+
+- Same window caveats as the omego re-derivation: 07-23 is largely missing and there is
+  an 11.8h ingest hole on 07-26 15:44 -> 07-27 03:34.
+- Bag treatment is the dominant uncertainty in the headline PnL (see above); the
+  mechanical findings (sizing, trail, dip, selection) do not depend on it.
+- Priority fees / Jito tips are excluded - 13,326 legs, so at 0.001 SOL/leg that is a
+  further ~13 SOL.
+- Analysis tables (`s64_tr`, `s64_bal`, `s64_ep`, `s64_mkt`, `s64_first`, `s64_sel`)
+  were left in the hunter PG for follow-up; drop them when done.

@@ -171,7 +171,7 @@ impl CostModel {
     ///
     /// Measured on the 2026-07 corpus (median depth ~70 SOL): a 0.1 SOL buy really
     /// costs 0.14%/leg and a 1.0 SOL buy 1.42%/leg, against the flat 1.00% this
-    /// replaces. See `docs/roadmap/flow-scalper-build-plan.md` §2g.
+    /// replaces. See `docs/plans/strategies/execution-costs.md`.
     pub fn pumpfun_with_impact() -> Self {
         Self::pumpfun_with_impact_with(&FeeTuning::current())
     }

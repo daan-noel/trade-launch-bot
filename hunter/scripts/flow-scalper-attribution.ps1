@@ -1,11 +1,15 @@
-# Phase C2 of hunter/docs/roadmap/flow-scalper-build-plan.md: is the residual loss
-# SELECTION or MECHANICS?
+# Is a rule's residual loss SELECTION or MECHANICS?
 #
 # Pulls one simulate run's per-episode rows from the lab bin and splits its PnL by
-# whether omego ever traded that mint. If the loss concentrates on mints he never
-# touched, selection is binding and a sharper entry gate (`unique_wallets`) earns its
-# place. If it is spread evenly, selection is not the problem -- consistent with the
-# ~5% precision ceiling measured on 2026-07-28, and D2 should be dropped.
+# whether a reference wallet ever traded that mint. If the loss concentrates on mints
+# it never touched, selection is binding and a sharper entry gate earns its place; if
+# it is spread evenly, selection is not what is broken.
+#
+# CAUTION, learned the hard way (docs/plans/strategies/flow-scalper-findings.md): the
+# first run of this split looked decisive and was an ARTEFACT. The rule under test had
+# `m_price_lifetime.stall` in its exit, which silently capped every hold at ~15s AND
+# filtered entries; once that was removed the cohort ordering INVERTED. Only trust
+# this split on a rule whose exits you have already verified are not truncating.
 #
 # Note: simulate emits one row PER EPISODE (`outcome_to_row` maps each
 # `PositionOutcome`), so a re-entry run yields several rows per mint. Rows with
