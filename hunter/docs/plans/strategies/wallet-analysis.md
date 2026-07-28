@@ -903,3 +903,174 @@ adoption than the omego-calibrated rules assume.
   further ~13 SOL.
 - Analysis tables (`s64_tr`, `s64_bal`, `s64_ep`, `s64_mkt`, `s64_first`, `s64_sel`)
   were left in the hunter PG for follow-up; drop them when done.
+
+## Dev-buy size - the one creation axis that predicts OUTCOME (2026-07-28)
+
+**This overturns a standing assumption, but only in one direction.** The
+fingerprint-axis section above tested creation shape against token *selection* - which
+token a scalper picks - and found chi2/df ~ 1.0 on every axis: no signal, hence the
+"use a maximally-broad fingerprint" design rule. That result stands. What was never
+tested is creation shape against *outcome* - how an episode on a token he already
+picked ends. For outcome, one axis does carry signal.
+
+Method: `s64_fp` (built from `s64_ep` + `s64_sel` + `tokens` + a creation-slot rollup),
+one row per episode, PnL priced net of the measured 125 bps/leg fee as
+`sol_out*0.9875 - sol_in*1.0125`. Baseline over his 6,515 **closed** episodes:
+**+2.66 %/ep, 49.6% win**, sd 30.1 (t=7.1 - his edge is real; the 56.5% win quoted
+earlier in this doc is gross, before the fee).
+
+Axis-level omnibus on win/loss, groups of >= 20 pooled, null expectation chi2/df ~ 1.0:
+
+| axis | groups | chi2/df |
+| --- | --- | --- |
+| `buy_ix_type` | 5 | **2.59** |
+| `init_buy` (1 SOL buckets) | 19 | **2.03** |
+| first-slot buy (1 SOL) | 35 | 1.85 |
+| `spendable_in` (1 SOL) | 14 | 1.78 |
+| `ix_labels` | 29 | 1.38 |
+| `cu_limit` | 12 | 0.82 |
+| `cu_price` | 29 | 0.82 |
+| `is_cashback_enabled` | 2 | 0.44 |
+
+`init_buy` is the usable one (`buy_ix_type` is a 5-value proxy for the same thing and
+`cu_*` are flat). Note `spendable_lamports_in` IS populated in this window - the
+earlier "absent from every creation row" note was about the older corpus.
+
+### The threshold ladder
+
+`initial_buy_lamports` is the **net** curve amount, so the dev-buy clusters sit at
+`gross x 0.98765` (12.0 -> 11.8519, 15.0 -> 14.8148, 25.0 -> 25.0). Fit window
+07-22..07-25, holdout 07-26..07-27 (the holdout was never used to pick the cut):
+
+| `init_buy >=` | n fit | win fit | net fit | n hold | win hold | net hold | mints |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 (all) | 3371 | 50.3% | +2.81 | 2966 | 48.6% | +2.52 | 2434 |
+| 5.8 | 472 | 53.8% | +4.27 | 418 | 55.0% | +3.40 | 291 |
+| 8.8 | 323 | 54.5% | +5.79 | 299 | 57.2% | +4.01 | 196 |
+| **12.0** | 143 | **57.3%** | **+7.73** | 179 | **57.0%** | **+4.45** | 101 |
+| 13.0 | 136 | 58.1% | +8.26 | 151 | 61.6% | +6.15 | 87 |
+| 14.7 | 131 | 59.5% | +9.38 | 147 | 61.9% | +6.46 | 81 |
+
+Monotone in **both** windows - which is the property that separates this from the
+bucket-derived gates that died (`range`, rise-at-low, `rise <= 1`). Those were all
+best-of-N single buckets; this is a threshold family improving everywhere.
+
+At the chosen cut of 12.8 SOL (the bucket edge used by the fingerprint, below):
+
+| cohort | eps | mints | win | net %/ep |
+| --- | --- | --- | --- | --- |
+| dev buy < 12.8 | 6,218 | 2,400 | 49.1% | +2.44 |
+| **dev buy 12.8-25.6** | **284** | **80** | **59.2%** | **+7.11** |
+| dev buy >= 25.6 | 13 | 9 | 76.9% | +8.51 |
+
+### Why it is believable
+
+1. **Mint-level block permutation, 2,000 shuffles** (labels permuted across mints so
+   the within-mint episode clustering is preserved): null win 49.52% (sd 3.19) vs
+   observed 57.14% => **p = 0.006**; null net +2.57 (sd 1.82) vs +5.91 => p = 0.037.
+2. **Not a liquidity proxy.** The lift survives conditioning on the entry-vsol band -
+   within 40-55 it is 61.9% vs 50.7%, within 55-75 it is 62.9% vs 52.1%. (It does
+   invert above vsol 75, n=81 - hence the 40-75 band in the rule.)
+3. **Every day of the window**, on both metrics: win 62.5 / 56.7 / 59.7 / 62.6 for the
+   big cohort vs 49.6 / 50.2 / 49.0 / 46.8 for the small one.
+4. **Not concentrated**: 89 mints, top 3 carry 34% of the net, 62% of mints net-positive.
+5. It also halves his one real defect - the **bag rate is 2.42%** for big dev buys vs
+   3.55% for small ones, consistent with "a funded launch does not go cold".
+
+### What does NOT support it
+
+- **It does not replicate on omego, because it cannot.** Rebuilt from `trades` +
+  `wallet_dict` over the same window: omego has **zero** episodes above a 12.8 SOL dev
+  buy (10 above 8.0), and inside the range he does trade the ladder is flat-to-down
+  (47.7% at >= 0, 47.9% at >= 3, 45.8% at >= 5). So this is a **one-wallet finding in a
+  region the other wallet never enters** - a non-test, not a confirmation.
+- ~40 groups/thresholds were examined, so the p=0.006 is not Bonferroni-safe on its
+  own. The holdout replication and the day-by-day consistency are what carry it.
+- One wallet, 4.2 usable days.
+
+### Engine validation (the independent test)
+
+Because the effect is conditional on *his* entry timing, the only real test is our own
+engine on our own entries. `scripts/flow-scalper-ladder.ps1 -Plan fp13 / fp13b` against
+fingerprint `fs3-dev big [12.8-25.6)`, 07-22..07-28, `pumpfun_impact`, 0.30 SOL, conc 4.
+Geometry = 64hP's, plus `arm_above_pct 2`, `liquidity 40-75`, dip 25:
+
+| run | fill | n | mints | win | mean %/ep | PF | t(mean) | t(win vs 50%) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| N1 base | first | 74 | 39 | 59.5% | +5.42 | 1.67 | 1.32 | 1.66 |
+| M2 | signal | 74 | 39 | **63.5%** | +8.06 | 2.13 | 1.86 | **2.41** |
+| **M1** | **worst** | 72 | 39 | 51.4% | **+3.48** | 1.35 | 0.79 | 0.24 |
+| M5 one-shot | first | 39 | 39 | **66.7%** | +11.04 | 2.55 | 1.62 | **2.21** |
+| M7 unarmed | first | 116 | 39 | 26.7% | -0.98 | 0.88 | -0.40 | -5.67 |
+
+Reads:
+
+- **M1 is the headline.** `worst` fill is what live paper books, and every prior
+  configuration in this project died there (`flow-scalper-findings.md`: "-2.6 to -4.7
+  %/ep vs `first`... nothing measured survives it"). This one stays **positive**. It is
+  not *significantly* positive (t=0.79) - but positive-signed at the adversarial bound
+  is a first.
+- **The win-rate lift is the statistically solid part** (t=2.41 at `signal`, 2.21
+  one-shot); the PnL is not established at any fill (t=0.79..1.86). Per-episode sd is
+  35-43, so at n=74 the SE on the mean is ~4.3 pp.
+- **M7 confirms the armed trail is not optional for us.** Running 64hP's literal
+  unarmed exit collapses to 26.7% win with a 5 s median hold - the
+  `PositionCtx::at_fill` trap (`retrace >= 7` is a hard -7% stop from entry until the
+  price rises). He gets away with it because he enters earlier in the dip than our
+  gates do; we do not.
+- The `lock`-ladder invariant `arm > retrace` **fails here** (`fp13` rows N2-N5, all at
+  a median -14.6%): arming at +8 disables the trail below +8 and leaves `stop_loss 10`
+  as the only exit, so every position runs to the stop. 64hP's wide, barely-armed trail
+  (arm 2 / retrace 7) is correct.
+- Dip is single-peaked at 25: 18 -> 51.0%, 20 -> 56.2%, **25 -> 59.5%**, 30 -> 58.0%.
+- Concurrency 12 is byte-identical to 4 - at ~110 armed tokens/day the cap never binds.
+
+### The band control - and why WIN RATE IS THE WRONG OBJECTIVE
+
+The N1 geometry, unchanged, run against lower dev-buy bands. Token count is held
+roughly constant so the comparison is the fingerprint and nothing else:
+
+| band | tokens | n | mints | win | mean %/ep | avg win | avg loss | W/L |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| mid [6.4, 9.6) | 1,020 | 68 | 33 | **64.7%** | **-1.01** | +13.23 | -27.11 | **0.49** |
+| adj [9.6, 12.8) | 1,269 | 68 | 38 | 52.9% | +1.02 | +18.85 | -19.04 | 0.99 |
+| **big [12.8, 25.6)** | **595** | **74** | **39** | 59.5% | **+5.42** | +22.70 | -19.93 | **1.14** |
+
+**The middle band has the HIGHEST win rate in the whole study and the WORST
+expectancy.** It wins 64.7% of the time and still loses money, because its payoff ratio
+is 0.49 - small wins, double-size losses. Ranking these three bands by win rate picks
+the only losing one; ranking by expectancy or by W/L picks the right one.
+
+So the dev-buy fingerprint's value is **not** that it raises the hit rate. It is that
+it is the only band where the hit rate and the payoff ratio are good **together** - the
+winners get bigger (+22.70 vs +13.23) without the losers getting bigger. A funded
+launch produces the deeper, longer reversion the strategy monetises; it does not
+produce more of them.
+
+Corollary for any future ladder here: **do not rank on `win_rate`.** Use
+`expectancy_sol` / `profit_factor`, and read `win_rate` only alongside the average
+win/loss pair. The control also isolates the fingerprint from the gate changes that
+came with it - the dip-25 / liq-40-75 gates alone (the `adj` band) deliver +1.02 %/ep,
+so ~80% of N1's +5.42 is attributable to dev-buy size.
+
+### Practical limits found while running this
+
+- **Do not simulate the exact complement** `fs3-dev small [0-12.8)` (~85k tokens): a
+  6-day fold dies with `lake trade fetch failed: Out of Memory Error: Allocation
+  failure` after the full 5400 s ladder timeout, on the 16 GB workstation. The
+  size-matched bands above are both runnable (50-70 s) and better controlled.
+- The fine structure below the cut is **not monotone** - the "12 SOL gross" cluster
+  (11.8519 net, 35 mints) is his mediocre one, which is part of why the cut lands at
+  12.8. Treat 12.8 as "the edge of a good region", not as a precisely estimated
+  threshold.
+
+### Tractability - the other reason to use it
+
+The broad `fs2-ALL` fingerprint arms ~18,000 tokens/day, which is why its matched set
+is too large to simulate or trade. `init_buy` in [12.8, 25.6) arms **933 of 107,954
+tokens over the window (~110/day)**, and a 6-day simulate folds in **60 s** instead of
+~20 min. It is an **instant** axis (`has_instant_criterion`), so it matches
+synchronously on `TokenCreated` with no `PendingFirstSlot` deferral.
+
+Seed: [`../../scripts/seed-flow-scalper-dev13-rules.sql`](../../scripts/seed-flow-scalper-dev13-rules.sql)
+(`fs3-*`, paper, `is_active=false`).

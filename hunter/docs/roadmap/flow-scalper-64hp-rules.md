@@ -1,5 +1,22 @@
 # Flow-scalper `fs2-*` rule ladder - 64hP-calibrated (2026-07-28)
 
+> **SUPERSEDED by the `fs3-*` ladder, later the same day.** `fs2-*` runs on ONE BROAD
+> fingerprint, on the assumption that creation shape carries no signal. That assumption
+> was only ever tested against token *selection*; against per-episode *outcome* the
+> creator dev-buy size does carry signal (59.2% win / +7.11 %/ep above 12.8 SOL vs 49.1%
+> / +2.44% below, mint-clustered permutation p=0.006, replicated on an untouched
+> holdout and on every day of the window). See "Dev-buy size" in
+> [`../plans/strategies/wallet-analysis.md`](../plans/strategies/wallet-analysis.md).
+>
+> Consequences: the narrow fingerprint arms ~110 tokens/day instead of ~18,000 (which
+> is what made the `fs2-*` matched set too big to simulate or trade), and it is the
+> first configuration here to stay PnL-positive under the adversarial `worst` fill.
+> Seed [`../../scripts/seed-flow-scalper-dev13-rules.sql`](../../scripts/seed-flow-scalper-dev13-rules.sql);
+> ladder plans `fp13` / `fp13b` / `fp13ctl`. Keep `fs2-*` only as the broad-universe
+> control - the knob conclusions below still hold, they just apply to a worse universe.
+> Two of them were revised by the `fs3-*` runs: the dip gate is best at **25**, not 18,
+> and `liquidity` at **40-75**, not 36-70.
+
 Renamed from `flow-scalper-fingerprint-rules.md`. That file's original content - a
 6-rule fingerprint A/B calibrated from wallet `omego` - is **retired**:
 [`../plans/strategies/flow-scalper-findings.md`](../plans/strategies/flow-scalper-findings.md)

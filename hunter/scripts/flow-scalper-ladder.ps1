@@ -29,9 +29,13 @@ param(
   # is why "broad" is spelled as one very wide bucket.
   [string]$FingerprintId = 'a23cf424-8d4c-45ae-aa51-37ba4f2fc6ca',
   [string]$OutCsv     = "$PSScriptRoot/../docs/roadmap/data/flow-scalper-ladder.csv",
-  # Per-run, not per-ladder. A 5-day broad-universe fold is ~8 min, so 20 gives plenty
-  # of headroom while still surfacing a lost run in minutes rather than an hour.
-  [int]$TimeoutSec    = 1200
+  # Per-run, not per-ladder. Fold cost varies by more than an order of magnitude with
+  # the GEOMETRY, not just the window: the omego anchor folds a 5-day window in ~8 min
+  # because `stall >= 15` caps every hold at ~15 s, while the 64hP geometry
+  # (`time >= 45`, `held >= 90`, re-entry to 40 episodes) keeps ~6x as many positions
+  # alive and runs well past 25 min. Do not tune this down off one geometry's timing -
+  # a too-short value silently kills a HEALTHY run (observed 2026-07-28).
+  [int]$TimeoutSec    = 5400
 )
 
 $ErrorActionPreference = 'Stop'
@@ -206,15 +210,41 @@ function Invoke-SimRun {
         throw "lab at $LabUrl stopped responding during run $runId ($($_.Exception.Message)). It was probably restarted; re-run this ladder."
       }
       if ($code -eq 401 -or $code -eq 403) { throw "auth rejected polling run $runId (HTTP $code)" }
+      if ($code -ge 500) {
+        # The run FAILED server-side and the id will 500 forever. This is the state
+        # that used to masquerade as "still folding" for the whole timeout. The body
+        # carries the real reason - on this box it is usually
+        #   "lake trade fetch failed: Out of Memory Error: Allocation failure"
+        # i.e. DuckDB could not allocate while reading the lake, which happens when
+        # something else (a second lab instance, a sweep) is holding RAM on the 16 GB
+        # workstation. Surface it immediately instead of polling a corpse.
+        $detail = $null
+        if ($_.ErrorDetails) { $detail = $_.ErrorDetails.Message }
+        elseif ($_.Exception.Response) {
+          try {
+            $sr = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+            $detail = $sr.ReadToEnd()
+          } catch { }
+        }
+        throw "run $runId FAILED server-side (HTTP $code): $detail"
+      }
       # 404 while the job is still folding is the one expected transient.
       Write-Host '.' -NoNewline
     }
   }
   if ($null -eq $summary) {
-    throw ("run $runId produced no summary within $TimeoutSec s. A real run of this " +
-           "window takes ~8 min, so this is far more likely a lab RESTART (the in-memory " +
-           "run registry was lost and the id now 404s forever) than a slow fold. Check " +
-           "whether hunter-lab's PID changed, then re-run.")
+    # State the ambiguity rather than guessing a cause. A 404 means only "this bin has
+    # no summary for that id", which is equally consistent with (a) still folding and
+    # (b) the bin having restarted and lost the run. Distinguishing them from inside
+    # the script is not possible - there is no run-status endpoint - so hand the caller
+    # the two checks that DO separate them.
+    throw ("run $runId produced no summary within $TimeoutSec s, and the lab is still " +
+           "reachable. That is 404-ambiguous: the run may still be folding, or the bin " +
+           "may have restarted and dropped it. To tell them apart: (1) is hunter-lab's " +
+           "PID the same as when the run started? (2) is it burning CPU - a fold pegs " +
+           "one core, an idle bin sits at 0%. If it is still folding, the summary will " +
+           "appear on its own; poll " +
+           "$LabUrl/api/strategies/simulate/$runId/result/summary rather than re-running.")
   }
 
   $elapsed = [math]::Round(((Get-Date) - $start).TotalSeconds, 1)
@@ -452,6 +482,101 @@ $ladders = @{
        apply = { param($p) Set-Stall $p $null; Set-Held $p 120; Set-Episodes $p $null
                  Set-ArmAbove $p 5; Set-Retrace $p 2; Set-StopLoss $p 8 } }
   )
+  # DEV-BUY FINGERPRINT A/B (2026-07-28). The one creation axis that predicts 64hP's
+  # per-episode OUTCOME rather than his selection: on his 6,515 closed episodes a dev
+  # buy >= 12.8 SOL (net; = ~13 SOL gross) scores 59.2% win / +7.11%/ep against 49.1%
+  # / +2.44% below it, and the lift holds on an untouched 07-26..27 holdout. Mint-level
+  # block permutation p=0.006 on win rate. It is NOT a liquidity proxy - the lift
+  # survives conditioning on the entry-vsol band. See
+  # docs/plans/strategies/wallet-analysis.md ("dev-buy size").
+  #
+  # Run this plan TWICE, once per fingerprint, and compare like for like. The two are
+  # exact complements at bucket width 12.8 SOL, so the ONLY difference is dev-buy size:
+  #   -FingerprintId 49471cf5-41d5-4929-973a-4bc0afc63754   # fs3-dev big   [12.8,25.6)
+  #   -FingerprintId c9a76f18-9a14-4a5a-83fe-99bd97dea05e   # fs3-dev small [0,12.8)
+  # Buy size is 0.30 SOL, not the ladder's historical 1.0: execution-costs.md puts the
+  # impact-aware optimum at sqrt(fixed_per_leg * vsol) ~ 0.27 on this vsol band.
+  fp13 = @(
+    # Base = the 64hP geometry with the two gates the dev-buy cohort measured best at
+    # (vsol 40-75 rather than the seed's 36-70; dip >= 18).
+    @{ name = 'N0 dev13 base'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75
+                 Set-ArmAbove $p 2 } }
+    # His single best dip cohort (-25..-40); on the big-dev-buy subset it took win
+    # 67.3% -> 71.8% in-sample and 75.9% -> 78.6% on the holdout.
+    @{ name = 'N1 dev13 dip 25'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2 } }
+    # The `lock` ladder's invariant: arm MUST exceed retrace or the trail gives back
+    # more than it locked in. fs2-00 (arm 2 / retrace 7) violates it; this is the fix,
+    # and it is the knob that should move WIN RATE most.
+    @{ name = 'N2 dev13 arm8 r4 sl10'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75
+                 Set-ArmAbove $p 8; Set-Retrace $p 4; Set-StopLoss $p 10 } }
+    @{ name = 'N3 dev13 dip25 arm8 r4 sl10'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 8; Set-Retrace $p 4; Set-StopLoss $p 10 } }
+    # Re-entry was PnL-negative on the broad universe because it compounds bad picks.
+    # On a fingerprint that selects well it should behave like 64hP's (ep9+ = his best
+    # cohort), so the sign of this row is the test of whether selection improved.
+    @{ name = 'N4 dev13 dip25 arm8 one-shot'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 8; Set-Retrace $p 4; Set-StopLoss $p 10
+                 Set-Episodes $p $null } }
+    # The bar that decides real money: live paper books `worst`.
+    @{ name = 'N5 dev13 dip25 arm8 WORST fill'; buy = 0.30; fill = 'worst'
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 8; Set-Retrace $p 4; Set-StopLoss $p 10 } }
+  )
+  # Round 2, on the fp13 winner. N1 (dip 25 / arm 2 / retrace 7) took 59.5% win and
+  # +5.42 %/ep; the arm8+retrace4 rows (N2-N5) all FAILED at a median -14.6 %, because
+  # arming at +8 disables the trail below +8 and leaves `stop_loss` as the only exit -
+  # so every position runs to the stop. 64hP's own wide, barely-armed trail is right.
+  # Open questions this round settles: (a) does N1 survive `worst` fill, (b) is the dip
+  # gate monotone, (c) does more concurrency just add worse episodes.
+  fp13b = @(
+    # THE bar for real money: live paper books `worst`.
+    @{ name = 'M1 N1 WORST fill'; buy = 0.30; fill = 'worst'
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2 } }
+    # C6 measured 64hP's real fills at +1.18% vs signal, i.e. much nearer `signal`
+    # than `worst` - the realistic bound for an operator with comparable latency.
+    @{ name = 'M2 N1 SIGNAL fill'; buy = 0.30; fill = 'signal'
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2 } }
+    @{ name = 'M3 N1 dip 20'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 20
+                 Set-ArmAbove $p 2 } }
+    @{ name = 'M4 N1 dip 30'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 30
+                 Set-ArmAbove $p 2 } }
+    @{ name = 'M5 N1 one-shot'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2; Set-Episodes $p $null } }
+    @{ name = 'M6 N1 conc 12'; buy = 0.30; conc = 12
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2 } }
+    @{ name = 'M7 N1 unarmed (64hP literal)'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25 } }
+  )
+  # The CONTROL arm of the A/B: the fp13 winner's geometry, UNCHANGED, run against a
+  # lower dev-buy band. Anything it fails to reproduce is attributable to dev-buy size
+  # rather than to the dip-25 / liq-40-75 gate changes that came with it.
+  #
+  # Do NOT use the exact complement `fs3-dev small [0-12.8)` for this: at ~85k tokens
+  # the 6-day fold dies with `lake trade fetch failed: Out of Memory Error` (measured
+  # 2026-07-28, 16 GB box). The size-matched bands below fold in minutes AND hold token
+  # count roughly constant, which is the better-controlled comparison anyway. Run one
+  # per invocation:
+  #   -FingerprintId 7b2e4c10-5d3a-4f81-9c6e-2a1b0d4e8f37  # adj [9.6,12.8)  1,269 tok
+  #   -FingerprintId 3f9a1d62-8c47-4e05-b1d2-6e7c93a4b508  # mid [6.4,9.6)   1,020 tok
+  # Predictions from his own episodes: adj = 48.7% win / +0.89 %/ep (baseline),
+  # mid = 55.6% / +3.57, vs big = 59.2% / +7.11.
+  fp13ctl = @(
+    @{ name = 'C1 control-band N1 geometry'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2 } }
+  )
   # OUT-OF-SAMPLE. Everything above was tuned on 07-25..07-28. Run with:
   #   -Since 2026-07-22T00:00:00Z -Until 2026-07-25T00:00:00Z
   v0oos = @(
@@ -542,6 +667,44 @@ $ladders = @{
     # The adversarial in-slot fill live paper books.
     @{ name = 'V64-7 WORST fill'
        apply = { param($p) Use-64hpGeometry $p }; buy = 0.2; fill = 'worst' }
+  )
+  # Follow-up to V64-0 (-3.419%/ep, 2,215 eps, win 28.6%, ALL exits via metrics,
+  # **median hold 6.0 s**). A 6 s median under `retrace >= 7` + `held >= 90` means the
+  # trail is firing almost immediately and `held` never binds - i.e. the unarmed-trail
+  # trap again (peak seeds at the entry fill, so `retrace >= 7` is a hard -7% stop from
+  # entry). 64hP survives that because he buys a -22.7% dip; we evidently do not enter
+  # where he does. Ordered by what would change a decision, since each run is ~32 min.
+  v64b = @(
+    # THE hypothesis: does arming rescue the 6 s hold?
+    @{ name = 'V64b-1 armed g3'
+       apply = { param($p) Use-64hpGeometry $p; Set-ArmAbove $p 3 }; buy = 0.2 }
+    @{ name = 'V64b-2 armed g6 trail 7'
+       apply = { param($p) Use-64hpGeometry $p; Set-ArmAbove $p 6 }; buy = 0.2 }
+    # What the new cost model actually changed on THIS geometry (same run, old pricing).
+    @{ name = 'V64b-3 base FEE-ONLY (old model)'
+       apply = { param($p) Use-64hpGeometry $p }; buy = 0.2; cost = 'pumpfun_fee_only' }
+    # Size curve extreme - 5x the notional, so ~5x the impact term.
+    @{ name = 'V64b-4 buy 1.0'
+       apply = { param($p) Use-64hpGeometry $p }; buy = 1.0 }
+  )
+  # THE COUPLING FIX. V64-0 (unarmed, no stop) and V64b-1 (arm 3, no stop) both lose,
+  # for OPPOSITE mechanical reasons, and the second one is my configuration error:
+  #
+  #   `arm_above_pct` and "no `stop_loss`" cannot both be copied from a wallet that
+  #   trails UNARMED. With the peak seeded at the entry fill, an unarmed trail IS the
+  #   stop-loss - that is why 64hP needs no separate one. Arming it removes that
+  #   function, so anything that never reaches the arm threshold has no exit at all
+  #   until `held >= 90`. Hence V64b-1's win rate 28.6% -> 56.1% WITH PnL falling
+  #   -3.42% -> -5.74%/ep: more winners held, but the losers ran unbounded.
+  #
+  # So arming requires re-adding an explicit stop. This is the only configuration of
+  # this geometry that has not had a fair test; without it we would be dismissing 64hP
+  # on my error rather than on his economics.
+  v64c = @(
+    @{ name = 'V64c-1 armed g3 + stop 10'
+       apply = { param($p) Use-64hpGeometry $p; Set-ArmAbove $p 3; Set-StopLoss $p 10 }; buy = 0.2 }
+    @{ name = 'V64c-2 armed g3 + stop 15'
+       apply = { param($p) Use-64hpGeometry $p; Set-ArmAbove $p 3; Set-StopLoss $p 15 }; buy = 0.2 }
   )
 }
 
