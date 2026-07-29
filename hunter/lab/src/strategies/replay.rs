@@ -58,6 +58,19 @@ pub const TICK: Duration = Duration::milliseconds(hunter_engine::TICK_MS);
 /// consistent across the paper-live and simulate fill models.
 const TOKEN_SCALE: f64 = 1_000_000.0;
 
+/// One confirmed sell leg collected during replay (partial or final). Feeds
+/// [`trading_core::strategies::kernel::round_trip_multi_leg`] and the chart's
+/// per-leg exit markers. `sell_bps` is of the **initial** bag.
+#[derive(Clone, Debug)]
+pub struct OutcomeExitLeg {
+    pub sell_bps: u16,
+    pub price: f64,
+    pub reserve_sol: Option<f64>,
+    pub time: Ts,
+    pub tx: String,
+    pub reason: Option<ExitReason>,
+}
+
 /// One token to replay: the metadata a result row needs, its observed creation
 /// axes (built through the shared [`observed_axes`](trading_core::strategies::fingerprint_axes::observed_axes)
 /// SSOT so it matches live), and its canonical-ordered lake trades.
@@ -99,6 +112,10 @@ pub struct PositionOutcome {
     pub exit_time: Option<Ts>,
     pub exit_tx: Option<String>,
     pub exit_reason: Option<ExitReason>,
+    /// Confirmed sell legs in fire order (scale-out partials + final). Empty when
+    /// the position never sold (still open with no banked tranche). Legacy
+    /// full-close is a single 10_000-bps leg.
+    pub exit_legs: Vec<OutcomeExitLeg>,
     /// Last observed spot for the token — the mark for an open (unexited) position.
     pub last_price: f64,
 }
@@ -218,6 +235,9 @@ struct Builder {
     entry_token_amount: u64,
     /// Confirmed sell-leg tokens so far (scale-out); sizes the next portion.
     sold_token_amount: u64,
+    /// Banked exit legs (partials); the final close appends one more in
+    /// [`Replay::push_closed`].
+    exit_legs: Vec<OutcomeExitLeg>,
     entry_time: Ts,
     entry_tx: String,
     entry_reserve_sol: Option<f64>,
@@ -583,6 +603,7 @@ impl Replay {
                         entry_price: 0.0,
                         entry_token_amount: 0,
                         sold_token_amount: 0,
+                        exit_legs: Vec::new(),
                         entry_time: Utc::now(),
                         entry_tx: String::new(),
                         entry_reserve_sol: None,
@@ -606,8 +627,21 @@ impl Replay {
                         b.entry_tx = sig;
                     } else {
                         // Scale-out partial fill — keep entry anchors, bank the leg.
+                        let sell_bps = sell_bps_of(fill.token_amount, b.entry_token_amount);
                         b.sold_token_amount =
                             b.sold_token_amount.saturating_add(fill.token_amount);
+                        b.exit_legs.push(OutcomeExitLeg {
+                            sell_bps,
+                            price: fill.price,
+                            reserve_sol: self
+                                .last_reserve_sol
+                                .get(&delta.mint)
+                                .copied()
+                                .filter(|r| *r > 0.0),
+                            time: fill.at,
+                            tx: sig,
+                            reason: delta.reason,
+                        });
                     }
                 }
             }
@@ -615,7 +649,7 @@ impl Replay {
             PositionStatus::End => {
                 if let Some(b) = self.builders.remove(&delta.position) {
                     if let Some(fill) = delta.fill {
-                        self.push_closed(b, fill.price, fill.at, sig, delta.reason);
+                        self.push_closed(b, fill.price, fill.at, sig, delta.reason, Some(fill.token_amount));
                     }
                 }
             }
@@ -629,7 +663,8 @@ impl Replay {
                         let mint = Mint::from(b.mint.as_str());
                         let price =
                             self.last_price.get(&mint).copied().unwrap_or(b.entry_price);
-                        self.push_closed(b, price, Utc::now(), sig, delta.reason);
+                        // Remaining bag closes as one mark leg (no confirmed fill amount).
+                        self.push_closed(b, price, Utc::now(), sig, delta.reason, None);
                     }
                 }
             }
@@ -638,15 +673,39 @@ impl Replay {
 
     fn push_closed(
         &mut self,
-        b: Builder,
+        mut b: Builder,
         exit_price: f64,
         exit_time: Ts,
         exit_tx: String,
         reason: Option<ExitReason>,
+        // Confirmed final-leg token amount when known; `None` ⇒ remaining bag
+        // (stuck / unconfirmed mark).
+        final_token_amount: Option<u64>,
     ) {
         let mint = Mint::from(b.mint.as_str());
         let last_price = self.last_price.get(&mint).copied().unwrap_or(exit_price);
-        self.done.push(outcome_from_builder(b, Some(exit_price), Some(exit_time), Some(exit_tx), reason, last_price));
+        let remaining = b.entry_token_amount.saturating_sub(b.sold_token_amount);
+        let final_tokens = final_token_amount.unwrap_or(remaining).min(remaining);
+        if final_tokens > 0 {
+            let sell_bps = sell_bps_of(final_tokens, b.entry_token_amount);
+            b.exit_legs.push(OutcomeExitLeg {
+                sell_bps,
+                price: exit_price,
+                reserve_sol: self.last_reserve_sol.get(&mint).copied().filter(|r| *r > 0.0),
+                time: exit_time,
+                tx: exit_tx.clone(),
+                reason,
+            });
+            b.sold_token_amount = b.sold_token_amount.saturating_add(final_tokens);
+        }
+        self.done.push(outcome_from_builder(
+            b,
+            Some(exit_price),
+            Some(exit_time),
+            Some(exit_tx),
+            reason,
+            last_price,
+        ));
     }
 
     /// Drain the remaining in-flight builders — every still-held position becomes an
@@ -716,6 +775,12 @@ pub struct EngineBacktestResult {
     pub exit_price: Option<f64>,
     pub exit_tx: Option<String>,
     pub exit_time: Option<DateTime<Utc>>,
+    /// Per-leg exit fills (scale-out). Legacy full close is a one-element vec;
+    /// absent/`[]` only for never-sold opens. Chart markers render one arrow
+    /// per leg. Position-level `exit_*` above still stamps the **last** leg so
+    /// existing columns / filters keep working.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub exit_legs: Vec<EngineExitLeg>,
     pub holding_secs: Option<i64>,
     pub pnl_percent: Option<f64>,
     pub pnl_sol: Option<f64>,
@@ -723,6 +788,16 @@ pub struct EngineBacktestResult {
     pub exit_reason: String,
     #[serde(flatten)]
     pub token: crate::strategies::token_enrich::TokenEnrichment,
+}
+
+/// Wire shape of one scale-out exit leg on a simulate result row.
+#[derive(Clone, serde::Serialize)]
+pub struct EngineExitLeg {
+    pub sell_bps: u16,
+    pub price: f64,
+    pub time: DateTime<Utc>,
+    pub tx: Option<String>,
+    pub reason: Option<String>,
 }
 
 fn outcome_from_builder(
@@ -753,7 +828,69 @@ fn outcome_from_builder(
         exit_time,
         exit_tx,
         exit_reason,
+        exit_legs: b.exit_legs,
         last_price,
+    }
+}
+
+/// Integer bps of the initial bag this fill sold. Clamps to `[0, 10_000]`.
+fn sell_bps_of(fill_tokens: u64, initial: u64) -> u16 {
+    if initial == 0 || fill_tokens == 0 {
+        return 0;
+    }
+    ((fill_tokens as u128 * 10_000) / initial as u128).min(10_000) as u16
+}
+
+impl PositionOutcome {
+    /// Exit legs for [`round_trip_multi_leg`](trading_core::strategies::kernel::round_trip_multi_leg):
+    /// confirmed sells, plus a mark-to-`last_price` remainder when still open.
+    /// Legacy empty-legs closed outcomes fall back to a single full-bag exit.
+    pub fn cost_legs(&self) -> Vec<trading_core::strategies::kernel::ExitLeg> {
+        use trading_core::strategies::kernel::ExitLeg;
+        let mut legs: Vec<ExitLeg> = self
+            .exit_legs
+            .iter()
+            .filter(|l| l.sell_bps > 0)
+            .map(|l| ExitLeg {
+                sell_bps: l.sell_bps,
+                price: l.price,
+                reserve_sol: l.reserve_sol.or(self.entry_reserve_sol),
+            })
+            .collect();
+        if self.exit_reason.is_none() {
+            let sold: u32 = legs.iter().map(|l| u32::from(l.sell_bps)).sum();
+            let rem = 10_000u32.saturating_sub(sold);
+            if rem > 0 {
+                legs.push(ExitLeg {
+                    sell_bps: rem as u16,
+                    price: self.last_price,
+                    reserve_sol: self.entry_reserve_sol,
+                });
+            }
+        }
+        if legs.is_empty() {
+            legs.push(ExitLeg {
+                sell_bps: 10_000,
+                price: self.exit_price.unwrap_or(self.last_price),
+                reserve_sol: self.entry_reserve_sol,
+            });
+        }
+        legs
+    }
+
+    /// Net PnL after costs via the multi-leg kernel (SSOT with [`outcome_to_row`]).
+    pub fn pnl_with_costs(
+        &self,
+        buy_amount_sol: f64,
+        costs: &trading_core::strategies::kernel::CostModel,
+    ) -> (f64, f64) {
+        trading_core::strategies::kernel::round_trip_multi_leg(
+            self.entry_price,
+            buy_amount_sol,
+            self.entry_reserve_sol,
+            &self.cost_legs(),
+            costs,
+        )
     }
 }
 
@@ -1015,6 +1152,9 @@ mod tests {
 /// `cost_model` is the caller's chosen [`CostModelKind`](trading_core::strategies::kernel::CostModelKind)
 /// (request-selectable — see `EngineSimRequest::cost_model` — no longer hardcoded to
 /// `pumpfun_default`, which double-counts slippage against a non-default fill model).
+///
+/// Scale-out positions price through [`round_trip_multi_leg`](trading_core::strategies::kernel::round_trip_multi_leg)
+/// over every confirmed exit leg (plus a mark-to-last-price remainder when still open).
 pub fn outcome_to_row(
     outcome: &PositionOutcome,
     symbol: &str,
@@ -1022,12 +1162,11 @@ pub fn outcome_to_row(
     buy_amount_sol: f64,
     cost_model: trading_core::strategies::kernel::CostModelKind,
 ) -> EngineBacktestResult {
-    use trading_core::strategies::kernel::{quantize_f32, round_trip_with_costs};
+    use trading_core::strategies::kernel::quantize_f32;
 
-    let (exit_price_for_pnl, exit_price, exit_time, exit_tx, holding_secs, exit_reason) =
+    let (exit_price, exit_time, exit_tx, holding_secs, exit_reason) =
         match outcome.exit_reason {
             Some(reason) => (
-                outcome.exit_price.unwrap_or(outcome.last_price),
                 outcome.exit_price,
                 outcome.exit_time,
                 outcome.exit_tx.clone(),
@@ -1035,17 +1174,23 @@ pub fn outcome_to_row(
                 reason.label().into_owned(),
             ),
             // Open at end of history — mark unrealized PnL to the last price; exit
-            // fields stay None (no sell fired), reason "Open".
-            None => (outcome.last_price, None, None, None, None, "Open".to_string()),
+            // fields stay None (no final sell fired), reason "Open".
+            None => (None, None, None, None, "Open".to_string()),
         };
 
-    let (sol, pct) = round_trip_with_costs(
-        outcome.entry_price,
-        exit_price_for_pnl,
-        buy_amount_sol,
-        outcome.entry_reserve_sol,
-        &cost_model.model(),
-    );
+    let (sol, pct) = outcome.pnl_with_costs(buy_amount_sol, &cost_model.model());
+
+    let exit_legs: Vec<EngineExitLeg> = outcome
+        .exit_legs
+        .iter()
+        .map(|l| EngineExitLeg {
+            sell_bps: l.sell_bps,
+            price: l.price,
+            time: l.time,
+            tx: if l.tx.is_empty() { None } else { Some(l.tx.clone()) },
+            reason: l.reason.map(|r| r.label().into_owned()),
+        })
+        .collect();
 
     EngineBacktestResult {
         mint_address: outcome.mint.clone(),
@@ -1066,6 +1211,7 @@ pub fn outcome_to_row(
         exit_price,
         exit_tx,
         exit_time,
+        exit_legs,
         holding_secs,
         pnl_percent: Some(quantize_f32(pct)),
         pnl_sol: Some(quantize_f32(sol)),
@@ -1094,6 +1240,7 @@ pub fn no_entry_row(mint: &str, symbol: &str, created_at: Ts) -> EngineBacktestR
         exit_price: None,
         exit_tx: None,
         exit_time: None,
+        exit_legs: Vec::new(),
         holding_secs: None,
         pnl_percent: None,
         pnl_sol: None,

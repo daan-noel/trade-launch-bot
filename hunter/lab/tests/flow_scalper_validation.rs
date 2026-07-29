@@ -36,7 +36,7 @@ use lab::sweep::projection::to_trade_lite;
 use lab::lake::duck::LakeSource;
 use lab::strategies::replay::{run_replay, PositionOutcome, ReplayConfig, ReplayToken};
 
-use trading_core::strategies::kernel::{round_trip_with_costs, CostModel};
+use trading_core::strategies::kernel::CostModel;
 use trading_core::strategies::paper_fill::FillModel;
 
 /// Absolute lake path (test CWD is the crate dir, so a relative `./lake-data` from
@@ -356,13 +356,9 @@ fn run_with_fill(
             dips.push(d);
         }
         let exited = o.exit_reason.is_some();
-        let exit_price = o.exit_price.unwrap_or(o.last_price);
-        let depth = o.entry_reserve_sol;
-        let (pnl_after, pct_after) =
-            round_trip_with_costs(o.entry_price, exit_price, BUY_SOL, depth, &costed);
-        let (pnl_feeonly, pct_feeonly) =
-            round_trip_with_costs(o.entry_price, exit_price, BUY_SOL, depth, &feeonly);
-        let (pnl_before, _) = round_trip_with_costs(o.entry_price, exit_price, BUY_SOL, depth, &free);
+        let (pnl_after, pct_after) = o.pnl_with_costs(BUY_SOL, &costed);
+        let (pnl_feeonly, pct_feeonly) = o.pnl_with_costs(BUY_SOL, &feeonly);
+        let (pnl_before, _) = o.pnl_with_costs(BUY_SOL, &free);
         if exited {
             let reason = o.exit_reason.map(|r| r.label().into_owned()).unwrap_or_default();
             *exit_mix.entry(reason).or_default() += 1;

@@ -117,3 +117,16 @@ roughly 4% gross per round trip to break even**, before any market slippage. Tha
 the number to check a candidate against first — it kills most ideas before a backtest
 is worth running. See [flow-scalper-findings.md](flow-scalper-findings.md) for a
 worked case where a real, profitable-looking pattern turned out to sit just under it.
+
+## 5. Multi-leg (scale-out) round trips
+
+`round_trip_multi_leg` is the sibling that prices **one entry + N exit legs**. Each
+leg pays fee bps + fixed tip + impact(`leg_notional / reserve_at_leg`). Fixed cost
+therefore scales with leg count — at 0.1 SOL size an extra exit leg adds ~1% of
+notional. That is the real economic bound on stage count (see the partial-exits
+roadmap).
+
+`round_trip_with_costs` is a thin wrapper over a single 10_000-bps exit, so legacy
+callers stay byte-identical. Simulate collects confirmed legs on `PositionOutcome`
+and prices through the multi-leg path; the grouped sweep still uses the single-exit
+wrapper until the staged resolver (roadmap step 4) lands.

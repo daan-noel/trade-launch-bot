@@ -370,6 +370,16 @@ export interface SimulatedTokenResult extends TokenEnrichmentFields {
   exit_price: number | null;
   exit_tx: string | null;
   exit_time: string | null;
+  /** Scale-out exit fills in fire order. Absent / empty on legacy single-exit
+   *  rows and never-sold opens. Chart markers render one arrow per leg; the
+   *  position-level `exit_*` fields still stamp the last leg. */
+  exit_legs?: Array<{
+    sell_bps: number;
+    price: number;
+    time: string;
+    tx: string | null;
+    reason: string | null;
+  }> | null;
   holding_secs: number | null;
   pnl_percent: number | null;
   pnl_sol: number | null;

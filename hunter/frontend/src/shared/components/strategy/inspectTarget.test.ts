@@ -75,3 +75,39 @@ describe('buildEventMarkersForEpisodes', () => {
     expect(total).toBe(summed);
   });
 });
+
+describe('buildEventMarkers scale-out legs', () => {
+  it('renders one exit marker per leg with banked %', () => {
+    const markers = buildEventMarkers(
+      target({
+        entryTime: '2026-07-20T22:39:35Z',
+        entryPrice: 1,
+        exitTime: '2026-07-20T22:47:23Z',
+        exitPrice: 1.1,
+        exitLegs: [
+          { time: '2026-07-20T22:42:14Z', price: 1.5, sellBps: 7000, reason: 'TakeProfit' },
+          { time: '2026-07-20T22:47:23Z', price: 1.1, sellBps: 3000, reason: 'TimeStop' },
+        ],
+      }),
+    );
+    expect(markers.map((m) => m.label)).toEqual([
+      'Entry',
+      'Exit 70% · TakeProfit',
+      'Exit 30% · TimeStop',
+    ]);
+    expect(markers.filter((m) => m.kind === 'exit').map((m) => m.priceInSol)).toEqual([1.5, 1.1]);
+  });
+
+  it('falls back to the single exit_* fields when exitLegs is absent', () => {
+    const markers = buildEventMarkers(
+      target({
+        entryTime: '2026-07-20T22:39:35Z',
+        entryPrice: 1,
+        exitTime: '2026-07-20T22:42:14Z',
+        exitPrice: 2,
+        exitLabel: 'TakeProfit',
+      }),
+    );
+    expect(markers.map((m) => m.label)).toEqual(['Entry', 'Exit · TakeProfit']);
+  });
+});

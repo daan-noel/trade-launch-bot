@@ -3,12 +3,12 @@
 //! The same primitives back every replay path (`lab`'s param sweep, live/paper
 //! run rollups), so live / paper / sweep results stay comparable.
 //!
-//! PnL is priced through the shared [`CostModel`] ([`round_trip_with_costs`]) so
-//! a backtest reflects the frictions the live trader pays. The bounded
-//! `QuantileSketch` + streaming [`RunAgg`] are the single home for the sketch /
-//! robust-score math: `lab`'s per-combo sweep folds into [`RunAgg`] via its thin
-//! `ComboAgg` wrapper, so backtest and live/paper metrics can never drift to a
-//! second copy.
+//! PnL is priced through the shared [`CostModel`] ([`round_trip_with_costs`] /
+//! [`round_trip_multi_leg`]) so a backtest reflects the frictions the live trader
+//! pays — including scale-out's per-leg fixed cost. The bounded `QuantileSketch`
+//! + streaming [`RunAgg`] are the single home for the sketch / robust-score math:
+//! `lab`'s per-combo sweep folds into [`RunAgg`] via its thin `ComboAgg` wrapper,
+//! so backtest and live/paper metrics can never drift to a second copy.
 
 use serde::{Deserialize, Serialize};
 
@@ -265,24 +265,26 @@ impl CostModelKind {
     }
 }
 
+/// One exit leg of a (possibly tranched) round-trip. `sell_bps` is of the
+/// **initial** bag (same grain as scale-out stages); fractions compose without
+/// compounding. Cap is 10_000 (= 100%); a single full close is one leg at 10_000.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExitLeg {
+    pub sell_bps: u16,
+    pub price: f64,
+    /// SOL-side pool depth at this leg for [`CostModel::price_impact`]. `None`
+    /// charges no impact on this leg (same contract as
+    /// [`round_trip_with_costs`]'s reserve arg).
+    pub reserve_sol: Option<f64>,
+}
+
 /// Net PnL of a buy@`entry_price` / sell@`exit_price` round-trip sized at
-/// `notional_sol`, net of `costs`: symmetric slippage worsens both fills, a fee is
-/// charged on each leg's SOL value, and the fixed per-leg cost is subtracted twice.
-/// Returns `(pnl_sol, pnl_percent)`.
+/// `notional_sol`, net of `costs`. Thin wrapper over [`round_trip_multi_leg`]
+/// with a single full-bag exit — the legacy 1-exit shape.
 ///
-/// `reserve_sol` is the **SOL-side pool depth at entry**, used only when
-/// [`CostModel::price_impact`] is set. On a constant-product curve, spending
-/// `B` SOL against virtual reserves `(vsol, vtok)` yields
-/// `vtok·B/(vsol+B)` tokens, so the *average* price paid is `(vsol+B)/vtok` —
-/// exactly `(1 + B/vsol)` times the pre-trade spot `vsol/vtok`. The impact is
-/// therefore `B/vsol`, independent of `vtok`. (This is why a wallet that sizes at
-/// a fixed fraction of the pool shows a *constant* realised slippage.)
-///
-/// The same depth prices the exit leg, which slightly **over**-charges it whenever
-/// the pool grew during the hold — the common case on a winner, so the
-/// approximation errs toward pessimism on exactly the trades that matter most.
-/// Pass `None` when depth is unknown; no impact is charged and the result matches
-/// the pre-impact behavior.
+/// `reserve_sol` is the **SOL-side pool depth at entry**, reused for the exit
+/// leg's impact (slightly over-charges winners when the pool grew — pessimistic
+/// on the trades that matter). Pass `None` when unknown.
 pub fn round_trip_with_costs(
     entry_price: f64,
     exit_price: f64,
@@ -290,24 +292,76 @@ pub fn round_trip_with_costs(
     reserve_sol: Option<f64>,
     costs: &CostModel,
 ) -> (f64, f64) {
-    if entry_price <= 0.0 || notional_sol <= 0.0 {
+    round_trip_multi_leg(
+        entry_price,
+        notional_sol,
+        reserve_sol,
+        &[ExitLeg { sell_bps: 10_000, price: exit_price, reserve_sol }],
+        costs,
+    )
+}
+
+/// Multi-leg sibling of [`round_trip_with_costs`]: one entry + `exits` sell legs.
+/// Each leg pays fee bps + fixed-per-leg + impact(`leg_notional / reserve_at_leg`).
+/// Fixed cost therefore scales with leg count — the real economic bound on
+/// scale-out stage count (~1% of notional per extra exit leg at 0.1 SOL size).
+///
+/// `exits` must be non-empty and `sum(sell_bps)` should cover the bag being
+/// priced (10_000 for a full close; less + a mark leg for mid-ladder open MTM).
+/// Returns `(pnl_sol, pnl_percent)` of the entry notional. Empty / invalid
+/// inputs → `(0, 0)`.
+pub fn round_trip_multi_leg(
+    entry_price: f64,
+    notional_sol: f64,
+    entry_reserve_sol: Option<f64>,
+    exits: &[ExitLeg],
+    costs: &CostModel,
+) -> (f64, f64) {
+    if entry_price <= 0.0 || notional_sol <= 0.0 || exits.is_empty() {
         return (0.0, 0.0);
     }
     let slip = costs.slippage_bps / 10_000.0;
     let fee = costs.fee_bps_per_leg / 10_000.0;
-    // Our own footprint in the pool. `filter` (not a bare `unwrap_or`) so a zero or
-    // negative depth cannot divide by ~0 and produce an absurd haircut.
-    let impact = match costs.price_impact {
-        true => reserve_sol.filter(|r| *r > 0.0).map_or(0.0, |r| notional_sol / r),
-        false => 0.0,
-    };
-    let eff_entry = entry_price * (1.0 + slip + impact);
-    let eff_exit = exit_price * (1.0 - slip - impact).max(0.0);
-    let tokens = notional_sol / eff_entry;
-    let gross_proceeds = tokens * eff_exit;
-    let costs_sol = (notional_sol + gross_proceeds) * fee + costs.fixed_cost_sol_per_leg * 2.0;
+    let entry_impact = leg_impact(costs, notional_sol, entry_reserve_sol);
+    let eff_entry = entry_price * (1.0 + slip + entry_impact);
+    if eff_entry <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let tokens_total = notional_sol / eff_entry;
+
+    let mut gross_proceeds = 0.0;
+    let mut n_exit = 0u32;
+    for leg in exits {
+        if leg.sell_bps == 0 {
+            continue;
+        }
+        let frac = leg.sell_bps as f64 / 10_000.0;
+        let leg_tokens = tokens_total * frac;
+        // Impact sized to this leg's share of the entry notional (same B/vsol
+        // grain as the single-leg path, just not the full bag).
+        let exit_impact = leg_impact(costs, notional_sol * frac, leg.reserve_sol);
+        let eff_exit = leg.price * (1.0 - slip - exit_impact).max(0.0);
+        gross_proceeds += leg_tokens * eff_exit;
+        n_exit += 1;
+    }
+    if n_exit == 0 {
+        return (0.0, 0.0);
+    }
+    // Fee on entry notional + sum of exit proceeds; fixed cost once per leg
+    // (1 entry + N exits).
+    let costs_sol = (notional_sol + gross_proceeds) * fee
+        + costs.fixed_cost_sol_per_leg * (1.0 + f64::from(n_exit));
     let pnl_sol = gross_proceeds - notional_sol - costs_sol;
     (pnl_sol, pnl_sol / notional_sol * 100.0)
+}
+
+/// Our own footprint in the pool for one leg. `filter` (not a bare
+/// `unwrap_or`) so a zero / negative depth cannot divide by ~0.
+fn leg_impact(costs: &CostModel, size_sol: f64, reserve_sol: Option<f64>) -> f64 {
+    if !costs.price_impact || size_sol <= 0.0 {
+        return 0.0;
+    }
+    reserve_sol.filter(|r| *r > 0.0).map_or(0.0, |r| size_sol / r)
 }
 
 /// Round a PnL figure through `f32` precision and back. The sweep's
@@ -1066,6 +1120,79 @@ mod tests {
         let friction = round_trip_with_costs(1.0, 2.0, 1.0, None, &CostModel::pumpfun_default()).0;
         let free = round_trip_with_costs(1.0, 2.0, 1.0, None, &CostModel::frictionless()).0;
         assert!(friction < free, "costs must drag PnL down");
+    }
+
+    // ── multi-leg round-trip (scale-out) ─────────────────────────────────────
+
+    #[test]
+    fn multi_leg_single_full_exit_matches_round_trip() {
+        let m = CostModel::pumpfun_with_impact();
+        let depth = Some(70.0);
+        let single = round_trip_with_costs(1.0, 1.25, 0.1, depth, &m);
+        let multi = round_trip_multi_leg(
+            1.0,
+            0.1,
+            depth,
+            &[ExitLeg { sell_bps: 10_000, price: 1.25, reserve_sol: depth }],
+            &m,
+        );
+        assert!((single.0 - multi.0).abs() < 1e-12, "sol {} vs {}", single.0, multi.0);
+        assert!((single.1 - multi.1).abs() < 1e-12, "pct {} vs {}", single.1, multi.1);
+    }
+
+    #[test]
+    fn multi_leg_fixed_cost_scales_with_exit_count() {
+        // Same prices / full coverage: one 100% exit vs two 50% exits at the same
+        // price. Frictionless PnL is identical; with a fixed tip the 2-leg path
+        // pays one extra fixed_cost_sol_per_leg — the economic bound on stages.
+        let tip = 0.001;
+        let m = CostModel {
+            fee_bps_per_leg: 0.0,
+            slippage_bps: 0.0,
+            fixed_cost_sol_per_leg: tip,
+            price_impact: false,
+        };
+        let one = round_trip_multi_leg(
+            1.0,
+            0.1,
+            None,
+            &[ExitLeg { sell_bps: 10_000, price: 1.10, reserve_sol: None }],
+            &m,
+        )
+        .0;
+        let two = round_trip_multi_leg(
+            1.0,
+            0.1,
+            None,
+            &[
+                ExitLeg { sell_bps: 5_000, price: 1.10, reserve_sol: None },
+                ExitLeg { sell_bps: 5_000, price: 1.10, reserve_sol: None },
+            ],
+            &m,
+        )
+        .0;
+        assert!(
+            (one - two - tip).abs() < 1e-12,
+            "2-leg must cost exactly one extra tip: one={one} two={two} tip={tip}"
+        );
+    }
+
+    #[test]
+    fn multi_leg_prices_tranches_at_their_own_fills() {
+        // Frictionless: bank 70% at +50%, stub 30% at flat → net +35% of notional.
+        let m = CostModel::frictionless();
+        let (sol, pct) = round_trip_multi_leg(
+            1.0,
+            1.0,
+            None,
+            &[
+                ExitLeg { sell_bps: 7_000, price: 1.50, reserve_sol: None },
+                ExitLeg { sell_bps: 3_000, price: 1.00, reserve_sol: None },
+            ],
+            &m,
+        );
+        assert!((sol - 0.35).abs() < 1e-12, "got sol={sol}");
+        assert!((pct - 35.0).abs() < 1e-12, "got pct={pct}");
     }
 
     // ── price impact (§2g) ──────────────────────────────────────────────────

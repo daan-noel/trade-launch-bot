@@ -26,6 +26,15 @@ export interface InspectTarget {
   exitTx?: string | null;
   /** Exit reason / position status (e.g. "TakeProfit"); appended to the exit label. */
   exitLabel?: string | null;
+  /** Scale-out legs (when present, one chart marker per leg). Position-level
+   *  `exit*` above still carries the last leg for legacy single-arrow callers. */
+  exitLegs?: Array<{
+    time: string;
+    price: number;
+    tx?: string | null;
+    sellBps?: number;
+    reason?: string | null;
+  }> | null;
 }
 
 /** Build the chart **fill** entry/exit markers for an inspect target (backend
@@ -60,7 +69,26 @@ export function buildEventMarkers(target: InspectTarget): ChartEventMarker[] {
       label: 'Entry',
     });
   }
-  if (target.exitTime != null && target.exitPrice != null) {
+  const legs = target.exitLegs?.filter((l) => l.time != null && l.price != null) ?? [];
+  if (legs.length > 0) {
+    const multi = legs.length > 1;
+    for (const leg of legs) {
+      const pct =
+        multi && leg.sellBps != null && leg.sellBps > 0
+          ? ` ${Math.round(leg.sellBps / 100)}%`
+          : '';
+      const reason = leg.reason ?? target.exitLabel;
+      const label = reason ? `Exit${pct} · ${reason}` : `Exit${pct || ''}`.trim();
+      markers.push({
+        kind: 'exit',
+        role: 'fill',
+        time: leg.time,
+        priceInSol: leg.price,
+        txSignature: leg.tx ?? null,
+        label,
+      });
+    }
+  } else if (target.exitTime != null && target.exitPrice != null) {
     markers.push({
       kind: 'exit',
       role: 'fill',
@@ -120,6 +148,16 @@ export function inspectFromMint(
 /** Map a backtest/simulate result row to an inspect target. */
 export function inspectFromSim(r: SimulatedTokenResult): InspectTarget {
   const fired = r.fired !== false && r.exit_reason !== 'NoEntry';
+  const exitLegs =
+    r.exit_legs && r.exit_legs.length > 0
+      ? r.exit_legs.map((l) => ({
+          time: l.time,
+          price: l.price,
+          tx: l.tx,
+          sellBps: l.sell_bps,
+          reason: l.reason,
+        }))
+      : null;
   return {
     mint_address: r.mint_address,
     symbol: r.symbol,
@@ -131,6 +169,7 @@ export function inspectFromSim(r: SimulatedTokenResult): InspectTarget {
     exitTx: r.exit_tx,
     exitLabel:
       fired && r.exit_reason && r.exit_reason !== 'Open' ? r.exit_reason : null,
+    exitLegs,
   };
 }
 
