@@ -57,15 +57,36 @@ const HARD_MAX_COMBOS = 1000000;
 const DEFAULT_TOKEN_CAP = 10000;
 const MAX_TOKEN_CAP = 100000;
 
-/** Default Pass-2 ladder (plan cheap probe): bank 70% at +50% TP, remainder time-stop. */
-const DEFAULT_SCALE_OUT_PRESET: unknown[] = [
-  { sell_bps: 7000, take_profit: 50 },
-  {
-    conditions: {
-      m_position: { held: [{ operator: '>=', value: 30 }] },
-    },
-  },
+/** A single candidate scale-out ladder for the Pass-2 grid: bank `sellBps` at
+ *  `takeProfit`, remainder trails out on `held >= stubHeldSec`. */
+function ladderStages(sellBps: number, takeProfit: number, stubHeldSec: number): unknown[] {
+  return [
+    { sell_bps: sellBps, take_profit: takeProfit },
+    { conditions: { m_position: { held: [{ operator: '>=', value: stubHeldSec }] } } },
+  ];
+}
+
+/**
+ * The Pass-2 grid the form offers: a handful of candidate ladders (bank
+ * fraction × TP × stub time-stop). Each is independently checkable — a group's
+ * top-K combos are re-scored against every CHECKED ladder plus their own
+ * baseline exit and keep whichever wins per combo (dynamic, not one ladder
+ * forced onto the whole grid). See `docs/roadmap/scale-out-sweep-overlay-plan.md`.
+ */
+const SCALE_OUT_PRESETS: { label: string; stages: unknown[] }[] = [
+  { label: '50% @ +30% TP → stub held ≥ 20s', stages: ladderStages(5000, 30, 20) },
+  { label: '70% @ +50% TP → stub held ≥ 30s', stages: ladderStages(7000, 50, 30) },
+  { label: '85% @ +80% TP → stub held ≥ 45s', stages: ladderStages(8500, 80, 45) },
 ];
+
+/** Is `stages` present (by deep value) in `variants`? Drives each preset's
+ *  checkbox state directly off the form's `scaleOutVariants`, so a run restored
+ *  from history (or a hand-edited grid) shows the right boxes checked without a
+ *  separate index to keep in sync. */
+function presetIndexIn(variants: unknown[][], stages: unknown[]): number {
+  const target = JSON.stringify(stages);
+  return variants.findIndex((v) => JSON.stringify(v) === target);
+}
 
 /**
  * Desktop RAM reserve choices (MB) — how much host RAM the run leaves free for
@@ -156,8 +177,9 @@ interface GenericSweepConfig {
   /** Saved fingerprint the corpus is scoped to (engine match SSOT). When set the
    *  manual value filters are not sent — the backend matches instead. */
   seedFingerprintId: string | null;
-  /** Pass-2 scale-out overlay: empty = off. Stages are ExitStage-shaped. */
-  scaleOut: unknown[];
+  /** Pass-2 candidate scale-out ladder GRID: `ExitStage[][]`, one array per
+   *  candidate ladder. Empty = off. */
+  scaleOutVariants: unknown[][];
   /** Top-K combos per group for Pass 2. */
   scaleOutTopK: number;
 }
@@ -199,7 +221,7 @@ function defaultConfig(): GenericSweepConfig {
     fillModel: 'first_in_window',
     costModel: 'pumpfun_fee_only',
     seedFingerprintId: null,
-    scaleOut: [],
+    scaleOutVariants: [],
     scaleOutTopK: 3,
   };
 }
@@ -285,7 +307,12 @@ function runToConfig(run: GroupedSweepRunRecord, defaults: GenericSweepConfig): 
     // filters are NULL on a scoped run, so without this the re-run would silently
     // widen to the whole selection window.
     seedFingerprintId: run.fingerprint_id ?? null,
-    scaleOut: Array.isArray(run.scale_out) ? run.scale_out : [],
+    // `scale_out` is `ExitStage[][]` (a grid); defensively drop any non-array
+    // entry so a legacy flat-ladder run (pre-grid wire shape) restores as empty
+    // rather than crashing the preset matcher on a bad shape.
+    scaleOutVariants: Array.isArray(run.scale_out)
+      ? run.scale_out.filter((v): v is unknown[] => Array.isArray(v))
+      : [],
     scaleOutTopK: run.scale_out_top_k ?? defaults.scaleOutTopK,
   };
 }
@@ -386,7 +413,7 @@ export function GenericSweepConfigForm({
     fillModel,
     costModel,
     seedFingerprintId,
-    scaleOut,
+    scaleOutVariants,
     scaleOutTopK,
   } = config;
 
@@ -467,6 +494,16 @@ export function GenericSweepConfigForm({
     setField('groupBy', groupBy.includes(f) ? groupBy.filter((x) => x !== f) : [...groupBy, f]);
   }
 
+  /** Add/remove one preset ladder from the Pass-2 grid (`scaleOutVariants`), by
+   *  deep-value match — see [`presetIndexIn`]. */
+  function toggleScaleOutPreset(stages: unknown[]) {
+    const idx = presetIndexIn(scaleOutVariants, stages);
+    setField(
+      'scaleOutVariants',
+      idx >= 0 ? scaleOutVariants.filter((_, i) => i !== idx) : [...scaleOutVariants, stages],
+    );
+  }
+
   function handleRun() {
     if (!canRun) return;
     // Scoped run: the backend matches on the fingerprint's own axes, so the manual
@@ -521,8 +558,8 @@ export function GenericSweepConfigForm({
             .map((p) => p.map((s) => s.trim()).filter(Boolean))
             .filter((p) => p.length > 0)
         : undefined,
-      scale_out: scaleOut.length > 0 ? scaleOut : undefined,
-      scale_out_top_k: scaleOut.length > 0 ? Math.max(1, scaleOutTopK) : undefined,
+      scale_out: scaleOutVariants.length > 0 ? scaleOutVariants : undefined,
+      scale_out_top_k: scaleOutVariants.length > 0 ? Math.max(1, scaleOutTopK) : undefined,
     });
   }
 
@@ -823,44 +860,49 @@ export function GenericSweepConfigForm({
       )}
 
       <div className="mt-3 border-t border-white/10 pt-3">
-        <Accordion title="Scale-out overlay (Pass 2)" defaultOpen={scaleOut.length > 0}>
+        <Accordion title="Scale-out overlay (Pass 2)" defaultOpen={scaleOutVariants.length > 0}>
           <div className="flex flex-col gap-2">
             <span className="text-[11px] text-text-dim">
               Keep the axes grid on the fast exit path; after ranking, re-score each group&apos;s
-              top-K combos under a fixed scale-out ladder (staged resolve only for those combos).
-              Promote attaches the ladder to the saved rule.
+              top-K combos against EVERY checked ladder below PLUS the combo&apos;s own baseline
+              exit, and keep whichever wins per combo — dynamic, not one ladder forced on the
+              whole grid (a combo none of these ladders help keeps its own exit). Promote attaches
+              the winning ladder to the saved rule.
             </span>
-            <div className="flex flex-wrap items-end gap-3">
-              <label className="flex items-center gap-2 text-[11px] text-text">
-                <Checkbox
-                  checked={scaleOut.length > 0}
-                  onChange={(e) =>
-                    setField('scaleOut', e.target.checked ? DEFAULT_SCALE_OUT_PRESET : [])
-                  }
-                  disabled={running}
-                />
-                Enable Pass-2 overlay
-              </label>
-              {scaleOut.length > 0 && (
-                <>
-                  <label className="flex flex-col gap-0.5 text-[11px] text-text-dim">
-                    Top-K / group
-                    <Input
-                      type="number"
-                      min={1}
-                      max={50}
-                      value={scaleOutTopK}
-                      onChange={(e) =>
-                        setField('scaleOutTopK', Math.max(1, Number(e.target.value) || 3))
-                      }
-                      disabled={running}
-                      className="w-20"
-                    />
-                  </label>
-                  <Badge variant="info">70% @ +50% TP → stub held ≥ 30s</Badge>
-                </>
-              )}
+            <div className="flex flex-col gap-1.5">
+              {SCALE_OUT_PRESETS.map((preset) => (
+                <label key={preset.label} className="flex items-center gap-2 text-[11px] text-text">
+                  <Checkbox
+                    checked={presetIndexIn(scaleOutVariants, preset.stages) >= 0}
+                    onChange={() => toggleScaleOutPreset(preset.stages)}
+                    disabled={running}
+                  />
+                  {preset.label}
+                </label>
+              ))}
             </div>
+            {scaleOutVariants.length > 0 && (
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="flex flex-col gap-0.5 text-[11px] text-text-dim">
+                  Top-K / group
+                  <Input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={scaleOutTopK}
+                    onChange={(e) =>
+                      setField('scaleOutTopK', Math.max(1, Number(e.target.value) || 3))
+                    }
+                    disabled={running}
+                    className="w-20"
+                  />
+                </label>
+                <Badge variant="info">
+                  {scaleOutVariants.length} candidate ladder{scaleOutVariants.length > 1 ? 's' : ''} +
+                  baseline, per combo
+                </Badge>
+              </div>
+            )}
           </div>
         </Accordion>
       </div>

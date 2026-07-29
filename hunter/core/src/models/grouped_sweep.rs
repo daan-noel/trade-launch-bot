@@ -90,10 +90,15 @@ pub struct GroupedSweepRun {
     /// fingerprint's `metric_config.m_flow_split.volume_ix_patterns`. `None` =
     /// non-flow run / legacy row.
     pub volume_ix_patterns: Option<Value>,
-    /// Fixed scale-out ladder applied in Pass 2 to each group's top-K combos
-    /// (`ExitStage[]`). `None` = no Pass 2 (legacy / overlay off). Promote merges
-    /// this into draft params — `_combos.params` stay baseline (shared across
-    /// groups). See `docs/roadmap/scale-out-sweep-overlay-plan.md`.
+    /// The candidate scale-out ladder **grid** searched in Pass 2 (`ExitStage[][]`
+    /// — one array per candidate ladder). `None` = no Pass 2 (legacy / overlay
+    /// off). This is the config that was searched, NOT necessarily what any one
+    /// combo ended up with: each group's top-K combos are independently re-scored
+    /// against every ladder here plus their own baseline and keep whichever wins,
+    /// so the winning ladder (if any) is baked directly into that specific
+    /// combo's own `_combos.params` / `best_params` at write time — never merged
+    /// from this run-level field at read time. See
+    /// `docs/roadmap/scale-out-sweep-overlay-plan.md`.
     pub scale_out: Option<Value>,
     /// How many best combos per group Pass 2 re-scores. `None` when no overlay.
     pub scale_out_top_k: Option<i32>,

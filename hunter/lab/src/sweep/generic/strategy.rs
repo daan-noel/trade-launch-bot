@@ -110,18 +110,23 @@ pub struct GenericSweepStrategy {
     flow_patterns: Option<hunter_engine::metrics::flow_split::FlowPatterns>,
     /// When set, [`compile_combo`](Self::compile_combo) merges this ladder into every
     /// combo's `RuleParams` (Pass-2 overlay scan only). Leave `None` on the main
-    /// Pass-1 strategy so the axes grid keeps `fast_exit`.
+    /// Pass-1 strategy so the axes grid keeps `fast_exit`. One overlay clone exists
+    /// per candidate ladder in [`ScaleOutPass2::variants`] — see [`with_overlay`].
     scale_out_overlay: Option<Vec<hunter_engine::rule_params::ExitStage>>,
-    /// Pass-2 config: after each group's cheap fold, re-score top-K with
-    /// [`scale_out_overlay`](Self::scale_out_overlay). `None` ⇒ skip Pass 2.
+    /// Pass-2 config: after each group's cheap fold, re-score top-K combos against
+    /// every ladder in [`ScaleOutPass2::variants`]. `None` ⇒ skip Pass 2.
     scale_out_pass2: Option<ScaleOutPass2>,
 }
 
-/// Fixed scale-out ladder + per-group top-K for Pass 2 (see
-/// `docs/roadmap/scale-out-sweep-overlay-plan.md`).
+/// A small **grid** of candidate scale-out ladders + per-group top-K for Pass 2
+/// (see `docs/roadmap/scale-out-sweep-overlay-plan.md`). Dynamic, not fixed: each
+/// top-K combo is independently re-scored under its own baseline (no ladder) PLUS
+/// every ladder here, and keeps whichever wins — a combo the ladder doesn't help
+/// stays on its own Pass-1 exit. Bounded cost: `variants.len() + 1` staged scans
+/// per top-K combo, never a swept axis over the whole grid.
 #[derive(Clone, Debug)]
 pub struct ScaleOutPass2 {
-    pub stages: Vec<hunter_engine::rule_params::ExitStage>,
+    pub variants: Vec<Vec<hunter_engine::rule_params::ExitStage>>,
     pub top_k: usize,
 }
 
@@ -157,10 +162,15 @@ impl GenericSweepStrategy {
     }
 
     /// Enable Pass 2: after each group ranks on the cheap axes path, re-score its
-    /// top-`top_k` combos under a fixed scale-out ladder.
-    pub fn set_scale_out_pass2(&mut self, stages: Vec<hunter_engine::rule_params::ExitStage>, top_k: usize) {
+    /// top-`top_k` combos against every ladder in `variants` (plus each combo's own
+    /// baseline) and keep whichever wins per combo.
+    pub fn set_scale_out_pass2(
+        &mut self,
+        variants: Vec<Vec<hunter_engine::rule_params::ExitStage>>,
+        top_k: usize,
+    ) {
         self.scale_out_pass2 = Some(ScaleOutPass2 {
-            stages,
+            variants,
             top_k: top_k.max(1),
         });
     }
@@ -530,43 +540,83 @@ impl Strategy for GenericSweepStrategy {
             return Ok(());
         };
         let top = top_combo_ids(&gr.metrics, pass2.top_k);
-        if top.is_empty() {
+        if top.is_empty() || pass2.variants.is_empty() {
             return Ok(());
         }
-        let overlay = self.with_overlay(pass2.stages.clone());
+        // One overlay strategy per candidate ladder — built once, reused across every
+        // top-K combo in this group (the ladder is fixed; only the combo varies).
+        let overlays: Vec<Self> =
+            pass2.variants.iter().map(|v| self.with_overlay(v.clone())).collect();
         for &orig_id in &top {
             if observer.cancelled() {
                 bail!("sweep cancelled");
             }
             let combo = GenericCombo { idx: orig_id as usize };
-            let bound = overlay.bind_param(&combo);
-            let mut agg = ComboAgg::default();
-            let mut ctx = Self::ExitCtx::default();
-            let mut cands = Self::EntryCands::default();
-            let mut last_exit_key: Option<Self::ExitCtxKey> = None;
-            for &ti in token_idx {
+            // The combo's OWN Pass-1 result is baseline candidate #0 — a ladder must
+            // beat the combo's own exit to be adopted, not just "do okay". This is
+            // what makes the grid dynamic per combo rather than a blanket overlay.
+            let baseline = gr
+                .metrics
+                .iter()
+                .find(|m| m.combo_id == orig_id)
+                .cloned()
+                .expect("top_combo_ids only returns ids present in gr.metrics");
+            let mut best: crate::sweep::aggregate::ComboMetrics = baseline.clone();
+            let mut best_variant: Option<usize> = None;
+            for (vi, overlay) in overlays.iter().enumerate() {
                 if observer.cancelled() {
                     bail!("sweep cancelled");
                 }
-                let token = &corpus.tokens[ti];
-                let state = overlay.prepare_token(token);
-                let trades = &token.trades;
-                let entry =
-                    overlay.resolve_entry_from(trades, &state, &bound, &combo, &mut cands);
-                let exit_key = overlay.exit_ctx_key(&bound, &entry);
-                if last_exit_key.as_ref() != Some(&exit_key) {
-                    overlay.build_exit_ctx(trades, &state, &bound, &entry, &combo, &mut ctx);
-                    last_exit_key = Some(exit_key);
+                let bound = overlay.bind_param(&combo);
+                let mut agg = ComboAgg::default();
+                let mut ctx = Self::ExitCtx::default();
+                let mut cands = Self::EntryCands::default();
+                let mut last_exit_key: Option<Self::ExitCtxKey> = None;
+                for &ti in token_idx {
+                    if observer.cancelled() {
+                        bail!("sweep cancelled");
+                    }
+                    let token = &corpus.tokens[ti];
+                    let state = overlay.prepare_token(token);
+                    let trades = &token.trades;
+                    let entry =
+                        overlay.resolve_entry_from(trades, &state, &bound, &combo, &mut cands);
+                    let exit_key = overlay.exit_ctx_key(&bound, &entry);
+                    if last_exit_key.as_ref() != Some(&exit_key) {
+                        overlay.build_exit_ctx(trades, &state, &bound, &entry, &combo, &mut ctx);
+                        last_exit_key = Some(exit_key);
+                    }
+                    let outcome =
+                        overlay.resolve_exit(trades, &state, &bound, &entry, &combo, &ctx);
+                    agg.record(&outcome);
                 }
-                let outcome =
-                    overlay.resolve_exit(trades, &state, &bound, &entry, &combo, &ctx);
-                agg.record(&outcome);
+                let mut m = agg.finalize(orig_id);
+                m.rescore_for_group(gr.token_count);
+                if pass2_candidate_wins(&m, &best) {
+                    best = m;
+                    best_variant = Some(vi);
+                }
             }
-            let mut m = agg.finalize(orig_id);
-            m.rescore_for_group(gr.token_count);
-            if let Some(slot) = gr.metrics.iter_mut().find(|x| x.combo_id == orig_id) {
-                *slot = m;
+            if let Some(vi) = best_variant {
+                if let Some(slot) = gr.metrics.iter_mut().find(|x| x.combo_id == orig_id) {
+                    *slot = best;
+                }
+                // `ExitStage` has no `Serialize` impl of its own (see `rule_params`'s
+                // module docs) — round-trip through `RuleParams::to_value`, the one
+                // canonical stage-JSON writer, instead of hand-rolling a second one.
+                let wrapper = hunter_engine::rule_params::RuleParams {
+                    scale_out: Some(pass2.variants[vi].clone()),
+                    ..Default::default()
+                };
+                let ladder_json = wrapper
+                    .to_value()
+                    .get("scale_out")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                gr.scale_out_winners.insert(orig_id, ladder_json);
             }
+            // Else: no candidate beat this combo's own exit — `gr.metrics` already
+            // holds its Pass-1 baseline untouched, and it carries no `scale_out`.
         }
         let (best_combo_id, best_score, best_expectancy_sol) =
             best_combo(&gr.metrics, gr.token_count, coverage);
@@ -575,6 +625,19 @@ impl Strategy for GenericSweepStrategy {
         gr.best_expectancy_sol = best_expectancy_sol;
         Ok(())
     }
+}
+
+/// Whether one Pass-2 candidate's rescored metrics beat the current best (which
+/// starts as the combo's own Pass-1 baseline) — the one decision
+/// [`GenericSweepStrategy::post_group_rescore`] makes per (combo, candidate).
+/// Factored out as a pure fn (no corpus/observer args) so it's unit-testable
+/// without a scan: the grid-search "dynamic, per combo" behavior lives entirely
+/// in this one comparison, not in the scanning loop around it.
+fn pass2_candidate_wins(
+    candidate: &crate::sweep::aggregate::ComboMetrics,
+    current_best: &crate::sweep::aggregate::ComboMetrics,
+) -> bool {
+    crate::sweep::grouped_engine::rank_combo(candidate, current_best) == std::cmp::Ordering::Greater
 }
 
 // ───────────────────────────── decode / encode ─────────────────────────────
@@ -3247,6 +3310,74 @@ mod tests {
         let b = BoundCombo::new(&[], c);
         assert!(!b.fast_exit);
         assert_eq!(b.stage_cols.len(), 1);
+    }
+
+    // ── Pass-2 grid: dynamic per-combo winner selection ────────────────────────
+
+    /// Build one combo's [`ComboMetrics`] the same way `post_group_rescore` does
+    /// (`ComboAgg::record` + `finalize` + `rescore_for_group`), from a flat list of
+    /// realized per-trade PnL%.
+    fn metrics_from_pnls(id: u32, pnls: &[f32], group_tokens: usize) -> crate::sweep::aggregate::ComboMetrics {
+        use crate::sweep::aggregate::ComboAgg;
+        use trading_core::strategies::kernel::ExitCode;
+        let mut agg = ComboAgg::default();
+        for &p in pnls {
+            agg.record(&TokenOutcome {
+                fired: true,
+                holding_secs: 60,
+                pnl_percent: p,
+                pnl_sol: (p / 100.0) as f32,
+                exit: ExitCode::TakeProfit,
+                ..TokenOutcome::no_entry()
+            });
+        }
+        let mut m = agg.finalize(id);
+        m.rescore_for_group(group_tokens);
+        m
+    }
+
+    #[test]
+    fn pass2_keeps_the_combos_own_baseline_when_no_candidate_beats_it() {
+        // The grid is dynamic per combo: a combo whose OWN exit already wins must
+        // not be overwritten just because a candidate ladder was evaluated.
+        let baseline = metrics_from_pnls(7, &[80.0, 90.0, 70.0], 10);
+        let worse_ladder = metrics_from_pnls(7, &[-40.0, -60.0, -50.0], 10);
+        assert!(
+            !pass2_candidate_wins(&worse_ladder, &baseline),
+            "a ladder that performs worse than the combo's own exit must not win"
+        );
+    }
+
+    #[test]
+    fn pass2_adopts_a_candidate_that_beats_the_baseline() {
+        let baseline = metrics_from_pnls(7, &[-30.0, -20.0, -25.0], 10);
+        let better_ladder = metrics_from_pnls(7, &[60.0, 70.0, 65.0], 10);
+        assert!(
+            pass2_candidate_wins(&better_ladder, &baseline),
+            "a ladder that clearly outperforms the combo's own exit must win"
+        );
+    }
+
+    #[test]
+    fn pass2_picks_the_best_of_several_candidates_not_just_the_first_better_one() {
+        // Simulates the fold in `post_group_rescore`: start from baseline, keep
+        // whichever of a sequence of candidates is currently best — must end up on
+        // the GLOBAL best, not the first one that beat the running `best`.
+        let baseline = metrics_from_pnls(7, &[-10.0], 10);
+        let candidates = [
+            (0usize, metrics_from_pnls(7, &[10.0], 10)), // beats baseline
+            (1usize, metrics_from_pnls(7, &[95.0], 10)), // the actual best
+            (2usize, metrics_from_pnls(7, &[20.0], 10)), // beats baseline, not #1
+        ];
+        let mut best = baseline;
+        let mut best_variant: Option<usize> = None;
+        for (vi, m) in candidates {
+            if pass2_candidate_wins(&m, &best) {
+                best = m;
+                best_variant = Some(vi);
+            }
+        }
+        assert_eq!(best_variant, Some(1), "must adopt the single best candidate, not the first improvement");
     }
 
     #[test]

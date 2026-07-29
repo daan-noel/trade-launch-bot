@@ -622,8 +622,10 @@ pub async fn run_grouped(
     pricing: Pricing,
     // Corpus-wide volume-ix patterns for flow-metric axes (`None` = non-flow).
     volume_ix_patterns: Option<Vec<Vec<String>>>,
-    // Pass-2 fixed scale_out overlay + top_k (`None` = no Pass 2).
-    scale_out_pass2: Option<(Vec<hunter_engine::rule_params::ExitStage>, usize)>,
+    // Pass-2 candidate scale_out ladder grid + top_k (`None` = no Pass 2). Each
+    // top-K combo per group is independently re-scored against every ladder here
+    // plus its own baseline — see `GenericSweepStrategy::post_group_rescore`.
+    scale_out_pass2: Option<(Vec<Vec<hunter_engine::rule_params::ExitStage>>, usize)>,
     coarse_observer: Arc<dyn SweepObserver + Send>,
     observer: Arc<dyn SweepObserver + Send>,
     sink: Arc<dyn GroupSink + Send + Sync>,
@@ -679,7 +681,7 @@ async fn sweep_generic(
     max_combos: Option<usize>,
     pricing: Pricing,
     volume_ix_patterns: Option<Vec<Vec<String>>>,
-    scale_out_pass2: Option<(Vec<hunter_engine::rule_params::ExitStage>, usize)>,
+    scale_out_pass2: Option<(Vec<Vec<hunter_engine::rule_params::ExitStage>>, usize)>,
     coarse_observer: Arc<dyn SweepObserver + Send>,
     observer: Arc<dyn SweepObserver + Send>,
     sink: Arc<dyn GroupSink + Send + Sync>,
@@ -732,10 +734,12 @@ async fn sweep_generic(
     // a deterministic clock exit past a token's own last-trade cut still closes, matching
     // a simulate over the same tokens (parity plan Task 1). No-op on a trade-less corpus.
     strategy.set_corpus(&corpus.tokens);
-    if let Some((stages, top_k)) = scale_out_pass2 {
-        strategy.set_scale_out_pass2(stages, top_k);
+    if let Some((variants, top_k)) = scale_out_pass2 {
+        let n = variants.len();
+        strategy.set_scale_out_pass2(variants, top_k);
         observer.notice(&format!(
-            "Pass-2 scale-out overlay: re-scoring top-{top_k} combos/group under a fixed ladder"
+            "Pass-2 scale-out overlay: re-scoring top-{top_k} combos/group against {n} \
+             candidate ladder(s) + baseline, per combo"
         ));
     }
     let max_series_bytes = corpus

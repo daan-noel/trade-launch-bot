@@ -128,8 +128,13 @@ export interface GroupedSweepRunRecord {
   /** Which cost model priced the round-trips. `null` on legacy runs ⇒
    *  `pumpfun_default`, which charges slippage on top of the fill price. */
   cost_model: CostModelId | null;
-  /** Pass-2 fixed scale_out ladder (`ExitStage[]`). `null` = no overlay. */
-  scale_out: unknown[] | null;
+  /** The candidate scale-out ladder GRID searched in Pass 2 — `ExitStage[][]`,
+   *  one array per candidate ladder (not a single flat ladder). `null` = no Pass 2.
+   *  Each group's top-K combos are independently re-scored against every ladder
+   *  here plus their own baseline exit and keep whichever wins — a combo the grid
+   *  doesn't help keeps its own exit, so this field is the search space, not what
+   *  any one combo ended up with (see that combo's own `params.scale_out`). */
+  scale_out: unknown[][] | null;
   /** How many best combos/group Pass 2 re-scored. `null` when no overlay. */
   scale_out_top_k: number | null;
 }
@@ -266,8 +271,11 @@ export interface GroupedSweepStartArgs {
    *  `pumpfun_default`. Pair an explicit `fill_model` with `pumpfun_fee_only`:
    *  the fill price already prices slippage. */
   cost_model?: CostModelId;
-  /** Pass-2 fixed scale_out ladder. Omitted / empty ⇒ no Pass 2. */
-  scale_out?: unknown[];
+  /** Candidate scale-out ladder GRID for Pass 2 — `ExitStage[][]`, one array per
+   *  candidate ladder. Omitted / empty ⇒ no Pass 2. Each top-K combo per group is
+   *  re-scored against every ladder here plus its own baseline and keeps
+   *  whichever wins (dynamic, per combo — not one ladder forced on the grid). */
+  scale_out?: unknown[][];
   /** Top-K combos per group for Pass 2. Default 3. */
   scale_out_top_k?: number;
 }

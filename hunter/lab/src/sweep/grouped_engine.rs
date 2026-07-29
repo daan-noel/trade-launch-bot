@@ -96,6 +96,15 @@ pub struct GroupResult {
     /// The winning combo's expectancy per trade — kept as a secondary readout
     /// (no longer the ranking metric).
     pub best_expectancy_sol: f64,
+    /// Pass-2 winners: `combo_id -> ExitStage[]` for every combo where
+    /// [`Strategy::post_group_rescore`](crate::sweep::strategy::Strategy::post_group_rescore)
+    /// found a candidate ladder that beat that combo's OWN Pass-1 baseline. Absent
+    /// entry ⇒ either not rescored, or every candidate ladder lost to the combo's
+    /// own exit (kept as-is). Read by [`retained_combo_params`] to bake each
+    /// combo's own winning ladder directly into its persisted `params` — **not**
+    /// a run-wide ladder, since the grid search picks independently per combo.
+    /// See `docs/roadmap/scale-out-sweep-overlay-plan.md`.
+    pub scale_out_winners: HashMap<u32, serde_json::Value>,
 }
 
 /// Sink for **incremental** per-group results (Phase 4 partial persistence). The
@@ -782,7 +791,17 @@ fn retained_combo_params<S: Strategy>(
         .iter()
         .filter_map(|&id| {
             let p = params.get(id as usize)?;
-            Some((id, strategy.params_json(p)))
+            let mut v = strategy.params_json(p);
+            // Bake this combo's OWN Pass-2 winner (if any) directly into its persisted
+            // params — see `GroupResult::scale_out_winners`. Every downstream reader
+            // (drill-in, promote, the group's `best_params`) reads this one column, so
+            // there is no separate run-wide merge step anymore.
+            if let Some(ladder) = gr.scale_out_winners.get(&id) {
+                if let Value::Object(obj) = &mut v {
+                    obj.insert("scale_out".into(), ladder.clone());
+                }
+            }
+            Some((id, v))
         })
         .collect();
     out.sort_by_key(|(id, _)| *id);
@@ -826,6 +845,7 @@ fn make_group_result(
         best_combo_id,
         best_score,
         best_expectancy_sol,
+        scale_out_winners: HashMap::new(),
     }
 }
 
@@ -880,7 +900,12 @@ pub(crate) fn best_combo(
 
 /// Rank two floor-clearing combos: higher checklist `score` first (absent score
 /// sorts as worst), then more fired tokens, then higher [`marked_pnl_sol`].
-fn rank_combo(a: &ComboMetrics, b: &ComboMetrics) -> Ordering {
+///
+/// `pub(crate)` so [`Strategy::post_group_rescore`](crate::sweep::strategy::Strategy::post_group_rescore)
+/// impls can compare a Pass-2 candidate against a combo's own baseline with the
+/// exact same ordering `best_combo`/`top_combo_ids` use — a strategy re-implementing
+/// this comparison could silently drift from the ranking the rest of the sweep uses.
+pub(crate) fn rank_combo(a: &ComboMetrics, b: &ComboMetrics) -> Ordering {
     score_cmp(a.score, b.score)
         .then_with(|| a.n_fired.cmp(&b.n_fired))
         .then_with(|| pnl_cmp(a, b))
