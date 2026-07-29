@@ -93,6 +93,16 @@ pub async fn get_positions_summary_by_rule(
     .await
 }
 
+/// GET `/api/strategies/{strategy}/positions/{position_id}/fills` (lab twin) —
+/// Evidence dialog ledger over the synced mirror.
+pub async fn get_position_fills(
+    app_state: web::Data<Arc<LocalState>>,
+    path: web::Path<(String, Uuid)>,
+) -> impl Responder {
+    let (_strategy, position_id) = path.into_inner();
+    rule_positions::position_fills(&strategy_repo(&app_state), position_id).await
+}
+
 /// GET `/api/strategy-rules/{id}/runs` (lab twin) — the run navigator's chips +
 /// cross-run PnL trend over the synced run history.
 pub async fn list_rule_runs(

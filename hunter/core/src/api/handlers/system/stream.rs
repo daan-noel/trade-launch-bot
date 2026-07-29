@@ -319,6 +319,7 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
             rule_name,
             needs_review,
             sold_token_amount,
+            sold_bps,
             scale_stage,
         } => {
             // Mint-scoped: the generic engine's position transition. The client
@@ -338,6 +339,7 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
                     "rule_name": rule_name,
                     "needs_review": needs_review,
                     "sold_token_amount": sold_token_amount,
+                    "sold_bps": sold_bps,
                     "scale_stage": scale_stage,
                 }),
             )

@@ -26,7 +26,7 @@ import { exitReasonBadge, exitReasonSearchText } from 'components/strategy/strat
 import { apiErrorMessage } from 'store/apiSlice';
 import { ArmedHistoryPanel } from '@live/components/strategy/ArmedHistoryPanel';
 import { FloorBookStrip } from '@live/components/floor/FloorBookStrip';
-import { FloorPositionDetail } from '@live/components/floor/FloorPositionDetail';
+import { FloorPositionDetailWithFills } from '@live/components/floor/FloorPositionDetailWithFills';
 import { FloorMintChart } from '@live/components/floor/FloorMintChart';
 import {
   useCloseRulePositionMutation,
@@ -460,6 +460,11 @@ export function ConsolePage() {
   const statusCell = (r: LiveOpenRow) => (
     <span className="inline-flex flex-wrap items-center gap-1">
       <Badge variant={statusVariant(r.status)}>{STATUS_LABEL[r.status] ?? r.status}</Badge>
+      {r.soldBps > 0 && (
+        <Badge variant="accent" title={`Scale stage ${r.scaleStage}`}>
+          {Math.round(r.soldBps / 100)}% banked
+        </Badge>
+      )}
       {r.status === 'ExitStuck' &&
         (r.exitParked ? (
           <Badge variant="danger">PARKED</Badge>
@@ -870,7 +875,8 @@ export function ConsolePage() {
     const { mtmSol, mtmPct } = openMark(r);
     const entryMs = r.entryTime ? Date.parse(r.entryTime) : NaN;
     return (
-      <FloorPositionDetail
+      <FloorPositionDetailWithFills
+        positionId={r.positionId}
         facts={{
           mint: r.mint,
           ruleId: r.ruleId,
@@ -904,7 +910,8 @@ export function ConsolePage() {
     });
     const entryMs = r.entryTime ? Date.parse(r.entryTime) : NaN;
     return (
-      <FloorPositionDetail
+      <FloorPositionDetailWithFills
+        positionId={r.positionId}
         facts={{
           mint: r.mint,
           ruleId: r.ruleId,

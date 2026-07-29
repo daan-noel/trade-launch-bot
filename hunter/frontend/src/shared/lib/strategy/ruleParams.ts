@@ -63,6 +63,22 @@ export interface ReEntry {
   max_episodes_per_token: number;
 }
 
+/** One ordered scale-out stage (mirror of `hunter_engine::rule_params::ExitStage`).
+ *  `sell_bps: null` = remainder/`All` stage (must be last). */
+export interface ExitStage {
+  /** Basis points of the **initial** bag to sell. `null` = remainder stage. */
+  sell_bps: number | null;
+  /** Per-stage take-profit sugar (`pnl >= tp`). `null` = off. */
+  take_profit: number | null;
+  /** Authored metric conditions for this stage (exit grammar). */
+  conditions: SideConditions;
+}
+
+/** Hard caps mirroring `hunter_engine::rule_params::{MAX_EXPLICIT_SCALE_STAGES,
+ *  MAX_SCALE_SELL_BPS}` — keep in lockstep (validate.ts asserts the same). */
+export const MAX_EXPLICIT_SCALE_STAGES = 3;
+export const MAX_SCALE_SELL_BPS = 9900;
+
 /** The whole rule `params` object in form shape. */
 export interface RuleParams {
   /** Take-profit % of entry price (`100` = +100%). `null`/absent = off. */
@@ -73,6 +89,8 @@ export interface RuleParams {
   entry?: SideConditions;
   /** Exit side. `undefined`/empty ⇒ TP/SL/death only. */
   exit?: SideConditions;
+  /** Ordered partial-exit ladder. `null`/empty ⇒ legacy full close only. */
+  scale_out?: ExitStage[] | null;
   /** Re-entry lifecycle. `null`/absent ⇒ one-shot. */
   reentry?: ReEntry | null;
   /** Skip entry while ANY other rule (manual buys included) already holds this
@@ -90,6 +108,7 @@ export function emptyRuleParams(): RuleParams {
     stop_loss: null,
     entry: {},
     exit: {},
+    scale_out: null,
     reentry: null,
     exclusive: false,
     priority: 0,
@@ -106,6 +125,8 @@ export function ruleParamsToJson(p: RuleParams): Record<string, unknown> {
   if (entry) root.entry = entry;
   const exit = sideToJson(p.exit);
   if (exit) root.exit = exit;
+  const scaleOut = scaleOutToJson(p.scale_out);
+  if (scaleOut) root.scale_out = scaleOut;
   // Re-entry rides along only when fully specified (both a cooldown and an episode
   // cap) — the backend requires both keys and rejects a partial object.
   const re = p.reentry;
@@ -164,10 +185,52 @@ export function ruleParamsFromJson(json: unknown, reg: StrategyRegistry | undefi
     stop_loss: numOrNull(obj.stop_loss),
     entry: sideFromJson(obj.entry, reg) ?? {},
     exit: sideFromJson(obj.exit, reg) ?? {},
+    scale_out: scaleOutFromJson(obj.scale_out, reg),
     reentry: reentryFromJson(obj.reentry),
     exclusive: obj.exclusive === true,
     priority: typeof obj.priority === 'number' && Number.isFinite(obj.priority) ? obj.priority : 0,
   };
+}
+
+/** Empty array folds to `null` (same sentinel as backend `configured_labels`). */
+function scaleOutFromJson(
+  v: unknown,
+  reg: StrategyRegistry | undefined,
+): ExitStage[] | null {
+  if (v == null) return null;
+  if (!Array.isArray(v) || v.length === 0) return null;
+  const stages: ExitStage[] = [];
+  for (const item of v) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const o = item as Record<string, unknown>;
+    const sellRaw = o.sell_bps;
+    let sell_bps: number | null = null;
+    if (sellRaw != null && typeof sellRaw === 'number' && Number.isFinite(sellRaw)) {
+      sell_bps = sellRaw;
+    }
+    stages.push({
+      sell_bps,
+      take_profit: numOrNull(o.take_profit),
+      conditions: sideFromJson(o.conditions, reg) ?? {},
+    });
+  }
+  return stages.length > 0 ? stages : null;
+}
+
+function scaleOutToJson(stages: ExitStage[] | null | undefined): unknown[] | undefined {
+  if (!stages || stages.length === 0) return undefined;
+  const out: Record<string, unknown>[] = [];
+  for (const s of stages) {
+    const obj: Record<string, unknown> = {};
+    if (s.sell_bps != null && Number.isFinite(s.sell_bps)) obj.sell_bps = s.sell_bps;
+    if (s.take_profit != null) obj.take_profit = s.take_profit;
+    const conditions = sideToJson(s.conditions);
+    if (conditions) obj.conditions = conditions;
+    // Skip a completely blank draft stage (no bps, no TP, no conditions).
+    if (Object.keys(obj).length === 0 && s.sell_bps == null) continue;
+    out.push(obj);
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 /** Parse the wire `reentry` object → form (`null` when absent or malformed). Both

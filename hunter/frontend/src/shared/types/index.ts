@@ -224,6 +224,8 @@ export interface RulePositionRecord extends TokenEnrichmentFields {
   exit_sol_total?: number;
   /** Next scale-out stage index (`0` = pre-first / legacy). */
   scale_stage?: number;
+  /** Sold fraction of the initial bag in bps. */
+  sold_bps?: number;
   exit_time: string | null;
   exit_tx: string | null;
   pnl_percent: number | null;
@@ -707,6 +709,14 @@ export interface OpenStrategyPosition {
   entry_price?: number | null;
   entry_sol?: number | null;
   entry_time?: string | null;
+  /** Raw token units at entry (for sold_bps when SSE omits it). */
+  entry_token_amount?: number | null;
+  /** Running sum of confirmed sell-leg raw token units (scale-out). */
+  sold_token_amount?: number;
+  /** Sold fraction of the initial bag in bps. */
+  sold_bps?: number;
+  /** Next scale-out stage index. */
+  scale_stage?: number;
   /** `bot` | `manual` — who opened the position. */
   origin?: string;
   /** Backend-derived B3 flag: stale unresolved BuySubmitted, needs Verify. */
@@ -714,6 +724,20 @@ export interface OpenStrategyPosition {
   /** ExitStuck redrive state (mig 0012). */
   exit_parked?: boolean;
   exit_redrive_count?: number;
+}
+
+/** One `position_fills` ledger row (`GET …/positions/{id}/fills`). */
+export interface PositionFill {
+  position_id: string;
+  seq: number;
+  side: 'buy' | 'sell' | string;
+  price: number;
+  sol_lamports: number;
+  token_amount: number;
+  at: string;
+  reason?: string | null;
+  stage?: number | null;
+  tx_signature?: string | null;
 }
 
 /** Closed row from `GET /api/portfolio/recent-closes` (Floor Recent hydrate). */

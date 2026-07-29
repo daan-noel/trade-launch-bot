@@ -128,6 +128,11 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/{strategy}/positions/{position_id}/manual-exit",
                 web::post().to(handlers::strategies::positions::set_manual_exit),
             )
+            // Fill ledger (entry + sell legs) — more specific than bare `{position_id}`.
+            .route(
+                "/strategies/{strategy}/positions/{position_id}/fills",
+                web::get().to(handlers::strategies::positions::get_position_fills),
+            )
             // Console manual buy → a full tracked position (202 {position_id};
             // progress over SSE like a bot buy). Replaces the sync wallet buy.
             .route(

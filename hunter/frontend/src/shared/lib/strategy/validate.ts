@@ -5,7 +5,15 @@
 // the authority; this is a fast-feedback pre-check.
 
 import { normalizeConditionExpr, type Condition, type ConditionExpr } from './grammar';
-import { sideInstances, type RuleParams, type SideConditions, type GroupConditions } from './ruleParams';
+import {
+  MAX_EXPLICIT_SCALE_STAGES,
+  MAX_SCALE_SELL_BPS,
+  sideInstances,
+  type ExitStage,
+  type RuleParams,
+  type SideConditions,
+  type GroupConditions,
+} from './ruleParams';
 import { findGroup, findMetric, type StrategyRegistry } from './registry';
 
 /** Validate a draft against the registry. Returns human-readable error strings
@@ -22,6 +30,7 @@ export function validateRuleParams(p: RuleParams, reg: StrategyRegistry | undefi
   }
   validateSide('entry', p.entry, reg, errors);
   validateSide('exit', p.exit, reg, errors);
+  validateScaleOut(p.scale_out, reg, errors);
   validateReentry(p.reentry, errors);
   // Mirror of the backend `parse_opt_priority`.
   if (!Number.isInteger(p.priority)) errors.push('priority must be an integer');
@@ -95,8 +104,61 @@ function validateReentry(re: RuleParams['reentry'], errors: string[]): void {
   }
 }
 
+/** Mirror of backend `validate_scale_out`. */
+function validateScaleOut(
+  stages: ExitStage[] | null | undefined,
+  reg: StrategyRegistry | undefined,
+  errors: string[],
+): void {
+  if (!stages || stages.length === 0) return;
+  let explicit = 0;
+  let sumBps = 0;
+  for (let i = 0; i < stages.length; i++) {
+    const stage = stages[i];
+    const prefix = `scale_out[${i}]`;
+    if (stage.sell_bps == null) {
+      if (i + 1 !== stages.length) {
+        errors.push(`${prefix}: remainder stage (sell_bps omitted) must be last`);
+      }
+    } else {
+      if (i > 0 && stages[i - 1].sell_bps == null) {
+        errors.push(`${prefix}: remainder stage (sell_bps omitted) must be last`);
+      }
+      if (
+        !Number.isInteger(stage.sell_bps) ||
+        stage.sell_bps < 1 ||
+        stage.sell_bps > MAX_SCALE_SELL_BPS
+      ) {
+        errors.push(`${prefix}.sell_bps must be an integer in [1, ${MAX_SCALE_SELL_BPS}]`);
+      } else {
+        explicit += 1;
+        sumBps += stage.sell_bps;
+      }
+    }
+    if (stage.take_profit != null && (!Number.isFinite(stage.take_profit) || stage.take_profit <= 0)) {
+      errors.push(`${prefix}.take_profit must be a finite number > 0`);
+    }
+    const hasConds = sideInstances(stage.conditions).some(([, g]) => groupHasConstraint(g));
+    if (stage.take_profit == null && !hasConds) {
+      errors.push(`${prefix}: stage needs take_profit and/or non-empty conditions`);
+    }
+    // Stages are exit-like — reuse the side validator under a prefixed path.
+    validateSide(`${prefix}.conditions`, stage.conditions, reg, errors);
+  }
+  if (explicit > MAX_EXPLICIT_SCALE_STAGES) {
+    errors.push(
+      `scale_out: at most ${MAX_EXPLICIT_SCALE_STAGES} explicit stages (+ optional remainder); got ${explicit}`,
+    );
+  }
+  if (sumBps > MAX_SCALE_SELL_BPS) {
+    errors.push(
+      `scale_out: sum of explicit sell_bps must be <= ${MAX_SCALE_SELL_BPS} (got ${sumBps}) — a remainder must exist for the stub`,
+    );
+  }
+}
+
 function validateSide(
-  side: 'entry' | 'exit',
+  side: 'entry' | 'exit' | string,
   conds: SideConditions | undefined,
   reg: StrategyRegistry | undefined,
   errors: string[],

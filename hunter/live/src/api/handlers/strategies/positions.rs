@@ -203,6 +203,18 @@ pub async fn get_position(
     }
 }
 
+/// GET /api/strategies/{strategy}/positions/{position_id}/fills
+///
+/// Append-only fill ledger (entry + every sell leg) for the Console / Evidence
+/// dialog. Thin adapter over the shared core read.
+pub async fn get_position_fills(
+    app_state: web::Data<Arc<DeployState>>,
+    path: web::Path<(String, Uuid)>,
+) -> impl Responder {
+    let (_strategy, position_id) = path.into_inner();
+    rule_positions::position_fills(repo(&app_state), position_id).await
+}
+
 /// `?action=` selector for [`close_position`]. Legality matrix (backend-enforced;
 /// status alone determines what is legal — the UI renders, never infers):
 ///

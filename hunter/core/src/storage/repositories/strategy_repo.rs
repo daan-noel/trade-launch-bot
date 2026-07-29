@@ -2835,6 +2835,49 @@ impl StrategyRepo {
         .await?;
         Ok(rows.into_iter().map(|(m,)| m).collect())
     }
+
+    /// Append-only fill ledger for one position (entry + every sell leg), ordered
+    /// by `seq`. Empty when the position predates mig 0018 or has no fills yet.
+    pub async fn list_position_fills(
+        &self,
+        position_id: Uuid,
+    ) -> anyhow::Result<Vec<crate::models::PositionFill>> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            position_id: Uuid,
+            seq: i32,
+            side: String,
+            price: f64,
+            sol_lamports: i64,
+            token_amount: i64,
+            at: DateTime<Utc>,
+            reason: Option<String>,
+            stage: Option<i16>,
+            tx_signature: Option<String>,
+        }
+        let rows = sqlx::query_as::<_, Row>(
+            "SELECT position_id, seq, side, price, sol_lamports, token_amount, at, reason, stage, tx_signature \
+             FROM position_fills WHERE position_id = $1 ORDER BY seq ASC",
+        )
+        .bind(position_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| crate::models::PositionFill {
+                position_id: r.position_id,
+                seq: r.seq,
+                side: r.side,
+                price: r.price,
+                sol_lamports: r.sol_lamports,
+                token_amount: r.token_amount.max(0) as u64,
+                at: r.at,
+                reason: r.reason,
+                stage: r.stage,
+                tx_signature: r.tx_signature,
+            })
+            .collect())
+    }
 }
 
 /// Append one row to `position_fills` inside an open transaction. `seq` is

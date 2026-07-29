@@ -169,3 +169,35 @@ describe('multi-window per group (the array-form round-trip)', () => {
     expect(ruleParamsJsonEqual(ruleParamsToJson(form), json)).toBe(true);
   });
 });
+
+describe('scale_out round-trip', () => {
+  it('carries stages through toJson → fromJson unchanged', () => {
+    const json = {
+      scale_out: [
+        { sell_bps: 7000, take_profit: 50 },
+        {
+          sell_bps: 2000,
+          conditions: {
+            m_price_window: {
+              window_size_sec: 10,
+              trail: [{ operator: '>=', value: 8 }],
+            },
+          },
+        },
+        { take_profit: 10 },
+      ],
+    };
+    const form = ruleParamsFromJson(json, REG);
+    expect(form.scale_out).toHaveLength(3);
+    expect(form.scale_out![0]).toMatchObject({ sell_bps: 7000, take_profit: 50 });
+    expect(form.scale_out![1].sell_bps).toBe(2000);
+    expect(form.scale_out![2].sell_bps).toBeNull();
+    expect(form.scale_out![2].take_profit).toBe(10);
+    expect(ruleParamsJsonEqual(ruleParamsToJson(form), json)).toBe(true);
+  });
+
+  it('folds empty scale_out to null (configured_labels sentinel)', () => {
+    expect(ruleParamsFromJson({ scale_out: [] }, undefined).scale_out).toBeNull();
+    expect('scale_out' in ruleParamsToJson(emptyRuleParams())).toBe(false);
+  });
+});

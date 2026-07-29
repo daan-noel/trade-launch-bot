@@ -17,6 +17,11 @@ interface RuleParamsJson {
   stop_loss?: number | null;
   entry?: Record<string, unknown>;
   exit?: Record<string, unknown>;
+  scale_out?: Array<{
+    sell_bps?: number | null;
+    take_profit?: number | null;
+    conditions?: Record<string, unknown>;
+  }> | null;
   reentry?: { cooldown_sec?: number; max_episodes_per_token?: number } | null;
   exclusive?: boolean;
   priority?: number;
@@ -85,6 +90,7 @@ function parseParams(raw: unknown): {
   stop_loss: number | null;
   entry: SideChip[];
   exit: SideChip[];
+  scale_out: Array<{ sellPct: number | null; take_profit: number | null; conds: SideChip[] }>;
   reentry: { cooldown_sec: number; max_episodes_per_token: number } | null;
   exclusive: boolean;
   priority: number;
@@ -95,11 +101,20 @@ function parseParams(raw: unknown): {
     re && typeof re.cooldown_sec === 'number' && typeof re.max_episodes_per_token === 'number'
       ? { cooldown_sec: re.cooldown_sec, max_episodes_per_token: re.max_episodes_per_token }
       : null;
+  const scale_out = Array.isArray(p.scale_out)
+    ? p.scale_out.map((s) => ({
+        sellPct:
+          typeof s.sell_bps === 'number' && Number.isFinite(s.sell_bps) ? s.sell_bps / 100 : null,
+        take_profit: typeof s.take_profit === 'number' ? s.take_profit : null,
+        conds: sideChips(s.conditions),
+      }))
+    : [];
   return {
     take_profit: typeof p.take_profit === 'number' ? p.take_profit : null,
     stop_loss: typeof p.stop_loss === 'number' ? p.stop_loss : null,
     entry: sideChips(p.entry),
     exit: sideChips(p.exit),
+    scale_out,
     reentry,
     exclusive: p.exclusive === true,
     priority: typeof p.priority === 'number' ? p.priority : 0,
@@ -183,10 +198,12 @@ function SideBlock({
  *  Metric conditions stack one row per metric group; side label on the first
  *  row only so later groups stay indented under it. */
 export function ruleParamsCell(raw: unknown): ReactNode {
-  const { take_profit, stop_loss, entry, exit, reentry, exclusive, priority } = parseParams(raw);
+  const { take_profit, stop_loss, entry, exit, scale_out, reentry, exclusive, priority } =
+    parseParams(raw);
   const hasTpsl = take_profit != null || stop_loss != null;
   const hasFlags = reentry != null || exclusive;
-  const empty = !hasTpsl && !hasFlags && entry.length === 0 && exit.length === 0;
+  const hasScale = scale_out.length > 0;
+  const empty = !hasTpsl && !hasFlags && !hasScale && entry.length === 0 && exit.length === 0;
   return (
     <div className="flex flex-col items-start gap-1 text-left">
       {hasTpsl && (
@@ -205,6 +222,21 @@ export function ruleParamsCell(raw: unknown): ReactNode {
           {exclusive && chip(`Exclusive P${priority}`, 'text-warning')}
         </div>
       )}
+      {hasScale && (
+        <div className="flex flex-wrap items-center gap-1">
+          {scale_out.map((s, i) => {
+            const pct =
+              s.sellPct != null ? `${formatDecimalTrim(s.sellPct, 0)}%` : 'rem';
+            const tp =
+              s.take_profit != null ? `@TP${formatDecimalTrim(s.take_profit, 0)}` : '';
+            return (
+              <Fragment key={`scale-${i}`}>
+                {chip(`Scale ${pct}${tp}`, 'text-accent')}
+              </Fragment>
+            );
+          })}
+        </div>
+      )}
       <SideBlock side="in" chips={entry} labelCls="text-accent/70" />
       <SideBlock side="out" chips={exit} labelCls="text-warning/70" />
       {empty && chip('fingerprint only', 'text-text-dim')}
@@ -214,7 +246,8 @@ export function ruleParamsCell(raw: unknown): ReactNode {
 
 /** Flat searchable text for table filters (metric names, ops, TP/SL). */
 export function ruleParamsSearchText(raw: unknown): string {
-  const { take_profit, stop_loss, entry, exit, reentry, exclusive, priority } = parseParams(raw);
+  const { take_profit, stop_loss, entry, exit, scale_out, reentry, exclusive, priority } =
+    parseParams(raw);
   const parts: string[] = [];
   if (take_profit != null) parts.push(`TP ${formatDecimalTrim(take_profit, 1)}%`);
   if (stop_loss != null) parts.push(`SL ${formatDecimalTrim(stop_loss, 1)}%`);
@@ -222,6 +255,10 @@ export function ruleParamsSearchText(raw: unknown): string {
     parts.push(`Re-entry ${formatDecimalTrim(reentry.cooldown_sec, 1)}s/${reentry.max_episodes_per_token}`);
   }
   if (exclusive) parts.push(`Exclusive P${priority}`);
+  for (const s of scale_out) {
+    const pct = s.sellPct != null ? `${formatDecimalTrim(s.sellPct, 0)}%` : 'rem';
+    parts.push(`Scale ${pct}`);
+  }
   for (const c of entry) {
     if (c.orBefore) parts.push('|');
     parts.push(`in ${c.text}`);

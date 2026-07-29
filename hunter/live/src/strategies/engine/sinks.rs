@@ -768,6 +768,19 @@ impl Sink {
             });
         // Mid-ladder banked fraction for the FE chip (phase 5); omitted when zero.
         let sold_token_amount = (meta.sold_token_amount > 0).then_some(meta.sold_token_amount);
+        let sold_bps = if meta.sold_token_amount > 0 {
+            let entry = meta.entry_token_amount.unwrap_or(0);
+            if entry == 0 {
+                None
+            } else {
+                Some(
+                    ((u128::from(meta.sold_token_amount) * 10_000) / u128::from(entry)).min(10_000)
+                        as u16,
+                )
+            }
+        } else {
+            None
+        };
         let scale_stage = (meta.scale_stage > 0 || meta.sold_token_amount > 0)
             .then_some(meta.scale_stage);
         let _ = self.sse_tx.send(SseEvent::StrategyPositionUpdate {
@@ -782,6 +795,7 @@ impl Sink {
             rule_name,
             needs_review: None,
             sold_token_amount,
+            sold_bps,
             scale_stage,
         });
     }

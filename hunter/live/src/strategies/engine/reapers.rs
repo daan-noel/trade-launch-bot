@@ -380,6 +380,7 @@ async fn redrive_orphaned_buy_submitted(
                         rule_name: None,
                         needs_review: Some(true),
                         sold_token_amount: None,
+                        sold_bps: None,
                         scale_stage: None,
                     });
                     stuck_rpc_skip.insert(position.id, STUCK_RPC_SKIP_TICKS);

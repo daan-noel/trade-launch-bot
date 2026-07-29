@@ -39,6 +39,10 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/{strategy}/rules/{rule_id}/positions",
                 web::post().to(handlers::strategies::live_positions::get_positions_by_rule),
             )
+            .route(
+                "/strategies/{strategy}/positions/{position_id}/fills",
+                web::get().to(handlers::strategies::live_positions::get_position_fills),
+            )
             // Redesign: time-travel debugger — replay a recorded event log through
             // the engine and dump every event→effect decision (plan 6.1)
             .route(

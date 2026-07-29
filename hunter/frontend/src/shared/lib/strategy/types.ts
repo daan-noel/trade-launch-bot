@@ -312,6 +312,8 @@ export interface StrategyPositionUpdateEvent {
   needs_review?: boolean | null;
   /** Confirmed sell-leg raw token units so far (scale-out). Omitted when zero. */
   sold_token_amount?: number | null;
+  /** Sold fraction of the initial bag in bps. Omitted when zero. */
+  sold_bps?: number | null;
   /** Next scale-out stage index. Omitted when unset / legacy. */
   scale_stage?: number | null;
 }

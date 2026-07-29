@@ -22,6 +22,12 @@ import {
 import { validateRuleParams } from 'lib/strategy/validate';
 import { solToLamports, lamportsToSol, type StrategyRule, type TradeMode } from 'lib/strategy/types';
 import { ConditionBuilder } from './ConditionBuilder';
+import {
+  draftsToStages,
+  stagesToDrafts,
+  ScaleOutBuilder,
+  type ScaleStageDraft,
+} from './ScaleOutBuilder';
 import { FingerprintPicker } from './FingerprintPicker';
 import { LabelTip } from './LabelTip';
 import { RULE_FIELD_HELP } from 'lib/strategy/strategyHelp';
@@ -79,9 +85,8 @@ function RuleEditorInner({
   const [maxTotal, setMaxTotal] = useState<number | null>(initial?.max_total_tokens ?? 0);
   const [fingerprintId, setFingerprintId] = useState<string | null>(initial?.fingerprint_id ?? null);
 
-  // `params` carries only TP/SL/re-entry; the entry/exit conditions live in `rows`
-  // (the row builder's source of truth) and are folded back into a `SideConditions`
-  // at compose time. Seeded from one parse of the initial rule.
+  // `params` carries TP/SL/re-entry/flags; entry/exit conditions live in `rows`
+  // and scale-out stages in `scaleStages` — both folded back at compose time.
   const [params, setParams] = useState<RuleParams>(() =>
     initial ? ruleParamsFromJson(initial.params, registry) : emptyRuleParams(),
   );
@@ -89,7 +94,11 @@ function RuleEditorInner({
     const p = initial ? ruleParamsFromJson(initial.params, registry) : emptyRuleParams();
     return sidesToRows(p.entry, p.exit);
   });
-  // The full rule params = TP/SL/re-entry + the conditions folded from the rows.
+  const [scaleStages, setScaleStages] = useState<ScaleStageDraft[]>(() => {
+    const p = initial ? ruleParamsFromJson(initial.params, registry) : emptyRuleParams();
+    return stagesToDrafts(p.scale_out);
+  });
+  // The full rule params = TP/SL/re-entry + conditions + scale-out.
   const composedParams: RuleParams = useMemo(
     () => ({
       take_profit: params.take_profit,
@@ -98,8 +107,17 @@ function RuleEditorInner({
       exclusive: params.exclusive,
       priority: params.priority,
       ...rowsToSides(rows),
+      scale_out: draftsToStages(scaleStages),
     }),
-    [params.take_profit, params.stop_loss, params.reentry, params.exclusive, params.priority, rows],
+    [
+      params.take_profit,
+      params.stop_loss,
+      params.reentry,
+      params.exclusive,
+      params.priority,
+      rows,
+      scaleStages,
+    ],
   );
   const [tab, setTab] = useState<'builder' | 'json'>('builder');
   const [jsonText, setJsonText] = useState(() =>
@@ -152,8 +170,8 @@ function RuleEditorInner({
     }));
   const finiteOrNull = (v: number | undefined) => (v != null && Number.isFinite(v) ? v : null);
 
-  // When editing the JSON tab, fold it back into both the TP/SL/re-entry state and
-  // the condition rows so the builder stays in sync.
+  // When editing the JSON tab, fold it back into TP/SL/re-entry, condition rows,
+  // and scale-out stages so the builder stays in sync.
   const syncFromJson = (text: string) => {
     setJsonText(text);
     try {
@@ -167,6 +185,7 @@ function RuleEditorInner({
         priority: parsed.priority,
       }));
       setRows(sidesToRows(parsed.entry, parsed.exit));
+      setScaleStages(stagesToDrafts(parsed.scale_out));
       setJsonError(null);
     } catch (e) {
       setJsonError(e instanceof Error ? e.message : 'invalid JSON');
@@ -395,12 +414,20 @@ function RuleEditorInner({
           <TabsTrigger value="json">JSON</TabsTrigger>
         </TabsList>
         <TabsPanel value="builder">
-          <ConditionBuilder
-            rows={rows}
-            onChange={setRows}
-            registry={registry}
-            disabled={conditionsLocked}
-          />
+          <div className="flex flex-col gap-3">
+            <ConditionBuilder
+              rows={rows}
+              onChange={setRows}
+              registry={registry}
+              disabled={conditionsLocked}
+            />
+            <ScaleOutBuilder
+              stages={scaleStages}
+              onChange={setScaleStages}
+              registry={registry}
+              disabled={conditionsLocked}
+            />
+          </div>
         </TabsPanel>
         <TabsPanel value="json">
           <textarea

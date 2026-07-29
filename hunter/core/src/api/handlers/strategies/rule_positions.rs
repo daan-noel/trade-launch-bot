@@ -76,6 +76,14 @@ pub struct PositionResponse {
     pub entry_token_amount: Option<u64>,
     /// Raw token units (exact integer; the frontend scales for display).
     pub exit_token_amount: Option<u64>,
+    /// Running sum of confirmed sell-leg raw token units (scale-out; mig 0018).
+    pub sold_token_amount: u64,
+    /// Running sum of confirmed sell-leg SOL (human); from `exit_sol_lamports_total`.
+    pub exit_sol_total: f64,
+    /// Next scale-out stage index (`0` = pre-first / legacy).
+    pub scale_stage: u8,
+    /// Sold fraction of the initial bag in bps (`sold * 10_000 / entry`).
+    pub sold_bps: u16,
     pub pnl_percent: Option<f64>,
     /// Realized SOL PnL (`StrategyPosition::realized_pnl_sol`) — the canonical
     /// win/loss basis mirroring `positions_summary`/`is_win`.
@@ -121,6 +129,7 @@ impl From<StrategyPosition> for PositionResponse {
     fn from(p: StrategyPosition) -> Self {
         let pnl_percent = p.pnl_pct();
         let pnl_sol = p.realized_pnl_sol();
+        let sold_bps = p.sold_bps();
         let entry_sigs = p.entry_tx_sigs();
         let exit_sigs = p.exit_tx_sigs();
         Self {
@@ -143,6 +152,10 @@ impl From<StrategyPosition> for PositionResponse {
             rule_id: p.rule_id,
             entry_token_amount: p.entry_token_amount,
             exit_token_amount: p.exit_token_amount,
+            sold_token_amount: p.sold_token_amount,
+            exit_sol_total: p.exit_sol_total,
+            scale_stage: p.scale_stage,
+            sold_bps,
             pnl_percent,
             pnl_sol,
             entry_time: p.entry_time,
@@ -580,5 +593,22 @@ pub async fn rule_runs(
     match strategy_repo.list_runs_with_metrics(rule_id, &rule.trade_mode).await {
         Ok(rows) => HttpResponse::Ok().json(rows),
         Err(e) => list_error("list rule runs", e),
+    }
+}
+
+/// `GET /strategies/{strategy}/positions/{position_id}/fills` — append-only
+/// fill ledger for one episode (entry + every sell leg). Both bins serve this
+/// so Console (live) and Evidence (lab mirror) share one wire shape.
+pub async fn position_fills(strategy_repo: &StrategyRepo, position_id: Uuid) -> HttpResponse {
+    match strategy_repo.find_position(position_id).await {
+        Ok(None) => {
+            return HttpResponse::NotFound().json(serde_json::json!({"error": "Position not found"}))
+        }
+        Err(e) => return list_error("load position", e),
+        Ok(Some(_)) => {}
+    }
+    match strategy_repo.list_position_fills(position_id).await {
+        Ok(fills) => HttpResponse::Ok().json(fills),
+        Err(e) => list_error("list position fills", e),
     }
 }

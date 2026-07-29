@@ -65,6 +65,10 @@ export interface LiveOpenRow {
   /** ExitStuck redrive state (snapshot-sourced). */
   exitParked: boolean;
   exitRedriveCount: number;
+  /** Sold fraction of the initial bag in bps (0 = none / legacy). */
+  soldBps: number;
+  /** Next scale-out stage index. */
+  scaleStage: number;
   updatedAt: number;
 }
 
@@ -113,6 +117,17 @@ function openFromPortfolio(
 ): LiveOpenRow | null {
   if (!OPEN_STATUSES.has(p.status)) return null;
   const ruleId = p.rule_id;
+  let soldBps = p.sold_bps ?? 0;
+  if (
+    soldBps === 0 &&
+    (p.sold_token_amount ?? 0) > 0 &&
+    (p.entry_token_amount ?? 0) > 0
+  ) {
+    soldBps = Math.min(
+      10_000,
+      Math.floor(((p.sold_token_amount ?? 0) * 10_000) / (p.entry_token_amount ?? 1)),
+    );
+  }
   return {
     positionId: p.id,
     strategyId: p.strategy_id,
@@ -129,6 +144,8 @@ function openFromPortfolio(
     origin: p.origin ?? 'bot',
     exitParked: p.exit_parked ?? false,
     exitRedriveCount: p.exit_redrive_count ?? 0,
+    soldBps,
+    scaleStage: p.scale_stage ?? 0,
     updatedAt: Date.now(),
   };
 }
@@ -292,6 +309,8 @@ const liveStatusSlice = createSlice({
           origin: prev?.origin ?? 'bot',
           exitParked: prev?.exitParked ?? false,
           exitRedriveCount: prev?.exitRedriveCount ?? 0,
+          soldBps: d.sold_bps ?? prev?.soldBps ?? 0,
+          scaleStage: d.scale_stage ?? prev?.scaleStage ?? 0,
           updatedAt: now,
         };
         // Entered a position → drop matching armed waiting row.

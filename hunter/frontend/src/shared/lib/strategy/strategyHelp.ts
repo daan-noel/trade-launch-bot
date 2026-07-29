@@ -597,6 +597,22 @@ export const RULE_FIELD_HELP = {
       'Prefer this field over writing pnl >= … in the exit metrics.',
     ].join('\n'),
   },
+  scaleOut: {
+    title: 'Scale-out (tranched exit)',
+    body: [
+      'Ordered partial exits: each stage sells a % of the INITIAL bag when its',
+      'conditions (or stage TP) fire, then advances. Global exit / SL still close',
+      '100% of whatever remains — catastrophe path is unchanged.',
+      '',
+      'Sell % is of the initial bag (not the remainder). Blank sell % = remainder',
+      'stage (must be last): closes the stub under its own conditions (e.g. a',
+      'tighter trail or a pure time-stop). At most 3 partial stages + optional',
+      'remainder; sum of partials ≤ 99%.',
+      '',
+      'After the last partial, the position keeps the global exit side unless a',
+      'remainder stage is authored.',
+    ].join('\n'),
+  },
   stopLoss: {
     title: 'Stop loss (%)',
     body: [
@@ -612,7 +628,7 @@ export const RULE_FIELD_HELP = {
   paramsJson: {
     title: 'Params JSON',
     body: [
-      'Raw strategy params: take_profit, stop_loss, entry{…}, exit{…}, reentry{…}.',
+      'Raw strategy params: take_profit, stop_loss, entry{…}, exit{…}, scale_out[…], reentry{…}.',
       '',
       'Each metric is a list of {operator, value} (one AND arm) or a nested list of arms for OR.',
       'Example liquidity outside band: [[{"operator":"<","value":30}],[{"operator":">=","value":70}]].',

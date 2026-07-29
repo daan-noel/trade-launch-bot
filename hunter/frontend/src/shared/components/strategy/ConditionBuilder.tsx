@@ -35,15 +35,31 @@ export interface ConditionBuilderProps {
   onChange: (rows: RuleConditionRow[]) => void;
   registry: StrategyRegistry;
   disabled?: boolean;
+  /** Which side columns to show. Default both. Scale-out stages use `['exit']`. */
+  sides?: RuleConditionSide[];
+  /** Allow the ⇄ flip between columns. Default true when both sides are shown. */
+  allowFlip?: boolean;
+  /** Optional column title override (e.g. exit → "conditions"). */
+  sideTitles?: Partial<Record<RuleConditionSide, string>>;
 }
 
 /**
  * The two-column (entry · exit) condition builder. Add a condition per column,
  * pick group → metric → window → grammar; the `⇄` flips a row to the other side.
+ * Pass `sides={['exit']}` for a single exit-only column (scale-out stages).
  */
-export function ConditionBuilder({ rows, onChange, registry, disabled }: ConditionBuilderProps) {
+export function ConditionBuilder({
+  rows,
+  onChange,
+  registry,
+  disabled,
+  sides = ['entry', 'exit'],
+  allowFlip,
+  sideTitles,
+}: ConditionBuilderProps) {
   const dupErr = duplicateConditionRowError(rows);
   const armErr = armAbovePctOrphanError(rows);
+  const canFlip = allowFlip ?? sides.length > 1;
 
   const setRow = (id: string, patch: Partial<RuleConditionRow>) =>
     onChange(rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -56,16 +72,21 @@ export function ConditionBuilder({ rows, onChange, registry, disabled }: Conditi
       ),
     );
 
+  const gridCls =
+    sides.length === 1 ? 'grid grid-cols-1 gap-2' : 'grid grid-cols-1 gap-2 md:grid-cols-2';
+
   return (
     <div className="flex flex-col gap-2">
-      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-        {(['entry', 'exit'] as RuleConditionSide[]).map((side) => (
+      <div className={gridCls}>
+        {sides.map((side) => (
           <ConditionColumn
             key={side}
             side={side}
+            title={sideTitles?.[side]}
             rows={rows.filter((r) => r.side === side)}
             registry={registry}
             disabled={disabled}
+            allowFlip={canFlip}
             onAdd={() => addRow(side)}
             onPatch={setRow}
             onRemove={removeRow}
@@ -81,28 +102,33 @@ export function ConditionBuilder({ rows, onChange, registry, disabled }: Conditi
 
 function ConditionColumn({
   side,
+  title,
   rows,
   registry,
   disabled,
+  allowFlip,
   onAdd,
   onPatch,
   onRemove,
   onFlip,
 }: {
   side: RuleConditionSide;
+  title?: string;
   rows: RuleConditionRow[];
   registry: StrategyRegistry;
   disabled?: boolean;
+  allowFlip: boolean;
   onAdd: () => void;
   onPatch: (id: string, patch: Partial<RuleConditionRow>) => void;
   onRemove: (id: string) => void;
   onFlip: (id: string) => void;
 }) {
+  const label = title ?? side;
   return (
     <div className="flex flex-col gap-1.5 rounded-md border border-white/10 bg-white/2 p-2">
       <div className="flex items-center justify-between gap-1.5">
         <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-text-dim/70">
-          {side}
+          {label}
           <InfoTooltip title={SIDE_HELP[side].title} body={SIDE_HELP[side].body} />
         </span>
         <IconButton
@@ -119,7 +145,7 @@ function ConditionColumn({
 
       {rows.length === 0 ? (
         <div className="rounded border border-dashed border-white/10 px-2 py-3 text-center text-[11px] text-text-dim/50">
-          No {side} conditions — + to add one
+          No {label} conditions — + to add one
         </div>
       ) : (
         <div className="flex flex-col gap-1.5">
@@ -129,6 +155,7 @@ function ConditionColumn({
               row={row}
               registry={registry}
               disabled={disabled}
+              allowFlip={allowFlip}
               onPatch={(patch) => onPatch(row.id, patch)}
               onRemove={() => onRemove(row.id)}
               onFlip={() => onFlip(row.id)}
@@ -144,6 +171,7 @@ function ConditionRow({
   row,
   registry,
   disabled,
+  allowFlip,
   onPatch,
   onRemove,
   onFlip,
@@ -151,6 +179,7 @@ function ConditionRow({
   row: RuleConditionRow;
   registry: StrategyRegistry;
   disabled?: boolean;
+  allowFlip: boolean;
   onPatch: (patch: Partial<RuleConditionRow>) => void;
   onRemove: () => void;
   onFlip: () => void;
@@ -301,16 +330,18 @@ function ConditionRow({
       </Cell>
 
       <div className="ml-auto flex shrink-0 items-center gap-0.5">
-        <button
-          type="button"
-          onClick={onFlip}
-          disabled={disabled}
-          title={`Move to ${row.side === 'entry' ? 'exit' : 'entry'}`}
-          aria-label="Flip side"
-          className="px-1 text-text-dim/60 transition-colors hover:text-text disabled:opacity-40"
-        >
-          ⇄
-        </button>
+        {allowFlip && (
+          <button
+            type="button"
+            onClick={onFlip}
+            disabled={disabled}
+            title={`Move to ${row.side === 'entry' ? 'exit' : 'entry'}`}
+            aria-label="Flip side"
+            className="px-1 text-text-dim/60 transition-colors hover:text-text disabled:opacity-40"
+          >
+            ⇄
+          </button>
+        )}
         <button
           type="button"
           onClick={onRemove}

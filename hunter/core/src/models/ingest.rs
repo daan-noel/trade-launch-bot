@@ -227,6 +227,9 @@ pub enum SseEvent {
         /// / legacy. FE chip: banked fraction of the initial bag.
         #[serde(skip_serializing_if = "Option::is_none", default)]
         sold_token_amount: Option<u64>,
+        /// Sold fraction of the initial bag in bps. `None` when zero / legacy.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        sold_bps: Option<u16>,
         /// Next scale-out stage index after this update. `None` when unset / legacy.
         #[serde(skip_serializing_if = "Option::is_none", default)]
         scale_stage: Option<u8>,

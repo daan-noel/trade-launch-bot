@@ -19,7 +19,7 @@ pub use portfolio::{unrealized_pnl, ManagedMint, UnrealizedPnl};
 pub use raw_tx::RawTx;
 pub use fingerprint::Fingerprint;
 pub use strategy::{
-    PositionsSummary, StrategyPosition, StrategyRule, StrategyRun, StrategyRunMetrics,
+    PositionFill, PositionsSummary, StrategyPosition, StrategyRule, StrategyRun, StrategyRunMetrics,
 };
 pub use token::Token;
 pub use token_sync_state::TokenSyncState;

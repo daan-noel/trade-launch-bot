@@ -253,9 +253,11 @@ next load (no per-metric frontend work).
 - `lib/strategy/grammar.ts` — the condition grammar (`">10, <=30"` → `{operator,value}`
   list; `1..10` → `>=1 AND <=10`), wrapping the shared compound `numericFilter` parser.
 - `lib/strategy/ruleParams.ts` — the ONE generic `params` JSONB ⇄ form serializer
-  (registry-guided strict/metric split); `validate.ts` mirrors backend §5 validation.
+  (registry-guided strict/metric split; includes `scale_out: ExitStage[]`);
+  `validate.ts` mirrors backend §5 validation (incl. scale-out caps).
 - `components/strategy/` — `ConditionInput` (grammar input + chips + red-underline),
-  `ConditionSideEditor` (entry/exit column), `RuleEditor` (builder + JSON tab + a
+  `ConditionBuilder` (entry/exit columns; exit-only mode for scale-out stages),
+  `ScaleOutBuilder` (ordered partial-exit ladder), `RuleEditor` (builder + JSON tab + a
   `renderDryRun` slot; edit mode locks `trade_mode` behind a padlock unlock),
   `FingerprintPicker`/`FingerprintForm` (registry-driven
   `metric_config` section + `VolumeIxPatternsEditor` for `m_flow_split.volume_ix_patterns`),

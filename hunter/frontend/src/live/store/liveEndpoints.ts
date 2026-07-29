@@ -8,6 +8,7 @@ import type {
   RecentClosedPosition,
   CashbackStatus,
   CashbackClaimResult,
+  PositionFill,
 } from 'types';
 import type { ArmedEntry } from 'lib/strategy/types';
 
@@ -153,6 +154,11 @@ export const liveApi = baseApi.injectEndpoints({
         method: 'POST',
       }),
     }),
+    /** Append-only fill ledger for one position (entry + every sell leg). */
+    getPositionFills: builder.query<PositionFill[], string>({
+      query: (positionId) =>
+        `/api/strategies/generic/positions/${encodeURIComponent(positionId)}/fills`,
+    }),
     // Accrued pump.fun cashback — a read-only on-chain status (two account
     // reads). Cached, not polled: cashback accrues slowly, so the wallet card
     // refreshes on mount / after a claim, never on the live price tick.
@@ -208,6 +214,7 @@ export const {
   useSetManualExitConfigMutation,
   useSellTokenMutation,
   useCloseRulePositionMutation,
+  useGetPositionFillsQuery,
   useGetCashbackStatusQuery,
   useClaimCashbackMutation,
   useGetArmedHistoryQuery,

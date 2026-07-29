@@ -419,7 +419,30 @@ impl StrategyPosition {
         }
         ((u128::from(self.sold_token_amount) * 10_000) / u128::from(entry)).min(10_000) as u16
     }
+}
 
+/// One append-only fill leg under a `strategy_positions` episode (mig 0018
+/// `position_fills`). Entry is `side = buy`; each confirmed sell (partial or
+/// final) is `side = sell`. Per-leg PnL% / hold time are derived at read time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PositionFill {
+    pub position_id: Uuid,
+    pub seq: i32,
+    /// `"buy"` | `"sell"`.
+    pub side: String,
+    pub price: f64,
+    /// Exact SOL amount for this leg (lamports).
+    pub sol_lamports: i64,
+    /// Raw token units for this leg.
+    pub token_amount: u64,
+    pub at: DateTime<Utc>,
+    pub reason: Option<String>,
+    /// Scale-out stage index that produced this sell (`None` on buy / legacy).
+    pub stage: Option<i16>,
+    pub tx_signature: Option<String>,
+}
+
+impl StrategyPosition {
     /// Record the target (trigger-trade) snapshot that armed this position.
     pub fn set_target(&mut self, price: f64, amount: u64, time: DateTime<Utc>, tx: String) {
         self.target_price = Some(price);
