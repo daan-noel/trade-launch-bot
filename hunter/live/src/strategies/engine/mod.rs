@@ -270,6 +270,11 @@ pub struct PositionMeta {
     pub creator: Option<String>,
     /// Held raw token units, set from the entry fill (needed to size the sell).
     pub entry_token_amount: Option<u64>,
+    /// Confirmed sell-leg raw token units so far (scale-out). Remainder =
+    /// `entry_token_amount - sold_token_amount`.
+    pub sold_token_amount: u64,
+    /// Next scale-out stage index (mirrors PG `scale_stage`; 0 = legacy / pre-first).
+    pub scale_stage: u8,
     /// Persisted wallet token account for the mint (set after entry fill).
     pub token_account: Option<String>,
     pub entry_price: Option<f64>,

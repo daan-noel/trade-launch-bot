@@ -71,7 +71,7 @@ pub fn spawn_orphan_sell(
     default_reason: &str,
     dump: bool,
 ) -> OrphanStart {
-    let token_amount = position.entry_token_amount.unwrap_or(0);
+    let token_amount = position.remaining_token_amount();
     if token_amount == 0 {
         return OrphanStart::NothingToSell;
     }
@@ -237,27 +237,43 @@ pub async fn book_externally_cleared(
 }
 
 /// PG-only externally-cleared close (registry miss / reaper heal).
+///
+/// Appends the final sell leg via `record_sell_fill` so the ledger + aggregates
+/// stay consistent with the scale-out sink path (mig 0018).
 pub async fn book_externally_cleared_pg(
     repo: &StrategyRepo,
     pg_id: Uuid,
     fill: Fill,
     reason: &str,
 ) -> anyhow::Result<()> {
-    let Some(mut pos) = repo.find_position(pg_id).await? else {
+    let Some(pos) = repo.find_position(pg_id).await? else {
         return Ok(());
     };
     if matches!(pos.status.as_str(), "End") {
         return Ok(());
     }
-    pos.close(
+    // Size the final leg to the still-held remainder (scale-out stub or full bag).
+    let token_amount = match pos.remaining_token_amount() {
+        0 => fill.token_amount,
+        rem => rem,
+    };
+    let sol = if fill.token_amount > 0 && token_amount != fill.token_amount {
+        fill.sol * (token_amount as f64 / fill.token_amount as f64)
+    } else {
+        fill.sol
+    };
+    repo.record_sell_fill(
+        pg_id,
         fill.price,
-        fill.sol,
-        fill.token_amount,
-        vec![],
+        sol,
+        token_amount,
         fill.at,
-        reason,
-    );
-    repo.update_position(&pos).await?;
+        Some(reason),
+        None,
+        &[],
+        true,
+    )
+    .await?;
     info!(position_id = %pg_id, reason, "orphan_exit: booked externally cleared → End");
     Ok(())
 }
@@ -273,7 +289,7 @@ pub async fn fill_from_latest_sell(
         .await
         .ok()
         .flatten();
-    let token_amount = pos.entry_token_amount.unwrap_or(0);
+    let token_amount = pos.remaining_token_amount();
     match last_sell {
         Some(s) => Fill {
             price: s.price_per_token,
@@ -317,8 +333,8 @@ pub async fn close_siblings_if_mint_cleared(
     for sib in siblings {
         let fill = Fill {
             price: leader_fill.price,
-            sol: leader_fill.price * sib.entry_token_amount.unwrap_or(0) as f64,
-            token_amount: sib.entry_token_amount.unwrap_or(0),
+            sol: leader_fill.price * sib.remaining_token_amount() as f64,
+            token_amount: sib.remaining_token_amount(),
             at: leader_fill.at,
         };
         if let Some(engine_id) = registry.engine_id(sib.id) {
@@ -440,7 +456,8 @@ pub fn adopt_holding_into_engine(
     // Seed the position context from the adopted fill: `held` counts from the entry
     // time, `retrace` from the entry price (the peak is re-established as live trades
     // fold in — a conservative restart baseline). Mid-ladder `stage`/`sold_bps`
-    // resume from PG lands in mig 0018 (step 2); until then adopt as stage 0.
+    // resume from PG aggregates (mig 0018).
+    let sold_bps = pos.sold_bps();
     token.arms.insert(
         rule_id,
         ArmState::Entered(EnteredCtx {
@@ -449,8 +466,8 @@ pub fn adopt_holding_into_engine(
             entered_at: created_at,
             peak_price: entry_price,
             trough_price: entry_price,
-            stage: 0,
-            sold_bps: 0,
+            stage: pos.scale_stage,
+            sold_bps,
         }),
     );
 
@@ -468,6 +485,8 @@ pub fn adopt_holding_into_engine(
             token_program_id: pos.token_program_id.clone(),
             creator: None,
             entry_token_amount: pos.entry_token_amount,
+            sold_token_amount: pos.sold_token_amount,
+            scale_stage: pos.scale_stage,
             token_account: pos.token_account.clone(),
             entry_price: pos.entry_price,
             paper_target: None,
@@ -582,6 +601,8 @@ pub fn adopt_buy_submitted_into_engine(
             token_program_id: pos.token_program_id.clone(),
             creator: None,
             entry_token_amount: pos.entry_token_amount,
+            sold_token_amount: pos.sold_token_amount,
+            scale_stage: pos.scale_stage,
             token_account: pos.token_account.clone(),
             entry_price: pos.entry_price,
             paper_target: None,

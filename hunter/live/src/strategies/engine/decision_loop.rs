@@ -309,8 +309,8 @@ async fn dispatch(
                     state, registry, real_deps, token_cache, settings, intent, rule, mint, lamports,
                 );
             }
-            Effect::SubmitSell { intent, position, reason: _, portion: _ } => {
-                dispatch_sell(registry, real_deps, token_cache, settings, intent, position);
+            Effect::SubmitSell { intent, position, reason: _, portion } => {
+                dispatch_sell(registry, real_deps, token_cache, settings, intent, position, portion);
             }
             _ => {}
         }
@@ -445,13 +445,19 @@ fn dispatch_sell(
     settings: &watch::Receiver<AppSettings>,
     intent: IntentId,
     position: PositionId,
+    portion: hunter_engine::event::Portion,
 ) {
     let Some(meta) = registry.get(position) else {
         warn!("sell: no position meta — skipping submit");
         return;
     };
     let mint = meta.mint.clone();
-    let token_amount = meta.entry_token_amount.unwrap_or(0);
+    let initial = meta.entry_token_amount.unwrap_or(0);
+    let token_amount = portion.token_amount(initial, meta.sold_token_amount);
+    if token_amount == 0 {
+        warn!(portion = ?portion, initial, sold = meta.sold_token_amount, "sell: zero token amount — skipping");
+        return;
+    }
     match meta.trade_mode {
         TradeMode::Paper => {
             let fire_abs = exec_paper::latest_trade_abs_idx(token_cache, &mint);

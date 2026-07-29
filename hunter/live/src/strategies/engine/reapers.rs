@@ -379,6 +379,8 @@ async fn redrive_orphaned_buy_submitted(
                         trade_mode: Some("real".to_string()),
                         rule_name: None,
                         needs_review: Some(true),
+                        sold_token_amount: None,
+                        scale_stage: None,
                     });
                     stuck_rpc_skip.insert(position.id, STUCK_RPC_SKIP_TICKS);
                 }
@@ -778,8 +780,10 @@ async fn close_stale_paper_exit_pending(deps: &ReaperDeps) {
     for pos in stale {
         let fill = Fill {
             price: pos.entry_price.unwrap_or(0.0),
-            sol: pos.entry_sol.unwrap_or(0.0),
-            token_amount: pos.entry_token_amount.unwrap_or(0),
+            sol: pos.entry_sol.unwrap_or(0.0)
+                * (pos.remaining_token_amount() as f64
+                    / pos.entry_token_amount.unwrap_or(1).max(1) as f64),
+            token_amount: pos.remaining_token_amount(),
             at: Utc::now(),
         };
         if orphan_exit::book_externally_cleared_pg(&deps.strategy_repo, pos.id, fill, "Manual")

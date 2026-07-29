@@ -83,23 +83,26 @@ pub async fn run_entry(
 /// Fill a paper sell at the worst-case adverse price after `fire_abs_idx`.
 /// Live paper keeps the strict window (`market_fill_on_empty_window = false`): an
 /// empty window times out as `FillFailed` rather than inventing a fill.
+///
+/// `token_amount` is the portion already sized by the decision loop
+/// (`Portion::token_amount`) — full remainder or a scale-out leg.
 pub async fn run_exit(
     fill_tx: mpsc::Sender<Event>,
     token_cache: Arc<TokenCache>,
     intent: IntentId,
     mint: String,
-    entry_token_amount: u64,
+    token_amount: u64,
     fire_abs_idx: Option<u64>,
 ) {
     let event = match wait_exit_fill(&token_cache, &mint, fire_abs_idx).await {
         Some(fill) => {
-            let sol = (entry_token_amount as f64 / TOKEN_SCALE) * fill.price;
+            let sol = (token_amount as f64 / TOKEN_SCALE) * fill.price;
             Event::FillConfirmed {
                 intent,
                 fill: Fill {
                     price: fill.price,
                     sol,
-                    token_amount: entry_token_amount,
+                    token_amount,
                     at: fill.block_time,
                 },
             }

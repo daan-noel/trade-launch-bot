@@ -27,8 +27,8 @@
 | Status | Partition | Meaning |
 |---|---|---|
 | `BuySubmitted` | Open | buy in flight; stale >600 s (`BUY_SUBMITTED_REVIEW_SECS` SSOT) surfaces `needs_review` via API + SSE |
-| `Holding` | Open | entry filled, SOL deployed |
-| `ExitPending` | Open | sell in flight |
+| `Holding` | Open | entry filled, SOL deployed (mid-ladder scale-out stays `Holding` after a partial fill; banked fraction is `sold_token_amount` / ledger — see mig 0018 + `docs/roadmap/partial-exits-plan.md`) |
+| `ExitPending` | Open | sell in flight (partial **or** full; portion sized at exec from `Portion`) |
 | `ExitStuck` | Open · attention | sell gave up, **bag still held**; reaper redrives ×`EXIT_REDRIVE_CAP=2` then `exit_parked` (mig 0012 cols) |
 | `ExitUnconfirmed` | Open · attention | sell may/may-not have cleared; auto-re-sold **only** once the original is proven unexecutable (§2.1); bag-cleared reaper heal + manual Verify |
 | `End` | Terminal | confirmed exit (incl. `Dead` write-off) |

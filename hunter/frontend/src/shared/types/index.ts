@@ -218,6 +218,12 @@ export interface RulePositionRecord extends TokenEnrichmentFields {
   exit_price: number | null;
   /** Tokens sold at exit; SOL derived as `exit_price × exit_token_amount`. */
   exit_token_amount: number | null;
+  /** Running sum of confirmed sell-leg raw token units (scale-out; mig 0018). */
+  sold_token_amount?: number;
+  /** Running sum of confirmed sell-leg SOL (scale-out aggregate). */
+  exit_sol_total?: number;
+  /** Next scale-out stage index (`0` = pre-first / legacy). */
+  scale_stage?: number;
   exit_time: string | null;
   exit_tx: string | null;
   pnl_percent: number | null;

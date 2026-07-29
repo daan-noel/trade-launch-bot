@@ -318,6 +318,8 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
             trade_mode,
             rule_name,
             needs_review,
+            sold_token_amount,
+            scale_stage,
         } => {
             // Mint-scoped: the generic engine's position transition. The client
             // patches the one row keyed by `position_id`.
@@ -335,6 +337,8 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
                     "trade_mode": trade_mode,
                     "rule_name": rule_name,
                     "needs_review": needs_review,
+                    "sold_token_amount": sold_token_amount,
+                    "scale_stage": scale_stage,
                 }),
             )
         }

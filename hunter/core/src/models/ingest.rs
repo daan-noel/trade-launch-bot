@@ -223,6 +223,13 @@ pub enum SseEvent {
         /// reverted — the row needs a manual Verify. `None` elsewhere.
         #[serde(skip_serializing_if = "Option::is_none", default)]
         needs_review: Option<bool>,
+        /// Confirmed sell-leg raw token units so far (scale-out). `None` when zero
+        /// / legacy. FE chip: banked fraction of the initial bag.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        sold_token_amount: Option<u64>,
+        /// Next scale-out stage index after this update. `None` when unset / legacy.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        scale_stage: Option<u8>,
     },
     /// A generic-engine (token, rule) arming transition — armed or disarmed —
     /// emitted by the engine's `ArmedChanged` sink. There is no legacy analogue

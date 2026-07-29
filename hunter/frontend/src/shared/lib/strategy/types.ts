@@ -310,4 +310,8 @@ export interface StrategyPositionUpdateEvent {
   rule_name?: string | null;
   /** `true` on a stale unresolved BuySubmitted (B3) — needs manual Verify. */
   needs_review?: boolean | null;
+  /** Confirmed sell-leg raw token units so far (scale-out). Omitted when zero. */
+  sold_token_amount?: number | null;
+  /** Next scale-out stage index. Omitted when unset / legacy. */
+  scale_stage?: number | null;
 }

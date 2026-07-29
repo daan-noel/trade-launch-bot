@@ -396,6 +396,23 @@ impl Portion {
     pub fn is_partial(self) -> bool {
         matches!(self, Self::BpsOfInitial(_))
     }
+
+    /// Exact integer token units to sell for this portion.
+    ///
+    /// `BpsOfInitial` sizes off the **initial** bag (`initial * bps / 10_000`) and
+    /// clamps to the still-held remainder (`initial - sold`). `All` sells the
+    /// entire remainder. Shared by live exec, paper, lab replay, and orphan sells
+    /// — one formula so legs cannot drift (see `docs/roadmap/partial-exits-plan.md`).
+    pub fn token_amount(self, initial: u64, sold: u64) -> u64 {
+        let remaining = initial.saturating_sub(sold);
+        match self {
+            Self::All => remaining,
+            Self::BpsOfInitial(bps) => {
+                let want = (u128::from(initial) * u128::from(bps) / 10_000) as u64;
+                want.min(remaining)
+            }
+        }
+    }
 }
 
 /// The ordered output stream. `SubmitBuy`/`SubmitSell` are the trade *decisions*
@@ -490,4 +507,19 @@ pub enum ArmedStateTag {
     Armed,
     /// The (token, rule) disarmed for the given reason.
     Disarmed(DisarmReason),
+}
+
+#[cfg(test)]
+mod portion_tests {
+    use super::Portion;
+
+    #[test]
+    fn bps_of_initial_clamps_to_remaining() {
+        let initial = 10_000u64;
+        assert_eq!(Portion::BpsOfInitial(7000).token_amount(initial, 0), 7000);
+        assert_eq!(Portion::BpsOfInitial(7000).token_amount(initial, 7000), 3000);
+        assert_eq!(Portion::All.token_amount(initial, 7000), 3000);
+        assert_eq!(Portion::All.token_amount(initial, 0), 10_000);
+        assert_eq!(Portion::BpsOfInitial(5000).token_amount(initial, 8000), 2000);
+    }
 }

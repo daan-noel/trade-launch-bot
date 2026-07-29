@@ -216,6 +216,8 @@ struct Builder {
     target: Option<TargetSnap>,
     entry_price: f64,
     entry_token_amount: u64,
+    /// Confirmed sell-leg tokens so far (scale-out); sizes the next portion.
+    sold_token_amount: u64,
     entry_time: Ts,
     entry_tx: String,
     entry_reserve_sol: Option<f64>,
@@ -453,9 +455,13 @@ impl Replay {
                     self.pending_buys.insert(mint, intent);
                 }
             }
-            Effect::SubmitSell { intent, position, reason: _, portion: _ } => {
-                let token_amount =
-                    self.builders.get(&position).map(|b| b.entry_token_amount).unwrap_or(0);
+            Effect::SubmitSell { intent, position, reason: _, portion } => {
+                let (initial, sold) = self
+                    .builders
+                    .get(&position)
+                    .map(|b| (b.entry_token_amount, b.sold_token_amount))
+                    .unwrap_or((0, 0));
+                let token_amount = portion.token_amount(initial, sold);
                 let mint = intent.mint.clone();
                 self.queue_exit_fill(&mint, intent, token_amount, now, work);
             }
@@ -576,6 +582,7 @@ impl Replay {
                         target: None,
                         entry_price: 0.0,
                         entry_token_amount: 0,
+                        sold_token_amount: 0,
                         entry_time: Utc::now(),
                         entry_tx: String::new(),
                         entry_reserve_sol: None,
@@ -585,16 +592,23 @@ impl Replay {
             }
             PositionStatus::Holding => {
                 if let (Some(b), Some(fill)) = (self.builders.get_mut(&delta.position), delta.fill) {
-                    b.entered = true;
-                    b.target = self.pending_targets.remove(&delta.mint);
-                    b.entry_price = fill.price;
-                    b.entry_token_amount = fill.token_amount;
-                    b.entry_time = fill.at;
-                    b.entry_reserve_sol =
-                        self.last_reserve_sol.get(&delta.mint).copied().filter(|r| *r > 0.0);
-                    // Prefer the fill trade's sig (adverse print); fall back to the
-                    // last folded trade's sig when the slim corpus omitted it.
-                    b.entry_tx = sig;
+                    if !b.entered {
+                        // Entry fill.
+                        b.entered = true;
+                        b.target = self.pending_targets.remove(&delta.mint);
+                        b.entry_price = fill.price;
+                        b.entry_token_amount = fill.token_amount;
+                        b.entry_time = fill.at;
+                        b.entry_reserve_sol =
+                            self.last_reserve_sol.get(&delta.mint).copied().filter(|r| *r > 0.0);
+                        // Prefer the fill trade's sig (adverse print); fall back to the
+                        // last folded trade's sig when the slim corpus omitted it.
+                        b.entry_tx = sig;
+                    } else {
+                        // Scale-out partial fill — keep entry anchors, bank the leg.
+                        b.sold_token_amount =
+                            b.sold_token_amount.saturating_add(fill.token_amount);
+                    }
                 }
             }
             PositionStatus::ExitPending => {}

@@ -166,6 +166,9 @@ struct StrategyPositionDbRow {
     exit_lamports: Option<i64>,
     exit_time: Option<DateTime<Utc>>,
     exit_tx_signatures: Json<Value>,
+    sold_token_amount: i64,
+    exit_sol_lamports_total: i64,
+    scale_stage: i16,
     submitted_buy_signatures: Vec<String>,
     status: String,
     exit_reason: Option<String>,
@@ -211,6 +214,9 @@ impl From<StrategyPositionDbRow> for StrategyPosition {
             exit_sol: r.exit_lamports.map(lamports_to_sol),
             exit_time: r.exit_time,
             exit_tx_signatures: r.exit_tx_signatures.0,
+            sold_token_amount: r.sold_token_amount.max(0) as u64,
+            exit_sol_total: lamports_to_sol(r.exit_sol_lamports_total),
+            scale_stage: r.scale_stage.max(0) as u8,
             submitted_buy_signatures: r.submitted_buy_signatures,
             status: r.status,
             exit_reason: r.exit_reason,
@@ -486,6 +492,7 @@ const POSITION_COLS: &str = "id, run_id, strategy_id, rule_id, mode, mint_addres
     token_program_id, token_account, target_price, target_token_amount, target_time, target_tx, \
     entry_price, entry_token_amount, entry_lamports, entry_time, entry_tx_signatures, \
     exit_price, exit_token_amount, exit_lamports, exit_time, exit_tx_signatures, \
+    sold_token_amount, exit_sol_lamports_total, scale_stage, \
     submitted_buy_signatures, status, exit_reason, origin, manual_exit, \
     exit_redrive_count, exit_parked, last_entry_error, extra, created_at, updated_at";
 
@@ -495,7 +502,8 @@ const POSITION_COLS_SP: &str = "sp.id, sp.run_id, sp.strategy_id, sp.rule_id, sp
     sp.wallet, sp.token_program_id, sp.token_account, sp.target_price, sp.target_token_amount, \
     sp.target_time, sp.target_tx, sp.entry_price, sp.entry_token_amount, sp.entry_lamports, \
     sp.entry_time, sp.entry_tx_signatures, sp.exit_price, sp.exit_token_amount, sp.exit_lamports, \
-    sp.exit_time, sp.exit_tx_signatures, sp.submitted_buy_signatures, sp.status, sp.exit_reason, \
+    sp.exit_time, sp.exit_tx_signatures, sp.sold_token_amount, sp.exit_sol_lamports_total, \
+    sp.scale_stage, sp.submitted_buy_signatures, sp.status, sp.exit_reason, \
     sp.origin, sp.manual_exit, sp.exit_redrive_count, sp.exit_parked, sp.last_entry_error, \
     sp.extra, sp.created_at, sp.updated_at";
 
@@ -505,7 +513,8 @@ const POSITION_COLS_P: &str = "p.id, p.run_id, p.strategy_id, p.rule_id, p.mode,
     p.wallet, p.token_program_id, p.token_account, p.target_price, p.target_token_amount, \
     p.target_time, p.target_tx, p.entry_price, p.entry_token_amount, p.entry_lamports, \
     p.entry_time, p.entry_tx_signatures, p.exit_price, p.exit_token_amount, p.exit_lamports, \
-    p.exit_time, p.exit_tx_signatures, p.submitted_buy_signatures, p.status, p.exit_reason, \
+    p.exit_time, p.exit_tx_signatures, p.sold_token_amount, p.exit_sol_lamports_total, \
+    p.scale_stage, p.submitted_buy_signatures, p.status, p.exit_reason, \
     p.origin, p.manual_exit, p.exit_redrive_count, p.exit_parked, p.last_entry_error, \
     p.extra, p.created_at, p.updated_at";
 
@@ -2142,6 +2151,7 @@ impl StrategyRepo {
         // (`COALESCE`) — a later fill never blanks an already-recorded account.
         token_account: Option<&str>,
     ) -> anyhow::Result<StrategyPosition> {
+        let mut tx = self.pool.begin().await?;
         let row = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             "UPDATE strategy_positions \
              SET entry_tx_signatures = $2, entry_token_amount = $3, entry_price = $4, \
@@ -2158,9 +2168,162 @@ impl StrategyRepo {
         .bind(sol_to_lamports(entry_sol))
         .bind(entry_time)
         .bind(token_account)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await?;
+        append_fill_tx(
+            &mut tx,
+            id,
+            "buy",
+            entry_price,
+            sol_to_lamports(entry_sol),
+            entry_token_amount as i64,
+            entry_time,
+            None,
+            Some(0),
+            if entry_tx.is_empty() { None } else { Some(entry_tx) },
+        )
+        .await?;
+        tx.commit().await?;
         Ok(StrategyPosition::from(row))
+    }
+
+    /// Append one confirmed sell leg to `position_fills` and bump the denormalized
+    /// aggregates on `strategy_positions`. When `final_close` is true, also stamp
+    /// the legacy exit_* columns (SOL-weighted average price, total tokens/SOL,
+    /// last reason) and flip status to `End`.
+    ///
+    /// Aggregates are deliberately NOT on `update_position`'s SET list — a full-row
+    /// status write must never reset mid-ladder sold amounts (same class as
+    /// `exit_redrive_count` / mig 0012).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_sell_fill(
+        &self,
+        id: Uuid,
+        price: f64,
+        sol: f64,
+        token_amount: u64,
+        at: DateTime<Utc>,
+        reason: Option<&str>,
+        stage: Option<u8>,
+        tx_signatures: &[String],
+        final_close: bool,
+    ) -> anyhow::Result<StrategyPosition> {
+        let lamports = sol_to_lamports(sol);
+        let sig0 = tx_signatures.first().map(|s| s.as_str()).filter(|s| !s.is_empty());
+        let next_stage = stage.map(|s| s as i16);
+        let fill_stage = stage.map(|s| s.saturating_sub(1) as i16);
+        let mut db_tx = self.pool.begin().await?;
+        append_fill_tx(
+            &mut db_tx,
+            id,
+            "sell",
+            price,
+            lamports,
+            token_amount as i64,
+            at,
+            reason,
+            fill_stage,
+            sig0,
+        )
+        .await?;
+
+        // Union exit sigs into the JSONB array (same semantics as add_submitted_exit_sigs).
+        if !tx_signatures.is_empty() {
+            sqlx::query(
+                "UPDATE strategy_positions SET \
+                     exit_tx_signatures = (\
+                         SELECT COALESCE(jsonb_agg(DISTINCT v), '[]'::jsonb) \
+                         FROM (\
+                             SELECT jsonb_array_elements_text(exit_tx_signatures) AS v \
+                             FROM strategy_positions WHERE id = $1 \
+                             UNION \
+                             SELECT UNNEST($2::text[])\
+                         ) s\
+                     ), updated_at = now() \
+                 WHERE id = $1",
+            )
+            .bind(id)
+            .bind(tx_signatures)
+            .execute(&mut *db_tx)
+            .await?;
+        }
+
+        let row = if final_close {
+            // Stamp exit_* from post-bump aggregates: SOL-weighted avg price =
+            // total_sol / (sold_tokens / 1e6) when tokens > 0 (pump.fun 6 decimals).
+            sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+                "UPDATE strategy_positions SET \
+                     sold_token_amount = sold_token_amount + $2, \
+                     exit_sol_lamports_total = exit_sol_lamports_total + $3, \
+                     scale_stage = COALESCE($4, scale_stage), \
+                     exit_token_amount = sold_token_amount + $2, \
+                     exit_lamports = exit_sol_lamports_total + $3, \
+                     exit_price = CASE \
+                         WHEN (sold_token_amount + $2) > 0 \
+                         THEN ((exit_sol_lamports_total + $3)::float8 / 1e9) \
+                              / ((sold_token_amount + $2)::float8 / 1e6) \
+                         ELSE $5 END, \
+                     exit_time = $6, \
+                     exit_reason = COALESCE($7, exit_reason), \
+                     status = 'End', \
+                     updated_at = now() \
+                 WHERE id = $1 \
+                 RETURNING {POSITION_COLS}"
+            ))
+            .bind(id)
+            .bind(token_amount as i64)
+            .bind(lamports)
+            .bind(next_stage)
+            .bind(price)
+            .bind(at)
+            .bind(reason)
+            .fetch_one(&mut *db_tx)
+            .await?
+        } else {
+            sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+                "UPDATE strategy_positions SET \
+                     sold_token_amount = sold_token_amount + $2, \
+                     exit_sol_lamports_total = exit_sol_lamports_total + $3, \
+                     scale_stage = COALESCE($4, scale_stage), \
+                     status = 'Holding', \
+                     updated_at = now() \
+                 WHERE id = $1 \
+                 RETURNING {POSITION_COLS}"
+            ))
+            .bind(id)
+            .bind(token_amount as i64)
+            .bind(lamports)
+            .bind(next_stage)
+            .fetch_one(&mut *db_tx)
+            .await?
+        };
+        db_tx.commit().await?;
+        Ok(StrategyPosition::from(row))
+    }
+
+    /// Sell-leg aggregate vs ledger SSOT check for one position. Returns
+    /// `(sold_ok, sol_ok)` — both true when the denormalized caches match
+    /// `Σ position_fills` for `side = 'sell'`. Used by the no-hot-path guard test
+    /// when a DATABASE_URL is available; also callable from ops/debug.
+    pub async fn sell_aggregates_match_ledger(
+        &self,
+        id: Uuid,
+    ) -> anyhow::Result<(bool, bool)> {
+        let row: Option<(i64, i64, i64, i64)> = sqlx::query_as(
+            "SELECT p.sold_token_amount, p.exit_sol_lamports_total, \
+                    COALESCE((SELECT SUM(f.token_amount) FROM position_fills f \
+                              WHERE f.position_id = p.id AND f.side = 'sell'), 0)::bigint, \
+                    COALESCE((SELECT SUM(f.sol_lamports) FROM position_fills f \
+                              WHERE f.position_id = p.id AND f.side = 'sell'), 0)::bigint \
+             FROM strategy_positions p WHERE p.id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((sold, sol_total, ledger_sold, ledger_sol)) = row else {
+            return Ok((true, true));
+        };
+        Ok((sold == ledger_sold, sol_total == ledger_sol))
     }
 
     // -- Recovery reaper queries (mode-scoped) --------------------------------
@@ -2472,8 +2635,14 @@ impl StrategyRepo {
     }
 
     /// Real `ExitPending` whose wallet mint net is already ≤ `threshold_raw` (the
-    /// in-flight sell already cleared the bag — book End without RE-selling). Same
-    /// shape as [`find_exit_failed_cleared`]: requires a sell on record so a
+    /// in-flight sell already cleared the bag — book End without RE-selling).
+    ///
+    /// With scale-out, a mid-ladder ExitPending that only sold a portion leaves
+    /// `net ≈ entry - sold > 0`, so this query correctly does **not** fire (the
+    /// fill path restores Holding). Fully flat (`net ≤ dust`) still books End
+    /// whether or not prior legs were banked. Orphan/redrive sell sizing uses
+    /// `remaining_token_amount()` (= entry − sold), not the full entry bag.
+    /// Same shape as [`find_exit_failed_cleared`]: requires a sell on record so a
     /// rolling-buffer age-out of the buy alone cannot false-clear. Drives the
     /// reaper's cleared-ExitPending heal, which must run BEFORE the ExitPending
     /// re-drive so a gone bag is booked instead of triggering a phantom sell.
@@ -2668,6 +2837,45 @@ impl StrategyRepo {
     }
 }
 
+/// Append one row to `position_fills` inside an open transaction. `seq` is
+/// `max(seq)+1` for the position (1-based). Empty/NULL `tx_signature` is allowed
+/// (paper); the partial unique index excludes those.
+#[allow(clippy::too_many_arguments)]
+async fn append_fill_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    position_id: Uuid,
+    side: &str,
+    price: f64,
+    sol_lamports: i64,
+    token_amount: i64,
+    at: DateTime<Utc>,
+    reason: Option<&str>,
+    stage: Option<i16>,
+    tx_signature: Option<&str>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO position_fills \
+         (position_id, seq, side, price, sol_lamports, token_amount, at, reason, stage, tx_signature) \
+         VALUES (\
+             $1, \
+             COALESCE((SELECT MAX(seq) FROM position_fills WHERE position_id = $1), 0) + 1, \
+             $2, $3, $4, $5, $6, $7, $8, $9\
+         )",
+    )
+    .bind(position_id)
+    .bind(side)
+    .bind(price)
+    .bind(sol_lamports)
+    .bind(token_amount)
+    .bind(at)
+    .bind(reason)
+    .bind(stage)
+    .bind(tx_signature)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod position_col_guard {
     //! No-DB guard over the three `strategy_positions` read column lists. SQL has
@@ -2699,12 +2907,18 @@ mod position_col_guard {
 
     /// Three columns are READ by the full row but written ONLY by their dedicated
     /// writer, because the engine sink's `update_position` lands *after* that
-    /// writer and a shared write path would clobber it (mig 0012 / 0017). That
-    /// invariant is what makes the reaper's redrive counter and the buy-failure
-    /// cause survive at all, and nothing tested it until now.
+    /// writer and a shared write path would clobber it (mig 0012 / 0017). Scale-out
+    /// aggregates (mig 0018) join that set — `record_sell_fill` is the ONE writer.
     #[test]
     fn writer_owned_columns_never_enter_the_full_row_write() {
-        const OWNED: [&str; 3] = ["exit_redrive_count", "exit_parked", "last_entry_error"];
+        const OWNED: [&str; 6] = [
+            "exit_redrive_count",
+            "exit_parked",
+            "last_entry_error",
+            "sold_token_amount",
+            "exit_sol_lamports_total",
+            "scale_stage",
+        ];
         // Slice out `update_position`'s SQL literal so the scan cannot be fooled by
         // the dedicated writers' own `UPDATE`s elsewhere in this file.
         let src = include_str!("strategy_repo.rs");
@@ -2716,12 +2930,27 @@ mod position_col_guard {
             assert!(
                 !set_list.contains(col),
                 "{col} must never appear in update_position's SET list — its dedicated writer \
-                 would be clobbered (see migration 0012 / 0017)"
+                 would be clobbered (see migration 0012 / 0017 / 0018)"
             );
             assert!(
                 cols(POSITION_COLS).iter().any(|c| c == col),
                 "{col} is written by a dedicated writer but must still be READ"
             );
+        }
+    }
+
+    /// No-DB SSOT: the sold-bps derivation used by boot adopt / SSE must match
+    /// integer `sold * 10_000 / entry` (same formula as `StrategyPosition::sold_bps`).
+    #[test]
+    fn sold_bps_matches_integer_scale_out_formula() {
+        let cases = [(1_000_000u64, 700_000u64, 7000u16), (1_000_000, 0, 0), (0, 0, 0)];
+        for (entry, sold, expect) in cases {
+            let bps = if entry == 0 {
+                0
+            } else {
+                ((u128::from(sold) * 10_000) / u128::from(entry)).min(10_000) as u16
+            };
+            assert_eq!(bps, expect);
         }
     }
 

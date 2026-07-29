@@ -330,6 +330,8 @@ impl Sink {
                 token_program_id,
                 creator,
                 entry_token_amount: None,
+                sold_token_amount: 0,
+                scale_stage: 0,
                 token_account: None,
                 entry_price: None,
                 paper_target: None,
@@ -358,6 +360,12 @@ impl Sink {
         let Some(fill) = delta.fill else { return };
         self.retain_held_pool(&meta.mint, meta.trade_mode);
 
+        // Mid-ladder partial fill: entry already recorded. Do NOT overwrite entry_*.
+        if meta.entry_token_amount.is_some() {
+            self.on_partial_fill(delta, &meta, fill).await;
+            return;
+        }
+
         // Fill signatures + token account stashed by the executor, keyed by intent.
         let fs = delta.intent.as_ref().and_then(|i| self.fill_sigs.take(i)).unwrap_or_default();
         let entry_tx = fs.sigs.first().cloned().unwrap_or_default();
@@ -368,6 +376,8 @@ impl Sink {
         self.registry.update(delta.position, |m| {
             m.entry_token_amount = Some(fill.token_amount);
             m.entry_price = Some(fill.price);
+            m.sold_token_amount = 0;
+            m.scale_stage = 0;
             m.paper_target = None;
             if token_account.is_some() {
                 m.token_account = token_account.clone();
@@ -415,6 +425,51 @@ impl Sink {
         self.pending_pg.insert(pg_id, handle);
     }
 
+    /// Holding-preserving sell fill (scale-out leg): append ledger + bump aggregates;
+    /// registry tracks sold so the next `SubmitSell` sizes the remainder correctly.
+    async fn on_partial_fill(
+        &mut self,
+        delta: &PositionDelta,
+        meta: &PositionMeta,
+        fill: hunter_engine::event::Fill,
+    ) {
+        let fs = delta.intent.as_ref().and_then(|i| self.fill_sigs.take(i)).unwrap_or_default();
+        let reason = delta.reason.map(|r| r.label().into_owned());
+        let stage = delta.stage;
+        self.registry.update(delta.position, |m| {
+            m.sold_token_amount = m.sold_token_amount.saturating_add(fill.token_amount);
+            if let Some(s) = stage {
+                m.scale_stage = s;
+            }
+            m.inflight_intent = None;
+        });
+        let prev = self.pending_pg.remove(&meta.pg_id);
+        let repo = self.repo.clone();
+        let pg_id = meta.pg_id;
+        let handle = tokio::spawn(async move {
+            if let Some(h) = prev {
+                let _ = h.await;
+            }
+            if let Err(e) = repo
+                .record_sell_fill(
+                    pg_id,
+                    fill.price,
+                    fill.sol,
+                    fill.token_amount,
+                    fill.at,
+                    reason.as_deref(),
+                    stage,
+                    &fs.sigs,
+                    false,
+                )
+                .await
+            {
+                warn!(pg = %pg_id, "engine sink: record_sell_fill (partial) failed: {e}");
+            }
+        });
+        self.pending_pg.insert(pg_id, handle);
+    }
+
     /// Status-only transition (`ExitPending`): fire-and-forget PG so Pass-2
     /// `SubmitSell` is not gated on the write. Chains after any pending insert /
     /// Holding persist inside the spawn. Mid-sell crash recovery: ExitPending
@@ -452,11 +507,22 @@ impl Sink {
             .reason
             .map(|r| r.label().into_owned())
             .unwrap_or_else(|| "Metrics".to_string());
-        if let Ok(Some(mut pos)) = self.repo.find_position(meta.pg_id).await {
-            pos.close(fill.price, fill.sol, fill.token_amount, fs.sigs, fill.at, &reason);
-            if let Err(e) = self.repo.update_position(&pos).await {
-                warn!(pg = %meta.pg_id, "engine sink: close update failed: {e}");
-            }
+        if let Err(e) = self
+            .repo
+            .record_sell_fill(
+                meta.pg_id,
+                fill.price,
+                fill.sol,
+                fill.token_amount,
+                fill.at,
+                Some(&reason),
+                delta.stage,
+                &fs.sigs,
+                true,
+            )
+            .await
+        {
+            warn!(pg = %meta.pg_id, "engine sink: record_sell_fill (final) failed: {e}");
         }
         self.release_held_pool(&meta.mint, meta.trade_mode, meta.pg_id)
             .await;
@@ -678,11 +744,14 @@ impl Sink {
         };
         // Frozen per-position mode (set at BuySubmitted) — not the live rule table.
         let trade_mode = Some(mode_str(meta.trade_mode).to_string());
-        let entry_price = delta
-            .fill
-            .filter(|_| delta.status == PositionStatus::Holding)
-            .map(|f| f.price)
-            .or(meta.entry_price);
+        // Registry is updated before SSE on Holding (entry or partial); fall back to
+        // the fill price only on a first entry if meta somehow lagged.
+        let entry_price = meta.entry_price.or_else(|| {
+            delta
+                .fill
+                .filter(|_| delta.status == PositionStatus::Holding && delta.reason.is_none())
+                .map(|f| f.price)
+        });
         let exit_price = delta
             .fill
             .filter(|_| delta.status == PositionStatus::End)
@@ -697,6 +766,10 @@ impl Sink {
                     .contains(&delta.rule)
                     .then(|| MANUAL_STRATEGY_ID.to_string())
             });
+        // Mid-ladder banked fraction for the FE chip (phase 5); omitted when zero.
+        let sold_token_amount = (meta.sold_token_amount > 0).then_some(meta.sold_token_amount);
+        let scale_stage = (meta.scale_stage > 0 || meta.sold_token_amount > 0)
+            .then_some(meta.scale_stage);
         let _ = self.sse_tx.send(SseEvent::StrategyPositionUpdate {
             rule_id: delta.rule.0,
             mint_address: delta.mint.to_string(),
@@ -708,6 +781,8 @@ impl Sink {
             trade_mode,
             rule_name,
             needs_review: None,
+            sold_token_amount,
+            scale_stage,
         });
     }
 }

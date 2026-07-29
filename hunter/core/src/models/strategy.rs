@@ -237,6 +237,16 @@ pub struct StrategyPosition {
     pub exit_sol: Option<f64>,
     pub exit_time: Option<DateTime<Utc>>,
     pub exit_tx_signatures: Value,
+    /// Running sum of confirmed sell-leg raw token units (mig 0018). Ledger is
+    /// authority; this is the denormalized cache for list/sizing.
+    #[serde(default)]
+    pub sold_token_amount: u64,
+    /// Running sum of confirmed sell-leg SOL (human), from `exit_sol_lamports_total`.
+    #[serde(default)]
+    pub exit_sol_total: f64,
+    /// Next scale-out stage index (`0` = pre-first partial / legacy).
+    #[serde(default)]
+    pub scale_stage: u8,
     /// Raw submitted buy signatures (`TEXT[]`).
     pub submitted_buy_signatures: Vec<String>,
     /// `BuySubmitted` | `Holding` | `ExitPending` | `ExitUnconfirmed` |
@@ -309,13 +319,17 @@ impl StrategyPosition {
         self.entry_price.is_some()
     }
 
-    /// Realized SOL PnL (`exit_sol − entry_sol`), once both fills are recorded.
-    /// Mirrors `strategy_position_pnl.realized_pnl_sol`.
+    /// Realized SOL PnL once closed. Prefers the running sell-leg aggregate
+    /// (`exit_sol_total`) when any sell landed; else the stamped `exit_sol`
+    /// (legacy single-leg). Mirrors `strategy_position_pnl.realized_pnl_sol`.
     pub fn realized_pnl_sol(&self) -> Option<f64> {
-        match (self.entry_sol, self.exit_sol) {
-            (Some(entry), Some(exit)) => Some(exit - entry),
-            _ => None,
-        }
+        let entry = self.entry_sol?;
+        let exit = if self.sold_token_amount > 0 {
+            Some(self.exit_sol_total)
+        } else {
+            self.exit_sol
+        }?;
+        Some(exit - entry)
     }
 
     /// Realized PnL % off the entry price. Mirrors `strategy_position_pnl.pnl_pct`.
@@ -372,6 +386,9 @@ impl StrategyPosition {
             exit_sol: None,
             exit_time: None,
             exit_tx_signatures: json!([]),
+            sold_token_amount: 0,
+            exit_sol_total: 0.0,
+            scale_stage: 0,
             submitted_buy_signatures: Vec::new(),
             status: "BuySubmitted".to_string(),
             exit_reason: None,
@@ -385,6 +402,22 @@ impl StrategyPosition {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// Tokens still held: `entry - sold` (scale-out remainder).
+    pub fn remaining_token_amount(&self) -> u64 {
+        self.entry_token_amount
+            .unwrap_or(0)
+            .saturating_sub(self.sold_token_amount)
+    }
+
+    /// Sold fraction of the initial bag in bps (`sold * 10_000 / entry`).
+    pub fn sold_bps(&self) -> u16 {
+        let entry = self.entry_token_amount.unwrap_or(0);
+        if entry == 0 {
+            return 0;
+        }
+        ((u128::from(self.sold_token_amount) * 10_000) / u128::from(entry)).min(10_000) as u16
     }
 
     /// Record the target (trigger-trade) snapshot that armed this position.
