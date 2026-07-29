@@ -117,7 +117,7 @@ fn live_open(s: &EngineState) -> BTreeMap<RuleId, u32> {
         for (rule, arm) in &token.arms {
             if matches!(
                 arm,
-                ArmState::EntryPending { .. } | ArmState::Entered { .. } | ArmState::ExitPending { .. }
+                ArmState::EntryPending { .. } | ArmState::Entered(_) | ArmState::ExitPending { .. }
             ) {
                 *live.entry(*rule).or_default() += 1;
             }

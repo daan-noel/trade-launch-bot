@@ -225,6 +225,7 @@ fn compile_manual_exit_rule(rule: RuleId, exit: &ManualExit) -> CompiledRule {
         stop_loss: exit.sl_pct.filter(|v| v.is_finite() && *v > 0.0),
         entry: None,
         exit: None,
+        scale_out: None,
         reentry: None,
         exclusive: false,
         priority: 0,

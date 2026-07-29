@@ -57,6 +57,16 @@ use crate::metrics::{
     group_by_name, group_spec, metric_spec, MetricGroupId, MetricId, MetricScope, REGISTRY,
 };
 
+/// Hard cap on explicit (non-remainder) scale-out stages. Fee cost (~1% notional
+/// per extra leg at 0.1 SOL) and in-flight-sell blindness both argue against
+/// unbounded ladders — raise only when measurement demands it.
+pub const MAX_EXPLICIT_SCALE_STAGES: usize = 3;
+
+/// Max `sell_bps` on an explicit stage, and max sum of all explicit stages — a
+/// remainder must exist for whatever closes the stub (remainder stage or global
+/// exit). `9900` = 99% of the initial bag.
+pub const MAX_SCALE_SELL_BPS: u16 = 9900;
+
 /// Typed, registry-checked `params`. See module docs for the JSON shape.
 /// `default()` is the legal empty rule (fingerprint-only, no TP/SL/conditions).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -69,6 +79,9 @@ pub struct RuleParams {
     pub entry: Option<SideConditions>,
     /// Exit conditions. `None` = TP/SL/death only.
     pub exit: Option<SideConditions>,
+    /// Ordered partial-exit ladder. `None` / empty = no scale-out (legacy full
+    /// close only). See [`ExitStage`] and `docs/roadmap/partial-exits-plan.md`.
+    pub scale_out: Option<Vec<ExitStage>>,
     /// Re-entry lifecycle. `None` = one-shot (`Done` is terminal per (token, rule) —
     /// every stored rule's behavior). See [`ReEntry`].
     pub reentry: Option<ReEntry>,
@@ -83,6 +96,23 @@ pub struct RuleParams {
     /// exclusive rule then sees the claim). Ties fall back to rule-id order.
     /// Meaningless on a non-exclusive rule.
     pub priority: i32,
+}
+
+/// One ordered scale-out stage. Fires once while `stage == k`, sells
+/// [`sell_bps`](Self::sell_bps) of the **initial** bag (or `All` when `None` —
+/// the remainder stage), then advances. Reuses the full exit grammar: per-stage
+/// TP sugar + [`SideConditions`] (incl. `arm_above_pct`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ExitStage {
+    /// Basis points of the initial bag to sell. `None` = remainder / `All`
+    /// (must be last; closes the position outright under its own conditions).
+    pub sell_bps: Option<u16>,
+    /// Per-stage take-profit sugar (`pnl >= tp`), desugared at compile like the
+    /// global field. `None` = off for this stage.
+    pub take_profit: Option<f64>,
+    /// Authored metric conditions for this stage. Empty + no `take_profit` is
+    /// rejected at validate — a stage must be able to fire.
+    pub conditions: SideConditions,
 }
 
 /// Optional re-entry lifecycle (plan Ph4). Absent ⇒ one-shot. Present ⇒ after a
@@ -169,6 +199,14 @@ impl RuleParams {
         if let Some(side) = &self.exit {
             root.insert("exit".into(), side_to_value(side));
         }
+        if let Some(stages) = &self.scale_out {
+            if !stages.is_empty() {
+                root.insert(
+                    "scale_out".into(),
+                    Value::Array(stages.iter().map(stage_to_value).collect()),
+                );
+            }
+        }
         if let Some(re) = self.reentry {
             let mut o = Map::new();
             o.insert("cooldown_sec".into(), re.cooldown_sec.into());
@@ -199,6 +237,7 @@ impl RuleParams {
                     | "stop_loss"
                     | "entry"
                     | "exit"
+                    | "scale_out"
                     | "reentry"
                     | "exclusive"
                     | "priority"
@@ -211,6 +250,7 @@ impl RuleParams {
             stop_loss: parse_opt_number(obj.get("stop_loss"), "stop_loss")?,
             entry: parse_opt_side(obj.get("entry"), "entry")?,
             exit: parse_opt_side(obj.get("exit"), "exit")?,
+            scale_out: parse_opt_scale_out(obj.get("scale_out"))?,
             reentry: parse_opt_reentry(obj.get("reentry"))?,
             exclusive: parse_opt_bool(obj.get("exclusive"), "exclusive")?,
             priority: parse_opt_priority(obj.get("priority"))?,
@@ -234,6 +274,9 @@ impl RuleParams {
             for (group_id, instances) in &side.0 {
                 validate_group_instances(side_name, *group_id, instances)?;
             }
+        }
+        if let Some(stages) = &self.scale_out {
+            validate_scale_out(stages)?;
         }
         Ok(())
     }
@@ -272,6 +315,131 @@ fn parse_opt_reentry(v: Option<&Value>) -> Result<Option<ReEntry>, String> {
         }
         Some(_) => Err("reentry must be an object".into()),
     }
+}
+
+/// Parse `scale_out`. Empty array folds to `None` (same sentinel as
+/// [`crate::fingerprint::configured_labels`] — never leave `Some([])` in
+/// storage). Shape validation of counts/bps happens in [`validate_scale_out`].
+fn parse_opt_scale_out(v: Option<&Value>) -> Result<Option<Vec<ExitStage>>, String> {
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(arr)) if arr.is_empty() => Ok(None),
+        Some(Value::Array(arr)) => {
+            let stages = arr
+                .iter()
+                .enumerate()
+                .map(|(i, item)| parse_exit_stage(item, i))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Some(stages))
+        }
+        Some(_) => Err("scale_out must be an array".into()),
+    }
+}
+
+fn parse_exit_stage(v: &Value, index: usize) -> Result<ExitStage, String> {
+    let prefix = format!("scale_out[{index}]");
+    let obj = v
+        .as_object()
+        .ok_or_else(|| format!("{prefix} must be an object"))?;
+    for key in obj.keys() {
+        if !matches!(key.as_str(), "sell_bps" | "take_profit" | "conditions") {
+            return Err(format!("{prefix}: unknown key '{key}'"));
+        }
+    }
+    let sell_bps = match obj.get("sell_bps") {
+        None | Some(Value::Null) => None,
+        Some(Value::Number(n)) => {
+            let f = n
+                .as_f64()
+                .ok_or_else(|| format!("{prefix}.sell_bps is not a valid number"))?;
+            if !f.is_finite() || f.fract() != 0.0 || f < 1.0 || f > MAX_SCALE_SELL_BPS as f64 {
+                return Err(format!(
+                    "{prefix}.sell_bps must be an integer in [1, {MAX_SCALE_SELL_BPS}]"
+                ));
+            }
+            Some(f as u16)
+        }
+        Some(_) => return Err(format!("{prefix}.sell_bps must be a number")),
+    };
+    let take_profit = parse_opt_number(obj.get("take_profit"), &format!("{prefix}.take_profit"))?;
+    let conditions = match obj.get("conditions") {
+        None | Some(Value::Null) => SideConditions::default(),
+        Some(c) => parse_opt_side(Some(c), &format!("{prefix}.conditions"))?
+            .unwrap_or_default(),
+    };
+    Ok(ExitStage { sell_bps, take_profit, conditions })
+}
+
+fn validate_scale_out(stages: &[ExitStage]) -> Result<(), String> {
+    if stages.is_empty() {
+        return Ok(());
+    }
+    let mut explicit = 0usize;
+    let mut sum_bps: u32 = 0;
+    for (i, stage) in stages.iter().enumerate() {
+        let prefix = format!("scale_out[{i}]");
+        match stage.sell_bps {
+            Some(bps) => {
+                if i > 0 && stages[i - 1].sell_bps.is_none() {
+                    return Err(format!(
+                        "{prefix}: remainder stage (sell_bps omitted) must be last"
+                    ));
+                }
+                explicit += 1;
+                sum_bps += bps as u32;
+            }
+            None => {
+                if i + 1 != stages.len() {
+                    return Err(format!(
+                        "{prefix}: remainder stage (sell_bps omitted) must be last"
+                    ));
+                }
+            }
+        }
+        if let Some(tp) = stage.take_profit {
+            if !tp.is_finite() || tp <= 0.0 {
+                return Err(format!("{prefix}.take_profit must be a finite number > 0"));
+            }
+        }
+        // A stage must be able to fire: TP sugar and/or non-empty conditions.
+        if stage.take_profit.is_none() && stage.conditions.is_empty() {
+            return Err(format!(
+                "{prefix}: stage needs take_profit and/or non-empty conditions"
+            ));
+        }
+        for (group_id, instances) in &stage.conditions.0 {
+            // Stages are exit-like — position metrics are legal. Use a non-"entry"
+            // side name so `validate_group`'s entry-only rejection does not fire.
+            validate_group_instances(&format!("{prefix}.conditions"), *group_id, instances)?;
+        }
+    }
+    if explicit > MAX_EXPLICIT_SCALE_STAGES {
+        return Err(format!(
+            "scale_out: at most {MAX_EXPLICIT_SCALE_STAGES} explicit stages \
+             (+ optional remainder); got {explicit}"
+        ));
+    }
+    if sum_bps > MAX_SCALE_SELL_BPS as u32 {
+        return Err(format!(
+            "scale_out: sum of explicit sell_bps must be <= {MAX_SCALE_SELL_BPS} \
+             (got {sum_bps}) — a remainder must exist for the stub"
+        ));
+    }
+    Ok(())
+}
+
+fn stage_to_value(stage: &ExitStage) -> Value {
+    let mut obj = Map::new();
+    if let Some(bps) = stage.sell_bps {
+        obj.insert("sell_bps".into(), (bps as u64).into());
+    }
+    if let Some(tp) = stage.take_profit {
+        obj.insert("take_profit".into(), tp.into());
+    }
+    if !stage.conditions.is_empty() {
+        obj.insert("conditions".into(), side_to_value(&stage.conditions));
+    }
+    Value::Object(obj)
 }
 
 fn parse_opt_bool(v: Option<&Value>, name: &str) -> Result<bool, String> {
@@ -955,6 +1123,7 @@ mod tests {
             stop_loss: None,
             entry: Some(side),
             exit: None,
+            scale_out: None,
             reentry: None,
             exclusive: false,
             priority: 0,
@@ -1023,6 +1192,62 @@ mod tests {
             (json!({ "reentry": { "cooldown_sec": 5, "max_episodes_per_token": 2.5 } }), ">= 1"),
             (json!({ "reentry": { "cooldown_sec": 5 } }), "max_episodes_per_token"),
             (json!({ "reentry": { "cooldown_sec": 5, "max_episodes_per_token": 5, "foo": 1 } }), "unknown key"),
+        ] {
+            let e = RuleParams::parse(&bad).unwrap_err();
+            assert!(e.contains(needle), "expected '{needle}' in: {e}");
+        }
+    }
+
+    #[test]
+    fn scale_out_parses_validates_and_round_trips() {
+        let p = RuleParams::parse(&json!({
+            "stop_loss": 20,
+            "exit": { "m_position": { "retrace": [{ "operator": ">=", "value": 7 }], "arm_above_pct": 2 } },
+            "scale_out": [
+                { "sell_bps": 7000, "take_profit": 25 },
+                { "conditions": { "m_position": { "held": [{ "operator": ">=", "value": 30 }] } } }
+            ]
+        }))
+        .expect("scale_out rule is valid");
+        let stages = p.scale_out.as_ref().unwrap();
+        assert_eq!(stages.len(), 2);
+        assert_eq!(stages[0].sell_bps, Some(7000));
+        assert_eq!(stages[0].take_profit, Some(25.0));
+        assert!(stages[0].conditions.is_empty());
+        assert_eq!(stages[1].sell_bps, None, "remainder stage");
+        assert!(!stages[1].conditions.is_empty());
+        assert_eq!(RuleParams::parse(&p.to_value()).unwrap(), p);
+
+        // Empty array folds to None (configured_labels precedent).
+        assert_eq!(RuleParams::parse(&json!({ "scale_out": [] })).unwrap().scale_out, None);
+        assert!(RuleParams::parse(&json!({})).unwrap().to_value().get("scale_out").is_none());
+    }
+
+    #[test]
+    fn scale_out_rejects_bad_ladders() {
+        for (bad, needle) in [
+            // sell_bps out of range
+            (json!({ "scale_out": [{ "sell_bps": 0, "take_profit": 10 }] }), "[1, 9900]"),
+            (json!({ "scale_out": [{ "sell_bps": 9901, "take_profit": 10 }] }), "[1, 9900]"),
+            // no way to fire
+            (json!({ "scale_out": [{ "sell_bps": 5000 }] }), "take_profit and/or"),
+            // remainder not last
+            (json!({ "scale_out": [
+                { "conditions": { "m_position": { "held": [{ "operator": ">=", "value": 1 }] } } },
+                { "sell_bps": 5000, "take_profit": 10 }
+            ] }), "must be last"),
+            // sum too high
+            (json!({ "scale_out": [
+                { "sell_bps": 5000, "take_profit": 10 },
+                { "sell_bps": 5000, "take_profit": 20 }
+            ] }), "<= 9900"),
+            // too many explicit stages
+            (json!({ "scale_out": [
+                { "sell_bps": 1000, "take_profit": 10 },
+                { "sell_bps": 1000, "take_profit": 20 },
+                { "sell_bps": 1000, "take_profit": 30 },
+                { "sell_bps": 1000, "take_profit": 40 }
+            ] }), "at most 3 explicit"),
         ] {
             let e = RuleParams::parse(&bad).unwrap_err();
             assert!(e.contains(needle), "expected '{needle}' in: {e}");

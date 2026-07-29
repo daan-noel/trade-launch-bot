@@ -453,7 +453,7 @@ impl Replay {
                     self.pending_buys.insert(mint, intent);
                 }
             }
-            Effect::SubmitSell { intent, position, reason: _ } => {
+            Effect::SubmitSell { intent, position, reason: _, portion: _ } => {
                 let token_amount =
                     self.builders.get(&position).map(|b| b.entry_token_amount).unwrap_or(0);
                 let mint = intent.mint.clone();

@@ -381,7 +381,7 @@ pub fn adopt_holding_into_engine(
     registry: &PositionRegistry,
     pos: &StrategyPosition,
 ) -> Option<PositionId> {
-    use hunter_engine::arm::ArmState;
+    use hunter_engine::arm::{ArmState, EnteredCtx};
     use hunter_engine::event::TradeMode;
     use hunter_engine::grouping::TokenFingerprint;
     use hunter_engine::state::{PositionRef, RuleCounters, TokenState};
@@ -439,16 +439,19 @@ pub fn adopt_holding_into_engine(
     let token = state.tokens.get_mut(&mint)?;
     // Seed the position context from the adopted fill: `held` counts from the entry
     // time, `retrace` from the entry price (the peak is re-established as live trades
-    // fold in — a conservative restart baseline).
+    // fold in — a conservative restart baseline). Mid-ladder `stage`/`sold_bps`
+    // resume from PG lands in mig 0018 (step 2); until then adopt as stage 0.
     token.arms.insert(
         rule_id,
-        ArmState::Entered {
+        ArmState::Entered(EnteredCtx {
             position,
             entry_price,
             entered_at: created_at,
             peak_price: entry_price,
             trough_price: entry_price,
-        },
+            stage: 0,
+            sold_bps: 0,
+        }),
     );
 
     let ctr = state.counters.entry(rule_id).or_insert(RuleCounters::default());

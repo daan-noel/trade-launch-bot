@@ -128,7 +128,12 @@ pub fn read_logs(dir: &Path, date: Option<&str>) -> std::io::Result<(Vec<String>
 #[serde(tag = "effect")]
 enum InspectEffect {
     SubmitBuy { intent: IntentId, rule: RuleId, mint: String, lamports: u64 },
-    SubmitSell { intent: IntentId, position: PositionId, reason: ExitReason },
+    SubmitSell {
+        intent: IntentId,
+        position: PositionId,
+        reason: ExitReason,
+        portion: hunter_engine::event::Portion,
+    },
     PositionUpdate {
         position: PositionId,
         rule: RuleId,
@@ -140,6 +145,8 @@ enum InspectEffect {
         reason: Option<ExitReason>,
         #[serde(skip_serializing_if = "Option::is_none")]
         intent: Option<IntentId>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stage: Option<u8>,
     },
     ArmedChanged { mint: String, rule: RuleId, state: ArmedStateTag },
 }
@@ -153,10 +160,11 @@ impl From<&Effect> for InspectEffect {
                 mint: mint.to_string(),
                 lamports: *lamports,
             },
-            Effect::SubmitSell { intent, position, reason } => InspectEffect::SubmitSell {
+            Effect::SubmitSell { intent, position, reason, portion } => InspectEffect::SubmitSell {
                 intent: intent.clone(),
                 position: *position,
                 reason: *reason,
+                portion: *portion,
             },
             Effect::PositionUpdate(d) => InspectEffect::PositionUpdate {
                 position: d.position,
@@ -166,6 +174,7 @@ impl From<&Effect> for InspectEffect {
                 fill: d.fill,
                 reason: d.reason,
                 intent: d.intent.clone(),
+                stage: d.stage,
             },
             Effect::ArmedChanged(d) => InspectEffect::ArmedChanged {
                 mint: d.mint.to_string(),

@@ -9,7 +9,7 @@ use chrono::{Duration, TimeZone, Utc};
 use hunter_engine::arm::CompiledRule;
 use hunter_engine::event::{
     ArmedStateTag, DisarmReason, Effect, Event, ExitReason, Fill, FillFailReason, LoadedRule, Mint,
-    PositionId, PositionStatus, RuleId, TradeMode,
+    Portion, PositionId, PositionStatus, RuleId, TradeMode,
 };
 use hunter_engine::fingerprint::{Fingerprint, FingerprintId};
 use hunter_engine::grouping::TokenFingerprint;
@@ -122,6 +122,15 @@ fn sells(fx: &[Effect]) -> Vec<(PositionId, ExitReason)> {
         .collect()
 }
 
+fn sell_portions(fx: &[Effect]) -> Vec<Portion> {
+    fx.iter()
+        .filter_map(|e| match e {
+            Effect::SubmitSell { portion, .. } => Some(*portion),
+            _ => None,
+        })
+        .collect()
+}
+
 fn sell_intent(fx: &[Effect]) -> hunter_engine::event::IntentId {
     fx.iter()
         .find_map(|e| match e {
@@ -129,6 +138,15 @@ fn sell_intent(fx: &[Effect]) -> hunter_engine::event::IntentId {
             _ => None,
         })
         .expect("a SubmitSell effect")
+}
+
+fn stages(fx: &[Effect]) -> Vec<Option<u8>> {
+    fx.iter()
+        .filter_map(|e| match e {
+            Effect::PositionUpdate(d) => Some(d.stage),
+            _ => None,
+        })
+        .collect()
 }
 
 fn statuses(fx: &[Effect]) -> Vec<PositionStatus> {
@@ -1224,4 +1242,246 @@ fn manual_buy_retries_with_frozen_lamports_then_entry_failed() {
     assert!(buys(&fx).is_empty());
     assert_eq!(statuses(&fx), vec![PositionStatus::EntryFailed]);
     assert!(s.manual_rules.is_empty() && s.positions.is_empty());
+}
+
+// ── Scale-out / partial exits (roadmap partial-exits-plan.md §2) ──────────────
+
+/// Enter-on-arm + fill helper for scale-out scenarios.
+fn enter_holding(s: &mut EngineState, m: &Mint) {
+    let fx = reduce(
+        s,
+        Event::TokenCreated {
+            mint: m.clone(),
+            fp: cu_token(),
+            at: ts(0.0),
+            creator_wallet_hash: None,
+        },
+    );
+    let entry = buy_intent(&fx);
+    reduce(s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
+}
+
+#[test]
+fn scale_out_stage_fires_partial_and_advances() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(
+        &mut s,
+        reload(
+            vec![rule(
+                1,
+                1,
+                json!({
+                    "scale_out": [
+                        { "sell_bps": 7000, "take_profit": 50 },
+                        { "conditions": { "m_position": { "held": [{ "operator": ">=", "value": 30 }] } } }
+                    ]
+                }),
+            )],
+            vec![cu_fp(1)],
+        ),
+    );
+    enter_holding(&mut s, &m);
+
+    // +50% → stage-0 partial (7000 bps), NOT a full End.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.5, 40.0, 1.0) });
+    assert_eq!(sell_portions(&fx), vec![Portion::BpsOfInitial(7000)]);
+    assert_eq!(
+        sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+        vec![ExitReason::TakeProfit]
+    );
+    assert_eq!(statuses(&fx), vec![PositionStatus::ExitPending]);
+    assert_eq!(stages(&fx), vec![Some(0)]);
+    let leg = sell_intent(&fx);
+
+    // Partial fill → Holding again, stage advanced to 1; position still open.
+    let fx = reduce(&mut s, Event::FillConfirmed { intent: leg, fill: fill(1.5, 1.1) });
+    assert_eq!(statuses(&fx), vec![PositionStatus::Holding]);
+    assert_eq!(stages(&fx), vec![Some(1)]);
+    assert!(s.positions.len() == 1, "mid-ladder keeps the concurrency slot");
+    let token = s.tokens.get(&m).expect("still tracked");
+    match token.arms.get(&rid(1)) {
+        Some(hunter_engine::arm::ArmState::Entered(ctx)) => {
+            assert_eq!(ctx.stage, 1);
+            assert_eq!(ctx.sold_bps, 7000);
+            assert_eq!(ctx.peak_price, 1.5, "peak resumed, not reseeded");
+        }
+        other => panic!("expected Entered after partial fill, got {other:?}"),
+    }
+
+    // Remainder stage (held >= 30) closes All.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.6, 40.0, 40.0) });
+    assert_eq!(sell_portions(&fx), vec![Portion::All]);
+    let exit = sell_intent(&fx);
+    let fx = reduce(&mut s, Event::FillConfirmed { intent: exit, fill: fill(1.6, 40.1) });
+    assert_eq!(statuses(&fx), vec![PositionStatus::End]);
+    assert!(!s.tokens.contains_key(&m));
+}
+
+#[test]
+fn scale_out_global_sl_mid_ladder_closes_remainder() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(
+        &mut s,
+        reload(
+            vec![rule(
+                1,
+                1,
+                json!({
+                    "stop_loss": 30,
+                    "scale_out": [{ "sell_bps": 7000, "take_profit": 50 }]
+                }),
+            )],
+            vec![cu_fp(1)],
+        ),
+    );
+    enter_holding(&mut s, &m);
+
+    // Bank 70% at +50%.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.5, 40.0, 1.0) });
+    let leg = sell_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: leg, fill: fill(1.5, 1.1) });
+
+    // Price crashes to −40% from entry → global SL closes the stub (All), not
+    // another stage (there is none left).
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 0.6, 40.0, 2.0) });
+    assert_eq!(sell_portions(&fx), vec![Portion::All]);
+    assert_eq!(
+        sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+        vec![ExitReason::StopLoss]
+    );
+}
+
+#[test]
+fn scale_out_after_last_partial_global_trail_closes_stub() {
+    // One partial into strength; stub trails under the global exit side.
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(
+        &mut s,
+        reload(
+            vec![rule(
+                1,
+                1,
+                json!({
+                    "exit": { "m_position": {
+                        "retrace": [{ "operator": ">=", "value": 8 }],
+                        "arm_above_pct": 2
+                    } },
+                    "scale_out": [{ "sell_bps": 7000, "take_profit": 50 }]
+                }),
+            )],
+            vec![cu_fp(1)],
+        ),
+    );
+    enter_holding(&mut s, &m);
+
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.5, 40.0, 1.0) });
+    assert_eq!(sell_portions(&fx), vec![Portion::BpsOfInitial(7000)]);
+    let leg = sell_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: leg, fill: fill(1.5, 1.1) });
+
+    // Peak stays 1.5; drop to 1.35 = 10% retrace off peak, pnl +35% clears the gate.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.35, 40.0, 2.0) });
+    assert_eq!(sell_portions(&fx), vec![Portion::All]);
+    assert!(matches!(
+        sells(&fx)[0].1,
+        ExitReason::Metrics { .. }
+    ));
+}
+
+#[test]
+fn scale_out_partial_fill_fail_exhaust_goes_exit_stuck() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(
+        &mut s,
+        reload(
+            vec![rule(1, 1, json!({ "scale_out": [{ "sell_bps": 5000, "take_profit": 20 }] }))],
+            vec![cu_fp(1)],
+        ),
+    );
+    enter_holding(&mut s, &m);
+
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.25, 40.0, 1.0) });
+    assert_eq!(sell_portions(&fx), vec![Portion::BpsOfInitial(5000)]);
+    let mut intent = sell_intent(&fx);
+    // MAX_EXIT_ATTEMPTS = 5 → four retries then ExitStuck on the 5th failure.
+    for _ in 0..4 {
+        let fx = reduce(
+            &mut s,
+            Event::FillFailed { intent: intent.clone(), reason: FillFailReason::Reverted },
+        );
+        assert_eq!(sell_portions(&fx), vec![Portion::BpsOfInitial(5000)]);
+        intent = sell_intent(&fx);
+    }
+    let fx = reduce(&mut s, Event::FillFailed { intent, reason: FillFailReason::Reverted });
+    assert!(sells(&fx).is_empty());
+    assert_eq!(statuses(&fx), vec![PositionStatus::ExitStuck]);
+}
+
+#[test]
+fn scale_out_reentry_only_after_final_close() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(
+        &mut s,
+        reload(
+            vec![rule(
+                1,
+                1,
+                json!({
+                    "reentry": { "cooldown_sec": 0, "max_episodes_per_token": 3 },
+                    "scale_out": [
+                        { "sell_bps": 7000, "take_profit": 50 },
+                        { "take_profit": 100 }
+                    ]
+                }),
+            )],
+            vec![cu_fp(1)],
+        ),
+    );
+    enter_holding(&mut s, &m);
+
+    // Partial bank — must NOT count an episode / re-arm.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.5, 40.0, 1.0) });
+    let leg = sell_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: leg, fill: fill(1.5, 1.1) });
+    let token = s.tokens.get(&m).unwrap();
+    assert!(token.episodes.get(&rid(1)).is_none(), "partial does not bump episodes");
+    assert!(matches!(
+        token.arms.get(&rid(1)),
+        Some(hunter_engine::arm::ArmState::Entered(_))
+    ));
+
+    // Remainder TP at +100% → final End → then Cooldown (re-entry).
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 2.0, 40.0, 2.0) });
+    assert_eq!(sell_portions(&fx), vec![Portion::All]);
+    let exit = sell_intent(&fx);
+    let fx = reduce(&mut s, Event::FillConfirmed { intent: exit, fill: fill(2.0, 2.1) });
+    assert_eq!(statuses(&fx), vec![PositionStatus::End]);
+    let token = s.tokens.get(&m).expect("re-entry keeps token tracked");
+    assert_eq!(token.episodes.get(&rid(1)), Some(&1));
+    assert!(matches!(
+        token.arms.get(&rid(1)),
+        Some(hunter_engine::arm::ArmState::Cooldown { .. })
+            | Some(hunter_engine::arm::ArmState::Armed)
+    ));
+}
+
+#[test]
+fn scale_out_absent_legacy_sell_is_portion_all() {
+    // Existing TP path must still emit Portion::All (byte-identical decisions aside
+    // from the new field defaulting to All).
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(&mut s, reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![cu_fp(1)]));
+    enter_holding(&mut s, &m);
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 2.0, 40.0, 1.0) });
+    assert_eq!(sell_portions(&fx), vec![Portion::All]);
+    assert_eq!(
+        sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+        vec![ExitReason::TakeProfit]
+    );
 }

@@ -380,6 +380,24 @@ pub enum Event {
     ExternallyCleared { position: PositionId, fill: Fill },
 }
 
+/// How much of a held bag a sell should close. `All` is today's full-bag path;
+/// `BpsOfInitial` sells that many basis points of the **initial** entry bag
+/// (partial exits / scale-out). See `docs/roadmap/partial-exits-plan.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Portion {
+    /// Close 100% of the remaining bag.
+    All,
+    /// Sell `bps / 10_000` of the initial token amount (clamped to remaining at exec).
+    BpsOfInitial(u16),
+}
+
+impl Portion {
+    /// Whether this portion leaves a stub behind (a Holding-preserving fill).
+    pub fn is_partial(self) -> bool {
+        matches!(self, Self::BpsOfInitial(_))
+    }
+}
+
 /// The ordered output stream. `SubmitBuy`/`SubmitSell` are the trade *decisions*
 /// (the golden-log spec asserts on these); `PositionUpdate`/`ArmedChanged` are the
 /// persistence + SSE side-effects the adapters consume.
@@ -388,8 +406,14 @@ pub enum Effect {
     /// Buy `lamports` of `mint` for `rule`. The consumer submits and, on fill,
     /// feeds a `FillConfirmed { intent, .. }` back into the engine.
     SubmitBuy { intent: IntentId, rule: RuleId, mint: Mint, lamports: u64 },
-    /// Sell the position out, `reason` recording why.
-    SubmitSell { intent: IntentId, position: PositionId, reason: ExitReason },
+    /// Sell (a portion of) the position out, `reason` recording why.
+    /// `portion: All` is the legacy full close; `BpsOfInitial` is a scale-out leg.
+    SubmitSell {
+        intent: IntentId,
+        position: PositionId,
+        reason: ExitReason,
+        portion: Portion,
+    },
     /// A position lifecycle transition — the PG writer + position SSE consume it.
     PositionUpdate(PositionDelta),
     /// A (token, rule) arming transition — the live-monitor SSE consumes it.
@@ -421,7 +445,8 @@ pub enum PositionStatus {
 }
 
 /// One position lifecycle transition. `fill` is the entry fill on `Holding` and
-/// the exit fill on `End`; `reason` accompanies the exit statuses.
+/// the exit fill on `End` (or a partial-leg fill on a Holding-preserving update);
+/// `reason` accompanies the exit statuses.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PositionDelta {
     pub position: PositionId,
@@ -432,6 +457,9 @@ pub struct PositionDelta {
     pub reason: Option<ExitReason>,
     /// The intent that drove this transition (for adapter correlation), when one did.
     pub intent: Option<IntentId>,
+    /// Scale-out stage index after this transition (`None` = legacy / no ladder).
+    /// Set on partial ExitPending submits and on Holding-preserving partial fills.
+    pub stage: Option<u8>,
 }
 
 /// Why a (token, rule) arming ended.

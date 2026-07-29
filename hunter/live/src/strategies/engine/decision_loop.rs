@@ -309,7 +309,7 @@ async fn dispatch(
                     state, registry, real_deps, token_cache, settings, intent, rule, mint, lamports,
                 );
             }
-            Effect::SubmitSell { intent, position, reason: _ } => {
+            Effect::SubmitSell { intent, position, reason: _, portion: _ } => {
                 dispatch_sell(registry, real_deps, token_cache, settings, intent, position);
             }
             _ => {}

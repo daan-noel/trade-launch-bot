@@ -12,7 +12,7 @@ use smallvec::SmallVec;
 
 use crate::cap::Cap;
 use crate::event::{
-    DisarmReason, ExitReason, IntentId, LoadedRule, PositionId, RuleId, TradeMode,
+    DisarmReason, ExitReason, IntentId, LoadedRule, Portion, PositionId, RuleId, TradeMode,
 };
 use crate::fingerprint::FingerprintId;
 use crate::metrics::evaluator::{eval, first_satisfied_cond, Condition, ConditionExpr, Operator};
@@ -148,6 +148,14 @@ fn arm_mono_upper(
     })
 }
 
+/// One compiled scale-out stage: optional `sell_bps` (`None` = remainder/`All`)
+/// and the flattened exit reqs (per-stage TP desugared + authored conditions).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledStage {
+    pub sell_bps: Option<u16>,
+    pub reqs: Vec<MetricReq>,
+}
+
 /// A [`LoadedRule`] pre-chewed for the hot path. Metric reads are flattened, the
 /// distinct windows are listed (split flow vs price) for
 /// [`TokenTrack::ensure_window`] / [`TokenTrack::ensure_price_window`], and the
@@ -175,6 +183,9 @@ pub struct CompiledRule {
     /// desugared TP/SL (`pnl`, prepended) followed by authored exit metrics
     /// (token- or position-scoped). Empty ⇒ only a dead-token verdict closes.
     pub exit_reqs: Vec<MetricReq>,
+    /// Ordered scale-out stages (empty = legacy full-close only). Evaluated via
+    /// [`stage_fired`](Self::stage_fired) only when no global exit fired.
+    pub scale_out: Vec<CompiledStage>,
     /// Distinct **flow** `window_size_sec` values this rule reads across both sides
     /// (`m_flow_window` + `m_flow_split_window`) — drive `ensure_window` / `ensure_flow`.
     pub flow_windows: SmallVec<[f64; 2]>,
@@ -236,11 +247,33 @@ impl CompiledRule {
             exit_reqs = desugared;
         }
 
-        // Distinct windows across both sides (dynamic metrics only), split by which
-        // buffer they drive: price-extrema deques vs flow ring buffers.
+        // Scale-out stages: same TP desugar + build_reqs per stage.
+        let scale_out: Vec<CompiledStage> = rule
+            .params
+            .scale_out
+            .as_ref()
+            .map(|stages| {
+                stages
+                    .iter()
+                    .map(|s| {
+                        let mut reqs = build_reqs(&s.conditions, rule.fingerprint_id);
+                        if let Some(tp) = s.take_profit {
+                            let mut with_tp = vec![pnl_req(Operator::Gte, tp, ReqOrigin::TakeProfit)];
+                            with_tp.append(&mut reqs);
+                            reqs = with_tp;
+                        }
+                        CompiledStage { sell_bps: s.sell_bps, reqs }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Distinct windows across both sides + every scale-out stage (dynamic
+        // metrics only), split by which buffer they drive.
         let mut flow_windows: SmallVec<[f64; 2]> = SmallVec::new();
         let mut price_windows: SmallVec<[f64; 2]> = SmallVec::new();
-        for r in entry_reqs.iter().chain(exit_reqs.iter()) {
+        let stage_reqs = scale_out.iter().flat_map(|s| s.reqs.iter());
+        for r in entry_reqs.iter().chain(exit_reqs.iter()).chain(stage_reqs) {
             if let Some(w) = r.window {
                 let bucket = if group_of(r.metric).id == MetricGroupId::PriceWindow {
                     &mut price_windows
@@ -290,6 +323,7 @@ impl CompiledRule {
             stop_loss: rule.params.stop_loss,
             entry_reqs,
             exit_reqs,
+            scale_out,
             flow_windows,
             price_windows,
             mono_kills,
@@ -355,32 +389,26 @@ impl CompiledRule {
         ctx: &PositionCtx,
         now: Ts,
     ) -> Option<ExitReason> {
-        let price = track.current_price();
-        for r in &self.exit_reqs {
-            // A trailing stop held off until the position is `arm_above_pct` in
-            // profit. Only ever set on trailing reqs, so TP/SL and every other exit
-            // metric are untouched.
-            if !trailing_armed(r.arm_above_pct, ctx, price) {
-                continue;
-            }
-            let reading = if r.position_scoped {
-                position_value(r.metric, ctx, price, now)
-            } else {
-                track.value(r.metric, r.window, r.fingerprint, now)
-            };
-            if let Some(c) = first_satisfied_cond(&r.conds, reading, r.tolerance) {
-                return Some(match r.origin {
-                    ReqOrigin::TakeProfit => ExitReason::TakeProfit,
-                    ReqOrigin::StopLoss => ExitReason::StopLoss,
-                    ReqOrigin::Authored => ExitReason::Metrics {
-                        metric: r.metric,
-                        operator: c.operator,
-                        value: c.value,
-                    },
-                });
-            }
-        }
-        None
+        reqs_exit_fired(&self.exit_reqs, track, ctx, now)
+    }
+
+    /// Whether the current scale-out stage fires at `now`. Only the stage at
+    /// `stage` is evaluated; past the ladder ⇒ `None` (position continues under
+    /// the global exit side alone). Same req walk as [`exit_fired`].
+    pub fn stage_fired(
+        &self,
+        stage: u8,
+        track: &TokenTrack,
+        ctx: &PositionCtx,
+        now: Ts,
+    ) -> Option<ExitReason> {
+        let s = self.scale_out.get(stage as usize)?;
+        reqs_exit_fired(&s.reqs, track, ctx, now)
+    }
+
+    /// The compiled stage at `stage`, if any (for the fold to read `sell_bps`).
+    pub fn stage_at(&self, stage: u8) -> Option<&CompiledStage> {
+        self.scale_out.get(stage as usize)
     }
 
     /// Whether the armed side may submit a buy at `now`.
@@ -401,6 +429,41 @@ impl CompiledRule {
             k.permanently_false(track.value(k.metric, k.window, k.fingerprint, now))
         })
     }
+}
+
+/// Shared exit-req walk for the global side and each scale-out stage.
+fn reqs_exit_fired(
+    reqs: &[MetricReq],
+    track: &TokenTrack,
+    ctx: &PositionCtx,
+    now: Ts,
+) -> Option<ExitReason> {
+    let price = track.current_price();
+    for r in reqs {
+        // A trailing stop held off until the position is `arm_above_pct` in
+        // profit. Only ever set on trailing reqs, so TP/SL and every other exit
+        // metric are untouched.
+        if !trailing_armed(r.arm_above_pct, ctx, price) {
+            continue;
+        }
+        let reading = if r.position_scoped {
+            position_value(r.metric, ctx, price, now)
+        } else {
+            track.value(r.metric, r.window, r.fingerprint, now)
+        };
+        if let Some(c) = first_satisfied_cond(&r.conds, reading, r.tolerance) {
+            return Some(match r.origin {
+                ReqOrigin::TakeProfit => ExitReason::TakeProfit,
+                ReqOrigin::StopLoss => ExitReason::StopLoss,
+                ReqOrigin::Authored => ExitReason::Metrics {
+                    metric: r.metric,
+                    operator: c.operator,
+                    value: c.value,
+                },
+            });
+        }
+    }
+    None
 }
 
 /// AND every metric read in `reqs` at `now` (the **entry** combinator). Empty ⇒
@@ -485,6 +548,48 @@ fn build_reqs(
     out
 }
 
+/// Held-position snapshot shared by [`ArmState::Entered`] and a partial
+/// [`ArmState::ExitPending`] (restored on fill so peak/trough/entry are not
+/// reseeded). `stage` / `sold_bps` are 0 on legacy (no scale-out) positions.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnteredCtx {
+    pub position: PositionId,
+    pub entry_price: f64,
+    pub entered_at: Ts,
+    pub peak_price: f64,
+    pub trough_price: f64,
+    /// Index of the next scale-out stage to evaluate (`0` = first / no ladder).
+    pub stage: u8,
+    /// Cumulative bps of the initial bag already sold via scale-out legs.
+    pub sold_bps: u16,
+}
+
+impl EnteredCtx {
+    /// Seed a fresh entry fill: peak/trough start at the fill price; stage ladder
+    /// at 0.
+    pub fn at_fill(position: PositionId, fill_price: f64, at: Ts) -> Self {
+        Self {
+            position,
+            entry_price: fill_price,
+            entered_at: at,
+            peak_price: fill_price,
+            trough_price: fill_price,
+            stage: 0,
+            sold_bps: 0,
+        }
+    }
+
+    /// Build the [`PositionCtx`] position-scoped metrics read.
+    pub fn position_ctx(&self) -> PositionCtx {
+        PositionCtx {
+            entry_price: self.entry_price,
+            peak_price: self.peak_price,
+            trough_price: self.trough_price,
+            entered_at: self.entered_at,
+        }
+    }
+}
+
 /// Per-(token, rule) arming lifecycle. `attempts` counts submit tries so a bounded
 /// retry policy can give up (plan §3.3 fill-failure handling).
 #[derive(Debug, Clone, PartialEq)]
@@ -500,20 +605,18 @@ pub enum ArmState {
     /// identically (manual episodes have no rule row to re-read; `0` ⇒ fall back
     /// to the rule's configured amount, as boot-adopted arms do).
     EntryPending { intent: IntentId, position: PositionId, attempts: u32, lamports: u64 },
-    /// Entry filled; the position is held and evaluating exit. `entry_price` is the
-    /// fill price `pnl` measures against, `entered_at` the fill time (`held`),
-    /// `peak_price` the highest price since entry (`retrace`), and `trough_price`
-    /// the lowest (`bounce`) — both folded forward each event into the
-    /// [`PositionCtx`] the position-scoped exit metrics read.
-    Entered {
-        position: PositionId,
-        entry_price: f64,
-        entered_at: Ts,
-        peak_price: f64,
-        trough_price: f64,
+    /// Entry filled; the position is held and evaluating exit / scale-out.
+    Entered(EnteredCtx),
+    /// A sell is in flight for `intent` (the `attempts`-th try), closing (a
+    /// portion of) the bag for `reason`. `held` is the Entered snapshot —
+    /// restored on a partial fill; discarded on a full close.
+    ExitPending {
+        intent: IntentId,
+        reason: ExitReason,
+        attempts: u32,
+        portion: Portion,
+        held: EnteredCtx,
     },
-    /// A sell is in flight for `intent` (the `attempts`-th try), closing for `reason`.
-    ExitPending { position: PositionId, intent: IntentId, reason: ExitReason, attempts: u32 },
     /// A re-entry rule closed a position and is waiting out its cooldown before
     /// re-arming: the fold promotes it back to [`Armed`](Self::Armed) once a
     /// trade/tick carries `now >= until` (plan Ph4). **Non-terminal** — the token
@@ -893,5 +996,32 @@ mod tests {
         assert!(!b.cross_at_ge);
         assert!(!b.crossed(20.25));
         assert!(b.crossed(20.26));
+    }
+
+    #[test]
+    fn scale_out_compiles_stages_and_merges_windows() {
+        let c = CompiledRule::compile(&rule(json!({
+            "scale_out": [
+                { "sell_bps": 7000, "take_profit": 25 },
+                {
+                    "sell_bps": 2000,
+                    "conditions": {
+                        "m_flow_window": {
+                            "window_size_sec": 5,
+                            "net_flow": [{ "operator": "<=", "value": 0 }]
+                        }
+                    }
+                },
+                { "conditions": { "m_position": { "held": [{ "operator": ">=", "value": 30 }] } } }
+            ]
+        })));
+        assert_eq!(c.scale_out.len(), 3);
+        assert_eq!(c.scale_out[0].sell_bps, Some(7000));
+        assert_eq!(c.scale_out[0].reqs.len(), 1);
+        assert_eq!(c.scale_out[0].reqs[0].origin, ReqOrigin::TakeProfit);
+        assert_eq!(c.scale_out[1].sell_bps, Some(2000));
+        assert_eq!(c.scale_out[2].sell_bps, None, "remainder");
+        assert!(c.flow_windows.contains(&5.0), "stage windows merge into rule");
+        assert!(c.exit_reqs.is_empty(), "global side empty — stages alone");
     }
 }

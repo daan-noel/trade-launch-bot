@@ -18,16 +18,15 @@ use std::collections::BTreeMap;
 
 use smallvec::SmallVec;
 
-use crate::arm::{ArmState, CompiledRule};
+use crate::arm::{ArmState, CompiledRule, EnteredCtx};
 use crate::cap::Cap;
 use crate::deadness::{is_dead_verdict, DEAD_MEANINGFUL_TRADE_SOL};
 use crate::event::{
     ArmedDelta, ArmedStateTag, DisarmReason, Effect, Event, ExitReason, FillFailReason, Mint,
-    PositionDelta, PositionStatus, RuleId,
+    Portion, PositionDelta, PositionStatus, RuleId,
 };
 use crate::fingerprint::{match_all, MatchPhase};
 use crate::grouping::{TokenFingerprint, LAMPORTS_PER_SOL_F64};
-use crate::metrics::position::PositionCtx;
 use crate::metrics::Ts;
 use crate::state::{EngineState, PositionRef, TokenState};
 
@@ -158,18 +157,12 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
             match token.arms.get(&rule_id).cloned() {
                 Some(ArmState::EntryPending { intent: pend, position, .. }) if pend == intent => {
+                    // Peak/trough start at the fill: before any run-up
+                    // `retrace` measures the drop from entry (a soft stop);
+                    // before any dip `bounce` equals `pnl`.
                     token.arms.insert(
                         rule_id,
-                        ArmState::Entered {
-                            position,
-                            entry_price: fill.price,
-                            entered_at: fill.at,
-                            // Peak/trough start at the fill: before any run-up
-                            // `retrace` measures the drop from entry (a soft stop);
-                            // before any dip `bounce` equals `pnl`.
-                            peak_price: fill.price,
-                            trough_price: fill.price,
-                        },
+                        ArmState::Entered(EnteredCtx::at_fill(position, fill.price, fill.at)),
                     );
                     fx.push(Effect::PositionUpdate(PositionDelta {
                         position,
@@ -179,25 +172,59 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                         fill: Some(fill),
                         reason: None,
                         intent: Some(intent),
+                        stage: Some(0),
                     }));
                 }
-                Some(ArmState::ExitPending { intent: pend, position, reason, .. })
-                    if pend == intent =>
+                Some(ArmState::ExitPending {
+                    intent: pend,
+                    reason,
+                    portion,
+                    held,
+                    ..
+                }) if pend == intent =>
                 {
-                    decrement_open(state, rule_id);
-                    state.remove_position(position);
-                    // Re-arm into a cooldown if the rule allows it (else terminal Done).
-                    let next = rearm_after_close(state, &mut token.episodes, rule_id, reason, fill.at);
-                    token.arms.insert(rule_id, next);
-                    fx.push(Effect::PositionUpdate(PositionDelta {
-                        position,
-                        rule: rule_id,
-                        mint: mint.clone(),
-                        status: PositionStatus::End,
-                        fill: Some(fill),
-                        reason: Some(reason),
-                        intent: Some(intent),
-                    }));
+                    if portion.is_partial() {
+                        // Partial fill: advance stage, keep bag open, resume peak/trough.
+                        let bps = match portion {
+                            Portion::BpsOfInitial(b) => b,
+                            Portion::All => 0, // unreachable via is_partial
+                        };
+                        let mut next = held;
+                        next.stage = next.stage.saturating_add(1);
+                        next.sold_bps = next.sold_bps.saturating_add(bps);
+                        let stage = next.stage;
+                        let position = next.position;
+                        token.arms.insert(rule_id, ArmState::Entered(next));
+                        fx.push(Effect::PositionUpdate(PositionDelta {
+                            position,
+                            rule: rule_id,
+                            mint: mint.clone(),
+                            status: PositionStatus::Holding,
+                            fill: Some(fill),
+                            reason: Some(reason),
+                            intent: Some(intent),
+                            stage: Some(stage),
+                        }));
+                    } else {
+                        // Full / remainder close.
+                        let position = held.position;
+                        decrement_open(state, rule_id);
+                        state.remove_position(position);
+                        // Re-arm into a cooldown if the rule allows it (else terminal Done).
+                        let next =
+                            rearm_after_close(state, &mut token.episodes, rule_id, reason, fill.at);
+                        token.arms.insert(rule_id, next);
+                        fx.push(Effect::PositionUpdate(PositionDelta {
+                            position,
+                            rule: rule_id,
+                            mint: mint.clone(),
+                            status: PositionStatus::End,
+                            fill: Some(fill),
+                            reason: Some(reason),
+                            intent: Some(intent),
+                            stage: None,
+                        }));
+                    }
                 }
                 _ => {} // stale / unknown intent — ignore
             }
@@ -256,15 +283,18 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                             fill: None,
                             reason: None,
                             intent: Some(intent),
+                            stage: None,
                         }));
                     }
                 }
                 Some(ArmState::ExitPending {
                     intent: pend,
-                    position,
                     reason: exit_reason,
                     attempts,
+                    portion,
+                    held,
                 }) if pend == intent => {
+                    let position = held.position;
                     if reason == FillFailReason::Unconfirmed {
                         // May have cleared — never re-sell; alarm for manual review.
                         decrement_open(state, rule_id);
@@ -278,10 +308,12 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                             fill: None,
                             reason: Some(exit_reason),
                             intent: Some(intent),
+                            stage: None,
                         }));
                     } else if reason == FillFailReason::Fatal || attempts >= MAX_EXIT_ATTEMPTS {
                         // Sell gave up but the bag is still held — the position
                         // stays open in PG (`ExitStuck`); the reaper owns it now.
+                        // Same for a partial-leg exhaust (bag = the remainder).
                         decrement_open(state, rule_id);
                         state.remove_position(position);
                         token.arms.insert(rule_id, ArmState::Done);
@@ -293,6 +325,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                             fill: None,
                             reason: Some(exit_reason),
                             intent: Some(intent),
+                            stage: None,
                         }));
                     } else {
                         let next = state.next_intent(rule_id, mint.clone());
@@ -300,12 +333,18 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                             rule_id,
                             ArmState::ExitPending {
                                 intent: next.clone(),
-                                position,
                                 reason: exit_reason,
                                 attempts: attempts + 1,
+                                portion,
+                                held,
                             },
                         );
-                        fx.push(Effect::SubmitSell { intent: next, position, reason: exit_reason });
+                        fx.push(Effect::SubmitSell {
+                            intent: next,
+                            position,
+                            reason: exit_reason,
+                            portion,
+                        });
                     }
                 }
                 _ => {}
@@ -367,6 +406,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                 fill: None,
                 reason: None,
                 intent: Some(intent),
+                stage: None,
             }));
         }
 
@@ -379,22 +419,24 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             let Some(pref) = state.positions.get(&position).cloned() else { return fx };
             let PositionRef { mint, rule } = pref;
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
-            if let Some(ArmState::Entered { position: pos, .. }) = token.arms.get(&rule).cloned() {
-                if pos == position {
+            if let Some(ArmState::Entered(held)) = token.arms.get(&rule).cloned() {
+                if held.position == position {
                     let intent = state.next_intent(rule, mint.clone());
                     token.arms.insert(
                         rule,
                         ArmState::ExitPending {
                             intent: intent.clone(),
-                            position,
                             reason: ExitReason::Manual,
                             attempts: 1,
+                            portion: Portion::All,
+                            held,
                         },
                     );
                     fx.push(Effect::SubmitSell {
                         intent: intent.clone(),
                         position,
                         reason: ExitReason::Manual,
+                        portion: Portion::All,
                     });
                     fx.push(Effect::PositionUpdate(PositionDelta {
                         position,
@@ -404,6 +446,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                         fill: None,
                         reason: Some(ExitReason::Manual),
                         intent: Some(intent),
+                        stage: None,
                     }));
                 }
             }
@@ -416,8 +459,8 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             let Some(pref) = state.positions.get(&position).cloned() else { return fx };
             let PositionRef { mint, rule } = pref;
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
-            if let Some(ArmState::Entered { position: pos, .. }) = token.arms.get(&rule).cloned() {
-                if pos == position {
+            if let Some(ArmState::Entered(held)) = token.arms.get(&rule).cloned() {
+                if held.position == position {
                     // The bag is already gone → close terminally at the resolved fill.
                     // No `SubmitSell` (the twin of `ManualClose`, minus the sell).
                     decrement_open(state, rule);
@@ -431,6 +474,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                         fill: Some(fill),
                         reason: Some(ExitReason::Manual),
                         intent: None,
+                        stage: None,
                     }));
                 }
             }
@@ -474,6 +518,8 @@ enum ArmDecision {
     Disarm(DisarmReason),
     Enter,
     Exit(ExitReason),
+    /// Scale-out leg: sell `sell_bps` of the initial bag; fill restores Entered.
+    PartialExit { reason: ExitReason, sell_bps: u16 },
 }
 
 /// Sweep every arm on one token at `now`, deciding then applying. Used by
@@ -499,12 +545,12 @@ fn evaluate_token(
     let cur_price = token.track.current_price();
     if cur_price.is_finite() {
         for arm in token.arms.values_mut() {
-            if let ArmState::Entered { peak_price, trough_price, .. } = arm {
-                if cur_price > *peak_price {
-                    *peak_price = cur_price;
+            if let ArmState::Entered(ctx) = arm {
+                if cur_price > ctx.peak_price {
+                    ctx.peak_price = cur_price;
                 }
-                if cur_price < *trough_price {
-                    *trough_price = cur_price;
+                if cur_price < ctx.trough_price {
+                    ctx.trough_price = cur_price;
                 }
             }
         }
@@ -555,9 +601,8 @@ fn evaluate_token(
 /// The position an arm owns, when it owns one (keys the manual exit-rule lookup).
 fn arm_position(arm: &ArmState) -> Option<crate::event::PositionId> {
     match arm {
-        ArmState::EntryPending { position, .. }
-        | ArmState::Entered { position, .. }
-        | ArmState::ExitPending { position, .. } => Some(*position),
+        ArmState::EntryPending { position, .. } => Some(*position),
+        ArmState::Entered(ctx) | ArmState::ExitPending { held: ctx, .. } => Some(ctx.position),
         _ => None,
     }
 }
@@ -565,9 +610,10 @@ fn arm_position(arm: &ArmState) -> Option<crate::event::PositionId> {
 /// Decide one arm's fate. Priorities: armed side disarms (dead, then derived-unsat)
 /// before it enters; an `exclusive` rule then stands down while another arm holds the
 /// token; entry is gated by [`CompiledRule::can_enter`] (no buy while exit metrics
-/// already hold); the open side follows `Dead > exit_fired`, where `exit_fired` walks
-/// the desugared-TP/SL-then-authored exit reqs in order (so the legacy
-/// `SL > TP > Metrics` tiebreak is preserved inside the one loop).
+/// already hold); the open side follows `Dead > exit_fired > stage_fired`, where
+/// `exit_fired` walks the desugared-TP/SL-then-authored exit reqs in order (so the
+/// legacy `SL > TP > Metrics` tiebreak is preserved inside the one loop) and stages
+/// only fire when no global exit did.
 fn decide_arm(
     c: &CompiledRule,
     rule_id: RuleId,
@@ -600,23 +646,29 @@ fn decide_arm(
             }
             ArmDecision::None
         }
-        ArmState::Entered { entry_price, entered_at, peak_price, trough_price, .. } => {
+        ArmState::Entered(held) => {
             // Dead stays first and special (liquidity-based, not price). Every
             // price-based exit — the desugared TP/SL and every authored metric —
             // flows through the one `exit_fired` loop, so priority collapses from
             // `Dead > SL > TP > Metrics` to `Dead > exit_fired` (SL/TP are prepended
             // pnl reqs, so their old relative order is preserved inside the loop).
+            // Scale-out stages rank after the global side (catastrophe path first).
             if dead {
                 return ArmDecision::Exit(ExitReason::Dead);
             }
-            let ctx = PositionCtx {
-                entry_price: *entry_price,
-                peak_price: *peak_price,
-                trough_price: *trough_price,
-                entered_at: *entered_at,
-            };
+            let ctx = held.position_ctx();
             if let Some(reason) = c.exit_fired(&token.track, &ctx, now) {
                 return ArmDecision::Exit(reason);
+            }
+            if let Some(reason) = c.stage_fired(held.stage, &token.track, &ctx, now) {
+                match c.stage_at(held.stage).and_then(|s| s.sell_bps) {
+                    Some(sell_bps) => {
+                        return ArmDecision::PartialExit { reason, sell_bps };
+                    }
+                    // Remainder stage (`sell_bps` omitted) ⇒ full close under its
+                    // own conditions.
+                    None => return ArmDecision::Exit(reason),
+                }
             }
             ArmDecision::None
         }
@@ -681,18 +733,31 @@ fn apply_decision(
                 fill: None,
                 reason: None,
                 intent: Some(intent),
+                stage: None,
             }));
         }
         ArmDecision::Exit(reason) => {
-            let Some(ArmState::Entered { position, .. }) = token.arms.get(&rule_id).cloned() else {
+            let Some(ArmState::Entered(held)) = token.arms.get(&rule_id).cloned() else {
                 return;
             };
+            let position = held.position;
             let intent = state.next_intent(rule_id, mint.clone());
             token.arms.insert(
                 rule_id,
-                ArmState::ExitPending { intent: intent.clone(), position, reason, attempts: 1 },
+                ArmState::ExitPending {
+                    intent: intent.clone(),
+                    reason,
+                    attempts: 1,
+                    portion: Portion::All,
+                    held,
+                },
             );
-            fx.push(Effect::SubmitSell { intent: intent.clone(), position, reason });
+            fx.push(Effect::SubmitSell {
+                intent: intent.clone(),
+                position,
+                reason,
+                portion: Portion::All,
+            });
             fx.push(Effect::PositionUpdate(PositionDelta {
                 position,
                 rule: rule_id,
@@ -701,6 +766,42 @@ fn apply_decision(
                 fill: None,
                 reason: Some(reason),
                 intent: Some(intent),
+                stage: None,
+            }));
+        }
+        ArmDecision::PartialExit { reason, sell_bps } => {
+            let Some(ArmState::Entered(held)) = token.arms.get(&rule_id).cloned() else {
+                return;
+            };
+            let position = held.position;
+            let stage = held.stage;
+            let portion = Portion::BpsOfInitial(sell_bps);
+            let intent = state.next_intent(rule_id, mint.clone());
+            token.arms.insert(
+                rule_id,
+                ArmState::ExitPending {
+                    intent: intent.clone(),
+                    reason,
+                    attempts: 1,
+                    portion,
+                    held,
+                },
+            );
+            fx.push(Effect::SubmitSell {
+                intent: intent.clone(),
+                position,
+                reason,
+                portion,
+            });
+            fx.push(Effect::PositionUpdate(PositionDelta {
+                position,
+                rule: rule_id,
+                mint: mint.clone(),
+                status: PositionStatus::ExitPending,
+                fill: None,
+                reason: Some(reason),
+                intent: Some(intent),
+                stage: Some(stage),
             }));
         }
     }
