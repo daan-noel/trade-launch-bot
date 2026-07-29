@@ -128,12 +128,16 @@ export interface GroupedSweepRunRecord {
   /** Which cost model priced the round-trips. `null` on legacy runs ⇒
    *  `pumpfun_default`, which charges slippage on top of the fill price. */
   cost_model: CostModelId | null;
-  /** The candidate scale-out ladder GRID searched in Pass 2 — `ExitStage[][]`,
-   *  one array per candidate ladder (not a single flat ladder). `null` = no Pass 2.
-   *  Each group's top-K combos are independently re-scored against every ladder
-   *  here plus their own baseline exit and keep whichever wins — a combo the grid
-   *  doesn't help keeps its own exit, so this field is the search space, not what
-   *  any one combo ended up with (see that combo's own `params.scale_out`). */
+  /** The candidate scale-out ladder(s) searched in Pass 2 — `ExitStage[][]`
+   *  (backend keeps the grid-shaped wire contract for forward compat), but the
+   *  FE authors exactly ONE user ladder via `ScaleOutBuilder` and sends it as
+   *  the sole entry: comparing many arbitrary ladders against the same small
+   *  per-combo sample is a multiple-comparisons trap, not a real search. `null`
+   *  = no Pass 2. Each group's top-K combos are independently re-scored against
+   *  the ladder(s) here plus their own baseline exit and keep whichever wins —
+   *  a combo it doesn't help keeps its own exit, so this field is the search
+   *  space, not what any one combo ended up with (see that combo's own
+   *  `params.scale_out`). */
   scale_out: unknown[][] | null;
   /** How many best combos/group Pass 2 re-scored. `null` when no overlay. */
   scale_out_top_k: number | null;
@@ -271,10 +275,11 @@ export interface GroupedSweepStartArgs {
    *  `pumpfun_default`. Pair an explicit `fill_model` with `pumpfun_fee_only`:
    *  the fill price already prices slippage. */
   cost_model?: CostModelId;
-  /** Candidate scale-out ladder GRID for Pass 2 — `ExitStage[][]`, one array per
-   *  candidate ladder. Omitted / empty ⇒ no Pass 2. Each top-K combo per group is
-   *  re-scored against every ladder here plus its own baseline and keeps
-   *  whichever wins (dynamic, per combo — not one ladder forced on the grid). */
+  /** Pass-2 ladder for the run — `ExitStage[][]` on the wire (backend grid
+   *  contract), but the FE sends exactly one user-authored ladder as its sole
+   *  entry. Omitted / empty ⇒ no Pass 2. Each top-K combo per group is
+   *  re-scored against it plus its own baseline and keeps whichever wins
+   *  (per combo — never forced onto a combo it doesn't help). */
   scale_out?: unknown[][];
   /** Top-K combos per group for Pass 2. Default 3. */
   scale_out_top_k?: number;

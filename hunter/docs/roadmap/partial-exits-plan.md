@@ -319,11 +319,14 @@ join, or store `tx_signature` on the fill row with a partial unique). Entry-side
    PnL via `round_trip_multi_leg`); scale-out forces scalar (no index/SIMD);
    D5/D6 recorded in `sim-parity.md`; guards
    `scan_matches_replay_scale_out_two_stage` + `…_global_sl_mid_ladder`.
-   fs3-00 re-measure still pending operator run. **Pass-2 grid (07-29, v2
-   dynamic):** optional run-level `scale_out` (a candidate `ExitStage[][]`
-   grid) + `scale_out_top_k` re-scores each group's top-K combos against every
-   candidate ladder PLUS each combo's own baseline after the cheap axes pass,
-   independently per combo — see `docs/roadmap/scale-out-sweep-overlay-plan.md`.
+   fs3-00 re-measure still pending operator run. **Pass-2 overlay (07-29, v3
+   single ladder):** optional run-level `scale_out` (`ExitStage[][]` on the
+   wire, FE always sends one user-authored ladder) + `scale_out_top_k`
+   re-scores each group's top-K combos against that ladder PLUS each combo's
+   own baseline after the cheap axes pass, independently per combo. FE authors
+   the ladder via `ScaleOutBuilder` (Rule Editor's stage editor) as a
+   hypothesis to test, not a grid of guesses to search — see
+   `docs/roadmap/scale-out-sweep-overlay-plan.md`.
 5. FE. **DONE (07-29)** — RuleParams `scale_out`/`ExitStage` + validate +
    ScaleOutBuilder in RuleEditor; summary chips; PositionResponse
    sold_*/scale_stage/sold_bps; `GET …/positions/{id}/fills` (live+lab);

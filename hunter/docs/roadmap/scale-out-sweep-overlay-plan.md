@@ -1,8 +1,8 @@
 # Scale-out Pass 2 overlay (grouped-sweep)
 
-> Status: SHIPPED (07-29), v2 dynamic grid (07-29). Extends
-> `partial-exits-plan.md` §5 without making `scale_out` a swept axis — axes
-> stay fast; only top-K pay the staged scalar path.
+> Status: SHIPPED (07-29), v2 dynamic grid (07-29), v3 single authored ladder
+> (07-29). Extends `partial-exits-plan.md` §5 without making `scale_out` a
+> swept axis — axes stay fast; only top-K pay the staged scalar path.
 
 ## Problem
 
@@ -47,10 +47,45 @@ Promote / drill-in: read params as-is — the winning ladder (if any) is already
   `pass2_candidate_wins` helper.
 - Cost: `variants.len() + 1` staged scans per top-K combo (bounded — never a
   swept axis over the whole grid).
-- Default FE presets (any subset checkable): bank 50/70/85% at +30/50/80% TP,
-  remainder `held >= 20/30/45`.
 - v1 stage conditions: `m_position` / `take_profit` only (axes precompute
-  columns) — unchanged in v2, validated per-ladder in the grid.
+  columns) — unchanged in v2/v3, validated per-ladder in the grid.
+
+## Design update (v3 — single authored ladder)
+
+v2's FE offered a handful of hand-picked CANNED preset ladders (bank
+50/70/85% at various TPs) as independently-checkable candidates, comparing
+each checked one against baseline per combo. Two problems:
+
+1. **The presets were arbitrary guesses**, not derived from this rule's/
+   corpus's actual price-action — no reason any of the 3 shapes fits an
+   arbitrary swept combo's winning exit profile.
+2. **Multiple comparisons.** Picking the best of `{baseline, preset_0,
+   preset_1, preset_2}` per combo, scored on the same small per-combo sample
+   (often tens of fires), biases the reported winner upward from noise, not
+   real edge — the more candidates tried, the worse this gets. This is the
+   same "post-hoc selection on this dataset tends not to generalize" failure
+   mode called out in `launch-crew-follower-analysis.md`; the grid search
+   made it *more* likely, not less.
+
+v3 keeps the wire contract (`scale_out: ExitStage[][]`, run-level grid, per-
+combo `pass2_candidate_wins` selection) exactly as-is — it is still sound
+engineering — but the FE (`GenericSweepConfigForm`) now authors exactly
+**ONE** ladder via `ScaleOutBuilder` (the same stage editor the Rule Editor
+uses: arbitrary sell%/TP/conditions, not a canned checkbox), sent as the sole
+entry of the grid array. This turns Pass 2 into what it should be: a
+**hypothesis test** ("does the ladder I already believe in, from a real
+observation, beat this sweep's own top-K survivors' baseline exit, per
+combo?"), not a blind search over guesses. The 2-way (baseline vs. one
+ladder) comparison keeps the same "never make a combo worse" guarantee
+without amplifying selection bias. A one-click "start from" template just
+seeds the editor with a starting shape the user still owns and edits — it is
+not a second candidate compared alongside it.
+
+The backend still technically accepts `N > 1` variants (nothing enforces
+`N == 1` server-side) — the FE is what enforces single-ladder authoring. If a
+deliberate multi-hypothesis comparison is ever wanted, prefer running Pass 2
+twice (once per hypothesis) and eyeballing which one **generalizes** across
+groups, rather than letting Pass 2 pick per-combo from many at once.
 
 ## Non-goals
 
@@ -59,9 +94,11 @@ Promote / drill-in: read params as-is — the winning ladder (if any) is already
 - Parallel baseline/staged metric columns (Pass-2 winner overwrites the
   combo's `ComboMetrics` row in place; the pre-overwrite Pass-1 numbers are not
   separately retained).
-- A continuous/adaptive trail (`trail_pct = f(pnl)`) — the grid stays a small,
-  fixed set of discrete ladders; if a combo needs something between two
-  presets, add a preset, don't parameterize the shape.
+- A continuous/adaptive trail (`trail_pct = f(pnl)`) — author a discrete
+  ladder via `ScaleOutBuilder`, don't parameterize the shape.
+- Auto-searching a grid of guessed ladders to find "something profitable"
+  (v2's approach) — see the v3 design update above for why that amplifies
+  selection bias instead of finding real edge.
 
 ## Done criteria
 
@@ -70,7 +107,8 @@ Promote / drill-in: read params as-is — the winning ladder (if any) is already
   the dynamic winner-selection logic (`pass2_*` tests in `generic/strategy.rs`)
   — keeps baseline when nothing beats it, adopts a beating candidate, picks the
   single best of several (not the first improvement). ✓
-- FE: per-preset checkboxes + top-K on sweep form; re-run restores checked
-  state from the run's stored grid. ✓
+- FE: `ScaleOutBuilder` ladder editor (reused from the Rule Editor) + top-K on
+  sweep form, replacing the v2 preset checkboxes; re-run restores the run's
+  stored ladder into the editor. ✓
 - Promote of a Pass-2 run opens RuleEditor with the PROMOTED COMBO'S OWN
   winning `scale_out` attached (not a run-wide one). ✓

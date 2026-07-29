@@ -24,6 +24,13 @@ import { FingerprintGroupPicker } from './FingerprintGroupPicker';
 import { GenericAxisBuilder } from './GenericAxisBuilder';
 import { VolumeIxPatternsEditor } from 'components/strategy/VolumeIxPatternsEditor';
 import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeControl';
+import {
+  ScaleOutBuilder,
+  stagesToDrafts,
+  draftsToStages,
+  type ScaleStageDraft,
+} from 'components/strategy/ScaleOutBuilder';
+import type { ExitStage } from 'lib/strategy/ruleParams';
 import { useFingerprintMatches } from '@lab/components/strategy/useFingerprintMatches';
 import { FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import { LabelTip } from 'components/strategy/LabelTip';
@@ -57,36 +64,30 @@ const HARD_MAX_COMBOS = 1000000;
 const DEFAULT_TOKEN_CAP = 10000;
 const MAX_TOKEN_CAP = 100000;
 
-/** A single candidate scale-out ladder for the Pass-2 grid: bank `sellBps` at
- *  `takeProfit`, remainder trails out on `held >= stubHeldSec`. */
-function ladderStages(sellBps: number, takeProfit: number, stubHeldSec: number): unknown[] {
-  return [
-    { sell_bps: sellBps, take_profit: takeProfit },
-    { conditions: { m_position: { held: [{ operator: '>=', value: stubHeldSec }] } } },
-  ];
-}
-
 /**
- * The Pass-2 grid the form offers: a handful of candidate ladders (bank
- * fraction × TP × stub time-stop). Each is independently checkable — a group's
- * top-K combos are re-scored against every CHECKED ladder plus their own
- * baseline exit and keep whichever wins per combo (dynamic, not one ladder
- * forced onto the whole grid). See `docs/roadmap/scale-out-sweep-overlay-plan.md`.
+ * Optional quick-start templates for the Pass-2 ladder editor — a starting
+ * point to then EDIT (via `ScaleOutBuilder`, the same builder the Rule Editor
+ * uses), not auto-searched candidates. Pass 2 authors and tests exactly ONE
+ * ladder at a time: comparing many arbitrary shapes against the same small
+ * per-combo sample is a multiple-comparisons trap (a "winner" that's noise,
+ * not edge) — see `docs/roadmap/scale-out-sweep-overlay-plan.md`. Loading a
+ * template just seeds the editor; the user still owns and can reshape it.
  */
-const SCALE_OUT_PRESETS: { label: string; stages: unknown[] }[] = [
-  { label: '50% @ +30% TP → stub held ≥ 20s', stages: ladderStages(5000, 30, 20) },
-  { label: '70% @ +50% TP → stub held ≥ 30s', stages: ladderStages(7000, 50, 30) },
-  { label: '85% @ +80% TP → stub held ≥ 45s', stages: ladderStages(8500, 80, 45) },
+const SCALE_OUT_TEMPLATES: { label: string; stages: ExitStage[] }[] = [
+  {
+    label: '70% @ +50% TP → stub held ≥ 30s',
+    stages: [
+      { sell_bps: 7000, take_profit: 50, conditions: {} },
+      {
+        sell_bps: null,
+        take_profit: null,
+        conditions: {
+          m_position: [{ strict: {}, metrics: { held: [[{ operator: '>=', value: 30 }]] } }],
+        },
+      },
+    ],
+  },
 ];
-
-/** Is `stages` present (by deep value) in `variants`? Drives each preset's
- *  checkbox state directly off the form's `scaleOutVariants`, so a run restored
- *  from history (or a hand-edited grid) shows the right boxes checked without a
- *  separate index to keep in sync. */
-function presetIndexIn(variants: unknown[][], stages: unknown[]): number {
-  const target = JSON.stringify(stages);
-  return variants.findIndex((v) => JSON.stringify(v) === target);
-}
 
 /**
  * Desktop RAM reserve choices (MB) — how much host RAM the run leaves free for
@@ -177,9 +178,9 @@ interface GenericSweepConfig {
   /** Saved fingerprint the corpus is scoped to (engine match SSOT). When set the
    *  manual value filters are not sent — the backend matches instead. */
   seedFingerprintId: string | null;
-  /** Pass-2 candidate scale-out ladder GRID: `ExitStage[][]`, one array per
-   *  candidate ladder. Empty = off. */
-  scaleOutVariants: unknown[][];
+  /** Pass-2 scale-out ladder: one user-authored `ExitStage[]` (editor drafts,
+   *  same shape the Rule Editor uses). Empty = off. */
+  scaleOutStages: ScaleStageDraft[];
   /** Top-K combos per group for Pass 2. */
   scaleOutTopK: number;
 }
@@ -221,7 +222,7 @@ function defaultConfig(): GenericSweepConfig {
     fillModel: 'first_in_window',
     costModel: 'pumpfun_fee_only',
     seedFingerprintId: null,
-    scaleOutVariants: [],
+    scaleOutStages: [],
     scaleOutTopK: 3,
   };
 }
@@ -307,12 +308,14 @@ function runToConfig(run: GroupedSweepRunRecord, defaults: GenericSweepConfig): 
     // filters are NULL on a scoped run, so without this the re-run would silently
     // widen to the whole selection window.
     seedFingerprintId: run.fingerprint_id ?? null,
-    // `scale_out` is `ExitStage[][]` (a grid); defensively drop any non-array
-    // entry so a legacy flat-ladder run (pre-grid wire shape) restores as empty
-    // rather than crashing the preset matcher on a bad shape.
-    scaleOutVariants: Array.isArray(run.scale_out)
-      ? run.scale_out.filter((v): v is unknown[] => Array.isArray(v))
-      : [],
+    // `scale_out` is `ExitStage[][]` on the wire (grid-shaped for forward
+    // compat) but the form authors exactly ONE ladder — restore its first
+    // entry into editor drafts; anything else (legacy multi-ladder runs,
+    // malformed rows) restores as empty rather than guessing.
+    scaleOutStages:
+      Array.isArray(run.scale_out) && Array.isArray(run.scale_out[0])
+        ? stagesToDrafts(run.scale_out[0] as ExitStage[])
+        : [],
     scaleOutTopK: run.scale_out_top_k ?? defaults.scaleOutTopK,
   };
 }
@@ -413,7 +416,7 @@ export function GenericSweepConfigForm({
     fillModel,
     costModel,
     seedFingerprintId,
-    scaleOutVariants,
+    scaleOutStages,
     scaleOutTopK,
   } = config;
 
@@ -494,15 +497,9 @@ export function GenericSweepConfigForm({
     setField('groupBy', groupBy.includes(f) ? groupBy.filter((x) => x !== f) : [...groupBy, f]);
   }
 
-  /** Add/remove one preset ladder from the Pass-2 grid (`scaleOutVariants`), by
-   *  deep-value match — see [`presetIndexIn`]. */
-  function toggleScaleOutPreset(stages: unknown[]) {
-    const idx = presetIndexIn(scaleOutVariants, stages);
-    setField(
-      'scaleOutVariants',
-      idx >= 0 ? scaleOutVariants.filter((_, i) => i !== idx) : [...scaleOutVariants, stages],
-    );
-  }
+  // The user's authored Pass-2 ladder (editor drafts → wire `ExitStage[]`); `null`
+  // when the builder is empty, i.e. Pass 2 is off.
+  const scaleOutLadder = useMemo(() => draftsToStages(scaleOutStages), [scaleOutStages]);
 
   function handleRun() {
     if (!canRun) return;
@@ -558,8 +555,10 @@ export function GenericSweepConfigForm({
             .map((p) => p.map((s) => s.trim()).filter(Boolean))
             .filter((p) => p.length > 0)
         : undefined,
-      scale_out: scaleOutVariants.length > 0 ? scaleOutVariants : undefined,
-      scale_out_top_k: scaleOutVariants.length > 0 ? Math.max(1, scaleOutTopK) : undefined,
+      // Wire shape stays `ExitStage[][]` (forward-compat with the backend grid),
+      // but the form authors exactly ONE ladder — sent as its sole entry.
+      scale_out: scaleOutLadder ? [scaleOutLadder] : undefined,
+      scale_out_top_k: scaleOutLadder ? Math.max(1, scaleOutTopK) : undefined,
     });
   }
 
@@ -860,28 +859,44 @@ export function GenericSweepConfigForm({
       )}
 
       <div className="mt-3 border-t border-white/10 pt-3">
-        <Accordion title="Scale-out overlay (Pass 2)" defaultOpen={scaleOutVariants.length > 0}>
+        <Accordion title="Scale-out overlay (Pass 2)" defaultOpen={scaleOutStages.length > 0}>
           <div className="flex flex-col gap-2">
             <span className="text-[11px] text-text-dim">
-              Keep the axes grid on the fast exit path; after ranking, re-score each group&apos;s
-              top-K combos against EVERY checked ladder below PLUS the combo&apos;s own baseline
-              exit, and keep whichever wins per combo — dynamic, not one ladder forced on the
-              whole grid (a combo none of these ladders help keeps its own exit). Promote attaches
-              the winning ladder to the saved rule.
+              Author ONE ladder below — same builder as the Rule Editor — as a hypothesis you
+              already believe in (e.g. from a wallet/tranche analysis), not a shape to search
+              over: comparing many arbitrary ladders against the same small per-combo sample
+              tends to pick noise, not edge. Keep the axes grid on the fast exit path; after
+              ranking, re-score each group&apos;s top-K combos against this ladder PLUS the
+              combo&apos;s own baseline exit, and keep whichever wins per combo (a combo it
+              doesn&apos;t help keeps its own exit). Promote attaches the winning ladder to the
+              saved rule.
             </span>
-            <div className="flex flex-col gap-1.5">
-              {SCALE_OUT_PRESETS.map((preset) => (
-                <label key={preset.label} className="flex items-center gap-2 text-[11px] text-text">
-                  <Checkbox
-                    checked={presetIndexIn(scaleOutVariants, preset.stages) >= 0}
-                    onChange={() => toggleScaleOutPreset(preset.stages)}
+            {scaleOutStages.length === 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {SCALE_OUT_TEMPLATES.map((tpl) => (
+                  <button
+                    key={tpl.label}
+                    type="button"
                     disabled={running}
-                  />
-                  {preset.label}
-                </label>
-              ))}
-            </div>
-            {scaleOutVariants.length > 0 && (
+                    onClick={() => setField('scaleOutStages', stagesToDrafts(tpl.stages))}
+                    className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-text-dim hover:text-text disabled:opacity-40"
+                  >
+                    Start from: {tpl.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {registry ? (
+              <ScaleOutBuilder
+                stages={scaleOutStages}
+                onChange={(s) => setField('scaleOutStages', s)}
+                registry={registry}
+                disabled={running}
+              />
+            ) : (
+              <span className="text-[11px] text-text-dim/60">Loading strategy registry…</span>
+            )}
+            {scaleOutStages.length > 0 && (
               <div className="flex flex-wrap items-end gap-3">
                 <label className="flex flex-col gap-0.5 text-[11px] text-text-dim">
                   Top-K / group
@@ -897,10 +912,7 @@ export function GenericSweepConfigForm({
                     className="w-20"
                   />
                 </label>
-                <Badge variant="info">
-                  {scaleOutVariants.length} candidate ladder{scaleOutVariants.length > 1 ? 's' : ''} +
-                  baseline, per combo
-                </Badge>
+                <Badge variant="info">baseline vs. this ladder, per combo</Badge>
               </div>
             )}
           </div>

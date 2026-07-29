@@ -147,19 +147,23 @@ legacy combos keep the index/SIMD fast paths (`fast_exit` requires empty
 `scale_out`). Deliberate residuals D5/D6 in sim-parity (no in-flight-sell
 blindness; no frozen-tail stage advance).
 
-**Axes do not sweep stage counts.** Optional **Pass-2 grid** (run fields
-`scale_out` + `scale_out_top_k`, `scale_out` = `ExitStage[][]` — one array per
-candidate ladder): after each group's cheap fold, `GenericSweepStrategy::
-post_group_rescore` re-scores its top-K combos against EVERY candidate ladder
-PLUS each combo's own Pass-1 baseline, and keeps whichever wins **per combo** —
-dynamic, not one ladder forced on the whole grid. The winning ladder (if any)
-is baked directly into that specific combo's own `_combos.params` /
-`best_params` at write time (`grouped_engine::retained_combo_params`); a combo
-none of the ladders help keeps its own exit and carries no `scale_out`. Promote
-/ drill-in read `params` as-is — no run-level merge at read time. See
+**Axes do not sweep stage counts.** Optional **Pass-2 overlay** (run fields
+`scale_out` + `scale_out_top_k`; `scale_out` = `ExitStage[][]` on the wire for
+backend forward-compat, but the FE always sends exactly **one** user-authored
+ladder as its sole entry): after each group's cheap fold, `GenericSweepStrategy::
+post_group_rescore` re-scores its top-K combos against that ladder PLUS each
+combo's own Pass-1 baseline, and keeps whichever wins **per combo** — never
+forced onto a combo it doesn't help. The winning ladder (if any) is baked
+directly into that specific combo's own `_combos.params` / `best_params` at
+write time (`grouped_engine::retained_combo_params`); a combo the ladder
+doesn't help keeps its own exit and carries no `scale_out`. Promote / drill-in
+read `params` as-is — no run-level merge at read time. FE authors the ladder
+via `ScaleOutBuilder` (same stage editor as the Rule Editor) rather than
+picking from canned presets: Pass 2 is meant to test a hypothesis you already
+believe in against the sweep's own top-K survivors, not to blind-search a grid
+of guesses — comparing many arbitrary ladders per combo on a small sample is a
+multiple-comparisons trap (looks good by chance, not real edge). See
 [`docs/roadmap/scale-out-sweep-overlay-plan.md`](../roadmap/scale-out-sweep-overlay-plan.md).
-FE offers 3 checkable presets (bank 50/70/85% at +30/50/80% TP, remainder
-`held >= 20/30/45`); any subset forms the searched grid.
 
 ### Flow axes (`m_flow_split` / `m_flow_split_window`)
 
