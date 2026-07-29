@@ -622,6 +622,8 @@ pub async fn run_grouped(
     pricing: Pricing,
     // Corpus-wide volume-ix patterns for flow-metric axes (`None` = non-flow).
     volume_ix_patterns: Option<Vec<Vec<String>>>,
+    // Pass-2 fixed scale_out overlay + top_k (`None` = no Pass 2).
+    scale_out_pass2: Option<(Vec<hunter_engine::rule_params::ExitStage>, usize)>,
     coarse_observer: Arc<dyn SweepObserver + Send>,
     observer: Arc<dyn SweepObserver + Send>,
     sink: Arc<dyn GroupSink + Send + Sync>,
@@ -630,7 +632,7 @@ pub async fn run_grouped(
         "generic" => {
             sweep_generic(
                 axes_json, method, refine, corpus, fields, width, min_tokens, floor, max_combos,
-                pricing, volume_ix_patterns, coarse_observer, observer, sink,
+                pricing, volume_ix_patterns, scale_out_pass2, coarse_observer, observer, sink,
             )
             .await
         }
@@ -677,6 +679,7 @@ async fn sweep_generic(
     max_combos: Option<usize>,
     pricing: Pricing,
     volume_ix_patterns: Option<Vec<Vec<String>>>,
+    scale_out_pass2: Option<(Vec<hunter_engine::rule_params::ExitStage>, usize)>,
     coarse_observer: Arc<dyn SweepObserver + Send>,
     observer: Arc<dyn SweepObserver + Send>,
     sink: Arc<dyn GroupSink + Send + Sync>,
@@ -729,6 +732,12 @@ async fn sweep_generic(
     // a deterministic clock exit past a token's own last-trade cut still closes, matching
     // a simulate over the same tokens (parity plan Task 1). No-op on a trade-less corpus.
     strategy.set_corpus(&corpus.tokens);
+    if let Some((stages, top_k)) = scale_out_pass2 {
+        strategy.set_scale_out_pass2(stages, top_k);
+        observer.notice(&format!(
+            "Pass-2 scale-out overlay: re-scoring top-{top_k} combos/group under a fixed ladder"
+        ));
+    }
     let max_series_bytes = corpus
         .tokens
         .iter()

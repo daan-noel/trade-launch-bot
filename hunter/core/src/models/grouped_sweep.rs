@@ -90,6 +90,13 @@ pub struct GroupedSweepRun {
     /// fingerprint's `metric_config.m_flow_split.volume_ix_patterns`. `None` =
     /// non-flow run / legacy row.
     pub volume_ix_patterns: Option<Value>,
+    /// Fixed scale-out ladder applied in Pass 2 to each group's top-K combos
+    /// (`ExitStage[]`). `None` = no Pass 2 (legacy / overlay off). Promote merges
+    /// this into draft params — `_combos.params` stay baseline (shared across
+    /// groups). See `docs/roadmap/scale-out-sweep-overlay-plan.md`.
+    pub scale_out: Option<Value>,
+    /// How many best combos per group Pass 2 re-scores. `None` when no overlay.
+    pub scale_out_top_k: Option<i32>,
     /// Lifecycle: `running` (in flight), `completed` (full sweep), or
     /// `cancelled` (cancelled / crash-recovered → only `groups_done` groups
     /// present). Phase 4 partial persistence — a `cancelled` run is honest about

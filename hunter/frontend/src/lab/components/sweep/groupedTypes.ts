@@ -128,6 +128,10 @@ export interface GroupedSweepRunRecord {
   /** Which cost model priced the round-trips. `null` on legacy runs ⇒
    *  `pumpfun_default`, which charges slippage on top of the fill price. */
   cost_model: CostModelId | null;
+  /** Pass-2 fixed scale_out ladder (`ExitStage[]`). `null` = no overlay. */
+  scale_out: unknown[] | null;
+  /** How many best combos/group Pass 2 re-scored. `null` when no overlay. */
+  scale_out_top_k: number | null;
 }
 
 /** One group's summary row: its fingerprint key, sample size, and winning combo. */
@@ -262,4 +266,8 @@ export interface GroupedSweepStartArgs {
    *  `pumpfun_default`. Pair an explicit `fill_model` with `pumpfun_fee_only`:
    *  the fill price already prices slippage. */
   cost_model?: CostModelId;
+  /** Pass-2 fixed scale_out ladder. Omitted / empty ⇒ no Pass 2. */
+  scale_out?: unknown[];
+  /** Top-K combos per group for Pass 2. Default 3. */
+  scale_out_top_k?: number;
 }

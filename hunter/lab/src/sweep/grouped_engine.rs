@@ -284,8 +284,10 @@ pub fn run_grouped_sweep<S: Strategy>(
             bail!("sweep cancelled");
         }
         let mut gr = make_group_result(key.clone(), idx.len(), metrics, coverage);
-        // Emit a fully-folded group for incremental persistence before storing it.
+        // Pass 2 only on the persist path — coarse refine seeds neighborhoods from
+        // baseline ranks (no need to pay staged resolve twice).
         if emit {
+            strategy.post_group_rescore(params, corpus, idx, &mut gr, coverage, observer)?;
             let retained = retained_combo_params(strategy, params, &gr);
             sink.group_done(pos, &gr, &retained);
             free_persisted_metrics(&mut gr);
@@ -321,11 +323,9 @@ pub fn run_grouped_sweep<S: Strategy>(
                 }
             };
             let mut gr = make_group_result(key.clone(), idx.len(), metrics, coverage);
-            // `sweep_group_serial` bails on cancel, so reaching here means a
-            // fully-folded group — safe to emit for incremental persistence.
-            // Called from rayon workers, so out of order; `pos` carries the
-            // deterministic group_index.
+            // Pass 2 only on the persist path (see large-group branch).
             if emit {
+                strategy.post_group_rescore(params, corpus, idx, &mut gr, coverage, observer)?;
                 let retained = retained_combo_params(strategy, params, &gr);
                 sink.group_done(pos, &gr, &retained);
                 free_persisted_metrics(&mut gr);
@@ -837,7 +837,7 @@ fn make_group_result(
 /// If no combo clears the floor, fall back to the most-fired combo (a low-
 /// confidence pick — logged) so the group still surfaces something. `(0, None,
 /// 0.0)` only when no combo fired at all.
-fn best_combo(
+pub(crate) fn best_combo(
     metrics: &[ComboMetrics],
     group_tokens: usize,
     floor: CoverageFloor,

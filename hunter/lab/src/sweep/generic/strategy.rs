@@ -108,6 +108,21 @@ pub struct GenericSweepStrategy {
     grid: SparseGrid,
     /// Corpus-wide volume-ix patterns (compiled). `None` ⇒ no flow state / NaN.
     flow_patterns: Option<hunter_engine::metrics::flow_split::FlowPatterns>,
+    /// When set, [`compile_combo`](Self::compile_combo) merges this ladder into every
+    /// combo's `RuleParams` (Pass-2 overlay scan only). Leave `None` on the main
+    /// Pass-1 strategy so the axes grid keeps `fast_exit`.
+    scale_out_overlay: Option<Vec<hunter_engine::rule_params::ExitStage>>,
+    /// Pass-2 config: after each group's cheap fold, re-score top-K with
+    /// [`scale_out_overlay`](Self::scale_out_overlay). `None` ⇒ skip Pass 2.
+    scale_out_pass2: Option<ScaleOutPass2>,
+}
+
+/// Fixed scale-out ladder + per-group top-K for Pass 2 (see
+/// `docs/roadmap/scale-out-sweep-overlay-plan.md`).
+#[derive(Clone, Debug)]
+pub struct ScaleOutPass2 {
+    pub stages: Vec<hunter_engine::rule_params::ExitStage>,
+    pub top_k: usize,
 }
 
 impl GenericSweepStrategy {
@@ -128,7 +143,41 @@ impl GenericSweepStrategy {
             time_horizon_secs: model.metric_value_ceiling(MetricId::Time),
             stall_horizon_secs: model.metric_value_ceiling(MetricId::Stall),
         };
-        Self { model, as_of, corpus_horizon: None, pricing, columns, grid, flow_patterns }
+        Self {
+            model,
+            as_of,
+            corpus_horizon: None,
+            pricing,
+            columns,
+            grid,
+            flow_patterns,
+            scale_out_overlay: None,
+            scale_out_pass2: None,
+        }
+    }
+
+    /// Enable Pass 2: after each group ranks on the cheap axes path, re-score its
+    /// top-`top_k` combos under a fixed scale-out ladder.
+    pub fn set_scale_out_pass2(&mut self, stages: Vec<hunter_engine::rule_params::ExitStage>, top_k: usize) {
+        self.scale_out_pass2 = Some(ScaleOutPass2 {
+            stages,
+            top_k: top_k.max(1),
+        });
+    }
+
+    /// Clone this strategy with a compile-time scale_out overlay (no nested Pass 2).
+    fn with_overlay(&self, stages: Vec<hunter_engine::rule_params::ExitStage>) -> Self {
+        Self {
+            model: self.model.clone(),
+            as_of: self.as_of,
+            corpus_horizon: self.corpus_horizon,
+            pricing: self.pricing,
+            columns: self.columns.clone(),
+            grid: self.grid,
+            flow_patterns: self.flow_patterns.clone(),
+            scale_out_overlay: Some(stages),
+            scale_out_pass2: None,
+        }
     }
 
     /// Opt this run into the analytic frozen-tail resolve (D1) by anchoring it to the
@@ -221,7 +270,10 @@ impl GenericSweepStrategy {
     /// model charges a *fixed* per-leg cost, PnL% is not notional-invariant, so
     /// compare a sweep against a simulate only when both were sized the same.
     fn compile_combo(&self, idx: usize) -> CompiledRule {
-        let params = self.model.combo_params(idx);
+        let mut params = self.model.combo_params(idx);
+        if let Some(stages) = &self.scale_out_overlay {
+            params.scale_out = Some(stages.clone());
+        }
         let loaded = LoadedRule {
             id: RuleId(Uuid::nil()),
             fingerprint_id: FingerprintId(Uuid::nil()),
@@ -459,6 +511,69 @@ impl Strategy for GenericSweepStrategy {
 
     fn token_state_bytes_estimate(&self, token: &CorpusToken) -> usize {
         self.series_bytes_estimate(token)
+    }
+
+    fn post_group_rescore(
+        &self,
+        _params: &[Self::Params],
+        corpus: &crate::sweep::corpus::Corpus,
+        token_idx: &[usize],
+        gr: &mut crate::sweep::grouped_engine::GroupResult,
+        coverage: crate::sweep::grouped_engine::CoverageFloor,
+        observer: &dyn crate::sweep::progress::SweepObserver,
+    ) -> anyhow::Result<()> {
+        use crate::sweep::aggregate::ComboAgg;
+        use crate::sweep::grouped_engine::{best_combo, top_combo_ids};
+        use anyhow::bail;
+
+        let Some(pass2) = &self.scale_out_pass2 else {
+            return Ok(());
+        };
+        let top = top_combo_ids(&gr.metrics, pass2.top_k);
+        if top.is_empty() {
+            return Ok(());
+        }
+        let overlay = self.with_overlay(pass2.stages.clone());
+        for &orig_id in &top {
+            if observer.cancelled() {
+                bail!("sweep cancelled");
+            }
+            let combo = GenericCombo { idx: orig_id as usize };
+            let bound = overlay.bind_param(&combo);
+            let mut agg = ComboAgg::default();
+            let mut ctx = Self::ExitCtx::default();
+            let mut cands = Self::EntryCands::default();
+            let mut last_exit_key: Option<Self::ExitCtxKey> = None;
+            for &ti in token_idx {
+                if observer.cancelled() {
+                    bail!("sweep cancelled");
+                }
+                let token = &corpus.tokens[ti];
+                let state = overlay.prepare_token(token);
+                let trades = &token.trades;
+                let entry =
+                    overlay.resolve_entry_from(trades, &state, &bound, &combo, &mut cands);
+                let exit_key = overlay.exit_ctx_key(&bound, &entry);
+                if last_exit_key.as_ref() != Some(&exit_key) {
+                    overlay.build_exit_ctx(trades, &state, &bound, &entry, &combo, &mut ctx);
+                    last_exit_key = Some(exit_key);
+                }
+                let outcome =
+                    overlay.resolve_exit(trades, &state, &bound, &entry, &combo, &ctx);
+                agg.record(&outcome);
+            }
+            let mut m = agg.finalize(orig_id);
+            m.rescore_for_group(gr.token_count);
+            if let Some(slot) = gr.metrics.iter_mut().find(|x| x.combo_id == orig_id) {
+                *slot = m;
+            }
+        }
+        let (best_combo_id, best_score, best_expectancy_sol) =
+            best_combo(&gr.metrics, gr.token_count, coverage);
+        gr.best_combo_id = best_combo_id;
+        gr.best_score = best_score;
+        gr.best_expectancy_sol = best_expectancy_sol;
+        Ok(())
     }
 }
 

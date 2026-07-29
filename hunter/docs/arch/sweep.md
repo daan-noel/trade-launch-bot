@@ -145,8 +145,14 @@ non-empty (`Dead > global exit > stage`, multi-leg PnL via
 `round_trip_multi_leg`). Cost is ×(stages+1) resolve work only for those rules;
 legacy combos keep the index/SIMD fast paths (`fast_exit` requires empty
 `scale_out`). Deliberate residuals D5/D6 in sim-parity (no in-flight-sell
-blindness; no frozen-tail stage advance). Axes do not yet sweep stage counts —
-author a ladder on the rule / drill-in, or simulate.
+blindness; no frozen-tail stage advance).
+
+**Axes do not sweep stage counts.** Optional **Pass-2 overlay** (run fields
+`scale_out` + `scale_out_top_k`): after each group's cheap fold, re-score its
+top-K combos under a fixed ladder (`GenericSweepStrategy::post_group_rescore`).
+`_combos.params` stay baseline; promote / drill-in merge the run ladder. See
+[`docs/roadmap/scale-out-sweep-overlay-plan.md`](../roadmap/scale-out-sweep-overlay-plan.md).
+Default FE preset: bank 70% @ +50% TP, remainder `held >= 30`.
 
 ### Flow axes (`m_flow_split` / `m_flow_split_window`)
 

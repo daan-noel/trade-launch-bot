@@ -162,6 +162,17 @@ pub struct StartGroupedSweepBody {
     /// per-leg, that haircut is **not** rank-preserving across combos.
     #[serde(default)]
     pub cost_model: trading_core::strategies::kernel::CostModelKind,
+    /// Fixed scale-out ladder for Pass 2 (re-score each group's top-K). Omitted /
+    /// empty ⇒ no Pass 2. Stages validated like rule `scale_out`; v1 restricts
+    /// stage conditions to `m_position` / `take_profit` so the precompute columns
+    /// from the axes grid stay sufficient. See
+    /// `docs/roadmap/scale-out-sweep-overlay-plan.md`.
+    #[serde(default)]
+    pub scale_out: Option<serde_json::Value>,
+    /// How many best combos per group Pass 2 re-scores. Default 3; ignored when
+    /// `scale_out` is absent.
+    #[serde(default)]
+    pub scale_out_top_k: Option<usize>,
 }
 
 /// The [`Pricing`](crate::sweep::generic::Pricing) a stored run was computed under.
@@ -684,6 +695,15 @@ async fn run_grouped_sweep_job(
         let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })));
         return;
     }
+    // Parse + validate Pass-2 scale_out overlay (optional). Empty / omitted ⇒ off.
+    let scale_out_pass2 = match parse_scale_out_pass2(b.scale_out.as_ref(), b.scale_out_top_k) {
+        Ok(v) => v,
+        Err(msg) => {
+            gate.error = Some(msg.clone());
+            let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })));
+            return;
+        }
+    };
     let sel = Selection {
         mints: None,
         token_cap,
@@ -1031,6 +1051,10 @@ async fn run_grouped_sweep_job(
             .volume_ix_patterns
             .as_ref()
             .and_then(|p| serde_json::to_value(p).ok()),
+        scale_out: scale_out_pass2
+            .as_ref()
+            .and_then(|_| b.scale_out.clone()),
+        scale_out_top_k: scale_out_pass2.as_ref().map(|(_, k)| *k as i32),
         // The run's pricing identity. Persisted (not just applied) because a PnL
         // column without them is unreadable: two runs under different models are not
         // comparable, and the drill-in re-simulates against these to reproduce the
@@ -1186,8 +1210,11 @@ async fn run_grouped_sweep_job(
     // The sink hands each fully-folded group to the writer task. `run_grouped`
     // takes ownership, so it (and its sender) drop when the sweep ends — closing
     // the channel and letting the writer task finish.
-    let sink: Arc<dyn GroupSink + Send + Sync> =
-        Arc::new(HandlerSink { tx, group_mints: group_mints_map });
+    let sink: Arc<dyn GroupSink + Send + Sync> = Arc::new(HandlerSink {
+        tx,
+        group_mints: group_mints_map,
+        scale_out: scale_out_pass2.as_ref().and_then(|_| b.scale_out.clone()),
+    });
 
     let result = registry::run_grouped(
         &b.strategy_id,
@@ -1206,6 +1233,7 @@ async fn run_grouped_sweep_job(
             cost: b.cost_model.model(),
         },
         b.volume_ix_patterns.clone(),
+        scale_out_pass2.clone(),
         coarse_observer,
         observer,
         sink,
@@ -1357,6 +1385,9 @@ struct HandlerSink {
     /// Built from the corpus before the sweep so the group_done callback can
     /// attach mints to each write unit without touching the corpus again.
     group_mints: Arc<std::collections::HashMap<String, Vec<String>>>,
+    /// Run-level Pass-2 ladder — merged into `best_params` so the group chip
+    /// shows the overlay without mutating shared `_combos.params`.
+    scale_out: Option<serde_json::Value>,
 }
 
 impl GroupSink for HandlerSink {
@@ -1375,7 +1406,7 @@ impl GroupSink for HandlerSink {
     ) {
         let key_str = group.key.to_json().to_string();
         let mints = self.group_mints.get(&key_str).cloned().unwrap_or_default();
-        let write = group_to_write(group_index, group, retained_params, mints);
+        let write = group_to_write(group_index, group, retained_params, mints, self.scale_out.as_ref());
         // Insert retained combo rows before the group so JOINs resolve.
         let combo_rows: Vec<(i32, serde_json::Value)> = retained_params
             .iter()
@@ -1402,6 +1433,7 @@ fn group_to_write(
     g: &GroupResult,
     retained_params: &[(u32, serde_json::Value)],
     mints: Vec<String>,
+    scale_out: Option<&serde_json::Value>,
 ) -> GroupedSweepGroupWrite {
     let param_at = |id: u32| -> serde_json::Value {
         retained_params
@@ -1423,6 +1455,10 @@ fn group_to_write(
         .filter(|m| keep.contains(&m.combo_id))
         .map(metrics_to_result)
         .collect();
+    let mut best_params = param_at(g.best_combo_id);
+    if let Some(so) = scale_out {
+        best_params = merge_scale_out_into_params(&best_params, so);
+    }
     GroupedSweepGroupWrite {
         group_index: group_index as i32,
         group_key: g.key.to_json(),
@@ -1431,7 +1467,7 @@ fn group_to_write(
         best_combo_id: g.best_combo_id as i32,
         best_score: g.best_score,
         best_expectancy_sol: g.best_expectancy_sol,
-        best_params: param_at(g.best_combo_id),
+        best_params,
         results,
         mints,
     }
@@ -1825,7 +1861,7 @@ pub async fn promote_group(
     // The combo's params: an explicit `combo_id` from the `_combos` dict, else the
     // group's crowned `best_params`.
     let combo_id = query.combo_id.unwrap_or(group.best_combo_id);
-    let params = match query.combo_id {
+    let mut params = match query.combo_id {
         Some(cid) => match repo.get_combo_params(run_id, cid).await {
             Ok(Some(p)) => p,
             Ok(None) => {
@@ -1839,6 +1875,11 @@ pub async fn promote_group(
         },
         None => group.best_params.clone(),
     };
+    // Pass-2 overlay lives on the run (not `_combos.params`) — attach it so the
+    // promoted rule matches the scores that crowned this group.
+    if let Some(so) = &run.scale_out {
+        params = merge_scale_out_into_params(&params, so);
+    }
 
     // Fingerprint at the run's bucket width (fall back to the default for pre-0002
     // runs), find-or-created so identical winning groups map onto ONE fingerprint.
@@ -1966,6 +2007,65 @@ fn axes_json_references_flow(axes: &serde_json::Value) -> bool {
     })
 }
 
+/// Parse optional Pass-2 `scale_out` + top_k. Empty / null ⇒ `Ok(None)`.
+/// Stages must parse as rule `scale_out`; authored conditions must be
+/// position-scoped so the axes precompute columns remain sufficient.
+fn parse_scale_out_pass2(
+    raw: Option<&serde_json::Value>,
+    top_k: Option<usize>,
+) -> Result<Option<(Vec<hunter_engine::rule_params::ExitStage>, usize)>, String> {
+    use hunter_engine::arm::{CompiledRule, ReqOrigin};
+    use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
+    use hunter_engine::fingerprint::FingerprintId;
+    use hunter_engine::rule_params::RuleParams;
+
+    let Some(v) = raw else { return Ok(None) };
+    if v.is_null() {
+        return Ok(None);
+    }
+    if let Some(arr) = v.as_array() {
+        if arr.is_empty() {
+            return Ok(None);
+        }
+    }
+    let wrapped = serde_json::json!({ "scale_out": v });
+    let parsed = RuleParams::parse(&wrapped).map_err(|e| format!("scale_out: {e}"))?;
+    let stages = parsed
+        .scale_out
+        .clone()
+        .ok_or_else(|| "scale_out is empty".to_string())?;
+    let compiled = CompiledRule::compile(&LoadedRule {
+        id: RuleId(uuid::Uuid::nil()),
+        fingerprint_id: FingerprintId(uuid::Uuid::nil()),
+        trade_mode: TradeMode::Paper,
+        buy_amount_lamports: 1,
+        max_concurrent_tokens: 1,
+        max_total_tokens: 0,
+        params: parsed,
+    });
+    for (i, stage) in compiled.scale_out.iter().enumerate() {
+        for req in &stage.reqs {
+            if matches!(req.origin, ReqOrigin::Authored) && !req.position_scoped {
+                return Err(format!(
+                    "scale_out[{i}]: Pass-2 stages may only use m_position metrics \
+                     or take_profit (axes precompute has no extra columns for token-scoped metrics)"
+                ));
+            }
+        }
+    }
+    Ok(Some((stages, top_k.unwrap_or(3).max(1))))
+}
+
+/// Attach a run-level Pass-2 ladder onto a baseline combo params object.
+fn merge_scale_out_into_params(
+    params: &serde_json::Value,
+    scale_out: &serde_json::Value,
+) -> serde_json::Value {
+    let mut obj = params.as_object().cloned().unwrap_or_default();
+    obj.insert("scale_out".into(), scale_out.clone());
+    serde_json::Value::Object(obj)
+}
+
 /// Rebuild a [`Fingerprint`] from a stored group key at bucket `width`. The group
 /// key is `{field_tag: label}` where continuous SOL fields carry the bucket's
 /// `"lo–hi"` label (lower edge = a `width`-multiple) — the representative used is
@@ -2084,7 +2184,7 @@ pub async fn list_token_results(
 
     // Fetch the params JSON for the requested combo (from the per-run `_combos`
     // dictionary — `params` is run-level, keyed by `(run_id, combo_id)`).
-    let params_json = match repo.get_combo_params(run_id, query.combo_id).await {
+    let mut params_json = match repo.get_combo_params(run_id, query.combo_id).await {
         Ok(Some(p)) => p,
         Ok(None) => {
             return HttpResponse::NotFound().json(serde_json::json!({"error": "combo not found"}))
@@ -2095,6 +2195,9 @@ pub async fn list_token_results(
                 .json(serde_json::json!({"error": "database error"}));
         }
     };
+    if let Some(so) = &run.scale_out {
+        params_json = merge_scale_out_into_params(&params_json, so);
+    }
 
     // -----------------------------------------------------------------------
     // Load the group's token corpus — A → B → C cascade.
@@ -2400,6 +2503,48 @@ pub(crate) fn matches_field_filter(
             allowed.iter().any(|a| a.as_bool().map(|b| b == v).unwrap_or(false))
         }
         TokenProgramId | IxLabels => false,
+    }
+}
+
+#[cfg(test)]
+mod scale_out_pass2_tests {
+    use super::{merge_scale_out_into_params, parse_scale_out_pass2};
+    use serde_json::json;
+
+    #[test]
+    fn absent_or_empty_is_off() {
+        assert!(parse_scale_out_pass2(None, None).unwrap().is_none());
+        assert!(parse_scale_out_pass2(Some(&json!([])), Some(3)).unwrap().is_none());
+        assert!(parse_scale_out_pass2(Some(&json!(null)), None).unwrap().is_none());
+    }
+
+    #[test]
+    fn accepts_position_only_preset() {
+        let raw = json!([
+            { "sell_bps": 7000, "take_profit": 50 },
+            { "conditions": { "m_position": { "held": [{ "operator": ">=", "value": 30 }] } } }
+        ]);
+        let (stages, k) = parse_scale_out_pass2(Some(&raw), Some(5)).unwrap().unwrap();
+        assert_eq!(stages.len(), 2);
+        assert_eq!(k, 5);
+    }
+
+    #[test]
+    fn rejects_token_scoped_stage_metric() {
+        let raw = json!([
+            { "sell_bps": 7000, "conditions": { "m_snapshot": { "time": [{ "operator": ">=", "value": 10 }] } } }
+        ]);
+        let err = parse_scale_out_pass2(Some(&raw), None).unwrap_err();
+        assert!(err.contains("m_position"), "{err}");
+    }
+
+    #[test]
+    fn merge_attaches_ladder() {
+        let base = json!({ "take_profit": 100.0, "stop_loss": 30.0 });
+        let so = json!([{ "sell_bps": 7000, "take_profit": 50 }]);
+        let merged = merge_scale_out_into_params(&base, &so);
+        assert_eq!(merged["take_profit"], 100.0);
+        assert_eq!(merged["scale_out"], so);
     }
 }
 

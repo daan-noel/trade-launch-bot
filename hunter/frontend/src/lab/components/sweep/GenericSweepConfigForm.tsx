@@ -57,6 +57,16 @@ const HARD_MAX_COMBOS = 1000000;
 const DEFAULT_TOKEN_CAP = 10000;
 const MAX_TOKEN_CAP = 100000;
 
+/** Default Pass-2 ladder (plan cheap probe): bank 70% at +50% TP, remainder time-stop. */
+const DEFAULT_SCALE_OUT_PRESET: unknown[] = [
+  { sell_bps: 7000, take_profit: 50 },
+  {
+    conditions: {
+      m_position: { held: [{ operator: '>=', value: 30 }] },
+    },
+  },
+];
+
 /**
  * Desktop RAM reserve choices (MB) — how much host RAM the run leaves free for
  * OS + desktop. Every admission ceiling the backend computes is
@@ -146,6 +156,10 @@ interface GenericSweepConfig {
   /** Saved fingerprint the corpus is scoped to (engine match SSOT). When set the
    *  manual value filters are not sent — the backend matches instead. */
   seedFingerprintId: string | null;
+  /** Pass-2 scale-out overlay: empty = off. Stages are ExitStage-shaped. */
+  scaleOut: unknown[];
+  /** Top-K combos per group for Pass 2. */
+  scaleOutTopK: number;
 }
 
 function defaultConfig(): GenericSweepConfig {
@@ -185,6 +199,8 @@ function defaultConfig(): GenericSweepConfig {
     fillModel: 'first_in_window',
     costModel: 'pumpfun_fee_only',
     seedFingerprintId: null,
+    scaleOut: [],
+    scaleOutTopK: 3,
   };
 }
 
@@ -269,6 +285,8 @@ function runToConfig(run: GroupedSweepRunRecord, defaults: GenericSweepConfig): 
     // filters are NULL on a scoped run, so without this the re-run would silently
     // widen to the whole selection window.
     seedFingerprintId: run.fingerprint_id ?? null,
+    scaleOut: Array.isArray(run.scale_out) ? run.scale_out : [],
+    scaleOutTopK: run.scale_out_top_k ?? defaults.scaleOutTopK,
   };
 }
 
@@ -368,6 +386,8 @@ export function GenericSweepConfigForm({
     fillModel,
     costModel,
     seedFingerprintId,
+    scaleOut,
+    scaleOutTopK,
   } = config;
 
   const { data: fingerprints = [] } = useGetFingerprintsQuery();
@@ -501,6 +521,8 @@ export function GenericSweepConfigForm({
             .map((p) => p.map((s) => s.trim()).filter(Boolean))
             .filter((p) => p.length > 0)
         : undefined,
+      scale_out: scaleOut.length > 0 ? scaleOut : undefined,
+      scale_out_top_k: scaleOut.length > 0 ? Math.max(1, scaleOutTopK) : undefined,
     });
   }
 
@@ -799,6 +821,49 @@ export function GenericSweepConfigForm({
           </Accordion>
         </div>
       )}
+
+      <div className="mt-3 border-t border-white/10 pt-3">
+        <Accordion title="Scale-out overlay (Pass 2)" defaultOpen={scaleOut.length > 0}>
+          <div className="flex flex-col gap-2">
+            <span className="text-[11px] text-text-dim">
+              Keep the axes grid on the fast exit path; after ranking, re-score each group&apos;s
+              top-K combos under a fixed scale-out ladder (staged resolve only for those combos).
+              Promote attaches the ladder to the saved rule.
+            </span>
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="flex items-center gap-2 text-[11px] text-text">
+                <Checkbox
+                  checked={scaleOut.length > 0}
+                  onChange={(e) =>
+                    setField('scaleOut', e.target.checked ? DEFAULT_SCALE_OUT_PRESET : [])
+                  }
+                  disabled={running}
+                />
+                Enable Pass-2 overlay
+              </label>
+              {scaleOut.length > 0 && (
+                <>
+                  <label className="flex flex-col gap-0.5 text-[11px] text-text-dim">
+                    Top-K / group
+                    <Input
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={scaleOutTopK}
+                      onChange={(e) =>
+                        setField('scaleOutTopK', Math.max(1, Number(e.target.value) || 3))
+                      }
+                      disabled={running}
+                      className="w-20"
+                    />
+                  </label>
+                  <Badge variant="info">70% @ +50% TP → stub held ≥ 30s</Badge>
+                </>
+              )}
+            </div>
+          </div>
+        </Accordion>
+      </div>
 
       {ixFilterError && (
         <div className="mt-2">

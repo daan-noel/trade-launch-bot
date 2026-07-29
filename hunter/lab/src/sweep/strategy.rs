@@ -468,6 +468,21 @@ pub trait Strategy: ParamSpace + Send + Sync {
     fn token_state_bytes_estimate(&self, _token: &crate::sweep::corpus::CorpusToken) -> usize {
         0
     }
+
+    /// Optional Pass-2 hook: after a group's cheap fold, re-score selected combos
+    /// under an alternate compiled form (e.g. fixed `scale_out` overlay). Default
+    /// no-op. Called with metrics still resident, before the sink persists.
+    fn post_group_rescore(
+        &self,
+        _params: &[Self::Params],
+        _corpus: &crate::sweep::corpus::Corpus,
+        _token_idx: &[usize],
+        _gr: &mut crate::sweep::grouped_engine::GroupResult,
+        _coverage: crate::sweep::grouped_engine::CoverageFloor,
+        _observer: &dyn crate::sweep::progress::SweepObserver,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
