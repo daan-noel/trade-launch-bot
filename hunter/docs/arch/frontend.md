@@ -280,7 +280,12 @@ next load (no per-metric frontend work).
   under `lab/components/flow/`. Job kind `discovery` in `BackgroundJobsContext`
   (SSE `flow_discovery_*`, mutual exclusion with sweeps).
 - The lab `RulesPage` injects `@lab/components/strategy/DryRunPanel` via `renderDryRun`
-  (inline draft → `POST /api/strategies/simulate` → funnel summary), boundary-clean.
+  (inline draft → `POST /api/strategies/simulate` → funnel summary + trades table),
+  boundary-clean. Finished dry-run trades share Simulate's chart path: `useRowOverlay`
+  entry/exit markers, mint-grouped episode overlays (`useSimMintEpisodeOverlay`), and
+  row/chart select → `LabTokenInspectModal` with metric panes pinned to the live draft
+  via `ruleOverride` (params + fingerprint). Shared episode-marker fetch lives in
+  `@lab/hooks/useSimMintEpisodeOverlay`.
   Lab `SimulatePage` (`/strategies/simulate`) runs saved rules over the full lake and
   shows the `SimulatedSummary` rollup as separate DataTable columns (Mode, Entered /
   Closed / Win % / Avg PnL / Total PnL, plus a Run status) so sort/search/filter work

@@ -144,7 +144,7 @@ export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; 
         {!canRun && <span className="text-[11px] text-text-dim/70">fix the draft to enable</span>}
       </div>
       {err && <p className="mt-2 text-[11px] text-red">{err}</p>}
-      {runId && <DryRunDetail runId={runId} />}
+      {runId && draft && <DryRunDetail runId={runId} draft={draft} />}
     </div>
   );
 }

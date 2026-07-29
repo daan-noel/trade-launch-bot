@@ -26,8 +26,18 @@ const FOCUSABLE =
  * Ref-count of currently-open modals so the page body scroll stays locked while
  * ANY modal is open and only unlocks once the last one closes (handles stacking).
  * Compensating for the scrollbar's width avoids a layout shift when it vanishes.
+ *
+ * Escape + Tab focus-trap apply only to the topmost modal: each open instance
+ * pushes a handle onto `modalStack` so nested portals (e.g. dry-run inspect over
+ * the rule editor) don't all dismiss on Escape or steal Tab from the top dialog.
  */
 let openModalCount = 0;
+type ModalStackHandle = {
+  onClose: () => void;
+  dialogRef: { current: HTMLDivElement | null };
+};
+const modalStack: ModalStackHandle[] = [];
+
 function lockBodyScroll() {
   if (openModalCount === 0) {
     const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
@@ -44,50 +54,80 @@ function unlockBodyScroll() {
   }
 }
 
+function pushModalHandle(handle: ModalStackHandle) {
+  modalStack.push(handle);
+}
+function popModalHandle(handle: ModalStackHandle) {
+  const idx = modalStack.lastIndexOf(handle);
+  if (idx >= 0) modalStack.splice(idx, 1);
+}
+
+/** Document-level Escape + Tab listener — installed once while any modal is open. */
+let keyListening = false;
+function ensureKeyListener() {
+  if (keyListening) return;
+  keyListening = true;
+  document.addEventListener('keydown', onDocumentModalKey);
+}
+function releaseKeyListener() {
+  if (modalStack.length > 0) return;
+  keyListening = false;
+  document.removeEventListener('keydown', onDocumentModalKey);
+}
+function onDocumentModalKey(e: KeyboardEvent) {
+  const top = modalStack[modalStack.length - 1];
+  if (!top) return;
+  if (e.key === 'Escape') {
+    e.stopPropagation();
+    top.onClose();
+    return;
+  }
+  if (e.key !== 'Tab') return;
+  const dialog = top.dialogRef.current;
+  if (!dialog) return;
+  const focusable = dialog.querySelectorAll<HTMLElement>(FOCUSABLE);
+  if (focusable.length === 0) {
+    e.preventDefault();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  if (e.shiftKey) {
+    if (active === first || !dialog.contains(active)) {
+      e.preventDefault();
+      last.focus();
+    }
+  } else if (active === last || !dialog.contains(active)) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
 export function Modal({ title, open, onClose, children, size = 'md' }: ModalProps) {
   const pressedOnBackdrop = useRef(false);
   const dialogRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
-  // Escape-to-close + Tab/Shift+Tab focus trap, mirroring the portal popovers.
+  // Lock page-body scroll while open; register Escape/Tab on the stack. Stable
+  // handle so an inline `onClose={() => ...}` identity change does not reshuffle
+  // nested modals.
   useEffect(() => {
     if (!open) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-        return;
-      }
-      if (e.key !== 'Tab') return;
-      const dialog = dialogRef.current;
-      if (!dialog) return;
-      const focusable = dialog.querySelectorAll<HTMLElement>(FOCUSABLE);
-      if (focusable.length === 0) {
-        e.preventDefault();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const active = document.activeElement;
-      if (e.shiftKey) {
-        if (active === first || !dialog.contains(active)) {
-          e.preventDefault();
-          last.focus();
-        }
-      } else if (active === last || !dialog.contains(active)) {
-        e.preventDefault();
-        first.focus();
-      }
+    const handle: ModalStackHandle = {
+      onClose: () => onCloseRef.current(),
+      dialogRef,
     };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [open, onClose]);
-
-  // Lock page-body scroll while open so only the modal (backdrop) scrolls; the
-  // ref-count restores it correctly when modals stack or unmount mid-open.
-  useEffect(() => {
-    if (!open) return;
     lockBodyScroll();
-    return unlockBodyScroll;
+    pushModalHandle(handle);
+    ensureKeyListener();
+    return () => {
+      popModalHandle(handle);
+      unlockBodyScroll();
+      releaseKeyListener();
+    };
   }, [open]);
 
   // Focus the first focusable element on open; restore focus on close/unmount.

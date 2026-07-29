@@ -27,14 +27,11 @@ import { TokenTable } from 'components/tokens/TokenTable';
 import { tokenAmountColKeys, tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
 import { dashPercent } from 'components/strategy/cellFormat';
 import {
-  buildEventMarkersForEpisodes,
   episodeRowKey,
   inspectFromSim,
   markerRowOverlay,
   type InspectTarget,
 } from 'components/strategy/inspectTarget';
-import type { ChartEventMarker } from 'components/token-price-chart';
-import type { RowChartOverlay } from 'components/tokens/TokenChartsGrid';
 import { simColumns, SIM_KEYS } from 'components/strategy/strategyColumns';
 import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
 import { SummaryStatsPanel, type SummaryStat } from 'components/strategy/SummaryStatsPanel';
@@ -103,6 +100,10 @@ import {
   useGetEngineSimSummaryMutation,
   useGetEngineSimSummariesMutation,
 } from '@lab/store/labEndpoints';
+import {
+  useSimInspectEpisodeMarkers,
+  useSimMintEpisodeOverlay,
+} from '@lab/hooks/useSimMintEpisodeOverlay';
 
 type RunState = { running: boolean; summary?: SimulatedSummary; error?: string };
 
@@ -139,65 +140,6 @@ function localInputToIso(local: string): string | undefined {
   if (!local) return undefined;
   const d = new Date(local.endsWith('Z') ? local : `${local}Z`);
   return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
-}
-
-/** Hook-based `chartsGroupByMint` overlay for the sim positions table. The table
- *  is server-paged (20 rows/page by default) and NOT sorted by mint, so a rule's
- *  re-entry episodes of one mint essentially never co-occur on the same page —
- *  the page-scoped rows the charts grid hands a card are almost always just the
- *  one clicked episode. Mirrors the inspect modal's own `episodeMarkers` effect
- *  (above in `SimulatePage`): fetch every row for this mint straight from the same
- *  simulate-result endpoint, filtered server-side, so the chart overlays every
- *  episode regardless of paging. `pageRows` (that mint's rows already on the
- *  current page) seeds the chart immediately and is the fallback if the fetch
- *  fails, so the card is never blank while loading. */
-function useSimMintEpisodeOverlay(
-  ruleId: string,
-  mint: string,
-  pageRows: SimulatedTokenResult[],
-): RowChartOverlay {
-  const [markers, setMarkers] = useState<ChartEventMarker[] | null>(null);
-  useEffect(() => {
-    setMarkers(null);
-    const ctrl = new AbortController();
-    const body = toTableRequest(
-      {
-        page: 1,
-        pageSize: 1000,
-        sortKeys: [],
-        search: '',
-        colFilters: {},
-        structuredFilters: { mint_address: { op: 'in', val: [mint] } },
-      },
-      SIM_NUMERIC_COLS,
-      { amountCols: SIM_AMOUNT_COLS },
-    );
-    void (async () => {
-      try {
-        const page = await fetchEngineSimPage(ruleId, body as TableRequestBody, ctrl.signal);
-        if (ctrl.signal.aborted) return;
-        const targets = page.items
-          .filter((r) => r.fired !== false && r.exit_reason !== 'NoEntry')
-          .map(inspectFromSim);
-        setMarkers(buildEventMarkersForEpisodes(targets));
-      } catch (e) {
-        if (ctrl.signal.aborted || (e instanceof DOMException && e.name === 'AbortError')) return;
-        setMarkers(null);
-      }
-    })();
-    return () => ctrl.abort();
-  }, [ruleId, mint]);
-
-  const fallback = useMemo(
-    () =>
-      buildEventMarkersForEpisodes(
-        pageRows
-          .filter((r) => r.fired !== false && r.exit_reason !== 'NoEntry')
-          .map(inspectFromSim),
-      ),
-    [pageRows],
-  );
-  return { eventMarkers: markers ?? fallback };
 }
 
 /**
@@ -250,46 +192,11 @@ export function SimulatePage() {
     target: InspectTarget;
     rule: StrategyRule;
   } | null>(null);
-  // All re-entry episodes for the inspected token, overlaid on one chart. A rule can
-  // re-enter the same mint many times; the clicked row is only one episode, so fetch
-  // the mint's full episode set (server-side, filtered) and build the union of their
-  // entry/exit markers. Null ⇒ the modal falls back to the single clicked episode
-  // (shown while this loads, or if the fetch fails).
-  const [episodeMarkers, setEpisodeMarkers] = useState<ChartEventMarker[] | null>(null);
-  useEffect(() => {
-    setEpisodeMarkers(null);
-    if (!inspect) return;
-    const { rule, target } = inspect;
-    const ctrl = new AbortController();
-    const body = toTableRequest(
-      {
-        page: 1,
-        pageSize: 1000,
-        sortKeys: [],
-        search: '',
-        colFilters: {},
-        structuredFilters: { mint_address: { op: 'in', val: [target.mint_address] } },
-      },
-      SIM_NUMERIC_COLS,
-      { amountCols: SIM_AMOUNT_COLS },
-    );
-    void (async () => {
-      try {
-        const page = await fetchEngineSimPage(rule.id, body as TableRequestBody, ctrl.signal);
-        if (ctrl.signal.aborted) return;
-        const targets = page.items
-          .filter((r) => r.fired !== false && r.exit_reason !== 'NoEntry')
-          .map(inspectFromSim);
-        setEpisodeMarkers(
-          buildEventMarkersForEpisodes(targets.length ? targets : [target]),
-        );
-      } catch (e) {
-        if (ctrl.signal.aborted || (e instanceof DOMException && e.name === 'AbortError')) return;
-        setEpisodeMarkers(null);
-      }
-    })();
-    return () => ctrl.abort();
-  }, [inspect]);
+  // All re-entry episodes for the inspected token, overlaid on one chart.
+  const episodeMarkers = useSimInspectEpisodeMarkers(
+    inspect?.rule.id ?? null,
+    inspect?.target ?? null,
+  );
   const [reloadNonce, setReloadNonce] = useState(0);
   /** Soft-archived rules are hidden by default — toggle to review them. */
   const [showDisabled, setShowDisabled] = useState(false);

@@ -6,11 +6,25 @@ import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { tokenAmountColKeys, tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
 import { simColumns, SIM_KEYS } from 'components/strategy/strategyColumns';
-import { episodeRowKey } from 'components/strategy/inspectTarget';
+import {
+  episodeRowKey,
+  inspectFromSim,
+  markerRowOverlay,
+  type InspectTarget,
+} from 'components/strategy/inspectTarget';
+import type { RuleEditorDraft } from 'components/strategy/RuleEditor';
 import { TemporalSummary, type TemporalSelection } from 'components/strategy/TemporalSummary';
+import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
+import {
+  useSimInspectEpisodeMarkers,
+  useSimMintEpisodeOverlay,
+} from '@lab/hooks/useSimMintEpisodeOverlay';
 import { fetchEngineSimPage, fetchEngineSimSummary, fetchEngineSimTimeSummary } from 'services/api';
 import { toSummaryBody, toTableRequest, type TableRequestBody } from 'services/tableRequest';
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
+import { patternKeysFrom } from 'lib/flow/classifyFlow';
+import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
+import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 import type { TableQuery } from 'components/table/types';
 import type {
   HoldSchemeChoice,
@@ -22,19 +36,29 @@ import { SimSummary } from './SimSummary';
 
 const SIM_NUMERIC_COLS = tokenNumericColKeys(simColumns);
 const SIM_AMOUNT_COLS = tokenAmountColKeys(simColumns);
+const simRowOverlay = markerRowOverlay(inspectFromSim);
 
 /**
  * Per-token detail for a finished dry-run (Tier 2): the exact `/result` +
  * `/result/time-summary` endpoints the Simulate page reads for saved rules, but
- * keyed by the inline draft's `run_id` (the sim start response id). Renders the
- * trades table (`simColumns`) + the hold/wall-clock timing bins so a draft is
- * reviewable trade-by-trade in the editor without leaving for the Simulate page.
- *
- * Deliberately lighter than the Simulate page's `RuleSimPositionsPanel`: no
- * chart drill-in / inspect modal (that page owns the modal state) and no linked
- * temporal cohort — a modal-scoped preview, not the full analysis surface.
+ * keyed by the inline draft's `run_id`. Renders trades (`simColumns`) with the
+ * same chart entry/exit overlays + row inspect (metric panes) as Simulate,
+ * pinned to the editor draft via `ruleOverride`.
  */
-export function DryRunDetail({ runId }: { runId: string }) {
+export function DryRunDetail({
+  runId,
+  draft,
+}: {
+  runId: string;
+  draft: RuleEditorDraft;
+}) {
+  const { data: fingerprints = [] } = useGetFingerprintsQuery();
+  const flowPatternKeys = useMemo(() => {
+    const fp = fingerprints.find((f) => f.id === draft.fingerprint_id);
+    if (!fp) return null;
+    return patternKeysFrom(volumeIxPatternsFromConfig(fp.metric_config));
+  }, [fingerprints, draft.fingerprint_id]);
+
   const [simQuery, setSimQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   // Matched-but-not-entered `NoEntry` rows are hidden by default — a dry-run's
   // "Trades" read is the positions it took; toggle to see everything it matched.
@@ -44,6 +68,8 @@ export function DryRunDetail({ runId }: { runId: string }) {
   const [wallGrain, setWallGrain] = useState<WallGrainChoice>('auto');
   const [holdScheme, setHoldScheme] = useState<HoldSchemeChoice>('auto');
   const [timeSummary, setTimeSummary] = useState<TemporalSummaryPayload | null>(null);
+  const [inspect, setInspect] = useState<{ key: string; target: InspectTarget } | null>(null);
+  const episodeMarkers = useSimInspectEpisodeMarkers(runId, inspect?.target ?? null);
 
   // Hide-not-fired injects a server-side `exit_reason != NoEntry` so paging /
   // totals stay correct (same toggle as the sweep combo drill-in).
@@ -128,6 +154,10 @@ export function DryRunDetail({ runId }: { runId: string }) {
   }, [runId, baseFilterKey]);
 
   useEffect(() => {
+    setInspect(null);
+  }, [runId]);
+
+  useEffect(() => {
     const ctrl = new AbortController();
     void fetchEngineSimTimeSummary(
       runId,
@@ -146,6 +176,27 @@ export function DryRunDetail({ runId }: { runId: string }) {
       });
     return () => ctrl.abort();
   }, [runId, timeBody, wallField, wallGrain, holdScheme]);
+
+  const onSelect = useCallback(
+    (key: string | null) => {
+      const row = key
+        ? rows.find((t) => episodeRowKey(t) === key) ??
+          rows.find((t) => t.mint_address === key) ??
+          null
+        : null;
+      setInspect(row ? { key: episodeRowKey(row), target: inspectFromSim(row) } : null);
+    },
+    [rows],
+  );
+
+  const ruleOverride = useMemo(
+    () => ({
+      paramsJson: draft.params,
+      fingerprintId: draft.fingerprint_id,
+      label: draft.rule_name.trim() || 'dry-run draft',
+    }),
+    [draft.params, draft.fingerprint_id, draft.rule_name],
+  );
 
   return (
     <section className="mt-3">
@@ -199,6 +250,14 @@ export function DryRunDetail({ runId }: { runId: string }) {
             rows={rows}
             rowKey={episodeRowKey}
             charts
+            useRowOverlay={simRowOverlay}
+            chartsGroupByMint
+            useMintChartGroupOverlay={(mint, pageRows) =>
+              useSimMintEpisodeOverlay(runId, mint, pageRows)
+            }
+            flowPatternKeys={flowPatternKeys}
+            selectedKey={inspect?.key ?? null}
+            onSelect={onSelect}
             serverSide
             serverTotal={total}
             onQueryChange={setSimQuery}
@@ -212,6 +271,16 @@ export function DryRunDetail({ runId }: { runId: string }) {
             }
           />
         </>
+      )}
+
+      {inspect && (
+        <LazyLabTokenInspectModal
+          target={inspect.target}
+          titleSuffix="Dry-run inspect"
+          ruleOverride={ruleOverride}
+          eventMarkers={episodeMarkers}
+          onClose={() => setInspect(null)}
+        />
       )}
     </section>
   );
