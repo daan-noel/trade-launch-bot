@@ -20,7 +20,7 @@ use hunter_engine::grouping::TokenFingerprint;
 use hunter_engine::metrics::evaluator::{Condition, Operator};
 use hunter_engine::metrics::flow_split::FlowPatterns;
 use hunter_engine::metrics::{MetricGroupId, MetricId, Ts};
-use hunter_engine::rule_params::{GroupConditions, RuleParams, SideConditions};
+use hunter_engine::rule_params::{ExitStage, GroupConditions, RuleParams, SideConditions};
 
 use trading_core::config::constants::sol_to_lamports;
 use trading_core::strategies::kernel::{CostModel, ExitCode};
@@ -421,6 +421,74 @@ fn scan_matches_replay_pure_dead_open_rule() {
     // No TP/SL/exit metrics: every fired token rides to Dead or Open.
     let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, ..RuleParams::default() };
     assert_parity("dead_open", params, &corpus(), at(1000.0));
+}
+
+/// Plan §5 / step 4 — 2-stage scale-out: bank 70% into strength (`take_profit`),
+/// then close the stub on a pure time-stop (`held >= N`). Trades are spaced so
+/// each fire's fill window collapses to the fire trade (no mid-flight deferred
+/// fill), so the sweep's instantaneous stage advance matches replay's
+/// same-batch `FillConfirmed`. Locked by `assert_parity` under every fill model.
+#[test]
+fn scan_matches_replay_scale_out_two_stage() {
+    // Entry @ 1.0 exactly (fill window empty past slot 0 → market-fill) so
+    // `initial_tokens = 1e6` and `7000 bps` is an exact integer — otherwise
+    // replay's `sell_bps_of` truncates (6999) and multi-leg PnL drifts by float
+    // dust under WorstCase. Gaps ≫ MAX_FILL_WAIT_SLOTS so every exit also
+    // collapses to its fire print under every FillModel.
+    let tokens = vec![token(
+        "scale2",
+        vec![
+            ct(0.0, true, 1.0, 1.0, 100.0), // entry trigger + fill @ 1.0
+            ct(10.0, true, 0.5, 1.50, 100.0), // +50% → stage-0 TP banks 7000 bps
+            ct(40.0, true, 0.5, 1.60, 100.0), // held ≥ 30 from entry → remainder
+        ],
+    )];
+    let remainder = static_metric_side(
+        MetricGroupId::Position,
+        MetricId::Held,
+        Operator::Gte,
+        30.0,
+    );
+    let params = RuleParams {
+        scale_out: Some(vec![
+            ExitStage {
+                sell_bps: Some(7000),
+                take_profit: Some(50.0),
+                conditions: SideConditions::default(),
+            },
+            ExitStage {
+                sell_bps: None,
+                take_profit: None,
+                conditions: remainder,
+            },
+        ]),
+        ..RuleParams::default()
+    };
+    assert_parity("scale_out_2stage", params, &tokens, at(1000.0));
+}
+
+/// Same ladder plus a global SL — after the bank, a crash must close the stub
+/// via the global side (not another stage), matching `decide_arm` priority.
+#[test]
+fn scan_matches_replay_scale_out_global_sl_mid_ladder() {
+    let tokens = vec![token(
+        "scale_sl",
+        vec![
+            ct(0.0, true, 1.0, 1.0, 100.0), // exact 1.0 entry (see two_stage note)
+            ct(10.0, true, 0.5, 1.50, 100.0), // bank 70% at +50%
+            ct(20.0, false, 0.5, 0.60, 100.0), // −40% from entry → global SL
+        ],
+    )];
+    let params = RuleParams {
+        stop_loss: Some(30.0),
+        scale_out: Some(vec![ExitStage {
+            sell_bps: Some(7000),
+            take_profit: Some(50.0),
+            conditions: SideConditions::default(),
+        }]),
+        ..RuleParams::default()
+    };
+    assert_parity("scale_out_sl_mid", params, &tokens, at(1000.0));
 }
 
 // ───────────── flow-scalper metrics parity (Phase 6 sweep wiring) ─────────────

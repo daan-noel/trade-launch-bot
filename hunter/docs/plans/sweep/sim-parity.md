@@ -53,6 +53,20 @@ condition `eval`, `CompiledRule::compile`.
    flag-dropped non-vacuity leg). It drives `reduce` directly rather than `run_replay`
    because the lab replay driver keys in-flight fills by *mint* and so cannot carry two
    concurrent positions on one token whatever the engine decides.
+- **D5 · Scale-out in-flight-sell blindness absent in sweep (2026-07-29).** The live /
+   replay fold stays `ExitPending` until a partial fill confirms (and may defer that
+   confirm to a later adverse print in the fill window) — no new decision while the
+   sell is in flight. The sweep's staged resolver books each partial instantly and
+   resumes from the next series row, so a global exit that becomes true on the trade
+   *after* a stage fire is taken immediately. Same-batch confirms (fill window =
+   fire trade) match byte-for-byte; deferred fills can diverge. Guard:
+   `scan_matches_replay_scale_out_two_stage` + `…_global_sl_mid_ladder` (trades spaced
+   past `MAX_FILL_WAIT_SLOTS` so every fill collapses to the fire print).
+- **D6 · Scale-out frozen-tail (D1) not applied (2026-07-29).** A rule with
+   `scale_out` that leaves the in-series scan `Open` does **not** get the analytic
+   quiet-tail clock resolve — a stage / remainder `held` that would only fire past
+   the per-token cut stays `Open` in the sweep. Legacy (no scale-out) keeps full D1.
+   Re-measure staged ladders through simulate when the close lives in the quiet tail.
 - **D3 · Sketched quantiles.** Persisted sweep quantiles come from a 64-bucket DDSketch
    (~15% rel. error); `simulate` and the sweep drill-in compute exact ones. **Ranking is
    unaffected** — `score` is exact. O(1) memory per combo is the point.

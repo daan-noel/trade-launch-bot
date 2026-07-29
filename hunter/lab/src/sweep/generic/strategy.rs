@@ -44,7 +44,9 @@ use hunter_engine::metrics::{MetricId, TradeLite, Ts};
 use hunter_engine::TICK_MS;
 
 use trading_core::config::constants::sol_to_lamports;
-use trading_core::strategies::kernel::{round_trip_with_costs, CostModel, ExitCode};
+use trading_core::strategies::kernel::{
+    round_trip_multi_leg, round_trip_with_costs, CostModel, ExitCode, ExitLeg,
+};
 use trading_core::strategies::paper_fill::{
     find_paper_entry_at, find_paper_exit_at, FillModel, PaperFill,
 };
@@ -577,11 +579,13 @@ fn trade_lite(ct: &CorpusTrade) -> TradeLite {
     crate::sweep::projection::to_trade_lite(ct)
 }
 
-/// The union of precompute columns a compiled rule reads (both sides). Used by the
-/// guard test to build a series for one rule without the axes model.
+/// The union of precompute columns a compiled rule reads (both sides + every
+/// scale-out stage). Used by the guard test to build a series for one rule without
+/// the axes model.
 pub(crate) fn columns_for(compiled: &CompiledRule) -> Vec<SeriesColumn> {
     let mut cols = Vec::new();
-    for req in compiled.entry_reqs.iter().chain(compiled.exit_reqs.iter()) {
+    let stage_reqs = compiled.scale_out.iter().flat_map(|s| s.reqs.iter());
+    for req in compiled.entry_reqs.iter().chain(compiled.exit_reqs.iter()).chain(stage_reqs) {
         // Position-scoped reqs (`m_position`) read the per-entry `PositionCtx` in the
         // exit scan, not a token series column — see `exit_position_metrics_fired`.
         if req.position_scoped {
@@ -610,11 +614,14 @@ pub(crate) fn sparse_grid_for(compiled: &CompiledRule) -> SparseGrid {
         .chain(compiled.price_windows.iter())
         .cloned()
         .fold(0.0_f64, f64::max);
-    // Max condition value + eq-tolerance for a monotone/static metric across both sides.
+    // Max condition value + eq-tolerance for a monotone/static metric across both
+    // sides and every scale-out stage (a remainder `held >= N` must size the grid).
     let ceiling = |metric: MetricId| -> f64 {
         let mut max = 0.0_f64;
         let mut found = false;
-        for req in compiled.entry_reqs.iter().chain(compiled.exit_reqs.iter()) {
+        let stage_reqs = compiled.scale_out.iter().flat_map(|s| s.reqs.iter());
+        for req in compiled.entry_reqs.iter().chain(compiled.exit_reqs.iter()).chain(stage_reqs)
+        {
             if req.metric == metric {
                 for arm in &req.conds {
                     for c in arm {
@@ -717,6 +724,9 @@ pub struct BoundCombo {
     entry_cols: Vec<usize>,
     mono_cols: Vec<usize>,
     exit_cols: Vec<usize>,
+    /// Per scale-out stage: column indices for that stage's `reqs` (lockstep with
+    /// [`CompiledRule::scale_out`]). Empty when the rule has no scale-out.
+    stage_cols: Vec<Vec<usize>>,
     /// One [`ExitClass`] per `rule.exit_reqs`, in lockstep — how the fast paths may
     /// resolve each req's first firing row.
     exit_classes: Vec<ExitClass>,
@@ -732,10 +742,11 @@ pub struct BoundCombo {
     /// fixed size. Bind-time only — depends solely on the compiled rule, so
     /// resolving an exit looks this up instead of computing anything per token.
     exit_metric_label: Vec<Option<(MetricId, Operator, f64, u8)>>,
-    /// `true` ⇔ **every** exit req classified (no [`ExitClass::General`]), so the
-    /// index / SIMD paths can resolve the whole exit. One `General` req forces the
-    /// scalar walk for the entire rule: that walk is O(n) and must evaluate every
-    /// req anyway, so resolving the others by index would only add work.
+    /// `true` ⇔ **every** exit req classified (no [`ExitClass::General`]) **and**
+    /// the rule has no `scale_out` — so the index / SIMD paths can resolve the
+    /// whole exit as a single full-bag close. Scale-out forces the staged scalar
+    /// walk (plan §5); one `General` req forces the scalar walk for the entire
+    /// rule.
     pub(crate) fast_exit: bool,
     /// `true` ⇔ some exit req could hold *before* entry and so veto it (the
     /// `can_enter` gate). `false` ⇒ this combo's entry is a pure function of the
@@ -749,16 +760,20 @@ impl BoundCombo {
     pub(crate) fn new(columns: &[SeriesColumn], rule: CompiledRule) -> Self {
         let entry_cols = resolve_cols_in(columns, &rule.entry_reqs);
         let exit_cols = resolve_cols_in(columns, &rule.exit_reqs);
+        let stage_cols: Vec<Vec<usize>> =
+            rule.scale_out.iter().map(|s| resolve_cols_in(columns, &s.reqs)).collect();
         let mono_cols = rule.mono_kills.iter().map(|k| col_idx_mono(columns, k)).collect();
         let exit_classes: Vec<ExitClass> = rule.exit_reqs.iter().map(classify_exit_req).collect();
         let exit_metric_label = exit_metric_labels(&rule.exit_reqs);
-        let fast_exit = !exit_classes.iter().any(|c| matches!(c, ExitClass::General));
+        let fast_exit = rule.scale_out.is_empty()
+            && !exit_classes.iter().any(|c| matches!(c, ExitClass::General));
         // Can any exit req hold at a row *before* entry, i.e. veto it? Conservative
         // by construction: a req that reads a recorded column might, and a req with
         // no conditions is vacuously true even on the `NaN` an unrecorded column
         // reads. Everything else — every position-scoped req under the sweep's own
         // column set, which is what a pure TP/SL combo is made of — provably cannot,
         // so those combos skip the veto eval entirely (see `resolve_entry_from`).
+        // Scale-out stages do not participate in `can_enter` (engine mirrors this).
         let entry_veto_possible = rule
             .exit_reqs
             .iter()
@@ -769,6 +784,7 @@ impl BoundCombo {
             entry_cols,
             mono_cols,
             exit_cols,
+            stage_cols,
             exit_classes,
             exit_metric_label,
             fast_exit,
@@ -906,6 +922,12 @@ fn debug_assert_cols_match(series: &MetricSeries, c: &BoundCombo) {
             .zip(&c.entry_cols)
             .chain(c.rule.exit_reqs.iter().zip(&c.exit_cols))
             .all(|(r, &col)| col == col_idx_of(series, r))
+            && c
+                .rule
+                .scale_out
+                .iter()
+                .zip(&c.stage_cols)
+                .all(|(s, cols)| s.reqs.iter().zip(cols).all(|(r, &col)| col == col_idx_of(series, r)))
             && c.rule.mono_kills.iter().zip(&c.mono_cols).all(|(k, &col)| {
                 let req = hunter_engine::arm::MetricReq {
                     metric: k.metric,
@@ -1400,6 +1422,9 @@ pub(crate) fn resolve_exit(
     tail_horizon: Option<Ts>,
 ) -> TokenOutcome {
     debug_assert_cols_match(series, b);
+    if !b.rule.scale_out.is_empty() {
+        return resolve_exit_staged(trades, series, b, entry, pricing, tail_horizon);
+    }
     let c = &b.rule;
     let (fill_row, entry_price, entry_at) = match entry {
         EntryResolution::NoEntry => return TokenOutcome::no_entry(),
@@ -1466,6 +1491,340 @@ pub(crate) fn resolve_exit(
     // realized stats by `RunAgg`, but priced for the drill-in / row view).
     let last_price = (0..n).rev().map(|k| series.price[k]).find(|p| p.is_finite()).unwrap_or(entry_price);
     open_outcome(series, fill_row, entry_price, entry_at, last_price, pricing)
+}
+
+/// Scale-out exit scan — mirrors `decide_arm`'s open-side priority
+/// `Dead > exit_fired > stage_fired` across the ladder. Each partial books an
+/// [`ExitLeg`] at the fire-row fill and resumes from the next row with the same
+/// `PositionCtx` (peak/trough NOT reseeded). The final/global close sells the
+/// remainder (`10_000 - sold_bps`). PnL through [`round_trip_multi_leg`].
+///
+/// Deliberate divergence vs `reduce` + replay: the sweep has no in-flight-sell
+/// blindness — a stage fill is instantaneous, so a global exit that becomes true
+/// on the next row after a partial is taken immediately. Replay stays
+/// `ExitPending` until the paper fill confirms (possibly deferred to a later
+/// trade). Documented in `docs/plans/sweep/sim-parity.md`.
+///
+/// Frozen-tail (D1) is **not** applied while a ladder is in play: a stage clock
+/// that would only fire past the per-token cut stays `Open` here (re-measure
+/// through simulate). Legacy no-scale-out rules keep the full D1 path.
+fn resolve_exit_staged(
+    trades: &[CorpusTrade],
+    series: &MetricSeries,
+    b: &BoundCombo,
+    entry: &EntryResolution,
+    pricing: &Pricing,
+    _tail_horizon: Option<Ts>,
+) -> TokenOutcome {
+    let c = &b.rule;
+    let (fill_row, entry_price, entry_at) = match entry {
+        EntryResolution::NoEntry => return TokenOutcome::no_entry(),
+        EntryResolution::Entered { fill_row, price, at } => (*fill_row, *price, *at),
+    };
+    let entry_slot = fill_trade_slot(series, fill_row);
+    let entry_reserve = entry_depth(series, fill_row);
+    let n = series.n_rows();
+    let has_exit_reqs = c.has_exit_metrics();
+    let mut ctx = PositionCtx::at_fill(entry_price, entry_at);
+    let mut stage: usize = 0;
+    let mut sold_bps: u16 = 0;
+    let mut legs: Vec<ExitLeg> = Vec::new();
+
+    for j in (fill_row + 1)..n {
+        if series.dead[j] {
+            return close_staged(
+                trades,
+                series,
+                b,
+                ExitCode::Dead,
+                None,
+                entry_price,
+                entry_at,
+                entry_slot,
+                entry_reserve,
+                &legs,
+                sold_bps,
+                j,
+                pricing,
+            );
+        }
+        ctx.fold_price(series.price[j]);
+
+        // Global side first — catastrophe path (SL / authored exit / desugared TP).
+        if has_exit_reqs {
+            if let Some((exit, idx)) =
+                first_exit_req_fired(series, &c.exit_reqs, &b.exit_cols, j, &ctx)
+            {
+                return close_staged(
+                    trades,
+                    series,
+                    b,
+                    exit,
+                    Some(idx),
+                    entry_price,
+                    entry_at,
+                    entry_slot,
+                    entry_reserve,
+                    &legs,
+                    sold_bps,
+                    j,
+                    pricing,
+                );
+            }
+        }
+
+        // Current scale-out stage (if any remain).
+        let Some(compiled_stage) = c.scale_out.get(stage) else {
+            continue;
+        };
+        let stage_cols = b.stage_cols.get(stage).map(Vec::as_slice).unwrap_or(&[]);
+        let Some((exit, _)) =
+            first_exit_req_fired(series, &compiled_stage.reqs, stage_cols, j, &ctx)
+        else {
+            continue;
+        };
+
+        match compiled_stage.sell_bps {
+            Some(bps) => {
+                // Partial: book the leg, advance stage, keep scanning (position stays open).
+                let rem = 10_000u16.saturating_sub(sold_bps);
+                let sell = bps.min(rem);
+                if sell == 0 {
+                    stage = stage.saturating_add(1);
+                    continue;
+                }
+                let (price, reserve) = stage_fill_price(trades, series, j, pricing, entry_reserve);
+                legs.push(ExitLeg { sell_bps: sell, price, reserve_sol: reserve });
+                sold_bps = sold_bps.saturating_add(sell);
+                stage = stage.saturating_add(1);
+            }
+            None => {
+                // Remainder stage (`sell_bps` omitted) ⇒ full close under its conditions.
+                // Stage-authored metric labels aren't in `exit_metric_label` (global
+                // slots only) — stamp `None` and keep the ExitCode from the stage req.
+                return close_staged(
+                    trades,
+                    series,
+                    b,
+                    exit,
+                    None,
+                    entry_price,
+                    entry_at,
+                    entry_slot,
+                    entry_reserve,
+                    &legs,
+                    sold_bps,
+                    j,
+                    pricing,
+                );
+            }
+        }
+    }
+
+    // Still open: mark the unsold remainder. No frozen-tail advance of stages (see
+    // fn docs). When nothing was banked this reduces to the legacy open mark.
+    let last_price =
+        (0..n).rev().map(|k| series.price[k]).find(|p| p.is_finite()).unwrap_or(entry_price);
+    open_staged(
+        series,
+        fill_row,
+        entry_price,
+        entry_at,
+        entry_slot,
+        entry_reserve,
+        &legs,
+        sold_bps,
+        last_price,
+        pricing,
+    )
+}
+
+/// Paper fill price (+ reserve) at a stage/global fire row — same `exit_fill`
+/// helper the single-leg path uses, so SignalPrice / WorstCase / FirstInWindow
+/// stay coherent with replay when the fill window collapses to the fire trade.
+fn stage_fill_price(
+    trades: &[CorpusTrade],
+    series: &MetricSeries,
+    fire_row: usize,
+    pricing: &Pricing,
+    entry_reserve: Option<f64>,
+) -> (f64, Option<f64>) {
+    let fill = exit_fill(trades, series, fire_row, pricing.fill_model).unwrap_or_else(|| PaperFill {
+        trade_idx: 0,
+        price: series.price[fire_row],
+        token_amount: 0.0,
+        slot: series.slot[fire_row].unwrap_or(0),
+        block_time: series.at[fire_row],
+        tx_signature: String::new(),
+    });
+    let exit_row = series_row_for_trade_idx(series, fill.trade_idx).unwrap_or(fire_row);
+    let reserve = series
+        .reserve_sol
+        .get(exit_row)
+        .copied()
+        .filter(|r| r.is_finite() && *r > 0.0)
+        .or(entry_reserve);
+    (fill.price, reserve)
+}
+
+/// Final close of a staged position: append the remaining bag as one leg and
+/// price through [`round_trip_multi_leg`]. `exit_req_idx` labels global authored
+/// metrics only (`None` for Dead / remainder-stage closes).
+#[allow(clippy::too_many_arguments)]
+fn close_staged(
+    trades: &[CorpusTrade],
+    series: &MetricSeries,
+    b: &BoundCombo,
+    exit: ExitCode,
+    exit_req_idx: Option<usize>,
+    entry_price: f64,
+    entry_at: DateTime<Utc>,
+    entry_slot: Option<u64>,
+    entry_reserve_sol: Option<f64>,
+    prior_legs: &[ExitLeg],
+    sold_bps: u16,
+    fire_row: usize,
+    pricing: &Pricing,
+) -> TokenOutcome {
+    let fill = exit_fill(trades, series, fire_row, pricing.fill_model).unwrap_or_else(|| PaperFill {
+        trade_idx: 0,
+        price: series.price[fire_row],
+        token_amount: 0.0,
+        slot: series.slot[fire_row].unwrap_or(0),
+        block_time: series.at[fire_row],
+        tx_signature: String::new(),
+    });
+    let exit_row = series_row_for_trade_idx(series, fill.trade_idx).unwrap_or(fire_row);
+    let reserve = series
+        .reserve_sol
+        .get(exit_row)
+        .copied()
+        .filter(|r| r.is_finite() && *r > 0.0)
+        .or(entry_reserve_sol);
+    let mut legs: Vec<ExitLeg> = prior_legs.to_vec();
+    let rem = 10_000u16.saturating_sub(sold_bps);
+    if rem > 0 {
+        legs.push(ExitLeg { sell_bps: rem, price: fill.price, reserve_sol: reserve });
+    }
+    let label = exit_req_idx.and_then(|i| b.exit_metric_label.get(i).copied().flatten());
+    closed_multi(
+        exit,
+        label,
+        entry_price,
+        entry_at,
+        entry_slot,
+        entry_reserve_sol,
+        &legs,
+        fill.price,
+        fill.block_time,
+        fill_trade_slot(series, exit_row),
+        pricing,
+    )
+}
+
+/// Open (or mid-ladder open) mark: banked legs + a mark-to-`last_price` remainder.
+#[allow(clippy::too_many_arguments)]
+fn open_staged(
+    series: &MetricSeries,
+    fill_row: usize,
+    entry_price: f64,
+    entry_at: DateTime<Utc>,
+    entry_slot: Option<u64>,
+    entry_reserve_sol: Option<f64>,
+    prior_legs: &[ExitLeg],
+    sold_bps: u16,
+    last_price: f64,
+    pricing: &Pricing,
+) -> TokenOutcome {
+    let mut legs: Vec<ExitLeg> = prior_legs.to_vec();
+    let rem = 10_000u16.saturating_sub(sold_bps);
+    if rem > 0 {
+        legs.push(ExitLeg {
+            sell_bps: rem,
+            price: last_price,
+            reserve_sol: entry_reserve_sol,
+        });
+    }
+    if legs.is_empty() {
+        return open_outcome(series, fill_row, entry_price, entry_at, last_price, pricing);
+    }
+    let (pnl_sol, pnl_pct) = round_trip_multi_leg(
+        entry_price,
+        pricing.buy_amount_sol,
+        entry_reserve_sol,
+        &legs,
+        &pricing.cost,
+    );
+    TokenOutcome {
+        fired: true,
+        holding_secs: 0,
+        pnl_percent: pnl_pct as f32,
+        pnl_sol: pnl_sol as f32,
+        exit: ExitCode::Open,
+        exit_metric: None,
+        exit_operator: None,
+        exit_metric_value: None,
+        exit_metric_slot: None,
+        entry_time: Some(entry_at),
+        entry_price: Some(entry_price),
+        entry_slot: entry_slot.or_else(|| fill_trade_slot(series, fill_row)),
+        exit_time: None,
+        exit_price: None,
+        exit_slot: None,
+    }
+}
+
+/// Multi-leg sibling of [`closed`] — same outcome shape, PnL via
+/// [`round_trip_multi_leg`]. `exit_price`/`exit_time` stamp the **final** leg
+/// (matches `End`'s last-leg reason/price).
+#[allow(clippy::too_many_arguments)]
+fn closed_multi(
+    exit: ExitCode,
+    label: Option<(MetricId, Operator, f64, u8)>,
+    entry_price: f64,
+    entry_at: DateTime<Utc>,
+    entry_slot: Option<u64>,
+    entry_reserve_sol: Option<f64>,
+    legs: &[ExitLeg],
+    exit_price: f64,
+    exit_at: DateTime<Utc>,
+    exit_slot: Option<u64>,
+    pricing: &Pricing,
+) -> TokenOutcome {
+    let (pnl_sol, pnl_pct) = if legs.is_empty() {
+        round_trip_with_costs(
+            entry_price,
+            exit_price,
+            pricing.buy_amount_sol,
+            entry_reserve_sol,
+            &pricing.cost,
+        )
+    } else {
+        round_trip_multi_leg(
+            entry_price,
+            pricing.buy_amount_sol,
+            entry_reserve_sol,
+            legs,
+            &pricing.cost,
+        )
+    };
+    TokenOutcome {
+        fired: true,
+        holding_secs: (exit_at - entry_at).num_seconds(),
+        pnl_percent: pnl_pct as f32,
+        pnl_sol: pnl_sol as f32,
+        exit,
+        exit_metric: label.map(|(m, _, _, _)| m),
+        exit_operator: label.map(|(_, op, _, _)| op),
+        exit_metric_value: label.map(|(_, _, v, _)| v),
+        exit_metric_slot: label.map(|(_, _, _, s)| s),
+        entry_time: Some(entry_at),
+        entry_price: Some(entry_price),
+        entry_slot,
+        exit_time: Some(exit_at),
+        exit_price: Some(exit_price),
+        exit_slot,
+    }
 }
 
 /// SOL-side pool depth at the entry row, for [`CostModel::price_impact`]. `None`
@@ -2761,6 +3120,18 @@ mod tests {
             "SL is the downward bound and is prepended ahead of TP"
         );
         assert!(b.fast_exit, "a pure TP/SL rule must take the index path");
+    }
+
+    #[test]
+    fn scale_out_forces_scalar_staged_walk() {
+        // Scale-out is multi-leg; the index / SIMD paths only price a single full-bag
+        // close. Even a TP/SL-shaped global side must not take `fast_exit`.
+        let c = compiled(serde_json::json!({
+            "scale_out": [{ "sell_bps": 7000, "take_profit": 50 }]
+        }));
+        let b = BoundCombo::new(&[], c);
+        assert!(!b.fast_exit);
+        assert_eq!(b.stage_cols.len(), 1);
     }
 
     #[test]

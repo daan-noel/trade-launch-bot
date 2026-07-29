@@ -139,6 +139,15 @@ Not wired: **re-entry** (`RuleParams.reentry`). The sweep's `TokenOutcome` is on
 episode per (token, combo); multi-episode accumulation would change the outcome
 model, aggregation and persistence. Re-entry validates via simulate/replay instead. Same for **exclusivity** (`RuleParams.exclusive` / `priority`) — it needs cross-*rule* state at one instant, which the per-combo fan-out has no place to keep; recorded as divergence D4 in [../plans/sweep/sim-parity.md](../plans/sweep/sim-parity.md) and locked by a `guard.rs` test.
 
+**Scale-out** (`RuleParams.scale_out`) **is** wired on the exit scan:
+`resolve_exit` delegates to `resolve_exit_staged` when the compiled ladder is
+non-empty (`Dead > global exit > stage`, multi-leg PnL via
+`round_trip_multi_leg`). Cost is ×(stages+1) resolve work only for those rules;
+legacy combos keep the index/SIMD fast paths (`fast_exit` requires empty
+`scale_out`). Deliberate residuals D5/D6 in sim-parity (no in-flight-sell
+blindness; no frozen-tail stage advance). Axes do not yet sweep stage counts —
+author a ladder on the rule / drill-in, or simulate.
+
 ### Flow axes (`m_flow_split` / `m_flow_split_window`)
 
 When axes reference a flow group, the corpus loads with `Selection.with_flow`
