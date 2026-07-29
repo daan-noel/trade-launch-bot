@@ -250,8 +250,9 @@ export function ConsolePage() {
 
   // ── Row actions (legality mirrors the backend close-action matrix) ──────────
   const onAction = useCallback(
-    async (row: LiveOpenRow, action: CloseAction) => {
+    async (row: LiveOpenRow, action: CloseAction, sellBps?: number) => {
       const mint8 = `${row.mint.slice(0, 8)}…`;
+      const pctLabel = sellBps != null ? `${(sellBps / 100).toFixed(sellBps % 100 === 0 ? 0 : 1)}%` : null;
       const prompt =
         action === 'dump'
           ? `Force-DUMP ${mint8}? Sells with NO slippage floor — accepts whatever the (near-drained) pool gives. REAL on-chain sell.`
@@ -261,7 +262,9 @@ export function ConsolePage() {
               ? null // verify is read-only + heal — no confirm needed
               : row.status === 'ExitUnconfirmed'
                 ? `Re-sell ${mint8}? Safe: if the original sell landed, this books the row cleared instead of double-selling.`
-                : `Sell ALL of this position (${mint8})? REAL mode sends an on-chain sell.`;
+                : pctLabel
+                  ? `Sell ${pctLabel} of initial bag (${mint8})? REAL mode sends an on-chain partial. Position stays open.`
+                  : `Sell ALL of this position (${mint8})? REAL mode sends an on-chain sell.`;
       if (prompt && !window.confirm(prompt)) return;
       setActionErr(null);
       setActionNotice(null);
@@ -271,6 +274,7 @@ export function ConsolePage() {
           strategy: 'generic',
           positionId: row.positionId,
           action,
+          sellBps,
         }).unwrap();
         if (action === 'verify') {
           const note = res.cleared
@@ -289,7 +293,12 @@ export function ConsolePage() {
           pushLog(action === 'writeoff' ? 'Write off' : 'Sell', row.mint, 'booked closed', true);
           setBusyId(null);
         } else {
-          pushLog(action === 'dump' ? 'Dump' : 'Sell', row.mint, 'sell submitted', true);
+          pushLog(
+            action === 'dump' ? 'Dump' : pctLabel ? `Sell ${pctLabel}` : 'Sell',
+            row.mint,
+            'sell submitted',
+            true,
+          );
         }
       } catch (e) {
         setBusyId(null);
@@ -541,6 +550,12 @@ export function ConsolePage() {
             >
               {busy ? <SpinnerIcon /> : <SellIcon />}
             </IconButton>
+            {actionBtn('25%', 'Sell 25% of the initial bag (partial)', 'text-warning', busy, () =>
+              void onAction(r, 'retry', 2500),
+            )}
+            {actionBtn('50%', 'Sell 50% of the initial bag (partial)', 'text-warning', busy, () =>
+              void onAction(r, 'retry', 5000),
+            )}
             {r.origin === 'manual' && (
               <button
                 type="button"

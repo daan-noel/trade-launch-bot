@@ -415,20 +415,23 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             state.set_manual_exit(position, pref.rule, exit);
         }
 
-        Event::ManualClose { position } => {
+        Event::ManualClose { position, portion } => {
             let Some(pref) = state.positions.get(&position).cloned() else { return fx };
             let PositionRef { mint, rule } = pref;
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
             if let Some(ArmState::Entered(held)) = token.arms.get(&rule).cloned() {
                 if held.position == position {
                     let intent = state.next_intent(rule, mint.clone());
+                    // Same ExitPending + SubmitSell shape as PartialExit / full
+                    // Exit — exec/sinks already size from `portion`. A partial
+                    // Manual fill advances stage like a ladder leg (pure reuse).
                     token.arms.insert(
                         rule,
                         ArmState::ExitPending {
                             intent: intent.clone(),
                             reason: ExitReason::Manual,
                             attempts: 1,
-                            portion: Portion::All,
+                            portion,
                             held,
                         },
                     );
@@ -436,7 +439,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                         intent: intent.clone(),
                         position,
                         reason: ExitReason::Manual,
-                        portion: Portion::All,
+                        portion,
                     });
                     fx.push(Effect::PositionUpdate(PositionDelta {
                         position,

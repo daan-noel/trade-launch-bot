@@ -646,8 +646,9 @@ fn manual_close_sells_held_position() {
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
 
     let position = *s.positions.keys().next().expect("one open position");
-    let fx = reduce(&mut s, Event::ManualClose { position });
+    let fx = reduce(&mut s, Event::ManualClose { position, portion: Portion::All });
     assert_eq!(sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(), vec![ExitReason::Manual]);
+    assert_eq!(sell_portions(&fx), vec![Portion::All]);
     let exit = sell_intent(&fx);
     let fx = reduce(&mut s, Event::FillConfirmed { intent: exit, fill: fill(1.5, 1.0) });
     assert_eq!(statuses(&fx), vec![PositionStatus::End]);
@@ -682,7 +683,7 @@ fn unconfirmed_sell_is_terminal_and_never_resold() {
     let entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
     let position = *s.positions.keys().next().unwrap();
-    let fx = reduce(&mut s, Event::ManualClose { position });
+    let fx = reduce(&mut s, Event::ManualClose { position, portion: Portion::All });
     let exit = sell_intent(&fx);
 
     // The sell may have cleared and the feed never confirmed → alarm, never re-sell.
@@ -775,7 +776,7 @@ fn untracked_token_events_are_ignored() {
         Event::Trade { mint: Mint::from("ghost"), trade: trade(1.0, 1.0, 40.0, 1.0) },
     );
     assert!(fx.is_empty());
-    let fx = reduce(&mut s, Event::ManualClose { position: PositionId(999) });
+    let fx = reduce(&mut s, Event::ManualClose { position: PositionId(999), portion: Portion::All });
     assert!(fx.is_empty());
 }
 
@@ -1099,7 +1100,7 @@ fn reentry_manual_close_never_rearms() {
 
     // A human closed it — the bot must not re-buy the token they just exited.
     let position = *s.positions.keys().next().expect("one open position");
-    let fx = reduce(&mut s, Event::ManualClose { position });
+    let fx = reduce(&mut s, Event::ManualClose { position, portion: Portion::All });
     let exit = sell_intent(&fx);
     let fx = reduce(&mut s, Event::FillConfirmed { intent: exit, fill: fill(1.5, 1.0) });
     assert_eq!(statuses(&fx), vec![PositionStatus::End]);
@@ -1168,7 +1169,7 @@ fn manual_buy_tracked_only_never_auto_exits() {
 
     // Manual close still routes through the engine.
     let position = *s.positions.keys().next().expect("held");
-    let fx = reduce(&mut s, Event::ManualClose { position });
+    let fx = reduce(&mut s, Event::ManualClose { position, portion: Portion::All });
     assert_eq!(sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(), vec![ExitReason::Manual]);
 }
 
@@ -1484,4 +1485,50 @@ fn scale_out_absent_legacy_sell_is_portion_all() {
         sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
         vec![ExitReason::TakeProfit]
     );
+}
+
+#[test]
+fn manual_close_partial_preserves_holding_and_advances_sold_bps() {
+    // Console "Sell N%" — same Portion plumbing as scale-out; fill restores Holding.
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(&mut s, reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![cu_fp(1)]));
+    enter_holding(&mut s, &m);
+
+    let position = *s.positions.keys().next().expect("one open position");
+    let fx = reduce(
+        &mut s,
+        Event::ManualClose {
+            position,
+            portion: Portion::BpsOfInitial(5000),
+        },
+    );
+    assert_eq!(sell_portions(&fx), vec![Portion::BpsOfInitial(5000)]);
+    assert_eq!(
+        sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+        vec![ExitReason::Manual]
+    );
+    assert_eq!(statuses(&fx), vec![PositionStatus::ExitPending]);
+    let leg = sell_intent(&fx);
+
+    let fx = reduce(&mut s, Event::FillConfirmed { intent: leg, fill: fill(1.2, 1.0) });
+    assert_eq!(statuses(&fx), vec![PositionStatus::Holding]);
+    assert_eq!(stages(&fx), vec![Some(1)]);
+    assert_eq!(s.positions.len(), 1, "partial manual keeps the concurrency slot");
+    let token = s.tokens.get(&m).expect("still tracked");
+    match token.arms.get(&rid(1)) {
+        Some(hunter_engine::arm::ArmState::Entered(ctx)) => {
+            assert_eq!(ctx.stage, 1);
+            assert_eq!(ctx.sold_bps, 5000);
+        }
+        other => panic!("expected Entered after partial manual fill, got {other:?}"),
+    }
+
+    // Final ManualClose All closes the remainder → End (re-entry only then).
+    let fx = reduce(&mut s, Event::ManualClose { position, portion: Portion::All });
+    assert_eq!(sell_portions(&fx), vec![Portion::All]);
+    let exit = sell_intent(&fx);
+    let fx = reduce(&mut s, Event::FillConfirmed { intent: exit, fill: fill(1.3, 2.0) });
+    assert_eq!(statuses(&fx), vec![PositionStatus::End]);
+    assert!(!s.tokens.contains_key(&m));
 }

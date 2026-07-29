@@ -145,14 +145,24 @@ export const liveApi = baseApi.injectEndpoints({
         dropped?: boolean;
         unresolved?: boolean;
       },
-      { strategy: string; positionId: string; action?: 'retry' | 'dump' | 'writeoff' | 'verify' }
+      {
+        strategy: string;
+        positionId: string;
+        action?: 'retry' | 'dump' | 'writeoff' | 'verify';
+        /** Basis points of the initial bag (1..9900 = partial; omit = Sell ALL). */
+        sellBps?: number;
+      }
     >({
-      query: ({ strategy, positionId, action }) => ({
-        url: `/api/strategies/${strategy}/positions/${positionId}/close${
-          action && action !== 'retry' ? `?action=${action}` : ''
-        }`,
-        method: 'POST',
-      }),
+      query: ({ strategy, positionId, action, sellBps }) => {
+        const params = new URLSearchParams();
+        if (action && action !== 'retry') params.set('action', action);
+        if (sellBps != null) params.set('sell_bps', String(sellBps));
+        const qs = params.toString();
+        return {
+          url: `/api/strategies/${strategy}/positions/${positionId}/close${qs ? `?${qs}` : ''}`,
+          method: 'POST',
+        };
+      },
     }),
     /** Append-only fill ledger for one position (entry + every sell leg). */
     getPositionFills: builder.query<PositionFill[], string>({

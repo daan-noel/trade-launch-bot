@@ -14,7 +14,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::event::{Event, Fill, FillFailReason, IntentId, ManualExit, Mint, PositionId, RuleId};
+use crate::event::{
+    Event, Fill, FillFailReason, IntentId, ManualExit, Mint, Portion, PositionId, RuleId,
+};
 use crate::grouping::TokenFingerprint;
 use crate::metrics::{Ts, TradeLite};
 
@@ -38,7 +40,12 @@ pub enum LoggedEvent {
     Migrated { mint: Mint, at: Ts },
     ManualBuy { mint: Mint, rule: RuleId, lamports: u64, at: Ts, exit: Option<ManualExit> },
     SetManualExit { position: PositionId, exit: Option<ManualExit> },
-    ManualClose { position: PositionId },
+    ManualClose {
+        position: PositionId,
+        /// Absent on pre-portion JSONL lines ⇒ `All` (legacy Sell ALL).
+        #[serde(default)]
+        portion: Portion,
+    },
     ExternallyCleared { position: PositionId, fill: Fill },
 }
 
@@ -83,7 +90,9 @@ impl LoggedEvent {
             Event::SetManualExit { position, exit } => {
                 LoggedEvent::SetManualExit { position: *position, exit: *exit }
             }
-            Event::ManualClose { position } => LoggedEvent::ManualClose { position: *position },
+            Event::ManualClose { position, portion } => {
+                LoggedEvent::ManualClose { position: *position, portion: *portion }
+            }
             Event::ExternallyCleared { position, fill } => {
                 LoggedEvent::ExternallyCleared { position: *position, fill: *fill }
             }
@@ -147,7 +156,9 @@ impl LoggedEvent {
             LoggedEvent::SetManualExit { position, exit } => {
                 Event::SetManualExit { position, exit }
             }
-            LoggedEvent::ManualClose { position } => Event::ManualClose { position },
+            LoggedEvent::ManualClose { position, portion } => {
+                Event::ManualClose { position, portion }
+            }
             LoggedEvent::ExternallyCleared { position, fill } => {
                 Event::ExternallyCleared { position, fill }
             }

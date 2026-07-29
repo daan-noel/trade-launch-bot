@@ -504,8 +504,8 @@ async fn handle_command(
             reload_rules(rule_repo, fp_repo, state, sink).await;
             EventBatch::none() // reload_rules folds the event itself
         }
-        EngineCommand::ManualClose { pg_position_id } => match registry.engine_id(pg_position_id) {
-            Some(position) => EventBatch::one(Event::ManualClose { position }),
+        EngineCommand::ManualClose { pg_position_id, portion } => match registry.engine_id(pg_position_id) {
+            Some(position) => EventBatch::one(Event::ManualClose { position, portion }),
             None => {
                 // HTTP close_position handles registry-miss via orphan_exit; a bare
                 // command with no registry entry is a no-op (never pretend success).
@@ -527,13 +527,29 @@ async fn handle_command(
         EngineCommand::CloseRule { rule_id } => {
             let positions = registry.positions_for_rule(RuleId(rule_id));
             info!(rule = %rule_id, positions = positions.len(), "engine: stop rule — closing open positions");
-            EventBatch::many(positions.into_iter().map(|position| Event::ManualClose { position }).collect())
+            EventBatch::many(
+                positions
+                    .into_iter()
+                    .map(|position| Event::ManualClose {
+                        position,
+                        portion: hunter_engine::event::Portion::All,
+                    })
+                    .collect(),
+            )
         }
         EngineCommand::CloseMode { real } => {
             let mode = if real { TradeMode::Real } else { TradeMode::Paper };
             let positions = registry.positions_for_mode(mode);
             info!(?mode, positions = positions.len(), "engine: stop-all — closing open positions");
-            EventBatch::many(positions.into_iter().map(|position| Event::ManualClose { position }).collect())
+            EventBatch::many(
+                positions
+                    .into_iter()
+                    .map(|position| Event::ManualClose {
+                        position,
+                        portion: hunter_engine::event::Portion::All,
+                    })
+                    .collect(),
+            )
         }
         EngineCommand::ManualBuy { pg_id, mint, lamports, exit } => {
             // Fresh per-episode rule id: keys the arm, the intents, and the

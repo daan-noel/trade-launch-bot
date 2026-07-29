@@ -51,7 +51,7 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
 **Operator clarity (jobs):** Wallet = bag overview (funding/cashback + holdings; manual
 trading moved to the Console); **Console = the one real-trade surface** (SSE SSOT; lanes
 top-to-bottom: ⚠ Attention with per-status actions mirroring the backend close matrix,
-Open ∥ Manual-trade panel (buy 202→SSE, TP/SL, sell-all-by-mint, persistent trade log),
+Open ∥ Manual-trade panel (buy 202→SSE, TP/SL, sell-all-by-mint, Holding Sell ALL / 25% / 50%, persistent trade log),
 collapsible Waiting, Recent closed; rows carry origin dot / status+sub-chips / dead-pool ❗ /
 MTM / stale-age cue; row select opens the detail modal); Portfolio = cross-rule money
 (PnL% + by-rule bars + rule drill-in); Rules =

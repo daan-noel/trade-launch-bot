@@ -257,7 +257,10 @@ fn random_streams_preserve_invariants_and_never_panic() {
                         .next()
                         .copied()
                         .unwrap_or(PositionId(rng.next()));
-                    Event::ManualClose { position }
+                    Event::ManualClose {
+                        position,
+                        portion: hunter_engine::event::Portion::All,
+                    }
                 }
                 _ => Event::Tick { now: ts(now) },
             };

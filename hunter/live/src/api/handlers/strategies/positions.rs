@@ -234,10 +234,17 @@ pub async fn get_position_fills(
 ///   on-chain sell, for a pool with no sellable liquidity. Manual-only, forever.
 /// - `verify` — on-demand resolve: `ExitUnconfirmed` → PG-net check (heal to End
 ///   or report still-held); `BuySubmitted` → the reaper's adopt-or-drop logic.
+///
+/// Optional `sell_bps` (query): basis points of the **initial** bag to sell
+/// (`1..=9900` ⇒ partial / Console "Sell N%"; omit or `10000` ⇒ Sell ALL).
+/// Partials are Holding + live-engine only — orphan / stuck / dump stay full.
 #[derive(Debug, Deserialize)]
 pub struct CloseParams {
     #[serde(default)]
     pub action: Option<String>,
+    /// `None` / `10000` ⇒ `Portion::All`; `1..=9900` ⇒ `BpsOfInitial`.
+    #[serde(default)]
+    pub sell_bps: Option<u16>,
 }
 
 /// POST /api/strategies/{strategy}/positions/{position_id}/close
@@ -259,6 +266,22 @@ pub async fn close_position(
 
     let (_strategy, position_id) = path.into_inner();
     let action = query.action.as_deref().unwrap_or("retry");
+    // Map optional sell_bps → Portion. Omit / 10000 = All; 1..=9900 = partial.
+    // Reject anything else before touching the engine / orphan path.
+    let portion = match query.sell_bps {
+        None | Some(10_000) => hunter_engine::event::Portion::All,
+        Some(bps) if (1..=hunter_engine::rule_params::MAX_SCALE_SELL_BPS).contains(&bps) => {
+            hunter_engine::event::Portion::BpsOfInitial(bps)
+        }
+        Some(bps) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": format!(
+                    "sell_bps must be 1..={} (partial) or 10000/omit (all), got {bps}",
+                    hunter_engine::rule_params::MAX_SCALE_SELL_BPS
+                )
+            }));
+        }
+    };
     let pos = match app_state.strategy_repo.find_position(position_id).await {
         Ok(Some(p)) => p,
         Ok(None) => {
@@ -289,6 +312,11 @@ pub async fn close_position(
         // attention statuses only, so it can never race a live engine arm.
         // Manual-only; the reaper never writes a position off.
         "writeoff" => {
+            if portion.is_partial() {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "write-off has no sell — omit sell_bps"
+                }));
+            }
             if !matches!(status, "ExitStuck" | "ExitUnconfirmed") {
                 return HttpResponse::Conflict().json(serde_json::json!({
                     "error": format!(
@@ -317,13 +345,25 @@ pub async fn close_position(
         }
 
         // Verify: on-demand resolve, no sell.
-        "verify" => verify_position(&app_state, pos).await,
+        "verify" => {
+            if portion.is_partial() {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "verify has no sell — omit sell_bps"
+                }));
+            }
+            verify_position(&app_state, pos).await
+        },
 
         "retry" | "dump" => {
             let dump = action == "dump";
             if dump && !matches!(status, "ExitStuck" | "ExitUnconfirmed") {
                 return HttpResponse::Conflict().json(serde_json::json!({
                     "error": format!("dump applies only to a stuck/unconfirmed exit, not {status}")
+                }));
+            }
+            if dump && portion.is_partial() {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "dump always sells the full remaining bag — omit sell_bps"
                 }));
             }
             if status == "ExitPending" {
@@ -346,11 +386,19 @@ pub async fn close_position(
             // Registry hit → engine ManualClose (live path). Stuck/unconfirmed rows
             // are never engine-owned (the arm was dropped), so this is Holding-only.
             if status == "Holding" && app_state.positions.engine_id(position_id).is_some() {
-                if app_state.engine.manual_close(position_id).await {
+                if app_state.engine.manual_close(position_id, portion).await {
                     return HttpResponse::Accepted().json(serde_json::json!({ "closing": true }));
                 }
                 return HttpResponse::InternalServerError()
                     .json(serde_json::json!({"error": "Engine shutting down"}));
+            }
+
+            // Partial sells need the live engine (stage/sold_bps resume on fill).
+            // Orphan / stuck paths always clear the full remaining bag.
+            if portion.is_partial() {
+                return HttpResponse::Conflict().json(serde_json::json!({
+                    "error": "Partial sell (sell_bps) requires a live Holding position in the engine registry"
+                }));
             }
 
             // Bag already gone (Trade sell / sibling) — book closed, no sell RPC.

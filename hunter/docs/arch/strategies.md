@@ -60,7 +60,7 @@ side-effects only.
 | `convert.rs` | DB model ↔ engine type converters (re-exports `fingerprint_axes::{fp_to_engine, observed_axes, rule_to_loaded}`) |
 
 `EngineHandle` (held by the HTTP layer, enqueues commands only): `reload_rules`,
-`manual_close(pg_id)` (per-row "Sell ALL"), `close_rule(rule_id)` (per-row Stop),
+`manual_close(pg_id, portion)` (per-row "Sell ALL" / "Sell N%"), `close_rule(rule_id)` (per-row Stop),
 `close_mode(real)` (Stop All), `reconcile_cleared(pg_id, fill)` (externally-cleared
 close — below), `manual_buy(pg_id, mint, lamports, exit)` (Console manual buy — a
 fresh per-episode rule id + `Event::ManualBuy`), `set_manual_exit(pg_id, exit)`
@@ -99,13 +99,16 @@ After a leader sell clears the wallet mint net (PG), siblings are booked
 
 ## Console close + externally-cleared reconcile
 
-`POST …/positions/{id}/close?action=retry|dump|writeoff|verify` (per-status legality
+`POST …/positions/{id}/close?action=retry|dump|writeoff|verify[&sell_bps=N]` (per-status legality
 matrix — see [position-lifecycle.md](position-lifecycle.md) §3):
 
-1. Registry hit (Holding) → `manual_close` (engine `ManualClose`, SSE lifecycle).
+1. Registry hit (Holding) → `manual_close(portion)` (engine `ManualClose`, SSE lifecycle).
+   Optional `sell_bps` in `1..=9900` ⇒ partial (`Portion::BpsOfInitial`); omit / `10000` ⇒ Sell ALL.
+   Partials reuse the scale-out fill path (Holding preserved, stage/sold_bps advance).
 2. Registry miss / `ExitStuck`/`ExitUnconfirmed` retry → if PG `trades` net ≤ 0, book
    End (no sell RPC); else `orphan_exit::spawn_orphan_sell` (same `run_exit` feed
-   confirm). Retry on a parked bag un-parks it (fresh redrive budget).
+   confirm). Retry on a parked bag un-parks it (fresh redrive budget). Partial
+   `sell_bps` is rejected here (engine-held Holding only).
 3. Never returns 202 on a silent ignore (409/404/500 with an error body).
 
 When a manual wallet sell (`POST /api/solana/wallet/sell`) empties a held mint,

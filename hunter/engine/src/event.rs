@@ -371,7 +371,8 @@ pub enum Event {
     /// (`[+TP/SL]` on a Holding row). `None` ⇒ back to tracked-only.
     SetManualExit { position: PositionId, exit: Option<ManualExit> },
     /// A manual sell / stop-all targeting one open position.
-    ManualClose { position: PositionId },
+    /// `portion: All` = Sell ALL (legacy); `BpsOfInitial` = Console "Sell N%".
+    ManualClose { position: PositionId, portion: Portion },
     /// One open position whose token bag was already cleared **off-chain** (an
     /// external / manual wallet sell) — book it closed at `fill` WITHOUT emitting a
     /// `SubmitSell` (the bag is gone; a sell would only revert into an empty wallet).
@@ -382,10 +383,11 @@ pub enum Event {
 
 /// How much of a held bag a sell should close. `All` is today's full-bag path;
 /// `BpsOfInitial` sells that many basis points of the **initial** entry bag
-/// (partial exits / scale-out). See `docs/roadmap/partial-exits-plan.md`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// (partial exits / scale-out / manual Sell N%). See `docs/roadmap/partial-exits-plan.md`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Portion {
     /// Close 100% of the remaining bag.
+    #[default]
     All,
     /// Sell `bps / 10_000` of the initial token amount (clamped to remaining at exec).
     BpsOfInitial(u16),

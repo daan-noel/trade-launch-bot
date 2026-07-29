@@ -141,10 +141,14 @@ pub enum EngineCommand {
     /// The active rule set changed (create/update/delete/activate/pause) — the loop
     /// reloads rules+fingerprints from PG and folds a `RulesReloaded` event.
     ReloadRules,
-    /// A manual "Sell ALL" / stop-all targeting one **PG** position id. The loop
+    /// A manual "Sell ALL" / "Sell N%" targeting one **PG** position id. The loop
     /// resolves it to the engine `PositionId` via the sink registry, then folds a
     /// `ManualClose` (a no-op if the position isn't a live engine-held one).
-    ManualClose { pg_position_id: Uuid },
+    /// `portion: All` = full close; `BpsOfInitial` = Console partial.
+    ManualClose {
+        pg_position_id: Uuid,
+        portion: hunter_engine::event::Portion,
+    },
     /// Force-close every open position of one **rule** (the per-row Stop). The loop
     /// resolves the rule's live engine positions via the registry and folds a
     /// `ManualClose` for each (a no-op for any not currently Holding).
@@ -191,11 +195,19 @@ impl EngineHandle {
         let _ = self.cmd_tx.send(EngineCommand::ReloadRules).await;
     }
 
-    /// Ask the loop to close a PG position id manually. Returns `false` only if the
-    /// loop channel is closed (shutting down).
-    pub async fn manual_close(&self, pg_position_id: Uuid) -> bool {
+    /// Ask the loop to close a PG position id manually. `portion` selects Sell ALL
+    /// vs Sell N% (`BpsOfInitial`). Returns `false` only if the loop channel is
+    /// closed (shutting down).
+    pub async fn manual_close(
+        &self,
+        pg_position_id: Uuid,
+        portion: hunter_engine::event::Portion,
+    ) -> bool {
         self.cmd_tx
-            .send(EngineCommand::ManualClose { pg_position_id })
+            .send(EngineCommand::ManualClose {
+                pg_position_id,
+                portion,
+            })
             .await
             .is_ok()
     }
