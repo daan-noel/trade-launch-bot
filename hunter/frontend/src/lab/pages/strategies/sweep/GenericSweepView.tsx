@@ -296,7 +296,13 @@ export function GenericSweepView() {
     setComboPage(0);
   }
 
-  const { rows: results, total: resultsTotal, loading: resultsLoading, error: resultsErr } =
+  const {
+    rows: results,
+    total: resultsTotal,
+    exitMetricLegend,
+    loading: resultsLoading,
+    error: resultsErr,
+  } =
     useStreamedSweepResults(
       strategyId,
       activeRunId,
@@ -362,7 +368,10 @@ export function GenericSweepView() {
     () => buildGenericGroupColumns(buyAmountSol, { fingerprintByGroupId, rulesByFingerprintId }),
     [buyAmountSol, fingerprintByGroupId, rulesByFingerprintId],
   );
-  const comboColumns = useMemo(() => buildGenericComboColumns(buyAmountSol), [buyAmountSol]);
+  const comboColumns = useMemo(
+    () => buildGenericComboColumns(buyAmountSol, exitMetricLegend),
+    [buyAmountSol, exitMetricLegend],
+  );
 
   const groupRowActions = useCallback(
     (g: GroupedSweepGroupRecord): ReactNode => (

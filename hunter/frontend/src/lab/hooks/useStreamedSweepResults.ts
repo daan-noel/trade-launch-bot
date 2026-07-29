@@ -5,9 +5,21 @@ import type { FilterSpec } from 'components/table/numericFilter';
 
 export const COMBO_PAGE_SIZE = 200;
 
+/** One `n_exit_metrics_by_slot` slot's name — see `exit_metric_legend` (backend). */
+export interface ExitMetricLegendEntry {
+  slot: number;
+  metric: string;
+  operator: string | null;
+  value: number | null;
+}
+
 export interface StreamedSweepState {
   rows: GroupedSweepResultRecord[];
   total: number;
+  /** Names every occupied `n_exit_metrics_by_slot` index for the current page
+   *  (all rows in a group share one rule shape, so one legend covers the page).
+   *  Empty when the page has no rows or carries no metric exits. */
+  exitMetricLegend: ExitMetricLegendEntry[];
   loading: boolean;
   error: string | null;
 }
@@ -17,7 +29,9 @@ export interface StreamedSweepState {
  * each line arrives. Rows become visible progressively rather than all at once.
  *
  * The backend returns `X-Total-Count` (of the *filtered* set) so the DataTable can
- * render a correct page count. A new fetch fires whenever
+ * render a correct page count, and `X-Exit-Metric-Legend` (see
+ * `ExitMetricLegendEntry`) naming every slot the page's `n_exit_metrics_by_slot`
+ * breakdown occupies. A new fetch fires whenever
  * strategyId/runId/groupId/page/pageSize/sort/filters change; the previous fetch is
  * aborted.
  */
@@ -32,6 +46,7 @@ export function useStreamedSweepResults(
 ): StreamedSweepState {
   const [rows, setRows] = useState<GroupedSweepResultRecord[]>([]);
   const [total, setTotal] = useState(0);
+  const [exitMetricLegend, setExitMetricLegend] = useState<ExitMetricLegendEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -41,6 +56,7 @@ export function useStreamedSweepResults(
     if (!runId || !groupId) {
       setRows([]);
       setTotal(0);
+      setExitMetricLegend([]);
       setLoading(false);
       setError(null);
       return;
@@ -96,6 +112,17 @@ export function useStreamedSweepResults(
         const rawTotal = res.headers.get('X-Total-Count');
         if (rawTotal) setTotal(Number(rawTotal));
 
+        const rawLegend = res.headers.get('X-Exit-Metric-Legend');
+        if (rawLegend) {
+          try {
+            setExitMetricLegend(JSON.parse(rawLegend) as ExitMetricLegendEntry[]);
+          } catch {
+            setExitMetricLegend([]);
+          }
+        } else {
+          setExitMetricLegend([]);
+        }
+
         if (!res.body) {
           throw new Error('No response body');
         }
@@ -138,5 +165,5 @@ export function useStreamedSweepResults(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [strategyId, runId, groupId, page, pageSize, JSON.stringify(sortKeys), JSON.stringify(filters)]);
 
-  return { rows, total, loading, error };
+  return { rows, total, exitMetricLegend, loading, error };
 }

@@ -1471,6 +1471,7 @@ fn metrics_to_result(m: &ComboMetrics) -> GroupedSweepResult {
         n_exit_next_kill: m.n_exit_next_kill as i32,
         n_exit_dead: m.n_exit_dead as i32,
         n_exit_metrics: m.n_exit_metrics as i32,
+        n_exit_metrics_by_slot: m.n_exit_metrics_by_slot.iter().map(|&v| v as i32).collect(),
         n_exit_open: m.n_exit_open as i32,
     }
 }
@@ -1582,6 +1583,14 @@ pub async fn list_results(
         }
     };
 
+    // Every combo in a group shares the same rule *shape* (the sweep varies
+    // threshold values, not which conditions exist), so the first row's own
+    // `params` names every `n_exit_metrics_by_slot` slot for the whole page.
+    // Cheap: one rule compile, not per row. Empty when the page has no rows
+    // (e.g. an out-of-range page) or `params` doesn't parse (legacy rows).
+    let legend = results.first().map(|r| exit_metric_legend(&r.params)).unwrap_or_default();
+    let legend_header = serde_json::to_string(&legend).unwrap_or_else(|_| "[]".to_string());
+
     // Serialize each row as a newline-delimited JSON line and stream them through
     // a channel so actix uses chunked transfer — the frontend reader sees rows
     // arrive progressively rather than waiting for the full payload.
@@ -1609,8 +1618,61 @@ pub async fn list_results(
     HttpResponse::Ok()
         .content_type("application/x-ndjson")
         .insert_header(("X-Total-Count", total.to_string()))
-        .insert_header(("Access-Control-Expose-Headers", "X-Total-Count"))
+        .insert_header(("X-Exit-Metric-Legend", legend_header))
+        .insert_header((
+            "Access-Control-Expose-Headers",
+            "X-Total-Count, X-Exit-Metric-Legend",
+        ))
         .streaming(stream)
+}
+
+/// Legend for a page's `n_exit_metrics_by_slot` breakdown: for each occupied
+/// slot, the metric name + condition that names it — e.g.
+/// `[{"slot":0,"metric":"stall","operator":">","value":3.0}]`. Mirrors
+/// `BoundCombo::exit_metric_label`'s bind-time derivation exactly (including its
+/// overflow rule: a rule with more than `N_EXIT_METRIC_SLOTS` authored exit
+/// conditions names the last slot after whichever of them compiles first), so
+/// the label always matches what the aggregate actually counted. `params` must
+/// be a valid `RuleParams` JSON object; anything else (unparsable / legacy row)
+/// yields an empty legend rather than an error — this is a display aid, never on
+/// the write path.
+fn exit_metric_legend(params_json: &serde_json::Value) -> Vec<serde_json::Value> {
+    use hunter_engine::arm::{CompiledRule, ReqOrigin};
+    use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
+    use hunter_engine::fingerprint::FingerprintId;
+    use hunter_engine::rule_params::RuleParams;
+
+    let Ok(params) = RuleParams::parse(params_json) else {
+        return Vec::new();
+    };
+    let loaded = LoadedRule {
+        id: RuleId(Uuid::nil()),
+        fingerprint_id: FingerprintId(Uuid::nil()),
+        trade_mode: TradeMode::Paper,
+        buy_amount_lamports: 0,
+        max_concurrent_tokens: u32::MAX,
+        max_total_tokens: 0,
+        params,
+    };
+    let compiled = CompiledRule::compile(&loaded);
+
+    let mut legend: Vec<serde_json::Value> = Vec::new();
+    let mut authored_slots: u8 = 0;
+    for r in compiled.exit_reqs.iter().filter(|r| r.origin == ReqOrigin::Authored) {
+        let slot = authored_slots.min(crate::sweep::strategy::N_EXIT_METRIC_SLOTS as u8 - 1) as usize;
+        authored_slots = authored_slots.saturating_add(1);
+        if slot != legend.len() {
+            continue; // this req folded into an already-named slot (overflow)
+        }
+        let cond = r.conds.first().and_then(|arm| arm.first());
+        legend.push(serde_json::json!({
+            "slot": slot,
+            "metric": r.metric.name(),
+            "operator": cond.map(|c| c.operator.symbol()),
+            "value": cond.map(|c| c.value),
+        }));
+    }
+    legend
 }
 
 /// `POST /api/strategies/sweeps/cancel` — request cancellation of the in-flight

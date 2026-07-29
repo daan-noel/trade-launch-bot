@@ -897,6 +897,7 @@ mod tests {
                 pnl_pct: pct as f32,
                 holding_secs: h.unwrap_or(0),
                 exit: ex.into(),
+                exit_metric_slot: None,
                 entry_time: None,
                 entry_price: None,
                 entry_tx: None,

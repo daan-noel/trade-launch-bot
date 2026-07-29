@@ -43,6 +43,11 @@ export interface SweepResultRecord {
   /** Generic engine's single metric-condition exit (`ExitReason::Metrics`). The
    *  legacy strategies never emit it, so it's optional on the wire (absent ⇒ 0). */
   n_exit_metrics?: number;
+  /** `n_exit_metrics` broken down by WHICH authored exit condition fired (slot
+   *  index into the page's `X-Exit-Metric-Legend` header — see
+   *  `useStreamedSweepResults`). Absent on rows written before this column
+   *  existed; `sum() === n_exit_metrics` otherwise. */
+  n_exit_metrics_by_slot?: number[];
   /** Analysis-only death-closes: positions closed at the last meaningful trade
    *  because the token died silent. Counted as closed; 0 on the live path. */
   n_exit_dead: number;

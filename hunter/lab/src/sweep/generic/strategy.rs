@@ -720,6 +720,18 @@ pub struct BoundCombo {
     /// One [`ExitClass`] per `rule.exit_reqs`, in lockstep — how the fast paths may
     /// resolve each req's first firing row.
     exit_classes: Vec<ExitClass>,
+    /// For each `rule.exit_reqs[i]`: `Some((metric, operator, value, slot))` when
+    /// that req is `ReqOrigin::Authored` (an `ExitCode::Metrics` exit), else
+    /// `None` for a desugared TP/SL req. `operator`/`value` are the req's first
+    /// OR-arm's first AND-condition — the same simplification
+    /// `hunter_engine::arm::exit_fired`'s `first_satisfied_cond` makes when it
+    /// stamps a label (a rare multi-arm DNF can report a different arm than the
+    /// one that actually fired; the metric name is always correct). `slot` is
+    /// 0-based among this rule's own authored exit reqs, capped at
+    /// `N_EXIT_METRIC_SLOTS - 1` so the aggregate's per-combo counters stay a
+    /// fixed size. Bind-time only — depends solely on the compiled rule, so
+    /// resolving an exit looks this up instead of computing anything per token.
+    exit_metric_label: Vec<Option<(MetricId, Operator, f64, u8)>>,
     /// `true` ⇔ **every** exit req classified (no [`ExitClass::General`]), so the
     /// index / SIMD paths can resolve the whole exit. One `General` req forces the
     /// scalar walk for the entire rule: that walk is O(n) and must evaluate every
@@ -739,6 +751,7 @@ impl BoundCombo {
         let exit_cols = resolve_cols_in(columns, &rule.exit_reqs);
         let mono_cols = rule.mono_kills.iter().map(|k| col_idx_mono(columns, k)).collect();
         let exit_classes: Vec<ExitClass> = rule.exit_reqs.iter().map(classify_exit_req).collect();
+        let exit_metric_label = exit_metric_labels(&rule.exit_reqs);
         let fast_exit = !exit_classes.iter().any(|c| matches!(c, ExitClass::General));
         // Can any exit req hold at a row *before* entry, i.e. veto it? Conservative
         // by construction: a req that reads a recorded column might, and a req with
@@ -751,8 +764,38 @@ impl BoundCombo {
             .iter()
             .zip(&exit_cols)
             .any(|(r, &col)| col != MISSING_COL || eval(&r.conds, f64::NAN, r.tolerance));
-        Self { rule, entry_cols, mono_cols, exit_cols, exit_classes, fast_exit, entry_veto_possible }
+        Self {
+            rule,
+            entry_cols,
+            mono_cols,
+            exit_cols,
+            exit_classes,
+            exit_metric_label,
+            fast_exit,
+            entry_veto_possible,
+        }
     }
+}
+
+/// Precompute [`BoundCombo::exit_metric_label`] — one entry per `exit_reqs`,
+/// `Some` only for `ReqOrigin::Authored` reqs, slot-numbered among just those.
+/// Bind-time only (never per token/row).
+fn exit_metric_labels(exit_reqs: &[MetricReq]) -> Vec<Option<(MetricId, Operator, f64, u8)>> {
+    let mut authored_slots: u8 = 0;
+    exit_reqs
+        .iter()
+        .map(|r| {
+            if r.origin != ReqOrigin::Authored {
+                return None;
+            }
+            let slot = authored_slots.min(crate::sweep::strategy::N_EXIT_METRIC_SLOTS as u8 - 1);
+            authored_slots = authored_slots.saturating_add(1);
+            r.conds
+                .first()
+                .and_then(|arm| arm.first())
+                .map(|c| (r.metric, c.operator, c.value, slot))
+        })
+        .collect()
 }
 
 // ─────────────────────── exit-req classification (bind time) ───────────────────
@@ -949,17 +992,21 @@ fn exit_req_fires(
 /// [`ReqOrigin`]. That order is what preserves the ladder's
 /// `StopLoss > TakeProfit > Metrics` priority now that TP/SL are ordinary `pnl`
 /// reqs rather than a separate price-threshold branch.
+/// Returns the winning `ExitCode` **and** its index into `reqs` — the caller
+/// looks the index up against `BoundCombo::exit_metric_label` to stamp a
+/// `ExitCode::Metrics` outcome with its authored metric/operator/value/slot.
 fn first_exit_req_fired(
     series: &MetricSeries,
     reqs: &[MetricReq],
     cols: &[usize],
     row: usize,
     ctx: &PositionCtx,
-) -> Option<ExitCode> {
+) -> Option<(ExitCode, usize)> {
     reqs.iter()
         .zip(cols)
-        .find(|(r, &col)| exit_req_fires(series, r, col, row, ctx))
-        .map(|(r, _)| exit_code_of(r.origin))
+        .enumerate()
+        .find(|(_, (r, &col))| exit_req_fires(series, r, col, row, ctx))
+        .map(|(i, (r, _))| (exit_code_of(r.origin), i))
 }
 
 fn entry_unsatisfiable(series: &MetricSeries, c: &CompiledRule, mono_cols: &[usize], row: usize) -> bool {
@@ -1259,7 +1306,10 @@ pub(crate) fn resolve_exit_indexed(
     // keeps the desugared SL ahead of TP ahead of the authored metrics. (A req whose
     // first firing row is `min` is exactly a req that fires at `min`: an earlier first
     // row would contradict minimality.)
-    let mut best: Option<(usize, ExitCode)> = None;
+    // (row, req_index) of the earliest classified req that fires — the index is
+    // kept (not just the derived `ExitCode`) so the caller can label an
+    // `ExitCode::Metrics` winner via `BoundCombo::exit_metric_label` below.
+    let mut best: Option<(usize, usize)> = None;
     for (i, req) in b.rule.exit_reqs.iter().enumerate() {
         let row = match b.exit_classes[i] {
             ExitClass::PnlBound { up } => match first_pnl_row(index, req, entry_price, up) {
@@ -1280,29 +1330,39 @@ pub(crate) fn resolve_exit_indexed(
         };
         if let Some(row) = row {
             if best.is_none_or(|(br, _)| row < br) {
-                best = Some((row, exit_code_of(req.origin)));
+                best = Some((row, i));
             }
         }
     }
-    if let Some(dead) = index.dead_row() {
-        // Dead outranks every strategy exit, at any row (scalar checks it first).
-        if best.is_none_or(|(br, _)| dead <= br) {
-            best = Some((dead, ExitCode::Dead));
-        }
-    }
+    // Dead outranks every strategy exit, at any row (scalar checks it first).
+    // `None` req-index marks Dead (never req-driven, so never a Metrics label).
+    let winner: Option<(usize, Option<usize>)> = match (index.dead_row(), best) {
+        (Some(dead), Some((br, _))) if dead <= br => Some((dead, None)),
+        (Some(dead), None) => Some((dead, None)),
+        (_, Some((br, bi))) => Some((br, Some(bi))),
+        (None, None) => None,
+    };
 
-    match best {
-        Some((row, exit)) => close_at_fire(
-            trades,
-            series,
-            exit,
-            entry_price,
-            entry_at,
-            fill_trade_slot(series, fill_row),
-            entry_depth(series, fill_row),
-            row,
-            pricing,
-        ),
+    match winner {
+        Some((row, req_idx)) => {
+            let exit = match req_idx {
+                Some(i) => exit_code_of(b.rule.exit_reqs[i].origin),
+                None => ExitCode::Dead,
+            };
+            close_at_fire(
+                trades,
+                series,
+                b,
+                exit,
+                req_idx,
+                entry_price,
+                entry_at,
+                fill_trade_slot(series, fill_row),
+                entry_depth(series, fill_row),
+                row,
+                pricing,
+            )
+        }
         // Open by the series' per-token cut: first try the analytic frozen-tail
         // resolve (D1), else mark to last finite (precomputed on the index).
         None => resolve_frozen_tail(
@@ -1364,7 +1424,9 @@ pub(crate) fn resolve_exit(
             return close_at_fire(
                 trades,
                 series,
+                b,
                 ExitCode::Dead,
+                None,
                 entry_price,
                 entry_at,
                 entry_slot,
@@ -1375,11 +1437,13 @@ pub(crate) fn resolve_exit(
         }
         ctx.fold_price(series.price[j]);
         if has_exit_reqs {
-            if let Some(exit) = first_exit_req_fired(series, &c.exit_reqs, exit_cols, j, &ctx) {
+            if let Some((exit, idx)) = first_exit_req_fired(series, &c.exit_reqs, exit_cols, j, &ctx) {
                 return close_at_fire(
                     trades,
                     series,
+                    b,
                     exit,
+                    Some(idx),
                     entry_price,
                     entry_at,
                     entry_slot,
@@ -1434,6 +1498,10 @@ fn open_outcome(
         pnl_percent: pnl_pct as f32,
         pnl_sol: pnl_sol as f32,
         exit: ExitCode::Open,
+        exit_metric: None,
+        exit_operator: None,
+        exit_metric_value: None,
+        exit_metric_slot: None,
         entry_time: Some(entry_at),
         entry_price: Some(entry_price),
         entry_slot: fill_trade_slot(series, fill_row),
@@ -1539,21 +1607,24 @@ fn resolve_frozen_tail(
     // First req (in `exit_reqs` order) that holds at the firing instant labels the exit
     // — a non-clock req reads the frozen values that left the position Open, so only a
     // clock can hold here; this mirrors `first_exit_req_fired` at one row.
-    let mut exit = None;
+    let mut exit: Option<(ExitCode, usize)> = None;
     for (i, req) in b.rule.exit_reqs.iter().enumerate() {
         let Some(base) = frozen_tail_clock_base(series, b, &pos_ctx, i, req, last) else {
             continue;
         };
         if eval(&req.conds, base + delta, req.tolerance) {
-            exit = Some(exit_code_of(req.origin));
+            exit = Some((exit_code_of(req.origin), i));
             break;
         }
     }
+    let (exit, req_idx) = exit?;
     let entry_slot = fill_trade_slot(series, fill_row);
     Some(close_at_fire(
         trades,
         series,
-        exit?,
+        b,
+        exit,
+        Some(req_idx),
         entry_price,
         entry_at,
         entry_slot,
@@ -1853,17 +1924,24 @@ pub(crate) fn resolve_exit_simd(
         // EARLIEST req in `exit_reqs` order that holds here. A req firing at `j`
         // whose own first firing row were earlier would contradict `j` being first,
         // so re-judging this one row reproduces the walk exactly.
-        let exit = if series.dead[j] {
-            ExitCode::Dead
+        let (exit, req_idx) = if series.dead[j] {
+            (ExitCode::Dead, None)
         } else {
             let ctx = PositionCtx::at_fill(entry_price, entry_at);
-            first_exit_req_fired(series, &b.rule.exit_reqs, &b.exit_cols, j, &ctx)
-                .unwrap_or(ExitCode::Metrics)
+            match first_exit_req_fired(series, &b.rule.exit_reqs, &b.exit_cols, j, &ctx) {
+                Some((exit, i)) => (exit, Some(i)),
+                // Should not happen (the vector scan only lands on `j` because some
+                // req fires there) — preserved as a safety fallback; the label is
+                // simply unavailable for this one outcome.
+                None => (ExitCode::Metrics, None),
+            }
         };
         return close_at_fire(
             trades,
             series,
+            b,
             exit,
+            req_idx,
             entry_price,
             entry_at,
             entry_slot,
@@ -2295,11 +2373,18 @@ fn exit_fill(
 }
 
 /// Book a closed outcome at the run's fill-model price after fire row `j`.
+/// `exit_req_idx` is the winning `b.rule.exit_reqs` index (`None` for `Dead` or
+/// any exit that isn't req-driven) — looked up once here against
+/// [`BoundCombo::exit_metric_label`] to stamp the detailed metric/operator/value/
+/// slot onto the outcome, instead of collapsing every authored condition to the
+/// bare `ExitCode::Metrics` code.
 #[allow(clippy::too_many_arguments)]
 fn close_at_fire(
     trades: &[CorpusTrade],
     series: &MetricSeries,
+    b: &BoundCombo,
     exit: ExitCode,
+    exit_req_idx: Option<usize>,
     entry_price: f64,
     entry_at: DateTime<Utc>,
     entry_slot: Option<u64>,
@@ -2319,8 +2404,10 @@ fn close_at_fire(
         }
     });
     let exit_row = series_row_for_trade_idx(series, fill.trade_idx).unwrap_or(fire_row);
+    let label = exit_req_idx.and_then(|i| b.exit_metric_label.get(i).copied().flatten());
     closed(
         exit,
+        label,
         entry_price,
         entry_at,
         entry_slot,
@@ -2373,6 +2460,7 @@ pub(crate) fn scan_with_horizon(
 #[allow(clippy::too_many_arguments)]
 fn closed(
     exit: ExitCode,
+    label: Option<(MetricId, Operator, f64, u8)>,
     entry_price: f64,
     entry_at: DateTime<Utc>,
     entry_slot: Option<u64>,
@@ -2395,6 +2483,10 @@ fn closed(
         pnl_percent: pnl_pct as f32,
         pnl_sol: pnl_sol as f32,
         exit,
+        exit_metric: label.map(|(m, _, _, _)| m),
+        exit_operator: label.map(|(_, op, _, _)| op),
+        exit_metric_value: label.map(|(_, _, v, _)| v),
+        exit_metric_slot: label.map(|(_, _, _, s)| s),
         entry_time: Some(entry_at),
         entry_price: Some(entry_price),
         entry_slot,

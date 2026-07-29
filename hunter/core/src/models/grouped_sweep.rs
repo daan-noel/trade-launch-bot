@@ -195,6 +195,14 @@ pub struct GroupedSweepResult {
     /// Generic-engine metric-condition exits (`ExitCode::Metrics`); 0 for the
     /// legacy tpsl/swing sweeps.
     pub n_exit_metrics: i32,
+    /// `n_exit_metrics` broken down by which of the rule's own authored exit
+    /// conditions fired (0-based slot, overflow folded into the last entry).
+    /// Length is `hunter_lab`'s `N_EXIT_METRIC_SLOTS` (8) — a `Vec` (not a fixed
+    /// array) purely because that's what binds to the Postgres `INTEGER[]`
+    /// column; every row has the same length. Empty on rows written before this
+    /// column existed. See the run/group response's `X-Exit-Metric-Legend`
+    /// header for what each slot names.
+    pub n_exit_metrics_by_slot: Vec<i32>,
     pub n_exit_open: i32,
 }
 
@@ -212,7 +220,14 @@ pub struct ComboTokenResult {
     /// `"Stall"`, `"TimeStop"`, `"LiquidityExit"`, `"NextKill"`,
     /// `"Dead"` (force-closed at the last meaningful trade — token died silent),
     /// `"Open"` (still open at end of history, token still alive), or `"NoEntry"`.
+    /// A metric-condition exit is the spaced `metric op value` detail label
+    /// (`"stall > 3"`), not the bare `"Metrics"` code name — see
+    /// `hunter_engine::event::format_metric_exit_label`.
     pub exit: String,
+    /// Which of the rule's own authored exit conditions `exit` fired on (0-based,
+    /// see `n_exit_metrics_by_slot` on [`GroupedSweepResult`]); `None` for every
+    /// non-metric exit (or a metric exit whose slot wasn't resolved).
+    pub exit_metric_slot: Option<u8>,
     // --- Simulation fill details (populated by single-combo re-sim) ---
     /// RFC3339 block time of the simulated entry fill; `None` when not fired.
     pub entry_time: Option<String>,

@@ -884,6 +884,22 @@ fn exit_label(code: ExitCode) -> &'static str {
     }
 }
 
+/// Drill-in row's persisted exit-reason string. A metric exit reuses the exact
+/// `metric op value` label the live/paper engine stamps
+/// (`hunter_engine::event::format_metric_exit_label`) instead of the bare
+/// `"Metrics"` code name — the fields it needs (`exit_metric`/`exit_operator`/
+/// `exit_metric_value`) are resolved bind-time on `TokenOutcome`, not
+/// recomputed here. Falls back to [`exit_label`] for every other exit / when
+/// (rarely — see the SIMD fallback) the detail wasn't resolved.
+fn exit_reason_string(o: &crate::sweep::strategy::TokenOutcome) -> String {
+    match (o.exit_metric, o.exit_operator, o.exit_metric_value) {
+        (Some(metric), Some(op), Some(value)) => {
+            hunter_engine::event::format_metric_exit_label(metric, op, value)
+        }
+        _ => exit_label(o.exit).to_string(),
+    }
+}
+
 /// Re-simulate a single stored **generic** (redesigned-engine) combo per token —
 /// the drill-in counterpart of [`sweep_generic`]. The stored `params_json` is a
 /// canonical [`RuleParams`] object (what [`GenericSweepStrategy::params_json`]
@@ -959,7 +975,8 @@ fn simulate_generic_one_combo(
             pnl_sol: o.pnl_sol,
             pnl_pct: o.pnl_percent,
             holding_secs: o.holding_secs,
-            exit: exit_label(o.exit).to_string(),
+            exit: exit_reason_string(&o),
+            exit_metric_slot: o.exit_metric_slot,
             entry_time: o.entry_time.map(|t| t.to_rfc3339()),
             entry_price: o.entry_price,
             // Resolved from `entry_slot`/`exit_slot` by the handler post-sim.

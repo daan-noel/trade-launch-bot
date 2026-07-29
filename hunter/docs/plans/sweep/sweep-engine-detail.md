@@ -51,6 +51,54 @@ The group/combo tables carry the matching `n_open` / open-share columns.
 - `exit_stall f64` — stall exits
 - `exit_liquidity f64` — liquidity-drop exits
 
+## Exit-Metric Slot Breakdown — `n_exit_metrics_by_slot`
+
+The generic engine collapses every authored exit condition (`stall > 3`, `retrace
+>= 5`, `held >= 10`, …) into one `ExitCode::Metrics` bucket, so `n_exit_metrics`
+alone can't say WHICH condition actually closed a position. A per-metric-label
+counter isn't affordable in the streaming aggregate (`ComboAgg`/`RunAgg`): it's
+held `combos`-wide in RAM for the whole sweep, so its footprint must stay O(1) per
+combo regardless of how many conditions a rule authors.
+
+The fix keeps that bound with a **fixed-size** array instead of a per-label map:
+
+- `hunter_lab::sweep::strategy::N_EXIT_METRIC_SLOTS` (currently 8) bounds a new
+  `ComboAgg`/`ComboMetrics` field, `n_exit_metrics_by_slot: [u32; N]` — one
+  counter per **position** among a rule's own authored exit reqs (slot 0 = the
+  first authored condition compiled, slot 1 = the second, …), not one per
+  distinct `MetricId`. A rule with more than `N` authored conditions folds the
+  overflow into the last slot rather than growing the array.
+- The slot (and the label needed to name it — metric, operator, authored
+  threshold) is resolved once per combo at **bind time**
+  (`BoundCombo::exit_metric_label`, built alongside the existing `exit_classes`),
+  not per token: `TokenOutcome` carries it forward as four `Copy` fields
+  (`exit_metric`, `exit_operator`, `exit_metric_value`, `exit_metric_slot`), and
+  every exit-resolution path (scalar `resolve_exit`, indexed
+  `resolve_exit_indexed`, the AVX-512 `resolve_exit_simd`, and the frozen-tail
+  D1 resolve) threads the winning `exit_reqs` index through `close_at_fire` to
+  look it up — zero recomputation, zero extra allocation.
+- The label's operator/value are the req's first OR-arm's first AND-condition —
+  the same simplification `hunter_engine::arm::exit_fired`'s
+  `first_satisfied_cond` makes when it stamps a live/paper exit's label. The
+  metric name is always correct; a rare multi-arm DNF condition can report the
+  wrong arm's operator/value.
+- The per-token drill-in (`ComboTokenResult.exit`) reuses the exact same fields
+  to stamp the real `metric op value` label
+  (`hunter_engine::event::format_metric_exit_label`) instead of the bare
+  `"Metrics"` code name it used to persist — the fix applies at both the
+  per-token and the aggregated-combo level.
+- Persisted as one `INTEGER[]` column on `grouped_sweep_results`
+  (`0012_exit_metric_slots.sql`), not `N` scalar columns — `append_group`'s
+  bulk insert already sits close to the 65535 bind-parameter ceiling on its
+  2000-row chunks, and an array column costs exactly one bind per row.
+- The frontend never re-derives a slot's meaning: `GET …/results` returns an
+  `X-Exit-Metric-Legend` response header (JSON: `[{slot, metric, operator,
+  value}, …]`), computed once per page by compiling any one row's own `params`
+  (every combo in a group shares one rule *shape* — the sweep varies threshold
+  values, not which conditions exist) — see `exit_metric_legend` in
+  `grouped_sweep.rs`. The `Metrics` column's per-row hover breaks the count down
+  using that legend.
+
 ## QuantileSketch — `aggregate.rs`
 
 `ComboAgg` uses a DDSketch (deterministic relative-error sketch) for median/p90 approximation. Why not exact sort: at 10k combos × 1k tokens per group, storing all PnL values per combo would be 10M f64 values = 80 MB per sweep run. The sketch uses ~0.6 KB per combo with ~15% relative error, giving 6 MB total — fits in L3 cache.

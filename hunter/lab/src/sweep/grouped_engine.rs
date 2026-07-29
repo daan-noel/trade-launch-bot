@@ -963,6 +963,10 @@ mod tests {
                 pnl_percent: *p as f32,
                 pnl_sol: *p as f32,
                 exit: ExitCode::TakeProfit,
+                exit_metric: None,
+                exit_operator: None,
+                exit_metric_value: None,
+                exit_metric_slot: None,
                 entry_time: None,
                 entry_price: None,
                 entry_slot: None,
@@ -1031,6 +1035,7 @@ mod tests {
             n_exit_next_kill: 0,
             n_exit_dead: 0,
             n_exit_metrics: 0,
+            n_exit_metrics_by_slot: [0; crate::sweep::strategy::N_EXIT_METRIC_SLOTS],
             n_exit_open: 0,
         }
     }

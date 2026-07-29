@@ -15,7 +15,7 @@
 //! central return (`mean`/`median_pnl_pct`), tails (`best`/`worst`/`p90`),
 //! holding time, and the exit-reason mix.
 
-use crate::sweep::strategy::TokenOutcome;
+use crate::sweep::strategy::{TokenOutcome, N_EXIT_METRIC_SLOTS};
 use trading_core::models::grouped_sweep::ComboTokenResult;
 use trading_core::strategies::kernel::{
     checklist_score, exact_run_metrics, ExitCode, RunAgg, RunMetrics, TokenOutcome as CoreOutcome,
@@ -31,29 +31,46 @@ use trading_core::strategies::kernel::{
 /// fixed-size DDSketch (~0.6 KB, ~15% relative error), not a per-token `Vec`, so a
 /// combo's footprint never grows with the number of tokens it fires on — the cap
 /// that lets high-`max_combos` sweeps run without OOM. Best/worst/mean/total stay
-/// exact; only the two interior quantiles are approximate.
+/// exact; only the two interior quantiles are approximate. `metrics_by_slot` is
+/// the one sweep-only addition over `RunAgg`: a fixed `N_EXIT_METRIC_SLOTS`-size
+/// counter array (not one entry per distinct metric label), so it keeps the same
+/// O(1)-per-combo guarantee instead of growing with how many conditions a rule
+/// authors.
 #[derive(Clone, Default)]
-pub struct ComboAgg(RunAgg);
+pub struct ComboAgg {
+    run: RunAgg,
+    metrics_by_slot: [u32; N_EXIT_METRIC_SLOTS],
+}
 
 impl ComboAgg {
     /// Fold one token's outcome under this combo. The sweep's [`TokenOutcome`]
     /// carries extra drill-in fields (entry/exit time + price) the aggregate never
     /// reads, so the fold narrows it to the core [`CoreOutcome`] the accumulator
     /// consumes — a register-level copy of five scalars, no allocation. No-entry
-    /// rows are ignored by the accumulator.
+    /// rows are ignored by the accumulator. `exit_metric_slot` (also `Copy`, also
+    /// resolved bind-time) additionally bumps the bounded per-metric breakdown —
+    /// still O(1) per token, no allocation.
     pub fn record(&mut self, o: &TokenOutcome) {
-        self.0.record(&CoreOutcome {
+        self.run.record(&CoreOutcome {
             fired: o.fired,
             holding_secs: o.holding_secs,
             pnl_percent: o.pnl_percent,
             pnl_sol: o.pnl_sol,
             exit: o.exit,
         });
+        if o.exit == ExitCode::Metrics {
+            if let Some(slot) = o.exit_metric_slot {
+                let idx = (slot as usize).min(N_EXIT_METRIC_SLOTS - 1);
+                self.metrics_by_slot[idx] += 1;
+            }
+        }
     }
 
     /// Collapse to the final ranked row, stamping the combo's id.
     pub fn finalize(self, combo_id: u32) -> ComboMetrics {
-        ComboMetrics::from_run(combo_id, self.0.finalize())
+        let mut m = ComboMetrics::from_run(combo_id, self.run.finalize());
+        m.n_exit_metrics_by_slot = self.metrics_by_slot;
+        m
     }
 }
 
@@ -108,6 +125,13 @@ pub struct ComboMetrics {
     /// Generic-engine metric-condition exits (`ExitCode::Metrics`). 0 for the
     /// legacy tpsl/swing sweeps (their ladder uses the granular codes above).
     pub n_exit_metrics: u32,
+    /// `n_exit_metrics` broken down by WHICH authored exit condition fired —
+    /// slot `i` is this combo's rule's `i`-th authored exit req (0-based,
+    /// overflow folded into the last slot). `sum() == n_exit_metrics`. See
+    /// [`crate::sweep::strategy::N_EXIT_METRIC_SLOTS`] / `BoundCombo::exit_metric_label`
+    /// for how a slot is assigned, and the run/group API response's
+    /// `exit_metric_legend` header for what each slot names.
+    pub n_exit_metrics_by_slot: [u32; N_EXIT_METRIC_SLOTS],
     pub n_exit_open: u32,
 }
 
@@ -144,6 +168,9 @@ impl ComboMetrics {
             n_exit_next_kill: m.n_exit_next_kill,
             n_exit_dead: m.n_exit_dead,
             n_exit_metrics: m.n_exit_metrics,
+            // Populated by `ComboAgg::finalize` (streaming) or `exact_from_rows`
+            // (per-token rows) — never known from the core `RunMetrics` alone.
+            n_exit_metrics_by_slot: [0; N_EXIT_METRIC_SLOTS],
             n_exit_open: m.n_exit_open,
         }
     }
@@ -167,7 +194,19 @@ impl ComboMetrics {
                 exit: ExitCode::from_reason(&r.exit),
             })
             .collect();
-        Self::from_run(combo_id, exact_run_metrics(outcomes.iter()))
+        let mut m = Self::from_run(combo_id, exact_run_metrics(outcomes.iter()));
+        // `exit_metric_slot` rides on the drill-in row itself (resolved the same
+        // bind-time way `ComboAgg::record` reads it), so the exact per-token path
+        // gets the identical breakdown without re-parsing `exit`.
+        for r in rows.iter().filter(|r| r.fired) {
+            if ExitCode::from_reason(&r.exit) == ExitCode::Metrics {
+                if let Some(slot) = r.exit_metric_slot {
+                    let idx = (slot as usize).min(N_EXIT_METRIC_SLOTS - 1);
+                    m.n_exit_metrics_by_slot[idx] += 1;
+                }
+            }
+        }
+        m
     }
 
     /// Rewrite [`Self::score`] with the group's matched-token count so fire-rate
@@ -197,6 +236,7 @@ mod tests {
             pnl_pct,
             holding_secs: holding,
             exit: exit.into(),
+            exit_metric_slot: None,
             entry_time: None,
             entry_price: None,
             entry_tx: None,
@@ -231,12 +271,27 @@ mod tests {
     }
 
     fn outcome(pnl_sol: f32, pnl_pct: f32, exit: ExitCode, holding: i64) -> TokenOutcome {
+        outcome_with_slot(pnl_sol, pnl_pct, exit, holding, None)
+    }
+
+    /// Like [`outcome`] but for tests exercising the per-metric slot breakdown.
+    fn outcome_with_slot(
+        pnl_sol: f32,
+        pnl_pct: f32,
+        exit: ExitCode,
+        holding: i64,
+        exit_metric_slot: Option<u8>,
+    ) -> TokenOutcome {
         TokenOutcome {
             fired: true,
             holding_secs: holding,
             pnl_percent: pnl_pct,
             pnl_sol,
             exit,
+            exit_metric: None,
+            exit_operator: None,
+            exit_metric_value: None,
+            exit_metric_slot,
             entry_time: None,
             entry_price: None,
             entry_slot: None,
@@ -265,6 +320,24 @@ mod tests {
         assert_eq!(m.profit_factor, Some(2.0)); // 2.0 win / 1.0 loss
         assert_eq!(m.n_exit_take_profit, 1);
         assert_eq!(m.n_exit_stop_loss, 1);
+    }
+
+    #[test]
+    fn metrics_exits_bucket_by_slot_and_sum_to_the_total() {
+        let mut a = ComboAgg::default();
+        a.record(&outcome_with_slot(0.5, 25.0, ExitCode::Metrics, 5, Some(0)));
+        a.record(&outcome_with_slot(0.5, 25.0, ExitCode::Metrics, 5, Some(0)));
+        a.record(&outcome_with_slot(-0.2, -10.0, ExitCode::Metrics, 5, Some(1)));
+        // A slot past the fixed bound folds into the last one, never dropped.
+        a.record(&outcome_with_slot(0.1, 5.0, ExitCode::Metrics, 5, Some(200)));
+        // No slot info (legacy path) still counts toward the total, just not a slot.
+        a.record(&outcome_with_slot(0.1, 5.0, ExitCode::Metrics, 5, None));
+        let m = a.finalize(0);
+        assert_eq!(m.n_exit_metrics, 5);
+        assert_eq!(m.n_exit_metrics_by_slot[0], 2);
+        assert_eq!(m.n_exit_metrics_by_slot[1], 1);
+        assert_eq!(m.n_exit_metrics_by_slot[N_EXIT_METRIC_SLOTS - 1], 1);
+        assert_eq!(m.n_exit_metrics_by_slot.iter().sum::<u32>(), 4, "the slotless row is excluded from the breakdown, not fabricated into a slot");
     }
 
     #[test]

@@ -19,6 +19,16 @@ pub use trading_core::strategies::kernel::{
     quantize_f32, round_trip_with_costs, CostModel, ExitCode,
 };
 
+/// Bound on the per-combo `ExitCode::Metrics` breakdown ([`ComboAgg`](crate::sweep::aggregate::ComboAgg)'s
+/// `metrics_by_slot`) — a fixed-size counter array, not one entry per distinct
+/// metric label, so the aggregate stays O(1) memory per combo regardless of how
+/// many conditions a rule authors (the whole reason the sweep can hold `combos ×
+/// ComboAgg` resident for hundreds of thousands of combos). 8 covers every
+/// authored rule seen in practice (a handful of exit conditions); a rule with
+/// more folds its extra conditions into the last slot — never worse than the old
+/// single `n_exit_metrics` bucket. See `hunter/docs/plans/sweep/sweep-engine-detail.md`.
+pub const N_EXIT_METRIC_SLOTS: usize = 8;
+
 /// How a sweep samples a strategy's param space. Pluggable so a strategy can
 /// grid the high-leverage knobs and random/Latin-hypercube the rest, and so the
 /// CLI can run a coarse pass then a refine pass around the survivors.
@@ -155,8 +165,11 @@ pub fn lhs_index_plan(rng: &mut StdRng, n: usize, axis_lens: &[usize]) -> Vec<Ve
 /// `Option<f64>` — `DateTime<Utc>` is `Copy`, so the struct stays `Copy`.
 /// They are populated only in the single-combo re-simulation path (the drill-in
 /// endpoint); the full sweep folds these into `ComboAgg` aggregates and never
-/// reads the individual timestamps, so the hot-path cost is four `None` writes
-/// per outcome (register-level, no allocation).
+/// reads the individual timestamps, so the hot-path cost is a handful of `None`
+/// writes per outcome (register-level, no allocation). The `exit_metric*` fields
+/// are the exception: [`ComboAgg::record`](crate::sweep::aggregate::ComboAgg::record)
+/// DOES read `exit_metric_slot` (to bucket `n_exit_metrics_by_slot`), but it's
+/// still a `Copy` field already resolved at bind time — no per-token cost either.
 #[derive(Clone, Copy, Debug)]
 pub struct TokenOutcome {
     /// Whether the strategy took a position on this token under these params.
@@ -169,6 +182,23 @@ pub struct TokenOutcome {
     pub pnl_sol: f32,
     /// Why it exited (or `Open`/`NoEntry`).
     pub exit: ExitCode,
+    /// The authored metric an `ExitCode::Metrics` exit fired on (`None` for every
+    /// other exit / still-`Open` / `NoEntry`). Together with `exit_operator` /
+    /// `exit_metric_value` this reconstructs the same `metric op value` label
+    /// [`hunter_engine::event::format_metric_exit_label`] renders for live/paper —
+    /// without it the grouped sweep collapsed every authored condition down to
+    /// the bare `"Metrics"` code name. Resolved once per (combo, token) from the
+    /// winning `MetricReq` (bind-time data, no live-value recompute), not per row.
+    pub exit_metric: Option<hunter_engine::metrics::MetricId>,
+    /// The authored condition operator paired with `exit_metric` (see above).
+    pub exit_operator: Option<hunter_engine::metrics::evaluator::Operator>,
+    /// The authored condition **threshold** paired with `exit_metric` — not the
+    /// live metric reading at exit, mirroring `ExitReason::Metrics::value`.
+    pub exit_metric_value: Option<f64>,
+    /// 0-based position among this rule's OWN authored exit reqs (capped at
+    /// `N_EXIT_METRIC_SLOTS - 1`) — the aggregate's bounded per-metric bucket
+    /// index. `None` for every non-metric exit.
+    pub exit_metric_slot: Option<u8>,
     /// Block time of the simulated entry fill (`None` when not fired).
     pub entry_time: Option<DateTime<Utc>>,
     /// Simulated entry fill price in SOL/token (`None` when not fired).
@@ -195,6 +225,10 @@ impl TokenOutcome {
             pnl_percent: 0.0,
             pnl_sol: 0.0,
             exit: ExitCode::NoEntry,
+            exit_metric: None,
+            exit_operator: None,
+            exit_metric_value: None,
+            exit_metric_slot: None,
             entry_time: None,
             entry_price: None,
             entry_slot: None,

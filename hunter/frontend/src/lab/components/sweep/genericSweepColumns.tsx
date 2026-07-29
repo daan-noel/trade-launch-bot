@@ -12,6 +12,7 @@ import { fingerprintsHref, rulesHref } from 'lib/strategy/nav';
 import { ruleParamsJsonEqual } from 'lib/strategy/ruleParams';
 import type { Fingerprint, StrategyRule } from 'lib/strategy/types';
 import { formatDecimalTrim } from 'utils/format';
+import type { ExitMetricLegendEntry } from '@lab/hooks/useStreamedSweepResults';
 import { GROUP_FIELD_LABELS, type GroupField, type GroupedSweepGroupRecord } from './groupedTypes';
 import type { SweepResultRecord } from './types';
 
@@ -112,7 +113,10 @@ function mtmPctOf(totalPnl: number, openPnl: number, nFired: number, buySol: num
 
 /** Build the generic-engine combo-results table columns. */
 
-export function buildGenericComboColumns(buyAmountSol = 1): ColumnDef<SweepResultRecord>[] {
+export function buildGenericComboColumns(
+  buyAmountSol = 1,
+  exitMetricLegend: ExitMetricLegendEntry[] = [],
+): ColumnDef<SweepResultRecord>[] {
   return [
     {
       key: 'p_take_profit',
@@ -148,13 +152,16 @@ export function buildGenericComboColumns(buyAmountSol = 1): ColumnDef<SweepResul
       render: (r) => ruleParamsCell(r.params),
       searchValue: () => '',
     },
-    ...genericStatColumns(buyAmountSol),
+    ...genericStatColumns(buyAmountSol, exitMetricLegend),
   ];
 }
 
 /** The stat/count/exit columns shared by the combo table (order mirrors the
  *  legacy sweep so the two read the same). */
-function genericStatColumns(buyAmountSol: number): ColumnDef<SweepResultRecord>[] {
+function genericStatColumns(
+  buyAmountSol: number,
+  exitMetricLegend: ExitMetricLegendEntry[],
+): ColumnDef<SweepResultRecord>[] {
   const metric = (
     key: string,
     label: string,
@@ -325,14 +332,56 @@ function genericStatColumns(buyAmountSol: number): ColumnDef<SweepResultRecord>[
     metric('avg_holding_secs', 'Avg hold', 'holding', (r) => r.avg_holding_secs, (r) => tone(fmtSecs(r.avg_holding_secs), 'text-accent')),
     count('n_exit_take_profit', 'TP', 'text-green', (r) => r.n_exit_take_profit, { tooltip: 'Exited on take-profit' }),
     count('n_exit_stop_loss', 'SL', 'text-red', (r) => r.n_exit_stop_loss, { tooltip: 'Exited on stop-loss' }),
-    count('n_exit_metrics', 'Metrics', 'text-text-mid', (r) => r.n_exit_metrics ?? 0, {
-      tooltip: 'Exited because any exit metric condition became true',
-    }),
+    metricsExitColumn(exitMetricLegend),
     count('n_exit_dead', 'Dead', 'text-red', (r) => r.n_exit_dead, {
       tooltip: 'Analysis death-close: token died silent, booked at the last meaningful trade',
     }),
     count('n_exit_open', 'Still open', 'text-text-dim', (r) => r.n_exit_open, { defaultVisible: false }),
   ];
+}
+
+/** One legend entry as a short `metric op value` fragment (e.g. `stall > 3`),
+ *  or just the metric name when the condition didn't resolve (rare — see the
+ *  backend's `exit_metric_legend`). */
+function legendFragment(l: ExitMetricLegendEntry): string {
+  if (l.operator == null || l.value == null) return l.metric;
+  return `${l.metric} ${l.operator} ${formatDecimalTrim(l.value, 4)}`;
+}
+
+/** The `Metrics` exit column: the same aggregate count as before, plus — when
+ *  the page's `X-Exit-Metric-Legend` named its slots — a per-row hover
+ *  breakdown of WHICH authored condition each of those exits fired on. Falls
+ *  back to the old undifferentiated count when there's no legend (legacy rows,
+ *  a rule the sweep never resolved a slot for, or a run predating this column). */
+function metricsExitColumn(exitMetricLegend: ExitMetricLegendEntry[]): ColumnDef<SweepResultRecord> {
+  const baseTooltip = 'Exited because any exit metric condition became true';
+  const breakdown = (r: SweepResultRecord): string | undefined => {
+    const slots = r.n_exit_metrics_by_slot;
+    if (!slots || exitMetricLegend.length === 0) return undefined;
+    const parts = exitMetricLegend
+      .map((l) => (slots[l.slot] ? `${legendFragment(l)}: ${slots[l.slot]}` : null))
+      .filter((s): s is string => s != null);
+    return parts.length > 0 ? parts.join('\n') : undefined;
+  };
+  return {
+    key: 'n_exit_metrics',
+    label: 'Metrics',
+    group: 'exits',
+    tooltip: baseTooltip,
+    sortable: true,
+    render: (r) => {
+      const total = r.n_exit_metrics ?? 0;
+      const title = breakdown(r);
+      return (
+        <span className={cn('font-medium', 'text-text-mid')} title={title ? `${baseTooltip}\n${title}` : baseTooltip}>
+          {total}
+        </span>
+      );
+    },
+    sortValue: (r) => r.n_exit_metrics ?? 0,
+    filterNumber: (r) => r.n_exit_metrics ?? 0,
+    searchValue: () => '',
+  };
 }
 
 // --- group columns ----------------------------------------------------------
