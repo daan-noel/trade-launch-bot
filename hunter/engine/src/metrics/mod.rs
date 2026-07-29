@@ -40,6 +40,34 @@ use std::fmt;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// (De)serializes an `f64` that may carry a non-finite `NaN` sentinel ("no value
+/// yet") through formats — like JSON — that have no `NaN`/`Infinity` literal.
+/// A derived `Serialize` on a bare `f64` already degrades a non-finite value to
+/// `null` (e.g. `serde_json`'s writer does this silently), but the matching
+/// derived `Deserialize` for a bare (non-`Option`) `f64` then rejects that same
+/// `null` — a write-only asymmetry. [`TradeLite::reserve_sol`] uses `NaN` as its
+/// "no real reserve decoded yet" sentinel (see [`crate::metrics::snapshot`]), so
+/// any event-log `Trade` line logged with that sentinel became permanently
+/// unparseable (`invalid type: null, expected f64`) on replay/recovery. This
+/// module makes the round trip explicit instead of widening the field to
+/// `Option<f64>`, which would ripple the sentinel-vs-`None` distinction through
+/// `track`/`snapshot`/`series`/sweep for no behavioral gain.
+mod finite_f64 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
+        if v.is_finite() {
+            s.serialize_f64(*v)
+        } else {
+            s.serialize_none()
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+        Ok(Option::<f64>::deserialize(d)?.unwrap_or(f64::NAN))
+    }
+}
+
 /// Every timestamp in the engine arrives on an event — the engine never reads a
 /// clock (purity). `Ts` is that carried instant.
 pub type Ts = DateTime<Utc>;
@@ -72,6 +100,11 @@ pub struct TradeLite {
     pub side: Side,
     pub sol: f64,
     pub price: f64,
+    /// May be `NaN` ("no real reserve decoded yet") — round-trips through JSON
+    /// via [`finite_f64`], which maps `NaN <-> null` explicitly so an event-log
+    /// line carrying the sentinel stays parseable (plain-`f64` derive isn't
+    /// symmetric: it serializes `NaN` as `null` but fails to deserialize `null`).
+    #[serde(with = "finite_f64")]
     pub reserve_sol: f64,
     pub at: Ts,
     /// FNV-1a of the trade's ordered `ix_labels`; `None` when labels are absent.
@@ -948,6 +981,27 @@ pub fn registry_json() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `TradeLite::reserve_sol` uses `NaN` as its "no real reserve decoded yet"
+    /// sentinel; the event log writes it as JSON `null` (serde_json's default
+    /// non-finite-float behavior). A plain-`f64` derive round-trips one way only
+    /// — it fails to read `null` back — which was silently dropping event-log
+    /// lines (`invalid type: null, expected f64`) on replay/boot-recovery.
+    /// Locks the fix: `null <-> NaN` must round-trip through JSON.
+    #[test]
+    fn trade_lite_reserve_sol_nan_round_trips_through_json() {
+        let t = TradeLite { reserve_sol: f64::NAN, ..Default::default() };
+        let json = serde_json::to_string(&t).unwrap();
+        assert!(json.contains("\"reserve_sol\":null"), "json: {json}");
+        let back: TradeLite = serde_json::from_str(&json).unwrap();
+        assert!(back.reserve_sol.is_nan());
+
+        // A finite value still round-trips exactly (no regression on the happy path).
+        let t = TradeLite { reserve_sol: 42.5, ..Default::default() };
+        let json = serde_json::to_string(&t).unwrap();
+        let back: TradeLite = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.reserve_sol, 42.5);
+    }
 
     #[test]
     fn registry_names_resolve_both_ways() {

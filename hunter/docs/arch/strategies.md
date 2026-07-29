@@ -195,6 +195,16 @@ time-travel debugger. `LoggedEvent` (engine crate) is the SSOT format so recorde
 and inspector can't drift; `Tick`/`RulesReloaded` are not logged (ticks regenerated
 on replay, rules reloaded from PG).
 
+`TradeLite::reserve_sol` carries a deliberate `NaN` sentinel ("no real reserve
+decoded yet" — see `metrics::snapshot`); since JSON has no `NaN` literal, it
+round-trips through the log via `metrics::finite_f64` (`#[serde(with = ...)]`),
+which maps `NaN <-> null` on both sides. A bare `f64` derive only handles that
+conversion one way (serialize NaN → `null`, but fail to deserialize `null` back),
+which silently dropped every such `Trade` line from recovery/replay with `WARN
+event log: skipping unparseable line ...: invalid type: null, expected f64`
+(fixed 2026-07-28). Any future non-`Option` `f64` field that can legitimately be
+non-finite needs the same treatment — never rely on the derive alone.
+
 ## Shared result-table infrastructure
 
 These surfaces are strategy-agnostic and unchanged by the retirement:
