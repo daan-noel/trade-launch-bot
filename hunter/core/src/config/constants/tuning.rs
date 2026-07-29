@@ -125,7 +125,15 @@ pub const POOL_SUBSCRIBE_ACTIVITY_WINDOW_SECONDS: i64 = 3 * 3600; // 3 hours
 /// full token universe is visible regardless of this cap. Named `TRACKING` (not the
 /// old `TOKEN`) to make that separation explicit — it seeds the tracking cache, not
 /// the table.
-pub const SEED_TRACKING_LIMIT: i64 = 25_000;
+///
+/// Sized against measured volume, not aspiration: at the 2026-07-29 rate
+/// (~91K tokens created per 7-day window, ~13K/day) 5K covers roughly the most
+/// recent ~9 hours of launches. Strategies enter within minutes of creation, so
+/// older un-held tokens don't need to resume tracking; every mint with an
+/// unsettled position is seeded regardless of this cap (see `live::seed`). The
+/// previous 25_000 made the boot seed scan + resident cache exceed the 4 GB
+/// box during high-volume hours (2026-07-27..29 OOM/watchdog crash loop).
+pub const SEED_TRACKING_LIMIT: i64 = 5_000;
 /// Lab's in-RAM token-list snapshot base cap. `lab` runs on the workstation (big
 /// RAM, speed-critical analysis) and wants the WHOLE token universe resident, so its
 /// snapshot loads up to this many rows — bounded-but-huge, well past the expected
@@ -159,9 +167,23 @@ pub const LAB_TOKEN_LIST_WINDOW_DAYS: i64 = 90;
 /// Lives in `config` (not `state::token_cache`) so it stays single-source for the
 /// seed cap below without `config` depending on `state`.
 pub const MAX_TRADES_RETAINED: usize = 2_500;
-/// Per-mint cap on trade history pulled at seed time. Matches the live retained
-/// cap (`MAX_TRADES_RETAINED`) so a high-volume token reads only its newest window.
-pub const SEED_TRADES_PER_MINT: i64 = MAX_TRADES_RETAINED as i64;
+/// Per-mint cap on trade history pulled at seed time. Deliberately SMALLER than
+/// the live retained cap (`MAX_TRADES_RETAINED`): the seed is a warm-start, not
+/// a replay — it needs enough tail for the metric windows and exit context of a
+/// just-resumed position, while the live feed grows each buffer toward the full
+/// retained cap from there. At the former `= MAX_TRADES_RETAINED` (2 500) the
+/// worst-case seed materialized tens of millions of rows and OOM'd the 4 GB box
+/// (2026-07-29 incident).
+pub const SEED_TRADES_PER_MINT: i64 = 500;
+/// Trade-history age bound for the seed scan: only trades newer than this feed
+/// the cache warm-start. Bounds the scan's IO (TimescaleDB prunes older chunks
+/// — without it the seed read the entire retained `trades` history, ~5 GB at
+/// 2026-07 volume, starving ingest writes for minutes per boot) and keeps the
+/// per-mint `SeedAgg` aggregates cheap. Consequence: a held mint quiet for
+/// longer than this seeds from `tokens_info` alone (already the no-trades path),
+/// and `lifetime_count`/`lifetime_volume` under-count tokens older than the
+/// window — display-only fields, refreshed by live trading.
+pub const SEED_TRADES_MAX_AGE_HOURS: i64 = 48;
 
 /// Floor for the ingest watchdog stall window. Kept generous because the watchdog
 /// only ever fires on a *genuine* downstream wedge — the stall predicate is gated

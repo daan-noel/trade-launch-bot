@@ -855,10 +855,24 @@ impl TradeRepo {
     /// seed path doesn't filter by wallet, so it simply JOINs `wallet_dict` for the
     /// address. Scoped to the seeded set (`mint = ANY($1)`, chunked) and grouped
     /// while streaming so peak memory is one mint's capped run.
+    ///
+    /// `since` bounds the scan to trades newer than the cutoff
+    /// (`SEED_TRADES_MAX_AGE_HOURS` at the caller) so TimescaleDB prunes older
+    /// chunks — without it the window scan read the entire retained history and
+    /// starved ingest writes for minutes per boot (2026-07-29 incident). A mint
+    /// with no in-window trades never reaches `f`; the caller's no-trades path
+    /// covers it. The per-mint aggregates are therefore in-window, not lifetime.
+    ///
+    /// **Degrades per chunk instead of aborting:** one failed chunk (statement
+    /// timeout under load, a bad row) is logged and SKIPPED — the seed is a
+    /// warm-start, not a correctness gate, and aborting the whole task meant
+    /// every restart re-ran the identical doomed scan. Mints already flushed
+    /// stay seeded; the failed chunk's mints fill from live events instead.
     pub async fn for_each_seed_mint<F>(
         &self,
         mints: &[String],
         per_mint_cap: i64,
+        since: DateTime<Utc>,
         mut f: F,
     ) -> anyhow::Result<()>
     where
@@ -901,7 +915,7 @@ impl TradeRepo {
                            FIRST_VALUE(t.reserve_token::float8) OVER w AS newest_reserves
                     FROM trades t
                     LEFT JOIN wallet_dict w ON w.id = t.wallet_id
-                    WHERE t.mint_address = ANY($1)
+                    WHERE t.mint_address = ANY($1) AND t.block_time >= $3
                     WINDOW
                         w  AS (PARTITION BY t.mint_address
                                ORDER BY t.slot DESC, t.tx_index DESC, t.leg_index DESC),
@@ -919,6 +933,7 @@ impl TradeRepo {
             )
             .bind(chunk)
             .bind(per_mint_cap)
+            .bind(since)
             .fetch(&self.pool);
 
             // Rows are mint-contiguous (ORDER BY mint_address) and each mint lives
@@ -926,25 +941,49 @@ impl TradeRepo {
             let mut cur_mint: Option<String> = None;
             let mut buf: Vec<Trade> = Vec::new();
             let mut agg: Option<SeedAgg> = None;
-            while let Some(row) = stream.try_next().await? {
-                if cur_mint.as_deref() != Some(row.trade.mint_address.as_str()) {
+            let chunk_result: anyhow::Result<()> = loop {
+                match stream.try_next().await {
+                    Ok(Some(row)) => {
+                        if cur_mint.as_deref() != Some(row.trade.mint_address.as_str()) {
+                            if let (Some(m), Some(a)) = (cur_mint.take(), agg.take()) {
+                                f(m, std::mem::take(&mut buf), a);
+                            }
+                            cur_mint = Some(row.trade.mint_address.clone());
+                            agg = Some(SeedAgg {
+                                lifetime_count: row.lifetime_count.max(0) as u64,
+                                // lifetime_volume is a lamports SUM → convert to f64 SOL.
+                                lifetime_volume: lamports_to_sol(row.lifetime_volume),
+                                last_trade_at: row.newest_block_time,
+                                current_reserves: row.newest_reserves,
+                                newest_price: row.newest_price,
+                            });
+                        }
+                        match Trade::try_from(row.trade) {
+                            Ok(t) => buf.push(t),
+                            Err(e) => break Err(e.into()),
+                        }
+                    }
+                    Ok(None) => break Ok(()),
+                    Err(e) => break Err(e.into()),
+                }
+            };
+            match chunk_result {
+                Ok(()) => {
+                    // Clean end of chunk — flush the trailing mint.
                     if let (Some(m), Some(a)) = (cur_mint.take(), agg.take()) {
                         f(m, std::mem::take(&mut buf), a);
                     }
-                    cur_mint = Some(row.trade.mint_address.clone());
-                    agg = Some(SeedAgg {
-                        lifetime_count: row.lifetime_count.max(0) as u64,
-                        // lifetime_volume is a lamports SUM → convert to f64 SOL.
-                        lifetime_volume: lamports_to_sol(row.lifetime_volume),
-                        last_trade_at: row.newest_block_time,
-                        current_reserves: row.newest_reserves,
-                        newest_price: row.newest_price,
-                    });
                 }
-                buf.push(Trade::try_from(row.trade)?);
-            }
-            if let (Some(m), Some(a)) = (cur_mint.take(), agg.take()) {
-                f(m, std::mem::take(&mut buf), a);
+                Err(e) => {
+                    // The in-flight mint's buffer is dropped, NOT flushed: it holds
+                    // the oldest rows of a capped run, so flushing it would seed a
+                    // stale newest-price. Already-flushed mints stay.
+                    tracing::warn!(
+                        chunk_mints = chunk.len(),
+                        error = %e,
+                        "seed scan: chunk failed — skipping it (its mints will fill from live events)"
+                    );
+                }
             }
         }
         Ok(())

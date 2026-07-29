@@ -8,7 +8,7 @@ use tracing::info;
 use crate::state::token_cache::{TokenCache, TokenState};
 use trading_core::config::constants::{
     market_cap_sol, INITIAL_VIRTUAL_TOKEN_RESERVES, SEED_ACTIVITY_WINDOW_DAYS,
-    SEED_TRACKING_LIMIT, SEED_TRADES_PER_MINT,
+    SEED_TRACKING_LIMIT, SEED_TRADES_MAX_AGE_HOURS, SEED_TRADES_PER_MINT,
 };
 use trading_core::models::{token::Token, token_info::TokenInfo, trade::Trade};
 use trading_core::storage::repositories::{
@@ -45,10 +45,10 @@ pub struct SeedOutcome {
 ///      `SEED_TRACKING_LIMIT` — plus every mint with an unsettled position (always
 ///      tracked regardless of age, or its open exit would strand).
 ///   2. Those mints' persisted `tokens_info` metrics.
-///   3. One windowed scan of `trades` (`for_each_seed_mint`): newest
-///      `SEED_TRADES_PER_MINT` per mint into the cache, lifetime aggregates carried
-///      along — no separate aggregate pass. Unsettled-position mints first so their
-///      exits resume soonest.
+///   3. One windowed scan of `trades` (`for_each_seed_mint`), bounded to
+///      `SEED_TRADES_MAX_AGE_HOURS`: newest `SEED_TRADES_PER_MINT` per mint into
+///      the cache, in-window aggregates carried along — no separate aggregate
+///      pass. Unsettled-position mints first so their exits resume soonest.
 pub async fn seed_token_cache(
     pool: &PgPool,
     token_cache: Arc<TokenCache>,
@@ -107,10 +107,15 @@ pub async fn seed_token_cache(
         .partition(|m| held_set.contains(m));
 
     // 3. Single windowed trade scan — build each mint's full state, then insert.
+    // Trades are bounded to the recent window (`SEED_TRADES_MAX_AGE_HOURS`) so the
+    // scan prunes old chunks instead of reading the whole retained history; a mint
+    // quiet longer than the window seeds from `tokens_info` alone (the no-trades
+    // path below).
     let cap = SEED_TRADES_PER_MINT;
+    let trades_since = chrono::Utc::now() - Duration::hours(SEED_TRADES_MAX_AGE_HOURS);
     for mints in [&held_present, &rest] {
         trade_repo
-            .for_each_seed_mint(mints, cap, |mint, trades, agg| {
+            .for_each_seed_mint(mints, cap, trades_since, |mint, trades, agg| {
                 if let Some(token) = token_by_mint.remove(&mint) {
                     let state = build_state(token, info_by_mint.get(&mint), Some(agg), trades);
                     token_cache.entry(mint).or_insert(state);
@@ -372,9 +377,14 @@ mod tests {
 
         let mut seen: Vec<(String, Vec<trading_core::models::trade::Trade>, SeedAgg)> = Vec::new();
         trade_repo
-            .for_each_seed_mint(std::slice::from_ref(&mint), 3, |m, trades, agg| {
-                seen.push((m, trades, agg));
-            })
+            .for_each_seed_mint(
+                std::slice::from_ref(&mint),
+                3,
+                base - chrono::Duration::days(1),
+                |m, trades, agg| {
+                    seen.push((m, trades, agg));
+                },
+            )
             .await
             .expect("seed scan");
 
