@@ -5,6 +5,7 @@ import type { ChartEventMarker } from 'components/token-price-chart';
 import { apiErrorMessage, useGetTokenDetailQuery } from 'store/apiSlice';
 import { LabTokenInspect } from '@lab/components/strategy/LabTokenInspect';
 import type { MetricPanesRuleOverride } from '@lab/components/strategy/MetricPanes';
+import { labTokenInspectModalTitle } from '@lab/components/strategy/LabTokenInspectModalTitle';
 
 /**
  * Run-result token inspect (sweep combos + simulate positions) — chart with the
@@ -51,7 +52,7 @@ export function LabTokenInspectModal({
 
   return (
     <Modal
-      title={`${heading} — ${titleSuffix}`}
+      title={labTokenInspectModalTitle({ heading, titleSuffix, ruleOverride })}
       open
       onClose={onClose}
       size="viewport"

@@ -1442,7 +1442,7 @@ async fn run() -> anyhow::Result<()> {
         trade_signals: trade_signals.clone(),
         sse_tx: sse_tx.clone(),
         settings: settings_tx.subscribe(),
-        held_pools,
+        held_pools: held_pools.clone(),
     });
     let strategies::engine::EngineHandles {
         handle: engine_handle,
@@ -1471,6 +1471,7 @@ async fn run() -> anyhow::Result<()> {
         pools_changed,
         trade_signals.clone(),
         live_tx.clone(),
+        held_pools.clone(),
     ));
 
     // Pin a SlotAnchor once at startup so incremental token-sync replay paths can

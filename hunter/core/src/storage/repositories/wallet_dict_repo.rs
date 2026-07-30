@@ -17,6 +17,11 @@ static WALLET_ID_CACHE: LazyLock<DashMap<String, i32>> = LazyLock::new(DashMap::
 /// Upper bound on cached `address -> id` entries (~48 B/entry → a few MB at the cap).
 const WALLET_ID_CACHE_CAP: usize = 200_000;
 
+/// Drop the process-wide interning cache (admin reseed). Cold misses re-hit PG.
+pub fn clear_wallet_id_cache() {
+    WALLET_ID_CACHE.clear();
+}
+
 /// Cache a freshly-resolved `(address, id)` if there's headroom (see cap rationale).
 fn cache_put(address: &str, id: i32) {
     // Racy len check is fine — the cap is a soft RAM guard, not an exact bound.

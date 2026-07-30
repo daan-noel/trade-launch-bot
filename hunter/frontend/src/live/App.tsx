@@ -19,7 +19,9 @@ const TokensPage = lazy(() => import('pages/tokens/TokensPage').then((m) => ({ d
 const SyncTokenPage = lazy(() => import('@live/pages/tokens/SyncTokenPage').then((m) => ({ default: m.SyncTokenPage })));
 const MyWalletPage = lazy(() => import('@live/pages/profiles/MyWalletPage').then((m) => ({ default: m.MyWalletPage })));
 const ProfilesPage = lazy(() => import('pages/profiles/ProfilesPage').then((m) => ({ default: m.ProfilesPage })));
-const SettingsPage = lazy(() => import('pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
+const SettingsPage = lazy(() =>
+  import('@live/pages/settings/LiveSettingsPage').then((m) => ({ default: m.LiveSettingsPage })),
+);
 const RulesPage = lazy(() => import('@live/pages/strategies/RulesPage').then((m) => ({ default: m.RulesPage })));
 const FingerprintsPage = lazy(() => import('@live/pages/strategies/FingerprintsPage').then((m) => ({ default: m.FingerprintsPage })));
 const ConsolePage = lazy(() => import('@live/pages/console/ConsolePage').then((m) => ({ default: m.ConsolePage })));

@@ -19,6 +19,7 @@
 //! * [`event_log`] — event recorder + boot-recovery replay (plan 4.6).
 //! * [`convert`] — DB model ↔ engine type converters (no conversion existed).
 
+pub mod boot;
 pub mod convert;
 pub mod decision_loop;
 pub mod event_log;
@@ -46,6 +47,8 @@ pub use decision_loop::{spawn_engine, EngineDeps, EngineHandles};
 /// `warm_runs` on the 2vCPU EC2 box under ingest load. HTTP rule mutations
 /// schedule reloads in the background instead of blocking on this.
 pub(crate) const RELOAD_ACK_TIMEOUT: Duration = Duration::from_secs(30);
+/// Admin cache reseed waits longer — PG adopt + rule reload under load.
+pub(crate) const RESEED_ACK_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// RAII interlock claiming a PG position id (and optionally a mint) for an
 /// in-flight entry or exit task. Recovery reapers skip ids/mints present in these
@@ -185,6 +188,20 @@ pub enum EngineCommand {
     /// resolves the engine position via the registry and folds a
     /// [`Event::SetManualExit`] (the handler persists the JSONB separately).
     SetManualExit { pg_position_id: Uuid, exit: Option<ManualExit> },
+    /// Admin reseed: reload rules from PG, then adopt open positions + episode
+    /// counters from PG (no event-log replay; does not clear armed state).
+    ReseedFromDb {
+        ack: oneshot::Sender<Result<EngineReseedReport, String>>,
+    },
+}
+
+/// Outcome of [`EngineCommand::ReseedFromDb`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EngineReseedReport {
+    pub rules: usize,
+    pub holdings_adopted: u32,
+    pub buy_submitted_adopted: u32,
+    pub episodes_seeded: u32,
 }
 
 /// Why [`EngineHandle::reload_rules`] failed.
@@ -243,6 +260,20 @@ impl EngineHandle {
             .await
             .map_err(|_| EngineReloadError::ChannelClosed)?;
         match tokio::time::timeout(RELOAD_ACK_TIMEOUT, rx).await {
+            Ok(Ok(result)) => result.map_err(EngineReloadError::Failed),
+            Ok(Err(_)) => Err(EngineReloadError::ChannelClosed),
+            Err(_) => Err(EngineReloadError::TimedOut),
+        }
+    }
+
+    /// Reload rules + adopt PG position rows into the engine (admin reseed).
+    pub async fn reseed_from_db(&self) -> Result<EngineReseedReport, EngineReloadError> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(EngineCommand::ReseedFromDb { ack: tx })
+            .await
+            .map_err(|_| EngineReloadError::ChannelClosed)?;
+        match tokio::time::timeout(RESEED_ACK_TIMEOUT, rx).await {
             Ok(Ok(result)) => result.map_err(EngineReloadError::Failed),
             Ok(Err(_)) => Err(EngineReloadError::ChannelClosed),
             Err(_) => Err(EngineReloadError::TimedOut),

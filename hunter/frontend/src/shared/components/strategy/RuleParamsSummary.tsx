@@ -244,6 +244,93 @@ export function ruleParamsCell(raw: unknown): ReactNode {
   );
 }
 
+function headerSep(): ReactNode {
+  return (
+    <span className="px-0.5 font-mono text-[10px] text-text-dim/35" aria-hidden>
+      ·
+    </span>
+  );
+}
+
+function headerSideChips(side: 'in' | 'out', chips: SideChip[]): ReactNode[] {
+  if (chips.length === 0) return [];
+  const labelCls = side === 'in' ? 'text-accent/70' : 'text-warning/70';
+  const out: ReactNode[] = [];
+  let sideShown = false;
+  for (let i = 0; i < chips.length; i++) {
+    const c = chips[i];
+    out.push(
+      <Fragment key={`${side}-${c.group}-${i}`}>
+        {c.orBefore && (
+          <span className="font-mono text-[10px] text-text-dim/70" aria-hidden>
+            |
+          </span>
+        )}
+        {!sideShown && (
+          <span className={cn('text-[9px] font-bold uppercase leading-none', labelCls)}>{side}</span>
+        )}
+        <span className="font-mono text-[10px] text-text-dim/80" title={c.group}>
+          {c.group}
+        </span>
+        <MetricCondChip chip={c} />
+      </Fragment>,
+    );
+    sideShown = true;
+  }
+  return out;
+}
+
+/** Single-row chip strip for modal headers — same facts as {@link ruleParamsCell}, laid out
+ *  horizontally so params stay visible above a chart. */
+export function ruleParamsHeaderStrip(raw: unknown): ReactNode {
+  const { take_profit, stop_loss, entry, exit, scale_out, reentry, exclusive, priority } =
+    parseParams(raw);
+  const nodes: ReactNode[] = [];
+  let needsSep = false;
+  const push = (node: ReactNode) => {
+    if (needsSep) nodes.push(<Fragment key={`sep-${nodes.length}`}>{headerSep()}</Fragment>);
+    nodes.push(node);
+    needsSep = true;
+  };
+
+  if (take_profit != null) {
+    push(chip(`TP ${formatDecimalTrim(take_profit, 1)}%`, 'text-green'));
+  }
+  if (stop_loss != null) {
+    push(chip(`SL ${formatDecimalTrim(stop_loss, 1)}%`, 'text-red'));
+  }
+  if (reentry != null) {
+    push(
+      chip(
+        `Re ${formatDecimalTrim(reentry.cooldown_sec, 1)}s/${reentry.max_episodes_per_token}`,
+        'text-accent',
+      ),
+    );
+  }
+  if (exclusive) push(chip(`Excl P${priority}`, 'text-warning'));
+  for (const [i, s] of scale_out.entries()) {
+    const pct = s.sellPct != null ? `${formatDecimalTrim(s.sellPct, 0)}%` : 'rem';
+    const tp = s.take_profit != null ? `@TP${formatDecimalTrim(s.take_profit, 0)}` : '';
+    push(<Fragment key={`scale-${i}`}>{chip(`Scale ${pct}${tp}`, 'text-accent')}</Fragment>);
+  }
+
+  const condNodes = [...headerSideChips('in', entry), ...headerSideChips('out', exit)];
+  if (condNodes.length > 0) {
+    if (needsSep) nodes.push(<Fragment key={`sep-${nodes.length}`}>{headerSep()}</Fragment>);
+    nodes.push(
+      <div key="conds" className="flex flex-wrap items-center gap-1">
+        {condNodes}
+      </div>,
+    );
+  }
+
+  if (nodes.length === 0) {
+    return chip('fingerprint only', 'text-text-dim');
+  }
+
+  return <div className="flex flex-wrap items-center gap-1">{nodes}</div>;
+}
+
 /** Flat searchable text for table filters (metric names, ops, TP/SL). */
 export function ruleParamsSearchText(raw: unknown): string {
   const { take_profit, stop_loss, entry, exit, scale_out, reentry, exclusive, priority } =

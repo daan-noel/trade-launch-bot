@@ -1,6 +1,7 @@
 import { lazy, Suspense, type ComponentProps } from 'react';
 import { LoadingState } from 'components/ui/LoadingState';
 import { Modal } from 'components/ui/Modal';
+import { labTokenInspectModalTitle } from '@lab/components/strategy/LabTokenInspectModalTitle';
 
 const LabTokenInspectModal = lazy(() =>
   import('./LabTokenInspectModal').then((m) => ({ default: m.LabTokenInspectModal })),
@@ -17,7 +18,11 @@ export function LazyLabTokenInspectModal(
     <Suspense
       fallback={
         <Modal
-          title={`${heading} — ${titleSuffix}`}
+          title={labTokenInspectModalTitle({
+            heading,
+            titleSuffix,
+            ruleOverride: props.ruleOverride,
+          })}
           open
           onClose={props.onClose}
           size="viewport"

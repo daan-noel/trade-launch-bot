@@ -202,19 +202,8 @@ async fn run_loop(
     // position at crash time (effects discarded — PG + reapers own open rows).
     boot_recover(&strategy_repo, &recorder, &mut state).await;
 
-    // Adopt PG Holding rows into the in-memory engine + registry (PG-only, no RPC)
-    // so TP/SL/Dead and Ops close work after a restart.
-    boot_adopt_holdings(&strategy_repo, &mut state, &registry).await;
-
-    // Adopt PG BuySubmitted rows as inert EntryPending arms so a fresh entry
-    // trigger cannot double-buy a mint whose pre-crash buy is still unsettled; the
-    // reaper folds each to Holding (fill) or terminal (revert). PG-only, no RPC.
-    boot_adopt_buy_submitted(&strategy_repo, &mut state, &registry).await;
-
-    // Seed re-entry episode counters from PG terminal-position counts for every
-    // (rule, mint) rebuilt above, so a restart cannot restart a token's episode
-    // budget from zero and over-trade it (plan Ph4 restart caveat). PG-only.
-    boot_seed_episodes(&strategy_repo, &mut state).await;
+    // Adopt PG position rows + re-entry episode counters (see `boot`).
+    let _ = super::boot::adopt_from_db(&strategy_repo, &mut state, &registry).await;
 
     // Recovery reaper (buy adopt/drop + exit redrive + cleared Holding + ExitStuck
     // bag + stale ExitPending bag-check). Immediate first tick, then every 60 s.
@@ -269,6 +258,18 @@ async fn run_loop(
                     for a in acks {
                         let _ = a.send(result.clone());
                     }
+                    EventBatch::none()
+                } else if let EngineCommand::ReseedFromDb { ack } = cmd {
+                    let result = reseed_from_db(
+                        &rule_repo,
+                        &fp_repo,
+                        &strategy_repo,
+                        &registry,
+                        &mut state,
+                        &mut sink,
+                    )
+                    .await;
+                    let _ = ack.send(result);
                     EventBatch::none()
                 } else {
                     handle_command(
@@ -542,8 +543,8 @@ async fn handle_command(
     sink: &mut Sink,
 ) -> EventBatch {
     match cmd {
-        EngineCommand::ReloadRules { .. } => {
-            // Coalesced in `run_loop` — unreachable through this path.
+        EngineCommand::ReloadRules { .. } | EngineCommand::ReseedFromDb { .. } => {
+            // Handled in `run_loop` — unreachable through this path.
             EventBatch::none()
         }
         EngineCommand::ManualClose { pg_position_id, portion } => match registry.engine_id(pg_position_id) {
@@ -711,6 +712,26 @@ async fn reload_rules(
     Ok(())
 }
 
+/// Admin reseed: reload rules/fingerprints from PG, then adopt open position rows
+/// and re-entry episode counters (same boot path, without event-log replay).
+async fn reseed_from_db(
+    rule_repo: &RuleRepo,
+    fp_repo: &FingerprintRepo,
+    strategy_repo: &StrategyRepo,
+    registry: &PositionRegistry,
+    state: &mut EngineState,
+    sink: &mut Sink,
+) -> Result<super::EngineReseedReport, String> {
+    reload_rules(rule_repo, fp_repo, strategy_repo, registry, state, sink).await?;
+    let adopt = super::boot::adopt_from_db(strategy_repo, state, registry).await;
+    Ok(super::EngineReseedReport {
+        rules: state.rules.len(),
+        holdings_adopted: adopt.holdings,
+        buy_submitted_adopted: adopt.buy_submitted,
+        episodes_seeded: adopt.episodes,
+    })
+}
+
 /// Replay the recent event-log tail to re-arm tokens that had no open position at
 /// crash time. Effects are **discarded** — this only rebuilds in-memory armed
 /// state; PG rows (Holding/BuySubmitted/ExitPending) are reconciled by the reapers.
@@ -734,104 +755,6 @@ async fn boot_recover(
     }
     if n > 0 {
         info!(events = n, held = held.len(), "engine: boot recovery replayed");
-    }
-}
-
-/// Rebuild in-memory `Entered` arms + registry meta from PG `Holding` rows (real
-/// AND paper) so a process restart does not orphan live bags (Ops close / TP-SL)
-/// or strand paper bags as forever-`Open`. **PG-only.**
-async fn boot_adopt_holdings(
-    strategy_repo: &StrategyRepo,
-    state: &mut EngineState,
-    registry: &PositionRegistry,
-) {
-    let mut n = 0u32;
-    for mode in ["real", "paper"] {
-        let holdings = match strategy_repo.find_all_holding(mode).await {
-            Ok(h) => h,
-            Err(e) => {
-                warn!(mode, "engine: boot adopt Holding load failed: {e}");
-                continue;
-            }
-        };
-        for pos in &holdings {
-            if super::orphan_exit::adopt_holding_into_engine(state, registry, pos).is_some() {
-                n += 1;
-            }
-        }
-    }
-    if n > 0 {
-        info!(adopted = n, "engine: boot adopted Holding positions into registry");
-    }
-}
-
-/// Adopt real PG `BuySubmitted` rows as inert `EntryPending` arms so the engine
-/// treats the (rule, mint) slot as occupied and a fresh trigger cannot double-buy
-/// it; the reaper folds each to `Holding` (fill indexed) or terminal (all sigs
-/// reverted). Real-only — paper carries no on-chain double-spend risk. **PG-only.**
-async fn boot_adopt_buy_submitted(
-    strategy_repo: &StrategyRepo,
-    state: &mut EngineState,
-    registry: &PositionRegistry,
-) {
-    let submitted = match strategy_repo.find_all_buy_submitted("real").await {
-        Ok(s) => s,
-        Err(e) => {
-            warn!("engine: boot adopt BuySubmitted load failed: {e}");
-            return;
-        }
-    };
-    let mut n = 0u32;
-    for pos in &submitted {
-        if super::orphan_exit::adopt_buy_submitted_into_engine(state, registry, pos).is_some() {
-            n += 1;
-        }
-    }
-    if n > 0 {
-        info!(adopted = n, "engine: boot adopted BuySubmitted positions into registry (dedup)");
-    }
-}
-
-/// Seed the in-RAM re-entry episode counters (`TokenState::episodes`) from PG:
-/// COUNT of terminal positions per (rule, mint), batched over every tracked mint
-/// whose rule has re-entry configured. Without this, a restart wipes the episode
-/// budget and a re-entry rule can over-trade a token it had already exhausted.
-/// Cheap (one indexed grouped query over the boot-adopted mints), boot-only.
-async fn boot_seed_episodes(strategy_repo: &StrategyRepo, state: &mut EngineState) {
-    // Mints worth seeding: any tracked token with an arm on a re-entry rule.
-    let mints: Vec<String> = state
-        .tokens
-        .iter()
-        .filter(|(_, t)| {
-            t.arms.keys().any(|r| {
-                state.rules.get(r).is_some_and(|c| c.reentry.is_some())
-            })
-        })
-        .map(|(m, _)| m.to_string())
-        .collect();
-    if mints.is_empty() {
-        return;
-    }
-    let counts = match strategy_repo.count_closed_by_rule_mint(&mints).await {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("engine: boot episode-seed load failed: {e}");
-            return;
-        }
-    };
-    let mut n = 0u32;
-    for (rule_uuid, mint_s, count) in counts {
-        let rule = RuleId(rule_uuid);
-        if state.rules.get(&rule).is_none_or(|c| c.reentry.is_none()) {
-            continue; // one-shot rule — the engine never reads its episode count
-        }
-        if let Some(token) = state.tokens.get_mut(&Mint::from(mint_s.as_str())) {
-            token.episodes.insert(rule, count.max(0) as u32);
-            n += 1;
-        }
-    }
-    if n > 0 {
-        info!(seeded = n, "engine: boot seeded re-entry episode counters");
     }
 }
 

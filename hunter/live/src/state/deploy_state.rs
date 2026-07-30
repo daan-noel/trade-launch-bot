@@ -10,6 +10,7 @@ use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 use trading_core::storage::repositories::rule_repo::RuleRepo;
 use trading_core::storage::repositories::settings_repo::AppSettings;
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
+use crate::ingest::HeldPoolGate;
 use crate::strategies::engine::{ArmedRegistry, EngineHandle, InFlightGuards, PositionRegistry};
 use crate::trader::PumpFunTrader;
 
@@ -72,6 +73,8 @@ pub struct DeployState {
     /// Short-TTL cache of the two cashback pots so the dashboard's `/api/cashback/status`
     /// poll doesn't re-read on-chain each time (see [`crate::services::cashback::CashbackCache`]).
     pub cashback_cache: crate::services::cashback::CashbackCache,
+    /// Held-position AMM pool gate — resubscribe after admin cache reseed.
+    pub held_pools: HeldPoolGate,
 }
 
 impl DeployState {
@@ -91,6 +94,7 @@ impl DeployState {
         pools_changed: Arc<Notify>,
         trade_signals: Arc<TradeSignals>,
         live_mode: watch::Sender<bool>,
+        held_pools: HeldPoolGate,
     ) -> Self {
         Self {
             core,
@@ -111,6 +115,7 @@ impl DeployState {
             slot_anchor: Arc::new(RwLock::new(None)),
             holdings_cache: Default::default(),
             cashback_cache: Default::default(),
+            held_pools,
         }
     }
 

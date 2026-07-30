@@ -210,6 +210,14 @@ export const liveApi = baseApi.injectEndpoints({
       transformResponse: (r: { live: boolean }) => r.live,
       invalidatesTags: ['LiveMode'],
     }),
+    /** Admin reseed of DB-backed in-memory caches (settings, engine, token seed). */
+    reloadCaches: builder.mutation<
+      { ok: boolean; steps: { name: string; ok: boolean; detail?: string | null }[] },
+      void
+    >({
+      query: () => ({ url: '/api/system/reload-caches', method: 'POST' }),
+      invalidatesTags: ['Settings', 'StrategyRule', 'WalletHoldings', 'Cashback'],
+    }),
   }),
 });
 
@@ -231,4 +239,5 @@ export const {
   useGetArmedQuery,
   useGetLiveModeQuery,
   useSetLiveModeMutation,
+  useReloadCachesMutation,
 } = liveApi;

@@ -7,6 +7,7 @@ pub mod amm_pool_facts;
 pub mod cashback;
 pub mod laserstream_replay;
 pub mod portfolio;
+pub mod reload_caches;
 pub mod token_sync;
 pub mod wallet_reconcile;
 pub mod wallet_tokens;

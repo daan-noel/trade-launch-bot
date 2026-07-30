@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { cn } from 'lib/cn';
 
 interface ModalProps {
-  title: string;
+  title: ReactNode;
   open: boolean;
   onClose: () => void;
   children: ReactNode;
@@ -183,10 +183,14 @@ export function Modal({
           size !== 'viewport' && MODAL_WIDTH[size],
         )}
       >
-        <div className="flex items-center justify-between border-b border-white/6 px-5 py-3.5">
-          <h2 id={titleId} className="text-[15px] font-bold text-text">
-            {title}
-          </h2>
+        <div className="flex items-start justify-between gap-3 border-b border-white/6 px-5 py-3.5">
+          <div id={titleId} className="min-w-0 flex-1">
+            {typeof title === 'string' ? (
+              <h2 className="text-[15px] font-bold text-text">{title}</h2>
+            ) : (
+              title
+            )}
+          </div>
           <button
             type="button"
             onClick={onClose}

@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AppSettings } from 'services/api';
 import { useGetSettingsQuery, useUpdateSettingsMutation } from 'store/apiSlice';
@@ -10,7 +11,12 @@ import { ReliabilitySection } from './ReliabilitySection';
 
 const SAVED_FLASH_MS = 1600;
 
-export function SettingsPage() {
+export interface SettingsPageProps {
+  /** Live-only panels injected below the standard settings grid. */
+  extraPanel?: ReactNode;
+}
+
+export function SettingsPage({ extraPanel }: SettingsPageProps) {
   const { data: settings, isLoading: loading } = useGetSettingsQuery();
   const [updateSettings, { isLoading: saving }] = useUpdateSettingsMutation();
   const [error, setError] = useState<string | null>(null);
@@ -96,6 +102,7 @@ export function SettingsPage() {
             update={update}
             setError={reportError}
           />
+          {extraPanel}
         </div>
       ) : null}
     </div>
