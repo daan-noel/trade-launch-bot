@@ -59,7 +59,7 @@ side-effects only.
 | `event_log.rs` | JSONL recorder (daily rotation + retention) + **conservative** boot-recovery replay (`recover_armed` = re-arm only; held/filled mints excluded; effects discarded). Dir = `EVENT_LOG_DIR` via `config::dir_from_env`: a relative value anchors to the loaded `.env`'s directory, never the CWD (see below) |
 | `convert.rs` | DB model ↔ engine type converters (re-exports `fingerprint_axes::{fp_to_engine, observed_axes, rule_to_loaded}`) |
 
-`EngineHandle` (held by the HTTP layer, enqueues commands only): `reload_rules`,
+`EngineHandle` (held by the HTTP layer, enqueues commands only): `reload_rules` (blocking, used by the background scheduler), `schedule_reload(sse_tx)` (HTTP rule/fingerprint mutations — PG write returns immediately; debounced reload + `tpsl_rules_changed` SSE on ack; coalesced reload acks in the decision loop),
 `manual_close(pg_id, portion)` (per-row "Sell ALL" / "Sell N%"), `close_rule(rule_id)` (per-row Stop),
 `close_mode(real)` (Stop All), `reconcile_cleared(pg_id, fill)` (externally-cleared
 close — below), `manual_buy(pg_id, mint, lamports, exit)` (Console manual buy — a

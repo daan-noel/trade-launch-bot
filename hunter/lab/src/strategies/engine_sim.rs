@@ -82,6 +82,11 @@ pub struct EngineSimRequest {
     /// fill model to avoid that (mirrors the grouped-sweep's `cost_model`).
     #[serde(default)]
     pub cost_model: CostModelKind,
+    /// When set (non-empty), restrict the backtest to these mint addresses only.
+    /// The fingerprint filter still applies first; this narrows further (e.g. a
+    /// top-trade subset used during grouped sweep).
+    #[serde(default)]
+    pub mints: Option<Vec<String>>,
 }
 
 /// An inline, unsaved rule for a dry-run simulate — the "how it trades" columns
@@ -124,6 +129,7 @@ pub async fn spawn_engine_simulation(
     let until = req.until;
     let fill_model = req.fill_model;
     let cost_model = req.cost_model;
+    let mints = req.mints.clone();
     let target = match resolve_target(&app_state, &req).await {
         Ok(t) => t,
         Err(resp) => return resp,
@@ -160,7 +166,7 @@ pub async fn spawn_engine_simulation(
         let _guard = Guard { state: app_state.clone(), run_id, cancel: cancel.clone() };
 
         let outcome = match run_engine_backtest(
-            &app_state, &target, since, until, fill_model, cost_model, cancel, cell,
+            &app_state, &target, since, until, fill_model, cost_model, mints, cancel, cell,
         )
         .await
         {
@@ -198,8 +204,9 @@ async fn resolve_target(
             .map_err(|e| HttpResponse::InternalServerError().json(err(&format!("DB error: {e}"))))?
             .ok_or_else(|| HttpResponse::NotFound().json(err("Rule not found")))?;
         let fp = load_fp(&fp_repo, rule.fingerprint_id).await?;
-        let loaded = rule_to_loaded(&rule)
-            .map_err(|e| HttpResponse::BadRequest().json(err(&format!("invalid rule params: {e}"))))?;
+        let loaded = backtest_armed(rule_to_loaded(&rule).map_err(|e| {
+            HttpResponse::BadRequest().json(err(&format!("invalid rule params: {e}")))
+        })?);
         return Ok(ResolvedTarget {
             run_id: rule_id,
             buy_amount_sol: rule.buy_amount_sol(),
@@ -228,14 +235,30 @@ async fn resolve_target(
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };
-    let loaded = rule_to_loaded(&synthetic)
-        .map_err(|e| HttpResponse::BadRequest().json(err(&format!("invalid draft params: {e}"))))?;
+    let loaded = backtest_armed(rule_to_loaded(&synthetic).map_err(|e| {
+        HttpResponse::BadRequest().json(err(&format!("invalid draft params: {e}")))
+    })?);
     Ok(ResolvedTarget {
         run_id: synthetic.id,
         buy_amount_sol: draft.buy_amount_sol,
         fp: fp_to_engine(&fp),
         loaded,
     })
+}
+
+/// Force the engine's arming switch on for a backtest.
+///
+/// `rule_to_loaded` maps the row's `is_active` onto `LoadedRule::entry_enabled`,
+/// which `hunter_engine::reduce` reads as "may this rule arm a token at all". That
+/// is a *live lifecycle* flag (start/pause), and a simulate is an offline replay —
+/// honoring it made every Idle rule report `n_matched > 0, n_tokens_entered = 0`,
+/// which reads like an entry-condition miss rather than a switched-off rule. It
+/// also disagreed with the grouped-sweep, which has always compiled its candidates
+/// with `entry_enabled: true` — so the same rule scored in the sweep and came back
+/// empty in the simulate that is supposed to be the PnL authority for it.
+fn backtest_armed(mut loaded: LoadedRule) -> LoadedRule {
+    loaded.entry_enabled = true;
+    loaded
 }
 
 async fn load_fp(
@@ -267,6 +290,7 @@ async fn run_engine_backtest(
     until: Option<DateTime<Utc>>,
     fill_model: FillModel,
     cost_model: CostModelKind,
+    mints: Option<Vec<String>>,
     cancel: Arc<std::sync::atomic::AtomicBool>,
     progress_cell: Arc<crate::state::job_progress::ProgressCell>,
 ) -> Result<Vec<Value>> {
@@ -291,6 +315,18 @@ async fn run_engine_backtest(
     let tokens = {
         let _stage = crate::sweep::obs::Stage::start("sim_scan");
         scan_matched_candidates(app_state, &fp, since, until).await?
+    };
+    let tokens = if let Some(allow) = mints.filter(|m| !m.is_empty()) {
+        let set: std::collections::HashSet<&str> = allow.iter().map(|s| s.as_str()).collect();
+        Arc::new(
+            tokens
+                .iter()
+                .filter(|t| set.contains(t.mint_address.as_str()))
+                .cloned()
+                .collect(),
+        )
+    } else {
+        tokens
     };
 
     let progress = Arc::new(SimProgress::new(

@@ -9,8 +9,9 @@
 //!   scoped by `?mode=real|paper`. `is_enabled` soft-archives inefficient rules
 //!   without deleting them (orthogonal to Active/Idle).
 //!
-//! Every rule/fingerprint mutation ends with `engine.reload_rules()` so the running
-//! loop picks up the change (a `RulesReloaded` event) without a restart.
+//! Every rule/fingerprint mutation schedules a background `engine.reload_rules()`
+//! so the HTTP response returns after the PG write; `tpsl_rules_changed` SSE fires
+//! once the loop acks.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -21,23 +22,12 @@ use serde_json::{json, Value};
 use trading_core::api::handlers::strategies::rule_positions::{
     self, ScoreScope, ScoreScopeParam,
 };
-use trading_core::models::ingest::SseEvent;
 use trading_core::models::Fingerprint;
 use trading_core::strategies::rules::{self, apply_rule_update, RuleDraft, RuleError};
 use uuid::Uuid;
 
 use super::action_progress;
 use crate::state::deploy_state::DeployState;
-use crate::strategies::engine::EngineReloadError;
-
-/// Signal that the strategy-rules list changed so clients confirm optimistic
-/// pause/activate without waiting on a refetch race. Legacy event name
-/// (`tpsl_rules_changed`); payload `strategy` is `"generic"` for the unified engine.
-fn emit_rules_changed(app_state: &DeployState) {
-    let _ = app_state.sse_tx.send(SseEvent::TpslRulesChanged {
-        strategy: "generic".into(),
-    });
-}
 
 // ── Metadata ─────────────────────────────────────────────────────────────────
 
@@ -146,9 +136,7 @@ pub async fn update_fingerprint(
     }
     match app_state.fingerprint_repo.update(&fp).await {
         Ok(()) => {
-            if let Err(resp) = reload_engine(&app_state).await {
-                return resp;
-            }
+            schedule_engine_reload(&app_state);
             HttpResponse::Ok().json(fp)
         }
         Err(e) => server_error("update fingerprint", e),
@@ -234,9 +222,7 @@ pub async fn create_rule(
     .await
     {
         Ok((rule, warning)) => {
-            if let Err(resp) = reload_engine(&app_state).await {
-                return resp;
-            }
+            schedule_engine_reload(&app_state);
             let mut body = serde_json::to_value(&rule).unwrap_or_default();
             if let Some(w) = warning {
                 if let Some(obj) = body.as_object_mut() {
@@ -268,9 +254,7 @@ pub async fn update_rule(
     .await
     {
         Ok(warning) => {
-            if let Err(resp) = reload_engine(&app_state).await {
-                return resp;
-            }
+            schedule_engine_reload(&app_state);
             let mut body = serde_json::to_value(&rule).unwrap_or_default();
             if let Some(w) = warning {
                 if let Some(obj) = body.as_object_mut() {
@@ -290,9 +274,7 @@ pub async fn delete_rule(
 ) -> impl Responder {
     match app_state.rule_repo.delete(path.into_inner()).await {
         Ok(()) => {
-            if let Err(resp) = reload_engine(&app_state).await {
-                return resp;
-            }
+            schedule_engine_reload(&app_state);
             HttpResponse::NoContent().finish()
         }
         Err(e) => server_error("delete rule", e),
@@ -344,10 +326,7 @@ async fn set_active(app_state: &DeployState, id: Uuid, active: bool) -> HttpResp
     rule.updated_at = Utc::now();
     match app_state.rule_repo.update(&rule).await {
         Ok(()) => {
-            if let Err(resp) = reload_engine(&app_state).await {
-                return resp;
-            }
-            emit_rules_changed(app_state);
+            schedule_engine_reload(app_state);
             HttpResponse::Ok().json(rule)
         }
         Err(e) => server_error("toggle rule active", e),
@@ -366,10 +345,7 @@ async fn set_enabled(app_state: &DeployState, id: Uuid, enabled: bool) -> HttpRe
     rule.updated_at = Utc::now();
     match app_state.rule_repo.update(&rule).await {
         Ok(()) => {
-            if let Err(resp) = reload_engine(&app_state).await {
-                return resp;
-            }
-            emit_rules_changed(app_state);
+            schedule_engine_reload(app_state);
             HttpResponse::Ok().json(rule)
         }
         Err(e) => server_error("toggle rule enabled", e),
@@ -448,8 +424,7 @@ async fn pause_all_of_mode(app_state: &DeployState, mode: &str) -> Result<usize,
             .map_err(|e| server_error("pause-all: update rule", e))?;
         paused += 1;
     }
-    reload_engine(&app_state).await?;
-    emit_rules_changed(app_state);
+    schedule_engine_reload(app_state);
     Ok(paused)
 }
 
@@ -536,23 +511,8 @@ fn server_error(ctx: &str, e: impl std::fmt::Display) -> HttpResponse {
     HttpResponse::InternalServerError().json(json!({"error": format!("{ctx} failed")}))
 }
 
-async fn reload_engine(app_state: &DeployState) -> Result<(), HttpResponse> {
-    app_state
-        .engine
-        .reload_rules()
-        .await
-        .map_err(|e| match e {
-            EngineReloadError::ChannelClosed | EngineReloadError::TimedOut => {
-                engine_unavailable("engine reload", e.to_string())
-            }
-            EngineReloadError::Failed(msg) => {
-                tracing::warn!("engine reload failed: {msg}");
-                HttpResponse::ServiceUnavailable().json(json!({
-                    "error": "engine reload failed",
-                    "detail": msg,
-                }))
-            }
-        })
+fn schedule_engine_reload(app_state: &DeployState) {
+    app_state.engine.schedule_reload(app_state.sse_tx.clone());
 }
 
 fn engine_unavailable(ctx: &str, detail: impl std::fmt::Display) -> HttpResponse {

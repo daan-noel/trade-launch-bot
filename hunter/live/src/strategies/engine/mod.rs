@@ -27,22 +27,25 @@ pub mod exec_real;
 pub mod orphan_exit;
 pub mod producers;
 pub mod reapers;
+pub mod reload_scheduler;
 pub mod sinks;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use dashmap::DashSet;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
+use trading_core::models::ingest::SseEvent;
 use uuid::Uuid;
 
 use hunter_engine::event::{Fill, IntentId, ManualExit, PositionId, RuleId, TradeMode};
 
 pub use decision_loop::{spawn_engine, EngineDeps, EngineHandles};
 
-/// How long HTTP rule CRUD waits for the decision loop to ack a reload. Must
-/// cover PG load + `warm_runs` on the 2vCPU EC2 box under ingest load.
-const RELOAD_ACK_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a reload ack waits on the decision loop. Must cover PG load +
+/// `warm_runs` on the 2vCPU EC2 box under ingest load. HTTP rule mutations
+/// schedule reloads in the background instead of blocking on this.
+pub(crate) const RELOAD_ACK_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// RAII interlock claiming a PG position id (and optionally a mint) for an
 /// in-flight entry or exit task. Recovery reapers skip ids/mints present in these
@@ -207,14 +210,29 @@ impl std::fmt::Display for EngineReloadError {
 
 /// A cheap, cloneable handle the HTTP layer holds to talk to the running engine
 /// loop. All it can do is enqueue [`EngineCommand`]s — the loop owns all state.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EngineHandle {
     cmd_tx: mpsc::Sender<EngineCommand>,
+    reload_scheduler: Arc<reload_scheduler::EngineReloadScheduler>,
+}
+
+impl std::fmt::Debug for EngineHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EngineHandle").field("cmd_tx", &self.cmd_tx).finish_non_exhaustive()
+    }
 }
 
 impl EngineHandle {
     pub fn new(cmd_tx: mpsc::Sender<EngineCommand>) -> Self {
-        Self { cmd_tx }
+        Self {
+            cmd_tx,
+            reload_scheduler: Arc::new(reload_scheduler::EngineReloadScheduler::new()),
+        }
+    }
+
+    /// After a rule/fingerprint PG write, reload the engine without blocking HTTP.
+    pub fn schedule_reload(&self, sse_tx: broadcast::Sender<SseEvent>) {
+        Arc::clone(&self.reload_scheduler).schedule(self.clone(), sse_tx);
     }
 
     /// Ask the loop to reload rules from PG and wait until the fold completes.

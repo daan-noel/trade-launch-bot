@@ -2250,7 +2250,8 @@ impl StrategyRepo {
 
         let row = if final_close {
             // Stamp exit_* from post-bump aggregates: SOL-weighted avg price =
-            // total_sol / (sold_tokens / 1e6) when tokens > 0 (pump.fun 6 decimals).
+            // total_sol / total_raw_tokens — same SOL-per-raw-unit convention as
+            // `entry_price` (`SigLegs::price_per_token` / `Trade::price_per_token`).
             sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
                 "UPDATE strategy_positions SET \
                      sold_token_amount = sold_token_amount + $2, \
@@ -2261,7 +2262,7 @@ impl StrategyRepo {
                      exit_price = CASE \
                          WHEN (sold_token_amount + $2) > 0 \
                          THEN ((exit_sol_lamports_total + $3)::float8 / 1e9) \
-                              / ((sold_token_amount + $2)::float8 / 1e6) \
+                              / (sold_token_amount + $2)::float8 \
                          ELSE $5 END, \
                      exit_time = $6, \
                      exit_reason = COALESCE($7, exit_reason), \
@@ -2980,6 +2981,24 @@ mod position_col_guard {
                 "{col} is written by a dedicated writer but must still be READ"
             );
         }
+    }
+
+    /// Weighted exit price must use SOL per **raw** token unit — the same convention
+    /// as `entry_price` / `SigLegs::price_per_token`. Dividing the token sum by 1e6
+    /// (mig 0018 bug) inflated PnL% ~1e6× while SOL PnL stayed correct.
+    #[test]
+    fn exit_price_weighted_avg_uses_raw_token_units() {
+        let entry_sol = 0.01_f64;
+        let exit_sol = 0.012_f64;
+        let tokens: u64 = 353_000_000;
+        let entry_price = entry_sol / tokens as f64;
+        let exit_price = exit_sol / tokens as f64;
+        let pnl_pct = (exit_price - entry_price) / entry_price * 100.0;
+        assert!((pnl_pct - 20.0).abs() < 0.01, "expected ~20% capital return");
+
+        let wrong_exit = exit_sol / (tokens as f64 / 1e6);
+        let wrong_pnl = (wrong_exit - entry_price) / entry_price * 100.0;
+        assert!(wrong_pnl > 1_000_000.0, "1e6-scaled exit price must not be used");
     }
 
     /// No-DB SSOT: the sold-bps derivation used by boot adopt / SSE must match

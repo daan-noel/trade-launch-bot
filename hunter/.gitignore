@@ -19,6 +19,9 @@ sweep-out/
 tpsl2-sweep-out/
 venv
 
+# Local rule/fingerprint research (scripts, seeds, sweep data) — not shipped
+_local/
+
 # Environment secrets
 .env
 .env.backup

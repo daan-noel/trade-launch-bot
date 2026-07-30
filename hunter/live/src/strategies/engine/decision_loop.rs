@@ -247,16 +247,38 @@ async fn run_loop(
         let batch: EventBatch = tokio::select! {
             biased;
             Some(cmd) = cmd_rx.recv() => {
-                handle_command(
-                    cmd,
-                    &rule_repo,
-                    &fp_repo,
-                    &strategy_repo,
-                    &registry,
-                    &mut state,
-                    &mut sink,
-                )
-                .await
+                if let EngineCommand::ReloadRules { ack } = cmd {
+                    let mut acks = vec![ack];
+                    while let Ok(EngineCommand::ReloadRules { ack }) = cmd_rx.try_recv() {
+                        acks.push(ack);
+                    }
+                    let result = reload_rules(
+                        &rule_repo,
+                        &fp_repo,
+                        &strategy_repo,
+                        &registry,
+                        &mut state,
+                        &mut sink,
+                    )
+                    .await;
+                    if acks.len() > 1 {
+                        info!(waiters = acks.len(), "engine: coalesced reload requests");
+                    } else {
+                        info!("engine: reload requested");
+                    }
+                    for a in acks {
+                        let _ = a.send(result.clone());
+                    }
+                    EventBatch::none()
+                } else {
+                    handle_command(
+                        cmd,
+                        &registry,
+                        &mut state,
+                        &mut sink,
+                    )
+                    .await
+                }
             }
             Some(fill) = fill_rx.recv() => EventBatch::one(fill),
             Some(ping) = ping_rx.recv() => EventBatch::many(producer.on_ping(&ping).into_vec()),
@@ -512,20 +534,16 @@ fn dispatch_sell(
 }
 
 /// Handle an [`EngineCommand`], returning any events it produces to fold.
+/// [`EngineCommand::ReloadRules`] is handled in `run_loop` (coalesced acks).
 async fn handle_command(
     cmd: EngineCommand,
-    rule_repo: &RuleRepo,
-    fp_repo: &FingerprintRepo,
-    strategy_repo: &StrategyRepo,
     registry: &PositionRegistry,
     state: &mut EngineState,
     sink: &mut Sink,
 ) -> EventBatch {
     match cmd {
-        EngineCommand::ReloadRules { ack } => {
-            info!("engine: reload requested");
-            let result = reload_rules(rule_repo, fp_repo, strategy_repo, registry, state, sink).await;
-            let _ = ack.send(result);
+        EngineCommand::ReloadRules { .. } => {
+            // Coalesced in `run_loop` — unreachable through this path.
             EventBatch::none()
         }
         EngineCommand::ManualClose { pg_position_id, portion } => match registry.engine_id(pg_position_id) {
