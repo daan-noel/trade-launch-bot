@@ -8,6 +8,7 @@ import { formatCompact, formatDecimalTrim } from 'utils/format';
 import { configuredIxLabels, formatIxLabelsText } from 'lib/ixLabels';
 import { metricColorStyle } from 'lib/strategy/metricColors';
 import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
+import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 import { lamportsToSol, type Fingerprint } from 'lib/strategy/types';
 
 /** Stable per-axis hue so each fingerprint param reads with its own color,
@@ -107,6 +108,16 @@ export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
   ].filter(Boolean);
 
   return <div className="flex flex-wrap items-center gap-1 text-left">{chips}</div>;
+}
+
+/** Axis chips for a fingerprint id — RTK-cached. Render as a sibling below
+ *  `FingerprintPicker` when the parent needs full-width chips (e.g. the rule
+ *  editor's fingerprint + TP/SL grid). The picker itself is controls-only. */
+export function FingerprintParamsById({ id }: { id: string | null }) {
+  const { data: fps = [] } = useGetFingerprintsQuery();
+  const fp = fps.find((f) => f.id === id);
+  if (!fp) return null;
+  return fingerprintParamsCell(fp);
 }
 
 /** Flat searchable text for table filters (axis labels + values + name). */

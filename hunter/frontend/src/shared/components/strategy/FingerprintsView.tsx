@@ -5,7 +5,7 @@ import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
 import { IconButton } from 'components/ui/IconButton';
 import { IconButtonGroup } from 'components/ui/IconButtonGroup';
-import { EditIcon, LinkIcon, PlusIcon, TrashIcon } from 'components/ui/icons';
+import { DuplicateIcon, EditIcon, LinkIcon, PlusIcon, TrashIcon } from 'components/ui/icons';
 import { Badge } from 'components/ui/Badge';
 import { Modal } from 'components/ui/Modal';
 import { EmptyState } from 'components/ui/EmptyState';
@@ -200,15 +200,28 @@ export function FingerprintsView({
     (row: Fingerprint): string | undefined =>
       valueColors.get(`${row.id}\0${colKey}`);
 
+  const editingId =
+    editing && editing !== 'new' && editing.id ? editing.id : undefined;
+
   const submit = async (draft: FingerprintDraft) => {
     setErr(null);
     try {
-      if (editing && editing !== 'new') await updateFp({ id: editing.id, body: draft }).unwrap();
+      if (editingId) await updateFp({ id: editingId, body: draft }).unwrap();
       else await createFp(draft).unwrap();
       setEditing(null);
     } catch (e) {
       setErr(apiErrorMessage(e as never) ?? 'Save failed');
     }
+  };
+
+  const duplicate = (fp: Fingerprint) => {
+    setErr(null);
+    setEditing({
+      ...fp,
+      id: '',
+      name: `${fp.name || fp.id.slice(0, 8)} copy`,
+      used_by: 0,
+    });
   };
 
   const remove = async (fp: Fingerprint) => {
@@ -406,8 +419,7 @@ export function FingerprintsView({
     [valueColors, linkToFlowDiscovery],
   );
 
-  const editingRules =
-    editing && editing !== 'new' ? (rulesByFp.get(editing.id) ?? []) : [];
+  const editingRules = editingId ? (rulesByFp.get(editingId) ?? []) : [];
 
   return (
     <div className="flex flex-col gap-3 p-4">
@@ -454,6 +466,15 @@ export function FingerprintsView({
               <EditIcon />
             </IconButton>
             <IconButton
+              variant="ghost"
+              size="md"
+              title="Duplicate"
+              aria-label="Duplicate"
+              onClick={() => duplicate(r)}
+            >
+              <DuplicateIcon />
+            </IconButton>
+            <IconButton
               variant="danger"
               size="md"
               disabled={Boolean(r.used_by && r.used_by > 0)}
@@ -467,13 +488,13 @@ export function FingerprintsView({
         )}
       />
       <Modal
-        title={editing && editing !== 'new' ? 'Edit fingerprint' : 'New fingerprint'}
+        title={editingId ? 'Edit fingerprint' : 'New fingerprint'}
         open={editing !== null}
         onClose={() => setEditing(null)}
       >
         {editing !== null && (
           <div className="flex flex-col gap-3">
-            {editing !== 'new' && <FingerprintUsedByDetail rules={editingRules} />}
+            {editingId && <FingerprintUsedByDetail rules={editingRules} />}
             <FingerprintForm
               initial={editing === 'new' ? undefined : editing}
               onSubmit={submit}

@@ -2,10 +2,11 @@
 //! bin happens here, so there is exactly one place a token/rule decision is made —
 //! no mint-sharding (decision 11), determinism preserved by construction.
 //!
-//! `select!` inputs (biased order — fills/commands before the tick so a confirmed
-//! fill is folded before the next tick re-evaluates):
-//! 1. **fills** — `FillConfirmed`/`FillFailed` from the executor adapters,
-//! 2. **commands** — rule reloads + manual closes from HTTP ([`EngineCommand`]),
+//! `select!` inputs (biased order — commands before fills so HTTP reloads/closes
+//! are not starved under heavy fill traffic; fills still beat the tick so a
+//! confirmed fill is folded before the next tick re-evaluates):
+//! 1. **commands** — rule reloads + manual closes from HTTP ([`EngineCommand`]),
+//! 2. **fills** — `FillConfirmed`/`FillFailed` from the executor adapters,
 //! 3. **ingest pings** — mapped to events by the [`Producer`],
 //! 4. **Clock tick** (`TICK_MS`, currently 200 ms) — a synthetic `Tick(now)` so
 //!    quiet-token metrics fire.
@@ -245,7 +246,6 @@ async fn run_loop(
         // A batch of events to fold this iteration (usually one).
         let batch: EventBatch = tokio::select! {
             biased;
-            Some(fill) = fill_rx.recv() => EventBatch::one(fill),
             Some(cmd) = cmd_rx.recv() => {
                 handle_command(
                     cmd,
@@ -258,6 +258,7 @@ async fn run_loop(
                 )
                 .await
             }
+            Some(fill) = fill_rx.recv() => EventBatch::one(fill),
             Some(ping) = ping_rx.recv() => EventBatch::many(producer.on_ping(&ping).into_vec()),
             _ = tick.tick() => {
                 ticks = ticks.wrapping_add(1);
@@ -522,6 +523,7 @@ async fn handle_command(
 ) -> EventBatch {
     match cmd {
         EngineCommand::ReloadRules { ack } => {
+            info!("engine: reload requested");
             let result = reload_rules(rule_repo, fp_repo, strategy_repo, registry, state, sink).await;
             let _ = ack.send(result);
             EventBatch::none()

@@ -49,7 +49,7 @@ side-effects only.
 
 | Module | Role |
 | --- | --- |
-| `decision_loop.rs` | **THE** one serialized `select!` loop (ingest ping / `TICK_MS` tick / fill / command channels); every `reduce` call happens here; two-pass dispatch = registry/SSE first (BuySubmitted/ExitPending PG is async) then submit spawn. `spawn_engine` → `EngineHandles { handle, armed, positions, task }` |
+| `decision_loop.rs` | **THE** one serialized `select!` loop (command / fill / ingest ping / `TICK_MS` tick channels); every `reduce` call happens here; two-pass dispatch = registry/SSE first (BuySubmitted/ExitPending PG is async) then submit spawn. `spawn_engine` → `EngineHandles { handle, armed, positions, task }` |
 | `producers.rs` | `StrategyPing` + `TokenCache` → `Event`s; first-slot settlement detection; the live freshness gate; feeds `real_reserve_sol` for deadness parity |
 | `exec_real.rs` | `SubmitBuy`/`SubmitSell` → executor submit-and-return, then synthesize a definitive `FillConfirmed`/`FillFailed` from the **trades feed** (RPC watchdog fallback). SOL commit/release; M2 sync `SubmittedBuyJournal` + fire-and-forget bounded `mark_buy_submitted`; adopt skips PG when journal empty; curve sell uses cache reserves for min_out; `classify_swap_revert` heal; sell route re-read + rent reclaim. **Double-fire safe:** `FillFailed::Reverted` only when re-submitting is safe |
 | `exec_paper.rs` | worst-case paper fill (`paper_fill`, slot window) → `FillConfirmed` (sim-parity) |

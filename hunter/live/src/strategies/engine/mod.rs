@@ -40,6 +40,10 @@ use hunter_engine::event::{Fill, IntentId, ManualExit, PositionId, RuleId, Trade
 
 pub use decision_loop::{spawn_engine, EngineDeps, EngineHandles};
 
+/// How long HTTP rule CRUD waits for the decision loop to ack a reload. Must
+/// cover PG load + `warm_runs` on the 2vCPU EC2 box under ingest load.
+const RELOAD_ACK_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// RAII interlock claiming a PG position id (and optionally a mint) for an
 /// in-flight entry or exit task. Recovery reapers skip ids/mints present in these
 /// sets so they never race a live task. The mint lock serializes exits that share
@@ -220,7 +224,7 @@ impl EngineHandle {
             .send(EngineCommand::ReloadRules { ack: tx })
             .await
             .map_err(|_| EngineReloadError::ChannelClosed)?;
-        match tokio::time::timeout(Duration::from_secs(10), rx).await {
+        match tokio::time::timeout(RELOAD_ACK_TIMEOUT, rx).await {
             Ok(Ok(result)) => result.map_err(EngineReloadError::Failed),
             Ok(Err(_)) => Err(EngineReloadError::ChannelClosed),
             Err(_) => Err(EngineReloadError::TimedOut),

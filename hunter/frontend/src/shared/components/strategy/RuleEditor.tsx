@@ -28,6 +28,7 @@ import {
   ScaleOutBuilder,
   type ScaleStageDraft,
 } from './ScaleOutBuilder';
+import { FingerprintParamsById } from './FingerprintParamsSummary';
 import { FingerprintPicker } from './FingerprintPicker';
 import { LabelTip } from './LabelTip';
 import { RULE_FIELD_HELP } from 'lib/strategy/strategyHelp';
@@ -303,39 +304,46 @@ function RuleEditorInner({
         </label>
       </div>
 
-      {/* Fingerprint + TP/SL */}
-      <div className="flex flex-wrap items-end gap-3">
-        <div className="flex flex-col gap-1 text-[11px] text-text-dim">
-          <LabelTip tip={RULE_FIELD_HELP.fingerprint}>
-            Fingerprint{' '}
-            {conditionsLocked && <span className="text-text-dim/60">(locked — rule live)</span>}
-          </LabelTip>
-          <FingerprintPicker value={fingerprintId} onChange={setFingerprintId} disabled={conditionsLocked} />
+      {/* Fingerprint + TP/SL — controls on one row; axis chips below full width */}
+      <div className="flex flex-col gap-1.5">
+        <div className="grid grid-cols-[minmax(0,1fr)_5rem_5rem] items-end gap-x-3">
+          <div className="flex min-w-0 flex-col gap-1 text-[11px] text-text-dim">
+            <LabelTip tip={RULE_FIELD_HELP.fingerprint}>
+              Fingerprint{' '}
+              {conditionsLocked && <span className="text-text-dim/60">(locked — rule live)</span>}
+            </LabelTip>
+            <FingerprintPicker
+              value={fingerprintId}
+              onChange={setFingerprintId}
+              disabled={conditionsLocked}
+            />
+          </div>
+          <label className="flex flex-col gap-1 text-[11px] text-text-dim">
+            <LabelTip tip={RULE_FIELD_HELP.takeProfit}>TP (%)</LabelTip>
+            <Input
+              fieldSize="sm"
+              numeric
+              unit="%"
+              numericValue={params.take_profit}
+              onNumericChange={(n) => setParams((p) => ({ ...p, take_profit: n }))}
+              disabled={conditionsLocked}
+              className="w-full"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-[11px] text-text-dim">
+            <LabelTip tip={RULE_FIELD_HELP.stopLoss}>SL (%)</LabelTip>
+            <Input
+              fieldSize="sm"
+              numeric
+              unit="%"
+              numericValue={params.stop_loss}
+              onNumericChange={(n) => setParams((p) => ({ ...p, stop_loss: n }))}
+              disabled={conditionsLocked}
+              className="w-full"
+            />
+          </label>
         </div>
-        <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          <LabelTip tip={RULE_FIELD_HELP.takeProfit}>TP (%)</LabelTip>
-          <Input
-            fieldSize="sm"
-            numeric
-            unit="%"
-            numericValue={params.take_profit}
-            onNumericChange={(n) => setParams((p) => ({ ...p, take_profit: n }))}
-            disabled={conditionsLocked}
-            className="w-20"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          <LabelTip tip={RULE_FIELD_HELP.stopLoss}>SL (%)</LabelTip>
-          <Input
-            fieldSize="sm"
-            numeric
-            unit="%"
-            numericValue={params.stop_loss}
-            onNumericChange={(n) => setParams((p) => ({ ...p, stop_loss: n }))}
-            disabled={conditionsLocked}
-            className="w-20"
-          />
-        </label>
+        <FingerprintParamsById id={fingerprintId} />
       </div>
 
       {/* Re-entry (optional): re-arm after each normal exit. Absent ⇒ one-shot. */}
