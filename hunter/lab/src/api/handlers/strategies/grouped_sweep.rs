@@ -1688,6 +1688,7 @@ fn exit_metric_legend(params_json: &serde_json::Value) -> Vec<serde_json::Value>
         max_concurrent_tokens: u32::MAX,
         max_total_tokens: 0,
         params,
+        entry_enabled: true,
     };
     let compiled = CompiledRule::compile(&loaded);
 
@@ -2032,6 +2033,7 @@ fn parse_scale_out_ladder(
         max_concurrent_tokens: 1,
         max_total_tokens: 0,
         params: parsed,
+        entry_enabled: true,
     });
     for (i, stage) in compiled.scale_out.iter().enumerate() {
         for req in &stage.reqs {

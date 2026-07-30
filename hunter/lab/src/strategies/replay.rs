@@ -938,6 +938,7 @@ mod tests {
             max_concurrent_tokens: cap,
             max_total_tokens: 0,
             params: RuleParams::parse(&params).unwrap(),
+            entry_enabled: true,
         }
     }
 

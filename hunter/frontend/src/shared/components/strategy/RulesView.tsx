@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useDispatch } from 'react-redux';
 import { Link } from 'react-router-dom';
 
 import { DataTable } from 'components/table/DataTable';
@@ -39,6 +40,7 @@ import {
   useStopStrategyRuleMutation,
   usePauseAllStrategyRulesMutation,
   useStopAllStrategyRulesMutation,
+  refetchAllRuleLists,
 } from 'store/sharedEndpoints';
 import {
   connectActionProgressStream,
@@ -114,6 +116,7 @@ export function RulesView({
   onScoreScopeChange,
   renderAnalyze,
 }: RulesViewProps) {
+  const dispatch = useDispatch();
   const { data: rules = [], isLoading, refetch } = useGetStrategyRulesQuery(
     scoreScope ?? undefined,
   );
@@ -227,6 +230,7 @@ export function RulesView({
   useEffect(() => {
     const rulesH = connectTpslRulesChanged(() => {
       setPausingIds(new Set());
+      refetchAllRuleLists(dispatch);
       void refetch();
     });
     const progressH = connectActionProgressStream((p) => {
@@ -261,7 +265,7 @@ export function RulesView({
       rulesH.close();
       progressH.close();
     };
-  }, [refetch]);
+  }, [dispatch, refetch]);
 
   const run = async (fn: () => Promise<unknown>, fail: string) => {
     setOpErr(null);

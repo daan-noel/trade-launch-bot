@@ -184,7 +184,18 @@ async fn run_loop(
     };
 
     // Initial rule load.
-    reload_rules(&rule_repo, &fp_repo, &mut state, &mut sink).await;
+    if let Err(e) = reload_rules(
+        &rule_repo,
+        &fp_repo,
+        &strategy_repo,
+        &registry,
+        &mut state,
+        &mut sink,
+    )
+    .await
+    {
+        warn!("engine: initial rule load failed: {e}");
+    }
 
     // Boot recovery: replay the recent log to re-arm tokens that had no open
     // position at crash time (effects discarded — PG + reapers own open rows).
@@ -236,7 +247,16 @@ async fn run_loop(
             biased;
             Some(fill) = fill_rx.recv() => EventBatch::one(fill),
             Some(cmd) = cmd_rx.recv() => {
-                handle_command(cmd, &rule_repo, &fp_repo, &registry, &mut state, &mut sink).await
+                handle_command(
+                    cmd,
+                    &rule_repo,
+                    &fp_repo,
+                    &strategy_repo,
+                    &registry,
+                    &mut state,
+                    &mut sink,
+                )
+                .await
             }
             Some(ping) = ping_rx.recv() => EventBatch::many(producer.on_ping(&ping).into_vec()),
             _ = tick.tick() => {
@@ -495,14 +515,16 @@ async fn handle_command(
     cmd: EngineCommand,
     rule_repo: &RuleRepo,
     fp_repo: &FingerprintRepo,
+    strategy_repo: &StrategyRepo,
     registry: &PositionRegistry,
     state: &mut EngineState,
     sink: &mut Sink,
 ) -> EventBatch {
     match cmd {
-        EngineCommand::ReloadRules => {
-            reload_rules(rule_repo, fp_repo, state, sink).await;
-            EventBatch::none() // reload_rules folds the event itself
+        EngineCommand::ReloadRules { ack } => {
+            let result = reload_rules(rule_repo, fp_repo, strategy_repo, registry, state, sink).await;
+            let _ = ack.send(result);
+            EventBatch::none()
         }
         EngineCommand::ManualClose { pg_position_id, portion } => match registry.engine_id(pg_position_id) {
             Some(position) => EventBatch::one(Event::ManualClose { position, portion }),
@@ -525,7 +547,17 @@ async fn handle_command(
             }
         }
         EngineCommand::CloseRule { rule_id } => {
-            let positions = registry.positions_for_rule(RuleId(rule_id));
+            let rid = RuleId(rule_id);
+            let mut positions = registry.positions_for_rule(rid);
+            for (_mint, token) in &state.tokens {
+                if let Some(ArmState::EntryPending { position, .. }) = token.arms.get(&rid) {
+                    if registry.get(*position).is_none() {
+                        positions.push(*position);
+                    }
+                }
+            }
+            positions.sort_unstable();
+            positions.dedup();
             info!(rule = %rule_id, positions = positions.len(), "engine: stop rule — closing open positions");
             EventBatch::many(
                 positions
@@ -588,30 +620,49 @@ async fn handle_command(
     }
 }
 
-/// Load active rules + fingerprints from PG, refresh the sink's rule info, and fold
-/// a `RulesReloaded` event into `state`.
+/// Load active rules + drain rules (paused but holding open positions) +
+/// fingerprints from PG, refresh the sink's rule info, and fold a `RulesReloaded`
+/// event into `state`.
 async fn reload_rules(
     rule_repo: &RuleRepo,
     fp_repo: &FingerprintRepo,
+    strategy_repo: &StrategyRepo,
+    registry: &PositionRegistry,
     state: &mut EngineState,
     sink: &mut Sink,
-) {
-    let rules = match rule_repo.list_active().await {
-        Ok(r) => r,
-        Err(e) => {
-            warn!("engine: list_active rules failed: {e}");
-            return;
+) -> Result<(), String> {
+    let rules = rule_repo
+        .list_active()
+        .await
+        .map_err(|e| format!("list_active rules: {e}"))?;
+    let fps = fp_repo
+        .list()
+        .await
+        .map_err(|e| format!("list fingerprints: {e}"))?;
+
+    let active_ids: HashSet<RuleId> = rules.iter().map(|r| RuleId(r.id)).collect();
+    let mut drain_ids: HashSet<RuleId> = registry.open_rule_ids();
+    if let Ok(open) = strategy_repo.find_open_positions().await {
+        for p in open {
+            if let Some(rid) = p.rule_id {
+                drain_ids.insert(RuleId(rid));
+            }
         }
-    };
-    let fps = match fp_repo.list().await {
-        Ok(f) => f,
-        Err(e) => {
-            warn!("engine: list fingerprints failed: {e}");
-            return;
+    }
+    drain_ids.retain(|id| !active_ids.contains(id));
+
+    let mut all_rows = rules;
+    for rid in drain_ids {
+        let uuid = rid.0;
+        match rule_repo.find(uuid).await {
+            Ok(Some(row)) if row.is_enabled => all_rows.push(row),
+            Ok(_) => {}
+            Err(e) => return Err(format!("find drain rule {uuid}: {e}")),
         }
-    };
-    let mut names: Vec<(RuleId, String)> = Vec::with_capacity(rules.len());
-    let loaded: Vec<LoadedRule> = rules
+    }
+
+    let mut names: Vec<(RuleId, String)> = Vec::with_capacity(all_rows.len());
+    let loaded: Vec<LoadedRule> = all_rows
         .iter()
         .filter_map(|r| match convert::rule_to_loaded(r) {
             Ok(l) => {
@@ -627,14 +678,17 @@ async fn reload_rules(
     let engine_fps: Vec<EngineFingerprint> = fps.iter().map(convert::fp_to_engine).collect();
 
     sink.set_rules(&loaded, &names);
-    // Pre-create/cache run rows so the first BuySubmitted of each rule does not
-    // await insert_run on the decision→send critical path.
     sink.warm_runs().await;
-    info!(rules = loaded.len(), fingerprints = engine_fps.len(), "engine: rules reloaded");
+    info!(
+        rules = loaded.len(),
+        fingerprints = engine_fps.len(),
+        "engine: rules reloaded"
+    );
     let _ = reduce(
         state,
         Event::RulesReloaded { rules: loaded.into(), fps: engine_fps.into() },
     );
+    Ok(())
 }
 
 /// Replay the recent event-log tail to re-arm tokens that had no open position at

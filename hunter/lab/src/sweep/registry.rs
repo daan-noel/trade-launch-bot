@@ -960,6 +960,7 @@ fn simulate_generic_one_combo(
         max_concurrent_tokens: u32::MAX,
         max_total_tokens: 0,
         params,
+        entry_enabled: true,
     };
     let compiled = CompiledRule::compile(&loaded);
     let columns = columns_for(&compiled);

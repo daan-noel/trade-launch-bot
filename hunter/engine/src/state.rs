@@ -238,6 +238,7 @@ fn compile_manual_exit_rule(rule: RuleId, exit: &ManualExit) -> CompiledRule {
         max_concurrent_tokens: 1,
         max_total_tokens: 0,
         params,
+        entry_enabled: true,
     };
     CompiledRule::compile(&loaded)
 }

@@ -28,6 +28,7 @@ use uuid::Uuid;
 
 use super::action_progress;
 use crate::state::deploy_state::DeployState;
+use crate::strategies::engine::EngineReloadError;
 
 /// Signal that the strategy-rules list changed so clients confirm optimistic
 /// pause/activate without waiting on a refetch race. Legacy event name
@@ -145,7 +146,9 @@ pub async fn update_fingerprint(
     }
     match app_state.fingerprint_repo.update(&fp).await {
         Ok(()) => {
-            app_state.engine.reload_rules().await;
+            if let Err(resp) = reload_engine(&app_state).await {
+                return resp;
+            }
             HttpResponse::Ok().json(fp)
         }
         Err(e) => server_error("update fingerprint", e),
@@ -231,7 +234,9 @@ pub async fn create_rule(
     .await
     {
         Ok((rule, warning)) => {
-            app_state.engine.reload_rules().await;
+            if let Err(resp) = reload_engine(&app_state).await {
+                return resp;
+            }
             let mut body = serde_json::to_value(&rule).unwrap_or_default();
             if let Some(w) = warning {
                 if let Some(obj) = body.as_object_mut() {
@@ -263,7 +268,9 @@ pub async fn update_rule(
     .await
     {
         Ok(warning) => {
-            app_state.engine.reload_rules().await;
+            if let Err(resp) = reload_engine(&app_state).await {
+                return resp;
+            }
             let mut body = serde_json::to_value(&rule).unwrap_or_default();
             if let Some(w) = warning {
                 if let Some(obj) = body.as_object_mut() {
@@ -283,7 +290,9 @@ pub async fn delete_rule(
 ) -> impl Responder {
     match app_state.rule_repo.delete(path.into_inner()).await {
         Ok(()) => {
-            app_state.engine.reload_rules().await;
+            if let Err(resp) = reload_engine(&app_state).await {
+                return resp;
+            }
             HttpResponse::NoContent().finish()
         }
         Err(e) => server_error("delete rule", e),
@@ -335,7 +344,9 @@ async fn set_active(app_state: &DeployState, id: Uuid, active: bool) -> HttpResp
     rule.updated_at = Utc::now();
     match app_state.rule_repo.update(&rule).await {
         Ok(()) => {
-            app_state.engine.reload_rules().await;
+            if let Err(resp) = reload_engine(&app_state).await {
+                return resp;
+            }
             emit_rules_changed(app_state);
             HttpResponse::Ok().json(rule)
         }
@@ -355,7 +366,9 @@ async fn set_enabled(app_state: &DeployState, id: Uuid, enabled: bool) -> HttpRe
     rule.updated_at = Utc::now();
     match app_state.rule_repo.update(&rule).await {
         Ok(()) => {
-            app_state.engine.reload_rules().await;
+            if let Err(resp) = reload_engine(&app_state).await {
+                return resp;
+            }
             emit_rules_changed(app_state);
             HttpResponse::Ok().json(rule)
         }
@@ -390,7 +403,9 @@ pub async fn stop_rule(
         Some(id),
         position_ids,
     );
-    app_state.engine.close_rule(id).await;
+    if !app_state.engine.close_rule(id).await {
+        return engine_unavailable("stop", "engine channel closed");
+    }
 
     // Deactivate after close is queued (positions already ExitPending-bound).
     let rule_resp = set_active(&app_state, id, false).await;
@@ -415,27 +430,27 @@ pub struct ModeParam {
     pub mode: String,
 }
 
-/// Deactivate every active rule of `mode`. Returns the count of rules paused, or a
-/// `500` if the rule list / an update fails.
-async fn pause_all_of_mode(app_state: &DeployState, mode: &str) -> HttpResponse {
-    let rules = match app_state.rule_repo.list().await {
-        Ok(v) => v,
-        Err(e) => return server_error("pause-all: list rules", e),
-    };
+/// Deactivate every active rule of `mode`. Returns the count paused.
+async fn pause_all_of_mode(app_state: &DeployState, mode: &str) -> Result<usize, HttpResponse> {
+    let rules = app_state
+        .rule_repo
+        .list()
+        .await
+        .map_err(|e| server_error("pause-all: list rules", e))?;
     let mut paused = 0usize;
     for mut rule in rules.into_iter().filter(|r| r.is_active && r.trade_mode == mode) {
         rule.is_active = false;
         rule.updated_at = Utc::now();
-        if let Err(e) = app_state.rule_repo.update(&rule).await {
-            return server_error("pause-all: update rule", e);
-        }
+        app_state
+            .rule_repo
+            .update(&rule)
+            .await
+            .map_err(|e| server_error("pause-all: update rule", e))?;
         paused += 1;
     }
-    app_state.engine.reload_rules().await;
-    if paused > 0 {
-        emit_rules_changed(app_state);
-    }
-    HttpResponse::Ok().json(json!({ "paused": paused }))
+    reload_engine(&app_state).await?;
+    emit_rules_changed(app_state);
+    Ok(paused)
 }
 
 /// POST /api/strategy-rules/pause-all?mode=real|paper — entries off for every active
@@ -444,7 +459,10 @@ pub async fn pause_all_rules(
     app_state: web::Data<Arc<DeployState>>,
     query: web::Query<ModeParam>,
 ) -> impl Responder {
-    pause_all_of_mode(&app_state, &query.mode).await
+    match pause_all_of_mode(&app_state, &query.mode).await {
+        Ok(paused) => HttpResponse::Ok().json(json!({ "paused": paused })),
+        Err(resp) => resp,
+    }
 }
 
 /// POST /api/strategy-rules/stop-all?mode=real|paper — force-close every open
@@ -467,11 +485,21 @@ pub async fn stop_all_rules(
     let action_id = Uuid::new_v4();
 
     action_progress::spawn_stop_watcher(app_state.sse_tx.clone(), action_id, None, position_ids);
-    app_state.engine.close_mode(mode == "real").await;
+    if !app_state.engine.close_mode(mode == "real").await {
+        return engine_unavailable("stop-all", "engine channel closed");
+    }
 
-    let pause_resp = pause_all_of_mode(&app_state, mode).await;
-    if !pause_resp.status().is_success() {
-        return pause_resp;
+    let paused = match pause_all_of_mode(&app_state, mode).await {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+
+    if paused == 0 && total == 0 {
+        return HttpResponse::Conflict().json(json!({
+            "error": "no active rules or open positions to stop for this mode",
+            "paused": paused,
+            "total": total,
+        }));
     }
 
     HttpResponse::Accepted().json(json!({
@@ -479,6 +507,7 @@ pub async fn stop_all_rules(
         "kind": "stop",
         "mode": mode,
         "total": total,
+        "paused": paused,
         "closing": true,
     }))
 }
@@ -505,4 +534,31 @@ fn rule_error(e: RuleError, ctx: &str) -> HttpResponse {
 fn server_error(ctx: &str, e: impl std::fmt::Display) -> HttpResponse {
     tracing::warn!("{ctx}: {e}");
     HttpResponse::InternalServerError().json(json!({"error": format!("{ctx} failed")}))
+}
+
+async fn reload_engine(app_state: &DeployState) -> Result<(), HttpResponse> {
+    app_state
+        .engine
+        .reload_rules()
+        .await
+        .map_err(|e| match e {
+            EngineReloadError::ChannelClosed | EngineReloadError::TimedOut => {
+                engine_unavailable("engine reload", e.to_string())
+            }
+            EngineReloadError::Failed(msg) => {
+                tracing::warn!("engine reload failed: {msg}");
+                HttpResponse::ServiceUnavailable().json(json!({
+                    "error": "engine reload failed",
+                    "detail": msg,
+                }))
+            }
+        })
+}
+
+fn engine_unavailable(ctx: &str, detail: impl std::fmt::Display) -> HttpResponse {
+    tracing::warn!("{ctx}: {detail}");
+    HttpResponse::ServiceUnavailable().json(json!({
+        "error": format!("{ctx}: engine unavailable"),
+        "detail": detail.to_string(),
+    }))
 }

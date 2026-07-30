@@ -290,6 +290,9 @@ pub struct LoadedRule {
     /// the cap fires sooner). One-shot rules are unaffected (1 token = 1 entry).
     pub max_total_tokens: u32,
     pub params: RuleParams,
+    /// When `false`, the rule stays loaded for exit/drain but must not arm new
+    /// entries (paused / stopped-with-open-positions drain set).
+    pub entry_enabled: bool,
 }
 
 impl LoadedRule {
@@ -491,6 +494,8 @@ pub enum DisarmReason {
     /// A monotonic entry bound was permanently crossed (e.g. `time < 30` at 30 s) —
     /// the entry can never re-satisfy (plan §2.2 "derived unsatisfiability").
     Unsatisfiable,
+    /// Rule paused or stopped — entries off; open positions may still drain.
+    Paused,
 }
 
 /// A (token, rule) arming transition for the live monitor. Entry/exit are carried

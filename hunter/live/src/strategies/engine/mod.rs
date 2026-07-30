@@ -30,9 +30,10 @@ pub mod reapers;
 pub mod sinks;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use dashmap::DashSet;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use hunter_engine::event::{Fill, IntentId, ManualExit, PositionId, RuleId, TradeMode};
@@ -136,11 +137,13 @@ impl Drop for ExitMintGuard {
 /// A command into the serialized decision loop from *outside* the ingest / tick /
 /// fill paths — i.e. from HTTP handlers (rule CRUD reloads, manual position
 /// closes). Kept small and `Send` so the loop's `select!` can own it.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum EngineCommand {
     /// The active rule set changed (create/update/delete/activate/pause) — the loop
     /// reloads rules+fingerprints from PG and folds a `RulesReloaded` event.
-    ReloadRules,
+    ReloadRules {
+        ack: oneshot::Sender<Result<(), String>>,
+    },
     /// A manual "Sell ALL" / "Sell N%" targeting one **PG** position id. The loop
     /// resolves it to the engine `PositionId` via the sink registry, then folds a
     /// `ManualClose` (a no-op if the position isn't a live engine-held one).
@@ -177,6 +180,27 @@ pub enum EngineCommand {
     SetManualExit { pg_position_id: Uuid, exit: Option<ManualExit> },
 }
 
+/// Why [`EngineHandle::reload_rules`] failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineReloadError {
+    /// Decision loop channel closed (shutting down).
+    ChannelClosed,
+    /// Reload ack timed out waiting on the serialized loop.
+    TimedOut,
+    /// PG load or rule parse failed inside the loop.
+    Failed(String),
+}
+
+impl std::fmt::Display for EngineReloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ChannelClosed => write!(f, "channel closed"),
+            Self::TimedOut => write!(f, "reload ack timed out"),
+            Self::Failed(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
 /// A cheap, cloneable handle the HTTP layer holds to talk to the running engine
 /// loop. All it can do is enqueue [`EngineCommand`]s — the loop owns all state.
 #[derive(Debug, Clone)]
@@ -189,10 +213,18 @@ impl EngineHandle {
         Self { cmd_tx }
     }
 
-    /// Ask the loop to reload rules from PG. Best-effort: a full queue (loop busy)
-    /// drops the request — the next reload subsumes it.
-    pub async fn reload_rules(&self) {
-        let _ = self.cmd_tx.send(EngineCommand::ReloadRules).await;
+    /// Ask the loop to reload rules from PG and wait until the fold completes.
+    pub async fn reload_rules(&self) -> Result<(), EngineReloadError> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(EngineCommand::ReloadRules { ack: tx })
+            .await
+            .map_err(|_| EngineReloadError::ChannelClosed)?;
+        match tokio::time::timeout(Duration::from_secs(10), rx).await {
+            Ok(Ok(result)) => result.map_err(EngineReloadError::Failed),
+            Ok(Err(_)) => Err(EngineReloadError::ChannelClosed),
+            Err(_) => Err(EngineReloadError::TimedOut),
+        }
     }
 
     /// Ask the loop to close a PG position id manually. `portion` selects Sell ALL
@@ -375,6 +407,11 @@ impl PositionRegistry {
         if let Some((_, meta)) = self.by_id.remove(&id) {
             self.by_pg.remove(&meta.pg_id);
         }
+    }
+
+    /// Distinct rule ids with a live engine-held position (drain-set input).
+    pub fn open_rule_ids(&self) -> std::collections::HashSet<RuleId> {
+        self.by_id.iter().map(|e| e.value().rule_id).collect()
     }
 }
 

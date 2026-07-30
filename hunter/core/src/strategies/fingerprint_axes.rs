@@ -92,5 +92,6 @@ pub fn rule_to_loaded(rule: &StrategyRule) -> Result<LoadedRule, String> {
         max_concurrent_tokens: rule.max_concurrent_tokens.clamp(0, i64::from(u32::MAX)) as u32,
         max_total_tokens: rule.max_total_tokens.clamp(0, i64::from(u32::MAX)) as u32,
         params,
+        entry_enabled: rule.is_active,
     })
 }

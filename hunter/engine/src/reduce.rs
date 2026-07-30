@@ -46,6 +46,28 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
     let mut fx = Effects::new();
     match event {
         Event::RulesReloaded { rules, fps } => {
+            let incoming: std::collections::HashMap<_, _> =
+                rules.iter().map(|r| (r.id, r.entry_enabled)).collect();
+            for (mint, token) in state.tokens.iter_mut() {
+                let stale: smallvec::SmallVec<[RuleId; 4]> = token
+                    .arms
+                    .iter()
+                    .filter(|(rid, arm)| {
+                        if arm_holds_position(arm) {
+                            return false;
+                        }
+                        match incoming.get(rid) {
+                            None => true,
+                            Some(entry_enabled) => !entry_enabled,
+                        }
+                    })
+                    .map(|(id, _)| *id)
+                    .collect();
+                for rid in stale {
+                    token.arms.insert(rid, ArmState::Disarmed(DisarmReason::Paused));
+                    fx.push(armed(mint, rid, ArmedStateTag::Disarmed(DisarmReason::Paused)));
+                }
+            }
             state.reload(&rules, &fps);
         }
 
@@ -71,6 +93,9 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             // creation slot settles; the rest arm immediately.
             let hits = match_all(&state.fps, &token.tf, MatchPhase::Instant);
             for (rule_id, compiled) in &state.rules {
+                if !compiled.entry_enabled {
+                    continue;
+                }
                 if hits.contains(&compiled.fingerprint_id) {
                     let arm = if state.fp_has_first_slot(compiled.fingerprint_id) {
                         ArmState::PendingFirstSlot
@@ -107,10 +132,11 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                     .map(|(id, _)| *id)
                     .collect();
                 for rule_id in pending {
-                    let matched = state
-                        .rules
-                        .get(&rule_id)
-                        .is_some_and(|c| hits.contains(&c.fingerprint_id));
+                    let Some(compiled) = state.rules.get(&rule_id) else { continue };
+                    if !compiled.entry_enabled {
+                        continue;
+                    }
+                    let matched = hits.contains(&compiled.fingerprint_id);
                     if matched {
                         token.arms.insert(rule_id, ArmState::Armed);
                         fx.push(armed(&mint, rule_id, ArmedStateTag::Armed));
@@ -419,7 +445,25 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             let Some(pref) = state.positions.get(&position).cloned() else { return fx };
             let PositionRef { mint, rule } = pref;
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
-            if let Some(ArmState::Entered(held)) = token.arms.get(&rule).cloned() {
+            if let Some(ArmState::EntryPending { intent: _, position: pos, .. }) =
+                token.arms.get(&rule).cloned()
+            {
+                if pos == position {
+                    rollback_entry(state, rule);
+                    state.remove_position(position);
+                    token.arms.insert(rule, ArmState::Done);
+                    fx.push(Effect::PositionUpdate(PositionDelta {
+                        position,
+                        rule,
+                        mint: mint.clone(),
+                        status: PositionStatus::EntryFailed,
+                        fill: None,
+                        reason: Some(ExitReason::Manual),
+                        intent: None,
+                        stage: None,
+                    }));
+                }
+            } else if let Some(ArmState::Entered(held)) = token.arms.get(&rule).cloned() {
                 if held.position == position {
                     let intent = state.next_intent(rule, mint.clone());
                     // Same ExitPending + SubmitSell shape as PartialExit / full
@@ -564,7 +608,9 @@ fn evaluate_token(
     // iteration (BTreeMap) keeps the emitted `ArmedChanged` order deterministic.
     for (rule_id, arm) in token.arms.iter_mut() {
         if let ArmState::Cooldown { until } = arm {
-            if now >= *until {
+            if now >= *until
+                && state.rules.get(rule_id).is_some_and(|c| c.entry_enabled)
+            {
                 *arm = ArmState::Armed;
                 fx.push(armed(mint, *rule_id, ArmedStateTag::Armed));
             }
@@ -627,6 +673,9 @@ fn decide_arm(
 ) -> ArmDecision {
     match arm {
         ArmState::Armed => {
+            if !c.entry_enabled {
+                return ArmDecision::None;
+            }
             if dead {
                 return ArmDecision::Disarm(DisarmReason::Dead);
             }
@@ -857,6 +906,16 @@ fn decrement_open(state: &mut EngineState, rule: RuleId) {
     if let Some(c) = state.counters.get_mut(&rule) {
         c.open = c.open.saturating_sub(1);
     }
+}
+
+/// Whether an arm still owns an open or in-flight position (must survive reload).
+fn arm_holds_position(arm: &ArmState) -> bool {
+    matches!(
+        arm,
+        ArmState::Entered(_)
+            | ArmState::EntryPending { .. }
+            | ArmState::ExitPending { .. }
+    )
 }
 
 /// Roll back both counters for an entry that never filled (saturating).

@@ -206,6 +206,8 @@ pub struct CompiledRule {
     /// tiebreak between two contesting `exclusive` rules. The **sweep ignores both**
     /// (documented divergence, `docs/plans/sweep/sim-parity.md`).
     pub priority: i32,
+    /// When `false`, skip arming and new entries; exits on held positions still run.
+    pub entry_enabled: bool,
 }
 
 impl CompiledRule {
@@ -330,6 +332,7 @@ impl CompiledRule {
             reentry: rule.params.reentry,
             exclusive: rule.params.exclusive,
             priority: rule.params.priority,
+            entry_enabled: rule.entry_enabled,
         }
     }
 
@@ -655,6 +658,7 @@ mod tests {
             max_concurrent_tokens: 1,
             max_total_tokens: 0,
             params: RuleParams::parse(&params).unwrap(),
+            entry_enabled: true,
         }
     }
 

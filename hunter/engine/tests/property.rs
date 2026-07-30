@@ -79,6 +79,7 @@ fn rules() -> Vec<LoadedRule> {
             max_concurrent_tokens: 2,
             max_total_tokens: 5,
             params: RuleParams::parse(&json!({ "take_profit": 80 })).unwrap(),
+            entry_enabled: true,
         },
         LoadedRule {
             id: rid(2),
@@ -93,6 +94,7 @@ fn rules() -> Vec<LoadedRule> {
                 "exit":  { "m_price_lifetime": { "stall": [{ "operator": ">", "value": 8 }] } }
             }))
             .unwrap(),
+            entry_enabled: true,
         },
     ]
 }

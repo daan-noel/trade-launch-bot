@@ -86,6 +86,7 @@ fn rule(id: u128, params: serde_json::Value) -> LoadedRule {
         max_concurrent_tokens: 1_000_000,
         max_total_tokens: 0,
         params: RuleParams::parse(&params).expect("valid rule params"),
+        entry_enabled: true,
     }
 }
 

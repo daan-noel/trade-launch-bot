@@ -66,6 +66,7 @@ server {
         # token stays server-side — it is never sent to the browser.
         proxy_set_header Authorization     "Bearer ${API_AUTH_TOKEN}";
         proxy_read_timeout 300s;
+        add_header Cache-Control "no-store" always;
     }
 
     # SPA fallback: let react-router handle client-side routes.

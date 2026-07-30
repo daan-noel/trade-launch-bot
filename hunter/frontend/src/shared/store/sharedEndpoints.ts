@@ -300,18 +300,15 @@ export const sharedApi = baseApi.injectEndpoints({
       },
       invalidatesTags: ['StrategyRule'],
     }),
-    // Instant flag flip — optimistic Idle patch; RulesView clears Pausing on settle.
+    // Instant flag flip — server ack + refetch; no optimistic is_active patch.
     pauseStrategyRule: builder.mutation<StrategyRule, string>({
       query: (id) => ({ url: `/api/strategy-rules/${id}/pause`, method: 'POST' }),
-      async onQueryStarted(id, { dispatch, queryFulfilled }) {
-        const undo = patchAllRuleLists(dispatch, (draft) => {
-          const row = draft.find((r) => r.id === id);
-          if (row) row.is_active = false;
-        });
+      async onQueryStarted(_id, { dispatch, queryFulfilled }) {
         try {
           await queryFulfilled;
+          refetchAllRuleLists(dispatch);
         } catch {
-          undo.undo();
+          /* RulesView surfaces the error */
         }
       },
       invalidatesTags: ['StrategyRule'],
@@ -323,15 +320,12 @@ export const sharedApi = baseApi.injectEndpoints({
       string
     >({
       query: (id) => ({ url: `/api/strategy-rules/${id}/stop`, method: 'POST' }),
-      async onQueryStarted(id, { dispatch, queryFulfilled }) {
-        const undo = patchAllRuleLists(dispatch, (draft) => {
-          const row = draft.find((r) => r.id === id);
-          if (row) row.is_active = false;
-        });
+      async onQueryStarted(_id, { dispatch, queryFulfilled }) {
         try {
           await queryFulfilled;
+          refetchAllRuleLists(dispatch);
         } catch {
-          undo.undo();
+          /* RulesView surfaces the error */
         }
       },
       invalidatesTags: ['StrategyRule'],
@@ -339,35 +333,27 @@ export const sharedApi = baseApi.injectEndpoints({
     // Bulk lifecycle scoped to one trade mode — mirror the per-row Pause / Stop.
     pauseAllStrategyRules: builder.mutation<{ paused: number }, TradeMode>({
       query: (mode) => ({ url: `/api/strategy-rules/pause-all?mode=${mode}`, method: 'POST' }),
-      async onQueryStarted(mode, { dispatch, queryFulfilled }) {
-        const undo = patchAllRuleLists(dispatch, (draft) => {
-          for (const r of draft) {
-            if (r.is_active && r.trade_mode === mode) r.is_active = false;
-          }
-        });
+      async onQueryStarted(_mode, { dispatch, queryFulfilled }) {
         try {
           await queryFulfilled;
+          refetchAllRuleLists(dispatch);
         } catch {
-          undo.undo();
+          /* RulesView surfaces the error */
         }
       },
       invalidatesTags: ['StrategyRule'],
     }),
     stopAllStrategyRules: builder.mutation<
-      { action_id: string; total: number; closing: boolean; mode: string },
+      { action_id: string; total: number; paused: number; closing: boolean; mode: string },
       TradeMode
     >({
       query: (mode) => ({ url: `/api/strategy-rules/stop-all?mode=${mode}`, method: 'POST' }),
-      async onQueryStarted(mode, { dispatch, queryFulfilled }) {
-        const undo = patchAllRuleLists(dispatch, (draft) => {
-          for (const r of draft) {
-            if (r.is_active && r.trade_mode === mode) r.is_active = false;
-          }
-        });
+      async onQueryStarted(_mode, { dispatch, queryFulfilled }) {
         try {
           await queryFulfilled;
+          refetchAllRuleLists(dispatch);
         } catch {
-          undo.undo();
+          /* RulesView surfaces the error */
         }
       },
       invalidatesTags: ['StrategyRule'],
@@ -403,6 +389,16 @@ export const sharedApi = baseApi.injectEndpoints({
 
 /** Optimistic lifecycle patches must update every `getStrategyRules` cache key. */
 const RULE_LIST_ARGS: Array<'current' | 'all' | undefined> = [undefined, 'current', 'all'];
+
+/** Refetch every cached strategy-rules list (all score_scope keys). */
+export function refetchAllRuleLists(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dispatch: (action: any) => unknown,
+): void {
+  for (const arg of RULE_LIST_ARGS) {
+    dispatch(sharedApi.endpoints.getStrategyRules.initiate(arg, { forceRefetch: true }));
+  }
+}
 
 function patchAllRuleLists(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

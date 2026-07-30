@@ -825,6 +825,7 @@ fn disarm_reason_str(r: DisarmReason) -> &'static str {
         DisarmReason::Dead => "dead",
         DisarmReason::Migrated => "migrated",
         DisarmReason::Unsatisfiable => "unsatisfiable",
+        DisarmReason::Paused => "paused",
     }
 }
 

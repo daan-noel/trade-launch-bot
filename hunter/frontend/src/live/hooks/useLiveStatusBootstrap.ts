@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useDispatch } from 'react-redux';
 import { connectArmedChanged, connectStrategyPositionUpdate } from 'services/sse';
-import { sharedApi } from 'store/sharedEndpoints';
+import { sharedApi, refetchAllRuleLists } from 'store/sharedEndpoints';
 import { liveApi } from '@live/store/liveEndpoints';
 import {
   applyArmedDelta,
@@ -28,13 +28,16 @@ export function useLiveStatusBootstrap(): void {
     inflight.current = ac;
     dispatch(snapshotStart());
     try {
-      const [armedRes, posRes, recentRes, rulesRes] = await Promise.all([
+      const [armedRes, posRes, recentRes] = await Promise.all([
         dispatch(liveApi.endpoints.getArmed.initiate(undefined, { forceRefetch: true })),
         // `false` = real + paper so the store is mode-complete; UI filters.
         dispatch(liveApi.endpoints.getPortfolioPositions.initiate(false, { forceRefetch: true })),
         dispatch(liveApi.endpoints.getPortfolioRecentCloses.initiate(50, { forceRefetch: true })),
-        dispatch(sharedApi.endpoints.getStrategyRules.initiate(undefined)),
       ]);
+      refetchAllRuleLists(dispatch);
+      const rulesRes = await dispatch(
+        sharedApi.endpoints.getStrategyRules.initiate(undefined, { forceRefetch: true }),
+      );
       if (ac.signal.aborted) return;
       if (armedRes.error || posRes.error) {
         dispatch(snapshotFailed());

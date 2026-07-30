@@ -66,6 +66,7 @@ fn rule_capped(id: u128, fp: u128, params: Value, max_concurrent: u32, max_total
         max_concurrent_tokens: max_concurrent,
         max_total_tokens: max_total,
         params: RuleParams::parse(&params).expect("valid params"),
+        entry_enabled: true,
     }
 }
 
