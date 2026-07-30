@@ -171,13 +171,13 @@ impl TokenTrack {
             LifeGrossFlow | LifeNetFlow | LifeBuy | LifeSell => self.flow_lifetime.value(id),
             WinTrail | WinRise => {
                 match window_secs.and_then(|ws| self.price_windows.get(&window_key(ws))) {
-                    Some(pw) => pw.value(id),
+                    Some(pw) => pw.value(id, now),
                     None => f64::NAN,
                 }
             }
             GrossFlow | NetFlow | Buy | Sell => {
                 match window_secs.and_then(|ws| self.windows.get(&window_key(ws))) {
-                    Some(w) => w.value(id),
+                    Some(w) => w.value(id, now),
                     None => f64::NAN,
                 }
             }
@@ -188,7 +188,7 @@ impl TokenTrack {
                     return f64::NAN;
                 };
                 match self.flow.get(&fp) {
-                    Some(f) => f.value(id, window_secs),
+                    Some(f) => f.value(id, window_secs, now),
                     None => f64::NAN,
                 }
             }

@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use chrono::Duration;
 use serde_json::Value;
 
-use super::flow_window::window_key;
+use super::flow_window::{in_window, window_key};
 use super::{MetricId, Side, TradeLite, Ts};
 
 /// FNV-1a offset basis (64-bit).
@@ -300,6 +300,25 @@ impl FlowSplitWindowState {
             }
         }
     }
+
+    fn totals_at(&self, now: Ts) -> FlowTotals {
+        let mut out = FlowTotals::default();
+        for &(ts, signed, is_vol) in &self.buf {
+            if !in_window(ts, now, self.window_secs) {
+                continue;
+            }
+            if signed >= 0.0 {
+                out.add(Side::Buy, signed, is_vol);
+            } else {
+                out.add(Side::Sell, -signed, is_vol);
+            }
+        }
+        out
+    }
+
+    fn value(&self, id: MetricId, now: Ts) -> f64 {
+        self.totals_at(now).value(id)
+    }
 }
 
 // ── FlowState ────────────────────────────────────────────────────────────────
@@ -357,12 +376,12 @@ impl FlowState {
         }
     }
 
-    /// Lifetime (`m_flow_split`) or windowed (`m_flow_split_window`) read.
-    pub fn value(&self, id: MetricId, window_secs: Option<f64>) -> f64 {
+    /// Lifetime (`m_flow_split`) or windowed (`m_flow_split_window`) read at `now`.
+    pub fn value(&self, id: MetricId, window_secs: Option<f64>, now: Ts) -> f64 {
         match window_secs {
             None => self.lifetime.value(id),
             Some(ws) => match self.windows.get(&window_key(ws)) {
-                Some(w) => w.totals.value(id),
+                Some(w) => w.value(id, now),
                 None => f64::NAN,
             },
         }
@@ -499,21 +518,21 @@ mod tests {
         st.on_trade(&trade(Side::Buy, 6.0, None, 2, 1.0));
         st.on_trade(&trade(Side::Sell, 1.0, Some(ix_hash(&["vol"])), 1, 2.0));
 
-        assert_eq!(st.value(MetricId::VolBuy, None), 4.0);
-        assert_eq!(st.value(MetricId::VolSell, None), 1.0);
-        assert_eq!(st.value(MetricId::VolGross, None), 5.0);
-        assert_eq!(st.value(MetricId::VolNet, None), 3.0);
-        assert_eq!(st.value(MetricId::NonvolBuy, None), 6.0);
-        assert_eq!(st.value(MetricId::NonvolGross, None), 6.0);
+        assert_eq!(st.value(MetricId::VolBuy, None, ts(2.0)), 4.0);
+        assert_eq!(st.value(MetricId::VolSell, None, ts(2.0)), 1.0);
+        assert_eq!(st.value(MetricId::VolGross, None, ts(2.0)), 5.0);
+        assert_eq!(st.value(MetricId::VolNet, None, ts(2.0)), 3.0);
+        assert_eq!(st.value(MetricId::NonvolBuy, None, ts(2.0)), 6.0);
+        assert_eq!(st.value(MetricId::NonvolGross, None, ts(2.0)), 6.0);
         // vol_share = 5 / 11 * 100
-        let share = st.value(MetricId::VolShare, None);
+        let share = st.value(MetricId::VolShare, None, ts(2.0));
         assert!((share - 500.0 / 11.0).abs() < 1e-9);
     }
 
     #[test]
     fn vol_share_nan_at_zero() {
         let st = FlowState::new(FlowPatterns::default());
-        assert!(st.value(MetricId::VolShare, None).is_nan());
+        assert!(st.value(MetricId::VolShare, None, ts(0.0)).is_nan());
     }
 
     #[test]
@@ -523,17 +542,17 @@ mod tests {
         st.ensure_window(10.0);
         st.on_trade(&trade(Side::Buy, 4.0, Some(ix_hash(&["vol"])), 1, 0.0));
         st.on_trade(&trade(Side::Buy, 6.0, None, 2, 1.0));
-        assert_eq!(st.value(MetricId::VolBuy, Some(10.0)), 4.0);
-        assert_eq!(st.value(MetricId::NonvolBuy, Some(10.0)), 6.0);
+        assert_eq!(st.value(MetricId::VolBuy, Some(10.0), ts(1.0)), 4.0);
+        assert_eq!(st.value(MetricId::NonvolBuy, Some(10.0), ts(1.0)), 6.0);
         // Trailing window is (now−w, now] — at t=11 the t=1 trade is still in;
         // one ms past the edge drops everything.
         st.on_tick(ts(11.0));
-        assert_eq!(st.value(MetricId::VolBuy, Some(10.0)), 0.0);
-        assert_eq!(st.value(MetricId::NonvolBuy, Some(10.0)), 6.0);
+        assert_eq!(st.value(MetricId::VolBuy, Some(10.0), ts(11.0)), 0.0);
+        assert_eq!(st.value(MetricId::NonvolBuy, Some(10.0), ts(11.0)), 6.0);
         st.on_tick(ts(11.001));
-        assert_eq!(st.value(MetricId::NonvolBuy, Some(10.0)), 0.0);
+        assert_eq!(st.value(MetricId::NonvolBuy, Some(10.0), ts(11.001)), 0.0);
         // Lifetime unchanged.
-        assert_eq!(st.value(MetricId::VolBuy, None), 4.0);
+        assert_eq!(st.value(MetricId::VolBuy, None, ts(11.001)), 4.0);
     }
 
     #[test]

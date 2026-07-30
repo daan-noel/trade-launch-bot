@@ -252,7 +252,7 @@ fn entry_dip_depth(tokens: &HashMap<String, Arc<Vec<lab::sweep::projection::Corp
         }
         let t = to_trade_lite(ct);
         pw.on_trade(t.price, t.at);
-        last = Some(pw.trail());
+        last = Some(pw.trail(t.at));
     }
     last.filter(|v| v.is_finite())
 }

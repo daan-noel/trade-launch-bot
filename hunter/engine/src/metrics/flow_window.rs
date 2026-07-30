@@ -25,6 +25,15 @@ pub fn window_key(window_secs: f64) -> u64 {
     (window_secs * 1000.0).round().max(0.0) as u64
 }
 
+/// True when `at` lies in the trailing window `[now − w, now]` — same closed
+/// lower bound as [`WindowState::evict`] (`at < cutoff` drops). Entries with
+/// `at > now` are excluded (regressed `block_time` across slot order).
+pub fn in_window(at: Ts, now: Ts, window_secs: f64) -> bool {
+    let width = Duration::milliseconds(window_key(window_secs) as i64);
+    let cutoff = now - width;
+    at >= cutoff && at <= now
+}
+
 /// One trailing-window aggregator for a single `window_size_sec`.
 #[derive(Debug, Clone)]
 pub struct WindowState {
@@ -85,13 +94,26 @@ impl WindowState {
         }
     }
 
-    /// Value of one `m_flow_window` metric over the current window contents.
-    pub fn value(&self, id: MetricId) -> f64 {
+    /// Value of one `m_flow_window` metric over `(now − w, now]`. Scans the buffer
+    /// so regressed `block_time` rows cannot pull in future-dated entries.
+    pub fn value(&self, id: MetricId, now: Ts) -> f64 {
+        let mut buy = 0.0;
+        let mut sell = 0.0;
+        for &(ts, signed) in &self.buf {
+            if !in_window(ts, now, self.window_secs) {
+                continue;
+            }
+            if signed >= 0.0 {
+                buy += signed;
+            } else {
+                sell -= signed;
+            }
+        }
         match id {
-            MetricId::Buy => self.buy,
-            MetricId::Sell => self.sell,
-            MetricId::GrossFlow => self.buy + self.sell,
-            MetricId::NetFlow => self.buy - self.sell,
+            MetricId::Buy => buy,
+            MetricId::Sell => sell,
+            MetricId::GrossFlow => buy + sell,
+            MetricId::NetFlow => buy - sell,
             _ => f64::NAN,
         }
     }
@@ -120,10 +142,10 @@ mod tests {
         w.on_trade(Side::Buy, 3.0, ts(0.0));
         w.on_trade(Side::Sell, 1.0, ts(1.0));
         w.on_trade(Side::Buy, 2.0, ts(2.0));
-        assert_eq!(w.value(MetricId::Buy), 5.0);
-        assert_eq!(w.value(MetricId::Sell), 1.0);
-        assert_eq!(w.value(MetricId::GrossFlow), 6.0);
-        assert_eq!(w.value(MetricId::NetFlow), 4.0);
+        assert_eq!(w.value(MetricId::Buy, ts(2.0)), 5.0);
+        assert_eq!(w.value(MetricId::Sell, ts(2.0)), 1.0);
+        assert_eq!(w.value(MetricId::GrossFlow, ts(2.0)), 6.0);
+        assert_eq!(w.value(MetricId::NetFlow, ts(2.0)), 4.0);
     }
 
     #[test]
@@ -132,11 +154,11 @@ mod tests {
         w.on_trade(Side::Buy, 5.0, ts(0.0));
         // Boundary: an entry exactly 10 s old is still in (cutoff is exclusive).
         w.evict(ts(10.0));
-        assert_eq!(w.value(MetricId::Buy), 5.0);
+        assert_eq!(w.value(MetricId::Buy, ts(10.0)), 5.0);
         // One millisecond past the window edge → it drops.
         w.evict(ts(10.001));
-        assert_eq!(w.value(MetricId::Buy), 0.0);
-        assert_eq!(w.value(MetricId::GrossFlow), 0.0);
+        assert_eq!(w.value(MetricId::Buy, ts(10.001)), 0.0);
+        assert_eq!(w.value(MetricId::GrossFlow, ts(10.001)), 0.0);
     }
 
     #[test]
@@ -146,9 +168,9 @@ mod tests {
         w.on_trade(Side::Sell, 2.0, ts(3.0));
         // A new trade at t=6 pushes t=0 out of the 5 s window.
         w.on_trade(Side::Buy, 4.0, ts(6.0));
-        assert_eq!(w.value(MetricId::Buy), 4.0); // t=0 buy gone
-        assert_eq!(w.value(MetricId::Sell), 2.0); // t=3 sell still in
-        assert_eq!(w.value(MetricId::NetFlow), 2.0);
+        assert_eq!(w.value(MetricId::Buy, ts(6.0)), 4.0); // t=0 buy gone
+        assert_eq!(w.value(MetricId::Sell, ts(6.0)), 2.0); // t=3 sell still in
+        assert_eq!(w.value(MetricId::NetFlow, ts(6.0)), 2.0);
     }
 
     #[test]
@@ -157,6 +179,16 @@ mod tests {
         w.on_trade(Side::Buy, f64::NAN, ts(0.0));
         w.on_trade(Side::Buy, -1.0, ts(0.0));
         w.on_trade(Side::Buy, 2.0, ts(0.0));
-        assert_eq!(w.value(MetricId::Buy), 2.0);
+        assert_eq!(w.value(MetricId::Buy, ts(0.0)), 2.0);
+    }
+
+    #[test]
+    fn future_dated_entries_excluded_at_regressed_now() {
+        let mut w = WindowState::new(30.0);
+        w.on_trade(Side::Buy, 5.0, ts(54.0));
+        w.on_trade(Side::Buy, 1.0, ts(51.0));
+        // At now=51 the t=54 print is future-dated — must not count.
+        assert_eq!(w.value(MetricId::Buy, ts(51.0)), 1.0);
+        assert_eq!(w.value(MetricId::Buy, ts(54.0)), 6.0);
     }
 }
