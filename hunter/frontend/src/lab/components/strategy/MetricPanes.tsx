@@ -1,9 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 
 import { Select } from 'components/ui/Select';
 import { Checkbox } from 'components/ui/Checkbox';
 import { Button } from 'components/ui/Button';
 import { Accordion } from 'components/ui/Accordion';
+import { cn } from 'lib/cn';
 import { useStrategyRegistry, unitSuffix, type MetricUnit } from 'lib/strategy/registry';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { ruleParamsFromJson, sideInstances, type RuleParams } from 'lib/strategy/ruleParams';
@@ -88,13 +97,20 @@ export interface MetricPanesProps {
   positionEntry?: { time: string; price: number } | null;
 }
 
-/**
- * Registry-driven metric panes for one token (lab-only — metric-series needs the
- * lake). Plots selected metrics on a shared wall-clock axis with the price chart
- * (crosshair + visible range), overlays a rule's thresholds, and reports first
- * entry/exit metric fires as `role: 'signal'` chart markers (`{metric}{op}`).
- */
-export function MetricPanes({
+export type MetricPanesLayout = 'page' | 'inspect';
+export type MetricPanesPartKind = 'selector' | 'values' | 'graphs';
+
+type MetricPanesModel = ReturnType<typeof useMetricPanesModel>;
+
+const MetricPanesContext = createContext<MetricPanesModel | null>(null);
+
+function useMetricPanesCtx(): MetricPanesModel {
+  const ctx = useContext(MetricPanesContext);
+  if (!ctx) throw new Error('MetricPanesPart must render inside MetricPanesProvider');
+  return ctx;
+}
+
+function useMetricPanesModel({
   mint,
   crosshairTimeSec = null,
   visibleTimeRange = null,
@@ -102,7 +118,8 @@ export function MetricPanes({
   onEventMarkersChange,
   ruleOverride = null,
   positionEntry = null,
-}: MetricPanesProps) {
+  layout = 'page',
+}: MetricPanesProps & { layout?: MetricPanesLayout }) {
   const { data: registry } = useStrategyRegistry();
   const { data: rules = [] } = useGetStrategyRulesQuery();
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
@@ -354,152 +371,101 @@ export function MetricPanes({
     onCrosshairTimeChange?.(null);
   }, [onCrosshairTimeChange]);
 
-  if (!registry) return <p className="text-[12px] text-text-dim">loading registry…</p>;
+  return {
+    layout,
+    registry,
+    ruleOverride,
+    rules,
+    prefs,
+    setPrefs,
+    panes,
+    allColumns,
+    columnsByGroup,
+    valueStrip,
+    groupKeys,
+    togglePane,
+    toggleSelectAll,
+    allSelected,
+    error,
+    isFetching,
+    data,
+    crosshairIdx,
+    atSec,
+    seriesByKey,
+    xDomain,
+    ruleParams,
+    conditionByMetric,
+    crosshairTimeSec,
+    handlePanePointer,
+    handlePaneLeave,
+  };
+}
+
+function MetricPanesSelector() {
+  const {
+    layout,
+    registry,
+    ruleOverride,
+    rules,
+    prefs,
+    panes,
+    allColumns,
+    columnsByGroup,
+    togglePane,
+    toggleSelectAll,
+    allSelected,
+    setPrefs,
+  } = useMetricPanesCtx();
+
+  if (!registry) return null;
+
+  const inspect = layout === 'inspect';
+  const groupLabelClass = inspect
+    ? 'w-full font-mono text-[10px] font-semibold uppercase tracking-wider text-secondary'
+    : 'w-32 shrink-0 pt-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-secondary';
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-col gap-2 rounded-md border border-white/8 bg-white/2 p-2">
-        <Accordion
-          title="Metrics"
-          padding="none"
-          bordered={false}
-          storageKey="mt:metric-selector-open"
-        >
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between gap-2 border-b border-white/8 pb-2">
-              <span className="text-[11px] text-text-dim">
-                {panes.length} / {allColumns.length} selected
-              </span>
-              <Button variant="subtle" size="xs" onClick={toggleSelectAll}>
-                {allSelected ? 'unselect all' : 'select all'}
-              </Button>
-            </div>
-            {columnsByGroup.map(({ group, cols }) => {
-              const windowRows = colsByWindow(cols);
-              const isDynamic = windowRows.some((r) => r.window != null);
-              return (
-                <div
-                  key={group}
-                  className="flex items-start gap-x-3 border-b border-white/5 pb-1.5 last:border-b-0 last:pb-0"
-                >
-                  <span
-                    className="w-32 shrink-0 pt-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-secondary"
-                    title={group}
-                  >
-                    {group}
-                  </span>
-                  <div className={`min-w-0 flex-1 ${isDynamic ? 'flex flex-col gap-0.5' : ''}`}>
-                    {windowRows.map(({ window, items }) => (
-                      <div
-                        key={window ?? 'static'}
-                        className={`flex min-w-0 items-center gap-2 ${
-                          isDynamic ? 'rounded px-1 py-0.5 odd:bg-white/2' : 'px-1'
-                        }`}
-                      >
-                        {/* Always reserve the badge column so static groups (m_flow_split)
-                            share the same checkbox indent as dynamic ones (m_flow_split_window). */}
-                        <span
-                          className={`w-8 shrink-0 text-center font-mono text-[10px] font-semibold tabular-nums ${
-                            window != null
-                              ? 'rounded bg-white/8 px-1 py-px text-text'
-                              : 'invisible select-none'
-                          }`}
-                          aria-hidden={window == null}
-                        >
-                          {window != null ? `${window}s` : '0s'}
-                        </span>
-                        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-0.5">
-                          {items.map((c) => (
-                            <label
-                              key={c.key}
-                              className="flex shrink-0 items-center gap-1 text-[11px] text-text-dim"
-                            >
-                              <Checkbox
-                                boxSize="sm"
-                                checked={panes.includes(c.key)}
-                                onChange={() => togglePane(c.key)}
-                              />
-                              <span
-                                className="font-mono whitespace-nowrap"
-                                title={`${c.metric}${c.window != null ? `@${c.window}s` : ''}`}
-                              >
-                                {c.metric}
-                              </span>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
+    <div className="flex flex-col gap-2 rounded-md border border-white/8 bg-white/2 p-2">
+      <Accordion
+        title="Metrics"
+        padding="none"
+        bordered={false}
+        storageKey={inspect ? 'mt:metric-selector-inspect-open' : 'mt:metric-selector-open'}
+        defaultOpen={!inspect}
+      >
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-2 border-b border-white/8 pb-2">
+            <span className="text-[11px] text-text-dim">
+              {panes.length} / {allColumns.length} selected
+            </span>
+            <Button variant="subtle" size="xs" onClick={toggleSelectAll}>
+              {allSelected ? 'unselect all' : 'select all'}
+            </Button>
           </div>
-          <div className="flex items-center gap-2 border-t border-white/8 pt-2">
-            <span className="text-[11px] text-text-dim">rule overlay</span>
-            {ruleOverride ? (
-              <span
-                className="rounded border border-white/10 bg-surface px-2 py-1 font-mono text-[12px] text-secondary"
-                title="Thresholds + fire markers use the exact params of the inspected run"
-              >
-                {ruleOverride.label}
-              </span>
-            ) : (
-              <Select
-                fieldSize="sm"
-                value={prefs.ruleId ?? ''}
-                onChange={(e) =>
-                  setPrefs((p) => ({
-                    ...p,
-                    ruleId: e.target.value || null,
-                    autoPanes: true,
-                  }))
-                }
-                className="min-w-40"
-              >
-                <option value="">none</option>
-                {rules.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.rule_name}
-                  </option>
-                ))}
-              </Select>
-            )}
-          </div>
-        </Accordion>
-      </div>
-
-      {/* Sticky value strip — scan every selected metric without reading each sparkline. */}
-      {valueStrip.length > 0 && (
-        <div className="sticky top-0 z-10 flex flex-col gap-y-1.5 rounded-md border border-white/10 bg-bg-panel/95 px-2.5 py-2 backdrop-blur-sm">
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-text-dim">
-            {crosshairIdx != null ? 'at crosshair' : 'latest'}
-          </span>
-          {groupKeys(valueStrip, (v) => v.key).map(({ group, items }) => {
-            // Same window banding as the selector — strip `@Ns` from the label once the
-            // row tag owns the window, so the eye reads "10s → values" not "foo@10s".
-            const rows = colsByWindow(
-              items.map((v) => {
-                const meta = allColumns.find((c) => c.key === v.key);
-                return { ...v, window: meta?.window ?? null, metric: meta?.metric ?? v.label };
-              }),
-            );
-            const isDynamic = rows.some((r) => r.window != null);
+          {columnsByGroup.map(({ group, cols }) => {
+            const windowRows = colsByWindow(cols);
+            const isDynamic = windowRows.some((r) => r.window != null);
             return (
-              <div key={group} className="flex items-start gap-x-3">
-                <span className="w-32 shrink-0 pt-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-secondary">
+              <div
+                key={group}
+                className={cn(
+                  'border-b border-white/5 pb-1.5 last:border-b-0 last:pb-0',
+                  inspect ? 'flex flex-col gap-1' : 'flex items-start gap-x-3',
+                )}
+              >
+                <span className={groupLabelClass} title={group}>
                   {group}
                 </span>
                 <div className={`min-w-0 flex-1 ${isDynamic ? 'flex flex-col gap-0.5' : ''}`}>
-                  {rows.map(({ window, items: rowItems }) => (
+                  {windowRows.map(({ window, items }) => (
                     <div
                       key={window ?? 'static'}
-                      className={`flex min-w-0 flex-wrap items-end gap-x-3 gap-y-1 px-1 ${
-                        isDynamic ? 'rounded py-0.5 odd:bg-white/2' : ''
+                      className={`flex min-w-0 items-center gap-2 ${
+                        isDynamic ? 'rounded px-1 py-0.5 odd:bg-white/2' : 'px-1'
                       }`}
                     >
                       <span
-                        className={`mb-0.5 w-8 shrink-0 text-center font-mono text-[10px] font-semibold tabular-nums ${
+                        className={`w-8 shrink-0 text-center font-mono text-[10px] font-semibold tabular-nums ${
                           window != null
                             ? 'rounded bg-white/8 px-1 py-px text-text'
                             : 'invisible select-none'
@@ -508,22 +474,26 @@ export function MetricPanes({
                       >
                         {window != null ? `${window}s` : '0s'}
                       </span>
-                      {rowItems.map((v) => (
-                        <div key={v.key} className="min-w-[4.5rem]">
-                          <div className="font-mono text-[10px] text-text-dim">{v.metric}</div>
-                          <div
-                            className={`font-mono text-[15px] font-semibold tabular-nums leading-tight ${
-                              v.ok === true
-                                ? 'text-green'
-                                : v.ok === false
-                                  ? 'text-warning'
-                                  : 'text-text'
-                            }`}
+                      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-0.5">
+                        {items.map((c) => (
+                          <label
+                            key={c.key}
+                            className="flex shrink-0 items-center gap-1 text-[11px] text-text-dim"
                           >
-                            {v.text}
-                          </div>
-                        </div>
-                      ))}
+                            <Checkbox
+                              boxSize="sm"
+                              checked={panes.includes(c.key)}
+                              onChange={() => togglePane(c.key)}
+                            />
+                            <span
+                              className="font-mono whitespace-nowrap"
+                              title={`${c.metric}${c.window != null ? `@${c.window}s` : ''}`}
+                            >
+                              {c.metric}
+                            </span>
+                          </label>
+                        ))}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -531,12 +501,135 @@ export function MetricPanes({
             );
           })}
         </div>
-      )}
+        <div className="flex items-center gap-2 border-t border-white/8 pt-2">
+          <span className="text-[11px] text-text-dim">rule overlay</span>
+          {ruleOverride ? (
+            <span
+              className="rounded border border-white/10 bg-surface px-2 py-1 font-mono text-[12px] text-secondary"
+              title="Thresholds + fire markers use the exact params of the inspected run"
+            >
+              {ruleOverride.label}
+            </span>
+          ) : (
+            <Select
+              fieldSize="sm"
+              value={prefs.ruleId ?? ''}
+              onChange={(e) =>
+                setPrefs((p) => ({
+                  ...p,
+                  ruleId: e.target.value || null,
+                  autoPanes: true,
+                }))
+              }
+              className="min-w-40"
+            >
+              <option value="">none</option>
+              {rules.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.rule_name}
+                </option>
+              ))}
+            </Select>
+          )}
+        </div>
+      </Accordion>
+    </div>
+  );
+}
 
+function MetricPanesValues() {
+  const { allColumns, valueStrip, groupKeys, crosshairIdx } = useMetricPanesCtx();
+
+  if (valueStrip.length === 0) return null;
+
+  return (
+    <div className="sticky top-0 z-10 flex flex-col gap-y-1.5 rounded-md border border-white/10 bg-bg-panel/95 px-2.5 py-2 backdrop-blur-sm">
+      <span className="text-[10px] font-semibold uppercase tracking-wider text-text-dim">
+        {crosshairIdx != null ? 'at crosshair' : 'latest'}
+      </span>
+      {groupKeys(valueStrip, (v) => v.key).map(({ group, items }) => {
+        const rows = colsByWindow(
+          items.map((v) => {
+            const meta = allColumns.find((c) => c.key === v.key);
+            return { ...v, window: meta?.window ?? null, metric: meta?.metric ?? v.label };
+          }),
+        );
+        const isDynamic = rows.some((r) => r.window != null);
+        return (
+          <div key={group} className="flex items-start gap-x-3">
+            <span className="w-32 shrink-0 pt-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-secondary">
+              {group}
+            </span>
+            <div className={`min-w-0 flex-1 ${isDynamic ? 'flex flex-col gap-0.5' : ''}`}>
+              {rows.map(({ window, items: rowItems }) => (
+                <div
+                  key={window ?? 'static'}
+                  className={`flex min-w-0 flex-wrap items-end gap-x-3 gap-y-1 px-1 ${
+                    isDynamic ? 'rounded py-0.5 odd:bg-white/2' : ''
+                  }`}
+                >
+                  <span
+                    className={`mb-0.5 w-8 shrink-0 text-center font-mono text-[10px] font-semibold tabular-nums ${
+                      window != null
+                        ? 'rounded bg-white/8 px-1 py-px text-text'
+                        : 'invisible select-none'
+                    }`}
+                    aria-hidden={window == null}
+                  >
+                    {window != null ? `${window}s` : '0s'}
+                  </span>
+                  {rowItems.map((v) => (
+                    <div key={v.key} className="min-w-[4.5rem]">
+                      <div className="font-mono text-[10px] text-text-dim">{v.metric}</div>
+                      <div
+                        className={`font-mono text-[15px] font-semibold tabular-nums leading-tight ${
+                          v.ok === true
+                            ? 'text-green'
+                            : v.ok === false
+                              ? 'text-warning'
+                              : 'text-text'
+                        }`}
+                      >
+                        {v.text}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function MetricPanesGraphs() {
+  const {
+    layout,
+    panes,
+    allColumns,
+    groupKeys,
+    seriesByKey,
+    atSec,
+    xDomain,
+    crosshairTimeSec,
+    crosshairIdx,
+    ruleParams,
+    conditionByMetric,
+    handlePanePointer,
+    handlePaneLeave,
+    error,
+    isFetching,
+    data,
+  } = useMetricPanesCtx();
+
+  const compact = layout === 'inspect';
+
+  return (
+    <div className="flex min-w-0 flex-col gap-3">
       {error && <p className="text-[12px] text-red">metric series unavailable for this token.</p>}
       {isFetching && <p className="text-[12px] text-text-dim">computing…</p>}
-      {/* Never draw a short series as if it were the whole token: the backend's row
-          ceiling truncates coverage in time (rows that ARE here stay exact). */}
       {data?.truncated && (
         <p className="text-[12px] text-warning">
           Series truncated at the row ceiling — panes and condition markers cover only up
@@ -552,7 +645,6 @@ export function MetricPanes({
         <div
           className="flex flex-col gap-2"
           onPointerLeave={(e) => {
-            // Only clear when leaving the whole pane stack (not when moving pane→pane).
             if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
               handlePaneLeave();
             }
@@ -604,6 +696,7 @@ export function MetricPanes({
                           thresholds={ruleParams ? metricThresholds(ruleParams, meta.metric) : []}
                           conditionOk={conditionByMetric.get(meta.metric)?.ok ?? null}
                           onPointerTime={handlePanePointer}
+                          compact={compact}
                         />
                       );
                     })}
@@ -615,6 +708,42 @@ export function MetricPanes({
         </div>
       )}
     </div>
+  );
+}
+
+/** Mount once per token inspect — shares query/state across split panes. */
+export function MetricPanesProvider({
+  children,
+  layout = 'page',
+  ...props
+}: MetricPanesProps & { layout?: MetricPanesLayout; children: ReactNode }) {
+  const model = useMetricPanesModel({ ...props, layout });
+  if (!model.registry) {
+    return <p className="text-[12px] text-text-dim">loading registry…</p>;
+  }
+  return <MetricPanesContext.Provider value={model}>{children}</MetricPanesContext.Provider>;
+}
+
+export function MetricPanesPart({ part }: { part: MetricPanesPartKind }) {
+  if (part === 'selector') return <MetricPanesSelector />;
+  if (part === 'values') return <MetricPanesValues />;
+  return <MetricPanesGraphs />;
+}
+
+/**
+ * Registry-driven metric panes for one token (lab-only — metric-series needs the
+ * lake). Default stacked layout; use {@link MetricPanesProvider} +
+ * {@link MetricPanesPart} for inspect modal split (graphs right, values under chart).
+ */
+export function MetricPanes(props: MetricPanesProps) {
+  return (
+    <MetricPanesProvider {...props} layout="page">
+      <div className="flex min-w-0 flex-col gap-3">
+        <MetricPanesPart part="selector" />
+        <MetricPanesPart part="values" />
+        <MetricPanesPart part="graphs" />
+      </div>
+    </MetricPanesProvider>
   );
 }
 
@@ -684,6 +813,7 @@ function MetricPane({
   thresholds,
   conditionOk,
   onPointerTime,
+  compact = false,
 }: {
   label: string;
   unit: MetricUnit;
@@ -695,6 +825,7 @@ function MetricPane({
   thresholds: Array<{ side: 'entry' | 'exit'; value: number }>;
   conditionOk: boolean | null;
   onPointerTime?: (clientX: number, svgEl: Element) => void;
+  compact?: boolean;
 }) {
   const xFrom = xDomain?.from ?? atSec.find((t) => Number.isFinite(t)) ?? 0;
   const xTo = xDomain?.to ?? atSec.filter((t) => Number.isFinite(t)).at(-1) ?? 1;
@@ -754,6 +885,85 @@ function MetricPane({
 
   const valueTone =
     conditionOk === true ? 'text-green' : conditionOk === false ? 'text-warning' : 'text-text';
+
+  if (compact) {
+    return (
+      <div className="flex min-w-0 flex-col gap-1 rounded-md border border-white/8 bg-white/2 p-2">
+        <span className="truncate font-mono text-[10px] text-text-dim" title={label}>
+          {label}
+        </span>
+        <div className="relative min-w-0">
+          <svg
+            viewBox={`0 0 ${W} ${PANE_H}`}
+            preserveAspectRatio="none"
+            className="h-16 w-full min-w-0 cursor-crosshair touch-none"
+            onPointerMove={(e) => onPointerTime?.(e.clientX, e.currentTarget)}
+          >
+            {thresholds.map((t, i) => (
+              <g key={i}>
+                <line
+                  x1={0}
+                  x2={W}
+                  y1={y(t.value)}
+                  y2={y(t.value)}
+                  stroke={t.side === 'entry' ? 'var(--color-primary)' : 'var(--color-warning)'}
+                  strokeWidth={1}
+                  strokeDasharray="4 3"
+                  opacity={0.75}
+                />
+              </g>
+            ))}
+            {segments.map((pts, i) => (
+              <polyline key={i} points={pts} fill="none" stroke="var(--color-green)" strokeWidth={1.5} />
+            ))}
+            {crossX != null && (
+              <line
+                x1={crossX}
+                x2={crossX}
+                y1={0}
+                y2={PANE_H}
+                stroke="var(--color-text)"
+                strokeWidth={1}
+                opacity={0.65}
+              />
+            )}
+            {crossY != null && (
+              <line
+                x1={0}
+                x2={W}
+                y1={crossY}
+                y2={crossY}
+                stroke="var(--color-text)"
+                strokeWidth={1}
+                opacity={0.35}
+                strokeDasharray="3 3"
+              />
+            )}
+            {crossX != null && crossY != null && (
+              <circle cx={crossX} cy={crossY} r={3.5} fill="var(--color-green)" opacity={0.9} />
+            )}
+          </svg>
+          {thresholds.map((t, i) => (
+            <span
+              key={`thr-${i}`}
+              className="pointer-events-none absolute right-0 font-mono text-[9px] tabular-nums"
+              style={{
+                top: `${((hi - t.value) / span) * 100}%`,
+                transform: 'translateY(-50%)',
+                color: t.side === 'entry' ? 'var(--color-primary)' : 'var(--color-warning)',
+              }}
+            >
+              {t.side[0].toUpperCase()} {formatMetric(t.value)}
+            </span>
+          ))}
+        </div>
+        <div className="flex justify-between px-0.5 font-mono text-[10px] tabular-nums text-text-dim">
+          <span title="visible max">{formatMetric(hi)}</span>
+          <span title="visible min">{formatMetric(lo)}</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="grid grid-cols-[7.5rem_minmax(0,1fr)_auto] items-stretch gap-2 rounded-md border border-white/8 bg-white/2 p-2">

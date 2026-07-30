@@ -50,7 +50,13 @@ export function LabTokenInspectModal({
   );
 
   return (
-    <Modal title={`${heading} — ${titleSuffix}`} open onClose={onClose} size="xxl">
+    <Modal
+      title={`${heading} — ${titleSuffix}`}
+      open
+      onClose={onClose}
+      size="viewport"
+      bodyClassName="p-4"
+    >
       <LabTokenInspect
         detail={detail ?? null}
         loading={isFetching}

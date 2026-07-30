@@ -7,15 +7,24 @@ interface ModalProps {
   open: boolean;
   onClose: () => void;
   children: ReactNode;
-  /** Width preset: `md` (default, ~700px), `xl` (~1200px, e.g. for a chart), or
-   *  `xxl` (~1600px, e.g. a token-detail modal with chart + metric panes). */
-  size?: 'md' | 'xl' | 'xxl';
+  /** Width preset: `md` (default, ~700px), `xl` (~1200px, e.g. for a chart),
+   *  `xxl` (~1600px), or `viewport` (98vw x 98vh, e.g. lab token inspect). */
+  size?: 'md' | 'xl' | 'xxl' | 'viewport';
+  /** Override classes on the scrollable body (below the title bar). */
+  bodyClassName?: string;
 }
 
-const MODAL_WIDTH: Record<NonNullable<ModalProps['size']>, string> = {
+const MODAL_WIDTH: Record<Exclude<NonNullable<ModalProps['size']>, 'viewport'>, string> = {
   md: 'max-w-[700px]',
   xl: 'max-w-[1200px]',
   xxl: 'max-w-[1600px]',
+};
+
+const MODAL_SHELL: Record<NonNullable<ModalProps['size']>, string> = {
+  md: 'max-h-[92vh] w-full',
+  xl: 'max-h-[92vh] w-full',
+  xxl: 'max-h-[92vh] w-full',
+  viewport: 'h-[98vh] max-h-[98vh] w-[98vw] max-w-[98vw]',
 };
 
 /** Selector for the focusable elements we keep `Tab` cycling between. */
@@ -104,7 +113,14 @@ function onDocumentModalKey(e: KeyboardEvent) {
   }
 }
 
-export function Modal({ title, open, onClose, children, size = 'md' }: ModalProps) {
+export function Modal({
+  title,
+  open,
+  onClose,
+  children,
+  size = 'md',
+  bodyClassName,
+}: ModalProps) {
   const pressedOnBackdrop = useRef(false);
   const dialogRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
@@ -144,7 +160,10 @@ export function Modal({ title, open, onClose, children, size = 'md' }: ModalProp
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[200] flex justify-center overflow-y-auto bg-black/65 p-5 backdrop-blur-sm"
+      className={cn(
+        'fixed inset-0 z-[200] flex justify-center bg-black/65 backdrop-blur-sm',
+        size === 'viewport' ? 'items-center overflow-hidden p-0' : 'overflow-y-auto p-5',
+      )}
       onMouseDown={(e) => {
         pressedOnBackdrop.current = e.target === e.currentTarget;
       }}
@@ -159,8 +178,9 @@ export function Modal({ title, open, onClose, children, size = 'md' }: ModalProp
         aria-labelledby={titleId}
         tabIndex={-1}
         className={cn(
-          'flex h-fit w-full flex-col overflow-hidden rounded-xl border border-white/8 bg-bg-panel shadow-[0_24px_80px_rgba(0,0,0,0.7)] focus:outline-none',
-          MODAL_WIDTH[size],
+          'flex flex-col overflow-hidden rounded-xl border border-white/8 bg-bg-panel shadow-[0_24px_80px_rgba(0,0,0,0.7)] focus:outline-none',
+          MODAL_SHELL[size],
+          size !== 'viewport' && MODAL_WIDTH[size],
         )}
       >
         <div className="flex items-center justify-between border-b border-white/6 px-5 py-3.5">
@@ -175,7 +195,12 @@ export function Modal({ title, open, onClose, children, size = 'md' }: ModalProp
             ×
           </button>
         </div>
-        <div className="scrollbar-gutter-stable overflow-y-auto overflow-x-hidden p-5">
+        <div
+          className={cn(
+            'scrollbar-gutter-stable min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-5',
+            bodyClassName,
+          )}
+        >
           {children}
         </div>
       </div>

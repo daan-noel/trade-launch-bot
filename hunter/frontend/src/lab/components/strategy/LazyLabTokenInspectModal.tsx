@@ -20,7 +20,8 @@ export function LazyLabTokenInspectModal(
           title={`${heading} — ${titleSuffix}`}
           open
           onClose={props.onClose}
-          size="xxl"
+          size="viewport"
+          bodyClassName="p-4"
         >
           <LoadingState variant="panel" label="Loading chart…" />
         </Modal>

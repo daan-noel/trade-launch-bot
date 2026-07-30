@@ -103,9 +103,16 @@ interface TokenDetailPanelProps {
   detail: TokenDetailRecord | null;
   loading: boolean;
   error: string | null;
+  /** Stack sections vertically for narrow split-pane layouts (lab inspect modal). */
+  compact?: boolean;
 }
 
-export function TokenDetailPanel({ detail, loading, error }: TokenDetailPanelProps) {
+export function TokenDetailPanel({
+  detail,
+  loading,
+  error,
+  compact = false,
+}: TokenDetailPanelProps) {
   const price = usePriceDisplay();
   const { timezone } = useTimezone();
   const [copiedAll, setCopiedAll] = useState(false);
@@ -176,8 +183,13 @@ export function TokenDetailPanel({ detail, loading, error }: TokenDetailPanelPro
         </Badge>
       </div>
 
-      <div className="flex items-start gap-0">
-        <div className="grid min-w-0 flex-1 grid-cols-2 gap-2">
+      <div className={cn('flex gap-3', compact ? 'flex-col' : 'items-start gap-0')}>
+        <div
+          className={cn(
+            'grid min-w-0 flex-1 gap-2',
+            compact ? 'grid-cols-1' : 'grid-cols-2',
+          )}
+        >
           <div>
             <div className="mb-1 text-[9px] font-bold uppercase tracking-widest text-text-dim">
               Price Performance
@@ -224,11 +236,11 @@ export function TokenDetailPanel({ detail, loading, error }: TokenDetailPanelPro
             </div>
           </div>
 
-          <div className="col-span-2">
+          <div className={compact ? undefined : 'col-span-2'}>
             <div className="mb-1 text-[9px] font-bold uppercase tracking-widest text-text-dim">
               Creation Parameters
             </div>
-            <div className="grid grid-cols-4 gap-1">
+            <div className={cn('grid gap-1', compact ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-4')}>
               <StatCard label={`Initial Buy (${price.unitLabel})`} value={detail.initial_buy_sol != null ? price.displayAmount(detail.initial_buy_sol) : '-'} />
               <StatCard label="Initial Supply" value={detail.initial_supply_token != null ? String(detail.initial_supply_token) : '-'} />
               <StatCard label="CU Limit" value={detail.cu_limit != null ? String(detail.cu_limit) : '-'} variant="muted" bold />
@@ -236,11 +248,11 @@ export function TokenDetailPanel({ detail, loading, error }: TokenDetailPanelPro
             </div>
           </div>
 
-          <div className="col-span-2">
+          <div className={compact ? undefined : 'col-span-2'}>
             <div className="mb-1 text-[9px] font-bold uppercase tracking-widest text-text-dim">
               Addresses
             </div>
-            <div className="grid grid-cols-4 gap-1">
+            <div className={cn('grid gap-1', compact ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-4')}>
               <AddrCard
                 label="Creator"
                 full={detail.creator_wallet}
@@ -269,9 +281,14 @@ export function TokenDetailPanel({ detail, loading, error }: TokenDetailPanelPro
           </div>
         </div>
 
-        <div className="mx-2.5 w-px shrink-0 self-stretch bg-white/7" />
+        {!compact && <div className="mx-2.5 w-px shrink-0 self-stretch bg-white/7" />}
 
-        <div className="flex w-[300px] shrink-0 flex-col gap-1 overflow-y-auto max-h-[300px]">
+        <div
+          className={cn(
+            'flex flex-col gap-1 overflow-y-auto',
+            compact ? 'w-full max-h-[220px]' : 'w-[300px] shrink-0 max-h-[300px]',
+          )}
+        >
           <div className="flex items-center justify-between text-[9px] font-bold uppercase tracking-widest text-text-dim">
             <span>Instruction Labels ({labelCount})</span>
             <button

@@ -13,6 +13,7 @@ export function LabTokensPage() {
           detail={detail}
           showDetailPanel={false}
           tableId="token_detail_trades"
+          metricLayout="page"
         />
       )}
     />

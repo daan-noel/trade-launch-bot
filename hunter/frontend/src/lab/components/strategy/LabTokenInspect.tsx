@@ -8,7 +8,12 @@ import { patternKeysFrom } from 'lib/flow/classifyFlow';
 import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
 import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 import type { TokenDetailRecord } from 'types';
-import { MetricPanes, type MetricPanesRuleOverride } from '@lab/components/strategy/MetricPanes';
+import {
+  MetricPanes,
+  MetricPanesPart,
+  MetricPanesProvider,
+  type MetricPanesRuleOverride,
+} from '@lab/components/strategy/MetricPanes';
 
 /**
  * Lab token inspect: trade-history chart + metric panes sharing crosshair /
@@ -28,6 +33,8 @@ export function LabTokenInspect({
   positionEntry = null,
   /** Explicit pattern keys; when omitted, resolved from `ruleOverride.fingerprintId`. */
   flowPatternKeys: flowPatternKeysProp = null,
+  /** `inspect` = graphs on the right, values under chart (modal). `page` = all stacked. */
+  metricLayout = 'inspect',
 }: {
   detail: TokenDetailRecord | null;
   loading?: boolean;
@@ -41,6 +48,7 @@ export function LabTokenInspect({
   /** Inspected run's entry fill — drives the `m_position` panes (see MetricPanes). */
   positionEntry?: { time: string; price: number } | null;
   flowPatternKeys?: ReadonlySet<string> | null;
+  metricLayout?: 'page' | 'inspect';
 }) {
   const [crosshairTimeSec, setCrosshairTimeSec] = useState<number | null>(null);
   /** Who last drove the shared crosshair — only pane hover is pushed into the price chart. */
@@ -82,35 +90,65 @@ export function LabTokenInspect({
 
   const mint = detail?.mint_address ?? '';
 
+  const metricPanesProps = {
+    mint,
+    crosshairTimeSec,
+    visibleTimeRange,
+    onCrosshairTimeChange: onPanesCrosshair,
+    onEventMarkersChange,
+    ruleOverride,
+    positionEntry,
+  };
+
+  const chart = (
+    <LazyTokenTradeChart
+      tableId={tableId}
+      detail={detail}
+      eventMarkers={eventMarkers}
+      onCrosshairTimeChange={onChartCrosshair}
+      externalCrosshairTimeSec={crosshairSource === 'panes' ? crosshairTimeSec : null}
+      onVisibleTimeRangeChange={setVisibleTimeRange}
+      flowPatternKeys={flowPatternKeys}
+    />
+  );
+
   return (
     <div className="flex flex-col gap-2.5">
       {showDetailPanel && (
         <Accordion title="Detail" padding="sm" bordered={false} storageKey="mt:inspect-detail-open">
-          <TokenDetailPanel detail={detail} loading={loading} error={error} />
-        </Accordion>
-      )}
-      <LazyTokenTradeChart
-        tableId={tableId}
-        detail={detail}
-        eventMarkers={eventMarkers}
-        onCrosshairTimeChange={onChartCrosshair}
-        externalCrosshairTimeSec={crosshairSource === 'panes' ? crosshairTimeSec : null}
-        onVisibleTimeRangeChange={setVisibleTimeRange}
-        flowPatternKeys={flowPatternKeys}
-      />
-      {mint ? (
-        <Accordion title="Metric panes" bordered={false} padding="sm" storageKey="mt:inspect-panes-open">
-          <MetricPanes
-            mint={mint}
-            crosshairTimeSec={crosshairTimeSec}
-            visibleTimeRange={visibleTimeRange}
-            onCrosshairTimeChange={onPanesCrosshair}
-            onEventMarkersChange={onEventMarkersChange}
-            ruleOverride={ruleOverride}
-            positionEntry={positionEntry}
+          <TokenDetailPanel
+            detail={detail}
+            loading={loading}
+            error={error}
+            compact
           />
         </Accordion>
-      ) : null}
+      )}
+
+      {!mint ? (
+        chart
+      ) : metricLayout === 'page' ? (
+        <>
+          {chart}
+          <MetricPanes {...metricPanesProps} />
+        </>
+      ) : (
+        <MetricPanesProvider layout="inspect" {...metricPanesProps}>
+          <div className="grid grid-cols-1 items-start gap-3 md:grid-cols-[minmax(0,1fr)_minmax(340px,36%)]">
+            <div className="flex min-w-0 flex-col gap-2.5">
+              {chart}
+              <MetricPanesPart part="values" />
+            </div>
+            <aside className="flex min-w-0 flex-col gap-2 border-t border-white/8 pt-3 md:sticky md:top-0 md:max-h-[calc(98vh-4rem)] md:overflow-y-auto md:border-t-0 md:border-l md:pl-3 md:pt-0">
+              <span className="text-[10px] font-bold uppercase tracking-widest text-text-dim">
+                Metric graphs
+              </span>
+              <MetricPanesPart part="selector" />
+              <MetricPanesPart part="graphs" />
+            </aside>
+          </div>
+        </MetricPanesProvider>
+      )}
     </div>
   );
 }
