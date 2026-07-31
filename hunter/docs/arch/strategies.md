@@ -56,7 +56,7 @@ side-effects only.
 | `sinks.rs` | `PositionUpdate` → registry + SSE; `BuySubmitted` upserts registry then background `insert_position` (later transitions chain on the handle); `Holding` updates registry sync then backgrounds fill persist; `ExitPending` PG is fire-and-forget; terminal SSE emits **before** `registry.remove` (so `position_id` / frozen `trade_mode` stay on the wire); `warm_runs` on rule reload (`ensure_run` reuses latest still-`Running` DB run + collapses empty leading shells — does not mint a new `run_seq` on every restart); releases SOL on terminal unentered exits |
 | `reapers.rs` | Boot+60 s: buy orphan adopt/drop/wait (never re-send; stale ⇒ `needs_review` SSE); **externally-cleared Holding** book-close (PG `trades` net, no RPC); exit orphan nudge via `FillFailed` or shared `orphan_exit`; **ExitStuck-with-bag** redrive (PG-gated, backoff, bounded-then-park); `ExitStuck`/`ExitUnconfirmed` bag-gone heal → End; stale `ExitPending` bag-check → `ExitStuck` (real) / breakeven End (paper). Skips `InFlightGuards`-held rows/mints |
 | `orphan_exit.rs` | Shared direct-sell + PG book-close for registry-miss rows (Console close, ExitPending/ExitStuck reapers). Feed-confirm via `run_exit`; sibling mint clear → `ExternallyCleared` / PG End; boot adopts re-install manual TP/SL rules |
-| `event_log.rs` | JSONL recorder (daily rotation + retention) + **conservative** boot-recovery replay (`recover_armed` = re-arm only; held/filled mints excluded; effects discarded). Dir = `EVENT_LOG_DIR` via `config::dir_from_env`: a relative value anchors to the loaded `.env`'s directory, never the CWD (see below) |
+| `event_log.rs` | JSONL recorder (daily rotation + age/size retention) + **conservative, bounded** boot-recovery replay (`recover_armed` = re-arm only; held/filled mints excluded; effects discarded; reads only the recent tail — see below). Dir = `EVENT_LOG_DIR` via `config::dir_from_env`: a relative value anchors to the loaded `.env`'s directory, never the CWD (see below) |
 | `convert.rs` | DB model ↔ engine type converters (re-exports `fingerprint_axes::{fp_to_engine, observed_axes, rule_to_loaded}`) |
 
 `EngineHandle` (held by the HTTP layer, enqueues commands only): `reload_rules` (blocking, used by the background scheduler), `schedule_reload(sse_tx)` (HTTP rule/fingerprint mutations — PG write returns immediately; debounced reload + `tpsl_rules_changed` SSE on ack; coalesced reload acks in the decision loop),
@@ -79,6 +79,29 @@ per-position one-off rule (`EngineState::manual_rules`) — without it, tracked-
 **Boot Holding adopt:** after event-log re-arm, PG `Holding` rows are loaded into
 the in-memory engine (`Entered`) + registry (PG-only, no RPC) so TP/SL/Dead and
 Ops `ManualClose` work after a process restart.
+
+**Boot recovery is bounded at both ends — never read the corpus.** `recover_armed`
+needs only the last `MAX_SNIPE_AGE_SECS` (30 s) of events, and must stay O(that),
+not O(log size): `recent_log_files` skips files whose date is wholly older than the
+window, and `read_log_tail` reads each kept file **backwards** in 1 MiB chunks,
+stopping at the first event older than it. A scan margin (`RECOVERY_SCAN_MARGIN_SECS`,
+5 min) covers the fact that `at()` is *chain* time, so append order is only
+approximately time-ordered and a settling fill must be seen before its mint is
+re-armed. Retention is enforced by **bytes** (`MAX_TOTAL_LOG_BYTES`, 6 GiB,
+oldest-evicted-first) as well as days — daily volume swings 5× (4.3 GB → 0.87 GB
+across three days), so `EVENT_LOG_RETENTION_DAYS` alone cannot bound the directory.
+
+> **Why all of that exists (2026-07-30 outage).** The old `recover_armed` read every
+> `events-*.jsonl` front-to-back into one `Vec<LoggedEvent>` and applied the age
+> cutoff *after* — ~8.2 GB of JSONL on a 4 GB box. The process reached 2.4 GB RES,
+> starved the 2-worker runtime until `DbWriter` could not land a flush for 90 s, and
+> the ingest watchdog force-exited it **mid-recovery**. The decision loop was never
+> reached across **70 consecutive boots**, so nothing ever drained `ping_rx`; the
+> strategy queue stayed full and `ping_strategy`'s `try_send` shed 100% of pings into
+> a counter nothing logged. Externally everything looked healthy — tokens and trades
+> kept landing in PG from the ingest task — while no rule was evaluated for 14 h and
+> not one position was entered. Three independent guards now break that chain: the
+> bounded scan above, a loud shed warning (`consumer.rs`), and the watchdog `BootGate`.
 
 **Where the log lives (one contract, three readers).** `EVENT_LOG_DIR` is resolved
 by [`config::env_paths`](../../core/src/config/env_paths.rs), installed after

@@ -64,6 +64,8 @@ See `@plans/ingest/backpressure-watchdog.md`.
 
 **Liveness watchdog:** `db_writer.rs` stamps `DbHeartbeat` at the end of a `flush()` **only when it persisted ≥1 row** (`any_ok`) — an all-failed flush leaves it stale. A dedicated OS thread (via `watchdog::spawn_watchdog`) force-exits (`exit(1)`) when live mode is on AND no successful write landed within `watchdog_stall_timeout_secs`. It no longer gates on DB-queue depth: that proxy missed upstream stalls (a dead transport drains the queue empty), so `live + stale` alone now catches both a wedged downstream and a dead upstream. (2026-07-22: stamping unconditionally kept the heartbeat fresh through a pool-exhaustion wedge, so the watchdog never fired for 7h.)
 
+**It only polices the steady state (`BootGate`).** The watchdog is armed by `boot_gate.mark_ready()`, latched by the strategy decision loop immediately before it starts consuming; while unset the heartbeat is stamped each check. Startup work competes with `DbWriter` on 2 vCPU, so a slow boot otherwise reads as a wedged pipeline — and killing a *booting* process turns a slow boot into an unbreakable crash loop rather than a recovery. (2026-07-30: force-exited at ~90 s during event-log recovery **70 times in a row**; the engine loop was never reached once, so every strategy ping was shed and no rule ran for 14 h. See `@arch/strategies.md` "Boot recovery is bounded at both ends".) A boot that genuinely hangs now surfaces as a stuck process — check for the absence of `strategy engine loop running`.
+
 ## `ingest-laserstream/src/` — crate modules
 
 | File | Responsibility |
@@ -103,7 +105,7 @@ See `@plans/ingest/backpressure-watchdog.md`.
 | `held_pools.rs` | `HeldPoolGate` — keeps PumpSwap pools subscribed for unsettled **real** positions even when `track_post_migration` is off (feed harvest + sell-confirm) |
 | `consumer.rs` | `IngestConsumer` — translates `IngestEvent` → `trading_core` types; fans out to token_cache, DB, strategy, SSE, trader; handles `track_mayhem` / `track_post_migration` policy transitions |
 | `db_writer.rs` | `DbWriter` — batches (1000 ops / 150ms), dedups, persists; stamps `DbHeartbeat` after a flush **only if ≥1 row persisted** (`any_ok`); signals `TradeSignals` per `(wallet,mint)`; `DbWriteOp` variants: `Raw(RawBlobJob)` · `Token` · `Wallet` · `Trade` · `Metrics` · `Migration` |
-| `watchdog.rs` | `DbHeartbeat` (atomic ms stamp), `spawn_watchdog` (OS thread); force-exits when live and no successful write within `watchdog_stall_timeout_secs` (no queue-depth gate — catches upstream stalls too) |
+| `watchdog.rs` | `DbHeartbeat` (atomic ms stamp), `BootGate` (latched by the engine loop; disarms the watchdog during startup), `spawn_watchdog` (OS thread); force-exits when live, booted, and no successful write within `watchdog_stall_timeout_secs` (no queue-depth gate — catches upstream stalls too) |
 
 ### Consumer event handlers
 

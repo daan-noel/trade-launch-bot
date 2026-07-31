@@ -33,6 +33,8 @@ use consumer::{IngestConsumer, DB_QUEUE_CAP, DB_RETRY_CAP, STRATEGY_QUEUE_CAP};
 use db_writer::DbWriter;
 use watchdog::{DbHeartbeat, spawn_watchdog};
 
+pub use watchdog::BootGate;
+
 pub struct IngestSpawnResult {
     pub pool_index: PoolIndex,
     pub pools_changed: Arc<Notify>,
@@ -57,6 +59,9 @@ pub async fn spawn_ingest(
     trade_signals: Arc<TradeSignals>,
     push_hooks: PushHooks,
     trading_wallet: String,
+    // Set by the engine loop once startup finishes — the watchdog only polices
+    // the steady state (see `BootGate`).
+    boot_gate: BootGate,
 ) -> IngestSpawnResult {
     let (strategy_tx, strategy_rx) =
         mpsc::channel::<StrategyPing>(STRATEGY_QUEUE_CAP);
@@ -119,7 +124,7 @@ pub async fn spawn_ingest(
 
     // The watchdog trips on "live but no successful DB write within the timeout" —
     // no longer gated on db_tx queue depth (that proxy missed upstream stalls).
-    spawn_watchdog(heartbeat, live_rx, settings_rx.clone());
+    spawn_watchdog(heartbeat, live_rx, settings_rx.clone(), boot_gate);
 
     // Forward gap-replay settings to the ingest transport whenever the operator
     // changes them via the settings page. Reads the current value immediately so

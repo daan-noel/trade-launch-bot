@@ -79,6 +79,9 @@ pub struct EngineDeps {
     pub settings: watch::Receiver<AppSettings>,
     /// Retains LaserStream AMM pool subs for unsettled real positions.
     pub held_pools: crate::ingest::HeldPoolGate,
+    /// Latched once this loop starts consuming, so the ingest watchdog stops
+    /// treating startup work as a wedged pipeline.
+    pub boot_gate: crate::ingest::BootGate,
 }
 
 /// Build the command/fill channels, spawn the loop, and return the HTTP-facing
@@ -148,6 +151,7 @@ async fn run_loop(
         sse_tx,
         settings,
         held_pools,
+        boot_gate,
     } = deps;
 
     let wallet = trader.wallet_pubkey();
@@ -225,6 +229,11 @@ async fn run_loop(
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut ticks: u64 = 0;
+
+    // Startup is done; the watchdog may now police the steady state. Must be the
+    // last thing before the loop — anything after it runs unprotected-from-restart
+    // only in the sense that a real hang here is now a stuck process, not a storm.
+    boot_gate.mark_ready();
 
     info!(
         tick_ms = hunter_engine::TICK_MS,

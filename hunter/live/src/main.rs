@@ -1326,6 +1326,10 @@ async fn run() -> anyhow::Result<()> {
         }
     };
 
+    // Latched by the engine loop once startup finishes; the ingest watchdog holds
+    // the other end so a slow boot is never mistaken for a wedged pipeline.
+    let boot_gate = ingest::BootGate::new();
+
     let ingest_result = ingest::spawn_ingest(
         settings.helius_laserstream_url.clone(),
         settings.helius_api_key.clone(),
@@ -1338,6 +1342,7 @@ async fn run() -> anyhow::Result<()> {
         trade_signals.clone(),
         push_hooks,
         trader.wallet_pubkey(),
+        boot_gate.clone(),
     ).await;
     let pool_index = ingest_result.pool_index;
     let pools_changed = ingest_result.pools_changed;
@@ -1443,6 +1448,7 @@ async fn run() -> anyhow::Result<()> {
         sse_tx: sse_tx.clone(),
         settings: settings_tx.subscribe(),
         held_pools: held_pools.clone(),
+        boot_gate,
     });
     let strategies::engine::EngineHandles {
         handle: engine_handle,

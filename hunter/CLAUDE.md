@@ -217,6 +217,21 @@ check — today that is exactly one field, the rule editor's **Max total** (blan
   is a hard −N% stop from entry until the price rises, because `PositionCtx::at_fill`
   seeds `peak = entry_price` — arm it with `arm_above_pct`. Both in
   [docs/plans/strategies/flow-scalper-findings.md](docs/plans/strategies/flow-scalper-findings.md).
+- **A silent shed on a bounded queue hides a total outage.** `ping_strategy`
+  (`ingest/consumer.rs`) `try_send`s onto a 512-deep queue and sheds on full — correct
+  (the engine must never back-pressure ingest), but a *wedged* engine sheds 100% of
+  pings while ingest keeps writing tokens/trades to PG, so every external signal looks
+  healthy while no rule is evaluated. It shed for 14 h on 2026-07-30 without one log
+  line. Any `try_send`-and-drop on a path that decides trades must be **loud**
+  (rate-limited `warn!`, never a bare counter). Same shape as the 2026-07-22 heartbeat
+  bug: a liveness signal that stays green through a total failure.
+- **Boot work must be bounded, and the watchdog must not police a booting process.**
+  `recover_armed` read the whole event-log corpus (~8.2 GB) to use its last 30 s; the
+  ingest watchdog then force-exited it mid-recovery at 90 s, **70 boots in a row**, so
+  the decision loop never started. Both halves are now guarded (bounded tail scan +
+  `BootGate`) — don't reintroduce either. Diagnostic: **`strategy engine loop running`
+  absent from the log = the engine never started**, regardless of how healthy ingest
+  looks. Detail: [docs/arch/strategies.md](docs/arch/strategies.md).
 - **Deferred entry fingerprint gates:** a fingerprint axis whose source data isn't settled at
   `TokenCreated` (`first_slot_{buy,sell}_lamports`) can't match synchronously. The engine arms
   it as `PendingFirstSlot` and resolves it on the `FirstSlotSettled` event (fired when the

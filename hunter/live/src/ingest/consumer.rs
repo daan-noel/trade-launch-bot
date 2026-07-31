@@ -38,6 +38,10 @@ use super::held_pools::HeldPoolGate;
 
 pub const DB_QUEUE_CAP: usize = 16384;
 pub const STRATEGY_QUEUE_CAP: usize = 512;
+/// Rate-limit for the strategy-shed warning: log the first drop, then every Nth.
+/// Loud enough to surface a deaf engine within seconds, quiet enough that a brief
+/// burst under load does not flood the log.
+const STRATEGY_SHED_LOG_EVERY: u64 = 5_000;
 /// Bounded overflow for durable writes that could not enter the hot `db_tx`
 /// without blocking. A dedicated retry task drains this into `db_tx` with
 /// `send().await` so a PG stall does not silently drop Trade/Token/Wallet/
@@ -511,11 +515,27 @@ impl IngestConsumer {
         }
     }
 
+    /// Ping the decision loop. A full queue sheds the ping — the engine is the
+    /// slow consumer and must never back-pressure ingest.
+    ///
+    /// Shedding is LOUD by design. A wedged engine sheds 100% of pings while
+    /// ingest keeps writing to PG, so every external signal (tokens/trades
+    /// landing, feed healthy) looks normal while no rule is ever evaluated. That
+    /// stayed invisible for 14 h on 2026-07-30 because this arm only bumped a
+    /// counter nothing read. Never make it silent again.
     fn ping_strategy(&self, mint: String, kind: IngestKind) {
         match self.strategy_tx.try_send(StrategyPing { mint, kind }) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
-                self.shed.strategy_pings.fetch_add(1, Ordering::Relaxed);
+                let n = self.shed.strategy_pings.fetch_add(1, Ordering::Relaxed) + 1;
+                if n == 1 || n.is_multiple_of(STRATEGY_SHED_LOG_EVERY) {
+                    warn!(
+                        shed_total = n,
+                        queue_cap = STRATEGY_QUEUE_CAP,
+                        "strategy ping queue full — engine is not consuming; \
+                         rules are NOT being evaluated"
+                    );
+                }
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 warn!("Strategy channel closed — ping not delivered");
