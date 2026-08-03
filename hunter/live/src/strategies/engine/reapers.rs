@@ -264,13 +264,28 @@ async fn resolve_buy_submitted_inner(
         }
     }
 
+    // A row that never recorded a signature never sent a transaction, so it
+    // cannot own tokens — the reason real `BuySubmitted` is spared the paper
+    // row's stale-drop does not apply to it. Waiting forever is the strictly
+    // worse answer: the row is re-adopted at boot as an inert `EntryPending`
+    // arm, so it holds its (rule, mint) slot AND a `max_concurrent_tokens`
+    // slot for the process's whole life. Ten of them silenced a live rule for
+    // ~17 h on 2026-08-02 (see the buy-send timeout in `exec_real`, the defect
+    // that produced them). Give the signature a bounded grace window — the
+    // write-ahead `on_signed` persist is best-effort and can land late — then
+    // drop exactly like the all-reverted case.
     if position.submitted_buy_signatures.is_empty() {
+        let age = Utc::now().signed_duration_since(position.updated_at);
+        if age <= chrono::Duration::from_std(UNENTERED_STALE).unwrap_or_default() {
+            return BuyResolution::Wait;
+        }
         warn!(
             position_id = %position.id,
             mint = %position.mint_address,
-            "reaper: BuySubmitted has no signatures — leaving for review"
+            age_secs = age.num_seconds(),
+            "reaper: BuySubmitted never recorded a signature — no tx was sent, dropping"
         );
-        return BuyResolution::Wait;
+        return drop_buy_submitted(deps, position, "never signed").await;
     }
 
     // 2. Drop ONLY if EVERY submitted sig is a confirmed revert.
@@ -289,13 +304,25 @@ async fn resolve_buy_submitted_inner(
         return BuyResolution::Wait;
     }
 
+    drop_buy_submitted(deps, position, "all sigs reverted").await
+}
+
+/// Terminate one unfillable `BuySubmitted` row: delete it, release its SOL
+/// earmark, and fold the engine arm so the `max_concurrent_tokens` counter is
+/// rolled back. The ONE drop path — reached only once the caller has PROVEN the
+/// row owns no tokens (every sig reverted, or no sig was ever sent).
+async fn drop_buy_submitted(
+    deps: &ReaperDeps,
+    position: &StrategyPosition,
+    why: &str,
+) -> BuyResolution {
     match deps.strategy_repo.delete_position(position.id).await {
         Ok(()) => {
             deps.trader.release_sol_for_position(&position.id.to_string());
             info!(
                 position_id = %position.id,
                 mint = %position.mint_address,
-                "reaper: dropped reverted BuySubmitted (no tokens)"
+                "reaper: dropped BuySubmitted ({why} — no tokens)"
             );
             if let Some(engine_id) = deps.registry.engine_id(position.id) {
                 if let Some(meta) = deps.registry.get(engine_id) {

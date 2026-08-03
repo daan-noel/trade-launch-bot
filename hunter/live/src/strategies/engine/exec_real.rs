@@ -49,6 +49,16 @@ const ENTRY_FEED_WINDOW: Duration = Duration::from_secs(12);
 /// Background persist budget (send is never blocked). Sized for a few short
 /// retries while Pass-1 `insert_position` lands.
 const MARK_BUY_SUBMITTED_TIMEOUT: Duration = Duration::from_millis(400);
+/// Hard cap on the buy RPC send itself (nonce/blockhash build + fan-out) — the
+/// mirror of [`SELL_SEND_TIMEOUT`], which the buy path went without until
+/// 2026-08-03. Without it a wedged send parks `run_entry` forever: it emits
+/// neither `FillConfirmed` nor `FillFailed`, so the arm stays `EntryPending`,
+/// the row stays `BuySubmitted` with no signature, and the position holds a
+/// `max_concurrent_tokens` slot for the life of the process. Ten of those
+/// silenced a live rule for ~17 h on 2026-08-02. Sized above the sell's 15 s:
+/// the snipe path front-loads a rebroadcast fan-out, so a slow-but-working send
+/// must still be allowed to finish rather than be abandoned mid-flight.
+const BUY_SEND_TIMEOUT: Duration = Duration::from_secs(20);
 /// Extended feed poll after the RPC says the buy *landed* but the feed hasn't
 /// indexed it yet.
 const EXTENDED_FEED_WINDOW: Duration = Duration::from_secs(20);
@@ -192,7 +202,17 @@ pub struct SellOrder {
 /// emitting the definitive `FillConfirmed`/`FillFailed` back to the engine.
 pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
     let Some(_guard) = deps.inflight.try_begin_entry(order.pg_id) else {
+        // Another attempt for this position owns the send. It emits for ITS
+        // intent, which the engine has already superseded with this one — so a
+        // bare return would strand the arm in `EntryPending` (the engine's
+        // `FillFailed` handler only folds a matching intent). Fail THIS intent
+        // as retryable: the engine re-submits, and the bounded attempt ladder
+        // terminates it if the guard is still held.
         warn!(pg = %order.pg_id, mint = %order.mint, "real buy: entry guard held — skipping");
+        let _ = deps
+            .fill_tx
+            .send(Event::FillFailed { intent: order.intent, reason: FillFailReason::Reverted })
+            .await;
         return;
     };
     let wallet = deps.trader.wallet_pubkey();
@@ -310,42 +330,57 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
             .and_then(|a| std::str::FromStr::from_str(&a).ok()),
     };
 
-    let submit = deps
-        .trader
-        .buy_token_snipe_write_ahead(
-            &order.mint,
-            &order.creator,
-            &order.token_program_id,
-            sol_amount,
-            order.slippage_bps,
-            reserves,
-            on_signed,
-            order.cashback_enabled,
-            reuse_account,
-            tip_level,
-        )
-        .await;
+    let send = deps.trader.buy_token_snipe_write_ahead(
+        &order.mint,
+        &order.creator,
+        &order.token_program_id,
+        sol_amount,
+        order.slippage_bps,
+        reserves,
+        on_signed,
+        order.cashback_enabled,
+        reuse_account,
+        tip_level,
+    );
+    // Bounded send (mirrors the sell path). `None` = the timeout elapsed. We
+    // still fall through with whatever `on_signed` recorded: a signature means
+    // the tx IS out there, so the confirm below runs and the reaper can verify
+    // it — only a send that never signed is a proven no-op we may terminate.
+    let submit = match tokio::time::timeout(BUY_SEND_TIMEOUT, send).await {
+        Ok(r) => Some(r),
+        Err(_) => {
+            warn!(
+                mint = %order.mint, pg = %order.pg_id,
+                "real buy send timed out after {}s (abandoning the send task)",
+                BUY_SEND_TIMEOUT.as_secs()
+            );
+            None
+        }
+    };
 
     let signed_sig = signed.lock().unwrap().clone();
     // The account THIS buy funded. Authoritative — never re-read from the trader's
     // per-mint cache, which a concurrent same-mint snipe overwrites (see `SnipeBuy`).
-    // The `Err(_) + signed` arm has no such fact in hand: fall back to whatever the
+    // The non-`Ok` arms have no such fact in hand: fall back to whatever the
     // position already knew, then the cache.
     let funded_account = match &submit {
-        Ok(b) => Some(b.user_token_account.to_string()),
-        Err(_) => order.token_account.clone(),
+        Some(Ok(b)) => Some(b.user_token_account.to_string()),
+        _ => order.token_account.clone(),
     };
     // The submit error used to be dropped on the floor — not even logged — which is
     // half the reason the 2026-07-27 `EntryFailed` rows could not be explained. It
     // is only the *fallback* cause: when the buy did get signed we still confirm
     // on-chain below, and that verdict is more authoritative than the send error.
     let send_error = match &submit {
-        Ok(_) => None,
-        Err(e) => Some(format!("buy send failed: {e}")),
+        Some(Ok(_)) => None,
+        Some(Err(e)) => Some(format!("buy send failed: {e}")),
+        None => {
+            Some(format!("buy send timed out after {}s", BUY_SEND_TIMEOUT.as_secs()))
+        }
     };
     let submitted_sig = match submit {
-        Ok(b) => Some(b.signature),
-        Err(_) => None,
+        Some(Ok(b)) => Some(b.signature),
+        _ => None,
     };
     match (submitted_sig, signed_sig) {
         (Some(sig), _) | (None, Some(sig)) => {

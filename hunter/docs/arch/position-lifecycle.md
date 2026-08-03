@@ -124,6 +124,7 @@ fees hinge on it) from a structural one.
 |---|---|
 | pre-send migrated skip | `skipped before send: token already migrated (curve-only snipe)` |
 | send returned `Err` and nothing was signed | `buy send failed: <TradeError>` |
+| send exceeded `BUY_SEND_TIMEOUT` (20 s) | `buy send timed out after 20s` |
 | confirmed on-chain revert | `reverted on-chain, curve buy error <code>` — the code is the point |
 | revert with no Anchor code | `reverted on-chain, no Anchor code (account / funds error)` |
 | 2006 stale creator | refreshed-and-retrying, or `creator vault is unchanged` |
@@ -134,6 +135,26 @@ final status — not an `EntryFailed`-only field, and never cleared on success. 
 `Holding` row reading `reverted 6002` entered on a later attempt, and that is useful
 history. `Ambiguous` outcomes record nothing (the row stays `BuySubmitted` for the
 reaper; there is no verdict yet).
+
+**Every exit from the buy dispatch path must emit a fill event.** A `BuySubmitted`
+row is durable *before* the send, so a `dispatch_buy` / `run_entry` path that
+returns without a `FillConfirmed`/`FillFailed` strands the arm in `EntryPending`
+and the row in `BuySubmitted` **forever** — it holds its `max_concurrent_tokens`
+slot for the life of the process, and past it, since boot re-adopts the row as an
+inert arm. Use `decision_loop::fail_entry` (`Fatal` for structural causes,
+`Reverted` where a later attempt can succeed); never a bare `return`. Fixed
+2026-08-03 after 10 such rows silenced a live rule for ~17 h: the buy send had no
+timeout (the sell path's `SELL_SEND_TIMEOUT` had no buy mirror), so a wedged send
+parked `run_entry` with nothing emitted. Two independent guards now exist — the
+bounded `BUY_SEND_TIMEOUT` upstream, and the reaper's no-signature drop below.
+
+**A `BuySubmitted` row with zero signatures provably sent no transaction**, so it
+cannot own tokens and the reaper drops it past `UNENTERED_STALE` (600 s) exactly
+like the all-reverted case (`reapers::drop_buy_submitted`, the ONE drop path). This
+is the only place real `BuySubmitted` is dropped without proving reverts — sound
+because the "it might hold a bag" premise that spares real rows from the paper
+stale-drop does not apply when no tx exists. A row **with** a signature is
+untouched: it still waits for adopt-or-all-reverted, forever if need be.
 
 Mechanically it follows the `exit_redrive_count` / `exit_parked` pattern (§2.1, mig
 0012): a **dedicated column, deliberately absent from `update_position`'s SET list**,

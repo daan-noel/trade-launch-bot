@@ -27,7 +27,7 @@ use tracing::{info, warn};
 
 use hunter_engine::arm::ArmState;
 use hunter_engine::event::{
-    Effect, Event, IntentId, LoadedRule, Mint, PositionId, RuleId, TradeMode,
+    Effect, Event, FillFailReason, IntentId, LoadedRule, Mint, PositionId, RuleId, TradeMode,
 };
 use hunter_engine::fingerprint::Fingerprint as EngineFingerprint;
 use hunter_engine::{reduce, EngineState};
@@ -370,6 +370,25 @@ async fn dispatch(
     }
 }
 
+/// Fold an entry that never reached the trader back into the engine.
+///
+/// **Every** path out of [`dispatch_buy`] that does not spawn a submit task must
+/// call this. A bare `return` leaves the arm `EntryPending` and the PG row
+/// `BuySubmitted` forever: nothing else ever emits for that intent, the reaper
+/// has no signature to verify, and the position holds a `max_concurrent_tokens`
+/// slot until the process restarts (and past it — boot re-adopts the row). That
+/// is how a live rule went silent for ~17 h on 2026-08-02.
+///
+/// `Fatal` for structural causes (no arm / no meta / unknown rule — a resend
+/// would hit the same wall); `Reverted` where a later attempt can legitimately
+/// succeed (the SOL guards, whose funds free up).
+fn fail_entry(fill_tx: &mpsc::Sender<Event>, intent: IntentId, reason: FillFailReason) {
+    let tx = fill_tx.clone();
+    tokio::spawn(async move {
+        let _ = tx.send(Event::FillFailed { intent, reason }).await;
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 fn dispatch_buy(
     state: &EngineState,
@@ -411,10 +430,12 @@ fn dispatch_buy(
         Some(TradeMode::Real) => {
             let Some(position) = position else {
                 warn!(mint = %mint_s, "real buy: no EntryPending arm — skipping submit");
+                fail_entry(&real_deps.fill_tx, intent, FillFailReason::Fatal);
                 return;
             };
             let Some(meta) = registry.get(position) else {
                 warn!(mint = %mint_s, "real buy: no position meta — skipping submit");
+                fail_entry(&real_deps.fill_tx, intent, FillFailReason::Fatal);
                 return;
             };
 
@@ -422,16 +443,7 @@ fn dispatch_buy(
             // Fail → FillFailed::Reverted so the engine can retry when free SOL returns.
             if !real_deps.trader.can_commit_buy(lamports) {
                 warn!(mint = %mint_s, lamports, "real buy blocked by SOL balance-floor guard");
-                let tx = real_deps.fill_tx.clone();
-                let intent = intent.clone();
-                tokio::spawn(async move {
-                    let _ = tx
-                        .send(Event::FillFailed {
-                            intent,
-                            reason: hunter_engine::event::FillFailReason::Reverted,
-                        })
-                        .await;
-                });
+                fail_entry(&real_deps.fill_tx, intent, FillFailReason::Reverted);
                 return;
             }
             if let Some(max_sol) = settings.borrow().max_committed_sol {
@@ -442,16 +454,7 @@ fn dispatch_buy(
                         mint = %mint_s, lamports, committed, ceiling,
                         "real buy blocked by max_committed_sol guard"
                     );
-                    let tx = real_deps.fill_tx.clone();
-                    let intent = intent.clone();
-                    tokio::spawn(async move {
-                        let _ = tx
-                            .send(Event::FillFailed {
-                                intent,
-                                reason: hunter_engine::event::FillFailReason::Reverted,
-                            })
-                            .await;
-                    });
+                    fail_entry(&real_deps.fill_tx, intent, FillFailReason::Reverted);
                     return;
                 }
             }
@@ -487,7 +490,10 @@ fn dispatch_buy(
             };
             tokio::spawn(super::exec_real::run_entry(real_deps.clone(), order));
         }
-        None => warn!(rule = %rule.0, "buy for unknown rule — skipping"),
+        None => {
+            warn!(rule = %rule.0, "buy for unknown rule — skipping");
+            fail_entry(&real_deps.fill_tx, intent, FillFailReason::Fatal);
+        }
     }
 }
 

@@ -232,6 +232,17 @@ check — today that is exactly one field, the rule editor's **Max total** (blan
   `BootGate`) — don't reintroduce either. Diagnostic: **`strategy engine loop running`
   absent from the log = the engine never started**, regardless of how healthy ingest
   looks. Detail: [docs/arch/strategies.md](docs/arch/strategies.md).
+- **An unemitted fill event leaks a concurrency slot permanently.** The
+  `BuySubmitted` row is durable *before* the send, so every exit from
+  `dispatch_buy`/`run_entry` MUST emit `FillConfirmed`/`FillFailed` (use
+  `decision_loop::fail_entry`) — a bare `return` strands the arm in `EntryPending`,
+  and boot re-adopts the row, so the `max_concurrent_tokens` slot is lost across
+  restarts too. Ten such rows filled a live rule's cap and silenced it for ~17 h on
+  2026-08-02; the cause was a buy send with **no timeout** (the sell path had
+  `SELL_SEND_TIMEOUT`, the buy path had no mirror until `BUY_SEND_TIMEOUT`). Same
+  family as the silent-shed and false-heartbeat bugs above: a failure that leaves
+  every visible signal green. Detail:
+  [docs/arch/position-lifecycle.md](docs/arch/position-lifecycle.md).
 - **Deferred entry fingerprint gates:** a fingerprint axis whose source data isn't settled at
   `TokenCreated` (`first_slot_{buy,sell}_lamports`) can't match synchronously. The engine arms
   it as `PendingFirstSlot` and resolves it on the `FirstSlotSettled` event (fired when the
