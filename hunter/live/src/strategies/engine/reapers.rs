@@ -300,11 +300,89 @@ async fn resolve_buy_submitted_inner(
             break;
         }
     }
-    if !all_reverted {
+    if all_reverted {
+        return drop_buy_submitted(deps, position, "all sigs reverted").await;
+    }
+
+    // 3. Not reverted is NOT the same as still alive. A buy that was signed but
+    //    never actually broadcast reports `Pending` forever, so every check above
+    //    returns `Wait` on every tick for the life of the process — and boot
+    //    re-adopts the row, so restarts don't clear it either. It holds its
+    //    `(rule, mint)` slot AND a `max_concurrent_tokens` slot permanently: the
+    //    same cap-starvation that silenced a live rule for ~17 h on 2026-08-02,
+    //    reached from the other side. Thirteen such rows piled up 2026-07-31..08-03
+    //    when a server-side tip below the Helius Sender floor made every submit
+    //    fail pre-broadcast. `55164323` only retires rows that never recorded a
+    //    signature; these recorded one, so nothing could ever retire them.
+    resolve_never_broadcast(deps, position).await
+}
+
+/// Age a `BuySubmitted` row must reach before the never-broadcast proof is even
+/// attempted. Well past a recent blockhash's ~60-90 s lifetime, and long enough
+/// that feed/RPC lag cannot masquerade as "never landed".
+const NEVER_BROADCAST_STALE: Duration = Duration::from_secs(600);
+
+/// Retire a `BuySubmitted` row whose transaction was signed but provably never
+/// executed. Three gates, in this order, because the order is what makes it safe:
+///
+/// 1. **Make execution impossible.** `burn_nonce_tx` returns `Dead` only once the
+///    nonce has moved past this tx's hash, advancing the nonce itself when it has
+///    not. `Unknown` (untracked, or aged out across a restart) proves nothing, so
+///    the row is left for manual Verify rather than guessed at.
+/// 2. **Only then ask whether it ever landed.** A `Dead` nonce on its own is
+///    worthless as a drop signal — a tx that *executed* consumes the nonce too, so
+///    `Dead` covers "never sent" and "already filled" alike, and dropping on it
+///    alone would delete a filled position and strand its tokens. After gate 1 no
+///    new execution is possible, so this answer cannot go stale underneath us.
+/// 3. **Re-check the indexed feed**, in case the fill was recorded while 1-2 ran.
+///
+/// Anything short of all three ⇒ `Wait`. Never re-sends.
+async fn resolve_never_broadcast(
+    deps: &ReaperDeps,
+    position: &StrategyPosition,
+) -> BuyResolution {
+    let age = Utc::now().signed_duration_since(position.updated_at);
+    if age <= chrono::Duration::from_std(NEVER_BROADCAST_STALE).unwrap_or_default() {
         return BuyResolution::Wait;
     }
 
-    drop_buy_submitted(deps, position, "all sigs reverted").await
+    for sig in &position.submitted_buy_signatures {
+        match deps.trader.burn_nonce_tx(sig).await {
+            NonceTxState::Dead => {}
+            state => {
+                info!(
+                    id = %position.id, mint = %position.mint_address, sig = %sig, ?state,
+                    "reaper: BuySubmitted not provably dead — leaving for manual Verify"
+                );
+                return BuyResolution::Wait;
+            }
+        }
+    }
+
+    for sig in &position.submitted_buy_signatures {
+        if !matches!(deps.trader.signature_state(sig).await, Ok(None)) {
+            return BuyResolution::Wait;
+        }
+    }
+
+    let wallet = deps.trader.wallet_pubkey();
+    for sig in &position.submitted_buy_signatures {
+        if let Ok(Some(legs)) = deps
+            .trade_repo
+            .find_fill_by_signature(&wallet, &position.mint_address, sig)
+            .await
+        {
+            if legs.token_amount > 0 {
+                return BuyResolution::Wait;
+            }
+        }
+    }
+
+    warn!(
+        id = %position.id, mint = %position.mint_address, age_secs = age.num_seconds(),
+        "reaper: BuySubmitted tx was signed but never executed — dropping, slot released"
+    );
+    drop_buy_submitted(deps, position, "signed but never executed").await
 }
 
 /// Terminate one unfillable `BuySubmitted` row: delete it, release its SOL

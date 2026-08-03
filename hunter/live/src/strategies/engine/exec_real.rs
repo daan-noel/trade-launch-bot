@@ -378,6 +378,17 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
             Some(format!("buy send timed out after {}s", BUY_SEND_TIMEOUT.as_secs()))
         }
     };
+    // Say it out loud the moment it happens. A send that fails AFTER the tx was
+    // signed used to vanish: the arms below prefer the on-chain verdict, so the
+    // cause was dropped and the row was left `BuySubmitted` with a NULL
+    // `last_entry_error` and not one log line. That is exactly how a server-side
+    // `JITO_MIN_TIP_SOL` under the Helius Sender floor (which rejects
+    // pre-broadcast with `-32602`) killed 13 consecutive real buys unnoticed
+    // between 2026-07-31 and 08-03. The send error is never authoritative about
+    // the FILL — but it is always the truth about the SEND, so it must be visible.
+    if let Some(err) = &send_error {
+        warn!(mint = %order.mint, pg = %order.pg_id, "{err}");
+    }
     let submitted_sig = match submit {
         Some(Ok(b)) => Some(b.signature),
         _ => None,
@@ -387,7 +398,7 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
             let outcome =
                 confirm_entry(&deps, &guard_sig, &wallet, &order.mint, &sig, ENTRY_FEED_WINDOW)
                     .await;
-            emit_entry_outcome(&deps, &order, sig, funded_account, outcome).await;
+            emit_entry_outcome(&deps, &order, sig, funded_account, outcome, send_error).await;
         }
         (None, None) => {
             let cause = send_error
@@ -513,6 +524,11 @@ async fn emit_entry_outcome(
     sig: String,
     funded_account: Option<String>,
     outcome: EntryOutcome,
+    // Why the submit call failed, when it did. Not authoritative about the fill
+    // (the tx was already signed, so it may still be on the wire) — but it is the
+    // ONLY explanation available for an `Ambiguous` row, so it is persisted there
+    // instead of being dropped.
+    send_error: Option<String>,
 ) {
     match outcome {
         EntryOutcome::Filled(legs) => {
@@ -539,9 +555,27 @@ async fn emit_entry_outcome(
                 })
                 .await;
         }
-        // Ambiguous: leave BuySubmitted for the reaper — never resend.
+        // Ambiguous: leave BuySubmitted for the reaper — never resend. Record the
+        // send failure (when there was one) so the row carries its own diagnosis:
+        // a send that never reached the network and a send that landed but hasn't
+        // been indexed yet are indistinguishable from the row alone, and only the
+        // first one is a bug. Status is deliberately unchanged — the tx was signed,
+        // so it may still execute, and only the reaper may retire the row.
         EntryOutcome::Ambiguous => {
-            warn!(mint = %order.mint, "real buy outcome ambiguous — left BuySubmitted for the reaper");
+            match send_error {
+                Some(cause) => {
+                    note_entry_error(
+                        deps,
+                        order,
+                        &format!("{cause} (tx was signed; left BuySubmitted for the reaper)"),
+                    )
+                    .await;
+                }
+                None => warn!(
+                    mint = %order.mint,
+                    "real buy outcome ambiguous — left BuySubmitted for the reaper"
+                ),
+            }
         }
     }
 }

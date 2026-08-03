@@ -42,6 +42,15 @@ services:
     container_name: hunter-postgres
     image: timescale/timescaledb:latest-pg16
     restart: unless-stopped
+    # Docker's default /dev/shm is 64MB. Postgres puts every DYNAMIC shared memory
+    # segment there (parallel-query tuple queues, parallel hash/bitmap scans — each
+    # sized off work_mem), NOT in shared_buffers. 64MB is exhausted by a handful of
+    # concurrent parallel queries and the query dies mid-flight with
+    #   could not resize shared memory segment "/PostgreSQL.NNN" ... No space left on device
+    # (seen from a lab simulate's token-enrichment batch). This is a tmpfs CAP, not a
+    # reservation — it only consumes what is actually in use, so it is safe on the
+    # 4GB box. Keep it >> work_mem * max_parallel_workers_per_gather * concurrency.
+    shm_size: ${POSTGRES_SHM_SIZE:-1gb}
     # Server tuning: keep max_connections low, bias planner to index scans on
     # SSD/EBS, cap parallel workers off the ingest cores. Every value is
     # env-overridable to dial per box size.

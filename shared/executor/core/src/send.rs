@@ -477,7 +477,9 @@ impl Engine {
         // Single endpoint: await directly — no spawn/channel overhead, identical
         // to the pre-fan-out hot path.
         if urls.len() == 1 {
-            return post_tx_bytes(&self.http, &urls[0], raw).await;
+            return post_tx_bytes(&self.http, &urls[0], raw).await.inspect_err(|e| {
+                warn!("tx NOT submitted — sole sender {} rejected it: {e}", urls[0]);
+            });
         }
 
         // Fan out: fire every endpoint concurrently as a detached task and return
@@ -523,8 +525,20 @@ impl Engine {
                 Err(e) => last_err = Some(e),
             }
         }
-        Err(last_err
-            .unwrap_or_else(|| TradeError::Other("no sender endpoints configured".into())))
+        // EVERY endpoint refused: the tx did not go out. A single degraded endpoint
+        // stays at `debug!` above (routine, the others still carry the trade), but
+        // this is the total-failure case and it is never routine — the caller has a
+        // signed tx that will never reach the chain. Left at `debug!`, a whole-fleet
+        // rejection (e.g. a tip under the Sender floor) is indistinguishable from a
+        // healthy bot in the logs; that cost 3 days on 2026-08-03. Bounded by trade
+        // rate, so it cannot spam.
+        let err = last_err
+            .unwrap_or_else(|| TradeError::Other("no sender endpoints configured".into()));
+        warn!(
+            endpoints = urls.len(),
+            "tx NOT submitted — every sender endpoint rejected it; last error: {err}"
+        );
+        Err(err)
     }
 
     /// Poll the RPC until the transaction is confirmed or retries are exhausted.
