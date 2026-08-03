@@ -9,6 +9,7 @@
  * Wall grain picker is also twin'd there (`pick_wall_grain`).
  */
 
+import { isMetricExitReason } from './exitReason';
 import { EXIT_KINDS, type ExitCountKey } from './runSummary';
 
 /** One fired (or open) outcome with the times the temporal fold needs. */
@@ -278,7 +279,9 @@ function tallyExit(exits: Record<string, number>, reason: string, pnlSol?: numbe
     exits.open = (exits.open ?? 0) + 1;
     return;
   }
-  if (reason === 'Metrics') {
+  // Detail label (`retrace >= 12`) or legacy bare `Metrics` / compact `stall>` —
+  // the ONE membership test, same as `countExits` / the Rust `is_metric_exit_label`.
+  if (isMetricExitReason(reason)) {
     const key =
       pnlSol != null && Number.isFinite(pnlSol) && pnlSol > 0
         ? 'n_exit_metrics_win'

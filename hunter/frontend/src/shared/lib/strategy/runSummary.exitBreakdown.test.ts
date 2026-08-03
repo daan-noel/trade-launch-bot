@@ -79,4 +79,20 @@ describe('runSummaryFromRows', () => {
     expect(realized.n_exit_metrics_loss).toBe(1);
     expect(realized.n_exit_take_profit).toBe(1);
   });
+
+  it('counts metric DETAIL labels as metric exits, not Other', () => {
+    // What the grouped-sweep drill-in and the live engine actually stamp
+    // (`exit_reason_string` / `format_metric_exit_label`) — bare `Metrics` is
+    // legacy-only, so an exact-string test dumped the whole mix into `Other`.
+    const { realized } = runSummaryFromRows([
+      { fired: true, exit: 'pnl >= 20', pnl_sol: 1, pnl_pct: 20, holding_secs: 5 },
+      { fired: true, exit: 'retrace >= 12.5', pnl_sol: -0.5, pnl_pct: -12, holding_secs: 5 },
+      { fired: true, exit: 'stall>', pnl_sol: -0.2, pnl_pct: -3, holding_secs: 5 },
+    ]);
+    expect(realized.n_exit_metrics).toBe(3);
+    expect(realized.n_exit_metrics_win).toBe(1);
+    expect(realized.n_exit_metrics_loss).toBe(2);
+    const slices = exitBreakdown(realized);
+    expect(slices.map((s) => s.label)).not.toContain('Other');
+  });
 });

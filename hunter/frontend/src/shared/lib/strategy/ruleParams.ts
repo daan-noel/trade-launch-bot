@@ -288,20 +288,42 @@ function numOrNull(v: unknown): number | null {
 
 /**
  * Canonicalize wire `params` JSON for equality: drop null/undefined, drop empty
- * objects, sort object keys. So `{take_profit:50,stop_loss:null}` equals
- * `{take_profit:50}` — the same semantic rule the engine treats as identical.
+ * objects, sort object keys, and sort **set-like** arrays. So
+ * `{take_profit:50,stop_loss:null}` equals `{take_profit:50}` — the same semantic
+ * rule the engine treats as identical.
+ *
+ * Array order carries no meaning anywhere in `params` **except** `scale_out`: a
+ * group's window instances (`m_flow_window: [{…@25},{…@50}]`) are a set keyed by
+ * window, and a metric's DNF arms / AND atoms are conjunctions and disjunctions —
+ * all order-free. Only the scale-out ladder executes in the authored order, so it
+ * is the one array kept positional. Without this, a rule that survived an editor
+ * round-trip (which re-emits window instances sorted by window) failed to compare
+ * equal to the sweep combo it was promoted from — the "best" badge on the sweep's
+ * Used-by column silently went missing on every multi-window winner.
  */
 export function canonicalizeRuleParamsJson(raw: unknown): unknown {
   return canonicalizeJson(raw) ?? {};
 }
 
-function canonicalizeJson(v: unknown): unknown {
+function canonicalizeJson(v: unknown, ordered = false): unknown {
   if (v == null) return undefined;
   if (typeof v !== 'object') return v;
-  if (Array.isArray(v)) return v.map((x) => canonicalizeJson(x) ?? null);
+  if (Array.isArray(v)) {
+    const items = v.map((x) => canonicalizeJson(x) ?? null);
+    // Sort by the canonical rendering of each element, so the order of a set-like
+    // array can't decide equality. `ordered` (the `scale_out` ladder) opts out.
+    return ordered
+      ? items
+      : items
+          .map((x) => [JSON.stringify(x) ?? 'null', x] as const)
+          .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+          .map(([, x]) => x);
+  }
   const out: Record<string, unknown> = {};
   for (const k of Object.keys(v as object).sort()) {
-    const c = canonicalizeJson((v as Record<string, unknown>)[k]);
+    // Only the ladder ITSELF is positional — each stage's nested `conditions` are
+    // set-like again, which falls out of passing the flag one level deep only.
+    const c = canonicalizeJson((v as Record<string, unknown>)[k], k === 'scale_out');
     if (c === undefined) continue;
     if (typeof c === 'object' && c !== null && !Array.isArray(c) && Object.keys(c).length === 0) {
       continue;

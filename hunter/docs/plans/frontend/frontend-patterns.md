@@ -175,7 +175,13 @@ same-tab navigation (and Ctrl/middle-click new tabs) land with the row selected.
   (`replace: true` on user select; URL seeds on load / back-forward).
 - Fingerprints "Used by" → `rulesHref`; Rules (lab `linkToSimulate`) → `simulateHref`;
   Simulate rule name → `rulesHref`; fingerprint cells → `fingerprintsHref`.
-- Sweep group Used-by chips → `rulesHref`; matched fingerprint → `fingerprintsHref`.
+- Sweep group Used-by chips → `rulesHref`; matched fingerprint → `fingerprintsHref`. The
+  chip's **best** badge is `ruleParamsJsonEqual(rule.params, group.best_params)` — that
+  comparator canonicalizes key order **and** the order of every set-like array (a group's
+  window instances, a metric's DNF arms / AND atoms), because an editor round-trip re-emits
+  window instances sorted by window. `scale_out` is the one array kept positional (the
+  ladder executes in authored order). Never compare rule `params` with a bare
+  `JSON.stringify`.
 - Flow Discovery seed/target badges → `fingerprintsHref`.
 - Live Armed rule columns → `rulesHref`.
 

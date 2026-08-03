@@ -1,5 +1,6 @@
 import { cn } from 'lib/cn';
 import { pctGradeClass, signedToneClass, winRateGradeClass } from 'lib/signedTone';
+import { isMetricExitReason } from 'lib/strategy/exitReason';
 import { formatDecimalTrim } from 'utils/format';
 import type { SummaryStat, SummarySection } from 'components/strategy/SummaryStatsPanel';
 
@@ -295,11 +296,18 @@ function median(vals: number[]): number {
 /** Tally the exit reasons of a cohort of closed rows. A reason with no counter
  *  (`Manual`, `Migrated`, a typo) is intentionally *not* forced into a bucket —
  *  it goes unaccounted so [`exitBreakdown`] surfaces it as `Other`.
- *  `Metrics` splits by realized PnL (`Metric+` / `Metric-`). */
+ *  Metric exits split by realized PnL (`Metric+` / `Metric-`).
+ *
+ *  Metric membership goes through [`isMetricExitReason`], never `=== 'Metrics'`:
+ *  the sweep drill-in and the live engine both stamp the **detail** label
+ *  (`retrace >= 12`, legacy compact `stall>`), and only legacy rows carry bare
+ *  `Metrics`. Testing the bare form alone sent every metric exit to `Other` —
+ *  which on a generic-engine rule is the entire mix. Mirrors the Rust
+ *  `ExitCode::from_reason` (`is_metric_exit_label`). */
 function countExits(closed: RunOutcomeRow[]): Record<ExitCountKey, number> {
   const counts = zeroExitCounts();
   for (const r of closed) {
-    if (r.exit === 'Metrics') {
+    if (isMetricExitReason(r.exit)) {
       counts.n_exit_metrics += 1;
       if (r.pnl_sol > 0) counts.n_exit_metrics_win += 1;
       else counts.n_exit_metrics_loss += 1;

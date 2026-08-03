@@ -1922,6 +1922,36 @@ pub async fn promote_group(
         None => {
             let name = format!("sweep {} · group {}", short_id(run_id), group.group_index);
             let mut draft_fp = fingerprint_from_group_key(&group.group_key, width, name);
+            // The run's exact-set label filter is part of what selected these results,
+            // but it lives on the RUN — the group key only carries grouped fields, and
+            // the form disables the filter box when `ix_labels` is a group-by, so at
+            // most one of the two is ever set. Without this the promoted rule silently
+            // drops the label axis and fires on every token shape (and on a run whose
+            // only criterion WAS the filter, `has_any_criterion` is false ⇒ the rule
+            // matches nothing). Same semantics on both sides: the sweep filter is an
+            // exact ordered label sequence (`normalize_label_vec` preserves order and
+            // count) and so is the engine's `ix_labels` axis.
+            if draft_fp.ix_labels.is_none() {
+                let filtered = run
+                    .ix_labels_filter
+                    .as_ref()
+                    .map(crate::sweep::grouping::normalize_labels)
+                    .filter(|v| !v.is_empty());
+                if let Some(labels) = filtered {
+                    draft_fp.ix_labels = Some(normalize_label_vec(labels));
+                }
+            }
+            // `field_filters` cannot be carried the same way: they pin an EXACT value
+            // while a fingerprint SOL axis matches by bucket, and they admit a set of
+            // values where an axis holds one. Promoting silently would widen the rule,
+            // so say it out loud instead of pretending the axis came along.
+            if run.field_filters.as_ref().and_then(|v| v.as_object()).is_some_and(|o| !o.is_empty()) {
+                tracing::warn!(
+                    field_filters = %run.field_filters.as_ref().unwrap(),
+                    "promote: run used per-field value filters — they are NOT expressible as fingerprint axes, \
+                     so the promoted rule is wider than the swept corpus"
+                );
+            }
             // V2.2: Promote copies the run's volume-ix patterns into metric_config so
             // the live/sim rule classifies with the same set the sweep scored.
             if let Some(patterns) = &run.volume_ix_patterns {

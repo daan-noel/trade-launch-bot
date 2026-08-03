@@ -59,6 +59,59 @@ describe('ruleParamsJsonEqual', () => {
     expect(ruleParamsJsonEqual(a, c)).toBe(false);
   });
 
+  // The "best" badge on the sweep's Used-by column compares a saved rule's params
+  // to the group's `best_params`. An editor round-trip re-emits a group's window
+  // instances sorted by window, so a positional array compare dropped the badge on
+  // every multi-window winner even though the rule was that exact combo.
+  it('ignores the order of a group\'s window instances', () => {
+    const swept = {
+      exit: {
+        m_flow_window: [
+          { buy: [{ operator: '<', value: 3 }], window_size_sec: 25 },
+          { sell: [{ operator: '>=', value: 20 }], window_size_sec: 5 },
+        ],
+      },
+    };
+    const promoted = {
+      exit: {
+        m_flow_window: [
+          { sell: [{ operator: '>=', value: 20 }], window_size_sec: 5 },
+          { buy: [{ operator: '<', value: 3 }], window_size_sec: 25 },
+        ],
+      },
+    };
+    expect(ruleParamsJsonEqual(swept, promoted)).toBe(true);
+  });
+
+  it('ignores the order of AND atoms within one metric', () => {
+    const a = { entry: { m_snapshot: { time: [{ operator: '>', value: 10 }, { operator: '<', value: 45 }] } } };
+    const b = { entry: { m_snapshot: { time: [{ operator: '<', value: 45 }, { operator: '>', value: 10 }] } } };
+    expect(ruleParamsJsonEqual(a, b)).toBe(true);
+  });
+
+  it('KEEPS scale_out positional — the ladder executes in authored order', () => {
+    const a = { scale_out: [{ sell_bps: 7000, take_profit: 50 }, { sell_bps: null, take_profit: 10 }] };
+    const b = { scale_out: [{ sell_bps: null, take_profit: 10 }, { sell_bps: 7000, take_profit: 50 }] };
+    expect(ruleParamsJsonEqual(a, b)).toBe(false);
+  });
+
+  it('still normalizes a scale_out stage\'s own conditions order-free', () => {
+    const stage = (windows: number[]) => ({
+      scale_out: [
+        {
+          sell_bps: 5000,
+          conditions: {
+            m_flow_window: windows.map((w) => ({
+              buy: [{ operator: '<', value: 3 }],
+              window_size_sec: w,
+            })),
+          },
+        },
+      ],
+    });
+    expect(ruleParamsJsonEqual(stage([25, 50]), stage([50, 25]))).toBe(true);
+  });
+
   it('distinguishes a re-entry block from a one-shot rule', () => {
     const oneShot = { take_profit: 50 };
     const reentry = {
