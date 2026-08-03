@@ -31,7 +31,7 @@ wallets the user tracks, from the local pump.fun curve firehose (PG `trades`,
 Wallets (user nicknames):
 - `omego` = omegoMAe1AMY5MFKQQr3JwXVy8F4eCvmBAfcpo8XAfq  <- fully analyzed (1,396 legs, 92 mints in window)
 - `Co6` = Co6qnh3eHYd8FjyS5N6YXutUb3Z2GyKNPQHPURHaCK7T   <- absent locally (~2 tx/hour; trades outside our curve/fresh-token scope)
-- `trunoest` = ardinRsN1mNYVeoJWTBsWeYeXvuR9UUDGMsCDKpb6AT <- absent locally; sig scan shows 1000/1000 recent txs FAILED within minutes = latency-race spam bot (snipe/arb); user sees only its landed residue
+- `trunoest` = ardinRsN1mNYVeoJWTBsWeYeXvuR9UUDGMsCDKpb6AT <- 07-21: absent locally; sig scan showed 1000/1000 recent txs FAILED = latency-race spam. **07-31 UPDATE: now present in the rebuilt window (730 landed legs / 255 mints) and fully analyzed — see the `trunoest` section at the bottom. It is a momentum-IGNITION pump-rider (Axiom + durable-nonce spam), a different family from the dip-reversion scalpers.**
 
 Analysis scripts + episode CSV live in the session scratchpad (throwaway); this doc is
 the permanent record. Web research: all three are anonymous ground-vanity wallets; no
@@ -1074,3 +1074,89 @@ synchronously on `TokenCreated` with no `PendingFirstSlot` deferral.
 
 Seed: [`../../scripts/seed-flow-scalper-dev13-rules.sql`](../../scripts/seed-flow-scalper-dev13-rules.sql)
 (`fs3-*`, paper, `is_active=false`).
+
+## `trunoest` - momentum-IGNITION pump-rider, a different family (2026-07-31)
+
+`ardinRsN1mNYVeoJWTBsWeYeXvuR9UUDGMsCDKpb6AT`. The 07-21 note above ("absent
+locally, 1000/1000 failed txs") is half-stale: the failures are real - it is a
+durable-nonce mass-rebroadcast racer whose spam residue is what a sig scan sees -
+but on the rebuilt window (2026-07-22 18:58 -> 07-31 11:26, ~8.7d) its LANDED
+legs are in our curve feed: **730 legs / 494 buys / 236 sells / 255 mints**
+(0.25% of the 102,208-mint universe - the most selective wallet studied yet).
+Scratch tables were dropped after the analysis; the numbers below are the record.
+
+Seed: [`../../scripts/seed-trunoest-rules.sql`](../../scripts/seed-trunoest-rules.sql)
+(`tru-00` his size / `tru-01` impact-optimal 0.30 SOL, paper, `is_active=false`;
+the knob->measurement map is in the script header).
+
+**This is NOT the omego/64hP/63ot dip-reversion family.** It does not scalp
+someone else's flow - it manufactures the flow it exits into.
+
+### The loop (one token at a time, one shot per token)
+
+1. **Pick** a very young, very hot, violently-moving token: age at entry med
+   **69s** (p10 8.8s, p75 3.1min, p90 7min; ZERO same-slot-as-creation buys - not
+   a launch sniper), vsol med **60** (p25 48, p75 72), prior-60s market: **105
+   trades / 58 wallets / 70 SOL gross** (hotter than anything omego touches).
+   Entry price sits **-19.1% off the 30s high** (p25 -30.2 / p75 -8.5) AND +37%
+   above the 30s low - a ~70% 30s range. The 30s net flow is strongly POSITIVE
+   (med +8.3 SOL) while the last 2-5s are slightly negative (med -0.45/-0.63):
+   he buys the micro-pullback inside an ongoing buy wave. Reaction 0.238s
+   (med) after the previous market trade.
+2. **Ignite**: ONE oversized buy from a discrete tier ladder of exact
+   repeating-decimal constants - **1.4(6) / 1.9(5) / 2.9(3) / 4.8(8) SOL**
+   (one big buy per mint, 249/255 mints) - med **3.99% of vsol** = ~+8% own
+   price impact. Market net flow flips from **-0.63 (5s before) to +5.72 SOL
+   (5s after)** his buy: the spike reliably pulls the crowd in.
+3. **Paint the tape while holding**: sprays micro-buys of exactly **0.009(7)
+   SOL** (176 legs on 48 mints, ~3.7/mint) and/or **0.24(4) SOL** adds (68 legs
+   on 41 mints), 100% AFTER the big buy (med 1-2min after it), 87% while still
+   holding, up to ~45-70s before the exit - keeps the token printing on
+   screeners/velocity filters while the crowd pumps it.
+4. **Dump on confirmed reversal**: exactly ONE full-balance sell (228/232
+   sell-mints have 1 sell; 94%+ of tokens fully exited). During the hold the
+   token runs a median **+50% above his entry**; he exits **-29.5% off the
+   episode peak** (winners -24.4 / losers -38.1) with 2s pre-sell flow negative
+   (med -0.80) - i.e. he gives back a third of the pump and leaves only once
+   the dump has begun. Post-exit the token falls another **-43.4% (med) within
+   2min** (further upside only +6.5%): he consistently exits into the collapse,
+   before the bulk of it. This is neither a tight trail nor a fixed TP - it is
+   a wide (~25-40%) off-peak reversal-confirmation exit.
+
+### Economics (landed residue only; before the 125bps/leg pump.fun fee)
+
+- 225 fully-closed mints: **63.6% win, med +4.6%/ep** (p25 -4.0 / p75 +17.1 /
+  p90 +43.4 / p10 -14.6), closed PnL **+65.2 SOL**. Holds: win med 30.3s, loss
+  med 15.0s (p90 127s).
+- **Bags are the tax**: 21 big-buy mints never sold, **60.1 SOL sunk**, marked
+  med -48.8% vs entry (5 collapsed >70%). Net cash over the window **+21.4
+  SOL**; marking bags at current price ~+51 SOL. Est. fees on 1,202 SOL
+  turnover ~15 SOL + tips -> true net roughly break-even to modestly positive
+  ON WHAT LANDED (the racer presumably loses more edge on the fills it lost).
+- Tier PnL says **size hurts**: 1.9(5) is the sweet spot (70 eps, 76% win,
+  +10.3 med, +25.4 SOL); 2.9(3) drops to 52%/+0.5; 4.8(8) is flat (58%, +0.0
+  total). More impact = more ignition but a worse exit.
+- Ops shape: **1 position at a time** (avg concurrency 1.01, max 2), adopts a
+  token every ~6.3min while active, and runs only **08:00-22:00 UTC** (peak
+  09-14) - a human-scheduled European-daytime operation, not a 24/7 daemon.
+
+### Infrastructure
+
+Every tx: `AdvanceNonceAccount | SetComputeUnitLimit | SetComputeUnitPrice |
+[CreateIdempotent] | Axiom Trade: Unknown | Transfer(tip)` - an **Axiom Trade
+router** bot using **durable nonces**, which is what enables the mass-rebroadcast
+race (same nonce tx sprayed to many senders; one lands, the rest of the spam
+fails and is what the 07-21 sig scan saw).
+
+### Replication read
+
+- The entry gate IS expressible in the engine today (age >= ~10s, liquidity
+  ~45-85, trail30 >= ~10-30, hot gross60/w60, net30 strongly positive, net2 <=
+  0), and the exit is `arm_above_pct`-style wide trail (~30%) - but the +50%
+  median peak he rides is partly **caused by his own 4%-of-vsol ignition buy
+  and the micro-buy tape-painting**. Copying the entry/exit without the
+  ignition mechanic samples a different, weaker distribution - validate via
+  simulate before believing any of his numbers transfer.
+- His loss containment is the weak spot we should NOT copy: 21 bags / 60 SOL
+  (2.4x 63ot's bag rate in SOL terms). A -35..-40% catastrophe SL under the
+  wide trail would have kept most of the closed-episode profile intact.
