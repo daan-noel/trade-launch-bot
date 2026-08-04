@@ -318,7 +318,7 @@ async fn run_job(
 
     let token_cap = crate::sweep::registry::clamp_token_cap(b.token_cap);
     let with_flow = flow_patterns.is_some();
-    let sel = Selection {
+    let mut sel = Selection {
         mints: None,
         token_cap,
         created_after: b.created_after,
@@ -339,34 +339,12 @@ async fn run_job(
 
     let root = crate::lake::lake_root();
     let src = LakeSource::new(root);
-    let mut corpus = match src.load(&sel).await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("metric-discovery: lake load failed: {e}");
-            gate.error = Some(e.to_string());
-            let _ = early_tx.send(
-                HttpResponse::InternalServerError().json(serde_json::json!({ "error": e.to_string() })),
-            );
-            return;
-        }
-    };
 
-    if corpus.tokens.is_empty() {
-        let msg = "no tokens in that date range — widen the selection";
-        gate.error = Some(msg.into());
-        let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })));
-        return;
-    }
-    if corpus.candidates_capped {
-        let _ = state.sse_tx.send(SseEvent::MetricDiscoveryNotice {
-            run_id,
-            message: format!(
-                "Corpus hit the {token_cap}-token cap — only the newest {token_cap} tokens were scored."
-            ),
-        });
-    }
-
-    // Cohort scoping — same SSOT as flow-discovery.
+    // Cohort scoping resolved BEFORE the trade scan — same fix, and the same reason,
+    // as flow-discovery: a post-load `retain` pays for the full trade history of every
+    // token in the window and then throws away all but the matched ones. See
+    // `LakeSource::matching_mints`. `token_cap` consequently bounds matched tokens.
+    let mut scope_capped = false;
     if let Some(fp_id) = b.fingerprint_id {
         let repo = FingerprintRepo::new(state.db.clone());
         let fp = match repo.find(fp_id).await {
@@ -386,15 +364,56 @@ async fn run_job(
                 return;
             }
         };
-        let engine_fp = fp_to_engine(&fp);
-        corpus.tokens.retain(|t| hunter_engine::fingerprint::matches(&engine_fp, &t.fp));
-        if corpus.tokens.is_empty() {
+        let (mints, capped) = match src.matching_mints(&sel, fp_to_engine(&fp)).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("metric-discovery: fingerprint mint scan failed: {e}");
+                gate.error = Some(e.to_string());
+                let _ = early_tx.send(HttpResponse::InternalServerError().json(
+                    serde_json::json!({ "error": e.to_string() }),
+                ));
+                return;
+            }
+        };
+        if mints.is_empty() {
             let msg = format!("no tokens match fingerprint “{}” — widen the range or cap", fp.name);
             gate.error = Some(msg.clone());
             let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })));
             return;
         }
-    } else {
+        scope_capped = capped;
+        sel.mints = Some(mints);
+    }
+    let sel = sel;
+
+    let mut corpus = match src.load(&sel).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("metric-discovery: lake load failed: {e}");
+            gate.error = Some(e.to_string());
+            let _ = early_tx.send(
+                HttpResponse::InternalServerError().json(serde_json::json!({ "error": e.to_string() })),
+            );
+            return;
+        }
+    };
+
+    if corpus.tokens.is_empty() {
+        let msg = "no tokens in that date range — widen the selection";
+        gate.error = Some(msg.into());
+        let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })));
+        return;
+    }
+    if corpus.candidates_capped || scope_capped {
+        let _ = state.sse_tx.send(SseEvent::MetricDiscoveryNotice {
+            run_id,
+            message: format!(
+                "Corpus hit the {token_cap}-token cap — only the newest {token_cap} tokens were scored."
+            ),
+        });
+    }
+
+    if b.fingerprint_id.is_none() {
         if let Some(want) = b
             .ix_labels_filter
             .as_ref()

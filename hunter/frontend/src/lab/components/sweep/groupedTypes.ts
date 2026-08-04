@@ -193,8 +193,11 @@ export interface SelectionClause {
   /** Pre-rendered value (`"0.324"`, `"1.5–1.6"`, `"∅ (absent)"`). Rendered by the
    *  backend on purpose — the frontend must not re-derive a selection. */
   display: string;
-  /** Discriminant of the underlying predicate (`exact`/`labels`/`absent`/…). */
-  predicate: { kind: string } & Record<string, unknown>;
+  /** The underlying predicate, adjacently tagged by the backend `AxisPredicate`:
+   *  `kind` is the discriminant (`lamports` / `labels` / `absent` / …) and `value`
+   *  the payload (absent for `absent`). Read `display` to render — this is here for
+   *  discriminating, never for re-deriving a selection. */
+  predicate: { kind: string; value?: unknown };
 }
 
 /**

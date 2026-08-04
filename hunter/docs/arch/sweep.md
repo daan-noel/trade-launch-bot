@@ -256,11 +256,49 @@ The 3-hop analysis pipeline that feeds the sweep on the workstation:
 | --- | --- | --- |
 | 1 · sync | Sealed daily Timescale chunks (yesterday-and-older) pulled EC2→local PG over postgres_fdw/SSH; `wallet_dict` id-preserving, no partition loop (Timescale auto-chunks) | `scripts/db-incremental-sync.ps1` |
 | 2 · lake export | Each newly-sealed local day → **immutable** `trades/dt=YYYY-MM-DD/data.parquet` (write-once, temp+rename); `tokens/tokens.parquet` dimension (fingerprint cols) rewritten each run. Streamed + row-group-flushed. Units mirror `trade_repo`'s `TradeDbRow` exactly (lamports→SOL ÷1e9; raw token f64; vsol raw→f64; `real_*` dropped). Column **names** are single-sourced in `lake/schema.rs` (writer schema references the consts; a guard test pins the writer's field order to `TRADE_WRITE_COLS`/`TOKEN_WRITE_COLS` and a by-name round-trip catches a same-typed builder swap in `finish()`) | `lab/src/lake/export.rs` (`export_lake`), `lab/src/lake/schema.rs` (column names), `lab/src/lake/mod.rs` (layout) |
-| 3 · DuckDB corpus | `LakeSource: CorpusSource` (the **sole** corpus source) reads the lake via an in-memory DuckDB: candidate select + per-mint `ROW_NUMBER` cap over the trades glob (`hive_partitioning=true`), fingerprints from the dimension → `TokenTrades`/`SweepTrade`. Per-mint order is `(slot, tx_index, leg_index, block_time)` — `block_time` is the final tiebreaker because the RPC backfill path leaves `tx_index`=0 (only the live LaserStream feed sets it) and `leg_index`=0 for single-leg txs, so the first three are non-unique; the 4-tuple is unique per mint, giving a deterministic total order. Uses DuckDB's **row API** only (not `query_arrow`) so its bundled arrow never clashes with lab's `arrow 53`. Since `real_*_reserves` were dropped on export, the loader **reconstructs** `real_sol_reserves` per row from the priced reserve pair + `venue` (`approx_real_sol_reserves`: AMM→`reserve_sol`, curve→`reserve_sol−30` clamped ≥0) so the sim's real-reserve gates (tpsl2 `min_liquidity_sol`, dead-token) resolve — an approximation of the live program-emitted value, not lamport-identical | `lab/src/lake/duck.rs` |
+| 3 · DuckDB corpus | `LakeSource: CorpusSource` (the **sole** corpus source) reads the lake via an in-memory DuckDB: candidate select + per-mint cap over the trades glob (`hive_partitioning=true`), fingerprints from the dimension → `TokenTrades`/`SweepTrade`. The trade query has **two shapes** (see *Corpus-load cost model* below): a `ROW_NUMBER` CTE when `per_mint_cap` clips, a plain scan when it doesn't. Per-mint order is `(slot, tx_index, leg_index, block_time)` — `block_time` is the final tiebreaker because the RPC backfill path leaves `tx_index`=0 (only the live LaserStream feed sets it) and `leg_index`=0 for single-leg txs, so the first three are non-unique; the 4-tuple is unique per mint, giving a deterministic total order. Uses DuckDB's **row API** only (not `query_arrow`) so its bundled arrow never clashes with lab's `arrow 53`. Since `real_*_reserves` were dropped on export, the loader **reconstructs** `real_sol_reserves` per row from the priced reserve pair + `venue` (`approx_real_sol_reserves`: AMM→`reserve_sol`, curve→`reserve_sol−30` clamped ≥0) so the sim's real-reserve gates (tpsl2 `min_liquidity_sol`, dead-token) resolve — an approximation of the live program-emitted value, not lamport-identical | `lab/src/lake/duck.rs` |
 
 CLI: `cargo run -p lab -- lake-export` (batch job; reads `SWEEP_LAKE_DIR`, default OS-temp `pumpfun-lake`; a relative value anchors to the loaded `.env`'s dir, not the CWD — `lake_root()` via [`config::env_paths`](../../core/src/config/env_paths.rs) — so the launch folder can't point the export at a second, empty lake). Add `--include-today` to also export today's still-open UTC day (force-overwritten, non-immutable) — the only way to sweep current-day data, since the default export is sealed-days-only. Each sealed day also writes `_meta.json` (`row_count`); a later export re-seals if the sidecar is missing or mismatches PG `COUNT(*)`. One-shot current-day refresh: `./scripts/db-incremental-sync.ps1 -IncludeToday -ExportLake`. `duckdb = { features=["bundled"] }` is a lab-only dep (lab never ships to EC2).
 
 **Cutover (DONE):** the lake is the **sole** grouped-sweep corpus source. The grouped-sweep handler always calls `LakeSource::new(lake_root()).load(sel)`, and `list_token_results` reloads from the lake when its warm in-memory cache (Option A) misses. The PG `DbSource`, `load_grouped_corpus`/`load_or_build`, the Parquet corpus-cache, and the separate `attach_fingerprints` pass are gone — `LakeSource` embeds fingerprints (`has_fingerprints`). Validated by a byte-identical lake-vs-PG metric diff (the divergence was a non-unique trade-order key; fixed with the `block_time` tiebreaker above). `SWEEP_CORPUS_SOURCE` is retired.
+
+### Corpus-load cost model
+
+The trades glob is the expensive object in the lab (GBs across `dt=` partitions), so
+every consumer of `LakeSource::load` is bound by *how much of it the query has to
+touch*. Four rules keep that bounded — the first is the one that matters:
+
+1. **Scope before you load, never after.** A caller scoped to a saved fingerprint
+   resolves it to an explicit `Selection::mints` via `LakeSource::matching_mints`,
+   which reads the **tokens dimension only** (one small Parquet file) and applies the
+   engine `fingerprint::matches` SSOT. Filtering *after* `load` — the old flow- and
+   metric-discovery shape — reads the full trade history of every token in the window
+   and then discards all but the matching handful, which was essentially the entire
+   cost of a scoped run. Consequence to know: under this shape `token_cap` bounds
+   **matched** tokens, not candidates, so a scoped run covers the same set the
+   matched-token count chip reports.
+2. **Prune partitions with the `dt` floor.** `created_after` implies a lower bound on
+   the day partitions a selected token's trades can occupy (`trade_partition_floor`,
+   one day of slack), so the glob skips whole files. There is **no upper bound**:
+   `created_before` bounds token *creation*, and tokens keep trading for days — an
+   upper `dt` predicate would silently truncate live histories. Pinned by
+   `parity_tests::partition_floor_drops_no_trades`.
+3. **No window operator when nothing is clipped.** `SWEEP_DEFAULT_PER_MINT_CAP =
+   i64::MAX` (the analysis default) makes `rn <= ?` a no-op, and the `ROW_NUMBER`
+   window sorts on the same key the outer `ORDER BY` needs — so keeping it sorted the
+   corpus twice for a rank nobody reads. The uncapped path emits a plain scan instead;
+   `parity_tests::uncapped_plain_scan_matches_the_windowed_scan` pins the two shapes
+   row-identical (order included — the fold's f64 summation is order-sensitive).
+4. **Reuse the corpus across runs.** `sweep_corpus_cache` is keyed on
+   `LakeSource::selection_hash` = *(selection, lake version)*. Grouped sweep, flow
+   discovery, and metric discovery all read and write it, so re-running any of them
+   over one selection — the normal tune-and-re-run loop — costs one Parquet read
+   rather than one each, and a fresh `lake-export` moves the lake version so a stale
+   corpus can never be served. Always cache the **unfiltered** selection corpus: the
+   key doesn't include the in-memory `field_filters`, so a post-filter subset would
+   serve a later run a corpus missing the tokens the earlier filter dropped. (A
+   fingerprint scope is *not* such a filter any more — per rule 1 it is part of the
+   selection, hence correctly part of the key.)
 
 **Single-rule simulate shares the lake too — ONE row type.** The tpsl1/tpsl2/swing1 `.../simulate` backtests read the **same** lake through the **same** `LakeSource::load`/`SweepTrade`; there is no separate `SimTrade`. The only difference is `Selection::with_signatures`: the sweep loads it `false` (rows stay slim — the trigger is resolved by index, not signature), simulate loads it `true` so `SweepTrade::tx_signature` (an `Option<Box<str>>`, `None` on the sweep) is populated for the result tables' Solscan links. Shared entry point `strategies::sim_fetch::fetch_sim_histories` (uncapped per-mint, `curve_only: false`, stale-lake warn). The trades Parquet schema carries `tx_signature` (~88 B/row, only read when `with_signatures`); DuckDB reads use `union_by_name=true` so pre-migration day files null-fill until a full re-export. Because one loader + one type serve both, sim↔sweep pricing is parity by construction; `lake::duck::parity_tests::signature_flag_changes_only_the_signature` (no longer `--ignored` — auto-runs when `$SWEEP_LAKE_DIR` points at a populated lake, self-skips otherwise) pins that the flag touches nothing but `tx_signature`, and `duck::tests::reader_columns_are_canonical` ties the reader's column names to `lake/schema.rs`.
 

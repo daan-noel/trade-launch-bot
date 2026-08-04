@@ -1605,7 +1605,17 @@ pub async fn list_groups(
         };
         for g in &mut groups {
             let sel = GroupSelection::resolve(&run, scope_fp.as_ref(), &g.group_key);
-            g.selection = serde_json::to_value(&sel).ok();
+            // Never silently drop it: an omitted `selection` degrades every card to
+            // the lossy `group_key` view and un-badges the fingerprint promote
+            // would resolve to — a green 200 that lost the fact. (It did exactly
+            // that until `AxisPredicate` stopped being internally tagged.)
+            match serde_json::to_value(&sel) {
+                Ok(v) => g.selection = Some(v),
+                Err(e) => tracing::error!(
+                    %run_id, group_index = g.group_index,
+                    "failed to serialize group selection: {e}"
+                ),
+            }
         }
     }
     HttpResponse::Ok().json(groups)

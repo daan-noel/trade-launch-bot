@@ -30,7 +30,9 @@ use duckdb::Connection;
 
 use trading_core::config::constants::approx_real_sol_reserves;
 
-use crate::sweep::corpus::{Corpus, CorpusSource, Selection, TradeWindow};
+use crate::sweep::corpus::{
+    Corpus, CorpusSource, Selection, TradeWindow, SWEEP_DEFAULT_PER_MINT_CAP,
+};
 use crate::sweep::grouping::TokenFingerprint;
 use crate::sweep::projection::CorpusTrade;
 use crate::sweep::corpus::CorpusToken;
@@ -81,6 +83,72 @@ impl LakeSource {
         let tokens_lit = sql_str(&tokens.to_string_lossy().replace('\\', "/"));
         let trades_lit = sql_str(&trades_glob(&self.root));
         Ok((conn, trades_lit, tokens_lit))
+    }
+
+    /// Mints in `sel`'s creation window whose lake fingerprint **matches `fp`**,
+    /// newest-first, clipped to `sel.token_cap`; plus whether the clip bit.
+    ///
+    /// **Reads the tokens dimension only** — no trade scan. This exists so a
+    /// fingerprint-scoped caller can turn its scope into an explicit `sel.mints`
+    /// *before* paying for trades: filtering after [`CorpusSource::load`] means
+    /// loading the full history of every token in the window and then discarding all
+    /// but the handful that match, which is the whole cost of the run. The token
+    /// dimension is a single small Parquet file, so this is cheap by comparison.
+    ///
+    /// Matching goes through `hunter_engine::fingerprint::matches`, the same SSOT the
+    /// live entry gate arms on — so the resulting mint set is exactly what a
+    /// post-load `retain` would have kept, and `token_cap` now bounds *matched*
+    /// tokens rather than candidates.
+    pub async fn matching_mints(
+        &self,
+        sel: &Selection,
+        fp: hunter_engine::fingerprint::Fingerprint,
+    ) -> Result<(Vec<String>, bool)> {
+        let this = LakeSource::new(self.root.clone());
+        let sel = sel.clone();
+        tokio::task::spawn_blocking(move || this.matching_mints_sync(&sel, &fp))
+            .await
+            .context("DuckDB fingerprint-match task panicked")?
+    }
+
+    fn matching_mints_sync(
+        &self,
+        sel: &Selection,
+        fp: &hunter_engine::fingerprint::Fingerprint,
+    ) -> Result<(Vec<String>, bool)> {
+        let (conn, _trades_lit, tokens_lit) = self.connect()?;
+        // Microseconds + the `is_mayhem_mode` exclusion — the same candidate
+        // predicate `resolve_candidates` applies, so a scoped run and an unscoped one
+        // draw from the identical population.
+        let after = sel.created_after.map(|t| t.timestamp_micros()).unwrap_or(i64::MIN);
+        let before = sel.created_before.map(|t| t.timestamp_micros()).unwrap_or(i64::MAX);
+        let sql = format!(
+            "SELECT mint, {FP_COLUMNS} FROM read_parquet({tokens_lit}) \
+             WHERE is_mayhem_mode = false AND created_at >= ? AND created_at < ? \
+             ORDER BY created_at DESC"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query(duckdb::params![after, before])?;
+        let mut mints: Vec<String> = Vec::new();
+        let mut scanned = 0_u64;
+        while let Some(row) = rows.next()? {
+            scanned += 1;
+            let token_fp = fp_from_row(row, 1)?;
+            if hunter_engine::fingerprint::matches(fp, &token_fp) {
+                mints.push(row.get(0)?);
+            }
+        }
+        // Rows arrive newest-first, so the clip keeps the newest matches — the same
+        // slice semantics as the `LIMIT` in `resolve_candidates`.
+        let capped = mints.len() > sel.token_cap;
+        mints.truncate(sel.token_cap);
+        tracing::info!(
+            scanned,
+            matched = mints.len(),
+            capped,
+            "corpus: fingerprint scope resolved on the tokens dimension (no trade scan)"
+        );
+        Ok((mints, capped))
     }
 
     /// Synchronous DuckDB corpus assembly (Parquet scan + per-mint windowing +
@@ -400,6 +468,37 @@ fn stage_mints<'a>(conn: &Connection, mints: impl Iterator<Item = &'a str>) -> R
     Ok(())
 }
 
+/// One extra day of slack on the [`trade_partition_floor`] bound. A token's
+/// `created_at` and its first trade's `block_time` come from different sources, so a
+/// sub-second skew across a UTC midnight must not be able to prune the day file the
+/// launch trades actually landed in.
+const PARTITION_FLOOR_SLACK_DAYS: i64 = 1;
+
+/// The oldest `dt=` day partition a selection's trades can possibly live in, as a
+/// `YYYY-MM-DD` literal — or `None` when the selection has no creation floor.
+///
+/// The lake partitions trades by the **UTC day of `block_time`** (see
+/// `export::sealed_days`), and a token's trades all happen at or after its creation.
+/// So for a selection bounded by `created_after`, no trade of a selected token can
+/// sit in an older partition, and a `dt` predicate prunes those whole Parquet files
+/// off the glob without changing a single loaded row. Without it, narrowing the date
+/// range narrows only the token dimension while the trade scan still opens every day
+/// in the lake.
+///
+/// **Only the floor is derivable.** `created_before` bounds token *creation*, but a
+/// token keeps trading for days afterwards — an upper `dt` bound would silently
+/// truncate live histories, which is a correctness bug, not a slower query.
+///
+/// Contract for an explicit-`mints` selection: passing `created_after` alongside a
+/// mint list asserts those mints were themselves selected within that window (true of
+/// every caller — the sweep drill-in reuses its run's window, `sim_fetch` sends
+/// `None`). A mint list from a *wider* window than `created_after` would lose trades.
+fn trade_partition_floor(sel: &Selection) -> Option<String> {
+    let after = sel.created_after?;
+    let floor = after.date_naive() - chrono::Duration::days(PARTITION_FLOOR_SLACK_DAYS);
+    Some(floor.format("%Y-%m-%d").to_string())
+}
+
 /// Stream the per-mint capped trades and group them into [`CorpusToken`] — one slim
 /// [`CorpusTrade`] buffer per token, the single row type both sweep and simulate walk.
 fn load_corpus_tokens(
@@ -416,6 +515,11 @@ fn load_corpus_tokens(
         candidates.iter().map(|(m, _, c)| (m.as_str(), *c)).collect();
     let order = partition_order(sel.window);
     let curve_filter = if sel.curve_only { "AND t.venue = 'curve'" } else { "" };
+    // Hive `dt=` partition floor — prunes whole day files off the glob. See
+    // `trade_partition_floor` for why only the floor is derivable.
+    let dt_filter = trade_partition_floor(sel)
+        .map(|day| format!("AND t.dt >= '{day}' "))
+        .unwrap_or_default();
     // Simulate needs `tx_signature` (Solscan links); flow metrics need
     // `ix_labels`/`wallet`. The sweep leaves both out so rows stay slim.
     // Selecting columns only when asked keeps non-flow / non-sim reads from
@@ -423,23 +527,53 @@ fn load_corpus_tokens(
     let sig_col = if sel.with_signatures { ", tx_signature" } else { "" };
     let flow_cols = if sel.with_flow { ", ix_labels, wallet" } else { "" };
 
-    // ROW_NUMBER window caps each mint's slice; outer ORDER BY restores execution
-    // order so a token's legs arrive contiguous + chronological (single-pass group).
-    let sql = format!(
-        "WITH ranked AS ( \
-            SELECT t.mint, t.is_buy, t.sol_amount, t.token_amount, t.price, \
-                   t.slot, t.tx_index, t.block_time, t.leg_index, t.vsol, t.vtok, t.venue{sig_col}{flow_cols}, \
-                   ROW_NUMBER() OVER (PARTITION BY t.mint ORDER BY {order}) AS rn \
-            FROM read_parquet({trades_lit}, hive_partitioning=true, union_by_name=true) t \
-            WHERE t.mint IN (SELECT mint FROM sel_mints) {curve_filter} \
-         ) \
-         SELECT mint, is_buy, sol_amount, token_amount, price, slot, block_time, leg_index, vsol, vtok, venue{sig_col}{flow_cols} \
-         FROM ranked WHERE rn <= ? \
-         ORDER BY mint ASC, slot ASC, tx_index ASC, leg_index ASC, block_time ASC"
+    // The one projection both shapes below emit — the exact column order the row
+    // reader decodes by ordinal.
+    let projection = format!(
+        "mint, is_buy, sol_amount, token_amount, price, slot, block_time, leg_index, \
+         vsol, vtok, venue{sig_col}{flow_cols}"
     );
+    // Restores execution order so a token's legs arrive contiguous + chronological
+    // (single-pass group in the loop below).
+    let row_order = "mint ASC, slot ASC, tx_index ASC, leg_index ASC, block_time ASC";
+
+    // An **uncapped** per-mint selection (the analysis default — see
+    // `SWEEP_DEFAULT_PER_MINT_CAP`) makes `rn <= ?` a no-op, so the `ROW_NUMBER`
+    // window computes a rank nothing reads. Worse, that window sorts on
+    // `(mint, slot, tx_index, leg_index, block_time)` — the SAME key `row_order`
+    // needs — so keeping it sorts the whole corpus twice. Emit the plain scan
+    // instead; the capped shape below is unchanged, since there the window is what
+    // does the clipping.
+    let capped = sel.per_mint_cap != SWEEP_DEFAULT_PER_MINT_CAP;
+    let sql = if capped {
+        // ROW_NUMBER window caps each mint's slice.
+        format!(
+            "WITH ranked AS ( \
+                SELECT t.mint, t.is_buy, t.sol_amount, t.token_amount, t.price, \
+                       t.slot, t.tx_index, t.block_time, t.leg_index, t.vsol, t.vtok, t.venue{sig_col}{flow_cols}, \
+                       ROW_NUMBER() OVER (PARTITION BY t.mint ORDER BY {order}) AS rn \
+                FROM read_parquet({trades_lit}, hive_partitioning=true, union_by_name=true) t \
+                WHERE t.mint IN (SELECT mint FROM sel_mints) {curve_filter} {dt_filter}\
+             ) \
+             SELECT {projection} \
+             FROM ranked WHERE rn <= ? \
+             ORDER BY {row_order}"
+        )
+    } else {
+        format!(
+            "SELECT {projection} \
+             FROM read_parquet({trades_lit}, hive_partitioning=true, union_by_name=true) t \
+             WHERE t.mint IN (SELECT mint FROM sel_mints) {curve_filter} {dt_filter}\
+             ORDER BY {row_order}"
+        )
+    };
 
     let mut stmt = conn.prepare(&sql)?;
-    let mut rows = stmt.query(duckdb::params![sel.per_mint_cap])?;
+    let mut rows = if capped {
+        stmt.query(duckdb::params![sel.per_mint_cap])?
+    } else {
+        stmt.query([])?
+    };
 
     let mut tokens: Vec<CorpusToken> = Vec::with_capacity(candidates.len());
     let mut cur_mint: Option<String> = None;
@@ -539,14 +673,40 @@ fn push_token(
     });
 }
 
+/// The tokens-dimension fingerprint columns, in the ONE order [`fp_from_row`] decodes
+/// them by ordinal. Both fingerprint readers (the post-load attach and the
+/// pre-load [`LakeSource::matching_mints`] scan) select exactly this list, so a column
+/// added here can never be decoded at a stale offset by the other.
+const FP_COLUMNS: &str = "fp_token_program_id, fp_initial_buy_sol, \
+     fp_cu_limit, fp_cu_price, fp_is_cashback_enabled, fp_max_sol_cost, \
+     fp_spendable_sol_in, fp_first_slot_buy_sol, fp_first_slot_sell_sol, fp_ix_labels";
+
+/// Decode a [`FP_COLUMNS`] block starting at ordinal `base` into a grouping
+/// [`TokenFingerprint`].
+fn fp_from_row(row: &duckdb::Row<'_>, base: usize) -> duckdb::Result<TokenFingerprint> {
+    let ix_labels_json: Option<String> = row.get(base + 9)?;
+    Ok(TokenFingerprint {
+        token_program_id: row.get(base)?,
+        initial_buy_sol: row.get(base + 1)?,
+        cu_limit: row.get(base + 2)?,
+        cu_price: row.get(base + 3)?,
+        is_cashback_enabled: row.get::<_, Option<bool>>(base + 4)?.unwrap_or(false),
+        max_cost_lamports: row.get(base + 5)?,
+        spendable_lamports_in: row.get(base + 6)?,
+        first_slot_buy_sol: row.get(base + 7)?,
+        first_slot_sell_sol: row.get(base + 8)?,
+        ix_labels: ix_labels_json
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default(),
+    })
+}
+
 /// Read the grouping [`TokenFingerprint`] for every staged mint from the `tokens`
 /// dimension into a `mint → fp` map (one query), for [`attach_fingerprints`]. Relies
 /// on `sel_mints` being staged by the caller.
 fn load_fingerprints(conn: &Connection, tokens_lit: &str) -> Result<HashMap<String, TokenFingerprint>> {
     let sql = format!(
-        "SELECT mint, fp_token_program_id, fp_initial_buy_sol, \
-                fp_cu_limit, fp_cu_price, fp_is_cashback_enabled, fp_max_sol_cost, \
-                fp_spendable_sol_in, fp_first_slot_buy_sol, fp_first_slot_sell_sol, fp_ix_labels \
+        "SELECT mint, {FP_COLUMNS} \
          FROM read_parquet({tokens_lit}) WHERE mint IN (SELECT mint FROM sel_mints)"
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -554,24 +714,7 @@ fn load_fingerprints(conn: &Connection, tokens_lit: &str) -> Result<HashMap<Stri
     let mut by_mint: HashMap<String, TokenFingerprint> = HashMap::new();
     while let Some(row) = rows.next()? {
         let mint: String = row.get(0)?;
-        let ix_labels_json: Option<String> = row.get(10)?;
-        by_mint.insert(
-            mint,
-            TokenFingerprint {
-                token_program_id: row.get(1)?,
-                initial_buy_sol: row.get(2)?,
-                cu_limit: row.get(3)?,
-                cu_price: row.get(4)?,
-                is_cashback_enabled: row.get::<_, Option<bool>>(5)?.unwrap_or(false),
-                max_cost_lamports: row.get(6)?,
-                spendable_lamports_in: row.get(7)?,
-                first_slot_buy_sol: row.get(8)?,
-                first_slot_sell_sol: row.get(9)?,
-                ix_labels: ix_labels_json
-                    .and_then(|s| serde_json::from_str(&s).ok())
-                    .unwrap_or_default(),
-            },
-        );
+        by_mint.insert(mint, fp_from_row(row, 1)?);
     }
     Ok(by_mint)
 }
@@ -614,6 +757,33 @@ mod tests {
     fn partition_order_matches_window() {
         assert!(partition_order(TradeWindow::LaunchWindow).contains("ASC"));
         assert!(partition_order(TradeWindow::Recent).contains("DESC"));
+    }
+
+    #[test]
+    fn partition_floor_is_a_day_before_the_creation_bound() {
+        let sel = Selection {
+            created_after: Some(
+                DateTime::parse_from_rfc3339("2026-08-03T00:00:01Z").unwrap().with_timezone(&Utc),
+            ),
+            ..Selection::default()
+        };
+        // A day of slack: the floor must never land ON the creation day, or a
+        // sub-second skew between `created_at` and the first trade's `block_time`
+        // across UTC midnight could prune the launch trades' own partition.
+        assert_eq!(trade_partition_floor(&sel).as_deref(), Some("2026-08-02"));
+    }
+
+    /// `created_before` bounds token *creation*, not trading — a token keeps trading
+    /// for days after it launches, so there is no derivable upper `dt` bound and an
+    /// unbounded-below selection gets no predicate at all.
+    #[test]
+    fn partition_floor_is_absent_without_a_creation_floor() {
+        let sel = Selection {
+            created_after: None,
+            created_before: Some(Utc::now()),
+            ..Selection::default()
+        };
+        assert_eq!(trade_partition_floor(&sel), None);
     }
 
     #[test]
@@ -671,6 +841,30 @@ mod parity_tests {
         v.map(f64::to_bits)
     }
 
+    /// Start of the newest **sealed** `dt=` partition — the `created_before` bound
+    /// every lake test here needs.
+    ///
+    /// `export_tokens` rewrites the token dimension in full on each run, so it carries
+    /// tokens created *today*, whose trades are still in the open day and therefore
+    /// live in no partition at all. `resolve_candidates` orders `created_at DESC`, so
+    /// an unbounded test selection picks exactly those first and loads a corpus of N
+    /// tokens with zero trades — the assertions then fail on empty input rather than
+    /// on the behaviour under test.
+    fn sealed_created_before(root: &Path) -> Option<DateTime<Utc>> {
+        use chrono::TimeZone;
+        let mut days: Vec<String> = std::fs::read_dir(super::super::trades_dir(root))
+            .ok()?
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                name.strip_prefix("dt=").map(str::to_string)
+            })
+            .collect();
+        days.sort();
+        let day = chrono::NaiveDate::parse_from_str(days.last()?, "%Y-%m-%d").ok()?;
+        Some(Utc.from_utc_datetime(&day.and_hms_opt(0, 0, 0)?))
+    }
+
     // NOT `#[ignore]`: self-skips when no lake is present (keyless CI stays green) but
     // runs automatically once `$SWEEP_LAKE_DIR` points at a populated lake, so the
     // sim↔sweep parity is enforced without an `--ignored` opt-in.
@@ -689,7 +883,8 @@ mod parity_tests {
             mints: None,
             token_cap: 200,
             created_after: None,
-            created_before: None,
+            // Sealed days only — see `sealed_created_before`.
+            created_before: sealed_created_before(&root),
             per_mint_cap: 5_000,
             window: TradeWindow::LaunchWindow,
             curve_only: false,
@@ -731,5 +926,105 @@ mod parity_tests {
             }
         }
         assert!(any_sig, "simulate load populated no signatures — is the lake re-exported with tx_signature?");
+    }
+
+    /// Assert two corpora are the same tokens in the same order carrying bit-identical
+    /// trades. Shared by the two query-shape tests below, which each change *how* the
+    /// trades are read and must change nothing about *what* is read.
+    fn assert_same_corpus(a: &Corpus, b: &Corpus, what: &str) {
+        assert_eq!(a.tokens.len(), b.tokens.len(), "{what}: token count");
+        assert!(!a.tokens.is_empty(), "{what}: lake returned no tokens — populate it first");
+        for (ta, tb) in a.tokens.iter().zip(&b.tokens) {
+            assert_eq!(ta.mint, tb.mint, "{what}: token order");
+            assert_eq!(ta.trades.len(), tb.trades.len(), "{what}: trade count for {}", ta.mint);
+            for (x, y) in ta.trades.iter().zip(tb.trades.iter()) {
+                assert_eq!(x.slot, y.slot, "{what}: slot {}", ta.mint);
+                assert_eq!(x.leg_index, y.leg_index, "{what}: leg_index {}", ta.mint);
+                assert_eq!(x.block_time, y.block_time, "{what}: block_time {}", ta.mint);
+                assert_eq!(x.is_buy, y.is_buy, "{what}: is_buy {}", ta.mint);
+                assert_eq!(
+                    x.amount_sol.to_bits(),
+                    y.amount_sol.to_bits(),
+                    "{what}: amount_sol {}",
+                    ta.mint
+                );
+            }
+        }
+    }
+
+    /// Dropping the `ROW_NUMBER` CTE on an uncapped selection must be a pure query-plan
+    /// change. `i64::MAX - 1` still clips nothing, so it takes the windowed path and
+    /// yields the reference rows the plain scan has to reproduce exactly — order
+    /// included, since the fold's f64 summation is order-sensitive.
+    #[tokio::test]
+    async fn uncapped_plain_scan_matches_the_windowed_scan() {
+        let root = lake_root();
+        if !tokens_file(&root).exists() || !super::super::trades_dir(&root).exists() {
+            eprintln!("skipping uncapped-scan parity: no lake at {}", root.display());
+            return;
+        }
+        let windowed = Selection {
+            mints: None,
+            token_cap: 100,
+            created_after: None,
+            created_before: sealed_created_before(&root),
+            // One below the sentinel: still a no-op clip, but takes the CTE path.
+            per_mint_cap: SWEEP_DEFAULT_PER_MINT_CAP - 1,
+            window: TradeWindow::LaunchWindow,
+            curve_only: false,
+            with_signatures: false,
+            with_flow: true,
+        };
+        let plain = Selection { per_mint_cap: SWEEP_DEFAULT_PER_MINT_CAP, ..windowed.clone() };
+
+        let src = LakeSource::new(root);
+        let a = src.load(&windowed).await.expect("windowed corpus load");
+        let b = src.load(&plain).await.expect("plain corpus load");
+        assert_same_corpus(&a, &b, "uncapped scan");
+    }
+
+    /// The `dt=` partition floor must prune only files that cannot hold a selected
+    /// token's trades. Pinning the token set with an explicit mint list (which makes
+    /// `resolve_candidates` ignore `created_after`) isolates the predicate: the only
+    /// difference between the two loads is whether the floor is applied, so any
+    /// dropped trade shows up as a mismatch.
+    #[tokio::test]
+    async fn partition_floor_drops_no_trades() {
+        let root = lake_root();
+        if !tokens_file(&root).exists() || !super::super::trades_dir(&root).exists() {
+            eprintln!("skipping partition-floor parity: no lake at {}", root.display());
+            return;
+        }
+        let sealed_before = sealed_created_before(&root);
+        let src = LakeSource::new(root);
+        let probe = Selection {
+            mints: None,
+            token_cap: 100,
+            created_after: None,
+            created_before: sealed_before,
+            per_mint_cap: SWEEP_DEFAULT_PER_MINT_CAP,
+            window: TradeWindow::LaunchWindow,
+            curve_only: false,
+            with_signatures: false,
+            with_flow: true,
+        };
+        let seed = src.load(&probe).await.expect("probe corpus load");
+        assert!(!seed.tokens.is_empty(), "lake returned no tokens — populate it first");
+
+        let mints: Vec<String> = seed.tokens.iter().map(|t| t.mint.clone()).collect();
+        // The oldest creation in the set — the tightest floor that is still legal for
+        // every one of these mints, i.e. the worst case for over-pruning.
+        let oldest = seed.tokens.iter().map(|t| t.created_at).min().expect("non-empty");
+
+        let unpruned = Selection { mints: Some(mints), ..probe };
+        let pruned = Selection { created_after: Some(oldest), ..unpruned.clone() };
+        assert!(
+            trade_partition_floor(&pruned).is_some(),
+            "the pruned selection must actually carry a dt floor, or this proves nothing"
+        );
+
+        let a = src.load(&unpruned).await.expect("unpruned corpus load");
+        let b = src.load(&pruned).await.expect("pruned corpus load");
+        assert_same_corpus(&a, &b, "partition floor");
     }
 }

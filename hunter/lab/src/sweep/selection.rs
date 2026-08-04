@@ -66,8 +66,16 @@ impl Origin {
 
 /// What one axis is pinned to. The SOL-amount variants carry **lamports**, the
 /// unit every fingerprint axis and every matcher compare uses.
+///
+/// **Adjacently** tagged (`{"kind": …, "value": …}`), not internally tagged: an
+/// internal tag can only be merged into a variant that serializes as a *map*, so
+/// `Lamports(i64)` / `Labels(Vec<String>)` — every scalar and sequence variant
+/// here — fail at runtime with "cannot serialize tagged newtype variant …". That
+/// error surfaces nowhere near the type: it aborts `to_value(&selection)` for the
+/// WHOLE selection, so the groups response silently shipped without `selection`
+/// at all and the frontend fell back to "no fingerprint" on every card.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum AxisPredicate {
     /// Exact integer (`cu_limit` / `cu_price`).
     Int(i64),
@@ -738,6 +746,50 @@ mod tests {
         assert_eq!(out.cu_limit, Some(200_000), "scope axis kept");
         assert_eq!(out.max_cost_lamports, Some(1_010_000), "scope axis kept");
         assert_eq!(out.cu_price, Some(1_000), "group-by narrowing kept");
+    }
+
+    /// **Every predicate variant must survive `to_value`.** The groups handler
+    /// serializes the whole selection in one call, so a single unserializable
+    /// variant drops `selection` — and with it `identity` — from every group in
+    /// the response, leaving the card unable to badge the fingerprint promote
+    /// would resolve to. That is what an internally-tagged `AxisPredicate` did:
+    /// serde can only merge an internal tag into a map, so `Lamports(i64)` and
+    /// `Labels(Vec<String>)` failed at runtime while compiling fine.
+    #[test]
+    fn every_predicate_variant_serializes() {
+        let all = [
+            AxisPredicate::Int(200_000),
+            AxisPredicate::Text("Tokenkeg".into()),
+            AxisPredicate::Bool(true),
+            AxisPredicate::Labels(vec!["Pump.Fun: Create_v2".into()]),
+            AxisPredicate::Lamports(15_150_000_000),
+            AxisPredicate::LamportsRange { lo: 1_500_000_000, hi: 1_600_000_000 },
+            AxisPredicate::AnyOf(vec!["0.1".into(), "0.5".into()]),
+            AxisPredicate::Ceiling(u64::MAX),
+            AxisPredicate::Absent,
+        ];
+        for p in all {
+            let v = serde_json::to_value(&p)
+                .unwrap_or_else(|e| panic!("{p:?} is not serializable: {e}"));
+            assert!(v.get("kind").is_some(), "{p:?} lost its discriminant: {v}");
+        }
+    }
+
+    /// The end-to-end shape the frontend reads: a filtered run's groups must ship
+    /// `clauses` + `identity`, because the card matches that identity against the
+    /// saved fingerprints to decide between the "already defined" badge and Create.
+    #[test]
+    fn resolved_selection_serializes_with_its_identity() {
+        let mut r = run();
+        r.ix_labels_filter = Some(json!(["Pump.Fun: Create_v2", "Pump.Fun: BuyV2"]));
+        r.field_filters = Some(json!({ "max_cost_lamports": ["15.15"] }));
+        let sel = GroupSelection::resolve(&r, None, &json!({}));
+
+        let v = serde_json::to_value(&sel).expect("selection must serialize");
+        assert_eq!(v["promotable"], json!(true), "{v}");
+        assert_eq!(v["clauses"].as_array().map(Vec::len), Some(2), "{v}");
+        assert_eq!(v["identity"]["max_cost_lamports"], json!(15_150_000_000i64), "{v}");
+        assert_eq!(v["identity"]["bucket_size_amount"], json!(null), "{v}");
     }
 
     /// A group-by axis is this group's own slice, so it wins over the wider
