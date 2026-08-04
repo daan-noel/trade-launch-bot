@@ -53,11 +53,6 @@ use crate::sweep::projection::CorpusTrade;
 /// (plan 5.3). The guard test below asserts the derivation.
 pub const TICK: Duration = Duration::milliseconds(hunter_engine::TICK_MS);
 
-/// pump.fun SPL token decimals — mirrors `exec_paper::TOKEN_SCALE`. Paper/sim
-/// `token_amount` is cosmetic (PnL is price-ratio based), so it only needs to be
-/// consistent across the paper-live and simulate fill models.
-const TOKEN_SCALE: f64 = 1_000_000.0;
-
 /// One confirmed sell leg collected during replay (partial or final). Feeds
 /// [`trading_core::strategies::kernel::round_trip_multi_leg`] and the chart's
 /// per-leg exit markers. `sell_bps` is of the **initial** bag.
@@ -550,7 +545,7 @@ impl Replay {
             if let Some(fill) =
                 find_paper_exit_at(trades.as_slice(), fire_idx, true, self.cfg.fill_model)
             {
-                let sol = (token_amount as f64 / TOKEN_SCALE) * fill.price;
+                let sol = token_amount as f64 * fill.price;
                 let event = Event::FillConfirmed {
                     intent,
                     fill: Fill {
@@ -565,7 +560,7 @@ impl Replay {
             }
         }
         let price = self.price_of(mint).unwrap_or(0.0);
-        let sol = (token_amount as f64 / TOKEN_SCALE) * price;
+        let sol = token_amount as f64 * price;
         work.push(Event::FillConfirmed {
             intent,
             fill: Fill { price, sol, token_amount, at: now },
@@ -584,7 +579,9 @@ impl Replay {
     /// Build the `FillConfirmed` for an entry buy (mirrors `exec_paper::run_entry`).
     fn buy_fill(&self, intent: IntentId, lamports: u64, price: f64, at: Ts) -> Event {
         let sol = lamports as f64 / LAMPORTS_PER_SOL_F64;
-        let token_amount = ((sol / price) * TOKEN_SCALE).round().max(0.0) as u64;
+        // `price` is SOL per RAW token unit ⇒ the quotient is already raw units
+        // (mirrors `exec_paper::run_entry`).
+        let token_amount = (sol / price).round().max(0.0) as u64;
         Event::FillConfirmed { intent, fill: Fill { price, sol, token_amount, at } }
     }
 

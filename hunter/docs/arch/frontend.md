@@ -268,7 +268,16 @@ next load (no per-metric frontend work).
   (`useSelectionSearchParam` + `lib/strategy/nav.ts` — same-tab Router `Link`,
   Ctrl/middle-click still opens a new tab). Rules support soft-archive via
   `is_enabled` (Enable/Disable endpoints; Disabled hidden by default on Rules +
-  Simulate, orthogonal to Active/Idle). Fingerprints "Used by" → Rules;
+  Simulate, orthogonal to Active/Idle) and **tags** — a tri-state chip bar
+  (`RuleTagFilter` + `TagChip`, off → include → exclude; includes OR, excludes
+  hide) over the `tags` column, backed by `useTagFilter` (`?tags=`/`?notags=` in
+  the URL, sticky per app in `localStorage`), authored in the editor via
+  `RuleTagsInput`. The column itself is `buildRuleTagsColumn` — shared with
+  Simulate, where the same chip bar narrows what "Simulate Filtered" targets.
+  Tags are presentational only and orthogonal to `is_enabled`:
+  chip colour is hashed from the label (`lib/strategy/tags.ts` → the shared
+  `chipColorsFromHue`), and the canonical tag grammar lives server-side, NOT here
+  ([rule-tags.md](@plans/strategies/rule-tags.md)). Fingerprints "Used by" → Rules;
   Rules/Simulate fingerprint cells → Fingerprints; lab Rules → Simulate
   (`linkToSimulate`); Simulate rule name → Rules. Sweep Used-by / matched fp,
   Flow Discovery seed/target badges, and live Armed rule names also deep-link),

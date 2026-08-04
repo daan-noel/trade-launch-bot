@@ -35,6 +35,62 @@ pub enum RuleError {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Rule tags — free-form labels, presentational only
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Max tags on one rule. A label set past this is a taxonomy problem, not a
+/// storage one — the write is rejected rather than truncated.
+pub const MAX_TAGS_PER_RULE: usize = 8;
+
+/// Max chars in one tag. Long enough for `stage:paper-test`, short enough that a
+/// chip stays a chip.
+pub const MAX_TAG_LEN: usize = 24;
+
+/// Canonicalize a tag set — **the** authority on tag shape (wire parse and save
+/// both run it, so storage is canonical whichever door the write came through).
+///
+/// Lowercase, `-`-separated, `[a-z0-9:-]` only, deduped, sorted. `:` survives as
+/// the namespace separator (`fam:scalper`); `,` does not, because it is the
+/// DataTable filter grammar's separator and a tag containing one would be
+/// unfilterable. Sorting is what makes the stored array comparable and the chip
+/// order stable across rules.
+///
+/// **Total by design** — it only reshapes. Over-long / too-many is a *loud*
+/// rejection in [`validate_rule_fields`], never a silent truncation here: a
+/// writer that clamps user input away before any reader sees it is the failure
+/// shape that produced the slippage-floor bug (see the zero-as-unbound section of
+/// `hunter/CLAUDE.md`). A tag that normalizes to nothing (`"!!!"`) is dropped —
+/// there is no label left to store.
+///
+/// The frontend deliberately has no copy of this grammar; its chip input only
+/// trims + lowercases and re-renders from the response. See
+/// `docs/plans/strategies/rule-tags.md`.
+pub fn normalize_tags(tags: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = tags
+        .iter()
+        .filter_map(|raw| {
+            let mut s = String::with_capacity(raw.len());
+            for ch in raw.trim().chars() {
+                match ch {
+                    'a'..='z' | '0'..='9' | ':' => s.push(ch),
+                    'A'..='Z' => s.push(ch.to_ascii_lowercase()),
+                    // Every separator collapses to one `-`; a repeat falls through
+                    // to the drop arm below, which is what suppresses `a--b`.
+                    '-' | '_' | ' ' | '\t' if !s.ends_with('-') => s.push('-'),
+                    // Anything else (incl. `,` and repeated separators) is dropped.
+                    _ => {}
+                }
+            }
+            let s = s.trim_matches('-').to_string();
+            (!s.is_empty()).then_some(s)
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Generic engine (fingerprint + metrics) rule CRUD
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -51,6 +107,8 @@ pub struct RuleDraft {
     /// 0 = unlimited.
     pub max_total_tokens: i64,
     pub params: Value,
+    /// Presentational labels — already canonical (see [`normalize_tags`]).
+    pub tags: Vec<String>,
 }
 
 impl RuleDraft {
@@ -76,8 +134,22 @@ impl RuleDraft {
             max_concurrent_tokens: opt_i64(body, "max_concurrent_tokens").unwrap_or(1),
             max_total_tokens: opt_i64(body, "max_total_tokens").unwrap_or(0),
             params: body.get("params").cloned().unwrap_or_else(|| serde_json::json!({})),
+            tags: normalize_tags(&tags_from_json(body).unwrap_or_default()),
         })
     }
+}
+
+/// Read a `tags` array off a request body. `None` = the key is absent (a PATCH
+/// leaves tags alone); `Some(vec![])` = an explicit empty array (clear them).
+/// Non-string entries are skipped rather than failing the whole write — the same
+/// leniency the numeric fields get.
+fn tags_from_json(body: &Value) -> Option<Vec<String>> {
+    let arr = body.get("tags")?.as_array()?;
+    Some(
+        arr.iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+    )
 }
 
 /// Overlay the mutable fields of a PUT body onto a loaded rule — SSOT for the
@@ -105,16 +177,24 @@ pub fn apply_rule_update(rule: &mut StrategyRule, body: &Value) {
     if let Some(v) = body.get("params").cloned() {
         rule.params = v;
     }
+    // Absent ⇒ leave tags alone (patch semantics); `[]` ⇒ clear them. `save`
+    // re-normalizes, so a hand-rolled PUT can't store a non-canonical array.
+    if let Some(tags) = tags_from_json(body) {
+        rule.tags = normalize_tags(&tags);
+    }
     rule.updated_at = Utc::now();
 }
 
-/// Validate the typed-column knobs shared by create and edit.
+/// Validate the typed-column knobs shared by create and edit. `tags` are
+/// expected already normalized ([`normalize_tags`]) — this checks the caps that
+/// normalization deliberately does **not** silently enforce.
 fn validate_rule_fields(
     rule_name: &str,
     trade_mode: &str,
     buy_amount_lamports: i64,
     max_concurrent_tokens: i64,
     max_total_tokens: i64,
+    tags: &[String],
 ) -> Result<(), String> {
     if rule_name.trim().is_empty() {
         return Err("rule_name must not be empty".into());
@@ -131,6 +211,17 @@ fn validate_rule_fields(
     if max_total_tokens < 0 {
         return Err("max_total_tokens must be >= 0 (0 = unlimited)".into());
     }
+    if tags.len() > MAX_TAGS_PER_RULE {
+        return Err(format!(
+            "at most {MAX_TAGS_PER_RULE} tags per rule (got {})",
+            tags.len()
+        ));
+    }
+    if let Some(long) = tags.iter().find(|t| t.chars().count() > MAX_TAG_LEN) {
+        return Err(format!(
+            "tag \"{long}\" is longer than {MAX_TAG_LEN} characters"
+        ));
+    }
     Ok(())
 }
 
@@ -140,12 +231,17 @@ fn validate_rule_fields(
 /// serialization ([`RuleParams::to_value`]) so the JSONB shape can't drift by
 /// author.
 pub fn build_rule(draft: &RuleDraft) -> Result<StrategyRule, String> {
+    // Re-normalize rather than trust the draft: `from_json` already did it, but a
+    // caller that builds a `RuleDraft` directly (promote, tests) must not be able
+    // to store a non-canonical array.
+    let tags = normalize_tags(&draft.tags);
     validate_rule_fields(
         &draft.rule_name,
         &draft.trade_mode,
         draft.buy_amount_lamports,
         draft.max_concurrent_tokens,
         draft.max_total_tokens,
+        &tags,
     )?;
     let params = RuleParams::parse(&draft.params)?;
     let now = Utc::now();
@@ -160,6 +256,7 @@ pub fn build_rule(draft: &RuleDraft) -> Result<StrategyRule, String> {
         max_concurrent_tokens: draft.max_concurrent_tokens,
         max_total_tokens: draft.max_total_tokens,
         params: params.to_value(),
+        tags,
         created_at: now,
         updated_at: now,
     })
@@ -237,12 +334,15 @@ pub async fn create_with_fp_check(
 /// cannot drift by author JSON shape. Refuses colliding with another rule's
 /// identity.
 pub async fn save(repo: &RuleRepo, rule: &mut StrategyRule) -> Result<(), RuleError> {
+    // Same fixed point as `params` below — canonical shape can't drift by author.
+    rule.tags = normalize_tags(&rule.tags);
     validate_rule_fields(
         &rule.rule_name,
         &rule.trade_mode,
         rule.buy_amount_lamports,
         rule.max_concurrent_tokens,
         rule.max_total_tokens,
+        &rule.tags,
     )
     .map_err(RuleError::Invalid)?;
     let params = RuleParams::parse(&rule.params)
@@ -298,6 +398,7 @@ mod generic_tests {
             max_concurrent_tokens: 3,
             max_total_tokens: 0,
             params,
+            tags: Vec::new(),
         }
     }
 
@@ -407,5 +508,112 @@ mod generic_tests {
         assert_eq!(ra.max_total_tokens, rb.max_total_tokens);
         assert_eq!(ra.params, rb.params, "canonical params must match for identity");
         assert_ne!(ra.rule_name, rb.rule_name);
+    }
+
+    // ── tags ────────────────────────────────────────────────────────────────
+
+    fn tags(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn normalize_tags_canonicalizes_shape() {
+        // Case, separators, and repeats all collapse to one canonical form.
+        assert_eq!(
+            normalize_tags(&tags(&["Fam:Scalper", "fam:scalper", "  FAM:SCALPER  "])),
+            tags(&["fam:scalper"]),
+            "case/whitespace variants must not become distinct chips"
+        );
+        assert_eq!(
+            normalize_tags(&tags(&["paper test", "paper_test", "paper--test", "-paper-test-"])),
+            tags(&["paper-test"]),
+            "every separator collapses to a single inner dash"
+        );
+        // `:` survives (namespace separator); `,` does not — it is the DataTable
+        // filter grammar's separator, so a tag holding one would be unfilterable.
+        assert_eq!(normalize_tags(&tags(&["a,b"])), tags(&["ab"]));
+        assert_eq!(normalize_tags(&tags(&["risk:high!"])), tags(&["risk:high"]));
+        // Sorted + deduped ⇒ the stored array is comparable and renders stably.
+        assert_eq!(normalize_tags(&tags(&["zeta", "alpha", "zeta"])), tags(&["alpha", "zeta"]));
+        // A label that reshapes to nothing has nothing left to store.
+        assert!(normalize_tags(&tags(&["!!!", "   ", "---"])).is_empty());
+    }
+
+    #[test]
+    fn normalize_tags_is_idempotent() {
+        // `from_json`, `build_rule`, and `save` all run it — a second pass must be
+        // a no-op or the same rule would keep changing shape on every save.
+        let once = normalize_tags(&tags(&["Fam Scalper", "src:SWEEP", "a,,b"]));
+        assert_eq!(normalize_tags(&once), once);
+    }
+
+    #[test]
+    fn tag_caps_are_rejected_not_truncated() {
+        // Silently dropping the 9th tag would be the "writer clamps user input
+        // away before any reader sees it" bug shape — reject loudly instead.
+        let mut d = generic_draft(valid_params());
+        d.tags = (0..MAX_TAGS_PER_RULE + 1).map(|i| format!("t{i}")).collect();
+        assert!(matches!(build_rule(&d), Err(e) if e.contains("at most")));
+
+        let mut d = generic_draft(valid_params());
+        d.tags = tags(&["x".repeat(MAX_TAG_LEN + 1).as_str()]);
+        assert!(matches!(build_rule(&d), Err(e) if e.contains("longer than")));
+
+        // At the cap is fine.
+        let mut d = generic_draft(valid_params());
+        d.tags = (0..MAX_TAGS_PER_RULE).map(|i| format!("t{i}")).collect();
+        assert!(build_rule(&d).is_ok());
+    }
+
+    #[test]
+    fn build_rule_stores_canonical_tags() {
+        let mut d = generic_draft(valid_params());
+        d.tags = tags(&["Stage:Paper Test", "fam:scalper", "fam:scalper"]);
+        let rule = build_rule(&d).expect("valid");
+        assert_eq!(rule.tags, tags(&["fam:scalper", "stage:paper-test"]));
+    }
+
+    #[test]
+    fn tags_are_not_trading_identity() {
+        // The Duplicate gate compares fingerprint + knobs + canonical params. Tags
+        // must stay out of it — that is the whole reason they are a column rather
+        // than a `params` key (docs/plans/strategies/rule-tags.md).
+        let mut a = generic_draft(valid_params());
+        a.tags = tags(&["fam:scalper"]);
+        let mut b = generic_draft(valid_params());
+        b.fingerprint_id = a.fingerprint_id;
+        b.tags = tags(&["stage:experiment", "risk:high"]);
+        let ra = build_rule(&a).expect("a");
+        let rb = build_rule(&b).expect("b");
+        assert_eq!(ra.params, rb.params);
+        assert_eq!(ra.buy_amount_lamports, rb.buy_amount_lamports);
+        assert_ne!(ra.tags, rb.tags, "tags differ but identity does not");
+    }
+
+    #[test]
+    fn apply_rule_update_tag_patch_semantics() {
+        let mut rule = build_rule(&generic_draft(valid_params())).expect("valid");
+        apply_rule_update(&mut rule, &json!({ "tags": ["Fam:Scalper"] }));
+        assert_eq!(rule.tags, tags(&["fam:scalper"]));
+
+        // Absent key ⇒ untouched (a rename must not wipe tags).
+        apply_rule_update(&mut rule, &json!({ "rule_name": "renamed" }));
+        assert_eq!(rule.tags, tags(&["fam:scalper"]));
+
+        // Explicit empty array ⇒ cleared.
+        apply_rule_update(&mut rule, &json!({ "tags": [] }));
+        assert!(rule.tags.is_empty());
+    }
+
+    #[test]
+    fn from_json_normalizes_tags() {
+        let body = json!({
+            "fingerprint_id": Uuid::new_v4().to_string(),
+            // Non-string entries are skipped, not fatal — same leniency as the
+            // numeric fields.
+            "tags": ["Fam Scalper", 7, "fam-scalper"],
+        });
+        let d = RuleDraft::from_json(&body).expect("parses");
+        assert_eq!(d.tags, tags(&["fam-scalper"]));
     }
 }

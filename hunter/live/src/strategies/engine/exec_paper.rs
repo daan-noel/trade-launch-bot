@@ -13,8 +13,14 @@
 //! There is no on-chain identity for a paper fill, so the executor stashes no
 //! signatures — the sink's `record_entry_fill`/`close` just see an empty sig list.
 //!
-//! PnL is purely price-ratio based (exit_sol = entry_sol · exit_price/entry_price),
-//! so the (cosmetic) raw `token_amount` uses pump.fun's 6-decimal scaling.
+//! `Fill::price` is the feed's `price_per_token` = **SOL per RAW token unit**
+//! (`Trade::new`: `amount_sol / token_amount`, count in raw units), so a paper
+//! `token_amount` is `sol / price` with **no** decimal scaling — the same raw-unit
+//! convention `entry_price`/`exit_price` and the real executor use. Scaling it by
+//! 1e6 kept SOL PnL right (the factor cancels on the exit leg) but inflated every
+//! stored token count 1e6×, which made the repo's post-close
+//! `exit_price = exit_sol / sold_token_amount` 1e6× too small and pinned the
+//! positions PnL% cell at −100% on every paper row.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,9 +36,6 @@ use trading_core::strategies::paper_fill::{
 
 use super::{PaperTarget, PositionId, PositionRegistry};
 
-/// pump.fun SPL token decimals (raw units per whole token). Paper `token_amount`
-/// is cosmetic — PnL is price-ratio based — so this only needs to be consistent.
-const TOKEN_SCALE: f64 = 1_000_000.0;
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 
 /// How long to wait for the fill window to index before giving up.
@@ -64,7 +67,8 @@ pub async fn run_entry(
                 registry.update(pid, |m| m.paper_target = Some(trigger));
             }
             let sol = lamports as f64 / LAMPORTS_PER_SOL;
-            let token_amount = ((sol / fill.price) * TOKEN_SCALE).round().max(0.0) as u64;
+            // `fill.price` is SOL per RAW unit ⇒ the quotient is already raw units.
+            let token_amount = (sol / fill.price).round().max(0.0) as u64;
             Event::FillConfirmed {
                 intent,
                 fill: Fill {
@@ -96,7 +100,7 @@ pub async fn run_exit(
 ) {
     let event = match wait_exit_fill(&token_cache, &mint, fire_abs_idx).await {
         Some(fill) => {
-            let sol = (token_amount as f64 / TOKEN_SCALE) * fill.price;
+            let sol = token_amount as f64 * fill.price;
             Event::FillConfirmed {
                 intent,
                 fill: Fill {

@@ -47,15 +47,23 @@ export interface MetricColorStyle {
   color: string;
 }
 
-/** Stable hue from `group.metric` when the registry has no hue yet. */
-export function hashMetricHue(group: string, metric: string): number {
-  const s = `${group}.${metric}`;
+/**
+ * Stable hue `[0, 359]` from any string (FNV-1a). The ONE string→hue hash on the
+ * frontend — rule-tag chips reuse it so an unregistered label still gets a
+ * consistent color without a second implementation.
+ */
+export function hashHue(s: string): number {
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
   return (h >>> 0) % 360;
+}
+
+/** Stable hue from `group.metric` when the registry has no hue yet. */
+export function hashMetricHue(group: string, metric: string): number {
+  return hashHue(`${group}.${metric}`);
 }
 
 function clamp(n: number, lo: number, hi: number): number {
@@ -71,16 +79,11 @@ function resolveHue(input: MetricColorInput): number {
 }
 
 /**
- * Border / background / text colors for a metric (+ optional op shade).
- * Entry vs exit does not change the color — only group.metric (+ op).
+ * Chip colors from a resolved hue + saturation/lightness. The ONE place the
+ * border/background/text formula lives — metric chips and rule-tag chips share
+ * it so a chip reads the same wherever it is rendered.
  */
-export function metricColorStyle(input: MetricColorInput): MetricColorStyle {
-  const hue = resolveHue(input);
-  const op = (input.operator ?? '>') as Operator;
-  const dL = OP_LIGHTNESS[op] ?? 0;
-  const dS = OP_SATURATION[op] ?? 0;
-  const sat = clamp(68 + dS, 40, 85);
-  const light = clamp(58 + dL, 42, 72);
+export function chipColorsFromHue(hue: number, sat: number, light: number): MetricColorStyle {
   const border = `hsla(${hue}, ${sat}%, ${light}%, 0.5)`;
   const background = `hsla(${hue}, ${sat}%, ${light}%, 0.12)`;
   const color = `hsl(${hue}, ${clamp(sat + 5, 45, 90)}%, ${clamp(light + 18, 62, 82)}%)`;
@@ -91,4 +94,17 @@ export function metricColorStyle(input: MetricColorInput): MetricColorStyle {
     color,
     style: { borderColor: border, backgroundColor: background, color },
   };
+}
+
+/**
+ * Border / background / text colors for a metric (+ optional op shade).
+ * Entry vs exit does not change the color — only group.metric (+ op).
+ */
+export function metricColorStyle(input: MetricColorInput): MetricColorStyle {
+  const op = (input.operator ?? '>') as Operator;
+  return chipColorsFromHue(
+    resolveHue(input),
+    clamp(68 + (OP_SATURATION[op] ?? 0), 40, 85),
+    clamp(58 + (OP_LIGHTNESS[op] ?? 0), 42, 72),
+  );
 }

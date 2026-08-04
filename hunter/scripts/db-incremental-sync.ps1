@@ -892,16 +892,22 @@ ON CONFLICT (id) DO UPDATE SET
   updated_at = EXCLUDED.updated_at;
 
 \echo '-- strategy_rules'
--- Post-0004 redesign columns (rule_repo::RULE_COLS) -- NOT the legacy
--- strategy_id / buy_amount_sol shape.
+-- Post-0004 redesign columns + 0002 tags (rule_repo::RULE_COLS) -- NOT the
+-- legacy strategy_id / buy_amount_sol shape.
+--
+-- ORDERING: `tags` is read off the FOREIGN table, so the SERVER must have run
+-- core migration 0002 (i.e. the live bin must have been redeployed) before this
+-- sync runs -- otherwise the SELECT fails on an unknown column. Server wins on
+-- every column here, `tags` included: a tag edited LOCALLY on a rule the server
+-- also owns is overwritten. Tag server-owned rules in the live app.
 INSERT INTO strategy_rules (
   id, rule_name, fingerprint_id, trade_mode, is_active, is_enabled,
-  buy_amount_lamports, max_concurrent_tokens, max_total_tokens, params,
+  buy_amount_lamports, max_concurrent_tokens, max_total_tokens, params, tags,
   created_at, updated_at
 )
 SELECT
   r.id, r.rule_name, r.fingerprint_id, r.trade_mode, r.is_active, r.is_enabled,
-  r.buy_amount_lamports, r.max_concurrent_tokens, r.max_total_tokens, r.params,
+  r.buy_amount_lamports, r.max_concurrent_tokens, r.max_total_tokens, r.params, r.tags,
   r.created_at, r.updated_at
 FROM ec2_sync_src.strategy_rules r
 ON CONFLICT (id) DO UPDATE SET
@@ -910,6 +916,7 @@ ON CONFLICT (id) DO UPDATE SET
   is_enabled = EXCLUDED.is_enabled, buy_amount_lamports = EXCLUDED.buy_amount_lamports,
   max_concurrent_tokens = EXCLUDED.max_concurrent_tokens,
   max_total_tokens = EXCLUDED.max_total_tokens, params = EXCLUDED.params,
+  tags = EXCLUDED.tags,
   created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at;
 
 \echo '-- strategy_runs'

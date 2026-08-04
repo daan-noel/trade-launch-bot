@@ -51,6 +51,9 @@ export function PromoteRuleModal({
             max_concurrent_tokens: draft.max_concurrent_tokens,
             max_total_tokens: draft.max_total_tokens,
             params: draft.params,
+            // Seed provenance: a promoted combo is worth being able to find as a
+            // group later ("what came out of the sweep?"). Editable before save.
+            tags: ['src:sweep'],
             created_at: '',
             updated_at: '',
           }

@@ -319,7 +319,8 @@ export function FlowDiscoveryPage() {
   const [fetchResult] = useLazyGetFlowDiscoveryQuery();
   const [bindFp, bindState] = useBindFlowDiscoveryMutation();
   const [updateFp, updateState] = useUpdateFingerprintMutation();
-  const { data: fingerprints = [] } = useGetFingerprintsQuery();
+  const { data: fingerprints = [], isLoading: fingerprintsLoading } =
+    useGetFingerprintsQuery();
   const seedFp = seedFingerprintId
     ? fingerprints.find((f) => f.id === seedFingerprintId)
     : undefined;
@@ -529,16 +530,44 @@ export function FlowDiscoveryPage() {
     (targetFpId && fingerprints.find((f) => f.id === targetFpId)) || null;
   const currentPatterns = volumeIxPatternsFromConfig(targetFp?.metric_config ?? {});
 
+  /** Point the apply target at a fingerprint and load its SAVED patterns into the
+   *  draft — the ONE seeding path, so every trigger (group change, late list load,
+   *  manual pick) stages the same thing. `null` ⇒ promote-style bind, empty draft. */
+  const seedFromFingerprint = useCallback(
+    (id: string | null) => {
+      setTargetFpId(id);
+      const fp = id ? fingerprints.find((f) => f.id === id) : null;
+      setDraftPatterns(fp ? volumeIxPatternsFromConfig(fp.metric_config) : []);
+      setApplyOk(null);
+    },
+    [fingerprints],
+  );
+
+  /** The seed ran before the fingerprint list had loaded, so its "no fingerprint"
+   *  verdict came from an absent list, not from identity — re-resolve once below. */
+  const seedUnresolved = useRef(false);
+
   // Prefer the config-section seed fingerprint; else identity-axis auto-match.
   useEffect(() => {
-    const preferred = seedFingerprintId ?? autoMatchedFp?.id ?? null;
-    setTargetFpId(preferred);
-    const fp = preferred ? fingerprints.find((f) => f.id === preferred) : null;
-    setDraftPatterns(fp ? volumeIxPatternsFromConfig(fp.metric_config) : []);
-    setApplyOk(null);
+    seedUnresolved.current = fingerprintsLoading;
+    seedFromFingerprint(seedFingerprintId ?? autoMatchedFp?.id ?? null);
     setSelectedTokenMint(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- group/run/seed are the SSOTs
   }, [selectedGroupIdx, result?.run_id, seedFingerprintId]);
+
+  // The fingerprint list is fetched in parallel with the run, so the seed above
+  // routinely runs with an empty list and stages nothing — and since the group
+  // list preselects index 0, re-clicking that group is a no-op that never
+  // re-seeds, leaving an already-configured group looking unconfigured. Resolve
+  // once, the moment the list lands. Deliberately NOT keyed on `fingerprints`:
+  // Apply invalidates the tag, and a refetch must never overwrite a live draft.
+  useEffect(() => {
+    if (!seedUnresolved.current || fingerprintsLoading) return;
+    seedUnresolved.current = false;
+    const preferred = seedFingerprintId ?? autoMatchedFp?.id ?? null;
+    if (preferred) seedFromFingerprint(preferred);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires once, when the list resolves
+  }, [fingerprintsLoading]);
 
   function selectSeedFingerprint(id: string) {
     if (!id) {
@@ -548,9 +577,7 @@ export function FlowDiscoveryPage() {
     const fp = fingerprints.find((f) => f.id === id);
     if (!fp) return;
     setConfig((prev) => ({ ...DEFAULTS, ...prev, ...configFromFingerprint(fp) }));
-    setTargetFpId(fp.id);
-    setDraftPatterns(volumeIxPatternsFromConfig(fp.metric_config));
-    setApplyOk(null);
+    seedFromFingerprint(fp.id);
     setApplyError(null);
   }
 
@@ -630,12 +657,14 @@ export function FlowDiscoveryPage() {
 
   function selectTargetFingerprint(id: string) {
     const nextId = id || null;
+    // Switching to promote-style bind keeps whatever is staged — only a real
+    // fingerprint re-seeds the draft from its saved config.
+    if (nextId && fingerprints.some((f) => f.id === nextId)) {
+      seedFromFingerprint(nextId);
+      return;
+    }
     setTargetFpId(nextId);
     setApplyOk(null);
-    if (nextId) {
-      const fp = fingerprints.find((f) => f.id === nextId);
-      if (fp) setDraftPatterns(volumeIxPatternsFromConfig(fp.metric_config));
-    }
   }
 
   async function handleApply() {

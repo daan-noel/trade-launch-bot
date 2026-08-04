@@ -541,6 +541,18 @@ export const RULE_FIELD_HELP = {
       'Pick something you’ll recognize later (e.g. “liq-exit outside 30/70”).',
     ].join('\n'),
   },
+  tags: {
+    title: 'Tags',
+    body: [
+      'Free-form labels for slicing the Rules board — chip-filter to show only a family, or hide a batch you are not looking at right now.',
+      '',
+      'Presentational only: a tag never affects matching, arming, or PnL, and is not part of a rule’s trading identity (two rules that trade the same way still collide on the duplicate check however they are tagged). Hiding a rule by tag is NOT the same as Disable, which also blocks activation.',
+      '',
+      'Namespace with a colon to keep the set navigable — fam:scalper, src:sweep, stage:paper-test, risk:high. The server canonicalizes what you type (lowercase, dashes for spaces, deduped), so “Paper Test” and “paper_test” become one tag.',
+      '',
+      'Editable while the rule is live — a label is not a condition.',
+    ].join('\n'),
+  },
   mode: {
     title: 'Trade mode',
     body: [

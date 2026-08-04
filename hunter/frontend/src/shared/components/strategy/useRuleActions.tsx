@@ -75,6 +75,7 @@ export function useRuleActions({ renderDryRun }: UseRuleActionsOptions = {}): Ru
             max_concurrent_tokens: draft.max_concurrent_tokens,
             max_total_tokens: draft.max_total_tokens,
             params: draft.params,
+            tags: draft.tags,
           },
         }).unwrap();
       } else {
@@ -122,6 +123,8 @@ export function useRuleActions({ renderDryRun }: UseRuleActionsOptions = {}): Ru
     saving: creating || updating,
     openNew: () => setEditing('new'),
     edit: (r) => setEditing(r),
+    // Tags ride along with the spread — a copy of a rule belongs to the same
+    // families as its original, and the editor can prune them before saving.
     duplicate: (r) =>
       setEditing({
         ...r,

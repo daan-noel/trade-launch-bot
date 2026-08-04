@@ -31,6 +31,9 @@ import {
 import { FingerprintParamsById } from './FingerprintParamsSummary';
 import { FingerprintPicker } from './FingerprintPicker';
 import { LabelTip } from './LabelTip';
+import { RuleTagsInput } from './RuleTagsInput';
+import { allTags } from 'lib/strategy/tags';
+import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { RULE_FIELD_HELP } from 'lib/strategy/strategyHelp';
 
 /** The normalized draft the editor emits (matches the create body; the page maps
@@ -43,6 +46,8 @@ export interface RuleEditorDraft {
   max_concurrent_tokens: number;
   max_total_tokens: number;
   params: Record<string, unknown>;
+  /** Presentational labels — the server canonicalizes them on save. */
+  tags: string[];
 }
 
 export interface RuleEditorProps {
@@ -85,6 +90,11 @@ function RuleEditorInner({
   );
   const [maxTotal, setMaxTotal] = useState<number | null>(initial?.max_total_tokens ?? 0);
   const [fingerprintId, setFingerprintId] = useState<string | null>(initial?.fingerprint_id ?? null);
+  const [tags, setTags] = useState<string[]>(initial?.tags ?? []);
+  // Autocomplete over the tags already in use, so the vocabulary converges
+  // instead of sprouting a near-duplicate per rule.
+  const { data: allRules = [] } = useGetStrategyRulesQuery();
+  const tagSuggestions = useMemo(() => allTags(allRules), [allRules]);
 
   // `params` carries TP/SL/re-entry/flags; entry/exit conditions live in `rows`
   // and scale-out stages in `scaleStages` — both folded back at compose time.
@@ -222,6 +232,7 @@ function RuleEditorInner({
         max_concurrent_tokens: maxConcurrent ?? 1,
         max_total_tokens: maxTotal ?? 0,
         params: ruleParamsToJson(composedParams),
+        tags,
       }
     : null;
 
@@ -302,6 +313,13 @@ function RuleEditorInner({
             className="w-20"
           />
         </label>
+      </div>
+
+      {/* Tags — a label, not a condition, so it stays editable while the rule is
+          live (unlike the fingerprint / entry / exit block below). */}
+      <div className="flex flex-col gap-1 text-[11px] text-text-dim">
+        <LabelTip tip={RULE_FIELD_HELP.tags}>Tags</LabelTip>
+        <RuleTagsInput value={tags} onChange={setTags} suggestions={tagSuggestions} />
       </div>
 
       {/* Fingerprint + TP/SL — controls on one row; axis chips below full width */}

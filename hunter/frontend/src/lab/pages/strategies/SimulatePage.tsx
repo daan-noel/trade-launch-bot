@@ -61,6 +61,10 @@ import { RuleHoverTip } from 'components/strategy/RuleHoverTip';
 import { useRuleActions } from 'components/strategy/useRuleActions';
 import { buildCapsColumns } from 'components/strategy/capsRuleColumns';
 import { buildFingerprintRuleColumns } from 'components/strategy/fingerprintRuleColumns';
+import { buildRuleTagsColumn } from 'components/strategy/ruleTagsColumn';
+import { RuleTagFilter } from 'components/strategy/RuleTagFilter';
+import { useTagFilter } from 'hooks/useTagFilter';
+import { includeOnly, matchesTagFilter } from 'lib/strategy/tags';
 import { buildRuleParamsColumns } from 'components/strategy/ruleParamsColumns';
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
 import { useLocalStorage } from 'hooks/useLocalStorage';
@@ -200,6 +204,8 @@ export function SimulatePage() {
   const [reloadNonce, setReloadNonce] = useState(0);
   /** Soft-archived rules are hidden by default — toggle to review them. */
   const [showDisabled, setShowDisabled] = useState(false);
+  /** Tag chip selection — URL-backed (`?tags=`/`?notags=`) + sticky for this page. */
+  const [tagFilter, setTagFilter] = useTagFilter('simulate.tagFilter');
   const [opErr, setOpErr] = useState<string | null>(null);
   const handleRef = useRef<{ close: () => void } | null>(null);
   const hydratedIds = useRef<Set<string>>(new Set());
@@ -216,9 +222,15 @@ export function SimulatePage() {
   const fpById = useMemo(() => new Map(fps.map((f) => [f.id, f])), [fps]);
 
   const disabledCount = useMemo(() => rules.filter((r) => !r.is_enabled).length, [rules]);
-  const visibleRules = useMemo(
+  const enabledRules = useMemo(
     () => (showDisabled ? rules : rules.filter((r) => r.is_enabled)),
     [rules, showDisabled],
+  );
+  // Tag filter narrows what the table shows — and therefore what "Simulate
+  // Filtered" / the paper+real run buttons target.
+  const visibleRules = useMemo(
+    () => enabledRules.filter((r) => matchesTagFilter(r.tags, tagFilter)),
+    [enabledRules, tagFilter],
   );
 
   // Tint fingerprint cells when ≥2 rules share the same fingerprint_id.
@@ -368,7 +380,7 @@ export function SimulatePage() {
 
   const columns = useMemo<ColumnDef<StrategyRule>[]>(
     () => [
-      ...buildColumns(runs, fpById, fpTints),
+      ...buildColumns(runs, fpById, fpTints, (tag) => setTagFilter(includeOnly(tag))),
       {
         key: 'execute',
         label: 'Execute',
@@ -537,6 +549,9 @@ export function SimulatePage() {
           </>
         }
       />
+      {/* Counts describe the enabled set, not the tag-filtered one, so a chip's
+          count doesn't collapse the moment you click it. */}
+      <RuleTagFilter rules={enabledRules} filter={tagFilter} onChange={setTagFilter} />
       {(actions.err || opErr) && (
         <p className="text-xs text-red">{actions.err || opErr}</p>
       )}
@@ -1004,6 +1019,7 @@ function buildColumns(
   runs: Record<string, RunState>,
   fpById: Map<string, Fingerprint>,
   fpTints: Map<string, string>,
+  onTagClick: (tag: string) => void,
 ): ColumnDef<StrategyRule>[] {
   const runOf = (r: StrategyRule) => runs[r.id];
   const summaryOf = (r: StrategyRule) => runOf(r)?.summary;
@@ -1083,6 +1099,10 @@ function buildColumns(
         `${r.rule_name} ${!r.is_enabled ? 'disabled' : r.is_active ? 'active' : 'idle'}`,
       sortValue: (r) => r.rule_name,
     },
+    // Same column definition the Rules board uses — a tag reads and filters
+    // identically on both. Clicking one narrows to that tag, which composes with
+    // "Simulate Filtered" (run exactly one family in one click).
+    buildRuleTagsColumn({ onTagClick }),
     {
       key: 'mode',
       label: 'Mode',

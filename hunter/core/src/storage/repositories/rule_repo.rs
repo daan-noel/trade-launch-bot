@@ -28,6 +28,7 @@ struct StrategyRuleDbRow {
     max_concurrent_tokens: i64,
     max_total_tokens: i64,
     params: Json<Value>,
+    tags: Vec<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -45,15 +46,19 @@ impl From<StrategyRuleDbRow> for StrategyRule {
             max_concurrent_tokens: r.max_concurrent_tokens,
             max_total_tokens: r.max_total_tokens,
             params: r.params.0,
+            tags: r.tags,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
     }
 }
 
-// Explicit column list (struct order) — not `SELECT *`.
+// Explicit column list (struct order) — not `SELECT *`. sqlx maps positionally,
+// so the order here is load-bearing. `scripts/db-incremental-sync.ps1` mirrors
+// this list by hand — a column added here must be added there too, or the lab
+// mirror silently stops carrying it.
 const RULE_COLS: &str = "id, rule_name, fingerprint_id, trade_mode, is_active, is_enabled, \
-    buy_amount_lamports, max_concurrent_tokens, max_total_tokens, params, \
+    buy_amount_lamports, max_concurrent_tokens, max_total_tokens, params, tags, \
     created_at, updated_at";
 
 impl RuleRepo {
@@ -66,8 +71,8 @@ impl RuleRepo {
             r#"
             INSERT INTO strategy_rules
                 (id, rule_name, fingerprint_id, trade_mode, is_active, is_enabled, buy_amount_lamports,
-                 max_concurrent_tokens, max_total_tokens, params, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                 max_concurrent_tokens, max_total_tokens, params, tags, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             "#,
         )
         .bind(rule.id)
@@ -80,6 +85,7 @@ impl RuleRepo {
         .bind(rule.max_concurrent_tokens)
         .bind(rule.max_total_tokens)
         .bind(Json(&rule.params))
+        .bind(&rule.tags)
         .bind(rule.created_at)
         .bind(rule.updated_at)
         .execute(&self.pool)
@@ -100,6 +106,7 @@ impl RuleRepo {
                 max_concurrent_tokens = $8,
                 max_total_tokens = $9,
                 params = $10,
+                tags = $11,
                 updated_at = now()
             WHERE id = $1
             "#,
@@ -114,6 +121,7 @@ impl RuleRepo {
         .bind(rule.max_concurrent_tokens)
         .bind(rule.max_total_tokens)
         .bind(Json(&rule.params))
+        .bind(&rule.tags)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -167,8 +175,11 @@ impl RuleRepo {
     }
 
     /// Identity-identical rule (same fingerprint + trade knobs + canonical
-    /// `params`). `rule_name` / `is_active` / `is_enabled` are labels/lifecycle,
-    /// not identity — mirrors fingerprint `find_or_create` (name excluded).
+    /// `params`). `rule_name` / `tags` / `is_active` / `is_enabled` are
+    /// labels/lifecycle, not identity — mirrors fingerprint `find_or_create`
+    /// (name excluded). Two rules that trade the same way stay duplicates however
+    /// they are tagged; that is exactly why tags are a column and not a
+    /// `params` key (see `docs/plans/strategies/rule-tags.md`).
     /// Optional `exclude_id` skips that row (edit-self).
     pub async fn find_identical(
         &self,

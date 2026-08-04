@@ -26,9 +26,13 @@ import { buildCapsColumns } from './capsRuleColumns';
 import { buildFingerprintRuleColumns } from './fingerprintRuleColumns';
 import { buildRuleParamsColumns } from './ruleParamsColumns';
 import { RuleHoverTip } from './RuleHoverTip';
+import { RuleTagFilter } from './RuleTagFilter';
+import { buildRuleTagsColumn } from './ruleTagsColumn';
 import { useRuleActions } from './useRuleActions';
 import type { RuleEditorDraft } from './RuleEditor';
 import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
+import { useTagFilter } from 'hooks/useTagFilter';
+import { includeOnly, matchesTagFilter } from 'lib/strategy/tags';
 import { apiErrorMessage } from 'store/baseApi';
 import {
   useGetStrategyRulesQuery,
@@ -139,6 +143,10 @@ export function RulesView({
 
   /** Soft-archived rules are hidden by default — toggle to review them. */
   const [showDisabled, setShowDisabled] = useState(false);
+  /** Tag chip selection — URL-backed (`?tags=`/`?notags=`) + sticky per app. */
+  const [tagFilter, setTagFilter] = useTagFilter(
+    showScores ? 'rules-control.tagFilter' : 'rules.tagFilter',
+  );
   const [opErr, setOpErr] = useState<string | null>(null);
   /** Rule ids mid optimistic pause (label "Pausing…" until SSE/refetch confirms). */
   const [pausingIds, setPausingIds] = useState<Set<string>>(() => new Set());
@@ -152,10 +160,17 @@ export function RulesView({
   const fpById = useMemo(() => new Map(fps.map((f) => [f.id, f])), [fps]);
 
   const disabledCount = useMemo(() => rules.filter((r) => !r.is_enabled).length, [rules]);
-  const visibleRules = useMemo(
+  // Two independent hides, deliberately kept apart: `is_enabled` is lifecycle (a
+  // disabled rule also cannot be activated); tags are a pure view filter.
+  const enabledRules = useMemo(
     () => (showDisabled ? rules : rules.filter((r) => r.is_enabled)),
     [rules, showDisabled],
   );
+  const visibleRules = useMemo(
+    () => enabledRules.filter((r) => matchesTagFilter(r.tags, tagFilter)),
+    [enabledRules, tagFilter],
+  );
+  const hiddenByTags = enabledRules.length - visibleRules.length;
 
   /** Cross-rule rollup for the Control TOTAL strip (same scope as scoreboard). */
   const scoreboardTotals = useMemo(() => {
@@ -609,6 +624,9 @@ export function RulesView({
           },
         ] satisfies ColumnDef<StrategyRule>[])
       : []),
+    // Click-to-filter: the fastest path from "I see this label" to "show me the
+    // rest of them".
+    buildRuleTagsColumn({ onTagClick: (tag) => setTagFilter(includeOnly(tag)) }),
     {
       key: 'mode',
       label: 'Mode',
@@ -820,6 +838,14 @@ export function RulesView({
             </>
           }
         />
+        {/* Counts describe the enabled set, NOT `visibleRules` — otherwise every
+            chip would drop to its own count the moment you clicked it. */}
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <RuleTagFilter rules={enabledRules} filter={tagFilter} onChange={setTagFilter} />
+          {hiddenByTags > 0 && (
+            <span className="text-[10px] text-text-dim">{hiddenByTags} hidden by tags</span>
+          )}
+        </div>
       </div>
       {err && <p className="text-xs text-red">{err}</p>}
       {showScores && (

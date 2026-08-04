@@ -39,6 +39,14 @@ use super::strategy::{
 const BUY_SOL: f64 = 1.0;
 const FP_ID: uuid::Uuid = uuid::Uuid::from_u128(0x1234);
 
+/// Price scale for the **scale-out** corpora. A fill price is SOL per *raw* token
+/// unit, so the toy `1.0` the single-exit corpora use would buy a one-unit bag and
+/// quantize every `sell_bps` leg to 0 or 1 units. At `1e-6` SOL/unit, `BUY_SOL` is
+/// an exact 1e6-unit bag — the integer-`sell_bps` precondition the ladder tests
+/// state — while all price *ratios* (and so every TP/SL/metric decision) are
+/// unchanged. Single-exit parity is ratio-based and needs no scaling.
+const RAW_PX: f64 = 1e-6;
+
 /// The sweep's legacy pricing — worst-case fills + `pumpfun_default`. The default
 /// for tests that aren't about the fill model; [`pricing_for`] varies it.
 fn pricing() -> Pricing {
@@ -431,7 +439,7 @@ fn scan_matches_replay_pure_dead_open_rule() {
 /// same-batch `FillConfirmed`. Locked by `assert_parity` under every fill model.
 #[test]
 fn scan_matches_replay_scale_out_two_stage() {
-    // Entry @ 1.0 exactly (fill window empty past slot 0 → market-fill) so
+    // Entry @ `RAW_PX` exactly (fill window empty past slot 0 → market-fill) so
     // `initial_tokens = 1e6` and `7000 bps` is an exact integer — otherwise
     // replay's `sell_bps_of` truncates (6999) and multi-leg PnL drifts by float
     // dust under WorstCase. Gaps ≫ MAX_FILL_WAIT_SLOTS so every exit also
@@ -439,9 +447,9 @@ fn scan_matches_replay_scale_out_two_stage() {
     let tokens = vec![token(
         "scale2",
         vec![
-            ct(0.0, true, 1.0, 1.0, 100.0), // entry trigger + fill @ 1.0
-            ct(10.0, true, 0.5, 1.50, 100.0), // +50% → stage-0 TP banks 7000 bps
-            ct(40.0, true, 0.5, 1.60, 100.0), // held ≥ 30 from entry → remainder
+            ct(0.0, true, 1.0, RAW_PX, 100.0), // entry trigger + fill @ RAW_PX
+            ct(10.0, true, 0.5, 1.50 * RAW_PX, 100.0), // +50% → stage-0 TP banks 7000 bps
+            ct(40.0, true, 0.5, 1.60 * RAW_PX, 100.0), // held ≥ 30 from entry → remainder
         ],
     )];
     let remainder = static_metric_side(
@@ -475,9 +483,9 @@ fn scan_matches_replay_scale_out_global_sl_mid_ladder() {
     let tokens = vec![token(
         "scale_sl",
         vec![
-            ct(0.0, true, 1.0, 1.0, 100.0), // exact 1.0 entry (see two_stage note)
-            ct(10.0, true, 0.5, 1.50, 100.0), // bank 70% at +50%
-            ct(20.0, false, 0.5, 0.60, 100.0), // −40% from entry → global SL
+            ct(0.0, true, 1.0, RAW_PX, 100.0), // exact 1e6-unit entry (see two_stage note)
+            ct(10.0, true, 0.5, 1.50 * RAW_PX, 100.0), // bank 70% at +50%
+            ct(20.0, false, 0.5, 0.60 * RAW_PX, 100.0), // −40% from entry → global SL
         ],
     )];
     let params = RuleParams {

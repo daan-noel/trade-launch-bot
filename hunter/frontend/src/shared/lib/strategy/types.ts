@@ -87,6 +87,13 @@ export interface StrategyRule {
   max_concurrent_tokens: number;
   max_total_tokens: number;
   params: Record<string, unknown>;
+  /**
+   * Free-form labels for slicing the Rules board — presentational only, and
+   * deliberately NOT part of trading identity (see `ruleIdentityOf`). The server
+   * canonicalizes them (`normalize_tags`) and always sends the key; optional here
+   * so a response cached from a pre-tags bin still types.
+   */
+  tags?: string[];
   created_at: string;
   updated_at: string;
   /** DB scoreboard (list_rules enrichment). Absent/0 until something trades. */
@@ -138,14 +145,23 @@ export interface CreateRuleBody {
   max_concurrent_tokens: number;
   max_total_tokens: number;
   params: Record<string, unknown>;
+  tags?: string[];
 }
 
 /** PUT /api/strategy-rules/{id} patch — `fingerprint_id`/`is_active`/`is_enabled` NOT
- *  patchable. `trade_mode` is patchable (editor gates it behind unlock). */
+ *  patchable. `trade_mode` is patchable (editor gates it behind unlock).
+ *  `tags` follows patch semantics server-side: omit to leave them alone, send
+ *  `[]` to clear. */
 export type UpdateRuleBody = Partial<
   Pick<
     CreateRuleBody,
-    'rule_name' | 'trade_mode' | 'buy_amount_lamports' | 'max_concurrent_tokens' | 'max_total_tokens' | 'params'
+    | 'rule_name'
+    | 'trade_mode'
+    | 'buy_amount_lamports'
+    | 'max_concurrent_tokens'
+    | 'max_total_tokens'
+    | 'params'
+    | 'tags'
   >
 >;
 

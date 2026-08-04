@@ -232,6 +232,8 @@ async fn resolve_target(
         max_concurrent_tokens: draft.max_concurrent_tokens,
         max_total_tokens: draft.max_total_tokens,
         params: draft.params.clone(),
+        // Tags are a Rules-board label; a synthetic dry-run row is never listed.
+        tags: Vec::new(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };

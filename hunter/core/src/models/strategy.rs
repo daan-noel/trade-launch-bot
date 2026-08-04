@@ -30,6 +30,12 @@ pub struct StrategyRule {
     pub max_total_tokens: i64,
     /// TP/SL + entry/exit metric conditions as JSON (redesign plan §5 shape).
     pub params: Value,
+    /// Free-form labels for slicing the Rules board. **Presentational only** —
+    /// never identity (unlike `params`), never read by the engine. Canonical
+    /// shape is owned by [`crate::strategies::rules::normalize_tags`].
+    /// `#[serde(default)]` so a pre-0002 stored/cached rule JSON still decodes.
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
