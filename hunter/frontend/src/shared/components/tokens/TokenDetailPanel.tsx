@@ -13,6 +13,7 @@ import {
 } from 'utils/format';
 import { AddrCard, StatCard } from 'components/ui/StatCard';
 import { Badge } from 'components/ui/Badge';
+import { u64Num } from 'lib/u64Wire';
 
 function CopyIcon({ copied }: { copied: boolean }) {
   if (copied) {
@@ -132,11 +133,10 @@ export function TokenDetailPanel({
     );
   }
 
+  const initialSupply = u64Num(detail.initial_supply_token);
   const entry =
-    detail.initial_buy_sol != null &&
-    detail.initial_supply_token != null &&
-    detail.initial_supply_token > 0
-      ? detail.initial_buy_sol / detail.initial_supply_token
+    detail.initial_buy_sol != null && initialSupply != null && initialSupply > 0
+      ? detail.initial_buy_sol / initialSupply
       : null;
   const athMult =
     entry && detail.ath_price && entry !== 0 ? detail.ath_price / entry : null;
@@ -243,6 +243,8 @@ export function TokenDetailPanel({
             <div className={cn('grid gap-1', compact ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-4')}>
               <StatCard label={`Initial Buy (${price.unitLabel})`} value={detail.initial_buy_sol != null ? price.displayAmount(detail.initial_buy_sol) : '-'} />
               <StatCard label="Initial Supply" value={detail.initial_supply_token != null ? String(detail.initial_supply_token) : '-'} />
+              {/* String(...) on the wire value is already the exact digits — the
+                  `u64` args are sent as strings precisely so this stays lossless. */}
               <StatCard label="CU Limit" value={detail.cu_limit != null ? String(detail.cu_limit) : '-'} variant="muted" bold />
               <StatCard label="CU Price" value={detail.cu_price != null ? String(detail.cu_price) : '-'} variant="muted" bold />
             </div>

@@ -172,6 +172,26 @@ impl SolPrecision {
     }
 }
 
+/// The largest lamports value that fits the `i64` storage/bucket type — i.e. the
+/// largest one that can be bucketed, stored in a `BIGINT` fingerprint axis, or
+/// compared against one.
+///
+/// The on-chain domain of a creation-instruction lamports arg is **`u64`**, and
+/// real data exceeds this: pump.fun's `buy`/`buy_v2` take `max_sol_cost` as a
+/// *slippage ceiling*, so a dev who wants "fill at any price" passes `u64::MAX`
+/// (≈1.84e10 SOL — not an amount anybody bid). Values above this line are carried
+/// exactly and rendered by [`exact_sol_label_u64`], never wrapped into `i64` and
+/// never bucketed. The dashboard SQL interpolates this same threshold so both
+/// surfaces split at the identical point.
+pub const MAX_BUCKETABLE_LAMPORTS: u64 = i64::MAX as u64;
+
+/// **The one decider** for "is this lamports value a bucketable amount, or an
+/// out-of-`i64` ceiling?". Returns the `i64` for the former and `None` for the
+/// latter — never a wrapped or saturated integer.
+pub fn bucketable_lamports(lamports: u64) -> Option<i64> {
+    i64::try_from(lamports).ok()
+}
+
 /// Render a lamports amount as its **exact** human-SOL group key — the
 /// [`SolPrecision::Exact`] counterpart of [`bucket_sol_label`].
 ///
@@ -181,9 +201,31 @@ impl SolPrecision {
 /// byte-for-byte in `creation_stats_repo::sol_exact_sql` — keep the two in step,
 /// exactly as `sol_bucket_sql` mirrors `bucket_sol_label`.
 pub fn exact_sol_label(lamports: i64) -> String {
-    let s = format!("{:.9}", lamports as f64 / LAMPORTS_PER_SOL_F64);
-    let t = s.trim_end_matches('0').trim_end_matches('.');
-    if t.is_empty() { "0".to_string() } else { t.to_string() }
+    if lamports < 0 {
+        format!("-{}", exact_sol_label_u64(lamports.unsigned_abs()))
+    } else {
+        exact_sol_label_u64(lamports as u64)
+    }
+}
+
+/// [`exact_sol_label`] over the full on-chain `u64` domain.
+///
+/// **Integer arithmetic, deliberately.** The old form was
+/// `format!("{:.9}", lamports as f64 / 1e9)`, which is exact only below 2^53
+/// lamports — and real data carries `u64::MAX` (see [`MAX_BUCKETABLE_LAMPORTS`]),
+/// where the `f64` round-trip silently drops the low digits (`…709551615` printed
+/// as `…7096`) and, worse, maps distinct amounts onto one label. Splitting the
+/// integer into whole/fractional parts is exact for every `u64` and produces a
+/// byte-identical result to the old float form everywhere the float form was
+/// correct. Mirrored in SQL by `creation_stats_repo::sol_exact_sql`.
+pub fn exact_sol_label_u64(lamports: u64) -> String {
+    let whole = lamports / 1_000_000_000;
+    let frac = lamports % 1_000_000_000;
+    if frac == 0 {
+        return whole.to_string();
+    }
+    let s = format!("{whole}.{frac:09}");
+    s.trim_end_matches('0').to_string()
 }
 
 /// Human SOL → lamports, **rounded**. The engine's own copy of the conversion
@@ -275,10 +317,12 @@ pub struct TokenFingerprint {
     pub cu_limit: Option<i64>,
     pub cu_price: Option<i64>,
     pub is_cashback_enabled: bool,
-    /// Creation-instruction `max_cost_lamports`, in lamports.
-    pub max_cost_lamports: Option<i64>,
-    /// Creation-instruction `spendable_lamports_in`, in lamports.
-    pub spendable_lamports_in: Option<i64>,
+    /// Creation-instruction `max_cost_lamports`, in lamports. `u64` because that is
+    /// the on-chain domain and real data uses all of it — see
+    /// [`MAX_BUCKETABLE_LAMPORTS`].
+    pub max_cost_lamports: Option<u64>,
+    /// Creation-instruction `spendable_lamports_in`, in lamports (`u64`, as above).
+    pub spendable_lamports_in: Option<u64>,
     /// Total buy SOL across trades landing in the token's creation slot (human
     /// SOL). First **trade-derived** fingerprint field — sourced from `tokens_info`,
     /// not the `tokens` creation row like every field above.
@@ -289,16 +333,28 @@ pub struct TokenFingerprint {
     pub ix_labels: Vec<String>,
 }
 
-/// Read a lamports value (u64 number or numeric string) from a creation
-/// instruction-args object. Mirrors the live entry path's `instruction_arg_as_sol`
-/// reader (minus the SOL conversion — grouping keys on raw lamports).
-pub fn extract_lamports(instruction: Option<&Value>, key: &str) -> Option<i64> {
+/// Read a lamports value from a creation instruction-args object. Mirrors the live
+/// entry path's `instruction_arg_as_sol` reader (minus the SOL conversion —
+/// grouping keys on raw lamports).
+///
+/// **Returns `u64`, the on-chain domain, and never narrows.** The previous form
+/// returned `Option<i64>` via `v.as_u64().map(|u| u as i64)`, which wrapped
+/// pump.fun's `u64::MAX` "no slippage cap" ceiling into `-1` — silently, on every
+/// surface that reads it (the engine matcher, the sweep group key, the Parquet
+/// token dimension), while the dashboard's SQL read the same row as `+1.84e19`.
+/// One sentinel, three disagreeing readers. Callers that need an `i64` (a bucket,
+/// a `BIGINT` axis) go through [`bucketable_lamports`], which says `None` instead
+/// of lying.
+///
+/// **Both persisted shapes are accepted** — a JSON number (what ingest writes) and
+/// a numeric string — because JSON numbers are unsafe past 2^53 for any consumer
+/// that parses them as `f64`, so the string form is a legitimate wire/storage
+/// encoding for a `u64`. The string branch parses as `u64` too; parsing it as
+/// `i64` (the old code) simply dropped the very values this exists to preserve.
+pub fn extract_lamports(instruction: Option<&Value>, key: &str) -> Option<u64> {
     let obj = instruction?;
-    obj.get(key).and_then(|v| {
-        v.as_i64()
-            .or_else(|| v.as_u64().map(|u| u as i64))
-            .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
-    })
+    obj.get(key)
+        .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().parse::<u64>().ok())))
 }
 
 /// Collect an instruction-labels JSON value into a `Vec<String>`, preserving
@@ -482,6 +538,16 @@ fn render_field(
         SolPrecision::Bucket(w) => bucket_lamports_as_sol(l, w, decimals),
         SolPrecision::Exact => exact_sol_label(l),
     };
+    // The `u64`-domain instruction axes. A value past `i64` is not an amount — it
+    // is a "no limit" ceiling (see `MAX_BUCKETABLE_LAMPORTS`) — so it gets its own
+    // exact label in **both** precision modes rather than being binned: a 0.1-SOL
+    // bucket around 1.84e10 SOL is noise, and the exact digits keep distinct
+    // ceilings distinct. It stays separate from the `∅` MISSING key on purpose —
+    // "the dev set no slippage cap" and "the field is absent" are different facts.
+    let key_lamports_u64 = |l: u64| match bucketable_lamports(l) {
+        Some(v) => key_lamports(v),
+        None => exact_sol_label_u64(l),
+    };
     let key_sol = |v: f64| match precision {
         SolPrecision::Bucket(w) => bucket_sol_label(v, w, decimals),
         SolPrecision::Exact => exact_sol_label(sol_to_lamports(v)),
@@ -495,9 +561,11 @@ fn render_field(
         GroupField::IsCashbackEnabled => fp.is_cashback_enabled.to_string(),
         // Continuous SOL amounts → binned SOL ranges. Lamports fields convert to SOL
         // first so the label reads in SOL (matching their "SOL cost"/"SOL in" name).
-        GroupField::MaxCostLamports => fp.max_cost_lamports.map(key_lamports).unwrap_or_else(miss),
+        GroupField::MaxCostLamports => {
+            fp.max_cost_lamports.map(key_lamports_u64).unwrap_or_else(miss)
+        }
         GroupField::SpendableLamportsIn => {
-            fp.spendable_lamports_in.map(key_lamports).unwrap_or_else(miss)
+            fp.spendable_lamports_in.map(key_lamports_u64).unwrap_or_else(miss)
         }
         GroupField::InitialBuySol => fp.initial_buy_sol.map(key_sol).unwrap_or_else(miss),
         GroupField::FirstSlotBuySol => fp.first_slot_buy_sol.map(key_sol).unwrap_or_else(miss),
@@ -788,6 +856,89 @@ mod tests {
         assert_eq!(extract_lamports(Some(&ix), "spendable_lamports_in"), Some(500));
         assert_eq!(extract_lamports(Some(&ix), "absent"), None);
         assert_eq!(extract_lamports(None, "max_cost_lamports"), None);
+    }
+
+    /// **The regression this whole `u64` path exists for.** pump.fun's `buy` takes
+    /// `max_sol_cost` as a slippage *ceiling*, so a dev wanting "fill at any price"
+    /// passes `u64::MAX` — ~11k tokens in a 30-day window carried it. The old reader
+    /// did `v.as_u64().map(|u| u as i64)` and turned that into `-1`, silently, while
+    /// the dashboard's SQL read the same row as `+1.84e19`.
+    ///
+    /// Both persisted shapes must survive, because the wire encoding for a `u64` is
+    /// a string (`trading_core::serde_wire`) and the string branch used to parse as
+    /// `i64`, which simply dropped the value.
+    #[test]
+    fn u64_max_instruction_arg_survives_both_persisted_shapes() {
+        for ix in [
+            json!({ "max_cost_lamports": u64::MAX }),
+            json!({ "max_cost_lamports": u64::MAX.to_string() }),
+        ] {
+            assert_eq!(
+                extract_lamports(Some(&ix), "max_cost_lamports"),
+                Some(u64::MAX),
+                "value did not round-trip from {ix}",
+            );
+        }
+        // And it is explicitly *not* a bucketable amount — callers that need an
+        // `i64` get `None`, never a wrapped `-1` or a saturated `i64::MAX`.
+        assert_eq!(bucketable_lamports(u64::MAX), None);
+        assert_eq!(bucketable_lamports(MAX_BUCKETABLE_LAMPORTS), Some(i64::MAX));
+        assert_eq!(bucketable_lamports(1_515_000_000), Some(1_515_000_000));
+    }
+
+    /// The exact label is integer arithmetic, so it holds every digit of a `u64`.
+    /// The old `format!("{:.9}", l as f64 / 1e9)` printed `u64::MAX` as
+    /// `18446744073.7096` — the number the dashboard was showing — and mapped
+    /// distinct amounts onto one key up there.
+    #[test]
+    fn exact_sol_label_is_lossless_across_the_whole_u64_domain() {
+        assert_eq!(exact_sol_label_u64(u64::MAX), "18446744073.709551615");
+        assert_eq!(exact_sol_label_u64(u64::MAX - 1), "18446744073.709551614");
+        assert_ne!(exact_sol_label_u64(u64::MAX), exact_sol_label_u64(u64::MAX - 1));
+        // Above 2^53 the float form collapses neighbours onto one key; the integer
+        // form keeps them apart. This is the property, not just the digits.
+        let via_f64 = |l: u64| format!("{:.9}", l as f64 / LAMPORTS_PER_SOL_F64);
+        assert_eq!(via_f64(u64::MAX), via_f64(u64::MAX - 1), "premise: f64 loses them");
+    }
+
+    /// Rewriting `exact_sol_label` in integer math must not move a single existing
+    /// group key — every amount the float form rendered correctly (< 2^53 lamports,
+    /// i.e. every real SOL amount) has to render byte-identically.
+    #[test]
+    fn exact_sol_label_matches_the_float_form_everywhere_the_float_form_was_correct() {
+        for l in [
+            0i64, 1, 500, 50_000_000, 1_000_000_000, 1_515_000_000, 10_000_000_000,
+            15_150_000_000, 100_000_000_000, 123_456_789_012, 9_007_199_254_740_991,
+        ] {
+            let old = {
+                let s = format!("{:.9}", l as f64 / LAMPORTS_PER_SOL_F64);
+                let t = s.trim_end_matches('0').trim_end_matches('.');
+                if t.is_empty() { "0".to_string() } else { t.to_string() }
+            };
+            assert_eq!(exact_sol_label(l), old, "label moved for {l} lamports");
+        }
+    }
+
+    /// An out-of-`i64` ceiling gets its own exact group key in **both** precision
+    /// modes, and that key is distinct from the `∅` missing sentinel — "the dev set
+    /// no slippage cap" and "the field is absent" are different facts, and folding
+    /// them together is what loses the signal.
+    #[test]
+    fn the_no_limit_ceiling_groups_separately_from_missing() {
+        let key = |max_cost: Option<u64>, p: SolPrecision| {
+            let mut tf = fp();
+            tf.max_cost_lamports = max_cost;
+            group_key(&tf, &[GroupField::MaxCostLamports], p).0[0].1.clone()
+        };
+        for p in [SolPrecision::Bucket(SOL_BUCKET_WIDTH), SolPrecision::Exact] {
+            assert_eq!(key(Some(u64::MAX), p), "18446744073.709551615", "mode {p:?}");
+            assert_ne!(key(Some(u64::MAX), p), MISSING);
+        }
+        // Absent still renders the missing sentinel, unchanged.
+        assert_eq!(key(None, SolPrecision::Exact), MISSING);
+        // A normal amount is untouched by any of this.
+        assert_eq!(key(Some(1_515_000_000), SolPrecision::Bucket(SOL_BUCKET_WIDTH)), "1.5–1.6");
+        assert_eq!(key(Some(1_515_000_000), SolPrecision::Exact), "1.515");
     }
 
 }

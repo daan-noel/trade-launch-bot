@@ -334,24 +334,34 @@ fn sol_bucket_sql(sol_expr: &str, width: f64) -> String {
 }
 
 /// SQL group-key expression for a continuous SOL amount in [`SolPrecision::Exact`]
-/// mode — the mirror of `grouping::exact_sol_label`, byte-for-byte.
+/// mode — the mirror of `grouping::exact_sol_label_u64`, byte-for-byte. Takes the
+/// **raw lamports** expression, not a pre-divided SOL one.
 ///
 /// Nine decimals is lossless for lamports; the double `rtrim` strips trailing
-/// zeros then the bare `.`, which is exactly Rust's
-/// `format!("{:.9}")` + `trim_end_matches('0')` + `trim_end_matches('.')`. The `.`
+/// zeros then the bare `.`, which is exactly Rust's trailing-zero trim. The `.`
 /// pass is load-bearing: without it a whole-SOL amount would keep eating digits
 /// (`10.000000000` → `1`). Verified equal on `0`, `1` lamport, `1.515`, `10`,
 /// `100`, `15.15`, `123.456789012`.
 ///
+/// **Multiply by `0.000000001`; never divide by `1e9`.** The exact form has to be
+/// exact for the whole `u64` domain (see `grouping::MAX_BUCKETABLE_LAMPORTS`), and
+/// the two obvious spellings both lose digits there: `::float8 / 1e9` (what this
+/// used to be) collapses to 15 significant digits, printing `u64::MAX` as
+/// `18446744073.7096`, and even `::numeric / 1e9` loses them because Postgres picks
+/// the quotient's scale from `select_div_scale` — 16 significant digits, i.e. only
+/// 8 decimals on an 11-digit result. Numeric *multiplication* takes the scale of
+/// the operands (`0 + 9 = 9`), so this is exact by construction.
+///
 /// Do **not** substitute `'FM…999999999'` here: `FM` leaves a trailing `.` on
 /// whole amounts (`1.`), which Rust never produces, and a group key that differs
 /// by one byte is a different group.
-fn sol_exact_sql(sol_expr: &str) -> String {
+fn sol_exact_sql(lamports_expr: &str) -> String {
     // 9 decimals = one lamport, the finest the source can express.
     let mask = sql_num_mask(9);
     format!(
-        "CASE WHEN ({sol_expr}) IS NULL THEN '∅' \
-         ELSE rtrim(rtrim(to_char({sol_expr}, '{mask}'), '0'), '.') END"
+        "CASE WHEN ({lamports_expr}) IS NULL THEN '∅' \
+         ELSE rtrim(rtrim(to_char(({lamports_expr})::numeric * 0.000000001, '{mask}'), '0'), '.') \
+         END"
     )
 }
 
@@ -372,9 +382,27 @@ fn group_field_sql(f: GroupField, precision: impl Into<SolPrecision>, ti_alias: 
     let precision = precision.into();
     // One seam for the precision policy, so no field can render in a mode the
     // others don't (mirrors `grouping::render_field`'s `key_lamports`/`key_sol`).
-    let sol_key = |sol_expr: &str| match precision {
-        SolPrecision::Bucket(w) => sol_bucket_sql(sol_expr, w),
-        SolPrecision::Exact => sol_exact_sql(sol_expr),
+    // Takes the **raw lamports** expression: the bucket form divides in `float8`
+    // because the engine bins in `f64` and the two must agree bit-for-bit, while
+    // the exact form stays in `numeric` because it must be lossless (see
+    // [`sol_exact_sql`]).
+    let sol_key = |lamports_expr: &str| match precision {
+        SolPrecision::Bucket(w) => sol_bucket_sql(&format!("({lamports_expr})::float8 / 1e9"), w),
+        SolPrecision::Exact => sol_exact_sql(lamports_expr),
+    };
+    // The two `u64`-domain axes read off the creation-instruction JSONB. A value
+    // past `i64` is a "no limit" ceiling, not an amount, so it short-circuits to
+    // its exact label instead of being binned — the mirror of `render_field`'s
+    // `key_lamports_u64`. Splitting at the identical threshold is what keeps the
+    // dashboard's group key byte-identical to the sweep's.
+    let sol_key_u64 = |lamports_expr: &str| {
+        format!(
+            "CASE WHEN ({lamports_expr}) IS NULL THEN '∅' \
+             WHEN ({lamports_expr})::numeric > {max} THEN {exact} ELSE {inner} END",
+            max = crate::grouping::MAX_BUCKETABLE_LAMPORTS,
+            exact = sol_exact_sql(lamports_expr),
+            inner = sol_key(lamports_expr),
+        )
     };
     match f {
         GroupField::TokenProgramId => "COALESCE(t.token_program_id, '∅')".to_string(),
@@ -385,20 +413,16 @@ fn group_field_sql(f: GroupField, precision: impl Into<SolPrecision>, ti_alias: 
         // human SOL first so the label reads in SOL (matches the "SOL cost"/"SOL in"
         // display name + the sweep's `bucket_lamports_as_sol`).
         GroupField::MaxCostLamports => {
-            sol_key("(t.initial_buy_instruction->>'max_cost_lamports')::float8 / 1e9")
+            sol_key_u64("t.initial_buy_instruction->>'max_cost_lamports'")
         }
         GroupField::SpendableLamportsIn => {
-            sol_key("(t.initial_buy_instruction->>'spendable_lamports_in')::float8 / 1e9")
+            sol_key_u64("t.initial_buy_instruction->>'spendable_lamports_in'")
         }
-        GroupField::InitialBuySol => sol_key("t.initial_buy_lamports::float8 / 1e9"),
+        GroupField::InitialBuySol => sol_key("t.initial_buy_lamports"),
         // First-slot buy/sell are trade-derived, sourced from the caller's
         // `tokens_info` LEFT JOIN — the only non-`tokens` group fields.
-        GroupField::FirstSlotBuySol => {
-            sol_key(&format!("{ti_alias}.first_slot_buy_lamports::float8 / 1e9"))
-        }
-        GroupField::FirstSlotSellSol => {
-            sol_key(&format!("{ti_alias}.first_slot_sell_lamports::float8 / 1e9"))
-        }
+        GroupField::FirstSlotBuySol => sol_key(&format!("{ti_alias}.first_slot_buy_lamports")),
+        GroupField::FirstSlotSellSol => sol_key(&format!("{ti_alias}.first_slot_sell_lamports")),
         // Labels joined with " | " in on-chain order (NOT alphabetised) so the
         // displayed/copied set mirrors the real instruction sequence. Ordinality
         // preserves array position; duplicates are kept intentionally. Unwraps
@@ -416,17 +440,18 @@ fn group_field_sql(f: GroupField, precision: impl Into<SolPrecision>, ti_alias: 
 /// `"lo–hi"` label — exposed unbinned so a value filter can pin an exact amount.
 ///
 /// All five bucketed fields are lamports-backed: two read off the
-/// `initial_buy_instruction` JSONB (cast to `float8`, not `bigint`, so a value
-/// persisted as `1515000000.0` can't raise a cast error mid-query — integers below
-/// 2^53 compare exactly as `float8`), three are `BIGINT` columns. `ti_alias` is the
-/// `tokens_info` join alias, same contract as [`group_field_sql`].
+/// `initial_buy_instruction` JSONB (cast to `numeric`, not `bigint`, so a value
+/// persisted as `1515000000.0` can't raise a cast error mid-query and a value past
+/// `i64` — pump.fun's `u64::MAX` ceiling — neither errors nor rounds; **not**
+/// `float8`, which stops being injective at 2^53), three are `BIGINT` columns.
+/// `ti_alias` is the `tokens_info` join alias, same contract as [`group_field_sql`].
 fn sol_field_lamports_sql(f: GroupField, ti_alias: &str) -> Option<String> {
     Some(match f {
         GroupField::MaxCostLamports => {
-            "(t.initial_buy_instruction->>'max_cost_lamports')::float8".to_string()
+            "(t.initial_buy_instruction->>'max_cost_lamports')::numeric".to_string()
         }
         GroupField::SpendableLamportsIn => {
-            "(t.initial_buy_instruction->>'spendable_lamports_in')::float8".to_string()
+            "(t.initial_buy_instruction->>'spendable_lamports_in')::numeric".to_string()
         }
         GroupField::InitialBuySol => "t.initial_buy_lamports".to_string(),
         GroupField::FirstSlotBuySol => format!("{ti_alias}.first_slot_buy_lamports"),
@@ -604,19 +629,31 @@ pub fn group_key_from_fingerprint(fp: &Fingerprint) -> JsonValue {
 /// literal-embedding it is injection-safe — same convention `sol_bucket_sql`
 /// already uses for `width`. No leading `AND`; join clauses with `" AND "`.
 fn sol_axis_clause(lamports_expr: &str, fp_lamports: i64, precision: SolPrecision) -> String {
+    // A stored axis is a `BIGINT`, so a token value past `i64` can never satisfy
+    // one — the mirror of `hunter_engine::fingerprint::sol_axis_u64`'s
+    // `bucketable_lamports` guard. Stated explicitly rather than left to the
+    // arithmetic so the two sides are provably identical, and so nothing here
+    // depends on `float8` behaviour above 2^53. Always true for the three
+    // `BIGINT`-sourced axes; load-bearing for the two JSONB `u64` ones.
+    let in_range = format!(
+        "({lamports_expr})::numeric <= {max}",
+        max = crate::grouping::MAX_BUCKETABLE_LAMPORTS,
+    );
     match precision {
         SolPrecision::Bucket(width) => {
             let idx = crate::grouping::bucket_index(lamports_to_sol(fp_lamports), width);
+            // `float8` here on purpose: the engine bins in `f64`, so the mirror has
+            // to reproduce the same rounding, not a more exact one.
             format!(
-                "floor(((({lamports_expr})::float8) / 1e9) / {width} + {eps}) = {idx}",
+                "{in_range} AND floor(((({lamports_expr})::float8) / 1e9) / {width} + {eps}) = {idx}",
                 eps = crate::grouping::BUCKET_EPS,
             )
         }
         // Exact compares the raw lamports, mirroring the engine's `sol_axis`,
-        // which is an `i64 ==` — comparing in SOL would go through a `/ 1e9` that
-        // stops being injective past 2^53 lamports (real data carries pump.fun's
-        // `u64::MAX` "no limit" sentinel, well past that).
-        SolPrecision::Exact => format!("(({lamports_expr})::float8) = {fp_lamports}"),
+        // which is an `i64 ==`. In `numeric`, not `float8`: comparing as `float8`
+        // stops being injective past 2^53 lamports, so two distinct amounts up
+        // there would compare equal.
+        SolPrecision::Exact => format!("{in_range} AND (({lamports_expr})::numeric) = {fp_lamports}"),
     }
 }
 
@@ -1361,6 +1398,69 @@ mod grouped_tokens_tests {
         assert!(sol_exact_sql("x").contains(&sql_num_mask(9)));
     }
 
+    /// The SQL mirror must split the `u64`-domain axes at **the engine's**
+    /// threshold, and must not reach for `float8` anywhere the value can exceed
+    /// 2^53. Both halves were live bugs: the group key cast
+    /// `(…->>'max_cost_lamports')::float8 / 1e9`, which rendered pump.fun's
+    /// `u64::MAX` ceiling as `18446744073.7096` (15 significant digits) and folded
+    /// distinct ceilings into one group, while the engine read the same row as `-1`.
+    #[test]
+    fn the_u64_axes_split_at_the_engine_threshold_and_stay_exact() {
+        let max = crate::grouping::MAX_BUCKETABLE_LAMPORTS.to_string();
+        for field in [GroupField::MaxCostLamports, GroupField::SpendableLamportsIn] {
+            for precision in [SolPrecision::Exact, SolPrecision::Bucket(0.1)] {
+                let sql = group_field_sql(field, precision, "ti");
+                assert!(
+                    sql.contains(&max),
+                    "{field:?}/{precision:?}: no out-of-i64 branch at the engine \
+                     threshold {max}: {sql}"
+                );
+                // The exact renderer must multiply, never divide: Postgres picks a
+                // quotient scale from `select_div_scale` (16 significant digits →
+                // only 8 decimals on an 11-digit result), so `/ 1e9` drops the low
+                // lamport digits even in `numeric`.
+                assert!(
+                    sql.contains("::numeric * 0.000000001"),
+                    "{field:?}/{precision:?}: exact branch is not lossless: {sql}"
+                );
+                assert!(
+                    !sql.contains("::float8 / 1e9 IS NULL"),
+                    "{field:?}/{precision:?}: null-check went through float8: {sql}"
+                );
+            }
+        }
+        // The `BIGINT`-backed axes cannot exceed `i64`, so they keep the plain
+        // renderer — no branch, no numeric cast, no change to their group keys.
+        for field in [GroupField::InitialBuySol, GroupField::FirstSlotBuySol] {
+            let sql = group_field_sql(field, SolPrecision::Bucket(0.1), "ti");
+            assert!(!sql.contains(&max), "{field:?}: grew a branch it does not need: {sql}");
+        }
+    }
+
+    /// The fingerprint-scope mirror carries the same guard as the engine matcher
+    /// (`sol_axis_u64`'s `bucketable_lamports`), and compares exact amounts in
+    /// `numeric` — `float8` equality stops being injective at 2^53, so two distinct
+    /// lamport amounts up there would compare equal and widen the armed set.
+    #[test]
+    fn the_scope_mirror_guards_the_same_range_as_the_matcher() {
+        let max = crate::grouping::MAX_BUCKETABLE_LAMPORTS.to_string();
+        let expr = sol_field_lamports_sql(GroupField::MaxCostLamports, "ti").unwrap();
+        assert!(expr.ends_with("::numeric"), "scope expr must be exact, got: {expr}");
+        for precision in [SolPrecision::Exact, SolPrecision::Bucket(0.1)] {
+            let clause = sol_axis_clause(&expr, 1_515_000_000, precision);
+            assert!(clause.contains(&max), "{precision:?}: no range guard: {clause}");
+        }
+        // Bucket mode still bins in `float8` — the engine bins in `f64`, and the
+        // mirror has to reproduce that rounding rather than a more exact one.
+        let bucketed = sol_axis_clause(&expr, 1_515_000_000, SolPrecision::Bucket(0.1));
+        assert!(bucketed.contains("::float8"), "bucket parity with the engine lost: {bucketed}");
+        let exact = sol_axis_clause(&expr, 1_515_000_000, SolPrecision::Exact);
+        assert!(
+            exact.contains("::numeric) = 1515000000"),
+            "exact compare must be numeric: {exact}"
+        );
+    }
+
     #[test]
     fn exact_precision_renders_amounts_not_ranges() {
         for field in GroupField::ALL.into_iter().filter(|f: &GroupField| f.is_bucketed()) {
@@ -1580,8 +1680,17 @@ mod grouped_tokens_tests {
                     // uses so this tests the bucketing, not f64 round-tripping.
                     let fp_sol = lamports_to_sol(lamports);
                     let idx = bucket_index(fp_sol, width);
-                    let expected =
-                        format!("floor({sol_expr} / {width} + {BUCKET_EPS}) = {idx}");
+                    // The `<= i64::MAX` prefix mirrors the matcher's
+                    // `bucketable_lamports` guard: a token value past `i64` (the
+                    // `u64::MAX` "no cap" ceiling) can never satisfy a `BIGINT` axis
+                    // on either side. Always true for the three `BIGINT` axes.
+                    let in_range = format!(
+                        "({lam_expr})::numeric <= {}",
+                        crate::grouping::MAX_BUCKETABLE_LAMPORTS
+                    );
+                    let expected = format!(
+                        "{in_range} AND floor({sol_expr} / {width} + {BUCKET_EPS}) = {idx}"
+                    );
                     assert_eq!(clauses[0], expected, "axis={axis} width={width} fp={fp_sol}");
 
                     // …and the SQL's arithmetic must agree with `same_bucket` on
@@ -1641,6 +1750,9 @@ mod grouped_tokens_tests {
     /// `max_cost_lamports = u64::MAX` "no limit" sentinel — well past that — so a
     /// float compare could call two different amounts equal and arm on the wrong
     /// token. This is the live entry gate, so that has to be impossible, not unlikely.
+    /// For the same reason the comparison itself is `numeric`, not `float8`: casting
+    /// the raw lamports to `float8` reintroduced exactly that collision one level
+    /// down, above 2^53.
     #[test]
     fn exact_fingerprint_scope_pins_raw_lamports_on_every_axis() {
         for (axis, (_, field)) in SOL_AXES.iter().enumerate() {
@@ -1652,7 +1764,10 @@ mod grouped_tokens_tests {
                 assert_eq!(clauses.len(), 1, "one configured axis ⇒ one clause");
                 assert_eq!(
                     clauses[0],
-                    format!("(({lam_expr})::float8) = {lamports}"),
+                    format!(
+                        "({lam_expr})::numeric <= {max} AND (({lam_expr})::numeric) = {lamports}",
+                        max = crate::grouping::MAX_BUCKETABLE_LAMPORTS,
+                    ),
                     "axis={axis} lamports={lamports}",
                 );
                 // No bucketing arithmetic may survive into the exact clause.

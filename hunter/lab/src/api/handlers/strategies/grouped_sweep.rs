@@ -2216,10 +2216,22 @@ pub(crate) fn fingerprint_from_group_key(
 
 /// Parse a `"lo–hi"` SOL bucket label's lower edge into lamports (a plain numeric
 /// label with no separator parses whole). `None` if it isn't numeric.
+///
+/// **A label naming an amount past `i64` clamps to `i64::MAX`, it does not return
+/// `None`.** That case is real — the `max_cost_lamports` / `spendable_lamports_in`
+/// group keys render pump.fun's `u64::MAX` "no slippage cap" ceiling exactly (see
+/// `hunter_engine::grouping::MAX_BUCKETABLE_LAMPORTS`) — and the two failure
+/// directions are not symmetric: a `BIGINT` axis cannot hold that value, but
+/// returning `None` would *drop the axis*, and a dropped axis matches every token.
+/// Clamping instead yields an axis no token can satisfy, so a fingerprint promoted
+/// from that group arms on nothing rather than on everything. Expressing it
+/// properly needs the axis to carry the state (a schema change), not a wider parse.
 fn parse_lo_lamports(label: &str) -> Option<i64> {
     let lo = label.split('–').next()?.trim();
     let sol: f64 = lo.parse().ok()?;
-    Some(sol_to_lamports(sol))
+    // `sol_to_lamports`' `as i64` already saturates; spelled out so the fail-closed
+    // choice above is visible at the site rather than inherited from a cast.
+    Some(if sol >= i64::MAX as f64 / 1e9 { i64::MAX } else { sol_to_lamports(sol) })
 }
 
 // ---------------------------------------------------------------------------
@@ -2598,8 +2610,17 @@ pub(crate) fn matches_field_filter(
         }
         // The five bucketed SOL axes. Typed values are **human SOL** and match the
         // exact amount — see `sol_filter_matches_lamports`.
-        MaxCostLamports => sol_filter_matches_lamports(allowed, fp.max_cost_lamports),
-        SpendableLamportsIn => sol_filter_matches_lamports(allowed, fp.spendable_lamports_in),
+        // The two `u64`-domain axes: a value past `i64` (a "no slippage cap"
+        // ceiling) can never equal a filter entry, which names an `i64` amount in
+        // human SOL — so it drops out here rather than being wrapped into one.
+        MaxCostLamports => sol_filter_matches_lamports(
+            allowed,
+            fp.max_cost_lamports.and_then(hunter_engine::grouping::bucketable_lamports),
+        ),
+        SpendableLamportsIn => sol_filter_matches_lamports(
+            allowed,
+            fp.spendable_lamports_in.and_then(hunter_engine::grouping::bucketable_lamports),
+        ),
         InitialBuySol => sol_filter_matches_lamports(allowed, sol_opt_to_lamports(fp.initial_buy_sol)),
         FirstSlotBuySol => {
             sol_filter_matches_lamports(allowed, sol_opt_to_lamports(fp.first_slot_buy_sol))

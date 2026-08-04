@@ -7,6 +7,7 @@ pub mod api;
 pub mod config;
 pub mod ingest;
 pub mod models;
+pub mod serde_wire;
 
 // Moved into the pure `hunter-engine` crate (strategy redesign) — re-exported
 // here so `trading_core::grouping`/`::metrics` paths keep working during the

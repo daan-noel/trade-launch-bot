@@ -9,10 +9,54 @@ import { amountColKeys, numericColKeys } from 'services/tableRequest';
 import { amountInDisplayUnit, type AmountStorageUnit } from 'lib/priceUnitSnapshot';
 import { formatCompact, formatDecimalTrim, formatWithCommas } from 'utils/format';
 import { cn } from 'lib/cn';
+import {
+  isNoLimitLamports,
+  u64LamportsToSolText,
+  u64Num,
+  u64Sol,
+  type U64Wire,
+} from 'lib/u64Wire';
 
 /** SOL storage → displayed unit for PriceUnit-aware numeric filters. */
 function solFilter(n: number | null | undefined): number | null {
   return n == null ? null : amountInDisplayUnit(n, 'sol');
+}
+
+// ---------------------------------------------------------------------------
+// Raw `u64` instruction args. These arrive as strings (see `lib/u64Wire`) because
+// they can exceed 2^53, so every cell reads them through the helpers rather than
+// doing arithmetic on the wire value.
+// ---------------------------------------------------------------------------
+
+function compactU64Text(v: U64Wire): string {
+  const n = u64Num(v);
+  return n == null ? '' : formatCompact(n, 2);
+}
+
+function compactU64(v: U64Wire) {
+  return compactU64Text(v) || '—';
+}
+
+/** Display text for a lamports *ceiling* arg (`max_cost_lamports`,
+ *  `spendable_lamports_in`).
+ *
+ *  `∞` for a value past `i64`: those are not amounts but "no slippage cap"
+ *  ceilings (pump.fun's `u64::MAX`), and showing them as `18446744073.71` reads as
+ *  a real 18-billion-SOL bid. Matches the backend, which groups that case
+ *  separately from both real amounts and the `∅` missing key. */
+function solCeilingText(v: U64Wire): string {
+  if (v == null) return '';
+  if (isNoLimitLamports(v)) return '∞';
+  const sol = u64Sol(v);
+  return sol == null ? '' : formatDecimalTrim(sol, 3);
+}
+
+function solCeilingCell(v: U64Wire) {
+  const text = solCeilingText(v);
+  if (!text) return '—';
+  // The exact SOL amount on hover, so the precise value is always recoverable
+  // from the UI even where the cell abbreviates it.
+  return <span title={`${u64LamportsToSolText(v)} SOL`}>{text}</span>;
 }
 
 // ---------------------------------------------------------------------------
@@ -240,11 +284,10 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       label: 'Init Supply',
       group: 'initial',
       sortable: true,
-      render: (r: { initial_supply_token?: number | null }) =>
-        r.initial_supply_token != null ? formatCompact(r.initial_supply_token, 2) : '—',
-      sortValue: (r: { initial_supply_token?: number | null }) => r.initial_supply_token ?? null,
-      searchValue: (r: { initial_supply_token?: number | null }) => String(r.initial_supply_token ?? ''),
-      filterNumber: (r: { initial_supply_token?: number | null }) => r.initial_supply_token ?? null,
+      render: (r: { initial_supply_token?: U64Wire }) => compactU64(r.initial_supply_token),
+      sortValue: (r: { initial_supply_token?: U64Wire }) => u64Num(r.initial_supply_token),
+      searchValue: (r: { initial_supply_token?: U64Wire }) => String(r.initial_supply_token ?? ''),
+      filterNumber: (r: { initial_supply_token?: U64Wire }) => u64Num(r.initial_supply_token),
     },
     // max_or_spendable
     {
@@ -252,57 +295,46 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       label: 'Token Amt',
       group: 'max_or_spendable',
       sortable: true,
-      render: (r: { token_amount?: number | null }) =>
-        r.token_amount != null ? formatCompact(r.token_amount, 2) : '—',
-      sortValue: (r: { token_amount?: number | null }) => r.token_amount ?? null,
+      render: (r: { token_amount?: U64Wire }) => compactU64(r.token_amount),
+      sortValue: (r: { token_amount?: U64Wire }) => u64Num(r.token_amount),
       searchValue: () => '',
-      filterValue: (r: { token_amount?: number | null }) =>
-        r.token_amount != null ? formatCompact(r.token_amount, 2) : '',
-      filterNumber: (r: { token_amount?: number | null }) => r.token_amount ?? null,
+      filterValue: (r: { token_amount?: U64Wire }) => compactU64Text(r.token_amount),
+      filterNumber: (r: { token_amount?: U64Wire }) => u64Num(r.token_amount),
     },
     {
       key: 'max_cost_lamports',
       label: 'Max SOL Cost',
       group: 'max_or_spendable',
       sortable: true,
-      render: (r: { max_cost_lamports?: number | null }) =>
-        r.max_cost_lamports != null ? formatDecimalTrim(r.max_cost_lamports / 1e9, 3) : '—',
+      render: (r: { max_cost_lamports?: U64Wire }) => solCeilingCell(r.max_cost_lamports),
       // Sort/filter in displayed SOL (÷1e9) — matches Tokens SQL + in-memory evaluator.
-      sortValue: (r: { max_cost_lamports?: number | null }) =>
-        r.max_cost_lamports != null ? r.max_cost_lamports / 1e9 : null,
+      sortValue: (r: { max_cost_lamports?: U64Wire }) => u64Sol(r.max_cost_lamports),
       searchValue: () => '',
-      filterValue: (r: { max_cost_lamports?: number | null }) =>
-        r.max_cost_lamports != null ? formatDecimalTrim(r.max_cost_lamports / 1e9, 3) : '',
-      filterNumber: (r: { max_cost_lamports?: number | null }) =>
-        r.max_cost_lamports != null ? r.max_cost_lamports / 1e9 : null,
+      filterValue: (r: { max_cost_lamports?: U64Wire }) => solCeilingText(r.max_cost_lamports),
+      filterNumber: (r: { max_cost_lamports?: U64Wire }) => u64Sol(r.max_cost_lamports),
     },
     {
       key: 'spendable_lamports_in',
       label: 'Spendable SOL In',
       group: 'max_or_spendable',
       sortable: true,
-      render: (r: { spendable_lamports_in?: number | null }) =>
-        r.spendable_lamports_in != null ? formatDecimalTrim(r.spendable_lamports_in / 1e9, 3) : '—',
-      sortValue: (r: { spendable_lamports_in?: number | null }) =>
-        r.spendable_lamports_in != null ? r.spendable_lamports_in / 1e9 : null,
+      render: (r: { spendable_lamports_in?: U64Wire }) => solCeilingCell(r.spendable_lamports_in),
+      sortValue: (r: { spendable_lamports_in?: U64Wire }) => u64Sol(r.spendable_lamports_in),
       searchValue: () => '',
-      filterValue: (r: { spendable_lamports_in?: number | null }) =>
-        r.spendable_lamports_in != null ? formatDecimalTrim(r.spendable_lamports_in / 1e9, 3) : '',
-      filterNumber: (r: { spendable_lamports_in?: number | null }) =>
-        r.spendable_lamports_in != null ? r.spendable_lamports_in / 1e9 : null,
+      filterValue: (r: { spendable_lamports_in?: U64Wire }) =>
+        solCeilingText(r.spendable_lamports_in),
+      filterNumber: (r: { spendable_lamports_in?: U64Wire }) => u64Sol(r.spendable_lamports_in),
     },
     {
       key: 'min_tokens_out',
       label: 'Min Tokens',
       group: 'max_or_spendable',
       sortable: true,
-      render: (r: { min_tokens_out?: number | null }) =>
-        r.min_tokens_out != null ? formatCompact(r.min_tokens_out, 2) : '—',
-      sortValue: (r: { min_tokens_out?: number | null }) => r.min_tokens_out ?? null,
+      render: (r: { min_tokens_out?: U64Wire }) => compactU64(r.min_tokens_out),
+      sortValue: (r: { min_tokens_out?: U64Wire }) => u64Num(r.min_tokens_out),
       searchValue: () => '',
-      filterValue: (r: { min_tokens_out?: number | null }) =>
-        r.min_tokens_out != null ? formatCompact(r.min_tokens_out, 2) : '',
-      filterNumber: (r: { min_tokens_out?: number | null }) => r.min_tokens_out ?? null,
+      filterValue: (r: { min_tokens_out?: U64Wire }) => compactU64Text(r.min_tokens_out),
+      filterNumber: (r: { min_tokens_out?: U64Wire }) => u64Num(r.min_tokens_out),
     },
     // compute
     {

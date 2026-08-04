@@ -32,6 +32,8 @@ use serde_json::Value;
 use sqlx::types::Json;
 use sqlx::PgPool;
 
+use crate::serde_wire::u64_as_string;
+
 /// Canonical **market-cap** SQL expression — current spot price × **total supply**
 /// (`tokens.total_supply_token`, populated at ingest from the mayhem-aware
 /// `total_supply_for` SSOT; H1). NOT `initial_supply_token` (the dev's first-buy).
@@ -98,9 +100,13 @@ pub struct TokenEnrichmentRow {
 }
 
 /// Read a `u64` buy-instruction arg by its snake_case name from
-/// `initial_buy_instruction`. (Duplicated from `handlers::tokens` — private there.)
+/// `initial_buy_instruction`, through the **one** instruction-arg reader
+/// (`hunter_engine::grouping::extract_lamports`) rather than a local
+/// `Value::as_u64` — so this path accepts both persisted shapes (JSON number and
+/// numeric string) exactly like the fingerprint/grouping path, instead of silently
+/// yielding `None` on the string form.
 fn buy_arg_u64(value: &Option<Value>, field: &str) -> Option<u64> {
-    value.as_ref()?.get(field).and_then(Value::as_u64)
+    crate::grouping::extract_lamports(value.as_ref(), field)
 }
 
 /// JSON flatten struct — the ~24 enrichment fields shared by every token-result
@@ -112,11 +118,22 @@ pub struct TokenEnrichment {
     pub creator_wallet: String,
     pub creation_tx_signature: String,
     pub initial_buy_sol: Option<f64>,
+    // The raw on-chain `u64` args go over the wire as strings — see
+    // [`u64_as_string`]. Applied to the whole family, not just the one field that
+    // overflows today: a half-applied encoding rule is worse than either shape,
+    // because then the reader has to know which fields it covers.
+    #[serde(with = "u64_as_string")]
     pub initial_supply_token: Option<u64>,
+    #[serde(with = "u64_as_string")]
     pub token_amount: Option<u64>,
+    #[serde(with = "u64_as_string")]
     pub max_cost_lamports: Option<u64>,
+    #[serde(with = "u64_as_string")]
     pub spendable_lamports_in: Option<u64>,
+    #[serde(with = "u64_as_string")]
     pub min_tokens_out: Option<u64>,
+    // `cu_limit`/`cu_price` stay numbers: compute units and micro-lamport prices
+    // are bounded far below 2^53, and they are read as numbers by the rule editor.
     pub cu_limit: Option<u64>,
     pub cu_price: Option<u64>,
     pub is_mayhem_mode: bool,

@@ -1,7 +1,9 @@
 import type { RunSummary } from 'lib/strategy/runSummary';
 import type { CostModelId, FillModelId } from 'lib/strategy/types';
+import type { U64Wire } from 'lib/u64Wire';
 
 export type { RunMetrics, RunSummary } from 'lib/strategy/runSummary';
+export type { U64Wire } from 'lib/u64Wire';
 
 export type PriceUnit = 'SOL' | 'USD';
 
@@ -21,11 +23,14 @@ export interface TokenEnrichmentFields {
   name?: string;
   creator_wallet?: string;
   initial_buy_sol?: number | null;
-  initial_supply_token?: number | null;
-  token_amount?: number | null;
-  max_cost_lamports?: number | null;
-  spendable_lamports_in?: number | null;
-  min_tokens_out?: number | null;
+  /** Raw on-chain `u64` creation-instruction args — sent as **strings** so values
+   *  above 2^53 survive (pump.fun's `u64::MAX` "no slippage cap" ceiling). Read
+   *  them through `lib/u64Wire`, never with bare arithmetic. */
+  initial_supply_token?: U64Wire;
+  token_amount?: U64Wire;
+  max_cost_lamports?: U64Wire;
+  spendable_lamports_in?: U64Wire;
+  min_tokens_out?: U64Wire;
   cu_limit?: number | null;
   cu_price?: number | null;
   is_mayhem_mode?: boolean;
@@ -63,11 +68,12 @@ export interface TokenRecord {
   ath_timestamp: string | null;
   market_cap: number | null;
   initial_buy_sol: number | null;
-  initial_supply_token: number | null;
-  token_amount: number | null;
-  max_cost_lamports: number | null;
-  spendable_lamports_in: number | null;
-  min_tokens_out: number | null;
+  /** Raw on-chain `u64` args — strings on the wire, see `lib/u64Wire`. */
+  initial_supply_token: U64Wire;
+  token_amount: U64Wire;
+  max_cost_lamports: U64Wire;
+  spendable_lamports_in: U64Wire;
+  min_tokens_out: U64Wire;
   cu_limit: number | null;
   cu_price: number | null;
   ix_labels_count: number;
@@ -830,12 +836,13 @@ export interface TokenDetailRecord {
   symbol: string;
   creator_wallet: string;
   bonding_curve_address: string | null;
-  initial_supply_token: number | null;
+  /** Raw on-chain `u64` args — strings on the wire, see `lib/u64Wire`. */
+  initial_supply_token: U64Wire;
   initial_buy_sol: number | null;
-  token_amount: number | null;
-  max_cost_lamports: number | null;
-  spendable_lamports_in: number | null;
-  min_tokens_out: number | null;
+  token_amount: U64Wire;
+  max_cost_lamports: U64Wire;
+  spendable_lamports_in: U64Wire;
+  min_tokens_out: U64Wire;
   cu_limit: number | null;
   cu_price: number | null;
   instruction_labels: unknown;

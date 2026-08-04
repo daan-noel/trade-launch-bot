@@ -10,14 +10,18 @@ use std::sync::Arc;
 
 use crate::{
     api::table_query::{FilterOp, FilterSpec, TableRequest},
+    serde_wire::u64_as_string,
     state::{core_state::CoreState, token_cache::TokenState},
     storage::token_enrichment::MARKET_CAP_SQL,
 };
 
 /// Read a `u64` buy-instruction arg by its snake_case name from
-/// `initial_buy_instruction`.
+/// `initial_buy_instruction`, through the **one** instruction-arg reader
+/// (`hunter_engine::grouping::extract_lamports`) so this endpoint accepts the same
+/// two persisted shapes (JSON number, numeric string) as the fingerprint/grouping
+/// path instead of a local `as_u64` that drops the string form.
 fn extract_buy_arg_u64(value: &Option<Value>, field: &str) -> Option<u64> {
-    value.as_ref()?.get(field).and_then(|v| v.as_u64())
+    crate::grouping::extract_lamports(value.as_ref(), field)
 }
 
 // ---------------------------------------------------------------------------
@@ -41,10 +45,16 @@ pub struct TokenSummary {
     pub first_slot_sell_sol: Option<f64>,
     pub market_cap: Option<f64>,
     pub initial_buy_sol: Option<f64>,
+    // Raw on-chain `u64` args — string on the wire, see `crate::serde_wire`.
+    #[serde(with = "u64_as_string")]
     pub initial_supply_token: Option<u64>,
+    #[serde(with = "u64_as_string")]
     pub token_amount: Option<u64>,
+    #[serde(with = "u64_as_string")]
     pub max_cost_lamports: Option<u64>,
+    #[serde(with = "u64_as_string")]
     pub spendable_lamports_in: Option<u64>,
+    #[serde(with = "u64_as_string")]
     pub min_tokens_out: Option<u64>,
     pub cu_limit: Option<u64>,
     pub cu_price: Option<u64>,
@@ -190,11 +200,17 @@ pub struct TokenDetail {
     pub symbol: String,
     pub creator_wallet: String,
     pub bonding_curve_address: Option<String>,
+    // Raw on-chain `u64` args — string on the wire, see `crate::serde_wire`.
+    #[serde(with = "u64_as_string")]
     pub initial_supply_token: Option<u64>,
     pub initial_buy_sol: Option<f64>,
+    #[serde(with = "u64_as_string")]
     pub token_amount: Option<u64>,
+    #[serde(with = "u64_as_string")]
     pub max_cost_lamports: Option<u64>,
+    #[serde(with = "u64_as_string")]
     pub spendable_lamports_in: Option<u64>,
+    #[serde(with = "u64_as_string")]
     pub min_tokens_out: Option<u64>,
     pub cu_limit: Option<u64>,
     pub cu_price: Option<u64>,

@@ -4,6 +4,7 @@ import { AgeCell } from 'components/table/AgeCell';
 import { DateCell } from 'components/table/DateCell';
 import { ageClass, formatAge, formatDecimalTrim, ratioClass } from 'utils/format';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
+import { u64Num } from 'lib/u64Wire';
 import { tokenInfoColumnMap } from './sharedTokenColumns';
 
 /**
@@ -22,10 +23,11 @@ function ageSecondsOf(r: TokenRecord): number {
 }
 
 function fep(r: TokenRecord): number | null {
-  if (r.initial_buy_sol == null || r.initial_supply_token == null || r.initial_supply_token <= 0) {
+  const supply = u64Num(r.initial_supply_token);
+  if (r.initial_buy_sol == null || supply == null || supply <= 0) {
     return null;
   }
-  return r.initial_buy_sol / r.initial_supply_token;
+  return r.initial_buy_sol / supply;
 }
 
 // Per-column pixel widths for the Tokens-page layout. The shared token-info

@@ -1,6 +1,7 @@
 import type { TokenRecord } from 'types';
 import type { FilterSpec } from 'components/table/numericFilter';
 import { ixLabelsMatchFilter } from 'lib/ixLabels';
+import { u64Num, u64Sol } from 'lib/u64Wire';
 import { datetimeLocalToUtcWallClock } from 'utils/date';
 import { STORAGE_KEYS, getString, setString, remove } from 'lib/storage';
 
@@ -243,10 +244,11 @@ function triMatch(value: boolean, tri: TriState): boolean {
 }
 
 function fep(t: TokenRecord): number | null {
-  if (t.initial_buy_sol == null || t.initial_supply_token == null || t.initial_supply_token <= 0) {
+  const supply = u64Num(t.initial_supply_token);
+  if (t.initial_buy_sol == null || supply == null || supply <= 0) {
     return null;
   }
-  return t.initial_buy_sol / t.initial_supply_token;
+  return t.initial_buy_sol / supply;
 }
 
 function ixLabelStrings(raw: unknown): string[] {
@@ -448,12 +450,14 @@ export function tokenPassesFilters(f: TokenFilters, t: TokenRecord): boolean {
   if (!optF64(t.market_cap, f.mcap_min, f.mcap_max)) return false;
   if (!rangeF64(t.trade_count, f.trades_min, f.trades_max)) return false;
   if (!optF64(t.initial_buy_sol, f.init_buy_min, f.init_buy_max)) return false;
-  if (!optF64(t.initial_supply_token, f.init_supply_min, f.init_supply_max)) return false;
-  if (!optF64(t.token_amount, f.token_amount_min, f.token_amount_max)) return false;
+  // The raw `u64` args arrive as strings (`lib/u64Wire`) — parse, never divide the
+  // wire value directly.
+  if (!optF64(u64Num(t.initial_supply_token), f.init_supply_min, f.init_supply_max)) return false;
+  if (!optF64(u64Num(t.token_amount), f.token_amount_min, f.token_amount_max)) return false;
   // max_cost_lamports / spendable_lamports_in are lamports; filter in SOL to match the table.
-  if (!optF64(t.max_cost_lamports != null ? t.max_cost_lamports / 1e9 : null, f.max_cost_lamports_min, f.max_cost_lamports_max)) return false;
-  if (!optF64(t.spendable_lamports_in != null ? t.spendable_lamports_in / 1e9 : null, f.spendable_lamports_in_min, f.spendable_lamports_in_max)) return false;
-  if (!optF64(t.min_tokens_out, f.min_tokens_out_min, f.min_tokens_out_max)) return false;
+  if (!optF64(u64Sol(t.max_cost_lamports), f.max_cost_lamports_min, f.max_cost_lamports_max)) return false;
+  if (!optF64(u64Sol(t.spendable_lamports_in), f.spendable_lamports_in_min, f.spendable_lamports_in_max)) return false;
+  if (!optF64(u64Num(t.min_tokens_out), f.min_tokens_out_min, f.min_tokens_out_max)) return false;
 
   // Technical
   if (!optF64(t.cu_limit, f.cu_limit_min, f.cu_limit_max)) return false;

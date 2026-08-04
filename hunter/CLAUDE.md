@@ -162,6 +162,33 @@ follow the same rule. A new SOL column that skips the suffix is a bug (caused th
 `find_tx_by_fill` lamports-vs-SOL mismatch). Codified in `0009_sol_lamports_naming.sql`; the
 executor + `lake/` schema keep their own decoupled vocab.
 
+## Raw `u64` on-chain args (locked)
+
+A creation-instruction arg's domain is **`u64`**, and real data uses all of it:
+pump.fun's `max_sol_cost` is a *slippage ceiling*, so "fill at any price" is
+`u64::MAX` (≈1.84e10 SOL). It is a **sentinel, not an amount**.
+
+- **One decode seam:** `hunter_engine::grouping::extract_lamports` → `Option<u64>`,
+  never narrowed. Need an `i64` (a bucket, a `BIGINT` axis)? Go through
+  `bucketable_lamports`, which returns `None` instead of a wrapped `-1` or a
+  saturated `i64::MAX`. `MAX_BUCKETABLE_LAMPORTS` is the one threshold — the SQL
+  mirror interpolates that same constant.
+- **A ceiling is its own group**, rendered as exact digits by `exact_sol_label_u64`
+  (integer math) in both precision modes — never binned, and never folded into the
+  `∅` missing key: "no cap set" and "field absent" are different facts.
+- **`float8` is banned wherever the value can pass 2^53** (exact labels, exact
+  compares → `numeric`); **bucket** arithmetic stays `float8` because the engine
+  bins in `f64` and the mirror must reproduce that rounding, not improve on it.
+  Divide-by-`1e9` is banned in the exact SQL path — `select_div_scale` truncates it;
+  multiply by `0.000000001` instead.
+- **Wire = JSON string** (`trading_core::serde_wire::u64_as_string`), applied to the
+  whole family of raw `u64` args, because a JSON number is an f64 to the browser.
+  Storage keeps the JSON **number** — `jsonb` holds it as arbitrary-precision
+  `numeric`, so nothing is lost at rest. Frontend reads via `lib/u64Wire`.
+
+Full reference incl. the known `BIGINT`-axis limitation:
+[docs/plans/database/u64-instruction-args.md](docs/plans/database/u64-instruction-args.md).
+
 ## Zero-as-unbound (locked)
 
 `0` may mean "off / unbounded" **only where 0 is not a valid value of the domain** — the

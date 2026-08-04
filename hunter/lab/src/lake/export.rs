@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use arrow::array::{
-    BooleanBuilder, Float64Builder, Int32Builder, Int64Builder, StringBuilder,
+    BooleanBuilder, Float64Builder, Int32Builder, Int64Builder, StringBuilder, UInt64Builder,
 };
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
@@ -112,8 +112,15 @@ fn tokens_schema() -> Schema {
         Field::new(col::K_FP_CU_LIMIT, DataType::Int64, true),
         Field::new(col::K_FP_CU_PRICE, DataType::Int64, true),
         Field::new(col::K_FP_IS_CASHBACK_ENABLED, DataType::Boolean, false),
-        Field::new(col::K_FP_MAX_SOL_COST, DataType::Int64, true),
-        Field::new(col::K_FP_SPENDABLE_SOL_IN, DataType::Int64, true),
+        // `UInt64`, not `Int64`: these two come from the creation instruction's
+        // `u64` args, and real data uses the top of that range (pump.fun's
+        // `u64::MAX` "no slippage cap" ceiling — see
+        // `hunter_engine::grouping::MAX_BUCKETABLE_LAMPORTS`). As `Int64` every such
+        // token was written as `-1`. The tokens dimension is a single file rewritten
+        // wholesale each run, so this widening needs no schema migration — but the
+        // existing file keeps the old `-1`s until the next `lake-export`.
+        Field::new(col::K_FP_MAX_SOL_COST, DataType::UInt64, true),
+        Field::new(col::K_FP_SPENDABLE_SOL_IN, DataType::UInt64, true),
         Field::new(col::K_FP_FIRST_SLOT_BUY_SOL, DataType::Float64, true),
         Field::new(col::K_FP_FIRST_SLOT_SELL_SOL, DataType::Float64, true),
         Field::new(col::K_FP_IX_LABELS, DataType::Utf8, true),
@@ -482,8 +489,8 @@ async fn export_tokens(pool: &PgPool, root: &Path) -> Result<usize> {
     let mut cu_limit = Int64Builder::new();
     let mut cu_price = Int64Builder::new();
     let mut cashback = BooleanBuilder::new();
-    let mut max_sol_cost = Int64Builder::new();
-    let mut spendable_sol_in = Int64Builder::new();
+    let mut max_sol_cost = UInt64Builder::new();
+    let mut spendable_sol_in = UInt64Builder::new();
     let mut first_slot_buy = Float64Builder::new();
     let mut first_slot_sell = Float64Builder::new();
     let mut ix_labels = StringBuilder::new();

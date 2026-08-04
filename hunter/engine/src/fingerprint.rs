@@ -26,7 +26,10 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use uuid::Uuid;
 
-use crate::grouping::{same_bucket, sol_to_lamports, SolPrecision, TokenFingerprint, LAMPORTS_PER_SOL_F64};
+use crate::grouping::{
+    bucketable_lamports, same_bucket, sol_to_lamports, SolPrecision, TokenFingerprint,
+    LAMPORTS_PER_SOL_F64,
+};
 
 /// A fingerprint's stable id (the `fingerprints.id` UUID). A pure 128-bit data
 /// wrapper — ids are minted in the DB, never in the engine.
@@ -217,10 +220,10 @@ pub fn matches_phase(fp: &Fingerprint, tf: &TokenFingerprint, phase: MatchPhase)
     if !sol_axis(fp.init_buy_lamports, tf.initial_buy_sol.map(sol_to_lamports), precision) {
         return false;
     }
-    if !sol_axis(fp.max_cost_lamports, tf.max_cost_lamports, precision) {
+    if !sol_axis_u64(fp.max_cost_lamports, tf.max_cost_lamports, precision) {
         return false;
     }
-    if !sol_axis(fp.spendable_lamports_in, tf.spendable_lamports_in, precision) {
+    if !sol_axis_u64(fp.spendable_lamports_in, tf.spendable_lamports_in, precision) {
         return false;
     }
 
@@ -285,6 +288,25 @@ fn sol_axis(fp_lamports: Option<i64>, tf_lamports: Option<i64>, precision: SolPr
         SolPrecision::Bucket(w) => same_bucket(lamports_to_sol(v), lamports_to_sol(target), w),
         SolPrecision::Exact => v == target,
     })
+}
+
+/// [`sol_axis`] for the two axes whose token-side value is the full on-chain `u64`
+/// (`max_cost_lamports` / `spendable_lamports_in`).
+///
+/// A stored fingerprint axis is a `BIGINT`, so it can only ever name a value that
+/// fits `i64`. A token carrying an out-of-`i64` ceiling (pump.fun's `u64::MAX` "no
+/// slippage cap") therefore **fails a configured axis** rather than being wrapped
+/// into `-1` and accidentally matching, or saturated and accidentally colliding.
+/// Fails closed: an unconfigured axis still passes, exactly as before. The SQL
+/// mirror (`creation_stats_repo::sol_axis_clause`) carries the identical guard.
+fn sol_axis_u64(fp_lamports: Option<i64>, tf_lamports: Option<u64>, precision: SolPrecision) -> bool {
+    let Some(target) = fp_lamports else { return true };
+    tf_lamports
+        .and_then(bucketable_lamports)
+        .is_some_and(|v| match precision {
+            SolPrecision::Bucket(w) => same_bucket(lamports_to_sol(v), lamports_to_sol(target), w),
+            SolPrecision::Exact => v == target,
+        })
 }
 
 fn lamports_to_sol(lamports: i64) -> f64 {
@@ -476,6 +498,42 @@ mod tests {
         // Right instant axis, first-slot deferred → pending pass at Instant.
         tf.cu_limit = Some(200_000);
         assert!(matches_phase(&fp, &tf, MatchPhase::Instant));
+    }
+
+    /// A token carrying an out-of-`i64` ceiling (pump.fun's `u64::MAX` "no slippage
+    /// cap") must **fail** a configured `max_cost_lamports` axis and leave an
+    /// unconfigured one alone.
+    ///
+    /// Both directions matter and they fail differently. Before the `u64` widening
+    /// the value wrapped to `-1`, so it could collide with a negative or
+    /// near-`i64::MIN` axis; saturating instead would collide at `i64::MAX`. A
+    /// `BIGINT` axis simply cannot name this value, so the honest answer is "no
+    /// match" — never "matches everything", which is what dropping the axis would
+    /// mean.
+    #[test]
+    fn a_no_limit_ceiling_never_satisfies_a_configured_axis() {
+        for width in [None, Some(0.1)] {
+            let mut fp = blank_fp();
+            fp.bucket_size_amount = width;
+            fp.max_cost_lamports = Some(1_515_000_000);
+
+            let mut tf = blank_tf();
+            tf.max_cost_lamports = Some(u64::MAX);
+            assert!(!matches(&fp, &tf), "width {width:?}: ceiling matched a real axis");
+            // The same fingerprint still matches the amount it actually names.
+            tf.max_cost_lamports = Some(1_515_000_000);
+            assert!(matches(&fp, &tf), "width {width:?}: real amount stopped matching");
+
+            // An unconfigured axis is not part of identity — a ceiling token still
+            // passes it, exactly as any other value does.
+            let mut open = blank_fp();
+            open.bucket_size_amount = width;
+            open.cu_limit = Some(200_000);
+            let mut tf = blank_tf();
+            tf.cu_limit = Some(200_000);
+            tf.max_cost_lamports = Some(u64::MAX);
+            assert!(matches(&open, &tf), "width {width:?}: unconfigured axis rejected");
+        }
     }
 
     #[test]
