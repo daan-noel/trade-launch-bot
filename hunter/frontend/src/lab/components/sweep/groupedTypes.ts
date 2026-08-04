@@ -179,6 +179,54 @@ export interface GroupedSweepGroupRecord {
   best_median_holding_secs: number;
   /** The winning combo's params — a `RuleParams` blob for the generic engine. */
   best_params: Record<string, unknown>;
+  /** What this group's tokens were actually selected by. `undefined` only on a
+   *  response from an older backend. See {@link GroupSelection}. */
+  selection?: GroupSelection;
+}
+
+/** One axis of a group's selection, as the backend resolved it. */
+export interface SelectionClause {
+  /** `GroupField` tag — `"max_cost_lamports"`, `"ix_labels"`, … */
+  field: string;
+  /** Where the clause came from: the scope fingerprint, a run filter, or group-by. */
+  origin: 'scope' | 'filter' | 'group_by';
+  /** Pre-rendered value (`"0.324"`, `"1.5–1.6"`, `"∅ (absent)"`). Rendered by the
+   *  backend on purpose — the frontend must not re-derive a selection. */
+  display: string;
+  /** Discriminant of the underlying predicate (`exact`/`labels`/`absent`/…). */
+  predicate: { kind: string } & Record<string, unknown>;
+}
+
+/**
+ * What selected a group's tokens: the scope fingerprint's axes ∧ the run's manual
+ * filters ∧ the group key — resolved ONCE by the backend
+ * (`lab/src/sweep/selection.rs`) and consumed verbatim here.
+ *
+ * This replaced a frontend re-derivation from `group_key`, which is why a run
+ * that pinned its corpus with `ix_labels_filter` / `field_filters` used to render
+ * as "ALL tokens": those clauses live on the RUN, never in the group key.
+ */
+export interface GroupSelection {
+  /** The saved fingerprint the run was scoped to, if any. */
+  scope_fingerprint_id: string | null;
+  clauses: SelectionClause[];
+  /** Whether Promote can express this selection as a fingerprint. */
+  promotable: boolean;
+  /** Why not — one message per unexpressible clause. Empty when promotable. */
+  blockers: string[];
+  /** Identity fields of the fingerprint Promote would find-or-create. Compare
+   *  (never rebuild) to badge a group with an existing fingerprint. */
+  identity?: {
+    cu_limit: number | null;
+    cu_price: number | null;
+    init_buy_lamports: number | null;
+    max_cost_lamports: number | null;
+    spendable_lamports_in: number | null;
+    first_slot_buy_lamports: number | null;
+    first_slot_sell_lamports: number | null;
+    bucket_size_amount: number | null;
+    ix_labels: string[] | null;
+  };
 }
 
 /** Drill-in combo rows reuse the flat sweep-result shape (same metric set). */

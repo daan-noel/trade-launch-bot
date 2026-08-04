@@ -46,6 +46,11 @@ pub mod progress;
 pub mod projection;
 pub mod registry;
 pub mod retention;
+// `selection` — the ONE derivation of what a group's tokens were selected by
+// (scope fingerprint ∧ run filters ∧ group key), and the only place that turns
+// it back into a fingerprint. See the module docs for why it is not re-derived
+// per consumer.
+pub mod selection;
 pub mod shard;
 pub mod spill;
 pub mod strategy;

@@ -104,9 +104,46 @@ pub struct DiscoveryGroup {
     pub tokens: Vec<TokenGross>,
 }
 
+/// A scored discovery run: its groups **plus the corpus identity that produced
+/// them**.
+///
+/// The identity fields are not scoring output — [`score_corpus`] leaves them at
+/// their defaults and the handler stamps them before caching. They exist because
+/// the page rehydrates a disk-cached result on mount, at which point its form
+/// state is whatever the user last left it, not what the run used. Reading the
+/// precision or the label filter off the form to rebuild a fingerprint identity
+/// silently attributes a card to the wrong fingerprint (or binds one that drops
+/// an axis). The grouped sweep gets this right by reading its persisted run row;
+/// this is the same contract for a run that lives only in the cache.
+///
+/// `#[serde(default)]` on each so a result cached before these fields existed
+/// still deserializes — it reads back as "0.1 bucket, no filter, unscoped",
+/// which is what those older runs actually were.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DiscoveryResult {
     pub groups: Vec<DiscoveryGroup>,
+    /// Bucket width (SOL) the continuous SOL group axes were binned at, or `None`
+    /// when the run keyed them on their **exact** amount ([`SolPrecision::Exact`]).
+    /// `None` is the mode, never a `0` width — see [`SolPrecision`].
+    #[serde(default = "default_result_width")]
+    pub bucket_width_sol: Option<f64>,
+    /// The exact-set instruction-label corpus filter the run applied, or `None`.
+    /// Part of what selected these groups, so it is part of the fingerprint
+    /// identity a group binds to — the group key never carries it (the form
+    /// disables the filter box when `ix_labels` is a group-by).
+    #[serde(default)]
+    pub ix_labels_filter: Option<Vec<String>>,
+    /// Saved fingerprint the corpus was scoped to (engine match), or `None` for an
+    /// unscoped run. Authoritative attribution for every group in the run.
+    #[serde(default)]
+    pub fingerprint_id: Option<uuid::Uuid>,
+}
+
+/// A pre-identity cached result predates exact mode, so it was bucketed at the
+/// default width — not exact. Spelled out because `Option::default()` is `None`,
+/// which [`SolPrecision::from_width`] reads as `Exact`: the wrong answer here.
+fn default_result_width() -> Option<f64> {
+    Some(SOL_BUCKET_WIDTH)
 }
 
 /// Parse lake `ix_labels` JSON array string → ordered labels. `None` when missing,
@@ -174,7 +211,16 @@ pub fn score_corpus(
     }
 
     groups.sort_by_key(|g| std::cmp::Reverse(g.n_tokens));
-    Ok(DiscoveryResult { groups })
+    Ok(DiscoveryResult {
+        groups,
+        // Stamped from the very `cfg` that partitioned above, so the echoed
+        // precision cannot drift from the one the group keys were rendered at.
+        // The corpus-selection fields are the handler's to fill — this fn never
+        // sees the filter or the scope.
+        bucket_width_sol: cfg.bucket_width_sol,
+        ix_labels_filter: None,
+        fingerprint_id: None,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

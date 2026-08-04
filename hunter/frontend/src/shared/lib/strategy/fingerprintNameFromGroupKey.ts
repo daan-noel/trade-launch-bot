@@ -41,12 +41,17 @@ function compactBucketLo(label: string): string {
  *
  * @param gk group_key map (may include `∅` and grouping-only axes)
  * @param source one-letter provenance (`c` / `f` / `s`)
- * @param bucketWidthSol width used for SOL axes; `b{width}` appended when ≠ 0.1
+ * @param bucketWidthSol width used for SOL axes; `b{width}` appended when ≠ 0.1.
+ *        `null` is the **exact**-amount mode (`SolPrecision::Exact` / NULL stored
+ *        width) and appends `bexact` — never a width. Two fingerprints with the
+ *        same axes but different precision are different rules that arm on
+ *        different token sets, so the name has to tell them apart; `exact` is the
+ *        same word `formatBucketWidth` and `BucketChip` use for this mode.
  */
 export function fingerprintNameFromGroupKey(
   gk: Record<string, string>,
   source: FingerprintNameSource,
-  bucketWidthSol: number = DEFAULT_BUCKET_WIDTH,
+  bucketWidthSol: number | null = DEFAULT_BUCKET_WIDTH,
 ): string {
   const parts: string[] = [source];
   for (const [k, v] of Object.entries(gk)) {
@@ -61,9 +66,13 @@ export function fingerprintNameFromGroupKey(
     const val = v.includes('–') ? compactBucketLo(v) : v;
     parts.push(`${short}${val}`);
   }
-  const width = tidySolDecimal(bucketWidthSol);
-  if (width !== DEFAULT_BUCKET_WIDTH) {
-    parts.push(`b${formatDecimalTrim(width, 4)}`);
+  if (bucketWidthSol == null) {
+    parts.push('bexact');
+  } else {
+    const width = tidySolDecimal(bucketWidthSol);
+    if (width !== DEFAULT_BUCKET_WIDTH) {
+      parts.push(`b${formatDecimalTrim(width, 4)}`);
+    }
   }
   if (parts.length === 1) parts.push('ALL');
   return parts.join(' · ');

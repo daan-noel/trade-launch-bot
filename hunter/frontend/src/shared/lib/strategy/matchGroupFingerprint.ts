@@ -7,6 +7,37 @@ import { solToLamports, type Fingerprint } from './types';
 import { configuredIxLabels } from 'lib/ixLabels';
 import { tidySolDecimal } from 'utils/format';
 
+/**
+ * Attach a run's applied exact-set `ix_labels` filter onto a card's `group_key`
+ * when Instruction labels was **not** in group-by (so the key omitted that axis).
+ *
+ * **Every surface that turns a `group_key` into a fingerprint identity must call
+ * this first.** The filter is part of what selected the run's corpus, but it lives
+ * on the RUN, not the key — the group-by form disables the filter box when
+ * `ix_labels` is grouped, so at most one of the two is ever set. The backend
+ * already does the same join (`promote_group` copies `run.ix_labels_filter` into
+ * the drafted fingerprint), so a caller that skips it compares a key the backend
+ * would never have produced: the identity branch of
+ * {@link findFingerprintForGroupKey} can't hit, matching silently degrades to the
+ * ambiguous single-compatible fallback, and a create/bind saves a fingerprint that
+ * dropped the label axis and therefore arms on every token shape.
+ *
+ * Lives here, next to the identity functions it feeds, rather than in a page's
+ * display helpers — that separation is what let the sweep page omit it.
+ *
+ * Never overwrites an existing `ix_labels` key; a `null`/empty filter is a no-op
+ * (the same "empty collection is the not-set sentinel" rule as
+ * `configuredIxLabels`).
+ */
+export function withIxLabelsFilter(
+  groupKey: Record<string, string>,
+  ixLabelsFilter: readonly string[] | null | undefined,
+): Record<string, string> {
+  if (Object.prototype.hasOwnProperty.call(groupKey, 'ix_labels')) return groupKey;
+  if (!ixLabelsFilter || ixLabelsFilter.length === 0) return groupKey;
+  return { ...groupKey, ix_labels: ixLabelsFilter.join(' | ') };
+}
+
 /** Identity axes only — what `find_or_create` compares. */
 export interface FingerprintIdentity {
   cu_limit: number | null;
@@ -144,7 +175,19 @@ function sameWidth(a: number | null, b: number | null): boolean {
   return tidySolDecimal(a) === tidySolDecimal(b);
 }
 
-/** True when every `IDENTITY_WHERE` axis matches (`NULL` is a value). */
+/**
+ * True when every `IDENTITY_WHERE` axis matches (`NULL` is a value).
+ *
+ * This is the compare to reach for wherever the backend hands you an identity it
+ * authored — the `identity` block of a resolved `GroupSelection`
+ * (`lab/src/sweep/selection.rs`), which is literally the row
+ * `FingerprintRepo::find_or_create` keys on. Prefer that over
+ * {@link findFingerprintForGroupKey}, which must *reconstruct* an identity from a
+ * group key: a group key is a lossy view of what selected a group (the run's
+ * `ix_labels_filter` / `field_filters` live on the run row and never appear in
+ * it), so the reconstruction runs wide and needs an ambiguous
+ * single-compatible fallback to paper over the gap.
+ */
 export function fingerprintMatchesIdentity(fp: Fingerprint, id: FingerprintIdentity): boolean {
   return (
     fp.cu_limit === id.cu_limit &&

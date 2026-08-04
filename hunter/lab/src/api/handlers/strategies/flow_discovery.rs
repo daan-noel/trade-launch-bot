@@ -160,6 +160,11 @@ pub async fn get_flow_discovery(
         Some(result) => HttpResponse::Ok().json(serde_json::json!({
             "run_id": run_id,
             "groups": result.groups,
+            // The run's own identity — the page rebuilds fingerprint identity from
+            // these, never from its live form state (see `DiscoveryResult`).
+            "bucket_width_sol": result.bucket_width_sol,
+            "ix_labels_filter": result.ix_labels_filter,
+            "fingerprint_id": result.fingerprint_id,
         })),
         None => HttpResponse::NotFound().json(serde_json::json!({
             "error": "no discovery result for that run_id (still running, expired, or unknown)"
@@ -175,6 +180,11 @@ pub async fn get_last_flow_discovery(state: web::Data<Arc<LocalState>>) -> impl 
         Some((run_id, result)) => HttpResponse::Ok().json(serde_json::json!({
             "run_id": run_id,
             "groups": result.groups,
+            // Rehydration is exactly the case the echo exists for: this result can
+            // be from a previous session, so the form is not its identity.
+            "bucket_width_sol": result.bucket_width_sol,
+            "ix_labels_filter": result.ix_labels_filter,
+            "fingerprint_id": result.fingerprint_id,
         })),
         None => HttpResponse::NotFound().json(serde_json::json!({
             "error": "no cached discovery result"
@@ -317,6 +327,20 @@ async fn run_flow_discovery_job(
         });
     }
 
+    // What actually selected this corpus, captured before the filters consume it —
+    // echoed on the result so the page rebuilds fingerprint identity from the RUN
+    // rather than from whatever its form happens to hold when a cached result
+    // rehydrates. The two are mutually exclusive, exactly as the branch below shows.
+    let scope_fingerprint_id = b.fingerprint_id;
+    let applied_ix_labels_filter: Option<Vec<String>> = if b.fingerprint_id.is_some() {
+        None
+    } else {
+        b.ix_labels_filter
+            .as_ref()
+            .filter(|f| !f.is_empty())
+            .map(|f| normalize_label_vec(f.clone()))
+    };
+
     if let Some(fp_id) = b.fingerprint_id {
         // Saved-fingerprint path: engine match SSOT (exact + bucket axes).
         let repo = FingerprintRepo::new(state.db.clone());
@@ -445,7 +469,11 @@ async fn run_flow_discovery_job(
     .await;
 
     match result {
-        Ok(Ok(discovery)) => {
+        Ok(Ok(mut discovery)) => {
+            // `score_corpus` stamped the precision it grouped at; the corpus
+            // selection is ours to record.
+            discovery.ix_labels_filter = applied_ix_labels_filter;
+            discovery.fingerprint_id = scope_fingerprint_id;
             store_result(&state, run_id, discovery).await;
         }
         Ok(Err(Cancelled)) => {

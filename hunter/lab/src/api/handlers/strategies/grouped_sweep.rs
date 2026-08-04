@@ -31,6 +31,7 @@ use crate::sweep::corpus::{sweep_per_mint_cap, CorpusSource, Selection};
 use crate::sweep::grouped_engine::{CoverageFloor, GroupResult, GroupSink};
 use crate::sweep::grouping::{group_key, normalize_label_vec, GroupField, SolPrecision};
 use crate::sweep::registry;
+use crate::sweep::selection::GroupSelection;
 use crate::sweep::strategy::parse_method;
 use trading_core::config::constants::{sol_to_lamports, tidy_sol_decimal};
 use trading_core::models::Fingerprint;
@@ -1581,13 +1582,33 @@ pub async fn list_groups(
         None => return bad_strategy(&query.strategy_id),
     };
     let run_id = path.into_inner();
-    match GroupedSweepRepo::new(state.db.clone(), tables).list_groups(run_id).await {
-        Ok(groups) => HttpResponse::Ok().json(groups),
+    let repo = GroupedSweepRepo::new(state.db.clone(), tables);
+    let mut groups = match repo.list_groups(run_id).await {
+        Ok(g) => g,
         Err(e) => {
             tracing::error!("DB error listing grouped sweep groups: {e}");
-            HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}))
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "database error"}));
+        }
+    };
+
+    // Attach what actually selected each group. The frontend used to rebuild this
+    // in TypeScript from `group_key` alone — a second, differently-lossy copy of
+    // the promote-side derivation, which is why a filtered run's card read
+    // "ALL tokens" while its corpus was pinned. Resolved here, from the one SSOT,
+    // so the card, the Promote button's enabled state and the fingerprint the
+    // promote endpoint would create can never disagree.
+    if let Ok(Some(run)) = repo.get_run(run_id).await {
+        let scope_fp = match run.fingerprint_id {
+            Some(id) => FingerprintRepo::new(state.db.clone()).find(id).await.ok().flatten(),
+            None => None,
+        };
+        for g in &mut groups {
+            let sel = GroupSelection::resolve(&run, scope_fp.as_ref(), &g.group_key);
+            g.selection = serde_json::to_value(&sel).ok();
         }
     }
+    HttpResponse::Ok().json(groups)
 }
 
 /// `GET /api/strategies/sweeps/{run_id}/groups/{group_id}/results?strategy_id=tpsl2&page=0&limit=200`
@@ -1915,36 +1936,18 @@ pub async fn promote_group(
     // see `grouped_engine::retained_combo_params`. `run.scale_out` is the candidate
     // grid that was searched, not necessarily what this combo ended up with.
 
-    // Fingerprint at the run's bucket width (fall back to the default for pre-0002
-    // runs), find-or-created so identical winning groups map onto ONE fingerprint.
-    // Promote at the precision the run GROUPED at, read through the one
-    // `SolPrecision::from_width` — a NULL width means the run keyed exact amounts,
-    // and a fingerprint spells exact the same way, so the promoted rule arms on
-    // exactly the tokens the group counted. Substituting a default width here is
-    // what would silently widen an exact group back into a bucket.
-    let precision = SolPrecision::from_width(run.bucket_width_sol);
+    // The fingerprint this group promotes to is **whatever selected its tokens**,
+    // resolved once by `GroupSelection` (scope fingerprint ∧ run filters ∧ group
+    // key at the run's precision) and materialized back into an entry gate. The
+    // promote path does not re-derive any part of that: every earlier version of
+    // this code rebuilt the gate from `group_key` alone and silently dropped the
+    // rest (`field_filters`, the group-by narrowing inside a scope, the `∅` and
+    // ceiling keys), so the created rule armed on a SUPERSET of the tokens the
+    // promoted numbers came from. See `crate::sweep::selection`.
     let fp_repo = FingerprintRepo::new(state.db.clone());
-
-    // A fingerprint-scoped run already HAS the gate that selected its corpus — reuse
-    // it instead of synthesizing one from the group key. The group key only carries
-    // the grouped fields (and is `{}` for the usual single-"ALL"-group scoped run),
-    // so `fingerprint_from_group_key` would hand back a fingerprint with fewer axes
-    // than the sweep actually matched on — for an empty key, one that matches EVERY
-    // token. That rule would fire far wider than the results it was promoted from.
-    let mut fp = match run.fingerprint_id {
+    let scope_fp = match run.fingerprint_id {
         Some(fp_id) => match fp_repo.find(fp_id).await {
-            Ok(Some(f)) => {
-                if !group.group_key.as_object().map(|o| o.is_empty()).unwrap_or(true) {
-                    // Grouped *within* the scope: the promoted rule is the scope gate,
-                    // which is wider than this group's slice. Say so in the log — the
-                    // extra narrowing is a group-by artifact, not a fingerprint axis.
-                    tracing::warn!(
-                        %fp_id, group_key = %group.group_key,
-                        "promote: scoped run grouped by extra fields — promoting the scope fingerprint (wider than the group)"
-                    );
-                }
-                f
-            }
+            Ok(Some(f)) => Some(f),
             Ok(None) => {
                 return HttpResponse::BadRequest().json(serde_json::json!({
                     "error": format!(
@@ -1959,60 +1962,59 @@ pub async fn promote_group(
                     .json(serde_json::json!({"error": "database error"}));
             }
         },
-        None => {
-            let name = format!("sweep {} · group {}", short_id(run_id), group.group_index);
-            let mut draft_fp = fingerprint_from_group_key(&group.group_key, precision, name);
-            // The run's exact-set label filter is part of what selected these results,
-            // but it lives on the RUN — the group key only carries grouped fields, and
-            // the form disables the filter box when `ix_labels` is a group-by, so at
-            // most one of the two is ever set. Without this the promoted rule silently
-            // drops the label axis and fires on every token shape (and on a run whose
-            // only criterion WAS the filter, `has_any_criterion` is false ⇒ the rule
-            // matches nothing). Same semantics on both sides: the sweep filter is an
-            // exact ordered label sequence (`normalize_label_vec` preserves order and
-            // count) and so is the engine's `ix_labels` axis.
-            if draft_fp.ix_labels.is_none() {
-                let filtered = run
-                    .ix_labels_filter
-                    .as_ref()
-                    .map(crate::sweep::grouping::normalize_labels)
-                    .filter(|v| !v.is_empty());
-                if let Some(labels) = filtered {
-                    draft_fp.ix_labels = Some(normalize_label_vec(labels));
-                }
-            }
-            // `field_filters` cannot be carried the same way: they pin an EXACT value
-            // while a fingerprint SOL axis matches by bucket, and they admit a set of
-            // values where an axis holds one. Promoting silently would widen the rule,
-            // so say it out loud instead of pretending the axis came along.
-            if run.field_filters.as_ref().and_then(|v| v.as_object()).is_some_and(|o| !o.is_empty()) {
+        None => None,
+    };
+    let selection = GroupSelection::resolve(&run, scope_fp.as_ref(), &group.group_key);
+
+    let mut fp = if selection.is_scope_only() {
+        // The group IS the scope, unnarrowed — reuse the saved row rather than
+        // create a match-identical twin (see `is_scope_only`).
+        scope_fp.clone().expect("is_scope_only implies a scope fingerprint")
+    } else {
+        let name = format!("sweep {} · group {}", short_id(run_id), group.group_index);
+        let mut draft_fp = match selection.materialize(name) {
+            Ok(f) => f,
+            // **Fail closed.** A clause with no fingerprint expression is refused
+            // here, with the clause named — never dropped to produce a wider gate.
+            Err(blockers) => {
                 tracing::warn!(
-                    field_filters = %run.field_filters.as_ref().unwrap(),
-                    "promote: run used per-field value filters — they are NOT expressible as fingerprint axes, \
-                     so the promoted rule is wider than the swept corpus"
+                    %run_id, %group_id, selection = %selection.summary(),
+                    "promote: selection is not expressible as a fingerprint"
                 );
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "this group's selection can't be expressed as a fingerprint, so \
+                              promoting it would create a rule that arms on MORE tokens than the \
+                              sweep measured",
+                    "blockers": blockers,
+                    "selection": selection.summary(),
+                }));
             }
-            // V2.2: Promote copies the run's volume-ix patterns into metric_config so
-            // the live/sim rule classifies with the same set the sweep scored.
-            if let Some(patterns) = &run.volume_ix_patterns {
-                draft_fp.metric_config = serde_json::json!({
-                    "m_flow_split": { "volume_ix_patterns": patterns }
-                });
-                if let Err(e) =
-                    hunter_engine::metrics::flow_split::FlowPatterns::validate_metric_config(
-                        &draft_fp.metric_config,
-                    )
-                {
-                    return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
-                }
+        };
+        // A narrowed scope keeps the scope's metric config — the promoted rule must
+        // classify flow exactly as the swept corpus did.
+        if let Some(s) = &scope_fp {
+            draft_fp.metric_config = s.metric_config.clone();
+        }
+        // V2.2: Promote copies the run's volume-ix patterns into metric_config so
+        // the live/sim rule classifies with the same set the sweep scored.
+        if let Some(patterns) = &run.volume_ix_patterns {
+            draft_fp.metric_config = serde_json::json!({
+                "m_flow_split": { "volume_ix_patterns": patterns }
+            });
+            if let Err(e) =
+                hunter_engine::metrics::flow_split::FlowPatterns::validate_metric_config(
+                    &draft_fp.metric_config,
+                )
+            {
+                return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
             }
-            match fp_repo.find_or_create(&draft_fp).await {
-                Ok(f) => f,
-                Err(e) => {
-                    tracing::error!("promote: find_or_create fingerprint failed: {e}");
-                    return HttpResponse::InternalServerError()
-                        .json(serde_json::json!({"error": "database error"}));
-                }
+        }
+        match fp_repo.find_or_create(&draft_fp).await {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::error!("promote: find_or_create fingerprint failed: {e}");
+                return HttpResponse::InternalServerError()
+                    .json(serde_json::json!({"error": "database error"}));
             }
         }
     };

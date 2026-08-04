@@ -136,13 +136,28 @@ mod tests {
         let _ = fs::remove_file(&path);
         let cache = DiscoveryResultCache::open(path.clone());
         let run_id = Uuid::new_v4();
-        let result = DiscoveryResult { groups: vec![] };
+        // Exact precision + a label filter: the identity a rehydrating page must
+        // read back off the RUN, since its form state is not the run's.
+        let result = DiscoveryResult {
+            groups: vec![],
+            bucket_width_sol: None,
+            ix_labels_filter: Some(vec!["Pump.Fun: Create_v2".into(), "Pump.Fun: Buy".into()]),
+            fingerprint_id: None,
+        };
         cache.store(run_id, result).await;
         assert!(cache.get(run_id).await.is_some());
 
         drop(cache);
         let cache2 = DiscoveryResultCache::open(path.clone());
-        assert!(cache2.get(run_id).await.is_some());
+        let reopened = cache2.get(run_id).await.expect("result survives reopen");
+        // The whole point of caching the identity: exact must not come back as a
+        // width, and the filter must not come back empty — either would rebuild a
+        // different fingerprint than the run's groups were selected by.
+        assert_eq!(reopened.bucket_width_sol, None);
+        assert_eq!(
+            reopened.ix_labels_filter.as_deref(),
+            Some(["Pump.Fun: Create_v2".to_string(), "Pump.Fun: Buy".to_string()].as_slice()),
+        );
         assert!(cache2.get(Uuid::new_v4()).await.is_none());
 
         let _ = fs::remove_file(&path);

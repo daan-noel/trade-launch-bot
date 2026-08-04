@@ -38,6 +38,7 @@ import {
   findFingerprintForGroupKey,
   fingerprintIdentityFromGroupKey,
   identityHasCriterion,
+  withIxLabelsFilter,
 } from 'lib/strategy/matchGroupFingerprint';
 import { fingerprintNameFromGroupKey } from 'lib/strategy/fingerprintNameFromGroupKey';
 import { fingerprintsHref } from 'lib/strategy/nav';
@@ -64,7 +65,6 @@ import {
   groupColor,
   groupValueParts,
   drillTokenFilters,
-  withIxLabelsFilter,
   type GroupedCreationArgs,
   type GroupedCreationCell,
   type GroupedCreationGroup,

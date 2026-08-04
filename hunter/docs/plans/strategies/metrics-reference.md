@@ -132,6 +132,33 @@ Ambiguity chip when top structure's `group_lift < 1.25`. Apply writes
 `metric_config` via fingerprint `PUT` or promote-style bind. Auto-promote stays
 future work (gated on hand-label kit).
 
+### The result carries its own corpus identity
+
+`DiscoveryResult` echoes `bucket_width_sol` (`null` = `SolPrecision::Exact`),
+`ix_labels_filter` and `fingerprint_id` alongside `groups`, and both GET endpoints
+serialize them. **The page must rebuild fingerprint identity from these, never from
+its own form state**, for two reasons:
+
+- The result is disk-cached and rehydrated on mount, so it is routinely a run from
+  an earlier session while the form holds something else entirely. Reading the
+  form attributes a card to the wrong fingerprint, and binds one that arms on a
+  window the card never showed.
+- `bind_flow_discovery` builds the fingerprint from the **posted `group_key`
+  alone** — unlike the sweep's `promote_group` it has no run row to recover the
+  label filter from. So the client must re-attach it (`withIxLabelsFilter`) before
+  posting, or the bound fingerprint silently drops its `ix_labels` axis and fires
+  on every token shape. Same failure `promote_group`'s filter copy exists to
+  prevent.
+
+Precision is part of identity: an exact fingerprint and a bucketed one with equal
+axes are different rules that arm on different token sets, so `withIxLabelsFilter`
+and the width both feed `findFingerprintForGroupKey`, and an exact-mode auto-name
+ends in `bexact` rather than a width.
+
+Discovery has no `GroupSelection` resolver — that seam is grouped-sweep-only
+(`lab/src/sweep/selection.rs`), because a discovery run has no persisted run row to
+resolve against. The echoed fields are its equivalent.
+
 ## Future toggles (not built)
 
 - **Cross-token contagion**: wallets tagged on token A pre-tagged on token B of the

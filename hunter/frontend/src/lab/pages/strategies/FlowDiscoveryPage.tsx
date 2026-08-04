@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
 import { Accordion } from 'components/ui/Accordion';
@@ -77,7 +77,10 @@ import type {
   FlowDiscoveryGroup,
   FlowDiscoveryResult,
 } from 'types';
-import { findFingerprintForGroupKey } from 'lib/strategy/matchGroupFingerprint';
+import {
+  findFingerprintForGroupKey,
+  withIxLabelsFilter,
+} from 'lib/strategy/matchGroupFingerprint';
 import { fingerprintNameFromGroupKey } from 'lib/strategy/fingerprintNameFromGroupKey';
 import { lamportsToSol, type Fingerprint } from 'lib/strategy/types';
 import { tidySolDecimal } from 'utils/format';
@@ -352,15 +355,57 @@ export function FlowDiscoveryPage() {
   const selectedGroup: FlowDiscoveryGroup | null =
     result?.groups[selectedGroupIdx] ?? null;
 
+  // ── The displayed result's OWN identity ───────────────────────────────────
+  // Read off the run, never off the form above it. `result` can be a disk-cached
+  // run from an earlier session (see the rehydrate effect), so the live config is
+  // not its identity — and precision + label filter are both part of what a group
+  // binds to. A pre-echo cached result omits these; fall back to the form, which
+  // is the best available guess and matches the old behaviour exactly.
+  /** The width the RUN grouped at — `null` means it keyed exact amounts. */
+  const runWidth: number | null = useMemo(() => {
+    if (result && result.bucket_width_sol !== undefined) {
+      return result.bucket_width_sol == null ? null : tidySolDecimal(result.bucket_width_sol);
+    }
+    return exactSol ? null : tidySolDecimal(bucketWidthSol);
+  }, [result, exactSol, bucketWidthSol]);
+  /** The exact-set label filter the RUN applied, or null. */
+  const runIxLabels: string[] | null = useMemo(() => {
+    if (result && result.ix_labels_filter !== undefined) return result.ix_labels_filter;
+    return ixLabelsGrouped ? null : ixFilter.labels;
+  }, [result, ixLabelsGrouped, ixFilter.labels]);
+  /** The saved fingerprint the RUN was scoped to, if any. */
+  const runScopeFp: Fingerprint | null = useMemo(() => {
+    const id = result && result.fingerprint_id !== undefined ? result.fingerprint_id : seedFingerprintId;
+    return (id && fingerprints.find((f) => f.id === id)) || null;
+  }, [result, seedFingerprintId, fingerprints]);
+
+  /** Resolve one group to its saved fingerprint, exactly as promote/bind would.
+   *
+   *  A scoped run pins the whole corpus to one fingerprint and its groups are
+   *  sub-slices of it, so that fingerprint is the authoritative attribution — and
+   *  a scoped run's key is usually `{}`, which would otherwise fuzzily match any
+   *  unrelated fingerprint that merely shares the precision. Same precedence the
+   *  grouped sweep uses. */
+  const resolveGroupFp = useCallback(
+    (groupKey: Record<string, string>): Fingerprint | null =>
+      runScopeFp ??
+      findFingerprintForGroupKey(
+        withIxLabelsFilter(groupKey, runIxLabels),
+        fingerprints,
+        runWidth,
+      ),
+    [runScopeFp, runIxLabels, fingerprints, runWidth],
+  );
+
   /** Group indices whose group_key identity-matches a saved fingerprint. */
   const fingerprintGroupIdxs = useMemo(() => {
     const set = new Set<number>();
     if (!result || fingerprints.length === 0) return set;
     result.groups.forEach((g, i) => {
-      if (findFingerprintForGroupKey(g.group_key, fingerprints, bucketWidthSol)) set.add(i);
+      if (resolveGroupFp(g.group_key)) set.add(i);
     });
     return set;
-  }, [result, fingerprints, bucketWidthSol]);
+  }, [result, fingerprints, resolveGroupFp]);
   const flowSplit = useMemo(() => {
     if (!selectedGroup) return null;
     const draftKeys = new Set(draftPatterns.map((p) => JSON.stringify(p)));
@@ -437,9 +482,7 @@ export function FlowDiscoveryPage() {
     setDraftPatterns((prev) => [...prev, ...suggestedUnchecked]);
     setApplyOk(null);
   }
-  const autoMatchedFp = selectedGroup
-    ? findFingerprintForGroupKey(selectedGroup.group_key, fingerprints, bucketWidthSol)
-    : null;
+  const autoMatchedFp = selectedGroup ? resolveGroupFp(selectedGroup.group_key) : null;
   const targetFp: Fingerprint | null =
     (targetFpId && fingerprints.find((f) => f.id === targetFpId)) || null;
   const currentPatterns = volumeIxPatternsFromConfig(targetFp?.metric_config ?? {});
@@ -578,16 +621,20 @@ export function FlowDiscoveryPage() {
         }).unwrap();
         setApplyOk(`Updated fingerprint “${targetFp.name}”.`);
       } else {
+        // Bind builds the fingerprint from the posted key alone — unlike the sweep's
+        // `promote_group`, it has no run row to read the label filter off. So the
+        // key we post must already carry it, or the bound fingerprint silently
+        // drops the `ix_labels` axis and arms on every token shape. Identity, name
+        // and the badge all read this one resolved key, so they cannot disagree.
+        const boundKey = withIxLabelsFilter(selectedGroup.group_key, runIxLabels);
         const fp = await bindFp({
-          group_key: selectedGroup.group_key,
+          group_key: boundKey,
           // Exact mode replaces the width outright (backend ignores it there).
-          ...(exactSol ? { exact_sol: true } : { bucket_width_sol: bucketWidthSol }),
+          // Both come from the RUN, not the form — binding a rehydrated result at
+          // the form's precision would arm on a window the card never showed.
+          ...(runWidth == null ? { exact_sol: true } : { bucket_width_sol: runWidth }),
           volume_ix_patterns: patterns,
-          name: fingerprintNameFromGroupKey(
-            selectedGroup.group_key,
-            'f',
-            bucketWidthSol,
-          ),
+          name: fingerprintNameFromGroupKey(boundKey, 'f', runWidth),
         }).unwrap();
         setTargetFpId(fp.id);
         setApplyOk(`Bound fingerprint “${fp.name}”.`);

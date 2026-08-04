@@ -386,13 +386,39 @@ function metricsExitColumn(exitMetricLegend: ExitMetricLegendEntry[]): ColumnDef
 
 // --- group columns ----------------------------------------------------------
 
-/** A human label + value string for one group-key field (chips + search). */
-function keyParts(group: GroupedSweepGroupRecord): { label: string; value: string }[] {
+/**
+ * A human label + value + provenance for every axis the group was selected by.
+ *
+ * Reads the backend's resolved `selection` (`lab/src/sweep/selection.rs`) — the
+ * ONE place that merges the scope fingerprint, the run's `ix_labels_filter` /
+ * `field_filters` and the group key. Falls back to the bare `group_key` only for
+ * a response from an older backend, which is exactly the lossy view that made a
+ * pinned run render as "ALL tokens": those filters live on the RUN, so a card
+ * built from `group_key` alone cannot see them.
+ */
+function keyParts(
+  group: GroupedSweepGroupRecord,
+): { label: string; value: string; origin?: string }[] {
+  const sel = group.selection;
+  if (sel) {
+    return sel.clauses.map((c) => ({
+      label: GROUP_FIELD_LABELS[c.field as GroupField] ?? c.field,
+      value: c.display,
+      origin: c.origin,
+    }));
+  }
   return Object.entries(group.group_key).map(([k, v]) => ({
     label: GROUP_FIELD_LABELS[k as GroupField] ?? k,
     value: v,
   }));
 }
+
+/** Short provenance tag shown next to a clause: where the pin came from. */
+const ORIGIN_LABEL: Record<string, string> = {
+  scope: 'fp',
+  filter: 'filter',
+  group_by: 'group',
+};
 
 /** Optional lookups for the Used-by column (promote identity → fingerprint → rules). */
 export type GroupFingerprintLookup = ReadonlyMap<string, Fingerprint>;
@@ -522,9 +548,20 @@ export function buildGenericGroupColumns(
         const parts = keyParts(g);
         const fp = fingerprintByGroupId?.get(g.id);
         const fpLabel = fp ? fp.name || fp.id.slice(0, 8) : null;
+        const blockers = g.selection?.promotable === false ? g.selection.blockers : null;
+        // "ALL tokens" now means what it says: nothing pinned the corpus and
+        // nothing grouped it. A filtered run lands in the branch below.
         if (parts.length === 0 && !fp) return chip('ALL tokens', 'text-text-dim');
         return (
           <div className="flex flex-col gap-1.5 text-left">
+            {blockers && blockers.length > 0 && (
+              <span
+                className="self-start rounded border border-warn/40 px-1 text-[10px] font-medium text-warn"
+                title={`Can't promote this group:\n\n${blockers.join('\n\n')}`}
+              >
+                not promotable
+              </span>
+            )}
             {fp && (
               <Link
                 to={fingerprintsHref(fp.id)}
@@ -546,9 +583,25 @@ export function buildGenericGroupColumns(
                     <Fragment key={p.label}>
                       <span
                         className="text-[11px] leading-tight text-text-dim"
-                        title={`${p.label}: ${p.value}`}
+                        title={
+                          p.origin
+                            ? `${p.label}: ${p.value} (pinned by the ${
+                                p.origin === 'scope'
+                                  ? 'scope fingerprint'
+                                  : p.origin === 'filter'
+                                    ? "run's corpus filter"
+                                    : 'group-by axis'
+                              })`
+                            : `${p.label}: ${p.value}`
+                        }
                       >
-                        {p.label}:
+                        {p.label}
+                        {p.origin && p.origin !== 'group_by' && (
+                          <span className="ml-1 text-[9px] uppercase text-text-dim/70">
+                            {ORIGIN_LABEL[p.origin]}
+                          </span>
+                        )}
+                        :
                       </span>
                       {ixParts ? (
                         <IxLabelsDisplay labels={ixParts} copyJson className="text-secondary" />

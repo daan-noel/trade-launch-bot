@@ -159,6 +159,17 @@ pub struct GroupedSweepGroupSummary {
     pub best_avg_holding_secs: f64,
     pub best_median_holding_secs: f64,
     pub best_params: Value,
+    /// What this group's tokens were actually selected by — the scope
+    /// fingerprint's axes, the run's manual filters and the group key, resolved
+    /// into one canonical clause list by `lab`'s `sweep::selection::GroupSelection`
+    /// (which also says whether it can be promoted, and why not).
+    ///
+    /// Not a stored column: every input lives on the run row, so this is derived
+    /// per request by the ONE resolver rather than persisted as a second copy that
+    /// could drift from it. `None` on paths that don't need it (the repo leaves it
+    /// unset; only the groups-list handler fills it in).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<Value>,
 }
 
 /// One ranked param-combo row within a group (the drill-in table). Metric set

@@ -629,6 +629,23 @@ export interface FlowDiscoveryGroup {
 export interface FlowDiscoveryResult {
   run_id: string;
   groups: FlowDiscoveryGroup[];
+  /** Bucket width (SOL) the run binned the continuous SOL group axes at, or
+   *  `null` when it keyed them on their **exact** amount (`SolPrecision::Exact`).
+   *  Precision is part of fingerprint identity, so never substitute a default.
+   *
+   *  Read this — not the page's live form state — whenever a group key is turned
+   *  into a fingerprint identity: the page rehydrates a disk-cached result on
+   *  mount, so the form can describe a completely different run. Absent only on a
+   *  result cached before the backend echoed it, where the backend substitutes the
+   *  0.1 default those runs actually used. */
+  bucket_width_sol?: number | null;
+  /** The exact-set instruction-label filter the run applied to its corpus, or
+   *  `null`. Part of the identity a group binds to — the group key never carries
+   *  it — so it must be re-attached via `withIxLabelsFilter` before matching. */
+  ix_labels_filter?: string[] | null;
+  /** Saved fingerprint the corpus was scoped to, or `null` when unscoped. Every
+   *  group is a sub-slice of it, so it is the authoritative attribution. */
+  fingerprint_id?: string | null;
 }
 
 /** The live (real) strategy managing a held mint — the Holdings bot badge and the

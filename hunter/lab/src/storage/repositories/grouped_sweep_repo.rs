@@ -177,6 +177,9 @@ impl From<GroupDbRow> for GroupedSweepGroupSummary {
             best_avg_holding_secs: r.best_avg_holding_secs.unwrap_or(0.0) as f64,
             best_median_holding_secs: r.best_median_holding_secs.unwrap_or(0.0) as f64,
             best_params: r.best_params.0,
+            // Derived, not stored — filled in by the groups-list handler from
+            // `sweep::selection::GroupSelection` (see the field's docs).
+            selection: None,
         }
     }
 }

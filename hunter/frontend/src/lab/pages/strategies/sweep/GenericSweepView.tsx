@@ -63,10 +63,8 @@ import type {
   ComboTokenResult,
   GroupedSweepStartArgs,
 } from '@lab/components/sweep/groupedTypes';
-import { withIxLabelsFilter } from '@lab/components/creation-stats/groupedCreationStats';
-import { findFingerprintForGroupKey } from 'lib/strategy/matchGroupFingerprint';
+import { fingerprintMatchesIdentity } from 'lib/strategy/matchGroupFingerprint';
 import type { Fingerprint, PromotedRuleDraft, StrategyRule } from 'lib/strategy/types';
-import { tidySolDecimal } from 'utils/format';
 
 /**
  * Convert the DataTable's raw per-column filter strings into structured
@@ -338,41 +336,29 @@ export function GenericSweepView() {
   const { data: strategyRules = [] } = useGetStrategyRulesQuery();
   // group_key → saved fingerprint (promote identity) → rules for the Used-by column.
   const fingerprintByGroupId = useMemo(() => {
-    // A NULL width IS the exact mode, and precision is part of fingerprint identity
-    // (`sameWidth`) — substituting the default would match these cards against
-    // 0.1-bucketed fingerprints and miss the exact ones the run can actually promote to.
-    const width =
-      activeRun?.bucket_width_sol == null ? null : tidySolDecimal(activeRun.bucket_width_sol);
     // A scoped run pins the whole corpus to one saved fingerprint; every group is a
-    // sub-slice of it, so that fingerprint is the authoritative attribution. The
-    // group_key omits the scope's identity axes, so group-key matching can't recover
-    // it — and on an empty key it would fuzzily match an unrelated fingerprint that
-    // merely shares the bucket width, so prefer the scope fingerprint outright.
+    // sub-slice of it, so that fingerprint is the authoritative attribution — but a
+    // group that narrowed it further (a group-by axis inside the scope) promotes to
+    // its own narrower fingerprint, which the identity below finds.
     const scopeFp =
       activeRun?.fingerprint_id != null
         ? fingerprints.find((f) => f.id === activeRun.fingerprint_id) ?? null
         : null;
     const map = new Map<string, Fingerprint>();
     for (const g of groups) {
-      // The run's exact-set label filter is part of the promote identity but lives on
-      // the RUN, not the group key (the form disables the filter box when `ix_labels`
-      // is a group-by, so at most one of the two is ever set) — `promote_group` copies
-      // it into the created fingerprint. Re-attach it here or the identity compare can
-      // never hit, leaving every card on a filtered run to the ambiguous
-      // single-compatible fallback, which silently un-badges as soon as a second
-      // fingerprint is compatible. Same helper the creation-stats dashboard uses.
-      const gk = withIxLabelsFilter(g.group_key, activeRun?.ix_labels_filter);
-      const fp = scopeFp ?? findFingerprintForGroupKey(gk, fingerprints, width);
+      // Compare against the identity the BACKEND resolved for this group
+      // (`selection.identity` — exactly the columns `find_or_create` keys on), never
+      // one rebuilt here from the group key. That rebuild was a second, lossy copy of
+      // the promote-side derivation: it could not see the run's `field_filters` at
+      // all, so a pinned run's card never badged the fingerprint promote would create.
+      const id = g.selection?.identity;
+      const fp = id
+        ? fingerprints.find((f) => fingerprintMatchesIdentity(f, id)) ?? scopeFp
+        : scopeFp;
       if (fp) map.set(g.id, fp);
     }
     return map;
-  }, [
-    groups,
-    fingerprints,
-    activeRun?.bucket_width_sol,
-    activeRun?.fingerprint_id,
-    activeRun?.ix_labels_filter,
-  ]);
+  }, [groups, fingerprints, activeRun?.fingerprint_id]);
   const rulesByFingerprintId = useMemo(() => {
     const map = new Map<string, StrategyRule[]>();
     for (const r of strategyRules) {
@@ -638,10 +624,7 @@ export function GenericSweepView() {
                 <h3 className="text-sm font-bold text-secondary">Combos for group</h3>
                 {activeGroup && (
                   <span className="font-mono text-xs text-text-dim">
-                    {Object.keys(activeGroup.group_key).length
-                      ? Object.entries(activeGroup.group_key).map(([k, v]) => `${k}=${v}`).join(' · ')
-                      : 'ALL tokens'}{' '}
-                    · {activeGroup.token_count} tokens
+                    {groupBreadcrumb(activeGroup)} · {activeGroup.token_count} tokens
                   </span>
                 )}
               </div>
@@ -975,7 +958,17 @@ function ComboTokenResults({
   );
 }
 
+/** One-line "what this group is" for the drill-in header + inspect breadcrumb.
+ *  Reads the backend's resolved selection (scope ∧ run filters ∧ group key) —
+ *  the group key alone can't see a pinned corpus, which is what made a filtered
+ *  run read as "ALL tokens". */
 function groupBreadcrumb(g: GroupedSweepGroupRecord): string {
+  const clauses = g.selection?.clauses;
+  if (clauses) {
+    return clauses.length === 0
+      ? 'ALL tokens'
+      : clauses.map((c) => `${c.field}=${c.display}`).join(' · ');
+  }
   const keys = Object.keys(g.group_key);
   if (keys.length === 0) return 'ALL tokens';
   return Object.entries(g.group_key)

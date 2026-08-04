@@ -6,6 +6,7 @@ import {
   fingerprintIdentityFromGroupKey,
   identityHasCriterion,
   parseLoLamports,
+  withIxLabelsFilter,
 } from './matchGroupFingerprint';
 
 function fp(partial: Partial<Fingerprint> & Pick<Fingerprint, 'id'>): Fingerprint {
@@ -231,5 +232,60 @@ describe('findFingerprintForGroupKey', () => {
     // picking either would treat different fingerprints as the same one.
     const hit = findFingerprintForGroupKey(gkNoLabels, [refinedA, refinedB], 0.5);
     expect(hit).toBeNull();
+  });
+
+  it('a label-filtered run resolves by EXACT identity once the filter is re-attached', () => {
+    // The regression this pairing exists for. The run filtered the corpus to a
+    // label set but did not group by it, so `promote_group` copied the filter
+    // into the saved fingerprint while the group key omits it. Matching the raw
+    // key can only reach the ambiguous superset path; `withIxLabelsFilter`
+    // rebuilds the key the backend actually promoted from.
+    const labels = refinedA.ix_labels as string[];
+    const rawKeyHit = findFingerprintForGroupKey(gkNoLabels, [refinedA, refinedB], 0.5);
+    expect(rawKeyHit).toBeNull(); // ambiguous — two label refinements compatible
+
+    const resolved = withIxLabelsFilter(gkNoLabels, labels);
+    const hit = findFingerprintForGroupKey(resolved, [refinedA, refinedB], 0.5);
+    expect(hit?.id).toBe('refined-a');
+    // And it is the identity branch, not the single-compatible fallback: adding
+    // more unrelated fingerprints must not change the answer.
+    expect(findFingerprintForGroupKey(resolved, [sparse, refinedB, refinedA], 0.5)?.id).toBe(
+      'refined-a',
+    );
+  });
+});
+
+describe('withIxLabelsFilter — the group_key ⋈ run-filter join', () => {
+  it('attaches the applied filter when group_key omitted ix_labels', () => {
+    expect(
+      withIxLabelsFilter({ cu_limit: '300000' }, ['Pump.Fun: Create', 'Pump.Fun: Buy']),
+    ).toEqual({
+      cu_limit: '300000',
+      ix_labels: 'Pump.Fun: Create | Pump.Fun: Buy',
+    });
+  });
+
+  it('never overwrites an existing ix_labels key (grouped path)', () => {
+    expect(
+      withIxLabelsFilter({ cu_limit: '300000', ix_labels: 'A | B' }, [
+        'Pump.Fun: Create',
+        'Pump.Fun: Buy',
+      ]),
+    ).toEqual({ cu_limit: '300000', ix_labels: 'A | B' });
+  });
+
+  it('is a no-op when no filter is applied', () => {
+    expect(withIxLabelsFilter({ cu_limit: '300000' }, null)).toEqual({ cu_limit: '300000' });
+    expect(withIxLabelsFilter({ cu_limit: '300000' }, [])).toEqual({ cu_limit: '300000' });
+    expect(withIxLabelsFilter({ cu_limit: '300000' }, undefined)).toEqual({
+      cu_limit: '300000',
+    });
+  });
+
+  it('joins with the same separator the backend group key uses', () => {
+    // `fingerprint_from_group_key` splits on " | " — a different separator here
+    // would produce a single bogus label instead of the set.
+    const gk = withIxLabelsFilter({}, ['A', 'B', 'C']);
+    expect(fingerprintIdentityFromGroupKey(gk, null).ix_labels).toEqual(['A', 'B', 'C']);
   });
 });
