@@ -301,6 +301,14 @@ export function DataTable<R>({
     }
     return pruneSortKeys(initial, columns);
   });
+  // Pinned-section collapse. Persisted alongside sort/page-size (the pins
+  // themselves live in a separate `tablePins` entry, so collapsing never loses
+  // them). Collapsing only hides the *section* — the pinned rows fall back into
+  // the paged body at their natural position (see `hidePinnedInBody`), so no row
+  // silently disappears.
+  const [pinsCollapsed, setPinsCollapsed] = useState(() =>
+    tableId ? getTablePrefs(tableId).pinsCollapsed ?? false : false,
+  );
   const [search, setSearch] = useState('');
   const [colFiltersMap, setColFiltersMap] = useState<Record<string, string>>({});
   const [visibleCols, setVisibleCols] = useState<Set<string>>(() =>
@@ -340,8 +348,10 @@ export function DataTable<R>({
   }, [visibleCols, tableId, colKeysSig]);
 
   useEffect(() => {
-    if (tableId) setTablePrefs(tableId, { pageSize, sortKeys });
-  }, [tableId, pageSize, sortKeys]);
+    // `setTablePrefs` replaces this table's whole entry — every persisted pref
+    // must be written here, or the omitted one is wiped on the next sort/page change.
+    if (tableId) setTablePrefs(tableId, { pageSize, sortKeys, pinsCollapsed });
+  }, [tableId, pageSize, sortKeys, pinsCollapsed]);
 
   // Drop sort levels for columns that disappeared or never accepted sort
   // (stale localStorage / renamed keys), so the next click is primary again.
@@ -738,10 +748,15 @@ export function DataTable<R>({
   // never shows twice. Kept as its own array so `pageRows`/`processed` — and every
   // callback that reads them — stay untouched; the dedup is display-only.
   const pinnedDisplay = pinning.pinnedRows;
-  const pageBodyCount = pinningEnabled
+  const pinsOpen = !pinsCollapsed;
+  // The body only hides a pinned row while the section that re-shows it is open.
+  // Collapsed, the row renders in its normal paged position instead of vanishing.
+  const hidePinnedInBody = pinningEnabled && pinsOpen;
+  const pageBodyCount = hidePinnedInBody
     ? pageRows.reduce((n, r) => n + (pinning.isPinned(r) ? 0 : 1), 0)
     : pageRows.length;
-  const bodyEmpty = pinnedDisplay.length === 0 && pageBodyCount === 0;
+  const shownPinned = pinsOpen ? pinnedDisplay.length : 0;
+  const bodyEmpty = shownPinned === 0 && pageBodyCount === 0;
 
   return (
     <div className="flex flex-col gap-0">
@@ -945,8 +960,50 @@ export function DataTable<R>({
             </thead>
             <tbody>
               {/* Pinned section: floats above the page on every page. Rendered from
-                  snapshots so a pinned row shows even when its page isn't loaded. */}
-              {pinnedDisplay.map((row, i) => {
+                  snapshots so a pinned row shows even when its page isn't loaded.
+                  Its header row collapses the section (state persists per tableId). */}
+              {pinnedDisplay.length > 0 && (
+                <tr>
+                  <td
+                    // `dt-nohover`: a colSpan cell breaks the column-hover
+                    // `nth-child` math, exactly as for the group-header banner.
+                    className={cn(
+                      'dt-nohover border-b border-border bg-primary/6 px-2 py-1',
+                      // Collapsed, this row IS the bottom of the pinned section, so
+                      // it carries the divider `pinnedLast` would otherwise draw.
+                      !pinsOpen && 'border-b-2 border-b-primary/60',
+                    )}
+                    colSpan={colCount}
+                  >
+                    <button
+                      type="button"
+                      aria-expanded={pinsOpen}
+                      title={pinsOpen ? 'Collapse pinned rows' : 'Expand pinned rows'}
+                      onClick={() => setPinsCollapsed((v) => !v)}
+                      className="flex items-center gap-1.5 font-sans text-[10px] font-semibold uppercase tracking-wider text-primary/75 transition-colors hover:text-primary"
+                    >
+                      <svg
+                        className={cn(
+                          'size-3 shrink-0 transition-transform duration-150',
+                          pinsOpen && 'rotate-90',
+                        )}
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden
+                      >
+                        <polyline points="7,4 13,10 7,16" />
+                      </svg>
+                      <PinIcon className="size-3" />
+                      {pinnedDisplay.length} pinned
+                    </button>
+                  </td>
+                </tr>
+              )}
+              {pinsOpen && pinnedDisplay.map((row, i) => {
                 const key = rowKey(row);
                 return (
                   <TableRow
@@ -984,7 +1041,7 @@ export function DataTable<R>({
                   // Skip the paged copy of a pinned row — it's shown in the section
                   // above. `index` stays the global position so `#` numbering is
                   // unchanged (a pinned row just leaves a gap).
-                  if (pinningEnabled && pinning.isPinned(row)) return null;
+                  if (hidePinnedInBody && pinning.isPinned(row)) return null;
                   const key = rowKey(row);
                   return (
                     <TableRow

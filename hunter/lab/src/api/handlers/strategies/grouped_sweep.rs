@@ -741,16 +741,37 @@ async fn run_grouped_sweep_job(
     // stores the **unfiltered** selection corpus, so this run's own field/label
     // filters below re-apply either way.
     let expected_hash = src.selection_hash(&sel);
+    // On a **miss**, evict before loading. The entry holds the previous run's whole
+    // corpus (`Arc<Vec<CorpusToken>>` → the per-token `Arc<Vec<CorpusTrade>>`
+    // buffers), and it is only overwritten *after* the load below — so a hash miss
+    // used to peak at two full corpora plus DuckDB's scan state, on exactly the runs
+    // where it hurts (a widened date range / raised `token_cap` is a miss by
+    // definition). It also inflates `RESIDENT_BASELINE_BYTES`, captured at
+    // `corpus_loaded`, which the mid-run headroom read treats as permanently
+    // consumed — so the dead corpus was charged against every fold batch for the
+    // rest of the run. Evicting here is pure gain: nothing reads the stale entry
+    // again (`list_token_results` keys on the run's own `corpus_hash`), and this
+    // write is under the same single-flight gate as the run.
     let cached = {
-        let cache = state.sweep_corpus_cache.read().await;
-        cache.as_ref().filter(|c| c.corpus_hash == expected_hash).map(|c| {
-            crate::sweep::corpus::Corpus {
+        let mut cache = state.sweep_corpus_cache.write().await;
+        match cache.as_ref() {
+            Some(c) if c.corpus_hash == expected_hash => Some(crate::sweep::corpus::Corpus {
                 tokens: (*c.tokens).clone(),
                 hash: c.corpus_hash.clone(),
                 has_fingerprints: true,
                 candidates_capped: c.candidates_capped,
+            }),
+            Some(_) => {
+                tracing::info!(
+                    rss_mb = crate::sweep::obs::process_rss_mb(),
+                    "grouped sweep: corpus cache miss — freeing the previous run's corpus \
+                     before loading this one"
+                );
+                *cache = None;
+                None
             }
-        })
+            None => None,
+        }
     };
     let mut corpus = if let Some(c) = cached {
         tracing::info!(lake = %root.display(),

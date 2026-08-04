@@ -58,6 +58,10 @@ impl LakeSource {
     /// Open an in-memory DuckDB and confirm the lake has both datasets. A missing
     /// lake is a clear error (run the export first) rather than DuckDB's opaque
     /// "No files found".
+    ///
+    /// The connection is **bounded** before any query runs — see
+    /// [`bound_duckdb_memory`]. An unbounded DuckDB is entitled to 80% of physical
+    /// RAM, which on a 16 GB workstation is more than the whole sweep's own budget.
     fn connect(&self) -> Result<(Connection, String, String)> {
         let tokens = tokens_file(&self.root);
         if !tokens.exists() {
@@ -73,6 +77,7 @@ impl LakeSource {
             );
         }
         let conn = Connection::open_in_memory().context("opening in-memory DuckDB")?;
+        bound_duckdb_memory(&conn);
         let tokens_lit = sql_str(&tokens.to_string_lossy().replace('\\', "/"));
         let trades_lit = sql_str(&trades_glob(&self.root));
         Ok((conn, trades_lit, tokens_lit))
@@ -134,6 +139,86 @@ impl LakeSource {
 /// ours, but quoting keeps a stray apostrophe in a temp path from breaking the SQL.
 fn sql_str(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
+}
+
+/// Share of the sweep's own usable RAM (`available − desktop reserve`, read through
+/// the ONE sizing SSOT [`crate::sweep::registry::usable_host_bytes`]) that the corpus
+/// load may hand to DuckDB's buffer manager. Half: the other half is the corpus we
+/// are *building out of* that query — the `CorpusTrade` buffers land in our own heap
+/// while DuckDB still holds its scan/window state, so both are resident at the peak.
+const DUCKDB_USABLE_SHARE_DIVISOR: u64 = 2;
+
+/// Floor / ceiling (MB) on that share. The floor keeps a tight box able to run the
+/// scan at all (DuckDB spills below it rather than failing); the ceiling stops a
+/// roomy box from letting a window operator balloon far past what the load needs —
+/// the corpus load is 6% of a sweep's wall-clock, so extra buffer pool buys nothing.
+const DUCKDB_MEMORY_FLOOR_MB: u64 = 512;
+const DUCKDB_MEMORY_CAP_MB: u64 = 4096;
+
+/// Bound the connection's buffer manager and give it somewhere to spill.
+///
+/// **Why this exists.** An unconfigured DuckDB sets `memory_limit` to 80% of
+/// *physical* RAM — ~12.8 GB on a 16 GB workstation — and the corpus query is exactly
+/// the shape that will take it: a Parquet scan of the whole trades glob feeding a
+/// per-mint `ROW_NUMBER` window. That budget is set from hardware, so it knows nothing
+/// about the desktop reserve the run was admitted under, nor about the previous run's
+/// corpus still resident in `sweep_corpus_cache`. The result is a load phase that can
+/// drive the box to 100% before the fold — whose own sizing ladder — has allocated
+/// anything at all.
+///
+/// Bounding it does **not** cost the load: with `temp_directory` set, a query over the
+/// limit spills to disk instead of failing, and the scan is IO/CPU-bound rather than
+/// buffer-pool-bound. Without a temp directory an over-limit query is an
+/// out-of-memory *error*, so the two settings are applied together or not at all.
+///
+/// Best-effort by design: if the host read or the `SET` fails we leave DuckDB on its
+/// default rather than fail a load over a tuning knob — but we say so, because a
+/// silently-unbounded load is the condition this function exists to make visible.
+fn bound_duckdb_memory(conn: &Connection) {
+    let Some(usable) = crate::sweep::registry::usable_host_bytes() else {
+        tracing::warn!(
+            "corpus load: host RAM unreadable — DuckDB left on its default limit \
+             (80% of physical RAM); the load phase is unbounded on this platform"
+        );
+        return;
+    };
+    let limit_mb = (usable / DUCKDB_USABLE_SHARE_DIVISOR / (1024 * 1024))
+        .clamp(DUCKDB_MEMORY_FLOOR_MB, DUCKDB_MEMORY_CAP_MB);
+
+    // An in-memory database has no database file to derive a spill path from, so the
+    // temp directory must be named explicitly for the limit to degrade (spill) rather
+    // than fail. Lab-owned dir under the OS temp root — never the lake, which is the
+    // immutable dataset this same connection is globbing.
+    let temp_dir = std::env::temp_dir().join("hunter-lab-duckdb");
+    let temp_sql = match std::fs::create_dir_all(&temp_dir) {
+        Ok(()) => Some(format!(
+            "SET temp_directory={};",
+            sql_str(&temp_dir.to_string_lossy().replace('\\', "/"))
+        )),
+        Err(e) => {
+            tracing::warn!(
+                dir = %temp_dir.display(),
+                "corpus load: DuckDB spill dir unavailable ({e}) — leaving the memory \
+                 limit unset so an over-budget query spills nowhere rather than erroring"
+            );
+            None
+        }
+    };
+    let Some(temp_sql) = temp_sql else { return };
+
+    let sql = format!("SET memory_limit='{limit_mb}MB';{temp_sql}");
+    match conn.execute_batch(&sql) {
+        Ok(()) => tracing::info!(
+            duckdb_memory_limit_mb = limit_mb,
+            usable_mb = usable / (1024 * 1024),
+            temp_dir = %temp_dir.display(),
+            "corpus load: DuckDB bounded to its share of the run's usable RAM"
+        ),
+        Err(e) => tracing::warn!(
+            "corpus load: could not bound DuckDB ({e}) — it stays on its default \
+             limit of 80% of physical RAM"
+        ),
+    }
 }
 
 /// DuckDB partition ordering for the per-mint `ROW_NUMBER` cap. Mirrors the

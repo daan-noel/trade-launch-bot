@@ -121,6 +121,49 @@ group set: `HandlerSink::group_failed` → `SweepWrite::GroupFailed` → the wri
 `groups_failed` count → the handler's terminal status. A silent drop would be worse
 than the abort this replaced.
 
+## The load phase is bounded too (2026-08-03)
+
+Everything above sizes the **fold**. Two allocators outside the ladder could still
+drive the box to 100% *before* the fold allocated anything, so neither was visible
+to `plan_sweep_sizing` at all:
+
+**1. DuckDB was unbounded.** `LakeSource::connect` opened an in-memory connection with
+no settings, and an unconfigured DuckDB sets `memory_limit` to **80% of physical RAM**
+(~12.8 GB on a 16 GB box) — a budget derived from hardware, which by construction knows
+nothing about the run's desktop reserve. The corpus query is the shape that will take
+it: a Parquet scan of the whole trades glob feeding a per-mint `ROW_NUMBER` window.
+`duck::bound_duckdb_memory` now sets `memory_limit` to **half of
+`registry::usable_host_bytes()`** (the same SSOT the ladder reads), clamped to
+512 MB..=4 GB — half, because the `CorpusTrade` buffers being built *out of* that query
+are resident in our heap while DuckDB still holds its scan state.
+
+`temp_directory` is set in the same batch and this is load-bearing: an in-memory
+database has no database file to derive a spill path from, so **without it an
+over-limit query is an out-of-memory error rather than a spill**. The two settings
+apply together or not at all. Both are best-effort — an unreadable host or a failed
+`SET` logs and leaves DuckDB on its default rather than failing a load over a tuning
+knob. Cost: none measurable. The scan is IO/CPU-bound, and `corpus_load` is 5.8% of a
+normal run's wall-clock.
+
+**2. The stale corpus cache was held across the load.** `sweep_corpus_cache` holds the
+previous run's whole corpus and was only overwritten *after* the new load, so a hash
+miss peaked at **two full corpora** plus DuckDB's scan state — on exactly the runs
+where it hurts, since a widened date range or a raised `token_cap` is a miss by
+definition. Worse, it was still resident when `RESIDENT_BASELINE_BYTES` is captured at
+`corpus_loaded`, and the structural headroom read treats the baseline as permanently
+consumed — so a dead corpus was charged against every fold batch for the rest of the
+run. The handler now evicts on a miss *before* loading. Nothing reads the stale entry
+again (`list_token_results` keys on the run's own `corpus_hash`), and the write is under
+the same single-flight gate, so this is pure gain: less peak **and** a bigger fold
+budget.
+
+The remaining known fat is the corpus row itself: `CorpusTrade` is ~168 B, of which
+three `Option<Box<str>>` (`tx_signature` / `ix_labels` / `wallet`) are 48 B that are
+**always `None` on a sweep load** — ~190 MB on a 4M-trade corpus — and four
+`Option<f64>` reserve fields cost 64 B where a NaN sentinel would cost 32. Slimming it
+is a change to the row type single-rule simulate also walks, so it is recorded here
+rather than done in passing.
+
 ## Reporting
 
 Degradation is never silent — an unexplained 4× slowdown reads as a hang.

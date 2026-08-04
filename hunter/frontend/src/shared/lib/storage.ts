@@ -160,6 +160,8 @@ export interface TablePrefs {
   pageSize?: number;
   /** Multi-key sort; index 0 = primary. */
   sortKeys?: { col: string; dir: 'asc' | 'desc' }[];
+  /** Pinned section collapsed (pins themselves live in `tablePins`, untouched). */
+  pinsCollapsed?: boolean;
 }
 
 type TablePrefsMap = Record<string, TablePrefs>;
