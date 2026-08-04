@@ -260,7 +260,9 @@ next load (no per-metric frontend work).
   `ScaleOutBuilder` (ordered partial-exit ladder), `RuleEditor` (builder + JSON tab + a
   `renderDryRun` slot; edit mode locks `trade_mode` behind a padlock unlock),
   `FingerprintPicker`/`FingerprintForm` (registry-driven
-  `metric_config` section + `VolumeIxPatternsEditor` for `m_flow_split.volume_ix_patterns`),
+  `metric_config` section + `VolumeIxPatternsEditor` for `m_flow_split.volume_ix_patterns`
+  — add-row / remove-row / **Delete all** footer, the last confirming via the shared
+  `clearPrompt` also used by the flow-discovery cart),
   `RulesView`/`FingerprintsView` (shared list+editor, mounted by both apps'
   `RulesPage`/`FingerprintsPage`; cross-page selection via `?rule=` / `?fp=`
   (`useSelectionSearchParam` + `lib/strategy/nav.ts` — same-tab Router `Link`,
@@ -279,7 +281,11 @@ next load (no per-metric frontend work).
   match SSOT fills the corpus) or manual `FingerprintGroupPicker` → ranked
   ix-structure table → toggle draft patterns → Apply (`PUT` / create-bind). UI split:
   `flowDiscoverySuggest` / `StructureTable` / `DraftPatternsCart` / `TokenPreviewPanel`
-  under `lab/components/flow/`. Job kind `discovery` in `BackgroundJobsContext`
+  under `lab/components/flow/`. Two independent bulk-selects over the table, each
+  paired with the column that explains it: *Auto-select suggested* (`Auto` column —
+  bot-likelihood composite) and *Select launch shapes* (`Launch%` column shows
+  creation-slot **purity**, but the button takes every shape *present* in a creation
+  slot; see `plans/strategies/metrics-reference.md`). Job kind `discovery` in `BackgroundJobsContext`
   (SSE `flow_discovery_*`, mutual exclusion with sweeps).
 - The lab `RulesPage` injects `@lab/components/strategy/DryRunPanel` via `renderDryRun`
   (inline draft → `POST /api/strategies/simulate` → funnel summary + trades table),

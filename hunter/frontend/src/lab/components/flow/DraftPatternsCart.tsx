@@ -1,12 +1,12 @@
 import { Fragment, useState } from 'react';
 
-import { VolumeIxPatternsEditor } from 'components/strategy/VolumeIxPatternsEditor';
+import { clearPrompt, VolumeIxPatternsEditor } from 'components/strategy/VolumeIxPatternsEditor';
 import { LabelTip } from 'components/strategy/LabelTip';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { EmptyState } from 'components/ui/EmptyState';
 import { IconButton } from 'components/ui/IconButton';
-import { CheckIcon, CloseIcon, EditIcon, LinkIcon, SpinnerIcon } from 'components/ui/icons';
+import { CheckIcon, CloseIcon, EditIcon, LinkIcon, SpinnerIcon, TrashIcon } from 'components/ui/icons';
 import { DISCOVERY_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import { metricConfigWithVolumePatterns } from 'lib/strategy/registry';
 import type { Fingerprint } from 'lib/strategy/types';
@@ -65,15 +65,32 @@ export function DraftPatternsCart({
             </Badge>
           )}
         </span>
-        <Button
-          variant="link"
-          size="xs"
-          onClick={() => setRawEdit((v) => !v)}
-          title={rawEdit ? 'Back to chip view' : 'Edit raw JSON label sequences'}
-        >
-          <EditIcon className="h-3 w-3" />
-          {rawEdit ? 'Done editing' : 'Edit raw'}
-        </Button>
+        <span className="inline-flex items-center gap-2">
+          {!rawEdit && draftPatterns.length > 0 && (
+            <Button
+              variant="link"
+              size="xs"
+              className="text-red hover:text-red"
+              onClick={() => {
+                if (stagedCount > 0 && !window.confirm(clearPrompt(draftPatterns))) return;
+                onChange([]);
+              }}
+              title="Delete all staged structures"
+            >
+              <TrashIcon className="h-3 w-3" />
+              Delete all
+            </Button>
+          )}
+          <Button
+            variant="link"
+            size="xs"
+            onClick={() => setRawEdit((v) => !v)}
+            title={rawEdit ? 'Back to chip view' : 'Edit raw JSON label sequences'}
+          >
+            <EditIcon className="h-3 w-3" />
+            {rawEdit ? 'Done editing' : 'Edit raw'}
+          </Button>
+        </span>
       </div>
 
       {rawEdit ? (

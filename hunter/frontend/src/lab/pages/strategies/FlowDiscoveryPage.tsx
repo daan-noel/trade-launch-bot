@@ -46,7 +46,7 @@ import {
 import { formatIxLabelsText } from 'lib/ixLabels';
 import { DraftPatternsCart } from '@lab/components/flow/DraftPatternsCart';
 import {
-  sideOf,
+  isFirstSlotPresent,
   suggestStructure,
   type StructureSuggestion,
 } from '@lab/components/flow/flowDiscoverySuggest';
@@ -452,19 +452,28 @@ export function FlowDiscoveryPage() {
     }
     return map;
   }, [selectedGroup, draftPatterns]);
+  /** Whether this run has an out-of-group baseline for `group_lift`. A scoped run
+   *  (or any run with no group-by) is one group over the whole corpus, so every
+   *  lift is exactly 1.0 — the gate must be skipped, not failed. Absent on a
+   *  pre-field cached result: those were read as having a real lift. */
+  const liftDefined = selectedGroup?.lift_defined ?? true;
   /** Per-structure auto-suggest verdict (client-side composite of the
-   *  bot-likelihood columns — see suggestStructure). Recomputes with contagion,
-   *  so checking a both-side wash row can light up the one-sided rows its
-   *  wallets also trade. */
+   *  bot-likelihood columns — see suggestStructure). Deliberately does NOT depend
+   *  on `contagionByStructure`: contagion is defined against the current draft, so
+   *  feeding it in made a row's verdict change as you clicked and the bulk-select
+   *  non-idempotent. It stays a column you read, not an input to the score — which
+   *  also keeps this memo off the check/uncheck path. */
   const suggestionByStructure = useMemo(() => {
     const map = new Map<string, StructureSuggestion>();
     if (!selectedGroup) return map;
     for (const s of selectedGroup.structures) {
-      const key = JSON.stringify(s.ix_labels);
-      map.set(key, suggestStructure(s, sideOf(s), contagionByStructure.get(key) ?? null));
+      map.set(
+        JSON.stringify(s.ix_labels),
+        suggestStructure(s, { liftDefined, groupTokens: selectedGroup.n_tokens }),
+      );
     }
     return map;
-  }, [selectedGroup, contagionByStructure]);
+  }, [selectedGroup, liftDefined]);
   /** Suggested rows not yet in the draft — drives the auto-select button. */
   const suggestedUnchecked = useMemo(() => {
     if (!selectedGroup) return [] as string[][];
@@ -477,10 +486,43 @@ export function FlowDiscoveryPage() {
       .map((s) => s.ix_labels);
   }, [selectedGroup, suggestionByStructure, draftPatterns]);
 
+  /** Rows that traded in a matched token's creation slot and aren't in the draft
+   *  yet — drives the launch auto-select. Independent of the composite above: a
+   *  shape present in the launch bundle is bundler tooling by identity, whether
+   *  or not it also trips the bot signals (and whether or not it trades later —
+   *  see `isFirstSlotPresent`). The creation shape is covered by the same test. */
+  const firstSlotUnchecked = useMemo(() => {
+    if (!selectedGroup) return [] as string[][];
+    const draftKeys = new Set(draftPatterns.map((p) => JSON.stringify(p)));
+    return selectedGroup.structures
+      .filter((s) => isFirstSlotPresent(s) && !draftKeys.has(JSON.stringify(s.ix_labels)))
+      .map((s) => s.ix_labels);
+  }, [selectedGroup, draftPatterns]);
+
   function autoSelectSuggested() {
     if (suggestedUnchecked.length === 0) return;
     setDraftPatterns((prev) => [...prev, ...suggestedUnchecked]);
     setApplyOk(null);
+  }
+
+  function autoSelectFirstSlot() {
+    if (firstSlotUnchecked.length === 0) return;
+    setDraftPatterns((prev) => [...prev, ...firstSlotUnchecked]);
+    setApplyOk(null);
+  }
+
+  /** Rows a hovered/focused bulk-select would add — outlined in the table so the
+   *  effect is visible before the click, not discovered after it. */
+  const [previewPatterns, setPreviewPatterns] = useState<string[][] | null>(null);
+  const previewKeys = useMemo(
+    () => new Set((previewPatterns ?? []).map((p) => JSON.stringify(p))),
+    [previewPatterns],
+  );
+  /** Hover/focus handlers for a bulk-select button. */
+  function previewProps(rows: string[][]) {
+    const show = () => setPreviewPatterns(rows);
+    const hide = () => setPreviewPatterns(null);
+    return { onMouseEnter: show, onMouseLeave: hide, onFocus: show, onBlur: hide };
   }
   const autoMatchedFp = selectedGroup ? resolveGroupFp(selectedGroup.group_key) : null;
   const targetFp: Fingerprint | null =
@@ -982,23 +1024,44 @@ export function FlowDiscoveryPage() {
                         {suggestedUnchecked.length} suggested
                       </Badge>
                     )}
+                    {firstSlotUnchecked.length > 0 && (
+                      <Badge variant="info" size="sm">
+                        {firstSlotUnchecked.length} at launch
+                      </Badge>
+                    )}
                   </span>
-                  <button
-                    type="button"
-                    disabled={suggestedUnchecked.length === 0}
-                    onClick={autoSelectSuggested}
-                    className="inline-flex items-center gap-1 rounded border border-warning/40 px-2 py-1 text-[11px] font-semibold text-warning transition hover:bg-warning/10 disabled:cursor-not-allowed disabled:opacity-40"
-                    title="Add every auto-suggested structure to the draft volume_ix_patterns"
-                  >
-                    <CheckIcon className="h-3.5 w-3.5" />
-                    Auto-select suggested
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={firstSlotUnchecked.length === 0}
+                      onClick={autoSelectFirstSlot}
+                      {...previewProps(firstSlotUnchecked)}
+                      className="inline-flex items-center gap-1 rounded border border-info/40 px-2 py-1 text-[11px] font-semibold text-info transition hover:bg-info/10 disabled:cursor-not-allowed disabled:opacity-40"
+                      title="Add every structure that appears in a matched token's creation slot — the launch bundle, create instruction included — to the draft volume_ix_patterns"
+                    >
+                      <CheckIcon className="h-3.5 w-3.5" />
+                      Select launch shapes
+                    </button>
+                    <button
+                      type="button"
+                      disabled={suggestedUnchecked.length === 0}
+                      onClick={autoSelectSuggested}
+                      {...previewProps(suggestedUnchecked)}
+                      className="inline-flex items-center gap-1 rounded border border-warning/40 px-2 py-1 text-[11px] font-semibold text-warning transition hover:bg-warning/10 disabled:cursor-not-allowed disabled:opacity-40"
+                      title="Add every auto-suggested structure to the draft volume_ix_patterns"
+                    >
+                      <CheckIcon className="h-3.5 w-3.5" />
+                      Auto-select suggested
+                    </button>
+                  </div>
                 </div>
                 <StructureTable
                   structures={selectedGroup.structures}
                   draftPatterns={draftPatterns}
                   contagionByStructure={contagionByStructure}
                   suggestionByStructure={suggestionByStructure}
+                  liftDefined={liftDefined}
+                  previewKeys={previewKeys}
                   onToggle={toggleStructure}
                 />
               </div>

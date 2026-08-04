@@ -124,13 +124,106 @@ ix-structure:
 | `volume_share` | structure gross / group gross ×100 |
 | `wash_symmetry` | mean `|net|/gross` over tokens (→0 = wash) |
 | `cross_token_recurrence` | % of group tokens with gross ≥ 0.05 SOL |
-| `group_lift` | share(S\|G) / share(S\|window) — lift≈1 ⇒ ambiguous |
+| `group_lift` | share(S\|G) / share(S\|window) — **only meaningful when `lift_defined`** |
 | `slot_burst` | % of trades in ±1-slot same-structure clusters |
-| `wallet_reuse` | `1 − distinct_wallets/trades` (+ secondary Jaccard overlap) |
+| `wallet_reuse` | `1 − distinct_wallets/trades` |
+| `wallet_overlap` | mean pairwise Jaccard of per-token wallet sets — one crew across launches |
+| `first_slot_gross_sol` | structure gross landing in the token's **creation slot** (+ `first_slot_trades`) |
 
-Ambiguity chip when top structure's `group_lift < 1.25`. Apply writes
-`metric_config` via fingerprint `PUT` or promote-style bind. Auto-promote stays
-future work (gated on hand-label kit).
+Ambiguity chip when top structure's `group_lift < 1.25` **and** `lift_defined`.
+Apply writes `metric_config` via fingerprint `PUT` or promote-style bind.
+Auto-promote stays future work (gated on hand-label kit).
+
+### `lift_defined` — lift needs something to be measured against
+
+`group_lift`'s denominator is the structure's share of the **whole scored
+corpus**. When the group *is* that corpus, the ratio is the group's own share over
+itself and every structure scores exactly `1.0`. That happens on the page's main
+workflow: a fingerprint-scoped run loads only matched tokens and groups by
+nothing, so it is one `ALL` group over everything. A corpus with zero scored
+volume is degenerate the same way (ratio ≡ 0).
+
+`DiscoveryGroup.lift_defined` reports this, and **readers must skip the lift gate
+when it is false, never fail it** — failing a `lift >= 1.25` gate against a
+constant `1.0` rejects every row of the run. That is exactly what silenced the
+UI's `Auto` verdict on every scoped run (each row rendered `—`, the bulk-select
+sat disabled) and made the "split may be noisy" chip fire unconditionally. The UI
+also renders the Lift column itself as `—` there: printing `1.00` reads as a
+verdict when it means *not measured*. `#[serde(default)] = true` for pre-field
+cached results; those stay gated until re-run. Locked by
+`whole_corpus_group_reports_lift_undefined`.
+
+### The `Auto` composite (client-side, `flowDiscoverySuggest.ts`)
+
+Not a backend fact — a client composite over the columns above, so the human
+doesn't eyeball every row. Four properties it deliberately holds, each fixing a
+way the first version misled:
+
+- **The number IS the decision.** `score >= SUGGEST_SCORE` (0.5) is the whole
+  badge rule. It used to show a mean while badging on a count of strong signals,
+  so a 49% row could sit un-badged beside a badged 33% one.
+- **Correlated columns count once.** Score is a mean over *families* — `Recur`,
+  `Burst`, `Wallets` (= max of `wallet_reuse`/`wallet_overlap`), `Wash`
+  (both-sided rows only; n/a is dropped from the mean, not scored 0). One launch
+  bundle trips same-slot bursts *and* few-wallets off the same fact, and under the
+  old "≥2 strong signals" vote that alone was a pass. Averaging families also
+  encodes "needs ~two kinds of evidence" in the single number: one family at 1.0
+  with the rest cold lands at 0.25–0.33.
+- **The verdict never moves as you click.** Contagion% is **not** an input: it is
+  defined against the current draft, so feeding it in made a row score differently
+  depending on click order and made the bulk-select non-idempotent (pressing twice
+  took more rows than once). It stays a read-only column.
+- **Small samples don't vote.** `wallet_reuse` is `1 − distinct/trades`, so 2
+  trades from 1 wallet reads 0.5 — "strong" off a coin flip. Below
+  `SUGGEST_MIN_REUSE_TRADES` (4) it is dropped as unavailable.
+
+Gates, all reported by name in the cell tooltip: dust floor, `SUGGEST_MIN_TOKENS`
+(≥ 2 tokens carry the shape meaningfully — a pattern is written onto the whole
+fingerprint, so a one-token curiosity is out of scope), and the lift gate *when
+`lift_defined`*. `suggestExplain` renders every family with pass/fail, including
+the ones that fell short, so a near-miss explains itself; hovering either
+bulk-select outlines the exact rows it would check.
+
+### First-slot (launch) presence — the second auto-select
+
+Two different reads of the same pair of fields, deliberately not the same test:
+
+- **`first_slot_gross_sol / gross_sol` = the `Launch%` column** — purity, i.e. how
+  much of the shape landed at launch. Sort/filter/inspect only.
+- **`first_slot_trades > 0` = the *Select launch shapes* predicate**
+  (`isFirstSlotPresent`, plus the `SUGGEST_MIN_GROSS` dust floor) — *presence*.
+  The launch bundle is the set of shapes that appear in the creation slot, and a
+  bundler shape that also trades later is still bundler tooling, so the button
+  takes a shape at any Launch% above 0.
+
+The creation instruction needs no clause of its own: a shape carrying it is in the
+creation slot by construction, so the presence test already takes it. Both reads
+answer a different question from the `Auto` composite — *when* the shape trades,
+not how bot-like it scores — so the two buttons are independent and neither gates
+the other. No lift gate on this one: creation-slot presence is an identity claim,
+while lift measures group-vs-window concentration and would drop a bundler shape
+that happens to be ambient across the whole window.
+
+The cost of presence-over-purity is real and is what `Launch%` is *for*: **live
+classifies volume by `ix_hash` alone — there is no slot predicate**
+(`flow_split.rs`). A checked shape that carries launch *and* organic flow tags the
+organic tail too, and wallet contagion then sweeps those wallets' other trades in
+as well. So the button is a bulk *proposal* — read `Launch%` on the rows it
+checked and uncheck the mixed ones before Apply.
+
+`first_slot_trades == null` is **unknown**, not 0: a pre-field cached run selects
+nothing rather than guessing (re-run discovery to fill it).
+
+The creation slot is the offline stand-in
+`lab::sweep::projection::creation_slot` — the slot of the token's first trade,
+**one fn** shared with replay's `FirstSlotSettled` derivation, because the lake
+`tokens` dimension carries only the derived `fp_first_slot_*` sums, not
+`tokens.creation_slot` itself. Known divergence: a token whose creation slot saw
+no trade at all reports its first *later* slot instead.
+
+Both fields are `Option` on the wire (`#[serde(default)]`): a result cached before
+they existed must read back `—` ("unknown"), never an authoritative `0%` the
+button would then rank on. Same contract as the identity fields below.
 
 ### The result carries its own corpus identity
 

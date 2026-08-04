@@ -294,8 +294,7 @@ impl Replay {
                 trade_idx: None,
             });
 
-            if let Some(first) = trades.first() {
-                let creation_slot = first.slot;
+            if let Some(creation_slot) = crate::sweep::projection::creation_slot(trades) {
                 // First-slot SOL sums (buy/sell) from the creation-slot trades — the
                 // same axes the live producer settles from the cache's first-slot
                 // accumulators.

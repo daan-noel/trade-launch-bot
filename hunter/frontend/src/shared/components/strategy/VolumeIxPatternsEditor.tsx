@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import { IconButton } from 'components/ui/IconButton';
-import { CloseIcon, PlusIcon } from 'components/ui/icons';
+import { CloseIcon, PlusIcon, TrashIcon } from 'components/ui/icons';
 import { IxLabelsInput } from 'components/ui/IxLabelsInput';
 import { formatIxLabelsText, parseIxLabelsText } from 'lib/ixLabels';
 
@@ -10,6 +10,12 @@ export interface VolumeIxPatternsEditorProps {
   patterns: string[][];
   onChange: (patterns: string[][]) => void;
   disabled?: boolean;
+}
+
+/** One wording for every "delete all patterns" confirm (editor + discovery cart). */
+export function clearPrompt(patterns: string[][]): string {
+  const n = patterns.filter((p) => p.length > 0).length;
+  return `Delete all ${n} volume_ix_pattern${n === 1 ? '' : 's'}? Flow metrics stay NaN until you add one back.`;
 }
 
 /**
@@ -43,16 +49,35 @@ export function VolumeIxPatternsEditor({
         />
       ))}
       {!disabled && (
-        <IconButton
-          variant="success"
-          size="md"
-          type="button"
-          onClick={() => onChange([...patterns, []])}
-          title="Add pattern"
-          aria-label="Add pattern"
-        >
-          <PlusIcon />
-        </IconButton>
+        <div className="flex items-center gap-2">
+          <IconButton
+            variant="success"
+            size="md"
+            type="button"
+            onClick={() => onChange([...patterns, []])}
+            title="Add pattern"
+            aria-label="Add pattern"
+          >
+            <PlusIcon />
+          </IconButton>
+          {patterns.length > 0 && (
+            <IconButton
+              variant="danger"
+              size="md"
+              type="button"
+              label={`Delete all (${patterns.length})`}
+              onClick={() => {
+                // Only worth a prompt when there is authored content to lose.
+                if (patterns.some((p) => p.length > 0) && !window.confirm(clearPrompt(patterns)))
+                  return;
+                onChange([]);
+              }}
+              title="Delete all patterns"
+            >
+              <TrashIcon />
+            </IconButton>
+          )}
+        </div>
       )}
     </div>
   );

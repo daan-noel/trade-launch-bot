@@ -603,6 +603,15 @@ export interface FlowDiscoveryStructure {
   gross_sol: number;
   buy_sol: number;
   sell_sol: number;
+  /** Gross SOL of this shape that landed in its token's **creation slot** — the
+   *  launch-bundle share, which `firstSlotPurity` turns into the Launch% column.
+   *  `null`/absent on a result cached before the backend computed it: unknown,
+   *  NOT 0% (see the Rust `StructureScore` doc). */
+  first_slot_gross_sol?: number | null;
+  /** Trade count behind `first_slot_gross_sol`, and the input to
+   *  `isFirstSlotPresent` (the *Select launch shapes* predicate: `> 0`). Same
+   *  unknown-vs-zero contract — `null` selects nothing rather than guessing. */
+  first_slot_trades?: number | null;
   wallets: FlowDiscoveryWalletGross[];
 }
 
@@ -620,6 +629,13 @@ export interface FlowDiscoveryGroup {
   n_tokens: number;
   n_trades_scored: number;
   ambiguity: boolean;
+  /** Whether `group_lift` carries information. `false` when this group IS the
+   *  whole scored corpus (a fingerprint-scoped run, or no group-by): every lift
+   *  is then exactly 1.0 by construction. **Skip the lift gate when false, never
+   *  fail it** — failing it rejects every row of the run. Absent on a result
+   *  cached before the backend echoed it; treat as `true`, which is how those
+   *  runs were already read. */
+  lift_defined?: boolean;
   structures: FlowDiscoveryStructure[];
   /** Ranked (desc gross_sol) member-token roster, capped server-side. */
   tokens: FlowDiscoveryTokenGross[];

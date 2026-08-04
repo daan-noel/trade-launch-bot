@@ -66,6 +66,23 @@ pub struct StructureScore {
     pub buy_sol: f64,
     /// Sell-side gross SOL for this structure.
     pub sell_sol: f64,
+    /// Gross SOL of this structure that landed in its token's **creation slot**
+    /// (see [`crate::sweep::projection::creation_slot`]) — the launch-bundle
+    /// share. `first_slot_gross_sol / gross_sol` is the purity the UI ranks on
+    /// (`Launch%`); the *launch* bulk-select instead keys on mere presence
+    /// ([`Self::first_slot_trades`] > 0), since the launch bundle is the set of
+    /// shapes appearing in that slot. Purity stays visible because a shape that
+    /// also trades later is ambient, and tagging it as volume sweeps organic flow
+    /// (and, via wallet contagion, those wallets' other trades) into the volume
+    /// bucket.
+    ///
+    /// `Option`, not a bare `f64`: a result cached before this field existed must
+    /// read back as "unknown" (rendered `—`), never as an authoritative 0%.
+    #[serde(default)]
+    pub first_slot_gross_sol: Option<f64>,
+    /// Trade count behind [`Self::first_slot_gross_sol`]. Same `Option` contract.
+    #[serde(default)]
+    pub first_slot_trades: Option<u64>,
     /// Per-wallet gross SOL on this structure — lets the UI preview live's
     /// wallet-contagion classifier (a wallet tagged by one checked structure
     /// sweeps its trades on OTHER structures into "volume" too, even if those
@@ -98,6 +115,23 @@ pub struct DiscoveryGroup {
     pub n_tokens: usize,
     pub n_trades_scored: u64,
     pub ambiguity: bool,
+    /// Whether this group's `group_lift` carries any information.
+    ///
+    /// Lift is `share(S|group) / share(S|window)`, and the window denominator is
+    /// the **whole scored corpus**. When the group IS that corpus — a
+    /// fingerprint-scoped run (one `ALL` group over the matched tokens), or any
+    /// run with no group-by — the ratio is the group's own share over itself, so
+    /// every structure scores exactly `1.0`. That is *no baseline*, not "ambient
+    /// everywhere", and a reader that fails a `lift >= 1.25` gate on it rejects
+    /// every row of the run (which is exactly what silenced the UI's auto-select
+    /// on scoped runs). Readers must **skip** the lift gate when this is false,
+    /// never fail it; `ambiguity` is likewise suppressed rather than always-on.
+    ///
+    /// `#[serde(default)]` = `true` for a result cached before the field existed:
+    /// those runs were read as having a real lift, and for the multi-group ones
+    /// that was correct. A cached scoped run stays gated until it is re-run.
+    #[serde(default = "default_lift_defined")]
+    pub lift_defined: bool,
     pub structures: Vec<StructureScore>,
     /// Ranked (desc gross_sol) member-token roster, capped at
     /// `MAX_TOKENS_PER_GROUP` — drives the per-token preview picker.
@@ -144,6 +178,12 @@ pub struct DiscoveryResult {
 /// which [`SolPrecision::from_width`] reads as `Exact`: the wrong answer here.
 fn default_result_width() -> Option<f64> {
     Some(SOL_BUCKET_WIDTH)
+}
+
+/// See [`DiscoveryGroup::lift_defined`] — a pre-field cached result is read as
+/// having an informative lift, which is what those runs were treated as.
+fn default_lift_defined() -> bool {
+    true
 }
 
 /// Parse lake `ix_labels` JSON array string → ordered labels. `None` when missing,
@@ -198,11 +238,17 @@ pub fn score_corpus(
         if cancelled(cancel) {
             return Err(Cancelled);
         }
+        // Lift needs a baseline the group is measured AGAINST. A group holding
+        // every scored token is its own baseline (ratio ≡ 1.0), and so is a
+        // corpus with no scored volume at all (ratio ≡ 0.0) — say so instead of
+        // shipping a number that looks like a verdict.
+        let lift_defined = idxs.len() < corpus.tokens.len() && window_gross_total > 0.0;
         let g = score_group(
             corpus,
             &key,
             &idxs,
             cfg,
+            lift_defined,
             window_gross_total,
             &window_gross_by_struct,
             &labels_by_hash,
@@ -230,11 +276,13 @@ fn cancelled(flag: Option<&AtomicBool>) -> bool {
     flag.map(|f| f.load(Ordering::Acquire)).unwrap_or(false)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn score_group(
     corpus: &Corpus,
     key: &GroupKey,
     idxs: &[usize],
     cfg: &DiscoveryConfig,
+    lift_defined: bool,
     window_gross_total: f64,
     window_gross_by_struct: &HashMap<u64, f64>,
     labels_by_hash: &HashMap<u64, Vec<String>>,
@@ -254,6 +302,9 @@ fn score_group(
         net_by_token: HashMap<usize, f64>,
         /// per-wallet gross (drives the contagion-overlap preview)
         gross_by_wallet: HashMap<u64, f64>,
+        /// gross SOL + trade count landing in the owning token's creation slot
+        first_slot_gross: f64,
+        first_slot_trades: u64,
         slots: Vec<u64>,
     }
 
@@ -265,6 +316,9 @@ fn score_group(
 
     for &ti in idxs {
         let tok: &CorpusToken = &corpus.tokens[ti];
+        // One creation-slot read per token (SSOT with replay's `FirstSlotSettled`),
+        // hoisted out of the trade loop.
+        let creation_slot = crate::sweep::projection::creation_slot(&tok.trades);
         for t in tok.trades.iter() {
             let Some(labels) = parse_trade_ix_labels(t.ix_labels.as_deref()) else {
                 continue;
@@ -281,6 +335,10 @@ fn score_group(
             acc.n_trades += 1;
             n_trades_scored += 1;
             group_gross_total += g;
+            if creation_slot == Some(t.slot) {
+                acc.first_slot_gross += g;
+                acc.first_slot_trades += 1;
+            }
             acc.slots.push(t.slot);
             *acc.gross_by_token.entry(ti).or_insert(0.0) += g;
             let signed = if t.is_buy { g } else { -g };
@@ -388,6 +446,8 @@ fn score_group(
             gross_sol: acc.gross,
             buy_sol: acc.buy,
             sell_sol: acc.sell,
+            first_slot_gross_sol: Some(acc.first_slot_gross),
+            first_slot_trades: Some(acc.first_slot_trades),
             wallets,
         });
     }
@@ -410,10 +470,14 @@ fn score_group(
     });
     structures.truncate(cfg.max_structures_per_group);
 
-    let ambiguity = structures
-        .first()
-        .map(|s| s.group_lift < cfg.lift_ambiguous)
-        .unwrap_or(false);
+    // "Nothing here stands out" is only sayable against a real baseline — an
+    // undefined lift means the run has no out-of-group comparison, not that the
+    // split is noisy.
+    let ambiguity = lift_defined
+        && structures
+            .first()
+            .map(|s| s.group_lift < cfg.lift_ambiguous)
+            .unwrap_or(false);
 
     let mut tokens: Vec<TokenGross> = token_gross
         .into_iter()
@@ -435,6 +499,7 @@ fn score_group(
         n_tokens,
         n_trades_scored,
         ambiguity,
+        lift_defined,
         structures,
         tokens,
     }
@@ -809,6 +874,142 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Launch tooling trades only in the creation slot ⇒ 100% first-slot purity,
+    /// while the same-group ambient buy that trades later reports 0% — the split
+    /// the UI's first-slot auto-select keys on.
+    #[test]
+    fn first_slot_split_separates_launch_tooling_from_ambient() {
+        let mut tokens = Vec::new();
+        for i in 0..3u64 {
+            let create = 100 + i * 10;
+            tokens.push(tok(
+                &format!("t{i}"),
+                200_000,
+                vec![
+                    // Creation slot: bundle create+buy, then a same-slot sell.
+                    trade(&["Pump.Fun: Create", "Pump.Fun: Buy"], "w", 1.0, true, create),
+                    trade(&["Pump.Fun: Create", "Pump.Fun: Buy"], "w", 1.0, false, create),
+                    // Later slots: ambient buys, plus one late trade of the launch
+                    // shape so purity is a share, not a flag.
+                    trade(&["Pump.Fun: Buy"], "org", 0.5, true, create + 5),
+                    trade(&["Pump.Fun: Buy"], "org", 0.5, true, create + 6),
+                ],
+            ));
+        }
+        let corpus = Corpus {
+            tokens,
+            hash: "fs".into(),
+            has_fingerprints: true,
+            candidates_capped: false,
+        };
+        let cfg = DiscoveryConfig {
+            group_by: vec![GroupField::CuLimit],
+            min_tokens: 3,
+            ..DiscoveryConfig::default()
+        };
+        let result = score_corpus(&corpus, &cfg, None).unwrap();
+        let g = &result.groups[0];
+
+        let launch = g
+            .structures
+            .iter()
+            .find(|s| s.ix_labels == ["Pump.Fun: Create", "Pump.Fun: Buy"])
+            .expect("launch structure");
+        assert_eq!(launch.first_slot_gross_sol, Some(launch.gross_sol));
+        assert_eq!(launch.first_slot_trades, Some(launch.n_trades));
+
+        let ambient = g
+            .structures
+            .iter()
+            .find(|s| s.ix_labels == ["Pump.Fun: Buy"])
+            .expect("ambient structure");
+        assert_eq!(ambient.first_slot_gross_sol, Some(0.0));
+        assert_eq!(ambient.first_slot_trades, Some(0));
+    }
+
+    /// A run whose single group holds the whole corpus (fingerprint-scoped, or
+    /// any run with no group-by) has no out-of-group baseline: every lift is
+    /// exactly 1.0. It must say so via `lift_defined = false` and NOT raise the
+    /// ambiguity flag — a `lift >= 1.25` gate applied to that 1.0 rejects every
+    /// structure in the run.
+    #[test]
+    fn whole_corpus_group_reports_lift_undefined() {
+        let mut tokens = Vec::new();
+        for i in 0..4u64 {
+            tokens.push(tok(
+                &format!("s{i}"),
+                200_000,
+                vec![
+                    trade(&["Pump.Fun: Create", "Pump.Fun: Buy"], "w", 1.0, true, 100 + i),
+                    trade(&["Pump.Fun: Buy"], "org", 0.4, true, 110 + i),
+                ],
+            ));
+        }
+        let corpus = Corpus {
+            tokens,
+            hash: "scoped".into(),
+            has_fingerprints: true,
+            candidates_capped: false,
+        };
+        // No group-by ⇒ one ALL group over every token — the shape a scoped run takes.
+        let cfg = DiscoveryConfig {
+            group_by: vec![],
+            min_tokens: 3,
+            ..DiscoveryConfig::default()
+        };
+        let result = score_corpus(&corpus, &cfg, None).unwrap();
+        assert_eq!(result.groups.len(), 1);
+        let g = &result.groups[0];
+        assert!(!g.lift_defined, "a group that IS the corpus has no baseline");
+        assert!(!g.ambiguity, "no baseline ⇒ nothing to call ambiguous");
+        for s in &g.structures {
+            assert!(
+                (s.group_lift - 1.0).abs() < 1e-9,
+                "self-comparison is exactly 1.0, got {}",
+                s.group_lift
+            );
+        }
+
+        // Splitting the same corpus into two groups restores the baseline.
+        let mut split = corpus;
+        for (i, t) in split.tokens.iter_mut().enumerate() {
+            if i >= 2 {
+                t.fp.cu_limit = Some(300_000);
+            }
+        }
+        let cfg = DiscoveryConfig {
+            group_by: vec![GroupField::CuLimit],
+            min_tokens: 1,
+            ..DiscoveryConfig::default()
+        };
+        let split_result = score_corpus(&split, &cfg, None).unwrap();
+        assert!(split_result.groups.iter().all(|g| g.lift_defined));
+    }
+
+    /// A pre-field cached result must read back as "unknown", never as an
+    /// authoritative 0% first-slot (which the UI would happily rank).
+    #[test]
+    fn missing_first_slot_fields_deserialize_as_unknown() {
+        let s: StructureScore = serde_json::from_value(serde_json::json!({
+            "ix_labels": ["Pump.Fun: Buy"],
+            "volume_share": 1.0,
+            "wash_symmetry": 1.0,
+            "cross_token_recurrence": 1.0,
+            "group_lift": 1.0,
+            "slot_burst": 0.0,
+            "wallet_reuse": 0.0,
+            "wallet_overlap": 0.0,
+            "n_trades": 1,
+            "gross_sol": 1.0,
+            "buy_sol": 1.0,
+            "sell_sol": 0.0,
+            "wallets": [],
+        }))
+        .expect("legacy structure deserializes");
+        assert_eq!(s.first_slot_gross_sol, None);
+        assert_eq!(s.first_slot_trades, None);
     }
 
     #[test]

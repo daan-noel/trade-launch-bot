@@ -136,6 +136,22 @@ pub fn to_trade_lite(ct: &CorpusTrade) -> TradeLite {
     }
 }
 
+/// The token's **creation slot**, as the offline corpus can know it: the slot of
+/// its first chronological trade.
+///
+/// `tokens.creation_slot` is the on-chain truth (live's `TokenState` first-slot
+/// accumulators key on it), but the lake `tokens` dimension does not carry it —
+/// only the two derived `fp_first_slot_*` sums. So every offline first-slot
+/// derivation stands in the first trade's slot, which agrees whenever the
+/// creation tx itself produced a trade (a dev buy / launch bundle — the shapes
+/// anyone asks this question about). A token whose creation slot traded not at
+/// all reports its first *later* slot instead; that is the one known divergence,
+/// and it is why this is ONE fn and not a re-derived `trades.first().slot` at
+/// each call site (replay's `FirstSlotSettled`, discovery's first-slot split).
+pub fn creation_slot(trades: &[CorpusTrade]) -> Option<u64> {
+    trades.first().map(|t| t.slot)
+}
+
 /// Project a token's chronological trade slice into the slim rows. Generic over any
 /// [`TradeRow`] whose `Wallet` is a `String`, so it projects the full [`Trade`]
 /// field-for-field; no decision data is lost. Signature-free (the sweep resolves the
