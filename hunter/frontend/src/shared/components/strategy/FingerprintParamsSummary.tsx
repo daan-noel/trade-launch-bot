@@ -9,7 +9,7 @@ import { configuredIxLabels, formatIxLabelsText } from 'lib/ixLabels';
 import { metricColorStyle } from 'lib/strategy/metricColors';
 import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
 import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
-import { lamportsToSol, type Fingerprint } from 'lib/strategy/types';
+import { formatBucketWidth, lamportsToSol, type Fingerprint } from 'lib/strategy/types';
 
 /** Stable per-axis hue so each fingerprint param reads with its own color,
  *  mirroring the metric-condition chips. Related axes share a hue family (small
@@ -104,7 +104,11 @@ export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
     ix
       ? chip(`${ix.length}ix`, { title: formatIxLabelsText(ix), style: axisTint('ix') })
       : null,
-    chip(`bkt=${formatDecimalTrim(fp.bucket_size_amount, 4)}◎`, { style: axisTint('bkt') }),
+    // `exact` carries no unit — appending ◎ would read as a zero-width bucket.
+    chip(
+      `bkt=${formatBucketWidth(fp.bucket_size_amount, 4)}${fp.bucket_size_amount == null ? '' : '◎'}`,
+      { style: axisTint('bkt') },
+    ),
   ].filter(Boolean);
 
   return <div className="flex flex-wrap items-center gap-1 text-left">{chips}</div>;
@@ -144,7 +148,7 @@ export function fingerprintParamsSearchText(fp: Fingerprint | undefined, fallbac
   // Match the `flowStatusBadge` pill text (`flow N` / `flow✗`) so filtering by
   // what's actually shown works; the `flow=N` form stays matchable too.
   parts.push(flowCount > 0 ? `flow ${flowCount} flow=${flowCount}` : 'flow✗');
-  parts.push(`bkt=${formatDecimalTrim(fp.bucket_size_amount, 4)}`);
+  parts.push(`bkt=${formatBucketWidth(fp.bucket_size_amount, 4)}`);
   return parts.join(' ');
 }
 
@@ -168,7 +172,7 @@ export function fingerprintIdentityKey(fp: Fingerprint | undefined, fallbackId?:
     fp.spendable_lamports_in ?? '',
     fp.first_slot_buy_lamports ?? '',
     fp.first_slot_sell_lamports ?? '',
-    fp.bucket_size_amount,
+    formatBucketWidth(fp.bucket_size_amount, 4),
     (configuredIxLabels(fp.ix_labels) ?? []).join(','),
     flowCount,
   ].join('\u0001');

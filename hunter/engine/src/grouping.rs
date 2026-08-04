@@ -114,6 +114,157 @@ fn bucket_lamports_as_sol(lamports: i64, width: f64, decimals: usize) -> String 
     bucket_sol_label(lamports as f64 / LAMPORTS_PER_SOL_F64, width, decimals)
 }
 
+/// How the continuous SOL axes are keyed for one run.
+///
+/// `Bucket(width)` is the normal mode — values collapse into `width`-wide `"lo–hi"`
+/// ranges so they make useful group keys. `Exact` renders the amount itself, for
+/// the "what are the most common exact dev-buy sizes?" question that bucketing by
+/// construction cannot answer.
+///
+/// **This is a mode, not a sentinel width.** `0` is not spelled here and never
+/// should be: a width is a *measured* quantity (see the zero-as-unbound rule in
+/// the product `CLAUDE.md`), `0` is a division by zero in [`bucket_index`], and a
+/// magic-`0` width already caused one live bug where two readers disagreed about
+/// whether it meant "default 0.1" or "literally zero".
+///
+/// `From<f64>` exists so every existing `…(width)` call site keeps compiling and
+/// keeps its meaning — only a caller that explicitly wants `Exact` says so.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SolPrecision {
+    /// Bin into `width`-wide half-open ranges.
+    Bucket(f64),
+    /// Key on the exact amount — one group per distinct value.
+    Exact,
+}
+
+impl From<f64> for SolPrecision {
+    fn from(width: f64) -> Self {
+        SolPrecision::Bucket(width)
+    }
+}
+
+impl SolPrecision {
+    /// **The one reader of a stored bucket width.** `None` — and defensively any
+    /// non-finite or non-positive width — resolves to [`SolPrecision::Exact`].
+    ///
+    /// Both `Fingerprint` structs (the `hunter-core` DB model and the engine's
+    /// match-time copy) route through this, so the live entry gate and the
+    /// dashboard's SQL mirror can never disagree about what a stored width means.
+    /// The defensive arm matters because this value reaches the entry gate: a `0`
+    /// slipping past `validate` + the `0020` CHECK would otherwise divide by zero
+    /// in [`bucket_index`] and saturate every amount into one bucket — arming on
+    /// every token. Failing to *exact* instead fails closed.
+    pub fn from_width(width: Option<f64>) -> Self {
+        match width {
+            Some(w) if w.is_finite() && w > 0.0 => SolPrecision::Bucket(w),
+            _ => SolPrecision::Exact,
+        }
+    }
+
+    /// The bucket width, or `None` in [`SolPrecision::Exact`] mode. Use this at a
+    /// boundary that must persist or echo the width (the sweep run row, the
+    /// dashboard response) — `None` is the honest "not bucketed" there.
+    pub fn width(self) -> Option<f64> {
+        match self {
+            SolPrecision::Bucket(w) => Some(w),
+            SolPrecision::Exact => None,
+        }
+    }
+}
+
+/// Render a lamports amount as its **exact** human-SOL group key — the
+/// [`SolPrecision::Exact`] counterpart of [`bucket_sol_label`].
+///
+/// Nine decimals is lossless for lamports; trailing zeros are trimmed so the key
+/// reads as the amount a human typed (`1515000000 → "1.515"`, not `"1.515000000"`)
+/// and so it round-trips through the filter box. The dashboard SQL mirrors this
+/// byte-for-byte in `creation_stats_repo::sol_exact_sql` — keep the two in step,
+/// exactly as `sol_bucket_sql` mirrors `bucket_sol_label`.
+pub fn exact_sol_label(lamports: i64) -> String {
+    let s = format!("{:.9}", lamports as f64 / LAMPORTS_PER_SOL_F64);
+    let t = s.trim_end_matches('0').trim_end_matches('.');
+    if t.is_empty() { "0".to_string() } else { t.to_string() }
+}
+
+/// Human SOL → lamports, **rounded**. The engine's own copy of the conversion
+/// `trading_core::config::constants::sol_to_lamports` performs, because this crate
+/// is pure (no `config`) by design — locked equal by trading_core's
+/// `engine_sol_to_lamports_matches_the_repo_boundary_conversion`. Rounding (not
+/// truncation) is what makes a lamports→SOL→lamports round-trip exact, so a filter
+/// typed from a displayed amount recovers the stored integer.
+pub fn sol_to_lamports(sol: f64) -> i64 {
+    (sol * LAMPORTS_PER_SOL_F64).round() as i64
+}
+
+/// A parsed value-filter entry for one of the bucketed SOL axes
+/// ([`GroupField::is_bucketed`]). **The one parser** for that syntax — the
+/// dashboard SQL (`creation_stats_repo::field_filter_pred`), the resident-corpus
+/// retain (`grouped_sweep::matches_field_filter`), and the request validator all
+/// read it, so a value can never mean different things to different surfaces.
+///
+/// Two accepted forms, both in **human SOL**:
+///
+/// * `"1.515"` → [`SolFilter::Exact`] — that amount and nothing else, whatever the
+///   run's bucket width. This is what you want to pin one dev-buy size.
+/// * `"1.5–1.6"` (en-dash, or a plain `-`) → [`SolFilter::Range`] — the half-open
+///   `[lo, hi)` window, i.e. exactly what a group chip displays. Copy a chip's text
+///   into the filter box and it selects that chip's tokens.
+///
+/// Ranges are half-open on purpose: it makes `bucket_sol_label(v, w)` pasted back
+/// as a filter select precisely `same_bucket(v, ·, w)`, with no double-counting at
+/// the shared edge between adjacent buckets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SolFilter {
+    /// One exact amount, in lamports.
+    Exact(i64),
+    /// Half-open `[lo, hi)` in lamports.
+    Range(i64, i64),
+}
+
+impl SolFilter {
+    /// Parse one filter entry. `None` if it is neither an amount nor a range
+    /// (callers surface that as a 400 rather than silently dropping it — a dropped
+    /// value reads as "no filter", which is how this whole family failed before).
+    pub fn parse(text: &str) -> Option<SolFilter> {
+        let t = text.trim();
+        if t.is_empty() {
+            return None;
+        }
+        // Range first: split on the label's en-dash, or an ASCII hyphen for the
+        // keyboard-typed form. Amounts here are non-negative, so a separator can
+        // never be confused with a sign. `splitn(2)` keeps `1.5-1.6-1.7` invalid
+        // rather than silently reading a prefix.
+        for sep in ['–', '-'] {
+            if let Some((lo, hi)) = t.split_once(sep) {
+                let (lo, hi) = (lo.trim(), hi.trim());
+                if lo.is_empty() || hi.is_empty() {
+                    continue;
+                }
+                let (lo, hi) = (parse_sol(lo)?, parse_sol(hi)?);
+                if hi <= lo {
+                    return None;
+                }
+                return Some(SolFilter::Range(sol_to_lamports(lo), sol_to_lamports(hi)));
+            }
+        }
+        Some(SolFilter::Exact(sol_to_lamports(parse_sol(t)?)))
+    }
+
+    /// Whether a lamports amount satisfies this filter.
+    pub fn matches(self, lamports: i64) -> bool {
+        match self {
+            SolFilter::Exact(v) => lamports == v,
+            SolFilter::Range(lo, hi) => lamports >= lo && lamports < hi,
+        }
+    }
+}
+
+/// A finite, non-negative human-SOL literal. Rejects `NaN`/`inf`/negatives so they
+/// can never reach [`sol_to_lamports`] (where they'd saturate to a junk `i64`).
+fn parse_sol(s: &str) -> Option<f64> {
+    s.parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0)
+}
+
 /// Token-creation metadata used **only** for grouping — never read by any
 /// `simulate()`. Carried on each corpus token so grouping is a pure in-memory
 /// pass with no extra DB hit in the sweep loop.
@@ -229,6 +380,46 @@ impl GroupField {
             _ => return None,
         })
     }
+
+    /// Whether this field's group key is a **bucket label** (`"1.5–1.6"`) rather
+    /// than its exact value — i.e. the continuous SOL amounts [`render_field`]
+    /// routes through `bucket_sol_label`/`bucket_lamports_as_sol`.
+    ///
+    /// **Why this exists.** A value *filter* on one of these fields cannot compare
+    /// against the rendered group key (no typed amount ever equals `"1.5–1.6"`), so
+    /// every filter surface has to special-case them and pin the underlying amount
+    /// instead. Two surfaces do that — the dashboard's SQL
+    /// (`creation_stats_repo::field_filter_pred`) and the grouped sweep's in-memory
+    /// retain (`grouped_sweep::matches_field_filter`) — and they used to disagree
+    /// about which fields were bucketed *and* in what unit, which made the filter
+    /// silently unsatisfiable on both. This is the ONE decider; `render_field` and
+    /// this function are locked together by `is_bucketed_agrees_with_render_field`.
+    ///
+    /// The frontend mirrors it as `BUCKETED_GROUP_FIELDS` (`groupedTypes.ts`).
+    pub fn is_bucketed(self) -> bool {
+        matches!(
+            self,
+            GroupField::MaxCostLamports
+                | GroupField::SpendableLamportsIn
+                | GroupField::InitialBuySol
+                | GroupField::FirstSlotBuySol
+                | GroupField::FirstSlotSellSol
+        )
+    }
+
+    /// Every field, for exhaustive iteration in guard tests + filter validation.
+    pub const ALL: [GroupField; 10] = [
+        GroupField::TokenProgramId,
+        GroupField::CuLimit,
+        GroupField::CuPrice,
+        GroupField::IsCashbackEnabled,
+        GroupField::MaxCostLamports,
+        GroupField::SpendableLamportsIn,
+        GroupField::InitialBuySol,
+        GroupField::FirstSlotBuySol,
+        GroupField::FirstSlotSellSol,
+        GroupField::IxLabels,
+    ];
 }
 
 /// A compound group key: the chosen fields' exact values in selection order.
@@ -251,14 +442,21 @@ impl GroupKey {
 }
 
 /// Compute the group key for one token's fingerprint under the chosen fields at
-/// bucket `width` (the per-run partition width for the continuous SOL fields;
-/// discrete fields ignore it). Pass [`SOL_BUCKET_WIDTH`] for the default.
-pub fn group_key(fp: &TokenFingerprint, fields: &[GroupField], width: f64) -> GroupKey {
+/// the given [`SolPrecision`] (the per-run partition precision for the continuous
+/// SOL fields; discrete fields ignore it). An `f64` converts in, so
+/// `group_key(fp, fields, SOL_BUCKET_WIDTH)` still reads as before; pass
+/// [`SolPrecision::Exact`] for one group per distinct amount.
+pub fn group_key<P: Into<SolPrecision>>(
+    fp: &TokenFingerprint,
+    fields: &[GroupField],
+    precision: P,
+) -> GroupKey {
+    let precision = precision.into();
     // Derive decimals once from the width so every continuous field renders its
     // (width-multiple) edge exactly — the invariant that keeps the label byte-for-byte
     // identical to the dashboard SQL `to_char` (see `creation_stats_repo::sol_bucket_sql`).
-    let decimals = decimals_for(width);
-    GroupKey(fields.iter().map(|f| (*f, render_field(fp, *f, width, decimals))).collect())
+    let decimals = precision.width().map(decimals_for).unwrap_or(0);
+    GroupKey(fields.iter().map(|f| (*f, render_field(fp, *f, precision, decimals))).collect())
 }
 
 /// Group-key string for one field. `None`/empty → [`MISSING`].
@@ -267,10 +465,27 @@ pub fn group_key(fp: &TokenFingerprint, fields: &[GroupField], width: f64) -> Gr
 /// **exact** value. The continuous SOL-amount fields (initial buy, max cost,
 /// spendable-in, first-slot buy/sell) are **binned** into `width`-wide ranges at
 /// `decimals` = [`decimals_for`]`(width)` places — this is the single seam where a
-/// value becomes a coarse, groupable key.
-fn render_field(fp: &TokenFingerprint, f: GroupField, width: f64, decimals: usize) -> String {
+/// value becomes a coarse, groupable key — unless the run asked for
+/// [`SolPrecision::Exact`], where they render the amount itself.
+fn render_field(
+    fp: &TokenFingerprint,
+    f: GroupField,
+    precision: SolPrecision,
+    decimals: usize,
+) -> String {
     let opt = |v: Option<i64>| v.map(|x| x.to_string()).unwrap_or_else(|| MISSING.to_string());
     let miss = || MISSING.to_string();
+    // The precision policy, written once per source unit rather than per field —
+    // the `Bucket` arms are byte-identical to what they were before `Exact`
+    // existed, so adding the mode cannot perturb an existing group key.
+    let key_lamports = |l: i64| match precision {
+        SolPrecision::Bucket(w) => bucket_lamports_as_sol(l, w, decimals),
+        SolPrecision::Exact => exact_sol_label(l),
+    };
+    let key_sol = |v: f64| match precision {
+        SolPrecision::Bucket(w) => bucket_sol_label(v, w, decimals),
+        SolPrecision::Exact => exact_sol_label(sol_to_lamports(v)),
+    };
     match f {
         GroupField::TokenProgramId => {
             fp.token_program_id.clone().unwrap_or_else(|| MISSING.to_string())
@@ -280,24 +495,13 @@ fn render_field(fp: &TokenFingerprint, f: GroupField, width: f64, decimals: usiz
         GroupField::IsCashbackEnabled => fp.is_cashback_enabled.to_string(),
         // Continuous SOL amounts → binned SOL ranges. Lamports fields convert to SOL
         // first so the label reads in SOL (matching their "SOL cost"/"SOL in" name).
-        GroupField::MaxCostLamports => {
-            fp.max_cost_lamports.map(|l| bucket_lamports_as_sol(l, width, decimals)).unwrap_or_else(miss)
-        }
+        GroupField::MaxCostLamports => fp.max_cost_lamports.map(key_lamports).unwrap_or_else(miss),
         GroupField::SpendableLamportsIn => {
-            fp.spendable_lamports_in.map(|l| bucket_lamports_as_sol(l, width, decimals)).unwrap_or_else(miss)
+            fp.spendable_lamports_in.map(key_lamports).unwrap_or_else(miss)
         }
-        GroupField::InitialBuySol => fp
-            .initial_buy_sol
-            .map(|v| bucket_sol_label(v, width, decimals))
-            .unwrap_or_else(miss),
-        GroupField::FirstSlotBuySol => fp
-            .first_slot_buy_sol
-            .map(|v| bucket_sol_label(v, width, decimals))
-            .unwrap_or_else(miss),
-        GroupField::FirstSlotSellSol => fp
-            .first_slot_sell_sol
-            .map(|v| bucket_sol_label(v, width, decimals))
-            .unwrap_or_else(miss),
+        GroupField::InitialBuySol => fp.initial_buy_sol.map(key_sol).unwrap_or_else(miss),
+        GroupField::FirstSlotBuySol => fp.first_slot_buy_sol.map(key_sol).unwrap_or_else(miss),
+        GroupField::FirstSlotSellSol => fp.first_slot_sell_sol.map(key_sol).unwrap_or_else(miss),
         // Empty ≡ absent, decided by the same SSOT the fingerprint matcher uses —
         // this group key is read back into a fingerprint identity (`∅` ⇒ axis
         // unset), so the token side and the fingerprint side must agree.
@@ -325,6 +529,131 @@ mod tests {
             first_slot_buy_sol: Some(2.25),
             first_slot_sell_sol: None,
             ix_labels: vec!["Pump.Fun: Create".into(), "System: Transfer".into()],
+        }
+    }
+
+    /// A group chip's own text, pasted back into the filter box, must select
+    /// exactly that chip's tokens — the property that makes range syntax
+    /// discoverable (the UI already shows you the syntax).
+    #[test]
+    fn a_bucket_label_round_trips_as_a_range_filter() {
+        let width = SOL_BUCKET_WIDTH;
+        let decimals = decimals_for(width);
+        for sol in [0.0, 0.05, 1.515, 2.34, 15.15, 99.999] {
+            let label = bucket_sol_label(sol, width, decimals);
+            let filter = SolFilter::parse(&label).expect("a chip label must parse");
+            let lamports = sol_to_lamports(sol);
+            assert!(filter.matches(lamports), "{label} must contain its own value {sol}");
+            // …and agree with the membership test the live matcher uses.
+            for other in [0.0, 0.05, 1.515, 2.34, 15.15, 99.999] {
+                assert_eq!(
+                    filter.matches(sol_to_lamports(other)),
+                    same_bucket(sol, other, width),
+                    "range {label} disagrees with same_bucket on {other}"
+                );
+            }
+        }
+    }
+
+    /// Exact mode's key must read as the amount a human would type, and be the
+    /// value its own exact filter selects — so a card and a filter agree.
+    #[test]
+    fn exact_mode_keys_read_as_typed_amounts() {
+        assert_eq!(exact_sol_label(1_515_000_000), "1.515");
+        assert_eq!(exact_sol_label(15_150_000_000), "15.15");
+        assert_eq!(exact_sol_label(1_000_000_000), "1");
+        // Whole-SOL amounts must not have their integer digits eaten by the
+        // trailing-zero trim — the `.` guard is what stops that.
+        assert_eq!(exact_sol_label(10_000_000_000), "10");
+        assert_eq!(exact_sol_label(100_000_000_000), "100");
+        assert_eq!(exact_sol_label(0), "0");
+        assert_eq!(exact_sol_label(1), "0.000000001"); // one lamport, lossless
+        // The key round-trips through the shared filter parser.
+        for l in [0_i64, 1, 50_000_000, 1_515_000_000, 15_150_000_000] {
+            let key = exact_sol_label(l);
+            assert_eq!(
+                SolFilter::parse(&key),
+                Some(SolFilter::Exact(l)),
+                "exact key {key} must parse back to its own amount"
+            );
+        }
+    }
+
+    /// Exact mode splits what bucket mode merges — the whole point of the mode.
+    #[test]
+    fn exact_mode_separates_values_inside_one_bucket() {
+        let mut a = fp();
+        a.max_cost_lamports = Some(1_515_000_000); // 1.515
+        let mut b = fp();
+        b.max_cost_lamports = Some(1_520_000_000); // 1.520 — same [1.5,1.6) bucket
+        let fields = [GroupField::MaxCostLamports];
+        assert_eq!(
+            group_key(&a, &fields, SOL_BUCKET_WIDTH),
+            group_key(&b, &fields, SOL_BUCKET_WIDTH),
+            "bucket mode must merge them"
+        );
+        assert_ne!(
+            group_key(&a, &fields, SolPrecision::Exact),
+            group_key(&b, &fields, SolPrecision::Exact),
+            "exact mode must separate them"
+        );
+        assert_eq!(SolPrecision::Exact.width(), None);
+        assert_eq!(SolPrecision::from(0.1).width(), Some(0.1));
+    }
+
+    #[test]
+    fn sol_filter_parses_both_forms_and_rejects_junk() {
+        assert_eq!(SolFilter::parse("1.515"), Some(SolFilter::Exact(1_515_000_000)));
+        assert_eq!(SolFilter::parse(" 1.515 "), Some(SolFilter::Exact(1_515_000_000)));
+        // En-dash (what a chip renders) and the typed ASCII hyphen are the same.
+        let r = Some(SolFilter::Range(1_500_000_000, 1_600_000_000));
+        assert_eq!(SolFilter::parse("1.5–1.6"), r);
+        assert_eq!(SolFilter::parse("1.5-1.6"), r);
+        assert_eq!(SolFilter::parse("1.5 – 1.6"), r);
+        // Half-open: lo is in, hi belongs to the next bucket.
+        let f = SolFilter::parse("1.5–1.6").unwrap();
+        assert!(f.matches(1_500_000_000) && f.matches(1_599_999_999));
+        assert!(!f.matches(1_600_000_000) && !f.matches(1_499_999_999));
+        // Junk is rejected, never silently dropped into "no filter".
+        for bad in ["", "  ", "abc", "1.5–", "–1.6", "1.6–1.5", "1.5–1.5", "1.5-1.6-1.7", "-1", "NaN", "inf"] {
+            assert_eq!(SolFilter::parse(bad), None, "{bad:?} must not parse");
+        }
+    }
+
+    /// `is_bucketed` must name EXACTLY the fields `render_field` turns into a
+    /// `"lo–hi"` range. Every filter surface branches on it to decide whether a
+    /// typed value can be compared against the group key (discrete) or has to pin
+    /// the underlying amount (bucketed) — a field that drifts out of sync here
+    /// makes its filter silently match nothing, which is the bug this locks.
+    /// Every field is populated so no arm can pass by rendering the `∅` sentinel.
+    #[test]
+    fn is_bucketed_agrees_with_render_field() {
+        let mut f = fp();
+        f.cu_price = Some(1_000);
+        f.spendable_lamports_in = Some(500_000_000);
+        f.first_slot_sell_sol = Some(0.75);
+        let decimals = decimals_for(SOL_BUCKET_WIDTH);
+        for field in GroupField::ALL {
+            let rendered = render_field(&f, field, SOL_BUCKET_WIDTH.into(), decimals);
+            assert_ne!(rendered, MISSING, "{field:?}: fixture must populate every field");
+            // Exact mode must key on the amount itself — never a range, and never
+            // the `∅` sentinel — for exactly the bucketed fields.
+            let exact = render_field(&f, field, SolPrecision::Exact, 0);
+            assert_ne!(exact, MISSING, "{field:?}: exact mode lost the value");
+            assert!(!exact.contains('–'), "{field:?}: exact mode still ranged: {exact}");
+            assert_eq!(
+                exact != rendered,
+                field.is_bucketed(),
+                "{field:?}: only bucketed fields may differ between the two modes",
+            );
+            // The en-dash separator is the observable mark of a bucket label; no
+            // discrete rendering (id, integer, bool, " | "-joined labels) contains it.
+            assert_eq!(
+                rendered.contains('–'),
+                field.is_bucketed(),
+                "{field:?}: is_bucketed()={} but render_field gave {rendered:?}",
+                field.is_bucketed(),
+            );
         }
     }
 

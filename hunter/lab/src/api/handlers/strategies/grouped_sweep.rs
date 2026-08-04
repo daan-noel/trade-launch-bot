@@ -29,7 +29,7 @@ use crate::sweep::aggregate::ComboMetrics;
 use crate::lake::duck::LakeSource;
 use crate::sweep::corpus::{sweep_per_mint_cap, CorpusSource, Selection};
 use crate::sweep::grouped_engine::{CoverageFloor, GroupResult, GroupSink};
-use crate::sweep::grouping::{group_key, normalize_label_vec, GroupField, SOL_BUCKET_WIDTH};
+use crate::sweep::grouping::{group_key, normalize_label_vec, GroupField, SolPrecision};
 use crate::sweep::registry;
 use crate::sweep::strategy::parse_method;
 use trading_core::config::constants::{sol_to_lamports, tidy_sol_decimal};
@@ -64,6 +64,16 @@ pub struct StartGroupedSweepBody {
     /// clamped to a [`grouping::MIN_BUCKET_WIDTH_SOL`] floor server-side.
     #[serde(default = "default_bucket_width_sol")]
     pub bucket_width_sol: f64,
+    /// `true` ⇒ group the continuous SOL fields on their **exact** amount instead
+    /// of a bucket range (`grouping::SolPrecision::Exact`); `bucket_width_sol` is
+    /// then ignored and the run row stores a `NULL` width. A promoted group carries
+    /// that straight onto the fingerprint, whose `bucket_size_amount` uses the same
+    /// `NULL`-means-exact spelling — so "what you swept = what you run" holds in
+    /// exact mode too.
+    ///
+    /// A separate named flag, never a `0` width: see `SolPrecision`.
+    #[serde(default)]
+    pub exact_sol: bool,
     /// Optional exact-set instruction-label filter: when set (and non-empty),
     /// restrict the corpus to tokens whose normalized `ix_labels` set EXACTLY
     /// equals these labels, then sweep that slice. The page offers this as the
@@ -669,12 +679,16 @@ async fn run_grouped_sweep_job(
     // width falls back to the default rather than 400-ing, so a stray input can't
     // block a run. Floored at MIN_BUCKET_WIDTH_SOL to keep the 1e-9 ratio-epsilon
     // valid and edge labels from exploding in decimals.
-    let bucket_width = {
+    // Exact mode wins outright and consults no width, so a stray one can't quietly
+    // downgrade it back to bucketing.
+    let precision = if b.exact_sol {
+        SolPrecision::Exact
+    } else {
         let w = b.bucket_width_sol;
         if w.is_finite() && w >= crate::sweep::grouping::MIN_BUCKET_WIDTH_SOL {
-            w
+            SolPrecision::Bucket(w)
         } else {
-            crate::sweep::grouping::SOL_BUCKET_WIDTH
+            SolPrecision::Bucket(crate::sweep::grouping::SOL_BUCKET_WIDTH)
         }
     };
     let floor = CoverageFloor {
@@ -1071,7 +1085,7 @@ async fn run_grouped_sweep_job(
         buy_amount_sol: Some(b.buy_amount_sol),
         // The clamped width actually used to partition (not the raw request), so
         // re-run + promotion restore exactly what this run swept.
-        bucket_width_sol: Some(bucket_width),
+        bucket_width_sol: precision.width(),
         volume_ix_patterns: b
             .volume_ix_patterns
             .as_ref()
@@ -1226,7 +1240,7 @@ async fn run_grouped_sweep_job(
         for t in &corpus.tokens {
             // MUST use the same `bucket_width` the engine partitions by, or these
             // group-key strings won't match the engine's group keys and mints go missing.
-            let key_str = group_key(&t.fp, &b.group_by, bucket_width).to_json().to_string();
+            let key_str = group_key(&t.fp, &b.group_by, precision).to_json().to_string();
             map.entry(key_str).or_default().push(t.mint.clone());
         }
         Arc::new(map)
@@ -1247,7 +1261,7 @@ async fn run_grouped_sweep_job(
         refine,
         corpus,
         b.group_by.clone(),
-        bucket_width,
+        precision,
         min_tokens,
         floor,
         b.max_combos,
@@ -1903,7 +1917,12 @@ pub async fn promote_group(
 
     // Fingerprint at the run's bucket width (fall back to the default for pre-0002
     // runs), find-or-created so identical winning groups map onto ONE fingerprint.
-    let width = run.bucket_width_sol.unwrap_or(SOL_BUCKET_WIDTH);
+    // Promote at the precision the run GROUPED at, read through the one
+    // `SolPrecision::from_width` — a NULL width means the run keyed exact amounts,
+    // and a fingerprint spells exact the same way, so the promoted rule arms on
+    // exactly the tokens the group counted. Substituting a default width here is
+    // what would silently widen an exact group back into a bucket.
+    let precision = SolPrecision::from_width(run.bucket_width_sol);
     let fp_repo = FingerprintRepo::new(state.db.clone());
 
     // A fingerprint-scoped run already HAS the gate that selected its corpus — reuse
@@ -1942,7 +1961,7 @@ pub async fn promote_group(
         },
         None => {
             let name = format!("sweep {} · group {}", short_id(run_id), group.group_index);
-            let mut draft_fp = fingerprint_from_group_key(&group.group_key, width, name);
+            let mut draft_fp = fingerprint_from_group_key(&group.group_key, precision, name);
             // The run's exact-set label filter is part of what selected these results,
             // but it lives on the RUN — the group key only carries grouped fields, and
             // the form disables the filter box when `ix_labels` is a group-by, so at
@@ -2139,9 +2158,18 @@ fn parse_scale_out_pass2(
 /// match reproduces the group's membership exactly. Grouping-only fields
 /// (`token_program_id`, `is_cashback_enabled`) have no fingerprint axis and the
 /// `∅` "missing" label is skipped.
+/// Synthesize a saved fingerprint from a ranked group's key.
+///
+/// `precision` must be the one the run **grouped** at, so the promoted rule arms on
+/// exactly the tokens the card counted: `Bucket(w)` stores `w` and the engine
+/// matches with `same_bucket`; `Exact` stores `NULL` and the engine matches the
+/// exact lamports. Passing a substituted width here is the whole class of bug this
+/// signature exists to prevent — it would arm on a window the card never showed.
+/// `parse_lo_lamports` reads both key shapes (a `"lo–hi"` label's lower edge, or a
+/// bare exact amount).
 pub(crate) fn fingerprint_from_group_key(
     gk: &serde_json::Value,
-    width: f64,
+    precision: SolPrecision,
     name: String,
 ) -> Fingerprint {
     let now = Utc::now();
@@ -2155,7 +2183,7 @@ pub(crate) fn fingerprint_from_group_key(
         spendable_lamports_in: None,
         first_slot_buy_lamports: None,
         first_slot_sell_lamports: None,
-        bucket_size_amount: tidy_sol_decimal(width),
+        bucket_size_amount: precision.width().map(tidy_sol_decimal),
         ix_labels: None,
         metric_config: serde_json::json!({}),
         created_at: now,
@@ -2513,6 +2541,43 @@ fn bad_strategy(strategy_id: &str) -> HttpResponse {
     }))
 }
 
+/// A bucketed-SOL axis's amount as lamports, from an `f64` SOL fingerprint field.
+/// Rounds through the shared `sol_to_lamports`, which exactly recovers the integer
+/// the value was divided down from — so comparing in lamports is lossless and
+/// matches the dashboard SQL, which pins the stored `*_lamports` column directly.
+fn sol_opt_to_lamports(sol: Option<f64>) -> Option<i64> {
+    sol.filter(|v| v.is_finite()).map(hunter_engine::grouping::sol_to_lamports)
+}
+
+/// Match a typed filter value against a lamports amount, through the one shared
+/// `SolFilter` parser — human SOL, either an exact amount (`1.515`) or a half-open
+/// bucket range (`"1.5–1.6"`, the text a group chip displays).
+///
+/// JSON numbers are exact amounts; JSON strings go through the full parser, so the
+/// range form survives the wire (it cannot be expressed as a number). Any other
+/// JSON kind never matches.
+///
+/// This is the in-memory twin of `creation_stats_repo::field_filter_pred`'s
+/// bucketed arm; the two must accept the same typed value for the same token, and
+/// `docs/arch/sweep.md` records why the pair exists rather than one shared
+/// implementation (SQL vs. resident-corpus retain). Before 2026-08-04 the two
+/// disagreed — this side compared the raw lamports integer while the dashboard
+/// compared the `"1.5–1.6"` bucket *label* — so a filter typed in either unit
+/// matched nothing on at least one surface.
+fn sol_filter_matches_lamports(allowed: &[serde_json::Value], lamports: Option<i64>) -> bool {
+    let Some(l) = lamports else { return false };
+    allowed.iter().any(|a| match a {
+        serde_json::Value::Number(n) => n
+            .as_f64()
+            .filter(|sol| sol.is_finite() && *sol >= 0.0)
+            .is_some_and(|sol| hunter_engine::grouping::sol_to_lamports(sol) == l),
+        serde_json::Value::String(s) => {
+            hunter_engine::grouping::SolFilter::parse(s).is_some_and(|f| f.matches(l))
+        }
+        _ => false,
+    })
+}
+
 /// Return `true` if the token's fingerprint value for `field` is in `allowed`.
 /// `IxLabels` is handled by the `ix_labels_filter` path and never reaches here.
 /// `TokenProgramId` isn't offered in the frontend filter UI.
@@ -2531,43 +2596,125 @@ pub(crate) fn matches_field_filter(
             let v = fp.cu_price;
             allowed.iter().any(|a| a.as_i64().map(|x| Some(x) == v).unwrap_or(false))
         }
-        MaxCostLamports => {
-            let v = fp.max_cost_lamports;
-            allowed.iter().any(|a| a.as_i64().map(|x| Some(x) == v).unwrap_or(false))
-        }
-        SpendableLamportsIn => {
-            let v = fp.spendable_lamports_in;
-            allowed.iter().any(|a| a.as_i64().map(|x| Some(x) == v).unwrap_or(false))
-        }
-        InitialBuySol => {
-            let v = fp.initial_buy_sol;
-            allowed.iter().any(|a| {
-                a.as_f64()
-                    .map(|x| v.map(|y| (x - y).abs() < 1e-9).unwrap_or(false))
-                    .unwrap_or(false)
-            })
-        }
+        // The five bucketed SOL axes. Typed values are **human SOL** and match the
+        // exact amount — see `sol_filter_matches_lamports`.
+        MaxCostLamports => sol_filter_matches_lamports(allowed, fp.max_cost_lamports),
+        SpendableLamportsIn => sol_filter_matches_lamports(allowed, fp.spendable_lamports_in),
+        InitialBuySol => sol_filter_matches_lamports(allowed, sol_opt_to_lamports(fp.initial_buy_sol)),
         FirstSlotBuySol => {
-            let v = fp.first_slot_buy_sol;
-            allowed.iter().any(|a| {
-                a.as_f64()
-                    .map(|x| v.map(|y| (x - y).abs() < 1e-9).unwrap_or(false))
-                    .unwrap_or(false)
-            })
+            sol_filter_matches_lamports(allowed, sol_opt_to_lamports(fp.first_slot_buy_sol))
         }
         FirstSlotSellSol => {
-            let v = fp.first_slot_sell_sol;
-            allowed.iter().any(|a| {
-                a.as_f64()
-                    .map(|x| v.map(|y| (x - y).abs() < 1e-9).unwrap_or(false))
-                    .unwrap_or(false)
-            })
+            sol_filter_matches_lamports(allowed, sol_opt_to_lamports(fp.first_slot_sell_sol))
         }
         IsCashbackEnabled => {
             let v = fp.is_cashback_enabled;
             allowed.iter().any(|a| a.as_bool().map(|b| b == v).unwrap_or(false))
         }
         TokenProgramId | IxLabels => false,
+    }
+}
+
+#[cfg(test)]
+mod field_filter_tests {
+    use super::matches_field_filter;
+    use crate::sweep::grouping::{GroupField, TokenFingerprint};
+    use serde_json::json;
+
+    /// `max_cost_lamports: 1515000000` = **1.515 SOL**.
+    fn fp() -> TokenFingerprint {
+        TokenFingerprint {
+            token_program_id: Some("Tokenkeg".into()),
+            initial_buy_sol: Some(0.05),
+            cu_limit: Some(200_000),
+            cu_price: Some(1_000),
+            is_cashback_enabled: true,
+            max_cost_lamports: Some(1_515_000_000),
+            spendable_lamports_in: Some(500_000_000),
+            first_slot_buy_sol: Some(2.25),
+            first_slot_sell_sol: Some(0.75),
+            ix_labels: vec!["Pump.Fun: Create_v2".into()],
+        }
+    }
+
+    /// The unit contract, and the bug this locks: every surface that *produces* a
+    /// filter value emits human SOL (the "Max SOL cost" label, the picker tooltip,
+    /// flow discovery's `solText` = `lamports / 1e9`), but this matcher used to
+    /// compare the raw lamports integer — so the typed `1.515` never matched and
+    /// only an undiscoverable `1515000000` did. Must be SOL on every bucketed axis.
+    #[test]
+    fn bucketed_axes_take_human_sol_not_raw_lamports() {
+        let f = fp();
+        for (field, sol, lamports) in [
+            (GroupField::MaxCostLamports, 1.515, 1_515_000_000.0),
+            (GroupField::SpendableLamportsIn, 0.5, 500_000_000.0),
+            (GroupField::InitialBuySol, 0.05, 50_000_000.0),
+            (GroupField::FirstSlotBuySol, 2.25, 2_250_000_000.0),
+            (GroupField::FirstSlotSellSol, 0.75, 750_000_000.0),
+        ] {
+            assert!(
+                matches_field_filter(&f, field, &[json!(sol)]),
+                "{field:?}: human SOL {sol} must match"
+            );
+            assert!(
+                !matches_field_filter(&f, field, &[json!(lamports)]),
+                "{field:?}: raw lamports {lamports} must NOT match (SOL is the unit)"
+            );
+        }
+    }
+
+    /// Exact, not bucketed: the sweep's `field_filters` pin one amount regardless of
+    /// the run's bucket width. A neighbour inside the same 0.1-SOL bucket must miss —
+    /// that is the whole difference from a `fingerprint_id` scope, which matches by
+    /// bucket. Mirrors `creation_stats_repo`'s
+    /// `bucketed_sol_filter_pins_exact_lamports_not_the_bucket_label`.
+    #[test]
+    fn bucketed_axes_match_exactly_not_by_bucket() {
+        let f = fp();
+        // 1.515 and 1.52 share the [1.5, 1.6) bucket; only the exact amount matches.
+        assert!(matches_field_filter(&f, GroupField::MaxCostLamports, &[json!(1.515)]));
+        assert!(!matches_field_filter(&f, GroupField::MaxCostLamports, &[json!(1.52)]));
+        // Sub-lamport noise still resolves (both round to the same i64).
+        assert!(matches_field_filter(&f, GroupField::MaxCostLamports, &[json!(1.5150000001)]));
+        // Any value in the list matches (comma-separated list semantics).
+        assert!(matches_field_filter(
+            &f,
+            GroupField::MaxCostLamports,
+            &[json!(9.0), json!(1.515)]
+        ));
+    }
+
+    /// The range form must survive the wire as a JSON **string** (it can't be a
+    /// number), and select the same half-open window the dashboard SQL does.
+    #[test]
+    fn bucket_range_strings_select_the_same_window_as_the_sql() {
+        let f = fp(); // max_cost = 1.515 SOL
+        assert!(matches_field_filter(&f, GroupField::MaxCostLamports, &[json!("1.5–1.6")]));
+        assert!(matches_field_filter(&f, GroupField::MaxCostLamports, &[json!("1.5-1.6")]));
+        // Half-open: the neighbouring bucket must not claim it.
+        assert!(!matches_field_filter(&f, GroupField::MaxCostLamports, &[json!("1.6–1.7")]));
+        assert!(!matches_field_filter(&f, GroupField::MaxCostLamports, &[json!("1.4–1.5")]));
+        // An exact amount sent as a string works too (the FE keeps one text field).
+        assert!(matches_field_filter(&f, GroupField::MaxCostLamports, &[json!("1.515")]));
+        // Junk never silently widens to "everything".
+        assert!(!matches_field_filter(&f, GroupField::MaxCostLamports, &[json!("abc")]));
+        assert!(!matches_field_filter(&f, GroupField::MaxCostLamports, &[json!(null)]));
+    }
+
+    /// An absent axis is never pinned by a value filter (no `∅` collision with 0),
+    /// and the discrete axes are untouched by this change.
+    #[test]
+    fn absent_axis_never_matches_and_discrete_axes_are_unchanged() {
+        let mut f = fp();
+        f.max_cost_lamports = None;
+        assert!(!matches_field_filter(&f, GroupField::MaxCostLamports, &[json!(0)]));
+        assert!(!matches_field_filter(&f, GroupField::MaxCostLamports, &[json!(1.515)]));
+
+        assert!(matches_field_filter(&f, GroupField::CuLimit, &[json!(200_000)]));
+        assert!(!matches_field_filter(&f, GroupField::CuLimit, &[json!(1)]));
+        assert!(matches_field_filter(&f, GroupField::IsCashbackEnabled, &[json!(true)]));
+        // `ix_labels` has its own set-equality filter and never reaches here.
+        assert!(!matches_field_filter(&f, GroupField::IxLabels, &[json!("Pump.Fun: Create_v2")]));
     }
 }
 

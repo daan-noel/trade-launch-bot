@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use uuid::Uuid;
 
-use crate::grouping::{same_bucket, TokenFingerprint, LAMPORTS_PER_SOL_F64};
+use crate::grouping::{same_bucket, sol_to_lamports, SolPrecision, TokenFingerprint, LAMPORTS_PER_SOL_F64};
 
 /// A fingerprint's stable id (the `fingerprints.id` UUID). A pure 128-bit data
 /// wrapper — ids are minted in the DB, never in the engine.
@@ -64,8 +64,17 @@ pub struct Fingerprint {
     pub first_slot_buy_lamports: Option<i64>,
     /// Sum of sell SOL in the creation slot (first-slot axis — deferred).
     pub first_slot_sell_lamports: Option<i64>,
-    /// SOL width every bucket-matched axis on this row uses.
-    pub bucket_size_amount: f64,
+    /// SOL width every bucket-matched axis on this row uses, or `None` to match
+    /// those axes on their **exact** lamports amount.
+    ///
+    /// `None` is the honest "not bucketed" — a width is a *measured* quantity, so
+    /// "unset" is `NULL`, never a `0` sentinel (`floor(v/0)` is a division by zero,
+    /// and a magic-`0` width already caused one live bug where two readers
+    /// disagreed about whether it meant "default 0.1" or "literally zero").
+    /// Read it through [`Fingerprint::precision`], never directly, so every axis
+    /// resolves the mode the same way.
+    #[serde(default = "default_bucket_size_amount")]
+    pub bucket_size_amount: Option<f64>,
     /// Per-metric-group fingerprint-side config (e.g. `m_flow_split`). Not part
     /// of match identity — compiled into [`crate::metrics::flow_split::FlowPatterns`]
     /// at reload. Default `{}` for older event-log / test fixtures.
@@ -75,6 +84,14 @@ pub struct Fingerprint {
 
 fn default_metric_config() -> serde_json::Value {
     serde_json::json!({})
+}
+
+/// Event-log / fixture rows written before the exact-axis mode existed carried a
+/// bare `f64` width. Serde's `Option<f64>` already accepts that shape, so this
+/// default only covers a *missing* field — and "missing" there means the old
+/// always-bucketed behaviour at the standard width, not exact.
+fn default_bucket_size_amount() -> Option<f64> {
+    Some(crate::grouping::SOL_BUCKET_WIDTH)
 }
 
 impl Fingerprint {
@@ -92,6 +109,19 @@ impl Fingerprint {
     }
     pub fn first_slot_sell_sol(&self) -> Option<f64> {
         self.first_slot_sell_lamports.map(lamports_to_sol)
+    }
+
+    /// How this row's SOL axes are matched — **the one reader** of
+    /// [`Self::bucket_size_amount`]. A width of `None` (or a non-finite / non-positive
+    /// one, which `Fingerprint::validate` and the `0014` CHECK already reject at the
+    /// storage boundary) means exact-lamports matching.
+    ///
+    /// Defending against a bad width here as well as at the boundary is deliberate:
+    /// this value reaches the **live entry gate**, and a `0` slipping through would
+    /// otherwise divide by zero inside `bucket_index` and saturate every amount into
+    /// one bucket — i.e. arm on every token.
+    pub fn precision(&self) -> SolPrecision {
+        SolPrecision::from_width(self.bucket_size_amount)
     }
 
     /// Whether any matchable criterion is configured. The matcher requires at
@@ -158,7 +188,7 @@ pub fn matches_phase(fp: &Fingerprint, tf: &TokenFingerprint, phase: MatchPhase)
     if !fp.has_any_criterion() {
         return false;
     }
-    let w = fp.bucket_size_amount;
+    let precision = fp.precision();
 
     // ── Exact axes ──
     if let Some(cu) = fp.cu_limit {
@@ -180,23 +210,34 @@ pub fn matches_phase(fp: &Fingerprint, tf: &TokenFingerprint, phase: MatchPhase)
         }
     }
 
-    // ── Bucket-matched instant SOL axes ──
-    if !bucket_axis(fp.init_buy_sol(), tf.initial_buy_sol, w) {
+    // ── SOL axes (bucket- or exact-matched per `precision`) ──
+    // The `f64` token axes convert to lamports through the shared `sol_to_lamports`,
+    // which round-trips the integer they were divided down from exactly — so all
+    // five axes compare in one unit.
+    if !sol_axis(fp.init_buy_lamports, tf.initial_buy_sol.map(sol_to_lamports), precision) {
         return false;
     }
-    if !bucket_axis(fp.max_cost_sol(), tf.max_cost_lamports.map(lamports_to_sol), w) {
+    if !sol_axis(fp.max_cost_lamports, tf.max_cost_lamports, precision) {
         return false;
     }
-    if !bucket_axis(fp.spendable_sol_in(), tf.spendable_lamports_in.map(lamports_to_sol), w) {
+    if !sol_axis(fp.spendable_lamports_in, tf.spendable_lamports_in, precision) {
         return false;
     }
 
     // ── First-slot axes (deferred: only judged at Full) ──
     if phase == MatchPhase::Full {
-        if !bucket_axis(fp.first_slot_buy_sol(), tf.first_slot_buy_sol, w) {
+        if !sol_axis(
+            fp.first_slot_buy_lamports,
+            tf.first_slot_buy_sol.map(sol_to_lamports),
+            precision,
+        ) {
             return false;
         }
-        if !bucket_axis(fp.first_slot_sell_sol(), tf.first_slot_sell_sol, w) {
+        if !sol_axis(
+            fp.first_slot_sell_lamports,
+            tf.first_slot_sell_sol.map(sol_to_lamports),
+            precision,
+        ) {
             return false;
         }
     }
@@ -225,11 +266,25 @@ pub fn match_all(
 /// One bucket-matched axis: `None` fingerprint value = not configured (always
 /// satisfied); a configured value requires a present token value in the same
 /// [`same_bucket`] bucket. Both operands are SOL and the width is SOL.
-fn bucket_axis(fp_sol: Option<f64>, tf_sol: Option<f64>, width: f64) -> bool {
-    match fp_sol {
-        None => true,
-        Some(target) => tf_sol.is_some_and(|v| same_bucket(v, target, width)),
-    }
+/// One SOL axis of the match, in **lamports**.
+///
+/// A `None` fingerprint axis is not part of identity (always passes); a configured
+/// axis requires the token to have a value, and:
+///
+/// * [`SolPrecision::Bucket`] → the two land in the same `width`-wide bucket, via
+///   the [`same_bucket`] SSOT (converted to SOL, the space buckets are defined in).
+/// * [`SolPrecision::Exact`] → the raw lamports integers are equal.
+///
+/// Exact compares **integers, not SOL floats**, deliberately: `lamports as f64 / 1e9`
+/// stops being injective past 2^53 lamports, and real data carries pump.fun's
+/// `max_cost_lamports = u64::MAX` "no limit" sentinel — well past that — so a float
+/// compare could call two different amounts equal.
+fn sol_axis(fp_lamports: Option<i64>, tf_lamports: Option<i64>, precision: SolPrecision) -> bool {
+    let Some(target) = fp_lamports else { return true };
+    tf_lamports.is_some_and(|v| match precision {
+        SolPrecision::Bucket(w) => same_bucket(lamports_to_sol(v), lamports_to_sol(target), w),
+        SolPrecision::Exact => v == target,
+    })
 }
 
 fn lamports_to_sol(lamports: i64) -> f64 {
@@ -257,7 +312,7 @@ mod tests {
             spendable_lamports_in: None,
             first_slot_buy_lamports: None,
             first_slot_sell_lamports: None,
-            bucket_size_amount: 0.1,
+            bucket_size_amount: Some(0.1),
             metric_config: serde_json::json!({}),
         }
     }
@@ -448,13 +503,30 @@ mod tests {
     fn different_widths_can_both_match_same_token() {
         // A coarse fingerprint (width 1.0) and a fine one (0.1) can both claim the
         // same token — each judges its own axis at its own width.
+        let mut exact = blank_fp();
+        exact.bucket_size_amount = None;
+        exact.max_cost_lamports = Some(1_515_000_000);
+        let mut tf_exact = blank_tf();
+        tf_exact.max_cost_lamports = Some(1_515_000_000);
+        assert!(matches(&exact, &tf_exact), "exact mode must match its own amount");
+        // A neighbour inside the same 0.1-SOL bucket must MISS — that is the whole
+        // difference from a bucketed fingerprint, and it is the live entry gate.
+        tf_exact.max_cost_lamports = Some(1_520_000_000);
+        assert!(!matches(&exact, &tf_exact), "exact mode must not match a bucket neighbour");
+        // One lamport apart still misses.
+        tf_exact.max_cost_lamports = Some(1_515_000_001);
+        assert!(!matches(&exact, &tf_exact), "exact mode must be lamport-exact");
+        // An absent token value never satisfies a configured axis.
+        tf_exact.max_cost_lamports = None;
+        assert!(!matches(&exact, &tf_exact));
+
         let mut coarse = blank_fp();
         coarse.id = fp_id(1);
-        coarse.bucket_size_amount = 1.0;
+        coarse.bucket_size_amount = Some(1.0);
         coarse.init_buy_lamports = Some((1.0 * SOL) as i64); // [1,2)
         let mut fine = blank_fp();
         fine.id = fp_id(2);
-        fine.bucket_size_amount = 0.1;
+        fine.bucket_size_amount = Some(0.1);
         fine.init_buy_lamports = Some((1.5 * SOL) as i64); // [1.5,1.6)
 
         let mut tf = blank_tf();

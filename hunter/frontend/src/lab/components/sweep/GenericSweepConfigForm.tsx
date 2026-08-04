@@ -18,7 +18,8 @@ import {
   type GroupedSweepStartArgs,
   SOL_BUCKET_WIDTH,
 } from './groupedTypes';
-import { parseNumbers, parseIxLabelsFilter } from './fingerprintFilters';
+import { buildFieldFilters, parseIxLabelsFilter } from './fingerprintFilters';
+import { BUCKETED_GROUP_FIELDS, GROUP_FIELD_LABELS } from './groupedTypes';
 import { formatIxLabelsText } from 'lib/ixLabels';
 import { FingerprintGroupPicker } from './FingerprintGroupPicker';
 import { GenericAxisBuilder } from './GenericAxisBuilder';
@@ -163,6 +164,9 @@ interface GenericSweepConfig {
   curveOnly: boolean;
   buyAmountSol: number;
   bucketWidthSol: number;
+  /** Group the SOL axes on their exact amount (`SolPrecision::Exact`) instead of a
+   *  `bucketWidthSol`-wide range. A promoted/bound fingerprint stores a NULL width. */
+  exactSol: boolean;
   /** Host RAM (MB) left free for OS + desktop while the run sizes its peaks. */
   ramReserveMb: number;
   /** Opt into the AVX-512 vectorized exit scan (lab-only; host-gated server-side). */
@@ -208,6 +212,7 @@ function defaultConfig(): GenericSweepConfig {
     curveOnly: false,
     buyAmountSol: 1.0,
     bucketWidthSol: SOL_BUCKET_WIDTH,
+    exactSol: false,
     ramReserveMb: DEFAULT_RAM_RESERVE_MB,
     // Default OFF: the scalar scan is the SSOT. Flip to `true` once the workstation
     // A/B (plan §P5) confirms the speedup on your corpus — the result is identical.
@@ -298,6 +303,8 @@ function runToConfig(run: GroupedSweepRunRecord, defaults: GenericSweepConfig): 
     maxCombos: run.max_combos ?? defaults.maxCombos,
     curveOnly: run.curve_only,
     buyAmountSol: tidySolDecimal(run.buy_amount_sol ?? defaults.buyAmountSol),
+    // A NULL stored width means the run grouped on exact amounts.
+    exactSol: run.bucket_width_sol == null,
     bucketWidthSol: tidySolDecimal(run.bucket_width_sol ?? defaults.bucketWidthSol),
     volumeIxPatterns: run.volume_ix_patterns ?? defaults.volumeIxPatterns,
     // Legacy rows (null) were computed under what the sweep hardcoded then — restore
@@ -410,6 +417,7 @@ export function GenericSweepConfigForm({
     curveOnly,
     buyAmountSol,
     bucketWidthSol,
+    exactSol,
     ramReserveMb,
     useAvx512,
     volumeIxPatterns,
@@ -446,9 +454,10 @@ export function GenericSweepConfigForm({
       seedFingerprintId: fp.id,
       groupBy: [],
       minTokens: 1,
-      bucketWidthSol: tidySolDecimal(
-        fp.bucket_size_amount > 0 ? fp.bucket_size_amount : SOL_BUCKET_WIDTH,
-      ),
+      // A NULL width IS the exact mode — mirror it so the scoped picker shows the
+      // precision the fingerprint actually matches at, not a substituted default.
+      exactSol: fp.bucket_size_amount == null,
+      bucketWidthSol: tidySolDecimal(fp.bucket_size_amount ?? SOL_BUCKET_WIDTH),
     }));
   }
 
@@ -489,9 +498,27 @@ export function GenericSweepConfigForm({
     return comboCount(axisRows, registry);
   }, [methodKind, randomN, axisRows, registry]);
 
+  // Per-field value filters, parsed once. Blocks Run on a bad entry exactly as an
+  // ix-labels parse error does — a silently dropped SOL filter would run the whole
+  // sweep over a corpus the operator thinks was narrowed.
+  const fieldFilterParse = useMemo(
+    () =>
+      buildFieldFilters(fieldFiltersText, {
+        fields: GROUP_FIELDS,
+        bucketed: BUCKETED_GROUP_FIELDS,
+        cashback: cashbackFilter,
+        labels: GROUP_FIELD_LABELS,
+      }),
+    [fieldFiltersText, cashbackFilter],
+  );
+  // Scoped runs ignore the manual filters entirely, so a stale parse error there
+  // must not block the run.
+  const fieldFilterError = seedFingerprintId ? null : fieldFilterParse.error;
+
   const effectiveCap = Math.min(Math.max(1, maxCombos || DEFAULT_MAX_COMBOS), HARD_MAX_COMBOS);
   const overCap = projected > effectiveCap;
-  const canRun = axesValid && !overCap && !running && !ixFilterError && flowPatternsOk;
+  const canRun =
+    axesValid && !overCap && !running && !ixFilterError && !fieldFilterError && flowPatternsOk;
 
   function toggleGroupField(f: GroupField) {
     setField('groupBy', groupBy.includes(f) ? groupBy.filter((x) => x !== f) : [...groupBy, f]);
@@ -507,17 +534,7 @@ export function GenericSweepConfigForm({
     // filters are not sent at all (sending them would only look like they applied —
     // the server ignores them, and the run row stores the fingerprint instead).
     const scoped = !!seedFingerprintId;
-    const fieldFilters: Record<string, (number | boolean)[]> = {};
-    if (!scoped) {
-      for (const f of GROUP_FIELDS) {
-        if (f === 'ix_labels' || f === 'is_cashback_enabled') continue;
-        const nums = parseNumbers(fieldFiltersText[f] ?? '');
-        if (nums.length > 0) fieldFilters[f] = nums;
-      }
-      if (cashbackFilter !== 'all') {
-        fieldFilters['is_cashback_enabled'] = [cashbackFilter === 'true'];
-      }
-    }
+    const fieldFilters = scoped ? {} : fieldFilterParse.filters;
 
     onRun({
       strategy_id: GENERIC_STRATEGY_ID,
@@ -525,7 +542,8 @@ export function GenericSweepConfigForm({
       created_before: toUtc(createdBefore),
       curve_only: curveOnly,
       group_by: groupBy,
-      bucket_width_sol: bucketWidthSol,
+      // Exact mode replaces the width outright (backend ignores it there).
+      ...(exactSol ? { exact_sol: true } : { bucket_width_sol: bucketWidthSol }),
       fingerprint_id: seedFingerprintId ?? undefined,
       ix_labels_filter:
         !scoped && !ixLabelsGrouped && ixFilter.labels ? ixFilter.labels : undefined,
@@ -568,9 +586,11 @@ export function GenericSweepConfigForm({
       ? 'Fix the axes: every row needs a valid metric/operator and at least one value'
       : ixFilterError
         ? `Fix the instruction-label filter: ${ixFilterError}`
-        : !flowPatternsOk
-          ? 'Flow axes require at least one volume_ix_patterns row'
-          : 'Run the grouped sweep';
+        : fieldFilterError
+          ? `Fix the value filter — ${fieldFilterError}`
+          : !flowPatternsOk
+            ? 'Flow axes require at least one volume_ix_patterns row'
+            : 'Run the grouped sweep';
 
   return (
     <div className="mb-4 bg-surface">
@@ -813,6 +833,8 @@ export function GenericSweepConfigForm({
             onSetCashback={(v) => setField('cashbackFilter', v)}
             bucketWidthSol={bucketWidthSol}
             onSetBucketWidth={(n) => setField('bucketWidthSol', n <= 0 ? SOL_BUCKET_WIDTH : n)}
+            exactSol={exactSol}
+            onSetExactSol={(v) => setField('exactSol', v)}
             ixLabelsText={ixLabelsFilter}
             onSetIxLabels={(v) => setField('ixLabelsFilter', v)}
             ixFilter={ixFilter}
@@ -922,6 +944,11 @@ export function GenericSweepConfigForm({
       {ixFilterError && (
         <div className="mt-2">
           <InlineAlert variant="error">Fix the instruction-label filter: {ixFilterError}</InlineAlert>
+        </div>
+      )}
+      {fieldFilterError && (
+        <div className="mt-2">
+          <InlineAlert variant="error">Fix the value filter — {fieldFilterError}</InlineAlert>
         </div>
       )}
     </div>

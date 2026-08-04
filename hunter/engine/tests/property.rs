@@ -62,7 +62,7 @@ fn cu_fp(id: u128) -> Fingerprint {
         spendable_lamports_in: None,
         first_slot_buy_lamports: Some(1_000_000_000),
         first_slot_sell_lamports: None,
-        bucket_size_amount: 0.1,
+        bucket_size_amount: Some(0.1),
         metric_config: serde_json::json!({}),
     }
 }

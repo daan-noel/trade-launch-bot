@@ -5,7 +5,7 @@ use sqlx::PgPool;
 use hunter_engine::fingerprint::configured_labels;
 
 use crate::config::constants::lamports_to_sol;
-use crate::grouping::{bucket_sol_label, decimals_for, GroupField};
+use crate::grouping::{bucket_sol_label, decimals_for, exact_sol_label, GroupField, SolFilter, SolPrecision};
 use crate::models::Fingerprint;
 use crate::storage::ix_labels_sql::{ix_labels_elements_sql, ix_labels_ordered_eq_sql};
 
@@ -292,21 +292,66 @@ pub struct GroupedTrendPointRow {
 ///
 /// `sol_expr` is built from fixed field literals (never user text) and `width` is a
 /// server-clamped float, so interpolation is injection-safe.
+/// Integer digit positions in every `to_char` group-key mask.
+///
+/// **Sized for the worst case, because `to_char` fails LOUDLY-but-silently:** a
+/// value too wide for its mask renders as `########`, and since that is a perfectly
+/// good TEXT group key it becomes a real (wrong) group instead of an error. The old
+/// 8-position mask did exactly that to every token carrying pump.fun's
+/// `max_cost_lamports = u64::MAX` "no slippage limit" sentinel (≈1.84e10 SOL) —
+/// 11,250 of them in a 30-day window on 2026-08-04, all collapsed into one
+/// `########.#` group, and silently disagreeing with `bucket_sol_label`, which the
+/// mirror is supposed to match byte-for-byte.
+///
+/// 18 positions covers `u64::MAX` lamports as SOL (11 digits) with room to spare;
+/// `FM` suppresses the leading blanks, so a wide mask costs nothing in output.
+const SQL_MASK_INT_DIGITS: usize = 18;
+
+/// The `to_char` numeric mask for a group-key label at `decimals` fractional
+/// places. Shared by [`sol_bucket_sql`] and [`sol_exact_sql`] so the two can never
+/// drift on integer width — the drift that produced the `########` groups above.
+fn sql_num_mask(decimals: usize) -> String {
+    // `FM` strips padding; a trailing `0` (rather than `9`) in each position forces
+    // the digit to render, mirroring Rust's `{:.decimals$}`.
+    let int_part = format!("{}0", "9".repeat(SQL_MASK_INT_DIGITS - 1));
+    if decimals == 0 {
+        format!("FM{int_part}")
+    } else {
+        format!("FM{int_part}.{}", "0".repeat(decimals))
+    }
+}
+
 fn sol_bucket_sql(sol_expr: &str, width: f64) -> String {
     let decimals = crate::grouping::decimals_for(width);
-    // `FM` strips padding; the trailing `0`s force exactly `decimals` fractional
-    // digits (mirroring Rust `{:.decimals$}`). No dot at all for whole-SOL widths.
-    let mask = if decimals == 0 {
-        "FM99999990".to_string()
-    } else {
-        format!("FM99999990.{}", "0".repeat(decimals))
-    };
+    let mask = sql_num_mask(decimals);
     // `{width}` prints f64 as its shortest round-tripping decimal, which Postgres
     // parses back to the identical float8 — so `/ width` matches Rust's `/ width`.
     let lo = format!("floor(({sol_expr}) / {width} + 1e-9) * {width}");
     format!(
         "CASE WHEN ({sol_expr}) IS NULL THEN '∅' \
          ELSE to_char({lo}, '{mask}') || '–' || to_char(({lo}) + {width}, '{mask}') END"
+    )
+}
+
+/// SQL group-key expression for a continuous SOL amount in [`SolPrecision::Exact`]
+/// mode — the mirror of `grouping::exact_sol_label`, byte-for-byte.
+///
+/// Nine decimals is lossless for lamports; the double `rtrim` strips trailing
+/// zeros then the bare `.`, which is exactly Rust's
+/// `format!("{:.9}")` + `trim_end_matches('0')` + `trim_end_matches('.')`. The `.`
+/// pass is load-bearing: without it a whole-SOL amount would keep eating digits
+/// (`10.000000000` → `1`). Verified equal on `0`, `1` lamport, `1.515`, `10`,
+/// `100`, `15.15`, `123.456789012`.
+///
+/// Do **not** substitute `'FM…999999999'` here: `FM` leaves a trailing `.` on
+/// whole amounts (`1.`), which Rust never produces, and a group key that differs
+/// by one byte is a different group.
+fn sol_exact_sql(sol_expr: &str) -> String {
+    // 9 decimals = one lamport, the finest the source can express.
+    let mask = sql_num_mask(9);
+    format!(
+        "CASE WHEN ({sol_expr}) IS NULL THEN '∅' \
+         ELSE rtrim(rtrim(to_char({sol_expr}, '{mask}'), '0'), '.') END"
     )
 }
 
@@ -323,7 +368,14 @@ fn sol_bucket_sql(sol_expr: &str, width: f64) -> String {
 /// `token_repo`'s own query (`TokenRepo::LIST_FROM`), which joins it as `i`. Passing
 /// the wrong one is a silent SQL error ("missing FROM-clause entry") only surfaced
 /// at query time — every call site is listed here so a rename can't miss one.
-fn group_field_sql(f: GroupField, width: f64, ti_alias: &str) -> String {
+fn group_field_sql(f: GroupField, precision: impl Into<SolPrecision>, ti_alias: &str) -> String {
+    let precision = precision.into();
+    // One seam for the precision policy, so no field can render in a mode the
+    // others don't (mirrors `grouping::render_field`'s `key_lamports`/`key_sol`).
+    let sol_key = |sol_expr: &str| match precision {
+        SolPrecision::Bucket(w) => sol_bucket_sql(sol_expr, w),
+        SolPrecision::Exact => sol_exact_sql(sol_expr),
+    };
     match f {
         GroupField::TokenProgramId => "COALESCE(t.token_program_id, '∅')".to_string(),
         GroupField::CuLimit => "COALESCE(t.cu_limit::text, '∅')".to_string(),
@@ -333,19 +385,19 @@ fn group_field_sql(f: GroupField, width: f64, ti_alias: &str) -> String {
         // human SOL first so the label reads in SOL (matches the "SOL cost"/"SOL in"
         // display name + the sweep's `bucket_lamports_as_sol`).
         GroupField::MaxCostLamports => {
-            sol_bucket_sql("(t.initial_buy_instruction->>'max_cost_lamports')::float8 / 1e9", width)
+            sol_key("(t.initial_buy_instruction->>'max_cost_lamports')::float8 / 1e9")
         }
         GroupField::SpendableLamportsIn => {
-            sol_bucket_sql("(t.initial_buy_instruction->>'spendable_lamports_in')::float8 / 1e9", width)
+            sol_key("(t.initial_buy_instruction->>'spendable_lamports_in')::float8 / 1e9")
         }
-        GroupField::InitialBuySol => sol_bucket_sql("t.initial_buy_lamports::float8 / 1e9", width),
+        GroupField::InitialBuySol => sol_key("t.initial_buy_lamports::float8 / 1e9"),
         // First-slot buy/sell are trade-derived, sourced from the caller's
         // `tokens_info` LEFT JOIN — the only non-`tokens` group fields.
         GroupField::FirstSlotBuySol => {
-            sol_bucket_sql(&format!("{ti_alias}.first_slot_buy_lamports::float8 / 1e9"), width)
+            sol_key(&format!("{ti_alias}.first_slot_buy_lamports::float8 / 1e9"))
         }
         GroupField::FirstSlotSellSol => {
-            sol_bucket_sql(&format!("{ti_alias}.first_slot_sell_lamports::float8 / 1e9"), width)
+            sol_key(&format!("{ti_alias}.first_slot_sell_lamports::float8 / 1e9"))
         }
         // Labels joined with " | " in on-chain order (NOT alphabetised) so the
         // displayed/copied set mirrors the real instruction sequence. Ordinality
@@ -356,6 +408,99 @@ fn group_field_sql(f: GroupField, width: f64, ti_alias: &str) -> String {
               FROM {} WITH ORDINALITY AS e(val, ord)), '∅')",
             ix_labels_elements_sql("t.ix_labels")
         ),
+    }
+}
+
+/// The **raw lamports** SQL expression behind a bucketed SOL group field, or
+/// `None` for a discrete field. This is the value [`group_field_sql`] bins into a
+/// `"lo–hi"` label — exposed unbinned so a value filter can pin an exact amount.
+///
+/// All five bucketed fields are lamports-backed: two read off the
+/// `initial_buy_instruction` JSONB (cast to `float8`, not `bigint`, so a value
+/// persisted as `1515000000.0` can't raise a cast error mid-query — integers below
+/// 2^53 compare exactly as `float8`), three are `BIGINT` columns. `ti_alias` is the
+/// `tokens_info` join alias, same contract as [`group_field_sql`].
+fn sol_field_lamports_sql(f: GroupField, ti_alias: &str) -> Option<String> {
+    Some(match f {
+        GroupField::MaxCostLamports => {
+            "(t.initial_buy_instruction->>'max_cost_lamports')::float8".to_string()
+        }
+        GroupField::SpendableLamportsIn => {
+            "(t.initial_buy_instruction->>'spendable_lamports_in')::float8".to_string()
+        }
+        GroupField::InitialBuySol => "t.initial_buy_lamports".to_string(),
+        GroupField::FirstSlotBuySol => format!("{ti_alias}.first_slot_buy_lamports"),
+        GroupField::FirstSlotSellSol => format!("{ti_alias}.first_slot_sell_lamports"),
+        _ => return None,
+    })
+}
+
+/// One per-field value filter, lowered to SQL. Returns the predicate plus the
+/// `text[]` bind it needs (`None` ⇒ fully self-contained, bind nothing).
+///
+/// **Two shapes, one decider — `GroupField::is_bucketed`.**
+///
+/// * **Discrete** fields (`cu_limit`, `cu_price`, `is_cashback_enabled`,
+///   `token_program_id`) compare the rendered group key against a bound `text[]`.
+///   The typed value IS the group-key value, so the filter reads exactly as the
+///   card does (`200000` pins `cu_limit=200000`).
+/// * **Bucketed** SOL fields cannot do that: their group key is a *range label*
+///   (`"1.5–1.6"`), and no typed amount ever equals one — the frontend's
+///   `parseNumbers` doesn't even admit the range syntax, so this predicate was
+///   unsatisfiable for all five fields. They instead pin the **exact amount** on
+///   the raw lamports column ([`sol_field_lamports_sql`]), matching what the
+///   grouped sweep's `matches_field_filter` does over the same wire field.
+///
+/// **Unit + syntax are `hunter_engine::grouping::SolFilter`'s**, the one parser
+/// every surface shares: human SOL, either an exact amount (`1.515`) or a
+/// half-open bucket range (`1.5–1.6`, the text a group chip displays). Grouping is
+/// untouched either way — a filtered run still renders `group_key` as the bucket
+/// label, so fingerprint identity / create-from-card are unaffected.
+///
+/// Bounds are parsed to `i64` lamports and interpolated as integer literals —
+/// injection-safe by construction (a parsed number, never user text), the same
+/// argument [`fingerprint_scope_clauses`] makes. A value that doesn't parse is
+/// dropped; if that leaves nothing, the filter becomes `FALSE` rather than
+/// silently passing every row (the handler rejects unparseable values up front,
+/// so this is only a defensive floor).
+///
+/// `bind_placeholder` (e.g. `"$7"`) is consumed **only** when the returned bind is
+/// `Some` — the bucketed arm is self-contained, so callers must not advance their
+/// parameter counter for it.
+fn field_filter_pred(
+    field: GroupField,
+    values: &[String],
+    precision: impl Into<SolPrecision>,
+    ti_alias: &str,
+    bind_placeholder: &str,
+) -> (String, Option<Vec<String>>) {
+    let precision = precision.into();
+    let Some(lamports_expr) = sol_field_lamports_sql(field, ti_alias) else {
+        // Discrete: compare the group-key text against a bound array.
+        return (
+            format!("{} = ANY({bind_placeholder})", group_field_sql(field, precision, ti_alias)),
+            Some(values.to_vec()),
+        );
+    };
+    // Exact amounts collapse into one `IN (…)`; each range contributes its own
+    // half-open pair. Both kinds OR together, so `1.515, 2.0–2.1` reads naturally.
+    let mut exact: Vec<String> = Vec::new();
+    let mut terms: Vec<String> = Vec::new();
+    for parsed in values.iter().filter_map(|v| SolFilter::parse(v)) {
+        match parsed {
+            SolFilter::Exact(l) => exact.push(l.to_string()),
+            SolFilter::Range(lo, hi) => {
+                terms.push(format!("({lamports_expr} >= {lo} AND {lamports_expr} < {hi})"))
+            }
+        }
+    }
+    if !exact.is_empty() {
+        terms.push(format!("{lamports_expr} IN ({})", exact.join(", ")));
+    }
+    match terms.len() {
+        0 => ("FALSE".to_string(), None),
+        1 => (terms.pop().unwrap(), None),
+        _ => (format!("({})", terms.join(" OR ")), None),
     }
 }
 
@@ -400,8 +545,14 @@ fn fold_ordered_labels_into_group_key(group_key: &mut JsonValue, ordered: Option
 /// the scoped dashboard so the single `g = 0` card displays the fingerprint's
 /// axes as-is — including `ix_labels` — instead of an empty `{}` "ALL" key.
 pub fn group_key_from_fingerprint(fp: &Fingerprint) -> JsonValue {
-    let width = fp.bucket_size_amount;
-    let decimals = decimals_for(width);
+    // Same precision policy as `render_field` / `group_field_sql` — a scoped card
+    // must read exactly as the manual path would render the same token.
+    let precision = fp.precision();
+    let decimals = precision.width().map(decimals_for).unwrap_or(0);
+    let sol_key = |l: i64| match precision {
+        SolPrecision::Bucket(w) => bucket_sol_label(lamports_to_sol(l), w, decimals),
+        SolPrecision::Exact => exact_sol_label(l),
+    };
     let mut map = serde_json::Map::new();
     if let Some(v) = fp.cu_limit {
         map.insert("cu_limit".into(), json!(v.to_string()));
@@ -412,31 +563,31 @@ pub fn group_key_from_fingerprint(fp: &Fingerprint) -> JsonValue {
     if let Some(l) = fp.init_buy_lamports {
         map.insert(
             "initial_buy_sol".into(),
-            json!(bucket_sol_label(lamports_to_sol(l), width, decimals)),
+            json!(sol_key(l)),
         );
     }
     if let Some(l) = fp.max_cost_lamports {
         map.insert(
             "max_cost_lamports".into(),
-            json!(bucket_sol_label(lamports_to_sol(l), width, decimals)),
+            json!(sol_key(l)),
         );
     }
     if let Some(l) = fp.spendable_lamports_in {
         map.insert(
             "spendable_lamports_in".into(),
-            json!(bucket_sol_label(lamports_to_sol(l), width, decimals)),
+            json!(sol_key(l)),
         );
     }
     if let Some(l) = fp.first_slot_buy_lamports {
         map.insert(
             "first_slot_buy_sol".into(),
-            json!(bucket_sol_label(lamports_to_sol(l), width, decimals)),
+            json!(sol_key(l)),
         );
     }
     if let Some(l) = fp.first_slot_sell_lamports {
         map.insert(
             "first_slot_sell_sol".into(),
-            json!(bucket_sol_label(lamports_to_sol(l), width, decimals)),
+            json!(sol_key(l)),
         );
     }
     if let Some(labels) = configured_labels(fp.ix_labels.as_deref()) {
@@ -452,12 +603,21 @@ pub fn group_key_from_fingerprint(fp: &Fingerprint) -> JsonValue {
 /// numeric field on the `Fingerprint` DB row (never user free-text), so
 /// literal-embedding it is injection-safe — same convention `sol_bucket_sql`
 /// already uses for `width`. No leading `AND`; join clauses with `" AND "`.
-fn bucket_eq_clause(sol_expr: &str, fp_value_sol: f64, width: f64) -> String {
-    let idx = crate::grouping::bucket_index(fp_value_sol, width);
-    format!(
-        "floor(({sol_expr}) / {width} + {eps}) = {idx}",
-        eps = crate::grouping::BUCKET_EPS,
-    )
+fn sol_axis_clause(lamports_expr: &str, fp_lamports: i64, precision: SolPrecision) -> String {
+    match precision {
+        SolPrecision::Bucket(width) => {
+            let idx = crate::grouping::bucket_index(lamports_to_sol(fp_lamports), width);
+            format!(
+                "floor(((({lamports_expr})::float8) / 1e9) / {width} + {eps}) = {idx}",
+                eps = crate::grouping::BUCKET_EPS,
+            )
+        }
+        // Exact compares the raw lamports, mirroring the engine's `sol_axis`,
+        // which is an `i64 ==` — comparing in SOL would go through a `/ 1e9` that
+        // stops being injective past 2^53 lamports (real data carries pump.fun's
+        // `u64::MAX` "no limit" sentinel, well past that).
+        SolPrecision::Exact => format!("(({lamports_expr})::float8) = {fp_lamports}"),
+    }
 }
 
 /// Every configured-axis clause for the "scope by saved fingerprint" path
@@ -486,7 +646,7 @@ fn fingerprint_scope_clauses(fp: &Fingerprint, ti_alias: &str) -> Vec<String> {
     if !fp.has_any_criterion() {
         return vec!["FALSE".to_string()];
     }
-    let width = fp.bucket_size_amount;
+    let precision = fp.precision();
     let mut out = Vec::new();
     if let Some(v) = fp.cu_limit {
         out.push(format!("t.cu_limit = {v}"));
@@ -494,36 +654,21 @@ fn fingerprint_scope_clauses(fp: &Fingerprint, ti_alias: &str) -> Vec<String> {
     if let Some(v) = fp.cu_price {
         out.push(format!("t.cu_price = {v}"));
     }
-    if let Some(l) = fp.init_buy_lamports {
-        out.push(bucket_eq_clause("t.initial_buy_lamports::float8 / 1e9", lamports_to_sol(l), width));
-    }
-    if let Some(l) = fp.max_cost_lamports {
-        out.push(bucket_eq_clause(
-            "(t.initial_buy_instruction->>'max_cost_lamports')::float8 / 1e9",
-            lamports_to_sol(l),
-            width,
-        ));
-    }
-    if let Some(l) = fp.spendable_lamports_in {
-        out.push(bucket_eq_clause(
-            "(t.initial_buy_instruction->>'spendable_lamports_in')::float8 / 1e9",
-            lamports_to_sol(l),
-            width,
-        ));
-    }
-    if let Some(l) = fp.first_slot_buy_lamports {
-        out.push(bucket_eq_clause(
-            &format!("{ti_alias}.first_slot_buy_lamports::float8 / 1e9"),
-            lamports_to_sol(l),
-            width,
-        ));
-    }
-    if let Some(l) = fp.first_slot_sell_lamports {
-        out.push(bucket_eq_clause(
-            &format!("{ti_alias}.first_slot_sell_lamports::float8 / 1e9"),
-            lamports_to_sol(l),
-            width,
-        ));
+    // Each SOL axis pairs its `GroupField` with the fingerprint's value, so the
+    // axis→column mapping is read from the ONE `sol_field_lamports_sql` table that
+    // the value filters also use — no second hand-written copy of the five column
+    // expressions to drift (or to miss an alias fix).
+    for (field, fp_lamports) in [
+        (GroupField::InitialBuySol, fp.init_buy_lamports),
+        (GroupField::MaxCostLamports, fp.max_cost_lamports),
+        (GroupField::SpendableLamportsIn, fp.spendable_lamports_in),
+        (GroupField::FirstSlotBuySol, fp.first_slot_buy_lamports),
+        (GroupField::FirstSlotSellSol, fp.first_slot_sell_lamports),
+    ] {
+        let (Some(l), Some(expr)) = (fp_lamports, sol_field_lamports_sql(field, ti_alias)) else {
+            continue;
+        };
+        out.push(sol_axis_clause(&expr, l, precision));
     }
     out
 }
@@ -580,7 +725,7 @@ impl CreationStatsRepo {
         // Bucket width (SOL) for the continuous SOL group fields — the same knob the
         // grouped sweep uses, so the dashboard's group labels match a sweep at this
         // width ("swept = run"). Discrete fields ignore it.
-        bucket_width: f64,
+        precision: SolPrecision,
         // Ranking criterion: "count" (default) | "trades" | "trades_per_token" —
         // whitelisted by the handler's `normalize_rank_by`, never free text.
         rank_by: &str,
@@ -593,24 +738,30 @@ impl CreationStatsRepo {
         } else {
             let pairs: Vec<String> = fields
                 .iter()
-                .map(|fld| format!("'{}', {}", fld.as_str(), group_field_sql(*fld, bucket_width, "ti")))
+                .map(|fld| format!("'{}', {}", fld.as_str(), group_field_sql(*fld, precision, "ti")))
                 .collect();
             format!("jsonb_build_object({})", pairs.join(", "))
         };
 
         // Per-field value filters restrict the corpus *before* partitioning, so
-        // only matching groups survive into the top-N. Predicates compare the same
-        // TEXT expression the group key renders, against a bound `text[]` (one
-        // param per field). `ix_labels` is a set-equality match (order-independent)
-        // against the sorted-distinct label array. Binds start at `$7` (after
-        // top=$6); both predicate index and bind order must stay in lockstep.
+        // only matching groups survive into the top-N. `field_filter_pred` is the
+        // SSOT for how one lowers: discrete fields compare the rendered group-key
+        // TEXT against a bound `text[]`, the bucketed SOL fields pin an exact
+        // amount on their raw lamports column (they have no typeable group-key
+        // form). `ix_labels` is a set-equality match (order-independent) against
+        // the sorted-distinct label array. Binds start at `$7` (after top=$6);
+        // only a predicate that returned a bind advances `idx`, so predicate index
+        // and bind order stay in lockstep.
         let mut preds = String::new();
         let mut filter_binds: Vec<Vec<String>> = Vec::new();
         let mut idx = 7;
         for (fld, vals) in field_filters {
-            preds.push_str(&format!("\n  AND {} = ANY(${idx})", group_field_sql(*fld, bucket_width, "ti")));
-            filter_binds.push(vals.clone());
-            idx += 1;
+            let (pred, bind) = field_filter_pred(*fld, vals, precision, "ti", &format!("${idx}"));
+            preds.push_str(&format!("\n  AND {pred}"));
+            if let Some(b) = bind {
+                filter_binds.push(b);
+                idx += 1;
+            }
         }
         if let Some(labels) = ix_labels_filter {
             let mut sorted: Vec<String> = labels.to_vec();
@@ -860,12 +1011,13 @@ pub fn build_grouped_tokens_where(
     group_key: &[(GroupField, String)],
     field_filters: &[(GroupField, Vec<String>)],
     ix_labels_filter: Option<&[String]>,
-    bucket_width: f64,
+    precision: impl Into<SolPrecision>,
     dow: Option<i32>,
     hour: Option<i32>,
     search: &str,
     f: StatsFilter<'_>,
 ) -> (String, Vec<crate::api::handlers::tokens::SqlArg>) {
+    let precision = precision.into();
     use crate::api::handlers::tokens::SqlArg;
 
     let mut clauses: Vec<String> = Vec::new();
@@ -895,13 +1047,19 @@ pub fn build_grouped_tokens_where(
         args.push(SqlArg::Str(val.clone()));
         // Runs against `token_repo`'s query (`TokenRepo::LIST_FROM`), which joins
         // `tokens_info` as `i` (NOT the `ti` `grouped()` uses) — see `group_field_sql`.
-        clauses.push(format!("{} = ${}", group_field_sql(*field, bucket_width, "i"), args.len()));
+        clauses.push(format!("{} = ${}", group_field_sql(*field, precision, "i"), args.len()));
     }
 
-    // Corpus-level filters applied before the groups were ranked (same as `grouped()`).
+    // Corpus-level filters applied before the groups were ranked — through the
+    // SAME `field_filter_pred` SSOT `grouped()` uses, so the drill-down's row set
+    // and the card's count can't diverge. A bucketed-SOL predicate is
+    // self-contained (no bind), so only the discrete arm pushes an arg.
     for (field, vals) in field_filters {
-        args.push(SqlArg::StrArray(vals.clone()));
-        clauses.push(format!("{} = ANY(${})", group_field_sql(*field, bucket_width, "i"), args.len()));
+        let (pred, bind) = field_filter_pred(*field, vals, precision, "i", &format!("${}", args.len() + 1));
+        if let Some(b) = bind {
+            args.push(SqlArg::StrArray(b));
+        }
+        clauses.push(pred);
     }
     if let Some(labels) = ix_labels_filter {
         let mut sorted: Vec<String> = labels.to_vec();
@@ -1066,6 +1224,215 @@ mod grouped_tokens_tests {
         DateTime::parse_from_rfc3339("2026-06-16T00:00:00Z").unwrap().with_timezone(&Utc)
     }
 
+    /// The bug this locks: a value filter on a bucketed SOL field used to compare
+    /// the typed amount against the **bucket label** the group key renders
+    /// (`'15.1–15.2' = '15.15'`), so it matched nothing at any width — and the
+    /// frontend's `parseNumbers` wouldn't even admit the range syntax that could
+    /// have matched. It must pin the exact amount on the raw lamports column.
+    #[test]
+    fn bucketed_sol_filter_pins_exact_lamports_not_the_bucket_label() {
+        let (pred, bind) = field_filter_pred(
+            GroupField::MaxCostLamports,
+            &["1.515".to_string()],
+            SOL_BUCKET_WIDTH,
+            "ti",
+            "$7",
+        );
+        // Exact lamports, self-contained (no bind consumed → callers must not
+        // advance their parameter counter for this arm).
+        assert!(pred.contains("1515000000"), "expected exact lamports pin, got: {pred}");
+        assert!(bind.is_none(), "bucketed arm must not consume a bind slot");
+        // Must NOT reach for the label machinery.
+        assert!(!pred.contains('–'), "predicate compares a bucket label: {pred}");
+        assert!(!pred.contains("to_char"), "predicate compares a bucket label: {pred}");
+
+        // The width is irrelevant to the filter — only to the group key. A run at
+        // any width pins the same amount (this is what "exact match" buys you).
+        let (wide, _) = field_filter_pred(
+            GroupField::MaxCostLamports,
+            &["1.515".to_string()],
+            5.0,
+            "ti",
+            "$7",
+        );
+        assert_eq!(pred, wide, "bucket width must not change an exact value filter");
+    }
+
+    /// Every bucketed field pins its own lamports source, at the caller's
+    /// `tokens_info` alias — a missed arm silently falls back to the label compare
+    /// (and a wrong alias is a run-time "missing FROM-clause entry").
+    #[test]
+    fn every_bucketed_field_has_a_lamports_source() {
+        for field in GroupField::ALL {
+            let src = sol_field_lamports_sql(field, "ti");
+            assert_eq!(
+                src.is_some(),
+                field.is_bucketed(),
+                "{field:?}: is_bucketed()={} but lamports source is {src:?}",
+                field.is_bucketed(),
+            );
+        }
+        // Alias-dependent arms actually use the alias they were handed.
+        assert!(sol_field_lamports_sql(GroupField::FirstSlotBuySol, "i")
+            .unwrap()
+            .starts_with("i."));
+        assert!(sol_field_lamports_sql(GroupField::FirstSlotSellSol, "ti")
+            .unwrap()
+            .starts_with("ti."));
+    }
+
+    /// `hunter-engine` is pure by design, so it carries its own SOL→lamports
+    /// conversion rather than importing `config::constants`. That's a sanctioned
+    /// duplication (crate decoupling), so it needs the guard the monorepo rules
+    /// require: the two must agree on every value, or a filter typed against a
+    /// displayed amount would resolve to a different integer than the one the
+    /// repo boundary stored.
+    #[test]
+    fn engine_sol_to_lamports_matches_the_repo_boundary_conversion() {
+        for sol in [0.0, 1e-9, 0.05, 0.1, 1.515, 2.34, 15.15, 99.999, 1234.56789] {
+            assert_eq!(
+                crate::grouping::sol_to_lamports(sol),
+                crate::config::constants::sol_to_lamports(sol),
+                "engine/config disagree on {sol} SOL"
+            );
+        }
+    }
+
+    /// A group chip's text, pasted into the filter box, must select that chip's
+    /// tokens — the half-open `[lo, hi)` window, never an exact-value compare.
+    #[test]
+    fn a_bucket_range_filter_lowers_to_a_half_open_window() {
+        let (pred, bind) = field_filter_pred(
+            GroupField::MaxCostLamports,
+            &["1.5–1.6".to_string()],
+            SOL_BUCKET_WIDTH,
+            "ti",
+            "$7",
+        );
+        assert!(bind.is_none());
+        assert!(pred.contains(">= 1500000000"), "expected lower bound, got: {pred}");
+        assert!(pred.contains("< 1600000000"), "expected exclusive upper bound, got: {pred}");
+
+        // Mixed list: exact amounts collapse into one IN(), ranges OR alongside.
+        let (mixed, _) = field_filter_pred(
+            GroupField::MaxCostLamports,
+            &["1.515".to_string(), "2.0–2.1".to_string(), "15.15".to_string()],
+            SOL_BUCKET_WIDTH,
+            "ti",
+            "$7",
+        );
+        assert!(mixed.contains(" OR "), "expected a disjunction, got: {mixed}");
+        assert!(mixed.contains("IN (1515000000, 15150000000)"), "got: {mixed}");
+        assert!(mixed.contains(">= 2000000000"), "got: {mixed}");
+    }
+
+    /// Exact mode must render the amount, not a range — and must not reach for the
+    /// bucket machinery, whose `to_char` mask would produce a different key.
+    /// `sol_exact_sql` mirrors `grouping::exact_sol_label`; the two were checked
+    /// equal against live Postgres on 0, 1 lamport, 0.05, 1.515, 10, 100, 15.15 and
+    /// 123.456789012 — the `rtrim(rtrim(…,'0'),'.')` pair is what makes them agree
+    /// (an `FM…999999999` mask leaves `1.` where Rust gives `1`).
+    /// `to_char` renders `########` when a value overflows its mask, and that
+    /// string is a perfectly good TEXT group key — so an overflow silently becomes
+    /// a wrong group rather than an error. The mask must therefore be wide enough
+    /// for the widest value the column can hold, including pump.fun's
+    /// `max_cost_lamports = u64::MAX` "no slippage limit" sentinel.
+    #[test]
+    fn masks_are_wide_enough_for_the_u64_max_sentinel() {
+        // u64::MAX lamports as SOL ≈ 1.8446744e10 — 11 integer digits.
+        let needed = (u64::MAX as f64 / 1e9).log10().floor() as usize + 1;
+        assert!(
+            SQL_MASK_INT_DIGITS >= needed,
+            "mask holds {SQL_MASK_INT_DIGITS} integer digits, sentinel needs {needed}"
+        );
+        for decimals in [0, 1, 2, 5, 9] {
+            let mask = sql_num_mask(decimals);
+            let int_digits = mask.trim_start_matches("FM").split('.').next().unwrap().len();
+            assert_eq!(int_digits, SQL_MASK_INT_DIGITS, "mask {mask} lost integer width");
+            assert_eq!(
+                mask.split('.').nth(1).map(str::len).unwrap_or(0),
+                decimals,
+                "mask {mask} has the wrong fractional width"
+            );
+        }
+        // Both renderers must go through the shared builder — a private mask is
+        // how the two drifted apart in the first place.
+        assert!(sol_bucket_sql("x", 0.1).contains(&sql_num_mask(1)));
+        assert!(sol_exact_sql("x").contains(&sql_num_mask(9)));
+    }
+
+    #[test]
+    fn exact_precision_renders_amounts_not_ranges() {
+        for field in GroupField::ALL.into_iter().filter(|f: &GroupField| f.is_bucketed()) {
+            let sql = group_field_sql(field, SolPrecision::Exact, "ti");
+            assert!(sql.contains("rtrim"), "{field:?}: not the exact renderer: {sql}");
+            assert!(!sql.contains("'–'"), "{field:?}: still emits a range label: {sql}");
+            assert!(sql.contains("'∅'"), "{field:?}: lost the missing-value sentinel");
+            // Bucket mode is unchanged for the same field.
+            let bucketed = group_field_sql(field, SolPrecision::Bucket(0.1), "ti");
+            assert!(bucketed.contains("'–'"), "{field:?}: bucket mode regressed: {bucketed}");
+        }
+        // Discrete fields are identical in both modes — precision is a SOL-axis
+        // concept only, so a mode switch must not perturb their keys.
+        for field in GroupField::ALL.into_iter().filter(|f| !f.is_bucketed()) {
+            assert_eq!(
+                group_field_sql(field, SolPrecision::Exact, "ti"),
+                group_field_sql(field, SolPrecision::Bucket(0.1), "ti"),
+                "{field:?}: discrete field changed with precision",
+            );
+        }
+    }
+
+    /// Discrete fields keep comparing the rendered group key against a bound
+    /// `text[]` — there the typed value IS the group-key value, so `cu_limit=200000`
+    /// reads exactly as the card does. Changing this would break working filters.
+    #[test]
+    fn discrete_filter_still_binds_the_group_key_text() {
+        let (pred, bind) = field_filter_pred(
+            GroupField::CuLimit,
+            &["200000".to_string()],
+            SOL_BUCKET_WIDTH,
+            "ti",
+            "$7",
+        );
+        assert!(pred.contains("t.cu_limit"), "expected group-key compare, got: {pred}");
+        assert!(pred.ends_with("= ANY($7)"), "expected bound array compare, got: {pred}");
+        assert_eq!(bind.as_deref(), Some(["200000".to_string()].as_slice()));
+    }
+
+    /// Both surfaces number their parameters themselves, so a self-contained
+    /// (bucketed) predicate must not leave a hole in the drill-down's bind list.
+    #[test]
+    fn drilldown_binds_stay_in_lockstep_with_placeholders() {
+        let (sql, args) = build_grouped_tokens_where(
+            &[GroupField::CuLimit],
+            &[(GroupField::CuLimit, "200000".to_string())],
+            // One bucketed (no bind) + one discrete (one bind), in that order —
+            // the discrete one must still land on the placeholder it was given.
+            &[
+                (GroupField::MaxCostLamports, vec!["1.515".to_string()]),
+                (GroupField::CuPrice, vec!["1000".to_string()]),
+            ],
+            None,
+            SOL_BUCKET_WIDTH,
+            None,
+            None,
+            "",
+            filter(now() - chrono::Duration::days(30), now()),
+        );
+        // Highest placeholder referenced must equal the number of args pushed.
+        let max_ph = (1..=args.len() + 2)
+            .filter(|n| sql.contains(&format!("${n}")))
+            .max()
+            .unwrap_or(0);
+        assert_eq!(max_ph, args.len(), "placeholder/bind drift in: {sql}");
+        assert!(sql.contains("1515000000"), "bucketed filter not applied: {sql}");
+        match args.last() {
+            Some(SqlArg::StrArray(v)) => assert_eq!(v, &["1000".to_string()]),
+            other => panic!("expected the cu_price array as the last bind, got {other:?}"),
+        }
+    }
+
     #[test]
     fn ordered_labels_expr_only_when_filtered_and_ungrouped() {
         let labels = vec!["Pump.Fun: Create".to_string(), "Pump.Fun: Buy".to_string()];
@@ -1123,7 +1490,7 @@ mod grouped_tokens_tests {
             spendable_lamports_in: None,
             first_slot_buy_lamports: None,
             first_slot_sell_lamports: None,
-            bucket_size_amount: 0.1,
+            bucket_size_amount: Some(0.1),
             ix_labels: Some(vec!["Pump.Fun: Create".into(), "Pump.Fun: Buy".into()]),
             metric_config: serde_json::json!({}),
             created_at: now,
@@ -1136,7 +1503,7 @@ mod grouped_tokens_tests {
     }
 
     /// A fingerprint with no axis set, at `width`.
-    fn blank_fp(width: f64) -> Fingerprint {
+    fn blank_fp(width: Option<f64>) -> Fingerprint {
         let now = Utc::now();
         Fingerprint {
             id: uuid::Uuid::nil(),
@@ -1161,22 +1528,21 @@ mod grouped_tokens_tests {
     /// so the guard below has to walk all five — a per-axis width would be a bug in
     /// itself. `ti_alias` is `"ti"` throughout (`grouped_scoped`'s join alias).
     #[allow(clippy::type_complexity)]
-    const SOL_AXES: &[(fn(&mut Fingerprint, Option<i64>), &str)] = &[
-        (|fp, v| fp.init_buy_lamports = v, "t.initial_buy_lamports::float8 / 1e9"),
-        (
-            |fp, v| fp.max_cost_lamports = v,
-            "(t.initial_buy_instruction->>'max_cost_lamports')::float8 / 1e9",
-        ),
-        (
-            |fp, v| fp.spendable_lamports_in = v,
-            "(t.initial_buy_instruction->>'spendable_lamports_in')::float8 / 1e9",
-        ),
-        (|fp, v| fp.first_slot_buy_lamports = v, "ti.first_slot_buy_lamports::float8 / 1e9"),
-        (|fp, v| fp.first_slot_sell_lamports = v, "ti.first_slot_sell_lamports::float8 / 1e9"),
+    /// The five SOL axes paired with the `GroupField` naming their lamports column,
+    /// so this guard reads the column expression from the same
+    /// `sol_field_lamports_sql` table production uses — it can then only test the
+    /// bucketing/precision, never accidentally re-assert a stale column name.
+    const SOL_AXES: &[(fn(&mut Fingerprint, Option<i64>), GroupField)] = &[
+        (|fp, v| fp.init_buy_lamports = v, GroupField::InitialBuySol),
+        (|fp, v| fp.max_cost_lamports = v, GroupField::MaxCostLamports),
+        (|fp, v| fp.spendable_lamports_in = v, GroupField::SpendableLamportsIn),
+        (|fp, v| fp.first_slot_buy_lamports = v, GroupField::FirstSlotBuySol),
+        (|fp, v| fp.first_slot_sell_lamports = v, GroupField::FirstSlotSellSol),
     ];
 
-    /// One-axis fingerprint at `width`, for the `axis`-th entry of [`SOL_AXES`].
-    fn one_axis_fp(axis: usize, lamports: i64, width: f64) -> Fingerprint {
+    /// One-axis fingerprint at `width` (`None` => exact match), for the `axis`-th
+    /// entry of [`SOL_AXES`].
+    fn one_axis_fp(axis: usize, lamports: i64, width: Option<f64>) -> Fingerprint {
         let mut fp = blank_fp(width);
         SOL_AXES[axis].0(&mut fp, Some(lamports));
         fp
@@ -1198,11 +1564,13 @@ mod grouped_tokens_tests {
 
         // A 0-SOL axis is a REAL value (bucket `[0, width)`), not "unset" — it is
         // in the matrix on purpose.
-        for (axis, (_, sol_expr)) in SOL_AXES.iter().enumerate() {
+        for (axis, (_, field)) in SOL_AXES.iter().enumerate() {
+            let lam_expr = sol_field_lamports_sql(*field, "ti").expect("bucketed axis");
+            let sol_expr = format!("((({lam_expr})::float8) / 1e9)");
             for width in [1e-6f64, 0.05, 0.1, 0.25, 1.0, 5.0] {
                 for fp_sol in [0.0f64, 0.1, 0.5, 1.0, 2.34, 8.0] {
                     let lamports = (fp_sol * 1e9).round() as i64;
-                    let fp = one_axis_fp(axis, lamports, width);
+                    let fp = one_axis_fp(axis, lamports, Some(width));
                     let clauses = fingerprint_scope_clauses(&fp, "ti");
                     assert_eq!(clauses.len(), 1, "one configured axis ⇒ one clause");
 
@@ -1213,7 +1581,7 @@ mod grouped_tokens_tests {
                     let fp_sol = lamports_to_sol(lamports);
                     let idx = bucket_index(fp_sol, width);
                     let expected =
-                        format!("floor(({sol_expr}) / {width} + {BUCKET_EPS}) = {idx}");
+                        format!("floor({sol_expr} / {width} + {BUCKET_EPS}) = {idx}");
                     assert_eq!(clauses[0], expected, "axis={axis} width={width} fp={fp_sol}");
 
                     // …and the SQL's arithmetic must agree with `same_bucket` on
@@ -1238,7 +1606,7 @@ mod grouped_tokens_tests {
     #[test]
     fn zero_sol_axis_emits_its_own_bucket_clause() {
         for axis in 0..SOL_AXES.len() {
-            let fp = one_axis_fp(axis, 0, 1.0);
+            let fp = one_axis_fp(axis, 0, Some(1.0));
             let clauses = fingerprint_scope_clauses(&fp, "ti");
             assert_eq!(clauses.len(), 1, "axis {axis}: a 0-lamport axis must emit a clause");
             assert!(clauses[0].ends_with("= 0"), "axis {axis}: expected bucket 0: {}", clauses[0]);
@@ -1246,7 +1614,7 @@ mod grouped_tokens_tests {
         // …while an all-absent fingerprint is fenced off entirely rather than
         // matching every token.
         assert_eq!(
-            fingerprint_scope_clauses(&blank_fp(1.0), "ti"),
+            fingerprint_scope_clauses(&blank_fp(Some(1.0)), "ti"),
             vec!["FALSE".to_string()],
         );
 
@@ -1255,7 +1623,7 @@ mod grouped_tokens_tests {
         // FALSE guard, and then emitted NO predicates — leaving the scoped
         // dashboard matching every token in the window while the engine matcher
         // (which does not count empty labels) matched none.
-        let mut empty_labels = blank_fp(1.0);
+        let mut empty_labels = blank_fp(Some(1.0));
         empty_labels.ix_labels = Some(vec![]);
         assert_eq!(
             fingerprint_scope_clauses(&empty_labels, "ti"),
@@ -1264,18 +1632,64 @@ mod grouped_tokens_tests {
         );
     }
 
+    /// The exact-mode half of the same SSOT guard: with `bucket_size_amount = NULL`
+    /// every SOL axis must pin the **raw lamports integer**, matching the engine's
+    /// `sol_axis`, which is an `i64 ==`.
+    ///
+    /// Comparing in SOL would be the subtle wrong answer here: `lamports as f64 / 1e9`
+    /// stops being injective past 2^53 lamports, and real data carries pump.fun's
+    /// `max_cost_lamports = u64::MAX` "no limit" sentinel — well past that — so a
+    /// float compare could call two different amounts equal and arm on the wrong
+    /// token. This is the live entry gate, so that has to be impossible, not unlikely.
+    #[test]
+    fn exact_fingerprint_scope_pins_raw_lamports_on_every_axis() {
+        for (axis, (_, field)) in SOL_AXES.iter().enumerate() {
+            let lam_expr = sol_field_lamports_sql(*field, "ti").expect("bucketed axis");
+            for lamports in [0_i64, 1, 50_000_000, 1_515_000_000, 15_150_000_000, i64::MAX] {
+                let fp = one_axis_fp(axis, lamports, None);
+                assert_eq!(fp.precision(), crate::grouping::SolPrecision::Exact);
+                let clauses = fingerprint_scope_clauses(&fp, "ti");
+                assert_eq!(clauses.len(), 1, "one configured axis ⇒ one clause");
+                assert_eq!(
+                    clauses[0],
+                    format!("(({lam_expr})::float8) = {lamports}"),
+                    "axis={axis} lamports={lamports}",
+                );
+                // No bucketing arithmetic may survive into the exact clause.
+                assert!(!clauses[0].contains("floor"), "exact clause still buckets: {}", clauses[0]);
+            }
+        }
+        // A NULL width must not weaken the never-match-everything guard.
+        assert_eq!(
+            fingerprint_scope_clauses(&blank_fp(None), "ti"),
+            vec!["FALSE".to_string()],
+        );
+    }
+
+    /// A scoped card under an exact fingerprint must read as the amount, not a
+    /// range — otherwise the card describes a wider set than it was served.
+    #[test]
+    fn exact_scoped_group_key_labels_as_amounts() {
+        let mut fp = blank_fp(None);
+        fp.spendable_lamports_in = Some(0);
+        fp.init_buy_lamports = Some(1_515_000_000);
+        let gk = group_key_from_fingerprint(&fp);
+        assert_eq!(gk["spendable_lamports_in"], "0");
+        assert_eq!(gk["initial_buy_sol"], "1.515");
+    }
+
     /// The `g = 0` scoped card labels its axes at the same width the clauses bucket
     /// at, so the card a user reads describes the rows they were actually served.
     #[test]
     fn scoped_group_key_labels_at_the_fingerprint_width() {
-        let mut fp = blank_fp(1.0);
+        let mut fp = blank_fp(Some(1.0));
         fp.spendable_lamports_in = Some(0);
         fp.init_buy_lamports = Some(2_500_000_000); // 2.5 SOL @ 1.0 ⇒ [2, 3)
         let gk = group_key_from_fingerprint(&fp);
         assert_eq!(gk["spendable_lamports_in"], "0–1", "a 0 axis labels as its own bucket");
         assert_eq!(gk["initial_buy_sol"], "2–3");
 
-        let mut fp = blank_fp(0.1);
+        let mut fp = blank_fp(Some(0.1));
         fp.spendable_lamports_in = Some(1_050_000_000); // 1.05 SOL @ 0.1 ⇒ [1.0, 1.1)
         let gk = group_key_from_fingerprint(&fp);
         assert_eq!(gk["spendable_lamports_in"], "1.0–1.1");
@@ -1324,10 +1738,14 @@ mod grouped_tokens_tests {
         // which joins it as `i`. Emitting `ti.` here produced a live Postgres
         // "missing FROM-clause entry for table \"ti\"" (surfaced to the client as
         // the generic "failed to compute creation stats" 500).
+        // The `group_key` entry stays a bucket LABEL (that's what a card carries);
+        // the `field_filters` entry is an exact SOL amount (the filter pins the
+        // amount, not the label — see `field_filter_pred`). Both arms must resolve
+        // the alias, so this covers the label path and the raw-lamports path.
         let (where_sql, _args) = build_grouped_tokens_where(
             &[GroupField::FirstSlotBuySol],
             &[(GroupField::FirstSlotBuySol, "0.0–0.1".to_string())],
-            &[(GroupField::FirstSlotSellSol, vec!["0.0–0.1".to_string()])],
+            &[(GroupField::FirstSlotSellSol, vec!["0.05".to_string()])],
             None,
             SOL_BUCKET_WIDTH,
             None,

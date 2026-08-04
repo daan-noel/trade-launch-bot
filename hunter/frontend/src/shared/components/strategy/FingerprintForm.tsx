@@ -4,6 +4,7 @@ import { Input } from 'components/ui/Input';
 import { IconButton } from 'components/ui/IconButton';
 import { SaveIcon, SpinnerIcon } from 'components/ui/icons';
 import { Button } from 'components/ui/Button';
+import { Checkbox } from 'components/ui/Checkbox';
 import { IxLabelsInput } from 'components/ui/IxLabelsInput';
 import { configuredIxLabels, formatIxLabelsText, parseIxLabelsText } from 'lib/ixLabels';
 import {
@@ -43,6 +44,10 @@ interface FormState {
   first_slot_buy_sol: number | null;
   first_slot_sell_sol: number | null;
   bucket_size_amount: number | null;
+  /** Exact-SOL matching: the fingerprint pins each SOL axis to its exact lamports
+   *  amount instead of a bucket. Separate from the width so "exact" is a named
+   *  mode and never a magic 0 -- the width input keeps its value while disabled. */
+  exact_sol: boolean;
   /** Textarea text — pretty JSON string array (see `parseIxLabelsText`). */
   ix_labels: string;
   /** `m_flow_split.volume_ix_patterns` rows (other metric_config keys preserved on save). */
@@ -64,6 +69,8 @@ function fromFingerprint(fp?: Fingerprint): FormState {
     first_slot_buy_sol: lamportsToSol(fp?.first_slot_buy_lamports),
     first_slot_sell_sol: lamportsToSol(fp?.first_slot_sell_lamports),
     bucket_size_amount: tidySolDecimal(fp?.bucket_size_amount ?? 0.1),
+    // A stored NULL width IS the exact mode (see Rust `SolPrecision::from_width`).
+    exact_sol: fp != null && fp.bucket_size_amount == null,
     ix_labels: formatIxLabelsText(fp?.ix_labels),
     volume_ix_patterns: volumeIxPatternsFromConfig(cfg),
     metric_config_rest: rest,
@@ -82,7 +89,8 @@ function toDraft(s: FormState): FingerprintDraft {
     spendable_lamports_in: solToLamports(s.spendable_sol),
     first_slot_buy_lamports: solToLamports(s.first_slot_buy_sol),
     first_slot_sell_lamports: solToLamports(s.first_slot_sell_sol),
-    bucket_size_amount: tidySolDecimal(s.bucket_size_amount ?? 0.1),
+    // Exact wins outright and sends NULL — never a 0 width.
+    bucket_size_amount: s.exact_sol ? null : tidySolDecimal(s.bucket_size_amount ?? 0.1),
     ix_labels: labels,
     metric_config: { ...s.metric_config_rest, ...flow },
   };
@@ -142,7 +150,8 @@ export function FingerprintForm({
   const ixParsed = useMemo(() => parseIxLabelsText(s.ix_labels), [s.ix_labels]);
   const criteria = criterionCount(s, ixParsed.labels);
   const nameOk = s.name.trim().length > 0;
-  const widthError = bucketWidthError(s.bucket_size_amount);
+  // In exact mode the width is unused, so a stale value must not block submit.
+  const widthError = s.exact_sol ? null : bucketWidthError(s.bucket_size_amount);
   const canSubmit = criteria > 0 && nameOk && !submitting && !ixParsed.error && !widthError;
 
   const solField = (label: string, key: keyof FormState, tip: (typeof FINGERPRINT_FIELD_HELP)[keyof typeof FINGERPRINT_FIELD_HELP]) => (
@@ -205,10 +214,29 @@ export function FingerprintForm({
             fieldSize="sm"
             numeric
             unit="◎"
+            disabled={s.exact_sol}
+            title={s.exact_sol ? 'Ignored while matching exact amounts' : undefined}
             className={widthError ? 'border-red/60' : undefined}
             numericValue={s.bucket_size_amount}
             onNumericChange={(n) => set('bucket_size_amount', n)}
           />
+          {/* A named mode, not a `0` width — `0` divides by zero in `bucket_index`
+              and would collapse every amount into one bucket, arming on any value. */}
+          <label
+            className="flex cursor-pointer items-center gap-1.5 text-[11px] text-text-mid"
+            title={
+              'Match each SOL axis on its EXACT lamports amount instead of a bucket range.\n\n' +
+              'Bucketed (default): max_cost 1.515◎ at 0.1 arms on anything in [1.5, 1.6).\n' +
+              'Exact: arms only on exactly 1.515◎.\n\n' +
+              'Stored as a NULL bucket width. Affects the LIVE entry gate.'
+            }
+          >
+            <Checkbox
+              checked={s.exact_sol}
+              onChange={() => set('exact_sol', !s.exact_sol)}
+            />
+            <span className="whitespace-nowrap">exact amounts</span>
+          </label>
         </label>
       </div>
 
@@ -245,7 +273,9 @@ export function FingerprintForm({
           ) : criteria === 0 ? (
             <span className="text-red">needs ≥1 match criterion</span>
           ) : (
-            `${criteria} criterion${criteria === 1 ? '' : 'a'} · matched by ${s.bucket_size_amount ?? 0.1}◎ bucket`
+            `${criteria} criterion${criteria === 1 ? '' : 'a'} · ${
+              s.exact_sol ? 'matched on exact amounts' : `matched by ${s.bucket_size_amount ?? 0.1}◎ bucket`
+            }`
           )}
         </span>
         <div className="flex gap-2">

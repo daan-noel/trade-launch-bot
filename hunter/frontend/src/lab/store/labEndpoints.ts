@@ -1,4 +1,5 @@
 import { baseApi } from 'store/baseApi';
+import type { FieldFilterValue } from '@lab/components/sweep/fingerprintFilters';
 import { tokensTableRequestBody, type TokensPageArgs } from 'store/sharedEndpoints';
 import type {
   GroupedSweepRunRecord,
@@ -41,7 +42,7 @@ export interface FlowDiscoveryStartArgs {
   ix_labels_filter?: string[];
   min_tokens?: number;
   token_cap?: number;
-  field_filters?: Record<string, (number | boolean)[]>;
+  field_filters?: Record<string, FieldFilterValue[]>;
   /** When set, corpus is filtered by engine fingerprint match (bucket-aware). */
   fingerprint_id?: string;
 }
@@ -269,6 +270,7 @@ export const labApi = baseApi.injectEndpoints({
         groupBy,
         top,
         bucketWidth,
+        exactSol,
         fieldFilters,
         ixLabelsFilter,
         rankBy,
@@ -291,7 +293,10 @@ export const labApi = baseApi.injectEndpoints({
         p.set('top', String(top));
         // Only attach a non-default width so the cache key stays stable for the
         // common 0.1 case; omitted ⇒ backend default.
-        if (bucketWidth != null) p.set('bucket_width', String(bucketWidth));
+        // Exact mode is a separate named flag, never a magic width — see
+        // `SolPrecision`. It wins server-side, so the width is not sent with it.
+        if (exactSol) p.set('exact_sol', 'true');
+        else if (bucketWidth != null) p.set('bucket_width', String(bucketWidth));
         // Only attach filter params when non-empty so the cache key stays stable.
         if (fieldFilters && Object.keys(fieldFilters).length > 0) {
           p.set('field_filters', JSON.stringify(fieldFilters));
@@ -342,7 +347,11 @@ export const labApi = baseApi.injectEndpoints({
             ? { fingerprint_id: a.fingerprintId }
             : {
                 group_by: a.groupBy.join(','),
-                ...(a.bucketWidth != null ? { bucket_width: a.bucketWidth } : {}),
+                ...(a.exactSol
+                  ? { exact_sol: true }
+                  : a.bucketWidth != null
+                    ? { bucket_width: a.bucketWidth }
+                    : {}),
                 ...(a.fieldFilters && Object.keys(a.fieldFilters).length > 0
                   ? { field_filters: JSON.stringify(a.fieldFilters) }
                   : {}),
@@ -408,7 +417,10 @@ export const labApi = baseApi.injectEndpoints({
       Fingerprint,
       {
         group_key: Record<string, string>;
-        bucket_width_sol: number;
+        /// Omitted when `exact_sol` — the two are mutually exclusive.
+        bucket_width_sol?: number;
+        /// Bind the fingerprint at exact-amount precision (stores a NULL width).
+        exact_sol?: boolean;
         volume_ix_patterns: string[][];
         name?: string;
       }

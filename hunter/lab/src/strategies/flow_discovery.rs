@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::sweep::corpus::{Corpus, CorpusToken};
 use crate::sweep::grouped_engine::partition;
-use crate::sweep::grouping::{GroupField, GroupKey, SOL_BUCKET_WIDTH};
+use crate::sweep::grouping::{GroupField, GroupKey, SolPrecision, SOL_BUCKET_WIDTH};
 
 /// Cap ranked structures returned per group (wire + UI).
 pub const MAX_STRUCTURES_PER_GROUP: usize = 64;
@@ -28,7 +28,9 @@ pub const DEFAULT_MIN_TOKENS: usize = 3;
 #[derive(Clone, Debug)]
 pub struct DiscoveryConfig {
     pub group_by: Vec<GroupField>,
-    pub bucket_width_sol: f64,
+    /// Bucket width for the SOL group axes, or `None` to group on exact amounts
+    /// (`SolPrecision::Exact`). `None` -- not 0 -- is how "not bucketed" is spelled.
+    pub bucket_width_sol: Option<f64>,
     pub min_tokens: usize,
     pub min_structure_sol: f64,
     pub lift_ambiguous: f64,
@@ -39,7 +41,7 @@ impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self {
             group_by: Vec::new(),
-            bucket_width_sol: SOL_BUCKET_WIDTH,
+            bucket_width_sol: Some(SOL_BUCKET_WIDTH),
             min_tokens: DEFAULT_MIN_TOKENS,
             min_structure_sol: MIN_STRUCTURE_SOL,
             lift_ambiguous: LIFT_AMBIGUOUS,
@@ -125,11 +127,8 @@ pub fn score_corpus(
     cfg: &DiscoveryConfig,
     cancel: Option<&AtomicBool>,
 ) -> Result<DiscoveryResult, Cancelled> {
-    let width = if cfg.bucket_width_sol.is_finite() && cfg.bucket_width_sol > 0.0 {
-        cfg.bucket_width_sol
-    } else {
-        SOL_BUCKET_WIDTH
-    };
+    // One reader for the stored width — `None` (or a junk value) means exact.
+    let precision = SolPrecision::from_width(cfg.bucket_width_sol);
 
     // Window-wide denominators for lift (after filters, before group split).
     let mut window_gross_by_struct: HashMap<u64, f64> = HashMap::new();
@@ -152,7 +151,7 @@ pub fn score_corpus(
         }
     }
 
-    let parts = partition(corpus, &cfg.group_by, width);
+    let parts = partition(corpus, &cfg.group_by, precision);
     let mut groups: Vec<DiscoveryGroup> = Vec::new();
 
     for (key, idxs) in parts {

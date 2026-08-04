@@ -3,6 +3,7 @@
 //! number the Rust DTO already flattened, so nothing here recomputes.
 
 import type { AxisSpecWire } from '@lab/components/sweep/genericAxes';
+import type { FieldFilterValue } from '@lab/components/sweep/fingerprintFilters';
 
 /** One point on a metric's Layer-1 response curve. */
 export interface ResponsePoint {
@@ -196,7 +197,7 @@ export interface MetricDiscoveryStartArgs {
   token_cap?: number;
   fingerprint_id?: string;
   ix_labels_filter?: string[];
-  field_filters?: Record<string, (number | boolean)[]>;
+  field_filters?: Record<string, FieldFilterValue[]>;
   buy_amount_sol?: number;
   take_profit_pct?: number | null;
   stop_loss_pct?: number | null;

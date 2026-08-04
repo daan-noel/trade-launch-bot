@@ -33,12 +33,13 @@ import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
 import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
 import { flowDiscoveryHref, rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
+  formatBucketWidth,
   lamportsToSol,
   type Fingerprint,
   type FingerprintDraft,
   type StrategyRule,
 } from 'lib/strategy/types';
-import { formatDecimalTrim, tidySolDecimal } from 'utils/format';
+import { tidySolDecimal } from 'utils/format';
 
 function dash(): ReactNode {
   return <span className="text-text-dim">—</span>;
@@ -86,7 +87,7 @@ const COLOR_COLS: {
       return labels ? formatIxLabelsText(labels) : null;
     },
   },
-  { key: 'bucket', valueOf: (r) => formatDecimalTrim(tidySolDecimal(r.bucket_size_amount), 6) },
+  { key: 'bucket', valueOf: (r) => formatBucketWidth(r.bucket_size_amount) },
 ];
 
 /** Expanded row detail: rules that reference this fingerprint, with the same
@@ -392,12 +393,16 @@ export function FingerprintsView({
         group: 'bucket',
         render: (r) => (
           <span className="font-mono tabular-nums">
-            {formatDecimalTrim(tidySolDecimal(r.bucket_size_amount), 6)}◎
+            {formatBucketWidth(r.bucket_size_amount)}{r.bucket_size_amount == null ? "" : "◎"}
           </span>
         ),
-        searchValue: (r) => formatDecimalTrim(tidySolDecimal(r.bucket_size_amount), 6),
-        sortValue: (r) => tidySolDecimal(r.bucket_size_amount),
-        filterNumber: (r) => tidySolDecimal(r.bucket_size_amount),
+        searchValue: (r) => formatBucketWidth(r.bucket_size_amount),
+        // Exact rows have no width — sort/filter them as null rather than coercing
+        // to 0, which would rank them as the *finest* bucket instead of no bucket.
+        sortValue: (r) =>
+          r.bucket_size_amount == null ? null : tidySolDecimal(r.bucket_size_amount),
+        filterNumber: (r) =>
+          r.bucket_size_amount == null ? null : tidySolDecimal(r.bucket_size_amount),
         sortable: true,
         cellClassName: cellTint('bucket'),
       },

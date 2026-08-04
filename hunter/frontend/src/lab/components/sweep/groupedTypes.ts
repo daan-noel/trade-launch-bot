@@ -6,6 +6,7 @@
 // serializers were removed with the legacy sweep pages (redesign FE5.4).
 
 import type { CostModelId, FillModelId } from 'lib/strategy/types';
+import type { FieldFilterValue } from './fingerprintFilters';
 
 import type { SweepResultRecord } from './types';
 
@@ -232,7 +233,7 @@ export interface GroupedSweepStartArgs {
    *  by `ix_labels`). Omitted ⇒ no filter. */
   ix_labels_filter?: string[];
   /** Per-field value filters (key = GroupField tag; value = allowed numbers/bools). */
-  field_filters?: Record<string, (number | boolean)[]>;
+  field_filters?: Record<string, FieldFilterValue[]>;
   /** Scope the corpus to a saved fingerprint using the ENGINE matcher (exact +
    *  bucket axes — the same gate live arms on). When set the backend ignores
    *  `ix_labels_filter` / `field_filters`; `group_by` still partitions within the
@@ -251,6 +252,9 @@ export interface GroupedSweepStartArgs {
   buy_amount_sol?: number;
   /** Bucket width (SOL) for the continuous SOL group fields. Omitted ⇒ 0.1. */
   bucket_width_sol?: number;
+  /** `true` => group SOL axes on exact amounts; `bucket_width_sol` is then ignored
+   *  and the run row stores a NULL width. Never a 0 width — see `SolPrecision`. */
+  exact_sol?: boolean;
   /** Host RAM (MB) the run leaves free for OS + desktop; every sizing ceiling is
    *  `host free − this`. A preference, not a limit — a run that does not fit
    *  degrades (fewer threads / smaller batches) rather than being refused.

@@ -36,7 +36,7 @@ use serde_json::Value;
 use crate::sweep::aggregate::{ComboAgg, ComboMetrics};
 use crate::sweep::corpus::Corpus;
 use crate::sweep::engine::{combo_batch_size, run_sweep};
-use crate::sweep::grouping::{group_key, GroupField, GroupKey};
+use crate::sweep::grouping::{group_key, GroupField, GroupKey, SolPrecision};
 use crate::sweep::progress::SweepObserver;
 use crate::sweep::strategy::{RefineSpec, Strategy, TokenOutcome};
 
@@ -170,10 +170,10 @@ impl GroupSink for NoopSink {
 /// Partition token indices by exact-value group key at bucket `width` (the per-run
 /// partition width for the continuous SOL fields; see [`group_key`]). Pure
 /// `O(tokens)` pass.
-pub fn partition(corpus: &Corpus, fields: &[GroupField], width: f64) -> HashMap<GroupKey, Vec<usize>> {
+pub fn partition(corpus: &Corpus, fields: &[GroupField], precision: SolPrecision) -> HashMap<GroupKey, Vec<usize>> {
     let mut groups: HashMap<GroupKey, Vec<usize>> = HashMap::new();
     for (i, tt) in corpus.tokens.iter().enumerate() {
-        groups.entry(group_key(&tt.fp, fields, width)).or_default().push(i);
+        groups.entry(group_key(&tt.fp, fields, precision)).or_default().push(i);
     }
     groups
 }
@@ -193,7 +193,7 @@ pub fn run_grouped_sweep<S: Strategy>(
     params: &[S::Params],
     corpus: &Corpus,
     fields: &[GroupField],
-    width: f64,
+    precision: SolPrecision,
     min_tokens: usize,
     coverage: CoverageFloor,
     observer: &dyn SweepObserver,
@@ -204,7 +204,7 @@ pub fn run_grouped_sweep<S: Strategy>(
     // re-ran it O(n log n) times); sort, then drop the decoration.
     let surviving: Vec<(GroupKey, Vec<usize>)> = {
         let _stage = crate::sweep::obs::Stage::start("partition");
-        let mut surviving: Vec<(String, GroupKey, Vec<usize>)> = partition(corpus, fields, width)
+        let mut surviving: Vec<(String, GroupKey, Vec<usize>)> = partition(corpus, fields, precision)
             .into_iter()
             .filter(|(_, idx)| idx.len() >= floor)
             .map(|(key, idx)| (key.to_json().to_string(), key, idx))
@@ -402,7 +402,7 @@ pub fn run_grouped_with_refine<S: Strategy>(
     refine: Option<RefineSpec>,
     corpus: &Corpus,
     fields: &[GroupField],
-    width: f64,
+    precision: SolPrecision,
     min_tokens: usize,
     coverage: CoverageFloor,
     cap: usize,
@@ -425,7 +425,7 @@ pub fn run_grouped_with_refine<S: Strategy>(
         // so this is the number that decides whether vectorizing the scan is worth it.
         let _stage = crate::sweep::obs::Stage::start("sweep_pass");
         let groups = run_grouped_sweep(
-            strategy, &coarse, corpus, fields, width, min_tokens, coverage, observer, sink,
+            strategy, &coarse, corpus, fields, precision, min_tokens, coverage, observer, sink,
         )?;
         return Ok((coarse, groups));
     };
@@ -445,7 +445,7 @@ pub fn run_grouped_with_refine<S: Strategy>(
             &coarse,
             corpus,
             fields,
-            width,
+            precision,
             min_tokens,
             coverage,
             coarse_observer,
@@ -505,7 +505,7 @@ pub fn run_grouped_with_refine<S: Strategy>(
     let groups = {
         let _stage = crate::sweep::obs::Stage::start("refine_final_pass");
         run_grouped_sweep(
-            strategy, &union, corpus, fields, width, min_tokens, coverage, observer, sink,
+            strategy, &union, corpus, fields, precision, min_tokens, coverage, observer, sink,
         )?
     };
     Ok((union, groups))
@@ -1082,7 +1082,10 @@ mod tests {
     const OPEN_FLOOR: CoverageFloor = CoverageFloor { min_fired_abs: 1, fire_frac: 0.0 };
     /// Default per-run bucket width for these tests (grouping fields here are all
     /// discrete, so the exact width is immaterial — it just satisfies the signature).
-    const WIDTH: f64 = crate::sweep::grouping::SOL_BUCKET_WIDTH;
+    /// These grouping fields are all discrete, so the precision is immaterial here —
+    /// it just satisfies the signature.
+    const WIDTH: crate::sweep::grouping::SolPrecision =
+        crate::sweep::grouping::SolPrecision::Bucket(crate::sweep::grouping::SOL_BUCKET_WIDTH);
 
     #[test]
     fn groups_by_exact_field_and_picks_best_combo() {

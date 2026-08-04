@@ -16,7 +16,8 @@ export interface FingerprintIdentity {
   spendable_lamports_in: number | null;
   first_slot_buy_lamports: number | null;
   first_slot_sell_lamports: number | null;
-  bucket_size_amount: number;
+  /** SOL bucket width, or `null` when the fingerprint matches exact amounts. */
+  bucket_size_amount: number | null;
   ix_labels: string[] | null;
 }
 
@@ -43,7 +44,9 @@ export function parseLoLamports(label: string): number | null {
  */
 export function fingerprintIdentityFromGroupKey(
   gk: Record<string, string>,
-  bucketWidthSol: number,
+  /** The width the card was grouped at, or `null` for an exact-grouped run — the
+   *  precision must agree for a card and a fingerprint to be the same thing. */
+  bucketWidthSol: number | null,
 ): FingerprintIdentity {
   const id: FingerprintIdentity = {
     cu_limit: null,
@@ -53,7 +56,7 @@ export function fingerprintIdentityFromGroupKey(
     spendable_lamports_in: null,
     first_slot_buy_lamports: null,
     first_slot_sell_lamports: null,
-    bucket_size_amount: tidySolDecimal(bucketWidthSol),
+    bucket_size_amount: bucketWidthSol == null ? null : tidySolDecimal(bucketWidthSol),
     ix_labels: null,
   };
   for (const [tag, raw] of Object.entries(gk)) {
@@ -133,6 +136,14 @@ function ixLabelsEqual(rawA: string[] | null, rawB: string[] | null): boolean {
   return true;
 }
 
+/** Whether two bucket widths denote the same precision. `null` (exact) only ever
+ *  equals `null` — an exact fingerprint and a bucketed one are different rules
+ *  even when every axis value agrees, because they arm on different token sets. */
+function sameWidth(a: number | null, b: number | null): boolean {
+  if (a == null || b == null) return a == null && b == null;
+  return tidySolDecimal(a) === tidySolDecimal(b);
+}
+
 /** True when every `IDENTITY_WHERE` axis matches (`NULL` is a value). */
 export function fingerprintMatchesIdentity(fp: Fingerprint, id: FingerprintIdentity): boolean {
   return (
@@ -143,7 +154,7 @@ export function fingerprintMatchesIdentity(fp: Fingerprint, id: FingerprintIdent
     fp.spendable_lamports_in === id.spendable_lamports_in &&
     fp.first_slot_buy_lamports === id.first_slot_buy_lamports &&
     fp.first_slot_sell_lamports === id.first_slot_sell_lamports &&
-    tidySolDecimal(fp.bucket_size_amount) === id.bucket_size_amount &&
+    sameWidth(fp.bucket_size_amount, id.bucket_size_amount) &&
     ixLabelsEqual(fp.ix_labels, id.ix_labels)
   );
 }
@@ -162,9 +173,11 @@ export function fingerprintMatchesIdentity(fp: Fingerprint, id: FingerprintIdent
 export function fingerprintCompatibleWithGroupKey(
   fp: Fingerprint,
   gk: Record<string, string>,
-  bucketWidthSol: number,
+  /** The width the card was grouped at, or `null` for an exact-grouped run — the
+   *  precision must agree for a card and a fingerprint to be the same thing. */
+  bucketWidthSol: number | null,
 ): boolean {
-  if (tidySolDecimal(fp.bucket_size_amount) !== tidySolDecimal(bucketWidthSol)) {
+  if (!sameWidth(fp.bucket_size_amount, bucketWidthSol)) {
     return false;
   }
   for (const [tag, raw] of Object.entries(gk)) {
@@ -263,7 +276,9 @@ export function fingerprintCompatibleWithGroupKey(
 export function findFingerprintForGroupKey(
   gk: Record<string, string>,
   fingerprints: Fingerprint[],
-  bucketWidthSol: number,
+  /** The width the card was grouped at, or `null` for an exact-grouped run — the
+   *  precision must agree for a card and a fingerprint to be the same thing. */
+  bucketWidthSol: number | null,
 ): Fingerprint | null {
   const id = fingerprintIdentityFromGroupKey(gk, bucketWidthSol);
   let compatible: Fingerprint | null = null;

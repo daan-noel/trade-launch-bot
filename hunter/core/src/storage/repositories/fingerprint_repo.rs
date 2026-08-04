@@ -29,7 +29,7 @@ struct FingerprintDbRow {
     spendable_lamports_in: Option<i64>,
     first_slot_buy_lamports: Option<i64>,
     first_slot_sell_lamports: Option<i64>,
-    bucket_size_amount: f64,
+    bucket_size_amount: Option<f64>,
     ix_labels: Option<Vec<String>>,
     metric_config: sqlx::types::Json<serde_json::Value>,
     created_at: DateTime<Utc>,
@@ -48,7 +48,7 @@ impl From<FingerprintDbRow> for Fingerprint {
             spendable_lamports_in: r.spendable_lamports_in,
             first_slot_buy_lamports: r.first_slot_buy_lamports,
             first_slot_sell_lamports: r.first_slot_sell_lamports,
-            bucket_size_amount: tidy_sol_decimal(r.bucket_size_amount),
+            bucket_size_amount: r.bucket_size_amount.map(tidy_sol_decimal),
             ix_labels: r.ix_labels,
             metric_config: r.metric_config.0,
             created_at: r.created_at,
@@ -73,7 +73,7 @@ const IDENTITY_WHERE: &str = "cu_limit IS NOT DISTINCT FROM $1 \
     AND spendable_lamports_in IS NOT DISTINCT FROM $5 \
     AND first_slot_buy_lamports IS NOT DISTINCT FROM $6 \
     AND first_slot_sell_lamports IS NOT DISTINCT FROM $7 \
-    AND bucket_size_amount = $8 \
+    AND bucket_size_amount IS NOT DISTINCT FROM $8 \
     AND ix_labels IS NOT DISTINCT FROM $9";
 
 impl FingerprintRepo {
@@ -104,7 +104,7 @@ impl FingerprintRepo {
         .bind(fp.spendable_lamports_in)
         .bind(fp.first_slot_buy_lamports)
         .bind(fp.first_slot_sell_lamports)
-        .bind(tidy_sol_decimal(fp.bucket_size_amount))
+        .bind(fp.bucket_size_amount.map(tidy_sol_decimal))
         .bind(fp.ix_labels.as_ref())
         .bind(sqlx::types::Json(&fp.metric_config))
         .bind(fp.created_at)
@@ -146,7 +146,7 @@ impl FingerprintRepo {
         .bind(fp.spendable_lamports_in)
         .bind(fp.first_slot_buy_lamports)
         .bind(fp.first_slot_sell_lamports)
-        .bind(tidy_sol_decimal(fp.bucket_size_amount))
+        .bind(fp.bucket_size_amount.map(tidy_sol_decimal))
         .bind(fp.ix_labels.as_ref())
         .bind(sqlx::types::Json(&fp.metric_config))
         .execute(&self.pool)
@@ -197,7 +197,7 @@ impl FingerprintRepo {
         .bind(fp.spendable_lamports_in)
         .bind(fp.first_slot_buy_lamports)
         .bind(fp.first_slot_sell_lamports)
-        .bind(tidy_sol_decimal(fp.bucket_size_amount))
+        .bind(fp.bucket_size_amount.map(tidy_sol_decimal))
         .bind(fp.ix_labels.as_ref())
         .fetch_optional(&self.pool)
         .await?;

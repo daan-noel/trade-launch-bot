@@ -9,7 +9,7 @@ use hunter_engine::fingerprint::configured_labels;
 use crate::api::table_query::TableRequest;
 use crate::state::core_state::CoreState;
 use crate::storage::repositories::creation_stats_repo::{HeatCellRow, StatsFilter, TrendPointRow};
-use crate::grouping::GroupField;
+use crate::grouping::{GroupField, SolPrecision};
 
 use super::tokens::TokenSummary;
 
@@ -334,11 +334,25 @@ pub struct GroupedCreationQuery {
     /// at this width. Omitted/invalid ⇒ the default (`grouping::SOL_BUCKET_WIDTH`,
     /// 0.1); floored server-side at `grouping::MIN_BUCKET_WIDTH_SOL`.
     pub bucket_width: Option<f64>,
+    /// `true` ⇒ key the continuous SOL fields on their **exact** amount instead of
+    /// a bucket range (`grouping::SolPrecision::Exact`), answering "what are the
+    /// most common exact dev-buy sizes?" — which bucketing by construction cannot.
+    /// `bucket_width` is then ignored and echoed back as `null`.
+    ///
+    /// A separate named flag on purpose: a `bucket_width` of `0` would be a
+    /// division by zero *and* a sentinel folded into a measured quantity, the shape
+    /// that already caused a live `bucket_size_amount` bug (see the zero-as-unbound
+    /// rule in the product CLAUDE.md).
+    pub exact_sol: Option<bool>,
     /// Per-field value filters restricting the corpus *before* partitioning, as a
     /// JSON object `{"cu_limit":["300000"],"is_cashback_enabled":["true"]}` (keys =
     /// `GroupField` tags, values = allowed string forms matching the group key).
     /// Independent of `group_by`. Omitted/empty ⇒ no filter. `ix_labels` is handled
     /// by `ix_labels_filter` below (set-equality, not value-in).
+    ///
+    /// The five bucketed SOL fields take `SolFilter` syntax — an exact amount
+    /// (`"1.515"`) or a bucket range (`"1.5–1.6"`) — and are validated, never
+    /// silently dropped. Independent of `exact_sol`, which only affects grouping.
     pub field_filters: Option<String>,
     /// Group ranking criterion: `count` (default, unchanged) | `trades` | `trades_per_token`.
     /// Whitelisted — see `normalize_rank_by`. `trades_per_token` is the one that
@@ -397,8 +411,13 @@ pub struct GroupedCreationResponse {
     pub segment: String,
     /// The grouping fields echoed back (serde tags, in selection order).
     pub group_by: Vec<String>,
-    /// The applied (clamped) bucket width (SOL) for the continuous SOL group fields.
-    pub bucket_width: f64,
+    /// The applied (clamped) bucket width (SOL) for the continuous SOL group
+    /// fields, or `null` when the run keyed them on their **exact** amount
+    /// (`exact_sol=true`). `null` is the honest "not bucketed" — it is what the
+    /// client must branch on, because an exact group key (`"1.515"`) carries no
+    /// width and so cannot be turned into a saved fingerprint, which matches by
+    /// bucket in the live engine.
+    pub bucket_width: Option<f64>,
     /// The applied per-field value filters echoed back (`{"cu_limit":["300000"]}`).
     pub field_filters: serde_json::Value,
     /// The applied exact instruction-label set filter, or `null` when none.
@@ -432,6 +451,27 @@ fn clamp_top(top: Option<i64>) -> i64 {
     top.unwrap_or(DEFAULT_TOP_GROUPS).clamp(1, MAX_TOP_GROUPS)
 }
 
+/// Resolve the request's SOL grouping precision — **the one decider**, shared by
+/// the stats endpoint and the drill-down so a card and its token list can never be
+/// keyed differently.
+///
+/// `exact_sol=true` wins outright and ignores `bucket_width` entirely, so a stale
+/// or invalid width can't quietly downgrade an exact run back to bucketing.
+/// Otherwise the width is clamped as the sweep handler clamps it: non-finite or
+/// below `MIN_BUCKET_WIDTH_SOL` ⇒ the 0.1 default, never an error — a bad width is
+/// a UI slip, not a reason to fail a dashboard load.
+fn resolve_precision(exact_sol: Option<bool>, bucket_width: Option<f64>) -> SolPrecision {
+    if exact_sol == Some(true) {
+        return SolPrecision::Exact;
+    }
+    match bucket_width {
+        Some(w) if w.is_finite() && w >= crate::grouping::MIN_BUCKET_WIDTH_SOL => {
+            SolPrecision::Bucket(w)
+        }
+        _ => SolPrecision::Bucket(crate::grouping::SOL_BUCKET_WIDTH),
+    }
+}
+
 /// Parse the `field_filters` JSON object into ordered `(field, allowed-values)`
 /// pairs. Blank/missing ⇒ empty (no filter). `ix_labels` is ignored here (it has
 /// its own set-equality filter). Empty value lists and blank values are dropped so
@@ -463,6 +503,21 @@ fn parse_field_filters(raw: Option<&str>) -> Result<Vec<(GroupField, Vec<String>
             })
             .filter(|s| !s.is_empty())
             .collect();
+        // A bucketed SOL field pins an EXACT human-SOL amount (the group key is a
+        // range label, so there is nothing typeable to compare against — see
+        // `creation_stats_repo::field_filter_pred`). Reject junk here so the user
+        // gets a message instead of a silently empty dashboard, which is exactly
+        // how the old label-comparing predicate failed.
+        if field.is_bucketed() {
+            if let Some(bad) =
+                values.iter().find(|v| crate::grouping::SolFilter::parse(v).is_none())
+            {
+                return Err(format!(
+                    "field_filters[{tag}]: '{bad}' is neither a SOL amount (e.g. 1.515) nor a \
+                     bucket range (e.g. 1.5–1.6)"
+                ));
+            }
+        }
         if !values.is_empty() {
             out.push((field, values));
         }
@@ -562,12 +617,11 @@ pub async fn get_grouped_creation_stats(
     }
 
     let top = clamp_top(query.top);
-    // Clamp the bucket width like the sweep handler: invalid/sub-floor ⇒ default,
-    // so the dashboard groups a corpus at the same width a sweep would.
-    let bucket_width = match query.bucket_width {
-        Some(w) if w.is_finite() && w >= crate::grouping::MIN_BUCKET_WIDTH_SOL => w,
-        _ => crate::grouping::SOL_BUCKET_WIDTH,
-    };
+    // Exact mode wins outright — no width is consulted, so an invalid one can't
+    // quietly downgrade it to bucketing. Otherwise clamp like the sweep handler:
+    // invalid/sub-floor ⇒ default, so the dashboard groups a corpus at the same
+    // width a sweep would.
+    let precision = resolve_precision(query.exact_sol, query.bucket_width);
 
     let fields = match parse_group_by(query.group_by.as_deref()) {
         Ok(f) => f,
@@ -610,7 +664,7 @@ pub async fn get_grouped_creation_stats(
             top,
             &field_filters,
             ix_labels_filter.as_deref(),
-            bucket_width,
+            precision,
             rank_by,
             filter,
         )
@@ -643,7 +697,7 @@ pub async fn get_grouped_creation_stats(
         to,
         segment,
         group_by: fields.iter().map(|f| f.as_str().to_string()).collect(),
-        bucket_width,
+        bucket_width: precision.width(),
         field_filters: field_filters_json,
         ix_labels_filter,
         rank_by: rank_by.to_string(),
@@ -712,6 +766,10 @@ pub struct GroupedCreationTokensRequest {
     pub segment: Option<String>,
     pub group_by: Option<String>,
     pub bucket_width: Option<f64>,
+    /// Mirrors `GroupedCreationQuery::exact_sol` — MUST match the stats request that
+    /// produced `group_key`, or the key here is rendered in the other mode and
+    /// selects nothing. Resolved by the same `resolve_precision`.
+    pub exact_sol: Option<bool>,
     pub field_filters: Option<String>,
     pub ix_labels_filter: Option<String>,
     /// The exact group to drill into: `{"cu_limit":"200000","ix_labels":"A | B"}`
@@ -755,10 +813,7 @@ pub async fn get_grouped_creation_tokens(
     let segment = body.segment.clone().unwrap_or_else(|| "all".to_string());
     let (mayhem, cashback) = parse_segment(&segment);
     let (from, to) = resolve_window(body.from.as_deref(), body.to.as_deref(), now);
-    let bucket_width = match body.bucket_width {
-        Some(w) if w.is_finite() && w >= crate::grouping::MIN_BUCKET_WIDTH_SOL => w,
-        _ => crate::grouping::SOL_BUCKET_WIDTH,
-    };
+    let precision = resolve_precision(body.exact_sol, body.bucket_width);
 
     // dow/hour: both-or-neither, and in-range when present.
     let cell = match (body.dow, body.hour) {
@@ -842,7 +897,7 @@ pub async fn get_grouped_creation_tokens(
             &group_key,
             &field_filters,
             ix_labels_filter.as_deref(),
-            bucket_width,
+            precision,
             dow,
             hour,
             &body.table.search,

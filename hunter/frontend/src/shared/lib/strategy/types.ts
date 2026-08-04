@@ -4,6 +4,8 @@
 // accessors are non-serialized); `bucket_size_amount` is already SOL. The UI
 // speaks SOL, so the form components convert with the helpers below.
 
+import { formatDecimalTrim, tidySolDecimal } from 'utils/format';
+
 /** 1 SOL in lamports — the one divisor for the fingerprint/rule amount axes. */
 export const LAMPORTS_PER_SOL = 1_000_000_000;
 
@@ -41,8 +43,14 @@ export interface Fingerprint {
   spendable_lamports_in: number | null;
   first_slot_buy_lamports: number | null;
   first_slot_sell_lamports: number | null;
-  /** SOL width of the match bucket (default 0.1). */
-  bucket_size_amount: number;
+  /** SOL width of the match bucket (default 0.1), or `null` to match the SOL axes
+   *  on their **exact** lamports amount (Rust `SolPrecision::Exact`).
+   *
+   *  `null` — never `0` — is how "not bucketed" is spelled: a width is a measured
+   *  quantity, and `0` both divides by zero in `bucket_index` and would be a second
+   *  sentinel in a field that already caused one live mis-arming bug. */
+  bucket_size_amount: number | null;
+  // (see `formatBucketWidth` for the one way to display this)
   ix_labels: string[] | null;
   /** Per-metric-group fingerprint-side config (e.g. `m_flow_split.volume_ix_patterns`).
    *  Absent/`{}` ⇒ flow metrics stay NaN. */
@@ -316,4 +324,15 @@ export interface StrategyPositionUpdateEvent {
   sold_bps?: number | null;
   /** Next scale-out stage index. Omitted when unset / legacy. */
   scale_stage?: number | null;
+}
+
+/**
+ * Display a fingerprint's `bucket_size_amount` — **the one place** that renders
+ * it, so "exact" reads identically in the table, the chips, the search index and
+ * the form summary. A `null` width means the SOL axes match exact amounts
+ * (Rust `SolPrecision::Exact`); showing a bare `0`/blank there would read as a
+ * degenerate bucket rather than a different mode.
+ */
+export function formatBucketWidth(width: number | null, decimals = 6): string {
+  return width == null ? 'exact' : formatDecimalTrim(tidySolDecimal(width), decimals);
 }

@@ -59,6 +59,7 @@ export const STORAGE_KEYS = {
   /** Grouped-section ranking criterion: `count` (default) | `trades` | `trades_per_token`. */
   groupedRankBy: `${PREFIX}dashboard.grouped.rankBy`,
   groupedBucketWidth: `${PREFIX}dashboard.grouped.bucketWidth`,
+  groupedExactSol: `${PREFIX}dashboard.grouped.exactSol`,
   groupedBucket: `${PREFIX}dashboard.grouped.bucket`,
   groupedRange: `${PREFIX}dashboard.grouped.range`,
   groupedFilters: `${PREFIX}dashboard.grouped.filters`,

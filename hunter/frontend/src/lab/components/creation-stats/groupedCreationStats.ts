@@ -12,6 +12,7 @@ import {
   GROUP_FIELD_LABELS,
   type GroupField,
 } from '@lab/components/sweep/groupedTypes';
+import type { FieldFilterValue } from '@lab/components/sweep/fingerprintFilters';
 import { WALLET_MARKER_COLORS } from 'components/token-price-chart/constants';
 import type { CreationBucket, CreationSegment } from 'components/creation-stats/creationStats';
 import type { SortEntry, TableQuery } from 'components/table/types';
@@ -69,8 +70,11 @@ export interface GroupedCreationResponse {
   to: string;
   segment: string;
   group_by: GroupField[];
-  /** The applied (clamped) bucket width (SOL) for the continuous SOL group fields. */
-  bucket_width: number;
+  /** The applied (clamped) bucket width (SOL) for the continuous SOL group fields,
+   *  or `null` when the run keyed them on their **exact** amount (`exactSol`).
+   *  `null` is the signal that a group key carries no width and so can't be saved
+   *  as a fingerprint — the live engine matches SOL axes by bucket. */
+  bucket_width: number | null;
   /** The applied per-field value filters echoed back (`{cu_limit:["300000"]}`). */
   field_filters: Record<string, string[]>;
   /** The applied exact instruction-label set filter, or `null` when none. */
@@ -99,7 +103,10 @@ export interface GroupedCreationTokensArgs {
   segment: CreationSegment;
   groupBy: GroupField[];
   bucketWidth?: number;
-  fieldFilters?: Record<string, string[]>;
+  /** Mirrors {@link GroupedCreationArgs.exactSol} — MUST match the stats request
+   *  that produced `groupKey`, or the key is rendered in the other mode. */
+  exactSol?: boolean;
+  fieldFilters?: Record<string, FieldFilterValue[]>;
   ixLabelsFilter?: string[];
   /** Saved-fingerprint scope — mirrors {@link GroupedCreationArgs.fingerprintId}.
    *  When set, `groupBy`/`fieldFilters`/`ixLabelsFilter`/`groupKey` are all
@@ -165,10 +172,15 @@ export interface GroupedCreationArgs {
    *  grouped sweep uses, so the dashboard groups a corpus identically to a sweep at
    *  this width. Omitted ⇒ the backend default (0.1). */
   bucketWidth?: number;
+  /** `true` ⇒ key the continuous SOL fields on their **exact** amount instead of a
+   *  bucket range, so each distinct value forms its own group. Mutually exclusive
+   *  with `bucketWidth` (the backend ignores the width in this mode). A separate
+   *  named flag, never a magic width of 0 — see Rust `SolPrecision`. */
+  exactSol?: boolean;
   /** Per-field value filters restricting the corpus before partitioning (keys =
    *  GroupField tags, values = allowed string forms). Independent of `groupBy`.
    *  Empty/omitted ⇒ no filter. `ix_labels` uses `ixLabelsFilter` instead. */
-  fieldFilters?: Record<string, string[]>;
+  fieldFilters?: Record<string, FieldFilterValue[]>;
   /** Exact instruction-label set filter (set-equality). Omitted ⇒ no filter. */
   ixLabelsFilter?: string[];
   /** Group ranking criterion. Omitted when `count` so the default keeps a

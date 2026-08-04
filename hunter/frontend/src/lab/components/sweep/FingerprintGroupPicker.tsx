@@ -30,6 +30,12 @@ interface FingerprintGroupPickerProps {
    *  the partition, the promoted rule's matcher, and this dashboard all share. */
   bucketWidthSol: number;
   onSetBucketWidth: (v: number) => void;
+  /** Exact-SOL grouping: key the ◎ fields on the amount itself (one group per
+   *  distinct value) instead of a `bucketWidthSol`-wide range. Omit the pair to
+   *  hide the control entirely — surfaces that can't express the mode (the sweep's
+   *  run row persists a width) simply don't pass it. */
+  exactSol?: boolean;
+  onSetExactSol?: (v: boolean) => void;
   /** Raw textarea text for the exact ix_labels set filter (pretty JSON array). */
   ixLabelsText: string;
   onSetIxLabels: (v: string) => void;
@@ -47,23 +53,22 @@ const NUMERIC_FIELDS = GROUP_FIELDS.filter(
   (f) => f !== 'ix_labels' && f !== 'is_cashback_enabled',
 );
 
-/** Units note shown at the bottom of each numeric field's filter tooltip. Discrete
- *  fields group on their exact value; the continuous SOL amounts are grouped into
- *  `width`-wide buckets (chips read as ranges like "1.0–1.1"), so the value filter
- *  here is best used to pin a bucket rather than an exact amount. */
+/** Units note shown at the bottom of each numeric field's filter tooltip.
+ *
+ *  Grouping and filtering use DIFFERENT precisions on the ◎ SOL fields, which is
+ *  the thing worth stating: the group key is a `width`-wide bucket *range*
+ *  ("1.5–1.6"), but the value filter pins an **exact SOL amount** (1.515) on the
+ *  underlying lamports — independent of the bucket width. Typing a range here
+ *  matches nothing (the backend 400s on it). */
 function fieldUnitHint(field: GroupField, width: number): string {
   switch (field) {
     case 'cu_limit':
       return 'Raw integer (e.g. 200000), exact grouping. Match values shown in group keys.';
     case 'cu_price':
       return 'Raw integer (e.g. 1000), exact grouping. Match values shown in group keys.';
-    case 'first_slot_buy_sol':
-      return `Creation-slot buy SOL, grouped into ${width}-SOL buckets (ranges, e.g. 1.0–1.1).`;
-    case 'first_slot_sell_sol':
-      return `Creation-slot sell SOL, grouped into ${width}-SOL buckets (ranges, e.g. 1.0–1.1).`;
     default:
       return BUCKETED_GROUP_FIELDS.has(field)
-        ? `Grouped into ${width}-SOL buckets (chips read as ranges, e.g. 1.0–1.1).`
+        ? `SOL amount "1.515" (that exact value) or bucket range "1.5–1.6" (the half-open window a group chip shows). Independent of the ${width}-SOL grouping width.`
         : 'Comma-separated numbers.';
   }
 }
@@ -130,6 +135,8 @@ export function FingerprintGroupPicker({
   onSetCashback,
   bucketWidthSol,
   onSetBucketWidth,
+  exactSol = false,
+  onSetExactSol,
   ixLabelsText,
   onSetIxLabels,
   ixFilter,
@@ -223,24 +230,33 @@ export function FingerprintGroupPicker({
                 type="text"
                 value={filterText}
                 onChange={(e) => onSetFieldFilter(f, e.target.value)}
-                placeholder="all values"
+                placeholder={BUCKETED_GROUP_FIELDS.has(f) ? '1.515 or 1.5–1.6' : 'all values'}
                 title={fieldFilterTooltip(f, isGrouped, bucketWidthSol)}
                 className="min-w-0 flex-1 rounded border border-white/10 bg-surface px-2 py-0.5 text-xs text-text-mid placeholder:text-text-dim/30 focus:border-white/25 focus:outline-none"
               />
-              {hasFilter ? (
+              {/* The ◎ chip states how the field GROUPS; the pinned/filtered badge
+                  states that a value filter is active. They're independent facts,
+                  so both show at once — hiding the chip behind an active filter
+                  made a bucketed field look like an exact-value one. */}
+              {BUCKETED_GROUP_FIELDS.has(f) && (
+                <BucketChip
+                  width={bucketWidthSol}
+                  title={`Continuous SOL amount — grouped into ${bucketWidthSol}-SOL buckets. Group chips read as ranges (e.g. "1.0–1.1"), not exact values.\n\nThe filter box is separate: it pins an exact SOL amount, whatever the bucket width.`}
+                />
+              )}
+              {hasFilter && (
                 <span
                   className="shrink-0 text-[10px] text-text-dim/60"
-                  title={isGrouped ? 'Groups restricted to these values' : 'Corpus pinned to these values'}
+                  title={
+                    BUCKETED_GROUP_FIELDS.has(f)
+                      ? `Pinned to the exact SOL amount(s) "${filterText.trim()}"${isGrouped ? ' — grouped into buckets' : ''}`
+                      : isGrouped
+                        ? 'Groups restricted to these values'
+                        : 'Corpus pinned to these values'
+                  }
                 >
                   {isGrouped ? 'filtered' : 'pinned'}
                 </span>
-              ) : (
-                BUCKETED_GROUP_FIELDS.has(f) && (
-                  <BucketChip
-                    width={bucketWidthSol}
-                    title={`Continuous SOL amount — grouped into ${bucketWidthSol}-SOL buckets. Group chips read as ranges (e.g. "1.0–1.1"), not exact values.`}
-                  />
-                )
               )}
             </div>
           );
@@ -328,11 +344,23 @@ export function FingerprintGroupPicker({
         })()}
       </div>
 
-      {/* Bucket width — the one knob that sizes every ◎ bucketed SOL field. Lives
-          here (not in the outer form) so it sits with the fields it governs, and so
-          the sweep page and the dashboard expose it identically. */}
+      {/* Grouping precision for every ◎ SOL field. Lives here (not in the outer
+          form) so it sits with the fields it governs, and so the sweep page and the
+          dashboard expose it identically.
+
+          Exact is a named mode with its own control, NOT a width of 0: a width is a
+          measured quantity, `floor(v / 0)` is a division by zero, and a magic-0
+          width already caused one live bug where two readers disagreed about
+          whether it meant "default 0.1" or "literally zero". The width input is
+          disabled rather than hidden in exact mode so the setting you'll return to
+          stays visible. */}
       <div className="flex flex-wrap items-center gap-2 border-t border-white/5 pt-1.5">
-        <label className="flex items-center gap-1.5 text-[11px] text-text-mid">
+        <label
+          className={cn(
+            'flex items-center gap-1.5 text-[11px] text-text-mid',
+            exactSol && 'opacity-40',
+          )}
+        >
           <BucketChip width={bucketWidthSol} className="align-middle" />
           <LabelTip
             tip={FINGERPRINT_FIELD_HELP.bucket}
@@ -345,14 +373,37 @@ export function FingerprintGroupPicker({
             min={0.000001}
             step={0.05}
             value={bucketWidthSol}
+            disabled={exactSol}
+            title={exactSol ? 'Ignored while grouping on exact values' : undefined}
             onChange={(e) => {
               const n = Number(e.target.value);
               onSetBucketWidth(Number.isFinite(n) && n > 0 ? tidySolDecimal(n) : 0.1);
             }}
-            className="w-20 rounded border border-white/10 bg-surface px-2 py-0.5 text-xs text-text-mid focus:border-white/25 focus:outline-none"
+            className="w-20 rounded border border-white/10 bg-surface px-2 py-0.5 text-xs text-text-mid focus:border-white/25 focus:outline-none disabled:cursor-not-allowed"
           />
         </label>
-        <span className="text-[10px] text-text-dim/55">applies to the ◎ bucketed SOL fields</span>
+        {onSetExactSol ? (
+          <label
+            className="flex cursor-pointer items-center gap-1.5 text-[11px] text-text-mid"
+            title={
+              'Group the ◎ SOL fields on their EXACT amount — one group per distinct value,\n' +
+              'e.g. "1.515" instead of "1.5–1.6". Answers "what are the most common exact\n' +
+              'amounts?", which bucketing cannot.\n\n' +
+              'Expect many more groups (raise Top N). Cards produced this way cannot be saved\n' +
+              'as fingerprints: the live engine matches SOL axes by bucket, so an exact card\n' +
+              'has no faithful fingerprint.\n\n' +
+              'Independent of the filter boxes above, which are always exact/range.'
+            }
+          >
+            <Checkbox checked={exactSol} onChange={() => onSetExactSol(!exactSol)} />
+            <span className="whitespace-nowrap">Exact values (no bucketing)</span>
+          </label>
+        ) : null}
+        <span className="text-[10px] text-text-dim/55">
+          {exactSol
+            ? 'the ◎ SOL fields group on their exact amount'
+            : 'applies to the ◎ bucketed SOL fields'}
+        </span>
       </div>
 
       {/* Legend — which fields bucket and how (so grouping behavior is self-explaining). */}
@@ -364,7 +415,10 @@ export function FingerprintGroupPicker({
         are continuous SOL amounts, so they group by <b>{bucketWidthSol}-SOL ranges</b> —
         group chips read as{' '}
         <span className="font-mono">1.0–1.1</span>, not exact values. Every other field
-        groups on its <b>exact</b> value.
+        groups on its <b>exact</b> value. Their filter boxes take either form:{' '}
+        <span className="font-mono">1.515</span> pins that exact amount,{' '}
+        <span className="font-mono">1.5–1.6</span> pins the whole bucket — both
+        independent of the grouping width above.
       </p>
 
       {groupBy.length === 0 && (

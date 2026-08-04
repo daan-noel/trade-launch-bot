@@ -54,9 +54,10 @@ import { StructureTable } from '@lab/components/flow/StructureTable';
 import { TokenPreviewPanel } from '@lab/components/flow/TokenPreviewPanel';
 import { patternKeysFrom } from '@lab/lib/flow/classifyFlow';
 import { FingerprintGroupPicker } from '@lab/components/sweep/FingerprintGroupPicker';
-import { parseIxLabelsFilter, parseNumbers } from '@lab/components/sweep/fingerprintFilters';
+import { parseIxLabelsFilter, buildFieldFilters } from '@lab/components/sweep/fingerprintFilters';
 import {
   GROUP_FIELD_LABELS,
+  BUCKETED_GROUP_FIELDS,
   GROUP_FIELDS,
   SOL_BUCKET_WIDTH,
   type GroupField,
@@ -92,6 +93,9 @@ interface DiscoveryConfig {
   tokenCap: number;
   curveOnly: boolean;
   bucketWidthSol: number;
+  /** Group the SOL axes on their exact amount (`SolPrecision::Exact`) instead of a
+   *  `bucketWidthSol`-wide range. A promoted/bound fingerprint stores a NULL width. */
+  exactSol: boolean;
   /** Saved fingerprint whose match axes scope discovery (engine match SSOT). */
   seedFingerprintId: string | null;
 }
@@ -107,6 +111,7 @@ const DEFAULTS: DiscoveryConfig = {
   tokenCap: 5000,
   curveOnly: false,
   bucketWidthSol: SOL_BUCKET_WIDTH,
+  exactSol: false,
   seedFingerprintId: null,
 };
 
@@ -139,9 +144,9 @@ function configFromFingerprint(fp: Fingerprint): Partial<DiscoveryConfig> {
     groupBy: [],
     fieldFiltersText,
     ixLabelsFilter: formatIxLabelsText(fp.ix_labels),
-    bucketWidthSol: tidySolDecimal(
-      fp.bucket_size_amount > 0 ? fp.bucket_size_amount : SOL_BUCKET_WIDTH,
-    ),
+    // A NULL width IS the exact mode — mirror it rather than substituting 0.1.
+    exactSol: fp.bucket_size_amount == null,
+    bucketWidthSol: tidySolDecimal(fp.bucket_size_amount ?? SOL_BUCKET_WIDTH),
     minTokens: 1,
     cashbackFilter: 'all',
   };
@@ -274,6 +279,7 @@ export function FlowDiscoveryPage() {
     tokenCap,
     curveOnly,
     bucketWidthSol,
+    exactSol,
     seedFingerprintId,
   } = config;
 
@@ -287,6 +293,20 @@ export function FlowDiscoveryPage() {
   // is the SSOT) — don't block Run on ix-filter parse errors.
   const ixFilterError =
     !seedFingerprintId && !ixLabelsGrouped ? ixFilter.error : null;
+  // Per-field value filters, parsed once — same contract as the ix filter above:
+  // display-only under a fingerprint scope, otherwise a parse error blocks Run so
+  // a dropped SOL filter can't silently widen the discovery corpus.
+  const fieldFilterParse = useMemo(
+    () =>
+      buildFieldFilters(fieldFiltersText, {
+        fields: GROUP_FIELDS,
+        bucketed: BUCKETED_GROUP_FIELDS,
+        cashback: cashbackFilter,
+        labels: GROUP_FIELD_LABELS,
+      }),
+    [fieldFiltersText, cashbackFilter],
+  );
+  const fieldFilterError = seedFingerprintId ? null : fieldFilterParse.error;
 
   const { markStarting, markFinished } = useBackgroundJobActions();
   const { isRunning } = useBackgroundJobsState();
@@ -464,7 +484,7 @@ export function FlowDiscoveryPage() {
   }, [searchParams, fingerprints]);
 
   async function handleRun() {
-    if (running || ixFilterError) return;
+    if (running || ixFilterError || fieldFilterError) return;
     setApplyError(null);
     setApplyOk(null);
 
@@ -475,22 +495,15 @@ export function FlowDiscoveryPage() {
         created_before: toUtc(createdBefore),
         curve_only: curveOnly,
         group_by: groupBy,
-        bucket_width_sol: bucketWidthSol,
+        // Exact mode replaces the width outright (backend ignores it there).
+        ...(exactSol ? { exact_sol: true } : { bucket_width_sol: bucketWidthSol }),
         min_tokens: minTokens,
         token_cap: tokenCap,
       };
       if (seedFingerprintId) {
         body.fingerprint_id = seedFingerprintId;
       } else {
-        const fieldFilters: Record<string, (number | boolean)[]> = {};
-        for (const f of GROUP_FIELDS) {
-          if (f === 'ix_labels' || f === 'is_cashback_enabled') continue;
-          const nums = parseNumbers(fieldFiltersText[f] ?? '');
-          if (nums.length > 0) fieldFilters[f] = nums;
-        }
-        if (cashbackFilter !== 'all') {
-          fieldFilters.is_cashback_enabled = [cashbackFilter === 'true'];
-        }
+        const fieldFilters = fieldFilterParse.filters;
         body.ix_labels_filter =
           !ixLabelsGrouped && ixFilter.labels ? ixFilter.labels : undefined;
         body.field_filters =
@@ -567,7 +580,8 @@ export function FlowDiscoveryPage() {
       } else {
         const fp = await bindFp({
           group_key: selectedGroup.group_key,
-          bucket_width_sol: bucketWidthSol,
+          // Exact mode replaces the width outright (backend ignores it there).
+          ...(exactSol ? { exact_sol: true } : { bucket_width_sol: bucketWidthSol }),
           volume_ix_patterns: patterns,
           name: fingerprintNameFromGroupKey(
             selectedGroup.group_key,
@@ -656,7 +670,7 @@ export function FlowDiscoveryPage() {
           variant="primary"
           size="lg"
           onClick={handleRun}
-          disabled={running || !!ixFilterError || startState.isLoading}
+          disabled={running || !!ixFilterError || !!fieldFilterError || startState.isLoading}
           label={running ? 'Discovering…' : 'Run discovery'}
           title={running ? 'Discovering…' : 'Run discovery'}
         >
@@ -702,6 +716,8 @@ export function FlowDiscoveryPage() {
             onSetBucketWidth={(n) =>
               setField('bucketWidthSol', n <= 0 ? SOL_BUCKET_WIDTH : n)
             }
+            exactSol={exactSol}
+            onSetExactSol={(v) => setField('exactSol', v)}
             ixLabelsText={ixLabelsFilter}
             onSetIxLabels={(v) => setField('ixLabelsFilter', v)}
             ixFilter={ixFilter}
@@ -714,9 +730,9 @@ export function FlowDiscoveryPage() {
         </Accordion>
       </div>
 
-      {(applyError || ixFilterError || startState.error) && (
+      {(applyError || ixFilterError || fieldFilterError || startState.error) && (
         <InlineAlert variant="error">
-          {applyError || ixFilterError || apiErrorMessage(startState.error, 'Error')}
+          {applyError || ixFilterError || fieldFilterError || apiErrorMessage(startState.error, "Error")}
         </InlineAlert>
       )}
       {applyOk && <InlineAlert variant="success">{applyOk}</InlineAlert>}

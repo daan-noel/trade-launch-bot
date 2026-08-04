@@ -48,8 +48,15 @@ pub struct Fingerprint {
     pub first_slot_buy_lamports: Option<i64>,
     /// Sum of sell SOL in the creation slot (bucket-matched; deferred as above).
     pub first_slot_sell_lamports: Option<i64>,
-    /// SOL width of the bucket every bucket-matched axis uses.
-    pub bucket_size_amount: f64,
+    /// SOL width every bucket-matched axis uses, or `NULL` to match those axes on
+    /// their **exact** lamports amount (`hunter_engine::grouping::SolPrecision`).
+    ///
+    /// `NULL` — not `0` — is how "not bucketed" is spelled: a width is a *measured*
+    /// quantity, `floor(v/0)` is a division by zero, and this value feeds the live
+    /// entry gate. Read it through `hunter_engine::fingerprint::Fingerprint::precision`,
+    /// never directly. Enforced by `0018_fingerprint_exact_bucket.sql`
+    /// (`NULL OR (>= 1e-6 AND <= 1e6)`) and [`Fingerprint::validate`].
+    pub bucket_size_amount: Option<f64>,
     /// Exact ordered instruction-label sequence of the creation tx.
     pub ix_labels: Option<Vec<String>>,
     /// Per-metric-group fingerprint-side config (e.g. `m_flow_split.volume_ix_patterns`).
@@ -100,11 +107,15 @@ impl Fingerprint {
             spendable_lamports_in: opt_i64(body, "spendable_lamports_in"),
             first_slot_buy_lamports: opt_i64(body, "first_slot_buy_lamports"),
             first_slot_sell_lamports: opt_i64(body, "first_slot_sell_lamports"),
-            bucket_size_amount: tidy_sol_decimal(
-                body.get("bucket_size_amount")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.1),
-            ),
+            // Present-and-numeric ⇒ a bucket width; explicit `null` ⇒ exact match;
+            // **absent ⇒ the 0.1 default**, so an older client that never heard of
+            // exact mode can't silently create exact-matching fingerprints. Only a
+            // deliberate `null` opts in.
+            bucket_size_amount: match body.get("bucket_size_amount") {
+                None => Some(0.1),
+                Some(serde_json::Value::Null) => None,
+                Some(v) => Some(tidy_sol_decimal(v.as_f64().unwrap_or(0.1))),
+            },
             // Normalize the empty label list to `None` at the boundary so the
             // ambiguous "set but empty" state never reaches storage or a matcher
             // — `Some([])` and `None` mean the same thing, so only one of them
@@ -150,22 +161,33 @@ impl Fingerprint {
     /// * **At least one match criterion.** An all-`None` row hits the matcher's
     ///   own never-match-everything guard, so it silently matches *nothing* and
     ///   quietly kills every rule pointing at it.
-    /// * **`bucket_size_amount` finite and >= [`MIN_BUCKET_WIDTH_SOL`].** The
-    ///   matcher divides by this width **raw** (`grouping::bucket_index`), so a
-    ///   `0` width sends every positive amount to the same saturated bucket index
-    ///   and a configured SOL axis stops discriminating — the fingerprint arms on
-    ///   any non-zero value. Zero is an *invalid* width here, never a "not set"
-    ///   sentinel: a fingerprint axis of `0` SOL is a real bucket (`[0, width)`),
-    ///   and `None` is the only way to say "axis not part of identity".
+    /// * **`bucket_size_amount` is `NULL`, or finite and >= [`MIN_BUCKET_WIDTH_SOL`].**
+    ///   `NULL` selects exact-lamports matching. A *present* width is still divided
+    ///   by **raw** (`grouping::bucket_index`), so a `0` sends every positive amount
+    ///   to the same saturated bucket index and a configured SOL axis stops
+    ///   discriminating — the fingerprint arms on any non-zero value. Zero remains an
+    ///   *invalid* width, never a second spelling of "exact": `NULL` is the one
+    ///   spelling, so the two readers of this field can't disagree. (Distinct again
+    ///   from a `None` **axis**, which means "not part of identity" — a fingerprint
+    ///   axis of `0` SOL is a real bucket, `[0, width)`.)
+    /// How this row's SOL axes match — delegated to the engine's
+    /// `SolPrecision::from_width` so the DB model and the match-time copy can
+    /// never read the same stored width differently.
+    pub fn precision(&self) -> hunter_engine::grouping::SolPrecision {
+        hunter_engine::grouping::SolPrecision::from_width(self.bucket_size_amount)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if !self.has_any_criterion() {
             return Err("fingerprint must configure at least one match criterion".into());
         }
-        let w = self.bucket_size_amount;
-        if !w.is_finite() || w < MIN_BUCKET_WIDTH_SOL {
-            return Err(format!(
-                "bucket_size_amount must be a finite SOL width >= {MIN_BUCKET_WIDTH_SOL} (got {w})"
-            ));
+        if let Some(w) = self.bucket_size_amount {
+            if !w.is_finite() || w < MIN_BUCKET_WIDTH_SOL {
+                return Err(format!(
+                    "bucket_size_amount must be null (exact match) or a finite SOL width \
+                     >= {MIN_BUCKET_WIDTH_SOL} (got {w})"
+                ));
+            }
         }
         Ok(())
     }
@@ -175,7 +197,7 @@ impl Fingerprint {
 mod tests {
     use super::*;
 
-    fn fp_with(bucket_size_amount: f64) -> Fingerprint {
+    fn fp_with(bucket_size_amount: Option<f64>) -> Fingerprint {
         let now = Utc::now();
         Fingerprint {
             id: Uuid::nil(),
@@ -200,11 +222,11 @@ mod tests {
         // A 0 width makes `bucket_index` saturate every positive value to the same
         // index, so a configured SOL axis would match any non-zero amount.
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY, MIN_BUCKET_WIDTH_SOL / 2.0] {
-            let err = fp_with(bad).validate().unwrap_err();
+            let err = fp_with(Some(bad)).validate().unwrap_err();
             assert!(err.contains("bucket_size_amount"), "width {bad} not rejected: {err}");
         }
         for ok in [MIN_BUCKET_WIDTH_SOL, 0.1, 1.0, 5.0] {
-            assert!(fp_with(ok).validate().is_ok(), "width {ok} wrongly rejected");
+            assert!(fp_with(Some(ok)).validate().is_ok(), "width {ok} wrongly rejected");
         }
     }
 
@@ -213,7 +235,7 @@ mod tests {
         // 0 lamports is a real axis value (bucket `[0, width)`), distinct from
         // `None`. It must survive the criterion count, unlike the caps elsewhere
         // in the codebase where 0 means "off".
-        let mut fp = fp_with(1.0);
+        let mut fp = fp_with(Some(1.0));
         fp.cu_limit = None;
         assert!(!fp.has_any_criterion(), "all-None must not count");
         fp.spendable_lamports_in = Some(0);
@@ -233,7 +255,7 @@ mod tests {
 
         // An axis-free fingerprint; each case sets exactly the axis it exercises.
         let bare = || {
-            let mut fp = fp_with(0.1);
+            let mut fp = fp_with(Some(0.1));
             fp.cu_limit = None;
             fp
         };
@@ -260,7 +282,7 @@ mod tests {
         // A fingerprint whose ONLY axis is an empty label list configures nothing:
         // it must be rejected at the write edge rather than saved to match nothing
         // in the engine and everything on the dashboard.
-        let mut fp = fp_with(0.1);
+        let mut fp = fp_with(Some(0.1));
         fp.cu_limit = None;
         fp.ix_labels = Some(vec![]);
         assert!(!fp.has_any_criterion());

@@ -14,6 +14,7 @@ use crate::api::handlers::strategies::grouped_sweep::{
     fingerprint_from_group_key, matches_field_filter,
 };
 use crate::lake::duck::LakeSource;
+use crate::sweep::grouping::SolPrecision;
 use crate::models::ingest::SseEvent;
 use crate::state::local_state::LocalState;
 use crate::strategies::flow_discovery::{
@@ -38,6 +39,10 @@ pub struct StartFlowDiscoveryBody {
     pub group_by: Vec<GroupField>,
     #[serde(default = "default_bucket_width_sol")]
     pub bucket_width_sol: f64,
+    /// `true` => group the SOL axes on their exact amount (`SolPrecision::Exact`);
+    /// `bucket_width_sol` is ignored and a bound fingerprint stores a NULL width.
+    #[serde(default)]
+    pub exact_sol: bool,
     #[serde(default)]
     pub ix_labels_filter: Option<Vec<String>>,
     #[serde(default = "default_min_tokens")]
@@ -69,6 +74,11 @@ pub struct BindFlowDiscoveryBody {
     pub group_key: serde_json::Value,
     #[serde(default = "default_bucket_width_sol")]
     pub bucket_width_sol: f64,
+    /// Must mirror the discovery run that produced `group_key` — the bound
+    /// fingerprint matches at this precision, so a mismatch arms on a different
+    /// token set than the group showed.
+    #[serde(default)]
+    pub exact_sol: bool,
     pub volume_ix_patterns: Vec<Vec<String>>,
     #[serde(default)]
     pub name: Option<String>,
@@ -189,7 +199,12 @@ pub async fn bind_flow_discovery(
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
     }
 
-    let mut draft = fingerprint_from_group_key(&b.group_key, b.bucket_width_sol, name);
+    let precision = if b.exact_sol {
+        SolPrecision::Exact
+    } else {
+        SolPrecision::from_width(Some(b.bucket_width_sol))
+    };
+    let mut draft = fingerprint_from_group_key(&b.group_key, precision, name);
     draft.metric_config = metric_config.clone();
     if !draft.has_any_criterion() {
         return HttpResponse::BadRequest().json(serde_json::json!({
@@ -402,7 +417,7 @@ async fn run_flow_discovery_job(
 
     let cfg = DiscoveryConfig {
         group_by: b.group_by,
-        bucket_width_sol: b.bucket_width_sol,
+        bucket_width_sol: if b.exact_sol { None } else { Some(b.bucket_width_sol) },
         min_tokens: b.min_tokens.max(1),
         ..DiscoveryConfig::default()
     };

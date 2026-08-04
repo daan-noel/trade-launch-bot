@@ -20,12 +20,12 @@ import {
   useGetGroupedCreationStatsQuery,
   useGetGroupedCreationTokensQuery,
 } from '@lab/store/labEndpoints';
-import { parseNumbers, parseIxLabelsFilter } from '@lab/components/sweep/fingerprintFilters';
+import { parseIxLabelsFilter, buildFieldFilters } from '@lab/components/sweep/fingerprintFilters';
 import {
   FingerprintGroupPicker,
   type CashbackFilter,
 } from '@lab/components/sweep/FingerprintGroupPicker';
-import { SOL_BUCKET_WIDTH } from '@lab/components/sweep/groupedTypes';
+import { SOL_BUCKET_WIDTH, BUCKETED_GROUP_FIELDS } from '@lab/components/sweep/groupedTypes';
 import { formatWithCommas } from 'utils/format';
 import { cn } from 'lib/cn';
 import { CreationHeatmap } from 'components/creation-stats/CreationHeatmap';
@@ -169,6 +169,9 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   // Bucket width (SOL) for the continuous SOL group fields — the same knob the
   // grouped sweep uses, so this dashboard groups a corpus identically to a sweep.
   const [bucketWidth, setBucketWidth] = useLocalStorage<number>(STORAGE_KEYS.groupedBucketWidth, 0.1);
+  // Exact mode: key the ◎ SOL fields on the amount itself, one group per distinct
+  // value. Separate from the width (never a magic 0) — see Rust `SolPrecision`.
+  const [exactSol, setExactSol] = useLocalStorage<boolean>(STORAGE_KEYS.groupedExactSol, false);
   const [bucket, setBucket] = useLocalStorage<CreationBucket>(STORAGE_KEYS.groupedBucket, 'day');
   const [rangeDays, setRangeDays] = useLocalStorage<number>(STORAGE_KEYS.groupedRange, 30);
   const [fieldFiltersText, setFieldFiltersText] = useLocalStorage<Record<string, string>>(STORAGE_KEYS.groupedFilters, {});
@@ -221,6 +224,22 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   // Parse the ix_labels textarea once; an active parse error blocks Analyze.
   const ixFilter = useMemo(() => parseIxLabelsFilter(ixLabelsText), [ixLabelsText]);
 
+  // Per-field value filters, parsed once. The bucketed ◎ SOL fields accept an
+  // exact amount OR a bucket range and are validated (`parseSolFilterList`); the
+  // discrete ones stay plain numbers. A bad entry blocks Analyze rather than
+  // shipping a filter that reads as "no filter" or as unsatisfiable — the two
+  // ways this control used to fail silently.
+  const scalarFilters = useMemo(
+    () =>
+      buildFieldFilters(fieldFiltersText, {
+        fields: SCALAR_FILTER_FIELDS,
+        bucketed: BUCKETED_GROUP_FIELDS,
+        cashback: cashbackFilter,
+        labels: GROUP_FIELD_LABELS,
+      }),
+    [fieldFiltersText, cashbackFilter],
+  );
+
   // Build the query args from the current draft + page props (the thing Analyze
   // snapshots). Memoized so dirty-checking + click are cheap. Scoped by a saved
   // fingerprint ⇒ the manual group-by/filters below are dropped entirely (the
@@ -238,12 +257,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
       };
     }
 
-    const fieldFilters: Record<string, string[]> = {};
-    for (const f of SCALAR_FILTER_FIELDS) {
-      const nums = parseNumbers(fieldFiltersText[f] ?? '');
-      if (nums.length > 0) fieldFilters[f] = nums.map(String);
-    }
-    if (cashbackFilter !== 'all') fieldFilters['is_cashback_enabled'] = [cashbackFilter];
+    const fieldFilters = scalarFilters.filters;
 
     return {
       bucket: effBucket,
@@ -252,8 +266,14 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
       segment,
       groupBy,
       top,
-      // Send only a non-default width so the 0.1 case keeps a stable cache key.
-      ...(bucketWidth !== SOL_BUCKET_WIDTH ? { bucketWidth } : {}),
+      // Exact mode replaces the width outright (the backend ignores it there), so
+      // the two are never sent together — one knob, one meaning.
+      ...(exactSol
+        ? { exactSol: true }
+        : // Send only a non-default width so the 0.1 case keeps a stable cache key.
+          bucketWidth !== SOL_BUCKET_WIDTH
+          ? { bucketWidth }
+          : {}),
       ...(Object.keys(fieldFilters).length > 0 ? { fieldFilters } : {}),
       // ix_labels grouping and the exact-set filter are mutually exclusive
       // (matches the sweep page): drop the filter when grouping by ix_labels.
@@ -271,7 +291,8 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
     groupBy,
     top,
     bucketWidth,
-    fieldFiltersText,
+    exactSol,
+    scalarFilters.filters,
     cashbackFilter,
     ixFilter.labels,
     rankBy,
@@ -320,6 +341,16 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   // is also omitted for the default 0.1 case.
   const appliedBucketWidth = data?.bucket_width ?? applied?.bucketWidth ?? SOL_BUCKET_WIDTH;
 
+  // Was the applied run keyed on exact SOL amounts? Then a card's SOL axes read
+  // "1.515", not "1.5–1.6", and the card **cannot** become a fingerprint: the live
+  // engine matches those axes with `same_bucket` at the fingerprint's own
+  // `bucket_size_amount`, so any width we invented here would silently arm on a
+  // window the card never showed. Offering Create anyway would mint a rule that
+  // matches something other than what you clicked — so it's hidden, with the
+  // reason on the card. (Prefer the Analyze snapshot over the response echo so an
+  // in-flight refetch can't briefly flip the badge.)
+  const appliedExactSol = applied?.exactSol ?? data?.bucket_width === null;
+
   // Applied exact-set ix_labels filter. Prefer the Analyze snapshot (`applied`)
   // over the response echo so a in-flight refetch can't briefly drop the axis
   // while previous data (no filter) is still on screen. When Instruction labels
@@ -340,15 +371,27 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
         : null;
     for (const g of groups) {
       const gk = withIxLabelsFilter(g.group_key, appliedIxLabels);
-      const matched =
-        scoped ?? findFingerprintForGroupKey(gk, fingerprints, appliedBucketWidth);
+      // Under exact-SOL grouping the key carries amounts, not bucket labels, so
+      // neither the identity match nor create is meaningful — both read a `lo`
+      // edge that isn't there. Fall back to the scope link only.
+      const matched = appliedExactSol
+        ? scoped
+        : scoped ?? findFingerprintForGroupKey(gk, fingerprints, appliedBucketWidth);
       const canCreate =
+        !appliedExactSol &&
         matched == null &&
         identityHasCriterion(fingerprintIdentityFromGroupKey(gk, appliedBucketWidth));
       map.set(g.g, { matched, canCreate });
     }
     return map;
-  }, [groups, fingerprints, appliedBucketWidth, applied?.fingerprintId, appliedIxLabels]);
+  }, [
+    groups,
+    fingerprints,
+    appliedBucketWidth,
+    appliedExactSol,
+    applied?.fingerprintId,
+    appliedIxLabels,
+  ]);
 
   // Save a group card as a fingerprint. Identity = group_key axes, plus the
   // applied ix_labels filter when that axis wasn't grouped (mutually exclusive
@@ -386,6 +429,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
       segment: applied.segment,
       groupBy: applied.groupBy,
       bucketWidth: applied.bucketWidth,
+      exactSol: applied.exactSol,
       fieldFilters: applied.fieldFilters,
       ixLabelsFilter: applied.ixLabelsFilter,
       fingerprintId: applied.fingerprintId,
@@ -480,9 +524,11 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
             size="sm"
             variant={dirty ? 'primary' : 'subtle'}
             active={dirty}
-            disabled={isFetching || ixFilter.error != null}
+            disabled={isFetching || ixFilter.error != null || scalarFilters.error != null}
             onClick={() => setApplied(draftArgs)}
-            title={ixFilter.error ?? 'Run the analysis with the current settings'}
+            title={
+              scalarFilters.error ?? ixFilter.error ?? 'Run the analysis with the current settings'
+            }
           >
             {isFetching ? 'Analyzing…' : dirty ? 'Analyze' : 'Analyzed'}
           </Button>
@@ -518,6 +564,8 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
           onSetCashback={setCashbackFilter}
           bucketWidthSol={bucketWidth}
           onSetBucketWidth={setBucketWidth}
+          exactSol={exactSol}
+          onSetExactSol={setExactSol}
           ixLabelsText={ixLabelsText}
           onSetIxLabels={setIxLabelsText}
           ixFilter={ixFilter}
@@ -527,6 +575,9 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
               : 'No fields selected → one "ALL" group (every token in the window).'
           }
         />
+        {scalarFilters.error && (
+          <p className="mt-1 text-[11px] text-red">{scalarFilters.error}</p>
+        )}
       </div>
 
       {isError && (
@@ -649,6 +700,20 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
                           >
                             {fpBusyGroup === g.g ? 'Creating…' : 'Create fingerprint'}
                           </Button>
+                        ) : appliedExactSol ? (
+                          // Say why the action is gone rather than leaving a silent
+                          // gap — the reason is a real constraint, not an oversight.
+                          <span
+                            className="text-[10px] text-text-dim/60"
+                            title={
+                              'This card groups on exact SOL amounts, but a fingerprint matches SOL axes\n' +
+                              'by BUCKET (the live engine uses same_bucket at the fingerprint\'s own\n' +
+                              'bucket_size_amount). Saving this card would arm on a window it never showed.\n\n' +
+                              'Uncheck "Exact values" to group into buckets, then Create.'
+                            }
+                          >
+                            exact — not saveable
+                          </span>
                         ) : null}
                         <Button
                           size="sm"
