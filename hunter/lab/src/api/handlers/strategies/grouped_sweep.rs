@@ -2324,10 +2324,13 @@ pub async fn list_token_results(
             }
         };
     let target_key = group.group_key.clone();
-    // Re-partition at the SAME width the run swept, so the re-computed group keys
-    // match the stored `target_key`. Legacy rows (NULL) fall back to the default,
-    // which is exactly the width they were swept at.
-    let run_width = run.bucket_width_sol.unwrap_or(crate::sweep::grouping::SOL_BUCKET_WIDTH);
+    // Re-partition at the SAME precision the run swept, so the re-computed group
+    // keys match the stored `target_key` byte-for-byte. Read through the ONE
+    // `SolPrecision::from_width` reader: a NULL width means the run keyed EXACT
+    // amounts, not "legacy row, use the default width" — substituting a default
+    // here re-buckets an exact group (`"1.01"` → `"1–1.1"`), the retain below
+    // matches nothing, and the drill-in returns zero rows.
+    let run_precision = SolPrecision::from_width(run.bucket_width_sol);
 
     // A fingerprint-scoped run's corpus can only be reproduced through the engine
     // matcher (the manual filters are NULL on such a row), so resolve the scope
@@ -2385,7 +2388,7 @@ pub async fn list_token_results(
                 tokens.retain(|t| matches_field_filter(&t.fp, field, allowed));
             }
         }
-        tokens.retain(|t| group_key(&t.fp, &grouping_fields, run_width).to_json() == target_key);
+        tokens.retain(|t| group_key(&t.fp, &grouping_fields, run_precision).to_json() == target_key);
         tokens
     };
 

@@ -54,8 +54,9 @@ pub struct Fingerprint {
     /// `NULL` — not `0` — is how "not bucketed" is spelled: a width is a *measured*
     /// quantity, `floor(v/0)` is a division by zero, and this value feeds the live
     /// entry gate. Read it through `hunter_engine::fingerprint::Fingerprint::precision`,
-    /// never directly. Enforced by `0018_fingerprint_exact_bucket.sql`
-    /// (`NULL OR (>= 1e-6 AND <= 1e6)`) and [`Fingerprint::validate`].
+    /// never directly. Enforced by `0020_fingerprint_exact_bucket.sql`
+    /// (`NULL OR (>= 1e-6 AND <= 1e6)`, with the column made nullable in
+    /// `0021_fingerprint_bucket_size_nullable.sql`) and [`Fingerprint::validate`].
     pub bucket_size_amount: Option<f64>,
     /// Exact ordered instruction-label sequence of the creation tx.
     pub ix_labels: Option<Vec<String>>,
