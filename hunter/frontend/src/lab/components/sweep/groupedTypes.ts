@@ -116,7 +116,9 @@ export interface GroupedSweepRunRecord {
   /** Notional (SOL) each simulated round-trip was priced at; `null` on legacy runs. */
   buy_amount_sol: number | null;
   /** Bucket width (SOL) the continuous SOL group fields were binned at — the width
-   *  a promoted rule's matcher must use so it matches the same bucket. `null` legacy. */
+   *  a promoted rule's matcher must use so it matches the same bucket. `null` = the
+   *  run grouped on **exact** amounts (`SolPrecision::Exact`), the same NULL-means-exact
+   *  spelling `Fingerprint.bucket_size_amount` uses; never substitute a default for it. */
   bucket_width_sol: number | null;
   /** Corpus-wide volume-ix patterns used when the run swept flow axes. `null` =
    *  non-flow run / legacy. Promote copies these into the fingerprint. */

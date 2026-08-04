@@ -113,6 +113,8 @@ export function PortfolioPage() {
           </Link>
         ),
         searchValue: (r) => r.rule_name ?? r.rule_id,
+        sortValue: (r) => r.rule_name ?? r.rule_id,
+        sortable: true,
       },
       {
         key: 'pnl',

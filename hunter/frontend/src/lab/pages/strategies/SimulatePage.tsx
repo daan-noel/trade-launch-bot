@@ -1081,6 +1081,7 @@ function buildColumns(
       ),
       searchValue: (r) =>
         `${r.rule_name} ${!r.is_enabled ? 'disabled' : r.is_active ? 'active' : 'idle'}`,
+      sortValue: (r) => r.rule_name,
     },
     {
       key: 'mode',

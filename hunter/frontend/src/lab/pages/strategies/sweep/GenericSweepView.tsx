@@ -63,7 +63,7 @@ import type {
   ComboTokenResult,
   GroupedSweepStartArgs,
 } from '@lab/components/sweep/groupedTypes';
-import { SOL_BUCKET_WIDTH } from '@lab/components/sweep/groupedTypes';
+import { withIxLabelsFilter } from '@lab/components/creation-stats/groupedCreationStats';
 import { findFingerprintForGroupKey } from 'lib/strategy/matchGroupFingerprint';
 import type { Fingerprint, PromotedRuleDraft, StrategyRule } from 'lib/strategy/types';
 import { tidySolDecimal } from 'utils/format';
@@ -338,7 +338,11 @@ export function GenericSweepView() {
   const { data: strategyRules = [] } = useGetStrategyRulesQuery();
   // group_key → saved fingerprint (promote identity) → rules for the Used-by column.
   const fingerprintByGroupId = useMemo(() => {
-    const width = tidySolDecimal(activeRun?.bucket_width_sol ?? SOL_BUCKET_WIDTH);
+    // A NULL width IS the exact mode, and precision is part of fingerprint identity
+    // (`sameWidth`) — substituting the default would match these cards against
+    // 0.1-bucketed fingerprints and miss the exact ones the run can actually promote to.
+    const width =
+      activeRun?.bucket_width_sol == null ? null : tidySolDecimal(activeRun.bucket_width_sol);
     // A scoped run pins the whole corpus to one saved fingerprint; every group is a
     // sub-slice of it, so that fingerprint is the authoritative attribution. The
     // group_key omits the scope's identity axes, so group-key matching can't recover
@@ -350,11 +354,25 @@ export function GenericSweepView() {
         : null;
     const map = new Map<string, Fingerprint>();
     for (const g of groups) {
-      const fp = scopeFp ?? findFingerprintForGroupKey(g.group_key, fingerprints, width);
+      // The run's exact-set label filter is part of the promote identity but lives on
+      // the RUN, not the group key (the form disables the filter box when `ix_labels`
+      // is a group-by, so at most one of the two is ever set) — `promote_group` copies
+      // it into the created fingerprint. Re-attach it here or the identity compare can
+      // never hit, leaving every card on a filtered run to the ambiguous
+      // single-compatible fallback, which silently un-badges as soon as a second
+      // fingerprint is compatible. Same helper the creation-stats dashboard uses.
+      const gk = withIxLabelsFilter(g.group_key, activeRun?.ix_labels_filter);
+      const fp = scopeFp ?? findFingerprintForGroupKey(gk, fingerprints, width);
       if (fp) map.set(g.id, fp);
     }
     return map;
-  }, [groups, fingerprints, activeRun?.bucket_width_sol, activeRun?.fingerprint_id]);
+  }, [
+    groups,
+    fingerprints,
+    activeRun?.bucket_width_sol,
+    activeRun?.fingerprint_id,
+    activeRun?.ix_labels_filter,
+  ]);
   const rulesByFingerprintId = useMemo(() => {
     const map = new Map<string, StrategyRule[]>();
     for (const r of strategyRules) {

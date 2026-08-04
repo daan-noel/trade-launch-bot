@@ -393,6 +393,8 @@ export function RulesView({
         </RuleHoverTip>
       ),
       searchValue: (r) => r.rule_name,
+      sortValue: (r) => r.rule_name,
+      sortable: true,
     },
     ...(showScores
       ? ([

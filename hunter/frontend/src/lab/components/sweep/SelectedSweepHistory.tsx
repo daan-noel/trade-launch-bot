@@ -12,7 +12,6 @@ import { fingerprintsHref } from 'lib/strategy/nav';
 import { COST_MODELS, FILL_MODELS } from 'lib/strategy/types';
 import {
   GROUP_FIELD_LABELS,
-  SOL_BUCKET_WIDTH,
   type GroupField,
   type GroupedSweepRunRecord,
 } from './groupedTypes';
@@ -255,8 +254,12 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
         </Row>
         <Row label="Caps / gates">
           min {run.min_tokens} tok/grp · token cap {run.token_cap ?? '—'} · max combos{' '}
-          {run.max_combos ?? 'default'} · buy {tidySolDecimal(run.buy_amount_sol ?? 1)} SOL · bucket{' '}
-          {tidySolDecimal(run.bucket_width_sol ?? SOL_BUCKET_WIDTH)} SOL
+          {run.max_combos ?? 'default'} · buy {tidySolDecimal(run.buy_amount_sol ?? 1)} SOL ·{' '}
+          {/* A NULL width IS the exact mode (Rust `SolPrecision::from_width`) — substituting
+              the default here reported a 0.1 bucket on runs that grouped exact amounts. */}
+          {run.bucket_width_sol == null
+            ? 'exact SOL amounts'
+            : `bucket ${tidySolDecimal(run.bucket_width_sol)} SOL`}
           {run.curve_only ? ' · curve-only' : ''}
         </Row>
         {/* Pricing is part of this run's IDENTITY, not a display preference: every

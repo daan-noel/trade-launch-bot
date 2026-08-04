@@ -60,22 +60,23 @@ const NUMERIC_FIELDS = GROUP_FIELDS.filter(
  *  ("1.5–1.6"), but the value filter pins an **exact SOL amount** (1.515) on the
  *  underlying lamports — independent of the bucket width. Typing a range here
  *  matches nothing (the backend 400s on it). */
-function fieldUnitHint(field: GroupField, width: number): string {
+function fieldUnitHint(field: GroupField, width: number | null): string {
   switch (field) {
     case 'cu_limit':
       return 'Raw integer (e.g. 200000), exact grouping. Match values shown in group keys.';
     case 'cu_price':
       return 'Raw integer (e.g. 1000), exact grouping. Match values shown in group keys.';
     default:
-      return BUCKETED_GROUP_FIELDS.has(field)
-        ? `SOL amount "1.515" (that exact value) or bucket range "1.5–1.6" (the half-open window a group chip shows). Independent of the ${width}-SOL grouping width.`
-        : 'Comma-separated numbers.';
+      if (!BUCKETED_GROUP_FIELDS.has(field)) return 'Comma-separated numbers.';
+      return width == null
+        ? 'SOL amount "1.515" (that exact value). This run groups the ◎ fields on their exact amount, so group chips read as single values, not ranges.'
+        : `SOL amount "1.515" (that exact value) or bucket range "1.5–1.6" (the half-open window a group chip shows). Independent of the ${width}-SOL grouping width.`;
   }
 }
 
 /** Tooltip for a numeric field's filter input — explains the 3-state interaction
  *  (neutral wording so it reads correctly on the sweep page and the dashboard). */
-function fieldFilterTooltip(field: GroupField, isGrouped: boolean, width: number): string {
+function fieldFilterTooltip(field: GroupField, isGrouped: boolean, width: number | null): string {
   const label = GROUP_FIELD_LABELS[field];
   const units = fieldUnitHint(field, width);
   const whenOn = isGrouped
@@ -231,7 +232,7 @@ export function FingerprintGroupPicker({
                 value={filterText}
                 onChange={(e) => onSetFieldFilter(f, e.target.value)}
                 placeholder={BUCKETED_GROUP_FIELDS.has(f) ? '1.515 or 1.5–1.6' : 'all values'}
-                title={fieldFilterTooltip(f, isGrouped, bucketWidthSol)}
+                title={fieldFilterTooltip(f, isGrouped, exactSol ? null : bucketWidthSol)}
                 className="min-w-0 flex-1 rounded border border-white/10 bg-surface px-2 py-0.5 text-xs text-text-mid placeholder:text-text-dim/30 focus:border-white/25 focus:outline-none"
               />
               {/* The ◎ chip states how the field GROUPS; the pinned/filtered badge
@@ -241,7 +242,12 @@ export function FingerprintGroupPicker({
               {BUCKETED_GROUP_FIELDS.has(f) && (
                 <BucketChip
                   width={bucketWidthSol}
-                  title={`Continuous SOL amount — grouped into ${bucketWidthSol}-SOL buckets. Group chips read as ranges (e.g. "1.0–1.1"), not exact values.\n\nThe filter box is separate: it pins an exact SOL amount, whatever the bucket width.`}
+                  exact={exactSol}
+                  title={
+                    exactSol
+                      ? 'Continuous SOL amount — grouped on the exact amount (one group per distinct value). Group chips read as single values, not ranges.\n\nThe filter box is separate: it pins an exact SOL amount either way.'
+                      : `Continuous SOL amount — grouped into ${bucketWidthSol}-SOL buckets. Group chips read as ranges (e.g. "1.0–1.1"), not exact values.\n\nThe filter box is separate: it pins an exact SOL amount, whatever the bucket width.`
+                  }
                 />
               )}
               {hasFilter && (
@@ -389,9 +395,9 @@ export function FingerprintGroupPicker({
               'Group the ◎ SOL fields on their EXACT amount — one group per distinct value,\n' +
               'e.g. "1.515" instead of "1.5–1.6". Answers "what are the most common exact\n' +
               'amounts?", which bucketing cannot.\n\n' +
-              'Expect many more groups (raise Top N). Cards produced this way cannot be saved\n' +
-              'as fingerprints: the live engine matches SOL axes by bucket, so an exact card\n' +
-              'has no faithful fingerprint.\n\n' +
+              'Expect many more groups (raise Top N). A card produced this way promotes to a\n' +
+              'fingerprint with a NULL bucket width, which the live matcher reads as exact —\n' +
+              'so the promoted rule arms on exactly the tokens the card counted.\n\n' +
               'Independent of the filter boxes above, which are always exact/range.'
             }
           >
@@ -408,14 +414,24 @@ export function FingerprintGroupPicker({
 
       {/* Legend — which fields bucket and how (so grouping behavior is self-explaining). */}
       <p className="text-[11px] leading-snug text-text-dim/70">
-        <BucketChip width={bucketWidthSol} className="align-middle" />{' '}
+        <BucketChip width={bucketWidthSol} exact={exactSol} className="align-middle" />{' '}
         <span className="text-text-mid">
           {[...BUCKETED_GROUP_FIELDS].map((f) => GROUP_FIELD_LABELS[f]).join(', ')}
         </span>{' '}
-        are continuous SOL amounts, so they group by <b>{bucketWidthSol}-SOL ranges</b> —
-        group chips read as{' '}
-        <span className="font-mono">1.0–1.1</span>, not exact values. Every other field
-        groups on its <b>exact</b> value. Their filter boxes take either form:{' '}
+        are continuous SOL amounts, so they group by{' '}
+        {exactSol ? (
+          <>
+            their <b>exact amount</b> — group chips read as{' '}
+            <span className="font-mono">1.515</span>, one per distinct value
+          </>
+        ) : (
+          <>
+            <b>{bucketWidthSol}-SOL ranges</b> — group chips read as{' '}
+            <span className="font-mono">1.0–1.1</span>, not exact values
+          </>
+        )}
+        . Every other field groups on its <b>exact</b> value. Their filter boxes take
+        either form:{' '}
         <span className="font-mono">1.515</span> pins that exact amount,{' '}
         <span className="font-mono">1.5–1.6</span> pins the whole bucket — both
         independent of the grouping width above.
