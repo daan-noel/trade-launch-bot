@@ -118,6 +118,12 @@ Clippy `too_many_arguments` is `#[allow]`-ed on trade-path fns by design.
   `trades`/`raw_txs`. Hot tables are **TimescaleDB hypertables** with declarative
   compression + retention (in `0001_init.sql`); the old hand-rolled `maintenance.rs`
   partition loop is gone.
+- **Both migration chains are squashed to a single `0001_init.sql`** (core +
+  lab). A new migration is a new `00NN_*.sql`; re-squashing later invalidates every
+  already-migrated database's ledger and needs a one-off
+  `scripts/consolidate-migration-ledgers.ps1` run per DB (**EC2 before the next
+  `db-incremental-sync.ps1`**, which copies the server ledger into the local
+  mirror). Rules + the verification step: `docs/plans/database/db-patterns.md`.
 - **Trade-history reads: lake vs PG.** Single-rule simulate + all `lab` analysis read the
   sealed Parquet lake (same corpus/`SweepTrade` as the sweep); only two indexed lookups
   stay on PG. There is ONE deliberate full-history PG carve-out (`GET
@@ -207,7 +213,7 @@ identity (`bucket_axis` / `IS NOT DISTINCT FROM` / the `∅` grouping sentinel a
 **An empty collection is the same sentinel** — `ix_labels: Some([])` means "not set", so it
 collapses to `None` via the ONE decider `hunter_engine::fingerprint::configured_labels`, and
 `from_json` folds `[]` → `None` at the wire boundary so the ambiguous state never reaches
-storage (normalized by `0015_fingerprint_empty_ix_labels_null.sql`).
+storage.
 
 A *sentinel* field always needs ONE reader; two readers of the same sentinel is the bug, and
 it fails **in opposite directions** on the fingerprint path — the engine matcher turns

@@ -88,7 +88,7 @@ The fix keeps that bound with a **fixed-size** array instead of a per-label map:
   `"Metrics"` code name it used to persist — the fix applies at both the
   per-token and the aggregated-combo level.
 - Persisted as one `INTEGER[]` column on `grouped_sweep_results`
-  (`0012_exit_metric_slots.sql`), not `N` scalar columns — `append_group`'s
+  (`grouped_sweep_results.n_exit_metrics_by_slot`), not `N` scalar columns — `append_group`'s
   bulk insert already sits close to the 65535 bind-parameter ceiling on its
   2000-row chunks, and an array column costs exactly one bind per row.
 - The frontend never re-derives a slot's meaning: `GET …/results` returns an

@@ -30,8 +30,9 @@ only ever *loosens* a floor, so it can never turn a fill into a revert. The old
 inverting the value's meaning on the bot's own buy AND sell paths (an exit meant
 to clear at any price during a dump instead reverted on 0.1% movement). A stored
 `10` could be a genuine 0.1% or a clamped `0` and the two are not distinguishable,
-so `0016_slippage_reset_and_retire_legacy.sql` resets both keys rather than
-attempting a repair.
+so the slippage-reset migration deleted both keys from `app_settings` rather than
+attempting a repair (a one-off data fix; it is a no-op on a fresh DB, so the squash
+into `0001_init.sql` records it only as a note).
 
 The legacy combined `trade.slippage_bps` key is **retired** by the same migration:
 the buy chain is now one key, so a blank buy field falls to the default instead of

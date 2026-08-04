@@ -1008,9 +1008,17 @@ ON CONFLICT (id) DO UPDATE SET
 "@ 'strategy tables'
 
   # ---- 8. Sync _sqlx_migrations so local backend doesn't re-apply applied migrations ---
-  # The server's checksum records are authoritative (same files, same binary).
-  # Without this, _sqlx_migrations is empty locally and sqlx re-runs all migrations
-  # on every startup, failing on non-idempotent steps.
+  # The server's checksum records are authoritative (same files, same binary --
+  # .gitattributes pins **/migrations/*.sql to eol=lf so the SHA-384 is identical on
+  # Windows and in the Linux build container). Without this, _sqlx_migrations is
+  # empty locally and sqlx re-runs all migrations on every startup, failing on
+  # non-idempotent steps.
+  #
+  # CAUTION after a migration squash: this copies the SERVER's rows in, so if the
+  # server ledger still lists versions 2..N and the local one was already collapsed
+  # to a single version 1, this re-pollutes local and the next local boot aborts
+  # ("previously applied but is missing"). Run scripts/consolidate-migration-ledgers.ps1
+  # against the SERVER database first, then sync.
   Write-Host "Syncing _sqlx_migrations from server ..."
   $env:PGPASSWORD = $remotePw
   $migErr = [System.IO.Path]::GetTempFileName()

@@ -20,3 +20,11 @@ Dockerfile text eol=lf
 
 # Shell scripts must stay LF to run in Linux containers / on the EC2 host.
 *.sh text eol=lf
+
+# Migrations are checksummed BY CONTENT: sqlx stores SHA-384 of the file bytes in
+# `_sqlx_migrations` (and our lab runner in `_lab_migrations`), so a CRLF checkout
+# on Windows and an LF checkout in the Linux build container would hash the SAME
+# migration differently -- the local bin and the EC2 bin would each refuse the
+# other's ledger, and db-incremental-sync copies that ledger between them. Force LF
+# so the checksum is platform-stable.
+**/migrations/*.sql text eol=lf

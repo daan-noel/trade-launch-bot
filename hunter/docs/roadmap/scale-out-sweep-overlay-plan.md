@@ -28,7 +28,7 @@ Promote / drill-in: read params as-is — the winning ladder (if any) is already
 ```
 
 - Run-level fields: `scale_out` (JSONB `ExitStage[][]` — one array per
-  candidate ladder) + `scale_out_top_k` (int). Mig `0013_sweep_scale_out_overlay.sql`
+  candidate ladder) + `scale_out_top_k` (int). Columns in `lab/migrations/0001_init.sql`
   (column shape unchanged from v1 — JSONB — only its *content* is now a grid).
   `scale_out` on the run row is the **search space**, not what any one combo
   ended up with — read that combo's own `params.scale_out`.

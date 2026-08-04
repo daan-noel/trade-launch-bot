@@ -96,7 +96,7 @@ Two mutually-exclusive ways the start request narrows the loaded corpus, both ap
 
 **Promote carries `ix_labels_filter` onto the synthesized fingerprint**, because the group key only holds *grouped* fields — the filter is a corpus narrowing that lives on the run row. The form disables the filter box when `ix_labels` is a group-by, so at most one of the two ever supplies the axis. Both sides mean the same thing (exact **ordered** label sequence), so the copy is faithful. `field_filters` deliberately do **not** carry: they pin an exact value where a fingerprint SOL axis matches by *bucket*, and admit a value *set* where an axis holds one — promote `warn!`s instead of silently widening.
 
-The scope is persisted on the run row (`grouped_sweep_runs.fingerprint_id`, `lab/migrations/0009_sweep_fingerprint_id.sql`, no FK) because it is not reconstructible from the filter columns: the token-results reload re-applies the same match, re-run restores it in the form, and **promote reuses the scope fingerprint itself** instead of synthesizing one from the group key — an `ALL` group key would otherwise yield an axis-less fingerprint that matches every token.
+The scope is persisted on the run row (`grouped_sweep_runs.fingerprint_id`, `lab/migrations/0001_init.sql`, no FK) because it is not reconstructible from the filter columns: the token-results reload re-applies the same match, re-run restores it in the form, and **promote reuses the scope fingerprint itself** instead of synthesizing one from the group key — an `ALL` group key would otherwise yield an axis-less fingerprint that matches every token.
 
 ### Metric scope: token-scoped columns vs position-scoped axes
 

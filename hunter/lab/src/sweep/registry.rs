@@ -548,7 +548,7 @@ fn threads_fitting_admission(preferred: usize, max_series_bytes: usize, budget: 
 // ---------------------------------------------------------------------------
 
 /// The redesigned generic engine's single (unprefixed) grouped-sweep table set.
-/// Created in `lab/migrations/0003_generic_grouped_sweep.sql`.
+/// Created in `lab/migrations/0001_init.sql`.
 const GENERIC_TABLES: GroupedSweepTables = GroupedSweepTables {
     runs: "grouped_sweep_runs",
     groups: "grouped_sweep_groups",

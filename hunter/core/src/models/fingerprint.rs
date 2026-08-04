@@ -54,9 +54,9 @@ pub struct Fingerprint {
     /// `NULL` — not `0` — is how "not bucketed" is spelled: a width is a *measured*
     /// quantity, `floor(v/0)` is a division by zero, and this value feeds the live
     /// entry gate. Read it through `hunter_engine::fingerprint::Fingerprint::precision`,
-    /// never directly. Enforced by `0020_fingerprint_exact_bucket.sql`
-    /// (`NULL OR (>= 1e-6 AND <= 1e6)`, with the column made nullable in
-    /// `0021_fingerprint_bucket_size_nullable.sql`) and [`Fingerprint::validate`].
+    /// never directly. Enforced by the `fingerprints_bucket_size_amount_positive`
+    /// CHECK in `0001_init.sql` (`NULL OR (>= 1e-6 AND <= 1e6)`, on a nullable
+    /// column) and [`Fingerprint::validate`].
     pub bucket_size_amount: Option<f64>,
     /// Exact ordered instruction-label sequence of the creation tx.
     pub ix_labels: Option<Vec<String>>,
@@ -156,8 +156,8 @@ impl Fingerprint {
     /// The ONE write-edge gate for a persisted fingerprint — called by the live +
     /// lab create/update handlers (for a 400) and again by `FingerprintRepo`
     /// insert/update (backstop for non-HTTP writers like sweep promotion). The DB
-    /// `CHECK` added in `0014_fingerprint_bucket_width_positive.sql` is the last
-    /// line of defence.
+    /// `fingerprints_bucket_size_amount_positive` CHECK (`0001_init.sql`) is the
+    /// last line of defence.
     ///
     /// * **At least one match criterion.** An all-`None` row hits the matcher's
     ///   own never-match-everything guard, so it silently matches *nothing* and

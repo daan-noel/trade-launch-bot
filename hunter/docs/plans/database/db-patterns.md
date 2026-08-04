@@ -25,7 +25,9 @@ A single pool under mixed workload creates latency spikes: a slow sweep query (f
 
 ## Migration Conventions
 
-File naming: `backend/migrations/00NN_descriptive-slug.sql`. `0001_init.sql` is the consolidated baseline — it contains every table that existed at the point the migration history was squashed. New migrations are additive only.
+File naming: `<crate>/migrations/00NN_descriptive-slug.sql`. `0001_init.sql` is the consolidated baseline — the entire chain squashed into one end-state file, so it creates exactly what running the chain on a fresh database would leave. New migrations are additive only.
+
+**Squashing again later is not free.** The ledger keys on `(version, SHA-384 of the file bytes)`, so folding `00NN_*.sql` back into `0001_init.sql` both changes version 1's checksum and orphans versions 2..N — the runner refuses to boot on either. Every already-migrated database must be reconciled once with `scripts/consolidate-migration-ledgers.ps1` (ledger-only). When you squash: fold each later migration into the logical place in the end-state DDL, keep its rationale as a comment there, and **drop the pure data backfills** (they only rewrote pre-existing rows, so they are no-ops on a fresh DB) — note in the header which ones were dropped and why. Then verify by applying the squashed file to a scratch database and diffing `information_schema.columns` + `pg_constraint` + `pg_indexes` against a real, incrementally-migrated one; the diff must be empty.
 
 Runner: `sqlx::migrate!("./migrations")` in `storage/postgres.rs::connect()`. Migrations run at every startup on the `hot` pool. `sqlx_migrations` table tracks applied migrations.
 

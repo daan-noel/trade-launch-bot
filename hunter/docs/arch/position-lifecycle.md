@@ -256,7 +256,8 @@ when SSE stale). Notifications deep-link to `/console?position=…` (`opsNotifyH
 - Live: `hunter/live/src/strategies/engine/{sinks,reapers,orphan_exit,decision_loop,mod}.rs`
 - Repo/model: `hunter/core/src/models/strategy.rs`,
   `hunter/core/src/storage/repositories/strategy_repo.rs`
-- Migrations: `0012_exit_redrive_park.sql`, `0013_status_split_manual_origin.sql`
+- Schema: `hunter/core/migrations/0001_init.sql` (`strategy_positions` — the status
+  domain, `origin`/`manual_exit`, `exit_redrive_count`/`exit_parked`)
 - API: `hunter/live/src/api/handlers/strategies/positions.rs`,
   `handlers/trading/solana.rs` (sell lock)
 - FE: `live/pages/console/ConsolePage.tsx`, `live/slices/liveStatusSlice.ts`,

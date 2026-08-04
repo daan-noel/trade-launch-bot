@@ -37,9 +37,10 @@ pub mod keys {
         Setting::new("ingest.track_post_migration", || false);
     pub const TIMEZONE: Setting<Option<String>> = Setting::new("ui.timezone", || None);
     pub const PRICE_UNIT: Setting<Option<String>> = Setting::new("ui.price_unit", || None);
-    // Slippage is ONE key per side — the legacy combined `trade.slippage_bps` was
-    // retired by `0016_slippage_reset_and_retire_legacy.sql` so a blank buy field
-    // can't fall through to a stale legacy number instead of the default.
+    // Slippage is ONE key per side — the legacy combined `trade.slippage_bps` is
+    // retired (deleted from `app_settings` by the slippage-reset migration, now
+    // folded into `0001_init.sql`'s notes) so a blank buy field can't fall through
+    // to a stale legacy number instead of the default.
     pub const BUY_SLIPPAGE_BPS: Setting<Option<u64>> = Setting::new("trade.buy_slippage_bps", || None);
     pub const SELL_SLIPPAGE_BPS: Setting<Option<u64>> = Setting::new("trade.sell_slippage_bps", || None);
     pub const LIVE: Setting<bool> = Setting::new("ingest.live", || false);

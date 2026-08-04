@@ -14,9 +14,16 @@
 --                                   managed_wallet_id (+ wallet_address); 'dropped' position status
 --       0005 bundle_create_args     bundles.create_args (atomic-launch re-bid build inputs)
 --       0006 hot_poll_indexes       idx_launches_created, idx_managed_wallets_role_created
+--       0007 trades_priced_wallet_address  trades_priced.wallet_address (folded into
+--                                   the view definition below; was on-disk 0002)
 -- Data-only steps (variant rewrites, and the 0004 backfills that only rewrote
 -- pre-existing rows) are no-ops on a fresh DB and intentionally omitted here.
 -- See the per-domain plan docs for column rationale.
+--
+-- NOTE (ledger): collapsing the chain changes this file's checksum and removes
+-- version 2 from `_sqlx_migrations`. An already-migrated database must be
+-- reconciled once with `scripts/consolidate-migration-ledgers.ps1` before a forge
+-- bin that embeds this file will boot against it.
 --
 -- Naming rule (locked): a column denoting an amount names its unit as a SUFFIX —
 -- `amount_quote`/`amount_base` (exact BIGINT base units, display ÷10^decimals);
@@ -221,10 +228,18 @@ SELECT add_retention_policy('trades', drop_after => INTERVAL '30 days', if_not_e
 -- Derived-never-stored views (decimals + USD applied HERE, not in storage)
 -- ===========================================================================
 
+-- `wallet_address` (0002): `trades.wallet_ref` is an interned `wallet_dict` int key
+-- (an internal storage id). The SSOT rule is that the on-chain ADDRESS is the
+-- canonical cross-subsystem wallet identity, so read paths resolve it here rather
+-- than leaking the interned id to callers/UI. LEFT JOIN + COALESCE fallback (NOT an
+-- inner join): a `wallet_ref` with no `wallet_dict` row — e.g. db-incremental-sync
+-- id-space divergence on the local mirror — must still yield its trade; degrade to a
+-- '#<ref>' marker, never drop the row.
 DROP VIEW IF EXISTS trades_priced;
 CREATE VIEW trades_priced AS
 SELECT
     t.*,
+    COALESCE(w.address, '#' || t.wallet_ref)                        AS wallet_address,
     qa.symbol   AS quote_symbol,
     qa.decimals AS quote_decimals,
     qa.usd_rate AS quote_usd_rate,
@@ -233,7 +248,8 @@ SELECT
     (t.amount_quote::double precision / power(10, qa.decimals))                    AS amount_quote_display,
     (t.amount_quote::double precision / power(10, qa.decimals) * qa.usd_rate)      AS amount_usd
 FROM trades t
-JOIN quote_assets qa ON qa.id = t.quote_asset_id;
+JOIN quote_assets qa ON qa.id = t.quote_asset_id
+LEFT JOIN wallet_dict w ON w.id = t.wallet_ref;
 
 DROP VIEW IF EXISTS token_overview;
 CREATE VIEW token_overview AS

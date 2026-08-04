@@ -50,9 +50,15 @@ Ideas carried from hunter, generalized off SOL/pump.fun:
 
 ## Postgres schema (`migrations/0001_init.sql`, single squashed init)
 
-`0001` is the full end-state (SLP `0001..0013` + forge `0002..0006` folded in).
-`0002_trades_priced_wallet_address.sql` re-creates the `trades_priced` view to add
-`wallet_address` (LEFT JOIN `wallet_dict` + `#<ref>` COALESCE fallback).
+`0001` is the full end-state (SLP `0001..0013` + forge `0002..0007` folded in),
+including the `trades_priced` view's `wallet_address` (LEFT JOIN `wallet_dict` +
+`#<ref>` COALESCE fallback), which was the last on-disk `0002`.
+
+Squashing changes version 1's checksum and drops version 2 from
+`_sqlx_migrations`, so `sqlx` refuses to boot against a database that already ran
+the chain. Reconcile it once with
+`scripts/consolidate-migration-ledgers.ps1 -Ledger forge -Apply` (ledger-only — no
+schema, no data).
 
 ### Domain A — dimensions (interned, row-extensible)
 
