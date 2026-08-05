@@ -140,3 +140,34 @@ It aggregates `trades.ix_labels`, ranks the still-`Unknown (<id>)` programs by f
 - `trades` table = this feed. TPSL exit loop confirms fills from this feed (not a separate RPC).
 - No blocking I/O / `.await`-on-lock / unbounded alloc per event on the ingest hot path; DB+SSE go through channels.
 - `ingest-laserstream` has **zero workspace deps** — standalone drop-in crate.
+- **The transport must be in the log filter.** `ingest_core` + `ingest_laserstream` are
+  named explicitly in `live/main.rs`'s default `EnvFilter`. They were not until
+  2026-08-05, and the box sets no `RUST_LOG` — so every `LaserStream: connecting` /
+  `stream error` / `no transaction update … forcing reconnect` /
+  `pipeline backpressured` line was dropped, and the sole live transport ran
+  invisibly in production. The cost of that: **seven watchdog process kills in one
+  day with no evidence of why the feed stopped** — the log showed a healthy process,
+  then a kill. Every one of those lines is per-connection, never per-message, so
+  there is no hot-path cost to keeping them on. `live::ingest` (host adapter +
+  watchdog) was always covered by `live=info`; the crates *underneath* it were not,
+  which is exactly the layer that knows why a feed died.
+
+## Watchdog kills are real outages, not false positives (2026-08-05)
+
+`live::ingest::watchdog` force-exits when no **successful** DB write lands for
+`watchdog_stall_timeout_secs` (90 s) while live+booted. Seven fired on 2026-08-05.
+Checked against the data rather than assumed: `trades` shows a genuine hole at each
+one — 13:44 has **zero** rows in a feed averaging ~1500/min, and 12:08→12:09 decayed
+1538 → 225 → 103 before the 12:09:47 kill. So the watchdog is reporting a true fault.
+
+Two things follow, neither yet fixed:
+
+- **A kill costs 1–2 min of feed data, permanently.** In-process reconnect replays
+  from the last slot (`ReplayAnchor`), but a process exit discards that anchor and
+  the restart comes up live — 13:44 is simply absent from `trades` and was never
+  backfilled. The killer destroys the state the healer needed.
+- **The transport self-heals in ~12 s** (`idle_reconnect_timeout` 10 s +
+  `idle_check_interval` 2 s), far inside the 90 s watchdog window, so a plain feed
+  stall should never reach the watchdog at all. Something is defeating that
+  reconnect for 90 s+. Diagnosing it needs the transport logs above — enable-then-
+  wait, do not guess.

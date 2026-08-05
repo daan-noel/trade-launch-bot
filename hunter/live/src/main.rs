@@ -1085,8 +1085,21 @@ async fn run() -> anyhow::Result<()> {
                 // of main.rs's startup logs live; `live` is the lib crate. Enable both
                 // (plus the shared `trading_core` lib) or the process runs silently and
                 // looks idle.
+                //
+                // `ingest_core` + `ingest_laserstream` are the **transport** — the sole
+                // live feed. Omitting them made every connect / stream error / idle
+                // reconnect / pipeline-backpressure line invisible in production, so
+                // seven watchdog process kills (2026-08-05) each landed with zero
+                // evidence of why the feed had stopped: the log showed a healthy
+                // process, then a kill. Each of those lines is per-connection, never
+                // per-message, so this costs nothing on the hot path — and without it
+                // an ingest stall is undiagnosable after the fact. `live::ingest` (the
+                // host adapter + watchdog) was already covered by `live`; the crates
+                // underneath it were not.
                 .unwrap_or_else(|_| {
-                    "hunter_live=info,live=info,trading_core=info,sqlx=error".into()
+                    "hunter_live=info,live=info,trading_core=info,\
+                     ingest_core=info,ingest_laserstream=info,sqlx=error"
+                        .into()
                 }),
         )
         .init();
