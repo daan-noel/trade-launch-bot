@@ -157,6 +157,36 @@ again (`list_token_results` keys on the run's own `corpus_hash`), and the write 
 the same single-flight gate, so this is pure gain: less peak **and** a bigger fold
 budget.
 
+### The spill directory is per-connection (2026-08-05)
+
+`temp_directory` was one fixed path (`%TEMP%/hunter-lab-duckdb`) shared by every
+connection, and that is a bug: **a DuckDB instance treats its temp directory as
+private**. On open it deletes the `duckdb_temp_block-*` / `duckdb_temp_storage_*`
+files it finds there, and it names them by internal block id, not by pid. So a
+starting load wipes a *running* load's spilled blocks, and the running load then dies
+wherever it next reads one back.
+
+`lab` runs concurrent DuckDB connections as a matter of course — `MAX_CONCURRENT_BACKTESTS`
+is 4, a "Simulate All" over rules with distinct fingerprints misses the history
+single-flight on every one of them, and a grouped sweep can be loading alongside. The
+corpus also **spills as the normal case**: measured on the 18.4 M-row lake, the sorted
+uncapped load needs ≥ 2 GB to stay in memory, and the bound above hands out
+512 MB..=4 GB. So the collision was routine, not rare.
+
+Both observed failure modes are the same cause:
+
+| Symptom | When |
+| --- | --- |
+| `IO Error: Failed to delete file "…duckdb_temp_storage_S160K-0.tmp": being used by another process` | the second connection opens while the first holds its storage file (fails in ~1.6 s) |
+| `Invalid Error: Unknown exception in Finalize!` | the delete *succeeds*, and the victim only notices when the sort's merge reads a block that is now gone — DuckDB 1.2.2 reports that through its catch-all, so the message names neither the file nor the cause |
+
+`duck::SpillDir` now gives each connection `%TEMP%/hunter-lab-duckdb/<pid>-<seq>` and
+removes it on drop. It is a field of `DuckSession` rather than a sibling local so the
+drop order is fixed by declaration order — the `Connection` closes (releasing its temp
+files) *before* the directory is removed. `prune_stale_spill_dirs` sweeps siblings
+untouched for a day, since a killed process can strand gigabytes. Pinned by
+`each_connection_gets_its_own_spill_dir`.
+
 The remaining known fat is the corpus row itself: `CorpusTrade` is ~168 B, of which
 three `Option<Box<str>>` (`tx_signature` / `ix_labels` / `wallet`) are 48 B that are
 **always `None` on a sweep load** — ~190 MB on a 4M-trade corpus — and four

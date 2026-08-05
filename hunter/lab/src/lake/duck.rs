@@ -64,7 +64,7 @@ impl LakeSource {
     /// The connection is **bounded** before any query runs — see
     /// [`bound_duckdb_memory`]. An unbounded DuckDB is entitled to 80% of physical
     /// RAM, which on a 16 GB workstation is more than the whole sweep's own budget.
-    fn connect(&self) -> Result<(Connection, String, String)> {
+    fn connect(&self) -> Result<(DuckSession, String, String)> {
         let tokens = tokens_file(&self.root);
         if !tokens.exists() {
             bail!(
@@ -79,10 +79,10 @@ impl LakeSource {
             );
         }
         let conn = Connection::open_in_memory().context("opening in-memory DuckDB")?;
-        bound_duckdb_memory(&conn);
+        let spill = bound_duckdb_memory(&conn);
         let tokens_lit = sql_str(&tokens.to_string_lossy().replace('\\', "/"));
         let trades_lit = sql_str(&trades_glob(&self.root));
-        Ok((conn, trades_lit, tokens_lit))
+        Ok((DuckSession { conn, _spill: spill }, trades_lit, tokens_lit))
     }
 
     /// Mints in `sel`'s creation window whose lake fingerprint **matches `fp`**,
@@ -116,7 +116,8 @@ impl LakeSource {
         sel: &Selection,
         fp: &hunter_engine::fingerprint::Fingerprint,
     ) -> Result<(Vec<String>, bool)> {
-        let (conn, _trades_lit, tokens_lit) = self.connect()?;
+        let (session, _trades_lit, tokens_lit) = self.connect()?;
+        let conn = &session.conn;
         // Microseconds + the `is_mayhem_mode` exclusion — the same candidate
         // predicate `resolve_candidates` applies, so a scoped run and an unscoped one
         // draw from the identical population.
@@ -155,13 +156,14 @@ impl LakeSource {
     /// fingerprint attach) — run on a blocking thread by [`CorpusSource::load`] so
     /// the read never occupies an actix HTTP worker / the async runtime.
     fn load_sync(&self, sel: &Selection) -> Result<Corpus> {
-        let (conn, trades_lit, tokens_lit) = self.connect()?;
+        let (session, trades_lit, tokens_lit) = self.connect()?;
+        let conn = &session.conn;
 
         // 1. Resolve candidate (mint, symbol) — explicit list or newest non-mayhem
         //    tokens in the created window, capped — straight from the token dimension.
         //    `resolve_candidates` also stages `sel_mints` (the ONE staging for the
         //    run); the trade + fingerprint queries below join to it.
-        let candidates = resolve_candidates(&conn, &tokens_lit, sel)?;
+        let candidates = resolve_candidates(conn, &tokens_lit, sel)?;
         // Explicit mint lists are caller-sized; only the newest-N dim scan can
         // silently drop older tokens when `LIMIT token_cap` saturates.
         let candidates_capped =
@@ -179,13 +181,13 @@ impl LakeSource {
         //    returns tokens in `mint ASC`; reorder to the candidate order
         //    (`created_at DESC`) so the corpus token order is deterministic
         //    — within-group fold order then matches, down to f64 summation.
-        let mut tokens = load_corpus_tokens(&conn, &trades_lit, &candidates, sel)?;
+        let mut tokens = load_corpus_tokens(conn, &trades_lit, &candidates, sel)?;
         let rank: HashMap<&str, usize> =
             candidates.iter().enumerate().map(|(i, (m, _, _))| (m.as_str(), i)).collect();
         tokens.sort_by_key(|t| rank.get(t.mint.as_str()).copied().unwrap_or(usize::MAX));
 
         // 3. Attach grouping fingerprints from the token dimension (one query).
-        attach_fingerprints(&conn, &tokens_lit, &mut tokens)?;
+        attach_fingerprints(conn, &tokens_lit, &mut tokens)?;
 
         tracing::info!(
             tokens = tokens.len(),
@@ -223,6 +225,97 @@ const DUCKDB_USABLE_SHARE_DIVISOR: u64 = 2;
 const DUCKDB_MEMORY_FLOOR_MB: u64 = 512;
 const DUCKDB_MEMORY_CAP_MB: u64 = 4096;
 
+/// One DuckDB connection plus the spill directory it owns, so the two are freed in
+/// the right order: **fields drop in declaration order**, so `conn` closes (releasing
+/// every temp block file) before `_spill` removes the directory.
+struct DuckSession {
+    conn: Connection,
+    _spill: Option<SpillDir>,
+}
+
+/// Parent of every per-connection spill directory. Only ever holds child dirs —
+/// DuckDB writes its temp blocks one level down, inside the dir it was handed.
+fn spill_root() -> PathBuf {
+    std::env::temp_dir().join("hunter-lab-duckdb")
+}
+
+/// Monotonic suffix making a spill dir unique within this process; the pid makes it
+/// unique across processes.
+static SPILL_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A spill directory owned by exactly one DuckDB connection, removed on drop.
+///
+/// **Why per-connection.** A DuckDB instance treats its `temp_directory` as private:
+/// on open it *deletes* the `duckdb_temp_block-*` / `duckdb_temp_storage_*` files it
+/// finds there, and it names those files by an internal block id, not by pid. Point
+/// two live instances at one directory and the second one's startup wipes the first
+/// one's spilled blocks — the first then dies mid-query, in whichever operator next
+/// reads a spilled block back. `lab` runs up to `MAX_CONCURRENT_BACKTESTS` (4) loads
+/// at once and a grouped sweep alongside them, and this corpus spills at any limit
+/// under ~2 GB, so the collision is the normal case, not the rare one. Measured on
+/// the bundled DuckDB 1.2.2: two concurrent loads on one shared directory fail in
+/// 1.6 s with `Failed to delete file "…duckdb_temp_storage_S160K-0.tmp": being used
+/// by another process`, and the racing-delete variant surfaces later, inside the
+/// sort's merge, as the opaque `Invalid Error: Unknown exception in Finalize!`.
+struct SpillDir(Option<PathBuf>);
+
+impl SpillDir {
+    /// Create this connection's own dir under [`spill_root`], or `None` if it can't
+    /// be created (the caller then leaves DuckDB's memory limit unset — see
+    /// [`bound_duckdb_memory`]).
+    fn create() -> Option<Self> {
+        let seq = SPILL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = spill_root().join(format!("{}-{seq}", std::process::id()));
+        match std::fs::create_dir_all(&dir) {
+            Ok(()) => Some(Self(Some(dir))),
+            Err(e) => {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    "corpus load: DuckDB spill dir unavailable ({e}) — leaving the memory \
+                     limit unset so an over-budget query spills nowhere rather than erroring"
+                );
+                None
+            }
+        }
+    }
+
+    fn path(&self) -> &Path {
+        self.0.as_deref().expect("spill dir present until drop")
+    }
+}
+
+impl Drop for SpillDir {
+    fn drop(&mut self) {
+        if let Some(dir) = self.0.take() {
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                tracing::debug!(dir = %dir.display(), "corpus load: spill dir cleanup failed ({e})");
+            }
+        }
+    }
+}
+
+/// Best-effort removal of spill dirs left behind by a crashed/killed process.
+///
+/// A [`SpillDir`] is removed on drop, so the only leftovers are from a process that
+/// died mid-query — and a spilled sort can leave gigabytes. Age-gated rather than
+/// pid-gated (a pid is reused): a directory untouched for a day cannot belong to a
+/// live load. Never touches a sibling of a *running* connection, and every error is
+/// swallowed — this is hygiene, not a precondition.
+fn prune_stale_spill_dirs() {
+    const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+    let Ok(entries) = std::fs::read_dir(spill_root()) else { return };
+    for e in entries.flatten() {
+        let stale = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|t| t.elapsed().map(|age| age > STALE_AFTER).unwrap_or(false))
+            .unwrap_or(false);
+        if stale {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
 /// Bound the connection's buffer manager and give it somewhere to spill.
 ///
 /// **Why this exists.** An unconfigured DuckDB sets `memory_limit` to 80% of
@@ -242,13 +335,13 @@ const DUCKDB_MEMORY_CAP_MB: u64 = 4096;
 /// Best-effort by design: if the host read or the `SET` fails we leave DuckDB on its
 /// default rather than fail a load over a tuning knob — but we say so, because a
 /// silently-unbounded load is the condition this function exists to make visible.
-fn bound_duckdb_memory(conn: &Connection) {
+fn bound_duckdb_memory(conn: &Connection) -> Option<SpillDir> {
     let Some(usable) = crate::sweep::registry::usable_host_bytes() else {
         tracing::warn!(
             "corpus load: host RAM unreadable — DuckDB left on its default limit \
              (80% of physical RAM); the load phase is unbounded on this platform"
         );
-        return;
+        return None;
     };
     let limit_mb = (usable / DUCKDB_USABLE_SHARE_DIVISOR / (1024 * 1024))
         .clamp(DUCKDB_MEMORY_FLOOR_MB, DUCKDB_MEMORY_CAP_MB);
@@ -256,30 +349,21 @@ fn bound_duckdb_memory(conn: &Connection) {
     // An in-memory database has no database file to derive a spill path from, so the
     // temp directory must be named explicitly for the limit to degrade (spill) rather
     // than fail. Lab-owned dir under the OS temp root — never the lake, which is the
-    // immutable dataset this same connection is globbing.
-    let temp_dir = std::env::temp_dir().join("hunter-lab-duckdb");
-    let temp_sql = match std::fs::create_dir_all(&temp_dir) {
-        Ok(()) => Some(format!(
-            "SET temp_directory={};",
-            sql_str(&temp_dir.to_string_lossy().replace('\\', "/"))
-        )),
-        Err(e) => {
-            tracing::warn!(
-                dir = %temp_dir.display(),
-                "corpus load: DuckDB spill dir unavailable ({e}) — leaving the memory \
-                 limit unset so an over-budget query spills nowhere rather than erroring"
-            );
-            None
-        }
-    };
-    let Some(temp_sql) = temp_sql else { return };
+    // immutable dataset this same connection is globbing — and **private to this
+    // connection**, since DuckDB wipes the temp dir it is handed (see [`SpillDir`]).
+    prune_stale_spill_dirs();
+    let spill = SpillDir::create()?;
+    let temp_sql = format!(
+        "SET temp_directory={};",
+        sql_str(&spill.path().to_string_lossy().replace('\\', "/"))
+    );
 
     let sql = format!("SET memory_limit='{limit_mb}MB';{temp_sql}");
     match conn.execute_batch(&sql) {
         Ok(()) => tracing::info!(
             duckdb_memory_limit_mb = limit_mb,
             usable_mb = usable / (1024 * 1024),
-            temp_dir = %temp_dir.display(),
+            temp_dir = %spill.path().display(),
             "corpus load: DuckDB bounded to its share of the run's usable RAM"
         ),
         Err(e) => tracing::warn!(
@@ -287,6 +371,7 @@ fn bound_duckdb_memory(conn: &Connection) {
              limit of 80% of physical RAM"
         ),
     }
+    Some(spill)
 }
 
 /// DuckDB partition ordering for the per-mint `ROW_NUMBER` cap. Mirrors the
@@ -786,10 +871,28 @@ mod tests {
         assert_eq!(trade_partition_floor(&sel), None);
     }
 
+    /// Two live connections must never be handed the same `temp_directory`: DuckDB
+    /// wipes the dir it is given on open, so a shared one lets a starting load
+    /// destroy a running load's spilled blocks (the `Unknown exception in Finalize!`
+    /// / `duckdb_temp_storage_*.tmp is being used by another process` failures). Also
+    /// pins the removal-on-drop, since a spilled sort leaves gigabytes behind.
+    #[test]
+    fn each_connection_gets_its_own_spill_dir() {
+        let (a, b) = (SpillDir::create().expect("spill a"), SpillDir::create().expect("spill b"));
+        let (pa, pb) = (a.path().to_path_buf(), b.path().to_path_buf());
+        assert_ne!(pa, pb, "concurrent connections must not share a DuckDB temp dir");
+        assert!(pa.is_dir() && pb.is_dir(), "both spill dirs must exist while held");
+        drop(a);
+        assert!(!pa.exists(), "spill dir must be removed on drop");
+        assert!(pb.is_dir(), "dropping one connection must not touch another's spill dir");
+        drop(b);
+    }
+
     #[test]
     fn missing_lake_is_a_clear_error() {
         let src = LakeSource::new(std::env::temp_dir().join("definitely-no-lake-here-xyz"));
-        let err = src.connect().unwrap_err().to_string();
+        // `map(drop)` because a `DuckSession` (a live DuckDB handle) isn't `Debug`.
+        let err = src.connect().map(drop).unwrap_err().to_string();
         assert!(err.contains("lake"), "expected a lake-not-found message, got: {err}");
     }
 
