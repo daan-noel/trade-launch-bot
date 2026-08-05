@@ -53,7 +53,7 @@ side-effects only.
 | `producers.rs` | `StrategyPing` + `TokenCache` → `Event`s; first-slot settlement detection; the live freshness gate; feeds `real_reserve_sol` for deadness parity |
 | `exec_real.rs` | `SubmitBuy`/`SubmitSell` → executor submit-and-return, then synthesize a definitive `FillConfirmed`/`FillFailed` from the **trades feed** (RPC watchdog fallback). SOL commit/release; M2 sync `SubmittedBuyJournal` + fire-and-forget bounded `mark_buy_submitted`; adopt skips PG when journal empty; curve sell uses cache reserves for min_out; `classify_swap_revert` heal; sell route re-read + rent reclaim. **Double-fire safe:** `FillFailed::Reverted` only when re-submitting is safe |
 | `exec_paper.rs` | worst-case paper fill (`paper_fill`, slot window) → `FillConfirmed` (sim-parity). **`Fill::price` is SOL per RAW token unit**, so `token_amount = sol / price` with no decimals scaling — see below |
-| `sinks.rs` | `PositionUpdate` → registry + SSE; `BuySubmitted` upserts registry then background `insert_position` (later transitions chain on the handle); `Holding` updates registry sync then backgrounds fill persist; `ExitPending` PG is fire-and-forget; terminal SSE emits **before** `registry.remove` (so `position_id` / frozen `trade_mode` stay on the wire); `warm_runs` on rule reload (`ensure_run` reuses latest still-`Running` DB run + collapses empty leading shells — does not mint a new `run_seq` on every restart); releases SOL on terminal unentered exits |
+| `sinks.rs` | `PositionUpdate` → registry + SSE; `BuySubmitted` upserts registry then background `insert_position` (later transitions chain on the handle); `Holding` updates registry sync then backgrounds fill persist; `ExitPending` PG is fire-and-forget; **terminal writes (`End`/`EntryFailed`/`ExitStuck`/`ExitUnconfirmed`) chain-spawn too — NO sink transition awaits PG on the loop** (see below); terminal SSE emits **before** `registry.remove` (so `position_id` / frozen `trade_mode` stay on the wire); `warm_runs` on rule reload (`ensure_run` reuses latest still-`Running` DB run + collapses empty leading shells — does not mint a new `run_seq` on every restart); releases SOL on terminal unentered exits |
 | `reapers.rs` | Boot+60 s: buy orphan adopt/drop/wait (never re-send; stale ⇒ `needs_review` SSE); **externally-cleared Holding** book-close (PG `trades` net, no RPC); exit orphan nudge via `FillFailed` or shared `orphan_exit`; **ExitStuck-with-bag** redrive (PG-gated, backoff, bounded-then-park); `ExitStuck`/`ExitUnconfirmed` bag-gone heal → End; stale `ExitPending` bag-check → `ExitStuck` (real) / breakeven End (paper). Skips `InFlightGuards`-held rows/mints |
 | `orphan_exit.rs` | Shared direct-sell + PG book-close for registry-miss rows (Console close, ExitPending/ExitStuck reapers). Feed-confirm via `run_exit`; sibling mint clear → `ExternallyCleared` / PG End; boot adopts re-install manual TP/SL rules |
 | `event_log.rs` | JSONL recorder (daily rotation + age/size retention) + **conservative, bounded** boot-recovery replay (`recover_armed` = re-arm only; held/filled mints excluded; effects discarded; reads only the recent tail — see below). Dir = `EVENT_LOG_DIR` via `config::dir_from_env`: a relative value anchors to the loaded `.env`'s directory, never the CWD (see below) |
@@ -80,6 +80,19 @@ token counts 1e6×, which made `record_sell_fill`'s post-close
 PnL% cell at −100% on every closed paper row. Corollary for tests: a corpus priced at
 `1.0` buys a **one-unit** bag, so any `sell_bps` ladder quantizes to 0/1 units — the
 sweep parity guard prices its scale-out corpora at `RAW_PX = 1e-6`.
+
+**No PG write blocks the decision loop (locked).** Every sink transition, terminal
+ones included, chain-spawns its write and keeps the handle in `pending_pg` so the
+*next* write for that same position awaits it first — per-position order is total,
+the loop never waits. Terminal handlers used to be the exception (`await_pending_pg`
++ `record_sell_fill` + the real-mode held-pool check, three round trips inline): a
+Stop closes every position of a rule at once, so those serialized head-to-head while
+ingest was also writing PG, and while the loop was blocked **nothing** else folded —
+no ticks, no pings, no other fills. What a terminal write no longer guarantees is
+landing before its SSE frame, so a client must trust the frame's payload rather than
+refetching the row on it. `pending_pg` is pruned of finished handles on each
+finalize (`prune_finished_pg`), else it would grow by one entry per closed position
+for the life of the process.
 
 **Position lifecycle:** `BuySubmitted → Holding → ExitPending → End`, with
 `EntryFailed` (buy never filled, terminal) and the OPEN attention states

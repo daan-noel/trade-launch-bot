@@ -1324,6 +1324,27 @@ impl StrategyRepo {
         Ok(res.rows_affected())
     }
 
+    /// `(id, status)` for a set of position ids, in one round trip. Ids with no
+    /// row are simply absent (a deleted position is not an error).
+    ///
+    /// The status column only — this backs the Stop action's progress re-sync,
+    /// which polls the same ids repeatedly and needs nothing else off the row.
+    pub async fn find_position_statuses(
+        &self,
+        ids: &[Uuid],
+    ) -> anyhow::Result<Vec<(Uuid, String)>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query_as::<_, (Uuid, String)>(
+            "SELECT id, status FROM strategy_positions WHERE id = ANY($1)",
+        )
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     pub async fn find_position(&self, id: Uuid) -> anyhow::Result<Option<StrategyPosition>> {
         let row = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             "SELECT {POSITION_COLS} FROM strategy_positions WHERE id = $1"

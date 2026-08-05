@@ -79,11 +79,43 @@ exactly the dead-token losers, so paper PnL read high.
 
 Both halves are closed: the exit leg market-fills like analysis (and falls back to
 the token's last known spot when no window can price it), and the reaper sweep
-above owns any paper row that still fails. Historical rows:
-`scripts/backfill-paper-exit-stuck.sql` (same pricing, for a DB no `hunter-live`
-runs against). Note both paths size the closing leg from **cost basis × price
-ratio**, never `price × tokens` — rows written before the 2026-08-04 token-scale
-fix carry `entry_token_amount` 1e6× high, and a ratio is scale-free.
+above owns any paper row that still fails. The 2026-08-05 backlog (359 local, 329
+server) was healed through that same pricing and both databases now hold zero
+`ExitStuck` rows, so no one-shot script survives — the reaper is the only path.
+
+The one rule to keep if this is ever re-derived: size the closing leg from **cost
+basis × price ratio**, never `price × tokens`. Rows written before the 2026-08-04
+token-scale fix carry `entry_token_amount` 1e6× high, so `price × tokens` books a
+1e6× fantasy PnL (and can overflow `bigint`); `entry_lamports` was always right
+and a price *ratio* is scale-free, so it is correct on both sides of that fix and
+identical on a consistent row.
+
+### 2.3 What "Stop" actually waits on
+
+`POST /api/strategy-rules/{id}/stop` (and `stop-all?mode=`) returns **202 + `action_id`**
+immediately; the closes stream over `action_progress` SSE and the Rules row shows
+"Stopping n/N" until a non-`running` frame arrives
+([action_progress.rs](../../live/src/api/handlers/strategies/action_progress.rs)).
+Three properties that a "stop takes forever" report should be checked against:
+
+- **The watch set is the statuses the engine will emit *again* for** — `BuySubmitted`,
+  `Holding`, `ExitPending`, via the ONE decider `stop_in_flight`. `find_open_positions`
+  is "not End/EntryFailed", so it also returns `ExitStuck`/`ExitUnconfirmed`: open rows
+  in the attention lane, but engine-terminal — `CloseRule` never touches them and no
+  further frame ever fires. Counting them made `total` unreachable, which is how a
+  paper rule holding any §2.2 row parked the spinner permanently. Locked by
+  `sinks::status_partition_guard::stop_watch_set_is_exactly_the_statuses_the_sink_still_emits_for`.
+- **Postgres is the authority; SSE is only the fast path.** The watcher re-reads its
+  rows every 3 s, on every `Lagged`, and once more at the deadline. It shares the
+  512-slot broadcast bus with one frame *per ingested trade*, and a terminal frame is
+  emitted exactly once — so a dropped frame used to be unrecoverable. Never re-derive
+  completion from SSE alone here.
+- **It gives up out loud** (180 s → `partial`/`failed` naming the stranded count)
+  rather than spinning. Anything still open then is the reaper's, not the stop's.
+
+The engine side is *not* where the time goes: `CloseRule` folds every `ManualClose` in
+one batch and each `SubmitSell` is spawned, so N positions close concurrently — a paper
+exit is bounded by `exec_paper::FILL_WAIT` (2 s) and retries fire immediately.
 
 ### 2.1 Why a stranded bag needs more than "retry"
 

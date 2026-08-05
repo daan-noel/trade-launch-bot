@@ -701,14 +701,15 @@ async fn reload_rules(
     }
     drain_ids.retain(|id| !active_ids.contains(id));
 
+    // ONE round trip for the whole drain set. This runs inline on the decision
+    // loop, so a per-rule `find` here stalled every fold behind it — and the drain
+    // set only grows (a rule joins it the moment it is stopped/paused with an open
+    // row, and any leftover stuck row keeps it there).
     let mut all_rows = rules;
-    for rid in drain_ids {
-        let uuid = rid.0;
-        match rule_repo.find(uuid).await {
-            Ok(Some(row)) if row.is_enabled => all_rows.push(row),
-            Ok(_) => {}
-            Err(e) => return Err(format!("find drain rule {uuid}: {e}")),
-        }
+    let drain_uuids: Vec<uuid::Uuid> = drain_ids.iter().map(|r| r.0).collect();
+    match rule_repo.find_many(&drain_uuids).await {
+        Ok(rows) => all_rows.extend(rows.into_iter().filter(|r| r.is_enabled)),
+        Err(e) => return Err(format!("find drain rules: {e}")),
     }
 
     let mut names: Vec<(RuleId, String)> = Vec::with_capacity(all_rows.len());

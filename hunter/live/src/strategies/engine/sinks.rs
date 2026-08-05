@@ -13,7 +13,12 @@
 //! chain after the row exists. `ExitPending` is fire-and-forget (awaits any
 //! pending write only inside the spawn) so `SubmitSell` is not gated on PG.
 //! `Holding` updates the registry synchronously (sell sizing) and backgrounds
-//! the fill persist. Terminal handlers await the pending chain before closing.
+//! the fill persist. Terminal handlers (`End` / `EntryFailed` / `ExitStuck` /
+//! `ExitUnconfirmed`) follow the same rule — they chain-spawn their write instead
+//! of awaiting it, so **no** sink transition blocks the decision loop on PG. Order
+//! per position is still total (each task awaits that row's previous write first);
+//! what a terminal write no longer guarantees is landing before its SSE frame, so
+//! a client must trust the frame's payload over an immediate refetch.
 //! Crash recovery: process-local `SubmittedBuyJournal` + BuySubmitted/ExitPending
 //! reapers + boot Holding adopt / externally-cleared reconcile. Runs are warmed
 //! on rule reload so the first buy of a rule rarely blocks on `ensure_run`. Cold
@@ -74,6 +79,39 @@ const MANUAL_STRATEGY_ID: &str = "manual";
 pub struct StagedManual {
     pub pg_id: uuid::Uuid,
     pub manual_exit: Option<serde_json::Value>,
+}
+
+/// The "drop this mint's LaserStream pool retention" step of a terminal
+/// transition, packaged so the sink's background write task can run it (it needs
+/// a PG round trip of its own). `gate: None` = nothing to do — paper mode, or a
+/// bin with no ingest gate.
+struct HeldPoolRelease {
+    gate: Option<HeldPoolGate>,
+    repo: StrategyRepo,
+    wallet: String,
+    mint: String,
+    exclude_id: uuid::Uuid,
+}
+
+impl HeldPoolRelease {
+    /// Release only once no *other* open real position still needs the pool feed.
+    /// A failed check keeps the subscription — an extra sub costs bandwidth, a
+    /// missing one costs a sell.
+    async fn run(self) {
+        let Some(gate) = self.gate else { return };
+        match self
+            .repo
+            .has_other_open_position_on_mint(&self.wallet, &self.mint, "real", self.exclude_id)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => gate.release(&self.mint),
+            Err(e) => warn!(
+                mint = %self.mint,
+                "engine sink: held-pool release check failed (keeping subscription): {e}"
+            ),
+        }
+    }
 }
 
 pub struct Sink {
@@ -217,6 +255,7 @@ impl Sink {
         if finalized {
             self.registry.remove(delta.position);
             self.manual_episodes.remove(&delta.rule);
+            self.prune_finished_pg();
         }
     }
 
@@ -494,6 +533,15 @@ impl Sink {
     }
 
     /// Returns `true` when finalized — caller emits SSE then drops the registry row.
+    ///
+    /// The PG write is **chained-spawned**, not awaited: this runs on the one
+    /// serialized decision loop, and a terminal write used to be the only PG I/O
+    /// that blocked it (`await_pending_pg` + `record_sell_fill` + the real-mode
+    /// held-pool check, three round trips). A Stop closes every position of a rule
+    /// at once, so those serialized head-to-head while ingest was also writing —
+    /// and while the loop was blocked *nothing* else folded: no ticks, no pings,
+    /// no other fills. Per-position write ORDER is still guaranteed (the task
+    /// awaits this row's previous write first); only the loop's wait is gone.
     async fn on_end(&mut self, delta: &PositionDelta) -> bool {
         let Some(meta) = self.registry.get(delta.position) else {
             return false;
@@ -501,31 +549,39 @@ impl Sink {
         let Some(fill) = delta.fill else {
             return false;
         };
-        self.await_pending_pg(meta.pg_id).await;
         let fs = delta.intent.as_ref().and_then(|i| self.fill_sigs.take(i)).unwrap_or_default();
         let reason = delta
             .reason
             .map(|r| r.label().into_owned())
             .unwrap_or_else(|| "Metrics".to_string());
-        if let Err(e) = self
-            .repo
-            .record_sell_fill(
-                meta.pg_id,
-                fill.price,
-                fill.sol,
-                fill.token_amount,
-                fill.at,
-                Some(&reason),
-                delta.stage,
-                &fs.sigs,
-                true,
-            )
-            .await
-        {
-            warn!(pg = %meta.pg_id, "engine sink: record_sell_fill (final) failed: {e}");
-        }
-        self.release_held_pool(&meta.mint, meta.trade_mode, meta.pg_id)
-            .await;
+        let prev = self.pending_pg.remove(&meta.pg_id);
+        let repo = self.repo.clone();
+        let release = self.held_pool_release(&meta);
+        let pg_id = meta.pg_id;
+        let stage = delta.stage;
+        let handle = tokio::spawn(async move {
+            if let Some(h) = prev {
+                let _ = h.await;
+            }
+            if let Err(e) = repo
+                .record_sell_fill(
+                    pg_id,
+                    fill.price,
+                    fill.sol,
+                    fill.token_amount,
+                    fill.at,
+                    Some(&reason),
+                    stage,
+                    &fs.sigs,
+                    true,
+                )
+                .await
+            {
+                warn!(pg = %pg_id, "engine sink: record_sell_fill (final) failed: {e}");
+            }
+            release.run().await;
+        });
+        self.pending_pg.insert(pg_id, handle);
         true
     }
 
@@ -539,21 +595,33 @@ impl Sink {
         let Some(meta) = self.registry.get(delta.position) else {
             return false;
         };
-        self.await_pending_pg(meta.pg_id).await;
+        // Freeing the SOL commitment is in-memory and must not wait on PG — a
+        // stop force-fails every EntryPending arm at once and each one holds
+        // budget until this runs.
         if let Some(trader) = &self.trader {
             trader.release_sol_for_position(&meta.pg_id.to_string());
         }
-        if let Ok(Some(mut pos)) = self.repo.find_position(meta.pg_id).await {
-            pos.mark_entry_failed();
-            if let Some(r) = delta.reason {
-                pos.exit_reason = Some(r.label().into_owned());
+        let prev = self.pending_pg.remove(&meta.pg_id);
+        let repo = self.repo.clone();
+        let release = self.held_pool_release(&meta);
+        let pg_id = meta.pg_id;
+        let reason = delta.reason.map(|r| r.label().into_owned());
+        let handle = tokio::spawn(async move {
+            if let Some(h) = prev {
+                let _ = h.await;
             }
-            if let Err(e) = self.repo.update_position(&pos).await {
-                warn!(pg = %meta.pg_id, "engine sink: EntryFailed update failed: {e}");
+            if let Ok(Some(mut pos)) = repo.find_position(pg_id).await {
+                pos.mark_entry_failed();
+                if let Some(r) = reason {
+                    pos.exit_reason = Some(r);
+                }
+                if let Err(e) = repo.update_position(&pos).await {
+                    warn!(pg = %pg_id, "engine sink: EntryFailed update failed: {e}");
+                }
             }
-        }
-        self.release_held_pool(&meta.mint, meta.trade_mode, meta.pg_id)
-            .await;
+            release.run().await;
+        });
+        self.pending_pg.insert(pg_id, handle);
         true
     }
 
@@ -566,7 +634,6 @@ impl Sink {
         let Some(meta) = self.registry.get(delta.position) else {
             return false;
         };
-        self.await_pending_pg(meta.pg_id).await;
         if let Some(trader) = &self.trader {
             trader.release_sol_for_position(&meta.pg_id.to_string());
         }
@@ -580,31 +647,46 @@ impl Sink {
             .map(|fs| fs.sigs)
             .unwrap_or_default();
 
-        if let Ok(Some(mut pos)) = self.repo.find_position(meta.pg_id).await {
-            match status {
-                "ExitUnconfirmed" => pos.mark_exit_unconfirmed(),
-                _ => pos.mark_exit_stuck(),
+        let prev = self.pending_pg.remove(&meta.pg_id);
+        let repo = self.repo.clone();
+        let release = self.held_pool_release(&meta);
+        let pg_id = meta.pg_id;
+        let status = status.to_string();
+        let reason = delta.reason.map(|r| r.label().into_owned());
+        let handle = tokio::spawn(async move {
+            if let Some(h) = prev {
+                let _ = h.await;
             }
-            if let Some(r) = delta.reason {
-                pos.exit_reason = Some(r.label().into_owned());
+            if let Ok(Some(mut pos)) = repo.find_position(pg_id).await {
+                match status.as_str() {
+                    "ExitUnconfirmed" => pos.mark_exit_unconfirmed(),
+                    _ => pos.mark_exit_stuck(),
+                }
+                if let Some(r) = reason {
+                    pos.exit_reason = Some(r);
+                }
+                pos.add_submitted_exit_sigs(submitted_sells);
+                if let Err(e) = repo.update_position(&pos).await {
+                    warn!(pg = %pg_id, "engine sink: {status} update failed: {e}");
+                }
             }
-            pos.add_submitted_exit_sigs(submitted_sells);
-            if let Err(e) = self.repo.update_position(&pos).await {
-                warn!(pg = %meta.pg_id, "engine sink: {status} update failed: {e}");
-            }
-        }
-        self.release_held_pool(&meta.mint, meta.trade_mode, meta.pg_id)
-            .await;
+            release.run().await;
+        });
+        self.pending_pg.insert(pg_id, handle);
         true
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
-    /// Wait for any background PG lifecycle task so terminal writes see a consistent row.
-    async fn await_pending_pg(&mut self, pg_id: uuid::Uuid) {
-        if let Some(handle) = self.pending_pg.remove(&pg_id) {
-            let _ = handle.await;
-        }
+    /// Drop the `pending_pg` entries whose task already finished.
+    ///
+    /// A terminal transition parks its write handle under a `pg_id` that will
+    /// never be looked up again (the position leaves the registry), so without
+    /// this the map would grow by one entry per closed position for the life of
+    /// the process. Called only on finalize — the only place entries become
+    /// garbage — and `is_finished` never blocks.
+    fn prune_finished_pg(&mut self) {
+        self.pending_pg.retain(|_, h| !h.is_finished());
     }
 
     /// Keep this mint's PumpSwap pool on the LaserStream filter for the life of
@@ -627,25 +709,22 @@ impl Sink {
         }
     }
 
-    /// Drop held-pool retention once no other open real position shares the mint.
-    async fn release_held_pool(&self, mint: &str, mode: TradeMode, exclude_id: uuid::Uuid) {
-        if mode != TradeMode::Real {
-            return;
-        }
-        let Some(gate) = &self.held_pools else {
-            return;
-        };
-        match self
-            .repo
-            .has_other_open_position_on_mint(&self.wallet, mint, "real", exclude_id)
-            .await
-        {
-            Ok(true) => {}
-            Ok(false) => gate.release(mint),
-            Err(e) => warn!(
-                mint = %mint,
-                "engine sink: held-pool release check failed (keeping subscription): {e}"
-            ),
+    /// The held-pool release for a finalizing position, as an owned job the
+    /// terminal write task runs after its PG write. Built here (needs `&self`)
+    /// and executed there so its `has_other_open_position_on_mint` round trip
+    /// stays off the decision loop, and so it observes the write that just landed.
+    /// Paper (and a live bin with no gate) yields an inert job.
+    fn held_pool_release(&self, meta: &PositionMeta) -> HeldPoolRelease {
+        let gate = self
+            .held_pools
+            .clone()
+            .filter(|_| meta.trade_mode == TradeMode::Real);
+        HeldPoolRelease {
+            gate,
+            repo: self.repo.clone(),
+            wallet: self.wallet.clone(),
+            mint: meta.mint.clone(),
+            exclude_id: meta.pg_id,
         }
     }
 
@@ -889,6 +968,31 @@ mod status_partition_guard {
             let expected_terminal = matches!(s, PositionStatus::End | PositionStatus::EntryFailed);
             let is_terminal = classify(s).1 == Class::Terminal;
             assert_eq!(is_terminal, expected_terminal, "partition drift for {s:?}");
+        }
+    }
+
+    /// The Stop action's watch partition, tied to the emitter that feeds it.
+    ///
+    /// A stop waits on exactly the statuses this sink will emit *again* for.
+    /// `ExitStuck`/`ExitUnconfirmed` are `Open` above (the row keeps its SOL and
+    /// its attention-lane actions) but engine-**terminal**: the arm is dropped and
+    /// no further `strategy_position_update` ever fires. A new variant that lands
+    /// on the wrong side here re-creates the forever-spinning "Stopping x/N".
+    #[test]
+    fn stop_watch_set_is_exactly_the_statuses_the_sink_still_emits_for() {
+        use crate::api::handlers::strategies::action_progress::stop_in_flight;
+        for s in ALL {
+            let engine_still_owns = matches!(
+                s,
+                PositionStatus::BuySubmitted
+                    | PositionStatus::Holding
+                    | PositionStatus::ExitPending
+            );
+            assert_eq!(
+                stop_in_flight(position_status_str(s)),
+                engine_still_owns,
+                "stop watch partition drift for {s:?}"
+            );
         }
     }
 }

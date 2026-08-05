@@ -361,10 +361,14 @@ pub async fn stop_rule(
     path: web::Path<Uuid>,
 ) -> impl Responder {
     let id = path.into_inner();
+    // `find_open_positions` is "not End/EntryFailed", which also returns rows the
+    // engine already handed off (`ExitStuck`/`ExitUnconfirmed`). Those are open in
+    // the attention lane but settled as far as a stop is concerned — counting them
+    // gave a `total` the action could never reach.
     let open = match app_state.strategy_repo.find_open_positions().await {
         Ok(all) => all
             .into_iter()
-            .filter(|p| p.rule_id == Some(id))
+            .filter(|p| p.rule_id == Some(id) && action_progress::stop_in_flight(&p.status))
             .collect::<Vec<_>>(),
         Err(e) => return server_error("stop: list open positions", e),
     };
@@ -375,6 +379,7 @@ pub async fn stop_rule(
     // Subscribe + start frame before close so we don't miss terminal updates.
     action_progress::spawn_stop_watcher(
         app_state.sse_tx.clone(),
+        app_state.strategy_repo.clone(),
         action_id,
         Some(id),
         position_ids,
@@ -448,10 +453,11 @@ pub async fn stop_all_rules(
     query: web::Query<ModeParam>,
 ) -> impl Responder {
     let mode = query.mode.as_str();
+    // Same "already handed off" filter as the per-rule stop — see `stop_rule`.
     let open = match app_state.strategy_repo.find_open_positions().await {
         Ok(all) => all
             .into_iter()
-            .filter(|p| p.mode == mode)
+            .filter(|p| p.mode == mode && action_progress::stop_in_flight(&p.status))
             .collect::<Vec<_>>(),
         Err(e) => return server_error("stop-all: list open positions", e),
     };
@@ -459,7 +465,13 @@ pub async fn stop_all_rules(
     let position_ids: HashSet<Uuid> = open.into_iter().map(|p| p.id).collect();
     let action_id = Uuid::new_v4();
 
-    action_progress::spawn_stop_watcher(app_state.sse_tx.clone(), action_id, None, position_ids);
+    action_progress::spawn_stop_watcher(
+        app_state.sse_tx.clone(),
+        app_state.strategy_repo.clone(),
+        action_id,
+        None,
+        position_ids,
+    );
     if !app_state.engine.close_mode(mode == "real").await {
         return engine_unavailable("stop-all", "engine channel closed");
     }

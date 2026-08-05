@@ -137,6 +137,24 @@ impl RuleRepo {
         Ok(row.map(StrategyRule::from))
     }
 
+    /// [`Self::find`] for a set of ids, in **one** round trip. Missing ids are
+    /// simply absent from the result (same "not found is not an error" contract as
+    /// `find`). The engine's rule reload resolves its whole drain set through this
+    /// — that used to be one `find` per drain rule, awaited serially on the
+    /// decision loop, so a rule with leftover open rows taxed every reload.
+    pub async fn find_many(&self, ids: &[Uuid]) -> anyhow::Result<Vec<StrategyRule>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query_as::<_, StrategyRuleDbRow>(&format!(
+            "SELECT {RULE_COLS} FROM strategy_rules WHERE id = ANY($1)"
+        ))
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(StrategyRule::from).collect())
+    }
+
     pub async fn list(&self) -> anyhow::Result<Vec<StrategyRule>> {
         let rows = sqlx::query_as::<_, StrategyRuleDbRow>(&format!(
             "SELECT {RULE_COLS} FROM strategy_rules ORDER BY created_at DESC"
