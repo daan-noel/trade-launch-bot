@@ -246,6 +246,9 @@ function StageCard({
         disabled={disabled}
         sides={['exit']}
         allowFlip={false}
+        // No park toggle here: a stage's `conditions` have no `disabled` bag to fold
+        // into, so a parked row would vanish on save. Remove the stage instead.
+        allowToggle={false}
         sideTitles={{ exit: 'conditions' }}
       />
     </div>

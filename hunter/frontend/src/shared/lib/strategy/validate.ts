@@ -30,6 +30,10 @@ export function validateRuleParams(p: RuleParams, reg: StrategyRegistry | undefi
   }
   validateSide('entry', p.entry, reg, errors);
   validateSide('exit', p.exit, reg, errors);
+  // Parked conditions validate exactly like live ones (backend does the same), so a
+  // toggle back on can never turn a saved rule into one that refuses to save.
+  validateSide('disabled.entry', p.disabled?.entry, reg, errors);
+  validateSide('disabled.exit', p.disabled?.exit, reg, errors);
   validateScaleOut(p.scale_out, reg, errors);
   validateReentry(p.reentry, errors);
   // Mirror of the backend `parse_opt_priority`.

@@ -10,7 +10,7 @@
 // sweep two windows of one metric; the rule editor now authors the same shape.
 
 import type { ConditionExpr } from './grammar';
-import type { SideConditions } from './ruleParams';
+import type { DisabledConditions, SideConditions } from './ruleParams';
 import type { StrategyRegistry } from './registry';
 
 /** Which side a condition row applies to (the column owns it). */
@@ -21,6 +21,10 @@ export interface RuleConditionRow {
   /** Stable client id (list-render key + remove target). */
   id: string;
   side: RuleConditionSide;
+  /** `false` = **parked**: the row is kept and still validated, but folds into the
+   *  `disabled` bag instead of the live side, so the engine never compiles it.
+   *  `undefined` reads as enabled — a row from before this field existed is live. */
+  enabled?: boolean;
   /** Registry group name (e.g. `m_snapshot`), '' until picked. */
   group: string;
   /** Registry metric name (e.g. `time`), '' until picked. */
@@ -48,11 +52,17 @@ export function newRuleConditionRow(side: RuleConditionSide): RuleConditionRow {
   return {
     id: `cond-${rowSeq++}-${Math.random().toString(36).slice(2, 7)}`,
     side,
+    enabled: true,
     group: '',
     metric: '',
     window: '',
     arms: [],
   };
+}
+
+/** A row's live/parked state. `undefined` = enabled (rows predate the toggle). */
+export function ruleRowEnabled(row: RuleConditionRow): boolean {
+  return row.enabled !== false;
 }
 
 /** The registry group a row names, if any. */
@@ -126,7 +136,10 @@ export function armAbovePctOrphanError(rows: RuleConditionRow[]): string | null 
   const instances = new Map<string, { hasArm: boolean; hasTrailing: boolean }>();
   for (const row of rows) {
     if (row.group !== 'm_position') continue;
-    const key = `${row.side}|${rowWindow(row) ?? '∅'}`;
+    // Live and parked rows land in different bags, so they form different group
+    // instances — an arm on a live row is NOT satisfied by a parked trailing row.
+    // (This is the check that catches "I parked `retrace` and orphaned its arm".)
+    const key = `${ruleRowEnabled(row) ? 'on' : 'off'}|${row.side}|${rowWindow(row) ?? '∅'}`;
     const inst = instances.get(key) ?? { hasArm: false, hasTrailing: false };
     if (row.strict?.arm_above_pct != null) inst.hasArm = true;
     if (ruleRowIsTrailing(row)) inst.hasTrailing = true;
@@ -134,8 +147,9 @@ export function armAbovePctOrphanError(rows: RuleConditionRow[]): string | null 
   }
   for (const [key, inst] of instances) {
     if (inst.hasArm && !inst.hasTrailing) {
-      const [side] = key.split('|');
-      return `${side} m_position: arm_above_pct gates the trailing metrics (retrace / bounce) — add one or remove arm_above_pct`;
+      const [on, side] = key.split('|');
+      const where = on === 'on' ? side : `disabled ${side}`;
+      return `${where} m_position: arm_above_pct gates the trailing metrics (retrace / bounce) — add one or remove arm_above_pct`;
     }
   }
   return null;
@@ -152,14 +166,41 @@ export function duplicateConditionRowError(rows: RuleConditionRow[]): string | n
   for (const row of rows) {
     if (!row.group || !row.metric) continue;
     const w = rowWindow(row);
-    const key = `${row.side}|${row.group}|${w ?? '∅'}|${row.metric}`;
+    const on = ruleRowEnabled(row);
+    // Keyed by live/parked too: a parked row and a live one on the same
+    // (side, group, window, metric) go to different bags and cannot collide — that
+    // pairing is exactly what the toggle is for (park a value, try another).
+    const key = `${on ? 'on' : 'off'}|${row.side}|${row.group}|${w ?? '∅'}|${row.metric}`;
     if (seen.has(key)) {
       const at = w != null ? `@${w}s` : '';
-      return `${row.side} ${row.group}.${row.metric}${at} is set twice — merge the conditions into one row`;
+      const where = on ? row.side : `disabled ${row.side}`;
+      return `${where} ${row.group}.${row.metric}${at} is set twice — merge the conditions into one row`;
     }
     seen.add(key);
   }
   return null;
+}
+
+/**
+ * Warnings (not errors) for a side whose conditions are ALL parked. Turning off the
+ * last row is a rule rewrite dressed as unchecking a box: an empty entry side means
+ * the fingerprint alone fires the buy (`enter_on_arm`), and an empty exit side means
+ * only TP/SL/death can close. Both are legal rules — hence a warning — but nobody
+ * should discover it from a fill.
+ */
+export function parkedSideWarnings(rows: RuleConditionRow[]): string[] {
+  const out: string[] = [];
+  const authored = (r: RuleConditionRow) => r.group && r.metric && r.arms.length > 0;
+  for (const side of ['entry', 'exit'] as const) {
+    const ofSide = rows.filter((r) => r.side === side && authored(r));
+    if (ofSide.length === 0 || ofSide.some(ruleRowEnabled)) continue;
+    out.push(
+      side === 'entry'
+        ? 'every entry condition is off — the rule now buys on the fingerprint alone'
+        : 'every exit condition is off — only TP / SL / death can close a position',
+    );
+  }
+  return out;
 }
 
 /**
@@ -168,10 +209,14 @@ export function duplicateConditionRowError(rows: RuleConditionRow[]): string | n
  * Half-authored rows (no group/metric) and empty-condition rows are skipped, so the
  * output only ever carries constraints the backend will accept.
  */
-export function rowsToSide(rows: RuleConditionRow[], side: RuleConditionSide): SideConditions {
+export function rowsToSide(
+  rows: RuleConditionRow[],
+  side: RuleConditionSide,
+  enabled = true,
+): SideConditions {
   const out: SideConditions = {};
   for (const row of rows) {
-    if (row.side !== side) continue;
+    if (row.side !== side || ruleRowEnabled(row) !== enabled) continue;
     if (!row.group || !row.metric || row.arms.length === 0) continue;
     const w = rowWindow(row);
     const instances = out[row.group] ?? (out[row.group] = []);
@@ -190,12 +235,24 @@ export function rowsToSide(rows: RuleConditionRow[], side: RuleConditionSide): S
   return out;
 }
 
-/** Both sides folded — the `entry`/`exit` of a `RuleParams`. */
+/** Both sides folded — the `entry`/`exit`/`disabled` of a `RuleParams`. Parked rows
+ *  fold into `disabled` with the identical shape, so nothing is dropped on save and
+ *  the live sides stay exactly what the engine will compile. */
 export function rowsToSides(rows: RuleConditionRow[]): {
   entry: SideConditions;
   exit: SideConditions;
+  disabled: DisabledConditions | null;
 } {
-  return { entry: rowsToSide(rows, 'entry'), exit: rowsToSide(rows, 'exit') };
+  const off: DisabledConditions = {
+    entry: rowsToSide(rows, 'entry', false),
+    exit: rowsToSide(rows, 'exit', false),
+  };
+  const parked = Object.keys(off.entry ?? {}).length || Object.keys(off.exit ?? {}).length;
+  return {
+    entry: rowsToSide(rows, 'entry'),
+    exit: rowsToSide(rows, 'exit'),
+    disabled: parked ? off : null,
+  };
 }
 
 /** Expand a nested side back into editor rows — one row per (group, window, metric).
@@ -203,6 +260,7 @@ export function rowsToSides(rows: RuleConditionRow[]): {
 export function sideToRows(
   side: SideConditions | undefined,
   sideName: RuleConditionSide,
+  enabled = true,
 ): RuleConditionRow[] {
   const rows: RuleConditionRow[] = [];
   for (const [groupName, instances] of Object.entries(side ?? {})) {
@@ -217,6 +275,7 @@ export function sideToRows(
         if (!arms?.length) continue;
         rows.push({
           ...newRuleConditionRow(sideName),
+          enabled,
           group: groupName,
           metric,
           window: windowText,
@@ -229,10 +288,17 @@ export function sideToRows(
   return rows;
 }
 
-/** Load both sides of a parsed `RuleParams` into a single row list. */
+/** Load a parsed `RuleParams` into a single row list — live sides first, then the
+ *  parked bag as rows with `enabled: false`. Inverse of {@link rowsToSides}. */
 export function sidesToRows(
   entry: SideConditions | undefined,
   exit: SideConditions | undefined,
+  disabled?: DisabledConditions | null,
 ): RuleConditionRow[] {
-  return [...sideToRows(entry, 'entry'), ...sideToRows(exit, 'exit')];
+  return [
+    ...sideToRows(entry, 'entry'),
+    ...sideToRows(exit, 'exit'),
+    ...sideToRows(disabled?.entry, 'entry', false),
+    ...sideToRows(disabled?.exit, 'exit', false),
+  ];
 }

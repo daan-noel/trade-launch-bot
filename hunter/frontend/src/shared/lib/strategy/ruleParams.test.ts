@@ -176,6 +176,39 @@ describe('exclusivity round-trip', () => {
   });
 });
 
+describe('disabled (parked conditions) round-trip', () => {
+  // A parked gate on the SAME group/window/metric as a live one — the shape the
+  // toggle exists to produce, and the reason the two live in separate bags.
+  const json = {
+    entry: { m_price_window: { window_size_sec: 30, trail: [{ operator: '>=', value: 20 }] } },
+    disabled: {
+      entry: { m_price_window: { window_size_sec: 30, trail: [{ operator: '>=', value: 12 }] } },
+    },
+  };
+
+  it('carries the parked bag through fromJson → toJson unchanged', () => {
+    const form = ruleParamsFromJson(json, REG);
+    expect(form.entry?.m_price_window[0].metrics.trail[0][0].value).toBe(20);
+    expect(form.disabled?.entry?.m_price_window[0].metrics.trail[0][0].value).toBe(12);
+    expect(ruleParamsJsonEqual(ruleParamsToJson(form), json)).toBe(true);
+  });
+
+  it('omits the key entirely when nothing is parked (no migration)', () => {
+    expect('disabled' in ruleParamsToJson(emptyRuleParams())).toBe(false);
+    const live = ruleParamsFromJson({ entry: json.entry }, REG);
+    expect(live.disabled).toBeNull();
+    expect('disabled' in ruleParamsToJson(live)).toBe(false);
+  });
+
+  it('folds an empty / all-empty bag to null (the backend sentinel)', () => {
+    for (const empty of [{ disabled: {} }, { disabled: { entry: {}, exit: {} } }]) {
+      const form = ruleParamsFromJson(empty, REG);
+      expect(form.disabled).toBeNull();
+      expect('disabled' in ruleParamsToJson(form)).toBe(false);
+    }
+  });
+});
+
 describe('multi-window per group (the array-form round-trip)', () => {
   it('serializes one instance as an object, two as an array (mirrors the backend)', () => {
     const one = ruleParamsFromJson(

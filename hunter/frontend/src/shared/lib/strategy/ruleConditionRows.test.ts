@@ -4,9 +4,12 @@ import {
   armAbovePctOrphanError,
   duplicateConditionRowError,
   newRuleConditionRow,
+  parkedSideWarnings,
   ruleConditionRowError,
+  ruleRowEnabled,
   ruleRowIsTrailing,
   rowsToSide,
+  rowsToSides,
   sideToRows,
   sidesToRows,
   type RuleConditionRow,
@@ -216,6 +219,85 @@ describe('armAbovePctOrphanError', () => {
       }),
     ];
     expect(armAbovePctOrphanError(rows)).toBeNull();
+  });
+});
+
+describe('parked (disabled) rows', () => {
+  const live = row({
+    group: 'm_price_window',
+    metric: 'trail',
+    window: '30',
+    arms: [[{ operator: '>=' as const, value: 20 }]],
+  });
+  // The whole point of the toggle: the value this one replaced, kept around.
+  const parked = row({
+    enabled: false,
+    group: 'm_price_window',
+    metric: 'trail',
+    window: '30',
+    arms: [[{ operator: '>=' as const, value: 12 }]],
+  });
+
+  it('treats a missing `enabled` as live (rows predate the toggle)', () => {
+    const legacy = { ...row({ group: 'm_snapshot', metric: 'time' }), enabled: undefined };
+    expect(ruleRowEnabled(legacy)).toBe(true);
+    expect(ruleRowEnabled(parked)).toBe(false);
+  });
+
+  it('folds parked rows into `disabled`, never the live side', () => {
+    const { entry, exit, disabled } = rowsToSides([live, parked]);
+    expect(entry.m_price_window).toHaveLength(1);
+    expect(entry.m_price_window[0].metrics.trail[0][0].value).toBe(20);
+    expect(disabled?.entry?.m_price_window[0].metrics.trail[0][0].value).toBe(12);
+    expect(Object.keys(exit)).toHaveLength(0);
+  });
+
+  it('leaves `disabled` null when nothing is parked', () => {
+    expect(rowsToSides([live]).disabled).toBeNull();
+  });
+
+  it('round-trips through sidesToRows with the flags intact', () => {
+    const { entry, exit, disabled } = rowsToSides([live, parked]);
+    const back = sidesToRows(entry, exit, disabled);
+    expect(back).toHaveLength(2);
+    expect(back.filter(ruleRowEnabled)).toHaveLength(1);
+    // Re-folding the reloaded rows is a fixed point — a save+reload+save cycle must
+    // not migrate a parked condition into the live side (or lose it).
+    expect(rowsToSides(back)).toEqual({ entry, exit, disabled });
+  });
+
+  it('does not flag a parked row as a duplicate of its live twin', () => {
+    // Same side/group/window/metric — legal, because they go to different bags.
+    expect(duplicateConditionRowError([live, parked])).toBeNull();
+    // ...but two PARKED rows on the same key still collide inside the bag.
+    expect(duplicateConditionRowError([parked, { ...parked, id: 'x' }])).toMatch(/set twice/);
+  });
+
+  it('orphans arm_above_pct when its trailing metric is parked', () => {
+    const trailing = row({
+      side: 'exit',
+      group: 'm_position',
+      metric: 'retrace',
+      arms: [[{ operator: '>=' as const, value: 3 }]],
+      strict: { arm_above_pct: 2 },
+    });
+    expect(armAbovePctOrphanError([trailing])).toBeNull();
+    // Parking it moves it to the other bag — the live instance now has an arm with
+    // nothing to gate, exactly what the backend rejects at save.
+    expect(armAbovePctOrphanError([{ ...trailing, enabled: false }, { ...trailing, id: 'p', metric: 'pnl' }]))
+      .toMatch(/arm_above_pct gates the trailing metrics/);
+  });
+
+  it('warns when every condition of a side is parked', () => {
+    expect(parkedSideWarnings([live, parked])).toEqual([]);
+    expect(parkedSideWarnings([parked])).toEqual([
+      'every entry condition is off — the rule now buys on the fingerprint alone',
+    ]);
+    expect(parkedSideWarnings([{ ...parked, side: 'exit' }])).toEqual([
+      'every exit condition is off — only TP / SL / death can close a position',
+    ]);
+    // A side with no authored conditions at all was never constrained — no warning.
+    expect(parkedSideWarnings([row({ group: '', metric: '', arms: [] })])).toEqual([]);
   });
 });
 

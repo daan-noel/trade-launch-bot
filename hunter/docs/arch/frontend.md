@@ -256,7 +256,16 @@ next load (no per-metric frontend work).
   (registry-guided strict/metric split; includes `scale_out: ExitStage[]`);
   `validate.ts` mirrors backend §5 validation (incl. scale-out caps).
 - `components/strategy/` — `ConditionInput` (grammar input + chips + red-underline),
-  `ConditionBuilder` (entry/exit columns; exit-only mode for scale-out stages),
+  `ConditionBuilder` (entry/exit columns; exit-only mode for scale-out stages; the
+  per-row `⏻` **parks** a condition — kept, still validated, but folded into
+  `params.disabled` instead of the live side, so the engine never compiles it.
+  `lib/strategy/ruleConditionRows.ts` owns the row↔bag fold: `enabled` on the row,
+  `rowsToSides` → `{entry, exit, disabled}`, live/parked keyed separately in the
+  duplicate + `arm_above_pct`-orphan checks, and `parkedSideWarnings` for the case
+  that matters — parking a side's LAST condition rewrites the rule silently
+  (empty entry ⇒ buys on the fingerprint alone; empty exit ⇒ TP/SL/death only).
+  **Scale-out stages pass `allowToggle={false}`**: a stage's `conditions` have no
+  `disabled` bag, so a parked row there would vanish on save),
   `ScaleOutBuilder` (ordered partial-exit ladder), `RuleEditor` (builder + JSON tab + a
   `renderDryRun` slot; edit mode locks `trade_mode` behind a padlock unlock),
   `FingerprintPicker`/`FingerprintForm` (registry-driven

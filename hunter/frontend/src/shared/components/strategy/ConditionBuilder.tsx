@@ -22,7 +22,9 @@ import {
   armAbovePctOrphanError,
   duplicateConditionRowError,
   newRuleConditionRow,
+  parkedSideWarnings,
   ruleConditionRowError,
+  ruleRowEnabled,
   ruleRowIsTrailing,
   ruleRowNeedsWindow,
   type RuleConditionRow,
@@ -39,13 +41,20 @@ export interface ConditionBuilderProps {
   sides?: RuleConditionSide[];
   /** Allow the ⇄ flip between columns. Default true when both sides are shown. */
   allowFlip?: boolean;
+  /** Allow the ⏻ park toggle. Default true. **Scale-out stages pass `false`**: a
+   *  stage's `conditions` are their own nested `SideConditions` with no `disabled`
+   *  bag, so a parked row there would be silently dropped on save. Park the whole
+   *  stage instead (remove it) until the bag nests per stage. */
+  allowToggle?: boolean;
   /** Optional column title override (e.g. exit → "conditions"). */
   sideTitles?: Partial<Record<RuleConditionSide, string>>;
 }
 
 /**
  * The two-column (entry · exit) condition builder. Add a condition per column,
- * pick group → metric → window → grammar; the `⇄` flips a row to the other side.
+ * pick group → metric → window → grammar; the `⇄` flips a row to the other side and
+ * the ⏻ **parks** it (kept and still validated, but folded into `params.disabled`
+ * so the engine never compiles it — the "try this rule without that gate" loop).
  * Pass `sides={['exit']}` for a single exit-only column (scale-out stages).
  */
 export function ConditionBuilder({
@@ -55,16 +64,24 @@ export function ConditionBuilder({
   disabled,
   sides = ['entry', 'exit'],
   allowFlip,
+  allowToggle = true,
   sideTitles,
 }: ConditionBuilderProps) {
   const dupErr = duplicateConditionRowError(rows);
   const armErr = armAbovePctOrphanError(rows);
+  // Parking the LAST condition of a side silently rewrites the rule (entry ⇒ buys on
+  // the fingerprint alone; exit ⇒ TP/SL/death only) — warn, don't block.
+  // (Only for the columns this builder actually shows — a scale-out stage renders
+  // the exit column alone and has its own "stage needs a way to fire" check.)
+  const parkedWarnings = parkedSideWarnings(rows.filter((r) => sides.includes(r.side)));
   const canFlip = allowFlip ?? sides.length > 1;
 
   const setRow = (id: string, patch: Partial<RuleConditionRow>) =>
     onChange(rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   const removeRow = (id: string) => onChange(rows.filter((r) => r.id !== id));
   const addRow = (side: RuleConditionSide) => onChange([...rows, newRuleConditionRow(side)]);
+  const toggleRow = (id: string) =>
+    onChange(rows.map((r) => (r.id === id ? { ...r, enabled: !ruleRowEnabled(r) } : r)));
   const flipSide = (id: string) =>
     onChange(
       rows.map((r) =>
@@ -87,15 +104,22 @@ export function ConditionBuilder({
             registry={registry}
             disabled={disabled}
             allowFlip={canFlip}
+            allowToggle={allowToggle}
             onAdd={() => addRow(side)}
             onPatch={setRow}
             onRemove={removeRow}
             onFlip={flipSide}
+            onToggle={toggleRow}
           />
         ))}
       </div>
       {dupErr && <p className="text-[11px] text-red">{dupErr}</p>}
       {armErr && <p className="text-[11px] text-red">{armErr}</p>}
+      {parkedWarnings.map((w) => (
+        <p key={w} className="text-[11px] text-warning">
+          ⚠ {w}
+        </p>
+      ))}
     </div>
   );
 }
@@ -107,10 +131,12 @@ function ConditionColumn({
   registry,
   disabled,
   allowFlip,
+  allowToggle,
   onAdd,
   onPatch,
   onRemove,
   onFlip,
+  onToggle,
 }: {
   side: RuleConditionSide;
   title?: string;
@@ -118,18 +144,28 @@ function ConditionColumn({
   registry: StrategyRegistry;
   disabled?: boolean;
   allowFlip: boolean;
+  allowToggle: boolean;
   onAdd: () => void;
   onPatch: (id: string, patch: Partial<RuleConditionRow>) => void;
   onRemove: (id: string) => void;
   onFlip: (id: string) => void;
+  onToggle: (id: string) => void;
 }) {
   const label = title ?? side;
+  const parked = rows.filter((r) => !ruleRowEnabled(r)).length;
   return (
     <div className="flex flex-col gap-1.5 rounded-md border border-white/10 bg-white/2 p-2">
       <div className="flex items-center justify-between gap-1.5">
         <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-text-dim/70">
           {label}
           <InfoTooltip title={SIDE_HELP[side].title} body={SIDE_HELP[side].body} />
+          {/* A parked row still renders, so say plainly how many of the visible rows
+              the engine will actually evaluate. */}
+          {parked > 0 && (
+            <span className="font-normal normal-case tracking-normal text-warning/80">
+              {rows.length - parked} live · {parked} off
+            </span>
+          )}
         </span>
         <IconButton
           variant="success"
@@ -156,9 +192,11 @@ function ConditionColumn({
               registry={registry}
               disabled={disabled}
               allowFlip={allowFlip}
+              allowToggle={allowToggle}
               onPatch={(patch) => onPatch(row.id, patch)}
               onRemove={() => onRemove(row.id)}
               onFlip={() => onFlip(row.id)}
+              onToggle={() => onToggle(row.id)}
             />
           ))}
         </div>
@@ -172,18 +210,25 @@ function ConditionRow({
   registry,
   disabled,
   allowFlip,
+  allowToggle,
   onPatch,
   onRemove,
   onFlip,
+  onToggle,
 }: {
   row: RuleConditionRow;
   registry: StrategyRegistry;
   disabled?: boolean;
   allowFlip: boolean;
+  allowToggle: boolean;
   onPatch: (patch: Partial<RuleConditionRow>) => void;
   onRemove: () => void;
   onFlip: () => void;
+  onToggle: () => void;
 }) {
+  const on = ruleRowEnabled(row);
+  // A parked row is still validated (its problem must be visible BEFORE it goes
+  // live again) but is shown muted, and the editor's save gate ignores it.
   const err = ruleConditionRowError(row, registry);
   const group = registry.groups.find((g) => g.name === row.group);
   const metric = group?.metrics.find((m) => m.name === row.metric);
@@ -214,9 +259,10 @@ function ConditionRow({
   };
 
   // Tint the row border from the metric hue (+ op shade) once fully picked, matching
-  // the sweep builder's per-metric coloring.
+  // the sweep builder's per-metric coloring. A parked row drops the tint entirely —
+  // the hue is what says "this one is live".
   const tint: CSSProperties | undefined =
-    !err && row.metric
+    on && !err && row.metric
       ? (() => {
           const c = metricColorStyle({
             hue: metric?.hue,
@@ -232,7 +278,10 @@ function ConditionRow({
     <div
       className={cn(
         'flex flex-wrap items-center gap-1.5 rounded-md border px-2 py-1.5',
-        err ? 'border-red/40 bg-red/5' : tint ? '' : 'border-white/10 bg-surface',
+        err && on ? 'border-red/40 bg-red/5' : tint ? '' : 'border-white/10 bg-surface',
+        // Parked: readable but plainly inert. Controls stay enabled on purpose —
+        // tweaking a value before switching it back on is the whole workflow.
+        !on && 'border-dashed opacity-45',
       )}
       style={tint}
     >
@@ -330,6 +379,26 @@ function ConditionRow({
       </Cell>
 
       <div className="ml-auto flex shrink-0 items-center gap-0.5">
+        {allowToggle && (
+        <button
+          type="button"
+          onClick={onToggle}
+          disabled={disabled}
+          title={
+            on
+              ? 'Turn off — keep the condition but stop evaluating it'
+              : 'Turn on — evaluate this condition again'
+          }
+          aria-label="Toggle condition"
+          aria-pressed={on}
+          className={cn(
+            'px-1 transition-colors disabled:opacity-40',
+            on ? 'text-text-dim/60 hover:text-warning' : 'text-warning hover:text-text',
+          )}
+        >
+          ⏻
+        </button>
+        )}
         {allowFlip && (
           <button
             type="button"
@@ -354,7 +423,11 @@ function ConditionRow({
         </button>
       </div>
 
-      {err && <span className="w-full text-[11px] text-red">{err}</span>}
+      {err && (
+        <span className={cn('w-full text-[11px]', on ? 'text-red' : 'text-text-dim/70')}>
+          {on ? err : `off — ${err} (fix before turning it back on)`}
+        </span>
+      )}
     </div>
   );
 }

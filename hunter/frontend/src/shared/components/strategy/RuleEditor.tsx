@@ -103,7 +103,9 @@ function RuleEditorInner({
   );
   const [rows, setRows] = useState<RuleConditionRow[]>(() => {
     const p = initial ? ruleParamsFromJson(initial.params, registry) : emptyRuleParams();
-    return sidesToRows(p.entry, p.exit);
+    // Parked conditions come back as rows too (muted, `enabled: false`) — that is the
+    // point of storing them in `params.disabled` rather than dropping them on save.
+    return sidesToRows(p.entry, p.exit, p.disabled);
   });
   const [scaleStages, setScaleStages] = useState<ScaleStageDraft[]>(() => {
     const p = initial ? ruleParamsFromJson(initial.params, registry) : emptyRuleParams();
@@ -195,7 +197,7 @@ function RuleEditorInner({
         exclusive: parsed.exclusive,
         priority: parsed.priority,
       }));
-      setRows(sidesToRows(parsed.entry, parsed.exit));
+      setRows(sidesToRows(parsed.entry, parsed.exit, parsed.disabled));
       setScaleStages(stagesToDrafts(parsed.scale_out));
       setJsonError(null);
     } catch (e) {

@@ -42,6 +42,23 @@
 //! Absent = unconstrained: `entry: None` ⇒ enter on arm (fingerprint alone);
 //! `exit: None` ⇒ TP/SL/death only; absent TP/SL ⇒ that guard is off.
 //!
+//! **Parked (disabled) conditions.** The optional root key `disabled` holds an
+//! `entry` / `exit` pair in the *same* [`SideConditions`] shape, for conditions the
+//! author has toggled off in the editor but wants to keep:
+//!
+//! ```json
+//! "disabled": { "entry": { "m_snapshot": { "liquidity": [{"operator": ">", "value": 30}] } } }
+//! ```
+//!
+//! It is parsed and validated exactly like a live side — so re-enabling a parked
+//! condition can never produce a rule that fails to save — but **nothing compiles
+//! it**: [`crate::arm::CompiledRule`] reads `entry`/`exit` only, so the engine,
+//! the sweep, and simulate are untouched and the hot path pays nothing. A parked
+//! condition may duplicate a live one (same group/window/metric) — that is the point
+//! of the feature (park `trail >= 12` while trying `trail >= 20`), and the two live
+//! in separate bags so neither overwrites the other. Absent by default, so every
+//! stored rule round-trips byte-identically (no migration).
+//!
 //! Parse **once at rule load** into these structs — never per event.
 
 use std::collections::BTreeMap;
@@ -96,6 +113,28 @@ pub struct RuleParams {
     /// exclusive rule then sees the claim). Ties fall back to rule-id order.
     /// Meaningless on a non-exclusive rule.
     pub priority: i32,
+    /// Conditions the author toggled OFF but kept (see module docs). Validated like
+    /// a live side, compiled by nothing. `None` (every stored rule) = nothing parked.
+    pub disabled: Option<DisabledConditions>,
+}
+
+/// The parked half of a rule: entry/exit conditions kept but not evaluated. Same
+/// shape as the live sides so a toggle is a move between the two bags, nothing more.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DisabledConditions {
+    /// Parked entry-side conditions (`None`/empty = none parked).
+    pub entry: Option<SideConditions>,
+    /// Parked exit-side conditions (`None`/empty = none parked).
+    pub exit: Option<SideConditions>,
+}
+
+impl DisabledConditions {
+    /// Whether anything at all is parked (an empty bag ≡ absent, and never reaches
+    /// storage — [`RuleParams::to_value`] omits it).
+    pub fn is_empty(&self) -> bool {
+        let empty = |s: &Option<SideConditions>| s.as_ref().is_none_or(SideConditions::is_empty);
+        empty(&self.entry) && empty(&self.exit)
+    }
 }
 
 /// One ordered scale-out stage. Fires once while `stage == k`, sells
@@ -216,6 +255,16 @@ impl RuleParams {
             );
             root.insert("reentry".into(), Value::Object(o));
         }
+        // An empty parked bag is the same as none — never store the ambiguous state.
+        if let Some(d) = self.disabled.as_ref().filter(|d| !d.is_empty()) {
+            let mut o = Map::new();
+            for (key, side) in [("entry", &d.entry), ("exit", &d.exit)] {
+                if let Some(side) = side.as_ref().filter(|s| !s.is_empty()) {
+                    o.insert(key.into(), side_to_value(side));
+                }
+            }
+            root.insert("disabled".into(), Value::Object(o));
+        }
         // Defaults stay absent so every stored rule round-trips byte-identically.
         if self.exclusive {
             root.insert("exclusive".into(), Value::Bool(true));
@@ -241,6 +290,7 @@ impl RuleParams {
                     | "reentry"
                     | "exclusive"
                     | "priority"
+                    | "disabled"
             ) {
                 return Err(format!("unknown params key '{key}'"));
             }
@@ -254,6 +304,7 @@ impl RuleParams {
             reentry: parse_opt_reentry(obj.get("reentry"))?,
             exclusive: parse_opt_bool(obj.get("exclusive"), "exclusive")?,
             priority: parse_opt_priority(obj.get("priority"))?,
+            disabled: parse_opt_disabled(obj.get("disabled"))?,
         })
     }
 
@@ -267,18 +318,46 @@ impl RuleParams {
                 }
             }
         }
-        for (side_name, side) in
-            [("entry", self.entry.as_ref()), ("exit", self.exit.as_ref())]
-        {
+        // Parked sides validate exactly like live ones (`is_entry` and all), so a
+        // toggle back on can never turn a saved rule into an unsavable one.
+        let d = self.disabled.as_ref();
+        for (label, is_entry, side) in [
+            ("entry", true, self.entry.as_ref()),
+            ("exit", false, self.exit.as_ref()),
+            ("disabled.entry", true, d.and_then(|d| d.entry.as_ref())),
+            ("disabled.exit", false, d.and_then(|d| d.exit.as_ref())),
+        ] {
             let Some(side) = side else { continue };
             for (group_id, instances) in &side.0 {
-                validate_group_instances(side_name, *group_id, instances)?;
+                validate_group_instances(label, is_entry, *group_id, instances)?;
             }
         }
         if let Some(stages) = &self.scale_out {
             validate_scale_out(stages)?;
         }
         Ok(())
+    }
+}
+
+/// Parse the optional `disabled` bag — the parked `entry`/`exit` sides. Reuses
+/// [`parse_opt_side`] verbatim (one grammar, one registry walk); an all-empty bag
+/// folds to `None`, the same sentinel discipline as `scale_out: []`.
+fn parse_opt_disabled(v: Option<&Value>) -> Result<Option<DisabledConditions>, String> {
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Object(o)) => {
+            for k in o.keys() {
+                if !matches!(k.as_str(), "entry" | "exit") {
+                    return Err(format!("disabled: unknown key '{k}'"));
+                }
+            }
+            let d = DisabledConditions {
+                entry: parse_opt_side(o.get("entry"), "disabled.entry")?,
+                exit: parse_opt_side(o.get("exit"), "disabled.exit")?,
+            };
+            Ok(if d.is_empty() { None } else { Some(d) })
+        }
+        Some(_) => Err("disabled must be an object".into()),
     }
 }
 
@@ -408,9 +487,8 @@ fn validate_scale_out(stages: &[ExitStage]) -> Result<(), String> {
             ));
         }
         for (group_id, instances) in &stage.conditions.0 {
-            // Stages are exit-like — position metrics are legal. Use a non-"entry"
-            // side name so `validate_group`'s entry-only rejection does not fire.
-            validate_group_instances(&format!("{prefix}.conditions"), *group_id, instances)?;
+            // Stages are exit-like — position metrics are legal, hence `is_entry: false`.
+            validate_group_instances(&format!("{prefix}.conditions"), false, *group_id, instances)?;
         }
     }
     if explicit > MAX_EXPLICIT_SCALE_STAGES {
@@ -575,8 +653,14 @@ fn parse_group_object(
 
 /// Validate a group's instance list: shape rules that span the instances (a static
 /// group takes exactly one; dynamic windows must be distinct), then each instance.
+///
+/// `side_name` is only the error-message path; `is_entry` is the semantic question
+/// ("do position-scoped metrics make sense here?") — they diverge for `scale_out`
+/// stages (exit-like under an `scale_out[i]` path) and for the parked `disabled.entry`
+/// bag (entry-like under a `disabled.` path).
 fn validate_group_instances(
     side_name: &str,
+    is_entry: bool,
     group_id: MetricGroupId,
     instances: &[GroupConditions],
 ) -> Result<(), String> {
@@ -609,13 +693,14 @@ fn validate_group_instances(
         }
     }
     for group in instances {
-        validate_group(side_name, group_id, group)?;
+        validate_group(side_name, is_entry, group_id, group)?;
     }
     Ok(())
 }
 
 fn validate_group(
     side_name: &str,
+    is_entry: bool,
     group_id: MetricGroupId,
     group: &GroupConditions,
 ) -> Result<(), String> {
@@ -623,9 +708,9 @@ fn validate_group(
     // Position-scoped metrics anchor on YOUR entry fill — they have no value until a
     // position is held, so they are exit-only (pre-entry they read NaN and could
     // never satisfy an entry condition anyway; reject at save with a clear message).
-    if side_name == "entry" && spec.scope == MetricScope::Position {
+    if is_entry && spec.scope == MetricScope::Position {
         return Err(format!(
-            "entry.{}: position-scoped metrics only exist while holding — exit side only",
+            "{side_name}.{}: position-scoped metrics only exist while holding — exit side only",
             spec.name
         ));
     }
@@ -1127,9 +1212,100 @@ mod tests {
             reentry: None,
             exclusive: false,
             priority: 0,
+            disabled: None,
         };
         let e = p.validate().unwrap_err();
         assert!(e.contains("must be finite"), "{e}");
+    }
+
+    #[test]
+    fn disabled_bag_parses_round_trips_and_is_never_compiled() {
+        // The park-a-gate shape: a live `trail >= 20` entry beside the parked
+        // `trail >= 12` it replaced — SAME group, SAME window, same metric. That is
+        // the whole point, and the two bags keep them from overwriting each other.
+        let p = RuleParams::parse(&json!({
+            "entry": { "m_price_window": { "window_size_sec": 30, "trail": [{"operator": ">=", "value": 20}] } },
+            "disabled": {
+                "entry": { "m_price_window": { "window_size_sec": 30, "trail": [{"operator": ">=", "value": 12}] } },
+                "exit":  { "m_position": { "retrace": [{"operator": ">=", "value": 3}] } }
+            }
+        }))
+        .expect("parked conditions are valid");
+        let d = p.disabled.as_ref().expect("bag present");
+        assert_eq!(
+            d.entry.as_ref().unwrap().0[&MetricGroupId::PriceWindow][0].metrics
+                [&MetricId::WinTrail],
+            vec![vec![Condition { operator: Operator::Gte, value: 12.0 }]]
+        );
+        assert!(d.exit.as_ref().unwrap().0.contains_key(&MetricGroupId::Position));
+        assert_eq!(RuleParams::parse(&p.to_value()).unwrap(), p);
+
+        // The live sides — the only thing the engine compiles — are untouched by it.
+        assert!(!p.enter_on_arm());
+        assert!(p.exit_is_tp_sl_only(), "a parked exit is NOT an exit");
+
+        // Parking every entry condition really does mean enter-on-arm. The engine
+        // reads that straight off the live side; nothing consults the bag.
+        let all_parked = RuleParams::parse(&json!({
+            "disabled": { "entry": { "m_snapshot": { "time": [{"operator": ">", "value": 10}] } } }
+        }))
+        .unwrap();
+        assert!(all_parked.enter_on_arm());
+    }
+
+    #[test]
+    fn disabled_bag_defaults_absent_and_empty_folds_to_none() {
+        // Absent by default, and never serialized when unset ⇒ every stored rule
+        // round-trips byte-identically (no migration).
+        let p = RuleParams::parse(&json!({ "take_profit": 50 })).unwrap();
+        assert_eq!(p.disabled, None);
+        assert!(p.to_value().get("disabled").is_none());
+
+        // An empty / all-empty bag is the same sentinel as `scale_out: []` → None.
+        for empty in [json!({ "disabled": {} }), json!({ "disabled": { "entry": {}, "exit": {} } })] {
+            let p = RuleParams::parse(&empty).unwrap();
+            assert_eq!(p.disabled, None, "{empty}");
+            assert!(p.to_value().get("disabled").is_none());
+        }
+    }
+
+    #[test]
+    fn disabled_bag_validates_like_a_live_side() {
+        // Entry-scope rule applies under `disabled.entry` too — otherwise toggling a
+        // parked condition back on would produce a rule that refuses to save.
+        let e = RuleParams::parse(&json!({
+            "disabled": { "entry": { "m_position": { "retrace": [{"operator": ">=", "value": 3}] } } }
+        }))
+        .unwrap_err();
+        assert!(e.contains("disabled.entry") && e.contains("exit side only"), "{e}");
+
+        // ...and the ordinary per-group rules (unknown names, no-op groups,
+        // contradictions, required strict params) all still fire under the bag.
+        for (bad, needle) in [
+            (json!({ "disabled": { "exit": { "m_snapshots": {} } } }), "unknown metric group"),
+            (
+                json!({ "disabled": { "entry": { "m_flow_window": { "window_size_sec": 10 } } } }),
+                "no metric conditions",
+            ),
+            (
+                json!({ "disabled": { "entry": { "m_price_window": { "trail": [{"operator": ">=", "value": 1}] } } } }),
+                "missing required param 'window_size_sec'",
+            ),
+            (
+                // Two explicit OR arms, both unsatisfiable (normalize does not expand
+                // multi-arm exprs, so the metric stays contradictory).
+                json!({ "disabled": { "entry": { "m_snapshot": { "time": [
+                    [{"operator": ">", "value": 30}, {"operator": "<", "value": 10}],
+                    [{"operator": ">", "value": 50}, {"operator": "<", "value": 20}]
+                ] } } } }),
+                "contradictory",
+            ),
+            (json!({ "disabled": { "entyr": {} } }), "unknown key"),
+            (json!({ "disabled": [] }), "must be an object"),
+        ] {
+            let e = RuleParams::parse(&bad).unwrap_err();
+            assert!(e.contains(needle), "expected '{needle}' in: {e}");
+        }
     }
 
     #[test]

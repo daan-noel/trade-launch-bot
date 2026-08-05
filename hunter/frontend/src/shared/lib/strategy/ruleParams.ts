@@ -79,6 +79,20 @@ export interface ExitStage {
 export const MAX_EXPLICIT_SCALE_STAGES = 3;
 export const MAX_SCALE_SELL_BPS = 9900;
 
+/**
+ * Parked (toggled-off) conditions — mirror of the backend
+ * `hunter_engine::rule_params::DisabledConditions`. Same shape as a live side, so
+ * flipping a row's toggle is a move between the two bags and nothing else. Kept in
+ * `params` so a parked condition survives save+reload, but compiled by nothing: the
+ * engine reads `entry`/`exit` only. A parked row MAY duplicate a live one on the
+ * same (group, window, metric) — that is the point (park `trail >= 12` while trying
+ * `trail >= 20`), and separate bags keep them from overwriting each other.
+ */
+export interface DisabledConditions {
+  entry?: SideConditions;
+  exit?: SideConditions;
+}
+
 /** The whole rule `params` object in form shape. */
 export interface RuleParams {
   /** Take-profit % of entry price (`100` = +100%). `null`/absent = off. */
@@ -99,6 +113,8 @@ export interface RuleParams {
   /** Tiebreak between two contesting `exclusive` rules — higher wins, ties break by
    *  rule id. Meaningless when `exclusive` is false. */
   priority: number;
+  /** Conditions toggled off but kept. `null`/absent = nothing parked. */
+  disabled?: DisabledConditions | null;
 }
 
 /** An empty rule (fingerprint-only, no TP/SL/conditions). */
@@ -112,6 +128,7 @@ export function emptyRuleParams(): RuleParams {
     reentry: null,
     exclusive: false,
     priority: 0,
+    disabled: null,
   };
 }
 
@@ -140,6 +157,14 @@ export function ruleParamsToJson(p: RuleParams): Record<string, unknown> {
       max_episodes_per_token: re.max_episodes_per_token,
     };
   }
+  // Parked conditions ride along only when something is actually parked — an empty
+  // bag is the same as none (mirrors the backend `parse_opt_disabled` fold).
+  const parked: Record<string, unknown> = {};
+  const parkedEntry = sideToJson(p.disabled?.entry);
+  if (parkedEntry) parked.entry = parkedEntry;
+  const parkedExit = sideToJson(p.disabled?.exit);
+  if (parkedExit) parked.exit = parkedExit;
+  if (Object.keys(parked).length) root.disabled = parked;
   // Defaults stay off the wire so existing rules round-trip unchanged.
   if (p.exclusive) root.exclusive = true;
   if (Number.isFinite(p.priority) && p.priority !== 0) root.priority = p.priority;
@@ -189,7 +214,23 @@ export function ruleParamsFromJson(json: unknown, reg: StrategyRegistry | undefi
     reentry: reentryFromJson(obj.reentry),
     exclusive: obj.exclusive === true,
     priority: typeof obj.priority === 'number' && Number.isFinite(obj.priority) ? obj.priority : 0,
+    disabled: disabledFromJson(obj.disabled, reg),
   };
+}
+
+/** Parse the wire `disabled` bag → form. An all-empty bag folds to `null`, the
+ *  same sentinel the backend applies. */
+function disabledFromJson(
+  v: unknown,
+  reg: StrategyRegistry | undefined,
+): DisabledConditions | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  const entry = sideFromJson(o.entry, reg);
+  const exit = sideFromJson(o.exit, reg);
+  const has = (s: SideConditions | undefined) => s != null && Object.keys(s).length > 0;
+  if (!has(entry) && !has(exit)) return null;
+  return { entry, exit };
 }
 
 /** Empty array folds to `null` (same sentinel as backend `configured_labels`). */
