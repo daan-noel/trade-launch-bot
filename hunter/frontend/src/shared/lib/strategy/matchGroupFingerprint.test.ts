@@ -5,6 +5,7 @@ import {
   fingerprintCompatibleWithGroupKey,
   fingerprintIdentityFromGroupKey,
   identityHasCriterion,
+  identityLamportsAreStorable,
   parseLoLamports,
   withIxLabelsFilter,
 } from './matchGroupFingerprint';
@@ -88,6 +89,36 @@ describe('fingerprintIdentityFromGroupKey', () => {
     expect(id.ix_labels).toEqual(['buy', 'sell']);
     expect(id.max_cost_lamports).toBeNull();
     expect(id.bucket_size_amount).toBe(0.1);
+  });
+});
+
+describe('identityLamportsAreStorable — the BIGINT-axis limit', () => {
+  const bare = {
+    cu_limit: null,
+    cu_price: null,
+    init_buy_lamports: null,
+    max_cost_lamports: null,
+    spendable_lamports_in: null,
+    first_slot_buy_lamports: null,
+    first_slot_sell_lamports: null,
+    bucket_size_amount: null,
+    ix_labels: null,
+  };
+
+  it('rejects a u64 ceiling reconstructed from an exact label', () => {
+    // pump.fun's "fill at any price" sentinel: max_sol_cost = u64::MAX. Past both
+    // 2^53 and i64::MAX, so it can never be a stored criterion.
+    const id = fingerprintIdentityFromGroupKey(
+      { max_cost_lamports: '18446744073.709551615' },
+      null,
+    );
+    expect(identityLamportsAreStorable(id)).toBe(false);
+  });
+
+  it('accepts real amounts, including 0 and an exact-mode identity', () => {
+    expect(identityLamportsAreStorable({ ...bare, init_buy_lamports: 0 })).toBe(true);
+    expect(identityLamportsAreStorable({ ...bare, init_buy_lamports: 1_515_000_000 })).toBe(true);
+    expect(identityLamportsAreStorable(bare)).toBe(true);
   });
 });
 
@@ -252,6 +283,32 @@ describe('findFingerprintForGroupKey', () => {
     expect(findFingerprintForGroupKey(resolved, [sparse, refinedB, refinedA], 0.5)?.id).toBe(
       'refined-a',
     );
+  });
+});
+
+describe('exact-mode identity — an exact-grouped card is a saveable fingerprint', () => {
+  // Regression: the creation-stats page used to substitute the 0.1 default for the
+  // response's `bucket_width: null`, so an exact card compared against every
+  // fingerprint at the wrong precision — no card ever badged and Create was hidden.
+  const gk = { initial_buy_sol: '1.515' };
+  const exact = fp({ id: 'e', init_buy_lamports: 1_515_000_000, bucket_size_amount: null });
+  const bucketed = fp({ id: 'b', init_buy_lamports: 1_515_000_000, bucket_size_amount: 0.1 });
+
+  it('badges the exact fingerprint an exact card would resolve to', () => {
+    expect(findFingerprintForGroupKey(gk, [exact, bucketed], null)?.id).toBe('e');
+  });
+
+  it('never crosses precision — the two arm on different token sets', () => {
+    expect(findFingerprintForGroupKey(gk, [bucketed], null)).toBeNull();
+    expect(findFingerprintForGroupKey({ initial_buy_sol: '1.5–1.6' }, [exact], 0.1)).toBeNull();
+  });
+
+  it('reconstructs a plain exact label whole, and keeps the NULL width', () => {
+    const id = fingerprintIdentityFromGroupKey(gk, null);
+    expect(id.init_buy_lamports).toBe(1_515_000_000);
+    expect(id.bucket_size_amount).toBeNull();
+    expect(identityHasCriterion(id)).toBe(true);
+    expect(identityLamportsAreStorable(id)).toBe(true);
   });
 });
 

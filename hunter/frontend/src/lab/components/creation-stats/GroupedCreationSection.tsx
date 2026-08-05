@@ -38,6 +38,7 @@ import {
   findFingerprintForGroupKey,
   fingerprintIdentityFromGroupKey,
   identityHasCriterion,
+  identityLamportsAreStorable,
   withIxLabelsFilter,
 } from 'lib/strategy/matchGroupFingerprint';
 import { fingerprintNameFromGroupKey } from 'lib/strategy/fingerprintNameFromGroupKey';
@@ -334,22 +335,24 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   const groups = data?.groups ?? [];
   const drillGroup = drillTarget ? groups.find((g) => g.g === drillTarget.g) ?? null : null;
 
-  // The bucket width the applied run grouped SOL axes at — the same width the
-  // fingerprint identity match/create must use so a card maps to the fingerprint
-  // it would actually match. Prefer the server echo (`data.bucket_width`): scoped
-  // runs ignore the draft width and use the fingerprint's own; `applied.bucketWidth`
-  // is also omitted for the default 0.1 case.
-  const appliedBucketWidth = data?.bucket_width ?? applied?.bucketWidth ?? SOL_BUCKET_WIDTH;
-
   // Was the applied run keyed on exact SOL amounts? Then a card's SOL axes read
-  // "1.515", not "1.5–1.6", and the card **cannot** become a fingerprint: the live
-  // engine matches those axes with `same_bucket` at the fingerprint's own
-  // `bucket_size_amount`, so any width we invented here would silently arm on a
-  // window the card never showed. Offering Create anyway would mint a rule that
-  // matches something other than what you clicked — so it's hidden, with the
-  // reason on the card. (Prefer the Analyze snapshot over the response echo so an
-  // in-flight refetch can't briefly flip the badge.)
+  // "1.515", not "1.5–1.6", and the fingerprint it maps to is an **exact** one
+  // (NULL stored width ⇒ `SolPrecision::Exact` ⇒ raw-lamports equality), not a
+  // bucketed one. (Prefer the Analyze snapshot over the response echo so an
+  // in-flight refetch can't briefly flip the precision.)
   const appliedExactSol = applied?.exactSol ?? data?.bucket_width === null;
+
+  // The precision the applied run grouped SOL axes at — the same precision the
+  // fingerprint identity match/create must use so a card maps to the fingerprint
+  // it would actually match. `null` IS the exact mode, never a substituted width:
+  // inventing 0.1 there would mint a rule that arms on a window the card never
+  // showed. Prefer the server echo (`data.bucket_width`): scoped runs ignore the
+  // draft width and use the fingerprint's own; `applied.bucketWidth` is also
+  // omitted for the default 0.1 case. Note the `??` chain only runs when the run
+  // is bucketed — in exact mode the echo is `null`, which `??` would swallow.
+  const appliedBucketWidth: number | null = appliedExactSol
+    ? null
+    : data?.bucket_width ?? applied?.bucketWidth ?? SOL_BUCKET_WIDTH;
 
   // Applied exact-set ix_labels filter. Prefer the Analyze snapshot (`applied`)
   // over the response echo so a in-flight refetch can't briefly drop the axis
@@ -363,35 +366,31 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   // (ALL / grouping-only cards can't become a fingerprint — hide Create then).
   // When scoped by a saved fingerprint, prefer that id directly (group_key is
   // stamped from it server-side, but the scope select is the authoritative link).
+  // Exact grouping is saveable — a plain SOL label parses whole, and the identity
+  // it builds carries a `null` width, which `sameWidth` keeps distinct from every
+  // bucketed one. The single case that still isn't: an axis on a `u64` ceiling,
+  // which no `BIGINT` column can hold (`identityLamportsAreStorable`).
   const fpByGroup = useMemo(() => {
-    const map = new Map<number, { matched: Fingerprint | null; canCreate: boolean }>();
+    const map = new Map<
+      number,
+      { matched: Fingerprint | null; canCreate: boolean; overflow: boolean }
+    >();
     const scoped =
       applied?.fingerprintId != null
         ? fingerprints.find((f) => f.id === applied.fingerprintId) ?? null
         : null;
     for (const g of groups) {
       const gk = withIxLabelsFilter(g.group_key, appliedIxLabels);
-      // Under exact-SOL grouping the key carries amounts, not bucket labels, so
-      // neither the identity match nor create is meaningful — both read a `lo`
-      // edge that isn't there. Fall back to the scope link only.
-      const matched = appliedExactSol
-        ? scoped
-        : scoped ?? findFingerprintForGroupKey(gk, fingerprints, appliedBucketWidth);
-      const canCreate =
-        !appliedExactSol &&
-        matched == null &&
-        identityHasCriterion(fingerprintIdentityFromGroupKey(gk, appliedBucketWidth));
-      map.set(g.g, { matched, canCreate });
+      const matched = scoped ?? findFingerprintForGroupKey(gk, fingerprints, appliedBucketWidth);
+      const identity = fingerprintIdentityFromGroupKey(gk, appliedBucketWidth);
+      const storable = identityLamportsAreStorable(identity);
+      const canCreate = matched == null && storable && identityHasCriterion(identity);
+      // Only worth explaining on a card that would otherwise offer Create.
+      const overflow = matched == null && !storable && identityHasCriterion(identity);
+      map.set(g.g, { matched, canCreate, overflow });
     }
     return map;
-  }, [
-    groups,
-    fingerprints,
-    appliedBucketWidth,
-    appliedExactSol,
-    applied?.fingerprintId,
-    appliedIxLabels,
-  ]);
+  }, [groups, fingerprints, appliedBucketWidth, applied?.fingerprintId, appliedIxLabels]);
 
   // Save a group card as a fingerprint. Identity = group_key axes, plus the
   // applied ix_labels filter when that axis wasn't grouped (mutually exclusive
@@ -644,7 +643,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
               const targetingThisGroup = drillTarget?.g === g.g;
               // Selected = its tokens are showing in the shared drill-down below.
               const selected = targetingThisGroup;
-              const fp = fpByGroup.get(g.g) ?? { matched: null, canCreate: false };
+              const fp = fpByGroup.get(g.g) ?? { matched: null, canCreate: false, overflow: false };
               const gk = withIxLabelsFilter(g.group_key, appliedIxLabels);
               const hasIxLabels =
                 Object.prototype.hasOwnProperty.call(gk, 'ix_labels') &&
@@ -700,19 +699,21 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
                           >
                             {fpBusyGroup === g.g ? 'Creating…' : 'Create fingerprint'}
                           </Button>
-                        ) : appliedExactSol ? (
+                        ) : fp.overflow ? (
                           // Say why the action is gone rather than leaving a silent
                           // gap — the reason is a real constraint, not an oversight.
                           <span
                             className="text-[10px] text-text-dim/60"
                             title={
-                              'This card groups on exact SOL amounts, but a fingerprint matches SOL axes\n' +
-                              'by BUCKET (the live engine uses same_bucket at the fingerprint\'s own\n' +
-                              'bucket_size_amount). Saving this card would arm on a window it never showed.\n\n' +
-                              'Uncheck "Exact values" to group into buckets, then Create.'
+                              'A SOL axis on this card is an out-of-i64 "no limit" ceiling (pump.fun\n' +
+                              'passes max_sol_cost = u64::MAX to mean "fill at any price"), not an\n' +
+                              'amount anyone bid. A fingerprint axis is a BIGINT, so that value cannot\n' +
+                              'be stored as a criterion — and the live matcher fails a configured axis\n' +
+                              'against it rather than wrapping it.\n\n' +
+                              'Group by an axis that carries a real amount instead.'
                             }
                           >
-                            exact — not saveable
+                            ceiling — not saveable
                           </span>
                         ) : null}
                         <Button

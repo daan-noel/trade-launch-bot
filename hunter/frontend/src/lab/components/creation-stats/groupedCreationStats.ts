@@ -72,8 +72,10 @@ export interface GroupedCreationResponse {
   group_by: GroupField[];
   /** The applied (clamped) bucket width (SOL) for the continuous SOL group fields,
    *  or `null` when the run keyed them on their **exact** amount (`exactSol`).
-   *  `null` is the signal that a group key carries no width and so can't be saved
-   *  as a fingerprint — the live engine matches SOL axes by bucket. */
+   *  Carry the `null` through to identity match/create verbatim — it is the width a
+   *  fingerprint saved from such a card stores, and `SolPrecision::Exact` is what
+   *  the live engine then matches those axes with. Substituting a width there mints
+   *  a rule that arms on a window the card never showed. */
   bucket_width: number | null;
   /** The applied per-field value filters echoed back (`{cu_limit:["300000"]}`). */
   field_filters: Record<string, string[]>;

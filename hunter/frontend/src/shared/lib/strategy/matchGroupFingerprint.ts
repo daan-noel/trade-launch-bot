@@ -132,6 +132,41 @@ export function fingerprintIdentityFromGroupKey(
   return id;
 }
 
+/** The lamports axes of an identity — every field stored as a `BIGINT` column. */
+const LAMPORTS_AXES = [
+  'init_buy_lamports',
+  'max_cost_lamports',
+  'spendable_lamports_in',
+  'first_slot_buy_lamports',
+  'first_slot_sell_lamports',
+] as const;
+
+/**
+ * True when every SOL axis of this identity can be *stored exactly*.
+ *
+ * A group key's SOL axes are decimal SOL text and we reconstruct lamports from
+ * them with {@link parseLoLamports}, i.e. through a JS `number`. That is lossless
+ * for any real amount, but a creation arg's on-chain domain is `u64` and pump.fun's
+ * `max_sol_cost` uses `u64::MAX` (≈1.84e10 SOL) as the "fill at any price"
+ * **sentinel** — thousands of tokens a month carry it. Such a value is past both
+ * `Number.MAX_SAFE_INTEGER` and the `BIGINT` axis's `i64::MAX`, so it cannot be a
+ * fingerprint criterion at all (the backend's `sol_axis` fails a configured axis
+ * against an out-of-`i64` token value rather than wrapping it — see
+ * `hunter_engine::fingerprint`). Bucketed runs never hit this: the backend keeps a
+ * ceiling out of the bins as its own group, and its label only reaches identity
+ * reconstruction under exact grouping.
+ *
+ * Checked with `isSafeInteger` rather than against `MAX_BUCKETABLE_LAMPORTS`: past
+ * 2^53 the reconstructed number has already lost digits, so the identity would be
+ * wrong even where `i64` would have held it.
+ */
+export function identityLamportsAreStorable(id: FingerprintIdentity): boolean {
+  return LAMPORTS_AXES.every((k) => {
+    const v = id[k];
+    return v == null || (Number.isSafeInteger(v) && v >= 0);
+  });
+}
+
 /** True when the identity carries at least one match criterion — mirrors the
  *  backend `Fingerprint::has_any_criterion` (`bucket_size_amount` alone doesn't
  *  count). A group with none (e.g. the ALL group, or grouping only by the
