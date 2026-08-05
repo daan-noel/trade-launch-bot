@@ -201,11 +201,37 @@ describe('disabled (parked conditions) round-trip', () => {
   });
 
   it('folds an empty / all-empty bag to null (the backend sentinel)', () => {
-    for (const empty of [{ disabled: {} }, { disabled: { entry: {}, exit: {} } }]) {
+    for (const empty of [
+      { disabled: {} },
+      { disabled: { entry: {}, exit: {} } },
+      { disabled: { scale_out: [] } },
+    ]) {
       const form = ruleParamsFromJson(empty, REG);
       expect(form.disabled).toBeNull();
       expect('disabled' in ruleParamsToJson(form)).toBe(false);
     }
+  });
+
+  it('round-trips parked scale-out stages beside the live ladder', () => {
+    // Parked stages that could never coexist in ONE ladder (a second remainder, a
+    // 99% tranche on top of a live 70%) — the bag is a shelf, not a ladder.
+    const withStages = {
+      scale_out: [{ sell_bps: 7000, take_profit: 50 }],
+      disabled: {
+        scale_out: [{ sell_bps: 9900, take_profit: 40 }, { take_profit: 120 }],
+      },
+    };
+    const form = ruleParamsFromJson(withStages, REG);
+    expect(form.scale_out).toHaveLength(1);
+    expect(form.disabled?.scale_out).toHaveLength(2);
+    expect(form.disabled?.scale_out?.[1].take_profit).toBe(120);
+    expect(ruleParamsJsonEqual(ruleParamsToJson(form), withStages)).toBe(true);
+  });
+
+  it('keeps a parked bag alive when ONLY stages are parked', () => {
+    const form = ruleParamsFromJson({ disabled: { scale_out: [{ take_profit: 40 }] } }, REG);
+    expect(form.disabled?.scale_out).toHaveLength(1);
+    expect(ruleParamsToJson(form)).toEqual({ disabled: { scale_out: [{ take_profit: 40 }] } });
   });
 });
 

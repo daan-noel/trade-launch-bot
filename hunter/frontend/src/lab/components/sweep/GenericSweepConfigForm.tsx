@@ -914,6 +914,10 @@ export function GenericSweepConfigForm({
                 onChange={(s) => setField('scaleOutStages', s)}
                 registry={registry}
                 disabled={running}
+                // No park toggle here: a run stores a bare `ExitStage[]`, with no
+                // `disabled` bag to fold a parked stage into, so it would vanish when
+                // the run is reloaded. Remove the stage instead.
+                allowToggle={false}
               />
             ) : (
               <span className="text-[11px] text-text-dim/60">Loading strategy registry…</span>

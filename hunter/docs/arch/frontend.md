@@ -265,8 +265,15 @@ next load (no per-metric frontend work).
   that matters — parking a side's LAST condition rewrites the rule silently
   (empty entry ⇒ buys on the fingerprint alone; empty exit ⇒ TP/SL/death only).
   **Scale-out stages pass `allowToggle={false}`**: a stage's `conditions` have no
-  `disabled` bag, so a parked row there would vanish on save),
-  `ScaleOutBuilder` (ordered partial-exit ladder), `RuleEditor` (builder + JSON tab + a
+  `disabled` bag of their own — park the whole stage instead, below),
+  `ScaleOutBuilder` (ordered partial-exit ladder; each stage carries the same `⏻`
+  park toggle — `enabled` on the draft, `draftsToStages(drafts, enabled)` splits the
+  live ladder from `params.disabled.scale_out`, and every budget question — stage
+  count, sell-% sum, remainder — is asked of the LIVE stages only, so parking a stage
+  frees its slot and its share of the bag. Un-parking an explicit stage re-inserts it
+  before a live remainder, the ladder's one ordering rule. **The lab sweep config form
+  passes `allowToggle={false}`**: a run stores a bare `ExitStage[]` with no bag, so a
+  parked stage there would vanish on reload), `RuleEditor` (builder + JSON tab + a
   `renderDryRun` slot; edit mode locks `trade_mode` behind a padlock unlock),
   `FingerprintPicker`/`FingerprintForm` (registry-driven
   `metric_config` section + `VolumeIxPatternsEditor` for `m_flow_split.volume_ix_patterns`

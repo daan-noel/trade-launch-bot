@@ -80,17 +80,24 @@ export const MAX_EXPLICIT_SCALE_STAGES = 3;
 export const MAX_SCALE_SELL_BPS = 9900;
 
 /**
- * Parked (toggled-off) conditions — mirror of the backend
- * `hunter_engine::rule_params::DisabledConditions`. Same shape as a live side, so
- * flipping a row's toggle is a move between the two bags and nothing else. Kept in
- * `params` so a parked condition survives save+reload, but compiled by nothing: the
- * engine reads `entry`/`exit` only. A parked row MAY duplicate a live one on the
- * same (group, window, metric) — that is the point (park `trail >= 12` while trying
- * `trail >= 20`), and separate bags keep them from overwriting each other.
+ * Parked (toggled-off) conditions and scale-out stages — mirror of the backend
+ * `hunter_engine::rule_params::DisabledConditions`. Same shape as a live side /
+ * ladder, so flipping a toggle is a move between the two bags and nothing else. Kept
+ * in `params` so a parked condition survives save+reload, but compiled by nothing:
+ * the engine reads `entry`/`exit`/`scale_out` only. A parked row MAY duplicate a live
+ * one on the same (group, window, metric) — that is the point (park `trail >= 12`
+ * while trying `trail >= 20`), and separate bags keep them from overwriting each
+ * other.
+ *
+ * Parked **stages** are validated per stage only: the cross-stage rules (remainder
+ * last, stage count, bps sum) describe a ladder, and this is a shelf of spares —
+ * summing them would make parking a stage pointless.
  */
 export interface DisabledConditions {
   entry?: SideConditions;
   exit?: SideConditions;
+  /** Parked scale-out stages. Order is authoring order only — no execution meaning. */
+  scale_out?: ExitStage[] | null;
 }
 
 /** The whole rule `params` object in form shape. */
@@ -157,13 +164,15 @@ export function ruleParamsToJson(p: RuleParams): Record<string, unknown> {
       max_episodes_per_token: re.max_episodes_per_token,
     };
   }
-  // Parked conditions ride along only when something is actually parked — an empty
-  // bag is the same as none (mirrors the backend `parse_opt_disabled` fold).
+  // Parked conditions/stages ride along only when something is actually parked — an
+  // empty bag is the same as none (mirrors the backend `parse_opt_disabled` fold).
   const parked: Record<string, unknown> = {};
   const parkedEntry = sideToJson(p.disabled?.entry);
   if (parkedEntry) parked.entry = parkedEntry;
   const parkedExit = sideToJson(p.disabled?.exit);
   if (parkedExit) parked.exit = parkedExit;
+  const parkedStages = scaleOutToJson(p.disabled?.scale_out);
+  if (parkedStages) parked.scale_out = parkedStages;
   if (Object.keys(parked).length) root.disabled = parked;
   // Defaults stay off the wire so existing rules round-trip unchanged.
   if (p.exclusive) root.exclusive = true;
@@ -228,9 +237,10 @@ function disabledFromJson(
   const o = v as Record<string, unknown>;
   const entry = sideFromJson(o.entry, reg);
   const exit = sideFromJson(o.exit, reg);
+  const scale_out = scaleOutFromJson(o.scale_out, reg);
   const has = (s: SideConditions | undefined) => s != null && Object.keys(s).length > 0;
-  if (!has(entry) && !has(exit)) return null;
-  return { entry, exit };
+  if (!has(entry) && !has(exit) && !scale_out?.length) return null;
+  return { entry, exit, scale_out };
 }
 
 /** Empty array folds to `null` (same sentinel as backend `configured_labels`). */

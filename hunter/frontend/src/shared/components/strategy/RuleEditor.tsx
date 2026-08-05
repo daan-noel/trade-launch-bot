@@ -109,29 +109,38 @@ function RuleEditorInner({
   });
   const [scaleStages, setScaleStages] = useState<ScaleStageDraft[]>(() => {
     const p = initial ? ruleParamsFromJson(initial.params, registry) : emptyRuleParams();
-    return stagesToDrafts(p.scale_out);
+    // Parked stages come back as drafts too (muted, `enabled: false`) — same reason
+    // as the parked condition rows above.
+    return stagesToDrafts(p.scale_out, p.disabled?.scale_out);
   });
-  // The full rule params = TP/SL/re-entry + conditions + scale-out.
-  const composedParams: RuleParams = useMemo(
-    () => ({
+  // The full rule params = TP/SL/re-entry + conditions + scale-out. Parked rows and
+  // parked stages share the one `disabled` bag, so they merge here rather than one
+  // overwriting the other.
+  const composedParams: RuleParams = useMemo(() => {
+    const sides = rowsToSides(rows);
+    const parkedStages = draftsToStages(scaleStages, false);
+    return {
       take_profit: params.take_profit,
       stop_loss: params.stop_loss,
       reentry: params.reentry,
       exclusive: params.exclusive,
       priority: params.priority,
-      ...rowsToSides(rows),
+      ...sides,
+      disabled:
+        sides.disabled || parkedStages
+          ? { ...sides.disabled, scale_out: parkedStages }
+          : null,
       scale_out: draftsToStages(scaleStages),
-    }),
-    [
-      params.take_profit,
-      params.stop_loss,
-      params.reentry,
-      params.exclusive,
-      params.priority,
-      rows,
-      scaleStages,
-    ],
-  );
+    };
+  }, [
+    params.take_profit,
+    params.stop_loss,
+    params.reentry,
+    params.exclusive,
+    params.priority,
+    rows,
+    scaleStages,
+  ]);
   const [tab, setTab] = useState<'builder' | 'json'>('builder');
   const [jsonText, setJsonText] = useState(() =>
     JSON.stringify(ruleParamsToJson(composedParams), null, 2),
@@ -198,7 +207,7 @@ function RuleEditorInner({
         priority: parsed.priority,
       }));
       setRows(sidesToRows(parsed.entry, parsed.exit, parsed.disabled));
-      setScaleStages(stagesToDrafts(parsed.scale_out));
+      setScaleStages(stagesToDrafts(parsed.scale_out, parsed.disabled?.scale_out));
       setJsonError(null);
     } catch (e) {
       setJsonError(e instanceof Error ? e.message : 'invalid JSON');

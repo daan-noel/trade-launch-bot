@@ -43,21 +43,31 @@
 //! `exit: None` ⇒ TP/SL/death only; absent TP/SL ⇒ that guard is off.
 //!
 //! **Parked (disabled) conditions.** The optional root key `disabled` holds an
-//! `entry` / `exit` pair in the *same* [`SideConditions`] shape, for conditions the
-//! author has toggled off in the editor but wants to keep:
+//! `entry` / `exit` pair in the *same* [`SideConditions`] shape plus a `scale_out`
+//! ladder in the *same* [`ExitStage`] shape, for conditions and stages the author
+//! has toggled off in the editor but wants to keep:
 //!
 //! ```json
-//! "disabled": { "entry": { "m_snapshot": { "liquidity": [{"operator": ">", "value": 30}] } } }
+//! "disabled": {
+//!   "entry": { "m_snapshot": { "liquidity": [{"operator": ">", "value": 30}] } },
+//!   "scale_out": [{ "sell_bps": 5000, "take_profit": 40 }]
+//! }
 //! ```
 //!
-//! It is parsed and validated exactly like a live side — so re-enabling a parked
-//! condition can never produce a rule that fails to save — but **nothing compiles
-//! it**: [`crate::arm::CompiledRule`] reads `entry`/`exit` only, so the engine,
-//! the sweep, and simulate are untouched and the hot path pays nothing. A parked
-//! condition may duplicate a live one (same group/window/metric) — that is the point
-//! of the feature (park `trail >= 12` while trying `trail >= 20`), and the two live
-//! in separate bags so neither overwrites the other. Absent by default, so every
-//! stored rule round-trips byte-identically (no migration).
+//! It is parsed and validated exactly like a live side/stage — so re-enabling a
+//! parked condition can never produce a rule that fails to save — but **nothing
+//! compiles it**: [`crate::arm::CompiledRule`] reads `entry`/`exit`/`scale_out`
+//! only, so the engine, the sweep, and simulate are untouched and the hot path pays
+//! nothing. A parked condition may duplicate a live one (same group/window/metric) —
+//! that is the point of the feature (park `trail >= 12` while trying `trail >= 20`),
+//! and the two live in separate bags so neither overwrites the other. Absent by
+//! default, so every stored rule round-trips byte-identically (no migration).
+//!
+//! The one deliberate asymmetry: a parked stage is validated **per stage** only.
+//! The cross-stage rules (`remainder must be last`, the explicit-stage count, the
+//! `sell_bps` sum) describe a *ladder*, and the parked bag is a shelf of spare
+//! stages, not a ladder — summing them would make parking a stage useless (the
+//! ladder it was parked out of would still be over budget).
 //!
 //! Parse **once at rule load** into these structs — never per event.
 
@@ -118,14 +128,19 @@ pub struct RuleParams {
     pub disabled: Option<DisabledConditions>,
 }
 
-/// The parked half of a rule: entry/exit conditions kept but not evaluated. Same
-/// shape as the live sides so a toggle is a move between the two bags, nothing more.
+/// The parked half of a rule: entry/exit conditions and scale-out stages kept but
+/// not evaluated. Same shape as the live sides/ladder so a toggle is a move between
+/// the two bags, nothing more.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DisabledConditions {
     /// Parked entry-side conditions (`None`/empty = none parked).
     pub entry: Option<SideConditions>,
     /// Parked exit-side conditions (`None`/empty = none parked).
     pub exit: Option<SideConditions>,
+    /// Parked scale-out stages (`None`/empty = none parked). Order is the authoring
+    /// order the editor showed them in; it carries no execution meaning here — only
+    /// the live [`RuleParams::scale_out`] ladder is ordered.
+    pub scale_out: Option<Vec<ExitStage>>,
 }
 
 impl DisabledConditions {
@@ -133,7 +148,9 @@ impl DisabledConditions {
     /// storage — [`RuleParams::to_value`] omits it).
     pub fn is_empty(&self) -> bool {
         let empty = |s: &Option<SideConditions>| s.as_ref().is_none_or(SideConditions::is_empty);
-        empty(&self.entry) && empty(&self.exit)
+        empty(&self.entry)
+            && empty(&self.exit)
+            && self.scale_out.as_ref().is_none_or(Vec::is_empty)
     }
 }
 
@@ -263,6 +280,12 @@ impl RuleParams {
                     o.insert(key.into(), side_to_value(side));
                 }
             }
+            if let Some(stages) = d.scale_out.as_ref().filter(|s| !s.is_empty()) {
+                o.insert(
+                    "scale_out".into(),
+                    Value::Array(stages.iter().map(stage_to_value).collect()),
+                );
+            }
             root.insert("disabled".into(), Value::Object(o));
         }
         // Defaults stay absent so every stored rule round-trips byte-identically.
@@ -300,7 +323,7 @@ impl RuleParams {
             stop_loss: parse_opt_number(obj.get("stop_loss"), "stop_loss")?,
             entry: parse_opt_side(obj.get("entry"), "entry")?,
             exit: parse_opt_side(obj.get("exit"), "exit")?,
-            scale_out: parse_opt_scale_out(obj.get("scale_out"))?,
+            scale_out: parse_opt_scale_out(obj.get("scale_out"), "scale_out")?,
             reentry: parse_opt_reentry(obj.get("reentry"))?,
             exclusive: parse_opt_bool(obj.get("exclusive"), "exclusive")?,
             priority: parse_opt_priority(obj.get("priority"))?,
@@ -335,25 +358,32 @@ impl RuleParams {
         if let Some(stages) = &self.scale_out {
             validate_scale_out(stages)?;
         }
+        // Parked stages: per-stage rules only (see module docs — the cross-stage
+        // rules describe a ladder, and this bag is a shelf).
+        for (i, stage) in d.and_then(|d| d.scale_out.as_ref()).into_iter().flatten().enumerate() {
+            validate_stage(&format!("disabled.scale_out[{i}]"), stage)?;
+        }
         Ok(())
     }
 }
 
-/// Parse the optional `disabled` bag — the parked `entry`/`exit` sides. Reuses
-/// [`parse_opt_side`] verbatim (one grammar, one registry walk); an all-empty bag
-/// folds to `None`, the same sentinel discipline as `scale_out: []`.
+/// Parse the optional `disabled` bag — the parked `entry`/`exit` sides and
+/// `scale_out` stages. Reuses [`parse_opt_side`] / [`parse_opt_scale_out`] verbatim
+/// (one grammar, one registry walk); an all-empty bag folds to `None`, the same
+/// sentinel discipline as `scale_out: []`.
 fn parse_opt_disabled(v: Option<&Value>) -> Result<Option<DisabledConditions>, String> {
     match v {
         None | Some(Value::Null) => Ok(None),
         Some(Value::Object(o)) => {
             for k in o.keys() {
-                if !matches!(k.as_str(), "entry" | "exit") {
+                if !matches!(k.as_str(), "entry" | "exit" | "scale_out") {
                     return Err(format!("disabled: unknown key '{k}'"));
                 }
             }
             let d = DisabledConditions {
                 entry: parse_opt_side(o.get("entry"), "disabled.entry")?,
                 exit: parse_opt_side(o.get("exit"), "disabled.exit")?,
+                scale_out: parse_opt_scale_out(o.get("scale_out"), "disabled.scale_out")?,
             };
             Ok(if d.is_empty() { None } else { Some(d) })
         }
@@ -396,10 +426,12 @@ fn parse_opt_reentry(v: Option<&Value>) -> Result<Option<ReEntry>, String> {
     }
 }
 
-/// Parse `scale_out`. Empty array folds to `None` (same sentinel as
-/// [`crate::fingerprint::configured_labels`] — never leave `Some([])` in
-/// storage). Shape validation of counts/bps happens in [`validate_scale_out`].
-fn parse_opt_scale_out(v: Option<&Value>) -> Result<Option<Vec<ExitStage>>, String> {
+/// Parse a stage ladder — the live `scale_out` or the parked `disabled.scale_out`
+/// (`path` is the error-message prefix, the only difference between the two). Empty
+/// array folds to `None` (same sentinel as [`crate::fingerprint::configured_labels`]
+/// — never leave `Some([])` in storage). Shape validation of counts/bps happens in
+/// [`validate_scale_out`] / [`validate_stage`].
+fn parse_opt_scale_out(v: Option<&Value>, path: &str) -> Result<Option<Vec<ExitStage>>, String> {
     match v {
         None | Some(Value::Null) => Ok(None),
         Some(Value::Array(arr)) if arr.is_empty() => Ok(None),
@@ -407,16 +439,15 @@ fn parse_opt_scale_out(v: Option<&Value>) -> Result<Option<Vec<ExitStage>>, Stri
             let stages = arr
                 .iter()
                 .enumerate()
-                .map(|(i, item)| parse_exit_stage(item, i))
+                .map(|(i, item)| parse_exit_stage(item, &format!("{path}[{i}]")))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Some(stages))
         }
-        Some(_) => Err("scale_out must be an array".into()),
+        Some(_) => Err(format!("{path} must be an array")),
     }
 }
 
-fn parse_exit_stage(v: &Value, index: usize) -> Result<ExitStage, String> {
-    let prefix = format!("scale_out[{index}]");
+fn parse_exit_stage(v: &Value, prefix: &str) -> Result<ExitStage, String> {
     let obj = v
         .as_object()
         .ok_or_else(|| format!("{prefix} must be an object"))?;
@@ -475,21 +506,7 @@ fn validate_scale_out(stages: &[ExitStage]) -> Result<(), String> {
                 }
             }
         }
-        if let Some(tp) = stage.take_profit {
-            if !tp.is_finite() || tp <= 0.0 {
-                return Err(format!("{prefix}.take_profit must be a finite number > 0"));
-            }
-        }
-        // A stage must be able to fire: TP sugar and/or non-empty conditions.
-        if stage.take_profit.is_none() && stage.conditions.is_empty() {
-            return Err(format!(
-                "{prefix}: stage needs take_profit and/or non-empty conditions"
-            ));
-        }
-        for (group_id, instances) in &stage.conditions.0 {
-            // Stages are exit-like — position metrics are legal, hence `is_entry: false`.
-            validate_group_instances(&format!("{prefix}.conditions"), false, *group_id, instances)?;
-        }
+        validate_stage(&prefix, stage)?;
     }
     if explicit > MAX_EXPLICIT_SCALE_STAGES {
         return Err(format!(
@@ -502,6 +519,29 @@ fn validate_scale_out(stages: &[ExitStage]) -> Result<(), String> {
             "scale_out: sum of explicit sell_bps must be <= {MAX_SCALE_SELL_BPS} \
              (got {sum_bps}) — a remainder must exist for the stub"
         ));
+    }
+    Ok(())
+}
+
+/// The rules that describe ONE stage in isolation — shared by the live ladder and
+/// the parked bag, which is the whole reason re-enabling a parked stage can never
+/// produce a rule that refuses to save. (The cross-stage rules stay in
+/// [`validate_scale_out`]: they are properties of a ladder, not of a stage.)
+fn validate_stage(prefix: &str, stage: &ExitStage) -> Result<(), String> {
+    if let Some(tp) = stage.take_profit {
+        if !tp.is_finite() || tp <= 0.0 {
+            return Err(format!("{prefix}.take_profit must be a finite number > 0"));
+        }
+    }
+    // A stage must be able to fire: TP sugar and/or non-empty conditions.
+    if stage.take_profit.is_none() && stage.conditions.is_empty() {
+        return Err(format!(
+            "{prefix}: stage needs take_profit and/or non-empty conditions"
+        ));
+    }
+    for (group_id, instances) in &stage.conditions.0 {
+        // Stages are exit-like — position metrics are legal, hence `is_entry: false`.
+        validate_group_instances(&format!("{prefix}.conditions"), false, *group_id, instances)?;
     }
     Ok(())
 }
@@ -1254,6 +1294,55 @@ mod tests {
     }
 
     #[test]
+    fn disabled_scale_out_parks_stages_without_touching_the_live_ladder() {
+        // Park two stages that could never coexist in ONE ladder (a second remainder,
+        // and a bps sum way over the cap) beside a live ladder that is fine. This is
+        // the shelf-not-a-ladder contract: parking a stage must actually free its
+        // budget, otherwise the toggle does nothing useful.
+        let p = RuleParams::parse(&json!({
+            "scale_out": [{ "sell_bps": 7000, "take_profit": 50 }],
+            "disabled": { "scale_out": [
+                { "sell_bps": 9900, "take_profit": 40 },
+                { "take_profit": 120 },
+                { "conditions": { "m_position": { "retrace": [{"operator": ">=", "value": 8}] } } }
+            ] }
+        }))
+        .expect("parked stages are validated per stage, not as a ladder");
+
+        // The live ladder — the only thing the engine compiles — is exactly as authored.
+        let live = p.scale_out.as_ref().expect("live ladder");
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].sell_bps, Some(7000));
+        let parked = p.disabled.as_ref().unwrap().scale_out.as_ref().unwrap();
+        assert_eq!(parked.len(), 3);
+        assert_eq!(parked[1].take_profit, Some(120.0));
+        assert_eq!(RuleParams::parse(&p.to_value()).unwrap(), p);
+
+        // Per-stage rules DO apply, so a parked stage can always be switched back on.
+        for (bad, needle) in [
+            (
+                json!({ "disabled": { "scale_out": [{ "sell_bps": 5000 }] } }),
+                "stage needs take_profit and/or non-empty conditions",
+            ),
+            (
+                json!({ "disabled": { "scale_out": [{ "sell_bps": 99999, "take_profit": 10 }] } }),
+                "sell_bps must be an integer in [1, 9900]",
+            ),
+            (
+                json!({ "disabled": { "scale_out": [
+                    { "take_profit": 10, "conditions": { "m_price_window": { "trail": [{"operator": ">=", "value": 1}] } } }
+                ] } }),
+                "missing required param 'window_size_sec'",
+            ),
+            (json!({ "disabled": { "scale_out": {} } }), "disabled.scale_out must be an array"),
+        ] {
+            let e = RuleParams::parse(&bad).unwrap_err();
+            assert!(e.contains(needle), "expected '{needle}' in: {e}");
+            assert!(e.contains("disabled.scale_out"), "path must name the bag: {e}");
+        }
+    }
+
+    #[test]
     fn disabled_bag_defaults_absent_and_empty_folds_to_none() {
         // Absent by default, and never serialized when unset ⇒ every stored rule
         // round-trips byte-identically (no migration).
@@ -1262,7 +1351,11 @@ mod tests {
         assert!(p.to_value().get("disabled").is_none());
 
         // An empty / all-empty bag is the same sentinel as `scale_out: []` → None.
-        for empty in [json!({ "disabled": {} }), json!({ "disabled": { "entry": {}, "exit": {} } })] {
+        for empty in [
+            json!({ "disabled": {} }),
+            json!({ "disabled": { "entry": {}, "exit": {} } }),
+            json!({ "disabled": { "scale_out": [] } }),
+        ] {
             let p = RuleParams::parse(&empty).unwrap();
             assert_eq!(p.disabled, None, "{empty}");
             assert!(p.to_value().get("disabled").is_none());

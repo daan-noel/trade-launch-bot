@@ -35,6 +35,12 @@ export function validateRuleParams(p: RuleParams, reg: StrategyRegistry | undefi
   validateSide('disabled.entry', p.disabled?.entry, reg, errors);
   validateSide('disabled.exit', p.disabled?.exit, reg, errors);
   validateScaleOut(p.scale_out, reg, errors);
+  // Parked stages get the PER-STAGE rules only — the cross-stage ones (remainder
+  // last, stage count, bps sum) describe a ladder, and the bag is a shelf of spares.
+  // Same split the backend applies (`validate_stage` vs `validate_scale_out`).
+  (p.disabled?.scale_out ?? []).forEach((stage, i) =>
+    validateStage(`disabled.scale_out[${i}]`, stage, reg, errors),
+  );
   validateReentry(p.reentry, errors);
   // Mirror of the backend `parse_opt_priority`.
   if (!Number.isInteger(p.priority)) errors.push('priority must be an integer');
@@ -108,7 +114,14 @@ function validateReentry(re: RuleParams['reentry'], errors: string[]): void {
   }
 }
 
-/** Mirror of backend `validate_scale_out`. */
+/** A stage's sell size is an integer bps in `[1, MAX]` — the backend checks this at
+ *  parse, for the live ladder and the parked bag alike. */
+function sellBpsInRange(bps: number): boolean {
+  return Number.isInteger(bps) && bps >= 1 && bps <= MAX_SCALE_SELL_BPS;
+}
+
+/** Mirror of backend `validate_scale_out` — the CROSS-stage rules (remainder last,
+ *  stage count, bps sum). Per-stage rules live in {@link validateStage}. */
 function validateScaleOut(
   stages: ExitStage[] | null | undefined,
   reg: StrategyRegistry | undefined,
@@ -128,26 +141,14 @@ function validateScaleOut(
       if (i > 0 && stages[i - 1].sell_bps == null) {
         errors.push(`${prefix}: remainder stage (sell_bps omitted) must be last`);
       }
-      if (
-        !Number.isInteger(stage.sell_bps) ||
-        stage.sell_bps < 1 ||
-        stage.sell_bps > MAX_SCALE_SELL_BPS
-      ) {
-        errors.push(`${prefix}.sell_bps must be an integer in [1, ${MAX_SCALE_SELL_BPS}]`);
-      } else {
+      // Only a legal bps counts toward the ladder budget (the range error itself is
+      // reported by `validateStage`, which the parked bag shares).
+      if (sellBpsInRange(stage.sell_bps)) {
         explicit += 1;
         sumBps += stage.sell_bps;
       }
     }
-    if (stage.take_profit != null && (!Number.isFinite(stage.take_profit) || stage.take_profit <= 0)) {
-      errors.push(`${prefix}.take_profit must be a finite number > 0`);
-    }
-    const hasConds = sideInstances(stage.conditions).some(([, g]) => groupHasConstraint(g));
-    if (stage.take_profit == null && !hasConds) {
-      errors.push(`${prefix}: stage needs take_profit and/or non-empty conditions`);
-    }
-    // Stages are exit-like — reuse the side validator under a prefixed path.
-    validateSide(`${prefix}.conditions`, stage.conditions, reg, errors);
+    validateStage(prefix, stage, reg, errors);
   }
   if (explicit > MAX_EXPLICIT_SCALE_STAGES) {
     errors.push(
@@ -159,6 +160,29 @@ function validateScaleOut(
       `scale_out: sum of explicit sell_bps must be <= ${MAX_SCALE_SELL_BPS} (got ${sumBps}) — a remainder must exist for the stub`,
     );
   }
+}
+
+/** Mirror of the backend `validate_stage`: the rules that describe ONE stage in
+ *  isolation, shared by the live ladder and the parked bag (so a stage switched back
+ *  on can never turn a saved rule into one that refuses to save). */
+function validateStage(
+  prefix: string,
+  stage: ExitStage,
+  reg: StrategyRegistry | undefined,
+  errors: string[],
+): void {
+  if (stage.sell_bps != null && !sellBpsInRange(stage.sell_bps)) {
+    errors.push(`${prefix}.sell_bps must be an integer in [1, ${MAX_SCALE_SELL_BPS}]`);
+  }
+  if (stage.take_profit != null && (!Number.isFinite(stage.take_profit) || stage.take_profit <= 0)) {
+    errors.push(`${prefix}.take_profit must be a finite number > 0`);
+  }
+  const hasConds = sideInstances(stage.conditions).some(([, g]) => groupHasConstraint(g));
+  if (stage.take_profit == null && !hasConds) {
+    errors.push(`${prefix}: stage needs take_profit and/or non-empty conditions`);
+  }
+  // Stages are exit-like — reuse the side validator under a prefixed path.
+  validateSide(`${prefix}.conditions`, stage.conditions, reg, errors);
 }
 
 function validateSide(
