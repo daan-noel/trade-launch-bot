@@ -22,6 +22,14 @@
 //! windows are already implied by `windows`. A horizon left at `0` only drops ticks
 //! in quiet gaps past every other horizon — never near a trade.
 //!
+//! **The flow context is the fingerprint's patterns AND the token's creator.** The
+//! creator wallet is volume-side unconditionally and seeds the contagion set, so a
+//! series folded without it books the dev buy + dev dump — usually a token's two
+//! largest single flows — as *organic*. That is not a cosmetic difference: it is a
+//! different classification from the one the live engine (`reduce.rs`, seeds on
+//! `TokenCreated`) and simulate (`engine_sim.rs`, seeds on its `ReplayToken`) fold,
+//! which is the whole premise of this endpoint. See [`resolve_flow_ctx`].
+//!
 //! [`stall_horizon_sec`]: MetricSeriesQuery::stall_horizon_sec
 
 use std::sync::Arc;
@@ -32,7 +40,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use hunter_engine::fingerprint::FingerprintId;
-use hunter_engine::metrics::flow_split::FlowPatterns;
+use hunter_engine::metrics::flow_split::{wallet_hash, FlowPatterns};
 use hunter_engine::metrics::grid::{estimate_sparse_rows, fold_sparse, SparseGrid};
 use hunter_engine::metrics::position::PositionCtx;
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
@@ -41,6 +49,7 @@ use hunter_engine::metrics::{
 };
 
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
+use trading_core::storage::repositories::token_repo::TokenRepo;
 use trading_core::strategies::fingerprint_axes::fp_to_engine;
 
 use crate::state::local_state::LocalState;
@@ -134,7 +143,7 @@ pub async fn token_metric_series(
         _ => None,
     };
 
-    let flow_ctx = match resolve_flow_ctx(&state, query.fingerprint_id.as_deref()).await {
+    let flow_ctx = match resolve_flow_ctx(&state, &mint, query.fingerprint_id.as_deref()).await {
         Ok(c) => c,
         Err(resp) => return resp,
     };
@@ -176,10 +185,18 @@ pub async fn token_metric_series(
 struct FlowCtx {
     fp_id: FingerprintId,
     patterns: FlowPatterns,
+    /// FNV hash of the token's creator wallet — volume-side unconditionally, and the
+    /// seed of the contagion set. `None` only when the `tokens` row is missing or
+    /// carries no creator. **Load-bearing for parity**: the live engine seeds it on
+    /// `TokenCreated` (`reduce.rs`) and simulate seeds it on its `ReplayToken`
+    /// (`engine_sim.rs`), so an unseeded series books the dev buy/dump as *organic*
+    /// and disagrees with every decision the engine actually makes.
+    creator_wallet_hash: Option<u64>,
 }
 
 async fn resolve_flow_ctx(
     state: &LocalState,
+    mint: &str,
     fingerprint_id: Option<&str>,
 ) -> Result<Option<FlowCtx>, HttpResponse> {
     let Some(raw) = fingerprint_id.filter(|s| !s.is_empty()) else {
@@ -203,9 +220,24 @@ async fn resolve_flow_ctx(
         // Fingerprint present but unconfigured — omit flow columns (same as no id).
         return Ok(None);
     };
+    // One indexed PK lookup, and only on the flow path — a series without flow columns
+    // never pays for it. A missing row is non-fatal: the series still folds, it just
+    // can't seed the creator (logged, never silent — an unseeded fold misclassifies).
+    let creator_wallet_hash = match TokenRepo::new(state.core.db.clone()).find_by_mint(mint).await {
+        Ok(Some(t)) if !t.creator_wallet.is_empty() => Some(wallet_hash(&t.creator_wallet)),
+        Ok(_) => {
+            tracing::warn!(mint, "metric-series: no creator wallet — flow split unseeded");
+            None
+        }
+        Err(e) => {
+            tracing::warn!(mint, error = %e, "metric-series: creator lookup failed — flow split unseeded");
+            None
+        }
+    };
     Ok(Some(FlowCtx {
         fp_id: engine_fp.id,
         patterns,
+        creator_wallet_hash,
     }))
 }
 
@@ -287,7 +319,12 @@ fn build_series(
     let created_at = trades[0].block_time;
     let mut series = MetricSeries::new(created_at, columns);
     if let Some(ctx) = flow {
+        // Same order as the live `TokenCreated` arm (`new_track` → `seed_creator`):
+        // `seed_creator` back-fills every flow state already registered.
         series.ensure_flow(ctx.fp_id, &ctx.patterns, windows);
+        if let Some(h) = ctx.creator_wallet_hash {
+            series.seed_creator(h);
+        }
     }
     // `as_of` = now: the deadness clock advances toward the request instant exactly as
     // a `run_replay` over this token would, so the tail ticks that book a Dead exit are
@@ -429,6 +466,7 @@ fn finite(v: f64) -> Option<f64> {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use hunter_engine::metrics::flow_split::ix_hash;
     use hunter_engine::metrics::{Side, TradeLite};
 
     fn ts(secs: i64) -> Ts {
@@ -493,6 +531,86 @@ mod tests {
         assert_eq!(bounce[0], Some(0.0));
         assert_eq!(bounce[1], Some(0.0)); // at the trough
         assert!((bounce[2].unwrap() - 25.0).abs() < 1e-9);
+    }
+
+    /// A corpus row carrying the flow columns; only the fields the classifier and
+    /// the tick grid read are meaningful here.
+    fn corpus_trade(
+        sol: f64,
+        wallet: &str,
+        labels: Option<&str>,
+        secs: i64,
+    ) -> crate::sweep::projection::CorpusTrade {
+        crate::sweep::projection::CorpusTrade {
+            block_time: ts(secs),
+            amount_sol: sol,
+            token_amount: 1_000.0,
+            price_per_token: 1.0,
+            reserve_sol: Some(30.0),
+            reserve_token: Some(30.0),
+            real_reserve_sol: Some(30.0),
+            real_token_reserves: Some(30.0),
+            slot: secs as u64 + 1,
+            leg_index: 0,
+            is_buy: true,
+            tx_signature: None,
+            ix_labels: labels.map(Box::from),
+            wallet: Some(Box::from(wallet)),
+        }
+    }
+
+    /// Last finite value of a lifetime (`window_size_sec: null`) column.
+    fn last_lifetime(resp: &serde_json::Value, metric: &str) -> f64 {
+        let col = resp["series"]
+            .as_array()
+            .expect("series array")
+            .iter()
+            .find(|s| s["metric"] == metric && s["window_size_sec"].is_null())
+            .unwrap_or_else(|| panic!("{metric} lifetime column present"));
+        col["values"]
+            .as_array()
+            .expect("values array")
+            .iter()
+            .rev()
+            .find_map(serde_json::Value::as_f64)
+            .unwrap_or_else(|| panic!("{metric} has a finite value"))
+    }
+
+    /// The parity guard for the creator seed: the dev buy is volume-side even with
+    /// no matching `ix_labels`, exactly as the live engine folds it (`reduce.rs`
+    /// seeds `TokenCreated`) and simulate folds it (`engine_sim.rs`). Unseeded, the
+    /// creator's SOL lands in `nonvol_*` and the pane disagrees with every decision.
+    #[test]
+    fn the_creator_wallet_is_volume_side_even_without_a_pattern_match() {
+        let patterns = FlowPatterns::new(std::collections::BTreeSet::from([ix_hash(&[
+            "Pump.Fun: Create",
+            "Pump.Fun: Buy",
+        ])]));
+        let ctx = FlowCtx {
+            fp_id: FingerprintId(Uuid::new_v4()),
+            patterns,
+            creator_wallet_hash: Some(wallet_hash("dev")),
+        };
+        // Dev buys 5 (no labels ⇒ classified only by the creator seed), a stranger
+        // buys 3 (no labels ⇒ organic), a bot buys 2 on the configured pattern.
+        let trades = [
+            corpus_trade(5.0, "dev", None, 0),
+            corpus_trade(3.0, "normie", None, 1),
+            corpus_trade(2.0, "bot", Some(r#"["Pump.Fun: Create","Pump.Fun: Buy"]"#), 2),
+        ];
+        let grid = SparseGrid::for_windows(&[10.0]);
+
+        let seeded = build_series("mint", &trades, &[10.0], &grid, Some(&ctx), None);
+        assert_eq!(last_lifetime(&seeded, "vol_buy"), 7.0, "dev + pattern bot");
+        assert_eq!(last_lifetime(&seeded, "nonvol_buy"), 3.0, "the stranger only");
+        assert_eq!(last_lifetime(&seeded, "nonvol_net"), 3.0);
+
+        // Unseeded (the pre-fix behavior) the dev's 5 SOL crosses into organic —
+        // the exact drift this seed exists to prevent.
+        let unseeded = FlowCtx { creator_wallet_hash: None, ..ctx };
+        let out = build_series("mint", &trades, &[10.0], &grid, Some(&unseeded), None);
+        assert_eq!(last_lifetime(&out, "vol_buy"), 2.0);
+        assert_eq!(last_lifetime(&out, "nonvol_buy"), 8.0);
     }
 
     #[test]

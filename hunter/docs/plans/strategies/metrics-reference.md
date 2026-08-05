@@ -59,6 +59,34 @@ unless wallet-tagged/creator.
 Flow state is **fingerprint-scoped** on `TokenTrack` (`BTreeMap<FingerprintId, FlowState>`),
 not token-scoped — two fingerprints with different pattern sets diverge.
 
+### The flow context is patterns **AND** creator — every consumer seeds both
+
+`ensure_flow` alone is not a complete flow context. The creator seed is rule 3 of the
+classifier *and* the contagion set's origin, so a fold that skips `seed_creator` books
+the dev buy + dev dump — a token's two largest single flows — as **organic**, and its
+`vol_*`/`nonvol_*` are a different classification from the one the engine decides on.
+Both calls, on every path that folds flow:
+
+| consumer | seeds at |
+| --- | --- |
+| live engine | `reduce.rs` — `TokenCreated { creator_wallet_hash }` → `track.seed_creator` |
+| simulate | `engine_sim.rs` — `ReplayToken.creator_wallet_hash` (hashed from `tokens.creator_wallet`) |
+| metric-series (`/metric-series`) | `metric_series.rs` — `resolve_flow_ctx` loads the creator; `build_series` seeds after `ensure_flow` |
+| chart overlay (browser preview) | `classifyFlow.ts` — `FlowClassifyOptions.creatorWallet`, passed by `TokenTradeChart` |
+
+`/metric-series` shipped without the seed and drew a `nonvol_net` that disagreed with
+both the chart overlay and the live engine; locked by
+`the_creator_wallet_is_volume_side_even_without_a_pattern_match`. Order is free —
+`ensure_flow` copies an already-set creator, `seed_creator` back-fills existing states —
+but one of the two alone is a silent misclassification, never an error.
+
+**The browser overlay is a preview, not the metric.** `classifyFlow.ts` mirrors the Rust
+classifier but folds a *different corpus* (PG-only `/api/tokens/:mint/trades`, vs the
+sealed lake + PG tail the endpoint reads) and renders in the chart's display unit and
+flow basis. Compare it to `m_flow_split.nonvol_net` only in SOL on the `cost_sol` basis,
+and expect drift wherever the two corpora differ (PG retention has dropped a token's
+early trades; pre-V0 lake days null-fill `ix_labels`/`wallet`).
+
 ## Hash SSOT
 
 `hunter_engine::metrics::flow_split::{ix_hash, wallet_hash, ix_hash_opt}` are the
@@ -108,6 +136,7 @@ derived-unsatisfiability disarm (`arm.rs` reads the registry flag).
 | Fingerprint has no `m_flow_split` key | all NaN |
 | Pre-first-trade (no classifier state yet) | NaN (existing convention) |
 | Trade `ix_hash = None`, wallet not tagged, not creator | counts as organic |
+| Token row missing / no `creator_wallet` | creator unseeded (logged `warn`); creator trades classify by pattern/contagion only |
 | Pre-V0 sealed lake days (NULL `ix_labels`) | organic in runtime; **excluded** from discovery score denominators |
 
 Rule save **warns** (does not reject) when params reference flow groups but the
