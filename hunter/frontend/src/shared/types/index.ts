@@ -609,7 +609,7 @@ export interface FlowDiscoveryStructure {
    *  NOT 0% (see the Rust `StructureScore` doc). */
   first_slot_gross_sol?: number | null;
   /** Trade count behind `first_slot_gross_sol`, and the input to
-   *  `isFirstSlotPresent` (the *Select launch shapes* predicate: `> 0`). Same
+   *  `isFirstSlotPresent` (the *Launch shapes · group* predicate: `> 0`). Same
    *  unknown-vs-zero contract — `null` selects nothing rather than guessing. */
   first_slot_trades?: number | null;
   wallets: FlowDiscoveryWalletGross[];
@@ -621,6 +621,16 @@ export interface FlowDiscoveryTokenGross {
   mint_address: string;
   gross_sol: number;
   n_trades: number;
+  /** This token's creation slot, or `null` when no corpus trade carries one. */
+  first_slot?: number | null;
+  /** **Every** distinct ix shape that traded in THIS token's creation slot,
+   *  ranked by first-slot gross desc — uncapped and unfloored, unlike the
+   *  group-wide `structures` list (which is ranked, truncated server-side, and
+   *  read through a dust floor). Drives the per-token *Select launch shapes*.
+   *
+   *  `null`/absent on a result cached before the backend computed it: **unknown**,
+   *  not "this token had no launch bundle" — `[]` is that real zero. */
+  first_slot_ix_labels?: string[][] | null;
 }
 
 /** One fingerprint group in a flow-discovery result. */

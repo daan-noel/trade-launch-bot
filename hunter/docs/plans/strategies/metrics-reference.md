@@ -220,11 +220,14 @@ Two different reads of the same pair of fields, deliberately not the same test:
 
 - **`first_slot_gross_sol / gross_sol` = the `Launch%` column** — purity, i.e. how
   much of the shape landed at launch. Sort/filter/inspect only.
-- **`first_slot_trades > 0` = the *Select launch shapes* predicate**
-  (`isFirstSlotPresent`, plus the `SUGGEST_MIN_GROSS` dust floor) — *presence*.
-  The launch bundle is the set of shapes that appear in the creation slot, and a
-  bundler shape that also trades later is still bundler tooling, so the button
-  takes a shape at any Launch% above 0.
+- **`first_slot_trades > 0` = the *Launch shapes · group* predicate**
+  (`isFirstSlotPresent`) — *presence*. The launch bundle is the set of shapes that
+  appear in the creation slot, and a bundler shape that also trades later is still
+  bundler tooling, so the button takes a shape at any Launch% above 0. **No dust
+  floor** (it applied here until 2026-08-05): presence is an identity claim about
+  the launch, so size gets no vote — and `SUGGEST_MIN_GROSS` was read against
+  *group-wide* gross anyway, so it dropped exactly the rare small bundler tail the
+  button exists to find. The floor still gates the `suggested` composite.
 
 The creation instruction needs no clause of its own: a shape carrying it is in the
 creation slot by construction, so the presence test already takes it. Both reads
@@ -269,6 +272,37 @@ no trade at all reports its first *later* slot instead.
 Both fields are `Option` on the wire (`#[serde(default)]`): a result cached before
 they existed must read back `—` ("unknown"), never an authoritative `0%` the
 button would then rank on. Same contract as the identity fields below.
+
+### Per-token launch set — the *Launch shapes · this token* button
+
+`StructureScore.first_slot_trades` cannot answer "what was in THIS token's launch
+bundle", and reading it as if it could is the bug that motivated this section. It
+is lossy three separate ways:
+
+1. **Aggregated over the group.** The count sums every member token's creation
+   slot, so the group button proposes shapes that launched a *different* token.
+2. **Rank-truncated server-side.** `structures` is sorted by lift → volume_share →
+   wash_symmetry and cut at `max_structures_per_group` (64). A shape past the cut
+   never reaches the browser, so no client-side predicate can recover it — and a
+   rare, small bundler shape loses that ranking by construction.
+3. **Trade-only.** A launch-bundle instruction that produced no buy/sell trade row,
+   or whose `ix_labels` failed to parse, is not a structure at all
+   (`parse_trade_ix_labels`). Nothing downstream can add what was never scored.
+
+So `TokenGross` carries its own answer: `first_slot` (the creation slot) and
+`first_slot_ix_labels`, **every distinct shape that traded in that token's slot**,
+ranked by first-slot gross desc (ties broken on the labels, so the order is stable
+across runs). Uncapped and unfloored — a slot holds a handful of shapes, and the
+whole point is that neither size nor rank may veto membership. Accumulated in the
+same pass as the group aggregate (`token_first_slot_gross`), so it costs one extra
+map, not a second scan.
+
+`Option<Vec<_>>` on the wire: a pre-field cached run reads *unknown* (badge/tooltip
+say re-run discovery), `Some([])` is the real "no ix_labels in that slot". The
+button appears only while a token is picked in the preview panel; its hover outline
+can only mark shapes that also have a row in the ranked table, which is precisely
+the set the group button was limited to — the ones it adds beyond that are the
+point.
 
 ### The result carries its own corpus identity
 

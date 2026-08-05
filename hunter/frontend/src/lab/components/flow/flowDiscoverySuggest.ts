@@ -79,15 +79,26 @@ export function firstSlotPurity(s: FlowDiscoveryStructure): number | null {
   return clamp01(fs / s.gross_sol);
 }
 
-/** Launch tooling: traded in at least one matched token's creation slot AND above
- *  the dust floor. `first_slot_trades == null` is *unknown* (a result cached
- *  before the backend field existed), never 0 — such a row is excluded rather
- *  than guessed at. No lift gate — appearing in the creation slot is its own
- *  identity claim, whereas lift measures group-vs-window concentration and would
- *  drop a bundler shape that's ambient across the whole window. */
+/** Launch tooling: traded in at least one matched token's creation slot.
+ *  `first_slot_trades == null` is *unknown* (a result cached before the backend
+ *  field existed), never 0 — such a row is excluded rather than guessed at.
+ *
+ *  No gates beyond presence. Not the lift gate: lift measures group-vs-window
+ *  concentration and would drop a bundler shape that's ambient across the whole
+ *  window. And not the `SUGGEST_MIN_GROSS` dust floor either (it was applied here
+ *  until it was found silently dropping real launch shapes): presence in the
+ *  creation slot is an identity claim about the launch, so size does not get a
+ *  vote, and the floor was read against *group-wide* gross anyway — a shape whose
+ *  whole launch leg is 0.02◎ is exactly the bundler tail we want, not dust.
+ *  The floor still gates the `suggested` composite below, where it belongs.
+ *
+ *  Even without the floor this stays the GROUP-wide answer: `first_slot_trades`
+ *  is summed over every member token, and the row must have survived the
+ *  server-side rank + `max_structures_per_group` truncation to be here at all.
+ *  For one token's actual bundle use `TokenGross.first_slot_ix_labels`. */
 export function isFirstSlotPresent(s: FlowDiscoveryStructure): boolean {
   const trades = s.first_slot_trades;
-  return trades != null && trades > 0 && s.gross_sol >= SUGGEST_MIN_GROSS;
+  return trades != null && trades > 0;
 }
 
 /** One kind of evidence. A family collapses signals that move together — two

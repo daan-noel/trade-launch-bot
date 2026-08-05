@@ -107,6 +107,32 @@ pub struct TokenGross {
     pub mint_address: String,
     pub gross_sol: f64,
     pub n_trades: u64,
+    /// This token's creation slot ([`crate::sweep::projection::creation_slot`]),
+    /// or `None` when no trade in the corpus carries one. Shown so the UI can
+    /// name the slot the launch set was read from.
+    #[serde(default)]
+    pub first_slot: Option<u64>,
+    /// **Every** distinct ix shape that traded in THIS token's creation slot,
+    /// ranked by first-slot gross desc.
+    ///
+    /// Deliberately not derived from [`DiscoveryGroup::structures`], which is the
+    /// wrong instrument for "what was in this token's launch bundle" in three
+    /// ways: it aggregates first-slot presence over *every* member token, it is
+    /// ranked by lift/volume and truncated to `max_structures_per_group`, and its
+    /// readers apply a group-wide dust floor. A launch shape that is rare and
+    /// small — exactly what a bundler's tail looks like — loses on all three. This
+    /// list is per token, uncapped, and unfloored: presence in the creation slot
+    /// is an identity claim about the launch, and size does not get a vote.
+    ///
+    /// Bounded in practice by how many distinct shapes fit in one slot.
+    ///
+    /// `Option`, not a bare `Vec`: a result cached before this field existed must
+    /// read back as *unknown* (the UI says "re-run discovery"), never as an
+    /// authoritative "this token had no launch bundle". `Some([])` is that real
+    /// zero. Same unknown-vs-zero contract as
+    /// [`StructureScore::first_slot_trades`].
+    #[serde(default)]
+    pub first_slot_ix_labels: Option<Vec<Vec<String>>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -313,12 +339,20 @@ fn score_group(
     let mut n_trades_scored = 0_u64;
     let mut token_gross: HashMap<usize, f64> = HashMap::new();
     let mut token_trades: HashMap<usize, u64> = HashMap::new();
+    // Per-token launch set: creation slot, and gross-by-structure WITHIN that slot.
+    // Kept per token (not folded into `Acc`) because the roster answers "what was
+    // in THIS token's bundle" — see `TokenGross::first_slot_ix_labels`.
+    let mut token_first_slot: HashMap<usize, u64> = HashMap::new();
+    let mut token_first_slot_gross: HashMap<usize, HashMap<u64, f64>> = HashMap::new();
 
     for &ti in idxs {
         let tok: &CorpusToken = &corpus.tokens[ti];
         // One creation-slot read per token (SSOT with replay's `FirstSlotSettled`),
         // hoisted out of the trade loop.
         let creation_slot = crate::sweep::projection::creation_slot(&tok.trades);
+        if let Some(slot) = creation_slot {
+            token_first_slot.insert(ti, slot);
+        }
         for t in tok.trades.iter() {
             let Some(labels) = parse_trade_ix_labels(t.ix_labels.as_deref()) else {
                 continue;
@@ -338,6 +372,11 @@ fn score_group(
             if creation_slot == Some(t.slot) {
                 acc.first_slot_gross += g;
                 acc.first_slot_trades += 1;
+                *token_first_slot_gross
+                    .entry(ti)
+                    .or_default()
+                    .entry(h)
+                    .or_insert(0.0) += g;
             }
             acc.slots.push(t.slot);
             *acc.gross_by_token.entry(ti).or_insert(0.0) += g;
@@ -481,10 +520,30 @@ fn score_group(
 
     let mut tokens: Vec<TokenGross> = token_gross
         .into_iter()
-        .map(|(ti, gross_sol)| TokenGross {
-            mint_address: corpus.tokens[ti].mint.clone(),
-            gross_sol,
-            n_trades: token_trades.get(&ti).copied().unwrap_or(0),
+        .map(|(ti, gross_sol)| {
+            // Ranked by first-slot gross desc, then by the labels themselves so a
+            // tie (two dust shapes at the same size) is stable across runs rather
+            // than ordered by HashMap iteration.
+            let mut shapes: Vec<(f64, Vec<String>)> = token_first_slot_gross
+                .get(&ti)
+                .map(|by_h| {
+                    by_h.iter()
+                        .filter_map(|(h, &g)| labels_by_hash.get(h).map(|l| (g, l.clone())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            shapes.sort_by(|a, b| {
+                b.0.partial_cmp(&a.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.1.cmp(&b.1))
+            });
+            TokenGross {
+                mint_address: corpus.tokens[ti].mint.clone(),
+                gross_sol,
+                n_trades: token_trades.get(&ti).copied().unwrap_or(0),
+                first_slot: token_first_slot.get(&ti).copied(),
+                first_slot_ix_labels: Some(shapes.into_iter().map(|(_, l)| l).collect()),
+            }
         })
         .collect();
     tokens.sort_by(|a, b| {
@@ -689,6 +748,99 @@ mod tests {
             top.wash_symmetry
         );
         assert!(!g.ambiguity);
+    }
+
+    /// The per-token launch set is per TOKEN, and survives both of the losses that
+    /// make the group-wide `first_slot_trades` unusable for "what was in THIS
+    /// token's bundle": the rank truncation, and dust size.
+    #[test]
+    fn per_token_launch_set_is_uncapped_and_per_token() {
+        let tokens = vec![
+            tok(
+                "a1",
+                200_000,
+                vec![
+                    trade(&["Pump.Fun: Create", "Pump.Fun: Buy"], "w1", 1.0, true, 100),
+                    // Dust, and in the launch slot: the bundler tail the old
+                    // `SUGGEST_MIN_GROSS` floor silently dropped.
+                    trade(&["Bundler: Tip"], "w1", 0.01, true, 100),
+                    // Same token, LATER slot — not part of the launch bundle.
+                    trade(&["Pump.Fun: Buy"], "org1", 0.5, true, 110),
+                ],
+            ),
+            tok(
+                "a2",
+                200_000,
+                vec![
+                    trade(&["Pump.Fun: Create", "Pump.Fun: Buy"], "w2", 1.0, true, 200),
+                    trade(&["Pump.Fun: Buy"], "org2", 0.5, true, 210),
+                ],
+            ),
+            tok(
+                "a3",
+                200_000,
+                vec![trade(
+                    &["Pump.Fun: Create", "Pump.Fun: Buy"],
+                    "w3",
+                    1.0,
+                    true,
+                    300,
+                )],
+            ),
+        ];
+        let corpus = Corpus {
+            tokens,
+            hash: "test".into(),
+            has_fingerprints: true,
+            candidates_capped: false,
+        };
+        // One structure row survives ranking — the group-wide list is now blind to
+        // the dust shape, exactly as the 64-row cap is blind on a real run.
+        let cfg = DiscoveryConfig {
+            group_by: vec![GroupField::CuLimit],
+            min_tokens: 3,
+            max_structures_per_group: 1,
+            ..DiscoveryConfig::default()
+        };
+        let result = score_corpus(&corpus, &cfg, None).unwrap();
+        let g = &result.groups[0];
+        assert_eq!(g.structures.len(), 1, "rank cap applied");
+        assert!(
+            !g.structures
+                .iter()
+                .any(|s| s.ix_labels == ["Bundler: Tip".to_string()]),
+            "the dust shape is NOT reachable through the ranked table"
+        );
+
+        let a1 = g
+            .tokens
+            .iter()
+            .find(|t| t.mint_address == "a1")
+            .expect("a1 in roster");
+        assert_eq!(a1.first_slot, Some(100));
+        assert_eq!(
+            a1.first_slot_ix_labels.as_deref(),
+            Some(
+                [
+                    vec!["Pump.Fun: Create".to_string(), "Pump.Fun: Buy".to_string()],
+                    vec!["Bundler: Tip".to_string()],
+                ]
+                .as_slice()
+            ),
+            "both launch shapes, ranked by first-slot gross desc; the later-slot \
+             [\"Pump.Fun: Buy\"] is not a launch shape"
+        );
+
+        let a2 = g
+            .tokens
+            .iter()
+            .find(|t| t.mint_address == "a2")
+            .expect("a2 in roster");
+        assert_eq!(
+            a2.first_slot_ix_labels.as_deref(),
+            Some([vec!["Pump.Fun: Create".to_string(), "Pump.Fun: Buy".to_string()]].as_slice()),
+            "a2 must not inherit a1's bundler shape — this is the per-token answer"
+        );
     }
 
     /// Ambient `["Pump.Fun: Buy"]` alone inside a group that also sees it
@@ -1010,6 +1162,17 @@ mod tests {
         .expect("legacy structure deserializes");
         assert_eq!(s.first_slot_gross_sol, None);
         assert_eq!(s.first_slot_trades, None);
+
+        // Same contract on the roster: a cached run predating the per-token launch
+        // set reads *unknown*, never an authoritative "this token had no bundle".
+        let t: TokenGross = serde_json::from_value(serde_json::json!({
+            "mint_address": "m1",
+            "gross_sol": 1.0,
+            "n_trades": 1,
+        }))
+        .expect("legacy roster token deserializes");
+        assert_eq!(t.first_slot, None);
+        assert_eq!(t.first_slot_ix_labels, None);
     }
 
     #[test]

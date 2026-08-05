@@ -524,6 +524,33 @@ export function FlowDiscoveryPage() {
     [selectedGroup],
   );
 
+  // ── the per-token launch set ──────────────────────────────────────────────
+  // `firstSlotAll` above answers "which ranked structures appeared in SOME member
+  // token's creation slot" — three lossy steps away from "what was in this
+  // token's launch bundle": it aggregates over the whole group, it only ever sees
+  // the rows that survived the server-side rank + `max_structures_per_group`
+  // truncation, and a rare small bundler shape loses that ranking by
+  // construction. The backend therefore ships each roster token its OWN
+  // creation-slot shape list, uncapped and unfloored, and this button applies
+  // exactly that.
+  /** Roster row for the token being previewed, or null when none is picked. */
+  const selectedTokenRow = useMemo(
+    () => selectedGroup?.tokens.find((t) => t.mint_address === selectedTokenMint) ?? null,
+    [selectedGroup, selectedTokenMint],
+  );
+  /** Every shape in the previewed token's creation slot. */
+  const tokenLaunchAll = useMemo(
+    () => selectedTokenRow?.first_slot_ix_labels ?? [],
+    [selectedTokenRow],
+  );
+  /** Of those, the ones the click would actually add. */
+  const tokenLaunchUnchecked = useMemo(() => {
+    const draftKeys = new Set(draftPatterns.map((p) => JSON.stringify(p)));
+    return tokenLaunchAll.filter((labels) => !draftKeys.has(JSON.stringify(labels)));
+  }, [tokenLaunchAll, draftPatterns]);
+  /** The run predates the per-token field — the list is *unknown*, not empty. */
+  const tokenLaunchUnscored = !!selectedTokenRow && selectedTokenRow.first_slot_ix_labels == null;
+
   function autoSelectSuggested() {
     if (suggestedUnchecked.length === 0) return;
     setDraftPatterns((prev) => [...prev, ...suggestedUnchecked]);
@@ -533,6 +560,12 @@ export function FlowDiscoveryPage() {
   function autoSelectFirstSlot() {
     if (firstSlotUnchecked.length === 0) return;
     setDraftPatterns((prev) => [...prev, ...firstSlotUnchecked]);
+    setApplyOk(null);
+  }
+
+  function autoSelectTokenLaunch() {
+    if (tokenLaunchUnchecked.length === 0) return;
+    setDraftPatterns((prev) => [...prev, ...tokenLaunchUnchecked]);
     setApplyOk(null);
   }
 
@@ -1093,8 +1126,41 @@ export function FlowDiscoveryPage() {
                         launch presence unscored
                       </Badge>
                     )}
+                    {selectedTokenRow && !tokenLaunchUnscored && (
+                      <Badge variant="info" size="sm">
+                        {tokenLaunchAll.length} in this token&apos;s slot
+                        {selectedTokenRow.first_slot != null
+                          ? ` (${selectedTokenRow.first_slot})`
+                          : ''}
+                      </Badge>
+                    )}
                   </span>
                   <div className="flex flex-wrap items-center gap-2">
+                    {selectedTokenRow && (
+                      <button
+                        type="button"
+                        disabled={tokenLaunchAll.length === 0}
+                        onClick={autoSelectTokenLaunch}
+                        {...previewProps(tokenLaunchAll)}
+                        className="inline-flex items-center gap-1 rounded border border-info/40 px-2 py-1 text-[11px] font-semibold text-info transition hover:bg-info/10 disabled:cursor-not-allowed disabled:opacity-40"
+                        title={
+                          tokenLaunchAll.length === 0
+                            ? tokenLaunchUnscored
+                              ? 'This run predates the per-token launch set, so the creation-slot shapes of the previewed token are unknown. Re-run discovery.'
+                              : 'No trade in the creation slot of the previewed token carried ix_labels'
+                            : `Add every ix shape that traded in the creation slot of the previewed token${
+                                selectedTokenRow.first_slot != null
+                                  ? ` (slot ${selectedTokenRow.first_slot})`
+                                  : ''
+                              } — ${tokenLaunchAll.length} shape(s), ${
+                                tokenLaunchUnchecked.length
+                              } not yet staged. Uncapped and unfloored: unlike the group button this is not read off the ranked table, so a shape too small or too low-ranked to appear as a row above is still added (the hover outline can only mark the ones that do have a row).`
+                        }
+                      >
+                        <CheckIcon className="h-3.5 w-3.5" />
+                        Launch shapes · this token
+                      </button>
+                    )}
                     <button
                       type="button"
                       disabled={firstSlotAll.length === 0}
@@ -1108,11 +1174,11 @@ export function FlowDiscoveryPage() {
                             : "No structure in this group traded in a matched token's creation slot"
                           : firstSlotUnchecked.length === 0
                             ? `All ${firstSlotAll.length} launch shapes are already staged (hover outlines them) — the draft is re-seeded from the target fingerprint's saved patterns on every run`
-                            : `Add the ${firstSlotUnchecked.length} not-yet-staged structure(s) that appear in a matched token's creation slot — the launch bundle, create instruction included — to the draft volume_ix_patterns`
+                            : `Add the ${firstSlotUnchecked.length} not-yet-staged structure(s) that appear in ANY matched token's creation slot — the launch bundle, create instruction included — to the draft volume_ix_patterns. Group-wide and read off the ranked table above, so it can miss a shape that fell outside the server-side row cap; for one token's exact bundle, pick it in the preview and use the per-token button.`
                       }
                     >
                       <CheckIcon className="h-3.5 w-3.5" />
-                      Select launch shapes
+                      Launch shapes · group
                     </button>
                     <button
                       type="button"
