@@ -487,18 +487,42 @@ export function FlowDiscoveryPage() {
       .map((s) => s.ix_labels);
   }, [selectedGroup, suggestionByStructure, draftPatterns]);
 
-  /** Rows that traded in a matched token's creation slot and aren't in the draft
-   *  yet — drives the launch auto-select. Independent of the composite above: a
-   *  shape present in the launch bundle is bundler tooling by identity, whether
-   *  or not it also trips the bot signals (and whether or not it trades later —
-   *  see `isFirstSlotPresent`). The creation shape is covered by the same test. */
-  const firstSlotUnchecked = useMemo(() => {
+  /** Every row that traded in a matched token's creation slot — a property of THIS
+   *  corpus alone, deliberately not differenced against the draft. Independent of
+   *  the composite above: a shape present in the launch bundle is bundler tooling
+   *  by identity, whether or not it also trips the bot signals (and whether or not
+   *  it trades later — see `isFirstSlotPresent`). The creation shape is covered by
+   *  the same test.
+   *
+   *  The launch auto-select gates on THIS, not on the unchecked diff below, because
+   *  the two answer different questions and only this one is about the run: the
+   *  draft is re-seeded from the target fingerprint's SAVED patterns on every run
+   *  (`seedFromFingerprint`), so once a launch set has been applied, a re-run over a
+   *  new window re-stages it and the diff is empty — even though the new corpus is
+   *  full of launch shapes. Disabling on the diff made "this window has no launch
+   *  shapes" and "you already saved these" the same dead button, which also killed
+   *  the hover preview (a `disabled` button fires no mouse events), removing the one
+   *  affordance that could tell them apart. Clicking with an empty diff is a
+   *  deliberate no-op. */
+  const firstSlotAll = useMemo(() => {
     if (!selectedGroup) return [] as string[][];
+    return selectedGroup.structures.filter(isFirstSlotPresent).map((s) => s.ix_labels);
+  }, [selectedGroup]);
+  /** Of those, the ones the click would actually add. */
+  const firstSlotUnchecked = useMemo(() => {
     const draftKeys = new Set(draftPatterns.map((p) => JSON.stringify(p)));
-    return selectedGroup.structures
-      .filter((s) => isFirstSlotPresent(s) && !draftKeys.has(JSON.stringify(s.ix_labels)))
-      .map((s) => s.ix_labels);
-  }, [selectedGroup, draftPatterns]);
+    return firstSlotAll.filter((labels) => !draftKeys.has(JSON.stringify(labels)));
+  }, [firstSlotAll, draftPatterns]);
+  /** No row in the group carries a first-slot count — the run predates the backend
+   *  field, so presence is *unknown* for every shape rather than false. Reported, so
+   *  an unscored run can't read as "this window had no launch bundle". */
+  const firstSlotUnscored = useMemo(
+    () =>
+      !!selectedGroup &&
+      selectedGroup.structures.length > 0 &&
+      selectedGroup.structures.every((s) => s.first_slot_trades == null),
+    [selectedGroup],
+  );
 
   function autoSelectSuggested() {
     if (suggestedUnchecked.length === 0) return;
@@ -512,8 +536,11 @@ export function FlowDiscoveryPage() {
     setApplyOk(null);
   }
 
-  /** Rows a hovered/focused bulk-select would add — outlined in the table so the
-   *  effect is visible before the click, not discovered after it. */
+  /** Rows a hovered/focused bulk-select acts on — outlined in the table so the
+   *  effect is visible before the click, not discovered after it. The launch button
+   *  passes its FULL set, not its unchecked diff: when everything is already staged
+   *  the outline is the only way to see which rows the button is talking about, and
+   *  re-adding a staged row is a no-op anyway. */
   const [previewPatterns, setPreviewPatterns] = useState<string[][] | null>(null);
   const previewKeys = useMemo(
     () => new Set((previewPatterns ?? []).map((p) => JSON.stringify(p))),
@@ -1053,20 +1080,36 @@ export function FlowDiscoveryPage() {
                         {suggestedUnchecked.length} suggested
                       </Badge>
                     )}
-                    {firstSlotUnchecked.length > 0 && (
+                    {firstSlotAll.length > 0 && (
                       <Badge variant="info" size="sm">
-                        {firstSlotUnchecked.length} at launch
+                        {firstSlotAll.length} at launch
+                        {firstSlotUnchecked.length === 0
+                          ? ' · all staged'
+                          : ` · ${firstSlotUnchecked.length} new`}
+                      </Badge>
+                    )}
+                    {firstSlotAll.length === 0 && firstSlotUnscored && (
+                      <Badge variant="neutral" size="sm">
+                        launch presence unscored
                       </Badge>
                     )}
                   </span>
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      disabled={firstSlotUnchecked.length === 0}
+                      disabled={firstSlotAll.length === 0}
                       onClick={autoSelectFirstSlot}
-                      {...previewProps(firstSlotUnchecked)}
+                      {...previewProps(firstSlotAll)}
                       className="inline-flex items-center gap-1 rounded border border-info/40 px-2 py-1 text-[11px] font-semibold text-info transition hover:bg-info/10 disabled:cursor-not-allowed disabled:opacity-40"
-                      title="Add every structure that appears in a matched token's creation slot — the launch bundle, create instruction included — to the draft volume_ix_patterns"
+                      title={
+                        firstSlotAll.length === 0
+                          ? firstSlotUnscored
+                            ? 'No structure in this group carries a first-slot count — the run predates the backend field, so launch presence is unknown. Re-run discovery.'
+                            : "No structure in this group traded in a matched token's creation slot"
+                          : firstSlotUnchecked.length === 0
+                            ? `All ${firstSlotAll.length} launch shapes are already staged (hover outlines them) — the draft is re-seeded from the target fingerprint's saved patterns on every run`
+                            : `Add the ${firstSlotUnchecked.length} not-yet-staged structure(s) that appear in a matched token's creation slot — the launch bundle, create instruction included — to the draft volume_ix_patterns`
+                      }
                     >
                       <CheckIcon className="h-3.5 w-3.5" />
                       Select launch shapes

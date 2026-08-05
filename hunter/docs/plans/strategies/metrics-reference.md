@@ -181,8 +181,9 @@ Gates, all reported by name in the cell tooltip: dust floor, `SUGGEST_MIN_TOKENS
 (≥ 2 tokens carry the shape meaningfully — a pattern is written onto the whole
 fingerprint, so a one-token curiosity is out of scope), and the lift gate *when
 `lift_defined`*. `suggestExplain` renders every family with pass/fail, including
-the ones that fell short, so a near-miss explains itself; hovering either
-bulk-select outlines the exact rows it would check.
+the ones that fell short, so a near-miss explains itself; hovering a bulk-select
+outlines the rows it acts on (*Auto-select suggested* outlines the rows it would
+check, *Select launch shapes* its full set — see below).
 
 ### First-slot (launch) presence — the second auto-select
 
@@ -213,6 +214,21 @@ checked and uncheck the mixed ones before Apply.
 
 `first_slot_trades == null` is **unknown**, not 0: a pre-field cached run selects
 nothing rather than guessing (re-run discovery to fill it).
+
+**The button gates on the corpus, not on the draft.** `disabled` reads
+`firstSlotAll.length === 0` — "this group has no launch shapes at all" — while the
+click adds only `firstSlotUnchecked`, the ones not already staged. They must not be
+the same test: the draft is re-seeded from the target fingerprint's *saved*
+`volume_ix_patterns` on every run (`seedFromFingerprint`, keyed on `result.run_id`),
+so once a launch set has been applied, re-running over a new time window re-stages it
+and the diff is empty even though the new corpus is full of launch shapes. Gating on
+the diff collapsed three distinct facts — *no launch shapes here*, *already saved*,
+and *presence unscored* — into one dead button, and a `disabled` button fires no
+mouse events, so it also killed the hover outline that could have told them apart.
+Clicking with an empty diff is a deliberate no-op; the hover preview passes the FULL
+launch set so the outline still answers "which rows do you mean?". The badge reports
+`N at launch · all staged` vs `· M new`, and an all-`null` group is badged
+`launch presence unscored` rather than silently reading as "no launch bundle".
 
 The creation slot is the offline stand-in
 `lab::sweep::projection::creation_slot` — the slot of the token's first trade,
