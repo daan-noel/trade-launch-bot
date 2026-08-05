@@ -2799,6 +2799,24 @@ impl StrategyRepo {
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
     }
 
+    /// **Paper** `ExitStuck` rows — a simulated sell whose fill window could never
+    /// resolve. Paper owns no on-chain bag, so none of the real recovery machinery
+    /// applies (`find_exit_stuck_bags` / `find_cleared_by_status` / `find_bags_by_status`
+    /// are all `mode = 'real'`, which is why these rows used to stay open forever);
+    /// the reaper books them `End` at the token's last known price. Bounded by
+    /// `limit` so a large backlog drains over several ticks instead of one long one.
+    pub async fn find_paper_exit_stuck(&self, limit: i64) -> anyhow::Result<Vec<StrategyPosition>> {
+        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+            "SELECT {POSITION_COLS} FROM strategy_positions \
+             WHERE status = 'ExitStuck' AND mode = 'paper' AND entry_price IS NOT NULL \
+             ORDER BY updated_at ASC LIMIT $1",
+        ))
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
     /// Distinct mints with an entry-recorded `Holding` real position whose net traded
     /// balance (Σbuys − Σsells) has fallen to ≤ `threshold_raw` — the bag was cleared
     /// outside the strategy exit path (a manual sell). Drives the boot/maintenance

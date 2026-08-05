@@ -389,6 +389,18 @@ fn fail_entry(fill_tx: &mpsc::Sender<Event>, intent: IntentId, reason: FillFailR
     });
 }
 
+/// The exit-side twin of [`fail_entry`] — same rule, same reason: every path out
+/// of [`dispatch_sell`] that does not spawn a submit task must emit for its
+/// intent. A bare `return` leaves the arm `ExitPending` and the PG row
+/// `ExitPending` forever (nothing else ever emits for that intent), which holds
+/// the position — and its `max_concurrent_tokens` slot — open for the life of the
+/// process. `Fatal` because both call sites are structural (no registry meta, or
+/// a portion that sizes to zero): a resend would hit the same wall, so the engine
+/// books `ExitStuck` and the row surfaces for attention instead of vanishing.
+fn fail_exit(fill_tx: &mpsc::Sender<Event>, intent: IntentId, reason: FillFailReason) {
+    fail_entry(fill_tx, intent, reason);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn dispatch_buy(
     state: &EngineState,
@@ -508,6 +520,7 @@ fn dispatch_sell(
 ) {
     let Some(meta) = registry.get(position) else {
         warn!("sell: no position meta — skipping submit");
+        fail_exit(&real_deps.fill_tx, intent, FillFailReason::Fatal);
         return;
     };
     let mint = meta.mint.clone();
@@ -515,6 +528,7 @@ fn dispatch_sell(
     let token_amount = portion.token_amount(initial, meta.sold_token_amount);
     if token_amount == 0 {
         warn!(portion = ?portion, initial, sold = meta.sold_token_amount, "sell: zero token amount — skipping");
+        fail_exit(&real_deps.fill_tx, intent, FillFailReason::Fatal);
         return;
     }
     match meta.trade_mode {

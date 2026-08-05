@@ -60,6 +60,30 @@ Reaper (`reapers.rs`, boot + 60 s):
 | `redrive_exit_unconfirmed` | ExitUnconfirmed-with-bag → **only if every recorded sell sig is provably dead** (`burn_nonce_tx`) → orphan sell; else left for manual Verify. Runs AFTER its heal |
 | `mark_stale_exit_pending_stuck` | real ExitPending >300 s: bag-check first — heal-eligible rows are left to the heal; the rest flip `ExitStuck` (never a blind terminal stamp) |
 | `close_stale_paper_exit_pending` | paper crash artifact → book End at entry (breakeven) |
+| `close_paper_exit_stuck` | **paper** ExitStuck → book End at the feed price as of `updated_at` (else cache spot, else entry). No bag ⇒ nothing to redrive; every real sweep above is `mode='real'`, so these had no owner at all (§2.2) |
+
+### 2.2 Paper never had an `ExitStuck` owner
+
+`ExitStuck` means "the sell gave up, the bag is still held" — a real-only premise,
+and every recovery query above filters `mode = 'real'`. A **paper** row that
+reached it therefore stayed open forever: 333 of 742 paper positions (45%) as of
+2026-08-05.
+
+It reached it constantly because `exec_paper`'s exit resolved with
+`market_fill_on_empty_window = false` while lab replay/simulate and the sweep both
+pass `true`. A `Dead` exit fires *because* the token stopped printing, so its fill
+window is empty by construction: each of the engine's 5 retries re-fired against
+the same last trade, all 5 timed out, `ExitStuck`. Same for a manual close on a
+mint no longer in the cache. The bias is one-directional — the stranded rows are
+exactly the dead-token losers, so paper PnL read high.
+
+Both halves are closed: the exit leg market-fills like analysis (and falls back to
+the token's last known spot when no window can price it), and the reaper sweep
+above owns any paper row that still fails. Historical rows:
+`scripts/backfill-paper-exit-stuck.sql` (same pricing, for a DB no `hunter-live`
+runs against). Note both paths size the closing leg from **cost basis × price
+ratio**, never `price × tokens` — rows written before the 2026-08-04 token-scale
+fix carry `entry_token_amount` 1e6× high, and a ratio is scale-free.
 
 ### 2.1 Why a stranded bag needs more than "retry"
 

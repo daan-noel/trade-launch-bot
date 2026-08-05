@@ -8,6 +8,8 @@
 //! - `ExitStuck` / `ExitUnconfirmed` whose bag is gone → heal to End
 //! - stale `ExitPending` → bag-check first: cleared heals to End, a held bag
 //!   flips to `ExitStuck` (open, attention) — never a blind terminal stamp
+//! - **paper** `ExitStuck` → book End at the last known price (no bag to redrive;
+//!   every real path above is `mode = 'real'`, so these had no owner at all)
 //!
 //! Fires once at boot (immediate tick) then every 60 s. Skips rows whose
 //! [`InFlightGuards`] slot is held so it never races a live buy/sell task.
@@ -154,6 +156,10 @@ pub fn spawn_reaper(deps: ReaperDeps) -> JoinHandle<()> {
             // exists — book End at the entry (breakeven) rather than fabricating
             // a loss or stranding an attention row with no legal action.
             close_stale_paper_exit_pending(&deps).await;
+            // Paper `ExitStuck`: no bag, no redrive — book End at the last known
+            // price. Every real recovery path above is `mode = 'real'`, so without
+            // this a paper row that failed its exit stays open forever.
+            close_paper_exit_stuck(&deps).await;
             // Paper `BuySubmitted` that never filled (crash mid-sim buy) owns no
             // on-chain bag to recover — drop it past the stale window so it can't
             // linger as a forever-`Open` paper row. Real `BuySubmitted` is left to
@@ -864,6 +870,91 @@ async fn heal_cleared_by_status(deps: &ReaperDeps, status: &str) {
     }
     if n > 0 {
         info!(n, status, "reaper: booked cleared rows → End");
+    }
+}
+
+/// How many paper `ExitStuck` rows one tick may heal. Only bounds the historical
+/// backlog — steady state is ~0 now that a paper exit market-fills instead of
+/// timing out.
+const PAPER_STUCK_HEAL_PER_TICK: i64 = 200;
+
+/// **Paper** `ExitStuck` rows → `End` at the token's last known price.
+///
+/// Paper owns no on-chain bag, so `ExitStuck` — "the sell gave up, the bag is
+/// still held, the reaper owns it now" — has no meaning for it: every redrive/park
+/// path is `mode = 'real'`, so nothing could ever reach these rows and they stayed
+/// open forever (333 of 742 paper positions before the `exec_paper` exit fill was
+/// fixed to market-fill an empty window). This is the heal for that backlog, and
+/// the backstop for any paper exit that still fails.
+///
+/// Price, in order: the mint's last `trades` row **as of the moment the exit gave
+/// up** (`[entry_time, updated_at]` — the death price for a token that stopped
+/// trading, and the honest as-of price for a backlog row on a token that kept
+/// going) → the live cache's current spot → the entry price. The feed leads the
+/// cache deliberately: `current_price` is *now*, which is the right answer only
+/// for a row that just failed, and silently wrong for one stranded days ago. The
+/// entry price is a breakeven fiction, used only when neither holds a price; it
+/// matches what [`close_stale_paper_exit_pending`] already does. Books through
+/// `record_sell_fill` (via
+/// [`orphan_exit::book_externally_cleared_pg`]) so the `position_fills` ledger and
+/// the row aggregates stay consistent — never a bare status UPDATE.
+async fn close_paper_exit_stuck(deps: &ReaperDeps) {
+    let stuck = match deps.strategy_repo.find_paper_exit_stuck(PAPER_STUCK_HEAL_PER_TICK).await {
+        Ok(p) => p,
+        Err(e) => {
+            warn!("reaper: find_paper_exit_stuck failed: {e}");
+            return;
+        }
+    };
+    let mut n = 0u32;
+    for pos in stuck {
+        let since = pos.entry_time.unwrap_or(pos.created_at);
+        let from_feed = deps
+            .trade_repo
+            .find_latest_by_mint(&pos.mint_address, since, pos.updated_at)
+            .await
+            .ok()
+            .flatten()
+            .filter(|t| t.price_per_token > 0.0)
+            .map(|t| (t.price_per_token, t.block_time));
+        let priced = from_feed.or_else(|| {
+            deps.token_cache.get(&pos.mint_address).and_then(|e| {
+                let s = e.value();
+                s.current_price
+                    .filter(|p| *p > 0.0)
+                    .map(|price| (price, s.last_trade_at.unwrap_or(pos.updated_at)))
+            })
+        });
+        let (price, at) =
+            priced.unwrap_or_else(|| (pos.entry_price.unwrap_or(0.0), pos.updated_at));
+        let token_amount = pos.remaining_token_amount();
+        // Size the closing leg from the **cost basis × price ratio**, not
+        // `price × tokens`. Paper rows written before the 2026-08-04 token-scale
+        // fix carry `entry_token_amount` 1e6× too high (`Fill::price` is SOL per
+        // RAW unit, and `exec_paper` still multiplied by `TOKEN_SCALE`), so
+        // `price × tokens` would book a 1e6× fantasy PnL on 331 of the 359
+        // stranded rows. `entry_sol` was always right and a price *ratio* is
+        // scale-free, so this is correct on both sides of that fix — and exactly
+        // equal to `price × tokens` on a row whose scale is consistent.
+        let sol = match (pos.entry_sol, pos.entry_price, pos.entry_token_amount) {
+            (Some(entry_sol), Some(entry_price), Some(entry_tokens))
+                if entry_price > 0.0 && entry_tokens > 0 =>
+            {
+                entry_sol * (token_amount as f64 / entry_tokens as f64) * (price / entry_price)
+            }
+            _ => price * token_amount as f64,
+        };
+        let fill = Fill { price, sol, token_amount, at };
+        let reason = pos.exit_reason.clone().unwrap_or_else(|| "Manual".to_string());
+        match orphan_exit::book_externally_cleared_pg(&deps.strategy_repo, pos.id, fill, &reason)
+            .await
+        {
+            Ok(()) => n += 1,
+            Err(e) => warn!(position_id = %pos.id, "reaper: paper ExitStuck heal failed: {e}"),
+        }
+    }
+    if n > 0 {
+        info!(n, "reaper: closed paper ExitStuck rows at last known price");
     }
 }
 

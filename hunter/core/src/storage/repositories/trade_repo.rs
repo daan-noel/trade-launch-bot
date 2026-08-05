@@ -475,6 +475,48 @@ impl TradeRepo {
         row.map(Trade::try_from).transpose()
     }
 
+    /// Last trade on `mint` inside `[since, until]`, any wallet — the token's
+    /// observed price *as of* a past moment. Used by the reaper's paper
+    /// `ExitStuck` heal to close at the price the exit would have filled at
+    /// instead of a fabricated breakeven.
+    ///
+    /// **Both bounds matter.** `since` is what keeps this cheap: `trades` is a
+    /// `block_time` hypertable, so a bare `mint_address` lookup probes every
+    /// chunk, while bounding it to the position's own entry prunes to the chunks
+    /// that can hold the token's history. `until` is what keeps it *honest*: the
+    /// newest print overall can be days after the exit fired, on a token that went
+    /// on trading — pricing a stranded close at it would book a PnL that never
+    /// existed. Ordering is the canonical execution order
+    /// (`slot, tx_index, leg_index` — `idx_trades_mint_order`), never
+    /// `block_time`, which is a partition axis and not an order key.
+    pub async fn find_latest_by_mint(
+        &self,
+        mint: &str,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> anyhow::Result<Option<Trade>> {
+        let row = sqlx::query_as::<_, TradeDbRow>(
+            r#"
+            SELECT t.mint_address, COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address, t.trade_type, t.venue,
+                   t.amount_lamports, t.token_amount,
+                   t.reserve_lamports, t.reserve_token,
+                   t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
+            FROM trades t
+            LEFT JOIN wallet_dict w ON w.id = t.wallet_id
+            WHERE t.mint_address = $1 AND t.block_time >= $2 AND t.block_time <= $3
+            ORDER BY t.slot DESC, t.tx_index DESC, t.leg_index DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(mint)
+        .bind(since)
+        .bind(until)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(Trade::try_from).transpose()
+    }
+
     /// Average manual-buy cost basis per mint for `wallet` over a bounded mint set.
     /// Rolls up `trade_type='buy'` legs — `SUM(amount_lamports)` / `SUM(token_amount)`
     /// grouped by mint — into an [`AvgEntry`] each. This is the **manual-buy
