@@ -65,6 +65,14 @@ Generic, reused across all pages. Two modes:
 
 **Hidden sort-only columns:** set `sortOnly: true` (+ `sortValue`) so the column joins multi-key sort but stays out of the Columns panel and defaults hidden. A sibling column's `renderHeader(SortCtx)` (via shared `MultiSortHeader`) calls `toggleSort(key)` for each axis — Rules/Simulate use `buildFingerprintRuleColumns`, `buildRuleParamsColumns`, and `buildCapsColumns` (concurrent / total; `0` total displays/filters as `∞` and sorts as largest).
 
+**Row-memo performance (locked):** `TableRow` is `React.memo`'d. `DataTable` ref-stabilizes
+`rowActions` / `rowDetail` / `rowClassName` / `cellGroupClassName` / `onSelect` so inline
+call-site closures never bust memo. Callers must still **memoize `columns`** (and prefer a
+module-level `rowKey`) — a fresh `columns` array rebuilds `visCols` and re-renders every
+visible row. Client search precomputes a per-row blob (`WeakMap`); sort uses
+decorate-sort-undecorate; selection-follow looks up a `Map` index; prefs/pins writes to
+`localStorage` are debounced (150ms).
+
 ## `useTradeStream` — `hooks/useTradeStream.ts`
 
 Buffers incoming SSE `trade` events. Max buffer size: 500 (older events are dropped from the front). The buffer is a `useRef` (not state) to avoid re-renders on every trade; a debounced `setState` at 100ms flushes the ref into React state for rendering. This means `TransactionsPage` re-renders at most 10×/sec regardless of trade volume.
@@ -147,6 +155,15 @@ Creation Stats, server-side — see below).
   (`fingerprintsHref`) + axis-params summary (`fingerprintParamsCell`), or a manual-mode
   hint when nothing's picked. The three pages share this component; only the help copy
   (`tip`, `scopedDescription`, `manualHint`) differs per page, passed in by the caller.
+  Match-count chip is **lazy** (`onRequestMatchCount` on hover / `openMatches`) via
+  `useFingerprintMatches` — no `POST …/grouped/tokens` on every page mount with a
+  persisted seed id.
+- **`FingerprintGroupPicker`** — shared group-by + value filters. Clears filters in
+  **one** parent update (`onClearFilters`). When scoped: Creation Stats passes
+  `disabled` (manual group-by/filters dropped entirely); Flow / Sweep pass
+  `filtersDisabled` (engine match replaces filters; group-by can still split).
+  High-churn filter text uses `useLocalStorage(..., { debounceMs: 400 })` so React
+  state stays live while disk/broadcast writes are coalesced.
 
 **Creation Stats parity note:** unlike Flow Discovery/Sweep (which load a corpus into
 memory and run the engine matcher directly), Creation Stats is SQL-only. Its backend

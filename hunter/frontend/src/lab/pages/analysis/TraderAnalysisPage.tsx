@@ -219,7 +219,7 @@ export function TraderAnalysisPage() {
           <DateTimeRangePicker
             aria-label="Look-back days"
             size="sm"
-            zoneLabel="UTC"
+            zoneLabel={null}
             allowCustom={false}
             emptyLabel="Days"
             presets={[...TRADER_LOOKBACK_PRESETS]}

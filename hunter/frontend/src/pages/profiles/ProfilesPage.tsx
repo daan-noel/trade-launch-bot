@@ -1074,6 +1074,8 @@ export function ProfilesPage() {
         description="Your own wallet, plus tracked trader, whale, and dev wallet profiles."
         actions={
           <>
+            <div className="grow" />
+
             <IconButton
               variant="ghost"
               size="md"
@@ -1084,6 +1086,7 @@ export function ProfilesPage() {
               <SettingsIcon />
             </IconButton>
             <IconButton
+              className="ml-8"
               variant="success"
               size="lg"
               onClick={() => setProfileModal({ open: true })}

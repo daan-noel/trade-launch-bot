@@ -5,11 +5,15 @@ import { getTablePins, setTablePins } from 'lib/storage';
 export interface PinnedRows<R> {
   /** True when this row is currently pinned. */
   isPinned: (row: R) => boolean;
+  /** O(1) key lookup — prefer this when the row key is already in hand. */
+  isPinnedKey: (key: string) => boolean;
   /** Flip the pinned state of a row (pins if unpinned, unpins if pinned). */
   onToggle: (row: R) => void;
   /** The pinned rows to render in the sticky top section, in pin order. */
   pinnedRows: R[];
 }
+
+const PINS_PERSIST_MS = 150;
 
 /**
  * Row-pinning state for a {@link DataTable}, scoped per `tableId` and persisted via
@@ -68,11 +72,16 @@ export function usePinnedRows<R>(
   }, [pageRows, keySet, keys.length]);
 
   // Persist keys + snapshots together so a reload can render pinned rows immediately.
+  // Debounced: rapid pin/unpin or snapshot refresh from polling shouldn't hit
+  // localStorage on every tick.
   useEffect(() => {
     if (!tableId) return;
-    const rows: Record<string, R> = {};
-    for (const k of keys) if (snapshots[k] !== undefined) rows[k] = snapshots[k];
-    setTablePins(tableId, { keys, rows });
+    const id = window.setTimeout(() => {
+      const rows: Record<string, R> = {};
+      for (const k of keys) if (snapshots[k] !== undefined) rows[k] = snapshots[k];
+      setTablePins(tableId, { keys, rows });
+    }, PINS_PERSIST_MS);
+    return () => window.clearTimeout(id);
   }, [tableId, keys, snapshots]);
 
   const onToggle = useCallback((row: R) => {
@@ -81,12 +90,16 @@ export function usePinnedRows<R>(
     setSnapshots((prev) => ({ ...prev, [k]: row })); // capture at pin time
   }, []);
 
-  const isPinned = useCallback((row: R) => keySet.has(keyRef.current(row)), [keySet]);
+  const isPinnedKey = useCallback((key: string) => keySet.has(key), [keySet]);
+  const isPinned = useCallback(
+    (row: R) => keySet.has(keyRef.current(row)),
+    [keySet],
+  );
 
   const pinnedRows = useMemo(
     () => keys.map((k) => snapshots[k]).filter((r): r is R => r !== undefined),
     [keys, snapshots],
   );
 
-  return { isPinned, onToggle, pinnedRows };
+  return { isPinned, isPinnedKey, onToggle, pinnedRows };
 }

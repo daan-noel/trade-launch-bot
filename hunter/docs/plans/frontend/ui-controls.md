@@ -8,7 +8,8 @@ or date ranges.
 
 | Control | Use for | Not for |
 | --- | --- | --- |
-| `DateTimeRangePicker` (`components/ui/DateTimeRangePicker`) | Date / datetime windows (History cohort, Created range, token filter dates) | Single `type="date"` fields; reinventing dual `datetime-local` inputs |
+| `DatePicker` (`components/ui/DatePicker`) | Single civil day (`YYYY-MM-DD`) — sweep prune cutoff, Replay day-file | Ranges; reinventing bare `type="date"` |
+| `DateTimeRangePicker` (`components/ui/DateTimeRangePicker`) | Date / datetime windows (History cohort, Created range, token filter dates) | Single-day fields; reinventing dual `datetime-local` inputs |
 | `ToggleGroup` (`components/ui/ToggleGroup`) | Exclusive filters: scoreboard scope, SOL/USD, short non-temporal enums | Swapping large content panels; reinventing mode chrome; datetime windows |
 | `ModeToggle` (`components/strategy/ModeToggle`) | All / Paper / Real (or Real / Paper) everywhere | Per-page option arrays with copied hues |
 | `Tabs` (`components/ui/Tabs`) | Panel swaps (RuleEditor Builder/JSON, analytics views) | Mode / range filters |
@@ -17,21 +18,51 @@ or date ranges.
 | `ModeBadge` / `modeBadgeVariant` | Any paper/real pill | `Badge variant="neutral"` for paper |
 | `VisibilityToggleButton` | Show/hide cohort toggles (disabled rules, not-fired) | Form checkboxes / settings switches |
 
+## `DatePicker`
+
+Compact input-shaped trigger (calendar icon + `MM/DD/YYYY` / placeholder) +
+popover (editable date field · one month pane with ‹ › / month-year chooser ·
+Today · Clear). Day click commits immediately; typed date uses Apply / Enter.
+Wire value is `YYYY-MM-DD` (or `''`). `timeZone` (default: browser IANA) drives
+civil Today only. Zone badge is off by default (`showZoneBadge` / `zoneLabel`).
+Supports inclusive `min` / `max` (disabled days). Shared calendar math lives in
+`dateTimeRangePickerUtils.ts`.
+
+| Surface | Notes |
+| --- | --- |
+| Grouped sweep “Clear runs before” | `max=today` local; prune still uses local midnight ISO |
+| Replay “Date” | one day-file |
+
 ## `DateTimeRangePicker`
 
 Compact input-shaped trigger (`From → To` placeholders when empty; presets show
-`7 days · MM/DD → now`) + popover (shortcuts · two independent month panes
-always visible/stacked · editable date+time fields · Apply/Cancel). Each pane
-has its own ‹ ›; click the month label for a year stepper + Jan–Dec chooser.
-Right pane stays ≥ left. Popover flips above the trigger when space below is
-tight. Wire values are bare wall-clock `YYYY-MM-DDTHH:mm` (same as
-`datetime-local`); callers own zone semantics — History treats them as UTC ISO
-bounds, FilterPanel converts via `datetimeLocalToUtcWallClock` at the query
-boundary. Preset clicks commit immediately; calendar edits stay in a draft
-until Apply. Pass `presets` for History-style shortcuts; omit for calendar-only
-fields (Simulate Created, token filter dates). `allowCustom={false}` for
-preset-only APIs (Portfolio `range`, creation-stats / trader look-back days) —
-hides the calendar and only lists shortcuts.
+`7 days · MM/DD → now`) + popover (shortcuts · editable From/To date+time
+fields · two independent month panes · Apply/Cancel). MUI-like interaction:
+click From/To to choose which bound the calendar edits; first day click sets
+start, second sets end (hover previews the in-progress range); a click after a
+complete range restarts at start. Fields sit above the calendars. Each pane has
+its own ‹ ›; click the month label for a year stepper + Jan–Dec chooser. Right
+pane stays ≥ left. Popover flips above the trigger when space below is tight.
+Dialog is `aria-modal` with focus move/restore.
+
+Wire values are bare wall-clock `YYYY-MM-DDTHH:mm` (same as `datetime-local`).
+`timeZone` (default `UTC`) drives civil Today + the today ring only — it does
+not rewrite wire values. `zoneLabel` defaults to a short badge from `timeZone`;
+pass `zoneLabel={null}` to hide (look-back day presets). Callers own zone
+semantics at the query boundary:
+
+| Surface | `timeZone` / badge | Boundary |
+| --- | --- | --- |
+| History / Simulate / lab Created | `UTC` | wall-clock treated as UTC ISO |
+| Tokens Created | project IANA (`TokensFilterBar` `timezone`) | `datetimeLocalToUtcWallClock` |
+| Portfolio / creation-stats / trader look-back | `zoneLabel={null}`, `allowCustom={false}` | day/preset enums only |
+
+Preset clicks commit immediately; calendar edits stay in a draft until Apply.
+Clear + Apply with empty bounds commits the `all` / "All" preset when one is
+in `presets` (History All time). Pass `presets` for History-style shortcuts;
+omit for calendar-only fields (Simulate Created, Tokens Created).
+`allowCustom={false}` hides the calendar and only lists shortcuts. Pure helpers
+live in `dateTimeRangePickerUtils.ts` (guarded by unit tests).
 
 ## `ToggleGroup`
 
@@ -94,6 +125,26 @@ cluster**, not a loose badge + icon row:
   danger Stop)
 
 Do not drop the frame or shrink to `sm` — these are high-stakes ops controls.
+
+## `Accordion` with a live header (`header` prop)
+
+`title` mode makes the whole header row one big collapse button. `header` mode
+exists for headers that carry their **own** controls (the Grouped Sweep run
+picker: run `<select>`, delete, prune date + button) — there the row cannot
+simply be a `<button>`.
+
+The toggle surface is still the whole row; the row's `onClick` bails when the
+event's target sits inside `button, select, input, textarea, a, label,
+[role="button"]`, so every header control keeps its own semantics (a `<label>`
+is in the list because clicking it activates its control, not the panel). The
+prepended chevron `<button>` stays the keyboard/a11y trigger and carries
+`aria-expanded`; it needs no `stopPropagation` because the same target check
+already excludes it.
+
+Give it a `toggleLabel` ("Run details") — a bare ~20px chevron is too small to
+be the only visible affordance for a panel toggle. Pair with `storageKey` so a
+panel the user opened stays open across reloads instead of snapping back to
+`defaultOpen`.
 
 ## Explanation tips (`InfoTooltip` / `HoverPopover`)
 

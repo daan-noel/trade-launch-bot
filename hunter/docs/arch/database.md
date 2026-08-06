@@ -61,11 +61,12 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
   the same column keys, and `token_repo::parity_tests` (auto-runs when `DATABASE_URL` is
   set, self-skips otherwise) asserts identical ordered rows. Requested via the unified
   `POST /api/tokens` [`TableRequest`] body (same contract as the strategy tables); the
-  global filter panel + per-column filters arrive as ONE `filters: {col → FilterSpec}` map
-  and `TokenQuery::from_table_request` **lowers** each spec back onto the internal panel-map
-  / per-column-predicate representation both engines already evaluate — so the fold added no
-  new eval code and the parity guarantee still holds. `ath_price`/`current_price` are
-  numeric-filterable; free-text search is mint/symbol only.
+  page/wrapper structured filters + per-column filters arrive as ONE
+  `filters: {col → FilterSpec}` map and `TokenQuery::from_table_request` **lowers** each
+  spec back onto the internal panel-map / per-column-predicate representation both engines
+  already evaluate — so the fold added no new eval code and the parity guarantee still
+  holds. `ath_price`/`current_price` are numeric-filterable; free-text search is
+  mint/symbol only.
 - **`TokenDetail`** coalesces `trade_count`/`volume_sol_total` to 0 (non-null), matching
   the list endpoint's `TokenSummary` — the detail modal and the list agree on those two.
 

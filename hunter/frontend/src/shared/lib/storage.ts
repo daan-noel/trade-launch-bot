@@ -29,6 +29,9 @@ export const STORAGE_KEYS = {
   sweepDiscoverySeed: `${PREFIX}sweep.discoverySeed`,
   /** Base key for persisted sweep run selection; append `.${strategyId}` for per-strategy key. */
   sweepSel: `${PREFIX}sweep.sel`,
+  /** Base key for the selected run's "Run details" panel open/closed state;
+   *  append `.${strategyId}` for a per-strategy key. */
+  sweepDetailsOpen: `${PREFIX}sweep.detailsOpen`,
   /** Sweep results "show not-fired tokens" toggle. */
   sweepShowNotFired: `${PREFIX}sweep.showNotFired`,
   /** Simulate Positions "show not-fired (NoEntry) tokens" toggle. */

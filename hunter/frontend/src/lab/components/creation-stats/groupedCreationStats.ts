@@ -204,6 +204,56 @@ export const TOP_OPTIONS: { value: number; label: string }[] = [
   { value: 16, label: 'Top 16' },
 ];
 
+/** Structural equality for Analyze dirty-checking — avoids `JSON.stringify` alloc. */
+export function groupedCreationArgsEqual(
+  a: GroupedCreationArgs,
+  b: GroupedCreationArgs,
+): boolean {
+  if (
+    a.bucket !== b.bucket ||
+    a.tz !== b.tz ||
+    a.from !== b.from ||
+    a.segment !== b.segment ||
+    a.top !== b.top ||
+    a.bucketWidth !== b.bucketWidth ||
+    a.exactSol !== b.exactSol ||
+    a.rankBy !== b.rankBy ||
+    a.fingerprintId !== b.fingerprintId
+  ) {
+    return false;
+  }
+  if (a.groupBy.length !== b.groupBy.length) return false;
+  for (let i = 0; i < a.groupBy.length; i++) {
+    if (a.groupBy[i] !== b.groupBy[i]) return false;
+  }
+  const aIx = a.ixLabelsFilter;
+  const bIx = b.ixLabelsFilter;
+  if ((aIx == null) !== (bIx == null)) return false;
+  if (aIx && bIx) {
+    if (aIx.length !== bIx.length) return false;
+    for (let i = 0; i < aIx.length; i++) {
+      if (aIx[i] !== bIx[i]) return false;
+    }
+  }
+  const aFf = a.fieldFilters;
+  const bFf = b.fieldFilters;
+  if ((aFf == null) !== (bFf == null)) return false;
+  if (aFf && bFf) {
+    const aKeys = Object.keys(aFf);
+    const bKeys = Object.keys(bFf);
+    if (aKeys.length !== bKeys.length) return false;
+    for (const k of aKeys) {
+      const av = aFf[k];
+      const bv = bFf[k];
+      if (!bv || av.length !== bv.length) return false;
+      for (let i = 0; i < av.length; i++) {
+        if (av[i] !== bv[i]) return false;
+      }
+    }
+  }
+  return true;
+}
+
 /** The `∅` sentinel the backend renders for a missing fingerprint value. */
 export const MISSING_VALUE = '∅';
 

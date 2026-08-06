@@ -43,7 +43,8 @@ function mintSetFilters(mints: string[]): Record<string, FilterSpec> | undefined
  *      column set, defined once (keys already present are skipped via
  *      `existingKeys`);
  *   2. own the two token-table features — the mint-set paste filter
- *      (`mintSetFilter`) and the per-token charts grid (`charts`).
+ *      (`mintSetFilter`) and the per-token charts grid (`charts` toggle rides
+ *      `DataTable`'s `toolbarTrailing` slot).
  *
  * Two modes:
  *   • **server** (`serverSide`) — rows arrive backend-enriched and one page at a
@@ -133,6 +134,11 @@ interface TokenTableCommon<R> {
   defaultSort?: { col: string; dir?: SortDir };
   selectable?: boolean;
   searchable?: boolean;
+  /** Forwarded to {@link DataTable} — e.g. `Mint or symbol…` on All Tokens. */
+  searchPlaceholder?: string;
+  /** Forwarded to {@link DataTable} toolbar slots (domain chrome). */
+  toolbarLeading?: ReactNode;
+  toolbarTrailing?: ReactNode;
   colFilters?: boolean;
   colToggle?: boolean;
   hoverable?: boolean;
@@ -188,9 +194,9 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
   // the grid is hidden — `DataTable` re-fires this on toggle (handler is a dep),
   // so switching on captures the current page immediately.
   const capture = useCallback(
-    (rows: R[]) => {
-      setVisibleRows(rows);
-      onVisibleRowsChange?.(rows);
+    (nextRows: R[]) => {
+      setVisibleRows(nextRows);
+      onVisibleRowsChange?.(nextRows);
     },
     [onVisibleRowsChange],
   );
@@ -201,29 +207,49 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
     setChartsOn((v) => {
       const next = !v;
       saveChartsPref(tableId, next);
+      // Drop the mirrored page snapshot when the grid closes — no reason to retain
+      // a large row array while charts are off.
+      if (!next) setVisibleRows([]);
       return next;
     });
 
+  const chartsToggle = charts ? (
+    <button
+      type="button"
+      onClick={toggleCharts}
+      className={cn(
+        'rounded-md border border-white/8 bg-white/4 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider text-text-dim transition hover:text-text',
+        chartsOn && 'border-primary/35 bg-primary/12 text-primary',
+      )}
+    >
+      {chartsOn ? 'Charts ✓' : 'Charts'}
+    </button>
+  ) : null;
+
+  // Compose domain trailing chrome with any caller-supplied trailing slot.
+  const toolbarTrailing = (
+    <>
+      {props.toolbarTrailing}
+      {chartsToggle}
+    </>
+  );
+
   return (
     <>
-      {charts && (
-        <div className="mb-2 flex justify-end">
-          <button
-            type="button"
-            onClick={toggleCharts}
-            className={cn(
-              'rounded-md border border-white/8 bg-white/4 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider text-text-dim transition hover:text-text',
-              chartsOn && 'border-primary/35 bg-primary/12 text-primary',
-            )}
-          >
-            {chartsOn ? 'Charts ✓' : 'Charts'}
-          </button>
-        </div>
-      )}
       {props.serverSide ? (
-        <ServerTokenTable {...props} mintOf={mintOf} onVisibleRowsChange={childOnVisible} />
+        <ServerTokenTable
+          {...props}
+          mintOf={mintOf}
+          onVisibleRowsChange={childOnVisible}
+          toolbarTrailing={toolbarTrailing}
+        />
       ) : (
-        <ClientTokenTable {...props} mintOf={mintOf} onVisibleRowsChange={childOnVisible} />
+        <ClientTokenTable
+          {...props}
+          mintOf={mintOf}
+          onVisibleRowsChange={childOnVisible}
+          toolbarTrailing={toolbarTrailing}
+        />
       )}
       {showGrid && (
         <LazyTokenChartsGrid
@@ -264,6 +290,13 @@ function ServerTokenTable<R>({
   );
 
   const [mintSet, setMintSet] = useState<string[]>([]);
+  // Bumped on every mint-set apply so `resetKey` stays short (joining thousands of
+  // mints into the key was a render-time string tax).
+  const [mintEpoch, setMintEpoch] = useState(0);
+  const onMintSetChange = useCallback((mints: string[]) => {
+    setMintSet(mints);
+    setMintEpoch((e) => e + 1);
+  }, []);
   // Fold the active mint set into every emitted query (ANDs with the table's own
   // filters). The set change rides `resetKey` so `DataTable` snaps to page 1 and
   // re-emits through this same `emit` — no manual re-fetch plumbing.
@@ -275,12 +308,12 @@ function ServerTokenTable<R>({
     [onQueryChange, mintSet],
   );
   const combinedResetKey = mintSetFilter
-    ? `${resetKey ?? ''}::mints=${mintSet.join(',')}`
+    ? `${resetKey ?? ''}::m${mintEpoch}`
     : resetKey;
 
   return (
     <>
-      {mintSetFilter && <MintSetInput appliedCount={mintSet.length} onChange={setMintSet} />}
+      {mintSetFilter && <MintSetInput appliedCount={mintSet.length} onChange={onMintSetChange} />}
       {/* `rest` carries serverTotal + rows + the shared passthroughs. */}
       <DataTable
         {...rest}
@@ -312,18 +345,23 @@ function ClientTokenTable<R>({
   );
 
   const [mintSet, setMintSet] = useState<string[]>([]);
+  const [mintEpoch, setMintEpoch] = useState(0);
+  const onMintSetChange = useCallback((mints: string[]) => {
+    setMintSet(mints);
+    setMintEpoch((e) => e + 1);
+  }, []);
   const shownRows = useMemo(() => {
     if (mintSet.length === 0) return rows;
     const set = new Set(mintSet);
     return rows.filter((r) => set.has(mintOf(r)));
   }, [rows, mintSet, mintOf]);
   const combinedResetKey = mintSetFilter
-    ? `${resetKey ?? ''}::mints=${mintSet.join(',')}`
+    ? `${resetKey ?? ''}::m${mintEpoch}`
     : resetKey;
 
   return (
     <>
-      {mintSetFilter && <MintSetInput appliedCount={mintSet.length} onChange={setMintSet} />}
+      {mintSetFilter && <MintSetInput appliedCount={mintSet.length} onChange={onMintSetChange} />}
       <DataTable
         {...rest}
         columns={cols}

@@ -45,8 +45,16 @@ export function WalletAnalyticsPanel({ rows, timezone }: WalletAnalyticsPanelPro
   const [tab, setTab] = useState<ChartTab>('heatmap');
 
   const summary = useMemo(() => computeWalletSummary(rows), [rows]);
-  const heatCells = useMemo(() => buildPnlHeatCells(rows, timezone), [rows, timezone]);
-  const equityPoints = useMemo(() => buildEquityCurve(rows), [rows]);
+  // Only fold the active tab's series — switching views never pays for the
+  // other four aggregations (distribution/scatter already fold inside their adapters).
+  const heatCells = useMemo(
+    () => (tab === 'heatmap' ? buildPnlHeatCells(rows, timezone) : null),
+    [rows, timezone, tab],
+  );
+  const equityPoints = useMemo(
+    () => (tab === 'equity' ? buildEquityCurve(rows) : null),
+    [rows, tab],
+  );
   const activeTab = TABS.find((t) => t.id === tab) ?? TABS[0]!;
 
   if (rows.length === 0) return null;
@@ -67,8 +75,8 @@ export function WalletAnalyticsPanel({ rows, timezone }: WalletAnalyticsPanelPro
           <span className="text-[10px] text-text-dim">{activeTab.hint}</span>
         </div>
 
-        {tab === 'heatmap' && <WalletPnlHeatmap cells={heatCells} />}
-        {tab === 'equity' && (
+        {tab === 'heatmap' && heatCells && <WalletPnlHeatmap cells={heatCells} />}
+        {tab === 'equity' && equityPoints && (
           <Suspense fallback={<LoadingState variant="inline" label="Loading chart…" />}>
             <WalletEquityCurveChart points={equityPoints} timezone={timezone} />
           </Suspense>

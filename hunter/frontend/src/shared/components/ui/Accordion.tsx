@@ -6,10 +6,13 @@ interface AccordionProps {
   title?: React.ReactNode;
   /** Extra content rendered inline with the title (badges, info icons). Only used with `title`. */
   badge?: React.ReactNode;
-  /** Full custom header content. The chevron button is prepended at the left edge
-   *  and is the *only* collapse trigger — interactive controls inside `header`
-   *  (selects, buttons, inputs) are not affected. */
+  /** Full custom header content. A labelled chevron button is prepended at the left
+   *  edge, and the header row's own empty/static area toggles too — but interactive
+   *  controls inside `header` (selects, buttons, inputs, their labels) never do. */
   header?: React.ReactNode;
+  /** Text shown next to the chevron in `header` mode. Without it the only visible
+   *  affordance is a ~20px icon, which is a poor click target for a panel toggle. */
+  toggleLabel?: React.ReactNode;
   defaultOpen?: boolean;
   children: React.ReactNode;
   className?: string;
@@ -60,10 +63,16 @@ function Chevron({ open }: { open: boolean }) {
   );
 }
 
+/** Elements inside a custom `header` that own their own click semantics — a click
+ *  landing in one of these must never also collapse/expand the panel. `label` is in
+ *  the list because clicking it focuses/activates its control, not the accordion. */
+const HEADER_INTERACTIVE = 'button, select, input, textarea, a, label, [role="button"]';
+
 export function Accordion({
   title,
   badge,
   header,
+  toggleLabel,
   defaultOpen = true,
   children,
   className,
@@ -95,15 +104,25 @@ export function Accordion({
       )}
     >
       {header !== undefined ? (
-        // Interactive-header mode: only the chevron button toggles collapse.
-        <div className={cn('flex items-center gap-2', pad.row, pad.header)}>
+        // Interactive-header mode: the row's static area toggles collapse, but a click
+        // that lands on one of the header's own controls is left entirely alone.
+        <div
+          className={cn('flex cursor-pointer items-center gap-2 hover:bg-white/5', pad.row, pad.header)}
+          onClick={(e) => {
+            if ((e.target as HTMLElement).closest(HEADER_INTERACTIVE)) return;
+            toggle();
+          }}
+        >
           <button
             type="button"
             aria-expanded={open}
             onClick={toggle}
-            className="flex shrink-0 items-center rounded-md p-1 text-text-dim hover:bg-white/8 hover:text-text"
+            className="flex shrink-0 items-center gap-1 rounded-md p-1 text-text-dim hover:bg-white/8 hover:text-text"
           >
             <Chevron open={open} />
+            {toggleLabel !== undefined && (
+              <span className="text-sm font-medium">{toggleLabel}</span>
+            )}
           </button>
           {header}
         </div>

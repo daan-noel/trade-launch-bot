@@ -1,5 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { monthAbbr, shiftDayKey, summarizeDailyPnl, type PnlDay } from './pnlSeries';
+import {
+  dayKeyInTz,
+  foldPnlDeck,
+  monthAbbr,
+  pnlDistributionBuckets,
+  shiftDayKey,
+  summarizeDailyPnl,
+  type PnlDay,
+  type PnlPoint,
+} from './pnlSeries';
+
+function pt(partial: Partial<PnlPoint> & Pick<PnlPoint, 'key' | 'timeMs' | 'pnlSol'>): PnlPoint {
+  return {
+    pnlPct: null,
+    label: partial.label ?? partial.key,
+    ...partial,
+  };
+}
 
 function day(d: string, pnlSol: number, count = 1): PnlDay {
   return { day: d, pnlSol, count, wins: pnlSol > 0 ? count : 0 };
@@ -99,3 +116,81 @@ describe('summarizeDailyPnl', () => {
     });
   });
 });
+
+describe('dayKeyInTz', () => {
+  it('returns a stable ISO day key', () => {
+    // 2026-08-05 18:00 UTC → still 2026-08-05 in America/New_York (UTC-4).
+    expect(dayKeyInTz(Date.parse('2026-08-05T18:00:00Z'), 'America/New_York')).toBe('2026-08-05');
+    // Same instant is already the next civil day in Tokyo.
+    expect(dayKeyInTz(Date.parse('2026-08-05T18:00:00Z'), 'Asia/Tokyo')).toBe('2026-08-06');
+  });
+});
+
+describe('pnlDistributionBuckets', () => {
+  it('bins via the edge grid (incl. open tails)', () => {
+    const points = [
+      pt({ key: 'a', timeMs: 1, pnlSol: -1, pnlPct: -80 }),
+      pt({ key: 'b', timeMs: 2, pnlSol: -0.1, pnlPct: -5 }),
+      pt({ key: 'c', timeMs: 3, pnlSol: 1, pnlPct: 15 }),
+      pt({ key: 'd', timeMs: 4, pnlSol: 2, pnlPct: 600 }),
+      pt({ key: 'e', timeMs: 5, pnlSol: 0, pnlPct: null }),
+    ];
+    const buckets = pnlDistributionBuckets(points, 'default');
+    const byLabel = Object.fromEntries(buckets.map((b) => [b.label, b.count]));
+    expect(byLabel['< -50%']).toBe(1);
+    expect(byLabel['-10…0%']).toBe(1);
+    expect(byLabel['10…20%']).toBe(1);
+    expect(byLabel['≥ 500%']).toBe(1);
+    expect(buckets.reduce((s, b) => s + b.count, 0)).toBe(4);
+  });
+});
+
+describe('foldPnlDeck', () => {
+  it('builds curve, heat, daily, sparklines, and trends from one cohort', () => {
+    const t0 = Date.parse('2026-08-01T15:00:00Z');
+    const hour = 3_600_000;
+    const points: PnlPoint[] = [];
+    for (let i = 0; i < 40; i++) {
+      points.push(
+        pt({
+          key: `r1-${i}`,
+          timeMs: t0 + i * hour,
+          pnlSol: i < 20 ? 0.1 : -0.05,
+          pnlPct: i < 20 ? 10 : -5,
+          groupId: 'rule-a',
+          label: 'A',
+        }),
+      );
+    }
+    for (let i = 0; i < 5; i++) {
+      points.push(
+        pt({
+          key: `r2-${i}`,
+          timeMs: t0 + i * hour,
+          pnlSol: 1,
+          pnlPct: 50,
+          groupId: 'rule-b',
+          label: 'B',
+        }),
+      );
+    }
+
+    const fold = foldPnlDeck(points, {
+      timeZone: 'UTC',
+      density: 'sparse',
+      labelOf: (id) => (id === 'rule-a' ? 'Alpha' : 'Beta'),
+      window: 20,
+    });
+
+    expect(fold.curve.length).toBeGreaterThan(0);
+    expect(fold.curve[fold.curve.length - 1]!.cumPnlSol).toBeCloseTo(20 * 0.1 + 20 * -0.05 + 5, 6);
+    expect(fold.heatCells).toHaveLength(168);
+    expect(fold.days.length).toBeGreaterThan(0);
+    expect(fold.sparkByGroup.get('rule-a')?.length).toBeGreaterThan(0);
+    expect(fold.trends.map((t) => t.groupId).sort()).toEqual(['rule-a', 'rule-b']);
+    const alpha = fold.trends.find((t) => t.groupId === 'rule-a')!;
+    expect(alpha.label).toBe('Alpha');
+    expect(alpha.decaying).toBe(true);
+  });
+});
+

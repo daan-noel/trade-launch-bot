@@ -24,11 +24,12 @@ Concretely, that means no per-chart aggregate endpoints — the four charts fold
 
 ### Chart focus (drill-down lens)
 
-Clicking a calendar day or week, heat cell, distribution bar, or rule-comparison row
-sets `hfocus` (see `live/pages/console/historyFocus.ts`). That is a **table-only lens**
-on top of the parent cohort:
+Clicking a calendar day or week, heat cell, distribution bar, rule-comparison row,
+or hold point/band sets `hfocus` (see `live/pages/console/historyFocus.ts`). That is
+a **shared lens** on top of the parent cohort — same predicate for the table and for
+the charts that refold (`filterClosesForFocus`):
 
-| Wire | Meaning | Table applies |
+| Wire | Meaning | Table + lens charts apply |
 | --- | --- | --- |
 | `day:YYYY-MM-DD` | civil day in the UI timezone | `range` intersected with that day's UTC `[from,to)` |
 | `week:YYYY-MM-DD` | calendar week, keyed by its **Sunday** | same, over a 7-day span |
@@ -38,9 +39,11 @@ on top of the parent cohort:
 | `pos:<uuid>` | one close (Hold vs PnL point) | `id` eq |
 | `band:<holdLo>:<holdHi>:<pctLo>:<pctHi>` | Hold vs PnL drag-zoom | client filter on hold + PnL% |
 
-Charts keep rendering the **parent** cohort with a selection ring on the active cell;
-a Focus chip in the filter bar clears the lens. Clicking the same cell again toggles
-it off. Equity-curve brush focus is intentionally out of scope.
+**Hybrid rendering:** calendar + heatmap keep the **parent** cohort (selection ring on
+the active cell) so the timing grid stays readable; equity curve, PnL distribution,
+hold scatter, and rule comparison **refold on the focused slice**. A Focus chip in
+the filter bar clears the lens. Clicking the same cell again toggles it off.
+Equity-curve brush focus is intentionally out of scope.
 
 `day:` and `week:` are the same derivation at two widths — both go through
 `spanBoundsUtcIso(startDay, days, tz)`, so a week lens is exactly the union of its
@@ -131,8 +134,10 @@ per `End` row — plus an `entry_failed` count. `hold_secs` is
 the Hold-vs-PnL scatter. `exit_reason` lets the charts deck apply the same exit-reason
 `contains` cohort filter as the table (metric needles like `stall` match `stall >= 300`).
 Not pre-bucketed: one fetch feeds the equity curve, the histogram, the calendar, the
-day×hour heatmap, the hold scatter, and the per-rule comparison. Per-chart endpoints would
-have been the obvious alternative and are exactly how aggregation drift starts.
+day×hour heatmap, the hold scatter, and the per-rule comparison. The client folds that
+payload once via `foldPnlDeck` (`shared/components/analytics/pnlSeries.ts`) — not six
+independent walks. Per-chart endpoints would have been the obvious alternative and are
+exactly how aggregation drift starts.
 
 `pnl_sol` uses `models::strategy::realized_exit_sol` — the ONE decider of which exit figure
 counts (`exit_sol_total` once any sell leg landed, else the stamped single-leg `exit_sol`),

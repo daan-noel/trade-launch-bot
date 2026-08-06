@@ -6,10 +6,10 @@ import { describe, expect, it } from 'vitest';
  *
  * `components/table/` is the PURE, general-purpose table primitive. Token concerns
  * live one layer up in `components/tokens/` (`TokenTable`, `sharedTokenColumns`,
- * `filters`), and the dependency is strictly one-way: `tokens/` → `table/`, never
- * the reverse. This test fails if any file in `table/` imports the token layer or
- * an app-specific (`@live`/`@lab`) tree — i.e. if token vocabulary starts leaking
- * back into the primitive. Keep `DataTable` reusable for ANY row type.
+ * `TokensFilterBar`), and the dependency is strictly one-way: `tokens/` → `table/`,
+ * never the reverse. This test fails if any file in `table/` imports the token
+ * layer or an app-specific (`@live`/`@lab`) tree — i.e. if token vocabulary starts
+ * leaking back into the primitive. Keep `DataTable` reusable for ANY row type.
  */
 
 // Raw source of every sibling file in `table/`, loaded via Vite's glob (vitest runs

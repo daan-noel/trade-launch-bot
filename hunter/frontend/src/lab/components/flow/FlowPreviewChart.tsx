@@ -114,6 +114,8 @@ import {
 import { getString, setString, STORAGE_KEYS } from 'lib/storage';
 import type { TradeRecord } from 'types';
 
+const flowTradeRowKey = (t: TradeRecord) => t.id;
+
 interface FlowPreviewChartPrefs {
   style: ChartStyle;
   groupMode: ChartGroupMode;
@@ -1475,7 +1477,7 @@ export function FlowPreviewChart({
           <DataTable
             columns={tradeColumns}
             rows={selectionTrades}
-            rowKey={(t) => t.id}
+            rowKey={flowTradeRowKey}
             searchable
             colFilters
             hoverable

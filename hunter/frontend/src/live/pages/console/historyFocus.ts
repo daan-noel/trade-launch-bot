@@ -1,9 +1,10 @@
 /**
- * Chart → table drill-down for Console History.
+ * Chart → table (+ sibling charts) drill-down for Console History.
  *
- * A focus is a **lens on top of the parent cohort**: charts keep showing the
- * full cohort (with the selected cell highlighted); the table + filter-bar chip
- * show only the matching slice. Encoded in `hfocus` so reload / deep-links keep it.
+ * A focus is a **lens on top of the parent cohort**. Timing charts (calendar /
+ * heatmap) keep the parent grid with a selection ring; equity / distribution /
+ * hold scatter / rule comparison refold on the matching slice — same predicate
+ * as the table + filter-bar chip. Encoded in `hfocus` so reload / deep-links keep it.
  *
  * Wire forms:
  *   day:YYYY-MM-DD
@@ -239,11 +240,93 @@ export function matchesHoldBandFocus(
   const start = Date.parse(entryIso);
   const end = Date.parse(exitIso);
   if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
-  const hold = (end - start) / 1000;
+  return matchesHoldBandSecs((end - start) / 1000, pnlPct, focus);
+}
+
+/** Same band test when hold seconds are already on the wire (closes-series). */
+export function matchesHoldBandSecs(
+  holdSecs: number | null | undefined,
+  pnlPct: number | null | undefined,
+  focus: Extract<HistoryFocus, { kind: 'holdBand' }>,
+): boolean {
+  if (holdSecs == null || !Number.isFinite(holdSecs) || pnlPct == null || !Number.isFinite(pnlPct)) {
+    return false;
+  }
   return (
-    hold >= focus.holdLo &&
-    hold <= focus.holdHi &&
+    holdSecs >= focus.holdLo &&
+    holdSecs <= focus.holdHi &&
     pnlPct >= focus.pctLo &&
     pnlPct <= focus.pctHi
   );
+}
+
+/** Matches `pctFocusFilter` (half-open on the closed top edge). */
+export function matchesPctFocus(
+  pnlPct: number | null | undefined,
+  lo: number,
+  hi: number,
+): boolean {
+  if (pnlPct == null || !Number.isFinite(pnlPct)) return false;
+  if (lo === -Infinity) return pnlPct < hi;
+  if (hi === Infinity) return pnlPct >= lo;
+  return pnlPct >= lo && pnlPct < hi;
+}
+
+/** Minimal close shape for client-side focus filtering (B2 series + table rows). */
+export interface FocusableClose {
+  id: string;
+  exit_time: string;
+  rule_id: string | null;
+  entry_sol: number;
+  pnl_sol: number;
+  hold_secs: number | null;
+}
+
+/**
+ * Narrow a closes list to the focused slice — SSOT for History chart refolds.
+ * Timing charts keep the parent cohort; everything else + the table use this.
+ */
+export function filterClosesForFocus<T extends FocusableClose>(
+  closes: readonly T[],
+  focus: HistoryFocus | null,
+  timeZone: string,
+): T[] {
+  if (!focus) return closes as T[];
+  switch (focus.kind) {
+    case 'day':
+    case 'week': {
+      const span =
+        focus.kind === 'day'
+          ? dayBoundsUtcIso(focus.day, timeZone)
+          : weekBoundsUtcIso(focus.weekStart, timeZone);
+      const from = Date.parse(span.fromIso);
+      const to = Date.parse(span.toIso);
+      return closes.filter((c) => {
+        const t = Date.parse(c.exit_time);
+        return Number.isFinite(t) && t >= from && t < to;
+      });
+    }
+    case 'heat':
+      return closes.filter((c) => matchesHeatFocus(c.exit_time, focus, timeZone));
+    case 'pct':
+      return closes.filter((c) =>
+        matchesPctFocus(
+          c.entry_sol > 0 ? (c.pnl_sol / c.entry_sol) * 100 : null,
+          focus.lo,
+          focus.hi,
+        ),
+      );
+    case 'rule':
+      return closes.filter((c) => c.rule_id === focus.ruleId);
+    case 'pos':
+      return closes.filter((c) => c.id === focus.positionId);
+    case 'holdBand':
+      return closes.filter((c) =>
+        matchesHoldBandSecs(
+          c.hold_secs,
+          c.entry_sol > 0 ? (c.pnl_sol / c.entry_sol) * 100 : null,
+          focus,
+        ),
+      );
+  }
 }

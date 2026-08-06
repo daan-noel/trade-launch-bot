@@ -3,22 +3,20 @@ import { useDispatch } from 'react-redux';
 import { useSearchParams } from 'react-router-dom';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
-import { FilterPanel } from 'components/tokens/FilterPanel';
+import { TokensFilterBar } from 'components/tokens/TokensFilterBar';
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
 import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import { tokenColumns } from 'components/tokens/tokenColumns';
 import {
-  activeFilterCount,
-  defaultFilters,
-  loadStoredTokenFilters,
-  saveStoredTokenFilters,
-  type TokenFilters,
-} from 'components/tokens/filters';
+  activeQuickFilterCount,
+  loadStoredQuickFilters,
+  quickFiltersToSpecs,
+  saveStoredQuickFilters,
+  type TokensQuickFilters,
+} from 'components/tokens/tokensQuickFilters';
 import type { TableQuery } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
-import { IconButton } from 'components/ui/IconButton';
 import { PageHeader } from 'components/ui/PageHeader';
-import { SettingsIcon } from 'components/ui/icons';
 import { StatusButton } from 'components/ui/StatusButton';
 import { cn } from 'lib/cn';
 import { FALLBACK_POLL_INTERVAL_MS } from 'services/config';
@@ -80,15 +78,14 @@ export function TokensPage({
 
   const [live, setLive] = useState(loadLive);
   const [trackedOnly, setTrackedOnly] = useState(false);
-  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
-  const [filters, setFilters] = useState<TokenFilters>(loadStoredTokenFilters);
+  const [quickFilters, setQuickFilters] = useState<TokensQuickFilters>(loadStoredQuickFilters);
   const [selectedMint, setSelectedMint] = useState<string | null>(mintFromUrl);
   // View-state emitted by the DataTable (page/sort/search/col-filters). The
-  // backend does the filtering/sorting/paging; we just forward it + the global
-  // `filters` panel as query args.
+  // backend does the filtering/sorting/paging; we just forward it + page-owned
+  // quick filters as query args.
   const [tableQuery, setTableQuery] = useState<TableQuery>(INITIAL_QUERY);
 
-  // Selected project timezone — sent so datetime-range filters normalize from
+  // Selected project timezone — quick-filter Created bounds normalize from
   // picker wall-clock to the exact UTC instant at the query boundary.
   const { timezone } = useTimezone();
 
@@ -115,6 +112,11 @@ export function TokensPage({
     [setSearchParams],
   );
 
+  const quickSpecs = useMemo(
+    () => quickFiltersToSpecs(quickFilters, timezone),
+    [quickFilters, timezone],
+  );
+
   // The query args, shared by the live query and the adjacent-page prefetch
   // below so both hit identical cache keys.
   const queryArgs = useMemo(
@@ -124,19 +126,17 @@ export function TokensPage({
       sortKeys: tableQuery.sortKeys,
       search: tableQuery.search,
       colFilters: tableQuery.colFilters,
-      // The mint-set paste box (TokenTable) rides here so it reaches the backend
-      // `filters` map as the `in`-on-`mint` op.
-      structuredFilters: tableQuery.structuredFilters,
-      filters,
-      timezone,
+      // Mint-set (TokenTable) + page quick filters (Created / Dead / Migrated).
+      // Quick specs win on key collision with mint-set (disjoint keys today).
+      structuredFilters: { ...tableQuery.structuredFilters, ...quickSpecs },
       trackedOnly,
     }),
-    [tableQuery, filters, timezone, trackedOnly],
+    [tableQuery, quickSpecs, trackedOnly],
   );
 
   // Server-side page: only one page crosses the wire. Polling re-runs the
-  // current filtered/sorted page. `filters` (the global panel) ride along as
-  // query args; changing them resets the table to page 1 via `resetKey`.
+  // current filtered/sorted page. Quick filters ride along as structured
+  // specs; changing them resets the table to page 1 via `resetKey`.
   const {
     data: tokensData,
     isFetching: loading,
@@ -181,14 +181,17 @@ export function TokensPage({
     if (hasPrevPage) prefetchPage({ ...queryArgs, page: tableQuery.page - 1 });
   }, [prefetchPage, queryArgs, tableQuery.page, hasNextPage, hasPrevPage]);
 
-  // Resets the table to page 1 when the global filter panel or tracked-only mode changes.
-  const filtersResetKey = useMemo(() => JSON.stringify({ filters, trackedOnly }), [filters, trackedOnly]);
-  const filterCount = activeFilterCount(filters);
+  // Resets the table to page 1 when the quick filter bar or tracked-only mode changes.
+  const filtersResetKey = useMemo(
+    () => JSON.stringify({ quickFilters, trackedOnly }),
+    [quickFilters, trackedOnly],
+  );
+  const quickCount = activeQuickFilterCount(quickFilters);
   // Whether any reduction is active — drives the "matched" vs "total" badge.
   // Unfiltered, `total` is the whole DB-backed token universe (not just the
   // cache-tracked subset); with any reduction it's the filtered count.
   const anyActive =
-    filterCount > 0 ||
+    quickCount > 0 ||
     !!tableQuery.search ||
     Object.values(tableQuery.colFilters).some(Boolean) ||
     Object.keys(tableQuery.structuredFilters ?? {}).length > 0;
@@ -300,6 +303,11 @@ export function TokensPage({
     };
   }, [live]);
 
+  const applyQuickFilters = useCallback((next: TokensQuickFilters) => {
+    setQuickFilters(next);
+    saveStoredQuickFilters(next);
+  }, []);
+
   return (
     <div>
       <PageHeader
@@ -325,6 +333,9 @@ export function TokensPage({
             >
               {tracked} tracked
             </Badge>
+
+            <div className="grow" />
+
             <StatusButton
               state={live ? 'live' : 'dead'}
               label={live ? 'STREAM ON' : 'STREAM OFF'}
@@ -336,37 +347,11 @@ export function TokensPage({
         }
       />
 
-      <div className="mb-1.5 flex gap-1.5 justify-end">
-        <IconButton
-          variant="subtle"
-          size="md"
-          active={showAdvancedFilters || filterCount > 0}
-          onClick={() => setShowAdvancedFilters((v) => !v)}
-          title={
-            filterCount > 0 ? `Advanced filters (${filterCount})` : 'Advanced filters'
-          }
-          aria-label={
-            filterCount > 0 ? `Advanced filters (${filterCount})` : 'Advanced filters'
-          }
-        >
-          <SettingsIcon />
-        </IconButton>
-      </div>
-
-      {showAdvancedFilters && (
-        <FilterPanel
-          filters={filters}
-          onApply={(next) => {
-            setFilters(next);
-            saveStoredTokenFilters(next);
-          }}
-          onClear={() => {
-            const empty = defaultFilters();
-            setFilters(empty);
-            saveStoredTokenFilters(empty);
-          }}
-        />
-      )}
+      <TokensFilterBar
+        filters={quickFilters}
+        onChange={applyQuickFilters}
+        timezone={timezone}
+      />
 
       {error && <p className="text-red">{error}</p>}
       {!error && (
@@ -385,6 +370,7 @@ export function TokensPage({
           loading={loading}
           resetKey={filtersResetKey}
           searchable
+          searchPlaceholder="Mint or symbol…"
           colFilters
           colToggle
           hoverable

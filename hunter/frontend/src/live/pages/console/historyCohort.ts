@@ -7,8 +7,9 @@
  * `OPS_PARAMS`) so a History deep-link from Portfolio lands on exactly the
  * cohort it promised, and a reload keeps it.
  *
- * `focus` is a drill-down lens on top of that cohort (chart cell → table slice).
- * Charts keep rendering the parent cohort; only the table + chip honor `focus`.
+ * `focus` is a drill-down lens on top of that cohort (chart cell → slice).
+ * Timing charts keep the parent grid; equity / distribution / hold / rules and
+ * the table + chip honor `focus`.
  */
 
 import { useCallback, useMemo } from 'react';
@@ -34,7 +35,7 @@ export interface HistoryCohort {
   /** Position status (`End` / `EntryFailed` / an open status); `null` = any. */
   status: string | null;
   exitReason: string | null;
-  /** Chart drill-down — table-only lens; charts stay on the parent cohort. */
+  /** Chart drill-down — timing stays on parent; other charts + table follow. */
   focus: HistoryFocus | null;
   /** The `range` value the B2 series endpoint understands (it takes presets
    *  only; a custom window is served as `all` and trimmed client-side). */

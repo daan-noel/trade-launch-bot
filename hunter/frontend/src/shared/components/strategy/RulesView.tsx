@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useDispatch } from 'react-redux';
 import { Link } from 'react-router-dom';
 
@@ -75,6 +75,8 @@ import {
 } from 'lib/strategy/types';
 
 /** Closed trades behind Win% / Avg% / Exp (entered + terminal). */
+const strategyRuleRowKey = (r: StrategyRule) => r.id;
+
 function closedCount(r: StrategyRule): number {
   return (r.win_count ?? 0) + (r.loss_count ?? 0);
 }
@@ -315,64 +317,70 @@ export function RulesView({
     };
   }, [dispatch, refetch]);
 
-  const run = async (fn: () => Promise<unknown>, fail: string) => {
+  const run = useCallback(async (fn: () => Promise<unknown>, fail: string) => {
     setOpErr(null);
     try {
       await fn();
     } catch (e) {
       setOpErr(apiErrorMessage(e as never) ?? fail);
     }
-  };
+  }, []);
 
-  const clearPausing = (ids: Iterable<string>) => {
+  const clearPausing = useCallback((ids: Iterable<string>) => {
     setPausingIds((prev) => {
       const next = new Set(prev);
       for (const id of ids) next.delete(id);
       return next;
     });
-  };
+  }, []);
 
-  const pauseRule = (r: StrategyRule) => {
-    setPausingIds((prev) => new Set(prev).add(r.id));
-    void run(async () => {
-      try {
-        await pause(r.id).unwrap();
-        // Don't wait for `tpsl_rules_changed` — lab never emits it, and live
-        // SSE can lag; mutation success + RTK invalidation already flipped Idle.
-        clearPausing([r.id]);
-      } catch (e) {
-        clearPausing([r.id]);
-        throw e;
-      }
-    }, 'Pause failed');
-  };
+  const pauseRule = useCallback(
+    (r: StrategyRule) => {
+      setPausingIds((prev) => new Set(prev).add(r.id));
+      void run(async () => {
+        try {
+          await pause(r.id).unwrap();
+          // Don't wait for `tpsl_rules_changed` — lab never emits it, and live
+          // SSE can lag; mutation success + RTK invalidation already flipped Idle.
+          clearPausing([r.id]);
+        } catch (e) {
+          clearPausing([r.id]);
+          throw e;
+        }
+      }, 'Pause failed');
+    },
+    [run, pause, clearPausing],
+  );
 
-  const stopRule = (r: StrategyRule) => {
-    if (
-      r.trade_mode === 'real' &&
-      !window.confirm(`Stop "${r.rule_name}" and close its open positions? REAL mode sends on-chain sells.`)
-    )
-      return;
-    void run(async () => {
-      const res = await stop(r.id).unwrap();
-      // Lab (and live with nothing open) returns total=0 + immediate done SSE;
-      // don't park the row on a "Stopping…" spinner that has no work to track.
-      if (res.action_id && (res.total ?? 0) > 0) {
-        setStopByRule((prev) => ({
-          ...prev,
-          [r.id]: {
-            action_id: res.action_id,
-            mint_address: null,
-            rule_id: r.id,
-            kind: 'stop',
-            status: 'running',
-            done: 0,
-            total: res.total ?? 0,
-          },
-        }));
-      }
-    }, 'Stop failed');
-  };
+  const stopRule = useCallback(
+    (r: StrategyRule) => {
+      if (
+        r.trade_mode === 'real' &&
+        !window.confirm(`Stop "${r.rule_name}" and close its open positions? REAL mode sends on-chain sells.`)
+      )
+        return;
+      void run(async () => {
+        const res = await stop(r.id).unwrap();
+        // Lab (and live with nothing open) returns total=0 + immediate done SSE;
+        // don't park the row on a "Stopping…" spinner that has no work to track.
+        if (res.action_id && (res.total ?? 0) > 0) {
+          setStopByRule((prev) => ({
+            ...prev,
+            [r.id]: {
+              action_id: res.action_id,
+              mint_address: null,
+              rule_id: r.id,
+              kind: 'stop',
+              status: 'running',
+              done: 0,
+              total: res.total ?? 0,
+            },
+          }));
+        }
+      }, 'Stop failed');
+    },
+    [run, stop],
+  );
 
   const doPauseAll = (mode: TradeMode) => {
     const ids = rules.filter((r) => r.is_active && r.trade_mode === mode).map((r) => r.id);
@@ -417,7 +425,7 @@ export function RulesView({
     }, 'Stop all failed');
   };
 
-  const columns: ColumnDef<StrategyRule>[] = [
+  const columns: ColumnDef<StrategyRule>[] = useMemo(() => [
     {
       key: 'rule_name',
       label: 'Name',
@@ -754,7 +762,21 @@ export function RulesView({
       },
       searchValue: (r) => (!r.is_enabled ? 'enable' : r.is_active ? 'pause stop' : 'activate'),
     },
-  ];
+  ], [
+    fpById,
+    linkToSimulate,
+    showScores,
+    pausingIds,
+    stopByRule,
+    ruleLiveCounts,
+    fpTints,
+    setTagFilter,
+    enable,
+    activate,
+    pauseRule,
+    stopRule,
+    run,
+  ]);
 
   const err = actions.err || opErr;
 
@@ -974,7 +996,7 @@ export function RulesView({
       <DataTable
         columns={columns}
         rows={visibleRules}
-        rowKey={(r) => r.id}
+        rowKey={strategyRuleRowKey}
         loading={isLoading}
         searchable
         colFilters

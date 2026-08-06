@@ -1,5 +1,14 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getJSON, setJSON } from 'lib/storage';
+
+export interface UseLocalStorageOptions {
+  /**
+   * Debounce persistence (localStorage write + same-tab broadcast) while keeping
+   * React state updates immediate. Use for high-churn text (filter boxes) so
+   * every keystroke doesn't hit disk / wake sibling hooks. Flushes on unmount.
+   */
+  debounceMs?: number;
+}
 
 /**
  * `useState` that persists to `localStorage` under `key` (via the shared
@@ -22,30 +31,77 @@ import { getJSON, setJSON } from 'lib/storage';
 export function useLocalStorage<T>(
   key: string,
   initial: T,
+  options?: UseLocalStorageOptions,
 ): [T, (value: T | ((prev: T) => T)) => void] {
+  const debounceMs = options?.debounceMs;
   const [value, setValue] = useState<T>(() => getJSON(key, initial));
+  const pendingRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestRef = useRef(value);
+  latestRef.current = value;
+
+  const persist = useCallback(
+    (resolved: T) => {
+      setJSON(key, resolved);
+      window.dispatchEvent(
+        new CustomEvent<T>(`${LS_SYNC_EVENT}:${key}`, { detail: resolved }),
+      );
+    },
+    [key],
+  );
+
+  const flush = useCallback(() => {
+    if (pendingRef.current != null) {
+      clearTimeout(pendingRef.current);
+      pendingRef.current = null;
+      persist(latestRef.current);
+    }
+  }, [persist]);
 
   const set = useCallback(
     (next: T | ((prev: T) => T)) => {
       setValue((prev) => {
         const resolved = next instanceof Function ? next(prev) : next;
-        setJSON(key, resolved);
-        // Broadcast to sibling hooks in this tab (storage events are cross-tab only).
-        window.dispatchEvent(
-          new CustomEvent<T>(`${LS_SYNC_EVENT}:${key}`, { detail: resolved }),
-        );
+        latestRef.current = resolved;
+        if (debounceMs != null && debounceMs > 0) {
+          if (pendingRef.current != null) clearTimeout(pendingRef.current);
+          pendingRef.current = setTimeout(() => {
+            pendingRef.current = null;
+            persist(latestRef.current);
+          }, debounceMs);
+        } else {
+          persist(resolved);
+        }
         return resolved;
       });
     },
-    [key],
+    [debounceMs, persist],
   );
+
+  // Flush a pending debounced write on unmount so a fast navigate doesn't drop
+  // the last keystrokes.
+  useEffect(() => () => flush(), [flush]);
 
   useEffect(() => {
     const onLocal = (e: Event) => {
-      setValue((e as CustomEvent<T>).detail);
+      // Sibling hook wrote — cancel our pending debounce so we don't overwrite
+      // their fresher value a tick later.
+      if (pendingRef.current != null) {
+        clearTimeout(pendingRef.current);
+        pendingRef.current = null;
+      }
+      const detail = (e as CustomEvent<T>).detail;
+      latestRef.current = detail;
+      setValue(detail);
     };
     const onCrossTab = (e: StorageEvent) => {
-      if (e.key === key) setValue(getJSON(key, initial));
+      if (e.key !== key) return;
+      if (pendingRef.current != null) {
+        clearTimeout(pendingRef.current);
+        pendingRef.current = null;
+      }
+      const next = getJSON(key, initial);
+      latestRef.current = next;
+      setValue(next);
     };
     window.addEventListener(`${LS_SYNC_EVENT}:${key}`, onLocal);
     window.addEventListener('storage', onCrossTab);

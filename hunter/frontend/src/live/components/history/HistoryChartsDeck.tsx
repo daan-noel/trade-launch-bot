@@ -7,9 +7,11 @@
  * the one with a real time axis worth panning), and it is lazy-loaded so the
  * rest of the deck costs nothing extra.
  *
- * Clicking a calendar day / heat cell / distribution bar / rule row sets a
- * URL-backed `focus` lens: charts stay on the parent cohort (selection ring),
- * the table below narrows to that slice.
+ * Clicking a calendar day / week / heat cell / distribution bar / rule row /
+ * hold point sets a URL-backed `focus` lens:
+ *   • Timing charts (calendar + heatmap) stay on the parent cohort (selection ring)
+ *   • Equity / distribution / hold scatter / rule comparison refold on the slice
+ *   • The table below narrows to that same slice
  */
 
 import { Suspense, lazy, memo, useMemo, useState, type ReactNode } from 'react';
@@ -21,16 +23,12 @@ import { PnlDistribution } from 'components/analytics/PnlDistribution';
 import { PnlHeatmap } from 'components/analytics/PnlHeatmap';
 import { PnlSparkline } from 'components/analytics/PnlSparkline';
 import {
-  buildDailyPnl,
-  buildEquityCurve,
+  EMPTY_PNL_DECK,
   buildHoldScatterPoints,
-  buildPnlHeatCells,
   dayKeyInTz,
-  groupDailyPnl,
-  groupTrends,
+  foldPnlDeck,
   isPnlDistBucket,
-  maxDrawdownSol,
-  pnlDistributionBuckets,
+  type HoldScatterPoint,
   type PnlPoint,
 } from 'components/analytics/pnlSeries';
 import {
@@ -44,6 +42,7 @@ import { formatDecimalTrim } from 'utils/format';
 import { cn } from 'lib/cn';
 import type { ClosedTradePoint } from '@live/store/liveEndpoints';
 import {
+  filterClosesForFocus,
   toggleHistoryFocus,
   type HistoryFocus,
 } from '@live/pages/console/historyFocus';
@@ -51,6 +50,13 @@ import {
 const EquityCurveChart = lazy(() =>
   import('components/analytics/EquityCurveChart').then((m) => ({ default: m.EquityCurveChart })),
 );
+
+const EMPTY_HOLD: HoldScatterPoint[] = [];
+const EMPTY_HOLD_SPARK: number[] = [];
+
+/** Timing stays on parent; everything else pays for the focused slice. */
+const TIMING_PARTS = ['heat', 'days'] as const;
+const LENS_PARTS = ['curve', 'buckets', 'sparks', 'trends'] as const;
 
 /** ⓘ copy for each card — plain language, same cohort as the table below. */
 const CHART_HELP = {
@@ -60,7 +66,7 @@ const CHART_HELP = {
       'Running total of realized SOL profit/loss from closed trades, oldest → newest.\n\n' +
       '• Goes up when you close winners, down when you close losers.\n' +
       '• Max DD (drawdown) is the deepest drop from a previous peak — how far you fell from your best point.\n\n' +
-      'Only includes closes that match the History filters above (date, rule, mode, …).',
+      'Follows the History filters above, and any chart Focus (day / bar / rule / …).',
   },
   distribution: {
     title: 'PnL distribution',
@@ -70,7 +76,7 @@ const CHART_HELP = {
       '• Left = losers, right = winners (open tail: 50 / 100 / 200 / ≥500%). Bar height = trade count.\n' +
       '• Color follows magnitude grade: deep red for big losses, blue for small wins, green / gold / orange for larger wins.\n' +
       '• Sparse / Default / Dense changes how finely the zone around 0% is sliced (preference is remembered).\n\n' +
-      'Click a bar to show only those positions in the table. Click again to clear.',
+      'Click a bar to focus that bucket — equity, hold scatter, rules, and the table follow. Click again to clear.',
   },
   calendar: {
     title: 'Daily PnL calendar',
@@ -78,9 +84,8 @@ const CHART_HELP = {
       'One square per calendar day in your selected timezone — like a contribution graph.\n\n' +
       '• Green = that day made money overall; red = that day lost. Brighter fill = larger |PnL|.\n' +
       '• Brighter BORDER = more trades that day, so one lucky close and a long grind look different.\n' +
-      '• Columns are weeks (newest right), labeled by month. Rows run Sun (top) → Sat (bottom); weekend cells are dashed. Today has a white outline.\n' +
-      '• The line underneath is the part color cannot show: how often you finish green, your best and worst day, and the longest run of consecutive losing days.\n\n' +
-      'Click a day to show only that day in the table; click the month label above a column to show that whole week. Click again to clear.',
+      '• Columns are weeks (newest right), labeled by month. Rows run Sun (top) → Sat (bottom); weekend cells are dashed. Today has a white outline.\n\n' +
+      'Stays on the full cohort when focused (selection ring). Click a day — or the month label above a column for that week — to refold the other charts and the table. Click again to clear.',
   },
   heatmap: {
     title: 'When it trades',
@@ -89,7 +94,7 @@ const CHART_HELP = {
       '• Each cell sums PnL of closes that exited in that weekday + hour slot.\n' +
       '• Green cell = that slot is profitable on net; red = net loser.\n' +
       '• Empty / near-empty cells mean few or no closes then.\n\n' +
-      'Click a cell to show only closes in that recurring slot (still inside the date filters). Click again to clear.',
+      'Stays on the full cohort when focused (selection ring). Click a cell to refold the other charts and the table. Click again to clear.',
   },
   rules: {
     title: 'Rule comparison',
@@ -100,7 +105,7 @@ const CHART_HELP = {
       '• Win% = hit rate on those 20, with the change vs the prior 20 in parentheses.\n' +
       '• n = how many closes are in the recent window.\n\n' +
       '▼ means the rule is decaying: both win rate AND average SOL per trade fell vs the prior window.\n\n' +
-      'Click a row to show only that rule in the table (charts stay on the full cohort). Click again to clear.',
+      'Click a row to focus that rule — equity, distribution, hold scatter, and the table follow. Click again to clear.',
   },
   hold: {
     title: 'Hold vs PnL',
@@ -108,40 +113,50 @@ const CHART_HELP = {
       'Each closed trade as a point: how long you held (X, log scale) vs return % (Y).\n\n' +
       '• Green = winner, red = loser. Dot size = entry SOL.\n' +
       '• Cluster on the left = money from fast scalps; on the right = longer rides.\n' +
-      '• Drag a rectangle to zoom that band and show only those positions in the table.\n' +
+      '• Drag a rectangle to zoom that band and focus the other charts + table on it.\n' +
       '• Click a point for one position. Double-click or Reset scale to clear the zoom.',
   },
 } as const;
 
-/** A close from the wire → the deck's neutral point. `pnlPct` is the SOL-basis
- *  percent (`pnl_sol / entry_sol`), matching `pnlPctFromSol`; a zero-cost row
- *  has no percent (not a 0% trade). */
-function toPoints(closes: readonly ClosedTradePoint[]): PnlPoint[] {
-  return closes.map((c, i) => ({
-    key: `${c.exit_time}:${i}`,
-    timeMs: Date.parse(c.exit_time),
-    pnlSol: c.pnl_sol,
-    pnlPct: c.entry_sol > 0 ? (c.pnl_sol / c.entry_sol) * 100 : null,
-    label: c.rule_id ?? 'unknown',
-    groupId: c.rule_id,
-  }));
-}
-
-function toHoldRows(
+/** Map wire closes → deck points + hold rows in one pass. */
+function mapCloses(
   closes: readonly ClosedTradePoint[],
   ruleNameOf: (id: string | null) => string | null,
-) {
-  return closes.map((c) => ({
-    key: c.id,
-    label:
-      (c.rule_id ? ruleNameOf(c.rule_id) : null) ??
-      c.mint_address.slice(0, 8) + '…',
-    holdSeconds: c.hold_secs,
-    pnlPct: c.entry_sol > 0 ? (c.pnl_sol / c.entry_sol) * 100 : null,
-    sizeSol: c.entry_sol,
-    pnlSol: c.pnl_sol,
-    isWin: c.win,
-  }));
+): { points: PnlPoint[]; holdPoints: HoldScatterPoint[] } {
+  const points: PnlPoint[] = [];
+  const holdRows: {
+    key: string;
+    label: string;
+    holdSeconds: number | null;
+    pnlPct: number | null;
+    sizeSol: number;
+    pnlSol: number;
+    isWin: boolean;
+  }[] = [];
+  for (let i = 0; i < closes.length; i++) {
+    const c = closes[i]!;
+    const pnlPct = c.entry_sol > 0 ? (c.pnl_sol / c.entry_sol) * 100 : null;
+    points.push({
+      key: `${c.exit_time}:${i}`,
+      timeMs: Date.parse(c.exit_time),
+      pnlSol: c.pnl_sol,
+      pnlPct,
+      label: c.rule_id ?? 'unknown',
+      groupId: c.rule_id,
+    });
+    holdRows.push({
+      key: c.id,
+      label:
+        (c.rule_id ? ruleNameOf(c.rule_id) : null) ??
+        c.mint_address.slice(0, 8) + '…',
+      holdSeconds: c.hold_secs,
+      pnlPct,
+      sizeSol: c.entry_sol,
+      pnlSol: c.pnl_sol,
+      isWin: c.win,
+    });
+  }
+  return { points, holdPoints: buildHoldScatterPoints(holdRows) };
 }
 
 function Card({
@@ -210,25 +225,61 @@ export const HistoryChartsDeck = memo(function HistoryChartsDeck({
 }) {
   const [open, setOpen] = useState(true);
   const [density, setDensity] = usePnlDistDensity();
-  const points = useMemo(() => toPoints(closes), [closes]);
 
-  const curve = useMemo(() => buildEquityCurve(points), [points]);
-  const buckets = useMemo(() => pnlDistributionBuckets(points, density), [points, density]);
-  const heatCells = useMemo(() => buildPnlHeatCells(points, timezone), [points, timezone]);
-  const days = useMemo(() => buildDailyPnl(points, timezone), [points, timezone]);
-  const perRuleDays = useMemo(() => groupDailyPnl(points, timezone), [points, timezone]);
-  const trends = useMemo(
-    () => groupTrends(points, (id) => ruleNameOf(id) ?? `${id.slice(0, 8)}…`),
-    [points, ruleNameOf],
-  );
-  const holdPoints = useMemo(
-    () => buildHoldScatterPoints(toHoldRows(closes, ruleNameOf)),
-    [closes, ruleNameOf],
-  );
+  // Collapsed deck skips the cohort walk — hooks still run, but the heavy fold
+  // returns the stable empty sentinel until the user expands charts again.
+  // With a focus: timing stays on the parent; equity/dist/hold/rules refold.
+  const { timing, lens, holdPoints, parentCount, lensCount } = useMemo(() => {
+    if (!open) {
+      return {
+        timing: EMPTY_PNL_DECK,
+        lens: EMPTY_PNL_DECK,
+        holdPoints: EMPTY_HOLD,
+        parentCount: 0,
+        lensCount: 0,
+      };
+    }
+    const labelOf = (id: string) => ruleNameOf(id) ?? `${id.slice(0, 8)}…`;
+    const parentMapped = mapCloses(closes, ruleNameOf);
+    if (!focus) {
+      const fold = foldPnlDeck(parentMapped.points, {
+        timeZone: timezone,
+        density,
+        labelOf,
+      });
+      return {
+        timing: fold,
+        lens: fold,
+        holdPoints: parentMapped.holdPoints,
+        parentCount: parentMapped.points.length,
+        lensCount: parentMapped.points.length,
+      };
+    }
+    const lensMapped = mapCloses(filterClosesForFocus(closes, focus, timezone), ruleNameOf);
+    return {
+      timing: foldPnlDeck(parentMapped.points, {
+        timeZone: timezone,
+        density,
+        labelOf,
+        only: TIMING_PARTS,
+      }),
+      lens: foldPnlDeck(lensMapped.points, {
+        timeZone: timezone,
+        density,
+        labelOf,
+        only: LENS_PARTS,
+      }),
+      holdPoints: lensMapped.holdPoints,
+      parentCount: parentMapped.points.length,
+      lensCount: lensMapped.points.length,
+    };
+  }, [open, closes, timezone, density, ruleNameOf, focus]);
+
   const todayKey = useMemo(() => dayKeyInTz(Date.now(), timezone), [timezone]);
 
+  const { days, heatCells } = timing;
+  const { curve, drawdownSol: drawdown, buckets, sparkByGroup, trends } = lens;
   const totalPnl = curve.length ? curve[curve.length - 1]!.cumPnlSol : 0;
-  const drawdown = useMemo(() => maxDrawdownSol(curve), [curve]);
 
   const setFocus = (next: HistoryFocus) => onFocusChange(toggleHistoryFocus(focus, next));
 
@@ -253,6 +304,9 @@ export const HistoryChartsDeck = memo(function HistoryChartsDeck({
     );
   }
 
+  const emptyLens = 'No closed trades in this focus.';
+  const emptyCohort = 'No closed trades in this cohort.';
+
   return (
     <div className="flex flex-col gap-2">
       <button
@@ -263,7 +317,7 @@ export const HistoryChartsDeck = memo(function HistoryChartsDeck({
         ▾ Charts
       </button>
 
-      {loading && points.length === 0 ? (
+      {loading && parentCount === 0 ? (
         <LoadingState variant="inline" />
       ) : (
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
@@ -273,7 +327,7 @@ export const HistoryChartsDeck = memo(function HistoryChartsDeck({
             hint={`${formatSigned(totalPnl, 3)} ◎ · max DD ${formatDecimalTrim(drawdown, 3)} ◎`}
           >
             {curve.length === 0 ? (
-              <p className="text-xs text-text-dim">No closed trades in this cohort.</p>
+              <p className="text-xs text-text-dim">{focus ? emptyLens : emptyCohort}</p>
             ) : (
               <Suspense fallback={<LoadingState variant="inline" />}>
                 <EquityCurveChart points={curve} timezone={timezone} height={280} />
@@ -281,7 +335,11 @@ export const HistoryChartsDeck = memo(function HistoryChartsDeck({
             )}
           </Card>
 
-          <Card title="PnL distribution" tip={CHART_HELP.distribution} hint={`${points.length} trades`}>
+          <Card
+            title="PnL distribution"
+            tip={CHART_HELP.distribution}
+            hint={`${lensCount} trade${lensCount === 1 ? '' : 's'}`}
+          >
             <PnlDistribution
               buckets={buckets}
               height={280}
@@ -296,7 +354,6 @@ export const HistoryChartsDeck = memo(function HistoryChartsDeck({
             />
           </Card>
 
-
           <Card
             title="Hold vs PnL"
             tip={CHART_HELP.hold}
@@ -305,16 +362,17 @@ export const HistoryChartsDeck = memo(function HistoryChartsDeck({
             <HoldPnlScatter
               points={holdPoints}
               height={300}
+              emptyMessage={focus ? emptyLens : emptyCohort}
               selectedKey={focus?.kind === 'pos' ? focus.positionId : null}
               onSelectPoint={(positionId) => setFocus({ kind: 'pos', positionId })}
               domain={
                 focus?.kind === 'holdBand'
                   ? {
-                    holdLo: focus.holdLo,
-                    holdHi: focus.holdHi,
-                    pctLo: focus.pctLo,
-                    pctHi: focus.pctHi,
-                  }
+                      holdLo: focus.holdLo,
+                      holdHi: focus.holdHi,
+                      pctLo: focus.pctLo,
+                      pctHi: focus.pctHi,
+                    }
                   : null
               }
               onDomainChange={(d) => {
@@ -333,16 +391,17 @@ export const HistoryChartsDeck = memo(function HistoryChartsDeck({
 
           <Card title="Rule comparison" tip={CHART_HELP.rules} hint="click a row to focus">
             {trends.length === 0 ? (
-              <p className="text-xs text-text-dim">No per-rule closes in this cohort.</p>
+              <p className="text-xs text-text-dim">{focus ? emptyLens : 'No per-rule closes in this cohort.'}</p>
             ) : (
               <div className="flex flex-col gap-1">
                 {trends.map((t) => {
                   const selected = focus?.kind === 'rule' && focus.ruleId === t.groupId;
+                  const spark = sparkByGroup.get(t.groupId) ?? EMPTY_HOLD_SPARK;
                   return (
                     <button
                       key={t.groupId}
                       type="button"
-                      title="Click to focus table on this rule"
+                      title="Click to focus this rule across charts + table"
                       onClick={() => setFocus({ kind: 'rule', ruleId: t.groupId })}
                       className={cn(
                         'flex items-center gap-2 rounded-sm border border-transparent px-1 py-0.5 text-left text-[11px] hover:border-white/15 hover:bg-white/3',
@@ -358,7 +417,7 @@ export const HistoryChartsDeck = memo(function HistoryChartsDeck({
                         {t.label}
                       </span>
                       <PnlSparkline
-                        values={(perRuleDays.get(t.groupId) ?? []).map((d) => d.pnlSol)}
+                        values={spark}
                         title={`${t.label} — daily cumulative PnL`}
                       />
                       <span

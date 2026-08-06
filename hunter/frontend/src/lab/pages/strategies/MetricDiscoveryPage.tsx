@@ -330,6 +330,7 @@ export function MetricDiscoveryPage() {
           matchedCount={fpMatches.count}
           matchedCountLoading={fpMatches.countLoading}
           onViewMatches={fpMatches.openMatches}
+          onRequestMatchCount={fpMatches.ensureCount}
         />
         {fpMatches.matchesModal}
         {!config.fingerprintId && (

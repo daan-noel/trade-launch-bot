@@ -41,8 +41,15 @@ export const PnlDistribution = memo(function PnlDistribution({
   density,
   onDensityChange,
 }: PnlDistributionProps) {
-  const maxCount = useMemo(() => buckets.reduce((m, b) => Math.max(m, b.count), 0), [buckets]);
-  const total = buckets.reduce((s, b) => s + b.count, 0);
+  const { maxCount, total } = useMemo(() => {
+    let max = 0;
+    let sum = 0;
+    for (const b of buckets) {
+      if (b.count > max) max = b.count;
+      sum += b.count;
+    }
+    return { maxCount: max, total: sum };
+  }, [buckets]);
   // Dense (~15 bars) crowds under-bar labels — keep open ends + zero + occupied.
   const thinLabels = buckets.length > 10;
 

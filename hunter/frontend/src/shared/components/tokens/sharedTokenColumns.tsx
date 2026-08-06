@@ -114,6 +114,12 @@ function IxCountCell({ row }: { row: { ix_labels_count?: number; instruction_lab
 //   • every strategy result table (positions/matched/simulated/wallet) — via
 //     `appendedTokenColumns`, which overlays each column's default show/hide.
 //
+/** Shared Yes/No choices for boolean token flag columns (DataTable `filterOptions`). */
+const FLAG_FILTER_OPTIONS = [
+  { value: 'yes', label: 'Yes' },
+  { value: 'no', label: 'No' },
+] as const;
+
 // The columns carry the render/sort/search/filter *logic* (the facts that must
 // not drift). Per-view presentation — column width, order, and `defaultVisible`
 // — is applied by the consumer, since those legitimately differ (the Tokens page
@@ -387,7 +393,7 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       },
       searchValue: (r: { instruction_labels?: unknown }) => ixLabelsText(r),
     },
-    // flags
+    // flags — enum filter row (Yes/No); wire values match backend tri-state (`eq`/`contains` → `yes`/`no`).
     {
       key: 'migrated',
       label: 'Migrated',
@@ -396,6 +402,8 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       render: (r: { is_migrated?: boolean }) => (r.is_migrated ? '✓' : ''),
       sortValue: (r: { is_migrated?: boolean }) => (r.is_migrated ? 1 : 0),
       searchValue: (r: { is_migrated?: boolean }) => String(r.is_migrated ?? false),
+      filterOptions: FLAG_FILTER_OPTIONS,
+      filterOptionValue: (r: { is_migrated?: boolean }) => (r.is_migrated ? 'yes' : 'no'),
     },
     {
       key: 'dead',
@@ -405,6 +413,8 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       render: (r: { is_dead?: boolean }) => (r.is_dead ? '💀' : ''),
       sortValue: (r: { is_dead?: boolean }) => (r.is_dead ? 1 : 0),
       searchValue: (r: { is_dead?: boolean }) => String(r.is_dead ?? false),
+      filterOptions: FLAG_FILTER_OPTIONS,
+      filterOptionValue: (r: { is_dead?: boolean }) => (r.is_dead ? 'yes' : 'no'),
     },
     {
       key: 'mayhem_mode',
@@ -414,6 +424,8 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       render: (r: { is_mayhem_mode?: boolean }) => (r.is_mayhem_mode ? '✓' : ''),
       sortValue: (r: { is_mayhem_mode?: boolean }) => (r.is_mayhem_mode ? 1 : 0),
       searchValue: (r: { is_mayhem_mode?: boolean }) => String(r.is_mayhem_mode ?? false),
+      filterOptions: FLAG_FILTER_OPTIONS,
+      filterOptionValue: (r: { is_mayhem_mode?: boolean }) => (r.is_mayhem_mode ? 'yes' : 'no'),
     },
     {
       key: 'cashback',
@@ -423,6 +435,9 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       render: (r: { is_cashback_enabled?: boolean }) => (r.is_cashback_enabled ? '✓' : ''),
       sortValue: (r: { is_cashback_enabled?: boolean }) => (r.is_cashback_enabled ? 1 : 0),
       searchValue: (r: { is_cashback_enabled?: boolean }) => String(r.is_cashback_enabled ?? false),
+      filterOptions: FLAG_FILTER_OPTIONS,
+      filterOptionValue: (r: { is_cashback_enabled?: boolean }) =>
+        r.is_cashback_enabled ? 'yes' : 'no',
     },
   ];
 }

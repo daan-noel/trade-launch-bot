@@ -118,6 +118,7 @@ export const HistoryFilterBar = memo(function HistoryFilterBar({
         <DateTimeRangePicker
           aria-label="Date range"
           size="sm"
+          timeZone="UTC"
           zoneLabel="UTC"
           emptyLabel="Select date range"
           presets={RANGE_PRESETS}

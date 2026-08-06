@@ -344,7 +344,9 @@ export function GenericSweepConfigForm({
 }: GenericSweepConfigFormProps) {
   const { data: registry } = useStrategyRegistry();
   const DEFAULTS = useMemo(() => defaultConfig(), []);
-  const [stored, setConfig] = useLocalStorage<GenericSweepConfig>(storageKey, DEFAULTS);
+  const [stored, setConfig] = useLocalStorage<GenericSweepConfig>(storageKey, DEFAULTS, {
+    debounceMs: 400,
+  });
 
   useEffect(() => {
     if (!reuseNonce || !reuseRun) return;
@@ -430,8 +432,12 @@ export function GenericSweepConfigForm({
   } = config;
 
   const { data: fingerprints = [] } = useGetFingerprintsQuery();
+  const fingerprintsById = useMemo(() => {
+    const map = new Map(fingerprints.map((f) => [f.id, f]));
+    return map;
+  }, [fingerprints]);
   const seedFp = seedFingerprintId
-    ? fingerprints.find((f) => f.id === seedFingerprintId)
+    ? fingerprintsById.get(seedFingerprintId)
     : undefined;
   const fpMatches = useFingerprintMatches(seedFingerprintId, seedFp?.name);
 
@@ -447,7 +453,7 @@ export function GenericSweepConfigForm({
       setField('seedFingerprintId', null);
       return;
     }
-    const fp = fingerprints.find((f) => f.id === id);
+    const fp = fingerprintsById.get(id);
     if (!fp) return;
     setConfig((prev) => ({
       ...DEFAULTS,
@@ -470,6 +476,14 @@ export function GenericSweepConfigForm({
       const base = { ...DEFAULTS, ...prev };
       return { ...base, fieldFiltersText: { ...base.fieldFiltersText, [field]: value } };
     });
+  const clearFieldFilters = () =>
+    setConfig((prev) => ({
+      ...DEFAULTS,
+      ...prev,
+      fieldFiltersText: {},
+      cashbackFilter: 'all',
+      ixLabelsFilter: '',
+    }));
 
   const ixLabelsGrouped = groupBy.includes('ix_labels');
   const ixFilter = useMemo(() => parseIxLabelsFilter(ixLabelsFilter), [ixLabelsFilter]);
@@ -829,6 +843,7 @@ export function GenericSweepConfigForm({
             matchedCount={fpMatches.count}
             matchedCountLoading={fpMatches.countLoading}
             onViewMatches={fpMatches.openMatches}
+            onRequestMatchCount={fpMatches.ensureCount}
           />
           {fpMatches.matchesModal}
           <FingerprintGroupPicker
@@ -836,6 +851,7 @@ export function GenericSweepConfigForm({
             onToggleField={toggleGroupField}
             fieldFiltersText={fieldFiltersText}
             onSetFieldFilter={setFieldFilterText}
+            onClearFilters={clearFieldFilters}
             cashbackFilter={cashbackFilter}
             onSetCashback={(v) => setField('cashbackFilter', v)}
             bucketWidthSol={bucketWidthSol}
@@ -845,6 +861,7 @@ export function GenericSweepConfigForm({
             ixLabelsText={ixLabelsFilter}
             onSetIxLabels={(v) => setField('ixLabelsFilter', v)}
             ixFilter={ixFilter}
+            filtersDisabled={!!seedFingerprintId}
             emptyHint={
               seedFingerprintId
                 ? 'No fields selected → one "ALL" group over the fingerprint\'s matched tokens.'

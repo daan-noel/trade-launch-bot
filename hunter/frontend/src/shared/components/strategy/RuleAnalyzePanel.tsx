@@ -53,6 +53,8 @@ export type EvidenceScope =
   | { kind: 'run'; runSeq: number }
   | { kind: 'all' };
 
+const analyzePositionRowKey = (r: RulePositionRecord) => r.id;
+
 function holdingSecs(r: RulePositionRecord): number {
   if (!r.entry_time) return 0;
   const start = Date.parse(r.entry_time);
@@ -501,7 +503,7 @@ export function RuleAnalyzePanel({
         columns={tableColumns}
         existingKeys={tableKeys.size ? tableKeys : POSITION_KEYS}
         rows={items}
-        rowKey={(r) => r.id}
+        rowKey={analyzePositionRowKey}
         loading={loading}
         serverSide
         serverTotal={total}

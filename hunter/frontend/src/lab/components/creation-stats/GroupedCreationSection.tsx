@@ -36,15 +36,12 @@ import { useFingerprintMatches } from '@lab/components/strategy/useFingerprintMa
 import { CREATION_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import { useGetFingerprintsQuery, useCreateFingerprintMutation } from 'store/sharedEndpoints';
 import {
-  findFingerprintForGroupKey,
   fingerprintIdentityFromGroupKey,
-  identityHasCriterion,
-  identityLamportsAreStorable,
+  matchFingerprintsForGroups,
   withIxLabelsFilter,
 } from 'lib/strategy/matchGroupFingerprint';
 import { fingerprintNameFromGroupKey } from 'lib/strategy/fingerprintNameFromGroupKey';
 import { fingerprintsHref } from 'lib/strategy/nav';
-import type { Fingerprint } from 'lib/strategy/types';
 
 const GroupedCreationTrendChart = lazy(() =>
   import('./GroupedCreationTrendChart').then((m) => ({ default: m.GroupedCreationTrendChart })),
@@ -72,6 +69,7 @@ import {
   groupColor,
   groupValueParts,
   drillTokenFilters,
+  groupedCreationArgsEqual,
   type GroupedCreationArgs,
   type GroupedCreationCell,
   type GroupedCreationGroup,
@@ -79,6 +77,9 @@ import {
   type GroupField,
   type GroupRankBy,
 } from './groupedCreationStats';
+
+/** Debounce localStorage writes for high-churn filter text (React state stays live). */
+const FILTER_LS_DEBOUNCE_MS = 400;
 
 interface GroupedCreationSectionProps {
   tz: string;
@@ -181,9 +182,15 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   const [exactSol, setExactSol] = useLocalStorage<boolean>(STORAGE_KEYS.groupedExactSol, false);
   const [bucket, setBucket] = useLocalStorage<CreationBucket>(STORAGE_KEYS.groupedBucket, 'day');
   const [rangeDays, setRangeDays] = useLocalStorage<number>(STORAGE_KEYS.groupedRange, 30);
-  const [fieldFiltersText, setFieldFiltersText] = useLocalStorage<Record<string, string>>(STORAGE_KEYS.groupedFilters, {});
+  const [fieldFiltersText, setFieldFiltersText] = useLocalStorage<Record<string, string>>(
+    STORAGE_KEYS.groupedFilters,
+    {},
+    { debounceMs: FILTER_LS_DEBOUNCE_MS },
+  );
   const [cashbackFilter, setCashbackFilter] = useLocalStorage<CashbackFilter>(STORAGE_KEYS.groupedCashback, 'all');
-  const [ixLabelsText, setIxLabelsText] = useLocalStorage<string>(STORAGE_KEYS.groupedIxLabels, '');
+  const [ixLabelsText, setIxLabelsText] = useLocalStorage<string>(STORAGE_KEYS.groupedIxLabels, '', {
+    debounceMs: FILTER_LS_DEBOUNCE_MS,
+  });
   // Saved-fingerprint scope — same "ALL group over the engine-matched tokens"
   // contract as the sweep's/flow discovery's seed select. Set ⇒ the manual
   // group-by/filters above are ignored (both client-side and server-side).
@@ -192,9 +199,11 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
     null,
   );
   const { data: fingerprints = [] } = useGetFingerprintsQuery();
-  const seedFp = seedFingerprintId
-    ? fingerprints.find((f) => f.id === seedFingerprintId)
-    : undefined;
+  const fingerprintsById = useMemo(() => {
+    const map = new Map(fingerprints.map((f) => [f.id, f]));
+    return map;
+  }, [fingerprints]);
+  const seedFp = seedFingerprintId ? fingerprintsById.get(seedFingerprintId) : undefined;
   const fpMatches = useFingerprintMatches(seedFingerprintId, seedFp?.name);
   function selectSeedFingerprint(id: string) {
     setSeedFingerprintId(id || null);
@@ -318,8 +327,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   }, [applied]);
 
   // "Dirty" = the draft differs from what's applied (or nothing applied yet).
-  // Same builder on both sides ⇒ key order is stable, so a string compare works.
-  const dirty = !applied || JSON.stringify(draftArgs) !== JSON.stringify(applied);
+  const dirty = !applied || !groupedCreationArgsEqual(draftArgs, applied);
 
   // Partition cells by group rank so each heatmap gets only its own cells.
   // Memoized so the high-frequency SOL/USD + live-trade ticks never re-bucket.
@@ -377,26 +385,18 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   // bucketed one. The single case that still isn't: an axis on a `u64` ceiling,
   // which no `BIGINT` column can hold (`identityLamportsAreStorable`).
   const fpByGroup = useMemo(() => {
-    const map = new Map<
-      number,
-      { matched: Fingerprint | null; canCreate: boolean; overflow: boolean }
-    >();
     const scoped =
       applied?.fingerprintId != null
-        ? fingerprints.find((f) => f.id === applied.fingerprintId) ?? null
+        ? fingerprintsById.get(applied.fingerprintId) ?? null
         : null;
-    for (const g of groups) {
-      const gk = withIxLabelsFilter(g.group_key, appliedIxLabels);
-      const matched = scoped ?? findFingerprintForGroupKey(gk, fingerprints, appliedBucketWidth);
-      const identity = fingerprintIdentityFromGroupKey(gk, appliedBucketWidth);
-      const storable = identityLamportsAreStorable(identity);
-      const canCreate = matched == null && storable && identityHasCriterion(identity);
-      // Only worth explaining on a card that would otherwise offer Create.
-      const overflow = matched == null && !storable && identityHasCriterion(identity);
-      map.set(g.g, { matched, canCreate, overflow });
-    }
-    return map;
-  }, [groups, fingerprints, appliedBucketWidth, applied?.fingerprintId, appliedIxLabels]);
+    return matchFingerprintsForGroups(
+      groups,
+      fingerprints,
+      appliedBucketWidth,
+      appliedIxLabels,
+      scoped,
+    );
+  }, [groups, fingerprints, fingerprintsById, appliedBucketWidth, applied?.fingerprintId, appliedIxLabels]);
 
   // Save a group card as a fingerprint. Identity = group_key axes, plus the
   // applied ix_labels filter when that axis wasn't grouped (mutually exclusive
@@ -477,7 +477,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
           <DateTimeRangePicker
             aria-label="Look-back window"
             size="sm"
-            zoneLabel="local"
+            zoneLabel={null}
             allowCustom={false}
             emptyLabel="Look-back"
             presets={LOOKBACK_PRESETS}
@@ -552,6 +552,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
         matchedCount={fpMatches.count}
         matchedCountLoading={fpMatches.countLoading}
         onViewMatches={fpMatches.openMatches}
+        onRequestMatchCount={fpMatches.ensureCount}
       />
       {fpMatches.matchesModal}
 
@@ -563,6 +564,11 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
           onToggleField={toggleField}
           fieldFiltersText={fieldFiltersText}
           onSetFieldFilter={(f, v) => setFieldFiltersText((prev) => ({ ...prev, [f]: v }))}
+          onClearFilters={() => {
+            setFieldFiltersText({});
+            setCashbackFilter('all');
+            setIxLabelsText('');
+          }}
           cashbackFilter={cashbackFilter}
           onSetCashback={setCashbackFilter}
           bucketWidthSol={bucketWidth}
@@ -572,6 +578,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
           ixLabelsText={ixLabelsText}
           onSetIxLabels={setIxLabelsText}
           ixFilter={ixFilter}
+          disabled={!!seedFingerprintId}
           emptyHint={
             seedFingerprintId
               ? 'Scoped to the saved fingerprint → one "ALL" group of matching tokens.'

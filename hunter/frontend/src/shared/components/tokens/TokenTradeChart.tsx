@@ -23,6 +23,7 @@ import type { TokenDetailRecord, TradeRecord } from 'types';
 
 /** Stable empty reference so the chart doesn't re-aggregate on every render. */
 const EMPTY_TRADES: TradeRecord[] = [];
+const tradeRowKey = (t: TradeRecord) => t.id;
 
 /** A selection that lives outside the chart's own bar/range click (e.g. a swing
  *  leg picked in a separate results table) but should drive the trades panel
@@ -324,7 +325,7 @@ export function TokenTradeChart({
             tableId={tableId}
             columns={tradeColumns}
             rows={selectionTrades}
-            rowKey={(t) => t.id}
+            rowKey={tradeRowKey}
             searchable
             colFilters
             hoverable

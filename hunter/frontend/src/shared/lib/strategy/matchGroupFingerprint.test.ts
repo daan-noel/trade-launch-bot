@@ -4,8 +4,12 @@ import {
   findFingerprintForGroupKey,
   fingerprintCompatibleWithGroupKey,
   fingerprintIdentityFromGroupKey,
+  fingerprintIdentityKey,
+  fingerprintToIdentity,
   identityHasCriterion,
   identityLamportsAreStorable,
+  indexFingerprintsByIdentity,
+  matchFingerprintsForGroups,
   parseLoLamports,
   withIxLabelsFilter,
 } from './matchGroupFingerprint';
@@ -283,6 +287,50 @@ describe('findFingerprintForGroupKey', () => {
     expect(findFingerprintForGroupKey(resolved, [sparse, refinedB, refinedA], 0.5)?.id).toBe(
       'refined-a',
     );
+  });
+
+  it('identity index agrees with the linear scan (exact + compatible paths)', () => {
+    const byIdentity = indexFingerprintsByIdentity([sparse, refinedA, refinedB, ...library]);
+    const cases: { gk: Record<string, string>; width: number | null }[] = [
+      { gk: { cu_limit: '200000', initial_buy_sol: '1.0–1.1', ix_labels: 'buy | sell' }, width: 0.1 },
+      { gk: { cu_limit: '200000' }, width: 0.1 },
+      { gk: gkNoLabels, width: 0.5 },
+      { gk: withIxLabelsFilter(gkNoLabels, refinedA.ix_labels as string[]), width: 0.5 },
+    ];
+    const fps = [sparse, refinedA, refinedB, ...library];
+    for (const { gk, width } of cases) {
+      expect(findFingerprintForGroupKey(gk, fps, width, { byIdentity })?.id).toBe(
+        findFingerprintForGroupKey(gk, fps, width)?.id,
+      );
+    }
+  });
+
+  it('matchFingerprintsForGroups rebuilds identity once and scopes win', () => {
+    const groups: { g: number; group_key: Record<string, string> }[] = [
+      { g: 0, group_key: { cu_limit: '200000' } },
+      { g: 1, group_key: { cu_limit: '200000', initial_buy_sol: '1.0–1.1', ix_labels: 'buy | sell' } },
+    ];
+    const map = matchFingerprintsForGroups(groups, library, 0.1, null, null);
+    expect(map.get(0)?.matched?.id).toBe('b');
+    expect(map.get(0)?.identity.cu_limit).toBe(200000);
+    expect(map.get(1)?.matched?.id).toBe('a');
+
+    const scoped = library[0]!;
+    const scopedMap = matchFingerprintsForGroups(groups, library, 0.1, null, scoped);
+    expect(scopedMap.get(0)?.matched?.id).toBe('a');
+    expect(scopedMap.get(1)?.matched?.id).toBe('a');
+  });
+
+  it('fingerprintIdentityKey is stable for row ↔ rebuilt identity', () => {
+    const row = library[0]!;
+    const fromRow = fingerprintIdentityKey(fingerprintToIdentity(row));
+    const fromGk = fingerprintIdentityKey(
+      fingerprintIdentityFromGroupKey(
+        { cu_limit: '200000', initial_buy_sol: '1.0–1.1', ix_labels: 'buy | sell' },
+        0.1,
+      ),
+    );
+    expect(fromRow).toBe(fromGk);
   });
 });
 

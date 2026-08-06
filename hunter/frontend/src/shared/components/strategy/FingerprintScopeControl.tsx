@@ -46,6 +46,8 @@ export interface FingerprintScopeControlProps {
   /** Opens the caller's matched-tokens view. Presence of this callback is what
    *  enables the count chip + "View matches" button. */
   onViewMatches?: () => void;
+  /** Start the lazy match-count fetch (hover the chip / focus the affordance). */
+  onRequestMatchCount?: () => void;
   /** Look-back window (days) the match count/list covers — labels the chip so a
    *  window-scoped count doesn't read as all-time. Defaults to 30. */
   matchWindowDays?: number;
@@ -64,9 +66,15 @@ export function FingerprintScopeControl({
   matchedCount,
   matchedCountLoading = false,
   onViewMatches,
+  onRequestMatchCount,
   matchWindowDays = 30,
 }: FingerprintScopeControlProps) {
-  const selected = (value && fingerprints.find((f) => f.id === value)) || null;
+  const byId = useMemo(() => {
+    const map = new Map<string, Fingerprint>();
+    for (const f of fingerprints) map.set(f.id, f);
+    return map;
+  }, [fingerprints]);
+  const selected = (value && byId.get(value)) || null;
 
   const options: SearchableSelectOption<Fingerprint>[] = useMemo(
     () =>
@@ -112,7 +120,11 @@ export function FingerprintScopeControl({
             </Link>
             <span className="text-[10px] text-text-dim">{scopedDescription}</span>
             {onViewMatches && (
-              <>
+              <span
+                className="inline-flex flex-wrap items-center gap-2"
+                onPointerEnter={() => onRequestMatchCount?.()}
+                onFocusCapture={() => onRequestMatchCount?.()}
+              >
                 <span
                   className="inline-flex items-center rounded border border-white/10 bg-surface px-1.5 py-0.5 font-mono text-[10px] leading-tight text-text-dim"
                   title={`Tokens matching this fingerprint, created in the last ${matchWindowDays} days`}
@@ -121,7 +133,7 @@ export function FingerprintScopeControl({
                     ? 'counting…'
                     : matchedCount != null
                       ? `${formatWithCommas(matchedCount)} match · ${matchWindowDays}d`
-                      : '— match'}
+                      : `match · ${matchWindowDays}d`}
                 </span>
                 <button
                   type="button"
@@ -131,7 +143,7 @@ export function FingerprintScopeControl({
                 >
                   View matches
                 </button>
-              </>
+              </span>
             )}
           </div>
           {fingerprintParamsCell(selected)}

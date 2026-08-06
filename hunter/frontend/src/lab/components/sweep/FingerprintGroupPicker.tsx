@@ -24,6 +24,12 @@ interface FingerprintGroupPickerProps {
   /** Per-(numeric)field comma-separated value-filter text. */
   fieldFiltersText: Record<string, string>;
   onSetFieldFilter: (field: string, value: string) => void;
+  /**
+   * Clear every value filter in **one** parent update (numeric texts + cashback
+   * + ix_labels). Prefer this over N× `onSetFieldFilter` — each call is a
+   * separate setState / localStorage write on the host pages.
+   */
+  onClearFilters: () => void;
   cashbackFilter: CashbackFilter;
   onSetCashback: (v: CashbackFilter) => void;
   /** Bucket width (SOL) the continuous SOL fields (◎) are binned at — the one knob
@@ -44,6 +50,17 @@ interface FingerprintGroupPickerProps {
   ixFilter: { labels: string[] | null; error: string | null };
   /** Hint shown when no grouping field is selected (the single "ALL" group). */
   emptyHint?: string;
+  /**
+   * Whole picker inert — Creation Stats when scoped by a fingerprint (manual
+   * group-by / filters are dropped from the query entirely).
+   */
+  disabled?: boolean;
+  /**
+   * Value-filter controls inert, group-by still usable — Flow Discovery / Sweep
+   * when scoped (engine match replaces filters; group-by can still split the
+   * matched slice).
+   */
+  filtersDisabled?: boolean;
 }
 
 /** Fields that take a numeric comma-list filter (rendered in the 2-col grid).
@@ -132,6 +149,7 @@ export function FingerprintGroupPicker({
   onToggleField,
   fieldFiltersText,
   onSetFieldFilter,
+  onClearFilters,
   cashbackFilter,
   onSetCashback,
   bucketWidthSol,
@@ -142,10 +160,14 @@ export function FingerprintGroupPicker({
   onSetIxLabels,
   ixFilter,
   emptyHint = 'No fields selected → one "ALL" group.',
+  disabled = false,
+  filtersDisabled = false,
 }: FingerprintGroupPickerProps) {
   const ixLabelsGrouped = groupBy.includes('ix_labels');
   // Suppress the parse error while grouping by ix_labels (the filter is ignored).
   const ixFilterError = !ixLabelsGrouped ? ixFilter.error : null;
+  const filtersLocked = disabled || filtersDisabled;
+  const groupByLocked = disabled;
 
   // Active value-filter summary (independent of grouping). Shown in the header so
   // pinned constraints are visible at a glance.
@@ -169,16 +191,18 @@ export function FingerprintGroupPicker({
     cashbackFilter !== 'all' ||
     ixLabelsText.trim() !== '';
 
-  const clearFilters = () => {
-    for (const f of NUMERIC_FIELDS) {
-      if ((fieldFiltersText[f] ?? '') !== '') onSetFieldFilter(f, '');
-    }
-    if (cashbackFilter !== 'all') onSetCashback('all');
-    if (ixLabelsText !== '') onSetIxLabels('');
-  };
-
   return (
-    <div className="flex flex-col gap-2">
+    <div
+      className={cn('flex flex-col gap-2', disabled && 'opacity-50')}
+      aria-disabled={disabled || undefined}
+    >
+      {(disabled || filtersDisabled) && (
+        <p className="text-[11px] leading-snug text-text-dim/80">
+          {disabled
+            ? 'Scoped to a saved fingerprint — manual group-by / filters are ignored.'
+            : 'Scoped to a saved fingerprint — value filters are not sent (group-by still splits the matched slice).'}
+        </p>
+      )}
       {/* Header — active-filter summary + clear. */}
       <div className="flex min-h-[1.25rem] items-start justify-between gap-2">
         <div className="min-w-0 flex-1 text-[11px] leading-tight">
@@ -199,8 +223,8 @@ export function FingerprintGroupPicker({
         <Button
           size="sm"
           variant="subtle"
-          disabled={!hasFilters}
-          onClick={clearFilters}
+          disabled={!hasFilters || filtersLocked}
+          onClick={onClearFilters}
           title="Clear every value filter (keeps your group-by selection)"
         >
           Clear filters
@@ -219,21 +243,27 @@ export function FingerprintGroupPicker({
               <RankBadge index={isGrouped ? groupIndex : -1} />
               <label
                 className={cn(
-                  'flex w-36 shrink-0 cursor-pointer items-center gap-1.5 text-sm',
+                  'flex w-36 shrink-0 items-center gap-1.5 text-sm',
+                  groupByLocked ? 'cursor-not-allowed' : 'cursor-pointer',
                   isGrouped ? 'text-text-base' : 'text-text-mid',
                 )}
                 title={groupByCheckboxTooltip(f, isGrouped)}
               >
-                <Checkbox checked={isGrouped} onChange={() => onToggleField(f)} />
+                <Checkbox
+                  checked={isGrouped}
+                  disabled={groupByLocked}
+                  onChange={() => onToggleField(f)}
+                />
                 <span className="whitespace-nowrap">{GROUP_FIELD_LABELS[f]}</span>
               </label>
               <input
                 type="text"
                 value={filterText}
+                disabled={filtersLocked}
                 onChange={(e) => onSetFieldFilter(f, e.target.value)}
                 placeholder={BUCKETED_GROUP_FIELDS.has(f) ? '1.515 or 1.5–1.6' : 'all values'}
                 title={fieldFilterTooltip(f, isGrouped, exactSol ? null : bucketWidthSol)}
-                className="min-w-0 flex-1 rounded border border-white/10 bg-surface px-2 py-0.5 text-xs text-text-mid placeholder:text-text-dim/30 focus:border-white/25 focus:outline-none"
+                className="min-w-0 flex-1 rounded border border-white/10 bg-surface px-2 py-0.5 text-xs text-text-mid placeholder:text-text-dim/30 focus:border-white/25 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
               />
               {/* The ◎ chip states how the field GROUPS; the pinned/filtered badge
                   states that a value filter is active. They're independent facts,
@@ -281,23 +311,29 @@ export function FingerprintGroupPicker({
               <RankBadge index={isGrouped ? groupIndex : -1} />
               <label
                 className={cn(
-                  'flex w-36 shrink-0 cursor-pointer items-center gap-1.5 text-sm',
+                  'flex w-36 shrink-0 items-center gap-1.5 text-sm',
+                  groupByLocked ? 'cursor-not-allowed' : 'cursor-pointer',
                   isGrouped ? 'text-text-base' : 'text-text-mid',
                 )}
                 title={groupByCheckboxTooltip(f, isGrouped)}
               >
-                <Checkbox checked={isGrouped} onChange={() => onToggleField(f)} />
+                <Checkbox
+                  checked={isGrouped}
+                  disabled={groupByLocked}
+                  onChange={() => onToggleField(f)}
+                />
                 <span className="whitespace-nowrap">{GROUP_FIELD_LABELS[f]}</span>
               </label>
               <select
                 value={cashbackFilter}
+                disabled={filtersLocked}
                 onChange={(e) => onSetCashback(e.target.value as CashbackFilter)}
                 title={
                   isGrouped
                     ? 'Filter by Cashback on value.\n\n☑ ON + cashback only → only cashback=true tokens, in their own group.\n☑ ON + no cashback  → only cashback=false tokens, in their own group.\n☑ ON + all          → all tokens, split into true/false groups (default).'
                     : 'Filter by Cashback on value.\n\n☐ OFF + cashback only → only cashback=true tokens, all in ONE group.\n☐ OFF + no cashback  → only cashback=false tokens, all in ONE group.\n☐ OFF + all          → no filter; all tokens pass through (default).'
                 }
-                className="w-36 rounded border border-white/10 bg-surface px-2 py-0.5 text-xs text-text-mid focus:border-white/25 focus:outline-none"
+                className="w-36 rounded border border-white/10 bg-surface px-2 py-0.5 text-xs text-text-mid focus:border-white/25 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <option value="all">all</option>
                 <option value="true">cashback only</option>
@@ -318,12 +354,17 @@ export function FingerprintGroupPicker({
                 <RankBadge index={isGrouped ? groupIndex : -1} />
                 <label
                   className={cn(
-                    'flex w-36 shrink-0 cursor-pointer items-center gap-1.5 text-sm',
+                    'flex w-36 shrink-0 items-center gap-1.5 text-sm',
+                    groupByLocked ? 'cursor-not-allowed' : 'cursor-pointer',
                     isGrouped ? 'text-text-base' : 'text-text-mid',
                   )}
                   title={groupByCheckboxTooltip(f, isGrouped)}
                 >
-                  <Checkbox checked={isGrouped} onChange={() => onToggleField(f)} />
+                  <Checkbox
+                    checked={isGrouped}
+                    disabled={groupByLocked}
+                    onChange={() => onToggleField(f)}
+                  />
                   <span className="whitespace-nowrap">{GROUP_FIELD_LABELS[f]}</span>
                 </label>
                 {!ixLabelsGrouped && ixFilter.labels && (
@@ -336,12 +377,14 @@ export function FingerprintGroupPicker({
                 <IxLabelsInput
                   value={ixLabelsText}
                   onValueChange={onSetIxLabels}
-                  disabled={ixLabelsGrouped}
+                  disabled={ixLabelsGrouped || filtersLocked}
                   error={ixFilterError}
                   title={
                     ixLabelsGrouped
                       ? 'Disabled: grouping by instruction labels. Uncheck to pin a specific label set here.'
-                      : 'Filter to tokens whose instruction-label set exactly matches this JSON array (order-independent).\nLeave empty = all label sets included.'
+                      : filtersLocked
+                        ? 'Disabled while scoped to a saved fingerprint.'
+                        : 'Filter to tokens whose instruction-label set exactly matches this JSON array (order-independent).\nLeave empty = all label sets included.'
                   }
                 />
               </div>
@@ -364,7 +407,7 @@ export function FingerprintGroupPicker({
         <label
           className={cn(
             'flex items-center gap-1.5 text-[11px] text-text-mid',
-            exactSol && 'opacity-40',
+            (exactSol || groupByLocked) && 'opacity-40',
           )}
         >
           <BucketChip width={bucketWidthSol} className="align-middle" />
@@ -379,8 +422,14 @@ export function FingerprintGroupPicker({
             min={0.000001}
             step={0.05}
             value={bucketWidthSol}
-            disabled={exactSol}
-            title={exactSol ? 'Ignored while grouping on exact values' : undefined}
+            disabled={exactSol || groupByLocked}
+            title={
+              groupByLocked
+                ? 'Disabled while scoped to a saved fingerprint'
+                : exactSol
+                  ? 'Ignored while grouping on exact values'
+                  : undefined
+            }
             onChange={(e) => {
               const n = Number(e.target.value);
               onSetBucketWidth(Number.isFinite(n) && n > 0 ? tidySolDecimal(n) : 0.1);
@@ -390,7 +439,10 @@ export function FingerprintGroupPicker({
         </label>
         {onSetExactSol ? (
           <label
-            className="flex cursor-pointer items-center gap-1.5 text-[11px] text-text-mid"
+            className={cn(
+              'flex items-center gap-1.5 text-[11px] text-text-mid',
+              groupByLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
+            )}
             title={
               'Group the ◎ SOL fields on their EXACT amount — one group per distinct value,\n' +
               'e.g. "1.515" instead of "1.5–1.6". Answers "what are the most common exact\n' +
@@ -401,7 +453,11 @@ export function FingerprintGroupPicker({
               'Independent of the filter boxes above, which are always exact/range.'
             }
           >
-            <Checkbox checked={exactSol} onChange={() => onSetExactSol(!exactSol)} />
+            <Checkbox
+              checked={exactSol}
+              disabled={groupByLocked}
+              onChange={() => onSetExactSol(!exactSol)}
+            />
             <span className="whitespace-nowrap">Exact values (no bucketing)</span>
           </label>
         ) : null}

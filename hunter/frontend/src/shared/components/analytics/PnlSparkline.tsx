@@ -3,7 +3,7 @@ import { CHART_COLORS } from 'components/token-price-chart/constants';
 
 interface PnlSparklineProps {
   /** Per-period values in chronological order (e.g. daily realized PnL). */
-  values: number[];
+  values: readonly number[];
   width?: number;
   height?: number;
   /** Render the running cumulative sum instead of the per-period values — the
@@ -36,15 +36,22 @@ export const PnlSparkline = memo(function PnlSparkline({
     }
     if (series.length === 0) return { path: '', zeroY: height / 2, last: 0 };
 
-    const min = Math.min(0, ...series);
-    const max = Math.max(0, ...series);
+    let min = 0;
+    let max = 0;
+    for (const v of series) {
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
     const span = max - min || 1;
     const pad = 1.5;
     const usable = height - pad * 2;
     const y = (v: number) => pad + (1 - (v - min) / span) * usable;
     const x = (i: number) => (series.length === 1 ? width / 2 : (i / (series.length - 1)) * width);
 
-    const d = series.map((v, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(2)},${y(v).toFixed(2)}`).join(' ');
+    let d = '';
+    for (let i = 0; i < series.length; i++) {
+      d += `${i === 0 ? 'M' : 'L'}${x(i).toFixed(2)},${y(series[i]!).toFixed(2)}`;
+    }
     return { path: d, zeroY: y(0), last: series[series.length - 1]! };
   }, [values, width, height, cumulative]);
 

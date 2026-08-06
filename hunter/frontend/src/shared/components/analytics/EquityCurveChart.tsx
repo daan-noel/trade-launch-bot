@@ -43,6 +43,9 @@ export const EquityCurveChart = memo(function EquityCurveChart({
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Baseline'> | null>(null);
   const peakRef = useRef<ISeriesApi<'Line'> | null>(null);
+  /** Last fitted series identity — avoid `fitContent` on every data tick so a
+   *  user pan/zoom survives a same-window refresh. */
+  const fittedKeyRef = useRef('');
 
   useEffect(() => {
     const el = containerRef.current;
@@ -101,6 +104,7 @@ export const EquityCurveChart = memo(function EquityCurveChart({
         crosshairMarkerVisible: false,
       });
     }
+    fittedKeyRef.current = '';
 
     const ro = new ResizeObserver((entries) => {
       const w = entries[0]?.contentRect.width ?? 0;
@@ -120,11 +124,23 @@ export const EquityCurveChart = memo(function EquityCurveChart({
   useEffect(() => {
     const series = seriesRef.current;
     if (!series) return;
-    series.setData(points.map((p) => ({ time: p.time as UTCTimestamp, value: p.cumPnlSol })));
-    peakRef.current?.setData(
-      points.map((p) => ({ time: p.time as UTCTimestamp, value: p.peakSol })),
-    );
-    chartRef.current?.timeScale().fitContent();
+    const baseline: { time: UTCTimestamp; value: number }[] = [];
+    const peak: { time: UTCTimestamp; value: number }[] = [];
+    for (const p of points) {
+      const time = p.time as UTCTimestamp;
+      baseline.push({ time, value: p.cumPnlSol });
+      peak.push({ time, value: p.peakSol });
+    }
+    series.setData(baseline);
+    peakRef.current?.setData(peak);
+
+    const first = points[0];
+    const last = points[points.length - 1];
+    const key = first && last ? `${first.time}:${last.time}:${points.length}` : '';
+    if (key !== fittedKeyRef.current) {
+      fittedKeyRef.current = key;
+      chartRef.current?.timeScale().fitContent();
+    }
   }, [points]);
 
   return <div ref={containerRef} className="w-full" style={{ height }} />;

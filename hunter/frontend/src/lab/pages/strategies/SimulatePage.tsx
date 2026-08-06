@@ -117,6 +117,9 @@ import {
 
 type RunState = { running: boolean; summary?: SimulatedSummary; error?: string };
 
+/** Stable DataTable row key — hoisted so filter/chrome re-renders keep row memo. */
+const simulateRuleRowKey = (r: StrategyRule) => r.id;
+
 /** Which bulk-simulate button fired: one of the two trade modes, or the rows the
  *  table's current search/column filters have narrowed to. */
 type BulkTag = TradeMode | 'filtered';
@@ -143,7 +146,7 @@ const SIM_NUMERIC_COLS = tokenNumericColKeys(simColumns);
 const SIM_AMOUNT_COLS = tokenAmountColKeys(simColumns);
 const simRowOverlay = markerRowOverlay(inspectFromSim);
 
-/** `datetime-local` (browser-local, no timezone) -> UTC ISO, same convention as
+/** Wall-clock `YYYY-MM-DDTHH:mm` (picker wire) -> UTC ISO, same convention as
  *  the grouped-sweep "Created range" control — `since`/`until` bound the same
  *  token creation-time window server-side (`collect_matching_tokens`). */
 function localInputToIso(local: string): string | undefined {
@@ -590,7 +593,7 @@ export function SimulatePage() {
       <DataTable
         columns={columns}
         rows={visibleRules}
-        rowKey={(r) => r.id}
+        rowKey={simulateRuleRowKey}
         loading={isLoading}
         pinnable
         searchable

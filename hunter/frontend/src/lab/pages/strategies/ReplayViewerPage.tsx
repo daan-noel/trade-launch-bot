@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from 'lib/cn';
 import { IconButton } from 'components/ui/IconButton';
 import { IconButtonGroup } from 'components/ui/IconButtonGroup';
+import { DatePicker } from 'components/ui/DatePicker';
 import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { PauseIcon, PlayIcon, SpinnerIcon } from 'components/ui/icons';
 import { Input } from 'components/ui/Input';
@@ -220,8 +221,13 @@ export function ReplayViewerPage() {
             <Field label="Dir" hint="blank = EVENT_LOG_DIR" className="w-[180px]">
               <Input value={dir} onChange={(e) => setDir(e.target.value)} placeholder="event_log" />
             </Field>
-            <Field label="Date" hint="one day-file" className="w-[150px]">
-              <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+            <Field label="Date" hint="one day-file" className="w-fit">
+              <DatePicker
+                aria-label="Replay day-file date"
+                emptyLabel="Pick day"
+                value={date}
+                onChange={setDate}
+              />
             </Field>
             <Field label="Mint" hint="focus one token" className="w-[280px]">
               <Input value={mint} onChange={(e) => setMint(e.target.value)} placeholder="all tokens" />

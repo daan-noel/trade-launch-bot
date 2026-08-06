@@ -69,6 +69,8 @@ interface BuyDialog {
 /// Below-this USD value a holding is treated as dust and hidden when the toggle is on.
 const DUST_USD = 1;
 
+const walletTokenRowKey = (r: { mint_address: string }) => r.mint_address;
+
 const INITIAL_QUERY: TableQuery = {
   page: 1,
   pageSize: DEFAULT_PAGE_SIZE,
@@ -517,6 +519,9 @@ export function MyWalletPage() {
             <Badge variant="primary" className="font-mono">
               {total} positions
             </Badge>
+
+            <div className="grow" />
+
             <IconButton
               variant="subtle"
               size="md"
@@ -536,7 +541,7 @@ export function MyWalletPage() {
             </Button>
             <Link
               to="/console"
-              className="inline-flex min-h-8 items-center justify-center rounded-md border border-primary bg-primary/15 px-3 text-xs font-semibold text-primary transition hover:bg-primary/25"
+              className="ml-8 inline-flex min-h-8 items-center justify-center rounded-md border border-primary bg-primary/15 px-3 text-xs font-semibold text-primary transition hover:bg-primary/25"
             >
               Console →
             </Link>
@@ -557,7 +562,7 @@ export function MyWalletPage() {
         rows={priced}
         existingKeys={WALLET_KEYS}
         mintSetFilter
-        rowKey={(r) => r.mint_address}
+        rowKey={walletTokenRowKey}
         selectedKey={selectedMint}
         onSelect={selectMint}
         serverSide

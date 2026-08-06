@@ -22,8 +22,7 @@ import { useTimezone } from 'context/TimezoneContext';
 import { RankedPnlBars } from 'components/analytics/RankedPnlBars';
 import { PnlSparkline } from 'components/analytics/PnlSparkline';
 import {
-  groupDailyPnl,
-  groupTrends,
+  foldPnlDeck,
   type GroupTrend,
   type PnlPoint,
 } from 'components/analytics/pnlSeries';
@@ -34,6 +33,8 @@ import {
 } from '@live/store/liveEndpoints';
 import { PortfolioRuleDetail } from '@live/components/portfolio/PortfolioRuleDetail';
 import type { PortfolioRulePnl } from 'types';
+
+const portfolioRuleRowKey = (r: PortfolioRulePnl) => r.rule_id;
 
 type Range = 'today' | '7d' | '30d' | 'all';
 type Mode = 'real' | 'paper';
@@ -106,18 +107,27 @@ export function PortfolioPage() {
     [series],
   );
 
-  /** rule_id → daily realized PnL (the sparkline series). */
-  const dailyByRule = useMemo(() => groupDailyPnl(points, timezone), [points, timezone]);
-  /** rule_id → rolling-window trend (the decay marker). */
+  /** One fold feeds sparkline values + decay markers (same cohort walk). */
+  const deck = useMemo(
+    () =>
+      foldPnlDeck(points, {
+        timeZone: timezone,
+        labelOf: ruleNameOf,
+        window: DECAY_WINDOW,
+        only: ['sparks', 'trends'],
+      }),
+    [points, timezone, ruleNameOf],
+  );
+  const sparkByRule = deck.sparkByGroup;
   const trendByRule = useMemo(() => {
     const m = new Map<string, GroupTrend>();
-    for (const t of groupTrends(points, ruleNameOf, DECAY_WINDOW)) m.set(t.groupId, t);
+    for (const t of deck.trends) m.set(t.groupId, t);
     return m;
-  }, [points, ruleNameOf]);
+  }, [deck.trends]);
 
   const decayingCount = useMemo(
-    () => [...trendByRule.values()].filter((t) => t.decaying).length,
-    [trendByRule],
+    () => deck.trends.reduce((n, t) => n + (t.decaying ? 1 : 0), 0),
+    [deck.trends],
   );
 
   const rankedBars = useMemo(
@@ -284,11 +294,11 @@ export function PortfolioPage() {
         label: 'Trend',
         width: '100px',
         render: (r) => {
-          const days = dailyByRule.get(r.rule_id) ?? [];
-          if (days.length === 0) return <span className="text-text-dim">—</span>;
+          const spark = sparkByRule.get(r.rule_id);
+          if (!spark || spark.length === 0) return <span className="text-text-dim">—</span>;
           return (
             <PnlSparkline
-              values={days.map((d) => d.pnlSol)}
+              values={spark}
               title={`${r.rule_name ?? r.rule_id} — cumulative realized PnL by day`}
             />
           );
@@ -349,7 +359,7 @@ export function PortfolioPage() {
         searchValue: () => '',
       },
     ],
-    [mode, range, dailyByRule, trendByRule],
+    [mode, range, sparkByRule, trendByRule],
   );
 
   const selectedRow = useMemo(
@@ -383,7 +393,7 @@ export function PortfolioPage() {
         <DateTimeRangePicker
           aria-label="Date range"
           size="sm"
-          zoneLabel="UTC"
+          zoneLabel={null}
           allowCustom={false}
           presets={PORTFOLIO_RANGE_PRESETS}
           value={{ preset: range, from: '', to: '' }}
@@ -442,7 +452,7 @@ export function PortfolioPage() {
       <DataTable
         columns={columns}
         rows={data?.by_rule ?? []}
-        rowKey={(r) => r.rule_id}
+        rowKey={portfolioRuleRowKey}
         loading={isLoading}
         searchable
         defaultSort={{ col: 'pnl', dir: 'desc' }}

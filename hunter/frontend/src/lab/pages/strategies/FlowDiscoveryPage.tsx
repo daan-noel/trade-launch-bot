@@ -80,6 +80,7 @@ import type {
 } from 'types';
 import {
   findFingerprintForGroupKey,
+  indexFingerprintsByIdentity,
   withIxLabelsFilter,
 } from 'lib/strategy/matchGroupFingerprint';
 import { fingerprintNameFromGroupKey } from 'lib/strategy/fingerprintNameFromGroupKey';
@@ -264,6 +265,7 @@ export function FlowDiscoveryPage() {
   const [stored, setConfig] = useLocalStorage<DiscoveryConfig>(
     'hunter.lab.flowDiscovery.config',
     DEFAULTS,
+    { debounceMs: 400 },
   );
   const config: DiscoveryConfig = {
     ...DEFAULTS,
@@ -322,8 +324,16 @@ export function FlowDiscoveryPage() {
   const [updateFp, updateState] = useUpdateFingerprintMutation();
   const { data: fingerprints = [], isLoading: fingerprintsLoading } =
     useGetFingerprintsQuery();
+  const fingerprintsById = useMemo(() => {
+    const map = new Map(fingerprints.map((f) => [f.id, f]));
+    return map;
+  }, [fingerprints]);
+  const fpByIdentity = useMemo(
+    () => indexFingerprintsByIdentity(fingerprints),
+    [fingerprints],
+  );
   const seedFp = seedFingerprintId
-    ? fingerprints.find((f) => f.id === seedFingerprintId)
+    ? fingerprintsById.get(seedFingerprintId)
     : undefined;
   const fpMatches = useFingerprintMatches(seedFingerprintId, seedFp?.name);
 
@@ -378,8 +388,8 @@ export function FlowDiscoveryPage() {
   /** The saved fingerprint the RUN was scoped to, if any. */
   const runScopeFp: Fingerprint | null = useMemo(() => {
     const id = result && result.fingerprint_id !== undefined ? result.fingerprint_id : seedFingerprintId;
-    return (id && fingerprints.find((f) => f.id === id)) || null;
-  }, [result, seedFingerprintId, fingerprints]);
+    return (id && fingerprintsById.get(id)) || null;
+  }, [result, seedFingerprintId, fingerprintsById]);
 
   /** Resolve one group to its saved fingerprint, exactly as promote/bind would.
    *
@@ -395,8 +405,9 @@ export function FlowDiscoveryPage() {
         withIxLabelsFilter(groupKey, runIxLabels),
         fingerprints,
         runWidth,
+        { byIdentity: fpByIdentity },
       ),
-    [runScopeFp, runIxLabels, fingerprints, runWidth],
+    [runScopeFp, runIxLabels, fingerprints, runWidth, fpByIdentity],
   );
 
   /** Group indices whose group_key identity-matches a saved fingerprint. */
@@ -635,7 +646,7 @@ export function FlowDiscoveryPage() {
       setField('seedFingerprintId', null);
       return;
     }
-    const fp = fingerprints.find((f) => f.id === id);
+    const fp = fingerprintsById.get(id);
     if (!fp) return;
     setConfig((prev) => ({ ...DEFAULTS, ...prev, ...configFromFingerprint(fp) }));
     seedFromFingerprint(fp.id);
@@ -867,6 +878,7 @@ export function FlowDiscoveryPage() {
             matchedCount={fpMatches.count}
             matchedCountLoading={fpMatches.countLoading}
             onViewMatches={fpMatches.openMatches}
+            onRequestMatchCount={fpMatches.ensureCount}
           />
           {fpMatches.matchesModal}
           <FingerprintGroupPicker
@@ -887,6 +899,15 @@ export function FlowDiscoveryPage() {
                 };
               })
             }
+            onClearFilters={() =>
+              setConfig((prev) => ({
+                ...DEFAULTS,
+                ...prev,
+                fieldFiltersText: {},
+                cashbackFilter: 'all',
+                ixLabelsFilter: '',
+              }))
+            }
             cashbackFilter={cashbackFilter}
             onSetCashback={(v) => setField('cashbackFilter', v)}
             bucketWidthSol={bucketWidthSol}
@@ -898,9 +919,10 @@ export function FlowDiscoveryPage() {
             ixLabelsText={ixLabelsFilter}
             onSetIxLabels={(v) => setField('ixLabelsFilter', v)}
             ixFilter={ixFilter}
+            filtersDisabled={!!seedFingerprintId}
             emptyHint={
               seedFingerprintId
-                ? 'Scoped to the saved fingerprint → one "ALL" group of matching tokens.'
+                ? 'Scoped to the saved fingerprint — value filters are not sent; group-by still splits the matched slice.'
                 : 'No fields selected → one "ALL" group (noisy lift).'
             }
           />

@@ -1,6 +1,5 @@
 import { baseApi } from './baseApi';
 import type { AppSettings } from 'services/api';
-import { tokenFiltersToSpecs, type TokenFilters } from 'components/tokens/filters';
 import type { SortEntry } from 'components/table/types';
 import type { FilterSpec } from 'components/table/numericFilter';
 import { toTableRequest } from 'services/tableRequest';
@@ -27,9 +26,9 @@ import type {
 
 /**
  * Args for the server-side paginated Tokens view: the backend filters/sorts/pages so
- * only one page crosses the wire. Mirrors the DataTable view-state plus the global
- * `TokenFilters` panel; the endpoint serializes both into the unified `TableRequest`
- * POST body (`toTableRequest` + `tokenFiltersToSpecs`).
+ * only one page crosses the wire. Mirrors the DataTable view-state; page-owned
+ * quick filters (Created / Dead / Migrated) and mint-set arrive already folded
+ * into `structuredFilters` by the caller.
  */
 export interface TokensPageArgs {
   page: number; // 1-based
@@ -37,17 +36,10 @@ export interface TokensPageArgs {
   sortKeys: SortEntry[];
   search: string;
   colFilters: Record<string, string>;
-  /** Wrapper-injected structured filters (e.g. the `<MintSetInput>` `in` op on
-   *  `mint`); merged into the request `filters` map (panel-wins on key collision). */
+  /** Wrapper-/page-injected structured filters (mint-set `in`, Tokens quick
+   *  bar, etc.); merged into the request `filters` map (structured wins on
+   *  key collision with per-column text). */
   structuredFilters?: Record<string, FilterSpec>;
-  filters: TokenFilters;
-  /**
-   * Selected project timezone. Exists to normalize the datetime-range `f_*`
-   * filters from picker wall-clock to the exact UTC instant at the param
-   * boundary (see `DATETIME_FILTER_BOUND` / `datetimeLocalToUtcWallClock`). Also
-   * makes the RTK cache key tz-aware so switching timezone correctly refetches.
-   */
-  timezone: string;
   /** When true, restrict results to the live cache-tracked subset only. */
   trackedOnly?: boolean;
 }
@@ -63,11 +55,9 @@ export const TOKENS_LIST_LIMIT = 20_000;
 
 /**
  * Serialize `TokensPageArgs` into the unified `TableRequest` POST body — the ONE
- * place the DataTable view-state (`toTableRequest`) and the global `TokenFilters`
- * panel (`tokenFiltersToSpecs`, panel-wins on key collision) fold together, plus
- * the Tokens-only `trackedOnly` rider. Shared so `getTokensPage` and the
- * mints-only `getTokenMints` (lab) build a byte-identical filter body and
- * can't drift.
+ * place DataTable view-state (`toTableRequest`) becomes a wire body, plus the
+ * Tokens-only `trackedOnly` rider. Shared so `getTokensPage` and the mints-only
+ * `getTokenMints` (lab) build a byte-identical filter body and can't drift.
  */
 export function tokensTableRequestBody(a: TokensPageArgs): ReturnType<typeof toTableRequest> {
   // Numeric columns needn't be enumerated for ordinary ops: the backend re-parses
@@ -86,8 +76,6 @@ export function tokensTableRequestBody(a: TokensPageArgs): ReturnType<typeof toT
     new Set(),
     { amountCols: TOKEN_INFO_AMOUNT_COLS },
   );
-  // Fold the global panel into the same filters map (panel-wins on collision).
-  Object.assign(body.filters, tokenFiltersToSpecs(a.filters, a.timezone));
   if (a.trackedOnly) body.trackedOnly = true;
   return body;
 }
@@ -126,12 +114,11 @@ export const sharedApi = baseApi.injectEndpoints({
   endpoints: (builder) => ({
     // Server-side paginated/filtered/sorted token list over the **unified**
     // `POST /api/tokens` [`TableRequest`] body — the SAME contract the strategy
-    // tables use. The DataTable view-state (`toTableRequest`) and the global
-    // `TokenFilters` panel (`tokenFiltersToSpecs`) fold into ONE `filters` map
-    // (panel-wins on any key collision); the Tokens-only `trackedOnly` rides
-    // alongside. Backend execution differs
-    // by build (same wire contract): the LIVE bin pages this straight from Postgres
-    // over the whole token universe (no cap) — its in-RAM cache holds only tracking
+    // tables use. DataTable view-state + page/wrapper `structuredFilters`
+    // (quick bar, mint-set) fold into ONE `filters` map; the Tokens-only
+    // `trackedOnly` rides alongside. Backend execution differs by build (same
+    // wire contract): the LIVE bin pages this straight from Postgres over the
+    // whole token universe (no cap) — its in-RAM cache holds only tracking
     // tokens; the LAB bin runs it over a full in-RAM snapshot. A short retention
     // keeps abandoned filter/sort/page permutations from accumulating.
     getTokensPage: builder.query<TokensResponse, TokensPageArgs>({

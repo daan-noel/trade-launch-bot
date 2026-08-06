@@ -247,6 +247,8 @@ behind the run's start. `NULL` on rows written before the column existed ⇒ "un
 
 API: `POST /api/strategies/sweeps` (start, detached → 202 with `run_id`), `POST .../cancel`, `DELETE .../sweeps/{run_id}`, `PATCH .../sweeps/{run_id}` (rename), `DELETE .../sweeps?before=` (prune), `GET` for runs/groups/results.
 
+**Prune cutoff is a UTC instant, but the UI speaks local time.** `before` is required server-side (`PruneQuery`) so the route can't wipe the whole history by accident, and `delete_runs_before` compares it to `created_at` in UTC. The "Clear runs before" picker in `GenericSweepView` therefore converts its `YYYY-MM-DD` value through **local** midnight (`localMidnightIso`), not the browser's default date-only parse — that parse yields *UTC* midnight, which would prune on a boundary offset from the local-time stamps the run picker renders. The picker is also capped at today (`max` + a re-check in `onPrune`): a future cutoff matches every run, including one still sweeping whose writer task is mid-commit against the run row. The `{deleted}` count is surfaced in the UI, since a cutoff that matched nothing otherwise leaves the page unchanged and reads as a broken button.
+
 ## Parquet lake + DuckDB corpus (Phase 4 — `lab/src/lake/`)
 
 The 3-hop analysis pipeline that feeds the sweep on the workstation:

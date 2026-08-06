@@ -12,6 +12,7 @@ import { InlineAlert } from 'components/ui/Modal';
 import { PageHeader } from 'components/ui/PageHeader';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { Badge } from 'components/ui/Badge';
+import { DatePicker } from 'components/ui/DatePicker';
 import { IconButton } from 'components/ui/IconButton';
 import { PromoteIcon, SpinnerIcon, TrashIcon } from 'components/ui/icons';
 import { Accordion } from 'components/ui/Accordion';
@@ -34,7 +35,7 @@ import {
 import { runSummaryFromRows, runSummarySections } from 'lib/strategy/runSummary';
 import type { TemporalRow } from 'lib/strategy/temporalSummary';
 import { cn } from 'lib/cn';
-import { formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
+import { formatSigned, formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { useBackgroundJobActions, useBackgroundJobsState } from '@lab/context/BackgroundJobsContext';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
@@ -66,6 +67,9 @@ import type {
 import { fingerprintMatchesIdentity } from 'lib/strategy/matchGroupFingerprint';
 import type { Fingerprint, PromotedRuleDraft, StrategyRule } from 'lib/strategy/types';
 
+const sweepGroupRowKey = (g: GroupedSweepGroupRecord) => g.id;
+const sweepComboRowKey = (r: GroupedSweepResultRecord) => String(r.combo_id);
+
 /**
  * Convert the DataTable's raw per-column filter strings into structured
  * {@link FilterSpec}s for the server. Only numeric combo columns (`filterNumber`)
@@ -94,6 +98,30 @@ function comboFiltersFromColFilters(
  *  server accepts. `buyAmountSol` doesn't change *which* columns are filterable,
  *  so this is a stable, build-once set. */
 const COMBO_NUMERIC_KEYS: ReadonlySet<string> = numericColKeys(buildGenericComboColumns());
+
+/**
+ * Local-midnight instant for a `YYYY-MM-DD` date-input value, as an ISO timestamp.
+ * A bare `new Date('2026-08-01')` parses a date-only string as **UTC** midnight,
+ * but every run timestamp on this page renders in **local** time
+ * ({@link runPickerLine}) — so the bare parse prunes on a boundary the user can't
+ * see, off by their UTC offset in whichever direction they sit from UTC.
+ * Returns `null` if the input isn't a real date.
+ */
+function localMidnightIso(day: string): string | null {
+  const d = new Date(`${day}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+/**
+ * Today as `YYYY-MM-DD` in local time — the newest cutoff the prune input accepts.
+ * A future cutoff matches *every* run, including one that is still sweeping and
+ * whose sink is mid-write against the run row it would delete.
+ */
+function todayLocalIsoDate(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
 
 /** Compact run-picker line (date · method · tokens · groups · combos). */
 function runPickerLine(r: GroupedSweepRunRecord): string {
@@ -227,6 +255,9 @@ export function GenericSweepView() {
   const [pruneRuns, pruneState] = usePruneGroupedSweepsMutation();
   const deleteErr = apiErrorMessage(deleteState.error ?? pruneState.error, 'Failed to delete sweep history');
   const [pruneBefore, setPruneBefore] = useState('');
+  // Outcome of the last prune. Without it a cutoff that matched nothing looks
+  // byte-identical to a successful one — indistinguishable from a broken button.
+  const [pruneNote, setPruneNote] = useState<{ tone: 'success' | 'warning'; text: string } | null>(null);
 
   const [reuseNonce, setReuseNonce] = useState(0);
   const formRef = useRef<HTMLDivElement>(null);
@@ -251,10 +282,37 @@ export function GenericSweepView() {
   }
   async function onPrune() {
     if (!pruneBefore) return;
-    if (!window.confirm(`Delete all sweep runs created before ${pruneBefore}?`)) return;
+    const before = localMidnightIso(pruneBefore);
+    if (!before) return;
+    // `max` only marks a typed-in future date :invalid — the value still reaches
+    // here, and a future cutoff deletes every run including one still sweeping.
+    if (pruneBefore > todayLocalIsoDate()) {
+      setPruneNote({
+        tone: 'warning',
+        text: `Cutoff ${pruneBefore} is in the future — that would delete every run, including one still sweeping. Pick today or earlier.`,
+      });
+      return;
+    }
+    if (!window.confirm(`Delete all sweep runs created before ${pruneBefore} (local midnight)?`)) return;
+    // Whether the run we're looking at is itself in the deleted range. Clearing
+    // the selection unconditionally bumped the user to the newest run even when
+    // their run survived the cutoff.
+    const activeIsPruned = !!activeRun && new Date(activeRun.created_at).toISOString() < before;
+    setPruneNote(null);
     try {
-      await pruneRuns({ strategyId, before: new Date(pruneBefore).toISOString() }).unwrap();
-      setSelectedRunId(null);
+      const { deleted } = await pruneRuns({ strategyId, before }).unwrap();
+      if (activeIsPruned) setSelectedRunId(null);
+      setPruneNote(
+        deleted > 0
+          ? {
+              tone: 'success',
+              text: `Deleted ${deleted} sweep run${deleted === 1 ? '' : 's'} created before ${pruneBefore}.`,
+            }
+          : {
+              tone: 'warning',
+              text: `No sweep runs were created before ${pruneBefore} — nothing deleted.`,
+            },
+      );
     } catch { /* surfaced via deleteErr */ }
   }
 
@@ -310,6 +368,12 @@ export function GenericSweepView() {
       comboSortKeys,
       comboFilters,
     );
+
+  /** The drilled-into combo's row. Server-paged, so it is absent whenever the
+   *  selection lives on a page the table isn't currently holding. */
+  const activeCombo = results.find((r) => r.combo_id === activeComboId) ?? null;
+  /** Scroll target for the breadcrumb's combo segment (the token-results drill-in). */
+  const comboTokensRef = useRef<HTMLDivElement | null>(null);
 
   // --- promote ---
   const [promote, promoteState] = usePromoteSweepGroupMutation();
@@ -431,7 +495,11 @@ export function GenericSweepView() {
         }
       />
 
-      {activeRunId && (
+      {/* Sticky drill path. Rendered only once a group is picked — before that the
+          group table is the whole page and the bar would say nothing. This is the
+          ONE on-screen copy of the group label; the combos section below must not
+          repeat it, since only this copy survives scrolling into the token drill-in. */}
+      {activeRunId && activeGroup && (
         <nav
           aria-label="Sweep drill path"
           className="sticky top-14 z-40 mb-3 flex flex-wrap items-center gap-1.5 rounded-md border border-white/8 bg-bg/90 px-3 py-2 text-[12px] backdrop-blur-md"
@@ -447,22 +515,38 @@ export function GenericSweepView() {
             Run
           </button>
           <span className="text-text-dim">›</span>
-          {activeGroup ? (
-            <button
-              type="button"
-              className="max-w-[28rem] truncate font-medium text-text hover:underline"
-              title={groupBreadcrumb(activeGroup)}
-              onClick={() => setActiveComboId(null)}
-            >
-              {groupBreadcrumb(activeGroup)}
-            </button>
-          ) : (
-            <span className="text-text-dim">pick a group</span>
-          )}
+          <button
+            type="button"
+            className="max-w-md truncate font-medium text-text hover:underline"
+            title={groupBreadcrumb(activeGroup)}
+            onClick={() => setActiveComboId(null)}
+          >
+            {groupBreadcrumb(activeGroup)}
+          </button>
+          <span className="font-mono text-text-dim">· {activeGroup.token_count} tokens</span>
           {activeComboId !== null && (
             <>
               <span className="text-text-dim">›</span>
-              <span className="font-mono text-secondary">combo #{activeComboId}</span>
+              <button
+                type="button"
+                className="font-mono text-secondary hover:underline"
+                title="Scroll to this combo's per-token results"
+                onClick={() =>
+                  comboTokensRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+                }
+              >
+                combo #{activeComboId}
+              </button>
+              {/* Absent whenever the selected combo sits on a page the server-paged
+                  table isn't holding — show nothing rather than a stale/zero PnL. */}
+              {activeCombo && (
+                <span className={cn('font-mono', signedToneClass(activeCombo.total_pnl_sol))}>
+                  {formatSigned(activeCombo.total_pnl_sol, 2)} SOL
+                  <span className="ml-1 text-text-dim">
+                    · {(activeCombo.win_rate * 100).toFixed(0)}% win · {activeCombo.n_fired} fired
+                  </span>
+                </span>
+              )}
             </>
           )}
         </nav>
@@ -496,10 +580,14 @@ export function GenericSweepView() {
         <>
           <SectionDivider />
           {deleteErr && <InlineAlert variant="error">{deleteErr}</InlineAlert>}
+          {/* A prune that matched nothing leaves the page byte-identical — say so,
+              or a working button is indistinguishable from a broken one. */}
+          {pruneNote && <InlineAlert variant={pruneNote.tone}>{pruneNote.text}</InlineAlert>}
           {groupsErr && <InlineAlert variant="error">{groupsErr}</InlineAlert>}
 
           {activeRun && (
             <Accordion
+              toggleLabel="Run details section : "
               header={
                 <div className="flex flex-1 flex-wrap items-center gap-2.5">
                   <label className="text-sm text-text-dim" htmlFor="generic-sweep-run">Run</label>
@@ -524,20 +612,29 @@ export function GenericSweepView() {
                     {deleteState.isLoading ? <SpinnerIcon /> : <TrashIcon />}
                   </IconButton>
                   <span className="ml-auto flex items-center gap-2">
-                    <label className="text-sm text-text-dim" htmlFor="generic-sweep-prune">Clear runs before</label>
-                    <input
-                      id="generic-sweep-prune"
-                      type="date"
-                      className="rounded-md border border-white/10 bg-surface px-2.5 py-1.5 text-sm text-primary"
+                    <span className="text-sm text-text-dim">Clear runs before</span>
+                    <DatePicker
+                      aria-label="Clear runs before"
+                      size="sm"
+                      emptyLabel="Pick date"
+                      max={todayLocalIsoDate()}
                       value={pruneBefore}
-                      onChange={(e) => setPruneBefore(e.target.value)}
+                      onChange={(next) => {
+                        setPruneBefore(next);
+                        setPruneNote(null);
+                      }}
+                      className="text-primary"
                     />
                     <IconButton
                       variant="danger"
                       size="md"
                       disabled={!pruneBefore || pruneState.isLoading}
                       onClick={onPrune}
-                      title={pruneState.isLoading ? 'Clearing…' : 'Clear all old runs'}
+                      title={
+                        pruneState.isLoading
+                          ? 'Clearing…'
+                          : 'Clear runs created before this date (local midnight)'
+                      }
                       aria-label={pruneState.isLoading ? 'Clearing…' : 'Clear all old runs'}
                     >
                       {pruneState.isLoading ? <SpinnerIcon /> : <TrashIcon />}
@@ -546,6 +643,7 @@ export function GenericSweepView() {
                 </div>
               }
               defaultOpen={false}
+              storageKey={`${STORAGE_KEYS.sweepDetailsOpen}.generic`}
               className="mb-3"
             >
               <SelectedSweepHistory
@@ -594,7 +692,7 @@ export function GenericSweepView() {
           <DataTable
             columns={groupColumns}
             rows={groups}
-            rowKey={(g) => g.id}
+            rowKey={sweepGroupRowKey}
             rowActions={groupRowActions}
             groupLabels={{
               group: 'Group',
@@ -620,13 +718,10 @@ export function GenericSweepView() {
 
           {activeGroupId && (
             <div className="mt-4">
+              {/* No group label here on purpose — the sticky breadcrumb above owns it
+                  (see the nav), and it stays visible once this table scrolls away. */}
               <div className="mb-2 flex flex-wrap items-center gap-2">
                 <h3 className="text-sm font-bold text-secondary">Combos for group</h3>
-                {activeGroup && (
-                  <span className="font-mono text-xs text-text-dim">
-                    {groupBreadcrumb(activeGroup)} · {activeGroup.token_count} tokens
-                  </span>
-                )}
               </div>
 
               {resultsErr && <InlineAlert variant="error">{resultsErr}</InlineAlert>}
@@ -634,7 +729,7 @@ export function GenericSweepView() {
               <DataTable
                 columns={comboColumns}
                 rows={results}
-                rowKey={(r) => String(r.combo_id)}
+                rowKey={sweepComboRowKey}
                 rowActions={comboRowActions}
                 groupLabels={{ params: 'Rule', counts: 'Counts', pnl: 'PnL', holding: 'Holding', exits: 'Exit reasons' }}
                 searchable={false}
@@ -657,19 +752,19 @@ export function GenericSweepView() {
               />
 
               {activeComboId !== null && activeGroupId && (
-                <ComboTokenResults
-                  strategyId={strategyId}
-                  runId={activeRunId ?? ''}
-                  groupId={activeGroupId}
-                  comboId={activeComboId}
-                  comboParams={
-                    results.find((r) => r.combo_id === activeComboId)?.params ?? null
-                  }
-                  inspectFingerprintId={
-                    promotedFp?.groupId === activeGroupId ? promotedFp.fingerprintId : null
-                  }
-                  onClose={() => setActiveComboId(null)}
-                />
+                <div ref={comboTokensRef} className="scroll-mt-28">
+                  <ComboTokenResults
+                    strategyId={strategyId}
+                    runId={activeRunId ?? ''}
+                    groupId={activeGroupId}
+                    comboId={activeComboId}
+                    comboParams={activeCombo?.params ?? null}
+                    inspectFingerprintId={
+                      promotedFp?.groupId === activeGroupId ? promotedFp.fingerprintId : null
+                    }
+                    onClose={() => setActiveComboId(null)}
+                  />
+                </div>
               )}
             </div>
           )}

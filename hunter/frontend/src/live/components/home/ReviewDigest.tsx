@@ -16,8 +16,7 @@ import { Link } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { PnlSparkline } from 'components/analytics/PnlSparkline';
 import {
-  buildDailyPnl,
-  groupTrends,
+  foldPnlDeck,
   type PnlPoint,
 } from 'components/analytics/pnlSeries';
 import { useTimezone } from 'context/TimezoneContext';
@@ -57,14 +56,26 @@ export const ReviewDigest = memo(function ReviewDigest() {
     [series],
   );
 
-  const days = useMemo(() => buildDailyPnl(points, timezone), [points, timezone]);
-  const weekPnl = useMemo(() => days.reduce((s, d) => s + d.pnlSol, 0), [days]);
-
-  const decaying = useMemo(() => {
+  const deck = useMemo(() => {
     const nameOf = (id: string) =>
       rules.find((r) => r.id === id)?.rule_name ?? `${id.slice(0, 8)}…`;
-    return groupTrends(points, nameOf, DECAY_WINDOW).filter((t) => t.decaying);
-  }, [points, rules]);
+    return foldPnlDeck(points, {
+      timeZone: timezone,
+      labelOf: nameOf,
+      window: DECAY_WINDOW,
+      only: ['days', 'trends'],
+    });
+  }, [points, timezone, rules]);
+
+  const weekSpark = useMemo(() => deck.days.map((d) => d.pnlSol), [deck.days]);
+  const weekPnl = useMemo(
+    () => deck.days.reduce((s, d) => s + d.pnlSol, 0),
+    [deck.days],
+  );
+  const decaying = useMemo(
+    () => deck.trends.filter((t) => t.decaying),
+    [deck.trends],
+  );
 
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-white/6 bg-bg-panel p-3">
@@ -74,7 +85,7 @@ export const ReviewDigest = memo(function ReviewDigest() {
             Last 7 days
           </span>
           <PnlSparkline
-            values={days.map((d) => d.pnlSol)}
+            values={weekSpark}
             width={110}
             height={22}
             title="Cumulative realized PnL, last 7 days"

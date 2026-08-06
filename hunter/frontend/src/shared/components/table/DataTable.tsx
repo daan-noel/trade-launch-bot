@@ -2,9 +2,10 @@ import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type
 import { cn } from 'lib/cn';
 import { Checkbox } from 'components/ui/Checkbox';
 import { Input } from 'components/ui/Input';
+import { Select } from 'components/ui/Select';
 import { PinIcon } from 'components/ui/icons';
 import { Pagination, DEFAULT_PAGE_SIZE } from './Pagination';
-import { parseNumericPredicate } from './numericFilter';
+import { parseNumericPredicate, type FilterSpec } from './numericFilter';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
 import { usePinnedRows } from './usePinnedRows';
 import {
@@ -56,6 +57,29 @@ function cleanColFilters(map: Record<string, string>): Record<string, string> {
     if (v.trim()) out[k] = v;
   }
   return out;
+}
+
+/**
+ * Columns with `filterOptions` are exclusive choices — emit them as `{op:'eq'}`
+ * structured filters (not substring `contains`) so any server table that keys
+ * off exact values (flags, status, mode) gets the right wire shape. Remaining
+ * keys stay as raw per-column text for `toTableRequest` to parse.
+ */
+function splitEnumColFilters<R>(
+  colFilters: Record<string, string>,
+  columns: ColumnDef<R>[],
+): { textFilters: Record<string, string>; structured: Record<string, FilterSpec> } {
+  const enumKeys = new Set(
+    columns.filter((c) => c.filterOptions && c.filterOptions.length > 0).map((c) => c.key),
+  );
+  if (enumKeys.size === 0) return { textFilters: colFilters, structured: {} };
+  const textFilters: Record<string, string> = {};
+  const structured: Record<string, FilterSpec> = {};
+  for (const [k, v] of Object.entries(colFilters)) {
+    if (enumKeys.has(k)) structured[k] = { op: 'eq', val: v };
+    else textFilters[k] = v;
+  }
+  return { textFilters, structured };
 }
 
 /**
@@ -114,6 +138,27 @@ function compareSort(a: SortValue, b: SortValue, dir: SortDir): number {
   return dir === 'asc' ? cmp : -cmp;
 }
 
+/** Cheap stable signature for sort keys (avoids JSON.stringify on every render). */
+function sortKeysSignature(keys: SortEntry[]): string {
+  if (keys.length === 0) return '';
+  let s = `${keys[0].col}:${keys[0].dir}`;
+  for (let i = 1; i < keys.length; i++) s += `|${keys[i].col}:${keys[i].dir}`;
+  return s;
+}
+
+/** Cheap stable signature for a col-filter map (sorted keys → deterministic). */
+function colFiltersSignature(map: Record<string, string>): string {
+  const keys = Object.keys(map);
+  if (keys.length === 0) return '';
+  keys.sort();
+  let s = `${keys[0]}=${map[keys[0]]}`;
+  for (let i = 1; i < keys.length; i++) s += `|${keys[i]}=${map[keys[i]]}`;
+  return s;
+}
+
+/** localStorage prefs coalesce window — rapid sort/page toggles write once. */
+const PREFS_PERSIST_MS = 150;
+
 /**
  * The canonical string a cell groups by for `sameValueTints`. Prefers the
  * column's own numeric/sort accessors over its display text so `1.5` and
@@ -161,6 +206,20 @@ interface DataTableProps<R> {
   defaultPageSize?: number;
   pageSizeOptions?: number[];
   searchable?: boolean;
+  /** Placeholder for the global search box. Default `Search…`. */
+  searchPlaceholder?: string;
+  /**
+   * Extra controls rendered before the search box (domain wrappers — e.g. a
+   * scope toggle). Keep token/history vocabulary out of this primitive; pass
+   * nodes from the caller.
+   */
+  toolbarLeading?: ReactNode;
+  /**
+   * Extra controls rendered after the flex spacer, before Filters/Columns
+   * (domain wrappers — e.g. Charts toggle). Expanding panels should live
+   * outside the toolbar row, not inside this slot.
+   */
+  toolbarTrailing?: ReactNode;
   /** Per-column filter row toggle (toolbar "Filters"). Default on. */
   colFilters?: boolean;
   /** Column-visibility panel toggle (toolbar "Columns"). Default on. */
@@ -260,6 +319,9 @@ export function DataTable<R>({
   defaultPageSize = DEFAULT_PAGE_SIZE,
   pageSizeOptions,
   searchable = true,
+  searchPlaceholder = 'Search…',
+  toolbarLeading,
+  toolbarTrailing,
   colFilters = true,
   colToggle = true,
   hoverable = true,
@@ -323,7 +385,8 @@ export function DataTable<R>({
   // The column-key set, and a stable string signature of it. Callers don't all
   // memoize their `columns` array, so keying the persist effect on the array
   // identity would rewrite localStorage on every render — the signature fires it
-  // only when a column is actually added or removed.
+  // only when a column is actually added or removed. Join with `\0` so
+  // `['a','bc']` and `['ab','c']` don't collide.
   const colKeys = useMemo(() => (columns as ColumnDef<unknown>[]).map((c) => c.key), [columns]);
   const colKeysSig = useMemo(() => colKeys.join(' '), [colKeys]);
   const [internalSelected, setInternalSelected] = useState<string | null>(null);
@@ -343,14 +406,69 @@ export function DataTable<R>({
   const selectedKey =
     externalSelected !== undefined ? externalSelected : internalSelected;
 
+  // ---------------------------------------------------------------------
+  // Stabilize callback props for memoized rows
+  // ---------------------------------------------------------------------
+  // Callers often pass inline `rowActions` / `rowClassName` / `rowKey` / etc.
+  // Default `memo` is shallow, so a fresh closure every parent render would
+  // re-render every visible row — defeating TableRow memo on live/polled tables.
+  // Refs always call the latest handler; the wrappers keep a stable identity.
+  const rowKeyRef = useRef(rowKey);
+  rowKeyRef.current = rowKey;
+  const rowActionsRef = useRef(rowActions);
+  rowActionsRef.current = rowActions;
+  const rowDetailRef = useRef(rowDetail);
+  rowDetailRef.current = rowDetail;
+  const rowClassNameRef = useRef(rowClassName);
+  rowClassNameRef.current = rowClassName;
+  const cellGroupClassNameRef = useRef(cellGroupClassName);
+  cellGroupClassNameRef.current = cellGroupClassName;
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
+
+  const stableRowActions = useMemo(
+    () => (rowActions ? (row: R) => rowActionsRef.current!(row) : undefined),
+    // Re-create only when the *presence* of actions changes (adds/removes the column).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [!!rowActions],
+  );
+  const stableRowDetail = useMemo(
+    () => (rowDetail ? (row: R) => rowDetailRef.current!(row) : undefined),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [!!rowDetail],
+  );
+  const stableRowClassName = useMemo(
+    () => (rowClassName ? (row: R) => rowClassNameRef.current!(row) : undefined),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [!!rowClassName],
+  );
+  const stableCellGroupClassName = useMemo(
+    () =>
+      cellGroupClassName
+        ? (group: string | undefined, row: R) => cellGroupClassNameRef.current!(group, row)
+        : undefined,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [!!cellGroupClassName],
+  );
+
   useEffect(() => {
-    if (tableId) saveVisibleCols(tableId, visibleCols, colKeys);
-  }, [visibleCols, tableId, colKeysSig]);
+    if (!tableId) return;
+    const id = window.setTimeout(
+      () => saveVisibleCols(tableId, visibleCols, colKeys),
+      PREFS_PERSIST_MS,
+    );
+    return () => window.clearTimeout(id);
+  }, [visibleCols, tableId, colKeys, colKeysSig]);
 
   useEffect(() => {
     // `setTablePrefs` replaces this table's whole entry — every persisted pref
     // must be written here, or the omitted one is wiped on the next sort/page change.
-    if (tableId) setTablePrefs(tableId, { pageSize, sortKeys, pinsCollapsed });
+    if (!tableId) return;
+    const id = window.setTimeout(
+      () => setTablePrefs(tableId, { pageSize, sortKeys, pinsCollapsed }),
+      PREFS_PERSIST_MS,
+    );
+    return () => window.clearTimeout(id);
   }, [tableId, pageSize, sortKeys, pinsCollapsed]);
 
   // Drop sort levels for columns that disappeared or never accepted sort
@@ -462,6 +580,23 @@ export function DataTable<R>({
     return out;
   }, [serverSide, debouncedColFilters, columns]);
 
+  // Precompute per-row search text once when `rows`/`columns` change — typing in
+  // the search box then only does substring checks against the blob, not
+  // re-running every column's `searchValue` + `toLowerCase` (client lists can be
+  // large; see TOKENS_LIST_LIMIT). WeakMap keys by row identity (RTK structural
+  // sharing keeps unchanged rows stable across polls).
+  const searchTextByRow = useMemo(() => {
+    if (serverSide) return null;
+    const searchCols = columns.filter((c) => !c.sortOnly);
+    const map = new WeakMap<object, string>();
+    for (const row of rows) {
+      let blob = '';
+      for (const col of searchCols) blob += col.searchValue(row).toLowerCase() + '\0';
+      map.set(row as object, blob);
+    }
+    return map;
+  }, [serverSide, rows, columns]);
+
   const processed = useMemo(() => {
     // Server mode: `rows` already IS the filtered/sorted page — never reduce it
     // locally (that would hide rows the server legitimately returned).
@@ -473,14 +608,17 @@ export function DataTable<R>({
     const searchLower = debouncedSearch.toLowerCase();
     let list = rows.filter((row) => {
       if (searchLower) {
-        const hit = columns.some((col) =>
-          col.searchValue(row).toLowerCase().includes(searchLower),
-        );
-        if (!hit) return false;
+        const blob = searchTextByRow?.get(row as object);
+        if (!blob || !blob.includes(searchLower)) return false;
       }
       for (const { col, raw, needle, numeric } of activeColFilters) {
         if (col.filterMatch) {
           if (!col.filterMatch(row, raw)) return false;
+        } else if (col.filterOptions) {
+          const optVal = col.filterOptionValue
+            ? col.filterOptionValue(row)
+            : (col.filterValue ?? col.searchValue)(row);
+          if (optVal !== raw) return false;
         } else if (numeric) {
           const n = col.filterNumber!(row);
           if (n == null || !numeric(n)) return false;
@@ -497,17 +635,26 @@ export function DataTable<R>({
         .map(({ col, dir }) => ({ sv: columns.find((c) => c.key === col)?.sortValue, dir }))
         .filter((s): s is { sv: (row: R) => SortValue; dir: SortDir } => s.sv != null);
       if (levels.length > 0) {
-        list = [...list].sort((a, b) => {
-          for (const { sv, dir } of levels) {
-            const cmp = compareSort(sv(a), sv(b), dir);
-            if (cmp !== 0) return cmp;
-          }
-          return 0;
-        });
+        // Decorate-sort-undecorate: evaluate each sortValue once per row instead
+        // of once per comparison (O(n log n) comparator calls otherwise).
+        list = list
+          .map((row, i) => ({
+            row,
+            i,
+            keys: levels.map(({ sv }) => sv(row)),
+          }))
+          .sort((a, b) => {
+            for (let li = 0; li < levels.length; li++) {
+              const cmp = compareSort(a.keys[li], b.keys[li], levels[li].dir);
+              if (cmp !== 0) return cmp;
+            }
+            return a.i - b.i;
+          })
+          .map(({ row }) => row);
       }
     }
     return list;
-  }, [serverSide, rows, columns, debouncedSearch, activeColFilters, sortKeys]);
+  }, [serverSide, rows, searchTextByRow, debouncedSearch, activeColFilters, sortKeys, columns]);
 
   // ---------------------------------------------------------------------
   // Selection follow
@@ -526,10 +673,15 @@ export function DataTable<R>({
   // Scope for the `tr[data-row-key]` lookup the scroll-into-view effect does, so
   // sibling tables on the same page can't match each other's rows.
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
-  // Index of the selected row in the FULL processed list, or -1. Not a callback:
-  // it's only ever called from effects, which always see the current render's
-  // `processed`/`rowKey` — so it needs no dependency bookkeeping.
-  const indexOfSelected = (key: string) => processed.findIndex((row) => rowKey(row) === key);
+  // Key → index in the FULL processed list. Rebuilt with `processed` so follow /
+  // scroll effects are O(1) lookups instead of a linear scan on every poll.
+  const processedIndexByKey = useMemo(() => {
+    const map = new Map<string, number>();
+    const keyOf = rowKeyRef.current;
+    for (let i = 0; i < processed.length; i++) map.set(keyOf(processed[i]), i);
+    return map;
+  }, [processed]);
+  const indexOfSelected = (key: string) => processedIndexByKey.get(key) ?? -1;
 
   // Reset to page 1 when the filter/sort/pageSize view *changes* — but NOT on the
   // initial mount (page already starts at 1) and NOT on a redundant re-fire. We
@@ -540,7 +692,15 @@ export function DataTable<R>({
   // new identity, and re-running this on every refresh would reset the page out
   // from under the user. With a followed selection the reset target is that row's
   // NEW page instead of page 1: re-sorting a table must not strand the selection.
-  const clientResetSig = `${debouncedSearch}|${JSON.stringify(debouncedColFilters)}|${JSON.stringify(sortKeys)}|${pageSize}`;
+  const sortKeysSig = useMemo(() => sortKeysSignature(sortKeys), [sortKeys]);
+  const debouncedColFiltersSig = useMemo(
+    () => colFiltersSignature(debouncedColFilters),
+    [debouncedColFilters],
+  );
+  const clientResetSig = useMemo(
+    () => `${debouncedSearch}|${debouncedColFiltersSig}|${sortKeysSig}|${pageSize}`,
+    [debouncedSearch, debouncedColFiltersSig, sortKeysSig, pageSize],
+  );
   const prevClientResetSig = useRef<string | null>(null);
   useEffect(() => {
     if (!paginate || serverSide) return;
@@ -579,10 +739,14 @@ export function DataTable<R>({
     () => cleanColFilters(debouncedColFilters),
     [debouncedColFilters],
   );
+  const cleanedColFiltersSig = useMemo(
+    () => colFiltersSignature(cleanedColFilters),
+    [cleanedColFilters],
+  );
   const viewSig = useMemo(
     () =>
-      `${resetKey ?? ''}|${pageSize}|${JSON.stringify(sortKeys)}|${debouncedSearch}|${JSON.stringify(cleanedColFilters)}`,
-    [resetKey, pageSize, sortKeys, debouncedSearch, cleanedColFilters],
+      `${resetKey ?? ''}|${pageSize}|${sortKeysSig}|${debouncedSearch}|${cleanedColFiltersSig}`,
+    [resetKey, pageSize, sortKeysSig, debouncedSearch, cleanedColFiltersSig],
   );
   const prevViewSig = useRef(viewSig);
   useEffect(() => {
@@ -595,15 +759,17 @@ export function DataTable<R>({
         p = 1;
       }
     }
+    const { textFilters, structured } = splitEnumColFilters(cleanedColFilters, columns);
     onQueryChange?.({
       page: p,
       pageSize,
       sortKeys,
       search: debouncedSearch,
-      colFilters: cleanedColFilters,
+      colFilters: textFilters,
+      structuredFilters: Object.keys(structured).length > 0 ? structured : undefined,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverSide, viewSig, page]);
+  }, [serverSide, viewSig, page, columns]);
 
   // Clamp the page when the filtered total shrinks below the current range.
   useEffect(() => {
@@ -667,7 +833,8 @@ export function DataTable<R>({
       scrollAnchor.current = null;
       return;
     }
-    const idx = pageRows.findIndex((row) => rowKey(row) === selectedKey);
+    const keyOf = rowKeyRef.current;
+    const idx = pageRows.findIndex((row) => keyOf(row) === selectedKey);
     if (idx < 0) return;
     const anchor = `${selectedKey}\0${start + idx}`;
     if (scrollAnchor.current === anchor) return;
@@ -704,7 +871,7 @@ export function DataTable<R>({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sameValueTints, pageRows, visCols]);
 
-  const colCount = visCols.length + 1 + (rowActions ? 1 : 0);
+  const colCount = visCols.length + 1 + (stableRowActions ? 1 : 0);
 
   const activeFilters = Object.values(colFiltersMap).filter(Boolean).length;
 
@@ -727,20 +894,23 @@ export function DataTable<R>({
   };
 
   // Stable identity so the memoized rows below don't re-render just because the
-  // table re-rendered (e.g. on a poll).
-  const selectRow = useCallback(
-    (key: string, isSelected: boolean) => {
-      const next = isSelected ? null : key;
-      setInternalSelected(next);
-      onSelect?.(next);
-    },
-    [onSelect],
-  );
+  // table re-rendered (e.g. on a poll). Reads `onSelect` through a ref so a
+  // fresh parent callback never changes this identity.
+  const selectRow = useCallback((key: string, isSelected: boolean) => {
+    const next = isSelected ? null : key;
+    setInternalSelected(next);
+    onSelectRef.current?.(next);
+  }, []);
 
   // Row pinning (opt-in via `pinnable` + `tableId`). The hook is inert without a
   // tableId, so this single call stays rules-of-hooks-safe for every table.
   const pinningEnabled = pinnable && !!tableId;
-  const pinning = usePinnedRows(pinningEnabled ? tableId : undefined, rowKey, pageRows);
+  // rowKeyRef keeps the hook from depending on an inline `rowKey` identity.
+  const pinning = usePinnedRows(
+    pinningEnabled ? tableId : undefined,
+    rowKeyRef.current,
+    pageRows,
+  );
   const togglePin = pinning.onToggle; // stable (useCallback in the hook)
 
   // Pinned rows render (from snapshots) in a section above the paged body, on
@@ -753,26 +923,53 @@ export function DataTable<R>({
   // Collapsed, the row renders in its normal paged position instead of vanishing.
   const hidePinnedInBody = pinningEnabled && pinsOpen;
   const pageBodyCount = hidePinnedInBody
-    ? pageRows.reduce((n, r) => n + (pinning.isPinned(r) ? 0 : 1), 0)
+    ? pageRows.reduce((n, r) => {
+        const k = rowKeyRef.current(r);
+        return n + (pinning.isPinnedKey(k) ? 0 : 1);
+      }, 0)
     : pageRows.length;
   const shownPinned = pinsOpen ? pinnedDisplay.length : 0;
   const bodyEmpty = shownPinned === 0 && pageBodyCount === 0;
 
+  const columnPanelGroups = useMemo(() => {
+    if (!showColPanel) return null;
+    const grouped: { group: string; cols: ColumnDef<R>[] }[] = [];
+    for (const col of columns) {
+      if (col.sortOnly) continue;
+      const g = col.group ?? '';
+      const last = grouped[grouped.length - 1];
+      if (last && last.group === g) last.cols.push(col);
+      else grouped.push({ group: g, cols: [col] });
+    }
+    return grouped;
+  }, [showColPanel, columns]);
+
+  const toggleColVisibility = useCallback((key: string, checked: boolean) => {
+    setVisibleCols((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
+
   return (
     <div className="flex flex-col gap-0">
       <div className="mb-2 flex flex-wrap items-center gap-2">
+        {toolbarLeading}
         {searchable && (
           <Input
             type="search"
             fieldSize="lg"
             variant="card"
-            placeholder="Search…"
+            placeholder={searchPlaceholder}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="min-w-[200px] max-w-[340px] flex-1 border-white/8 focus:border-primary"
           />
         )}
         <span className="flex-1" />
+        {toolbarTrailing}
         {colFilters && (
           <div className="flex items-center">
             <button
@@ -812,25 +1009,10 @@ export function DataTable<R>({
         )}
       </div>
 
-      {colToggle && showColPanel && (() => {
-        const grouped: { group: string; cols: typeof columns }[] = [];
-        for (const col of columns) {
-          if (col.sortOnly) continue;
-          const g = col.group ?? '';
-          const last = grouped[grouped.length - 1];
-          if (last && last.group === g) last.cols.push(col);
-          else grouped.push({ group: g, cols: [col] });
-        }
-        const toggleCol = (key: string, checked: boolean) =>
-          setVisibleCols((prev) => {
-            const next = new Set(prev);
-            if (checked) next.add(key); else next.delete(key);
-            return next;
-          });
-        return (
+      {colToggle && columnPanelGroups && (
           <div className="mb-2 flex flex-col gap-2 rounded-lg border border-white/7 bg-white/2 p-3">
-            {grouped.map(({ group, cols }) => (
-              <div key={group} className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            {columnPanelGroups.map(({ group, cols }) => (
+              <div key={group || '__ungrouped'} className="flex flex-wrap items-center gap-x-4 gap-y-1">
                 {group && (
                   <span className="w-20 shrink-0 text-[10px] font-bold uppercase tracking-wider text-secondary">
                     {group}
@@ -840,7 +1022,7 @@ export function DataTable<R>({
                   <label key={col.key} className="flex cursor-pointer items-center gap-2 text-xs text-text">
                     <Checkbox
                       checked={visibleCols.has(col.key)}
-                      onChange={(e) => toggleCol(col.key, e.target.checked)}
+                      onChange={(e) => toggleColVisibility(col.key, e.target.checked)}
                     />
                     {col.label}
                   </label>
@@ -848,8 +1030,7 @@ export function DataTable<R>({
               </div>
             ))}
           </div>
-        );
-      })()}
+      )}
 
       <div
         ref={tableWrapRef}
@@ -877,7 +1058,7 @@ export function DataTable<R>({
                       {run.label}
                     </th>
                   ))}
-                  {rowActions && <th className="dt-nohover bg-bg-panel" />}
+                  {stableRowActions && <th className="dt-nohover bg-bg-panel" />}
                 </tr>
               )}
               <tr>
@@ -922,7 +1103,7 @@ export function DataTable<R>({
                     )}
                   </th>
                 ))}
-                {rowActions && (
+                {stableRowActions && (
                   <th className={cn('sticky top-0 bg-bg-panel px-2 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-primary', actionsCellCls)}>
                     Actions
                   </th>
@@ -933,28 +1114,48 @@ export function DataTable<R>({
                   <th className="bg-bg-panel px-1 py-1" />
                   {visCols.map((col, ci) => (
                     <th key={`f-${col.key}`} className={cn('bg-bg-panel px-1 py-1', groupClasses[ci])}>
-                      <Input
-                        type="text"
-                        fieldSize="table"
-                        placeholder={
-                          col.filterPlaceholder ??
-                          (col.filterNumber ? '>0  1..5' : 'filter…')
-                        }
-                        title={
-                          col.filterTitle ??
-                          (col.filterNumber
-                            ? 'Text matches; or use >  >=  <  <=  =  !=  or a range like 1..5'
-                            : undefined)
-                        }
-                        value={colFiltersMap[col.key] ?? ''}
-                        onChange={(e) =>
-                          setColFiltersMap((m) => ({ ...m, [col.key]: e.target.value }))
-                        }
-                        className="border-white/8 focus:border-primary/40"
-                      />
+                      {col.filterOptions ? (
+                        <Select
+                          fieldSize="table"
+                          aria-label={`Filter ${col.label}`}
+                          title={col.filterTitle}
+                          value={colFiltersMap[col.key] ?? ''}
+                          onChange={(e) =>
+                            setColFiltersMap((m) => ({ ...m, [col.key]: e.target.value }))
+                          }
+                          className="border-white/8 focus:border-primary/40"
+                        >
+                          <option value="">All</option>
+                          {col.filterOptions.map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </Select>
+                      ) : (
+                        <Input
+                          type="text"
+                          fieldSize="table"
+                          placeholder={
+                            col.filterPlaceholder ??
+                            (col.filterNumber ? '>0  1..5' : 'filter…')
+                          }
+                          title={
+                            col.filterTitle ??
+                            (col.filterNumber
+                              ? 'Text matches; or use >  >=  <  <=  =  !=  or a range like 1..5'
+                              : undefined)
+                          }
+                          value={colFiltersMap[col.key] ?? ''}
+                          onChange={(e) =>
+                            setColFiltersMap((m) => ({ ...m, [col.key]: e.target.value }))
+                          }
+                          className="border-white/8 focus:border-primary/40"
+                        />
+                      )}
                     </th>
                   ))}
-                  {rowActions && <th className={cn('bg-bg-panel px-1 py-1', actionsCellCls)} />}
+                  {stableRowActions && <th className={cn('bg-bg-panel px-1 py-1', actionsCellCls)} />}
                 </tr>
               )}
             </thead>
@@ -1004,7 +1205,7 @@ export function DataTable<R>({
                 </tr>
               )}
               {pinsOpen && pinnedDisplay.map((row, i) => {
-                const key = rowKey(row);
+                const key = rowKeyRef.current(row);
                 return (
                   <TableRow
                     key={`pin:${key}`}
@@ -1016,12 +1217,12 @@ export function DataTable<R>({
                     selectable={selectable}
                     isSelected={selectedKey === key}
                     onSelectRow={selectRow}
-                    rowActions={rowActions}
+                    rowActions={stableRowActions}
                     actionsCellCls={actionsCellCls}
-                    rowDetail={rowDetail}
+                    rowDetail={stableRowDetail}
                     colCount={colCount}
-                    rowClassName={rowClassName}
-                    cellGroupClassName={cellGroupClassName}
+                    rowClassName={stableRowClassName}
+                    cellGroupClassName={stableCellGroupClassName}
                     valueTints={valueTints}
                     pinningEnabled
                     pinned
@@ -1041,8 +1242,8 @@ export function DataTable<R>({
                   // Skip the paged copy of a pinned row — it's shown in the section
                   // above. `index` stays the global position so `#` numbering is
                   // unchanged (a pinned row just leaves a gap).
-                  if (hidePinnedInBody && pinning.isPinned(row)) return null;
-                  const key = rowKey(row);
+                  const key = rowKeyRef.current(row);
+                  if (hidePinnedInBody && pinning.isPinnedKey(key)) return null;
                   return (
                     <TableRow
                       key={key}
@@ -1054,12 +1255,12 @@ export function DataTable<R>({
                       selectable={selectable}
                       isSelected={selectedKey === key}
                       onSelectRow={selectRow}
-                      rowActions={rowActions}
+                      rowActions={stableRowActions}
                       actionsCellCls={actionsCellCls}
-                      rowDetail={rowDetail}
+                      rowDetail={stableRowDetail}
                       colCount={colCount}
-                      rowClassName={rowClassName}
-                      cellGroupClassName={cellGroupClassName}
+                      rowClassName={stableRowClassName}
+                      cellGroupClassName={stableCellGroupClassName}
                       valueTints={valueTints}
                       pinningEnabled={pinningEnabled}
                       onTogglePin={pinningEnabled ? togglePin : undefined}

@@ -91,7 +91,7 @@ export function CreationStatsPage() {
         <DateTimeRangePicker
           aria-label="Look-back window"
           size="sm"
-          zoneLabel="local"
+          zoneLabel={null}
           allowCustom={false}
           emptyLabel="Look-back"
           presets={LOOKBACK_PRESETS}

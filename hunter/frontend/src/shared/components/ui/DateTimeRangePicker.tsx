@@ -2,13 +2,16 @@
  * Compact date-time range control — MUI DateTimeRangePicker interaction model
  * on our chrome (no MUI dep).
  *
- * Trigger is input-shaped (`From → To` placeholders, calendar icon, UTC badge).
- * Popover: optional shortcuts · two independent month panes (each with ‹ › and
- * a clickable month/year chooser) · editable date+time fields · Apply/Cancel.
+ * Trigger is input-shaped (`From → To` placeholders, calendar icon, zone badge).
+ * Popover: optional shortcuts · editable From/To date+time fields (click to set
+ * which bound the calendar edits) · two month panes · hover range preview ·
+ * Apply/Cancel. Each pane has its own ‹ ›; click the month label for a year
+ * stepper + Jan–Dec chooser. Right pane stays ≥ left. Popover flips above the
+ * trigger when space below is tight.
  *
  * Wire values are bare wall-clock `YYYY-MM-DDTHH:mm` (same as `datetime-local`).
- * Callers own zone semantics (History treats them as UTC; FilterPanel converts
- * via `datetimeLocalToUtcWallClock` at the query boundary).
+ * Callers own zone semantics via `timeZone` (History/Simulate: UTC; Tokens: project
+ * IANA zone, converted with `datetimeLocalToUtcWallClock` at the query boundary).
  */
 
 import {
@@ -25,6 +28,25 @@ import { cn } from 'lib/cn';
 import { Button } from './Button';
 import { CalendarIcon } from './icons';
 import { fieldClassName } from './Input';
+import {
+  addMonths,
+  applyDayPick,
+  daysInMonth,
+  defaultZoneBadge,
+  formatCompact,
+  initialViews,
+  joinDt,
+  monthIndex,
+  normalizeTime,
+  rangeDayRole,
+  splitDt,
+  startDow,
+  todayInZone,
+  ymFromDateString,
+  ymdKey,
+  type RangeDayRole,
+  type YearMonth,
+} from './dateTimeRangePickerUtils';
 
 export type DateTimeRangePreset<T extends string = string> = {
   value: T;
@@ -51,8 +73,16 @@ export interface DateTimeRangePickerProps<T extends string = string> {
   presets?: DateTimeRangePreset<T>[];
   /** Preset value that means "use from/to". Default `"custom"`. */
   customPreset?: T;
-  /** Zone badge (display only). Default `"UTC"`. */
-  zoneLabel?: string;
+  /**
+   * IANA zone for civil "today" (Today jump + today ring). Default `"UTC"`.
+   * Does not rewrite wire values — callers convert at the query boundary.
+   */
+  timeZone?: string;
+  /**
+   * Zone badge on the trigger / popover. Default: short label from `timeZone`.
+   * Pass `null` to hide (look-back day presets that are not wall-clock ranges).
+   */
+  zoneLabel?: string | null;
   /** Tooltip / aria hint when custom bounds are empty. */
   emptyLabel?: string;
   /**
@@ -67,7 +97,6 @@ export interface DateTimeRangePickerProps<T extends string = string> {
   disabled?: boolean;
 }
 
-const DT_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/;
 const DOW = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'] as const;
 const MONTHS = [
   'Jan',
@@ -87,84 +116,12 @@ const MONTHS = [
 const MENU_GAP_PX = 6;
 const MENU_EDGE_PX = 8;
 
-type YearMonth = { y: number; m: number };
 type MenuPosition = { top: number; left: number; maxHeight?: number };
 type Draft = { preset: string; from: string; to: string; picking: 'from' | 'to' };
 type ChooserPane = 'left' | 'right' | null;
 
-function pad2(n: number): string {
-  return String(n).padStart(2, '0');
-}
-
-function splitDt(v: string): { date: string; time: string } {
-  if (!v) return { date: '', time: '' };
-  const m = DT_RE.exec(v);
-  if (!m) return { date: '', time: '' };
-  return { date: `${m[1]}-${m[2]}-${m[3]}`, time: `${m[4]}:${m[5]}` };
-}
-
-function joinDt(date: string, time: string): string {
-  if (!date) return '';
-  return `${date}T${time || '00:00'}`;
-}
-
-function ymdKey(y: number, m: number, d: number): string {
-  return `${y}-${pad2(m + 1)}-${pad2(d)}`;
-}
-
-function parseYmd(key: string): (YearMonth & { d: number }) | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key);
-  if (!m) return null;
-  return { y: Number(m[1]), m: Number(m[2]) - 1, d: Number(m[3]) };
-}
-
-function monthIndex({ y, m }: YearMonth): number {
-  return y * 12 + m;
-}
-
-function addMonths({ y, m }: YearMonth, delta: number): YearMonth {
-  const idx = y * 12 + m + delta;
-  return { y: Math.floor(idx / 12), m: ((idx % 12) + 12) % 12 };
-}
-
-function daysInMonth(y: number, m: number): number {
-  return new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
-}
-
-function startDow(y: number, m: number): number {
-  return new Date(Date.UTC(y, m, 1)).getUTCDay();
-}
-
-function formatCompact(dt: string): string {
-  const { date, time } = splitDt(dt);
-  if (!date) return '';
-  const [, mo, da] = date.split('-');
-  return `${mo}/${da} ${time}`;
-}
-
 function monthLabel({ y, m }: YearMonth): string {
   return `${MONTHS[m]} ${y}`;
-}
-
-function ymFromDateString(date: string): YearMonth | null {
-  const parsed = date ? parseYmd(date) : null;
-  return parsed ? { y: parsed.y, m: parsed.m } : null;
-}
-
-/** Civil "today" in UTC — matches the picker's default zone badge. */
-function todayUtc(): { ymd: string; ym: YearMonth } {
-  const n = new Date();
-  const ym = { y: n.getUTCFullYear(), m: n.getUTCMonth() };
-  return { ymd: ymdKey(ym.y, ym.m, n.getUTCDate()), ym };
-}
-
-/** Seed left/right panes from bounds (or today UTC / today+1). */
-function initialViews(from: string, to: string): { left: YearMonth; right: YearMonth } {
-  const today = todayUtc().ym;
-  const left = ymFromDateString(splitDt(from).date) ?? today;
-  const rightRaw = ymFromDateString(splitDt(to).date) ?? addMonths(left, 1);
-  const right = monthIndex(rightRaw) < monthIndex(left) ? left : rightRaw;
-  return { left, right };
 }
 
 const fieldCls = fieldClassName({
@@ -175,20 +132,47 @@ const fieldCls = fieldClassName({
     'scheme-dark pr-1 [&::-webkit-calendar-picker-indicator]:mr-0 [&::-webkit-calendar-picker-indicator]:opacity-60',
 });
 
+function dayCellClass(role: RangeDayRole, isToday: boolean): string {
+  const endpoint =
+    role === 'start' || role === 'end' || role === 'single' || role === 'preview-end';
+  const middle = role === 'middle' || role === 'preview-middle';
+  return cn(
+    'relative flex size-7 items-center justify-center text-[11px] tabular-nums transition-colors',
+    role === 'middle' && 'rounded-none bg-primary/14 text-text',
+    role === 'preview-middle' && 'rounded-none bg-primary/8 text-text',
+    endpoint && 'font-semibold',
+    (role === 'start' || role === 'end' || role === 'single') &&
+      'rounded bg-primary text-bg-panel',
+    role === 'preview-end' && 'rounded bg-primary/55 text-bg-panel',
+    role === 'start' && 'rounded-r-none',
+    role === 'end' && 'rounded-l-none',
+    role === 'preview-end' && 'rounded-l-none',
+    !endpoint && !middle && 'rounded text-text-mid hover:bg-white/8 hover:text-text',
+    isToday && !endpoint && 'font-semibold text-primary ring-1 ring-inset ring-primary/55',
+    isToday && endpoint && 'ring-1 ring-inset ring-white/70',
+  );
+}
+
 function MonthGrid({
   y,
   m,
   fromDate,
   toDate,
+  picking,
+  hoverYmd,
   todayYmd,
   onPick,
+  onHover,
 }: {
   y: number;
   m: number;
   fromDate: string;
   toDate: string;
+  picking: 'from' | 'to';
+  hoverYmd: string | null;
   todayYmd: string;
   onPick: (ymd: string) => void;
+  onHover: (ymd: string | null) => void;
 }) {
   const cells = useMemo(() => {
     const dim = daysInMonth(y, m);
@@ -206,7 +190,10 @@ function MonthGrid({
   }, [y, m]);
 
   return (
-    <div className="w-fit">
+    <div
+      className="w-fit"
+      onMouseLeave={() => onHover(null)}
+    >
       <div className="mb-1 grid w-[196px] grid-cols-7 text-center text-[9px] font-semibold uppercase tracking-wider text-text-dim/70">
         {DOW.map((d) => (
           <div key={d} className="h-5 leading-5">
@@ -220,32 +207,16 @@ function MonthGrid({
             return <div key={c.key} className="size-7" />;
           }
           const ymd = c.ymd;
-          const isFrom = ymd === fromDate;
-          const isTo = ymd === toDate;
+          const role = rangeDayRole(ymd, fromDate, toDate, picking, hoverYmd);
           const isToday = ymd === todayYmd;
-          const inRange =
-            !!fromDate && !!toDate && ymd > fromDate && ymd < toDate;
-          const isEndpoint = isFrom || isTo;
           return (
             <button
               key={c.key}
               type="button"
               onClick={() => onPick(ymd)}
+              onMouseEnter={() => onHover(ymd)}
               title={isToday ? 'Today' : undefined}
-              className={cn(
-                'relative flex size-7 items-center justify-center text-[11px] tabular-nums transition-colors',
-                inRange && 'bg-primary/12 text-text',
-                isEndpoint && 'rounded bg-primary font-semibold text-bg-panel',
-                !isEndpoint && !inRange && 'rounded text-text-mid hover:bg-white/8 hover:text-text',
-                isFrom && !isTo && 'rounded-r-none',
-                isTo && !isFrom && 'rounded-l-none',
-                inRange && 'rounded-none',
-                // Today ring sits under the endpoint fill when they coincide.
-                isToday &&
-                  !isEndpoint &&
-                  'font-semibold text-primary ring-1 ring-inset ring-primary/55',
-                isToday && isEndpoint && 'ring-1 ring-inset ring-white/70',
-              )}
+              className={dayCellClass(role, isToday)}
             >
               {c.day}
             </button>
@@ -367,11 +338,14 @@ function CalendarPane({
   chooserOpen,
   fromDate,
   toDate,
+  picking,
+  hoverYmd,
   todayYmd,
   onToggleChooser,
   onStep,
   onPickMonth,
   onPickDay,
+  onHover,
   ariaPrev,
   ariaNext,
 }: {
@@ -379,11 +353,14 @@ function CalendarPane({
   chooserOpen: boolean;
   fromDate: string;
   toDate: string;
+  picking: 'from' | 'to';
+  hoverYmd: string | null;
   todayYmd: string;
   onToggleChooser: () => void;
   onStep: (delta: number) => void;
   onPickMonth: (next: YearMonth) => void;
   onPickDay: (ymd: string) => void;
+  onHover: (ymd: string | null) => void;
   ariaPrev: string;
   ariaNext: string;
 }) {
@@ -405,10 +382,82 @@ function CalendarPane({
           m={view.m}
           fromDate={fromDate}
           toDate={toDate}
+          picking={picking}
+          hoverYmd={hoverYmd}
           todayYmd={todayYmd}
           onPick={onPickDay}
+          onHover={onHover}
         />
       )}
+    </div>
+  );
+}
+
+function BoundField({
+  label,
+  active,
+  date,
+  time,
+  dateId,
+  timeId,
+  onActivate,
+  onDate,
+  onTime,
+}: {
+  label: string;
+  active: boolean;
+  date: string;
+  time: string;
+  dateId: string;
+  timeId: string;
+  onActivate: () => void;
+  onDate: (date: string) => void;
+  onTime: (time: string) => void;
+}) {
+  return (
+    <div
+      role="group"
+      aria-label={label}
+      onMouseDown={onActivate}
+      className={cn(
+        'flex flex-col gap-1 rounded-lg border px-2 py-1.5 text-left transition-colors',
+        active
+          ? 'border-primary/45 bg-primary/10'
+          : 'border-white/8 bg-white/3 hover:border-white/14 hover:bg-white/5',
+      )}
+    >
+      <span
+        className={cn(
+          'text-[9px] font-bold uppercase tracking-wider',
+          active ? 'text-primary' : 'text-text-dim/70',
+        )}
+      >
+        {label}
+      </span>
+      <div className="flex items-center gap-1">
+        <input
+          id={dateId}
+          type="date"
+          value={date}
+          onFocus={onActivate}
+          onChange={(e) => onDate(e.target.value)}
+          className={cn(fieldCls, 'min-w-0 flex-1')}
+          aria-label={`${label} date`}
+          title={`${label} date`}
+        />
+        <input
+          id={timeId}
+          type="time"
+          step={60}
+          value={time}
+          disabled={!date}
+          onFocus={onActivate}
+          onChange={(e) => onTime(e.target.value)}
+          className={cn(fieldCls, 'w-24 shrink-0')}
+          aria-label={`${label} time`}
+          title={`${label} time`}
+        />
+      </div>
     </div>
   );
 }
@@ -418,7 +467,8 @@ export function DateTimeRangePicker<T extends string = string>({
   onChange,
   presets = [],
   customPreset: customPresetProp,
-  zoneLabel = 'UTC',
+  timeZone = 'UTC',
+  zoneLabel: zoneLabelProp,
   emptyLabel = 'Select date range',
   allowCustom = true,
   size = 'sm',
@@ -427,7 +477,16 @@ export function DateTimeRangePicker<T extends string = string>({
   disabled = false,
 }: DateTimeRangePickerProps<T>) {
   const customPreset = (customPresetProp ?? ('custom' as T)) as T;
+  const zoneBadge =
+    zoneLabelProp === null
+      ? null
+      : (zoneLabelProp ?? defaultZoneBadge(timeZone));
   const menuId = useId();
+  const titleId = useId();
+  const fromDateId = useId();
+  const fromTimeId = useId();
+  const toDateId = useId();
+  const toTimeId = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -438,10 +497,11 @@ export function DateTimeRangePicker<T extends string = string>({
     to: value.to,
     picking: 'from',
   });
-  const init = initialViews(value.from, value.to);
+  const init = initialViews(value.from, value.to, timeZone);
   const [leftView, setLeftView] = useState<YearMonth>(init.left);
   const [rightView, setRightView] = useState<YearMonth>(init.right);
   const [chooser, setChooser] = useState<ChooserPane>(null);
+  const [hoverYmd, setHoverYmd] = useState<string | null>(null);
 
   const isCustom = value.preset === customPreset;
   const hasBounds = !!(value.from || value.to);
@@ -453,7 +513,7 @@ export function DateTimeRangePicker<T extends string = string>({
   const toLabel = formatCompact(value.to);
   const fromParts = splitDt(draft.from);
   const toParts = splitDt(draft.to);
-  const todayYmd = todayUtc().ymd;
+  const todayYmd = todayInZone(timeZone).ymd;
   const invalidRange =
     draft.preset === customPreset &&
     !!draft.from &&
@@ -479,11 +539,12 @@ export function DateTimeRangePicker<T extends string = string>({
       to: value.to,
       picking: value.from && !value.to ? 'to' : 'from',
     });
-    const views = initialViews(value.from, value.to);
+    const views = initialViews(value.from, value.to, timeZone);
     setLeftView(views.left);
     setRightView(views.right);
     setChooser(null);
-  }, [value]);
+    setHoverYmd(null);
+  }, [value, timeZone]);
 
   const updateMenuPosition = useCallback(() => {
     const el = triggerRef.current;
@@ -543,6 +604,25 @@ export function DateTimeRangePicker<T extends string = string>({
     };
   }, [open, chooser]);
 
+  // Move focus into the dialog on open; restore the trigger on close.
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.activeElement as HTMLElement | null;
+    const t = window.setTimeout(() => {
+      menuRef.current
+        ?.querySelector<HTMLElement>('button:not([disabled]), input:not([disabled])')
+        ?.focus();
+    }, 0);
+    return () => {
+      window.clearTimeout(t);
+      if (prev && typeof prev.focus === 'function' && document.contains(prev)) {
+        prev.focus();
+      } else {
+        triggerRef.current?.focus();
+      }
+    };
+  }, [open]);
+
   const openMenu = () => {
     if (disabled) return;
     syncDraftFromValue();
@@ -591,39 +671,13 @@ export function DateTimeRangePicker<T extends string = string>({
 
   const pickDay = (ymd: string) => {
     setChooser(null);
-    const fromDate = splitDt(draft.from).date;
-    const toDate = splitDt(draft.to).date;
-    if (draft.picking === 'from' || (fromDate && toDate)) {
-      const time = splitDt(draft.from).time || '00:00';
-      setDraft({
-        preset: customPreset,
-        from: joinDt(ymd, time),
-        to: '',
-        picking: 'to',
-      });
-      revealMonth(ymd, 'left');
-      return;
-    }
-    const fromTime = splitDt(draft.from).time || '00:00';
-    const toTime = splitDt(draft.to).time || '23:59';
-    if (ymd < fromDate) {
-      setDraft({
-        preset: customPreset,
-        from: joinDt(ymd, fromTime),
-        to: joinDt(fromDate, toTime),
-        picking: 'from',
-      });
-      revealMonth(ymd, 'left');
-      revealMonth(fromDate, 'right');
-      return;
-    }
-    setDraft({
-      preset: customPreset,
-      from: draft.from,
-      to: joinDt(ymd, toTime),
-      picking: 'from',
-    });
-    revealMonth(ymd, 'right');
+    setHoverYmd(null);
+    const next = applyDayPick(draft, ymd, customPreset);
+    setDraft(next);
+    const fromDate = splitDt(next.from).date;
+    const toDate = splitDt(next.to).date;
+    if (fromDate) revealMonth(fromDate, 'left');
+    if (toDate) revealMonth(toDate, 'right');
   };
 
   const setBoundDate = (bound: 'from' | 'to', date: string) => {
@@ -642,7 +696,7 @@ export function DateTimeRangePicker<T extends string = string>({
       ...draft,
       preset: customPreset,
       [bound]: joinDt(date, time),
-      picking: bound === 'from' && !draft.to ? 'to' : draft.picking,
+      picking: bound === 'from' && !draft.to ? 'to' : bound,
     });
     revealMonth(date, bound === 'from' ? 'left' : 'right');
   };
@@ -651,14 +705,16 @@ export function DateTimeRangePicker<T extends string = string>({
     setDraft((d) => {
       const parts = splitDt(bound === 'from' ? d.from : d.to);
       if (!parts.date) return d;
+      const normalized = normalizeTime(time);
       const next = joinDt(
         parts.date,
-        time || (bound === 'from' ? '00:00' : '23:59'),
+        normalized || (bound === 'from' ? '00:00' : '23:59'),
       );
       return {
         ...d,
         preset: customPreset,
         [bound]: next,
+        picking: bound,
       };
     });
   };
@@ -694,7 +750,7 @@ export function DateTimeRangePicker<T extends string = string>({
   };
 
   const goToToday = () => {
-    const { ym } = todayUtc();
+    const { ym } = todayInZone(timeZone);
     setChooser(null);
     setLeftView(ym);
     setRightView(addMonths(ym, 1));
@@ -710,13 +766,15 @@ export function DateTimeRangePicker<T extends string = string>({
       ? 'Select end date'
       : draft.picking === 'from' && !fromParts.date
         ? 'Select start date'
-        : null;
+        : draft.picking === 'from' && fromParts.date
+          ? 'Editing start · click a day to restart range'
+          : null;
 
   const title =
     presetLabel ??
     (fromLabel || toLabel
-      ? `${fromLabel || '…'} → ${toLabel || '…'} (${zoneLabel})`
-      : `${emptyLabel} (${zoneLabel})`);
+      ? `${fromLabel || '…'} → ${toLabel || '…'}${zoneBadge ? ` (${zoneBadge})` : ''}`
+      : `${emptyLabel}${zoneBadge ? ` (${zoneBadge})` : ''}`);
 
   const menu = open
     ? createPortal(
@@ -724,7 +782,8 @@ export function DateTimeRangePicker<T extends string = string>({
           ref={menuRef}
           id={menuId}
           role="dialog"
-          aria-label={ariaLabel}
+          aria-modal="true"
+          aria-labelledby={titleId}
           style={{
             top: menuPos.top,
             left: menuPos.left,
@@ -733,21 +792,25 @@ export function DateTimeRangePicker<T extends string = string>({
           className="fixed z-200 flex flex-col overflow-hidden rounded-xl border border-white/8 bg-bg-panel shadow-[0_16px_48px_rgba(0,0,0,0.55)]"
         >
           <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/6 px-3 py-2">
-            <span className="text-[11px] font-semibold text-text">Date range</span>
+            <span id={titleId} className="text-[11px] font-semibold text-text">
+              Date range
+            </span>
             <div className="flex items-center gap-1.5">
               {allowCustom && (
                 <button
                   type="button"
                   onClick={goToToday}
-                  title="Jump calendars to today (UTC)"
+                  title={`Jump calendars to today (${zoneBadge ?? timeZone})`}
                   className="rounded-md border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary hover:bg-primary/20"
                 >
                   Today
                 </button>
               )}
-              <span className="rounded bg-white/6 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-text-dim">
-                {zoneLabel}
-              </span>
+              {zoneBadge && (
+                <span className="rounded bg-white/6 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-text-dim">
+                  {zoneBadge}
+                </span>
+              )}
             </div>
           </div>
 
@@ -793,7 +856,36 @@ export function DateTimeRangePicker<T extends string = string>({
             )}
 
             {allowCustom && (
-              <div className="flex w-fit flex-col gap-2 p-3">
+              <div className="flex w-fit flex-col gap-2.5 p-3">
+                <div className="grid w-full max-w-[408px] grid-cols-1 gap-2 sm:grid-cols-2">
+                  <BoundField
+                    label="From"
+                    active={draft.picking === 'from'}
+                    date={fromParts.date}
+                    time={fromParts.time}
+                    dateId={fromDateId}
+                    timeId={fromTimeId}
+                    onActivate={() =>
+                      setDraft((d) => ({ ...d, preset: customPreset, picking: 'from' }))
+                    }
+                    onDate={(date) => setBoundDate('from', date)}
+                    onTime={(time) => setBoundTime('from', time)}
+                  />
+                  <BoundField
+                    label="To"
+                    active={draft.picking === 'to'}
+                    date={toParts.date}
+                    time={toParts.time}
+                    dateId={toDateId}
+                    timeId={toTimeId}
+                    onActivate={() =>
+                      setDraft((d) => ({ ...d, preset: customPreset, picking: 'to' }))
+                    }
+                    onDate={(date) => setBoundDate('to', date)}
+                    onTime={(time) => setBoundTime('to', time)}
+                  />
+                </div>
+
                 {pickingHint && (
                   <p className="text-[10px] font-medium text-primary">{pickingHint}</p>
                 )}
@@ -804,6 +896,8 @@ export function DateTimeRangePicker<T extends string = string>({
                     chooserOpen={chooser === 'left'}
                     fromDate={fromParts.date}
                     toDate={toParts.date}
+                    picking={draft.picking}
+                    hoverYmd={hoverYmd}
                     todayYmd={todayYmd}
                     onToggleChooser={() =>
                       setChooser((c) => (c === 'left' ? null : 'left'))
@@ -811,6 +905,7 @@ export function DateTimeRangePicker<T extends string = string>({
                     onStep={stepLeft}
                     onPickMonth={setLeftMonth}
                     onPickDay={pickDay}
+                    onHover={setHoverYmd}
                     ariaPrev="Previous month (start pane)"
                     ariaNext="Next month (start pane)"
                   />
@@ -819,6 +914,8 @@ export function DateTimeRangePicker<T extends string = string>({
                     chooserOpen={chooser === 'right'}
                     fromDate={fromParts.date}
                     toDate={toParts.date}
+                    picking={draft.picking}
+                    hoverYmd={hoverYmd}
                     todayYmd={todayYmd}
                     onToggleChooser={() =>
                       setChooser((c) => (c === 'right' ? null : 'right'))
@@ -826,66 +923,27 @@ export function DateTimeRangePicker<T extends string = string>({
                     onStep={stepRight}
                     onPickMonth={setRightMonth}
                     onPickDay={pickDay}
+                    onHover={setHoverYmd}
                     ariaPrev="Previous month (end pane)"
                     ariaNext="Next month (end pane)"
                   />
-                </div>
-
-                <div className="grid w-full max-w-[408px] grid-cols-1 gap-2 border-t border-white/6 pt-2 sm:grid-cols-2">
-                  <div className="flex flex-col gap-1">
-                    <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/70">
-                      From
-                    </span>
-                    <div className="flex items-center gap-1">
-                      <input
-                        type="date"
-                        value={fromParts.date}
-                        onChange={(e) => setBoundDate('from', e.target.value)}
-                        className={cn(fieldCls, 'min-w-0 flex-1')}
-                        title="Start date"
-                      />
-                      <input
-                        type="time"
-                        value={fromParts.time}
-                        disabled={!fromParts.date}
-                        onChange={(e) => setBoundTime('from', e.target.value)}
-                        className={cn(fieldCls, 'w-24 shrink-0')}
-                        title="Start time"
-                      />
-                    </div>
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/70">
-                      To
-                    </span>
-                    <div className="flex items-center gap-1">
-                      <input
-                        type="date"
-                        value={toParts.date}
-                        onChange={(e) => setBoundDate('to', e.target.value)}
-                        className={cn(fieldCls, 'min-w-0 flex-1')}
-                        title="End date"
-                      />
-                      <input
-                        type="time"
-                        value={toParts.time}
-                        disabled={!toParts.date}
-                        onChange={(e) => setBoundTime('to', e.target.value)}
-                        className={cn(fieldCls, 'w-24 shrink-0')}
-                        title="End time"
-                      />
-                    </div>
-                  </div>
                 </div>
 
                 {invalidRange && (
                   <p className="text-[10px] text-red">End must be on or after start.</p>
                 )}
 
-                <div className="flex items-center justify-between gap-2 pt-1">
+                <div className="flex items-center justify-between gap-2 border-t border-white/6 pt-2">
                   <button
                     type="button"
                     className="text-[11px] font-semibold text-text-dim hover:text-text"
+                    title={
+                      presets.some(
+                        (p) => p.value === 'all' || p.label.toLowerCase() === 'all',
+                      )
+                        ? 'Clear bounds; Apply commits All time when an All preset exists'
+                        : 'Clear both bounds'
+                    }
                     onClick={() =>
                       setDraft({
                         preset: customPreset,
@@ -983,9 +1041,11 @@ export function DateTimeRangePicker<T extends string = string>({
           </span>
         )}
 
-        <span className="shrink-0 rounded bg-white/6 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wider text-text-dim">
-          {zoneLabel}
-        </span>
+        {zoneBadge && (
+          <span className="shrink-0 rounded bg-white/6 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wider text-text-dim">
+            {zoneBadge}
+          </span>
+        )}
         <span
           className={cn(
             'shrink-0 text-[9px] leading-none text-text-dim/70 transition-transform',

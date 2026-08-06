@@ -182,7 +182,8 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   patches table rows; detail/chart `TokenTradeChart` appends the same frames into
   RTK `getTokenTrades` via `useWatchTokenTradesLive`; scroll-into-view on select;
   table stream toggle labeled **STREAM ON/OFF** so it is not confused with the
-  header trading kill switch; advanced filters behind a disclosure; `?mint=`
+  header trading kill switch; slim page-owned `TokensFilterBar` (Created /
+  Dead / Migrated) above the table — not inside `DataTable`; `?mint=`
   deep-links selection), Profiles, Settings (`pages/settings/` — 2-col
   content-sized Trading / Notifications / Tracking / Reliability grid
   (`items-start`, no viewport stretch); page-level Saved/error feedback;
@@ -313,9 +314,10 @@ next load (no per-metric frontend work).
   (`?mode=` in the URL, sticky per board: Rules, Rules Control and Simulate each
   keep their own key).   Ops surfaces (Console / History / Portfolio) use
   `ModeToggle` directly (`layout="ops"`). Datetime windows use
-  `DateTimeRangePicker`; other exclusive non-mode filters (score scope) use
-  `ToggleGroup`; panel swaps use `Tabs`; paper/real pills use
-  `ModeBadge` / `modeBadgeVariant` — see [ui-controls.md](@plans/frontend/ui-controls.md).
+  `DateTimeRangePicker`; single civil days use `DatePicker`; other exclusive
+  non-mode filters (score scope) use `ToggleGroup`; panel swaps use `Tabs`;
+  paper/real pills use `ModeBadge` / `modeBadgeVariant` — see
+  [ui-controls.md](@plans/frontend/ui-controls.md).
   It is the same view-filter shape as tags and composes with them: each control's
   chip counts come from the set narrowed by the *other* one, so a count never
   collapses to its own selection. Because both pages derive everything
@@ -422,14 +424,17 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   operators compare **numerically server-side**. `numericColKeys(columns)` derives the numeric-key set
   from a column list. All tables read the run-wide `total` off the response. Positions is POST on
   **both** bins (live + lab) so the shared hook/fetchers are one code path.
-- **Tokens page = same contract (`POST /api/tokens`).** `getTokensPage` (`sharedEndpoints.ts`) folds the
-  DataTable view-state (`toTableRequest`) AND the global `TokenFilters` panel (`tokenFiltersToSpecs`,
-  `filters.ts`) into ONE `filters: {col → FilterSpec}` map keyed by backend column key (panel-wins on
-  collision), tz-normalizing the datetime pickers; the Tokens-only `trackedOnly`/`swingRunId`/
-  `swingChainLatencyMs` ride alongside. Backend lowers each `FilterSpec` back onto its internal panel/
-  per-column representation (`TokenQuery::from_table_request`), so the LIVE (Postgres) and LAB (in-RAM)
-  engines are unchanged and identical (DB parity test). The old bespoke `f_*`/`cf` `URLSearchParams`
-  builder and the dead simple `getTokens` GET endpoint were removed.
+- **Tokens page = same contract (`POST /api/tokens`).** `getTokensPage` (`sharedEndpoints.ts`) serializes
+  DataTable view-state via `toTableRequest`; page-owned quick filters (`TokensFilterBar` →
+  `quickFiltersToSpecs`) and mint-set arrive already folded into `structuredFilters` (structured wins
+  on key collision with per-column text). The Tokens-only `trackedOnly` rider sits alongside. Backend
+  lowers each `FilterSpec` onto its internal panel/per-column representation
+  (`TokenQuery::from_table_request`), so the LIVE (Postgres) and LAB (in-RAM) engines stay identical
+  (DB parity test). The old mega Advanced-filters panel and bespoke `f_*`/`cf` query builders are gone.
+- **`DataTable` stays domain-agnostic.** Extensibility is via `searchPlaceholder`,
+  `toolbarLeading`/`toolbarTrailing`, and `ColumnDef.filterOptions` / `filterOptionValue` (enum
+  filter-row selects). Token/History chrome lives in wrappers or page bars (`TokenTable`,
+  `TokensFilterBar`, `HistoryFilterBar`) — never token vocabulary inside `components/table/`.
 - **Rule Evidence = server-side paged + summary, shared by BOTH apps** (`shared/components/strategy/RuleAnalyzePanel`
   via `useServerTable` +
   `fetchRulePositionsPage` / `fetchRulePositionsSummary`): `POST …/rules/{id}/positions[?scope=current|run|all|history]`
@@ -574,16 +579,19 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   over ONE neutral atom, `PnlPoint` (`{key, timeMs, pnlSol, pnlPct, label, groupId?, isOpen?}`):
   `buildEquityCurve` (+ running peak → `maxDrawdownSol`), `pnlDistributionBuckets`,
   `buildPnlHeatCells`, `buildDailyPnl`, `buildHoldScatterPoints`, `rankByValue`, `groupDailyPnl`,
-  and `groupTrends` (the decay verdict). Renderers: `EquityCurveChart` (the ONLY one pulling
-  `lightweight-charts` — lazy-load it), `PnlDistribution`, `PnlHeatmap`, `PnlCalendar`,
-  `HoldPnlScatter` (log hold × PnL%, also used by lab Trader Analysis), `RankedPnlBars`,
-  `PnlSparkline` (inline SVG, cheap enough per table row). Callers map their own row type into
-  `PnlPoint` and every chart derives from the same points, so an equity curve can't disagree
-  with the histogram
-  beside it. Promoted out of `@lab/components/analysis` (a sanctioned lab→shared move — the live
-  app may never import `@lab`); the `Wallet*` components there are now thin adapters that map
-  `TraderTokenRow` → `PnlPoint` and render the shared pair, and `walletPnlStats.ts` keeps only the
-  wallet-specific summary/scatter.
+  `groupTrends` (the decay verdict), and **`foldPnlDeck`** (one cohort walk → curve + buckets +
+  heat + daily + sparkline value arrays + trends — used by Console History, Portfolio, Home
+  digest so those surfaces never re-walk the same closes). Civil day/dow/hour share one cached
+  `Intl.DateTimeFormat` per timezone (`civilPartsInTz`). Renderers: `EquityCurveChart` (the ONLY
+  one pulling `lightweight-charts` — lazy-load it; `fitContent` only when the series identity
+  changes), `PnlDistribution`, `PnlHeatmap`, `PnlCalendar`, `HoldPnlScatter` (log hold × PnL%;
+  brush drag is DOM-ref based so it does not remount markers; canvas above ~250 points),
+  `RankedPnlBars`, `PnlSparkline` (inline SVG, cheap enough per table row). Callers map their own
+  row type into `PnlPoint` and every chart derives from the same points, so an equity curve can't
+  disagree with the histogram beside it. Promoted out of `@lab/components/analysis` (a sanctioned
+  lab→shared move — the live app may never import `@lab`); the `Wallet*` components there are now
+  thin adapters that map `TraderTokenRow` → `PnlPoint` and render the shared pair, and
+  `walletPnlStats.ts` keeps only the wallet-specific summary/scatter.
 - Memoized column defs/price formatters; cells read context directly. localStorage via `lib/storage`
   (`mt:` namespace); column visibility in one `mt:table.cols` map keyed by `tableId`.
 

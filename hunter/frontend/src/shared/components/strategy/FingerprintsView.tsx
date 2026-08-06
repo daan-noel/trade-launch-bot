@@ -42,6 +42,8 @@ import {
 } from 'lib/strategy/types';
 import { tidySolDecimal } from 'utils/format';
 
+const fingerprintRowKey = (r: Fingerprint) => r.id;
+
 function dash(): ReactNode {
   return <span className="text-text-dim">—</span>;
 }
@@ -432,22 +434,26 @@ export function FingerprintsView({
         title="Fingerprints"
         description="Match specs · select a row to see which rules use it"
         actions={
-          <IconButton
-            variant="success"
-            size="lg"
-            label="New fingerprint"
-            title="New fingerprint"
-            onClick={() => setEditing('new')}
-          >
-            <PlusIcon />
-          </IconButton>
+          <>
+            <div className="grow" />
+
+            <IconButton
+              variant="success"
+              size="lg"
+              label="New fingerprint"
+              title="New fingerprint"
+              onClick={() => setEditing('new')}
+            >
+              <PlusIcon />
+            </IconButton>
+          </>
         }
       />
       {err && <p className="text-xs text-red">{err}</p>}
       <DataTable
         columns={columns}
         rows={fps}
-        rowKey={(r) => r.id}
+        rowKey={fingerprintRowKey}
         loading={isLoading}
         searchable
         colFilters

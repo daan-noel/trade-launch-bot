@@ -1,16 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import {
   dayBoundsUtcIso,
+  filterClosesForFocus,
   historyFocusLabel,
   intersectUtcWindow,
   matchesHeatFocus,
   matchesHoldBandFocus,
+  matchesHoldBandSecs,
+  matchesPctFocus,
   parseHistoryFocus,
   pctFocusFilter,
   serializeHistoryFocus,
   toggleHistoryFocus,
   weekBoundsUtcIso,
+  type FocusableClose,
 } from './historyFocus';
+
+const RID = '01234567-89ab-cdef-0123-456789abcdef';
+const PID = 'fedcba98-7654-3210-fedc-ba9876543210';
+
+function close(partial: Partial<FocusableClose> & Pick<FocusableClose, 'id' | 'exit_time'>): FocusableClose {
+  return {
+    rule_id: null,
+    entry_sol: 1,
+    pnl_sol: 0,
+    hold_secs: 30,
+    ...partial,
+  };
+}
 
 describe('parseHistoryFocus / serializeHistoryFocus', () => {
   it('round-trips each kind', () => {
@@ -165,5 +182,91 @@ describe('matchesHoldBandFocus', () => {
         focus,
       ),
     ).toBe(false);
+  });
+
+  it('matchesHoldBandSecs agrees with the entry/exit form', () => {
+    const focus = { kind: 'holdBand' as const, holdLo: 10, holdHi: 60, pctLo: -5, pctHi: 25 };
+    expect(matchesHoldBandSecs(30, 10, focus)).toBe(true);
+    expect(matchesHoldBandSecs(120, 10, focus)).toBe(false);
+  });
+});
+
+describe('matchesPctFocus', () => {
+  it('mirrors pctFocusFilter half-open edges', () => {
+    expect(matchesPctFocus(-60, -Infinity, -50)).toBe(true);
+    expect(matchesPctFocus(-50, -Infinity, -50)).toBe(false);
+    expect(matchesPctFocus(500, 500, Infinity)).toBe(true);
+    expect(matchesPctFocus(499, 500, Infinity)).toBe(false);
+    expect(matchesPctFocus(-10, -10, 0)).toBe(true);
+    expect(matchesPctFocus(0, -10, 0)).toBe(false);
+  });
+});
+
+describe('filterClosesForFocus', () => {
+  const closes: FocusableClose[] = [
+    // Monday 2026-08-03 14:30 America/New_York = 18:30 UTC
+    close({
+      id: 'a',
+      exit_time: '2026-08-03T18:30:00.000Z',
+      rule_id: RID,
+      pnl_sol: 0.2,
+      hold_secs: 30,
+    }),
+    // Tuesday
+    close({
+      id: 'b',
+      exit_time: '2026-08-04T18:30:00.000Z',
+      rule_id: null,
+      pnl_sol: -0.5,
+      hold_secs: 120,
+    }),
+    close({
+      id: PID,
+      exit_time: '2026-08-03T19:00:00.000Z',
+      rule_id: RID,
+      pnl_sol: 6,
+      hold_secs: 45,
+    }),
+  ];
+
+  it('returns the parent list when focus is null', () => {
+    expect(filterClosesForFocus(closes, null, 'UTC')).toBe(closes);
+  });
+
+  it('filters day / heat / pct / rule / pos / holdBand', () => {
+    expect(
+      filterClosesForFocus(closes, { kind: 'day', day: '2026-08-03' }, 'America/New_York').map(
+        (c) => c.id,
+      ),
+    ).toEqual(['a', PID]);
+
+    expect(
+      filterClosesForFocus(
+        closes,
+        { kind: 'heat', dow: 1, hour: 14 },
+        'America/New_York',
+      ).map((c) => c.id),
+    ).toEqual(['a']);
+
+    // +600% lands in ≥500 open tail
+    expect(
+      filterClosesForFocus(closes, { kind: 'pct', lo: 500, hi: Infinity }, 'UTC').map((c) => c.id),
+    ).toEqual([PID]);
+
+    expect(
+      filterClosesForFocus(closes, { kind: 'rule', ruleId: RID }, 'UTC').map((c) => c.id),
+    ).toEqual(['a', PID]);
+
+    expect(
+      filterClosesForFocus(closes, { kind: 'pos', positionId: PID }, 'UTC').map((c) => c.id),
+    ).toEqual([PID]);
+
+    expect(
+      filterClosesForFocus(
+        closes,
+        { kind: 'holdBand', holdLo: 20, holdHi: 60, pctLo: 0, pctHi: 50 },
+        'UTC',
+      ).map((c) => c.id),
+    ).toEqual(['a']);
   });
 });

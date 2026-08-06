@@ -50,6 +50,10 @@ import type { WalletHolding } from 'types';
 /** Loose base58 mint check — the backend does the real validation. */
 const MINT_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
+/** Stable DataTable row keys — hoisted so live re-renders don't defeat row memo. */
+const openPositionRowKey = (r: LiveOpenRow) => r.positionId;
+const waitingRowKey = (r: LiveArmedRow) => r.key;
+
 type CloseAction = 'retry' | 'dump' | 'writeoff' | 'verify';
 
 const STATUS_LABEL: Record<string, string> = {
@@ -664,146 +668,155 @@ export function ConsolePage() {
     );
   };
 
-  // ── Columns ────────────────────────────────────────────────────────────────
-  const openColsBase: ColumnDef<LiveOpenRow>[] = [
-    {
-      key: 'mint',
-      label: 'Token',
-      render: tokenCell,
-      searchValue: (r) => r.mint,
-    },
-    {
-      key: 'rule',
-      label: 'Rule',
-      render: (r) => ruleLink(r.ruleId, r.ruleName, r.origin),
-      searchValue: (r) => (r.origin === 'manual' ? 'manual' : (r.ruleName ?? r.ruleId ?? '')),
-    },
-    {
-      key: 'status',
-      label: 'Status',
-      sortable: true,
-      render: statusCell,
-      sortValue: (r) => r.status,
-      searchValue: (r) => STATUS_LABEL[r.status] ?? r.status,
-    },
-    {
-      key: 'age',
-      label: 'Age',
-      sortable: true,
-      render: (r) => (
-        <span
-          className={`tabular-nums ${sseLive ? 'text-text-dim' : 'text-warning'}`}
-          title={sseLive ? undefined : 'SSE stale — status may be out of date'}
-        >
-          {ageCell(r)}
-        </span>
-      ),
-      sortValue: (r) => ageSecs(r) ?? -1,
-      searchValue: () => '',
-      filterNumber: ageSecs,
-    },
-    {
-      key: 'entry',
-      label: 'Entry ◎',
-      sortable: true,
-      render: (r) => (
-        <span className="tabular-nums">
-          {r.entrySol != null ? formatCompact(r.entrySol, 3) : '—'}
-        </span>
-      ),
-      sortValue: (r) => r.entrySol ?? -1,
-      searchValue: (r) => String(r.entrySol ?? ''),
-      filterNumber: (r) => r.entrySol ?? null,
-    },
-    {
-      key: 'mtm',
-      label: 'MTM ◎',
-      sortable: true,
-      render: (r) => {
-        const { mtmSol } = openMark(r);
-        return mtmSol != null ? (
-          <span className={`tabular-nums text-xs font-semibold ${signedToneClass(mtmSol)}`}>
-            {formatSigned(mtmSol, 3)}
-          </span>
-        ) : (
-          <span className="text-text-dim">—</span>
-        );
+  // ── Columns (memoized — Console re-renders on SSE ticks; stable defs keep
+  // DataTable row memo effective when only unrelated chrome changed).
+  const openColsBase: ColumnDef<LiveOpenRow>[] = useMemo(
+    () => [
+      {
+        key: 'mint',
+        label: 'Token',
+        render: tokenCell,
+        searchValue: (r) => r.mint,
       },
-      sortValue: (r) => openMark(r).mtmSol ?? 0,
-      searchValue: (r) => String(openMark(r).mtmSol ?? ''),
-      filterNumber: (r) => openMark(r).mtmSol,
-    },
-    {
-      key: 'pnl_pct',
-      label: 'PnL%',
-      sortable: true,
-      render: (r) => {
-        const { mtmPct } = openMark(r);
-        return mtmPct != null ? (
-          <span className={`tabular-nums text-xs ${pctGradeClass(mtmPct)}`}>
-            {formatSignedPct(mtmPct, 1)}
-          </span>
-        ) : (
-          <span className="text-text-dim">—</span>
-        );
+      {
+        key: 'rule',
+        label: 'Rule',
+        render: (r) => ruleLink(r.ruleId, r.ruleName, r.origin),
+        searchValue: (r) => (r.origin === 'manual' ? 'manual' : (r.ruleName ?? r.ruleId ?? '')),
       },
-      sortValue: (r) => openMark(r).mtmPct ?? 0,
-      searchValue: (r) => String(openMark(r).mtmPct ?? ''),
-      filterNumber: (r) => openMark(r).mtmPct,
-    },
-    {
-      key: 'actions',
-      label: '',
-      width: '250px',
-      render: actionsCell,
-      searchValue: () => '',
-    },
-  ];
+      {
+        key: 'status',
+        label: 'Status',
+        sortable: true,
+        render: statusCell,
+        sortValue: (r) => r.status,
+        searchValue: (r) => STATUS_LABEL[r.status] ?? r.status,
+      },
+      {
+        key: 'age',
+        label: 'Age',
+        sortable: true,
+        render: (r) => (
+          <span
+            className={`tabular-nums ${sseLive ? 'text-text-dim' : 'text-warning'}`}
+            title={sseLive ? undefined : 'SSE stale — status may be out of date'}
+          >
+            {ageCell(r)}
+          </span>
+        ),
+        sortValue: (r) => ageSecs(r) ?? -1,
+        searchValue: () => '',
+        filterNumber: ageSecs,
+      },
+      {
+        key: 'entry',
+        label: 'Entry ◎',
+        sortable: true,
+        render: (r) => (
+          <span className="tabular-nums">
+            {r.entrySol != null ? formatCompact(r.entrySol, 3) : '—'}
+          </span>
+        ),
+        sortValue: (r) => r.entrySol ?? -1,
+        searchValue: (r) => String(r.entrySol ?? ''),
+        filterNumber: (r) => r.entrySol ?? null,
+      },
+      {
+        key: 'mtm',
+        label: 'MTM ◎',
+        sortable: true,
+        render: (r) => {
+          const { mtmSol } = openMark(r);
+          return mtmSol != null ? (
+            <span className={`tabular-nums text-xs font-semibold ${signedToneClass(mtmSol)}`}>
+              {formatSigned(mtmSol, 3)}
+            </span>
+          ) : (
+            <span className="text-text-dim">—</span>
+          );
+        },
+        sortValue: (r) => openMark(r).mtmSol ?? 0,
+        searchValue: (r) => String(openMark(r).mtmSol ?? ''),
+        filterNumber: (r) => openMark(r).mtmSol,
+      },
+      {
+        key: 'pnl_pct',
+        label: 'PnL%',
+        sortable: true,
+        render: (r) => {
+          const { mtmPct } = openMark(r);
+          return mtmPct != null ? (
+            <span className={`tabular-nums text-xs ${pctGradeClass(mtmPct)}`}>
+              {formatSignedPct(mtmPct, 1)}
+            </span>
+          ) : (
+            <span className="text-text-dim">—</span>
+          );
+        },
+        sortValue: (r) => openMark(r).mtmPct ?? 0,
+        searchValue: (r) => String(openMark(r).mtmPct ?? ''),
+        filterNumber: (r) => openMark(r).mtmPct,
+      },
+      {
+        key: 'actions',
+        label: '',
+        width: '250px',
+        render: actionsCell,
+        searchValue: () => '',
+      },
+    ],
+    // tokenCell/actionsCell/ageCell close over live book + busy/SSE — rebuild when those move.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sseLive, openMark, busyId, modeFilter, holdingByMint],
+  );
 
-  const waitingCols: ColumnDef<LiveArmedRow>[] = [
-    {
-      key: 'mint',
-      label: 'Token',
-      render: (r) => <AddressDisplay address={r.mint} kind="token" />,
-      searchValue: (r) => r.mint,
-    },
-    {
-      key: 'rule',
-      label: 'Rule',
-      render: (r) => ruleLink(r.ruleId, r.ruleName),
-      searchValue: (r) => r.ruleName ?? r.ruleId,
-    },
-    {
-      key: 'age',
-      label: 'Age',
-      sortable: true,
-      render: (r) => (
-        <span className="tabular-nums text-text-dim">{fmtAge(Date.now() - r.armedAt)}</span>
-      ),
-      sortValue: (r) => r.armedAt,
-      searchValue: () => '',
-      filterNumber: (r) => Math.max(0, Math.floor((Date.now() - r.armedAt) / 1000)),
-    },
-    {
-      key: 'trade',
-      label: '',
-      width: '64px',
-      render: (r) => (
-        <button
-          type="button"
-          className="text-[11px] font-semibold text-accent hover:text-primary hover:underline"
-          onClick={(e) => {
-            e.stopPropagation();
-            setTradeMint(r.mint);
-          }}
-          title="Prefill the manual-trade panel with this mint"
-        >
-          Trade
-        </button>
-      ),
-      searchValue: () => '',
-    },
-  ];
+  const waitingCols: ColumnDef<LiveArmedRow>[] = useMemo(
+    () => [
+      {
+        key: 'mint',
+        label: 'Token',
+        render: (r) => <AddressDisplay address={r.mint} kind="token" />,
+        searchValue: (r) => r.mint,
+      },
+      {
+        key: 'rule',
+        label: 'Rule',
+        render: (r) => ruleLink(r.ruleId, r.ruleName),
+        searchValue: (r) => r.ruleName ?? r.ruleId,
+      },
+      {
+        key: 'age',
+        label: 'Age',
+        sortable: true,
+        render: (r) => (
+          <span className="tabular-nums text-text-dim">{fmtAge(Date.now() - r.armedAt)}</span>
+        ),
+        sortValue: (r) => r.armedAt,
+        searchValue: () => '',
+        filterNumber: (r) => Math.max(0, Math.floor((Date.now() - r.armedAt) / 1000)),
+      },
+      {
+        key: 'trade',
+        label: '',
+        width: '64px',
+        render: (r) => (
+          <button
+            type="button"
+            className="text-[11px] font-semibold text-accent hover:text-primary hover:underline"
+            onClick={(e) => {
+              e.stopPropagation();
+              setTradeMint(r.mint);
+            }}
+            title="Prefill the manual-trade panel with this mint"
+          >
+            Trade
+          </button>
+        ),
+        searchValue: () => '',
+      },
+    ],
+    [],
+  );
 
   // ── Deep-link detail modals (row click → position param) ────────────────────
   const selectedKey = positionParam;
@@ -876,7 +889,7 @@ export function ConsolePage() {
           </>
         }
         actions={
-          <div className="flex items-center gap-2">
+          <>
             {/* SSE feed state — deliberately separate from the engine LIVE/DEAD
                 kill switch in the app header (two different facts). */}
             <span
@@ -887,13 +900,16 @@ export function ConsolePage() {
             >
               {sseLive ? '● live' : '○ stale'}
             </span>
+
+            <div className="grow" />
+
             <ModeToggle
               layout="ops"
               size="sm"
               value={modeFilter}
               onChange={setMode}
             />
-          </div>
+          </>
         }
       />
 
@@ -928,7 +944,7 @@ export function ConsolePage() {
           <DataTable
             columns={openColsBase}
             rows={attentionRows}
-            rowKey={(r) => r.positionId}
+            rowKey={openPositionRowKey}
             tableId="console-attention"
             emptyMessage="Nothing needs attention."
             selectedKey={selectedKey}
@@ -956,7 +972,7 @@ export function ConsolePage() {
           <DataTable
             columns={openColsBase}
             rows={openRows}
-            rowKey={(r) => r.positionId}
+            rowKey={openPositionRowKey}
             searchable
             colFilters
             tableId="console-open"
@@ -1105,7 +1121,7 @@ export function ConsolePage() {
             <DataTable
               columns={waitingCols}
               rows={waitingRows}
-              rowKey={(r) => r.key}
+              rowKey={waitingRowKey}
               searchable
               tableId="console-waiting"
               emptyMessage="No armed (waiting) rules."

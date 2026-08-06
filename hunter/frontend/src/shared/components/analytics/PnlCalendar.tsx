@@ -83,8 +83,6 @@ export const PnlCalendar = memo(function PnlCalendar({
 }: PnlCalendarProps) {
   const { columns, maxAbs, maxCount, total, summary } = useMemo(() => {
     const byDay = new Map(days.map((d) => [d.day, d]));
-    const max = days.reduce((m, d) => Math.max(m, Math.abs(d.pnlSol)), 0);
-    const maxN = days.reduce((m, d) => Math.max(m, d.count), 0);
 
     const todayNoonUtc = datetimeLocalToUtcWallClock(`${todayKey}T12:00:00`, timeZone, 'lower');
     const todayDow = dowHourInTz(Date.parse(`${todayNoonUtc}Z`), timeZone).dow;
@@ -95,12 +93,14 @@ export const PnlCalendar = memo(function PnlCalendar({
       key: string;
       /** Sunday of this column — the week focus key. */
       weekStart: string;
-      /** Month abbreviation when this column opens a new month, else `''`. */
+      /** Month abbreviation when this column opens a month, else `''`. */
       monthLabel: string;
       pnlSol: number;
       count: number;
       cells: { day: string; data: PnlDay | undefined; future: boolean }[];
     }[] = [];
+    let max = 0;
+    let maxN = 0;
     for (let w = 0; w < weeks; w++) {
       const cells: { day: string; data: PnlDay | undefined; future: boolean }[] = [];
       let pnlSol = 0;
@@ -108,9 +108,12 @@ export const PnlCalendar = memo(function PnlCalendar({
       for (let d = 0; d < 7; d++) {
         const key = shiftDayKey(startKey, w * 7 + d);
         const data = byDay.get(key);
-        if (data) {
+        if (data && key <= todayKey) {
           pnlSol += data.pnlSol;
           count += data.count;
+          const abs = Math.abs(data.pnlSol);
+          if (abs > max) max = abs;
+          if (data.count > maxN) maxN = data.count;
         }
         cells.push({ day: key, data, future: key > todayKey });
       }

@@ -38,6 +38,9 @@ import {
   weekBoundsUtcIso,
 } from '@live/pages/console/historyFocus';
 
+/** Stable row key — hoisted so DataTable doesn't see a fresh closure each render. */
+const historyPositionRowKey = (r: RulePositionRecord) => r.id;
+
 /** `entry_time` → `exit_time` as a compact hold label. */
 function holdLabel(r: RulePositionRecord): string | null {
   if (!r.entry_time) return null;
@@ -325,6 +328,14 @@ export const HistoryTable = memo(function HistoryTable({
   const inspect = selectedKey ? (rows.find((r) => r.id === selectedKey) ?? null) : null;
   const heatScanCapped = clientScanFocus && total >= HEAT_SCAN_PAGE_SIZE;
 
+  const handleSelect = useCallback(
+    (key: string | null) => {
+      const row = key ? rows.find((r) => r.id === key) : undefined;
+      onSelect(key, row?.mint_address);
+    },
+    [rows, onSelect],
+  );
+
   return (
     <>
       {error && <InlineAlert variant="error">History failed to load: {error}</InlineAlert>}
@@ -337,7 +348,7 @@ export const HistoryTable = memo(function HistoryTable({
       <DataTable
         columns={columns}
         rows={rows}
-        rowKey={(r) => r.id}
+        rowKey={historyPositionRowKey}
         searchable
         colFilters
         loading={loading}
@@ -354,10 +365,7 @@ export const HistoryTable = memo(function HistoryTable({
             : 'No positions in this cohort — widen the date range or clear the filters.'
         }
         selectedKey={selectedKey}
-        onSelect={(key) => {
-          const row = rows.find((r) => r.id === key);
-          onSelect(key, row?.mint_address);
-        }}
+        onSelect={handleSelect}
       />
 
       {inspect && (

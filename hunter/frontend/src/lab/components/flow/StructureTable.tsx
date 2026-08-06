@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 
 import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
@@ -21,6 +21,9 @@ import {
   washGrade,
   type StructureSuggestion,
 } from './flowDiscoverySuggest';
+
+/** Stable structure identity — same key the draft/preview sets use. */
+const structureRowKey = (s: FlowDiscoveryStructure) => JSON.stringify(s.ix_labels);
 
 function fmt(n: number, digits = 1): string {
   if (!Number.isFinite(n)) return '—';
@@ -321,16 +324,21 @@ export function StructureTable({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- draftKeysSig/contagion/suggestion maps are the real identities
     [draftKeysSig, contagionByStructure, suggestionByStructure, liftDefined, onToggle],
   );
+  const rowClassName = useCallback(
+    (s: FlowDiscoveryStructure) => {
+      const key = structureRowKey(s);
+      if (previewKeys?.has(key)) return 'bg-accent/12 outline outline-1 outline-accent/50';
+      return draftPatterns.some((p) => JSON.stringify(p) === key) ? 'bg-accent/8' : undefined;
+    },
+    [previewKeys, draftPatterns],
+  );
+
   return (
     <DataTable
       columns={columns}
       rows={structures}
-      rowKey={(s) => JSON.stringify(s.ix_labels)}
-      rowClassName={(s) => {
-        const key = JSON.stringify(s.ix_labels);
-        if (previewKeys?.has(key)) return 'bg-accent/12 outline outline-1 outline-accent/50';
-        return draftPatterns.some((p) => JSON.stringify(p) === key) ? 'bg-accent/8' : undefined;
-      }}
+      rowKey={structureRowKey}
+      rowClassName={rowClassName}
       searchable={false}
       colFilters={false}
       colToggle={false}

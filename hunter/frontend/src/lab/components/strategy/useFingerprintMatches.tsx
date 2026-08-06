@@ -11,6 +11,9 @@
 // so counts/rows are "matched, created in the window", not all-time. Kept in
 // `@lab` (not `src/shared`) because the endpoint hook is lab-only and the shared
 // control must stay import-boundary clean (`shared ⊬ @lab`).
+//
+// Count fetch is **lazy**: it starts on `ensureCount` (hover the chip) or when
+// the matches modal opens — not on every page mount with a persisted seed id.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { skipToken } from '@reduxjs/toolkit/query/react';
@@ -132,10 +135,12 @@ function FingerprintMatchesModal({
 
 export interface UseFingerprintMatches {
   /** Number of tokens the fingerprint matches in the window, or `null` when no
-   *  fingerprint is selected / the count hasn't loaded. */
+   *  fingerprint is selected / the count hasn't been requested yet. */
   count: number | null;
   countLoading: boolean;
-  /** Open the matched-tokens modal (no-op with no fingerprint selected). */
+  /** Start the cheap `pageSize:1` count fetch (idempotent). */
+  ensureCount: () => void;
+  /** Open the matched-tokens modal (also starts the count fetch). */
   openMatches: () => void;
   /** The modal element (rendered only while open) — drop into the page's JSX. */
   matchesModal: ReactNode;
@@ -144,33 +149,44 @@ export interface UseFingerprintMatches {
 /**
  * Wire a selected fingerprint to a matched-token count + an on-demand modal
  * table. Pass the result into `FingerprintScopeControl`'s `matchedCount` /
- * `matchedCountLoading` / `onViewMatches` props, and render `matchesModal`.
+ * `matchedCountLoading` / `onViewMatches` / `onRequestMatchCount` props, and
+ * render `matchesModal`.
  *
- * The count loads automatically on selection (cheap `pageSize:1` fetch reading
- * the total); the full table only fetches once the modal is opened.
+ * The count loads lazily (`ensureCount` / open modal) — a cheap `pageSize:1`
+ * fetch reading `total`. The full table only fetches once the modal is opened.
  */
 export function useFingerprintMatches(
   fingerprintId: string | null,
   fingerprintName?: string,
 ): UseFingerprintMatches {
   const [open, setOpen] = useState(false);
+  const [countEnabled, setCountEnabled] = useState(false);
 
   // Count = the `total` of a 1-row page; no per-column filters (the raw match
   // count for the whole window). Reuses the modal's cache-adjacent query shape.
-  const countArgs = fingerprintId
-    ? scopedArgs(fingerprintId, { ...INITIAL_QUERY, page: 1, pageSize: 1 })
-    : skipToken;
+  const countArgs =
+    fingerprintId && countEnabled
+      ? scopedArgs(fingerprintId, { ...INITIAL_QUERY, page: 1, pageSize: 1 })
+      : skipToken;
   const { data: countData, isFetching: countLoading } =
     useGetGroupedCreationTokensQuery(countArgs);
-  const count = fingerprintId ? countData?.total ?? null : null;
+  const count = fingerprintId && countEnabled ? countData?.total ?? null : null;
 
-  // Clearing / switching the fingerprint closes any open modal.
+  // Clearing / switching the fingerprint closes any open modal and resets the
+  // lazy count gate so a newly picked id doesn't flash the previous total.
   useEffect(() => {
     if (!fingerprintId) setOpen(false);
+    setCountEnabled(false);
+  }, [fingerprintId]);
+
+  const ensureCount = useCallback(() => {
+    if (fingerprintId) setCountEnabled(true);
   }, [fingerprintId]);
 
   const openMatches = useCallback(() => {
-    if (fingerprintId) setOpen(true);
+    if (!fingerprintId) return;
+    setCountEnabled(true);
+    setOpen(true);
   }, [fingerprintId]);
 
   const matchesModal =
@@ -183,5 +199,11 @@ export function useFingerprintMatches(
       />
     ) : null;
 
-  return { count, countLoading: fingerprintId ? countLoading : false, openMatches, matchesModal };
+  return {
+    count,
+    countLoading: fingerprintId && countEnabled ? countLoading : false,
+    ensureCount,
+    openMatches,
+    matchesModal,
+  };
 }

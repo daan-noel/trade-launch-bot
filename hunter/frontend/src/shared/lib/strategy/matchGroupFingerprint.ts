@@ -335,12 +335,62 @@ export function fingerprintCompatibleWithGroupKey(
   return true;
 }
 
+/** Canonical `IDENTITY_WHERE` key — stable string for Map lookups. */
+export function fingerprintIdentityKey(id: FingerprintIdentity): string {
+  const labels = configuredIxLabels(id.ix_labels);
+  return [
+    id.cu_limit ?? '',
+    id.cu_price ?? '',
+    id.init_buy_lamports ?? '',
+    id.max_cost_lamports ?? '',
+    id.spendable_lamports_in ?? '',
+    id.first_slot_buy_lamports ?? '',
+    id.first_slot_sell_lamports ?? '',
+    id.bucket_size_amount == null ? 'exact' : String(tidySolDecimal(id.bucket_size_amount)),
+    labels == null ? '' : labels.join('\0'),
+  ].join('|');
+}
+
+/** Identity axes from a saved fingerprint row (same shape as group-key rebuild). */
+export function fingerprintToIdentity(fp: Fingerprint): FingerprintIdentity {
+  return {
+    cu_limit: fp.cu_limit,
+    cu_price: fp.cu_price,
+    init_buy_lamports: fp.init_buy_lamports,
+    max_cost_lamports: fp.max_cost_lamports,
+    spendable_lamports_in: fp.spendable_lamports_in,
+    first_slot_buy_lamports: fp.first_slot_buy_lamports,
+    first_slot_sell_lamports: fp.first_slot_sell_lamports,
+    bucket_size_amount:
+      fp.bucket_size_amount == null ? null : tidySolDecimal(fp.bucket_size_amount),
+    ix_labels: fp.ix_labels,
+  };
+}
+
+/** Exact-identity index for O(1) group→fingerprint hits. First write wins on dupes. */
+export function indexFingerprintsByIdentity(
+  fingerprints: readonly Fingerprint[],
+): Map<string, Fingerprint> {
+  const map = new Map<string, Fingerprint>();
+  for (const fp of fingerprints) {
+    const key = fingerprintIdentityKey(fingerprintToIdentity(fp));
+    if (!map.has(key)) map.set(key, fp);
+  }
+  return map;
+}
+
+export interface FindFingerprintOptions {
+  /** Prebuilt {@link indexFingerprintsByIdentity} — skips the exact-scan pass. */
+  byIdentity?: Map<string, Fingerprint>;
+}
+
 /**
  * Find the saved fingerprint for this group key.
  *
  * 1. **Exact `IDENTITY_WHERE` identity wins** — the same comparison
  *    `find_or_create` runs, so a card always badges the fingerprint it would
- *    resolve to on create.
+ *    resolve to on create. Prefer a {@link indexFingerprintsByIdentity} map for
+ *    O(1) here when matching many groups against one library.
  * 2. No exact hit ⇒ fall back to {@link fingerprintCompatibleWithGroupKey}
  *    (superset) matching, but **only when exactly one** fingerprint is
  *    compatible — that keeps a card badging the fingerprint it was created
@@ -353,19 +403,65 @@ export function fingerprintCompatibleWithGroupKey(
  */
 export function findFingerprintForGroupKey(
   gk: Record<string, string>,
-  fingerprints: Fingerprint[],
+  fingerprints: readonly Fingerprint[],
   /** The width the card was grouped at, or `null` for an exact-grouped run — the
    *  precision must agree for a card and a fingerprint to be the same thing. */
   bucketWidthSol: number | null,
+  opts?: FindFingerprintOptions,
 ): Fingerprint | null {
   const id = fingerprintIdentityFromGroupKey(gk, bucketWidthSol);
+  const byIdentity = opts?.byIdentity;
+  if (byIdentity) {
+    const exact = byIdentity.get(fingerprintIdentityKey(id));
+    if (exact) return exact;
+  }
   let compatible: Fingerprint | null = null;
   let compatibleN = 0;
   for (const fp of fingerprints) {
     if (!fingerprintCompatibleWithGroupKey(fp, gk, bucketWidthSol)) continue;
-    if (fingerprintMatchesIdentity(fp, id)) return fp;
+    // Without an index, exact identity still wins inside the compatible scan.
+    if (!byIdentity && fingerprintMatchesIdentity(fp, id)) return fp;
     compatible ??= fp;
     compatibleN += 1;
   }
   return compatibleN === 1 ? compatible : null;
+}
+
+/** Per-group badge/create verdict for creation-stats / discovery cards. */
+export interface GroupFingerprintMatch {
+  matched: Fingerprint | null;
+  identity: FingerprintIdentity;
+  canCreate: boolean;
+  overflow: boolean;
+}
+
+/**
+ * Resolve every group's fingerprint badge in one pass: build the identity index
+ * once, attach run-level `ix_labels` filter, and avoid rebuilding identity twice
+ * (match + canCreate).
+ */
+export function matchFingerprintsForGroups(
+  groups: readonly { g: number; group_key: Record<string, string> }[],
+  fingerprints: readonly Fingerprint[],
+  bucketWidthSol: number | null,
+  ixLabelsFilter: readonly string[] | null | undefined,
+  /** When the whole run is scoped to one fingerprint, that id wins for every card. */
+  scoped: Fingerprint | null,
+): Map<number, GroupFingerprintMatch> {
+  const map = new Map<number, GroupFingerprintMatch>();
+  const byIdentity = scoped ? null : indexFingerprintsByIdentity(fingerprints);
+  for (const g of groups) {
+    const gk = withIxLabelsFilter(g.group_key, ixLabelsFilter);
+    const identity = fingerprintIdentityFromGroupKey(gk, bucketWidthSol);
+    const matched =
+      scoped ??
+      findFingerprintForGroupKey(gk, fingerprints, bucketWidthSol, {
+        byIdentity: byIdentity ?? undefined,
+      });
+    const storable = identityLamportsAreStorable(identity);
+    const canCreate = matched == null && storable && identityHasCriterion(identity);
+    const overflow = matched == null && !storable && identityHasCriterion(identity);
+    map.set(g.g, { matched, identity, canCreate, overflow });
+  }
+  return map;
 }

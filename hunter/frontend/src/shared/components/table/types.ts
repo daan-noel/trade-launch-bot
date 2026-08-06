@@ -23,10 +23,10 @@ export interface TableQuery {
   search: string;
   colFilters: Record<string, string>;
   /**
-   * Pre-structured filters injected by a wrapper around the table (NOT typed into
-   * the per-column text inputs) — e.g. a pasted mint set as an `in` op. Merged into
-   * the request `filters` alongside the parsed `colFilters` (structured wins on key
-   * collision). `DataTable` never sets this itself; it stays token-agnostic.
+   * Pre-structured filters — either emitted by `DataTable` for `filterOptions`
+   * columns (`{op:'eq'}`) or injected by a wrapper (e.g. a pasted mint set as
+   * an `in` op). Merged into the request `filters` alongside the parsed
+   * `colFilters` (structured wins on key collision). Domain-agnostic.
    */
   structuredFilters?: Record<string, FilterSpec>;
 }
@@ -84,6 +84,20 @@ export interface ColumnDef<R> {
   filterPlaceholder?: string;
   /** Native tooltip on the filter-row input. */
   filterTitle?: string;
+  /**
+   * Exclusive choices for the per-column filter row (renders a `<select>` instead
+   * of a text input). Domain-agnostic — flags, status enums, mode, etc. The
+   * selected `value` is stored in `colFilters` like any other filter string;
+   * leave `value: ''` out of the list (the row always offers an "All" clear).
+   * Client-side matching uses {@link filterOptionValue} (equality); server-side
+   * serialization is unchanged (`contains` / `eq` depending on the backend key).
+   */
+  filterOptions?: ReadonlyArray<{ value: string; label: string }>;
+  /**
+   * Row → selected option `value` for client-side equality when
+   * {@link filterOptions} is set. Defaults to `filterValue` / `searchValue`.
+   */
+  filterOptionValue?: (row: R) => string;
   /**
    * Numeric value (in the column's *displayed* units) used by the per-column
    * filter row for comparison/range expressions like `>5`, `<=10`, `1..5`.

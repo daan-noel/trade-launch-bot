@@ -801,6 +801,45 @@ function metricThresholds(
 
 const PANE_H = 64;
 
+/** Short tag for a threshold line. `entry`/`exit` both start with "e", so they get
+ *  distinct words — the color alone (primary vs warning) isn't a readable difference
+ *  on a 9px overlay. */
+const THRESHOLD_TAG = { entry: 'IN', exit: 'OUT' } as const;
+
+const thresholdColor = (side: 'entry' | 'exit') =>
+  side === 'entry' ? 'var(--color-primary)' : 'var(--color-warning)';
+
+/** Rule threshold values labelled on the right edge of a pane's sparkline. Shared by
+ *  the compact and full pane layouts so the two never drift. */
+function ThresholdLabels({
+  thresholds,
+  hi,
+  span,
+}: {
+  thresholds: Array<{ side: 'entry' | 'exit'; value: number }>;
+  hi: number;
+  span: number;
+}) {
+  return (
+    <>
+      {thresholds.map((t, i) => (
+        <span
+          key={`thr-${i}`}
+          className="pointer-events-none absolute right-0 font-mono text-[9px] font-semibold tabular-nums"
+          style={{
+            top: `${((hi - t.value) / span) * 100}%`,
+            transform: 'translateY(-50%)',
+            color: thresholdColor(t.side),
+          }}
+          title={`${t.side} threshold`}
+        >
+          {THRESHOLD_TAG[t.side]} {formatMetric(t.value)}
+        </span>
+      ))}
+    </>
+  );
+}
+
 /** One metric pane: value-first rail + wall-clock sparkline with min/max + thresholds. */
 function MetricPane({
   label,
@@ -889,9 +928,19 @@ function MetricPane({
   if (compact) {
     return (
       <div className="flex min-w-0 flex-col gap-1 rounded-md border border-white/8 bg-white/2 p-2">
-        <span className="truncate font-mono text-[10px] text-text-dim" title={label}>
-          {label}
-        </span>
+        {/* Label left, readout right — the crosshair is shared across every pane, so
+         *  hovering ANY pane (or the price chart) updates all of these at once. */}
+        <div className="flex min-w-0 items-baseline justify-between gap-2">
+          <span className="truncate font-mono text-[10px] text-text-dim" title={label}>
+            {label}
+          </span>
+          <span
+            className={`shrink-0 font-mono text-[11px] font-semibold tabular-nums ${valueTone}`}
+            title={crosshairIdx != null ? 'at crosshair' : 'latest'}
+          >
+            {primaryText}
+          </span>
+        </div>
         <div className="relative min-w-0">
           <svg
             viewBox={`0 0 ${W} ${PANE_H}`}
@@ -906,7 +955,7 @@ function MetricPane({
                   x2={W}
                   y1={y(t.value)}
                   y2={y(t.value)}
-                  stroke={t.side === 'entry' ? 'var(--color-primary)' : 'var(--color-warning)'}
+                  stroke={thresholdColor(t.side)}
                   strokeWidth={1}
                   strokeDasharray="4 3"
                   opacity={0.75}
@@ -943,19 +992,7 @@ function MetricPane({
               <circle cx={crossX} cy={crossY} r={3.5} fill="var(--color-green)" opacity={0.9} />
             )}
           </svg>
-          {thresholds.map((t, i) => (
-            <span
-              key={`thr-${i}`}
-              className="pointer-events-none absolute right-0 font-mono text-[9px] tabular-nums"
-              style={{
-                top: `${((hi - t.value) / span) * 100}%`,
-                transform: 'translateY(-50%)',
-                color: t.side === 'entry' ? 'var(--color-primary)' : 'var(--color-warning)',
-              }}
-            >
-              {t.side[0].toUpperCase()} {formatMetric(t.value)}
-            </span>
-          ))}
+          <ThresholdLabels thresholds={thresholds} hi={hi} span={span} />
         </div>
         <div className="flex justify-between px-0.5 font-mono text-[10px] tabular-nums text-text-dim">
           <span title="visible max">{formatMetric(hi)}</span>
@@ -993,7 +1030,7 @@ function MetricPane({
                 x2={W}
                 y1={y(t.value)}
                 y2={y(t.value)}
-                stroke={t.side === 'entry' ? 'var(--color-primary)' : 'var(--color-warning)'}
+                stroke={thresholdColor(t.side)}
                 strokeWidth={1}
                 strokeDasharray="4 3"
                 opacity={0.75}
@@ -1031,19 +1068,7 @@ function MetricPane({
           )}
         </svg>
         {/* Threshold labels overlaid on the right of the sparkline */}
-        {thresholds.map((t, i) => (
-          <span
-            key={`thr-${i}`}
-            className="pointer-events-none absolute right-0 font-mono text-[9px] tabular-nums"
-            style={{
-              top: `${((hi - t.value) / span) * 100}%`,
-              transform: 'translateY(-50%)',
-              color: t.side === 'entry' ? 'var(--color-primary)' : 'var(--color-warning)',
-            }}
-          >
-            {t.side[0].toUpperCase()} {formatMetric(t.value)}
-          </span>
-        ))}
+        <ThresholdLabels thresholds={thresholds} hi={hi} span={span} />
       </div>
 
       <div className="flex w-12 flex-col justify-between py-0.5 text-right font-mono text-[10px] tabular-nums text-text-dim">

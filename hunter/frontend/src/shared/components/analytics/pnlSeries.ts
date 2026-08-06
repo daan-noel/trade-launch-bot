@@ -47,41 +47,82 @@ const WEEKDAY_TO_DOW: Record<string, number> = {
   Sat: 6,
 };
 
-const dtfCache = new Map<string, Intl.DateTimeFormat>();
+/** One cached formatter per timezone that yields day key + dow + hour in a
+ *  single `formatToParts` — heatmap + calendar used to pay two Intl builds per
+ *  point (and `dayKeyInTz` used to allocate a fresh formatter every call). */
+const civilDtfCache = new Map<string, Intl.DateTimeFormat>();
 
-/** Day-of-week (0=Sun..6=Sat) + hour-of-day (0..23) for an instant, in
- *  `timeZone`'s local wall-clock. Caches the `Intl.DateTimeFormat` per timezone
- *  (mirrors `utils/date.ts`'s formatter cache) since this runs once per point
- *  per heatmap rebuild, not per render. */
-export function dowHourInTz(ms: number, timeZone: string): { dow: number; hour: number } {
-  let dtf = dtfCache.get(timeZone);
+function civilDtf(timeZone: string): Intl.DateTimeFormat {
+  let dtf = civilDtfCache.get(timeZone);
   if (!dtf) {
     dtf = new Intl.DateTimeFormat('en-US', {
       timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
       weekday: 'short',
       hour: '2-digit',
       hour12: false,
     });
-    dtfCache.set(timeZone, dtf);
+    civilDtfCache.set(timeZone, dtf);
   }
-  const parts = dtf.formatToParts(new Date(ms));
-  const weekday = parts.find((p) => p.type === 'weekday')?.value ?? 'Sun';
+  return dtf;
+}
+
+/** Civil wall-clock parts for an instant in `timeZone`. */
+export function civilPartsInTz(
+  ms: number,
+  timeZone: string,
+): { dayKey: string; dow: number; hour: number } {
+  const parts = civilDtf(timeZone).formatToParts(new Date(ms));
+  let year = '1970';
+  let month = '01';
+  let day = '01';
+  let weekday = 'Sun';
+  let hourRaw = 0;
+  for (const p of parts) {
+    switch (p.type) {
+      case 'year':
+        year = p.value;
+        break;
+      case 'month':
+        month = p.value;
+        break;
+      case 'day':
+        day = p.value;
+        break;
+      case 'weekday':
+        weekday = p.value;
+        break;
+      case 'hour':
+        hourRaw = Number(p.value);
+        break;
+      default:
+        break;
+    }
+  }
   // `hour12: false` still renders midnight as "24" in some locales/engines —
   // normalize into 0..23 rather than trust the raw string.
-  const hourRaw = Number(parts.find((p) => p.type === 'hour')?.value ?? '0');
   const hour = ((hourRaw % 24) + 24) % 24;
-  return { dow: WEEKDAY_TO_DOW[weekday] ?? 0, hour };
+  return {
+    // `2-digit` is padded in practice; `padStart` keeps the key ISO-stable if a
+    // host ever returns a single digit.
+    dayKey: `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`,
+    dow: WEEKDAY_TO_DOW[weekday] ?? 0,
+    hour,
+  };
+}
+
+/** Day-of-week (0=Sun..6=Sat) + hour-of-day (0..23) for an instant, in
+ *  `timeZone`'s local wall-clock. */
+export function dowHourInTz(ms: number, timeZone: string): { dow: number; hour: number } {
+  const { dow, hour } = civilPartsInTz(ms, timeZone);
+  return { dow, hour };
 }
 
 /** `YYYY-MM-DD` for an instant in `timeZone` — the calendar day key. */
 export function dayKeyInTz(ms: number, timeZone: string): string {
-  // `en-CA` renders ISO-ordered `YYYY-MM-DD`, which sorts lexicographically.
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date(ms));
+  return civilPartsInTz(ms, timeZone).dayKey;
 }
 
 /**
@@ -116,10 +157,10 @@ export interface EquityPoint {
   peakSol: number;
 }
 
-/** Cumulative PnL ordered oldest → newest. Ties (same-second points) collapse
- *  into one entry so a chart series never receives duplicate x-values. */
-export function buildEquityCurve(points: readonly PnlPoint[]): EquityPoint[] {
-  const sorted = [...points].filter((p) => Number.isFinite(p.timeMs)).sort((a, b) => a.timeMs - b.timeMs);
+/** Cumulative PnL over points already ordered oldest → newest. Ties (same-second
+ *  points) collapse into one entry so a chart series never receives duplicate
+ *  x-values. */
+function buildEquityCurveSorted(sorted: readonly PnlPoint[]): EquityPoint[] {
   const out: EquityPoint[] = [];
   let cum = 0;
   let peak = 0;
@@ -136,6 +177,15 @@ export function buildEquityCurve(points: readonly PnlPoint[]): EquityPoint[] {
     }
   }
   return out;
+}
+
+/** Cumulative PnL ordered oldest → newest. Ties (same-second points) collapse
+ *  into one entry so a chart series never receives duplicate x-values. */
+export function buildEquityCurve(points: readonly PnlPoint[]): EquityPoint[] {
+  const sorted = points
+    .filter((p) => Number.isFinite(p.timeMs))
+    .sort((a, b) => a.timeMs - b.timeMs);
+  return buildEquityCurveSorted(sorted);
 }
 
 /** Deepest peak-to-trough drop in SOL over the curve (`0` when never underwater). */
@@ -224,11 +274,7 @@ function bucketRepPct(lo: number, hi: number): number {
   return (lo + hi) / 2;
 }
 
-export function pnlDistributionBuckets(
-  points: readonly PnlPoint[],
-  density: PnlDistDensity = 'default',
-): PnlBucket[] {
-  const edges = PNL_DIST_EDGE_SETS[density];
+function emptyBuckets(edges: readonly number[]): PnlBucket[] {
   const buckets: PnlBucket[] = [];
   for (let i = 0; i < edges.length - 1; i++) {
     const lo = edges[i]!;
@@ -242,18 +288,33 @@ export function pnlDistributionBuckets(
       count: 0,
     });
   }
+  return buckets;
+}
+
+/** Index of the half-open `[edges[i], edges[i+1])` bucket holding `pct`
+ *  (`edges` starts at `-Infinity` and ends at `+Infinity`). */
+function bucketIndex(pct: number, edges: readonly number[]): number {
+  let lo = 0;
+  let hi = edges.length - 2;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    const midHi = edges[mid + 1]!;
+    if (pct >= midHi && midHi !== Infinity) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+export function pnlDistributionBuckets(
+  points: readonly PnlPoint[],
+  density: PnlDistDensity = 'default',
+): PnlBucket[] {
+  const edges = PNL_DIST_EDGE_SETS[density];
+  const buckets = emptyBuckets(edges);
   for (const p of points) {
     const pct = p.pnlPct;
-    if (pct == null) continue;
-    for (let i = 0; i < edges.length - 1; i++) {
-      const lo = edges[i]!;
-      const hi = edges[i + 1]!;
-      // Half-open [lo, hi) except the final bucket, which is closed at +Infinity.
-      if (pct >= lo && (pct < hi || hi === Infinity)) {
-        buckets[i]!.count += 1;
-        break;
-      }
-    }
+    if (pct == null || !Number.isFinite(pct)) continue;
+    buckets[bucketIndex(pct, edges)]!.count += 1;
   }
   return buckets;
 }
@@ -267,21 +328,26 @@ export interface PnlHeatCell {
   count: number;
 }
 
-/** Fold every point into a 7×24 day×hour grid in `timeZone`. Always returns all
- *  168 cells (zero-filled) so the heatmap never synthesizes missing slots. */
-export function buildPnlHeatCells(
-  points: readonly PnlPoint[],
-  timeZone: string,
-): PnlHeatCell[] {
+function emptyHeatGrid(): Map<number, PnlHeatCell> {
   const grid = new Map<number, PnlHeatCell>();
   for (const row of DOW_ROWS) {
     for (const hour of HOURS) {
       grid.set(row.dow * 24 + hour, { dow: row.dow, hour, pnl_sol: 0, count: 0 });
     }
   }
+  return grid;
+}
+
+/** Fold every point into a 7×24 day×hour grid in `timeZone`. Always returns all
+ *  168 cells (zero-filled) so the heatmap never synthesizes missing slots. */
+export function buildPnlHeatCells(
+  points: readonly PnlPoint[],
+  timeZone: string,
+): PnlHeatCell[] {
+  const grid = emptyHeatGrid();
   for (const p of points) {
     if (!Number.isFinite(p.timeMs)) continue;
-    const { dow, hour } = dowHourInTz(p.timeMs, timeZone);
+    const { dow, hour } = civilPartsInTz(p.timeMs, timeZone);
     const cell = grid.get(dow * 24 + hour);
     if (cell) {
       cell.pnl_sol += p.pnlSol;
@@ -301,18 +367,24 @@ export interface PnlDay {
   wins: number;
 }
 
+function bumpDay(byDay: Map<string, PnlDay>, dayKey: string, pnlSol: number): void {
+  let cur = byDay.get(dayKey);
+  if (!cur) {
+    cur = { day: dayKey, pnlSol: 0, count: 0, wins: 0 };
+    byDay.set(dayKey, cur);
+  }
+  cur.pnlSol += pnlSol;
+  cur.count += 1;
+  if (pnlSol > 0) cur.wins += 1;
+}
+
 /** Daily PnL, oldest → newest. Only days with at least one point appear —
  *  the calendar component fills the gaps it needs for its month grid. */
 export function buildDailyPnl(points: readonly PnlPoint[], timeZone: string): PnlDay[] {
   const byDay = new Map<string, PnlDay>();
   for (const p of points) {
     if (!Number.isFinite(p.timeMs)) continue;
-    const day = dayKeyInTz(p.timeMs, timeZone);
-    const cur = byDay.get(day) ?? { day, pnlSol: 0, count: 0, wins: 0 };
-    cur.pnlSol += p.pnlSol;
-    cur.count += 1;
-    if (p.pnlSol > 0) cur.wins += 1;
-    byDay.set(day, cur);
+    bumpDay(byDay, civilPartsInTz(p.timeMs, timeZone).dayKey, p.pnlSol);
   }
   return [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day));
 }
@@ -338,6 +410,7 @@ export interface DailyPnlSummary {
  * (`buildDailyPnl`'s order), optionally pre-clipped to the rendered window.
  */
 export function summarizeDailyPnl(days: readonly PnlDay[]): DailyPnlSummary {
+  let tradedDays = 0;
   let greenDays = 0;
   let redDays = 0;
   let best: PnlDay | null = null;
@@ -346,6 +419,7 @@ export function summarizeDailyPnl(days: readonly PnlDay[]): DailyPnlSummary {
   let longestRedStreak = 0;
   for (const d of days) {
     if (d.count === 0) continue;
+    tradedDays += 1;
     if (d.pnlSol > 0) greenDays += 1;
     if (d.pnlSol < 0) redDays += 1;
     if (!best || d.pnlSol > best.pnlSol) best = d;
@@ -358,7 +432,7 @@ export function summarizeDailyPnl(days: readonly PnlDay[]): DailyPnlSummary {
     }
   }
   return {
-    tradedDays: days.filter((d) => d.count > 0).length,
+    tradedDays,
     greenDays,
     redDays,
     best,
@@ -403,8 +477,12 @@ export interface GroupWindowStats {
 /** Stats over one slice of points, grouped by `groupId`. */
 function statsOf(groupId: string, label: string, points: readonly PnlPoint[]): GroupWindowStats {
   const n = points.length;
-  const pnlSol = points.reduce((s, p) => s + p.pnlSol, 0);
-  const wins = points.filter((p) => p.pnlSol > 0).length;
+  let pnlSol = 0;
+  let wins = 0;
+  for (const p of points) {
+    pnlSol += p.pnlSol;
+    if (p.pnlSol > 0) wins += 1;
+  }
   return {
     groupId,
     label,
@@ -494,19 +572,210 @@ export function groupDailyPnl(
   points: readonly PnlPoint[],
   timeZone: string,
 ): Map<string, PnlDay[]> {
-  const byGroup = new Map<string, PnlPoint[]>();
+  // One pass over points (shared civil formatter) instead of regroup → rebuild
+  // daily (which re-walked every point and re-paid Intl).
+  const byGroupDay = new Map<string, Map<string, PnlDay>>();
   for (const p of points) {
     const g = p.groupId;
-    if (!g) continue;
-    const arr = byGroup.get(g);
-    if (arr) arr.push(p);
-    else byGroup.set(g, [p]);
+    if (!g || !Number.isFinite(p.timeMs)) continue;
+    let gDays = byGroupDay.get(g);
+    if (!gDays) {
+      gDays = new Map();
+      byGroupDay.set(g, gDays);
+    }
+    bumpDay(gDays, civilPartsInTz(p.timeMs, timeZone).dayKey, p.pnlSol);
   }
   const out = new Map<string, PnlDay[]>();
-  for (const [groupId, arr] of byGroup) {
-    out.set(groupId, buildDailyPnl(arr, timeZone));
+  for (const [groupId, gDays] of byGroupDay) {
+    out.set(
+      groupId,
+      [...gDays.values()].sort((a, b) => a.day.localeCompare(b.day)),
+    );
   }
   return out;
+}
+
+// ── one-pass deck fold ──────────────────────────────────────────────────────
+
+/** Everything a multi-chart PnL deck needs from one cohort walk. */
+export interface PnlDeckFold {
+  curve: EquityPoint[];
+  drawdownSol: number;
+  buckets: PnlBucket[];
+  heatCells: PnlHeatCell[];
+  days: PnlDay[];
+  /** Chronological daily `pnlSol` per `groupId` — sparkline-ready (stable until
+   *  the next fold). */
+  sparkByGroup: Map<string, number[]>;
+  trends: GroupTrend[];
+}
+
+/** Stable empty fold — safe to return when a deck is collapsed / has no rows.
+ *  Arrays are shared immutable empties; never mutate `sparkByGroup`. */
+const EMPTY_ARR: never[] = [];
+export const EMPTY_PNL_DECK: PnlDeckFold = {
+  curve: EMPTY_ARR,
+  drawdownSol: 0,
+  buckets: EMPTY_ARR,
+  heatCells: EMPTY_ARR,
+  days: EMPTY_ARR,
+  sparkByGroup: new Map<string, number[]>(),
+  trends: EMPTY_ARR,
+};
+
+export type PnlDeckPart =
+  | 'curve'
+  | 'buckets'
+  | 'heat'
+  | 'days'
+  | 'sparks'
+  | 'trends';
+
+const ALL_PNL_DECK_PARTS: readonly PnlDeckPart[] = [
+  'curve',
+  'buckets',
+  'heat',
+  'days',
+  'sparks',
+  'trends',
+];
+
+/**
+ * One cohort → every analytics view. Walks each point once (shared civil
+ * timezone parts), sorts once for the equity curve / decay windows, and
+ * pre-builds sparkline value arrays so scoreboard rows don't re-`.map` daily
+ * rows on every render.
+ *
+ * Pass `only` when a surface needs a subset (Portfolio = sparks+trends) so it
+ * does not pay for heat / buckets / equity it never mounts.
+ */
+export function foldPnlDeck(
+  points: readonly PnlPoint[],
+  opts: {
+    timeZone: string;
+    density?: PnlDistDensity;
+    labelOf: (groupId: string) => string;
+    window?: number;
+    only?: readonly PnlDeckPart[];
+  },
+): PnlDeckFold {
+  const density = opts.density ?? 'default';
+  const window = opts.window ?? 20;
+  const { timeZone, labelOf } = opts;
+  const want = new Set(opts.only ?? ALL_PNL_DECK_PARTS);
+  const needCivil = want.has('heat') || want.has('days') || want.has('sparks');
+  const needCurve = want.has('curve');
+  const needTrends = want.has('trends');
+
+  const edges = PNL_DIST_EDGE_SETS[density];
+  const buckets = want.has('buckets') ? emptyBuckets(edges) : [];
+  const heat = want.has('heat') ? emptyHeatGrid() : null;
+  const byDay = want.has('days') ? new Map<string, PnlDay>() : null;
+  const byGroupDay = want.has('sparks') ? new Map<string, Map<string, PnlDay>>() : null;
+  const byGroup = needTrends ? new Map<string, PnlPoint[]>() : null;
+  const timed: PnlPoint[] = needCurve ? [] : [];
+
+  for (const p of points) {
+    if (want.has('buckets')) {
+      const pct = p.pnlPct;
+      if (pct != null && Number.isFinite(pct)) {
+        buckets[bucketIndex(pct, edges)]!.count += 1;
+      }
+    }
+    if (!Number.isFinite(p.timeMs)) continue;
+    if (needCurve) timed.push(p);
+    if (!needCivil && !needTrends) continue;
+
+    const parts = needCivil ? civilPartsInTz(p.timeMs, timeZone) : null;
+    if (parts && heat) {
+      const cell = heat.get(parts.dow * 24 + parts.hour);
+      if (cell) {
+        cell.pnl_sol += p.pnlSol;
+        cell.count += 1;
+      }
+    }
+    if (parts && byDay) bumpDay(byDay, parts.dayKey, p.pnlSol);
+    const g = p.groupId;
+    if (g && parts && byGroupDay) {
+      let gDays = byGroupDay.get(g);
+      if (!gDays) {
+        gDays = new Map();
+        byGroupDay.set(g, gDays);
+      }
+      bumpDay(gDays, parts.dayKey, p.pnlSol);
+    }
+    if (g && byGroup) {
+      const arr = byGroup.get(g);
+      if (arr) arr.push(p);
+      else byGroup.set(g, [p]);
+    }
+  }
+
+  let curve: EquityPoint[] = [];
+  if (needCurve) {
+    timed.sort((a, b) => a.timeMs - b.timeMs);
+    curve = buildEquityCurveSorted(timed);
+  }
+
+  const days = byDay
+    ? [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day))
+    : [];
+
+  const sparkByGroup = new Map<string, number[]>();
+  if (byGroupDay) {
+    for (const [groupId, gDays] of byGroupDay) {
+      const sortedDays = [...gDays.values()].sort((a, b) => a.day.localeCompare(b.day));
+      sparkByGroup.set(
+        groupId,
+        sortedDays.map((d) => d.pnlSol),
+      );
+    }
+  }
+
+  const trends: GroupTrend[] = [];
+  if (byGroup) {
+    for (const [groupId, arr] of byGroup) {
+      arr.sort((a, b) => a.timeMs - b.timeMs);
+      const label = labelOf(groupId);
+      const recentSlice = arr.slice(-window);
+      const priorSlice = arr.slice(-2 * window, -window);
+      const recent = statsOf(groupId, label, recentSlice);
+      const prior = statsOf(groupId, label, priorSlice);
+      const comparable = recentSlice.length >= window && priorSlice.length >= window;
+      const winRateDeltaPp =
+        comparable && recent.winRate != null && prior.winRate != null
+          ? recent.winRate - prior.winRate
+          : null;
+      const expectancyDeltaSol =
+        comparable && recent.expectancySol != null && prior.expectancySol != null
+          ? recent.expectancySol - prior.expectancySol
+          : null;
+      trends.push({
+        groupId,
+        label,
+        recent,
+        prior,
+        winRateDeltaPp,
+        expectancyDeltaSol,
+        decaying:
+          winRateDeltaPp != null &&
+          expectancyDeltaSol != null &&
+          winRateDeltaPp < 0 &&
+          expectancyDeltaSol < 0,
+      });
+    }
+    trends.sort((a, b) => b.recent.pnlSol - a.recent.pnlSol);
+  }
+
+  return {
+    curve,
+    drawdownSol: want.has('curve') ? maxDrawdownSol(curve) : 0,
+    buckets,
+    heatCells: heat ? [...heat.values()] : [],
+    days,
+    sparkByGroup,
+    trends,
+  };
 }
 
 // ── hold-time vs PnL% scatter ────────────────────────────────────────────────
