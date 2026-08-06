@@ -39,8 +39,10 @@ Two opt-in features live here so every table gets them once:
 - **`charts`** — a toggle (persisted per `tableId`) rendering `<TokenChartsGrid>`
   (lazy-mounted, **current page only**, with `renderChartCardExtra`/`titleOf`/
   `highlightWallet` slots) below the table, fed by the table's intercepted
-  `onVisibleRowsChange`. Trader Analysis keeps an always-on **external** grid instead
-  (chart-centric page), fed by the same `onVisibleRowsChange`.
+  `onVisibleRowsChange`. With `chartsGroupByMint`, the extra renderer also gets
+  the mint's group rows. Position tables use shared `PositionChartCardExtra`;
+  Trader Analysis uses `TraderChartCardExtra` (`charts` + `chartsDefaultOn` +
+  wallet spotlight).
 
 ## The one request contract
 

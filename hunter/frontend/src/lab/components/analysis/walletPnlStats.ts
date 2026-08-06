@@ -40,6 +40,16 @@ import type { TraderTokenRow } from 'types';
 export { DOW_ROWS, HOURS, dowHourInTz };
 export type { EquityPoint, HoldScatterPoint, PnlBucket, PnlHeatCell };
 
+/** First→last trade span (seconds) for one mint in the window. `null` when
+ *  either timestamp is missing/invalid. Not a single-episode hold — see the
+ *  grain caveat at the top of this file. */
+export function walletHoldSeconds(r: TraderTokenRow): number | null {
+  const firstMs = r.wallet_first_trade_at_ms ?? Date.parse(r.wallet_first_trade_at);
+  const lastMs = r.wallet_last_trade_at_ms ?? Date.parse(r.wallet_last_trade_at);
+  if (!Number.isFinite(firstMs) || !Number.isFinite(lastMs)) return null;
+  return (lastMs - firstMs) / 1000;
+}
+
 /**
  * The wallet grain → the shared `PnlPoint` grain.
  *
@@ -48,7 +58,8 @@ export type { EquityPoint, HoldScatterPoint, PnlBucket, PnlHeatCell };
  * reads as "when this position was decided" (an exit for a closed mint, the
  * latest re-entry for an open one).
  */
-function toPnlPoints(rows: readonly TraderTokenRow[]): PnlPoint[] {
+/** Wallet grain → shared `PnlPoint` (decision instant = last trade in window). */
+export function toPnlPoints(rows: readonly TraderTokenRow[]): PnlPoint[] {
   return rows.map((r) => ({
     key: r.mint_address,
     timeMs: r.wallet_last_trade_at_ms ?? Date.parse(r.wallet_last_trade_at),
@@ -211,20 +222,14 @@ export function buildEquityCurve(rows: readonly TraderTokenRow[]): EquityPoint[]
  *  to plot). `sizeSol` (total volume) drives the marker radius. */
 export function buildHoldScatter(rows: readonly TraderTokenRow[]): HoldScatterPoint[] {
   return buildHoldScatterPoints(
-    rows.map((r) => {
-      const firstMs = r.wallet_first_trade_at_ms ?? Date.parse(r.wallet_first_trade_at);
-      const lastMs = r.wallet_last_trade_at_ms ?? Date.parse(r.wallet_last_trade_at);
-      const holdSeconds =
-        Number.isFinite(firstMs) && Number.isFinite(lastMs) ? (lastMs - firstMs) / 1000 : null;
-      return {
-        key: r.mint_address,
-        label: r.symbol || r.name || r.mint_address,
-        holdSeconds,
-        pnlPct: r.wallet_realized_pnl_pct,
-        sizeSol: r.wallet_buy_sol + r.wallet_sell_sol,
-        pnlSol: r.wallet_realized_pnl_sol,
-        isWin: r.wallet_realized_pnl_sol > 0,
-      };
-    }),
+    rows.map((r) => ({
+      key: r.mint_address,
+      label: r.symbol || r.name || r.mint_address,
+      holdSeconds: walletHoldSeconds(r),
+      pnlPct: r.wallet_realized_pnl_pct,
+      sizeSol: r.wallet_buy_sol + r.wallet_sell_sol,
+      pnlSol: r.wallet_realized_pnl_sol,
+      isWin: r.wallet_realized_pnl_sol > 0,
+    })),
   );
 }

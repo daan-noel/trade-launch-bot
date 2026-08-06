@@ -1,7 +1,11 @@
 import type { ReactNode } from 'react';
 import { cn } from 'lib/cn';
 import { pctGradeClass, signedToneClass, winRateGradeClass } from 'lib/signedTone';
-import { isMetricExitReason, normalizeExitReasonFilter } from 'lib/strategy/exitReason';
+import {
+  isMetricExitReason,
+  normalizeExitReasonFilter,
+  parseMetricExitParts,
+} from 'lib/strategy/exitReason';
 import { formatDecimalTrim } from 'utils/format';
 import type { SummaryStat, SummarySection } from 'components/strategy/SummaryStatsPanel';
 
@@ -253,6 +257,10 @@ export interface ExitSlice {
 /**
  * Split a band's closed positions by exit reason, **reconciling to `n_closed`**.
  *
+ * Wire-counter path: metric exits collapse to Metric+ / Metric- (PnL sign). Prefer
+ * [`exitBreakdownFromRows`] when per-position `exit_reason` strings are available
+ * so detail labels (`stall > 300`) stay distinct.
+ *
  * Any closed position whose reason isn't one of the known counters lands in a
  * trailing `Other` slice rather than vanishing, so the parts always sum to the
  * whole. That makes a miscount *visible* instead of silent — which is how the
@@ -297,6 +305,186 @@ export function exitBreakdown(m: RunMetrics): ExitSlice[] {
     });
   }
   return slices;
+}
+
+/** Minimal row for a detailed exit mix (closed positions only). */
+export interface ExitOutcomeRow {
+  exit: string;
+  pnl_sol: number;
+}
+
+function metricSliceTone(pnlSol: number): { cls: string; bar: string } {
+  if (pnlSol > 0) return { cls: 'text-green', bar: 'bg-green' };
+  if (pnlSol < 0) return { cls: 'text-red', bar: 'bg-red' };
+  return { cls: 'text-info', bar: 'bg-info' };
+}
+
+/**
+ * Exit mix from per-position reasons — system exits keep EXIT_KINDS labels;
+ * metric-condition exits keep the **stored** detail (`stall > 300`, …).
+ * Legacy bare `Metrics` still splits Metric+ / Metric- by PnL.
+ */
+export function exitBreakdownFromRows(
+  rows: readonly ExitOutcomeRow[],
+): ExitSlice[] {
+  const denom = rows.length > 0 ? rows.length : 1;
+  type Bucket = {
+    label: string;
+    full: string;
+    n: number;
+    wins: number;
+    pnl_sol: number;
+    cls: string;
+    bar: string;
+    /** Sort: system ladder index, then metric details by count. */
+    order: number;
+  };
+  const byKey = new Map<string, Bucket>();
+
+  const bump = (
+    key: string,
+    init: Omit<Bucket, 'n' | 'wins' | 'pnl_sol'> & { pnl_sol: number; win: boolean },
+  ) => {
+    const cur = byKey.get(key);
+    if (cur) {
+      cur.n += 1;
+      cur.pnl_sol += init.pnl_sol;
+      if (init.win) cur.wins += 1;
+      if (key.startsWith('metric:')) {
+        const tone = metricSliceTone(cur.pnl_sol);
+        cur.cls = tone.cls;
+        cur.bar = tone.bar;
+      }
+      return;
+    }
+    byKey.set(key, {
+      label: init.label,
+      full: init.full,
+      n: 1,
+      wins: init.win ? 1 : 0,
+      pnl_sol: init.pnl_sol,
+      cls: init.cls,
+      bar: init.bar,
+      order: init.order,
+    });
+  };
+
+  for (const r of rows) {
+    const reason = (r.exit ?? '').trim();
+    if (!reason || reason === 'Open' || reason === 'NoEntry') continue;
+    const win = r.pnl_sol > 0;
+
+    if (isMetricExitReason(reason)) {
+      if (reason === 'Metrics') {
+        const label = win ? 'Metric+' : 'Metric-';
+        const kind = EXIT_KINDS.find((k) => k.label === label)!;
+        bump(`legacy:${label}`, {
+          label,
+          full: kind.full,
+          cls: kind.cls,
+          bar: kind.bar,
+          order: EXIT_KINDS.findIndex((k) => k.label === label),
+          pnl_sol: r.pnl_sol,
+          win,
+        });
+        continue;
+      }
+      // Exact stored detail — not Metric±.
+      const tone = metricSliceTone(r.pnl_sol);
+      bump(`metric:${reason}`, {
+        label: reason,
+        full: reason,
+        cls: tone.cls,
+        bar: tone.bar,
+        order: 1000,
+        pnl_sol: r.pnl_sol,
+        win,
+      });
+      continue;
+    }
+
+    const countKey = EXIT_KEY_BY_REASON[reason];
+    if (countKey) {
+      const kind = EXIT_KINDS.find((k) => k.key === countKey);
+      if (kind && !kind.legacyMetricsTotal) {
+        bump(`sys:${kind.label}`, {
+          label: kind.label,
+          full: kind.full,
+          cls: kind.cls,
+          bar: kind.bar,
+          order: EXIT_KINDS.findIndex((k) => k.key === countKey),
+          pnl_sol: r.pnl_sol,
+          win,
+        });
+        continue;
+      }
+    }
+    bump('other', {
+      label: 'Other',
+      full: 'Closed with an unrecognised exit reason',
+      cls: 'text-text-mid',
+      bar: 'bg-text-mid',
+      order: 2000,
+      pnl_sol: r.pnl_sol,
+      win,
+    });
+  }
+
+  const system: Bucket[] = [];
+  const metrics: Bucket[] = [];
+  let other: Bucket | undefined;
+  for (const b of byKey.values()) {
+    if (b.label === 'Other') other = b;
+    else if (b.order >= 1000 && b.order < 2000) metrics.push(b);
+    else system.push(b);
+  }
+  system.sort((a, b) => a.order - b.order);
+  metrics.sort((a, b) => b.n - a.n || a.label.localeCompare(b.label));
+
+  // Always surface empty TP/SL cores when anything closed (same as wire path).
+  const haveCore = new Set(system.map((s) => s.label));
+  for (const k of EXIT_KINDS) {
+    if (!k.core) continue;
+    if (haveCore.has(k.label)) continue;
+    system.push({
+      label: k.label,
+      full: k.full,
+      n: 0,
+      wins: 0,
+      pnl_sol: 0,
+      cls: k.cls,
+      bar: k.bar,
+      order: EXIT_KINDS.findIndex((x) => x.key === k.key),
+    });
+  }
+  system.sort((a, b) => a.order - b.order);
+
+  const toSlice = (b: Bucket): ExitSlice => {
+    const parts = [b.full === b.label ? b.label : b.full, `n=${b.n}`, pctOf(b.n / denom)];
+    if (b.n > 0 && (parseMetricExitParts(b.label) != null || b.label.startsWith('Metric'))) {
+      parts.push(`${b.wins}W/${b.n - b.wins}L`, solText(b.pnl_sol));
+    }
+    return {
+      label: b.label,
+      full: parts.join(' · '),
+      n: b.n,
+      share: b.n / denom,
+      cls: b.cls,
+      bar: b.bar,
+    };
+  };
+
+  const out: ExitSlice[] = [];
+  for (const b of system) {
+    if (b.n > 0 || EXIT_KINDS.some((k) => k.label === b.label && k.core)) {
+      out.push(toSlice(b));
+    }
+  }
+  for (const b of metrics) {
+    if (b.n > 0) out.push(toSlice(b));
+  }
+  if (other && other.n > 0) out.push(toSlice(other));
+  return out;
 }
 
 // --- client-side aggregation (sweep drill-in) --------------------------------
@@ -559,6 +747,11 @@ export function runSummarySections(
     extended?: boolean;
     /** Wire Open / Closed / Fired / exit / win-loss / migrated tiles into focus. */
     interaction?: RunSummaryInteraction;
+    /**
+     * Closed-position exit strings for a detailed mix (exact metric labels).
+     * When non-empty, replaces the wire Metric+/− collapse.
+     */
+    exitOutcomes?: readonly ExitOutcomeRow[];
   } = {},
 ): {
   hero: SummaryStat[];
@@ -606,7 +799,10 @@ export function runSummarySections(
     },
   ];
 
-  const slices = exitBreakdown(realized);
+  const slices =
+    extras.exitOutcomes && extras.exitOutcomes.length > 0
+      ? exitBreakdownFromRows(extras.exitOutcomes)
+      : exitBreakdown(realized);
 
   const clickable = (
     stat: SummaryStat,

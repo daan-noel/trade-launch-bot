@@ -4,9 +4,7 @@ import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
 import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import { Accordion } from 'components/ui/Accordion';
 import type { ChartEventMarker, ChartVisibleTimeRange } from 'components/token-price-chart';
-import { patternKeysFrom } from 'lib/flow/classifyFlow';
-import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
-import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
+import { useFlowPatternKeys } from 'hooks/useFlowPatternKeys';
 import type { TokenDetailRecord } from 'types';
 import {
   MetricPanes,
@@ -56,18 +54,10 @@ export function LabTokenInspect({
   const [visibleTimeRange, setVisibleTimeRange] = useState<ChartVisibleTimeRange | null>(null);
   const [paneMarkers, setPaneMarkers] = useState<ChartEventMarker[]>([]);
 
-  const { data: fingerprints = [] } = useGetFingerprintsQuery(undefined, {
-    skip: flowPatternKeysProp != null || !ruleOverride?.fingerprintId,
-  });
-
-  const flowPatternKeys = useMemo(() => {
-    if (flowPatternKeysProp) return flowPatternKeysProp;
-    const fpId = ruleOverride?.fingerprintId;
-    if (!fpId) return null;
-    const fp = fingerprints.find((f) => f.id === fpId);
-    if (!fp) return null;
-    return patternKeysFrom(volumeIxPatternsFromConfig(fp.metric_config));
-  }, [flowPatternKeysProp, ruleOverride?.fingerprintId, fingerprints]);
+  const resolvedFlowKeys = useFlowPatternKeys(
+    flowPatternKeysProp != null ? null : ruleOverride?.fingerprintId,
+  );
+  const flowPatternKeys = flowPatternKeysProp ?? resolvedFlowKeys;
 
   const onEventMarkersChange = useCallback((markers: ChartEventMarker[]) => {
     setPaneMarkers(markers);
@@ -114,8 +104,16 @@ export function LabTokenInspect({
 
   return (
     <div className="flex flex-col gap-2.5">
+      {/* Collapsed by default — inspect opens for the chart + metric panes; the
+          token's static detail is reference, not the reason you're here. */}
       {showDetailPanel && (
-        <Accordion title="Detail" padding="sm" bordered={false} storageKey="mt:inspect-detail-open">
+        <Accordion
+          title="Detail"
+          padding="sm"
+          bordered={false}
+          storageKey="mt:inspect-detail-open"
+          defaultOpen={false}
+        >
           <TokenDetailPanel
             detail={detail}
             loading={loading}

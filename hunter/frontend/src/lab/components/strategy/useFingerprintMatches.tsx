@@ -23,6 +23,7 @@ import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
 import { tokenColumns } from 'components/tokens/tokenColumns';
 import { inspectFromMint } from 'components/strategy/inspectTarget';
 import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
+import { useFlowPatternKeys } from 'hooks/useFlowPatternKeys';
 import { apiErrorMessage } from 'store/apiSlice';
 import { useGetGroupedCreationTokensQuery } from '@lab/store/labEndpoints';
 import {
@@ -82,6 +83,7 @@ function FingerprintMatchesModal({
   const [query, setQuery] = useState<TableQuery>(INITIAL_QUERY);
   const columns = useMemo(() => tokenColumns(), []);
   const [inspected, setInspected] = useState<{ mint: string; symbol?: string } | null>(null);
+  const flowPatternKeys = useFlowPatternKeys(fingerprintId);
 
   const args = useMemo(() => scopedArgs(fingerprintId, query), [fingerprintId, query]);
   const { data, isFetching, isError, error } = useGetGroupedCreationTokensQuery(args);
@@ -110,6 +112,8 @@ function FingerprintMatchesModal({
           onQueryChange={setQuery}
           loading={isFetching}
           charts
+          chartsDefaultOn
+          flowPatternKeys={flowPatternKeys}
           searchable
           colToggle
           hoverable
@@ -126,6 +130,7 @@ function FingerprintMatchesModal({
         <LazyLabTokenInspectModal
           target={inspectFromMint(inspected.mint, inspected.symbol)}
           titleSuffix="Token inspect"
+          flowPatternKeys={flowPatternKeys}
           onClose={() => setInspected(null)}
         />
       )}

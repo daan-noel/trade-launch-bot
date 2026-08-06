@@ -10,17 +10,19 @@
 `PositionSummarySection` (`shared/components/strategy/PositionSummarySection.tsx`):
 
 ```text
+▾ Summary — collapses the whole shell (hero → charts); nested ▾ Charts still works when open
 1. Hero KPIs + exit mix + focus chips
-2. Details bands (Positions / Exits / Realized / MTM / Capital*) — always on
-3. ▾ Charts — ONE toggle collapsing everything below (`useState`, like Console History)
+2. Details bands (Positions / Exits / Realized / MTM / Capital*)
+3. ▾ Charts — ONE toggle collapsing every chart below
 4. Equity path | Return shape — `grid xl:grid-cols-2` (stack below xl)
 5. Hold mix | Wall clock — `xl:grid-cols-2` (`TemporalSummary` `variant="deck"`)
 6. Timing — one card, `xl:grid-cols-3`: Daily PnL calendar (1/3) | When it trades (2/3)
 7. Hold vs PnL — full width
 ```
 
-A collapsed deck returns the stable empty cohort/`EMPTY_PNL_DECK` from the fold memos, so
-hiding the charts also skips the cohort walk — not just the paint.
+A collapsed Summary or Charts deck returns the stable empty cohort/`EMPTY_PNL_DECK` from the
+fold memos, so hiding them also skips the cohort walk — not just the paint. Focus chips
+stay visible when Summary is collapsed so Clear all remains reachable.
 
 The heatmap's 24 hour columns need the wide two thirds, which is why Timing is a full-width
 card holding two panels rather than a heatmap cell in a 2-col grid (same split as Console).
@@ -51,6 +53,14 @@ Run scope → table filters → Focus chips (stacked)
   predicates + key-resolved `id in` / `mint_address in` from the chart cohort).
 - Sweep: full combo rows in memory; pin the table-filter cohort when focus activates.
 
+## Exit mix
+
+When full-cohort `chartPoints` (or History closes) are loaded, the mix bar and Exits
+tiles use **`exitBreakdownFromRows`**: system exits keep EXIT_KINDS labels; each
+metric-condition reason stays as stored (`stall > 300`, `trail >= 20`, …). Segment
+color follows that reason's net SOL. Legacy bare `Metrics` still splits Metric±.
+Until row reasons arrive, the wire summary falls back to Metric+/− counters.
+
 ## Focus
 
 `lib/strategy/positionFocus.ts` — stacked lenses (`status`, `exit`, `outcome`,
@@ -65,7 +75,8 @@ Parents call `buildFocusTableFilters(lenses, chartPoints, timeZone, mode)` where
 | `pct` | `pnl_pct` via `pctFocusFilter` (`lt`/`gte`/half-open `between`) | same |
 | `status:open/closed` | `status` neq/eq `End` (text `Neq` must reach SQL) | open → `exit_reason eq Open`; closed → key-resolved |
 | `status:fired` | `exit_reason neq NoEntry` | same |
-| `exit:Metric±` | `Metrics` contains **and** `pnl_sol` cut | same |
+| `exit:Metric±` | bare `Metrics` **eq** + `pnl_sol` cut (legacy) | same |
+| `exit:` detail | exact `exit_reason` **eq** (`stall > 300`) | same |
 | `exit:Other` | key-resolved `id in` | key-resolved mint set |
 | `pos` | `id eq` UUID | `mint_address` + `entry_time` from `parseEpisodeRowKey` |
 | `band` | key-resolved (no hold-seconds column) | `holding` + `pnl_pct` between |
@@ -88,19 +99,28 @@ Open positions use unrealized PnL when present on the wire (`isOpen` on
 The calendar renders `CALENDAR_WEEKS = 10` columns: past that, one third of the row
 truncates the in-cell SOL labels to nothing.
 
-## Wall clock vs Timing — why the numbers differ (locked)
+## Wall clock vs Timing — the shared time basis (locked)
 
-They are **not** two views of the same fact, and reconciling them is a support question
-that comes back. Two independent reasons:
+Every dated chart bins on the **decision instant**: exit time, or entry while a position
+is still open. One definition, three implementations that must stay in step —
+`PositionChartPoint.timeMs` (equity / calendar / heatmap / focus lenses), FE `wallTimeMs`,
+Rust `WallTimeField::time_of`.
+
+The anchor is the **equity curve**: realized PnL lands when you sell, so it cannot bin on
+anything else. Everything datable follows it, which is why `exit_time` is the Wall clock's
+default (`WallTimeField` = `exit_time` | `entry_time` | `created_at`).
+
+They still won't show equal *numbers*, and that part is by design:
 
 | | Wall clock | Timing (calendar + heatmap) |
 | --- | --- | --- |
-| Bins on | `created_at` (default) or `entry_time` | the **decision instant** — exit time, or entry for open marks |
 | Shows | count of fired positions (color = count or PnL) | net SOL |
 
-A position created Mon 23:40 and exited Tue 00:20 is a **Monday** wall bar and a
-**Tuesday** calendar square. That is by design; do not "fix" it by re-pointing one at the
-other's timestamp.
+`created_at` / `entry_time` remain one click away on the Wall toolbar (launch-cohort and
+entry-timing reads). Only the Wall clock honors that toggle today — switching it there
+re-opens the disagreement with the Timing card, which is why a **shared** basis control is
+planned: [`../../roadmap/temporal-time-basis-selector.md`](../../roadmap/temporal-time-basis-selector.md).
+Whatever lands, it must **not** reach equity / return-shape / hold-scatter.
 
 **Both bin in the app timezone** (`useTimezone()`), and that part is a hard rule:
 

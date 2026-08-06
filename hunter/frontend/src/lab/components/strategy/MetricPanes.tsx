@@ -431,7 +431,10 @@ function MetricPanesSelector() {
         padding="none"
         bordered={false}
         storageKey={inspect ? 'mt:metric-selector-inspect-open' : 'mt:metric-selector-open'}
-        defaultOpen={!inspect}
+        // Collapsed by default in both placements: the picker is a tall
+        // multi-column checklist, and open it pushes the panes it selects off
+        // screen — you set the panes once, then read them.
+        defaultOpen={false}
       >
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between gap-2 border-b border-white/8 pb-2">

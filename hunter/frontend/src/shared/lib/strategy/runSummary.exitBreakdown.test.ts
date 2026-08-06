@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   exitBreakdown,
+  exitBreakdownFromRows,
   exitReasonToneClass,
   runSummaryFromRows,
   zeroExitCounts,
@@ -95,6 +96,34 @@ describe('runSummaryFromRows', () => {
     expect(realized.n_exit_metrics_loss).toBe(2);
     const slices = exitBreakdown(realized);
     expect(slices.map((s) => s.label)).not.toContain('Other');
+  });
+});
+
+describe('exitBreakdownFromRows', () => {
+  it('keeps each metric detail label distinct (not Metric±)', () => {
+    const slices = exitBreakdownFromRows([
+      { exit: 'stall > 300', pnl_sol: -0.2 },
+      { exit: 'stall > 300', pnl_sol: 0.5 },
+      { exit: 'trail >= 20', pnl_sol: -0.1 },
+      { exit: 'TakeProfit', pnl_sol: 1 },
+    ]);
+    const labels = slices.map((s) => s.label);
+    expect(labels).toContain('stall > 300');
+    expect(labels).toContain('trail >= 20');
+    expect(labels).toContain('Take profit');
+    expect(labels).not.toContain('Metric+');
+    expect(labels).not.toContain('Metric-');
+    expect(slices.find((s) => s.label === 'stall > 300')?.n).toBe(2);
+    expect(slices.find((s) => s.label === 'trail >= 20')?.n).toBe(1);
+  });
+
+  it('still splits legacy bare Metrics into Metric+ / Metric-', () => {
+    const slices = exitBreakdownFromRows([
+      { exit: 'Metrics', pnl_sol: 1 },
+      { exit: 'Metrics', pnl_sol: -0.5 },
+    ]);
+    expect(slices.find((s) => s.label === 'Metric+')?.n).toBe(1);
+    expect(slices.find((s) => s.label === 'Metric-')?.n).toBe(1);
   });
 });
 

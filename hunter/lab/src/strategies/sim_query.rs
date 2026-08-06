@@ -191,6 +191,10 @@ pub fn count_tokens_entered(rows: &[Value]) -> usize {
 /// Wall-clock field the heatmap bins on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WallTimeField {
+    /// The **decision instant**: sold, falling back to bought while still open.
+    /// The FE default, and the stamp the equity curve / calendar / heatmap bin
+    /// on — so every dated chart on the page lands a position on one civil day.
+    ExitTime,
     EntryTime,
     CreatedAt,
 }
@@ -199,19 +203,29 @@ impl WallTimeField {
     pub fn parse(s: &str) -> Self {
         match s {
             "created_at" => WallTimeField::CreatedAt,
+            "exit_time" => WallTimeField::ExitTime,
             _ => WallTimeField::EntryTime,
         }
     }
 
     fn as_str(self) -> &'static str {
         match self {
+            WallTimeField::ExitTime => "exit_time",
             WallTimeField::EntryTime => "entry_time",
             WallTimeField::CreatedAt => "created_at",
         }
     }
 
-    fn json_key(self) -> &'static str {
-        self.as_str()
+    /// The row's wall-clock instant — twin of FE `wallTimeMs`. Only `ExitTime`
+    /// falls back (an open position has no exit stamp but still belongs on the
+    /// timeline, at the moment it was bought).
+    fn time_of(self, row: &Value) -> Option<i64> {
+        let at = |k: &str| row.get(k).and_then(Value::as_str).and_then(parse_rfc3339_ms);
+        match self {
+            WallTimeField::CreatedAt => at("created_at"),
+            WallTimeField::EntryTime => at("entry_time"),
+            WallTimeField::ExitTime => at("exit_time").or_else(|| at("entry_time")),
+        }
     }
 }
 
@@ -642,7 +656,6 @@ pub fn time_summary(
 
     let mut times: Vec<i64> = Vec::new();
     let mut n_fired = 0usize;
-    let field_key = wall_field.json_key();
 
     for row in rows {
         let exit = row
@@ -678,11 +691,7 @@ pub fn time_summary(
                 }
             }
         }
-        if let Some(ts) = row
-            .get(field_key)
-            .and_then(Value::as_str)
-            .and_then(parse_rfc3339_ms)
-        {
+        if let Some(ts) = wall_field.time_of(row) {
             times.push(ts);
         }
     }
@@ -735,11 +744,7 @@ pub fn time_summary(
                 .and_then(Value::as_str)
                 .unwrap_or("Open");
             let pnl = row.get("pnl_sol").and_then(Value::as_f64).unwrap_or(0.0);
-            let Some(ts) = row
-                .get(field_key)
-                .and_then(Value::as_str)
-                .and_then(parse_rfc3339_ms)
-            else {
+            let Some(ts) = wall_field.time_of(row) else {
                 continue;
             };
             let key = floor_to_grain_in_zone(ts, grain, tz);
@@ -1086,6 +1091,39 @@ mod tests {
             floor_to_grain_in_zone(t, WallGrain::H4, chrono_tz::UTC),
             t - t.rem_euclid(WallGrain::H4.step_ms())
         );
+    }
+
+    /// `exit_time` is the FE default. An open position has no exit stamp but is
+    /// still an outcome on the timeline — it must fall back to `entry_time`, not
+    /// vanish from the wall total (twin of FE `wallTimeMs`).
+    #[test]
+    fn exit_time_binning_keeps_open_positions_at_their_buy() {
+        let rows = vec![
+            json!({
+                "mint_address":"a","exit_reason":"TakeProfit","holding_secs":30,"pnl_sol":1.0,
+                "entry_time":"2026-07-15T14:00:00Z","exit_time":"2026-07-15T14:30:00Z"
+            }),
+            json!({
+                "mint_address":"b","exit_reason":"Open","holding_secs":0,"pnl_sol":0.1,
+                "entry_time":"2026-07-15T15:00:00Z","exit_time": Value::Null
+            }),
+        ];
+        let body = time_summary(
+            &rows,
+            WallTimeField::ExitTime,
+            Some("30m"),
+            None,
+            chrono_tz::UTC,
+        );
+        let cells = body["wall"].as_array().unwrap();
+        let total: i64 = cells.iter().map(|c| c["n"].as_i64().unwrap_or(0)).sum();
+        assert_eq!(total, 2, "the open position must still land on the timeline");
+        // Closed row sits at its EXIT (14:30), not its entry (14:00).
+        let at_1430 = cells
+            .iter()
+            .find(|c| c["start"].as_str().unwrap_or("").contains("14:30"))
+            .expect("14:30 bucket");
+        assert_eq!(at_1430["n"], 1);
     }
 
     /// A DST day is 23h or 25h, so a `t += step` cell grid drifts off the real

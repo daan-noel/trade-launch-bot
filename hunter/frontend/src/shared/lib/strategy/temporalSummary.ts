@@ -1,5 +1,5 @@
 /**
- * Temporal summary fold — hold-duration × exit mix + wall-clock entry/create
+ * Temporal summary fold — hold-duration × exit mix + wall-clock sold/bought/created
  * volume timeline. Shared by Simulate (server bins mirror this shape) and the
  * grouped-sweep combo drill-in (client fold over ComboTokenResult rows).
  *
@@ -25,9 +25,25 @@ export interface TemporalRow {
   holding_secs: number;
   entry_time: string | null;
   created_at: string | null;
+  /** Null while open — `exit_time` binning falls back to `entry_time` there. */
+  exit_time?: string | null;
 }
 
-export type WallTimeField = 'entry_time' | 'created_at';
+export type WallTimeField = 'exit_time' | 'entry_time' | 'created_at';
+
+/**
+ * The instant a row sits at on the wall-clock timeline.
+ *
+ * `exit_time` is the **decision instant** — sold, or bought for a position still
+ * open — the same rule `PositionChartPoint.timeMs` uses, so the Wall clock lands
+ * a position on the identical civil day as the equity curve, calendar and
+ * heatmap beside it. Keep the two definitions in step.
+ */
+export function wallTimeMs(row: TemporalRow, field: WallTimeField): number | null {
+  if (field === 'created_at') return parseTsMs(row.created_at);
+  if (field === 'entry_time') return parseTsMs(row.entry_time);
+  return parseTsMs(row.exit_time) ?? parseTsMs(row.entry_time);
+}
 
 export type TemporalMetric = 'exit_mix' | 'pnl';
 
@@ -484,7 +500,7 @@ export function buildTemporalSummary(
     bin.pnl_sol += r.pnl_sol;
     bin.mints.push(r.mint_address);
     tallyExit(bin.exits, r.exit, r.pnl_sol);
-    const ts = parseTsMs(wallField === 'entry_time' ? r.entry_time : r.created_at);
+    const ts = wallTimeMs(r, wallField);
     if (ts != null) times.push(ts);
   }
 
@@ -520,7 +536,7 @@ export function buildTemporalSummary(
     });
     const wins = new Map<number, number>();
     for (const r of fired) {
-      const ts = parseTsMs(wallField === 'entry_time' ? r.entry_time : r.created_at);
+      const ts = wallTimeMs(r, wallField);
       if (ts == null) continue;
       const key = floorToWallGrain(ts, wallGrain, timeZone);
       const cell = cellMap.get(key);
@@ -589,7 +605,7 @@ export function rebucketWall(
   const wins = new Map<string, number>();
   for (const r of rows) {
     if (!r.fired) continue;
-    const ts = parseTsMs(wallField === 'entry_time' ? r.entry_time : r.created_at);
+    const ts = wallTimeMs(r, wallField);
     if (ts == null) continue;
     const key = floorToWallGrain(ts, grain, timeZone);
     const id = `${wallField}:${key}`;
@@ -714,7 +730,7 @@ export function rowMatchesWallCell(
   startIso: string,
   endIso: string,
 ): boolean {
-  const ts = parseTsMs(field === 'entry_time' ? row.entry_time : row.created_at);
+  const ts = wallTimeMs(row, field);
   if (ts == null) return false;
   const a = parseTsMs(startIso);
   const b = parseTsMs(endIso);

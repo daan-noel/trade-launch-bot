@@ -17,6 +17,7 @@ export function LabTokenInspectModal({
   target,
   titleSuffix = 'Token inspect',
   ruleOverride = null,
+  flowPatternKeys = null,
   eventMarkers = null,
   onClose,
 }: {
@@ -24,6 +25,9 @@ export function LabTokenInspectModal({
   /** Modal heading suffix, e.g. "Sweep inspect". */
   titleSuffix?: string;
   ruleOverride?: MetricPanesRuleOverride | null;
+  /** Explicit overlay keys (e.g. sweep run `volume_ix_patterns`); when omitted,
+   *  resolved from `ruleOverride.fingerprintId` inside LabTokenInspect. */
+  flowPatternKeys?: ReadonlySet<string> | null;
   /** Precomputed fill markers to draw instead of the single `target`'s — used to
    *  overlay **all re-entry episodes** of the token on one chart. Falls back to the
    *  single-target markers when null/absent. */
@@ -65,6 +69,7 @@ export function LabTokenInspectModal({
         tableId="lab_run_inspect"
         extraEventMarkers={extraEventMarkers}
         ruleOverride={ruleOverride}
+        flowPatternKeys={flowPatternKeys}
         positionEntry={positionEntry}
       />
     </Modal>

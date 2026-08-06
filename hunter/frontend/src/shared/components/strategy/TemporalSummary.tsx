@@ -87,7 +87,8 @@ export interface TemporalSummaryProps {
 }
 
 /**
- * Hold-duration stacked bars + entry/create wall-clock volume timeline.
+ * Hold-duration stacked bars + a wall-clock volume timeline (sold time by
+ * default; switchable to bought / created).
  * Click a bin/cell to focus; click again / Clear to reset.
  */
 export function TemporalSummary({
@@ -110,7 +111,8 @@ export function TemporalSummary({
   const { timezone } = useTimezone();
   const [metric, setMetric] = useState<TemporalMetric>('exit_mix');
   const [wallColor, setWallColor] = useState<WallColorMode>('volume');
-  const [localField, setLocalField] = useState<WallTimeField>('created_at');
+  // Sold (decision instant) — same stamp the other charts bin on.
+  const [localField, setLocalField] = useState<WallTimeField>('exit_time');
   const [localGrain, setLocalGrain] = useState<WallGrainChoice>('auto');
   const [localHold, setLocalHold] = useState<HoldSchemeChoice>('auto');
   const wallField = wallFieldProp ?? localField;
@@ -186,7 +188,7 @@ export function TemporalSummary({
           title="Wall clock"
           tip={{
             title: 'Wall-clock timeline',
-            body: 'Entry/create volume over time. Click a cell to focus that mint set.',
+            body: 'Position volume over time, by sold time (bought, while still open). Click a cell to focus that mint set.',
           }}
         >
           <p className="text-xs text-text-dim">No temporal cohort yet.</p>
@@ -901,7 +903,8 @@ function WallTimeline({
   flat?: boolean;
 }) {
   const { timezone } = useTimezone();
-  const fieldLabel = field === 'entry_time' ? 'entry' : 'created';
+  const fieldLabel =
+    field === 'entry_time' ? 'entry' : field === 'created_at' ? 'created' : 'sold';
   const ghostById = useMemo(() => {
     if (!ghostCells) return null;
     return new Map(ghostCells.map((c) => [c.id, c]));
@@ -1228,6 +1231,10 @@ function WallToolbar({
         value={field}
         onChange={onFieldChange}
         options={[
+          // Default. The decision instant (sold, or bought while open) — the
+          // stamp the equity curve, calendar and heatmap all bin on, so the
+          // cards on this page agree about which day a position belongs to.
+          { id: 'exit_time', label: 'Sold' },
           { id: 'created_at', label: 'Created at' },
           { id: 'entry_time', label: 'Entry time' },
         ]}

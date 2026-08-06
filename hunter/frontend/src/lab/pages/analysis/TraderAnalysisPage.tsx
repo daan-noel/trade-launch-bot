@@ -1,20 +1,21 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ColumnDef } from 'components/table/types';
 import { tokenColumns } from 'components/tokens/tokenColumns';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
-import { LazyTokenChartsGrid } from 'components/tokens/LazyTokenChartsGrid';
-import { AmountCell, PriceCell } from 'components/tokens/priceCells';
-import { Badge } from 'components/ui/Badge';
 import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { IconButton } from 'components/ui/IconButton';
 import { SearchIcon, SpinnerIcon } from 'components/ui/icons';
 import { Input } from 'components/ui/Input';
+import { TraderChartCardExtra } from '@lab/components/analysis/TraderChartCardExtra';
 import { WalletAnalyticsPanel } from '@lab/components/analysis/WalletAnalyticsPanel';
+import { filterTraderRowsByFocus } from '@lab/components/analysis/walletFocus';
+import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
+import { inspectFromMint } from 'components/strategy/inspectTarget';
+import type { PositionFocusLens } from 'lib/strategy/positionFocus';
 import { Select } from 'components/ui/Select';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { useTimezone } from 'context/TimezoneContext';
-import { formatTimestampMs } from 'utils/date';
 import { apiErrorMessage } from 'store/apiSlice';
 import { useGetTraderTokensQuery } from '@lab/store/labEndpoints';
 import { useProfileWallets } from 'hooks/useProfileWallets';
@@ -89,20 +90,21 @@ const parseLimit = (raw: string) => {
  * Trader Analysis — paste a wallet address and see every token it traded in the
  * look-back window as the standard full token table (client-side sort / filter /
  * search — identical columns to every other token table), a wallet-level PnL
- * analytics panel (summary stats + heatmap/equity-curve/ranked/distribution/
- * scatter, re-derived from the table's current filtered cohort — see
- * `@lab/components/analysis/walletPnlStats.ts`), and a synced charts grid below
- * that mirrors the table's current sort/filter/page. Each chart card carries the
- * wallet-specific stats (buys/sells/last traded, reconstructed PnL, avg buy/sell
- * price, open/partial-data flags) so the trader dimension never duplicates the
- * token columns.
+ * analytics deck (summary + interactive charts with focus chips, re-derived from
+ * the table's current filtered cohort — see
+ * `@lab/components/analysis/walletPnlStats.ts` / `walletFocus.ts`), and the shared
+ * `TokenTable` Charts toggle for a per-token grid mirroring the current page.
+ * Each chart card carries the wallet-specific stats (buys/sells/last traded,
+ * reconstructed PnL, avg buy/sell price, open/partial-data flags) so the trader
+ * dimension never duplicates the token columns.
  *
  * Every PnL figure is an avg-cost reconstruction over this per-mint grain, NOT a
  * true per-episode ledger (a wallet that re-entered a mint many times collapses
  * to one row) — see the backend `kernel::wallet_mint_pnl` doc comment.
  *
  * Scope caveat: only tokens this box ingests appear — a coin the wallet traded
- * that was never tracked won't show. Charts are lazily mounted on scroll.
+ * that was never tracked won't show. Charts are lazily mounted when the toggle
+ * is on.
  */
 export function TraderAnalysisPage() {
   const { timezone } = useTimezone();
@@ -110,14 +112,16 @@ export function TraderAnalysisPage() {
   const [daysInput, setDaysInput] = useState(String(DEFAULT_DAYS));
   const [limitInput, setLimitInput] = useState(String(DEFAULT_LIMIT));
   const [query, setQuery] = useState<TraderQuery | null>(null);
-  // The rows the table currently shows (after sort/filter/paging) — drives the
-  // charts grid so both stay in sync. Fed by DataTable's onVisibleRowsChange.
-  const [visibleRows, setVisibleRows] = useState<TraderTokenRow[]>(EMPTY_ROWS);
-  // The FULL filtered cohort (post search/column-filter, pre-pagination) — feeds
-  // the wallet PnL analytics panel (summary + heatmap/equity/ranked/distribution/
-  // scatter), so filtering the token table re-derives every chart for free
-  // instead of the analytics panel silently only covering page 1.
+  // Table column/search cohort (pre-pagination). Pinned when focus activates so
+  // the analytics deck's parent base doesn't collapse to the focused slice
+  // (same pin pattern as Sweep drill-in).
   const [filteredRows, setFilteredRows] = useState<TraderTokenRow[]>(EMPTY_ROWS);
+  const [focus, setFocus] = useState<PositionFocusLens[]>([]);
+  const [cohortPinned, setCohortPinned] = useState<TraderTokenRow[] | null>(null);
+  // Row / chart-card select → lab token detail modal (mint-only; no fill markers).
+  const [inspected, setInspected] = useState<{ mint: string; symbol?: string | null } | null>(
+    null,
+  );
 
   // Tracked wallets from the shared profiles cache (same SSOT the chart markers
   // read) — a picker to fill the wallet input from a saved profile wallet.
@@ -136,6 +140,15 @@ export function TraderAnalysisPage() {
   });
   const error = apiErrorMessage(rawError, 'Failed to load trader tokens');
   const rows = data ?? EMPTY_ROWS;
+
+  // New Analyze (wallet / days / limit) drops focus — a stale day lens from the
+  // previous window would silently empty the table.
+  useEffect(() => {
+    setFocus([]);
+    setCohortPinned(null);
+    setFilteredRows(EMPTY_ROWS);
+    setInspected(null);
+  }, [query]);
 
   // Exactly the standard shared token columns — identical to every other token
   // table (SSOT), no additions/removals. The wallet-specific data lives in the
@@ -165,8 +178,39 @@ export function TraderAnalysisPage() {
   };
 
   // Stable identity so DataTable's memoized pageRows/processed effects don't churn.
-  const handleVisibleRows = useCallback((r: TraderTokenRow[]) => setVisibleRows(r), []);
-  const handleFilteredRows = useCallback((r: TraderTokenRow[]) => setFilteredRows(r), []);
+  const handleFilteredRows = useCallback(
+    (r: TraderTokenRow[]) => {
+      // Only track column/search filters while unfocused — once focus is on, the
+      // table's row set is already narrowed and would collapse the chart base.
+      if (focus.length === 0) setFilteredRows(r);
+    },
+    [focus.length],
+  );
+
+  const onFocusChange = useCallback(
+    (next: PositionFocusLens[]) => {
+      if (next.length > 0 && focus.length === 0) {
+        // Prefer the table's column/search cohort; fall back to the full API
+        // set if DataTable hasn't reported filtered rows yet.
+        setCohortPinned(filteredRows.length > 0 ? filteredRows : rows);
+      }
+      if (next.length === 0) setCohortPinned(null);
+      setFocus(next);
+    },
+    [focus.length, filteredRows, rows],
+  );
+
+  // Prefer the live table-filter report; fall back to the full API set so the
+  // deck paints before DataTable's first onFilteredRowsChange.
+  const tableFilterCohort = cohortPinned ?? (filteredRows.length > 0 ? filteredRows : rows);
+  const focusOpts = useMemo(() => ({ timeZone: timezone }), [timezone]);
+
+  // Focus narrows the table's input set (client-side); column filters still
+  // apply inside DataTable on top of this. When unfocused, pass the full API set.
+  const rowsForTable = useMemo(() => {
+    if (focus.length === 0) return rows;
+    return filterTraderRowsByFocus(rows, focus, focusOpts);
+  }, [rows, focus, focusOpts]);
 
   return (
     <div className="p-4">
@@ -265,90 +309,56 @@ export function TraderAnalysisPage() {
         </p>
       )}
 
-      {/* Wallet-level PnL analytics — summary stat row + a tabbed chart panel
-          (heatmap / equity curve / ranked / distribution / scatter). Driven by
-          the table's FULL filtered cohort, so a column filter/search here also
-          re-scopes every chart below. Lives above the table since this is the
-          "is this wallet good" answer, not a per-token drill-down. */}
+      {/* Wallet-level PnL analytics — summary + interactive chart deck. Driven by
+          the table's FULL filtered cohort (pinned under focus), so a column
+          filter/search here also re-scopes every chart. Lives above the table
+          since this is the "is this wallet good" answer, not a per-token drill-down. */}
       {query && !isFetching && !error && (
-        <WalletAnalyticsPanel rows={filteredRows} timezone={timezone} />
+        <WalletAnalyticsPanel
+          rows={tableFilterCohort}
+          timezone={timezone}
+          focus={focus}
+          onFocusChange={onFocusChange}
+        />
       )}
 
-      {/* Token table — routed through the shared `TokenTable` (client mode: rows are
-          the full set, `DataTable` pages in-browser). Standard shared token columns
-          (append nothing — `tokenColumns()` already lays out the full set). Rows
-          arrive recent-first from the backend (no defaultSort). The synced charts
-          grid below is fed by the table's current on-screen rows; the analytics
-          panel above is fed by its full filtered cohort. */}
+      {/* Token table — shared `TokenTable` client mode + Charts toggle (defaults
+          on; persisted per tableId). Wallet stats ride `renderChartCardExtra` so
+          the trader dimension never duplicates the token columns. Focus narrows
+          the input set; the analytics panel above is fed by the pinned
+          table-filter cohort so timing charts keep their parent base. */}
       {query && rows.length > 0 && (
         <TokenTable
           columns={columns}
-          rows={rows}
+          rows={rowsForTable}
           existingKeys={ALL_TOKEN_INFO_KEYS}
           mintSetFilter
+          charts
+          chartsDefaultOn
           searchable
           colFilters
           colToggle
           hoverable
           loading={isFetching}
           tableId="trader_analysis_tokens"
-          onVisibleRowsChange={handleVisibleRows}
+          highlightWallet={query.wallet}
+          titleOf={(r) => r.symbol || r.name || shortAddr(r.mint_address)}
+          selectedKey={inspected?.mint ?? null}
+          onSelect={(mint) => {
+            const row = mint ? rowsForTable.find((r) => r.mint_address === mint) : null;
+            setInspected(mint ? { mint, symbol: row?.symbol } : null);
+          }}
           onFilteredRowsChange={handleFilteredRows}
           emptyMessage="No tokens match the filters"
+          renderChartCardExtra={(row) => <TraderChartCardExtra row={row} timezone={timezone} />}
         />
       )}
 
-      {/* Charts grid — the shared grid, mirroring the table's current sort/filter/
-          page. The per-wallet stats (buys/sells/last, PnL, avg prices, open/
-          partial flags) ride the card-header slot so the trader dimension never
-          duplicates the token columns (see `walletPnlStats.ts` / the wallet-level
-          analytics panel above for the aggregate view across every token). */}
-      {visibleRows.length > 0 && query && (
-        <LazyTokenChartsGrid
-          rows={visibleRows}
-          titleOf={(r) => r.symbol || r.name || shortAddr(r.mint_address)}
-          highlightWallet={query.wallet}
-          chartTableId="trader_analysis_trades"
-          renderChartCardExtra={(row) => (
-            <span className="ml-auto flex flex-col items-end gap-1 rounded-md border border-white/8 bg-white/3 px-2 py-1 text-[11px]">
-              <span className="flex items-center gap-2">
-                <span className="font-bold uppercase tracking-wide text-text-dim">This wallet</span>
-                <span className="text-buy">{row.wallet_buy_count} buys</span>
-                <span className="text-sell">{row.wallet_sell_count} sells</span>
-                <span className="text-text-dim">
-                  last {formatTimestampMs(Date.parse(row.wallet_last_trade_at), timezone)}
-                </span>
-              </span>
-              <span className="flex items-center gap-2">
-                <span className={`font-bold ${row.wallet_total_pnl_sol >= 0 ? 'text-green' : 'text-red'}`}>
-                  <AmountCell sol={row.wallet_total_pnl_sol} /> PnL
-                </span>
-                <span className="text-text-dim">
-                  avg buy <PriceCell sol={row.wallet_avg_buy_price} />
-                  {row.wallet_avg_sell_price != null && (
-                    <>
-                      {' '}
-                      · sell <PriceCell sol={row.wallet_avg_sell_price} />
-                    </>
-                  )}
-                </span>
-                {row.wallet_is_open && (
-                  <Badge variant="info" size="sm">
-                    open
-                  </Badge>
-                )}
-                {row.wallet_partial_data && (
-                  <Badge
-                    variant="warning"
-                    size="sm"
-                    title="Sold more than bought in this window — the position predates the look-back, so this PnL is a partial estimate"
-                  >
-                    partial
-                  </Badge>
-                )}
-              </span>
-            </span>
-          )}
+      {inspected && (
+        <LazyLabTokenInspectModal
+          target={inspectFromMint(inspected.mint, inspected.symbol)}
+          titleSuffix="Token inspect"
+          onClose={() => setInspected(null)}
         />
       )}
     </div>

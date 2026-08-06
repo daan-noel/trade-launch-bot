@@ -293,6 +293,34 @@ describe('buildTemporalSummary', () => {
  * drift, the Wall clock card and the Timing calendar beside it silently disagree
  * about which day a position belongs to.
  */
+/** Twin of the Rust `exit_time_binning_keeps_open_positions_at_their_buy`. */
+describe('wall field = sold (the default)', () => {
+  it('bins closed rows at the exit and open rows at the buy', () => {
+    const rows: TemporalRow[] = [
+      row({
+        mint_address: 'a',
+        exit: 'TakeProfit',
+        holding_secs: 30,
+        entry_time: '2026-07-15T14:00:00Z',
+        exit_time: '2026-07-15T14:30:00Z',
+      }),
+      row({
+        mint_address: 'b',
+        exit: 'Open',
+        holding_secs: 0,
+        entry_time: '2026-07-15T15:00:00Z',
+        exit_time: null,
+      }),
+    ];
+    const t = buildTemporalSummary(rows, 'UTC', 'exit_time', '30m');
+    expect(t.wall.reduce((s, c) => s + c.n, 0)).toBe(2);
+    const at1430 = t.wall.find((c) => c.start.includes('14:30'));
+    expect(at1430?.n).toBe(1);
+    // …and not at 14:00, where `entry_time` binning would have put it.
+    expect(t.wall.find((c) => c.start.includes('14:00'))?.n ?? 0).toBe(0);
+  });
+});
+
 describe('floorToWallGrain', () => {
   const at = (iso: string) => Date.parse(iso);
 

@@ -111,6 +111,23 @@ pill groups (group mode, interval, style, metric) and the marker/line toggles. *
 | **Chain link** | icon toggle | longest-chain highlight band (§9); disabled unless `chainHighlightAvailable` | session |
 | **Range select** | icon toggle | drag-to-select range mode (§6) | session |
 
+### 4a. Opening state (`DEFAULT_CHART_PREFS`)
+
+The persisted toggles start from one shared default in `constants.ts`, tuned for the read
+this chart is used for — **what a token did in its first seconds**:
+
+| Pref | Default | Why |
+| --- | --- | --- |
+| `interval` | `1s` | a `1m` candle swallows the entire window that decides an entry |
+| `groupMode` / `style` | `time` / `candles` | — |
+| `showDevMarkers` + `devMarkersBoundariesOnly` | both **on** | the dev's `first_buy`/`sell_all` are the signal; their manufactured mid-position churn is noise |
+| `showWalletMarkers`, `showEventMarkers`, `showAthLine`, `showMigrationLine`, `showFlowLines` | on | read every time; the toolbar disables each when its data is absent, so they cost nothing |
+| `showTradeMarkers` | **off** | the per-bar buy/sell count badge is one badge per candle at `1s` — it hides the price action it annotates |
+| `trimEmptyBars` | **off** | no-trade gaps ARE information (a stalled token); dropping them distorts the time axis |
+
+Both apps share this default — it is not split per app. `FlowPreviewChart` keeps its own
+`DEFAULT_FLOW_CHART_PREFS` (different toolbar, own storage key).
+
 The toolbar **wraps**: the control cluster is shrinkable (no `shrink-0`) and both levels
 carry `flex-wrap`, so in a narrow host — the Console's 380px manual-trade column, the
 Portfolio/Floor row details — it drops to its own full-width line and re-flows into rows.
@@ -133,7 +150,8 @@ the tooltip; toggles expose `aria-pressed` for accessibility.
 
 ## 5. Trade-count markers (buy/sell per bar)
 
-When **Buy/sell counts** is on (`showTradeMarkers`, default on), `buildTradeMarkers` emits a
+When **Buy/sell counts** is on (`showTradeMarkers`, default **off** — see §4a),
+`buildTradeMarkers` emits a
 lightweight-charts marker per bar:
 
 - Counts buys vs. sells in the bar; text like `↑3 ↓2`.

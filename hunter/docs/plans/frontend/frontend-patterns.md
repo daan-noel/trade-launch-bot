@@ -83,6 +83,12 @@ token-info columns alike, and is the fallback for a column added *later* too (a 
 absent from `mt:table.knownCols` re-resolves through all three tiers — see `loadVisibleCols`).
 Never copy the same `defaultCols` map to several call sites; if they agree, it belongs in tier 2.
 
+**Charts-grid default** follows the same shape: `TokenTable`'s per-`tableId` charts toggle
+(`mt:tablecharts:<tableId>`) starts from the call site's `chartsDefaultOn` (default off,
+since each card is a per-row fetch), and the persisted choice wins once the user toggles it.
+On today's tables it is on everywhere the chart IS the read, and off on `simulate-positions`
+(a long result list you scan before drilling into one token).
+
 **Hidden sort-only columns:** set `sortOnly: true` (+ `sortValue`) so the column joins multi-key sort but stays out of the Columns panel and defaults hidden. A sibling column's `renderHeader(SortCtx)` (via shared `MultiSortHeader`) calls `toggleSort(key)` for each axis — Rules/Simulate use `buildFingerprintRuleColumns`, `buildRuleParamsColumns`, and `buildCapsColumns` (concurrent / total; `0` total displays/filters as `∞` and sorts as largest).
 
 **Row-memo performance (locked):** `TableRow` is `React.memo`'d. `DataTable` ref-stabilizes
@@ -127,6 +133,12 @@ server compare. Percent columns that render `×100` (Win %, Open %) use a local
   route or from `TokenTable`. Use `LazyTokenTradeChart`, `LazyLabTokenInspect(Modal)`, and
   `TokenTable`'s `LazyTokenChartsGrid` (Charts toggle). Creation-stats trend charts
   are lazy inside the page/section so the control shell paints first.
+- **Vol/non-vol overlay gate:** `TokenPriceChart` only draws the lines when
+  `flowPatternKeys` is a non-empty set (fingerprint `volume_ix_patterns`). Resolve via
+  `hooks/useFlowPatternKeys` / `useFlowPatternKeysForRule` / `useResolvedFlowPatternKeys`
+  (or `lib/flow/flowPatternKeys` for a raw pattern list). Any rule/fingerprint-scoped chart
+  (`TokenTable` Charts, Floor inspect, lab inspect) must pass them — omit only on
+  mint-only surfaces with no fingerprint.
 
 ## BackgroundJobsContext — `context/BackgroundJobsContext.tsx`
 

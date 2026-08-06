@@ -13,6 +13,7 @@ import {
 } from 'lib/signedTone';
 import { exitReasonBadge } from 'components/strategy/strategyColumns';
 import { fetchPortfolioPositionsPage } from 'services/api';
+import { useFlowPatternKeysForRule } from 'hooks/useFlowPatternKeys';
 import { useServerTable } from 'hooks/useServerTable';
 import { FloorMintChart } from '@live/components/floor/FloorMintChart';
 import { buildEventMarkers, inspectFromPosition } from 'components/strategy/inspectTarget';
@@ -52,6 +53,7 @@ export function PortfolioRuleDetail({
 }) {
   const pnlPct =
     row.total_entry_sol > 0 ? (row.realized_pnl_sol / row.total_entry_sol) * 100 : null;
+  const flowPatternKeys = useFlowPatternKeysForRule(row.rule_id);
   const [pick, setPick] = useState<RulePositionRecord | null>(null);
   // Frozen per mount so the window bound can't slide between fetches.
   const [nowMs] = useState(() => Date.now());
@@ -204,6 +206,7 @@ export function PortfolioRuleDetail({
           mint={pick.mint_address}
           markers={markers}
           tableId="portfolio-rule-detail"
+          flowPatternKeys={flowPatternKeys}
         />
       )}
     </div>

@@ -170,18 +170,23 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
     () => rawGroupBy.filter((f) => (GROUP_FIELDS as readonly string[]).includes(f)),
     [rawGroupBy],
   );
-  const [top, setTop] = useLocalStorage<number>(STORAGE_KEYS.groupedTop, 8);
+  // 16 rows — enough that a launch tool's preset ladder shows up as a ladder
+  // rather than as its top few rungs (the 6-preset max-buy client needed it).
+  const [top, setTop] = useLocalStorage<number>(STORAGE_KEYS.groupedTop, 16);
   // Ranking criterion for the top-N — "trades per token" is the one that
   // actually surfaces a small elite group over a big group of mediocre
   // launches (raw "trades" still scales with group size like "count" does).
-  const [rankBy, setRankBy] = useLocalStorage<GroupRankBy>(STORAGE_KEYS.groupedRankBy, 'count');
+  const [rankBy, setRankBy] = useLocalStorage<GroupRankBy>(STORAGE_KEYS.groupedRankBy, 'trades');
   // Bucket width (SOL) for the continuous SOL group fields — the same knob the
   // grouped sweep uses, so this dashboard groups a corpus identically to a sweep.
-  const [bucketWidth, setBucketWidth] = useLocalStorage<number>(STORAGE_KEYS.groupedBucketWidth, 0.1);
+  const [bucketWidth, setBucketWidth] = useLocalStorage<number>(STORAGE_KEYS.groupedBucketWidth, 1);
   // Exact mode: key the ◎ SOL fields on the amount itself, one group per distinct
   // value. Separate from the width (never a magic 0) — see Rust `SolPrecision`.
-  const [exactSol, setExactSol] = useLocalStorage<boolean>(STORAGE_KEYS.groupedExactSol, false);
-  const [bucket, setBucket] = useLocalStorage<CreationBucket>(STORAGE_KEYS.groupedBucket, 'day');
+  // Default ON: a launch client's tell is a repeated EXACT amount, which any
+  // non-zero bucket width smears across neighbours.
+  const [exactSol, setExactSol] = useLocalStorage<boolean>(STORAGE_KEYS.groupedExactSol, true);
+  // Hour bins: a launch tool's activity is a burst, and a day bin flattens it.
+  const [bucket, setBucket] = useLocalStorage<CreationBucket>(STORAGE_KEYS.groupedBucket, 'hour');
   const [rangeDays, setRangeDays] = useLocalStorage<number>(STORAGE_KEYS.groupedRange, 30);
   const [fieldFiltersText, setFieldFiltersText] = useLocalStorage<Record<string, string>>(
     STORAGE_KEYS.groupedFilters,
@@ -802,6 +807,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
                   loading={drillLoading}
                   resetKey={drillResetKey}
                   charts
+                  chartsDefaultOn
                   searchable
                   colToggle
                   hoverable

@@ -14,6 +14,7 @@ import {
   type RunOutcomeRow,
   type RunSummary,
 } from 'lib/strategy/runSummary';
+import { parseMetricExitParts } from 'lib/strategy/exitReason';
 import type { ClosedTradePoint } from '@live/store/liveEndpoints';
 import type { HistoryFocus } from './historyFocus';
 
@@ -63,8 +64,13 @@ export function exitTileToHistoryNeedle(tileLabel: string): string | null {
       return 'metric_loss';
     case 'Metric':
       return 'metric';
-    default:
+    case 'Other':
       return null;
+    default:
+      // Detailed metric labels (`stall > 300`) — contains needle matches exactly
+      // that stored reason (and no shorter substring false-positives when the
+      // full spaced form is used).
+      return tileLabel;
   }
 }
 
@@ -107,6 +113,8 @@ export function activeExitTileLabel(
     case 'metric':
       return 'Metric';
     default:
-      return null;
+      // Exact metric-condition labels from the detailed exit mix (`stall > 300`).
+      // Metric-name dropdown needles (`pnl`, `trail`) are not tile labels.
+      return exitReason && parseMetricExitParts(exitReason) ? exitReason : null;
   }
 }

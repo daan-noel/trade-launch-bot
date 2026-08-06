@@ -2,8 +2,9 @@
  * Shared position-summary shell for Evidence / Simulate / Sweep.
  *
  * Layout:
+ *   ▾ Summary — collapses the whole shell (hero → charts), like ▾ Charts
  *   1. Hero + exit mix + focus chips
- *   2. Details bands (always visible)
+ *   2. Details bands
  *   3. ▾ Charts — one toggle collapsing every chart below it
  *   4. Equity | Return shape (`xl:grid-cols-2`)
  *   5. Hold mix | Wall clock (`xl:grid-cols-2`)
@@ -154,7 +155,10 @@ export function PositionSummarySection({
 }: PositionSummarySectionProps) {
   const { timezone } = useTimezone();
   const [density, setDensity] = usePnlDistDensity();
+  const [summaryOpen, setSummaryOpen] = useState(true);
   const [chartsOpen, setChartsOpen] = useState(true);
+  /** Charts only fold when both the shell and the Charts toggle are open. */
+  const decksOpen = summaryOpen && chartsOpen;
 
   const toggleLens = useCallback(
     (lens: PositionFocusLens) => {
@@ -195,13 +199,29 @@ export function PositionSummarySection({
     };
   }, [focus, toggleLens]);
 
+  /** Closed cohort reasons for a detailed exit mix (exact metric labels). */
+  const exitOutcomes = useMemo(
+    () =>
+      chartPoints
+        .filter(
+          (p) =>
+            !p.isOpen &&
+            !!p.exit_reason &&
+            p.exit_reason !== 'Open' &&
+            p.exit_reason !== 'NoEntry',
+        )
+        .map((p) => ({ exit: p.exit_reason as string, pnl_sol: p.pnlSol })),
+    [chartPoints],
+  );
+
   const { hero, exitMix, sections } = useMemo(
     () =>
       runSummarySections(summary, {
         ...summaryExtras,
         interaction,
+        exitOutcomes,
       }),
-    [summary, summaryExtras, interaction],
+    [summary, summaryExtras, interaction, exitOutcomes],
   );
 
   const detailSections = useMemo(() => {
@@ -216,40 +236,40 @@ export function PositionSummarySection({
   // Calendar + heatmap (timing) stay on the table-filter cohort — only non-timing
   // lenses apply, so an exit/pct stack still narrows the grid while a clicked day
   // or slot is drawn as a selection ring instead of emptying its own chart.
-  // A collapsed deck skips the cohort walk entirely (hooks still run).
+  // A collapsed Summary/Charts shell skips the cohort walk entirely (hooks still run).
   const timingPoints = useMemo(() => {
-    if (!chartsOpen) return NO_POINTS;
+    if (!decksOpen) return NO_POINTS;
     const nonTiming = focus.filter((l) => !isTimeLens(l));
     if (nonTiming.length === 0) return chartPoints;
     return filterRowsByFocus(chartPoints.map(toFocusRow), nonTiming, matchOpts).map((r) => r._p);
-  }, [chartsOpen, chartPoints, focus, matchOpts]);
+  }, [decksOpen, chartPoints, focus, matchOpts]);
 
   const focusedPoints = useMemo(() => {
-    if (!chartsOpen) return NO_POINTS;
+    if (!decksOpen) return NO_POINTS;
     if (focus.length === 0) return chartPoints;
     return filterRowsByFocus(chartPoints.map(toFocusRow), focus, matchOpts).map((r) => r._p);
-  }, [chartsOpen, chartPoints, focus, matchOpts]);
+  }, [decksOpen, chartPoints, focus, matchOpts]);
 
   // Scatter does not empty itself on a band brush — domain zooms the parent
   // (non-band) cohort; other lenses still narrow the dots.
   const holdSourcePoints = useMemo(() => {
-    if (!chartsOpen) return NO_POINTS;
+    if (!decksOpen) return NO_POINTS;
     const nonBand = focus.filter((l) => l.kind !== 'band');
     if (nonBand.length === 0) return chartPoints;
     return filterRowsByFocus(chartPoints.map(toFocusRow), nonBand, matchOpts).map((r) => r._p);
-  }, [chartsOpen, chartPoints, focus, matchOpts]);
+  }, [decksOpen, chartPoints, focus, matchOpts]);
 
   const pnlPoints = useMemo(() => toPnlPoints(focusedPoints), [focusedPoints]);
   const holdPoints = useMemo(() => toHoldScatterPoints(holdSourcePoints), [holdSourcePoints]);
   const holdContextPoints = useMemo(
-    () => toHoldScatterPoints(chartsOpen ? chartPoints : NO_POINTS),
-    [chartsOpen, chartPoints],
+    () => toHoldScatterPoints(decksOpen ? chartPoints : NO_POINTS),
+    [decksOpen, chartPoints],
   );
   const timingPnlPoints = useMemo(() => toPnlPoints(timingPoints), [timingPoints]);
 
   const deck = useMemo(
     () =>
-      chartsOpen
+      decksOpen
         ? foldPnlDeck(pnlPoints, {
             timeZone: timezone,
             density,
@@ -257,12 +277,12 @@ export function PositionSummarySection({
             only: ['curve', 'buckets'],
           })
         : EMPTY_PNL_DECK,
-    [chartsOpen, pnlPoints, timezone, density],
+    [decksOpen, pnlPoints, timezone, density],
   );
 
   const timingDeck = useMemo(
     () =>
-      chartsOpen
+      decksOpen
         ? foldPnlDeck(timingPnlPoints, {
             timeZone: timezone,
             density,
@@ -270,7 +290,7 @@ export function PositionSummarySection({
             only: ['heat', 'days'],
           })
         : EMPTY_PNL_DECK,
-    [chartsOpen, timingPnlPoints, timezone, density],
+    [decksOpen, timingPnlPoints, timezone, density],
   );
 
   const todayKey = useMemo(() => dayKeyInTz(Date.now(), timezone), [timezone]);
@@ -308,8 +328,36 @@ export function PositionSummarySection({
 
   const temporalEnabled = temporal?.enabled !== false && temporal != null;
 
+  if (!summaryOpen) {
+    return (
+      <div className={className}>
+        <button
+          type="button"
+          className="mb-2 self-start text-[11px] font-semibold uppercase tracking-wider text-text-dim hover:text-text"
+          onClick={() => setSummaryOpen(true)}
+        >
+          ▸ Summary
+        </button>
+        {/* Keep chips so an active focus isn't stuck with no clear control. */}
+        <PositionFocusChips
+          lenses={focus}
+          onRemove={(lens) => onFocusChange(removePositionFocus(focus, lens))}
+          onClearAll={() => onFocusChange([])}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className={className}>
+      <button
+        type="button"
+        className="mb-2 self-start text-[11px] font-semibold uppercase tracking-wider text-text-dim hover:text-text"
+        onClick={() => setSummaryOpen(false)}
+      >
+        ▾ Summary
+      </button>
+
       <SummaryStatsPanel
         title={title}
         subtitle={subtitle}
@@ -447,7 +495,7 @@ export function PositionSummarySection({
             title="Wall clock"
             tip={{
               title: 'Wall-clock timeline',
-              body: 'Entry/create volume over time. Click a cell to focus that mint set.',
+              body: 'Position volume over time, by sold time (bought, while still open). Click a cell to focus that mint set.',
             }}
           >
             <p className="text-xs text-text-dim">No temporal cohort yet.</p>

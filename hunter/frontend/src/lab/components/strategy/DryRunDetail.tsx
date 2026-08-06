@@ -12,6 +12,10 @@ import {
   markerRowOverlay,
   type InspectTarget,
 } from 'components/strategy/inspectTarget';
+import {
+  PositionChartCardExtra,
+  positionChartFactsFromSim,
+} from 'components/strategy/PositionChartCardExtra';
 import type { RuleEditorDraft } from 'components/strategy/RuleEditor';
 import { TemporalSummary, type TemporalSelection } from 'components/strategy/TemporalSummary';
 import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
@@ -22,9 +26,7 @@ import {
 import { fetchEngineSimPage, fetchEngineSimSummary, fetchEngineSimTimeSummary } from 'services/api';
 import { toSummaryBody, toTableRequest, type TableRequestBody } from 'services/tableRequest';
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
-import { patternKeysFrom } from 'lib/flow/classifyFlow';
-import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
-import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
+import { useFlowPatternKeys } from 'hooks/useFlowPatternKeys';
 import { useTimezone } from 'context/TimezoneContext';
 import type { TableQuery } from 'components/table/types';
 import type {
@@ -64,19 +66,15 @@ export function DryRunDetail({
 }) {
   // Wall bins are civil buckets — the server must floor them in the app zone.
   const { timezone } = useTimezone();
-  const { data: fingerprints = [] } = useGetFingerprintsQuery();
-  const flowPatternKeys = useMemo(() => {
-    const fp = fingerprints.find((f) => f.id === draft.fingerprint_id);
-    if (!fp) return null;
-    return patternKeysFrom(volumeIxPatternsFromConfig(fp.metric_config));
-  }, [fingerprints, draft.fingerprint_id]);
+  const flowPatternKeys = useFlowPatternKeys(draft.fingerprint_id);
 
   const [simQuery, setSimQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   // Matched-but-not-entered `NoEntry` rows are hidden by default — a dry-run's
   // "Trades" read is the positions it took; toggle to see everything it matched.
   const [showNotFired, setShowNotFired] = useState(false);
   const [temporalSel, setTemporalSel] = useState<TemporalSelection>(null);
-  const [wallField, setWallField] = useState<WallTimeField>('created_at');
+  // Sold (decision instant) — same stamp the other charts bin on.
+  const [wallField, setWallField] = useState<WallTimeField>('exit_time');
   const [wallGrain, setWallGrain] = useState<WallGrainChoice>('auto');
   const [holdScheme, setHoldScheme] = useState<HoldSchemeChoice>('auto');
   const [timeSummary, setTimeSummary] = useState<TemporalSummaryPayload | null>(null);
@@ -263,12 +261,16 @@ export function DryRunDetail({
             rows={rows}
             rowKey={episodeRowKey}
             charts
+            chartsDefaultOn
             useRowOverlay={simRowOverlay}
             chartsGroupByMint
             useMintChartGroupOverlay={(mint, pageRows) =>
               useSimMintEpisodeOverlay(runId, mint, pageRows)
             }
             flowPatternKeys={flowPatternKeys}
+            renderChartCardExtra={(row, group) => (
+              <PositionChartCardExtra facts={positionChartFactsFromSim(group ?? [row])} />
+            )}
             selectedKey={inspect?.key ?? null}
             onSelect={onSelect}
             serverSide

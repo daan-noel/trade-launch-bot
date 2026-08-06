@@ -16,6 +16,11 @@ import {
   POSITION_KEYS,
 } from 'components/strategy/strategyColumns';
 import { inspectFromPosition, markerRowOverlay } from 'components/strategy/inspectTarget';
+import {
+  PositionChartCardExtra,
+  positionChartFactsFromRule,
+} from 'components/strategy/PositionChartCardExtra';
+import { useResolvedFlowPatternKeys } from 'hooks/useFlowPatternKeys';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { useServerTable, DEFAULT_POSITIONS_QUERY } from 'hooks/useServerTable';
 import { numericColKeys, toSummaryBody, toTableRequest } from 'services/tableRequest';
@@ -92,6 +97,7 @@ function toTemporalRow(r: RulePositionRecord): TemporalRow {
     holding_secs: holdingSecs(r),
     entry_time: r.entry_time,
     created_at: r.created_at,
+    exit_time: r.exit_time,
   };
 }
 
@@ -178,8 +184,9 @@ export interface RuleAnalyzePanelProps {
   notice?: ReactNode;
   /** Injects a token-inspect modal for the selected position. When provided, the
    *  positions table becomes selectable (row + chart-card click) and this renders
-   *  the open modal. The live app leaves it out (no metric-series endpoint on that
-   *  bin); the lab app passes its `LabTokenInspectModal`. */
+   *  the open modal. Live passes `LivePositionInspectModal` (chart + fills; no
+   *  metric panes — that bin has no `metric-series` route); lab passes
+   *  `LabTokenInspectModal` (chart + metric panes). */
   renderInspect?: (ctx: {
     position: RulePositionRecord;
     rule: StrategyRule | null;
@@ -191,9 +198,8 @@ export interface RuleAnalyzePanelProps {
  * Rules Evidence — run navigator + Positions Summary + temporal + history.
  *
  * Shared by both apps: the **live** app embeds it under Rules Control with the SSE
- * position feed and its open count wired; the **lab** app renders it over the synced
- * position mirror and injects a token-inspect modal via `renderInspect`, so a real
- * fill can be read against the metric panes.
+ * position feed, open count, and a Floor chart/fills inspect modal; the **lab** app
+ * renders it over the synced position mirror with metric-pane inspect.
  *
  * Activate/Pause/Stop render in both. On the lab app they hit the lab CRUD routes,
  * so they flip the rule in the **local mirror** only — the live engine doesn't see
@@ -212,6 +218,10 @@ export function RuleAnalyzePanel({
 }: RuleAnalyzePanelProps) {
   const price = usePriceDisplay();
   const { timezone } = useTimezone();
+  const flowPatternKeys = useResolvedFlowPatternKeys({
+    fingerprintId: rule?.fingerprint_id,
+    ruleId,
+  });
   const [scope, setScope] = useState<EvidenceScope>(() =>
     initialScopeKind === 'all' ? { kind: 'all' } : { kind: 'current' },
   );
@@ -449,7 +459,7 @@ export function RuleAnalyzePanel({
 
   return (
     <div
-      className={`flex flex-col gap-4 ${embedded ? 'rounded-lg border border-white/8 bg-panel/40 p-4' : ''}`}
+      className={`flex flex-col gap-4 ${embedded ? 'rounded-lg bg-panel/40 pt-8' : ''}`}
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
@@ -629,6 +639,11 @@ export function RuleAnalyzePanel({
         onQueryChange={setQuery}
         useRowOverlay={posRowOverlay}
         charts
+        chartsDefaultOn
+        flowPatternKeys={flowPatternKeys}
+        renderChartCardExtra={(row) => (
+          <PositionChartCardExtra facts={positionChartFactsFromRule(row)} />
+        )}
         {...(renderInspect
           ? { selectedKey: inspectId, onSelect: setInspectId }
           : {})}

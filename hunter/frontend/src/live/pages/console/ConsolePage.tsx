@@ -14,6 +14,7 @@ import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { BuyIcon, LinkIcon, SellIcon, SpinnerIcon } from 'components/ui/icons';
 import { ModeBadge } from 'components/strategy/ModeBadge';
 import { ModeToggle } from 'components/strategy/ModeToggle';
+import { useFlowPatternKeysForRule } from 'hooks/useFlowPatternKeys';
 import { useSseStatus } from 'hooks/useSseStatus';
 import { OPS_PARAMS, portfolioHref, rulesHref } from 'lib/strategy/nav';
 import type { ModeFilter } from 'lib/strategy/mode';
@@ -822,12 +823,14 @@ export function ConsolePage() {
   const selectedKey = positionParam;
   const inspectOpen =
     [...attentionRows, ...openRows].find((r) => r.positionId === selectedKey) ?? null;
+  const openFlowPatternKeys = useFlowPatternKeysForRule(inspectOpen?.ruleId);
   // A closed row's detail modal belongs to the History section — it holds the
   // full DB record, so it can open a position from any date, not just one still
   // in the session's open lane.
   const inspectWaiting = inspectOpen
     ? null
     : (waitingRows.find((r) => r.key === selectedKey) ?? null);
+  const waitingFlowPatternKeys = useFlowPatternKeysForRule(inspectWaiting?.ruleId);
 
   const selectRow = (key: string | null, mint?: string) => {
     if (!key) {
@@ -864,6 +867,7 @@ export function ConsolePage() {
             exitTime: null,
             exitPrice: null,
           },
+          flowPatternKeys: openFlowPatternKeys,
         }}
         chartHeight={420}
       />
@@ -1168,7 +1172,12 @@ export function ConsolePage() {
               </span>
               {ruleLink(inspectWaiting.ruleId, inspectWaiting.ruleName)}
             </div>
-            <FloorMintChart mint={inspectWaiting.mint} tableId="console-waiting-chart" height={420} />
+            <FloorMintChart
+              mint={inspectWaiting.mint}
+              tableId="console-waiting-chart"
+              height={420}
+              flowPatternKeys={waitingFlowPatternKeys}
+            />
           </div>
         </Modal>
       )}

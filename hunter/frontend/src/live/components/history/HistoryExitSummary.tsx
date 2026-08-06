@@ -79,9 +79,18 @@ export const HistoryExitSummary = memo(function HistoryExitSummary({
     [activeLabel, onToggleExit],
   );
 
+  const exitOutcomes = useMemo(
+    () =>
+      foldCloses.map((c) => ({
+        exit: c.exit_reason?.trim() ? c.exit_reason : 'Other',
+        pnl_sol: c.pnl_sol,
+      })),
+    [foldCloses],
+  );
+
   const { exitMix, sections } = useMemo(
-    () => runSummarySections(summary, { interaction }),
-    [summary, interaction],
+    () => runSummarySections(summary, { interaction, exitOutcomes }),
+    [summary, interaction, exitOutcomes],
   );
 
   const exits = sections.find((s) => s.title === 'Exits');

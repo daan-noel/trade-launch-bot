@@ -8,14 +8,16 @@ import { LazyTokenChartsGrid } from './LazyTokenChartsGrid';
 import type { ChartOverlayHook, MintGroupOverlayHook, RowChartOverlay } from './TokenChartsGrid';
 import { cn } from 'lib/cn';
 
-/** Persist the charts-grid toggle per `tableId` (localStorage; SSR/test safe). */
+/** Persist the charts-grid toggle per `tableId` (localStorage; SSR/test safe).
+ *  `fallback` is the table's own default, used until the user toggles it once. */
 const CHARTS_PREF_PREFIX = 'mt:tablecharts:';
-function loadChartsPref(tableId?: string): boolean {
-  if (!tableId || typeof window === 'undefined') return false;
+function loadChartsPref(tableId?: string, fallback = false): boolean {
+  if (!tableId || typeof window === 'undefined') return fallback;
   try {
-    return window.localStorage.getItem(CHARTS_PREF_PREFIX + tableId) === '1';
+    const v = window.localStorage.getItem(CHARTS_PREF_PREFIX + tableId);
+    return v == null ? fallback : v === '1';
   } catch {
-    return false;
+    return fallback;
   }
 }
 function saveChartsPref(tableId: string | undefined, on: boolean) {
@@ -87,6 +89,11 @@ interface TokenTableCommon<R> {
    *  page below the table (lazy-mounted). Persisted per `tableId`. When on, a chart
    *  card header click selects that token (same `onSelect` as a row — opens inspect). */
   charts?: boolean;
+  /** Whether the charts grid starts ON, before the user has ever toggled it on
+   *  this `tableId` (the persisted choice always wins once made). Default off —
+   *  charts are a per-row fetch, so a table only opts in where the chart IS the
+   *  read. Ignored unless `charts` is set. */
+  chartsDefaultOn?: boolean;
   /** Per-row entry/exit + swing overlay for the charts grid (when `charts` is on),
    *  matching the row's inspect modal. Called as a hook per card — see
    *  {@link ChartOverlayHook}. */
@@ -105,8 +112,9 @@ interface TokenTableCommon<R> {
    *  itself. Takes precedence over {@link mintChartGroupOverlay} when both are
    *  supplied. See {@link MintGroupOverlayHook}. */
   useMintChartGroupOverlay?: MintGroupOverlayHook<R>;
-  /** Per-row extra rendered in a chart card's header when `charts` is on. */
-  renderChartCardExtra?: (row: R) => ReactNode;
+  /** Per-row extra rendered in a chart card's header when `charts` is on.
+   *  With `chartsGroupByMint`, receives the mint's group rows as the 2nd arg. */
+  renderChartCardExtra?: (row: R, groupRows?: readonly R[]) => ReactNode;
   /** Per-row chart-card title (else derived from the fetched detail). */
   titleOf?: (row: R) => string;
   /** Wallet to spotlight on every chart (Trader Analysis). */
@@ -175,6 +183,7 @@ function mintAddressOf<R>(row: R): string {
 export function TokenTable<R>(props: TokenTableProps<R>) {
   const {
     charts,
+    chartsDefaultOn = false,
     useRowOverlay,
     renderChartCardExtra,
     titleOf,
@@ -190,7 +199,9 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
     flowPatternKeys,
   } = props;
   const mintOf = mintAddressOf;
-  const [chartsOn, setChartsOn] = useState(() => (charts ? loadChartsPref(tableId) : false));
+  const [chartsOn, setChartsOn] = useState(() =>
+    charts ? loadChartsPref(tableId, chartsDefaultOn) : false,
+  );
   const [visibleRows, setVisibleRows] = useState<R[]>([]);
 
   // When the grid is showing, mirror the table's current page into it; always

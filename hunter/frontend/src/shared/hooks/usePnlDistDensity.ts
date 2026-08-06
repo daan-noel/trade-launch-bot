@@ -15,7 +15,9 @@ function readStored(): PnlDistDensity {
   } catch {
     /* private mode / blocked storage */
   }
-  return 'default';
+  // 'dense' — the distribution is read to find the tail, and the coarser bins
+  // hide exactly that. Both apps opted into it, so it is the shared default.
+  return 'dense';
 }
 
 /** Persist Sparse / Default / Dense across reloads (view preference, not cohort). */

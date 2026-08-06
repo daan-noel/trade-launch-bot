@@ -29,6 +29,7 @@ describe('exitTileToHistoryNeedle', () => {
     expect(exitTileToHistoryNeedle('Metric+')).toBe('metric_win');
     expect(exitTileToHistoryNeedle('Metric-')).toBe('metric_loss');
     expect(exitTileToHistoryNeedle('Other')).toBeNull();
+    expect(exitTileToHistoryNeedle('stall > 300')).toBe('stall > 300');
     expect(exitTileClickAction('Metric+')).toEqual({
       channel: 'filter',
       needle: 'metric_win',
@@ -42,6 +43,7 @@ describe('activeExitTileLabel', () => {
     expect(activeExitTileLabel('metric_win', null)).toBe('Metric+');
     expect(activeExitTileLabel('stall', null)).toBe('Stall');
     expect(activeExitTileLabel('pnl', null)).toBeNull();
+    expect(activeExitTileLabel('stall > 300', null)).toBe('stall > 300');
     expect(activeExitTileLabel(null, { kind: 'exit', tile: 'Metric-' })).toBe('Metric-');
   });
 });

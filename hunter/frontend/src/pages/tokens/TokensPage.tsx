@@ -362,6 +362,7 @@ export function TokensPage({
           rowKey={tokenRowKey}
           mintSetFilter
           charts
+          chartsDefaultOn
           selectedKey={selectedMint}
           onSelect={selectMint}
           serverSide

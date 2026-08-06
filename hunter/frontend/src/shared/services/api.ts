@@ -249,7 +249,7 @@ export function fetchEngineSimSummary(
 export function fetchEngineSimTimeSummary(
   runId: string,
   body: TableRequestBody,
-  wallField: 'entry_time' | 'created_at' = 'entry_time',
+  wallField: import('lib/strategy/temporalSummary').WallTimeField = 'exit_time',
   wallGrain: import('lib/strategy/temporalSummary').WallGrainChoice = 'auto',
   holdScheme: import('lib/strategy/temporalSummary').HoldSchemeChoice = 'auto',
   timeZone = 'UTC',

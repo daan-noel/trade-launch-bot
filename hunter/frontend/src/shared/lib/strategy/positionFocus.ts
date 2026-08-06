@@ -16,7 +16,11 @@ import {
   shiftDayKey,
 } from 'components/analytics/pnlSeries';
 import { parseEpisodeRowKey } from 'components/strategy/inspectTarget';
-import { isMetricExitReason, normalizeExitReasonFilter } from 'lib/strategy/exitReason';
+import {
+  isMetricExitReason,
+  normalizeExitReasonFilter,
+  parseMetricExitParts,
+} from 'lib/strategy/exitReason';
 import type { FilterSpec } from 'components/table/numericFilter';
 
 /** How the parent table addresses a row — Evidence UUIDs vs Simulate episode keys. */
@@ -390,6 +394,11 @@ function exitMatches(reason: string | null, needle: string): boolean {
   if (needle === 'Metric' || needle === 'Metrics') {
     return isMetricExitReason(reason);
   }
+  // Exact metric-condition label from the detailed exit mix — no substring
+  // (avoids `stall > 30` matching `stall > 300`).
+  if (parseMetricExitParts(needle) != null) {
+    return (reason ?? '').trim() === needle.trim();
+  }
   const normalizedNeedle = normalizeExitReasonFilter(needle);
   const normalizedReason = reason ? normalizeExitReasonFilter(reason) : '';
   if (!normalizedReason) return false;
@@ -509,11 +518,16 @@ export function focusToStructuredFilters(
           break;
         }
         if (lens.reason === 'Metric+' || lens.reason === 'Metric-') {
-          // Same `Metrics` contains as the unsplit tile, plus the win/loss cut the
-          // chip promises (otherwise the table shows every metric exit).
-          out.exit_reason = { op: 'contains', val: 'Metrics' };
+          // Bare legacy `Metrics` + PnL cut. Detail labels (`stall > 300`) are
+          // their own exit lenses with `eq` below — not this path.
+          out.exit_reason = { op: 'eq', val: 'Metrics' };
           out.pnl_sol =
             lens.reason === 'Metric+' ? { op: 'gt', val: 0 } : { op: 'lte', val: 0 };
+          break;
+        }
+        // Exact metric-condition label from the detailed exit mix (`stall > 300`).
+        if (parseMetricExitParts(lens.reason) != null) {
+          out.exit_reason = { op: 'eq', val: lens.reason };
           break;
         }
         const needle =

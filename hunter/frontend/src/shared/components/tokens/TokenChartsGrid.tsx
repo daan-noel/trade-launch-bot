@@ -189,8 +189,10 @@ export interface TokenChartsGridProps<R> {
   /** Per-row entry/exit + swing overlay (matches the row's inspect modal). Called
    *  as a hook per card — see {@link ChartOverlayHook}. Omit for a plain chart. */
   useRowOverlay?: ChartOverlayHook<R>;
-  /** Extra header content per card (e.g. per-wallet buys/sells). */
-  renderChartCardExtra?: (row: R) => ReactNode;
+  /** Extra header content per card (e.g. position PnL / hold). When
+   *  `groupByMint` is on, the second arg is every row in that mint group so the
+   *  caller can fold re-entry episodes; otherwise omitted. */
+  renderChartCardExtra?: (row: R, groupRows?: readonly R[]) => ReactNode;
   /** Highlight the card whose key matches (same key as the table's `selectedKey`). */
   selectedKey?: string | null;
   /** Header click on a card — same contract as the table row select (toggle). */
@@ -288,7 +290,7 @@ export function TokenChartsGrid<R>({
                 useOverlay={overlayHook}
                 eventMarkersOverride={eventMarkersOverride}
                 flowPatternKeys={flowPatternKeys}
-                extra={renderChartCardExtra?.(rep)}
+                extra={renderChartCardExtra?.(rep, groupRows)}
                 selected={selected}
                 onSelect={
                   onSelect && mint

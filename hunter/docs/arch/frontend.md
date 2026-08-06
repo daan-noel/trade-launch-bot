@@ -450,9 +450,16 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   Control Execute **and** the Evidence header. Open inventory manage is **Ops** (Live Status SSOT),
   not this table. See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   The panel itself is app-agnostic; each app injects its own wiring via props:
-  - **live** (`@live/pages/strategies/RulesPage` → `LiveRuleEvidence`) passes `liveUpdates` (SSE on
-    the same `rule_id` triggers `reload()`) + `liveOpenCount` from `selectOpenByRule`. The selector
-    lives in that leaf component so a status tick re-renders the panel, not `RulesView`.
+  - **live** (`@live/pages/strategies/RulesPage` → `LiveRuleEvidence`, and the standalone
+    `RuleAnalyzePage`) passes `liveUpdates` (SSE on the same `rule_id` triggers `reload()`) +
+    `liveOpenCount` from `selectOpenByRule` + `renderInspect` → `LivePositionInspectModal`
+    (Floor chart + fills ledger — same body as Console History; no metric panes on this bin).
+    Vol/non-vol overlay SSOT: `hooks/useFlowPatternKeys` (+ `useFlowPatternKeysForRule` /
+    `useResolvedFlowPatternKeys`) and `lib/flow/flowPatternKeys` resolve fingerprint
+    `volume_ix_patterns` → `flowPatternKeys`. Wired into Evidence `TokenTable` charts,
+    `LivePositionInspectModal`, Console History/open/waiting detail, Portfolio rule drill-in,
+    fingerprint matched-tokens, and sweep combo charts (run patterns; omit/empty ⇒ toolbar disabled).
+    The open-count selector lives in that leaf so a status tick re-renders the panel, not `RulesView`.
   - **lab** (`@lab/components/strategy/LabRuleEvidence`) passes `notice` + `renderInspect` + `scoreScope`
     (Evidence default follows the list's scoreboard scope) and serves
     the same endpoints off the synced mirror (`lab/.../live_positions.rs`) — clicking a position opens
@@ -479,7 +486,9 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   mint-filtered refetch with base grain/scheme locked) and pages a full-cohort chart series for
   distribution/scatter/equity; sweep folds client-side from `ComboTokenResult` rows. Focus lenses
   (including Temporal mint sets) narrow summary + charts + table together. Default wall field is
-  **created at**.
+  **`exit_time`** = the decision instant (sold, or bought while open) — the same stamp equity /
+  calendar / heatmap bin on, so every dated chart agrees on a position's civil day;
+  `entry_time` / `created_at` stay on the Wall toolbar.
 - **Token enrichment is server-side, not client-merged — for EVERY token table.** Every token-result
   table (Matched, Positions current/history, lab paper positions, Simulated, Sweep drill-in, **and, since
   Phase 4, Wallet Holdings**) receives the full `TOKEN_ENRICH_FIELDS` set **in the response body** — the
@@ -505,35 +514,41 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   box (server: an `in` op on `mint_address` folded into `structuredFilters`; client: a plain row pre-filter);
   **`charts`** — a toggle rendering `<TokenChartsGrid>` (lazy-mounted, current page only, with
   `renderChartCardExtra`/`titleOf`/`highlightWallet` slots) below the table, fed by the table's
-  intercepted `onVisibleRowsChange`. With `onSelect` wired, a chart **card header** click selects
-  that mint (same toggle contract as a row — opens inspect); the chart canvas itself stays
-  interactive (pan/zoom/bar-select). Strategy-result tables also pass **`useRowOverlay`** — a per-row
-  hook (`ChartOverlayHook`) resolving the same **entry/exit markers + swing legs** the row's inspect
-  modal shows, so the inline charts match the modal. It's built from the shared `inspectTarget` helpers
-  (`markerRowOverlay` for tpsl entry/exit; `carriedSwingRowOverlay` for `live` swing1 positions whose
-  legs ride the row) or `@lab/hooks/useSwing1DetectOverlay`'s `makeSwing1DetectRowOverlay` (lab swing1
-  positions/matched/sim + grouped-sweep combos, which re-run `swing1-detect` per card keyed off the
-  section's rule/combo params — sim rows carry their legs and skip the fetch). `DataTable` stays
-  token-agnostic: the dependency is one-way
-  (`tokens/` → `table/`), asserted by `components/table/DataTable.boundary.test.ts`. **Every** token-row
-  table now renders through `TokenTable`. (Trader Analysis keeps its always-on external `<TokenChartsGrid>`
-  fed by the table's `onVisibleRowsChange` rather than the toggle, being chart-centric.)
+  intercepted `onVisibleRowsChange`. With `groupByMint`, `renderChartCardExtra` also receives the
+  mint's group rows so headers can fold re-entries. With `onSelect` wired, a chart **card header**
+  click selects that mint (same toggle contract as a row — opens inspect); the chart canvas itself
+  stays interactive (pan/zoom/bar-select). Strategy-result tables also pass **`useRowOverlay`** — a
+  per-row hook (`ChartOverlayHook`) resolving the same **entry/exit markers + swing legs** the row's
+  inspect modal shows, so the inline charts match the modal. It's built from the shared
+  `inspectTarget` helpers (`markerRowOverlay` for tpsl entry/exit; `carriedSwingRowOverlay` for
+  `live` swing1 positions whose legs ride the row) or `@lab/hooks/useSwing1DetectOverlay`'s
+  `makeSwing1DetectRowOverlay` (lab swing1 positions/matched/sim + grouped-sweep combos, which
+  re-run `swing1-detect` per card keyed off the section's rule/combo params — sim rows carry their
+  legs and skip the fetch). Position tables (Evidence / Simulate / Dry-run / Sweep) share
+  **`PositionChartCardExtra`** (hold · exit · PnL% · size · entry/exit price; multi-episode fold
+  when `chartsGroupByMint`). Trader Analysis uses `TraderChartCardExtra` (wallet buys/sells/hold/
+  vol). `DataTable` stays token-agnostic: the dependency is one-way (`tokens/` → `table/`),
+  asserted by `components/table/DataTable.boundary.test.ts`. **Every** token-row table now renders
+  through `TokenTable`. Trader Analysis row / chart-card select opens `LazyLabTokenInspectModal`
+  via `inspectFromMint`.
 - **Trader Analysis wallet PnL analytics (`lab/components/analysis/`).** The per-mint rows returned by
   `/api/wallets/:wallet/tokens` (`WalletTokenRow` in `lab/api/handlers/wallets.rs`, backed by
   `strategies::kernel::wallet_mint_pnl` — an avg-cost reconstruction over that wallet's in-window trades on
   the mint, with gross **and** fee-adjusted-net realized PnL plus mark-to-market unrealized PnL off
   `current_price`) land on `TraderTokenRow` as `wallet_*` fields. `TraderAnalysisPage` feeds the table's
-  full **filtered** cohort (via `TokenTable`'s `onFilteredRowsChange`, not just the visible page) into
-  `<WalletAnalyticsPanel>`, a summary-stats row (`WalletPnlSummary`) plus a tabbed chart switcher: PnL
-  heatmap (day-of-week × hour, CSS grid, `WalletPnlHeatmap`), cumulative-PnL equity curve
-  (`WalletEquityCurveChart`, `lightweight-charts` `BaselineSeries`, lazy-mounted), tokens ranked best→worst
-  by total PnL (`WalletRankedPnlBars`), realized-PnL% distribution buckets (`WalletPnlDistribution`), and a
-  hold-time-vs-PnL% scatter (`WalletHoldScatter`, log-scaled SVG). All chart data is pure/DB-free —
+  full **filtered** cohort (via `TokenTable`'s `onFilteredRowsChange`, not just the visible page; pinned
+  when focus activates — same pin pattern as Sweep drill-in) into `<WalletAnalyticsPanel>`: summary KPIs
+  + Open/Closed/Win/Loss toggles, a focus-chip strip (`PositionFocusChips` over
+  `lib/strategy/positionFocus` via `walletFocus.ts`), and a collapsible multi-chart deck mirroring Console
+  History / Position Summary — Equity path · Return shape · Hold vs PnL · Ranked by PnL · Timing (daily
+  calendar + dow×hour heatmap). Chart clicks stack focus lenses (`heat` / `day` / `week` / `pct` / `pos` /
+  `band` / `status` / `outcome`); timing charts keep the parent cohort with a selection ring, other charts
+  + the token table refold on the focused slice. All chart data is pure/DB-free —
   `lab/components/analysis/walletPnlStats.ts` derives every shape from the current `TraderTokenRow[]`
-  cohort, unit-tested in `walletPnlStats.test.ts` — so filtering/re-sorting the table live-updates every
-  chart without a refetch. Every figure is a per-mint aggregate, not a per-episode ledger: a wallet that
-  re-entered a mint several times in the window collapses to one row (see the doc comment on
-  `kernel::wallet_mint_pnl`).
+  cohort, unit-tested in `walletPnlStats.test.ts` / `walletFocus.test.ts` — so filtering the table
+  live-updates every chart without a refetch. Every figure is a per-mint aggregate, not a per-episode
+  ledger: a wallet that re-entered a mint several times in the window collapses to one row (see the doc
+  comment on `kernel::wallet_mint_pnl`).
 - **One in-memory evaluator, in Rust only.** Token tables whose rows are RAM-resident on the backend (the
   lab Simulated table; the live Holdings composition) page/sort/filter through
   `trading_core::api::table_eval::apply_table_request` with a per-table `ColResolver` grammar; the shared

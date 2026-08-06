@@ -159,17 +159,33 @@ export const CHART_GROUP_MODE_LABELS: Record<ChartGroupMode, string> = {
   slot: 'Slot',
 };
 
+/**
+ * The chart's opening state, shared by both apps.
+ *
+ * Tuned for the read this chart is actually used for: what a token did in its
+ * first seconds. Hence the **1s** interval (a 1m candle swallows the whole
+ * window that decides an entry) and dev markers **on, boundaries-only** — the
+ * dev's `first_buy`/`sell_all` are the signal, their manufactured mid-position
+ * churn is not. Reference lines (ATH, migration, strategy entry/exit) and the
+ * vol/non-vol flow overlay stay on; both are read every time and cost nothing
+ * when their data is absent (the toolbar disables them).
+ *
+ * Off by design: `showTradeMarkers` is the per-bar buy/sell *count* badge, which
+ * at a 1s interval is one badge per candle — it hides the price action it
+ * annotates. `trimEmptyBars` would drop the no-trade intervals, but the gaps ARE
+ * information here (a stalled token), and dropping them distorts the time axis.
+ */
 export const DEFAULT_CHART_PREFS = {
   groupMode: 'time' as ChartGroupMode,
-  interval: '1m' as ChartInterval,
+  interval: '1s' as ChartInterval,
   style: 'candles' as ChartStyle,
-  showTradeMarkers: true,
+  showTradeMarkers: false,
   showAthLine: true,
   showMigrationLine: true,
   trimEmptyBars: false,
   showWalletMarkers: true,
-  showDevMarkers: false,
-  devMarkersBoundariesOnly: false,
+  showDevMarkers: true,
+  devMarkersBoundariesOnly: true,
   showEventMarkers: true,
   showFlowLines: true,
 };

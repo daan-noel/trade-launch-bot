@@ -120,6 +120,8 @@ export function historyExitFilterToneClass(
     case 'Migrated':
       return 'text-secondary';
     default:
+      // Exact metric-condition labels from the detailed exit mix.
+      if (isMetricExitReason(value)) return 'text-info';
       return 'text-text-dim';
   }
 }

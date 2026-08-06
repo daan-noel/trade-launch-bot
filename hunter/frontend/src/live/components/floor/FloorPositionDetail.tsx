@@ -29,6 +29,8 @@ export interface FloorDetailFacts {
   mtmSol?: number | null;
   /** Open vs closed chart markers. */
   inspect: InspectTarget;
+  /** Fingerprint `volume_ix_patterns` keys for the chart vol/non-vol overlay. */
+  flowPatternKeys?: ReadonlySet<string> | null;
   /** Optional action slot (Sell / Trade). */
   actions?: ReactNode;
 }
@@ -117,7 +119,13 @@ export function FloorPositionDetail({
         )}
       </div>
 
-      <FloorMintChart mint={facts.mint} markers={markers} tableId="floor-detail" height={chartHeight} />
+      <FloorMintChart
+        mint={facts.mint}
+        markers={markers}
+        tableId="floor-detail"
+        height={chartHeight}
+        flowPatternKeys={facts.flowPatternKeys ?? null}
+      />
     </div>
   );
 }

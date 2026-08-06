@@ -36,6 +36,10 @@ import {
 import { simColumns, SIM_KEYS } from 'components/strategy/strategyColumns';
 import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
 import { PositionSummarySection } from 'components/strategy/PositionSummarySection';
+import {
+  PositionChartCardExtra,
+  positionChartFactsFromSim,
+} from 'components/strategy/PositionChartCardExtra';
 import { apiErrorMessage } from 'store/baseApi';
 import { connectSimulationFinished } from 'services/sse';
 import {
@@ -78,8 +82,7 @@ import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
-import { patternKeysFrom } from 'lib/flow/classifyFlow';
-import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
+import { useFlowPatternKeys } from 'hooks/useFlowPatternKeys';
 import { STORAGE_KEYS } from 'lib/storage';
 import { rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
@@ -714,7 +717,6 @@ export function SimulatePage() {
           reloadNonce={reloadNonce}
           onInspect={setInspect}
           inspectKey={inspect?.key ?? null}
-          fingerprints={fps}
         />
       )}
 
@@ -746,19 +748,13 @@ function RuleSimPositionsPanel({
   reloadNonce,
   onInspect,
   inspectKey,
-  fingerprints,
 }: {
   rule: StrategyRule;
   reloadNonce: number;
   onInspect: (v: { key: string; target: InspectTarget; rule: StrategyRule } | null) => void;
   inspectKey: string | null;
-  fingerprints: Fingerprint[];
 }) {
-  const flowPatternKeys = useMemo(() => {
-    const fp = fingerprints.find((f) => f.id === rule.fingerprint_id);
-    if (!fp) return null;
-    return patternKeysFrom(volumeIxPatternsFromConfig(fp.metric_config));
-  }, [fingerprints, rule.fingerprint_id]);
+  const flowPatternKeys = useFlowPatternKeys(rule.fingerprint_id);
 
   const { timezone } = useTimezone();
   const [simQuery, setSimQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
@@ -767,7 +763,8 @@ function RuleSimPositionsPanel({
     true,
   );
   const [focus, setFocus] = useState<PositionFocusLens[]>([]);
-  const [wallField, setWallField] = useState<WallTimeField>('created_at');
+  // Sold (decision instant) — same stamp the other charts bin on.
+  const [wallField, setWallField] = useState<WallTimeField>('exit_time');
   const [wallGrain, setWallGrain] = useState<WallGrainChoice>('auto');
   const [holdScheme, setHoldScheme] = useState<HoldSchemeChoice>('auto');
   const [timeSummary, setTimeSummary] = useState<TemporalSummaryPayload | null>(null);
@@ -1076,6 +1073,9 @@ function RuleSimPositionsPanel({
               useSimMintEpisodeOverlay(rule.id, mint, rows)
             }
             flowPatternKeys={flowPatternKeys}
+            renderChartCardExtra={(row, group) => (
+              <PositionChartCardExtra facts={positionChartFactsFromSim(group ?? [row])} />
+            )}
             rows={simTokens}
             rowKey={episodeRowKey}
             selectedKey={inspectKey}

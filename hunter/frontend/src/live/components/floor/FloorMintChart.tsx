@@ -19,11 +19,14 @@ export function FloorMintChart({
   markers,
   height = 220,
   tableId = 'floor-mint-chart',
+  /** Fingerprint `volume_ix_patterns` keys — enables the vol/non-vol overlay. */
+  flowPatternKeys = null,
 }: {
   mint: string;
   markers?: ChartEventMarker[] | null;
   height?: number;
   tableId?: string;
+  flowPatternKeys?: ReadonlySet<string> | null;
 }) {
   const { unit, usdRate } = usePriceUnit();
   useWatchTokenTradesLive(mint || null);
@@ -70,6 +73,8 @@ export function FloorMintChart({
         athPriceInSol={detail?.ath_price ?? null}
         isMigrated={detail?.is_migrated}
         isCashbackEnabled={detail?.is_cashback_enabled}
+        creatorWallet={detail?.creator_wallet ?? null}
+        flowPatternKeys={flowPatternKeys}
       />
     </div>
   );

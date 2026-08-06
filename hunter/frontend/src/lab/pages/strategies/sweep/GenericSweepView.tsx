@@ -25,6 +25,11 @@ import {
   type InspectTarget,
 } from 'components/strategy/inspectTarget';
 import { PositionSummarySection } from 'components/strategy/PositionSummarySection';
+import {
+  PositionChartCardExtra,
+  positionChartFactsFromEpisodes,
+  type PositionChartEpisode,
+} from 'components/strategy/PositionChartCardExtra';
 import { runSummaryFromRows } from 'lib/strategy/runSummary';
 import {
   filterRowsByFocus,
@@ -33,6 +38,7 @@ import {
 } from 'lib/strategy/positionFocus';
 import type { PositionChartPoint } from 'lib/strategy/positionChartPoints';
 import { cn } from 'lib/cn';
+import { flowPatternKeysOf } from 'lib/flow/flowPatternKeys';
 import { formatSigned, formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { useBackgroundJobActions, useBackgroundJobsState } from '@lab/context/BackgroundJobsContext';
 import { apiErrorMessage } from 'store/apiSlice';
@@ -132,6 +138,21 @@ function runPickerLine(r: GroupedSweepRunRecord): string {
       : `${r.status === 'running' ? 'run' : 'part'} ${r.groups_done}/${r.group_count} grp`;
   const suffix = r.label ? ` · ${r.label}` : '';
   return `${date} · ${r.method} · ${r.token_count.toLocaleString()} tok · ${groups} × ${r.combo_count.toLocaleString()} combos${suffix}`;
+}
+
+function comboChartEpisode(r: ComboTokenResult): PositionChartEpisode {
+  const open = r.fired && (r.exit === 'Open' || r.exit_time == null);
+  return {
+    holdSecs: r.fired ? r.holding_secs : null,
+    pnlSol: r.fired ? r.pnl_sol : null,
+    pnlPct: r.fired ? r.pnl_pct : null,
+    entrySol: null,
+    entryPrice: r.entry_price,
+    exitPrice: r.exit_price,
+    exitReason: r.exit,
+    isOpen: open,
+    include: r.fired,
+  };
 }
 
 /** ComboTokenResult → inspect target (entry/exit markers). */
@@ -801,6 +822,7 @@ export function GenericSweepView() {
                     groupId={activeGroupId}
                     comboId={activeComboId}
                     comboParams={activeCombo?.params ?? null}
+                    volumeIxPatterns={activeRun?.volume_ix_patterns ?? null}
                     inspectFingerprintId={
                       promotedFp?.groupId === activeGroupId ? promotedFp.fingerprintId : null
                     }
@@ -828,6 +850,7 @@ function ComboTokenResults({
   groupId,
   comboId,
   comboParams,
+  volumeIxPatterns,
   inspectFingerprintId,
   onClose,
 }: {
@@ -838,20 +861,30 @@ function ComboTokenResults({
   /** The combo's swept `RuleParams` blob — pins the inspect's metric panes to the
    *  exact params that produced these rows. Null when the row paged out of view. */
   comboParams: Record<string, unknown> | null;
+  /** Corpus-wide run patterns — chart overlay before Promote creates a fingerprint. */
+  volumeIxPatterns: string[][] | null;
   /** Promoted fingerprint for this group — enables flow metric-series panes. */
   inspectFingerprintId: string | null;
   onClose: () => void;
 }) {
   const { timezone } = useTimezone();
+  const flowPatternKeys = useMemo(
+    () => flowPatternKeysOf(volumeIxPatterns),
+    [volumeIxPatterns],
+  );
   const query = useGetComboTokenResultsQuery({ strategyId, runId, groupId, comboId });
   // Stable identities: RTK keeps `query.data` referentially equal across renders, so
   // memoizing keeps `rows`/`visible` from churning — otherwise the filtered-rows
   // callback below (which sets state) would re-fire every render into a loop.
   const rows = useMemo(() => query.data?.rows ?? [], [query.data]);
   const err = apiErrorMessage(query.error, 'Failed to load token results');
+  // Default OFF: a combo drill-in is read as the positions the combo TOOK. The
+  // matched-but-not-entered `NoEntry` rows usually outnumber them and bury the
+  // result — toggle on to audit what the entry gate rejected. (Simulate keeps
+  // the opposite default: there the point is auditing the match set.)
   const [showNotFired, setShowNotFired] = useLocalStorage(
     STORAGE_KEYS.sweepShowNotFired,
-    true,
+    false,
   );
   const visible = useMemo(
     () => (showNotFired ? rows : rows.filter((r) => r.fired)),
@@ -928,6 +961,7 @@ function ComboTokenResults({
         holding_secs: r.holding_secs,
         entry_time: r.entry_time,
         created_at: r.created_at,
+        exit_time: r.exit_time,
       })),
     [tableFilterCohort],
   );
@@ -1066,6 +1100,8 @@ function ComboTokenResults({
         columns={columns}
         existingKeys={existingKeys}
         charts
+        chartsDefaultOn
+        flowPatternKeys={flowPatternKeys}
         useRowOverlay={comboRowOverlay}
         chartsGroupByMint
         // `rowsForTable` is this combo's FULL (already client-loaded) row set, not
@@ -1077,6 +1113,17 @@ function ComboTokenResults({
             rowsForTable.filter((r) => r.fired && r.mint_address === mint).map(comboTarget),
           ),
         })}
+        renderChartCardExtra={(row) => (
+          // Full-mint cohort (same reason as mintChartGroupOverlay) so episode
+          // count / PnL sum aren't truncated to the current page.
+          <PositionChartCardExtra
+            facts={positionChartFactsFromEpisodes(
+              rowsForTable
+                .filter((r) => r.mint_address === row.mint_address)
+                .map(comboChartEpisode),
+            )}
+          />
+        )}
         rows={rowsForTable}
         rowKey={episodeRowKey}
         searchable
@@ -1098,6 +1145,7 @@ function ComboTokenResults({
         <LazyLabTokenInspectModal
           target={comboTarget(selectedRow)}
           titleSuffix="Sweep inspect"
+          flowPatternKeys={flowPatternKeys}
           ruleOverride={
             comboParams
               ? {

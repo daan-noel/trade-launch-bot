@@ -101,14 +101,20 @@ describe('pct lens → structured filter', () => {
 });
 
 describe('exit Metric± → structured filter', () => {
-  it('keeps the win/loss cut on the wire', () => {
+  it('keeps the win/loss cut on the wire (legacy bare Metrics)', () => {
     expect(focusToStructuredFilters([{ kind: 'exit', reason: 'Metric+' }])).toEqual({
-      exit_reason: { op: 'contains', val: 'Metrics' },
+      exit_reason: { op: 'eq', val: 'Metrics' },
       pnl_sol: { op: 'gt', val: 0 },
     });
     expect(focusToStructuredFilters([{ kind: 'exit', reason: 'Metric-' }])).toEqual({
-      exit_reason: { op: 'contains', val: 'Metrics' },
+      exit_reason: { op: 'eq', val: 'Metrics' },
       pnl_sol: { op: 'lte', val: 0 },
+    });
+  });
+
+  it('maps exact metric-condition labels with eq', () => {
+    expect(focusToStructuredFilters([{ kind: 'exit', reason: 'stall > 300' }])).toEqual({
+      exit_reason: { op: 'eq', val: 'stall > 300' },
     });
   });
 });

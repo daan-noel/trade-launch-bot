@@ -8,6 +8,7 @@ import {
   dowHourInTz,
   pnlDistributionBuckets,
   rankedPnlBarRows,
+  walletHoldSeconds,
 } from './walletPnlStats';
 import { rankByValue } from 'components/analytics/pnlSeries';
 
@@ -265,6 +266,18 @@ describe('buildEquityCurve', () => {
     const curve = buildEquityCurve(rows);
     expect(curve).toHaveLength(1);
     expect(curve[0]!.cumPnlSol).toBe(2);
+  });
+});
+
+describe('walletHoldSeconds', () => {
+  it('returns first→last span in seconds', () => {
+    const t0 = Date.parse('2026-07-01T00:00:00Z');
+    const t1 = Date.parse('2026-07-01T00:05:00Z');
+    expect(
+      walletHoldSeconds(
+        row({ wallet_first_trade_at_ms: t0, wallet_last_trade_at_ms: t1 }),
+      ),
+    ).toBeCloseTo(300, 9);
   });
 });
 

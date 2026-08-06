@@ -23,6 +23,7 @@ import { exitReasonSearchText } from 'lib/strategy/exitReason';
 import { formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { resolvePnlPct } from 'lib/pnlPct';
 import { ruleAnalyzeHref } from 'lib/strategy/nav';
+import { useFlowPatternKeysForRule } from 'hooks/useFlowPatternKeys';
 import { fetchPortfolioPositionsPage } from 'services/api';
 import { numericColKeys, toTableRequest } from 'services/tableRequest';
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
@@ -348,6 +349,7 @@ export const HistoryTable = memo(function HistoryTable({
   // detail modal rather than the Console page: a position from any date opens
   // here, not just one still in the session's live lane.
   const inspect = selectedKey ? (rows.find((r) => r.id === selectedKey) ?? null) : null;
+  const flowPatternKeys = useFlowPatternKeysForRule(inspect?.rule_id);
   const heatScanCapped = clientScanFocus && total >= HEAT_SCAN_PAGE_SIZE;
 
   const handleSelect = useCallback(
@@ -424,6 +426,7 @@ export const HistoryTable = memo(function HistoryTable({
                 exitPrice: inspect.exit_price,
                 exitLabel: inspect.exit_reason,
               },
+              flowPatternKeys,
             }}
             chartHeight={420}
           />

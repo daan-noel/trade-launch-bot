@@ -1,8 +1,11 @@
 import { Link, useParams } from 'react-router-dom';
+import { useSelector } from 'react-redux';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { rulesHref } from 'lib/strategy/nav';
 import { InlineAlert } from 'components/ui/Modal';
 import { RuleAnalyzePanel } from 'components/strategy/RuleAnalyzePanel';
+import { LivePositionInspectModal } from '@live/components/strategy/LivePositionInspectModal';
+import { selectOpenByRule } from '@live/slices/liveStatusSlice';
 
 /**
  * Standalone Evidence route — same panel as the Rules Control embed.
@@ -13,6 +16,7 @@ export function RuleAnalyzePage() {
   const { ruleId = '' } = useParams<{ ruleId: string }>();
   const { data: rules = [] } = useGetStrategyRulesQuery('current');
   const rule = rules.find((r) => r.id === ruleId);
+  const liveOpen = useSelector(selectOpenByRule(ruleId));
 
   if (!ruleId) {
     return <InlineAlert variant="error">Missing rule id.</InlineAlert>;
@@ -26,7 +30,15 @@ export function RuleAnalyzePage() {
       >
         ← Rules Control
       </Link>
-      <RuleAnalyzePanel ruleId={ruleId} rule={rule ?? null} liveUpdates />
+      <RuleAnalyzePanel
+        ruleId={ruleId}
+        rule={rule ?? null}
+        liveUpdates
+        liveOpenCount={liveOpen.length}
+        renderInspect={({ position, rule: inspectRule, onClose: close }) => (
+          <LivePositionInspectModal position={position} rule={inspectRule} onClose={close} />
+        )}
+      />
     </div>
   );
 }

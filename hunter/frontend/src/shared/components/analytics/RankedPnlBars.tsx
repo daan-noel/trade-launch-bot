@@ -12,7 +12,16 @@ interface RankedPnlBarsProps {
    * wants; a several-hundred-row wallet ranking is what needs the cap.
    */
   maxEachSide?: number;
+  /**
+   * Cap the list body height (px) and scroll inside. Use when this sits beside a
+   * fixed-height chart so the row doesn't grow with row count.
+   */
+  maxHeight?: number;
   emptyMessage?: string;
+  /** Currently focused row key (mint / rule id), if any. */
+  selectedKey?: string | null;
+  /** Click a row to focus it across charts + table. Omit to keep rows inert. */
+  onSelectRow?: (key: string) => void;
 }
 
 /**
@@ -25,7 +34,10 @@ interface RankedPnlBarsProps {
 export const RankedPnlBars = memo(function RankedPnlBars({
   rows,
   maxEachSide = 0,
+  maxHeight,
   emptyMessage = 'Nothing to rank.',
+  selectedKey = null,
+  onSelectRow,
 }: RankedPnlBarsProps) {
   const { shown, maxAbs, hiddenCount, splitAt } = useMemo(() => {
     const ranked = rankByValue(rows);
@@ -48,37 +60,58 @@ export const RankedPnlBars = memo(function RankedPnlBars({
   }
 
   return (
-    <div className="flex flex-col gap-1">
+    <div
+      className={cn('flex flex-col gap-1', maxHeight != null && 'overflow-y-auto')}
+      style={maxHeight != null ? { maxHeight } : undefined}
+    >
       {shown.map((r, i) => {
         const isLoss = r.value < 0;
         const widthPct = maxAbs > 0 ? Math.max(2, (Math.abs(r.value) / maxAbs) * 100) : 0;
+        const selected = selectedKey === r.key;
+        const rowBody = (
+          <>
+            <span
+              className="w-28 shrink-0 truncate font-mono text-text-dim"
+              title={r.title ?? r.label}
+            >
+              {r.label}
+            </span>
+            <div className="relative h-4 flex-1 overflow-hidden rounded bg-white/4">
+              <div
+                className={cn('h-full rounded', isLoss ? 'bg-red/60' : 'bg-green/60')}
+                style={{ width: `${widthPct}%`, marginLeft: isLoss ? 'auto' : undefined }}
+              />
+            </div>
+            <span
+              className={cn(
+                'w-20 shrink-0 text-right font-mono font-semibold',
+                isLoss ? 'text-red' : 'text-green',
+              )}
+            >
+              <AmountCell sol={r.value} />
+            </span>
+            {r.tag && (
+              <span className="shrink-0 text-[9px] font-bold uppercase text-info">{r.tag}</span>
+            )}
+          </>
+        );
         return (
           <div key={r.key}>
-            <div className="flex items-center gap-2 text-[11px]">
-              <span
-                className="w-28 shrink-0 truncate font-mono text-text-dim"
-                title={r.title ?? r.label}
-              >
-                {r.label}
-              </span>
-              <div className="relative h-4 flex-1 overflow-hidden rounded bg-white/4">
-                <div
-                  className={cn('h-full rounded', isLoss ? 'bg-red/60' : 'bg-green/60')}
-                  style={{ width: `${widthPct}%`, marginLeft: isLoss ? 'auto' : undefined }}
-                />
-              </div>
-              <span
+            {onSelectRow ? (
+              <button
+                type="button"
+                title="Click to focus this row across charts + table"
+                onClick={() => onSelectRow(r.key)}
                 className={cn(
-                  'w-20 shrink-0 text-right font-mono font-semibold',
-                  isLoss ? 'text-red' : 'text-green',
+                  'flex w-full items-center gap-2 rounded-sm border border-transparent px-1 py-0.5 text-left text-[11px] hover:border-white/15 hover:bg-white/3',
+                  selected && 'border-primary/40 bg-primary/8 ring-1 ring-primary/50',
                 )}
               >
-                <AmountCell sol={r.value} />
-              </span>
-              {r.tag && (
-                <span className="shrink-0 text-[9px] font-bold uppercase text-info">{r.tag}</span>
-              )}
-            </div>
+                {rowBody}
+              </button>
+            ) : (
+              <div className="flex items-center gap-2 text-[11px]">{rowBody}</div>
+            )}
             {/* A divider where the truncated middle would have been. */}
             {hiddenCount > 0 && i === splitAt && (
               <div className="my-1 border-t border-dashed border-white/10 py-0.5 text-center text-[10px] text-text-dim/60">

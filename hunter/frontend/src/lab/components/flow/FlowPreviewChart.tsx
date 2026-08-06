@@ -151,7 +151,9 @@ const DEFAULT_FLOW_CHART_PREFS: FlowPreviewChartPrefs = {
   devMarkersBoundariesOnly: false,
   showAthLine: true,
   showMigrationLine: true,
-  highlightVolumeBars: false,
+  // Default ON: this chart exists to separate manufactured volume from organic
+  // flow, and the bar highlight is what makes that split visible at a glance.
+  highlightVolumeBars: true,
   showFlowLines: true,
 };
 
