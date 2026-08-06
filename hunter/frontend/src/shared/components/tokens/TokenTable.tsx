@@ -7,27 +7,7 @@ import { MintSetInput } from './MintSetInput';
 import { LazyTokenChartsGrid } from './LazyTokenChartsGrid';
 import type { ChartOverlayHook, MintGroupOverlayHook, RowChartOverlay } from './TokenChartsGrid';
 import { cn } from 'lib/cn';
-
-/** Persist the charts-grid toggle per `tableId` (localStorage; SSR/test safe).
- *  `fallback` is the table's own default, used until the user toggles it once. */
-const CHARTS_PREF_PREFIX = 'mt:tablecharts:';
-function loadChartsPref(tableId?: string, fallback = false): boolean {
-  if (!tableId || typeof window === 'undefined') return fallback;
-  try {
-    const v = window.localStorage.getItem(CHARTS_PREF_PREFIX + tableId);
-    return v == null ? fallback : v === '1';
-  } catch {
-    return fallback;
-  }
-}
-function saveChartsPref(tableId: string | undefined, on: boolean) {
-  if (!tableId || typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(CHARTS_PREF_PREFIX + tableId, on ? '1' : '0');
-  } catch {
-    /* ignore */
-  }
-}
+import { getTableCharts, setTableCharts } from 'lib/storage';
 
 /** Build the wrapper-injected `structuredFilters` for an active mint set (empty →
  *  none). The `in`-on-`mint_address` shape is defined once here — `mint_address` is
@@ -200,7 +180,7 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
   } = props;
   const mintOf = mintAddressOf;
   const [chartsOn, setChartsOn] = useState(() =>
-    charts ? loadChartsPref(tableId, chartsDefaultOn) : false,
+    charts ? getTableCharts(tableId, chartsDefaultOn) : false,
   );
   const [visibleRows, setVisibleRows] = useState<R[]>([]);
 
@@ -221,7 +201,7 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
   const toggleCharts = () =>
     setChartsOn((v) => {
       const next = !v;
-      saveChartsPref(tableId, next);
+      setTableCharts(tableId, next);
       // Drop the mirrored page snapshot when the grid closes — no reason to retain
       // a large row array while charts are off.
       if (!next) setVisibleRows([]);

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useSearchParams } from 'react-router-dom';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { useTimezone } from 'context/TimezoneContext';
-import { STORAGE_KEYS } from 'lib/storage';
+import { ACCORDION_IDS, STORAGE_KEYS } from 'lib/storage';
 import { DataTable } from 'components/table/DataTable';
 import { TokenTable } from 'components/tokens/TokenTable';
 import type { ColumnDef, SortEntry, TableQuery } from 'components/table/types';
@@ -706,7 +706,7 @@ export function GenericSweepView() {
                 </div>
               }
               defaultOpen={false}
-              storageKey={`${STORAGE_KEYS.sweepDetailsOpen}.generic`}
+              storageKey={ACCORDION_IDS.sweepDetailsGeneric}
               className="mb-3"
             >
               <SelectedSweepHistory

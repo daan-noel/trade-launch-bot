@@ -18,7 +18,7 @@
  * a cross-chart focus has no scatter rows.
  */
 
-import { Suspense, lazy, useCallback, useMemo, useState, type ReactNode } from 'react';
+import { Suspense, lazy, useCallback, useMemo, type ReactNode } from 'react';
 import { LoadingState } from 'components/ui/LoadingState';
 import { InfoTooltip } from 'components/ui/InfoTooltip';
 import { PnlDistribution } from 'components/analytics/PnlDistribution';
@@ -33,6 +33,8 @@ import {
 } from 'components/analytics/pnlSeries';
 import type { HoldPnlDomain } from 'components/analytics/HoldPnlScatter';
 import { usePnlDistDensity } from 'hooks/usePnlDistDensity';
+import { useAccordionOpen } from 'hooks/useUiPrefs';
+import { ACCORDION_IDS } from 'lib/storage';
 import { useTimezone } from 'context/TimezoneContext';
 import { formatDecimalTrim } from 'utils/format';
 import { signedToneClass } from 'lib/signedTone';
@@ -155,8 +157,10 @@ export function PositionSummarySection({
 }: PositionSummarySectionProps) {
   const { timezone } = useTimezone();
   const [density, setDensity] = usePnlDistDensity();
-  const [summaryOpen, setSummaryOpen] = useState(true);
-  const [chartsOpen, setChartsOpen] = useState(true);
+  // One shared pair of ids: collapsing Summary on Evidence keeps it collapsed on
+  // Simulate and Sweep, and across reloads (`mt:ui.accordion`).
+  const [summaryOpen, setSummaryOpen] = useAccordionOpen(ACCORDION_IDS.positionSummary);
+  const [chartsOpen, setChartsOpen] = useAccordionOpen(ACCORDION_IDS.positionCharts);
   /** Charts only fold when both the shell and the Charts toggle are open. */
   const decksOpen = summaryOpen && chartsOpen;
 

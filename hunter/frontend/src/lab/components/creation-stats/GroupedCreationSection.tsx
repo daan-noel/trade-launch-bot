@@ -1,6 +1,6 @@
 import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useLocalStorage } from 'hooks/useLocalStorage';
+import { useStoredField } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { skipToken } from '@reduxjs/toolkit/query/react';
 import { Button } from 'components/ui/Button';
@@ -161,7 +161,10 @@ const INITIAL_DRILL_QUERY: TableQuery = {
 export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionProps) {
   // --- draft controls (don't fetch until applied) ---------------------------
   // Click order = compound-key order (matches the sweep page semantics).
-  const [rawGroupBy, setGroupBy] = useLocalStorage<GroupField[]>(STORAGE_KEYS.groupedBy, DEFAULT_GROUP_BY);
+  // One `mt:page.creationStats` blob for the whole surface (page + this section);
+  // each control owns a field, so a new knob costs a field, not a key.
+  const P = STORAGE_KEYS.pageCreationStats;
+  const [rawGroupBy, setGroupBy] = useStoredField<GroupField[]>(P, 'groupedBy', DEFAULT_GROUP_BY);
   // Sanitize against the current `GROUP_FIELDS` — a stale entry from before a
   // backend field rename (or a removed field like the old `creator_wallet`) is
   // invisible in the picker (which only renders known fields) and unremovable
@@ -172,36 +175,42 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   );
   // 16 rows — enough that a launch tool's preset ladder shows up as a ladder
   // rather than as its top few rungs (the 6-preset max-buy client needed it).
-  const [top, setTop] = useLocalStorage<number>(STORAGE_KEYS.groupedTop, 16);
+  const [top, setTop] = useStoredField<number>(P, 'groupedTop', 16);
   // Ranking criterion for the top-N — "trades per token" is the one that
   // actually surfaces a small elite group over a big group of mediocre
   // launches (raw "trades" still scales with group size like "count" does).
-  const [rankBy, setRankBy] = useLocalStorage<GroupRankBy>(STORAGE_KEYS.groupedRankBy, 'trades');
+  const [rankBy, setRankBy] = useStoredField<GroupRankBy>(P, 'groupedRankBy', 'trades');
   // Bucket width (SOL) for the continuous SOL group fields — the same knob the
   // grouped sweep uses, so this dashboard groups a corpus identically to a sweep.
-  const [bucketWidth, setBucketWidth] = useLocalStorage<number>(STORAGE_KEYS.groupedBucketWidth, 1);
+  const [bucketWidth, setBucketWidth] = useStoredField<number>(P, 'groupedBucketWidth', 1);
   // Exact mode: key the ◎ SOL fields on the amount itself, one group per distinct
   // value. Separate from the width (never a magic 0) — see Rust `SolPrecision`.
   // Default ON: a launch client's tell is a repeated EXACT amount, which any
   // non-zero bucket width smears across neighbours.
-  const [exactSol, setExactSol] = useLocalStorage<boolean>(STORAGE_KEYS.groupedExactSol, true);
+  const [exactSol, setExactSol] = useStoredField<boolean>(P, 'groupedExactSol', true);
   // Hour bins: a launch tool's activity is a burst, and a day bin flattens it.
-  const [bucket, setBucket] = useLocalStorage<CreationBucket>(STORAGE_KEYS.groupedBucket, 'hour');
-  const [rangeDays, setRangeDays] = useLocalStorage<number>(STORAGE_KEYS.groupedRange, 30);
-  const [fieldFiltersText, setFieldFiltersText] = useLocalStorage<Record<string, string>>(
-    STORAGE_KEYS.groupedFilters,
+  const [bucket, setBucket] = useStoredField<CreationBucket>(P, 'groupedBucket', 'hour');
+  const [rangeDays, setRangeDays] = useStoredField<number>(P, 'groupedRange', 30);
+  const [fieldFiltersText, setFieldFiltersText] = useStoredField<Record<string, string>>(
+    P,
+    'groupedFilters',
     {},
     { debounceMs: FILTER_LS_DEBOUNCE_MS },
   );
-  const [cashbackFilter, setCashbackFilter] = useLocalStorage<CashbackFilter>(STORAGE_KEYS.groupedCashback, 'all');
-  const [ixLabelsText, setIxLabelsText] = useLocalStorage<string>(STORAGE_KEYS.groupedIxLabels, '', {
+  const [cashbackFilter, setCashbackFilter] = useStoredField<CashbackFilter>(
+    P,
+    'groupedCashback',
+    'all',
+  );
+  const [ixLabelsText, setIxLabelsText] = useStoredField<string>(P, 'groupedIxLabels', '', {
     debounceMs: FILTER_LS_DEBOUNCE_MS,
   });
   // Saved-fingerprint scope — same "ALL group over the engine-matched tokens"
   // contract as the sweep's/flow discovery's seed select. Set ⇒ the manual
   // group-by/filters above are ignored (both client-side and server-side).
-  const [seedFingerprintId, setSeedFingerprintId] = useLocalStorage<string | null>(
-    STORAGE_KEYS.groupedFingerprintId,
+  const [seedFingerprintId, setSeedFingerprintId] = useStoredField<string | null>(
+    P,
+    'groupedFingerprintId',
     null,
   );
   const { data: fingerprints = [] } = useGetFingerprintsQuery();

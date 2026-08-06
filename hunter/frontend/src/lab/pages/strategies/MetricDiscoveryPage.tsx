@@ -118,7 +118,7 @@ function parseIxLabels(text: string): string[] | undefined {
  */
 export function MetricDiscoveryPage() {
   const navigate = useNavigate();
-  const [stored, setConfig] = useLocalStorage<Config>('hunter.lab.metricDiscovery.config', DEFAULTS);
+  const [stored, setConfig] = useLocalStorage<Config>(STORAGE_KEYS.metricDiscoveryConfig, DEFAULTS);
   const config: Config = { ...DEFAULTS, ...stored };
   const set = <K extends keyof Config>(key: K, value: Config[K]) =>
     setConfig((prev) => ({ ...DEFAULTS, ...prev, [key]: value }));

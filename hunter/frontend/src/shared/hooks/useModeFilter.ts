@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
+import { STORAGE_KEYS, getString, remove, setString } from 'lib/storage';
 import {
-  DEFAULT_MODE_FILTER,
   isDefaultModeFilter,
   MODE_PARAM,
   parseModeFilter,
@@ -19,23 +19,20 @@ import {
  * from storage, which is what makes "I'm iterating on paper today" stick across
  * a reload instead of snapping back to `all` every visit.
  *
- * Pass a per-page `storageKey` (Rules, Rules Control and Simulate each keep
- * their own scope — they are different jobs and should not drag each other).
+ * Pass a per-page `pageId` (Rules, Rules Control and Simulate each keep their
+ * own scope — they are different jobs and should not drag each other); the `mt:`
+ * key is built here, so no call site owns a raw key.
  */
 export function useModeFilter(
-  storageKey: string,
+  pageId: string,
 ): [ModeFilter, (next: ModeFilter) => void] {
+  const storageKey = `${STORAGE_KEYS.filterMode}.${pageId}`;
   const [searchParams, setSearchParams] = useSearchParams();
   const urlHasFilter = searchParams.has(MODE_PARAM);
 
   const [filter, setFilter] = useState<ModeFilter>(() => {
     if (urlHasFilter) return parseModeFilter(searchParams.get(MODE_PARAM));
-    try {
-      return parseModeFilter(localStorage.getItem(storageKey));
-    } catch {
-      // Private mode / quota — a view filter is not worth failing the page over.
-      return DEFAULT_MODE_FILTER;
-    }
+    return parseModeFilter(getString(storageKey));
   });
 
   // Seed the URL from a restored scope once, so the address bar always
@@ -45,12 +42,9 @@ export function useModeFilter(
   const apply = useCallback(
     (next: ModeFilter) => {
       setFilter(next);
-      try {
-        if (isDefaultModeFilter(next)) localStorage.removeItem(storageKey);
-        else localStorage.setItem(storageKey, next);
-      } catch {
-        // Ignore — storage is a convenience, the URL is the real state.
-      }
+      // Storage is a convenience mirror; the URL is the real state.
+      if (isDefaultModeFilter(next)) remove(storageKey);
+      else setString(storageKey, next);
       setSearchParams(
         (prev) => {
           const params = new URLSearchParams(prev);

@@ -16,6 +16,8 @@ import { ModeBadge } from 'components/strategy/ModeBadge';
 import { ModeToggle } from 'components/strategy/ModeToggle';
 import { useFlowPatternKeysForRule } from 'hooks/useFlowPatternKeys';
 import { useSseStatus } from 'hooks/useSseStatus';
+import { useUiToggle } from 'hooks/useUiPrefs';
+import { STORAGE_KEYS, getJSON, setJSON } from 'lib/storage';
 import { OPS_PARAMS, portfolioHref, rulesHref } from 'lib/strategy/nav';
 import type { ModeFilter } from 'lib/strategy/mode';
 import { formatCompact } from 'utils/format';
@@ -114,17 +116,11 @@ interface LogEntry {
 /** Persistent manual-trade log (defect #10: the old page-local array died on
  *  reload). localStorage-backed; the durable source of truth for manual
  *  activity remains the positions table itself (origin='manual' rows). */
-const TRADE_LOG_KEY = 'mt:console-trade-log';
+const TRADE_LOG_MAX = 50;
 
 function loadTradeLog(): LogEntry[] {
-  try {
-    const raw = localStorage.getItem(TRADE_LOG_KEY);
-    if (!raw) return [];
-    const arr = JSON.parse(raw) as LogEntry[];
-    return Array.isArray(arr) ? arr.slice(0, 50) : [];
-  } catch {
-    return [];
-  }
+  const arr = getJSON<LogEntry[]>(STORAGE_KEYS.consoleTradeLog, []);
+  return Array.isArray(arr) ? arr.slice(0, TRADE_LOG_MAX) : [];
 }
 
 /**
@@ -178,12 +174,12 @@ export function ConsolePage() {
   const pushLog = useCallback((action: string, mint: string, note: string, ok: boolean) => {
     const key = `${logSeq.current++}`;
     setLog((prev) => {
-      const next = [{ key, at: Date.now(), action, mint, note, ok }, ...prev].slice(0, 50);
-      try {
-        localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(next));
-      } catch {
-        /* quota/private mode — session-only fallback */
-      }
+      const next = [{ key, at: Date.now(), action, mint, note, ok }, ...prev].slice(
+        0,
+        TRADE_LOG_MAX,
+      );
+      // Quota / private mode degrades to a session-only log (setJSON swallows).
+      setJSON(STORAGE_KEYS.consoleTradeLog, next);
       return next;
     });
   }, []);
@@ -874,7 +870,7 @@ export function ConsolePage() {
     );
   };
 
-  const [waitingOpen, setWaitingOpen] = useState(false);
+  const [waitingOpen, setWaitingOpen] = useUiToggle('consoleWaitingOpen', false);
 
   return (
     <div className="flex flex-col gap-4">

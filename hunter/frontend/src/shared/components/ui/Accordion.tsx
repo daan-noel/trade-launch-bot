@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useAccordionOpen } from 'hooks/useUiPrefs';
 import { cn } from 'lib/cn';
 
 interface AccordionProps {
@@ -20,26 +21,15 @@ interface AccordionProps {
   bordered?: boolean;
   /** Header + content spacing. Default 'default' (matches legacy look). */
   padding?: 'default' | 'sm' | 'none';
-  /** Persist the open/closed state under this localStorage key (survives reloads).
-   *  Falls back to `defaultOpen` when unset or unreadable. Ignored when `open`
-   *  is controlled. */
+  /** Persist the open/closed state under this **logical id** in the shared
+   *  `mt:ui.accordion` map (survives reloads) — pass a value from
+   *  `ACCORDION_IDS`, never a full `mt:` key. Falls back to `defaultOpen` when
+   *  unset. Ignored when `open` is controlled. */
   storageKey?: string;
   /** Controlled open state — pair with `onOpenChange`. When set, `storageKey`
    *  is ignored (caller owns persistence). */
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
-}
-
-function readStoredOpen(key: string | undefined, fallback: boolean): boolean {
-  if (!key) return fallback;
-  try {
-    const v = localStorage.getItem(key);
-    if (v === '0') return false;
-    if (v === '1') return true;
-  } catch {
-    /* ignore */
-  }
-  return fallback;
 }
 
 const PAD = {
@@ -88,9 +78,11 @@ export function Accordion({
   onOpenChange,
 }: AccordionProps) {
   const controlled = openControlled !== undefined;
-  const [openUncontrolled, setOpenUncontrolled] = useState(() =>
-    readStoredOpen(storageKey, defaultOpen),
-  );
+  // Both hooks always run (rules of hooks); which one owns the state depends on
+  // whether the caller gave us an id to persist under.
+  const [openStored, setOpenStored] = useAccordionOpen(storageKey ?? '', defaultOpen);
+  const [openSession, setOpenSession] = useState(defaultOpen);
+  const openUncontrolled = storageKey ? openStored : openSession;
   const open = controlled ? openControlled : openUncontrolled;
   const toggle = () => {
     const next = !open;
@@ -98,14 +90,8 @@ export function Accordion({
       onOpenChange?.(next);
       return;
     }
-    setOpenUncontrolled(next);
-    if (storageKey) {
-      try {
-        localStorage.setItem(storageKey, next ? '1' : '0');
-      } catch {
-        /* ignore */
-      }
-    }
+    if (storageKey) setOpenStored(next);
+    else setOpenSession(next);
     onOpenChange?.(next);
   };
   const pad = PAD[padding];

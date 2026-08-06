@@ -28,6 +28,7 @@ import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeCon
 import { useFingerprintMatches } from '@lab/components/strategy/useFingerprintMatches';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { useLocalStorage } from 'hooks/useLocalStorage';
+import { STORAGE_KEYS } from 'lib/storage';
 import { apiErrorMessage } from 'store/baseApi';
 import {
   useGetFingerprintsQuery,
@@ -258,7 +259,7 @@ function groupKeyChips(gk: Record<string, string>) {
  */
 export function FlowDiscoveryPage() {
   const [stored, setConfig] = useLocalStorage<DiscoveryConfig>(
-    'hunter.lab.flowDiscovery.config',
+    STORAGE_KEYS.flowDiscoveryConfig,
     DEFAULTS,
     { debounceMs: 400 },
   );

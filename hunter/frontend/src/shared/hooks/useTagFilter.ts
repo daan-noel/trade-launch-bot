@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
+import { STORAGE_KEYS, getString, remove, setString } from 'lib/storage';
 import {
   EMPTY_TAG_FILTER,
   isEmptyTagFilter,
@@ -19,23 +20,22 @@ import {
  * shows exactly what the sender saw. Otherwise the last-used filter is restored
  * from storage on mount, which is what makes a habitual "hide `stage:experiment`"
  * stick across sessions instead of needing a re-toggle every visit.
+ *
+ * `pageId` scopes the mirror (Rules, Rules Control and Simulate each keep their
+ * own filter); the `mt:` key is built here, so no call site owns a raw key.
  */
 export function useTagFilter(
-  storageKey: string,
+  pageId: string,
 ): [TagFilterState, (next: TagFilterState) => void] {
+  const storageKey = `${STORAGE_KEYS.filterTags}.${pageId}`;
   const [searchParams, setSearchParams] = useSearchParams();
   const urlHasFilter =
     searchParams.has(TAG_PARAMS.include) || searchParams.has(TAG_PARAMS.exclude);
 
   const [filter, setFilter] = useState<TagFilterState>(() => {
     if (urlHasFilter) return parseTagFilter(searchParams);
-    try {
-      const raw = localStorage.getItem(storageKey);
-      if (raw) return parseTagFilter(new URLSearchParams(raw));
-    } catch {
-      // Private mode / quota — a filter is not worth failing the page over.
-    }
-    return EMPTY_TAG_FILTER;
+    const raw = getString(storageKey);
+    return raw ? parseTagFilter(new URLSearchParams(raw)) : EMPTY_TAG_FILTER;
   });
 
   // Seed the URL from a restored filter once, so the address bar always
@@ -46,12 +46,9 @@ export function useTagFilter(
     (next: TagFilterState) => {
       setFilter(next);
       const serialized = serializeTagFilter(next);
-      try {
-        if (isEmptyTagFilter(next)) localStorage.removeItem(storageKey);
-        else localStorage.setItem(storageKey, new URLSearchParams(serialized).toString());
-      } catch {
-        // Ignore — storage is a convenience, the URL is the real state.
-      }
+      // Storage is a convenience mirror; the URL is the real state.
+      if (isEmptyTagFilter(next)) remove(storageKey);
+      else setString(storageKey, new URLSearchParams(serialized).toString());
       setSearchParams(
         (prev) => {
           const params = new URLSearchParams(prev);

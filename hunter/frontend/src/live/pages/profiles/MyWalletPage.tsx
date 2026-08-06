@@ -32,6 +32,7 @@ import { apiErrorMessage, useGetTokenDetailQuery } from 'store/apiSlice';
 import { useGetProfilesQuery } from 'store/sharedEndpoints';
 import { useUsdRate } from 'context/PriceUnitContext';
 import { useMintTradeStream } from 'hooks/useMintTradeStream';
+import { useUiToggle } from 'hooks/useUiPrefs';
 import {
   liveTradeSpotSolPerRaw,
   spotSolPerRawToUsd,
@@ -90,7 +91,7 @@ export function MyWalletPage() {
   // query (already folding in the mint-set filter) and we serialize it to the
   // unified request body.
   const [query, setQuery] = useState<TableQuery>(INITIAL_QUERY);
-  const [hideDust, setHideDust] = useState(false);
+  const [hideDust, setHideDust] = useUiToggle('hideDust', false);
 
   // Master-detail: selected holding → detail panel + live trade chart below.
   // Cash (USDC) is not selectable — no useful meme tape / detail.

@@ -5,6 +5,7 @@ import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import { Accordion } from 'components/ui/Accordion';
 import type { ChartEventMarker, ChartVisibleTimeRange } from 'components/token-price-chart';
 import { useFlowPatternKeys } from 'hooks/useFlowPatternKeys';
+import { ACCORDION_IDS } from 'lib/storage';
 import type { TokenDetailRecord } from 'types';
 import {
   MetricPanes,
@@ -111,7 +112,7 @@ export function LabTokenInspect({
           title="Detail"
           padding="sm"
           bordered={false}
-          storageKey="mt:inspect-detail-open"
+          storageKey={ACCORDION_IDS.inspectDetail}
           defaultOpen={false}
         >
           <TokenDetailPanel

@@ -423,7 +423,11 @@ export function DataTable<R>({
   const colKeysSig = useMemo(() => colKeys.join(' '), [colKeys]);
   const [internalSelected, setInternalSelected] = useState<string | null>(null);
   const [showColPanel, setShowColPanel] = useState(false);
-  const [showFilterRow, setShowFilterRow] = useState(false);
+  // Revealing the filter row is page chrome, so it persists with the table's
+  // other prefs — a table you always filter opens ready to filter.
+  const [showFilterRow, setShowFilterRow] = useState(() =>
+    tableId ? getTablePrefs(tableId).filtersOpen ?? false : false,
+  );
   // Debounced mirrors of the search box / per-column filter inputs. Both the
   // server-side emit and the client-side `processed` filter read these so a
   // burst of keystrokes coalesces into a single query/recompute instead of one
@@ -497,11 +501,17 @@ export function DataTable<R>({
     // must be written here, or the omitted one is wiped on the next sort/page change.
     if (!tableId) return;
     const id = window.setTimeout(
-      () => setTablePrefs(tableId, { pageSize, sortKeys, pinsCollapsed }),
+      () =>
+        setTablePrefs(tableId, {
+          pageSize,
+          sortKeys,
+          pinsCollapsed,
+          filtersOpen: showFilterRow,
+        }),
       PREFS_PERSIST_MS,
     );
     return () => window.clearTimeout(id);
-  }, [tableId, pageSize, sortKeys, pinsCollapsed]);
+  }, [tableId, pageSize, sortKeys, pinsCollapsed, showFilterRow]);
 
   // Drop sort levels for columns that disappeared or never accepted sort
   // (stale localStorage / renamed keys), so the next click is primary again.

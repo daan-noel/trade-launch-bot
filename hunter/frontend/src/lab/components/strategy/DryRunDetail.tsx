@@ -27,6 +27,8 @@ import { fetchEngineSimPage, fetchEngineSimSummary, fetchEngineSimTimeSummary } 
 import { toSummaryBody, toTableRequest, type TableRequestBody } from 'services/tableRequest';
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
 import { useFlowPatternKeys } from 'hooks/useFlowPatternKeys';
+import { useLocalStorage } from 'hooks/useLocalStorage';
+import { STORAGE_KEYS } from 'lib/storage';
 import { useTimezone } from 'context/TimezoneContext';
 import type { TableQuery } from 'components/table/types';
 import type {
@@ -71,7 +73,9 @@ export function DryRunDetail({
   const [simQuery, setSimQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   // Matched-but-not-entered `NoEntry` rows are hidden by default — a dry-run's
   // "Trades" read is the positions it took; toggle to see everything it matched.
-  const [showNotFired, setShowNotFired] = useState(false);
+  // Same key as Simulate Positions — "show not-fired" is one product preference,
+  // and the two surfaces show the same kind of row.
+  const [showNotFired, setShowNotFired] = useLocalStorage(STORAGE_KEYS.simShowNotFired, false);
   const [temporalSel, setTemporalSel] = useState<TemporalSelection>(null);
   // Sold (decision instant) — same stamp the other charts bin on.
   const [wallField, setWallField] = useState<WallTimeField>('exit_time');

@@ -628,6 +628,13 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   `walletPnlStats.ts` keeps only the wallet-specific summary/scatter.
 - Memoized column defs/price formatters; cells read context directly. localStorage via `lib/storage`
   (`mt:` namespace); column visibility in one `mt:table.cols` map keyed by `tableId`.
+- **Durable UI prefs have one gate:** `lib/storage.ts` (`STORAGE_KEYS` + `ACCORDION_IDS` +
+  `migrateLegacyStorage`) with `hooks/useLocalStorage` (`useLocalStorage` / `useStoredField`) and
+  `hooks/useUiPrefs` (`useAccordionOpen` / `useUiToggle`) on top. Related prefs group into blobs
+  (`mt:ui.accordion`, `mt:ui.toggles`, `mt:table.*`, `mt:page.creationStats`) rather than one flat
+  key each; a raw `localStorage.*` in a component fails `lib/storageGate.test.ts`. Key table,
+  persist-vs-not policy, and how to retire a key:
+  [../plans/frontend/frontend-patterns.md](../plans/frontend/frontend-patterns.md) § localStorage.
 
 ## Known follow-ups (NOT yet done)
 

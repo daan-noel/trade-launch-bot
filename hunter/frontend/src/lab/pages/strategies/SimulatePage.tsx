@@ -75,6 +75,7 @@ import { RuleModeFilter } from 'components/strategy/RuleModeFilter';
 import { RuleTagFilter } from 'components/strategy/RuleTagFilter';
 import { useModeFilter } from 'hooks/useModeFilter';
 import { useTagFilter } from 'hooks/useTagFilter';
+import { useUiToggle } from 'hooks/useUiPrefs';
 import { matchesModeFilter } from 'lib/strategy/mode';
 import { includeOnly, matchesTagFilter } from 'lib/strategy/tags';
 import { buildRuleParamsColumns } from 'components/strategy/ruleParamsColumns';
@@ -253,12 +254,12 @@ export function SimulatePage() {
   );
   const [reloadNonce, setReloadNonce] = useState(0);
   /** Soft-archived rules are hidden by default — toggle to review them. */
-  const [showDisabled, setShowDisabled] = useState(false);
+  const [showDisabled, setShowDisabled] = useUiToggle('showDisabledRules', false);
   /** Tag chip selection — URL-backed (`?tags=`/`?notags=`) + sticky for this page. */
-  const [tagFilter, setTagFilter] = useTagFilter('simulate.tagFilter');
+  const [tagFilter, setTagFilter] = useTagFilter('simulate');
   /** Paper/Real scope — URL-backed (`?mode=`) + sticky for this page. Narrowing
    *  here also narrows what every bulk-simulate button targets. */
-  const [modeFilter, setModeFilter] = useModeFilter('simulate.modeFilter');
+  const [modeFilter, setModeFilter] = useModeFilter('simulate');
   const [opErr, setOpErr] = useState<string | null>(null);
   const handleRef = useRef<{ close: () => void } | null>(null);
   const hydratedIds = useRef<Set<string>>(new Set());

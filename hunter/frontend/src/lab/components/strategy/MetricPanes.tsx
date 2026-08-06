@@ -13,6 +13,7 @@ import { Checkbox } from 'components/ui/Checkbox';
 import { Button } from 'components/ui/Button';
 import { Accordion } from 'components/ui/Accordion';
 import { cn } from 'lib/cn';
+import { ACCORDION_IDS, STORAGE_KEYS, getJSON, setJSON } from 'lib/storage';
 import { useStrategyRegistry, unitSuffix, type MetricUnit } from 'lib/strategy/registry';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { ruleParamsFromJson, sideInstances, type RuleParams } from 'lib/strategy/ruleParams';
@@ -31,8 +32,6 @@ import { useGetMetricSeriesQuery } from '@lab/store/labEndpoints';
 import type { ChartEventMarker, ChartVisibleTimeRange } from 'components/token-price-chart';
 import type { MetricSeriesColumn } from 'lib/strategy/types';
 
-const PREF_KEY = 'mt:metric-panes';
-
 /** Wall-clock label for the truncation notice's `covered_until`. */
 function formatCoveredUntil(at: string | null | undefined): string {
   if (!at) return 'the start of the token';
@@ -49,21 +48,15 @@ interface Prefs {
 }
 
 function loadPrefs(): Prefs {
-  try {
-    const raw = localStorage.getItem(PREF_KEY);
-    if (raw) {
-      return {
-        windows: DEFAULT_WINDOWS,
-        panes: [],
-        ruleId: null,
-        autoPanes: true,
-        ...JSON.parse(raw),
-      };
-    }
-  } catch {
-    /* ignore */
-  }
-  return { panes: [], windows: [...DEFAULT_WINDOWS], ruleId: null, autoPanes: true };
+  const stored = getJSON<Partial<Prefs> | null>(STORAGE_KEYS.metricPanes, null);
+  // Merge over defaults (never a versioned key) so an added field is just absent.
+  return {
+    panes: [],
+    windows: [...DEFAULT_WINDOWS],
+    ruleId: null,
+    autoPanes: true,
+    ...(stored ?? {}),
+  };
 }
 
 /** Pin the pane overlay to explicit params instead of the saved-rule dropdown —
@@ -185,11 +178,7 @@ function useMetricPanesModel({
   );
 
   useEffect(() => {
-    try {
-      localStorage.setItem(PREF_KEY, JSON.stringify(prefs));
-    } catch {
-      /* ignore */
-    }
+    setJSON(STORAGE_KEYS.metricPanes, prefs);
   }, [prefs]);
 
   /** Panes actually rendered: the override's own metrics until the user toggles. */
@@ -430,7 +419,9 @@ function MetricPanesSelector() {
         title="Metrics"
         padding="none"
         bordered={false}
-        storageKey={inspect ? 'mt:metric-selector-inspect-open' : 'mt:metric-selector-open'}
+        storageKey={
+          inspect ? ACCORDION_IDS.metricSelectorInspect : ACCORDION_IDS.metricSelector
+        }
         // Collapsed by default in both placements: the picker is a tall
         // multi-column checklist, and open it pushes the panes it selects off
         // screen — you set the panes once, then read them.

@@ -11,7 +11,7 @@
  * (non-band) cohort and passes contextPoints so axes stay mounted.
  */
 
-import { Suspense, lazy, useCallback, useMemo, useState, type ReactNode } from 'react';
+import { Suspense, lazy, useCallback, useMemo, type ReactNode } from 'react';
 import { LoadingState } from 'components/ui/LoadingState';
 import { InfoTooltip } from 'components/ui/InfoTooltip';
 import { PnlDistribution } from 'components/analytics/PnlDistribution';
@@ -27,6 +27,8 @@ import {
 } from 'components/analytics/pnlSeries';
 import type { HoldPnlDomain } from 'components/analytics/HoldPnlScatter';
 import { usePnlDistDensity } from 'hooks/usePnlDistDensity';
+import { useAccordionOpen } from 'hooks/useUiPrefs';
+import { ACCORDION_IDS } from 'lib/storage';
 import { cn } from 'lib/cn';
 import { signedToneClass } from 'lib/signedTone';
 import { formatDecimalTrim } from 'utils/format';
@@ -73,7 +75,7 @@ export function WalletAnalyticsPanel({
   focus,
   onFocusChange,
 }: WalletAnalyticsPanelProps) {
-  const [chartsOpen, setChartsOpen] = useState(true);
+  const [chartsOpen, setChartsOpen] = useAccordionOpen(ACCORDION_IDS.walletCharts);
   const [density, setDensity] = usePnlDistDensity();
 
   const toggleLens = useCallback(

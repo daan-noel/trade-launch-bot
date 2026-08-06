@@ -37,6 +37,7 @@ import type { RuleEditorDraft } from './RuleEditor';
 import { useModeFilter } from 'hooks/useModeFilter';
 import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
 import { useTagFilter } from 'hooks/useTagFilter';
+import { useUiToggle } from 'hooks/useUiPrefs';
 import { matchesModeFilter } from 'lib/strategy/mode';
 import { includeOnly, matchesTagFilter } from 'lib/strategy/tags';
 import { apiErrorMessage } from 'store/baseApi';
@@ -149,16 +150,17 @@ export function RulesView({
   const [pauseAll, pauseAllState] = usePauseAllStrategyRulesMutation();
   const [stopAll, stopAllState] = useStopAllStrategyRulesMutation();
 
-  /** Soft-archived rules are hidden by default — toggle to review them. */
-  const [showDisabled, setShowDisabled] = useState(false);
+  /** Soft-archived rules are hidden by default — toggle to review them. Shared
+   *  with Simulate's rules list: one product preference, persisted. */
+  const [showDisabled, setShowDisabled] = useUiToggle('showDisabledRules', false);
   /** Tag chip selection — URL-backed (`?tags=`/`?notags=`) + sticky per app. */
   const [tagFilter, setTagFilter] = useTagFilter(
-    showScores ? 'rules-control.tagFilter' : 'rules.tagFilter',
+    showScores ? 'rules-control' : 'rules',
   );
   /** Paper/Real scope — URL-backed (`?mode=`) + sticky per app. Live Control and
    *  the lab board keep separate scopes; they are different jobs. */
   const [modeFilter, setModeFilter] = useModeFilter(
-    showScores ? 'rules-control.modeFilter' : 'rules.modeFilter',
+    showScores ? 'rules-control' : 'rules',
   );
   const [opErr, setOpErr] = useState<string | null>(null);
   /** Rule ids mid optimistic pause (label "Pausing…" until SSE/refetch confirms). */

@@ -8,7 +8,7 @@ import { StatCard } from 'components/ui/StatCard';
 import { useTimezone } from 'context/TimezoneContext';
 import { useGetCreationStatsQuery } from 'store/apiSlice';
 import { apiErrorMessage } from 'store/apiSlice';
-import { useLocalStorage } from 'hooks/useLocalStorage';
+import { useStoredField } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { CreationHeatmap } from 'components/creation-stats/CreationHeatmap';
 import { GroupedCreationSection } from '@lab/components/creation-stats/GroupedCreationSection';
@@ -42,10 +42,13 @@ const LOOKBACK_PRESETS = RANGE_OPTIONS.map((o) => ({
 /** Token creation analysis: heatmap + trend + grouped (lab) section. */
 export function CreationStatsPage() {
   const { timezone } = useTimezone();
-  const [metric, setMetric] = useLocalStorage<CreationMetric>(STORAGE_KEYS.dashboardMetric, 'count');
-  const [segment, setSegment] = useLocalStorage<CreationSegment>(STORAGE_KEYS.dashboardSegment, 'all');
-  const [bucket, setBucket] = useLocalStorage<CreationBucket>(STORAGE_KEYS.dashboardBucket, 'hour');
-  const [rangeDays, setRangeDays] = useLocalStorage<number>(STORAGE_KEYS.dashboardRange, 7);
+  // Page + grouped-section controls share one `mt:page.creationStats` blob —
+  // one key for the surface, one field per control.
+  const P = STORAGE_KEYS.pageCreationStats;
+  const [metric, setMetric] = useStoredField<CreationMetric>(P, 'metric', 'count');
+  const [segment, setSegment] = useStoredField<CreationSegment>(P, 'segment', 'all');
+  const [bucket, setBucket] = useStoredField<CreationBucket>(P, 'bucket', 'hour');
+  const [rangeDays, setRangeDays] = useStoredField<number>(P, 'range', 7);
 
   const from = useMemo(() => windowFrom(rangeDays), [rangeDays]);
 

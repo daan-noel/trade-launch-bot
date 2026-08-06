@@ -268,13 +268,60 @@ Lab Evidence must surface the sync-snapshot caveat via `InlineAlert variant="war
 
 ## localStorage — `lib/storage.ts`
 
-All localStorage access goes through `lib/storage` wrapper. Keys are namespaced `mt:`:
+Four rules, all enforced by tests (`lib/storage.test.ts`, `lib/storageGate.test.ts`):
+
+1. **One gate.** Every durable pref goes through `lib/storage` or `hooks/useLocalStorage`.
+   A raw `localStorage.*` in a component fails `storageGate.test.ts`. The one allowlisted
+   exception is `live/lib/desktopNotify.ts` (an ephemeral cross-tab claim stamp, not a
+   pref). `sessionStorage` is used only for the one-shot discovery → sweep seed.
+2. **One prefix.** Everything durable is `mt:`. There is no `hunter.*` namespace.
+3. **Registry = truth.** Every key is in `STORAGE_KEYS`; accordion ids are in
+   `ACCORDION_IDS`. A key that nothing reads is deleted in the PR that finds it.
+4. **Few blobs, not many flat keys.** Group related prefs into one object and give each
+   control a *field*; a new pref should cost a field, not a key. Shape changes **merge
+   with defaults** at the reader — never a `_v2` key, never a migration framework.
+
+### Hooks
+
+| Hook | Use for |
+|---|---|
+| `useLocalStorage(key, initial, { debounceMs })` | one whole key (a form draft, a standalone pref). High-churn filter text passes `debounceMs: 400` |
+| `useStoredField(key, field, initial, opts)` | one **field** of a shared blob. The write is read-modify-write against storage, so sibling fields (including debounced ones) can never clobber each other |
+| `useAccordionOpen(ACCORDION_IDS.x, defaultOpen?)` | a collapsible panel's open state (`mt:ui.accordion`) |
+| `useUiToggle('hideDust', false)` | an app-wide show/hide switch (`mt:ui.toggles`) |
+
+All of them broadcast, so every mounted reader of the same key/field stays in sync within
+the tab, and follow a `storage` event across tabs.
+
+### Key map
 
 | Key | Content |
 |---|---|
-| `mt:table.cols` | `{ [tableId]: string[] }` — hidden column keys per table |
-| `mt:price-unit` | `'SOL'` or `'USD'` |
-| `mt:timezone` | `'local'` or `'UTC'` |
-| `mt:dashboard.grouped.fingerprintId` | Creation Stats' saved-fingerprint scope (`GroupedCreationSection`) |
+| `mt:app.timezone` / `mt:app.priceUnit` | timezone; `'SOL'` or `'USD'` |
+| `mt:chart.prefs` · `mt:notifications` · `mt:swing.criteria` | chart toolbar; notification prefs; swing criteria |
+| `mt:ui.accordion` | `{ [accordionId]: boolean }` — every collapsible chrome panel (`ACCORDION_IDS`) |
+| `mt:ui.toggles` | `{ showDisabledRules, hideDust, consoleWaitingOpen }` |
+| `mt:ui.pnlDistDensity` · `mt:ui.metricPanes` | distribution bin density; metric-pane selection |
+| `mt:table.{cols,knownCols,prefs,pins,charts}` | per-`tableId` maps: visible columns, the column set at write time, sort/pageSize/pinsCollapsed/filtersOpen, pinned rows + snapshots, charts-grid on/off |
+| `mt:page.creationStats` | Creation Stats page **and** its grouped section (one blob, one field per control) |
+| `mt:tokens.filters` / `mt:tokens.live` | Tokens page quick filters; live-stream toggle |
+| `mt:form.flowDiscovery` / `mt:form.metricDiscovery` / `mt:sweep.config*` | form drafts |
+| `mt:flow.previewChart.prefs` | FlowPreviewChart toolbar |
+| `mt:sweep.sel.*` · `mt:sweep.showNotFired` · `mt:simulate.showNotFired` | run selection; the two **deliberately separate** not-fired toggles (a sweep row is a combo token, a sim row a position — Simulate and Dry-run *do* share theirs) |
+| `mt:filter.tags.<pageId>` / `mt:filter.mode.<pageId>` | URL-mirrored view filters; **the URL stays authoritative**, storage only restores the last-used value when the URL carries no param |
+| `mt:console.tradeLog` | the manual-trade log — data, not a view pref (positions table stays the source of truth) |
 
-Direct `localStorage.getItem/setItem` calls outside `lib/storage` are a code smell — they bypass SSR safety guards and miss the namespace prefix.
+### Persist vs do-not-persist
+
+Persist **view preferences**: collapse state, column visibility/sort/page size/pins,
+show-hide toggles, chart toolbar prefs, form drafts. Do **not** persist modal/popover
+open, focus chips or row selection, in-flight busy flags, or a cohort filter the URL
+already owns. An accordion whose default follows the data (`defaultOpen={runs.length === 0}`)
+must stay unpersisted — otherwise the first visit's data shape sticks forever.
+
+### Retiring a key
+
+Add it to the move tables in `storage.ts` (`LEGACY_JSON_MOVES` / `LEGACY_STRING_MOVES` /
+`LEGACY_ACCORDION_MOVES`) so `migrateLegacyStorage` folds the user's value into its new
+home on the next load, then purges the old key. The move only writes when the destination
+is still empty, so it is safe to re-run.

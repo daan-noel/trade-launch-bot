@@ -18,7 +18,7 @@
  * with this lens — they do not replace it. See HistoryExitSummary.
  */
 
-import { Suspense, lazy, memo, useMemo, useState, type ReactNode } from 'react';
+import { Suspense, lazy, memo, useMemo, type ReactNode } from 'react';
 import { LoadingState } from 'components/ui/LoadingState';
 import { InfoTooltip } from 'components/ui/InfoTooltip';
 import { HoldPnlScatter } from 'components/analytics/HoldPnlScatter';
@@ -42,6 +42,8 @@ import {
   winRateGradeClass,
 } from 'lib/signedTone';
 import { usePnlDistDensity } from 'hooks/usePnlDistDensity';
+import { useAccordionOpen } from 'hooks/useUiPrefs';
+import { ACCORDION_IDS } from 'lib/storage';
 import { formatDecimalTrim } from 'utils/format';
 import { cn } from 'lib/cn';
 import type { ClosedTradePoint } from '@live/store/liveEndpoints';
@@ -227,7 +229,7 @@ export const HistoryChartsDeck = memo(function HistoryChartsDeck({
   focus: HistoryFocus | null;
   onFocusChange: (focus: HistoryFocus | null) => void;
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useAccordionOpen(ACCORDION_IDS.historyCharts);
   const [density, setDensity] = usePnlDistDensity();
 
   // Collapsed deck skips the cohort walk — hooks still run, but the heavy fold
