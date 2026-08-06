@@ -1,18 +1,18 @@
-import {
-  CandlestickSeries,
-  ColorType,
-  CrosshairMode,
-  LineSeries,
-  type CandlestickSeriesOptions,
-  type ChartOptions,
-  type DeepPartial,
-  type LineSeriesOptions,
+import type {
+  CandlestickSeriesOptions,
+  DeepPartial,
+  LineSeriesOptions,
 } from 'lightweight-charts';
 import { STORAGE_KEYS } from 'lib/storage';
 import { formatPrice } from 'utils/format';
 import type { PriceUnit } from 'types';
-import { createChartTimeFormatters } from './chartTimezone';
 import type { ChartGroupMode, ChartInterval, ChartStyle } from './types';
+
+// NOTE: lightweight-charts may only be imported here as a TYPE (erased at
+// build time). This module's colors / storage key / prefs are read by dozens
+// of non-chart modules, so a VALUE import drags the whole charting library
+// into the eager app-root chunk. Real enums and series constructors live in
+// `./chartOptions`, which only the (lazily loaded) charts import.
 
 /** Pump.fun total supply in raw token units (FDV market cap). */
 export const TOKEN_TOTAL_SUPPLY = 1_000_000_000_000_000;
@@ -211,19 +211,6 @@ export function responsiveChartHeight(
   return Math.round(Math.min(max, Math.max(min, width / aspect)));
 }
 
-/** Optional extras for {@link createChartOptions}. */
-export interface CreateChartOptionsExtras {
-  /**
-   * Dual left+right price scales with independent units (e.g. flow overlay +
-   * token price). Enables the left scale and omits the chart-level
-   * `localization.priceFormatter` so each series' own `priceFormat` owns its
-   * axis ticks — a single chart formatter would paint both scales the same.
-   */
-  dualPriceScale?: boolean;
-}
-
-const DUAL_PRICE_SCALE_MARGINS = { top: 0.1, bottom: 0.1 };
-
 /** Shared by dual-axis charts so range-select teardown restores the same policy. */
 export const DUAL_CHART_HANDLE_SCALE = {
   mouseWheel: true,
@@ -231,73 +218,6 @@ export const DUAL_CHART_HANDLE_SCALE = {
   axisPressedMouseMove: { time: true, price: true },
   axisDoubleClickReset: { time: true, price: true },
 } as const;
-
-export function createChartOptions(
-  width: number,
-  height: number,
-  groupMode: ChartGroupMode = 'time',
-  priceUnit: PriceUnit = 'SOL',
-  timezone?: string,
-  extras?: CreateChartOptionsExtras,
-): DeepPartial<ChartOptions> {
-  const slotTimeFormatter = (time: number) => String(time);
-  const timeFormatters =
-    groupMode === 'time' && timezone ? createChartTimeFormatters(timezone) : null;
-  const dual = extras?.dualPriceScale === true;
-
-  return {
-    width,
-    height,
-    layout: {
-      background: { type: ColorType.Solid, color: CHART_COLORS.background },
-      textColor: CHART_COLORS.text,
-    },
-    grid: {
-      vertLines: { color: CHART_COLORS.grid },
-      horzLines: { color: CHART_COLORS.grid },
-    },
-    rightPriceScale: {
-      borderColor: CHART_COLORS.border,
-      ...(dual ? { scaleMargins: DUAL_PRICE_SCALE_MARGINS, autoScale: true } : {}),
-    },
-    ...(dual
-      ? {
-          leftPriceScale: {
-            visible: true,
-            borderColor: CHART_COLORS.border,
-            scaleMargins: DUAL_PRICE_SCALE_MARGINS,
-            autoScale: true,
-          },
-          handleScale: { ...DUAL_CHART_HANDLE_SCALE },
-        }
-      : {}),
-    timeScale: {
-      borderColor: CHART_COLORS.border,
-      timeVisible: groupMode === 'time',
-      secondsVisible: groupMode === 'time',
-      ...(groupMode === 'slot'
-        ? { tickMarkFormatter: slotTimeFormatter }
-        : timeFormatters
-          ? { tickMarkFormatter: timeFormatters.tickMarkFormatter }
-          : {}),
-    },
-    crosshair: {
-      mode: CrosshairMode.Normal,
-      vertLine: { color: CHART_COLORS.crosshair },
-      horzLine: { color: CHART_COLORS.crosshair },
-    },
-    localization: {
-      // Dual-axis charts must NOT set a chart-level priceFormatter — it overrides
-      // every series' priceFormat and forces left+right through one unit.
-      ...(dual ? {} : { priceFormatter: createChartPriceFormatter(priceUnit) }),
-      ...(groupMode === 'slot'
-        ? { timeFormatter: slotTimeFormatter }
-        : timeFormatters
-          ? { timeFormatter: timeFormatters.timeFormatter }
-          : {}),
-    },
-  };
-}
 
 export const LINE_SERIES_OPTIONS: DeepPartial<LineSeriesOptions> = {
   color: CHART_COLORS.line,
@@ -319,9 +239,3 @@ export const CANDLE_SERIES_OPTIONS: DeepPartial<CandlestickSeriesOptions> = {
   lastValueVisible: true,
   priceFormat: CHART_PRICE_FORMAT,
 };
-
-/** Extend with new series types here when adding chart styles. */
-export const SERIES_BY_STYLE = {
-  line: LineSeries,
-  candles: CandlestickSeries,
-} as const;

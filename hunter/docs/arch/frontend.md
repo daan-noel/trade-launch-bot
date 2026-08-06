@@ -172,10 +172,25 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   **lab `App` nests `BackgroundJobsProvider` itself** (keeps its SSE out of the live build).
   **Route Suspense lives inside `AppLayout` around `<Outlet />`** (not around `Routes`) so a
   lazy page chunk keeps the header/nav mounted; fallback is `SuspenseFallback` → `LoadingState`.
-- **Chart code-split:** `lightweight-charts` is not pulled into route/table chunks up front.
-  Call sites use `LazyTokenTradeChart` / `LazyLabTokenInspect(Modal)` / `LazyTokenChartsGrid`;
-  all lazy Suspense fallbacks share `LoadingState` (`page` / `panel` / `inline`). Lab Creation
-  Stats owns `GroupedCreationSection` (lab-only page — no live `extraSections` inject).
+- **Chart code-split:** `lightweight-charts` (~177 kB raw / 57 kB gz) is not pulled into the
+  app-root or route/table chunks up front — it must stay reachable only through a `lazy()`
+  boundary, so it downloads when a chart actually mounts. Call sites use
+  `LazyTokenTradeChart` / `LazyLabTokenInspect(Modal)` / `LazyTokenChartsGrid` /
+  `LazyFloorMintChart` (live Console + Portfolio + `FloorPositionDetail`) /
+  `LazyLivePositionInspectModal` (live Rules + Rule Analyze) / `LazyFlowPreviewChart` (lab
+  Flow Discovery); all lazy Suspense fallbacks share `LoadingState` (`page` / `panel` /
+  `inline`). Lab Creation Stats owns `GroupedCreationSection` (lab-only page — no live
+  `extraSections` inject).
+  - **`token-price-chart/constants.ts` may import `lightweight-charts` as a TYPE only.**
+    Its colors / storage key / prefs are read by ~20 non-chart modules (PnL widgets,
+    `TimezoneContext`, `useProfileWallets`, `utils/date`), several of them in the eager
+    root graph — one value import there (`ColorType`, `CrosshairMode`, `LineSeries`,
+    `CandlestickSeries`) put the entire charting library in the app-root vendor chunk of
+    **both** apps. Real enums and series constructors live in
+    `token-price-chart/chartOptions.ts` (`createChartOptions`, `SERIES_BY_STYLE`), which
+    only the lazily-loaded charts import. Verify after any chart-module change: no
+    `modulepreload` in `dist/index.html`/`dist/lab.html` should resolve to a chunk that
+    statically imports `lightweight-charts`.
 
 ## Pages by mode
 

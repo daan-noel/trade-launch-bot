@@ -58,7 +58,6 @@ import {
   CANDLE_SERIES_OPTIONS,
   CHART_COLORS,
   CHART_INTERVALS,
-  createChartOptions,
   createChartPriceFormat,
   createChartPriceFormatter,
   DEFAULT_CHART_PREFS,
@@ -66,9 +65,9 @@ import {
   LINE_SERIES_OPTIONS,
   LS_CHART_PREFS_KEY,
   responsiveChartHeight,
-  SERIES_BY_STYLE,
   TOKEN_TOTAL_SUPPLY,
 } from './constants';
+import { createChartOptions, SERIES_BY_STYLE } from './chartOptions';
 import { getString, setString } from 'lib/storage';
 import { BarCrosshairTooltip } from './BarCrosshairTooltip';
 import { WalletMarkersTooltip } from './WalletMarkersTooltip';

@@ -4,7 +4,7 @@ import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Input } from 'components/ui/Input';
 import type { FlowDiscoveryTokenGross, TradeRecord } from 'types';
 
-import { FlowPreviewChart } from './FlowPreviewChart';
+import { LazyFlowPreviewChart } from './LazyFlowPreviewChart';
 
 function fmt(n: number, digits = 1): string {
   if (!Number.isFinite(n)) return '—';
@@ -110,7 +110,7 @@ export function TokenPreviewPanel({
         </div>
         <div className="min-w-0 flex-1">
           {selectedMint ? (
-            <FlowPreviewChart
+            <LazyFlowPreviewChart
               trades={trades}
               patternKeys={patternKeys}
               onTogglePattern={onTogglePattern}

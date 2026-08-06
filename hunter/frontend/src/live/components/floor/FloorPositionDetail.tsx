@@ -11,7 +11,7 @@ import {
   signedStatTone,
   signedToneClass,
 } from 'lib/signedTone';
-import { FloorMintChart } from './FloorMintChart';
+import { LazyFloorMintChart } from './LazyFloorMintChart';
 
 export interface FloorDetailFacts {
   mint: string;
@@ -119,7 +119,7 @@ export function FloorPositionDetail({
         )}
       </div>
 
-      <FloorMintChart
+      <LazyFloorMintChart
         mint={facts.mint}
         markers={markers}
         tableId="floor-detail"

@@ -15,7 +15,7 @@ import { exitReasonBadge } from 'components/strategy/strategyColumns';
 import { fetchPortfolioPositionsPage } from 'services/api';
 import { useFlowPatternKeysForRule } from 'hooks/useFlowPatternKeys';
 import { useServerTable } from 'hooks/useServerTable';
-import { FloorMintChart } from '@live/components/floor/FloorMintChart';
+import { LazyFloorMintChart } from '@live/components/floor/LazyFloorMintChart';
 import { buildEventMarkers, inspectFromPosition } from 'components/strategy/inspectTarget';
 import type { PortfolioRulePnl, RulePositionRecord } from 'types';
 
@@ -202,7 +202,7 @@ export function PortfolioRuleDetail({
       </div>
 
       {pick && (
-        <FloorMintChart
+        <LazyFloorMintChart
           mint={pick.mint_address}
           markers={markers}
           tableId="portfolio-rule-detail"

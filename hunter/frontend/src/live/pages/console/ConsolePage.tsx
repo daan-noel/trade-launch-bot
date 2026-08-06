@@ -29,7 +29,7 @@ import { apiErrorMessage } from 'store/apiSlice';
 import { ConsoleHistorySection } from '@live/components/history/ConsoleHistorySection';
 import { FloorBookStrip } from '@live/components/floor/FloorBookStrip';
 import { FloorPositionDetailWithFills } from '@live/components/floor/FloorPositionDetailWithFills';
-import { FloorMintChart } from '@live/components/floor/FloorMintChart';
+import { LazyFloorMintChart } from '@live/components/floor/LazyFloorMintChart';
 import {
   useCloseRulePositionMutation,
   useGetPortfolioHoldingsQuery,
@@ -1082,7 +1082,7 @@ export function ConsolePage() {
           </div>
 
           {tradeMintValid && (
-            <FloorMintChart mint={tradeMint.trim()} tableId="console-trade-chart" height={260} />
+            <LazyFloorMintChart mint={tradeMint.trim()} tableId="console-trade-chart" height={260} />
           )}
 
           <div className="rounded-lg border border-white/6 bg-bg-panel p-3">
@@ -1172,7 +1172,7 @@ export function ConsolePage() {
               </span>
               {ruleLink(inspectWaiting.ruleId, inspectWaiting.ruleName)}
             </div>
-            <FloorMintChart
+            <LazyFloorMintChart
               mint={inspectWaiting.mint}
               tableId="console-waiting-chart"
               height={420}

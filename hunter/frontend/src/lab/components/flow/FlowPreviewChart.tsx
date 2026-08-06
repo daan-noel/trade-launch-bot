@@ -52,12 +52,12 @@ import {
   CHART_INTERVALS,
   CHART_STYLES,
   DUAL_CHART_HANDLE_SCALE,
-  createChartOptions,
   createChartPriceFormat,
   createChartPriceFormatter,
   LINE_SERIES_OPTIONS,
   responsiveChartHeight,
 } from 'components/token-price-chart/constants';
+import { createChartOptions } from 'components/token-price-chart/chartOptions';
 import type {
   ChartBarSelection,
   ChartBarTooltipState,

@@ -4,7 +4,7 @@ import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { rulesHref } from 'lib/strategy/nav';
 import { InlineAlert } from 'components/ui/Modal';
 import { RuleAnalyzePanel } from 'components/strategy/RuleAnalyzePanel';
-import { LivePositionInspectModal } from '@live/components/strategy/LivePositionInspectModal';
+import { LazyLivePositionInspectModal } from '@live/components/strategy/LazyLivePositionInspectModal';
 import { selectOpenByRule } from '@live/slices/liveStatusSlice';
 
 /**
@@ -36,7 +36,7 @@ export function RuleAnalyzePage() {
         liveUpdates
         liveOpenCount={liveOpen.length}
         renderInspect={({ position, rule: inspectRule, onClose: close }) => (
-          <LivePositionInspectModal position={position} rule={inspectRule} onClose={close} />
+          <LazyLivePositionInspectModal position={position} rule={inspectRule} onClose={close} />
         )}
       />
     </div>

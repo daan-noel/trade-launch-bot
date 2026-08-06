@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useSelector } from 'react-redux';
 import { RulesView } from 'components/strategy/RulesView';
 import { RuleAnalyzePanel } from 'components/strategy/RuleAnalyzePanel';
-import { LivePositionInspectModal } from '@live/components/strategy/LivePositionInspectModal';
+import { LazyLivePositionInspectModal } from '@live/components/strategy/LazyLivePositionInspectModal';
 import { selectOpenByRule, selectRuleOpenCounts } from '@live/slices/liveStatusSlice';
 import type { StrategyRule } from 'lib/strategy/types';
 
@@ -58,7 +58,7 @@ function LiveRuleEvidence({
       liveOpenCount={liveOpen.length}
       liveUpdates
       renderInspect={({ position, rule: inspectRule, onClose: close }) => (
-        <LivePositionInspectModal position={position} rule={inspectRule} onClose={close} />
+        <LazyLivePositionInspectModal position={position} rule={inspectRule} onClose={close} />
       )}
     />
   );
