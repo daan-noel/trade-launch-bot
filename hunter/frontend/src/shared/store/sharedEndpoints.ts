@@ -56,8 +56,9 @@ export const TOKENS_LIST_LIMIT = 20_000;
 /**
  * Serialize `TokensPageArgs` into the unified `TableRequest` POST body — the ONE
  * place DataTable view-state (`toTableRequest`) becomes a wire body, plus the
- * Tokens-only `trackedOnly` rider. Shared so `getTokensPage` and the mints-only
- * `getTokenMints` (lab) build a byte-identical filter body and can't drift.
+ * Tokens-only `trackedOnly` rider. Kept as a named function (not inlined into
+ * `getTokensPage`) so any future filtered-token read builds a byte-identical
+ * body and can't drift from the visible table.
  */
 export function tokensTableRequestBody(a: TokensPageArgs): ReturnType<typeof toTableRequest> {
   // Numeric columns needn't be enumerated for ordinary ops: the backend re-parses
@@ -195,10 +196,6 @@ export const sharedApi = baseApi.injectEndpoints({
       query: () => '/api/fingerprints',
       providesTags: ['Fingerprint'],
     }),
-    getFingerprint: builder.query<Fingerprint, string>({
-      query: (id) => `/api/fingerprints/${id}`,
-      providesTags: ['Fingerprint'],
-    }),
     createFingerprint: builder.mutation<Fingerprint, FingerprintDraft>({
       query: (body) => ({ url: '/api/fingerprints', method: 'POST', body }),
       invalidatesTags: ['Fingerprint'],
@@ -229,10 +226,6 @@ export const sharedApi = baseApi.injectEndpoints({
       string
     >({
       query: (id) => `/api/strategy-rules/${encodeURIComponent(id)}/runs`,
-      providesTags: ['StrategyRule'],
-    }),
-    getStrategyRule: builder.query<StrategyRule, string>({
-      query: (id) => `/api/strategy-rules/${id}`,
       providesTags: ['StrategyRule'],
     }),
     createStrategyRule: builder.mutation<StrategyRule, CreateRuleBody>({
@@ -414,13 +407,11 @@ export const {
   useUpdateSettingsMutation,
   useGetStrategyRegistryQuery,
   useGetFingerprintsQuery,
-  useGetFingerprintQuery,
   useCreateFingerprintMutation,
   useUpdateFingerprintMutation,
   useDeleteFingerprintMutation,
   useGetStrategyRulesQuery,
   useGetStrategyRuleRunsQuery,
-  useGetStrategyRuleQuery,
   useCreateStrategyRuleMutation,
   useUpdateStrategyRuleMutation,
   useDeleteStrategyRuleMutation,

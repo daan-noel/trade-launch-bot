@@ -61,17 +61,11 @@ export const liveApi = baseApi.injectEndpoints({
     // Portfolio holdings — the position-manager read (full wallet RPC scan +
     // Jupiter marks + cost basis + unrealized PnL + bot-managed tag + token
     // enrichment, composed server-side by the portfolio service). Expensive, so
-    // cached like the token list; a manual trade refreshes it surgically (see
-    // getWalletHolding) rather than re-fetching the whole wallet.
+    // cached like the token list; a trade refresh invalidates the WalletHoldings
+    // tag rather than re-fetching the whole wallet eagerly.
     getPortfolioHoldings: builder.query<WalletHolding[], void>({
       query: () => '/api/portfolio/holdings',
       providesTags: ['WalletHoldings'],
-    }),
-    // Single-mint counterpart used only for post-trade confirmation polling:
-    // one cheap RPC + one price lookup. Not exposed as a hook — callers drive
-    // it imperatively via `initiate` and patch the result into the list cache.
-    getWalletHolding: builder.query<WalletHolding | null, string>({
-      query: (mint) => `/api/solana/wallet/tokens/${encodeURIComponent(mint)}`,
     }),
     // Wallet-wide roll-up for the Home KPI row (value/PnL totals + real-money
     // aggregates). Shares the WalletHoldings tag so a trade refresh invalidates it.
@@ -255,7 +249,6 @@ export const liveApi = baseApi.injectEndpoints({
 export const {
   useGetPortfolioHoldingsQuery,
   useGetPortfolioSummaryQuery,
-  useGetPortfolioPositionsQuery,
   useGetPortfolioPerformanceQuery,
   useGetPortfolioClosesSeriesQuery,
   useGetWalletPricesQuery,
@@ -266,7 +259,6 @@ export const {
   useGetPositionFillsQuery,
   useGetCashbackStatusQuery,
   useClaimCashbackMutation,
-  useGetArmedQuery,
   useGetLiveModeQuery,
   useSetLiveModeMutation,
   useReloadCachesMutation,
