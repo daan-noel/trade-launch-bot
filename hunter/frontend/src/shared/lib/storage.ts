@@ -71,6 +71,8 @@ export const STORAGE_KEYS = {
   groupedFingerprintId: `${PREFIX}dashboard.grouped.fingerprintId`,
   /** FlowPreviewChart toolbar toggle state (flow-discovery). */
   flowPreviewChartPrefs: `${PREFIX}flow.previewChart.prefs`,
+  /** Position summary accordion open map — shared Evidence / Simulate / Sweep. */
+  positionSummaryAccordion: `${PREFIX}positionSummary.accordion`,
 } as const;
 
 // ── raw string accessors ────────────────────────────────────────────────────

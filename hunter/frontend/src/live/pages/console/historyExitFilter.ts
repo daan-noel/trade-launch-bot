@@ -7,11 +7,34 @@
  * **metric names** as `contains` needles — never the retired ladder aliases
  * (`Trailing`, bare `Stall`, `TimeStop`, …).
  *
+ * Exit-mix tiles also write synthetic cohort needles (`metric_win` /
+ * `metric_loss` / `metric`) for the Metric± split — those are client-only
+ * (not SQL `contains`) so they compose with chart `hfocus`.
+ *
  * Do **not** run these needles through `normalizeExitReasonFilter`: that helper
  * maps `stall` → `Stall` for badge/search aliases and would break metric matching.
  */
 
+import { isMetricExitReason } from 'lib/strategy/exitReason';
+
 export type HistoryExitFilterKind = 'system' | 'metric';
+
+/** Synthetic hexit values from the exit-mix Metric± tiles (not dropdown options). */
+export const HISTORY_METRIC_EXIT_NEEDLES = [
+  'metric_win',
+  'metric_loss',
+  'metric',
+] as const;
+
+export type HistoryMetricExitNeedle = (typeof HISTORY_METRIC_EXIT_NEEDLES)[number];
+
+export function isHistoryMetricExitNeedle(
+  needle: string | null | undefined,
+): needle is HistoryMetricExitNeedle {
+  return (
+    needle === 'metric_win' || needle === 'metric_loss' || needle === 'metric'
+  );
+}
 
 export type HistoryExitFilterOption = {
   /** Bound as `exit_reason contains` (ILIKE). */
@@ -81,6 +104,9 @@ export function historyExitFilterToneClass(
   value: string | null | undefined,
 ): string {
   if (!value) return 'text-text-dim';
+  if (value === 'metric_win') return 'text-green';
+  if (value === 'metric_loss') return 'text-red';
+  if (value === 'metric') return 'text-info';
   const opt = HISTORY_EXIT_FILTER_OPTIONS.find((o) => o.value === value);
   if (opt?.kind === 'metric') return 'text-info';
   switch (value) {
@@ -98,12 +124,25 @@ export function historyExitFilterToneClass(
   }
 }
 
-/** Mirror of the server `exit_reason contains` (case-insensitive substring). */
+/**
+ * Mirror of the server `exit_reason contains` (case-insensitive substring),
+ * plus the synthetic Metric± cohort needles (need `pnlSol` for win/loss).
+ */
 export function exitReasonMatchesFilter(
   exitReason: string | null | undefined,
   needle: string | null | undefined,
+  pnlSol?: number | null,
 ): boolean {
   if (!needle) return true;
+  if (needle === 'metric_win') {
+    return isMetricExitReason(exitReason) && (pnlSol ?? 0) > 0;
+  }
+  if (needle === 'metric_loss') {
+    return isMetricExitReason(exitReason) && (pnlSol ?? 0) <= 0;
+  }
+  if (needle === 'metric') {
+    return isMetricExitReason(exitReason);
+  }
   return (exitReason ?? '').toLowerCase().includes(needle.toLowerCase());
 }
 
@@ -121,11 +160,13 @@ export function seriesStatusAllowsCloses(
 export type CohortClosePoint = {
   exit_time: string;
   exit_reason?: string | null;
+  /** Required for synthetic Metric± needles; ignored for contains needles. */
+  pnl_sol?: number;
 };
 
 /**
  * Client trim so the charts deck matches the History table cohort: custom
- * window + status + exit-reason contains.
+ * window + status + exit-reason contains (or Metric± synthetic needles).
  */
 export function filterClosesForCohort<T extends CohortClosePoint>(
   closes: readonly T[],
@@ -143,6 +184,6 @@ export function filterClosesForCohort<T extends CohortClosePoint>(
   return closes.filter((c) => {
     const t = Date.parse(c.exit_time);
     if (!(t >= from && t < to)) return false;
-    return exitReasonMatchesFilter(c.exit_reason, needle);
+    return exitReasonMatchesFilter(c.exit_reason, needle, c.pnl_sol);
   });
 }

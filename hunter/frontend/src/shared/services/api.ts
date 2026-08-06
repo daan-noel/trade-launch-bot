@@ -239,19 +239,27 @@ export function fetchEngineSimSummary(
   );
 }
 
-/** POST hold + wall-clock bins for the Temporal summary band. */
+/**
+ * POST hold + wall-clock bins for the Temporal summary band.
+ *
+ * `timeZone` is not cosmetic: the wall bins are civil-time buckets, and the
+ * server floors them in this zone so they line up with the Timing calendar +
+ * heatmap the client folds locally. Omit it and the server buckets in UTC.
+ */
 export function fetchEngineSimTimeSummary(
   runId: string,
   body: TableRequestBody,
   wallField: 'entry_time' | 'created_at' = 'entry_time',
   wallGrain: import('lib/strategy/temporalSummary').WallGrainChoice = 'auto',
   holdScheme: import('lib/strategy/temporalSummary').HoldSchemeChoice = 'auto',
+  timeZone = 'UTC',
   signal?: AbortSignal,
 ): Promise<import('types').TemporalSummaryPayload> {
   const q = new URLSearchParams({
     wall_field: wallField,
     wall_grain: wallGrain,
     hold_scheme: holdScheme,
+    tz: timeZone,
   });
   return request(
     `${API_BASE}/api/strategies/simulate/${encodeURIComponent(runId)}/result/time-summary?${q}`,

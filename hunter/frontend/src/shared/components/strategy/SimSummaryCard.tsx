@@ -28,6 +28,11 @@ interface SimSummaryCardProps {
  * emitting `0` would assert a measurement that was never taken. Everything else
  * is derivable — `win_rate` is a 0-100 percent here and 0..1 in the shared shape.
  */
+/** Map live/paper `PositionsSummary` onto the shared `RunSummary` wire. */
+export function toRunSummaryFromPositions(s: PositionsSummary): RunSummary {
+  return toRunSummary(s);
+}
+
 function toRunSummary(s: PositionsSummary): RunSummary {
   const closed = s.closed;
   // Older live binaries may omit `exits`; treat as zeros so the card still

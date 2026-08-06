@@ -524,9 +524,49 @@ fn pick_wall_grain(span_ms: i64) -> WallGrain {
     }
 }
 
-fn floor_to_grain(ms: i64, grain: WallGrain) -> i64 {
+/// Parse an IANA zone name, falling back to UTC on anything unknown.
+/// A bad `tz` must never 500 a chart request — it degrades to the old behavior.
+pub fn parse_tz(name: &str) -> chrono_tz::Tz {
+    name.parse::<chrono_tz::Tz>().unwrap_or(chrono_tz::UTC)
+}
+
+/// Floor an instant to its wall-clock bucket **in `tz`** — twin of FE
+/// `floorToWallGrain`.
+///
+/// Epoch-aligned flooring (`ms.rem_euclid(step)`) buckets in UTC, which
+/// disagrees with the calendar + dow×hour heatmap on the same page: those
+/// resolve civil dates in the user's zone, so a UTC-floored `day` bar starts at
+/// 19:00 the previous local day for a UTC-5 user. Half-hour zones and the 2h/4h
+/// grains straddle local boundaries the same way.
+///
+/// The local wall-clock is floored, then mapped back to an instant. A DST gap
+/// (that wall-clock never happens) or fold (it happens twice) is resolved to the
+/// **earliest** valid instant, so buckets stay monotonic and half-open.
+fn floor_to_grain_in_zone(ms: i64, grain: WallGrain, tz: chrono_tz::Tz) -> i64 {
+    use chrono::{Offset, TimeZone};
     let step = grain.step_ms();
-    ms - ms.rem_euclid(step)
+    let Some(utc) = chrono::Utc.timestamp_millis_opt(ms).single() else {
+        return ms - ms.rem_euclid(step);
+    };
+    let local = utc.with_timezone(&tz);
+    let off_ms = local.offset().fix().local_minus_utc() as i64 * 1_000;
+    let floored_local = (ms + off_ms) - (ms + off_ms).rem_euclid(step);
+    let out = floored_local - off_ms;
+    // Re-resolve: crossing the boundary may have changed the offset (DST).
+    let Some(after) = chrono::Utc.timestamp_millis_opt(out).single() else {
+        return out;
+    };
+    let off_after = after
+        .with_timezone(&tz)
+        .offset()
+        .fix()
+        .local_minus_utc() as i64
+        * 1_000;
+    if off_after == off_ms {
+        out
+    } else {
+        floored_local - off_after
+    }
 }
 
 fn dominant_exit(exits: &serde_json::Map<String, Value>) -> Option<&'static str> {
@@ -562,6 +602,7 @@ pub fn time_summary(
     wall_field: WallTimeField,
     grain_override: Option<&str>,
     hold_scheme_override: Option<&str>,
+    tz: chrono_tz::Tz,
 ) -> Value {
     let closed_secs: Vec<i64> = rows
         .iter()
@@ -657,16 +698,31 @@ pub fn time_summary(
         let auto = pick_wall_grain(span);
         let grain = forced.unwrap_or(auto);
         let step = grain.step_ms();
-        let start0 = floor_to_grain(min_t, grain);
-        let end0 = floor_to_grain(max_t, grain) + step;
         let mut cells: std::collections::BTreeMap<
             i64,
             (i64, f64, serde_json::Map<String, Value>, i64, Vec<String>),
         > = std::collections::BTreeMap::new();
+        // Civil buckets are NOT uniformly `step` apart (a DST day is 23h or 25h),
+        // so seed the real row keys — boundaries by construction — and let the
+        // walk only fill the empty gaps. A `t += step` grid would drift off the
+        // boundaries `floor_to_grain_in_zone` produces and silently drop rows.
+        for t in &times {
+            cells
+                .entry(floor_to_grain_in_zone(*t, grain, tz))
+                .or_insert_with(|| (0, 0.0, empty_exits(), 0, Vec::new()));
+        }
+        let start0 = floor_to_grain_in_zone(min_t, grain, tz);
+        let last = floor_to_grain_in_zone(max_t, grain, tz);
         let mut t = start0;
-        while t < end0 {
-            cells.insert(t, (0, 0.0, empty_exits(), 0, Vec::new()));
-            t += step;
+        while t < last {
+            let snapped = floor_to_grain_in_zone(t + step, grain, tz);
+            // Forced monotonic so a repeated local hour can't spin the walk.
+            t = if snapped > t { snapped } else { t + step };
+            if t <= last {
+                cells
+                    .entry(t)
+                    .or_insert_with(|| (0, 0.0, empty_exits(), 0, Vec::new()));
+            }
         }
         for row in rows {
             let mint = row
@@ -686,7 +742,7 @@ pub fn time_summary(
             else {
                 continue;
             };
-            let key = floor_to_grain(ts, grain);
+            let key = floor_to_grain_in_zone(ts, grain, tz);
             if let Some(cell) = cells.get_mut(&key) {
                 cell.0 += 1;
                 cell.1 += pnl;
@@ -699,9 +755,14 @@ pub fn time_summary(
                 }
             }
         }
+        let ordered: Vec<i64> = cells.keys().copied().collect();
         let wall: Vec<Value> = cells
             .into_iter()
-            .map(|(key, (n, pnl, exits, wins, mints))| {
+            .enumerate()
+            .map(|(i, (key, (n, pnl, exits, wins, mints)))| {
+                // End at the next boundary so cells stay contiguous across a DST
+                // step — the FE click→filter tests this exact `[start, end)`.
+                let end = ordered.get(i + 1).copied().unwrap_or(key + step);
                 let closed = n - exits.get("open").and_then(Value::as_i64).unwrap_or(0);
                 let win_rate = if closed > 0 {
                     wins as f64 / closed as f64
@@ -721,7 +782,7 @@ pub fn time_summary(
                         .map(|d| d.to_rfc3339())
                         .unwrap_or_default(),
                     "end": chrono::Utc
-                        .timestamp_millis_opt(key + step)
+                        .timestamp_millis_opt(end)
                         .single()
                         .map(|d| d.to_rfc3339())
                         .unwrap_or_default(),
@@ -950,7 +1011,7 @@ mod tests {
                 "pnl_sol":0.1,"entry_time":"2026-07-15T15:00:00Z"
             }),
         ];
-        let body = time_summary(&rows, WallTimeField::EntryTime, None, None);
+        let body = time_summary(&rows, WallTimeField::EntryTime, None, None, chrono_tz::UTC);
         assert_eq!(body["nFired"], 3);
         // Closed holds 10s + 20s → p90=20 → dense_60s
         assert_eq!(body["holdScheme"], "dense_60s");
@@ -974,11 +1035,89 @@ mod tests {
             .sum();
         assert_eq!(wall_n, 3);
 
-        let forced = time_summary(&rows, WallTimeField::EntryTime, Some("1h"), Some("dense_15s"));
+        let forced = time_summary(
+            &rows,
+            WallTimeField::EntryTime,
+            Some("1h"),
+            Some("dense_15s"),
+            chrono_tz::UTC,
+        );
         assert_eq!(forced["wallGrain"], "1h");
         assert_eq!(forced["wallGrainAuto"], "30m");
         assert_eq!(forced["holdScheme"], "dense_15s");
         assert_eq!(forced["holdSchemeAuto"], "dense_60s");
+    }
+
+    /// Wall buckets are CIVIL buckets. These vectors are duplicated verbatim in
+    /// the FE twin (`temporalSummary.test.ts` → "floors wall buckets in the app
+    /// timezone"); the two folds must agree cell-for-cell or the Wall clock card
+    /// and the Timing calendar next to it silently disagree about which day a
+    /// position belongs to.
+    #[test]
+    fn wall_buckets_floor_in_the_requested_zone() {
+        let ny: chrono_tz::Tz = "America/New_York".parse().unwrap();
+        let kolkata: chrono_tz::Tz = "Asia/Kolkata".parse().unwrap();
+        let at = |s: &str| parse_rfc3339_ms(s).unwrap();
+
+        // Late-evening UTC instant is still the PREVIOUS civil day in New York.
+        assert_eq!(
+            floor_to_grain_in_zone(at("2026-01-15T02:30:00Z"), WallGrain::Day, ny),
+            at("2026-01-14T05:00:00Z")
+        );
+        // 4h grain aligns to LOCAL 00/04/08/…, not to the UTC epoch.
+        assert_eq!(
+            floor_to_grain_in_zone(at("2026-07-15T14:37:00Z"), WallGrain::H4, ny),
+            at("2026-07-15T12:00:00Z")
+        );
+        // Half-hour zone: an epoch-aligned floor is wrong at EVERY grain here.
+        assert_eq!(
+            floor_to_grain_in_zone(at("2026-07-15T14:20:00Z"), WallGrain::H1, kolkata),
+            at("2026-07-15T13:30:00Z")
+        );
+        // DST fall-back day: the instant is EST (-5) but local midnight that day
+        // was still EDT (-4) — the second pass is what gets this right.
+        assert_eq!(
+            floor_to_grain_in_zone(at("2026-11-01T12:00:00Z"), WallGrain::Day, ny),
+            at("2026-11-01T04:00:00Z")
+        );
+        // UTC degrades to plain epoch alignment (the pre-fix behavior).
+        let t = at("2026-07-15T14:37:00Z");
+        assert_eq!(
+            floor_to_grain_in_zone(t, WallGrain::H4, chrono_tz::UTC),
+            t - t.rem_euclid(WallGrain::H4.step_ms())
+        );
+    }
+
+    /// A DST day is 23h or 25h, so a `t += step` cell grid drifts off the real
+    /// boundaries and drops every row landing past the transition.
+    #[test]
+    fn no_row_is_dropped_across_a_dst_transition() {
+        let ny: chrono_tz::Tz = "America/New_York".parse().unwrap();
+        let stamps = [
+            "2026-10-30T18:00:00Z",
+            "2026-10-31T18:00:00Z",
+            "2026-11-01T02:00:00Z", // before the 06:00Z fall-back
+            "2026-11-01T18:00:00Z", // after it
+            "2026-11-02T18:00:00Z",
+            "2026-11-03T18:00:00Z",
+        ];
+        let rows: Vec<Value> = stamps
+            .iter()
+            .map(|ts| {
+                json!({
+                    "mint_address": "m", "exit_reason": "TakeProfit",
+                    "holding_secs": 30, "pnl_sol": 1.0, "entry_time": ts
+                })
+            })
+            .collect();
+        let body = time_summary(&rows, WallTimeField::EntryTime, Some("day"), None, ny);
+        let cells = body["wall"].as_array().unwrap();
+        let total: i64 = cells.iter().map(|c| c["n"].as_i64().unwrap_or(0)).sum();
+        assert_eq!(total, stamps.len() as i64, "every row must land in a cell");
+        // Cells are contiguous: each end is the next start.
+        for pair in cells.windows(2) {
+            assert_eq!(pair[0]["end"], pair[1]["start"]);
+        }
     }
 
     #[test]

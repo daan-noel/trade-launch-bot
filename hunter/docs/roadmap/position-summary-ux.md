@@ -1,9 +1,12 @@
 # Position summary UX upgrade
 
-> Status: **PLANNED** (not shipped). Upgrade the shared "summary above positions
-> table" on Evidence / Simulate / Sweep. **Out of scope:** Console History
-> charts deck (already has its own cohort + focus model — see
-> [`docs/plans/frontend/review-surfaces.md`](../plans/frontend/review-surfaces.md)).
+> Status: **SHIPPED** (frontend). Durable contract:
+> [`docs/plans/frontend/position-summary.md`](../plans/frontend/position-summary.md).
+> Chart series currently pages the existing positions/sim endpoints (full cohort,
+> soft-capped); a compact rule-scoped series endpoint remains optional follow-up.
+> Console History keeps its own charts deck; exit mix + Exits tiles were added
+> separately via `HistoryExitSummary` — see
+> [`docs/plans/frontend/review-surfaces.md`](../plans/frontend/review-surfaces.md).
 
 ## Goal
 
@@ -38,36 +41,22 @@ chrome.
 | 6 | Clickable filters: Open / Closed / Fired, exit reason, win vs loss, migrated. **Capital tiles are display-only** (no click filter). |
 | 7 | New charts **include open** positions (unrealized / mark PnL), not closed-only. |
 | 8 | Cohort bound = existing **run selector** (`current` / `run`+`run_seq` / `all`). No soft row cap — always fetch all within the selected scope. Users narrow with run chips when All-time is heavy. |
-| 9 | Console History unchanged. |
+| 9 | Console History keeps its own deck; exit mix/counts later via `HistoryExitSummary`. |
 
 ## Layout
 
 ```text
 [Always visible]
-  Hero KPIs          (PnL realized, PnL incl. open, Win %, Fired / open)
-  Exit mix bar       (segments clickable → focus chip)
-  Focus chips        (stacked lenses + Clear all)
-
-[Accordion — open state in shared localStorage]
-  ▾ Hold & time          (default open)
-      Hold × exit bars   (existing Temporal)
-      Wall-clock timeline (existing Temporal)
-      Hold vs PnL scatter (NEW)
-
-  ▾ Return shape         (default open)
-      PnL % distribution  (NEW)
-
-  ▾ Details              (default open)
-      Positions / Exits / Realized / MTM / Capital tiles
-      (capital tiles not clickable)
-
-  ▸ Equity path          (default collapsed)
-      Cumulative PnL + max DD (NEW; includes open as unrealized marks)
+  Hero + exit mix + focus chips
+  Details bands (no accordion)
+[Under one ▾ Charts toggle]
+  Equity path | Return shape               (xl: 2-col)
+  Hold mix | Wall clock                    (xl: 2-col)
+  Timing: Daily PnL | When it trades       (xl: 1/3 + 2/3, one card)
+  Hold vs PnL                              (full width)
 ```
 
-Hero + exit mix stay outside the accordion so the money read never requires a
-click. Temporal controls (grain, hold scheme, wall field, metric toggles) stay
-inside Hold & time.
+See [`docs/plans/frontend/position-summary.md`](../plans/frontend/position-summary.md).
 
 ## Cohort model
 
@@ -127,13 +116,14 @@ register as focus chip(s) so summary recomputes and the state is visible/clearab
 | --- | --- | --- |
 | Hero KPIs | Keep always on | Money-first |
 | Exit mix bar | Keep always on; clickable | Glance; tiles in Details for counts |
-| Hold × exit bars | Keep (Hold & time) | Primary for hold research |
-| Wall-clock timeline | Keep (Hold & time) | Primary for when |
+| Hold × exit bars | Keep (Hold mix card) | Primary for hold research |
+| Wall-clock timeline | Keep (Wall clock card) | Primary for when |
 | Hold vs PnL scatter | **Add** | Money × hold per position; include open |
 | PnL % distribution | **Add** | Return shape; include open (unrealized %) |
 | Equity / cum PnL | **Add**, default collapsed | Path + max DD; include open marks |
 | Detail bands | Keep in Details accordion | Full research detail; clickable where listed |
-| Console calendar / heatmap | Do **not** add here | Book-review charts; stay on Console |
+| Dow×hour heatmap | **Add** | Same as Console “When it trades” |
+| Console day calendar | **Added** (reversed 2026-08-06) | Pairs with the heatmap in one Timing card, as on Console — “which dates” is a run question too |
 
 ## Accordion persistence
 
@@ -202,7 +192,8 @@ persistence helper.
 
 ## Non-goals
 
-- Changing Console History / Portfolio / Home digest.
+- Replacing Console History's charts deck / `hfocus` with this shell (History got a
+  separate exit-mix strip instead).
 - Soft-capping All-time series.
 - Making capital / avg-entry tiles into filters.
 - Writing focus lenses into the DataTable filter row.
@@ -218,7 +209,7 @@ persistence helper.
   all restores the table-filter-only cohort.
 - Open positions appear in distribution / scatter / equity with unrealized PnL.
 - Capital tiles never add a focus chip.
-- Console History behavior unchanged.
+- Console History keeps its own deck/`hfocus` (exit mix is a separate strip).
 
 ## File map (expected touch points)
 

@@ -21,8 +21,13 @@ interface AccordionProps {
   /** Header + content spacing. Default 'default' (matches legacy look). */
   padding?: 'default' | 'sm' | 'none';
   /** Persist the open/closed state under this localStorage key (survives reloads).
-   *  Falls back to `defaultOpen` when unset or unreadable. */
+   *  Falls back to `defaultOpen` when unset or unreadable. Ignored when `open`
+   *  is controlled. */
   storageKey?: string;
+  /** Controlled open state — pair with `onOpenChange`. When set, `storageKey`
+   *  is ignored (caller owns persistence). */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
 function readStoredOpen(key: string | undefined, fallback: boolean): boolean {
@@ -79,20 +84,30 @@ export function Accordion({
   bordered = true,
   padding = 'default',
   storageKey,
+  open: openControlled,
+  onOpenChange,
 }: AccordionProps) {
-  const [open, setOpen] = useState(() => readStoredOpen(storageKey, defaultOpen));
-  const toggle = () =>
-    setOpen((o) => {
-      const next = !o;
-      if (storageKey) {
-        try {
-          localStorage.setItem(storageKey, next ? '1' : '0');
-        } catch {
-          /* ignore */
-        }
+  const controlled = openControlled !== undefined;
+  const [openUncontrolled, setOpenUncontrolled] = useState(() =>
+    readStoredOpen(storageKey, defaultOpen),
+  );
+  const open = controlled ? openControlled : openUncontrolled;
+  const toggle = () => {
+    const next = !open;
+    if (controlled) {
+      onOpenChange?.(next);
+      return;
+    }
+    setOpenUncontrolled(next);
+    if (storageKey) {
+      try {
+        localStorage.setItem(storageKey, next ? '1' : '0');
+      } catch {
+        /* ignore */
       }
-      return next;
-    });
+    }
+    onOpenChange?.(next);
+  };
   const pad = PAD[padding];
 
   return (

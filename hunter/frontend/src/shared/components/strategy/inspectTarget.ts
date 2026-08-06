@@ -186,6 +186,14 @@ export function episodeRowKey(r: { mint_address: string; entry_time?: string | n
   return r.entry_time ? `${r.mint_address}::${r.entry_time}` : r.mint_address;
 }
 
+/** Inverse of {@link episodeRowKey} — used when a Simulate/Sweep `pos` focus
+ *  must become structured `mint_address` (+ optional `entry_time`) filters. */
+export function parseEpisodeRowKey(key: string): { mint_address: string; entry_time: string | null } {
+  const sep = key.indexOf('::');
+  if (sep < 0) return { mint_address: key, entry_time: null };
+  return { mint_address: key.slice(0, sep), entry_time: key.slice(sep + 2) || null };
+}
+
 /** Map a live/paper position row to an inspect target. */
 export function inspectFromPosition(r: RulePositionRecord): InspectTarget {
   return {

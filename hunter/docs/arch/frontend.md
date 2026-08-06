@@ -58,10 +58,11 @@ MTM / stale-age cue; row select opens the detail modal).
 
 The three lanes above History are the **cockpit** (live, SSE-driven, only what is still
 actionable); **History is the review surface** — one URL-backed cohort (date range · rule ·
-mode · status · exit reason) driving a charts deck **and** a server-paged table over the whole
-`strategy_positions` population, so both always describe the same rows. It replaced the old
-50-row "Recent closed" lane, and it owns closed rows outright (there is no session-local
-closes buffer any more — see "Live Status SSOT" below). Detail: [review-surfaces.md](../plans/frontend/review-surfaces.md).
+mode · status · exit reason) driving an exit-mix strip, a charts deck, **and** a
+server-paged table over the whole `strategy_positions` population, so both always describe
+the same rows. It replaced the old 50-row "Recent closed" lane, and it owns closed rows
+outright (there is no session-local closes buffer any more — see "Live Status SSOT" below).
+Detail: [review-surfaces.md](../plans/frontend/review-surfaces.md).
 
 Portfolio = the **rule scoreboard** (ranked realized-PnL bars over every rule, per-rule
 sparkline + rolling-window decay marker, History deep-links); Rules =
@@ -439,11 +440,15 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   via `useServerTable` +
   `fetchRulePositionsPage` / `fetchRulePositionsSummary`): `POST …/rules/{id}/positions[?scope=current|run|all|history]`
   (+ `run_seq` when `scope=run`) and `…/summary`; run chips from `GET …/strategy-rules/{id}/runs`;
-  `SimSummaryCard` + page-cohort `TemporalSummary` (click → mint `in` filter). Embedded under Rules
-  Control when a row is selected (`key={ruleId}` remount). Default Evidence scope follows Control
-  (`current` / `all`); no auto-flip to History. Activate/Pause/Stop live on Control Execute **and**
-  the Evidence header. Open inventory manage is **Ops** (Live Status SSOT), not this table. See
-  [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
+  shared **`PositionSummarySection`** (hero + exit mix + focus chips + a `▾ Charts` collapse over
+  the chart cards: Equity | Return / Hold mix | Wall clock / Timing (daily calendar + dow×hour
+  heatmap) / Hold vs PnL — see [position-summary.md](../plans/frontend/position-summary.md)).
+  Full-cohort chart series is paged client-side from the same positions endpoint (not the table page);
+  focus lenses stack on top of column filters without writing into the DataTable filter row.
+  Embedded under Rules Control when a row is selected (`key={ruleId}` remount). Default Evidence
+  scope follows Control (`current` / `all`); no auto-flip to History. Activate/Pause/Stop live on
+  Control Execute **and** the Evidence header. Open inventory manage is **Ops** (Live Status SSOT),
+  not this table. See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   The panel itself is app-agnostic; each app injects its own wiring via props:
   - **live** (`@live/pages/strategies/RulesPage` → `LiveRuleEvidence`) passes `liveUpdates` (SSE on
     the same `rule_id` triggers `reload()`) + `liveOpenCount` from `selectOpenByRule`. The selector
@@ -464,18 +469,17 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   backtest's rows from the lab disk cache (`$SWEEP_LAKE_DIR/sim-results/`, hydrated into a
   one-rule RAM working set), with a matching `POST /simulate/result/summary` aggregate
   (`toSummaryBody`) for its card; unfiltered column hydrate uses meta only
-  (`POST /simulate/summaries`). `reload()` refetches on the `simulation_finished` SSE. Below the scalar summary, a **Temporal**
-  band (`TemporalSummary` + `lib/strategy/temporalSummary`) shows an entry/create wall-clock **volume
-  timeline** (bar height = count; grain `auto|30m|1h|2h|4h|day`, volume color by default) plus
-  hold-duration × exit stacked bars (bucket scheme `auto` from closed-hold p90, or manual
-  `dense_15s`…`wide_day`), insight chips (`peak volume` / `best PnL` / `worst PnL` / `span` /
-  `timed`), and a **selection inspector** when a bin or cell is active. **Linked brush:**
-  selecting a wall candle rebins hold over that mint set (and vice versa); the driving chart
-  stays on the base cohort with a faint ghost of the full distribution under the linked bars.
-  Simulate bins via `POST …/result/time-summary?wall_field=&wall_grain=&hold_scheme=` (base =
-  table filters; linked = mint-filtered refetch with base grain/scheme locked); sweep combo
-  drill-in folds client-side from `ComboTokenResult` rows. Clicking also filters the positions
-  table by mint set. Default wall field is **created at**.
+  (`POST /simulate/summaries`). `reload()` refetches on the `simulation_finished` SSE. Simulate
+  and Sweep combo drill-in mount the same **`PositionSummarySection`** as Evidence (Hold mix +
+  Wall clock as deck ChartCards; PnL% distribution / hold scatter / equity / timing calendar +
+  heatmap as sibling cards; stacked focus chips). Simulate bins via
+  `POST …/result/time-summary?wall_field=&wall_grain=&hold_scheme=&tz=` (`tz` = the app
+  timezone: the wall bins are CIVIL buckets and must floor in the same zone the calendar +
+  heatmap do — absent ⇒ UTC) (base = table filters; linked =
+  mint-filtered refetch with base grain/scheme locked) and pages a full-cohort chart series for
+  distribution/scatter/equity; sweep folds client-side from `ComboTokenResult` rows. Focus lenses
+  (including Temporal mint sets) narrow summary + charts + table together. Default wall field is
+  **created at**.
 - **Token enrichment is server-side, not client-merged — for EVERY token table.** Every token-result
   table (Matched, Positions current/history, lab paper positions, Simulated, Sweep drill-in, **and, since
   Phase 4, Wallet Holdings**) receives the full `TOKEN_ENRICH_FIELDS` set **in the response body** — the

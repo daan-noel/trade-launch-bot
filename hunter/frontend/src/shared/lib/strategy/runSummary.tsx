@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { cn } from 'lib/cn';
 import { pctGradeClass, signedToneClass, winRateGradeClass } from 'lib/signedTone';
 import { isMetricExitReason, normalizeExitReasonFilter } from 'lib/strategy/exitReason';
@@ -459,19 +460,48 @@ function bandStats(m: RunMetrics, extended = false): SummaryStat[] {
  * the `0`. The 2px gaps are surface-colored separators, not padding: they keep
  * adjacent fills from reading as one blended block.
  */
-function ExitMixBar({ slices }: { slices: ExitSlice[] }) {
+function ExitMixBar({
+  slices,
+  activeReason,
+  onSelect,
+}: {
+  slices: ExitSlice[];
+  activeReason?: string | null;
+  onSelect?: (label: string) => void;
+}) {
   const shown = slices.filter((s) => s.n > 0);
   if (shown.length === 0) return null;
   return (
     <div className="flex h-1.5 w-full max-w-lg gap-0.5" role="img" aria-label="Exit reason mix">
-      {shown.map((s) => (
-        <div
-          key={s.label}
-          className={cn('h-full rounded-xs', s.bar)}
-          style={{ flexGrow: s.n, flexBasis: 0 }}
-          title={`${s.full}: ${s.n} (${pctOf(s.share)})`}
-        />
-      ))}
+      {shown.map((s) => {
+        const active = activeReason === s.label;
+        const title = `${s.full}: ${s.n} (${pctOf(s.share)})${onSelect ? ' — click to focus' : ''}`;
+        if (!onSelect) {
+          return (
+            <div
+              key={s.label}
+              className={cn('h-full rounded-xs', s.bar)}
+              style={{ flexGrow: s.n, flexBasis: 0 }}
+              title={title}
+            />
+          );
+        }
+        return (
+          <button
+            key={s.label}
+            type="button"
+            onClick={() => onSelect(s.label)}
+            title={title}
+            className={cn(
+              'h-full rounded-xs border-0 p-0',
+              s.bar,
+              'cursor-pointer transition hover:opacity-90',
+              active && 'ring-1 ring-white/70',
+            )}
+            style={{ flexGrow: s.n, flexBasis: 0 }}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -488,6 +518,20 @@ function ExitMixBar({ slices }: { slices: ExitSlice[] }) {
  * the signal**. The MTM band is omitted when nothing is open (it would repeat the
  * realized band tile-for-tile).
  */
+/** Optional click wiring for focus chips — capital / hold / score tiles stay inert. */
+export interface RunSummaryInteraction {
+  /** Currently active status lens, if any. */
+  status?: 'open' | 'closed' | 'fired' | null;
+  /** Active exit tile label (`Take profit`, `Metric+`, …). */
+  exitLabel?: string | null;
+  outcome?: 'win' | 'loss' | null;
+  migrated?: boolean | null;
+  onToggleStatus?: (status: 'open' | 'closed' | 'fired') => void;
+  onToggleExit?: (tileLabel: string) => void;
+  onToggleOutcome?: (outcome: 'win' | 'loss') => void;
+  onToggleMigrated?: (migrated: boolean) => void;
+}
+
 export function runSummarySections(
   s: RunSummary,
   extras: {
@@ -513,12 +557,18 @@ export function runSummarySections(
      *  and median-hold + score to Positions. Only for server-computed summaries
      *  (the dry-run) — the client-side row builder can't fill these faithfully. */
     extended?: boolean;
+    /** Wire Open / Closed / Fired / exit / win-loss / migrated tiles into focus. */
+    interaction?: RunSummaryInteraction;
   } = {},
 ): {
   hero: SummaryStat[];
+  /** Always-visible exit mix (when closed > 0) — pulled out of Details accordion. */
+  exitMix?: ReactNode;
+  /** Detail bands for the Details accordion (Positions / Exits tiles / Realized / MTM). */
   sections: SummarySection[];
 } {
   const extended = extras.extended ?? false;
+  const ix = extras.interaction;
   const { realized, mtm } = s;
   const nFired = realized.n_fired;
   const nOpen = realized.n_open;
@@ -533,19 +583,36 @@ export function runSummarySections(
       label: 'Win % (real.)',
       value: nClosed === 0 ? '—' : pctOf(realized.win_rate),
       cls: nClosed === 0 ? undefined : winRateGradeClass(realized.win_rate),
+      ...(ix?.onToggleOutcome
+        ? {
+            onClick: () => ix.onToggleOutcome!('win'),
+            active: ix.outcome === 'win',
+          }
+        : {}),
     },
     {
       label: 'Fired',
       node: (
         <>
           <span className="text-info">{nFired}</span>
-          {nOpen > 0 && <span className={cn('ml-2 text-base font-bold', tone)}>{nOpen} open</span>}
+          {nOpen > 0 && (
+            <span className={cn('ml-2 text-base font-bold', tone)}>{nOpen} open</span>
+          )}
         </>
       ),
+      ...(ix?.onToggleStatus
+        ? { onClick: () => ix.onToggleStatus!('fired'), active: ix.status === 'fired' }
+        : {}),
     },
   ];
 
   const slices = exitBreakdown(realized);
+
+  const clickable = (
+    stat: SummaryStat,
+    onClick?: () => void,
+    active?: boolean,
+  ): SummaryStat => (onClick ? { ...stat, onClick, active } : stat);
 
   const sections: SummarySection[] = [
     {
@@ -569,9 +636,21 @@ export function runSummarySections(
               } satisfies SummaryStat,
             ]
           : []),
-        { label: 'Fired', value: String(nFired), cls: 'text-info' },
-        { label: 'Closed', value: String(nClosed), cls: 'text-info' },
-        { label: 'Open', value: String(nOpen), cls: nOpen > 0 ? tone : 'text-text-dim' },
+        clickable(
+          { label: 'Fired', value: String(nFired), cls: 'text-info' },
+          ix?.onToggleStatus ? () => ix.onToggleStatus!('fired') : undefined,
+          ix?.status === 'fired',
+        ),
+        clickable(
+          { label: 'Closed', value: String(nClosed), cls: 'text-info' },
+          ix?.onToggleStatus ? () => ix.onToggleStatus!('closed') : undefined,
+          ix?.status === 'closed',
+        ),
+        clickable(
+          { label: 'Open', value: String(nOpen), cls: nOpen > 0 ? tone : 'text-text-dim' },
+          ix?.onToggleStatus ? () => ix.onToggleStatus!('open') : undefined,
+          ix?.status === 'open',
+        ),
         {
           label: 'Open share',
           value: nFired ? pctOf(openShare) : '—',
@@ -582,21 +661,25 @@ export function runSummarySections(
         // "this surface doesn't measure it".
         ...(extras.migrated != null
           ? [
-              {
-                label: 'Migrated',
-                node: (
-                  <span className="inline-flex items-baseline gap-1.5">
-                    <span className={extras.migrated > 0 ? 'text-primary' : 'text-text-dim'}>
-                      {extras.migrated}
-                    </span>
-                    {nFired > 0 && (
-                      <span className="text-[10px] font-normal text-text-dim">
-                        {pctOf(extras.migrated / nFired)}
+              clickable(
+                {
+                  label: 'Migrated',
+                  node: (
+                    <span className="inline-flex items-baseline gap-1.5">
+                      <span className={extras.migrated > 0 ? 'text-primary' : 'text-text-dim'}>
+                        {extras.migrated}
                       </span>
-                    )}
-                  </span>
-                ),
-              } satisfies SummaryStat,
+                      {nFired > 0 && (
+                        <span className="text-[10px] font-normal text-text-dim">
+                          {pctOf(extras.migrated / nFired)}
+                        </span>
+                      )}
+                    </span>
+                  ),
+                },
+                ix?.onToggleMigrated ? () => ix.onToggleMigrated!(true) : undefined,
+                ix?.migrated === true,
+              ),
             ]
           : []),
         { label: 'Avg hold', value: fmtSecs(realized.avg_holding_secs), cls: 'text-accent' },
@@ -618,22 +701,37 @@ export function runSummarySections(
         nClosed > 0
           ? `How the ${nClosed} closed position${nClosed === 1 ? '' : 's'} left`
           : 'Nothing has closed yet',
-      stats: slices.map((s) => ({
-        label: s.label,
-        node: (
-          <span className="inline-flex items-baseline gap-1.5">
-            <span
-              className={cn('inline-block size-2 shrink-0 self-center rounded-sm', s.bar)}
-              aria-hidden
-            />
-            <span className={s.n > 0 ? s.cls : 'text-text-dim'}>{s.n}</span>
-            {nClosed > 0 && (
-              <span className="text-[10px] font-normal text-text-dim">{pctOf(s.share)}</span>
-            )}
-          </span>
+      stats: slices.map((s) =>
+        clickable(
+          {
+            label: s.label,
+            node: (
+              <span className="inline-flex items-baseline gap-1.5">
+                <span
+                  className={cn('inline-block size-2 shrink-0 self-center rounded-sm', s.bar)}
+                  aria-hidden
+                />
+                <span className={s.n > 0 ? s.cls : 'text-text-dim'}>{s.n}</span>
+                {nClosed > 0 && (
+                  <span className="text-[10px] font-normal text-text-dim">{pctOf(s.share)}</span>
+                )}
+              </span>
+            ),
+          },
+          ix?.onToggleExit && s.n > 0 ? () => ix.onToggleExit!(s.label) : undefined,
+          ix?.exitLabel === s.label,
         ),
-      })),
-      lead: nClosed > 0 ? <ExitMixBar slices={slices} /> : undefined,
+      ),
+      // Mix bar is also rendered always-visible via `exitMix`; keep lead here for
+      // callers that still render the full Exits section without the shell.
+      lead:
+        nClosed > 0 ? (
+          <ExitMixBar
+            slices={slices}
+            activeReason={ix?.exitLabel}
+            onSelect={ix?.onToggleExit}
+          />
+        ) : undefined,
     },
     {
       title: 'Realized',
@@ -642,7 +740,15 @@ export function runSummarySections(
           ? `Closed positions only (${nClosed} of ${nFired}) — the ${nOpen} open are excluded`
           : `All ${nClosed} positions closed`,
       titleCls: 'text-green',
-      stats: bandStats(realized, extended),
+      stats: bandStats(realized, extended).map((stat) => {
+        if (stat.label === 'Win %' && ix?.onToggleOutcome) {
+          return clickable(stat, () => ix.onToggleOutcome!('win'), ix.outcome === 'win');
+        }
+        if (stat.label === 'Worst %' && ix?.onToggleOutcome) {
+          return clickable(stat, () => ix.onToggleOutcome!('loss'), ix.outcome === 'loss');
+        }
+        return stat;
+      }),
     },
   ];
 
@@ -662,5 +768,10 @@ export function runSummarySections(
     });
   }
 
-  return { hero, sections };
+  const exitMix =
+    nClosed > 0 ? (
+      <ExitMixBar slices={slices} activeReason={ix?.exitLabel} onSelect={ix?.onToggleExit} />
+    ) : undefined;
+
+  return { hero, exitMix, sections };
 }

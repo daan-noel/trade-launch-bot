@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
-import { DataTable } from 'components/table/DataTable';
+import { DataTable, type ColVisibilityOverrides } from 'components/table/DataTable';
 import type { ColumnDef, SortDir, TableQuery } from 'components/table/types';
 import type { FilterSpec } from 'components/table/numericFilter';
 import { appendedTokenColumns } from './sharedTokenColumns';
@@ -144,6 +144,10 @@ interface TokenTableCommon<R> {
   hoverable?: boolean;
   loading?: boolean;
   tableId?: string;
+  /** Per-table initial show/hide deviations from the shared column defaults —
+   *  covers this table's own columns AND the appended token-info set. Forwarded
+   *  verbatim to {@link DataTable}. */
+  defaultCols?: ColVisibilityOverrides;
   emptyMessage?: string;
   defaultPageSize?: number;
   pageSizeOptions?: number[];

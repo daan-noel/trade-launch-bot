@@ -28,6 +28,7 @@ import {
 } from '@lab/components/sweep/FingerprintGroupPicker';
 import { SOL_BUCKET_WIDTH, BUCKETED_GROUP_FIELDS } from '@lab/components/sweep/groupedTypes';
 import { formatWithCommas } from 'utils/format';
+import { ixLabelsCountTail } from 'lib/ixLabels';
 import { cn } from 'lib/cn';
 import { CreationHeatmap } from 'components/creation-stats/CreationHeatmap';
 import { DOW_ROWS } from 'components/creation-stats/creationStats';
@@ -846,8 +847,11 @@ function GroupKeyInline({
           {i > 0 && <span className="text-text-dim"> · </span>}
           <span className="text-text-dim">{GROUP_FIELD_LABELS[k as GroupField] ?? k}=</span>
           {k === 'ix_labels' ? (
-            <span className="font-mono">
-              {v === MISSING_VALUE ? '∅' : `${groupValueParts(k, v).length} ix`}
+            // Tail, not a bare count — this legend line is how two groups in
+            // the same chart are told apart, and same-length sequences are the
+            // common case (a buy-variant swap).
+            <span className="font-mono" title={v === MISSING_VALUE ? undefined : v}>
+              {v === MISSING_VALUE ? '∅' : ixLabelsCountTail(groupValueParts(k, v))}
             </span>
           ) : (
             <span className="font-mono">{v}</span>

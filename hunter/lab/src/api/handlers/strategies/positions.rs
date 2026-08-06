@@ -117,7 +117,11 @@ pub fn sim_result_summaries(state: &LocalState, rule_ids: &[Uuid]) -> HttpRespon
 /// wall-clock bins over the filtered sim cohort (same filter grammar as
 /// [`sim_result_summary`]). Query: `wall_field` = `entry_time`|`created_at`,
 /// `wall_grain` = `auto`|`30m`|`1h`|`2h`|`4h`|`day`,
-/// `hold_scheme` = `auto`|`dense_15s`|`dense_60s`|`mid_5m`|`mid_30m`|`wide_2h`|`wide_day`.
+/// `hold_scheme` = `auto`|`dense_15s`|`dense_60s`|`mid_5m`|`mid_30m`|`wide_2h`|`wide_day`,
+/// `tz` = IANA zone the wall buckets are CIVIL buckets of (unknown / absent →
+/// UTC). The zone matters: these bars sit next to a calendar + dow×hour heatmap
+/// the frontend folds in the user's zone, and a UTC-floored day bucket cannot
+/// agree with a local-day calendar square.
 pub fn sim_result_time_summary(
     state: &LocalState,
     rule_id: Uuid,
@@ -125,6 +129,7 @@ pub fn sim_result_time_summary(
     wall_field: &str,
     wall_grain: Option<&str>,
     hold_scheme: Option<&str>,
+    tz: Option<&str>,
 ) -> HttpResponse {
     let rows = match peek_sim_rows(state, rule_id) {
         Ok(rows) => rows,
@@ -132,7 +137,8 @@ pub fn sim_result_time_summary(
     };
     let filtered = crate::strategies::sim_query::filter_rows(&rows, &req);
     let field = crate::strategies::sim_query::WallTimeField::parse(wall_field);
+    let zone = crate::strategies::sim_query::parse_tz(tz.unwrap_or("UTC"));
     let body =
-        crate::strategies::sim_query::time_summary(&filtered, field, wall_grain, hold_scheme);
+        crate::strategies::sim_query::time_summary(&filtered, field, wall_grain, hold_scheme, zone);
     HttpResponse::Ok().json(body)
 }

@@ -15,17 +15,27 @@
  *   rule:<uuid>
  *   pos:<uuid>            one close from the Hold-vs-PnL scatter
  *   band:<holdLo>:<holdHi>:<pctLo>:<pctHi>   drag-zoom on Hold vs PnL
+ *   exit:metric_win|metric_loss|metric       Metric+/Metric-/Metric tile
+ *                         (system exits use `hexit` instead — filter bar sync)
  */
 
 import {
   DOW_ROWS,
   dowHourInTz,
   isPnlDistBucket,
+  matchesPctFocus,
+  pctFocusFilter,
   shiftDayKey,
 } from 'components/analytics/pnlSeries';
+import { isMetricExitReason } from 'lib/strategy/exitReason';
 import { datetimeLocalToUtcWallClock } from 'utils/date';
 import { formatDurationShort } from 'utils/format';
-import type { FilterSpec } from 'components/table/numericFilter';
+
+/** Re-export — History table + tests; SSOT lives next to the bucket edges. */
+export { matchesPctFocus, pctFocusFilter };
+
+/** Exit tiles that cannot ride `hexit` (win/loss split of metric exits). */
+export type HistoryExitFocusTile = 'Metric+' | 'Metric-' | 'Metric';
 
 export type HistoryFocus =
   | { kind: 'day'; day: string }
@@ -34,7 +44,8 @@ export type HistoryFocus =
   | { kind: 'pct'; lo: number; hi: number }
   | { kind: 'rule'; ruleId: string }
   | { kind: 'pos'; positionId: string }
-  | { kind: 'holdBand'; holdLo: number; holdHi: number; pctLo: number; pctHi: number };
+  | { kind: 'holdBand'; holdLo: number; holdHi: number; pctLo: number; pctHi: number }
+  | { kind: 'exit'; tile: HistoryExitFocusTile };
 
 const DAY_RE = /^day:(\d{4}-\d{2}-\d{2})$/;
 const WEEK_RE = /^week:(\d{4}-\d{2}-\d{2})$/;
@@ -44,6 +55,19 @@ const RULE_RE = /^rule:([0-9a-fA-F-]{36})$/;
 const POS_RE = /^pos:([0-9a-fA-F-]{36})$/;
 const BAND_RE =
   /^band:(-?\d+(?:\.\d+)?):(-?\d+(?:\.\d+)?):(-?\d+(?:\.\d+)?):(-?\d+(?:\.\d+)?)$/;
+const EXIT_RE = /^exit:(metric_win|metric_loss|metric)$/;
+
+const EXIT_TILE_BY_WIRE: Record<string, HistoryExitFocusTile> = {
+  metric_win: 'Metric+',
+  metric_loss: 'Metric-',
+  metric: 'Metric',
+};
+
+const EXIT_WIRE_BY_TILE: Record<HistoryExitFocusTile, string> = {
+  'Metric+': 'metric_win',
+  'Metric-': 'metric_loss',
+  Metric: 'metric',
+};
 
 function roundBand(n: number): number {
   // Stable URL + enough precision for brush zoom.
@@ -93,6 +117,12 @@ export function parseHistoryFocus(raw: string | null | undefined): HistoryFocus 
     if (!(holdLo < holdHi) || !(pctLo < pctHi)) return null;
     return { kind: 'holdBand', holdLo, holdHi, pctLo, pctHi };
   }
+  m = EXIT_RE.exec(raw);
+  if (m) {
+    const tile = EXIT_TILE_BY_WIRE[m[1]!];
+    if (!tile) return null;
+    return { kind: 'exit', tile };
+  }
   return null;
 }
 
@@ -113,6 +143,8 @@ export function serializeHistoryFocus(focus: HistoryFocus | null | undefined): s
       return `pos:${focus.positionId}`;
     case 'holdBand':
       return `band:${roundBand(focus.holdLo)}:${roundBand(focus.holdHi)}:${roundBand(focus.pctLo)}:${roundBand(focus.pctHi)}`;
+    case 'exit':
+      return `exit:${EXIT_WIRE_BY_TILE[focus.tile]}`;
   }
 }
 
@@ -150,6 +182,8 @@ export function historyFocusLabel(
       return `close ${focus.positionId.slice(0, 8)}…`;
     case 'holdBand':
       return `${formatDurationShort(focus.holdLo)}–${formatDurationShort(focus.holdHi)} · ${focus.pctLo.toFixed(0)}…${focus.pctHi.toFixed(0)}%`;
+    case 'exit':
+      return focus.tile;
   }
 }
 
@@ -208,14 +242,6 @@ export function intersectUtcWindow(
   };
 }
 
-/** Server `pnl_pct` filter for a distribution bucket (half-open ≈ via between/lt/gte). */
-export function pctFocusFilter(lo: number, hi: number): FilterSpec {
-  if (lo === -Infinity) return { op: 'lt', val: hi };
-  if (hi === Infinity) return { op: 'gte', val: lo };
-  // BETWEEN is inclusive; nudge the top so the next bucket's edge isn't double-counted.
-  return { op: 'between', min: lo, max: hi - 1e-6 };
-}
-
 /** True when `exitIso` lands in the focused heat cell (user TZ). */
 export function matchesHeatFocus(
   exitIso: string | null | undefined,
@@ -260,18 +286,6 @@ export function matchesHoldBandSecs(
   );
 }
 
-/** Matches `pctFocusFilter` (half-open on the closed top edge). */
-export function matchesPctFocus(
-  pnlPct: number | null | undefined,
-  lo: number,
-  hi: number,
-): boolean {
-  if (pnlPct == null || !Number.isFinite(pnlPct)) return false;
-  if (lo === -Infinity) return pnlPct < hi;
-  if (hi === Infinity) return pnlPct >= lo;
-  return pnlPct >= lo && pnlPct < hi;
-}
-
 /** Minimal close shape for client-side focus filtering (B2 series + table rows). */
 export interface FocusableClose {
   id: string;
@@ -280,6 +294,20 @@ export interface FocusableClose {
   entry_sol: number;
   pnl_sol: number;
   hold_secs: number | null;
+  /** Required for `exit:` (Metric+/−) lenses; optional so older callers still typecheck. */
+  exit_reason?: string | null;
+}
+
+/** True when a close matches an exit-tile focus (Metric+/Metric-/Metric). */
+export function matchesExitFocus(
+  exitReason: string | null | undefined,
+  pnlSol: number | null | undefined,
+  focus: Extract<HistoryFocus, { kind: 'exit' }>,
+): boolean {
+  if (!isMetricExitReason(exitReason)) return false;
+  if (focus.tile === 'Metric') return true;
+  const pnl = pnlSol ?? 0;
+  return focus.tile === 'Metric+' ? pnl > 0 : pnl <= 0;
 }
 
 /**
@@ -328,5 +356,7 @@ export function filterClosesForFocus<T extends FocusableClose>(
           focus,
         ),
       );
+    case 'exit':
+      return closes.filter((c) => matchesExitFocus(c.exit_reason, c.pnl_sol, focus));
   }
 }

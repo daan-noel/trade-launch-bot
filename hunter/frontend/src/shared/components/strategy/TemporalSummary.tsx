@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { cn } from 'lib/cn';
 import { formatDecimalTrim } from 'utils/format';
 import {
@@ -38,6 +38,8 @@ import {
 } from 'lib/strategy/temporalSummary';
 import { signedToneClass, winRateGradeClass } from 'lib/signedTone';
 import { solText } from 'lib/strategy/runSummary';
+import { InfoTooltip } from 'components/ui/InfoTooltip';
+import { useTimezone } from 'context/TimezoneContext';
 
 export type TemporalSelection =
   | { kind: 'hold'; binId: string; mints: string[] }
@@ -46,7 +48,7 @@ export type TemporalSelection =
 
 type WallColorMode = 'volume' | 'pnl';
 
-interface TemporalSummaryProps {
+export interface TemporalSummaryProps {
   /** Pre-built base cohort (sim server path), or omit and pass `rows` for client fold. */
   data?: TemporalSummaryData | null;
   /**
@@ -76,13 +78,17 @@ interface TemporalSummaryProps {
    */
   holdScheme?: HoldSchemeChoice;
   onHoldSchemeChange?: (s: HoldSchemeChoice) => void;
+  /**
+   * `band` — legacy "Temporal pattern" chrome (DryRunDetail).
+   * `deck` — Console-style chart cards (PositionSummarySection).
+   */
+  variant?: 'band' | 'deck';
   className?: string;
 }
 
 /**
- * Temporal band under the scalar run summary — hold-duration stacked bars +
- * entry/create wall-clock volume timeline (auto or manual 30m…day grain).
- * Click a bin/cell to filter the positions table; click again / Clear to reset.
+ * Hold-duration stacked bars + entry/create wall-clock volume timeline.
+ * Click a bin/cell to focus; click again / Clear to reset.
  */
 export function TemporalSummary({
   data: dataProp,
@@ -96,8 +102,12 @@ export function TemporalSummary({
   onWallGrainChange,
   holdScheme: holdSchemeProp,
   onHoldSchemeChange,
+  variant = 'band',
   className,
 }: TemporalSummaryProps) {
+  // The app zone, not the browser's: wall buckets and their labels must land in
+  // the same civil day as the Timing calendar / heatmap on the same page.
+  const { timezone } = useTimezone();
   const [metric, setMetric] = useState<TemporalMetric>('exit_mix');
   const [wallColor, setWallColor] = useState<WallColorMode>('volume');
   const [localField, setLocalField] = useState<WallTimeField>('created_at');
@@ -132,9 +142,9 @@ export function TemporalSummary({
         wallSpanMs: dataProp.wallSpanMs ?? 0,
       } satisfies TemporalSummaryData;
     }
-    if (rows) return buildTemporalSummary(rows, wallField, grainChoice, holdChoice);
+    if (rows) return buildTemporalSummary(rows, timezone, wallField, grainChoice, holdChoice);
     return null;
-  }, [dataProp, rows, wallField, grainChoice, holdChoice]);
+  }, [dataProp, rows, timezone, wallField, grainChoice, holdChoice]);
 
   // Linked brush: selection on one chart rebins the other over the same mint set.
   const linked = useMemo(() => {
@@ -147,7 +157,7 @@ export function TemporalSummary({
       }
       return {
         hold: null as HoldBinStats[] | null,
-        wall: rebucketWall(base.wall, wallField, base.wallGrain, filtered),
+        wall: rebucketWall(base.wall, wallField, base.wallGrain, filtered, timezone),
       };
     }
     if (linkedData) {
@@ -157,9 +167,33 @@ export function TemporalSummary({
       return { hold: null, wall: alignWallCells(base.wall, linkedData.wall) };
     }
     return null;
-  }, [base, selection, rows, linkedData, wallField]);
+  }, [base, selection, rows, linkedData, wallField, timezone]);
 
-  if (!base || base.nFired === 0) return null;
+  if (!base || base.nFired === 0) {
+    if (variant !== 'deck') return null;
+    return (
+      <div className={cn('mb-5 grid grid-cols-1 gap-3 xl:grid-cols-2', className)}>
+        <DeckChartCard
+          title="Hold mix"
+          tip={{
+            title: 'Hold duration',
+            body: 'Hold-duration × exit mix. Click a bin to focus that mint set.',
+          }}
+        >
+          <p className="text-xs text-text-dim">No temporal cohort yet.</p>
+        </DeckChartCard>
+        <DeckChartCard
+          title="Wall clock"
+          tip={{
+            title: 'Wall-clock timeline',
+            body: 'Entry/create volume over time. Click a cell to focus that mint set.',
+          }}
+        >
+          <p className="text-xs text-text-dim">No temporal cohort yet.</p>
+        </DeckChartCard>
+      </div>
+    );
+  }
 
   const displayHold = linked?.hold ?? base.hold;
   const displayWall = linked?.wall ?? base.wall;
@@ -178,7 +212,7 @@ export function TemporalSummary({
   const worstPnl = worstPnlWallCell(base.wall);
   const wallTotal = base.wall.reduce((s, c) => s + c.n, 0);
   const autoGrain = base.wallGrainAuto ?? base.wallGrain;
-  const selectedSlice = resolveSelection(base, selection);
+  const selectedSlice = resolveSelection(base, selection, timezone);
   const wallLinkHint = (() => {
     if (selection?.kind !== 'hold') return null;
     const bin = base.hold.find((b) => b.id === selection.binId);
@@ -187,7 +221,7 @@ export function TemporalSummary({
   const holdLinkHint = (() => {
     if (selection?.kind !== 'wall') return null;
     const cell = base.wall.find((c) => c.id === selection.cellId);
-    return cell ? `in ${formatWallTick(cell.start, base.wallGrain)}` : null;
+    return cell ? `in ${formatWallTick(cell.start, base.wallGrain, timezone)}` : null;
   })();
 
   const selectWall = (cell: WallCellStats) => {
@@ -198,6 +232,79 @@ export function TemporalSummary({
         : { kind: 'wall', cellId: cell.id, mints: cell.mints },
     );
   };
+
+  const holdChart = (
+    <HoldBars
+      bins={displayHold}
+      ghostBins={ghostHold}
+      linkHint={holdLinkHint}
+      holdScheme={base.holdScheme}
+      holdSchemeAuto={base.holdSchemeAuto}
+      holdChoice={holdChoice}
+      onHoldChoiceChange={setHoldChoice}
+      maxN={maxHoldN}
+      maxAbsPnl={maxAbsPnl}
+      metric={metric}
+      onMetricChange={setMetric}
+      selection={selection}
+      onSelect={onSelect}
+      hideTitle={variant === 'deck'}
+    />
+  );
+
+  const wallChart = (
+    <WallTimeline
+      cells={displayWall}
+      ghostCells={ghostWall}
+      linkHint={wallLinkHint}
+      grain={base.wallGrain}
+      autoGrain={autoGrain}
+      grainChoice={grainChoice}
+      onGrainChange={setGrainChoice}
+      field={wallField}
+      onFieldChange={setWallField}
+      maxN={maxWallN}
+      maxAbsPnl={maxAbsPnl}
+      colorMode={wallColor}
+      onColorModeChange={setWallColor}
+      peakId={peak?.id ?? null}
+      bestId={bestPnl?.id ?? null}
+      worstId={worstPnl?.id ?? null}
+      selection={selection}
+      onSelect={onSelect}
+      hideTitle={variant === 'deck'}
+      flat={variant === 'deck'}
+    />
+  );
+
+  if (variant === 'deck') {
+    return (
+      <div className={cn('mb-5 grid grid-cols-1 gap-3 xl:grid-cols-2', className)}>
+        <DeckChartCard
+          title="Wall clock"
+          tip={{
+            title: 'Wall-clock timeline',
+            body:
+              'Entry or create-time volume (auto or manual grain).\n\n' +
+              'Click a cell to focus that mint set — hold mix and the table follow. Click again to clear.',
+          }}
+        >
+          {wallChart}
+        </DeckChartCard>
+        <DeckChartCard
+          title="Hold mix"
+          tip={{
+            title: 'Hold duration',
+            body:
+              'Hold-duration × exit mix (or hold PnL).\n\n' +
+              'Click a bin to focus that mint set — wall clock and the table follow. Click again to clear.',
+          }}
+        >
+          {holdChart}
+        </DeckChartCard>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -232,7 +339,7 @@ export function TemporalSummary({
           {peak && (
             <InsightChip
               label="Peak volume"
-              value={`${formatWallTick(peak.start, base.wallGrain)} · n=${peak.n}`}
+              value={`${formatWallTick(peak.start, base.wallGrain, timezone)} · n=${peak.n}`}
               tone="info"
               active={selection?.kind === 'wall' && selection.cellId === peak.id}
               onClick={onSelect ? () => selectWall(peak) : undefined}
@@ -241,7 +348,7 @@ export function TemporalSummary({
           {bestPnl && (
             <InsightChip
               label="Best PnL"
-              value={`${formatWallTick(bestPnl.start, base.wallGrain)} · ${pnlText(bestPnl.pnl_sol)}`}
+              value={`${formatWallTick(bestPnl.start, base.wallGrain, timezone)} · ${pnlText(bestPnl.pnl_sol)}`}
               tone="good"
               active={selection?.kind === 'wall' && selection.cellId === bestPnl.id}
               onClick={onSelect ? () => selectWall(bestPnl) : undefined}
@@ -250,7 +357,7 @@ export function TemporalSummary({
           {worstPnl && worstPnl.id !== bestPnl?.id && (
             <InsightChip
               label="Worst PnL"
-              value={`${formatWallTick(worstPnl.start, base.wallGrain)} · ${pnlText(worstPnl.pnl_sol)}`}
+              value={`${formatWallTick(worstPnl.start, base.wallGrain, timezone)} · ${pnlText(worstPnl.pnl_sol)}`}
               tone="bad"
               active={selection?.kind === 'wall' && selection.cellId === worstPnl.id}
               onClick={onSelect ? () => selectWall(worstPnl) : undefined}
@@ -273,44 +380,33 @@ export function TemporalSummary({
 
       <div className="rounded-lg border border-white/12 bg-black/30 px-3 py-3 sm:px-4 sm:py-4">
         <div className="flex flex-col gap-7">
-          <WallTimeline
-            cells={displayWall}
-            ghostCells={ghostWall}
-            linkHint={wallLinkHint}
-            grain={base.wallGrain}
-            autoGrain={autoGrain}
-            grainChoice={grainChoice}
-            onGrainChange={setGrainChoice}
-            field={wallField}
-            onFieldChange={setWallField}
-            maxN={maxWallN}
-            maxAbsPnl={maxAbsPnl}
-            colorMode={wallColor}
-            onColorModeChange={setWallColor}
-            peakId={peak?.id ?? null}
-            bestId={bestPnl?.id ?? null}
-            worstId={worstPnl?.id ?? null}
-            selection={selection}
-            onSelect={onSelect}
-          />
-
-          <HoldBars
-            bins={displayHold}
-            ghostBins={ghostHold}
-            linkHint={holdLinkHint}
-            holdScheme={base.holdScheme}
-            holdSchemeAuto={base.holdSchemeAuto}
-            holdChoice={holdChoice}
-            onHoldChoiceChange={setHoldChoice}
-            maxN={maxHoldN}
-            maxAbsPnl={maxAbsPnl}
-            metric={metric}
-            onMetricChange={setMetric}
-            selection={selection}
-            onSelect={onSelect}
-          />
+          {wallChart}
+          {holdChart}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Console History-style chart card (matches PositionSummarySection / HistoryChartsDeck). */
+function DeckChartCard({
+  title,
+  tip,
+  children,
+}: {
+  title: string;
+  tip?: { title: string; body: string };
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-2 rounded-lg border border-white/6 bg-bg-panel p-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <h3 className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-text-dim">
+          {title}
+          {tip && <InfoTooltip title={tip.title} body={tip.body} />}
+        </h3>
+      </div>
+      {children}
     </div>
   );
 }
@@ -329,6 +425,7 @@ type SliceView = {
 function resolveSelection(
   data: TemporalSummaryData,
   selection: TemporalSelection,
+  timeZone: string,
 ): SliceView | null {
   if (!selection) return null;
   if (selection.kind === 'hold') {
@@ -349,7 +446,7 @@ function resolveSelection(
   if (!cell || cell.n === 0) return null;
   return {
     kind: 'wall',
-    title: formatWallTick(cell.start, data.wallGrain),
+    title: formatWallTick(cell.start, data.wallGrain, timeZone),
     subtitle: `Wall-clock · ${wallGrainLabel(data.wallGrain)}`,
     n: cell.n,
     pnl_sol: cell.pnl_sol,
@@ -577,6 +674,7 @@ function HoldBars({
   onMetricChange,
   selection,
   onSelect,
+  hideTitle = false,
 }: {
   bins: HoldBinStats[];
   ghostBins?: HoldBinStats[] | null;
@@ -591,6 +689,8 @@ function HoldBars({
   onMetricChange: (m: TemporalMetric) => void;
   selection: TemporalSelection;
   onSelect?: (sel: TemporalSelection) => void;
+  /** When the parent ChartCard already titles the panel. */
+  hideTitle?: boolean;
 }) {
   const totalPnlAbs = bins.reduce((s, b) => s + Math.abs(b.pnl_sol), 0) || 1;
   const ghostById = useMemo(() => {
@@ -611,9 +711,11 @@ function HoldBars({
   return (
     <div>
       <div className="mb-2 flex flex-wrap items-center gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-text">
-          By hold duration
-        </span>
+        {!hideTitle && (
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-text">
+            By hold duration
+          </span>
+        )}
         {linkHint && (
           <span className="rounded-md border border-primary/35 bg-primary/15 px-2 py-0.5 font-mono text-[10px] font-semibold text-primary">
             {linkHint}
@@ -773,6 +875,8 @@ function WallTimeline({
   worstId,
   selection,
   onSelect,
+  hideTitle = false,
+  flat = false,
 }: {
   cells: WallCellStats[];
   ghostCells?: WallCellStats[] | null;
@@ -792,7 +896,11 @@ function WallTimeline({
   worstId: string | null;
   selection: TemporalSelection;
   onSelect?: (sel: TemporalSelection) => void;
+  hideTitle?: boolean;
+  /** Skip nested black panel — ChartCard already provides the shell. */
+  flat?: boolean;
 }) {
+  const { timezone } = useTimezone();
   const fieldLabel = field === 'entry_time' ? 'entry' : 'created';
   const ghostById = useMemo(() => {
     if (!ghostCells) return null;
@@ -811,6 +919,7 @@ function WallTimeline({
           onGrainChange={onGrainChange}
           colorMode={colorMode}
           onColorModeChange={onColorModeChange}
+          hideTitle={hideTitle}
         />
         <p className="rounded-md border border-dashed border-white/10 px-3 py-4 text-[12px] text-text-dim">
           No timestamps on this cohort.
@@ -826,7 +935,7 @@ function WallTimeline({
   const colMinPx = grain === 'day' ? 44 : 40;
   const gridMinWidth = Math.max(cells.length * colMinPx, 320);
   const rangeSource = ghostCells ?? cells;
-  const rangeLabel = formatWallRange(rangeSource, grain);
+  const rangeLabel = formatWallRange(rangeSource, grain, timezone);
   const selectedCell =
     selection?.kind === 'wall'
       ? (ghostCells ?? cells).find((c) => c.id === selection.cellId)
@@ -850,9 +959,14 @@ function WallTimeline({
         onGrainChange={onGrainChange}
         colorMode={colorMode}
         onColorModeChange={onColorModeChange}
+        hideTitle={hideTitle}
       />
 
-      <div className="rounded-md border border-white/10 bg-black/25 px-2.5 pt-2.5 pb-2">
+      <div
+        className={
+          flat ? undefined : 'rounded-md border border-white/10 bg-black/25 px-2.5 pt-2.5 pb-2'
+        }
+      >
         <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 px-0.5">
           <div className="min-w-0">
             <div className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
@@ -870,7 +984,7 @@ function WallTimeline({
 
         {selectedCell && (
           <div className="mb-2 rounded border border-primary/30 bg-primary/10 px-2 py-1 font-mono text-[12px] font-semibold text-text">
-            Focus · {formatWallTick(selectedCell.start, grain)}
+            Focus · {formatWallTick(selectedCell.start, grain, timezone)}
             <span className="ml-2 font-normal text-text-mid">
               n={selectedCell.n} · {pnlText(selectedCell.pnl_sol)}
             </span>
@@ -889,7 +1003,7 @@ function WallTimeline({
             >
               {cells.map((c, i) => {
                 const prev = i > 0 ? cells[i - 1]!.start : null;
-                const dayBreak = grain !== 'day' && isWallDayBreak(c.start, prev);
+                const dayBreak = grain !== 'day' && isWallDayBreak(c.start, prev, timezone);
                 const active = selection?.kind === 'wall' && selection.cellId === c.id;
                 const ghost = ghostById?.get(c.id);
                 const ghostH =
@@ -911,7 +1025,7 @@ function WallTimeline({
                   !ghostById &&
                   (c.id === peakId ? '▲' : c.id === bestId ? '+' : c.id === worstId ? '−' : '');
                 const title = [
-                  formatWallTick(c.start, grain),
+                  formatWallTick(c.start, grain, timezone),
                   `n=${c.n}`,
                   ghost ? `cohort n=${ghost.n}` : null,
                   c.n > 0 ? `win ${(c.win_rate * 100).toFixed(0)}%` : null,
@@ -1007,7 +1121,7 @@ function WallTimeline({
             >
               {cells.map((c, i) => {
                 const prev = i > 0 ? cells[i - 1]!.start : null;
-                const dayBreak = grain !== 'day' && isWallDayBreak(c.start, prev);
+                const dayBreak = grain !== 'day' && isWallDayBreak(c.start, prev, timezone);
                 const show =
                   i === 0 ||
                   i === cells.length - 1 ||
@@ -1030,7 +1144,7 @@ function WallTimeline({
                       dayBreak && i > 0 && 'border-l-2 border-info/45 pl-1',
                       active && 'rounded-sm bg-primary/15',
                     )}
-                    title={formatWallTick(c.start, grain)}
+                    title={formatWallTick(c.start, grain, timezone)}
                   >
                     <span
                       className={cn(
@@ -1047,7 +1161,7 @@ function WallTimeline({
                           active ? 'text-primary' : 'text-text',
                         )}
                       >
-                        {formatWallDate(c.start)}
+                        {formatWallDate(c.start, timezone)}
                       </span>
                     ) : (
                       <>
@@ -1057,7 +1171,7 @@ function WallTimeline({
                             active ? 'text-primary' : 'text-text',
                           )}
                         >
-                          {formatWallClock(c.start, grain)}
+                          {formatWallClock(c.start, grain, timezone)}
                         </span>
                         {(dayBreak || i === 0) && (
                           <span
@@ -1066,7 +1180,7 @@ function WallTimeline({
                               active ? 'text-primary' : 'text-info',
                             )}
                           >
-                            {formatWallDate(c.start)}
+                            {formatWallDate(c.start, timezone)}
                           </span>
                         )}
                       </>
@@ -1091,6 +1205,7 @@ function WallToolbar({
   onGrainChange,
   colorMode,
   onColorModeChange,
+  hideTitle = false,
 }: {
   fieldLabel: string;
   field: WallTimeField;
@@ -1100,12 +1215,15 @@ function WallToolbar({
   onGrainChange: (g: WallGrainChoice) => void;
   colorMode: WallColorMode;
   onColorModeChange: (m: WallColorMode) => void;
+  hideTitle?: boolean;
 }) {
   return (
     <div className="mb-2 flex flex-wrap items-center gap-2">
-      <span className="text-[11px] font-semibold uppercase tracking-wider text-text">
-        By {fieldLabel} time
-      </span>
+      {!hideTitle && (
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-text">
+          By {fieldLabel} time
+        </span>
+      )}
       <ToggleGroup
         value={field}
         onChange={onFieldChange}

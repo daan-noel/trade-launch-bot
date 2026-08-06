@@ -17,6 +17,7 @@ import { useGetPortfolioClosesSeriesQuery } from '@live/store/liveEndpoints';
 import { useHistoryCohort } from '@live/pages/console/historyCohort';
 import { filterClosesForCohort } from '@live/pages/console/historyExitFilter';
 import { HistoryChartsDeck } from './HistoryChartsDeck';
+import { HistoryExitSummary } from './HistoryExitSummary';
 import { HistoryFilterBar } from './HistoryFilterBar';
 import { HistoryTable } from './HistoryTable';
 
@@ -127,6 +128,16 @@ export const ConsoleHistorySection = memo(function ConsoleHistorySection({
         entryFailed={entryFailedForCohort}
         ruleNameOf={(id) => ruleNameOf(id)}
       />
+
+      {series && (
+        <HistoryExitSummary
+          closes={closes}
+          timezone={timezone}
+          exitReason={cohort.exitReason}
+          focus={cohort.focus}
+          onCohortPatch={(patch) => cohort.set(patch)}
+        />
+      )}
 
       <HistoryChartsDeck
         closes={closes}

@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   dayKeyInTz,
   foldPnlDeck,
+  matchesPctFocus,
   monthAbbr,
+  pctFocusFilter,
   pnlDistributionBuckets,
   shiftDayKey,
   summarizeDailyPnl,
@@ -142,6 +144,28 @@ describe('pnlDistributionBuckets', () => {
     expect(byLabel['10…20%']).toBe(1);
     expect(byLabel['≥ 500%']).toBe(1);
     expect(buckets.reduce((s, b) => s + b.count, 0)).toBe(4);
+  });
+});
+
+describe('pctFocusFilter / matchesPctFocus', () => {
+  it('maps open and closed edges', () => {
+    expect(pctFocusFilter(-Infinity, -50)).toEqual({ op: 'lt', val: -50 });
+    expect(pctFocusFilter(500, Infinity)).toEqual({ op: 'gte', val: 500 });
+    const mid = pctFocusFilter(-10, 0);
+    expect(mid.op).toBe('between');
+    if (mid.op === 'between') {
+      expect(mid.min).toBe(-10);
+      expect(mid.max).toBeLessThan(0);
+    }
+  });
+
+  it('mirrors half-open client edges', () => {
+    expect(matchesPctFocus(-60, -Infinity, -50)).toBe(true);
+    expect(matchesPctFocus(-50, -Infinity, -50)).toBe(false);
+    expect(matchesPctFocus(500, 500, Infinity)).toBe(true);
+    expect(matchesPctFocus(499, 500, Infinity)).toBe(false);
+    expect(matchesPctFocus(-10, -10, 0)).toBe(true);
+    expect(matchesPctFocus(0, -10, 0)).toBe(false);
   });
 });
 

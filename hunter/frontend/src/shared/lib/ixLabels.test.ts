@@ -3,6 +3,9 @@ import {
   configuredIxLabels,
   formatIxLabelsText,
   isIxLabelJsonFilter,
+  ixLabelAction,
+  ixLabelsActions,
+  ixLabelsCountTail,
   ixLabelsMatchFilter,
   parseIxLabelFilter,
   parseIxLabelsText,
@@ -30,6 +33,34 @@ describe('formatIxLabelsText', () => {
   it('handles null/empty', () => {
     expect(formatIxLabelsText(null)).toBe('');
     expect(formatIxLabelsText([])).toBe('');
+  });
+});
+
+describe('ixLabelAction / ixLabelsActions / ixLabelsCountTail', () => {
+  const A = ['Pump.Fun: Create_v2', 'Associated Token: Create', 'Pump.Fun: Buy'];
+  const B = ['Pump.Fun: Create_v2', 'Associated Token: Create', 'Pump.Fun: BuyExactSolIn'];
+
+  it('takes the action past the LAST ": "', () => {
+    expect(ixLabelAction('Pump.Fun: Create_v2')).toBe('Create_v2');
+    expect(ixLabelAction('Vote: Program: Withdraw')).toBe('Withdraw');
+    expect(ixLabelAction('Undecorated')).toBe('Undecorated');
+  });
+
+  it('joins actions in on-chain order', () => {
+    expect(ixLabelsActions(A)).toBe('Create_v2 > Create > Buy');
+    expect(ixLabelsActions([])).toBe('');
+  });
+
+  it('separates same-length sets that a bare count conflates', () => {
+    expect(A.length).toBe(B.length); // the bug: both render `3ix`
+    expect(ixLabelsCountTail(A)).toBe('3ix:Buy');
+    expect(ixLabelsCountTail(B)).toBe('3ix:BuyExactSolIn');
+    expect(ixLabelsCountTail(A)).not.toBe(ixLabelsCountTail(B));
+  });
+
+  it('falls back to the bare count when there is no tail action', () => {
+    expect(ixLabelsCountTail([])).toBe('0ix');
+    expect(ixLabelsCountTail(['Pump.Fun: Buy', '  '])).toBe('2ix');
   });
 });
 

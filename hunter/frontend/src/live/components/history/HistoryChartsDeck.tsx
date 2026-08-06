@@ -10,8 +10,12 @@
  * Clicking a calendar day / week / heat cell / distribution bar / rule row /
  * hold point sets a URL-backed `focus` lens:
  *   • Timing charts (calendar + heatmap) stay on the parent cohort (selection ring)
- *   • Equity / distribution / hold scatter / rule comparison refold on the slice
- *   • The table below narrows to that same slice
+ *   • Equity / distribution / rule comparison refold on the slice
+ *   • Hold scatter refolds on the slice except for its own holdBand zoom (domain
+ *     keeps parent dots; empty lenses keep axes via contextPoints)
+ *   • The table below + exit-mix strip narrow to that same slice
+ * Exit-mix tiles write `hexit` (including synthetic Metric± needles) and compose
+ * with this lens — they do not replace it. See HistoryExitSummary.
  */
 
 import { Suspense, lazy, memo, useMemo, useState, type ReactNode } from 'react';
@@ -113,7 +117,7 @@ const CHART_HELP = {
       'Each closed trade as a point: how long you held (X, log scale) vs return % (Y).\n\n' +
       '• Green = winner, red = loser. Dot size = entry SOL.\n' +
       '• Cluster on the left = money from fast scalps; on the right = longer rides.\n' +
-      '• Drag a rectangle to zoom that band and focus the other charts + table on it.\n' +
+      '• Drag a rectangle to zoom that band and focus the other charts + table on it — the scatter stays mounted even if the band is empty (Reset scale / double-click clears).\n' +
       '• Click a point for one position. Double-click or Reset scale to clear the zoom.',
   },
 } as const;
@@ -228,13 +232,15 @@ export const HistoryChartsDeck = memo(function HistoryChartsDeck({
 
   // Collapsed deck skips the cohort walk — hooks still run, but the heavy fold
   // returns the stable empty sentinel until the user expands charts again.
-  // With a focus: timing stays on the parent; equity/dist/hold/rules refold.
-  const { timing, lens, holdPoints, parentCount, lensCount } = useMemo(() => {
+  // With a focus: timing stays on the parent; equity/dist/rules refold; hold
+  // scatter keeps parent dots under its own holdBand zoom.
+  const { timing, lens, holdPoints, holdContextPoints, parentCount, lensCount } = useMemo(() => {
     if (!open) {
       return {
         timing: EMPTY_PNL_DECK,
         lens: EMPTY_PNL_DECK,
         holdPoints: EMPTY_HOLD,
+        holdContextPoints: EMPTY_HOLD,
         parentCount: 0,
         lensCount: 0,
       };
@@ -251,6 +257,7 @@ export const HistoryChartsDeck = memo(function HistoryChartsDeck({
         timing: fold,
         lens: fold,
         holdPoints: parentMapped.holdPoints,
+        holdContextPoints: parentMapped.holdPoints,
         parentCount: parentMapped.points.length,
         lensCount: parentMapped.points.length,
       };
@@ -269,7 +276,10 @@ export const HistoryChartsDeck = memo(function HistoryChartsDeck({
         labelOf,
         only: LENS_PARTS,
       }),
-      holdPoints: lensMapped.holdPoints,
+      // Band zoom must not empty the scatter — domain clips; other lenses refold.
+      holdPoints:
+        focus.kind === 'holdBand' ? parentMapped.holdPoints : lensMapped.holdPoints,
+      holdContextPoints: parentMapped.holdPoints,
       parentCount: parentMapped.points.length,
       lensCount: lensMapped.points.length,
     };
@@ -361,6 +371,7 @@ export const HistoryChartsDeck = memo(function HistoryChartsDeck({
           >
             <HoldPnlScatter
               points={holdPoints}
+              contextPoints={holdContextPoints}
               height={300}
               emptyMessage={focus ? emptyLens : emptyCohort}
               selectedKey={focus?.kind === 'pos' ? focus.positionId : null}

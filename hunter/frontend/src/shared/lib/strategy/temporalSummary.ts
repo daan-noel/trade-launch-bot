@@ -9,6 +9,8 @@
  * Wall grain picker is also twin'd there (`pick_wall_grain`).
  */
 
+import { getUtcOffsetMinutes } from 'components/token-price-chart/chartTimezone';
+import { dayKeyInTz } from 'components/analytics/pnlSeries';
 import { isMetricExitReason } from './exitReason';
 import { EXIT_KINDS, type ExitCountKey } from './runSummary';
 
@@ -357,10 +359,62 @@ export function pickWallGrain(spanMs: number): WallGrain {
   return 'day';
 }
 
-export function floorToWallGrain(ms: number, grain: WallGrain): number {
+/**
+ * Floor an instant to its wall-clock bucket **in `timeZone`** — twin of Rust
+ * `floor_to_grain_in_zone`.
+ *
+ * Epoch-aligned flooring (`ms % step`) buckets in UTC, which silently disagrees
+ * with every other chart on this page: the calendar and the dow×hour heatmap
+ * resolve civil dates through `Intl` in the user's zone, so a UTC-floored `day`
+ * bar starts at 19:00 the previous local day for a UTC-5 user and its total can
+ * never match the calendar square carrying the same date. Half-hour zones
+ * (+05:30) and the 2h/4h grains straddle local boundaries the same way.
+ *
+ * DST-safe in two passes: floor the local wall-clock, map it back with the
+ * offset in effect *there*, and re-resolve if crossing the boundary changed the
+ * offset (`getUtcOffsetMinutes` reads the offset at a given instant, never a
+ * fixed value).
+ */
+export function floorToWallGrain(ms: number, grain: WallGrain, timeZone: string): number {
   const step = wallGrainStepMs(grain);
-  // UTC epoch alignment — same as Rust `floor_to_grain` (rem_euclid on millis).
-  return ms - ((((ms % step) + step) % step));
+  const offMs = getUtcOffsetMinutes(timeZone, new Date(ms)) * 60_000;
+  const local = ms + offMs;
+  const flooredLocal = local - (((local % step) + step) % step);
+  const out = flooredLocal - offMs;
+  const offAfter = getUtcOffsetMinutes(timeZone, new Date(out)) * 60_000;
+  return offAfter === offMs ? out : flooredLocal - offAfter;
+}
+
+/**
+ * Ascending bucket boundaries covering `[minT, maxT]` in `timeZone`.
+ *
+ * Civil buckets are NOT uniformly `step` apart — a DST day is 23 h or 25 h — so
+ * a `t += step` grid drifts off the boundaries `floorToWallGrain` produces, and
+ * every row landing on a drifted boundary would be silently dropped at lookup.
+ * The real row keys are therefore seeded first (they are boundaries by
+ * construction) and the walk only fills the empty gaps between them; the walk
+ * is forced monotonic so a repeated local hour can't spin.
+ */
+function wallBoundaries(
+  minT: number,
+  maxT: number,
+  grain: WallGrain,
+  timeZone: string,
+  rowKeys: Iterable<number>,
+): number[] {
+  const step = wallGrainStepMs(grain);
+  const set = new Set<number>(rowKeys);
+  let t = floorToWallGrain(minT, grain, timeZone);
+  const last = floorToWallGrain(maxT, grain, timeZone);
+  set.add(t);
+  set.add(last);
+  // Bounded: each step advances by at least `step`, so the walk is O(span/step).
+  while (t < last) {
+    const snapped = floorToWallGrain(t + step, grain, timeZone);
+    t = snapped > t ? snapped : t + step;
+    if (t <= last) set.add(t);
+  }
+  return [...set].sort((a, b) => a - b);
 }
 
 function dominantExit(exits: Record<string, number>): string | null {
@@ -385,9 +439,15 @@ function dominantExit(exits: Record<string, number>): string | null {
  * Fold fired rows into hold bins + a wall-clock volume timeline over `wallField`.
  * Not-fired (`NoEntry`) rows are skipped.
  * `grainChoice` / `holdChoice` override the adaptive pickers when not `'auto'`.
+ *
+ * `timeZone` is required and positioned early on purpose: the wall buckets are
+ * civil-time buckets, and a caller that forgets one silently re-introduces the
+ * UTC-vs-local split with the calendar (see {@link floorToWallGrain}). Pass the
+ * app zone from `useTimezone()`; `'UTC'` is only correct in tests.
  */
 export function buildTemporalSummary(
   rows: TemporalRow[],
+  timeZone: string,
   wallField: WallTimeField = 'entry_time',
   grainChoice: WallGrainChoice = 'auto',
   holdChoice: HoldSchemeChoice = 'auto',
@@ -439,14 +499,17 @@ export function buildTemporalSummary(
     wallGrainAuto = pickWallGrain(wallSpanMs);
     wallGrain = grainChoice === 'auto' ? wallGrainAuto : grainChoice;
     const step = wallGrainStepMs(wallGrain);
-    const start0 = floorToWallGrain(minT, wallGrain);
-    const end0 = floorToWallGrain(maxT, wallGrain) + step;
+    const rowKeys = times.map((t) => floorToWallGrain(t, wallGrain, timeZone));
+    const boundaries = wallBoundaries(minT, maxT, wallGrain, timeZone, rowKeys);
     const cellMap = new Map<number, WallCellStats>();
-    for (let t = start0; t < end0; t += step) {
+    boundaries.forEach((t, i) => {
+      // End at the next boundary so cells stay contiguous across a DST step —
+      // `rowMatchesWallCell` filters on this exact `[start, end)`.
+      const end = boundaries[i + 1] ?? t + step;
       cellMap.set(t, {
         id: `${wallField}:${t}`,
         start: new Date(t).toISOString(),
-        end: new Date(t + step).toISOString(),
+        end: new Date(end).toISOString(),
         n: 0,
         pnl_sol: 0,
         win_rate: 0,
@@ -454,12 +517,12 @@ export function buildTemporalSummary(
         dominant: null,
         mints: [],
       });
-    }
+    });
     const wins = new Map<number, number>();
     for (const r of fired) {
       const ts = parseTsMs(wallField === 'entry_time' ? r.entry_time : r.created_at);
       if (ts == null) continue;
-      const key = floorToWallGrain(ts, wallGrain);
+      const key = floorToWallGrain(ts, wallGrain, timeZone);
       const cell = cellMap.get(key);
       if (!cell) continue;
       cell.n += 1;
@@ -497,7 +560,9 @@ export function buildTemporalSummary(
  * Used for linked-brush: wall selection → hold distribution of that slice.
  */
 export function rebucketHold(scheme: HoldScheme, rows: TemporalRow[]): HoldBinStats[] {
-  return buildTemporalSummary(rows, 'entry_time', 'auto', scheme).hold;
+  // Hold bins are durations, not civil times — the zone can't change them, so the
+  // wall half of this fold is discarded and 'UTC' is a real answer here.
+  return buildTemporalSummary(rows, 'UTC', 'entry_time', 'auto', scheme).hold;
 }
 
 /**
@@ -509,6 +574,7 @@ export function rebucketWall(
   wallField: WallTimeField,
   grain: WallGrain,
   rows: TemporalRow[],
+  timeZone: string,
 ): WallCellStats[] {
   const cells = baseWall.map((c) => ({
     ...c,
@@ -525,7 +591,7 @@ export function rebucketWall(
     if (!r.fired) continue;
     const ts = parseTsMs(wallField === 'entry_time' ? r.entry_time : r.created_at);
     if (ts == null) continue;
-    const key = floorToWallGrain(ts, grain);
+    const key = floorToWallGrain(ts, grain, timeZone);
     const id = `${wallField}:${key}`;
     const cell = byId.get(id);
     if (!cell) continue;
@@ -719,12 +785,20 @@ export function parseWallGrainChoice(s: string | null | undefined): WallGrainCho
   return 'auto';
 }
 
-export function formatWallTick(iso: string, grain: WallGrain): string {
+/*
+ * Every label below takes the **app** timezone (`useTimezone()`), not the
+ * browser's. The zone is user-selectable and server-persisted, so a bare
+ * `toLocaleString()` renders the axis in a different zone than the calendar +
+ * heatmap grid in — the dates themselves then disagree on the same page.
+ */
+
+export function formatWallTick(iso: string, grain: WallGrain, timeZone: string): string {
   const d = new Date(iso);
   if (grain === 'day') {
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    return d.toLocaleDateString(undefined, { timeZone, month: 'short', day: 'numeric' });
   }
   return d.toLocaleString(undefined, {
+    timeZone,
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
@@ -734,12 +808,13 @@ export function formatWallTick(iso: string, grain: WallGrain): string {
 }
 
 /** Compact clock for the chart axis (`14:30` / `14:00`). */
-export function formatWallClock(iso: string, grain: WallGrain): string {
+export function formatWallClock(iso: string, grain: WallGrain, timeZone: string): string {
   const d = new Date(iso);
   if (grain === 'day') {
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    return d.toLocaleDateString(undefined, { timeZone, month: 'short', day: 'numeric' });
   }
   return d.toLocaleTimeString(undefined, {
+    timeZone,
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
@@ -747,28 +822,30 @@ export function formatWallClock(iso: string, grain: WallGrain): string {
 }
 
 /** Short date for axis day-breaks (`Jul 15`). */
-export function formatWallDate(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+export function formatWallDate(iso: string, timeZone: string): string {
+  return new Date(iso).toLocaleDateString(undefined, {
+    timeZone,
+    month: 'short',
+    day: 'numeric',
+  });
 }
 
 /** Full range caption above the wall chart. */
-export function formatWallRange(cells: WallCellStats[], grain: WallGrain): string | null {
+export function formatWallRange(
+  cells: WallCellStats[],
+  grain: WallGrain,
+  timeZone: string,
+): string | null {
   const timed = cells.filter((c) => c.n > 0);
   if (timed.length === 0) return null;
   const first = timed[0]!;
   const last = timed[timed.length - 1]!;
-  if (first.id === last.id) return formatWallTick(first.start, grain);
-  return `${formatWallTick(first.start, grain)}  →  ${formatWallTick(last.start, grain)}`;
+  if (first.id === last.id) return formatWallTick(first.start, grain, timeZone);
+  return `${formatWallTick(first.start, grain, timeZone)}  →  ${formatWallTick(last.start, grain, timeZone)}`;
 }
 
-/** Whether `iso` falls on a different local calendar day than `prevIso`. */
-export function isWallDayBreak(iso: string, prevIso: string | null): boolean {
+/** Whether `iso` falls on a different calendar day than `prevIso` in `timeZone`. */
+export function isWallDayBreak(iso: string, prevIso: string | null, timeZone: string): boolean {
   if (prevIso == null) return true;
-  const a = new Date(iso);
-  const b = new Date(prevIso);
-  return (
-    a.getFullYear() !== b.getFullYear() ||
-    a.getMonth() !== b.getMonth() ||
-    a.getDate() !== b.getDate()
-  );
+  return dayKeyInTz(Date.parse(iso), timeZone) !== dayKeyInTz(Date.parse(prevIso), timeZone);
 }

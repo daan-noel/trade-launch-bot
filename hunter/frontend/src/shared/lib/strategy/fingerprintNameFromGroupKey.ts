@@ -1,10 +1,17 @@
 // Compact auto-name for a fingerprint created/bound from a group_key (C3).
 // Name is a label only — match identity lives on the axes. Skip unset/`∅`,
-// glue short axis keys to compact values, collapse ix to `Nix`, append `bW`
-// only when bucket width ≠ default 0.1.
+// glue short axis keys to compact values, collapse ix to `Nix:Tail`, append
+// `bW` only when bucket width ≠ default 0.1.
 //
-// Example: `c · fsb19.5 · 3ix · b0.5`
+// Example: `c · fsb19.5 · 3ix:Buy · b0.5`
+//
+// The ix part carries the trailing action, not just the count: a bare `3ix`
+// named `[…, Pump.Fun: Buy]` and `[…, Pump.Fun: BuyExactSolIn]` identically,
+// so two fingerprints that arm on different tokens were indistinguishable in
+// every picker and table that shows a name. A name has no color to carry the
+// chip's ribbon, so it needs the text discriminator.
 
+import { ixLabelsCountTail } from 'lib/ixLabels';
 import { formatDecimalTrim, tidySolDecimal } from 'utils/format';
 
 /** Provenance tag — creation-stats / flow-discovery / sweep. */
@@ -58,8 +65,7 @@ export function fingerprintNameFromGroupKey(
     if (v === MISSING_VALUE) continue;
     if (k === 'is_cashback_enabled' || k === 'token_program_id') continue;
     if (k === 'ix_labels') {
-      const n = v.split(' | ').filter((s) => s.length > 0).length;
-      parts.push(`${n}ix`);
+      parts.push(ixLabelsCountTail(v.split(' | ').filter((s) => s.length > 0)));
       continue;
     }
     const short = AXIS_SHORT[k] ?? k;

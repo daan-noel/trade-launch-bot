@@ -25,6 +25,7 @@ import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
 import { patternKeysFrom } from 'lib/flow/classifyFlow';
 import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
 import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
+import { useTimezone } from 'context/TimezoneContext';
 import type { TableQuery } from 'components/table/types';
 import type {
   HoldSchemeChoice,
@@ -37,6 +38,15 @@ import { SimSummary } from './SimSummary';
 const SIM_NUMERIC_COLS = tokenNumericColKeys(simColumns);
 const SIM_AMOUNT_COLS = tokenAmountColKeys(simColumns);
 const simRowOverlay = markerRowOverlay(inspectFromSim);
+
+/**
+ * Dry-run deviation from the shared column defaults. `cu_price` is a launch-
+ * client tell next to `cu_limit`, so both sim tables surface it where the
+ * appended token-info set hides it. Unlike Simulate, a dry-run is still being
+ * tuned against an unfixed buy size, so the token's `initial_buy` stays up
+ * front (i.e. it is NOT overridden here).
+ */
+const DRYRUN_DEFAULT_COLS = { cu_price: true } as const;
 
 /**
  * Per-token detail for a finished dry-run (Tier 2): the exact `/result` +
@@ -52,6 +62,8 @@ export function DryRunDetail({
   runId: string;
   draft: RuleEditorDraft;
 }) {
+  // Wall bins are civil buckets — the server must floor them in the app zone.
+  const { timezone } = useTimezone();
   const { data: fingerprints = [] } = useGetFingerprintsQuery();
   const flowPatternKeys = useMemo(() => {
     const fp = fingerprints.find((f) => f.id === draft.fingerprint_id);
@@ -165,6 +177,7 @@ export function DryRunDetail({
       wallField,
       wallGrain,
       holdScheme,
+      timezone,
       ctrl.signal,
     )
       .then((t) => {
@@ -175,7 +188,7 @@ export function DryRunDetail({
         if (!ctrl.signal.aborted) setTimeSummary(null);
       });
     return () => ctrl.abort();
-  }, [runId, timeBody, wallField, wallGrain, holdScheme]);
+  }, [runId, timeBody, wallField, wallGrain, holdScheme, timezone]);
 
   const onSelect = useCallback(
     (key: string | null) => {
@@ -264,6 +277,7 @@ export function DryRunDetail({
             loading={loading}
             resetKey={`${runId}_${showNotFired}`}
             tableId="dryrun-positions"
+            defaultCols={DRYRUN_DEFAULT_COLS}
             emptyMessage={
               showNotFired
                 ? 'No tokens in this dry-run result.'

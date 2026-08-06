@@ -6,8 +6,11 @@ import { IconButton } from 'components/ui/IconButton';
 import { IconButtonGroup } from 'components/ui/IconButtonGroup';
 import { PauseIcon, PlayIcon, SpinnerIcon, StopIcon } from 'components/ui/icons';
 import { ModeBadge } from 'components/strategy/ModeBadge';
-import { SimSummaryCard } from 'components/strategy/SimSummaryCard';
-import { TemporalSummary, type TemporalSelection } from 'components/strategy/TemporalSummary';
+import {
+  capitalDetailSection,
+  PositionSummarySection,
+} from 'components/strategy/PositionSummarySection';
+import { toRunSummaryFromPositions } from 'components/strategy/SimSummaryCard';
 import {
   positionColumns,
   POSITION_KEYS,
@@ -21,6 +24,12 @@ import {
   fetchRulePositionsSummary,
   type PositionFetchScope,
 } from 'services/api';
+import { fetchAllTablePages } from 'lib/strategy/fetchPositionChartSeries';
+import {
+  buildFocusTableFilters,
+  type PositionFocusLens,
+} from 'lib/strategy/positionFocus';
+import type { PositionChartPoint } from 'lib/strategy/positionChartPoints';
 import { connectStrategyPositionUpdate } from 'services/sse';
 import { apiErrorMessage } from 'store/baseApi';
 import {
@@ -29,6 +38,7 @@ import {
   usePauseStrategyRuleMutation,
   useStopStrategyRuleMutation,
 } from 'store/sharedEndpoints';
+import { useTimezone } from 'context/TimezoneContext';
 import type { TableQuery } from 'components/table/types';
 import type { PositionsSummary, RulePositionRecord } from 'types';
 import type { StrategyRule, StrategyRuleRun } from 'lib/strategy/types';
@@ -38,6 +48,14 @@ import { signedToneClass } from 'lib/signedTone';
 const STRATEGY_SEG = 'generic';
 const POS_NUMERIC = numericColKeys(positionColumns);
 const posRowOverlay = markerRowOverlay(inspectFromPosition);
+
+/**
+ * Evidence-table deviation from the appended token-info defaults. The row is a
+ * closed position, so the token's `token_amount` is the size actually held —
+ * the sanity check against `entry_sol`/`exit_sol` — rather than the background
+ * fact it is on a token list, where the shared set hides it.
+ */
+const EVIDENCE_DEFAULT_COLS = { token_amount: true } as const;
 
 const TABLE_RELOAD_STATUSES = new Set([
   'Holding',
@@ -75,6 +93,36 @@ function toTemporalRow(r: RulePositionRecord): TemporalRow {
     entry_time: r.entry_time,
     created_at: r.created_at,
   };
+}
+
+function evidenceChartPoints(rows: RulePositionRecord[]): PositionChartPoint[] {
+  const out: PositionChartPoint[] = [];
+  for (const r of rows) {
+    if (r.entry_price == null) continue;
+    const open = !r.exit_time && r.status !== 'End' && r.status !== 'EntryFailed';
+    // Open rows often lack realized pnl on the wire — still plot when %/SOL exist.
+    const pnlSol = r.pnl_sol;
+    const pnlPct = r.pnl_percent;
+    if (!open && (pnlSol == null || !Number.isFinite(pnlSol))) continue;
+    const timeIso = open ? r.entry_time ?? r.created_at : r.exit_time ?? r.entry_time;
+    const timeMs = timeIso ? Date.parse(timeIso) : NaN;
+    if (!Number.isFinite(timeMs)) continue;
+    const hold = holdingSecs(r);
+    out.push({
+      key: r.id,
+      label: r.symbol || r.mint_address.slice(0, 8),
+      mint_address: r.mint_address,
+      timeMs,
+      pnlSol: pnlSol ?? 0,
+      pnlPct: pnlPct ?? null,
+      holdSeconds: hold > 0 ? hold : open ? 1 : null,
+      entrySol: r.entry_sol ?? 0.1,
+      isOpen: open,
+      exit_reason: open ? null : r.exit_reason,
+      is_migrated: r.is_migrated ?? null,
+    });
+  }
+  return out;
 }
 
 function toFetchScope(s: EvidenceScope): PositionFetchScope {
@@ -163,11 +211,14 @@ export function RuleAnalyzePanel({
   renderInspect,
 }: RuleAnalyzePanelProps) {
   const price = usePriceDisplay();
+  const { timezone } = useTimezone();
   const [scope, setScope] = useState<EvidenceScope>(() =>
     initialScopeKind === 'all' ? { kind: 'all' } : { kind: 'current' },
   );
   const [query, setQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
-  const [temporalSel, setTemporalSel] = useState<TemporalSelection>(null);
+  const [focus, setFocus] = useState<PositionFocusLens[]>([]);
+  const [chartPoints, setChartPoints] = useState<PositionChartPoint[]>([]);
+  const [temporalBaseRows, setTemporalBaseRows] = useState<TemporalRow[]>([]);
   const [opErr, setOpErr] = useState<string | null>(null);
   const [pausing, setPausing] = useState(false);
   const [inspectId, setInspectId] = useState<string | null>(null);
@@ -192,29 +243,34 @@ export function RuleAnalyzePanel({
     [runs],
   );
 
+  const focusFilters = useMemo(
+    () => buildFocusTableFilters(focus, chartPoints, timezone, 'positionId'),
+    [focus, chartPoints, timezone],
+  );
+
   const body = useMemo(() => {
     const base = toTableRequest(query, POS_NUMERIC);
-    if (!temporalSel?.mints.length) return base;
+    if (Object.keys(focusFilters).length === 0) return base;
     return {
       ...base,
       filters: {
         ...base.filters,
-        mint_address: { op: 'in' as const, val: temporalSel.mints },
+        ...focusFilters,
       },
     };
-  }, [query, temporalSel]);
+  }, [query, focusFilters]);
 
   const summaryBody = useMemo(() => {
     const base = toSummaryBody(query, POS_NUMERIC);
-    if (!temporalSel?.mints.length) return base;
+    if (Object.keys(focusFilters).length === 0) return base;
     return {
       ...base,
       filters: {
         ...base.filters,
-        mint_address: { op: 'in' as const, val: temporalSel.mints },
+        ...focusFilters,
       },
     };
-  }, [query, temporalSel]);
+  }, [query, focusFilters]);
 
   const fetchScope = useMemo(() => toFetchScope(scope), [scope]);
 
@@ -235,25 +291,61 @@ export function RuleAnalyzePanel({
   >(!!ruleId, body, fetchPage, fetchSummary, summaryBody, `${ruleId}:${scopeKey(scope)}`);
 
   useEffect(() => {
-    setTemporalSel(null);
+    setFocus([]);
     setScope(initialScopeKind === 'all' ? { kind: 'all' } : { kind: 'current' });
     setQuery(DEFAULT_POSITIONS_QUERY);
     setOpErr(null);
     setPausing(false);
     setInspectId(null);
+    setChartPoints([]);
+    setTemporalBaseRows([]);
   }, [ruleId, initialScopeKind]);
 
+  const [seriesTick, setSeriesTick] = useState(0);
   useEffect(() => {
     if (!ruleId || !liveUpdates) return;
     const h = connectStrategyPositionUpdate((d) => {
       if (d.rule_id !== ruleId) return;
       if (!TABLE_RELOAD_STATUSES.has(d.status)) return;
       reload();
+      setSeriesTick((t) => t + 1);
     });
     return () => h.close();
   }, [ruleId, reload, liveUpdates]);
 
-  const temporalRows = useMemo(() => items.map(toTemporalRow), [items]);
+  // Full-cohort series for charts + Temporal (table filters only; focus applied in shell / request).
+  const tableFilterKey = JSON.stringify({
+    s: query.search,
+    c: query.colFilters,
+    f: query.structuredFilters,
+  });
+  useEffect(() => {
+    setFocus([]);
+  }, [tableFilterKey, scope]);
+
+  useEffect(() => {
+    if (!ruleId) return;
+    const ctrl = new AbortController();
+    const seriesBody = toSummaryBody(query, POS_NUMERIC);
+    void fetchAllTablePages(
+      (b, signal) => fetchRulePositionsPage(STRATEGY_SEG, ruleId, b, fetchScope, signal),
+      seriesBody,
+      ctrl.signal,
+    )
+      .then((rows) => {
+        if (ctrl.signal.aborted) return;
+        setTemporalBaseRows(rows.map(toTemporalRow));
+        setChartPoints(evidenceChartPoints(rows));
+      })
+      .catch((e) => {
+        if (e instanceof DOMException && e.name === 'AbortError') return;
+        if (!ctrl.signal.aborted) {
+          setTemporalBaseRows([]);
+          setChartPoints([]);
+        }
+      });
+    return () => ctrl.abort();
+  }, [ruleId, fetchScope, tableFilterKey, seriesTick]);
 
   // Selected position for the injected inspect modal. Resolved off the current page
   // rather than held as a row, so a reload/refilter can't strand a stale copy.
@@ -312,8 +404,35 @@ export function RuleAnalyzePanel({
   const selectScope = (next: EvidenceScope) => {
     setScope(next);
     setQuery((q) => ({ ...q, page: 1 }));
-    setTemporalSel(null);
+    setFocus([]);
   };
+
+  const runSummary = useMemo(
+    () => (summary ? toRunSummaryFromPositions(summary) : null),
+    [summary],
+  );
+
+  const capitalSection = useMemo(() => {
+    if (!summary) return [];
+    const avgEntry = summary.tokens > 0 ? summary.total_entry_sol / summary.tokens : null;
+    return [
+      capitalDetailSection([
+        { label: `Total Entry (${price.unitLabel})`, value: price.displayAmount(summary.total_entry_sol) },
+        { label: `Total Holding (${price.unitLabel})`, value: price.displayAmount(summary.total_holding_sol) },
+        { label: 'Avg Entry', value: avgEntry != null ? price.displayAmount(avgEntry) : '—' },
+        {
+          label: `Total Gains (${price.unitLabel})`,
+          value: price.displayAmount(summary.total_gains_sol),
+          cls: 'text-green',
+        },
+        {
+          label: `Total Losses (${price.unitLabel})`,
+          value: price.displayAmount(summary.total_losses_sol),
+          cls: 'text-red',
+        },
+      ]),
+    ];
+  }, [summary, price]);
 
   if (!ruleId) {
     return <InlineAlert variant="error">Missing rule id.</InlineAlert>;
@@ -481,21 +600,21 @@ export function RuleAnalyzePanel({
         </div>
       </div>
 
-      {summary && (
-        <SimSummaryCard
-          ruleName={rule?.rule_name ?? ruleId.slice(0, 8)}
-          price={price}
+      {runSummary && (
+        <PositionSummarySection
           title={`Summary · ${scopeLabel}`}
-          summary={summary}
-        />
-      )}
-
-      {temporalRows.length > 0 && (
-        <TemporalSummary
-          rows={temporalRows}
-          selection={temporalSel}
-          onSelect={setTemporalSel}
-          wallField="entry_time"
+          subtitle={rule?.rule_name ?? ruleId.slice(0, 8)}
+          summary={runSummary}
+          summaryExtras={{ migrated: summary?.migrated }}
+          extraDetailSections={capitalSection}
+          chartPoints={chartPoints}
+          focus={focus}
+          onFocusChange={setFocus}
+          temporal={{
+            rows: temporalBaseRows,
+            wallField: 'entry_time',
+            enabled: temporalBaseRows.length > 0,
+          }}
         />
       )}
 
@@ -507,10 +626,7 @@ export function RuleAnalyzePanel({
         loading={loading}
         serverSide
         serverTotal={total}
-        onQueryChange={(q) => {
-          setTemporalSel(null);
-          setQuery(q);
-        }}
+        onQueryChange={setQuery}
         useRowOverlay={posRowOverlay}
         charts
         {...(renderInspect
@@ -518,6 +634,7 @@ export function RuleAnalyzePanel({
           : {})}
         resetKey={`${ruleId}_${scopeKey(scope)}`}
         tableId="rule-evidence"
+        defaultCols={EVIDENCE_DEFAULT_COLS}
         emptyMessage={
           scope.kind === 'all'
             ? 'No positions in any run.'

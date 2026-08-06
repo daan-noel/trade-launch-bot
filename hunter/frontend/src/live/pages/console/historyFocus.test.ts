@@ -4,6 +4,7 @@ import {
   filterClosesForFocus,
   historyFocusLabel,
   intersectUtcWindow,
+  matchesExitFocus,
   matchesHeatFocus,
   matchesHoldBandFocus,
   matchesHoldBandSecs,
@@ -48,6 +49,9 @@ describe('parseHistoryFocus / serializeHistoryFocus', () => {
         pctLo: -20,
         pctHi: 50,
       },
+      { kind: 'exit' as const, tile: 'Metric+' as const },
+      { kind: 'exit' as const, tile: 'Metric-' as const },
+      { kind: 'exit' as const, tile: 'Metric' as const },
     ];
     for (const f of cases) {
       expect(parseHistoryFocus(serializeHistoryFocus(f))).toEqual(f);
@@ -63,6 +67,8 @@ describe('parseHistoryFocus / serializeHistoryFocus', () => {
     expect(parseHistoryFocus('pct:50:inf')).toBeNull(); // old open-tail; not adjacent now
     expect(parseHistoryFocus('rule:not-a-uuid')).toBeNull();
     expect(parseHistoryFocus('pos:not-a-uuid')).toBeNull();
+    expect(parseHistoryFocus('exit:Metric+')).toBeNull(); // wire uses metric_win
+    expect(parseHistoryFocus('exit:nope')).toBeNull();
   });
 });
 
@@ -89,6 +95,27 @@ describe('historyFocusLabel', () => {
         () => 'scalper',
       ),
     ).toBe('scalper');
+    expect(historyFocusLabel({ kind: 'exit', tile: 'Metric+' })).toBe('Metric+');
+  });
+});
+
+describe('matchesExitFocus / filterClosesForFocus exit', () => {
+  it('keeps metric exits by PnL sign', () => {
+    expect(matchesExitFocus('stall >= 300', 0.1, { kind: 'exit', tile: 'Metric+' })).toBe(true);
+    expect(matchesExitFocus('stall >= 300', -0.1, { kind: 'exit', tile: 'Metric+' })).toBe(false);
+    expect(matchesExitFocus('TakeProfit', 0.1, { kind: 'exit', tile: 'Metric+' })).toBe(false);
+    expect(matchesExitFocus('trail >= 12', -0.2, { kind: 'exit', tile: 'Metric-' })).toBe(true);
+  });
+
+  it('filters the closes series', () => {
+    const closes = [
+      close({ id: '1', exit_time: '2026-08-01T12:00:00.000Z', exit_reason: 'stall >= 1', pnl_sol: 0.2 }),
+      close({ id: '2', exit_time: '2026-08-01T13:00:00.000Z', exit_reason: 'stall >= 1', pnl_sol: -0.1 }),
+      close({ id: '3', exit_time: '2026-08-01T14:00:00.000Z', exit_reason: 'TakeProfit', pnl_sol: 0.3 }),
+    ];
+    expect(
+      filterClosesForFocus(closes, { kind: 'exit', tile: 'Metric+' }, 'UTC').map((c) => c.id),
+    ).toEqual(['1']);
   });
 });
 

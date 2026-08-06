@@ -31,12 +31,17 @@ import type { HistoryCohort } from '@live/pages/console/historyCohort';
 import {
   dayBoundsUtcIso,
   intersectUtcWindow,
+  matchesExitFocus,
   matchesHeatFocus,
   matchesHoldBandFocus,
   pctFocusFilter,
   serializeHistoryFocus,
   weekBoundsUtcIso,
 } from '@live/pages/console/historyFocus';
+import {
+  exitReasonMatchesFilter,
+  isHistoryMetricExitNeedle,
+} from '@live/pages/console/historyExitFilter';
 
 /** Stable row key — hoisted so DataTable doesn't see a fresh closure each render. */
 const historyPositionRowKey = (r: RulePositionRecord) => r.id;
@@ -220,8 +225,12 @@ export const HistoryTable = memo(function HistoryTable({
   const focus = cohort.focus;
   const heatFocus = focus?.kind === 'heat' ? focus : null;
   const holdBandFocus = focus?.kind === 'holdBand' ? focus : null;
-  /** Heat + hold-band need a wide scan then client match (not one SQL range). */
-  const clientScanFocus = !!(heatFocus || holdBandFocus);
+  const exitFocus = focus?.kind === 'exit' ? focus : null;
+  const metricExitNeedle = isHistoryMetricExitNeedle(cohort.exitReason)
+    ? cohort.exitReason
+    : null;
+  /** Heat / hold-band / Metric± (focus or synthetic hexit) need a wide scan. */
+  const clientScanFocus = !!(heatFocus || holdBandFocus || exitFocus || metricExitNeedle);
 
   // The cohort + optional chart focus are applied as structured filters + a
   // range window on top of the table's own per-column filters.
@@ -231,7 +240,10 @@ export const HistoryTable = memo(function HistoryTable({
     if (cohort.ruleId) filters.rule_id = { op: 'eq' as const, val: cohort.ruleId };
     if (cohort.mode !== 'all') filters.mode = { op: 'eq' as const, val: cohort.mode };
     if (cohort.status) filters.status = { op: 'eq' as const, val: cohort.status };
-    if (cohort.exitReason) filters.exit_reason = { op: 'contains' as const, val: cohort.exitReason };
+    // Synthetic Metric± needles are client-only — never SQL `contains`.
+    if (cohort.exitReason && !metricExitNeedle) {
+      filters.exit_reason = { op: 'contains' as const, val: cohort.exitReason };
+    }
 
     let fromIso = cohort.fromIso;
     let toIso = cohort.toIso;
@@ -280,7 +292,7 @@ export const HistoryTable = memo(function HistoryTable({
           }
         : {}),
     };
-  }, [query, numericCols, cohort, focus, clientScanFocus, timezone]);
+  }, [query, numericCols, cohort, focus, clientScanFocus, metricExitNeedle, timezone]);
 
   const fetchPage = useCallback(
     (b: unknown, signal: AbortSignal) => fetchPortfolioPositionsPage(b as never, signal),
@@ -297,11 +309,13 @@ export const HistoryTable = memo(function HistoryTable({
   );
 
   const rows = useMemo(() => {
+    // Lenses stack: heat/band/exit-focus and synthetic Metric± hexit all apply.
+    let out = items;
     if (heatFocus) {
-      return items.filter((r) => matchesHeatFocus(r.exit_time, heatFocus, timezone));
+      out = out.filter((r) => matchesHeatFocus(r.exit_time, heatFocus, timezone));
     }
     if (holdBandFocus) {
-      return items.filter((r) =>
+      out = out.filter((r) =>
         matchesHoldBandFocus(
           r.entry_time,
           r.exit_time,
@@ -315,8 +329,16 @@ export const HistoryTable = memo(function HistoryTable({
         ),
       );
     }
-    return items;
-  }, [items, heatFocus, holdBandFocus, timezone]);
+    if (exitFocus) {
+      out = out.filter((r) => matchesExitFocus(r.exit_reason, r.pnl_sol, exitFocus));
+    }
+    if (metricExitNeedle) {
+      out = out.filter((r) =>
+        exitReasonMatchesFilter(r.exit_reason, metricExitNeedle, r.pnl_sol),
+      );
+    }
+    return out;
+  }, [items, heatFocus, holdBandFocus, exitFocus, metricExitNeedle, timezone]);
 
   const cohortKey = `${cohort.range}|${cohort.fromIso ?? ''}|${cohort.toIso ?? ''}|${
     cohort.ruleId ?? ''

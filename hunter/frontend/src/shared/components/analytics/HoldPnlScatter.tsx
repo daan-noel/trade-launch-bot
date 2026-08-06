@@ -12,7 +12,15 @@ export interface HoldPnlDomain {
 }
 
 interface HoldPnlScatterProps {
+  /** Dots to paint (focused / band-aware cohort from the caller). */
   points: readonly HoldScatterPoint[];
+  /**
+   * Axis / empty-frame fallback when `points` is empty. Keeps the plot mounted
+   * under a lens that has no scatter rows (cross-chart focus) so Reset / brush
+   * stay reachable. Ignored when `points` is non-empty.
+   */
+  contextPoints?: readonly HoldScatterPoint[];
+  /** Fallback layout width (px) — used only until the container is measured. */
   width?: number;
   height?: number;
   emptyMessage?: string;
@@ -54,6 +62,36 @@ interface LaidOutPoint {
   r: number;
 }
 
+function autoDomainOf(pts: readonly HoldScatterPoint[]) {
+  if (pts.length === 0) {
+    return { xMin: 0, xMax: 1, yMin: -10, yMax: 10, maxSize: 1 };
+  }
+  let xMinV = Infinity;
+  let xMaxV = -Infinity;
+  let yMinV = 0;
+  let yMaxV = 0;
+  let sizeMax = 0;
+  for (const p of pts) {
+    const lx = logHold(p.holdSeconds);
+    if (lx < xMinV) xMinV = lx;
+    if (lx > xMaxV) xMaxV = lx;
+    if (p.pnlPct < yMinV) yMinV = p.pnlPct;
+    if (p.pnlPct > yMaxV) yMaxV = p.pnlPct;
+    if (p.sizeSol > sizeMax) sizeMax = p.sizeSol;
+  }
+  if (yMinV > 0) yMinV = 0;
+  if (yMaxV < 0) yMaxV = 0;
+  if (xMinV === xMaxV) {
+    xMinV -= 0.5;
+    xMaxV += 0.5;
+  }
+  if (yMinV === yMaxV) {
+    yMinV -= 1;
+    yMaxV += 1;
+  }
+  return { xMin: xMinV, xMax: xMaxV, yMin: yMinV, yMax: yMaxV, maxSize: sizeMax || 1 };
+}
+
 /**
  * Hold-time vs realized PnL% scatter. Drag on the plot to zoom into a band
  * (and optionally focus the table via `onDomainChange`); double-click resets.
@@ -61,10 +99,19 @@ interface LaidOutPoint {
  * Brush geometry is updated via DOM refs during pointermove so a drag never
  * re-renders every marker. Large cohorts paint on canvas; small ones keep SVG
  * circles (native `<title>` tooltips).
+ *
+ * The plot lays out at the container's measured pixel width so the viewBox maps
+ * 1:1 onto the card — a fixed viewBox would letterbox (default
+ * `preserveAspectRatio`) and slide the canvas dot layer off the SVG axes.
+ *
+ * An empty focused slice keeps the axes mounted when `contextPoints` or
+ * `domain` can size the frame — bare text only when there is truly nothing
+ * to plot in the parent cohort.
  */
 export const HoldPnlScatter = memo(function HoldPnlScatter({
   points,
-  width = 640,
+  contextPoints,
+  width: fallbackWidth = 640,
   height = 280,
   emptyMessage = 'No closed round trips with a positive hold span in this window to plot.',
   selectedKey = null,
@@ -78,35 +125,31 @@ export const HoldPnlScatter = memo(function HoldPnlScatter({
   const dragRef = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [hover, setHover] = useState<LaidOutPoint | null>(null);
 
-  const auto = useMemo(() => {
-    if (points.length === 0) {
-      return { xMin: 0, xMax: 1, yMin: -10, yMax: 10, maxSize: 1 };
-    }
-    let xMinV = Infinity;
-    let xMaxV = -Infinity;
-    let yMinV = 0;
-    let yMaxV = 0;
-    let sizeMax = 0;
-    for (const p of points) {
-      const lx = logHold(p.holdSeconds);
-      if (lx < xMinV) xMinV = lx;
-      if (lx > xMaxV) xMaxV = lx;
-      if (p.pnlPct < yMinV) yMinV = p.pnlPct;
-      if (p.pnlPct > yMaxV) yMaxV = p.pnlPct;
-      if (p.sizeSol > sizeMax) sizeMax = p.sizeSol;
-    }
-    if (yMinV > 0) yMinV = 0;
-    if (yMaxV < 0) yMaxV = 0;
-    if (xMinV === xMaxV) {
-      xMinV -= 0.5;
-      xMaxV += 0.5;
-    }
-    if (yMinV === yMaxV) {
-      yMinV -= 1;
-      yMaxV += 1;
-    }
-    return { xMin: xMinV, xMax: xMaxV, yMin: yMinV, yMax: yMaxV, maxSize: sizeMax || 1 };
-  }, [points]);
+  // Width-only observer: height is fixed by the caller, so this can never loop.
+  const roRef = useRef<ResizeObserver | null>(null);
+  const [measured, setMeasured] = useState(0);
+  const wrapEl = useCallback((el: HTMLDivElement | null) => {
+    roRef.current?.disconnect();
+    roRef.current = null;
+    if (!el) return;
+    setMeasured(Math.round(el.clientWidth));
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0;
+      if (w > 0) setMeasured(Math.round(w));
+    });
+    ro.observe(el);
+    roRef.current = ro;
+  }, []);
+  useEffect(() => () => roRef.current?.disconnect(), []);
+
+  const width = measured > 0 ? measured : fallbackWidth;
+
+  // Size axes from painted points when present; otherwise fall back to the
+  // parent cohort so an empty lens still has a readable frame.
+  const axisPoints = points.length > 0 ? points : (contextPoints ?? points);
+  const keepFrame = axisPoints.length > 0 || domain != null;
+
+  const auto = useMemo(() => autoDomainOf(axisPoints), [axisPoints]);
 
   const xMin = domain ? logHold(domain.holdLo) : auto.xMin;
   const xMax = domain ? logHold(domain.holdHi) : auto.xMax;
@@ -243,9 +286,12 @@ export const HoldPnlScatter = memo(function HoldPnlScatter({
     [laidOut],
   );
 
-  if (points.length === 0) {
+  if (!keepFrame) {
     return <p className="text-xs text-text-dim">{emptyMessage}</p>;
   }
+
+  // Empty focus, or a zoom band that clipped every dot — keep axes + Reset.
+  const showEmptyOverlay = laidOut.length === 0;
 
   const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     if (!onDomainChange && !onSelectPoint) return;
@@ -302,7 +348,7 @@ export const HoldPnlScatter = memo(function HoldPnlScatter({
   const tipPoint = useCanvas ? hover : null;
 
   return (
-    <div className="relative w-full">
+    <div ref={wrapEl} className="relative w-full">
       {domain && onDomainChange && (
         <button
           type="button"
@@ -314,6 +360,11 @@ export const HoldPnlScatter = memo(function HoldPnlScatter({
         </button>
       )}
       <div className="relative w-full" style={{ height }}>
+        {showEmptyOverlay && (
+          <p className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-4 text-center text-xs text-text-dim">
+            {emptyMessage}
+          </p>
+        )}
         {tipPoint && (
           <div
             className="pointer-events-none absolute z-10 max-w-[14rem] rounded border border-white/15 bg-bg-panel/95 px-1.5 py-1 text-[10px] text-text shadow-md"

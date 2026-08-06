@@ -3,6 +3,7 @@ import {
   buildEventMarkers,
   buildEventMarkersForEpisodes,
   episodeRowKey,
+  parseEpisodeRowKey,
   type InspectTarget,
 } from './inspectTarget';
 
@@ -33,6 +34,14 @@ describe('episodeRowKey', () => {
   it('falls back to mint alone for a never-entered row', () => {
     expect(episodeRowKey({ mint_address: 'AAA', entry_time: null })).toBe('AAA');
     expect(episodeRowKey({ mint_address: 'AAA' })).toBe('AAA');
+  });
+
+  it('parseEpisodeRowKey round-trips', () => {
+    expect(parseEpisodeRowKey('AAA::2026-07-20T22:39:35Z')).toEqual({
+      mint_address: 'AAA',
+      entry_time: '2026-07-20T22:39:35Z',
+    });
+    expect(parseEpisodeRowKey('AAA')).toEqual({ mint_address: 'AAA', entry_time: null });
   });
 });
 

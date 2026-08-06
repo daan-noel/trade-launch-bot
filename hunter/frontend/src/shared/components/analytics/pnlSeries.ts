@@ -13,6 +13,7 @@
  */
 
 import { DOW_ROWS, HOURS } from 'components/creation-stats/creationStats';
+import type { FilterSpec } from 'components/table/numericFilter';
 
 export { DOW_ROWS, HOURS };
 
@@ -259,6 +260,30 @@ export function isPnlDistBucket(
     }
   }
   return false;
+}
+
+/**
+ * Server `pnl_percent` / `pnl_pct` filter for a distribution bucket.
+ * Open tails (`< -50%`, `≥ 500%`) cannot ride inclusive `between` — they need
+ * `lt` / `gte`. Closed buckets stay half-open via a nudged top edge.
+ */
+export function pctFocusFilter(lo: number, hi: number): FilterSpec {
+  if (lo === -Infinity) return { op: 'lt', val: hi };
+  if (hi === Infinity) return { op: 'gte', val: lo };
+  // BETWEEN is inclusive; nudge the top so the next bucket's edge isn't double-counted.
+  return { op: 'between', min: lo, max: hi - 1e-6 };
+}
+
+/** Client predicate matching {@link pctFocusFilter} (half-open on the closed top). */
+export function matchesPctFocus(
+  pnlPct: number | null | undefined,
+  lo: number,
+  hi: number,
+): boolean {
+  if (pnlPct == null || !Number.isFinite(pnlPct)) return false;
+  if (lo === -Infinity) return pnlPct < hi;
+  if (hi === Infinity) return pnlPct >= lo;
+  return pnlPct >= lo && pnlPct < hi;
 }
 
 function bucketLabel(lo: number, hi: number): string {

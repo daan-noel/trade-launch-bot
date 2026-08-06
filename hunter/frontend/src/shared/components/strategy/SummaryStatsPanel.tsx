@@ -8,6 +8,10 @@ export interface SummaryStat {
   value?: string;
   node?: ReactNode;
   cls?: string;
+  /** When set, the tile is a toggle button (focus lens). Capital tiles omit this. */
+  onClick?: () => void;
+  /** Highlight when the matching focus lens is active. */
+  active?: boolean;
 }
 
 /** A labelled band of stat tiles rendered under the hero row. Use when the
@@ -56,9 +60,8 @@ interface SummaryStatsPanelProps {
  * (each its own row, so groups that must not be conflated stay visually apart).
  * Purely presentational: callers pass already-formatted
  * tile strings (or nodes), so it stays decoupled from any particular summary wire
- * shape or price-unit context. `SimSummaryCard` (live/paper positions), the Simulate
- * page, and the grouped-sweep combo drill-in all render through this so the summary
- * reads identically everywhere.
+ * shape or price-unit context. `PositionSummarySection` (Evidence / Simulate /
+ * Sweep) renders its hero through this so the summary reads identically everywhere.
  */
 export function SummaryStatsPanel({
   title,
@@ -92,19 +95,7 @@ export function SummaryStatsPanel({
 
       <div className="flex flex-wrap gap-x-10 gap-y-4">
         {heroStats.map((s) => (
-          <div key={s.label} className="flex flex-col gap-1">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-text-dim">
-              {s.label}
-            </span>
-            <span
-              className={cn(
-                'font-mono text-3xl font-extrabold leading-none tracking-tight text-text',
-                s.cls,
-              )}
-            >
-              {s.node ?? s.value}
-            </span>
-          </div>
+          <HeroTile key={s.label} stat={s} />
         ))}
       </div>
 
@@ -150,17 +141,65 @@ export function SummaryStatsPanel({
   );
 }
 
+function HeroTile({ stat }: { stat: SummaryStat }) {
+  const inner = (
+    <>
+      <span className="text-[10px] font-semibold uppercase tracking-wider text-text-dim">
+        {stat.label}
+      </span>
+      <span
+        className={cn(
+          'font-mono text-3xl font-extrabold leading-none tracking-tight text-text',
+          stat.cls,
+        )}
+      >
+        {stat.node ?? stat.value}
+      </span>
+    </>
+  );
+  if (!stat.onClick) {
+    return <div className="flex flex-col gap-1">{inner}</div>;
+  }
+  return (
+    <button
+      type="button"
+      onClick={stat.onClick}
+      className={cn(
+        'flex flex-col gap-1 rounded-md px-1.5 py-1 text-left transition hover:bg-white/5',
+        stat.active && 'bg-primary/15 ring-1 ring-primary/50',
+      )}
+    >
+      {inner}
+    </button>
+  );
+}
+
 /** One small label-over-value tile — the shared atom of the detail strip and of
  *  every `SummarySection` band, so the two never drift apart visually. */
 function DetailTile({ stat }: { stat: SummaryStat }) {
-  return (
-    <div className="flex min-w-[84px] flex-col gap-0.5">
+  const body = (
+    <>
       <span className="text-[9px] font-semibold uppercase tracking-wider text-text-dim">
         {stat.label}
       </span>
       <span className={cn('font-mono text-sm font-bold text-text', stat.cls)}>
         {stat.node ?? stat.value}
       </span>
-    </div>
+    </>
+  );
+  if (!stat.onClick) {
+    return <div className="flex min-w-[84px] flex-col gap-0.5">{body}</div>;
+  }
+  return (
+    <button
+      type="button"
+      onClick={stat.onClick}
+      className={cn(
+        'flex min-w-[84px] flex-col gap-0.5 rounded-md px-1 py-0.5 text-left transition hover:bg-white/5',
+        stat.active && 'bg-primary/15 ring-1 ring-primary/50',
+      )}
+    >
+      {body}
+    </button>
   );
 }

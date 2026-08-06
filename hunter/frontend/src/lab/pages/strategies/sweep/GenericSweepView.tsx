@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useLocalStorage } from 'hooks/useLocalStorage';
+import { useTimezone } from 'context/TimezoneContext';
 import { STORAGE_KEYS } from 'lib/storage';
 import { DataTable } from 'components/table/DataTable';
 import { TokenTable } from 'components/tokens/TokenTable';
@@ -23,17 +24,14 @@ import {
   markerRowOverlay,
   type InspectTarget,
 } from 'components/strategy/inspectTarget';
+import { PositionSummarySection } from 'components/strategy/PositionSummarySection';
+import { runSummaryFromRows } from 'lib/strategy/runSummary';
 import {
-  SummaryStatsPanel,
-  type SummaryStat,
-  type SummarySection,
-} from 'components/strategy/SummaryStatsPanel';
-import {
-  TemporalSummary,
-  type TemporalSelection,
-} from 'components/strategy/TemporalSummary';
-import { runSummaryFromRows, runSummarySections } from 'lib/strategy/runSummary';
-import type { TemporalRow } from 'lib/strategy/temporalSummary';
+  filterRowsByFocus,
+  type PositionFocusLens,
+  type PositionFocusRow,
+} from 'lib/strategy/positionFocus';
+import type { PositionChartPoint } from 'lib/strategy/positionChartPoints';
 import { cn } from 'lib/cn';
 import { formatSigned, formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { useBackgroundJobActions, useBackgroundJobsState } from '@lab/context/BackgroundJobsContext';
@@ -155,6 +153,14 @@ function comboTarget(r: ComboTokenResult): InspectTarget {
 const comboRowOverlay = markerRowOverlay(comboTarget);
 
 /**
+ * Combo-tokens deviation from the appended token-info defaults. Each row is one
+ * simulated position, so `token_amount` is the size the combo actually took —
+ * the check that a headline PnL isn't riding a bag too small to matter — where
+ * the shared set treats it as token background and hides it.
+ */
+const COMBO_TOKENS_DEFAULT_COLS = { token_amount: true } as const;
+
+/**
  * Aggregate the combo's per-token rows into the summary tiles, via the **shared**
  * run-summary renderer — the same builder the Simulate page and the live/paper
  * positions card use, so all three show the same metrics under the same labels in
@@ -165,12 +171,48 @@ const comboRowOverlay = markerRowOverlay(comboTarget);
  * The realized-vs-MTM two-band split and the metric arithmetic live in
  * `lib/strategy/runSummary`; this is now only the row adapter.
  */
-function buildComboSummary(rows: ComboTokenResult[]): {
-  hero: SummaryStat[];
-  sections: SummarySection[];
-} {
-  const migrated = rows.filter((r) => r.fired && r.is_migrated).length;
-  return runSummarySections(runSummaryFromRows(rows), { migrated });
+function comboFocusRow(r: ComboTokenResult): PositionFocusRow {
+  const open = r.fired && r.exit === 'Open';
+  const timeIso = open ? r.entry_time ?? r.created_at : r.exit_time ?? r.entry_time;
+  const timeMs = timeIso ? Date.parse(timeIso) : NaN;
+  return {
+    id: episodeRowKey(r),
+    mint_address: r.mint_address,
+    fired: r.fired,
+    isOpen: open,
+    isClosed: r.fired && r.exit !== 'Open' && r.exit !== 'NoEntry',
+    exit_reason: r.exit === 'Open' || r.exit === 'NoEntry' ? null : r.exit,
+    pnl_sol: r.fired ? r.pnl_sol : null,
+    pnl_pct: r.fired ? r.pnl_pct : null,
+    hold_secs: r.fired ? r.holding_secs : null,
+    is_migrated: r.is_migrated,
+    timeMs: Number.isFinite(timeMs) ? timeMs : null,
+  };
+}
+
+function comboChartPoints(rows: ComboTokenResult[]): PositionChartPoint[] {
+  const out: PositionChartPoint[] = [];
+  for (const r of rows) {
+    if (!r.fired) continue;
+    const open = r.exit === 'Open';
+    const timeIso = open ? r.entry_time ?? r.created_at : r.exit_time ?? r.entry_time;
+    const timeMs = timeIso ? Date.parse(timeIso) : NaN;
+    if (!Number.isFinite(timeMs)) continue;
+    out.push({
+      key: episodeRowKey(r),
+      label: r.symbol || r.mint_address.slice(0, 8),
+      mint_address: r.mint_address,
+      timeMs,
+      pnlSol: r.pnl_sol ?? 0,
+      pnlPct: Number.isFinite(r.pnl_pct) ? r.pnl_pct : null,
+      holdSeconds: r.holding_secs > 0 ? r.holding_secs : open ? 1 : null,
+      entrySol: Math.abs(r.pnl_sol) > 0 && r.pnl_pct !== 0 ? Math.abs(r.pnl_sol / (r.pnl_pct / 100)) : 0.1,
+      isOpen: open,
+      exit_reason: open ? null : r.exit,
+      is_migrated: r.is_migrated,
+    });
+  }
+  return out;
 }
 
 /**
@@ -800,6 +842,7 @@ function ComboTokenResults({
   inspectFingerprintId: string | null;
   onClose: () => void;
 }) {
+  const { timezone } = useTimezone();
   const query = useGetComboTokenResultsQuery({ strategyId, runId, groupId, comboId });
   // Stable identities: RTK keeps `query.data` referentially equal across renders, so
   // memoizing keeps `rows`/`visible` from churning — otherwise the filtered-rows
@@ -815,55 +858,78 @@ function ComboTokenResults({
     [showNotFired, rows],
   );
   const [selected, setSelected] = useState<string | null>(null);
-  const [temporalSel, setTemporalSel] = useState<TemporalSelection>(null);
-  /** Frozen cohort for the Temporal chart so a click-filter doesn't collapse it. */
-  const [chartPinned, setChartPinned] = useState<ComboTokenResult[] | null>(null);
+  const [focus, setFocus] = useState<PositionFocusLens[]>([]);
+  /** Table-filter cohort pinned when focus activates so charts/summary base don't collapse. */
+  const [cohortPinned, setCohortPinned] = useState<ComboTokenResult[] | null>(null);
   useEffect(() => {
     setSelected(null);
-    setTemporalSel(null);
-    setChartPinned(null);
+    setFocus([]);
+    setCohortPinned(null);
   }, [comboId]);
 
-  // Summary cohort = the table's current filtered rows (null until the table first
-  // reports them → fall back to the full set so the card shows immediately). Reset
-  // on combo change so a stale cohort can't linger while the new rows load.
   const [filteredRows, setFilteredRows] = useState<ComboTokenResult[] | null>(null);
   useEffect(() => setFilteredRows(null), [comboId]);
-  const onFilteredRowsChange = useCallback((r: ComboTokenResult[]) => setFilteredRows(r), []);
-
-  const rowsForTable = useMemo(() => {
-    if (!temporalSel?.mints.length) return visible;
-    const set = new Set(temporalSel.mints);
-    return visible.filter((r) => set.has(r.mint_address));
-  }, [visible, temporalSel]);
-
-  const summary = useMemo(
-    () => buildComboSummary(filteredRows ?? rowsForTable),
-    [filteredRows, rowsForTable],
+  const onFilteredRowsChange = useCallback(
+    (r: ComboTokenResult[]) => {
+      // Only track column/search filters while unfocused — once focus is on, the
+      // table's row set is already narrowed and would collapse the chart base.
+      if (focus.length === 0) setFilteredRows(r);
+    },
+    [focus.length],
   );
 
-  const temporalRows: TemporalRow[] = useMemo(() => {
-    const src = chartPinned ?? filteredRows ?? visible;
-    return src.map((r) => ({
-      mint_address: r.mint_address,
-      fired: r.fired,
-      exit: r.exit,
-      pnl_sol: r.pnl_sol,
-      holding_secs: r.holding_secs,
-      entry_time: r.entry_time,
-      created_at: r.created_at,
-    }));
-  }, [chartPinned, filteredRows, visible]);
-
-  const onTemporalSelect = useCallback(
-    (sel: TemporalSelection) => {
-      if (sel && !chartPinned) {
-        setChartPinned(filteredRows ?? visible);
+  const onFocusChange = useCallback(
+    (next: PositionFocusLens[]) => {
+      if (next.length > 0 && focus.length === 0) {
+        setCohortPinned(filteredRows ?? visible);
       }
-      if (!sel) setChartPinned(null);
-      setTemporalSel(sel);
+      if (next.length === 0) setCohortPinned(null);
+      setFocus(next);
     },
-    [chartPinned, filteredRows, visible],
+    [focus.length, filteredRows, visible],
+  );
+
+  const tableFilterCohort = cohortPinned ?? filteredRows ?? visible;
+  const focusOpts = useMemo(() => ({ timeZone: timezone }), [timezone]);
+  const rowsForTable = useMemo(() => {
+    if (focus.length === 0) return visible;
+    const keep = new Set(
+      filterRowsByFocus(visible.map(comboFocusRow), focus, focusOpts).map((r) => r.id!),
+    );
+    return visible.filter((r) => keep.has(episodeRowKey(r)));
+  }, [visible, focus, focusOpts]);
+
+  const summaryRun = useMemo(() => {
+    const cohort =
+      focus.length === 0
+        ? tableFilterCohort
+        : filterRowsByFocus(tableFilterCohort.map(comboFocusRow), focus, focusOpts).flatMap(
+            (fr) => {
+              const row = tableFilterCohort.find((r) => episodeRowKey(r) === fr.id);
+              return row ? [row] : [];
+            },
+          );
+    const migrated = cohort.filter((r) => r.fired && r.is_migrated).length;
+    return { summary: runSummaryFromRows(cohort), migrated };
+  }, [tableFilterCohort, focus, focusOpts]);
+
+  const chartPoints = useMemo(
+    () => comboChartPoints(tableFilterCohort),
+    [tableFilterCohort],
+  );
+
+  const temporalRows = useMemo(
+    () =>
+      tableFilterCohort.map((r) => ({
+        mint_address: r.mint_address,
+        fired: r.fired,
+        exit: r.exit,
+        pnl_sol: r.pnl_sol,
+        holding_secs: r.holding_secs,
+        entry_time: r.entry_time,
+        created_at: r.created_at,
+      })),
+    [tableFilterCohort],
   );
 
   // A table row selects by episode key; a grouped charts-grid card by mint.
@@ -983,20 +1049,17 @@ function ComboTokenResults({
       {err && <InlineAlert variant="error">{err}</InlineAlert>}
 
       {!err && rows.length > 0 && (
-        <>
-          <SummaryStatsPanel
-            title="Combo results summary"
-            subtitle="Tracks the table's filters"
-            heroStats={summary.hero}
-            sections={summary.sections}
-            accentClass="bg-secondary"
-          />
-          <TemporalSummary
-            rows={temporalRows}
-            selection={temporalSel}
-            onSelect={onTemporalSelect}
-          />
-        </>
+        <PositionSummarySection
+          title="Combo results summary"
+          subtitle="Tracks the table's filters + focus"
+          summary={summaryRun.summary}
+          summaryExtras={{ migrated: summaryRun.migrated }}
+          chartPoints={chartPoints}
+          focus={focus}
+          onFocusChange={onFocusChange}
+          accentClass="bg-secondary"
+          temporal={{ rows: temporalRows }}
+        />
       )}
 
       <TokenTable
@@ -1025,6 +1088,7 @@ function ComboTokenResults({
         sameValueTints
         defaultSort={{ col: 'pnl_sol', dir: 'desc' }}
         tableId="generic_combo_tokens"
+        defaultCols={COMBO_TOKENS_DEFAULT_COLS}
         resetKey={`${comboId}_${showNotFired}`}
         loading={query.isFetching}
         emptyMessage="No token results for this combo."

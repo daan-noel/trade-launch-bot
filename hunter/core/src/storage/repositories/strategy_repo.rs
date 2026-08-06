@@ -770,6 +770,14 @@ fn push_filter_predicate(
             let Some(text) = as_text(&spec.val) else { return };
             qb.push(" AND ").push(col).push(" ILIKE ").push_bind(like_escape(&text));
         }
+        (FilterKind::Text, FilterOp::Neq) => {
+            // Exact inequality — same case-insensitive escape as Eq. Needed by
+            // focus chips (`status:open` ⇒ status neq End, `status:fired` ⇒
+            // exit_reason neq NoEntry); without this arm those filters were
+            // silently dropped (unknown text ops are no-ops).
+            let Some(text) = as_text(&spec.val) else { return };
+            qb.push(" AND ").push(col).push(" NOT ILIKE ").push_bind(like_escape(&text));
+        }
         // Set membership: `val` is a JSON array → `col = ANY($n::text[])`. Operands
         // are trimmed/non-empty and capped (backstop; the UI caps too). An empty or
         // non-array operand drops the predicate.
@@ -3403,6 +3411,22 @@ mod filter_sql_tests {
         let sql = where_sql("cu_price", num(FilterOp::Neq, 333333.0));
         assert!(sql.contains(" != "), "expected `!=` compare, got: {sql}");
         assert!(!sql.contains(" = "), "neq must not emit an equality: {sql}");
+    }
+
+    #[test]
+    fn neq_on_text_col_emits_not_ilike() {
+        // Focus chips (`status neq End`, `exit_reason neq NoEntry`) need text Neq —
+        // without it the arm was a silent no-op and Open/Fired never narrowed.
+        let sql = where_sql(
+            "status",
+            FilterSpec {
+                op: FilterOp::Neq,
+                val: serde_json::json!("End"),
+                ..Default::default()
+            },
+        );
+        assert!(sql.contains("NOT ILIKE"), "text neq must emit NOT ILIKE: {sql}");
+        assert!(sql.contains("sp.status"), "status filter must reach SQL: {sql}");
     }
 
     #[test]

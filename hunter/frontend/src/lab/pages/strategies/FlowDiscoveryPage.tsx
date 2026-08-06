@@ -21,6 +21,7 @@ import {
   fingerprintParamsCell,
   chip as paramChip,
   axisTint,
+  ixLabelsChip,
 } from 'components/strategy/FingerprintParamsSummary';
 import { LabelTip } from 'components/strategy/LabelTip';
 import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeControl';
@@ -199,9 +200,10 @@ const MISSING_GROUP_VALUE = '∅';
  *  list. `ix_labels` is excluded from the chip row — a pipe-joined instruction
  *  sequence doesn't compress into a `label=value` chip, so it renders as
  *  pretty-printed JSON via `IxLabelsDisplay` instead (same as the sweep
- *  table's group-key column). It DOES still get an `Nix` count chip in the
- *  row though — same `${ix.length}ix` chip `fingerprintParamsCell` renders for
- *  a fingerprint's own `ix_labels` axis, same `axisTint('ix')` hue. */
+ *  table's group-key column). It DOES still get an `Nix` chip in the row
+ *  though — the shared `ixLabelsChip`, so the count, the hashed ribbon, and
+ *  the tooltip read exactly as they do for a fingerprint's own `ix_labels`
+ *  axis a few lines below. */
 function groupKeyChips(gk: Record<string, string>) {
   const entries = Object.entries(gk);
   if (entries.length === 0) {
@@ -230,14 +232,7 @@ function groupKeyChips(gk: Record<string, string>) {
               </span>
             );
           })}
-          {ixParts && (
-            <span>
-              {paramChip(`${ixParts.length}ix`, {
-                style: axisTint('ix'),
-                title: formatIxLabelsText(ixParts),
-              })}
-            </span>
-          )}
+          {ixParts && <span>{ixLabelsChip(ixParts)}</span>}
         </div>
       )}
       {ixValue != null && (

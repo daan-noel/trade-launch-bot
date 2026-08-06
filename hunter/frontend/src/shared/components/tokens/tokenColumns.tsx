@@ -66,6 +66,13 @@ const TOKEN_COL_WIDTH: Record<string, string> = {
  * Tokens-page columns that default to HIDDEN. The page lays out every column
  * (it ignores `APPENDED_HIDDEN_KEYS`), so its default visibility is specced here
  * directly — keeps the initial view to the fields watched most often.
+ *
+ * Shared by every `tokenColumns()` table (All Tokens, Trader Analysis, the
+ * creation-stats drilldown, fingerprint matches) — they all want the same
+ * layout, so this stays the single default rather than four `defaultCols` maps.
+ * `cu_price` is deliberately NOT here: it reads as a launch-client tell next to
+ * `cu_limit`, so it is up front on the token tables (the appended token-info set
+ * still hides it on strategy tables, where the row is about the position).
  */
 const TOKENS_HIDDEN_KEYS = new Set([
   'name',
@@ -80,8 +87,8 @@ const TOKENS_HIDDEN_KEYS = new Set([
   'market_cap',
   'volume',
   'init_supply',
+  'token_amount',
   'min_tokens_out',
-  'cu_price',
 ]);
 
 export function tokenColumns(): ColumnDef<TokenRecord>[] {

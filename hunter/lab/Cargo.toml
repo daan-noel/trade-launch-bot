@@ -55,6 +55,10 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
+# IANA zone database — the wall-clock temporal bins are CIVIL buckets in the
+# user's timezone, so they cannot be floored on the raw epoch (see
+# `sim_query::floor_to_grain_in_zone`). Lab-only; never ships to EC2.
+chrono-tz = "0.10"
 
 # Async trait
 async-trait = "0.1"

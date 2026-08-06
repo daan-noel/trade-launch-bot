@@ -87,6 +87,43 @@ export function parseIxLabelsText(text: string): ParseIxLabelsResult {
 }
 
 /**
+ * The action half of a decorated label — `"Pump.Fun: Create_v2"` → `"Create_v2"`.
+ * Labels are `"<Program>: <Action>"`; an undecorated label passes through. Split
+ * on the LAST `": "` so a program name containing a colon still resolves.
+ */
+export function ixLabelAction(label: string): string {
+  const i = label.lastIndexOf(': ');
+  return i < 0 ? label.trim() : label.slice(i + 2).trim();
+}
+
+/**
+ * Actions in on-chain order — `"Create_v2 > Create > BuyExactSolIn"`.
+ *
+ * **A label set's identity is the sequence, never its length.** Two sets that
+ * differ only in one action (`Buy` vs `BuyExactSolIn`) are different match
+ * criteria that arm on different tokens, so any surface collapsing them to a
+ * bare `Nix` count renders — and, via `fingerprintNameFromGroupKey`, *names* —
+ * two distinct fingerprints identically. Use this wherever the full JSON
+ * doesn't fit (tooltips, filter text).
+ */
+export function ixLabelsActions(labels: string[]): string {
+  return labels.map(ixLabelAction).join(' > ');
+}
+
+/**
+ * Count plus the trailing action — `"3ix:BuyExactSolIn"`. The compact form for
+ * text-only surfaces (auto-name, chart series label, legend line) where a color
+ * ribbon can't be drawn. The tail is the axis that varies in practice (the buy
+ * variant); it is a *discriminator*, not an identity — the full sequence still
+ * lives in the tooltip / `IxLabelsDisplay` beside it.
+ */
+export function ixLabelsCountTail(labels: string[]): string {
+  const n = labels.length;
+  const tail = n > 0 ? ixLabelAction(labels[n - 1]) : '';
+  return tail === '' ? `${n}ix` : `${n}ix:${tail}`;
+}
+
+/**
  * Column / Tokens filter grammar (mirrors hunter-core `ix_label` SQL):
  * - starts with `[`/`{` and parses as a JSON array (or `{ instructions: [...] }`)
  *   → ordered exact match (case-insensitive)

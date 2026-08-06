@@ -18,7 +18,21 @@ describe('fingerprintNameFromGroupKey (C3)', () => {
         'c',
         0.5,
       ),
-    ).toBe('c · fsb19.5 · fss0 · max0 · 3ix · b0.5');
+    ).toBe('c · fsb19.5 · fss0 · max0 · 3ix:Buy · b0.5');
+  });
+
+  it('separates two label sets that differ only past the count', () => {
+    const name = (last: string) =>
+      fingerprintNameFromGroupKey(
+        {
+          cu_limit: '80000',
+          ix_labels: `Pump.Fun: Create_v2 | Associated Token: Create | Pump.Fun: ${last}`,
+        },
+        'c',
+      );
+    expect(name('Buy')).toBe('c · cu80000 · 3ix:Buy');
+    expect(name('BuyExactSolIn')).toBe('c · cu80000 · 3ix:BuyExactSolIn');
+    expect(name('Buy')).not.toBe(name('BuyExactSolIn'));
   });
 
   it('omits b{width} when bucket is the default 0.1', () => {
@@ -28,7 +42,7 @@ describe('fingerprintNameFromGroupKey (C3)', () => {
         'c',
         0.1,
       ),
-    ).toBe('c · fsb19.5 · 2ix');
+    ).toBe('c · fsb19.5 · 2ix:B');
   });
 
   it('uses flow provenance and skips grouping-only axes', () => {

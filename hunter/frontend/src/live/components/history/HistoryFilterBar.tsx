@@ -18,8 +18,10 @@ import type { HistoryCohortApi } from '@live/pages/console/historyCohort';
 import {
   HISTORY_EXIT_FILTER_OPTIONS,
   historyExitFilterToneClass,
+  isHistoryMetricExitNeedle,
 } from '@live/pages/console/historyExitFilter';
 import { historyFocusLabel } from '@live/pages/console/historyFocus';
+import { activeExitTileLabel } from '@live/pages/console/historyExitSummary';
 
 const RANGE_PRESETS: { value: HistoryRange; label: string; description?: string }[] = [
   { value: 'today', label: 'Today', description: 'UTC midnight → now' },
@@ -111,6 +113,9 @@ export const HistoryFilterBar = memo(function HistoryFilterBar({
   const focusLabel = cohort.focus
     ? historyFocusLabel(cohort.focus, ruleNameOf)
     : null;
+  const metricExitLabel = isHistoryMetricExitNeedle(cohort.exitReason)
+    ? activeExitTileLabel(cohort.exitReason, null)
+    : null;
 
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-white/6 bg-bg-panel p-2.5">
@@ -181,14 +186,20 @@ export const HistoryFilterBar = memo(function HistoryFilterBar({
           />
           <SearchableSelect
             options={exitOptions}
-            value={cohort.exitReason}
+            // Metric± tiles write synthetic needles not in this dropdown —
+            // show "Any exit" there; the exit-mix tile carries the selection.
+            value={isHistoryMetricExitNeedle(cohort.exitReason) ? null : cohort.exitReason}
             onChange={(v) => cohort.set({ exitReason: v || null })}
             emptyOptionLabel="Any exit"
             placeholder="Any exit"
             noResultsLabel="No exit matches"
             className={cn(
-              cohort.exitReason && 'font-semibold',
-              historyExitFilterToneClass(cohort.exitReason),
+              cohort.exitReason &&
+                !isHistoryMetricExitNeedle(cohort.exitReason) &&
+                'font-semibold',
+              historyExitFilterToneClass(
+                isHistoryMetricExitNeedle(cohort.exitReason) ? null : cohort.exitReason,
+              ),
             )}
             renderOption={(opt) => (
               <span
@@ -234,6 +245,19 @@ export const HistoryFilterBar = memo(function HistoryFilterBar({
             <ModeBadge mode="real" />
             <ModeBadge mode="paper" />
           </>
+        )}
+        {metricExitLabel && (
+          <span className="inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-primary">
+            Exit: <span className="font-semibold text-text">{metricExitLabel}</span>
+            <button
+              type="button"
+              className="ml-0.5 text-text-dim hover:text-text"
+              title="Clear exit tile filter"
+              onClick={() => cohort.set({ exitReason: null })}
+            >
+              ✕
+            </button>
+          </span>
         )}
         {focusLabel && (
           <span className="inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-primary">

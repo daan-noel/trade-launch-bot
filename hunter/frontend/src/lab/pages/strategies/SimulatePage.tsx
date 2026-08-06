@@ -35,11 +35,7 @@ import {
 } from 'components/strategy/inspectTarget';
 import { simColumns, SIM_KEYS } from 'components/strategy/strategyColumns';
 import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
-import { SummaryStatsPanel, type SummaryStat } from 'components/strategy/SummaryStatsPanel';
-import {
-  TemporalSummary,
-  type TemporalSelection,
-} from 'components/strategy/TemporalSummary';
+import { PositionSummarySection } from 'components/strategy/PositionSummarySection';
 import { apiErrorMessage } from 'store/baseApi';
 import { connectSimulationFinished } from 'services/sse';
 import {
@@ -47,6 +43,13 @@ import {
   fetchEngineSimSummary,
   fetchEngineSimTimeSummary,
 } from 'services/api';
+import { fetchAllTablePages } from 'lib/strategy/fetchPositionChartSeries';
+import {
+  buildFocusTableFilters,
+  type PositionFocusLens,
+} from 'lib/strategy/positionFocus';
+import type { PositionChartPoint } from 'lib/strategy/positionChartPoints';
+import { useTimezone } from 'context/TimezoneContext';
 import {
   toSummaryBody,
   toTableRequest,
@@ -91,7 +94,7 @@ import {
   type TradeMode,
 } from 'lib/strategy/types';
 import { EXECUTION_MODEL_HELP } from 'lib/strategy/strategyHelp';
-import { goodBad, pctText, runSummarySections, solText } from 'lib/strategy/runSummary';
+import { goodBad, pctText, solText } from 'lib/strategy/runSummary';
 import { pctGradeClass, winRateGradeClass } from 'lib/signedTone';
 import { cn } from 'lib/cn';
 import type {
@@ -99,12 +102,38 @@ import type {
   WallGrainChoice,
   WallTimeField,
 } from 'lib/strategy/temporalSummary';
-import type { SummarySection } from 'components/strategy/SummaryStatsPanel';
 import type {
   SimulatedSummary,
   SimulatedTokenResult,
   TemporalSummaryPayload,
 } from 'types';
+
+function simChartPoints(rows: SimulatedTokenResult[]): PositionChartPoint[] {
+  const out: PositionChartPoint[] = [];
+  for (const r of rows) {
+    const fired = r.fired !== false && r.exit_reason !== 'NoEntry';
+    if (!fired) continue;
+    const open = r.exit_reason === 'Open' || !r.exit_time;
+    const timeIso = open ? r.entry_time ?? r.created_at : r.exit_time ?? r.entry_time;
+    const timeMs = timeIso ? Date.parse(timeIso) : NaN;
+    if (!Number.isFinite(timeMs)) continue;
+    const hold = r.holding_secs;
+    out.push({
+      key: episodeRowKey(r),
+      label: r.symbol || r.mint_address.slice(0, 8),
+      mint_address: r.mint_address,
+      timeMs,
+      pnlSol: r.pnl_sol ?? 0,
+      pnlPct: r.pnl_percent,
+      holdSeconds: hold != null && hold > 0 ? hold : open ? 1 : null,
+      entrySol: r.entry_token_amount ?? 0.1,
+      isOpen: open,
+      exit_reason: open ? null : r.exit_reason,
+      is_migrated: r.is_migrated ?? null,
+    });
+  }
+  return out;
+}
 import {
   useStartEngineSimulationMutation,
   useGetEngineSimSummaryMutation,
@@ -145,6 +174,15 @@ const COST_MODEL_VARIANT: Record<CostModelId, BadgeVariant> = {
 const SIM_NUMERIC_COLS = tokenNumericColKeys(simColumns);
 const SIM_AMOUNT_COLS = tokenAmountColKeys(simColumns);
 const simRowOverlay = markerRowOverlay(inspectFromSim);
+
+/**
+ * Simulate-only deviations from the shared column defaults (`simColumns` +
+ * appended token info). The rule's own buy size is fixed and shown in the rule
+ * header, so the token's `initial_buy` is noise here — but Dry-run, which reads
+ * the same `simColumns`, keeps it. `cu_price` earns its place on both sim tables
+ * (a launch-client tell next to `cu_limit`), where the appended set hides it.
+ */
+const SIM_POSITION_DEFAULT_COLS = { initial_buy: false, cu_price: true } as const;
 
 /** Wall-clock `YYYY-MM-DDTHH:mm` (picker wire) -> UTC ISO, same convention as
  *  the grouped-sweep "Created range" control — `since`/`until` bound the same
@@ -722,18 +760,19 @@ function RuleSimPositionsPanel({
     return patternKeysFrom(volumeIxPatternsFromConfig(fp.metric_config));
   }, [fingerprints, rule.fingerprint_id]);
 
+  const { timezone } = useTimezone();
   const [simQuery, setSimQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   const [showNotFired, setShowNotFired] = useLocalStorage(
     STORAGE_KEYS.simShowNotFired,
     true,
   );
-  const [temporalSel, setTemporalSel] = useState<TemporalSelection>(null);
+  const [focus, setFocus] = useState<PositionFocusLens[]>([]);
   const [wallField, setWallField] = useState<WallTimeField>('created_at');
   const [wallGrain, setWallGrain] = useState<WallGrainChoice>('auto');
   const [holdScheme, setHoldScheme] = useState<HoldSchemeChoice>('auto');
   const [timeSummary, setTimeSummary] = useState<TemporalSummaryPayload | null>(null);
-  /** Linked brush cohort — same grain/scheme as base, filtered to the selection mints. */
   const [linkedTimeSummary, setLinkedTimeSummary] = useState<TemporalSummaryPayload | null>(null);
+  const [chartPoints, setChartPoints] = useState<PositionChartPoint[]>([]);
 
   // Hide-not-fired injects a server-side `exit_reason != NoEntry` (text `neq`) so
   // paging/totals stay correct — same toggle as the sweep combo drill-in.
@@ -751,30 +790,32 @@ function RuleSimPositionsPanel({
     [showNotFired],
   );
 
-  // Temporal mint-set is applied to the page fetch only — summary + base time-summary
-  // stay on the table's own filters so the driving chart doesn't collapse after a click.
+  const focusFilters = useMemo(
+    () => buildFocusTableFilters(focus, chartPoints, timezone, 'mint'),
+    [focus, chartPoints, timezone],
+  );
+
+  // Table + summary include focus; base time-summary stays on table filters only.
   const simQueryForPage = useMemo(() => {
     const base = applyNotFiredFilter(simQuery);
-    if (!temporalSel?.mints.length) return base;
+    if (Object.keys(focusFilters).length === 0) return base;
     return {
       ...base,
       structuredFilters: {
         ...base.structuredFilters,
-        mint_address: { op: 'in' as const, val: temporalSel.mints },
+        ...focusFilters,
       },
     };
-  }, [simQuery, temporalSel, applyNotFiredFilter]);
+  }, [simQuery, focusFilters, applyNotFiredFilter]);
 
   const simBody = useMemo(
     () => toTableRequest(simQueryForPage, SIM_NUMERIC_COLS, { amountCols: SIM_AMOUNT_COLS }),
     [simQueryForPage],
   );
-  // KPI summary tracks the page cohort (includes temporal click-filter).
   const simSummaryBody = useMemo(
     () => toSummaryBody(simQueryForPage, SIM_NUMERIC_COLS, { amountCols: SIM_AMOUNT_COLS }),
     [simQueryForPage],
   );
-  // Base time chart stays on the table's own filters (+ not-fired toggle).
   const timeSummaryBody = useMemo(
     () =>
       toSummaryBody(applyNotFiredFilter(simQuery), SIM_NUMERIC_COLS, {
@@ -782,14 +823,12 @@ function RuleSimPositionsPanel({
       }),
     [simQuery.search, simQuery.colFilters, simQuery.structuredFilters, applyNotFiredFilter],
   );
-  // Linked chart: mint-filtered fold with base's resolved grain/scheme locked.
   const linkedTimeSummaryBody = useMemo(() => {
-    if (!temporalSel?.mints.length) return null;
+    const holdOrWall = focus.find((l) => l.kind === 'hold' || l.kind === 'wall');
+    if (!holdOrWall || !('mints' in holdOrWall) || !holdOrWall.mints.length) return null;
     return toSummaryBody(simQueryForPage, SIM_NUMERIC_COLS, { amountCols: SIM_AMOUNT_COLS });
-  }, [temporalSel, simQueryForPage]);
-  // Stable fetchers — inline arrows are new every render and `useServerTable`
-  // lists them as effect deps, which cleared the summary card in a loop and made
-  // Temporal pattern mount/unmount (the "vibration" / style break).
+  }, [focus, simQueryForPage]);
+
   const fetchSimPage = useCallback(
     (body: unknown, signal: AbortSignal) =>
       fetchEngineSimPage(rule.id, body as TableRequestBody, signal),
@@ -816,14 +855,13 @@ function RuleSimPositionsPanel({
     rule.id,
   );
 
-  // Clear temporal cohort when the table's own filters change or the rule switches.
   const baseFilterKey = JSON.stringify({
     s: simQuery.search,
     c: simQuery.colFilters,
     f: simQuery.structuredFilters,
   });
   useEffect(() => {
-    setTemporalSel(null);
+    setFocus([]);
     setLinkedTimeSummary(null);
   }, [rule.id, baseFilterKey]);
 
@@ -835,6 +873,7 @@ function RuleSimPositionsPanel({
       wallField,
       wallGrain,
       holdScheme,
+      timezone,
       ctrl.signal,
     )
       .then((t) => {
@@ -845,14 +884,13 @@ function RuleSimPositionsPanel({
         if (!ctrl.signal.aborted) setTimeSummary(null);
       });
     return () => ctrl.abort();
-  }, [rule.id, timeSummaryBody, wallField, wallGrain, holdScheme, reloadNonce]);
+  }, [rule.id, timeSummaryBody, wallField, wallGrain, holdScheme, timezone, reloadNonce]);
 
   useEffect(() => {
     if (!linkedTimeSummaryBody || !timeSummary) {
       setLinkedTimeSummary(null);
       return;
     }
-    // Lock edges to the base cohort so ghost bars align.
     const lockedGrain = timeSummary.wallGrain;
     const lockedHold = timeSummary.holdScheme ?? 'mid_30m';
     const ctrl = new AbortController();
@@ -862,6 +900,7 @@ function RuleSimPositionsPanel({
       wallField,
       lockedGrain,
       lockedHold,
+      timezone,
       ctrl.signal,
     )
       .then((t) => {
@@ -878,8 +917,30 @@ function RuleSimPositionsPanel({
     timeSummary?.wallGrain,
     timeSummary?.holdScheme,
     wallField,
+    timezone,
     reloadNonce,
   ]);
+
+  // Full-cohort chart series (table filters + not-fired; focus applied in the shell).
+  useEffect(() => {
+    const ctrl = new AbortController();
+    const body = toSummaryBody(applyNotFiredFilter(simQuery), SIM_NUMERIC_COLS, {
+      amountCols: SIM_AMOUNT_COLS,
+    }) as TableRequestBody;
+    void fetchAllTablePages(
+      (b, signal) => fetchEngineSimPage(rule.id, b, signal),
+      body,
+      ctrl.signal,
+    )
+      .then((rows) => {
+        if (!ctrl.signal.aborted) setChartPoints(simChartPoints(rows));
+      })
+      .catch((e) => {
+        if (e instanceof DOMException && e.name === 'AbortError') return;
+        if (!ctrl.signal.aborted) setChartPoints([]);
+      });
+    return () => ctrl.abort();
+  }, [rule.id, baseFilterKey, showNotFired, applyNotFiredFilter, reloadNonce]);
 
   useEffect(() => {
     reloadSim();
@@ -887,8 +948,6 @@ function RuleSimPositionsPanel({
 
   const onSelectSim = useCallback(
     (key: string | null) => {
-      // A table row selects by episode key; a grouped charts-grid card selects by
-      // mint — resolve either. The inspect modal overlays all episodes regardless.
       const row = key
         ? simTokens.find((t) => episodeRowKey(t) === key) ??
           simTokens.find((t) => t.mint_address === key) ??
@@ -898,8 +957,6 @@ function RuleSimPositionsPanel({
     },
     [simTokens, onInspect, rule],
   );
-
-  const simStats = useMemo(() => (simSummary ? simSummaryStats(simSummary) : null), [simSummary]);
 
   // "no simulation result" just means this rule has no resident run — the parent
   // only mounts us once it has a summary, so show the empty table, not an error.
@@ -957,48 +1014,55 @@ function RuleSimPositionsPanel({
         <InlineAlert variant="error">{simError}</InlineAlert>
       ) : (
         <>
-          {simStats && (
-            <SummaryStatsPanel
+          {simSummary && (
+            <PositionSummarySection
               title="Simulated results summary"
-              subtitle="Tracks the table's filters"
-              heroStats={simStats.hero}
-              sections={simStats.sections}
-              accentClass="bg-info"
-            />
-          )}
-          {timeSummary && timeSummary.nFired > 0 && (
-            <TemporalSummary
-              data={{
-                ...timeSummary,
-                holdScheme: timeSummary.holdScheme ?? 'mid_30m',
-                holdSchemeAuto:
-                  timeSummary.holdSchemeAuto ?? timeSummary.holdScheme ?? 'mid_30m',
-                wallGrainAuto: timeSummary.wallGrainAuto ?? timeSummary.wallGrain,
-                wallSpanMs: timeSummary.wallSpanMs ?? 0,
+              subtitle="Tracks the table's filters + focus"
+              summary={simSummary}
+              summaryExtras={{
+                matched: simSummary.n_matched,
+                tokensEntered: simSummary.n_tokens_entered,
+                migrated: simSummary.n_migrated,
+                extended: true,
               }}
-              linkedData={
-                linkedTimeSummary
+              chartPoints={chartPoints}
+              focus={focus}
+              onFocusChange={setFocus}
+              accentClass="bg-info"
+              temporal={
+                timeSummary && timeSummary.nFired > 0
                   ? {
-                      ...linkedTimeSummary,
-                      holdScheme: linkedTimeSummary.holdScheme ?? timeSummary.holdScheme ?? 'mid_30m',
-                      holdSchemeAuto:
-                        linkedTimeSummary.holdSchemeAuto ??
-                        linkedTimeSummary.holdScheme ??
-                        'mid_30m',
-                      wallGrainAuto:
-                        linkedTimeSummary.wallGrainAuto ?? linkedTimeSummary.wallGrain,
-                      wallSpanMs: linkedTimeSummary.wallSpanMs ?? 0,
+                      data: {
+                        ...timeSummary,
+                        holdScheme: timeSummary.holdScheme ?? 'mid_30m',
+                        holdSchemeAuto:
+                          timeSummary.holdSchemeAuto ?? timeSummary.holdScheme ?? 'mid_30m',
+                        wallGrainAuto: timeSummary.wallGrainAuto ?? timeSummary.wallGrain,
+                        wallSpanMs: timeSummary.wallSpanMs ?? 0,
+                      },
+                      linkedData: linkedTimeSummary
+                        ? {
+                            ...linkedTimeSummary,
+                            holdScheme:
+                              linkedTimeSummary.holdScheme ?? timeSummary.holdScheme ?? 'mid_30m',
+                            holdSchemeAuto:
+                              linkedTimeSummary.holdSchemeAuto ??
+                              linkedTimeSummary.holdScheme ??
+                              'mid_30m',
+                            wallGrainAuto:
+                              linkedTimeSummary.wallGrainAuto ?? linkedTimeSummary.wallGrain,
+                            wallSpanMs: linkedTimeSummary.wallSpanMs ?? 0,
+                          }
+                        : null,
+                      wallField,
+                      onWallFieldChange: setWallField,
+                      wallGrain,
+                      onWallGrainChange: setWallGrain,
+                      holdScheme,
+                      onHoldSchemeChange: setHoldScheme,
                     }
-                  : null
+                  : { enabled: false }
               }
-              selection={temporalSel}
-              onSelect={setTemporalSel}
-              wallField={wallField}
-              onWallFieldChange={setWallField}
-              wallGrain={wallGrain}
-              onWallGrainChange={setWallGrain}
-              holdScheme={holdScheme}
-              onHoldSchemeChange={setHoldScheme}
             />
           )}
           <TokenTable
@@ -1022,6 +1086,7 @@ function RuleSimPositionsPanel({
             loading={simTableLoading}
             resetKey={`${rule.id}_${showNotFired}`}
             tableId="simulate-positions"
+            defaultCols={SIM_POSITION_DEFAULT_COLS}
             pinnable
             emptyMessage={
               showNotFired
@@ -1033,25 +1098,6 @@ function RuleSimPositionsPanel({
       )}
     </section>
   );
-}
-
-/**
- * `SimulatedSummary` → summary-panel tiles, via the **shared** run-summary
- * renderer — the same builder the grouped sweep and the live/paper positions card
- * use (parity plan F1-F8). Server-computed over the filtered cohort (the summary
- * endpoint takes the table's search/filters), so these update as the user filters.
- *
- * This page previously hand-rolled four tiles whose headline "Total PnL" summed
- * still-open marks into the realized figure, so a rule that simply never closed
- * its losers read as profitable here while the sweep reported the loss. The
- * backend now sends the two-band `RunSummary` and this just renders it.
- */
-function simSummaryStats(s: SimulatedSummary): { hero: SummaryStat[]; sections: SummarySection[] } {
-  return runSummarySections(s, {
-    matched: s.n_matched,
-    tokensEntered: s.n_tokens_entered,
-    migrated: s.n_migrated,
-  });
 }
 
 function buildColumns(

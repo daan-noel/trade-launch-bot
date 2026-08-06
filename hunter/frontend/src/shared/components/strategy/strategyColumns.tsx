@@ -288,21 +288,29 @@ const EXIT_TOOLTIPS: Partial<Record<LegField, string>> = {
 
 /**
  * Bespoke Positions columns that default to HIDDEN (the enrichment columns are
- * governed separately by `APPENDED_HIDDEN_KEYS`). Keeps the table scannable:
- * price + time per leg, plus Created/Holding/PnL/state — the per-leg Tokens,
- * Size, and Tx are opt-in. Mirrors the sim table's `SIM_HIDDEN_KEYS`.
+ * governed separately by `APPENDED_HIDDEN_KEYS`). The evidence table is read as
+ * a PnL ledger: price + SOL per leg, PnL, and state up front, with the leg
+ * *timestamps* (Created / Target / Entry / Exit time, Holding) opt-in — the run
+ * order already carries the sequence, and dropping five time columns is what
+ * keeps the row readable without a horizontal scroll. Per-leg Tokens and Tx stay
+ * opt-in, as does the *target* leg's size (it never filled — only the entry and
+ * exit SOL are real). `positionColumns` has one consumer (Rule → Evidence), so
+ * this is its default rather than a `defaultCols` map.
  */
 const POSITION_HIDDEN_KEYS = new Set([
   'name',
+  'created',
   'target_tokens',
   'target_sol',
+  'target_time',
   'target_tx',
   'entry_tokens',
-  'entry_sol',
+  'entry_time',
   'entry_tx',
   'exit_tokens',
-  'exit_sol',
+  'exit_time',
   'exit_tx',
+  'holding',
 ]);
 
 // Price/amount cells read the unit + USD rate from context themselves (see
@@ -488,8 +496,12 @@ export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
 /**
  * Dry-run / sim trades columns that default to HIDDEN. Same philosophy as
  * `POSITION_HIDDEN_KEYS`: price + time per leg stay visible; the per-leg Tokens,
- * Size, Tx and the sim-only `ath_price` are opt-in. (The sim exit leg carries no
- * Tokens/Size columns to begin with — see the `legColumns('exit', …)` note.)
+ * Size and Tx are opt-in. (The sim exit leg carries no Tokens/Size columns to
+ * begin with — see the `legColumns('exit', …)` note.) `ath_price` is NOT hidden
+ * here: on a sim row it is the exit-quality yardstick — how much of the run the
+ * exit rule actually captured — which is the whole point of reading the table.
+ * Both `simColumns` tables (Simulate, Dry-run) want it, so it lives here rather
+ * than in a per-call-site `defaultCols` map.
  */
 const SIM_HIDDEN_KEYS = new Set([
   'name',
@@ -499,7 +511,6 @@ const SIM_HIDDEN_KEYS = new Set([
   'entry_tokens',
   'entry_sol',
   'entry_tx',
-  'ath_price',
   'exit_tx',
 ]);
 

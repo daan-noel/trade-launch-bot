@@ -83,6 +83,29 @@ function splitEnumColFilters<R>(
 }
 
 /**
+ * Per-table override of a column's own `defaultVisible`, keyed by column key
+ * (`true` = start shown, `false` = start hidden). Several tables are built from
+ * one shared column array (`simColumns`, `positionColumns`, the appended
+ * token-info set) but want different columns up front; this is the per-call-site
+ * escape hatch for that, so the shared array keeps ONE default and each page
+ * states only its own deviations. `sortOnly` columns are never toggleable and
+ * ignore this map.
+ */
+export type ColVisibilityOverrides = Readonly<Record<string, boolean>>;
+
+/** A column's initial visibility: the table's override if it names the key, else
+ *  the column's own `defaultVisible`. The ONE decider — used for the persisted
+ *  path, the unpersisted path, and the new-column merge below. */
+function defaultVisibleFor(
+  c: ColumnDef<unknown>,
+  overrides?: ColVisibilityOverrides,
+): boolean {
+  if (c.sortOnly) return false;
+  const o = overrides?.[c.key];
+  return o !== undefined ? o : c.defaultVisible !== false;
+}
+
+/**
  * Merge the saved visible-column set with the current column defs.
  *
  * `tableCols` persists a **visible** set, so a key's absence is ambiguous on its
@@ -92,9 +115,12 @@ function splitEnumColFilters<R>(
  * added to an existing table stays invisible forever for anyone who had ever
  * touched that table's toggles — silently shipping a feature nobody can see.
  */
-function loadVisibleCols(tableId: string, columns: ColumnDef<unknown>[]): Set<string> {
-  const isDefaultVisible = (c: ColumnDef<unknown>) =>
-    c.defaultVisible !== false && !c.sortOnly;
+function loadVisibleCols(
+  tableId: string,
+  columns: ColumnDef<unknown>[],
+  overrides?: ColVisibilityOverrides,
+): Set<string> {
+  const isDefaultVisible = (c: ColumnDef<unknown>) => defaultVisibleFor(c, overrides);
   const defaults = new Set(columns.filter(isDefaultVisible).map((c) => c.key));
   const stored = getTableCols(tableId);
   if (!stored) return defaults;
@@ -228,6 +254,11 @@ interface DataTableProps<R> {
   /** Stable id for persisting this table's column visibility (folded into the
    *  shared `mt:table.cols` map). Omit to not persist column toggles. */
   tableId?: string;
+  /** Per-table deviations from the shared column array's own `defaultVisible`
+   *  (`{ [colKey]: shown }`). See {@link ColVisibilityOverrides}. Applies to the
+   *  first render only — once the user touches the Columns panel, the persisted
+   *  set wins (a column added later still falls back to this map). */
+  defaultCols?: ColVisibilityOverrides;
   emptyMessage?: string;
   selectable?: boolean;
   paginate?: boolean;
@@ -326,6 +357,7 @@ export function DataTable<R>({
   colToggle = true,
   hoverable = true,
   tableId,
+  defaultCols,
   emptyMessage = 'No data.',
   selectable = true,
   paginate = true,
@@ -375,10 +407,10 @@ export function DataTable<R>({
   const [colFiltersMap, setColFiltersMap] = useState<Record<string, string>>({});
   const [visibleCols, setVisibleCols] = useState<Set<string>>(() =>
     tableId
-      ? loadVisibleCols(tableId, columns as ColumnDef<unknown>[])
+      ? loadVisibleCols(tableId, columns as ColumnDef<unknown>[], defaultCols)
       : new Set(
           columns
-            .filter((c) => c.defaultVisible !== false && !c.sortOnly)
+            .filter((c) => defaultVisibleFor(c as ColumnDef<unknown>, defaultCols))
             .map((c) => c.key),
         ),
   );

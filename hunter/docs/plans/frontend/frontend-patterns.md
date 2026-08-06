@@ -63,6 +63,26 @@ Generic, reused across all pages. Two modes:
 
 **Column visibility** is persisted per `tableId` to `localStorage` key `mt:table.cols` (a map of `tableId → Set<hidden_column_keys>`). All tables share one localStorage entry, keyed by `tableId` string. This is how column preferences survive refreshes.
 
+**Which columns start visible** — three tiers, most specific wins, all resolved by the ONE
+decider `defaultVisibleFor` in `DataTable.tsx`:
+
+| Tier | Where | Use for |
+| --- | --- | --- |
+| 1. `defaultVisible` on the column | the column def | the column's intrinsic default |
+| 2. Shared hidden-key set overlay | `TOKENS_HIDDEN_KEYS`, `SIM_HIDDEN_KEYS`, `POSITION_HIDDEN_KEYS`, `APPENDED_HIDDEN_KEYS` | a whole column *array*'s layout, when **every** table built from it agrees |
+| 3. `defaultCols={{ [key]: shown }}` prop | the call site | one table's deviation, when tables sharing an array **disagree** |
+
+Several tables are built from one shared array (`simColumns` feeds Simulate **and**
+Dry-run; `appendedTokenColumns` feeds every `TokenTable`), so tier 2 alone cannot express
+per-table layout — `initial_buy` is up front on Dry-run but not Simulate, `cu_price` on the
+sim tables but not Evidence/Sweep/Wallet, `token_amount` on Evidence/Sweep-combo but not
+the token lists. Tier 3 is the escape hatch: keep the shared array at ONE default and state
+only the deviation at the call site, so a shared-array edit never silently re-lays-out a
+table that never asked for it. Tier 3 applies to a table's own columns and its appended
+token-info columns alike, and is the fallback for a column added *later* too (a new column
+absent from `mt:table.knownCols` re-resolves through all three tiers — see `loadVisibleCols`).
+Never copy the same `defaultCols` map to several call sites; if they agree, it belongs in tier 2.
+
 **Hidden sort-only columns:** set `sortOnly: true` (+ `sortValue`) so the column joins multi-key sort but stays out of the Columns panel and defaults hidden. A sibling column's `renderHeader(SortCtx)` (via shared `MultiSortHeader`) calls `toggleSort(key)` for each axis — Rules/Simulate use `buildFingerprintRuleColumns`, `buildRuleParamsColumns`, and `buildCapsColumns` (concurrent / total; `0` total displays/filters as `∞` and sorts as largest).
 
 **Row-memo performance (locked):** `TableRow` is `React.memo`'d. `DataTable` ref-stabilizes

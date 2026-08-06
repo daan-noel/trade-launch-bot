@@ -5,8 +5,13 @@
 
 import type { CSSProperties, ReactNode } from 'react';
 import { formatCompact, formatDecimalTrim } from 'utils/format';
-import { configuredIxLabels, formatIxLabelsText } from 'lib/ixLabels';
-import { metricColorStyle } from 'lib/strategy/metricColors';
+import {
+  configuredIxLabels,
+  formatIxLabelsText,
+  ixLabelsActions,
+  ixLabelsCountTail,
+} from 'lib/ixLabels';
+import { hashHue, metricColorStyle } from 'lib/strategy/metricColors';
 import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
 import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 import { formatBucketWidth, lamportsToSol, type Fingerprint } from 'lib/strategy/types';
@@ -61,6 +66,31 @@ export function chip(text: ReactNode, opts?: { style?: CSSProperties; title?: st
   );
 }
 
+/**
+ * The `Nix` chip — amber body (the ix family tone), plus a hashed color ribbon
+ * on the leading edge.
+ *
+ * The count alone is NOT the axis: `[Create_v2, Create, Buy]` and
+ * `[Create_v2, Create, BuyExactSolIn]` are different match criteria that both
+ * render `3ix`, so two fingerprints looked identical wherever this chip appears.
+ * The ribbon hue is `hashHue` over the joined sequence — the same FNV the metric
+ * / rule-tag chips use, so no second hash — which makes any difference visible
+ * without widening the chip or adding an opaque token to read. It is a *hint*:
+ * two sequences can land on neighboring hues, so identity stays in the tooltip
+ * (actions + full JSON) and, on text-only surfaces, in `ixLabelsCountTail`.
+ */
+export function ixLabelsChip(labels: string[]): ReactNode {
+  const hue = hashHue(labels.join('|'));
+  return chip(`${labels.length}ix`, {
+    title: `${ixLabelsActions(labels)}\n\n${formatIxLabelsText(labels)}`,
+    style: {
+      ...axisTint('ix'),
+      boxShadow: `inset 3px 0 0 hsl(${hue}, 72%, 58%)`,
+      paddingLeft: '0.5rem',
+    },
+  });
+}
+
 function solChip(label: string, lamports: number | null): ReactNode | null {
   const s = lamportsToSol(lamports);
   if (s == null) return null;
@@ -101,9 +131,7 @@ export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
     solChip('spend', fp.spendable_lamports_in),
     solChip('fs_buy', fp.first_slot_buy_lamports),
     solChip('fs_sell', fp.first_slot_sell_lamports),
-    ix
-      ? chip(`${ix.length}ix`, { title: formatIxLabelsText(ix), style: axisTint('ix') })
-      : null,
+    ix ? ixLabelsChip(ix) : null,
     // `exact` carries no unit — appending ◎ would read as a zero-width bucket.
     chip(
       `bkt=${formatBucketWidth(fp.bucket_size_amount, 4)}${fp.bucket_size_amount == null ? '' : '◎'}`,
@@ -141,7 +169,11 @@ export function fingerprintParamsSearchText(fp: Fingerprint | undefined, fallbac
   pushSol('fs_sell', fp.first_slot_sell_lamports);
   const ix = configuredIxLabels(fp.ix_labels);
   if (ix) {
+    // Count keeps `3ix` matchable; the tail + actions make the *sequence*
+    // filterable, so two same-length sets don't both answer to one query.
     parts.push(`${ix.length}ix`);
+    parts.push(ixLabelsCountTail(ix));
+    parts.push(ixLabelsActions(ix));
     parts.push(formatIxLabelsText(ix));
   }
   const flowCount = volumeIxPatternsFromConfig(fp.metric_config).length;

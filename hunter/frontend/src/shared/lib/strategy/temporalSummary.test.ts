@@ -3,6 +3,7 @@ import {
   avgPnlSol,
   bestPnlWallCell,
   buildTemporalSummary,
+  floorToWallGrain,
   closedCount,
   formatWallClock,
   formatWallRange,
@@ -70,10 +71,10 @@ describe('pickHoldScheme', () => {
 
 describe('wall axis labels', () => {
   it('formats clock-first ticks and day breaks', () => {
-    expect(formatWallClock('2026-07-15T14:30:00Z', '30m')).toMatch(/\d{2}:\d{2}/);
+    expect(formatWallClock('2026-07-15T14:30:00Z', '30m', 'UTC')).toMatch(/\d{2}:\d{2}/);
     // Noon UTC stays on the same local calendar day in common US/EU offsets.
-    expect(isWallDayBreak('2026-07-16T12:00:00Z', '2026-07-15T12:00:00Z')).toBe(true);
-    expect(isWallDayBreak('2026-07-15T16:00:00Z', '2026-07-15T14:00:00Z')).toBe(false);
+    expect(isWallDayBreak('2026-07-16T12:00:00Z', '2026-07-15T12:00:00Z', 'UTC')).toBe(true);
+    expect(isWallDayBreak('2026-07-15T16:00:00Z', '2026-07-15T14:00:00Z', 'UTC')).toBe(false);
   });
 
   it('builds a range caption from filled cells', () => {
@@ -91,8 +92,8 @@ describe('wall axis labels', () => {
         created_at: '2026-07-15T16:00:00Z',
       }),
     ];
-    const t = buildTemporalSummary(rows, 'created_at', '1h');
-    const range = formatWallRange(t.wall, t.wallGrain);
+    const t = buildTemporalSummary(rows, 'UTC', 'created_at', '1h');
+    const range = formatWallRange(t.wall, t.wallGrain, 'UTC');
     expect(range).toContain('→');
   });
 });
@@ -106,7 +107,7 @@ describe('buildTemporalSummary', () => {
       row({ mint_address: 'd', exit: 'Open', holding_secs: 0, pnl_sol: 0.1 }),
       row({ mint_address: 'e', exit: 'NoEntry', fired: false, holding_secs: 0, pnl_sol: 0 }),
     ];
-    const t = buildTemporalSummary(rows);
+    const t = buildTemporalSummary(rows, 'UTC');
     expect(t.nFired).toBe(4);
     // closed 10/20/120 → nearest-rank p90=120 → mid_5m
     expect(t.holdScheme).toBe('mid_5m');
@@ -128,7 +129,7 @@ describe('buildTemporalSummary', () => {
       row({ mint_address: 'b', exit: 'StopLoss', holding_secs: 7, pnl_sol: -0.5 }),
       row({ mint_address: 'c', exit: 'TakeProfit', holding_secs: 12, pnl_sol: 0.2 }),
     ];
-    const t = buildTemporalSummary(rows);
+    const t = buildTemporalSummary(rows, 'UTC');
     expect(t.holdScheme).toBe('dense_15s');
     expect(t.hold.find((b) => b.id === 'hold_0_2')!.n).toBe(1);
     expect(t.hold.find((b) => b.id === 'hold_6_9')!.n).toBe(1);
@@ -152,7 +153,7 @@ describe('buildTemporalSummary', () => {
         created_at: '2026-07-15T14:45:00Z',
       }),
     ];
-    const t = buildTemporalSummary(rows, 'created_at');
+    const t = buildTemporalSummary(rows, 'UTC', 'created_at');
     expect(t.wallGrain).toBe('30m');
     expect(t.wallGrainAuto).toBe('30m');
     expect(t.wallSpanMs).toBe(15 * 60_000);
@@ -188,7 +189,7 @@ describe('buildTemporalSummary', () => {
         created_at: '2026-07-15T16:30:00Z',
       }),
     ];
-    const t = buildTemporalSummary(rows, 'created_at', '1h');
+    const t = buildTemporalSummary(rows, 'UTC', 'created_at', '1h');
     const best = bestPnlWallCell(t.wall)!;
     const worst = worstPnlWallCell(t.wall)!;
     expect(best.pnl_sol).toBe(2);
@@ -212,7 +213,7 @@ describe('buildTemporalSummary', () => {
         created_at: '2026-07-15T20:00:00Z',
       }),
     ];
-    const t = buildTemporalSummary(rows, 'created_at');
+    const t = buildTemporalSummary(rows, 'UTC', 'created_at');
     expect(t.wallGrain).toBe('1h');
     expect(t.wall.filter((c) => c.n > 0)).toHaveLength(2);
   });
@@ -232,7 +233,7 @@ describe('buildTemporalSummary', () => {
         created_at: '2026-07-15T14:45:00Z',
       }),
     ];
-    const t = buildTemporalSummary(rows, 'created_at', '1h');
+    const t = buildTemporalSummary(rows, 'UTC', 'created_at', '1h');
     expect(t.wallGrain).toBe('1h');
     expect(t.wallGrainAuto).toBe('30m');
   });
@@ -242,7 +243,7 @@ describe('buildTemporalSummary', () => {
       row({ mint_address: 'a', exit: 'TakeProfit', holding_secs: 10 }),
       row({ mint_address: 'b', exit: 'StopLoss', holding_secs: 20 }),
     ];
-    const t = buildTemporalSummary(rows, 'entry_time', 'auto', 'dense_15s');
+    const t = buildTemporalSummary(rows, 'UTC', 'entry_time', 'auto', 'dense_15s');
     expect(t.holdScheme).toBe('dense_15s');
     expect(t.holdSchemeAuto).toBe('dense_60s');
     expect(t.hold.find((b) => b.id === 'hold_10_14')!.n).toBe(1);
@@ -265,7 +266,7 @@ describe('buildTemporalSummary', () => {
         created_at: '2026-07-15T16:00:00Z',
       }),
     ];
-    const base = buildTemporalSummary(rows, 'created_at', '1h', 'mid_5m');
+    const base = buildTemporalSummary(rows, 'UTC', 'created_at', '1h', 'mid_5m');
     const holdOnlyA = rebucketHold(
       'mid_5m',
       rows.filter((r) => r.mint_address === 'a'),
@@ -279,8 +280,66 @@ describe('buildTemporalSummary', () => {
       'created_at',
       '1h',
       rows.filter((r) => r.mint_address === 'b'),
+      'UTC',
     );
     expect(wallOnlyB.map((c) => c.id)).toEqual(base.wall.map((c) => c.id));
     expect(wallOnlyB.reduce((s, c) => s + c.n, 0)).toBe(1);
+  });
+});
+
+/**
+ * Twin of the Rust guard `sim_query::wall_buckets_floor_in_the_requested_zone`
+ * (same vectors, verbatim). Wall bins are CIVIL buckets: if these two folds ever
+ * drift, the Wall clock card and the Timing calendar beside it silently disagree
+ * about which day a position belongs to.
+ */
+describe('floorToWallGrain', () => {
+  const at = (iso: string) => Date.parse(iso);
+
+  it('floors wall buckets in the app timezone', () => {
+    const ny = 'America/New_York';
+    // A late-evening UTC instant is still the PREVIOUS civil day in New York.
+    expect(floorToWallGrain(at('2026-01-15T02:30:00Z'), 'day', ny)).toBe(
+      at('2026-01-14T05:00:00Z'),
+    );
+    // 4h grain aligns to LOCAL 00/04/08/…, not to the UTC epoch.
+    expect(floorToWallGrain(at('2026-07-15T14:37:00Z'), '4h', ny)).toBe(
+      at('2026-07-15T12:00:00Z'),
+    );
+    // Half-hour zone: an epoch-aligned floor is wrong at EVERY grain here.
+    expect(floorToWallGrain(at('2026-07-15T14:20:00Z'), '1h', 'Asia/Kolkata')).toBe(
+      at('2026-07-15T13:30:00Z'),
+    );
+    // DST fall-back day: the instant is EST (-5) but local midnight that day was
+    // still EDT (-4) — the second pass is what gets this right.
+    expect(floorToWallGrain(at('2026-11-01T12:00:00Z'), 'day', ny)).toBe(
+      at('2026-11-01T04:00:00Z'),
+    );
+  });
+
+  it('degrades to plain epoch alignment under UTC', () => {
+    const t = at('2026-07-15T14:37:00Z');
+    expect(floorToWallGrain(t, '4h', 'UTC')).toBe(t - (t % (4 * 3_600_000)));
+  });
+
+  it('drops no row across a DST transition', () => {
+    // A DST day is 23h or 25h, so a `t += step` grid drifts off the boundaries.
+    const stamps = [
+      '2026-10-30T18:00:00Z',
+      '2026-10-31T18:00:00Z',
+      '2026-11-01T02:00:00Z', // before the 06:00Z fall-back
+      '2026-11-01T18:00:00Z', // after it
+      '2026-11-02T18:00:00Z',
+      '2026-11-03T18:00:00Z',
+    ];
+    const rows = stamps.map((ts, i) =>
+      row({ mint_address: `m${i}`, exit: 'TakeProfit', holding_secs: 30, created_at: ts }),
+    );
+    const t = buildTemporalSummary(rows, 'America/New_York', 'created_at', 'day');
+    expect(t.wall.reduce((s, c) => s + c.n, 0)).toBe(stamps.length);
+    // Cells stay contiguous: each end is the next start.
+    for (let i = 0; i + 1 < t.wall.length; i++) {
+      expect(t.wall[i]!.end).toBe(t.wall[i + 1]!.start);
+    }
   });
 });

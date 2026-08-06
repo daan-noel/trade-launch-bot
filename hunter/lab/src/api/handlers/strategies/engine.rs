@@ -164,6 +164,9 @@ pub async fn engine_sim_result_time_summary(
             Some(g)
         }
     });
+    // Absent `tz` keeps the legacy UTC bucketing rather than guessing the
+    // server's local zone — an unset zone must not silently reshape the bars.
+    let tz = query.get("tz").map(String::as_str).filter(|s| !s.is_empty());
     super::positions::sim_result_time_summary(
         &app_state,
         run_id.into_inner(),
@@ -171,6 +174,7 @@ pub async fn engine_sim_result_time_summary(
         wall_field,
         wall_grain,
         hold_scheme,
+        tz,
     )
 }
 

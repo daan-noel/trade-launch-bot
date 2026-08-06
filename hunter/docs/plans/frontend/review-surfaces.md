@@ -25,9 +25,10 @@ Concretely, that means no per-chart aggregate endpoints — the four charts fold
 ### Chart focus (drill-down lens)
 
 Clicking a calendar day or week, heat cell, distribution bar, rule-comparison row,
-or hold point/band sets `hfocus` (see `live/pages/console/historyFocus.ts`). That is
-a **shared lens** on top of the parent cohort — same predicate for the table and for
-the charts that refold (`filterClosesForFocus`):
+hold point/band, or a Metric± exit tile sets `hfocus` (see
+`live/pages/console/historyFocus.ts`). That is a **shared lens** on top of the parent
+cohort — same predicate for the table and for the charts that refold
+(`filterClosesForFocus`):
 
 | Wire | Meaning | Table + lens charts apply |
 | --- | --- | --- |
@@ -38,11 +39,22 @@ the charts that refold (`filterClosesForFocus`):
 | `rule:<uuid>` | one rule | `rule_id` eq (does **not** change the bar's rule select) |
 | `pos:<uuid>` | one close (Hold vs PnL point) | `id` eq |
 | `band:<holdLo>:<holdHi>:<pctLo>:<pctHi>` | Hold vs PnL drag-zoom | client filter on hold + PnL% |
+| `exit:metric_win` / `metric_loss` / `metric` | legacy Metric± deep-link | client filter (new clicks use `hexit` instead) |
+
+**Exit mix strip** (`HistoryExitSummary`) sits between the filter bar and the charts
+deck. It folds the same B2 closes payload through `runSummaryFromRows` /
+`runSummarySections`, then **refolds on chart `hfocus`** (day / heat / pct / …) so
+the counts match the focused slice equity/table use. Exit-tile clicks write `hexit`
+and leave `hfocus` alone — the two compose. Metric± use synthetic needles
+(`metric_win` / `metric_loss` / `metric`) — client-only, not SQL `contains` — because
+a substring cannot express the win/loss split. Legacy `hfocus=exit:…` still highlights.
 
 **Hybrid rendering:** calendar + heatmap keep the **parent** cohort (selection ring on
 the active cell) so the timing grid stays readable; equity curve, PnL distribution,
-hold scatter, and rule comparison **refold on the focused slice**. A Focus chip in
-the filter bar clears the lens. Clicking the same cell again toggles it off.
+and rule comparison **refold on the focused slice**. Hold scatter refolds too, except
+its own `holdBand` zoom — that keeps parent dots and zooms via `domain`, and
+`contextPoints` keeps axes mounted when another lens has no scatter rows. A Focus chip
+in the filter bar clears the lens. Clicking the same cell again toggles it off.
 Equity-curve brush focus is intentionally out of scope.
 
 `day:` and `week:` are the same derivation at two widths — both go through
@@ -197,9 +209,11 @@ any date opens; the Console page only ever had rows still in the session's live 
 | --- | --- |
 | Cohort state (URL-backed) | `live/pages/console/historyCohort.ts` |
 | Exit-reason filter needles + series trim | `live/pages/console/historyExitFilter.ts` |
+| Exit-mix fold + tile → cohort mapping | `live/pages/console/historyExitSummary.ts` |
 | Chart focus parse/serialize + TZ bounds | `live/pages/console/historyFocus.ts` |
 | Section composition + SSE refetch | `live/components/history/ConsoleHistorySection.tsx` |
 | Filter bar | `live/components/history/HistoryFilterBar.tsx` |
+| Exit mix + counts strip | `live/components/history/HistoryExitSummary.tsx` |
 | Charts deck | `live/components/history/HistoryChartsDeck.tsx` |
 | Server-paged table + detail modal | `live/components/history/HistoryTable.tsx` |
 | Shared folds + renderers | `shared/components/analytics/` |

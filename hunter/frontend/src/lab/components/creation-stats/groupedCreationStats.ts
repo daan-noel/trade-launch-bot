@@ -13,6 +13,7 @@ import {
   type GroupField,
 } from '@lab/components/sweep/groupedTypes';
 import type { FieldFilterValue } from '@lab/components/sweep/fingerprintFilters';
+import { ixLabelsCountTail } from 'lib/ixLabels';
 import { WALLET_MARKER_COLORS } from 'components/token-price-chart/constants';
 import type { CreationBucket, CreationSegment } from 'components/creation-stats/creationStats';
 import type { SortEntry, TableQuery } from 'components/table/types';
@@ -281,8 +282,10 @@ export function groupShortLabel(group: GroupedCreationGroup): string {
     .map(([k, v]) => {
       const label = GROUP_FIELD_LABELS[k as GroupField] ?? k;
       if (k === 'ix_labels') {
-        const n = v === MISSING_VALUE ? 0 : groupValueParts(k, v).length;
-        return `${label}=${n} ix`;
+        // Count alone collides — two same-length sequences would produce the
+        // same series name on the trend chart. Tail keeps them apart.
+        if (v === MISSING_VALUE) return `${label}=0 ix`;
+        return `${label}=${ixLabelsCountTail(groupValueParts(k, v))}`;
       }
       return `${label}=${v}`;
     })
