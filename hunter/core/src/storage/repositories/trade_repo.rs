@@ -581,14 +581,16 @@ impl TradeRepo {
     }
 
     /// Distinct token mints this wallet traded in the `since..now` window,
-    /// ordered by the wallet's most-recent trade on each mint (recent first) and
-    /// capped at `limit`. Powers the Trader Analysis page's per-wallet token list.
+    /// ordered by the wallet's most-recent trade on each mint (recent first).
+    /// `limit <= 0` returns every mint in the window (unbounded); a positive
+    /// `limit` caps the response. Powers the Trader Analysis page's per-wallet
+    /// token list.
     ///
     /// Counts **both** buys and sells, so a mint the wallet only *exited* in the
     /// window (its buy predates `since`) still appears. An unknown wallet has no
     /// trades, so returns an empty vec without touching `trades`. Bounded by
-    /// `limit` + the `block_time >= since` window, which rides the hypertable's
-    /// `block_time` partitioning.
+    /// the `block_time >= since` window (and optionally `limit`), which rides the
+    /// hypertable's `block_time` partitioning.
     pub async fn wallet_traded_mints(
         &self,
         wallet: &str,
@@ -598,6 +600,10 @@ impl TradeRepo {
         let Some(wallet_id) = WalletDictRepo::new(self.pool.clone()).id_for(wallet).await? else {
             return Ok(Vec::new());
         };
+        // `LIMIT NULL` = all rows (same trick as `find_by_mint_paged`). Binding
+        // an `Option<i64>` lets one SQL string serve both the capped and full-
+        // window callers without string-building the query.
+        let limit_opt: Option<i64> = if limit <= 0 { None } else { Some(limit) };
         // `amount_lamports`/`token_amount` sums per side feed the Trader Analysis
         // page's avg-cost PnL reconstruction (`kernel::wallet_mint_pnl`) — both are
         // exact-integer `SUM(...)::BIGINT` (never NULL: `COALESCE` guards the
@@ -638,7 +644,7 @@ impl TradeRepo {
         )
         .bind(wallet_id)
         .bind(since)
-        .bind(limit)
+        .bind(limit_opt)
         .fetch_all(&self.pool)
         .await?;
 

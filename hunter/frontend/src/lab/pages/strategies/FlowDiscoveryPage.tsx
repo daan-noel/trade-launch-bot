@@ -12,6 +12,7 @@ import {
   SpinnerIcon,
 } from 'components/ui/icons';
 import { Checkbox } from 'components/ui/Checkbox';
+import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { InlineAlert } from 'components/ui/Modal';
@@ -792,19 +793,17 @@ export function FlowDiscoveryPage() {
           >
             Created range · UTC
           </LabelTip>
-          <div className="flex items-center gap-1">
-            <Input
-              type="datetime-local"
-              value={createdAfter}
-              onChange={(e) => setField('createdAfter', e.target.value)}
-            />
-            <span className="text-[10px] text-text-dim/50">–</span>
-            <Input
-              type="datetime-local"
-              value={createdBefore}
-              onChange={(e) => setField('createdBefore', e.target.value)}
-            />
-          </div>
+          <DateTimeRangePicker
+            aria-label="Created range"
+            zoneLabel="UTC"
+            emptyLabel="All history"
+            customPreset="custom"
+            value={{ preset: 'custom', from: createdAfter, to: createdBefore }}
+            onChange={({ from, to }) => {
+              setField('createdAfter', from);
+              setField('createdBefore', to);
+            }}
+          />
         </div>
         <div className="flex flex-col gap-1 w-[120px]">
           <LabelTip

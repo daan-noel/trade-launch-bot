@@ -17,8 +17,9 @@ import {
   TrashIcon,
 } from 'components/ui/icons';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
-import { Input } from 'components/ui/Input';
+import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { Select } from 'components/ui/Select';
+import { InfoTooltip } from 'components/ui/InfoTooltip';
 import { InlineAlert } from 'components/ui/Modal';
 import { PageHeader } from 'components/ui/PageHeader';
 import { SectionDivider } from 'components/ui/SectionDivider';
@@ -89,6 +90,7 @@ import {
   type StrategyRule,
   type TradeMode,
 } from 'lib/strategy/types';
+import { EXECUTION_MODEL_HELP } from 'lib/strategy/strategyHelp';
 import { goodBad, pctText, runSummarySections, solText } from 'lib/strategy/runSummary';
 import { pctGradeClass, winRateGradeClass } from 'lib/signedTone';
 import { cn } from 'lib/cn';
@@ -438,30 +440,29 @@ export function SimulatePage() {
         className="mb-0"
         actions={
           <>
-          <label
-            className="flex items-center gap-1.5 text-xs text-text-dim mr-8"
+          <div
+            className="mr-8 flex items-center gap-1.5 text-xs text-text-dim"
             title="Only tokens created in this UTC window are scanned. Leave either end empty for all history."
           >
             <span>Created</span>
-            <Input
-              type="datetime-local"
-              fieldSize="sm"
-              className="w-44"
-              value={since}
-              onChange={(e) => setSince(e.target.value)}
+            <DateTimeRangePicker
+              aria-label="Created range"
+              zoneLabel="UTC"
+              emptyLabel="All history"
+              customPreset="custom"
+              value={{ preset: 'custom', from: since, to: until }}
+              onChange={({ from, to }) => {
+                setSince(from);
+                setUntil(to);
+              }}
             />
-            <span className="text-text-dim/50">–</span>
-            <Input
-              type="datetime-local"
-              fieldSize="sm"
-              className="w-44"
-              value={until}
-              onChange={(e) => setUntil(e.target.value)}
-            />
-          </label>
+          </div>
 
           <label className="flex items-center gap-1.5 text-xs text-text-dim">
-            <span>Fill</span>
+            <span className="flex items-center gap-1">
+              Fill
+              <InfoTooltip {...EXECUTION_MODEL_HELP.fillModel} />
+            </span>
             <Select
               fieldSize="sm"
               value={fillModel}
@@ -477,7 +478,10 @@ export function SimulatePage() {
             </Select>
           </label>
           <label className="flex items-center gap-1.5 text-xs text-text-dim">
-            <span>Cost</span>
+            <span className="flex items-center gap-1">
+              Cost
+              <InfoTooltip {...EXECUTION_MODEL_HELP.costModel} />
+            </span>
             <Select
               fieldSize="sm"
               value={costModel}

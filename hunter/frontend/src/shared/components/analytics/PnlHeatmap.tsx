@@ -9,6 +9,8 @@ interface PnlHeatmapProps {
   /** What one cell's `count` counts, for the tooltip ("trade", "token"). */
   unitLabel?: string;
   emptyMessage?: string;
+  selected?: { dow: number; hour: number } | null;
+  onSelectCell?: (cell: { dow: number; hour: number }) => void;
 }
 
 /** `#rrggbb` → `rgba(r,g,b,a)`. Keeps the heat wash on the SSOT candle palette
@@ -32,15 +34,25 @@ function heatColor(pnlSol: number, count: number, maxAbs: number): string {
   return withAlpha(pnlSol > 0 ? CHART_COLORS.up : CHART_COLORS.down, alpha);
 }
 
+/** Compact in-cell label — full precision stays on the tooltip. */
+function shortPnl(pnl: number): string {
+  const abs = Math.abs(pnl);
+  if (abs >= 10) return `${pnl > 0 ? '+' : ''}${formatDecimalTrim(pnl, 0)}`;
+  if (abs >= 1) return `${pnl > 0 ? '+' : ''}${formatDecimalTrim(pnl, 1)}`;
+  return `${pnl > 0 ? '+' : ''}${formatDecimalTrim(pnl, 2)}`;
+}
+
 /**
- * Day-of-week × hour-of-day PnL heatmap — "when do these trades make or lose
- * money". Pure CSS grid (mirrors `CreationHeatmap`), on a signed green/red scale
- * rather than a magnitude-only one. Bucketed in the caller's timezone.
+ * Day-of-week × hour-of-day PnL heatmap. Cells stretch across the card
+ * (`1fr` columns, min height) so a full-width History row stays clickable
+ * and readable instead of a 0.9rem postage stamp.
  */
 export const PnlHeatmap = memo(function PnlHeatmap({
   cells,
   unitLabel = 'trade',
   emptyMessage = 'No trades in this window to plot.',
+  selected = null,
+  onSelectCell,
 }: PnlHeatmapProps) {
   const { lookup, maxAbs, totalCount } = useMemo(() => {
     const map = new Map<number, PnlHeatCell>();
@@ -59,10 +71,10 @@ export const PnlHeatmap = memo(function PnlHeatmap({
   }
 
   return (
-    <div className="overflow-x-auto">
+    <div className="w-full">
       <div
-        className="grid gap-px text-[10px]"
-        style={{ gridTemplateColumns: `2.4rem repeat(24, minmax(0.9rem, 1fr))` }}
+        className="grid w-full gap-1 text-[11px]"
+        style={{ gridTemplateColumns: `2.75rem repeat(24, minmax(0, 1fr))` }}
       >
         <div />
         {HOURS.map((h) => (
@@ -79,6 +91,8 @@ export const PnlHeatmap = memo(function PnlHeatmap({
             lookup={lookup}
             maxAbs={maxAbs}
             unitLabel={unitLabel}
+            selected={selected}
+            onSelectCell={onSelectCell}
           />
         ))}
       </div>
@@ -92,36 +106,48 @@ function Row({
   lookup,
   maxAbs,
   unitLabel,
+  selected,
+  onSelectCell,
 }: {
   label: string;
   dow: number;
   lookup: Map<number, PnlHeatCell>;
   maxAbs: number;
   unitLabel: string;
+  selected: { dow: number; hour: number } | null;
+  onSelectCell?: (cell: { dow: number; hour: number }) => void;
 }) {
   return (
     <>
-      <div className="flex items-center pr-1.5 font-semibold text-text-dim">{label}</div>
+      <div className="flex items-center pr-1.5 text-[11px] font-semibold text-text-dim">{label}</div>
       {HOURS.map((h) => {
         const cell = lookup.get(dow * 24 + h) ?? { dow, hour: h, pnl_sol: 0, count: 0 };
-        // 3 dp (not 1): |pnl| < 0.05 used to render as "0" on every small-scalp hour.
-        const cellLabel = cell.count > 0 ? formatDecimalTrim(cell.pnl_sol, 3) : '';
+        const cellLabel = cell.count > 0 ? shortPnl(cell.pnl_sol) : '';
+        const isSelected = selected?.dow === dow && selected?.hour === h;
+        const clickable = cell.count > 0 && !!onSelectCell;
         const title =
           `${label} ${h}:00\n` +
           (cell.count > 0
             ? `PnL: ${cell.pnl_sol >= 0 ? '+' : ''}${formatDecimalTrim(cell.pnl_sol, 3)} SOL over ${cell.count} ${unitLabel}${cell.count === 1 ? '' : 's'}`
-            : 'No trades');
+            : 'No trades') +
+          (clickable ? '\nClick to focus table' : '');
         return (
-          <div
+          <button
             key={h}
+            type="button"
             title={title}
+            disabled={!clickable}
+            onClick={() => onSelectCell?.({ dow, hour: h })}
             className={cn(
-              'flex aspect-square items-center justify-center overflow-hidden rounded-[2px] border border-white/5 text-center font-mono leading-none tabular-nums text-white/85',
+              'flex min-h-[2.25rem] items-center justify-center overflow-hidden rounded-sm border border-white/5 px-0.5 text-center font-mono text-[10px] leading-none tabular-nums text-white/90',
+              clickable && 'cursor-pointer hover:border-white/40',
+              !clickable && 'cursor-default',
+              isSelected && 'ring-2 ring-primary ring-offset-1 ring-offset-bg-panel',
             )}
             style={{ background: heatColor(cell.pnl_sol, cell.count, maxAbs) }}
           >
-            {cellLabel}
-          </div>
+            <span className="max-w-full truncate">{cellLabel}</span>
+          </button>
         );
       })}
     </>

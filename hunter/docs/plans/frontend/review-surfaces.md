@@ -11,10 +11,73 @@ A **cohort** is a set of positions: date range · rule · mode · status · exit
 Console it lives in the URL (the `h*` keys of `OPS_PARAMS`, see `lib/strategy/nav.ts`) and
 is read through one hook, `live/pages/console/historyCohort.ts`.
 
+**Exit-reason filter needles** (`historyExitFilter.ts`) match what live persists: system
+labels (`TakeProfit`, `StopLoss`, `Dead`, `Manual`, `Migrated`) plus **metric names**
+(`stall`, `trail`, `pnl`, …) as `contains` substrings — so `stall` matches `stall >= 300`.
+Do not use the retired ladder aliases (`Trailing`, bare `Stall`, `TimeStop`); legacy URL
+values are canonicalized onto the metric names.
+
 The charts deck and the table below it are driven by that same cohort. This is the whole
 point: **a chart must never be computed from a different query than the rows under it**.
 Concretely, that means no per-chart aggregate endpoints — the four charts fold one payload
 (B2) client-side, and the table pages the matching population (B1) server-side.
+
+### Chart focus (drill-down lens)
+
+Clicking a calendar day or week, heat cell, distribution bar, or rule-comparison row
+sets `hfocus` (see `live/pages/console/historyFocus.ts`). That is a **table-only lens**
+on top of the parent cohort:
+
+| Wire | Meaning | Table applies |
+| --- | --- | --- |
+| `day:YYYY-MM-DD` | civil day in the UI timezone | `range` intersected with that day's UTC `[from,to)` |
+| `week:YYYY-MM-DD` | calendar week, keyed by its **Sunday** | same, over a 7-day span |
+| `heat:<dow>:<hour>` | recurring weekday×hour | client filter on `exit_time` (scan capped at 1000) |
+| `pct:<lo>:<hi>` | histogram bucket (adjacent pair from any `PNL_DIST_EDGE_SETS` density) | `pnl_pct` numeric filter |
+| `rule:<uuid>` | one rule | `rule_id` eq (does **not** change the bar's rule select) |
+| `pos:<uuid>` | one close (Hold vs PnL point) | `id` eq |
+| `band:<holdLo>:<holdHi>:<pctLo>:<pctHi>` | Hold vs PnL drag-zoom | client filter on hold + PnL% |
+
+Charts keep rendering the **parent** cohort with a selection ring on the active cell;
+a Focus chip in the filter bar clears the lens. Clicking the same cell again toggles
+it off. Equity-curve brush focus is intentionally out of scope.
+
+`day:` and `week:` are the same derivation at two widths — both go through
+`spanBoundsUtcIso(startDay, days, tz)`, so a week lens is exactly the union of its
+seven day lenses and neither can round a DST edge differently (locked by
+`weekBoundsUtcIso` starting where day 1 starts and ending where day 7 ends). The civil
+date arithmetic underneath is the shared `pnlSeries::shiftDayKey`, which the calendar
+grid also walks its columns with — a focus window cannot address a date the cell that
+produced it wasn't showing.
+
+### What the calendar encodes
+
+Three facts share one square, chosen because each answers a question the others can't:
+
+| Channel | Carries | Why |
+| --- | --- | --- |
+| Fill hue | sign of the day's PnL | the primary read |
+| Fill alpha | \|PnL\| relative to the window max | magnitude |
+| **Border alpha** | trade count (√-scaled vs the window max) | one lucky close and a forty-trade grind are otherwise identical squares — the same conflation the wallet work kept hitting |
+
+The column axis is **months**, not weekdays: the day×hour heatmap sits directly beside
+it and already owns "which weekday", so a M/W/F gutter spent width without ever telling
+you which dates you were looking at. Rows still run Sun→Sat; weekend cells carry a
+dashed outline, today a white ring.
+
+The summary strip under the grid (`summarizeDailyPnl`) is the part colour cannot show:
+green-day rate, the two extreme days, and the longest consecutive red run. Two decisions
+in that fold are load-bearing — a **no-trade day is not a flat day** (it's excluded from
+every count, since an absence isn't a loss), and a no-trade gap **does not break a red
+streak**, because a quiet weekend is not a recovery. It summarizes only the window the
+grid actually draws, so the strip and the squares can never disagree.
+
+PnL distribution density (`sparse` / `default` / `dense`) is a **view preference**
+(`localStorage` key `hunter.pnlDistDensity`), not a cohort key — see
+`PNL_DIST_EDGE_SETS` in `pnlSeries.ts`. All presets share the open win tail
+(`50…100` / `100…200` / `200…500` / `≥ 500`); they only change how finely the zone
+around 0% is sliced. Changing density clears a `pct:` focus whose bucket is not on
+the new grid.
 
 Two consequences worth knowing:
 
@@ -61,11 +124,15 @@ and `to` exclusive, so adjacent windows can't double-count a close on the bounda
 
 ### B2 — `GET /api/portfolio/closes-series?range=&mode=&rule_id=`
 
-A compact per-close array — `{exit_time, rule_id, pnl_sol, entry_sol, win}` per `End` row —
-plus an `entry_failed` count. Not pre-bucketed: one fetch feeds the equity curve, the
-histogram, the calendar, the day×hour heatmap, and the per-rule comparison. Per-chart
-endpoints would have been the obvious alternative and are exactly how aggregation drift
-starts.
+A compact per-close array —
+`{id, exit_time, rule_id, mint_address, pnl_sol, entry_sol, win, hold_secs, exit_reason}`
+per `End` row — plus an `entry_failed` count. `hold_secs` is
+`EXTRACT(EPOCH FROM exit_time − entry_time)` (null when `entry_time` is missing) and feeds
+the Hold-vs-PnL scatter. `exit_reason` lets the charts deck apply the same exit-reason
+`contains` cohort filter as the table (metric needles like `stall` match `stall >= 300`).
+Not pre-bucketed: one fetch feeds the equity curve, the histogram, the calendar, the
+day×hour heatmap, the hold scatter, and the per-rule comparison. Per-chart endpoints would
+have been the obvious alternative and are exactly how aggregation drift starts.
 
 `pnl_sol` uses `models::strategy::realized_exit_sol` — the ONE decider of which exit figure
 counts (`exit_sol_total` once any sell leg landed, else the stamped single-leg `exit_sol`),
@@ -124,6 +191,8 @@ any date opens; the Console page only ever had rows still in the session's live 
 | Concern | File |
 | --- | --- |
 | Cohort state (URL-backed) | `live/pages/console/historyCohort.ts` |
+| Exit-reason filter needles + series trim | `live/pages/console/historyExitFilter.ts` |
+| Chart focus parse/serialize + TZ bounds | `live/pages/console/historyFocus.ts` |
 | Section composition + SSE refetch | `live/components/history/ConsoleHistorySection.tsx` |
 | Filter bar | `live/components/history/HistoryFilterBar.tsx` |
 | Charts deck | `live/components/history/HistoryChartsDeck.tsx` |

@@ -21,7 +21,7 @@ import type { SweepResultRecord } from './types';
 // legacy `sweepColumns`/`groupColumns` shape, but the swept params are now a
 // nested `RuleParams` blob (TP/SL + entry/exit metric conditions), rendered as
 // compact chips instead of one flat column per knob. The legacy per-strategy
-// exit-reason columns (trailing/stall/time/liquidity/next-kill) collapse to the
+// exit-reason columns (trailing/stall/time/liquidity) collapse to the
 // engine's single `Metrics` exit.
 
 // --- formatters -------------------------------------------------------------

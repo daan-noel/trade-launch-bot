@@ -15,6 +15,7 @@ import { connectStrategyPositionUpdate } from 'services/sse';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { useGetPortfolioClosesSeriesQuery } from '@live/store/liveEndpoints';
 import { useHistoryCohort } from '@live/pages/console/historyCohort';
+import { filterClosesForCohort } from '@live/pages/console/historyExitFilter';
 import { HistoryChartsDeck } from './HistoryChartsDeck';
 import { HistoryFilterBar } from './HistoryFilterBar';
 import { HistoryTable } from './HistoryTable';
@@ -57,19 +58,25 @@ export const ConsoleHistorySection = memo(function ConsoleHistorySection({
     ruleId: cohort.ruleId,
   });
 
-  // Client-side trim for a custom window (the endpoint serves presets only) and
-  // for the exit-reason/status narrowing the series doesn't carry — so the deck
-  // describes exactly the cohort the table pages.
-  const closes = useMemo(() => {
-    const all = series?.closes ?? [];
-    if (!cohort.fromIso && !cohort.toIso) return all;
-    const from = cohort.fromIso ? Date.parse(cohort.fromIso) : -Infinity;
-    const to = cohort.toIso ? Date.parse(cohort.toIso) : Infinity;
-    return all.filter((c) => {
-      const t = Date.parse(c.exit_time);
-      return t >= from && t < to;
-    });
-  }, [series, cohort.fromIso, cohort.toIso]);
+  // Client-side trim: custom window (endpoint serves presets only) + status +
+  // exit-reason contains — same cohort the table pages. Series points carry
+  // `exit_reason` so metric needles (`stall`) match `stall >= 300`.
+  const closes = useMemo(
+    () =>
+      filterClosesForCohort(series?.closes ?? [], {
+        fromIso: cohort.fromIso,
+        toIso: cohort.toIso,
+        status: cohort.status,
+        exitReason: cohort.exitReason,
+      }),
+    [series, cohort.fromIso, cohort.toIso, cohort.status, cohort.exitReason],
+  );
+  // Entry-failed is only part of the cohort when status is unrestricted or
+  // explicitly EntryFailed (series closes are always `End`).
+  const entryFailedForCohort =
+    !cohort.status || cohort.status === 'EntryFailed'
+      ? (series?.entry_failed ?? null)
+      : null;
 
   // Live terminal frames invalidate the cohort — coalesced, one refetch of both
   // the series and the current table page.
@@ -117,7 +124,8 @@ export const ConsoleHistorySection = memo(function ConsoleHistorySection({
       <HistoryFilterBar
         cohort={cohort}
         closedCount={series ? closes.length : null}
-        entryFailed={series?.entry_failed ?? null}
+        entryFailed={entryFailedForCohort}
+        ruleNameOf={(id) => ruleNameOf(id)}
       />
 
       <HistoryChartsDeck
@@ -125,10 +133,13 @@ export const ConsoleHistorySection = memo(function ConsoleHistorySection({
         timezone={timezone}
         ruleNameOf={ruleNameOf}
         loading={isFetching}
+        focus={cohort.focus}
+        onFocusChange={(focus) => cohort.set({ focus })}
       />
 
       <HistoryTable
         cohort={cohort}
+        timezone={timezone}
         ruleNameOf={ruleNameOf}
         selectedKey={selectedKey}
         onSelect={onSelect}

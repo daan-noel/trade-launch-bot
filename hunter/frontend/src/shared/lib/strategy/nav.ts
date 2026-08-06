@@ -97,6 +97,8 @@ export const OPS_PARAMS = {
   hStatus: 'hstatus',
   /** History: exit-reason filter. */
   hExit: 'hexit',
+  /** History: chart drill-down focus (`day:…` / `heat:…` / `pct:…` / `rule:…`). */
+  hFocus: 'hfocus',
 } as const;
 
 /** Deep-link into the Console **History** section with a preset cohort — the

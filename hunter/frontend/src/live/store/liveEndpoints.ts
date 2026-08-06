@@ -18,11 +18,17 @@ export type PortfolioRange = 'today' | '7d' | '30d' | 'all';
 /** One closed trade — the atom of the charts deck (mirrors the backend
  *  `ClosedTradePoint`). `win` is `pnl_sol > 0` on a clean `End`. */
 export interface ClosedTradePoint {
+  id: string;
   exit_time: string;
   rule_id: string | null;
+  mint_address: string;
   pnl_sol: number;
   entry_sol: number;
   win: boolean;
+  /** `exit_time − entry_time` in seconds; null when entry_time is missing. */
+  hold_secs: number | null;
+  /** Persisted exit label — History charts filter this the same way as the table. */
+  exit_reason: string | null;
 }
 
 /** `GET /api/portfolio/closes-series` (mirrors `live::services::portfolio::ClosesSeries`). */

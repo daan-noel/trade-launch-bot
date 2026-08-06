@@ -369,10 +369,11 @@ export const labApi = baseApi.injectEndpoints({
       keepUnusedDataFor: 30,
     }),
     // Trader Analysis: full token rows (+ the wallet's per-mint stats) for every
-    // mint a wallet traded in the last `days`, most-recent-trade first, capped at
-    // `limit`. PG-backed on purpose — the 7-day default window includes today,
-    // which the sealed-days lake lacks. The page renders these through the shared
-    // token columns (client-side sort/filter) + a synced charts grid.
+    // mint a wallet traded in the last `days`, most-recent-trade first
+    // (`limit <= 0` ⇒ unbounded; positive ⇒ capped). PG-backed on purpose — the
+    // 7-day default window includes today, which the sealed-days lake lacks. The
+    // page renders these through the shared token columns (client-side
+    // sort/filter) + a synced charts grid.
     getTraderTokens: builder.query<
       TraderTokenRow[],
       { wallet: string; days: number; limit: number }

@@ -59,6 +59,8 @@ Deep-dive references: [docs/plans/database/lake-pg-read-paths.md](docs/plans/dat
 (which trade reads hit the lake vs PG), [docs/plans/frontend/token-list-backend.md](docs/plans/frontend/token-list-backend.md)
 (`/api/tokens` differs by bin), [docs/plans/strategies/execution-costs.md](docs/plans/strategies/execution-costs.md)
 (**what a round trip costs — read before believing any backtest**),
+[docs/plans/strategies/fill-and-cost-models.md](docs/plans/strategies/fill-and-cost-models.md)
+(the Fill / Cost dropdowns explained with worked numbers — what each mode picks or charges),
 [docs/plans/strategies/wallet-analysis.md](docs/plans/strategies/wallet-analysis.md)
 (reverse-engineered external scalper wallets — the calibration source for the
 flow-scalper rule ladder), plus the per-subsystem docs under `docs/plans/`.
@@ -227,7 +229,8 @@ The slippage bug was the third shape — a *writer* that clamped the sentinel aw
 reader saw it, inverting `0` from "accept any fill" into the tightest possible floor on the
 bot's own exits (locked by `a_typed_percent_reaches_the_trader_unchanged`).
 Where a sentinel stays, the UI marks it with the `Input` `blankZero` prop, never a truthiness
-check — today that is exactly one field, the rule editor's **Max total** (blank/`∞`).
+check — today: the rule editor's **Max total** and Trader Analysis **Max tokens**
+(blank/`∞`).
 
 ## Gotchas (hot-path landmines)
 

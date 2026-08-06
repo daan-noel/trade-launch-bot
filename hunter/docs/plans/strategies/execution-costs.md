@@ -5,6 +5,19 @@ Reference for `CostModel` / `round_trip_with_costs`
 flow-scalper work that produced it. Measured 2026-07-28 on the local lake +
 Postgres; no Helius calls involved.
 
+> For **worked examples** of each cost model (and of each `FillModel`) priced
+> side by side on the same trade, see
+> [fill-and-cost-models.md](fill-and-cost-models.md). This doc is the derivation;
+> that one is the "which dropdown do I pick" companion.
+>
+> **The fixed per-leg cost below is env-derived, not a constant.** It is
+> `JITO_MIN_TIP_SOL + avg CU priority fee` via `FeeTuning`. The 0.001025 SOL/leg
+> used throughout this doc came from a 0.001 tip; at the current `hunter/.env`
+> (tip 0.0002, CU price 200 000) it is **0.000225 SOL/leg**, which moves the §3
+> optimum from ~0.27 SOL to ~0.126 SOL and the §4 break-even bar from ~4% to
+> ~3.3%. Recompute both whenever you retune tips — the formulas hold, the numbers
+> do not.
+
 A round trip pays four things. Two are proportional, one is fixed, one scales with
 how big you are relative to the pool:
 

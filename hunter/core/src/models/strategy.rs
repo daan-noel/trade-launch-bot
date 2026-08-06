@@ -198,7 +198,6 @@ pub struct ExitReasonCounts {
     pub stall: i64,
     pub time: i64,
     pub liquidity: i64,
-    pub next_kill: i64,
 }
 
 /// Exit-side realized SOL for a position — the ONE decider of which exit figure

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from 'lib/cn';
 import { IconButton } from 'components/ui/IconButton';
 import { IconButtonGroup } from 'components/ui/IconButtonGroup';
+import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { PauseIcon, PlayIcon, SpinnerIcon } from 'components/ui/icons';
 import { Input } from 'components/ui/Input';
 import { Checkbox } from 'components/ui/Checkbox';
@@ -225,11 +226,18 @@ export function ReplayViewerPage() {
             <Field label="Mint" hint="focus one token" className="w-[280px]">
               <Input value={mint} onChange={(e) => setMint(e.target.value)} placeholder="all tokens" />
             </Field>
-            <Field label="Since" hint="UTC" className="w-[210px]">
-              <Input type="datetime-local" value={since} onChange={(e) => setSince(e.target.value)} />
-            </Field>
-            <Field label="Until" hint="UTC" className="w-[210px]">
-              <Input type="datetime-local" value={until} onChange={(e) => setUntil(e.target.value)} />
+            <Field label="Window" hint="UTC" className="w-fit">
+              <DateTimeRangePicker
+                aria-label="Replay window"
+                zoneLabel="UTC"
+                emptyLabel="Full slice"
+                customPreset="custom"
+                value={{ preset: 'custom', from: since, to: until }}
+                onChange={({ from, to }) => {
+                  setSince(from);
+                  setUntil(to);
+                }}
+              />
             </Field>
             <Field label="Max steps" className="w-[120px]">
               <Input

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   exitBreakdown,
+  exitReasonToneClass,
   runSummaryFromRows,
   zeroExitCounts,
   type RunMetrics,
@@ -94,5 +95,17 @@ describe('runSummaryFromRows', () => {
     expect(realized.n_exit_metrics_loss).toBe(2);
     const slices = exitBreakdown(realized);
     expect(slices.map((s) => s.label)).not.toContain('Other');
+  });
+});
+
+describe('exitReasonToneClass', () => {
+  it('matches EXIT_KINDS hues for persisted reasons and History filter aliases', () => {
+    expect(exitReasonToneClass('TakeProfit')).toBe('text-green');
+    expect(exitReasonToneClass('StopLoss')).toBe('text-red');
+    expect(exitReasonToneClass('Dead')).toBe('text-accent');
+    // History cohort uses substring keys (`Trailing` → TrailingStop).
+    expect(exitReasonToneClass('Trailing')).toBe('text-primary');
+    expect(exitReasonToneClass('Time')).toBe('text-warning');
+    expect(exitReasonToneClass('Liquidity')).toBe('text-text-mid');
   });
 });

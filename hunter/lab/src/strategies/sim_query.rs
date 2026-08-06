@@ -375,7 +375,6 @@ fn empty_exits() -> serde_json::Map<String, Value> {
         "n_exit_stall",
         "n_exit_time",
         "n_exit_liquidity",
-        "n_exit_next_kill",
         "other",
         "open",
     ] {
@@ -394,7 +393,6 @@ fn exit_key(code: ExitCode) -> &'static str {
         ExitCode::Stall => "n_exit_stall",
         ExitCode::TimeStop => "n_exit_time",
         ExitCode::LiquidityExit => "n_exit_liquidity",
-        ExitCode::NextKill => "n_exit_next_kill",
         ExitCode::Open | ExitCode::NoEntry => "open",
     }
 }
@@ -402,10 +400,17 @@ fn exit_key(code: ExitCode) -> &'static str {
 fn tally_exit(exits: &mut serde_json::Map<String, Value>, reason: &str) {
     let key = if reason == "Manual" {
         "n_exit_manual"
-    } else if reason == "Open" {
+    } else if reason == "Open" || reason == "NoEntry" {
         "open"
     } else {
-        exit_key(ExitCode::from_reason(reason))
+        let code = ExitCode::from_reason(reason);
+        // Retired / unrecognized labels (e.g. legacy `"NextKill"`) must not fold
+        // into `open` via `from_reason`'s `_ => Open` fallback.
+        if matches!(code, ExitCode::Open | ExitCode::NoEntry) {
+            "other"
+        } else {
+            exit_key(code)
+        }
     };
     let n = exits.get(key).and_then(Value::as_i64).unwrap_or(0) + 1;
     exits.insert(key.into(), json!(n));
@@ -535,7 +540,6 @@ fn dominant_exit(exits: &serde_json::Map<String, Value>) -> Option<&'static str>
         ("n_exit_stall", "Stall"),
         ("n_exit_time", "Time"),
         ("n_exit_liquidity", "Liquidity"),
-        ("n_exit_next_kill", "Next kill"),
         ("open", "Open"),
         ("other", "Other"),
     ];

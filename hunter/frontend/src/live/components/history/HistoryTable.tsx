@@ -28,6 +28,15 @@ import { numericColKeys, toTableRequest } from 'services/tableRequest';
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
 import type { RulePositionRecord } from 'types';
 import type { HistoryCohort } from '@live/pages/console/historyCohort';
+import {
+  dayBoundsUtcIso,
+  intersectUtcWindow,
+  matchesHeatFocus,
+  matchesHoldBandFocus,
+  pctFocusFilter,
+  serializeHistoryFocus,
+  weekBoundsUtcIso,
+} from '@live/pages/console/historyFocus';
 
 /** `entry_time` → `exit_time` as a compact hold label. */
 function holdLabel(r: RulePositionRecord): string | null {
@@ -182,14 +191,20 @@ function historyColumns(
   ];
 }
 
+/** Heat focus can't be expressed as one SQL range (recurring dow×hour), so we
+ *  pull a wide page and filter client-side. Cap matches the server page_size max. */
+const HEAT_SCAN_PAGE_SIZE = 1000;
+
 export const HistoryTable = memo(function HistoryTable({
   cohort,
+  timezone,
   ruleNameOf,
   selectedKey,
   onSelect,
   reloadNonce,
 }: {
   cohort: HistoryCohort;
+  timezone: string;
   ruleNameOf: (id: string | null) => string | null;
   selectedKey: string | null;
   onSelect: (positionId: string | null, mint?: string) => void;
@@ -199,10 +214,14 @@ export const HistoryTable = memo(function HistoryTable({
   const [query, setQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   const columns = useMemo(() => historyColumns(ruleNameOf), [ruleNameOf]);
   const numericCols = useMemo(() => numericColKeys(columns), [columns]);
+  const focus = cohort.focus;
+  const heatFocus = focus?.kind === 'heat' ? focus : null;
+  const holdBandFocus = focus?.kind === 'holdBand' ? focus : null;
+  /** Heat + hold-band need a wide scan then client match (not one SQL range). */
+  const clientScanFocus = !!(heatFocus || holdBandFocus);
 
-  // The cohort is applied as structured filters + a range window on top of the
-  // table's own per-column filters, so the server pages exactly the population
-  // the charts above are drawn from.
+  // The cohort + optional chart focus are applied as structured filters + a
+  // range window on top of the table's own per-column filters.
   const body = useMemo(() => {
     const base = toTableRequest(query, numericCols);
     const filters = { ...base.filters };
@@ -210,19 +229,55 @@ export const HistoryTable = memo(function HistoryTable({
     if (cohort.mode !== 'all') filters.mode = { op: 'eq' as const, val: cohort.mode };
     if (cohort.status) filters.status = { op: 'eq' as const, val: cohort.status };
     if (cohort.exitReason) filters.exit_reason = { op: 'contains' as const, val: cohort.exitReason };
+
+    let fromIso = cohort.fromIso;
+    let toIso = cohort.toIso;
+
+    if (focus?.kind === 'day' || focus?.kind === 'week') {
+      const span =
+        focus.kind === 'day'
+          ? dayBoundsUtcIso(focus.day, timezone)
+          : weekBoundsUtcIso(focus.weekStart, timezone);
+      const hit = intersectUtcWindow(fromIso, toIso, span.fromIso, span.toIso);
+      if (!hit) {
+        // Empty intersection — force an empty half-open window.
+        fromIso = '2099-01-01T00:00:00.000Z';
+        toIso = '2099-01-01T00:00:00.000Z';
+      } else {
+        fromIso = hit.fromIso;
+        toIso = hit.toIso;
+      }
+    }
+
+    if (focus?.kind === 'rule') {
+      filters.rule_id = { op: 'eq' as const, val: focus.ruleId };
+    }
+    if (focus?.kind === 'pct') {
+      filters.pnl_pct = pctFocusFilter(focus.lo, focus.hi);
+    }
+    if (focus?.kind === 'pos') {
+      filters.id = { op: 'eq' as const, val: focus.positionId };
+    }
+
+    // Heat / hold-band: scan a wide first page; client filter below.
+    const pagination = clientScanFocus
+      ? { page: 1, pageSize: HEAT_SCAN_PAGE_SIZE }
+      : base.pagination;
+
     return {
       ...base,
+      pagination,
       filters,
-      ...(cohort.fromIso || cohort.toIso
+      ...(fromIso || toIso
         ? {
             range: {
-              ...(cohort.fromIso ? { from: cohort.fromIso } : {}),
-              ...(cohort.toIso ? { to: cohort.toIso } : {}),
+              ...(fromIso ? { from: fromIso } : {}),
+              ...(toIso ? { to: toIso } : {}),
             },
           }
         : {}),
     };
-  }, [query, numericCols, cohort]);
+  }, [query, numericCols, cohort, focus, clientScanFocus, timezone]);
 
   const fetchPage = useCallback(
     (b: unknown, signal: AbortSignal) => fetchPortfolioPositionsPage(b as never, signal),
@@ -238,36 +293,69 @@ export const HistoryTable = memo(function HistoryTable({
     `history:${reloadNonce}`,
   );
 
+  const rows = useMemo(() => {
+    if (heatFocus) {
+      return items.filter((r) => matchesHeatFocus(r.exit_time, heatFocus, timezone));
+    }
+    if (holdBandFocus) {
+      return items.filter((r) =>
+        matchesHoldBandFocus(
+          r.entry_time,
+          r.exit_time,
+          resolvePnlPct({
+            pnlSol: r.pnl_sol,
+            entrySol: r.entry_sol,
+            entryPrice: r.entry_price,
+            exitPrice: r.exit_price,
+          }),
+          holdBandFocus,
+        ),
+      );
+    }
+    return items;
+  }, [items, heatFocus, holdBandFocus, timezone]);
+
   const cohortKey = `${cohort.range}|${cohort.fromIso ?? ''}|${cohort.toIso ?? ''}|${
     cohort.ruleId ?? ''
-  }|${cohort.mode}|${cohort.status ?? ''}|${cohort.exitReason ?? ''}`;
+  }|${cohort.mode}|${cohort.status ?? ''}|${cohort.exitReason ?? ''}|${serializeHistoryFocus(focus) ?? ''}`;
 
   // The selected row's full DB record — this is why History owns the closed
   // detail modal rather than the Console page: a position from any date opens
   // here, not just one still in the session's live lane.
-  const inspect = selectedKey ? (items.find((r) => r.id === selectedKey) ?? null) : null;
+  const inspect = selectedKey ? (rows.find((r) => r.id === selectedKey) ?? null) : null;
+  const heatScanCapped = clientScanFocus && total >= HEAT_SCAN_PAGE_SIZE;
 
   return (
     <>
       {error && <InlineAlert variant="error">History failed to load: {error}</InlineAlert>}
+      {heatScanCapped && (
+        <InlineAlert variant="warning">
+          Chart focus scanned the first {HEAT_SCAN_PAGE_SIZE} cohort rows — narrow the date range
+          if results look incomplete.
+        </InlineAlert>
+      )}
       <DataTable
         columns={columns}
-        rows={items}
+        rows={rows}
         rowKey={(r) => r.id}
         searchable
         colFilters
         loading={loading}
-        serverSide
-        serverTotal={total}
+        serverSide={!clientScanFocus}
+        serverTotal={clientScanFocus ? rows.length : total}
         onQueryChange={setQuery}
         resetKey={cohortKey}
         defaultSort={{ col: 'exit_time', dir: 'desc' }}
         defaultPageSize={25}
         tableId="console-history"
-        emptyMessage="No positions in this cohort — widen the date range or clear the filters."
+        emptyMessage={
+          focus
+            ? 'No positions in this chart focus — click the cell again or clear Focus.'
+            : 'No positions in this cohort — widen the date range or clear the filters.'
+        }
         selectedKey={selectedKey}
         onSelect={(key) => {
-          const row = items.find((r) => r.id === key);
+          const row = rows.find((r) => r.id === key);
           onSelect(key, row?.mint_address);
         }}
       />

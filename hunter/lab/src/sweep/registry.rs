@@ -891,7 +891,6 @@ fn exit_label(code: ExitCode) -> &'static str {
         ExitCode::Stall => "Stall",
         ExitCode::TimeStop => "TimeStop",
         ExitCode::LiquidityExit => "LiquidityExit",
-        ExitCode::NextKill => "NextKill",
         ExitCode::Dead => "Dead",
         ExitCode::Metrics => "Metrics",
     }

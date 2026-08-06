@@ -159,8 +159,6 @@ export interface RuleRecord {
   p_vol_min_duration_ms?: number | null;
   p_vol_min_up_duration_ms?: number | null;
   p_min_kills_before_volume?: number | null;
-  p_exit_next_kill_depth_min_pct?: number | null;
-  p_exit_next_kill_max_duration_ms?: number | null;
   bucket_width_sol: number;
   is_active: boolean;
   /** Derived lifecycle for the UI: 'Active' | 'Draining' | 'Idle' | 'Finished'.
@@ -334,7 +332,6 @@ export interface ExitReasonCounts {
   stall: number;
   time: number;
   liquidity: number;
-  next_kill: number;
 }
 
 export interface MatchedTokenRecord extends TokenEnrichmentFields {

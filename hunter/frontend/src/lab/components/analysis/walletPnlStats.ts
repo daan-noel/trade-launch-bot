@@ -23,10 +23,13 @@ import {
   DOW_ROWS,
   HOURS,
   buildEquityCurve as buildEquityCurveGeneric,
+  buildHoldScatterPoints,
   buildPnlHeatCells as buildPnlHeatCellsGeneric,
   dowHourInTz,
   pnlDistributionBuckets as pnlDistributionBucketsGeneric,
+  type PnlDistDensity,
   type EquityPoint,
+  type HoldScatterPoint,
   type PnlBucket,
   type PnlHeatCell,
   type PnlPoint,
@@ -35,7 +38,7 @@ import {
 import type { TraderTokenRow } from 'types';
 
 export { DOW_ROWS, HOURS, dowHourInTz };
-export type { EquityPoint, PnlBucket, PnlHeatCell };
+export type { EquityPoint, HoldScatterPoint, PnlBucket, PnlHeatCell };
 
 /**
  * The wallet grain → the shared `PnlPoint` grain.
@@ -189,8 +192,11 @@ export function rankedPnlBarRows(rows: readonly TraderTokenRow[]): RankedBarRow[
 
 /** Count histogram over `wallet_realized_pnl_pct` (open-only bags have no
  *  realized % and are excluded). */
-export function pnlDistributionBuckets(rows: readonly TraderTokenRow[]): PnlBucket[] {
-  return pnlDistributionBucketsGeneric(toPnlPoints(rows));
+export function pnlDistributionBuckets(
+  rows: readonly TraderTokenRow[],
+  density: PnlDistDensity = 'default',
+): PnlBucket[] {
+  return pnlDistributionBucketsGeneric(toPnlPoints(rows), density);
 }
 
 /** Cumulative `wallet_total_pnl_sol` ordered by each mint's most-recent trade. */
@@ -200,35 +206,25 @@ export function buildEquityCurve(rows: readonly TraderTokenRow[]): EquityPoint[]
 
 // ── hold-time vs PnL% scatter ────────────────────────────────────────────────
 
-export interface HoldScatterPoint {
-  mint_address: string;
-  label: string;
-  holdSeconds: number;
-  pnlPct: number;
-  sizeSol: number;
-  isWin: boolean;
-}
-
 /** One point per row with BOTH a positive hold span and a realized verdict
  *  (rows that are pure open bags with no matched cost basis have no `pnlPct`
  *  to plot). `sizeSol` (total volume) drives the marker radius. */
 export function buildHoldScatter(rows: readonly TraderTokenRow[]): HoldScatterPoint[] {
-  const points: HoldScatterPoint[] = [];
-  for (const r of rows) {
-    if (r.wallet_realized_pnl_pct == null) continue;
-    const firstMs = r.wallet_first_trade_at_ms ?? Date.parse(r.wallet_first_trade_at);
-    const lastMs = r.wallet_last_trade_at_ms ?? Date.parse(r.wallet_last_trade_at);
-    if (!Number.isFinite(firstMs) || !Number.isFinite(lastMs)) continue;
-    const holdSeconds = (lastMs - firstMs) / 1000;
-    if (holdSeconds <= 0) continue;
-    points.push({
-      mint_address: r.mint_address,
-      label: r.symbol || r.name || r.mint_address,
-      holdSeconds,
-      pnlPct: r.wallet_realized_pnl_pct,
-      sizeSol: r.wallet_buy_sol + r.wallet_sell_sol,
-      isWin: r.wallet_realized_pnl_sol > 0,
-    });
-  }
-  return points;
+  return buildHoldScatterPoints(
+    rows.map((r) => {
+      const firstMs = r.wallet_first_trade_at_ms ?? Date.parse(r.wallet_first_trade_at);
+      const lastMs = r.wallet_last_trade_at_ms ?? Date.parse(r.wallet_last_trade_at);
+      const holdSeconds =
+        Number.isFinite(firstMs) && Number.isFinite(lastMs) ? (lastMs - firstMs) / 1000 : null;
+      return {
+        key: r.mint_address,
+        label: r.symbol || r.name || r.mint_address,
+        holdSeconds,
+        pnlPct: r.wallet_realized_pnl_pct,
+        sizeSol: r.wallet_buy_sol + r.wallet_sell_sol,
+        pnlSol: r.wallet_realized_pnl_sol,
+        isWin: r.wallet_realized_pnl_sol > 0,
+      };
+    }),
+  );
 }

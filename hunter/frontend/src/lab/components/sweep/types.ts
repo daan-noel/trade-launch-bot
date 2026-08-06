@@ -38,8 +38,6 @@ export interface SweepResultRecord {
   n_exit_stall: number;
   n_exit_time: number;
   n_exit_liquidity: number;
-  /** swing1's symmetric next-kill flee count; 0 for tpsl1/tpsl2. */
-  n_exit_next_kill: number;
   /** Generic engine's single metric-condition exit (`ExitReason::Metrics`). The
    *  legacy strategies never emit it, so it's optional on the wire (absent ⇒ 0). */
   n_exit_metrics?: number;

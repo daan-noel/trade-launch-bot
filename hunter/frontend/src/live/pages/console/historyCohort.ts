@@ -6,11 +6,20 @@
  * URL-backed cohort. It lives in the query string (the `h*` keys of
  * `OPS_PARAMS`) so a History deep-link from Portfolio lands on exactly the
  * cohort it promised, and a reload keeps it.
+ *
+ * `focus` is a drill-down lens on top of that cohort (chart cell → table slice).
+ * Charts keep rendering the parent cohort; only the table + chip honor `focus`.
  */
 
 import { useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { OPS_PARAMS, type HistoryRange } from 'lib/strategy/nav';
+import {
+  parseHistoryFocus,
+  serializeHistoryFocus,
+  type HistoryFocus,
+} from './historyFocus';
+import { canonicalizeHistoryExitFilter } from './historyExitFilter';
 
 export type HistoryMode = 'real' | 'paper' | 'all';
 
@@ -25,6 +34,8 @@ export interface HistoryCohort {
   /** Position status (`End` / `EntryFailed` / an open status); `null` = any. */
   status: string | null;
   exitReason: string | null;
+  /** Chart drill-down — table-only lens; charts stay on the parent cohort. */
+  focus: HistoryFocus | null;
   /** The `range` value the B2 series endpoint understands (it takes presets
    *  only; a custom window is served as `all` and trimmed client-side). */
   seriesRange: 'today' | '7d' | '30d' | 'all';
@@ -75,7 +86,10 @@ export function useHistoryCohort(nowMs: number): HistoryCohortApi {
   const mode: HistoryMode =
     rawMode === 'paper' || rawMode === 'all' || rawMode === 'real' ? rawMode : 'real';
   const status = params.get(OPS_PARAMS.hStatus);
-  const exitReason = params.get(OPS_PARAMS.hExit);
+  // Canonicalize legacy ladder needles (`Trailing` → `trail`) so the dropdown
+  // selection and metric-label contains match stay aligned.
+  const exitReason = canonicalizeHistoryExitFilter(params.get(OPS_PARAMS.hExit));
+  const focusRaw = params.get(OPS_PARAMS.hFocus);
 
   const cohort = useMemo<HistoryCohort>(() => {
     const fromIso = range === 'custom' ? (customFrom || null) : presetStart(range, nowMs);
@@ -88,9 +102,10 @@ export function useHistoryCohort(nowMs: number): HistoryCohortApi {
       mode,
       status,
       exitReason,
+      focus: parseHistoryFocus(focusRaw),
       seriesRange: range === 'custom' ? 'all' : range,
     };
-  }, [range, customFrom, customTo, ruleId, mode, status, exitReason, nowMs]);
+  }, [range, customFrom, customTo, ruleId, mode, status, exitReason, focusRaw, nowMs]);
 
   const set = useCallback(
     (patch: Partial<Omit<HistoryCohort, 'seriesRange'>>) => {
@@ -113,7 +128,10 @@ export function useHistoryCohort(nowMs: number): HistoryCohortApi {
       if ('ruleId' in patch) put(OPS_PARAMS.hRule, patch.ruleId);
       if ('mode' in patch) put(OPS_PARAMS.hMode, patch.mode === 'real' ? null : patch.mode);
       if ('status' in patch) put(OPS_PARAMS.hStatus, patch.status);
-      if ('exitReason' in patch) put(OPS_PARAMS.hExit, patch.exitReason);
+      if ('exitReason' in patch) {
+        put(OPS_PARAMS.hExit, canonicalizeHistoryExitFilter(patch.exitReason));
+      }
+      if ('focus' in patch) put(OPS_PARAMS.hFocus, serializeHistoryFocus(patch.focus));
       setParams(next, { replace: true });
     },
     [params, setParams],
@@ -129,6 +147,7 @@ export function useHistoryCohort(nowMs: number): HistoryCohortApi {
       OPS_PARAMS.hMode,
       OPS_PARAMS.hStatus,
       OPS_PARAMS.hExit,
+      OPS_PARAMS.hFocus,
     ]) {
       next.delete(key);
     }
@@ -140,7 +159,8 @@ export function useHistoryCohort(nowMs: number): HistoryCohortApi {
     ruleId != null ||
     mode !== 'real' ||
     status != null ||
-    exitReason != null;
+    exitReason != null ||
+    focusRaw != null;
 
   return { ...cohort, set, reset, active };
 }

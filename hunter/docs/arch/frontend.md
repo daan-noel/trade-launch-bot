@@ -311,9 +311,10 @@ next load (no per-metric frontend work).
   Beside the tag chips sits the **trade-mode scope** — `RuleModeFilter`
   (All / PAPER / REAL + counts over shared `ModeToggle`) over `useModeFilter`
   (`?mode=` in the URL, sticky per board: Rules, Rules Control and Simulate each
-  keep their own key). Ops surfaces (Console / History / Portfolio) use
-  `ModeToggle` directly (`layout="ops"`). Exclusive non-mode filters (date range,
-  score scope) use `ToggleGroup`; panel swaps use `Tabs`; paper/real pills use
+  keep their own key).   Ops surfaces (Console / History / Portfolio) use
+  `ModeToggle` directly (`layout="ops"`). Datetime windows use
+  `DateTimeRangePicker`; other exclusive non-mode filters (score scope) use
+  `ToggleGroup`; panel swaps use `Tabs`; paper/real pills use
   `ModeBadge` / `modeBadgeVariant` — see [ui-controls.md](@plans/frontend/ui-controls.md).
   It is the same view-filter shape as tags and composes with them: each control's
   chip counts come from the set narrowed by the *other* one, so a count never
@@ -572,11 +573,13 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
 - **One PnL-analytics SSOT (`shared/components/analytics/`).** The folds live in `pnlSeries.ts`
   over ONE neutral atom, `PnlPoint` (`{key, timeMs, pnlSol, pnlPct, label, groupId?, isOpen?}`):
   `buildEquityCurve` (+ running peak → `maxDrawdownSol`), `pnlDistributionBuckets`,
-  `buildPnlHeatCells`, `buildDailyPnl`, `rankByValue`, `groupDailyPnl`, and `groupTrends` (the
-  decay verdict). Renderers: `EquityCurveChart` (the ONLY one pulling `lightweight-charts` —
-  lazy-load it), `PnlDistribution`, `PnlHeatmap`, `PnlCalendar`, `RankedPnlBars`, `PnlSparkline`
-  (inline SVG, cheap enough per table row). Callers map their own row type into `PnlPoint` and
-  every chart derives from the same points, so an equity curve can't disagree with the histogram
+  `buildPnlHeatCells`, `buildDailyPnl`, `buildHoldScatterPoints`, `rankByValue`, `groupDailyPnl`,
+  and `groupTrends` (the decay verdict). Renderers: `EquityCurveChart` (the ONLY one pulling
+  `lightweight-charts` — lazy-load it), `PnlDistribution`, `PnlHeatmap`, `PnlCalendar`,
+  `HoldPnlScatter` (log hold × PnL%, also used by lab Trader Analysis), `RankedPnlBars`,
+  `PnlSparkline` (inline SVG, cheap enough per table row). Callers map their own row type into
+  `PnlPoint` and every chart derives from the same points, so an equity curve can't disagree
+  with the histogram
   beside it. Promoted out of `@lab/components/analysis` (a sanctioned lab→shared move — the live
   app may never import `@lab`); the `Wallet*` components there are now thin adapters that map
   `TraderTokenRow` → `PnlPoint` and render the shared pair, and `walletPnlStats.ts` keeps only the

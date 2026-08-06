@@ -216,7 +216,6 @@ const EXIT_REASON_KEY: Readonly<Record<string, ExitCountKey>> = {
   Stall: 'n_exit_stall',
   TimeStop: 'n_exit_time',
   LiquidityExit: 'n_exit_liquidity',
-  NextKill: 'n_exit_next_kill',
 };
 
 export interface HoldBinStats {

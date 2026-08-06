@@ -4,7 +4,7 @@ import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
 import { StatTile } from 'components/ui/StatTile';
 import { PageHeader } from 'components/ui/PageHeader';
-import { ToggleGroup } from 'components/ui/ToggleGroup';
+import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { ModeToggle } from 'components/strategy/ModeToggle';
 import { LinkIcon } from 'components/ui/icons';
 import { consoleHref, consoleHistoryHref, rulesHref } from 'lib/strategy/nav';
@@ -38,6 +38,13 @@ import type { PortfolioRulePnl } from 'types';
 type Range = 'today' | '7d' | '30d' | 'all';
 type Mode = 'real' | 'paper';
 
+const PORTFOLIO_RANGE_PRESETS: { value: Range; label: string }[] = [
+  { value: 'today', label: 'Today' },
+  { value: '7d', label: '7 days' },
+  { value: '30d', label: '30 days' },
+  { value: 'all', label: 'All-time' },
+];
+
 /** Trades per rolling window for the decay comparison. Small enough that a
  *  low-volume rule still gets two windows; large enough that a single tail
  *  trade can't flip the verdict on its own. */
@@ -51,7 +58,14 @@ const DECAY_WINDOW = 20;
 export function PortfolioPage() {
   const [params, setParams] = useSearchParams();
   const { timezone } = useTimezone();
-  const range = (params.get('range') as Range | null) ?? 'today';
+  const rawRange = params.get('range');
+  const range: Range =
+    rawRange === 'today' ||
+    rawRange === '7d' ||
+    rawRange === '30d' ||
+    rawRange === 'all'
+      ? rawRange
+      : 'today';
   const mode = (params.get('mode') as Mode | null) ?? 'real';
   const selectedRule = params.get('rule');
   const setRange = (r: Range) => {
@@ -366,18 +380,14 @@ export function PortfolioPage() {
       />
 
       <div className="flex flex-wrap items-center gap-2">
-        <ToggleGroup
+        <DateTimeRangePicker
           aria-label="Date range"
-          tone="primary"
           size="sm"
-          value={range}
-          onChange={setRange}
-          options={[
-            { value: 'today', label: 'Today' },
-            { value: '7d', label: '7 days' },
-            { value: '30d', label: '30 days' },
-            { value: 'all', label: 'All-time' },
-          ]}
+          zoneLabel="UTC"
+          allowCustom={false}
+          presets={PORTFOLIO_RANGE_PRESETS}
+          value={{ preset: range, from: '', to: '' }}
+          onChange={({ preset }) => setRange(preset)}
         />
         <ModeToggle
           includeAll={false}

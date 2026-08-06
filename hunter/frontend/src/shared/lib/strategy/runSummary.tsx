@@ -1,6 +1,6 @@
 import { cn } from 'lib/cn';
 import { pctGradeClass, signedToneClass, winRateGradeClass } from 'lib/signedTone';
-import { isMetricExitReason } from 'lib/strategy/exitReason';
+import { isMetricExitReason, normalizeExitReasonFilter } from 'lib/strategy/exitReason';
 import { formatDecimalTrim } from 'utils/format';
 import type { SummaryStat, SummarySection } from 'components/strategy/SummaryStatsPanel';
 
@@ -90,7 +90,6 @@ export interface RunMetrics {
   n_exit_stall: number;
   n_exit_time: number;
   n_exit_liquidity: number;
-  n_exit_next_kill: number;
   n_exit_dead: number;
   /** Total metric-condition exits. Prefer the win/loss split when present. */
   n_exit_metrics: number;
@@ -134,8 +133,7 @@ export type ExitCountKey =
   | 'n_exit_trailing'
   | 'n_exit_stall'
   | 'n_exit_time'
-  | 'n_exit_liquidity'
-  | 'n_exit_next_kill';
+  | 'n_exit_liquidity';
 
 /**
  * **Every** way a position can leave, in ladder order — the one list the
@@ -189,7 +187,6 @@ export const EXIT_KINDS: ReadonlyArray<{
   { key: 'n_exit_stall', label: 'Stall', full: 'Stalled', cls: 'text-secondary', bar: 'bg-secondary' },
   { key: 'n_exit_time', label: 'Time', full: 'Time stop', cls: 'text-warning', bar: 'bg-warning' },
   { key: 'n_exit_liquidity', label: 'Liquidity', full: 'Liquidity exit', cls: 'text-text-mid', bar: 'bg-text-mid' },
-  { key: 'n_exit_next_kill', label: 'Next kill', full: 'Next kill (swing)', cls: 'text-secondary', bar: 'bg-secondary' },
 ];
 
 /** Persisted `ExitReason` string → the `RunMetrics` counter it feeds. Mirrors the
@@ -204,8 +201,25 @@ const EXIT_KEY_BY_REASON: Readonly<Record<string, ExitCountKey>> = {
   Stall: 'n_exit_stall',
   TimeStop: 'n_exit_time',
   LiquidityExit: 'n_exit_liquidity',
-  NextKill: 'n_exit_next_kill',
 };
+
+/**
+ * Glanceable text tone for a persisted exit reason **or** a History filter
+ * substring (`Trailing` / `Time` / `Liquidity`). Same hues as {@link EXIT_KINDS}
+ * so the cohort filter and the breakdown tile never disagree.
+ */
+export function exitReasonToneClass(reason: string | null | undefined): string {
+  if (!reason) return 'text-text-dim';
+  const normalized = normalizeExitReasonFilter(reason);
+  const key = EXIT_KEY_BY_REASON[normalized];
+  if (key) {
+    for (const k of EXIT_KINDS) {
+      if (k.key === key) return k.cls;
+    }
+  }
+  if (isMetricExitReason(normalized)) return 'text-info';
+  return 'text-text-dim';
+}
 
 /** All exit counters at zero — the base every builder starts from. */
 export function zeroExitCounts(): Record<ExitCountKey, number> {
@@ -221,7 +235,6 @@ export function zeroExitCounts(): Record<ExitCountKey, number> {
     n_exit_stall: 0,
     n_exit_liquidity: 0,
     n_exit_time: 0,
-    n_exit_next_kill: 0,
   };
 }
 

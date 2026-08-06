@@ -44,7 +44,6 @@ function toRunSummary(s: PositionsSummary): RunSummary {
     stall: 0,
     time: 0,
     liquidity: 0,
-    next_kill: 0,
   };
   const realized = {
     n_fired: s.tokens,
@@ -75,7 +74,6 @@ function toRunSummary(s: PositionsSummary): RunSummary {
     n_exit_stall: exits.stall,
     n_exit_time: exits.time,
     n_exit_liquidity: exits.liquidity,
-    n_exit_next_kill: exits.next_kill,
     n_exit_dead: exits.dead,
     n_exit_metrics: exits.metrics,
     n_exit_metrics_win: exits.metrics_win ?? 0,

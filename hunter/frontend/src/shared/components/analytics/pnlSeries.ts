@@ -84,6 +84,28 @@ export function dayKeyInTz(ms: number, timeZone: string): string {
   }).format(new Date(ms));
 }
 
+/**
+ * Civil-date arithmetic on `YYYY-MM-DD` labels — the ONE day-key shifter. The
+ * calendar grid walks columns with it and History's day/week focus derives its
+ * UTC bounds from it, so they cannot disagree about which date follows which.
+ * Goes through UTC noon so a ±1 h DST step can never round into a neighbouring
+ * date.
+ */
+export function shiftDayKey(key: string, deltaDays: number): string {
+  const ms = Date.parse(`${key}T12:00:00Z`) + deltaDays * 86_400_000;
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/** Month abbreviation of a `YYYY-MM-DD` key — the calendar's column axis. */
+const MONTH_ABBR = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+] as const;
+
+export function monthAbbr(dayKey: string): string {
+  return MONTH_ABBR[Number(dayKey.slice(5, 7)) - 1] ?? '';
+}
+
 // ── equity curve ────────────────────────────────────────────────────────────
 
 export interface EquityPoint {
@@ -130,6 +152,10 @@ export function maxDrawdownSol(curve: readonly EquityPoint[]): number {
 
 export interface PnlBucket {
   label: string;
+  /** Inclusive lower edge (`-Infinity` for the open left tail). */
+  lo: number;
+  /** Exclusive upper edge (`+Infinity` for the open right tail). */
+  hi: number;
   /** `-1` loss / `0` straddles zero / `1` win — coarse sign for callers that
    *  don't need magnitude grades. */
   sign: -1 | 0 | 1;
@@ -139,13 +165,55 @@ export interface PnlBucket {
   count: number;
 }
 
-/** Fixed bucket edges over PnL%. Points with no matched cost basis (`pnlPct`
- *  null) are excluded — there is no realized % to bucket. */
-const DIST_EDGES = [-Infinity, -50, -20, -10, 0, 10, 20, 50, Infinity];
+/**
+ * Histogram density presets over PnL%. All share the same open tails
+ * (`< -50%`, `≥ 500%`) and the `pctGradeClass` win bands (50 / 100 / 200 / 500);
+ * they differ only in how finely the decision zone around zero is sliced.
+ *
+ * Fixed presets (not data-driven) so click-to-focus `pct:lo:hi` addresses stay
+ * stable across cohort changes. Exported so History chart-focus can validate
+ * the same buckets the histogram draws.
+ */
+export type PnlDistDensity = 'sparse' | 'default' | 'dense';
+
+export const PNL_DIST_DENSITIES: readonly PnlDistDensity[] = ['sparse', 'default', 'dense'];
+
+export const PNL_DIST_EDGE_SETS: Record<PnlDistDensity, readonly number[]> = {
+  /** Grade-aligned — few bars, color bands match bin edges. */
+  sparse: [-Infinity, -50, 0, 50, 100, 200, 500, Infinity],
+  /** Near-zero detail + open win tail (the usual Console default). */
+  default: [-Infinity, -50, -20, -10, 0, 10, 20, 50, 100, 200, 500, Infinity],
+  /** 10pp steps through ±50, then the same open win tail. */
+  dense: [
+    -Infinity, -50, -40, -30, -20, -10, 0, 10, 20, 30, 40, 50, 100, 200, 500, Infinity,
+  ],
+};
+
+/** Alias for `PNL_DIST_EDGE_SETS.default`. */
+export const PNL_DIST_EDGES = PNL_DIST_EDGE_SETS.default;
+
+/** True when `[lo, hi)` is an adjacent pair in the given preset (or any preset
+ *  when `density` is omitted — used by URL focus parse). */
+export function isPnlDistBucket(
+  lo: number,
+  hi: number,
+  density?: PnlDistDensity,
+): boolean {
+  const sets =
+    density != null
+      ? [PNL_DIST_EDGE_SETS[density]]
+      : (Object.values(PNL_DIST_EDGE_SETS) as readonly (readonly number[])[]);
+  for (const edges of sets) {
+    for (let i = 0; i < edges.length - 1; i++) {
+      if (edges[i] === lo && edges[i + 1] === hi) return true;
+    }
+  }
+  return false;
+}
 
 function bucketLabel(lo: number, hi: number): string {
   if (lo === -Infinity) return `< ${hi}%`;
-  if (hi === Infinity) return `> ${lo}%`;
+  if (hi === Infinity) return `≥ ${lo}%`;
   return `${lo}…${hi}%`;
 }
 
@@ -156,13 +224,19 @@ function bucketRepPct(lo: number, hi: number): number {
   return (lo + hi) / 2;
 }
 
-export function pnlDistributionBuckets(points: readonly PnlPoint[]): PnlBucket[] {
+export function pnlDistributionBuckets(
+  points: readonly PnlPoint[],
+  density: PnlDistDensity = 'default',
+): PnlBucket[] {
+  const edges = PNL_DIST_EDGE_SETS[density];
   const buckets: PnlBucket[] = [];
-  for (let i = 0; i < DIST_EDGES.length - 1; i++) {
-    const lo = DIST_EDGES[i]!;
-    const hi = DIST_EDGES[i + 1]!;
+  for (let i = 0; i < edges.length - 1; i++) {
+    const lo = edges[i]!;
+    const hi = edges[i + 1]!;
     buckets.push({
       label: bucketLabel(lo, hi),
+      lo,
+      hi,
       sign: hi <= 0 ? -1 : lo >= 0 ? 1 : 0,
       repPct: bucketRepPct(lo, hi),
       count: 0,
@@ -171,9 +245,9 @@ export function pnlDistributionBuckets(points: readonly PnlPoint[]): PnlBucket[]
   for (const p of points) {
     const pct = p.pnlPct;
     if (pct == null) continue;
-    for (let i = 0; i < DIST_EDGES.length - 1; i++) {
-      const lo = DIST_EDGES[i]!;
-      const hi = DIST_EDGES[i + 1]!;
+    for (let i = 0; i < edges.length - 1; i++) {
+      const lo = edges[i]!;
+      const hi = edges[i + 1]!;
       // Half-open [lo, hi) except the final bucket, which is closed at +Infinity.
       if (pct >= lo && (pct < hi || hi === Infinity)) {
         buckets[i]!.count += 1;
@@ -241,6 +315,56 @@ export function buildDailyPnl(points: readonly PnlPoint[], timeZone: string): Pn
     byDay.set(day, cur);
   }
   return [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day));
+}
+
+export interface DailyPnlSummary {
+  /** Days that traded at all — the denominator (a flat day with no closes is
+   *  not a losing day, it is an absence). */
+  tradedDays: number;
+  greenDays: number;
+  redDays: number;
+  best: PnlDay | null;
+  worst: PnlDay | null;
+  /** Longest run of consecutive *traded* days in the red. A no-trade gap does
+   *  not break the run — the question is "how long did the book bleed", and a
+   *  quiet weekend is not a recovery. */
+  longestRedStreak: number;
+}
+
+/**
+ * Headline read of a daily series — the numbers a colour wash cannot convey.
+ * Green-day rate and streak length are what say whether a book grinds or lives
+ * off a couple of outliers; `days` is expected oldest → newest
+ * (`buildDailyPnl`'s order), optionally pre-clipped to the rendered window.
+ */
+export function summarizeDailyPnl(days: readonly PnlDay[]): DailyPnlSummary {
+  let greenDays = 0;
+  let redDays = 0;
+  let best: PnlDay | null = null;
+  let worst: PnlDay | null = null;
+  let streak = 0;
+  let longestRedStreak = 0;
+  for (const d of days) {
+    if (d.count === 0) continue;
+    if (d.pnlSol > 0) greenDays += 1;
+    if (d.pnlSol < 0) redDays += 1;
+    if (!best || d.pnlSol > best.pnlSol) best = d;
+    if (!worst || d.pnlSol < worst.pnlSol) worst = d;
+    if (d.pnlSol < 0) {
+      streak += 1;
+      if (streak > longestRedStreak) longestRedStreak = streak;
+    } else {
+      streak = 0;
+    }
+  }
+  return {
+    tradedDays: days.filter((d) => d.count > 0).length,
+    greenDays,
+    redDays,
+    best,
+    worst,
+    longestRedStreak,
+  };
 }
 
 // ── ranked bars ─────────────────────────────────────────────────────────────
@@ -383,4 +507,46 @@ export function groupDailyPnl(
     out.set(groupId, buildDailyPnl(arr, timeZone));
   }
   return out;
+}
+
+// ── hold-time vs PnL% scatter ────────────────────────────────────────────────
+
+export interface HoldScatterPoint {
+  key: string;
+  label: string;
+  holdSeconds: number;
+  pnlPct: number;
+  /** Marker size driver (entry SOL / volume). */
+  sizeSol: number;
+  isWin: boolean;
+}
+
+/** Rows with a positive hold span and a realized % — shared by live History and
+ *  lab Trader Analysis so both decks plot the same axes. */
+export function buildHoldScatterPoints(
+  rows: readonly {
+    key: string;
+    label: string;
+    holdSeconds: number | null | undefined;
+    pnlPct: number | null | undefined;
+    sizeSol: number;
+    pnlSol?: number;
+    isWin?: boolean;
+  }[],
+): HoldScatterPoint[] {
+  const points: HoldScatterPoint[] = [];
+  for (const r of rows) {
+    if (r.pnlPct == null || !Number.isFinite(r.pnlPct)) continue;
+    const hold = r.holdSeconds;
+    if (hold == null || !Number.isFinite(hold) || hold <= 0) continue;
+    points.push({
+      key: r.key,
+      label: r.label,
+      holdSeconds: hold,
+      pnlPct: r.pnlPct,
+      sizeSol: r.sizeSol,
+      isWin: r.isWin ?? (r.pnlSol != null ? r.pnlSol > 0 : r.pnlPct > 0),
+    });
+  }
+  return points;
 }

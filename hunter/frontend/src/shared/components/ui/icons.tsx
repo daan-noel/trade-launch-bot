@@ -177,6 +177,16 @@ export function CloseIcon({ className }: IconProps) {
   );
 }
 
+/** Calendar page — date / datetime range triggers. */
+export function CalendarIcon({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <rect x="3.5" y="5" width="13" height="11.5" rx="1.5" {...stroke} />
+      <path d="M3.5 8.5h13M7 3.5v3M13 3.5v3" {...stroke} />
+    </Svg>
+  );
+}
+
 export function BuyIcon({ className }: IconProps) {
   return (
     <Svg className={className}>

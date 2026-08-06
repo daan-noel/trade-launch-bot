@@ -303,24 +303,38 @@ impl From<RulePeriodPnlDbRow> for RulePeriodPnlRow {
 /// comparison) all derive from client-side. `pnl_sol` uses the canonical
 /// [`realized_exit_sol`][crate::models::strategy::realized_exit_sol] exit
 /// preference; `win` = `pnl_sol > 0` on an `End` row (mirrors
-/// `StrategyPosition::is_win`).
+/// `StrategyPosition::is_win`). `hold_secs` is `exit_time − entry_time` in
+/// seconds when both are present (drives the Hold-vs-PnL scatter); `None` when
+/// `entry_time` is missing so the chart can skip rather than invent a span.
+/// `exit_reason` is the persisted label so the Console History deck can apply
+/// the same exit-reason cohort filter as the paged table.
 #[derive(Debug, Clone, Serialize)]
 pub struct ClosedTradePoint {
+    pub id: Uuid,
     pub exit_time: DateTime<Utc>,
     pub rule_id: Option<Uuid>,
+    pub mint_address: String,
     pub pnl_sol: f64,
     pub entry_sol: f64,
     pub win: bool,
+    pub hold_secs: Option<f64>,
+    /// Persisted exit label (`TakeProfit`, `stall >= 300`, …). Lets the Console
+    /// History charts apply the same exit-reason cohort filter as the table.
+    pub exit_reason: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
 struct ClosedTradeDbRow {
+    id: Uuid,
     exit_time: DateTime<Utc>,
     rule_id: Option<Uuid>,
+    mint_address: String,
     entry_lamports: i64,
     exit_lamports: Option<i64>,
     exit_sol_lamports_total: i64,
     sold_token_amount: i64,
+    hold_secs: Option<f64>,
+    exit_reason: Option<String>,
 }
 
 impl From<ClosedTradeDbRow> for ClosedTradePoint {
@@ -333,7 +347,19 @@ impl From<ClosedTradeDbRow> for ClosedTradePoint {
         )
         .unwrap_or(0.0);
         let pnl_sol = exit_sol - entry_sol;
-        Self { exit_time: r.exit_time, rule_id: r.rule_id, pnl_sol, entry_sol, win: pnl_sol > 0.0 }
+        Self {
+            id: r.id,
+            exit_time: r.exit_time,
+            rule_id: r.rule_id,
+            mint_address: r.mint_address,
+            pnl_sol,
+            entry_sol,
+            win: pnl_sol > 0.0,
+            // Drop non-positive spans (clock skew / same-instant) — the scatter
+            // needs a real hold on a log-x axis.
+            hold_secs: r.hold_secs.filter(|s| s.is_finite() && *s > 0.0),
+            exit_reason: r.exit_reason,
+        }
     }
 }
 
@@ -428,7 +454,6 @@ const EXIT_REASON_COUNTS: &[(&str, &str)] = &[
     ("Stall", "n_stall"),
     ("TimeStop", "n_time"),
     ("LiquidityExit", "n_liquidity"),
-    ("NextKill", "n_next_kill"),
 ];
 
 /// SQL predicate: legacy bare `Metrics`, spaced `name op value`, or brief
@@ -479,7 +504,6 @@ struct PositionsSummaryRow {
     n_stall: i64,
     n_time: i64,
     n_liquidity: i64,
-    n_next_kill: i64,
     /// The still-open positions' `(mint_address, entry_price, entry_lamports)`,
     /// aggregated into JSON by the same query rather than fetched separately —
     /// open positions are bounded by the rule's concurrency cap (a handful), so
@@ -668,6 +692,8 @@ fn position_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
         "status" => ("sp.status", Text),
         // Cross-rule (portfolio) history filters: mode is 'real'|'paper'; the rule
         // filter compares the UUID as text so Eq / In ride the text machinery.
+        // `id` is the Hold-vs-PnL scatter drill-down (`hfocus=pos:<uuid>`).
+        "id" => ("sp.id::text", Text),
         "mode" => ("sp.mode", Text),
         "rule_id" => ("sp.rule_id::text", Text),
         // Null while still open — UI badges that as "Open", so filter must
@@ -1886,7 +1912,6 @@ impl StrategyRepo {
                 stall: row.n_stall,
                 time: row.n_time,
                 liquidity: row.n_liquidity,
-                next_kill: row.n_next_kill,
             },
         })
     }
@@ -2169,8 +2194,12 @@ impl StrategyRepo {
         rule_id: Option<Uuid>,
     ) -> anyhow::Result<Vec<ClosedTradePoint>> {
         let rows = sqlx::query_as::<_, ClosedTradeDbRow>(
-            "SELECT exit_time, rule_id, entry_lamports, exit_lamports, \
-                    exit_sol_lamports_total, sold_token_amount \
+            "SELECT id, exit_time, rule_id, mint_address, entry_lamports, exit_lamports, \
+                    exit_sol_lamports_total, sold_token_amount, \
+                    CASE WHEN entry_time IS NOT NULL \
+                         THEN EXTRACT(EPOCH FROM (exit_time - entry_time))::float8 \
+                         ELSE NULL END AS hold_secs, \
+                    exit_reason \
              FROM strategy_positions \
              WHERE mode = $1 AND status = 'End' \
                AND entry_lamports IS NOT NULL AND exit_time IS NOT NULL \

@@ -204,7 +204,6 @@ mod tests {
             n_exit_stall: 0,
             n_exit_time: 0,
             n_exit_liquidity: 0,
-            n_exit_next_kill: 0,
             n_exit_dead: 0,
             n_exit_metrics: 0,
             n_exit_metrics_by_slot: [0; crate::sweep::strategy::N_EXIT_METRIC_SLOTS],

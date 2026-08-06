@@ -6,6 +6,7 @@ import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
 import { LazyTokenChartsGrid } from 'components/tokens/LazyTokenChartsGrid';
 import { AmountCell, PriceCell } from 'components/tokens/priceCells';
 import { Badge } from 'components/ui/Badge';
+import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { IconButton } from 'components/ui/IconButton';
 import { SearchIcon, SpinnerIcon } from 'components/ui/icons';
 import { Input } from 'components/ui/Input';
@@ -20,12 +21,22 @@ import { useProfileWallets } from 'hooks/useProfileWallets';
 import type { ProfileWalletInfo } from 'components/token-price-chart/types';
 import type { TraderTokenRow } from 'types';
 
-// Look-back + token-count bounds mirror the backend clamps so the UI can't ask
-// for more than the endpoint will return.
+// Look-back clamp mirrors the backend. Max tokens uses the zero-as-unbound
+// sentinel (`0` / blank ⇒ every mint in the window) — same as mint-trades
+// `limit<=0` and the rule editor's Max total.
 const DEFAULT_DAYS = 7;
-const DEFAULT_LIMIT = 50;
+const DEFAULT_LIMIT = 0;
 const MAX_DAYS = 90;
-const MAX_LIMIT = 300;
+
+const TRADER_LOOKBACK_PRESETS = [
+  { value: '1', label: '1 day' },
+  { value: '3', label: '3 days' },
+  { value: '7', label: '7 days' },
+  { value: '14', label: '14 days' },
+  { value: '30', label: '30 days' },
+  { value: '60', label: '60 days' },
+  { value: '90', label: '90 days' },
+] as const;
 
 /** Stable empty reference so derived memos don't recompute while loading. */
 const EMPTY_ROWS: TraderTokenRow[] = [];
@@ -63,6 +74,15 @@ function groupByProfile(wallets: ProfileWalletInfo[]): { profileName: string; wa
 const clampInt = (raw: string, fallback: number, min: number, max: number) => {
   const n = parseInt(raw, 10);
   return Math.min(max, Math.max(min, Number.isFinite(n) ? n : fallback));
+};
+
+/** Parse Max tokens: blank / 0 / non-finite ⇒ 0 (unlimited); positive stays as asked. */
+const parseLimit = (raw: string) => {
+  const trimmed = raw.trim();
+  if (!trimmed) return 0;
+  const n = parseInt(trimmed, 10);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return n;
 };
 
 /**
@@ -132,7 +152,7 @@ export function TraderAnalysisPage() {
     setQuery({
       wallet,
       days: clampInt(daysInput, DEFAULT_DAYS, 1, MAX_DAYS),
-      limit: clampInt(limitInput, DEFAULT_LIMIT, 1, MAX_LIMIT),
+      limit: parseLimit(limitInput),
     });
   };
 
@@ -195,31 +215,32 @@ export function TraderAnalysisPage() {
           </label>
         )}
         <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
-          Days
-          <Input
-            type="number"
-            min={1}
-            max={MAX_DAYS}
-            value={daysInput}
-            onChange={(e) => setDaysInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') run();
-            }}
-            className="w-[90px] font-normal normal-case tracking-normal"
+          Look-back
+          <DateTimeRangePicker
+            aria-label="Look-back days"
+            size="sm"
+            zoneLabel="UTC"
+            allowCustom={false}
+            emptyLabel="Days"
+            presets={[...TRADER_LOOKBACK_PRESETS]}
+            value={{ preset: daysInput, from: '', to: '' }}
+            onChange={({ preset }) => setDaysInput(preset)}
           />
         </label>
         <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
           Max tokens
           <Input
             type="number"
-            min={1}
-            max={MAX_LIMIT}
+            min={0}
+            blankZero
+            placeholder="∞"
             value={limitInput}
             onChange={(e) => setLimitInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') run();
             }}
             className="w-[110px] font-normal normal-case tracking-normal"
+            title="Blank or 0 = every token in the window"
           />
         </label>
         <IconButton

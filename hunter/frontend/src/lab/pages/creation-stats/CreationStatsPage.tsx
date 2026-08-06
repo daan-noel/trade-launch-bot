@@ -1,6 +1,7 @@
 import { lazy, Suspense, useMemo } from 'react';
 import { LoadingState } from 'components/ui/LoadingState';
 import { Button } from 'components/ui/Button';
+import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { Select } from 'components/ui/Select';
 import { TimezoneSelect } from 'components/ui/TimezoneSelect';
 import { StatCard } from 'components/ui/StatCard';
@@ -32,6 +33,11 @@ const CreationTrendChart = lazy(() =>
     default: m.CreationTrendChart,
   })),
 );
+
+const LOOKBACK_PRESETS = RANGE_OPTIONS.map((o) => ({
+  value: String(o.value),
+  label: `Last ${o.label}`,
+}));
 
 /** Token creation analysis: heatmap + trend + grouped (lab) section. */
 export function CreationStatsPage() {
@@ -82,18 +88,16 @@ export function CreationStatsPage() {
       <div className="flex flex-wrap items-center gap-2">
         <TimezoneSelect />
 
-        <Select
-          value={String(rangeDays)}
-          onChange={(e) => setRangeDays(Number(e.target.value))}
-          title="Look-back window"
-          className="max-w-[7rem]"
-        >
-          {RANGE_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              Last {o.label}
-            </option>
-          ))}
-        </Select>
+        <DateTimeRangePicker
+          aria-label="Look-back window"
+          size="sm"
+          zoneLabel="local"
+          allowCustom={false}
+          emptyLabel="Look-back"
+          presets={LOOKBACK_PRESETS}
+          value={{ preset: String(rangeDays), from: '', to: '' }}
+          onChange={({ preset }) => setRangeDays(Number(preset))}
+        />
 
         <Select
           value={segment}

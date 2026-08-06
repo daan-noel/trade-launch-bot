@@ -197,15 +197,39 @@ describe('pnlDistributionBuckets', () => {
       row({ wallet_realized_pnl_pct: -5 }), // -10..0
       row({ wallet_realized_pnl_pct: 0 }), // 0..10 (half-open [0,10))
       row({ wallet_realized_pnl_pct: 15 }), // 10..20
+      row({ wallet_realized_pnl_pct: 250 }), // 200…500
       row({ wallet_realized_pnl_pct: null }), // excluded — pure open bag
     ];
     const buckets = pnlDistributionBuckets(rows);
     const total = buckets.reduce((s, b) => s + b.count, 0);
-    expect(total).toBe(4);
+    expect(total).toBe(5);
     expect(buckets.find((b) => b.label === '< -50%')!.count).toBe(1);
     expect(buckets.find((b) => b.label === '-10…0%')!.count).toBe(1);
     expect(buckets.find((b) => b.label === '0…10%')!.count).toBe(1);
     expect(buckets.find((b) => b.label === '10…20%')!.count).toBe(1);
+    expect(buckets.find((b) => b.label === '200…500%')!.count).toBe(1);
+    expect(buckets.some((b) => b.label === '≥ 500%')).toBe(true);
+  });
+
+  it('sparse density collapses the near-zero zone', () => {
+    const rows = [
+      row({ wallet_realized_pnl_pct: -5 }),
+      row({ wallet_realized_pnl_pct: 15 }),
+      row({ wallet_realized_pnl_pct: 120 }),
+    ];
+    const buckets = pnlDistributionBuckets(rows, 'sparse');
+    expect(buckets.map((b) => b.label)).toEqual([
+      '< -50%',
+      '-50…0%',
+      '0…50%',
+      '50…100%',
+      '100…200%',
+      '200…500%',
+      '≥ 500%',
+    ]);
+    expect(buckets.find((b) => b.label === '-50…0%')!.count).toBe(1);
+    expect(buckets.find((b) => b.label === '0…50%')!.count).toBe(1);
+    expect(buckets.find((b) => b.label === '100…200%')!.count).toBe(1);
   });
 
   it('every bucket has a stable win/loss/breakeven sign', () => {

@@ -28,8 +28,9 @@ pub struct WalletTokensParams {
     /// Look-back window in days (default 7). Clamped to 1..=90.
     #[serde(default = "default_days")]
     pub days: i64,
-    /// Max tokens returned, recent-first (default 50). Clamped to 1..=300 to
-    /// bound the fan-out of per-token chart fetches the page fires.
+    /// Max tokens returned, recent-first. `<= 0` (the default) ⇒ every mint in
+    /// the window; a positive value caps the response. Charts on the page are
+    /// lazily mounted, so an unbounded token list does not fan out fetches.
     #[serde(default = "default_limit")]
     pub limit: i64,
 }
@@ -38,7 +39,7 @@ fn default_days() -> i64 {
     7
 }
 fn default_limit() -> i64 {
-    50
+    0
 }
 
 /// One row of the Trader Analysis token table: the full token record (flattened,
@@ -94,10 +95,10 @@ struct WalletTokenRow {
 }
 
 /// `GET /api/wallets/:wallet/tokens` — full token rows for every mint the wallet
-/// traded in the last `days`, most-recent-trade first, capped at `limit`, each
-/// merged with the wallet's interaction stats + reconstructed PnL (see
-/// [`WalletTokenRow`]). Both buys and sells count (a mint the wallet only exited
-/// in the window still shows).
+/// traded in the last `days`, most-recent-trade first (`limit <= 0` ⇒ every mint
+/// in the window; positive ⇒ capped), each merged with the wallet's interaction
+/// stats + reconstructed PnL (see [`WalletTokenRow`]). Both buys and sells count
+/// (a mint the wallet only exited in the window still shows).
 ///
 /// Two indexed reads: `wallet_traded_mints` (recent-first mint set + stats) then
 /// `find_list_rows_for_mints` (the same batch token projection the All Tokens /
@@ -110,7 +111,8 @@ pub async fn list_wallet_tokens(
 ) -> impl Responder {
     let wallet = path.into_inner();
     let days = query.days.clamp(1, 90);
-    let limit = query.limit.clamp(1, 300);
+    // `<= 0` ⇒ unbounded (see `wallet_traded_mints`); positive stays capped as asked.
+    let limit = if query.limit <= 0 { 0 } else { query.limit };
     let since = Utc::now() - chrono::Duration::days(days);
 
     let traded = match state.trade_repo().wallet_traded_mints(&wallet, since, limit).await {

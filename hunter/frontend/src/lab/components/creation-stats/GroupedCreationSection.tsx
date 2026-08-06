@@ -5,6 +5,7 @@ import { STORAGE_KEYS } from 'lib/storage';
 import { skipToken } from '@reduxjs/toolkit/query/react';
 import { Button } from 'components/ui/Button';
 import { Badge } from 'components/ui/Badge';
+import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { Select } from 'components/ui/Select';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { LoadingState } from 'components/ui/LoadingState';
@@ -57,6 +58,11 @@ import {
   type CreationHeatCell,
   type CreationSegment,
 } from 'components/creation-stats/creationStats';
+
+const LOOKBACK_PRESETS = RANGE_OPTIONS.map((o) => ({
+  value: String(o.value),
+  label: `Last ${o.label}`,
+}));
 import {
   GROUP_FIELDS,
   GROUP_FIELD_LABELS,
@@ -468,18 +474,16 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
         </div>
         <div className="flex items-center gap-2">
           {/* Look-back window (section-local, independent of page range). */}
-          <Select
-            value={String(rangeDays)}
-            onChange={(e) => setRangeDays(Number(e.target.value))}
-            title="Look-back window"
-            className="max-w-[7rem]"
-          >
-            {RANGE_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                Last {o.label}
-              </option>
-            ))}
-          </Select>
+          <DateTimeRangePicker
+            aria-label="Look-back window"
+            size="sm"
+            zoneLabel="local"
+            allowCustom={false}
+            emptyLabel="Look-back"
+            presets={LOOKBACK_PRESETS}
+            value={{ preset: String(rangeDays), from: '', to: '' }}
+            onChange={({ preset }) => setRangeDays(Number(preset))}
+          />
           {/* Bucket granularity (range-gated). */}
           <Select
             value={effBucket}

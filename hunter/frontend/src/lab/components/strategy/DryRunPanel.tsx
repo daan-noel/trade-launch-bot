@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { IconButton } from 'components/ui/IconButton';
 import { SimulateIcon, SpinnerIcon } from 'components/ui/icons';
 import { Select } from 'components/ui/Select';
+import { InfoTooltip } from 'components/ui/InfoTooltip';
 import { apiErrorMessage } from 'store/baseApi';
 import { connectSimulationFinished } from 'services/sse';
 import type { RuleEditorDraft } from 'components/strategy/RuleEditor';
@@ -14,6 +15,7 @@ import {
   type EngineRuleDraft,
   type FillModelId,
 } from 'lib/strategy/types';
+import { EXECUTION_MODEL_HELP } from 'lib/strategy/strategyHelp';
 import { useStartEngineSimulationMutation } from '@lab/store/labEndpoints';
 import { DryRunDetail } from './DryRunDetail';
 
@@ -105,32 +107,38 @@ export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; 
             </option>
           ))}
         </Select>
-        <Select
-          fieldSize="sm"
-          value={fillModel}
-          onChange={(e) => setFillModel(e.target.value as FillModelId)}
-          className="w-36"
-          title={FILL_MODELS.find((m) => m.id === fillModel)?.hint}
-        >
-          {FILL_MODELS.map((m) => (
-            <option key={m.id} value={m.id} title={m.hint}>
-              {m.label}
-            </option>
-          ))}
-        </Select>
-        <Select
-          fieldSize="sm"
-          value={costModel}
-          onChange={(e) => setCostModel(e.target.value as CostModelId)}
-          className="w-36"
-          title={COST_MODELS.find((m) => m.id === costModel)?.hint}
-        >
-          {COST_MODELS.map((m) => (
-            <option key={m.id} value={m.id} title={m.hint}>
-              {m.label}
-            </option>
-          ))}
-        </Select>
+        <span className="flex items-center gap-1">
+          <Select
+            fieldSize="sm"
+            value={fillModel}
+            onChange={(e) => setFillModel(e.target.value as FillModelId)}
+            className="w-36"
+            title={FILL_MODELS.find((m) => m.id === fillModel)?.hint}
+          >
+            {FILL_MODELS.map((m) => (
+              <option key={m.id} value={m.id} title={m.hint}>
+                {m.label}
+              </option>
+            ))}
+          </Select>
+          <InfoTooltip {...EXECUTION_MODEL_HELP.fillModel} />
+        </span>
+        <span className="flex items-center gap-1">
+          <Select
+            fieldSize="sm"
+            value={costModel}
+            onChange={(e) => setCostModel(e.target.value as CostModelId)}
+            className="w-36"
+            title={COST_MODELS.find((m) => m.id === costModel)?.hint}
+          >
+            {COST_MODELS.map((m) => (
+              <option key={m.id} value={m.id} title={m.hint}>
+                {m.label}
+              </option>
+            ))}
+          </Select>
+          <InfoTooltip {...EXECUTION_MODEL_HELP.costModel} />
+        </span>
         <IconButton
           variant="primary"
           size="lg"

@@ -2,6 +2,7 @@ import { useEffect, useMemo, type ReactNode } from 'react';
 import { cn } from 'lib/cn';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { IconButton } from 'components/ui/IconButton';
+import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { PlayIcon, SpinnerIcon } from 'components/ui/icons';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
@@ -601,11 +602,17 @@ export function GenericSweepConfigForm({
           desc="Only tokens created in this UTC window are swept. Leave either end empty for open-ended."
           className="w-fit"
         >
-          <div className="flex items-center gap-1">
-            <Input type="datetime-local" value={createdAfter} onChange={(e) => setField('createdAfter', e.target.value)} />
-            <span className="text-[10px] text-text-dim/50">–</span>
-            <Input type="datetime-local" value={createdBefore} onChange={(e) => setField('createdBefore', e.target.value)} />
-          </div>
+          <DateTimeRangePicker
+            aria-label="Created range"
+            zoneLabel="UTC"
+            emptyLabel="All history"
+            customPreset="custom"
+            value={{ preset: 'custom', from: createdAfter, to: createdBefore }}
+            onChange={({ from, to }) => {
+              setField('createdAfter', from);
+              setField('createdBefore', to);
+            }}
+          />
         </Field>
 
         <Field label="Method" desc={SWEEP_FIELD_HELP.method.body} className="w-[140px]">

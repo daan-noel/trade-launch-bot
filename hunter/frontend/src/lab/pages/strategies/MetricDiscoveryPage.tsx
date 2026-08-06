@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 
 import { Badge } from 'components/ui/Badge';
 import { Checkbox } from 'components/ui/Checkbox';
+import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { IconButton } from 'components/ui/IconButton';
 import { PlayIcon, SpinnerIcon } from 'components/ui/icons';
 import { Input } from 'components/ui/Input';
@@ -256,19 +257,21 @@ export function MetricDiscoveryPage() {
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <Field label="Created range · UTC">
-          <div className="flex items-center gap-1">
-            <Input
-              type="datetime-local"
-              value={config.createdAfter}
-              onChange={(e) => set('createdAfter', e.target.value)}
-            />
-            <span className="text-[10px] text-text-dim/50">–</span>
-            <Input
-              type="datetime-local"
-              value={config.createdBefore}
-              onChange={(e) => set('createdBefore', e.target.value)}
-            />
-          </div>
+          <DateTimeRangePicker
+            aria-label="Created range"
+            zoneLabel="UTC"
+            emptyLabel="All history"
+            customPreset="custom"
+            value={{
+              preset: 'custom',
+              from: config.createdAfter,
+              to: config.createdBefore,
+            }}
+            onChange={({ from, to }) => {
+              set('createdAfter', from);
+              set('createdBefore', to);
+            }}
+          />
         </Field>
         <NumField label="Token cap" value={config.tokenCap} min={1} max={100000}
           onChange={(v) => set('tokenCap', v)} width="w-[110px]" />

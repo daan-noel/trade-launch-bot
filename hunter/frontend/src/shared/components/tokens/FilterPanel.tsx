@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from 
 import { cn } from 'lib/cn';
 import { IconButton } from 'components/ui/IconButton';
 import { CheckIcon, CloseIcon } from 'components/ui/icons';
+import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { Input, Textarea } from 'components/ui/Input';
 import {
   activeFilterCount,
@@ -132,19 +133,17 @@ const DateRangeField = memo(function DateRangeField({
 }) {
   return (
     <Field label={label} hint="UTC" className="w-fit">
-      <div className="flex items-center gap-1">
-        <Input
-          type="datetime-local"
-          value={fromValue}
-          onChange={(e) => set(fromKey, e.target.value as TokenFilters[typeof fromKey])}
-        />
-        <span className="text-[10px] text-text-dim/50">–</span>
-        <Input
-          type="datetime-local"
-          value={toValue}
-          onChange={(e) => set(toKey, e.target.value as TokenFilters[typeof toKey])}
-        />
-      </div>
+      <DateTimeRangePicker
+        aria-label={label}
+        zoneLabel="UTC"
+        emptyLabel="Any time"
+        customPreset="custom"
+        value={{ preset: 'custom', from: fromValue, to: toValue }}
+        onChange={({ from, to }) => {
+          set(fromKey, from as TokenFilters[typeof fromKey]);
+          set(toKey, to as TokenFilters[typeof toKey]);
+        }}
+      />
     </Field>
   );
 });

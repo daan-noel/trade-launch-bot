@@ -29,21 +29,17 @@ pub enum ExitCode {
     Stall = 5,
     TimeStop = 6,
     LiquidityExit = 7,
-    /// swing1's symmetric next-kill exit: a post-entry leg reverting to the kill
-    /// profile (deep + short) — the dev starting another intentional kill/rug.
-    /// Top-priority in the swing1 ladder.
-    NextKill = 8,
     /// Analysis-only death-close: the ladder never fired but the token is provably
     /// dead (liquidity gone + gone silent), so the sim closes the bag at the last
     /// meaningful trade instead of leaving it `Open` at a stale price. Live never
     /// produces this (it closes silent tokens via its clock sweep). Counts as a
     /// **closed** loss in the rollup. See [`crate::strategies::death`].
-    Dead = 9,
+    Dead = 8,
     /// The generic engine's metric-condition exit (`ExitReason::Metrics`): any of
     /// a rule's exit metric conditions became true. Rollups still bucket every
     /// detail label (`stall > 3`, legacy `stall>` / bare `Metrics`) here — the
     /// per-metric detail lives on the persisted string, not on this code.
-    Metrics = 10,
+    Metrics = 9,
 }
 
 impl ExitCode {
@@ -57,7 +53,6 @@ impl ExitCode {
             "Stall" => ExitCode::Stall,
             "TimeStop" => ExitCode::TimeStop,
             "LiquidityExit" => ExitCode::LiquidityExit,
-            "NextKill" => ExitCode::NextKill,
             "Dead" => ExitCode::Dead,
             "Open" => ExitCode::Open,
             // Matched fingerprint / armed but never filled — distinct from still-Open.
@@ -554,11 +549,6 @@ pub struct RunMetrics {
     pub n_exit_stall: u32,
     pub n_exit_time: u32,
     pub n_exit_liquidity: u32,
-    /// swing1 symmetric next-kill exits. Surfaced by the grouped sweep
-    /// (`ComboMetrics`); the live `StrategyRunMetrics` rollup does NOT carry this
-    /// column (NextKill only fires from swing1, which is backtest-only in Phase 1),
-    /// so `to_run_metrics` drops it — see that fn.
-    pub n_exit_next_kill: u32,
     /// Analysis-only death-closes (`ExitCode::Dead`): positions closed at the last
     /// meaningful trade because the token died silent. 0 in live rollups. Counts as
     /// closed (loss), so it lifts `n_closed` and lowers `n_open`.
@@ -619,7 +609,7 @@ pub struct RunAgg {
     fired_pct_sum: f64,
     holding_sum: i64,
     holding_sketch: QuantileSketch,
-    exit_counts: [u32; 10],
+    exit_counts: [u32; 9],
     /// `ExitCode::Metrics` with `pnl_sol > 0`.
     metrics_win: u32,
     /// `ExitCode::Metrics` that are not wins (`pnl_sol <= 0`).
@@ -644,7 +634,7 @@ impl Default for RunAgg {
             fired_pct_sum: 0.0,
             holding_sum: 0,
             holding_sketch: QuantileSketch::default(),
-            exit_counts: [0; 10],
+            exit_counts: [0; 9],
             metrics_win: 0,
             metrics_loss: 0,
         }
@@ -758,9 +748,8 @@ impl RunAgg {
             n_exit_time: self.exit_counts[4],
             n_exit_liquidity: self.exit_counts[5],
             n_exit_open: self.exit_counts[6],
-            n_exit_next_kill: self.exit_counts[7],
-            n_exit_dead: self.exit_counts[8],
-            n_exit_metrics: self.exit_counts[9],
+            n_exit_dead: self.exit_counts[7],
+            n_exit_metrics: self.exit_counts[8],
             n_exit_metrics_win: self.metrics_win,
             n_exit_metrics_loss: self.metrics_loss,
         }
@@ -789,7 +778,7 @@ pub fn exact_run_metrics<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -
     let mut closed_pct: Vec<f64> = Vec::new();
     let mut closed_holding: Vec<i64> = Vec::new();
     let mut fired_pct_sum = 0.0f64;
-    let mut exit_counts = [0u32; 10];
+    let mut exit_counts = [0u32; 9];
     let mut metrics_win = 0u32;
     let mut metrics_loss = 0u32;
 
@@ -881,9 +870,8 @@ pub fn exact_run_metrics<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -
         n_exit_time: exit_counts[4],
         n_exit_liquidity: exit_counts[5],
         n_exit_open: exit_counts[6],
-        n_exit_next_kill: exit_counts[7],
-        n_exit_dead: exit_counts[8],
-        n_exit_metrics: exit_counts[9],
+        n_exit_dead: exit_counts[7],
+        n_exit_metrics: exit_counts[8],
         n_exit_metrics_win: metrics_win,
         n_exit_metrics_loss: metrics_loss,
     }
@@ -943,7 +931,6 @@ pub fn run_summary<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -> RunS
     mtm.n_exit_stall = 0;
     mtm.n_exit_time = 0;
     mtm.n_exit_liquidity = 0;
-    mtm.n_exit_next_kill = 0;
     mtm.n_exit_dead = 0;
     mtm.n_exit_metrics = 0;
     mtm.n_exit_metrics_win = 0;
@@ -1019,9 +1006,8 @@ fn exit_index(e: ExitCode) -> usize {
         ExitCode::TimeStop => 4,
         ExitCode::LiquidityExit => 5,
         ExitCode::Open | ExitCode::NoEntry => 6,
-        ExitCode::NextKill => 7,
-        ExitCode::Dead => 8,
-        ExitCode::Metrics => 9,
+        ExitCode::Dead => 7,
+        ExitCode::Metrics => 8,
     }
 }
 

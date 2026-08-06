@@ -116,9 +116,6 @@ pub struct ComboMetrics {
     pub n_exit_stall: u32,
     pub n_exit_time: u32,
     pub n_exit_liquidity: u32,
-    /// swing1's symmetric next-kill flee count. 0 for tpsl1/tpsl2 (they never
-    /// produce `ExitCode::NextKill`).
-    pub n_exit_next_kill: u32,
     /// Analysis-only death-closes: positions closed at the last meaningful trade
     /// because the token died silent (see `trading_core::strategies::death`).
     pub n_exit_dead: u32,
@@ -165,7 +162,6 @@ impl ComboMetrics {
             n_exit_stall: m.n_exit_stall,
             n_exit_time: m.n_exit_time,
             n_exit_liquidity: m.n_exit_liquidity,
-            n_exit_next_kill: m.n_exit_next_kill,
             n_exit_dead: m.n_exit_dead,
             n_exit_metrics: m.n_exit_metrics,
             // Populated by `ComboAgg::finalize` (streaming) or `exact_from_rows`

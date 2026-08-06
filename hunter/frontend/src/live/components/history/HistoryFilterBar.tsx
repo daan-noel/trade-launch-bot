@@ -7,26 +7,49 @@
 
 import { memo, useMemo } from 'react';
 import { Button } from 'components/ui/Button';
-import { Input } from 'components/ui/Input';
+import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { SearchableSelect } from 'components/ui/SearchableSelect';
-import { Select } from 'components/ui/Select';
-import { ToggleGroup } from 'components/ui/ToggleGroup';
 import { ModeBadge } from 'components/strategy/ModeBadge';
 import { ModeToggle } from 'components/strategy/ModeToggle';
+import { cn } from 'lib/cn';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import type { HistoryRange } from 'lib/strategy/nav';
 import type { HistoryCohortApi } from '@live/pages/console/historyCohort';
+import {
+  HISTORY_EXIT_FILTER_OPTIONS,
+  historyExitFilterToneClass,
+} from '@live/pages/console/historyExitFilter';
+import { historyFocusLabel } from '@live/pages/console/historyFocus';
 
-const RANGE_OPTIONS: { value: HistoryRange; label: string }[] = [
-  { value: 'today', label: 'Today' },
-  { value: '7d', label: '7d' },
-  { value: '30d', label: '30d' },
-  { value: 'all', label: 'All' },
+const RANGE_PRESETS: { value: HistoryRange; label: string; description?: string }[] = [
+  { value: 'today', label: 'Today', description: 'UTC midnight → now' },
+  { value: '7d', label: '7 days' },
+  { value: '30d', label: '30 days' },
+  { value: 'all', label: 'All time' },
   { value: 'custom', label: 'Custom' },
 ];
 
+/** Glanceable status hues — in-flight amber, stuck/failed red, open info. */
+function statusToneClass(status: string | null | undefined): string {
+  switch (status) {
+    case 'End':
+      return 'text-secondary';
+    case 'Holding':
+      return 'text-info';
+    case 'BuySubmitted':
+    case 'ExitPending':
+    case 'ExitUnconfirmed':
+      return 'text-warning';
+    case 'ExitStuck':
+    case 'EntryFailed':
+      return 'text-red';
+    default:
+      return 'text-text-dim';
+  }
+}
+
 /** Terminal + open statuses a reviewer actually filters on. */
-const STATUSES = [
+const STATUSES: { value: string; label: string }[] = [
   { value: 'End', label: 'Closed (End)' },
   { value: 'EntryFailed', label: 'Entry failed' },
   { value: 'Holding', label: 'Holding' },
@@ -34,19 +57,6 @@ const STATUSES = [
   { value: 'ExitPending', label: 'Exit pending' },
   { value: 'ExitUnconfirmed', label: 'Exit unconfirmed' },
   { value: 'BuySubmitted', label: 'Buy submitted' },
-];
-
-/** Exit reasons the engine writes (the `Metrics(…)` family filters by substring). */
-const EXIT_REASONS = [
-  'TakeProfit',
-  'StopLoss',
-  'Trailing',
-  'Stall',
-  'Time',
-  'Liquidity',
-  'Dead',
-  'Manual',
-  'NextKill',
 ];
 
 /** `datetime-local` wants a `YYYY-MM-DDTHH:MM` wall-clock; the cohort stores UTC ISO. */
@@ -64,11 +74,13 @@ export const HistoryFilterBar = memo(function HistoryFilterBar({
   cohort,
   closedCount,
   entryFailed,
+  ruleNameOf,
 }: {
   cohort: HistoryCohortApi;
   /** Closes in the cohort (from the series) — the honest "what am I looking at". */
   closedCount: number | null;
   entryFailed: number | null;
+  ruleNameOf?: (id: string) => string | null;
 }) {
   const { data: rules = [] } = useGetStrategyRulesQuery();
   const ruleOptions = useMemo(
@@ -78,38 +90,58 @@ export const HistoryFilterBar = memo(function HistoryFilterBar({
         .sort((a, b) => a.label.localeCompare(b.label)),
     [rules],
   );
+  const statusOptions = useMemo(
+    () =>
+      STATUSES.map((s) => ({
+        value: s.value,
+        label: s.label,
+        data: { cls: statusToneClass(s.value) },
+      })),
+    [],
+  );
+  const exitOptions = useMemo(
+    () =>
+      HISTORY_EXIT_FILTER_OPTIONS.map((o) => ({
+        value: o.value,
+        label: o.label,
+        data: { cls: historyExitFilterToneClass(o.value), kind: o.kind },
+      })),
+    [],
+  );
+  const focusLabel = cohort.focus
+    ? historyFocusLabel(cohort.focus, ruleNameOf)
+    : null;
 
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-white/6 bg-bg-panel p-2.5">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <ToggleGroup
+        <DateTimeRangePicker
           aria-label="Date range"
-          tone="primary"
           size="sm"
-          options={RANGE_OPTIONS}
-          value={cohort.range}
-          onChange={(range) => cohort.set({ range })}
+          zoneLabel="UTC"
+          emptyLabel="Select date range"
+          presets={RANGE_PRESETS}
+          customPreset="custom"
+          value={{
+            preset: cohort.range,
+            // Pass computed preset bounds too so the popover draft is seeded
+            // (Custom starts from the active window) and the trigger can show
+            // a compact "7 days · MM/DD → now" hint.
+            from: isoToLocalInput(cohort.fromIso),
+            to: isoToLocalInput(cohort.toIso),
+          }}
+          onChange={({ preset, from, to }) => {
+            if (preset !== 'custom') {
+              cohort.set({ range: preset });
+              return;
+            }
+            cohort.set({
+              range: 'custom',
+              fromIso: localInputToIso(from),
+              toIso: localInputToIso(to),
+            });
+          }}
         />
-
-        {cohort.range === 'custom' && (
-          <div className="flex items-center gap-1.5">
-            <Input
-              type="datetime-local"
-              fieldSize="sm"
-              value={isoToLocalInput(cohort.fromIso)}
-              onChange={(e) => cohort.set({ fromIso: localInputToIso(e.target.value) })}
-              title="Window start (UTC)"
-            />
-            <span className="text-[10px] text-text-dim">→</span>
-            <Input
-              type="datetime-local"
-              fieldSize="sm"
-              value={isoToLocalInput(cohort.toIso)}
-              onChange={(e) => cohort.set({ toIso: localInputToIso(e.target.value) })}
-              title="Window end (UTC, exclusive)"
-            />
-          </div>
-        )}
 
         <ModeToggle
           layout="ops"
@@ -130,31 +162,46 @@ export const HistoryFilterBar = memo(function HistoryFilterBar({
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          <Select
-            value={cohort.status ?? ''}
-            onChange={(e) => cohort.set({ status: e.target.value || null })}
-            title="Position status"
-          >
-            <option value="">Any status</option>
-            {STATUSES.map((s) => (
-              <option key={s.value} value={s.value}>
-                {s.label}
-              </option>
-            ))}
-          </Select>
-          <Select
-            value={cohort.exitReason ?? ''}
-            onChange={(e) => cohort.set({ exitReason: e.target.value || null })}
-            title="Exit reason"
-          >
-            <option value="">Any exit</option>
-            {EXIT_REASONS.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </Select>
+        <div className="grid min-w-[280px] grid-cols-2 gap-2">
+          <SearchableSelect
+            options={statusOptions}
+            value={cohort.status}
+            onChange={(v) => cohort.set({ status: v || null })}
+            emptyOptionLabel="Any status"
+            placeholder="Any status"
+            noResultsLabel="No status matches"
+            className={cn(
+              cohort.status && 'font-semibold',
+              statusToneClass(cohort.status),
+            )}
+            renderOption={(opt) => (
+              <span className={cn('font-semibold', opt.data.cls)}>{opt.label}</span>
+            )}
+          />
+          <SearchableSelect
+            options={exitOptions}
+            value={cohort.exitReason}
+            onChange={(v) => cohort.set({ exitReason: v || null })}
+            emptyOptionLabel="Any exit"
+            placeholder="Any exit"
+            noResultsLabel="No exit matches"
+            className={cn(
+              cohort.exitReason && 'font-semibold',
+              historyExitFilterToneClass(cohort.exitReason),
+            )}
+            renderOption={(opt) => (
+              <span
+                className={cn('font-semibold', opt.data.cls)}
+                title={
+                  opt.data.kind === 'metric'
+                    ? 'Metric exits matching this name (e.g. stall >= 300)'
+                    : 'System exit reason'
+                }
+              >
+                {opt.label}
+              </span>
+            )}
+          />
         </div>
 
         {cohort.active && (
@@ -186,6 +233,19 @@ export const HistoryFilterBar = memo(function HistoryFilterBar({
             <ModeBadge mode="real" />
             <ModeBadge mode="paper" />
           </>
+        )}
+        {focusLabel && (
+          <span className="inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-primary">
+            Focus: <span className="font-semibold text-text">{focusLabel}</span>
+            <button
+              type="button"
+              className="ml-0.5 text-text-dim hover:text-text"
+              title="Clear chart focus"
+              onClick={() => cohort.set({ focus: null })}
+            >
+              ✕
+            </button>
+          </span>
         )}
       </div>
     </div>
