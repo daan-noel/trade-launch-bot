@@ -332,7 +332,9 @@ impl Default for TransportConfig {
 
 /// Transport task entry point. Loops: (wait for live) → connect → subscribe →
 /// stream → reconnect. Forwards `(Arc<SubscribeUpdateTransaction>, V::Relevance,
-/// DateTime<Utc>)` to `event_tx` for the decode task.
+/// DateTime<Utc>)` to the decode lanes: creates (`V::is_create_lane`) on
+/// `create_tx`, everything else on `normal_tx`, so AMM/curve swap volume can
+/// never stall a create in the transport→decode queue.
 ///
 /// `gap_replay_rx` carries `(gap_replay_on_reconnect, gap_replay_max_window_secs)`.
 /// When `gap_replay_on_reconnect` is false (default), reconnects always use live
@@ -351,7 +353,8 @@ pub async fn run<V: IngestVenue>(
     endpoint: String,
     auth: Auth,
     venue: Arc<V>,
-    event_tx: mpsc::Sender<(Arc<SubscribeUpdateTransaction>, V::Relevance, DateTime<Utc>)>,
+    create_tx: mpsc::Sender<(Arc<SubscribeUpdateTransaction>, V::Relevance, DateTime<Utc>)>,
+    normal_tx: mpsc::Sender<(Arc<SubscribeUpdateTransaction>, V::Relevance, DateTime<Utc>)>,
     mut live_rx: watch::Receiver<bool>,
     cfg: Arc<TransportConfig>,
     mut gap_replay_rx: watch::Receiver<(bool, u64)>,
@@ -382,7 +385,8 @@ pub async fn run<V: IngestVenue>(
             &endpoint,
             &auth,
             &venue,
-            &event_tx,
+            &create_tx,
+            &normal_tx,
             &mut live_rx,
             from_slot,
             &cfg,
@@ -523,7 +527,8 @@ async fn run_once<V: IngestVenue>(
     endpoint: &str,
     auth: &Auth,
     venue: &Arc<V>,
-    event_tx: &mpsc::Sender<(Arc<SubscribeUpdateTransaction>, V::Relevance, DateTime<Utc>)>,
+    create_tx: &mpsc::Sender<(Arc<SubscribeUpdateTransaction>, V::Relevance, DateTime<Utc>)>,
+    normal_tx: &mpsc::Sender<(Arc<SubscribeUpdateTransaction>, V::Relevance, DateTime<Utc>)>,
     live_rx: &mut watch::Receiver<bool>,
     from_slot: Option<u64>,
     cfg: &TransportConfig,
@@ -616,7 +621,12 @@ async fn run_once<V: IngestVenue>(
                             }
                             if let Some(relevance) = venue.classify(&tx) {
                                 let received_at = Utc::now();
-                                match event_tx
+                                let lane = if V::is_create_lane(relevance) {
+                                    create_tx
+                                } else {
+                                    normal_tx
+                                };
+                                match lane
                                     .send_timeout(
                                         (Arc::new(tx), relevance, received_at),
                                         cfg.pipeline_send_timeout,

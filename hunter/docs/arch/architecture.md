@@ -36,7 +36,7 @@ the bearer-auth middleware (fail-closed on mutating requests) + CORS.
 Builds trader → DB pools → caches → `CoreState` → `DeployState`. Long-lived tasks:
 
 - **ingest** (host adapter `live::ingest::spawn_ingest`, which drives `ingest_laserstream::Ingest`): gRPC producer · pipeline · DbWriter
-- **the generic engine** (`strategies::engine::spawn_engine`) — the one serialized decision loop, driven by the ingest `strategy_rx` + a 500 ms tick + confirmed fills; plus its PG recovery reaper
+- **the generic engine** (`strategies::engine::spawn_engine`) — the one serialized decision loop, driven by the ingest create + trade ping lanes + tick + confirmed fills; plus its PG recovery reaper
 - **SOL price poller**
 - optional **HTTP server** (core + deploy routes)
 

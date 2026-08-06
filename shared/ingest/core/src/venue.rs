@@ -56,6 +56,15 @@ pub trait IngestVenue: Send + Sync + 'static {
     /// forward to `decode`). Runs once, in the transport task.
     fn classify(&self, update: &SubscribeUpdateTransaction) -> Option<Self::Relevance>;
 
+    /// Whether this relevance rides the **create fast lane** (dedicated
+    /// transport→decode channel + decode task). Default `false` — all traffic
+    /// shares the normal lane. Pump.fun overrides for `TxRelevance::Create` so
+    /// AMM/curve swap volume can never delay a create decode.
+    fn is_create_lane(relevance: Self::Relevance) -> bool {
+        let _ = relevance;
+        false
+    }
+
     /// Full decode of a pre-classified update into neutral events.
     fn decode(
         &self,

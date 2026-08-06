@@ -5,76 +5,59 @@ i.e. pure sniper-on-`TokenCreated`. Goal is minimising **create-lands → our-bu
 Constraint from the operator: **no fee/tip raising, no extra sender regions, no second
 event feed** — code and architecture only.
 
-Shipped on `strategy-redesign` and folded into the permanent docs — nothing below
-re-covers them:
+Shipped (folded into arch docs — do not re-cover here):
 
-| Item | Commit | Reference |
-| --- | --- | --- |
-| **B** entry-path nonce fail-fast (`TxAnchor`) · **C** front-loaded rebroadcast · **F** warm sender socket | `23b0a97a` | [arch/trade-execution.md](../arch/trade-execution.md) |
-| **H** live runtime sized to the box (`WORKER_THREADS`) | `dbb65356` | — |
-| **D** classify off account keys + `TxRelevance::Create` | `19ea7d5c` | [arch/ingest.md](../arch/ingest.md) |
-
----
-
-## 1. Blocked — needs data only the server has
-
-### A — nonce off the snipe buy path
-
-**Gate:** does the live box actually contend for nonce slots?
-
-```powershell
-ssh -i $HOME/.ssh/aws-ec2-key.pem ubuntu@35.158.128.131 `
-  "docker logs hunter-live 2>&1 | grep -cE 'Nonce contention|Nonce pool exhausted'"
-```
-
-- **`0` ⇒ do NOT do A.** It is worth ~0.3 ms (one mutex + a hash copy) and costs a
-  tx-mode fork. **B already capped the downside** — the worst case is ~40 ms, not 4 s.
-- **`> 0` ⇒ A is worth up to seconds.** The change: drop the durable nonce for the
-  *snipe buy only* and ride the pushed recent blockhash (`BlockhashCache`, ~400 ms
-  fresh at zero RPC, already read by `build_recent_tx`). B's `TxAnchor::Entry` is the
-  seam — A becomes "Entry never takes a slot" rather than "Entry takes one briefly".
-  Gains: no acquisition wait, unbounded concurrency, ~70 B smaller tx. The write-ahead
-  signature guarantee is unchanged (fixed at signing in both modes).
-
-  Why the nonce buys this path nothing: its purpose is surviving long validity gaps,
-  but `REBROADCAST_WINDOW` is 5 s and a blockhash lasts ~60 s — 12× headroom. Sells
-  keep the nonce (long holds must not expire).
-
-  **Rejected alternative:** growing the pool to 24–32 accounts. Keeps the coupling and
-  the tail risk, costs rent.
-
-### G — right-size `curve_buy_cu` (150 000 today)
-
-Not a latency item — a *landing-probability* one: a smaller requested limit is easier
-for a leader to pack into a nearly-full block, at the same tip.
-
-The data is structurally already ours: `raw_txs.payload` is the verbatim prost-encoded
-`SubscribeUpdateTransaction`, so real consumption is at
-`.transaction(1) → .meta(4) → .compute_units_consumed(16)` — **no probe run, no RPC**.
-But in practice there is nothing to read:
-
-- `settings.persist_raw` **defaults off** — nothing is being captured;
-- `db-incremental-sync.ps1` skips `raw_txs` unless `-IncludeRawTxs`;
-- local `raw_txs` is **empty**, and its retention is 7 days.
-
-Trimming blind is worse than overshooting: a too-low limit is a hard tx failure.
-Unblock = turn `persist_raw` on → let real buys land → sync with `-IncludeRawTxs` →
-decode CU off the stored payloads → set actual + margin.
-
-If **A** also lands, the nonce ix disappears — re-check the wire size against the
-1232 B ceiling (`send.rs`) and record the headroom.
+| Item | Reference |
+| --- | --- |
+| **B** entry-path nonce fail-fast (`TxAnchor`) · **C** front-loaded rebroadcast · **F** warm sender socket | [arch/trade-execution.md](../arch/trade-execution.md) |
+| **H** live runtime sized to the box (`WORKER_THREADS`) | — |
+| **D** classify off account keys + `TxRelevance::Create` | [arch/ingest.md](../arch/ingest.md) |
+| **E** create fast lane (transport→decode split + dedicated create strategy ping + biased `create_rx`) | [arch/ingest.md](../arch/ingest.md), [arch/strategies.md](../arch/strategies.md) |
+| **G** `curve_buy_cu` 150k → **110k** (measured off 40 live buys: p99=86_389) | `executor-core` `ComputeBudgetCfg` |
+| **L0** `snipe_latency` structured log (`create_to_ping_ms` / `ping_to_decide_ms` / `decide_to_ack_ms`) | `exec_real::run_entry` |
 
 ---
 
-## 2. Deferred by design — gated on a measured tail
+## Server measurement (2026-08-06)
 
-### The measurement that gates both (M.2, re-run when a snipe rule has run)
+Re-checked on the live box (code + logs + Postgres — not the old plan alone).
 
-Ran 2026-07-27 and came back **inconclusive**: 39 real fills, but only **3** from a
-rule (all `+37` slots, and not fingerprint-only entries) — everything else was a manual
-buy. There is no snipe corpus yet, so the distribution says nothing about the pipeline.
-Re-run once a real fingerprint-only rule has traded (bot wallet
-`xxXgBgHE2S16gfe2CmcQ1cs2UwsFUqzMJaioovdZXxx`, `wallet_id` 78454):
+| Check | Result |
+| --- | --- |
+| `Nonce contention` / `Nonce pool exhausted` (current container logs) | **0** |
+| `Entry buy: no free nonce` fallback | **0** |
+| `strategy ping queue full` sheds | **0** |
+| `Buy pool miss` | **0** |
+| `ingest.persist_raw` | **true** (`raw_txs` ≈ 12.8M rows) |
+| Real rule positions (7d) slot_delta | n=192, **p50=42**, p90=126, min=1, max=640 |
+| Empty-entry (pure snipe) real rules | **none** — every active real rule has metric entry gates |
+| Active real rules | all require `m_snapshot.time > 10` (and usually liquidity / flow) |
+
+**Read of the slot_delta numbers:** they are **not** pipeline latency for today's book.
+Active rules refuse entry until token age ≥ 10 s (~25 slots), so a p50 of 22–42 is the
+strategy waiting on purpose. The inactive `3 IX - 20-30` rule (entry `time < 45` +
+`liquidity > 25`) still hit **+1 slot**  on 8 fills and ≤2 on 17/61 — proof the
+create→buy path *can* land at the physical floor when conditions allow.
+
+**Pipeline metric to watch after deploy:** `decide_to_ack_ms` on the `snipe_latency`
+log line (post-`reduce` → sender ACK). `ping_to_decide_ms` includes intentional
+metric waits and will look large on the current ladder.
+
+### A — nonce off the snipe buy path — **do NOT**
+
+Gate was contention logs → **0**. Worth ~0.3 ms median; B already caps the worst
+case at ~40 ms. Revisit only if `Nonce contention` / `Nonce pool exhausted` appear.
+
+CU decode helper (local): `cargo run -p ingest-core --example decode_cu -- <dir-of-*.b64>`.
+
+---
+
+## Still open
+
+### Pure-snipe corpus (M.2 for fingerprint-only)
+
+No empty-entry real rule is live, so there is still no fingerprint-only slot-delta
+distribution. When one trades, re-run:
 
 ```sql
 SELECT p.rule_id, tr.slot - tk.creation_slot AS slot_delta
@@ -89,36 +72,12 @@ JOIN LATERAL (
 WHERE p.mode = 'real' AND p.rule_id IS NOT NULL AND p.entry_time IS NOT NULL;
 ```
 
-- **p50 of 1–2 ⇒ we are at the physical floor. Stop — everything below is noise.**
-- **fat / bimodal tail ⇒ E and L0 are live.**
-
-### E — the rest of the create fast lane
-
-D shipped the prerequisite (`TxRelevance::Create`). What remains, without violating the
-one-decision-kernel rule:
-
-- separate channel + task per relevance out of the transport, so AMM swap volume can
-  never delay a create decode (`session.rs` is one decode task for everything today);
-- a dedicated `create_rx` arm in the decision loop, `biased` above the general ping arm
-  (`decision_loop.rs`). `reduce` stays the sole decider — only *arrival order* changes,
-  so SSOT and determinism are untouched;
-- raise `STRATEGY_QUEUE_CAP` (**512**, `consumer.rs`) or at least alarm on
-  `shed.strategy_pings` — a shed create ping is a snipe that never happened, and today
-  it is silently counted.
-
-Bounded tail latency under burst; nothing on a quiet median.
-
-### L0 — full stamped breakdown (diagnostic)
-
-Carry one timestamp end to end: stamp `received_at` at the transport (already exists),
-thread it through `IngestEvent::TokenCreated` → `StrategyPing` → `Event::TokenCreated`,
-and log one structured line per snipe: `block_time → received_at → decoded → pinged →
-reduced → nonce_acquired → signed → sender_ack`, alongside the landed slot from the fill
-feed. This says *which* stage owns the tail; M.2 says *whether* there is one, for free.
+- **p50 of 1–2 on a fingerprint-only rule ⇒ physical floor. Stop.**
+- **fat tail on `decide_to_ack_ms` ⇒ dig L0 stage that owns it.**
 
 ---
 
-## 3. The physical floor (be honest about this)
+## The physical floor (be honest about this)
 
 Reacting to a PROCESSED create notification means the earliest we can possibly land is
 **create_slot + 1**, realistically **+2…+4**. Anyone landing *in* the create slot is
@@ -127,20 +86,9 @@ crosses that line — the whole game is compressing +4 down to +1. If the requir
 landing *in* the create slot, that is a different product (mint-key prediction or bundle
 co-ordination), not a latency fix.
 
-## 4. Explicitly not doing
+## Explicitly not doing
 
-- **Pre-signing the buy tx** — impossible. A curve buy names `mint`, `bonding_curve`,
-  `associated_bonding_curve`, `creator_vault`, `bonding_curve_v2`, all derived from a
-  mint that does not exist until the create lands. The residual per-mint work (5 PDA
-  derivations + one signature + bincode + base64) is sub-millisecond and is not where
-  the time goes.
-- **Growing the nonce pool** — keeps the coupling and the tail; A supersedes it.
-- **Parallelising the decode task across a thread pool** — decode is microseconds; it
-  buys reordering risk for nothing.
-- **Second independent create feed / more sender regions / higher tip** — ruled out by
-  the operator constraint. A second feed is a real tail win but the most expensive item,
-  and it only makes sense after E proves the tail is *not* ours.
-- **Box placement / `probe pin-senders` re-run** — infrastructure, not code. Still likely
-  worth more than everything above combined if the EC2 box is not in `eu-central-1`
-  (a US↔EU round trip is ~90–180 ms, i.e. several slots), but out of scope by the same
-  constraint.
+- **Pre-signing the buy tx** — impossible until the mint exists.
+- **Growing the nonce pool** — no contention; A supersedes it if that changes.
+- **Second feed / more regions / higher tip** — operator constraint.
+- **Treating metric-gated slot_delta as pipeline lag** — it isn't; use `decide_to_ack_ms`.

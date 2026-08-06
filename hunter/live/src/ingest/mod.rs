@@ -29,7 +29,9 @@ use trading_core::{
 
 use trading_core::ingest::TraderHook;
 
-use consumer::{IngestConsumer, DB_QUEUE_CAP, DB_RETRY_CAP, STRATEGY_QUEUE_CAP};
+use consumer::{
+    IngestConsumer, CREATE_STRATEGY_QUEUE_CAP, DB_QUEUE_CAP, DB_RETRY_CAP, STRATEGY_QUEUE_CAP,
+};
 use db_writer::DbWriter;
 use watchdog::{DbHeartbeat, spawn_watchdog};
 
@@ -38,7 +40,10 @@ pub use watchdog::BootGate;
 pub struct IngestSpawnResult {
     pub pool_index: PoolIndex,
     pub pools_changed: Arc<Notify>,
+    /// Trade / migrate / creator-activity strategy pings.
     pub strategy_rx: mpsc::Receiver<StrategyPing>,
+    /// `TokenCreated` strategy pings (create fast lane).
+    pub create_rx: mpsc::Receiver<StrategyPing>,
     pub consumer_task: JoinHandle<()>,
     pub db_writer_task: JoinHandle<()>,
     pub ingest_handle: Arc<IngestHandle>,
@@ -65,6 +70,8 @@ pub async fn spawn_ingest(
 ) -> IngestSpawnResult {
     let (strategy_tx, strategy_rx) =
         mpsc::channel::<StrategyPing>(STRATEGY_QUEUE_CAP);
+    let (create_tx, create_rx) =
+        mpsc::channel::<StrategyPing>(CREATE_STRATEGY_QUEUE_CAP);
 
     let (db_tx, db_rx) =
         mpsc::channel::<db_writer::DbWriteOp>(DB_QUEUE_CAP);
@@ -93,6 +100,7 @@ pub async fn spawn_ingest(
         db_tx.clone(),
         db_retry_tx,
         strategy_tx,
+        create_tx,
         sse_tx,
         settings_rx.clone(),
         trader,
@@ -152,6 +160,7 @@ pub async fn spawn_ingest(
         pool_index,
         pools_changed,
         strategy_rx,
+        create_rx,
         consumer_task,
         db_writer_task,
         ingest_handle: handle,

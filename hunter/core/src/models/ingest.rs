@@ -8,6 +8,10 @@ use super::trade::TradeType;
 pub struct StrategyPing {
     pub mint: String,
     pub kind: IngestKind,
+    /// Transport observation time for create pings (`TokenCreated.received_at`).
+    /// `None` on trade/migrate/creator-activity lanes — only the create fast
+    /// lane carries an end-to-end latency stamp (L0).
+    pub received_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

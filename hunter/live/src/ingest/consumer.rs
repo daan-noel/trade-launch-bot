@@ -38,6 +38,9 @@ use super::held_pools::HeldPoolGate;
 
 pub const DB_QUEUE_CAP: usize = 16384;
 pub const STRATEGY_QUEUE_CAP: usize = 512;
+/// Dedicated create-ping lane. Creates are rare vs trade pings; keeping them off
+/// the trade queue means a saturated AMM/curve stream can never shed a snipe.
+pub const CREATE_STRATEGY_QUEUE_CAP: usize = 256;
 /// Rate-limit for the strategy-shed warning: log the first drop, then every Nth.
 /// Loud enough to surface a deaf engine within seconds, quiet enough that a brief
 /// burst under load does not flood the log.
@@ -53,6 +56,9 @@ pub const DB_RETRY_CAP: usize = 4096;
 #[derive(Default)]
 pub struct ShedCounters {
     pub strategy_pings: AtomicU64,
+    /// Create-lane sheds only — a non-zero count here is a missed snipe under
+    /// engine stall, not trade-queue pressure.
+    pub create_pings: AtomicU64,
     pub db_writes: AtomicU64,
     /// Durable ops deferred onto the retry buffer (not shed — still pending).
     pub db_deferred: AtomicU64,
@@ -63,7 +69,10 @@ pub struct IngestConsumer {
     db_tx: mpsc::Sender<DbWriteOp>,
     /// Overflow for durable writes that could not enter `db_tx` without blocking.
     db_retry_tx: mpsc::Sender<DbWriteOp>,
+    /// Trade / migrate / creator-activity pings (general lane).
     strategy_tx: mpsc::Sender<StrategyPing>,
+    /// `TokenCreated` pings only — never shares capacity with trade volume.
+    create_tx: mpsc::Sender<StrategyPing>,
     sse_tx: broadcast::Sender<SseEvent>,
     settings_rx: watch::Receiver<AppSettings>,
     trader: Arc<dyn TraderHook>,
@@ -82,6 +91,7 @@ impl IngestConsumer {
         db_tx: mpsc::Sender<DbWriteOp>,
         db_retry_tx: mpsc::Sender<DbWriteOp>,
         strategy_tx: mpsc::Sender<StrategyPing>,
+        create_tx: mpsc::Sender<StrategyPing>,
         sse_tx: broadcast::Sender<SseEvent>,
         settings_rx: watch::Receiver<AppSettings>,
         trader: Arc<dyn TraderHook>,
@@ -97,6 +107,7 @@ impl IngestConsumer {
                 db_tx,
                 db_retry_tx,
                 strategy_tx,
+                create_tx,
                 sse_tx,
                 settings_rx,
                 trader,
@@ -216,6 +227,7 @@ impl IngestConsumer {
         let signature = e.signature.clone();
         let slot = e.slot;
         let block_time = e.block_time;
+        let received_at = e.received_at;
         let token = token_from_event(e);
 
         // Hot path first: track the token in the in-RAM cache and fire the strategy
@@ -225,7 +237,7 @@ impl IngestConsumer {
         let token_state = TokenState::new(token.clone());
         let metrics = metrics_from_state(&mint, &token_state);
         self.token_cache.insert(mint.clone(), token_state);
-        self.ping_strategy(mint.clone(), IngestKind::TokenCreated);
+        self.ping_strategy(mint.clone(), IngestKind::TokenCreated, Some(received_at));
 
         self.enqueue_db_durable(DbWriteOp::Token(token));
         self.enqueue_db_durable(DbWriteOp::Wallet(creator));
@@ -306,7 +318,7 @@ impl IngestConsumer {
             self.trader.update_live_reserves(&mint, token_reserves as f64, sol_reserves, is_amm);
         }
 
-        self.ping_strategy(mint.clone(), IngestKind::Trade);
+        self.ping_strategy(mint.clone(), IngestKind::Trade, None);
 
         // Own-wallet preview + early wake *before* durable enqueue so buy/sell
         // confirm can resolve without waiting on DbWriter commit.
@@ -377,12 +389,12 @@ impl IngestConsumer {
         // Ping the strategy (re-routes any in-flight exit to the AMM) off the in-RAM
         // `is_migrated` flag set above — before the durable enqueue, so a DB hiccup
         // can't delay the re-route (H2).
-        self.ping_strategy(mint.clone(), IngestKind::Migrated);
+        self.ping_strategy(mint.clone(), IngestKind::Migrated, None);
         self.enqueue_db_durable(DbWriteOp::Migration { mint });
     }
 
     fn on_creator_activity(&self, e: CreatorActivityEvent) {
-        self.ping_strategy(e.mint.clone(), IngestKind::CreatorActivity);
+        self.ping_strategy(e.mint.clone(), IngestKind::CreatorActivity, None);
     }
 
     fn on_liquidity(&self, e: LiquidityEvent) {
@@ -518,27 +530,44 @@ impl IngestConsumer {
     /// Ping the decision loop. A full queue sheds the ping — the engine is the
     /// slow consumer and must never back-pressure ingest.
     ///
-    /// Shedding is LOUD by design. A wedged engine sheds 100% of pings while
-    /// ingest keeps writing to PG, so every external signal (tokens/trades
-    /// landing, feed healthy) looks normal while no rule is ever evaluated. That
-    /// stayed invisible for 14 h on 2026-07-30 because this arm only bumped a
-    /// counter nothing read. Never make it silent again.
-    fn ping_strategy(&self, mint: String, kind: IngestKind) {
-        match self.strategy_tx.try_send(StrategyPing { mint, kind }) {
+    /// `TokenCreated` rides a dedicated lane so trade-volume saturation cannot
+    /// drop a snipe. Shedding is LOUD by design. A wedged engine sheds 100% of
+    /// pings while ingest keeps writing to PG, so every external signal
+    /// (tokens/trades landing, feed healthy) looks normal while no rule is ever
+    /// evaluated. That stayed invisible for 14 h on 2026-07-30 because this arm
+    /// only bumped a counter nothing read. Never make it silent again.
+    fn ping_strategy(&self, mint: String, kind: IngestKind, received_at: Option<chrono::DateTime<chrono::Utc>>) {
+        let ping = StrategyPing { mint, kind, received_at };
+        let (tx, shed_counter, queue_cap, lane) = match kind {
+            IngestKind::TokenCreated => (
+                &self.create_tx,
+                &self.shed.create_pings,
+                CREATE_STRATEGY_QUEUE_CAP,
+                "create",
+            ),
+            _ => (
+                &self.strategy_tx,
+                &self.shed.strategy_pings,
+                STRATEGY_QUEUE_CAP,
+                "trade",
+            ),
+        };
+        match tx.try_send(ping) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
-                let n = self.shed.strategy_pings.fetch_add(1, Ordering::Relaxed) + 1;
+                let n = shed_counter.fetch_add(1, Ordering::Relaxed) + 1;
                 if n == 1 || n.is_multiple_of(STRATEGY_SHED_LOG_EVERY) {
                     warn!(
                         shed_total = n,
-                        queue_cap = STRATEGY_QUEUE_CAP,
+                        queue_cap,
+                        lane,
                         "strategy ping queue full — engine is not consuming; \
                          rules are NOT being evaluated"
                     );
                 }
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
-                warn!("Strategy channel closed — ping not delivered");
+                warn!(lane, "Strategy channel closed — ping not delivered");
             }
         }
     }

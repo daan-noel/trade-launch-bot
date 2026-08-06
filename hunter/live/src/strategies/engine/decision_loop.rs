@@ -4,11 +4,13 @@
 //!
 //! `select!` inputs (biased order — commands before fills so HTTP reloads/closes
 //! are not starved under heavy fill traffic; fills still beat the tick so a
-//! confirmed fill is folded before the next tick re-evaluates):
+//! confirmed fill is folded before the next tick re-evaluates; create pings beat
+//! trade pings so a snipe is never queued behind AMM/curve volume):
 //! 1. **commands** — rule reloads + manual closes from HTTP ([`EngineCommand`]),
 //! 2. **fills** — `FillConfirmed`/`FillFailed` from the executor adapters,
-//! 3. **ingest pings** — mapped to events by the [`Producer`],
-//! 4. **Clock tick** (`TICK_MS`, currently 200 ms) — a synthetic `Tick(now)` so
+//! 3. **create pings** — `TokenCreated` lane (dedicated channel),
+//! 4. **trade pings** — trade / migrate / creator-activity lane,
+//! 5. **Clock tick** (`TICK_MS`, currently 200 ms) — a synthetic `Tick(now)` so
 //!    quiet-token metrics fire.
 //!
 //! Effects are dispatched in two passes per event: state effects
@@ -71,8 +73,10 @@ const PRIME_SCAN_EVERY_TICKS: u64 = 5;
 /// Everything the engine loop needs to run. Built once in `main.rs` and moved into
 /// [`spawn_engine`].
 pub struct EngineDeps {
-    /// The ingest strategy-ping channel (same one the old `StrategyRunner` drained).
+    /// Trade / migrate / creator-activity ingest pings.
     pub ping_rx: mpsc::Receiver<StrategyPing>,
+    /// `TokenCreated` ingest pings (create fast lane — drained before `ping_rx`).
+    pub create_rx: mpsc::Receiver<StrategyPing>,
     pub rule_repo: RuleRepo,
     pub fp_repo: FingerprintRepo,
     pub strategy_repo: StrategyRepo,
@@ -146,6 +150,7 @@ async fn run_loop(
 ) {
     let EngineDeps {
         mut ping_rx,
+        mut create_rx,
         rule_repo,
         fp_repo,
         strategy_repo,
@@ -180,6 +185,7 @@ async fn run_loop(
     );
     let recorder = EventLogRecorder::from_env();
 
+    let create_stamps = Arc::new(dashmap::DashMap::new());
     let real_deps = RealExecDeps {
         trader: trader.clone(),
         token_cache: token_cache.clone(),
@@ -193,6 +199,7 @@ async fn run_loop(
         buy_journal,
         registry: registry.clone(),
         engine_fill_tx: Some(fill_tx.clone()),
+        create_stamps: create_stamps.clone(),
     };
 
     // Initial rule load.
@@ -298,6 +305,23 @@ async fn run_loop(
                 }
             }
             Some(fill) = fill_rx.recv() => EventBatch::one(fill),
+            // Create lane above the general ping arm: under trade burst a snipe
+            // must not wait behind hundreds of curve/AMM pings. `reduce` stays
+            // the sole decider — only arrival order changes.
+            Some(ping) = create_rx.recv() => {
+                if let Some(received_at) = ping.received_at {
+                    create_stamps.insert(
+                        ping.mint.clone(),
+                        super::exec_real::CreateStamp {
+                            received_at,
+                            pinged_at: Utc::now(),
+                        },
+                    );
+                }
+                let produced = producer.on_ping(&ping);
+                prime(&mut state, produced.prime);
+                EventBatch::many(produced.events.into_vec())
+            }
             Some(ping) = ping_rx.recv() => {
                 let produced = producer.on_ping(&ping);
                 prime(&mut state, produced.prime);
@@ -308,6 +332,11 @@ async fn run_loop(
                 if ticks.is_multiple_of(PRUNE_EVERY_TICKS) {
                     let live: HashSet<String> = state.tokens.keys().map(|m| m.to_string()).collect();
                     producer.retain(|m| live.contains(m));
+                    // Drop create stamps past the snipe-freshness window so a
+                    // selective rule that rarely buys cannot grow the map forever.
+                    let cutoff = Utc::now()
+                        - chrono::Duration::seconds(MAX_SNIPE_AGE_SECS);
+                    create_stamps.retain(|_, stamp| stamp.received_at >= cutoff);
                 }
                 // Cold-start priming for tracked mints this process has never
                 // produced for (adopted positions, tokens re-armed from the log).
@@ -528,6 +557,7 @@ fn dispatch_buy(
             registry.update(position, |m| {
                 m.inflight_intent = Some(intent.clone());
             });
+            let create_stamp = real_deps.create_stamps.get(&mint_s).map(|e| *e);
             let order = BuyOrder {
                 intent,
                 pg_id: meta.pg_id,
@@ -541,6 +571,8 @@ fn dispatch_buy(
                 // the retry then buys straight into it instead of minting a second
                 // seeded account for the same position.
                 token_account: meta.token_account.clone(),
+                create_stamp,
+                decided_at: Utc::now(),
             };
             tokio::spawn(super::exec_real::run_entry(real_deps.clone(), order));
         }

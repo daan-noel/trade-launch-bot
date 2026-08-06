@@ -33,7 +33,11 @@ pub struct ComputeBudgetCfg {
 impl Default for ComputeBudgetCfg {
     fn default() -> Self {
         Self {
-            curve_buy_cu: 150_000,
+            // Measured 2026-08-06 off 40 real hunter curve buys in `raw_txs`
+            // (wallet 78454): min=66_735 p50=74_234 p90=80_234 p99=max=86_389.
+            // 110k ≈ p99 × 1.27 — room for Token-2022 init / tip variance without
+            // the old 150k packing penalty (priority fee is charged on the limit).
+            curve_buy_cu: 110_000,
             curve_create_cu: 250_000,
             curve_create_buy_cu: 350_000,
             curve_sell_cu: 100_000,

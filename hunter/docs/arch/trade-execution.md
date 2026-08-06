@@ -17,6 +17,7 @@ Deep-dive detail: `@plans/trade-execution/module-details.md`, `@plans/trade-exec
 | `tx.rs` | `build_nonce_tx`/`build_recent_tx`; `send_transaction` (fan-out to all Sender endpoints, first-win); `signature_state_detailed` (returns landed-revert program error code) |
 | `nonce.rs` | Zero-copy durable-nonce pool; push re-arm from the host's nonce-account feed (`on_nonce_account_update`, slot-gated + `use_epoch`-guarded) with the post-send poll demoted to a fallback (first read delayed by `nonce.refresh_first_delay_ms` on push-fed hosts); re-arms only after on-chain blockhash advances |
 | `jito_tip.rs` | `JitoTipCache` — bg-refreshed tip-floor; max(percentile ladder, `min×1.5^level`), clamped `[MIN,MAX]` (hunter env defaults MIN=`0.0001` / MAX=`0.0005` via shared `FeeTuning`; executor crate default remains `0.001` until live overwrites) |
+| compute budget | `ComputeBudgetCfg::curve_buy_cu` default **110_000** (was 150k; sized 2026-08-06 from 40 live curve buys, p99≈86k) |
 | `pool.rs` | Pre-built buy-template seed pool; async replenish |
 | `blockhash.rs` | `BlockhashCache` — recent-blockhash cache for AMM buys; push-fed via `Engine::set_cached_blockhash` (slot-gated `blocks_meta` bridge), refresher loop is a stall watchdog (fetches only when the feed didn't cover the tick) |
 | `init.rs` | One-time setup: warm tip/blockhash caches, fill buy pools, launch bg refresh tasks |

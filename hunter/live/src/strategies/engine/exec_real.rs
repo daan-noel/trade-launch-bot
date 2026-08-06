@@ -167,6 +167,15 @@ pub struct RealExecDeps {
     /// Orphan sells use a private fill_tx for their own outcome, so they pass the
     /// loop channel here separately.
     pub engine_fill_tx: Option<mpsc::Sender<Event>>,
+    /// Create-lane stamps (`received_at` → pinged) keyed by mint — L0 latency.
+    pub create_stamps: Arc<dashmap::DashMap<String, CreateStamp>>,
+}
+
+/// Transport → decision-loop stamp for a create (L0 snipe latency).
+#[derive(Debug, Clone, Copy)]
+pub struct CreateStamp {
+    pub received_at: chrono::DateTime<chrono::Utc>,
+    pub pinged_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Everything a buy submit needs, resolved by the loop from the cache + rule.
@@ -183,6 +192,10 @@ pub struct BuyOrder {
     /// Passed back as the buy's account override so a retry cannot mint a second
     /// seeded account and split this position's bag across two of them.
     pub token_account: Option<String>,
+    /// Create-lane observation stamp (if this mint was seen via `TokenCreated`).
+    pub create_stamp: Option<CreateStamp>,
+    /// Wall clock when `dispatch_buy` spawned this submit (post-`reduce`).
+    pub decided_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Everything a sell submit needs, resolved by the loop from the position meta.
@@ -357,6 +370,36 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
             None
         }
     };
+    // L0: one structured line per buy submit. `decide_to_ack_ms` is the true
+    // post-decision pipeline; `ping_to_decide_ms` includes intentional metric
+    // waits when the rule is not a pure create sniper.
+    {
+        let ack_at = chrono::Utc::now();
+        let decide_to_ack_ms = (ack_at - order.decided_at).num_milliseconds();
+        if let Some(stamp) = order.create_stamp {
+            let create_to_ping_ms = (stamp.pinged_at - stamp.received_at).num_milliseconds();
+            let ping_to_decide_ms = (order.decided_at - stamp.pinged_at).num_milliseconds();
+            let create_to_ack_ms = (ack_at - stamp.received_at).num_milliseconds();
+            info!(
+                mint = %order.mint,
+                pg = %order.pg_id,
+                create_to_ping_ms,
+                ping_to_decide_ms,
+                decide_to_ack_ms,
+                create_to_ack_ms,
+                send_ok = matches!(submit, Some(Ok(_))),
+                "snipe_latency"
+            );
+        } else {
+            info!(
+                mint = %order.mint,
+                pg = %order.pg_id,
+                decide_to_ack_ms,
+                send_ok = matches!(submit, Some(Ok(_))),
+                "snipe_latency"
+            );
+        }
+    }
 
     let signed_sig = signed.lock().unwrap().clone();
     // The account THIS buy funded. Authoritative — never re-read from the trader's

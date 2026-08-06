@@ -125,6 +125,7 @@ pub fn spawn_orphan_sell(
         buy_journal: SubmittedBuyJournal::new(),
         registry: deps.registry.clone(),
         engine_fill_tx: Some(deps.fill_tx.clone()),
+        create_stamps: Arc::new(dashmap::DashMap::new()),
     };
 
     let repo = deps.strategy_repo.clone();

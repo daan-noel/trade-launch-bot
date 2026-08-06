@@ -3,8 +3,8 @@
 //! `Ingest<V>` owns the transport + decode task wiring; a venue-specific builder
 //! (e.g. the pump.fun façade's `IngestBuilder`) assembles the `V` and constructs
 //! the session via [`Ingest::new`]. `start()` spawns the transport task
-//! (`transport::run<V>`) and the decode task (which calls `V::decode`), returning
-//! the host event receiver + a control handle.
+//! (`transport::run<V>`) and **two** decode tasks (create lane + normal lane),
+//! returning the host event receiver + a control handle.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -58,18 +58,26 @@ impl<V: IngestVenue> Ingest<V> {
     ///
     /// `live` — initial live-mode state (pass `true` to start streaming
     ///   immediately; `false` pauses until `handle.set_live(true)` is called).
+    ///
+    /// Two transport→decode lanes share one host `event_tx`: creates
+    /// (`V::is_create_lane`) never queue behind AMM/curve swap decode work.
     pub fn start(self, live: bool) -> (mpsc::Receiver<IngestEvent>, IngestHandle<V>) {
         let cfg = &self.config;
         let venue = self.venue.clone();
 
-        // Internal transport→decode channel.
-        let (update_tx, mut update_rx) = mpsc::channel::<(
+        type UpdateMsg<V> = (
             Arc<SubscribeUpdateTransaction>,
-            V::Relevance,
+            <V as IngestVenue>::Relevance,
             chrono::DateTime<chrono::Utc>,
-        )>(cfg.update_channel_cap);
+        );
 
-        // Host-facing event channel.
+        // Create lane stays shallow: creates are rare vs swaps, and a deep
+        // create backlog would only mean the host is already wedged.
+        let create_cap = (cfg.update_channel_cap / 8).max(64);
+        let (create_tx, create_rx) = mpsc::channel::<UpdateMsg<V>>(create_cap);
+        let (normal_tx, normal_rx) = mpsc::channel::<UpdateMsg<V>>(cfg.update_channel_cap);
+
+        // Host-facing event channel (both decode lanes merge here).
         let (event_tx, event_rx) = mpsc::channel::<IngestEvent>(cfg.event_channel_cap);
 
         // Live-mode gate.
@@ -96,69 +104,20 @@ impl<V: IngestVenue> Ingest<V> {
         // the host can push updates without restarting ingest.
         let (gap_replay_tx, gap_replay_rx) = watch::channel::<(bool, u64)>((false, 300));
 
-        // Spawn transport task.
         tokio::spawn(transport::run(
             self.endpoint.clone(),
             self.auth.clone(),
             venue.clone(),
-            update_tx,
+            create_tx,
+            normal_tx,
             live_rx,
             transport_cfg,
             gap_replay_rx,
             self.push.clone(),
         ));
 
-        // Spawn decode task.
-        let venue_decode = venue.clone();
-        let event_tx_clone = event_tx.clone();
-        tokio::spawn(async move {
-            while let Some((update, relevance, received_at)) = update_rx.recv().await {
-                let output = venue_decode.decode(&update, relevance, received_at);
-
-                let events = match output {
-                    DecodeOutput::Events(v) => v,
-                    DecodeOutput::Ignored => continue,
-                };
-
-                // Optionally append the raw-tx event (under feature gate).
-                #[cfg(feature = "raw-tx")]
-                let events = {
-                    let mut v = events;
-                    if let Some(raw_ev) = crate::raw_tx::build_raw_tx_event(&update, received_at) {
-                        v.push(raw_ev);
-                    }
-                    v
-                };
-
-                for ev in events {
-                    match event_tx_clone.try_send(ev) {
-                        Ok(()) => {}
-                        Err(mpsc::error::TrySendError::Full(ev)) => {
-                            // Channel briefly full — retry with a short timeout
-                            // rather than logging a drop prematurely (the retry
-                            // usually succeeds under transient back-pressure).
-                            if event_tx_clone
-                                .send_timeout(ev, std::time::Duration::from_millis(100))
-                                .await
-                                .is_err()
-                            {
-                                // Retry ALSO failed — this is a genuine drop. Count
-                                // it and log the running total so sustained loss is
-                                // visible instead of silent.
-                                let n = DROPPED_EVENTS.fetch_add(1, Ordering::Relaxed) + 1;
-                                warn!(
-                                    dropped_total = n,
-                                    "ingest: event channel full after retry — dropped event"
-                                );
-                            }
-                        }
-                        Err(mpsc::error::TrySendError::Closed(_)) => {
-                            return; // Host dropped the receiver — stop.
-                        }
-                    }
-                }
-            }
-        });
+        spawn_decode_lane(venue.clone(), create_rx, event_tx.clone());
+        spawn_decode_lane(venue.clone(), normal_rx, event_tx);
 
         let handle = IngestHandle {
             live_tx,
@@ -170,6 +129,67 @@ impl<V: IngestVenue> Ingest<V> {
 
         (event_rx, handle)
     }
+}
+
+/// One decode task for one transport→decode lane. Both lanes merge onto the
+/// same host `event_tx` — the split only isolates decode/queue latency.
+fn spawn_decode_lane<V: IngestVenue>(
+    venue: Arc<V>,
+    mut update_rx: mpsc::Receiver<(
+        Arc<SubscribeUpdateTransaction>,
+        V::Relevance,
+        chrono::DateTime<chrono::Utc>,
+    )>,
+    event_tx: mpsc::Sender<IngestEvent>,
+) {
+    tokio::spawn(async move {
+        while let Some((update, relevance, received_at)) = update_rx.recv().await {
+            let output = venue.decode(&update, relevance, received_at);
+
+            let events = match output {
+                DecodeOutput::Events(v) => v,
+                DecodeOutput::Ignored => continue,
+            };
+
+            // Optionally append the raw-tx event (under feature gate).
+            #[cfg(feature = "raw-tx")]
+            let events = {
+                let mut v = events;
+                if let Some(raw_ev) = crate::raw_tx::build_raw_tx_event(&update, received_at) {
+                    v.push(raw_ev);
+                }
+                v
+            };
+
+            for ev in events {
+                match event_tx.try_send(ev) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(ev)) => {
+                        // Channel briefly full — retry with a short timeout
+                        // rather than logging a drop prematurely (the retry
+                        // usually succeeds under transient back-pressure).
+                        if event_tx
+                            .send_timeout(ev, std::time::Duration::from_millis(100))
+                            .await
+                            .is_err()
+                        {
+                            // Retry ALSO failed — this is a genuine drop. Count
+                            // it and log the running total so sustained loss is
+                            // visible instead of silent.
+                            let n = DROPPED_EVENTS.fetch_add(1, Ordering::Relaxed) + 1;
+                            warn!(
+                                dropped_total = n,
+                                "ingest: event channel full after retry — dropped event"
+                            );
+                        }
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        return; // Host dropped the receiver — stop.
+                    }
+                }
+            }
+        }
+    });
 }
 
 // ── IngestHandle ──────────────────────────────────────────────────────────────

@@ -1360,6 +1360,7 @@ async fn run() -> anyhow::Result<()> {
     let pool_index = ingest_result.pool_index;
     let pools_changed = ingest_result.pools_changed;
     let strategy_rx = ingest_result.strategy_rx;
+    let create_rx = ingest_result.create_rx;
     let consumer_task = ingest_result.consumer_task;
     let db_writer_task = ingest_result.db_writer_task;
     let ingest_handle = ingest_result.ingest_handle;
@@ -1442,14 +1443,15 @@ async fn run() -> anyhow::Result<()> {
         sol_price.clone(),
     ));
     // ── The generic fingerprint + metrics engine (strategy redesign, Phase 4) ──
-    // THE serialized decision loop, driven by the same ingest ping channel the old
-    // `StrategyRunner` drained (`strategy_rx`), a 500 ms tick, and confirmed fills.
+    // THE serialized decision loop, driven by the ingest create + trade ping
+    // lanes, a tick, and confirmed fills.
     let rule_repo =
         trading_core::storage::repositories::rule_repo::RuleRepo::new(db.clone());
     let fingerprint_repo =
         trading_core::storage::repositories::fingerprint_repo::FingerprintRepo::new(db.clone());
     let engine_handles = strategies::engine::spawn_engine(strategies::engine::EngineDeps {
         ping_rx: strategy_rx,
+        create_rx,
         rule_repo: rule_repo.clone(),
         fp_repo: fingerprint_repo.clone(),
         strategy_repo:

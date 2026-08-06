@@ -13,18 +13,19 @@ Ingest::builder().build()?.start(live)
 
 Internal crate topology:
   transport::run()  (gRPC, classify)
-    --(Arc<SubscribeUpdateTransaction>, TxRelevance, DateTime<Utc>)-->
-  decode task  (Decoder::decode_relevant_pb)
-    --IngestEvent-->  host event channel
+    --create lane-->  decode task (Create)
+    --normal lane-->  decode task (Curve/Amm)
+    --IngestEvent-->  host event channel (both lanes merge)
 
 Host adapter (live/src/ingest/):
   consumer.rs  (translate IngestEvent -> trading_core types, fan-out)
-    --> { db_tx, strategy_tx, sse_tx, trader, trade_signals }
+    --> { db_tx, create_tx, strategy_tx, sse_tx, trader, trade_signals }
   db_writer.rs  (batch persistence) --> Postgres --> TradeSignals.notify
   watchdog.rs  (OS thread, DbHeartbeat)
 ```
 
-Channels: `update_tx` cap 4096 · `event_rx` cap 8192 · `db_tx` cap 16384 · `strategy_tx` cap 512 · `sse_tx` broadcast.
+Channels: create update cap `max(64, update_cap/8)` · normal update cap 4096 ·
+`event_rx` 4096 · `db_tx` 16384 · `create_tx` 256 · `strategy_tx` 512 · `sse_tx` broadcast.
 
 **Classify (`Decoder::classify_accounts`) reads the message, not the logs.** The
 pre-filter runs on the single transport task that gates every create's arrival, so
@@ -48,9 +49,11 @@ hint** — both arms run `decode_curve_pb`, single-sourced through
 missed create costs only the hint. Detection is the `create`/`create_v2`
 discriminator on a pump-program instruction, top-level **or** inner CPI (a bundled
 launch invokes `create` as a CPI, and those are exactly the creates worth routing
-first), via the same `is_create_disc` predicate the decode path uses. The tag is the
-prerequisite for a create fast lane (priority channel end-to-end); that lane is not
-built yet.
+first), via the same `is_create_disc` predicate the decode path uses. The tag drives
+the **create fast lane**: `IngestVenue::is_create_lane` routes creates onto a
+dedicated transport→decode channel + decode task (AMM/curve volume cannot delay a
+create decode), and the host consumer sends `TokenCreated` onto a dedicated
+`create_tx` drained by the decision loop *above* the general trade-ping arm.
 
 **Backpressure:** money-critical writes (`Trade`/`Migration`/`Token`/`Wallet`) use
 non-blocking `try_send` on the hot `db_tx` (cap 16384) so a PG stall never

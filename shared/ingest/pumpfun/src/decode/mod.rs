@@ -34,10 +34,10 @@ pub use program_registry::program_friendly_name;
 pub enum TxRelevance {
     /// Bonding-curve tx that **creates** a token (`create` / `create_v2`).
     ///
-    /// Decodes exactly like [`TxRelevance::Curve`] — the tag exists so downstream
-    /// routing can put a create ahead of unrelated swap volume. A create that is
-    /// missed here (and so arrives tagged `Curve`) costs a routing hint, never a
-    /// decoded event: both arms run the same decode.
+    /// Decodes exactly like [`TxRelevance::Curve`] — the tag drives the create
+    /// fast lane (`IngestVenue::is_create_lane` → dedicated transport→decode
+    /// channel). A create that is missed here (and so arrives tagged `Curve`)
+    /// costs a routing hint, never a decoded event: both arms run the same decode.
     Create,
     /// Bonding-curve (pump.fun program) tx.
     Curve,

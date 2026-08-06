@@ -338,7 +338,7 @@ mod tests {
     }
 
     fn ping() -> StrategyPing {
-        StrategyPing { mint: MINT.into(), kind: IngestKind::Trade }
+        StrategyPing { mint: MINT.into(), kind: IngestKind::Trade, received_at: None }
     }
 
     /// THE restart regression (2026-08-06, `247PRAda…`): after a restart the cache

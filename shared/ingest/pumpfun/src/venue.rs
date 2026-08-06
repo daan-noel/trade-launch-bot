@@ -73,6 +73,10 @@ impl IngestVenue for PumpFunVenue {
         self.decoder.classify_accounts(update.transaction.as_ref()?)
     }
 
+    fn is_create_lane(relevance: TxRelevance) -> bool {
+        matches!(relevance, TxRelevance::Create)
+    }
+
     fn decode(
         &self,
         update: &SubscribeUpdateTransaction,
