@@ -258,10 +258,24 @@ priority:
 4. **Swing path** hovered → `SwingCrosshairTooltip` (§8d)
 5. Otherwise, over the main series → **bar tooltip** `BarCrosshairTooltip`
 
-The **bar tooltip** shows the bar time (timezone/slot-formatted) + age, then fields from
-`BarCrosshairFields`: for candles a 2×2 **O/H/L/C** grid (colors from `CHART_OHLC_COLORS`) plus
-Vol/Liq; for line, Price + Vol/Liq. `BarFlowFields` renders the flow variant (Net / In / Out /
-Δ%) used for the per-bar volume readout.
+The **bar tooltip** and the toolbar readout carry **disjoint** facts — never the same ones
+twice, since both are on screen simultaneously:
+
+- **Toolbar readout** (`BarCrosshairFields`, `layout="inline"`) = the *price* view: for candles
+  **O/H/L/C** (colors from `CHART_OHLC_COLORS`) plus Vol/Liq; for line, Price + Vol/Liq. Plus
+  the cumulative VolMk/NonVol pair when flow lines are available.
+- **Bar tooltip** (`BarCrosshairTooltip`) = what the toolbar *cannot* say — **which** bar is
+  hovered (timezone/slot-formatted bar time + `+age` since token creation) and its per-bar
+  **order flow** via `BarFlowFields`: Net / In / Out / Δ%, then VolMk / NonVol.
+
+A chart that repeats the O/H/L/C block inside its own tooltip is the bug — `FlowPreviewChart`
+did until it was switched onto the shared `BarCrosshairTooltip`.
+
+Both boxes place horizontally through `tooltipHorizontalStyle` (flip to the cursor's left near
+the panel's right edge), so every chart must pass the live `containerWidth`.
+
+Bar age is single-sourced in `chartBars.ts`: `tokenCreatedAtSec` + `buildBarEarliestTradeSec`
++ `barAgeSec` (null on an empty bar in slot mode — a slot number is not a wall clock).
 
 ---
 

@@ -39,6 +39,53 @@ export function tradeBarSlot(trade: Pick<ChartTrade, 'slot'>): UTCTimestamp | nu
   return slot as UTCTimestamp;
 }
 
+/** Token `created_at` (ISO) → epoch seconds; null when absent/unparseable. */
+export function tokenCreatedAtSec(createdAt?: string | null): number | null {
+  if (!createdAt) return null;
+  return tradeTimestampSec(createdAt);
+}
+
+/**
+ * Earliest real trade time (epoch seconds) per bar key, keyed exactly as bars are
+ * bucketed: slot number in slot mode, bucket-start seconds in time mode. Feeds
+ * {@link barAgeSec} — one builder so every chart's "+age" reads the same clock.
+ */
+export function buildBarEarliestTradeSec(
+  sortedTrades: ChartTrade[],
+  groupMode: ChartGroupMode,
+  intervalSec: number,
+): Map<number, number> {
+  const map = new Map<number, number>();
+  for (const trade of sortedTrades) {
+    const key =
+      groupMode === 'slot' ? tradeBarSlot(trade) : tradeBarTime(trade.block_time, intervalSec);
+    if (key == null) continue;
+    const sec = tradeTimestampSec(trade.block_time);
+    if (sec == null) continue;
+    const prev = map.get(key as number);
+    if (prev == null || sec < prev) map.set(key as number, sec);
+  }
+  return map;
+}
+
+/**
+ * Age of a bar since token creation (seconds) — the crosshair tooltip's `+N`.
+ * Null when the creation time is unknown, or on an empty bar in slot mode (a
+ * slot number is not a wall clock, so nothing can be derived from it).
+ */
+export function barAgeSec(
+  barTime: number,
+  createdAtSec: number | null,
+  earliestTradeSec: ReadonlyMap<number, number>,
+  groupMode: ChartGroupMode,
+): number | null {
+  if (createdAtSec == null) return null;
+  const earliest = earliestTradeSec.get(barTime);
+  if (earliest != null) return Math.max(0, earliest - createdAtSec);
+  if (groupMode === 'slot') return null;
+  return Math.max(0, barTime - createdAtSec);
+}
+
 /** Matches backend `MIN_TRADE_SOL` (10k lamports); safety net for pre-filter data. */
 const MIN_CHART_SOL = 1e-5;
 

@@ -26,6 +26,7 @@ export function TokenPreviewPanel({
   creatorWallet,
   athPriceInSol,
   isMigrated,
+  tokenCreatedAt,
   patternKeys,
   onTogglePattern,
 }: {
@@ -37,6 +38,8 @@ export function TokenPreviewPanel({
   creatorWallet: string | null;
   athPriceInSol: number | null;
   isMigrated: boolean;
+  /** Token `created_at` (ISO) — zero point for the chart tooltip's "+age". */
+  tokenCreatedAt: string | null;
   patternKeys: ReadonlySet<string>;
   onTogglePattern: (labels: string[]) => void;
 }) {
@@ -114,6 +117,7 @@ export function TokenPreviewPanel({
               creatorWallet={creatorWallet}
               athPriceInSol={athPriceInSol}
               isMigrated={isMigrated}
+              tokenCreatedAt={tokenCreatedAt}
             />
           ) : (
             <p className="text-[11px] text-text-dim">

@@ -1077,6 +1077,7 @@ export function FlowDiscoveryPage() {
                     creatorWallet={previewDetail?.creator_wallet ?? null}
                     athPriceInSol={previewDetail?.ath_price ?? null}
                     isMigrated={previewDetail?.is_migrated ?? false}
+                    tokenCreatedAt={previewDetail?.created_at ?? null}
                     patternKeys={patternKeys}
                     onTogglePattern={toggleStructure}
                   />

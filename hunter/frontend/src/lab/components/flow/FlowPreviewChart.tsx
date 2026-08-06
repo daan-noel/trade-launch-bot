@@ -18,17 +18,22 @@ import {
   aggregateTradesToBars,
   aggregateTradesToBarsBySlot,
   athChartValue,
+  barAgeSec,
   barSelectionMarker,
   barsToCandleData,
   barsToLineData,
+  buildBarEarliestTradeSec,
   compareTradesChronologically,
   computeRangeStats,
   dropEmptyBars,
   migrationChartValue,
+  tokenCreatedAtSec,
   tradeBarSlot,
   tradeBarTime,
 } from 'components/token-price-chart/chartBars';
 import { BarCrosshairFields } from 'components/token-price-chart/BarCrosshairFields';
+import { BarCrosshairTooltip } from 'components/token-price-chart/BarCrosshairTooltip';
+import { createChartTimeFormatters } from 'components/token-price-chart/chartTimezone';
 import {
   BuySellCountsIcon,
   CandlesIcon,
@@ -55,6 +60,7 @@ import {
 } from 'components/token-price-chart/constants';
 import type {
   ChartBarSelection,
+  ChartBarTooltipState,
   ChartCrosshairInfo,
   ChartGroupMode,
   ChartInterval,
@@ -370,6 +376,9 @@ export interface FlowPreviewChartProps {
   /** Drives the "Migration" reference line the same way the shared chart's
    *  toggle does (the line itself is a fixed pump.fun constant either way). */
   isMigrated?: boolean;
+  /** Token `created_at` (ISO) — the zero point for the crosshair tooltip's
+   *  "+age since launch". Omit and the age line is simply absent. */
+  tokenCreatedAt?: string | null;
   /** Fixed pixel height. Omit (the default) to let the chart size its height
    *  to its width via {@link responsiveChartHeight} — the chart width fills
    *  the column, so a fixed height renders wide-and-flat on a big monitor. */
@@ -393,6 +402,7 @@ export function FlowPreviewChart({
   creatorWallet,
   athPriceInSol = null,
   isMigrated = false,
+  tokenCreatedAt = null,
   height: fixedHeight,
 }: FlowPreviewChartProps) {
   const { timezone } = useTimezone();
@@ -448,12 +458,16 @@ export function FlowPreviewChart({
   const [flowCrosshair, setFlowCrosshair] = useState<{ vol: number | null; nonVol: number | null } | null>(
     null,
   );
-  const [tooltipPoint, setTooltipPoint] = useState<{ x: number; y: number } | null>(null);
+  const [barTooltip, setBarTooltip] = useState<ChartBarTooltipState | null>(null);
+  const [chartWidth, setChartWidth] = useState(0);
   const [rangeTooltip, setRangeTooltip] = useState<ChartRangeTooltipState | null>(null);
   const [walletTooltip, setWalletTooltip] = useState<ChartWalletMarkersTooltipState | null>(null);
 
   const formatPrice = useMemo(() => createChartPriceFormatter(priceUnit), [priceUnit]);
-  const formatVol = useMemo(() => createChartPriceFormatter(priceUnit), [priceUnit]);
+  // Vol / Liq / Net / In / Out are raw SOL amounts — `aggregateTradesToBars`
+  // applies `toValue` to PRICES only — so they never follow the SOL/USD toggle
+  // (same as the shared token chart, which pins this formatter to 'SOL').
+  const formatVol = useMemo(() => createChartPriceFormatter('SOL'), []);
   // Same SOL→display conversion TokenTradeChart uses so the header SOL/USD
   // toggle moves candles and SOL-basis flow lines together.
   const toValue = useCallback(
@@ -487,6 +501,29 @@ export function FlowPreviewChart({
 
   // 1:1 with candle bar times so crosshair / X-zoom always hit both series.
   const alignedLines = useMemo(() => alignFlowToBars(lines, bars), [lines, bars]);
+
+  // Per-bar "+age since launch" for the crosshair tooltip — same shared resolver
+  // the token detail chart uses (SSOT), read through a ref because the crosshair
+  // handler is installed once at mount.
+  const createdAtSec = useMemo(() => tokenCreatedAtSec(tokenCreatedAt), [tokenCreatedAt]);
+  const barEarliestTradeSec = useMemo(
+    () => buildBarEarliestTradeSec(sortedTrades, groupMode, intervalSec),
+    [sortedTrades, groupMode, intervalSec],
+  );
+  const computeBarAgeSec = useCallback(
+    (barTime: number) => barAgeSec(barTime, createdAtSec, barEarliestTradeSec, groupMode),
+    [createdAtSec, barEarliestTradeSec, groupMode],
+  );
+  const computeBarAgeSecRef = useRef(computeBarAgeSec);
+  computeBarAgeSecRef.current = computeBarAgeSec;
+
+  const formatBarTime = useCallback(
+    (barTime: UTCTimestamp) =>
+      groupMode === 'slot'
+        ? `Slot ${barTime}`
+        : createChartTimeFormatters(timezone).timeFormatter(barTime),
+    [groupMode, timezone],
+  );
 
   const rangeStats: ChartRangeStats | null = useMemo(() => {
     if (!selectedRange) return null;
@@ -586,6 +623,7 @@ export function FlowPreviewChart({
     const initialHeight = fixedHeight ?? responsiveChartHeight(el.clientWidth);
     chartHeightRef.current = initialHeight;
     setChartHeight(initialHeight);
+    setChartWidth(el.clientWidth);
     const chart = createChart(
       el,
       createChartOptions(el.clientWidth, initialHeight, groupMode, priceUnit, timezone, {
@@ -646,7 +684,7 @@ export function FlowPreviewChart({
         setWalletTooltip(null);
         setCrosshair(null);
         setFlowCrosshair(null);
-        setTooltipPoint(null);
+        setBarTooltip(null);
         return;
       }
       setRangeTooltip(null);
@@ -654,7 +692,7 @@ export function FlowPreviewChart({
       if (!param.time) {
         setCrosshair(null);
         setFlowCrosshair(null);
-        setTooltipPoint(null);
+        setBarTooltip(null);
         setWalletTooltip(null);
         return;
       }
@@ -662,12 +700,12 @@ export function FlowPreviewChart({
       if (!bar) {
         setCrosshair(null);
         setFlowCrosshair(null);
-        setTooltipPoint(null);
+        setBarTooltip(null);
         setWalletTooltip(null);
         return;
       }
       const flow = flowAt(linesRef.current, param.time);
-      setCrosshair({
+      const info: ChartCrosshairInfo = {
         open: bar.open,
         high: bar.high,
         low: bar.low,
@@ -678,19 +716,33 @@ export function FlowPreviewChart({
         liquiditySol: bar.liquiditySol,
         flowVol: flow.vol,
         flowNonVol: flow.nonVol,
-      });
+      };
+      setCrosshair(info);
       setFlowCrosshair(flow);
 
+      // Wallet-marker tooltip wins over the bar tooltip — never stack the two
+      // boxes on one point (same precedence as the shared token chart).
       const onWalletMarker =
         param.point != null &&
         (walletMarkersPrimRef.current?.containsPoint(param.point.x, param.point.y) ?? false);
       if (onWalletMarker && param.point) {
         const activity = walletActivityMapRef.current.get(bar.time as number);
         setWalletTooltip(activity && activity.length > 0 ? { point: param.point, wallets: activity } : null);
-      } else {
-        setWalletTooltip(null);
+        setBarTooltip(null);
+        return;
       }
-      setTooltipPoint(param.point ? { x: param.point.x, y: param.point.y } : null);
+      setWalletTooltip(null);
+      setBarTooltip(
+        param.point
+          ? {
+              ...info,
+              barTime: bar.time,
+              ageSec: computeBarAgeSecRef.current(bar.time as number),
+              style,
+              point: param.point,
+            }
+          : null,
+      );
     };
     chart.subscribeCrosshairMove(handleCrosshairMove);
 
@@ -723,6 +775,8 @@ export function FlowPreviewChart({
       if (!node) return;
       const width = node.clientWidth;
       if (!(width > 0)) return;
+      // Feeds the crosshair tooltip's edge flip, so it must track the live width.
+      setChartWidth(width);
       // Height is derived from WIDTH only (never the observed height) so there's
       // no height->width->height feedback loop.
       const nextHeight = fixedHeight ?? responsiveChartHeight(width);
@@ -751,7 +805,7 @@ export function FlowPreviewChart({
       rangeSelectPrimRef.current = null;
       setCrosshair(null);
       setFlowCrosshair(null);
-      setTooltipPoint(null);
+      setBarTooltip(null);
       setRangeTooltip(null);
       setWalletTooltip(null);
       setSelectedBar(null);
@@ -1365,42 +1419,24 @@ export function FlowPreviewChart({
             tooltip={rangeTooltip}
             formatAmount={(sol) => formatVol(sol)}
             formatPrice={(p) => formatPrice(p)}
+            containerWidth={chartWidth}
           />
         )}
-        {!rangeTooltip && walletTooltip && <WalletMarkersTooltip tooltip={walletTooltip} />}
-        {!rangeTooltip && !walletTooltip && tooltipPoint && crosshair && (
-          <div
-            className="pointer-events-none absolute z-20 max-w-55 rounded-md border px-2.5 py-2 font-mono text-[10px] leading-snug shadow-lg"
-            style={{
-              left: tooltipPoint.x + 14,
-              top: Math.max(0, tooltipPoint.y - 10),
-              borderColor: CHART_COLORS.crosshair,
-              backgroundColor: '#0d0d0df0',
-              color: CHART_COLORS.panelText,
-            }}
-          >
-            <BarCrosshairFields
-              style={style}
-              crosshair={crosshair}
-              formatPrice={formatPrice}
-              formatVol={formatVol}
-              layout="grid"
-            />
-            <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
-              <span className="font-semibold" style={{ color: VOL_LINE_COLOR }}>
-                VolMk
-              </span>
-              <span style={{ color: VOL_LINE_COLOR }}>
-                {readVol != null ? formatFlow(readVol) : '—'}
-              </span>
-              <span className="font-semibold" style={{ color: NON_VOL_COLOR }}>
-                NonVol
-              </span>
-              <span style={{ color: NON_VOL_COLOR }}>
-                {readNonVol != null ? formatFlow(readNonVol) : '—'}
-              </span>
-            </div>
-          </div>
+        {!rangeTooltip && walletTooltip && (
+          <WalletMarkersTooltip tooltip={walletTooltip} containerWidth={chartWidth} />
+        )}
+        {/* The O/H/L/C/Vol/Liq readout lives in the header above — the tooltip
+            carries what the header CAN'T: which bar you're on (time + age since
+            launch) and its per-bar order flow (Net/In/Out/Δ). Same split, same
+            component, as the shared token charts. */}
+        {!rangeTooltip && !walletTooltip && barTooltip && (
+          <BarCrosshairTooltip
+            tooltip={barTooltip}
+            formatVol={formatVol}
+            formatFlow={formatFlow}
+            formatTime={formatBarTime}
+            containerWidth={chartWidth}
+          />
         )}
       </div>
 
