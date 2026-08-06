@@ -17,10 +17,6 @@ export function setPriceUnitSnapshot(next: { unit: PriceUnit; usdRate: number | 
   usdRate = next.usdRate;
 }
 
-export function getPriceUnitSnapshot(): { unit: PriceUnit; usdRate: number | null } {
-  return { unit, usdRate };
-}
-
 /**
  * Storage amount → currently displayed unit (for `filterNumber`).
  * When the rate is missing, cells fall back to the storage unit — so do we.

@@ -240,9 +240,6 @@ export const PNL_DIST_EDGE_SETS: Record<PnlDistDensity, readonly number[]> = {
   ],
 };
 
-/** Alias for `PNL_DIST_EDGE_SETS.default`. */
-export const PNL_DIST_EDGES = PNL_DIST_EDGE_SETS.default;
-
 /** True when `[lo, hi)` is an adjacent pair in the given preset (or any preset
  *  when `density` is omitted — used by URL focus parse). */
 export function isPnlDistBucket(
@@ -536,88 +533,6 @@ export interface GroupTrend {
    * single tail trade, and expectancy alone flips on one outlier.
    */
   decaying: boolean;
-}
-
-/**
- * Per-group rolling-window comparison — "is this rule getting worse". Points are
- * ordered oldest → newest per group; the last `window` trades are compared with
- * the `window` before them. Groups with fewer than `2 × window` trades are
- * reported with `decaying: false` (not enough evidence), never omitted — a rule
- * silently vanishing from a decay board reads as "healthy".
- */
-export function groupTrends(
-  points: readonly PnlPoint[],
-  labelOf: (groupId: string) => string,
-  window = 20,
-): GroupTrend[] {
-  const byGroup = new Map<string, PnlPoint[]>();
-  for (const p of points) {
-    const g = p.groupId;
-    if (!g) continue;
-    const arr = byGroup.get(g);
-    if (arr) arr.push(p);
-    else byGroup.set(g, [p]);
-  }
-  const out: GroupTrend[] = [];
-  for (const [groupId, arr] of byGroup) {
-    arr.sort((a, b) => a.timeMs - b.timeMs);
-    const label = labelOf(groupId);
-    const recentSlice = arr.slice(-window);
-    const priorSlice = arr.slice(-2 * window, -window);
-    const recent = statsOf(groupId, label, recentSlice);
-    const prior = statsOf(groupId, label, priorSlice);
-    const comparable = recentSlice.length >= window && priorSlice.length >= window;
-    const winRateDeltaPp =
-      comparable && recent.winRate != null && prior.winRate != null
-        ? recent.winRate - prior.winRate
-        : null;
-    const expectancyDeltaSol =
-      comparable && recent.expectancySol != null && prior.expectancySol != null
-        ? recent.expectancySol - prior.expectancySol
-        : null;
-    out.push({
-      groupId,
-      label,
-      recent,
-      prior,
-      winRateDeltaPp,
-      expectancyDeltaSol,
-      decaying:
-        winRateDeltaPp != null &&
-        expectancyDeltaSol != null &&
-        winRateDeltaPp < 0 &&
-        expectancyDeltaSol < 0,
-    });
-  }
-  return out.sort((a, b) => b.recent.pnlSol - a.recent.pnlSol);
-}
-
-/** Per-group daily PnL series — the small-multiple sparklines on the scoreboard. */
-export function groupDailyPnl(
-  points: readonly PnlPoint[],
-  timeZone: string,
-): Map<string, PnlDay[]> {
-  // One pass over points (shared civil formatter) instead of regroup → rebuild
-  // daily (which re-walked every point and re-paid Intl).
-  const byGroupDay = new Map<string, Map<string, PnlDay>>();
-  for (const p of points) {
-    const g = p.groupId;
-    if (!g || !Number.isFinite(p.timeMs)) continue;
-    let gDays = byGroupDay.get(g);
-    if (!gDays) {
-      gDays = new Map();
-      byGroupDay.set(g, gDays);
-    }
-    bumpDay(gDays, civilPartsInTz(p.timeMs, timeZone).dayKey, p.pnlSol);
-  }
-  const out = new Map<string, PnlDay[]>();
-  for (const [groupId, gDays] of byGroupDay) {
-    out.set(
-      groupId,
-      [...gDays.values()].sort((a, b) => a.day.localeCompare(b.day)),
-    );
-  }
-  return out;
 }
 
 // ── one-pass deck fold ──────────────────────────────────────────────────────

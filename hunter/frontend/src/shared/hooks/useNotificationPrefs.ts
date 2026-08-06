@@ -41,8 +41,6 @@ export function notifyPresetOf(statuses: readonly string[]): NotifyPreset {
   return 'custom';
 }
 
-/** @deprecated Prefer {@link ALL_NOTIFY_STATUSES}. */
-export const ALL_POSITION_STATUSES = ALL_NOTIFY_STATUSES;
 /** @deprecated Prefer {@link NotifyStatus}. */
 export type PositionStatus = NotifyStatus;
 

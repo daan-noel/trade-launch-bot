@@ -161,36 +161,6 @@ export function fetchRulePositionsSummary(
   );
 }
 
-/** POST one page of a rule's matched tokens. Response body is `{tokens}`. */
-export function fetchMatchedPage(
-  strategySeg: string,
-  ruleId: string,
-  body: TableRequestBody,
-  signal?: AbortSignal,
-): Promise<{ items: import('types').MatchedTokenRecord[]; total: number }> {
-  return postTablePage(
-    `/api/strategies/${strategySeg}/rules/${ruleId}/matched`,
-    body,
-    (json) => (json as { tokens: import('types').MatchedTokenRecord[] }).tokens,
-    signal,
-  );
-}
-
-/** POST one page of a rule's finished-simulation tokens. Response body is `{tokens}`. */
-export function fetchSimulatedPage(
-  strategySeg: string,
-  ruleId: string,
-  body: TableRequestBody,
-  signal?: AbortSignal,
-): Promise<{ items: import('types').SimulatedTokenResult[]; total: number }> {
-  return postTablePage(
-    `/api/strategies/${strategySeg}/rules/${ruleId}/simulate/result`,
-    body,
-    (json) => (json as { tokens: import('types').SimulatedTokenResult[] }).tokens,
-    signal,
-  );
-}
-
 /** POST one page of a generic-engine simulate run (`POST /api/strategies/simulate/{run_id}/result`).
  *  `run_id` is the rule id for a saved-rule run (same key as the rules table). */
 export function fetchEngineSimPage(
@@ -202,22 +172,6 @@ export function fetchEngineSimPage(
     `/api/strategies/simulate/${encodeURIComponent(runId)}/result`,
     body,
     (json) => (json as { tokens: import('types').SimulatedTokenResult[] }).tokens,
-    signal,
-  );
-}
-
-/** POST one page of a generic-engine run's matched tokens (`POST /api/strategies/simulate/{run_id}/matched`).
- *  The fingerprint-matched candidate pool the run's positions are a subset of;
- *  `run_id` is the rule id for a saved-rule run. Response body is `{tokens}`. */
-export function fetchEngineMatchedPage(
-  runId: string,
-  body: TableRequestBody,
-  signal?: AbortSignal,
-): Promise<{ items: import('types').MatchedTokenRecord[]; total: number }> {
-  return postTablePage(
-    `/api/strategies/simulate/${encodeURIComponent(runId)}/matched`,
-    body,
-    (json) => (json as { tokens: import('types').MatchedTokenRecord[] }).tokens,
     signal,
   );
 }
@@ -319,25 +273,6 @@ export function fetchHoldingsPage(
   );
 }
 
-/** One composed holding by mint (or `null` if unheld). The paged query endpoint is
- *  meme-positions only (cash is stripped), so a miss falls through to the full
- *  unpaged holdings list — cash / WSOL lookups still resolve for dialogs. */
-export async function fetchHoldingByMint(
-  mint: string,
-): Promise<import('types').WalletHolding | null> {
-  const { items } = await fetchHoldingsPage({
-    pagination: { page: 1, pageSize: 1 },
-    sorting: [],
-    search: '',
-    filters: { mint: { op: 'in', val: [mint] } },
-  });
-  if (items[0]) return items[0];
-  const all = await request(`${API_BASE}/api/portfolio/holdings`);
-  return (
-    (all as import('types').WalletHolding[]).find((h) => h.mint_address === mint) ?? null
-  );
-}
-
 /** GET-shaped POST for the Holdings summary bar — same filter body as the table so
  *  the totals cover exactly the filtered population (pagination/sorting ignored). */
 export function fetchHoldingsSummary(
@@ -350,24 +285,6 @@ export function fetchHoldingsSummary(
     body: JSON.stringify(body),
     signal,
   });
-}
-
-/** POST the filtered aggregate for a rule's Simulated summary card. */
-export function fetchSimulatedSummary(
-  strategySeg: string,
-  ruleId: string,
-  body: TableRequestBody,
-  signal?: AbortSignal,
-): Promise<import('types').SimulatedSummary> {
-  return request(
-    `${API_BASE}/api/strategies/${strategySeg}/rules/${ruleId}/simulate/result/summary`,
-    {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      signal,
-    },
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -478,53 +395,6 @@ export async function cancelGroupedSweep(): Promise<void> {
 /** Cooperative cancel for the in-flight flow-discovery job. */
 export async function cancelFlowDiscovery(): Promise<void> {
   await request(`${API_BASE}/api/strategies/flow-discovery/cancel`, { method: 'POST' });
-}
-
-/** Cooperative cancel for the in-flight metric-combo discovery pipeline. */
-export async function cancelMetricDiscovery(): Promise<void> {
-  await request(`${API_BASE}/api/strategies/metric-discovery/cancel`, { method: 'POST' });
-}
-
-/** Start a rule's backtest as a detached background job (returns immediately).
- *  The run is uncapped and may take minutes, so the result is NOT delivered on
- *  this request — collect it via the result endpoint (`getStrategySimulateResult`)
- *  once the `simulation_finished` SSE fires. `range` scopes the candidate scan
- *  (empty = all-time). This decoupling is what stops a long sim failing the client
- *  with `FETCH_ERROR`. */
-export async function startSimulation(
-  strategy: 'tpsl1' | 'tpsl2' | 'swing1',
-  ruleId: string,
-  range: { from?: string; to?: string },
-): Promise<void> {
-  const qs = new URLSearchParams();
-  if (range.from) qs.set('from', range.from);
-  if (range.to) qs.set('to', range.to);
-  const s = qs.toString();
-  const url = `${API_BASE}/api/strategies/${strategy}/rules/${encodeURIComponent(ruleId)}/simulate${
-    s ? `?${s}` : ''
-  }`;
-  await request(url, { method: 'POST' });
-}
-
-/** Start a backtest for every rule of `strategy` whose last-simulation rollup is
- *  missing or stale (params edited since that run) — rules already fresh for
- *  `range` are skipped server-side, so repeated clicks are cheap. Each job runs
- *  through the same detached pipeline as a single `startSimulation`; watch for
- *  their `simulation_finished` SSE frames (or just wait for the rules list to
- *  refresh) rather than this call. `started_ids` are exactly the rules a backtest
- *  was queued for (freshly-cached ones are omitted, and never fire a progress /
- *  finished frame), so the caller can `markStarting` those and only those for the
- *  per-row progress bar without leaving a phantom bar on a skipped rule. */
-export async function startSimulateAll(
-  strategy: 'tpsl1' | 'tpsl2' | 'swing1',
-  range: { from?: string; to?: string },
-): Promise<{ started: number; started_ids: string[]; skipped: number; total: number }> {
-  const qs = new URLSearchParams();
-  if (range.from) qs.set('from', range.from);
-  if (range.to) qs.set('to', range.to);
-  const s = qs.toString();
-  const url = `${API_BASE}/api/strategies/${strategy}/rules/simulate-all${s ? `?${s}` : ''}`;
-  return request(url, { method: 'POST' });
 }
 
 /** Strategy-agnostic cancel for a rule's in-flight simulation (the backend keys

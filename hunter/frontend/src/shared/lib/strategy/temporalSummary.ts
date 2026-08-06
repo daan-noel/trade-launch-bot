@@ -79,12 +79,6 @@ export const HOLD_SCHEMES: readonly HoldScheme[] = [
 /** Manual override; `auto` uses `pickHoldScheme` on closed-hold p90. */
 export type HoldSchemeChoice = 'auto' | HoldScheme;
 
-export function parseHoldSchemeChoice(s: string | null | undefined): HoldSchemeChoice {
-  if (!s || s === 'auto') return 'auto';
-  if ((HOLD_SCHEMES as readonly string[]).includes(s)) return s as HoldScheme;
-  return 'auto';
-}
-
 /** One hold-duration bucket — inclusive lo/hi seconds (`null` hi = open-ended). */
 export interface HoldBinDef {
   id: string;
@@ -793,12 +787,6 @@ export function wallGrainLabel(grain: WallGrain): string {
     case 'day':
       return 'day';
   }
-}
-
-export function parseWallGrainChoice(s: string | null | undefined): WallGrainChoice {
-  if (!s || s === 'auto') return 'auto';
-  if ((WALL_GRAINS as readonly string[]).includes(s)) return s as WallGrain;
-  return 'auto';
 }
 
 /*

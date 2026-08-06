@@ -151,19 +151,3 @@ export function amountColKeys<R>(
   }
   return m;
 }
-
-/**
- * Whether the query reduces its result set — i.e. a search string, any per-column
- * filter, or a wrapper-injected structured filter (e.g. a mint set) is active.
- * Sorting/paging don't count (they don't shrink the population). Callers that
- * hide an empty server-side table must keep it mounted while this is true, or the
- * table (with its filter controls) vanishes the moment a filter yields 0 rows and
- * the user can no longer change the filter.
- */
-export function isTableQueryActive(query: TableQuery): boolean {
-  return (
-    query.search.trim().length > 0 ||
-    Object.values(query.colFilters).some((v) => v.trim().length > 0) ||
-    Object.keys(query.structuredFilters ?? {}).length > 0
-  );
-}

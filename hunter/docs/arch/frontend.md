@@ -496,12 +496,12 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
     box has no ingest or SSE, so the rows are a snapshot as of the last `db-incremental-sync.ps1`.
     Lifecycle buttons still render there, but they write the local mirror only — the live engine never
     sees it and the next sync overwrites the row (server wins).
-- **Matched/Simulated = server-side via `useServerTable`** (lab-only). A lean page+total+summary hook
-  (no SSE-delta patching / settle-poll — these results are static once computed) drives the two tables
-  over `fetchMatchedPage` / `fetchSimulatedPage` (POST, `{tokens}` body + `X-Total-Count`). **Matched**
-  materializes server-side: the first POST scans the whole `tokens` table for the matched mint set,
-  caches it, and pages the DB restricted to it (no 5,000-row cap). **Simulated** pages the finished
-  backtest's rows from the lab disk cache (`$SWEEP_LAKE_DIR/sim-results/`, hydrated into a
+- **Simulated = server-side via `useServerTable`** (lab-only). A lean page+total+summary hook
+  (no SSE-delta patching / settle-poll — these results are static once computed) drives the table
+  over `fetchEngineSimPage` (POST, `{tokens}` body + `X-Total-Count`). There is no longer a separate
+  **Matched** table: matched-but-not-entered tokens are folded into this one as `NoEntry` rows, and
+  "Matched" survives only as the `n_matched` summary stat (the candidate pool Entries is drawn
+  from). **Simulated** pages the finished backtest's rows from the lab disk cache (`$SWEEP_LAKE_DIR/sim-results/`, hydrated into a
   one-rule RAM working set), with a matching `POST /simulate/result/summary` aggregate
   (`toSummaryBody`) for its card; unfiltered column hydrate uses meta only
   (`POST /simulate/summaries`). `reload()` refetches on the `simulation_finished` SSE. Simulate
@@ -588,8 +588,7 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   pinned.
 - **Shared enrichment type + strategy primitives.** The ~28 enrichment fields the backend
   `TokenEnrichment` flattens onto result rows are declared **once** in TS as
-  `TokenEnrichmentFields` (`shared/types`); `RulePositionRecord`/`MatchedTokenRecord`/
-  `SimulatedTokenResult` `extends` it (the all-required `TokenRecord`/`TokenDetailRecord`
+  `TokenEnrichmentFields` (`shared/types`); `RulePositionRecord`/`SimulatedTokenResult` `extends` it (the all-required `TokenRecord`/`TokenDetailRecord`
   stay bespoke — their nullability differs by endpoint on purpose). Strategy-page boilerplate
   is shared under `shared/components/strategy/`: `cellFormat.ts` (the former byte-identical
   `tpsl1/2 utils.ts`), `inspectTarget.ts` (the `InspectTarget` type + `inspectFromSim`/
@@ -625,10 +624,11 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
 - **One PnL-analytics SSOT (`shared/components/analytics/`).** The folds live in `pnlSeries.ts`
   over ONE neutral atom, `PnlPoint` (`{key, timeMs, pnlSol, pnlPct, label, groupId?, isOpen?}`):
   `buildEquityCurve` (+ running peak → `maxDrawdownSol`), `pnlDistributionBuckets`,
-  `buildPnlHeatCells`, `buildDailyPnl`, `buildHoldScatterPoints`, `rankByValue`, `groupDailyPnl`,
-  `groupTrends` (the decay verdict), and **`foldPnlDeck`** (one cohort walk → curve + buckets +
-  heat + daily + sparkline value arrays + trends — used by Console History, Portfolio, Home
-  digest so those surfaces never re-walk the same closes). Civil day/dow/hour share one cached
+  `buildPnlHeatCells`, `buildDailyPnl`, `buildHoldScatterPoints`, `rankByValue`, and
+  **`foldPnlDeck`** (one cohort walk → curve + buckets + heat + daily + sparkline value arrays +
+  per-group trends incl. the decay verdict — used by Console History, Portfolio, Home digest so
+  those surfaces never re-walk the same closes; it is the ONLY entry point, the standalone
+  per-group folds it superseded are gone). Civil day/dow/hour share one cached
   `Intl.DateTimeFormat` per timezone (`civilPartsInTz`). Renderers: `EquityCurveChart` (the ONLY
   one pulling `lightweight-charts` — lazy-load it; `fitContent` only when the series identity
   changes), `PnlDistribution`, `PnlHeatmap`, `PnlCalendar`, `HoldPnlScatter` (log hold × PnL%;

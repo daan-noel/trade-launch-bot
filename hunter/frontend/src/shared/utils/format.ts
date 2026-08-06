@@ -115,19 +115,6 @@ export function formatDurationShort(seconds: number): string {
 }
 
 /**
- * Single-unit duration from milliseconds for chart tooltips (`1.5s`, `2.3m`,
- * `1.1h`). Picks the largest unit under which the value is < 1 and trims to one
- * decimal. `undefined` renders an em dash.
- */
-export function formatDurationMs(ms: number | undefined): string {
-  if (ms == null) return '—';
-  const sec = ms / 1000;
-  if (sec < 60) return `${formatDecimalTrim(sec, 1)}s`;
-  if (sec < 3600) return `${formatDecimalTrim(sec / 60, 1)}m`;
-  return `${formatDecimalTrim(sec / 3600, 1)}h`;
-}
-
-/**
  * Format a USD value: engineering-notation cents for sub-$0.01 prices,
  * comma-grouped dollars-and-cents otherwise.
  */
@@ -142,11 +129,6 @@ export function formatUsd(value: number): string {
   const wholeStr = formatWithCommas(whole);
   if (frac === 0) return `${sign}$${wholeStr}`;
   return `${sign}$${wholeStr}.${String(frac).padStart(2, '0')}`;
-}
-
-/** True when a numeric cell should show "-" (null, undefined, zero, NaN). */
-export function isEmptyNum(n: number | null | undefined): boolean {
-  return n == null || n === 0 || Number.isNaN(n);
 }
 
 export function ageClass(seconds: number): string {
@@ -190,15 +172,3 @@ export function ratioVariant(mult: number | null | undefined): StatVariant {
 
 export type StatVariant = 'default' | 'primary' | 'warning' | 'danger' | 'info' | 'accent' | 'muted';
 
-export function statVariantClass(v: StatVariant): string {
-  const map: Record<StatVariant, string> = {
-    default: 'text-text',
-    primary: 'text-primary font-semibold',
-    warning: 'text-warning font-semibold',
-    danger: 'text-red font-bold',
-    info: 'text-info font-semibold',
-    accent: 'text-accent font-bold',
-    muted: 'text-text-dim',
-  };
-  return map[v];
-}

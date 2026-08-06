@@ -3,18 +3,6 @@
 // both strategy families (and the shared rule form / params engine) import from here.
 import { formatDecimalTrim } from 'utils/format';
 
-export function dashNum(val: number | null | undefined, zero = 0): string {
-  if (val == null || val === zero) return '-';
-  return String(val);
-}
-
-export function dashF(val: number | null | undefined, precision: number): string {
-  // Guard null/undefined — a field-name mismatch against the wire shape used to
-  // crash here via `undefined.toFixed` inside formatDecimalTrim.
-  if (val == null || val === 0 || Number.isNaN(val)) return '-';
-  return formatDecimalTrim(val, precision);
-}
-
 export function dashPercent(val: number | null | undefined): string {
   if (val == null || val === 0 || Number.isNaN(val)) return '-';
   return `${formatDecimalTrim(val, 1)}%`;
@@ -36,6 +24,3 @@ export function parseIxLabels(raw: string): unknown[] {
     .map((s) => s.trim())
     .filter(Boolean);
 }
-
-export const EXAMPLE_IX_LABELS =
-  '["Compute Budget: SetComputeUnitLimit", "Compute Budget: SetComputeUnitPrice", "Pump.Fun: Create_v2", "Associated Token: CreateIdempotent", "Pump.Fun: Buy", "System Program: Transfer"]';

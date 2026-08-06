@@ -17,7 +17,13 @@ import { InfoTooltip } from 'components/ui/InfoTooltip';
 import { type MetricUnit, type StrategyRegistry } from 'lib/strategy/registry';
 import { metricColorStyle } from 'lib/strategy/metricColors';
 import { isPnlAdvancedMetric } from 'lib/strategy/validate';
-import { GROUP_HELP, METRIC_HELP, metricHelpBody, SIDE_HELP } from 'lib/strategy/strategyHelp';
+import {
+  GROUP_HELP,
+  METRIC_HELP,
+  metricHelpBody,
+  SIDE_HELP,
+  STRICT_PARAM_HELP,
+} from 'lib/strategy/strategyHelp';
 import {
   armAbovePctOrphanError,
   duplicateConditionRowError,
@@ -333,7 +339,7 @@ function ConditionRow({
       </Cell>
 
       {needsWindow && (
-        <Cell label="window s">
+        <Cell label="window s" tip={STRICT_PARAM_HELP.window_size_sec}>
           <Input
             fieldSize="sm"
             type="number"

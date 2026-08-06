@@ -156,11 +156,6 @@ export function todayInZone(timeZone = 'UTC'): { ymd: string; ym: YearMonth } {
   return todayInZone('UTC');
 }
 
-/** @deprecated Prefer {@link todayInZone}; kept as a UTC shorthand. */
-export function todayUtc(): { ymd: string; ym: YearMonth } {
-  return todayInZone('UTC');
-}
-
 /** Seed left/right panes from bounds (or today in `timeZone` / today+1). */
 export function initialViews(
   from: string,

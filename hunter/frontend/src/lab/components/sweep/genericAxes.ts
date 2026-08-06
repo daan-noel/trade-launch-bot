@@ -52,12 +52,6 @@ export interface AxisSpecWire {
   values: (number | null)[];
 }
 
-/** The `axes` payload for a `strategy_id="generic"` sweep — the backend
- *  `AxesRequest { axes: [...] }`. */
-export interface GenericAxesRequest {
-  axes: AxisSpecWire[];
-}
-
 /** A safe upper bound on how many values one range fragment may expand to, so a
  *  fat-fingered `0..1000000 step 0.1` can't lock the tab. */
 const MAX_RANGE_VALUES = 1000;

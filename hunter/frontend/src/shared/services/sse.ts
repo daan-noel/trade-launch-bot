@@ -188,25 +188,6 @@ export function connectTokenCreatedStream(onCreated: () => void): StreamHandle {
 }
 
 /**
- * Listen for `paper_test_finished` events — broadcast when a paper-test rule
- * reaches its max-total cap and all holdings have exited (the rule is then
- * auto-deactivated). Delivered to every subscriber regardless of mint filter.
- */
-export function connectPaperTestStream(
-  onFinished: (data: import('types').PaperTestFinishedEvent) => void,
-): StreamHandle {
-  const unsub = subscribe('paper_test_finished', (e) => {
-    if (typeof e.data !== 'string') return;
-    try {
-      onFinished(JSON.parse(e.data) as import('types').PaperTestFinishedEvent);
-    } catch {
-      /* ignore malformed frames */
-    }
-  });
-  return { close: unsub };
-}
-
-/**
  * Terminal signal for the in-flight grouped param-sweep — the single-flight run
  * ended (normal finish, error, or user cancel). Lets a global progress indicator
  * clear itself without polling. The payload is delivered for every strategy_id;

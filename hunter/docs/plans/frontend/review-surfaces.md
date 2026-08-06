@@ -173,9 +173,9 @@ designing durable arm storage first; adding a route would only move the emptines
 
 ## Decay — what "▼" means
 
-`groupTrends(points, labelOf, window = 20)` compares a rule's last `window` closes against
-the `window` before them, and flags `decaying` only when **both** win rate and expectancy
-(mean SOL/trade) fell.
+`foldPnlDeck(..., { labelOf, window = 20 })` emits a `trends` entry per group: it compares a
+rule's last `window` closes against the `window` before them, and flags `decaying` only when
+**both** win rate and expectancy (mean SOL/trade) fell.
 
 Requiring both is the load-bearing choice. Win rate alone flips on a single tail trade —
 and the wallet-analysis work found repeatedly that hit rate is the *wrong* ranking signal
@@ -186,7 +186,7 @@ omitted: a rule silently vanishing from a decay board reads as "healthy". The UI
 with a tooltip saying how many closes it needs.
 
 The same window and verdict are used in three places — the Portfolio **Form** column, the
-Console rule-comparison card, and the Home rule alerts — from the one `groupTrends` fold.
+Console rule-comparison card, and the Home rule alerts — from the one `foldPnlDeck` walk.
 
 ## Portfolio keep/kill review board
 
@@ -197,7 +197,7 @@ not Rules Control current-run / all-time scores.
 | Control | Behavior |
 | --- | --- |
 | Window strip | Portfolio spark + realized ◎ + closed/rules counts; entry-failed hint; link to all-trades History |
-| Rule alerts | Named decaying rules (same `groupTrends` verdict as Home) → Rules Evidence; "Show only decaying" toggles `?decay=1` |
+| Rule alerts | Named decaying rules (same `foldPnlDeck` verdict as Home) → Rules Evidence; "Show only decaying" toggles `?decay=1` |
 | `RankedPnlBars` | Hero rank by realized PnL; click toggles `?rule=` highlight (synced with table) |
 | Compact table | Rule · PnL · Exp (◎/trade) · Form · N · History — row click highlights only |
 | Rule name | → Rules (keep/kill); History link → Console History |

@@ -96,108 +96,6 @@ export interface TokenRecord {
   last_synced_at: string | null;
 }
 
-export interface FetchTokensResult {
-  total: number;
-  items: TokenRecord[];
-}
-
-/** A rule's last-simulation rollup — computed server-side in-memory (no DB row)
- *  whenever a backtest finishes; see hunter's `state::sim_summary`. `win_rate`
- *  is a fraction (0..1), matching `SimulatedSummary.win_rate` (× 100 to render).
- *  `is_stale` flags a rollup from before the rule's params were last edited. */
-export interface RuleLastSimulation {
-  n_fired: number;
-  closed: number;
-  win_rate: number;
-  avg_pnl_pct: number;
-  total_pnl_sol: number;
-  computed_at: string;
-  is_stale: boolean;
-}
-
-export interface RuleRecord {
-  id: string;
-  rule_name: string;
-  p_token_initial_buy_sol: number | null;
-  p_token_first_slot_buy_sol: number | null;
-  p_token_first_slot_sell_sol: number | null;
-  p_token_cu_limit: number | null;
-  p_token_cu_price: number | null;
-  p_token_max_sol_cost: number | null;
-  p_token_spendable_sol_in: number | null;
-  p_max_concurrent_tokens: number | null;
-  p_max_total_tokens: number | null;
-  p_token_ix_labels: unknown;
-  trade_mode: string;
-  buy_amount_sol: number;
-  p_exit_take_profit: number;
-  p_exit_stop_loss: number;
-  p_exit_trailing_stop_pct: number | null;
-  p_exit_time_stop_secs: number | null;
-  p_exit_stall_secs: number | null;
-  p_exit_liquidity_drop_pct: number | null;
-  // Scalp-continuation gates (tpsl2 only; null on tpsl1). 0/null = disabled.
-  p_entry_min_age_secs: number | null;
-  p_entry_max_age_secs: number | null;
-  p_entry_min_alive_sol: number | null;
-  p_entry_min_net_buy_sol: number | null;
-  p_entry_pullback_pct: number | null;
-  p_entry_higher_low_secs: number | null;
-  p_entry_min_liquidity_sol: number | null;
-  // ── swing1-only params (null on tpsl1/tpsl2). Merged flat into the rule JSON by
-  //    the backend `rule_to_json`; 0/null = that knob is off. ──
-  p_swing_high_to_low_sol?: number | null;
-  p_swing_high_to_low_pct?: number | null;
-  p_swing_low_to_high_sol?: number | null;
-  p_swing_low_to_high_pct?: number | null;
-  p_swing_min_leg_trades?: number | null;
-  p_dust_frac?: number | null;
-  p_kill_depth_min_pct?: number | null;
-  p_kill_max_duration_ms?: number | null;
-  p_kill_min_net_flow_per_sec?: number | null;
-  p_vol_depth_max_pct?: number | null;
-  p_vol_min_duration_ms?: number | null;
-  p_vol_min_up_duration_ms?: number | null;
-  p_min_kills_before_volume?: number | null;
-  bucket_width_sol: number;
-  is_active: boolean;
-  /** Derived lifecycle for the UI: 'Active' | 'Draining' | 'Idle' | 'Finished'.
-   *  `is_active` gates entries only, so an inactive rule with open positions is
-   *  'Draining' (its exits keep running until they close). */
-  lifecycle: string;
-  /** Positions this rule currently holds open (drives the 'Draining (N)' badge
-   *  and gates the Stop & close action). */
-  open_positions: number;
-  /** Not-yet-filled positions this rule currently has buy-in-flight
-   *  (`BuySubmitted`) — distinct from `open_positions` (`Holding` only). */
-  pending_positions: number;
-  /** Realized-performance stats from the runtime cache (all-time for real rules,
-   *  current-run for paper). `total_positions` counts entered positions;
-   *  `win_count`/`loss_count` cover only closed positions; `win_rate` (0-100) and
-   *  `avg_pnl_pct` are 0 until something closes. `avg_pnl_pct` is the capital-weighted
-   *  return (Σ realized PnL ÷ Σ SOL deployed × 100), so its sign always matches
-   *  `total_pnl_sol` — the realized SOL PnL. */
-  total_positions: number;
-  win_count: number;
-  loss_count: number;
-  win_rate: number;
-  avg_pnl_pct: number;
-  total_pnl_sol: number;
-  /** Rollup of this rule's last finished backtest, `null` if never simulated
-   *  (or the process restarted since — the cache is in-RAM, not persisted). */
-  last_simulation: RuleLastSimulation | null;
-  created_at: string;
-  updated_at: string;
-}
-
-/** Response shape for the bulk lifecycle endpoints (`rules/pause-all`,
- *  `rules/stop-all`): the rules that transitioned successfully, plus any that
- *  failed (best-effort batch — one rule's failure doesn't block the rest). */
-export interface BulkRuleResult {
-  updated: RuleRecord[];
-  failed: { rule_id: string; error: string }[];
-}
-
 export interface RulePositionRecord extends TokenEnrichmentFields {
   id: string;
   mint_address: string;
@@ -272,14 +170,6 @@ export interface RulePositionRecord extends TokenEnrichmentFields {
   // `TokenEnrichmentFields`; only the record-specific extras stay here.
 }
 
-/** One page of a rule's positions plus the run/rule-wide `total` (from the
- *  `X-Total-Count` header) so the pager can size itself without fetching the
- *  whole population. */
-export interface RulePositionsPage {
-  items: RulePositionRecord[];
-  total: number;
-}
-
 /** Run/rule-wide position aggregates for the Positions Summary panel — computed
  *  server-side over the *entire* population (never a page), mirroring the backend
  *  `PositionsSummary`. `tokens` = entered positions; `open` = holding-index rows;
@@ -332,26 +222,6 @@ export interface ExitReasonCounts {
   stall: number;
   time: number;
   liquidity: number;
-}
-
-export interface MatchedTokenRecord extends TokenEnrichmentFields {
-  mint_address: string;
-  // These are always present on a matched row, so they narrow the optional
-  // `TokenEnrichmentFields` members to required (the rest come from the base).
-  symbol: string;
-  name: string;
-  created_at: string;
-  initial_buy_sol: number | null;
-  cu_limit: number | null;
-  cu_price: number | null;
-}
-
-export interface MatchedTokensResponse {
-  tokens: MatchedTokenRecord[];
-  /** True count before cap was applied. */
-  total: number;
-  /** True when total > 5000 and only the first 5000 are in `tokens`. */
-  capped: boolean;
 }
 
 export interface SimulatedTokenResult extends TokenEnrichmentFields {
@@ -465,34 +335,6 @@ export interface TemporalSummaryPayload {
   wallSpanMs?: number;
   wallField: 'entry_time' | 'created_at';
   nFired: number;
-}
-
-/** Metadata for one paper-test run (a single activate→finish cycle). */
-export interface PaperRunResponse {
-  run_seq: number;
-  /** "Running" | "Finished" | "Stopped". */
-  status: string;
-  max_total_tokens: number | null;
-  started_at: string;
-  finished_at: string | null;
-}
-
-/** Result of `GET /strategies/tpsl/rules/{id}/paper-result`. `run` is null when
- *  the rule has never been run in paper mode; `tokens` are the latest run's
- *  recorded positions, shaped like a simulation result for the shared card/table. */
-export interface PaperResultResponse {
-  rule_name: string;
-  run: PaperRunResponse | null;
-  tokens: SimulatedTokenResult[];
-}
-
-/** Payload of the `paper_test_finished` SSE event (cap reached + all positions exited). */
-export interface PaperTestFinishedEvent {
-  rule_id: string;
-  rule_name: string;
-  run_seq: number;
-  tokens_traded: number;
-  timestamp: string;
 }
 
 /** Payload of the `simulation_progress` SSE event: `processed` of `total`

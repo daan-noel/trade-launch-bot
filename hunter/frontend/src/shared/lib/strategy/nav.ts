@@ -147,11 +147,6 @@ export function consoleHref(opts?: {
 /** @deprecated Prefer {@link consoleHref}. */
 export const floorHref = consoleHref;
 
-/** Console trade-panel deep link — prefills the manual-trade mint. */
-export function consoleTradeHref(mint: string): string {
-  return consoleHref({ mint });
-}
-
 /**
  * Deep-link for a position/arm notification — always the Console with the
  * position focused; whichever lane the row lives in, it is on this one page

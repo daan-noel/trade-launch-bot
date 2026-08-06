@@ -78,11 +78,6 @@ export function timeLensMatches(
   return dayKey >= lens.weekStart && dayKey < shiftDayKey(lens.weekStart, 7);
 }
 
-/** One lens per kind — stacking exit + hold + pct is allowed; two statuses are not. */
-export function lensKind(lens: PositionFocusLens): PositionFocusLens['kind'] {
-  return lens.kind;
-}
-
 export function sameLens(a: PositionFocusLens, b: PositionFocusLens): boolean {
   if (a.kind !== b.kind) return false;
   switch (a.kind) {
@@ -242,19 +237,6 @@ export interface FocusMatchOpts {
   timeZone?: string;
 }
 
-/** Keys whose `timeMs` lands inside a timing lens (user TZ). */
-export function timeLensMatchingKeys(
-  points: readonly { key: string; timeMs: number }[],
-  lens: PositionTimeLens,
-  timeZone: string,
-): string[] {
-  const out: string[] = [];
-  for (const p of points) {
-    if (timeLensMatches(p.timeMs, lens, timeZone)) out.push(p.key);
-  }
-  return out;
-}
-
 /** Compact chart-point shape for key-resolved focus → table filters. */
 export type FocusTablePoint = {
   key: string;
@@ -294,24 +276,6 @@ function needsKeyResolution(lens: PositionFocusLens, mode: FocusTableMode): bool
   // Simulate has no `status` column; "Closed" must exclude both Open and NoEntry.
   if (lens.kind === 'status' && mode === 'mint' && lens.status === 'closed') return true;
   return false;
-}
-
-/**
- * Fold key-resolved focus lenses into structured table filters.
- * - `positionId`: Evidence (`id` UUID column).
- * - `mint`: Simulate (mint set; may over-include re-entries when many keys share a mint).
- * Intersects with any prior `mint_address in` from hold/wall chips.
- *
- * Prefer {@link buildFocusTableFilters} at call sites — it composes structured + keys.
- */
-export function applyTimeLensTableFilter(
-  filters: Record<string, FilterSpec>,
-  lenses: readonly PositionFocusLens[],
-  points: readonly FocusTablePoint[],
-  timeZone: string,
-  mode: FocusTableMode,
-): Record<string, FilterSpec> {
-  return applyFocusKeyTableFilter(filters, lenses, points, timeZone, mode);
 }
 
 export function applyFocusKeyTableFilter(

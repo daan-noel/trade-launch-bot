@@ -189,15 +189,6 @@ export function tradeLiquiditySol(trade: ChartTrade): number | null {
   return curveLiquiditySol(trade);
 }
 
-/** FDV in SOL: total supply × spot price (GMGN-style MC). */
-export function curveMarketCapSol(
-  trade: Pick<ChartTrade, 'reserve_sol' | 'reserve_token'>,
-): number | null {
-  const spot = curveSpotPriceSol(trade);
-  if (spot == null) return null;
-  return TOKEN_TOTAL_SUPPLY * spot;
-}
-
 /** FDV in SOL from chart spot (curve, pool, or execution fallback). */
 export function tradeMarketCapSol(trade: ChartTrade): number | null {
   const spot = tradeSpotPriceSol(trade);
@@ -262,20 +253,6 @@ function seedOpenValue(
     return pre == null ? null : toValue(pre);
   }
   return null;
-}
-
-/** Trades with `price_per_token` set to the chart metric (overlay / markers). */
-export function tradesForChartMetric(
-  trades: ChartTrade[],
-  metric: ChartMetric,
-): ChartTrade[] {
-  const sorted = [...trades].sort(compareTradesChronologically);
-
-  return sorted.flatMap((trade) => {
-    const value = chartValueForTrade(trade, metric);
-    if (value == null) return [];
-    return [{ ...trade, price_per_token: value }];
-  });
 }
 
 type TradeBucket = {

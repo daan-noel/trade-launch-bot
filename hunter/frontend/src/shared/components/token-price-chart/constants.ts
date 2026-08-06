@@ -27,8 +27,6 @@ export function createChartPriceFormatter(unit: PriceUnit = 'SOL') {
   return (price: number) => `${prefix} ${formatPrice(price)}`;
 }
 
-export const chartPriceFormatter = createChartPriceFormatter('SOL');
-
 export function createChartPriceFormat(unit: PriceUnit = 'SOL') {
   return {
     type: 'custom' as const,
