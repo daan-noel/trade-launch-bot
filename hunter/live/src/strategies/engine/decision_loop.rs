@@ -62,6 +62,11 @@ const TICK: Duration = Duration::from_millis(hunter_engine::TICK_MS as u64);
 /// How often (in ticks) to prune the producer's per-mint maps to the live set.
 /// ≈ 2 min at `TICK_MS = 200`.
 const PRUNE_EVERY_TICKS: u64 = 600;
+/// How often (in ticks) to look for tracked mints that have never been primed —
+/// an adopted position on a token that may never ping again. ≈ 1 s at
+/// `TICK_MS = 200`: fast enough that a warm start is priced within a second,
+/// slow enough that the scan is invisible next to the tick's own token sweep.
+const PRIME_SCAN_EVERY_TICKS: u64 = 5;
 
 /// Everything the engine loop needs to run. Built once in `main.rs` and moved into
 /// [`spawn_engine`].
@@ -159,7 +164,9 @@ async fn run_loop(
     let buy_journal = super::SubmittedBuyJournal::new();
 
     let mut state = EngineState::new();
-    let mut producer = Producer::new(token_cache.clone());
+    // Everything already cached at this instant is history, not signal — see the
+    // `producers` module docs (the restart rail).
+    let mut producer = Producer::new(token_cache.clone(), Utc::now());
     let mut sink = Sink::new(
         strategy_repo.clone(),
         token_cache.clone(),
@@ -291,14 +298,38 @@ async fn run_loop(
                 }
             }
             Some(fill) = fill_rx.recv() => EventBatch::one(fill),
-            Some(ping) = ping_rx.recv() => EventBatch::many(producer.on_ping(&ping).into_vec()),
+            Some(ping) = ping_rx.recv() => {
+                let produced = producer.on_ping(&ping);
+                prime(&mut state, produced.prime);
+                EventBatch::many(produced.events.into_vec())
+            }
             _ = tick.tick() => {
                 ticks = ticks.wrapping_add(1);
                 if ticks.is_multiple_of(PRUNE_EVERY_TICKS) {
                     let live: HashSet<String> = state.tokens.keys().map(|m| m.to_string()).collect();
                     producer.retain(|m| live.contains(m));
                 }
-                EventBatch::one(Event::Tick { now: Utc::now() })
+                // Cold-start priming for tracked mints this process has never
+                // produced for (adopted positions, tokens re-armed from the log).
+                // The scan is a hash lookup per tracked mint and allocates nothing
+                // in the steady state (every mint has a cursor ⇒ `missing` is
+                // empty); retrying is what closes the race against the async seed.
+                let mut warm = EventBatch::none();
+                if ticks.is_multiple_of(PRIME_SCAN_EVERY_TICKS) {
+                    let missing: Vec<String> = state
+                        .tokens
+                        .keys()
+                        .filter(|m| !producer.has_cursor(m.as_str()))
+                        .map(|m| m.to_string())
+                        .collect();
+                    for mint in missing {
+                        let produced = producer.prime_tracked(&mint);
+                        prime(&mut state, produced.prime);
+                        warm.events.extend(produced.events);
+                    }
+                }
+                warm.events.push(Event::Tick { now: Utc::now() });
+                warm
             }
             else => break,
         };
@@ -331,6 +362,17 @@ impl EventBatch {
     }
     fn none() -> Self {
         Self { events: Vec::new() }
+    }
+}
+
+/// Fold historical trades into their tracks **without deciding** on them, before
+/// the batch's live events are reduced (see the `producers` restart rail). Not
+/// recorded to the event log: the log is the decision stream the lab replays, and
+/// these trades are already in PG — logging them would make a replay re-decide
+/// exactly what this call exists to prevent.
+fn prime(state: &mut EngineState, primed: super::producers::PrimedTrades) {
+    for (mint, trade) in primed {
+        hunter_engine::prime_trade(state, &mint, trade);
     }
 }
 

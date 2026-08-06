@@ -268,6 +268,19 @@ check — today: the rule editor's **Max total** and Trader Analysis **Max token
   `BootGate`) — don't reintroduce either. Diagnostic: **`strategy engine loop running`
   absent from the log = the engine never started**, regardless of how healthy ingest
   looks. Detail: [docs/arch/strategies.md](docs/arch/strategies.md).
+- **A warm start may rebuild state, never re-decide the past.** The producer's trade
+  cursor is RAM-only and the cache seed backfills up to 500 historical trades per mint,
+  so after a restart a token's whole past reads as new. Deciding on it is not cosmetic:
+  `reduce` evaluates a trade at `trade.at`, so the decision uses the old price and the
+  fill uses the live one — that sold a real position's last leg on a `stop_loss` that
+  had been true five minutes earlier, at **+79%** (2026-08-06). Cached trades older than
+  the loop's `started_at` go through `hunter_engine::prime_trade` (fold the track, emit
+  nothing, don't log); only newer ones become `Event::Trade`. The 200 ms tick re-decides,
+  so priming defers a decision rather than dropping it. The mirror-image failure is just
+  as real: an adopted position on a token that never prints again keeps a `NaN` price, and
+  `NaN` satisfies no condition — no TP/SL, no trail, **no dead-close** — so `prime_tracked`
+  must keep retrying from the tick until the async seed lands. Full audit:
+  [docs/plans/strategies/restart-state-restoration.md](docs/plans/strategies/restart-state-restoration.md).
 - **An unemitted fill event leaks a concurrency slot permanently.** The
   `BuySubmitted` row is durable *before* the send, so every exit from
   `dispatch_buy`/`run_entry` MUST emit `FillConfirmed`/`FillFailed` (use

@@ -153,12 +153,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
 
         Event::Trade { mint, trade } => {
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
-            token.track.on_trade(trade);
-            if trade.sol >= DEAD_MEANINGFUL_TRADE_SOL
-                && token.last_meaningful_at.is_none_or(|t| trade.at >= t)
-            {
-                token.last_meaningful_at = Some(trade.at);
-            }
+            fold_trade(&mut token, trade);
             evaluate_token(state, &mut token, &mint, trade.at, &mut fx);
             if token.is_active() {
                 state.tokens.insert(mint, token);
@@ -571,6 +566,58 @@ enum ArmDecision {
 
 /// Sweep every arm on one token at `now`, deciding then applying. Used by
 /// `TokenCreated`, `FirstSlotSettled`, `Trade`, and `Tick`.
+/// Fold one trade into a token's metric state — the **observation** half of
+/// [`Event::Trade`], with no decision. Shared by the live fold and
+/// [`prime_trade`] so a primed trade and a decided trade can never leave the
+/// track in different shapes.
+fn fold_trade(token: &mut TokenState, trade: crate::metrics::TradeLite) {
+    token.track.on_trade(trade);
+    if trade.sol >= DEAD_MEANINGFUL_TRADE_SOL
+        && token.last_meaningful_at.is_none_or(|t| trade.at >= t)
+    {
+        token.last_meaningful_at = Some(trade.at);
+    }
+}
+
+/// Ratchet every held position's since-entry peak/trough to the track's current
+/// price. Two bare compares per `Entered` arm, no alloc.
+fn fold_entered_extremes(token: &mut TokenState) {
+    let cur_price = token.track.current_price();
+    if !cur_price.is_finite() {
+        return;
+    }
+    for arm in token.arms.values_mut() {
+        if let ArmState::Entered(ctx) = arm {
+            if cur_price > ctx.peak_price {
+                ctx.peak_price = cur_price;
+            }
+            if cur_price < ctx.trough_price {
+                ctx.trough_price = cur_price;
+            }
+        }
+    }
+}
+
+/// **Observe** a trade without deciding on it — the boot/backfill path.
+///
+/// A trade that happened before this process started is history: it must shape
+/// the metric track (price, windows, peak/trough, the deadness clock) but must
+/// never be handed to [`evaluate_token`], because an entry or exit decided at a
+/// stale price is executed at the live one. That mismatch sold a real position's
+/// last leg on a `stop_loss` that was true five minutes earlier
+/// (2026-08-06, `247PRAda…`) — the fill printed **+79%** against its own stop.
+///
+/// Decisions are not lost, only deferred: the engine's 200 ms `Tick` re-evaluates
+/// every token against the freshly primed track and the wall clock.
+///
+/// Emits no effects **by construction** (no return value to discard) — priming a
+/// closed/untracked mint is a no-op.
+pub fn prime_trade(state: &mut EngineState, mint: &Mint, trade: crate::metrics::TradeLite) {
+    let Some(token) = state.tokens.get_mut(mint) else { return };
+    fold_trade(token, trade);
+    fold_entered_extremes(token);
+}
+
 fn evaluate_token(
     state: &mut EngineState,
     token: &mut TokenState,
@@ -589,19 +636,7 @@ fn evaluate_token(
     // Fold the current price into every held position's since-entry peak/trough
     // BEFORE deciding — two bare compares per Entered arm, no alloc — so
     // `retrace`/`bounce` already include this event's price.
-    let cur_price = token.track.current_price();
-    if cur_price.is_finite() {
-        for arm in token.arms.values_mut() {
-            if let ArmState::Entered(ctx) = arm {
-                if cur_price > ctx.peak_price {
-                    ctx.peak_price = cur_price;
-                }
-                if cur_price < ctx.trough_price {
-                    ctx.trough_price = cur_price;
-                }
-            }
-        }
-    }
+    fold_entered_extremes(token);
 
     // Re-entry: promote any cooldown arm whose window has elapsed back to Armed, so
     // the same event's decide loop below can re-enter on a fresh signal. Sorted

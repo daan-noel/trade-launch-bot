@@ -34,7 +34,7 @@ pub mod state;
 pub use cap::Cap;
 pub use event::{Effect, Event};
 pub use event_log::LoggedEvent;
-pub use reduce::reduce;
+pub use reduce::{prime_trade, reduce};
 pub use state::EngineState;
 
 /// The decision-loop clock cadence, in milliseconds — the single source of truth

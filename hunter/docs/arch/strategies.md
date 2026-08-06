@@ -50,7 +50,7 @@ side-effects only.
 | Module | Role |
 | --- | --- |
 | `decision_loop.rs` | **THE** one serialized `select!` loop (command / fill / ingest ping / `TICK_MS` tick channels); every `reduce` call happens here; two-pass dispatch = registry/SSE first (BuySubmitted/ExitPending PG is async) then submit spawn. `spawn_engine` → `EngineHandles { handle, armed, positions, task }` |
-| `producers.rs` | `StrategyPing` + `TokenCache` → `Event`s; first-slot settlement detection; the live freshness gate; feeds `real_reserve_sol` for deadness parity |
+| `producers.rs` | `StrategyPing` + `TokenCache` → `Event`s; first-slot settlement detection (freshness-gated); the live freshness gate; **the restart rail** — `Produced { prime, events }` splits cached trades into history to observe vs signal to decide on (`started_at`), plus `prime_tracked` for mints that never ping; feeds `real_reserve_sol` for deadness parity |
 | `exec_real.rs` | `SubmitBuy`/`SubmitSell` → executor submit-and-return, then synthesize a definitive `FillConfirmed`/`FillFailed` from the **trades feed** (RPC watchdog fallback). SOL commit/release; M2 sync `SubmittedBuyJournal` + fire-and-forget bounded `mark_buy_submitted`; adopt skips PG when journal empty; curve sell uses cache reserves for min_out; `classify_swap_revert` heal; sell route re-read + rent reclaim. **Double-fire safe:** `FillFailed::Reverted` only when re-submitting is safe |
 | `exec_paper.rs` | worst-case paper fill (`paper_fill`, slot window) → `FillConfirmed` (sim-parity). **`Fill::price` is SOL per RAW token unit**, so `token_amount = sol / price` with no decimals scaling — see below |
 | `sinks.rs` | `PositionUpdate` → registry + SSE; `BuySubmitted` upserts registry then background `insert_position` (later transitions chain on the handle); `Holding` updates registry sync then backgrounds fill persist; `ExitPending` PG is fire-and-forget; **terminal writes (`End`/`EntryFailed`/`ExitStuck`/`ExitUnconfirmed`) chain-spawn too — NO sink transition awaits PG on the loop** (see below); terminal SSE emits **before** `registry.remove` (so `position_id` / frozen `trade_mode` stay on the wire); `warm_runs` on rule reload (`ensure_run` reuses latest still-`Running` DB run + collapses empty leading shells — does not mint a new `run_seq` on every restart); releases SOL on terminal unentered exits |
@@ -105,6 +105,20 @@ per-position one-off rule (`EngineState::manual_rules`) — without it, tracked-
 **Boot Holding adopt:** after event-log re-arm, PG `Holding` rows are loaded into
 the in-memory engine (`Entered`) + registry (PG-only, no RPC) so TP/SL/Dead and
 Ops `ManualClose` work after a process restart.
+
+**Warm start: prime, never re-decide.** An adopted arm carries the entry price but
+an *empty* metric track, while the async cache seed backfills up to
+`SEED_TRADES_PER_MINT` (500) historical trades per mint — and the producer's trade
+cursor is RAM-only, so every seeded row reads as new. `Producer::split_trade`
+therefore routes each cached trade by chain time against the loop's `started_at`:
+older ⇒ **primed** (`hunter_engine::prime_trade` — folds the track, the peak/trough
+of every `Entered` arm, and the deadness clock, emitting nothing, and never
+recorded to the event log), newer ⇒ a live `Event::Trade` the fold decides on. The
+200 ms tick then decides against a warm track and the wall clock, so nothing is
+lost — only re-based onto the present. `Producer::prime_tracked` runs the same path
+from the tick for tracked mints that never get a ping (a quiet token's adopted bag),
+retrying until the seed lands. Why both halves are load-bearing:
+[../plans/strategies/restart-state-restoration.md](../plans/strategies/restart-state-restoration.md).
 
 **Boot recovery is bounded at both ends — never read the corpus.** `recover_armed`
 needs only the last `MAX_SNIPE_AGE_SECS` (30 s) of events, and must stay O(that),

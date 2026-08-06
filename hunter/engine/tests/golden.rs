@@ -217,6 +217,62 @@ fn stop_loss_fires_below_threshold() {
     assert_eq!(sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(), vec![ExitReason::StopLoss]);
 }
 
+/// The restart regression (2026-08-06, `247PRAda…`): a warm start replays a
+/// token's cached history, and a stop-loss that was true minutes ago must not sell
+/// at today's price. `prime_trade` folds the observation without the decision.
+#[test]
+fn primed_history_never_fires_an_exit() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(&mut s, reload(vec![rule(1, 1, json!({ "stop_loss": 30 }))], vec![cu_fp(1)]));
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    let entry = buy_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.5) });
+
+    // The same −40% print that `stop_loss_fires_below_threshold` sells on — but
+    // primed as history, so it may only shape the track.
+    hunter_engine::prime_trade(&mut s, &m, trade(1.0, 0.6, 40.0, 1.0));
+    // ... and the tick that follows decides on the CURRENT price, which is 0.6.
+    // (Live, that price is minutes stale; here it proves priming defers rather
+    // than swallows the decision.)
+    let fx = reduce(&mut s, Event::Tick { now: ts(1.5) });
+    assert_eq!(
+        sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+        vec![ExitReason::StopLoss],
+        "priming defers the decision to the tick — it must not lose it"
+    );
+}
+
+/// Priming rebuilds what a restart drops: the since-entry peak an adopted position
+/// re-seeds to its entry price. Without it a trailing stop silently re-anchors and
+/// a bag can round-trip its whole run-up.
+#[test]
+fn primed_history_restores_the_trailing_peak() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    // 20% trailing stop, armed only once 5% in profit.
+    let params = json!({
+        "exit": { "m_position": {
+            "retrace": [{ "operator": ">=", "value": 20 }],
+            "arm_above_pct": 5.0,
+        } }
+    });
+    reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    let entry = buy_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.5) });
+
+    // History: the price doubled (peak 2.0) and eased to 1.9 — a 5% retrace, no exit.
+    hunter_engine::prime_trade(&mut s, &m, trade(1.0, 2.0, 40.0, 1.0));
+    hunter_engine::prime_trade(&mut s, &m, trade(1.0, 1.9, 40.0, 2.0));
+    assert!(sells(&reduce(&mut s, Event::Tick { now: ts(2.5) })).is_empty());
+
+    // Live print 25% off the *primed* peak ⇒ the trail fires. Anchored on entry
+    // instead (peak 1.0), 1.5 would read as +50% and never exit.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.5, 40.0, 3.0) });
+    assert_eq!(sells(&fx).len(), 1, "the trail must measure from the primed peak");
+}
+
 #[test]
 fn metrics_exit_on_time_condition() {
     let mut s = EngineState::new();
