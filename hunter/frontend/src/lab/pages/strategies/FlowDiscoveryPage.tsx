@@ -55,7 +55,7 @@ import {
 } from '@lab/components/flow/flowDiscoverySuggest';
 import { StructureTable } from '@lab/components/flow/StructureTable';
 import { TokenPreviewPanel } from '@lab/components/flow/TokenPreviewPanel';
-import { patternKeysFrom } from '@lab/lib/flow/classifyFlow';
+import { patternKeysFrom } from 'lib/flow/classifyFlow';
 import { FingerprintGroupPicker } from '@lab/components/sweep/FingerprintGroupPicker';
 import { parseIxLabelsFilter, buildFieldFilters } from '@lab/components/sweep/fingerprintFilters';
 import {
