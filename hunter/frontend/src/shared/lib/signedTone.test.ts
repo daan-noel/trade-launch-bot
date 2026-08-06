@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   formatSigned,
   formatSignedPct,
+  pctGradeBarClass,
   pctGradeClass,
   signedStatTone,
   signedToneClass,
@@ -32,6 +33,19 @@ describe('pctGradeClass', () => {
     expect(pctGradeClass(100)).toBe('text-warning font-semibold');
     expect(pctGradeClass(200)).toBe('text-accent font-bold');
     expect(pctGradeClass(500)).toBe('text-primary font-extrabold');
+  });
+});
+
+describe('pctGradeBarClass', () => {
+  it('mirrors pctGradeClass bands with bg tokens', () => {
+    expect(pctGradeBarClass(null)).toBe('bg-white/10');
+    expect(pctGradeBarClass(-10)).toBe('bg-red/55');
+    expect(pctGradeBarClass(-50)).toBe('bg-red/80');
+    expect(pctGradeBarClass(25)).toBe('bg-info/55');
+    expect(pctGradeBarClass(50)).toBe('bg-green/60');
+    expect(pctGradeBarClass(100)).toBe('bg-warning/65');
+    expect(pctGradeBarClass(200)).toBe('bg-accent/70');
+    expect(pctGradeBarClass(500)).toBe('bg-primary/75');
   });
 });
 

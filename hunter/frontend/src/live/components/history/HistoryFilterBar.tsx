@@ -6,21 +6,23 @@
  */
 
 import { memo, useMemo } from 'react';
-import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
 import { SearchableSelect } from 'components/ui/SearchableSelect';
 import { Select } from 'components/ui/Select';
+import { ToggleGroup } from 'components/ui/ToggleGroup';
+import { ModeBadge } from 'components/strategy/ModeBadge';
+import { ModeToggle } from 'components/strategy/ModeToggle';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import type { HistoryRange } from 'lib/strategy/nav';
-import type { HistoryCohortApi, HistoryMode } from '@live/pages/console/historyCohort';
+import type { HistoryCohortApi } from '@live/pages/console/historyCohort';
 
-const RANGES: { key: HistoryRange; label: string }[] = [
-  { key: 'today', label: 'Today' },
-  { key: '7d', label: '7d' },
-  { key: '30d', label: '30d' },
-  { key: 'all', label: 'All' },
-  { key: 'custom', label: 'Custom' },
+const RANGE_OPTIONS: { value: HistoryRange; label: string }[] = [
+  { value: 'today', label: 'Today' },
+  { value: '7d', label: '7d' },
+  { value: '30d', label: '30d' },
+  { value: 'all', label: 'All' },
+  { value: 'custom', label: 'Custom' },
 ];
 
 /** Terminal + open statuses a reviewer actually filters on. */
@@ -80,18 +82,14 @@ export const HistoryFilterBar = memo(function HistoryFilterBar({
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-white/6 bg-bg-panel p-2.5">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <div className="flex items-center gap-1">
-          {RANGES.map((r) => (
-            <Button
-              key={r.key}
-              size="sm"
-              variant={cohort.range === r.key ? 'primary' : 'subtle'}
-              onClick={() => cohort.set({ range: r.key })}
-            >
-              {r.label}
-            </Button>
-          ))}
-        </div>
+        <ToggleGroup
+          aria-label="Date range"
+          tone="primary"
+          size="sm"
+          options={RANGE_OPTIONS}
+          value={cohort.range}
+          onChange={(range) => cohort.set({ range })}
+        />
 
         {cohort.range === 'custom' && (
           <div className="flex items-center gap-1.5">
@@ -113,6 +111,14 @@ export const HistoryFilterBar = memo(function HistoryFilterBar({
           </div>
         )}
 
+        <ModeToggle
+          layout="ops"
+          size="sm"
+          aria-label="Execution mode"
+          value={cohort.mode}
+          onChange={(mode) => cohort.set({ mode })}
+        />
+
         <div className="min-w-[190px]">
           <SearchableSelect
             options={ruleOptions}
@@ -124,41 +130,32 @@ export const HistoryFilterBar = memo(function HistoryFilterBar({
           />
         </div>
 
-        <Select
-          value={cohort.mode}
-          onChange={(e) => cohort.set({ mode: e.target.value as HistoryMode })}
-          title="Execution mode"
-        >
-          <option value="real">Real</option>
-          <option value="paper">Paper</option>
-          <option value="all">Real + paper</option>
-        </Select>
-
-        <Select
-          value={cohort.status ?? ''}
-          onChange={(e) => cohort.set({ status: e.target.value || null })}
-          title="Position status"
-        >
-          <option value="">Any status</option>
-          {STATUSES.map((s) => (
-            <option key={s.value} value={s.value}>
-              {s.label}
-            </option>
-          ))}
-        </Select>
-
-        <Select
-          value={cohort.exitReason ?? ''}
-          onChange={(e) => cohort.set({ exitReason: e.target.value || null })}
-          title="Exit reason"
-        >
-          <option value="">Any exit</option>
-          {EXIT_REASONS.map((r) => (
-            <option key={r} value={r}>
-              {r}
-            </option>
-          ))}
-        </Select>
+        <div className="grid grid-cols-2 gap-4">
+          <Select
+            value={cohort.status ?? ''}
+            onChange={(e) => cohort.set({ status: e.target.value || null })}
+            title="Position status"
+          >
+            <option value="">Any status</option>
+            {STATUSES.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </Select>
+          <Select
+            value={cohort.exitReason ?? ''}
+            onChange={(e) => cohort.set({ exitReason: e.target.value || null })}
+            title="Exit reason"
+          >
+            <option value="">Any exit</option>
+            {EXIT_REASONS.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </Select>
+        </div>
 
         {cohort.active && (
           <Button size="sm" variant="ghost" onClick={cohort.reset}>
@@ -182,8 +179,14 @@ export const HistoryFilterBar = memo(function HistoryFilterBar({
             </>
           )}
         </span>
-        {cohort.mode === 'paper' && <Badge variant="neutral">paper</Badge>}
-        {cohort.mode === 'all' && <Badge variant="neutral">real + paper</Badge>}
+        {cohort.mode === 'paper' && <ModeBadge mode="paper" />}
+        {cohort.mode === 'real' && <ModeBadge mode="real" />}
+        {cohort.mode === 'all' && (
+          <>
+            <ModeBadge mode="real" />
+            <ModeBadge mode="paper" />
+          </>
+        )}
       </div>
     </div>
   );

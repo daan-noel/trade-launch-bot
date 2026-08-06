@@ -62,6 +62,7 @@ import { useRuleActions } from 'components/strategy/useRuleActions';
 import { buildCapsColumns } from 'components/strategy/capsRuleColumns';
 import { buildFingerprintRuleColumns } from 'components/strategy/fingerprintRuleColumns';
 import { buildRuleTagsColumn } from 'components/strategy/ruleTagsColumn';
+import { ModeBadge } from 'components/strategy/ModeBadge';
 import { RuleModeFilter } from 'components/strategy/RuleModeFilter';
 import { RuleTagFilter } from 'components/strategy/RuleTagFilter';
 import { useModeFilter } from 'hooks/useModeFilter';
@@ -438,7 +439,7 @@ export function SimulatePage() {
         actions={
           <>
           <label
-            className="flex items-center gap-1.5 text-xs text-text-dim"
+            className="flex items-center gap-1.5 text-xs text-text-dim mr-8"
             title="Only tokens created in this UTC window are scanned. Leave either end empty for all history."
           >
             <span>Created</span>
@@ -458,6 +459,7 @@ export function SimulatePage() {
               onChange={(e) => setUntil(e.target.value)}
             />
           </label>
+
           <label className="flex items-center gap-1.5 text-xs text-text-dim">
             <span>Fill</span>
             <Select
@@ -490,22 +492,24 @@ export function SimulatePage() {
               ))}
             </Select>
           </label>
+          
+          <div className='grow' />
+
           {disabledCount > 0 && (
-            <label className="flex cursor-pointer items-center gap-1.5 text-[12px] text-text-dim">
-              <input
-                type="checkbox"
-                checked={showDisabled}
-                onChange={(e) => setShowDisabled(e.target.checked)}
-                className="accent-accent"
-              />
-              Show disabled ({disabledCount})
-            </label>
+            <VisibilityToggleButton
+              visible={showDisabled}
+              onToggle={() => setShowDisabled((v) => !v)}
+              label="disabled rules"
+            >
+              {showDisabled
+                ? `Hide disabled (${disabledCount})`
+                : `Show disabled (${disabledCount})`}
+            </VisibilityToggleButton>
           )}
-          {/* Three standalone bulk-simulate CTAs, spaced apart and each with its
-              own hue + self-describing label so they read as distinct actions:
-              the table's current filter cohort (primary/glow — the highlighted
-              default), all paper rules (green), all real rules (orange). */}
-          <div className="flex items-center gap-3">
+
+          {/* Run actions (right) — Filtered is always primary. Mode-specific
+              CTAs hide when RuleModeFilter already narrows to the other mode. */}
+          <div className="flex items-center gap-2">
             <IconButton
               variant="primary"
               size="lg"
@@ -525,42 +529,46 @@ export function SimulatePage() {
             >
               {bulkMode === 'filtered' ? <SpinnerIcon /> : <SimulateIcon />}
             </IconButton>
-            <IconButton
-              variant="success"
-              size="lg"
-              className="shadow-sm"
-              disabled={paperCount === 0 || bulkMode !== null}
-              onClick={() => runAll('paper')}
-              label={
-                bulkMode === 'paper'
-                  ? 'Starting paper…'
-                  : `Simulate Paper (${paperCount})`
-              }
-              title={
-                bulkMode === 'paper'
-                  ? 'Starting paper…'
-                  : `Simulate all ${paperCount} paper rule(s)`
-              }
-            >
-              {bulkMode === 'paper' ? <SpinnerIcon /> : <SimulateIcon />}
-            </IconButton>
-            <IconButton
-              variant="accent"
-              size="lg"
-              className="shadow-sm"
-              disabled={realCount === 0 || bulkMode !== null}
-              onClick={() => runAll('real')}
-              label={
-                bulkMode === 'real' ? 'Starting real…' : `Simulate Real (${realCount})`
-              }
-              title={
-                bulkMode === 'real'
-                  ? 'Starting real…'
-                  : `Simulate all ${realCount} real rule(s)`
-              }
-            >
-              {bulkMode === 'real' ? <SpinnerIcon /> : <SimulateIcon />}
-            </IconButton>
+            {(modeFilter === 'all' || modeFilter === 'paper') && (
+              <IconButton
+                variant="success"
+                size={modeFilter === 'paper' ? 'lg' : 'md'}
+                className={modeFilter === 'all' ? 'opacity-90' : 'shadow-sm'}
+                disabled={paperCount === 0 || bulkMode !== null}
+                onClick={() => runAll('paper')}
+                label={
+                  bulkMode === 'paper'
+                    ? 'Starting paper…'
+                    : `Simulate Paper (${paperCount})`
+                }
+                title={
+                  bulkMode === 'paper'
+                    ? 'Starting paper…'
+                    : `Simulate all ${paperCount} paper rule(s)`
+                }
+              >
+                {bulkMode === 'paper' ? <SpinnerIcon /> : <SimulateIcon />}
+              </IconButton>
+            )}
+            {(modeFilter === 'all' || modeFilter === 'real') && (
+              <IconButton
+                variant="accent"
+                size={modeFilter === 'real' ? 'lg' : 'md'}
+                className={modeFilter === 'all' ? 'opacity-90' : 'shadow-sm'}
+                disabled={realCount === 0 || bulkMode !== null}
+                onClick={() => runAll('real')}
+                label={
+                  bulkMode === 'real' ? 'Starting real…' : `Simulate Real (${realCount})`
+                }
+                title={
+                  bulkMode === 'real'
+                    ? 'Starting real…'
+                    : `Simulate all ${realCount} real rule(s)`
+                }
+              >
+                {bulkMode === 'real' ? <SpinnerIcon /> : <SimulateIcon />}
+              </IconButton>
+            )}
           </div>
           </>
         }
@@ -1132,7 +1140,7 @@ function buildColumns(
       label: 'Mode',
       group: 'status',
       render: (r) => (
-        <Badge variant={r.trade_mode === 'real' ? 'warning' : 'info'}>{r.trade_mode}</Badge>
+        <ModeBadge mode={r.trade_mode} />
       ),
       searchValue: (r) => r.trade_mode,
       sortValue: (r) => r.trade_mode,

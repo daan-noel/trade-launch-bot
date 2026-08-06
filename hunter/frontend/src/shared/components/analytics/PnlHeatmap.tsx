@@ -104,7 +104,8 @@ function Row({
       <div className="flex items-center pr-1.5 font-semibold text-text-dim">{label}</div>
       {HOURS.map((h) => {
         const cell = lookup.get(dow * 24 + h) ?? { dow, hour: h, pnl_sol: 0, count: 0 };
-        const cellLabel = cell.count > 0 ? formatDecimalTrim(cell.pnl_sol, 1) : '';
+        // 3 dp (not 1): |pnl| < 0.05 used to render as "0" on every small-scalp hour.
+        const cellLabel = cell.count > 0 ? formatDecimalTrim(cell.pnl_sol, 3) : '';
         const title =
           `${label} ${h}:00\n` +
           (cell.count > 0

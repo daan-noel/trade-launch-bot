@@ -22,6 +22,9 @@ import {
 import { Badge } from 'components/ui/Badge';
 import { PageHeader } from 'components/ui/PageHeader';
 import { StatTile } from 'components/ui/StatTile';
+import { ToggleGroup } from 'components/ui/ToggleGroup';
+import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
+import { ModeBadge } from './ModeBadge';
 import { buildCapsColumns } from './capsRuleColumns';
 import { buildFingerprintRuleColumns } from './fingerprintRuleColumns';
 import { buildRuleParamsColumns } from './ruleParamsColumns';
@@ -443,157 +446,157 @@ export function RulesView({
     },
     ...(showScores
       ? ([
-          {
-            key: 'score_pnl',
-            label: 'PnL',
-            group: 'score',
-            render: (r: StrategyRule) => {
-              const v = r.total_pnl_sol ?? 0;
-              if ((r.total_positions ?? 0) === 0) {
-                return <span className="text-text-dim">—</span>;
-              }
-              return (
-                <span
-                  className={`tabular-nums text-xs font-semibold ${signedToneClass(v)}`}
-                >
-                  {v > 0 ? '+' : ''}
-                  {v.toFixed(3)}◎
-                </span>
-              );
-            },
-            searchValue: (r: StrategyRule) => String(r.total_pnl_sol ?? 0),
-            sortValue: (r: StrategyRule) => r.total_pnl_sol ?? 0,
-            filterNumber: (r: StrategyRule) =>
-              (r.total_positions ?? 0) === 0 ? null : r.total_pnl_sol ?? 0,
-            sortable: true as const,
+        {
+          key: 'score_pnl',
+          label: 'PnL',
+          group: 'score',
+          render: (r: StrategyRule) => {
+            const v = r.total_pnl_sol ?? 0;
+            if ((r.total_positions ?? 0) === 0) {
+              return <span className="text-text-dim">—</span>;
+            }
+            return (
+              <span
+                className={`tabular-nums text-xs font-semibold ${signedToneClass(v)}`}
+              >
+                {v > 0 ? '+' : ''}
+                {v.toFixed(3)}◎
+              </span>
+            );
           },
-          {
-            key: 'score_avg',
-            label: 'Avg%',
-            group: 'score',
-            render: (r: StrategyRule) => {
-              if (closedCount(r) === 0) {
-                return <span className="text-text-dim">—</span>;
-              }
-              const v = r.avg_pnl_pct ?? 0;
-              return (
-                <span className={`tabular-nums text-xs ${pctGradeClass(v)}`}>
-                  {formatSignedPct(v, 1)}
-                </span>
-              );
-            },
-            searchValue: (r: StrategyRule) => String(r.avg_pnl_pct ?? 0),
-            sortValue: (r: StrategyRule) => r.avg_pnl_pct ?? 0,
-            filterNumber: (r: StrategyRule) =>
-              closedCount(r) === 0 ? null : r.avg_pnl_pct ?? 0,
-            sortable: true as const,
+          searchValue: (r: StrategyRule) => String(r.total_pnl_sol ?? 0),
+          sortValue: (r: StrategyRule) => r.total_pnl_sol ?? 0,
+          filterNumber: (r: StrategyRule) =>
+            (r.total_positions ?? 0) === 0 ? null : r.total_pnl_sol ?? 0,
+          sortable: true as const,
+        },
+        {
+          key: 'score_avg',
+          label: 'Avg%',
+          group: 'score',
+          render: (r: StrategyRule) => {
+            if (closedCount(r) === 0) {
+              return <span className="text-text-dim">—</span>;
+            }
+            const v = r.avg_pnl_pct ?? 0;
+            return (
+              <span className={`tabular-nums text-xs ${pctGradeClass(v)}`}>
+                {formatSignedPct(v, 1)}
+              </span>
+            );
           },
-          {
-            key: 'score_exp',
-            label: 'Exp',
-            group: 'score',
-            render: (r: StrategyRule) => {
-              const n = closedCount(r);
-              if (n === 0) {
-                return <span className="text-text-dim">—</span>;
-              }
-              const v = (r.total_pnl_sol ?? 0) / n;
-              return (
-                <span className={`tabular-nums text-xs font-semibold ${signedToneClass(v)}`}>
-                  {v > 0 ? '+' : ''}
-                  {v.toFixed(3)}◎
-                </span>
-              );
-            },
-            searchValue: (r: StrategyRule) => {
-              const n = closedCount(r);
-              return n > 0 ? String((r.total_pnl_sol ?? 0) / n) : '';
-            },
-            sortValue: (r: StrategyRule) => {
-              const n = closedCount(r);
-              return n > 0 ? (r.total_pnl_sol ?? 0) / n : 0;
-            },
-            filterNumber: (r: StrategyRule) => {
-              const n = closedCount(r);
-              return n === 0 ? null : (r.total_pnl_sol ?? 0) / n;
-            },
-            sortable: true as const,
+          searchValue: (r: StrategyRule) => String(r.avg_pnl_pct ?? 0),
+          sortValue: (r: StrategyRule) => r.avg_pnl_pct ?? 0,
+          filterNumber: (r: StrategyRule) =>
+            closedCount(r) === 0 ? null : r.avg_pnl_pct ?? 0,
+          sortable: true as const,
+        },
+        {
+          key: 'score_exp',
+          label: 'Exp',
+          group: 'score',
+          render: (r: StrategyRule) => {
+            const n = closedCount(r);
+            if (n === 0) {
+              return <span className="text-text-dim">—</span>;
+            }
+            const v = (r.total_pnl_sol ?? 0) / n;
+            return (
+              <span className={`tabular-nums text-xs font-semibold ${signedToneClass(v)}`}>
+                {v > 0 ? '+' : ''}
+                {v.toFixed(3)}◎
+              </span>
+            );
           },
-          {
-            key: 'score_win',
-            label: 'Win%',
-            group: 'score',
-            render: (r: StrategyRule) => {
-              if (closedCount(r) === 0) {
-                return <span className="text-text-dim">—</span>;
-              }
-              const pct = r.win_rate ?? 0;
-              return (
-                <span className={`tabular-nums text-xs ${winRateGradeClass(pct / 100)}`}>
-                  {Math.round(pct)}%
-                </span>
-              );
-            },
-            searchValue: (r: StrategyRule) => String(r.win_rate ?? 0),
-            sortValue: (r: StrategyRule) => r.win_rate ?? 0,
-            filterNumber: (r: StrategyRule) =>
-              closedCount(r) === 0 ? null : r.win_rate ?? 0,
-            sortable: true as const,
+          searchValue: (r: StrategyRule) => {
+            const n = closedCount(r);
+            return n > 0 ? String((r.total_pnl_sol ?? 0) / n) : '';
           },
-          {
-            key: 'score_wl',
-            label: 'W/L',
-            group: 'score',
-            render: (r: StrategyRule) => {
-              const w = r.win_count ?? 0;
-              const l = r.loss_count ?? 0;
-              if (w + l === 0) {
-                return <span className="text-text-dim">—</span>;
-              }
-              return (
-                <span className="tabular-nums text-xs">
-                  <span className="text-green">{w}</span>
-                  <span className="text-text-dim">/</span>
-                  <span className="text-red">{l}</span>
-                </span>
-              );
-            },
-            searchValue: (r: StrategyRule) =>
-              `${r.win_count ?? 0}/${r.loss_count ?? 0}`,
-            sortValue: (r: StrategyRule) =>
-              (r.win_count ?? 0) * 1_000_000 + (r.loss_count ?? 0),
-            sortable: true as const,
+          sortValue: (r: StrategyRule) => {
+            const n = closedCount(r);
+            return n > 0 ? (r.total_pnl_sol ?? 0) / n : 0;
           },
-          {
-            key: 'score_n',
-            label: 'N',
-            group: 'score',
-            render: (r: StrategyRule) => {
-              const total = r.total_positions ?? 0;
-              const closed = closedCount(r);
-              if (total === 0) {
-                return <span className="text-text-dim">—</span>;
-              }
-              // Entered total; when some are still open, show closed beside it.
-              return (
-                <span
-                  className="tabular-nums text-xs text-text-mid"
-                  title="Entered positions (closed count when any still open)"
-                >
-                  {total}
-                  {closed < total && (
-                    <span className="text-text-dim"> · {closed}c</span>
-                  )}
-                </span>
-              );
-            },
-            searchValue: (r: StrategyRule) => String(r.total_positions ?? 0),
-            sortValue: (r: StrategyRule) => r.total_positions ?? 0,
-            filterNumber: (r: StrategyRule) =>
-              (r.total_positions ?? 0) === 0 ? null : r.total_positions ?? 0,
-            sortable: true as const,
+          filterNumber: (r: StrategyRule) => {
+            const n = closedCount(r);
+            return n === 0 ? null : (r.total_pnl_sol ?? 0) / n;
           },
-        ] satisfies ColumnDef<StrategyRule>[])
+          sortable: true as const,
+        },
+        {
+          key: 'score_win',
+          label: 'Win%',
+          group: 'score',
+          render: (r: StrategyRule) => {
+            if (closedCount(r) === 0) {
+              return <span className="text-text-dim">—</span>;
+            }
+            const pct = r.win_rate ?? 0;
+            return (
+              <span className={`tabular-nums text-xs ${winRateGradeClass(pct / 100)}`}>
+                {Math.round(pct)}%
+              </span>
+            );
+          },
+          searchValue: (r: StrategyRule) => String(r.win_rate ?? 0),
+          sortValue: (r: StrategyRule) => r.win_rate ?? 0,
+          filterNumber: (r: StrategyRule) =>
+            closedCount(r) === 0 ? null : r.win_rate ?? 0,
+          sortable: true as const,
+        },
+        {
+          key: 'score_wl',
+          label: 'W/L',
+          group: 'score',
+          render: (r: StrategyRule) => {
+            const w = r.win_count ?? 0;
+            const l = r.loss_count ?? 0;
+            if (w + l === 0) {
+              return <span className="text-text-dim">—</span>;
+            }
+            return (
+              <span className="tabular-nums text-xs">
+                <span className="text-green">{w}</span>
+                <span className="text-text-dim">/</span>
+                <span className="text-red">{l}</span>
+              </span>
+            );
+          },
+          searchValue: (r: StrategyRule) =>
+            `${r.win_count ?? 0}/${r.loss_count ?? 0}`,
+          sortValue: (r: StrategyRule) =>
+            (r.win_count ?? 0) * 1_000_000 + (r.loss_count ?? 0),
+          sortable: true as const,
+        },
+        {
+          key: 'score_n',
+          label: 'N',
+          group: 'score',
+          render: (r: StrategyRule) => {
+            const total = r.total_positions ?? 0;
+            const closed = closedCount(r);
+            if (total === 0) {
+              return <span className="text-text-dim">—</span>;
+            }
+            // Entered total; when some are still open, show closed beside it.
+            return (
+              <span
+                className="tabular-nums text-xs text-text-mid"
+                title="Entered positions (closed count when any still open)"
+              >
+                {total}
+                {closed < total && (
+                  <span className="text-text-dim"> · {closed}c</span>
+                )}
+              </span>
+            );
+          },
+          searchValue: (r: StrategyRule) => String(r.total_positions ?? 0),
+          sortValue: (r: StrategyRule) => r.total_positions ?? 0,
+          filterNumber: (r: StrategyRule) =>
+            (r.total_positions ?? 0) === 0 ? null : r.total_positions ?? 0,
+          sortable: true as const,
+        },
+      ] satisfies ColumnDef<StrategyRule>[])
       : []),
     {
       key: 'status',
@@ -624,35 +627,35 @@ export function RulesView({
     },
     ...(ruleLiveCounts
       ? ([
-          {
-            key: 'live_pos',
-            label: 'Live',
-            group: 'status',
-            render: (r: StrategyRule) => {
-              const c = ruleLiveCounts[r.id];
-              const open = c?.open ?? 0;
-              const pending = c?.pending ?? 0;
-              if (open === 0 && pending === 0) {
-                return <span className="text-text-dim">—</span>;
-              }
-              return (
-                <span className="tabular-nums text-xs">
-                  <span className="text-primary">{open} open</span>
-                  {pending > 0 && (
-                    <span className="text-text-dim"> · {pending} pend</span>
-                  )}
-                </span>
-              );
-            },
-            searchValue: (r: StrategyRule) => {
-              const c = ruleLiveCounts[r.id];
-              return `${c?.open ?? 0} ${c?.pending ?? 0}`;
-            },
-            sortValue: (r: StrategyRule) =>
-              (ruleLiveCounts[r.id]?.open ?? 0) * 1000 + (ruleLiveCounts[r.id]?.pending ?? 0),
-            sortable: true as const,
+        {
+          key: 'live_pos',
+          label: 'Live',
+          group: 'status',
+          render: (r: StrategyRule) => {
+            const c = ruleLiveCounts[r.id];
+            const open = c?.open ?? 0;
+            const pending = c?.pending ?? 0;
+            if (open === 0 && pending === 0) {
+              return <span className="text-text-dim">—</span>;
+            }
+            return (
+              <span className="tabular-nums text-xs">
+                <span className="text-primary">{open} open</span>
+                {pending > 0 && (
+                  <span className="text-text-dim"> · {pending} pend</span>
+                )}
+              </span>
+            );
           },
-        ] satisfies ColumnDef<StrategyRule>[])
+          searchValue: (r: StrategyRule) => {
+            const c = ruleLiveCounts[r.id];
+            return `${c?.open ?? 0} ${c?.pending ?? 0}`;
+          },
+          sortValue: (r: StrategyRule) =>
+            (ruleLiveCounts[r.id]?.open ?? 0) * 1000 + (ruleLiveCounts[r.id]?.pending ?? 0),
+          sortable: true as const,
+        },
+      ] satisfies ColumnDef<StrategyRule>[])
       : []),
     // Click-to-filter: the fastest path from "I see this label" to "show me the
     // rest of them".
@@ -662,7 +665,7 @@ export function RulesView({
       label: 'Mode',
       group: 'status',
       render: (r) => (
-        <Badge variant={r.trade_mode === 'real' ? 'warning' : 'info'}>{r.trade_mode}</Badge>
+        <ModeBadge mode={r.trade_mode} />
       ),
       searchValue: (r) => r.trade_mode,
       sortValue: (r) => r.trade_mode,
@@ -771,24 +774,18 @@ export function RulesView({
             showScores ? (
               <>
                 {onScoreScopeChange && (
-                  <span className="mr-2 inline-flex gap-1 align-middle">
-                    {([
-                      ['current', 'Current run'],
-                      ['all', 'All-time'],
-                    ] as const).map(([key, label]) => (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => onScoreScopeChange(key)}
-                        className={`rounded-md px-2.5 py-1 text-xs font-semibold ${
-                          (scoreScope ?? 'current') === key
-                            ? 'bg-primary/20 text-primary'
-                            : 'bg-white/5 text-text-dim hover:bg-white/8'
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    ))}
+                  <span className="mr-2 inline-flex align-middle">
+                    <ToggleGroup
+                      aria-label="Scoreboard scope"
+                      tone="primary"
+                      size="sm"
+                      value={scoreScope ?? 'current'}
+                      onChange={onScoreScopeChange}
+                      options={[
+                        { value: 'current', label: 'Current run' },
+                        { value: 'all', label: 'All-time' },
+                      ]}
+                    />
                   </span>
                 )}
                 <span className="text-xs text-text-dim">
@@ -801,6 +798,20 @@ export function RulesView({
           }
           actions={
             <>
+              <div className="grow" />
+
+              {disabledCount > 0 && (
+                <VisibilityToggleButton
+                  visible={showDisabled}
+                  onToggle={() => setShowDisabled((v) => !v)}
+                  label="disabled rules"
+                >
+                  {showDisabled
+                    ? `Hide disabled (${disabledCount})`
+                    : `Show disabled (${disabledCount})`}
+                </VisibilityToggleButton>
+              )}
+
               {(['paper', 'real'] as TradeMode[]).map((mode) => {
                 const bulkStop = stopByMode[mode];
                 const stopping = !!bulkStop && bulkStop.status === 'running';
@@ -809,17 +820,21 @@ export function RulesView({
                 return (
                   <div
                     key={mode}
-                    className="flex items-center gap-1 rounded-md border border-white/8 px-1.5 py-1"
+                    className={
+                      mode === 'real'
+                        ? 'flex items-center gap-1.5 rounded-md border border-warning/25 bg-warning/5 px-1.5 py-1'
+                        : 'flex items-center gap-1.5 rounded-md border border-info/25 bg-info/5 px-1.5 py-1'
+                    }
                   >
-                    <span className="text-xs uppercase tracking-wide text-text-dim">{mode}</span>
+                    <ModeBadge mode={mode} />
                     <IconButtonGroup>
                       <IconButton
                         variant="ghost"
                         size="md"
                         disabled={bulkBusy || stopping}
                         onClick={() => doPauseAll(mode)}
-                        title={`Pause All (${activeByMode[mode]})`}
-                        aria-label={`Pause All (${activeByMode[mode]})`}
+                        title={`Pause All ${mode} (${activeByMode[mode]})`}
+                        aria-label={`Pause All ${mode} (${activeByMode[mode]})`}
                       >
                         <PauseIcon />
                       </IconButton>
@@ -831,12 +846,12 @@ export function RulesView({
                         title={
                           stopping
                             ? `Stopping ${bulkStop!.done}/${bulkStop!.total}`
-                            : `Stop All (${activeByMode[mode]})`
+                            : `Stop All ${mode} (${activeByMode[mode]})`
                         }
                         aria-label={
                           stopping
                             ? `Stopping ${bulkStop!.done}/${bulkStop!.total}`
-                            : `Stop All (${activeByMode[mode]})`
+                            : `Stop All ${mode} (${activeByMode[mode]})`
                         }
                       >
                         {stopping ? <SpinnerIcon /> : <StopIcon />}
@@ -845,18 +860,9 @@ export function RulesView({
                   </div>
                 );
               })}
-              {disabledCount > 0 && (
-                <label className="flex cursor-pointer items-center gap-1.5 text-xs text-text-dim">
-                  <input
-                    type="checkbox"
-                    checked={showDisabled}
-                    onChange={(e) => setShowDisabled(e.target.checked)}
-                    className="accent-accent"
-                  />
-                  Show disabled ({disabledCount})
-                </label>
-              )}
+
               <IconButton
+                className='ml-8'
                 variant="success"
                 size="lg"
                 label="New rule"
@@ -897,11 +903,11 @@ export function RulesView({
             // number stand for both.
             sub={
               scoreboardTotals.tradedByMode.real > 0 &&
-              scoreboardTotals.tradedByMode.paper > 0
+                scoreboardTotals.tradedByMode.paper > 0
                 ? `real ${formatSigned(scoreboardTotals.pnlByMode.real, 3)} · paper ${formatSigned(
-                    scoreboardTotals.pnlByMode.paper,
-                    3,
-                  )}`
+                  scoreboardTotals.pnlByMode.paper,
+                  3,
+                )}`
                 : `${scoreboardTotals.traded} rules traded`
             }
             tone={signedStatTone(scoreboardTotals.pnl)}
@@ -958,9 +964,8 @@ export function RulesView({
           <StatTile
             label="Rules"
             value={visibleRules.length}
-            sub={`${modeFilter === 'all' ? '' : `${modeFilter} · `}${
-              showDisabled ? 'incl. disabled' : 'enabled'
-            }`}
+            sub={`${modeFilter === 'all' ? '' : `${modeFilter} · `}${showDisabled ? 'incl. disabled' : 'enabled'
+              }`}
             tone="muted"
             size="sm"
           />
@@ -1038,10 +1043,10 @@ export function RulesView({
       />
       {renderAnalyze && selectedKey && selectedRule
         ? renderAnalyze({
-            ruleId: selectedKey,
-            rule: selectedRule,
-            clear: () => setSelectedKey(null),
-          })
+          ruleId: selectedKey,
+          rule: selectedRule,
+          clear: () => setSelectedKey(null),
+        })
         : null}
       {actions.editorNode}
     </div>

@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Badge } from 'components/ui/Badge';
 import { HoverPopover } from 'components/ui/HoverPopover';
+import { ModeBadge } from './ModeBadge';
 import { ruleParamsCell } from './RuleParamsSummary';
 import { fingerprintParamsCell } from './FingerprintParamsSummary';
 import { lamportsToSol, type Fingerprint, type StrategyRule } from 'lib/strategy/types';
@@ -25,9 +26,7 @@ export function RuleDetailCard({
         <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-text">
           {rule.rule_name}
         </span>
-        <Badge variant={rule.trade_mode === 'real' ? 'warning' : 'info'} size="sm">
-          {rule.trade_mode}
-        </Badge>
+        <ModeBadge mode={rule.trade_mode} />
         <Badge variant={rule.is_active ? 'success' : 'neutral'} size="sm">
           {rule.is_active ? 'Active' : 'Idle'}
         </Badge>

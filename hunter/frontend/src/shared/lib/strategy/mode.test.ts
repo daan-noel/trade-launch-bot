@@ -5,7 +5,10 @@ import {
   DEFAULT_MODE_FILTER,
   isDefaultModeFilter,
   matchesModeFilter,
+  modeBadgeVariant,
   modeCounts,
+  MODE_TOGGLE_ACTIVE,
+  MODE_TOGGLE_SWATCH,
   parseModeFilter,
 } from './mode';
 import { modeRuleRowClass, ruleRowClass } from './types';
@@ -36,6 +39,19 @@ describe('mode filter', () => {
     expect(
       modeCounts([{ trade_mode: 'paper' }, { trade_mode: 'real' }, { trade_mode: 'paper' }]),
     ).toEqual({ paper: 2, real: 1 });
+  });
+
+  it('maps paper→info and real→warning for badges', () => {
+    expect(modeBadgeVariant('paper')).toBe('info');
+    expect(modeBadgeVariant('real')).toBe('warning');
+  });
+
+  it('keeps ModeToggle washes on the same hues as badges / rails', () => {
+    expect(MODE_TOGGLE_ACTIVE.paper).toContain('info');
+    expect(MODE_TOGGLE_ACTIVE.real).toContain('warning');
+    expect(MODE_TOGGLE_ACTIVE.all).toContain('primary');
+    expect(MODE_TOGGLE_SWATCH.paper).toContain('info');
+    expect(MODE_TOGGLE_SWATCH.real).toContain('warning');
   });
 });
 

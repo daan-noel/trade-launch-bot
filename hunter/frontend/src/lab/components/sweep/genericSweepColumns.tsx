@@ -5,6 +5,7 @@ import type { ColumnDef } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { LinkIcon } from 'components/ui/icons';
+import { ModeBadge } from 'components/strategy/ModeBadge';
 import { ruleParamsCell } from 'components/strategy/RuleParamsSummary';
 import { RuleHoverTip } from 'components/strategy/RuleHoverTip';
 import { cn } from 'lib/cn';
@@ -476,9 +477,7 @@ function usedByRulesCell(
                 best
               </Badge>
             )}
-            <Badge variant={r.trade_mode === 'real' ? 'warning' : 'info'} size="sm">
-              {r.trade_mode}
-            </Badge>
+            <ModeBadge mode={r.trade_mode} />
             <Badge
               variant={!r.is_enabled ? 'danger' : r.is_active ? 'success' : 'neutral'}
               size="sm"

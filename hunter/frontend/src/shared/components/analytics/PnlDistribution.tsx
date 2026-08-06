@@ -1,5 +1,6 @@
 import { memo, useMemo } from 'react';
 import { cn } from 'lib/cn';
+import { pctGradeBarClass, pctGradeClass } from 'lib/signedTone';
 import type { PnlBucket } from './pnlSeries';
 
 interface PnlDistributionProps {
@@ -10,9 +11,10 @@ interface PnlDistributionProps {
 
 /**
  * Win/loss size distribution — a count histogram over PnL% buckets, colored
- * red/green by sign (the buy/sell convention). Hand-rolled CSS bars: the x-axis
- * is categorical, which doesn't fit `lightweight-charts`' time-indexed series
- * model, and the chart is static per cohort so there is nothing to pan.
+ * by the shared magnitude grades (`pctGradeClass` / `pctGradeBarClass`).
+ * Hand-rolled CSS bars: the x-axis is categorical, which doesn't fit
+ * `lightweight-charts`' time-indexed series model, and the chart is static
+ * per cohort so there is nothing to pan.
  *
  * Takes pre-computed buckets (see `pnlDistributionBuckets`) rather than rows, so
  * one renderer serves every caller's row type.
@@ -34,20 +36,18 @@ export const PnlDistribution = memo(function PnlDistribution({
       {buckets.map((b) => {
         const barHeight =
           maxCount > 0 ? Math.max(b.count > 0 ? 4 : 0, (b.count / maxCount) * (height - 28)) : 0;
+        const gradeText = pctGradeClass(b.repPct);
         return (
           <div key={b.label} className="flex flex-1 flex-col items-center justify-end gap-1">
-            <span className="text-[11px] font-semibold text-text-dim">
+            <span className={cn('text-[11px] font-semibold', b.count > 0 ? gradeText : 'text-text-dim')}>
               {b.count > 0 ? b.count : ''}
             </span>
             <div
-              className={cn(
-                'w-full rounded-t',
-                b.sign < 0 ? 'bg-red/60' : b.sign > 0 ? 'bg-green/60' : 'bg-white/20',
-              )}
+              className={cn('w-full rounded-t', pctGradeBarClass(b.repPct))}
               style={{ height: barHeight }}
               title={`${b.label}: ${b.count} trade${b.count === 1 ? '' : 's'}`}
             />
-            <span className="whitespace-nowrap text-[10px] text-text-dim">{b.label}</span>
+            <span className={cn('whitespace-nowrap text-[10px]', gradeText)}>{b.label}</span>
           </div>
         );
       })}

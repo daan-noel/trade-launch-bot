@@ -17,9 +17,10 @@ import { FloorPositionDetailWithFills } from '@live/components/floor/FloorPositi
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { AmountCell } from 'components/tokens/priceCells';
 import { DateCell } from 'components/table/DateCell';
+import { ModeBadge } from 'components/strategy/ModeBadge';
 import { exitReasonBadge } from 'components/strategy/strategyColumns';
 import { exitReasonSearchText } from 'lib/strategy/exitReason';
-import { pctGradeClass, signedToneClass } from 'lib/signedTone';
+import { formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { resolvePnlPct } from 'lib/pnlPct';
 import { ruleAnalyzeHref } from 'lib/strategy/nav';
 import { fetchPortfolioPositionsPage } from 'services/api';
@@ -91,7 +92,7 @@ function historyColumns(
           <Badge variant={r.status === 'EntryFailed' ? 'neutral' : 'primary'}>
             {STATUS_LABEL[r.status] ?? r.status}
           </Badge>
-          {r.mode === 'paper' && <Badge variant="neutral">paper</Badge>}
+          {(r.mode === 'paper' || r.mode === 'real') && <ModeBadge mode={r.mode} />}
         </span>
       ),
       sortValue: (r) => r.status,
@@ -148,7 +149,7 @@ function historyColumns(
           exitPrice: r.exit_price,
         });
         return pct != null ? (
-          <span className={`tabular-nums ${pctGradeClass(pct)}`}>{pct.toFixed(1)}%</span>
+          <span className={`tabular-nums ${pctGradeClass(pct)}`}>{formatSignedPct(pct, 1)}</span>
         ) : (
           <span className="text-text-dim">—</span>
         );

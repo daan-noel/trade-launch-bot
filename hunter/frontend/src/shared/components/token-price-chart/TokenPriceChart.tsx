@@ -24,7 +24,7 @@ import {
   type FlowBasis,
   type FlowLines,
 } from 'lib/flow/flowChartData';
-import { attachDualPriceScaleSync, rearmDualAutoScale } from './dualPriceScaleSync';
+import { attachDualPriceScaleSync, type DualPriceScaleSync } from './dualPriceScaleSync';
 import {
   barsSignature,
   captureChartViewport,
@@ -608,6 +608,10 @@ export function TokenPriceChart({
   const isRestoringViewportRef = useRef(false);
   const mountedSeriesStyleRef = useRef<ChartStyle | null>(null);
   const prevBarsSignatureRef = useRef<string | null>(null);
+  const scaleSyncRef = useRef<DualPriceScaleSync | null>(null);
+  /** Non-data inputs that change what the price axes MEAN. Only these justify
+   *  dropping a hand-set Y zoom; a new trade never does. */
+  const flowScaleResetKeyRef = useRef<string | null>(null);
   const horzStepRef = useRef(intervalSec);
   horzStepRef.current = groupMode === 'slot' ? 1 : intervalSec;
 
@@ -853,9 +857,10 @@ export function TokenPriceChart({
     volSeriesRef.current = volSeries;
     nonVolSeriesRef.current = nonVolSeries;
 
-    const detachScaleSync = attachDualPriceScaleSync(chart, el, {
+    const scaleSync = attachDualPriceScaleSync(chart, el, {
       isPaused: () => rangeSelectModeRef.current,
     });
+    scaleSyncRef.current = scaleSync;
 
     // Width-only resize. Feeding contentRect.height back into applyOptions fights
     // the fixed parent height and the inspect-modal scrollbar (content grows →
@@ -1078,7 +1083,8 @@ export function TokenPriceChart({
     return () => {
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleLogicalRangeChange);
       chart.timeScale().unsubscribeVisibleTimeRangeChange(onVisibleTimeRangeChange);
-      detachScaleSync();
+      scaleSync.detach();
+      scaleSyncRef.current = null;
       if (crosshairRafRef.current != null) {
         cancelAnimationFrame(crosshairRafRef.current);
         crosshairRafRef.current = null;
@@ -1274,7 +1280,16 @@ export function TokenPriceChart({
     nonVolSeriesRef.current?.applyOptions({ priceFormat, visible: flowLinesVisible });
     const chart = chartRef.current;
     if (chart) {
-      rearmDualAutoScale(chart);
+      // Re-fit only when what an axis MEANS changed (overlay toggled, unit/basis
+      // switched) — never on a data update. `alignedFlowLines` and `toValue` are
+      // deps of this effect and both churn on every live trade / SOL-price tick,
+      // so an unconditional re-fit here re-armed autoScale continuously and threw
+      // away the user's hand-set price zoom.
+      const resetKey = `${flowLinesVisible}|${flowBasis}|${priceUnit}|${style}|${groupingKey}`;
+      if (flowScaleResetKeyRef.current !== resetKey) {
+        flowScaleResetKeyRef.current = resetKey;
+        scaleSyncRef.current?.reset();
+      }
       chart.priceScale('left').applyOptions({ visible: flowLinesVisible });
     }
     volSeriesRef.current?.setData(toData(alignedFlowLines.vol));
@@ -1558,7 +1573,7 @@ export function TokenPriceChart({
           handleScroll: true,
           handleScale: { ...DUAL_CHART_HANDLE_SCALE },
         });
-        rearmDualAutoScale(chart);
+        scaleSyncRef.current?.rearm();
       }
     };
   }, [showChart, fixedHeight, groupingKey, groupMode, priceUnit, chartTimezone, rangeSelectMode]);

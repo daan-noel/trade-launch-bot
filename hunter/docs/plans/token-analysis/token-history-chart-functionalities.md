@@ -111,6 +111,13 @@ pill groups (group mode, interval, style, metric) and the marker/line toggles. *
 | **Chain link** | icon toggle | longest-chain highlight band (§9); disabled unless `chainHighlightAvailable` | session |
 | **Range select** | icon toggle | drag-to-select range mode (§6) | session |
 
+The toolbar **wraps**: the control cluster is shrinkable (no `shrink-0`) and both levels
+carry `flex-wrap`, so in a narrow host — the Console's 380px manual-trade column, the
+Portfolio/Floor row details — it drops to its own full-width line and re-flows into rows.
+Pinning the cluster at its ~600px max-content width overflowed the panel and gave the whole
+page a horizontal scrollbar. The title keeps a `min-w` floor so the break happens before the
+symbol is crushed away.
+
 **Status badges** (only shown when `isMigrated != null`): `Migrated ✓` / `Bonding Curve`,
 plus optional `Mayhem` and `Cashback` badges, colored per `STATUS_BADGE_COLOR`.
 
@@ -293,7 +300,40 @@ Because bars are rebuilt whenever interval/group/metric/trades change, the chart
   on a shape change the viewport is restored by **time** rather than logical index so it lands
   correctly. On first mount the chart `fitContent()`s once, then preserves the user's view.
 
-### 12b. Bottom range slider (`ChartRangeSlider.tsx`)
+### 12b. Vertical (price) scale — manual Y zoom is sticky (`dualPriceScaleSync.ts`)
+
+The chart runs **two price scales**: right = token price/MC, left = the vol/non-vol flow
+overlay. `attachDualPriceScaleSync` keeps their Y zoom in lockstep — a drag on one axis
+mirrors the *relative* zoom onto the other via `setVisibleRange`, which implicitly turns
+that scale's `autoScale` off.
+
+Re-arming `autoScale` is therefore a normal part of the dance, but it must **never** be
+driven by a data update. `subscribeVisibleLogicalRangeChange` fires for programmatic range
+changes too — a live trade means `setData` **plus** the §12a viewport restore, i.e. two
+range changes — so an unconditional re-arm there wiped a hand-set price zoom on the next
+trade. The same held for the flow-overlay effect, whose `alignedFlowLines`/`toValue` deps
+churn on every trade and every SOL/USD tick.
+
+The rule, mirroring lightweight-charts' own semantics:
+
+- A pointer-down inside an axis gutter (hit-tested against `priceScale(id).width()`)
+  followed by a drag sets a sticky `manualPriceZoom`. The gesture's **origin** is the
+  signal — inferring it from "only one scale's range moved" misfires whenever a body pan
+  leaves the flow line flat, which would freeze Y on an ordinary horizontal drag.
+- `attachDualPriceScaleSync` returns a handle, not a bare disposer:
+  **`rearm()`** re-fits unless the user holds manual control (use for any data-driven
+  refit), **`reset()`** drops manual control and re-fits (only for changes to what an axis
+  *means* — overlay toggled, unit/basis switched), `detach()` disposes.
+  Call `rearmDualAutoScale` directly only from inside the sync module.
+- Double-click **on a price axis** always resets Y (the library's native gesture);
+  double-click on the chart **body** re-fits only when the user has not taken manual
+  control, so resetting the time zoom can't silently drop the price zoom.
+
+Consumers key their `reset()` on a string of the non-data inputs
+(`flowLinesVisible|flowBasis|priceUnit|style|groupingKey`) held in a ref, so a data update
+can never reach it.
+
+### 12c. Bottom range slider (`ChartRangeSlider.tsx`)
 
 Shown when there is more than one bar. It's a miniature scrollbar over the full data span with
 a teal "window" marking the visible range. Three drag modes:
@@ -349,7 +389,10 @@ as plain `Slot N` strings instead.
    (`ISeriesPrimitive` paint + a hit-testable label chip + a React tooltip).
 4. **New toggle** → add a control in `ChartToolbar.tsx`, thread the prop/handler, and decide
    persisted (localStorage) vs. session state. Keep `aria-pressed`/tooltips for icon-only buttons.
-5. **Respect the viewport** — never `fitContent()` on data refresh; capture/restore via
-   `chartViewport.ts` so the user's zoom/pan survives.
+5. **Respect the viewport — both axes.** Horizontally: never `fitContent()` on data
+   refresh; capture/restore via `chartViewport.ts`. Vertically: never call
+   `rearmDualAutoScale` from an effect whose deps include trade/bar data — go through the
+   sync handle's `rearm()` (see §12b), and reserve `reset()` for changes to what an axis
+   means.
 6. **Honor metric/unit** — route every displayed price through the metric converter and
    `createChartPriceFormatter(priceUnit)`.

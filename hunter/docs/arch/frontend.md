@@ -309,10 +309,14 @@ next load (no per-metric frontend work).
   `chipColorsFromHue`), and the canonical tag grammar lives server-side, NOT here
   ([rule-tags.md](@plans/strategies/rule-tags.md)).
   Beside the tag chips sits the **trade-mode scope** — `RuleModeFilter`
-  (All / Paper / Real) over `useModeFilter` (`?mode=` in the URL, sticky per
-  board: Rules, Rules Control and Simulate each keep their own key). It is the
-  same view-filter shape as tags and composes with them: each control's chip
-  counts come from the set narrowed by the *other* one, so a count never
+  (All / PAPER / REAL + counts over shared `ModeToggle`) over `useModeFilter`
+  (`?mode=` in the URL, sticky per board: Rules, Rules Control and Simulate each
+  keep their own key). Ops surfaces (Console / History / Portfolio) use
+  `ModeToggle` directly (`layout="ops"`). Exclusive non-mode filters (date range,
+  score scope) use `ToggleGroup`; panel swaps use `Tabs`; paper/real pills use
+  `ModeBadge` / `modeBadgeVariant` — see [ui-controls.md](@plans/frontend/ui-controls.md).
+  It is the same view-filter shape as tags and composes with them: each control's
+  chip counts come from the set narrowed by the *other* one, so a count never
   collapses to its own selection. Because both pages derive everything
   downstream from the filtered set, scoping also makes the Rules scoreboard
   tiles mode-pure and narrows what Simulate's bulk-run buttons target — and the

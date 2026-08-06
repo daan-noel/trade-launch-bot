@@ -130,8 +130,12 @@ export function maxDrawdownSol(curve: readonly EquityPoint[]): number {
 
 export interface PnlBucket {
   label: string;
-  /** `-1` loss / `0` straddles zero / `1` win — drives the bar color. */
+  /** `-1` loss / `0` straddles zero / `1` win — coarse sign for callers that
+   *  don't need magnitude grades. */
   sign: -1 | 0 | 1;
+  /** Representative % for [`pctGradeClass`] / [`pctGradeBarClass`] coloring
+   *  (midpoint of the bucket; open ends sit just past the finite edge). */
+  repPct: number;
   count: number;
 }
 
@@ -145,12 +149,24 @@ function bucketLabel(lo: number, hi: number): string {
   return `${lo}…${hi}%`;
 }
 
+/** A % inside the bucket that lands in the matching grade band. */
+function bucketRepPct(lo: number, hi: number): number {
+  if (lo === -Infinity) return hi - 1;
+  if (hi === Infinity) return lo + 1;
+  return (lo + hi) / 2;
+}
+
 export function pnlDistributionBuckets(points: readonly PnlPoint[]): PnlBucket[] {
   const buckets: PnlBucket[] = [];
   for (let i = 0; i < DIST_EDGES.length - 1; i++) {
     const lo = DIST_EDGES[i]!;
     const hi = DIST_EDGES[i + 1]!;
-    buckets.push({ label: bucketLabel(lo, hi), sign: hi <= 0 ? -1 : lo >= 0 ? 1 : 0, count: 0 });
+    buckets.push({
+      label: bucketLabel(lo, hi),
+      sign: hi <= 0 ? -1 : lo >= 0 ? 1 : 0,
+      repPct: bucketRepPct(lo, hi),
+      count: 0,
+    });
   }
   for (const p of points) {
     const pct = p.pnlPct;

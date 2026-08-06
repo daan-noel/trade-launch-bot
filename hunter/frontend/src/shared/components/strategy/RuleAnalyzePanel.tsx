@@ -5,6 +5,7 @@ import { Badge } from 'components/ui/Badge';
 import { IconButton } from 'components/ui/IconButton';
 import { IconButtonGroup } from 'components/ui/IconButtonGroup';
 import { PauseIcon, PlayIcon, SpinnerIcon, StopIcon } from 'components/ui/icons';
+import { ModeBadge } from 'components/strategy/ModeBadge';
 import { SimSummaryCard } from 'components/strategy/SimSummaryCard';
 import { TemporalSummary, type TemporalSelection } from 'components/strategy/TemporalSummary';
 import {
@@ -341,11 +342,7 @@ export function RuleAnalyzePanel({
                 {rule?.rule_name ?? ruleId.slice(0, 8)}
               </h1>
             )}
-            {rule && (
-              <Badge variant={rule.trade_mode === 'real' ? 'warning' : 'info'}>
-                {rule.trade_mode}
-              </Badge>
-            )}
+            {rule && <ModeBadge mode={rule.trade_mode} size="md" />}
             {rule && (
               <Badge variant={rule.is_active ? 'success' : 'neutral'}>
                 {rule.is_active ? 'Active' : 'Idle'}

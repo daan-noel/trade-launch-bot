@@ -41,6 +41,18 @@ export function pctGradeClass(v: number | null | undefined): string {
   return 'text-primary font-extrabold';
 }
 
+/** Bar/fill counterpart of [`pctGradeClass`] — same magnitude bands, `bg-*` tokens. */
+export function pctGradeBarClass(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return 'bg-white/10';
+  if (v < 0) return v <= -50 ? 'bg-red/80' : 'bg-red/55';
+  if (v === 0) return 'bg-white/20';
+  if (v < 50) return 'bg-info/55';
+  if (v < 100) return 'bg-green/60';
+  if (v < 200) return 'bg-warning/65';
+  if (v < 500) return 'bg-accent/70';
+  return 'bg-primary/75';
+}
+
 /**
  * Graded tone for win-rate fractions (unit: 0..1, e.g. `0.75` = 75%).
  * Coin-flip (50%) is the hard pivot; higher bands flag strong / exceptional

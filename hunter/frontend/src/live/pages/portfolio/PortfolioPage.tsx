@@ -4,6 +4,8 @@ import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
 import { StatTile } from 'components/ui/StatTile';
 import { PageHeader } from 'components/ui/PageHeader';
+import { ToggleGroup } from 'components/ui/ToggleGroup';
+import { ModeToggle } from 'components/strategy/ModeToggle';
 import { LinkIcon } from 'components/ui/icons';
 import { consoleHref, consoleHistoryHref, rulesHref } from 'lib/strategy/nav';
 import { formatCompact } from 'utils/format';
@@ -364,42 +366,26 @@ export function PortfolioPage() {
       />
 
       <div className="flex flex-wrap items-center gap-2">
-        {(
-          [
-            ['today', 'Today'],
-            ['7d', '7 days'],
-            ['30d', '30 days'],
-            ['all', 'All-time'],
-          ] as const
-        ).map(([key, label]) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => setRange(key)}
-            className={`rounded-md px-2.5 py-1 text-xs font-semibold ${
-              range === key
-                ? 'bg-primary/20 text-primary'
-                : 'bg-white/5 text-text-dim hover:bg-white/8'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-        <span className="mx-1 text-text-dim">·</span>
-        {(['real', 'paper'] as const).map((m) => (
-          <button
-            key={m}
-            type="button"
-            onClick={() => setMode(m)}
-            className={`rounded-md px-2.5 py-1 text-xs font-semibold capitalize ${
-              mode === m
-                ? 'bg-primary/20 text-primary'
-                : 'bg-white/5 text-text-dim hover:bg-white/8'
-            }`}
-          >
-            {m}
-          </button>
-        ))}
+        <ToggleGroup
+          aria-label="Date range"
+          tone="primary"
+          size="sm"
+          value={range}
+          onChange={setRange}
+          options={[
+            { value: 'today', label: 'Today' },
+            { value: '7d', label: '7 days' },
+            { value: '30d', label: '30 days' },
+            { value: 'all', label: 'All-time' },
+          ]}
+        />
+        <ModeToggle
+          includeAll={false}
+          layout="ops"
+          size="sm"
+          value={mode}
+          onChange={setMode}
+        />
       </div>
 
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">

@@ -12,8 +12,11 @@ import { PageHeader } from 'components/ui/PageHeader';
 import { StatTile } from 'components/ui/StatTile';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { BuyIcon, LinkIcon, SellIcon, SpinnerIcon } from 'components/ui/icons';
+import { ModeBadge } from 'components/strategy/ModeBadge';
+import { ModeToggle } from 'components/strategy/ModeToggle';
 import { useSseStatus } from 'hooks/useSseStatus';
 import { OPS_PARAMS, portfolioHref, rulesHref } from 'lib/strategy/nav';
+import type { ModeFilter } from 'lib/strategy/mode';
 import { formatCompact } from 'utils/format';
 import {
   formatSigned,
@@ -47,7 +50,6 @@ import type { WalletHolding } from 'types';
 /** Loose base58 mint check — the backend does the real validation. */
 const MINT_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
-type ModeFilter = 'real' | 'paper' | 'all';
 type CloseAction = 'retry' | 'dump' | 'writeoff' | 'verify';
 
 const STATUS_LABEL: Record<string, string> = {
@@ -483,7 +485,8 @@ export function ConsolePage() {
           <Badge variant="danger">❗ dead</Badge>
         </span>
       )}
-      {r.mode === 'paper' && <Badge variant="neutral">paper</Badge>}
+      {r.mode === 'paper' && <ModeBadge mode="paper" />}
+      {r.mode === 'real' && modeFilter === 'all' && <ModeBadge mode="real" />}
     </span>
   );
 
@@ -499,24 +502,6 @@ export function ConsolePage() {
     return Number.isFinite(t) ? Math.max(0, Math.floor((Date.now() - t) / 1000)) : null;
   };
 
-  const actionBtn = (
-    label: string,
-    title: string,
-    cls: string,
-    disabled: boolean,
-    onClick: () => void,
-  ) => (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      title={title}
-      className={`text-[11px] font-semibold ${cls} hover:underline disabled:opacity-40`}
-    >
-      {label}
-    </button>
-  );
-
   /** Per-status action cell — mirrors the backend legality matrix 1:1. */
   const actionsCell = (r: LiveOpenRow) => {
     const busy = busyId === r.positionId;
@@ -529,7 +514,7 @@ export function ConsolePage() {
       );
     }
     return (
-      <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+      <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
         {r.status === 'Holding' && (
           <>
             <IconButton
@@ -543,65 +528,136 @@ export function ConsolePage() {
             >
               {busy ? <SpinnerIcon /> : <SellIcon />}
             </IconButton>
-            {actionBtn('25%', 'Sell 25% of the initial bag (partial)', 'text-warning', busy, () =>
-              void onAction(r, 'retry', 2500),
-            )}
-            {actionBtn('50%', 'Sell 50% of the initial bag (partial)', 'text-warning', busy, () =>
-              void onAction(r, 'retry', 5000),
-            )}
+            <Button
+              variant="link"
+              size="xs"
+              disabled={busy}
+              className="text-warning"
+              title="Sell 25% of the initial bag (partial)"
+              onClick={() => void onAction(r, 'retry', 2500)}
+            >
+              25%
+            </Button>
+            <Button
+              variant="link"
+              size="xs"
+              disabled={busy}
+              className="text-warning"
+              title="Sell 50% of the initial bag (partial)"
+              onClick={() => void onAction(r, 'retry', 5000)}
+            >
+              50%
+            </Button>
             {r.origin === 'manual' && (
-              <button
-                type="button"
+              <Button
+                variant="link"
+                size="xs"
                 disabled={busy}
+                className="text-accent"
+                title="Set / change this manual position's TP/SL (empty = tracked-only)"
                 onClick={() => {
                   setTpslFor(r);
                   setTpInput('');
                   setSlInput('');
                 }}
-                title="Set / change this manual position's TP/SL (empty = tracked-only)"
-                className="text-[11px] font-semibold text-accent hover:underline disabled:opacity-40"
               >
                 +TP/SL
-              </button>
+              </Button>
             )}
           </>
         )}
         {r.status === 'ExitPending' && <span className="text-text-dim">selling…</span>}
         {r.status === 'BuySubmitted' &&
           (r.needsReview ? (
-            actionBtn('Verify', 'Resolve on demand: adopt an indexed fill or drop a proven revert', 'text-accent', busy, () =>
-              void onAction(r, 'verify'),
-            )
+            <Button
+              variant="link"
+              size="xs"
+              disabled={busy}
+              className="text-accent"
+              title="Resolve on demand: adopt an indexed fill or drop a proven revert"
+              onClick={() => void onAction(r, 'verify')}
+            >
+              Verify
+            </Button>
           ) : (
             <span className="text-text-dim">buying…</span>
           ))}
         {r.status === 'ExitStuck' && (
           <>
-            {actionBtn('Retry', 'Retry the sell (un-parks; fresh auto-redrive budget)', 'text-accent', busy, () =>
-              void onAction(r, 'retry'),
-            )}
-            {actionBtn('Dump', 'Force-dump — NO slippage floor (accept dust)', 'text-warning', busy, () =>
-              void onAction(r, 'dump'),
-            )}
-            {actionBtn('Write off', 'Book closed at a full loss with no sell', 'text-muted hover:text-danger', busy, () =>
-              void onAction(r, 'writeoff'),
-            )}
+            <Button
+              variant="link"
+              size="xs"
+              disabled={busy}
+              className="text-accent"
+              title="Retry the sell (un-parks; fresh auto-redrive budget)"
+              onClick={() => void onAction(r, 'retry')}
+            >
+              Retry
+            </Button>
+            <Button
+              variant="link"
+              size="xs"
+              disabled={busy}
+              className="text-warning"
+              title="Force-dump — NO slippage floor (accept dust)"
+              onClick={() => void onAction(r, 'dump')}
+            >
+              Dump
+            </Button>
+            <Button
+              variant="link"
+              size="xs"
+              disabled={busy}
+              className="text-text-dim hover:text-red"
+              title="Book closed at a full loss with no sell"
+              onClick={() => void onAction(r, 'writeoff')}
+            >
+              Write off
+            </Button>
           </>
         )}
         {r.status === 'ExitUnconfirmed' && (
           <>
-            {actionBtn('Verify', 'Check the wallet net on-chain history: bag gone ⇒ book closed', 'text-accent', busy, () =>
-              void onAction(r, 'verify'),
-            )}
-            {actionBtn('Re-sell', 'Safe re-sell: a landed original books the row cleared', 'text-warning', busy, () =>
-              void onAction(r, 'retry'),
-            )}
-            {actionBtn('Dump', 'Force-dump — NO slippage floor (accept dust)', 'text-warning', busy, () =>
-              void onAction(r, 'dump'),
-            )}
-            {actionBtn('Write off', 'Book closed at a full loss with no sell', 'text-muted hover:text-danger', busy, () =>
-              void onAction(r, 'writeoff'),
-            )}
+            <Button
+              variant="link"
+              size="xs"
+              disabled={busy}
+              className="text-accent"
+              title="Check the wallet net on-chain history: bag gone ⇒ book closed"
+              onClick={() => void onAction(r, 'verify')}
+            >
+              Verify
+            </Button>
+            <Button
+              variant="link"
+              size="xs"
+              disabled={busy}
+              className="text-warning"
+              title="Safe re-sell: a landed original books the row cleared"
+              onClick={() => void onAction(r, 'retry')}
+            >
+              Re-sell
+            </Button>
+            <Button
+              variant="link"
+              size="xs"
+              disabled={busy}
+              className="text-warning"
+              title="Force-dump — NO slippage floor (accept dust)"
+              onClick={() => void onAction(r, 'dump')}
+            >
+              Dump
+            </Button>
+            <Button
+              variant="link"
+              size="xs"
+              disabled={busy}
+              className="text-text-dim hover:text-red"
+              title="Book closed at a full loss with no sell"
+              onClick={() => void onAction(r, 'writeoff')}
+            >
+              Write off
+            </Button>
           </>
         )}
       </div>
@@ -803,17 +859,6 @@ export function ConsolePage() {
 
   const [waitingOpen, setWaitingOpen] = useState(false);
 
-  const modeChip = (m: ModeFilter, label: string) => (
-    <Button
-      key={m}
-      variant={modeFilter === m ? 'primary' : 'subtle'}
-      size="sm"
-      onClick={() => setMode(m)}
-    >
-      {label}
-    </Button>
-  );
-
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
@@ -842,9 +887,12 @@ export function ConsolePage() {
             >
               {sseLive ? '● live' : '○ stale'}
             </span>
-            {modeChip('real', 'Real')}
-            {modeChip('paper', 'Paper')}
-            {modeChip('all', 'All')}
+            <ModeToggle
+              layout="ops"
+              size="sm"
+              value={modeFilter}
+              onChange={setMode}
+            />
           </div>
         }
       />

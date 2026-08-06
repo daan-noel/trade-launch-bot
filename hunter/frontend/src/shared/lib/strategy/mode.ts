@@ -8,10 +8,39 @@
 // The row paint that goes with this lives in `types.ts` (`ruleRowClass`) —
 // filtering and painting are separate concerns and a page uses either or both.
 
+import type { BadgeVariant } from 'components/ui/Badge';
 import type { StrategyRule, TradeMode } from './types';
 
 /** `all` = both modes (the default); otherwise show that one mode only. */
 export type ModeFilter = 'all' | TradeMode;
+
+/**
+ * Badge hue for a trade mode — SSOT with ModeToggle / ModeBadge / row rails.
+ * `paper` = info (blue), `real` = warning (amber). Never `neutral` for paper.
+ */
+export function modeBadgeVariant(mode: TradeMode): BadgeVariant {
+  return mode === 'real' ? 'warning' : 'info';
+}
+
+/** Selected-segment washes for `ModeToggle` — literal Tailwind for the scanner. */
+export const MODE_TOGGLE_ACTIVE: Record<ModeFilter, string> = {
+  all: 'bg-primary/20 text-primary',
+  paper: 'bg-info/20 text-info',
+  real: 'bg-warning/20 text-warning',
+};
+
+/** Left rail swatches on Paper / Real segments (same hues as row rails). */
+export const MODE_TOGGLE_SWATCH: Record<TradeMode, string> = {
+  paper: 'bg-info/60',
+  real: 'bg-warning',
+};
+
+/**
+ * Segment order for `ModeToggle`:
+ * - `filter` — All · Paper · Real (rule boards; scope first)
+ * - `ops` — Real · Paper · All (Console / History; money mode first)
+ */
+export type ModeToggleLayout = 'filter' | 'ops';
 
 export const DEFAULT_MODE_FILTER: ModeFilter = 'all';
 

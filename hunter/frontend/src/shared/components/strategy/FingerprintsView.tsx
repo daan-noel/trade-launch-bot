@@ -11,6 +11,7 @@ import { Modal } from 'components/ui/Modal';
 import { EmptyState } from 'components/ui/EmptyState';
 import { PageHeader } from 'components/ui/PageHeader';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
+import { ModeBadge } from './ModeBadge';
 import { FingerprintForm } from './FingerprintForm';
 import { ruleParamsCell } from './RuleParamsSummary';
 import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
@@ -126,9 +127,7 @@ function FingerprintUsedByDetail({ rules }: { rules: StrategyRule[] }) {
                   {r.rule_name}
                 </span>
                 <LinkIcon className="h-3.5 w-3.5 shrink-0 text-accent" />
-                <Badge variant={r.trade_mode === 'real' ? 'warning' : 'info'} size="sm">
-                  {r.trade_mode}
-                </Badge>
+                <ModeBadge mode={r.trade_mode} />
                 <Badge
                   variant={!r.is_enabled ? 'danger' : r.is_active ? 'success' : 'neutral'}
                   size="sm"

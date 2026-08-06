@@ -107,7 +107,10 @@ import {
   type FlowBasis,
   type FlowLinePoint,
 } from 'lib/flow/flowChartData';
-import { attachDualPriceScaleSync, rearmDualAutoScale } from 'components/token-price-chart/dualPriceScaleSync';
+import {
+  attachDualPriceScaleSync,
+  type DualPriceScaleSync,
+} from 'components/token-price-chart/dualPriceScaleSync';
 import { getString, setString, STORAGE_KEYS } from 'lib/storage';
 import type { TradeRecord } from 'types';
 
@@ -423,6 +426,10 @@ export function FlowPreviewChart({
   const rangeSelectPrimRef = useRef<RangeSelectPlugin | null>(null);
   const rangeSelectModeRef = useRef(false);
   const selectedBarRef = useRef<ChartBarSelection | null>(null);
+  const scaleSyncRef = useRef<DualPriceScaleSync | null>(null);
+  /** Non-data inputs that change what the price axes MEAN — only these justify
+   *  dropping a hand-set Y zoom (see dualPriceScaleSync). */
+  const flowScaleResetKeyRef = useRef<string | null>(null);
 
   // Height tracks width unless the caller pins it (`fixedHeight`). Kept in a ref
   // too so the resize observer can compare without re-running the create effect.
@@ -766,9 +773,10 @@ export function FlowPreviewChart({
       setSelectedBar(selection);
     });
 
-    const detachScaleSync = attachDualPriceScaleSync(chart, el, {
+    const scaleSync = attachDualPriceScaleSync(chart, el, {
       isPaused: () => rangeSelectModeRef.current,
     });
+    scaleSyncRef.current = scaleSync;
 
     const observer = new ResizeObserver(() => {
       const node = containerRef.current;
@@ -792,7 +800,8 @@ export function FlowPreviewChart({
 
     return () => {
       observer.disconnect();
-      detachScaleSync();
+      scaleSync.detach();
+      scaleSyncRef.current = null;
       chart.remove();
       chartRef.current = null;
       mainSeriesRef.current = null;
@@ -835,8 +844,8 @@ export function FlowPreviewChart({
     } else {
       (mainSeriesRef.current as ISeriesApi<'Line'> | null)?.setData(barsToLineData(bars));
     }
-    const chart = chartRef.current;
-    if (chart) rearmDualAutoScale(chart);
+    // Data-driven refit only — a hand-set price zoom survives it.
+    scaleSyncRef.current?.rearm();
   }, [bars, style, selectedBar, highlightVolumeBars, pureVolumeBarTimes]);
 
   // The token basis is a cumulative whole-token count that runs past
@@ -867,8 +876,13 @@ export function FlowPreviewChart({
       }));
     volSeriesRef.current?.applyOptions({ priceFormat });
     nonVolSeriesRef.current?.applyOptions({ priceFormat });
-    const chart = chartRef.current;
-    if (chart) rearmDualAutoScale(chart);
+    // Only a basis/unit switch changes what the left axis means; `alignedLines`
+    // churning is a data update and must not drop a hand-set Y zoom.
+    const resetKey = `${basis}|${priceUnit}|${solUnitScale}`;
+    if (flowScaleResetKeyRef.current !== resetKey) {
+      flowScaleResetKeyRef.current = resetKey;
+      scaleSyncRef.current?.reset();
+    }
     volSeriesRef.current?.setData(toData(alignedLines.vol));
     nonVolSeriesRef.current?.setData(toData(alignedLines.nonVol));
   }, [alignedLines, basis, priceUnit, solUnitScale]);
@@ -1134,7 +1148,7 @@ export function FlowPreviewChart({
           handleScroll: true,
           handleScale: { ...DUAL_CHART_HANDLE_SCALE },
         });
-        rearmDualAutoScale(chart);
+        scaleSyncRef.current?.rearm();
       }
     };
   }, [rangeSelectMode, style, groupMode, intervalSec, fixedHeight, timezone]);
