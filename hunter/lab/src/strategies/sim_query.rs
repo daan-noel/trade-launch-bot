@@ -385,6 +385,7 @@ fn empty_exits() -> serde_json::Map<String, Value> {
         "n_exit_metrics",
         "n_exit_dead",
         "n_exit_manual",
+        "n_exit_migrated",
         "n_exit_trailing",
         "n_exit_stall",
         "n_exit_time",
@@ -407,14 +408,15 @@ fn exit_key(code: ExitCode) -> &'static str {
         ExitCode::Stall => "n_exit_stall",
         ExitCode::TimeStop => "n_exit_time",
         ExitCode::LiquidityExit => "n_exit_liquidity",
+        ExitCode::Manual => "n_exit_manual",
+        ExitCode::Migrated => "n_exit_migrated",
         ExitCode::Open | ExitCode::NoEntry => "open",
     }
 }
 
 fn tally_exit(exits: &mut serde_json::Map<String, Value>, reason: &str) {
-    let key = if reason == "Manual" {
-        "n_exit_manual"
-    } else if reason == "Open" || reason == "NoEntry" {
+    // "Manual" / "Migrated" are `from_reason` codes of their own — no special case.
+    let key = if reason == "Open" || reason == "NoEntry" {
         "open"
     } else {
         let code = ExitCode::from_reason(reason);

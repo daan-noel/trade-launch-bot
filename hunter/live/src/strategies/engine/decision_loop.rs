@@ -202,6 +202,13 @@ async fn run_loop(
         create_stamps: create_stamps.clone(),
     };
 
+    // Run-lifecycle boot reconcile (two bounded queries, no position rows loaded):
+    // finalize runs left open by a deactivation this process never witnessed, and
+    // rebuild the set of finished-but-still-draining runs whose metrics need
+    // re-rolling. Both precede the first reload so an early straggler is not missed.
+    sink.close_orphan_runs().await;
+    sink.load_draining_runs().await;
+
     // Initial rule load.
     if let Err(e) = reload_rules(
         &rule_repo,
@@ -803,6 +810,10 @@ async fn reload_rules(
     let engine_fps: Vec<EngineFingerprint> = fps.iter().map(convert::fp_to_engine).collect();
 
     sink.set_rules(&loaded, &names);
+    // End the runs of rules that just stopped being active, THEN warm the ones
+    // that are — order matters, `warm_runs` would otherwise re-mint what this just
+    // closed. Both are cheap on the loop (RAM); the rollup writes are spawned.
+    sink.close_stale_runs();
     sink.warm_runs().await;
     info!(
         rules = loaded.len(),

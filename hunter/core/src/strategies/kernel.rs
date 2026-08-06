@@ -40,6 +40,14 @@ pub enum ExitCode {
     /// detail label (`stall > 3`, legacy `stall>` / bare `Metrics`) here — the
     /// per-metric detail lives on the persisted string, not on this code.
     Metrics = 9,
+    /// Closed by an operator, not by the rule: a Console "Sell ALL", the per-rule
+    /// Stop, or Stop All (`ExitReason::Manual`). Also the fallback bucket for a
+    /// closed row whose label is missing/unrecognized — see
+    /// [`ExitCode::from_closed_reason`]. Live-only; analysis never produces it.
+    Manual = 10,
+    /// The token graduated off the bonding curve and the bag was closed
+    /// (`ExitReason::Migrated`). Live-only.
+    Migrated = 11,
 }
 
 impl ExitCode {
@@ -54,11 +62,27 @@ impl ExitCode {
             "TimeStop" => ExitCode::TimeStop,
             "LiquidityExit" => ExitCode::LiquidityExit,
             "Dead" => ExitCode::Dead,
+            "Manual" => ExitCode::Manual,
+            "Migrated" => ExitCode::Migrated,
             "Open" => ExitCode::Open,
             // Matched fingerprint / armed but never filled — distinct from still-Open.
             "NoEntry" => ExitCode::NoEntry,
             r if hunter_engine::event::is_metric_exit_label(r) => ExitCode::Metrics,
             _ => ExitCode::Open,
+        }
+    }
+
+    /// The bucket for a row already **known** to be closed (a terminal `End`),
+    /// from its persisted label. Unlike [`from_reason`](Self::from_reason) this
+    /// never answers `Open`/`NoEntry`: an unknown or absent label falls back to
+    /// [`ExitCode::Manual`], because [`RunAgg::record`] splits realized from
+    /// unrealized on `== Open`, so one mislabeled row would drop its realized PnL
+    /// out of `total_pnl_sol`, the win rate, and every holding-time stat while
+    /// inflating `n_open`.
+    pub fn from_closed_reason(reason: Option<&str>) -> Self {
+        match reason.map(Self::from_reason) {
+            None | Some(ExitCode::Open) | Some(ExitCode::NoEntry) => ExitCode::Manual,
+            Some(code) => code,
         }
     }
 }
@@ -564,6 +588,16 @@ pub struct RunMetrics {
     /// Metric exits that are not wins (loss or break-even).
     #[serde(default)]
     pub n_exit_metrics_loss: u32,
+    /// Operator-forced closes (`ExitCode::Manual`) — Console sell, per-rule Stop,
+    /// Stop All, plus any closed row with an unrecognized label. 0 in a sweep /
+    /// simulate rollup (analysis has no operator). `#[serde(default)]` so rows
+    /// stored before this field existed still deserialize.
+    #[serde(default)]
+    pub n_exit_manual: u32,
+    /// Closes taken because the token graduated off the curve
+    /// (`ExitCode::Migrated`). 0 in a sweep / simulate rollup.
+    #[serde(default)]
+    pub n_exit_migrated: u32,
     pub n_exit_open: u32,
 }
 
@@ -609,7 +643,7 @@ pub struct RunAgg {
     fired_pct_sum: f64,
     holding_sum: i64,
     holding_sketch: QuantileSketch,
-    exit_counts: [u32; 9],
+    exit_counts: [u32; N_EXIT_BUCKETS],
     /// `ExitCode::Metrics` with `pnl_sol > 0`.
     metrics_win: u32,
     /// `ExitCode::Metrics` that are not wins (`pnl_sol <= 0`).
@@ -634,7 +668,7 @@ impl Default for RunAgg {
             fired_pct_sum: 0.0,
             holding_sum: 0,
             holding_sketch: QuantileSketch::default(),
-            exit_counts: [0; 9],
+            exit_counts: [0; N_EXIT_BUCKETS],
             metrics_win: 0,
             metrics_loss: 0,
         }
@@ -752,6 +786,8 @@ impl RunAgg {
             n_exit_metrics: self.exit_counts[8],
             n_exit_metrics_win: self.metrics_win,
             n_exit_metrics_loss: self.metrics_loss,
+            n_exit_manual: self.exit_counts[9],
+            n_exit_migrated: self.exit_counts[10],
         }
     }
 }
@@ -778,7 +814,7 @@ pub fn exact_run_metrics<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -
     let mut closed_pct: Vec<f64> = Vec::new();
     let mut closed_holding: Vec<i64> = Vec::new();
     let mut fired_pct_sum = 0.0f64;
-    let mut exit_counts = [0u32; 9];
+    let mut exit_counts = [0u32; N_EXIT_BUCKETS];
     let mut metrics_win = 0u32;
     let mut metrics_loss = 0u32;
 
@@ -874,6 +910,8 @@ pub fn exact_run_metrics<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -
         n_exit_metrics: exit_counts[8],
         n_exit_metrics_win: metrics_win,
         n_exit_metrics_loss: metrics_loss,
+        n_exit_manual: exit_counts[9],
+        n_exit_migrated: exit_counts[10],
     }
 }
 
@@ -935,6 +973,8 @@ pub fn run_summary<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -> RunS
     mtm.n_exit_metrics = 0;
     mtm.n_exit_metrics_win = 0;
     mtm.n_exit_metrics_loss = 0;
+    mtm.n_exit_manual = 0;
+    mtm.n_exit_migrated = 0;
     mtm.n_exit_open = 0;
     // The open cohort is what MTM folded in; keep the counts describing the run.
     mtm.n_open = realized.n_open;
@@ -997,6 +1037,10 @@ pub fn checklist_score(
     Some(mtm_pnl_pct * fire_rate * (1.0 - SCORE_OPEN_DRAG * open_drag) * wr)
 }
 
+/// Width of the `exit_counts` histogram — one slot per [`exit_index`] value.
+/// Bump together with the match below when adding an [`ExitCode`].
+const N_EXIT_BUCKETS: usize = 11;
+
 fn exit_index(e: ExitCode) -> usize {
     match e {
         ExitCode::TakeProfit => 0,
@@ -1008,6 +1052,8 @@ fn exit_index(e: ExitCode) -> usize {
         ExitCode::Open | ExitCode::NoEntry => 6,
         ExitCode::Dead => 7,
         ExitCode::Metrics => 8,
+        ExitCode::Manual => 9,
+        ExitCode::Migrated => 10,
     }
 }
 

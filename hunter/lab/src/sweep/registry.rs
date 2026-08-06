@@ -893,6 +893,9 @@ fn exit_label(code: ExitCode) -> &'static str {
         ExitCode::LiquidityExit => "LiquidityExit",
         ExitCode::Dead => "Dead",
         ExitCode::Metrics => "Metrics",
+        // Live-only codes: a sweep has no operator and never rides a migration.
+        ExitCode::Manual => "Manual",
+        ExitCode::Migrated => "Migrated",
     }
 }
 

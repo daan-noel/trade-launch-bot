@@ -97,6 +97,17 @@ pub struct StrategyRunMetrics {
     pub n_exit_stall: i32,
     pub n_exit_time: i32,
     pub n_exit_liquidity: i32,
+    /// Analysis-only death-close (`ExitCode::Dead`); always 0 on a live rollup.
+    pub n_exit_dead: i32,
+    /// Generic-engine metric-condition exits — where **every** exit of a redesigned
+    /// rule lands, since it has no tpsl/swing ladder. Without this column a live
+    /// run's histogram read as all-zero next to a non-zero `n_closed` (mig 0004).
+    pub n_exit_metrics: i32,
+    /// Operator-forced closes (Console sell / Stop / Stop All) and any closed row
+    /// with an unrecognized label.
+    pub n_exit_manual: i32,
+    /// Closed because the token graduated off the bonding curve.
+    pub n_exit_migrated: i32,
     pub n_exit_open: i32,
 }
 

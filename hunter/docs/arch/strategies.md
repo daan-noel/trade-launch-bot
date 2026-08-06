@@ -322,6 +322,58 @@ These surfaces are strategy-agnostic and unchanged by the retirement:
    Toggling a condition off is a rule edit like any other — park, simulate,
    compare, then promote.
 
+## Run lifecycle (what "current run" vs "history" actually splits on)
+
+A `strategy_runs` row is **one activation of a rule**, not the rule's whole life.
+The sink owns both ends of it and `strategy_rules.is_active` is the only input —
+carried onto `LoadedRule::entry_enabled`, the same flag the arm gate reads, so
+"may own a run" and "may take an entry" cannot disagree.
+
+| Event | What happens |
+| --- | --- |
+| Rule becomes active (reload) | `warm_runs` → `ensure_run` reuses the latest still-`Running` run (restart continuity) else mints `run_seq + 1` |
+| Rule stops being active (reload) | `close_stale_runs` evicts the cache entry and backgrounds `StrategyRepo::finalize_run` → metrics rollup + `status='Stopped'` |
+| Rule's `trade_mode` is edited | same path — a run belongs to exactly one mode (`run_seq` is monotonic per `(rule, mode)`), so the old-mode run ends and the new mode opens its own |
+| The activation caught nothing | the empty run is **deleted**, not kept — no empty "Run #N" in front of the real bag, and the `run_seq` is freed |
+| A straggler of a finalized run settles | `reroll_draining_run` re-rolls that run's metrics (a run closed mid-drain has provisional numbers) |
+| Boot | `close_orphan_runs` finalizes runs left `Running` by a deactivation this process never witnessed; `load_draining_runs` rebuilds the re-roll set |
+
+Every deactivation path (pause, disable, per-rule Stop, Stop All, delete) already
+ends in `schedule_engine_reload`, so the reload hook covers all of them — there is
+no per-handler run bookkeeping to keep in sync.
+
+Consequences worth knowing:
+
+- **Metrics are written at finalize, not continuously.** A `Running` run has no
+  `strategy_run_metrics` row, which is what `RuleRunListRow::has_metrics` reports —
+  the Evidence pane shows a status for the current run and real PnL for prior ones.
+- **`?score_scope=current` resets on re-activation** — `rule_counters_for_latest_runs`
+  scopes to the newest run, which is now the new one. That is the point of the
+  scope; all-time counters are the other chip.
+- **The run cache is keyed by rule *and mode*** (`CachedRun`). It was rule-only,
+  which handed a paper position the id of the rule's *real* run whenever a
+  `trade_mode` edit landed — 17 rows in the local DB ended up with
+  `strategy_positions.mode <> strategy_runs.mode`, mis-scoping every run-scoped read
+  and hiding real-money positions from the real scoreboard.
+- **Positions never migrate between runs.** A position keeps the `run_id` it was
+  born with (the registry carries it), so pausing a rule with open bags leaves them
+  reporting into the run that opened them, and re-activating opens a fresh run
+  beside them.
+- **Two guards exist because the writes are backgrounded** (the rollup reads every
+  position of the run, and this runs on the serialized decision loop): `closed_runs`
+  (RAM) stops a fast pause→activate from re-adopting a run whose `Stopped` write has
+  not landed; and a run is never deleted while the engine still holds positions for
+  it, because a `BuySubmitted` insert naming that `run_id` may still be in flight and
+  would fail its FK.
+
+Rollup arithmetic is not re-derived: `strategies::run_rollup` maps a PG position
+onto the kernel's `TokenOutcome` and folds through the same `exact_run_metrics` the
+sweep and simulate use, so a finished run compares to a backtest of the same rule.
+The one PG-specific decision is `ExitCode::from_closed_reason`: a row known to be
+closed never buckets to `Open`, because `RunAgg` splits realized from unrealized on
+exactly that test and a `Manual`/unknown label would otherwise drop a settled
+trade's PnL out of every realized figure.
+
 ## Persistence
 
 Generic rules → `strategy_rules` (`RuleRepo`); fingerprints → `fingerprints`

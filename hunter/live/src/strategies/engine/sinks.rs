@@ -25,14 +25,25 @@
 //! miss reuses the latest still-`Running` DB run (and collapses empty leading
 //! shells) so a process restart does not orphan the paper scoreboard onto a new
 //! empty `run_seq`.
+//!
+//! **Run lifecycle.** A `strategy_runs` row is one *activation* of a rule, not the
+//! rule's whole life: the sink mints it on first need while the rule is active and
+//! ends it ([`Sink::close_stale_runs`]) the moment a reload reports the rule can
+//! no longer feed it — pause, disable, Stop, Stop All, delete, **or an edit to
+//! `trade_mode`** (a run belongs to exactly one mode). Re-activating mints the next
+//! `run_seq`, which is what makes the Evidence pane's "current run" vs "history"
+//! split move. Positions already open keep writing to the run they were born in
+//! (the registry carries `run_id`), so a run finalized mid-drain is re-rolled as
+//! its stragglers settle.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use chrono::Utc;
+use dashmap::DashSet;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
-use tracing::warn;
+use tracing::{info, warn};
 
 use hunter_engine::event::{
     ArmedDelta, ArmedStateTag, DisarmReason, LoadedRule, PositionDelta, PositionStatus, RuleId,
@@ -42,7 +53,7 @@ use hunter_engine::event::{
 use trading_core::models::ingest::SseEvent;
 use trading_core::models::{StrategyPosition, StrategyRun};
 use trading_core::state::token_cache::TokenCache;
-use trading_core::storage::repositories::strategy_repo::StrategyRepo;
+use trading_core::storage::repositories::strategy_repo::{RunFinalize, StrategyRepo};
 
 use crate::ingest::HeldPoolGate;
 use crate::trader::PumpFunTrader;
@@ -58,6 +69,21 @@ struct RuleInfo {
     name: String,
     max_total: Option<i64>,
     params: serde_json::Value,
+}
+
+/// The run a rule is currently writing into, **with the mode it was opened for**.
+///
+/// The mode is not decoration. A run belongs to exactly one mode (`run_seq` is
+/// monotonic per `(rule, mode)`) but `strategy_rules.trade_mode` is editable, so a
+/// rule-id-only cache hands a paper position the id of the rule's *real* run — the
+/// row then reads `strategy_positions.mode = 'paper'` inside `strategy_runs.mode =
+/// 'real'`, which silently mis-scopes every run-scoped read and hides a real-money
+/// position from the real scoreboard. A mode flip therefore ends the run exactly
+/// like a pause does.
+#[derive(Debug, Clone, Copy)]
+struct CachedRun {
+    mode: TradeMode,
+    id: uuid::Uuid,
 }
 
 /// The `strategy_id` the generic engine stamps on every run/position (the column
@@ -127,10 +153,25 @@ pub struct Sink {
     held_pools: Option<HeldPoolGate>,
     /// The real trading wallet address (position owner for real mode).
     wallet: String,
-    /// Per-rule info, refreshed on reload.
+    /// Per-rule info, refreshed on reload. Holds **active** rules plus the drain
+    /// set (paused rules still carrying open positions), so a draining rule's
+    /// transitions still resolve a mode/name.
     rules: HashMap<RuleId, RuleInfo>,
-    /// One live run per rule (lazily created on the first position).
-    run_cache: HashMap<RuleId, uuid::Uuid>,
+    /// The subset of [`Self::rules`] whose entries are enabled (`is_active` on the
+    /// row → `LoadedRule::entry_enabled`). Only these may own a run; everything
+    /// else in `rules` is draining and its run is being closed.
+    active: HashSet<RuleId>,
+    /// One live run per active rule (lazily created on the first position).
+    run_cache: HashMap<RuleId, CachedRun>,
+    /// Runs this process has finalized. `ensure_run` refuses to reuse one even if
+    /// its `Stopped` write has not landed yet — the finalize is backgrounded, so
+    /// without this a fast pause→activate could re-adopt the run being closed.
+    closed_runs: HashSet<uuid::Uuid>,
+    /// Finalized runs that still had unsettled positions when they closed: their
+    /// metrics are provisional and get re-rolled as each straggler settles.
+    /// Shared with the background finalize/rollup tasks. Entries go inert (never
+    /// matched again) once the run is fully settled, so the set stays tiny.
+    draining_runs: Arc<DashSet<uuid::Uuid>>,
     /// Staged manual-buy episodes awaiting their `BuySubmitted` delta.
     manual_pending: HashMap<RuleId, StagedManual>,
     /// Live manual episode rule ids (for the SSE `rule_name` = "manual" label).
@@ -167,7 +208,10 @@ impl Sink {
             held_pools,
             wallet,
             rules: HashMap::new(),
+            active: HashSet::new(),
             run_cache: HashMap::new(),
+            closed_runs: HashSet::new(),
+            draining_runs: Arc::new(DashSet::new()),
             manual_pending: HashMap::new(),
             manual_episodes: HashSet::new(),
             manual_run: None,
@@ -184,7 +228,14 @@ impl Sink {
     /// Refresh the per-rule info from a reload (mode, name, cap, params snapshot).
     /// `names` is `(RuleId, rule_name)` parallel to `rules` — `LoadedRule` does not
     /// carry the human label, but SSE notifications need it.
+    ///
+    /// `rules` carries the active set **and** the drain set (paused rules with
+    /// open positions, loaded so their exits keep running). Which is which comes
+    /// off `LoadedRule::entry_enabled` — the same flag the engine's arm gate reads,
+    /// so "may own a run" and "may take an entry" can never disagree. A rule that
+    /// may not enter may not own a run: see [`Self::close_stale_runs`].
     pub fn set_rules(&mut self, rules: &[LoadedRule], names: &[(RuleId, String)]) {
+        self.active = rules.iter().filter(|r| r.entry_enabled).map(|r| r.id).collect();
         let name_by_id: HashMap<RuleId, &str> = names
             .iter()
             .map(|(id, n)| (*id, n.as_str()))
@@ -210,15 +261,125 @@ impl Sink {
             .collect();
     }
 
-    /// Ensure every loaded rule has a cached `strategy_runs` id so the first
+    /// Ensure every **active** rule has a cached `strategy_runs` id so the first
     /// `BuySubmitted` of a rule does not await `insert_run` on the hot path.
+    ///
+    /// Draining rules are deliberately skipped: they cannot enter, so warming them
+    /// would mint a fresh empty run for a rule that is on its way out — exactly the
+    /// shell [`Self::close_stale_runs`] just deleted. Call that first.
     pub async fn warm_runs(&mut self) {
-        let rules: Vec<(RuleId, RuleInfo)> =
-            self.rules.iter().map(|(id, info)| (*id, info.clone())).collect();
+        let rules: Vec<(RuleId, RuleInfo)> = self
+            .rules
+            .iter()
+            .filter(|(id, _)| self.active.contains(id))
+            .map(|(id, info)| (*id, info.clone()))
+            .collect();
         for (rule, info) in rules {
             if let Err(e) = self.ensure_run(rule, &info).await {
                 warn!(rule = %rule.0, "engine sink: warm_runs failed: {e}");
             }
+        }
+    }
+
+    /// End every cached run that is no longer the rule's live run — the
+    /// counterpart to `ensure_run`. Called on each reload, so it covers pause,
+    /// disable, per-rule Stop, Stop All, and delete through the one path they all
+    /// already take (`schedule_engine_reload`).
+    ///
+    /// Two ways a run stops being live, and both must end it:
+    /// * the rule is no longer active — it can take no further entry;
+    /// * the rule's `trade_mode` was edited — the run belongs to the *old* mode and
+    ///   can never legally receive another position (see [`CachedRun`]).
+    ///
+    /// Only the cache eviction happens here; the rollup + status write are spawned,
+    /// because this runs **on the serialized decision loop** and a run's rollup
+    /// reads all of its positions. Correctness does not depend on that write
+    /// landing before the next reload: `closed_runs` (RAM, checked by `ensure_run`)
+    /// is what stops a re-activation from re-adopting the run being closed.
+    pub fn close_stale_runs(&mut self) {
+        let closing: Vec<(RuleId, uuid::Uuid)> = self
+            .run_cache
+            .iter()
+            .filter(|(rule, cached)| {
+                !self.active.contains(*rule)
+                    || self.rules.get(*rule).is_some_and(|i| i.mode != cached.mode)
+            })
+            .map(|(rule, cached)| (*rule, cached.id))
+            .collect();
+        for (rule, run_id) in closing {
+            self.run_cache.remove(&rule);
+            // Positions the engine still holds for this rule may have a PG insert
+            // in flight (`BuySubmitted` is written in the background), so the run
+            // can read as empty while a row naming it is about to commit — the
+            // finalize must not delete the parent out from under it.
+            let in_flight = !self.registry.positions_for_rule(rule).is_empty();
+            self.spawn_finalize(run_id, "paused", in_flight);
+        }
+    }
+
+    /// Finalize runs left `Running` by a deactivation this process never saw — rows
+    /// predating the run lifecycle, a DB sync from another box, a hand-edited
+    /// `is_active`. Normally a no-op; without it the next activation of such a rule
+    /// would be handed the stale run back. Boot-only, one indexed query.
+    pub async fn close_orphan_runs(&mut self) {
+        let ids = match self.repo.orphan_running_runs().await {
+            Ok(ids) => ids,
+            Err(e) => {
+                warn!("engine sink: orphan_running_runs failed: {e}");
+                return;
+            }
+        };
+        for run_id in ids {
+            // Boot-only, and `adopt_from_db` has not run yet, so the registry is
+            // empty by construction — nothing can be mid-insert.
+            self.spawn_finalize(run_id, "orphaned", false);
+        }
+    }
+
+    /// Mark a run closed (so `ensure_run` can never re-adopt it) and background the
+    /// rollup + terminal-status write. Never awaited: this is called from the
+    /// serialized decision loop, and a rollup reads all of the run's positions.
+    ///
+    /// `in_flight` = the engine still holds positions of this run, so it is
+    /// draining: the run keeps its row (never deleted) and its metrics are re-rolled
+    /// as those positions settle.
+    fn spawn_finalize(&mut self, run_id: uuid::Uuid, why: &'static str, in_flight: bool) {
+        self.closed_runs.insert(run_id);
+        if in_flight {
+            self.draining_runs.insert(run_id);
+        }
+        let repo = self.repo.clone();
+        let draining = self.draining_runs.clone();
+        tokio::spawn(async move {
+            match repo.finalize_run(run_id, "Stopped", !in_flight).await {
+                Ok(RunFinalize::Deleted) => {
+                    info!(run = %run_id, why, "engine sink: dropped empty run");
+                }
+                Ok(RunFinalize::Finalized { unsettled }) => {
+                    // Still-open positions keep writing to this run, so its rollup
+                    // is provisional until they settle — see `reroll_draining_run`.
+                    if unsettled > 0 {
+                        draining.insert(run_id);
+                    }
+                    info!(run = %run_id, why, unsettled, "engine sink: run finalized");
+                }
+                Err(e) => warn!(run = %run_id, why, "engine sink: finalize_run failed: {e}"),
+            }
+        });
+    }
+
+    /// Rebuild the re-roll set at boot: runs finalized before this process started
+    /// whose positions had not all settled. Without it a restart mid-drain would
+    /// freeze a finished run's metrics at the moment it was stopped. One indexed
+    /// round trip returning a handful of ids — safe inside the boot gate.
+    pub async fn load_draining_runs(&mut self) {
+        match self.repo.draining_finalized_runs().await {
+            Ok(ids) => {
+                for id in ids {
+                    self.draining_runs.insert(id);
+                }
+            }
+            Err(e) => warn!("engine sink: load_draining_runs failed: {e}"),
         }
     }
 
@@ -231,6 +392,10 @@ impl Sink {
     /// is emitted **before** `registry.remove` so clients always get a real
     /// `position_id` (and entry price) on the final frame.
     pub async fn on_position_update(&mut self, delta: PositionDelta) {
+        // Captured before the handlers run: a terminal transition drops the
+        // registry row, and the re-roll below needs the run this position belonged
+        // to (positions keep writing to the run they were born in).
+        let owner = self.registry.get(delta.position).map(|m| (m.run_id, m.pg_id));
         let finalized = match delta.status {
             PositionStatus::BuySubmitted => {
                 self.on_buy_submitted(&delta).await;
@@ -255,8 +420,36 @@ impl Sink {
         if finalized {
             self.registry.remove(delta.position);
             self.manual_episodes.remove(&delta.rule);
+            if let Some((run_id, pg_id)) = owner {
+                self.reroll_draining_run(run_id, pg_id);
+            }
             self.prune_finished_pg();
         }
+    }
+
+    /// A straggler of an already-finalized run just settled — re-roll that run's
+    /// metrics so its numbers stop being the provisional snapshot taken when the
+    /// rule was paused.
+    ///
+    /// No-op for a live run (its rollup happens at finalize) — the common path is
+    /// a single `DashSet` miss. Chains onto this position's pending PG write so it
+    /// reads the row *after* the terminal write commits, and is spawned so the
+    /// decision loop never waits on it.
+    fn reroll_draining_run(&mut self, run_id: uuid::Uuid, pg_id: uuid::Uuid) {
+        if !self.draining_runs.contains(&run_id) {
+            return;
+        }
+        let prev = self.pending_pg.remove(&pg_id);
+        let repo = self.repo.clone();
+        let handle = tokio::spawn(async move {
+            if let Some(h) = prev {
+                let _ = h.await;
+            }
+            if let Err(e) = repo.roll_up_run(run_id).await {
+                warn!(run = %run_id, "engine sink: run re-roll failed: {e}");
+            }
+        });
+        self.pending_pg.insert(pg_id, handle);
     }
 
     /// Consume one `ArmedChanged`: push the arming SSE (armed state is push-only
@@ -759,8 +952,16 @@ impl Sink {
     }
 
     async fn ensure_run(&mut self, rule: RuleId, info: &RuleInfo) -> anyhow::Result<uuid::Uuid> {
-        if let Some(id) = self.run_cache.get(&rule) {
-            return Ok(*id);
+        // Mode-checked, not just rule-checked: a cache entry opened for the other
+        // trade_mode must never be handed out (see `CachedRun`). `close_stale_runs`
+        // normally evicts it on the reload that changed the mode — this is the
+        // hot-path guarantee that a buy racing that reload cannot file itself into
+        // the wrong mode's run.
+        if let Some(cached) = self.run_cache.get(&rule) {
+            if cached.mode == info.mode {
+                return Ok(cached.id);
+            }
+            self.run_cache.remove(&rule);
         }
         let mode = mode_str(info.mode);
         // Drop empty newest shells left by the old always-insert warm path so
@@ -784,10 +985,14 @@ impl Sink {
             }
         }
         // Reuse the open run across restarts. Only mint when none exists or the
-        // latest was finalized (Stopped/Finished/Cancelled).
+        // latest was finalized (Stopped/Finished/Cancelled). `closed_runs` covers
+        // the in-flight case: this process closed the run on a pause and the
+        // background `Stopped` write may not have committed yet, so the row can
+        // still read `Running` — re-adopting it is exactly the bug the run
+        // lifecycle exists to fix.
         if let Some(existing) = self.repo.latest_run(rule.0, mode).await? {
-            if existing.status == "Running" {
-                self.run_cache.insert(rule, existing.id);
+            if existing.status == "Running" && !self.closed_runs.contains(&existing.id) {
+                self.run_cache.insert(rule, CachedRun { mode: info.mode, id: existing.id });
                 return Ok(existing.id);
             }
         }
@@ -805,7 +1010,7 @@ impl Sink {
             finished_at: None,
         };
         self.repo.insert_run(&run).await?;
-        self.run_cache.insert(rule, run.id);
+        self.run_cache.insert(rule, CachedRun { mode: info.mode, id: run.id });
         Ok(run.id)
     }
 

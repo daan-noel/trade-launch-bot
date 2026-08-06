@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::api::table_query::{FilterOp, FilterSpec, MAX_FILTER_IN_VALUES, TableRequest};
 use crate::config::constants::{lamports_to_sol, sol_to_lamports};
 use crate::strategies::kernel::{round_trip_with_costs, weighted_return_pct, CostModel};
+use crate::strategies::run_rollup::{self, RunRollup};
 use crate::models::portfolio::ManagedMint;
 use crate::models::strategy::{
     ExitReasonCounts, PositionsSummary, StrategyPosition, StrategyRun, StrategyRunMetrics,
@@ -64,6 +65,16 @@ impl From<StrategyRunDbRow> for StrategyRun {
             finished_at: r.finished_at,
         }
     }
+}
+
+/// What [`StrategyRepo::finalize_run`] did to the run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunFinalize {
+    /// The run never held a position — deleted outright, freeing its `run_seq`.
+    Deleted,
+    /// Finalized with a rolled-up metrics row. `unsettled` > 0 means the rollup is
+    /// provisional: positions were still draining when the run was closed.
+    Finalized { unsettled: u64 },
 }
 
 /// Flat LEFT JOIN of `strategy_runs` × `strategy_run_metrics` for the Rules
@@ -1178,6 +1189,108 @@ impl StrategyRepo {
         Ok(())
     }
 
+    /// Roll a run's positions up into its `strategy_run_metrics` row. Idempotent —
+    /// safe to re-run as a finalized run's stragglers settle (the upsert only
+    /// advances a stale row, see [`Self::upsert_metrics`]).
+    ///
+    /// Bounded by one run's positions and never called from the decision loop —
+    /// `live`'s sink spawns it.
+    pub async fn roll_up_run(&self, run_id: Uuid) -> anyhow::Result<RunRollup> {
+        let positions = self.find_positions_by_run(run_id).await?;
+        let rollup = run_rollup::roll_up(run_id, &positions);
+        self.upsert_metrics(&rollup.row).await?;
+        Ok(rollup)
+    }
+
+    /// End a run: roll its metrics up, then stamp `status` + `finished_at`.
+    ///
+    /// A run that never held a position is **deleted** instead — it is not a page
+    /// of history, and keeping it would burn a `run_seq` and put an empty "Run #N"
+    /// in front of the real bag in the Evidence pane. (Toggling a rule on and off
+    /// without a fill is common; each toggle would otherwise mint a shell.)
+    ///
+    /// `allow_delete` must be `false` whenever a position insert may still be in
+    /// flight for this run. The sink writes `BuySubmitted` rows in the background,
+    /// so a rule paused mid-buy can read as position-less here while an insert
+    /// naming this `run_id` is seconds from committing — deleting the parent would
+    /// fail that insert on its FK and strand a position that exists on-chain with
+    /// no row of its own.
+    ///
+    /// `status` is one of the terminal `strategy_runs.status` values —
+    /// `Stopped` | `Finished` | `Cancelled`.
+    pub async fn finalize_run(
+        &self,
+        run_id: Uuid,
+        status: &str,
+        allow_delete: bool,
+    ) -> anyhow::Result<RunFinalize> {
+        let positions = self.find_positions_by_run(run_id).await?;
+        if positions.is_empty() {
+            if allow_delete {
+                self.delete_run(run_id).await?;
+                return Ok(RunFinalize::Deleted);
+            }
+            // Keep the parent row valid for the in-flight insert; there is nothing
+            // to roll up yet, and the caller marks the run as draining.
+            self.set_run_status(run_id, status, Some(Utc::now())).await?;
+            return Ok(RunFinalize::Finalized { unsettled: 0 });
+        }
+        let rollup = run_rollup::roll_up(run_id, &positions);
+        self.upsert_metrics(&rollup.row).await?;
+        self.set_run_status(run_id, status, Some(Utc::now())).await?;
+        Ok(RunFinalize::Finalized { unsettled: rollup.unsettled })
+    }
+
+    /// Runs still marked `Running` that **no active rule is feeding** — the rule was
+    /// deactivated, disabled, deleted, or had its `trade_mode` edited away from the
+    /// run's mode. The engine finalizes these at boot.
+    ///
+    /// The `trade_mode` arm matters as much as `is_active`: `run_seq` is monotonic
+    /// per `(rule, mode)`, so a flipped rule writes to a *different* run and the old
+    /// one can never legally receive another position — yet it would sit `Running`
+    /// with no metrics forever, and be handed straight back by `latest_run` if the
+    /// mode were ever flipped again.
+    ///
+    /// Normally empty: the sink ends a run the moment a reload reports either
+    /// change. This catches the states no reload witnessed — rows written before
+    /// the run lifecycle existed, a `db-incremental-sync` from another box, a
+    /// hand-edited `is_active`. Without it the *next* activation would be handed
+    /// the stale run back and history would stay stuck on one page.
+    ///
+    /// `rule_id IS NOT NULL` deliberately spares the ONE manual-position run
+    /// (`strategy_id = 'manual'`), which `ensure_manual_run` finds **by** its
+    /// `Running` status and which must never be split across runs.
+    pub async fn orphan_running_runs(&self) -> anyhow::Result<Vec<Uuid>> {
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT r.id FROM strategy_runs r \
+             WHERE r.status = 'Running' AND r.rule_id IS NOT NULL \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM strategy_rules s \
+                   WHERE s.id = r.rule_id AND s.is_active AND s.trade_mode = r.mode \
+               )",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(ids)
+    }
+
+    /// Runs that are already finalized but still hold unsettled positions — their
+    /// metrics are provisional and must be re-rolled as those positions settle.
+    ///
+    /// One indexed round trip returning a handful of ids: the engine rebuilds its
+    /// in-RAM re-roll set from this at boot, so a restart mid-drain doesn't leave a
+    /// finished run's numbers frozen at the moment it was stopped.
+    pub async fn draining_finalized_runs(&self) -> anyhow::Result<Vec<Uuid>> {
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT DISTINCT r.id FROM strategy_runs r \
+             JOIN strategy_positions p ON p.run_id = r.id \
+             WHERE r.status <> 'Running' AND p.status NOT IN ('End','EntryFailed')",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(ids)
+    }
+
     // -- Metrics --------------------------------------------------------------
 
     pub async fn upsert_metrics(&self, m: &StrategyRunMetrics) -> anyhow::Result<()> {
@@ -1188,9 +1301,10 @@ impl StrategyRepo {
                  expectancy_sol, mean_pnl_pct, median_pnl_pct, p90_pnl_pct, best_pnl_pct,
                  worst_pnl_pct, std_pnl_pct, profit_factor, avg_holding_secs, median_holding_secs,
                  n_exit_take_profit, n_exit_stop_loss, n_exit_trailing, n_exit_stall, n_exit_time,
-                 n_exit_liquidity, n_exit_open)
+                 n_exit_liquidity, n_exit_dead, n_exit_metrics, n_exit_manual, n_exit_migrated,
+                 n_exit_open)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                    $18, $19, $20, $21, $22, $23, $24)
+                    $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
             ON CONFLICT (run_id) DO UPDATE SET
                 rolled_up_at = EXCLUDED.rolled_up_at,
                 n_fired = EXCLUDED.n_fired,
@@ -1214,7 +1328,12 @@ impl StrategyRepo {
                 n_exit_stall = EXCLUDED.n_exit_stall,
                 n_exit_time = EXCLUDED.n_exit_time,
                 n_exit_liquidity = EXCLUDED.n_exit_liquidity,
+                n_exit_dead = EXCLUDED.n_exit_dead,
+                n_exit_metrics = EXCLUDED.n_exit_metrics,
+                n_exit_manual = EXCLUDED.n_exit_manual,
+                n_exit_migrated = EXCLUDED.n_exit_migrated,
                 n_exit_open = EXCLUDED.n_exit_open
+            WHERE strategy_run_metrics.rolled_up_at < EXCLUDED.rolled_up_at
             "#,
         )
         .bind(m.run_id)
@@ -1240,6 +1359,10 @@ impl StrategyRepo {
         .bind(m.n_exit_stall)
         .bind(m.n_exit_time)
         .bind(m.n_exit_liquidity)
+        .bind(m.n_exit_dead)
+        .bind(m.n_exit_metrics)
+        .bind(m.n_exit_manual)
+        .bind(m.n_exit_migrated)
         .bind(m.n_exit_open)
         .execute(&self.pool)
         .await?;
