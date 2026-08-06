@@ -52,8 +52,10 @@ import { ChartRangeSlider } from './ChartRangeSlider';
 import { ChartToolbar } from './ChartToolbar';
 import { createChartTimeFormatters } from './chartTimezone';
 import { useTimezone } from 'context/TimezoneContext';
+import { useStoredField } from 'hooks/useLocalStorage';
 import { useProfileWallets } from 'hooks/useProfileWallets';
 import { cn } from 'lib/cn';
+import { STORAGE_KEYS } from 'lib/storage';
 import {
   CANDLE_SERIES_OPTIONS,
   CHART_COLORS,
@@ -473,6 +475,7 @@ export function TokenPriceChart({
   metric = 'price',
   onMetricChange,
   className,
+  chrome = 'full',
   height: fixedHeight,
   onBarClick,
   selectedBar = null,
@@ -499,6 +502,14 @@ export function TokenPriceChart({
   // not by convention.
   const trackedProfileWallets = useProfileWallets();
   const effectiveProfileWallets = profileWallets ?? trackedProfileWallets;
+
+  // Compact chrome: Tools open/closed persists per chart id so a narrow host
+  // (Console manual-trade) stays plot-first across reloads.
+  const [toolsOpen, setToolsOpen] = useStoredField(
+    STORAGE_KEYS.chartToolbarOpen,
+    id || '_default',
+    false,
+  );
 
   // The token's dev/creator as a synthetic tracked wallet — folded into the same
   // marker pipeline so its first_buy/sell_all lifecycle + triangle silhouette
@@ -1720,6 +1731,9 @@ export function TokenPriceChart({
         priceUnit={priceUnit}
         metric={metric}
         tradeCount={trades.length}
+        chrome={chrome}
+        toolsOpen={toolsOpen}
+        onToolsOpenChange={setToolsOpen}
         showTradeMarkers={showTradeMarkers}
         showWalletMarkers={showWalletMarkers}
         showDevMarkers={showDevMarkers}

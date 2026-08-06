@@ -312,6 +312,9 @@ export function ChartToolbar({
   priceUnit = 'SOL',
   metric,
   tradeCount,
+  chrome = 'full',
+  toolsOpen = false,
+  onToolsOpenChange,
   showTradeMarkers,
   showWalletMarkers,
   showDevMarkers,
@@ -348,6 +351,7 @@ export function ChartToolbar({
 }: ChartToolbarProps) {
   const [showMore, setShowMore] = useState(false);
   const intervalsDisabled = groupMode === 'slot';
+  const compactCollapsed = chrome === 'compact' && !toolsOpen;
   // Memoize so crosshair-move re-renders don't rebuild the formatters per pixel.
   const formatChartPrice = useMemo(() => createChartPriceFormatter(priceUnit), [priceUnit]);
   const formatVol = useMemo(() => createChartPriceFormatter('SOL'), []);
@@ -393,14 +397,56 @@ export function ChartToolbar({
     rangeSelectMode ||
     (showDevMarkers && devMarkersBoundariesOnly);
 
+  const titleMeta = (
+    <span className="font-normal" style={{ color: CHART_COLORS.panelTextDim }}>
+      · {groupMode === 'slot' ? 'slot' : interval} · {CHART_STYLE_LABELS[style]} · {tradeCount}{' '}
+      trades · {priceLabel}
+    </span>
+  );
+
+  // Compact collapsed: one thin row so a narrow host (Console manual-trade) keeps
+  // the plot taller than the chrome. Expand via Tools for interval/style/overlays.
+  if (compactCollapsed) {
+    return (
+      <div
+        className="flex items-center gap-2 border-b px-2 py-1"
+        style={{ borderColor: CHART_COLORS.border }}
+      >
+        <div
+          className="min-w-0 flex-1 truncate text-[12px] font-bold"
+          style={{ color: CHART_COLORS.panelText }}
+        >
+          {symbol} {titleMeta}
+        </div>
+        {showStatusBadges && isMigrated != null && (
+          <StatusBadge
+            label={isMigrated ? 'Mig' : 'BC'}
+            color={isMigrated ? STATUS_BADGE_COLOR.migrated : STATUS_BADGE_COLOR.bonding}
+          />
+        )}
+        <button
+          type="button"
+          onClick={() => onToolsOpenChange?.(true)}
+          className="shrink-0 rounded-md px-2 py-0.5 text-[11px] font-semibold transition-colors hover:text-white"
+          style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
+          title="Show chart tools (interval, style, overlays)"
+        >
+          Tools
+        </button>
+      </div>
+    );
+  }
+
   return (
     // The toolbar WRAPS, and the control cluster must be shrinkable (no `shrink-0`).
     // The cluster's max-content width is ~600px of pill groups + icon toggles; pinned
-    // at that width it overflows any narrow host (the Console's 380px manual-trade
+    // at that width it overflows any narrow host (the Console's manual-trade
     // column, the Portfolio/Floor row details) and gives the whole page a horizontal
     // scrollbar. Shrinkable + `flex-wrap` on both levels means the cluster drops to
     // its own full-width line and re-flows into rows instead. The title keeps a
     // `min-w` floor so the break happens before the symbol is crushed to nothing.
+    // Narrow hosts should prefer `chrome="compact"` so this full cluster stays
+    // behind the Tools toggle until needed.
     <div
       className="flex flex-wrap items-start gap-x-3 gap-y-2 border-b px-3 py-2"
       style={{ borderColor: CHART_COLORS.border }}
@@ -412,11 +458,7 @@ export function ChartToolbar({
             className="min-w-0 truncate text-[13px] font-bold"
             style={{ color: CHART_COLORS.panelText }}
           >
-            {symbol}{' '}
-            <span className="font-normal" style={{ color: CHART_COLORS.panelTextDim }}>
-              · {groupMode === 'slot' ? 'slot' : interval} · {CHART_STYLE_LABELS[style]} · {tradeCount}{' '}
-              trades · {priceLabel}
-            </span>
+            {symbol} {titleMeta}
           </div>
           {showStatusBadges && (
             <div className="flex shrink-0 items-center gap-1.5">
@@ -455,6 +497,18 @@ export function ChartToolbar({
       {/* Right: essentials always; overlays behind More */}
       <div className="flex min-w-0 flex-col items-end gap-1.5">
         <div className="flex flex-wrap items-center justify-end gap-2">
+          {chrome === 'compact' && (
+            <button
+              type="button"
+              onClick={() => onToolsOpenChange?.(false)}
+              aria-expanded
+              className="rounded-md px-2 py-0.5 text-[11px] font-semibold text-[#0a0a0a]"
+              style={{ backgroundColor: CHART_COLORS.activePill }}
+              title="Hide chart tools"
+            >
+              Tools ▴
+            </button>
+          )}
           <div
             className="flex rounded-md p-0.5"
             style={{ backgroundColor: CHART_COLORS.grid }}

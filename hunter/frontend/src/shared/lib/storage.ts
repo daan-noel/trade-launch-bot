@@ -29,6 +29,8 @@ export const STORAGE_KEYS = {
   timezone: `${PREFIX}app.timezone`,
   priceUnit: `${PREFIX}app.priceUnit`,
   chartPrefs: `${PREFIX}chart.prefs`,
+  /** Map of `{ [chartId]: boolean }` — compact-chrome Tools panel open/closed. */
+  chartToolbarOpen: `${PREFIX}chart.toolbarOpen`,
   /** Notification preferences (real/paper toggles, status filter, fp-param display). */
   notificationPrefs: `${PREFIX}notifications`,
   /** Map of `{ [accordionId]: boolean }` — every collapsible chrome panel.
@@ -124,6 +126,8 @@ export interface UiToggles {
   hideDust?: boolean;
   /** Console: the collapsible WAITING lane. */
   consoleWaitingOpen?: boolean;
+  /** Console: the collapsible Manual-trade panel (forced open when `?mint=` prefills). */
+  consoleManualOpen?: boolean;
 }
 
 // ── raw string accessors ────────────────────────────────────────────────────

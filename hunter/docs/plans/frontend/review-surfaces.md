@@ -185,8 +185,25 @@ A rule with fewer than `2 × window` closes is reported with `decaying: false`, 
 omitted: a rule silently vanishing from a decay board reads as "healthy". The UI shows `—`
 with a tooltip saying how many closes it needs.
 
-The same window and verdict are used in three places — the Portfolio `Δ Win%` column, the
+The same window and verdict are used in three places — the Portfolio **Form** column, the
 Console rule-comparison card, and the Home rule alerts — from the one `groupTrends` fold.
+
+## Portfolio keep/kill review board
+
+`/portfolio` is a **calendar-window keep/kill board** (not a second History). Default
+range is `7d` (aligned with History/Home digest). Numbers are calendar-window closes —
+not Rules Control current-run / all-time scores.
+
+| Control | Behavior |
+| --- | --- |
+| Window strip | Portfolio spark + realized ◎ + closed/rules counts; entry-failed hint; link to all-trades History |
+| Rule alerts | Named decaying rules (same `groupTrends` verdict as Home) → Rules Evidence; "Show only decaying" toggles `?decay=1` |
+| `RankedPnlBars` | Hero rank by realized PnL; click toggles `?rule=` highlight (synced with table) |
+| Compact table | Rule · PnL · Exp (◎/trade) · Form · N · History — row click highlights only |
+| Rule name | → Rules (keep/kill); History link → Console History |
+| Form column | Δ win pp + Δ expectancy ◎; ▼ only when `decaying` |
+
+Trade browsing and the charts deck remain on Console History. Pause/Activate stays on Rules.
 
 ## Why the Recent-closed lane is gone
 

@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { DataTable } from 'components/table/DataTable';
+import { ElapsedCell } from 'components/table/ElapsedCell';
 import type { ColumnDef } from 'components/table/types';
-import { Badge, type BadgeVariant } from 'components/ui/Badge';
+import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { IconButton } from 'components/ui/IconButton';
 import { Input } from 'components/ui/Input';
@@ -12,13 +13,13 @@ import { PageHeader } from 'components/ui/PageHeader';
 import { StatTile } from 'components/ui/StatTile';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { BuyIcon, LinkIcon, SellIcon, SpinnerIcon } from 'components/ui/icons';
-import { ModeBadge } from 'components/strategy/ModeBadge';
 import { ModeToggle } from 'components/strategy/ModeToggle';
 import { useFlowPatternKeysForRule } from 'hooks/useFlowPatternKeys';
 import { useSseStatus } from 'hooks/useSseStatus';
 import { useUiToggle } from 'hooks/useUiPrefs';
+import { cn } from 'lib/cn';
 import { STORAGE_KEYS, getJSON, setJSON } from 'lib/storage';
-import { OPS_PARAMS, portfolioHref, rulesHref } from 'lib/strategy/nav';
+import { OPS_PARAMS, rulesHref } from 'lib/strategy/nav';
 import type { ModeFilter } from 'lib/strategy/mode';
 import { formatCompact } from 'utils/format';
 import {
@@ -30,8 +31,16 @@ import {
 import { apiErrorMessage } from 'store/apiSlice';
 import { ConsoleHistorySection } from '@live/components/history/ConsoleHistorySection';
 import { FloorBookStrip } from '@live/components/floor/FloorBookStrip';
+import { FloorPositionDetail } from '@live/components/floor/FloorPositionDetail';
 import { FloorPositionDetailWithFills } from '@live/components/floor/FloorPositionDetailWithFills';
 import { LazyFloorMintChart } from '@live/components/floor/LazyFloorMintChart';
+import {
+  OPEN_STATUS_LABEL,
+  OpenPositionStatusChips,
+  openStatusBadgeVariant,
+} from '@live/components/floor/openPositionStatus';
+import { usePositionArrowNav } from '@live/components/floor/usePositionArrowNav';
+import { exitReasonBadge } from 'components/strategy/strategyColumns';
 import {
   useCloseRulePositionMutation,
   useGetPortfolioHoldingsQuery,
@@ -59,38 +68,10 @@ const waitingRowKey = (r: LiveArmedRow) => r.key;
 
 type CloseAction = 'retry' | 'dump' | 'writeoff' | 'verify';
 
-const STATUS_LABEL: Record<string, string> = {
-  BuySubmitted: 'Buy submitted',
-  Holding: 'Holding',
-  ExitPending: 'Exit pending',
-  ExitUnconfirmed: 'Exit unconfirmed',
-  ExitStuck: 'Exit stuck',
-  End: 'End',
-  EntryFailed: 'Entry failed',
-};
-
-function statusVariant(status: string): BadgeVariant {
-  switch (status) {
-    case 'ExitPending':
-    case 'ExitUnconfirmed':
-      return 'warning';
-    case 'Holding':
-      return 'success';
-    case 'BuySubmitted':
-      return 'info';
-    case 'ExitStuck':
-      return 'danger';
-    default:
-      return 'neutral';
-  }
-}
-
-function fmtAge(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${s % 60}s`;
-  return `${Math.floor(m / 60)}h ${m % 60}m`;
+/** The row's clock start — entry when we have it, else the last status change. */
+function startMsOf(r: LiveOpenRow): number {
+  const t = r.entryTime ? Date.parse(r.entryTime) : r.updatedAt;
+  return Number.isFinite(t) ? t : NaN;
 }
 
 function modeOk(mode: string | null | undefined, filter: ModeFilter): boolean {
@@ -463,51 +444,44 @@ export function ConsolePage() {
   );
 
   const statusCell = (r: LiveOpenRow) => (
-    <span className="inline-flex flex-wrap items-center gap-1">
-      <Badge variant={statusVariant(r.status)}>{STATUS_LABEL[r.status] ?? r.status}</Badge>
-      {r.soldBps > 0 && (
-        <Badge variant="accent" title={`Scale stage ${r.scaleStage}`}>
-          {Math.round(r.soldBps / 100)}% banked
-        </Badge>
-      )}
-      {r.status === 'ExitStuck' &&
-        (r.exitParked ? (
-          <Badge variant="danger">PARKED</Badge>
-        ) : (
-          <span className="text-[10px] text-text-dim">retry {Math.min(r.exitRedriveCount, 2)}/2</span>
-        ))}
-      {r.status === 'BuySubmitted' && r.needsReview && (
-        <Badge variant="warning">stale — verify</Badge>
-      )}
-      {/* Deadness chip (defect #9): a rugged/drained pool must not read as
-          "no data" — the shared is_dead verdict rides on the holdings join. */}
-      {holdingByMint.get(r.mint)?.is_dead && (
-        <span title="Dead pool — liquidity gone; sells may only clear via Dump / Write off">
-          <Badge variant="danger">❗ dead</Badge>
-        </span>
-      )}
-      {r.mode === 'paper' && <ModeBadge mode="paper" />}
-      {r.mode === 'real' && modeFilter === 'all' && <ModeBadge mode="real" />}
-    </span>
+    <OpenPositionStatusChips
+      facts={{
+        status: r.status,
+        origin: r.origin,
+        mode: r.mode,
+        showRealMode: modeFilter === 'all',
+        soldBps: r.soldBps,
+        scaleStage: r.scaleStage,
+        exitParked: r.exitParked,
+        exitRedriveCount: r.exitRedriveCount,
+        needsReview: r.needsReview,
+        isDead: holdingByMint.get(r.mint)?.is_dead ?? false,
+        exitReason: r.exitReason,
+        pnlSol: openMark(r).mtmSol,
+      }}
+    />
   );
 
   // Per-row stale cue (defect #10): with a dead feed the Age keeps ticking but
   // the STATUS may be old — mark it instead of letting it read as live.
-  const ageCell = (r: LiveOpenRow) => {
-    const t = r.entryTime ? Date.parse(r.entryTime) : r.updatedAt;
-    const age = Number.isFinite(t) ? fmtAge(Date.now() - t) : '—';
-    return sseLive ? age : `${age} ⚠`;
-  };
   const ageSecs = (r: LiveOpenRow) => {
-    const t = r.entryTime ? Date.parse(r.entryTime) : r.updatedAt;
+    const t = startMsOf(r);
     return Number.isFinite(t) ? Math.max(0, Math.floor((Date.now() - t) / 1000)) : null;
   };
 
-  /** Per-status action cell — mirrors the backend legality matrix 1:1. */
-  const actionsCell = (r: LiveOpenRow) => {
+  /** Per-status actions — mirrors the backend legality matrix 1:1.
+   *  Shared by the table Actions column and the open-position modal. */
+  const openActions = (r: LiveOpenRow, empty: 'dash' | 'hint' = 'dash') => {
     const busy = busyId === r.positionId;
     const actionable = sseLive && r.mode === 'real';
     if (!actionable) {
+      if (empty === 'hint') {
+        return (
+          <span className="text-[11px] text-text-dim">
+            {sseLive ? 'Paper — no on-chain actions' : 'SSE stale — sells disabled'}
+          </span>
+        );
+      }
       return (
         <span className="text-text-dim" title={sseLive ? 'paper position' : 'SSE not live — status may be stale'}>
           —
@@ -515,7 +489,7 @@ export function ConsolePage() {
       );
     }
     return (
-      <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+      <div className="flex flex-wrap items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
         {r.status === 'Holding' && (
           <>
             <IconButton
@@ -665,6 +639,8 @@ export function ConsolePage() {
     );
   };
 
+  const actionsCell = (r: LiveOpenRow) => openActions(r, 'dash');
+
   // ── Columns (memoized — Console re-renders on SSE ticks; stable defs keep
   // DataTable row memo effective when only unrelated chrome changed).
   const openColsBase: ColumnDef<LiveOpenRow>[] = useMemo(
@@ -687,19 +663,21 @@ export function ConsolePage() {
         sortable: true,
         render: statusCell,
         sortValue: (r) => r.status,
-        searchValue: (r) => STATUS_LABEL[r.status] ?? r.status,
+        searchValue: (r) => OPEN_STATUS_LABEL[r.status] ?? r.status,
       },
       {
         key: 'age',
         label: 'Age',
         sortable: true,
+        // Ticks on the shared clock, so a quiet token's age keeps counting up
+        // instead of freezing until the next SSE delta.
         render: (r) => (
-          <span
+          <ElapsedCell
+            startMs={startMsOf(r)}
             className={`tabular-nums ${sseLive ? 'text-text-dim' : 'text-warning'}`}
+            suffix={sseLive ? undefined : ' ⚠'}
             title={sseLive ? undefined : 'SSE stale — status may be out of date'}
-          >
-            {ageCell(r)}
-          </span>
+          />
         ),
         sortValue: (r) => ageSecs(r) ?? -1,
         searchValue: () => '',
@@ -762,7 +740,7 @@ export function ConsolePage() {
         searchValue: () => '',
       },
     ],
-    // tokenCell/actionsCell/ageCell close over live book + busy/SSE — rebuild when those move.
+    // tokenCell/actionsCell close over live book + busy/SSE — rebuild when those move.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sseLive, openMark, busyId, modeFilter, holdingByMint],
   );
@@ -786,7 +764,7 @@ export function ConsolePage() {
         label: 'Age',
         sortable: true,
         render: (r) => (
-          <span className="tabular-nums text-text-dim">{fmtAge(Date.now() - r.armedAt)}</span>
+          <ElapsedCell startMs={r.armedAt} />
         ),
         sortValue: (r) => r.armedAt,
         searchValue: () => '',
@@ -839,9 +817,15 @@ export function ConsolePage() {
     setParams(next, { replace: true });
   };
 
+  const prefillTrade = (mint: string) => {
+    setTradeMint(mint);
+    clearDeepLink();
+  };
+
   const openDetail = (r: LiveOpenRow) => {
     const { mtmSol, mtmPct } = openMark(r);
     const entryMs = r.entryTime ? Date.parse(r.entryTime) : NaN;
+    const holdStart = Number.isFinite(entryMs) ? entryMs : startMsOf(r);
     return (
       <FloorPositionDetailWithFills
         positionId={r.positionId}
@@ -850,48 +834,141 @@ export function ConsolePage() {
           ruleId: r.ruleId,
           ruleName: r.origin === 'manual' ? 'manual' : r.ruleName,
           mode: r.mode,
-          status: STATUS_LABEL[r.status] ?? r.status,
+          origin: r.origin,
+          status: OPEN_STATUS_LABEL[r.status] ?? r.status,
+          statusKey: r.status,
           entrySol: r.entrySol,
           entryPrice: r.entryPrice,
-          holdLabel: Number.isFinite(entryMs) ? fmtAge(Date.now() - entryMs) : null,
+          exitReason: r.exitReason,
+          holdStartMs: Number.isFinite(holdStart) ? holdStart : null,
           mtmSol,
           pnlPct: mtmPct,
+          soldBps: r.soldBps,
+          scaleStage: r.scaleStage,
+          exitParked: r.exitParked,
+          exitRedriveCount: r.exitRedriveCount,
+          needsReview: r.needsReview,
+          isDead: holdingByMint.get(r.mint)?.is_dead ?? false,
           inspect: {
             mint_address: r.mint,
             entryTime: r.entryTime,
             entryPrice: r.entryPrice,
             exitTime: null,
             exitPrice: null,
+            exitLabel: r.exitReason,
           },
           flowPatternKeys: openFlowPatternKeys,
+          actions: openActions(r, 'hint'),
+          onPrefillTrade: () => prefillTrade(r.mint),
         }}
-        chartHeight={420}
+        chartHeight={360}
       />
     );
   };
 
+  const openModalTitle = (r: LiveOpenRow) => {
+    const { mtmSol, mtmPct } = openMark(r);
+    return (
+      <span className="inline-flex flex-wrap items-center gap-2">
+        <span className="font-mono">{r.mint.slice(0, 8)}…</span>
+        <Badge variant={openStatusBadgeVariant(r.status)} size="sm">
+          {OPEN_STATUS_LABEL[r.status] ?? r.status}
+        </Badge>
+        {r.exitReason ? exitReasonBadge(r.exitReason, mtmSol, null, 'sm') : null}
+        {mtmPct != null ? (
+          <span className={`tabular-nums text-sm ${pctGradeClass(mtmPct)}`}>
+            {formatSignedPct(mtmPct, 1)}
+          </span>
+        ) : null}
+        {mtmSol != null ? (
+          <span className={`tabular-nums text-sm font-semibold ${signedToneClass(mtmSol)}`}>
+            {formatSigned(mtmSol, 3)}◎
+          </span>
+        ) : null}
+      </span>
+    );
+  };
+
   const [waitingOpen, setWaitingOpen] = useUiToggle('consoleWaitingOpen', false);
+  const [manualOpen, setManualOpen] = useUiToggle('consoleManualOpen', true);
+
+  // Deep-link mint prefills force the manual panel open for that visit.
+  useEffect(() => {
+    if (mintParam && MINT_RE.test(mintParam.trim())) setManualOpen(true);
+  }, [mintParam, setManualOpen]);
+
+  const staleVerifyRows = useMemo(
+    () =>
+      attentionRows.filter(
+        (r) => r.mode === 'real' && r.status === 'BuySubmitted' && r.needsReview,
+      ),
+    [attentionRows],
+  );
+  const stuckRetryRows = useMemo(
+    () =>
+      attentionRows.filter(
+        (r) => r.mode === 'real' && r.status === 'ExitStuck' && !r.exitParked,
+      ),
+    [attentionRows],
+  );
+
+  const runBulk = useCallback(
+    async (rows: LiveOpenRow[], action: CloseAction, label: string) => {
+      if (rows.length === 0) return;
+      if (
+        !window.confirm(
+          `${label} on ${rows.length} attention row${rows.length === 1 ? '' : 's'}? REAL mode.`,
+        )
+      ) {
+        return;
+      }
+      for (const row of rows) {
+        await onAction(row, action);
+      }
+    },
+    [onAction],
+  );
+
+  const cockpitNavKeys = useMemo(() => {
+    if (inspectOpen) {
+      if (attentionRows.some((r) => r.positionId === inspectOpen.positionId)) {
+        return attentionRows.map((r) => r.positionId);
+      }
+      return openRows.map((r) => r.positionId);
+    }
+    if (inspectWaiting) return waitingRows.map((r) => r.key);
+    return [];
+  }, [inspectOpen, inspectWaiting, attentionRows, openRows, waitingRows]);
+
+  const onArrowSelect = useCallback(
+    (key: string) => {
+      const open = [...attentionRows, ...openRows].find((r) => r.positionId === key);
+      if (open) {
+        selectRow(key, open.mint);
+        return;
+      }
+      const wait = waitingRows.find((r) => r.key === key);
+      if (wait) selectRow(key, wait.mint);
+    },
+    // selectRow closes over params — intentional fresh each render
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [attentionRows, openRows, waitingRows, params, modeFilter],
+  );
+
+  usePositionArrowNav({
+    enabled: !!(inspectOpen || inspectWaiting) && !tpslFor,
+    keys: cockpitNavKeys,
+    selectedKey,
+    onSelect: onArrowSelect,
+  });
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-3">
       <PageHeader
         title="Console"
-        description={
-          <>
-            Real-trade book · every SOL-holding row lives here ·{' '}
-            <Link to={rulesHref()} className="text-accent hover:underline">
-              Rules Evidence
-            </Link>
-            {' · '}
-            <Link to={portfolioHref('today')} className="text-accent hover:underline">
-              Portfolio
-            </Link>
-          </>
-        }
+        description="Real-trade book · ←/→ in a position modal walks the lane"
         actions={
           <>
-            {/* SSE feed state — deliberately separate from the engine LIVE/DEAD
-                kill switch in the app header (two different facts). */}
             <span
               className={`inline-flex items-center gap-1 text-[11px] font-semibold ${
                 sseLive ? 'text-green' : 'text-warning'
@@ -900,31 +977,34 @@ export function ConsolePage() {
             >
               {sseLive ? '● live' : '○ stale'}
             </span>
-
             <div className="grow" />
-
-            <ModeToggle
-              layout="ops"
-              size="sm"
-              value={modeFilter}
-              onChange={setMode}
-            />
+            <ModeToggle layout="ops" size="sm" value={modeFilter} onChange={setMode} />
           </>
         }
       />
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <StatTile label="Attention" value={String(attentionRows.length)} />
-        <StatTile label="Open" value={String(openRows.length)} />
-        <StatTile label="Deployed ◎" value={formatCompact(totalDeployed, 3)} />
-        <StatTile label="Waiting" value={String(waitingRows.length)} />
+      {/* Sticky KPI strip — stays visible while scanning the cockpit. */}
+      <div className="sticky top-14 z-30 -mx-1 border-b border-white/6 bg-bg/90 px-1 py-2 backdrop-blur-md">
+        <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+          <StatTile
+            label="Attention"
+            value={String(attentionRows.length)}
+            size="sm"
+            tone={attentionRows.length > 0 ? 'red' : 'default'}
+          />
+          <StatTile label="Open" value={String(openRows.length)} size="sm" />
+          <StatTile label="Deployed ◎" value={formatCompact(totalDeployed, 3)} size="sm" />
+          <StatTile label="Waiting" value={String(waitingRows.length)} size="sm" />
+        </div>
+        {!sseLive && (
+          <div className="mt-1">
+            <InlineAlert variant="warning">
+              SSE not live — status may be stale; sells are disabled until the stream recovers.
+            </InlineAlert>
+          </div>
+        )}
       </div>
 
-      {!sseLive && (
-        <InlineAlert variant="warning">
-          SSE not live — status may be stale; sells are disabled until the stream recovers.
-        </InlineAlert>
-      )}
       {!hydrated && snapshotLoading && (
         <p className="text-xs text-text-dim">Loading live book…</p>
       )}
@@ -933,9 +1013,31 @@ export function ConsolePage() {
 
       {/* ⚠ ATTENTION — always on top; every row here has at least one action. */}
       <section>
-        <h2 className="mb-1.5 text-xs font-bold uppercase tracking-wider text-warning">
-          ⚠ Attention ({attentionRows.length})
-        </h2>
+        <div className="mb-1.5 flex flex-wrap items-center gap-2">
+          <h2 className="text-xs font-bold uppercase tracking-wider text-warning">
+            ⚠ Attention ({attentionRows.length})
+          </h2>
+          {sseLive && staleVerifyRows.length > 0 && (
+            <Button
+              variant="link"
+              size="xs"
+              className="text-accent"
+              onClick={() => void runBulk(staleVerifyRows, 'verify', 'Verify')}
+            >
+              Verify all stale ({staleVerifyRows.length})
+            </Button>
+          )}
+          {sseLive && stuckRetryRows.length > 0 && (
+            <Button
+              variant="link"
+              size="xs"
+              className="text-accent"
+              onClick={() => void runBulk(stuckRetryRows, 'retry', 'Retry')}
+            >
+              Retry all unparked ({stuckRetryRows.length})
+            </Button>
+          )}
+        </div>
         {attentionRows.length === 0 ? (
           <p className="text-xs text-text-dim">
             Nothing needs eyes — no stuck, unconfirmed, or stale-buy rows.
@@ -956,8 +1058,13 @@ export function ConsolePage() {
         )}
       </section>
 
-      {/* OPEN + MANUAL TRADE — co-equal panels. */}
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
+      {/* OPEN + MANUAL TRADE — Open dominates; manual collapses to free width. */}
+      <div
+        className={cn(
+          'grid grid-cols-1 gap-3',
+          manualOpen && 'xl:grid-cols-[minmax(0,1fr)_300px]',
+        )}
+      >
         <section className="min-w-0">
           <h2 className="mb-1.5 text-xs font-bold uppercase tracking-wider text-text-dim">
             Open ({openRows.length})
@@ -985,125 +1092,135 @@ export function ConsolePage() {
           />
         </section>
 
-        <section className="flex min-w-0 flex-col gap-3">
-          <h2 className="text-xs font-bold uppercase tracking-wider text-text-dim">
-            Manual trade
-          </h2>
-          <div className="flex flex-col gap-2.5 rounded-lg border border-white/6 bg-bg-panel p-3">
-            <label className="flex flex-col gap-1">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
-                Mint address
-              </span>
-              <Input
-                type="text"
-                fieldSize="md"
-                placeholder="Token mint address"
-                value={tradeMint}
-                onChange={(e) => setTradeMint(e.target.value)}
-                className="font-mono"
-              />
-            </label>
-            <div className="flex flex-wrap items-end gap-2">
-              <label className="flex flex-col gap-1">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
-                  Amount ◎
-                </span>
-                <Input
-                  type="number"
-                  fieldSize="md"
-                  min={0.001}
-                  step={0.001}
-                  value={tradeSol}
-                  onChange={(e) => setTradeSol(e.target.value)}
-                  className="w-24"
-                />
-              </label>
-              <label className="flex flex-col gap-1">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
-                  TP %
-                </span>
-                <Input
-                  type="number"
-                  fieldSize="md"
-                  min={0}
-                  step={5}
-                  placeholder="off"
-                  value={tradeTp}
-                  onChange={(e) => setTradeTp(e.target.value)}
-                  className="w-20"
-                />
-              </label>
-              <label className="flex flex-col gap-1">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
-                  SL %
-                </span>
-                <Input
-                  type="number"
-                  fieldSize="md"
-                  min={0}
-                  step={5}
-                  placeholder="off"
-                  value={tradeSl}
-                  onChange={(e) => setTradeSl(e.target.value)}
-                  className="w-20"
-                />
-              </label>
-            </div>
-            <p className="text-[10px] leading-snug text-text-dim">
-              Buys become full tracked positions (row + MTM + row actions). TP/SL opts into
-              the engine's auto-exit stack (incl. dead-pool exit); empty = tracked-only.
-            </p>
-            <div className="flex items-center gap-2">
-              <IconButton
-                variant="primary"
-                size="lg"
-                onClick={() => void handleManualBuy()}
-                disabled={buying || !tradeMintValid}
-                label={buying ? 'Buying…' : 'Buy'}
-                title="Submit a manual buy (202 → row appears as Buy submitted)"
-              >
-                {buying ? <SpinnerIcon /> : <BuyIcon />}
-              </IconButton>
-              <IconButton
-                variant="danger"
-                size="lg"
-                onClick={() => void handleSellAllByMint()}
-                disabled={sellingMint || !tradeMintValid}
-                label={sellingMint ? 'Selling…' : 'Sell all by mint'}
-                title="Sweep the WALLET's entire balance of this mint (external bags)"
-              >
-                {sellingMint ? <SpinnerIcon /> : <SellIcon />}
-              </IconButton>
-            </div>
-          </div>
-
-          {tradeMintValid && (
-            <LazyFloorMintChart mint={tradeMint.trim()} tableId="console-trade-chart" height={260} />
-          )}
-
-          <div className="rounded-lg border border-white/6 bg-bg-panel p-3">
-            <h3 className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-text-dim">
-              Trade log (session)
-            </h3>
-            {log.length === 0 ? (
-              <p className="text-xs text-text-dim">No manual actions yet.</p>
-            ) : (
-              <ul className="flex max-h-56 flex-col gap-1 overflow-y-auto">
-                {log.map((e) => (
-                  <li key={e.key} className="flex items-center gap-2 text-xs">
-                    <span className="tabular-nums text-text-dim">
-                      {new Date(e.at).toLocaleTimeString()}
+        <section className="flex min-w-0 flex-col gap-2">
+          <button
+            type="button"
+            className="text-left text-xs font-bold uppercase tracking-wider text-text-dim hover:text-text"
+            onClick={() => setManualOpen((v) => !v)}
+          >
+            {manualOpen ? '▾' : '▸'} Manual trade
+          </button>
+          {manualOpen && (
+            <>
+              <div className="flex flex-col gap-2 rounded-lg border border-white/6 bg-bg-panel p-2.5">
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
+                    Mint
+                  </span>
+                  <Input
+                    type="text"
+                    fieldSize="md"
+                    placeholder="Token mint address"
+                    value={tradeMint}
+                    onChange={(e) => setTradeMint(e.target.value)}
+                    className="font-mono"
+                  />
+                </label>
+                <div className="flex flex-wrap items-end gap-2">
+                  <label className="flex flex-col gap-0.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
+                      ◎
                     </span>
-                    <Badge variant={e.ok ? (e.action === 'Buy' ? 'buy' : 'neutral') : 'danger'}>
-                      {e.action}
-                    </Badge>
-                    <span className="font-mono text-text-mid">{e.mint.slice(0, 8)}…</span>
-                    <span className={e.ok ? 'text-text-mid' : 'text-red'}>{e.note}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+                    <Input
+                      type="number"
+                      fieldSize="md"
+                      min={0.001}
+                      step={0.001}
+                      value={tradeSol}
+                      onChange={(e) => setTradeSol(e.target.value)}
+                      className="w-20"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-0.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
+                      TP%
+                    </span>
+                    <Input
+                      type="number"
+                      fieldSize="md"
+                      min={0}
+                      step={5}
+                      placeholder="off"
+                      value={tradeTp}
+                      onChange={(e) => setTradeTp(e.target.value)}
+                      className="w-16"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-0.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
+                      SL%
+                    </span>
+                    <Input
+                      type="number"
+                      fieldSize="md"
+                      min={0}
+                      step={5}
+                      placeholder="off"
+                      value={tradeSl}
+                      onChange={(e) => setTradeSl(e.target.value)}
+                      className="w-16"
+                    />
+                  </label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <IconButton
+                    variant="primary"
+                    size="md"
+                    onClick={() => void handleManualBuy()}
+                    disabled={buying || !tradeMintValid}
+                    label={buying ? 'Buying…' : 'Buy'}
+                    title="Submit a manual buy (202 → row appears as Buy submitted)"
+                  >
+                    {buying ? <SpinnerIcon /> : <BuyIcon />}
+                  </IconButton>
+                  <IconButton
+                    variant="danger"
+                    size="md"
+                    onClick={() => void handleSellAllByMint()}
+                    disabled={sellingMint || !tradeMintValid}
+                    label={sellingMint ? 'Selling…' : 'Sell all by mint'}
+                    title="Sweep the WALLET's entire balance of this mint (external bags)"
+                  >
+                    {sellingMint ? <SpinnerIcon /> : <SellIcon />}
+                  </IconButton>
+                </div>
+              </div>
+
+              {tradeMintValid && (
+                <LazyFloorMintChart
+                  mint={tradeMint.trim()}
+                  tableId="console-trade-chart"
+                  chrome="compact"
+                  height={220}
+                />
+              )}
+
+              {log.length > 0 && (
+                <div className="rounded-lg border border-white/6 bg-bg-panel p-2">
+                  <h3 className="mb-1 text-[10px] font-bold uppercase tracking-wider text-text-dim">
+                    Trade log
+                  </h3>
+                  <ul className="flex max-h-36 flex-col gap-1 overflow-y-auto">
+                    {log.map((e) => (
+                      <li key={e.key} className="flex items-center gap-2 text-[11px]">
+                        <span className="tabular-nums text-text-dim">
+                          {new Date(e.at).toLocaleTimeString()}
+                        </span>
+                        <Badge
+                          variant={e.ok ? (e.action === 'Buy' ? 'buy' : 'neutral') : 'danger'}
+                          size="sm"
+                        >
+                          {e.action}
+                        </Badge>
+                        <span className="font-mono text-text-mid">{e.mint.slice(0, 8)}…</span>
+                        <span className={e.ok ? 'text-text-mid' : 'text-red'}>{e.note}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </>
+          )}
         </section>
       </div>
 
@@ -1142,39 +1259,51 @@ export function ConsolePage() {
 
       {/* Detail modals (deep-link + row click). */}
       {inspectOpen && (
-        <Modal
-          title={`${inspectOpen.mint.slice(0, 8)}… — Open position`}
-          open
-          onClose={clearDeepLink}
-          size="xxl"
-        >
+        <Modal title={openModalTitle(inspectOpen)} open onClose={clearDeepLink} size="xxl">
           {openDetail(inspectOpen)}
         </Modal>
       )}
       {inspectWaiting && (
         <Modal
-          title={`${inspectWaiting.mint.slice(0, 8)}… — Waiting`}
+          title={
+            <span className="inline-flex flex-wrap items-center gap-2">
+              <span className="font-mono">{inspectWaiting.mint.slice(0, 8)}…</span>
+              <Badge variant="warning" size="sm">
+                Waiting
+              </Badge>
+              <span className="text-[11px] font-normal text-text-dim">
+                armed{' '}
+                <ElapsedCell
+                  startMs={inspectWaiting.armedAt}
+                  className="tabular-nums text-warning"
+                />
+              </span>
+            </span>
+          }
           open
           onClose={clearDeepLink}
           size="xxl"
         >
-          <div className="flex flex-col gap-3">
-            <div className="flex flex-wrap items-center gap-3 text-[11px]">
-              <span className="text-text-dim">
-                Waiting for entry · armed{' '}
-                <span className="tabular-nums text-text">
-                  {fmtAge(Date.now() - inspectWaiting.armedAt)}
-                </span>
-              </span>
-              {ruleLink(inspectWaiting.ruleId, inspectWaiting.ruleName)}
-            </div>
-            <LazyFloorMintChart
-              mint={inspectWaiting.mint}
-              tableId="console-waiting-chart"
-              height={420}
-              flowPatternKeys={waitingFlowPatternKeys}
-            />
-          </div>
+          <FloorPositionDetail
+            chartHeight={360}
+            facts={{
+              mint: inspectWaiting.mint,
+              ruleId: inspectWaiting.ruleId,
+              ruleName: inspectWaiting.ruleName,
+              status: 'Waiting',
+              statusKey: 'Waiting',
+              holdStartMs: inspectWaiting.armedAt,
+              inspect: {
+                mint_address: inspectWaiting.mint,
+                entryTime: null,
+                entryPrice: null,
+                exitTime: null,
+                exitPrice: null,
+              },
+              flowPatternKeys: waitingFlowPatternKeys,
+              onPrefillTrade: () => prefillTrade(inspectWaiting.mint),
+            }}
+          />
         </Modal>
       )}
 

@@ -7,6 +7,7 @@ import { cn } from 'lib/cn';
 import { amountInDisplayUnit } from 'lib/priceUnitSnapshot';
 import { formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
+import { Badge, type BadgeSize, type BadgeVariant } from 'components/ui/Badge';
 import { coreTokenColumns } from 'components/tokens/sharedTokenColumns';
 import {
   exitReasonLabel,
@@ -33,8 +34,50 @@ export { exitReasonLabel, exitReasonSearchText } from 'lib/strategy/exitReason';
 // set and the two strategies can never diverge again.
 // ---------------------------------------------------------------------------
 
-/** Render an exit reason as a compact colored badge, shared by the live-position
- * and simulation-result tables. Pass `pnlSol` so metric exits tint by outcome
+/** Badge variant for a persisted `exit_reason` — SSOT for pill color. */
+export function exitReasonBadgeVariant(
+  reason: string | null | undefined,
+  pnlSol?: number | null,
+): BadgeVariant {
+  switch (reason) {
+    case 'LiquidityExit':
+      return 'primary';
+    case 'TakeProfit':
+      return 'success';
+    case 'StopLoss':
+    case 'ExitFailed':
+    case 'ExitStuck':
+    case 'Dead':
+      return 'danger';
+    case 'TrailingStop':
+      return 'warning';
+    case 'Stall':
+      return 'accent';
+    case 'TimeStop':
+      return 'info';
+    case 'Manual':
+    case 'ManualClose':
+    case 'Migrated':
+    case 'NoEntry':
+    case 'Open':
+    case null:
+    case undefined:
+    case '':
+      return 'neutral';
+    default: {
+      if (isMetricExitReason(reason)) {
+        if (pnlSol != null && Number.isFinite(pnlSol) && pnlSol !== 0) {
+          return pnlSol > 0 ? 'success' : 'danger';
+        }
+        return 'info';
+      }
+      return 'neutral';
+    }
+  }
+}
+
+/** Render an exit reason as a compact colored pill, shared by position tables
+ * and the inspect modal. Pass `pnlSol` so metric exits tint by outcome
  * (green / red), matching TP/SL glanceability.
  *
  * `entryError` (`last_entry_error`, mig 0017) covers the one row shape that has no
@@ -46,70 +89,40 @@ export function exitReasonBadge(
   reason: string | null | undefined,
   pnlSol?: number | null,
   entryError?: string | null,
+  size: BadgeSize = 'sm',
 ) {
   if (!reason && entryError) {
     return (
-      <span className="font-bold text-red" title={entryError}>
+      <Badge variant="danger" size={size} title={entryError}>
         Entry failed
-      </span>
+      </Badge>
     );
   }
   const label = exitReasonLabel(reason, pnlSol);
-  switch (reason) {
-    case 'LiquidityExit':
-      return <span className="font-bold text-primary">{label}</span>;
-    case 'TakeProfit':
-      return <span className="font-bold text-green">{label}</span>;
-    case 'StopLoss':
-      return <span className="font-bold text-red">{label}</span>;
-    case 'TrailingStop':
-      return <span className="font-bold text-warning">{label}</span>;
-    case 'Stall':
-      return <span className="font-bold text-accent">{label}</span>;
-    case 'TimeStop':
-      return <span className="font-bold text-info">{label}</span>;
-    case 'ExitFailed':
-    case 'ExitStuck':
-      return <span className="font-bold text-red">{label}</span>;
-    case 'Manual':
-    case 'ManualClose':
-      return <span className="font-bold text-text-dim">{label}</span>;
-    case 'Dead':
-      return <span className="font-bold text-red">{label}</span>;
-    case 'Migrated':
-      return <span className="font-bold text-text-dim">{label}</span>;
-    case 'NoEntry':
-      return <span className="italic text-text-dim">{label}</span>;
-    case 'Open':
-    case null:
-    case undefined:
-    case '':
-      return <span className="text-text-dim">{label}</span>;
-    default: {
-      // Bare `Metrics` + spaced `name op value` (and legacy compact).
-      if (isMetricExitReason(reason)) {
-        const tone =
-          pnlSol != null && Number.isFinite(pnlSol) && pnlSol !== 0
-            ? pnlSol > 0
-              ? 'text-green'
-              : 'text-red'
-            : 'text-info';
-        const parts = parseMetricExitParts(reason);
-        if (parts) {
-          // Visually separate name · op · value so the three tokens scan cleanly.
-          return (
-            <span className={cn('inline-flex items-baseline gap-1 font-bold', tone)}>
-              <span className="opacity-90">{parts.name}</span>
-              <span className="opacity-55">{parts.op}</span>
-              {parts.value ? <span>{parts.value}</span> : null}
-            </span>
-          );
-        }
-        return <span className={cn('font-bold', tone)}>{label}</span>;
-      }
-      return <span className="text-text-dim">{label}</span>;
-    }
+  const variant = exitReasonBadgeVariant(reason, pnlSol);
+  const parts = isMetricExitReason(reason) ? parseMetricExitParts(reason) : null;
+  if (parts) {
+    // Visually separate name · op · value so the three tokens scan cleanly.
+    return (
+      <Badge variant={variant} size={size} title={reason ?? undefined}>
+        <span className="inline-flex items-baseline gap-1">
+          <span className="opacity-90">{parts.name}</span>
+          <span className="opacity-55">{parts.op}</span>
+          {parts.value ? <span>{parts.value}</span> : null}
+        </span>
+      </Badge>
+    );
   }
+  return (
+    <Badge
+      variant={variant}
+      size={size}
+      className={reason === 'NoEntry' ? 'italic font-semibold' : undefined}
+      title={reason && reason !== label ? reason : undefined}
+    >
+      {label}
+    </Badge>
+  );
 }
 
 /** Derive SOL from a price and a token count — used where SOL was never

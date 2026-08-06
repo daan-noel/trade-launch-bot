@@ -1,8 +1,11 @@
 import { Modal } from 'components/ui/Modal';
+import { Badge } from 'components/ui/Badge';
 import { inspectFromPosition } from 'components/strategy/inspectTarget';
+import { exitReasonBadge } from 'components/strategy/strategyColumns';
 import { FloorPositionDetailWithFills } from '@live/components/floor/FloorPositionDetailWithFills';
 import { useResolvedFlowPatternKeys } from 'hooks/useFlowPatternKeys';
 import { resolvePnlPct } from 'lib/pnlPct';
+import { formatSigned, formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import type { StrategyRule } from 'lib/strategy/types';
 import { formatDurationShort } from 'utils/format';
 import type { RulePositionRecord } from 'types';
@@ -44,28 +47,68 @@ export function LivePositionInspectModal({
   });
 
   const heading = position.symbol || `${position.mint_address.slice(0, 8)}…`;
+  const pnlPct = resolvePnlPct({
+    pnlSol: position.pnl_sol,
+    entrySol: position.entry_sol,
+    entryPrice: position.entry_price,
+    exitPrice: position.exit_price,
+  });
   return (
-    <Modal title={`${heading} — position`} open onClose={onClose} size="xxl">
+    <Modal
+      title={
+        <span className="inline-flex flex-wrap items-center gap-2">
+          <span>{heading}</span>
+          <Badge
+            variant={position.status === 'EntryFailed' ? 'danger' : 'primary'}
+            size="sm"
+          >
+            {STATUS_LABEL[position.status] ?? position.status}
+          </Badge>
+          {exitReasonBadge(
+            position.exit_reason,
+            position.pnl_sol,
+            position.last_entry_error,
+            'sm',
+          )}
+          {pnlPct != null ? (
+            <span className={`tabular-nums text-sm ${pctGradeClass(pnlPct)}`}>
+              {formatSignedPct(pnlPct, 1)}
+            </span>
+          ) : null}
+          {position.pnl_sol != null ? (
+            <span
+              className={`tabular-nums text-sm font-semibold ${signedToneClass(position.pnl_sol)}`}
+            >
+              {formatSigned(position.pnl_sol, 3)}◎
+            </span>
+          ) : null}
+        </span>
+      }
+      open
+      onClose={onClose}
+      size="xxl"
+    >
       <FloorPositionDetailWithFills
         positionId={position.id}
-        chartHeight={420}
+        chartHeight={360}
         facts={{
           mint: position.mint_address,
+          symbol: position.symbol,
           ruleId: position.rule_id ?? rule?.id ?? null,
           ruleName: rule?.rule_name ?? null,
           mode: position.mode ?? rule?.trade_mode ?? null,
           status: STATUS_LABEL[position.status] ?? position.status,
+          statusKey: position.status,
           entrySol: position.entry_sol ?? null,
           entryPrice: position.entry_price,
+          entryTokenAmount: position.entry_token_amount,
           exitPrice: position.exit_price,
+          exitSol: position.exit_sol_total ?? null,
+          exitTokenAmount: position.exit_token_amount,
+          exitReason: position.exit_reason,
           holdLabel: holdLabel(position),
           pnlSol: position.pnl_sol,
-          pnlPct: resolvePnlPct({
-            pnlSol: position.pnl_sol,
-            entrySol: position.entry_sol,
-            entryPrice: position.entry_price,
-            exitPrice: position.exit_price,
-          }),
+          pnlPct,
           inspect: inspectFromPosition(position),
           flowPatternKeys,
         }}

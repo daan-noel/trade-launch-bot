@@ -29,14 +29,10 @@ Live money surfaces after Rules Control/Evidence:
 
 ## Portfolio
 
-- `GET /api/portfolio/performance?range=today|7d|30d|all&mode=real|paper`
-- Totals + by-rule rows (`RulePeriodPnlRow`) with **PnL%** = `realized / total_entry`.
-- Page chart: **every** rule ranked by realized PnL (shared `RankedPnlBars`) — this replaced
-  the top-10-only `PortfolioByRuleCharts` bar cards, which silently hid the tail where the
-  losers live. Per-rule sparkline + rolling-window decay columns come from the closes series.
-- Row select → `PortfolioRuleDetail` (tiles, Evidence + Console-History links, closes in
-  range, mint chart). Its closes are now server-filtered by rule/mode/status/window, not
-  fetched 40-deep and trimmed client-side.
+- Keep/kill review board — see [`review-surfaces.md`](review-surfaces.md) § Portfolio.
+- `GET /api/portfolio/performance` + closes-series; UI default `7d`.
+- Window spark + named decay alerts → Rules; bars/table click highlights (`?rule=`).
+- Compact columns: Rule · PnL · Exp · Form · N · History.
 
 ## Rules Control TOTAL
 

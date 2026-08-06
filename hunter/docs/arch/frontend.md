@@ -54,7 +54,12 @@ trading moved to the Console); **Console = the one real-trade surface** (SSE SSO
 top-to-bottom: ⚠ Attention with per-status actions mirroring the backend close matrix,
 Open ∥ Manual-trade panel (buy 202→SSE, TP/SL, sell-all-by-mint, Holding Sell ALL / 25% / 50%, persistent trade log),
 collapsible Waiting, then **History**; rows carry origin dot / status+sub-chips / dead-pool ❗ /
-MTM / stale-age cue; row select opens the detail modal).
+MTM / stale-age cue; row select opens the detail modal — hero with graded PnL% /
+colored exit-reason pills / ops chips (dead, banked %, parked), the same close-action
+bar as the row, and a chart ∥ fills layout). Cockpit UX: sticky KPI strip, collapsible
+Manual trade (`consoleManualOpen`), shared `OpenPositionStatusChips`, ←/→ modal lane
+nav, Attention bulk Verify-stale / Retry-unparked, and mig `0003` backfill of legacy
+`position_fills`.
 
 The three lanes above History are the **cockpit** (live, SSE-driven, only what is still
 actionable); **History is the review surface** — one URL-backed cohort (date range · rule ·
@@ -64,8 +69,11 @@ the same rows. It replaced the old 50-row "Recent closed" lane, and it owns clos
 outright (there is no session-local closes buffer any more — see "Live Status SSOT" below).
 Detail: [review-surfaces.md](../plans/frontend/review-surfaces.md).
 
-Portfolio = the **rule scoreboard** (ranked realized-PnL bars over every rule, per-rule
-sparkline + rolling-window decay marker, History deep-links); Rules =
+Portfolio = the **keep/kill review board** (default window `7d`): window spark + realized,
+named decay alerts → Rules, ranked PnL bars + compact table (Rule · PnL · Exp · Form · N ·
+History). Bar/row click highlights (`?rule=`); rule name → Rules; History link → Console.
+Calendar-window closes, not
+Rules Control current-run scores. Rules =
 **Control** (TOTAL rollup + activate/pause + scoreboard scoped current-run / all-time) +
 **Evidence** pane (run navigator, summary, positions). Home leads with the **review digest**
 (7-day PnL sparkline, attention count, rule-decay alerts) and demotes the live trade feed to a
@@ -176,7 +184,8 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   app-root or route/table chunks up front — it must stay reachable only through a `lazy()`
   boundary, so it downloads when a chart actually mounts. Call sites use
   `LazyTokenTradeChart` / `LazyLabTokenInspect(Modal)` / `LazyTokenChartsGrid` /
-  `LazyFloorMintChart` (live Console + Portfolio + `FloorPositionDetail`) /
+  `LazyFloorMintChart` (live Console + `FloorPositionDetail`; Console manual-trade
+  passes `chrome="compact"` so the toolbar collapses behind a Tools toggle) /
   `LazyLivePositionInspectModal` (live Rules + Rule Analyze) / `LazyFlowPreviewChart` (lab
   Flow Discovery); all lazy Suspense fallbacks share `LoadingState` (`page` / `panel` /
   `inline`). Lab Creation Stats owns `GroupedCreationSection` (lab-only page — no live
@@ -472,8 +481,8 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
     Vol/non-vol overlay SSOT: `hooks/useFlowPatternKeys` (+ `useFlowPatternKeysForRule` /
     `useResolvedFlowPatternKeys`) and `lib/flow/flowPatternKeys` resolve fingerprint
     `volume_ix_patterns` → `flowPatternKeys`. Wired into Evidence `TokenTable` charts,
-    `LivePositionInspectModal`, Console History/open/waiting detail, Portfolio rule drill-in,
-    fingerprint matched-tokens, and sweep combo charts (run patterns; omit/empty ⇒ toolbar disabled).
+    `LivePositionInspectModal`, Console History/open/waiting detail, fingerprint matched-tokens,
+    and sweep combo charts (run patterns; omit/empty ⇒ toolbar disabled).
     The open-count selector lives in that leaf so a status tick re-renders the panel, not `RulesView`.
   - **lab** (`@lab/components/strategy/LabRuleEvidence`) passes `notice` + `renderInspect` + `scoreScope`
     (Evidence default follows the list's scoreboard scope) and serves

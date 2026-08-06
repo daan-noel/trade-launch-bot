@@ -1,23 +1,17 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
-import { StatTile } from 'components/ui/StatTile';
 import { PageHeader } from 'components/ui/PageHeader';
 import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { ModeToggle } from 'components/strategy/ModeToggle';
 import { LinkIcon } from 'components/ui/icons';
-import { consoleHref, consoleHistoryHref, rulesHref } from 'lib/strategy/nav';
-import { formatCompact } from 'utils/format';
+import { consoleHistoryHref, rulesHref } from 'lib/strategy/nav';
 import {
   formatSigned,
   formatSignedPct,
-  pctGradeClass,
-  signedStatTone,
   signedToneClass,
-  winRateGradeClass,
 } from 'lib/signedTone';
-import { pnlPctFromSol } from 'lib/pnlPct';
 import { useTimezone } from 'context/TimezoneContext';
 import { RankedPnlBars } from 'components/analytics/RankedPnlBars';
 import { PnlSparkline } from 'components/analytics/PnlSparkline';
@@ -29,9 +23,7 @@ import {
 import {
   useGetPortfolioClosesSeriesQuery,
   useGetPortfolioPerformanceQuery,
-  useGetPortfolioSummaryQuery,
 } from '@live/store/liveEndpoints';
-import { PortfolioRuleDetail } from '@live/components/portfolio/PortfolioRuleDetail';
 import type { PortfolioRulePnl } from 'types';
 
 const portfolioRuleRowKey = (r: PortfolioRulePnl) => r.rule_id;
@@ -51,10 +43,14 @@ const PORTFOLIO_RANGE_PRESETS: { value: Range; label: string }[] = [
  *  trade can't flip the verdict on its own. */
 const DECAY_WINDOW = 20;
 
+/** Window expectancy — mean SOL per closed trade. */
+function expectancySol(r: PortfolioRulePnl): number | null {
+  return r.closed > 0 ? r.realized_pnl_sol / r.closed : null;
+}
+
 /**
- * Portfolio — the **rule scoreboard**: which rules earn their keep, and is any
- * of them decaying. Rules = keep/kill · Console History = the trade browser ·
- * Portfolio = am I making money, and from what?
+ * Portfolio — keep/kill review board for a calendar window.
+ * Rank who earned SOL, flag decay, hand off to History (trades) or Rules (act).
  */
 export function PortfolioPage() {
   const [params, setParams] = useSearchParams();
@@ -66,9 +62,11 @@ export function PortfolioPage() {
     rawRange === '30d' ||
     rawRange === 'all'
       ? rawRange
-      : 'today';
+      : '7d';
   const mode = (params.get('mode') as Mode | null) ?? 'real';
   const selectedRule = params.get('rule');
+  const decayOnly = params.get('decay') === '1';
+
   const setRange = (r: Range) => {
     const next = new URLSearchParams(params);
     next.set('range', r);
@@ -79,15 +77,25 @@ export function PortfolioPage() {
     next.set('mode', m);
     setParams(next, { replace: true });
   };
+  const selectRule = useCallback(
+    (key: string | null) => {
+      const next = new URLSearchParams(params);
+      if (!key) next.delete('rule');
+      else next.set('rule', key);
+      setParams(next, { replace: true });
+    },
+    [params, setParams],
+  );
+  const toggleDecayFilter = useCallback(() => {
+    const next = new URLSearchParams(params);
+    if (decayOnly) next.delete('decay');
+    else next.set('decay', '1');
+    setParams(next, { replace: true });
+  }, [decayOnly, params, setParams]);
 
-  const { data: summary } = useGetPortfolioSummaryQuery();
   const { data, isLoading, isFetching } = useGetPortfolioPerformanceQuery({ range, mode });
-  // The per-close series (B2) — one fetch behind BOTH the sparkline column and
-  // the decay marker, so they can't disagree with each other or with the
-  // Console History charts, which fold the same payload.
+  // B2 series — portfolio spark + decay alerts/Form share one fold with History.
   const { data: series } = useGetPortfolioClosesSeriesQuery({ range, mode });
-
-  const openMtm = summary?.total_unrealized_pnl_sol ?? null;
 
   const ruleNameOf = useCallback(
     (id: string) => data?.by_rule.find((r) => r.rule_id === id)?.rule_name ?? `${id.slice(0, 8)}…`,
@@ -107,85 +115,93 @@ export function PortfolioPage() {
     [series],
   );
 
-  /** One fold feeds sparkline values + decay markers (same cohort walk). */
   const deck = useMemo(
     () =>
       foldPnlDeck(points, {
         timeZone: timezone,
         labelOf: ruleNameOf,
         window: DECAY_WINDOW,
-        only: ['sparks', 'trends'],
+        only: ['days', 'trends'],
       }),
     [points, timezone, ruleNameOf],
   );
-  const sparkByRule = deck.sparkByGroup;
+
+  const windowSpark = useMemo(() => deck.days.map((d) => d.pnlSol), [deck.days]);
   const trendByRule = useMemo(() => {
     const m = new Map<string, GroupTrend>();
     for (const t of deck.trends) m.set(t.groupId, t);
     return m;
   }, [deck.trends]);
 
-  const decayingCount = useMemo(
-    () => deck.trends.reduce((n, t) => n + (t.decaying ? 1 : 0), 0),
+  const decaying = useMemo(
+    () => deck.trends.filter((t) => t.decaying),
     [deck.trends],
   );
+  const decayingCount = decaying.length;
+
+  const effectiveDecayOnly = decayOnly && decayingCount > 0;
+  useEffect(() => {
+    if (decayOnly && decayingCount === 0 && trendByRule.size > 0) {
+      const next = new URLSearchParams(params);
+      next.delete('decay');
+      setParams(next, { replace: true });
+    }
+  }, [decayOnly, decayingCount, trendByRule.size, params, setParams]);
+
+  const tableRows = useMemo(() => {
+    const all = data?.by_rule ?? [];
+    if (!effectiveDecayOnly) return all;
+    const rows = all.filter((r) => trendByRule.get(r.rule_id)?.decaying);
+    return [...rows].sort((a, b) => {
+      const da = expectancySol(a) ?? 0;
+      const db = expectancySol(b) ?? 0;
+      return da - db;
+    });
+  }, [data?.by_rule, effectiveDecayOnly, trendByRule]);
 
   const rankedBars = useMemo(
     () =>
-      (data?.by_rule ?? []).map((r) => ({
+      tableRows.map((r) => ({
         key: r.rule_id,
         label: r.rule_name ?? r.rule_id.slice(0, 8),
         value: r.realized_pnl_sol,
         tag: trendByRule.get(r.rule_id)?.decaying ? 'decaying' : null,
         title: r.rule_name ?? r.rule_id,
       })),
-    [data?.by_rule, trendByRule],
+    [tableRows, trendByRule],
   );
 
-  // Recompute the realized/win-rate/rules tiles over the table's own filtered
-  // cohort (search + column filters), the way a server summary tracks its table.
-  // `onFilteredRowsChange` fires with every matching row (pre-pagination). Only
-  // treated as "filtered" when it narrows the set, so the unfiltered view keeps
-  // the server's authoritative totals (which may include unattributed closes).
   const [filteredRows, setFilteredRows] = useState<PortfolioRulePnl[] | null>(null);
   const onFilteredRowsChange = useCallback((r: PortfolioRulePnl[]) => setFilteredRows(r), []);
-  const tiles = useMemo(() => {
+  const summary = useMemo(() => {
     const full = data?.by_rule.length ?? 0;
-    const isFiltered = filteredRows != null && full > 0 && filteredRows.length < full;
-    if (!isFiltered || !filteredRows) {
-      return data
-        ? {
-            filtered: false,
-            realized: data.realized_pnl_sol,
-            closed: data.closed,
-            win: data.win,
-            loss: data.loss,
-            winRate: data.win_rate,
-            rules: full,
-          }
-        : null;
+    const base = effectiveDecayOnly ? tableRows : (data?.by_rule ?? []);
+    const baseLen = base.length;
+    const isFiltered =
+      filteredRows != null && baseLen > 0 && filteredRows.length < baseLen;
+    const rows = isFiltered && filteredRows ? filteredRows : base;
+    if (!data && rows.length === 0) return null;
+    if (!isFiltered && !effectiveDecayOnly && data) {
+      return {
+        filtered: false,
+        realized: data.realized_pnl_sol,
+        closed: data.closed,
+        rules: full,
+      };
     }
     let realized = 0;
     let closed = 0;
-    let win = 0;
-    let loss = 0;
-    for (const r of filteredRows) {
+    for (const r of rows) {
       realized += r.realized_pnl_sol;
       closed += r.closed;
-      win += r.win;
-      loss += r.loss;
     }
-    const decided = win + loss;
     return {
-      filtered: true,
+      filtered: isFiltered || effectiveDecayOnly,
       realized,
       closed,
-      win,
-      loss,
-      winRate: decided > 0 ? (win / decided) * 100 : 0,
-      rules: filteredRows.length,
+      rules: rows.length,
     };
-  }, [data, filteredRows]);
+  }, [data, filteredRows, effectiveDecayOnly, tableRows]);
 
   const columns: ColumnDef<PortfolioRulePnl>[] = useMemo(
     () => [
@@ -197,6 +213,7 @@ export function PortfolioPage() {
             to={rulesHref(r.rule_id)}
             className="inline-flex items-center gap-0.5 font-medium text-accent hover:text-primary hover:underline"
             onClick={(e) => e.stopPropagation()}
+            title="Open in Rules (keep / kill)"
           >
             <span>{r.rule_name ?? r.rule_id.slice(0, 8)}</span>
             <LinkIcon className="h-3.5 w-3.5 shrink-0" />
@@ -220,96 +237,27 @@ export function PortfolioPage() {
         filterNumber: (r) => r.realized_pnl_sol,
       },
       {
-        key: 'pnl_pct',
-        label: 'PnL%',
+        key: 'exp',
+        label: 'Exp',
         sortable: true,
         render: (r) => {
-          const pct = pnlPctFromSol(r.realized_pnl_sol, r.total_entry_sol);
-          return pct != null ? (
-            <span className={`tabular-nums text-xs ${pctGradeClass(pct)}`}>
-              {formatSignedPct(pct, 1)}
+          const exp = expectancySol(r);
+          return exp != null ? (
+            <span className={`tabular-nums text-xs ${signedToneClass(exp)}`} title="◎ per closed trade">
+              {formatSigned(exp, 4)}◎
             </span>
           ) : (
             <span className="text-text-dim">—</span>
           );
         },
-        sortValue: (r) => pnlPctFromSol(r.realized_pnl_sol, r.total_entry_sol) ?? 0,
-        searchValue: (r) => String(pnlPctFromSol(r.realized_pnl_sol, r.total_entry_sol) ?? ''),
-        filterNumber: (r) => pnlPctFromSol(r.realized_pnl_sol, r.total_entry_sol),
+        sortValue: (r) => expectancySol(r),
+        searchValue: (r) => String(expectancySol(r) ?? ''),
+        filterNumber: (r) => expectancySol(r),
       },
       {
-        key: 'win',
-        label: 'Win%',
-        sortable: true,
-        render: (r) =>
-          r.closed > 0 ? (
-            <span className={`tabular-nums text-xs ${winRateGradeClass(r.win_rate / 100)}`}>
-              {Math.round(r.win_rate)}%
-            </span>
-          ) : (
-            <span className="text-text-dim">—</span>
-          ),
-        sortValue: (r) => r.win_rate,
-        searchValue: (r) => String(r.win_rate),
-        filterNumber: (r) => (r.closed > 0 ? r.win_rate : null),
-      },
-      {
-        key: 'wl',
-        label: 'W/L',
-        render: (r) => (
-          <span className="tabular-nums text-xs">
-            <span className="text-green">{r.win}</span>
-            <span className="text-text-dim">/</span>
-            <span className="text-red">{r.loss}</span>
-          </span>
-        ),
-        searchValue: (r) => `${r.win}/${r.loss}`,
-        sortValue: (r) => r.win * 1_000_000 + r.loss,
-        sortable: true,
-      },
-      {
-        key: 'n',
-        label: 'N',
-        sortable: true,
-        render: (r) => <span className="tabular-nums text-xs text-text-mid">{r.closed}</span>,
-        sortValue: (r) => r.closed,
-        searchValue: (r) => String(r.closed),
-        filterNumber: (r) => r.closed,
-      },
-      {
-        key: 'entry',
-        label: 'Entry ◎',
-        sortable: true,
-        render: (r) => (
-          <span className="tabular-nums text-xs text-text-dim">
-            {formatCompact(r.total_entry_sol, 2)}
-          </span>
-        ),
-        sortValue: (r) => r.total_entry_sol,
-        searchValue: (r) => String(r.total_entry_sol),
-        filterNumber: (r) => r.total_entry_sol,
-      },
-      {
-        key: 'trend',
-        label: 'Trend',
-        width: '100px',
-        render: (r) => {
-          const spark = sparkByRule.get(r.rule_id);
-          if (!spark || spark.length === 0) return <span className="text-text-dim">—</span>;
-          return (
-            <PnlSparkline
-              values={spark}
-              title={`${r.rule_name ?? r.rule_id} — cumulative realized PnL by day`}
-            />
-          );
-        },
-        searchValue: () => '',
-      },
-      {
-        // The decay detector: last-N vs prior-N win rate AND expectancy. Both
-        // must be down to flag — either one alone flips on a single tail trade.
-        key: 'decay',
-        label: 'Δ Win%',
+        // Last-N vs prior-N: ▼ only when BOTH win rate AND expectancy fell.
+        key: 'form',
+        label: 'Form',
         sortable: true,
         render: (r) => {
           const t = trendByRule.get(r.rule_id);
@@ -323,6 +271,7 @@ export function PortfolioPage() {
               </span>
             );
           }
+          const expDelta = t.expectancyDeltaSol;
           return (
             <span
               className={`tabular-nums text-xs ${signedToneClass(t.winRateDeltaPp)}`}
@@ -330,11 +279,21 @@ export function PortfolioPage() {
                 `last ${DECAY_WINDOW}: ${t.recent.winRate?.toFixed(0)}% win, ` +
                 `${formatSigned(t.recent.expectancySol ?? 0, 4)}◎/trade\n` +
                 `prior ${DECAY_WINDOW}: ${t.prior.winRate?.toFixed(0)}% win, ` +
-                `${formatSigned(t.prior.expectancySol ?? 0, 4)}◎/trade`
+                `${formatSigned(t.prior.expectancySol ?? 0, 4)}◎/trade\n` +
+                `Δ win ${formatSignedPct(t.winRateDeltaPp, 0)}` +
+                (expDelta != null ? ` · Δ exp ${formatSigned(expDelta, 4)}◎/trade` : '') +
+                (t.decaying
+                  ? '\n▼ decaying — win rate and expectancy both down'
+                  : '')
               }
             >
               {t.decaying && <span className="mr-0.5 font-bold text-red">▼</span>}
               {formatSignedPct(t.winRateDeltaPp, 0)}
+              {expDelta != null && (
+                <span className={`ml-1 ${signedToneClass(expDelta)}`}>
+                  {formatSigned(expDelta, 3)}◎
+                </span>
+              )}
             </span>
           );
         },
@@ -343,15 +302,24 @@ export function PortfolioPage() {
         filterNumber: (r) => trendByRule.get(r.rule_id)?.winRateDeltaPp ?? null,
       },
       {
+        key: 'n',
+        label: 'N',
+        sortable: true,
+        render: (r) => <span className="tabular-nums text-xs text-text-mid">{r.closed}</span>,
+        sortValue: (r) => r.closed,
+        searchValue: (r) => String(r.closed),
+        filterNumber: (r) => r.closed,
+      },
+      {
         key: 'history',
         label: '',
-        width: '76px',
+        width: '72px',
         render: (r) => (
           <Link
             to={consoleHistoryHref({ ruleId: r.rule_id, range, mode })}
             className="text-[11px] font-semibold text-accent hover:underline"
             onClick={(e) => e.stopPropagation()}
-            title="Open this rule's trades in the Console History cohort"
+            title="Open this rule's trades in Console History"
           >
             History
           </Link>
@@ -359,121 +327,151 @@ export function PortfolioPage() {
         searchValue: () => '',
       },
     ],
-    [mode, range, sparkByRule, trendByRule],
+    [mode, range, trendByRule],
   );
 
-  const selectedRow = useMemo(
-    () => (selectedRule ? data?.by_rule.find((r) => r.rule_id === selectedRule) : undefined),
-    [data?.by_rule, selectedRule],
-  );
+  const entryFailed = series?.entry_failed ?? 0;
 
   return (
     <div className="flex flex-col gap-4">
-      <PageHeader
-        title="Portfolio"
-        description={
-          <>
-            Which rules earn their keep ·{' '}
-            <Link to={rulesHref()} className="text-accent hover:underline">
-              Rules
-            </Link>
-            {' · '}
-            <Link to={consoleHref()} className="text-accent hover:underline">
-              Console
-            </Link>
-            {' · '}
-            <Link to={consoleHistoryHref({ range, mode })} className="text-accent hover:underline">
-              Trade history
-            </Link>
-          </>
-        }
-      />
+      <PageHeader title="Portfolio" description="Keep / kill review for a calendar window." />
 
-      <div className="flex flex-wrap items-center gap-2">
-        <DateTimeRangePicker
-          aria-label="Date range"
-          size="sm"
-          zoneLabel={null}
-          allowCustom={false}
-          presets={PORTFOLIO_RANGE_PRESETS}
-          value={{ preset: range, from: '', to: '' }}
-          onChange={({ preset }) => setRange(preset)}
-        />
-        <ModeToggle
-          includeAll={false}
-          layout="ops"
-          size="sm"
-          value={mode}
-          onChange={setMode}
-        />
+      <div className="flex flex-col gap-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <DateTimeRangePicker
+            aria-label="Date range"
+            size="sm"
+            zoneLabel={null}
+            allowCustom={false}
+            presets={PORTFOLIO_RANGE_PRESETS}
+            value={{ preset: range, from: '', to: '' }}
+            onChange={({ preset }) => setRange(preset)}
+          />
+          <ModeToggle
+            includeAll={false}
+            layout="ops"
+            size="sm"
+            value={mode}
+            onChange={setMode}
+          />
+        </div>
+        <p className="text-[11px] text-text-dim">
+          Calendar-window closed PnL — not Rules Control current-run / all-time scores.
+        </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-        <StatTile
-          label={tiles?.filtered ? 'Realized · filtered' : 'Realized'}
-          value={tiles ? `◎${formatSigned(tiles.realized, 3)}` : '—'}
-          sub={tiles ? `${tiles.closed} closed` : undefined}
-          tone={signedStatTone(tiles?.realized ?? null)}
-        />
-        <StatTile
-          label="Win rate"
-          value={tiles && tiles.closed > 0 ? `${Math.round(tiles.winRate)}%` : '—'}
-          sub={tiles ? `${tiles.win}W / ${tiles.loss}L` : undefined}
-        />
-        <StatTile
-          label="Open MTM"
-          value={openMtm != null ? `◎${formatSigned(openMtm, 3)}` : '—'}
-          sub="wallet unrealized"
-          tone={signedStatTone(openMtm)}
-        />
-        <StatTile
-          label="Decaying rules"
-          value={trendByRule.size > 0 ? decayingCount : '—'}
-          sub={
-            trendByRule.size > 0
-              ? `of ${tiles?.rules ?? 0} · last ${DECAY_WINDOW} vs prior`
-              : isFetching
-                ? 'refreshing…'
-                : 'needs 2 windows'
-          }
-          tone={decayingCount > 0 ? 'red' : 'muted'}
-        />
+      {/* Window money — spark answers "am I making money?" before the table. */}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border border-white/6 bg-bg-panel px-3 py-2.5">
+        <div className="flex items-center gap-2.5">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
+            {summary?.filtered ? 'Realized · filtered' : 'Realized'}
+          </span>
+          <PnlSparkline
+            values={windowSpark}
+            width={120}
+            height={24}
+            title="Daily realized PnL in this window"
+          />
+          <span
+            className={`tabular-nums text-lg font-semibold ${signedToneClass(summary?.realized ?? 0)}`}
+          >
+            {summary ? `${formatSigned(summary.realized, 3)}◎` : '—'}
+          </span>
+        </div>
+        <span className="text-[11px] text-text-dim">
+          {summary
+            ? `${summary.closed} closed · ${summary.rules} rule${summary.rules === 1 ? '' : 's'}`
+            : isFetching
+              ? 'refreshing…'
+              : '—'}
+        </span>
+        {entryFailed > 0 && (
+          <span
+            className="text-[11px] text-text-dim"
+            title="Buys that never filled in this window — no SOL deployed"
+          >
+            {entryFailed} entry-failed
+          </span>
+        )}
+        <Link
+          to={consoleHistoryHref({ range, mode })}
+          className="ml-auto text-[11px] font-semibold text-accent hover:underline"
+        >
+          Review all trades →
+        </Link>
       </div>
+
+      {decayingCount > 0 && (
+        <div className="flex flex-col gap-1.5 rounded-lg border border-red/25 bg-red/5 px-3 py-2.5">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-red">
+              Rule alerts · {decayingCount}
+            </span>
+            <button
+              type="button"
+              onClick={toggleDecayFilter}
+              className="text-[11px] font-semibold text-accent hover:underline"
+            >
+              {effectiveDecayOnly ? 'Show all rules' : 'Show only decaying'}
+            </button>
+          </div>
+          {decaying.map((t) => (
+            <Link
+              key={t.groupId}
+              to={rulesHref(t.groupId)}
+              className="text-[11px] text-text-mid hover:text-text hover:underline"
+            >
+              <span className="font-semibold text-red">▼ {t.label}</span>
+              : win{' '}
+              <span className="tabular-nums">{t.recent.winRate?.toFixed(0)}%</span>
+              {' '}over last {DECAY_WINDOW} vs{' '}
+              <span className="tabular-nums">{t.prior.winRate?.toFixed(0)}%</span>
+              , and{' '}
+              <span className={`tabular-nums ${signedToneClass(t.recent.expectancySol ?? 0)}`}>
+                {formatSigned(t.recent.expectancySol ?? 0, 4)}◎
+              </span>
+              /trade vs{' '}
+              <span className="tabular-nums">
+                {formatSigned(t.prior.expectancySol ?? 0, 4)}◎
+              </span>
+            </Link>
+          ))}
+        </div>
+      )}
 
       {rankedBars.length > 0 && (
         <div className="rounded-lg border border-white/6 bg-bg-panel p-3">
           <h2 className="mb-2 text-[10px] font-bold uppercase tracking-wider text-text-dim">
-            Realized PnL by rule — every rule in the window
+            Realized PnL by rule
+            {effectiveDecayOnly ? ' · decaying only' : ''}
           </h2>
-          <RankedPnlBars rows={rankedBars} emptyMessage="No closed trades in this window." />
+          <RankedPnlBars
+            rows={rankedBars}
+            selectedKey={selectedRule}
+            onSelectRow={(key) => selectRule(selectedRule === key ? null : key)}
+            emptyMessage="No closed trades in this window."
+          />
         </div>
       )}
 
       <DataTable
         columns={columns}
-        rows={data?.by_rule ?? []}
+        rows={tableRows}
         rowKey={portfolioRuleRowKey}
         loading={isLoading}
         searchable
         defaultSort={{ col: 'pnl', dir: 'desc' }}
         tableId="portfolio-by-rule"
         pinnable
-        emptyMessage="No closed trades in this window."
+        emptyMessage={
+          effectiveDecayOnly
+            ? 'No decaying rules in this window.'
+            : 'No closed trades in this window.'
+        }
         onFilteredRowsChange={onFilteredRowsChange}
         selectedKey={selectedRule}
-        rowDetail={(r) => <PortfolioRuleDetail row={r} range={range} mode={mode} />}
-        onSelect={(key) => {
-          const next = new URLSearchParams(params);
-          if (!key) next.delete('rule');
-          else next.set('rule', key);
-          setParams(next, { replace: true });
-        }}
+        onSelect={selectRule}
       />
-
-      {/* Keep selection keyed even if table remounts mid-fetch */}
-      {selectedRule && !selectedRow && !isLoading ? (
-        <p className="text-[11px] text-text-dim">Selected rule has no closes in this window.</p>
-      ) : null}
     </div>
   );
 }

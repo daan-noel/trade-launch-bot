@@ -213,6 +213,11 @@ export interface ChartBarTooltipState {
   point: { x: number; y: number };
 }
 
+/** Toolbar density. `compact` collapses controls behind a Tools toggle — for
+ *  narrow hosts (Console manual-trade column) where the full toolbar wraps
+ *  taller than the plot. */
+export type ChartChrome = 'full' | 'compact';
+
 export interface TokenPriceChartProps {
   symbol: string;
   /** Token id (mint, address, etc.) — empty shows placeholder. */
@@ -229,6 +234,12 @@ export interface TokenPriceChartProps {
   metric?: ChartMetric;
   onMetricChange?: (metric: ChartMetric) => void;
   className?: string;
+  /**
+   * `full` (default) — always show the control cluster.
+   * `compact` — one thin title row + Tools toggle; expand to the full toolbar.
+   * Expand state persists per `id` under `STORAGE_KEYS.chartToolbarOpen`.
+   */
+  chrome?: ChartChrome;
   /** Fixed pixel height. Omit (the default) to size the height to the chart's
    *  measured width for a readable aspect ratio instead of a wide-flat band. */
   height?: number;
@@ -287,6 +298,11 @@ export interface ChartToolbarProps {
   priceUnit?: PriceUnit;
   metric?: ChartMetric;
   tradeCount: number;
+  /** See {@link ChartChrome}. Default `full`. */
+  chrome?: ChartChrome;
+  /** When `chrome="compact"`, whether the full control cluster is expanded. */
+  toolsOpen?: boolean;
+  onToolsOpenChange?: (open: boolean) => void;
   showTradeMarkers: boolean;
   showWalletMarkers: boolean;
   /** Dev/creator marker toggle state. */

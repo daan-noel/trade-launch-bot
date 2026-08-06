@@ -96,6 +96,9 @@ export function formatWithCommas(n: number): string {
  * Compact duration for live countdowns/elapsed (e.g. `45s`, `2m 15s`, `1h 3m`).
  * Unlike {@link formatAge} this keeps the second-level unit under an hour, so a
  * progress ETA visibly ticks down. Sub-second / negative inputs clamp to `0s`.
+ *
+ * Also the ONE formatter for position Age / Held cells (Console open, attention
+ * and waiting lanes, History `Held`, the position detail modals).
  */
 export function formatDurationShort(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
