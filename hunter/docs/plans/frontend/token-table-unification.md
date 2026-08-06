@@ -15,7 +15,7 @@ asserted by `DataTable.boundary.test.ts`) and owns the "token recipe":
 
 1. **Append the shared token-info columns** (`appendedTokenColumns(existingKeys)`, SSOT)
    after the caller's bespoke columns — callers export only their own columns + an
-   `existingKeys` set (`POSITION_KEYS`/`MATCHED_KEYS`/`SIM_KEYS`); a table that owns its
+   `existingKeys` set (`POSITION_KEYS`/`SIM_KEYS`); a table that owns its
    full layout passes `ALL_TOKEN_INFO_KEYS` to append nothing (Tokens page, Trader
    Analysis, Sweep drill-in, Wallet).
 2. **Own the table wiring** in one of two modes:

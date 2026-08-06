@@ -1,7 +1,6 @@
 // Append-only fill ledger table for a position dialog (entry + every sell leg).
 // Per-leg PnL% / hold are derived from the position entry — never stored columns.
 
-import { useMemo } from 'react';
 import { Badge } from 'components/ui/Badge';
 import { formatCompact } from 'utils/format';
 import { formatSignedPct, pctGradeClass } from 'lib/signedTone';
@@ -115,12 +114,10 @@ export function PositionFillsLedger({
   loading,
   reconstructed,
 }: PositionFillsLedgerProps) {
-  const rows = useMemo(() => fills, [fills]);
-
   if (loading) {
     return <p className="text-[11px] text-text-dim">loading fills…</p>;
   }
-  if (rows.length === 0) {
+  if (fills.length === 0) {
     return (
       <p className="text-[11px] text-text-dim/60">
         No fills yet — entry still in flight, or this row has no entry snapshot.
@@ -151,7 +148,7 @@ export function PositionFillsLedger({
           </tr>
         </thead>
         <tbody>
-          {rows.map((f) => {
+          {fills.map((f) => {
             const pnlPct =
               f.side === 'sell' && entryPrice != null && entryPrice > 0
                 ? ((f.price - entryPrice) / entryPrice) * 100

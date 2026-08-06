@@ -2,6 +2,12 @@ import type { ReactNode } from 'react';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { ModeBadge } from 'components/strategy/ModeBadge';
 import { exitReasonBadge } from 'components/strategy/strategyColumns';
+import {
+  formatSigned,
+  formatSignedPct,
+  pctGradeClass,
+  signedToneClass,
+} from 'lib/signedTone';
 
 /** Display labels for engine position statuses — Console + modal title SSOT. */
 export const OPEN_STATUS_LABEL: Record<string, string> = {
@@ -112,6 +118,59 @@ export function OpenPositionStatusChips({
         <Badge variant="warning" size={size}>
           stale — verify
         </Badge>
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * The header of a position modal — identity · status · exit · PnL, in that
+ * order. ONE definition, shared by the Console's open rows, Console History and
+ * Rules Evidence: the three used to hand-roll the same span and had already
+ * drifted on the status badge color (History painted every non-`EntryFailed`
+ * row `primary`, so a closed winner and a stuck exit looked alike).
+ */
+export function PositionModalTitle({
+  mint,
+  symbol,
+  status,
+  exitReason,
+  entryError,
+  pnlSol,
+  pnlPct,
+}: {
+  mint: string;
+  /** Falls back to a truncated mint when the row has no symbol. */
+  symbol?: string | null;
+  /** Raw engine status key (not the display label). */
+  status: string;
+  exitReason?: string | null;
+  /** `last_entry_error` — an `EntryFailed` row has no exit reason to show. */
+  entryError?: string | null;
+  /** MTM for an open row, realized PnL for a closed one. */
+  pnlSol?: number | null;
+  pnlPct?: number | null;
+}): ReactNode {
+  return (
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <span className={symbol ? undefined : 'font-mono'}>
+        {symbol || `${mint.slice(0, 8)}…`}
+      </span>
+      <Badge variant={openStatusBadgeVariant(status)} size="sm">
+        {OPEN_STATUS_LABEL[status] ?? status}
+      </Badge>
+      {exitReason || entryError
+        ? exitReasonBadge(exitReason, pnlSol, entryError ?? null, 'sm')
+        : null}
+      {pnlPct != null ? (
+        <span className={`tabular-nums text-sm ${pctGradeClass(pnlPct)}`}>
+          {formatSignedPct(pnlPct, 1)}
+        </span>
+      ) : null}
+      {pnlSol != null ? (
+        <span className={`tabular-nums text-sm font-semibold ${signedToneClass(pnlSol)}`}>
+          {formatSigned(pnlSol, 3)}◎
+        </span>
       ) : null}
     </span>
   );

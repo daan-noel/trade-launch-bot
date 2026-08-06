@@ -12,9 +12,13 @@ import { Link } from 'react-router-dom';
 import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef, TableQuery } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
-import { InlineAlert, Modal } from 'components/ui/Modal';
-import { FloorPositionDetailWithFills } from '@live/components/floor/FloorPositionDetailWithFills';
+import { InlineAlert } from 'components/ui/Modal';
+import {
+  OPEN_STATUS_LABEL,
+  openStatusBadgeVariant,
+} from '@live/components/floor/openPositionStatus';
 import { usePositionArrowNav } from '@live/components/floor/usePositionArrowNav';
+import { LazyLivePositionInspectModal } from '@live/components/strategy/LazyLivePositionInspectModal';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { AmountCell } from 'components/tokens/priceCells';
 import { DateCell } from 'components/table/DateCell';
@@ -22,11 +26,10 @@ import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
 import { ModeBadge } from 'components/strategy/ModeBadge';
 import { exitReasonBadge } from 'components/strategy/strategyColumns';
 import { exitReasonSearchText } from 'lib/strategy/exitReason';
-import { formatSigned, formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
+import { formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
+import { holdLabel } from 'lib/holdLabel';
 import { resolvePnlPct } from 'lib/pnlPct';
-import { formatDurationShort } from 'utils/format';
 import { ruleAnalyzeHref } from 'lib/strategy/nav';
-import { useFlowPatternKeysForRule } from 'hooks/useFlowPatternKeys';
 import { fetchPortfolioPositionsPage } from 'services/api';
 import { numericColKeys, toTableRequest } from 'services/tableRequest';
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
@@ -49,25 +52,6 @@ import {
 
 /** Stable row key — hoisted so DataTable doesn't see a fresh closure each render. */
 const historyPositionRowKey = (r: RulePositionRecord) => r.id;
-
-/** `entry_time` → `exit_time` as a compact hold label. */
-function holdLabel(r: RulePositionRecord): string | null {
-  if (!r.entry_time) return null;
-  const start = Date.parse(r.entry_time);
-  const end = r.exit_time ? Date.parse(r.exit_time) : Date.now();
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
-  return formatDurationShort((end - start) / 1000);
-}
-
-const STATUS_LABEL: Record<string, string> = {
-  BuySubmitted: 'Buy submitted',
-  Holding: 'Holding',
-  ExitPending: 'Exit pending',
-  ExitUnconfirmed: 'Exit unconfirmed',
-  ExitStuck: 'Exit stuck',
-  End: 'End',
-  EntryFailed: 'Entry failed',
-};
 
 /**
  * Columns. Keys that filter/sort server-side must match the backend whitelist
@@ -106,14 +90,14 @@ function historyColumns(
       sortable: true,
       render: (r) => (
         <span className="inline-flex flex-wrap items-center gap-1">
-          <Badge variant={r.status === 'EntryFailed' ? 'neutral' : 'primary'}>
-            {STATUS_LABEL[r.status] ?? r.status}
+          <Badge variant={openStatusBadgeVariant(r.status)}>
+            {OPEN_STATUS_LABEL[r.status] ?? r.status}
           </Badge>
           {(r.mode === 'paper' || r.mode === 'real') && <ModeBadge mode={r.mode} />}
         </span>
       ),
       sortValue: (r) => r.status,
-      searchValue: (r) => STATUS_LABEL[r.status] ?? r.status,
+      searchValue: (r) => OPEN_STATUS_LABEL[r.status] ?? r.status,
     },
     {
       key: 'exit_reason',
@@ -179,7 +163,7 @@ function historyColumns(
       key: 'hold',
       label: 'Held',
       render: (r) => {
-        const h = holdLabel(r);
+        const h = holdLabel(r.entry_time, r.exit_time);
         return h ? (
           <span className="tabular-nums text-text-dim">{h}</span>
         ) : (
@@ -357,15 +341,6 @@ export const HistoryTable = memo(function HistoryTable({
   // detail modal rather than the Console page: a position from any date opens
   // here, not just one still in the session's live lane.
   const inspect = selectedKey ? (rows.find((r) => r.id === selectedKey) ?? null) : null;
-  const inspectPnlPct = inspect
-    ? resolvePnlPct({
-        pnlSol: inspect.pnl_sol,
-        entrySol: inspect.entry_sol,
-        entryPrice: inspect.entry_price,
-        exitPrice: inspect.exit_price,
-      })
-    : null;
-  const flowPatternKeys = useFlowPatternKeysForRule(inspect?.rule_id);
   const heatScanCapped = clientScanFocus && total >= HEAT_SCAN_PAGE_SIZE;
 
   const handleSelect = useCallback(
@@ -424,70 +399,12 @@ export const HistoryTable = memo(function HistoryTable({
       />
 
       {inspect && (
-        <Modal
-          title={
-            <span className="inline-flex flex-wrap items-center gap-2">
-              <span>{inspect.symbol || `${inspect.mint_address.slice(0, 8)}…`}</span>
-              <Badge
-                variant={inspect.status === 'EntryFailed' ? 'danger' : 'primary'}
-                size="sm"
-              >
-                {STATUS_LABEL[inspect.status] ?? inspect.status}
-              </Badge>
-              {exitReasonBadge(inspect.exit_reason, inspect.pnl_sol, inspect.last_entry_error, 'sm')}
-              {inspectPnlPct != null ? (
-                <span className={`tabular-nums text-sm ${pctGradeClass(inspectPnlPct)}`}>
-                  {formatSignedPct(inspectPnlPct, 1)}
-                </span>
-              ) : null}
-              {inspect.pnl_sol != null ? (
-                <span
-                  className={`tabular-nums text-sm font-semibold ${signedToneClass(inspect.pnl_sol)}`}
-                >
-                  {formatSigned(inspect.pnl_sol, 3)}◎
-                </span>
-              ) : null}
-            </span>
-          }
-          open
+        <LazyLivePositionInspectModal
+          position={inspect}
+          rule={null}
+          ruleName={ruleNameOf(inspect.rule_id)}
           onClose={() => onSelect(null)}
-          size="xxl"
-        >
-          <FloorPositionDetailWithFills
-            positionId={inspect.id}
-            facts={{
-              mint: inspect.mint_address,
-              symbol: inspect.symbol,
-              ruleId: inspect.rule_id,
-              ruleName: ruleNameOf(inspect.rule_id),
-              mode: inspect.mode ?? null,
-              status: STATUS_LABEL[inspect.status] ?? inspect.status,
-              statusKey: inspect.status,
-              entrySol: inspect.entry_sol ?? null,
-              entryPrice: inspect.entry_price,
-              entryTokenAmount: inspect.entry_token_amount,
-              exitPrice: inspect.exit_price,
-              exitSol: inspect.exit_sol_total ?? null,
-              exitTokenAmount: inspect.exit_token_amount,
-              exitReason: inspect.exit_reason,
-              holdLabel: holdLabel(inspect),
-              pnlSol: inspect.pnl_sol,
-              pnlPct: inspectPnlPct,
-              inspect: {
-                mint_address: inspect.mint_address,
-                entryTime: inspect.entry_time,
-                entryPrice: inspect.entry_price,
-                entryTx: inspect.entry_tx || null,
-                exitTime: inspect.exit_time,
-                exitPrice: inspect.exit_price,
-                exitTx: inspect.exit_tx,
-                exitLabel: inspect.exit_reason,
-              },
-              flowPatternKeys,
-            }}
-            chartHeight={360}
-          />
-        </Modal>
+        />
       )}
     </>
   );

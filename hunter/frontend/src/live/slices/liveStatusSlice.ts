@@ -269,8 +269,9 @@ export const {
 
 export default liveStatusSlice.reducer;
 
-/** Selectors — pages must read these, never a private Map. */
-export const selectLiveStatus = (s: { liveStatus: LiveStatusState }) => s.liveStatus;
+/** Selectors — pages must read these, never a private Map. Each is a narrow
+ *  slice read on purpose: a whole-slice selector would re-render its subscriber
+ *  on every SSE delta, including ones it doesn't care about. */
 export const selectLiveArmed = (s: { liveStatus: LiveStatusState }) => s.liveStatus.armed;
 export const selectLiveOpen = (s: { liveStatus: LiveStatusState }) => s.liveStatus.open;
 export const selectLiveStatusHydrated = (s: { liveStatus: LiveStatusState }) => s.liveStatus.hydrated;

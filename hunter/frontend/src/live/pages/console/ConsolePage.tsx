@@ -37,10 +37,9 @@ import { LazyFloorMintChart } from '@live/components/floor/LazyFloorMintChart';
 import {
   OPEN_STATUS_LABEL,
   OpenPositionStatusChips,
-  openStatusBadgeVariant,
+  PositionModalTitle,
 } from '@live/components/floor/openPositionStatus';
 import { usePositionArrowNav } from '@live/components/floor/usePositionArrowNav';
-import { exitReasonBadge } from 'components/strategy/strategyColumns';
 import {
   useCloseRulePositionMutation,
   useGetPortfolioHoldingsQuery,
@@ -869,23 +868,13 @@ export function ConsolePage() {
   const openModalTitle = (r: LiveOpenRow) => {
     const { mtmSol, mtmPct } = openMark(r);
     return (
-      <span className="inline-flex flex-wrap items-center gap-2">
-        <span className="font-mono">{r.mint.slice(0, 8)}…</span>
-        <Badge variant={openStatusBadgeVariant(r.status)} size="sm">
-          {OPEN_STATUS_LABEL[r.status] ?? r.status}
-        </Badge>
-        {r.exitReason ? exitReasonBadge(r.exitReason, mtmSol, null, 'sm') : null}
-        {mtmPct != null ? (
-          <span className={`tabular-nums text-sm ${pctGradeClass(mtmPct)}`}>
-            {formatSignedPct(mtmPct, 1)}
-          </span>
-        ) : null}
-        {mtmSol != null ? (
-          <span className={`tabular-nums text-sm font-semibold ${signedToneClass(mtmSol)}`}>
-            {formatSigned(mtmSol, 3)}◎
-          </span>
-        ) : null}
-      </span>
+      <PositionModalTitle
+        mint={r.mint}
+        status={r.status}
+        exitReason={r.exitReason}
+        pnlSol={mtmSol}
+        pnlPct={mtmPct}
+      />
     );
   };
 
@@ -1234,21 +1223,19 @@ export function ConsolePage() {
           {waitingOpen ? '▾' : '▸'} Waiting ({waitingRows.length})
         </button>
         {waitingOpen && (
-          <>
-            <DataTable
-              columns={waitingCols}
-              rows={waitingRows}
-              rowKey={waitingRowKey}
-              searchable
-              tableId="console-waiting"
-              emptyMessage="No armed (waiting) rules."
-              selectedKey={selectedKey}
-              onSelect={(key) => {
-                const row = waitingRows.find((r) => r.key === key);
-                selectRow(key, row?.mint);
-              }}
-            />
-          </>
+          <DataTable
+            columns={waitingCols}
+            rows={waitingRows}
+            rowKey={waitingRowKey}
+            searchable
+            tableId="console-waiting"
+            emptyMessage="No armed (waiting) rules."
+            selectedKey={selectedKey}
+            onSelect={(key) => {
+              const row = waitingRows.find((r) => r.key === key);
+              selectRow(key, row?.mint);
+            }}
+          />
         )}
       </section>
 

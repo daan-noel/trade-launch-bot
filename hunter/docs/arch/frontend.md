@@ -237,7 +237,7 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   token count) so a small elite fingerprint group can out-rank a big group of
   mediocre launches. Drill-down opens
   `LazyLabTokenInspectModal` via `inspectFromMint` — same chart + metric panes as
-  Tokens, not the live-only `TokenDetailModal`), Tokens (detail = chart +
+  Tokens), Tokens (detail = chart +
   metric panes via `LabTokenInspect`), **TraderAnalysis**, Rules (authoring + dry-run
   **+ Evidence over the traded real/paper positions from the synced mirror**, where a
   fill opens the metric panes — see the Rule Evidence bullet below)/Fingerprints/
@@ -477,7 +477,11 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   - **live** (`@live/pages/strategies/RulesPage` → `LiveRuleEvidence`, and the standalone
     `RuleAnalyzePage`) passes `liveUpdates` (SSE on the same `rule_id` triggers `reload()`) +
     `liveOpenCount` from `selectOpenByRule` + `renderInspect` → `LivePositionInspectModal`
-    (Floor chart + fills ledger — same body as Console History; no metric panes on this bin).
+    (Floor chart + fills ledger; no metric panes on this bin). That component **is** Console
+    History's row modal too — History renders `LazyLivePositionInspectModal` with `rule={null}`
+    + a resolved `ruleName`, so the `RulePositionRecord` → `FloorDetailFacts` mapping and the
+    modal header exist once. The header itself is `PositionModalTitle` in
+    `@live/components/floor/openPositionStatus`, shared with the Console's open-row modal.
     Vol/non-vol overlay SSOT: `hooks/useFlowPatternKeys` (+ `useFlowPatternKeysForRule` /
     `useResolvedFlowPatternKeys`) and `lib/flow/flowPatternKeys` resolve fingerprint
     `volume_ix_patterns` → `flowPatternKeys`. Wired into Evidence `TokenTable` charts,
@@ -523,7 +527,7 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
 - **`TokenTable` = the ONE wrapper for every token-row table** (`components/tokens/TokenTable.tsx`).
   It owns the "token recipe" over `DataTable`: (1) append the shared token-info columns
   (`appendedTokenColumns`, so callers export only their bespoke columns + an `existingKeys` set — see
-  `components/strategy/strategyColumns` `POSITION_KEYS`/`MATCHED_KEYS`/`SIM_KEYS`, each derived straight from
+  `components/strategy/strategyColumns` `POSITION_KEYS`/`SIM_KEYS`, each derived straight from
   its column array so keys can't drift from what's rendered; a table that owns its full layout
   passes `ALL_TOKEN_INFO_KEYS` to append nothing); (2) own the table wiring. **Two modes:** **server**
   (`serverSide` + `serverTotal`/`onQueryChange`/`resetKey`) — rows arrive backend-enriched one page at a
@@ -591,8 +595,8 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   `tpsl1/2 utils.ts`), `inspectTarget.ts` (the `InspectTarget` type + `inspectFromSim`/
   `inspectFromPosition` mappers, previously copy-pasted across five pages and both modal forks).
 - **One strategy-table column SSOT (`strategyColumns.tsx` in `shared/components/strategy/`).** The
-  Positions / Matched / Sim tables' `positionColumns`/`matchedColumns`/`simColumns` (+ their
-  `POSITION_KEYS`/`MATCHED_KEYS`/`SIM_KEYS`) + `exitReasonBadge` live here **once**. The
+  Positions / Sim tables' `positionColumns`/`simColumns` (+ their
+  `POSITION_KEYS`/`SIM_KEYS`) + `exitReasonBadge` live here **once**. The
   **target/entry/exit** trade legs — each with **Price · Tokens · Size · Time · Tx** — are emitted by one
   `legColumns(prefix, accessors, opts)` builder (`Size` = `solOf(price, tokens)` unless a real SOL field is
   given; Tokens/Tx columns drop when their accessor is absent). This replaced the two copy-pasted

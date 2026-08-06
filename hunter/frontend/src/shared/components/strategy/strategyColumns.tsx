@@ -1,5 +1,5 @@
 import type { ColumnDef } from 'components/table/types';
-import type { RulePositionRecord, MatchedTokenRecord, SimulatedTokenResult } from 'types';
+import type { RulePositionRecord, SimulatedTokenResult } from 'types';
 import { ageClass, formatAge, formatDecimalTrim } from 'utils/format';
 import { AmountCell, CurrentPriceCell } from 'components/tokens/priceCells';
 import { DateCell } from 'components/table/DateCell';
@@ -475,37 +475,6 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = (
 ] as ColumnDef<RulePositionRecord>[]
 ).map((c) => (POSITION_HIDDEN_KEYS.has(c.key) ? { ...c, defaultVisible: false } : c));
 
-export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
-  {
-    key: 'symbol',
-    label: 'Symbol',
-    group: 'identity',
-    sortable: true,
-    render: (r) => <AddressDisplay address={r.mint_address} kind="token" display={r.symbol} />,
-    sortValue: (r) => r.symbol,
-    searchValue: (r) => `${r.symbol} ${r.name}`,
-  },
-  mintColumn<MatchedTokenRecord>(),
-  {
-    key: 'name',
-    label: 'Name',
-    group: 'identity',
-    sortable: true,
-    render: (r) => <span className="text-text-dim">{r.name}</span>,
-    sortValue: (r) => r.name,
-    searchValue: (r) => r.name,
-  },
-  {
-    key: 'created',
-    label: 'Created',
-    group: 'activity',
-    sortable: true,
-    render: (r) => <DateCell iso={r.created_at} />,
-    sortValue: (r) => r.created_at,
-    searchValue: (r) => r.created_at,
-  },
-];
-
 /**
  * Dry-run / sim trades columns that default to HIDDEN. Same philosophy as
  * `POSITION_HIDDEN_KEYS`: price + time per leg stay visible; the per-leg Tokens,
@@ -669,5 +638,4 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = (
 // them when appending the shared token-info set. Derived straight from the column
 // arrays above so they can NEVER drift from what is actually shown.
 export const POSITION_KEYS = new Set(positionColumns.map((c) => c.key));
-export const MATCHED_KEYS = new Set(matchedColumns.map((c) => c.key));
 export const SIM_KEYS = new Set(simColumns.map((c) => c.key));
