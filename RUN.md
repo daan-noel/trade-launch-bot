@@ -108,8 +108,16 @@ cd hunter/frontend; npm run dev:lab            # frontend → :5174
 ```powershell
 cargo run -p hunter-lab -- lake-export        # export sealed PG days → Parquet lake ($SWEEP_LAKE_DIR)
 cargo run -p hunter-lab -- lake-export --include-today   # include today's (unsealed) tokens
+cargo run -p hunter-lab -- reroll-run <run-uuid>...      # recompute a FINISHED run's strategy_run_metrics
 cargo run -p hunter-live -- probe <ladder|fanout|simulate-sell|holdings> [args]
 ```
+
+`reroll-run` is the manual lever for a finalized run whose membership changed after
+the fact (a position reattributed between runs, a straggler that settled while the
+process was down). It folds through the same `exact_run_metrics` kernel a live
+finalize uses — never recompute run metrics in SQL. It refuses a still-`Running`
+run, because "a `strategy_run_metrics` row exists" is what the run navigator reads
+as "this run is over" (`--force` overrides).
 
 ---
 

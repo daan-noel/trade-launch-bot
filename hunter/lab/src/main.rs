@@ -57,6 +57,19 @@ async fn main() -> anyhow::Result<()> {
         return run_lake_export(include_today).await;
     }
 
+    // `lab reroll-run <uuid>...` — recompute those runs' `strategy_run_metrics`
+    // from their current positions, then exit. Metrics are normally written once,
+    // when a run is finalized; this is the manual lever for the case where a
+    // finalized run's membership changed afterwards (a position reattributed
+    // between runs, a straggler settled while the process was down). It goes
+    // through `StrategyRepo::roll_up_run` — i.e. the same `exact_run_metrics`
+    // kernel a live finalize uses — so a hand-repaired run stays comparable with
+    // every other run and with a backtest. Never recompute these in SQL.
+    if std::env::args().nth(1).as_deref() == Some("reroll-run") {
+        let ids: Vec<String> = std::env::args().skip(2).filter(|a| !a.starts_with("--")).collect();
+        return run_reroll(&ids).await;
+    }
+
     let settings = config::Settings::from_env().context("Failed to load configuration")?;
     // Same tip/CU knobs live applies to the trader — CostModel's fixed per-leg
     // cost reads them via FeeTuning::current().
@@ -265,6 +278,55 @@ async fn run_lake_export(include_today: bool) -> anyhow::Result<()> {
         summary.tokens_written,
         root.display()
     );
+    Ok(())
+}
+
+/// `lab reroll-run <uuid>...`: re-roll each run's metrics row from its current
+/// positions and exit. Batch job — no HTTP, no pollers. Idempotent (the upsert
+/// only advances a row with an older `rolled_up_at`), so re-running is harmless.
+async fn run_reroll(ids: &[String]) -> anyhow::Result<()> {
+    if ids.is_empty() {
+        anyhow::bail!("usage: hunter-lab reroll-run <run-uuid> [<run-uuid>...]");
+    }
+    let settings = config::Settings::from_env().context("Failed to load configuration")?;
+    // The cost model's fixed per-leg cost is env-derived; a rollup prices PnL
+    // through it, so install the same tuning a live finalize would have used.
+    config::FeeTuning::from_env()
+        .context("Failed to load fee/tip tuning for CostModel")?
+        .install();
+    let storage::postgres::DbPools { batch: batch_db, .. } =
+        storage::postgres::connect(&settings).await?;
+    let repo = storage::repositories::strategy_repo::StrategyRepo::new(batch_db);
+
+    let force = std::env::args().any(|a| a == "--force");
+    for raw in ids {
+        let id: uuid::Uuid = raw.parse().with_context(|| format!("not a uuid: {raw}"))?;
+        // Metrics are finalize-time by contract: the run navigator reads "a
+        // `strategy_run_metrics` row exists" as "this run is over" (`has_metrics`).
+        // Writing one for a live run would show a half-finished activation as a
+        // settled result — and it would be wrong again on the next fill anyway.
+        match repo.find_run(id).await? {
+            None => anyhow::bail!("no such run: {id}"),
+            Some(run) if run.status == "Running" && !force => {
+                println!("{id}: skipped — run is still Running (metrics are written at finalize; pass --force to override)");
+                continue;
+            }
+            Some(_) => {}
+        }
+        let r = repo
+            .roll_up_run(id)
+            .await
+            .with_context(|| format!("reroll {id}"))?;
+        println!(
+            "{id}: fired={} closed={} open={} win_rate={:.3} pnl_sol={:.4} unsettled={}",
+            r.metrics.n_fired,
+            r.metrics.n_closed,
+            r.metrics.n_open,
+            r.metrics.win_rate,
+            r.metrics.total_pnl_sol,
+            r.unsettled,
+        );
+    }
     Ok(())
 }
 

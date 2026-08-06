@@ -347,6 +347,9 @@ Consequences worth knowing:
 - **Metrics are written at finalize, not continuously.** A `Running` run has no
   `strategy_run_metrics` row, which is what `RuleRunListRow::has_metrics` reports —
   the Evidence pane shows a status for the current run and real PnL for prior ones.
+  If a finalized run's membership changes afterwards, `hunter-lab -- reroll-run
+  <uuid>` recomputes it through the same kernel (it refuses a `Running` run, since
+  that would advertise a live activation as a settled result).
 - **`?score_scope=current` resets on re-activation** — `rule_counters_for_latest_runs`
   scopes to the newest run, which is now the new one. That is the point of the
   scope; all-time counters are the other chip.
