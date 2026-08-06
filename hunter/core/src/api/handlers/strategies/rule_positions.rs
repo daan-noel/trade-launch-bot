@@ -70,8 +70,14 @@ pub struct PositionResponse {
     pub exit_tx_signatures: Vec<String>,
     pub status: String,
     pub strategy: String,
+    /// Execution mode (`real` | `paper`) — the cross-rule History view mixes both,
+    /// so rows carry it (per-rule views infer it from the rule).
+    pub mode: String,
     /// Owning rule (`None` if the rule was deleted — `ON DELETE SET NULL`).
     pub rule_id: Option<Uuid>,
+    /// Entry cost in human SOL (from `entry_lamports`) — the History table's
+    /// Entry ◎ column and the `pnlPctFromSol` denominator.
+    pub entry_sol: Option<f64>,
     /// Raw token units (exact integer; the frontend scales for display).
     pub entry_token_amount: Option<u64>,
     /// Raw token units (exact integer; the frontend scales for display).
@@ -149,7 +155,9 @@ impl From<StrategyPosition> for PositionResponse {
             exit_tx_signatures: exit_sigs,
             status: p.status,
             strategy: p.strategy_id,
+            mode: p.mode,
             rule_id: p.rule_id,
+            entry_sol: p.entry_sol,
             entry_token_amount: p.entry_token_amount,
             exit_token_amount: p.exit_token_amount,
             sold_token_amount: p.sold_token_amount,
@@ -407,6 +415,29 @@ pub async fn rule_positions_page(
             json_positions_enriched(repo, positions, total, seq_map.as_ref()).await
         }
         (Err(e), _) | (_, Err(e)) => list_error("load positions for rule", e),
+    }
+}
+
+/// `POST /portfolio/positions/query` — one page of positions across **all rules
+/// and runs** (the Console History table). Same [`TableRequest`] wire contract and
+/// SQL machinery as the per-rule read; the cohort narrows only through the body's
+/// filters (`mode` / `rule_id` / `status` / `exit_reason`, `In`-capable) and its
+/// `range` (the close-or-entry time window). No run-scope semantics here — History
+/// spans runs by design.
+pub async fn portfolio_positions_page(
+    strategy_repo: &StrategyRepo,
+    body: TableRequest,
+) -> HttpResponse {
+    let (limit, offset) = body.pagination.bounds();
+    let pq = PositionQuery::from(body);
+    match (
+        strategy_repo.find_positions_all_paged(limit, offset, &pq).await,
+        strategy_repo.count_positions_all(&pq).await,
+    ) {
+        (Ok(positions), Ok(total)) => {
+            json_positions_enriched(strategy_repo, positions, total, None).await
+        }
+        (Err(e), _) | (_, Err(e)) => list_error("load portfolio positions", e),
     }
 }
 

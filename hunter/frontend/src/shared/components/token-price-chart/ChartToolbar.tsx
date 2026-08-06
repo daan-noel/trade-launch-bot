@@ -394,12 +394,19 @@ export function ChartToolbar({
     (showDevMarkers && devMarkersBoundariesOnly);
 
   return (
+    // The toolbar WRAPS, and the control cluster must be shrinkable (no `shrink-0`).
+    // The cluster's max-content width is ~600px of pill groups + icon toggles; pinned
+    // at that width it overflows any narrow host (the Console's 380px manual-trade
+    // column, the Portfolio/Floor row details) and gives the whole page a horizontal
+    // scrollbar. Shrinkable + `flex-wrap` on both levels means the cluster drops to
+    // its own full-width line and re-flows into rows instead. The title keeps a
+    // `min-w` floor so the break happens before the symbol is crushed to nothing.
     <div
-      className="flex items-start gap-3 border-b px-3 py-2"
+      className="flex flex-wrap items-start gap-x-3 gap-y-2 border-b px-3 py-2"
       style={{ borderColor: CHART_COLORS.border }}
     >
       {/* Left: title, status badges, crosshair OHLCV */}
-      <div className="min-w-0 flex-1">
+      <div className="min-w-44 flex-1">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <div
             className="min-w-0 truncate text-[13px] font-bold"
@@ -446,8 +453,8 @@ export function ChartToolbar({
       </div>
 
       {/* Right: essentials always; overlays behind More */}
-      <div className="flex shrink-0 flex-col items-end gap-1.5">
-        <div className="flex flex-wrap items-center gap-2">
+      <div className="flex min-w-0 flex-col items-end gap-1.5">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <div
             className="flex rounded-md p-0.5"
             style={{ backgroundColor: CHART_COLORS.grid }}

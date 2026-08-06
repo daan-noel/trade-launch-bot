@@ -389,28 +389,33 @@ pub struct PortfolioPerformance {
     pub by_rule: Vec<trading_core::storage::repositories::strategy_repo::RulePeriodPnlRow>,
 }
 
-/// `range`: `today` | `7d` | `all`. `mode`: `real` | `paper`.
+/// Resolve a calendar-range keyword to `(canonical label, UTC window start)`.
+/// `today` = UTC midnight; `7d`/`30d` = rolling; anything else = all-time. The
+/// ONE range grammar for the portfolio window endpoints (`performance`,
+/// `closes-series`).
+fn range_since(
+    range: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (&'static str, Option<chrono::DateTime<chrono::Utc>>) {
+    match range {
+        "today" => (
+            "today",
+            Some(now.date_naive().and_hms_opt(0, 0, 0).expect("00:00:00").and_utc()),
+        ),
+        "7d" => ("7d", Some(now - chrono::Duration::days(7))),
+        "30d" => ("30d", Some(now - chrono::Duration::days(30))),
+        _ => ("all", None),
+    }
+}
+
+/// `range`: `today` | `7d` | `30d` | `all`. `mode`: `real` | `paper`.
 pub async fn performance(
     state: &DeployState,
     range: &str,
     mode: &str,
 ) -> anyhow::Result<PortfolioPerformance> {
     let now = chrono::Utc::now();
-    let since = match range {
-        "today" => Some(
-            now.date_naive()
-                .and_hms_opt(0, 0, 0)
-                .expect("00:00:00")
-                .and_utc(),
-        ),
-        "7d" => Some(now - chrono::Duration::days(7)),
-        _ => None,
-    };
-    let range_label = match range {
-        "today" => "today",
-        "7d" => "7d",
-        _ => "all",
-    };
+    let (range_label, since) = range_since(range, now);
     let mode = if mode == "paper" { "paper" } else { "real" };
     let by_rule = state
         .strategy_repo()
@@ -435,6 +440,46 @@ pub async fn performance(
         loss,
         win_rate,
         by_rule,
+    })
+}
+
+/// Closes-series wire shape (B2) — the ONE payload behind every portfolio chart
+/// (equity curve, PnL histogram, calendar/hour heatmap, per-rule comparison).
+/// Compact per-close points, not pre-bucketed aggregates, so the charts can't
+/// disagree with each other or with the History table.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ClosesSeries {
+    pub range: String,
+    pub mode: String,
+    pub since: Option<chrono::DateTime<chrono::Utc>>,
+    /// Buys that never filled in the window — no SOL deployed, so excluded from
+    /// `closes`; surfaced as a count so the UI can show entry-failure pressure.
+    pub entry_failed: i64,
+    pub closes: Vec<trading_core::storage::repositories::strategy_repo::ClosedTradePoint>,
+}
+
+/// `range`: `today` | `7d` | `30d` | `all`. `mode`: `real` | `paper`.
+/// `rule_id = None` ⇒ all rules.
+pub async fn closes_series(
+    state: &DeployState,
+    range: &str,
+    mode: &str,
+    rule_id: Option<uuid::Uuid>,
+) -> anyhow::Result<ClosesSeries> {
+    let now = chrono::Utc::now();
+    let (range_label, since) = range_since(range, now);
+    let mode = if mode == "paper" { "paper" } else { "real" };
+    let repo = state.strategy_repo();
+    let (closes, entry_failed) = tokio::try_join!(
+        repo.closes_series(mode, since, None, rule_id),
+        repo.entry_failed_count(mode, since, None, rule_id),
+    )?;
+    Ok(ClosesSeries {
+        range: range_label.into(),
+        mode: mode.into(),
+        since,
+        entry_failed,
+        closes,
     })
 }
 

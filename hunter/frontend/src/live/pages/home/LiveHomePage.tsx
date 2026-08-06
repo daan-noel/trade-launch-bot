@@ -6,9 +6,10 @@ import { StatTile } from 'components/ui/StatTile';
 import { useUsdRate } from 'context/PriceUnitContext';
 import { formatCompact, formatUsd } from 'utils/format';
 import { formatSigned, formatSignedPct, signedStatTone } from 'lib/signedTone';
-import { floorHref, portfolioHref, rulesHref } from 'lib/strategy/nav';
+import { consoleHref, portfolioHref, rulesHref } from 'lib/strategy/nav';
 import { TopHoldingsWidget } from '@live/components/home/TopHoldingsWidget';
 import { LiveTradeFeed } from '@live/components/home/LiveTradeFeed';
+import { ReviewDigest } from '@live/components/home/ReviewDigest';
 import { StrategyStrip } from '@live/components/home/StrategyStrip';
 import {
   useGetPortfolioSummaryQuery,
@@ -17,8 +18,11 @@ import {
 import { selectLiveOpen } from '@live/slices/liveStatusSlice';
 
 /**
- * Home "Command Center" (live build) — the single pane of glass. KPI tiles deep-link
- * to the owning page so glance → act stays one click.
+ * Home "Command Center" (live build) — the single pane of glass, weighted for
+ * *coming back to it*: the review digest (week of PnL, attention count, rule
+ * decay alerts) sits directly under the KPI tiles, and the live trade feed —
+ * an actively-watching artifact — is demoted to a collapsed side panel.
+ * KPI tiles deep-link to the owning page so glance → act stays one click.
  */
 export function LiveHomePage() {
   const { data: summary } = useGetPortfolioSummaryQuery();
@@ -54,7 +58,7 @@ export function LiveHomePage() {
       <PageHeader
         size="page"
         title="Command Center"
-        description="Glance → act · Floor = book · Portfolio = money · Rules = keep/kill"
+        description="Console = book · Portfolio = which rules earn their keep · Rules = keep/kill"
       />
 
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
@@ -84,10 +88,10 @@ export function LiveHomePage() {
           />
         </Link>
         <Link
-          to={floorHref({ tab: 'open', mode: 'real' })}
+          to={consoleHref({ mode: 'real' })}
           className="block rounded-lg focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
         >
-          <StatTile label="Open Positions" value={liveOpenReal} sub="floor · live" />
+          <StatTile label="Open Positions" value={liveOpenReal} sub="console · live" />
         </Link>
         <Link
           to={rulesHref()}
@@ -104,12 +108,26 @@ export function LiveHomePage() {
       </div>
 
       <div className="mt-3">
+        <ReviewDigest />
+      </div>
+
+      <div className="mt-3">
         <StrategyStrip />
       </div>
 
-      <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+      <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_340px]">
         <TopHoldingsWidget />
-        <LiveTradeFeed />
+        {/* The trade feed only means something while you're watching it — kept
+            available, but collapsed by default so it doesn't outrank the review
+            content above on a page you mostly come back to. */}
+        <details className="rounded-lg border border-white/6 bg-bg-panel">
+          <summary className="cursor-pointer px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-text-dim hover:text-text">
+            Live trade feed
+          </summary>
+          <div className="px-1 pb-1">
+            <LiveTradeFeed />
+          </div>
+        </details>
       </div>
     </div>
   );

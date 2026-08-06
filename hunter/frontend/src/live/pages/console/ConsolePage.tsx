@@ -21,10 +21,8 @@ import {
   pctGradeClass,
   signedToneClass,
 } from 'lib/signedTone';
-import { resolvePnlPct } from 'lib/pnlPct';
-import { exitReasonBadge, exitReasonSearchText } from 'components/strategy/strategyColumns';
 import { apiErrorMessage } from 'store/apiSlice';
-import { ArmedHistoryPanel } from '@live/components/strategy/ArmedHistoryPanel';
+import { ConsoleHistorySection } from '@live/components/history/ConsoleHistorySection';
 import { FloorBookStrip } from '@live/components/floor/FloorBookStrip';
 import { FloorPositionDetailWithFills } from '@live/components/floor/FloorPositionDetailWithFills';
 import { FloorMintChart } from '@live/components/floor/FloorMintChart';
@@ -39,10 +37,8 @@ import {
   ATTENTION_STATUSES,
   selectLiveArmed,
   selectLiveOpen,
-  selectLiveRecentClosed,
   selectLiveStatusHydrated,
   type LiveArmedRow,
-  type LiveClosedRow,
   type LiveOpenRow,
 } from '@live/slices/liveStatusSlice';
 import type { RootState } from '@live/store';
@@ -127,8 +123,12 @@ function loadTradeLog(): LogEntry[] {
 /**
  * The unified real-trade Console (`/console`) — replaces Floor + Trade.
  * Lanes, top to bottom: ATTENTION (always first — every row has an action),
- * OPEN beside the MANUAL TRADE panel, WAITING (collapsible), RECENT CLOSED
- * (`End`/`EntryFailed` only; a stuck row can never land there).
+ * OPEN beside the MANUAL TRADE panel, WAITING (collapsible), then HISTORY.
+ *
+ * The three lanes above History are the **cockpit**: live, SSE-driven, scoped to
+ * what is still actionable. History is the **review** surface — server-paged over
+ * the whole `strategy_positions` population with its own cohort filter and charts
+ * deck, so it owns closed rows entirely (there is no session-local closes buffer).
  */
 export function ConsolePage() {
   const [params, setParams] = useSearchParams();
@@ -154,7 +154,6 @@ export function ConsolePage() {
   const hydrated = useSelector(selectLiveStatusHydrated);
   const armedMap = useSelector(selectLiveArmed);
   const openMap = useSelector(selectLiveOpen);
-  const recent = useSelector(selectLiveRecentClosed);
   const snapshotLoading = useSelector((s: RootState) => s.liveStatus.snapshotLoading);
 
   const [closePosition] = useCloseRulePositionMutation();
@@ -222,12 +221,6 @@ export function ConsolePage() {
     const rows = Object.values(armedMap).filter((r) => modeOk(r.tradeMode, modeFilter));
     return ruleParam ? rows.filter((r) => r.ruleId === ruleParam) : rows;
   }, [armedMap, modeFilter, ruleParam]);
-  const recentRows = useMemo(() => {
-    let rows = recent.filter((r) => modeOk(r.mode, modeFilter));
-    if (ruleParam) rows = rows.filter((r) => r.ruleId === ruleParam);
-    return rows;
-  }, [recent, modeFilter, ruleParam]);
-
   const totalDeployed = openAll.reduce((s, r) => s + (r.entrySol ?? 0), 0);
 
   const openMtmByRule = useMemo(() => {
@@ -756,124 +749,16 @@ export function ConsolePage() {
     },
   ];
 
-  const recentCols: ColumnDef<LiveClosedRow>[] = [
-    {
-      key: 'mint',
-      label: 'Token',
-      render: (r) => <AddressDisplay address={r.mint} kind="token" />,
-      searchValue: (r) => r.mint,
-    },
-    {
-      key: 'rule',
-      label: 'Rule',
-      render: (r) => ruleLink(r.ruleId, r.ruleName),
-      searchValue: (r) => r.ruleName ?? r.ruleId ?? '',
-    },
-    {
-      key: 'status',
-      label: 'Status',
-      sortable: true,
-      render: (r) => (
-        <span className="inline-flex flex-wrap items-center gap-1">
-          <Badge variant={r.status === 'EntryFailed' ? 'neutral' : 'primary'}>
-            {STATUS_LABEL[r.status] ?? r.status}
-          </Badge>
-          {r.mode === 'paper' && <Badge variant="neutral">paper</Badge>}
-          {/* An unknown mode must not masquerade as real (defect #10). */}
-          {r.mode == null && (
-            <span title="Mode unknown (older SSE frame)">
-              <Badge variant="neutral">mode?</Badge>
-            </span>
-          )}
-        </span>
-      ),
-      sortValue: (r) => r.status,
-      searchValue: (r) => STATUS_LABEL[r.status] ?? r.status,
-    },
-    {
-      key: 'exit',
-      label: 'Exit',
-      sortable: true,
-      render: (r) => exitReasonBadge(r.exitReason, r.pnlSol),
-      sortValue: (r) => r.exitReason ?? '',
-      searchValue: (r) => exitReasonSearchText(r.exitReason, r.pnlSol),
-    },
-    {
-      key: 'pnl',
-      label: 'PnL ◎',
-      sortable: true,
-      render: (r) =>
-        r.pnlSol != null ? (
-          <span className={`tabular-nums text-xs font-semibold ${signedToneClass(r.pnlSol)}`}>
-            {formatSigned(r.pnlSol, 3)}
-          </span>
-        ) : (
-          <span className="text-text-dim">—</span>
-        ),
-      sortValue: (r) => r.pnlSol ?? 0,
-      searchValue: (r) => String(r.pnlSol ?? ''),
-      filterNumber: (r) => r.pnlSol,
-      filterAmount: 'sol',
-    },
-    {
-      key: 'pnl_pct',
-      label: 'PnL%',
-      sortable: true,
-      render: (r) => {
-        const pct = resolvePnlPct({
-          pnlSol: r.pnlSol,
-          entrySol: r.entrySol,
-          entryPrice: r.entryPrice,
-          exitPrice: r.exitPrice,
-        });
-        return pct != null ? (
-          <span className={`tabular-nums text-xs ${pctGradeClass(pct)}`}>
-            {formatSignedPct(pct, 1)}
-          </span>
-        ) : (
-          <span className="text-text-dim">—</span>
-        );
-      },
-      sortValue: (r) =>
-        resolvePnlPct({
-          pnlSol: r.pnlSol,
-          entrySol: r.entrySol,
-          entryPrice: r.entryPrice,
-          exitPrice: r.exitPrice,
-        }) ?? 0,
-      searchValue: () => '',
-      filterNumber: (r) =>
-        resolvePnlPct({
-          pnlSol: r.pnlSol,
-          entrySol: r.entrySol,
-          entryPrice: r.entryPrice,
-          exitPrice: r.exitPrice,
-        }),
-    },
-    {
-      key: 'when',
-      label: 'Closed',
-      sortable: true,
-      render: (r) => (
-        <span className="tabular-nums text-text-dim">{fmtAge(Date.now() - r.closedAt)} ago</span>
-      ),
-      sortValue: (r) => r.closedAt,
-      searchValue: () => '',
-      filterNumber: (r) => Math.max(0, Math.floor((Date.now() - r.closedAt) / 1000)),
-    },
-  ];
-
   // ── Deep-link detail modals (row click → position param) ────────────────────
   const selectedKey = positionParam;
   const inspectOpen =
     [...attentionRows, ...openRows].find((r) => r.positionId === selectedKey) ?? null;
-  const inspectRecent = inspectOpen
+  // A closed row's detail modal belongs to the History section — it holds the
+  // full DB record, so it can open a position from any date, not just one still
+  // in the session's open lane.
+  const inspectWaiting = inspectOpen
     ? null
-    : (recentRows.find((r) => r.positionId === selectedKey) ?? null);
-  const inspectWaiting =
-    inspectOpen || inspectRecent
-      ? null
-      : (waitingRows.find((r) => r.key === selectedKey) ?? null);
+    : (waitingRows.find((r) => r.key === selectedKey) ?? null);
 
   const selectRow = (key: string | null, mint?: string) => {
     if (!key) {
@@ -909,43 +794,6 @@ export function ConsolePage() {
             entryPrice: r.entryPrice,
             exitTime: null,
             exitPrice: null,
-          },
-        }}
-        chartHeight={420}
-      />
-    );
-  };
-
-  const recentDetail = (r: LiveClosedRow) => {
-    const pct = resolvePnlPct({
-      pnlSol: r.pnlSol,
-      entrySol: r.entrySol,
-      entryPrice: r.entryPrice,
-      exitPrice: r.exitPrice,
-    });
-    const entryMs = r.entryTime ? Date.parse(r.entryTime) : NaN;
-    return (
-      <FloorPositionDetailWithFills
-        positionId={r.positionId}
-        facts={{
-          mint: r.mint,
-          ruleId: r.ruleId,
-          ruleName: r.ruleName,
-          mode: r.mode,
-          status: r.status,
-          entrySol: r.entrySol,
-          entryPrice: r.entryPrice,
-          exitPrice: r.exitPrice,
-          holdLabel: Number.isFinite(entryMs) ? fmtAge(r.closedAt - entryMs) : null,
-          pnlSol: r.pnlSol,
-          pnlPct: pct,
-          inspect: {
-            mint_address: r.mint,
-            entryTime: r.entryTime,
-            entryPrice: r.entryPrice,
-            exitTime: r.exitTime ?? new Date(r.closedAt).toISOString(),
-            exitPrice: r.exitPrice,
-            exitLabel: r.exitReason,
           },
         }}
         chartHeight={420}
@@ -1219,37 +1067,14 @@ export function ConsolePage() {
                 selectRow(key, row?.mint);
               }}
             />
-            <ArmedHistoryPanel
-              strategy="generic"
-              selectedRuleId={
-                waitingRows.find((r) => r.key === positionParam)?.ruleId ?? null
-              }
-            />
           </>
         )}
       </section>
 
-      {/* RECENT CLOSED — End · EntryFailed only; stuck rows never land here. */}
-      <section>
-        <h2 className="mb-1.5 text-xs font-bold uppercase tracking-wider text-text-dim">
-          Recent closed ({recentRows.length})
-        </h2>
-        <DataTable
-          columns={recentCols}
-          rows={recentRows}
-          rowKey={(r) => r.positionId}
-          searchable
-          colFilters
-          defaultSort={{ col: 'when', dir: 'desc' }}
-          tableId="console-recent"
-          emptyMessage="No recent closes — full history is on Rules Evidence."
-          selectedKey={selectedKey}
-          onSelect={(key) => {
-            const row = recentRows.find((r) => r.positionId === key);
-            selectRow(key, row?.mint);
-          }}
-        />
-      </section>
+      {/* HISTORY — every position across every rule and run, server-paged, with
+          the charts deck above it. Supersedes the old 50-row Recent-closed lane
+          (which could only show the session's SSE tail). */}
+      <ConsoleHistorySection selectedKey={selectedKey} onSelect={selectRow} />
 
       {/* Detail modals (deep-link + row click). */}
       {inspectOpen && (
@@ -1260,16 +1085,6 @@ export function ConsolePage() {
           size="xxl"
         >
           {openDetail(inspectOpen)}
-        </Modal>
-      )}
-      {inspectRecent && (
-        <Modal
-          title={`${inspectRecent.mint.slice(0, 8)}… — Closed position`}
-          open
-          onClose={clearDeepLink}
-          size="xxl"
-        >
-          {recentDetail(inspectRecent)}
         </Modal>
       )}
       {inspectWaiting && (

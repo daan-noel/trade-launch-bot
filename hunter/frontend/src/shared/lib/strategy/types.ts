@@ -135,6 +135,39 @@ export function disabledRuleRowClass(r: Pick<StrategyRule, 'is_enabled'>): strin
   return r.is_enabled ? undefined : 'opacity-40 bg-white/[0.02] hover:bg-white/[0.04]';
 }
 
+/**
+ * Trade-mode left rail — real rules carry a solid `warning` bar plus a faint
+ * warm wash, paper a thin `info` bar. Same hues as the Mode badge, so the rail
+ * and the badge are one language; the point is that "this row spends real
+ * money" survives any sort order, filter, or scroll position.
+ *
+ * Painted as a background **image**, never a background **color**. Two
+ * constraints force that, both of them load-bearing:
+ *   - `DataTable` merges `rowClassName` LAST through tailwind-merge, and
+ *     `bg-*` colors collapse to a single winner — so a `bg-warning/6` here
+ *     would silently erase the row's selection (`bg-accent/16`) and pin washes.
+ *     A gradient is a different merge group, so it composes with both.
+ *   - The table is `border-collapse: collapse`, where a row-level `box-shadow`
+ *     is never painted (see the comment on `TableRowInner`), which rules out
+ *     the inset-rail trick the selected row uses on its cells.
+ * Keep the class strings literal — Tailwind only emits what it can scan.
+ */
+export function modeRuleRowClass(r: Pick<StrategyRule, 'trade_mode'>): string {
+  return r.trade_mode === 'real'
+    ? 'bg-[linear-gradient(90deg,var(--color-warning)_0_3px,color-mix(in_srgb,var(--color-warning)_6%,transparent)_3px)]'
+    : 'bg-[linear-gradient(90deg,color-mix(in_srgb,var(--color-info)_45%,transparent)_0_2px,transparent_2px)]';
+}
+
+/** The ONE `rowClassName` for every rule table (Rules live/lab + Simulate):
+ *  mode rail + soft-archive dimming. Both layers compose — a disabled real rule
+ *  keeps its rail while dimming out. */
+export function ruleRowClass(
+  r: Pick<StrategyRule, 'trade_mode' | 'is_enabled'>,
+): string {
+  const archived = disabledRuleRowClass(r);
+  return archived ? `${modeRuleRowClass(r)} ${archived}` : modeRuleRowClass(r);
+}
+
 /** POST /api/strategy-rules body. `fingerprint_id` required; `is_active` is
  *  forced false and `is_enabled` true on create (lifecycle endpoints toggle them). */
 export interface CreateRuleBody {

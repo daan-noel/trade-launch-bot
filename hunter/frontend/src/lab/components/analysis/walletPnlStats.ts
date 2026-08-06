@@ -14,47 +14,46 @@
 // episode's hold — read it as "how long this mint stayed on the wallet's radar",
 // not a scalp duration.
 
-import { DOW_ROWS, HOURS } from 'components/creation-stats/creationStats';
+// The generic folds (equity curve, distribution buckets, day×hour heatmap,
+// ranking) now live in `components/analytics/pnlSeries` — shared with the live
+// app's Console History / Portfolio decks. What stays here is the wallet-
+// specific part: the `TraderTokenRow` → `PnlPoint` mapping and the wallet
+// summary/scatter that have no live counterpart.
+import {
+  DOW_ROWS,
+  HOURS,
+  buildEquityCurve as buildEquityCurveGeneric,
+  buildPnlHeatCells as buildPnlHeatCellsGeneric,
+  dowHourInTz,
+  pnlDistributionBuckets as pnlDistributionBucketsGeneric,
+  type EquityPoint,
+  type PnlBucket,
+  type PnlHeatCell,
+  type PnlPoint,
+  type RankedBarRow,
+} from 'components/analytics/pnlSeries';
 import type { TraderTokenRow } from 'types';
 
-export { DOW_ROWS, HOURS };
+export { DOW_ROWS, HOURS, dowHourInTz };
+export type { EquityPoint, PnlBucket, PnlHeatCell };
 
-// ── time bucketing ──────────────────────────────────────────────────────────
-
-const WEEKDAY_TO_DOW: Record<string, number> = {
-  Sun: 0,
-  Mon: 1,
-  Tue: 2,
-  Wed: 3,
-  Thu: 4,
-  Fri: 5,
-  Sat: 6,
-};
-
-const dtfCache = new Map<string, Intl.DateTimeFormat>();
-
-/** Day-of-week (0=Sun..6=Sat) + hour-of-day (0..23) for an instant, in
- *  `timeZone`'s local wall-clock. Caches the `Intl.DateTimeFormat` per timezone
- *  (mirrors `utils/date.ts`'s formatter cache) since this runs once per row per
- *  heatmap rebuild, not per render. */
-export function dowHourInTz(ms: number, timeZone: string): { dow: number; hour: number } {
-  let dtf = dtfCache.get(timeZone);
-  if (!dtf) {
-    dtf = new Intl.DateTimeFormat('en-US', {
-      timeZone,
-      weekday: 'short',
-      hour: '2-digit',
-      hour12: false,
-    });
-    dtfCache.set(timeZone, dtf);
-  }
-  const parts = dtf.formatToParts(new Date(ms));
-  const weekday = parts.find((p) => p.type === 'weekday')?.value ?? 'Sun';
-  // `hour12: false` still renders midnight as "24" in some locales/engines —
-  // normalize into 0..23 rather than trust the raw string.
-  const hourRaw = Number(parts.find((p) => p.type === 'hour')?.value ?? '0');
-  const hour = ((hourRaw % 24) + 24) % 24;
-  return { dow: WEEKDAY_TO_DOW[weekday] ?? 0, hour };
+/**
+ * The wallet grain → the shared `PnlPoint` grain.
+ *
+ * Bucketed by the mint's most-recent trade in the window
+ * (`wallet_last_trade_at_ms`) — the per-mint grain's only single instant that
+ * reads as "when this position was decided" (an exit for a closed mint, the
+ * latest re-entry for an open one).
+ */
+function toPnlPoints(rows: readonly TraderTokenRow[]): PnlPoint[] {
+  return rows.map((r) => ({
+    key: r.mint_address,
+    timeMs: r.wallet_last_trade_at_ms ?? Date.parse(r.wallet_last_trade_at),
+    pnlSol: r.wallet_total_pnl_sol,
+    pnlPct: r.wallet_realized_pnl_pct,
+    label: r.symbol || r.name || r.mint_address,
+    isOpen: r.wallet_is_open,
+  }));
 }
 
 // ── summary stats ───────────────────────────────────────────────────────────
@@ -161,128 +160,42 @@ export function computeWalletSummary(rows: readonly TraderTokenRow[]): WalletPnl
   };
 }
 
-// ── PnL heatmap (day-of-week × hour-of-day) ─────────────────────────────────
+// ── the promoted folds, adapted to the wallet grain ─────────────────────────
+//
+// Each is a one-line map into `PnlPoint` + the shared fold. Keeping the
+// wallet-named wrappers means the lab call sites and their doc comments stay
+// put; keeping the fold in `components/analytics` means the live decks and this
+// page can't drift into two different definitions of "equity curve".
 
-export interface PnlHeatCell {
-  dow: number;
-  hour: number;
-  pnl_sol: number;
-  count: number;
-}
-
-/**
- * Fold every row's `wallet_total_pnl_sol` into a 7×24 day×hour grid, bucketed
- * by the mint's most-recent trade in the window (`wallet_last_trade_at_ms`) —
- * the per-mint grain's only single instant that reads as "when this position
- * was decided" (an exit for a closed mint, the latest re-entry for an open
- * one). Always returns all 168 cells (zero-filled) so the heatmap component
- * never has to synthesize missing slots.
- */
+/** Day×hour grid of `wallet_total_pnl_sol`. See `toPnlPoints` for the instant
+ *  each mint is bucketed by (and its per-mint-grain caveat). */
 export function buildPnlHeatCells(
   rows: readonly TraderTokenRow[],
   timeZone: string,
 ): PnlHeatCell[] {
-  const grid = new Map<number, PnlHeatCell>();
-  for (const row of DOW_ROWS) {
-    for (const hour of HOURS) {
-      grid.set(row.dow * 24 + hour, { dow: row.dow, hour, pnl_sol: 0, count: 0 });
-    }
-  }
-  for (const r of rows) {
-    const ms = r.wallet_last_trade_at_ms ?? Date.parse(r.wallet_last_trade_at);
-    if (!Number.isFinite(ms)) continue;
-    const { dow, hour } = dowHourInTz(ms, timeZone);
-    const cell = grid.get(dow * 24 + hour);
-    if (cell) {
-      cell.pnl_sol += r.wallet_total_pnl_sol;
-      cell.count += 1;
-    }
-  }
-  return [...grid.values()];
+  return buildPnlHeatCellsGeneric(toPnlPoints(rows), timeZone);
 }
 
-// ── ranked bars ──────────────────────────────────────────────────────────────
-
-/** Rows sorted by `wallet_total_pnl_sol`, best first — the ranking the
- *  wallet-analysis doc's own finding argues for (win_rate alone can pick the
- *  worst cohort at the best hit rate). */
-export function rankByTotalPnl(rows: readonly TraderTokenRow[]): TraderTokenRow[] {
-  return [...rows].sort((a, b) => b.wallet_total_pnl_sol - a.wallet_total_pnl_sol);
+/** Rows as ranked bars, best first, on `wallet_total_pnl_sol`. */
+export function rankedPnlBarRows(rows: readonly TraderTokenRow[]): RankedBarRow[] {
+  return rows.map((r) => ({
+    key: r.mint_address,
+    label: r.symbol || r.name || r.mint_address.slice(0, 8),
+    value: r.wallet_total_pnl_sol,
+    tag: r.wallet_is_open ? 'open' : null,
+    title: r.mint_address,
+  }));
 }
 
-// ── win/loss distribution ───────────────────────────────────────────────────
-
-export interface PnlBucket {
-  label: string;
-  /** `-1` loss / `0` breakeven (excluded from both win/loss but kept visible as
-   *  its own bar) / `1` win — drives the bar color. */
-  sign: -1 | 0 | 1;
-  count: number;
-}
-
-/** Fixed bucket edges over `wallet_realized_pnl_pct` (rows with no matched cost
- *  basis — pure open bags — are excluded; there's no realized % to bucket). */
-const DIST_EDGES = [-Infinity, -50, -20, -10, 0, 10, 20, 50, Infinity];
-
-function bucketLabel(lo: number, hi: number): string {
-  if (lo === -Infinity) return `< ${hi}%`;
-  if (hi === Infinity) return `> ${lo}%`;
-  return `${lo}…${hi}%`;
-}
-
+/** Count histogram over `wallet_realized_pnl_pct` (open-only bags have no
+ *  realized % and are excluded). */
 export function pnlDistributionBuckets(rows: readonly TraderTokenRow[]): PnlBucket[] {
-  const buckets: PnlBucket[] = [];
-  for (let i = 0; i < DIST_EDGES.length - 1; i++) {
-    const lo = DIST_EDGES[i]!;
-    const hi = DIST_EDGES[i + 1]!;
-    buckets.push({ label: bucketLabel(lo, hi), sign: hi <= 0 ? -1 : lo >= 0 ? 1 : 0, count: 0 });
-  }
-  for (const r of rows) {
-    const pct = r.wallet_realized_pnl_pct;
-    if (pct == null) continue;
-    for (let i = 0; i < DIST_EDGES.length - 1; i++) {
-      const lo = DIST_EDGES[i]!;
-      const hi = DIST_EDGES[i + 1]!;
-      // Half-open [lo, hi) except the final bucket, which is closed at +Infinity.
-      if (pct >= lo && (pct < hi || hi === Infinity)) {
-        buckets[i]!.count += 1;
-        break;
-      }
-    }
-  }
-  return buckets;
+  return pnlDistributionBucketsGeneric(toPnlPoints(rows));
 }
 
-// ── equity curve ─────────────────────────────────────────────────────────────
-
-export interface EquityPoint {
-  /** Epoch seconds — lightweight-charts' native `Time` unit. */
-  time: number;
-  cumPnlSol: number;
-}
-
-/** Cumulative `wallet_total_pnl_sol` ordered by each mint's most-recent trade
- *  (ascending) — ties (same-ms `last_trade_at`) collapse into one point so a
- *  chart series never receives duplicate x-values. */
+/** Cumulative `wallet_total_pnl_sol` ordered by each mint's most-recent trade. */
 export function buildEquityCurve(rows: readonly TraderTokenRow[]): EquityPoint[] {
-  const withMs = rows
-    .map((r) => ({ ms: r.wallet_last_trade_at_ms ?? Date.parse(r.wallet_last_trade_at), pnl: r.wallet_total_pnl_sol }))
-    .filter((r) => Number.isFinite(r.ms))
-    .sort((a, b) => a.ms - b.ms);
-
-  const points: EquityPoint[] = [];
-  let cum = 0;
-  for (const { ms, pnl } of withMs) {
-    cum += pnl;
-    const time = Math.floor(ms / 1000);
-    const last = points[points.length - 1];
-    if (last && last.time === time) {
-      last.cumPnlSol = cum;
-    } else {
-      points.push({ time, cumPnlSol: cum });
-    }
-  }
-  return points;
+  return buildEquityCurveGeneric(toPnlPoints(rows));
 }
 
 // ── hold-time vs PnL% scatter ────────────────────────────────────────────────

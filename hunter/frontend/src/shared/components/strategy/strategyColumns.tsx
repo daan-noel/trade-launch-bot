@@ -112,8 +112,10 @@ export function exitReasonBadge(
   }
 }
 
-/** Derive SOL from a price and a token count — the bot stores TOKEN amounts; SOL
- * is never persisted, only shown. null when either input is missing. */
+/** Derive SOL from a price and a token count — used where SOL was never
+ * persisted for that leg, only shown. null when either input is missing.
+ * Where the row carries an exact stored amount (a position's `entry_sol`, from
+ * `entry_lamports`), prefer that: it is what the server sorts and filters on. */
 export const solOf = (price?: number | null, tokens?: number | null): number | null =>
   price != null && tokens != null ? price * tokens : null;
 
@@ -341,6 +343,10 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = (
     {
       price: (r) => r.entry_price,
       tokens: (r) => r.entry_token_amount,
+      // Exact stored cost (`entry_lamports`) when the endpoint sends it — the
+      // same expression the server's `entry_sol` sort/filter uses; the
+      // price × tokens reconstruction is the legacy fallback.
+      size: (r) => r.entry_sol ?? solOf(r.entry_price, r.entry_token_amount),
       time: (r) => r.entry_time,
       tx: (r) => r.entry_tx,
     },

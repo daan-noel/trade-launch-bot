@@ -1,5 +1,11 @@
 # Floor + Portfolio IA
 
+> **Historical.** The Floor and Trade pages below were later merged into the single
+> **Console** (`/console`), and its Recent tab was replaced by the **History** section.
+> For the current live money IA read [`review-surfaces.md`](review-surfaces.md) and
+> [`../../arch/frontend.md`](../../arch/frontend.md); this file is kept for the
+> per-column/per-strip decisions that carried over.
+
 Live money surfaces after Rules Control/Evidence:
 
 | Page | Route | Job |
@@ -23,10 +29,14 @@ Live money surfaces after Rules Control/Evidence:
 
 ## Portfolio
 
-- `GET /api/portfolio/performance?range=today|7d|all&mode=real|paper`
+- `GET /api/portfolio/performance?range=today|7d|30d|all&mode=real|paper`
 - Totals + by-rule rows (`RulePeriodPnlRow`) with **PnL%** = `realized / total_entry`.
-- Page charts: by-rule PnL bars + PnL% bars (`PortfolioByRuleCharts`).
-- Row select → `PortfolioRuleDetail` (tiles, Evidence/Floor links, closes in range, mint chart).
+- Page chart: **every** rule ranked by realized PnL (shared `RankedPnlBars`) — this replaced
+  the top-10-only `PortfolioByRuleCharts` bar cards, which silently hid the tail where the
+  losers live. Per-rule sparkline + rolling-window decay columns come from the closes series.
+- Row select → `PortfolioRuleDetail` (tiles, Evidence + Console-History links, closes in
+  range, mint chart). Its closes are now server-filtered by rule/mode/status/window, not
+  fetched 40-deep and trimmed client-side.
 
 ## Rules Control TOTAL
 

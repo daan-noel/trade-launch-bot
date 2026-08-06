@@ -5,7 +5,7 @@ import type { ColumnDef } from 'components/table/types';
 import { StatTile } from 'components/ui/StatTile';
 import { PageHeader } from 'components/ui/PageHeader';
 import { LinkIcon } from 'components/ui/icons';
-import { floorHref, rulesHref } from 'lib/strategy/nav';
+import { consoleHref, consoleHistoryHref, rulesHref } from 'lib/strategy/nav';
 import { formatCompact } from 'utils/format';
 import {
   formatSigned,
@@ -16,23 +16,39 @@ import {
   winRateGradeClass,
 } from 'lib/signedTone';
 import { pnlPctFromSol } from 'lib/pnlPct';
+import { useTimezone } from 'context/TimezoneContext';
+import { RankedPnlBars } from 'components/analytics/RankedPnlBars';
+import { PnlSparkline } from 'components/analytics/PnlSparkline';
 import {
+  groupDailyPnl,
+  groupTrends,
+  type GroupTrend,
+  type PnlPoint,
+} from 'components/analytics/pnlSeries';
+import {
+  useGetPortfolioClosesSeriesQuery,
   useGetPortfolioPerformanceQuery,
   useGetPortfolioSummaryQuery,
 } from '@live/store/liveEndpoints';
-import { PortfolioByRuleCharts } from '@live/components/portfolio/PortfolioByRuleCharts';
 import { PortfolioRuleDetail } from '@live/components/portfolio/PortfolioRuleDetail';
 import type { PortfolioRulePnl } from 'types';
 
-type Range = 'today' | '7d' | 'all';
+type Range = 'today' | '7d' | '30d' | 'all';
 type Mode = 'real' | 'paper';
 
+/** Trades per rolling window for the decay comparison. Small enough that a
+ *  low-volume rule still gets two windows; large enough that a single tail
+ *  trade can't flip the verdict on its own. */
+const DECAY_WINDOW = 20;
+
 /**
- * Portfolio — cross-rule closed-trade money over a period.
- * Rules = keep/kill · Floor = live book · Portfolio = am I making money?
+ * Portfolio — the **rule scoreboard**: which rules earn their keep, and is any
+ * of them decaying. Rules = keep/kill · Console History = the trade browser ·
+ * Portfolio = am I making money, and from what?
  */
 export function PortfolioPage() {
   const [params, setParams] = useSearchParams();
+  const { timezone } = useTimezone();
   const range = (params.get('range') as Range | null) ?? 'today';
   const mode = (params.get('mode') as Mode | null) ?? 'real';
   const selectedRule = params.get('rule');
@@ -49,8 +65,56 @@ export function PortfolioPage() {
 
   const { data: summary } = useGetPortfolioSummaryQuery();
   const { data, isLoading, isFetching } = useGetPortfolioPerformanceQuery({ range, mode });
+  // The per-close series (B2) — one fetch behind BOTH the sparkline column and
+  // the decay marker, so they can't disagree with each other or with the
+  // Console History charts, which fold the same payload.
+  const { data: series } = useGetPortfolioClosesSeriesQuery({ range, mode });
 
   const openMtm = summary?.total_unrealized_pnl_sol ?? null;
+
+  const ruleNameOf = useCallback(
+    (id: string) => data?.by_rule.find((r) => r.rule_id === id)?.rule_name ?? `${id.slice(0, 8)}…`,
+    [data?.by_rule],
+  );
+
+  const points = useMemo<PnlPoint[]>(
+    () =>
+      (series?.closes ?? []).map((c, i) => ({
+        key: `${c.exit_time}:${i}`,
+        timeMs: Date.parse(c.exit_time),
+        pnlSol: c.pnl_sol,
+        pnlPct: c.entry_sol > 0 ? (c.pnl_sol / c.entry_sol) * 100 : null,
+        label: c.rule_id ?? 'unknown',
+        groupId: c.rule_id,
+      })),
+    [series],
+  );
+
+  /** rule_id → daily realized PnL (the sparkline series). */
+  const dailyByRule = useMemo(() => groupDailyPnl(points, timezone), [points, timezone]);
+  /** rule_id → rolling-window trend (the decay marker). */
+  const trendByRule = useMemo(() => {
+    const m = new Map<string, GroupTrend>();
+    for (const t of groupTrends(points, ruleNameOf, DECAY_WINDOW)) m.set(t.groupId, t);
+    return m;
+  }, [points, ruleNameOf]);
+
+  const decayingCount = useMemo(
+    () => [...trendByRule.values()].filter((t) => t.decaying).length,
+    [trendByRule],
+  );
+
+  const rankedBars = useMemo(
+    () =>
+      (data?.by_rule ?? []).map((r) => ({
+        key: r.rule_id,
+        label: r.rule_name ?? r.rule_id.slice(0, 8),
+        value: r.realized_pnl_sol,
+        tag: trendByRule.get(r.rule_id)?.decaying ? 'decaying' : null,
+        title: r.rule_name ?? r.rule_id,
+      })),
+    [data?.by_rule, trendByRule],
+  );
 
   // Recompute the realized/win-rate/rules tiles over the table's own filtered
   // cohort (search + column filters), the way a server summary tracks its table.
@@ -200,22 +264,76 @@ export function PortfolioPage() {
         filterNumber: (r) => r.total_entry_sol,
       },
       {
-        key: 'floor',
+        key: 'trend',
+        label: 'Trend',
+        width: '100px',
+        render: (r) => {
+          const days = dailyByRule.get(r.rule_id) ?? [];
+          if (days.length === 0) return <span className="text-text-dim">—</span>;
+          return (
+            <PnlSparkline
+              values={days.map((d) => d.pnlSol)}
+              title={`${r.rule_name ?? r.rule_id} — cumulative realized PnL by day`}
+            />
+          );
+        },
+        searchValue: () => '',
+      },
+      {
+        // The decay detector: last-N vs prior-N win rate AND expectancy. Both
+        // must be down to flag — either one alone flips on a single tail trade.
+        key: 'decay',
+        label: 'Δ Win%',
+        sortable: true,
+        render: (r) => {
+          const t = trendByRule.get(r.rule_id);
+          if (!t || t.winRateDeltaPp == null) {
+            return (
+              <span
+                className="text-text-dim"
+                title={`Needs ${DECAY_WINDOW * 2} closes to compare two windows`}
+              >
+                —
+              </span>
+            );
+          }
+          return (
+            <span
+              className={`tabular-nums text-xs ${signedToneClass(t.winRateDeltaPp)}`}
+              title={
+                `last ${DECAY_WINDOW}: ${t.recent.winRate?.toFixed(0)}% win, ` +
+                `${formatSigned(t.recent.expectancySol ?? 0, 4)}◎/trade\n` +
+                `prior ${DECAY_WINDOW}: ${t.prior.winRate?.toFixed(0)}% win, ` +
+                `${formatSigned(t.prior.expectancySol ?? 0, 4)}◎/trade`
+              }
+            >
+              {t.decaying && <span className="mr-0.5 font-bold text-red">▼</span>}
+              {formatSignedPct(t.winRateDeltaPp, 0)}
+            </span>
+          );
+        },
+        sortValue: (r) => trendByRule.get(r.rule_id)?.winRateDeltaPp ?? null,
+        searchValue: (r) => (trendByRule.get(r.rule_id)?.decaying ? 'decaying' : ''),
+        filterNumber: (r) => trendByRule.get(r.rule_id)?.winRateDeltaPp ?? null,
+      },
+      {
+        key: 'history',
         label: '',
-        width: '72px',
+        width: '76px',
         render: (r) => (
           <Link
-            to={floorHref({ tab: 'open', mode, ruleId: r.rule_id })}
+            to={consoleHistoryHref({ ruleId: r.rule_id, range, mode })}
             className="text-[11px] font-semibold text-accent hover:underline"
             onClick={(e) => e.stopPropagation()}
+            title="Open this rule's trades in the Console History cohort"
           >
-            Floor
+            History
           </Link>
         ),
         searchValue: () => '',
       },
     ],
-    [mode],
+    [mode, range, dailyByRule, trendByRule],
   );
 
   const selectedRow = useMemo(
@@ -229,13 +347,17 @@ export function PortfolioPage() {
         title="Portfolio"
         description={
           <>
-            Cross-rule money ·{' '}
+            Which rules earn their keep ·{' '}
             <Link to={rulesHref()} className="text-accent hover:underline">
               Rules
             </Link>
             {' · '}
-            <Link to={floorHref()} className="text-accent hover:underline">
-              Floor
+            <Link to={consoleHref()} className="text-accent hover:underline">
+              Console
+            </Link>
+            {' · '}
+            <Link to={consoleHistoryHref({ range, mode })} className="text-accent hover:underline">
+              Trade history
             </Link>
           </>
         }
@@ -246,6 +368,7 @@ export function PortfolioPage() {
           [
             ['today', 'Today'],
             ['7d', '7 days'],
+            ['30d', '30 days'],
             ['all', 'All-time'],
           ] as const
         ).map(([key, label]) => (
@@ -298,20 +421,27 @@ export function PortfolioPage() {
           tone={signedStatTone(openMtm)}
         />
         <StatTile
-          label="Rules traded"
-          value={tiles ? tiles.rules : '—'}
+          label="Decaying rules"
+          value={trendByRule.size > 0 ? decayingCount : '—'}
           sub={
-            tiles?.filtered
-              ? `of ${data?.by_rule.length ?? 0} · filtered`
+            trendByRule.size > 0
+              ? `of ${tiles?.rules ?? 0} · last ${DECAY_WINDOW} vs prior`
               : isFetching
                 ? 'refreshing…'
-                : undefined
+                : 'needs 2 windows'
           }
-          tone="muted"
+          tone={decayingCount > 0 ? 'red' : 'muted'}
         />
       </div>
 
-      {data && data.by_rule.length > 0 && <PortfolioByRuleCharts rows={data.by_rule} />}
+      {rankedBars.length > 0 && (
+        <div className="rounded-lg border border-white/6 bg-bg-panel p-3">
+          <h2 className="mb-2 text-[10px] font-bold uppercase tracking-wider text-text-dim">
+            Realized PnL by rule — every rule in the window
+          </h2>
+          <RankedPnlBars rows={rankedBars} emptyMessage="No closed trades in this window." />
+        </div>
+      )}
 
       <DataTable
         columns={columns}

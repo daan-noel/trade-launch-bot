@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { StatTile } from 'components/ui/StatTile';
-import { floorHref, rulesHref } from 'lib/strategy/nav';
+import { consoleHistoryHref, rulesHref, type HistoryRange } from 'lib/strategy/nav';
 import { formatCompact } from 'utils/format';
 import {
   formatSigned,
@@ -12,27 +12,34 @@ import {
   signedToneClass,
 } from 'lib/signedTone';
 import { exitReasonBadge } from 'components/strategy/strategyColumns';
-import { fetchRulePositionsPage } from 'services/api';
+import { fetchPortfolioPositionsPage } from 'services/api';
+import { useServerTable } from 'hooks/useServerTable';
 import { FloorMintChart } from '@live/components/floor/FloorMintChart';
 import { buildEventMarkers, inspectFromPosition } from 'components/strategy/inspectTarget';
 import type { PortfolioRulePnl, RulePositionRecord } from 'types';
 
-const STRATEGY_SEG = 'generic';
+const PAGE_SIZE = 15;
 
-function rangeSinceMs(range: 'today' | '7d' | 'all'): number | null {
+/** The page's range keyword → the window's UTC start (`null` = all-time). */
+function rangeSinceIso(range: 'today' | '7d' | '30d' | 'all', nowMs: number): string | null {
   if (range === 'all') return null;
-  const now = Date.now();
   if (range === 'today') {
-    const d = new Date();
-    d.setUTCHours(0, 0, 0, 0);
-    return d.getTime();
+    const d = new Date(nowMs);
+    return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString();
   }
-  return now - 7 * 24 * 60 * 60 * 1000;
+  const days = range === '7d' ? 7 : 30;
+  return new Date(nowMs - days * 86_400_000).toISOString();
 }
 
 /**
- * Selected-rule drill-in on Portfolio — summary tiles + recent closes in range
- * + mint chart when a close row is picked.
+ * Selected-rule drill-in on Portfolio — summary tiles + the rule's closes in the
+ * page's window + a mint chart when a close row is picked.
+ *
+ * The closes come from the SAME cross-rule endpoint the Console History table
+ * pages (`POST /api/portfolio/positions/query`), with rule / mode / status and
+ * the time window applied **server-side**. The previous version fetched 40 rows
+ * and then filtered them down client-side, so a rule with more than 40 recent
+ * positions could show zero in-range closes while having plenty.
  */
 export function PortfolioRuleDetail({
   row,
@@ -40,61 +47,48 @@ export function PortfolioRuleDetail({
   mode,
 }: {
   row: PortfolioRulePnl;
-  range: 'today' | '7d' | 'all';
+  range: 'today' | '7d' | '30d' | 'all';
   mode: 'real' | 'paper';
 }) {
   const pnlPct =
     row.total_entry_sol > 0 ? (row.realized_pnl_sol / row.total_entry_sol) * 100 : null;
-  const [closes, setCloses] = useState<RulePositionRecord[]>([]);
-  const [loading, setLoading] = useState(false);
   const [pick, setPick] = useState<RulePositionRecord | null>(null);
-  const sinceMs = rangeSinceMs(range);
+  // Frozen per mount so the window bound can't slide between fetches.
+  const [nowMs] = useState(() => Date.now());
+  const fromIso = rangeSinceIso(range, nowMs);
 
-  useEffect(() => {
-    let cancelled = false;
-    const ac = new AbortController();
-    setLoading(true);
-    setPick(null);
-    void (async () => {
-      try {
-        const { items } = await fetchRulePositionsPage(
-          STRATEGY_SEG,
-          row.rule_id,
-          {
-            pagination: { page: 1, pageSize: 40 },
-            sorting: [{ col: 'exit_time', dir: 'desc' }],
-            search: '',
-            filters: {},
-          },
-          { kind: 'all' },
-          ac.signal,
-        );
-        if (cancelled) return;
-        const closed = items.filter((p) => p.exit_time != null && p.status === 'End');
-        const inRange =
-          sinceMs == null
-            ? closed
-            : closed.filter((p) => {
-                const t = Date.parse(p.exit_time!);
-                return Number.isFinite(t) && t >= sinceMs;
-              });
-        setCloses(inRange.slice(0, 15));
-      } catch {
-        if (!cancelled) setCloses([]);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-      ac.abort();
-    };
-  }, [row.rule_id, sinceMs]);
+  const body = useMemo(
+    () => ({
+      pagination: { page: 1, pageSize: PAGE_SIZE },
+      sorting: [{ col: 'exit_time', dir: 'desc' as const }],
+      search: '',
+      filters: {
+        rule_id: { op: 'eq' as const, val: row.rule_id },
+        mode: { op: 'eq' as const, val: mode },
+        status: { op: 'eq' as const, val: 'End' },
+      },
+      ...(fromIso ? { range: { from: fromIso } } : {}),
+    }),
+    [row.rule_id, mode, fromIso],
+  );
+
+  const fetchPage = useCallback(
+    (b: unknown, signal: AbortSignal) => fetchPortfolioPositionsPage(b as never, signal),
+    [],
+  );
+
+  const { items: closes, total, loading } = useServerTable<RulePositionRecord>(
+    true,
+    body,
+    fetchPage,
+  );
 
   const markers = useMemo(
     () => (pick ? buildEventMarkers(inspectFromPosition(pick)) : null),
     [pick],
   );
+
+  const historyRange: HistoryRange = range;
 
   return (
     <div className="flex flex-col gap-3">
@@ -121,12 +115,7 @@ export function PortfolioRuleDetail({
           value={row.closed > 0 ? `${Math.round(row.win_rate)}%` : '—'}
           size="sm"
         />
-        <StatTile
-          label="W/L"
-          value={`${row.win}/${row.loss}`}
-          size="sm"
-          tone="muted"
-        />
+        <StatTile label="W/L" value={`${row.win}/${row.loss}`} size="sm" tone="muted" />
         <StatTile label="Closed" value={row.closed} size="sm" tone="muted" />
         <StatTile
           label="Entry ◎"
@@ -145,24 +134,18 @@ export function PortfolioRuleDetail({
           Rules Evidence
         </Link>
         <Link
-          to={floorHref({ tab: 'open', mode, ruleId: row.rule_id })}
+          to={consoleHistoryHref({ ruleId: row.rule_id, range: historyRange, mode })}
           className="font-semibold text-accent hover:underline"
           onClick={(e) => e.stopPropagation()}
         >
-          Floor open
-        </Link>
-        <Link
-          to={floorHref({ tab: 'recent', mode, ruleId: row.rule_id })}
-          className="font-semibold text-accent hover:underline"
-          onClick={(e) => e.stopPropagation()}
-        >
-          Floor recent
+          Full history →
         </Link>
       </div>
 
       <div>
         <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-text-dim">
-          Closes in range {loading ? '· loading…' : `· ${closes.length}`}
+          Closes in range{' '}
+          {loading ? '· loading…' : `· showing ${closes.length} of ${total}`}
         </div>
         {closes.length === 0 && !loading ? (
           <p className="text-[11px] text-text-dim">No End closes in this window.</p>

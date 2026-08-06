@@ -291,7 +291,7 @@ fn default_perf_mode() -> String {
     "real".into()
 }
 
-/// `GET /api/portfolio/performance?range=today|7d|all&mode=real|paper`
+/// `GET /api/portfolio/performance?range=today|7d|30d|all&mode=real|paper`
 ///
 /// Cross-rule closed-trade rollup for the Portfolio page.
 pub async fn get_portfolio_performance(
@@ -305,4 +305,57 @@ pub async fn get_portfolio_performance(
             HttpResponse::InternalServerError().json(serde_json::json!({ "error": e.to_string() }))
         }
     }
+}
+
+#[derive(Deserialize)]
+pub struct ClosesSeriesQuery {
+    #[serde(default = "default_perf_range")]
+    pub range: String,
+    #[serde(default = "default_perf_mode")]
+    pub mode: String,
+    /// Restrict to one rule; absent = all rules.
+    #[serde(default)]
+    pub rule_id: Option<uuid::Uuid>,
+}
+
+/// `GET /api/portfolio/closes-series?range=&mode=&rule_id=` (B2)
+///
+/// The per-close array behind every portfolio chart. One fetch feeds the equity
+/// curve, the PnL histogram, the calendar/hour heatmap and the per-rule
+/// comparison — no per-chart endpoint, so no aggregation drift between them.
+pub async fn get_portfolio_closes_series(
+    app_state: web::Data<Arc<DeployState>>,
+    query: web::Query<ClosesSeriesQuery>,
+) -> impl Responder {
+    match portfolio::closes_series(
+        app_state.get_ref(),
+        &query.range,
+        &query.mode,
+        query.rule_id,
+    )
+    .await
+    {
+        Ok(body) => HttpResponse::Ok().json(body),
+        Err(e) => {
+            tracing::warn!("get_portfolio_closes_series failed: {e}");
+            HttpResponse::InternalServerError().json(serde_json::json!({ "error": e.to_string() }))
+        }
+    }
+}
+
+/// `POST /api/portfolio/positions/query` (B1)
+///
+/// One page of positions across **all rules and runs** — the Console History
+/// table. Shares the [`TableRequest`] contract (and the repo SQL) with the
+/// per-rule positions read; the cohort narrows through the body's filters
+/// (`mode` / `rule_id` / `status` / `exit_reason`) and `range` window.
+pub async fn query_portfolio_positions(
+    app_state: web::Data<Arc<DeployState>>,
+    body: web::Json<TableRequest>,
+) -> impl Responder {
+    trading_core::api::handlers::strategies::rule_positions::portfolio_positions_page(
+        &app_state.strategy_repo,
+        body.into_inner(),
+    )
+    .await
 }

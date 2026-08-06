@@ -5,12 +5,36 @@ import type {
   PortfolioSummary,
   PortfolioPerformance,
   OpenStrategyPosition,
-  RecentClosedPosition,
   CashbackStatus,
   CashbackClaimResult,
   PositionFill,
 } from 'types';
 import type { ArmedEntry } from 'lib/strategy/types';
+
+/** The calendar windows the portfolio endpoints accept (the server's `range`
+ *  grammar — `live::services::portfolio::range_since`). */
+export type PortfolioRange = 'today' | '7d' | '30d' | 'all';
+
+/** One closed trade — the atom of the charts deck (mirrors the backend
+ *  `ClosedTradePoint`). `win` is `pnl_sol > 0` on a clean `End`. */
+export interface ClosedTradePoint {
+  exit_time: string;
+  rule_id: string | null;
+  pnl_sol: number;
+  entry_sol: number;
+  win: boolean;
+}
+
+/** `GET /api/portfolio/closes-series` (mirrors `live::services::portfolio::ClosesSeries`). */
+export interface ClosesSeries {
+  range: string;
+  mode: string;
+  since: string | null;
+  /** Buys that never filled in the window — no SOL deployed, so never part of
+   *  `closes`; carried as a count so entry-failure pressure stays visible. */
+  entry_failed: number;
+  closes: ClosedTradePoint[];
+}
 
 export interface SellTokenArgs {
   mint_address: string;
@@ -19,16 +43,6 @@ export interface SellTokenArgs {
   /// live balance, so no amount is sent.
   token_account?: string;
   slippage_bps?: number;
-}
-
-/** One candidate that armed on the live feed but never fired (its entry trigger
- *  never came). In-memory, current-run only — resets when a fresh run starts. */
-export interface ArmedRecord {
-  mint_address: string;
-  position_id: string;
-  strategy_id: string;
-  armed_at: string;
-  ended_at: string;
 }
 
 /**
@@ -65,11 +79,6 @@ export const liveApi = baseApi.injectEndpoints({
       query: (real = true) => `/api/portfolio/positions?real=${real}`,
       providesTags: ['WalletHoldings'],
     }),
-    /** Latest End/EntryFailed rows — Recent hydrate (DB, not session SSE). */
-    getPortfolioRecentCloses: builder.query<RecentClosedPosition[], number | void>({
-      query: (limit = 50) => `/api/portfolio/recent-closes?limit=${limit}`,
-      providesTags: ['WalletHoldings'],
-    }),
     /**
      * Cross-rule closed PnL for the Portfolio page. Tagged `WalletHoldings` so a
      * real bag change refreshes it, PLUS `PortfolioPerf` so a *paper* close can
@@ -77,12 +86,30 @@ export const liveApi = baseApi.injectEndpoints({
      */
     getPortfolioPerformance: builder.query<
       PortfolioPerformance,
-      { range?: 'today' | '7d' | 'all'; mode?: 'real' | 'paper' } | void
+      { range?: PortfolioRange; mode?: 'real' | 'paper' } | void
     >({
       query: (arg) => {
         const range = arg && typeof arg === 'object' ? (arg.range ?? 'today') : 'today';
         const mode = arg && typeof arg === 'object' ? (arg.mode ?? 'real') : 'real';
         return `/api/portfolio/performance?range=${range}&mode=${mode}`;
+      },
+      providesTags: ['WalletHoldings', 'PortfolioPerf'],
+    }),
+    /**
+     * The per-close array behind EVERY portfolio chart (B2): equity curve, PnL
+     * histogram, calendar, day×hour heatmap, per-rule comparison. One fetch, so
+     * the charts can't drift apart the way per-chart aggregate endpoints would.
+     * Same tags as `getPortfolioPerformance` — a close refreshes both.
+     */
+    getPortfolioClosesSeries: builder.query<
+      ClosesSeries,
+      { range?: PortfolioRange; mode?: 'real' | 'paper'; ruleId?: string | null } | void
+    >({
+      query: (arg) => {
+        const a = arg && typeof arg === 'object' ? arg : {};
+        const q = new URLSearchParams({ range: a.range ?? '7d', mode: a.mode ?? 'real' });
+        if (a.ruleId) q.set('rule_id', a.ruleId);
+        return `/api/portfolio/closes-series?${q.toString()}`;
       },
       providesTags: ['WalletHoldings', 'PortfolioPerf'],
     }),
@@ -182,19 +209,17 @@ export const liveApi = baseApi.injectEndpoints({
       query: () => ({ url: '/api/cashback/claim', method: 'POST' }),
       invalidatesTags: ['Cashback'],
     }),
-    // Current-run "armed but never fired" candidates for a rule — read straight
-    // from the in-memory runtime cache (these rows are deleted on drop, so there's
-    // no DB history). A convenience read; `ArmedHistoryPanel` refetches on
-    // `strategy_armed_changed` / SSE reopen (no poll).
     // Generic-engine armed snapshot for the live monitor — the currently-armed
     // (token, rule) pairs. Live deltas ride the `strategy_armed_changed` SSE;
     // this is the initial + reconnect refetch.
+    //
+    // There is deliberately NO armed-*history* read: an arm that never fired is
+    // dropped from the in-memory runtime cache and never persisted, so the route
+    // the old `ArmedHistoryPanel` called never existed server-side and the panel
+    // 404'd on every render. Reviving it means designing durable arm storage
+    // first (see the live-UI redesign plan, B3) — not adding a route.
     getArmed: builder.query<ArmedEntry[], void>({
       query: () => '/api/strategies/armed',
-    }),
-    getArmedHistory: builder.query<ArmedRecord[], { strategy: string; ruleId: string }>({
-      query: ({ strategy, ruleId }) =>
-        `/api/strategies/${strategy}/rules/${ruleId}/armed-history`,
     }),
     getLiveMode: builder.query<boolean, void>({
       query: () => '/api/system/live',
@@ -225,8 +250,8 @@ export const {
   useGetPortfolioHoldingsQuery,
   useGetPortfolioSummaryQuery,
   useGetPortfolioPositionsQuery,
-  useGetPortfolioRecentClosesQuery,
   useGetPortfolioPerformanceQuery,
+  useGetPortfolioClosesSeriesQuery,
   useGetWalletPricesQuery,
   useManualBuyPositionMutation,
   useSetManualExitConfigMutation,
@@ -235,7 +260,6 @@ export const {
   useGetPositionFillsQuery,
   useGetCashbackStatusQuery,
   useClaimCashbackMutation,
-  useGetArmedHistoryQuery,
   useGetArmedQuery,
   useGetLiveModeQuery,
   useSetLiveModeMutation,

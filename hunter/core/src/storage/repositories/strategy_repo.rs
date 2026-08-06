@@ -298,6 +298,45 @@ impl From<RulePeriodPnlDbRow> for RulePeriodPnlRow {
     }
 }
 
+/// One closed trade for the portfolio closes-series (B2) — the compact per-close
+/// point the frontend charts (equity curve / histogram / calendar / rule
+/// comparison) all derive from client-side. `pnl_sol` uses the canonical
+/// [`realized_exit_sol`][crate::models::strategy::realized_exit_sol] exit
+/// preference; `win` = `pnl_sol > 0` on an `End` row (mirrors
+/// `StrategyPosition::is_win`).
+#[derive(Debug, Clone, Serialize)]
+pub struct ClosedTradePoint {
+    pub exit_time: DateTime<Utc>,
+    pub rule_id: Option<Uuid>,
+    pub pnl_sol: f64,
+    pub entry_sol: f64,
+    pub win: bool,
+}
+
+#[derive(sqlx::FromRow)]
+struct ClosedTradeDbRow {
+    exit_time: DateTime<Utc>,
+    rule_id: Option<Uuid>,
+    entry_lamports: i64,
+    exit_lamports: Option<i64>,
+    exit_sol_lamports_total: i64,
+    sold_token_amount: i64,
+}
+
+impl From<ClosedTradeDbRow> for ClosedTradePoint {
+    fn from(r: ClosedTradeDbRow) -> Self {
+        let entry_sol = lamports_to_sol(r.entry_lamports);
+        let exit_sol = crate::models::strategy::realized_exit_sol(
+            r.sold_token_amount.max(0) as u64,
+            lamports_to_sol(r.exit_sol_lamports_total),
+            r.exit_lamports.map(lamports_to_sol),
+        )
+        .unwrap_or(0.0);
+        let pnl_sol = exit_sol - entry_sol;
+        Self { exit_time: r.exit_time, rule_id: r.rule_id, pnl_sol, entry_sol, win: pnl_sol > 0.0 }
+    }
+}
+
 /// Raw batched counter row (one per rule) behind
 /// [`StrategyRepo::rule_counters_for_latest_paper_runs`]. Same win/open/closed
 /// predicates as [`PositionsSummaryRow`], grouped by `rule_id`.
@@ -539,20 +578,34 @@ pub struct PositionQuery {
     /// Ordered sort keys as `(frontend_key, descending?)`. Non-whitelisted keys are
     /// ignored; an empty resolved list falls back to `created_at DESC`.
     pub sort: Vec<(String, bool)>,
+    /// Optional time window over the row's "when" instant —
+    /// `COALESCE(exit_time, entry_time, created_at)`, so a closed row filters by
+    /// its close and an open/never-filled row by when it appeared. `from`
+    /// inclusive, `to` exclusive (mirrors `AnalysisRange`). Carried from
+    /// `TableRequest.range` by the `From` impl.
+    pub time_from: Option<DateTime<Utc>>,
+    pub time_to: Option<DateTime<Utc>>,
 }
 
 impl From<TableRequest> for PositionQuery {
     /// Lower the JSON wire request into the repo query. Paging (`pagination`) is
     /// resolved separately by the handler via [`Page::bounds`](crate::api::table_query::Page::bounds);
-    /// only the search / filter / sort view-state carries here.
+    /// only the search / filter / sort / range view-state carries here.
     fn from(req: TableRequest) -> Self {
+        let range = req.range.unwrap_or_default();
         PositionQuery {
             search: req.search,
             filters: req.filters.into_iter().collect(),
             sort: req.sorting.into_iter().map(|s| (s.col, s.dir.is_desc())).collect(),
+            time_from: range.from,
+            time_to: range.to,
         }
     }
 }
+
+/// The positions time-window instant — one expression shared by the range
+/// predicate and any caller that needs "when did this row happen" semantics.
+const POSITION_WHEN_SQL: &str = "COALESCE(sp.exit_time, sp.entry_time, sp.created_at)";
 
 /// Canonical SQL for the position **PnL%** column, in the same **percentage** units
 /// the frontend cell shows (`Position::pnl_percentage` = `(exit-entry)/entry × 100`).
@@ -569,6 +622,12 @@ const PNL_PCT_SQL: &str = "(((sp.exit_price - sp.entry_price) / NULLIF(sp.entry_
 /// `entry_token_amount`, or `exit_price` is absent — matching the model's `None`.
 const PNL_SOL_SQL: &str =
     "(sp.exit_price * COALESCE(sp.exit_token_amount, 0) - sp.entry_price * sp.entry_token_amount)";
+
+/// Canonical SQL for the position **entry cost in human SOL** — the stored exact
+/// lamports lifted into the unit the `entry_sol` wire field (and the History
+/// table's Entry column) shows, so a `>0.5` filter means 0.5 SOL. Multiplied,
+/// never divided by `1e9` (the divide is truncated in the exact SQL path).
+const ENTRY_SOL_SQL: &str = "(sp.entry_lamports * 0.000000001)";
 
 /// Map a frontend column key to its **trusted** SQL sort expression (with table
 /// alias). `None` for keys that aren't sortable server-side. Aliases:
@@ -588,6 +647,7 @@ fn position_sort_sql(key: &str) -> Option<&'static str> {
         "exit_time" => "sp.exit_time",
         "pnl_pct" => PNL_PCT_SQL,
         "pnl_sol" => PNL_SOL_SQL,
+        "entry_sol" => ENTRY_SOL_SQL,
         // The positions "Holding" column shows the raw exit-token count held.
         "holding" => "sp.exit_token_amount",
         "status" => "sp.status",
@@ -606,6 +666,10 @@ fn position_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
     Some(match key {
         "mint_address" => ("sp.mint_address", Text),
         "status" => ("sp.status", Text),
+        // Cross-rule (portfolio) history filters: mode is 'real'|'paper'; the rule
+        // filter compares the UUID as text so Eq / In ride the text machinery.
+        "mode" => ("sp.mode", Text),
+        "rule_id" => ("sp.rule_id::text", Text),
         // Null while still open — UI badges that as "Open", so filter must
         // COALESCE or typing "Open" never matches live holding rows.
         "exit_reason" => ("COALESCE(sp.exit_reason, 'Open')", Text),
@@ -613,6 +677,7 @@ fn position_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
         "exit_price" => ("sp.exit_price", Numeric),
         "pnl_pct" => (PNL_PCT_SQL, Numeric),
         "pnl_sol" => (PNL_SOL_SQL, Numeric),
+        "entry_sol" => (ENTRY_SOL_SQL, Numeric),
         "holding" => ("sp.exit_token_amount", Numeric),
         _ => return enrich_filter_sql(key),
     })
@@ -743,6 +808,12 @@ fn push_position_where(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, query: &Posi
             .push(" OR t.symbol ILIKE ")
             .push_bind(needle)
             .push(")");
+    }
+    if let Some(from) = query.time_from {
+        qb.push(" AND ").push(POSITION_WHEN_SQL).push(" >= ").push_bind(from);
+    }
+    if let Some(to) = query.time_to {
+        qb.push(" AND ").push(POSITION_WHEN_SQL).push(" < ").push_bind(to);
     }
     for (key, spec) in &query.filters {
         if let Some((col, kind)) = position_filter_sql(key) {
@@ -1410,7 +1481,7 @@ impl StrategyRepo {
         offset: i64,
         query: &PositionQuery,
     ) -> anyhow::Result<Vec<StrategyPosition>> {
-        self.find_positions_paged("sp.run_id", run_id, None, limit, offset, query).await
+        self.find_positions_paged(Some(("sp.run_id", run_id)), None, limit, offset, query).await
     }
 
     /// Page-bounded positions for a rule across all its runs — the by-rule view
@@ -1422,7 +1493,20 @@ impl StrategyRepo {
         offset: i64,
         query: &PositionQuery,
     ) -> anyhow::Result<Vec<StrategyPosition>> {
-        self.find_positions_paged("sp.rule_id", rule_id, None, limit, offset, query).await
+        self.find_positions_paged(Some(("sp.rule_id", rule_id)), None, limit, offset, query).await
+    }
+
+    /// Page-bounded positions across **all rules and runs** — the Console History
+    /// (portfolio-wide) view. Same JOIN/WHERE machinery as the scoped reads; the
+    /// cohort narrows only through `query` (mode / rule_id / status / exit_reason
+    /// filters + the time range), so this is not a fork of the SQL.
+    pub async fn find_positions_all_paged(
+        &self,
+        limit: i64,
+        offset: i64,
+        query: &PositionQuery,
+    ) -> anyhow::Result<Vec<StrategyPosition>> {
+        self.find_positions_paged(None, None, limit, offset, query).await
     }
 
     /// Page-bounded positions for a rule across **all runs except one** — the
@@ -1436,21 +1520,27 @@ impl StrategyRepo {
         offset: i64,
         query: &PositionQuery,
     ) -> anyhow::Result<Vec<StrategyPosition>> {
-        self.find_positions_paged("sp.rule_id", rule_id, Some(exclude_run_id), limit, offset, query)
-            .await
+        self.find_positions_paged(
+            Some(("sp.rule_id", rule_id)),
+            Some(exclude_run_id),
+            limit,
+            offset,
+            query,
+        )
+        .await
     }
 
     /// Shared page query behind the paged views. LEFT-JOINs `tokens` so the
     /// [`PositionQuery`] can sort/filter/search by token-enrichment columns too.
-    /// `scope_col` is a trusted literal (`"sp.run_id"` / `"sp.rule_id"`); the
-    /// where/order fragments come only from the whitelist resolvers (no user text in
+    /// `scope` is a trusted-literal column (`"sp.run_id"` / `"sp.rule_id"`) + its
+    /// id, or `None` for the cross-rule (portfolio-wide) view; the where/order
+    /// fragments come only from the whitelist resolvers (no user text in
     /// identifiers). `exclude_run` (when set) drops that run from the scope — the
     /// run-history view uses it to omit the current run. Falls back to
     /// `sp.created_at DESC` when no sort resolves.
     async fn find_positions_paged(
         &self,
-        scope_col: &str,
-        scope_id: Uuid,
+        scope: Option<(&str, Uuid)>,
         exclude_run: Option<Uuid>,
         limit: i64,
         offset: i64,
@@ -1461,7 +1551,14 @@ impl StrategyRepo {
              LEFT JOIN tokens t ON t.mint_address = sp.mint_address \
              LEFT JOIN tokens_info i ON i.mint_address = sp.mint_address WHERE "
         ));
-        qb.push(scope_col).push(" = ").push_bind(scope_id);
+        match scope {
+            Some((scope_col, scope_id)) => {
+                qb.push(scope_col).push(" = ").push_bind(scope_id);
+            }
+            None => {
+                qb.push("TRUE");
+            }
+        }
         if let Some(exclude) = exclude_run {
             qb.push(" AND sp.run_id <> ").push_bind(exclude);
         }
@@ -1482,7 +1579,7 @@ impl StrategyRepo {
         run_id: Uuid,
         query: &PositionQuery,
     ) -> anyhow::Result<i64> {
-        self.count_positions("sp.run_id", run_id, None, query).await
+        self.count_positions(Some(("sp.run_id", run_id)), None, query).await
     }
 
     /// Count of positions for a rule across all its runs (matching `query`).
@@ -1491,7 +1588,13 @@ impl StrategyRepo {
         rule_id: Uuid,
         query: &PositionQuery,
     ) -> anyhow::Result<i64> {
-        self.count_positions("sp.rule_id", rule_id, None, query).await
+        self.count_positions(Some(("sp.rule_id", rule_id)), None, query).await
+    }
+
+    /// Filtered count across all rules and runs — pairs with
+    /// [`find_positions_all_paged`] so the History pager total tracks the view.
+    pub async fn count_positions_all(&self, query: &PositionQuery) -> anyhow::Result<i64> {
+        self.count_positions(None, None, query).await
     }
 
     /// Count of a rule's positions across all runs except one (the run-history
@@ -1502,15 +1605,14 @@ impl StrategyRepo {
         exclude_run_id: Uuid,
         query: &PositionQuery,
     ) -> anyhow::Result<i64> {
-        self.count_positions("sp.rule_id", rule_id, Some(exclude_run_id), query).await
+        self.count_positions(Some(("sp.rule_id", rule_id)), Some(exclude_run_id), query).await
     }
 
     /// Shared count behind the count views — same JOIN + WHERE as
     /// [`find_positions_paged`], so `total` matches the filtered page exactly.
     async fn count_positions(
         &self,
-        scope_col: &str,
-        scope_id: Uuid,
+        scope: Option<(&str, Uuid)>,
         exclude_run: Option<Uuid>,
         query: &PositionQuery,
     ) -> anyhow::Result<i64> {
@@ -1519,7 +1621,14 @@ impl StrategyRepo {
              LEFT JOIN tokens t ON t.mint_address = sp.mint_address \
              LEFT JOIN tokens_info i ON i.mint_address = sp.mint_address WHERE ",
         );
-        qb.push(scope_col).push(" = ").push_bind(scope_id);
+        match scope {
+            Some((scope_col, scope_id)) => {
+                qb.push(scope_col).push(" = ").push_bind(scope_id);
+            }
+            None => {
+                qb.push("TRUE");
+            }
+        }
         if let Some(exclude) = exclude_run {
             qb.push(" AND sp.run_id <> ").push_bind(exclude);
         }
@@ -2044,6 +2153,66 @@ impl StrategyRepo {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(RulePeriodPnlRow::from).collect())
+    }
+
+    /// Per-close series for the portfolio charts (B2): every clean `End` row with
+    /// an entry fill in the window, oldest first, as compact
+    /// [`ClosedTradePoint`]s. `since = None` ⇒ all-time; `until` exclusive;
+    /// `rule_id = None` ⇒ all rules. Volume is closes (not trades), so a plain
+    /// bounded-window scan; no aggregation here — one fetch feeds every chart
+    /// client-side so they can't drift from each other.
+    pub async fn closes_series(
+        &self,
+        mode: &str,
+        since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
+        rule_id: Option<Uuid>,
+    ) -> anyhow::Result<Vec<ClosedTradePoint>> {
+        let rows = sqlx::query_as::<_, ClosedTradeDbRow>(
+            "SELECT exit_time, rule_id, entry_lamports, exit_lamports, \
+                    exit_sol_lamports_total, sold_token_amount \
+             FROM strategy_positions \
+             WHERE mode = $1 AND status = 'End' \
+               AND entry_lamports IS NOT NULL AND exit_time IS NOT NULL \
+               AND ($2::timestamptz IS NULL OR exit_time >= $2) \
+               AND ($3::timestamptz IS NULL OR exit_time < $3) \
+               AND ($4::uuid IS NULL OR rule_id = $4) \
+             ORDER BY exit_time ASC",
+        )
+        .bind(mode)
+        .bind(since)
+        .bind(until)
+        .bind(rule_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(ClosedTradePoint::from).collect())
+    }
+
+    /// Count of `EntryFailed` rows in the same window as [`Self::closes_series`]
+    /// (buys that never filled — no SOL deployed, so never part of the PnL series;
+    /// surfaced as a summary count). `EntryFailed` rows have no `exit_time`, so the
+    /// window instant falls back to `updated_at` (when the failure was booked).
+    pub async fn entry_failed_count(
+        &self,
+        mode: &str,
+        since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
+        rule_id: Option<Uuid>,
+    ) -> anyhow::Result<i64> {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM strategy_positions \
+             WHERE mode = $1 AND status = 'EntryFailed' \
+               AND ($2::timestamptz IS NULL OR COALESCE(exit_time, updated_at) >= $2) \
+               AND ($3::timestamptz IS NULL OR COALESCE(exit_time, updated_at) < $3) \
+               AND ($4::uuid IS NULL OR rule_id = $4)",
+        )
+        .bind(mode)
+        .bind(since)
+        .bind(until)
+        .bind(rule_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(n)
     }
 
     /// Distinct mints with an unsettled **real** position — every mint the wallet
@@ -3084,13 +3253,65 @@ mod filter_sql_tests {
     /// return the accumulated SQL string (bind params show as `$N`).
     fn where_sql(key: &str, spec: FilterSpec) -> String {
         let query = PositionQuery {
-            search: String::new(),
             filters: vec![(key.to_string(), spec)],
-            sort: Vec::new(),
+            ..Default::default()
         };
         let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT 1 WHERE true");
         push_position_where(&mut qb, &query);
         qb.sql().to_string()
+    }
+
+    /// The `WHERE` fragment for a bare time window (no filters) — the cohort
+    /// predicate the Console History range bar drives.
+    fn range_sql(from: Option<DateTime<Utc>>, to: Option<DateTime<Utc>>) -> String {
+        let query = PositionQuery { time_from: from, time_to: to, ..Default::default() };
+        let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT 1 WHERE true");
+        push_position_where(&mut qb, &query);
+        qb.sql().to_string()
+    }
+
+    #[test]
+    fn range_bounds_are_half_open_over_the_when_instant() {
+        let t = DateTime::parse_from_rfc3339("2026-08-01T00:00:00Z").unwrap().with_timezone(&Utc);
+        let sql = range_sql(Some(t), Some(t));
+        // `from` inclusive / `to` exclusive, so adjacent windows can't
+        // double-count a close that lands exactly on the boundary.
+        assert!(sql.contains(&format!("{POSITION_WHEN_SQL} >=")), "missing from-bound: {sql}");
+        assert!(sql.contains(&format!("{POSITION_WHEN_SQL} <")), "missing to-bound: {sql}");
+        assert!(!sql.contains("<="), "the `to` bound must be exclusive: {sql}");
+    }
+
+    #[test]
+    fn no_range_emits_no_time_predicate() {
+        let sql = range_sql(None, None);
+        assert!(!sql.contains("COALESCE(sp.exit_time"), "unbounded cohort must not filter: {sql}");
+    }
+
+    #[test]
+    fn cross_rule_filters_bind_rule_and_mode() {
+        let rule = where_sql(
+            "rule_id",
+            FilterSpec {
+                op: FilterOp::Eq,
+                val: serde_json::json!("2f6b8d1e-0000-4000-8000-000000000000"),
+                ..Default::default()
+            },
+        );
+        assert!(rule.contains("sp.rule_id::text"), "rule filter must reach SQL: {rule}");
+        let mode = where_sql(
+            "mode",
+            FilterSpec { op: FilterOp::Eq, val: serde_json::json!("paper"), ..Default::default() },
+        );
+        assert!(mode.contains("sp.mode"), "mode filter must reach SQL: {mode}");
+    }
+
+    #[test]
+    fn entry_sol_filters_in_human_sol_not_lamports() {
+        let sql = where_sql("entry_sol", num(FilterOp::Gt, 0.5));
+        // Multiplied, never divided by 1e9: the divide is truncated in the exact
+        // SQL path (see the u64 instruction-args reference).
+        assert!(sql.contains("sp.entry_lamports * 0.000000001"), "wrong unit lift: {sql}");
+        assert!(!sql.contains("/ 1e9"), "divide-by-1e9 is banned here: {sql}");
     }
 
     fn num(op: FilterOp, v: f64) -> FilterSpec {

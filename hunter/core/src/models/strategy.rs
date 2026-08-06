@@ -201,6 +201,23 @@ pub struct ExitReasonCounts {
     pub next_kill: i64,
 }
 
+/// Exit-side realized SOL for a position — the ONE decider of which exit figure
+/// counts: the running sell-leg aggregate (`exit_sol_total`) once any sell leg
+/// landed (`sold_token_amount > 0`, scale-out aware), else the stamped single-leg
+/// `exit_sol` (legacy). Shared by [`StrategyPosition::realized_pnl_sol`] and the
+/// repo's closes-series projection so the preference logic can't drift.
+pub fn realized_exit_sol(
+    sold_token_amount: u64,
+    exit_sol_total: f64,
+    exit_sol: Option<f64>,
+) -> Option<f64> {
+    if sold_token_amount > 0 {
+        Some(exit_sol_total)
+    } else {
+        exit_sol
+    }
+}
+
 /// A single position lifecycle within a run. Backs the `strategy_positions`
 /// table. JSONB signature lists are `serde_json::Value`; the Postgres `TEXT[]`
 /// `submitted_buy_signatures` maps to `Vec<String>`.
@@ -325,16 +342,12 @@ impl StrategyPosition {
         self.entry_price.is_some()
     }
 
-    /// Realized SOL PnL once closed. Prefers the running sell-leg aggregate
-    /// (`exit_sol_total`) when any sell landed; else the stamped `exit_sol`
-    /// (legacy single-leg). Mirrors `strategy_position_pnl.realized_pnl_sol`.
+    /// Realized SOL PnL once closed. Exit-side preference via
+    /// [`realized_exit_sol`] (the ONE decider); mirrors
+    /// `strategy_position_pnl.realized_pnl_sol`.
     pub fn realized_pnl_sol(&self) -> Option<f64> {
         let entry = self.entry_sol?;
-        let exit = if self.sold_token_amount > 0 {
-            Some(self.exit_sol_total)
-        } else {
-            self.exit_sol
-        }?;
+        let exit = realized_exit_sol(self.sold_token_amount, self.exit_sol_total, self.exit_sol)?;
         Some(exit - entry)
     }
 

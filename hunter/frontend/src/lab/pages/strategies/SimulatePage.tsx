@@ -62,8 +62,11 @@ import { useRuleActions } from 'components/strategy/useRuleActions';
 import { buildCapsColumns } from 'components/strategy/capsRuleColumns';
 import { buildFingerprintRuleColumns } from 'components/strategy/fingerprintRuleColumns';
 import { buildRuleTagsColumn } from 'components/strategy/ruleTagsColumn';
+import { RuleModeFilter } from 'components/strategy/RuleModeFilter';
 import { RuleTagFilter } from 'components/strategy/RuleTagFilter';
+import { useModeFilter } from 'hooks/useModeFilter';
 import { useTagFilter } from 'hooks/useTagFilter';
+import { matchesModeFilter } from 'lib/strategy/mode';
 import { includeOnly, matchesTagFilter } from 'lib/strategy/tags';
 import { buildRuleParamsColumns } from 'components/strategy/ruleParamsColumns';
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
@@ -75,7 +78,7 @@ import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
 import { STORAGE_KEYS } from 'lib/storage';
 import { rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
-  disabledRuleRowClass,
+  ruleRowClass,
   lamportsToSol,
   COST_MODELS,
   FILL_MODELS,
@@ -206,6 +209,9 @@ export function SimulatePage() {
   const [showDisabled, setShowDisabled] = useState(false);
   /** Tag chip selection — URL-backed (`?tags=`/`?notags=`) + sticky for this page. */
   const [tagFilter, setTagFilter] = useTagFilter('simulate.tagFilter');
+  /** Paper/Real scope — URL-backed (`?mode=`) + sticky for this page. Narrowing
+   *  here also narrows what every bulk-simulate button targets. */
+  const [modeFilter, setModeFilter] = useModeFilter('simulate.modeFilter');
   const [opErr, setOpErr] = useState<string | null>(null);
   const handleRef = useRef<{ close: () => void } | null>(null);
   const hydratedIds = useRef<Set<string>>(new Set());
@@ -226,11 +232,21 @@ export function SimulatePage() {
     () => (showDisabled ? rules : rules.filter((r) => r.is_enabled)),
     [rules, showDisabled],
   );
-  // Tag filter narrows what the table shows — and therefore what "Simulate
-  // Filtered" / the paper+real run buttons target.
-  const visibleRules = useMemo(
+  // Tag + mode filters narrow what the table shows — and therefore what
+  // "Simulate Filtered" / the paper+real run buttons target. Each control's
+  // counts come from the set narrowed by the OTHER one, so a chip never
+  // collapses to its own selection.
+  const tagScopedRules = useMemo(
     () => enabledRules.filter((r) => matchesTagFilter(r.tags, tagFilter)),
     [enabledRules, tagFilter],
+  );
+  const modeScopedRules = useMemo(
+    () => enabledRules.filter((r) => matchesModeFilter(r.trade_mode, modeFilter)),
+    [enabledRules, modeFilter],
+  );
+  const visibleRules = useMemo(
+    () => tagScopedRules.filter((r) => matchesModeFilter(r.trade_mode, modeFilter)),
+    [tagScopedRules, modeFilter],
   );
 
   // Tint fingerprint cells when ≥2 rules share the same fingerprint_id.
@@ -549,9 +565,13 @@ export function SimulatePage() {
           </>
         }
       />
-      {/* Counts describe the enabled set, not the tag-filtered one, so a chip's
-          count doesn't collapse the moment you click it. */}
-      <RuleTagFilter rules={enabledRules} filter={tagFilter} onChange={setTagFilter} />
+      {/* Counts describe the set narrowed by the OTHER filter, not the fully
+          filtered one, so a chip's count doesn't collapse the moment you click
+          it. Scoping to one mode also scopes every bulk-simulate button below. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <RuleModeFilter rules={tagScopedRules} value={modeFilter} onChange={setModeFilter} />
+        <RuleTagFilter rules={modeScopedRules} filter={tagFilter} onChange={setTagFilter} />
+      </div>
       {(actions.err || opErr) && (
         <p className="text-xs text-red">{actions.err || opErr}</p>
       )}
@@ -563,11 +583,15 @@ export function SimulatePage() {
         pinnable
         searchable
         tableId="simulate-rules"
-        emptyMessage="No rules yet — author one on the Rules page."
+        emptyMessage={
+          enabledRules.length > 0
+            ? 'No rules match the current mode / tag filters.'
+            : 'No rules yet — author one on the Rules page.'
+        }
         selectedKey={selectedRuleId}
         onSelect={setSelectedRuleId}
         onFilteredRowsChange={onFilteredRowsChange}
-        rowClassName={disabledRuleRowClass}
+        rowClassName={ruleRowClass}
         rowActions={(r) => (
           <IconButtonGroup>
             <IconButton

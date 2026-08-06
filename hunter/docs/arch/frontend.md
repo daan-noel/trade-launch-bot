@@ -40,7 +40,8 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   gating. `identity` (`{subtitle, badge, glyph?, pulse?}`) drives the Header logo block. Live nav
   (`liveNav`) = `Live Trading` / `LIVE` (pulsing) + Live-mode toggle; lab nav (`labNav`) =
   `Research & Backtesting` / `LAB`, no toggle.   Live money nav is collapsed to
-  **Console** (`/console` — one page of lanes: Attention/Open+Manual-trade/Waiting/Recent;
+  **Console** (`/console` — one page: the Attention/Open+Manual-trade/Waiting lanes plus the
+  **History** section;
   redirects from `/floor`, `/trade`, `/ops`, `/positions`, `/live-trading`,
   `/strategies/armed`, `/strategies/monitor`, query preserved) · **Portfolio** (`/portfolio`) · **Wallet**. Rules Evidence is
   `/strategies/rules/:ruleId`. Lab flattens single-child groups (Tokens, Trader Analysis
@@ -52,11 +53,22 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
 trading moved to the Console); **Console = the one real-trade surface** (SSE SSOT; lanes
 top-to-bottom: ⚠ Attention with per-status actions mirroring the backend close matrix,
 Open ∥ Manual-trade panel (buy 202→SSE, TP/SL, sell-all-by-mint, Holding Sell ALL / 25% / 50%, persistent trade log),
-collapsible Waiting, Recent closed; rows carry origin dot / status+sub-chips / dead-pool ❗ /
-MTM / stale-age cue; row select opens the detail modal); Portfolio = cross-rule money
-(PnL% + by-rule bars + rule drill-in); Rules =
+collapsible Waiting, then **History**; rows carry origin dot / status+sub-chips / dead-pool ❗ /
+MTM / stale-age cue; row select opens the detail modal).
+
+The three lanes above History are the **cockpit** (live, SSE-driven, only what is still
+actionable); **History is the review surface** — one URL-backed cohort (date range · rule ·
+mode · status · exit reason) driving a charts deck **and** a server-paged table over the whole
+`strategy_positions` population, so both always describe the same rows. It replaced the old
+50-row "Recent closed" lane, and it owns closed rows outright (there is no session-local
+closes buffer any more — see "Live Status SSOT" below). Detail: [review-surfaces.md](../plans/frontend/review-surfaces.md).
+
+Portfolio = the **rule scoreboard** (ranked realized-PnL bars over every rule, per-rule
+sparkline + rolling-window decay marker, History deep-links); Rules =
 **Control** (TOTAL rollup + activate/pause + scoreboard scoped current-run / all-time) +
-**Evidence** pane (run navigator, summary, positions).
+**Evidence** pane (run navigator, summary, positions). Home leads with the **review digest**
+(7-day PnL sparkline, attention count, rule-decay alerts) and demotes the live trade feed to a
+collapsed panel.
 Tokens table stream toggle is **STREAM ON/OFF**
 (not the header trading kill switch).
 
@@ -64,7 +76,9 @@ Live money nav: **Console** (`/console`) · **Portfolio** · **Wallet**.
 
 **Live Status SSOT:** `live/slices/liveStatusSlice` + `useLiveStatusBootstrap` (mounted
 in live `App`) — REST snapshot on mount / SSE reconnect / tab visible / `sse_resync`:
-armed + open positions + **recent closes from DB** (`GET /api/portfolio/recent-closes`).
+armed + open positions **only**. Closed rows are deliberately not held here: a terminal
+frame just deletes the row from `open`, and Console History reads it back from the DB off
+that same frame (with the exit fill the frame doesn't carry).
 In-place patch on `strategy_position_update` / `strategy_armed_changed`. Snapshot drops
 armed rows that collide with open `(rule, mint)` (Waiting must not stick after buy).
 Terminal position SSE is emitted **before** the sink drops registry meta so
@@ -293,7 +307,25 @@ next load (no per-metric frontend work).
   Tags are presentational only and orthogonal to `is_enabled`:
   chip colour is hashed from the label (`lib/strategy/tags.ts` → the shared
   `chipColorsFromHue`), and the canonical tag grammar lives server-side, NOT here
-  ([rule-tags.md](@plans/strategies/rule-tags.md)). Fingerprints "Used by" → Rules;
+  ([rule-tags.md](@plans/strategies/rule-tags.md)).
+  Beside the tag chips sits the **trade-mode scope** — `RuleModeFilter`
+  (All / Paper / Real) over `useModeFilter` (`?mode=` in the URL, sticky per
+  board: Rules, Rules Control and Simulate each keep their own key). It is the
+  same view-filter shape as tags and composes with them: each control's chip
+  counts come from the set narrowed by the *other* one, so a count never
+  collapses to its own selection. Because both pages derive everything
+  downstream from the filtered set, scoping also makes the Rules scoreboard
+  tiles mode-pure and narrows what Simulate's bulk-run buttons target — and the
+  Total PnL tile spells out its `real … / paper …` split rather than presenting
+  one blended figure whenever both modes have traded rules on screen.
+  Every rule row carries a mode rail (`ruleRowClass` — the ONE `rowClassName`
+  for all three boards, composing the rail with the soft-archive dimming), so a
+  real-money rule is identifiable regardless of sort, filter, or scroll. The
+  rail is deliberately a background **gradient**, not a background colour: the
+  `DataTable` merges `rowClassName` last through tailwind-merge, where a
+  `bg-<color>` would collapse the row's selection and pin washes; a row-level
+  `box-shadow` is not an option either under `border-collapse: collapse`. Locked
+  by `lib/strategy/mode.test.ts`. Fingerprints "Used by" → Rules;
   Rules/Simulate fingerprint cells → Fingerprints; lab Rules → Simulate
   (`linkToSimulate`); Simulate rule name → Rules. Sweep Used-by / matched fp,
   Flow Discovery seed/target badges, and live Armed rule names also deep-link),
@@ -533,6 +565,18 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   operand back to storage before the server compare (`lib/priceUnitSnapshot`). `!=` has no server op
   and maps to `eq`; the legacy `parseNumericPredicate` (still used by any fully client-side table)
   keeps the real `!=` negation.
+- **One PnL-analytics SSOT (`shared/components/analytics/`).** The folds live in `pnlSeries.ts`
+  over ONE neutral atom, `PnlPoint` (`{key, timeMs, pnlSol, pnlPct, label, groupId?, isOpen?}`):
+  `buildEquityCurve` (+ running peak → `maxDrawdownSol`), `pnlDistributionBuckets`,
+  `buildPnlHeatCells`, `buildDailyPnl`, `rankByValue`, `groupDailyPnl`, and `groupTrends` (the
+  decay verdict). Renderers: `EquityCurveChart` (the ONLY one pulling `lightweight-charts` —
+  lazy-load it), `PnlDistribution`, `PnlHeatmap`, `PnlCalendar`, `RankedPnlBars`, `PnlSparkline`
+  (inline SVG, cheap enough per table row). Callers map their own row type into `PnlPoint` and
+  every chart derives from the same points, so an equity curve can't disagree with the histogram
+  beside it. Promoted out of `@lab/components/analysis` (a sanctioned lab→shared move — the live
+  app may never import `@lab`); the `Wallet*` components there are now thin adapters that map
+  `TraderTokenRow` → `PnlPoint` and render the shared pair, and `walletPnlStats.ts` keeps only the
+  wallet-specific summary/scatter.
 - Memoized column defs/price formatters; cells read context directly. localStorage via `lib/storage`
   (`mt:` namespace); column visibility in one `mt:table.cols` map keyed by `tableId`.
 

@@ -61,13 +61,22 @@ export function flowDiscoveryHref(fpId?: string | null): string {
   return `${STRATEGY_PATHS.flowDiscovery}?${STRATEGY_PARAMS.fingerprint}=${encodeURIComponent(fpId)}`;
 }
 
-export function portfolioHref(range?: 'today' | '7d' | 'all'): string {
+/** The calendar windows the portfolio/history surfaces share. `custom` means the
+ *  explicit `from`/`to` params carry the window instead. */
+export type HistoryRange = 'today' | '7d' | '30d' | 'all' | 'custom';
+
+export function portfolioHref(range?: HistoryRange): string {
   if (!range) return STRATEGY_PATHS.portfolio;
   return `${STRATEGY_PATHS.portfolio}?range=${range}`;
 }
 
-/** Console deep-link query keys (notification click-through + Home). `tab` is
- *  legacy (the Console is one page of lanes) — accepted but ignored. */
+/** Console deep-link query keys (notification click-through + Home + the History
+ *  cohort filter bar). `tab` is legacy (the Console is one page of lanes) —
+ *  accepted but ignored.
+ *
+ *  The `h*` keys drive the History section's single cohort (charts deck **and**
+ *  table read the same ones), so a Portfolio "History" link lands on exactly the
+ *  cohort it promised. */
 export const OPS_PARAMS = {
   tab: 'tab',
   mode: 'mode',
@@ -75,7 +84,40 @@ export const OPS_PARAMS = {
   mint: 'mint',
   rule: 'rule',
   position: 'position',
+  /** History: calendar window preset (`today|7d|30d|all|custom`). */
+  range: 'range',
+  /** History: custom window bounds (UTC wall-clock), used when `range=custom`. */
+  from: 'from',
+  to: 'to',
+  /** History: rule filter (independent of the lane `rule` param). */
+  hRule: 'hrule',
+  /** History: mode filter (`real|paper|all`). */
+  hMode: 'hmode',
+  /** History: position status filter (`End`, `EntryFailed`, …). */
+  hStatus: 'hstatus',
+  /** History: exit-reason filter. */
+  hExit: 'hexit',
 } as const;
+
+/** Deep-link into the Console **History** section with a preset cohort — the
+ *  Portfolio scoreboard's per-rule "History" link. `scroll=history` tells the
+ *  Console to bring the section into view on arrival. */
+export function consoleHistoryHref(opts: {
+  ruleId?: string | null;
+  range?: HistoryRange;
+  mode?: 'real' | 'paper' | 'all';
+  from?: string;
+  to?: string;
+}): string {
+  const q = new URLSearchParams();
+  if (opts.ruleId) q.set(OPS_PARAMS.hRule, opts.ruleId);
+  if (opts.range) q.set(OPS_PARAMS.range, opts.range);
+  if (opts.mode) q.set(OPS_PARAMS.hMode, opts.mode);
+  if (opts.from) q.set(OPS_PARAMS.from, opts.from);
+  if (opts.to) q.set(OPS_PARAMS.to, opts.to);
+  q.set('scroll', 'history');
+  return `${STRATEGY_PATHS.console}?${q.toString()}`;
+}
 
 /** @deprecated The Console has no tabs — kept only for old link compatibility. */
 export type OpsTab = 'waiting' | 'open' | 'attention' | 'recent';

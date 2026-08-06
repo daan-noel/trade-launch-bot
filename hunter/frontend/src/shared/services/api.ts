@@ -116,6 +116,25 @@ export function fetchRulePositionsPage(
   );
 }
 
+/**
+ * POST one page of the **cross-rule** position history (Console History, B1).
+ * Same wire contract and server SQL as {@link fetchRulePositionsPage}; the cohort
+ * narrows only through the body's filters (`mode` / `rule_id` / `status` /
+ * `exit_reason`) and its `range` window. Body is a bare array; total from
+ * `X-Total-Count`.
+ */
+export function fetchPortfolioPositionsPage(
+  body: TableRequestBody,
+  signal?: AbortSignal,
+): Promise<{ items: import('types').RulePositionRecord[]; total: number }> {
+  return postTablePage(
+    '/api/portfolio/positions/query',
+    body,
+    (json) => json as import('types').RulePositionRecord[],
+    signal,
+  );
+}
+
 /** POST the filtered Positions Summary aggregate for a rule (same scope/filters as the table). */
 export function fetchRulePositionsSummary(
   strategySeg: string,

@@ -14,9 +14,13 @@ import type { AppDispatch } from '@live/store';
 
 /**
  * App-wide Live Status SSOT bootstrap — one mount in live `App`.
- * Snapshot (armed + open + recent closes) on mount / SSE reconnect / tab visible /
- * sse_resync; deltas patch the `liveStatus` slice in place. Pages must read the
- * slice, not own a parallel Map.
+ * Snapshot (armed + open) on mount / SSE reconnect / tab visible / sse_resync;
+ * deltas patch the `liveStatus` slice in place. Pages must read the slice, not
+ * own a parallel Map.
+ *
+ * Closed positions are deliberately NOT part of this snapshot: they are served
+ * by the Console History section straight from the DB, paged and filtered, so
+ * there is no session-local closes buffer to hydrate here.
  */
 export function useLiveStatusBootstrap(): void {
   const dispatch = useDispatch<AppDispatch>();
@@ -28,11 +32,10 @@ export function useLiveStatusBootstrap(): void {
     inflight.current = ac;
     dispatch(snapshotStart());
     try {
-      const [armedRes, posRes, recentRes] = await Promise.all([
+      const [armedRes, posRes] = await Promise.all([
         dispatch(liveApi.endpoints.getArmed.initiate(undefined, { forceRefetch: true })),
         // `false` = real + paper so the store is mode-complete; UI filters.
         dispatch(liveApi.endpoints.getPortfolioPositions.initiate(false, { forceRefetch: true })),
-        dispatch(liveApi.endpoints.getPortfolioRecentCloses.initiate(50, { forceRefetch: true })),
       ]);
       refetchAllRuleLists(dispatch);
       const rulesRes = await dispatch(
@@ -51,7 +54,6 @@ export function useLiveStatusBootstrap(): void {
         applySnapshot({
           armed: armedRes.data ?? [],
           positions: posRes.data ?? [],
-          recentClosed: recentRes.error ? undefined : (recentRes.data ?? []),
           ruleNames,
         }),
       );

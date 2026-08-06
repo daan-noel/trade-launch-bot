@@ -1,13 +1,17 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
-import type { OpenStrategyPosition, RecentClosedPosition } from 'types';
+import type { OpenStrategyPosition } from 'types';
 import type {
   ArmedChangedEvent,
   ArmedEntry,
   StrategyPositionUpdateEvent,
 } from 'lib/strategy/types';
 
-/** Cap on "recent closes" ring (SSE + DB hydrate). */
-const MAX_RECENT_CLOSED = 50;
+// There is no "recent closes" ring here any more. It was a 50-row session
+// buffer that could only ever answer "what closed while this tab was open";
+// closed positions now live in the Console **History** section, which pages the
+// full cross-rule population server-side (`POST /api/portfolio/positions/query`).
+// A terminal SSE frame still deletes the row from `open` — History refetches
+// off the same frame.
 
 /**
  * Statuses that count as open inventory (still actionable / in flight). A row
@@ -72,29 +76,9 @@ export interface LiveOpenRow {
   updatedAt: number;
 }
 
-export interface LiveClosedRow {
-  positionId: string;
-  ruleId: string | null;
-  ruleName: string | null;
-  mint: string;
-  mode: string | null;
-  status: string;
-  exitReason: string | null;
-  entryPrice: number | null;
-  exitPrice: number | null;
-  entrySol: number | null;
-  exitSol: number | null;
-  entryTime: string | null;
-  exitTime: string | null;
-  /** Realized SOL PnL when both legs known; null until hydrate / SSE with amounts. */
-  pnlSol: number | null;
-  closedAt: number;
-}
-
 export interface LiveStatusState {
   armed: Record<string, LiveArmedRow>;
   open: Record<string, LiveOpenRow>;
-  recentClosed: LiveClosedRow[];
   /** True after at least one successful REST snapshot apply. */
   hydrated: boolean;
   lastSnapshotAt: number | null;
@@ -105,7 +89,6 @@ export interface LiveStatusState {
 const initialState: LiveStatusState = {
   armed: {},
   open: {},
-  recentClosed: [],
   hydrated: false,
   lastSnapshotAt: null,
   snapshotLoading: false,
@@ -150,42 +133,6 @@ function openFromPortfolio(
   };
 }
 
-function closedFromRecent(
-  p: RecentClosedPosition,
-  ruleNames: Record<string, string>,
-): LiveClosedRow | null {
-  if (!TERMINAL_STATUSES.has(p.status)) return null;
-  const ruleId = p.rule_id;
-  const closedAt = p.exit_time
-    ? Date.parse(p.exit_time)
-    : p.updated_at
-      ? Date.parse(p.updated_at)
-      : Date.now();
-  const entrySol = p.entry_sol ?? null;
-  const exitSol = p.exit_sol ?? null;
-  const pnlSol =
-    entrySol != null && exitSol != null && Number.isFinite(entrySol) && Number.isFinite(exitSol)
-      ? exitSol - entrySol
-      : null;
-  return {
-    positionId: p.id,
-    ruleId,
-    ruleName: (ruleId && ruleNames[ruleId]) || null,
-    mint: p.mint_address,
-    mode: p.mode,
-    status: p.status,
-    exitReason: p.exit_reason ?? null,
-    entryPrice: p.entry_price ?? null,
-    exitPrice: p.exit_price ?? null,
-    entrySol,
-    exitSol,
-    entryTime: p.entry_time ?? null,
-    exitTime: p.exit_time ?? null,
-    pnlSol,
-    closedAt: Number.isFinite(closedAt) ? closedAt : Date.now(),
-  };
-}
-
 const liveStatusSlice = createSlice({
   name: 'liveStatus',
   initialState,
@@ -194,20 +141,19 @@ const liveStatusSlice = createSlice({
       state.snapshotLoading = true;
     },
     /**
-     * Replace armed + open from REST; merge DB recent closes (newest-first).
-     * Drops armed rows that collide with an open (rule, mint) — Waiting must
-     * never sit next to a buy-confirmed Open after snapshot.
+     * Replace armed + open from REST. Drops armed rows that collide with an open
+     * (rule, mint) — Waiting must never sit next to a buy-confirmed Open after
+     * snapshot. Closed rows are not held here (see the note at the top).
      */
     applySnapshot(
       state,
       action: PayloadAction<{
         armed: ArmedEntry[];
         positions: OpenStrategyPosition[];
-        recentClosed?: RecentClosedPosition[];
         ruleNames: Record<string, string>;
       }>,
     ) {
-      const { armed, positions, recentClosed, ruleNames } = action.payload;
+      const { armed, positions, ruleNames } = action.payload;
       const nextArmed: Record<string, LiveArmedRow> = {};
       const now = Date.now();
       for (const e of armed) {
@@ -239,21 +185,6 @@ const liveStatusSlice = createSlice({
       }
       state.armed = nextArmed;
       state.open = nextOpen;
-
-      if (recentClosed) {
-        const fromDb: LiveClosedRow[] = [];
-        for (const p of recentClosed) {
-          const row = closedFromRecent(p, ruleNames);
-          if (row) fromDb.push(row);
-        }
-        // Prefer DB order; keep any newer session-only closes not yet in DB page.
-        const dbIds = new Set(fromDb.map((r) => r.positionId));
-        const sessionExtra = state.recentClosed.filter((r) => !dbIds.has(r.positionId));
-        state.recentClosed = [...fromDb, ...sessionExtra]
-          .sort((a, b) => b.closedAt - a.closedAt)
-          .slice(0, MAX_RECENT_CLOSED);
-      }
-
       state.hydrated = true;
       state.lastSnapshotAt = now;
       state.snapshotLoading = false;
@@ -320,30 +251,10 @@ const liveStatusSlice = createSlice({
         return;
       }
 
+      // Anything not open leaves the lane. A terminal frame needs no further
+      // bookkeeping here: History reads the row back from the DB off the same
+      // SSE frame, with the exit fill attached (which this frame lacks).
       delete state.open[d.position_id];
-      if (TERMINAL_STATUSES.has(d.status)) {
-        const closed: LiveClosedRow = {
-          positionId: d.position_id,
-          ruleId: d.rule_id,
-          ruleName: d.rule_name ?? prev?.ruleName ?? null,
-          mint: d.mint_address,
-          mode: d.trade_mode ?? prev?.mode ?? null,
-          status: d.status,
-          exitReason: d.exit_reason ?? null,
-          entryPrice: d.entry_price ?? prev?.entryPrice ?? null,
-          exitPrice: d.exit_price ?? null,
-          entrySol: prev?.entrySol ?? null,
-          exitSol: null,
-          entryTime: prev?.entryTime ?? null,
-          exitTime: null,
-          pnlSol: null,
-          closedAt: now,
-        };
-        state.recentClosed = [
-          closed,
-          ...state.recentClosed.filter((r) => r.positionId !== d.position_id),
-        ].slice(0, MAX_RECENT_CLOSED);
-      }
     },
   },
 });
@@ -362,7 +273,6 @@ export default liveStatusSlice.reducer;
 export const selectLiveStatus = (s: { liveStatus: LiveStatusState }) => s.liveStatus;
 export const selectLiveArmed = (s: { liveStatus: LiveStatusState }) => s.liveStatus.armed;
 export const selectLiveOpen = (s: { liveStatus: LiveStatusState }) => s.liveStatus.open;
-export const selectLiveRecentClosed = (s: { liveStatus: LiveStatusState }) => s.liveStatus.recentClosed;
 export const selectLiveStatusHydrated = (s: { liveStatus: LiveStatusState }) => s.liveStatus.hydrated;
 
 export function selectOpenByRule(ruleId: string) {

@@ -239,6 +239,12 @@ export interface RulePositionRecord extends TokenEnrichmentFields {
   pnl_sol: number | null;
   status: string;
   strategy: string;
+  /** Execution mode (`real` | `paper`). The cross-rule History view mixes both,
+   *  so every row carries it; per-rule views infer it from the rule. */
+  mode?: string;
+  /** SOL spent at entry (from `entry_lamports`) — the History Entry column and
+   *  the `pnlPctFromSol` denominator. Null until the entry fills. */
+  entry_sol?: number | null;
   /** Owning rule id; null if the rule was deleted (`ON DELETE SET NULL`). */
   rule_id: string | null;
   /** Why the position exited (TakeProfit/StopLoss/TrailingStop/Stall/TimeStop/
@@ -787,24 +793,6 @@ export interface PositionFill {
   reason?: string | null;
   stage?: number | null;
   tx_signature?: string | null;
-}
-
-/** Closed row from `GET /api/portfolio/recent-closes` (Floor Recent hydrate). */
-export interface RecentClosedPosition {
-  id: string;
-  rule_id: string | null;
-  mint_address: string;
-  mode: string;
-  status: string;
-  exit_reason?: string | null;
-  entry_price?: number | null;
-  exit_price?: number | null;
-  entry_time?: string | null;
-  /** Human SOL — present on StrategyPosition JSON; used for PnL. */
-  entry_sol?: number | null;
-  exit_sol?: number | null;
-  exit_time?: string | null;
-  updated_at?: string;
 }
 
 /** `GET /api/portfolio/performance` — Portfolio page rollup. */

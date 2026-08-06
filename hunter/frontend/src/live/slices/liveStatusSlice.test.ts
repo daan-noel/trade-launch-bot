@@ -12,19 +12,9 @@ import reducer, {
 const empty = reducer(undefined, { type: '@@init' });
 
 describe('liveStatusSlice', () => {
-  it('applySnapshot replaces armed + open and hydrates recentClosed from DB', () => {
-    const withSession = reducer(
-      empty,
-      applyPositionDelta({
-        rule_id: 'r1',
-        mint_address: 'm1',
-        position_id: 'p-session',
-        status: 'End',
-        exit_reason: 'TakeProfit',
-      }),
-    );
+  it('applySnapshot replaces armed + open', () => {
     const next = reducer(
-      withSession,
+      empty,
       applySnapshot({
         armed: [{ rule_id: 'r1', mint_address: 'm2', state: 'armed' }],
         positions: [
@@ -38,25 +28,12 @@ describe('liveStatusSlice', () => {
             entry_sol: 0.5,
           },
         ],
-        recentClosed: [
-          {
-            id: 'p-db',
-            rule_id: 'r1',
-            mint_address: 'm9',
-            mode: 'real',
-            status: 'End',
-            exit_reason: 'StopLoss',
-            exit_time: '2026-07-20T12:00:00.000Z',
-          },
-        ],
         ruleNames: { r1: 'Alpha' },
       }),
     );
     expect(Object.keys(next.armed)).toEqual([armedKey('r1', 'm2')]);
     expect(next.open.p1?.ruleName).toBe('Alpha');
     expect(next.open.p1?.entrySol).toBe(0.5);
-    expect(next.recentClosed.map((r) => r.positionId)).toContain('p-db');
-    expect(next.recentClosed.map((r) => r.positionId)).toContain('p-session');
     expect(next.hydrated).toBe(true);
   });
 
@@ -104,10 +81,9 @@ describe('liveStatusSlice', () => {
       }),
     );
     expect(ignored.open.p1?.status).toBe('Holding');
-    expect(ignored.recentClosed).toEqual([]);
   });
 
-  it('Holding → ExitPending → End moves open into recentClosed', () => {
+  it('Holding → ExitPending → End removes the row from the open lane', () => {
     let s = reducer(
       empty,
       applyPositionDelta({
@@ -143,9 +119,9 @@ describe('liveStatusSlice', () => {
         trade_mode: 'real',
       }),
     );
+    // Closed rows are not buffered here any more — History reads them from the
+    // DB off this same SSE frame (with the exit fill the frame doesn't carry).
     expect(s.open.p1).toBeUndefined();
-    expect(s.recentClosed[0]?.status).toBe('End');
-    expect(s.recentClosed[0]?.exitReason).toBe('StopLoss');
   });
 
   it('armed delta self-heals and buy drops armed row', () => {

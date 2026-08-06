@@ -26,12 +26,15 @@ import { buildCapsColumns } from './capsRuleColumns';
 import { buildFingerprintRuleColumns } from './fingerprintRuleColumns';
 import { buildRuleParamsColumns } from './ruleParamsColumns';
 import { RuleHoverTip } from './RuleHoverTip';
+import { RuleModeFilter } from './RuleModeFilter';
 import { RuleTagFilter } from './RuleTagFilter';
 import { buildRuleTagsColumn } from './ruleTagsColumn';
 import { useRuleActions } from './useRuleActions';
 import type { RuleEditorDraft } from './RuleEditor';
+import { useModeFilter } from 'hooks/useModeFilter';
 import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
 import { useTagFilter } from 'hooks/useTagFilter';
+import { matchesModeFilter } from 'lib/strategy/mode';
 import { includeOnly, matchesTagFilter } from 'lib/strategy/tags';
 import { apiErrorMessage } from 'store/baseApi';
 import {
@@ -62,8 +65,8 @@ import {
 } from 'lib/signedTone';
 import { simulateHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
-  disabledRuleRowClass,
   lamportsToSol,
+  ruleRowClass,
   type StrategyRule,
   type TradeMode,
 } from 'lib/strategy/types';
@@ -147,6 +150,11 @@ export function RulesView({
   const [tagFilter, setTagFilter] = useTagFilter(
     showScores ? 'rules-control.tagFilter' : 'rules.tagFilter',
   );
+  /** Paper/Real scope — URL-backed (`?mode=`) + sticky per app. Live Control and
+   *  the lab board keep separate scopes; they are different jobs. */
+  const [modeFilter, setModeFilter] = useModeFilter(
+    showScores ? 'rules-control.modeFilter' : 'rules.modeFilter',
+  );
   const [opErr, setOpErr] = useState<string | null>(null);
   /** Rule ids mid optimistic pause (label "Pausing…" until SSE/refetch confirms). */
   const [pausingIds, setPausingIds] = useState<Set<string>>(() => new Set());
@@ -166,11 +174,23 @@ export function RulesView({
     () => (showDisabled ? rules : rules.filter((r) => r.is_enabled)),
     [rules, showDisabled],
   );
-  const visibleRules = useMemo(
+  // Tag and mode are independent view filters, so each control's counts are
+  // computed over the set narrowed by the OTHER one — a chip must never collapse
+  // to its own selection, but it should reflect the scope you are working in.
+  const tagScopedRules = useMemo(
     () => enabledRules.filter((r) => matchesTagFilter(r.tags, tagFilter)),
     [enabledRules, tagFilter],
   );
-  const hiddenByTags = enabledRules.length - visibleRules.length;
+  const modeScopedRules = useMemo(
+    () => enabledRules.filter((r) => matchesModeFilter(r.trade_mode, modeFilter)),
+    [enabledRules, modeFilter],
+  );
+  const visibleRules = useMemo(
+    () => tagScopedRules.filter((r) => matchesModeFilter(r.trade_mode, modeFilter)),
+    [tagScopedRules, modeFilter],
+  );
+  const hiddenByTags = modeScopedRules.length - visibleRules.length;
+  const hiddenByMode = tagScopedRules.length - visibleRules.length;
 
   /** Cross-rule rollup for the Control TOTAL strip (same scope as scoreboard). */
   const scoreboardTotals = useMemo(() => {
@@ -182,11 +202,19 @@ export function RulesView({
     let active = 0;
     let weightedAvgPct = 0;
     let avgWeight = 0;
+    // Real and paper PnL are different currencies — one is money, one is not.
+    // Kept apart so the TOTAL tile can refuse to present a blended figure.
+    const pnlByMode: Record<TradeMode, number> = { paper: 0, real: 0 };
+    const tradedByMode: Record<TradeMode, number> = { paper: 0, real: 0 };
     for (const r of visibleRules) {
       if (!showScores) break;
       const closed = closedCount(r);
       const n = r.total_positions ?? 0;
-      if (n > 0) pnl += r.total_pnl_sol ?? 0;
+      if (n > 0) {
+        pnl += r.total_pnl_sol ?? 0;
+        pnlByMode[r.trade_mode] += r.total_pnl_sol ?? 0;
+        tradedByMode[r.trade_mode] += 1;
+      }
       wins += r.win_count ?? 0;
       losses += r.loss_count ?? 0;
       entered += n;
@@ -210,6 +238,8 @@ export function RulesView({
     }
     return {
       pnl,
+      pnlByMode,
+      tradedByMode,
       wins,
       losses,
       closed,
@@ -838,12 +868,21 @@ export function RulesView({
             </>
           }
         />
-        {/* Counts describe the enabled set, NOT `visibleRules` — otherwise every
-            chip would drop to its own count the moment you clicked it. */}
+        {/* Counts describe the set narrowed by the OTHER filter, NOT
+            `visibleRules` — otherwise every chip would drop to its own count the
+            moment you clicked it. */}
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
-          <RuleTagFilter rules={enabledRules} filter={tagFilter} onChange={setTagFilter} />
+          <RuleModeFilter
+            rules={tagScopedRules}
+            value={modeFilter}
+            onChange={setModeFilter}
+          />
+          <RuleTagFilter rules={modeScopedRules} filter={tagFilter} onChange={setTagFilter} />
           {hiddenByTags > 0 && (
             <span className="text-[10px] text-text-dim">{hiddenByTags} hidden by tags</span>
+          )}
+          {hiddenByMode > 0 && (
+            <span className="text-[10px] text-text-dim">{hiddenByMode} hidden by mode</span>
           )}
         </div>
       </div>
@@ -853,7 +892,18 @@ export function RulesView({
           <StatTile
             label="Total PnL"
             value={`◎${formatSigned(scoreboardTotals.pnl, 3)}`}
-            sub={`${scoreboardTotals.traded} rules traded`}
+            // With both modes on screen the headline is a blend of real money
+            // and simulated money, so spell out the split rather than let one
+            // number stand for both.
+            sub={
+              scoreboardTotals.tradedByMode.real > 0 &&
+              scoreboardTotals.tradedByMode.paper > 0
+                ? `real ${formatSigned(scoreboardTotals.pnlByMode.real, 3)} · paper ${formatSigned(
+                    scoreboardTotals.pnlByMode.paper,
+                    3,
+                  )}`
+                : `${scoreboardTotals.traded} rules traded`
+            }
             tone={signedStatTone(scoreboardTotals.pnl)}
             size="sm"
           />
@@ -908,7 +958,9 @@ export function RulesView({
           <StatTile
             label="Rules"
             value={visibleRules.length}
-            sub={showDisabled ? 'incl. disabled' : 'enabled'}
+            sub={`${modeFilter === 'all' ? '' : `${modeFilter} · `}${
+              showDisabled ? 'incl. disabled' : 'enabled'
+            }`}
             tone="muted"
             size="sm"
           />
@@ -923,10 +975,14 @@ export function RulesView({
         colFilters
         tableId="strategy-rules"
         pinnable
-        emptyMessage="No rules yet — create one from a fingerprint."
+        emptyMessage={
+          enabledRules.length > 0
+            ? 'No rules match the current mode / tag filters.'
+            : 'No rules yet — create one from a fingerprint.'
+        }
         selectedKey={selectedKey}
         onSelect={setSelectedKey}
-        rowClassName={disabledRuleRowClass}
+        rowClassName={ruleRowClass}
         rowActions={(r) => (
           <IconButtonGroup>
             <IconButton

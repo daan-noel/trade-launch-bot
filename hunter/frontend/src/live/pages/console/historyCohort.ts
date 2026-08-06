@@ -1,0 +1,146 @@
+/**
+ * The **one cohort** behind the Console History section.
+ *
+ * Charts and table must never be computed from different queries — so the
+ * filter bar, the charts deck, and the server-paged table all read this single
+ * URL-backed cohort. It lives in the query string (the `h*` keys of
+ * `OPS_PARAMS`) so a History deep-link from Portfolio lands on exactly the
+ * cohort it promised, and a reload keeps it.
+ */
+
+import { useCallback, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { OPS_PARAMS, type HistoryRange } from 'lib/strategy/nav';
+
+export type HistoryMode = 'real' | 'paper' | 'all';
+
+export interface HistoryCohort {
+  range: HistoryRange;
+  /** Window start (ISO, UTC) — `null` for the all-time range. */
+  fromIso: string | null;
+  /** Window end (ISO, UTC, exclusive) — `null` for "up to now". */
+  toIso: string | null;
+  ruleId: string | null;
+  mode: HistoryMode;
+  /** Position status (`End` / `EntryFailed` / an open status); `null` = any. */
+  status: string | null;
+  exitReason: string | null;
+  /** The `range` value the B2 series endpoint understands (it takes presets
+   *  only; a custom window is served as `all` and trimmed client-side). */
+  seriesRange: 'today' | '7d' | '30d' | 'all';
+}
+
+export interface HistoryCohortApi extends HistoryCohort {
+  set: (patch: Partial<Omit<HistoryCohort, 'seriesRange'>>) => void;
+  reset: () => void;
+  /** True when anything narrows the cohort below "all trades, all time". */
+  active: boolean;
+}
+
+const DEFAULT_RANGE: HistoryRange = '7d';
+
+/** Preset → window start, evaluated against `now`. `all`/`custom` return null. */
+function presetStart(range: HistoryRange, now: number): string | null {
+  if (range === 'today') {
+    const d = new Date(now);
+    return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString();
+  }
+  if (range === '7d') return new Date(now - 7 * 86_400_000).toISOString();
+  if (range === '30d') return new Date(now - 30 * 86_400_000).toISOString();
+  return null;
+}
+
+/**
+ * Read + write the History cohort. `nowMs` is passed in (not read from the
+ * clock inside the memo) so a preset window is stable across re-renders — a
+ * moving `from` bound would refetch the table on every keystroke elsewhere on
+ * the page.
+ */
+export function useHistoryCohort(nowMs: number): HistoryCohortApi {
+  const [params, setParams] = useSearchParams();
+
+  const rawRange = params.get(OPS_PARAMS.range);
+  const range: HistoryRange =
+    rawRange === 'today' ||
+    rawRange === '7d' ||
+    rawRange === '30d' ||
+    rawRange === 'all' ||
+    rawRange === 'custom'
+      ? rawRange
+      : DEFAULT_RANGE;
+  const customFrom = params.get(OPS_PARAMS.from);
+  const customTo = params.get(OPS_PARAMS.to);
+  const ruleId = params.get(OPS_PARAMS.hRule);
+  const rawMode = params.get(OPS_PARAMS.hMode);
+  const mode: HistoryMode =
+    rawMode === 'paper' || rawMode === 'all' || rawMode === 'real' ? rawMode : 'real';
+  const status = params.get(OPS_PARAMS.hStatus);
+  const exitReason = params.get(OPS_PARAMS.hExit);
+
+  const cohort = useMemo<HistoryCohort>(() => {
+    const fromIso = range === 'custom' ? (customFrom || null) : presetStart(range, nowMs);
+    const toIso = range === 'custom' ? (customTo || null) : null;
+    return {
+      range,
+      fromIso,
+      toIso,
+      ruleId,
+      mode,
+      status,
+      exitReason,
+      seriesRange: range === 'custom' ? 'all' : range,
+    };
+  }, [range, customFrom, customTo, ruleId, mode, status, exitReason, nowMs]);
+
+  const set = useCallback(
+    (patch: Partial<Omit<HistoryCohort, 'seriesRange'>>) => {
+      const next = new URLSearchParams(params);
+      const put = (key: string, val: string | null | undefined) => {
+        if (val == null || val === '') next.delete(key);
+        else next.set(key, val);
+      };
+      if ('range' in patch) {
+        put(OPS_PARAMS.range, patch.range === DEFAULT_RANGE ? null : patch.range);
+        // Leaving custom drops the explicit bounds so they can't linger and
+        // silently re-apply the moment the user picks custom again.
+        if (patch.range !== 'custom') {
+          next.delete(OPS_PARAMS.from);
+          next.delete(OPS_PARAMS.to);
+        }
+      }
+      if ('fromIso' in patch) put(OPS_PARAMS.from, patch.fromIso);
+      if ('toIso' in patch) put(OPS_PARAMS.to, patch.toIso);
+      if ('ruleId' in patch) put(OPS_PARAMS.hRule, patch.ruleId);
+      if ('mode' in patch) put(OPS_PARAMS.hMode, patch.mode === 'real' ? null : patch.mode);
+      if ('status' in patch) put(OPS_PARAMS.hStatus, patch.status);
+      if ('exitReason' in patch) put(OPS_PARAMS.hExit, patch.exitReason);
+      setParams(next, { replace: true });
+    },
+    [params, setParams],
+  );
+
+  const reset = useCallback(() => {
+    const next = new URLSearchParams(params);
+    for (const key of [
+      OPS_PARAMS.range,
+      OPS_PARAMS.from,
+      OPS_PARAMS.to,
+      OPS_PARAMS.hRule,
+      OPS_PARAMS.hMode,
+      OPS_PARAMS.hStatus,
+      OPS_PARAMS.hExit,
+    ]) {
+      next.delete(key);
+    }
+    setParams(next, { replace: true });
+  }, [params, setParams]);
+
+  const active =
+    range !== DEFAULT_RANGE ||
+    ruleId != null ||
+    mode !== 'real' ||
+    status != null ||
+    exitReason != null;
+
+  return { ...cohort, set, reset, active };
+}

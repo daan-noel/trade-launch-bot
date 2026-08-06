@@ -7,8 +7,9 @@ import {
   computeWalletSummary,
   dowHourInTz,
   pnlDistributionBuckets,
-  rankByTotalPnl,
+  rankedPnlBarRows,
 } from './walletPnlStats';
+import { rankByValue } from 'components/analytics/pnlSeries';
 
 /** Minimal valid `TraderTokenRow` with sane token-record defaults; each test
  *  overrides only the wallet_* fields it cares about. */
@@ -167,16 +168,25 @@ describe('buildPnlHeatCells', () => {
   });
 });
 
-describe('rankByTotalPnl', () => {
+describe('rankedPnlBarRows', () => {
   it('sorts descending by total pnl without mutating the input', () => {
     const rows = [
       row({ mint_address: 'a', wallet_total_pnl_sol: -1 }),
       row({ mint_address: 'b', wallet_total_pnl_sol: 5 }),
       row({ mint_address: 'c', wallet_total_pnl_sol: 2 }),
     ];
-    const ranked = rankByTotalPnl(rows);
-    expect(ranked.map((r) => r.mint_address)).toEqual(['b', 'c', 'a']);
+    const ranked = rankByValue(rankedPnlBarRows(rows));
+    expect(ranked.map((r) => r.key)).toEqual(['b', 'c', 'a']);
     expect(rows.map((r) => r.mint_address)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('tags an open bag so the bar can mark it', () => {
+    const bars = rankedPnlBarRows([
+      row({ mint_address: 'open', wallet_is_open: true }),
+      row({ mint_address: 'closed', wallet_is_open: false }),
+    ]);
+    expect(bars.find((b) => b.key === 'open')!.tag).toBe('open');
+    expect(bars.find((b) => b.key === 'closed')!.tag).toBeNull();
   });
 });
 

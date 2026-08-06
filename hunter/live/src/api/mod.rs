@@ -154,6 +154,12 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
             .route("/portfolio/holdings/query", web::post().to(handlers::trading::query_portfolio_holdings))
             .route("/portfolio/holdings/summary", web::post().to(handlers::trading::portfolio_holdings_summary))
             .route("/portfolio/summary", web::get().to(handlers::trading::get_portfolio_summary))
+            // Cross-rule History page (B1) — registered before the bare
+            // `/portfolio/positions` GET; distinct method + `/query` suffix, no clash.
+            .route(
+                "/portfolio/positions/query",
+                web::post().to(handlers::trading::query_portfolio_positions),
+            )
             .route("/portfolio/positions", web::get().to(handlers::trading::get_portfolio_positions))
             .route(
                 "/portfolio/recent-closes",
@@ -162,6 +168,11 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
             .route(
                 "/portfolio/performance",
                 web::get().to(handlers::trading::get_portfolio_performance),
+            )
+            // Per-close series behind every portfolio chart (B2).
+            .route(
+                "/portfolio/closes-series",
+                web::get().to(handlers::trading::get_portfolio_closes_series),
             )
             // On-chain Solana queries
             .route("/solana/wallet/tokens", web::get().to(handlers::trading::get_wallet_tokens))
