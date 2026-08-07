@@ -439,7 +439,7 @@ export function ChartToolbar({
 
   return (
     // The toolbar WRAPS, and the control cluster must be shrinkable (no `shrink-0`).
-    // The cluster's max-content width is ~600px of pill groups + icon toggles; pinned
+    // The cluster's max-content width is ~650px of pill groups + icon toggles; pinned
     // at that width it overflows any narrow host (the Console's manual-trade
     // column, the Portfolio/Floor row details) and gives the whole page a horizontal
     // scrollbar. Shrinkable + `flex-wrap` on both levels means the cluster drops to
@@ -451,47 +451,27 @@ export function ChartToolbar({
       className="flex flex-wrap items-start gap-x-3 gap-y-2 border-b px-3 py-2"
       style={{ borderColor: CHART_COLORS.border }}
     >
-      {/* Left: title, status badges, crosshair OHLCV */}
-      <div className="min-w-44 flex-1">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <div
-            className="min-w-0 truncate text-[13px] font-bold"
-            style={{ color: CHART_COLORS.panelText }}
-          >
-            {symbol} {titleMeta}
-          </div>
-          {showStatusBadges && (
-            <div className="flex shrink-0 items-center gap-1.5">
-              <StatusBadge
-                label={isMigrated ? 'Migrated ✓' : 'Bonding Curve'}
-                color={isMigrated ? STATUS_BADGE_COLOR.migrated : STATUS_BADGE_COLOR.bonding}
-              />
-              {isMayhemMode && <StatusBadge label="Mayhem" color={STATUS_BADGE_COLOR.mayhem} />}
-              {isCashbackEnabled && (
-                <StatusBadge label="Cashback" color={STATUS_BADGE_COLOR.cashback} />
-              )}
-            </div>
-          )}
-        </div>
-        {/* Height is PINNED, never content-derived. This block sits above the chart
-            canvas, so any hover-driven height change moves the canvas out from under
-            the pointer — the crosshair then clears, the block shrinks back, and the
-            pointer is over the canvas again: a show/hide vibration loop. Two things
-            had to go: the placeholder's row count only matched the readout's by
-            coincidence, and in a narrow panel (the Console's 380px manual-trade
-            column) the readout wrapped to many more rows than it reserved. Fixed
-            rows × line-height + `whitespace-nowrap` makes both impossible; long
-            values clip instead of wrapping. */}
+      {/* Left: title + status badges. The crosshair readout is NOT here — see the
+          full-width row below. */}
+      <div className="flex min-w-44 flex-1 flex-wrap items-center gap-2">
         <div
-          className="mt-0.5 overflow-hidden whitespace-nowrap font-mono text-[11px]"
-          style={{
-            height: crosshairRows * CROSSHAIR_ROW_PX,
-            lineHeight: `${CROSSHAIR_ROW_PX}px`,
-          }}
-          aria-live="polite"
+          className="min-w-0 truncate text-[13px] font-bold"
+          style={{ color: CHART_COLORS.panelText }}
         >
-          {crosshairLine}
+          {symbol} {titleMeta}
         </div>
+        {showStatusBadges && (
+          <div className="flex shrink-0 items-center gap-1.5">
+            <StatusBadge
+              label={isMigrated ? 'Migrated ✓' : 'Bonding Curve'}
+              color={isMigrated ? STATUS_BADGE_COLOR.migrated : STATUS_BADGE_COLOR.bonding}
+            />
+            {isMayhemMode && <StatusBadge label="Mayhem" color={STATUS_BADGE_COLOR.mayhem} />}
+            {isCashbackEnabled && (
+              <StatusBadge label="Cashback" color={STATUS_BADGE_COLOR.cashback} />
+            )}
+          </div>
+        )}
       </div>
 
       {/* Right: essentials always; overlays behind More */}
@@ -782,6 +762,35 @@ export function ChartToolbar({
             </IconToggleButton>
           </div>
         )}
+      </div>
+
+      {/* Crosshair O/H/L/C readout — its OWN full-width flex line (`w-full` forces the
+          line break), never a column beside the controls. Sharing a line was the bug:
+          the control cluster is `flex: 0 1 auto`, so its ~650px max-content basis is
+          only given up once free space goes NEGATIVE — until then the readout column
+          is left with the remainder (~180-350px at a 880-1150px host), and since the
+          block is `whitespace-nowrap overflow-hidden` the tail of `O … C …` was
+          silently clipped. Full-width means it fits at every host width, and the
+          reserved band stays width-stable so hovering can't re-wrap the toolbar.
+
+          Height is PINNED, never content-derived. This block sits above the chart
+          canvas, so any hover-driven height change moves the canvas out from under
+          the pointer — the crosshair then clears, the block shrinks back, and the
+          pointer is over the canvas again: a show/hide vibration loop. Two things
+          had to go: the placeholder's row count only matched the readout's by
+          coincidence, and in a narrow panel (the Console's 380px manual-trade
+          column) the readout wrapped to many more rows than it reserved. Fixed
+          rows × line-height + `whitespace-nowrap` makes both impossible; a value
+          long enough to still overrun the full width clips instead of wrapping. */}
+      <div
+        className="w-full overflow-hidden whitespace-nowrap font-mono text-[11px]"
+        style={{
+          height: crosshairRows * CROSSHAIR_ROW_PX,
+          lineHeight: `${CROSSHAIR_ROW_PX}px`,
+        }}
+        aria-live="polite"
+      >
+        {crosshairLine}
       </div>
     </div>
   );

@@ -36,7 +36,14 @@ pub enum LoggedEvent {
     FirstSlotSettled { mint: Mint, buy_lamports: u64, sell_lamports: u64, at: Ts },
     Trade { mint: Mint, trade: TradeLite },
     FillConfirmed { intent: IntentId, fill: Fill },
-    FillFailed { intent: IntentId, reason: FillFailReason },
+    FillFailed {
+        intent: IntentId,
+        reason: FillFailReason,
+        /// Absent on pre-`at` JSONL lines ⇒ `None` (an entry retry replays
+        /// unqualified, as it originally ran).
+        #[serde(default)]
+        at: Option<Ts>,
+    },
     Migrated { mint: Mint, at: Ts },
     ManualBuy { mint: Mint, rule: RuleId, lamports: u64, at: Ts, exit: Option<ManualExit> },
     SetManualExit { position: PositionId, exit: Option<ManualExit> },
@@ -76,8 +83,8 @@ impl LoggedEvent {
             Event::FillConfirmed { intent, fill } => {
                 LoggedEvent::FillConfirmed { intent: intent.clone(), fill: *fill }
             }
-            Event::FillFailed { intent, reason } => {
-                LoggedEvent::FillFailed { intent: intent.clone(), reason: *reason }
+            Event::FillFailed { intent, reason, at } => {
+                LoggedEvent::FillFailed { intent: intent.clone(), reason: *reason, at: *at }
             }
             Event::Migrated { mint, at } => LoggedEvent::Migrated { mint: mint.clone(), at: *at },
             Event::ManualBuy { mint, rule, lamports, at, exit } => LoggedEvent::ManualBuy {
@@ -123,6 +130,9 @@ impl LoggedEvent {
             LoggedEvent::Trade { trade, .. } => Some(trade.at),
             LoggedEvent::FillConfirmed { fill, .. }
             | LoggedEvent::ExternallyCleared { fill, .. } => Some(fill.at),
+            // Present only on lines written after `at` was added; `None` on older
+            // ones, which is exactly what `Option` already means here.
+            LoggedEvent::FillFailed { at, .. } => *at,
             _ => None,
         }
     }
@@ -148,7 +158,9 @@ impl LoggedEvent {
             }
             LoggedEvent::Trade { mint, trade } => Event::Trade { mint, trade },
             LoggedEvent::FillConfirmed { intent, fill } => Event::FillConfirmed { intent, fill },
-            LoggedEvent::FillFailed { intent, reason } => Event::FillFailed { intent, reason },
+            LoggedEvent::FillFailed { intent, reason, at } => {
+                Event::FillFailed { intent, reason, at }
+            }
             LoggedEvent::Migrated { mint, at } => Event::Migrated { mint, at },
             LoggedEvent::ManualBuy { mint, rule, lamports, at, exit } => {
                 Event::ManualBuy { mint, rule, lamports, at, exit }

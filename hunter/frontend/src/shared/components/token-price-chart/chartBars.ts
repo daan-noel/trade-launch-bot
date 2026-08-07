@@ -105,9 +105,9 @@ export function curveSpotPriceSol(
 
 /** PumpSwap pool spot: quote SOL / base tokens (post-migration). */
 export function poolSpotPriceSol(
-  trade: Pick<ChartTrade, 'real_sol_reserves' | 'real_token_reserves'>,
+  trade: Pick<ChartTrade, 'real_reserve_sol' | 'real_token_reserves'>,
 ): number | null {
-  const sol = trade.real_sol_reserves;
+  const sol = trade.real_reserve_sol;
   const token = trade.real_token_reserves;
   if (sol == null || token == null || token <= 0) return null;
   return sol / token;
@@ -138,7 +138,7 @@ export function tradeSpotPriceSol(trade: ChartTrade): number | null {
  * missing or non-finite, so callers fall back to the post-trade price.
  */
 export function preTradeSpotPriceSol(trade: ChartTrade): number | null {
-  const postVsol = trade.reserve_sol ?? trade.real_sol_reserves;
+  const postVsol = trade.reserve_sol ?? trade.real_reserve_sol;
   const postVtoken = trade.reserve_token ?? trade.real_token_reserves;
   const tokenAmount = trade.token_amount;
   if (
@@ -179,13 +179,24 @@ export function curveLiquiditySol(
 }
 
 /**
- * Real SOL liquidity at a trade: post-migration AMM pool reserves when present,
- * else the curve's depositor SOL. The `trades` table only carries `virtual_*`
- * (no `real_*` columns), so the curve branch is the live path.
+ * Real SOL liquidity at a trade — the mirror of the backend SSOT
+ * `config::constants::approx_real_sol_reserves(reserve_sol, venue)`.
+ *
+ * The program-emitted real reserve is not persisted (only the live decoder sets
+ * it), so a row read back from Postgres arrives without it and the reserve pair is
+ * all we have. Reconstructing it is **venue-dependent**: on the curve the real
+ * deposited SOL is `reserve_sol − PUMP_INITIAL_VIRTUAL_SOL`, but on the AMM
+ * `reserve_sol` *is* the pool balance and there is no virtual offset — subtracting
+ * 30 there understates every post-migration row by 30 SOL (and floors small pools
+ * to 0). Keep this branch in step with the Rust fn; they are the same formula.
  */
 export function tradeLiquiditySol(trade: ChartTrade): number | null {
-  const sol = trade.real_sol_reserves;
+  const sol = trade.real_reserve_sol;
   if (sol != null && sol > 0) return sol;
+  if (trade.venue === 'amm') {
+    const pool = trade.reserve_sol;
+    return pool != null && pool > 0 ? pool : null;
+  }
   return curveLiquiditySol(trade);
 }
 

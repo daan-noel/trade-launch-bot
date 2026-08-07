@@ -457,13 +457,16 @@ async fn dispatch(
 /// slot until the process restarts (and past it — boot re-adopts the row). That
 /// is how a live rule went silent for ~17 h on 2026-08-02.
 ///
-/// `Fatal` for structural causes (no arm / no meta / unknown rule — a resend
-/// would hit the same wall); `Reverted` where a later attempt can legitimately
-/// succeed (the SOL guards, whose funds free up).
+/// `Fatal` for anything a resend would hit again — structural (no arm / no meta /
+/// unknown rule) **and** the pre-submit SOL guards, which re-evaluate identically
+/// because the engine's retry is immediate. `Reverted` is reserved for a buy that
+/// actually reached the chain and provably did not fill.
 fn fail_entry(fill_tx: &mpsc::Sender<Event>, intent: IntentId, reason: FillFailReason) {
     let tx = fill_tx.clone();
     tokio::spawn(async move {
-        let _ = tx.send(Event::FillFailed { intent, reason }).await;
+        let _ = tx
+            .send(Event::FillFailed { intent, reason, at: Some(Utc::now()) })
+            .await;
     });
 }
 
@@ -530,10 +533,18 @@ fn dispatch_buy(
             };
 
             // Pre-buy SOL guards (balance-floor + optional max_committed_sol).
-            // Fail → FillFailed::Reverted so the engine can retry when free SOL returns.
+            //
+            // `Fatal`, not `Reverted`, and deliberately: these fire *before* any tx
+            // exists, and the engine's retry is immediate (the `FillFailed` goes
+            // straight back into the same loop). `Reverted` therefore did not mean
+            // "retry when free SOL returns" as it claimed — it meant "re-run this
+            // same guard twice more within microseconds, then give up", three PG
+            // writes and three registry churns for a wall that cannot have moved.
+            // `Fatal` is the honest classification: its contract is exactly "a
+            // resend would hit the same wall".
             if !real_deps.trader.can_commit_buy(lamports) {
                 warn!(mint = %mint_s, lamports, "real buy blocked by SOL balance-floor guard");
-                fail_entry(&real_deps.fill_tx, intent, FillFailReason::Reverted);
+                fail_entry(&real_deps.fill_tx, intent, FillFailReason::Fatal);
                 return;
             }
             if let Some(max_sol) = settings.borrow().max_committed_sol {
@@ -544,7 +555,7 @@ fn dispatch_buy(
                         mint = %mint_s, lamports, committed, ceiling,
                         "real buy blocked by max_committed_sol guard"
                     );
-                    fail_entry(&real_deps.fill_tx, intent, FillFailReason::Reverted);
+                    fail_entry(&real_deps.fill_tx, intent, FillFailReason::Fatal);
                     return;
                 }
             }

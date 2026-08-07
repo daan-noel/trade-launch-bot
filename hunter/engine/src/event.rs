@@ -350,7 +350,14 @@ pub enum Event {
     /// A submitted buy/sell confirmed with a fill.
     FillConfirmed { intent: IntentId, fill: Fill },
     /// A submitted buy/sell failed to confirm.
-    FillFailed { intent: IntentId, reason: FillFailReason },
+    ///
+    /// `at` is when the failure was observed — the instant an entry retry is
+    /// re-qualified against the rule's entry conditions (see the `FillFailed`
+    /// arm of `reduce`). It is the engine's only "the clock moved" input on this
+    /// event, so a live producer must always supply it. `None` skips the
+    /// re-qualification and retries blind — reserved for replaying pre-`at`
+    /// JSONL lines, which carry no timestamp to judge against.
+    FillFailed { intent: IntentId, reason: FillFailReason, at: Option<Ts> },
     /// The token migrated off the curve.
     Migrated { mint: Mint, at: Ts },
     /// The active rule set (and the fingerprints they reference) changed. Parsed

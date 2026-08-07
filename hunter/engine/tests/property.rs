@@ -241,13 +241,14 @@ fn random_streams_preserve_invariants_and_never_panic() {
                                 2 => FillFailReason::Unconfirmed,
                                 _ => FillFailReason::Fatal,
                             };
-                            Event::FillFailed { intent, reason }
+                            Event::FillFailed { intent, reason, at: None }
                         }
                     } else {
                         // Garbage intent — the engine must ignore it.
                         Event::FillFailed {
                             intent: IntentId { rule: rid(1), mint, seq: 99_999 },
                             reason: FillFailReason::Reverted,
+                            at: None,
                         }
                     }
                 }

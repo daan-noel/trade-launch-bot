@@ -37,6 +37,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
 use tokio::sync::mpsc;
 
 use hunter_engine::event::{Event, Fill, FillFailReason, IntentId};
@@ -91,7 +92,11 @@ pub async fn run_entry(
                 },
             }
         }
-        None => Event::FillFailed { intent, reason: FillFailReason::Timeout },
+        None => Event::FillFailed {
+            intent,
+            reason: FillFailReason::Timeout,
+            at: Some(Utc::now()),
+        },
     };
     let _ = fill_tx.send(event).await;
 }
@@ -125,7 +130,11 @@ pub async fn run_exit(
                 },
             }
         }
-        None => Event::FillFailed { intent, reason: FillFailReason::Timeout },
+        None => Event::FillFailed {
+            intent,
+            reason: FillFailReason::Timeout,
+            at: Some(Utc::now()),
+        },
     };
     let _ = fill_tx.send(event).await;
 }

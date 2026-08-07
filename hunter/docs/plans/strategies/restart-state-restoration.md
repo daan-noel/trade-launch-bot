@@ -71,14 +71,28 @@ before `retrace` reads anything again.
 cached trade on it:
 
 * `block_time < started_at` ⇒ **prime**: `hunter_engine::prime_trade` folds the trade
-  into the track, ratchets each `Entered` arm's peak/trough, and advances the deadness
-  clock. It returns nothing — no effects to discard, so no decision can leak.
+  into the track, ratchets each `Entered` arm's peak/trough **that the trade is not
+  older than**, and advances the deadness clock. It returns nothing — no effects to
+  discard, so no decision can leak.
 * otherwise ⇒ **decide**: an `Event::Trade` through `reduce`, exactly as before.
 
 Priming is *deferral*, not suppression: the 200 ms `Tick` re-evaluates every token
 against the warm track and the wall clock, so a stop that is still true fires within
 one tick — at the price it will actually fill at. That single rail closes all four
 failure modes and restores the trailing peak (fix 5) as a side effect.
+
+**The peak restore is bounded by `entered_at`, and must stay that way.** The seed
+reaches back `SEED_TRADES_MAX_AGE_HOURS` — far past the fill of an adopted position —
+so priming replays trades from *before* it entered. `peak`/`trough` are
+**position-scoped** (they define `retrace` and `bounce`), so `fold_entered_extremes`
+skips any arm whose `entered_at` is newer than the trade being folded. Without that
+guard the restore over-corrects into the mirror bug: a dip-entry bag inherits the
+run-up it deliberately did not buy, wakes up already deep in `retrace`, and stops out
+on a high it never held — the fix-5 failure inverted. The guard is a no-op on the live
+path (every event is newer than the fill by construction), so it costs one compare
+per held arm and only ever changes the restart path. Locked by
+`golden::primed_history_before_entry_never_inflates_the_peak`, the mirror of
+`primed_history_restores_the_trailing_peak`.
 
 `Producer::prime_tracked` runs the same path from the tick for every tracked mint with
 no cursor yet — the case where no ping will ever arrive. It writes no cursor when the

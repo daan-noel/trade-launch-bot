@@ -865,7 +865,7 @@ export interface TradeRecord {
    *  curve rows, pool real reserves on amm rows. Spot = reserve_sol / reserve_token. */
   reserve_sol?: number | null;
   reserve_token?: number | null;
-  real_sol_reserves?: number | null;
+  real_reserve_sol?: number | null;
   real_token_reserves?: number | null;
   /** Trading venue: 'curve' (bonding curve) or 'amm' (post-migration PumpSwap). */
   venue?: 'curve' | 'amm';

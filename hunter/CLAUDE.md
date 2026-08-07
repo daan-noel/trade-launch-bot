@@ -292,6 +292,29 @@ check — today: the rule editor's **Max total** and Trader Analysis **Max token
   family as the silent-shed and false-heartbeat bugs above: a failure that leaves
   every visible signal green. Detail:
   [docs/arch/position-lifecycle.md](docs/arch/position-lifecycle.md).
+- **A retry is a NEW trade decision, so it must re-clear the gate that authorized the
+  first one.** `reduce`'s `FillFailed` → `EntryPending` branch re-checks
+  `entry_enabled && can_enter` at the failure's `at` before re-submitting; without it a
+  buy is authorized once and re-fired blind for as long as the attempt ladder lasts.
+  Confirming a revert is *slow* (12.3 s measured), which is exactly when the market has
+  moved most: on 2026-08-07 an `entry liquidity > 10` rule decided at 14.65 SOL, reverted
+  6042 (slippage), and the blind retry filled at **0.276 SOL** — 36x under its own floor.
+  `can_enter` does **not** cover `entry_enabled`, so both are checked (`decide_arm` gates
+  them separately, and a stopped rule stays loaded as a drain rule). This is why
+  `Event::FillFailed` carries `at` — it was the only event with no clock. Failing the
+  re-check re-arms rather than terminating (only an exhausted ladder / `Fatal` is
+  `Done`), so the ONE gate re-decides and the gates a retry cannot express —
+  `exclusive` (which means *wait*), `dead`, `entry_unsatisfiable` — still apply. Full
+  rules: [docs/arch/position-lifecycle.md](docs/arch/position-lifecycle.md).
+- **`peak`/`trough` are position-scoped — only prices the position lived through may
+  move them.** `fold_entered_extremes` skips any arm whose `entered_at` is newer than
+  the trade being folded. This is a no-op live (every event postdates the fill) and
+  exists for the **restart** path: priming replays the token-cache seed, which reaches
+  back `SEED_TRADES_MAX_AGE_HOURS` and therefore spans trades from before an adopted
+  position entered. Without the guard a dip-entry bag inherits the run-up it
+  deliberately did not buy and its trailing stop fires on a peak it never held — the
+  exact inverse of the re-anchoring bug the priming rail was built to fix. Detail:
+  [docs/plans/strategies/restart-state-restoration.md](docs/plans/strategies/restart-state-restoration.md).
 - **Deferred entry fingerprint gates:** a fingerprint axis whose source data isn't settled at
   `TokenCreated` (`first_slot_{buy,sell}_lamports`) can't match synchronously. The engine arms
   it as `PendingFirstSlot` and resolves it on the `FirstSlotSettled` event (fired when the

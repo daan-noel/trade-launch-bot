@@ -254,7 +254,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             }
         }
 
-        Event::FillFailed { intent, reason } => {
+        Event::FillFailed { intent, reason, at } => {
             let mint = intent.mint.clone();
             let rule_id = intent.rule;
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
@@ -270,10 +270,40 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                     } else {
                         state.rules.get(&rule_id).map(|c| c.buy_amount_lamports).unwrap_or(0)
                     };
+                    // A retry is a NEW buy, so it must clear the SAME entry gate the
+                    // first one did — the decision that authorized attempt 1 is only
+                    // as fresh as attempt 1. Confirming a revert takes seconds (12.3 s
+                    // on 2026-08-07, `XsPXZt…`), and the pool can be drained inside
+                    // that window: there, attempt 1 was decided at 14.65 SOL liquidity
+                    // under an `entry liquidity > 10` rule, reverted 6042 (slippage),
+                    // and the blind retry filled at 0.276 SOL — 36x under the rule's
+                    // own floor. `can_enter` is otherwise reachable only from
+                    // `decide_arm`'s `Armed` branch, which a retry never passes
+                    // through.
+                    //
+                    // `entry_enabled` is checked alongside, because `can_enter` does
+                    // NOT cover it — `decide_arm` gates the two separately, and a
+                    // rule the operator stopped mid-flight stays loaded (as a drain
+                    // rule, so its open positions can still exit) with
+                    // `entry_enabled = false`. Without this a "stop rule" click would
+                    // still let an in-flight revert buy again.
+                    //
+                    // A manual episode has no row in `rules` (`is_none_or` ⇒ retry):
+                    // manual buys bypass entry conditions by design. `at: None` is a
+                    // pre-`at` log line with no clock to judge against — replay it as
+                    // it originally ran.
+                    let requalifies = match at {
+                        Some(now) => state
+                            .rules
+                            .get(&rule_id)
+                            .is_none_or(|c| c.entry_enabled && c.can_enter(&token.track, now)),
+                        None => true,
+                    };
                     // Fatal = structural / StopFeeBurn — never burn fee retries.
-                    let retry = reason != FillFailReason::Fatal
+                    let attempts_left = reason != FillFailReason::Fatal
                         && attempts < MAX_ENTRY_ATTEMPTS
                         && retry_lamports > 0;
+                    let retry = attempts_left && requalifies;
                     if retry {
                         let next = state.next_intent(rule_id, mint.clone());
                         token.arms.insert(
@@ -295,7 +325,22 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                         // Never entered — roll the cap counters back and drop it.
                         rollback_entry(state, rule_id);
                         state.remove_position(position);
-                        token.arms.insert(rule_id, ArmState::Done);
+                        // "Not qualified right now" is NOT "finished with this token".
+                        // Only an exhausted ladder / Fatal is terminal; a live rule
+                        // that merely failed the re-check goes back to `Armed`, so the
+                        // ONE gate (`decide_arm`) re-decides on the next trade/tick —
+                        // which is also how the gates a retry cannot express get
+                        // applied: `exclusive` means *wait* there, not *give up*, and
+                        // `dead` / `entry_unsatisfiable` disarm properly.
+                        // Re-arming cannot spin: re-entry has to clear the full gate
+                        // again, exactly like a first entry.
+                        let next = if attempts_left && state.rules.contains_key(&rule_id) {
+                            fx.push(armed(&mint, rule_id, ArmedStateTag::Armed));
+                            ArmState::Armed
+                        } else {
+                            ArmState::Done
+                        };
+                        token.arms.insert(rule_id, next);
                         fx.push(Effect::PositionUpdate(PositionDelta {
                             position,
                             rule: rule_id,
@@ -579,15 +624,28 @@ fn fold_trade(token: &mut TokenState, trade: crate::metrics::TradeLite) {
     }
 }
 
-/// Ratchet every held position's since-entry peak/trough to the track's current
-/// price. Two bare compares per `Entered` arm, no alloc.
-fn fold_entered_extremes(token: &mut TokenState) {
+/// Ratchet every held position's **since-entry** peak/trough to the track's current
+/// price, as observed at `at`. Two bare compares per `Entered` arm, no alloc.
+///
+/// `at < entered_at` is skipped, and that guard is the whole point: `peak`/`trough`
+/// are *position-scoped* (they define `retrace` and `bounce`), so only prices the
+/// position actually lived through may move them. On the live path every event is
+/// newer than the fill by construction, so the guard is a no-op there — it exists
+/// for the **restart** path, where `prime_trade` replays the token-cache seed
+/// (`SEED_TRADES_PER_MINT` rows reaching back `SEED_TRADES_MAX_AGE_HOURS`), which
+/// spans trades from *before* the adopted position entered. Without the guard a
+/// dip-entry position wakes up owning the run-up it deliberately did not buy, and
+/// its trailing stop fires on a peak it never held.
+fn fold_entered_extremes(token: &mut TokenState, at: Ts) {
     let cur_price = token.track.current_price();
     if !cur_price.is_finite() {
         return;
     }
     for arm in token.arms.values_mut() {
         if let ArmState::Entered(ctx) = arm {
+            if at < ctx.entered_at {
+                continue;
+            }
             if cur_price > ctx.peak_price {
                 ctx.peak_price = cur_price;
             }
@@ -615,7 +673,7 @@ fn fold_entered_extremes(token: &mut TokenState) {
 pub fn prime_trade(state: &mut EngineState, mint: &Mint, trade: crate::metrics::TradeLite) {
     let Some(token) = state.tokens.get_mut(mint) else { return };
     fold_trade(token, trade);
-    fold_entered_extremes(token);
+    fold_entered_extremes(token, trade.at);
 }
 
 fn evaluate_token(
@@ -636,7 +694,7 @@ fn evaluate_token(
     // Fold the current price into every held position's since-entry peak/trough
     // BEFORE deciding — two bare compares per Entered arm, no alloc — so
     // `retrace`/`bounce` already include this event's price.
-    fold_entered_extremes(token);
+    fold_entered_extremes(token, now);
 
     // Re-entry: promote any cooldown arm whose window has elapsed back to Armed, so
     // the same event's decide loop below can re-enter on a fresh signal. Sorted

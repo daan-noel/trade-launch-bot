@@ -416,6 +416,7 @@ async fn drop_buy_submitted(
                             .send(Event::FillFailed {
                                 intent,
                                 reason: FillFailReason::Fatal,
+                                at: Some(Utc::now()),
                             })
                             .await;
                     }
@@ -541,6 +542,7 @@ async fn redrive_orphaned_exit_pending(deps: &ReaperDeps) {
                         .send(Event::FillFailed {
                             intent,
                             reason: FillFailReason::Reverted,
+                            at: Some(Utc::now()),
                         })
                         .await;
                     continue;

@@ -273,6 +273,40 @@ fn primed_history_restores_the_trailing_peak() {
     assert_eq!(sells(&fx).len(), 1, "the trail must measure from the primed peak");
 }
 
+/// The mirror of [`primed_history_restores_the_trailing_peak`]: priming must
+/// restore the peak the position *held*, never one from before it entered.
+///
+/// A restart replays the token-cache seed, which reaches back hours — far past the
+/// fill of an adopted position. `peak`/`trough` are position-scoped, so a dip-entry
+/// bag must not inherit the run-up it deliberately did not buy; otherwise it wakes
+/// up already deep in `retrace` and stops out on a high it never held.
+#[test]
+fn primed_history_before_entry_never_inflates_the_peak() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    let params = json!({
+        "exit": { "m_position": { "retrace": [{ "operator": ">=", "value": 20 }] } }
+    });
+    reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    let entry = buy_intent(&fx);
+    // The dip entry: filled at 1.0, at t=10.
+    reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 10.0) });
+
+    // Seed replay hands back the pre-entry run-up to 3.0 — the position never held
+    // it. Folding it as the peak would read the flat 1.0 price as a 67% retrace.
+    hunter_engine::prime_trade(&mut s, &m, trade(1.0, 3.0, 40.0, 1.0));
+    hunter_engine::prime_trade(&mut s, &m, trade(1.0, 1.0, 40.0, 2.0));
+
+    let fx = reduce(&mut s, Event::Tick { now: ts(11.0) });
+    assert!(sells(&fx).is_empty(), "a pre-entry high must not arm the trail");
+
+    // Post-entry the peak tracks normally: up to 2.0, then −25% ⇒ the trail fires.
+    reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 2.0, 40.0, 12.0) });
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.5, 40.0, 13.0) });
+    assert_eq!(sells(&fx).len(), 1, "post-entry extremes still ratchet");
+}
+
 #[test]
 fn metrics_exit_on_time_condition() {
     let mut s = EngineState::new();
@@ -666,18 +700,162 @@ fn entry_fill_failure_retries_then_gives_up() {
     // Two retries, each re-submitting a buy with a fresh intent.
     for _ in 0..2 {
         let fx =
-            reduce(&mut s, Event::FillFailed { intent: intent.clone(), reason: FillFailReason::Reverted });
+            reduce(&mut s, Event::FillFailed { intent: intent.clone(), reason: FillFailReason::Reverted, at: None });
         assert_eq!(buys(&fx), vec![(rid(1), BUY)], "retry re-submits the buy");
         let next = buy_intent(&fx);
         assert_ne!(next, intent, "retry uses a fresh intent id");
         intent = next;
     }
     // Third failure → give up (no more buys), book a terminal failure.
-    let fx = reduce(&mut s, Event::FillFailed { intent, reason: FillFailReason::Reverted });
+    let fx = reduce(&mut s, Event::FillFailed { intent, reason: FillFailReason::Reverted, at: None });
     assert!(buys(&fx).is_empty(), "gives up after MAX_ENTRY_ATTEMPTS");
     assert_eq!(statuses(&fx), vec![PositionStatus::EntryFailed]);
     // Counters rolled back → the token is done, pruned.
     assert!(!s.tokens.contains_key(&m));
+}
+
+/// A retry is a NEW buy and must clear the SAME entry gate the first one did.
+///
+/// Replays the 2026-08-07 `XsPXZt…` incident in miniature: an
+/// `entry liquidity > 10` rule enters at 14.65 SOL, the buy reverts (6042
+/// slippage), and by the time the revert is confirmed the pool has been drained
+/// to 0.276 SOL. Before the fix the retry re-submitted blind and filled 36x under
+/// the rule's own floor.
+#[test]
+fn entry_retry_requalifies_against_entry_conditions() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(
+        &mut s,
+        reload(
+            vec![rule(
+                1,
+                1,
+                json!({
+                    "entry": { "m_snapshot": { "liquidity": [{"operator": ">", "value": 10}] } },
+                    "take_profit": 100
+                })),
+            ],
+            vec![cu_fp(1)],
+        ),
+    );
+    reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    // Liquidity crosses the floor → entry fires.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 14.65, 1.0) });
+    let intent = buy_intent(&fx);
+
+    // While the buy is in flight the pool is drained well under the floor.
+    reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 0.5, 0.276, 12.0) });
+
+    // The revert lands 12s after the decision — the gate no longer holds.
+    let fx = reduce(
+        &mut s,
+        Event::FillFailed {
+            intent,
+            reason: FillFailReason::Reverted,
+            at: Some(ts(13.0)),
+        },
+    );
+    assert!(buys(&fx).is_empty(), "retry must not buy into a drained pool");
+    assert_eq!(statuses(&fx), vec![PositionStatus::EntryFailed]);
+
+    // And the slot is released, not leaked: the counters rolled back with it.
+    assert_eq!(s.counters.get(&rid(1)).map_or(0, |c| c.open), 0);
+
+    // "Not qualified right now" is not "done with this token": the arm re-arms, so
+    // the ONE gate re-decides. Liquidity recovers → it enters again, cleanly.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 20.0, 20.0) });
+    assert_eq!(buys(&fx), vec![(rid(1), BUY)], "re-armed and re-entered once qualified");
+}
+
+/// An exhausted ladder is still terminal — re-arming must not turn the bounded
+/// attempt count into an unbounded loop.
+#[test]
+fn entry_retry_exhausted_ladder_stays_terminal() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(&mut s, reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![cu_fp(1)]));
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    let mut intent = buy_intent(&fx);
+    for _ in 0..2 {
+        let fx = reduce(
+            &mut s,
+            Event::FillFailed { intent, reason: FillFailReason::Reverted, at: Some(ts(1.0)) },
+        );
+        intent = buy_intent(&fx);
+    }
+    let fx = reduce(
+        &mut s,
+        Event::FillFailed { intent, reason: FillFailReason::Reverted, at: Some(ts(1.0)) },
+    );
+    assert!(buys(&fx).is_empty(), "ladder exhausted");
+    assert_eq!(statuses(&fx), vec![PositionStatus::EntryFailed]);
+    // Terminal ⇒ the arm is Done and the token is pruned, not left re-armed.
+    assert!(!s.tokens.contains_key(&m), "exhausted ladder must not re-arm");
+}
+
+/// The mirror case: a retryable failure while the entry conditions still hold
+/// re-submits exactly as before. The gate must not turn every revert terminal.
+#[test]
+fn entry_retry_resubmits_while_conditions_still_hold() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(
+        &mut s,
+        reload(
+            vec![rule(
+                1,
+                1,
+                json!({
+                    "entry": { "m_snapshot": { "liquidity": [{"operator": ">", "value": 10}] } },
+                    "take_profit": 100
+                })),
+            ],
+            vec![cu_fp(1)],
+        ),
+    );
+    reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 40.0, 1.0) });
+    let intent = buy_intent(&fx);
+
+    // Pool still deep at the retry instant.
+    let fx = reduce(
+        &mut s,
+        Event::FillFailed { intent, reason: FillFailReason::Reverted, at: Some(ts(2.0)) },
+    );
+    assert_eq!(buys(&fx), vec![(rid(1), BUY)], "still qualified — retry re-submits");
+}
+
+/// Stopping a rule must also stop its in-flight retries. A rule with an open or
+/// in-flight position stays loaded as a *drain* rule (so its positions can still
+/// exit) with `entry_enabled = false` — and `can_enter` does not cover that flag,
+/// so the retry gate has to check it explicitly.
+#[test]
+fn entry_retry_refuses_once_the_rule_is_stopped() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    let params = json!({
+        "entry": { "m_snapshot": { "liquidity": [{"operator": ">", "value": 10}] } },
+        "take_profit": 100
+    });
+    reduce(&mut s, reload(vec![rule(1, 1, params.clone())], vec![cu_fp(1)]));
+    reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 40.0, 1.0) });
+    let intent = buy_intent(&fx);
+
+    // Operator stops the rule while the buy is in flight: it stays loaded to drain,
+    // entry disabled. The arm holds a position, so the reload preserves it.
+    let mut stopped = rule(1, 1, params);
+    stopped.entry_enabled = false;
+    reduce(&mut s, reload(vec![stopped], vec![cu_fp(1)]));
+
+    // Entry conditions still hold — only the stop switch differs.
+    let fx = reduce(
+        &mut s,
+        Event::FillFailed { intent, reason: FillFailReason::Reverted, at: Some(ts(2.0)) },
+    );
+    assert!(buys(&fx).is_empty(), "a stopped rule must not retry its buy");
+    assert_eq!(statuses(&fx), vec![PositionStatus::EntryFailed]);
 }
 
 #[test]
@@ -687,7 +865,7 @@ fn entry_fatal_gives_up_without_retry() {
     reduce(&mut s, reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![cu_fp(1)]));
     let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None});
     let intent = buy_intent(&fx);
-    let fx = reduce(&mut s, Event::FillFailed { intent, reason: FillFailReason::Fatal });
+    let fx = reduce(&mut s, Event::FillFailed { intent, reason: FillFailReason::Fatal, at: None });
     assert!(buys(&fx).is_empty(), "Fatal must not retry");
     assert_eq!(statuses(&fx), vec![PositionStatus::EntryFailed]);
     assert!(!s.tokens.contains_key(&m));
@@ -744,7 +922,7 @@ fn unconfirmed_sell_is_terminal_and_never_resold() {
     let exit = sell_intent(&fx);
 
     // The sell may have cleared and the feed never confirmed → alarm, never re-sell.
-    let fx = reduce(&mut s, Event::FillFailed { intent: exit, reason: FillFailReason::Unconfirmed });
+    let fx = reduce(&mut s, Event::FillFailed { intent: exit, reason: FillFailReason::Unconfirmed, at: None });
     assert!(sells(&fx).is_empty(), "unconfirmed sell must NOT re-submit");
     assert_eq!(statuses(&fx), vec![PositionStatus::ExitUnconfirmed]);
 }
@@ -1292,11 +1470,11 @@ fn manual_buy_retries_with_frozen_lamports_then_entry_failed() {
     });
     let mut intent = buy_intent(&fx);
     for _ in 0..2 {
-        let fx = reduce(&mut s, Event::FillFailed { intent: intent.clone(), reason: FillFailReason::Reverted });
+        let fx = reduce(&mut s, Event::FillFailed { intent: intent.clone(), reason: FillFailReason::Reverted, at: None });
         assert_eq!(buys(&fx), vec![(rid(9), 777)], "retry resubmits the FROZEN manual size");
         intent = buy_intent(&fx);
     }
-    let fx = reduce(&mut s, Event::FillFailed { intent, reason: FillFailReason::Reverted });
+    let fx = reduce(&mut s, Event::FillFailed { intent, reason: FillFailReason::Reverted, at: None });
     assert!(buys(&fx).is_empty());
     assert_eq!(statuses(&fx), vec![PositionStatus::EntryFailed]);
     assert!(s.manual_rules.is_empty() && s.positions.is_empty());
@@ -1469,12 +1647,12 @@ fn scale_out_partial_fill_fail_exhaust_goes_exit_stuck() {
     for _ in 0..4 {
         let fx = reduce(
             &mut s,
-            Event::FillFailed { intent: intent.clone(), reason: FillFailReason::Reverted },
+            Event::FillFailed { intent: intent.clone(), reason: FillFailReason::Reverted, at: None },
         );
         assert_eq!(sell_portions(&fx), vec![Portion::BpsOfInitial(5000)]);
         intent = sell_intent(&fx);
     }
-    let fx = reduce(&mut s, Event::FillFailed { intent, reason: FillFailReason::Reverted });
+    let fx = reduce(&mut s, Event::FillFailed { intent, reason: FillFailReason::Reverted, at: None });
     assert!(sells(&fx).is_empty());
     assert_eq!(statuses(&fx), vec![PositionStatus::ExitStuck]);
 }

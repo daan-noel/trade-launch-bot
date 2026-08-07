@@ -48,6 +48,33 @@ Engine (`hunter/engine/src/reduce.rs`), unchanged shape except the split:
 - `FillFailed::Unconfirmed` → `ExitUnconfirmed` (arm dropped, row open).
 - `ArmState::EntryPending` carries frozen `lamports` — retries resize identically
   (manual episodes have no rule row; `0` = boot-adopted, falls back to rule config).
+- **An entry retry re-clears the entry gate** (`entry_enabled && can_enter`) at the
+  failure's `at`, not just the `Fatal`/attempts/lamports checks. A retry is a new
+  buy and the decision that authorized attempt 1 is only as fresh as attempt 1 —
+  confirming a revert takes seconds, and `can_enter` is otherwise reachable only
+  from `decide_arm`'s `Armed` branch, which a retry never passes through. This is
+  why `Event::FillFailed` carries `at` at all (it was the one event with no clock;
+  `None` = a pre-`at` JSONL line, replayed unqualified).
+  Failing the re-check terminates the entry exactly like attempt exhaustion —
+  safe, because `FillFailReason::Reverted` is only ever emitted on a **proven**
+  non-fill (`exec_real`'s `EntryOutcome::Retry` needs a confirmed on-chain revert;
+  anything uncertain is `Ambiguous`, which emits nothing and leaves the row for the
+  reaper). Manual episodes have no rule row and keep retrying — they bypass entry
+  conditions by design.
+  Failing the re-check is **not** terminal: with attempts still on the ladder and
+  the rule still loaded, the arm goes back to `Armed` (counters rolled back, row
+  booked `EntryFailed`) so the ONE gate re-decides on the next trade/tick. That is
+  also how the gates a retry cannot express get applied — `exclusive` means *wait*
+  in `decide_arm`, not *give up*, and `dead` / `entry_unsatisfiable` disarm
+  properly. Only an exhausted ladder or `Fatal` ends in `Done`, so re-arming
+  cannot spin: re-entry has to clear the full gate again, exactly like a first
+  entry.
+- The pre-submit SOL guards in `dispatch_buy` (balance floor, `max_committed_sol`)
+  emit **`Fatal`**, not `Reverted`. The engine's retry is immediate, so `Reverted`
+  did not mean "retry when free SOL returns" — it meant re-running the same guard
+  twice more within microseconds, three PG writes deep, against a wall that cannot
+  have moved. `Reverted` is reserved for a buy that reached the chain and provably
+  did not fill.
 
 Reaper (`reapers.rs`, boot + 60 s):
 | Sweep | Behavior |

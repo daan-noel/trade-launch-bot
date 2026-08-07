@@ -17,6 +17,7 @@ use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use chrono::Utc;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -224,7 +225,11 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
         warn!(pg = %order.pg_id, mint = %order.mint, "real buy: entry guard held — skipping");
         let _ = deps
             .fill_tx
-            .send(Event::FillFailed { intent: order.intent, reason: FillFailReason::Reverted })
+            .send(Event::FillFailed {
+                intent: order.intent,
+                reason: FillFailReason::Reverted,
+                at: Some(Utc::now()),
+            })
             .await;
         return;
     };
@@ -265,7 +270,11 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
         .await;
         let _ = deps
             .fill_tx
-            .send(Event::FillFailed { intent: order.intent, reason: FillFailReason::Fatal })
+            .send(Event::FillFailed {
+                intent: order.intent,
+                reason: FillFailReason::Fatal,
+                at: Some(Utc::now()),
+            })
             .await;
         return;
     }
@@ -453,6 +462,7 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
                 .send(Event::FillFailed {
                     intent: order.intent,
                     reason: FillFailReason::Reverted,
+                    at: Some(Utc::now()),
                 })
                 .await;
         }
@@ -584,6 +594,7 @@ async fn emit_entry_outcome(
                 .send(Event::FillFailed {
                     intent: order.intent.clone(),
                     reason: FillFailReason::Reverted,
+                    at: Some(Utc::now()),
                 })
                 .await;
         }
@@ -595,6 +606,7 @@ async fn emit_entry_outcome(
                 .send(Event::FillFailed {
                     intent: order.intent.clone(),
                     reason: FillFailReason::Fatal,
+                    at: Some(Utc::now()),
                 })
                 .await;
         }
@@ -1003,7 +1015,7 @@ async fn fail_exit(
     }
     let _ = deps
         .fill_tx
-        .send(Event::FillFailed { intent: order.intent.clone(), reason })
+        .send(Event::FillFailed { intent: order.intent.clone(), reason, at: Some(Utc::now()) })
         .await;
 }
 

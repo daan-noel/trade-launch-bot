@@ -510,6 +510,10 @@ impl Replay {
                 work.push(Event::FillFailed {
                     intent,
                     reason: FillFailReason::Timeout,
+                    // Simulate's logical clock is the trigger trade, not the wall
+                    // clock — same instant the buy was decided on, so the retry
+                    // re-qualifies against exactly the track that authorized it.
+                    at: Some(trades[trigger_idx].block_time),
                 });
             }
             Some(fill) => {
