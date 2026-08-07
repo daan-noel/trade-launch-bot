@@ -209,6 +209,7 @@ fn load_corpus() -> Vec<CorpusToken> {
         curve_only: true, // bonding-curve only — the strategy's universe
         with_signatures: false,
         with_flow: false,
+        with_flow_text: false,
     };
     let src = LakeSource::new(lake_root());
     let rt = tokio::runtime::Builder::new_multi_thread()

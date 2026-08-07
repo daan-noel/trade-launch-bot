@@ -14,7 +14,7 @@
 
 use chrono::{DateTime, Utc};
 
-use hunter_engine::metrics::flow_split::{ix_hash_opt, wallet_hash};
+use hunter_engine::metrics::flow_split::{ix_hash_from_labels_json, wallet_hash};
 use hunter_engine::metrics::{Side, TradeLite};
 
 use trading_core::config::constants::approx_real_sol_reserves;
@@ -59,11 +59,46 @@ pub struct CorpusTrade {
     /// (Solscan links). See the struct doc. `Box<str>` (16 B) not `String` (24 B) since
     /// it's write-once.
     pub tx_signature: Option<Box<str>>,
-    /// Normalized ix-label JSON string — loaded only when [`Selection::with_flow`].
-    /// `None` on slim loads / pre-V0 sealed days.
+    /// Volume-flow classifier inputs, **already hashed** through the flow-split
+    /// SSOT at load time — see [`FlowKeys`].
+    pub flow: FlowKeys,
+    /// Normalized ix-label JSON string — kept only when [`Selection::with_flow_text`]
+    /// (flow *discovery*, which reports label text). `None` on every other load,
+    /// including flow sweeps/simulates, which read [`flow`](Self::flow) instead.
     pub ix_labels: Option<Box<str>>,
-    /// Wallet address — loaded only when [`Selection::with_flow`].
+    /// Wallet address — kept only when [`Selection::with_flow_text`]; see
+    /// [`ix_labels`](Self::ix_labels).
     pub wallet: Option<Box<str>>,
+}
+
+/// A trade's volume-flow classifier keys, resolved **once at load** rather than
+/// per fold.
+///
+/// The engine only ever wants two integers ([`TradeLite::ix_hash`] /
+/// [`TradeLite::wallet_hash`]), but the corpus used to carry the raw JSON label
+/// array and the base58 wallet and re-derive them in [`to_trade_lite`] — a
+/// `serde_json` parse plus a heap allocation per label on **every trade of every
+/// run**. Hashing at the row decode makes the fold allocation-free and shrinks a
+/// flow row: 24 B of scalars replace two pointers into ~85 B of heap.
+///
+/// Both fields keep the "absent ⇒ organic" contract: `ix_hash: None` (missing or
+/// unparseable labels) and `wallet_hash: 0` (no wallet column) classify volume-side
+/// only via contagion or the creator seed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FlowKeys {
+    pub ix_hash: Option<u64>,
+    pub wallet_hash: u64,
+}
+
+impl FlowKeys {
+    /// Hash a row's stored label JSON + wallet address through the flow-split SSOT.
+    /// `None` inputs stay the missing sentinel.
+    pub fn from_stored(ix_labels: Option<&str>, wallet: Option<&str>) -> Self {
+        Self {
+            ix_hash: ix_labels.and_then(ix_hash_from_labels_json),
+            wallet_hash: wallet.map(wallet_hash).unwrap_or(0),
+        }
+    }
 }
 
 impl TradeRow for CorpusTrade {
@@ -117,22 +152,18 @@ impl TradeRow for CorpusTrade {
     }
 }
 
-/// Build an engine [`TradeLite`] from a corpus row — hashes `ix_labels`/`wallet`
-/// via the flow-split SSOT when those columns were loaded (`with_flow`).
+/// Build an engine [`TradeLite`] from a corpus row. Pure field moves — the
+/// flow-split hashes were resolved at load ([`FlowKeys`]), so this allocates
+/// nothing even on a flow run.
 pub fn to_trade_lite(ct: &CorpusTrade) -> TradeLite {
-    let labels: Vec<String> = ct
-        .ix_labels
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default();
     TradeLite {
         side: if ct.is_buy { Side::Buy } else { Side::Sell },
         sol: ct.amount_sol,
         price: ct.price_per_token,
         reserve_sol: ct.real_reserve_sol.unwrap_or(f64::NAN),
         at: ct.block_time,
-        ix_hash: ix_hash_opt(&labels),
-        wallet_hash: ct.wallet.as_deref().map(wallet_hash).unwrap_or(0),
+        ix_hash: ct.flow.ix_hash,
+        wallet_hash: ct.flow.wallet_hash,
     }
 }
 
@@ -173,6 +204,7 @@ pub fn project_trades<T: TradeRow<Wallet = String>>(trades: &[T]) -> Vec<CorpusT
             leg_index: t.leg_index(),
             is_buy: t.is_buy(),
             tx_signature: None,
+            flow: FlowKeys::default(),
             ix_labels: None,
             wallet: None,
         })
@@ -200,8 +232,10 @@ fn pg_real_reserve_sol(t: &Trade) -> Option<f64> {
 /// the generic [`project_trades`]) so it can **reconstruct `real_reserve_sol`** from
 /// the persisted virtual reserve + venue (see [`pg_real_reserve_sol`]) — the lake load
 /// does the same, so a PG-only token's liquidity/deadness match what the lake would
-/// produce. `with_flow` fills `ix_labels`/`wallet` for the volume-flow metrics; when
-/// false they stay `None` (slim), exactly as each caller requests.
+/// produce. `with_flow` resolves each row's [`FlowKeys`] for the volume-flow metrics;
+/// when false they stay the missing sentinel (slim), exactly as each caller requests.
+/// The raw label/wallet text is never carried here — only flow *discovery* reads it,
+/// and that runs off the lake.
 pub fn project_pg_tail(trades: &[Trade], with_flow: bool) -> Vec<CorpusTrade> {
     trades
         .iter()
@@ -218,8 +252,16 @@ pub fn project_pg_tail(trades: &[Trade], with_flow: bool) -> Vec<CorpusTrade> {
             leg_index: t.leg_index(),
             is_buy: t.is_buy(),
             tx_signature: None,
-            ix_labels: with_flow.then(|| Box::from(t.instruction_labels.to_string())),
-            wallet: with_flow.then(|| Box::from(t.wallet_address.as_str())),
+            flow: if with_flow {
+                FlowKeys::from_stored(
+                    Some(&t.instruction_labels.to_string()),
+                    Some(t.wallet_address.as_str()),
+                )
+            } else {
+                FlowKeys::default()
+            },
+            ix_labels: None,
+            wallet: None,
         })
         .collect()
 }
@@ -314,11 +356,12 @@ mod tests {
         // AMM: reconstructed real == the pool reserve itself.
         assert_eq!(rows[1].real_reserve_sol, Some(approx_real_sol_reserves(25.0, "amm")));
 
-        // `with_flow=false` keeps the slim shape (no ix-label/wallet copy).
+        // `with_flow=false` keeps the slim shape (no classifier keys resolved).
+        assert_eq!(rows[0].flow, FlowKeys::default());
         assert!(rows[0].ix_labels.is_none() && rows[0].wallet.is_none());
-        // `with_flow=true` fills them without disturbing the reconstruction.
+        // `with_flow=true` resolves the hashes without disturbing the reconstruction.
         let flow_rows = project_pg_tail(&[curve], true);
-        assert!(flow_rows[0].ix_labels.is_some() && flow_rows[0].wallet.is_some());
+        assert_eq!(flow_rows[0].flow.wallet_hash, wallet_hash("wallet"));
         assert_eq!(flow_rows[0].real_reserve_sol, Some(curve_real));
     }
 }

@@ -90,7 +90,12 @@ fn ct_flow(
     ix_labels: Option<&[&str]>,
     wallet: Option<&str>,
 ) -> CorpusTrade {
+    let ix_json =
+        ix_labels.map(|labels| serde_json::to_string(labels).expect("labels json").into_boxed_str());
     CorpusTrade {
+        // The loaders resolve these at row decode; a fixture carrying label/wallet
+        // text must resolve them the same way or the classifier sees nothing.
+        flow: crate::sweep::projection::FlowKeys::from_stored(ix_json.as_deref(), wallet),
         block_time: at(secs),
         amount_sol: sol,
         token_amount: 1.0,
@@ -103,8 +108,7 @@ fn ct_flow(
         leg_index: 0,
         is_buy,
         tx_signature: None,
-        ix_labels: ix_labels
-            .map(|labels| serde_json::to_string(labels).expect("labels json").into_boxed_str()),
+        ix_labels: ix_json,
         wallet: wallet.map(|w| w.to_string().into_boxed_str()),
     }
 }
@@ -1238,6 +1242,7 @@ fn index_exit_scan_matches_scalar_on_randomized_walks() {
                 Some(slot),
             );
             trades.push(CorpusTrade {
+                flow: crate::sweep::projection::FlowKeys::default(),
                 block_time: at,
                 amount_sol: sol,
                 token_amount: 1.0,

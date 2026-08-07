@@ -328,6 +328,12 @@ impl ManualExit {
 }
 
 /// The ordered input stream. One variant per thing that can change a decision.
+///
+/// `Clone` is cheap by construction — the only non-`Copy` payloads are an `Arc`
+/// (rule/fingerprint slices) or a small `Box` — and it is what lets a differential
+/// test replay one recorded stream through two engine configurations (see
+/// `tests/settled_ticks.rs`).
+#[derive(Clone)]
 pub enum Event {
     /// A new token appeared. `fp` carries its instant creation axes (the
     /// first-slot axes are still unknown — resolved by [`Event::FirstSlotSettled`]).

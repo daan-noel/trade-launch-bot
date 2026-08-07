@@ -8,10 +8,10 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use chrono::Duration;
 use serde_json::Value;
 
-use super::flow_window::{in_window, window_key};
+use super::flow_window::{push_sorted, window_key, window_width};
 use super::{MetricId, Side, TradeLite, Ts};
 
-use crate::hash::{fnv1a_byte, fnv1a_bytes, FNV_OFFSET};
+use crate::hash::{fnv1a_byte, fnv1a_bytes, HashedSet, FNV_OFFSET};
 
 /// Stable hash of an ordered instruction-label sequence (exact-order match
 /// semantics, same as the fingerprint matcher's `ix_labels`). Labels are
@@ -39,6 +39,87 @@ pub fn ix_hash_opt(labels: &[impl AsRef<str>]) -> Option<u64> {
         None
     } else {
         Some(ix_hash(labels))
+    }
+}
+
+/// [`ix_hash_opt`] over labels still in their stored **JSON array** form, without
+/// allocating.
+///
+/// Both the lake (`normalize_labels`) and Postgres (`trades.ix_labels`) hold the
+/// label sequence as a JSON array of strings, and the offline paths used to turn
+/// every row back into a `Vec<String>` — a `serde_json` parse plus one heap
+/// allocation per label, **per trade**, on corpora of millions of rows — purely to
+/// feed [`ix_hash`]. This walks the array in place instead.
+///
+/// Exactness is not traded away: the scanner handles only the shape the writers
+/// actually emit (a flat array of unescaped strings) and **falls back to
+/// `serde_json`** the moment it meets an escape or anything unexpected, so the
+/// result is by construction whatever `ix_hash_opt(&parsed)` would have returned —
+/// including the "unparseable ⇒ `None` ⇒ organic" behaviour. Locked by
+/// `json_scanner_matches_the_parsed_hash`.
+pub fn ix_hash_from_labels_json(json: &str) -> Option<u64> {
+    match scan_labels_json(json.as_bytes()) {
+        Some(h) => h,
+        None => {
+            let labels: Vec<String> = serde_json::from_str(json).ok()?;
+            ix_hash_opt(&labels)
+        }
+    }
+}
+
+/// In-place hash of a JSON array of unescaped strings.
+///
+/// `Some(result)` = decided (`result` is [`ix_hash_opt`]'s answer); `None` = this
+/// scanner cannot answer exactly (escape, nested value, malformed input) and the
+/// caller must fall back to a real parse.
+fn scan_labels_json(b: &[u8]) -> Option<Option<u64>> {
+    let mut i = 0usize;
+    let skip_ws = |i: &mut usize| {
+        while matches!(b.get(*i), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+            *i += 1;
+        }
+    };
+    skip_ws(&mut i);
+    if b.get(i) != Some(&b'[') {
+        return None;
+    }
+    i += 1;
+    let mut h = FNV_OFFSET;
+    let mut n = 0usize;
+    loop {
+        skip_ws(&mut i);
+        match b.get(i) {
+            Some(b']') => {
+                i += 1;
+                skip_ws(&mut i);
+                // Trailing garbage after the array ⇒ not a shape we own.
+                return (i == b.len()).then_some((n > 0).then_some(h));
+            }
+            Some(b'"') => {}
+            _ => return None,
+        }
+        i += 1; // past the opening quote
+        if n > 0 {
+            h = fnv1a_byte(h, 0x1f);
+        }
+        let start = i;
+        loop {
+            match b.get(i) {
+                Some(b'"') => break,
+                // An escape changes the decoded bytes — only a real parse is exact.
+                Some(b'\\') | None => return None,
+                Some(_) => i += 1,
+            }
+        }
+        h = fnv1a_bytes(h, &b[start..i]);
+        i += 1; // past the closing quote
+        n += 1;
+        skip_ws(&mut i);
+        match b.get(i) {
+            Some(b',') => i += 1,
+            Some(b']') => {}
+            _ => return None,
+        }
     }
 }
 
@@ -244,11 +325,23 @@ impl FlowTotals {
 // ── Window ───────────────────────────────────────────────────────────────────
 
 /// Trailing-window vol/organic aggregator for one `window_size_sec`.
+///
+/// Same O(1)-read shape as [`WindowState`](super::flow_window::WindowState): a
+/// **time-sorted** deque plus running [`FlowTotals`] over all of it, so
+/// [`totals_at`](Self::totals_at) corrects the two out-of-window ends instead of
+/// rebuilding the totals from a full scan. This one mattered most — `value` is
+/// called once **per flow metric per rule per event**, and each call used to walk
+/// the whole window; a rule with three `m_flow_split_window` conditions paid three
+/// full scans on every 200 ms tick of every tracked token.
 #[derive(Debug, Clone, PartialEq)]
 struct FlowSplitWindowState {
     window_secs: f64,
-    /// `(timestamp, signed SOL, is_volume)` — buy positive, sell negative.
-    buf: VecDeque<(Ts, f64, bool)>,
+    /// Precomputed window width — see [`window_width`].
+    width: Duration,
+    /// `(timestamp, signed SOL, is_volume)` — buy positive, sell negative; oldest
+    /// at front, kept time-sorted.
+    buf: VecDeque<(Ts, (f64, bool))>,
+    /// Running totals over **all** of `buf`.
     totals: FlowTotals,
 }
 
@@ -256,6 +349,7 @@ impl FlowSplitWindowState {
     fn new(window_secs: f64) -> Self {
         Self {
             window_secs,
+            width: window_width(window_secs),
             buf: VecDeque::new(),
             totals: FlowTotals::default(),
         }
@@ -266,15 +360,14 @@ impl FlowSplitWindowState {
             Side::Buy => sol,
             Side::Sell => -sol,
         };
-        self.buf.push_back((at, signed, is_vol));
+        push_sorted(&mut self.buf, at, (signed, is_vol));
         self.totals.add(side, sol, is_vol);
         self.evict(at);
     }
 
     fn evict(&mut self, now: Ts) {
-        let width = Duration::milliseconds(window_key(self.window_secs) as i64);
-        let cutoff = now - width;
-        while let Some(&(ts, signed, is_vol)) = self.buf.front() {
+        let cutoff = now - self.width;
+        while let Some(&(ts, (signed, is_vol))) = self.buf.front() {
             if ts < cutoff {
                 self.buf.pop_front();
                 self.totals.sub_signed(signed, is_vol);
@@ -284,17 +377,24 @@ impl FlowSplitWindowState {
         }
     }
 
+    /// Totals over `(now − w, now]`, from the running totals minus the ends that
+    /// fall outside: not-yet-evicted entries at the front, future-dated entries
+    /// (regressed `block_time`) at the back. Sortedness makes the first in-window
+    /// entry a valid stop for both loops.
     fn totals_at(&self, now: Ts) -> FlowTotals {
-        let mut out = FlowTotals::default();
-        for &(ts, signed, is_vol) in &self.buf {
-            if !in_window(ts, now, self.window_secs) {
-                continue;
+        let mut out = self.totals;
+        let cutoff = now - self.width;
+        for &(ts, (signed, is_vol)) in self.buf.iter() {
+            if ts >= cutoff {
+                break;
             }
-            if signed >= 0.0 {
-                out.add(Side::Buy, signed, is_vol);
-            } else {
-                out.add(Side::Sell, -signed, is_vol);
+            out.sub_signed(signed, is_vol);
+        }
+        for &(ts, (signed, is_vol)) in self.buf.iter().rev() {
+            if ts <= now {
+                break;
             }
+            out.sub_signed(signed, is_vol);
         }
         out
     }
@@ -310,7 +410,10 @@ impl FlowSplitWindowState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlowState {
     patterns: FlowPatterns,
-    tagged_wallets: BTreeSet<u64>,
+    /// Wallets contagion has tagged volume-side. Membership-only (never iterated),
+    /// so a flat [`HashedSet`] over the already-FNV-hashed addresses replaces the
+    /// old `BTreeSet<u64>` — this is one lookup per trade per fingerprint.
+    tagged_wallets: HashedSet,
     creator_wallet_hash: Option<u64>,
     lifetime: FlowTotals,
     windows: BTreeMap<u64, FlowSplitWindowState>,
@@ -320,7 +423,7 @@ impl FlowState {
     pub fn new(patterns: FlowPatterns) -> Self {
         Self {
             patterns,
-            tagged_wallets: BTreeSet::new(),
+            tagged_wallets: HashedSet::default(),
             creator_wallet_hash: None,
             lifetime: FlowTotals::default(),
             windows: BTreeMap::new(),
@@ -430,6 +533,49 @@ mod tests {
         );
     }
 
+    /// The in-place JSON scanner must agree with "parse, then hash" on every input
+    /// — the happy shapes the writers emit, the degenerate ones, and the escaped /
+    /// malformed ones where it is required to fall back rather than guess. This is
+    /// the whole safety argument for skipping the per-trade `serde_json` parse.
+    #[test]
+    fn json_scanner_matches_the_parsed_hash() {
+        let cases = [
+            r#"["Pump.Fun: Create","Pump.Fun: Buy"]"#,
+            r#"["Pump.Fun: Buy"]"#,
+            r#"[ "a" , "b" , "c" ]"#,
+            r#"["a","b"]"#,
+            r#"["ab","c"]"#,   // separator sensitivity
+            r#"["a","bc"]"#,
+            r#"[""]"#,         // one empty label != empty array
+            r#"["",""]"#,
+            "[]",              // empty array ⇒ None (missing labels)
+            "[ ]",
+            r#"["with \"quote\""]"#,   // escape ⇒ fallback path
+            r#"["tab\there"]"#,
+            r#"["unicode é"]"#,
+            r#"["émoji ✨ raw"]"#,     // multi-byte but unescaped ⇒ fast path
+            "null",            // unparseable ⇒ None
+            "not json",
+            "[1,2]",           // wrong element type ⇒ None
+            r#"["unterminated"#,
+            r#"["a"] trailing"#,
+            "",
+        ];
+        for case in cases {
+            let parsed: Vec<String> = serde_json::from_str(case).unwrap_or_default();
+            assert_eq!(
+                ix_hash_from_labels_json(case),
+                ix_hash_opt(&parsed),
+                "scanner disagreed on {case:?}"
+            );
+        }
+        // And it really does produce the SSOT hash on the shape that matters.
+        assert_eq!(
+            ix_hash_from_labels_json(r#"["Pump.Fun: Create","Pump.Fun: Buy"]"#),
+            Some(ix_hash(&["Pump.Fun: Create", "Pump.Fun: Buy"])),
+        );
+    }
+
     #[test]
     fn wallet_hash_stable() {
         assert_eq!(wallet_hash("Abc123"), wallet_hash("Abc123"));
@@ -536,6 +682,67 @@ mod tests {
         assert_eq!(st.value(MetricId::NonvolBuy, Some(10.0), ts(11.001)), 0.0);
         // Lifetime unchanged.
         assert_eq!(st.value(MetricId::VolBuy, None, ts(11.001)), 4.0);
+    }
+
+    /// Guard on replacing the old full-buffer rescan: the running-totals read must
+    /// equal a brute-force `in_window` scan at every probe instant, including
+    /// out-of-order arrivals (regressed `block_time`) and instants no `evict` ran at.
+    #[test]
+    fn windowed_running_totals_equal_a_brute_force_scan() {
+        use super::super::flow_window::in_window;
+
+        let vol = ix_hash(&["vol"]);
+        let script: &[(Side, f64, bool, f64)] = &[
+            (Side::Buy, 3.0, true, 0.0),
+            (Side::Sell, 1.0, false, 4.0),
+            (Side::Buy, 2.0, true, 9.0),
+            (Side::Buy, 5.0, false, 7.0), // regressed
+            (Side::Sell, 4.0, true, 12.0),
+            (Side::Buy, 1.5, false, 11.0), // regressed
+            (Side::Sell, 0.5, true, 25.0),
+        ];
+        let ids = [
+            MetricId::WinVolBuy,
+            MetricId::WinVolSell,
+            MetricId::WinVolNet,
+            MetricId::WinVolGross,
+            MetricId::WinNonvolBuy,
+            MetricId::WinNonvolSell,
+            MetricId::WinNonvolNet,
+            MetricId::WinNonvolGross,
+            MetricId::WinVolShare,
+        ];
+        for window in [1.0_f64, 5.0, 10.0, 60.0] {
+            let mut st = FlowState::new(FlowPatterns::new(BTreeSet::from([vol])));
+            st.ensure_window(window);
+            let mut wallet = 100u64;
+            for &(side, sol, is_vol, at) in script {
+                wallet += 1; // fresh wallet each trade so contagion can't reclassify
+                st.on_trade(&trade(side, sol, is_vol.then_some(vol), wallet, at));
+                for probe in [-3.0, 0.0, 0.5, 3.0, 12.0] {
+                    let now = ts(at + probe);
+                    let w = &st.windows[&window_key(window)];
+                    let mut want = FlowTotals::default();
+                    for &(t, (signed, v)) in &w.buf {
+                        if !in_window(t, now, window) {
+                            continue;
+                        }
+                        if signed >= 0.0 {
+                            want.add(Side::Buy, signed, v);
+                        } else {
+                            want.add(Side::Sell, -signed, v);
+                        }
+                    }
+                    for id in ids {
+                        let (got, exp) = (st.value(id, Some(window), now), want.value(id));
+                        assert!(
+                            (got - exp).abs() < 1e-9 || (got.is_nan() && exp.is_nan()),
+                            "{id:?} w={window} at={at} probe={probe}: {got} != {exp}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

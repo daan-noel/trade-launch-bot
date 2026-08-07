@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::arm::{ArmState, CompiledRule};
+use crate::arm::{ArmState, ClockHorizons, CompiledRule};
 use crate::dupe_guard::DupeGuard;
 use crate::event::{IntentId, LoadedRule, ManualExit, Mint, PositionId, RuleId, TradeMode};
 use crate::fingerprint::{Fingerprint, FingerprintId};
@@ -51,6 +51,13 @@ pub struct TokenState {
     /// Newest *meaningful*-trade time (drives the deadness quiet clock). `None`
     /// until a meaningful trade prints — callers fall back to `created_at`.
     pub last_meaningful_at: Option<Ts>,
+    /// Newest folded trade time (**any** size, unlike `last_meaningful_at`) — the
+    /// origin every trade-anchored clock horizon measures from. `None` until the
+    /// first print, where `created_at` stands in.
+    pub last_trade_at: Option<Ts>,
+    /// Cached "this token is done changing on its own" verdict — see
+    /// [`Settled`]. `None` ⇒ evaluate on every tick.
+    pub settled: Option<Settled>,
     /// Whether the creation slot has settled (idempotency guard for a late event).
     pub first_slot_settled: bool,
     /// Per-rule arming state, sorted by rule id for deterministic iteration.
@@ -62,10 +69,65 @@ pub struct TokenState {
     pub episodes: BTreeMap<RuleId, u32>,
 }
 
+/// A token's "nothing of mine can change on its own any more" verdict, stamped by
+/// the evaluate sweep and consumed by [`crate::reduce`]'s `Tick` branch.
+///
+/// **Why this exists.** A token leaves `tokens` only when every arm goes terminal,
+/// and the only thing that disarms an idle *armed* token is the dead verdict —
+/// which needs real reserves under `DEAD_MAX_LIQUIDITY_SOL`. A token that pumped
+/// past that floor (or whose rows carry no reserve at all, so liquidity reads
+/// `NaN`) is therefore **never** pruned, and used to be swept arm-by-arm five times
+/// a second for the rest of the run. Live that is a slow leak; in a multi-day
+/// simulate it is the dominant cost, and it grows with corpus width rather than
+/// with anything the rule actually does.
+///
+/// Skipping is only sound if it is *decision-neutral*, and the verdict is only
+/// stamped when both of these hold:
+///
+/// * the sweep that stamped it ran at an instant **at or past** `until` — the last
+///   instant any of this token's own readings can move: its rules'
+///   [`ClockHorizons`] anchored on creation / the last trade / each entry fill, the
+///   one-shot dead flip at `last_meaningful + DEAD_QUIET_SECS`, and any pending
+///   re-entry cooldown. This is deliberately "*has already been* evaluated past the
+///   horizon", not "`now` is past the horizon": tick cadence is not the engine's to
+///   assume (the live loop ticks every `TICK_MS`, a replay driver may tick at
+///   arbitrary instants), and comparing against `now` silently swallows any
+///   crossing that falls inside a tick gap. Evaluating *at* the horizon is what
+///   makes every later instant provably identical.
+/// * `epoch` still matches [`EngineState::cross_epoch`], which is bumped whenever
+///   *another* token's event changes something this one's decision reads: a cap
+///   counter (a freed slot lets a waiting arm enter), a copycat-guard record (a new
+///   identity can disarm an armed token), or a rules reload. A stale epoch means
+///   "re-evaluate once, then re-settle".
+///
+/// The third cross-arm input, `exclusive`, resolves through events on *this* token
+/// (a fill / close on a sibling arm), so those branches clear `settled` outright.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Settled {
+    /// The horizon the stamping sweep had already reached. Diagnostic — the skip
+    /// predicate does not re-compare it (see above).
+    pub until: Ts,
+    pub epoch: u64,
+}
+
 impl TokenState {
     /// Whether any arm is still non-terminal — else the token can be pruned.
     pub fn is_active(&self) -> bool {
         self.arms.values().any(ArmState::is_active)
+    }
+
+    /// Whether a `Tick` is provably a no-op for this token — see [`Settled`].
+    /// Deliberately independent of `now`: the verdict is only stamped by a sweep
+    /// that already ran at or past the horizon, so *every* later instant repeats it.
+    pub fn tick_is_noop(&self, epoch: u64) -> bool {
+        self.settled.is_some_and(|s| s.epoch == epoch)
+    }
+
+    /// Forget the settled verdict — any change to this token's arms that did not go
+    /// through the evaluate sweep must call this, or the next tick may skip a
+    /// decision the change enabled.
+    pub fn unsettle(&mut self) {
+        self.settled = None;
     }
 }
 
@@ -89,6 +151,45 @@ pub struct EngineState {
     /// Union of every rule's distinct **price** `window_size_sec`
     /// (`m_price_window`) — ensured on each new track alongside `all_windows`.
     pub all_price_windows: Vec<f64>,
+    /// Union of every loaded rule's [`ClockHorizons`] — how long *any* rule's
+    /// readings can still move without a trade. Drives [`Settled`].
+    pub tick_horizons: ClockHorizons,
+    /// Whether any loaded rule sets a non-zero `priority`.
+    ///
+    /// The evaluate sweep visits arms by `(Reverse(priority), rule_id)`, but
+    /// `arms` is a `BTreeMap` and therefore *already* in rule-id order — so when
+    /// every priority is equal the sort is a no-op it pays for on every event of
+    /// every token. `priority` only ever changes behaviour between two contesting
+    /// `exclusive` rules anyway; this flag is what lets the sweep skip the sort
+    /// without changing the visit order in the case where it matters.
+    pub any_priority: bool,
+    /// Monotonic counter over **cross-token** state a settled token's decision
+    /// depends on — cap counters, the copycat guard's memory, the rule set. See
+    /// [`Settled`]; bump through [`bump_cross_epoch`](Self::bump_cross_epoch).
+    pub cross_epoch: u64,
+    /// Memo: the previous `Tick` sweep found **every** tracked token settled, and
+    /// there were this many of them.
+    ///
+    /// Per-token skipping still costs one iteration + one compare per tracked token
+    /// per tick, and the token set only grows (an un-prunable token never leaves).
+    /// Over a multi-day replay — millions of ticks — that walk becomes the cost by
+    /// itself. This collapses the whole tick to an O(1) check for the case that
+    /// dominates a long quiet stretch: nobody has anything left to do.
+    ///
+    /// Conservative by construction: a stale `None` only costs one wasted walk.
+    /// It is cleared by every non-`Tick` event (`reduce` does that up front), by any
+    /// change in the token count, and by [`touch_token`](Self::touch_token) for the
+    /// boot paths that mutate a tracked token outside the fold.
+    pub(crate) all_settled_at: Option<usize>,
+    /// Force every `Tick` to sweep every token, ignoring [`Settled`].
+    ///
+    /// The skip is an optimization that must be **decision-neutral**, and this is
+    /// how that claim is tested: `settled_tick_skip_is_decision_neutral` replays one
+    /// event stream through a dense engine and a skipping one and asserts the effect
+    /// streams are equal. It doubles as the kill switch if a future metric ever
+    /// gains a clock the horizons do not model — set it and the engine is back to
+    /// its pre-optimization behaviour, at pre-optimization cost.
+    pub dense_ticks: bool,
     /// Per-rule cap counters (persist across rule reloads).
     pub counters: BTreeMap<RuleId, RuleCounters>,
     /// Tracked tokens, by mint.
@@ -121,6 +222,40 @@ impl EngineState {
     pub fn next_position(&mut self) -> PositionId {
         self.position_seq += 1;
         PositionId(self.position_seq)
+    }
+
+    /// Invalidate every token's [`Settled`] verdict at once, because something a
+    /// settled token's decision reads but does not own has changed. Cheap (one
+    /// counter) precisely so the callers below can be liberal about calling it —
+    /// an unnecessary bump costs one extra sweep, a missing one costs a decision.
+    pub fn bump_cross_epoch(&mut self) {
+        self.cross_epoch = self.cross_epoch.wrapping_add(1);
+        self.all_settled_at = None;
+    }
+
+    /// Whether the next `Tick` is a whole-map no-op (see
+    /// [`all_settled_at`](Self::all_settled_at)) — diagnostics and guard tests.
+    pub fn all_tokens_settled(&self) -> bool {
+        self.all_settled_at == Some(self.tokens.len())
+    }
+
+    /// Announce that a tracked token was mutated **outside** the fold, so the next
+    /// tick re-decides it. Boot adoption (`live`'s orphan/manual reconcile, the
+    /// re-entry episode seed) reaches into `tokens` directly; without this the
+    /// engine could carry a settled verdict that predates the adoption.
+    pub fn touch_token(&mut self, mint: &Mint) {
+        if let Some(t) = self.tokens.get_mut(mint) {
+            t.unsettle();
+        }
+        self.all_settled_at = None;
+    }
+
+    /// Mutate a rule's cap counters, invalidating settled tokens: a freed slot is
+    /// exactly what an arm that stayed `Armed` because the cap refused it is
+    /// waiting for. The ONE mutation path, so no call site can forget the bump.
+    pub fn with_counters(&mut self, rule: RuleId, f: impl FnOnce(&mut RuleCounters)) {
+        f(self.counters.entry(rule).or_default());
+        self.bump_cross_epoch();
     }
 
     /// Drop a closed position from the owner map AND its one-off manual exit rule
@@ -160,7 +295,25 @@ impl EngineState {
     /// off (see [`DupeGuard::record`]).
     pub fn record_entry_identity(&mut self, mode: TradeMode, mint: &Mint, at: Ts) {
         let identity = self.tokens.get(mint).and_then(|t| t.identity);
+        self.record_identity(mode, identity, mint, at);
+    }
+
+    /// The ONE write into the copycat guard's memory from the fold, so no call site
+    /// can record an identity without invalidating settled tokens: a newly
+    /// remembered identity can disarm an armed token that had already settled.
+    ///
+    /// (Expiry is deliberately NOT bumped. It only ever *un*blocks, and a copycat
+    /// block is a terminal `Disarm` — nothing tracked is ever waiting for one to
+    /// lapse.)
+    pub fn record_identity(
+        &mut self,
+        mode: TradeMode,
+        identity: Option<IdentityHash>,
+        mint: &Mint,
+        at: Ts,
+    ) {
         self.dupe_guard.record(mode, identity, mint, at);
+        self.bump_cross_epoch();
     }
 
     /// Seed one already-traded identity at boot (the PG rebuild). Same memory as
@@ -191,20 +344,31 @@ impl EngineState {
         self.rules = rules.iter().map(|r| (r.id, CompiledRule::compile(r))).collect();
         self.fps = fps.to_vec();
 
-        self.all_windows.clear();
-        self.all_price_windows.clear();
+        let mut all_windows: Vec<f64> = Vec::new();
+        let mut all_price_windows: Vec<f64> = Vec::new();
+        let mut horizons = ClockHorizons::default();
+        let mut any_priority = false;
         for r in self.rules.values() {
+            horizons = horizons.widen(r.clock_horizons);
+            any_priority |= r.priority != 0;
             for &w in &r.flow_windows {
-                if !self.all_windows.contains(&w) {
-                    self.all_windows.push(w);
+                if !all_windows.contains(&w) {
+                    all_windows.push(w);
                 }
             }
             for &w in &r.price_windows {
-                if !self.all_price_windows.contains(&w) {
-                    self.all_price_windows.push(w);
+                if !all_price_windows.contains(&w) {
+                    all_price_windows.push(w);
                 }
             }
         }
+        self.all_windows = all_windows;
+        self.all_price_windows = all_price_windows;
+        self.tick_horizons = horizons;
+        self.any_priority = any_priority;
+        // A different rule set means different horizons, different priorities and a
+        // different arming answer — nothing settled under the old set may stay settled.
+        self.bump_cross_epoch();
         for token in self.tokens.values_mut() {
             Self::ensure_track_windows_and_flow(
                 &mut token.track,

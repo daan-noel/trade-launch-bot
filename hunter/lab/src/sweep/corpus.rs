@@ -164,10 +164,18 @@ pub struct Selection {
     /// affects the projected `CorpusTrade::tx_signature`; never changes which rows load
     /// or how they price.
     pub with_signatures: bool,
-    /// Populate each row's `ix_labels` + `wallet` for volume-flow metrics. Default
-    /// `false` so non-flow sweeps pay zero extra RAM; set when a run's rules/axes
-    /// reference `m_flow_*` (V2 wires this).
+    /// Load the `ix_labels` + `wallet` columns and resolve each row's
+    /// [`FlowKeys`](crate::sweep::projection::FlowKeys) for the volume-flow metrics.
+    /// Default `false` so non-flow sweeps pay zero extra RAM; set when a run's
+    /// rules/axes reference `m_flow_*` (V2 wires this).
     pub with_flow: bool,
+    /// Additionally keep the **raw** label JSON / wallet address on each row.
+    ///
+    /// Only flow *discovery* needs the text (it reports label shapes and groups by
+    /// wallet); every other flow consumer classifies from `with_flow`'s precomputed
+    /// hashes, so keeping two heap strings per trade there is pure RAM. Implies
+    /// nothing on its own — pair it with `with_flow`.
+    pub with_flow_text: bool,
 }
 
 impl Default for Selection {
@@ -182,6 +190,7 @@ impl Default for Selection {
             curve_only: false,
             with_signatures: false,
             with_flow: false,
+            with_flow_text: false,
         }
     }
 }

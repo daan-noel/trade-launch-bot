@@ -181,8 +181,14 @@ multiple-comparisons trap (looks good by chance, not real edge). See
 
 ### Flow axes (`m_flow_split` / `m_flow_split_window`)
 
-When axes reference a flow group, the corpus loads with `Selection.with_flow`
-(trade `ix_labels` + `wallet`). The start body carries optional
+When axes reference a flow group, the corpus loads with `Selection.with_flow`: it
+reads the trade `ix_labels` + `wallet` columns and resolves each row's
+`projection::FlowKeys { ix_hash, wallet_hash }` **at the row decode**, through the
+`flow_split` SSOT hashers, then drops the strings. `Selection.with_flow_text` keeps
+the raw text as well and is set by exactly one caller — flow *discovery*, which
+reports label shapes and groups by wallet address. Everything else (sweep, simulate,
+metric-series, metric-discovery) classifies from the hashes, so its rows are the
+slimmer shape. The start body carries optional
 `volume_ix_patterns: string[][]` — applied **corpus-wide** for that run (not per
 fingerprint). Missing patterns with flow axes ⇒ `400`. **Promote** copies the
 run's patterns into the created fingerprint's

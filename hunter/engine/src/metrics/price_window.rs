@@ -27,13 +27,17 @@ use std::collections::VecDeque;
 
 use chrono::Duration;
 
-use super::flow_window::{in_window, window_key};
+use super::flow_window::window_width;
 use super::{MetricId, Ts};
 
 /// One trailing-window extrema tracker for a single `window_size_sec`.
 #[derive(Debug, Clone)]
 pub struct PriceWindowState {
     window_secs: f64,
+    /// Precomputed window width. The reads below filter three deque walks by
+    /// `(now − w, now]`; deriving the width per **element** (what the shared
+    /// `in_window` does) put a float multiply + round inside every one of them.
+    width: Duration,
     /// Monotonic **decreasing** by price (front = window max); newest at back.
     max_deque: VecDeque<(f64, Ts)>,
     /// Monotonic **increasing** by price (front = window min); newest at back.
@@ -44,9 +48,17 @@ impl PriceWindowState {
     pub fn new(window_secs: f64) -> Self {
         Self {
             window_secs,
+            width: window_width(window_secs),
             max_deque: VecDeque::new(),
             min_deque: VecDeque::new(),
         }
+    }
+
+    /// Whether `at` lies in this tracker's window at `now` — the per-instance twin
+    /// of [`super::flow_window::in_window`], reusing the precomputed width.
+    #[inline]
+    fn holds(&self, at: Ts, now: Ts) -> bool {
+        at >= now - self.width && at <= now
     }
 
     /// The window this tracker covers.
@@ -93,8 +105,7 @@ impl PriceWindowState {
     /// evicted last; while either deque is non-empty its back is a valid current
     /// price (mirrors the `stall` floor precedent in `PriceLifetimeState`).
     pub fn evict(&mut self, now: Ts) {
-        let width = Duration::milliseconds(window_key(self.window_secs) as i64);
-        let cutoff = now - width;
+        let cutoff = now - self.width;
         while let Some(&(_, at)) = self.max_deque.front() {
             if at < cutoff {
                 self.max_deque.pop_front();
@@ -115,7 +126,7 @@ impl PriceWindowState {
     fn win_high(&self, now: Ts) -> Option<f64> {
         self.max_deque
             .iter()
-            .filter(|&&(_, at)| in_window(at, now, self.window_secs))
+            .filter(|&&(_, at)| self.holds(at, now))
             .map(|&(p, _)| p)
             .max_by(|a, b| a.partial_cmp(b).unwrap())
     }
@@ -124,7 +135,7 @@ impl PriceWindowState {
     fn win_low(&self, now: Ts) -> Option<f64> {
         self.min_deque
             .iter()
-            .filter(|&&(_, at)| in_window(at, now, self.window_secs))
+            .filter(|&&(_, at)| self.holds(at, now))
             .map(|&(p, _)| p)
             .min_by(|a, b| a.partial_cmp(b).unwrap())
     }
@@ -133,7 +144,7 @@ impl PriceWindowState {
     fn current_price(&self, now: Ts) -> Option<f64> {
         self.max_deque
             .iter()
-            .filter(|&&(_, at)| in_window(at, now, self.window_secs))
+            .filter(|&&(_, at)| self.holds(at, now))
             .max_by_key(|&&(_, at)| at)
             .map(|&(p, _)| p)
     }

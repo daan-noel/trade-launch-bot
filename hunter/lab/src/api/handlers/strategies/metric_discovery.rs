@@ -328,6 +328,8 @@ async fn run_job(
         curve_only: b.curve_only,
         with_signatures: false,
         with_flow,
+        // Hash-resolved flow keys only — no consumer here reads label text.
+        with_flow_text: false,
     };
 
     let _ = state.sse_tx.send(SseEvent::MetricDiscoveryProgress {

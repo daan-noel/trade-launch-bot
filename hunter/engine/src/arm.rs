@@ -156,6 +156,80 @@ pub struct CompiledStage {
     pub reqs: Vec<MetricReq>,
 }
 
+/// How long a rule's reads can keep changing **without a trade** — the per-rule
+/// half of [`crate::reduce`]'s settled-token tick skip.
+///
+/// Almost every metric is frozen between two trades: price, reserves, lifetime
+/// flows and extrema, and every position-scoped metric except `held` are functions
+/// of trade data alone. Only four things move on a bare `Tick`, and each has a last
+/// instant past which it can no longer flip a condition **this rule** authored:
+///
+/// * trailing windows decay until the newest trade ages out of the widest one;
+/// * `time` climbs from creation until it passes the largest `time` threshold;
+/// * `stall` climbs from the last all-time high (bounded above by the last trade);
+/// * `held` climbs from the entry fill.
+///
+/// Past all four (and past the one-shot dead verdict, which is token- not
+/// rule-scoped and so lives in [`crate::reduce`]) every further tick re-derives
+/// identical readings and identical decisions. `0.0` means "this rule never reads
+/// that clock", which is the strongest possible horizon, not a missing value.
+///
+/// Same idea — and the same horizon arithmetic — as the sweep's
+/// [`SparseGrid`](crate::metrics::grid::SparseGrid), which skips provably-static
+/// ticks when precomputing a series. This is that reasoning applied to the live
+/// fold instead of to a precompute.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ClockHorizons {
+    /// Widest trailing window read, across `m_flow_window`, `m_flow_split_window`
+    /// and `m_price_window`.
+    pub max_window_secs: f64,
+    /// Largest `m_snapshot.time` threshold (+ its `=`-tolerance), from creation.
+    pub time_secs: f64,
+    /// Largest `m_price_lifetime.stall` threshold (+ tolerance), from the last trade.
+    pub stall_secs: f64,
+    /// Largest `m_position.held` threshold (+ tolerance), from the entry fill.
+    pub held_secs: f64,
+}
+
+impl ClockHorizons {
+    /// Widen every field to at least `other`'s — the union a whole rule set needs.
+    /// Over-wide is always safe (it only re-evaluates a settled token); too narrow
+    /// silently drops a decision, so every combinator here is a `max`.
+    pub fn widen(self, other: Self) -> Self {
+        Self {
+            max_window_secs: self.max_window_secs.max(other.max_window_secs),
+            time_secs: self.time_secs.max(other.time_secs),
+            stall_secs: self.stall_secs.max(other.stall_secs),
+            held_secs: self.held_secs.max(other.held_secs),
+        }
+    }
+
+    /// Fold one metric requirement in: a clock metric's horizon is its largest
+    /// authored threshold plus the metric's `=`-tolerance (an `=` condition is a
+    /// band, so its upper edge is `value + tol/2`; the full tolerance is the cheap
+    /// safe over-estimate). Clamped by [`SparseGrid::clamp_secs`] so a fat-fingered
+    /// axis can't push the horizon to the end of time.
+    ///
+    /// [`SparseGrid::clamp_secs`]: crate::metrics::grid::SparseGrid::clamp_secs
+    fn absorb_req(&mut self, r: &MetricReq) {
+        use crate::metrics::grid::SparseGrid;
+        if let Some(w) = r.window {
+            self.max_window_secs = self.max_window_secs.max(SparseGrid::clamp_secs(w));
+        }
+        let slot = match r.metric {
+            MetricId::Time => &mut self.time_secs,
+            MetricId::Stall => &mut self.stall_secs,
+            MetricId::Held => &mut self.held_secs,
+            _ => return,
+        };
+        for arm in &r.conds {
+            for c in arm {
+                *slot = slot.max(SparseGrid::clamp_secs(c.value.abs() + r.tolerance));
+            }
+        }
+    }
+}
+
 /// A [`LoadedRule`] pre-chewed for the hot path. Metric reads are flattened, the
 /// distinct windows are listed (split flow vs price) for
 /// [`TokenTrack::ensure_window`] / [`TokenTrack::ensure_price_window`], and the
@@ -195,6 +269,10 @@ pub struct CompiledRule {
     pub price_windows: SmallVec<[f64; 2]>,
     /// Per entry-metric mono kills (for derived-unsatisfiability disarm).
     pub mono_kills: SmallVec<[MonoMetricKill; 2]>,
+    /// How long this rule's readings can still move without a trade — see
+    /// [`ClockHorizons`]. Consumed by [`crate::reduce`] to skip provably-static
+    /// ticks on a quiet token.
+    pub clock_horizons: ClockHorizons,
     /// Re-entry lifecycle (plan Ph4). `None` ⇒ one-shot: a closed position ends the
     /// (token, rule) forever (`Done`). `Some` ⇒ a normal strategy exit re-arms the
     /// token into [`ArmState::Cooldown`] up to the episode cap.
@@ -288,6 +366,19 @@ impl CompiledRule {
             }
         }
 
+        // Tick horizons — every clock this rule reads, on EVERY side (entry, exit,
+        // and each scale-out stage), because any of them can flip a decision on a
+        // bare tick. Derived from the same req list the fold evaluates, so a newly
+        // authored condition widens the horizon automatically.
+        let mut clock_horizons = ClockHorizons::default();
+        for r in entry_reqs
+            .iter()
+            .chain(exit_reqs.iter())
+            .chain(scale_out.iter().flat_map(|s| s.reqs.iter()))
+        {
+            clock_horizons.absorb_req(r);
+        }
+
         // Monotonic entry kills — per metric, OR of arm upper bounds.
         let mut mono_kills: SmallVec<[MonoMetricKill; 2]> = SmallVec::new();
         for r in &entry_reqs {
@@ -329,6 +420,7 @@ impl CompiledRule {
             flow_windows,
             price_windows,
             mono_kills,
+            clock_horizons,
             reentry: rule.params.reentry,
             exclusive: rule.params.exclusive,
             priority: rule.params.priority,

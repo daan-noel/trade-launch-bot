@@ -34,7 +34,7 @@ use crate::sweep::corpus::{
     Corpus, CorpusSource, Selection, TradeWindow, SWEEP_DEFAULT_PER_MINT_CAP,
 };
 use crate::sweep::grouping::TokenFingerprint;
-use crate::sweep::projection::CorpusTrade;
+use crate::sweep::projection::{CorpusTrade, FlowKeys};
 use crate::sweep::corpus::CorpusToken;
 
 use super::{tokens_file, trades_glob};
@@ -422,6 +422,9 @@ fn lake_hash(root: &Path, sel: &Selection) -> String {
     // the same mints, so a hash-keyed corpus cache can't serve sig-less rows to sim.
     sel.with_signatures.hash(&mut h);
     sel.with_flow.hash(&mut h);
+    // Same reason as `with_signatures`: a hash-resolved flow load and a
+    // text-carrying discovery load produce different rows over the same mints.
+    sel.with_flow_text.hash(&mut h);
     sel.created_after.map(|t| t.timestamp_millis()).hash(&mut h);
     sel.created_before.map(|t| t.timestamp_millis()).hash(&mut h);
     if let Some(mints) = &sel.mints {
@@ -686,13 +689,21 @@ fn load_corpus_tokens(
         } else {
             None
         };
-        let (ix_labels, wallet) = if sel.with_flow {
-            let ix = row.get::<_, Option<String>>(col)?.map(String::into_boxed_str);
+        // Flow columns are hashed **here**, at the row decode, so the fold never
+        // re-parses a label array per trade (see `projection::FlowKeys`). The raw
+        // text is dropped unless a discovery load asked to keep it.
+        let (flow, ix_labels, wallet) = if sel.with_flow {
+            let ix = row.get::<_, Option<String>>(col)?;
             col += 1;
-            let w = row.get::<_, Option<String>>(col)?.map(String::into_boxed_str);
-            (ix, w)
+            let w = row.get::<_, Option<String>>(col)?;
+            let keys = FlowKeys::from_stored(ix.as_deref(), w.as_deref());
+            if sel.with_flow_text {
+                (keys, ix.map(String::into_boxed_str), w.map(String::into_boxed_str))
+            } else {
+                (keys, None, None)
+            }
         } else {
-            (None, None)
+            (FlowKeys::default(), None, None)
         };
 
         if cur_mint.as_deref() != Some(mint.as_str()) {
@@ -722,6 +733,7 @@ fn load_corpus_tokens(
             leg_index: leg_index as u32,
             is_buy,
             tx_signature,
+            flow,
             ix_labels,
             wallet,
         });
@@ -1046,6 +1058,7 @@ mod parity_tests {
             curve_only: false,
             with_signatures: false,
             with_flow: false,
+            with_flow_text: false,
         };
         let with_sigs = Selection { with_signatures: true, ..base.clone() };
 
@@ -1130,6 +1143,7 @@ mod parity_tests {
             curve_only: false,
             with_signatures: false,
             with_flow: true,
+            with_flow_text: false,
         };
         let plain = Selection { per_mint_cap: SWEEP_DEFAULT_PER_MINT_CAP, ..windowed.clone() };
 
@@ -1163,6 +1177,7 @@ mod parity_tests {
             curve_only: false,
             with_signatures: false,
             with_flow: true,
+            with_flow_text: false,
         };
         let seed = src.load(&probe).await.expect("probe corpus load");
         assert!(!seed.tokens.is_empty(), "lake returned no tokens — populate it first");

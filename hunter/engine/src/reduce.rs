@@ -18,9 +18,9 @@ use std::collections::BTreeMap;
 
 use smallvec::SmallVec;
 
-use crate::arm::{ArmState, CompiledRule, EnteredCtx};
+use crate::arm::{ArmState, ClockHorizons, CompiledRule, EnteredCtx};
 use crate::cap::Cap;
-use crate::deadness::{is_dead_verdict, DEAD_MEANINGFUL_TRADE_SOL};
+use crate::deadness::{is_dead_verdict, DEAD_MEANINGFUL_TRADE_SOL, DEAD_QUIET_SECS};
 use crate::event::{
     ArmedDelta, ArmedStateTag, DisarmReason, Effect, Event, ExitReason, FillFailReason, Mint,
     Portion, PositionDelta, PositionStatus, RuleId, TradeMode,
@@ -28,7 +28,7 @@ use crate::event::{
 use crate::fingerprint::{match_all, MatchPhase};
 use crate::grouping::{TokenFingerprint, LAMPORTS_PER_SOL_F64};
 use crate::metrics::Ts;
-use crate::state::{EngineState, PositionRef, TokenState};
+use crate::state::{EngineState, PositionRef, Settled, TokenState};
 
 /// Bounded buy retries before an entry gives up (rolling its cap counters back).
 const MAX_ENTRY_ATTEMPTS: u32 = 3;
@@ -44,6 +44,12 @@ pub type Effects = SmallVec<[Effect; 8]>;
 /// malformed input is rejected at the adapter boundary, never here.
 pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
     let mut fx = Effects::new();
+    // Any event other than a bare clock advance can change a token, so the
+    // "everything is settled" memo cannot survive one. Cleared here, once, rather
+    // than in each branch — a branch that forgot would skip real decisions.
+    if !matches!(event, Event::Tick { .. }) {
+        state.all_settled_at = None;
+    }
     match event {
         Event::RulesReloaded { rules, fps } => {
             let incoming: std::collections::HashMap<_, _> =
@@ -63,6 +69,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                     })
                     .map(|(id, _)| *id)
                     .collect();
+                token.unsettle();
                 for rid in stale {
                     token.arms.insert(rid, ArmState::Disarmed(DisarmReason::Paused));
                     fx.push(armed(mint, rid, ArmedStateTag::Disarmed(DisarmReason::Paused)));
@@ -85,6 +92,8 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                 identity,
                 track,
                 last_meaningful_at: None,
+                last_trade_at: None,
+                settled: None,
                 first_slot_settled: false,
                 arms: BTreeMap::new(),
                 episodes: BTreeMap::new(),
@@ -153,33 +162,64 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
         }
 
         Event::Trade { mint, trade } => {
-            let Some(mut token) = state.tokens.remove(&mint) else { return fx };
-            fold_trade(&mut token, trade);
-            evaluate_token(state, &mut token, &mint, trade.at, &mut fx);
-            if token.is_active() {
-                state.tokens.insert(mint, token);
+            // Lend the map out rather than `remove` + re-`insert`: the sweep never
+            // reads `tokens`, so borrowing it away is enough to satisfy the borrow
+            // checker, and it turns two keyed `BTreeMap` operations (base58 string
+            // compares + rebalancing) per trade into one.
+            let mut tokens = std::mem::take(&mut state.tokens);
+            if let Some(token) = tokens.get_mut(&mint) {
+                fold_trade(token, trade);
+                evaluate_token(state, token, &mint, trade.at, &mut fx);
+                if !token.is_active() {
+                    tokens.remove(&mint);
+                }
             }
+            state.tokens = tokens;
         }
 
         Event::Tick { now } => {
             // Expire the copycat guard's memory on event time (self-rate-limited),
             // so a replay sweeps exactly where live did.
             state.dupe_guard.prune(now);
-            let mints: SmallVec<[Mint; 16]> = state.tokens.keys().cloned().collect();
-            for mint in mints {
-                let Some(mut token) = state.tokens.remove(&mint) else { continue };
-                token.track.on_tick(now);
-                evaluate_token(state, &mut token, &mint, now, &mut fx);
-                if token.is_active() {
-                    state.tokens.insert(mint, token);
-                }
+            let dense = state.dense_ticks;
+            // Whole-map no-op: the previous sweep settled everyone and the set has
+            // not changed since. O(1) — no walk at all.
+            if !dense && state.all_settled_at == Some(state.tokens.len()) {
+                return fx;
             }
+            // Same lend-the-map trick as `Trade`, over the whole set: one ordered
+            // walk with an in-place `retain` (which also does the pruning) replaces
+            // a cloned key list plus a `remove`/`insert` pair per token per tick.
+            let epoch = state.cross_epoch;
+            let mut tokens = std::mem::take(&mut state.tokens);
+            let mut all_settled = true;
+            tokens.retain(|mint, token| {
+                // Provably-static token: every reading re-derives identically and no
+                // cross-token input has moved, so the whole sweep is a no-op. See
+                // `Settled` — this is what stops an un-prunable token (healthy
+                // reserves, or no reserve reading at all) from being swept five times
+                // a second for the rest of the run.
+                if !dense && token.tick_is_noop(epoch) {
+                    return true;
+                }
+                token.track.on_tick(now);
+                evaluate_token(state, token, mint, now, &mut fx);
+                all_settled &= token.settled.is_some();
+                token.is_active()
+            });
+            // Only memoize when the epoch held still for the whole walk — a decision
+            // taken mid-walk (an entry, a close) invalidates the stamps written
+            // before it, and re-deriving that is not worth the bookkeeping.
+            state.all_settled_at =
+                (all_settled && !dense && state.cross_epoch == epoch).then_some(tokens.len());
+            state.tokens = tokens;
         }
 
         Event::FillConfirmed { intent, fill } => {
             let mint = intent.mint.clone();
             let rule_id = intent.rule;
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
+            token.unsettle();
             match token.arms.get(&rule_id).cloned() {
                 Some(ArmState::EntryPending { intent: pend, position, .. }) if pend == intent => {
                     // Peak/trough start at the fill: before any run-up
@@ -262,6 +302,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             let mint = intent.mint.clone();
             let rule_id = intent.rule;
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
+            token.unsettle();
             match token.arms.get(&rule_id).cloned() {
                 Some(ArmState::EntryPending { intent: pend, position, attempts, lamports })
                     if pend == intent =>
@@ -445,6 +486,8 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                         identity: None,
                         track,
                         last_meaningful_at: None,
+                        last_trade_at: None,
+                        settled: None,
                         first_slot_settled: true,
                         arms: BTreeMap::new(),
                         episodes: BTreeMap::new(),
@@ -463,6 +506,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             // stack incl. Dead); absent ⇒ tracked-only, no auto-exit of any kind.
             state.set_manual_exit(position, rule, exit);
             let Some(token) = state.tokens.get_mut(&mint) else { return fx };
+            token.unsettle();
             token.arms.insert(
                 rule,
                 ArmState::EntryPending { intent: intent.clone(), position, attempts: 1, lamports },
@@ -501,6 +545,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             let Some(pref) = state.positions.get(&position).cloned() else { return fx };
             let PositionRef { mint, rule } = pref;
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
+            token.unsettle();
             if let Some(ArmState::EntryPending { intent: _, position: pos, .. }) =
                 token.arms.get(&rule).cloned()
             {
@@ -562,6 +607,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             let Some(pref) = state.positions.get(&position).cloned() else { return fx };
             let PositionRef { mint, rule } = pref;
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
+            token.unsettle();
             if let Some(ArmState::Entered(held)) = token.arms.get(&rule).cloned() {
                 if held.position == position {
                     // The bag is already gone → close terminally at the resolved fill.
@@ -588,6 +634,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
 
         Event::Migrated { mint, at: _ } => {
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
+            token.unsettle();
             let rule_ids: SmallVec<[RuleId; 4]> = token.arms.keys().copied().collect();
             for rule_id in rule_ids {
                 match token.arms.get(&rule_id) {
@@ -638,6 +685,61 @@ fn fold_trade(token: &mut TokenState, trade: crate::metrics::TradeLite) {
     {
         token.last_meaningful_at = Some(trade.at);
     }
+    if token.last_trade_at.is_none_or(|t| trade.at > t) {
+        token.last_trade_at = Some(trade.at);
+    }
+    // A fold moves the track, so any settled verdict is stale. Doing it here (not
+    // in the `Trade` branch) also covers `prime_trade`, which folds *without*
+    // evaluating and would otherwise leave a stale verdict behind on boot replay.
+    token.unsettle();
+}
+
+/// Seconds as a `Duration`, clamped like the sparse grid's horizons so a
+/// fat-fingered threshold cannot overflow the instant arithmetic.
+fn horizon_secs(s: f64) -> chrono::Duration {
+    let ms = (crate::metrics::grid::SparseGrid::clamp_secs(s) * 1000.0).ceil();
+    chrono::Duration::milliseconds(if ms.is_finite() { ms.max(0.0) as i64 } else { 0 })
+}
+
+/// The last instant at which anything about `token` can still change on its own —
+/// the `until` half of [`Settled`]. `None` ⇒ never settle.
+///
+/// Anchors, all of which must be covered or a tick skip would drop a decision:
+/// * trailing windows decay from the newest trade;
+/// * `time` climbs from creation, `stall` from the last trade (an upper bound on
+///   the last all-time high), `held` from each entry fill;
+/// * the dead verdict flips once, at `last_meaningful + DEAD_QUIET_SECS`;
+/// * a re-entry `Cooldown` re-arms at its own instant.
+///
+/// A **manual** arm bails out to `None`: its exit rule lives in `manual_rules`, so
+/// its clocks are not in the reloaded [`ClockHorizons`] union and the horizon below
+/// would not cover them.
+fn settle_until(state: &EngineState, token: &TokenState, h: &ClockHorizons) -> Option<Ts> {
+    let anchor = token.last_trade_at.unwrap_or(token.created_at);
+    let mut until = anchor
+        .max(anchor + horizon_secs(h.max_window_secs))
+        .max(token.created_at + horizon_secs(h.time_secs))
+        .max(anchor + horizon_secs(h.stall_secs))
+        .max(
+            token.last_meaningful_at.unwrap_or(token.created_at)
+                + chrono::Duration::seconds(DEAD_QUIET_SECS),
+        );
+    for (rule_id, arm) in &token.arms {
+        if !arm.is_active() {
+            continue;
+        }
+        if !state.rules.contains_key(rule_id) {
+            return None; // manual episode — horizons unknown here
+        }
+        match arm {
+            ArmState::Cooldown { until: re } => until = until.max(*re),
+            ArmState::Entered(ctx) => {
+                until = until.max(ctx.entered_at + horizon_secs(h.held_secs))
+            }
+            _ => {}
+        }
+    }
+    Some(until)
 }
 
 /// Ratchet every held position's **since-entry** peak/trough to the track's current
@@ -733,12 +835,19 @@ fn evaluate_token(
     // `EntryPending` when the next arm is decided and therefore wins the claim. A
     // non-exclusive rule never reads another arm, so reordering it is a no-op.
     // Manual arms (no entry in `rules`) sort at the default 0.
-    rule_ids.sort_unstable_by_key(|id| {
-        (
-            std::cmp::Reverse(state.rules.get(id).map_or(0, |c| c.priority)),
-            *id,
-        )
-    });
+    //
+    // With every priority equal the sort key collapses to `*id`, and `arms` is a
+    // `BTreeMap` — already in that order. So the sort is skipped unless some loaded
+    // rule actually sets a priority, which is the only case where it can reorder
+    // anything (`any_priority`, recomputed on reload).
+    if state.any_priority {
+        rule_ids.sort_unstable_by_key(|id| {
+            (
+                std::cmp::Reverse(state.rules.get(id).map_or(0, |c| c.priority)),
+                *id,
+            )
+        });
+    }
     for rule_id in rule_ids {
         let (decision, buy_lamports, cap, max_total, trade_mode) = {
             let arm = &token.arms[&rule_id];
@@ -762,6 +871,18 @@ fn evaluate_token(
             fx,
         );
     }
+
+    // Stamp the settled verdict LAST, off the post-decision arm states — a decision
+    // taken above (an entry, a cooldown re-arm) changes what the token is still
+    // waiting for. Any later mutation that bypasses this sweep must `unsettle`.
+    //
+    // `now >= until` is the load-bearing half: it says THIS sweep already stood past
+    // every clock, so no later instant can reveal a crossing it missed. Stamping on
+    // `until` alone would instead assume the next tick lands close enough to observe
+    // one, which is a cadence assumption the engine does not get to make.
+    token.settled = settle_until(state, token, &state.tick_horizons)
+        .filter(|until| now >= *until)
+        .map(|until| Settled { until, epoch: state.cross_epoch });
 }
 
 /// The position an arm owns, when it owns one (keys the manual exit-rule lookup).
@@ -881,11 +1002,16 @@ fn apply_decision(
             {
                 let counters = state.counters.entry(rule_id).or_default();
                 if !cap.allows(counters.open) || !max_total.allows(counters.total) {
+                    // Stay armed and re-check later. Nothing changed, so nothing is
+                    // invalidated: the freeing close is what bumps the epoch and
+                    // wakes this arm back up (see `decrement_open`).
                     return;
                 }
-                counters.open += 1;
-                counters.total += 1;
             }
+            state.with_counters(rule_id, |c| {
+                c.open += 1;
+                c.total += 1;
+            });
             let position = state.next_position();
             let intent = state.next_intent(rule_id, mint.clone());
             state.positions.insert(position, PositionRef { mint: mint.clone(), rule: rule_id });
@@ -893,7 +1019,7 @@ fn apply_decision(
             // that reverts our buy is exactly the trap worth not re-entering, and
             // an entry that never fills still proves this identity looked
             // tradeable. `rollback_entry` deliberately does not undo this.
-            state.dupe_guard.record(trade_mode, token.identity, mint, now);
+            state.record_identity(trade_mode, token.identity, mint, now);
             token.arms.insert(
                 rule_id,
                 ArmState::EntryPending {
@@ -1033,11 +1159,11 @@ fn reason_allows_reentry(reason: ExitReason) -> bool {
     )
 }
 
-/// Decrement a rule's open counter on a position close (saturating).
+/// Decrement a rule's open counter on a position close (saturating). Goes through
+/// [`EngineState::with_counters`], which bumps the cross-token epoch — a freed slot
+/// is exactly what a cap-refused arm on some other token is waiting for.
 fn decrement_open(state: &mut EngineState, rule: RuleId) {
-    if let Some(c) = state.counters.get_mut(&rule) {
-        c.open = c.open.saturating_sub(1);
-    }
+    state.with_counters(rule, |c| c.open = c.open.saturating_sub(1));
 }
 
 /// Whether an arm still owns an open or in-flight position (must survive reload).
@@ -1050,12 +1176,13 @@ fn arm_holds_position(arm: &ArmState) -> bool {
     )
 }
 
-/// Roll back both counters for an entry that never filled (saturating).
+/// Roll back both counters for an entry that never filled (saturating). See
+/// [`decrement_open`] for why this goes through `with_counters`.
 fn rollback_entry(state: &mut EngineState, rule: RuleId) {
-    if let Some(c) = state.counters.get_mut(&rule) {
+    state.with_counters(rule, |c| {
         c.open = c.open.saturating_sub(1);
         c.total = c.total.saturating_sub(1);
-    }
+    });
 }
 
 /// Build an `ArmedChanged` effect.

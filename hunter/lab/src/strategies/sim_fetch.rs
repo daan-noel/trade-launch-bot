@@ -75,6 +75,8 @@ pub async fn fetch_sim_histories(
         // `ix_labels` + `wallet` for volume-flow metrics (V2) — off unless the run
         // references `m_flow_*` so non-flow sims stay slim.
         with_flow,
+        // Hash-resolved flow keys only — no consumer here reads label text.
+        with_flow_text: false,
     };
 
     let corpus = LakeSource::new(root).load(&sel).await?;
@@ -228,6 +230,7 @@ mod tests {
 
     fn corpus_at_slot(slot: u64) -> CorpusTrade {
         CorpusTrade {
+            flow: crate::sweep::projection::FlowKeys::default(),
             block_time: Utc::now(),
             amount_sol: 1.0,
             token_amount: 100.0,

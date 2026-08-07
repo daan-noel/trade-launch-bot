@@ -542,6 +542,9 @@ mod tests {
         secs: i64,
     ) -> crate::sweep::projection::CorpusTrade {
         crate::sweep::projection::CorpusTrade {
+            // Resolved at load in production (`duck.rs` / `project_pg_tail`), so a
+            // fixture that carries label/wallet text must resolve them too.
+            flow: crate::sweep::projection::FlowKeys::from_stored(labels, Some(wallet)),
             block_time: ts(secs),
             amount_sol: sol,
             token_amount: 1_000.0,

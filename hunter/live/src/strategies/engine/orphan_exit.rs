@@ -447,6 +447,10 @@ pub fn adopt_holding_into_engine(
                 identity: None,
                 track,
                 last_meaningful_at: None,
+                last_trade_at: None,
+                // Adopted cold: the evaluate sweep stamps the real verdict on the
+                // first event this token sees.
+                settled: None,
                 first_slot_settled: true,
                 arms: Default::default(),
                 episodes: Default::default(),
@@ -460,6 +464,9 @@ pub fn adopt_holding_into_engine(
         state.set_manual_exit(position, rule_id, manual_exit_of(pos));
     }
 
+    // Adoption rewrites this token's arms outside the fold, so the engine must
+    // forget any settled verdict that predates it.
+    state.touch_token(&mint);
     let token = state.tokens.get_mut(&mint)?;
     // Seed the position context from the adopted fill: `held` counts from the entry
     // time, `retrace` from the entry price (the peak is re-established as live trades
@@ -579,6 +586,10 @@ pub fn adopt_buy_submitted_into_engine(
                 identity: None,
                 track,
                 last_meaningful_at: None,
+                last_trade_at: None,
+                // Adopted cold: the evaluate sweep stamps the real verdict on the
+                // first event this token sees.
+                settled: None,
                 first_slot_settled: true,
                 arms: Default::default(),
                 episodes: Default::default(),
@@ -594,6 +605,8 @@ pub fn adopt_buy_submitted_into_engine(
 
     // Fresh intent keying both the arm and the registry meta (see doc above).
     let intent = state.next_intent(rule_id, mint.clone());
+    // See the sibling adopt path above.
+    state.touch_token(&mint);
     let token = state.tokens.get_mut(&mint)?;
     token.arms.insert(
         rule_id,

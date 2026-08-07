@@ -738,6 +738,8 @@ async fn run_grouped_sweep_job(
         // Sweep resolves the trigger by index, not signature — no `tx_signature` needed.
         with_signatures: false,
         with_flow,
+        // Hash-resolved flow keys only — no consumer here reads label text.
+        with_flow_text: false,
     };
 
     // Load the corpus from the immutable Parquet lake via DuckDB (the sole sweep
@@ -2435,6 +2437,8 @@ pub async fn list_token_results(
             per_mint_cap: sweep_per_mint_cap(),
             with_signatures: false,
             with_flow: run.volume_ix_patterns.is_some(),
+            // Hash-resolved flow keys only — no consumer here reads label text.
+            with_flow_text: false,
         };
         let root = crate::lake::lake_root();
         match LakeSource::new(root).load(&sel).await {

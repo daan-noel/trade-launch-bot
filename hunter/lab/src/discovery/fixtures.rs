@@ -28,6 +28,7 @@ pub fn created_at() -> DateTime<Utc> {
 
 pub fn trade(secs: i64, price: f64, reserve: f64, is_buy: bool) -> CorpusTrade {
     CorpusTrade {
+        flow: crate::sweep::projection::FlowKeys::default(),
         block_time: created_at() + Duration::seconds(secs),
         amount_sol: 1.0,
         token_amount: 1.0,

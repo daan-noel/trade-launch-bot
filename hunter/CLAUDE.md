@@ -387,8 +387,31 @@ check — today: the rule editor's **Max total** and Trader Analysis **Max token
   all `trades` read paths **LEFT JOIN** with `COALESCE(w.address,'unknown:'||wallet_id)`,
   never INNER. On the `lab` mirror `wallet_dict` is non-destructively merged each sync. (An
   INNER join once hid ~58% of the lab's trades — looked like an ingest miss, wasn't.)
-- **Flow hash SSOT:** `hunter_engine::metrics::flow_split::{ix_hash,wallet_hash,ix_hash_opt}`
+- **Flow hash SSOT:** `hunter_engine::metrics::flow_split::{ix_hash,wallet_hash,ix_hash_opt,ix_hash_from_labels_json}`
   are the only hashers for volume/organic classification. Live producer, lake replay, and
   event-log adapters must call them — never roll a private FNV/string join. Patterns compile
-  to a hash set at `RulesReloaded`. See
+  to a hash set at `RulesReloaded`. The offline paths hash **at load**
+  (`projection::FlowKeys`, resolved in `lake/duck.rs` + `project_pg_tail`), not per fold —
+  `to_trade_lite` must stay a pure field move. The raw label/wallet **text** rides only on a
+  `Selection::with_flow_text` load, which is flow *discovery* and nothing else. See
   [docs/plans/strategies/metrics-reference.md](docs/plans/strategies/metrics-reference.md).
+- **A `Tick` may skip a token; it may never skip a decision.** `reduce` skips tokens marked
+  `Settled` — evaluated at or past every clock their rules read (`arm::ClockHorizons`) with
+  no cross-token input moved since. This is what stops a token that can never go dead (real
+  reserves ≥ 30, or no reserve reading at all ⇒ `NaN` liquidity ⇒ "alive") from being swept
+  5x/second for the rest of a run; it was the dominant cost of a multi-day simulate
+  (~180x measured, `engine/tests/tick_bench.rs`). Three rules when editing the fold:
+  a **new metric that moves on a bare tick** needs a `ClockHorizons` field; a **new
+  cross-token input** a decision reads must bump `cross_epoch` (go through
+  `with_counters` / `record_identity`, the ONE write paths); anything mutating a tracked
+  token **outside** the evaluate sweep must `unsettle()` (in-fold) or `touch_token`
+  (live boot adoption). `dense_ticks` turns it all off for bisecting, and
+  `engine/tests/settled_ticks.rs` is the differential guard. Full rationale:
+  [docs/plans/strategies/tick-cost-and-settled-tokens.md](docs/plans/strategies/tick-cost-and-settled-tokens.md).
+- **A trailing-window read is O(1) — keep it that way.** `flow_window` / `flow_split`
+  maintain running sums over a **time-sorted** deque and correct only the two
+  out-of-window ends on read. They used to rescan the whole buffer *and* re-derive the
+  window width per element, which a flow-split rule paid once per metric per rule per
+  event. Never reintroduce a full-buffer scan in a `value()`, and never assume the caller
+  evicted at `now` (`TokenCreated`/`FirstSlotSettled` do not, and a skipped tick leaves
+  entries un-evicted by design).

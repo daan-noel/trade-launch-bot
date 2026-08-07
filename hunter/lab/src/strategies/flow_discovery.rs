@@ -629,6 +629,7 @@ mod tests {
     ) -> CorpusTrade {
         let ix = serde_json::to_string(&labels).unwrap();
         CorpusTrade {
+            flow: crate::sweep::projection::FlowKeys::from_stored(Some(&ix), Some(wallet)),
             block_time: Utc::now(),
             amount_sol: sol,
             token_amount: 1.0,
@@ -1182,6 +1183,7 @@ mod tests {
             "n1",
             200_000,
             vec![CorpusTrade {
+                flow: crate::sweep::projection::FlowKeys::default(),
                 block_time: Utc::now(),
                 amount_sol: 5.0,
                 token_amount: 1.0,

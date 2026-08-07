@@ -979,6 +979,7 @@ mod tests {
 
     fn trade(secs: f64, is_buy: bool, sol: f64, price: f64, real_reserve: f64) -> CorpusTrade {
         CorpusTrade {
+            flow: crate::sweep::projection::FlowKeys::default(),
             block_time: at(secs),
             amount_sol: sol,
             token_amount: 1000.0,

@@ -112,9 +112,13 @@ pub async fn seed_episodes(strategy_repo: &StrategyRepo, state: &mut EngineState
         if state.rules.get(&rule).is_none_or(|c| c.reentry.is_none()) {
             continue;
         }
-        if let Some(token) = state.tokens.get_mut(&Mint::from(mint_s.as_str())) {
+        let mint = Mint::from(mint_s.as_str());
+        if let Some(token) = state.tokens.get_mut(&mint) {
             token.episodes.insert(rule, count.max(0) as u32);
             n += 1;
+            // Adoption mutates a tracked token outside the fold — tell the engine,
+            // or a settled verdict predating it could survive.
+            state.touch_token(&mint);
         }
     }
     if n > 0 {
