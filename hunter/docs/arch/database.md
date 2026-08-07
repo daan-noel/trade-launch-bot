@@ -75,7 +75,22 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 ### Core trading
 
 - `tokens` — mint_address UNIQUE, creator_wallet, name/symbol, bonding_curve_address, initial_buy_lamports(BIGINT), cu_limit/price, is_mayhem_mode, ix_labels(JSONB), initial_buy_instruction(JSONB; keys `max_cost_lamports`/`spendable_lamports_in`), creation_slot(BIGINT), created_at
-- `trades` *(TimescaleDB hypertable on block_time, ~1mo retention)* — mint, wallet, trade_type, amount_lamports(BIGINT) / token_amount(BIGINT raw units), reserve_lamports/reserve_token(BIGINT venue-neutral pair), tx_signature(BYTEA), slot, block_time, venue(`curve`/`amm`), **`ix_labels`(JSONB, migration 0002, forward-only)**; price derived in `trades_priced` view (`price_per_token` = SOL/token). PK `(block_time, tx_signature, leg_index)`. **This table = the LaserStream feed.**
+- `trades` *(TimescaleDB hypertable on block_time, ~1mo retention)* — mint, wallet, trade_type, amount_lamports(BIGINT) / token_amount(BIGINT raw units), reserve_lamports/reserve_token(BIGINT venue-neutral pair), tx_signature(BYTEA), slot, block_time, venue(`curve`/`amm`), **`ix_labels`(JSONB, migration 0002, forward-only)**, **`fee_lamports`(BIGINT NULL, migration 0005, forward-only)**; price derived in `trades_priced` view (`price_per_token` = SOL/token). PK `(block_time, tx_signature, leg_index)`. **This table = the LaserStream feed.**
+  - **`fee_lamports` is per-TRANSACTION, the table is per-LEG.** It is the on-chain
+    `meta.fee` (base signature fee + priority fee) read straight off the feed at decode
+    — no RPC, no Helius credits — and denormalized onto every leg of its tx, so a bare
+    `SUM(fee_lamports)` over multi-leg transactions over-counts by the leg multiplier.
+    Collapse first: `SUM(fee) FROM (SELECT DISTINCT tx_signature, fee_lamports FROM trades …)`.
+    Denormalizing beats a per-signature side table here: a second table would add a
+    write per tx to the hot ingest path (the write-amplification shape that froze
+    ingest before), whereas this is one more bind on an insert that already runs.
+  - **NULL is load-bearing.** Pre-0005 rows have no fee and cannot get one (`raw_txs`
+    is not persisted and has 7-day retention), so NULL means "not captured" — never
+    coalesce it to 0 or average it in as 0. A landed tx always pays the base fee, so a
+    genuine zero does not exist; `ingest_core::event::fee_lamports_opt` is the ONE
+    reader that folds the protobuf's ambiguous `0` back to NULL at the source.
+  - **Excludes** the Jito tip (a transfer instruction — absent from `meta.fee`) and the
+    venue's own protocol/LP fee (already inside `amount_lamports`).
 - `raw_txs` *(TimescaleDB hypertable on block_time; compress 2d, retain 7d)* — tx_signature(BYTEA), slot, block_time, tx_index, payload(BYTEA = verbatim protobuf wire bytes, parse in Rust), source(SMALLINT: 0=live 1=sync). PK `(block_time, tx_signature)`. Source-of-truth feed; `trades` is a typed projection. Written by `RawTxRepo` from both the live ingest db_writer and the token_sync backfill.
 
 ### Token analysis

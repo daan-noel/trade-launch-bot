@@ -74,7 +74,21 @@ See `@plans/ingest/backpressure-watchdog.md`.
 | File | Responsibility |
 | --- | --- |
 | `lib.rs` | `Ingest` builder + `IngestHandle`; spawns transport + decode tasks; `start(live)` → `(Receiver<IngestEvent>, IngestHandle)` |
-| `event.rs` | Crate-owned output types: `IngestEvent`, `Trade`, `TokenCreated`, `TokenMigrated`, `LiquidityEvent`, `CreatorActivityEvent`, `BuyInstructionArgs`, `Side`, `Venue`, `Reserves`; `RawTx` under `raw-json` feature |
+| `event.rs` | Crate-owned output types: `IngestEvent`, `Trade`, `TokenCreated`, `TokenMigrated`, `LiquidityEvent`, `CreatorActivityEvent`, `BuyInstructionArgs`, `Side`, `Venue`, `Reserves`; `RawTx` under `raw-json` feature. Also `fee_lamports_opt` — the ONE reader of the `meta.fee` sentinel (see below) |
+
+**`Trade.fee_lamports`** — the transaction's on-chain network fee (base signature fee
++ priority fee) from `TransactionStatusMeta.fee`, which the decoder already holds in
+scope; capturing it costs one field read and **zero** RPC/Helius credits. Stamped by all
+three trade paths (`decode_curve_pb`, `decode_amm_live_pb`, the balance-delta fallback)
+and by the RPC backfill (`backfill::meta_from_json`, which previously left the protobuf
+field at its `0` default — an unset fee there reads as "free", not "unknown").
+
+Two invariants a consumer must not break: it is charged **once per transaction**, so
+every leg decoded out of one tx repeats the same value (collapse by `signature` before
+summing); and `0` is impossible on a landed tx, so `fee_lamports_opt` folds the
+protobuf's ambiguous zero to `None` at the source rather than letting each decode site
+invent its own rule. It excludes the Jito tip (a transfer instruction, not a fee) and
+the venue's protocol/LP fee (already inside `sol`).
 | `protocol.rs` | `Protocol` descriptor: pre-decoded program IDs (`ProgramId` w/ bytes + base58) + discriminators decoded once at build time |
 | `config.rs` | `IngestConfig` (all tunables, no env reads), `Commitment` enum |
 | `error.rs` | `IngestError`, `Result<T>` alias |

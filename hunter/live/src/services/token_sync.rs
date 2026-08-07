@@ -1441,6 +1441,11 @@ fn trade_from_ingest_event(e: &ingest_laserstream::event::Trade) -> Trade {
         amount_sol: e.sol,
         token_amount: e.tokens,
         price_per_token: e.price,
+        // Per-TRANSACTION network fee, repeated on every leg the tx produced —
+        // see `Trade::fee_sol`. `None` when the RPC payload carried no `fee`.
+        fee_sol: e
+            .fee_lamports
+            .map(|l| trading_core::config::constants::lamports_to_sol(l as i64)),
         tx_signature: e.signature.clone(),
         tx_index: e.tx_index,
         leg_index: e.leg_index,

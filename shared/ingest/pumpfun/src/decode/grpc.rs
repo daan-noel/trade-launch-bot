@@ -6,7 +6,7 @@ use borsh::BorshDeserialize;
 use chrono::{DateTime, Utc};
 use tracing::warn;
 
-use crate::event::{IngestEvent, Reserves, Side, TokenMigrated, Trade, Venue};
+use crate::event::{fee_lamports_opt, IngestEvent, Reserves, Side, TokenMigrated, Trade, Venue};
 use crate::pool::register_pool;
 use crate::protocol::Protocol;
 
@@ -273,6 +273,8 @@ impl Decoder {
         // Step 3: build IngestEvents.
         let mut events: Vec<IngestEvent> = Vec::new();
         let has_create = kinds.iter().any(|k| matches!(k, InstructionKind::Create));
+        // Charged once for the whole tx; stamped on every leg it produced.
+        let fee_lamports = fee_lamports_opt(meta.fee);
 
         // 3a: one Trade per decoded TradeEvent.
         for (leg_index, ev) in decoded_events.iter().enumerate() {
@@ -289,6 +291,7 @@ impl Decoder {
                 sol_lamports: ev.sol_amount_lamports,
                 tokens: ev.token_amount,
                 price,
+                fee_lamports,
                 signature: signature.clone(),
                 tx_index: info.index as u32,
                 leg_index: leg_index as u32,
@@ -326,6 +329,7 @@ impl Decoder {
                         &meta.pre_balances, &meta.post_balances,
                         &meta.pre_token_balances, &meta.post_token_balances,
                         instruction_labels.clone(),
+                        fee_lamports,
                     ) {
                         events.push(ev);
                     }
@@ -426,6 +430,8 @@ impl Decoder {
 
         let signature = bs58::encode(&info.signature).into_string();
         let (labels, _, _) = build_labels_pb(message, meta, &keys, p);
+        // Charged once for the whole tx; stamped on every leg it produced.
+        let fee_lamports = fee_lamports_opt(meta.fee);
 
         // Passive account-list harvest for the executor's zero-RPC pool warmup:
         // resolve the full (ALT-included) account list of each TOP-LEVEL
@@ -472,7 +478,7 @@ impl Decoder {
                 .map(|(_, list)| Box::new(std::mem::take(list)));
             events.push(IngestEvent::Trade(build_amm_trade(
                 ev, mint, &signature, slot, received_at, received_at,
-                labels.clone(), info.index as u32, i as u32, accounts,
+                labels.clone(), info.index as u32, i as u32, accounts, fee_lamports,
             )));
         }
 
@@ -526,6 +532,7 @@ impl Decoder {
         pre_token_balances: &[scb::TokenBalance],
         post_token_balances: &[scb::TokenBalance],
         instruction_labels: Vec<String>,
+        fee_lamports: Option<u64>,
     ) -> Option<IngestEvent> {
         let p = &self.protocol;
         let mint = pump_accounts.get(2).filter(|s| !s.is_empty())?.to_string();
@@ -557,6 +564,12 @@ impl Decoder {
             sol_lamports,
             tokens: token_amount,
             price,
+            // NOTE: on this fallback `sol_amount` is the payer's own lamport
+            // delta, so it already absorbs the fee — unlike the TradeEvent path,
+            // where `sol` is the program-emitted swap amount. The fee is still
+            // reported as its own value; don't subtract it from `sol` here or the
+            // two paths would price the same trade differently.
+            fee_lamports,
             signature: signature.to_string(),
             tx_index,
             leg_index: 0,

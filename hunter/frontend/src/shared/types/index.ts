@@ -809,6 +809,9 @@ export interface LiveTrade {
   amount_sol: number;
   token_amount: number;
   price_per_token: number;
+  /** Per-transaction network fee in SOL — see `TradeRecord.fee_sol`. Absent on
+   *  frames from a bin predating the field. */
+  fee_sol?: number | null;
   tx_signature: string;
   /** Canonical intra-slot order — must match `TradeRecord` / chart sort. */
   tx_index: number;
@@ -853,6 +856,14 @@ export interface TradeRecord {
   amount_sol: number;
   token_amount: number;
   price_per_token: number;
+  /** Network fee paid to land this trade's TRANSACTION — base signature fee +
+   *  priority fee, in SOL. Charged once per tx, so every leg of a multi-leg tx
+   *  repeats the same value: collapse by `tx_signature` before summing.
+   *  Excludes the Jito tip (a transfer, not a fee) and the venue protocol fee
+   *  (already inside `amount_sol`). Null on trades ingested before the column
+   *  existed — unbackfillable, and distinct from a zero fee, which a landed
+   *  transaction never pays. */
+  fee_sol?: number | null;
   tx_signature: string;
   /** Position of this trade's transaction within its block — the real intra-slot
    *  ordering key. Part of the canonical trade order `slot → tx_index → leg_index`. */

@@ -311,6 +311,7 @@ pub(super) fn build_amm_trade(
     tx_index: u32,
     leg_index: u32,
     amm_swap_accounts: Option<Box<Vec<String>>>,
+    fee_lamports: Option<u64>,
 ) -> Trade {
     let side = if ev.is_buy { Side::Buy } else { Side::Sell };
     let price = if ev.base_amount > 0 {
@@ -326,6 +327,7 @@ pub(super) fn build_amm_trade(
         sol_lamports: ev.quote_amount_lamports,
         tokens: ev.base_amount,
         price,
+        fee_lamports,
         signature: signature.to_string(),
         tx_index,
         leg_index,

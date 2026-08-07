@@ -16,6 +16,16 @@ pub enum IngestEvent {
     RawTx(RawTx),
 }
 
+/// The ONE reader of the protobuf `TransactionStatusMeta.fee` sentinel.
+///
+/// `fee` is a bare `u64` on the wire, so an absent field and a genuine zero are
+/// the same bytes. A landed transaction always pays the base signature fee, so
+/// zero can only mean "the source didn't carry it" — fold it to `None` here
+/// rather than letting each decode site invent its own rule.
+pub fn fee_lamports_opt(fee: u64) -> Option<u64> {
+    (fee > 0).then_some(fee)
+}
+
 // ── Trade ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -31,6 +41,17 @@ pub struct Trade {
     /// Raw token units — exact on-chain integer count (`u64`).
     pub tokens: u64,
     pub price: f64,
+    /// Total transaction fee paid by this tx's fee payer — base signature fee +
+    /// priority fee, straight from `TransactionStatusMeta.fee`. Charged **once
+    /// per transaction**, so every leg decoded out of the same tx carries the
+    /// same value: a host summing it across legs must first collapse by
+    /// `signature`. Excludes any Jito tip (that is a transfer instruction, not a
+    /// fee) and the venue's own protocol/LP fee (already inside `sol`).
+    ///
+    /// `None` when the source carried no fee (an RPC-backfill payload without
+    /// the field). Never `Some(0)`: a landed transaction always pays at least
+    /// the base fee, so a zero is "unknown", not "free".
+    pub fee_lamports: Option<u64>,
     pub signature: String,
     /// Position of this trade's transaction within its block (`info.index` from
     /// the LaserStream update). 0 on the RPC backfill path, which has no block

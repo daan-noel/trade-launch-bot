@@ -264,6 +264,9 @@ impl IngestConsumer {
 
         let labels_json = labels_to_json(&e.instruction_labels);
         let mut core_trade = trade_from_event(&e);
+        // Captured before `core_trade` moves into the cache — the SSE frame below
+        // needs it so a live-appended row shows the same fee a refetch would.
+        let fee_sol = core_trade.fee_sol;
         let db_trade = {
             let mut t = core_trade.clone();
             t.instruction_labels = labels_json;
@@ -351,6 +354,7 @@ impl IngestConsumer {
             amount_sol,
             token_amount,
             price_per_token,
+            fee_sol,
             tx_signature: e.signature,
             tx_index: e.tx_index,
             leg_index: e.leg_index,
@@ -616,6 +620,11 @@ fn trade_from_event(e: &IlTrade) -> Trade {
         amount_sol: e.sol,
         token_amount: e.tokens,
         price_per_token: e.price,
+        // Per-TRANSACTION network fee, repeated on every leg the tx produced —
+        // see `Trade::fee_sol`. `None` when the source carried no fee.
+        fee_sol: e
+            .fee_lamports
+            .map(|l| trading_core::config::constants::lamports_to_sol(l as i64)),
         tx_signature: e.signature.clone(),
         tx_index: e.tx_index,
         leg_index: e.leg_index,

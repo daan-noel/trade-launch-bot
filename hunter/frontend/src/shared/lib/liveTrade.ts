@@ -19,6 +19,9 @@ export function liveTradeToTradeRecord(t: LiveTrade): TradeRecord {
     amount_sol: t.amount_sol,
     token_amount: t.token_amount,
     price_per_token: t.price_per_token,
+    // `?? null` (not `?? 0`): a frame from a bin predating the field carries no
+    // fee, and the Fee column must render that as "—", never as a free trade.
+    fee_sol: t.fee_sol ?? null,
     tx_signature: t.tx_signature,
     tx_index: t.tx_index ?? 0,
     leg_index: t.leg_index ?? 0,

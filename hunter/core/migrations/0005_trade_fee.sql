@@ -1,0 +1,42 @@
+-- ===========================================================================
+-- 0005_trade_fee — per-transaction network fee on every ingested trade leg.
+--
+-- The decoder has always held `TransactionStatusMeta.fee` (base signature fee +
+-- priority fee) at the moment it builds each Trade event and simply dropped it,
+-- so the trade-history table could show what a wallet traded but never what it
+-- paid to get the transaction landed. It arrives on the LaserStream feed we
+-- already subscribe to — no extra RPC call and no Helius credits.
+--
+-- ATTRIBUTION (read before writing any aggregate over this column):
+-- `fee_lamports` is charged ONCE PER TRANSACTION, but `trades` is keyed per leg
+-- (block_time, tx_signature, leg_index) and one tx can emit many legs. The value
+-- is denormalized onto every leg of its tx — correct for per-row display, and a
+-- straight `SUM(fee_lamports)` over multi-leg transactions OVER-COUNTS by the leg
+-- multiplier. Collapse by signature first:
+--
+--     SELECT SUM(fee_lamports)
+--     FROM (SELECT DISTINCT tx_signature, fee_lamports FROM trades WHERE ...) s
+--
+-- Denormalizing (rather than a normalized per-signature side table) is deliberate:
+-- a second table would add a write per tx to the hot ingest path, which is the
+-- exact write-amplification shape that froze ingest before. This costs one more
+-- bind on an insert that already runs.
+--
+-- NULLABLE, and NULL is load-bearing. Every row written before this migration
+-- has no fee and cannot get one: `raw_txs` is not persisted in this deployment
+-- and carries 7-day retention regardless, so there is nothing to re-decode. NULL
+-- means "not captured"; it must never be coalesced to 0 for display or summed as
+-- 0 in an average. A landed transaction always pays at least the 5000-lamport
+-- base fee, so a genuine 0 does not exist — the ingest folds any zero back to
+-- NULL at the source (`ingest_core::event::fee_lamports_opt`).
+--
+-- Timescale: `trades` is a compressed hypertable. Adding a NULLABLE column with
+-- no DEFAULT is supported on compressed chunks and rewrites nothing.
+--
+-- NOT included: the Jito tip (a transfer instruction, not a fee — it is absent
+-- from meta.fee) and the venue's own protocol/LP fee (already inside
+-- amount_lamports). This column is the network fee only.
+-- ===========================================================================
+
+ALTER TABLE trades
+    ADD COLUMN IF NOT EXISTS fee_lamports BIGINT;

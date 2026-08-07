@@ -2,7 +2,7 @@ import type { ColumnDef } from 'components/table/types';
 import type { TradeRecord } from 'types';
 import { DateCell } from 'components/table/DateCell';
 import { formatDecimal } from 'utils/format';
-import { AmountCell, PriceCell } from 'components/tokens/priceCells';
+import { AmountCell, FeeCell, PriceCell } from 'components/tokens/priceCells';
 import { cn } from 'lib/cn';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
@@ -160,6 +160,26 @@ export function tokenTradeColumns(
       sortValue: (t) => t.price_per_token,
       searchValue: (t) => String(t.price_per_token),
       filterNumber: (t) => t.price_per_token,
+    },
+    {
+      key: 'fee',
+      label: 'Fee',
+      tooltip:
+        'Network fee paid to land this trade’s transaction — base signature fee + priority ' +
+        'fee, as reported on-chain. Charged once per transaction, so the legs of a multi-leg ' +
+        'tx all show the same value. Excludes the Jito tip (a transfer, not a fee) and the ' +
+        'venue’s own swap fee (already inside the SOL amount). “—” = not captured (trades ' +
+        'ingested before the fee column existed; it cannot be backfilled).',
+      render: (t) => (
+        <span className="text-text-dim">
+          <FeeCell sol={t.fee_sol} />
+        </span>
+      ),
+      // Unknown sorts below every real fee instead of tying with a genuine
+      // minimum — `null` is "not captured", not "cheapest".
+      sortValue: (t) => t.fee_sol ?? -1,
+      searchValue: (t) => (t.fee_sol != null ? String(t.fee_sol) : ''),
+      filterNumber: (t) => t.fee_sol ?? null,
     },
     {
       key: 'signature',

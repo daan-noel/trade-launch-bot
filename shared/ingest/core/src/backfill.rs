@@ -78,6 +78,10 @@ pub fn rpc_to_protobuf(result: &Value) -> Option<SubscribeUpdateTransaction> {
 fn meta_from_json(meta: &Value) -> scb::TransactionStatusMeta {
     let loaded = meta.get("loadedAddresses");
     scb::TransactionStatusMeta {
+        // Without this the struct default (0) reaches the decoder and every
+        // backfilled trade reports a zero fee — which reads as "free", not as
+        // "unknown". `event::fee_lamports_opt` folds a real 0 back to None.
+        fee: meta.get("fee").and_then(Value::as_u64).unwrap_or(0),
         log_messages: str_vec(meta.get("logMessages")),
         pre_balances: u64_vec(meta.get("preBalances")),
         post_balances: u64_vec(meta.get("postBalances")),

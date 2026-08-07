@@ -41,6 +41,11 @@ pub enum SseEvent {
         /// scales to a display amount). No `f64` round-trip on the notify path.
         token_amount: u64,
         price_per_token: f64,
+        /// Per-TRANSACTION network fee in SOL (see `Trade::fee_sol`). Carried on the
+        /// live lane so an SSE-appended row shows the same fee a refetch would —
+        /// without it the newest rows in the trade table would read "—" until the
+        /// next full fetch. `None` when the feed carried no fee.
+        fee_sol: Option<f64>,
         tx_signature: String,
         /// Intra-slot order keys — same canonical `(slot, tx_index, leg_index)` the
         /// REST trade history and chart aggregators use. Required so live SSE

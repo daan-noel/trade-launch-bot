@@ -19,6 +19,18 @@ pub struct Trade {
     pub token_amount: u64,
     /// Average execution price for this swap (`amount_sol / token_amount`).
     pub price_per_token: f64,
+    /// Network fee paid to land this trade's **transaction** — base signature fee
+    /// + priority fee, from the ingested `TransactionStatusMeta.fee`. Human SOL
+    /// (`fee_lamports` in the DB).
+    ///
+    /// Charged once per transaction, so every leg of a multi-leg tx repeats the
+    /// same value: summing across legs over-counts — collapse by `tx_signature`
+    /// first. Excludes the Jito tip (a transfer instruction, not a fee) and the
+    /// venue protocol/LP fee (already inside `amount_sol`).
+    ///
+    /// `None` on every trade ingested before migration 0005 — unbackfillable, and
+    /// distinct from a zero fee, which cannot occur on a landed transaction.
+    pub fee_sol: Option<f64>,
     pub tx_signature: String,
     /// Position of this trade's transaction within its block. Real on the live
     /// LaserStream feed and on LaserStream-replay backfill. On the RPC backfill path
@@ -102,6 +114,7 @@ impl Trade {
             amount_sol,
             token_amount,
             price_per_token,
+            fee_sol: None,
             tx_signature,
             tx_index: 0,
             leg_index: 0,

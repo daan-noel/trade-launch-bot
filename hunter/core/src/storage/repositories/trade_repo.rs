@@ -73,6 +73,12 @@ struct TradeDbRow {
     // from the SELECT *or* a NULL row (pre-0002 trades — no raw_txs to backfill).
     #[sqlx(default)]
     ix_labels: Option<sqlx::types::Json<serde_json::Value>>,
+    // Defaulted for the same reason as `ix_labels` — only the trade-history reads
+    // project it. `None` = column absent from the SELECT *or* a pre-0005 row (no
+    // raw_txs to re-decode, so those stay unknown forever). Never coalesce to 0:
+    // a landed tx always paid the base fee, so 0 would be a false reading.
+    #[sqlx(default)]
+    fee_lamports: Option<i64>,
 }
 
 impl TryFrom<TradeDbRow> for Trade {
@@ -101,6 +107,7 @@ impl TryFrom<TradeDbRow> for Trade {
             // Derived: the new table has no `price_per_token` column. The ratio is
             // computed in f64 (token cast at the divide).
             price_per_token: price_of(amount_sol, token_amount as f64),
+            fee_sol: r.fee_lamports.map(lamports_to_sol),
             tx_signature: sig_bytes_to_base58(&r.tx_signature),
             tx_index: r.tx_index as u32,
             leg_index: r.leg_index as u32,
@@ -167,8 +174,9 @@ impl TradeRepo {
                 (mint_address, wallet_id, trade_type, venue,
                  amount_lamports, token_amount,
                  reserve_lamports, reserve_token,
-                 slot, tx_index, leg_index, block_time, tx_signature, ix_labels)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                 slot, tx_index, leg_index, block_time, tx_signature, ix_labels,
+                 fee_lamports)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING
             "#,
         )
@@ -186,6 +194,7 @@ impl TradeRepo {
         .bind(trade.block_time)
         .bind(sig_base58_to_bytes(&trade.tx_signature)?)
         .bind(sqlx::types::Json(&trade.instruction_labels))
+        .bind(trade.fee_sol.map(sol_to_lamports))
         .execute(&self.pool)
         .await?;
 
@@ -245,7 +254,7 @@ impl TradeRepo {
                 "INSERT INTO trades \
                  (mint_address, wallet_id, trade_type, venue, amount_lamports, token_amount, \
                   reserve_lamports, reserve_token, slot, tx_index, leg_index, \
-                  block_time, tx_signature, ix_labels) ",
+                  block_time, tx_signature, ix_labels, fee_lamports) ",
             );
             qb.push_values(chunk.iter().zip(sig_chunk), |mut b, (t, sig)| {
                 let wallet_id = wallet_ids.get(&t.wallet_address).copied().unwrap_or_default();
@@ -262,7 +271,8 @@ impl TradeRepo {
                     .push_bind(t.leg_index as i16)
                     .push_bind(t.block_time)
                     .push_bind(sig.as_slice())
-                    .push_bind(sqlx::types::Json(&t.instruction_labels));
+                    .push_bind(sqlx::types::Json(&t.instruction_labels))
+                    .push_bind(t.fee_sol.map(sol_to_lamports));
             });
             qb.push(" ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING");
             qb.build().execute(&self.pool).await?;
@@ -673,7 +683,8 @@ impl TradeRepo {
             SELECT t.mint_address, COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address, t.trade_type, t.venue,
                    t.amount_lamports, t.token_amount,
                    t.reserve_lamports, t.reserve_token,
-                   t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature, t.ix_labels
+                   t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature, t.ix_labels,
+                   t.fee_lamports
             FROM trades t
             LEFT JOIN wallet_dict w ON w.id = t.wallet_id
             WHERE t.mint_address = $1
@@ -763,7 +774,8 @@ impl TradeRepo {
             SELECT t.mint_address, COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address, t.trade_type, t.venue,
                    t.amount_lamports, t.token_amount,
                    t.reserve_lamports, t.reserve_token,
-                   t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature, t.ix_labels
+                   t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature, t.ix_labels,
+                   t.fee_lamports
             FROM trades t
             LEFT JOIN wallet_dict w ON w.id = t.wallet_id
             WHERE t.mint_address = $1
@@ -1182,15 +1194,16 @@ mod tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
 
-    /// `insert_many` binds 13 params/row (mint_address, wallet_id, trade_type,
+    /// `insert_many` binds 15 params/row (mint_address, wallet_id, trade_type,
     /// venue, amount_lamports, token_amount, reserve_lamports, reserve_token,
-    /// slot, tx_index, leg_index, block_time, tx_signature); one Postgres statement
-    /// is capped at 65535 (sqlx 0.6 wraps `len() as i16` past it → a Postgres parse
-    /// error). Pin the chunk so adding a bound column re-checks the ceiling here
-    /// instead of surfacing as a runtime parse error on the backfill path.
+    /// slot, tx_index, leg_index, block_time, tx_signature, ix_labels,
+    /// fee_lamports); one Postgres statement is capped at 65535 (sqlx 0.6 wraps
+    /// `len() as i16` past it → a Postgres parse error). Pin the chunk so adding a
+    /// bound column re-checks the ceiling here instead of surfacing as a runtime
+    /// parse error on the backfill path.
     #[test]
     fn trade_insert_chunk_stays_under_param_ceiling() {
-        const BINDS_PER_ROW: usize = 13;
+        const BINDS_PER_ROW: usize = 15;
         assert!(
             TRADE_INSERT_CHUNK * BINDS_PER_ROW <= 65_535,
             "TRADE_INSERT_CHUNK ({TRADE_INSERT_CHUNK}) × {BINDS_PER_ROW} binds exceeds the 65535 ceiling"
