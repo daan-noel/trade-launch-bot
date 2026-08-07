@@ -18,20 +18,27 @@
 //!   fold [`metrics::track::TokenTrack`], and the sweep-precompute
 //!   [`metrics::series::MetricSeries`].
 //! * [`rule_params`] — typed, registry-checked `strategy_rules.params`.
+//! * [`identity`] + [`dupe_guard`] — the `(name, symbol)` key a copycat re-launch
+//!   re-uses, and the rolling memory that refuses to buy the same trap twice.
 
 pub mod arm;
 pub mod cap;
 pub mod deadness;
+pub mod dupe_guard;
 pub mod event;
 pub mod event_log;
 pub mod fingerprint;
 pub mod grouping;
+mod hash;
+pub mod identity;
 pub mod metrics;
 pub mod reduce;
 pub mod rule_params;
 pub mod state;
 
 pub use cap::Cap;
+pub use dupe_guard::DupeGuard;
+pub use identity::{token_identity_hash, IdentityHash};
 pub use event::{Effect, Event};
 pub use event_log::LoggedEvent;
 pub use reduce::{prime_trade, reduce};

@@ -3,21 +3,26 @@
 //! Used at process start and on admin `ReseedFromDb` to reconcile in-memory
 //! position registry + episode counters with durable rows without a restart.
 
+use chrono::{Duration, Utc};
 use hunter_engine::event::RuleId;
+use hunter_engine::event::{Mint, TradeMode};
 use hunter_engine::state::EngineState;
-use hunter_engine::event::Mint;
+use hunter_engine::token_identity_hash;
 use tracing::{info, warn};
 
+use trading_core::storage::repositories::settings_repo::AppSettings;
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 
 use super::PositionRegistry;
 
-/// Counts from a PG position-adopt pass (holdings, in-flight buys, re-entry seeds).
+/// Counts from a PG position-adopt pass (holdings, in-flight buys, re-entry seeds,
+/// copycat-guard identities).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BootAdoptReport {
     pub holdings: u32,
     pub buy_submitted: u32,
     pub episodes: u32,
+    pub traded_identities: u32,
 }
 
 /// Rebuild in-memory `Entered` arms + registry meta from PG `Holding` rows (real
@@ -118,15 +123,85 @@ pub async fn seed_episodes(strategy_repo: &StrategyRepo, state: &mut EngineState
     n
 }
 
-/// Run all PG adopt passes (holdings, buy-submitted dedup, episode counters).
+/// Rebuild the copycat guard's memory from PG.
+///
+/// The guard's state is **not** in-RAM-only like the arms: it is a projection of
+/// `strategy_positions ⋈ tokens`, so a restart restores it exactly instead of
+/// silently forgetting every identity the bot already traded — which is precisely
+/// when the protection matters most (the box restarts far more often than a
+/// copycat campaign lasts).
+///
+/// Two floors, whichever is later:
+/// * `now − window` — the guard only ever blocks inside its window, so older rows
+///   are dead weight, and this keeps the boot scan small on the 2vCPU box.
+/// * `duplicate_identity_since` — the instant the operator first switched the
+///   guard on. Enabling it starts from an *empty* memory rather than retroactively
+///   blocking a week of history nobody opted into. `None` (never enabled) seeds
+///   nothing.
+///
+/// Paper and real are seeded into their own memories.
+pub async fn seed_dupe_guard(
+    strategy_repo: &StrategyRepo,
+    state: &mut EngineState,
+    settings: &AppSettings,
+) -> u32 {
+    if !settings.skip_duplicate_identity {
+        return 0;
+    }
+    let window_hours = if settings.duplicate_identity_window_hours == 0 {
+        hunter_engine::dupe_guard::DEFAULT_WINDOW_HOURS
+    } else {
+        settings.duplicate_identity_window_hours
+    };
+    let window_floor = Utc::now() - Duration::hours(window_hours as i64);
+    let Some(since) = settings.duplicate_identity_since_ts() else {
+        info!("engine: copycat guard on but never stamped — starting from an empty memory");
+        return 0;
+    };
+    let floor = window_floor.max(since);
+
+    let mut n = 0u32;
+    for (mode_str, mode) in [("real", TradeMode::Real), ("paper", TradeMode::Paper)] {
+        let rows = match strategy_repo.find_traded_identities(mode_str, floor).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(mode = mode_str, "engine: copycat guard rebuild failed: {e}");
+                continue;
+            }
+        };
+        for (mint, name, symbol, at) in rows {
+            // Hashed here, through the ONE engine hasher — never in SQL, or a
+            // seeded identity could drift from a live one.
+            let identity = token_identity_hash(&name, &symbol);
+            if identity.is_none() {
+                continue;
+            }
+            state.seed_traded_identity(mode, identity, &Mint::from(mint.as_str()), at);
+            n += 1;
+        }
+    }
+    if n > 0 {
+        info!(
+            seeded = n,
+            since = %floor,
+            "engine: rebuilt copycat-guard memory from PG"
+        );
+    }
+    n
+}
+
+/// Run all PG adopt passes (holdings, buy-submitted dedup, episode counters,
+/// copycat-guard memory).
 pub async fn adopt_from_db(
     strategy_repo: &StrategyRepo,
     state: &mut EngineState,
     registry: &PositionRegistry,
+    settings: &AppSettings,
 ) -> BootAdoptReport {
     BootAdoptReport {
         holdings: adopt_holdings(strategy_repo, state, registry).await,
         buy_submitted: adopt_buy_submitted(strategy_repo, state, registry).await,
         episodes: seed_episodes(strategy_repo, state).await,
+        traded_identities: seed_dupe_guard(strategy_repo, state, settings).await,
     }
 }

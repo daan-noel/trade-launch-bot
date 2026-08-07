@@ -93,6 +93,15 @@ pub struct SimMeta {
     /// actually hardcoded to before this field existed, so their numbers keep meaning.
     #[serde(default)]
     pub cost_model: CostModelKind,
+    /// The copycat guard this run was booked under: `Some(window_hours)` = the
+    /// duplicate-identity gate was on with that memory horizon, `None` = off.
+    ///
+    /// Persisted because the toggle changes the PnL — it removes entries the rule
+    /// would otherwise have taken — so two results of the same rule only compare if
+    /// you can see which policy each ran under. `#[serde(default)]` ⇒ legacy metas
+    /// load as `None`, which is exactly what they were (the guard did not exist).
+    #[serde(default)]
+    pub dupe_guard_window_hours: Option<u64>,
     /// Unfiltered rollup — powers the Simulate page's per-rule columns without
     /// loading rows from disk.
     pub summary: RunSummary,
@@ -204,6 +213,7 @@ impl SimResults {
         to: Option<DateTime<Utc>>,
         fill_model: FillModel,
         cost_model: CostModelKind,
+        dupe_guard_window_hours: Option<u64>,
         outcome: SimOutcome,
         persist: bool,
     ) {
@@ -238,6 +248,7 @@ impl SimResults {
                     n_migrated,
                     fill_model,
                     cost_model,
+                    dupe_guard_window_hours,
                     summary,
                 };
                 if let Err(e) = self.write_durable(&meta, rows) {
@@ -438,6 +449,12 @@ pub fn summary_wire(meta: &SimMeta) -> Value {
         obj.insert("n_matched".into(), serde_json::json!(meta.n_matched));
         obj.insert("n_tokens_entered".into(), serde_json::json!(meta.n_tokens_entered));
         obj.insert("fill_model".into(), serde_json::json!(meta.fill_model));
+        // `null` = the guard was off for this run. Surfaced so a result always says
+        // which copycat policy produced it.
+        obj.insert(
+            "dupe_guard_window_hours".into(),
+            serde_json::json!(meta.dupe_guard_window_hours),
+        );
         obj.insert("cost_model".into(), serde_json::json!(meta.cost_model));
     }
     body
@@ -512,6 +529,7 @@ mod tests {
             None,
             FillModel::WorstCase,
             CostModelKind::PumpfunDefault,
+            None,
             SimOutcome::Done(rows.clone()),
             true,
         );
@@ -552,6 +570,7 @@ mod tests {
             None,
             FillModel::WorstCase,
             CostModelKind::PumpfunDefault,
+            None,
             SimOutcome::Done(Arc::new(vec![serde_json::json!({"fired": false})])),
             false,
         );
@@ -575,6 +594,7 @@ mod tests {
             None,
             FillModel::WorstCase,
             CostModelKind::PumpfunDefault,
+            None,
             SimOutcome::Done(Arc::new(vec![])),
             true,
         );

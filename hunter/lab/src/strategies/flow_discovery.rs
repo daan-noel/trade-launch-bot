@@ -664,6 +664,7 @@ mod tests {
                 first_slot_sell_sol: None,
                 ix_labels: vec![],
             },
+            identity: None,
         }
     }
 

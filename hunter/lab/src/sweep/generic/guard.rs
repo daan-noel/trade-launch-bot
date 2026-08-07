@@ -128,6 +128,7 @@ fn token_at(mint: &str, created_secs: f64, trades: Vec<CorpusTrade>) -> (CorpusT
         created_at: created,
         trades: trades.clone(),
         fp: tf.clone(),
+        identity: None,
     };
     let replay = ReplayToken {
         mint: mint.to_string(),
@@ -135,7 +136,7 @@ fn token_at(mint: &str, created_secs: f64, trades: Vec<CorpusTrade>) -> (CorpusT
         created_at: created,
         tf,
         trades,
-        creator_wallet_hash: None,
+        creator_wallet_hash: None, identity: None,
     };
     (corpus, replay)
 }
@@ -297,7 +298,7 @@ fn assert_parity_under(
             std::slice::from_ref(&rule),
             std::slice::from_ref(&fp),
             vec![replay_tok.clone()],
-            ReplayConfig { as_of, fill_model },
+            ReplayConfig { as_of, fill_model, ..Default::default() },
         );
         let po = replay_out.iter().find(|o| o.mint == corpus_tok.mint);
         let (r_fired, r_exit, r_entry, r_exit_price, r_pnl_sol, r_pnl_pct) = replay_tuple(po, &cost);
@@ -1430,7 +1431,7 @@ fn scan_matches_replay_multi_token_frozen_tail() {
             std::slice::from_ref(&loaded(params.clone())),
             std::slice::from_ref(&fingerprint()),
             replay_tokens.clone(),
-            ReplayConfig { as_of, fill_model: fm },
+            ReplayConfig { as_of, fill_model: fm, ..Default::default() },
         );
         let mut replay = ComboAgg::default();
         for po in &replay_out {
@@ -1605,7 +1606,7 @@ fn fold_gives_each_exit_variant_its_own_entry() {
                         std::slice::from_ref(&rule),
                         std::slice::from_ref(&fingerprint()),
                         vec![replay_tok.clone()],
-                        ReplayConfig { as_of, fill_model: fm },
+                        ReplayConfig { as_of, fill_model: fm, ..Default::default() },
                     );
                     let po = replay_out.iter().find(|o| o.mint == corpus_tok.mint);
                     let (r_fired, r_exit, r_entry, _r_exit_price, r_pnl_sol, _) =
@@ -1772,7 +1773,7 @@ fn sweep_ignores_exclusivity_but_the_engine_enforces_it() {
                 mint: Mint::from(replay_tok.mint.as_str()),
                 fp: Box::new(replay_tok.tf.clone()),
                 at: replay_tok.created_at,
-                creator_wallet_hash: None,
+                creator_wallet_hash: None, identity: None,
             },
         );
         fx.iter()
@@ -1789,5 +1790,92 @@ fn sweep_ignores_exclusivity_but_the_engine_enforces_it() {
         buys_under(false),
         vec![a.id, b.id],
         "without the flag both rules stack on the token"
+    );
+}
+
+/// **The copycat guard is NOT enforced by the sweep** (documented divergence D7,
+/// `docs/plans/sweep/sim-parity.md`). It needs a cross-*token* memory read at a given
+/// instant, and the scan judges each token independently in a parallel fan-out — the
+/// same shape that makes D2 strip the caps. `simulate` *does* honor it, because the
+/// replay driver folds every token through one globally time-ordered `EngineState`.
+///
+/// This keeps the gap visible: both mints fire in the sweep; through `reduce` only the
+/// first one does.
+#[test]
+fn sweep_ignores_the_copycat_guard_but_the_engine_enforces_it() {
+    use hunter_engine::event::{Effect, Event, Mint};
+    use hunter_engine::reduce::reduce;
+    use hunter_engine::EngineState;
+
+    let as_of = at(1000.0);
+    let trades =
+        vec![ct(0.0, true, 1.0, 1.0, 100.0), ct(1.0, true, 0.5, 1.05, 100.0)];
+    // Two DIFFERENT mints sharing one (name, symbol) — the copycat shape.
+    let (corpus_a, replay_a) = token("origA", trades.clone());
+    let (corpus_b, replay_b) = token("copyB", trades);
+    let identity = hunter_engine::token_identity_hash("Moon Dog", "MDOG");
+    let fp = fingerprint();
+    let pricing = pricing();
+
+    let rule = LoadedRule {
+        params: RuleParams { take_profit: Some(500.0), ..RuleParams::default() },
+        max_concurrent_tokens: 5,
+        ..loaded(RuleParams::default())
+    };
+    let compiled = CompiledRule::compile(&rule);
+
+    // Sweep: each token is scanned on its own → BOTH fire, un-deduplicated.
+    for tok in [&corpus_a, &corpus_b] {
+        let series = build_series_with_flow(
+            tok,
+            columns_for(&compiled),
+            &sparse_grid_for(&compiled),
+            as_of,
+            None,
+        );
+        let outcome = scan(&tok.trades, &series, &compiled, &pricing);
+        assert!(outcome.fired, "sweep fires every same-identity token independently ({})", tok.mint);
+    }
+
+    // Engine: one shared fold → the second mint is disarmed, not bought.
+    let buys_under = |guard: bool| -> Vec<String> {
+        let mut state = EngineState::new();
+        state.set_dupe_guard_policy(guard, hunter_engine::dupe_guard::DEFAULT_WINDOW_HOURS);
+        reduce(
+            &mut state,
+            Event::RulesReloaded {
+                rules: vec![rule.clone()].into(),
+                fps: vec![fp.clone()].into(),
+            },
+        );
+        let mut bought = Vec::new();
+        for t in [&replay_a, &replay_b] {
+            let fx = reduce(
+                &mut state,
+                Event::TokenCreated {
+                    mint: Mint::from(t.mint.as_str()),
+                    fp: Box::new(t.tf.clone()),
+                    at: t.created_at,
+                    creator_wallet_hash: None,
+                    identity,
+                },
+            );
+            if fx.iter().any(|e| matches!(e, Effect::SubmitBuy { .. })) {
+                bought.push(t.mint.clone());
+            }
+        }
+        bought
+    };
+    assert_eq!(
+        buys_under(true),
+        vec![replay_a.mint.clone()],
+        "reduce blocks the copycat; the sweep does not"
+    );
+    // Non-vacuity: with the guard off the same fold buys both, so the single entry
+    // above is the guard and not a cap or a fingerprint quirk.
+    assert_eq!(
+        buys_under(false),
+        vec![replay_a.mint.clone(), replay_b.mint.clone()],
+        "guard off ⇒ both same-identity mints are entered"
     );
 }

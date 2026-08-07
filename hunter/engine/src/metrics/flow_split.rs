@@ -11,24 +11,7 @@ use serde_json::Value;
 use super::flow_window::{in_window, window_key};
 use super::{MetricId, Side, TradeLite, Ts};
 
-/// FNV-1a offset basis (64-bit).
-const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-/// FNV-1a prime (64-bit).
-const FNV_PRIME: u64 = 0x100000001b3;
-
-#[inline]
-fn fnv1a_byte(mut h: u64, b: u8) -> u64 {
-    h ^= u64::from(b);
-    h.wrapping_mul(FNV_PRIME)
-}
-
-#[inline]
-fn fnv1a_bytes(mut h: u64, bytes: &[u8]) -> u64 {
-    for &b in bytes {
-        h = fnv1a_byte(h, b);
-    }
-    h
-}
+use crate::hash::{fnv1a_byte, fnv1a_bytes, FNV_OFFSET};
 
 /// Stable hash of an ordered instruction-label sequence (exact-order match
 /// semantics, same as the fingerprint matcher's `ix_labels`). Labels are

@@ -333,11 +333,15 @@ pub enum Event {
     /// first-slot axes are still unknown — resolved by [`Event::FirstSlotSettled`]).
     /// `creator_wallet_hash` feeds the volume-flow classifier (V1+); `None` when
     /// the creator address is unknown (old logs / lake rows without a creator).
+    /// `identity` is the `(name, symbol)` key the duplicate-identity guard matches
+    /// on ([`crate::identity::token_identity_hash`]); `None` when either half is
+    /// blank or the producer has no metadata for the mint.
     TokenCreated {
         mint: Mint,
         fp: Box<TokenFingerprint>,
         at: Ts,
         creator_wallet_hash: Option<u64>,
+        identity: Option<crate::identity::IdentityHash>,
     },
     /// The token's creation slot closed; the two first-slot SOL sums are now known.
     /// Resolves any fingerprint whose identity includes a first-slot axis (plan §2.2).
@@ -503,6 +507,13 @@ pub enum DisarmReason {
     Unsatisfiable,
     /// Rule paused or stopped — entries off; open positions may still drain.
     Paused,
+    /// A different mint with the same `(name, symbol)` was traded inside the
+    /// duplicate-identity guard's window (`strategy.skip_duplicate_identity`).
+    ///
+    /// Terminal, unlike `exclusive`'s wait: the block lifts only when the window
+    /// expires days later, long past any curve token's life, so staying `Armed`
+    /// would re-ask a fixed question on every tick forever.
+    DuplicateIdentity,
 }
 
 /// A (token, rule) arming transition for the live monitor. Entry/exit are carried

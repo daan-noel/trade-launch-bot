@@ -126,6 +126,10 @@ fn tokens_schema() -> Schema {
         Field::new(col::K_FP_IX_LABELS, DataType::Utf8, true),
         Field::new(col::K_IS_MAYHEM_MODE, DataType::Boolean, false),
         Field::new(col::K_CREATED_AT, DataType::Int64, false),
+        // `Int64`, not `UInt64`: `token_identity_hash` masks to 63 bits precisely so
+        // this column holds the engine's value unchanged, with no bit-casting and no
+        // `-1` trap of the kind the `u64` fingerprint columns above hit.
+        Field::new(col::K_IDENTITY_HASH, DataType::Int64, true),
     ])
 }
 
@@ -453,6 +457,7 @@ impl TradeBuilders {
 #[derive(sqlx::FromRow)]
 struct LakeTokenRow {
     mint_address: String,
+    name: String,
     symbol: String,
     token_program_id: Option<String>,
     initial_buy_sol: Option<f64>,
@@ -496,6 +501,7 @@ async fn export_tokens(pool: &PgPool, root: &Path) -> Result<usize> {
     let mut ix_labels = StringBuilder::new();
     let mut mayhem = BooleanBuilder::new();
     let mut created = Int64Builder::new();
+    let mut identity = Int64Builder::new();
     let mut pending = 0usize;
     let mut total = 0usize;
 
@@ -518,6 +524,7 @@ async fn export_tokens(pool: &PgPool, root: &Path) -> Result<usize> {
                     Arc::new(ix_labels.finish()),
                     Arc::new(mayhem.finish()),
                     Arc::new(created.finish()),
+                    Arc::new(identity.finish()),
                 ],
             )?;
             writer.write(&batch)?;
@@ -526,7 +533,7 @@ async fn export_tokens(pool: &PgPool, root: &Path) -> Result<usize> {
 
     let mut stream = sqlx::query_as::<_, LakeTokenRow>(
         r#"
-        SELECT t.mint_address, t.symbol, t.token_program_id,
+        SELECT t.mint_address, t.name, t.symbol, t.token_program_id,
                t.initial_buy_lamports::float8 / 1e9 AS initial_buy_sol,
                t.cu_limit, t.cu_price, t.is_cashback_enabled,
                ti.first_slot_buy_lamports::float8 / 1e9 AS first_slot_buy_sol,
@@ -547,6 +554,11 @@ async fn export_tokens(pool: &PgPool, root: &Path) -> Result<usize> {
         };
         mint.append_value(&r.mint_address);
         symbol.append_value(&r.symbol);
+        // Hashed HERE, through the one engine hasher — never in SQL, or a lake row
+        // could disagree with the live event about what a token's identity is.
+        identity.append_option(
+            hunter_engine::token_identity_hash(&r.name, &r.symbol).map(|h| h as i64),
+        );
         program.append_option(r.token_program_id.as_deref());
         buy_sol.append_option(r.initial_buy_sol);
         cu_limit.append_option(r.cu_limit);

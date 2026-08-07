@@ -23,7 +23,7 @@ use crate::cap::Cap;
 use crate::deadness::{is_dead_verdict, DEAD_MEANINGFUL_TRADE_SOL};
 use crate::event::{
     ArmedDelta, ArmedStateTag, DisarmReason, Effect, Event, ExitReason, FillFailReason, Mint,
-    Portion, PositionDelta, PositionStatus, RuleId,
+    Portion, PositionDelta, PositionStatus, RuleId, TradeMode,
 };
 use crate::fingerprint::{match_all, MatchPhase};
 use crate::grouping::{TokenFingerprint, LAMPORTS_PER_SOL_F64};
@@ -71,7 +71,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             state.reload(&rules, &fps);
         }
 
-        Event::TokenCreated { mint, fp, at, creator_wallet_hash } => {
+        Event::TokenCreated { mint, fp, at, creator_wallet_hash, identity } => {
             if state.tokens.contains_key(&mint) {
                 return fx; // duplicate creation — idempotent
             }
@@ -82,6 +82,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             let mut token = TokenState {
                 created_at: at,
                 tf: *fp,
+                identity,
                 track,
                 last_meaningful_at: None,
                 first_slot_settled: false,
@@ -161,6 +162,9 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
         }
 
         Event::Tick { now } => {
+            // Expire the copycat guard's memory on event time (self-rate-limited),
+            // so a replay sweeps exactly where live did.
+            state.dupe_guard.prune(now);
             let mints: SmallVec<[Mint; 16]> = state.tokens.keys().cloned().collect();
             for mint in mints {
                 let Some(mut token) = state.tokens.remove(&mint) else { continue };
@@ -434,6 +438,11 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                     TokenState {
                         created_at: at,
                         tf: TokenFingerprint::default(),
+                        // A manual buy can target a mint the engine never armed,
+                        // so there is no metadata to key on here. The guard never
+                        // blocks a manual buy anyway; `None` just means this
+                        // episode records nothing.
+                        identity: None,
                         track,
                         last_meaningful_at: None,
                         first_slot_settled: true,
@@ -458,6 +467,13 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                 rule,
                 ArmState::EntryPending { intent: intent.clone(), position, attempts: 1, lamports },
             );
+            // A manual episode is never *blocked* by the copycat guard (the
+            // operator's call always wins — manual already bypasses entry
+            // conditions and caps), but it is still a trade on that identity, so
+            // it is remembered against the bot's future entries. Manual buys are
+            // real-money only by construction (`POST /api/positions/manual-buy`
+            // spends the live wallet), so they land in the real memory.
+            state.record_entry_identity(TradeMode::Real, &mint, at);
             fx.push(Effect::SubmitBuy {
                 intent: intent.clone(),
                 rule,
@@ -724,19 +740,27 @@ fn evaluate_token(
         )
     });
     for rule_id in rule_ids {
-        let (decision, buy_lamports, cap, max_total) = {
+        let (decision, buy_lamports, cap, max_total, trade_mode) = {
             let arm = &token.arms[&rule_id];
             // Manual episodes resolve via their per-position exit rule; a
             // tracked-only manual arm has neither ⇒ no decision (no auto-exit).
             let Some(c) = state.rule_for(rule_id, arm_position(arm)) else { continue };
+            // Only an armed rule can be copycat-blocked, so the guard lookup stays
+            // off the held/in-flight paths entirely.
+            let dupe_blocked = matches!(arm, ArmState::Armed)
+                && state.dupe_guard.blocks(c.trade_mode, token.identity, mint, now);
             (
-                decide_arm(c, rule_id, arm, token, dead, now),
+                decide_arm(c, rule_id, arm, token, dead, dupe_blocked, now),
                 c.buy_amount_lamports,
                 c.concurrent_cap,
                 c.max_total,
+                c.trade_mode,
             )
         };
-        apply_decision(state, token, mint, rule_id, decision, buy_lamports, cap, max_total, fx);
+        apply_decision(
+            state, token, mint, rule_id, decision, buy_lamports, cap, max_total, trade_mode, now,
+            fx,
+        );
     }
 }
 
@@ -762,6 +786,7 @@ fn decide_arm(
     arm: &ArmState,
     token: &TokenState,
     dead: bool,
+    dupe_blocked: bool,
     now: Ts,
 ) -> ArmDecision {
     match arm {
@@ -774,6 +799,13 @@ fn decide_arm(
             }
             if c.entry_unsatisfiable(&token.track, now) {
                 return ArmDecision::Disarm(DisarmReason::Unsatisfiable);
+            }
+            // Copycat guard: a different mint with this token's `(name, symbol)`
+            // was traded inside the window. A **Disarm**, not `exclusive`'s wait —
+            // the block outlives any curve token, so waiting would re-ask a fixed
+            // question on every tick until the token dies.
+            if dupe_blocked {
+                return ArmDecision::Disarm(DisarmReason::DuplicateIdentity);
             }
             // Exclusivity: any other arm holding the token (in-flight buy/sell
             // included, manual arms included) blocks this entry. Stays `Armed` so it
@@ -833,6 +865,8 @@ fn apply_decision(
     buy_lamports: u64,
     cap: Cap,
     max_total: Cap,
+    trade_mode: TradeMode,
+    now: Ts,
     fx: &mut Effects,
 ) {
     match decision {
@@ -855,6 +889,11 @@ fn apply_decision(
             let position = state.next_position();
             let intent = state.next_intent(rule_id, mint.clone());
             state.positions.insert(position, PositionRef { mint: mint.clone(), rule: rule_id });
+            // Remember the identity at the ATTEMPT, not at the fill: a copycat
+            // that reverts our buy is exactly the trap worth not re-entering, and
+            // an entry that never fills still proves this identity looked
+            // tradeable. `rollback_entry` deliberately does not undo this.
+            state.dupe_guard.record(trade_mode, token.identity, mint, now);
             token.arms.insert(
                 rule_id,
                 ArmState::EntryPending {

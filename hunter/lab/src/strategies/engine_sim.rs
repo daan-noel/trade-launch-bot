@@ -32,6 +32,7 @@ use trading_core::strategies::kernel::CostModelKind;
 use trading_core::strategies::paper_fill::FillModel;
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 use trading_core::storage::repositories::rule_repo::RuleRepo;
+use trading_core::storage::repositories::settings_repo::AppSettings;
 use trading_core::storage::repositories::token_repo::TokenRepo;
 use trading_core::strategies::fingerprint_axes::{fp_to_engine, observed_axes, rule_to_loaded};
 
@@ -87,6 +88,21 @@ pub struct EngineSimRequest {
     /// top-trade subset used during grouped sweep).
     #[serde(default)]
     pub mints: Option<Vec<String>>,
+    /// Copycat guard (`strategy.skip_duplicate_identity`) for this run.
+    ///
+    /// **Absent ⇒ inherit the box's `app_settings` value**, so simulate measures the
+    /// rule under the same policy live is trading it under — flip the toggle in
+    /// Settings and the next backtest reflects it, no second knob to remember.
+    /// Present ⇒ override for this run only (A/B the guard without touching live).
+    ///
+    /// Whichever way it resolves is stamped on the run's meta
+    /// (`SimMeta::dupe_guard_window_hours`), because the toggle changes the PnL: two
+    /// results of the same rule are only comparable if you can see which policy each
+    /// was booked under. That is the lesson of the cost-model constants, which were
+    /// *not* persisted per run and silently made every pre-2026-07-28 result
+    /// incomparable.
+    #[serde(default)]
+    pub skip_duplicate_identity: Option<bool>,
 }
 
 /// An inline, unsaved rule for a dry-run simulate — the "how it trades" columns
@@ -130,6 +146,12 @@ pub async fn spawn_engine_simulation(
     let fill_model = req.fill_model;
     let cost_model = req.cost_model;
     let mints = req.mints.clone();
+    // Resolve the copycat guard ONCE, here, into `Some(window_hours)` = on. The
+    // request wins if it said anything; otherwise the box's own `app_settings`
+    // decides — the same row the co-hosted live bin reads (one `DATABASE_URL` per
+    // host in the compose), so "the toggle" means one thing on a given machine.
+    let dupe_guard_window_hours =
+        resolve_dupe_guard(req.skip_duplicate_identity, &app_state.core.settings());
     let target = match resolve_target(&app_state, &req).await {
         Ok(t) => t,
         Err(resp) => return resp,
@@ -166,7 +188,16 @@ pub async fn spawn_engine_simulation(
         let _guard = Guard { state: app_state.clone(), run_id, cancel: cancel.clone() };
 
         let outcome = match run_engine_backtest(
-            &app_state, &target, since, until, fill_model, cost_model, mints, cancel, cell,
+            &app_state,
+            &target,
+            since,
+            until,
+            fill_model,
+            cost_model,
+            mints,
+            dupe_guard_window_hours,
+            cancel,
+            cell,
         )
         .await
         {
@@ -181,12 +212,30 @@ pub async fn spawn_engine_simulation(
             until,
             fill_model,
             cost_model,
+            dupe_guard_window_hours,
             outcome,
             persist,
         );
     });
 
     HttpResponse::Accepted().json(serde_json::json!({ "started": true, "run_id": run_id }))
+}
+
+/// Resolve the copycat guard for one simulate run into `Some(window_hours)` (on) or
+/// `None` (off).
+///
+/// `override_on` is the request's `skip_duplicate_identity`: `None` ⇒ inherit the
+/// box's `app_settings`, so a backtest measures the rule under the same policy live
+/// is trading it under. A stored window of `0` falls back to the default rather than
+/// producing a guard that reads as on while remembering nothing — the same defensive
+/// read `DupeGuard::set_policy` does, because a `0` can reach here from an older
+/// binary's row even though the settings API now rejects it.
+fn resolve_dupe_guard(override_on: Option<bool>, settings: &AppSettings) -> Option<u64> {
+    let on = override_on.unwrap_or(settings.skip_duplicate_identity);
+    on.then(|| match settings.duplicate_identity_window_hours {
+        0 => hunter_engine::dupe_guard::DEFAULT_WINDOW_HOURS,
+        h => h,
+    })
 }
 
 /// Resolve `req` into a concrete [`ResolvedTarget`] (loading the rule + its
@@ -293,6 +342,8 @@ async fn run_engine_backtest(
     fill_model: FillModel,
     cost_model: CostModelKind,
     mints: Option<Vec<String>>,
+    // Copycat guard, already resolved by the caller: `Some(window_hours)` = on.
+    dupe_guard_window_hours: Option<u64>,
     cancel: Arc<std::sync::atomic::AtomicBool>,
     progress_cell: Arc<crate::state::job_progress::ProgressCell>,
 ) -> Result<Vec<Value>> {
@@ -368,6 +419,9 @@ async fn run_engine_backtest(
                 tf: observed_axes(t, None, None),
                 trades,
                 creator_wallet_hash,
+                // Straight off the PG `tokens` row through the ONE engine hasher —
+                // the same value the live producer stamps on `TokenCreated`.
+                identity: hunter_engine::token_identity_hash(&t.name, &t.symbol),
             })
         })
         .collect();
@@ -396,7 +450,13 @@ async fn run_engine_backtest(
                 replay_tokens,
                 // Defaults to worst-case (what live paper books); the request can select
                 // `first`/`signal` for the fill-sensitivity reprice (honest bottom line).
-                ReplayConfig { as_of: Utc::now(), fill_model },
+                ReplayConfig {
+                    as_of: Utc::now(),
+                    fill_model,
+                    skip_duplicate_identity: dupe_guard_window_hours.is_some(),
+                    duplicate_identity_window_hours: dupe_guard_window_hours
+                        .unwrap_or(hunter_engine::dupe_guard::DEFAULT_WINDOW_HOURS),
+                },
             );
             outcomes
                 .iter()
@@ -612,4 +672,44 @@ fn classify_error(e: &anyhow::Error) -> SimOutcome {
 
 fn err(message: &str) -> serde_json::Value {
     serde_json::json!({ "error": message })
+}
+
+#[cfg(test)]
+mod dupe_guard_resolution {
+    use super::*;
+
+    fn settings(on: bool, hours: u64) -> AppSettings {
+        AppSettings {
+            skip_duplicate_identity: on,
+            duplicate_identity_window_hours: hours,
+            ..AppSettings::default()
+        }
+    }
+
+    /// The whole point of inheriting: flip the toggle in Settings and the next
+    /// backtest measures the rule under the policy live is trading it under, with no
+    /// second knob to remember.
+    #[test]
+    fn an_absent_request_field_inherits_the_app_setting() {
+        assert_eq!(resolve_dupe_guard(None, &settings(true, 168)), Some(168));
+        assert_eq!(resolve_dupe_guard(None, &settings(false, 168)), None);
+    }
+
+    /// ...but a run can still A/B the guard without touching what live is doing.
+    #[test]
+    fn an_explicit_request_field_overrides_the_app_setting_both_ways() {
+        assert_eq!(resolve_dupe_guard(Some(true), &settings(false, 72)), Some(72));
+        assert_eq!(resolve_dupe_guard(Some(false), &settings(true, 72)), None);
+    }
+
+    /// A stored `0` predates the API's rejection of it. Honoring it literally would
+    /// produce a run that reports the guard as ON while remembering nothing — a
+    /// backtest that silently measures the wrong policy.
+    #[test]
+    fn a_zero_window_falls_back_to_the_default_instead_of_remembering_nothing() {
+        assert_eq!(
+            resolve_dupe_guard(Some(true), &settings(true, 0)),
+            Some(hunter_engine::dupe_guard::DEFAULT_WINDOW_HOURS)
+        );
+    }
 }

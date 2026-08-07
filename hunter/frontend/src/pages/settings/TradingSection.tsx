@@ -5,6 +5,7 @@ import {
   SettingsPanel,
   SettingsPanelIntro,
   SettingsRows,
+  ToggleRow,
 } from './SettingsPrimitives';
 
 /** Smallest percent that survives the API's `Math.round(pct * 100)` as a non-zero
@@ -22,10 +23,14 @@ interface TradingSectionProps {
   setError: (msg: string) => void;
 }
 
+/** Server bound on the copycat guard's memory (1 year); above it the API 400s. */
+const MAX_DUPE_WINDOW_HOURS = 24 * 365;
+
 export function TradingSection({ settings, saving, update, setError }: TradingSectionProps) {
   const [buySlipText, setBuySlipText] = useState('');
   const [sellSlipText, setSellSlipText] = useState('');
   const [maxSolText, setMaxSolText] = useState('');
+  const [dupeWindowText, setDupeWindowText] = useState('');
 
   useEffect(() => {
     setBuySlipText(
@@ -42,6 +47,10 @@ export function TradingSection({ settings, saving, update, setError }: TradingSe
   useEffect(() => {
     setMaxSolText(settings.max_committed_sol != null ? String(settings.max_committed_sol) : '');
   }, [settings.max_committed_sol]);
+
+  useEffect(() => {
+    setDupeWindowText(String(settings.duplicate_identity_window_hours));
+  }, [settings.duplicate_identity_window_hours]);
 
   // A typed percent is honored literally by the backend — no floor is applied on
   // the way in — so `0` (revert on any movement at all) is refused with a 400.
@@ -93,6 +102,19 @@ export function TradingSection({ settings, saving, update, setError }: TradingSe
     if (sol !== settings.max_committed_sol) update({ max_committed_sol: sol });
   }
 
+  // `0` is refused rather than treated as "off": the toggle is the off switch, so a
+  // zero window could only produce a guard that reads as ON while blocking nothing.
+  function commitDupeWindow() {
+    const hours = parseInt(dupeWindowText.trim(), 10);
+    if (!Number.isFinite(hours) || hours < 1 || hours > MAX_DUPE_WINDOW_HOURS) {
+      setError(`Copycat memory must be between 1 and ${MAX_DUPE_WINDOW_HOURS} hours`);
+      return;
+    }
+    if (hours !== settings.duplicate_identity_window_hours) {
+      update({ duplicate_identity_window_hours: hours });
+    }
+  }
+
   return (
     <SettingsPanel>
       <SettingsPanelIntro
@@ -140,6 +162,26 @@ export function TradingSection({ settings, saving, update, setError }: TradingSe
             onCommit={commitMaxCommittedSol}
           />
         </div>
+        <ToggleRow
+          title="Skip copycat re-launches"
+          description="Don't enter a token whose name + symbol was already traded on a different mint."
+          tip="A scam re-launch keeps the name and icon and only changes the mint, so every per-token gate lets it through. Counts entry attempts, not fills — a buy that reverted still burns the identity. Paper and real keep separate memories, and a manual buy is recorded but never blocked. Turning it on starts from an empty memory (positions from before are not blocked); skips are logged with the mint."
+          checked={settings.skip_duplicate_identity}
+          disabled={saving}
+          onChange={(skip_duplicate_identity) => update({ skip_duplicate_identity })}
+        >
+          <NumberField
+            label="Memory (hours)"
+            hint="Default 168 (7 days). Copycats land within hours; a long window bans common names."
+            min={1}
+            max={MAX_DUPE_WINDOW_HOURS}
+            step={1}
+            value={dupeWindowText}
+            disabled={saving || !settings.skip_duplicate_identity}
+            onChange={setDupeWindowText}
+            onCommit={commitDupeWindow}
+          />
+        </ToggleRow>
       </SettingsRows>
     </SettingsPanel>
   );

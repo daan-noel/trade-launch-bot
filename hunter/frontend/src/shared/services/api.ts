@@ -36,6 +36,14 @@ export interface AppSettings {
   gap_replay_on_reconnect: boolean;
   /** Max gap-replay window (seconds); gaps beyond this use a full re-subscribe. Default 300. */
   gap_replay_max_window_secs: number;
+  /** Copycat guard: skip a token whose (name, symbol) was already traded on a
+   *  different mint inside the window. Default false. */
+  skip_duplicate_identity: boolean;
+  /** Copycat-guard memory horizon in hours. Default 168 (7 days); `0` is a 400. */
+  duplicate_identity_window_hours: number;
+  /** RFC3339 instant the copycat guard was first enabled — the floor of its boot
+   *  rebuild, so enabling it starts from an empty memory. Read-only; null = never. */
+  duplicate_identity_since: string | null;
 }
 
 import type { TableRequestBody } from './tableRequest';

@@ -42,6 +42,11 @@ pub struct CorpusToken {
     pub created_at: DateTime<Utc>,
     pub trades: Arc<Vec<CorpusTrade>>,
     pub fp: TokenFingerprint,
+    /// `hunter_engine::token_identity_hash(name, symbol)` from the lake's tokens
+    /// dimension — the copycat key. `None` = blank name/symbol, or a lake exported
+    /// before the column existed (re-run `lake-export`). Only the duplicate-identity
+    /// guard reads it; every other analysis path ignores it.
+    pub identity: Option<u64>,
 }
 
 impl CorpusToken {
@@ -61,6 +66,9 @@ impl CorpusToken {
             created_at,
             fp,
             trades: Arc::new(project_trades(trades)),
+            // PG-sourced corpora carry no tokens-dimension row; the lake path fills
+            // this in `attach_fingerprints`.
+            identity: None,
         }
     }
 }

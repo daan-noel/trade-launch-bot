@@ -29,6 +29,7 @@ use smallvec::SmallVec;
 use hunter_engine::event::{Event, Mint};
 use hunter_engine::grouping::LAMPORTS_PER_SOL_F64;
 use hunter_engine::metrics::flow_split::wallet_hash;
+use hunter_engine::token_identity_hash;
 use hunter_engine::metrics::{Side, TradeLite};
 
 use trading_core::config::constants::MAX_SNIPE_AGE_SECS;
@@ -142,6 +143,9 @@ impl Producer {
             fp: Box::new(tf),
             at,
             creator_wallet_hash,
+            // The copycat key, straight off the create event's metadata — no
+            // extra lookup, no RPC. `None` when either half is blank.
+            identity: token_identity_hash(&token.name, &token.symbol),
         });
         out
     }

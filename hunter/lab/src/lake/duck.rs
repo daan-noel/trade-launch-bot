@@ -755,6 +755,8 @@ fn push_token(
         created_at,
         trades: Arc::new(std::mem::take(trades)),
         fp: TokenFingerprint::default(),
+        // Filled by `attach_fingerprints` from the same tokens-dimension row.
+        identity: None,
     });
 }
 
@@ -765,6 +767,12 @@ fn push_token(
 const FP_COLUMNS: &str = "fp_token_program_id, fp_initial_buy_sol, \
      fp_cu_limit, fp_cu_price, fp_is_cashback_enabled, fp_max_sol_cost, \
      fp_spendable_sol_in, fp_first_slot_buy_sol, fp_first_slot_sell_sol, fp_ix_labels";
+
+/// How many columns [`FP_COLUMNS`] names — the ordinal any column selected *after*
+/// it starts at. Pinned by `fp_column_count_matches_the_select_list`, because a
+/// column added to the list without bumping this would silently decode the next
+/// one at a stale offset (the exact hazard the `FP_COLUMNS` doc warns about).
+const FP_COLUMN_COUNT: usize = 10;
 
 /// Decode a [`FP_COLUMNS`] block starting at ordinal `base` into a grouping
 /// [`TokenFingerprint`].
@@ -789,17 +797,50 @@ fn fp_from_row(row: &duckdb::Row<'_>, base: usize) -> duckdb::Result<TokenFinger
 /// Read the grouping [`TokenFingerprint`] for every staged mint from the `tokens`
 /// dimension into a `mint → fp` map (one query), for [`attach_fingerprints`]. Relies
 /// on `sel_mints` being staged by the caller.
-fn load_fingerprints(conn: &Connection, tokens_lit: &str) -> Result<HashMap<String, TokenFingerprint>> {
-    let sql = format!(
-        "SELECT mint, {FP_COLUMNS} \
-         FROM read_parquet({tokens_lit}) WHERE mint IN (SELECT mint FROM sel_mints)"
-    );
-    let mut stmt = conn.prepare(&sql)?;
+fn load_fingerprints(
+    conn: &Connection,
+    tokens_lit: &str,
+) -> Result<HashMap<String, (TokenFingerprint, Option<u64>)>> {
+    // `identity_hash` rides along with the fingerprint block: same file, same
+    // per-mint row, so it costs no extra scan.
+    //
+    // The tokens dimension is a single file rewritten wholesale by `lake-export`,
+    // so a lake sealed before this column existed simply does not have it and the
+    // extended SELECT fails to bind. That must NOT take every sweep and simulate
+    // down until someone re-exports — so the read falls back to the fingerprint-only
+    // projection with no identity, which is exactly the "guard off" behavior.
+    let select = |with_identity: bool| {
+        let extra = if with_identity { ", identity_hash" } else { "" };
+        format!(
+            "SELECT mint, {FP_COLUMNS}{extra} \
+             FROM read_parquet({tokens_lit}) WHERE mint IN (SELECT mint FROM sel_mints)"
+        )
+    };
+    let (mut stmt, has_identity) = match conn.prepare(&select(true)) {
+        Ok(s) => (s, true),
+        Err(_) => {
+            tracing::warn!(
+                "lake tokens dimension has no `identity_hash` column — the copycat \
+                 guard cannot be backtested until `lake-export` is re-run"
+            );
+            (conn.prepare(&select(false))?, false)
+        }
+    };
     let mut rows = stmt.query([])?;
-    let mut by_mint: HashMap<String, TokenFingerprint> = HashMap::new();
+    let mut by_mint: HashMap<String, (TokenFingerprint, Option<u64>)> = HashMap::new();
     while let Some(row) = rows.next()? {
         let mint: String = row.get(0)?;
-        by_mint.insert(mint, fp_from_row(row, 1)?);
+        let fp = fp_from_row(row, 1)?;
+        // Written as a 63-bit value, so the `i64` round-trips unchanged; a negative
+        // reading could only be corruption and is dropped rather than wrapped into
+        // a bogus identity.
+        let identity: Option<u64> = if has_identity {
+            row.get::<_, Option<i64>>(FP_COLUMN_COUNT + 1)?
+                .and_then(|v| u64::try_from(v).ok())
+        } else {
+            None
+        };
+        by_mint.insert(mint, (fp, identity));
     }
     Ok(by_mint)
 }
@@ -811,7 +852,10 @@ fn attach_fingerprints(conn: &Connection, tokens_lit: &str, tokens: &mut [Corpus
     let mut missing = 0u64;
     for tt in tokens.iter_mut() {
         match by_mint.get(&tt.mint) {
-            Some(fp) => tt.fp = fp.clone(),
+            Some((fp, identity)) => {
+                tt.fp = fp.clone();
+                tt.identity = *identity;
+            }
             None => missing += 1,
         }
     }
@@ -831,6 +875,15 @@ fn micros_to_utc(micros: i64) -> DateTime<Utc> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `identity_hash` is read by ordinal right after the fingerprint block, so a
+    /// column added to `FP_COLUMNS` without bumping the count would silently decode
+    /// the wrong column — exactly the stale-offset bug the `FP_COLUMNS` doc warns
+    /// about.
+    #[test]
+    fn fp_column_count_matches_the_select_list() {
+        assert_eq!(FP_COLUMNS.split(',').count(), FP_COLUMN_COUNT);
+    }
 
     #[test]
     fn sql_str_escapes_quotes() {

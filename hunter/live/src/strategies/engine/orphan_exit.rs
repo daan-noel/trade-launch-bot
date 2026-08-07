@@ -438,6 +438,13 @@ pub fn adopt_holding_into_engine(
             TokenState {
                 created_at,
                 tf: TokenFingerprint::default(),
+                // An adopted row carries no metadata, and this token's
+                // `TokenCreated` is long past — but the copycat guard is not blind
+                // here: `boot::seed_dupe_guard` rebuilds its memory straight from
+                // `strategy_positions ⋈ tokens`, so an adopted position still
+                // blocks copycats. `None` only means a *further* entry on THIS
+                // mint adds nothing the rebuild did not already record.
+                identity: None,
                 track,
                 last_meaningful_at: None,
                 first_slot_settled: true,
@@ -563,6 +570,13 @@ pub fn adopt_buy_submitted_into_engine(
             TokenState {
                 created_at,
                 tf: TokenFingerprint::default(),
+                // An adopted row carries no metadata, and this token's
+                // `TokenCreated` is long past — but the copycat guard is not blind
+                // here: `boot::seed_dupe_guard` rebuilds its memory straight from
+                // `strategy_positions ⋈ tokens`, so an adopted position still
+                // blocks copycats. `None` only means a *further* entry on THIS
+                // mint adds nothing the rebuild did not already record.
+                identity: None,
                 track,
                 last_meaningful_at: None,
                 first_slot_settled: true,

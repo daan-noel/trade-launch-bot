@@ -910,6 +910,7 @@ mod tests {
                 (0..10).map(|i| trade(i * 10, 1.0 + i as f64, 40.0 + i as f64, true, 1.0)).collect(),
             ),
             fp: Default::default(),
+        identity: None,
         };
         let cfg = ScreenConfig::default();
         let plan = screen_plan(&cfg);

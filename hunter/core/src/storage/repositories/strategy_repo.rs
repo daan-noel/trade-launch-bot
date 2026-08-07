@@ -2743,6 +2743,40 @@ impl StrategyRepo {
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
     }
 
+    /// Every `(mint, name, symbol, at)` this mode has taken a position on since
+    /// `floor` — the boot rebuild for the copycat guard
+    /// (`strategy.skip_duplicate_identity`).
+    ///
+    /// **No status filter, deliberately.** An entry that reverted still proves the
+    /// identity was traded, so `EntryFailed` rows count exactly like `Holding` and
+    /// `Closed` ones — the guard's memory is of *attempts*, not fills.
+    ///
+    /// Newest row per mint (`DISTINCT ON`), because the guard only needs each
+    /// mint's most recent attempt to decide whether the identity is still warm.
+    /// The caller hashes `(name, symbol)` through the ONE
+    /// [`hunter_engine::token_identity_hash`] rather than the DB doing it, so a
+    /// seeded identity and a live one can never disagree. Boot-only; `floor`
+    /// bounds it to the guard's window so the scan stays small on the 2vCPU box.
+    pub async fn find_traded_identities(
+        &self,
+        mode: &str,
+        floor: DateTime<Utc>,
+    ) -> anyhow::Result<Vec<(String, String, String, DateTime<Utc>)>> {
+        let rows = sqlx::query_as::<_, (String, String, String, DateTime<Utc>)>(
+            "SELECT DISTINCT ON (p.mint_address) \
+                 p.mint_address, t.name, t.symbol, p.created_at \
+             FROM strategy_positions p \
+             JOIN tokens t ON t.mint_address = p.mint_address \
+             WHERE p.mode = $1 AND p.created_at > $2 \
+             ORDER BY p.mint_address, p.created_at DESC",
+        )
+        .bind(mode)
+        .bind(floor)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     /// Terminal-position counts per (rule, mint) over the given mints — the boot
     /// seed for the re-entry episode cap (plan Ph4): after a restart the engine's
     /// in-RAM episode counters are gone, and without this a re-entry rule would

@@ -315,6 +315,34 @@ check — today: the rule editor's **Max total** and Trader Analysis **Max token
   deliberately did not buy and its trailing stop fires on a peak it never held — the
   exact inverse of the re-anchoring bug the priming rail was built to fix. Detail:
   [docs/plans/strategies/restart-state-restoration.md](docs/plans/strategies/restart-state-restoration.md).
+- **The copycat guard is a global switch with per-mode memory, and it records
+  attempts, not fills.** `strategy.skip_duplicate_identity` (an `app_settings` bool,
+  enforced inside `decide_arm` — not at submit time like `max_committed_sol`, so
+  live-real / live-paper / simulate share the one decision path) refuses an entry when a
+  **different** mint with the same normalized `(name, symbol)` was traded inside
+  `strategy.duplicate_identity_window_hours` (default 168). Four invariants, each of
+  which is a bug if inverted: **(a)** the memory is written by every rule and every
+  manual buy, so the switch is global — a per-rule flag would let one rule silently
+  change another's gate; **(b)** the record is written at the entry *attempt*
+  (`rollback_entry` does not undo it), because a copycat that reverts our buy is the
+  trap worth remembering and confirming a revert takes ~12 s; **(c)** entries carry
+  their mint and only a *different* mint is blocked — recording otherwise poisons the
+  token's own retry ladder; **(d)** paper and real keep separate memories, so a paper
+  experiment can never narrow what the real rules may buy. Blocking is a **`Disarm`**
+  (`DisarmReason::DuplicateIdentity`), not `exclusive`'s wait — the block outlives any
+  curve token. `hunter_engine::token_identity_hash` is the ONE hasher (live producer,
+  lake exporter, replay); a private copy on any side is the bug the module exists to
+  prevent. Every skip is a `warn!` with the mint: a silently skipped entry is
+  indistinguishable from a rule that never fired. The grouped sweep **cannot** honor it
+  (no cross-token state — divergence D7 in
+  [docs/plans/sweep/sim-parity.md](docs/plans/sweep/sim-parity.md)). **Simulate does**:
+  it inherits the same `app_settings` value unless the request overrides it
+  (`EngineSimRequest.skip_duplicate_identity`), and stamps the resolved policy on the
+  run (`SimMeta::dupe_guard_window_hours`) — a backtest whose result depends on
+  ambient state it does not record is how the pre-2026-07-28 cost runs became
+  incomparable. Note `app_settings` is **per database**: co-hosted live+lab share one
+  row (one `DATABASE_URL` in `deploy/hunter.compose.yml`), but EC2 and the workstation
+  do not — `db-incremental-sync.ps1` copies data tables, never settings.
 - **Deferred entry fingerprint gates:** a fingerprint axis whose source data isn't settled at
   `TokenCreated` (`first_slot_{buy,sell}_lamports`) can't match synchronously. The engine arms
   it as `PendingFirstSlot` and resolves it on the `FirstSlotSettled` event (fired when the

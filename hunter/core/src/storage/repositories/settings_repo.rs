@@ -73,6 +73,31 @@ pub mod keys {
     /// a huge backlog. Default 300 s (5 min).
     pub const GAP_REPLAY_MAX_WINDOW_SECS: Setting<u64> =
         Setting::new("ingest.gap_replay_max_window_secs", || 300);
+    /// Skip entering a token whose `(name, symbol)` matches a **different** mint
+    /// the engine already traded inside
+    /// [`DUPLICATE_IDENTITY_WINDOW_HOURS`] — the copycat / re-launch guard. One
+    /// global switch on purpose: the memory it reads is written by every rule and
+    /// every manual buy, so a per-rule flag would let one rule silently change
+    /// another's behavior. Default OFF (no existing box changes behavior on
+    /// upgrade).
+    pub const SKIP_DUPLICATE_IDENTITY: Setting<bool> =
+        Setting::new("strategy.skip_duplicate_identity", || false);
+    /// How long a traded `(name, symbol)` stays blocked, in hours. Default 168
+    /// (7 days): copycats re-launch within hours, while a common name
+    /// (`PEPE`/`MOON`) would accumulate into a permanent ban if this never
+    /// expired. `0` ⇒ the default (a zero window would read as enabled while
+    /// blocking nothing).
+    pub const DUPLICATE_IDENTITY_WINDOW_HOURS: Setting<u64> =
+        Setting::new("strategy.duplicate_identity_window_hours", || {
+            hunter_engine::dupe_guard::DEFAULT_WINDOW_HOURS
+        });
+    /// When the duplicate-identity guard was first switched on (RFC3339). The
+    /// boot rebuild seeds the guard from positions **after** this instant only, so
+    /// enabling it starts from an empty memory instead of retroactively blocking a
+    /// week of history. Written once on the first off→on flip and never reset — a
+    /// brief toggle-off must not wipe the protection. `None` ⇒ never enabled.
+    pub const DUPLICATE_IDENTITY_SINCE: Setting<Option<String>> =
+        Setting::new("strategy.duplicate_identity_since", || None);
 }
 
 /// Global, server-wide settings — the assembled, strongly-typed view of the
@@ -126,6 +151,14 @@ pub struct AppSettings {
     /// Maximum gap-replay window in seconds. Gaps beyond this trigger a clean
     /// re-subscribe instead of replaying a large backlog. Default 300 s.
     pub gap_replay_max_window_secs: u64,
+    /// Copycat guard: skip a token whose `(name, symbol)` was already traded on a
+    /// different mint inside the window. Default false.
+    pub skip_duplicate_identity: bool,
+    /// Copycat-guard memory horizon in hours. Default 168 (7 days).
+    pub duplicate_identity_window_hours: u64,
+    /// RFC3339 instant the copycat guard was first enabled — the floor of the
+    /// boot rebuild. `None` = never enabled.
+    pub duplicate_identity_since: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -155,7 +188,21 @@ impl AppSettings {
             max_committed_sol: pick(map, &keys::MAX_COMMITTED_SOL),
             gap_replay_on_reconnect: pick(map, &keys::GAP_REPLAY_ON_RECONNECT),
             gap_replay_max_window_secs: pick(map, &keys::GAP_REPLAY_MAX_WINDOW_SECS),
+            skip_duplicate_identity: pick(map, &keys::SKIP_DUPLICATE_IDENTITY),
+            duplicate_identity_window_hours: pick(map, &keys::DUPLICATE_IDENTITY_WINDOW_HOURS),
+            duplicate_identity_since: pick(map, &keys::DUPLICATE_IDENTITY_SINCE),
         }
+    }
+
+    /// The floor for the copycat guard's boot rebuild: positions older than this
+    /// are not seeded. `None` (never enabled, or an unparseable stored value) ⇒
+    /// seed nothing, which is what "start from now" means on the very first boot
+    /// after enabling.
+    pub fn duplicate_identity_since_ts(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.duplicate_identity_since
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc))
     }
 }
 

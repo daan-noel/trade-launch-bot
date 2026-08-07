@@ -52,11 +52,19 @@ pub const K_FP_FIRST_SLOT_SELL_SOL: &str = "fp_first_slot_sell_sol";
 pub const K_FP_IX_LABELS: &str = "fp_ix_labels";
 pub const K_IS_MAYHEM_MODE: &str = "is_mayhem_mode";
 pub const K_CREATED_AT: &str = "created_at";
+/// `hunter_engine::token_identity_hash(name, symbol)` — the copycat key, stored as
+/// the hash rather than the raw `name`/`symbol` pair: 8 bytes instead of two
+/// strings, and it is the exact value the engine compares, so a lake row and a
+/// live event cannot disagree. Nullable (`NULL` = blank name or symbol ⇒ no
+/// identity). Always 63-bit, so `Int64` holds it unchanged — see
+/// [`hunter_engine::identity`]. The lab joins back to PG `tokens` when it needs
+/// the human-readable name.
+pub const K_IDENTITY_HASH: &str = "identity_hash";
 
 /// The tokens-dimension columns in writer order (guard-tested against `tokens_schema`).
-pub const TOKEN_WRITE_COLS: [&str; 14] = [
+pub const TOKEN_WRITE_COLS: [&str; 15] = [
     K_MINT, K_SYMBOL, K_FP_TOKEN_PROGRAM_ID, K_FP_INITIAL_BUY_SOL, K_FP_CU_LIMIT,
     K_FP_CU_PRICE, K_FP_IS_CASHBACK_ENABLED, K_FP_MAX_SOL_COST, K_FP_SPENDABLE_SOL_IN,
     K_FP_FIRST_SLOT_BUY_SOL, K_FP_FIRST_SLOT_SELL_SOL, K_FP_IX_LABELS, K_IS_MAYHEM_MODE,
-    K_CREATED_AT,
+    K_CREATED_AT, K_IDENTITY_HASH,
 ];

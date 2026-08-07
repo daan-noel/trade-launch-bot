@@ -29,7 +29,8 @@ use tracing::{info, warn};
 
 use hunter_engine::arm::ArmState;
 use hunter_engine::event::{
-    Effect, Event, FillFailReason, IntentId, LoadedRule, Mint, PositionId, RuleId, TradeMode,
+    ArmedStateTag, DisarmReason, Effect, Event, FillFailReason, IntentId, LoadedRule, Mint,
+    PositionId, RuleId, TradeMode,
 };
 use hunter_engine::fingerprint::Fingerprint as EngineFingerprint;
 use hunter_engine::{reduce, EngineState};
@@ -159,7 +160,7 @@ async fn run_loop(
         trader,
         trade_signals,
         sse_tx,
-        settings,
+        mut settings,
         held_pools,
         boot_gate,
     } = deps;
@@ -227,8 +228,14 @@ async fn run_loop(
     // position at crash time (effects discarded — PG + reapers own open rows).
     boot_recover(&strategy_repo, &recorder, &mut state).await;
 
-    // Adopt PG position rows + re-entry episode counters (see `boot`).
-    let _ = super::boot::adopt_from_db(&strategy_repo, &mut state, &registry).await;
+    // Copycat guard: apply the operator policy BEFORE the adopt pass, so the
+    // rebuild below seeds the memory the guard will actually read.
+    apply_dupe_guard_policy(&mut state, &settings);
+
+    // Adopt PG position rows + re-entry episode counters + copycat-guard memory.
+    // Snapshot the settings first — a `watch::Ref` must never be held across an await.
+    let boot_settings = settings.borrow().clone();
+    let _ = super::boot::adopt_from_db(&strategy_repo, &mut state, &registry, &boot_settings).await;
 
     // Recovery reaper (buy adopt/drop + exit redrive + cleared Holding + ExitStuck
     // bag + stale ExitPending bag-check). Immediate first tick, then every 60 s.
@@ -261,10 +268,20 @@ async fn run_loop(
         "strategy engine loop running (serialized clock tick)"
     );
 
+    // Set when the settings watch fires; drained after the `select!` so re-reading
+    // the channel never overlaps the `&mut` borrow the `changed()` future holds.
+    let mut settings_dirty = false;
+
     loop {
         // A batch of events to fold this iteration (usually one).
         let batch: EventBatch = tokio::select! {
             biased;
+            // Notify, don't poll: the copycat-guard toggle takes effect on the next
+            // decision instead of waiting for a redeploy or a rule edit.
+            Ok(()) = settings.changed() => {
+                settings_dirty = true;
+                EventBatch::none()
+            }
             Some(cmd) = cmd_rx.recv() => {
                 if let EngineCommand::ReloadRules { ack } = cmd {
                     let mut acks = vec![ack];
@@ -297,6 +314,7 @@ async fn run_loop(
                         &registry,
                         &mut state,
                         &mut sink,
+                        &settings,
                     )
                     .await;
                     let _ = ack.send(result);
@@ -370,6 +388,10 @@ async fn run_loop(
             else => break,
         };
 
+        if std::mem::take(&mut settings_dirty) {
+            apply_dupe_guard_policy(&mut state, &settings);
+        }
+
         for event in batch.events {
             if let Some(rec) = recorder.as_ref() {
                 rec.record(&event);
@@ -428,7 +450,20 @@ async fn dispatch(
     for fx in &effects {
         match fx {
             Effect::PositionUpdate(delta) => sink.on_position_update(delta.clone()).await,
-            Effect::ArmedChanged(delta) => sink.on_armed_changed(delta),
+            Effect::ArmedChanged(delta) => {
+                // A skipped entry is a trade that did not happen, and a silent one
+                // is indistinguishable from a rule that simply never fired — the
+                // same blind spot as the 14 h `ping_strategy` shed. Loud, at WARN,
+                // with the mint so the skip can be checked against the chain.
+                if matches!(delta.state, ArmedStateTag::Disarmed(DisarmReason::DuplicateIdentity)) {
+                    warn!(
+                        mint = %delta.mint,
+                        rule = %delta.rule.0,
+                        "entry skipped: copycat guard — this (name, symbol) was already traded on another mint"
+                    );
+                }
+                sink.on_armed_changed(delta)
+            }
             _ => {}
         }
     }
@@ -847,15 +882,32 @@ async fn reseed_from_db(
     registry: &PositionRegistry,
     state: &mut EngineState,
     sink: &mut Sink,
+    settings: &watch::Receiver<AppSettings>,
 ) -> Result<super::EngineReseedReport, String> {
     reload_rules(rule_repo, fp_repo, strategy_repo, registry, state, sink).await?;
-    let adopt = super::boot::adopt_from_db(strategy_repo, state, registry).await;
+    // Snapshot before the await — a `watch::Ref` is not held across one.
+    let snapshot = settings.borrow().clone();
+    let adopt = super::boot::adopt_from_db(strategy_repo, state, registry, &snapshot).await;
     Ok(super::EngineReseedReport {
         rules: state.rules.len(),
         holdings_adopted: adopt.holdings,
         buy_submitted_adopted: adopt.buy_submitted,
         episodes_seeded: adopt.episodes,
     })
+}
+
+/// Push the operator's copycat-guard policy into the engine.
+///
+/// Not an `Event`: it is a switch, not a market input (see
+/// [`EngineState::set_dupe_guard_policy`]). Called at boot and again whenever the
+/// settings `watch` channel changes, so flipping the toggle in the UI takes effect
+/// on the next decision — no redeploy, no rule edit.
+fn apply_dupe_guard_policy(state: &mut EngineState, settings: &watch::Receiver<AppSettings>) {
+    let (enabled, window_hours) = {
+        let s = settings.borrow();
+        (s.skip_duplicate_identity, s.duplicate_identity_window_hours)
+    };
+    state.set_dupe_guard_policy(enabled, window_hours);
 }
 
 /// Replay the recent event-log tail to re-arm tokens that had no open position at

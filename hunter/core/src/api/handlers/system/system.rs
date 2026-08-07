@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use actix_web::{web, HttpResponse, Responder};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use crate::config::constants::{
@@ -79,7 +80,18 @@ pub struct UpdateSettingsRequest {
     pub gap_replay_on_reconnect: Option<bool>,
     /// Maximum gap-replay window in seconds. Gaps beyond this use a full re-subscribe.
     pub gap_replay_max_window_secs: Option<u64>,
+    /// Copycat guard: skip a token whose `(name, symbol)` was already traded on a
+    /// different mint inside the window. Flipping this **on** for the first time
+    /// also stamps `duplicate_identity_since` (see [`update_settings`]).
+    pub skip_duplicate_identity: Option<bool>,
+    /// Copycat-guard memory horizon in hours. `0` is a 400 — the enabled flag is
+    /// how you turn the guard off, so a zero window would only mean "on but inert".
+    pub duplicate_identity_window_hours: Option<u64>,
 }
+
+/// Upper bound on the copycat guard's memory, in hours (1 year). Past this the
+/// "rolling window" is just "forever" with an unbounded map behind it.
+const DUPLICATE_IDENTITY_WINDOW_MAX_HOURS: u64 = 24 * 365;
 
 pub async fn get_settings(state: web::Data<Arc<CoreState>>) -> impl Responder {
     HttpResponse::Ok().json(state.settings())
@@ -103,6 +115,8 @@ pub async fn update_settings(
         max_committed_sol,
         gap_replay_on_reconnect,
         gap_replay_max_window_secs,
+        skip_duplicate_identity,
+        duplicate_identity_window_hours,
     } = req.into_inner();
 
     if let Some(pu) = &price_unit {
@@ -112,6 +126,26 @@ pub async fn update_settings(
             });
         }
     }
+
+    // A zero window is refused rather than silently defaulted: `skip_duplicate_identity`
+    // is the off switch, so `0` here could only produce a guard that reads as ON
+    // while blocking nothing — the false-green shape this codebase keeps paying for.
+    if let Some(h) = duplicate_identity_window_hours {
+        if h == 0 || h > DUPLICATE_IDENTITY_WINDOW_MAX_HOURS {
+            return HttpResponse::BadRequest().json(ErrorBody {
+                error: format!(
+                    "duplicate_identity_window_hours must be 1..={DUPLICATE_IDENTITY_WINDOW_MAX_HOURS} \
+                     (use skip_duplicate_identity=false to disable the guard)"
+                ),
+            });
+        }
+    }
+
+    // First off→on flip stamps the "start from now" floor. Written once and never
+    // reset: a brief toggle-off must not wipe the memory the guard has built, and
+    // after one window has elapsed the stamp stops mattering anyway.
+    let stamp_since = skip_duplicate_identity.unwrap_or(false)
+        && state.settings().duplicate_identity_since.is_none();
 
     // Slippage is NOT clamped — a typed value is persisted exactly as sent, so
     // nothing sits between the number the operator typed and the number the trader
@@ -183,6 +217,16 @@ pub async fn update_settings(
     if let Some(v) = gap_replay_max_window_secs {
         entries.push((keys::GAP_REPLAY_MAX_WINDOW_SECS.key, json!(v)));
     }
+    if let Some(v) = skip_duplicate_identity {
+        entries.push((keys::SKIP_DUPLICATE_IDENTITY.key, json!(v)));
+    }
+    if let Some(v) = duplicate_identity_window_hours {
+        entries.push((keys::DUPLICATE_IDENTITY_WINDOW_HOURS.key, json!(v)));
+    }
+    let since_stamp = stamp_since.then(|| Utc::now().to_rfc3339());
+    if let Some(v) = &since_stamp {
+        entries.push((keys::DUPLICATE_IDENTITY_SINCE.key, json!(v)));
+    }
 
     // Persist (one transaction) first; only publish to the watch channel if the
     // write succeeds, so a failed save never leaves the runtime diverged from the
@@ -238,6 +282,15 @@ pub async fn update_settings(
         }
         if let Some(v) = gap_replay_max_window_secs {
             s.gap_replay_max_window_secs = v;
+        }
+        if let Some(v) = skip_duplicate_identity {
+            s.skip_duplicate_identity = v;
+        }
+        if let Some(v) = duplicate_identity_window_hours {
+            s.duplicate_identity_window_hours = v;
+        }
+        if let Some(v) = &since_stamp {
+            s.duplicate_identity_since = Some(v.clone());
         }
         updated = Some(s.clone());
     });

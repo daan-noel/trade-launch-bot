@@ -234,6 +234,7 @@ fn to_replay_tokens(tokens: &[CorpusToken]) -> Vec<ReplayToken> {
             tf: uniform_tf(),
             trades: Arc::clone(&t.trades),
             creator_wallet_hash: None,
+            identity: t.identity,
         })
         .collect()
 }
@@ -322,7 +323,7 @@ fn run_with_fill(
     let r = rule(1, params);
     let replay_tokens = to_replay_tokens(tokens);
     let as_of = Utc::now();
-    let outcomes = run_replay(&[r], &[fp], replay_tokens, ReplayConfig { as_of, fill_model: fill });
+    let outcomes = run_replay(&[r], &[fp], replay_tokens, ReplayConfig { as_of, fill_model: fill, ..Default::default() });
 
     let trade_map: HashMap<String, Arc<Vec<lab::sweep::projection::CorpusTrade>>> =
         tokens.iter().map(|t| (t.mint.clone(), Arc::clone(&t.trades))).collect();

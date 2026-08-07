@@ -9,8 +9,10 @@
 use std::collections::BTreeMap;
 
 use crate::arm::{ArmState, CompiledRule};
+use crate::dupe_guard::DupeGuard;
 use crate::event::{IntentId, LoadedRule, ManualExit, Mint, PositionId, RuleId, TradeMode};
 use crate::fingerprint::{Fingerprint, FingerprintId};
+use crate::identity::IdentityHash;
 use crate::grouping::TokenFingerprint;
 use crate::metrics::flow_split::FlowPatterns;
 use crate::metrics::track::TokenTrack;
@@ -40,6 +42,11 @@ pub struct TokenState {
     pub created_at: Ts,
     /// Observed creation axes (first-slot fields filled in at `FirstSlotSettled`).
     pub tf: TokenFingerprint,
+    /// The `(name, symbol)` key the duplicate-identity guard matches on. `None` =
+    /// unknown or blank ⇒ this token never blocks and is never recorded. Set once
+    /// from `TokenCreated`; a boot-adopted position must be given it explicitly
+    /// (see `live`'s adopt path) or the guard silently forgets across a restart.
+    pub identity: Option<IdentityHash>,
     pub track: TokenTrack,
     /// Newest *meaningful*-trade time (drives the deadness quiet clock). `None`
     /// until a meaningful trade prints — callers fall back to `created_at`.
@@ -88,6 +95,10 @@ pub struct EngineState {
     pub tokens: BTreeMap<Mint, TokenState>,
     /// Open positions' owners, for manual-close targeting.
     pub positions: BTreeMap<PositionId, PositionRef>,
+    /// Rolling memory of recently-traded `(name, symbol)` identities — the
+    /// copycat guard. Disabled (and empty) unless the operator turns it on via
+    /// [`set_dupe_guard_policy`](Self::set_dupe_guard_policy).
+    pub dupe_guard: DupeGuard,
     /// Monotonic intent sequence (determinism: never random).
     intent_seq: u64,
     /// Monotonic position id sequence.
@@ -130,6 +141,40 @@ impl EngineState {
                 self.manual_rules.remove(&position);
             }
         }
+    }
+
+    /// Apply the operator's duplicate-identity policy.
+    ///
+    /// **Not an `Event`, deliberately.** It is an operator switch, not a market
+    /// input: it carries no timestamp, must not appear in the event log's decision
+    /// stream, and a replay sets it from its own run config rather than inheriting
+    /// whatever live happened to have on. Live calls this whenever `app_settings`
+    /// changes (the settings `watch` channel); the lab replay calls it once.
+    pub fn set_dupe_guard_policy(&mut self, enabled: bool, window_hours: u64) {
+        self.dupe_guard.set_policy(enabled, window_hours);
+    }
+
+    /// Remember an entry attempt's identity. Called for **every** entry the fold
+    /// submits — bot or manual, filled or not — because a copycat that reverts our
+    /// buy is exactly the trap worth not re-entering. A no-op while the guard is
+    /// off (see [`DupeGuard::record`]).
+    pub fn record_entry_identity(&mut self, mode: TradeMode, mint: &Mint, at: Ts) {
+        let identity = self.tokens.get(mint).and_then(|t| t.identity);
+        self.dupe_guard.record(mode, identity, mint, at);
+    }
+
+    /// Seed one already-traded identity at boot (the PG rebuild). Same memory as
+    /// [`record_entry_identity`](Self::record_entry_identity), but the token need
+    /// not be tracked — a restart rebuilds from `strategy_positions`, not from
+    /// whatever tokens happen to be live.
+    pub fn seed_traded_identity(
+        &mut self,
+        mode: TradeMode,
+        identity: Option<IdentityHash>,
+        mint: &Mint,
+        at: Ts,
+    ) {
+        self.dupe_guard.record(mode, identity, mint, at);
     }
 
     /// Whether a fingerprint (by id) has a first-slot axis, i.e. its full identity

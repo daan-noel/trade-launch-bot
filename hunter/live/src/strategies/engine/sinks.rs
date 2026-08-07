@@ -1110,6 +1110,7 @@ fn disarm_reason_str(r: DisarmReason) -> &'static str {
         DisarmReason::Migrated => "migrated",
         DisarmReason::Unsatisfiable => "unsatisfiable",
         DisarmReason::Paused => "paused",
+        DisarmReason::DuplicateIdentity => "duplicate_identity",
     }
 }
 

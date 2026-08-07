@@ -80,6 +80,10 @@ pub struct ReplayToken {
     pub trades: Arc<Vec<CorpusTrade>>,
     /// Creator wallet FNV hash for volume-flow classification (`None` when unknown).
     pub creator_wallet_hash: Option<u64>,
+    /// `(name, symbol)` identity hash for the duplicate-identity guard — read from
+    /// the lake's tokens dimension, the same value the live producer computes.
+    /// `None` ⇒ this token never blocks and is never recorded.
+    pub identity: Option<u64>,
 }
 
 /// One replayed position's realized lifecycle — the engine-neutral outcome the
@@ -135,11 +139,30 @@ pub struct ReplayConfig {
     /// [`FillModel::WorstCase`] (what live paper books); other models exist only for
     /// fill-sensitivity analysis (flow-scalper lever #2).
     pub fill_model: FillModel,
+    /// Duplicate-identity (copycat) guard — mirrors live's
+    /// `strategy.skip_duplicate_identity`. **Off by default**, so an existing
+    /// backtest is unchanged.
+    ///
+    /// Faithful here, unlike in the grouped sweep: the replay merges every token
+    /// into ONE globally time-ordered stream over ONE `EngineState`, so "traded
+    /// inside the last N hours of sim time" evaluates exactly as it does live.
+    /// (A "forever" horizon could not have been: forever-live means "since the bot
+    /// started", forever-in-a-corpus means "since the window opened" — two
+    /// different gates. The rolling window is what makes this backtestable.)
+    pub skip_duplicate_identity: bool,
+    /// Guard memory horizon in hours; ignored unless
+    /// [`skip_duplicate_identity`](Self::skip_duplicate_identity) is set.
+    pub duplicate_identity_window_hours: u64,
 }
 
 impl Default for ReplayConfig {
     fn default() -> Self {
-        Self { as_of: Utc::now(), fill_model: FillModel::WorstCase }
+        Self {
+            as_of: Utc::now(),
+            fill_model: FillModel::WorstCase,
+            skip_duplicate_identity: false,
+            duplicate_identity_window_hours: hunter_engine::dupe_guard::DEFAULT_WINDOW_HOURS,
+        }
     }
 }
 
@@ -244,6 +267,12 @@ struct Builder {
 impl Replay {
     fn new(rules: &[LoadedRule], fps: &[EngineFingerprint], cfg: ReplayConfig) -> Self {
         let mut state = EngineState::new();
+        // The copycat guard is an operator policy, not a market input — set from the
+        // run config, exactly as the live loop sets it from `app_settings`.
+        state.set_dupe_guard_policy(
+            cfg.skip_duplicate_identity,
+            cfg.duplicate_identity_window_hours,
+        );
         reduce(
             &mut state,
             Event::RulesReloaded { rules: rules.to_vec().into(), fps: fps.to_vec().into() },
@@ -284,6 +313,7 @@ impl Replay {
                     fp: Box::new(t.tf.clone()),
                     at: t.created_at,
                     creator_wallet_hash: t.creator_wallet_hash,
+                    identity: t.identity,
                 },
                 sig: None,
                 trade_idx: None,
@@ -973,7 +1003,7 @@ mod tests {
             created_at: at(created),
             tf: tf(),
             trades: Arc::new(trades),
-            creator_wallet_hash: None,
+            creator_wallet_hash: None, identity: None,
         }
     }
 

@@ -67,6 +67,29 @@ condition `eval`, `CompiledRule::compile`.
    quiet-tail clock resolve — a stage / remainder `held` that would only fire past
    the per-token cut stays `Open` in the sweep. Legacy (no scale-out) keeps full D1.
    Re-measure staged ladders through simulate when the close lives in the quiet tail.
+- **D7 · Duplicate-identity (copycat) guard absent in sweep (2026-08-07).** The
+   `strategy.skip_duplicate_identity` gate refuses an entry when a **different** mint
+   with the same `(name, symbol)` was traded inside a rolling window
+   (`hunter_engine::dupe_guard`). `reduce` enforces it, so live **and `simulate`** both
+   honor it — the replay driver merges every token into one globally time-ordered
+   stream over one `EngineState`, which is exactly what a cross-token memory needs.
+   The sweep has no such stream (D2's problem again: independent per-token scans in a
+   rayon fan-out), so it **cannot** reproduce "was this identity traded in the last N
+   hours *at this instant*". A sweep therefore reports the un-deduplicated upper bound:
+   every copycat that the live gate would have skipped still fires. The faithful
+   approximation available to a per-token scan is a *static* precomputed
+   "first-of-identity in the corpus" flag — not implemented; a sweep knob would have to
+   say plainly that it approximates. **Re-run a promoted combo through simulate
+   before trusting its PnL under the guard** — simulate inherits the box's
+   `strategy.skip_duplicate_identity` unless the request overrides it, and stamps the
+   resolved policy on the run (`SimMeta::dupe_guard_window_hours`, `null` = off) so
+   two results are comparable. A sweep run carries no such stamp because the sweep
+   never applies the gate at all.
+   Guard: `sweep_ignores_the_copycat_guard_but_the_engine_enforces_it`.
+
+   Note the horizon choice is what makes simulate faithful at all: a "forever" memory
+   means "since the bot started" live and "since the corpus window opened" in a
+   backtest — two different gates. The rolling window is the same rule in both.
 - **D3 · Sketched quantiles.** Persisted sweep quantiles come from a 64-bucket DDSketch
    (~15% rel. error); `simulate` and the sweep drill-in compute exact ones. **Ranking is
    unaffected** — `score` is exact. O(1) memory per combo is the point.

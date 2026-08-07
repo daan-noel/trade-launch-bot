@@ -69,6 +69,10 @@ Engine (`hunter/engine/src/reduce.rs`), unchanged shape except the split:
   properly. Only an exhausted ladder or `Fatal` ends in `Done`, so re-arming
   cannot spin: re-entry has to clear the full gate again, exactly like a first
   entry.
+  The **copycat guard** needs no re-check on this path and must not get one: the
+  entry attempt already recorded its own `(name, symbol)`, and the guard exempts
+  the mint that recorded it — a retry on the same mint is by construction never
+  blocked. Blocking it would mean an entry poisoning its own retry ladder.
 - The pre-submit SOL guards in `dispatch_buy` (balance floor, `max_committed_sol`)
   emit **`Fatal`**, not `Reverted`. The engine's retry is immediate, so `Reverted`
   did not mean "retry when free SOL returns" — it meant re-running the same guard
@@ -292,6 +296,10 @@ Each of these looks like an obvious improvement and is a regression:
   wrong one — `reconcile_bag_onchain` re-pointing recovers 100%. A token-transfer tx
   inside unattended recovery is new risk against a split-bag case with no evidence
   behind it.
+- **Recording the copycat guard at the fill instead of the attempt.** A buy that
+  reverts on a copycat is exactly the trap worth remembering, and confirming a revert
+  is slow (12.3 s measured) — long enough for the next re-launch to arrive. The record
+  is written at `ArmDecision::Enter` and `rollback_entry` deliberately leaves it.
 - **Turning on `exclusive` for the real rules.** Multiple rules per mint is a strategy
   choice and the executor is now safe under it (§2.1). Enabling it would cut coverage
   to hide a bug that is fixed.
