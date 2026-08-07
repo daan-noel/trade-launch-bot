@@ -311,12 +311,22 @@ Bar age is single-sourced in `chartBars.ts`: `tokenCreatedAtSec` + `buildBarEarl
 Because bars are rebuilt whenever interval/group/metric/trades change, the chart must not
 "jump" back to fit-content on every update. The helpers:
 
-- `captureChartViewport` snapshots the current logical/visible range.
-- `restoreChartViewport` / `reapplyChartViewport` re-apply it (the latter double-applies across
+- `captureChartViewport` snapshots the current **logical** range together with the
+  `barsShape` (`{length, first, last}`) it was measured against — the baseline needed to
+  translate it onto the next bar array.
+- `shiftLogicalRange` does that translation. Restoring by **time** is wrong:
+  `timeScale.setVisibleRange` snaps its endpoints onto bar boundaries, so a tight zoom drifted
+  a little on *every* trade until it no longer looked like the window the user set. Logical
+  indices are exact once the array shift is known.
+- The shift is anchored on the **last** bar of the old array, not the first. Bars are appended
+  on the right by live trades but can also be dropped from the left (rolling window,
+  `trimEmptyBars`), and only the last-bar anchor gets that second case right — a first-bar
+  anchor cannot tell "two bars trimmed off the front" from "no change".
+- A window that already sat at the live edge (within `LIVE_EDGE_SLACK_BARS`) is shifted by the
+  appended count so it keeps following new trades; a scrolled-back window stays exactly put.
+- `restoreChartViewport` / `reapplyChartViewport` apply it (the latter double-applies across
   a `requestAnimationFrame` because lightweight-charts re-lays-out on the next frame).
-- `barsSignature` (`"count:firstTime:lastTime"`) detects when the bar array's **shape** changed;
-  on a shape change the viewport is restored by **time** rather than logical index so it lands
-  correctly. On first mount the chart `fitContent()`s once, then preserves the user's view.
+- On first mount the chart `fitContent()`s once, then preserves the user's view.
 
 ### 12b. Vertical (price) scale — manual Y zoom is sticky (`dualPriceScaleSync.ts`)
 
@@ -334,10 +344,26 @@ churn on every trade and every SOL/USD tick.
 
 The rule, mirroring lightweight-charts' own semantics:
 
+- **The library's own `autoScale` option is the authority.** lightweight-charts clears it
+  inside `PriceScale.scaleTo` (its axis scale gesture) and sets it in `PriceScale.reset`
+  (axis double-click), so `priceScale(id).options().autoScale === false` *is* the record of
+  who owns the axis. `syncManualFromChart` latches `manualPriceZoom` from it before every
+  re-arm. The one thing it must discount is our **own** mirror write: `setVisibleRange` also
+  clears `autoScale`, so the mirrored scale id goes into `ourAutoScaleOff` and its `false`
+  is not read as user intent.
 - A pointer-down inside an axis gutter (hit-tested against `priceScale(id).width()`)
-  followed by a drag sets a sticky `manualPriceZoom`. The gesture's **origin** is the
-  signal — inferring it from "only one scale's range moved" misfires whenever a body pan
-  leaves the flow line flat, which would freeze Y on an ordinary horizontal drag.
+  followed by a drag latches the same flag. Kept as a second signal because the hit-test
+  catches the gesture a frame earlier — but it is **not** sufficient on its own: it sees only
+  a drag that *starts* in a gutter, so it missed pinch/touch scaling and any chart whose
+  container rect does not line up with the axis (the position-detail modal). The gesture's
+  **origin** is still the right signal for the hit-test — inferring it from "only one scale's
+  range moved" misfires whenever a body pan leaves the flow line flat, which would freeze Y
+  on an ordinary horizontal drag.
+- The flag lives in a **ref owned by the component**, passed in as `opts.manualZoom`, not in
+  the sync closure. The chart is destroyed and rebuilt on any `loading`/`error`/empty flip
+  (`showChart` is a dep of the create effect), and a closure-local flag handed the axis back
+  to autoScale on the way through. It is cleared only when `id`/`groupingKey` changes, i.e.
+  when the axis means something else.
 - `attachDualPriceScaleSync` returns a handle, not a bare disposer:
   **`rearm()`** re-fits unless the user holds manual control (use for any data-driven
   refit), **`reset()`** drops manual control and re-fits (only for changes to what an axis

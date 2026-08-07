@@ -4,6 +4,7 @@ import { Checkbox } from 'components/ui/Checkbox';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { PinIcon } from 'components/ui/icons';
+import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import { Pagination, DEFAULT_PAGE_SIZE } from './Pagination';
 import { parseNumericPredicate, type FilterSpec } from './numericFilter';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
@@ -403,6 +404,13 @@ export function DataTable<R>({
   const [pinsCollapsed, setPinsCollapsed] = useState(() =>
     tableId ? getTablePrefs(tableId).pinsCollapsed ?? false : false,
   );
+  // Pinned-row visibility — the other half of the pair above. Collapsing moves the
+  // pinned rows back into the paged body; *hiding* takes them out of both places, so
+  // the page reads as if nothing were pinned. The pins themselves are untouched
+  // either way, and the section header stays so the toggle is always reachable.
+  const [pinsHidden, setPinsHidden] = useState(() =>
+    tableId ? getTablePrefs(tableId).pinsHidden ?? false : false,
+  );
   const [search, setSearch] = useState('');
   const [colFiltersMap, setColFiltersMap] = useState<Record<string, string>>({});
   const [visibleCols, setVisibleCols] = useState<Set<string>>(() =>
@@ -506,12 +514,13 @@ export function DataTable<R>({
           pageSize,
           sortKeys,
           pinsCollapsed,
+          pinsHidden,
           filtersOpen: showFilterRow,
         }),
       PREFS_PERSIST_MS,
     );
     return () => window.clearTimeout(id);
-  }, [tableId, pageSize, sortKeys, pinsCollapsed, showFilterRow]);
+  }, [tableId, pageSize, sortKeys, pinsCollapsed, pinsHidden, showFilterRow]);
 
   // Drop sort levels for columns that disappeared or never accepted sort
   // (stale localStorage / renamed keys), so the next click is primary again.
@@ -960,10 +969,15 @@ export function DataTable<R>({
   // never shows twice. Kept as its own array so `pageRows`/`processed` — and every
   // callback that reads them — stay untouched; the dedup is display-only.
   const pinnedDisplay = pinning.pinnedRows;
-  const pinsOpen = !pinsCollapsed;
-  // The body only hides a pinned row while the section that re-shows it is open.
-  // Collapsed, the row renders in its normal paged position instead of vanishing.
-  const hidePinnedInBody = pinningEnabled && pinsOpen;
+  // Two independent toggles on the section header, in precedence order:
+  //   hidden   → pinned rows render nowhere (section empty, body filtered).
+  //   collapsed→ section empty, rows fall back to their natural paged position.
+  //   neither  → section shows them, body skips its duplicates.
+  const pinsHiddenActive = pinningEnabled && pinsHidden;
+  const pinsOpen = !pinsCollapsed && !pinsHiddenActive;
+  // The body drops a pinned row when the section re-shows it (open) or when the row
+  // is meant to be gone entirely (hidden) — never when merely collapsed.
+  const hidePinnedInBody = pinningEnabled && (pinsOpen || pinsHiddenActive);
   const pageBodyCount = hidePinnedInBody
     ? pageRows.reduce((n, r) => {
         const k = rowKeyRef.current(r);
@@ -1218,31 +1232,42 @@ export function DataTable<R>({
                     )}
                     colSpan={colCount}
                   >
-                    <button
-                      type="button"
-                      aria-expanded={pinsOpen}
-                      title={pinsOpen ? 'Collapse pinned rows' : 'Expand pinned rows'}
-                      onClick={() => setPinsCollapsed((v) => !v)}
-                      className="flex items-center gap-1.5 font-sans text-[10px] font-semibold uppercase tracking-wider text-primary/75 transition-colors hover:text-primary"
-                    >
-                      <svg
-                        className={cn(
-                          'size-3 shrink-0 transition-transform duration-150',
-                          pinsOpen && 'rotate-90',
-                        )}
-                        viewBox="0 0 20 20"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        aria-expanded={pinsOpen}
+                        // Collapsing is meaningless while the rows are hidden outright —
+                        // the eye is then the only control that changes anything.
+                        disabled={pinsHiddenActive}
+                        title={pinsOpen ? 'Collapse pinned rows' : 'Expand pinned rows'}
+                        onClick={() => setPinsCollapsed((v) => !v)}
+                        className="flex items-center gap-1.5 font-sans text-[10px] font-semibold uppercase tracking-wider text-primary/75 transition-colors hover:text-primary disabled:cursor-not-allowed disabled:text-primary/40 disabled:hover:text-primary/40"
                       >
-                        <polyline points="7,4 13,10 7,16" />
-                      </svg>
-                      <PinIcon className="size-3" />
-                      {pinnedDisplay.length} pinned
-                    </button>
+                        <svg
+                          className={cn(
+                            'size-3 shrink-0 transition-transform duration-150',
+                            pinsOpen && 'rotate-90',
+                          )}
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden
+                        >
+                          <polyline points="7,4 13,10 7,16" />
+                        </svg>
+                        <PinIcon className="size-3" />
+                        {pinnedDisplay.length} pinned
+                      </button>
+                      <VisibilityToggleButton
+                        visible={!pinsHiddenActive}
+                        onToggle={() => setPinsHidden((v) => !v)}
+                        label="pinned rows"
+                        className="h-5 w-5 rounded border-transparent bg-transparent text-primary/75 hover:text-primary [&_svg]:size-3"
+                      />
+                    </div>
                   </td>
                 </tr>
               )}

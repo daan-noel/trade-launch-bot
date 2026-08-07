@@ -245,6 +245,8 @@ export interface TablePrefs {
   sortKeys?: { col: string; dir: 'asc' | 'desc' }[];
   /** Pinned section collapsed (pins themselves live in `tablePins`, untouched). */
   pinsCollapsed?: boolean;
+  /** Pinned rows hidden everywhere — section AND paged body (pins are kept). */
+  pinsHidden?: boolean;
   /** Column-filter row revealed under the header. */
   filtersOpen?: boolean;
 }

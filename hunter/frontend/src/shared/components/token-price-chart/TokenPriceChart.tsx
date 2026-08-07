@@ -26,9 +26,10 @@ import {
 } from 'lib/flow/flowChartData';
 import { attachDualPriceScaleSync, type DualPriceScaleSync } from './dualPriceScaleSync';
 import {
-  barsSignature,
+  barsShape,
   captureChartViewport,
   reapplyChartViewport,
+  type BarsShape,
   type ChartViewport,
 } from './chartViewport';
 import {
@@ -617,23 +618,23 @@ export function TokenPriceChart({
   const visibleViewportRef = useRef<ChartViewport | null>(null);
   const isRestoringViewportRef = useRef(false);
   const mountedSeriesStyleRef = useRef<ChartStyle | null>(null);
-  const prevBarsSignatureRef = useRef<string | null>(null);
+  /** Shape of the bar array currently ON the chart — the baseline a saved logical
+   *  range is translated from when the next `setData` shifts the indices. */
+  const renderedBarsShapeRef = useRef<BarsShape | null>(null);
   const scaleSyncRef = useRef<DualPriceScaleSync | null>(null);
+  /** "The user owns the Y axis" — held OUTSIDE the sync closure so it survives a
+   *  chart teardown/recreate (any `loading`/`error`/empty flip rebuilds the chart,
+   *  and losing the flag there handed the axis straight back to autoScale). */
+  const manualPriceZoomRef = useRef(false);
   /** Non-data inputs that change what the price axes MEAN. Only these justify
    *  dropping a hand-set Y zoom; a new trade never does. */
   const flowScaleResetKeyRef = useRef<string | null>(null);
-  const horzStepRef = useRef(intervalSec);
-  horzStepRef.current = groupMode === 'slot' ? 1 : intervalSec;
-
-  const snapshotVisibleViewport = useCallback(
-    (chart: IChartApi, series: ISeriesApi<'Line' | 'Candlestick'>): ChartViewport | null => {
-      if (shouldFitContentRef.current) return null;
-      const logical = chart.timeScale().getVisibleLogicalRange();
-      if (!logical) return null;
-      return captureChartViewport(series, logical, horzStepRef.current);
-    },
-    [],
-  );
+  const snapshotVisibleViewport = useCallback((chart: IChartApi): ChartViewport | null => {
+    if (shouldFitContentRef.current) return null;
+    const logical = chart.timeScale().getVisibleLogicalRange();
+    if (!logical) return null;
+    return captureChartViewport(logical, renderedBarsShapeRef.current);
+  }, []);
 
   const sortedTrades = useMemo(
     () => [...trades].sort(compareTradesChronologically),
@@ -814,8 +815,11 @@ export function TokenPriceChart({
     if (prevIdRef.current !== id || prevGroupingKeyRef.current !== groupingKey) {
       shouldFitContentRef.current = true;
       visibleViewportRef.current = null;
-      prevBarsSignatureRef.current = null;
+      renderedBarsShapeRef.current = null;
       mountedSeriesStyleRef.current = null;
+      // A different token / bucketing means a different axis — the previous Y
+      // zoom is meaningless, so hand the scale back to autoScale.
+      manualPriceZoomRef.current = false;
       prevIdRef.current = id;
       prevGroupingKeyRef.current = groupingKey;
       setSliderWindow(null);
@@ -869,6 +873,7 @@ export function TokenPriceChart({
 
     const scaleSync = attachDualPriceScaleSync(chart, el, {
       isPaused: () => rangeSelectModeRef.current,
+      manualZoom: manualPriceZoomRef,
     });
     scaleSyncRef.current = scaleSync;
 
@@ -1061,13 +1066,8 @@ export function TokenPriceChart({
       if (shouldFitContentRef.current || isRestoringViewportRef.current || logical == null) {
         return;
       }
-      const series = seriesRef.current;
-      if (!series) return;
-      visibleViewportRef.current = captureChartViewport(
-        series,
-        logical,
-        horzStepRef.current,
-      );
+      if (!seriesRef.current) return;
+      visibleViewportRef.current = captureChartViewport(logical, renderedBarsShapeRef.current);
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(onVisibleLogicalRangeChange);
 
@@ -1142,16 +1142,13 @@ export function TokenPriceChart({
     if (!chart || !showChart || bars.length === 0) return;
 
     const ts = chart.timeScale();
-    const sig = barsSignature(bars);
-    const barsShapeChanged =
-      prevBarsSignatureRef.current != null && prevBarsSignatureRef.current !== sig;
-    prevBarsSignatureRef.current = sig;
+    const nextShape = barsShape(bars);
 
     const existing = seriesRef.current;
     const styleChanged = mountedSeriesStyleRef.current !== style;
 
     if (existing && !styleChanged) {
-      const savedViewport = snapshotVisibleViewport(chart, existing);
+      const savedViewport = snapshotVisibleViewport(chart);
       if (savedViewport) visibleViewportRef.current = savedViewport;
 
       if (style === 'line') {
@@ -1159,10 +1156,11 @@ export function TokenPriceChart({
       } else {
         existing.setData(barsToCandleData(bars, highlightBarTimes));
       }
+      renderedBarsShapeRef.current = nextShape;
 
       if (savedViewport) {
         isRestoringViewportRef.current = true;
-        reapplyChartViewport(ts, savedViewport, barsShapeChanged ? 'time' : 'logical');
+        reapplyChartViewport(ts, savedViewport, bars);
         requestAnimationFrame(() => {
           isRestoringViewportRef.current = false;
         });
@@ -1172,7 +1170,7 @@ export function TokenPriceChart({
 
     const savedViewport =
       existing != null
-        ? snapshotVisibleViewport(chart, existing)
+        ? snapshotVisibleViewport(chart)
         : shouldFitContentRef.current
           ? null
           : visibleViewportRef.current;
@@ -1224,13 +1222,15 @@ export function TokenPriceChart({
       series.setData(barsToCandleData(bars, highlightBarTimes));
     }
 
+    renderedBarsShapeRef.current = nextShape;
+
     if (shouldFitContentRef.current) {
       ts.fitContent();
       shouldFitContentRef.current = false;
       visibleViewportRef.current = null;
     } else if (savedViewport) {
       isRestoringViewportRef.current = true;
-      reapplyChartViewport(ts, savedViewport, barsShapeChanged ? 'time' : 'logical');
+      reapplyChartViewport(ts, savedViewport, bars);
       requestAnimationFrame(() => {
         isRestoringViewportRef.current = false;
       });

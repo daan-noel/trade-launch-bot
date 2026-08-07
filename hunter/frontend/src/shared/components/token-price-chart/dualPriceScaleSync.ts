@@ -43,6 +43,18 @@ export function rearmDualAutoScale(chart: IChartApi) {
   }
 }
 
+/** `false` once the user has scaled this axis by hand. lightweight-charts turns
+ *  its own `autoScale` option off inside `PriceScale.scaleTo` (the axis-drag /
+ *  pinch handler) and back on in `PriceScale.reset` (axis double-click), so this
+ *  is the library's own record of who owns the axis — authoritative in a way a
+ *  gesture hit-test can never be. Defensive about the accessor because the unit
+ *  tests drive a hand-rolled chart double. */
+function readsAsAutoScaled(chart: IChartApi, id: 'left' | 'right'): boolean {
+  const scale = chart.priceScale(id);
+  if (typeof scale?.options !== 'function') return true;
+  return scale.options().autoScale !== false;
+}
+
 export type DualPriceScaleSync = {
   detach: () => void;
   /**
@@ -71,7 +83,16 @@ export type DualPriceScaleSync = {
 export function attachDualPriceScaleSync(
   chart: IChartApi,
   el: HTMLElement,
-  opts?: { isPaused?: () => boolean },
+  opts?: {
+    isPaused?: () => boolean;
+    /**
+     * Where "the user owns the Y axis" is stored. Pass a ref that outlives the
+     * chart so the flag survives a teardown/recreate — the chart is destroyed and
+     * rebuilt on any `loading`/`error`/empty flip, and a closure-local flag would
+     * silently hand the axis back to autoScale on the way through.
+     */
+    manualZoom?: { current: boolean };
+  },
 ): DualPriceScaleSync {
   let lastLeftRange: PriceRange | null = null;
   let lastRightRange: PriceRange | null = null;
@@ -80,7 +101,29 @@ export function attachDualPriceScaleSync(
   /** The pointer went down on a price axis — this gesture scales Y, not time. */
   let axisDragging = false;
   /** The user has hand-set the Y zoom; hold it until an axis double-click. */
-  let manualPriceZoom = false;
+  const manualPriceZoom = opts?.manualZoom ?? { current: false };
+  /** Scales whose `autoScale` WE turned off, by mirroring the other side below.
+   *  Their `false` is our own write and must not read as user intent. */
+  const ourAutoScaleOff = new Set<'left' | 'right'>();
+
+  /** Latch manual control from the library's own autoScale flag. The gesture
+   *  hit-test below only sees a drag that STARTS in an axis gutter, so it misses
+   *  a pinch, a touch scale, and any case where the container rect does not line
+   *  up with the axis (the chart inside the scrolling position-detail modal). */
+  const syncManualFromChart = () => {
+    if (manualPriceZoom.current) return;
+    for (const id of ['left', 'right'] as const) {
+      if (!ourAutoScaleOff.has(id) && !readsAsAutoScaled(chart, id)) {
+        manualPriceZoom.current = true;
+        return;
+      }
+    }
+  };
+
+  const rearmBoth = () => {
+    ourAutoScaleOff.clear();
+    rearmDualAutoScale(chart);
+  };
 
   /** Hit-test against the axis gutters. The gesture's ORIGIN is the only reliable
    *  signal of intent: inferring it from "only one scale's range moved" misfires
@@ -122,14 +165,19 @@ export function attachDualPriceScaleSync(
     }
     syncingScales = true;
     try {
+      // `setVisibleRange` clears autoScale on the mirrored scale — remember that
+      // it was us, so the manual-control detector does not read our own mirror
+      // write as the user having grabbed that axis.
       if (rightChanged) {
         const next = proportionalRange(lastRightRange, right, lastLeftRange);
         chart.priceScale('left').setVisibleRange(next);
+        ourAutoScaleOff.add('left');
         lastLeftRange = next;
         lastRightRange = right;
       } else {
         const next = proportionalRange(lastLeftRange, left, lastRightRange);
         chart.priceScale('right').setVisibleRange(next);
+        ourAutoScaleOff.add('right');
         lastRightRange = next;
         lastLeftRange = left;
       }
@@ -142,6 +190,7 @@ export function attachDualPriceScaleSync(
     if (syncRaf) return;
     syncRaf = requestAnimationFrame(() => {
       syncRaf = 0;
+      syncManualFromChart();
       syncPriceScales();
     });
   };
@@ -150,7 +199,8 @@ export function attachDualPriceScaleSync(
   // and the post-setData viewport restore both land here — so it must not clobber
   // a hand-set Y zoom.
   const onTimeRangeChange = () => {
-    if (!manualPriceZoom) rearmDualAutoScale(chart);
+    syncManualFromChart();
+    if (!manualPriceZoom.current) rearmBoth();
     requestAnimationFrame(capturePriceRanges);
   };
   chart.timeScale().subscribeVisibleLogicalRangeChange(onTimeRangeChange);
@@ -165,7 +215,7 @@ export function attachDualPriceScaleSync(
   };
   const onPointerMoveScale = (e: PointerEvent) => {
     if (e.buttons !== 1) return;
-    if (axisDragging) manualPriceZoom = true;
+    if (axisDragging) manualPriceZoom.current = true;
     scheduleScaleSync();
   };
   // Double-click on a price axis is lightweight-charts' own "reset Y" gesture, so
@@ -175,9 +225,9 @@ export function attachDualPriceScaleSync(
   const onDoubleClickReset = (e: MouseEvent) => {
     const overAxis = isOverPriceAxis(e.clientX);
     requestAnimationFrame(() => {
-      if (overAxis || !manualPriceZoom) {
-        manualPriceZoom = false;
-        rearmDualAutoScale(chart);
+      if (overAxis || !manualPriceZoom.current) {
+        manualPriceZoom.current = false;
+        rearmBoth();
       }
       capturePriceRanges();
     });
@@ -201,13 +251,14 @@ export function attachDualPriceScaleSync(
       el.removeEventListener('dblclick', onDoubleClickReset);
     },
     rearm: () => {
-      if (manualPriceZoom) return;
-      rearmDualAutoScale(chart);
+      syncManualFromChart();
+      if (manualPriceZoom.current) return;
+      rearmBoth();
       requestAnimationFrame(capturePriceRanges);
     },
     reset: () => {
-      manualPriceZoom = false;
-      rearmDualAutoScale(chart);
+      manualPriceZoom.current = false;
+      rearmBoth();
       requestAnimationFrame(capturePriceRanges);
     },
   };

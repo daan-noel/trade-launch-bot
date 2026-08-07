@@ -40,13 +40,20 @@ function fakeElement() {
 function fakeChart() {
   const setAutoScale = vi.fn();
   let onLogicalRangeChange: (() => void) | null = null;
+  /** Mirrors lightweight-charts' own flag: the library clears it inside the axis
+   *  scale gesture and sets it on an axis reset. */
+  const autoScale = { value: true };
   const scale = {
     width: () => AXIS_WIDTH,
     // Static range: syncPriceScales sees no one-sided change and early-outs, so the
-    // manual flag can only come from the gesture hit-test — which is the point.
+    // manual flag can only come from the gesture hit-test or the autoScale flag.
     getVisibleRange: () => ({ from: 1, to: 2 }),
     setVisibleRange: vi.fn(),
-    setAutoScale,
+    setAutoScale: (on: boolean) => {
+      autoScale.value = on;
+      setAutoScale(on);
+    },
+    options: () => ({ autoScale: autoScale.value }),
     applyOptions: vi.fn(),
   };
   const chart = {
@@ -63,6 +70,12 @@ function fakeChart() {
   return {
     chart: chart as unknown as IChartApi,
     setAutoScale,
+    /** Stand-in for lightweight-charts clearing autoScale inside its own axis
+     *  scale gesture — the gesture our pointer hit-test cannot see (pinch, touch,
+     *  or a container rect that does not line up with the axis). */
+    scaleAxisInsideLibrary: () => {
+      autoScale.value = false;
+    },
     /** Stand-in for `setData` / the post-setData viewport restore. */
     emitDataDrivenRangeChange: () => onLogicalRangeChange?.(),
   };
@@ -125,6 +138,22 @@ describe('attachDualPriceScaleSync — manual Y zoom is sticky', () => {
     emitDataDrivenRangeChange();
 
     expect(setAutoScale).toHaveBeenCalledWith(true);
+  });
+
+  it('holds the Y zoom when the library cleared autoScale without a hit-testable drag', () => {
+    const { el } = fakeElement();
+    const { chart, setAutoScale, scaleAxisInsideLibrary, emitDataDrivenRangeChange } =
+      fakeChart();
+    attachDualPriceScaleSync(chart, el);
+
+    // No pointer gesture reaches us — a pinch, a touch scale, or a chart whose
+    // container rect does not line up with the axis (the inspect modal).
+    scaleAxisInsideLibrary();
+    setAutoScale.mockClear();
+    emitDataDrivenRangeChange();
+    emitDataDrivenRangeChange();
+
+    expect(setAutoScale).not.toHaveBeenCalled();
   });
 
   it('releases manual control on an axis double-click, not a body double-click', () => {
