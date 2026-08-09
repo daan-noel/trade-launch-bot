@@ -105,6 +105,14 @@ In-place patch on `strategy_position_update` / `strategy_armed_changed`. Snapsho
 armed rows that collide with open `(rule, mint)` (Waiting must not stick after buy).
 Terminal position SSE is emitted **before** the sink drops registry meta so
 `position_id` / `trade_mode` stay populated; the slice ignores nil/empty ids.
+A position that opens mid-session is hydrated by **deltas alone** — the snapshot's
+triggers are all session edges — so every `strategy_position_update` carries the whole
+entry snapshot (`entry_price` + `entry_sol` + `entry_time`), sourced from `PositionMeta`
+rather than the frame's fill (only the first-entry `Holding` frame has one). A missing
+`entry_time` is invisible in the row and silently drops the chart's entry marker, which
+needs time **and** price together (`buildEventMarkers`). The snapshot is not authoritative
+over a delta here: `record_entry_fill` is spawned, so a snapshot racing that write returns
+the entry columns empty and must carry the prior values forward.
 Ops, Rules live counts, Home open KPI, and StrategyStrip read this store only (no
 parallel Maps). Legacy `LiveTradingPage` / `MonitorPage` are gone — `/positions` and
 `/strategies/armed` redirect to Ops.

@@ -175,7 +175,13 @@ const liveStatusSlice = createSlice({
         if (!row) continue;
         const prev = state.open[row.positionId];
         if (prev?.ruleName && !row.ruleName) row.ruleName = prev.ruleName;
+        // The entry fill reaches SSE from the registry before its PG write settles,
+        // so a snapshot racing that write returns the entry columns still empty —
+        // never let it blank an entry the delta already delivered (the chart's
+        // entry marker needs `entryTime` AND `entryPrice` together).
         if (prev?.entrySol != null && row.entrySol == null) row.entrySol = prev.entrySol;
+        if (prev?.entryTime != null && row.entryTime == null) row.entryTime = prev.entryTime;
+        if (prev?.entryPrice != null && row.entryPrice == null) row.entryPrice = prev.entryPrice;
         nextOpen[row.positionId] = row;
         if (row.ruleId) openKeys.add(armedKey(row.ruleId, row.mint));
       }
@@ -233,8 +239,8 @@ const liveStatusSlice = createSlice({
           mode: d.trade_mode ?? prev?.mode ?? 'real',
           status: d.status,
           entryPrice: d.entry_price ?? prev?.entryPrice ?? null,
-          entrySol: prev?.entrySol ?? null,
-          entryTime: prev?.entryTime ?? null,
+          entrySol: d.entry_sol ?? prev?.entrySol ?? null,
+          entryTime: d.entry_time ?? prev?.entryTime ?? null,
           exitReason: d.exit_reason ?? null,
           needsReview: d.needs_review ?? prev?.needsReview ?? false,
           origin: prev?.origin ?? 'bot',

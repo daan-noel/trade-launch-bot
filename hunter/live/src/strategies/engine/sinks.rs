@@ -566,6 +566,8 @@ impl Sink {
                 scale_stage: 0,
                 token_account: None,
                 entry_price: None,
+                entry_sol: None,
+                entry_time: None,
                 paper_target: None,
                 cashback_enabled: cashback,
                 inflight_intent: None,
@@ -608,6 +610,8 @@ impl Sink {
         self.registry.update(delta.position, |m| {
             m.entry_token_amount = Some(fill.token_amount);
             m.entry_price = Some(fill.price);
+            m.entry_sol = Some(fill.sol);
+            m.entry_time = Some(fill.at);
             m.sold_token_amount = 0;
             m.scale_stage = 0;
             m.paper_target = None;
@@ -1030,12 +1034,15 @@ impl Sink {
         let trade_mode = Some(mode_str(meta.trade_mode).to_string());
         // Registry is updated before SSE on Holding (entry or partial); fall back to
         // the fill price only on a first entry if meta somehow lagged.
-        let entry_price = meta.entry_price.or_else(|| {
-            delta
-                .fill
-                .filter(|_| delta.status == PositionStatus::Holding && delta.reason.is_none())
-                .map(|f| f.price)
-        });
+        // The entry fill is only in `delta` on the first-entry Holding frame, so the
+        // registry is the source and the fill is the lag fallback — all three fields
+        // resolve off the same predicate so they can never disagree.
+        let entry_fill = delta
+            .fill
+            .filter(|_| delta.status == PositionStatus::Holding && delta.reason.is_none());
+        let entry_price = meta.entry_price.or_else(|| entry_fill.map(|f| f.price));
+        let entry_sol = meta.entry_sol.or_else(|| entry_fill.map(|f| f.sol));
+        let entry_time = meta.entry_time.or_else(|| entry_fill.map(|f| f.at));
         let exit_price = delta
             .fill
             .filter(|_| delta.status == PositionStatus::End)
@@ -1074,6 +1081,8 @@ impl Sink {
             status: position_status_str(delta.status).to_string(),
             exit_reason: delta.reason.map(|r| r.label().into_owned()),
             entry_price,
+            entry_sol,
+            entry_time,
             exit_price,
             trade_mode,
             rule_name,

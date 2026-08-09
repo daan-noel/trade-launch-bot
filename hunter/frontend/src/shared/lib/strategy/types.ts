@@ -368,6 +368,12 @@ export interface StrategyPositionUpdateEvent {
   status: string;
   exit_reason?: string | null;
   entry_price?: number | null;
+  /** Entry-fill SOL spent and fill instant (ISO). Present from the entry fill
+   *  onward, so a row hydrated only from deltas can still draw the chart's entry
+   *  marker and print the entry size — the REST snapshot refetches on mount /
+   *  SSE reopen / tab-visible, which a mid-session entry misses entirely. */
+  entry_sol?: number | null;
+  entry_time?: string | null;
   exit_price?: number | null;
   /** `"real"` | `"paper"` when the engine still has the rule loaded. */
   trade_mode?: string | null;

@@ -375,6 +375,11 @@ pub struct PositionMeta {
     /// Persisted wallet token account for the mint (set after entry fill).
     pub token_account: Option<String>,
     pub entry_price: Option<f64>,
+    /// Entry-fill SOL spent and fill instant — set from the same entry fill as
+    /// `entry_price`, so every position SSE frame (not just `Holding`) can carry
+    /// the full entry snapshot the UI charts and sizes from.
+    pub entry_sol: Option<f64>,
+    pub entry_time: Option<chrono::DateTime<chrono::Utc>>,
     /// Paper-only: trigger-trade snapshot for `target_*` (armed signal, distinct
     /// from the worst-case entry fill). Consumed by the sink on `Holding`.
     pub paper_target: Option<PaperTarget>,

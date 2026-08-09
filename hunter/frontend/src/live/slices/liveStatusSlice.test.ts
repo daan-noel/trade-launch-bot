@@ -83,6 +83,63 @@ describe('liveStatusSlice', () => {
     expect(ignored.open.p1?.status).toBe('Holding');
   });
 
+  // The chart's entry marker needs `entryTime` AND `entryPrice`; a position that
+  // opens mid-session is hydrated by deltas alone (the snapshot refetches only on
+  // mount / SSE reopen / tab-visible), so the delta must carry the whole entry.
+  it('delta carries the entry snapshot, and a racing snapshot cannot blank it', () => {
+    let s = reducer(
+      empty,
+      applyPositionDelta({
+        rule_id: 'r1',
+        mint_address: 'm1',
+        position_id: 'p1',
+        status: 'Holding',
+        trade_mode: 'real',
+        entry_price: 1,
+        entry_sol: 0.25,
+        entry_time: '2026-08-09T12:00:00Z',
+      }),
+    );
+    expect(s.open.p1?.entryTime).toBe('2026-08-09T12:00:00Z');
+    expect(s.open.p1?.entrySol).toBe(0.25);
+
+    // A later frame with no entry fields (e.g. a scale-out leg) keeps the entry.
+    s = reducer(
+      s,
+      applyPositionDelta({
+        rule_id: 'r1',
+        mint_address: 'm1',
+        position_id: 'p1',
+        status: 'Holding',
+        trade_mode: 'real',
+        sold_bps: 5000,
+      }),
+    );
+    expect(s.open.p1?.entryTime).toBe('2026-08-09T12:00:00Z');
+
+    // Snapshot taken before `record_entry_fill` settled: entry columns still empty.
+    s = reducer(
+      s,
+      applySnapshot({
+        armed: [],
+        positions: [
+          {
+            id: 'p1',
+            strategy_id: 'generic',
+            rule_id: 'r1',
+            mint_address: 'm1',
+            mode: 'real',
+            status: 'Holding',
+          },
+        ],
+        ruleNames: { r1: 'Alpha' },
+      }),
+    );
+    expect(s.open.p1?.entryTime).toBe('2026-08-09T12:00:00Z');
+    expect(s.open.p1?.entryPrice).toBe(1);
+    expect(s.open.p1?.entrySol).toBe(0.25);
+  });
+
   it('Holding → ExitPending → End removes the row from the open lane', () => {
     let s = reducer(
       empty,

@@ -230,6 +230,13 @@ pub enum SseEvent {
         status: String,
         exit_reason: Option<String>,
         entry_price: Option<f64>,
+        /// Entry-fill economics, carried so a session hydrated purely from deltas
+        /// can draw the chart's entry marker and print the entry size. The REST
+        /// snapshot is the only other source, and it refetches on mount / SSE
+        /// reopen / tab-visible — a position that opens mid-session would otherwise
+        /// have no entry time at all until the next one.
+        entry_sol: Option<f64>,
+        entry_time: Option<chrono::DateTime<chrono::Utc>>,
         exit_price: Option<f64>,
         /// `"real"` | `"paper"` from the frozen position meta (fallback: rule table).
         trade_mode: Option<String>,

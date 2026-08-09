@@ -487,6 +487,8 @@ async fn redrive_orphaned_buy_submitted(
                         status: "BuySubmitted".to_string(),
                         exit_reason: None,
                         entry_price: position.entry_price,
+                        entry_sol: position.entry_sol,
+                        entry_time: position.entry_time,
                         exit_price: None,
                         trade_mode: Some("real".to_string()),
                         rule_name: None,
