@@ -214,13 +214,18 @@ export const ConsoleHistorySection = memo(function ConsoleHistorySection({
   useEffect(() => {
     if (!wantsScroll) return;
     document.getElementById('console-history')?.scrollIntoView({ block: 'start' });
-    const next = new URLSearchParams(params);
-    next.delete('scroll');
-    setParams(next, { replace: true });
-    // Runs once per arrival — `params`/`setParams` change identity on every URL
-    // write, and depending on them would re-scroll on each filter change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wantsScroll]);
+    // Functional form: this fires during the same arrival in which the cohort
+    // hook may also be writing, and a closed-over `params` snapshot here would
+    // resurrect the keys that write had just changed.
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('scroll');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [wantsScroll, setParams]);
 
   return (
     <section id="console-history" className="flex flex-col gap-2">

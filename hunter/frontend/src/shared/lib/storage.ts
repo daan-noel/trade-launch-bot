@@ -50,7 +50,10 @@ export const STORAGE_KEYS = {
    *  `tableCols` was last written, so newly added columns can be told apart from
    *  user-hidden ones. See `getTableKnownCols`. */
   tableKnownCols: `${PREFIX}table.knownCols`,
-  /** Map of `{ [tableId]: { pageSize, sortKeys, pinsCollapsed, filtersOpen } }`. */
+  /** Map of `{ [tableId]: { pageSize, sortKeys, pinsCollapsed, pinsHidden, filtersOpen } }`.
+   *  `setTablePrefs` REPLACES a table's whole entry, so this list is the contract:
+   *  a field added to {@link TablePrefs} must also be written by DataTable's persist
+   *  effect, or it is wiped on the next sort/page change. */
   tablePrefs: `${PREFIX}table.prefs`,
   /** Map of `{ [tableId]: { keys, rows } }` — DataTable pinned rows (keys + a
    *  snapshot of each pinned row so it renders on every page without a refetch). */

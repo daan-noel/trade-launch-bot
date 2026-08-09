@@ -19,6 +19,16 @@ hunter-specific only.
   names, `token_enrichment::ENRICH_SELECT`, the TS `TokenEnrichmentFields` base.
 - **Efficient frontend state.** RTK Query / SSE cache; memoize high-freq ticks (SOL/USD,
   live trades). Build UI from `components/ui/`, `components/table/DataTable`, shared hooks.
+- **The query string is shared state — patch it, never rebuild it.** A page's filters,
+  cohort, selection and deep link all live in ONE `URLSearchParams`, and several hooks
+  write it independently (Console: the page's `position`/`mint`, `useHistoryCohort`'s
+  `h*` keys, the History scroll cleanup). So every write **(a)** deletes/sets only the
+  keys it owns — a fresh `new URLSearchParams()` silently reset every filter on the
+  Console the moment a row modal was closed — and **(b)** takes the functional form
+  `setParams(prev => …, { replace: true })`, so two writes in one tick can't drop each
+  other's keys (and the handler stays stable for memoized children). `new URLSearchParams()`
+  from empty is correct **only** in an href builder (`lib/strategy/nav.ts`), which
+  constructs a link rather than mutating the live URL.
 
 ## Architecture
 

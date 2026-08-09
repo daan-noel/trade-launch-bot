@@ -67,31 +67,47 @@ export function PortfolioPage() {
   const selectedRule = params.get('rule');
   const decayOnly = params.get('decay') === '1';
 
-  const setRange = (r: Range) => {
-    const next = new URLSearchParams(params);
-    next.set('range', r);
-    setParams(next, { replace: true });
-  };
-  const setMode = (m: Mode) => {
-    const next = new URLSearchParams(params);
-    next.set('mode', m);
-    setParams(next, { replace: true });
-  };
-  const selectRule = useCallback(
-    (key: string | null) => {
-      const next = new URLSearchParams(params);
-      if (!key) next.delete('rule');
-      else next.set('rule', key);
-      setParams(next, { replace: true });
+  /** Every URL write here patches `prev` rather than a closed-over snapshot, so
+   *  no writer can resurrect a key another one just changed, and the handlers
+   *  stay referentially stable for the memoized children below. */
+  const patchParams = useCallback(
+    (mutate: (next: URLSearchParams) => void) => {
+      setParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          mutate(next);
+          return next;
+        },
+        { replace: true },
+      );
     },
-    [params, setParams],
+    [setParams],
   );
-  const toggleDecayFilter = useCallback(() => {
-    const next = new URLSearchParams(params);
-    if (decayOnly) next.delete('decay');
-    else next.set('decay', '1');
-    setParams(next, { replace: true });
-  }, [decayOnly, params, setParams]);
+
+  const setRange = useCallback(
+    (r: Range) => patchParams((p) => p.set('range', r)),
+    [patchParams],
+  );
+  const setMode = useCallback(
+    (m: Mode) => patchParams((p) => p.set('mode', m)),
+    [patchParams],
+  );
+  const selectRule = useCallback(
+    (key: string | null) =>
+      patchParams((p) => {
+        if (!key) p.delete('rule');
+        else p.set('rule', key);
+      }),
+    [patchParams],
+  );
+  const toggleDecayFilter = useCallback(
+    () =>
+      patchParams((p) => {
+        if (decayOnly) p.delete('decay');
+        else p.set('decay', '1');
+      }),
+    [decayOnly, patchParams],
+  );
 
   const { data, isLoading, isFetching } = useGetPortfolioPerformanceQuery({ range, mode });
   // B2 series — portfolio spark + decay alerts/Form share one fold with History.
@@ -142,11 +158,9 @@ export function PortfolioPage() {
   const effectiveDecayOnly = decayOnly && decayingCount > 0;
   useEffect(() => {
     if (decayOnly && decayingCount === 0 && trendByRule.size > 0) {
-      const next = new URLSearchParams(params);
-      next.delete('decay');
-      setParams(next, { replace: true });
+      patchParams((p) => p.delete('decay'));
     }
-  }, [decayOnly, decayingCount, trendByRule.size, params, setParams]);
+  }, [decayOnly, decayingCount, trendByRule.size, patchParams]);
 
   const tableRows = useMemo(() => {
     const all = data?.by_rule ?? [];

@@ -428,7 +428,7 @@ export function DataTable<R>({
   // only when a column is actually added or removed. Join with `\0` so
   // `['a','bc']` and `['ab','c']` don't collide.
   const colKeys = useMemo(() => (columns as ColumnDef<unknown>[]).map((c) => c.key), [columns]);
-  const colKeysSig = useMemo(() => colKeys.join(' '), [colKeys]);
+  const colKeysSig = useMemo(() => colKeys.join('\0'), [colKeys]);
   const [internalSelected, setInternalSelected] = useState<string | null>(null);
   const [showColPanel, setShowColPanel] = useState(false);
   // Revealing the filter row is page chrome, so it persists with the table's

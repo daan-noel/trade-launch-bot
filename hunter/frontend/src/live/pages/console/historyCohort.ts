@@ -152,69 +152,89 @@ export function useHistoryCohort(nowMs: number): HistoryCohortApi {
     nowMs,
   ]);
 
+  // Both writers take the functional form and patch `prev`: the Console has
+  // three independent `useSearchParams` writers over one query string (this
+  // cohort, the page's own position/mint deep link, the History scroll
+  // cleanup), so a closed-over snapshot lets two writes in one tick drop each
+  // other's keys. It also keeps `set`/`reset` referentially stable, so a
+  // consumer can depend on them without re-running every render.
+  const patchParams = useCallback(
+    (mutate: (next: URLSearchParams) => void) => {
+      setParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          mutate(next);
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setParams],
+  );
+
   const set = useCallback(
     (patch: Partial<Omit<HistoryCohort, 'seriesRange'>>) => {
-      const next = new URLSearchParams(params);
-      const put = (key: string, val: string | null | undefined) => {
-        if (val == null || val === '') next.delete(key);
-        else next.set(key, val);
-      };
-      if ('range' in patch) {
-        put(OPS_PARAMS.range, patch.range === DEFAULT_RANGE ? null : patch.range);
-        // Leaving custom drops the explicit bounds so they can't linger and
-        // silently re-apply the moment the user picks custom again.
-        if (patch.range !== 'custom') {
-          next.delete(OPS_PARAMS.from);
-          next.delete(OPS_PARAMS.to);
+      patchParams((next) => {
+        const put = (key: string, val: string | null | undefined) => {
+          if (val == null || val === '') next.delete(key);
+          else next.set(key, val);
+        };
+        if ('range' in patch) {
+          put(OPS_PARAMS.range, patch.range === DEFAULT_RANGE ? null : patch.range);
+          // Leaving custom drops the explicit bounds so they can't linger and
+          // silently re-apply the moment the user picks custom again.
+          if (patch.range !== 'custom') {
+            next.delete(OPS_PARAMS.from);
+            next.delete(OPS_PARAMS.to);
+          }
         }
-      }
-      if ('fromIso' in patch) put(OPS_PARAMS.from, patch.fromIso);
-      if ('toIso' in patch) put(OPS_PARAMS.to, patch.toIso);
-      if ('ruleId' in patch) put(OPS_PARAMS.hRule, patch.ruleId);
-      if ('mode' in patch) put(OPS_PARAMS.hMode, patch.mode === 'real' ? null : patch.mode);
-      if ('status' in patch) put(OPS_PARAMS.hStatus, patch.status);
-      if ('exitReason' in patch) {
-        put(OPS_PARAMS.hExit, canonicalizeHistoryExitFilter(patch.exitReason));
-      }
-      if ('lane' in patch) {
-        put(OPS_PARAMS.hLane, patch.lane);
-        // The bar's exact-status dropdown and the lane tiles both narrow by
-        // status; letting both stand would silently intersect to an empty
-        // cohort ("Open" ∩ "End"), which reads as "no trades" rather than as a
-        // contradiction. Last one clicked wins.
-        if (patch.lane) next.delete(OPS_PARAMS.hStatus);
-      }
-      if ('status' in patch && patch.status) next.delete(OPS_PARAMS.hLane);
-      if ('outcome' in patch) put(OPS_PARAMS.hOutcome, patch.outcome);
-      if ('migrated' in patch) {
-        // Explicit `'0'`, not `put`'s empty-means-delete — `false` is a cohort.
-        put(OPS_PARAMS.hMigrated, patch.migrated == null ? null : patch.migrated ? '1' : '0');
-      }
-      if ('focus' in patch) put(OPS_PARAMS.hFocus, serializeHistoryFocus(patch.focus));
-      setParams(next, { replace: true });
+        if ('fromIso' in patch) put(OPS_PARAMS.from, patch.fromIso);
+        if ('toIso' in patch) put(OPS_PARAMS.to, patch.toIso);
+        if ('ruleId' in patch) put(OPS_PARAMS.hRule, patch.ruleId);
+        if ('mode' in patch) put(OPS_PARAMS.hMode, patch.mode === 'real' ? null : patch.mode);
+        if ('status' in patch) put(OPS_PARAMS.hStatus, patch.status);
+        if ('exitReason' in patch) {
+          put(OPS_PARAMS.hExit, canonicalizeHistoryExitFilter(patch.exitReason));
+        }
+        if ('lane' in patch) {
+          put(OPS_PARAMS.hLane, patch.lane);
+          // The bar's exact-status dropdown and the lane tiles both narrow by
+          // status; letting both stand would silently intersect to an empty
+          // cohort ("Open" ∩ "End"), which reads as "no trades" rather than as a
+          // contradiction. Last one clicked wins.
+          if (patch.lane) next.delete(OPS_PARAMS.hStatus);
+        }
+        if ('status' in patch && patch.status) next.delete(OPS_PARAMS.hLane);
+        if ('outcome' in patch) put(OPS_PARAMS.hOutcome, patch.outcome);
+        if ('migrated' in patch) {
+          // Explicit `'0'`, not `put`'s empty-means-delete — `false` is a cohort.
+          put(OPS_PARAMS.hMigrated, patch.migrated == null ? null : patch.migrated ? '1' : '0');
+        }
+        if ('focus' in patch) put(OPS_PARAMS.hFocus, serializeHistoryFocus(patch.focus));
+      });
     },
-    [params, setParams],
+    [patchParams],
   );
 
   const reset = useCallback(() => {
-    const next = new URLSearchParams(params);
-    for (const key of [
-      OPS_PARAMS.range,
-      OPS_PARAMS.from,
-      OPS_PARAMS.to,
-      OPS_PARAMS.hRule,
-      OPS_PARAMS.hMode,
-      OPS_PARAMS.hStatus,
-      OPS_PARAMS.hExit,
-      OPS_PARAMS.hLane,
-      OPS_PARAMS.hOutcome,
-      OPS_PARAMS.hMigrated,
-      OPS_PARAMS.hFocus,
-    ]) {
-      next.delete(key);
-    }
-    setParams(next, { replace: true });
-  }, [params, setParams]);
+    patchParams((next) => {
+      for (const key of [
+        OPS_PARAMS.range,
+        OPS_PARAMS.from,
+        OPS_PARAMS.to,
+        OPS_PARAMS.hRule,
+        OPS_PARAMS.hMode,
+        OPS_PARAMS.hStatus,
+        OPS_PARAMS.hExit,
+        OPS_PARAMS.hLane,
+        OPS_PARAMS.hOutcome,
+        OPS_PARAMS.hMigrated,
+        OPS_PARAMS.hFocus,
+      ]) {
+        next.delete(key);
+      }
+    });
+  }, [patchParams]);
 
   const active =
     range !== DEFAULT_RANGE ||

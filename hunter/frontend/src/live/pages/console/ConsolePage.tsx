@@ -15,6 +15,7 @@ import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { BuyIcon, LinkIcon, SellIcon, SpinnerIcon } from 'components/ui/icons';
 import { ModeToggle } from 'components/strategy/ModeToggle';
 import { useFlowPatternKeysForRule } from 'hooks/useFlowPatternKeys';
+import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { useSseStatus } from 'hooks/useSseStatus';
 import { useUiToggle } from 'hooks/useUiPrefs';
 import { cn } from 'lib/cn';
@@ -121,16 +122,57 @@ export function ConsolePage() {
   const ruleParam = params.get(OPS_PARAMS.rule);
   const positionParam = params.get(OPS_PARAMS.position);
 
-  const setMode = (m: ModeFilter) => {
-    const next = new URLSearchParams(params);
-    next.set(OPS_PARAMS.mode, m);
-    setParams(next, { replace: true });
-  };
-  const clearDeepLink = () => {
-    const next = new URLSearchParams();
-    next.set(OPS_PARAMS.mode, modeFilter);
-    setParams(next, { replace: true });
-  };
+  /**
+   * Every URL write on this page goes through here. Two rules, both learned the
+   * hard way:
+   *
+   * 1. **Patch, never rebuild.** The whole History cohort (rule, date range,
+   *    mode, status, exit, focus, the strip's tile lenses) lives in these same
+   *    params. A fresh `new URLSearchParams()` here silently reset every filter
+   *    on the page the moment a row modal was closed.
+   * 2. **Read `prev`, not a closed-over snapshot.** The page has three
+   *    independent `useSearchParams` writers (this one, `useHistoryCohort`, the
+   *    History scroll cleanup); the functional form is what stops two writes in
+   *    one tick from dropping each other's key.
+   */
+  const patchParams = useCallback(
+    (mutate: (next: URLSearchParams) => void) => {
+      setParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          mutate(next);
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setParams],
+  );
+
+  const setMode = useCallback(
+    (m: ModeFilter) => patchParams((p) => p.set(OPS_PARAMS.mode, m)),
+    [patchParams],
+  );
+  /** Close the detail modal — drops ONLY the two keys the modal owns. */
+  const clearDeepLink = useCallback(
+    () =>
+      patchParams((p) => {
+        p.delete(OPS_PARAMS.position);
+        p.delete(OPS_PARAMS.mint);
+      }),
+    [patchParams],
+  );
+  /** Drop the cockpit lane scope (`rule` / `status`) an `opsNotifyHref` landed
+   *  with. It narrows Open + Waiting invisibly, so the chip below is the only
+   *  way out — closing a modal must not double as "clear the filters". */
+  const clearCockpitScope = useCallback(
+    () =>
+      patchParams((p) => {
+        p.delete(OPS_PARAMS.rule);
+        p.delete(OPS_PARAMS.status);
+      }),
+    [patchParams],
+  );
 
   const sse = useSseStatus();
   const sseLive = sse === 'open';
@@ -138,6 +180,13 @@ export function ConsolePage() {
   const armedMap = useSelector(selectLiveArmed);
   const openMap = useSelector(selectLiveOpen);
   const snapshotLoading = useSelector((s: RootState) => s.liveStatus.snapshotLoading);
+
+  // Shared RTK cache — the History section already holds this, so naming the
+  // scoped rule costs no extra request.
+  const { data: strategyRules = [] } = useGetStrategyRulesQuery();
+  const scopedRuleLabel = ruleParam
+    ? (strategyRules.find((r) => r.id === ruleParam)?.rule_name || `${ruleParam.slice(0, 8)}…`)
+    : null;
 
   const [closePosition] = useCloseRulePositionMutation();
   const [manualBuy] = useManualBuyPositionMutation();
@@ -805,16 +854,19 @@ export function ConsolePage() {
     : (waitingRows.find((r) => r.key === selectedKey) ?? null);
   const waitingFlowPatternKeys = useFlowPatternKeysForRule(inspectWaiting?.ruleId);
 
-  const selectRow = (key: string | null, mint?: string) => {
-    if (!key) {
-      clearDeepLink();
-      return;
-    }
-    const next = new URLSearchParams(params);
-    next.set(OPS_PARAMS.position, key);
-    if (mint) next.set(OPS_PARAMS.mint, mint);
-    setParams(next, { replace: true });
-  };
+  const selectRow = useCallback(
+    (key: string | null, mint?: string) => {
+      if (!key) {
+        clearDeepLink();
+        return;
+      }
+      patchParams((p) => {
+        p.set(OPS_PARAMS.position, key);
+        if (mint) p.set(OPS_PARAMS.mint, mint);
+      });
+    },
+    [clearDeepLink, patchParams],
+  );
 
   const prefillTrade = (mint: string) => {
     setTradeMint(mint);
@@ -939,9 +991,7 @@ export function ConsolePage() {
       const wait = waitingRows.find((r) => r.key === key);
       if (wait) selectRow(key, wait.mint);
     },
-    // selectRow closes over params — intentional fresh each render
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [attentionRows, openRows, waitingRows, params, modeFilter],
+    [attentionRows, openRows, waitingRows, selectRow],
   );
 
   usePositionArrowNav({
@@ -985,6 +1035,29 @@ export function ConsolePage() {
           <StatTile label="Deployed ◎" value={formatCompact(totalDeployed, 3)} size="sm" />
           <StatTile label="Waiting" value={String(waitingRows.length)} size="sm" />
         </div>
+        {(ruleParam || statusFilter) && (
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-text-dim">
+            <span
+              className="inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-primary"
+              title="Open + Waiting are scoped by this deep link — History has its own filters"
+            >
+              Lane scope:{' '}
+              <span className="font-semibold text-text">
+                {[scopedRuleLabel, statusFilter && (OPEN_STATUS_LABEL[statusFilter] ?? statusFilter)]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </span>
+              <button
+                type="button"
+                className="ml-0.5 text-text-dim hover:text-text"
+                title="Clear the lane scope"
+                onClick={clearCockpitScope}
+              >
+                ✕
+              </button>
+            </span>
+          </div>
+        )}
         {!sseLive && (
           <div className="mt-1">
             <InlineAlert variant="warning">
