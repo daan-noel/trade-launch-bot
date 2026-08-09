@@ -68,6 +68,7 @@ import {
   winRateGradeClass,
 } from 'lib/signedTone';
 import { simulateHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
+import { weightedReturnPct } from 'lib/strategy/runSummary';
 import {
   lamportsToSol,
   ruleRowClass,
@@ -245,8 +246,8 @@ export function RulesView({
     // One percent only when one currency is on screen; with both modes visible
     // the tile shows the split instead of a meaningless blend.
     const returnPctByMode: Record<TradeMode, number | null> = {
-      paper: capitalByMode.paper > 0 ? (closedPnlByMode.paper / capitalByMode.paper) * 100 : null,
-      real: capitalByMode.real > 0 ? (closedPnlByMode.real / capitalByMode.real) * 100 : null,
+      paper: weightedReturnPct(closedPnlByMode.paper, capitalByMode.paper),
+      real: weightedReturnPct(closedPnlByMode.real, capitalByMode.real),
     };
     const mixedModes = returnPctByMode.real != null && returnPctByMode.paper != null;
     const returnPct = mixedModes ? null : returnPctByMode.real ?? returnPctByMode.paper;

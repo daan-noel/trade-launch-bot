@@ -62,6 +62,29 @@ export const goodBad = (v: number | null | undefined, pivot = 0) => {
 const pctOf = (v: number | null | undefined) =>
   v == null || !Number.isFinite(v) ? '—' : `${(v * 100).toFixed(0)}%`;
 
+/**
+ * **The one capital-weighted return** — the TS mirror of
+ * `hunter_core::strategies::kernel::weighted_return_pct`. A percent shown beside a
+ * SOL figure is that SOL over the capital that produced it: never a price ratio
+ * (which charges no execution cost) and never a mean of other percents (buy size
+ * is editable mid-run, so a 0.05 ◎ trade must not outvote a 1.0 ◎ one). Because
+ * the denominator is capital, and capital is positive, the percent can never
+ * disagree in sign with the ◎ it sits next to.
+ *
+ * Deliberately differs from the Rust fn in one way: no capital deployed returns
+ * `null`, not `0`. The backend needs a total-order `f64` to sort a column by; a
+ * tile needs to render `—` rather than assert an exact break-even that was never
+ * measured.
+ */
+export function weightedReturnPct(
+  sumPnlSol: number | null | undefined,
+  sumCapitalSol: number | null | undefined,
+): number | null {
+  if (sumPnlSol == null || !Number.isFinite(sumPnlSol)) return null;
+  if (sumCapitalSol == null || !Number.isFinite(sumCapitalSol) || sumCapitalSol <= 0) return null;
+  return (sumPnlSol / sumCapitalSol) * 100;
+}
+
 // --- wire shape --------------------------------------------------------------
 
 /** One band of a run's metrics — mirrors the Rust `RunMetrics`. */
@@ -124,6 +147,24 @@ export interface RunSummary {
   mtm: RunMetrics;
 }
 
+/**
+ * The percent that belongs beside **this band's** `total_pnl_sol` — the ONE
+ * reader of the capital-weighted-vs-mean choice, so the hero tile and the band
+ * tile below it can never give two answers to the same question.
+ *
+ * `return_pct` is present only where the notional varies between positions (a
+ * live/paper book, whose `buy_amount_lamports` is editable mid-run). A backtest
+ * prices every round trip at one fixed notional, and there the equal-weighted
+ * `mean_pnl_pct` **is** the capital-weighted return — same number, no denominator
+ * to ship. Each band carries its own: realized divides by the closed positions'
+ * capital, MTM by every fired position's, because an open bag's capital is
+ * deployed too.
+ */
+export function bandReturnPct(m: RunMetrics): number | null {
+  if (m.return_pct != null && Number.isFinite(m.return_pct)) return m.return_pct;
+  return Number.isFinite(m.mean_pnl_pct) ? m.mean_pnl_pct : null;
+}
+
 /** A fired position, in the minimal form the client-side builder needs. */
 export interface RunOutcomeRow {
   fired: boolean;
@@ -131,6 +172,11 @@ export interface RunOutcomeRow {
   pnl_sol: number;
   pnl_pct: number;
   holding_secs: number;
+  /** Entry cost of this position, when the surface has it. Supplying it makes the
+   *  fold's `return_pct` capital-weighted — required on a live/paper cohort,
+   *  where buy size varies. Omit on a fixed-notional backtest: `mean_pnl_pct`
+   *  already equals the capital-weighted return there. */
+  entry_sol?: number;
 }
 
 // --- exit-reason vocabulary (SSOT) -------------------------------------------
@@ -552,6 +598,12 @@ function metricsOf(
   const grossWin = closed.reduce((s, r) => (r.pnl_sol > 0 ? s + r.pnl_sol : s), 0);
   const grossLoss = closed.reduce((s, r) => (r.pnl_sol < 0 ? s - r.pnl_sol : s), 0);
   const holds = closed.map((r) => r.holding_secs).filter((v) => Number.isFinite(v) && v > 0);
+  // Capital-weighted return, but only when the rows carry their own entry cost —
+  // that is a live/paper cohort, where buy size varies between positions and an
+  // equal-weighted mean can therefore disagree in sign with the ◎ beside it. A
+  // fixed-notional backtest ships no `entry_sol`, this stays `null`, and
+  // `bandReturnPct` falls back to `mean_pnl_pct`, which is the same number there.
+  const capital = closed.reduce((s, r) => s + (r.entry_sol ?? 0), 0);
   return {
     n_fired: nFired,
     n_open: nOpen,
@@ -561,6 +613,7 @@ function metricsOf(
     open_pnl_sol: openPnl,
     expectancy_sol: n ? total / n : 0,
     mean_pnl_pct: n ? pcts.reduce((s, v) => s + v, 0) / n : 0,
+    return_pct: weightedReturnPct(total, capital),
     median_pnl_pct: median(pcts),
     p90_pnl_pct: n ? [...pcts].sort((a, b) => a - b)[Math.round((n - 1) * 0.9)] : 0,
     // reduce, not `Math.max(...pcts)` — a group can hold thousands of rows, past
@@ -627,12 +680,13 @@ function bandStats(m: RunMetrics, extended = false): SummaryStat[] {
       cls: empty ? undefined : goodBad(m.profit_factor ?? 10, 1),
     },
     { label: 'Median %', value: empty ? '—' : pctText(m.median_pnl_pct), cls: empty ? undefined : pctGradeClass(m.median_pnl_pct) },
-    // Capital-weighted where the surface can supply it (live/paper, where the
-    // buy size can vary between positions), else the equal-weighted mean — which
-    // IS the capital-weighted return under a backtest's fixed notional.
-    m.return_pct != null
-      ? { label: 'Return %', value: empty ? '—' : pctText(m.return_pct), cls: empty ? undefined : pctGradeClass(m.return_pct) }
-      : { label: 'Mean %', value: empty ? '—' : pctText(m.mean_pnl_pct), cls: empty ? undefined : pctGradeClass(m.mean_pnl_pct) },
+    // Value via `bandReturnPct` (the one reader); only the LABEL depends on which
+    // of the two it picked, so the hero tile above can't print a different figure.
+    {
+      label: m.return_pct != null ? 'Return %' : 'Mean %',
+      value: empty ? '—' : pctText(bandReturnPct(m)),
+      cls: empty ? undefined : pctGradeClass(bandReturnPct(m)),
+    },
     { label: 'Best %', value: empty ? '—' : pctText(m.best_pnl_pct), cls: empty ? undefined : pctGradeClass(m.best_pnl_pct) },
     { label: 'Worst %', value: empty ? '—' : pctText(m.worst_pnl_pct), cls: empty ? undefined : pctGradeClass(m.worst_pnl_pct) },
   ];
@@ -650,6 +704,34 @@ function bandStats(m: RunMetrics, extended = false): SummaryStat[] {
     );
   }
   return stats;
+}
+
+/**
+ * A hero PnL tile: the ◎ with its return % inline beside it, one size down.
+ *
+ * The two are **one fact read two ways**, so they share a tile and a tone rather
+ * than sitting in separate columns: `weightedReturnPct` sign-locks them, so a
+ * reader who sees green ◎ and red % has found a bug, not a nuance. Sizing follows
+ * the `Fired` tile's `N open` sub-figure, which is the same pattern — a headline
+ * with a qualifier that must not compete with it.
+ *
+ * The percent is dropped entirely (not rendered as `—`) when the band has no
+ * denominator to divide by: an empty slot reads as "this tile is just the ◎",
+ * while a dash beside a real number reads as a measurement that failed.
+ */
+function pnlHeroTile(label: string, pnlSol: number, pct: number | null): SummaryStat {
+  const tone = goodBad(pnlSol);
+  return {
+    label,
+    node: (
+      <>
+        <span className={tone}>{solText(pnlSol)}</span>
+        {pct != null && (
+          <span className={cn('ml-2 text-base font-bold', tone)}>{pctText(pct)}</span>
+        )}
+      </>
+    ),
+  };
 }
 
 /**
@@ -784,8 +866,8 @@ export function runSummarySections(
   const tone = openTone(openShare);
 
   const hero: SummaryStat[] = [
-    { label: 'PnL realized', value: solText(realized.total_pnl_sol), cls: goodBad(realized.total_pnl_sol) },
-    { label: 'PnL incl. open', value: solText(mtm.total_pnl_sol), cls: goodBad(mtm.total_pnl_sol) },
+    pnlHeroTile('PnL realized', realized.total_pnl_sol, bandReturnPct(realized)),
+    pnlHeroTile('PnL incl. open', mtm.total_pnl_sol, bandReturnPct(mtm)),
     {
       label: 'Win % (real.)',
       value: nClosed === 0 ? '—' : pctOf(realized.win_rate),

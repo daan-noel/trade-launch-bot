@@ -1,6 +1,11 @@
 import { useMemo } from 'react';
 import type { PositionsSummary } from 'types';
-import { runSummarySections, zeroExitCounts, type RunSummary } from 'lib/strategy/runSummary';
+import {
+  runSummarySections,
+  weightedReturnPct,
+  zeroExitCounts,
+  type RunSummary,
+} from 'lib/strategy/runSummary';
 import type { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { SummaryStatsPanel, type SummaryStat } from './SummaryStatsPanel';
 
@@ -96,10 +101,19 @@ function toRunSummary(s: PositionsSummary): RunSummary {
   // counters are zeroed on this band to match the Rust `kernel::run_summary`
   // (see its `mtm_band_reports_no_exit_reasons` test): the band reclassifies the
   // open positions as settled, and they have no exit reason to attribute.
+  // The MTM band needs the MTM band's own denominator. `return_pct` divides by
+  // `closed_entry_sol`; this numerator also carries the open bags' marks, and
+  // their capital is deployed too, so it divides by `total_entry_sol`. Copying
+  // realized's percent across printed the realized return beside a
+  // mark-to-market ◎ — the two headline figures describing different cohorts.
+  const mtmPnlSol = s.total_pnl_sol + s.open_pnl_sol;
+  const mtmReturnPct = weightedReturnPct(mtmPnlSol, s.total_entry_sol);
   const mtm = {
     ...realized,
     ...zeroExitCounts(),
-    total_pnl_sol: s.total_pnl_sol + s.open_pnl_sol,
+    total_pnl_sol: mtmPnlSol,
+    return_pct: mtmReturnPct,
+    mean_pnl_pct: mtmReturnPct ?? 0,
   };
   return { realized, mtm };
 }

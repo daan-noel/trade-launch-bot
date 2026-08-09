@@ -20,6 +20,39 @@ Grain does not change the formula, only the scope of the two sums:
 | One rule / run | `Σ realized_pnl_sol` (closed) | `Σ entry_sol` (closed) | `PositionsSummary::return_pct`, `RuleCounters::return_pct` |
 | A portfolio window | `Σ realized_pnl_sol` | `Σ closed_entry_sol` | `RulePeriodPnlRow::return_pct`, `PortfolioPerformance::return_pct` |
 | Rules TOTAL tile | `Σ total_pnl_sol` across rules | `Σ closed_entry_sol` across rules | derived in `RulesView` |
+| Summary hero, realized band | `realized.total_pnl_sol` | `Σ closed_entry_sol` | `bandReturnPct(realized)` |
+| Summary hero, MTM band | `Σ realized + Σ open marks` | `Σ total_entry_sol` | `bandReturnPct(mtm)` |
+
+## Both hero ◎ figures carry their own percent
+
+Every run-summary hero — Evidence, Simulate, the sweep drill-in, Console History,
+the dry-run card, all of them through `runSummarySections` — prints the return %
+inline beside the ◎ it belongs to. One tile, one tone: sign-lock means green ◎ next
+to a red % is a bug, so they are rendered as one fact rather than two columns a
+reader has to pair up.
+
+**The two hero tiles do not share a denominator, and must not.** `PnL realized`
+divides by the closed positions' capital; `PnL incl. open` also carries the open
+bags' marks in its numerator, and that capital is deployed too, so it divides by
+`total_entry_sol`. The live/paper mapper used to copy `return_pct` onto both bands,
+which printed the realized return beside a mark-to-market ◎ — two headline numbers
+measuring different cohorts under one label.
+
+`bandReturnPct` is the ONE reader of the capital-weighted-vs-mean choice (hero tile
+and band tile below it both go through it, so they cannot print different figures
+for the same band). It prefers `return_pct` and falls back to `mean_pnl_pct`, which
+is correct rather than approximate: `return_pct` exists only where the notional
+varies, and a fixed-notional backtest's equal-weighted mean **is** its
+capital-weighted return. The client-side fold (`runSummaryFromRows`) computes a real
+`return_pct` whenever its rows carry `entry_sol` — Console History's closes do, the
+sweep's `ComboTokenResult` has no entry field at all because there is one notional
+for the whole run.
+
+`weightedReturnPct` in `lib/strategy/runSummary` is the TS mirror of the Rust fn and
+the only place the division is written on the frontend. It differs deliberately in
+one way: no capital deployed returns `null`, not `0` — the backend needs a
+total-order `f64` to sort a column by, a tile needs to render `—` rather than assert
+an exact break-even nobody measured.
 
 ## Why buy size forces this
 
@@ -78,8 +111,11 @@ stopped being; the next person to "fix" the mismatch would have turned it back i
 mean. Label it **"Return %"** in UI, never "Avg %".
 
 Similarly `total_entry_sol` (all entered positions, open ones included) is **not** a
-return denominator — that is `closed_entry_sol`. Dividing by the former understates the
-return by the open positions' share of capital. Both are shipped; the names say which.
+*realized* return denominator — that is `closed_entry_sol`. Dividing by the former
+understates the realized return by the open positions' share of capital. It is the right
+denominator for exactly one thing: a **mark-to-market** return, whose numerator already
+carries those open positions' marks. Both are shipped; match the denominator to what the
+numerator counted.
 
 ## What is deliberately NOT capital-weighted
 

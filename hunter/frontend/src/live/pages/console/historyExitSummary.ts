@@ -26,6 +26,9 @@ export function closeToRunOutcome(c: ClosedTradePoint): RunOutcomeRow {
     pnl_sol: c.pnl_sol,
     pnl_pct: c.entry_sol > 0 ? (c.pnl_sol / c.entry_sol) * 100 : 0,
     holding_secs: c.hold_secs ?? 0,
+    // Live book: buy size varies between closes, so the fold must weight its
+    // headline percent by capital rather than average the per-close percents.
+    entry_sol: c.entry_sol,
   };
 }
 

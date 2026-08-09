@@ -12,6 +12,9 @@
 ```text
 ▾ Summary — collapses the whole shell (hero → charts); nested ▾ Charts still works when open
 1. Hero KPIs + exit mix + focus chips
+   PnL realized / PnL incl. open each print their return % inline beside the ◎,
+   one size down, sharing the ◎'s tone — see pnl-percent-definition.md for the
+   two bands' (different) denominators and why they must not be shared
 2. Details bands (Positions / Exits / Realized / MTM / Capital*)
 3. ▾ Charts — ONE toggle collapsing every chart below
 4. Equity path | Return shape — `grid xl:grid-cols-2` (stack below xl)

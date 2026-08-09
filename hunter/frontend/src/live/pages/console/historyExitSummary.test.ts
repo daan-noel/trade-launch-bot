@@ -75,6 +75,9 @@ describe('historyRunSummaryFromCloses', () => {
       pnl_sol: 0.5,
       pnl_pct: 25,
       holding_secs: 90,
+      // Carried through so the fold weights its return % by capital — a live
+      // book's buy size varies between closes.
+      entry_sol: 2,
     });
   });
 });

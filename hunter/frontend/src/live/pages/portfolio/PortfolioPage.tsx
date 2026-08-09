@@ -7,6 +7,7 @@ import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { ModeToggle } from 'components/strategy/ModeToggle';
 import { LinkIcon } from 'components/ui/icons';
 import { consoleHistoryHref, rulesHref } from 'lib/strategy/nav';
+import { weightedReturnPct } from 'lib/strategy/runSummary';
 import {
   formatSigned,
   formatSignedPct,
@@ -220,7 +221,7 @@ export function PortfolioPage() {
       filtered: isFiltered || effectiveDecayOnly,
       realized,
       capital,
-      returnPct: capital > 0 ? (realized / capital) * 100 : null,
+      returnPct: weightedReturnPct(realized, capital),
       closed,
       rules: rows.length,
     };
