@@ -30,6 +30,11 @@ export function liveTradeToTradeRecord(t: LiveTrade): TradeRecord {
     reserve_sol: t.reserve_sol ?? null,
     reserve_token: t.reserve_token ?? null,
     venue,
+    // The chart classifies vol / non-vol from these labels client-side, so an
+    // appended row that drops them is counted as non-vol AND fails to tag its
+    // wallet — the cumulative pair then diverges from that trade onward, which is
+    // why the overlay was wrong on a still-open position and right once it closed.
+    instruction_labels: t.instruction_labels ?? null,
   };
 }
 

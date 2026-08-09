@@ -58,6 +58,13 @@ pub enum SseEvent {
         reserve_token: Option<f64>,
         /// `"curve"` | `"amm"` — matches `trades.venue` / `TradeRecord.venue`.
         venue: String,
+        /// Ordered ix-structure labels for this trade's tx (see
+        /// `Trade::instruction_labels`). Carried on the live lane because the chart
+        /// classifies vol / non-vol from these labels client-side: an appended row
+        /// without them is silently counted as non-vol AND never tags its wallet,
+        /// so the whole cumulative pair diverges from that point until a refetch.
+        /// Empty when the decoder captured none.
+        instruction_labels: Vec<String>,
         slot: u64,
         timestamp: DateTime<Utc>,
     },

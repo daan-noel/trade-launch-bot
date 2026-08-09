@@ -23,6 +23,19 @@ than the rows under it**. Concretely, that means no per-chart aggregate endpoint
 chart folds one payload client-side, and the table pages the matching population (B1)
 server-side.
 
+### Two chart reads: the cohort, and the row
+
+- **The deck** (`HistoryChartsDeck`) is the **per-cohort** read — equity curve, PnL
+  distribution, hold scatter, rule comparison, calendar, hour heatmap.
+- **The table's toolbar Charts toggle** is the **per-position** read — one token price
+  chart per row on the current page, with that position's own fill markers and a PnL/hold
+  card header. `HistoryTable` rides `TokenTable` rather than the raw `DataTable` for
+  exactly this: the toggle and its lazy grid already live there.
+
+The grid starts closed (no `chartsDefaultOn`) — a card is a per-row trade fetch, and the
+deck is this page's primary read. `existingKeys` is `ALL_TOKEN_INFO_KEYS`, appending
+**nothing**: an appended token column would offer a sort/filter key B1's whitelist rejects.
+
 ### The cohort includes the table's own filters
 
 Three inputs compose into **one** request body (`console/historyRequest.ts`): the URL
@@ -307,12 +320,41 @@ not Rules Control current-run / all-time scores.
 | --- | --- |
 | Window strip | Portfolio spark + realized ◎ + closed/rules counts; entry-failed hint; link to all-trades History |
 | Rule alerts | Named decaying rules (same `foldPnlDeck` verdict as Home) → Rules Evidence; "Show only decaying" toggles `?decay=1` |
-| `RankedPnlBars` | Hero rank by realized PnL; click toggles `?rule=` highlight (synced with table) |
-| Compact table | Rule · PnL · Exp (◎/trade) · Form · N · History — row click highlights only |
+| `RankedPnlBars` | Hero rank by realized PnL; click toggles `?rule=` selection (synced with table) |
+| Compact table | Rule · PnL · Return% · Exp (◎/trade) · Form · N · History — row click selects |
+| Rule drill-down | `?rule=` opens `PortfolioRulePositions` below the table (see next section) |
 | Rule name | → Rules (keep/kill); History link → Console History |
 | Form column | Δ win pp + Δ expectancy ◎; ▼ only when `decaying` |
 
-Trade browsing and the charts deck remain on Console History. Pause/Activate stays on Rules.
+Cross-rule trade browsing and the charts **deck** remain on Console History. Pause/Activate
+stays on Rules.
+
+### The `?rule=` drill-down — `PortfolioRulePositions`
+
+Selecting a rule opens its **closed** trades for the same window, directly under the
+scoreboard: a server-paged `TokenTable` (B1) with the per-row Charts grid and the position
+inspect modal on `?pos=`. It answers "which trades produced that number?" in place, where
+the board's own atom is a rule.
+
+**It must reconcile with the row it drilled from**, so it is scoped to exactly the
+population `rule_period_pnl` aggregates — entered and `status = 'End'`, in the same window.
+The row count is the row's **N**; the PnL ◎ column sums to the row's **PnL**. A drill-down
+that quietly showed a different population (open bags, entry-failed buys) would look
+authoritative while answering a different question — the same failure the one-request-body
+rule exists to prevent above.
+
+That scope is **not a second definition**. The panel builds a `HistoryCohort` with
+`lane: 'closed'` and serializes it through `historyRequest`'s `historyTableBody` — the same
+builder Console History's table, strip, and deck share — so both surfaces agree on what
+"closed in this window" means, and the panel matches the row's own **History** deep link.
+
+| Decision | Why |
+| --- | --- |
+| Columns are `historyColumns` minus `rule` + `status` | Both are constant under this cohort; a column that renders one value everywhere spends width to say nothing and offers a sort that can't reorder |
+| Charts toggle starts **off** (persists per `tableId`) | A card is a per-token trade fetch; selecting a rule must not fire a page of them. Same choice as History, opposite of Rules Evidence, where the chart *is* the read |
+| `nowMs` frozen per mount | A preset window whose `from` slides on every render refetches continuously; the panel unmounts on deselect, so it re-freezes on re-open |
+| `?pos=` dropped when rule / window / mode changes | The id belongs to one population; a modal that silently fails to open reads as a bug |
+| `resetKey` = cohort only (not the table's search/filters) | Changing the population snaps to page 1; a keystroke must not reset the table that produced it |
 
 ## Why the Recent-closed lane is gone
 
@@ -341,7 +383,7 @@ any date opens; the Console page only ever had rows still in the session's live 
 | Filter bar | `live/components/history/HistoryFilterBar.tsx` |
 | Exit mix + counts strip | `live/components/history/HistoryExitSummary.tsx` |
 | Charts deck | `live/components/history/HistoryChartsDeck.tsx` |
-| Server-paged table + detail modal | `live/components/history/HistoryTable.tsx` |
+| Server-paged table + per-row charts + detail modal | `live/components/history/HistoryTable.tsx` |
 | Shared folds + renderers | `shared/components/analytics/` |
 | Home digest + rule alerts | `live/components/home/ReviewDigest.tsx` |
 | B1 handler | `core/src/api/handlers/strategies/rule_positions.rs::portfolio_positions_page` |

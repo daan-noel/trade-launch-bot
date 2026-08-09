@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { classifyFlowTrades, patternKeysFrom } from './flow/classifyFlow';
 import { liveTradeToTradeRecord, tradeDedupeKey } from './liveTrade';
 import type { LiveTrade, TradeRecord } from 'types';
 
@@ -31,6 +32,7 @@ describe('liveTradeToTradeRecord', () => {
     reserve_sol: 30,
     reserve_token: 20_000_000,
     venue: 'curve',
+    instruction_labels: ['Compute Budget: SetComputeUnitLimit', 'Pump.Fun: Buy'],
     slot: 99,
     timestamp: '2026-07-20T12:00:00Z',
   };
@@ -55,5 +57,22 @@ describe('liveTradeToTradeRecord', () => {
   it('dedupe key is signature + leg', () => {
     const row = liveTradeToTradeRecord(sample);
     expect(tradeDedupeKey(row)).toBe('SigAbc:1');
+  });
+
+  it('carries ix labels, so a live-appended row classifies as vol like a refetched one', () => {
+    const row = liveTradeToTradeRecord(sample);
+    expect(row.instruction_labels).toEqual(sample.instruction_labels);
+
+    const keys = patternKeysFrom([sample.instruction_labels!]);
+    const [classified] = classifyFlowTrades(
+      [{ wallet_address: row.wallet_address, sol: row.amount_sol, ix_labels: row.instruction_labels }],
+      { patternKeys: keys },
+    );
+    expect(classified.isVol).toBe(true);
+  });
+
+  it('a frame without labels carries null, never an empty match', () => {
+    const { instruction_labels: _omitted, ...noLabels } = sample;
+    expect(liveTradeToTradeRecord(noLabels).instruction_labels).toBeNull();
   });
 });

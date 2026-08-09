@@ -5,11 +5,23 @@
  * This replaces the old 50-row "Recent closed" lane: that lane could only ever
  * show the tail of the session's SSE buffer, so "what happened last Tuesday" was
  * unanswerable without leaving the page.
+ *
+ * It rides `TokenTable` rather than `DataTable` for ONE reason: the toolbar's
+ * **Charts** toggle. On, each row on the current page gets its token's price
+ * chart below the table, carrying that position's own entry/exit/target markers
+ * and a PnL/hold header — the per-position read, where the deck above is the
+ * per-cohort one. The grid is lazy-mounted, so it costs nothing until toggled.
  */
 
 import { memo, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { DataTable } from 'components/table/DataTable';
+import { TokenTable } from 'components/tokens/TokenTable';
+import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
+import { inspectFromPosition, markerRowOverlay } from 'components/strategy/inspectTarget';
+import {
+  PositionChartCardExtra,
+  positionChartFactsFromRule,
+} from 'components/strategy/PositionChartCardExtra';
 import type { ColumnDef, TableQuery } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
 import { InlineAlert } from 'components/ui/Modal';
@@ -43,6 +55,16 @@ import { applyHistoryClientLenses } from '@live/pages/console/historyPositions';
 
 /** Stable row key — hoisted so DataTable doesn't see a fresh closure each render. */
 const historyPositionRowKey = (r: RulePositionRecord) => r.id;
+
+/** Entry/exit/target fill markers on each chart card — the same overlay the row's
+ *  inspect modal draws, through the one `InspectTarget` adapter. */
+const historyRowOverlay = markerRowOverlay(inspectFromPosition);
+
+/** Hold / PnL / exit-reason facts in the chart card header, so a card reads like
+ *  its table row. Hoisted — a fresh closure would remount every card. */
+const historyChartCardExtra = (r: RulePositionRecord) => (
+  <PositionChartCardExtra facts={positionChartFactsFromRule(r)} />
+);
 
 /**
  * Columns. Keys that filter/sort server-side must match the backend whitelist
@@ -288,12 +310,16 @@ export const HistoryTable = memo(function HistoryTable({
           if results look incomplete.
         </InlineAlert>
       )}
-      <DataTable
+      <TokenTable
         columns={columns}
+        existingKeys={ALL_TOKEN_INFO_KEYS}
         rows={rows}
         rowKey={historyPositionRowKey}
         searchable
         colFilters
+        charts
+        useRowOverlay={historyRowOverlay}
+        renderChartCardExtra={historyChartCardExtra}
         loading={loading}
         serverSide={!clientScanFocus}
         serverTotal={clientScanFocus ? rows.length : total}

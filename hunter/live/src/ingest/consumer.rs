@@ -362,6 +362,9 @@ impl IngestConsumer {
             // Token reserves are raw u64 on the event; chart/REST use f64 amounts.
             reserve_token: e.reserves.virtual_token.map(|v| v as f64),
             venue: venue_str(e.venue).to_string(),
+            // Moved, not cloned — the DB row got its own JSON copy above and the
+            // flow-split hashes were taken by reference, so `e` is done with them.
+            instruction_labels: e.instruction_labels,
             slot: e.slot,
             timestamp: e.block_time,
         });

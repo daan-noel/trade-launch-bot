@@ -2,7 +2,7 @@
 
 Strip accumulated history/status narrative out of the present-tense doc tiers and code
 comments, keeping only what describes the system as it is now. The rule this work serves
-is locked in [../CLAUDE.md](../CLAUDE.md) → *"Present tense only"*; read that first, it is
+is locked in [root CLAUDE.md](../../CLAUDE.md) → *"Present tense only"*; read that first, it is
 the spec.
 
 Everything below is **measured against the tree**, not estimated. Re-measure before
@@ -146,7 +146,7 @@ These are cleanup, not engineering, so they belong to this task:
 
 **Do not** "fix" `pump-trader` / `ingest-laserstream` elsewhere — those are the current,
 intentional Cargo dep keys, and the item was already refuted once as a false premise. See
-[../hunter/docs/roadmap/venue-quote-portability.md](../hunter/docs/roadmap/venue-quote-portability.md).
+[venue-quote-portability.md](../../hunter/docs/roadmap/venue-quote-portability.md).
 
 ---
 

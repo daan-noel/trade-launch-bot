@@ -839,6 +839,11 @@ export interface LiveTrade {
   reserve_sol?: number | null;
   reserve_token?: number | null;
   venue?: 'curve' | 'amm' | string;
+  /** Ordered ix-structure labels — see `TradeRecord.instruction_labels`. Drives the
+   *  chart's vol/non-vol classification, so a frame without them appends a row that
+   *  reads as non-vol and never tags its wallet. Absent on frames from a bin
+   *  predating the field; `[]` when the decoder captured none. */
+  instruction_labels?: string[] | null;
   slot: number;
   timestamp: string;
   /** Snapshot of the mint's stats after this trade; absent if the token isn't

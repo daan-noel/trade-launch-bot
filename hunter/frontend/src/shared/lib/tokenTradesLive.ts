@@ -1,4 +1,4 @@
-import { connectTradeStream } from 'services/sse';
+import { connectTradeStream, onSseReopen } from 'services/sse';
 import type { AppDispatch } from 'store/types';
 import { sharedApi } from 'store/sharedEndpoints';
 import { liveTradeToTradeRecord, tradeDedupeKey } from 'lib/liveTrade';
@@ -13,9 +13,16 @@ const watchCounts = new Map<string, number>();
 const watched = new Set<string>();
 
 let streamClose: (() => void) | null = null;
+let reopenUnsub: (() => void) | null = null;
 let dispatchRef: AppDispatch | null = null;
 let pending: LiveTrade[] = [];
 let flushTimer: number | undefined;
+
+/** Rows kept across a resync refetch. The response is authoritative for
+ *  everything the DbWriter has committed; its tail lags the feed by one flush
+ *  (256 rows / 500 ms), so the newest appended rows are merged back rather than
+ *  replaced away. Anything the response already carries is dropped by dedupe. */
+const RESYNC_TAIL_KEEP = 512;
 
 function compareTradeOrder(a: TradeRecord, b: TradeRecord): number {
   if (a.slot !== b.slot) return a.slot - b.slot;
@@ -42,19 +49,62 @@ function flushPending(): void {
   }
 
   for (const [mint, trades] of byMint) {
-    dispatchRef(
-      sharedApi.util.updateQueryData('getTokenTrades', mint, (draft) => {
-        const existing = new Set(draft.map(tradeDedupeKey));
-        for (const t of trades) {
-          const row = liveTradeToTradeRecord(t);
-          const key = tradeDedupeKey(row);
-          if (existing.has(key)) continue;
-          existing.add(key);
-          draft.push(row);
-        }
-        draft.sort(compareTradeOrder);
-      }),
-    );
+    mergeIntoCache(mint, trades.map(liveTradeToTradeRecord));
+  }
+}
+
+/** Append `rows` to a mint's cached history, dropping ones already there and
+ *  restoring canonical order. The ONE writer into `getTokenTrades` — live
+ *  appends and resync merges must not diverge on dedupe or sort. */
+function mergeIntoCache(mint: string, rows: readonly TradeRecord[]): void {
+  if (rows.length === 0 || !dispatchRef) return;
+  dispatchRef(
+    sharedApi.util.updateQueryData('getTokenTrades', mint, (draft) => {
+      const existing = new Set(draft.map(tradeDedupeKey));
+      for (const row of rows) {
+        const key = tradeDedupeKey(row);
+        if (existing.has(key)) continue;
+        existing.add(key);
+        draft.push(row);
+      }
+      draft.sort(compareTradeOrder);
+    }),
+  );
+}
+
+/**
+ * Refetch every watched mint's history after a stream gap (reconnect, or the
+ * bridge's `sse_resync` when it lagged).
+ *
+ * A missed frame is not a missing row on a table nobody scrolled to: the chart's
+ * vol/non-vol overlay is CUMULATIVE, so a hole shifts both lines for the rest of
+ * the token's life and never heals on its own. Bounded by the mounted charts
+ * (usually one), and a gap is rare — the full-history read stays the cold path
+ * it is documented to be.
+ */
+/** State shape the `getTokenTrades` cache selector reads — derived from the
+ *  selector itself so this shared module needs no mode-specific `RootState`. */
+type TradesCacheState = Parameters<
+  ReturnType<typeof sharedApi.endpoints.getTokenTrades.select>
+>[0];
+
+function resyncWatchedMints(): void {
+  const dispatch = dispatchRef;
+  if (!dispatch || watched.size === 0) return;
+  for (const mint of [...watched]) {
+    dispatch((_unused: unknown, getState: () => unknown) => {
+      const selectTrades = sharedApi.endpoints.getTokenTrades.select(mint);
+      const cached = selectTrades(getState() as TradesCacheState).data ?? [];
+      const tail = cached.slice(-RESYNC_TAIL_KEEP);
+      void dispatch(
+        sharedApi.endpoints.getTokenTrades.initiate(mint, {
+          subscribe: false,
+          forceRefetch: true,
+        }),
+      ).then(() => {
+        if (watched.has(mint)) mergeIntoCache(mint, tail);
+      });
+    });
   }
 }
 
@@ -73,6 +123,7 @@ function ensureStream(): void {
     }
   });
   streamClose = () => handle.close();
+  reopenUnsub = onSseReopen(resyncWatchedMints);
 }
 
 function maybeTeardown(): void {
@@ -84,6 +135,8 @@ function maybeTeardown(): void {
   pending = [];
   streamClose?.();
   streamClose = null;
+  reopenUnsub?.();
+  reopenUnsub = null;
 }
 
 /**

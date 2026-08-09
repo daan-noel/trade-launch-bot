@@ -97,6 +97,7 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
             reserve_sol,
             reserve_token,
             venue,
+            instruction_labels,
             slot,
             timestamp,
         } => {
@@ -114,6 +115,7 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
                 "reserve_sol": reserve_sol,
                 "reserve_token": reserve_token,
                 "venue": venue,
+                "instruction_labels": instruction_labels,
                 "slot": slot,
                 "timestamp": timestamp,
                 "live": live_stats(state, mint),

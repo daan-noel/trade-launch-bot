@@ -69,8 +69,10 @@ export interface HistoryCohortApi extends HistoryCohort {
 
 const DEFAULT_RANGE: HistoryRange = '7d';
 
-/** Preset → window start, evaluated against `now`. `all`/`custom` return null. */
-function presetStart(range: HistoryRange, now: number): string | null {
+/** Preset → window start, evaluated against `now`. `all`/`custom` return null.
+ *  Exported because Portfolio builds the same window for its per-rule drill-down —
+ *  a second copy of this arithmetic is a second definition of "the last 7 days". */
+export function presetStart(range: HistoryRange, now: number): string | null {
   if (range === 'today') {
     const d = new Date(now);
     return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString();

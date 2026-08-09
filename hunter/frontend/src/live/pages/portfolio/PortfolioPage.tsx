@@ -26,10 +26,13 @@ import {
   useGetPortfolioPerformanceQuery,
 } from '@live/store/liveEndpoints';
 import type { PortfolioRulePnl } from 'types';
+import {
+  PortfolioRulePositions,
+  type PortfolioRange as Range,
+} from './PortfolioRulePositions';
 
 const portfolioRuleRowKey = (r: PortfolioRulePnl) => r.rule_id;
 
-type Range = 'today' | '7d' | '30d' | 'all';
 type Mode = 'real' | 'paper';
 
 const PORTFOLIO_RANGE_PRESETS: { value: Range; label: string }[] = [
@@ -66,6 +69,9 @@ export function PortfolioPage() {
       : '7d';
   const mode = (params.get('mode') as Mode | null) ?? 'real';
   const selectedRule = params.get('rule');
+  /** Position open in the drill-down's inspect modal — deep-linkable alongside
+   *  the rule, so a shared URL lands on the same trade. */
+  const selectedPosition = params.get('pos');
   const decayOnly = params.get('decay') === '1';
 
   /** Every URL write here patches `prev` rather than a closed-over snapshot, so
@@ -85,12 +91,24 @@ export function PortfolioPage() {
     [setParams],
   );
 
+  /** The three writers below also drop `pos`: the open position belongs to one
+   *  rule inside one window, so changing either leaves an id the drill-down can
+   *  no longer resolve — and a modal that silently fails to open reads as a bug.
+   *  They still touch only keys this page owns (see the patch-never-rebuild rule). */
   const setRange = useCallback(
-    (r: Range) => patchParams((p) => p.set('range', r)),
+    (r: Range) =>
+      patchParams((p) => {
+        p.set('range', r);
+        p.delete('pos');
+      }),
     [patchParams],
   );
   const setMode = useCallback(
-    (m: Mode) => patchParams((p) => p.set('mode', m)),
+    (m: Mode) =>
+      patchParams((p) => {
+        p.set('mode', m);
+        p.delete('pos');
+      }),
     [patchParams],
   );
   const selectRule = useCallback(
@@ -98,9 +116,19 @@ export function PortfolioPage() {
       patchParams((p) => {
         if (!key) p.delete('rule');
         else p.set('rule', key);
+        p.delete('pos');
       }),
     [patchParams],
   );
+  const selectPosition = useCallback(
+    (key: string | null) =>
+      patchParams((p) => {
+        if (!key) p.delete('pos');
+        else p.set('pos', key);
+      }),
+    [patchParams],
+  );
+  const clearRule = useCallback(() => selectRule(null), [selectRule]);
   const toggleDecayFilter = useCallback(
     () =>
       patchParams((p) => {
@@ -379,6 +407,14 @@ export function PortfolioPage() {
 
   const entryFailed = series?.entry_failed ?? 0;
 
+  /** Null when the selected rule has no closed trades in the current window —
+   *  the panel then renders its own empty state rather than the selection being
+   *  silently dropped, so "this rule did nothing here" stays a visible answer. */
+  const selectedRuleRow = useMemo(
+    () => (selectedRule ? (data?.by_rule.find((r) => r.rule_id === selectedRule) ?? null) : null),
+    [selectedRule, data?.by_rule],
+  );
+
   return (
     <div className="flex flex-col gap-4">
       <PageHeader title="Portfolio" description="Keep / kill review for a calendar window." />
@@ -527,6 +563,22 @@ export function PortfolioPage() {
         selectedKey={selectedRule}
         onSelect={selectRule}
       />
+
+      {/* Drill-down — the trades behind the selected row. Keyed by rule so the
+          table's own page/sort/filter state resets with the population instead
+          of carrying a page-4 offset onto a rule with three trades. */}
+      {selectedRule && (
+        <PortfolioRulePositions
+          key={selectedRule}
+          ruleId={selectedRule}
+          ruleRow={selectedRuleRow}
+          range={range}
+          mode={mode}
+          selectedPositionId={selectedPosition}
+          onSelectPosition={selectPosition}
+          onClose={clearRule}
+        />
+      )}
     </div>
   );
 }

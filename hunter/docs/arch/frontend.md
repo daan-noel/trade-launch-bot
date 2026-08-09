@@ -76,7 +76,15 @@ Portfolio = the **keep/kill review board** (default window `7d`): window spark +
 named decay alerts → Rules, ranked PnL bars + compact table (Rule · PnL · Return% · Exp ·
 Form · N · History). The window headline carries `return_pct` beside the realized ◎, and
 both re-derive from `Σ pnl / Σ closed_entry_sol` when the row set narrows (filter / decay
-toggle) — never a mean of the surviving rules' percents. Bar/row click highlights (`?rule=`); rule name → Rules; History link → Console.
+toggle) — never a mean of the surviving rules' percents. Bar/row click selects (`?rule=`); rule name → Rules; History link → Console.
+Selecting a rule opens `PortfolioRulePositions` beneath the table — that rule's **closed**
+trades for the same window, server-paged, with the per-row Charts grid and the position
+inspect modal (`?pos=`). It is scoped to the population the scoreboard row aggregates
+(entered + `status='End'`), so its count is the row's N and its PnL ◎ column sums to the
+row's PnL. The scope is not re-derived: the panel builds a `HistoryCohort` with
+`lane: 'closed'` and serializes it through Console History's one request builder
+(`historyRequest`), so both surfaces mean the same thing by "closed in this window".
+Changing rule / window / mode drops `?pos=` — an id from another population can't resolve.
 Calendar-window closes, not
 Rules Control current-run scores. Rules =
 **Control** (TOTAL rollup + activate/pause + scoreboard scoped current-run / all-time) +
@@ -109,10 +117,21 @@ position sink clears `ArmedRegistry` + emits `disarmed`/`entered` on `BuySubmitt
 
 | Domain | Push | Client sink |
 | --- | --- | --- |
-| On-chain trades | `trade_executed` (includes `tx_index`/`leg_index`/reserves) | Tokens table row patch; chart `getTokenTrades` append via `watchTokenTradesMint` + `liveTradeToTradeRecord`; `useMintTradeStream` for mint-filtered feeds |
+| On-chain trades | `trade_executed` (includes `tx_index`/`leg_index`/reserves/`fee_sol`/`instruction_labels`) | Tokens table row patch; chart `getTokenTrades` append via `watchTokenTradesMint` + `liveTradeToTradeRecord`; `useMintTradeStream` for mint-filtered feeds |
 | Strategy inventory | `strategy_position_update` / `strategy_armed_changed` | `liveStatusSlice` only |
 | Portfolio money | bag-changing position events + `trade_executed` for `mine` wallets | `usePortfolioRealtime` invalidates `WalletHoldings` **and** fans out via `onPortfolioBagRefresh` (Wallet imperative table — no second SSE filter) |
 | Display marks | `trade_executed` tip (SOL spot → USD) | `useWalletMarksLive` patches Home holdings + Jupiter price cache; Wallet page tips page rows locally. Jupiter oracle (liquidity/24h/cold) refetches on mount / bag refresh / tab focus — no interval |
+
+A pushed frame carries **every field the REST row it patches into carries**, because a
+live append is invisible: `liveTradeToTradeRecord` writes into the same
+`getTokenTrades` cache the chart reads, so a dropped field is not a blank cell but a
+*different answer*. `instruction_labels` is the sharp one — the chart's vol/non-vol
+overlay classifies from them client-side (`lib/flow/classifyFlow`), and a label-less
+row both counts as non-vol and fails to tag its wallet, so the cumulative pair diverges
+from that trade onward and only heals on a refetch. For the same reason
+`tokenTradesLive` is an `onSseReopen` consumer: a gap (reconnect or `sse_resync`)
+refetches each watched mint's history and merges the appended tail back over it, since
+a dropped frame leaves a hole a cumulative series reads as real flow.
 
 Mount points in live `App` `NotificationMount`: `useLiveStatusBootstrap`,
 `usePortfolioRealtime`, `useWalletMarksLive`, `useTokenTradesLiveBootstrap`,
