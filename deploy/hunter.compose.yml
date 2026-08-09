@@ -30,6 +30,11 @@
 # co-locate them on a box sized well above the old 2vCPU/4GB live EC2.
 #
 # Up / update:  docker compose --env-file hunter/.env -f deploy/hunter.compose.yml up -d --build
+#
+# ⚠ A bare `--build` builds EVERY service that has a `build:` block — including
+# lab-api, whose image compiles the bundled libduckdb C++ amalgamation and must
+# never be built on the live EC2 box. On the live box always NAME the services:
+#   … up -d --build postgres live-api live-ui
 # ---------------------------------------------------------------------------
 
 # Project name. Without this, Compose defaults it to the parent dir (`deploy`),
@@ -123,6 +128,11 @@ services:
     build:
       context: ..
       dockerfile: deploy/hunter-live/api.Dockerfile
+      args:
+        # rustc parallelism inside the build. Default 2 is sized for the 2vCPU
+        # EC2 / a memory-capped Docker VM; set CARGO_BUILD_JOBS=8 in the env-file
+        # (or the shell) when building on the workstation.
+        CARGO_BUILD_JOBS: ${CARGO_BUILD_JOBS:-2}
     restart: unless-stopped
     # tini as PID 1: forwards SIGTERM so `docker stop`/redeploy kills it promptly.
     init: true
@@ -179,6 +189,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/hunter-lab/api.Dockerfile
+      args:
+        CARGO_BUILD_JOBS: ${CARGO_BUILD_JOBS:-2}
     restart: unless-stopped
     init: true
     env_file: ../hunter/.env

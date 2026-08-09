@@ -104,6 +104,11 @@ services:
     build:
       context: ..
       dockerfile: deploy/forge-live/api.Dockerfile
+      args:
+        # rustc parallelism inside the build. Default 2 is sized for a small /
+        # memory-capped Docker VM; set CARGO_BUILD_JOBS=8 in the env-file (or the
+        # shell) when building on the workstation.
+        CARGO_BUILD_JOBS: ${CARGO_BUILD_JOBS:-2}
     restart: unless-stopped
     # tini as PID 1: forwards SIGTERM so `docker stop`/redeploy kills it promptly.
     init: true
@@ -173,6 +178,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/forge-lab/api.Dockerfile
+      args:
+        CARGO_BUILD_JOBS: ${CARGO_BUILD_JOBS:-2}
     restart: unless-stopped
     init: true
     env_file: ../forge/.env

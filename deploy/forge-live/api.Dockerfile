@@ -13,11 +13,17 @@
 # Build context = MONOREPO root (the single cargo workspace + shared/ crates
 # live there). See deploy/forge.compose.yml.
 # No DATABASE_URL needed at build time (runtime sqlx::query + embedded migrations).
+#
+# CACHE CONTRACT: the per-image `id=` on the target/ mount, the shared (unlocked)
+# registry/git mounts, and why `docker builder prune -a` must never run after a
+# build are all explained in deploy/hunter-live/api.Dockerfile — read that header
+# before editing a --mount line here.
 # ---------------------------------------------------------------------------
 
 # Pin to the toolchain the workspace builds on (matches hunter-live).
 FROM rust:1.95-bookworm AS chef
-RUN cargo install cargo-chef --locked
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo install cargo-chef --locked
 WORKDIR /app
 
 # --- Plan: compute the dependency recipe from the full source ---------------
@@ -27,21 +33,25 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 # --- Build: cook deps (cached), then compile just the forge-live binary -------
 FROM chef AS builder
+# Raise on a big workstation via the compose build arg; the low default keeps a
+# memory-constrained Docker VM from OOM-killing buildkitd mid-compile.
+ARG CARGO_BUILD_JOBS=2
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 COPY --from=planner /app/recipe.json recipe.json
 # NOTE: `-p forge-live` is REQUIRED. The root workspace sets default-members to the
 # hunter bins only, so a bare `--bin forge-live` resolves against those and errors
 # "no bin target named forge-live in default-run packages". Scope by package.
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,target=/app/target,sharing=locked \
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target,id=forge-live-target,sharing=locked \
     cargo chef cook --release --recipe-path recipe.json -p forge-live --bin forge-live
 # Now bring in the real source and build only the forge-live bin.
 COPY . .
 # target/ is a cache mount (not persisted into the layer) — copy the finished
 # binary out within the same RUN.
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,target=/app/target,sharing=locked \
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target,id=forge-live-target,sharing=locked \
     cargo build --release -p forge-live --bin forge-live \
     && cp /app/target/release/forge-live /usr/local/bin/forge-live
 

@@ -62,8 +62,8 @@ containers `Up` / postgres `healthy`.
 ### Safe prune
 
 ```bash
-# Build cache — usually the largest reclaim
-docker builder prune -af
+# Build cache — usually the largest reclaim. CAP IT, don't empty it (see below).
+docker builder prune -f --keep-storage 20GB
 
 # Unused images (not referenced by a running container)
 docker image prune -af
@@ -72,6 +72,19 @@ docker image prune -af
 docker container prune -f
 docker network prune -f
 ```
+
+> ⚠ **Never `docker builder prune -af` on a box you also build on.** The `-a`
+> deletes *cache mounts* too, and `target/` lives only in a cache mount
+> (`deploy/*/api.Dockerfile`) — so it throws away every dependency cargo-chef
+> cooked. The next build is then a full cold compile of ~400 crates, which is
+> exactly the "caching is configured but rebuilds are still slow" symptom.
+> `--keep-storage` reclaims the oldest cache first and stops at the cap, which
+> frees the disk without resetting the compile.
+>
+> `docker image prune -af` is fine to keep: it removes *unused runtime images*.
+> It does also drop untagged intermediate build stages, so the `cargo install
+> cargo-chef` layer recompiles (~2 min) on the next build — cheap next to a cold
+> dependency tree.
 
 ### Orphan volumes — review, then remove by name
 
@@ -175,10 +188,21 @@ docker compose ... up -d --build
 ```
 
 Build on the workstation (or CI), push/pull images, then `up -d` on the server.
-If you must build on EC2, prune immediately after:
+
+If you must build on EC2, build **only the live services** — a bare `--build`
+also builds `lab-api`, which compiles the bundled libduckdb C++ amalgamation
+(tens of GB of build cache, many minutes) and has no business on this box:
 
 ```bash
-docker builder prune -af
+docker compose --env-file hunter/.env -f deploy/hunter.compose.yml \
+  up -d --build postgres live-api live-ui
+```
+
+Then cap the cache rather than emptying it — `-af` deletes the cache mounts and
+guarantees the next build is a cold compile:
+
+```bash
+docker builder prune -f --keep-storage 20GB
 ```
 
 ### Watch disk

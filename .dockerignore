@@ -42,6 +42,17 @@ aws-ec2-key.pem
 **/.lake/
 **/*.parquet
 **/lake-data/
+# Local research scratch + the runtime strategy event log (a named volume in
+# compose, never baked into an image). Both churn constantly, and anything that
+# churns inside the build context invalidates the source COPY layer and re-runs
+# the cargo build for a change no crate can see.
+**/_local/
+**/event_log/
+# Root-level scratch dumps (fp.json, trades.json, resp*.json, tr_*/ms_*.json,
+# backup.dump). Patterns without **/ match the CONTEXT ROOT only, so the
+# frontends' package.json / tsconfig.json are untouched.
+*.json
+*.dump
 
 # --- Docs / plans (not needed to build; keep a docs edit from busting the
 #     builder's source-copy layer and forcing a recompile) ---

@@ -1,4 +1,6 @@
 pub mod constants;
+#[cfg(test)]
+mod deploy_guard;
 pub mod env_paths;
 pub mod fee_tuning;
 pub mod settings;

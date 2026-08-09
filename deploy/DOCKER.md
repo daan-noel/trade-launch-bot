@@ -54,6 +54,25 @@ docker compose --env-file forge/.env  -f deploy/forge.compose.yml  up -d --build
 - **Updating after a code change = the same `up -d --build` command.** Compose
   rebuilds only what changed and recreates just those containers.
 
+> ⚠ **On the live EC2 box, name the services.** A bare `--build` builds *every*
+> service with a `build:` block, including `lab-api` — which compiles the bundled
+> libduckdb C++ amalgamation and must never be built on that box:
+>
+> ```bash
+> docker compose --env-file hunter/.env -f deploy/hunter.compose.yml \
+>   up -d --build postgres live-api live-ui
+> ```
+
+### Build speed
+
+Three settings decide whether a rebuild takes ~1 minute or ~20:
+
+| Knob | Where | Notes |
+| --- | --- | --- |
+| `CARGO_BUILD_JOBS` | build arg, default `2` | Sized for the 2vCPU EC2 / a memory-capped Docker VM. On the workstation export `CARGO_BUILD_JOBS=8` before `up --build` — it is read by all four Rust images. |
+| target cache `id=` | `deploy/*/api.Dockerfile` | One per image. Without it BuildKit ids the cache by its path, so all four images share one `target/` and thrash each other's artifacts. Locked by `config::deploy_guard` in hunter-core. |
+| build-cache pruning | the box's housekeeping | `docker builder prune -af` deletes cache mounts, i.e. every cooked dependency. Cap it instead: `docker builder prune -f --keep-storage 20GB`. See [EC2-DISK-HOUSEKEEPING.md](EC2-DISK-HOUSEKEEPING.md). |
+
 ---
 
 ## Stop a stack
