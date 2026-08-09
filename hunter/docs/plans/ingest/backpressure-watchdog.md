@@ -30,6 +30,13 @@ db_tx.try_send(DbWriteOp::Raw(...)).ok()
 
 **Strategy channel** (`strategy_tx`, cap 512) uses `try_send` to the StrategyRunner — a slow strategy runner should not stall ingest.
 
+**A silent shed on this queue hides a total outage.** `ping_strategy`
+(`ingest/consumer.rs`) sheds on full, which is correct — the engine must never
+back-pressure ingest. But a *wedged* engine sheds 100% of pings while ingest keeps writing
+tokens and trades to PG, so every external signal looks healthy while no rule is evaluated.
+Any `try_send`-and-drop on a path that decides trades must be **loud** — a rate-limited
+`warn!`, never a bare counter.
+
 ## Watchdog — `live/src/ingest/watchdog.rs`
 
 `DbHeartbeat` is a shared atomic (unix-millis of the last DbWriter batch commit) stamped by

@@ -6,6 +6,30 @@ a `fingerprint_id` (a token-creation shape) + `params`
 **pure fold** in the `hunter-engine` crate; the live and lab bins are thin adapters
 that produce events and consume effects. A decision fix lands in exactly one place.
 
+## ONE decision kernel — the root rule
+
+Entry, exit, caps, re-entry and retries for **live-real, live-paper, and single-rule
+simulate** are all decided inside `hunter-engine::reduce`. Real and paper fork *only* at
+the fill layer (`exec_real.rs` vs `exec_paper.rs`); simulate forks *only* at who feeds the
+events (`lab`'s `replay.rs`). Never add a second decision path or a per-strategy clone.
+Live closes route through the engine (`EngineHandle::manual_close` / `reconcile_cleared`),
+never a separate service.
+
+The **grouped sweep** is the ONE sanctioned re-implementation — a precomputed
+`MetricSeries` scan (`lab/src/sweep/generic/strategy.rs`) that trades exactness for speed.
+Its contract has two halves:
+
+- Every fact it *can* share with the engine is single-sourced from `hunter-engine`/`core`,
+  never copied: deadness verdict, death-point, cost/PnL kernel, leaf-condition `eval`,
+  `CompiledRule::compile`, fill model, `TICK_MS`.
+- Every deliberate divergence from `reduce` (bounded per-token tail, stripped concurrency
+  caps, sketched quantiles) is recorded in [`../plans/sweep/sim-parity.md`](../plans/sweep/sim-parity.md)
+  **and** locked by a `sweep/generic/guard.rs` parity test.
+
+**Simulate is the PnL authority; a sweep result is a ranking screener, not a backtest.**
+Its uncapped, per-token-tail numbers are optimistic upper bounds — always re-run a promoted
+combo through simulate before trusting its PnL.
+
 Deep-dive detail: flow metrics + classifier in
 [`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md);
 what a round trip **costs** (fee 125 bps/leg, our own `buy_amount/reserve_sol` impact,

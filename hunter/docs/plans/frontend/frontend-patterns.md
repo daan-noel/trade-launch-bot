@@ -193,6 +193,22 @@ in-memory matcher. The frontend sends `fingerprint_id` and omits every other gro
 filter param when scoped (`labEndpoints.ts`'s `getGroupedCreationStats` /
 `getGroupedCreationTokens` query builders branch on it).
 
+## The query string is shared state — patch it, never rebuild it
+
+A page's filters, cohort, selection and deep link all live in ONE `URLSearchParams`, and
+several hooks write it independently (Console: the page's `position`/`mint`,
+`useHistoryCohort`'s `h*` keys, the History scroll cleanup). Two rules follow:
+
+- **Delete/set only the keys you own.** A fresh `new URLSearchParams()` drops every key
+  another hook owns — on the Console that silently resets every filter the moment a row
+  modal closes.
+- **Take the functional form** `setParams(prev => …, { replace: true })`, so two writes in
+  one tick cannot drop each other's keys (and the handler stays stable for memoized
+  children).
+
+Building from empty is correct **only** in an href builder (`lib/strategy/nav.ts`), which
+constructs a link rather than mutating the live URL.
+
 ## Strategy cross-page selection — `?rule=` / `?fp=`
 
 Same deep-link shape as Tokens `?mint=` and Sweep `?run=`: selection in the URL so

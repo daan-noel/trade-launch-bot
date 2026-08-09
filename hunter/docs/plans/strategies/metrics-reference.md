@@ -27,6 +27,15 @@ Non-finite / negative SOL is ignored. Windowed variants are never monotonic.
 Lifetime is the maturity / critical-mass gate; window is the hot-right-now filter.
 No fingerprint config — unlike the split groups below.
 
+### A trailing-window read is O(1) — keep it that way
+
+`flow_window` / `flow_split` maintain running sums over a **time-sorted** deque and correct
+only the two out-of-window ends on read. A flow-split rule pays that read once per metric
+per rule per event, so a full-buffer rescan — or re-deriving the window width per element —
+is a hot-path regression. Never reintroduce one inside a `value()`, and never assume the
+caller already evicted at `now`: `TokenCreated` / `FirstSlotSettled` do not, and a skipped
+tick leaves entries un-evicted by design.
+
 ## Classifier (per trade × fingerprint)
 
 A trade is **volume-side** iff any of:
