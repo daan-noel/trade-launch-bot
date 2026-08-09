@@ -58,7 +58,7 @@ side-effects only.
 | `sinks.rs` | `PositionUpdate` → registry + SSE; `BuySubmitted` upserts registry then background `insert_position` (later transitions chain on the handle); `Holding` updates registry sync then backgrounds fill persist; `ExitPending` PG is fire-and-forget; **terminal writes (`End`/`EntryFailed`/`ExitStuck`/`ExitUnconfirmed`) chain-spawn too — NO sink transition awaits PG on the loop** (see below); terminal SSE emits **before** `registry.remove` (so `position_id` / frozen `trade_mode` stay on the wire); `warm_runs` on rule reload (`ensure_run` reuses latest still-`Running` DB run + collapses empty leading shells — does not mint a new `run_seq` on every restart); releases SOL on terminal unentered exits |
 | `reapers.rs` | Boot+60 s: buy orphan adopt/drop/wait (never re-send; stale ⇒ `needs_review` SSE); **externally-cleared Holding** book-close (PG `trades` net, no RPC); exit orphan nudge via `FillFailed` or shared `orphan_exit`; **ExitStuck-with-bag** redrive (PG-gated, backoff, bounded-then-park); `ExitStuck`/`ExitUnconfirmed` bag-gone heal → End; stale `ExitPending` bag-check → `ExitStuck` (real) / breakeven End (paper). Skips `InFlightGuards`-held rows/mints |
 | `orphan_exit.rs` | Shared direct-sell + PG book-close for registry-miss rows (Console close, ExitPending/ExitStuck reapers). Feed-confirm via `run_exit`; sibling mint clear → `ExternallyCleared` / PG End; boot adopts re-install manual TP/SL rules |
-| `event_log.rs` | JSONL recorder (daily rotation + age/size retention) + **conservative, bounded** boot-recovery replay (`recover_armed` = re-arm only; held/filled mints excluded; effects discarded; reads only the recent tail — see below). Dir = `EVENT_LOG_DIR` via `config::dir_from_env`: a relative value anchors to the loaded `.env`'s directory, never the CWD (see below) |
+| `event_log.rs` | JSONL recorder (day + size segmented rotation, age/byte retention) + **conservative, bounded** boot-recovery replay (`recover_armed` = re-arm only; held/filled mints excluded; effects discarded; reads only the recent tail — see below). Dir = `EVENT_LOG_DIR` via `config::dir_from_env`: a relative value anchors to the loaded `.env`'s directory, never the CWD (see below) |
 | `convert.rs` | DB model ↔ engine type converters (re-exports `fingerprint_axes::{fp_to_engine, observed_axes, rule_to_loaded}`) |
 
 `EngineHandle` (held by the HTTP layer, enqueues commands only): `reload_rules` (blocking, used by the background scheduler), `schedule_reload(sse_tx)` (HTTP rule/fingerprint mutations — PG write returns immediately; debounced reload + `tpsl_rules_changed` SSE on ack; coalesced reload acks in the decision loop),
@@ -129,9 +129,28 @@ window, and `read_log_tail` reads each kept file **backwards** in 1 MiB chunks,
 stopping at the first event older than it. A scan margin (`RECOVERY_SCAN_MARGIN_SECS`,
 5 min) covers the fact that `at()` is *chain* time, so append order is only
 approximately time-ordered and a settling fill must be seen before its mint is
-re-armed. Retention is enforced by **bytes** (`MAX_TOTAL_LOG_BYTES`, 6 GiB,
+re-armed. Retention is enforced by **bytes** (`EVENT_LOG_MAX_BYTES`, default 6 GiB,
 oldest-evicted-first) as well as days — daily volume swings 5× (4.3 GB → 0.87 GB
 across three days), so `EVENT_LOG_RETENTION_DAYS` alone cannot bound the directory.
+
+**The day is split into segments, and only the OPEN one is un-evictable.** Files roll
+on size (`EVENT_LOG_SEGMENT_BYTES`, default 256 MiB) as well as at midnight, named
+`events-YYYY-MM-DD.NN.jsonl` — a day's first segment keeps the legacy un-suffixed
+`events-YYYY-MM-DD.jsonl`, so old directories parse unchanged and sort first. The
+name is parsed in ONE place, `hunter_engine::event_log::parse_log_file_name`, shared
+by the recorder's prune/recovery scan and the lab inspector's `read_logs`; the sort
+key is `(date, seq)`.
+
+Segmentation exists because a byte cap can only be enforced by deleting something,
+and the file open for append can never be deleted. With one file per day, "today's
+file" *was* "the open file", so a day that outgrew the budget by itself left `prune`
+nothing it was allowed to evict — it deleted every other file, reached today's,
+stopped, and the directory grew unbounded (**11 GB against a 6 GiB cap**, 2026-08-09,
+on a box that had already had one disk-full outage). Two fixes, both load-bearing:
+`prune` guards the **open path** rather than "is it today", and it runs on **every**
+rotation instead of only at the date change. Recovery is unaffected — the segment
+size is ~17× the 5.5-minute recovery window, so a boot scan stays inside one file,
+and `recover_armed` walks segments in order when it doesn't.
 
 > **Why all of that exists (2026-07-30 outage).** The old `recover_armed` read every
 > `events-*.jsonl` front-to-back into one `Vec<LoggedEvent>` and applied the age

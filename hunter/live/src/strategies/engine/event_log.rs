@@ -1,11 +1,20 @@
 //! Event-log recorder + boot recovery (plan 4.6, decision 12).
 //!
 //! The live loop appends every *loggable* engine event to a cheap local
-//! append-only JSONL file (rotated daily, retention-capped). `Tick` is **not**
-//! logged — it's regenerable — and `RulesReloaded` is **not** logged (rules are
-//! reloaded from PG on boot). Any live decision is therefore reproducible offline
-//! by replaying the log ("time-travel debugging", Phase 6), and boot recovery
-//! replays the recent tail to rebuild **armed** state.
+//! append-only JSONL file (rotated by day **and** by size, retention-capped).
+//! `Tick` is **not** logged — it's regenerable — and `RulesReloaded` is **not**
+//! logged (rules are reloaded from PG on boot). Any live decision is therefore
+//! reproducible offline by replaying the log ("time-travel debugging", Phase 6),
+//! and boot recovery replays the recent tail to rebuild **armed** state.
+//!
+//! **Why rotation is size-driven, not just daily.** The byte budget below is the
+//! operative bound — but a cap can only be enforced by deleting something, and the
+//! file currently open for append can never be deleted. With one file per day, a
+//! day that exceeds the budget on its own (4.3 GB/day measured against a 6 GiB cap)
+//! left `prune` with nothing it was allowed to evict: it deleted every other file,
+//! reached the open one, and stopped. The directory then grew without bound — 11 GB
+//! observed on 2026-08-09. Segmenting the day means the open file is a bounded slice
+//! of it, so everything behind it is evictable and the cap actually binds.
 //!
 //! Recovery is deliberately conservative: it re-arms only tokens that had **no
 //! open position** at crash time (so a held token can never be re-entered — PG
@@ -28,7 +37,7 @@ use chrono::{NaiveDate, Utc};
 use tracing::{info, warn};
 
 use hunter_engine::event::Event;
-use hunter_engine::event_log::LoggedEvent;
+use hunter_engine::event_log::{log_file_name, parse_log_file_name, LogFileName, LoggedEvent};
 use hunter_engine::metrics::Ts;
 
 /// Env: directory the event log is written to (created if missing). A **relative**
@@ -36,8 +45,13 @@ use hunter_engine::metrics::Ts;
 /// [`trading_core::config::env_paths`]; the lab replay inspector resolves the same
 /// key the same way, so writer and reader can't drift apart.
 const ENV_DIR: &str = "EVENT_LOG_DIR";
-/// Env: how many days of rotated logs to retain.
+/// Env: how many days of rotated logs to retain. A **secondary** bound — see
+/// [`Limits::max_total_bytes`], which is the one that actually holds.
 const ENV_RETENTION: &str = "EVENT_LOG_RETENTION_DAYS";
+/// Env: total on-disk budget for the whole directory, in bytes.
+const ENV_MAX_BYTES: &str = "EVENT_LOG_MAX_BYTES";
+/// Env: roll to a new segment once the open file passes this many bytes.
+const ENV_SEGMENT_BYTES: &str = "EVENT_LOG_SEGMENT_BYTES";
 const DEFAULT_DIR: &str = "event_log";
 const DEFAULT_RETENTION_DAYS: i64 = 7;
 /// Bound how far the decision loop can get ahead of disk. Full = drop the line.
@@ -48,13 +62,47 @@ const WRITE_QUEUE_CAP: usize = 4096;
 const RECOVERY_SCAN_MARGIN_SECS: i64 = 300;
 /// Reverse-read granularity for [`read_log_tail`] — caps peak memory per file.
 const REVERSE_CHUNK_BYTES: u64 = 1 << 20; // 1 MiB
-/// Total on-disk budget for `events-*.jsonl`. Age-based retention alone cannot
-/// bound this directory: daily volume swings by orders of magnitude (4.3 GB on
-/// 2026-07-27 vs 0.87 GB two days later), so [`prune`] also evicts oldest-first
-/// until the corpus fits. Recovery reads seconds of tail; the rest is for the lab
-/// replay inspector, which tolerates a shorter history far better than the live
-/// box tolerates a full disk.
-const MAX_TOTAL_LOG_BYTES: u64 = 6 * 1024 * 1024 * 1024; // 6 GiB
+/// Default total on-disk budget. Age-based retention alone cannot bound this
+/// directory: daily volume swings by orders of magnitude (4.3 GB on 2026-07-27 vs
+/// 0.87 GB two days later), so [`prune`] also evicts oldest-first until the corpus
+/// fits. Recovery reads seconds of tail; the rest is for the lab replay inspector,
+/// which tolerates a shorter history far better than the live box tolerates a full
+/// disk — so the deployed box overrides this downward via [`ENV_MAX_BYTES`].
+const DEFAULT_MAX_TOTAL_BYTES: u64 = 6 * 1024 * 1024 * 1024; // 6 GiB
+/// Default segment size. Must stay comfortably larger than the recovery window
+/// (`MAX_SNIPE_AGE_SECS` + [`RECOVERY_SCAN_MARGIN_SECS`] ≈ 5.5 min ≈ 15 MB at the
+/// measured 50 KB/s) so a boot scan almost never has to open a second file, and
+/// comfortably smaller than the total budget so there is always something evictable
+/// behind the open segment.
+const DEFAULT_SEGMENT_BYTES: u64 = 256 * 1024 * 1024; // 256 MiB
+/// Floor for the segment size. Below the recovery window, rotation would push the
+/// events boot recovery needs into files the byte cap is free to evict.
+const MIN_SEGMENT_BYTES: u64 = 1024 * 1024; // 1 MiB
+
+/// The three tunables that bound the directory, resolved once from env.
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    retention_days: i64,
+    max_total_bytes: u64,
+    segment_bytes: u64,
+}
+
+impl Limits {
+    fn from_env() -> Self {
+        let retention_days = parse_env(ENV_RETENTION).unwrap_or(DEFAULT_RETENTION_DAYS);
+        let max_total_bytes = parse_env(ENV_MAX_BYTES).unwrap_or(DEFAULT_MAX_TOTAL_BYTES);
+        // A segment larger than the whole budget can never be evicted behind, which
+        // is the exact deadlock this module is being fixed for — clamp instead.
+        let segment_bytes = parse_env(ENV_SEGMENT_BYTES)
+            .unwrap_or(DEFAULT_SEGMENT_BYTES)
+            .clamp(MIN_SEGMENT_BYTES, max_total_bytes.max(MIN_SEGMENT_BYTES));
+        Self { retention_days, max_total_bytes, segment_bytes }
+    }
+}
+
+fn parse_env<T: std::str::FromStr>(key: &str) -> Option<T> {
+    std::env::var(key).ok()?.trim().parse().ok()
+}
 
 /// Append-only recorder with daily rotation + retention pruning. The on-disk
 /// format ([`LoggedEvent`]) is defined once in `hunter_engine::event_log` — the SSOT
@@ -72,10 +120,7 @@ impl EventLogRecorder {
     /// can't be created — recording is best-effort, never fatal to trading.
     pub fn from_env() -> Option<Self> {
         let dir = trading_core::config::dir_from_env(ENV_DIR, DEFAULT_DIR);
-        let retention_days = std::env::var(ENV_RETENTION)
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_RETENTION_DAYS);
+        let limits = Limits::from_env();
         if let Err(e) = fs::create_dir_all(&dir) {
             warn!("event log disabled — cannot create {}: {e}", dir.display());
             return None;
@@ -84,12 +129,18 @@ impl EventLogRecorder {
         let writer_dir = dir.clone();
         thread::Builder::new()
             .name("event-log-writer".into())
-            .spawn(move || writer_loop(writer_dir, retention_days, rx))
+            .spawn(move || writer_loop(writer_dir, limits, rx))
             .map_err(|e| {
                 warn!("event log disabled — cannot spawn writer thread: {e}");
             })
             .ok()?;
-        info!(dir = %dir.display(), retention_days, "event log recorder enabled");
+        info!(
+            dir = %dir.display(),
+            retention_days = limits.retention_days,
+            max_total_bytes = limits.max_total_bytes,
+            segment_bytes = limits.segment_bytes,
+            "event log recorder enabled"
+        );
         Some(Self { dir, tx })
     }
 
@@ -117,26 +168,50 @@ impl EventLogRecorder {
     }
 }
 
-fn writer_loop(dir: PathBuf, retention_days: i64, rx: mpsc::Receiver<LoggedEvent>) {
-    let mut open: Option<(NaiveDate, BufWriter<File>)> = None;
+/// The file currently open for append. `written` tracks its size so the size check
+/// costs no `stat` per line; it is seeded from the file's real length on open, so a
+/// mid-day restart continues a partial segment instead of undercounting it.
+struct Segment {
+    date: NaiveDate,
+    seq: u32,
+    written: u64,
+    writer: BufWriter<File>,
+}
+
+impl Segment {
+    /// True when this segment is full, or belongs to a day that is over.
+    fn should_roll(&self, today: NaiveDate, limits: &Limits) -> bool {
+        self.date != today || self.written >= limits.segment_bytes
+    }
+}
+
+fn writer_loop(dir: PathBuf, limits: Limits, rx: mpsc::Receiver<LoggedEvent>) {
+    let mut open: Option<Segment> = None;
     while let Ok(logged) = rx.recv() {
         let today = Utc::now().date_naive();
-        if open.as_ref().map(|(d, _)| *d) != Some(today) {
-            match rotate(&dir, retention_days, today) {
-                Ok(w) => open = Some((today, w)),
+        if open.as_ref().is_none_or(|s| s.should_roll(today, &limits)) {
+            // Continue the day's newest segment on a fresh start; roll past it when
+            // the current one is full.
+            let seq = match &open {
+                Some(s) if s.date == today => s.seq + 1,
+                _ => next_seq_for(&dir, today),
+            };
+            match rotate(&dir, &limits, today, seq) {
+                Ok(seg) => open = Some(seg),
                 Err(e) => {
                     warn!("event log rotate failed: {e}");
                     continue;
                 }
             }
         }
-        if let Some((_, w)) = open.as_mut() {
+        if let Some(seg) = open.as_mut() {
             match serde_json::to_string(&logged) {
                 Ok(line) => {
-                    let _ = writeln!(w, "{line}");
+                    let _ = writeln!(seg.writer, "{line}");
                     // Flush per line so a crash loses at most the in-flight buffer;
                     // this runs off the decision loop so latency is acceptable.
-                    let _ = w.flush();
+                    let _ = seg.writer.flush();
+                    seg.written += line.len() as u64 + 1; // +1 for the newline
                 }
                 Err(e) => warn!("event log serialize failed: {e}"),
             }
@@ -144,57 +219,85 @@ fn writer_loop(dir: PathBuf, retention_days: i64, rx: mpsc::Receiver<LoggedEvent
     }
 }
 
-/// Open today's file (append) and prune files older than the retention window.
-fn rotate(
-    dir: &Path,
-    retention_days: i64,
-    today: NaiveDate,
-) -> std::io::Result<BufWriter<File>> {
-    let path = dir.join(format!("events-{today}.jsonl"));
-    let file = OpenOptions::new().create(true).append(true).open(&path)?;
-    prune(dir, retention_days, today);
-    Ok(BufWriter::new(file))
+/// The segment a fresh writer should append to for `today`: the highest `seq`
+/// already on disk for that day, or 0 when the day has no file yet. Resuming the
+/// newest rather than starting a new one keeps a restart from littering the
+/// directory with tiny segments; `should_roll` immediately rolls past it if it is
+/// already full.
+fn next_seq_for(dir: &Path, today: NaiveDate) -> u32 {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter_map(|e| parse_log_file_name(e.file_name().to_str()?))
+        .filter(|n| n.date == today)
+        .map(|n| n.seq)
+        .max()
+        .unwrap_or(0)
 }
 
-/// Delete `events-*.jsonl` older than `retention_days`, then evict oldest-first
-/// until the directory fits [`MAX_TOTAL_LOG_BYTES`].
+/// Open the `(today, seq)` segment for append and prune the directory around it.
+fn rotate(dir: &Path, limits: &Limits, today: NaiveDate, seq: u32) -> std::io::Result<Segment> {
+    let path = dir.join(log_file_name(today, seq));
+    let file = OpenOptions::new().create(true).append(true).open(&path)?;
+    // Seed from the real length: this may be a partial segment resumed after a
+    // restart, in which case counting from 0 would let it grow to 2x the cap.
+    let written = file.metadata().map(|m| m.len()).unwrap_or(0);
+    // Prune on every rotation, not just at the date change. Size-based rotation
+    // gives this a natural cadence — no timer needed — and it is the only thing
+    // between the directory and unbounded growth within a single day.
+    prune(dir, limits, today, &path);
+    Ok(Segment { date: today, seq, written, writer: BufWriter::new(file) })
+}
+
+/// Delete log files older than `retention_days`, then evict oldest-first until the
+/// directory fits [`Limits::max_total_bytes`].
 ///
-/// The size cap is the operative bound: retention is expressed in days but the
-/// cost is bytes, and daily volume is not stable enough for days to bound bytes.
-/// `today`'s file is never evicted — it is the one being appended to.
-fn prune(dir: &Path, retention_days: i64, today: NaiveDate) {
+/// The size cap is the operative bound: retention is expressed in days but the cost
+/// is bytes, and daily volume is not stable enough for days to bound bytes.
+///
+/// `open` — the segment currently held for append — is the ONE file that is never
+/// evicted, and the guard is on the **path**, not on "is it today's". That
+/// distinction is the whole bug: with one file per day, "today's file" and "the open
+/// file" were the same thing, so a day that outgrew the budget by itself left the
+/// loop with nothing it was permitted to delete. It evicted every other file,
+/// reached the open one, broke, and the directory kept growing (11 GB against a
+/// 6 GiB cap, 2026-08-09). Now only the live slice is protected, so the rest of
+/// today is evictable like any other day and the cap holds continuously.
+fn prune(dir: &Path, limits: &Limits, today: NaiveDate, open: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
-    let mut kept: Vec<(NaiveDate, PathBuf, u64)> = Vec::new();
+    let mut kept: Vec<(LogFileName, PathBuf, u64)> = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name();
-        let Some(name) = name.to_str() else {
+        let Some(parsed) = name.to_str().and_then(parse_log_file_name) else {
             continue;
         };
-        let Some(date) = name
-            .strip_prefix("events-")
-            .and_then(|s| s.strip_suffix(".jsonl"))
-            .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-        else {
-            continue;
-        };
-        if (today - date).num_days() > retention_days {
-            let _ = fs::remove_file(entry.path());
+        let path = entry.path();
+        if path != open && (today - parsed.date).num_days() > limits.retention_days {
+            let _ = fs::remove_file(&path);
             continue;
         }
         let bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
-        kept.push((date, entry.path(), bytes));
+        kept.push((parsed, path, bytes));
     }
 
     let mut total: u64 = kept.iter().map(|(_, _, b)| *b).sum();
-    if total <= MAX_TOTAL_LOG_BYTES {
+    if total <= limits.max_total_bytes {
         return;
     }
-    kept.sort_by_key(|(d, _, _)| *d); // oldest first
-    for (date, path, bytes) in kept {
-        if total <= MAX_TOTAL_LOG_BYTES || date == today {
+    kept.sort_by_key(|(n, _, _)| *n); // oldest first: (date, seq)
+    for (_, path, bytes) in kept {
+        if total <= limits.max_total_bytes {
             break;
+        }
+        // Skip, don't break: the open segment may sort anywhere once a stale file
+        // from a future date exists (clock skew, a restored backup), and stopping
+        // there would strand everything behind it.
+        if path == open {
+            continue;
         }
         if fs::remove_file(&path).is_ok() {
             total = total.saturating_sub(bytes);
@@ -279,29 +382,26 @@ pub fn recover_armed(
     out
 }
 
-/// Log files that can contain events at or after `stop_before`, oldest first.
+/// Log files that can contain events at or after `stop_before`, oldest first
+/// (`(date, seq)` order — a day's segments read in the order they were written).
 ///
 /// The date in the name bounds every event in the file, so a file dated before
-/// `stop_before`'s day is skipped without being opened. Retention (7 days) is NOT
-/// a usable bound here — at ~4 GB/day the corpus is fatal long before day 7.
+/// `stop_before`'s day is skipped without being opened. Retention in days is NOT a
+/// usable bound here — at ~4 GB/day the corpus is fatal long before day 7.
 fn recent_log_files(dir: &Path, stop_before: Ts) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
     let oldest_useful = stop_before.date_naive();
-    let mut files: Vec<(NaiveDate, PathBuf)> = entries
+    let mut files: Vec<(LogFileName, PathBuf)> = entries
         .flatten()
         .filter_map(|e| {
             let name = e.file_name();
-            let name = name.to_str()?;
-            let date = name
-                .strip_prefix("events-")
-                .and_then(|s| s.strip_suffix(".jsonl"))
-                .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())?;
-            (date >= oldest_useful).then(|| (date, e.path()))
+            let parsed = parse_log_file_name(name.to_str()?)?;
+            (parsed.date >= oldest_useful).then(|| (parsed, e.path()))
         })
         .collect();
-    files.sort_by_key(|(d, _)| *d);
+    files.sort_by_key(|(n, _)| *n);
     files.into_iter().map(|(_, p)| p).collect()
 }
 
@@ -486,27 +586,217 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn prune_evicts_oldest_until_the_size_cap_is_met() {
-        let dir = scratch("prune");
-        let today = NaiveDate::parse_from_str("2026-07-30", "%Y-%m-%d").expect("date");
-        // Three in-retention files that together blow the byte budget.
-        let big = vec![b'x'; (MAX_TOTAL_LOG_BYTES / 2) as usize + 1];
-        for day in ["2026-07-28", "2026-07-29", "2026-07-30"] {
-            fs::write(dir.join(format!("events-{day}.jsonl")), &big).expect("write");
-        }
+    /// Small limits so the byte-cap tests write kilobytes, not gigabytes.
+    fn limits(max_total_bytes: u64, segment_bytes: u64) -> Limits {
+        Limits { retention_days: 7, max_total_bytes, segment_bytes }
+    }
 
-        prune(&dir, 7, today);
+    fn day(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").expect("date")
+    }
 
-        let left: HashSet<String> = fs::read_dir(&dir)
+    fn names_in(dir: &Path) -> HashSet<String> {
+        fs::read_dir(dir)
             .expect("read dir")
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
+            .collect()
+    }
+
+    #[test]
+    fn prune_evicts_oldest_until_the_size_cap_is_met() {
+        let dir = scratch("prune");
+        let today = day("2026-07-30");
+        let lim = limits(6_000, 2_000);
+        // Three in-retention files that together blow the byte budget.
+        let big = vec![b'x'; 3_001];
+        for d in ["2026-07-28", "2026-07-29", "2026-07-30"] {
+            fs::write(dir.join(format!("events-{d}.jsonl")), &big).expect("write");
+        }
+
+        prune(&dir, &lim, today, &dir.join("events-2026-07-30.jsonl"));
+
+        let left = names_in(&dir);
         // Age alone would have kept all three (all within 7 days) — that is exactly
         // the bound that failed in production; bytes must win.
         assert!(!left.contains("events-2026-07-28.jsonl"), "oldest must be evicted");
-        assert!(left.contains("events-2026-07-30.jsonl"), "today's file is never evicted");
+        assert!(left.contains("events-2026-07-30.jsonl"), "the open segment is never evicted");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_bounds_a_single_day_that_exceeds_the_cap_by_itself() {
+        // THE production bug: one file per day meant "today's file" WAS "the open
+        // file", so a day bigger than the budget left prune nothing it could delete.
+        // It evicted every other file, hit today's, broke, and the directory grew to
+        // 11 GB against a 6 GiB cap. Segments make the rest of today evictable.
+        let dir = scratch("prune-single-day");
+        let today = day("2026-08-09");
+        let lim = limits(6_000, 2_000);
+        let seg = vec![b'x'; 2_500];
+        for name in [
+            "events-2026-08-09.jsonl",    // seq 0 — first segment of the day
+            "events-2026-08-09.01.jsonl",
+            "events-2026-08-09.02.jsonl",
+            "events-2026-08-09.03.jsonl", // the open one
+        ] {
+            fs::write(dir.join(name), &seg).expect("write");
+        }
+        let open = dir.join("events-2026-08-09.03.jsonl");
+
+        prune(&dir, &lim, today, &open);
+
+        let left = names_in(&dir);
+        assert!(left.contains("events-2026-08-09.03.jsonl"), "open segment survives");
+        assert!(!left.contains("events-2026-08-09.jsonl"), "oldest segment of today evicted");
+        let total: u64 = fs::read_dir(&dir)
+            .expect("read dir")
+            .flatten()
+            .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
+            .sum();
+        assert!(total <= lim.max_total_bytes, "cap must hold within one day, got {total}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_keeps_the_open_segment_even_when_it_alone_exceeds_the_cap() {
+        // The cap cannot be met by deleting the file being appended to. Prune must
+        // free everything else and stop — never delete the live segment, never loop.
+        let dir = scratch("prune-open-too-big");
+        let today = day("2026-08-09");
+        let lim = limits(1_000, 500);
+        fs::write(dir.join("events-2026-08-08.jsonl"), vec![b'x'; 900]).expect("write");
+        let open = dir.join("events-2026-08-09.jsonl");
+        fs::write(&open, vec![b'x'; 5_000]).expect("write");
+
+        prune(&dir, &lim, today, &open);
+
+        let left = names_in(&dir);
+        assert_eq!(left.len(), 1, "everything evictable is gone");
+        assert!(left.contains("events-2026-08-09.jsonl"), "the open segment stays");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_never_age_evicts_the_open_segment() {
+        // A clock jump (or a resumed box) can make the open segment look older than
+        // the retention window. Deleting it would leave the writer appending to an
+        // unlinked inode — the log silently stops existing while writes "succeed".
+        let dir = scratch("prune-age-open");
+        let today = day("2026-08-09");
+        let open = dir.join("events-2026-07-01.jsonl"); // 39 days "old"
+        fs::write(&open, b"x").expect("write");
+
+        prune(&dir, &limits(6_000, 2_000), today, &open);
+
+        assert!(open.exists(), "the open segment must survive age-based pruning");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn next_seq_resumes_the_days_newest_segment() {
+        let dir = scratch("next-seq");
+        let today = day("2026-08-09");
+        assert_eq!(next_seq_for(&dir, today), 0, "a day with no file starts at seq 0");
+
+        fs::write(dir.join("events-2026-08-09.jsonl"), b"").expect("write");
+        fs::write(dir.join("events-2026-08-09.01.jsonl"), b"").expect("write");
+        fs::write(dir.join("events-2026-08-09.02.jsonl"), b"").expect("write");
+        // A different day must not influence today's counter.
+        fs::write(dir.join("events-2026-08-08.07.jsonl"), b"").expect("write");
+
+        assert_eq!(next_seq_for(&dir, today), 2, "resume the newest, don't skip past it");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recover_armed_spans_segments_of_one_day() {
+        // Segmentation must not cost recovery events: a 30 s window that straddles a
+        // roll has to yield every event, in order, across both files.
+        let dir = scratch("recover-segments");
+        let now = at(1_000);
+        let d = now.date_naive();
+        write_log(&dir.join(log_file_name(d, 0)), &[migrated(975), migrated(980)]);
+        write_log(&dir.join(log_file_name(d, 1)), &[migrated(985), migrated(990)]);
+        write_log(&dir.join(log_file_name(d, 2)), &[migrated(995)]);
+
+        let out = recover_armed(&dir, 30, now, &HashSet::new());
+
+        assert_eq!(
+            mints(&out.iter().filter_map(LoggedEvent::from_event).collect::<Vec<_>>()),
+            vec!["mint975", "mint980", "mint985", "mint990", "mint995"],
+            "every in-window event, in write order, across all three segments"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recent_log_files_orders_segments_within_a_day() {
+        let dir = scratch("select-segments");
+        for name in [
+            "events-2026-07-30.02.jsonl",
+            "events-2026-07-30.jsonl",
+            "events-2026-07-30.01.jsonl",
+            "events-2026-07-31.jsonl",
+        ] {
+            fs::write(dir.join(name), b"").expect("write");
+        }
+
+        let stop_before = chrono::DateTime::from_timestamp(0, 0)
+            .expect("ts")
+            .with_timezone(&chrono::Utc)
+            + chrono::Duration::days(20_664); // 2026-07-30
+        let picked = recent_log_files(&dir, stop_before);
+
+        let names: Vec<String> =
+            picked.iter().map(|p| p.file_name().unwrap().to_string_lossy().into()).collect();
+        // Legacy seq-0 file first: it IS the start of that day.
+        assert_eq!(
+            names,
+            vec![
+                "events-2026-07-30.jsonl",
+                "events-2026-07-30.01.jsonl",
+                "events-2026-07-30.02.jsonl",
+                "events-2026-07-31.jsonl",
+            ]
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_segment_rolls_on_size_and_the_cap_then_holds() {
+        // End-to-end over the real rotate/prune pair: writing far past the budget
+        // must leave the directory inside it, which is the property that failed.
+        let dir = scratch("roll");
+        let today = day("2026-08-09");
+        let lim = limits(4_000, 1_000);
+
+        let mut seq = next_seq_for(&dir, today);
+        let mut seg = rotate(&dir, &lim, today, seq).expect("open");
+        for i in 0..400 {
+            if seg.should_roll(today, &lim) {
+                seq += 1;
+                seg = rotate(&dir, &lim, today, seq).expect("roll");
+            }
+            let line = serde_json::to_string(&migrated(i)).expect("serialize");
+            writeln!(seg.writer, "{line}").expect("write");
+            seg.writer.flush().expect("flush");
+            seg.written += line.len() as u64 + 1;
+        }
+        drop(seg);
+
+        let total: u64 = fs::read_dir(&dir)
+            .expect("read dir")
+            .flatten()
+            .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
+            .sum();
+        assert!(seq > 0, "the day must have rolled into segments");
+        // One open segment may sit above the cap; everything behind it is evicted.
+        assert!(
+            total <= lim.max_total_bytes + lim.segment_bytes,
+            "directory unbounded: {total} bytes over a {} cap",
+            lim.max_total_bytes
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

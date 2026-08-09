@@ -35,7 +35,7 @@ use hunter_engine::event::{
     Effect, Event, ExitReason, Fill, IntentId, LoadedRule, PositionId, PositionStatus, RuleId,
 };
 use hunter_engine::event::{ArmedStateTag, PositionDelta};
-use hunter_engine::event_log::LoggedEvent;
+use hunter_engine::event_log::{parse_log_file_name, LogFileName, LoggedEvent};
 use hunter_engine::fingerprint::Fingerprint as EngineFingerprint;
 use hunter_engine::metrics::Ts;
 use hunter_engine::{reduce, EngineState};
@@ -79,27 +79,27 @@ pub fn resolve_dir(req_dir: Option<&str>) -> PathBuf {
     }
 }
 
-/// Read the `events-YYYY-MM-DD.jsonl` day-files in `dir` (all, or just `date` if
-/// given), oldest day first, returning the file names read plus the parsed events in
-/// file order. Unparseable lines are skipped. (Filename convention mirrors the live
-/// recorder in `live/src/strategies/engine/event_log.rs`.)
+/// Read the log files in `dir` (all, or just `date` if given), oldest first,
+/// returning the file names read plus the parsed events in file order. Unparseable
+/// lines are skipped.
+///
+/// A day is one file until it outgrows `EVENT_LOG_SEGMENT_BYTES`, then several
+/// (`events-YYYY-MM-DD.NN.jsonl`) — so a `date` filter matches every segment of that
+/// day, and the sort key is `(date, seq)`. The name convention is single-sourced in
+/// `hunter_engine::event_log`; do not re-parse it here.
 pub fn read_logs(dir: &Path, date: Option<&str>) -> std::io::Result<(Vec<String>, Vec<LoggedEvent>)> {
     let want: Option<NaiveDate> = date.and_then(|d| NaiveDate::parse_from_str(d.trim(), "%Y-%m-%d").ok());
-    let mut files: Vec<(NaiveDate, PathBuf, String)> = Vec::new();
+    let mut files: Vec<(LogFileName, PathBuf, String)> = Vec::new();
     for entry in std::fs::read_dir(dir)?.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        let Some(d) = name
-            .strip_prefix("events-")
-            .and_then(|s| s.strip_suffix(".jsonl"))
-            .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-        else {
+        let Some(parsed) = parse_log_file_name(name) else {
             continue;
         };
-        if want.is_some_and(|w| w != d) {
+        if want.is_some_and(|w| w != parsed.date) {
             continue;
         }
-        files.push((d, entry.path(), name.to_string()));
+        files.push((parsed, entry.path(), name.to_string()));
     }
     files.sort_by_key(|a| a.0);
 

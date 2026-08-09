@@ -1,239 +1,124 @@
 # EC2 disk housekeeping (live box)
 
-Ops runbook for the **deployed hunter-live EC2** (2vCPU / ~4GB RAM, single
-root volume). Goal: keep the box from filling the disk again — a full disk
-stops Postgres writes, kills `live-api`, and nginx returns **502** for every
-`/api` request. Ingest cannot backfill the gap.
+Disk-full runbook for the deployed hunter-live EC2. A full disk stops Postgres writes
+and nginx 502s every `/api` request — **check `df -h /` first when the site 502s.**
 
-Related: command reference in [DOCKER.md](DOCKER.md).
-
----
-
-## Incident pattern (2026-07-23)
-
-| UTC time | What happened |
-| --- | --- |
-| ~20:47–20:56 | Containers flapping; journal under memory pressure |
-| **20:58:03** | `No space left on device` (journald + rsyslog) |
-| **20:58:09** | Last `trades` row written |
-| 20:58 → 22:35 | Disk full → API/DB unusable → site **502** |
-| **22:35–22:36** | Manual `docker compose` restart → ingest resumes |
-
-Gap in DB: ~1h38m with zero trades/tokens. Root cause was **disk full**, not
-Helius or a code bug.
-
-Typical fillers on this box:
-
-| Hog | Order of size | Cause |
-| --- | --- | --- |
-| Docker **build cache** (`containerd` snapshots) | tens of GB | repeated `docker compose build` / `up --build` **on the live EC2** |
-| Unused images (forge/lab/old stacks) | tens of GB | leftover after rebuilds |
-| Orphan volumes (e.g. `meme-trading_pgdata`) | several GB | old compose projects |
-| Journals + syslog | a few GB | crash-looping leftover systemd units |
-
----
-
-## SSH
+[DOCKER.md](DOCKER.md) · retention sizing:
+[raw-txs-storage.md](../hunter/docs/plans/database/raw-txs-storage.md)
 
 ```bash
 ssh -i ~/.ssh/aws-ec2-key.pem ubuntu@54.93.174.192
 ```
 
-Repo on the box is typically `~/trade-launch-bot` (or your checkout path).
-Always pass `--env-file hunter/.env` to hunter compose commands.
-
----
-
-## 0) Sanity check (before and after)
+## Diagnose
 
 ```bash
-df -h /
-docker system df
-docker ps --format 'table {{.Names}}\t{{.Status}}'
+df -h /                                                       # target < 80%
+docker system df                                              # images / volumes / build cache
+sudo du -xh --max-depth=1 / | sort -rh | head -20
+sudo du -xh --max-depth=1 /var/lib/docker/volumes | sort -rh  # pgdata vs eventlog
 ```
 
-Targets after cleanup: root well under ~80% (prefer >20–30GB free), hunter
-containers `Up` / postgres `healthy`.
+```bash
+# Where the DB space went. pg_total_relation_size includes TOAST — pg_toast_* rows
+# beside a chunk are the same bytes twice, don't sum them.
+docker exec hunter-postgres psql -U postgres -d hunter_bot -c "
+SELECT c.oid::regclass AS relation, pg_size_pretty(pg_total_relation_size(c.oid)) AS size
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('r','m','t') ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 25;"
+```
 
----
-
-## 1) Free Docker disk (keep `hunter-pgdata`)
-
-### Safe prune
+## Reclaim — Docker
 
 ```bash
-# Build cache — usually the largest reclaim. CAP IT, don't empty it (see below).
-docker builder prune -f --keep-storage 20GB
-
-# Unused images (not referenced by a running container)
+docker builder prune -f --keep-storage 20GB   # largest reclaim; see warning
 docker image prune -af
-
-# Stopped containers / unused networks
 docker container prune -f
 docker network prune -f
 ```
 
-> ⚠ **Never `docker builder prune -af` on a box you also build on.** The `-a`
-> deletes *cache mounts* too, and `target/` lives only in a cache mount
-> (`deploy/*/api.Dockerfile`) — so it throws away every dependency cargo-chef
-> cooked. The next build is then a full cold compile of ~400 crates, which is
-> exactly the "caching is configured but rebuilds are still slow" symptom.
-> `--keep-storage` reclaims the oldest cache first and stops at the cap, which
-> frees the disk without resetting the compile.
->
-> `docker image prune -af` is fine to keep: it removes *unused runtime images*.
-> It does also drop untagged intermediate build stages, so the `cargo install
-> cargo-chef` layer recompiles (~2 min) on the next build — cheap next to a cold
-> dependency tree.
+> ⚠ **Never `docker builder prune -af` on a box you also build on** — `-a` deletes cache
+> mounts, and `target/` lives only in one, so the next build is a cold ~400-crate compile.
 
-### Orphan volumes — review, then remove by name
+Orphan volumes — list, confirm unused, remove **by name**. Never `hunter-pgdata`:
 
 ```bash
 docker volume ls
-docker system df -v
-```
-
-Remove only volumes you confirm are unused. **Never** delete `hunter-pgdata`
-(or `forge-pgdata` if forge is still needed on this host).
-
-```bash
-# examples — only after you confirm unused:
 docker volume rm meme-trading_pgdata
-docker volume rm forge-pgdata
-docker volume rm forge-lakedata
-docker volume rm hunter_pgdata   # underscore name — NOT the same as hunter-pgdata
 ```
 
-### Do not run
+**Do not run:** `docker volume prune` · `docker compose ... down -v` ·
+`docker system prune -a --volumes` — each can delete the database.
+
+## Reclaim — Postgres
+
+`drop_chunks` is a `DROP TABLE` per chunk: space returns to the OS at once, no `VACUUM`.
 
 ```bash
-docker volume prune          # can wipe named volumes if unused by a container
-docker compose ... down -v   # deletes the DB volume
-docker system prune -a --volumes
+docker exec hunter-postgres psql -U postgres -d hunter_bot -c \
+  "SELECT drop_chunks('raw_txs', older_than => INTERVAL '3 days');"
 ```
 
-Confirm:
+To change a retention policy, edit `hunter/core/migrations/0001_init.sql` and apply via
+[scripts/squash-catchup.sql](../scripts/squash-catchup.sql) — don't hand-edit policies on
+the box or they drift from the migration.
+
+## Reclaim — event log
+
+Bounded by `EVENT_LOG_MAX_BYTES` in the box's `hunter/.env` (**set 536870912 = 512 MiB
+here**), enforced at every segment rotation. If the directory is over that, the setting
+isn't live — `docker restart` does **not** re-read `env_file`:
 
 ```bash
-df -h /
-docker system df
-docker ps
+grep EVENT_LOG ~/trade-launch-bot/hunter/.env
+docker compose --env-file hunter/.env -f deploy/hunter.compose.yml up -d live-api
 ```
 
----
-
-## 2) Disable zombie systemd services
-
-Old host units (pre-docker stacks) can crash-loop forever, spam syslog/journal,
-and burn CPU on the small box. Restart counters in the 100k+ range are a red flag.
-
-List candidates:
+Manual reclaim, safe with `live-api` running. Dry run, then delete all but the newest 3
+segments — never the newest, that's the open one:
 
 ```bash
-systemctl list-units --type=service --state=failed,activating,active \
-  | grep -Ei 'pump|scalper|bonk|nats|tx-publisher|analyzer'
-systemctl list-unit-files | grep -Ei 'pump|scalper|bonk|analyzer'
+sudo bash -c "cd /var/lib/docker/volumes/hunter-eventlog/_data/event_log && ls -1 events-*.jsonl | sort | head -n -3"
+sudo bash -c "cd /var/lib/docker/volumes/hunter-eventlog/_data/event_log && ls -1 events-*.jsonl | sort | head -n -3 | xargs -r rm -v"
 ```
 
-Disable + stop (skip any name that is “not found”):
+If one file is huge, the writer holds it open — `truncate`, never `rm`:
 
 ```bash
-sudo systemctl disable --now \
-  pumpswap-frontend.service \
-  pumpswap-backend.service \
-  scalper-dashboard.service \
-  scalper-bot.service \
-  bonk-frontend.service \
-  bonk-backend.service \
-  pumpfun-analyzer-frontend.service \
-  pumpfun-analyzer-backend.service
+sudo truncate -s 0 /var/lib/docker/volumes/hunter-eventlog/_data/event_log/events-$(date -u +%F).jsonl
 ```
 
-Optional leftovers:
-
-```bash
-sudo systemctl disable --now nats 2>/dev/null || true
-docker rm nats 2>/dev/null || true   # only if the exited nats container is unused
-```
-
-Trim log bulk after stopping the loops:
+## Reclaim — host logs
 
 ```bash
 sudo journalctl --vacuum-size=200M
-sudo logrotate -f /etc/logrotate.conf
-# nuclear (loses local syslog history):
-# sudo truncate -s 0 /var/log/syslog
+sudo apt-get clean
+systemctl list-units --type=service --state=failed,activating,active \
+  | grep -Ei 'pump|scalper|bonk|nats|analyzer'          # zombie pre-docker units
+sudo systemctl disable --now <unit>...
 ```
 
----
+## Prevent
 
-## 3) Avoid filling the disk again
-
-### Prefer on the live box
+Pull and restart — do **not** rebuild on EC2. If you must, name the services (a bare
+`--build` also builds `lab-api`, which compiles libduckdb):
 
 ```bash
-cd ~/trade-launch-bot
-git pull
-docker compose --env-file hunter/.env -f deploy/hunter.compose.yml \
-  up -d postgres live-api live-ui
+cd ~/trade-launch-bot && git pull
+docker compose --env-file hunter/.env -f deploy/hunter.compose.yml up -d postgres live-api live-ui
+docker compose --env-file hunter/.env -f deploy/hunter.compose.yml up -d --build postgres live-api live-ui
 ```
-
-Pull/restart existing images. Do **not** rebuild on EC2 unless you must.
-
-### Avoid on EC2
 
 ```bash
-docker compose ... build
-docker compose ... up -d --build
+df -P / | awk 'NR==2 {gsub(/%/,"",$5); if ($5+0 >= 85) exit 1}'   # exit 1 if root >= 85%
 ```
 
-Build on the workstation (or CI), push/pull images, then `up -d` on the server.
-
-If you must build on EC2, build **only the live services** — a bare `--build`
-also builds `lab-api`, which compiles the bundled libduckdb C++ amalgamation
-(tens of GB of build cache, many minutes) and has no business on this box:
-
-```bash
-docker compose --env-file hunter/.env -f deploy/hunter.compose.yml \
-  up -d --build postgres live-api live-ui
-```
-
-Then cap the cache rather than emptying it — `-af` deletes the cache mounts and
-guarantees the next build is a cold compile:
-
-```bash
-docker builder prune -f --keep-storage 20GB
-```
-
-### Watch disk
-
-```bash
-watch -n 30 'df -h /; echo; docker system df'
-```
-
-Simple threshold check (exit 1 if root >= 85%):
-
-```bash
-df -P / | awk 'NR==2 {gsub(/%/,"",$5); if ($5+0 >= 85) exit 1}'
-```
-
-Other constraints that bite this box:
-
-- **No swap** — memory pressure + heavy builds amplify risk.
-- Ship **hunter live only** to EC2; lab/forge builds and DuckDB stay on the workstation.
-- Do not raise cache caps / retention on the server to “make analysis easier”.
-
----
-
-## After cleanup — hunter healthy?
+## Verify
 
 ```bash
 docker ps
 docker logs --tail 50 hunter-live-api
 docker exec hunter-postgres psql -U postgres -d hunter_bot -c \
-  "SELECT max(block_time) AS last_trade FROM trades;"
+  "SELECT max(block_time) AS last_trade FROM trades;"   # should be within a minute or two
 df -h /
 ```
-
-While ingest is live, `last_trade` should advance within the last minute or two.
-If the site 502s again, check `df -h /` first — ENOSPC before anything else.
