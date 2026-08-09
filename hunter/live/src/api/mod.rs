@@ -160,6 +160,10 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/portfolio/positions/query",
                 web::post().to(handlers::trading::query_portfolio_positions),
             )
+            .route(
+                "/portfolio/positions/summary",
+                web::post().to(handlers::trading::query_portfolio_positions_summary),
+            )
             .route("/portfolio/positions", web::get().to(handlers::trading::get_portfolio_positions))
             .route(
                 "/portfolio/recent-closes",

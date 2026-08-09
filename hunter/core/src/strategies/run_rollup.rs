@@ -47,6 +47,19 @@ pub struct RunRollup {
 ///   realized SOL / % from the position's own [`StrategyPosition::realized_pnl_sol`]
 ///   / [`StrategyPosition::pnl_pct`] — the same accessors the Console and the
 ///   positions summary report, so a run's total can't disagree with its rows.
+///
+/// Since 0006 `pnl_pct` is a **capital** return (`pnl_sol / entry_sol`), not a
+/// price ratio, so each outcome's `pnl_percent` and `pnl_sol` now agree in sign —
+/// the same basis the sweep and simulate already fed the kernel (their percent
+/// comes out of `round_trip_with_costs`). One residual asymmetry remains and is
+/// deliberate: [`RunMetrics::mean_pnl_pct`](crate::strategies::kernel::RunMetrics)
+/// is the equal-weighted mean of those per-trade percents. Under the fixed
+/// notional a backtest uses that IS the capital-weighted return; a live rule
+/// whose `buy_amount_lamports` changed mid-run has varying notionals, so its
+/// stored mean can differ from `PositionsSummary::return_pct`, which is the
+/// capital-weighted figure every live surface shows. Closing that gap needs a
+/// per-outcome notional on [`TokenOutcome`] (and a `strategy_run_metrics`
+/// column), which is why the run-metrics row is not the headline anywhere.
 pub fn position_outcome(p: &StrategyPosition) -> TokenOutcome {
     if !p.is_entered() {
         return TokenOutcome::no_entry();

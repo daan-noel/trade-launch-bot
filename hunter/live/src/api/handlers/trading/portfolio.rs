@@ -359,3 +359,28 @@ pub async fn query_portfolio_positions(
     )
     .await
 }
+
+/// `POST /api/portfolio/positions/summary`
+///
+/// The aggregate twin of [`query_portfolio_positions`] — same body, same cohort,
+/// so the Console History summary strip can't disagree with the table under it.
+/// Open positions are marked to market from the live in-memory token cache (no DB
+/// or RPC round-trip), exactly as the per-rule summary does.
+pub async fn query_portfolio_positions_summary(
+    app_state: web::Data<Arc<DeployState>>,
+    body: web::Json<TableRequest>,
+) -> impl Responder {
+    let token_cache = app_state.token_cache.clone();
+    let price_of = |mint: &str| -> Option<f64> {
+        token_cache
+            .get(mint)
+            .and_then(|e| e.value().current_price)
+            .filter(|p| p.is_finite() && *p > 0.0)
+    };
+    trading_core::api::handlers::strategies::rule_positions::portfolio_positions_summary(
+        &app_state.strategy_repo,
+        body.into_inner(),
+        price_of,
+    )
+    .await
+}

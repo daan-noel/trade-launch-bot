@@ -104,8 +104,15 @@ export interface StrategyRule {
   loss_count?: number;
   /** 0–100. */
   win_rate?: number;
-  avg_pnl_pct?: number;
+  /** **Canonical return %** — capital-weighted (`total_pnl_sol /
+   *  closed_entry_sol × 100`), so it is sign-locked to `total_pnl_sol`. */
+  return_pct?: number;
   total_pnl_sol?: number;
+  /** `return_pct`'s own denominator: the entry cost of this rule's CLOSED
+   *  positions. Present so the Rules TOTAL tile can aggregate across rules by
+   *  capital; weighting the per-rule percents by trade count instead lets a rule
+   *  buying 0.05 SOL outvote one buying 1.0 SOL. */
+  closed_entry_sol?: number;
 }
 
 /** One activation session of a rule — Evidence run navigator wire shape. */

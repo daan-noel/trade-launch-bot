@@ -105,6 +105,22 @@ never the shared `store/apiSlice` barrel. See [docs/arch/frontend.md](docs/arch/
 Stay in the owning crate. Use `--target-dir target-check` if a bin `.exe` is running.
 Clippy `too_many_arguments` is `#[allow]`-ed on trade-path fns by design.
 
+## PnL % is money over capital (locked)
+
+**A percent shown beside a SOL figure is that SOL over the capital that produced it** —
+`weighted_return_pct(Σ pnl_sol, Σ entry_sol)` (`strategies::kernel`, the ONE formula, at
+every grain: position / rule / run / window). Never a **price ratio** (it charges no
+execution cost — break-even is ~4% of price move — so it renders green beside a red ◎)
+and never a **mean of other percents** (`buy_amount_lamports` is editable mid-run, so
+notionals vary; count-weighting lets a 0.05 ◎ rule outvote a 1.0 ◎ one). The denominator
+is `closed_entry_sol`, **not** `total_entry_sol` — the latter includes open positions.
+An aggregate re-weights by carrying both sums, never by averaging children's percents,
+which is why the counters + summary wire ships `closed_entry_sol`. Sign-lock is the
+invariant to protect: percent and ◎ can never point opposite ways. The deliberate
+exception is `RunMetrics::mean_pnl_pct` (equal-weighted; exact under a backtest's fixed
+notional). Full rationale, the four fixed defects, and the residual gap:
+[docs/plans/strategies/pnl-percent-definition.md](docs/plans/strategies/pnl-percent-definition.md).
+
 ## Performance budgets (hot path — violation = bug)
 
 - **Sell-confirm:** no new RPC call — confirm via the `trades` gRPC feed. An RPC poll

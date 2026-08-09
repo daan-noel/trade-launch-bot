@@ -73,7 +73,16 @@ export interface RunMetrics {
   total_pnl_sol: number;
   open_pnl_sol: number;
   expectancy_sol: number;
+  /** Equal-weighted mean of the per-trade returns. Under the fixed notional a
+   *  backtest uses, this equals the capital-weighted return; a live rule whose
+   *  buy size changed mid-run has varying notionals, so those surfaces send
+   *  `return_pct` as well and the tile prefers it. */
   mean_pnl_pct: number;
+  /** **Capital-weighted** realized return (`Σ pnl / Σ closed entry × 100`) —
+   *  present only where the notional can vary (the live/paper positions
+   *  summary). When set it REPLACES the Mean % tile, because with mixed trade
+   *  sizes the mean is the figure that can disagree with Total PnL, not this. */
+  return_pct?: number | null;
   /** Nullable because not every surface can compute an interior quantile: the
    *  backend always sends a number, but the live/paper card maps from a SQL
    *  aggregate that has no per-position distribution, and rendering `+0%` there
@@ -618,7 +627,12 @@ function bandStats(m: RunMetrics, extended = false): SummaryStat[] {
       cls: empty ? undefined : goodBad(m.profit_factor ?? 10, 1),
     },
     { label: 'Median %', value: empty ? '—' : pctText(m.median_pnl_pct), cls: empty ? undefined : pctGradeClass(m.median_pnl_pct) },
-    { label: 'Mean %', value: empty ? '—' : pctText(m.mean_pnl_pct), cls: empty ? undefined : pctGradeClass(m.mean_pnl_pct) },
+    // Capital-weighted where the surface can supply it (live/paper, where the
+    // buy size can vary between positions), else the equal-weighted mean — which
+    // IS the capital-weighted return under a backtest's fixed notional.
+    m.return_pct != null
+      ? { label: 'Return %', value: empty ? '—' : pctText(m.return_pct), cls: empty ? undefined : pctGradeClass(m.return_pct) }
+      : { label: 'Mean %', value: empty ? '—' : pctText(m.mean_pnl_pct), cls: empty ? undefined : pctGradeClass(m.mean_pnl_pct) },
     { label: 'Best %', value: empty ? '—' : pctText(m.best_pnl_pct), cls: empty ? undefined : pctGradeClass(m.best_pnl_pct) },
     { label: 'Worst %', value: empty ? '—' : pctText(m.worst_pnl_pct), cls: empty ? undefined : pctGradeClass(m.worst_pnl_pct) },
   ];

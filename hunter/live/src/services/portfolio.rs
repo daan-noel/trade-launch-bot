@@ -386,6 +386,13 @@ pub struct PortfolioPerformance {
     pub win: i64,
     pub loss: i64,
     pub win_rate: f64,
+    /// Capital deployed across every closed position in the window (human SOL).
+    pub closed_entry_sol: f64,
+    /// **Canonical return %** for the whole window — `realized_pnl_sol /
+    /// closed_entry_sol × 100`. Summed over the rules' own numerators and
+    /// denominators, NOT averaged over their percents: a rule buying 0.05 SOL
+    /// must not carry the same weight as one buying 1.0 SOL.
+    pub return_pct: f64,
     pub by_rule: Vec<trading_core::storage::repositories::strategy_repo::RulePeriodPnlRow>,
 }
 
@@ -425,6 +432,12 @@ pub async fn performance(
     let win: i64 = by_rule.iter().map(|r| r.win).sum();
     let loss: i64 = by_rule.iter().map(|r| r.loss).sum();
     let realized_pnl_sol: f64 = by_rule.iter().map(|r| r.realized_pnl_sol).sum();
+    // Σ pnl / Σ capital across the rules — never a mean of their percents.
+    let closed_entry_sol: f64 = by_rule.iter().map(|r| r.closed_entry_sol).sum();
+    let return_pct = trading_core::strategies::kernel::weighted_return_pct(
+        realized_pnl_sol,
+        closed_entry_sol,
+    );
     let win_rate = if closed > 0 {
         (win as f64 / closed as f64) * 100.0
     } else {
@@ -439,6 +452,8 @@ pub async fn performance(
         win,
         loss,
         win_rate,
+        closed_entry_sol,
+        return_pct,
         by_rule,
     })
 }

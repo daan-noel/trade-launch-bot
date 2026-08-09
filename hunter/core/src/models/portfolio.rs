@@ -9,6 +9,8 @@
 use serde::Serialize;
 use uuid::Uuid;
 
+use crate::strategies::kernel::weighted_return_pct;
+
 /// "Who manages this mint" — one open (unsettled) strategy position, tagged with
 /// its rule's human name. The cross-strategy bot-correlation read backing the
 /// Holdings bot badge and (later) the Trade-page interlock: a manual sell must not
@@ -36,8 +38,13 @@ pub struct UnrealizedPnl {
     pub cost_basis_sol: f64,
     /// Mark-to-market gain/loss: `(current_mark − avg_entry_price) × held_amount`.
     pub unrealized_pnl_sol: f64,
-    /// Percent off entry: `(current_mark − avg_entry_price) / avg_entry_price × 100`
-    /// (0 when there is no basis).
+    /// `unrealized_pnl_sol / cost_basis_sol × 100` — the mark over the capital
+    /// still deployed in the bag (0 when there is no basis). Same
+    /// [`weighted_return_pct`](crate::strategies::kernel::weighted_return_pct)
+    /// definition every other percent in the codebase uses, so it is sign-locked
+    /// to `unrealized_pnl_sol`. It is a **gross** mark: an open bag has not paid
+    /// an exit leg yet, unlike the realized
+    /// [`StrategyPosition::pnl_pct`](crate::models::strategy::StrategyPosition::pnl_pct).
     pub unrealized_pnl_pct: f64,
 }
 
@@ -48,17 +55,20 @@ pub struct UnrealizedPnl {
 /// per the SAME token quantity `held_amount` is counted in (raw token units
 /// throughout this codebase — see
 /// [`crate::models::strategy::StrategyPosition::realized_pnl_sol`]), so the SOL
-/// outputs come out in human SOL. `avg_entry_price ≤ 0` ⇒ no basis, so
-/// `unrealized_pnl_pct` falls back to 0 (the SOL fields still reflect the mark).
+/// outputs come out in human SOL. No basis (`avg_entry_price ≤ 0`, or nothing
+/// held) ⇒ `unrealized_pnl_pct` falls back to 0 (the SOL fields still reflect the
+/// mark).
+///
+/// The percent goes through the shared [`weighted_return_pct`] rather than the
+/// equivalent price ratio `(current_mark − avg_entry_price) / avg_entry_price`.
+/// The two are algebraically identical here — `held_amount` cancels — but routing
+/// it through the one formula makes the sign-lock to `unrealized_pnl_sol`
+/// structural instead of a coincidence that a later edit could quietly break.
 pub fn unrealized_pnl(avg_entry_price: f64, current_mark: f64, held_amount: f64) -> UnrealizedPnl {
     let cost_basis_sol = avg_entry_price * held_amount;
     let current_value_sol = current_mark * held_amount;
     let unrealized_pnl_sol = current_value_sol - cost_basis_sol;
-    let unrealized_pnl_pct = if avg_entry_price > 0.0 {
-        (current_mark - avg_entry_price) / avg_entry_price * 100.0
-    } else {
-        0.0
-    };
+    let unrealized_pnl_pct = weighted_return_pct(unrealized_pnl_sol, cost_basis_sol);
     UnrealizedPnl { cost_basis_sol, unrealized_pnl_sol, unrealized_pnl_pct }
 }
 

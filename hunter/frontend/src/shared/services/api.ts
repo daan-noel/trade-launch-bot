@@ -143,6 +143,24 @@ export function fetchPortfolioPositionsPage(
   );
 }
 
+/**
+ * POST the **cross-rule** Positions Summary aggregate (Console History's summary
+ * strip). Aggregate twin of {@link fetchPortfolioPositionsPage}: identical body,
+ * identical cohort, pagination/sort ignored — so the strip totals exactly the
+ * population the table pages, past the current page and without shipping rows.
+ */
+export function fetchPortfolioPositionsSummary(
+  body: TableRequestBody,
+  signal?: AbortSignal,
+): Promise<import('types').PositionsSummary> {
+  return request(`${API_BASE}/api/portfolio/positions/summary`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  });
+}
+
 /** POST the filtered Positions Summary aggregate for a rule (same scope/filters as the table). */
 export function fetchRulePositionsSummary(
   strategySeg: string,

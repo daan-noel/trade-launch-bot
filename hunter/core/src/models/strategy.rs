@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use crate::strategies::kernel::weighted_return_pct;
+
 /// A configured rule for the generic fingerprint + metrics engine. Backs the
 /// `strategy_rules` table (0004 redesign schema). Columns say *how* the rule
 /// trades; `params` (JSONB) says *when* — strict `take_profit`/`stop_loss` plus
@@ -136,8 +138,13 @@ pub struct PositionsSummary {
     pub closed: i64,
     /// `win / closed * 100` (0 when nothing closed).
     pub win_rate: f64,
-    /// Mean realized PnL % across closed positions (0 when nothing closed).
-    pub avg_pnl_pct: f64,
+    /// **Canonical return %** — capital-weighted realized return over the closed
+    /// positions: `total_pnl_sol / closed_entry_sol × 100`, via
+    /// [`weighted_return_pct`]. NOT a mean of per-trade percents: a rule whose
+    /// buy size changed (`buy_amount_lamports` is editable mid-run) must weight
+    /// a 1.0 ◎ trade above a 0.05 ◎ one. Sign-locked to `total_pnl_sol`.
+    /// 0 when nothing closed.
+    pub return_pct: f64,
     /// Sum of realized SOL PnL across closed positions (human SOL).
     pub total_pnl_sol: f64,
     /// **Unrealized** counterpart to `total_pnl_sol`: the sum of still-open
@@ -151,8 +158,16 @@ pub struct PositionsSummary {
     /// `0.0` when nothing is open, or when no open position has a cached price yet
     /// (a just-entered token before its first post-entry trade).
     pub open_pnl_sol: f64,
-    /// Sum of entry cost across entered positions (human SOL).
+    /// Sum of entry cost across entered positions (human SOL). Includes the
+    /// still-open ones, so it is **not** the denominator of a realized return —
+    /// use `closed_entry_sol` for that.
     pub total_entry_sol: f64,
+    /// Entry cost of the **closed** positions only (human SOL) — the exact
+    /// denominator behind `return_pct`, shipped so a caller aggregating several
+    /// scopes (the Rules total tile) can re-weight by capital instead of by
+    /// trade count. Dividing `total_pnl_sol` by `total_entry_sol` instead
+    /// understates the return by the open positions' share of capital.
+    pub closed_entry_sol: f64,
     /// Entry cost still deployed in open (holding) positions (human SOL).
     pub total_holding_sol: f64,
     /// Sum of positive realized PnL across winning closes (human SOL).
@@ -361,12 +376,28 @@ impl StrategyPosition {
         Some(exit - entry)
     }
 
-    /// Realized PnL % off the entry price. Mirrors `strategy_position_pnl.pnl_pct`.
+    /// Realized PnL as a percent of the SOL actually **deployed** —
+    /// `realized_pnl_sol / entry_sol × 100`, i.e. the per-position grain of the
+    /// canonical [`weighted_return_pct`]. Mirrors `strategy_position_pnl.pnl_pct`
+    /// and the repo's `PNL_PCT_SQL` (the sort/filter expression).
+    ///
+    /// This is a **money** return, not a price return. It used to be
+    /// `(exit_price - entry_price) / entry_price`, which had two defects:
+    ///
+    /// * It charged no execution cost. At 125 bps/leg plus the fixed tip a round
+    ///   trip needs roughly a **+4% price move just to break even**, so every
+    ///   trade between 0% and break-even rendered a green % next to a red ◎ —
+    ///   the exact `+%`/`−◎` contradiction [`weighted_return_pct`] was
+    ///   introduced to kill on the aggregate surfaces.
+    /// * It read `exit_price`, which stamps only the **last** sell leg, while
+    ///   [`Self::realized_pnl_sol`] sums **every** leg via [`realized_exit_sol`].
+    ///   On a scale-out the two headline numbers described different trades.
+    ///
+    /// Sign-locked to [`Self::realized_pnl_sol`] by construction: the
+    /// denominator is capital, which is always positive.
     pub fn pnl_pct(&self) -> Option<f64> {
-        match (self.entry_price, self.exit_price) {
-            (Some(entry), Some(exit)) if entry > 0.0 => Some((exit - entry) / entry * 100.0),
-            _ => None,
-        }
+        let entry_sol = self.entry_sol.filter(|e| *e > 0.0)?;
+        Some(weighted_return_pct(self.realized_pnl_sol()?, entry_sol))
     }
 
     /// A clean `End` exit that realized positive SOL — the win/loss classifier the
@@ -655,5 +686,83 @@ mod submitted_exit_sig_tests {
             p.exit_tx_sigs(),
             vec!["sigA".to_string(), "sigB".to_string(), "sigC".to_string()]
         );
+    }
+}
+
+#[cfg(test)]
+mod pnl_pct_tests {
+    use super::*;
+
+    /// A closed position: `entry_sol` in, `exit_sol` out, at the given prices.
+    fn closed(entry_sol: f64, exit_sol: f64, entry_price: f64, exit_price: f64) -> StrategyPosition {
+        let mut p = StrategyPosition::new(
+            Uuid::new_v4(),
+            "generic".to_string(),
+            Uuid::new_v4(),
+            "real".to_string(),
+            "MINT".to_string(),
+            "WALLET".to_string(),
+        );
+        p.status = "End".to_string();
+        p.entry_sol = Some(entry_sol);
+        p.entry_price = Some(entry_price);
+        p.exit_sol = Some(exit_sol);
+        p.exit_price = Some(exit_price);
+        p
+    }
+
+    /// The headline defect this formula was changed to fix: the price moved up,
+    /// but the round trip lost SOL after fees. A price ratio reports +2% (green)
+    /// next to a negative SOL figure (red); a capital return cannot.
+    #[test]
+    fn a_price_gain_that_lost_money_reports_a_loss() {
+        // Price +2%, but only 0.098 SOL came back out of 0.1 in — the spread the
+        // venue fee + tip + impact ate.
+        let p = closed(0.1, 0.098, 1.0, 1.02);
+        let pct = p.pnl_pct().expect("closed position has a percent");
+        assert!(pct < 0.0, "expected a loss, got {pct}%");
+        assert!((pct - (-2.0)).abs() < 1e-9, "expected -2%, got {pct}%");
+        assert!(p.realized_pnl_sol().unwrap() < 0.0);
+    }
+
+    /// Sign-lock: the percent and the SOL figure are the same number over a
+    /// positive denominator, so they can never point opposite ways.
+    #[test]
+    fn sign_is_locked_to_realized_sol() {
+        for (entry, exit) in [(0.1, 0.15), (0.1, 0.05), (0.1, 0.1)] {
+            let p = closed(entry, exit, 1.0, 1.0);
+            let sol = p.realized_pnl_sol().unwrap();
+            let pct = p.pnl_pct().unwrap();
+            assert_eq!(
+                sol.partial_cmp(&0.0),
+                pct.partial_cmp(&0.0),
+                "sol {sol} and pct {pct} disagree"
+            );
+        }
+    }
+
+    /// A laddered exit books every leg. The old formula read `exit_price` — the
+    /// LAST leg only — so a position that sold most of its bag high and the tail
+    /// low reported the tail's price as the whole trade's outcome.
+    #[test]
+    fn scale_out_percent_reads_every_leg_not_the_last_price() {
+        let mut p = closed(0.1, 0.0, 1.0, 0.5); // last leg dumped at half price
+        p.sold_token_amount = 1_000;
+        p.exit_sol_total = 0.13; // 0.13 SOL actually came back across all legs
+        let pct = p.pnl_pct().expect("closed position has a percent");
+        assert!((pct - 30.0).abs() < 1e-9, "expected +30% on capital, got {pct}%");
+    }
+
+    /// No capital deployed ⇒ no return to report (never a fabricated 0%).
+    #[test]
+    fn unentered_and_open_rows_have_no_percent() {
+        let mut p = closed(0.1, 0.2, 1.0, 2.0);
+        p.entry_sol = None;
+        assert!(p.pnl_pct().is_none(), "an unentered row has no capital base");
+
+        let mut open = closed(0.1, 0.2, 1.0, 2.0);
+        open.exit_sol = None;
+        open.exit_sol_total = 0.0;
+        assert!(open.pnl_pct().is_none(), "an open row has no realized exit");
     }
 }

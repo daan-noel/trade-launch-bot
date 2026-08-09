@@ -36,8 +36,11 @@ pub async fn get_sol_price(state: web::Data<Arc<CoreState>>) -> impl Responder {
 /// outer layer is "did the request mention this key" and the inner one is the
 /// nullable value. A plain `Option<T>` collapses absent and `null` into the same
 /// `None`, which makes a nullable setting impossible to *clear* — the handler
-/// can't tell "don't touch it" from "set it back to blank". Slippage needs the
-/// distinction because blank is a real state (buy ⇒ default, sell ⇒ no floor).
+/// can't tell "don't touch it" from "set it back to blank". Every nullable
+/// setting needs the distinction, because blank is a real state for each of them
+/// (slippage: buy ⇒ default, sell ⇒ no floor; `max_committed_sol` ⇒ no ceiling).
+/// A nullable field declared as a plain `Option<T>` here is a bug: the UI clears
+/// it, the write is silently dropped, and the response re-renders the old value.
 fn patch_field<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
 where
     T: Deserialize<'de>,
@@ -74,8 +77,13 @@ pub struct UpdateSettingsRequest {
     /// and capped at the (effective) stall window so a stall can't slip a full cycle.
     pub watchdog_check_interval_secs: Option<u64>,
     /// Hard ceiling (SOL) on total SOL committed across all open real positions.
-    /// `None` = no explicit ceiling (balance-floor guard still applies).
-    pub max_committed_sol: Option<f64>,
+    /// Three-state on the wire (see [`patch_field`]): absent = untouched, `null`
+    /// = clear the ceiling (the balance-floor guard still applies), a number =
+    /// set it. `<= 0` and non-finite are a 400 — a `0` ceiling would read as "a
+    /// limit is configured" while blocking every real buy, and clearing the field
+    /// is how you say "no ceiling".
+    #[serde(default, deserialize_with = "patch_field")]
+    pub max_committed_sol: Option<Option<f64>>,
     /// Enable gap-replay on LaserStream reconnect. Present = toggle the setting.
     pub gap_replay_on_reconnect: Option<bool>,
     /// Maximum gap-replay window in seconds. Gaps beyond this use a full re-subscribe.
@@ -137,6 +145,19 @@ pub async fn update_settings(
                     "duplicate_identity_window_hours must be 1..={DUPLICATE_IDENTITY_WINDOW_MAX_HOURS} \
                      (use skip_duplicate_identity=false to disable the guard)"
                 ),
+            });
+        }
+    }
+
+    // A ceiling that is set must be a real positive amount: `0` (or a negative)
+    // would be persisted as "a limit is configured" and then block every real buy
+    // — the false-green shape again, since the UI would render a number while the
+    // guard behaves like a kill switch. `null` (field cleared) is the off state.
+    if let Some(Some(v)) = max_committed_sol {
+        if !v.is_finite() || v <= 0.0 {
+            return HttpResponse::BadRequest().json(ErrorBody {
+                error: "max_committed_sol must be greater than 0 — clear the field for no limit"
+                    .to_string(),
             });
         }
     }
@@ -208,6 +229,8 @@ pub async fn update_settings(
     if let Some(v) = check_clamped {
         entries.push((keys::WATCHDOG_CHECK_INTERVAL_SECS.key, json!(v)));
     }
+    // `json!(None::<f64>)` is JSON `null`, which `pick` decodes back to `None` —
+    // so a cleared ceiling round-trips as blank instead of being skipped.
     if let Some(v) = max_committed_sol {
         entries.push((keys::MAX_COMMITTED_SOL.key, json!(v)));
     }
@@ -275,7 +298,7 @@ pub async fn update_settings(
             s.watchdog_check_interval_secs = v;
         }
         if let Some(v) = max_committed_sol {
-            s.max_committed_sol = Some(v);
+            s.max_committed_sol = v;
         }
         if let Some(v) = gap_replay_on_reconnect {
             s.gap_replay_on_reconnect = v;
@@ -297,4 +320,44 @@ pub async fn update_settings(
 
     // `send_modify` runs the closure synchronously, so `updated` is always set.
     HttpResponse::Ok().json(updated.expect("modify_settings closure runs synchronously"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn patch(body: &str) -> UpdateSettingsRequest {
+        serde_json::from_str(body).expect("valid patch body")
+    }
+
+    /// Every nullable setting must survive the round trip *clearing* it: the UI
+    /// sends `null`, which has to arrive as `Some(None)` ("set it back to blank")
+    /// and not as `None` ("field absent, don't touch"). A plain `Option<T>`
+    /// collapses the two, and the failure is silent — the write is skipped, the
+    /// 200 carries the old value, and the input re-renders what the operator just
+    /// deleted. `max_committed_sol` shipped with exactly that bug.
+    #[test]
+    fn a_nullable_setting_distinguishes_cleared_from_absent() {
+        let absent = patch("{}");
+        assert!(absent.max_committed_sol.is_none());
+        assert!(absent.buy_slippage_bps.is_none());
+        assert!(absent.sell_slippage_bps.is_none());
+
+        let cleared = patch(r#"{"max_committed_sol":null,"buy_slippage_bps":null,"sell_slippage_bps":null}"#);
+        assert_eq!(cleared.max_committed_sol, Some(None));
+        assert_eq!(cleared.buy_slippage_bps, Some(None));
+        assert_eq!(cleared.sell_slippage_bps, Some(None));
+
+        let set = patch(r#"{"max_committed_sol":2.5,"buy_slippage_bps":1200}"#);
+        assert_eq!(set.max_committed_sol, Some(Some(2.5)));
+        assert_eq!(set.buy_slippage_bps, Some(Some(1200)));
+    }
+
+    /// A cleared ceiling must be *persisted* as JSON `null`, not skipped — that is
+    /// what `pick` decodes back to `None` on the next boot.
+    #[test]
+    fn a_cleared_ceiling_persists_as_json_null() {
+        assert_eq!(json!(None::<f64>), Value::Null);
+        assert_eq!(json!(Some(2.5)), json!(2.5));
+    }
 }

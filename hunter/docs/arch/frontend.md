@@ -70,8 +70,10 @@ outright (there is no session-local closes buffer any more — see "Live Status 
 Detail: [review-surfaces.md](../plans/frontend/review-surfaces.md).
 
 Portfolio = the **keep/kill review board** (default window `7d`): window spark + realized,
-named decay alerts → Rules, ranked PnL bars + compact table (Rule · PnL · Exp · Form · N ·
-History). Bar/row click highlights (`?rule=`); rule name → Rules; History link → Console.
+named decay alerts → Rules, ranked PnL bars + compact table (Rule · PnL · Return% · Exp ·
+Form · N · History). The window headline carries `return_pct` beside the realized ◎, and
+both re-derive from `Σ pnl / Σ closed_entry_sol` when the row set narrows (filter / decay
+toggle) — never a mean of the surviving rules' percents. Bar/row click highlights (`?rule=`); rule name → Rules; History link → Console.
 Calendar-window closes, not
 Rules Control current-run scores. Rules =
 **Control** (TOTAL rollup + activate/pause + scoreboard scoped current-run / all-time) +
@@ -113,10 +115,15 @@ Mount points in live `App` `NotificationMount`: `useLiveStatusBootstrap`,
 `usePortfolioRealtime`, `useWalletMarksLive`, `useTokenTradesLiveBootstrap`,
 `usePositionNotifications`. Tokens STREAM fallback poll defaults to 90s.
 Rule Evidence (embedded on Rules Control + `/strategies/rules/:ruleId`) reloads history only on
-open/close edges (not ExitPending). Rules scoreboard columns (`PnL` / `Avg%` / `Exp` /
+open/close edges (not ExitPending). Rules scoreboard columns (`PnL` / `Return%` / `Exp` /
 `Win%` / `W/L` / `N`) come from `GET /api/strategy-rules?score_scope=current|all`
 (`current` = latest run both modes; `all` = real all-time / paper latest). `Exp` is
-client-derived expectancy (`PnL / closed`). Evidence run chips use
+client-derived expectancy (`PnL / closed`). `Return%` is the server's capital-weighted
+`return_pct`; the **TOTAL** tile re-derives it as `Σ total_pnl_sol / Σ closed_entry_sol`
+(that denominator is shipped for exactly this) and refuses a single figure when both
+modes are on screen — real ◎ and paper ◎ are not one currency, the same rule the PnL
+tile already followed. Never roll it up by trade count: see
+[docs/plans/strategies/pnl-percent-definition.md](../plans/strategies/pnl-percent-definition.md). Evidence run chips use
 `GET /api/strategy-rules/{id}/runs`; positions use `scope=current|run|all`.
 **Both apps serve all four routes** (lab off the synced mirror), so the lab Rules page is
 the same cockpit — scoreboard + TOTAL rollup + Evidence — over the traded results. The one

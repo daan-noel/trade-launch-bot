@@ -260,8 +260,18 @@ pub struct RuleCounters {
     pub win_count: i64,
     pub loss_count: i64,
     pub win_rate: f64,
-    pub avg_pnl_pct: f64,
+    /// **Canonical return %** — capital-weighted (`total_pnl_sol /
+    /// closed_entry_sol × 100`, via [`weighted_return_pct`]), so it is
+    /// sign-locked to `total_pnl_sol`.
+    pub return_pct: f64,
     pub total_pnl_sol: f64,
+    /// Entry cost of this rule's **closed** positions (human SOL) — `return_pct`'s
+    /// denominator, shipped to the frontend so the Rules **total** tile can
+    /// aggregate across rules by capital (`Σ pnl / Σ closed_entry`) instead of by
+    /// trade count. Weighting a per-rule percent by trade count lets a rule buying
+    /// 0.05 SOL outvote one buying 1.0 SOL and can print a green total on a losing
+    /// book — the exact failure `return_pct` exists to prevent, one level up.
+    pub closed_entry_sol: f64,
 }
 
 /// One rule's closed-trade rollup over a calendar window — Portfolio page.
@@ -274,7 +284,17 @@ pub struct RulePeriodPnlRow {
     pub loss: i64,
     pub win_rate: f64,
     pub realized_pnl_sol: f64,
-    pub total_entry_sol: f64,
+    /// Entry cost of the closed positions in the window (human SOL) — the query
+    /// is already `status = 'End'`-scoped, so every SOL here is settled capital.
+    /// Named for the scope (not `total_entry_sol`) so it can't be mistaken for
+    /// the summary's all-entered figure, which includes open positions and is
+    /// therefore the wrong denominator for a realized return.
+    pub closed_entry_sol: f64,
+    /// **Canonical return %** for the window — `realized_pnl_sol /
+    /// closed_entry_sol × 100` via [`weighted_return_pct`]. Derived here rather
+    /// than in the frontend so the Portfolio table's percent is the same
+    /// definition (and the same code) as the Rules board's.
+    pub return_pct: f64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -304,7 +324,11 @@ impl From<RulePeriodPnlDbRow> for RulePeriodPnlRow {
             loss: r.loss,
             win_rate,
             realized_pnl_sol: lamports_to_sol(r.total_pnl_lamports),
-            total_entry_sol: lamports_to_sol(r.total_entry_lamports),
+            closed_entry_sol: lamports_to_sol(r.total_entry_lamports),
+            return_pct: weighted_return_pct(
+                r.total_pnl_lamports as f64,
+                r.total_entry_lamports as f64,
+            ),
         }
     }
 }
@@ -423,7 +447,7 @@ fn map_rule_counters(rows: Vec<RuleCountersRow>) -> HashMap<Uuid, RuleCounters> 
             let closed = r.win + r.loss;
             let win_rate = if closed > 0 { r.win as f64 / closed as f64 * 100.0 } else { 0.0 };
             // Canonical capital-weighted return — sign-locked to `total_pnl_sol`.
-            let avg_pnl_pct =
+            let return_pct =
                 weighted_return_pct(r.total_pnl_lamports as f64, r.closed_entry_lamports as f64);
             (
                 r.rule_id,
@@ -434,8 +458,9 @@ fn map_rule_counters(rows: Vec<RuleCountersRow>) -> HashMap<Uuid, RuleCounters> 
                     win_count: r.win,
                     loss_count: r.loss,
                     win_rate,
-                    avg_pnl_pct,
+                    return_pct,
                     total_pnl_sol: lamports_to_sol(r.total_pnl_lamports),
+                    closed_entry_sol: lamports_to_sol(r.closed_entry_lamports),
                 },
             )
         })
@@ -642,21 +667,47 @@ impl From<TableRequest> for PositionQuery {
 /// predicate and any caller that needs "when did this row happen" semantics.
 const POSITION_WHEN_SQL: &str = "COALESCE(sp.exit_time, sp.entry_time, sp.created_at)";
 
-/// Canonical SQL for the position **PnL%** column, in the same **percentage** units
-/// the frontend cell shows (`Position::pnl_percentage` = `(exit-entry)/entry × 100`).
-/// Single-sourced so the sort whitelist, the filter whitelist, and the displayed
-/// value can't drift — a `>0` filter and the column ordering both agree with the cell
-/// (the `× 100` is monotonic, so it doesn't change sort order vs. the bare ratio).
-const PNL_PCT_SQL: &str = "(((sp.exit_price - sp.entry_price) / NULLIF(sp.entry_price, 0)) * 100)";
+/// The realized PnL of a position in **lamports** — the ONE numerator both PnL
+/// columns below are built from. Mirrors [`StrategyPosition::realized_pnl_sol`]
+/// arm for arm: the exit side prefers the running scale-out aggregate once any
+/// sell leg landed (`realized_exit_sol`'s decision), else the stamped single-leg
+/// `exit_lamports`. NULL — hence excluded by every compare, matching the model's
+/// `None` — whenever the chosen exit column or `entry_lamports` is absent.
+///
+/// Kept in lamports (never through `exit_price × exit_token_amount`, the old
+/// shape) because that product ignored the scale-out aggregate entirely, so the
+/// column the table SORTED on disagreed with the value the cell SHOWED on any
+/// partially-exited position.
+// Read by the `pnl_sql_columns_share_one_numerator` guard rather than spliced
+// into the two consts below — `concat!` cannot take a `const &str`, and both
+// whitelists must hand back a `&'static str`.
+#[allow(dead_code)]
+const PNL_LAMPORTS_SQL: &str = "((CASE WHEN sp.sold_token_amount > 0 \
+     THEN sp.exit_sol_lamports_total ELSE sp.exit_lamports END) - sp.entry_lamports)";
 
-/// Canonical SQL for the position **realized SOL PnL** column, mirroring
-/// `Position::pnl_sol` exactly: `exit_price × COALESCE(exit_token_amount, 0) −
-/// entry_price × entry_token_amount` (price is SOL per raw token unit, counts are raw
-/// units, so the product is human SOL). Single-sourced across the sort + filter
-/// whitelists. NULL (→ excluded by any compare) whenever `entry_price`,
-/// `entry_token_amount`, or `exit_price` is absent — matching the model's `None`.
-const PNL_SOL_SQL: &str =
-    "(sp.exit_price * COALESCE(sp.exit_token_amount, 0) - sp.entry_price * sp.entry_token_amount)";
+/// Canonical SQL for the position **PnL%** column, in the same **percentage**
+/// units the frontend cell shows. `realized_pnl_lamports / entry_lamports × 100`
+/// — a capital return, matching [`StrategyPosition::pnl_pct`] and the
+/// `strategy_position_pnl.pnl_pct` view (0006). It is deliberately NOT the price
+/// ratio `(exit_price - entry_price)/entry_price`: that charged no execution cost
+/// and read only the last sell leg, so it could sort a row green that the SOL
+/// column shows red. Single-sourced so the sort whitelist, the filter whitelist,
+/// and the displayed value can't drift (the `× 100` is monotonic, so it doesn't
+/// change sort order vs. the bare ratio).
+///
+/// Copy of [`PNL_LAMPORTS_SQL`]: `concat!` cannot splice a `const &str`, and both
+/// whitelists must hand back a `&'static str`. Locked by
+/// `pnl_sql_columns_share_one_numerator`.
+const PNL_PCT_SQL: &str = "(((CASE WHEN sp.sold_token_amount > 0 \
+     THEN sp.exit_sol_lamports_total ELSE sp.exit_lamports END) - sp.entry_lamports)::float8 \
+     / NULLIF(sp.entry_lamports, 0) * 100)";
+
+/// Canonical SQL for the position **realized SOL PnL** column — [`PNL_LAMPORTS_SQL`]
+/// lifted into human SOL. Multiplied, never divided by `1e9` (the divide is
+/// truncated in the exact SQL path). Same copy caveat/guard as [`PNL_PCT_SQL`].
+const PNL_SOL_SQL: &str = "(((CASE WHEN sp.sold_token_amount > 0 \
+     THEN sp.exit_sol_lamports_total ELSE sp.exit_lamports END) - sp.entry_lamports) \
+     * 0.000000001)";
 
 /// Canonical SQL for the position **entry cost in human SOL** — the stored exact
 /// lamports lifted into the unit the `entry_sol` wire field (and the History
@@ -1849,7 +1900,7 @@ impl StrategyRepo {
         query: &PositionQuery,
         price_of: impl Fn(&str) -> Option<f64>,
     ) -> anyhow::Result<PositionsSummary> {
-        self.positions_summary("sp.run_id", run_id, None, query, price_of).await
+        self.positions_summary(Some(("sp.run_id", run_id)), None, query, price_of).await
     }
 
     /// Rule-wide position aggregates across all runs (real-rule lifetime history).
@@ -1859,7 +1910,19 @@ impl StrategyRepo {
         query: &PositionQuery,
         price_of: impl Fn(&str) -> Option<f64>,
     ) -> anyhow::Result<PositionsSummary> {
-        self.positions_summary("sp.rule_id", rule_id, None, query, price_of).await
+        self.positions_summary(Some(("sp.rule_id", rule_id)), None, query, price_of).await
+    }
+
+    /// Aggregates across **all rules and runs** — the Console History summary
+    /// strip. Pairs with [`find_positions_all_paged`](Self::find_positions_all_paged)
+    /// / [`count_positions_all`](Self::count_positions_all): same `PositionQuery`,
+    /// so the strip totals exactly the population the table pages under it.
+    pub async fn positions_summary_all(
+        &self,
+        query: &PositionQuery,
+        price_of: impl Fn(&str) -> Option<f64>,
+    ) -> anyhow::Result<PositionsSummary> {
+        self.positions_summary(None, None, query, price_of).await
     }
 
     /// Rule-wide aggregates across all runs except one (the run-history view) —
@@ -1871,12 +1934,16 @@ impl StrategyRepo {
         query: &PositionQuery,
         price_of: impl Fn(&str) -> Option<f64>,
     ) -> anyhow::Result<PositionsSummary> {
-        self.positions_summary("sp.rule_id", rule_id, Some(exclude_run_id), query, price_of).await
+        self.positions_summary(Some(("sp.rule_id", rule_id)), Some(exclude_run_id), query, price_of)
+            .await
     }
 
-    /// Shared aggregate query behind the summary views. `scope_col` is a trusted
-    /// literal (`"sp.run_id"` / `"sp.rule_id"`), never user input — no injection
-    /// surface. `exclude_run` (when set) drops that run from the scope (run-history).
+    /// Shared aggregate query behind the summary views. `scope` is a trusted-literal
+    /// column (`"sp.run_id"` / `"sp.rule_id"`) + its id, never user input — no
+    /// injection surface — or `None` for the cross-rule (portfolio-wide) view, the
+    /// same shape [`find_positions_paged`](Self::find_positions_paged) takes so the
+    /// aggregate and the page can't scope differently.
+    /// `exclude_run` (when set) drops that run from the scope (run-history).
     /// LEFT-JOINs `tokens` so `query`'s search/filters match the paged list exactly.
     /// All aggregation happens in Postgres (`COUNT/SUM FILTER`), so no rows
     /// are shipped. The win rule mirrors [`StrategyPosition::is_win`]: a clean `End`
@@ -1890,8 +1957,7 @@ impl StrategyRepo {
     /// bin, which has no such cache, passes `|_| None` and gets a `0.0` mark).
     async fn positions_summary(
         &self,
-        scope_col: &str,
-        scope_id: Uuid,
+        scope: Option<(&str, Uuid)>,
         exclude_run: Option<Uuid>,
         query: &PositionQuery,
         price_of: impl Fn(&str) -> Option<f64>,
@@ -1904,10 +1970,12 @@ impl StrategyRepo {
         //   win      := status = 'End' AND exit_lamports > entry_lamports   (SOL basis)
         // Realized SOL PnL = COALESCE(exit_lamports,0) - entry_lamports (lamports),
         // `End`-only: an `EntryFailed` never deployed SOL, and a stuck bag is open
-        // (unrealized) until written off or sold. The headline return % is
-        // capital-weighted (Σ pnl / Σ entry, via `weighted_return_pct`), so it is
-        // sign-locked to the SOL total; `best_pct`/`worst_pct` are per-trade price
-        // extremes for the distribution tails.
+        // (unrealized) until written off or sold. The headline `return_pct` is
+        // capital-weighted (Σ pnl / Σ closed entry, via `weighted_return_pct`), so
+        // it is sign-locked to the SOL total. `best_pct`/`worst_pct` are the
+        // per-trade extremes of that SAME capital return (`PNL_PCT_SQL`'s
+        // expression), not of the price ratio — a tail figure the PnL% column can
+        // never reproduce is a tail of some other distribution.
         // One `COUNT(*) FILTER` per known exit reason, generated from the single
         // `EXIT_REASON_COUNTS` list so a new reason is added in exactly one place.
         let metrics_pred = metrics_exit_sql_pred("sp.exit_reason");
@@ -1953,11 +2021,15 @@ impl StrategyRepo {
                COALESCE(SUM(EXTRACT(EPOCH FROM (sp.exit_time - sp.entry_time))) \
                         FILTER (WHERE sp.entry_time IS NOT NULL AND sp.exit_time IS NOT NULL \
                                   AND sp.status = 'End'), 0)::DOUBLE PRECISION AS sum_hold_secs, \
-               MAX((sp.exit_price - sp.entry_price) / sp.entry_price * 100.0) \
-                        FILTER (WHERE sp.entry_price IS NOT NULL AND sp.entry_price > 0 \
+               MAX(((CASE WHEN sp.sold_token_amount > 0 \
+                          THEN sp.exit_sol_lamports_total ELSE sp.exit_lamports END) \
+                    - sp.entry_lamports)::float8 / NULLIF(sp.entry_lamports, 0) * 100.0) \
+                        FILTER (WHERE sp.entry_price IS NOT NULL AND sp.entry_lamports > 0 \
                                   AND sp.status = 'End')::DOUBLE PRECISION AS best_pct, \
-               MIN((sp.exit_price - sp.entry_price) / sp.entry_price * 100.0) \
-                        FILTER (WHERE sp.entry_price IS NOT NULL AND sp.entry_price > 0 \
+               MIN(((CASE WHEN sp.sold_token_amount > 0 \
+                          THEN sp.exit_sol_lamports_total ELSE sp.exit_lamports END) \
+                    - sp.entry_lamports)::float8 / NULLIF(sp.entry_lamports, 0) * 100.0) \
+                        FILTER (WHERE sp.entry_price IS NOT NULL AND sp.entry_lamports > 0 \
                                   AND sp.status = 'End')::DOUBLE PRECISION AS worst_pct, \
                COUNT(*) FILTER (WHERE sp.entry_price IS NOT NULL AND i.is_migrated) AS migrated, \
                {exit_cols}\
@@ -1972,7 +2044,14 @@ impl StrategyRepo {
              LEFT JOIN tokens t ON t.mint_address = sp.mint_address \
              LEFT JOIN tokens_info i ON i.mint_address = sp.mint_address WHERE "
         ));
-        qb.push(scope_col).push(" = ").push_bind(scope_id);
+        match scope {
+            Some((scope_col, scope_id)) => {
+                qb.push(scope_col).push(" = ").push_bind(scope_id);
+            }
+            None => {
+                qb.push("TRUE");
+            }
+        }
         if let Some(exclude) = exclude_run {
             qb.push(" AND sp.run_id <> ").push_bind(exclude);
         }
@@ -1983,7 +2062,7 @@ impl StrategyRepo {
         let win_rate = if closed > 0 { row.win as f64 / closed as f64 * 100.0 } else { 0.0 };
         // Canonical capital-weighted return (lamports ratio is scale-invariant), so
         // this figure's sign is locked to `total_pnl_sol`.
-        let avg_pnl_pct =
+        let return_pct =
             weighted_return_pct(row.total_pnl_lamports as f64, row.closed_entry_lamports as f64);
         let avg_hold_secs = if closed > 0 { row.sum_hold_secs / closed as f64 } else { 0.0 };
 
@@ -2020,10 +2099,11 @@ impl StrategyRepo {
             loss: row.loss,
             closed,
             win_rate,
-            avg_pnl_pct,
+            return_pct,
             total_pnl_sol: lamports_to_sol(row.total_pnl_lamports),
             open_pnl_sol,
             total_entry_sol: lamports_to_sol(row.total_entry_lamports),
+            closed_entry_sol: lamports_to_sol(row.closed_entry_lamports),
             total_holding_sol: lamports_to_sol(row.total_holding_lamports),
             total_gains_sol: lamports_to_sol(row.total_gains_lamports),
             total_losses_sol: lamports_to_sol(row.total_losses_lamports),
@@ -3597,11 +3677,42 @@ mod filter_sql_tests {
 
     #[test]
     fn pnl_sol_is_numeric_filterable() {
-        // `pnl_sol` is computed from the fill prices × token counts; a `>0` filter must
-        // lower to a numeric compare over that expression, not be dropped.
+        // `pnl_sol` is computed from the stored lamports (scale-out aware); a `>0`
+        // filter must lower to a numeric compare over that expression, not be dropped.
         let sql = where_sql("pnl_sol", num(FilterOp::Gt, 0.0));
-        assert!(sql.contains("exit_token_amount"), "pnl_sol filter must use the proceeds expr: {sql}");
+        assert!(
+            sql.contains("exit_sol_lamports_total"),
+            "pnl_sol filter must use the realized-lamports expr: {sql}"
+        );
         assert!(sql.contains(" > "), "pnl_sol `>0` must emit a numeric compare: {sql}");
+    }
+
+    /// No-DB SSOT guard: both PnL columns must be built from the ONE realized
+    /// numerator [`PNL_LAMPORTS_SQL`]. They spell it out inline because `concat!`
+    /// cannot splice a `const &str` and both whitelists hand back `&'static str`,
+    /// so this is the guard that keeps the copies honest. Drift here is how the
+    /// sort/filter expression came to disagree with the displayed cell in the
+    /// first place (the old `exit_price × exit_token_amount` shape ignored the
+    /// scale-out aggregate entirely).
+    #[test]
+    fn pnl_sql_columns_share_one_numerator() {
+        assert!(
+            PNL_SOL_SQL.contains(PNL_LAMPORTS_SQL),
+            "PNL_SOL_SQL drifted from PNL_LAMPORTS_SQL:\n  {PNL_SOL_SQL}\n  {PNL_LAMPORTS_SQL}"
+        );
+        assert!(
+            PNL_PCT_SQL.contains(PNL_LAMPORTS_SQL),
+            "PNL_PCT_SQL drifted from PNL_LAMPORTS_SQL:\n  {PNL_PCT_SQL}\n  {PNL_LAMPORTS_SQL}"
+        );
+        // The percent is that numerator over DEPLOYED CAPITAL — never over a price.
+        assert!(
+            PNL_PCT_SQL.contains("NULLIF(sp.entry_lamports, 0)"),
+            "pnl_pct must divide by entry capital, not entry price: {PNL_PCT_SQL}"
+        );
+        assert!(
+            !PNL_PCT_SQL.contains("entry_price"),
+            "pnl_pct must not be a price ratio: {PNL_PCT_SQL}"
+        );
     }
 
     #[test]

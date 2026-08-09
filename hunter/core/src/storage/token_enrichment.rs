@@ -275,8 +275,11 @@ pub fn enrich_sort_sql(key: &str) -> Option<&'static str> {
 /// Map a frontend column key to its **trusted** whitelisted filter expression +
 /// type for the enrichment (`t.`/`i.`) columns. `None` = not a known enrichment
 /// filter key. `Numeric` returns the **uncast** expr so numeric operators compare
-/// numerically. Mirrors [`enrich_sort_sql`]'s columns (the boolean columns aren't
-/// filterable, matching the historical whitelist).
+/// numerically. Mirrors [`enrich_sort_sql`]'s columns. The boolean columns stay
+/// sort-only except `is_migrated`, which the position-summary Migrated tile
+/// filters on — without it that spec hit the "unknown key → ignored" contract
+/// and was silently dropped, so the lens narrowed the charts (a client-side
+/// fold) but never the server-paged table under them.
 pub fn enrich_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
     use FilterKind::{Numeric, Text};
     Some(match key {
@@ -296,6 +299,13 @@ pub fn enrich_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
         "trade_count" => ("i.trade_count", Numeric),
         "first_slot_buy" => ("i.first_slot_buy_lamports", Numeric),
         "first_slot_sell" => ("i.first_slot_sell_lamports", Numeric),
+        // Graduation flag, as text so the `Eq` (ILIKE) arm matches `'true'` /
+        // `'false'` — the boolean columns are otherwise sort-only. COALESCEd for
+        // the same reason `exit_reason` is: the LEFT JOIN leaves a token with no
+        // `tokens_info` row NULL, and `NULL ILIKE 'false'` is NULL, so an
+        // un-enriched token would silently vanish from a "not migrated" cohort
+        // instead of counting as what it is — not known to have migrated.
+        "is_migrated" | "migrated" => ("COALESCE(i.is_migrated, false)::text", Text),
         // initial_buy_instruction JSONB — text in JSONB, cast to numeric so the
         // comparison ops work.
         "token_amount" => ("(t.initial_buy_instruction->>'token_amount')::numeric", Numeric),

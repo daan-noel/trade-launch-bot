@@ -207,15 +207,22 @@ export function RulesView({
     let entered = 0;
     let open = 0;
     let active = 0;
-    let weightedAvgPct = 0;
-    let avgWeight = 0;
     // Real and paper PnL are different currencies — one is money, one is not.
-    // Kept apart so the TOTAL tile can refuse to present a blended figure.
+    // Kept apart so the TOTAL tile can refuse to present a blended figure. The
+    // return % obeys the SAME rule: it is money over money, so blending the two
+    // modes into one percent is the same category error the SOL tile refuses.
     const pnlByMode: Record<TradeMode, number> = { paper: 0, real: 0 };
     const tradedByMode: Record<TradeMode, number> = { paper: 0, real: 0 };
+    // Capital-weighted return: Σ realized PnL / Σ capital that produced it,
+    // NOT a mean of the per-rule percents. Weighting those by trade count (what
+    // this used to do) lets a rule buying 0.05 ◎ outvote one buying 1.0 ◎ — ten
+    // trades at +20% on 0.05 and ten at −5% on 1.0 read as "+7.5%" while the
+    // book is down 0.4 ◎. Only the server's `closed_entry_sol` can weight it,
+    // which is why the counters endpoint now ships that denominator.
+    const capitalByMode: Record<TradeMode, number> = { paper: 0, real: 0 };
+    const closedPnlByMode: Record<TradeMode, number> = { paper: 0, real: 0 };
     for (const r of visibleRules) {
       if (!showScores) break;
-      const closed = closedCount(r);
       const n = r.total_positions ?? 0;
       if (n > 0) {
         pnl += r.total_pnl_sol ?? 0;
@@ -227,14 +234,22 @@ export function RulesView({
       entered += n;
       open += r.open_positions ?? 0;
       if (r.is_active && r.is_enabled) active += 1;
-      if (closed > 0 && r.avg_pnl_pct != null && Number.isFinite(r.avg_pnl_pct)) {
-        weightedAvgPct += r.avg_pnl_pct * closed;
-        avgWeight += closed;
+      const capital = r.closed_entry_sol ?? 0;
+      if (capital > 0 && Number.isFinite(capital)) {
+        capitalByMode[r.trade_mode] += capital;
+        closedPnlByMode[r.trade_mode] += r.total_pnl_sol ?? 0;
       }
     }
     const closed = wins + losses;
     const winRate = closed > 0 ? (wins / closed) * 100 : null;
-    const avgPct = avgWeight > 0 ? weightedAvgPct / avgWeight : null;
+    // One percent only when one currency is on screen; with both modes visible
+    // the tile shows the split instead of a meaningless blend.
+    const returnPctByMode: Record<TradeMode, number | null> = {
+      paper: capitalByMode.paper > 0 ? (closedPnlByMode.paper / capitalByMode.paper) * 100 : null,
+      real: capitalByMode.real > 0 ? (closedPnlByMode.real / capitalByMode.real) * 100 : null,
+    };
+    const mixedModes = returnPctByMode.real != null && returnPctByMode.paper != null;
+    const returnPct = mixedModes ? null : returnPctByMode.real ?? returnPctByMode.paper;
     let liveOpen = 0;
     let livePending = 0;
     if (ruleLiveCounts) {
@@ -254,7 +269,9 @@ export function RulesView({
       open,
       active,
       winRate,
-      avgPct,
+      returnPct,
+      returnPctByMode,
+      mixedModes,
       liveOpen,
       livePending,
       traded: visibleRules.filter((r) => (r.total_positions ?? 0) > 0).length,
@@ -481,24 +498,27 @@ export function RulesView({
           sortable: true as const,
         },
         {
+          // Capital-weighted realized return (Total PnL over the capital that
+          // produced it), NOT a mean of per-trade percents — so this column and
+          // the PnL column beside it can never disagree in sign.
           key: 'score_avg',
-          label: 'Avg%',
+          label: 'Return%',
           group: 'score',
           render: (r: StrategyRule) => {
             if (closedCount(r) === 0) {
               return <span className="text-text-dim">—</span>;
             }
-            const v = r.avg_pnl_pct ?? 0;
+            const v = r.return_pct ?? 0;
             return (
               <span className={`tabular-nums text-xs ${pctGradeClass(v)}`}>
                 {formatSignedPct(v, 1)}
               </span>
             );
           },
-          searchValue: (r: StrategyRule) => String(r.avg_pnl_pct ?? 0),
-          sortValue: (r: StrategyRule) => r.avg_pnl_pct ?? 0,
+          searchValue: (r: StrategyRule) => String(r.return_pct ?? 0),
+          sortValue: (r: StrategyRule) => r.return_pct ?? 0,
           filterNumber: (r: StrategyRule) =>
-            closedCount(r) === 0 ? null : r.avg_pnl_pct ?? 0,
+            closedCount(r) === 0 ? null : r.return_pct ?? 0,
           sortable: true as const,
         },
         {
@@ -938,17 +958,27 @@ export function RulesView({
             size="sm"
           />
           <StatTile
-            label="Avg%"
+            label="Return%"
             value={
-              scoreboardTotals.avgPct != null ? (
-                <span className={pctGradeClass(scoreboardTotals.avgPct)}>
-                  {formatSignedPct(scoreboardTotals.avgPct, 1)}
+              scoreboardTotals.returnPct != null ? (
+                <span className={pctGradeClass(scoreboardTotals.returnPct)}>
+                  {formatSignedPct(scoreboardTotals.returnPct, 1)}
                 </span>
               ) : (
                 '—'
               )
             }
-            sub={(scoreScope ?? 'current') === 'current' ? 'current run' : 'all-time'}
+            // Realized PnL over the capital that produced it. With both modes on
+            // screen there is no single denominator (real ◎ and paper ◎ are not
+            // the same currency), so the split is spelled out instead.
+            sub={
+              scoreboardTotals.mixedModes
+                ? `real ${formatSignedPct(scoreboardTotals.returnPctByMode.real ?? 0, 1)} · paper ${formatSignedPct(
+                  scoreboardTotals.returnPctByMode.paper ?? 0,
+                  1,
+                )}`
+                : `on capital · ${(scoreScope ?? 'current') === 'current' ? 'current run' : 'all-time'}`
+            }
             size="sm"
           />
           <StatTile

@@ -512,6 +512,32 @@ where
     }
 }
 
+/// `POST /portfolio/positions/summary` — the aggregate twin of
+/// [`portfolio_positions_page`]: same [`TableRequest`] body, same
+/// [`PositionQuery`], no run-scope semantics, so the Console History summary
+/// strip totals exactly the population its table pages (pagination/sort ignored).
+///
+/// Aggregating server-side rather than folding the fetched rows is what lets the
+/// strip stay exact past the page size — the table shows 25 of n, and a summary
+/// computed from those 25 would silently re-state itself on every page turn.
+///
+/// `price_of` marks the still-open positions for `open_pnl_sol` — see
+/// [`rule_positions_summary`].
+pub async fn portfolio_positions_summary<F>(
+    strategy_repo: &StrategyRepo,
+    body: TableRequest,
+    price_of: F,
+) -> HttpResponse
+where
+    F: Fn(&str) -> Option<f64> + Copy,
+{
+    let pq = PositionQuery::from(body);
+    match strategy_repo.positions_summary_all(&pq, price_of).await {
+        Ok(summary) => HttpResponse::Ok().json(summary),
+        Err(e) => list_error("load portfolio positions summary", e),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Rule-list scoreboard
 // ---------------------------------------------------------------------------
@@ -533,8 +559,8 @@ pub struct ScoreScopeParam {
 
 /// `GET /strategy-rules?score_scope=current|all` — every rule with its position
 /// counters folded in (the columns the Rules list scores on: `total_pnl_sol`,
-/// `avg_pnl_pct`, `win_rate`, `win_count`/`loss_count`, `total_positions`, and the
-/// open/pending split).
+/// `return_pct` + its `closed_entry_sol` denominator, `win_rate`,
+/// `win_count`/`loss_count`, `total_positions`, and the open/pending split).
 ///
 /// Both bins serve this. On `live` the counters roll up the positions its engine is
 /// writing; on `lab` they roll up the same table as synced from EC2 — so a rule
@@ -591,8 +617,11 @@ pub async fn rules_with_counters(
                 map.insert("win_count".into(), serde_json::json!(c.win_count));
                 map.insert("loss_count".into(), serde_json::json!(c.loss_count));
                 map.insert("win_rate".into(), serde_json::json!(c.win_rate));
-                map.insert("avg_pnl_pct".into(), serde_json::json!(c.avg_pnl_pct));
+                map.insert("return_pct".into(), serde_json::json!(c.return_pct));
                 map.insert("total_pnl_sol".into(), serde_json::json!(c.total_pnl_sol));
+                // `return_pct`'s own denominator — the Rules TOTAL tile re-weights
+                // by capital across rules, which a per-rule percent cannot do.
+                map.insert("closed_entry_sol".into(), serde_json::json!(c.closed_entry_sol));
                 map.insert(
                     "score_scope".into(),
                     serde_json::json!(match score_scope {

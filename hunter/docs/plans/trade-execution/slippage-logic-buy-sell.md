@@ -43,6 +43,16 @@ untouched, `null` = clear back to blank, number = set). A plain `Option<u64>`
 collapses absent and `null`, which would make blank — a real state here —
 unreachable once a number had been saved.
 
+This is a rule for **every nullable setting**, not a slippage quirk: declare it
+`Option<Option<T>>` behind `patch_field`. `max_committed_sol` shipped as a plain
+`Option<f64>` and could therefore never be cleared — the UI sent `null`, the
+handler read it as "absent", the write was skipped, and the 200 response
+re-rendered the number the operator had just deleted. Silent in both directions
+(no error, no log), which is why it is locked by
+`a_nullable_setting_distinguishes_cleared_from_absent` in `system.rs`. A set
+ceiling must also be `> 0`: `0` would persist as "a limit is configured" while
+blocking every real buy, so it is a 400 and clearing the field is the off switch.
+
 Frontend: `TradingSection.tsx` uses `step`/`min` of `0.01`, because the percent →
 bps conversion is `Math.round(pct * 100)` and anything under 0.005% would round to
 a `0` the API now rejects.

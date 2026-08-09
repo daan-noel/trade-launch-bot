@@ -181,7 +181,11 @@ export interface PositionsSummary {
   loss: number;
   closed: number;
   win_rate: number;
-  avg_pnl_pct: number;
+  /** **Canonical return %** — capital-weighted realized return over the closed
+   *  positions (`total_pnl_sol / closed_entry_sol × 100`). NOT a mean of
+   *  per-trade percents: a rule's buy size is editable mid-run, so a 1.0 SOL
+   *  trade must outweigh a 0.05 SOL one. Sign-locked to `total_pnl_sol`. */
+  return_pct: number;
   /** Realized only — closed positions. Never includes an open position's mark. */
   total_pnl_sol: number;
   /** Unrealized mark-to-current-price PnL of the still-open positions, priced
@@ -189,7 +193,13 @@ export interface PositionsSummary {
    *  `total_pnl_sol`, never folded into it, so a rule holding its losers open
    *  can't read as profitable. */
   open_pnl_sol: number;
+  /** Entry cost across ALL entered positions, open ones included — so it is not
+   *  the denominator of a realized return. Use `closed_entry_sol`. */
   total_entry_sol: number;
+  /** Entry cost of the CLOSED positions — `return_pct`'s exact denominator,
+   *  shipped so a caller spanning several scopes can re-weight by capital
+   *  (`Σ pnl / Σ closed_entry`) instead of by trade count. */
+  closed_entry_sol: number;
   total_holding_sol: number;
   total_gains_sol: number;
   total_losses_sol: number;
@@ -643,7 +653,11 @@ export interface PortfolioRulePnl {
   loss: number;
   win_rate: number;
   realized_pnl_sol: number;
-  total_entry_sol: number;
+  /** Capital deployed across the window's closed positions (human SOL). */
+  closed_entry_sol: number;
+  /** `realized_pnl_sol / closed_entry_sol × 100` — computed server-side so this
+   *  percent is the same definition as the Rules board's. */
+  return_pct: number;
 }
 
 export interface PortfolioPerformance {
@@ -655,6 +669,11 @@ export interface PortfolioPerformance {
   win: number;
   loss: number;
   win_rate: number;
+  /** Capital deployed across every closed position in the window (human SOL). */
+  closed_entry_sol: number;
+  /** Window-wide capital-weighted return — Σ pnl / Σ capital across the rules,
+   *  never a mean of their percents. */
+  return_pct: number;
   by_rule: PortfolioRulePnl[];
 }
 

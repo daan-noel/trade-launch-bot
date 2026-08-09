@@ -185,19 +185,28 @@ export function PortfolioPage() {
       return {
         filtered: false,
         realized: data.realized_pnl_sol,
+        capital: data.closed_entry_sol,
+        returnPct: data.closed_entry_sol > 0 ? data.return_pct : null,
         closed: data.closed,
         rules: full,
       };
     }
     let realized = 0;
     let closed = 0;
+    // Re-weight by capital when the row set narrows — Σ pnl / Σ capital, never
+    // a mean of the surviving rules' percents (a 0.05 ◎ rule would then count
+    // as much as a 1.0 ◎ one).
+    let capital = 0;
     for (const r of rows) {
       realized += r.realized_pnl_sol;
       closed += r.closed;
+      capital += r.closed_entry_sol;
     }
     return {
       filtered: isFiltered || effectiveDecayOnly,
       realized,
+      capital,
+      returnPct: capital > 0 ? (realized / capital) * 100 : null,
       closed,
       rules: rows.length,
     };
@@ -235,6 +244,29 @@ export function PortfolioPage() {
         sortValue: (r) => r.realized_pnl_sol,
         searchValue: (r) => String(r.realized_pnl_sol),
         filterNumber: (r) => r.realized_pnl_sol,
+      },
+      {
+        // The PnL column in the units that compare across rules: realized SOL
+        // over the capital that produced it. Server-derived (`weighted_return_pct`)
+        // so it is the same definition as the Rules board's Return%, and
+        // sign-locked to the PnL beside it.
+        key: 'return_pct',
+        label: 'Return%',
+        sortable: true,
+        render: (r) =>
+          r.closed_entry_sol > 0 ? (
+            <span
+              className={`tabular-nums text-xs ${signedToneClass(r.return_pct)}`}
+              title={`${formatSigned(r.realized_pnl_sol, 3)}◎ on ${r.closed_entry_sol.toFixed(3)}◎ deployed`}
+            >
+              {formatSignedPct(r.return_pct, 1)}
+            </span>
+          ) : (
+            <span className="text-text-dim">—</span>
+          ),
+        sortValue: (r) => (r.closed_entry_sol > 0 ? r.return_pct : null),
+        searchValue: (r) => String(r.return_pct),
+        filterNumber: (r) => (r.closed_entry_sol > 0 ? r.return_pct : null),
       },
       {
         key: 'exp',
@@ -377,6 +409,14 @@ export function PortfolioPage() {
           >
             {summary ? `${formatSigned(summary.realized, 3)}◎` : '—'}
           </span>
+          {summary?.returnPct != null && (
+            <span
+              className={`tabular-nums text-sm font-semibold ${signedToneClass(summary.returnPct)}`}
+              title={`Return on the ${summary.capital.toFixed(3)}◎ deployed across this window's closed trades`}
+            >
+              {formatSignedPct(summary.returnPct, 1)}
+            </span>
+          )}
         </div>
         <span className="text-[11px] text-text-dim">
           {summary

@@ -58,7 +58,12 @@ function toRunSummary(s: PositionsSummary): RunSummary {
     total_pnl_sol: s.total_pnl_sol,
     open_pnl_sol: s.open_pnl_sol,
     expectancy_sol: closed > 0 ? s.total_pnl_sol / closed : 0,
-    mean_pnl_pct: s.avg_pnl_pct,
+    // The SQL aggregate has no per-position distribution, so there is no true
+    // mean to send; what it does have is the capital-weighted return, which is
+    // the honest figure here anyway (a live rule's buy size can vary between
+    // positions). `bandStats` renders it as "Return %".
+    mean_pnl_pct: s.return_pct,
+    return_pct: s.return_pct,
     median_pnl_pct: null,
     p90_pnl_pct: null,
     best_pnl_pct: s.best_pct,
