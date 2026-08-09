@@ -17,10 +17,80 @@ labels (`TakeProfit`, `StopLoss`, `Dead`, `Manual`, `Migrated`) plus **metric na
 Do not use the retired ladder aliases (`Trailing`, bare `Stall`, `TimeStop`); legacy URL
 values are canonicalized onto the metric names.
 
-The charts deck and the table below it are driven by that same cohort. This is the whole
-point: **a chart must never be computed from a different query than the rows under it**.
-Concretely, that means no per-chart aggregate endpoints — the four charts fold one payload
-(B2) client-side, and the table pages the matching population (B1) server-side.
+The summary strip, the exit mix, the charts deck, and the table are all driven by that same
+cohort. This is the whole point: **a chart must never be computed from a different query
+than the rows under it**. Concretely, that means no per-chart aggregate endpoints — every
+chart folds one payload client-side, and the table pages the matching population (B1)
+server-side.
+
+### The cohort includes the table's own filters
+
+Three inputs compose into **one** request body (`console/historyRequest.ts`): the URL
+cohort, the chart focus lens, and the table's search + per-column filters. That body is
+then read three ways — paged for the table (B1), aggregated server-side for the strip (B4),
+walked in full for the charts. The table and the strip differ *only* in pagination and
+sort, which is exactly what an aggregate is allowed to ignore, and `historyRequest.test.ts`
+locks that.
+
+The chart walk is the deliberate exception: it passes `includeFocus: false` and fetches the
+**parent** cohort, because the deck lenses itself and does so asymmetrically (see "Hybrid
+rendering" below — the timing grids stay on the parent and draw a selection ring). Hand the
+deck a pre-focused cohort and clicking a day empties the calendar that produced the click,
+with nothing failing to say so. A useful side effect: clicking through chart cells
+re-fetches a single aggregate row rather than re-walking the cohort.
+
+This was not true originally: the cohort narrowed the table only, so typing `>0.1` into
+Entry ◎ moved the rows while the charts above them kept describing the unfiltered book. A
+summary that answers a different question than the rows under it is worse than no summary —
+it looks authoritative while being wrong. The builder makes the divergence unrepresentable
+rather than merely fixed.
+
+The deck also stopped folding B2 for the same reason: that endpoint is closed-only,
+single-mode, and cannot see a table filter, so it was a second population by construction.
+It still exists — Home's review digest is its consumer — but Console History now derives
+its close points from the same positions query the table pages
+(`console/historyPositions.ts`).
+
+### Two summary sources, one shape
+
+The strip normally renders the **server aggregate** (B4): exact over the whole filtered
+cohort, past the page and past the chart-walk cap, with no rows shipped. Under a lens SQL
+can't express — heat, hold band, legacy exit focus, a synthetic Metric± needle — the
+aggregate would count rows the surfaces have lensed away, so the section folds the focused
+slice client-side instead and that wins. Both paths meet at `RunSummary`, so only a
+provenance line and the Migrated tile differ.
+
+The client fold is **closes-only**, which is a property of those lenses rather than a
+shortcut: heat keys on `exit_time`, hold band on hold + PnL%, exit focus and Metric± on
+`exit_reason` — an open position matches none of them, so it belongs in no such slice. The
+Migrated tile is omitted there (close points carry no migration flag, and a `0` would read
+as "none migrated" rather than "not measured on this path" — `runSummarySections` hides a
+tile whose count is `undefined`).
+
+Exit tiles stay in their own panel (`HistoryExitSummary`) rather than the strip: the strip
+renders the wire counters, which collapse metric exits to Metric±, while the panel folds
+per-position reasons and can keep the stored detail (`stall > 300`). Rendering both would
+be two different answers to the same question, so the strip drops its `Exits` band.
+
+### Tiles are lenses
+
+| Tile | Channel | Filter |
+| --- | --- | --- |
+| Fired | `hlane=fired` | `entry_price > 0` — the aggregate's "entered" predicate |
+| Closed | `hlane=closed` | `entry_price > 0` + `status = End` |
+| Open | `hlane=open` | `entry_price > 0` + `status ≠ End` |
+| Win% / Worst% | `houtcome=win\|loss` | `pnl_sol > 0` / `≤ 0` — realized SOL, matching the server's `is_win` |
+| Migrated | `hmigrated=1\|0` | `is_migrated` eq |
+
+`hlane` is its own channel rather than a value of `hstatus` because **Open spans several DB
+statuses** (Holding, ExitPending, ExitStuck, ExitUnconfirmed) — no single status string
+means it, and `entry_price > 0` is what separates an entered position from an `EntryFailed`
+row. The two channels are mutually exclusive on write: letting both stand would intersect
+to an empty cohort ("Open" ∩ "End"), which reads as *no trades* rather than as a
+contradiction.
+
+`hmigrated` is tri-state and serialized `1`/`0`, never blank-for-false: "not migrated" is a
+real cohort, and folding it into "no filter" would silently drop it.
 
 ### Chart focus (drill-down lens)
 
@@ -41,13 +111,16 @@ cohort — same predicate for the table and for the charts that refold
 | `band:<holdLo>:<holdHi>:<pctLo>:<pctHi>` | Hold vs PnL drag-zoom | client filter on hold + PnL% |
 | `exit:metric_win` / `metric_loss` / `metric` | legacy Metric± deep-link | client filter (new clicks use `hexit` instead) |
 
-**Exit mix strip** (`HistoryExitSummary`) sits between the filter bar and the charts
-deck. It folds the same B2 closes payload through `runSummaryFromRows` /
-`runSummarySections`, then **refolds on chart `hfocus`** (day / heat / pct / …) so
-the counts match the focused slice equity/table use. Exit-tile clicks write `hexit`
+**Exit mix strip** (`HistoryExitSummary`) sits between the summary strip and the charts
+deck. It takes the same parent close points the deck plots and folds them through
+`runSummaryFromRows` / `runSummarySections`, **refolding on chart `hfocus`** (day / heat /
+pct / …) so the counts match the focused slice equity/table use. Exit-tile clicks write `hexit`
 and leave `hfocus` alone — the two compose. Metric± use synthetic needles
 (`metric_win` / `metric_loss` / `metric`) — client-only, not SQL `contains` — because
-a substring cannot express the win/loss split. Legacy `hfocus=exit:…` still highlights.
+a substring cannot express the win/loss split. Legacy `hfocus=exit:…` still highlights —
+and is the **one** lens this panel deliberately leaves unapplied, so a selected tile
+highlights inside the full mix instead of collapsing the chart to the single slice it just
+selected (which would destroy the comparison that made the tile worth clicking).
 
 **Hybrid rendering:** calendar + heatmap keep the **parent** cohort (selection ring on
 the active cell) so the timing grid stays readable; equity curve, PnL distribution,
@@ -99,10 +172,14 @@ Two consequences worth knowing:
 - The cohort hook takes `nowMs` from the caller and freezes it per mount. A preset window
   whose `from` bound is recomputed each render produces a new request body on every
   keystroke elsewhere on the page.
-- `mode: 'all'` (real + paper) has no series equivalent — the B2 endpoint takes one mode.
-  The deck charts the real book while the table pages both. That asymmetry is deliberate
-  (mixing paper money into an equity curve would misreport), and the filter bar says which
-  mode is charted.
+- `mode: 'all'` (real + paper) used to have no series equivalent — B2 takes one mode, so
+  the deck charted the real book while the table paged both. Now that every surface reads
+  the positions query, `all` charts what it says: the mode is an ordinary filter, absent
+  when `all`. Mixing paper money into an equity curve is still a real hazard — the mode
+  chip in the filter bar is what keeps it honest.
+- The charts walk is capped at 20 000 rows (`CHART_SCAN_MAX`). The strip is unaffected
+  (it aggregates in Postgres), so a larger cohort gets exact totals over partial charts —
+  and says so, rather than drawing a curve that silently stops.
 
 ## Backend contracts
 
@@ -162,6 +239,38 @@ that stopped losing money because it stopped *filling* is not a rule that got be
 
 Volume is closes, not trades, so a bounded window scan is fine. Note there is no index on
 `(mode, status, exit_time)`; if an all-time series ever gets slow, that is the fix.
+
+### B4 — `POST /api/portfolio/positions/summary`
+
+The aggregate twin of B1: same `TableRequest` body, same `PositionQuery`, no run-scope
+semantics — so the summary strip totals exactly the population the table pages, past the
+page size and without shipping rows. Backs the strip's server path.
+
+Like B1, it is **not a second SQL path**. `positions_summary` took a required
+`(scope_col, scope_id)`; it now takes `Option<(&str, Uuid)>` and pushes `TRUE` when
+`None`, the same shape `find_positions_paged` already had — so the aggregate and the page
+cannot scope differently. `positions_summary_all` is the cross-rule entry point.
+
+Open positions are marked to market from the live in-memory token cache (`price_of`), as
+the per-rule summary does — no DB or RPC round-trip on the read.
+
+One whitelist entry was added for the Migrated tile:
+
+| Key | SQL | Note |
+| --- | --- | --- |
+| `is_migrated` / `migrated` | `COALESCE(i.is_migrated, false)::text` | `Text` so the `Eq` (ILIKE) arm matches `'true'`/`'false'` |
+
+The `COALESCE` is load-bearing: the read LEFT-JOINs `tokens_info`, and `NULL ILIKE 'false'`
+is NULL, so an un-enriched token would vanish from a "not migrated" cohort instead of
+counting as *not known to have migrated*.
+
+This entry also fixed a **silent** pre-existing bug on Evidence / Simulate / Sweep:
+`buildFocusTableFilters` has always emitted an `is_migrated` spec for its Migrated lens,
+but the boolean columns were sort-only, so the spec hit the filter builder's "unknown key →
+ignored" contract. The lens narrowed the charts (a client-side fold) and never the
+server-paged table under them — the same failure shape as the sentinel bugs in
+`hunter/CLAUDE.md`: a filter that looks applied and isn't. Locked by
+`migrated_is_filterable_by_both_spellings` + `migrated_filter_survives_a_missing_tokens_info_row`.
 
 ### B3 — armed history: deleted, not built
 

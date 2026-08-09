@@ -1,11 +1,12 @@
 /**
  * Exit mix + per-reason counts for Console History — the research detail the
- * charts deck never had. Folds the same B2 closes-series the deck uses, so the
- * counts cannot disagree with the cohort strip above the charts.
+ * charts deck never had. Folds the **same closed rows** the deck plots and the
+ * summary strip totals (the section derives all three from one filtered
+ * positions query), so the counts cannot disagree with anything around them.
  *
- * Chart `hfocus` (day / heat / pct / …) narrows the strip the same way it
- * narrows equity / distribution — one cohort. Exit-tile clicks write `hexit`
- * and leave `hfocus` alone so the two compose.
+ * Every cohort narrowing — bar, table filters, chart `hfocus` — is already
+ * applied by the time `closes` arrives. Exit-tile clicks write `hexit` and leave
+ * `hfocus` alone so the two compose.
  */
 
 import { memo, useCallback, useMemo } from 'react';
@@ -33,6 +34,7 @@ export const HistoryExitSummary = memo(function HistoryExitSummary({
   focus,
   onCohortPatch,
 }: {
+  /** The **parent** cohort (no `hfocus` applied) — same population the deck gets. */
   closes: readonly ClosedTradePoint[];
   timezone: string;
   exitReason: string | null;
@@ -42,17 +44,16 @@ export const HistoryExitSummary = memo(function HistoryExitSummary({
     focus?: HistoryFocus | null;
   }) => void;
 }) {
-  // Legacy exit focus stays on the parent mix (tile highlight only). Every other
-  // chart lens refolds the strip onto the same slice equity/table use.
+  // Legacy exit focus stays on the parent mix (tile highlight only) — collapsing
+  // the chart to the slice you just selected would destroy the comparison that
+  // made the tile worth clicking. Every other chart lens refolds the strip onto
+  // the same slice equity/table use.
   const foldCloses = useMemo(() => {
     if (!focus || focus.kind === 'exit') return closes;
     return filterClosesForFocus(closes, focus, timezone);
   }, [closes, focus, timezone]);
 
-  const summary = useMemo(
-    () => historyRunSummaryFromCloses(foldCloses),
-    [foldCloses],
-  );
+  const summary = useMemo(() => historyRunSummaryFromCloses(foldCloses), [foldCloses]);
   const activeLabel = activeExitTileLabel(exitReason, focus);
 
   const onToggleExit = useCallback(

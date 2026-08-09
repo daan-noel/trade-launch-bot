@@ -63,9 +63,12 @@ nav, Attention bulk Verify-stale / Retry-unparked, and mig `0003` backfill of le
 
 The three lanes above History are the **cockpit** (live, SSE-driven, only what is still
 actionable); **History is the review surface** — one URL-backed cohort (date range · rule ·
-mode · status · exit reason) driving an exit-mix strip, a charts deck, **and** a
-server-paged table over the whole `strategy_positions` population, so both always describe
-the same rows. It replaced the old 50-row "Recent closed" lane, and it owns closed rows
+mode · status · exit reason) driving a **positions summary strip**, an exit-mix strip, a
+charts deck, **and** a server-paged table over the whole `strategy_positions` population,
+so all four always describe the same rows. The table's own search + per-column filters are
+part of that cohort (one builder, `console/historyRequest.ts`), so filtering the table
+narrows the strip and the charts with it; the strip's tiles (Closed / Open / Win% /
+Migrated) filter back the other way. It replaced the old 50-row "Recent closed" lane, and it owns closed rows
 outright (there is no session-local closes buffer any more — see "Live Status SSOT" below).
 Detail: [review-surfaces.md](../plans/frontend/review-surfaces.md).
 

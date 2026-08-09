@@ -24,6 +24,18 @@ import { canonicalizeHistoryExitFilter } from './historyExitFilter';
 
 export type HistoryMode = 'real' | 'paper' | 'all';
 
+/** Realized-outcome lens from the summary strip's Win% / Worst% tiles. */
+export type HistoryOutcome = 'win' | 'loss';
+
+/**
+ * Entered-position partition from the summary strip's Fired / Closed / Open
+ * tiles. Deliberately its own channel rather than a value of `status`: these are
+ * the aggregate's partitions (`fired` = entered at all, `open` = entered and not
+ * ended), and `open` in particular spans several DB statuses — Holding,
+ * ExitPending, ExitStuck, ExitUnconfirmed — so no single `status` string means it.
+ */
+export type HistoryLane = 'fired' | 'closed' | 'open';
+
 export interface HistoryCohort {
   range: HistoryRange;
   /** Window start (ISO, UTC) — `null` for the all-time range. */
@@ -35,6 +47,12 @@ export interface HistoryCohort {
   /** Position status (`End` / `EntryFailed` / an open status); `null` = any. */
   status: string | null;
   exitReason: string | null;
+  /** Summary Fired / Closed / Open tile; mutually exclusive with `status`. */
+  lane: HistoryLane | null;
+  /** Summary Win% / Worst% tile — realized SOL sign; `null` = both. */
+  outcome: HistoryOutcome | null;
+  /** Summary Migrated tile — graduated to AMM; `null` = don't care. */
+  migrated: boolean | null;
   /** Chart drill-down — timing stays on parent; other charts + table follow. */
   focus: HistoryFocus | null;
   /** The `range` value the B2 series endpoint understands (it takes presets
@@ -90,6 +108,16 @@ export function useHistoryCohort(nowMs: number): HistoryCohortApi {
   // Canonicalize legacy ladder needles (`Trailing` → `trail`) so the dropdown
   // selection and metric-label contains match stay aligned.
   const exitReason = canonicalizeHistoryExitFilter(params.get(OPS_PARAMS.hExit));
+  const rawLane = params.get(OPS_PARAMS.hLane);
+  const lane: HistoryLane | null =
+    rawLane === 'fired' || rawLane === 'closed' || rawLane === 'open' ? rawLane : null;
+  const rawOutcome = params.get(OPS_PARAMS.hOutcome);
+  const outcome: HistoryOutcome | null =
+    rawOutcome === 'win' || rawOutcome === 'loss' ? rawOutcome : null;
+  const rawMigrated = params.get(OPS_PARAMS.hMigrated);
+  // Tri-state, so `0` must stay distinct from absent: "not migrated" is a real
+  // cohort, not "no migration filter".
+  const migrated = rawMigrated === '1' ? true : rawMigrated === '0' ? false : null;
   const focusRaw = params.get(OPS_PARAMS.hFocus);
 
   const cohort = useMemo<HistoryCohort>(() => {
@@ -103,10 +131,26 @@ export function useHistoryCohort(nowMs: number): HistoryCohortApi {
       mode,
       status,
       exitReason,
+      lane,
+      outcome,
+      migrated,
       focus: parseHistoryFocus(focusRaw),
       seriesRange: range === 'custom' ? 'all' : range,
     };
-  }, [range, customFrom, customTo, ruleId, mode, status, exitReason, focusRaw, nowMs]);
+  }, [
+    range,
+    customFrom,
+    customTo,
+    ruleId,
+    mode,
+    status,
+    exitReason,
+    lane,
+    outcome,
+    migrated,
+    focusRaw,
+    nowMs,
+  ]);
 
   const set = useCallback(
     (patch: Partial<Omit<HistoryCohort, 'seriesRange'>>) => {
@@ -132,6 +176,20 @@ export function useHistoryCohort(nowMs: number): HistoryCohortApi {
       if ('exitReason' in patch) {
         put(OPS_PARAMS.hExit, canonicalizeHistoryExitFilter(patch.exitReason));
       }
+      if ('lane' in patch) {
+        put(OPS_PARAMS.hLane, patch.lane);
+        // The bar's exact-status dropdown and the lane tiles both narrow by
+        // status; letting both stand would silently intersect to an empty
+        // cohort ("Open" ∩ "End"), which reads as "no trades" rather than as a
+        // contradiction. Last one clicked wins.
+        if (patch.lane) next.delete(OPS_PARAMS.hStatus);
+      }
+      if ('status' in patch && patch.status) next.delete(OPS_PARAMS.hLane);
+      if ('outcome' in patch) put(OPS_PARAMS.hOutcome, patch.outcome);
+      if ('migrated' in patch) {
+        // Explicit `'0'`, not `put`'s empty-means-delete — `false` is a cohort.
+        put(OPS_PARAMS.hMigrated, patch.migrated == null ? null : patch.migrated ? '1' : '0');
+      }
       if ('focus' in patch) put(OPS_PARAMS.hFocus, serializeHistoryFocus(patch.focus));
       setParams(next, { replace: true });
     },
@@ -148,6 +206,9 @@ export function useHistoryCohort(nowMs: number): HistoryCohortApi {
       OPS_PARAMS.hMode,
       OPS_PARAMS.hStatus,
       OPS_PARAMS.hExit,
+      OPS_PARAMS.hLane,
+      OPS_PARAMS.hOutcome,
+      OPS_PARAMS.hMigrated,
       OPS_PARAMS.hFocus,
     ]) {
       next.delete(key);
@@ -161,6 +222,9 @@ export function useHistoryCohort(nowMs: number): HistoryCohortApi {
     mode !== 'real' ||
     status != null ||
     exitReason != null ||
+    lane != null ||
+    outcome != null ||
+    migrated != null ||
     focusRaw != null;
 
   return { ...cohort, set, reset, active };

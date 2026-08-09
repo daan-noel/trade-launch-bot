@@ -7,7 +7,7 @@
  * unanswerable without leaving the page.
  */
 
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef, TableQuery } from 'components/table/types';
@@ -31,24 +31,15 @@ import { holdLabel } from 'lib/holdLabel';
 import { resolvePnlPct } from 'lib/pnlPct';
 import { ruleAnalyzeHref } from 'lib/strategy/nav';
 import { fetchPortfolioPositionsPage } from 'services/api';
-import { numericColKeys, toTableRequest } from 'services/tableRequest';
-import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
+import { useServerTable } from 'hooks/useServerTable';
 import type { RulePositionRecord } from 'types';
 import type { HistoryCohort } from '@live/pages/console/historyCohort';
 import {
-  dayBoundsUtcIso,
-  intersectUtcWindow,
-  matchesExitFocus,
-  matchesHeatFocus,
-  matchesHoldBandFocus,
-  pctFocusFilter,
-  serializeHistoryFocus,
-  weekBoundsUtcIso,
-} from '@live/pages/console/historyFocus';
-import {
-  exitReasonMatchesFilter,
-  isHistoryMetricExitNeedle,
-} from '@live/pages/console/historyExitFilter';
+  historyCohortKey,
+  historyNeedsClientScan,
+  historyTableBody,
+} from '@live/pages/console/historyRequest';
+import { applyHistoryClientLenses } from '@live/pages/console/historyPositions';
 
 /** Stable row key — hoisted so DataTable doesn't see a fresh closure each render. */
 const historyPositionRowKey = (r: RulePositionRecord) => r.id;
@@ -60,7 +51,7 @@ const historyPositionRowKey = (r: RulePositionRecord) => r.id;
  * `hold` are display-only (derived), so they are deliberately not sortable —
  * a header that sorts nothing is worse than one that doesn't offer to.
  */
-function historyColumns(
+export function historyColumns(
   ruleNameOf: (id: string | null) => string | null,
 ): ColumnDef<RulePositionRecord>[] {
   return [
@@ -198,94 +189,43 @@ const HEAT_SCAN_PAGE_SIZE = 1000;
 
 export const HistoryTable = memo(function HistoryTable({
   cohort,
+  columns,
+  numericCols,
   timezone,
+  query,
+  onQueryChange,
   ruleNameOf,
   selectedKey,
   onSelect,
   reloadNonce,
 }: {
   cohort: HistoryCohort;
+  /** Built by the section — it needs the same defs to derive `numericCols`. */
+  columns: ColumnDef<RulePositionRecord>[];
+  numericCols: ReadonlySet<string>;
   timezone: string;
+  /** Owned by the section, so the strip + charts narrow with this table. */
+  query: TableQuery;
+  onQueryChange: (q: TableQuery) => void;
   ruleNameOf: (id: string | null) => string | null;
   selectedKey: string | null;
   onSelect: (positionId: string | null, mint?: string) => void;
   /** Bumped by the live SSE terminal frames — refetches the current page. */
   reloadNonce: number;
 }) {
-  const [query, setQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
-  const columns = useMemo(() => historyColumns(ruleNameOf), [ruleNameOf]);
-  const numericCols = useMemo(() => numericColKeys(columns), [columns]);
   const focus = cohort.focus;
-  const heatFocus = focus?.kind === 'heat' ? focus : null;
-  const holdBandFocus = focus?.kind === 'holdBand' ? focus : null;
-  const exitFocus = focus?.kind === 'exit' ? focus : null;
-  const metricExitNeedle = isHistoryMetricExitNeedle(cohort.exitReason)
-    ? cohort.exitReason
-    : null;
-  /** Heat / hold-band / Metric± (focus or synthetic hexit) need a wide scan. */
-  const clientScanFocus = !!(heatFocus || holdBandFocus || exitFocus || metricExitNeedle);
+  const clientScanFocus = historyNeedsClientScan(cohort);
 
-  // The cohort + optional chart focus are applied as structured filters + a
-  // range window on top of the table's own per-column filters.
-  const body = useMemo(() => {
-    const base = toTableRequest(query, numericCols);
-    const filters = { ...base.filters };
-    if (cohort.ruleId) filters.rule_id = { op: 'eq' as const, val: cohort.ruleId };
-    if (cohort.mode !== 'all') filters.mode = { op: 'eq' as const, val: cohort.mode };
-    if (cohort.status) filters.status = { op: 'eq' as const, val: cohort.status };
-    // Synthetic Metric± needles are client-only — never SQL `contains`.
-    if (cohort.exitReason && !metricExitNeedle) {
-      filters.exit_reason = { op: 'contains' as const, val: cohort.exitReason };
-    }
-
-    let fromIso = cohort.fromIso;
-    let toIso = cohort.toIso;
-
-    if (focus?.kind === 'day' || focus?.kind === 'week') {
-      const span =
-        focus.kind === 'day'
-          ? dayBoundsUtcIso(focus.day, timezone)
-          : weekBoundsUtcIso(focus.weekStart, timezone);
-      const hit = intersectUtcWindow(fromIso, toIso, span.fromIso, span.toIso);
-      if (!hit) {
-        // Empty intersection — force an empty half-open window.
-        fromIso = '2099-01-01T00:00:00.000Z';
-        toIso = '2099-01-01T00:00:00.000Z';
-      } else {
-        fromIso = hit.fromIso;
-        toIso = hit.toIso;
-      }
-    }
-
-    if (focus?.kind === 'rule') {
-      filters.rule_id = { op: 'eq' as const, val: focus.ruleId };
-    }
-    if (focus?.kind === 'pct') {
-      filters.pnl_pct = pctFocusFilter(focus.lo, focus.hi);
-    }
-    if (focus?.kind === 'pos') {
-      filters.id = { op: 'eq' as const, val: focus.positionId };
-    }
-
-    // Heat / hold-band: scan a wide first page; client filter below.
-    const pagination = clientScanFocus
-      ? { page: 1, pageSize: HEAT_SCAN_PAGE_SIZE }
-      : base.pagination;
-
-    return {
-      ...base,
-      pagination,
-      filters,
-      ...(fromIso || toIso
-        ? {
-            range: {
-              ...(fromIso ? { from: fromIso } : {}),
-              ...(toIso ? { to: toIso } : {}),
-            },
-          }
-        : {}),
-    };
-  }, [query, numericCols, cohort, focus, clientScanFocus, metricExitNeedle, timezone]);
+  // Cohort + chart focus + this table's own filters, through the one builder the
+  // summary and the charts also use — see `historyRequest`.
+  const body = useMemo(
+    () =>
+      historyTableBody(
+        { cohort, query, numericCols, timezone },
+        clientScanFocus ? HEAT_SCAN_PAGE_SIZE : undefined,
+      ),
+    [cohort, query, numericCols, timezone, clientScanFocus],
+  );
 
   const fetchPage = useCallback(
     (b: unknown, signal: AbortSignal) => fetchPortfolioPositionsPage(b as never, signal),
@@ -301,41 +241,14 @@ export const HistoryTable = memo(function HistoryTable({
     `history:${reloadNonce}`,
   );
 
-  const rows = useMemo(() => {
-    // Lenses stack: heat/band/exit-focus and synthetic Metric± hexit all apply.
-    let out = items;
-    if (heatFocus) {
-      out = out.filter((r) => matchesHeatFocus(r.exit_time, heatFocus, timezone));
-    }
-    if (holdBandFocus) {
-      out = out.filter((r) =>
-        matchesHoldBandFocus(
-          r.entry_time,
-          r.exit_time,
-          resolvePnlPct({
-            pnlSol: r.pnl_sol,
-            entrySol: r.entry_sol,
-            entryPrice: r.entry_price,
-            exitPrice: r.exit_price,
-          }),
-          holdBandFocus,
-        ),
-      );
-    }
-    if (exitFocus) {
-      out = out.filter((r) => matchesExitFocus(r.exit_reason, r.pnl_sol, exitFocus));
-    }
-    if (metricExitNeedle) {
-      out = out.filter((r) =>
-        exitReasonMatchesFilter(r.exit_reason, metricExitNeedle, r.pnl_sol),
-      );
-    }
-    return out;
-  }, [items, heatFocus, holdBandFocus, exitFocus, metricExitNeedle, timezone]);
+  // The SQL-inexpressible lenses, through the same helper the strip and the
+  // charts use — one predicate, so the three can't disagree about a row.
+  const rows = useMemo(
+    () => applyHistoryClientLenses(items, cohort, timezone),
+    [items, cohort, timezone],
+  );
 
-  const cohortKey = `${cohort.range}|${cohort.fromIso ?? ''}|${cohort.toIso ?? ''}|${
-    cohort.ruleId ?? ''
-  }|${cohort.mode}|${cohort.status ?? ''}|${cohort.exitReason ?? ''}|${serializeHistoryFocus(focus) ?? ''}`;
+  const cohortKey = historyCohortKey(cohort, timezone);
 
   // The selected row's full DB record — this is why History owns the closed
   // detail modal rather than the Console page: a position from any date opens
@@ -384,7 +297,7 @@ export const HistoryTable = memo(function HistoryTable({
         loading={loading}
         serverSide={!clientScanFocus}
         serverTotal={clientScanFocus ? rows.length : total}
-        onQueryChange={setQuery}
+        onQueryChange={onQueryChange}
         resetKey={cohortKey}
         defaultSort={{ col: 'exit_time', dir: 'desc' }}
         defaultPageSize={25}

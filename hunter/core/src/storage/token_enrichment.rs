@@ -336,4 +336,25 @@ mod market_cap_ssot_tests {
         assert_eq!(enrich_sort_sql("market_cap"), Some(MARKET_CAP_SQL));
         assert_eq!(enrich_filter_sql("market_cap"), Some((MARKET_CAP_SQL, FilterKind::Numeric)));
     }
+
+    /// The Migrated summary tile sends `is_migrated: {op:'eq', val:'true'|'false'}`.
+    /// An unknown key is *silently ignored* by the filter builder, so a missing
+    /// whitelist entry doesn't fail — it just stops narrowing, and the tile reads
+    /// as if it filtered while the table under it shows everything. That is
+    /// exactly what happened before this entry existed, so pin both spellings.
+    #[test]
+    fn migrated_is_filterable_by_both_spellings() {
+        let expected = Some(("COALESCE(i.is_migrated, false)::text", FilterKind::Text));
+        assert_eq!(enrich_filter_sql("is_migrated"), expected);
+        assert_eq!(enrich_filter_sql("migrated"), expected);
+    }
+
+    /// COALESCE, not a bare cast: the position reads LEFT JOIN `tokens_info`, and
+    /// `NULL ILIKE 'false'` is NULL — an un-enriched token would vanish from a
+    /// "not migrated" cohort rather than count as not known to have migrated.
+    #[test]
+    fn migrated_filter_survives_a_missing_tokens_info_row() {
+        let (sql, _) = enrich_filter_sql("is_migrated").expect("whitelisted");
+        assert!(sql.starts_with("COALESCE("), "is_migrated filter must COALESCE the NULL side");
+    }
 }
