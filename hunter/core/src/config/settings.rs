@@ -43,8 +43,8 @@ pub struct Settings {
     pub db_api_max_connections: u32,
     pub db_api_min_connections: u32,
     /// **Batch** pool — long, DB-heavy jobs (grouped sweeps' corpus load + per-group
-    /// writer, tpsl backtests). Isolated so a sweep can't starve the dashboard reads
-    /// it used to share a pool with (the "pool timed out" regression).
+    /// writer, tpsl backtests). Isolated so a sweep can't starve the dashboard
+    /// reads - sharing one pool with them is the "pool timed out" regression.
     pub db_batch_max_connections: u32,
     pub db_batch_min_connections: u32,
     pub db_acquire_timeout: Duration,

@@ -1,12 +1,12 @@
-//! Reservation-TTL sweep — the sole surviving wallet-lifecycle background loop.
+//! Reservation-TTL sweep — the only wallet-lifecycle background loop.
 //!
-//! All fund/balance work is now **operator-triggered** (the "Fund pool" and
-//! "Refresh balances" buttons). The former automatic loops — the balance poll,
-//! the warm-pool auto-funder, and the hourly dust sweep — were removed so the box
-//! makes **zero idle Helius RPC calls**. What remains is one DB-only safety timer:
-//! it releases wallets stranded `reserved` (an aborted/crashed launch) or `funding`
-//! (a treasury send that never landed) past their TTL, returning them to the
-//! claimable pool. No RPC, no SOL movement.
+//! All fund/balance work is **operator-triggered** (the "Fund pool" and "Refresh
+//! balances" buttons). There is no balance poll, no warm-pool auto-funder and no
+//! hourly dust sweep, so the box makes **zero idle Helius RPC calls** — a new
+//! background loop that touches RPC puts it back on a paid budget it does not need.
+//! This one is DB-only: it releases wallets stranded `reserved` (an aborted/crashed
+//! launch) or `funding` (a treasury send that never landed) past their TTL,
+//! returning them to the claimable pool. No RPC, no SOL movement.
 
 use std::time::Duration;
 

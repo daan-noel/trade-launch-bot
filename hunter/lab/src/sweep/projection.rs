@@ -7,7 +7,7 @@
 //! The projection is built **once per token** at corpus-load time and reused
 //! across every (combo) evaluation; `Trade` never enters the loop.
 //!
-//! No wallet identity is carried: the analysis path's cohort logic was removed, so
+//! No wallet identity is carried: the analysis path has no cohort logic, so
 //! nothing here reads a trade's wallet (`type Wallet = ()`). The live `Trade` /
 //! `CachedTrade` rows still key on wallet — that's why the shared [`TradeRow`] trait
 //! keeps the associated type.
@@ -75,10 +75,10 @@ pub struct CorpusTrade {
 /// per fold.
 ///
 /// The engine only ever wants two integers ([`TradeLite::ix_hash`] /
-/// [`TradeLite::wallet_hash`]), but the corpus used to carry the raw JSON label
-/// array and the base58 wallet and re-derive them in [`to_trade_lite`] — a
+/// [`TradeLite::wallet_hash`]). Carrying the raw JSON label array and the base58
+/// wallet on the corpus and re-deriving them in [`to_trade_lite`] would cost a
 /// `serde_json` parse plus a heap allocation per label on **every trade of every
-/// run**. Hashing at the row decode makes the fold allocation-free and shrinks a
+/// run**. Hashing at the row decode keeps the fold allocation-free and shrinks a
 /// flow row: 24 B of scalars replace two pointers into ~85 B of heap.
 ///
 /// Both fields keep the "absent ⇒ organic" contract: `ix_hash: None` (missing or

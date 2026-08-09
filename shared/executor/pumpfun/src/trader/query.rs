@@ -387,9 +387,9 @@ impl PumpFunTrader {
         }
     }
 
-    /// The `bonding-curve` PDA for a mint — single source of truth for the
-    /// `find_program_address(&[b"bonding-curve", ..])` previously inlined across
-    /// the buy and query paths.
+    /// The `bonding-curve` PDA for a mint — the single source of truth for
+    /// `find_program_address(&[b"bonding-curve", ..])`. The buy and query paths
+    /// call this; neither inlines its own derivation.
     pub(super) fn bonding_curve_pda(&self, mint: &Pubkey) -> Pubkey {
         Pubkey::find_program_address(&[b"bonding-curve", mint.as_ref()], &protocol::PUMP_FUN).0
     }

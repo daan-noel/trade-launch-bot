@@ -76,7 +76,7 @@ fn e400<E: std::fmt::Display + std::fmt::Debug>(e: E) -> actix_web::Error {
 
 /// Borrow the boot-time launcher settings out of `app_data`, or 503 if the box
 /// booted without a launcher config (missing RPC/keystore/nonce env). Built once
-/// in `main.rs`; handlers no longer re-parse env per request.
+/// in `main.rs`, so a handler never re-parses env per request.
 fn launcher_settings(
     data: &web::Data<Option<LauncherSettings>>,
 ) -> Result<&LauncherSettings, actix_web::Error> {

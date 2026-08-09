@@ -54,7 +54,7 @@ AMM buy flow:
 
 `GlobalConfig` is cached with a `freshness_secs` bound — fetched once at startup, re-fetched only when stale. It holds the protocol fee rate and fee recipient for the AMM program (`PUMP_AMM_BUYBACK_FEE_RECIPIENT` — whitelist of known addresses, **not** the curve's slot-17 exact match).
 
-## `tx.rs` — send_transaction fan-out
+## `executor-core send.rs` — send_transaction fan-out
 
 `send_transaction` is the sole submission path for all trade types:
 

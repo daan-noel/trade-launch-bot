@@ -5,7 +5,7 @@
 //! drift": the decoder (`trading_core`/ingest) and the executor (`pump-trader`) must
 //! agree on every address or a program upgrade applied to one copy silently breaks
 //! the other. `live` is the only crate that depends on both, so this equality check
-//! lives here. It needs no DB/network, so it runs on a plain `cargo test -p live`.
+//! lives here. It needs no DB/network, so it runs on a plain `cargo test -p hunter-live`.
 
 use pump_trader::protocol as pt;
 use trading_core::config::constants as tc;

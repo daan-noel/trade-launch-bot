@@ -1,6 +1,6 @@
-// Shared strategy-table cell formatters + instruction-label parsing. Single source
-// for what used to be byte-identical `tpsl1/utils.ts` and `tpsl2/utils.ts` copies —
-// both strategy families (and the shared rule form / params engine) import from here.
+// Shared strategy-table cell formatters + instruction-label parsing. THE single
+// source: both strategy families (and the shared rule form / params engine) import
+// from here, so a per-family copy of these formatters is always a bug.
 import { formatDecimalTrim } from 'utils/format';
 
 export function dashPercent(val: number | null | undefined): string {

@@ -304,10 +304,10 @@ async fn run_flow_discovery_job(
     let src = LakeSource::new(root.clone());
 
     // ── Saved-fingerprint scope, resolved BEFORE the trade scan ──────────────────
-    // The scope used to be a `retain` on the *loaded* corpus: that read the full
-    // trade history of every token in the window — `token_cap` tokens, uncapped per
-    // mint, with the fat `ix_labels`/`wallet` columns `with_flow` adds — and then
-    // discarded all but the handful that matched. `matching_mints` answers the same
+    // Resolving the scope as a `retain` on the *loaded* corpus instead would read the
+    // full trade history of every token in the window — `token_cap` tokens, uncapped
+    // per mint, with the fat `ix_labels`/`wallet` columns `with_flow` adds — only to
+    // discard all but the handful that match. `matching_mints` answers the same
     // question off the tokens dimension alone (engine `matches` SSOT, same verdict),
     // so the scan below only ever touches matched mints.
     //

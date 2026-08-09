@@ -286,11 +286,10 @@ pub trait ParamSpace {
 /// of the entry params alone: the engine's `can_enter` refuses to buy while the
 /// exit conditions already hold, so two combos sharing an
 /// [`Strategy::entry_key`] but differing on the exit side can legitimately enter
-/// on different rows. Caching the resolved entry by `entry_key` — what this trait
-/// used to do — silently donated the first combo's entered set to every sibling in
-/// its class (the entry-cache poisoning bug, 2026-07-26; mechanism and proof in
-/// `docs/plans/sweep/sim-parity.md`). So the engine caches only what is provably
-/// exit-independent:
+/// on different rows. Caching the resolved entry by `entry_key` silently donates the
+/// first combo's entered set to every sibling in its class — the entry-cache
+/// poisoning bug (mechanism and proof in `docs/plans/sweep/sim-parity.md`). So the
+/// engine caches only what is provably exit-independent:
 ///
 /// * [`Strategy::entry_candidates`] (**Stage A**) — the expensive walk, run once
 ///   per `entry_key` per token; its output is what the engine caches.
@@ -347,7 +346,7 @@ pub trait Strategy: ParamSpace + Send + Sync {
 
     /// Identity of the [`Strategy::ExitCtx`] a `(bound combo, resolved entry)` pair
     /// needs. The engine rebuilds the context only when this key changes — under
-    /// per-combo entries the context is no longer stale-once-per-entry-class, and
+    /// per-combo entries the context is not stale-once-per-entry-class, and
     /// rebuilding it per combo would undo the point of caching it at all.
     ///
     /// The key must distinguish every context the strategy would build differently,
@@ -489,9 +488,9 @@ pub trait Strategy: ParamSpace + Send + Sync {
 mod tests {
     use super::*;
 
-    // The cost model (`round_trip_with_costs`/`CostModel`) and `ExitCode` now live
-    // in `trading_core::strategies::kernel`; their unit tests live there too, so the
-    // sweep no longer re-tests the same math. What remains here is sweep-only.
+    // The cost model (`round_trip_with_costs`/`CostModel`) and `ExitCode` live in
+    // `trading_core::strategies::kernel`, and their unit tests live there too — the
+    // sweep must not re-test the same math. What remains here is sweep-only.
 
     #[test]
     fn lhs_plan_is_balanced_shaped_and_reproducible() {

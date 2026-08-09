@@ -7,7 +7,8 @@
 //! (`duckdb`/`arrow`/`parquet`/`rayon`) land when this is filled — and must NEVER
 //! reach EC2 (`live` must not appear in this crate's reverse deps).
 
-// The export/reader/parity pipeline (DuckDB/arrow/parquet, LAB-only) fills in a
-// later phase and will build on the column-SSOT seam below. The previous
-// `run_export` do-nothing stub was removed rather than left returning `Ok(0)`.
+// Only the column SSOT lives here. The export/reader/parity pipeline
+// (DuckDB/arrow/parquet, LAB-only) builds on it and lands with its deps — there is
+// deliberately no `run_export` entry point until then, because a stub returning
+// `Ok(0)` reads exactly like an export that ran and found nothing.
 pub mod schema;

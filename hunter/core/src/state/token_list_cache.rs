@@ -226,7 +226,7 @@ impl TokenListCache {
 ///
 /// **Lab-only in the split.** `lab` runs this with `LAB_TOKEN_LIST_LIMIT` /
 /// `LAB_TOKEN_LIST_WINDOW_DAYS` (workstation RAM, wants the whole universe resident
-/// for fast analysis). `live` no longer spawns it at all — the live box pages the
+/// for fast analysis). `live` does not spawn it at all — the live box pages the
 /// full list straight from Postgres and keeps this snapshot tracking-only (the DB
 /// base stays empty), respecting the 4 GB EC2 guardrail.
 pub async fn run_token_list_db_refresh(

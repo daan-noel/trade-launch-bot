@@ -127,9 +127,8 @@ pub fn resolve_leg_count(
 }
 
 /// Validate the template's static per-leg SOL amount + tip. Bundler *wallets* are
-/// no longer template-configured — they come from `ManagedWalletRepo::claim_funded`
-/// (wallet-pool Phase 3), a random atomic claim from the `funded` bundler pool
-/// rather than a client-side pick.
+/// not template-configured — they come from `ManagedWalletRepo::claim_funded`, a
+/// random atomic claim from the `funded` bundler pool rather than a client-side pick.
 pub fn resolve_bundle_quote(
     params: &super::service::PumpfunTemplateParams,
 ) -> Result<(i64, Option<i64>)> {

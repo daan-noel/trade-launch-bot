@@ -11,8 +11,7 @@ pub mod token_info_repo;
 pub mod token_repo;
 pub mod trade_repo;
 pub mod wallet_dict_repo;
-// The per-strategy tpsl{1,2}_{paper_trading,position,strategy_rule}_repo modules
-// were removed with the strategy-table merge — everything now lives on the unified
+// There are no per-strategy repos: every strategy reads and writes through the one
 // `strategy_repo` over `strategy_rules`/`strategy_runs`/`strategy_positions`.
 pub mod wallet_profile_repo;
 pub mod wallet_profile_tag_repo;

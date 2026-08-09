@@ -78,7 +78,7 @@ convergence** (all proceeds → one wallet) re-clusters everything at the exit.
 | `UNLINK_AMOUNT_ROUND_LAMPORTS` | `0` | quantize amounts OFF round numbers |
 | `UNLINK_NO_SHARED_SOURCE_PER_LAUNCH` | `true` | forbid 2 wallets in one launch sharing a source |
 
-- [ ] DoD: `cargo check -p launcher -p live` clean; migration applies; no
+- [ ] DoD: `cargo check -p forge-launcher -p forge-live` clean; migration applies; no
       behavior change while `UNLINK_ENABLED=false`.
 
 ## Phase 1 — CEX-seeded rotating source wallets
@@ -104,11 +104,11 @@ retire-after-use sources. `TreasuryPool` already spills across *all*
       *this* launch and prefer spreading across `funding_origin`s.
 - [ ] **No-hub invariant test:** assert the funder never creates a
       treasury→treasury (or dev→dev) fan-out transfer — CEX is the only many-payer.
-- [ ] Frontend `WalletPool.tsx`: "Seed sources from CEX" panel rendering the
+- [ ] Frontend `WalletPoolPage.tsx`: "Seed sources from CEX" panel rendering the
       worksheet + arrival status; show per-source `funding_origin`,
       `launches_served`, age.
 - [ ] Files: `wallet_funding.rs`, `wallet_pool.rs`, `http.rs`, `config.rs`,
-      `managed_wallet` repo, `WalletPool.tsx`.
+      `managed_wallet` repo, `WalletPoolPage.tsx`.
 - [ ] DoD: seed → arrival → source usable by `fund_for_launch`; rotation retires
       on threshold; rail test green.
 
@@ -208,7 +208,7 @@ address re-clusters the whole operation.
 - [ ] **Honest-scope note** in docs: resists *other traders'* clustering only; not
       privacy from the exchange (KYC) or authorities; keep CEX seeding manual +
       low-frequency to bound AML/ToS exposure.
-- [ ] DoD: `cargo check -p launcher -p live` + `cargo test -p launcher` + `npm run
+- [ ] DoD: `cargo check -p forge-launcher -p forge-live` + `cargo test -p forge-launcher` + `npm run
       build` clean.
 
 ---

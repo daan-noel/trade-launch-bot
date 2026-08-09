@@ -1291,7 +1291,7 @@ function buildColumns(
     },
     // Mirrors the grouped-sweep combo table's stat columns (same metrics, same
     // formatters) so a rule reads identically in both places — including the
-    // open cohort, which this table used to omit entirely (parity plan F1).
+    // open cohort, which this table must not omit (sim-parity F1).
     simMetric(
       'sim_matched',
       'Matched',

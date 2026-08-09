@@ -23,8 +23,8 @@
 //!      a reshaped account list is a **hard reject** (a malformed tx, not a stylistic
 //!      tell) that `--allow-fingerprint` can *not* override.
 //!
-//! (A funding-graph "star funding" rule once lived here too, but the `Plan.funding`
-//! input was never populated in production and was removed with the graph.)
+//! (There is no funding-graph "star funding" rule: nothing populates a funding
+//! graph on a `Plan`, so such a rule would only ever audit an empty input.)
 //!
 //! Every rule is a standalone, unit-testable fn over the audit context. The report
 //! carries a fingerprint **score** (informational) and the findings; the pass/fail

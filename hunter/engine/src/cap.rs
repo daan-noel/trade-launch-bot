@@ -4,10 +4,10 @@
 //! `strategy_rules.max_total_tokens` is `BIGINT NOT NULL DEFAULT 0` where `0`
 //! means "unlimited". That is the *legitimate* sentinel case (a cap of zero is
 //! not a meaningful value of the domain — see hunter/CLAUDE.md *Zero-as-unbound*),
-//! but the decode used to be ad hoc and re-derived at every site
-//! (`max_total != 0 && counters.total >= max_total`, `(r.max_total_tokens != 0).then_some(..)`).
-//! A sentinel needs exactly ONE reader; re-deriving it per site is how the two
-//! fingerprint sentinel bugs happened.
+//! and it decodes in exactly ONE place. An ad-hoc decode re-derived at each site
+//! (`max_total != 0 && counters.total >= max_total`, `(r.max_total_tokens != 0).then_some(..)`)
+//! is how the two fingerprint sentinel bugs happened — a sentinel with two readers
+//! fails in opposite directions.
 //!
 //! `Cap` is that one reader. `Cap::UNLIMITED` is `u32::MAX` rather than a
 //! `None`/enum variant on purpose: [`Cap::allows`] stays a single `<` with no

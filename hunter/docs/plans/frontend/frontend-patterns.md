@@ -99,10 +99,6 @@ visible row. Client search precomputes a per-row blob (`WeakMap`); sort uses
 decorate-sort-undecorate; selection-follow looks up a `Map` index; prefs/pins writes to
 `localStorage` are debounced (150ms).
 
-## `useTradeStream` — `hooks/useTradeStream.ts`
-
-Buffers incoming SSE `trade` events. Max buffer size: 500 (older events are dropped from the front). The buffer is a `useRef` (not state) to avoid re-renders on every trade; a debounced `setState` at 100ms flushes the ref into React state for rendering. This means `TransactionsPage` re-renders at most 10×/sec regardless of trade volume.
-
 ## PriceUnitContext — `context/PriceUnitContext.tsx`
 
 Provides SOL/USD toggle + current SOL price. Listens to `sol_price` SSE events.
@@ -148,22 +144,11 @@ App-wide registry for long-running jobs (sweep runs, simulation, swing-detection
 
 `BackgroundJobsIndicator` in the header subscribes to state; individual launch buttons subscribe to actions only.
 
-## `strategyResultCache.ts` — imperative start→wait→fetch
+## Sweep — `components/sweep/` and `GenericSweepView.tsx`
 
-Used for sim (`POST .../simulate`) and swing-detection-all (`POST .../detect-swings-batch`):
+`GenericSweepView` is the sweep UI; `GenericSweepPage` passes the `strategyId` prop plus the param key list + axes definitions.
 
-1. **POST** → receive `{ job_id }` (202 Accepted)
-2. **Subscribe** to SSE for `job_complete` events with matching `job_id`
-3. **On event:** `GET .../jobs/{job_id}/result` → store in slice
-4. **Timeout:** after 5min, mark job as timed-out; user can still manually refetch
-
-Result is stored in `simulationResultSlice` / `swingResultSlice` and retrieved via `selectSimResult(ruleId)` selectors. Pages access results via these selectors, not by polling the API.
-
-## Sweep — `components/sweep/` and `GroupedSweepView.tsx`
-
-`GroupedSweepView` is the generic sweep UI. Two thin wrappers (`Tpsl1GroupedSweepPage`, `Tpsl2GroupedSweepPage`) pass the `strategyId` prop and the strategy-specific param key list + axes definitions.
-
-**Config form** (`SweepConfigForm`): param ranges are per-axis (`AxesSpec` from backend). The frontend declares which params to show and their display names in `sweep/axes.ts` (one file per strategy). Adding a new param = add an entry to the axes file + ensure the backend `AxesSpec` includes it.
+**Config form** (`SweepConfigForm`): param ranges are per-axis (`AxesSpec` from backend). The frontend declares which params to show and their display names in `components/sweep/genericAxes.ts`. Adding a new param = add an entry to the axes file + ensure the backend `AxesSpec` includes it.
 
 **FingerprintGroupPicker**: shared between the sweep config form (filter corpus) and the dashboard (`GroupedCreationSection`). Renders a multi-select of known fingerprint field values; selection is serialized to URL query params so the group filter survives refresh.
 

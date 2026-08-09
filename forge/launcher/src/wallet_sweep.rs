@@ -50,9 +50,9 @@ const CLOSE_ACCOUNT_IX: u8 = 9;
 /// kept well under the 1232-byte tx limit with room for the two signers.
 const CLOSE_BATCH: usize = 12;
 /// Attempts for a single send/confirm before a wallet's step is reported failed.
-/// A transient RPC blip (expired blockhash, dropped confirm) used to fail the whole
-/// wallet until the operator re-clicked; retrying with a fresh blockhash self-heals
-/// it inside the same pass.
+/// At 1 attempt a transient RPC blip (expired blockhash, dropped confirm) fails the
+/// whole wallet until the operator re-clicks; retrying with a fresh blockhash
+/// self-heals it inside the same pass.
 const SEND_ATTEMPTS: usize = 3;
 /// Pause between send attempts — lets a transient RPC/network hiccup clear.
 const RETRY_BACKOFF_MS: u64 = 500;

@@ -1,7 +1,7 @@
 //! the **mandatory plan gate** every forge write flow passes through.
 //!
-//! The launcher/manage flows no longer hand-roll instructions from free-text
-//! variant strings. Instead each flow assembles an [`orchestrator::Plan`] (via the
+//! No launcher/manage flow hand-rolls instructions from free-text variant
+//! strings. Each flow instead assembles an [`orchestrator::Plan`] (via the
 //! macros — `bundle_launch` / `volume_make` / `exit` / `consolidate` / `fund`),
 //! then calls [`gate`], which:
 //!

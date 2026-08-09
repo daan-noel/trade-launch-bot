@@ -176,7 +176,7 @@ export function inspectFromSim(r: SimulatedTokenResult): InspectTarget {
 /** Stable per-row identity for engine-run result rows that carry no DB `id`
  *  (`SimulatedTokenResult` / `ComboTokenResult`). Re-entry (cooldown + episode
  *  cap) lets a rule/combo enter the same mint more than once in a single run, so
- *  `mint_address` alone is no longer unique — `entry_time` is (one fill per
+ *  `mint_address` alone is not unique — `entry_time` is (one fill per
  *  episode). A never-entered `NoEntry` row has no `entry_time` and is unique by
  *  mint alone (a matched-but-unentered token can't loop). Use as the table
  *  `rowKey` / charts-grid `rowKey` / inspect-selection key for any row source

@@ -126,9 +126,9 @@ export function OpenPositionStatusChips({
 /**
  * The header of a position modal — identity · status · exit · PnL, in that
  * order. ONE definition, shared by the Console's open rows, Console History and
- * Rules Evidence: the three used to hand-roll the same span and had already
- * drifted on the status badge color (History painted every non-`EntryFailed`
- * row `primary`, so a closed winner and a stuck exit looked alike).
+ * Rules Evidence — hand-rolling the same span in three places drifts, most
+ * visibly on the status badge color (paint every non-`EntryFailed` row `primary`
+ * and a closed winner reads exactly like a stuck exit).
  */
 export function PositionModalTitle({
   mint,

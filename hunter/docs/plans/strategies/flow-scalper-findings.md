@@ -67,9 +67,9 @@ deltas mostly sat inside the noise floor (below).
 
    > Use **`m_position.held >= N`** for a time stop. Same per-trade result with 32%
    > more throughput, because `held` bounds the hold *without* also filtering entries.
-   > `price_lifetime.rs` is authoritative on `stall`'s definition; the one-line
-   > summary in `metrics/mod.rs` used to say "since the price last moved", which is
-   > what made this invisible.
+   > `price_lifetime.rs` is authoritative on `stall`'s definition; a one-line summary
+   > in `metrics/mod.rs` reading "since the price last moved" is what makes this
+   > invisible.
 
 3. **Re-entry amplifies selection quality, in whichever direction it points.** He
    re-enters good picks and improves with episode index; we re-entered bad ones and

@@ -1,4 +1,7 @@
 #!/bin/sh
-# Repo-tracked hooks. Enable once per clone:
+# Repo-tracked hooks, optional. `core.hooksPath` is untracked local config, so a fresh
+# clone runs without this until someone opts in:
 #     git config core.hooksPath .githooks
+# It only narrows the loop — it checks STAGED files, and `--no-verify` skips it. CI runs
+# the whole-tree sweep on every push regardless (.github/workflows/docs.yml).
 exec "$(git rev-parse --show-toplevel)/scripts/check-docs.sh"

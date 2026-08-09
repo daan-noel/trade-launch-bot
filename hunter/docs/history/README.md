@@ -24,5 +24,8 @@ lives).
 | [2026-07-27 replay-anchor blackout](2026-07-27-replay-anchor-blackout.md) | A recovery anchor derived from the failing attempt's own state, so it never survived the failure |
 | [2026-07-26 sweep entry-cache poisoning](2026-07-26-sweep-entry-cache-poisoning.md) | Cached a resolved entry under a key that didn't determine it; every sibling combo inherited it |
 | [2026-07-22 heartbeat green through a wedge](2026-07-22-heartbeat-green-through-wedge.md) | Liveness measured the loop iterating, not work landing — 7 h outage, watchdog silent |
+| [2026-08-03 creator-crew screen refuted](2026-08-03-creator-crew-screen-refuted.md) | The `p=0.0002` creator-reputation signal did not replicate; backer reputation came out inverted |
+| [2026-08-03 wallet-copying closed](2026-08-03-wallet-copying-closed.md) | A 7-day mine of profitable wallets — negative even at zero latency, so the whole class is closed |
+| [2026-07-29 launch-crew refuted OOS](2026-07-29-launch-crew-refuted-oos.md) | Registry-copy + fixed-TP looked strong in-sample and failed out-of-sample |
 | [2026-07 chart swing + chain overlays removed](2026-07-chart-swing-and-chain-overlays-removed.md) | Two chart overlays deleted with the `swing_1` stack; geometry recorded in case they return |
 | [Wallet research journal (07-21 → 07-31)](wallet-research-2026-07.md) | The run-by-run scalper reverse-engineering; conclusions live in `@plans/strategies/wallet-analysis.md` |

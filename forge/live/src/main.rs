@@ -157,10 +157,10 @@ async fn main() -> anyhow::Result<()> {
         Some(event_sink.clone()),
     );
 
-    // Wallet-pool background work is now a single DB-only safety timer: the
+    // Wallet-pool background work is a single DB-only safety timer: the
     // reservation/funding TTL sweep (releases wallets stranded `reserved`/`funding`
-    // by a crashed/aborted launch). The former automatic balance poll, warm-pool
-    // funder, and hourly dust sweep were removed — funding + balance refresh are
+    // by a crashed/aborted launch). There is no automatic balance poll, warm-pool
+    // funder, or hourly dust sweep — funding + balance refresh are
     // operator-triggered ("Fund pool" / "Refresh balances" buttons), so the box
     // makes zero idle Helius RPC calls. The two trading loops (sell-ladder
     // evaluator, volume scheduler; both self-skip until MANAGE_ENABLED) stay

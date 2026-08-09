@@ -116,7 +116,7 @@ pub struct GroupedSweepRun {
 /// size, and the winning combo. The winner is picked on the robust realized
 /// `best_score` (the headline metric); `fired_count` is its `n_fired` — the
 /// sample size behind the pick — and `best_expectancy_sol` its expectancy
-/// (kept as a secondary readout, no longer the ranking metric).
+/// (a secondary readout, not the ranking metric).
 #[derive(Debug, Clone, Serialize)]
 pub struct GroupedSweepGroupSummary {
     pub id: Uuid,

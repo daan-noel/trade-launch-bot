@@ -183,7 +183,7 @@ export function LaunchConsolePage() {
       <div>
         <h1 className="text-lg font-semibold">Launch Console</h1>
         <p className="text-xs muted">
-          Create on pump.fun + auto-submit a Jito sniper bundle. Requires <code>cargo run -p live</code>{' '}
+          Create on pump.fun + auto-submit a Jito sniper bundle. Requires <code>cargo run -p forge-live</code>{' '}
           with launcher + ingest configured.
         </p>
       </div>

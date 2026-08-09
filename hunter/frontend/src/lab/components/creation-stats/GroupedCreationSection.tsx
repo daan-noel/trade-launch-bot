@@ -259,7 +259,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   // exact amount OR a bucket range and are validated (`parseSolFilterList`); the
   // discrete ones stay plain numbers. A bad entry blocks Analyze rather than
   // shipping a filter that reads as "no filter" or as unsatisfiable — the two
-  // ways this control used to fail silently.
+  // ways this control fails silently.
   const scalarFilters = useMemo(
     () =>
       buildFieldFilters(fieldFiltersText, {

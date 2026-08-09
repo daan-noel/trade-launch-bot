@@ -251,7 +251,7 @@ fn sweep_ram_reserve_bytes() -> u64 {
 ///   desktop reserve, minus the run's permanent resident set (the corpus, measured
 ///   once when headroom was real; see [`RESIDENT_BASELINE_BYTES`]). This is the
 ///   budget for *all* transient fold buffers combined, and it does not decay as the
-///   sweep fills it — the sweep's own RSS growth is no longer subtracted from its own
+///   sweep fills it — the sweep's own RSS growth is not subtracted from its own
 ///   headroom.
 ///
 /// `max` of the two prices the sweep's own transient buffers as reusable (structural
@@ -576,9 +576,9 @@ pub fn strategy_ids() -> &'static [&'static str] {
 
 /// The strategy-agnostic result of a grouped sweep, ready for the generic repo:
 /// the per-group sweep results plus the resolved axes JSON to store on the run.
-/// The combo→param-JSON map is no longer carried here — the engine's [`GroupSink`]
-/// builds each group's write incrementally, so only the final combo
-/// count survives to stamp on the run.
+/// No combo→param-JSON map is carried here — the engine's [`GroupSink`] builds each
+/// group's write incrementally, so only the final combo count survives to stamp on
+/// the run.
 pub struct GroupedSweepOutput {
     /// Number of param combos evaluated per group.
     pub combo_count: usize,

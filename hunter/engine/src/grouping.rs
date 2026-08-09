@@ -9,8 +9,8 @@
 //!
 //! Creator wallet is **deliberately not** a grouping dimension: on pump.fun
 //! creators rotate wallets constantly, so a creator key is un-trackable across
-//! tokens and only ever yields singleton groups. It was removed to keep any
-//! creator-wallet classification out of the project entirely.
+//! tokens and only ever yields singleton groups. Its absence is deliberate - it
+//! keeps creator-wallet classification out of the project entirely.
 //!
 //! This module is intentionally strategy-blind: it only reads
 //! [`TokenFingerprint`] (carried on each corpus token) and never touches the

@@ -145,8 +145,8 @@ notional). Full rationale, the four fixed defects, and the residual gap:
 
 - Bound every query — paginate/time-window/stream. Never `SELECT *` the full
   `trades`/`raw_txs`. Hot tables are **TimescaleDB hypertables** with declarative
-  compression + retention (in `0001_init.sql`); the old hand-rolled `maintenance.rs`
-  partition loop is gone.
+  compression + retention (in `0001_init.sql`). There is no `maintenance.rs` partition <!-- ref-ok: absence is the rule -->
+  loop and re-adding one fights the retention policies for the same chunks.
 - **Both migration chains are squashed to a single `0001_init.sql`** (core +
   lab). A new migration is a new `00NN_*.sql`; re-squashing later invalidates every
   already-migrated database's ledger and needs a one-off

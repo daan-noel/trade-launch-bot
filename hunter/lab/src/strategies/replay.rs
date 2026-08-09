@@ -1179,10 +1179,10 @@ mod tests {
 
 /// Turn a replayed [`PositionOutcome`] into a result row, pricing the round-trip
 /// through the shared [`CostModel`](trading_core::strategies::kernel::CostModel) so
-/// PnL matches the sweep + the old single-rule simulate byte-for-byte. `created_at`
+/// PnL matches the sweep + the single-rule simulate byte-for-byte. `created_at`
 /// / `symbol` come from the token metadata; `buy_amount_sol` sizes the round-trip;
 /// `cost_model` is the caller's chosen [`CostModelKind`](trading_core::strategies::kernel::CostModelKind)
-/// (request-selectable — see `EngineSimRequest::cost_model` — no longer hardcoded to
+/// (request-selectable — see `EngineSimRequest::cost_model`; never hardcode
 /// `pumpfun_default`, which double-counts slippage against a non-default fill model).
 ///
 /// Scale-out positions price through [`round_trip_multi_leg`](trading_core::strategies::kernel::round_trip_multi_leg)

@@ -73,7 +73,7 @@ function buildStructureColumns(opts: {
         if (!sug) return <span className="text-text-dim/50">—</span>;
         // One explanation for every state — a gated row says WHICH gate, and a
         // near-miss lists the families that fell short, not just the ones that
-        // fired (a row with nothing strong used to explain nothing at all).
+        // fired (a row with nothing strong would otherwise explain nothing).
         const why = suggestExplain(sug);
         if (sug.gated) {
           return (

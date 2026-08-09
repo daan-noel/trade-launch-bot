@@ -1,7 +1,7 @@
 # Full-repo refactor plan - remaining work
 
 Open items from the seven-audit sweep of the monorepo. Every item here has been checked
-against the tree and is genuinely open; anything found already done was removed rather
+against the tree and is genuinely open; anything found already done is removed rather
 than left ticked. `file:line` anchors drift fast — re-verify before acting on one.
 
 Constraints: breaking changes OK, no behavior-preservation requirement.
@@ -23,28 +23,25 @@ The completed/out-of-scope ledger and the audit's own status narrative are in
   the default OpenSSL stack: `forge/live/Cargo.toml:37`
   (`reqwest = { version = "0.11", features = ["json"] }`) and `forge/launcher/Cargo.toml:38`
   (`… ["json", "multipart"] }`). Add `default-features = false` + `"rustls-tls"` to match hunter.
-- [ ] **Doc sweep** — the stale names that survive. Scope is *bare* stale paths only; the
-  dep-key/lib-name mapping notes are intentional and stay (`pump-trader`/`ingest-laserstream` are
-  the **current** Cargo dep keys — see the "false premise" entry in
-  [../hunter/docs/roadmap/venue-quote-portability.md](../hunter/docs/roadmap/venue-quote-portability.md)
-  before re-raising that one).
-  - `cargo run -p lab`/`-p live` → `-p hunter-lab` / `-p hunter-live`. `-p` takes a **package**
-    name; `lab`/`live` are `[lib]` target names, so these commands do not run:
-    `hunter/docs/RUN-MODES.md:39-42`, `hunter/docs/arch/sweep.md:269`,
-    `hunter/docs/plans/database/lake-pg-read-paths.md:35`,
-    `hunter/docs/plans/deploy/api-auth-deploy-flow.md:103`, `forge/docs/roadmap-plan.md:93,100`,
-    `forge/frontend/src/features/launch/LaunchConsolePage.tsx:186` (UI text).
-  - `frontend-react` → `frontend`, code comments only (the docs are clean):
-    `hunter/core/src/api/handlers/tokens/tokens.rs:514,1374`.
-  - `../hunter/pump-trader::bundle_buy` → `shared/executor/pumpfun`:
-    `forge/docs/roadmap-plan.md:84`.
 - [ ] **Add a root `README.md`** tying the monorepo together (only `RUN.md` + root `CLAUDE.md` exist).
+- [ ] **Ingest deep-dives name symbols that no longer exist.** `scripts/check-docs.sh` only
+  validates cited *paths*, so these passed after their file maps were repointed at
+  `shared/ingest/{core,pumpfun}` + `live/src/ingest/`. Still stale in the prose:
+  `IngestHeartbeat` (the type is `DbHeartbeat`, a single atomic — `backpressure-watchdog.md`
+  still shows a two-field struct), and the constants `PIPELINE_SEND_TIMEOUT` /
+  `RECONNECT_INTERVAL`, which have no definition anywhere
+  (`reconnect-restart-flow.md` tabulates both with values). Verify each against
+  `live/src/ingest/watchdog.rs` + `shared/ingest/core/src/transport/mod.rs` before trusting
+  a number in those three docs.
 - [ ] **Façade `use`-name rename (dedicated cleanup commit)** — `pump_trader`→`executor_pumpfun`
   (38 files) and `ingest_laserstream`→`ingest_pumpfun` (21 files). Crates/packages already moved to
   `shared/executor/pumpfun` + `shared/ingest/pumpfun`; only the cosmetic `use`-name remains. Rename
   the lib targets (`shared/executor/pumpfun/src/lib.rs`, `shared/ingest/pumpfun/src/lib.rs`) + every
   call site, update the dep-key mapping notes in `hunter/CLAUDE.md` and `forge/CLAUDE.md`, in one
-  isolated commit (no logic change).
+  isolated commit (no logic change). Until then `pump-trader` / `ingest-laserstream` are the
+  **current** Cargo dep keys, not stale paths — do not "fix" them as such (the "false premise"
+  entry in
+  [../hunter/docs/roadmap/venue-quote-portability.md](../hunter/docs/roadmap/venue-quote-portability.md)).
 
 ---
 

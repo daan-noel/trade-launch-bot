@@ -72,8 +72,8 @@ export function TokensPage({
   const mintFromUrl = searchParams.get('mint');
 
   // Built once and held stable: the rate-dependent cells read the unit/USD-rate
-  // from context themselves (see priceCells), so a rate tick no longer rebuilds
-  // every column def and re-renders the whole grid — only the price cells update.
+  // from context themselves (see priceCells), so a rate tick does not rebuild
+  // every column def and re-render the whole grid — only the price cells update.
   const columns = useMemo(() => tokenColumns(), []);
 
   const [live, setLive] = useState(loadLive);

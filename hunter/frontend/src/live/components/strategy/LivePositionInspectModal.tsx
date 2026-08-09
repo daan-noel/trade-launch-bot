@@ -18,9 +18,9 @@ import type { RulePositionRecord } from 'types';
  * it with `rule={null}` and just the resolved name, and the flow-overlay keys
  * fall back to the position's `rule_id`.
  *
- * This is the ONE closed-position modal. History used to hand-roll a second
- * copy — same title, same `RulePositionRecord` → `FloorDetailFacts` mapping —
- * which meant every new persisted column had to be wired in two places.
+ * This is the ONE closed-position modal. A second copy for History — same title,
+ * same `RulePositionRecord` → `FloorDetailFacts` mapping — means every new
+ * persisted column has to be wired in two places.
  */
 export function LivePositionInspectModal({
   position,

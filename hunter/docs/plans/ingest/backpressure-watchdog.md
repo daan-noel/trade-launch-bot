@@ -30,9 +30,11 @@ db_tx.try_send(DbWriteOp::Raw(...)).ok()
 
 **Strategy channel** (`strategy_tx`, cap 512) uses `try_send` to the StrategyRunner — a slow strategy runner should not stall ingest.
 
-## Watchdog — `ingest_health.rs`
+## Watchdog — `live/src/ingest/watchdog.rs`
 
-`IngestHeartbeat` is a shared struct stamped by `db_writer.rs` at the end of every `flush()`:
+`DbHeartbeat` is a shared atomic (unix-millis of the last DbWriter batch commit) stamped by
+`db_writer.rs` — **only** after a flush that persisted at least one row, because stamping an
+all-failed flush is a false liveness signal that hides a wedged pipeline:
 
 ```rust
 pub struct IngestHeartbeat {
@@ -93,7 +95,7 @@ pub enum TxRelevance {
 }
 ```
 
-`client.rs` pre-filters by account key set (no full decode for irrelevant txs). `pipeline.rs` matches on `TxRelevance` to route to the correct handler.
+The transport (`shared/ingest/core/src/transport/mod.rs`) pre-filters by account key set (no full decode for irrelevant txs); the consumer (`live/src/ingest/consumer.rs`) matches on `TxRelevance` to route to the correct handler.
 
 ### Trade decode path
 
@@ -106,7 +108,7 @@ pub enum TxRelevance {
 
 ### Codegen
 
-Committed prost/tonic bindings live in `decoder/grpc/generated/`. `.proto` sources in `proto/`. These are **not** regenerated at build time. To regenerate: change `.proto` → run `build.rs` locally → commit the updated `generated/` files. This avoids making the build depend on `protoc`.
+Committed prost/tonic bindings live in `shared/ingest/core/src/generated/`. They are **not** regenerated at build time: regeneration is a local, manual step whose output is committed, so no build depends on `protoc`.
 
 ## DbWriter batching — `db_writer.rs`
 

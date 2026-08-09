@@ -12,8 +12,8 @@ under `live/src/strategies/engine/`.
 
 ## A0. Decision → spawn (latency)
 
-`dispatch` still runs state effects before submit effects, but Pass 1 no longer
-awaits durable PG for the hot transitions:
+`dispatch` runs state effects before submit effects, and Pass 1 does not await
+durable PG for the hot transitions:
 
 | Transition | Pass 1 | Submit spawn |
 |---|---|---|

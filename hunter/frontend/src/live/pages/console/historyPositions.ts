@@ -3,11 +3,11 @@
  * table rows stay `RulePositionRecord`, the charts deck takes `ClosedTradePoint`,
  * and the summary strip takes `RunOutcomeRow`.
  *
- * All three now derive from the same server-filtered positions query, so the
- * strip, the deck, and the table can no longer describe different cohorts. The
- * deck used to fold `/api/portfolio/closes-series` instead — a second population
- * that was closed-only, single-mode, and blind to the table's per-column filters.
- * (That endpoint stays; Home's Review digest is still its consumer.)
+ * All three derive from the same server-filtered positions query, so the strip,
+ * the deck, and the table can never describe different cohorts. The deck must not
+ * fold `/api/portfolio/closes-series` here — that is a second population, and it
+ * is closed-only, single-mode, and blind to the table's per-column filters.
+ * (The endpoint itself is fine; Home's Review digest is its consumer.)
  *
  * The lenses SQL can't express — recurring dow×hour heat, a hold/PnL band brush,
  * a legacy exit focus, a synthetic Metric± needle — are applied here, once, so

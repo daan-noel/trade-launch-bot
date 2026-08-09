@@ -28,7 +28,7 @@ asserted by `DataTable.boundary.test.ts`) and owns the "token recipe":
 3. **Mint accessor** — every token-data row keys its mint under the one canonical field
    `mint_address` (SSOT across DB → wire → JS: `tokens.mint_address`, `trades.mint_address`,
    `strategy_positions.mint_address`, and every DTO/grammar key). The accessor is fixed
-   internally to read `.mint_address` — callers no longer pass a `mintOf` prop (removed).
+   internally to read `.mint_address` — there is no `mintOf` prop for a caller to pass.
    It drives the charts grid, the default `rowKey`, and the client mint-set pre-filter, and
    matches the server mint-set column key.
 
@@ -75,10 +75,11 @@ the shared **enrichment** half of that grammar is the SSOT
 and the live Holdings resolver (`portfolio.rs::holdings_resolve`) both delegate to. The
 SQL backend reproduces the same op semantics via bound predicates.
 
-The **client-side TS evaluator retired** with Wallet's server migration
-(`services/tableEval.ts` + `columnResolver` + `mergeTokenData` deleted). The golden
-fixture `tableEval.fixtures.json` + Rust `table_eval::conformance_shared_fixtures` are
-kept **Rust-only** (do not delete the JSON — the Rust test `include_str!`s it).
+There is **no client-side TS evaluator** — no TS table evaluator, column resolver or row
+merger; every such table is server-side, so any of the three would be a second
+implementation of the Rust grammar. The golden fixture `tableEval.fixtures.json` + Rust
+`table_eval::conformance_shared_fixtures` are **Rust-only** (do not delete the JSON — the
+Rust test `include_str!`s it).
 
 ### Wallet Holdings server-side (the last client table)
 

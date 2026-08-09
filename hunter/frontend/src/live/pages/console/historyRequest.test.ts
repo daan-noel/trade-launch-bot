@@ -78,8 +78,8 @@ describe('the table and the summary describe one population', () => {
       numericCols: NUMERIC,
       timezone: TZ,
     };
-    // A numeric column filter reaching the aggregate is the fix's whole point —
-    // the strip used to state the unfiltered book while the table showed a slice.
+    // A numeric column filter must reach the aggregate: without it the strip
+    // states the unfiltered book while the table shows a slice.
     expect(historySummaryBody(input).filters.entry_sol).toEqual({ op: 'gt', val: 0.1 });
   });
 });

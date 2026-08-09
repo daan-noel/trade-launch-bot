@@ -131,7 +131,7 @@ Notes
 - **`block_time` NOT NULL is an ingest constraint** — it's the partition key, can't be
   NULL. If a live tx update lands before its block-meta, stamp `block_time` from a small
   in-memory `slot→block_time` map (you already consume block-meta for `tx_index`).
-- **No BRIN** — Timescale chunk exclusion does the time-range pruning the BRIN used to.
+- **No BRIN** — Timescale chunk exclusion does the time-range pruning a BRIN would.
 - The mint index mainly serves **recent uncompressed chunks** (the live trading read
   path); historical chunks are served by compression's `segmentby`/`orderby` metadata.
 - No `wallet_address` index (per-wallet flow logic reads the in-memory runtime cache).

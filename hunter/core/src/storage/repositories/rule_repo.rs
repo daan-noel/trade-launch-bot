@@ -140,8 +140,8 @@ impl RuleRepo {
     /// [`Self::find`] for a set of ids, in **one** round trip. Missing ids are
     /// simply absent from the result (same "not found is not an error" contract as
     /// `find`). The engine's rule reload resolves its whole drain set through this
-    /// — that used to be one `find` per drain rule, awaited serially on the
-    /// decision loop, so a rule with leftover open rows taxed every reload.
+    /// — one `find` per drain rule would be awaited serially on the decision loop,
+    /// taxing every reload of a rule that has leftover open rows.
     pub async fn find_many(&self, ids: &[Uuid]) -> anyhow::Result<Vec<StrategyRule>> {
         if ids.is_empty() {
             return Ok(Vec::new());

@@ -128,7 +128,8 @@ describe('reentry round-trip (the silent-strip regression)', () => {
       take_profit: 50,
       reentry: { cooldown_sec: 5, max_episodes_per_token: 10 },
     };
-    // fromJson → toJson must preserve reentry (before this field it was dropped).
+    // fromJson → toJson must preserve reentry — a round-trip that drops it is
+    // the regression this pins.
     const form = ruleParamsFromJson(json, undefined);
     expect(form.reentry).toEqual({ cooldown_sec: 5, max_episodes_per_token: 10 });
     expect(ruleParamsJsonEqual(ruleParamsToJson(form), json)).toBe(true);

@@ -759,13 +759,13 @@ async fn run_grouped_sweep_job(
     let expected_hash = src.selection_hash(&sel);
     // On a **miss**, evict before loading. The entry holds the previous run's whole
     // corpus (`Arc<Vec<CorpusToken>>` → the per-token `Arc<Vec<CorpusTrade>>`
-    // buffers), and it is only overwritten *after* the load below — so a hash miss
-    // used to peak at two full corpora plus DuckDB's scan state, on exactly the runs
-    // where it hurts (a widened date range / raised `token_cap` is a miss by
+    // buffers), and it is only overwritten *after* the load below — so holding it
+    // across a miss peaks at two full corpora plus DuckDB's scan state, on exactly
+    // the runs where it hurts (a widened date range / raised `token_cap` is a miss by
     // definition). It also inflates `RESIDENT_BASELINE_BYTES`, captured at
     // `corpus_loaded`, which the mid-run headroom read treats as permanently
-    // consumed — so the dead corpus was charged against every fold batch for the
-    // rest of the run. Evicting here is pure gain: nothing reads the stale entry
+    // consumed — charging the dead corpus against every fold batch for the rest of
+    // the run. Evicting here is pure gain: nothing reads the stale entry
     // again (`list_token_results` keys on the run's own `corpus_hash`), and this
     // write is under the same single-flight gate as the run.
     let cached = {
@@ -828,7 +828,7 @@ async fn run_grouped_sweep_job(
     // window holding more tokens than the cap is trimmed to its **newest** slice.
     // Flag the **candidate** select (not `corpus.len()`): `curve_only` / empty
     // histories can leave the loaded corpus below the cap even when older mints
-    // were dropped (parity plan B10). Simulate has no such cap.
+    // were dropped (sim-parity B10). Simulate has no such cap.
     if corpus.candidates_capped {
         let msg = format!(
             "Corpus hit the {token_cap}-token cap — only the newest {token_cap} tokens in \
@@ -1592,11 +1592,11 @@ pub async fn list_groups(
         }
     };
 
-    // Attach what actually selected each group. The frontend used to rebuild this
-    // in TypeScript from `group_key` alone — a second, differently-lossy copy of
-    // the promote-side derivation, which is why a filtered run's card read
-    // "ALL tokens" while its corpus was pinned. Resolved here, from the one SSOT,
-    // so the card, the Promote button's enabled state and the fingerprint the
+    // Attach what actually selected each group. The frontend must not rebuild this
+    // in TypeScript from `group_key` alone — that is a second, differently-lossy
+    // copy of the promote-side derivation, and it is how a filtered run's card ends
+    // up reading "ALL tokens" while its corpus is pinned. Resolved here, from the one
+    // SSOT, so the card, the Promote button's enabled state and the fingerprint the
     // promote endpoint would create can never disagree.
     if let Ok(Some(run)) = repo.get_run(run_id).await {
         let scope_fp = match run.fingerprint_id {

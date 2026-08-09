@@ -190,7 +190,7 @@ pub struct PumpFunTrader {
     pub(crate) amm_user_volume_accumulator: Pubkey,
     // Sharded concurrent maps (`DashMap`): each critical section is a single
     // get/insert with no `.await` held, and sharding means the WS-ingest writer
-    // and the trade readers no longer serialize on one global mutex.
+    // and the trade readers do not serialize on one global mutex.
     pub(crate) amm_pool_cache: Arc<DashMap<String, AmmPoolInfo>>,
     /// Per-mint mutex serializing the `amm_pool_info` cold path so concurrent
     /// sellers don't each fire `getSignaturesForAddress` + `getTransaction`.

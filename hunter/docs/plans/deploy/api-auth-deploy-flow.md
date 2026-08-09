@@ -3,13 +3,13 @@
 ## The problem this solves
 
 The mutating API routes spend **real SOL** (`POST /api/solana/wallet/{buy,sell}`,
-`/cashback/claim`, the `DELETE` routes). The auth middleware used to be
-**fail-open**: it required a bearer token *only if* `API_AUTH_TOKEN` happened to
-be set, and let everything through when it wasn't. A forgotten env var silently
-exposed the money path.
+`/cashback/claim`, the `DELETE` routes), so the auth middleware is **fail-closed**.
+A fail-open middleware — one that requires a bearer token *only if* `API_AUTH_TOKEN`
+happens to be set, and lets everything through when it isn't — turns a forgotten env
+var into a silently exposed money path.
 
-The fix flips it to **fail-closed** and wires the token end-to-end so the
-deployed stack still works without ever putting the secret in the browser.
+Fail-closed means the token is wired end-to-end, so the deployed stack still works
+without ever putting the secret in the browser.
 
 ## The two-layer defense
 
@@ -100,7 +100,7 @@ the browser.
 
 ## Dev mode (no nginx)
 
-`npm run dev:live` + `cargo run -p live` (or `dev:lab` + `cargo run -p lab`).
+`npm run dev:live` + `cargo run -p hunter-live` (or `dev:lab` + `cargo run -p hunter-lab`).
 There's no proxy container, so the **Vite dev proxy** does the injection:
 `vite.live.config.ts` / `vite.lab.config.ts` reads `API_AUTH_TOKEN` from the
 root `.env` via `loadEnv(mode, '..', '')` (non-`VITE_` vars stay server-side, in

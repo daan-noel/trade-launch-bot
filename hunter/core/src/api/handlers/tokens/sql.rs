@@ -394,9 +394,9 @@ fn push_tri(clauses: &mut Vec<String>, expr: &str, tri: Option<&str>) {
 }
 
 /// Global-search clause — deliberately narrowed to `mint` + `symbol` only (locked
-/// decision), mirroring the in-RAM `search_match`'s field set exactly. Dropping the
-/// old date/numeric substring matching also removes the `float8::text` vs Rust
-/// `to_string` formatting drift the two engines used to disagree on.
+/// decision), mirroring the in-RAM `search_match`'s field set exactly. Text-only
+/// also keeps the two engines off `float8::text` vs Rust `to_string`, which do not
+/// agree digit-for-digit - a date/numeric substring match would diverge by backend.
 fn search_clause(raw: &str, a: &mut SqlArgs) -> String {
     let needle = raw.trim().to_lowercase().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
     let ph = a.push(SqlArg::Str(needle));

@@ -62,8 +62,8 @@ fn pricing_for(fill_model: FillModel) -> Pricing {
     Pricing { buy_amount_sol: BUY_SOL, fill_model, cost: CostModel::pumpfun_default() }
 }
 
-/// Every selectable fill model — parity must hold under each, not just the one the
-/// sweep used to hardcode.
+/// Every selectable fill model — parity must hold under each, never under one
+/// hardcoded model.
 const FILL_MODELS: [FillModel; 3] =
     [FillModel::WorstCase, FillModel::FirstInWindow, FillModel::SignalPrice];
 

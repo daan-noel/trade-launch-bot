@@ -103,8 +103,8 @@ impl PumpFunTrader {
     /// nonce, the signature is fixed locally before the network round-trip, so a
     /// caller can persist a durable "buy in flight" marker keyed on that signature
     /// *ahead* of any on-chain side effect. This closes the last persist-after-send
-    /// window: a crash between submit and record can no longer strand untracked
-    /// tokens, because the signature was already on disk before submit. Returns the
+    /// window: a crash between submit and record cannot strand untracked
+    /// tokens, because the signature is already on disk before submit. Returns the
     /// submitted signature (identical to the one handed to `on_signed`).
     // Trade-path fn — the write-ahead buy threads the same routing/slippage inputs
     // plus the persist hook; `too_many_arguments` is allowed by design (see

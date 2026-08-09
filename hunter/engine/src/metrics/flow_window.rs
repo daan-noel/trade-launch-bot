@@ -12,11 +12,11 @@
 //! one buffer. A ring buffer of `(ts, signed_sol)` with running `buy`/`sell`
 //! sums keeps both fold and read O(1) amortized, no per-event allocation.
 //!
-//! **The read really is O(1)** — it used to claim that and then rescan the whole
-//! deque on every [`WindowState::value`], recomputing the window width per element
-//! inside [`in_window`]. That is a per-metric, per-rule, per-tick cost on the live
-//! hot path and the single-rule simulate fold alike. Two invariants make the O(1)
-//! read exact instead:
+//! **The read really is O(1)** — not an O(1) claim wrapped around a full-deque
+//! rescan inside [`WindowState::value`], and not a window width re-derived per
+//! element inside [`in_window`]. Either shape is a per-metric, per-rule, per-tick
+//! cost on the live hot path and the single-rule simulate fold alike. Two
+//! invariants make the O(1) read exact:
 //!
 //! * `buf` is kept **time-sorted** ([`WindowState::on_trade`] inserts in order; a
 //!   regressed `block_time` — legal, since canonical order is slot → tx_index → leg

@@ -101,9 +101,9 @@ race the incident timeline shows: adopt at `26.698`, seed still running at `38.8
 
 Two smaller rails came with it:
 
-* `FirstSlotSettled` is now gated on the same snipe-freshness check as `TokenCreated`
-  — after a restart, the first trade ping on a seeded token used to "settle" a
-  creation slot that closed hours earlier.
+* `FirstSlotSettled` is gated on the same snipe-freshness check as `TokenCreated`.
+  Without that gate, after a restart the first trade ping on a seeded token "settles"
+  a creation slot that closed hours earlier.
 * Primed trades are **not** written to the event log. The log is the decision stream
   the lab replays; logging an observation would make a replay re-decide precisely what
   priming exists to prevent (and the trades are already in PG).

@@ -203,7 +203,8 @@ export function setField(key: string, field: string, value: unknown): void {
 }
 
 // ── table column-visibility map ─────────────────────────────────────────────
-// Collapses what used to be ~10 separate `*_cols` keys into one object map.
+// ONE object map, in place of ~10 separate `*_cols` keys. The old keys still sit
+// in existing browsers, so `LEGACY_*` below migrates them in on read.
 
 type TableColsMap = Record<string, string[]>;
 
@@ -365,7 +366,7 @@ const LEGACY_STRING_MOVES: { from: string; to: string }[] = [
   { from: 'rules-control.modeFilter', to: `${STORAGE_KEYS.filterMode}.rules-control` },
 ];
 
-/** Accordion opens used to be one `'0'|'1'` key each; they are now ids in the map. */
+/** Legacy accordion opens: one `'0'|'1'` key each, migrated to ids in the map. */
 const LEGACY_ACCORDION_MOVES: { from: string; id: string }[] = [
   { from: `${PREFIX}inspect-detail-open`, id: ACCORDION_IDS.inspectDetail },
   { from: `${PREFIX}metric-selector-open`, id: ACCORDION_IDS.metricSelector },
@@ -373,10 +374,10 @@ const LEGACY_ACCORDION_MOVES: { from: string; id: string }[] = [
   { from: `${PREFIX}sweep.detailsOpen.generic`, id: ACCORDION_IDS.sweepDetailsGeneric },
 ];
 
-/** Per-`tableId` charts flags used to be one `'0'|'1'` key each. */
+/** Legacy per-`tableId` charts flags: one `'0'|'1'` key each. */
 const LEGACY_TABLE_CHARTS_PREFIX = `${PREFIX}tablecharts:`;
 
-/** True for any key this module has replaced and no longer reads. `mt:` keys in
+/** True for any key this module replaces and never reads. `mt:` keys in
  *  the registry never match; third-party keys never match. */
 function isLegacyStorageKey(key: string): boolean {
   if (key.startsWith('hunter.')) return true;

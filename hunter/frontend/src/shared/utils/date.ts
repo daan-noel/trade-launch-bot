@@ -7,10 +7,10 @@ function dtfPart(parts: Intl.DateTimeFormatPart[], type: Intl.DateTimeFormatPart
 /**
  * `Intl.DateTimeFormat` is an expensive constructor (full locale + timezone
  * resolution). These formatters are built with a tiny finite set of
- * (timezone, options) combinations but were previously reconstructed on every
- * call — i.e. per table cell, per render, ~40-100×/sec on the live-trade tables.
- * Cache them at module level keyed by a stable string so each combination is
- * built once and reused. Mirrors `createChartTimeFormatters` in chartTimezone.ts.
+ * (timezone, options) combinations. Reconstructing one per call means per table
+ * cell, per render, ~40-100×/sec on the live-trade tables. Cache them at module
+ * level keyed by a stable string so each combination is built once and reused.
+ * Mirrors `createChartTimeFormatters` in chartTimezone.ts.
  */
 const dtfCache = new Map<string, Intl.DateTimeFormat>();
 function getDtf(key: string, build: () => Intl.DateTimeFormat): Intl.DateTimeFormat {

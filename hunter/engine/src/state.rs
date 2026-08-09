@@ -76,10 +76,10 @@ pub struct TokenState {
 /// and the only thing that disarms an idle *armed* token is the dead verdict —
 /// which needs real reserves under `DEAD_MAX_LIQUIDITY_SOL`. A token that pumped
 /// past that floor (or whose rows carry no reserve at all, so liquidity reads
-/// `NaN`) is therefore **never** pruned, and used to be swept arm-by-arm five times
-/// a second for the rest of the run. Live that is a slow leak; in a multi-day
-/// simulate it is the dominant cost, and it grows with corpus width rather than
-/// with anything the rule actually does.
+/// `NaN`) is therefore **never** pruned, and without this skip it is swept
+/// arm-by-arm five times a second for the rest of the run. Live that is a slow
+/// leak; in a multi-day simulate it is the dominant cost, and it grows with corpus
+/// width rather than with anything the rule actually does.
 ///
 /// Skipping is only sound if it is *decision-neutral*, and the verdict is only
 /// stamped when both of these hold:

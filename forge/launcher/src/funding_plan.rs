@@ -4,8 +4,8 @@
 //! `FUND_AMOUNT_*` env constant. The dev requirement here is the SAME figure the
 //! pre-launch balance gate in [`crate::service::execute_launch`] enforces —
 //! computed once, in [`dev_launch_required_lamports`], so the funder can never
-//! top a dev wallet up to less than the gate demands (CLAUDE.md SSOT rule; the
-//! gate + funder used to drift). A launch's real need is template-specific:
+//! top a dev wallet up to less than the gate demands (CLAUDE.md SSOT rule — a
+//! second copy of that figure drifts). A launch's real need is template-specific:
 //! `dev = create floor + dev_buy_quote`, `leg = leg buy + tip + fees`.
 
 use anyhow::Result;

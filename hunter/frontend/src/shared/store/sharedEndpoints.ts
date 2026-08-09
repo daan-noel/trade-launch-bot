@@ -173,7 +173,7 @@ export const sharedApi = baseApi.injectEndpoints({
     }),
     // Global app settings — one shared object read by both root contexts
     // (timezone / price-unit), the Settings page, and the Sync page. A single
-    // cache entry replaces what used to be 4+ independent fetches on startup.
+    // cache entry, in place of 4+ independent fetches on startup.
     getSettings: builder.query<AppSettings, void>({
       query: () => '/api/system/settings',
       providesTags: ['Settings'],

@@ -255,8 +255,8 @@ Because bars are rebuilt whenever interval/group/metric/trades change, the chart
   `barsShape` (`{length, first, last}`) it was measured against — the baseline needed to
   translate it onto the next bar array.
 - `shiftLogicalRange` does that translation. Restoring by **time** is wrong:
-  `timeScale.setVisibleRange` snaps its endpoints onto bar boundaries, so a tight zoom drifted
-  a little on *every* trade until it no longer looked like the window the user set. Logical
+  `timeScale.setVisibleRange` snaps its endpoints onto bar boundaries, so a tight zoom drifts
+  a little on *every* trade until it no longer looks like the window the user set. Logical
   indices are exact once the array shift is known.
 - The shift is anchored on the **last** bar of the old array, not the first. Bars are appended
   on the right by live trades but can also be dropped from the left (rolling window,

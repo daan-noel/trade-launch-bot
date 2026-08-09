@@ -3266,7 +3266,7 @@ impl StrategyRepo {
     /// **Paper** `ExitStuck` rows — a simulated sell whose fill window could never
     /// resolve. Paper owns no on-chain bag, so none of the real recovery machinery
     /// applies (`find_exit_stuck_bags` / `find_cleared_by_status` / `find_bags_by_status`
-    /// are all `mode = 'real'`, which is why these rows used to stay open forever);
+    /// are all `mode = 'real'`, so nothing else would ever close these rows);
     /// the reaper books them `End` at the token's last known price. Bounded by
     /// `limit` so a large backlog drains over several ticks instead of one long one.
     pub async fn find_paper_exit_stuck(&self, limit: i64) -> anyhow::Result<Vec<StrategyPosition>> {

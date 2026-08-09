@@ -1,7 +1,7 @@
 # LaserStream Ingest Workflow
 
-LaserStream / Yellowstone gRPC is the **sole** live ingest transport (the old WebSocket path
-was fully removed 2026-06-11). This doc describes how a transaction goes from the gRPC stream
+LaserStream / Yellowstone gRPC is the **sole** live ingest transport — there is no
+WebSocket path. This doc describes how a transaction goes from the gRPC stream
 to persisted trades, token metrics, and strategy pings.
 
 Code lives in `ingest-laserstream/src/`. Token-sync service lives in `trading_core/src/services/token_sync.rs`.
@@ -10,18 +10,18 @@ Code lives in `ingest-laserstream/src/`. Token-sync service lives in `trading_co
 
 | File | Purpose |
 | ------ | --------- |
-| `ingest-laserstream/src/client.rs` | gRPC connect, TLS + `x-token` auth, subscription, reconnect backoff, pool resubscribe; forwards the typed `Arc<SubscribeUpdateTransaction>` (no `Value` build) |
-| `ingest-laserstream/src/adapter.rs` | Protobuf `SubscribeUpdateTransaction` → Helius-shaped JSON `Value` (`build_raw_blob` = persisted blob; off-thread in DbWriter for real-time `source='live'`, inline in token_sync for backfill `source='sync'`) |
-| `ingest-laserstream/src/adapter_rpc.rs` | **Inverse**: base64 RPC result → `SubscribeUpdateTransaction` (`rpc_to_protobuf`), so token_sync runs `decode_protobuf` like the live path |
-| `ingest-laserstream/src/pipeline.rs` | Main event loop: decode dispatch, cache updates, strategy pings, pool refresh |
-| `ingest-laserstream/src/db_writer.rs` | Batch queue, partition-by-type, dedup-keep-last, bulk inserts, signal notify; synthesises the raw blob via `build_raw_blob` off the hot path |
-| `ingest-laserstream/src/decoder/mod.rs` | `HeliusDecoder` API + `DecodeOutput`, `decode_migrate`; module wiring |
+| `shared/ingest/core/src/transport/mod.rs` | gRPC connect, TLS + `x-token` auth (`XTokenInterceptor`), `build_subscribe_request`, reconnect backoff, pool resubscribe; forwards the typed `Arc<SubscribeUpdateTransaction>` (no `Value` build) |
+| `shared/ingest/core/src/raw_tx.rs` | Protobuf `SubscribeUpdateTransaction` → the persisted raw blob (built off-thread in DbWriter for real-time `source='live'`, inline in token_sync for backfill `source='sync'`) |
+| `hunter/core/src/services/helius_rpc.rs` | **Inverse**: base64 RPC result → `SubscribeUpdateTransaction` (`rpc_to_protobuf`), so token_sync runs `decode_protobuf` like the live path |
+| `hunter/live/src/ingest/consumer.rs` | Main event loop: decode dispatch, cache updates, strategy pings, pool refresh |
+| `hunter/live/src/ingest/db_writer.rs` | Batch queue, partition-by-type, dedup-keep-last, bulk inserts, signal notify; builds the persisted raw blob off the hot path |
+| `shared/ingest/pumpfun/src/decode/mod.rs` | Decoder API + `DecodeOutput`; module wiring |
 | `ingest-laserstream/src/decoder/grpc/` | **The decoder** — protobuf-native `decode_protobuf` (+ `grpc/trade.rs`), reads the Yellowstone structs directly, no `Value`. Serves both live ingest and token_sync |
-| `ingest-laserstream/src/decoder/trade.rs` | Shared: bonding-curve `TradeEvent` + PumpSwap `BuyEvent`/`SellEvent` Borsh decode, `build_amm_trade`, `compute_sol_change` |
-| `ingest-laserstream/src/decoder/create.rs` | Shared: `Create`/`Create_v2` instruction + creator resolution (byte-source-agnostic) |
-| `ingest-laserstream/src/decoder/instructions.rs` | Shared: instruction kinds/labels + compute-unit extraction (plain byte slices) |
+| `shared/ingest/pumpfun/src/decode/trade.rs` | Shared: bonding-curve `TradeEvent` + PumpSwap `BuyEvent`/`SellEvent` Borsh decode |
+| `shared/ingest/pumpfun/src/decode/create.rs` | Shared: `Create`/`Create_v2` instruction + creator resolution (byte-source-agnostic) |
+| `shared/ingest/pumpfun/src/decode/instructions.rs` | Shared: instruction kinds/labels + compute-unit extraction (plain byte slices) |
 
-Only one decode path exists (protobuf-native `grpc/`); the old JSON `Value` path was removed. See [@arch/ingest.md](@arch/ingest.md) for the current file map.
+Only one decode path exists (protobuf-native `grpc/`) — there is no JSON `Value` path. See [@arch/ingest.md](@arch/ingest.md) for the current file map.
 
 ## End-to-end data flow
 
@@ -38,13 +38,13 @@ LaserStream gRPC  ──Arc<protobuf>──▶  IngestPipeline  ──┬─DbWr
 ### 1. Stream (client + adapter)
 
 - `connect(endpoint, api_key)` — TLS endpoint, `x-token` auth via `XTokenInterceptor`,
-  64 MiB max message, 30 s HTTP/2 + TCP keepalive. (`ingest-laserstream/src/client.rs`)
+  64 MiB max message, 30 s HTTP/2 + TCP keepalive. (`shared/ingest/core/src/transport/mod.rs`)
 - `build_subscribe_request(account_include, from_slot)` — subscribes to the **Pump.fun program**
   plus currently-tracked **PumpSwap pool accounts**. Commitment = `processed`. On reconnect it
   replays from `from_slot` when recent enough, else falls back to a live subscription.
 - `run(...)` main loop: `stream.message()` → `SubscribeUpdateTransaction` → cheap
   `tx_is_relevant(&tx)` log pre-filter → send the typed `Arc<SubscribeUpdateTransaction>` on
-  `value_tx` (mpsc) to the pipeline. (Tier B: the heap-heavy Helius `Value` blob is no longer
+  `value_tx` (mpsc) to the pipeline. (Tier B: the heap-heavy Helius `Value` blob is not
   built here — `decode_protobuf` reads the protobuf directly and the persisted blob is built
   off-thread in the DbWriter via `adapter::build_raw_blob`.)
   - Highest slot tracked in an `AtomicU64`.
@@ -55,12 +55,12 @@ LaserStream gRPC  ──Arc<protobuf>──▶  IngestPipeline  ──┬─DbWr
   connection delivers data. Jitter derives from subsecond nanos (no RNG).
 - **In-stream idle-reconnect vs. process watchdog (timing invariant).** Helius has a routine
   silent gap roughly every ~6 min. The in-stream idle-reconnect (`STREAM_RECONNECT_IDLE_TIMEOUT`
-  60 s, `client.rs`) is *designed* to reconnect+replay in-process, losslessly, with **no** restart.
-  The separate process liveness watchdog (`state/ingest_health.rs`) must therefore never fire first:
+  60 s, in the transport) is *designed* to reconnect+replay in-process, losslessly, with **no** restart.
+  The separate process liveness watchdog (`live/src/ingest/watchdog.rs`) must therefore never fire first:
   its stall-window floor is **180 s**, kept above the full upstream recovery window (idle 60 s +
-  check ~15 s + backoff ~30 s + connect ~10 s ≈ 130 s). A previously-stored `60` collided with the
-  idle-reconnect and force-exited the process ~10×/hr; the floor's `.max()` retroactively neutralizes
-  such DB rows. Keep `WATCHDOG_STALL_TIMEOUT_FLOOR_SECS` > `STREAM_RECONNECT_IDLE_TIMEOUT` + margin.
+  check ~15 s + backoff ~30 s + connect ~10 s ≈ 130 s). A stored `60` collides with the
+  idle-reconnect and force-exits the process ~10×/hr; the floor's `.max()` neutralizes such
+  a DB row. Keep `WATCHDOG_STALL_TIMEOUT_FLOOR_SECS` > `STREAM_RECONNECT_IDLE_TIMEOUT` + margin.
 
 ### 2. Decode (`HeliusDecoder`)
 

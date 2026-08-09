@@ -1,4 +1,4 @@
-# PnL % — the one definition, and the four places it used to differ
+# PnL % — the one definition, and the four places it can drift
 
 Permanent reference. Read before adding any percent next to a SOL figure.
 
@@ -34,9 +34,9 @@ reader has to pair up.
 **The two hero tiles do not share a denominator, and must not.** `PnL realized`
 divides by the closed positions' capital; `PnL incl. open` also carries the open
 bags' marks in its numerator, and that capital is deployed too, so it divides by
-`total_entry_sol`. The live/paper mapper used to copy `return_pct` onto both bands,
-which printed the realized return beside a mark-to-market ◎ — two headline numbers
-measuring different cohorts under one label.
+`total_entry_sol`. A live/paper mapper that copies `return_pct` onto both bands prints
+the realized return beside a mark-to-market ◎ — two headline numbers measuring
+different cohorts under one label.
 
 `bandReturnPct` is the ONE reader of the capital-weighted-vs-mean choice (hero tile
 and band tile below it both go through it, so they cannot print different figures
@@ -95,20 +95,20 @@ you were looking at on any partially-exited row. Both PnL columns are now built 
 one lamports numerator `PNL_LAMPORTS_SQL`, guarded by
 `pnl_sql_columns_share_one_numerator`.
 
-**4. The Rules TOTAL tile weighted by trade count** (the table above), and blended paper
-with real — while the PnL tile three lines up already refused to blend modes because
-"real ◎ and paper ◎ are different currencies". A percent is money over money, so the
-same refusal applies: with both modes visible the tile shows the split, not a blend.
+**4. The Rules TOTAL tile must not weight by trade count** (the table above) **or blend
+paper with real** — the PnL tile three lines up refuses to blend modes because "real ◎
+and paper ◎ are different currencies". A percent is money over money, so the same
+refusal applies: with both modes visible the tile shows the split, not a blend.
 
 `best_pct` / `worst_pct` moved with `pnl_pct` for the same reason — a distribution tail
 the PnL% column cannot reproduce is a tail of some other distribution.
 
 ## Naming
 
-`avg_pnl_pct` was renamed **`return_pct`** everywhere (model, repo, wire, TS, columns).
-The old name read as "average of percents" and described the formula it had already
-stopped being; the next person to "fix" the mismatch would have turned it back into a
-mean. Label it **"Return %"** in UI, never "Avg %".
+The name is **`return_pct`** everywhere (model, repo, wire, TS, columns) — never
+`avg_pnl_pct`, which reads as "average of percents" and so invites the next person to
+"fix" the mismatch by turning the formula back into a mean. Label it **"Return %"** in
+UI, never "Avg %".
 
 Similarly `total_entry_sol` (all entered positions, open ones included) is **not** a
 *realized* return denominator — that is `closed_entry_sol`. Dividing by the former

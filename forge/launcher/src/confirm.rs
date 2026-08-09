@@ -489,7 +489,7 @@ mod tests {
         }
     }
 
-    /// Regression (Fix 1): when the background re-bid can't re-submit a dropped
+    /// Regression guard: when the background re-bid can't re-submit a dropped
     /// atomic bundle, `execute_bundle` leaves the bundle terminal `failed`. The
     /// confirm watcher only ever revisits `submitted` bundles
     /// (`find_awaiting_confirmation`), so nothing else would touch it again —

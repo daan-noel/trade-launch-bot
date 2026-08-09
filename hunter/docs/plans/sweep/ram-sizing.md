@@ -3,13 +3,13 @@
 Deep-dive reference for how a grouped sweep sizes itself against free host RAM.
 Structure/summary lives in [../../arch/sweep.md](../../arch/sweep.md).
 
-## The problem this replaced
+## Why not admit-or-refuse
 
-The engine used to **admit or refuse**: it computed a *preferred* plan (full thread
-pool, full fold budget), estimated its resident peak, and `bail!`ed if that peak
-didn't fit `usable = host_free − desktop_reserve − slack`.
+The shape this replaces: compute a *preferred* plan (full thread pool, full fold
+budget), estimate its resident peak, and `bail!` if that peak does not fit
+`usable = host_free − desktop_reserve − slack`.
 
-Three things made that wrong:
+Three things make that wrong:
 
 1. **The peak is a choice, not a constant.** Threads, the series wave, the fold
    batch, the shard width and disk spill are all tunable downward, and the engine
@@ -89,8 +89,8 @@ Two different things bound a fold batch, and mixing them up aborted runs mid-fli
 
 The rule: **a live reading may size an allocation, never validate one.**
 
-`fold_wave_into` and the pass-outer loop assert against the constant. They used to
-assert against the live function, which is a TOCTOU: a batch legally sized at 65536
+`fold_wave_into` and the pass-outer loop assert against the constant. Asserting
+against the live function instead is a TOCTOU: a batch legally sized at 65536
 while RAM was free got retroactively declared illegal the instant free RAM dipped
 under the reserve, and the fold bailed —
 
@@ -204,10 +204,10 @@ an **info** toast in `BackgroundJobsContext`. Cold path: a handful of calls at
 sweep start, never from the fold loop.
 
 Notes are emitted for: reduced thread count (with the expected slowdown factor), a
-capped fold budget, running under the desktop reserve, and — new — **host RAM
-being unreadable** (non-Windows/Linux), where the guard is inert and sizing falls
-back to the flat `DEFAULT_SWEEP_ADMISSION_BUDGET_MB`. That last case used to be
-silent.
+capped fold budget, running under the desktop reserve, and **host RAM being
+unreadable** (non-Windows/Linux), where the guard is inert and sizing falls back to
+the flat `DEFAULT_SWEEP_ADMISSION_BUDGET_MB`. That last case is invisible unless it
+is said out loud, so it is always noted.
 
 ## Failure persistence
 
@@ -326,8 +326,8 @@ priced as consumed.** `usable_host_bytes()` now takes the **max** of two reading
   buffer yet — the run's permanent, non-reclaimable floor).
 
 The structural term does not decay as the sweep fills it, because the sweep's own
-fold buffers are exactly what that budget is *for* — they are no longer subtracted
-from the sweep's own headroom. It stays abort-safe by construction:
+fold buffers are exactly what that budget is *for* — they are not subtracted from
+the sweep's own headroom. It stays abort-safe by construction:
 `baseline + usable ≤ total − reserve`, so the desktop reserve is always left free
 (the never-OOM contract). Before the baseline is captured (admission, pre-load) the
 structural term is 0, so admission sizing is byte-for-byte the old behaviour.

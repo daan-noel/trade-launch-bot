@@ -1,9 +1,9 @@
 // Records + request shapes for the GROUPED param-sweep endpoints
-// (`/api/strategies/sweeps[...]`). One generic engine (`strategy_id="generic"`)
-// drives these now; the swept `params` per combo is a `RuleParams` blob (rendered
-// by `genericSweepColumns`), and the axes are the registry-driven `AxisSpec[]`
-// (`genericAxes.ts`) — the old per-strategy static axis grids + fingerprint-blob
-// serializers were removed with the legacy sweep pages (redesign FE5.4).
+// (`/api/strategies/sweeps[...]`). ONE generic engine (`strategy_id="generic"`)
+// drives these: the swept `params` per combo is a `RuleParams` blob (rendered by
+// `genericSweepColumns`), and the axes are the registry-driven `AxisSpec[]`
+// (`genericAxes.ts`). There are no per-strategy static axis grids or
+// fingerprint-blob serializers — a new strategy is a registry entry, not a page.
 
 import type { CostModelId, FillModelId } from 'lib/strategy/types';
 import type { FieldFilterValue } from './fingerprintFilters';
@@ -205,9 +205,9 @@ export interface SelectionClause {
  * filters ∧ the group key — resolved ONCE by the backend
  * (`lab/src/sweep/selection.rs`) and consumed verbatim here.
  *
- * This replaced a frontend re-derivation from `group_key`, which is why a run
- * that pinned its corpus with `ix_labels_filter` / `field_filters` used to render
- * as "ALL tokens": those clauses live on the RUN, never in the group key.
+ * Never re-derive this from `group_key` on the frontend: a run that pins its
+ * corpus with `ix_labels_filter` / `field_filters` then renders as "ALL tokens",
+ * because those clauses live on the RUN, never in the group key.
  */
 export interface GroupSelection {
   /** The saved fingerprint the run was scoped to, if any. */

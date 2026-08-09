@@ -30,8 +30,8 @@ struct ReserveEntry {
 
 /// Concurrent, freshness-bounded cache of the latest reserve snapshot per mint.
 /// Backed by a sharded `DashMap`: the WS-ingest writer (one `update` per tracked
-/// trade) and the trade-path readers no longer serialize on a single global
-/// mutex, and every critical section is still a single map op with no `.await`.
+/// trade) and the trade-path readers do not serialize on a single global mutex,
+/// and every critical section is a single map op with no `.await`.
 #[derive(Default)]
 pub struct ReserveCache {
     inner: DashMap<String, ReserveEntry>,

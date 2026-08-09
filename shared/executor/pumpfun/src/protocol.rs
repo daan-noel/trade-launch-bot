@@ -131,9 +131,10 @@ pub fn is_amm_buyback_fee_recipient(pk: &Pubkey) -> bool {
     PUMP_AMM_BUYBACK_FEE_RECIPIENTS.iter().any(|r| r == pk)
 }
 
-/// Legacy fixed pfee marker that cashback-enabled PumpSwap pools used to append
-/// before the buyback pair. On pools that require `pool_v2`, this marker is
-/// **omitted** (replaced by the pool_v2 slot). Kept for harvest of older swaps.
+/// Fixed pfee marker that cashback-enabled PumpSwap pools append before the
+/// buyback pair on the pre-`pool_v2` layout. A pool that requires `pool_v2`
+/// **omits** it (the pool_v2 slot takes that position). Needed to harvest the
+/// older swaps still on chain.
 pub const PUMP_AMM_CASHBACK_GLOBAL: Pubkey =
     pubkey!("5817UmPM7KLKu2mSQVsXMJ7X2rr3PtEb3j4EioyoJgd1");
 
@@ -156,7 +157,7 @@ pub const JITO_TIP_ACCOUNTS: [Pubkey; 8] = [
 
 /// Helius **Sender** tip accounts (mainnet); one is chosen at random per trader
 /// instance for the single-tx buy/sell tip. These are DISTINCT from
-/// [`JITO_TIP_ACCOUNTS`]: the Helius `/fast` sender no longer credits Jito tip
+/// [`JITO_TIP_ACCOUNTS`]: the Helius `/fast` sender does not credit Jito tip
 /// accounts and rejects a tx whose tip isn't paid to one of THESE wallets with
 /// `-32602 "transaction must send a tip of at least 200000 lamports to one of the
 /// following Helius wallets"` — i.e. the tx is dropped pre-broadcast (signed but

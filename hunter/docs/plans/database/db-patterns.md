@@ -111,4 +111,4 @@ persisted — the table never grows unboundedly:
 `retained_combo_ids` is the SSOT for "which combos survive"; the same pure filter would
 select existing and future data identically. (The old one-time backfill-compaction probe —
 `vacuum_full_results` / `fetch_combo_metrics_for_group` / `delete_combos_except` and the
-never-wired `compact-sweeps` subcommand — was removed; write-time retention makes it moot.)
+never-wired `compact-sweeps` subcommand — write-time retention makes one moot.)

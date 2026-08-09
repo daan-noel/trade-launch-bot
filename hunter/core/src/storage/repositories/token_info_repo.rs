@@ -75,8 +75,8 @@ type InfoRow = (
     DateTime<Utc>,           // updated_at
 );
 
-/// Build the runtime [`TokenInfo`] from a new-schema row, synthesizing the fields
-/// the new table no longer stores. `last_synced_at` is filled separately (from
+/// Build the runtime [`TokenInfo`] from a schema row, synthesizing the fields the
+/// table does not store. `last_synced_at` is filled separately (from
 /// `token_sync_state`) — `None` here.
 fn row_to_info(r: InfoRow) -> TokenInfo {
     let (
@@ -141,7 +141,7 @@ impl TokenInfoRepo {
     }
 
     /// Upsert token metrics. `age` / `market_cap` are accepted for signature
-    /// stability but no longer stored (derived in `token_overview`).
+    /// stability but not stored (they are derived in `token_overview`).
     ///
     /// `ath_price` is written authoritatively from the caller's freshly recomputed
     /// value (a re-sync must be able to *lower* a previously over-stated ATH); a

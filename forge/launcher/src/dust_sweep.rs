@@ -7,8 +7,8 @@
 //!
 //! The per-wallet pass ([`sweep_used_wallets`]) drives the operator "Sweep &
 //! retire" button (plus the retired-wallet reclaim) via [`crate::wallet_sweep`].
-//! (The former hourly automatic dust sweep was removed — sweeping is now purely
-//! operator-triggered, so the box makes no unattended sweep RPCs.)
+//! Sweeping is **operator-triggered only** — there is no automatic hourly pass, so
+//! the box makes no unattended sweep RPCs.
 
 use std::str::FromStr;
 

@@ -318,12 +318,11 @@ fn prune(dir: &Path, limits: &Limits, today: NaiveDate, open: &Path) {
 /// The scan is bounded at **both** ends before anything is parsed — the whole
 /// corpus is never materialized. Boot recovery only ever needs the last
 /// [`MAX_SNIPE_AGE_SECS`](trading_core::config::constants::MAX_SNIPE_AGE_SECS)
-/// (30 s) of events, but this used to read every `events-*.jsonl` front-to-back
-/// into one `Vec` — on 2026-07-30 that was ~8.2 GB of JSONL on a 4 GB box, so the
-/// process ballooned to 2.4 GB, starved the runtime until the ingest watchdog
-/// force-exited it at 90 s, and the loop below was never reached **once across 70
-/// boots**: the engine sat deaf (every ping shed on a full queue) for 14 h with no
-/// position ever entered. Keep both bounds:
+/// (30 s) of events; reading every `events-*.jsonl` front-to-back into one `Vec`
+/// scales with the whole log dir, which on a 4 GB box is multiple GB of JSONL. That
+/// starves the runtime, the ingest watchdog force-exits the process mid-recovery,
+/// and the loop below is never reached at all — a kill loop, not a recovery. Keep
+/// both bounds:
 ///   * [`recent_log_files`] drops files whose date is wholly older than the window;
 ///   * [`read_log_tail`] reads each kept file **backwards** and stops at the first
 ///     event older than the window.

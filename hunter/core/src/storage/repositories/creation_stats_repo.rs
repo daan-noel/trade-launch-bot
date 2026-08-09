@@ -345,8 +345,8 @@ fn sol_bucket_sql(sol_expr: &str, width: f64) -> String {
 ///
 /// **Multiply by `0.000000001`; never divide by `1e9`.** The exact form has to be
 /// exact for the whole `u64` domain (see `grouping::MAX_BUCKETABLE_LAMPORTS`), and
-/// the two obvious spellings both lose digits there: `::float8 / 1e9` (what this
-/// used to be) collapses to 15 significant digits, printing `u64::MAX` as
+/// the two obvious spellings both lose digits there: `::float8 / 1e9` collapses
+/// to 15 significant digits, printing `u64::MAX` as
 /// `18446744073.7096`, and even `::numeric / 1e9` loses them because Postgres picks
 /// the quotient's scale from `select_div_scale` — 16 significant digits, i.e. only
 /// 8 decimals on an 11-digit result. Numeric *multiplication* takes the scale of

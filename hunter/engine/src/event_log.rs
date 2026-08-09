@@ -27,10 +27,10 @@ pub const LOG_FILE_PREFIX: &str = "events-";
 pub const LOG_FILE_SUFFIX: &str = ".jsonl";
 
 /// A parsed log-file name. Lives here, next to the wire format, because THREE
-/// separate places used to re-implement this parse — the live recorder's `prune`
-/// and `recent_log_files`, and the lab inspector's `read_logs`. Segmenting the
-/// name would have made that four copies of one convention, so it is single-sourced
-/// instead.
+/// separate places need this parse — the live recorder's `prune` and
+/// `recent_log_files`, and the lab inspector's `read_logs`. A private copy in each
+/// (plus one for the segmented name) is four spellings of one convention, so the
+/// parse is single-sourced here.
 ///
 /// Two shapes, and the ordering between them matters:
 ///

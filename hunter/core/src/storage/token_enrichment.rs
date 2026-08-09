@@ -277,9 +277,9 @@ pub fn enrich_sort_sql(key: &str) -> Option<&'static str> {
 /// filter key. `Numeric` returns the **uncast** expr so numeric operators compare
 /// numerically. Mirrors [`enrich_sort_sql`]'s columns. The boolean columns stay
 /// sort-only except `is_migrated`, which the position-summary Migrated tile
-/// filters on — without it that spec hit the "unknown key → ignored" contract
-/// and was silently dropped, so the lens narrowed the charts (a client-side
-/// fold) but never the server-paged table under them.
+/// filters on — without it that spec hits the "unknown key → ignored" contract
+/// and is silently dropped, so the lens narrows the charts (a client-side fold)
+/// but never the server-paged table under them.
 pub fn enrich_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
     use FilterKind::{Numeric, Text};
     Some(match key {

@@ -30,6 +30,6 @@ only — never the list cap.
 
 ## Parity guards
 
-The two engines are held at parity by `token_repo::parity_tests` (no longer `--ignored`:
+The two engines are held at parity by `token_repo::parity_tests` (not `--ignored`:
 auto-runs when `DATABASE_URL` is set, self-skips otherwise) plus a **no-DB** column-key guard
 `handlers::tokens::grammar_parity_tests` that runs on every `cargo test`.

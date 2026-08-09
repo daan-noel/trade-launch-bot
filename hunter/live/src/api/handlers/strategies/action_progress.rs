@@ -5,12 +5,12 @@
 //! (`action_progress` SSE) so the Rules bulk/per-row Stop buttons can show
 //! "Stopping 3/8" instead of a static rule count.
 //!
-//! **Postgres is the authority, SSE is only the fast path.** The watcher used to
-//! derive completion *solely* from `strategy_position_update` frames, on the same
-//! 512-slot broadcast bus that carries one frame per ingested trade — so under
-//! live feed load a `Lagged` gap silently dropped terminal frames that are emitted
-//! exactly once and never repeat. `remaining` then never emptied, and the Rules
-//! row sat on a "Stopping…" spinner with Stop **and** Pause disabled until the
+//! **Postgres is the authority, SSE is only the fast path.** Completion must never
+//! be derived *solely* from `strategy_position_update` frames: they ride the same
+//! 512-slot broadcast bus that carries one frame per ingested trade, so under live
+//! feed load a `Lagged` gap silently drops terminal frames that are emitted exactly
+//! once and never repeat. `remaining` then never empties, and the Rules row sits on
+//! a "Stopping…" spinner with Stop **and** Pause disabled until the
 //! page was reloaded. It also had no deadline, so a position the stop could not
 //! actually drive parked the spinner forever. Now every `Lagged`, a periodic tick,
 //! and the give-up deadline all re-read the tracked rows from PG, so a lost frame

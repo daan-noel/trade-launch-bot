@@ -315,8 +315,8 @@ pub fn build_tokens_list(
     let now = chrono::Utc::now();
 
     // Shared, pre-sorted (newest-first) snapshot of the whole list. Rebuilt at
-    // most once per staleness window across all clients, so a request no longer
-    // clones the entire cache on every poll.
+    // most once per staleness window across all clients, so a request does not
+    // clone the entire cache on every poll.
     let snapshot = state.token_list.get(&state.token_cache, now);
 
     // When `tracked_only`, restrict to the live cache subset; otherwise use the
@@ -361,8 +361,8 @@ pub fn build_tokens_list(
 
     // Serialize + fingerprint here, off the async worker pool. The ETag is a
     // content hash of the page bytes, so a poll that produces a byte-identical
-    // page (no new tokens/trades — `age` is no longer in the body, so it no
-    // longer churns) can revalidate to a bodyless 304 instead of resending.
+    // page (no new tokens/trades — `age` is not in the body, so it never churns
+    // the hash) can revalidate to a bodyless 304 instead of resending.
     let body = serde_json::to_vec(&resp).unwrap_or_default();
     let mut hasher = DefaultHasher::new();
     body.hash(&mut hasher);
@@ -374,7 +374,7 @@ pub fn build_tokens_list(
 /// set. Runs the SAME `q.matches` reduction as [`build_tokens_list`] but skips
 /// sort/page/serialize and clones only the mint strings — the lean backend for a
 /// "run over every filtered token" action, so fanning out over the full filtered
-/// set no longer ships ~20k full token rows over the wire. Order is unspecified:
+/// set does not ship ~20k full token rows over the wire. Order is unspecified:
 /// the caller wants the set, not a page.
 pub fn collect_filtered_mints(state: &CoreState, q: &TokenQuery, tracked_only: bool) -> Vec<String> {
     let now = chrono::Utc::now();
@@ -511,10 +511,10 @@ pub async fn get_trades(
 //
 // Faithful Rust port of the React Tokens table's client-side reduction so the
 // whole token set can be filtered/sorted/paged on the server. Mirrors:
-//   - tokenPassesFilters (frontend-react/src/components/tokens/filters.ts)
-//   - the DataTable global search + per-column filters (DataTable.tsx)
-//   - parseNumericPredicate grammar (numericFilter.ts)
-//   - compareSort null/dir semantics (DataTable.tsx)
+//   - the quick-filter chips (frontend/src/shared/components/tokens/tokensQuickFilters.ts)
+//   - the DataTable global search + per-column filters (table/DataTable.tsx)
+//   - parseNumericPredicate grammar (table/numericFilter.ts)
+//   - compareSort null/dir semantics (table/DataTable.tsx)
 //
 // Intentional deviation: formatted-value substring matching (compact "1.2K",
 // price strings) is not reproduced — numeric columns match via the numeric
@@ -532,10 +532,10 @@ const LIFETIME_STALE_MS: i64 = 60 * 60 * 1000;
 //   * the SQL backend (`sql.rs`, `live`): `sql_num` / `sql_text` / `sql_sort`
 //   * the in-RAM evaluator (`lab` + Simulated): `ram_num` / `ram_text` / `ram_sort`
 // A column is declared exactly ONCE here, so its SQL expression and its
-// `TokenSummary` accessor can never silently drift (previously two parallel match
-// families held at parity only by tests). `sql_num`/`ram_num` are `Some` iff the
-// column takes the numeric per-column-filter grammar (the old `NUMERIC_COLS`);
-// `sql_sort`/`ram_sort` are `Some` iff it is sortable (the old `SORTABLE_COLS`).
+// `TokenSummary` accessor can never silently drift - two parallel match families
+// held at parity only by tests is the shape this replaces. `sql_num`/`ram_num` are
+// `Some` iff the column takes the numeric per-column-filter grammar;
+// `sql_sort`/`ram_sort` are `Some` iff it is sortable.
 // ===========================================================================
 
 type RamText = fn(&TokenSummary) -> String;
@@ -1367,11 +1367,12 @@ fn tri_match(value: bool, tri: &str) -> bool {
 /// datetime-local value -> UTC instant. The string is treated as a UTC
 /// wall-clock: append `:00Z` when seconds are absent (16 chars), else `Z`.
 ///
-/// The frontend now pre-converts the picker value from the selected project
+/// The frontend pre-converts the picker value from the selected project
 /// timezone to the exact UTC wall-clock before sending it (a 19-char
 /// `YYYY-MM-DDTHH:mm:ss`, the non-16-char branch). This contract — "datetime
 /// filters are UTC, the client does any tz conversion" — is intentional; keep it
-/// when editing. See `datetimeLocalToUtcWallClock` in `frontend-react/utils/date.ts`.
+/// when editing. See `datetimeLocalToUtcWallClock` in
+/// `frontend/src/shared/utils/date.ts`.
 fn parse_dt(v: &str) -> Option<DateTime<Utc>> {
     if v.is_empty() {
         return None;

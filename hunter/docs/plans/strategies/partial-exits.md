@@ -142,8 +142,8 @@ sentinel bugs: two writers of one fact is how they drift.
 **Unique-signature note.** `uq_strategy_positions_exit_sig0` (unique on
 `exit_tx_signatures->>0`, the real-mode double-sell guard) is **not** sufficient once
 the array holds N sigs — a later leg's sig could collide with another position's first.
-It was dropped; uniqueness moved to `position_fills.tx_signature` (partial unique, real
-sells). Entry-side `uq_strategy_positions_entry_sig0` is unchanged — still one buy.
+There is no such constraint: uniqueness lives on `position_fills.tx_signature` (partial
+unique, real sells). Entry-side `uq_strategy_positions_entry_sig0` stays — still one buy.
 
 ## Cost kernel
 

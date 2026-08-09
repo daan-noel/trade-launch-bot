@@ -916,9 +916,9 @@ impl PumpFunTrader {
     /// Stale-while-revalidate: past the max age the STALE value is served
     /// immediately and a background refresh is spawned, so a trade never blocks
     /// on this RPC read once the process has fetched the config once. (Fee bps
-    /// only feed the slippage floor math — one stale window is harmless; the
-    /// old RPC pool-prewarm used to keep this warm as a side effect, and that
-    /// prewarm is gone.) Only the very first call per process fetches inline.
+    /// only feed the slippage floor math — one stale window is harmless, and
+    /// nothing else warms this entry.) Only the very first call per process
+    /// fetches inline.
     async fn amm_config(&self) -> Result<AmmGlobalConfig> {
         if let Some((c, fetched)) = *self.amm_global_config.lock().unwrap_or_else(|p| p.into_inner()) {
             if fetched.elapsed() >= AMM_CONFIG_MAX_AGE {

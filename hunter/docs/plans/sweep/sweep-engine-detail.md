@@ -85,8 +85,7 @@ The fix keeps that bound with a **fixed-size** array instead of a per-label map:
 - The per-token drill-in (`ComboTokenResult.exit`) reuses the exact same fields
   to stamp the real `metric op value` label
   (`hunter_engine::event::format_metric_exit_label`) instead of the bare
-  `"Metrics"` code name it used to persist — the fix applies at both the
-  per-token and the aggregated-combo level.
+  `"Metrics"` code name — at both the per-token and the aggregated-combo level.
 - Persisted as one `INTEGER[]` column on `grouped_sweep_results`
   (`grouped_sweep_results.n_exit_metrics_by_slot`), not `N` scalar columns — `append_group`'s
   bulk insert already sits close to the 65535 bind-parameter ceiling on its
@@ -178,8 +177,8 @@ produce byte-identical labels. Making the width runtime-configurable is a separa
 not-yet-merged per-run knob.
 
 Fingerprints are **embedded by the lake loader** (`LakeSource`/`duck.rs::load_fingerprints`
-reads the `fp_*` columns of the tokens dimension file), not a separate PG pass — the
-old `attach_fingerprints` PG pass was deleted at the lake cutover.
+reads the `fp_*` columns of the tokens dimension file), not a separate PG pass —
+there is no `attach_fingerprints` pass over Postgres.
 
 Groups with fewer than `MIN_GROUP_SIZE` (default 30) tokens are merged into an `_other` bucket and swept separately.
 
@@ -225,9 +224,9 @@ the two-stage entry (6–7), a measured *wrongness* that had to stay cheap.
    `bound_all` identically.
 
 2. **`fold_wave_into` borrows the accumulators, never copies them.** It takes
-   `&mut [ComboAgg]` into a scoped thread and merges in place. It used to `to_vec()` in
-   and `clone_from_slice` back out: `ComboAgg` is ~640 POD bytes, so at a 65536 batch
-   that was ~42 MB in + ~42 MB out *per wave, per pass* — tens of GB of memcpy on a
+   `&mut [ComboAgg]` into a scoped thread and merges in place. Round-tripping a copy
+   (`to_vec()` in, `clone_from_slice` back out) costs, at ~640 POD bytes per `ComboAgg`
+   and a 65536 batch, ~42 MB in + ~42 MB out *per wave, per pass* — tens of GB of memcpy on a
    large group, moving the same accumulators back and forth for nothing.
 
 3. **`order_for_entry_cache` uses `sort_by_cached_key`.** `entry_key` allocates a
@@ -316,8 +315,8 @@ regression in any of the above, because its 3-token corpus is a single wave.
 
 ## Observability — two instruments, different shapes (`obs.rs`)
 
-A run used to be a black box between the `corpus_loaded` and `done` milestones: four
-timing sites existed, all whole-run, so no stage's *cost* was recoverable. Worst case,
+Whole-run timing sites alone leave a run a black box between the `corpus_loaded` and
+`done` milestones — no stage's *cost* is recoverable from them. Worst case,
 a refine run does two complete sweeps of the corpus and nothing said which half was
 slow.
 
@@ -333,8 +332,8 @@ slow.
 
 `writer_drain` exists because the write channel is unbounded *on purpose* (a rayon
 worker must never stall on the DB). A writer that fell behind during the fold therefore
-drains serially **after** the engine logs "all groups folded" — previously unlabeled
-dead time at the end of every slow run.
+drains serially **after** the engine logs "all groups folded"; unlabeled, that reads
+as dead time at the end of every slow run.
 
 Per-group cost is reported as `slowest_group_{secs,index,tokens}` on the run's summary
 line, not one line per group: at ~1k groups, per-group logging buries the single number
@@ -361,20 +360,6 @@ hoisted out of the 11-metric loop:
 
 Only the **value sort** is genuinely per-metric. Net: 22 sorts → 11, and 10 of the 11
 `n_combos`-sized allocations removed via buffers reused across metrics.
-
-## TPSL1 `Strategy` Impl — `sweep/strategies/tpsl1.rs`
-
-Sweeps 6 exit-ladder knobs: `take_profit_pct`, `stop_loss_pct`, `trailing_stop_pct`, `time_stop_secs`, `stall_secs`, `liquidity_drop_pct`.
-
-Entry is param-free: `entry_key` always returns the same key → `prepare_token` is called once per token, resolves entry by scanning trades for the first trade that satisfies the base rule's entry criteria, caches it. All combos share that entry point.
-
-`simulate(token, params)` calls `find_trade_driven_exit` + `find_clock_driven_exit` (same fns as live), accumulates `TokenOutcome { pnl_sol, exit_reason, held_secs }`.
-
-## TPSL2 `Strategy` Impl — `sweep/strategies/tpsl2.rs`
-
-Sweeps all 14 knobs (8 scalp entry + 6 exit ladder). Entry varies on 8 scalp-gate params → `entry_key` hashes those 8 params → `prepare_token` is a no-op (`TokenState = ()`) and the entry resolves fresh for each unique `(token, entry_key)` combination.
-
-The 8-param hash typically produces far fewer than 2^8 distinct values in practice (most params have 3–5 sweep values → ~3^5 = 243 distinct entries per token in a typical run).
 
 ## Metrics reference — what each column means
 

@@ -445,8 +445,8 @@ pub struct MetricCandidates {
     /// `off` (`None`) first, then the rounded anchors ascending — the exact shape
     /// [`AxisSpec::values`] takes.
     pub values: Vec<Option<f64>>,
-    /// `(quantile, measured value)` behind each menu entry — the audit trail the
-    /// hand-written anchor table used to carry. Empty for a declared menu.
+    /// `(quantile, measured value)` behind each menu entry — the audit trail for a
+    /// measured menu. Empty for a declared menu.
     pub anchors: Vec<(f64, f64)>,
 }
 

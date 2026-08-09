@@ -275,9 +275,9 @@ impl AxesModel {
     /// other combo accessor is defined in terms of (axis 0 most significant, so the
     /// entry axes at the front are the slowest-varying digits).
     ///
-    /// SSOT: `combo_params` and `entry_key` used to carry their own copies of this
-    /// loop. Discovery reads the picks directly (to compare which value a family's
-    /// best combo landed on), which is the third caller — one decode, three readers.
+    /// SSOT: `combo_params` and `entry_key` read this decode rather than each
+    /// carrying a copy of the loop. Discovery reads the picks directly (to compare
+    /// which value a family's best combo landed on) — one decode, three readers.
     pub fn combo_picks(&self, idx: usize) -> Vec<usize> {
         let mut rem = idx;
         let mut picks = vec![0usize; self.axes.len()];

@@ -78,11 +78,11 @@ function toRunSummary(s: PositionsSummary): RunSummary {
     score: null,
     avg_holding_secs: s.avg_hold_secs,
     median_holding_secs: 0,
-    // Exit reasons now come off the same SQL aggregate (counted per reason in
-    // the one pass), so a live rule's breakdown is real rather than the zeros
-    // this used to emit. Anything the backend doesn't model — an `ExitFailed`
-    // position has no reason at all — is reconciled into `Other` by
-    // `exitBreakdown` against `n_closed`, never silently dropped.
+    // Exit reasons come off the same SQL aggregate (counted per reason in the
+    // one pass), so a live rule's breakdown is real rather than zeros. Anything
+    // the backend doesn't model — an `ExitFailed` position has no reason at all
+    // — is reconciled into `Other` by `exitBreakdown` against `n_closed`, never
+    // silently dropped.
     n_exit_take_profit: exits.take_profit,
     n_exit_stop_loss: exits.stop_loss,
     n_exit_trailing: exits.trailing,

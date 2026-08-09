@@ -49,8 +49,8 @@ const WEEKDAY_TO_DOW: Record<string, number> = {
 };
 
 /** One cached formatter per timezone that yields day key + dow + hour in a
- *  single `formatToParts` — heatmap + calendar used to pay two Intl builds per
- *  point (and `dayKeyInTz` used to allocate a fresh formatter every call). */
+ *  single `formatToParts`. Without the cache, heatmap + calendar pay two Intl
+ *  builds per point and `dayKeyInTz` allocates a fresh formatter every call. */
 const civilDtfCache = new Map<string, Intl.DateTimeFormat>();
 
 function civilDtf(timeZone: string): Intl.DateTimeFormat {

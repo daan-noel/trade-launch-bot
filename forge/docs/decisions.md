@@ -165,8 +165,8 @@ multi-hop funding fan-out."
 
 | Check | Status |
 | --- | --- |
-| Dep partition — `cargo tree -p live` has no duckdb/arrow/parquet | **PASS** (rayon present, but as a Solana transitive via pump-trader, not the `lake` crate) |
-| Dep partition — `cargo tree -p lab` has no pump-trader/ingest-laserstream/tonic | **PASS** |
+| Dep partition — `cargo tree -p forge-live` has no duckdb/arrow/parquet | **PASS** (rayon present, but as a Solana transitive via pump-trader, not the `lake` crate) |
+| Dep partition — `cargo tree -p forge-lab` has no pump-trader/ingest-laserstream/tonic | **PASS** |
 | Workspace `cargo check --workspace` | **PASS** (exit 0, all 6 crates; only pre-existing future-incompat warnings from `solana-client`/`sqlx-core` deps, not this code) |
 | Migrations apply clean on fresh PG+Timescale | **PASS in Phase 4** via the generality test's boot path (it runs migrations + cagg setup); standalone `sqlx migrate run` re-run pending Docker |
 | Generality proof — mock USDC + SOL token, one `trades`/views handles both | **PASS in Phase 4** (`crates/platform-core/tests/generality.rs`); re-run this pass blocked only by Docker Desktop being stopped |

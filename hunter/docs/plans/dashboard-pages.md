@@ -100,7 +100,7 @@ tiny → safe on 4GB EC2). No new pools.
   compute site); a `live` unit test on 1.1/1.2 with a fixture (avg-entry + mark → known PnL).
 - [x] **1.7 Docs** — `@arch/database.md` (new `TradeRepo` fn), `@arch/architecture.md`
   (new service + `/api/portfolio/*`); note the cost-basis SSOT decision in `@plans/`.
-- [x] **DoD:** `cargo check -p live` + `cargo check -p trading_core` clean; clippy on touched;
+- [x] **DoD:** `cargo check -p hunter-live` + `cargo check -p hunter-core` clean; clippy on touched;
   the guard test passes.
 
 ## Phase 2 — Holdings page → position manager
@@ -133,7 +133,7 @@ Current 3 data sources stay (RPC scan, Jupiter 20s poll, token-DB enrichment) �
 
 ## Phase 3 — Home → "Command Center"
 
-Replace the empty `pages/home/HomePage.tsx` with the single pane of glass. Mostly
+Replace the empty home page (`live/pages/home/LiveHomePage.tsx`) with the single pane of glass. Mostly
 aggregation once Phase 1 exists.
 
 - [x] **3.1 KPI row** — from `/api/portfolio/summary`: wallet value (SOL + USD), unrealized
@@ -160,7 +160,7 @@ lazy route in `App.tsx`. Reads `GET /api/portfolio/positions` (Phase 1.5).
   the strategy position columns); real-only.
 - [x] **4.3 Realized-P&L over time** + **per-strategy win-rate / comparison** (roll up
   `PositionsSummary` per strategy; reuse `SimSummaryCard`-style tiles).
-- [x] **DoD:** `cargo check -p live` + `npm run build` clean.
+- [x] **DoD:** `cargo check -p hunter-live` + `npm run build` clean.
 
 ## Phase 5 — Dedicated Trade page + partial sells (deferred; heaviest, riskiest)
 
@@ -175,9 +175,9 @@ riskiest change — carries double-sell risk; do last.**
 - [ ] **5.4 Backend partial sell** *(DEFERRED — real-money sell path; needs feed-confirm design + review)* — add a `sell(amount)`/`sell(pct)` path across the `live`
   bin and `pump-trader`; sell-25/50/75%. **Keep sell-confirm on the `trades` gRPC feed — no new
   RPC poll** (hard constraint; the exit loop polls the full window before retry to avoid
-  duplicate sells — preserve `execution/real.rs` behavior).
+  duplicate sells — preserve `live/src/strategies/engine/exec_real.rs` behavior).
 - [ ] **5.5 Wire partial sell** *(DEFERRED — depends on 5.4)* into Holdings (2.5) + Trade page.
-- [ ] **DoD:** `cargo check -p live` + `cargo test -p pump-trader` + `npm run build` clean;
+- [ ] **DoD:** `cargo check -p hunter-live` + `cargo test -p executor-pumpfun` + `npm run build` clean;
   double-sell path re-verified.
 
 ---

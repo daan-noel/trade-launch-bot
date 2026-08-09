@@ -65,7 +65,7 @@ impl BundleBuyVariant {
 /// Per-leg overrides from the launch bundle composer (`bundles.legs[].structure`).
 /// Carries the leg's ix **layout** (shape): an authored hand-picked step order, or
 /// [`IxLayout::canonical_buy`] when none was authored. The `layout` (a `Vec`) is why
-/// this is no longer `Copy`; callers build it by value ([`crate::trader`] leg builder).
+/// this is not `Copy`; callers build it by value ([`crate::trader`] leg builder).
 #[derive(Debug, Clone)]
 pub struct BundleLegParams {
     pub slippage_bps: u64,

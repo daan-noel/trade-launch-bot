@@ -26,12 +26,11 @@ export { exitReasonLabel, exitReasonSearchText } from 'lib/strategy/exitReason';
 // ---------------------------------------------------------------------------
 // SINGLE SOURCE OF TRUTH for the strategy Positions / Matched / Sim tables.
 //
-// The target/entry/exit trade-leg columns (Price · Tokens · Size · Time · Tx)
-// used to be hand-copied into `tpsl1/tableColumns` and `tpsl2/tableColumns` and
-// had drifted (tpsl1 lost the target leg + tokens/size/tx; tpsl2's sim showed
-// only price/time on entry/exit). `legColumns()` below emits one leg's columns
-// from a prefix + field accessors, so every table renders the identical field
-// set and the two strategies can never diverge again.
+// The target/entry/exit trade-leg columns (Price · Tokens · Size · Time · Tx) are
+// never hand-copied per strategy: that is how one family loses the target leg +
+// tokens/size/tx while another's sim shows only price/time. `legColumns()` below
+// emits one leg's columns from a prefix + field accessors, so every table renders
+// the identical field set and the families cannot diverge.
 // ---------------------------------------------------------------------------
 
 /** Badge variant for a persisted `exit_reason` — SSOT for pill color. */
@@ -81,9 +80,9 @@ export function exitReasonBadgeVariant(
  * (green / red), matching TP/SL glanceability.
  *
  * `entryError` (`last_entry_error`, mig 0017) covers the one row shape that has no
- * exit reason to show: an `EntryFailed` position never exited, so the cell used to
- * read as an ordinary blank and the actual cause — a slippage revert vs a
- * structural one — was only in the container logs. Real positions only; a
+ * exit reason to show: an `EntryFailed` position never exited, so without it the
+ * cell reads as an ordinary blank and the actual cause — a slippage revert vs a
+ * structural one — lives only in the container logs. Real positions only; a
  * simulated row has no such field. */
 export function exitReasonBadge(
   reason: string | null | undefined,
@@ -630,7 +629,7 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = (
     filterValue: (r) => exitReasonSearchText(r.exit_reason, r.pnl_sol),
   },
   // Trade count comes from the shared "Token Trades" enrichment column
-  // (`trade_count`), appended by `TokenTable` — the sim no longer carries its own.
+  // (`trade_count`), appended by `TokenTable` — the sim carries no copy of it.
 ] as ColumnDef<SimulatedTokenResult>[]
 ).map((c) => (SIM_HIDDEN_KEYS.has(c.key) ? { ...c, defaultVisible: false } : c));
 

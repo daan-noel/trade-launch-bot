@@ -29,10 +29,10 @@ migration and no backfill: every corruption was a lossy *read*, not a lossy writ
 Both persisted shapes are nevertheless accepted on read (number and numeric string),
 because the *wire* encoding is a string (below) and a value can round-trip back in.
 
-## The three readers that used to disagree
+## The three readers that must agree
 
-One sentinel with three readings is the bug this file exists to prevent. Before
-2026-08-04 the same row was:
+One sentinel with three readings is the bug this file exists to prevent. Rows written
+before 2026-08-04 were keyed by readers that disagreed — the same row read as:
 
 | Reader | Saw | Why |
 | --- | --- | --- |

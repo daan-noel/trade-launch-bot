@@ -215,11 +215,11 @@ export function RulesView({
     const pnlByMode: Record<TradeMode, number> = { paper: 0, real: 0 };
     const tradedByMode: Record<TradeMode, number> = { paper: 0, real: 0 };
     // Capital-weighted return: Σ realized PnL / Σ capital that produced it,
-    // NOT a mean of the per-rule percents. Weighting those by trade count (what
-    // this used to do) lets a rule buying 0.05 ◎ outvote one buying 1.0 ◎ — ten
-    // trades at +20% on 0.05 and ten at −5% on 1.0 read as "+7.5%" while the
-    // book is down 0.4 ◎. Only the server's `closed_entry_sol` can weight it,
-    // which is why the counters endpoint now ships that denominator.
+    // NOT a mean of the per-rule percents. Weighting those by trade count lets a
+    // rule buying 0.05 ◎ outvote one buying 1.0 ◎ — ten trades at +20% on 0.05
+    // and ten at −5% on 1.0 read as "+7.5%" while the book is down 0.4 ◎. Only
+    // the server's `closed_entry_sol` can weight it, which is why the counters
+    // endpoint ships that denominator.
     const capitalByMode: Record<TradeMode, number> = { paper: 0, real: 0 };
     const closedPnlByMode: Record<TradeMode, number> = { paper: 0, real: 0 };
     for (const r of visibleRules) {

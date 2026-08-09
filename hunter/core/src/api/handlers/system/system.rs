@@ -57,7 +57,7 @@ pub struct UpdateSettingsRequest {
     pub timezone: Option<String>,
     pub price_unit: Option<String>,
     /// Buy-side slippage in bps (100 = 1%), stored **exactly as sent** — the write
-    /// path no longer transforms it. Three-state on the wire (see [`patch_field`]):
+    /// path must not transform it. Three-state on the wire (see [`patch_field`]):
     /// absent = untouched, `null` = clear back to blank (⇒ the per-side default),
     /// a number = set it. `0` is a 400.
     #[serde(default, deserialize_with = "patch_field")]

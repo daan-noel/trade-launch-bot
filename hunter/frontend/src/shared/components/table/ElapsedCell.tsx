@@ -8,7 +8,7 @@ import { useNow } from 'hooks/useNow';
  *
  * The value counts up from the shared {@link useNow} clock, so the age advances
  * on its own instead of waiting for an SSE delta to re-render the page (a quiet
- * token used to freeze its age). Memoized, and it is the ONLY part of the row
+ * token would otherwise freeze its age). Memoized, and it is the ONLY part of the row
  * that subscribes: an open row re-renders just this cell. Cadence is adaptive
  * (per-second under a minute, ~2×/min past that), the same pattern as
  * {@link AgeCell}.

@@ -33,7 +33,7 @@ card holding two panels rather than a heatmap cell in a 2-col grid (same split a
 \* Capital tiles (Evidence only) are display-only — never add a focus lens.
 
 Chart cards use the same chrome as Console History (`border` + panel + caps title).
-Hold / wall no longer use the legacy "Temporal pattern" band — DryRunDetail still can.
+Hold / wall do not use the "Temporal pattern" band — DryRunDetail can.
 
 ## Cohort
 

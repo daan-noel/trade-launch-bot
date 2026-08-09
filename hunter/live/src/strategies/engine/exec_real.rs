@@ -419,10 +419,10 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
         Some(Ok(b)) => Some(b.user_token_account.to_string()),
         _ => order.token_account.clone(),
     };
-    // The submit error used to be dropped on the floor — not even logged — which is
-    // half the reason the 2026-07-27 `EntryFailed` rows could not be explained. It
-    // is only the *fallback* cause: when the buy did get signed we still confirm
-    // on-chain below, and that verdict is more authoritative than the send error.
+    // The submit error must never be dropped on the floor: unlogged, it is half of
+    // why an `EntryFailed` row cannot be explained after the fact. It is only the
+    // *fallback* cause — when the buy did get signed we still confirm on-chain
+    // below, and that verdict is more authoritative than the send error.
     let send_error = match &submit {
         Some(Ok(_)) => None,
         Some(Err(e)) => Some(format!("buy send failed: {e}")),
@@ -430,14 +430,14 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
             Some(format!("buy send timed out after {}s", BUY_SEND_TIMEOUT.as_secs()))
         }
     };
-    // Say it out loud the moment it happens. A send that fails AFTER the tx was
-    // signed used to vanish: the arms below prefer the on-chain verdict, so the
-    // cause was dropped and the row was left `BuySubmitted` with a NULL
-    // `last_entry_error` and not one log line. That is exactly how a server-side
-    // `JITO_MIN_TIP_SOL` under the Helius Sender floor (which rejects
-    // pre-broadcast with `-32602`) killed 13 consecutive real buys unnoticed
-    // between 2026-07-31 and 08-03. The send error is never authoritative about
-    // the FILL — but it is always the truth about the SEND, so it must be visible.
+    // Say it out loud the moment it happens. A send that fails AFTER the tx is
+    // signed otherwise vanishes: the arms below prefer the on-chain verdict, so the
+    // cause is dropped and the row is left `BuySubmitted` with a NULL
+    // `last_entry_error` and not one log line. That is how a server-side
+    // `JITO_MIN_TIP_SOL` under the Helius Sender floor (which rejects pre-broadcast
+    // with `-32602`) kills real buys unnoticed — every one signed, none broadcast.
+    // The send error is never authoritative about the FILL, but it is always the
+    // truth about the SEND, so it must be visible.
     if let Some(err) = &send_error {
         warn!(mint = %order.mint, pg = %order.pg_id, "{err}");
     }

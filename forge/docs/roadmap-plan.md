@@ -70,7 +70,7 @@ planned sniper bundle → Jito submit.
   invoke bundle execute immediately after create lands (no second HTTP call)
 - [x] **Multi-variant bundle legs** — execute only supports `"buy"` today; wire
   `buy_exact_sol_in`, `buy_v2`, `buy_exact_quote_in` in `bundle_execute` +
-  `pump-trader::bundle_buy`
+  `shared/executor/pumpfun::bundle_buy`
 - [x] **SOL/USD poller** — update `quote_assets.usd_rate` for SOL (USDC ≈ 1.0);
   USD stays derived in views only (ADR D4)
 - [x] **`create_v1` on mainnet** — only if still required (v2 path exists)
@@ -81,7 +81,7 @@ planned sniper bundle → Jito submit.
 | --- | --- |
 | Auto-submit | `launcher::service`, `live::http` |
 | Bundle confirm | `launcher::confirm` (done — thin `live` watcher) |
-| Leg variants | `launcher::bundle_execute`, `../hunter/pump-trader::bundle_buy` |
+| Leg variants | `launcher::bundle_execute`, `shared/executor/pumpfun::bundle_buy` |
 | USD poller | `live` (composition root), `platform-core` repos |
 
 ---
@@ -90,14 +90,14 @@ planned sniper bundle → Jito submit.
 
 **Goal:** Prove the live box on real chain data before trading or lake work.
 
-- [x] **Ingest round-trip** — `cargo run -p live` with Helius gRPC; confirm
+- [x] **Ingest round-trip** — `cargo run -p forge-live` with Helius gRPC; confirm
   `trades` rows have correct `launchpad_id`, `quote_asset_id`, `reserve_quote` /
   `reserve_base`; spot-check `trades_priced` (automated schema proof:
   `ingest-host/tests/roundtrip.rs`)
 - [x] **Launch + bundle E2E** — template → execute launch → auto-bundle → confirm
   sniper legs appear in ingest feed for our mint
-- [x] **Dep partition CI guard** — `cargo tree -p live` (no duckdb/arrow/parquet);
-  `cargo tree -p lab` (no pump-trader/ingest-laserstream/tonic) — `scripts/dep-partition-check.*` + `.github/workflows/ci.yml`
+- [x] **Dep partition CI guard** — `cargo tree -p forge-live` (no duckdb/arrow/parquet);
+  `cargo tree -p forge-lab` (no pump-trader/ingest-laserstream/tonic) — `scripts/dep-partition-check.*` + `.github/workflows/ci.yml`
 - [ ] **Pin borrowed crates** — path dep → pinned `git` rev on `pump-trader` /
   `ingest-laserstream` once stable
 
@@ -110,10 +110,9 @@ See also the verification-status table in [`decisions.md`](decisions.md).
 Fresh-wallet pool for launch/bundler wallets — full lifecycle (`generated` →
 `funded` → `reserved` → `used` → `retired`), batch keygen, balance-driven
 funding detection, atomic pool claiming, launch-flow integration, dust sweep,
-and encrypted-store backup/restore. All 4 tracked phases done; see the
-`CLAUDE.md` Status section for the phase-by-phase summary (the plan doc itself
-was retired since every tracked phase shipped — full detail is in git history
-at `docs/wallet-pool-plan.md` as of commit `7f0526f`). Its two explicitly-deferred
+and encrypted-store backup/restore. All 4 tracked phases done; the phase-by-phase
+summary lives in the `CLAUDE.md` Status section and in
+[history/shipped-phases.md](history/shipped-phases.md). Its two explicitly-deferred
 items are folded into Phase 5+ below.
 
 ---
@@ -139,12 +138,12 @@ items are folded into Phase 5+ below.
 **Goal:** Cold tier + sweeps/backtests; EC2 stays a rolling PG buffer only.
 
 - [ ] Fill `lake` crate — Parquet writer, DuckDB reader, sealed-day export
-- [ ] `lake-export` implementation + `forge-lab` subcommand (the do-nothing
-      `lake::run_export` stub + its CLI branch were removed; build on `lake::schema`)
+- [ ] `lake-export` implementation + `forge-lab` subcommand (build on
+      `lake::schema`; there is no `run_export` stub or CLI branch to fill in)
 - [ ] Writer/reader column parity guard (`lake::schema` SSOT + test)
 - [ ] PG fresh-tail union for tokens newer than last export
-- [ ] `db-incremental-sync.ps1` — the non-functional stub was removed; author it
-      fresh (FDW/SSH-tunnel) once the EC2 box exists
+- [ ] `db-incremental-sync.ps1` — author it fresh (FDW/SSH-tunnel) once the EC2
+      box exists; there is no script to repair
 - [ ] Sweeps / backtests / simulate HTTP in `lab`
 - [ ] Domain E analytics tables — `wallet_profiles`, `wallets`, tags (eat-bots)
 - [ ] Analysis workflow cron documented — nightly sync + `lake-export --include-today`

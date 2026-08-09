@@ -381,8 +381,8 @@ impl StrategyPosition {
     /// canonical [`weighted_return_pct`]. Mirrors `strategy_position_pnl.pnl_pct`
     /// and the repo's `PNL_PCT_SQL` (the sort/filter expression).
     ///
-    /// This is a **money** return, not a price return. It used to be
-    /// `(exit_price - entry_price) / entry_price`, which had two defects:
+    /// This is a **money** return, not a price return. It is specifically **not**
+    /// `(exit_price - entry_price) / entry_price`, which has two defects:
     ///
     /// * It charged no execution cost. At 125 bps/leg plus the fixed tip a round
     ///   trip needs roughly a **+4% price move just to break even**, so every

@@ -3,9 +3,9 @@
 //! `funded` and claimable for launches. The pool could already generate wallets
 //! and reclaim dust — this closes the loop by *sending* SOL in.
 //!
-//! **Operator-triggered only.** The autonomous background funder and the JIT
-//! per-launch funder were removed; the sole entry point is [`fund_once`], driven
-//! by the "Fund pool" button (`POST /api/wallet_pool/fund`). Nothing here spends
+//! **Operator-triggered only.** The sole entry point is [`fund_once`], driven
+//! by the "Fund pool" button (`POST /api/wallet_pool/fund`) — there is no
+//! autonomous background funder and no JIT per-launch funder. Nothing here spends
 //! SOL unattended. Each send is confirmed and the wallet promoted to `funded`
 //! in-place, so one button click leaves the pool claimable with no background poll.
 //!

@@ -49,8 +49,8 @@ const LARGE_GROUP_TOKEN_FACTOR: usize = 4;
 /// Per-combo coverage floor for the group winner: a combo must fire on
 /// `max(min_fired_abs, ceil(fire_frac · group_tokens))` tokens before it's
 /// eligible to be crowned `best_combo`. Stops a combo that fired on a lucky 2
-/// tokens out of 200 from out-ranking a combo proven over 150 — the
-/// over-fit failure mode the headline pick used to have.
+/// tokens out of 200 from out-ranking a combo proven over 150 — the over-fit
+/// failure mode this floor exists to prevent.
 #[derive(Clone, Copy, Debug)]
 pub struct CoverageFloor {
     /// Absolute minimum fired tokens (e.g. 10).
@@ -93,8 +93,8 @@ pub struct GroupResult {
     /// The winning combo's checklist `score`, or `None` when it never fired.
     /// The page's headline metric.
     pub best_score: Option<f64>,
-    /// The winning combo's expectancy per trade — kept as a secondary readout
-    /// (no longer the ranking metric).
+    /// The winning combo's expectancy per trade — a secondary readout, not the
+    /// ranking metric.
     pub best_expectancy_sol: f64,
     /// Pass-2 winners: `combo_id -> ExitStage[]` for every combo where
     /// [`Strategy::post_group_rescore`](crate::sweep::strategy::Strategy::post_group_rescore)
@@ -274,9 +274,9 @@ pub fn run_grouped_sweep<S: Strategy>(
         let sub = sub_corpus(corpus, idx);
         let group_started = std::time::Instant::now();
         // Per-group failure isolation: a group that cannot fold costs the run *that
-        // group*, not the whole sweep. Aborting here used to discard every group
-        // already folded (the run died at group 48 of N) — a strictly worse outcome
-        // than finishing the other groups and reporting the run honestly partial.
+        // group*, not the whole sweep. Aborting here would discard every group
+        // already folded — strictly worse than finishing the other groups and
+        // reporting the run honestly partial.
         let metrics = match run_sweep(strategy, params, &sub, observer, batch) {
             Ok((_stats, metrics)) => metrics,
             Err(e) => {
@@ -436,8 +436,8 @@ pub fn run_grouped_with_refine<S: Strategy>(
     // are NOT persisted: a cancel during coarse leaves no checkpointable group → a
     // full cancel.
     // A refine run sweeps the whole corpus TWICE. Timing the two passes separately is
-    // the only way to tell which half a slow run spent its time in — previously both
-    // were folded into one undifferentiated block between `corpus_loaded` and `done`.
+    // the only way to tell which half a slow run spent its time in; timed together
+    // they collapse into one block between `corpus_loaded` and `done`.
     let coarse_groups = {
         let _stage = crate::sweep::obs::Stage::start("refine_coarse_pass");
         run_grouped_sweep(
@@ -552,9 +552,9 @@ fn sub_corpus(corpus: &Corpus, idx: &[usize]) -> Corpus {
 ///   accumulator set at once (`full_combo_aggs_fit` scaled by `threads`, since
 ///   `threads` of these serial folds run concurrently): each token's series is
 ///   built **exactly once**, combos folded over it in `batch`-sized chunks (the
-///   chunking only bounds the `TokenOutcome` scratch buffer). This kills the
-///   multi-batch series rebuild — previously a `n_batches×` multiplier on the
-///   dominant series-build cost.
+///   chunking only bounds the `TokenOutcome` scratch buffer). This avoids the
+///   multi-batch series rebuild — an `n_batches×` multiplier on the dominant
+///   series-build cost.
 /// - **Batch-outer fallback** when the full accumulator set does NOT fit: peak
 ///   accumulator memory stays `batch × ComboAgg` per worker, at the cost of
 ///   rebuilding each series once per batch — the same CPU-for-RAM trade the large

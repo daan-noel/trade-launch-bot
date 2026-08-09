@@ -39,7 +39,7 @@ function armedStatusKey(state: string): 'Armed' | 'Disarmed' | null {
 
 /**
  * Mode filter for toasts. Missing mode: allow if either real or paper is enabled
- * (do not invent paper/real — that used to drop real alerts).
+ * (do not invent paper/real — that drops real alerts).
  */
 function modeAllowed(
   tradeMode: string | null | undefined,

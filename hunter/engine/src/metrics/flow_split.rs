@@ -46,10 +46,10 @@ pub fn ix_hash_opt(labels: &[impl AsRef<str>]) -> Option<u64> {
 /// allocating.
 ///
 /// Both the lake (`normalize_labels`) and Postgres (`trades.ix_labels`) hold the
-/// label sequence as a JSON array of strings, and the offline paths used to turn
-/// every row back into a `Vec<String>` — a `serde_json` parse plus one heap
-/// allocation per label, **per trade**, on corpora of millions of rows — purely to
-/// feed [`ix_hash`]. This walks the array in place instead.
+/// label sequence as a JSON array of strings. Turning each row back into a
+/// `Vec<String>` just to feed [`ix_hash`] costs a `serde_json` parse plus one heap
+/// allocation per label, **per trade**, on corpora of millions of rows — so the
+/// offline paths must not: this walks the array in place.
 ///
 /// Exactness is not traded away: the scanner handles only the shape the writers
 /// actually emit (a flat array of unescaped strings) and **falls back to
@@ -329,10 +329,10 @@ impl FlowTotals {
 /// Same O(1)-read shape as [`WindowState`](super::flow_window::WindowState): a
 /// **time-sorted** deque plus running [`FlowTotals`] over all of it, so
 /// [`totals_at`](Self::totals_at) corrects the two out-of-window ends instead of
-/// rebuilding the totals from a full scan. This one mattered most — `value` is
-/// called once **per flow metric per rule per event**, and each call used to walk
-/// the whole window; a rule with three `m_flow_split_window` conditions paid three
-/// full scans on every 200 ms tick of every tracked token.
+/// rebuilding the totals from a full scan. This one matters most: `value` is called
+/// once **per flow metric per rule per event**, so a full scan per call costs a rule
+/// with three `m_flow_split_window` conditions three whole-window walks on every
+/// 200 ms tick of every tracked token.
 #[derive(Debug, Clone, PartialEq)]
 struct FlowSplitWindowState {
     window_secs: f64,

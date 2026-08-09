@@ -752,7 +752,7 @@ interface ProfileCardProps {
 
 // Memoized: a card only re-renders when its own profile/tags/toggling flag
 // change. With the page's callbacks stabilized via `useCallback`, editing one
-// profile no longer re-renders every sibling card.
+// profile does not re-render every sibling card.
 const ProfileCard = memo(function ProfileCard({
   profile,
   allTags,

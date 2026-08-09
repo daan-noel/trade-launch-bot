@@ -11,9 +11,9 @@
  * table's own search + per-column filters compose into a single request body
  * (`historyRequest`), which is then read three ways: paged for the table,
  * aggregated server-side for the strip, and walked in full for the charts. That
- * is what makes filtering the table narrow everything above it — previously the
- * deck folded a separate closes-series endpoint that was closed-only,
- * single-mode, and blind to the table's filters, so the numbers on screen could
+ * is what makes filtering the table narrow everything above it. Folding a
+ * separate closes-series endpoint into the deck instead would be closed-only,
+ * single-mode, and blind to the table's filters, so the numbers on screen would
  * describe two different cohorts at once.
  */
 

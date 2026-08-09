@@ -91,7 +91,7 @@ pub async fn run_bundle_simulate(settings: &Settings, args: &[String]) -> Result
     trader.initialize().await.context("initialize pump-trader")?;
 
     // Simulate against a FRESH ephemeral mint rather than the launch's persisted one:
-    // (a) a terminal (dropped/failed) bundle's mint key was deleted on its outcome,
+    // (a) a terminal (dropped/failed) bundle's mint key is deleted on its outcome,
     // and (b) a brand-new mint guarantees the create leg simulates against a clean
     // curve, exactly like a real first launch. Mint identity is irrelevant to whether
     // any leg reverts — this tests the create+co-buy SEQUENCE, not the exact address.

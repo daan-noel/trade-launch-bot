@@ -209,8 +209,8 @@ function cellGroupValue<R>(col: ColumnDef<R>, row: R): string | null {
 
 /**
  * Can this column join `sortKeys`? Bare columns (no `sortable: true`, no
- * `sortValue`) must not — a header click used to append a ghost level that
- * showed no real reorder, so the *next* click looked like sort priority "2".
+ * `sortValue`) must not — a header click would otherwise append a ghost level
+ * that shows no real reorder, making the *next* click look like sort priority "2".
  */
 function columnAcceptsSort<R>(col: ColumnDef<R>): boolean {
   if (col.sortable === false) return false;

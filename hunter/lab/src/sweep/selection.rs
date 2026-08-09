@@ -2,12 +2,12 @@
 //!
 //! A group's token set is `corpus-window ∧ (scope-fingerprint | manual filters) ∧
 //! group_key@precision`. Every one of those clauses is persisted on the run row or
-//! the group row, but they used to be re-assembled ad hoc at each consumer —
-//! `promote_group` rebuilt a fingerprint from `group_key` alone (dropping
-//! `field_filters`), and the frontend rebuilt a *second*, differently-lossy version
-//! in TypeScript to badge the group card. Two readers reconstructing one fact they
-//! were never handed, both failing in the **widening** direction: the promoted rule
-//! armed on a superset of the tokens the numbers came from.
+//! the group row, and no consumer may re-assemble them ad hoc: rebuilding a
+//! fingerprint from `group_key` alone drops `field_filters`, and a second,
+//! differently-lossy TypeScript rebuild badges the group card from the same partial
+//! input. Two readers reconstructing one fact they were never handed both fail in
+//! the **widening** direction — the promoted rule arms on a superset of the tokens
+//! the numbers came from.
 //!
 //! This module is that fact, resolved once ([`GroupSelection::resolve`]) and
 //! consumed by everything: promote materializes it into a fingerprint

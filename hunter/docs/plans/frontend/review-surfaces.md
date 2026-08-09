@@ -185,9 +185,9 @@ Two consequences worth knowing:
 - The cohort hook takes `nowMs` from the caller and freezes it per mount. A preset window
   whose `from` bound is recomputed each render produces a new request body on every
   keystroke elsewhere on the page.
-- `mode: 'all'` (real + paper) used to have no series equivalent — B2 takes one mode, so
-  the deck charted the real book while the table paged both. Now that every surface reads
-  the positions query, `all` charts what it says: the mode is an ordinary filter, absent
+- `mode: 'all'` (real + paper) has no series equivalent — B2 takes one mode, so a
+  series-backed deck charts the real book while the table pages both. Because every
+  surface reads the positions query, `all` charts what it says: the mode is an ordinary filter, absent
   when `all`. Mixing paper money into an equity curve is still a real hazard — the mode
   chip in the filter bar is what keeps it honest.
 - The charts walk is capped at 20 000 rows (`CHART_SCAN_MAX`). The strip is unaffected
@@ -363,8 +363,8 @@ prepended to by SSE. It could only ever answer "what closed while this tab was o
 its rows carried no exit fill (the terminal SSE frame doesn't include one), so PnL showed
 blank until a refetch.
 
-History replaces it with the DB population, and the slice no longer keeps `recentClosed` at
-all — a terminal frame just deletes the row from `open`. That also removed a per-close array
+History uses the DB population instead, and the slice keeps no `recentClosed` at all —
+a terminal frame just deletes the row from `open`. That also avoids a per-close array
 rebuild on the SSE path and one boot fetch.
 
 The consequence to keep in mind: **the closed-position detail modal belongs to

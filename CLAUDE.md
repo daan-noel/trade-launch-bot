@@ -114,6 +114,29 @@ Update the tier that matches what changed — this is what keeps `CLAUDE.md` thi
 permanent deep-dive references (column rationale, invariants, tuning constants, design
 decisions), **not** throwaway plans.
 
+### The gate — `scripts/check-docs.sh`
+
+Two blocking checks: **present tense** on the tiers paid every session (`CLAUDE.md`,
+`docs/arch/`), and **every cited path resolves** — `.md` from any doc or code comment,
+`.rs`/`.ts`/`.tsx` from `CLAUDE.md` / `docs/arch/` / `docs/plans/`. A deliberate
+exception is marked on the line: `pt-ok: <reason>` for a date that is a real cutoff,
+`ref-ok: <reason>` for a file named because its **absence** is the rule; an unchecked
+`- [ ]` is exempt unmarked, since a proposal names what nobody has written yet.
+`docs/history/` and `docs/roadmap/` may **name** a source file that is gone or unwritten —
+the past and the not-yet-written both have to. A markdown **link** resolves in every tier,
+including those two: a citation that goes nowhere is a dead end wherever it sits.
+
+`.github/workflows/docs.yml` runs the whole-tree sweep on every push and PR. Run it the
+same way locally, and optionally narrow the loop with the tracked pre-commit hook:
+
+```powershell
+sh scripts/check-docs.sh --all        # whole tree — the same command CI runs
+git config core.hooksPath .githooks   # optional, once per clone: also gate staged files
+```
+
+`core.hooksPath` lives in the untracked `.git/config`, so a fresh clone has **no** local
+hook until that one-liner runs, and `--no-verify` skips it — CI depends on neither.
+
 <!-- pt-ok:begin — this section defines the rule, so it quotes the phrasing it forbids -->
 ## Present tense only (locked — applies to every edit, docs AND code)
 

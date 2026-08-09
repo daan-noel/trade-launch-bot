@@ -28,12 +28,12 @@ pub struct SweepCorpusCache {
 
 /// Max concurrent backtests across both strategies. Each one streams the `tokens`
 /// table and batched trade history off the `batch` pool (16 connections by
-/// default), so unbounded overlap drains it. Raised from 2 to 4 now that the
+/// default), so unbounded overlap drains it. 4 rather than 2 because
 /// `analysis_cache` single-flights the candidate scan + lake load: a "Simulate All"
-/// batch of same-fingerprint rules no longer issues one whole-table scan per
-/// concurrent rule (they collapse onto one shared scan), so the extra slots turn
-/// into real parallelism — distinct-fingerprint scans and the per-rule exit walk —
-/// rather than duplicated pool pressure. 4 keeps well under the 16-conn pool and
+/// batch of same-fingerprint rules collapses onto one shared scan instead of one
+/// whole-table scan per concurrent rule, so the extra slots turn into real
+/// parallelism — distinct-fingerprint scans and the per-rule exit walk — rather than
+/// duplicated pool pressure. 4 keeps well under the 16-conn pool and
 /// leaves headroom for dashboard reads / a running grouped sweep.
 const MAX_CONCURRENT_BACKTESTS: usize = 4;
 

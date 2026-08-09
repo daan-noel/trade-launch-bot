@@ -1,0 +1,17 @@
+name: docs
+
+# The docs gate (root CLAUDE.md, "Present tense only"). This is the backstop that does
+# not depend on a local clone having `core.hooksPath` set, so a commit made with no hook
+# installed — or with `--no-verify` — is still checked here.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Present tense + dangling references
+        run: sh scripts/check-docs.sh --all

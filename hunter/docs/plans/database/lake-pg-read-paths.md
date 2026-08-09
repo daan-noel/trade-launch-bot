@@ -26,15 +26,14 @@ entry/exit signatures via a narrow indexed `(mint, slot, side)` PG lookup
 (`grouped_sweep.rs`'s `resolve_fill_signatures` → `TradeRepo`) rather than carrying the
 extra bytes through every sweep row. **That lookup plus the candidate-token scan are the
 only remaining PG reads of the `trades` table anywhere in `lab`** — every other
-trade-history path (grouped sweep, simulate, swing1-detect, the generic `swing.rs`
-analyzer, backtests) is lake-only.
+trade-history path (grouped sweep, simulate, backtests) is lake-only.
 
 ## Sealed-days-only + the stale-lake warning
 
 The lake is **sealed-days-only**, so keep
-`cargo run -p lab -- lake-export --include-today` on a cadence or simulate on recent
+`cargo run -p hunter-lab -- lake-export --include-today` on a cadence or simulate on recent
 (today's) tokens returns truncated histories (the loader logs a stale-lake warn). Parity
-with the sweep is guarded by `lake::duck::parity_tests` (no longer `--ignored`: auto-runs
+with the sweep is guarded by `lake::duck::parity_tests` (not `--ignored`: auto-runs
 when `$SWEEP_LAKE_DIR` points at a populated lake, self-skips otherwise), and the
 writer/reader lake column names are single-sourced in `lab/src/lake/schema.rs`.
 
@@ -72,7 +71,5 @@ generic `project_trades` (lake corpus + tests) is unaffected — the lake source
 ## Bounds are analysis-agnostic
 
 `MAX_TRADES_RETAINED` is the **live in-RAM cache trim, never an analysis read bound** —
-analysis reads full history. The **generic** `swing.rs` endpoints
-(`detect_token_swings`/`detect_tokens_swings_batch` — a separate analyzer from the swing1
-strategy) also read the same uncapped lake now; the batch path resolves its whole mint list
-in **one** `fetch_sim_histories` call instead of per-mint PG round trips.
+analysis reads full history. A batch analysis path resolves its whole mint list in **one**
+`fetch_sim_histories` call rather than per-mint PG round trips.

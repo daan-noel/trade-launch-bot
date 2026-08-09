@@ -1,9 +1,9 @@
 //! ANALYSIS composition root — workstation only (never ships to EC2).
 //!
 //! Runs with NO signing keys and NO gRPC. Serves a thin analysis HTTP surface over
-//! the synced LOCAL PG mirror. (The `lake-export` subcommand was removed — it was a
-//! do-nothing stub; the Parquet export/reader pipeline will re-add a real one. The
-//! column-SSOT seam it will build on survives in `lake::schema`.)
+//! the synced LOCAL PG mirror, and takes **no subcommands** — a `lake-export` lands
+//! with the real Parquet export/reader pipeline, over the column SSOT in
+//! `lake::schema`.
 //!
 //! Links the LAB half of the dep partition (`lake`) and deliberately NOT
 //! ingest-host / launcher / pump-trader / ingest-laserstream.
@@ -31,8 +31,8 @@ async fn main() -> anyhow::Result<()> {
 
     let settings = Settings::from_env()?;
 
-    // No subcommands today (the `lake-export` stub was removed). Reject any arg
-    // explicitly instead of silently falling through to the HTTP server.
+    // No subcommands. Reject any arg explicitly instead of silently falling
+    // through to the HTTP server.
     if let Some(arg) = std::env::args().nth(1) {
         anyhow::bail!("unknown argument {arg:?} — forge-lab takes no subcommands");
     }

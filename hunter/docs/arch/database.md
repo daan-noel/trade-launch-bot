@@ -154,6 +154,6 @@ One family — there are no per-strategy sweep tables, only these four:
 ## Rules
 
 - Always bound queries — paginate/time-window/stream. Never `SELECT *` full `trades`/`raw_txs`.
-- New high-volume tables → TimescaleDB hypertable with `add_compression_policy` + `add_retention_policy` (see `@plans/database/trades-storage.md` for the pattern). `maintenance.rs` is deleted.
+- New high-volume tables → TimescaleDB hypertable with `add_compression_policy` + `add_retention_policy` (see `@plans/database/trades-storage.md` for the pattern). Chunk lifecycle is declarative — there is no `maintenance.rs` partition loop to extend. <!-- ref-ok: absence is the rule -->
 - Bulk-insert must chunk by `floor(65535 / binds_per_row)` — sqlx 0.6 has no guard against the 65535 bind-param ceiling.
 - **Server-side table filters are structured + type-checked.** The strategy token tables take a unified `TableRequest` (POST/JSON, `trading_core::api::table_query`); per-column filters are `{op, val}` (`FilterOp`: contains/eq/gt/gte/lt/lte/between). `strategy_repo` splits its whitelist into typed `(sql_expr, FilterKind::{Text,Numeric})` rows: numeric cols return the **uncast** expr so `gt`/`between` compare numerically (operand bound as `f64`), text cols keep `ILIKE`. `push_filter_predicate` lowers each op to a bound predicate; an illegal pairing (numeric op on a text col, non-number operand) is **dropped**, like an unknown key — every operand `push_bind`s (injection-safe). No user text ever reaches an identifier.

@@ -125,10 +125,9 @@ Two safety behaviors worth noting:
 
 Same semantics as the curve: **`None` → `min_out = 1`** (no floor), on **both**
 sides — verified 2026-07-27 at `amm.rs:71-72` (buy) and `:442-445` (sell). There is
-no AMM-specific default slippage; `AMM_DEFAULT_SLIPPAGE_BPS` was removed as dead
-code. (An earlier revision of this doc claimed "there is no AMM default; callers
-must pass `Some(bps)` explicitly" — that was **wrong**: `None` is accepted on both
-AMM sides and means exactly what it means on the curve.)
+no AMM-specific default slippage and no `AMM_DEFAULT_SLIPPAGE_BPS` constant. Do not
+read that as "callers must pass `Some(bps)` explicitly" — `None` is accepted on both
+AMM sides and means exactly what it means on the curve.
 
 Buys always arrive as `Some(bps)` because `resolve_buy_slippage_bps` never returns
 `None`; bot/manual sells pass `None` whenever the sell field is blank.
@@ -165,7 +164,7 @@ where `cp_amount_out` (`amm.rs:761`) is the standard constant-product output:
 sell, AMM buy, AMM sell): `min_out = 1`, no floor.** Callers that want a floor
 pass `Some(bps)`.
 
-The **API layer no longer transforms the value** on its way to the trader. It only
+The **API layer does not transform the value** on its way to the trader. It only
 *rejects* `Some(0)` with a 400 (see "The settings contract" above) and caps a
 typed value at `SLIPPAGE_MAX_BPS`. `Option<u64>` remains the executor's contract,
 unchanged — forge's `MinOut::Unprotected` (`forge/orchestrator/src/provider.rs`) is

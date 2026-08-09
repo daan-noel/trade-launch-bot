@@ -6,7 +6,7 @@ Two separate mechanisms handle failures at different layers.
 
 ## Mechanism 1 — gRPC Stream Reconnect (`shared/ingest/core/src/transport/mod.rs`)
 
-Runs inside the transport tokio task (was `client.rs` before the ingest crate split).
+Runs inside the transport tokio task (was the transport (`shared/ingest/core/src/transport/mod.rs`) before the ingest crate split).
 **Never restarts the process** — drops and re-opens the gRPC subscription only.
 
 ### Flow
@@ -88,7 +88,7 @@ a_gap_wider_than_the_window_reconnects_live_and_disarms,
 the_toggle_gates_replay_without_forgetting_where_we_were,
 a_fresh_anchor_resumes_one_slot_past_the_last_one_seen, no_anchor_means_live}`.
 
-### Timing constants (hardcoded in `client.rs`)
+### Timing constants (hardcoded in the transport)
 
 | Constant | Value | Purpose |
 |---|---|---|
@@ -96,7 +96,7 @@ a_fresh_anchor_resumes_one_slot_past_the_last_one_seen, no_anchor_means_live}`.
 | `STREAM_RECONNECT_IDLE_CHECK_INTERVAL` | **2s** | How often idle is tested |
 | `PIPELINE_SEND_TIMEOUT` | **10s** | Max wait on a full pipeline channel |
 | `MAX_RECONNECT_BACKOFF` | **30s** | Exponential backoff cap (no-progress arm) |
-| `RECONNECT_INTERVAL` | **1s** (hardcoded in `client.rs`) | Base delay between reconnects |
+| `RECONNECT_INTERVAL` | **1s** (hardcoded in the transport) | Base delay between reconnects |
 | `connect_timeout` (tonic) | **10s** | TCP/TLS connect hard deadline |
 
 ### Two distinct idle paths
@@ -106,7 +106,7 @@ a_fresh_anchor_resumes_one_slot_past_the_last_one_seen, no_anchor_means_live}`.
 
 ---
 
-## Mechanism 2 — Process Watchdog (`ingest_health.rs`)
+## Mechanism 2 — Process Watchdog (`live/src/ingest/watchdog.rs`)
 
 Runs on a **dedicated OS thread** (not tokio). Calls `std::process::exit(1)` → supervisor (systemd/PM2) restarts the entire process.
 
@@ -135,8 +135,8 @@ spawn_watchdog OS thread loop:
 dead, nothing arriving) drains the queue empty, so `work_pending` was false and the
 watchdog stayed silent even though the feed was dead. The pump.fun firehose is never
 quiet — `live && no successful write for the timeout` is unambiguously a fault
-regardless of queue depth, so the gate was removed. This now catches BOTH a wedged
-downstream (pool exhausted) and a dead upstream (transport) with one condition.
+regardless of queue depth, so there is no queue-depth gate. One condition catches BOTH a
+wedged downstream (pool exhausted) and a dead upstream (transport).
 
 ### Timing (DB settings, adjustable via UI)
 
@@ -177,10 +177,10 @@ Time ~90s: If the reconnect never revives the feed, no rows are written, the
 
 | Lever | How to change |
 |---|---|
-| Base reconnect delay | Hardcoded `RECONNECT_INTERVAL` in `client.rs` (1s) |
+| Base reconnect delay | Hardcoded `RECONNECT_INTERVAL` in the transport (1s) |
 | Watchdog stall window | UI settings page → `watchdog_stall_timeout_secs` (floor 180s) |
 | Watchdog wake cadence | UI settings page → `watchdog_check_interval_secs` (floor 5s) |
-| Pipeline stall timeout | Hardcoded `PIPELINE_SEND_TIMEOUT` in `client.rs` (10s) |
-| Idle stream timeout | Hardcoded `STREAM_RECONNECT_IDLE_TIMEOUT` in `client.rs` (10s) |
+| Pipeline stall timeout | Hardcoded `PIPELINE_SEND_TIMEOUT` in the transport (10s) |
+| Idle stream timeout | Hardcoded `STREAM_RECONNECT_IDLE_TIMEOUT` in the transport (10s) |
 
 > Watchdog stall/cadence defaults (180s / 15s) are applied by `AppSettings` when the key is absent from the DB — no env seed needed.

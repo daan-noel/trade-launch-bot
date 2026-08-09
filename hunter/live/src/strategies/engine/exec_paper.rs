@@ -11,13 +11,12 @@
 //! replay/simulate and the sweep: an empty window books the trigger/fire trade's
 //! own spot instead of failing.
 //!
-//! The exit leg used to pass `false` ("don't invent a sell print"), which stranded
-//! the position instead: a `Dead` exit fires *because* the token stopped trading,
-//! so its window is empty by construction, each of the engine's
-//! `MAX_EXIT_ATTEMPTS` retries re-fired against that same last trade, and the row
-//! landed in `ExitStuck` — which no reaper path can reach (they are all
-//! `mode = 'real'`). That was 333 of 742 paper positions (45%), and since the
-//! stranded rows are exactly the dead-token losers it biased paper PnL upward.
+//! Passing `false` on the exit leg ("don't invent a sell print") strands the
+//! position instead: a `Dead` exit fires *because* the token stopped trading, so
+//! its window is empty by construction, each of the engine's `MAX_EXIT_ATTEMPTS`
+//! retries re-fires against that same last trade, and the row lands in `ExitStuck`
+//! — which no reaper path can reach (they are all `mode = 'real'`). The stranded
+//! rows are exactly the dead-token losers, so the bias is upward on paper PnL.
 //! Paper owns no on-chain bag, so a strict window protects nothing here; when the
 //! window cannot price the exit at all the position closes at the token's last
 //! known spot ([`last_known_price_fill`]) rather than never closing.

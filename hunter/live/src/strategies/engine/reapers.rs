@@ -79,8 +79,8 @@ pub struct ReaperDeps {
     pub registry: PositionRegistry,
     pub fill_tx: mpsc::Sender<Event>,
     pub settings: watch::Receiver<AppSettings>,
-    /// SSE hub — used to push the `needs_review` flag on a stale BuySubmitted
-    /// (B3: was log-only, invisible to the UI).
+    /// SSE hub — used to push the `needs_review` flag on a stale BuySubmitted.
+    /// Logging it alone leaves the stale row invisible to the UI.
     pub sse_tx: broadcast::Sender<SseEvent>,
     /// Opt-in on-chain bag check before a stranded row is parked
     /// (`EXIT_BAG_ONCHAIN_CHECK`, default **off** — it spends Helius credits).
@@ -760,11 +760,11 @@ async fn park_or_recover(deps: &ReaperDeps, position: &StrategyPosition, status:
 /// does not expire — `schedule_nonce_refresh` even re-arms the slot with the same
 /// hash when the send didn't land. So the original can still execute at any time,
 /// and a blind resend risks two landing sells; against a shared token account the
-/// second one eats a sibling position's bag. That is why the row was previously
-/// parked for a human forever (observed 2026-07-28, mint 57aJ… — migrated and
-/// sellable, but nothing would ever retry it).
+/// second one eats a sibling position's bag. So the row cannot simply be resent —
+/// without a liveness proof it can only be parked for a human, even when the token
+/// is migrated and perfectly sellable.
 ///
-/// [`Engine::burn_nonce_tx`] closes that hole: it returns `Dead` only once the
+/// [`Engine::burn_nonce_tx`] closes that gap: it returns `Dead` only once the
 /// nonce has moved past the tx's hash — usually already true (a busy wallet
 /// reuses the slot within seconds, costing nothing), otherwise it advances the
 /// nonce itself. **Every** recorded sell sig must be provably dead before we

@@ -131,7 +131,7 @@ pub async fn spawn_ingest(
     }
 
     // The watchdog trips on "live but no successful DB write within the timeout" —
-    // no longer gated on db_tx queue depth (that proxy missed upstream stalls).
+    // not gated on db_tx queue depth (that proxy misses upstream stalls).
     spawn_watchdog(heartbeat, live_rx, settings_rx.clone(), boot_gate);
 
     // Forward gap-replay settings to the ingest transport whenever the operator

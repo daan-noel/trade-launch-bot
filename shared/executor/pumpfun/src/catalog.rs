@@ -3,11 +3,12 @@
 //! by `(venue, name)`, carrying its discriminator, mechanism, amount
 //! denomination, and account-shape flags.
 //!
-//! Why this exists: variant selection used to live in three inconsistent places —
-//! a free-text string match (`"pumpfun.create_v2"`), an enum→string→enum
+//! Why this exists: variant selection is ONE decision, made here. It is not a
+//! free-text string match (`"pumpfun.create_v2"`), not an enum→string→enum
 //! round-trip (`BuyVariant` → persisted string → `BundleBuyVariant::parse`), and
-//! hardcoded dispatch with no variant knob at all. The catalog collapses those:
-//! [`valid_variants`] returns the legal subset for a venue, so an invalid
+//! not hardcoded dispatch with no variant knob — three shapes that drift apart the
+//! moment a variant is added. [`valid_variants`] returns the legal subset for a
+//! venue, so an invalid
 //! `(venue, variant)` pair is unrepresentable, and **adding a variant = one row
 //! here + one builder arm, nowhere else**.
 //!

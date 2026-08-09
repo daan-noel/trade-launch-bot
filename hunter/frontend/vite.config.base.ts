@@ -6,7 +6,7 @@ import tsconfigPaths from 'vite-tsconfig-paths';
 // Single source of truth: the monorepo root .env (one level up from this package).
 // Only VITE_*-prefixed vars are exposed to the client bundle; backend secrets in
 // the same file stay server-side. NEVER give a secret a VITE_ prefix.
-// (In Docker the build uses ENV build-args instead — see frontend-react/Dockerfile.)
+// (In Docker the build uses ENV build-args instead — see deploy/hunter-live/ui.Dockerfile.)
 const ENV_DIR = '..';
 
 export interface AppConfigOptions {

@@ -113,10 +113,10 @@ spawn(helius_laserstream_url, helius_api_key, pump_program_id, db, token_cache,
                        producer_task, pipeline_task, db_writer_task }
 ```
 
-`spawn` internally creates the `IngestHeartbeat` and starts the watchdog
-(`ingest_health.rs`), the pool-subscription refresh, and the queue-depth logger — all crate-owned,
-not caller-driven. (Partition maintenance is gone: TimescaleDB retention/compression policies now
-manage chunk lifecycle declaratively.) The deploy bin bridges
+`spawn` internally creates the DB heartbeat and starts the watchdog
+(`live/src/ingest/watchdog.rs`), the pool-subscription refresh, and the queue-depth logger — all
+owned by the ingest module, not caller-driven. Chunk lifecycle is declarative (TimescaleDB
+retention/compression policies), so nothing here maintains partitions. The deploy bin bridges
 its `PumpFunTrader` to `TraderHook` via `trader::TraderHookBridge`. See [@arch/ingest.md](@arch/ingest.md).
 
 ## Strategy layering — one engine, three layers
@@ -192,7 +192,7 @@ is built into its own SPA (`@live`/`@lab`) with a static nav. See [@arch/fronten
 | `token_metrics.rs` | price / market-cap / volume / ATH computation |
 | `trade_signals.rs` | `TradeSignals` — wakeup hub: `(wallet,mint)` lane + mint-only lane. **Notify over poll** (held by `DeployState`) |
 
-`IngestHeartbeat` + watchdog live in `ingest-laserstream/src/ingest_health.rs` (not in
-`state/`). Local-only state (`job_progress`, `sim_results`,
-`swing_results`, `swing_run_cache`) lives in `lab/src/state/`. See
+The DB heartbeat + watchdog live in `live/src/ingest/watchdog.rs` (not in `state/`).
+Local-only state (`job_progress`, `sim_results`, `sim_summary`, `analysis_cache`,
+`discovery_result_cache`) lives in `lab/src/state/`. See
 [@arch/database.md](@arch/database.md) for pools + repos.

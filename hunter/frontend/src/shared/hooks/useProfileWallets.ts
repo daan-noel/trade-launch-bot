@@ -38,8 +38,8 @@ function buildProfileWallets(profiles: WalletProfile[]): ProfileWalletInfo[] {
 
 /**
  * Tracked-wallet markers for the trade chart, sourced from the shared profiles
- * cache (same `getProfiles` query the Profiles page edits). Centralizes what
- * used to be duplicated per-page `buildProfileWallets` logic.
+ * cache (same `getProfiles` query the Profiles page edits). The one home for the
+ * `buildProfileWallets` logic — never duplicate it per page.
  */
 export function useProfileWallets(): ProfileWalletInfo[] {
   const { data: profiles = EMPTY_PROFILES } = useGetProfilesQuery();

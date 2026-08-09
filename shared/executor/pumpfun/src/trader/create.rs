@@ -31,8 +31,8 @@ use tracing::info;
 
 /// The dev-wallet buy fused into a create tx: the spend, its slippage floor, and
 /// the curve-buy **encoding**. `variant` is any of the four [`BundleBuyVariant`]s —
-/// the same catalog the bundler co-buys draw from — so the dev buy is no longer
-/// pinned to `buy_exact_sol_in`. `sol` is the human-SOL mirror of `lamports` (kept
+/// the same catalog the bundler co-buys draw from — so the dev buy is not pinned
+/// to `buy_exact_sol_in`. `sol` is the human-SOL mirror of `lamports` (kept
 /// for logging). A tokens-out variant (`buy` / `buy_v2`) needs a `slippage_bps` so
 /// `min_out` is a real reserve-derived token floor (else it would buy ~1 token); the
 /// launcher validates that before this is built.
@@ -323,8 +323,8 @@ impl PumpFunTrader {
         };
         // Same spend guard as curve/AMM buys — rejects NaN/inf/≤0/over-max, and
         // catches sol↔lamports drift from direct `DevBuy { .. }` constructors
-        // (forge bundle path). Zero-lamport "no buy" used to short-circuit here;
-        // that is now covered by `buy_lamports_checked` (rounds-to-0 → Err).
+        // (forge bundle path). A zero-lamport "no buy" is caught by
+        // `buy_lamports_checked` (rounds-to-0 → Err), not short-circuited here.
         let checked = self.buy_lamports_checked(dev_buy_sol)?;
         if checked != buy_lamports {
             return Err(TradeError::InvalidBuyAmount(format!(

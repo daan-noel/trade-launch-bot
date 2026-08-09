@@ -1,8 +1,8 @@
 //! DuckDB corpus source (hop 3) — assemble a sweep [`Corpus`] by querying the
 //! Parquet lake instead of Postgres.
 //!
-//! This is the **sole** [`CorpusSource`](crate::sweep::corpus::CorpusSource) (the old
-//! Postgres `DbSource` was retired at the lake cutover): it yields the same output
+//! This is the **sole** [`CorpusSource`](crate::sweep::corpus::CorpusSource) — there
+//! is no Postgres-backed corpus source. It yields the same output
 //! ([`CorpusToken`] with slim [`CorpusTrade`] buffers + a grouping
 //! [`TokenFingerprint`]), but the trades come from the immutable day-partitioned
 //! Parquet files and the fingerprint/symbol from the `tokens` dimension, queried
@@ -490,9 +490,9 @@ fn empty_hash() -> String {
 ///
 /// **Stages `sel_mints` with exactly the returned candidates — the single staging
 /// for the run** — so the trade + fingerprint queries can `IN (SELECT mint FROM
-/// sel_mints)` and [`LakeSource::load_sync`] never re-stages (the explicit path
-/// previously staged the raw `mints`, then `load` staged the capped candidates
-/// again — two rebuilds of the same temp table on every simulate read).
+/// sel_mints)` and [`LakeSource::load_sync`] never re-stages. Staging the raw
+/// `mints` here and the capped candidates again in `load` is two rebuilds of the
+/// same temp table on every simulate read.
 fn resolve_candidates(
     conn: &Connection,
     tokens_lit: &str,

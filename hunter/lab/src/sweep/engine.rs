@@ -168,7 +168,7 @@ pub(crate) const HARD_MAX_COMBO_BATCH: usize = 65_536;
 
 /// Number of `batch`-sized passes needed to cover `n_combos` combos (≥ 1) — the loop
 /// count for the fold's combo chunking (progress is tracked separately, in combo
-/// evaluations, so it no longer depends on this).
+/// evaluations, so it does not depend on this).
 pub fn combo_batch_count(n_combos: usize, batch: usize) -> usize {
     n_combos.div_ceil(batch.max(1)).max(1)
 }
@@ -182,7 +182,7 @@ pub fn combo_batch_count(n_combos: usize, batch: usize) -> usize {
 /// `bound_all` here, and the group-wide `bound` in the grouped driver's token-outer
 /// fold. Pass `size_of::<S::BoundParams>()`. That is the inline size only; a
 /// `SmallVec` that spills to the heap is absorbed by the 256 MB slack below, the same
-/// way this term used to be absorbed entirely when it was merely batch-resident.
+/// way this whole term is absorbed while it is merely batch-resident.
 pub fn full_combo_aggs_fit(
     n_combos: usize,
     wave: usize,
@@ -531,11 +531,11 @@ fn fold_wave_into<S: Strategy>(
 
     // The folder borrows `aggs` directly rather than round-tripping a copy.
     //
-    // This used to `aggs.to_vec()` in and `clone_from_slice` back out, i.e. two full
-    // copies of the accumulator array per call. `ComboAgg` is ~640 POD bytes (two
+    // Round-tripping instead (`aggs.to_vec()` in, `clone_from_slice` back out) is two
+    // full copies of the accumulator array per call. `ComboAgg` is ~640 POD bytes (two
     // fixed-size quantile sketches), so at a 65536 batch that is ~42 MB in and ~42 MB
     // out — per wave, per pass. A scoped thread can hold `&mut [ComboAgg]` for exactly
-    // the scope's lifetime, so the copies bought nothing.
+    // the scope's lifetime, so those copies buy nothing.
     let (rows, fired) = std::thread::scope(|scope| -> Result<(u64, u64)> {
         let folder = scope.spawn(move || -> (u64, u64) {
             let mut rows = 0u64;

@@ -749,8 +749,8 @@ pub async fn execute_launch(
                 .await?
                 .is_some_and(|b| b.status == BundleStatus::Planned.as_str())
             {
-                // Reuse the dev trader built above — the auto-submit no longer stands up
-                // (and initialize()s) a second trader in the same request.
+                // Reuse the dev trader built above — the auto-submit must not stand up
+                // (and `initialize()`) a second trader in the same request.
                 let bundle_result = execute_bundle_with_trader(pool, settings, &trader, bundle_id)
                     .await
                     .context("atomic launch bundle auto-submit failed")?;

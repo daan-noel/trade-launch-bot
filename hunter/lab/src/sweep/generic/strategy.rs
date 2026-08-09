@@ -890,10 +890,10 @@ fn col_idx_mono(columns: &[SeriesColumn], k: &hunter_engine::arm::MonoMetricKill
 ///
 /// Every token's series is built with `self.columns.clone()` (see `prepare_token`),
 /// so the column layout is fixed for the whole run and a combo's column indices are
-/// the same on every token. They used to be resolved inside `resolve_entry` /
-/// `resolve_exit`, i.e. **once per (token, combo)** — `resolve_exit` is uncached and
-/// runs for every combo on every token, which made that the single most-executed
-/// heap allocation in a sweep. Resolving at bind time makes it once per combo.
+/// the same on every token. Resolving them inside `resolve_entry` / `resolve_exit`
+/// instead costs **one resolve per (token, combo)** — `resolve_exit` is uncached and
+/// runs for every combo on every token, which makes it the single most-executed heap
+/// allocation in a sweep. Binding here makes it once per combo.
 ///
 /// The precomputed indices are only valid while that fixed-columns invariant holds;
 /// a `debug_assert` in each scan re-derives them from the series and would fail loudly
@@ -1587,11 +1587,11 @@ pub(crate) fn resolve_exit_indexed(
 /// Exit *price* is the run's [`FillModel`] fill after the firing row (analysis:
 /// market-fill fallback on an empty window).
 ///
-/// **This walk is the SSOT.** TP/SL used to be re-derived here as an
-/// `entry_price · (1 ∓ pct/100)` price branch — a second representation of the same
-/// fact the engine already desugars into a `pnl` req, and one that compared in price
-/// space where the fold compares in pnl space. That branch is gone: the sweep now
-/// evaluates the very reqs `CompiledRule::exit_fired` does.
+/// **This walk is the SSOT.** TP/SL is **not** re-derived here as an
+/// `entry_price · (1 ∓ pct/100)` price branch — that is a second representation of a
+/// fact the engine already desugars into a `pnl` req, and it compares in price space
+/// where the fold compares in pnl space. The sweep evaluates the very reqs
+/// `CompiledRule::exit_fired` does.
 pub(crate) fn resolve_exit(
     trades: &[CorpusTrade],
     series: &MetricSeries,

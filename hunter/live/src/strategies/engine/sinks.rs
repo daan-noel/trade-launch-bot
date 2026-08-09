@@ -17,7 +17,7 @@
 //! `ExitUnconfirmed`) follow the same rule — they chain-spawn their write instead
 //! of awaiting it, so **no** sink transition blocks the decision loop on PG. Order
 //! per position is still total (each task awaits that row's previous write first);
-//! what a terminal write no longer guarantees is landing before its SSE frame, so
+//! what a terminal write does not guarantee is landing before its SSE frame, so
 //! a client must trust the frame's payload over an immediate refetch.
 //! Crash recovery: process-local `SubmittedBuyJournal` + BuySubmitted/ExitPending
 //! reapers + boot Holding adopt / externally-cleared reconcile. Runs are warmed
@@ -728,12 +728,12 @@ impl Sink {
     /// Returns `true` when finalized — caller emits SSE then drops the registry row.
     ///
     /// The PG write is **chained-spawned**, not awaited: this runs on the one
-    /// serialized decision loop, and a terminal write used to be the only PG I/O
-    /// that blocked it (`await_pending_pg` + `record_sell_fill` + the real-mode
-    /// held-pool check, three round trips). A Stop closes every position of a rule
-    /// at once, so those serialized head-to-head while ingest was also writing —
-    /// and while the loop was blocked *nothing* else folded: no ticks, no pings,
-    /// no other fills. Per-position write ORDER is still guaranteed (the task
+    /// serialized decision loop, and awaiting a terminal write blocks it on PG
+    /// (`await_pending_pg` + `record_sell_fill` + the real-mode held-pool check,
+    /// three round trips). A Stop closes every position of a rule at once, so those
+    /// serialize head-to-head while ingest is also writing — and a blocked loop
+    /// folds *nothing* else: no ticks, no pings, no other fills. Per-position write
+    /// ORDER is still guaranteed (the task
     /// awaits this row's previous write first); only the loop's wait is gone.
     async fn on_end(&mut self, delta: &PositionDelta) -> bool {
         let Some(meta) = self.registry.get(delta.position) else {

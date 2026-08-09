@@ -177,7 +177,7 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
 
 - `Header.tsx` — data-driven from `NavConfig` (`navTypes.ts`); renders `identity` (name + `badge`
   chip + `subtitle` + `glyph`) and highlights active nav with `primary` utilities (no per-mode class
-  map — the old `lib/accent.ts` is deleted). Live-mode kill switch injected via `rightSlot` (live
+  map — highlighting is `primary`-utility driven, never a per-mode accent module). Live-mode kill switch injected via `rightSlot` (live
   passes `@live/components/LiveModeControl`). Shared: SOL/USD mirror, timezone, price-unit toggle.
 
 ### Per-app skin (`src/index.css`, `index.html` / `lab.html`)
@@ -610,8 +610,8 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   lab Simulated table; the live Holdings composition) page/sort/filter through
   `trading_core::api::table_eval::apply_table_request` with a per-table `ColResolver` grammar; the shared
   enrichment half of that grammar is `resolve_token_enrichment_key` (SSOT — the Simulated and Holdings
-  resolvers both delegate to it). The **TS twin** (`services/tableEval.ts` + `columnResolver` +
-  `mergeTokenData`) does not exist — every such table is server-side.
+  resolvers both delegate to it). There is **no TS twin** of the evaluator — every such table
+  is server-side, so a client-side column resolver or row merger is always a duplicate.
   The golden fixture `tableEval.fixtures.json` and the Rust `table_eval::conformance_shared_fixtures`
   test are **kept** (now Rust-only) so the evaluator's op/sort/search/tiebreak/paging semantics stay
   pinned.
@@ -619,19 +619,18 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   `TokenEnrichment` flattens onto result rows are declared **once** in TS as
   `TokenEnrichmentFields` (`shared/types`); `RulePositionRecord`/`SimulatedTokenResult` `extends` it (the all-required `TokenRecord`/`TokenDetailRecord`
   stay bespoke — their nullability differs by endpoint on purpose). Strategy-page boilerplate
-  is shared under `shared/components/strategy/`: `cellFormat.ts` (the former byte-identical
-  `tpsl1/2 utils.ts`), `inspectTarget.ts` (the `InspectTarget` type + `inspectFromSim`/
+  is shared under `shared/components/strategy/`: `cellFormat.ts` (formatters + instruction-label
+  parsing, one copy for every strategy family), `inspectTarget.ts` (the `InspectTarget` type + `inspectFromSim`/
   `inspectFromPosition` mappers — one copy for five pages and both modal forks).
 - **One strategy-table column SSOT (`strategyColumns.tsx` in `shared/components/strategy/`).** The
   Positions / Sim tables' `positionColumns`/`simColumns` (+ their
   `POSITION_KEYS`/`SIM_KEYS`) + `exitReasonBadge` live here **once**. The
   **target/entry/exit** trade legs — each with **Price · Tokens · Size · Time · Tx** — are emitted by one
   `legColumns(prefix, accessors, opts)` builder (`Size` = `solOf(price, tokens)` unless a real SOL field is
-  given; Tokens/Tx columns drop when their accessor is absent). This replaced the two copy-pasted
-  `tpsl1/tpsl2 tableColumns.tsx` files that had **drifted** (tpsl1 had lost the whole target leg +
-  tokens/size/tx; tpsl2's sim showed only price/time on entry/exit). All five strategy pages
-  (lab tpsl1/tpsl2/swing1, live tpsl/swing1) and the live cross-strategy monitor
-  (`live-trading/positionColumns.tsx`, entry-leg only via the same builder) now share this one source.
+  given; Tokens/Tx columns drop when their accessor is absent). One builder is the point: a
+  per-family copy of these column defs **drifts** — one family loses the whole target leg +
+  tokens/size/tx, another's sim shows only price/time on entry/exit. Every strategy page shares
+  this one source.
   The sim's exit leg still omits Tokens/Size because the sim result payload carries no `exit_token_amount`.
 - **One token-info column SSOT (`tokenInfoColumns()` in `sharedTokenColumns.tsx`).** The ~26 enrichment
   columns are defined **once** (render/sort/search/filter logic); both consumers derive from it —
@@ -681,6 +680,6 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
 ## Known follow-ups (NOT yet done)
 
 - **Cosmetic deviation:** shared store core lives in `src/shared/store` but the legacy `store/*`
-  alias still resolves there; the `live/services/strategyApi.ts` / `lab/services/labApi.ts`
-  file-level split was skipped (tree-shaking over one shared `services/api.ts` achieves the same
-  bundle isolation since the helpers are side-effect-free).
+  alias still resolves there; the per-mode `services/` file split was skipped (tree-shaking over
+  one shared `services/api.ts` achieves the same bundle isolation since the helpers are
+  side-effect-free).

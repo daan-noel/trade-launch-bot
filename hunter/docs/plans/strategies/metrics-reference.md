@@ -189,8 +189,8 @@ doesn't eyeball every row. Four properties it deliberately holds, each fixing a
 way the first version misled:
 
 - **The number IS the decision.** `score >= SUGGEST_SCORE` (0.5) is the whole
-  badge rule. It used to show a mean while badging on a count of strong signals,
-  so a 49% row could sit un-badged beside a badged 33% one.
+  badge rule. Showing a mean while badging on a count of strong signals lets a 49%
+  row sit un-badged beside a badged 33% one.
 - **Correlated columns count once.** Score is a mean over *families* — `Recur`,
   `Burst`, `Wallets` (= max of `wallet_reuse`/`wallet_overlap`), `Wash`
   (both-sided rows only; n/a is dropped from the mean, not scored 0). One launch

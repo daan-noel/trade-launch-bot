@@ -1194,7 +1194,7 @@ async fn run() -> anyhow::Result<()> {
         .context("Failed to initialize PumpFunTrader")?;
     let trader = Arc::new(trader);
 
-    // Probe mode: `cargo run -p live -- probe <subcommand>` runs a
+    // Probe mode: `cargo run -p hunter-live -- probe <subcommand>` runs a
     // one-shot, no-/low-SOL validation of the latency changes against live infra,
     // then exits before touching the DB / ingest / HTTP server. See `run_probe`.
     if std::env::args().nth(1).as_deref() == Some("probe") {
@@ -1523,11 +1523,11 @@ async fn run() -> anyhow::Result<()> {
         });
     }
 
-    // NOTE: the live bin no longer runs the token-list DB-base refresher. On live the
+    // The live bin does not run the token-list DB-base refresher. On live the
     // `GET /api/tokens` full list is paged directly from Postgres (see
     // `api::handlers::tokens::list`), so the in-RAM `token_list` snapshot is kept
     // tracking-only (its `db_base` stays empty) — the 4 GB EC2 box holds only the
-    // tracked subset, never the 100K+ universe. `lab` still runs the refresher to
+    // tracked subset, never the 100K+ universe. `lab` does run the refresher, to
     // build a full in-RAM snapshot (it has the RAM and wants the speed).
 
     // Bound the in-memory token cache: evict mints that have gone quiet beyond the
