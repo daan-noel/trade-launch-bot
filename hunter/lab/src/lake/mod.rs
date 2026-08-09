@@ -1,5 +1,5 @@
 //! The Parquet **lake** — hop 2 of the `lab` data pipeline
-//! (`EC2-PG → local-PG → Parquet lake → DuckDB`, live-lab-remake-plan.md Phase 4).
+//! (`EC2-PG → local-PG → Parquet lake → DuckDB`).
 //!
 //! Hop 1 ([`scripts/db-incremental-sync.ps1`]) lands sealed daily Timescale chunks
 //! into local Postgres. This module is hop 2: it exports each newly-sealed day of

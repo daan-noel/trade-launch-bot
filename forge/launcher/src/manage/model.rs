@@ -1,4 +1,4 @@
-//! Request + plan DTOs for post-launch management (token-management-plan.md).
+//! Request + plan DTOs for post-launch management (docs/arch/launcher.md).
 //!
 //! Three primitives (Sell/Buy/Consolidate) over a wallet selection + a sizing
 //! mode produce an [`ActionPlan`] — a list of per-wallet legs — which the operator

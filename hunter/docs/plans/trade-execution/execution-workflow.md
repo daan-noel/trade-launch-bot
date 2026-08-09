@@ -7,8 +7,8 @@ End-to-end lifecycle of a real position across the live fingerprint+metrics engi
 
 The pure fold (`hunter-engine::reduce`) owns *when* to buy/sell; the adapters below
 own *how* — SOL guards, write-ahead submit, feed confirm, classify/heal, and crash
-recovery. Path names from the pre-engine stack (`execution/real.rs`,
-`runtime_cache.rs`) map to `exec_real.rs` / `InFlightGuards` / `reapers.rs`.
+recovery. Those adapters are `exec_real.rs`, `InFlightGuards`, and `reapers.rs`, all
+under `live/src/strategies/engine/`.
 
 ## A0. Decision → spawn (latency)
 

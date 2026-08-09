@@ -8,7 +8,7 @@ Read [../CLAUDE.md](../CLAUDE.md) first for the monorepo-wide rules (SSOT,
 backend-latency-first, EC2 constraint, `.env`, docs discipline). This file is
 forge-specific only.
 
-- **Roadmap (phases & tasks) + full status narrative:** [docs/roadmap-plan.md](docs/roadmap-plan.md)
+- **Roadmap (open phases & tasks):** [docs/roadmap-plan.md](docs/roadmap-plan.md)
 - **Decisions (ADR):** [docs/decisions.md](docs/decisions.md) · **Overview + layout:** [README.md](README.md)
 
 ## Status (one-line — detail in the roadmap)
@@ -17,7 +17,7 @@ Foundation + Phase-2 launcher + wallet-pool (Phases 1–4) **done**: create/dev-
 atomic Jito bundles with tip-floor + drop re-bid + multi-region submit, feed-based landing
 confirmation, wallet-pool lifecycle, dust sweep, operator transfers, and the React operator
 dashboard. **Next:** Phase 3 live trading (buy/sell executor + feed-based sell-confirm).
-Phase 4 lab/lake is scaffold-only. Snapshot: [docs/roadmap-plan.md](docs/roadmap-plan.md#status-snapshot--2026-07-14-moved-out-of-claudemd).
+Phase 4 lab/lake is scaffold-only. What shipped, phase by phase: [docs/history/shipped-phases.md](docs/history/shipped-phases.md).
 
 ## Architecture — 5 crates, 2 bins
 
@@ -34,7 +34,7 @@ are the single canonical copy at `shared/executor/pumpfun/idl/`. forge's bins ar
 | `forge-live` | **bin** | `forge/live/` | ingest (`forge/live/src/ingest`) + launcher + trading + thin HTTP → **EC2** | — |
 | `forge-lab` | **bin** | `forge/lab/` | lake (`forge/lab/src/lake`, scaffold) + sweeps/backtests/analytics HTTP → **workstation** | — |
 
-**Folded (no longer crates):** `lake` → `forge/lab/src/lake` module · `ingest-host` →
+**In-crate modules, not crates:** `lake` → `forge/lab/src/lake` module · `ingest-host` →
 `forge/live/src/ingest` module. **Shared drop-in crates** (in `Bot/shared/`, consumed by
 both products): `shared/executor/{core,pumpfun}` (write stack; dep key `pump-trader`, lib
 `pump_trader`), `shared/ingest/{core,pumpfun}` (read stack; dep key `ingest-laserstream`,
@@ -131,4 +131,7 @@ throwaway** DB (they run their own migrations). Ports: DB **5556**, live **8230*
 - **Docs — update the tier that changed** (see [../CLAUDE.md](../CLAUDE.md) docs discipline):
   rules/commands → this file; module structure/data-flow → `docs/arch/<subsystem>.md`;
   algorithm/decision detail → `docs/plans/<subsystem>/<topic>.md`; ADR → `docs/decisions.md`;
-  phase/status → `docs/roadmap-plan.md`.
+  open phases/tasks → `docs/roadmap-plan.md`; shipped narrative / incidents →
+  `docs/history/`, never linked from here or from `docs/arch/`. **`docs/arch/` and this
+  file are present-tense only** — see *Present tense only* in [../CLAUDE.md](../CLAUDE.md)
+  for the test and what it forbids.

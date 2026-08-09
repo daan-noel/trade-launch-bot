@@ -11,9 +11,10 @@ use crate::models::{
 };
 
 /// `managed_wallets` — OUR wallets. Stores a key_ref, never a raw key. Lifecycle
-/// (`status`) queries below back the fresh-wallet pool (docs/wallet-pool-plan.md
-/// Phase 1): batch generation lands rows as `generated`; the rest of this repo is
-/// the state machine `generated -> funded -> reserved -> used -> retired`.
+/// (`status`) queries below back the fresh-wallet pool
+/// (docs/plans/wallet/wallet-management.md): batch generation lands rows as
+/// `generated`; the rest of this repo is the state machine
+/// `generated -> funded -> reserved -> used -> retired`.
 pub struct ManagedWalletRepo;
 
 impl ManagedWalletRepo {

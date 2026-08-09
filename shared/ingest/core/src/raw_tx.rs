@@ -5,7 +5,8 @@
 //! Runs entirely off the hot path (the decode task emits it alongside normal
 //! events, after decode). The payload is the prost-encoded update — the exact
 //! bytes a future replay/derive path re-`decode`s, with no JSON expansion or
-//! lossy re-shape (see raw-txs-storage-plan.md, "Bytes, not JSONB").
+//! lossy re-shape — bytes, not JSONB: a JSON expansion is both larger and lossy
+//! against the protobuf, so it could not round-trip a replay.
 
 use chrono::{DateTime, Utc};
 use prost::Message;

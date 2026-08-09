@@ -1,7 +1,7 @@
 //! Shared core for the hunter backends.
 //!
 //! Shared lib consumed by the `live` and `lab` bins.
-//! See `@plans/modes/crate-split.md` for the crate-split design.
+//! See `docs/arch/architecture.md` for the crate-split design.
 
 pub mod api;
 pub mod config;

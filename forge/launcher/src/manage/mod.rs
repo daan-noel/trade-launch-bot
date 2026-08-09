@@ -1,4 +1,4 @@
-//! Post-launch token management (token-management-plan.md).
+//! Post-launch token management (docs/arch/launcher.md).
 //!
 //! - `positions` — the holdings read model (Phase 1): seed from launch/bundle,
 //!   reconcile balance + realized proceeds.

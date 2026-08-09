@@ -57,7 +57,8 @@ impl PotStatus {
 }
 
 // Field offsets into UserVolumeAccumulator account data (8-byte Anchor
-// discriminator + fields, little-endian). See IDL struct in cashback-claim-plan.md.
+// discriminator + fields, little-endian), per the pump.fun IDL's
+// `UserVolumeAccumulator` struct.
 //   8  user(32) -> 40
 //   40 needs_claim(1) -> 41
 //   41 total_unclaimed_tokens(8) -> 49

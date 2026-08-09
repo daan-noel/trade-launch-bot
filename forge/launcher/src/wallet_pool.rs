@@ -1,4 +1,4 @@
-//! Fresh-wallet pool lifecycle (docs/wallet-pool-plan.md Phase 1): batch
+//! Fresh-wallet pool lifecycle (docs/plans/wallet/wallet-management.md): batch
 //! generation, balance-driven funding detection, and the reservation TTL sweep.
 //! The atomic claim / mark-used transitions live on `ManagedWalletRepo` itself
 //! (`platform_core::storage::repositories::own_launch`) since they're plain SQL
@@ -75,7 +75,7 @@ pub async fn generate_wallets(
 }
 
 /// Freshness window for reusing the cached `balance_lamports` in place of a fresh
-/// RPC read (audit Phase C2). Short enough that a reused figure is never
+/// RPC read. Short enough that a reused figure is never
 /// meaningfully stale for a spend decision. With the automatic balance poll
 /// removed, the cache is written only by the operator "Fund pool" / "Refresh
 /// balances" actions — so this fast-path applies right after one of those and

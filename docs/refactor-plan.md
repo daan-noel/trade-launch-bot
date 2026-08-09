@@ -1,56 +1,13 @@
-# Full-repo refactor plan — remaining work
+# Full-repo refactor plan - remaining work
 
-Origin: seven parallel audits (2026-07-10) on `feat/restructure-hunter-forge`. **Re-verified
-against the working tree on 2026-07-19** (branch `strategy-redesign`) by a four-agent sweep;
-every `file:line` below is current as of that date. Completed and out-of-scope items are
-collapsed into the ledger; do not redo them.
+Open items from the seven-audit sweep of the monorepo. Every item here has been checked
+against the tree and is genuinely open; anything found already done was removed rather
+than left ticked. `file:line` anchors drift fast — re-verify before acting on one.
 
-Constraints (unchanged): breaking changes OK, no behavior-preservation requirement.
+Constraints: breaking changes OK, no behavior-preservation requirement.
 
-## What changed since the last re-verify (2026-07-13 → 2026-07-19)
-
-The **strategy redesign fully landed** (commits `40965acd`…`07592d19`, FE `c114693c`…`e077a361`,
-Phase 7 `b274512e`…`07592d19`). This reshaped the ground the old plan stood on:
-
-- **Legacy strategy triplication is gone.** Phase 7 *deleted* the named tpsl1/tpsl2/swing1
-  decision stack (`live`, `lab`, and the FE swing feature). There is now **one generic
-  fold** — `hunter-engine::reduce`, driven live by `hunter/live/src/strategies/engine/` and in
-  analysis by `lab`'s replay/sweep. The audit's old "C1 — keep the intentional clones (OUT OF
-  SCOPE)" ledger entry is **reversed and moot**; do not look for the clones.
-- **A generic metric/fingerprint engine is the new extensibility surface** — metrics are pluggable
-  modules, fingerprints are shared DB rows, rule params are JSONB `{entry, exit, tp/sl}` with
-  per-operator grammar. See the new **Extensibility** section — this is where new-feature work now goes.
-- **Structure drift:** `forge` orchestrator is its own crate (`forge/orchestrator/`, was
-  `forge/launcher/src/orchestrator/`). The hunter ingest event model moved out of `hunter/core`
-  into a **neutral** crate `shared/ingest/core` and grew a real `IngestVenue` trait — the venue seam
-  is now half-real, not purely aspirational.
-- **Perf work landed** on the sweep/sim path (AVX-512 exit scan behind a per-run toggle `a8766d54`;
-  phase-split sim timers `6fdd5746`; fold hot-path fixes) and on billed RPC (`3911d070`, `01f5f782`,
-  `63a455df`). Several Phase-5 perf items were explicitly *deferred* by those commits, not done —
-  they remain below.
-
----
-
-## Status ledger — DONE / OUT (do not redo)
-
-- ✅ **Phase 0 — all correctness/safety/security bugs B1–B17** (bundle CAS, funding serialization,
-  AMM poison idiom, loud rail parsing, forge-lab auth, postgres required-password + loopback, e500
-  sanitization, constant-time token compare, etc.). Verified green when fixed.
-- ✅ **C3 — dead code (C3-1…C3-6)** deleted (ingest `websocket`, orchestrator `dryrun.rs` + funding
-  graph, legacy `Position` mutators, forge/lab `run_export` stub, `db-incremental-sync.ps1` stub;
-  `transfer_with_seed`→`system_transfer`).
-- ✅ **Strategy triplication removed** (was "C1 — OUT OF SCOPE / keep clones"). Phase 7 deleted the
-  tpsl/swing stack; one generic engine now. Ledger reversal noted above.
-- ✅ **`crates/forge-live` / `crates/forge-lab` doc refs** — gone (paths are `forge/live` / `forge/lab`).
-- ✅ **`deploy/DOCKER.md` six→two compose files** — already documents the two merged compose files.
-- ✅ **forge `/health` route** — present on forge-live (`forge/live/src/http.rs:62`) and forge-lab
-  (`forge/lab/src/http.rs:19`). (hunter still lacks it — see Deploy below.)
-- ⛔ **OUT OF SCOPE (agreed with user):**
-  - **C2 — forge↔hunter infra dedup** (`shared/db`, `shared/units`, `shared/sol-price`,
-    ingest-consumer extraction, http-auth bootstrap, `task_fault`). forge was copied from hunter and
-    is still WIP; do not extract to shared crates yet.
-  - **hunter deps stay direct** (not `.workspace = true`) — intentional split (`Cargo.toml:55-56`).
-  - **solana `resolver = "1"` pin** — explained in `Cargo.toml:2-8`.
+The completed/out-of-scope ledger and the audit's own status narrative are in
+[history/refactor-audit-ledger.md](history/refactor-audit-ledger.md) - do not redo those items.
 
 ### Standing user follow-ups (not code — do before deploy)
 - **B12:** the committed bcrypt `.htpasswd` hash is compromised (still in git history). Regenerate a
@@ -60,41 +17,34 @@ Phase 7 `b274512e`…`07592d19`). This reshaped the ground the old plan stood on
 
 ---
 
-## Phase 1 — Hygiene & docs (½–1 day, deletion-heavy)
+## Hygiene & docs (½–1 day)
 
-- [ ] **Delete build-cache dir** (~21 GB reclaimable): `target-check/` at repo root. *(The stray
-  `forge/target-check/` + `forge/frontend/target-check/` copies are already gone.)*
-- [ ] **Delete `_monorepo-backup/`** at repo root (post-merge leftover; only `.bundle` git-history
-  archives remain inside).
 - [ ] **forge reqwest → rustls** (avoid native-tls/openssl in real-money bins). Both crates still on
   the default OpenSSL stack: `forge/live/Cargo.toml:37`
   (`reqwest = { version = "0.11", features = ["json"] }`) and `forge/launcher/Cargo.toml:38`
   (`… ["json", "multipart"] }`). Add `default-features = false` + `"rustls-tls"` to match hunter.
-- [ ] **Doc sweep** — stale names after the hunter/forge restructure (only the *bare* stale paths;
-  the dep-key/lib-name mapping notes in CLAUDE.md are intentional and stay):
-  - `frontend-react` → `frontend`: `hunter/CLAUDE.md:25,55`, `hunter/docs/arch/frontend.md:1,8`,
-    `hunter/docs/plans/deploy/api-auth-deploy-flow.md:41,42`, code comments
-    `hunter/core/src/api/handlers/tokens/tokens.rs:498,1356`.
-  - `pump-trader`/`ingest-laserstream` bare refs → `shared/executor/pumpfun` / `shared/ingest/pumpfun`:
-    `forge/README.md` (23,24,33,46,47,63,64,72,84), `forge/docs/roadmap-plan.md`
-    (37,57,76,87,103-105,128,181,188), `forge/docs/arch/architecture.md` (21,24,26,33,35,36,177,182,196).
-  - `cargo run -p lab`/`-p live` → `-p hunter-lab` / `-p forge-live`: `hunter/docs/RUN-MODES.md:39-42`,
-    `hunter/docs/arch/sweep.md:108`, `forge/docs/roadmap-plan.md:96`,
+- [ ] **Doc sweep** — the stale names that survive. Scope is *bare* stale paths only; the
+  dep-key/lib-name mapping notes are intentional and stay (`pump-trader`/`ingest-laserstream` are
+  the **current** Cargo dep keys — see the "false premise" entry in
+  [../hunter/docs/roadmap/venue-quote-portability.md](../hunter/docs/roadmap/venue-quote-portability.md)
+  before re-raising that one).
+  - `cargo run -p lab`/`-p live` → `-p hunter-lab` / `-p hunter-live`. `-p` takes a **package**
+    name; `lab`/`live` are `[lib]` target names, so these commands do not run:
+    `hunter/docs/RUN-MODES.md:39-42`, `hunter/docs/arch/sweep.md:269`,
+    `hunter/docs/plans/database/lake-pg-read-paths.md:35`,
+    `hunter/docs/plans/deploy/api-auth-deploy-flow.md:103`, `forge/docs/roadmap-plan.md:93,100`,
     `forge/frontend/src/features/launch/LaunchConsolePage.tsx:186` (UI text).
-  - **Stale CLAUDE.md self-refs to fix while here:** hunter perf-budget says "read from
-    `runtime_cache.rs`" but that file was deleted in the redesign — run state now lives in
-    `hunter/core/src/models/strategy.rs` + the engine's in-memory caches. hunter CLAUDE.md's crate
-    table still lists the retired tpsl/swing vocabulary in places.
+  - `frontend-react` → `frontend`, code comments only (the docs are clean):
+    `hunter/core/src/api/handlers/tokens/tokens.rs:514,1374`.
+  - `../hunter/pump-trader::bundle_buy` → `shared/executor/pumpfun`:
+    `forge/docs/roadmap-plan.md:84`.
 - [ ] **Add a root `README.md`** tying the monorepo together (only `RUN.md` + root `CLAUDE.md` exist).
 - [ ] **Façade `use`-name rename (dedicated cleanup commit)** — `pump_trader`→`executor_pumpfun`
-  (86 refs/35 files) and `ingest_laserstream`→`ingest_pumpfun` (36 refs/19 files). Crates/packages
-  already moved to `shared/executor/pumpfun` + `shared/ingest/pumpfun`; only the cosmetic `use`-name
-  remains. Rename the lib targets (`shared/executor/pumpfun/src/lib.rs`,
-  `shared/ingest/pumpfun/src/lib.rs`) + every call site, update the dep-key mapping notes in
-  `hunter/CLAUDE.md:33-34` and `forge/CLAUDE.md:39-40`, in one isolated commit (no logic change).
-- [x] **Prune stale planning docs** — done 2026-07-19: deleted `swing-detection-logic.md` (swing
-  feature removed in Phase 7) and the landed design conversation `docs/strategy-redesign-{answer-1,
-  new-plan}.md`. Surviving strategy invariants live in `hunter/docs/arch/strategies.md`.
+  (38 files) and `ingest_laserstream`→`ingest_pumpfun` (21 files). Crates/packages already moved to
+  `shared/executor/pumpfun` + `shared/ingest/pumpfun`; only the cosmetic `use`-name remains. Rename
+  the lib targets (`shared/executor/pumpfun/src/lib.rs`, `shared/ingest/pumpfun/src/lib.rs`) + every
+  call site, update the dep-key mapping notes in `hunter/CLAUDE.md` and `forge/CLAUDE.md`, in one
+  isolated commit (no logic change).
 
 ---
 
@@ -103,7 +53,7 @@ Phase 7 `b274512e`…`07592d19`). This reshaped the ground the old plan stood on
 The redesign made "add a metric" and "add a venue" the two axes new work runs along. Documenting and
 smoothing these is now higher-leverage than any one-off cleanup.
 
-### E1 — Metric-engine extension path (highest leverage; work is queued)
+### E1 — Metric-engine extension path (highest leverage)
 The engine reads metrics from pluggable modules; the stated design goal is "I'll add more metrics
 later, so extensibility is very important." Make adding one a **single, documented seam** instead of a
 scavenger hunt across layers.
@@ -113,10 +63,6 @@ scavenger hunt across layers.
   `{entry,exit}` param shape + per-operator parsing, the sweep column + summary aggregation, and the
   FE authoring grammar + metric pane. This is the SSOT that keeps static vs dynamic metrics
   (immediate-on-trade vs rule-parametrized like `window_size_sec`) from drifting.
-- [ ] **Ship the first queued metric — volume/organic-flow split** (`m_flow_split` / `m_flow_window`,
-  `fingerprints.metric_config` JSONB + discovery scoring). Design is settled (see the volume-flow
-  design note) and was blocked on backend Ph5, which has now landed — this is the natural first
-  exercise of the E1 seam and will surface any rough edges in it.
 - [ ] **Registry as SSOT audit** — confirm metric keys, colors, and grammar are defined once in the
   Rust `REGISTRY` and flow to the FE (chips are already hue-driven from Rust). Add a no-DB guard test
   that the FE grammar and Rust registry can't silently diverge.
@@ -178,14 +124,14 @@ R1+R2 landed and were smoke-verified; two pieces were explicitly deferred and re
 ### P3 — Forge Jito hot-path client reuse (one-off win, independent)
 - [ ] Share one `reqwest::Client` for Jito submit — a fresh `reqwest::Client::new()` is built per call
   at `forge/launcher/src/bundle_execute.rs:515` (latency-critical) and `bundle_simulate.rs:188`,
-  `wallet_sweep.rs:211,286`. (`jito_leader.rs:88` is now TTL-cached ⇒ largely moot; `sol_price.rs:31,44`
-  sit behind a 60s poller ⇒ moot.)
+  `wallet_sweep.rs:216,337`. (`jito_leader.rs:88` sits behind a TTL cache and `sol_price.rs` behind a
+  60s poller ⇒ both moot.)
 
 ### P4 — `TokenQuery::matches` over the 100K+ universe (one-off win, independent)
-- [ ] `hunter/core/src/api/handlers/tokens/tokens.rs` — `matches` (`:1063`) re-`.parse::<f64>()`s
-  numeric operands per row (`range_f64`/`opt_f64` `:1306-1332`, ~25×/row) and re-`.to_lowercase()`s
-  needles per row (`text_match` `:1334-1338`, global search `:1229`). `mint_in` is a `Vec` with a
-  linear-scan membership test (`:811,1084`) — make it a `HashSet`. Precompile operands into a typed
+- [ ] `hunter/core/src/api/handlers/tokens/tokens.rs` — `matches` (`:1081`) re-`.parse::<f64>()`s
+  numeric operands per row (`range_f64` `:1324` / `opt_f64` `:1342`, ~25×/row) and
+  re-`.to_lowercase()`s needles per row (`text_match` `:1352`). `mint_in` is a `Vec` with a
+  linear-scan membership test (`:829,1102`) — make it a `HashSet`. Precompile operands into a typed
   filter plan once per query, not once per row.
 
 ---
@@ -193,14 +139,16 @@ R1+R2 landed and were smoke-verified; two pieces were explicitly deferred and re
 ## Quality (background, piecemeal)
 
 - [ ] **Run-status enum** — replace stringly `status: String` on `StrategyRun`
-  (`hunter/core/src/models/strategy.rs:56`, written `"Running".to_string()` at
-  `hunter/live/src/strategies/engine/sinks.rs:304`) with a typed enum
+  (`hunter/core/src/models/strategy.rs:67`, compared and written as `"Running"` at
+  `hunter/live/src/strategies/engine/sinks.rs:994,1006`) with a typed enum
   (`Running|Finished|Stopped|Cancelled`).
-- [ ] **God-file splits (no logic change)** — current sizes: `hunter/live/src/services/token_sync.rs`
-  **2089**, `hunter/lab/src/api/handlers/strategies/grouped_sweep.rs` **1951** (extract the ~500-line
-  sweep runner to `sweep/job.rs`), `hunter/core/src/storage/repositories/strategy_repo.rs` **1945**,
-  `hunter/core/src/api/handlers/tokens/tokens.rs` **1878**. (`forge/live/src/http.rs` dropped to 1231 ⇒
-  no longer a target; `own_launch.rs` already split into small model + repo.)
+- [ ] **God-file splits (no logic change)** — current sizes:
+  `hunter/core/src/storage/repositories/strategy_repo.rs` **3736**,
+  `hunter/lab/src/api/handlers/strategies/grouped_sweep.rs` **2924** (extract the sweep runner to
+  `sweep/job.rs`), `hunter/live/src/services/token_sync.rs` **2094**,
+  `hunter/core/src/api/handlers/tokens/tokens.rs` **1896**. The top two roughly doubled since the
+  audit, so this is growing faster than it is being paid down. `forge/live/src/http.rs` is not a
+  target.
 - [ ] **Positional-arg constructors → builders/struct-literal defaults** (adjacent same-typed Options
   transpose silently on the trade path).
 
@@ -228,19 +176,15 @@ R1+R2 landed and were smoke-verified; two pieces were explicitly deferred and re
 - [ ] **Compose resource limits + log rotation** — neither compose file caps cpu/mem (a lab sweep can
   starve the live hot path) or bounds `logging:` (default unbounded json-file). Add both; cap lab-api
   hardest.
-- [ ] **Mirror `CARGO_BUILD_JOBS=2` to forge Dockerfiles** — hunter has it
-  (`deploy/hunter-{live,lab}/api.Dockerfile`), forge does not
-  (`deploy/forge-{live,lab}/api.Dockerfile`) → OOM-during-build risk on the small box. Fix stale
-  `EXPOSE` ports while there.
 
 ---
 
 ## Suggested order
 
-1. **P1 hygiene** (target-check + `_monorepo-backup` delete, reqwest→rustls, doc sweep, prune stale
-   plans, root README) — cheap, unblocks a clean tree + honest docs.
-2. **E1 metric seam** (doc + ship the flow-split metric) — highest leverage; the engine is where new
-   product value now lands.
+1. **Hygiene & docs** (reqwest→rustls, doc sweep, root README) — cheap, unblocks a clean tree +
+   honest docs.
+2. **E1 metric seam** (write `adding-a-metric.md`, then the registry-SSOT guard test) — highest
+   leverage; the engine is where new product value now lands.
 3. **P2–P4 perf one-offs** (RPC deferrals, Jito client, TokenQuery) — independent, pick off
    opportunistically; **P1-sweep** just needs its one measurement run.
 4. **Quality + Frontend + Deploy** — background/piecemeal.

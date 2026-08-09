@@ -8,13 +8,13 @@ use crate::state::token_metrics::TokenMetricsWrite;
 
 /// Repo over the (clean-rebuild) `tokens_info` metrics table.
 ///
-/// The new `tokens_info` shape (token-storage-plan.md) is mint-keyed and drops
-/// the old surrogate `id`, the cached `age`/`market_cap` (derived in the
-/// `token_overview` view), `created_at` (redundant with `tokens.created_at`),
-/// and the per-venue `last_synced_*` columns (moved to `token_sync_state`).
+/// The `tokens_info` table (docs/plans/database/token-storage.md) is mint-keyed. It has
+/// no surrogate `id`, no cached `age`/`market_cap` (derived in the `token_overview`
+/// view), no `created_at` (redundant with `tokens.created_at`), and no per-venue
+/// `last_synced_*` columns (those live in `token_sync_state`).
 ///
-/// The runtime [`TokenInfo`] model still carries those fields (consumed by caches
-/// / handlers until Phase 2/3 rewires them), so reads synthesize them: `id` is a
+/// The runtime [`TokenInfo`] model still carries those fields (caches and handlers
+/// read them), so reads synthesize them: `id` is a
 /// fresh uuid, `age`/`market_cap` are `None` (derive at the call site / view),
 /// `created_at` mirrors `updated_at`, and `last_synced_at` is read from
 /// `token_sync_state`. Sync-watermark methods now read/write `token_sync_state`.

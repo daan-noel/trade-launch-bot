@@ -1,15 +1,15 @@
 # Lake — analysis cold tier (forge-lab)
 
 The lake is the Parquet/DuckDB cold tier for sweeps and backtests. It is the
-**in-crate `forge/lab/src/lake/` module** of the `forge-lab` bin — **no longer a
-separate `lake` crate** (the workspace `CLAUDE.md`/README crate table is stale on
-this point; `forge/lab/Cargo.toml` is ground truth). It runs on the **workstation
-only** and never ships to EC2.
+**in-crate `forge/lab/src/lake/` module** of the `forge-lab` bin, not a separate
+crate (`forge/lab/Cargo.toml` is ground truth). It runs on the **workstation only**
+and never ships to EC2.
 
 > Status: **scaffold**. Only the column single-source (`schema.rs`) exists. The
 > Parquet export writer, the DuckDB reader, and the sweep/backtest engines are
-> **absent** — the previous `lake-export` subcommand and a `run_export` stub were
-> both removed rather than left as no-ops. The stack deps
+> **absent**, and deliberately not stubbed: there is no `lake-export` subcommand and
+> no `run_export` no-op, because an `Ok(0)` stub reads as a working export that found
+> nothing. The stack deps
 > (`duckdb`/`arrow`/`parquet`/`rayon`) are **not yet added** to `forge-lab`.
 
 ## Architecture
@@ -40,9 +40,9 @@ The load-bearing invariant is the **dep partition**: `forge-lab` must not link
 
 | File | Responsibility |
 | --- | --- |
-| `forge/lab/src/lake/mod.rs` | Module root + doc-of-record for the cold tier. Declares `pub mod schema` only. Comments mark the export/reader/parity pipeline as a later phase; the `run_export` stub was deleted, not stubbed to `Ok(0)`. |
+| `forge/lab/src/lake/mod.rs` | Module root + doc-of-record for the cold tier. Declares `pub mod schema` only. Comments mark the export/reader/parity pipeline as a later phase. There is deliberately **no `run_export` stub** — an `Ok(0)` stub reads as a working export that found nothing. |
 | `forge/lab/src/lake/schema.rs` | **Column SSOT** for the sealed-day Parquet schema. `mod trades` holds one `&str` const per column + an ordered `COLUMNS: &[&str]`. Writer + reader (when they land) MUST import these — never string-literal a column name. `#![allow(dead_code)]` because there is no consumer yet. A guard test pins uniqueness, presence of the generalized quote/base + reserve pair, and `len == 15`. |
-| `forge/lab/src/main.rs` | ANALYSIS composition root. Loads `Settings`, connects the local PG mirror, serves HTTP. **Rejects any CLI arg** (`"forge-lab takes no subcommands"`) — the `lake-export` subcommand is gone. Fail-closed bearer gate (`http-auth`), token OPTIONAL here (reads pass, lab moves no SOL). Binds `HOST`/`PORT` → falls back to `LAB_HOST`/`LAB_PORT` = `127.0.0.1:8240`. |
+| `forge/lab/src/main.rs` | ANALYSIS composition root. Loads `Settings`, connects the local PG mirror, serves HTTP. **Rejects any CLI arg** (`"forge-lab takes no subcommands"`) — there is no `lake-export` subcommand. Fail-closed bearer gate (`http-auth`), token OPTIONAL here (reads pass, lab moves no SOL). Binds `HOST`/`PORT` → falls back to `LAB_HOST`/`LAB_PORT` = `127.0.0.1:8240`. |
 | `forge/lab/src/http.rs` | Thin read surface over the local mirror (NOT the lake). Routes: `GET /health`, `/api/quote_assets`, `/api/launchpads`, `/api/tokens/{mint}/overview`, `/api/tokens/{mint}/trades`. Own route config, disjoint from `forge-live`. Errors mapped to generic 500 (detail logged, never returned). |
 
 ### Parquet `trades` columns (schema.rs SSOT, ordered)
@@ -56,9 +56,8 @@ launchpad/quote asset is a data row, never a new column.
 
 ## Key rules
 
-- **Not a crate — a module.** `forge/lab/src/lake/`, part of the `forge-lab` bin.
-  The workspace CLAUDE.md/README "6 crates" table listing a `lake` lib crate is
-  stale; trust `forge/lab/Cargo.toml`.
+- **Not a crate — a module.** `forge/lab/src/lake/`, part of the `forge-lab` bin
+  (`forge/lab/Cargo.toml` is ground truth).
 - **Workstation only, never EC2.** The lake stack (`duckdb`/`arrow`/`parquet`/
   `rayon`) is confined to `forge-lab`. `forge-live` must never pull it (verify
   `cargo tree -p forge-live` shows no `duckdb`).
@@ -77,8 +76,7 @@ launchpad/quote asset is a data row, never a new column.
 
 ## Not yet present (verified absent in source)
 
-- `lake-export` subcommand / Parquet export writer — removed; `main.rs` rejects
-  all args.
+- `lake-export` subcommand / Parquet export writer — absent; `main.rs` rejects all args.
 - DuckDB name-based reader — not written.
 - Sweep / backtest / simulate engines — not written; `forge-lab` HTTP reads hit
   local PG directly.

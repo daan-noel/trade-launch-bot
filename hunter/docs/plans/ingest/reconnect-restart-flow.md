@@ -55,24 +55,21 @@ one decider, from a retained `ReplayAnchor { slot, at }`:
 | gap since `at` ≤ `gap_replay_max_window_secs` | `Some(slot + 1)` | kept |
 | gap since `at` > window | `None` (live) | **dropped** — that window is gone; keeping it would re-log the refusal forever |
 
-Three properties are load-bearing, and each was a bug:
+Three properties are load-bearing. Each has failed in production before, and breaking
+any of them silently loses feed windows rather than erroring — detail:
+[`@history/2026-07-27-replay-anchor-blackout.md`](../../history/2026-07-27-replay-anchor-blackout.md).
 
 1. **The anchor outlives an attempt that makes no progress.** A connect failure, a
    subscribe rejection, or a stream that opens and then goes silent until the idle
-   watchdog trips leaves `progress = None`, and the anchor is *not* advanced or
-   cleared. `from_slot` used to be recomputed from that attempt's own `last_slot`,
-   so one fruitless attempt zeroed it and the next (successful) attempt subscribed
-   live — permanently losing the window. **This is the 2026-07-27 20:11–20:12
-   blackout**: two minutes came back empty with `gap_replay_on_reconnect = true`,
-   and its blast radius was far wider than the feed (every strategy decision in the
-   window ran on incomplete data; two tokens were never flagged migrated or dead
-   because their trades vanished).
+   watchdog trips leaves `progress = None`, and the anchor must *not* be advanced or
+   cleared. Recomputing `from_slot` from that attempt's own `last_slot` zeroes it, so
+   the next (successful) attempt subscribes live and the window is gone for good.
 2. **`at` is when the last slot was *observed*, not when the attempt ended.** The
-   two differ by the whole idle timeout on a silently-dead stream. `last_progress_at`
-   used to be reset immediately *before* the window was measured against it, so the
-   measured gap was always ~0 — `gap_replay_max_window_secs` was unreachable, the
-   "gap exceeds replay window" warning was dead code, and a multi-hour backlog would
-   have been requested in full.
+   two differ by the whole idle timeout on a silently-dead stream. Resetting
+   `last_progress_at` immediately *before* measuring the window against it makes the
+   measured gap always ~0 — `gap_replay_max_window_secs` becomes unreachable, the
+   "gap exceeds replay window" warning becomes dead code, and a multi-hour backlog
+   would be requested in full.
 3. **Retention is bounded (`MAX_REPLAY_ATTEMPTS = 3`).** Retaining the anchor is what
    closes the gap, but unbounded retention can wedge: LaserStream serves only a few
    minutes of history, so a `from_slot` it refuses outright fails *every* attempt.
@@ -118,9 +115,10 @@ Runs on a **dedicated OS thread** (not tokio). Calls `std::process::exit(1)` →
 `DbWriter` stamps a shared atomic (`DbHeartbeat`) at the end of a `flush()` **only
 when that flush persisted at least one row** (`any_ok`). An all-failed flush (e.g.
 every write timing out on an exhausted pool) does **not** stamp — so the heartbeat
-means "data is landing", not merely "the writer loop is spinning". Stamping
-unconditionally was the 2026-07-22 root cause: a wedged pipeline kept the heartbeat
-fresh and the watchdog never fired for 7h.
+means "data is landing", not merely "the writer loop is spinning" — stamping
+unconditionally lets a wedged pipeline hold the heartbeat fresh indefinitely, and the
+watchdog never fires
+([history](../../history/2026-07-22-heartbeat-green-through-wedge.md)).
 
 ```
 spawn_watchdog OS thread loop:

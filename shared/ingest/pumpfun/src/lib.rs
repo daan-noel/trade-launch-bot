@@ -14,7 +14,7 @@
 //! The host owns all sinks (DB, cache, SSE, strategy, watchdog). The crate emits
 //! decoded [`event::IngestEvent`]s out a bounded mpsc channel and never reads env.
 //!
-//! **Structure (Phase H):** the venue-agnostic engine — gRPC transport, reconnect
+//! **Structure:** the venue-agnostic engine — gRPC transport, reconnect
 //! policy, the `IngestVenue` seam, and the generic `Ingest<V>` / `IngestHandle<V>`
 //! session — lives in `ingest-core`. This crate supplies the pump.fun
 //! [`venue::PumpFunVenue`] (classify + decode + pool derivation) and a

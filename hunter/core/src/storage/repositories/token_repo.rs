@@ -179,10 +179,9 @@ pub struct TokenListRow {
 impl From<TokenDbRow> for Token {
     fn from(r: TokenDbRow) -> Self {
         Self {
-            // `tokens` is now mint-keyed (no surrogate id column). The runtime
-            // `Token` model still carries a `Uuid` id (consumed by caches/handlers
-            // until Phase 2/3); synthesize a fresh one on read — nothing persists
-            // or joins on it.
+            // `tokens` is mint-keyed (no surrogate id column), but the runtime
+            // `Token` model still carries a `Uuid` id that caches/handlers read.
+            // Synthesize a fresh one — nothing persists or joins on it.
             id: Uuid::new_v4(),
             mint_address: r.mint_address,
             creator_wallet: r.creator_wallet,

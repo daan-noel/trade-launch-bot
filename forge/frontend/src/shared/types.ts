@@ -121,7 +121,7 @@ export interface TokenPosition {
   updated_at: string;
 }
 
-// ---- Post-launch management (token-management-plan.md Phase 2) ----
+// ---- Post-launch management (docs/arch/launcher.md) ----
 
 export interface WalletSelection {
   role?: string | null;
@@ -181,7 +181,7 @@ export interface ManageAction {
   completed_at: string | null;
 }
 
-// ---- Sell ladders (token-management-plan.md Phase 4) ----
+// ---- Sell ladders (docs/arch/launcher.md) ----
 export interface LadderRung {
   metric: string; // 'market_cap_usd' | 'price_usd'
   threshold: number;
@@ -199,7 +199,7 @@ export interface SellLadder {
   updated_at: string;
 }
 
-// ---- Volume-making bots (token-management-plan.md Phase 5) ----
+// ---- Volume-making bots (docs/arch/launcher.md) ----
 export interface VolumeConfig {
   buy_sol_min: number;
   buy_sol_max: number;

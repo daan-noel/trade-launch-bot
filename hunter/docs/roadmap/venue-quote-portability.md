@@ -1,10 +1,8 @@
 # Venue/quote portability + cross-product SSOT drift (deferred goals)
 
-Extracted from `project-audit-and-redesign.md` (deleted — a 2026-07-14 status
-reconciliation of a 2026-07-03 audit; every finding it tracked is now either shipped
-and documented elsewhere, or moot because the code it was about no longer exists — see
-"Dropped, not carried forward" below). What survives is genuinely still open and not
-tracked anywhere else.
+Goals that are genuinely still open and not tracked anywhere else. Everything an
+earlier audit raised that has since shipped or gone moot is listed under
+"Dropped, not carried forward" below, so it is not re-raised.
 
 ## 1. Hunter is pump/SOL-only; forge already generalized this (deferred future goal)
 
@@ -78,10 +76,11 @@ longer exist, replaced wholesale by the generic sweep/Console UI (see
   `docs/arch/trade-execution.md`, `docs/plans/trade-execution/sell-close-smoke.md`,
   `docs/arch/frontend.md`.
 
-## Never independently re-verified (status genuinely unknown, not "open" per se)
+## No unresolved audit IDs remain
 
-The 2026-07-14 reconciliation pass didn't re-check these against code; assume open but
-re-verify before acting, don't just build off this list: **M5** (pump-specific ingest
-contract — tracks with H8 above), **M6, M7, M11** (unverified), **M12** (`runtime_cache`
-living in shared core rather than relocated to `live`), **M13, L1-L8, L10, L11**
-(unverified).
+The audit's bare `M*`/`L*` identifiers are not carried here: the doc that defined them is
+gone, so an ID alone points nowhere a reader can act on. The one item whose subject was
+still nameable — a `runtime_cache` module sitting in shared core instead of `live` — is
+moot: run state is the in-memory `TokenCache` plus the engine's own state, and there is no
+such module to relocate. The pump-specific ingest contract that a couple of those IDs
+circled is the live item, and it is **H8** above.

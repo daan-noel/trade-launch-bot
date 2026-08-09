@@ -1,6 +1,6 @@
 //! `GET /api/tokens` — token list for the live (deploy) bin.
 //!
-//! Two paths, matching the live/lab cache split (see `tokens-db-pagination-plan.md`):
+//! Two paths, matching the live/lab cache split (see `docs/plans/frontend/token-list-backend.md`):
 //!   - **Full list** (`tracked_only=false`, the default): paged **from Postgres**.
 //!     The live in-RAM cache holds only tracking tokens, so the full token universe
 //!     (100K+) is filtered/sorted/paged in SQL via `build_where_and_order` +

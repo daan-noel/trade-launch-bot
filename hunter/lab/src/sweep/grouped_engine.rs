@@ -107,7 +107,7 @@ pub struct GroupResult {
     pub scale_out_winners: HashMap<u32, serde_json::Value>,
 }
 
-/// Sink for **incremental** per-group results (Phase 4 partial persistence). The
+/// Sink for **incremental** per-group results (incremental persistence). The
 /// engine calls [`begin`](GroupSink::begin) once — after the surviving group set
 /// and the final (possibly refine-expanded) combo set are fixed, before any group
 /// fires — then [`group_done`](GroupSink::group_done) once per **fully-folded**
@@ -217,7 +217,7 @@ pub fn run_grouped_sweep<S: Strategy>(
     let threads = rayon::current_num_threads().max(1);
     let large_min = LARGE_GROUP_TOKEN_FACTOR * threads;
 
-    // Phase 2.5: sweep the combo space in budget-sized batches so peak accumulator
+    // sweep the combo space in budget-sized batches so peak accumulator
     // memory is `threads × batch × ComboAgg`, independent of the total combo count.
     // The batch is global (same for every group + pass), but it — and how `run_sweep`
     // shards the combo space — are **memory-timed** decisions the engine re-makes
@@ -232,7 +232,7 @@ pub fn run_grouped_sweep<S: Strategy>(
     let total_tokens: usize = surviving.iter().map(|(_, idx)| idx.len()).sum();
     observer.set_total(total_tokens, n_combos);
 
-    // Phase 0.3 — RSS at the structural peak (corpus + the partition map resident)
+    // RSS at the structural peak (corpus + the partition map resident)
     // and a wall-clock origin for the per-sweep duration, both logged again at done.
     let sweep_started = std::time::Instant::now();
     tracing::info!(
@@ -251,7 +251,7 @@ pub fn run_grouped_sweep<S: Strategy>(
     // regardless of which phase produced each result.
     let mut results: Vec<Option<GroupResult>> = (0..surviving.len()).map(|_| None).collect();
 
-    // Phase 4 — per-group incremental emit. Announce counts only; combo JSON is
+    // per-group incremental emit. Announce counts only; combo JSON is
     // built per group for retained survivors (~660) — never the full N-combo grid.
     let emit = sink.wants_groups();
     if emit {
@@ -434,7 +434,7 @@ pub fn run_grouped_with_refine<S: Strategy>(
     // progress through `coarse_observer` so the frontend can show a "Coarse sweep"
     // bar. Its groups are throwaway (the combo-id space isn't final yet), so they
     // are NOT persisted: a cancel during coarse leaves no checkpointable group → a
-    // full cancel, exactly as the Phase 4 plan requires.
+    // full cancel.
     // A refine run sweeps the whole corpus TWICE. Timing the two passes separately is
     // the only way to tell which half a slow run spent its time in — previously both
     // were folded into one undifferentiated block between `corpus_loaded` and `done`.

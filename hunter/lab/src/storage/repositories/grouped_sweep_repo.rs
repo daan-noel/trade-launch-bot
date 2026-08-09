@@ -7,7 +7,7 @@
 //! internal consts in the registry — never client input — so the interpolation
 //! is injection-safe.
 //!
-//! Writes are **incremental** (Phase 4 partial persistence): `insert_run` writes
+//! Writes are **incremental** (incremental persistence): `insert_run` writes
 //! the run header up front (`status = 'running'`), `append_group` commits each
 //! completed group + its bounded combo rows in its own transaction (combo rows
 //! bulk-inserted in `chunks(2000)` to stay under the 65535 bind-parameter
@@ -267,7 +267,7 @@ impl GroupedSweepRepo {
         Self { pool, tables }
     }
 
-    /// Phase 4 — write the run header up front with `status = 'running'` (before
+    /// write the run header up front with `status = 'running'` (before
     /// any group is swept) so a cancel/crash mid-sweep leaves a recoverable row.
     /// `group_count` / `combo_count` are placeholders here (0); they're filled by
     /// [`update_run_counts`] once the engine knows them and re-affirmed by

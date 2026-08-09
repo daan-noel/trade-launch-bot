@@ -38,7 +38,7 @@ pub fn dev_launch_required_lamports(
 
 /// Per bundler leg funding target: the leg's buy quote + the bundle tip + fee/
 /// rent headroom. `tip_quote` is the bundle-wide tip; a leg's actual tip is drawn
-/// by the per-wallet persona disguise (Phase 2.F) within its range, so budgeting
+/// by the per-wallet persona disguise within its range, so budgeting
 /// the full configured tip per leg stays safe rather than under-funding a leg that
 /// happens to draw the top of its tip range.
 pub fn leg_required_lamports(quote_per_leg: i64, tip_quote: Option<i64>) -> u64 {

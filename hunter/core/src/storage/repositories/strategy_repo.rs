@@ -26,7 +26,7 @@ use crate::storage::token_enrichment::{
 /// Repo spanning the unified strategy schema (`strategy_runs`,
 /// `strategy_run_metrics`, `strategy_positions`). The generic engine's rule CRUD
 /// lives on `RuleRepo` (`strategy_rules`); the pre-0004 `strategy_rules_legacy`
-/// table is no longer read here (retired in Phase 7).
+/// table is not read here.
 #[derive(Clone)]
 pub struct StrategyRepo {
     pool: PgPool,

@@ -53,7 +53,7 @@ pub async fn spawn_ingest(
     // Decoupled writer: hot recv loop → bounded channel → DbWriter task.
     let (tx, rx) = mpsc::channel::<DbWriteOp>(CHANNEL_CAPACITY);
     let heartbeat = DbHeartbeat::new();
-    // Health metrics (audit Phase B): commit-heartbeat age, queue depth (weak peek
+    // Health metrics: commit-heartbeat age, queue depth (weak peek
     // at the channel), and the committed-event counter the writer bumps per flush.
     let metrics = IngestMetrics::new(heartbeat.clone(), tx.downgrade());
     tokio::spawn(

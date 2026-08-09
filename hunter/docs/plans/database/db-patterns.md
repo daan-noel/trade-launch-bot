@@ -1,11 +1,7 @@
 # Database Patterns & Operational Notes
 
-> **NOTE:** File paths below that reference `backend/` are stale — the old monorepo crate was renamed.
-> The current layout is: migrations at `trading_core/migrations/`, repos at
-> `trading_core/src/storage/repositories/`, ingest at `ingest-laserstream/src/`. The
-> `maintenance.rs` partition loop is **deleted** — TimescaleDB retention/compression policies
-> replaced it. `PARTITION BY RANGE` is
-> replaced by hypertables. BRIN on `block_time` is replaced by Timescale chunk exclusion.
+Layout: migrations at `hunter/core/migrations/` (core) and `hunter/lab/migrations/` (lab),
+repos at `hunter/core/src/storage/repositories/`, ingest at `shared/ingest/pumpfun/src/`.
 
 Deep-dive on pool rationale, migration conventions, sqlx patterns, and query guardrails. See [@arch/database.md](@arch/database.md) for the schema overview and repo table. See [@plans/database/db-pool-routing.md](@plans/database/db-pool-routing.md) for routing logic.
 
@@ -44,9 +40,10 @@ Runner: `sqlx::migrate!("./migrations")` in `storage/postgres.rs::connect()`. Mi
 
 **Idempotency rule:** migrations must be safe to inspect but not safe to re-apply (sqlx tracks applied state). Never use `DROP TABLE` in a migration without extreme care. Prefer `ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `CREATE TABLE IF NOT EXISTS` for columns/indexes.
 
-**BRIN indexes on `trades`:** block_time is append-only and monotonically increasing — a BRIN index (`pages_per_range = 32`) is 10–100× smaller than a B-tree for time-range scans on partitioned tables. Migration `0006_brin_trades_block_time.sql` adds this.
-
-**Partition maintenance:** `ingest_laserstream/maintenance.rs` creates future partitions (today + 2 days ahead) and drops past-retention partitions. It runs every 6 hours as a tokio task. A new partitioned table must register its `table_name` + `KEEP_DAYS` in `maintenance.rs`; there is no auto-discovery.
+**No hand-rolled time indexes or partition maintenance.** Hot tables are TimescaleDB
+hypertables: chunk exclusion does the time-range pruning (so no BRIN on `block_time`), and
+declarative `add_compression_policy` / `add_retention_policy` jobs do the aging (so no
+partition-creation task). Both are declared in `0001_init.sql` — see the pattern below.
 
 ## sqlx Patterns
 
@@ -84,16 +81,22 @@ This is not enforced by the library — it will silently produce a malformed que
 
 If columns are added to these tables, recalculate `chunk_size = floor(65535 / binds_per_row)` and update the corresponding `insert_many`.
 
-## Retention & Partition Pattern
+## Retention & Compression Pattern
 
-New high-volume tables (> 1M rows/week projected) must follow this pattern:
+New high-volume tables (> 1M rows/week projected) must follow this pattern, all declared in
+the migration itself — there is no maintenance task to register with:
 
-1. Partition by time range (daily for trade-scale; weekly for lower-volume): `PARTITION BY RANGE (created_at)`
-2. Register in `maintenance.rs::MANAGED_TABLES`: `{ table: "my_table", keep_days: 30 }`
-3. Create `my_table_YYYY_MM_DD` partitions for at least today + 2 future days at migration time
-4. Indexes go on the partition template, not the parent table
+1. `SELECT create_hypertable('my_table', by_range('block_time', INTERVAL '1 day'))` — the
+   time dimension must be **timestamptz**, so the policies below can use native `now()`.
+2. `ALTER TABLE … SET (timescaledb.compress, timescaledb.compress_segmentby = '<the
+   high-selectivity filter column>', timescaledb.compress_orderby = '<the scan order>')`.
+3. `SELECT add_compression_policy('my_table', compress_after => …)` — the window MUST
+   exceed how far back any backfill/sync writes, or those inserts land in a compressed chunk.
+4. `SELECT add_retention_policy('my_table', drop_after => …)`.
+5. Index only what the **uncompressed** recent chunks need; historical chunks are served by
+   the `segmentby`/`orderby` metadata, and a redundant time index just costs writes.
 
-Tables that don't need time-based partitioning (strategy rules, positions, sweep results) use standard B-tree PKs + targeted indexes. Sweep results use the `retention.rs` compaction strategy (retain per-metric extremes, ~660 rows/group) instead of time-based deletion.
+Tables that don't need time-based aging (strategy rules, positions, sweep results) use standard B-tree PKs + targeted indexes. Sweep results use the `retention.rs` compaction strategy (retain per-metric extremes, ~660 rows/group) instead of time-based deletion.
 
 ## Sweep Result Retention
 

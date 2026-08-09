@@ -97,7 +97,7 @@ pub fn find_death_point<T: TradeRow>(
 /// history: the same token/corpus resolves the same Dead/Open call whether swept
 /// today or replayed next week, and whether by the grouped sweep or a
 /// single-rule simulate reading the same lake slice — see
-/// `docs/plans/sweep/sweep-sim-parity.md` (C1).
+/// `docs/plans/sweep/sim-parity.md` (C1).
 pub fn analysis_as_of<T: TradeRow>(trades: &[T], entry_time: DateTime<Utc>) -> DateTime<Utc> {
     trades.last().map(|t| t.block_time()).unwrap_or(entry_time)
 }

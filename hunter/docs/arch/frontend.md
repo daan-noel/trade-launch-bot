@@ -1,11 +1,11 @@
-# Frontend — `frontend-react/` (React SPA, **two apps over a shared core**)
+# Frontend — `hunter/frontend/` (React SPA, **two apps over a shared core**)
 
 Stack: React 19 + TS + Vite, RTK Query + Redux Toolkit, React Router 7, Tailwind 4, lightweight-charts.
 Deep-dive detail: `@plans/frontend/frontend-patterns.md`, `@plans/token-analysis/*`.
 
 ## Split model (mirrors the backend two-bin split)
 
-One `frontend-react` package, **three source trees** + **two Vite entries running as two dev
+One `hunter/frontend` package, **three source trees** + **two Vite entries running as two dev
 servers** — the mode is a **build-time guarantee**, not a runtime `useCapabilities` guess:
 
 | Tree | Alias | Bundled by |
@@ -409,8 +409,8 @@ next load (no per-metric frontend work).
   not fired** injects `exit_reason != NoEntry` (server-side) so Charts can compare
   both or focus on fired only; badge shows `N · K fired` / `K / N` like the sweep
   drill-in. A bare `K` with no NoEntry rows means a stale pre-padding result — re-run
-  Simulate. (The separate Matched candidate tab was removed: Positions already is the
-  full matched slice.)
+  Simulate. There is no separate Matched candidate tab — Positions already is the
+  full matched slice.
 
 ## Grouped sweep — generic engine (`strategies/sweep/`, redesign FE5)
 
@@ -508,8 +508,8 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
     sees it and the next sync overwrites the row (server wins).
 - **Simulated = server-side via `useServerTable`** (lab-only). A lean page+total+summary hook
   (no SSE-delta patching / settle-poll — these results are static once computed) drives the table
-  over `fetchEngineSimPage` (POST, `{tokens}` body + `X-Total-Count`). There is no longer a separate
-  **Matched** table: matched-but-not-entered tokens are folded into this one as `NoEntry` rows, and
+  over `fetchEngineSimPage` (POST, `{tokens}` body + `X-Total-Count`). There is no separate
+  **Matched** table: matched-but-not-entered tokens fold into this one as `NoEntry` rows, and
   "Matched" survives only as the `n_matched` summary stat (the candidate pool Entries is drawn
   from). **Simulated** pages the finished backtest's rows from the lab disk cache (`$SWEEP_LAKE_DIR/sim-results/`, hydrated into a
   one-rule RAM working set), with a matching `POST /simulate/result/summary` aggregate
@@ -532,8 +532,8 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   Phase 4, Wallet Holdings**) receives the full `TOKEN_ENRICH_FIELDS` set **in the response body** — the
   backend attaches it from one shared `trading_core::storage::token_enrichment` SSOT — so sort/filter/
   search on enrichment columns works across the whole result set. `mergeTokenData` + the per-table
-  `useGetTokensByMintsQuery` batch call are **gone** (the wallet was the last client-merged table; both
-  were deleted with its server migration).
+  `useGetTokensByMintsQuery` batch call do not exist — there is no client-side merge path,
+  and re-adding one reintroduces search/sort that only sees the current page.
 - **`TokenTable` = the ONE wrapper for every token-row table** (`components/tokens/TokenTable.tsx`).
   It owns the "token recipe" over `DataTable`: (1) append the shared token-info columns
   (`appendedTokenColumns`, so callers export only their bespoke columns + an `existingKeys` set — see
@@ -546,8 +546,8 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   `DataTable`'s **own** client paging/sort/filter/search runs in-browser (NO separate evaluator — that TS
   twin retired with Wallet), used by tables with no backend paging endpoint (**Trader Analysis**,
   **Sweep drill-in**). Every token-data row keys its mint under the one canonical field `mint_address`
-  (SSOT across DB → wire → JS), so the mint accessor is fixed internally — callers no longer pass a
-  `mintOf`; it drives the charts grid, the default `rowKey`, and the client mint-set pre-filter. Two opt-in
+  (SSOT across DB → wire → JS), so the mint accessor is fixed internally — there is no
+  `mintOf` prop; it drives the charts grid, the default `rowKey`, and the client mint-set pre-filter. Two opt-in
   features live here so every token table gets them once: **`mintSetFilter`** — a `<MintSetInput>` paste
   box (server: an `in` op on `mint_address` folded into `structuredFilters`; client: a plain row pre-filter);
   **`charts`** — a toggle rendering `<TokenChartsGrid>` (lazy-mounted, current page only, with
@@ -592,7 +592,7 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   `trading_core::api::table_eval::apply_table_request` with a per-table `ColResolver` grammar; the shared
   enrichment half of that grammar is `resolve_token_enrichment_key` (SSOT — the Simulated and Holdings
   resolvers both delegate to it). The **TS twin** (`services/tableEval.ts` + `columnResolver` +
-  `mergeTokenData`) that used to drive Wallet client-side is **deleted** — the wallet is server-side now.
+  `mergeTokenData`) does not exist — every such table is server-side.
   The golden fixture `tableEval.fixtures.json` and the Rust `table_eval::conformance_shared_fixtures`
   test are **kept** (now Rust-only) so the evaluator's op/sort/search/tiebreak/paging semantics stay
   pinned.
@@ -602,7 +602,7 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   stay bespoke — their nullability differs by endpoint on purpose). Strategy-page boilerplate
   is shared under `shared/components/strategy/`: `cellFormat.ts` (the former byte-identical
   `tpsl1/2 utils.ts`), `inspectTarget.ts` (the `InspectTarget` type + `inspectFromSim`/
-  `inspectFromPosition` mappers, previously copy-pasted across five pages and both modal forks).
+  `inspectFromPosition` mappers — one copy for five pages and both modal forks).
 - **One strategy-table column SSOT (`strategyColumns.tsx` in `shared/components/strategy/`).** The
   Positions / Sim tables' `positionColumns`/`simColumns` (+ their
   `POSITION_KEYS`/`SIM_KEYS`) + `exitReasonBadge` live here **once**. The
@@ -620,7 +620,7 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   `APPENDED_HIDDEN_KEYS`, and the Tokens page (`tokenColumns.tsx`) pulls each column by key through
   `tokenInfoColumnMap()`, adding only its own presentation (order + `TOKEN_COL_WIDTH` widths) and
   Tokens-only columns (identity/`token_age`/`lifetime`/fep-ratios). Per-view `defaultVisible`/width/order
-  legitimately differ; the render/sort/filter facts don't. The matched tables no longer hand-roll
+  legitimately differ; the render/sort/filter facts don't. The matched tables must not hand-roll
   `init_buy`/`cu_limit`/`cu_price` — those come from the shared `initial_buy`/`cu_limit`/`cu_price`
   columns.
 - **Numeric column filters** (`>5`, `1..10`, `>=`, `!=`): every numeric column declares `filterNumber`

@@ -14,7 +14,7 @@ use crate::sweep::projection::CorpusTrade;
 // The cost model, round-trip pricing, and the exit-reason code are owned by the
 // core simulation kernel (one copy of the math, shared by live/paper/sweep). The
 // sweep re-exports them so existing `crate::sweep::strategy::{CostModel, …}`
-// paths keep resolving while the logic lives in exactly one place (Phase 4 dedup).
+// paths keep resolving while the logic lives in exactly one place .
 pub use trading_core::strategies::kernel::{
     quantize_f32, round_trip_with_costs, CostModel, ExitCode,
 };

@@ -104,7 +104,7 @@ pub struct GroupedSweepRun {
     pub scale_out_top_k: Option<i32>,
     /// Lifecycle: `running` (in flight), `completed` (full sweep), or
     /// `cancelled` (cancelled / crash-recovered → only `groups_done` groups
-    /// present). Phase 4 partial persistence — a `cancelled` run is honest about
+    /// present). With incremental persistence a `cancelled` run is honest about
     /// being partial so the UI never shows it as a complete sweep.
     pub status: String,
     /// Groups persisted so far; equals `group_count` for a `completed` run, fewer

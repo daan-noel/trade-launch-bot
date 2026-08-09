@@ -1,6 +1,5 @@
 //! Phase 3 — one-shot backtest validation for the flow-reversion "dip scalper"
-//! (results + verdict in `docs/plans/strategies/wallet-analysis.md` "Phase 3", moved
-//! there 2026-07-28 from `docs/roadmap/flow-reversion-scalper.md`). Drives the REAL
+//! (results + verdict in `docs/history/wallet-research-2026-07.md`). Drives the REAL
 //! engine fold (`run_replay`) over the sealed Parquet lake for two rules — a 2-metric
 //! MINIMAL CORE and a GATED variant — and prints the acceptance-gate stats vs the
 //! family distributions in `docs/plans/strategies/wallet-analysis.md`.
@@ -82,7 +81,7 @@ fn rule(id: u128, params: serde_json::Value) -> LoadedRule {
         trade_mode: TradeMode::Paper,
         buy_amount_lamports: (BUY_SOL * 1_000_000_000.0) as u64,
         // Effectively uncapped: measure the raw per-token edge (the sweep's B5
-        // semantics), so the caps don't hide episodes. Re-entry lifecycle is Phase 4.
+        // semantics), so the caps don't hide episodes. Re-entry lifecycle is out of scope here.
         max_concurrent_tokens: 1_000_000,
         max_total_tokens: 0,
         params: RuleParams::parse(&params).expect("valid rule params"),

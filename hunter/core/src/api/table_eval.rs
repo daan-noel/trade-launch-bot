@@ -405,7 +405,7 @@ mod tests {
     fn conformance_shared_fixtures() {
         // Golden fixtures pinning this evaluator's op/sort/search/tiebreak/paging
         // semantics. Originally shared with a TS twin (`tableEval.conformance.test.ts`)
-        // that retired when Wallet Holdings moved server-side (Phase 4) — the JSON
+        // that went away when Wallet Holdings moved server-side — the JSON
         // stays a **Rust-only** fixture (do not delete it: this test `include_str!`s
         // it). See the JSON's `_comment` for the grammar (it matches `resolve` above).
         let data: Value = serde_json::from_str(include_str!(

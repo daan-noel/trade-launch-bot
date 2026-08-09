@@ -1,7 +1,7 @@
 # Strategies — the generic fingerprint + metrics engine
 
-The named tpsl1/tpsl2/swing1 strategies were retired in Phase 7. There is now **one
-generic engine**: a rule = a `fingerprint_id` (a token-creation shape) + `params`
+There is exactly **one generic engine** — no named per-strategy stacks. A rule =
+a `fingerprint_id` (a token-creation shape) + `params`
 (strict TP/SL + `entry`/`exit` metric-condition groups). The decision core is a
 **pure fold** in the `hunter-engine` crate; the live and lab bins are thin adapters
 that produce events and consume effects. A decision fix lands in exactly one place.
@@ -38,8 +38,8 @@ fold; live, sweep, and the replay debugger all drive it.
 | `rule_params.rs` | `RuleParams` registry-guided parse → canonical `to_value` + validation (incl. `scale_out: Vec<ExitStage>` — ordered partial-exit ladder; see `docs/plans/strategies/partial-exits.md`). Also `disabled: Option<DisabledConditions>` — **parked** entry/exit conditions AND scale-out stages the author toggled off in the editor: same `SideConditions` / `ExitStage` shapes, parsed and validated identically (so re-enabling one can never produce an unsavable rule), but read by **nothing** — `CompiledRule::compile` sees `entry`/`exit`/`scale_out` only, so the engine, sweep, and simulate are untouched and the hot path pays zero. Absent by default ⇒ stored rules round-trip byte-identically, no migration. A parked condition MAY duplicate a live one on the same (group, window, metric) — that is the feature (park `trail >= 12` while trying `trail >= 20`), and separate bags keep them from overwriting each other. Parked **stages** are the one deliberate asymmetry: `validate_stage` (per stage — can it fire, is its `sell_bps`/TP legal, are its conditions valid) applies to the bag, `validate_scale_out` (remainder last, stage count, bps sum) does not, because those describe a *ladder* and the bag is a shelf of spares — summing them would make parking a stage useless |
 | `grouping.rs` | bucket matching (`same_bucket`) for the SOL fingerprint axes |
 | `deadness.rs` | `is_dead_verdict` + `DEAD_*` consts — the ONE deadness SSOT (core + live + sweep re-export it) |
-| **`Tick` (in `reduce.rs`)** | Sweeps every tracked token — **except** those `Settled`. A token is settled once a sweep has run **at or past** its horizon (`arm::ClockHorizons`: widest trailing window from the last trade, `time` from creation, `stall` from the last trade, `held` from the entry fill; plus the dead flip and any `Cooldown { until }`) **and** `cross_epoch` has not moved since. This exists because a token whose real reserves stayed above `DEAD_MAX_LIQUIDITY_SOL` (or that has no reserve reading at all) can never go dead, so it is never pruned and used to be swept 5x/second forever — the dominant cost of a multi-day simulate. Skipping is decision-neutral and guarded differentially by `engine/tests/settled_ticks.rs`; measured ~180x on the quiet-token shape (`engine/tests/tick_bench.rs`). Full rationale: [../plans/strategies/tick-cost-and-settled-tokens.md](../plans/strategies/tick-cost-and-settled-tokens.md) |
-| `kernel.rs` | `CostModel` / `round_trip_with_costs` / `round_trip_multi_leg` (+ `ExitLeg`) + `RunAgg` → `RunMetrics` (≡ `strategy_run_metrics` cols) + the quantile sketch / robust score — one copy of the PnL+summary math shared by live/paper/sweep. Fixed per-leg cost (tip + CU priority) comes from process-wide [`FeeTuning`](../../core/src/config/fee_tuning.rs) (`JITO_MIN_TIP_SOL` + `CU_PRICE_MICRO_LAMPORTS`), installed at boot by both bins. **`FEE_BPS_PER_LEG = 125`** — measured, not assumed (was 100 until 2026-07-28, making every earlier backtest 0.5 pp/round-trip optimistic). Three `CostModelKind`s: `pumpfun_default` (flat `slippage_bps`, legacy), `pumpfun_fee_only` (size-blind), and **`pumpfun_impact`** — the only one that charges our own `buy_amount_sol / reserve_sol` price impact, so the only one whose cost responds to buy size. Callers pass entry pool depth; `None` ⇒ no impact, never a guess. Scale-out prices through `round_trip_multi_leg` (fixed cost × leg count); the single-exit wrapper stays for legacy / sweep until the staged resolver lands |
+| **`Tick` (in `reduce.rs`)** | Sweeps every tracked token — **except** those `Settled`. A token is settled once a sweep has run **at or past** its horizon (`arm::ClockHorizons`: widest trailing window from the last trade, `time` from creation, `stall` from the last trade, `held` from the entry fill; plus the dead flip and any `Cooldown { until }`) **and** `cross_epoch` has not moved since. This exists because a token whose real reserves stayed above `DEAD_MAX_LIQUIDITY_SOL` (or that has no reserve reading at all) can never go dead, so without this it is never pruned and gets swept 5x/second forever — the dominant cost of a multi-day simulate. Skipping is decision-neutral and guarded differentially by `engine/tests/settled_ticks.rs`; measured ~180x on the quiet-token shape (`engine/tests/tick_bench.rs`). Full rationale: [../plans/strategies/tick-cost-and-settled-tokens.md](../plans/strategies/tick-cost-and-settled-tokens.md) |
+| `kernel.rs` | `CostModel` / `round_trip_with_costs` / `round_trip_multi_leg` (+ `ExitLeg`) + `RunAgg` → `RunMetrics` (≡ `strategy_run_metrics` cols) + the quantile sketch / robust score — one copy of the PnL+summary math shared by live/paper/sweep. Fixed per-leg cost (tip + CU priority) comes from process-wide [`FeeTuning`](../../core/src/config/fee_tuning.rs) (`JITO_MIN_TIP_SOL` + `CU_PRICE_MICRO_LAMPORTS`), installed at boot by both bins. **`FEE_BPS_PER_LEG = 125`** — measured, not assumed. **Runs stored before 2026-07-28 were priced at 100 bps with no impact charge: they understate cost and do not compare to a new run** (the constants are not persisted per run). <!-- pt-ok: cutoff, those runs are still in the DB --> Three `CostModelKind`s: `pumpfun_default` (flat `slippage_bps`, legacy), `pumpfun_fee_only` (size-blind), and **`pumpfun_impact`** — the only one that charges our own `buy_amount_sol / reserve_sol` price impact, so the only one whose cost responds to buy size. Callers pass entry pool depth; `None` ⇒ no impact, never a guess. Scale-out prices through `round_trip_multi_leg` (fixed cost × leg count); the single-exit wrapper stays for legacy / sweep until the staged resolver lands |
 | `event_log.rs` | `LoggedEvent` — the on-disk JSONL format, SSOT for the live recorder (writer) + the lab replay inspector (reader) |
 
 ## Live adapters — `live/src/strategies/engine/`
@@ -74,25 +74,25 @@ sell without the registry and still fold sibling clears.
 **SOL per RAW token unit** (`Trade::new`: `amount_sol / token_amount`, count in raw
 units), the same convention `entry_price`/`exit_price` and the real executor use. A
 synthesized paper/sim fill therefore sizes `token_amount = sol / price` and prices a
-leg `sol = token_amount × price` — **never** through a `10^decimals` factor. The old
-`TOKEN_SCALE = 1e6` scaling in `exec_paper.rs` + `lab/strategies/replay.rs` cancelled
-out of SOL PnL (so PnL and every ratio-based exit stayed correct) but inflated stored
-token counts 1e6×, which made `record_sell_fill`'s post-close
-`exit_price = exit_sol / sold_token_amount` 1e6× too small and pinned the positions
-PnL% cell at −100% on every closed paper row. Corollary for tests: a corpus priced at
+leg `sol = token_amount × price` — **never** through a `10^decimals` factor. Such a
+factor cancels out of SOL PnL (so PnL and every ratio-based exit stay correct) while
+silently inflating the *stored* token count, which then corrupts anything derived from
+that count alone — see
+[`@history/2026-08-04-token-scale-1e6-pnl.md`](../history/2026-08-04-token-scale-1e6-pnl.md).
+Corollary for tests: a corpus priced at
 `1.0` buys a **one-unit** bag, so any `sell_bps` ladder quantizes to 0/1 units — the
 sweep parity guard prices its scale-out corpora at `RAW_PX = 1e-6`.
 
 **No PG write blocks the decision loop (locked).** Every sink transition, terminal
 ones included, chain-spawns its write and keeps the handle in `pending_pg` so the
 *next* write for that same position awaits it first — per-position order is total,
-the loop never waits. Terminal handlers used to be the exception (`await_pending_pg`
-+ `record_sell_fill` + the real-mode held-pool check, three round trips inline): a
-Stop closes every position of a rule at once, so those serialized head-to-head while
-ingest was also writing PG, and while the loop was blocked **nothing** else folded —
-no ticks, no pings, no other fills. What a terminal write no longer guarantees is
-landing before its SSE frame, so a client must trust the frame's payload rather than
-refetching the row on it. `pending_pg` is pruned of finished handles on each
+the loop never waits. **Terminal handlers are not an exception** — an inline
+`await_pending_pg` + `record_sell_fill` + real-mode held-pool check is three round
+trips, and a Stop closes every position of a rule at once, so they serialize
+head-to-head while ingest is also writing PG; while the loop is blocked **nothing**
+else folds — no ticks, no pings, no other fills. The price is that a terminal write
+does not guarantee landing before its SSE frame, so a client must trust the frame's
+payload rather than refetching the row on it. `pending_pg` is pruned of finished handles on each
 finalize (`prune_finished_pg`), else it would grow by one entry per closed position
 for the life of the process.
 
@@ -145,24 +145,21 @@ Segmentation exists because a byte cap can only be enforced by deleting somethin
 and the file open for append can never be deleted. With one file per day, "today's
 file" *was* "the open file", so a day that outgrew the budget by itself left `prune`
 nothing it was allowed to evict — it deleted every other file, reached today's,
-stopped, and the directory grew unbounded (**11 GB against a 6 GiB cap**, 2026-08-09,
-on a box that had already had one disk-full outage). Two fixes, both load-bearing:
+stopped, and the directory grew unbounded (measured **11 GB against a 6 GiB cap**).
+Two properties, both load-bearing:
 `prune` guards the **open path** rather than "is it today", and it runs on **every**
 rotation instead of only at the date change. Recovery is unaffected — the segment
 size is ~17× the 5.5-minute recovery window, so a boot scan stays inside one file,
 and `recover_armed` walks segments in order when it doesn't.
 
-> **Why all of that exists (2026-07-30 outage).** The old `recover_armed` read every
-> `events-*.jsonl` front-to-back into one `Vec<LoggedEvent>` and applied the age
-> cutoff *after* — ~8.2 GB of JSONL on a 4 GB box. The process reached 2.4 GB RES,
-> starved the 2-worker runtime until `DbWriter` could not land a flush for 90 s, and
-> the ingest watchdog force-exited it **mid-recovery**. The decision loop was never
-> reached across **70 consecutive boots**, so nothing ever drained `ping_rx`; the
-> strategy queue stayed full and `ping_strategy`'s `try_send` shed 100% of pings into
-> a counter nothing logged. Externally everything looked healthy — tokens and trades
-> kept landing in PG from the ingest task — while no rule was evaluated for 14 h and
-> not one position was entered. Three independent guards now break that chain: the
-> bounded scan above, a loud shed warning (`consumer.rs`), and the watchdog `BootGate`.
+> **Boot recovery is bounded at both ends.** Recovery reads a *tail*, never a corpus: an
+> unbounded front-to-back scan starves the 2-worker runtime, `DbWriter` stops landing
+> flushes, and the ingest watchdog then force-exits the process **mid-recovery** — which
+> turns a slow boot into an unbreakable crash loop rather than a recovery. Three guards
+> keep that chain broken and none is optional: the bounded scan above, the watchdog
+> `BootGate` (it must not police a booting process), and a **loud** shed warning in
+> `consumer.rs` — a silent `try_send`-and-drop on the ping path makes the whole failure
+> invisible from outside.
 
 **Where the log lives (one contract, three readers).** `EVENT_LOG_DIR` is resolved
 by [`config::env_paths`](../../core/src/config/env_paths.rs), installed after
@@ -287,9 +284,9 @@ decoded yet" — see `metrics::snapshot`); since JSON has no `NaN` literal, it
 round-trips through the log via `metrics::finite_f64` (`#[serde(with = ...)]`),
 which maps `NaN <-> null` on both sides. A bare `f64` derive only handles that
 conversion one way (serialize NaN → `null`, but fail to deserialize `null` back),
-which silently dropped every such `Trade` line from recovery/replay with `WARN
-event log: skipping unparseable line ...: invalid type: null, expected f64`
-(fixed 2026-07-28). Any future non-`Option` `f64` field that can legitimately be
+which silently drops every such `Trade` line from recovery/replay with `WARN
+event log: skipping unparseable line ...: invalid type: null, expected f64`.
+Any future non-`Option` `f64` field that can legitimately be
 non-finite needs the same treatment — never rely on the derive alone.
 
 ## Shared result-table infrastructure
@@ -410,5 +407,5 @@ trade's PnL out of every realized figure.
 Generic rules → `strategy_rules` (`RuleRepo`); fingerprints → `fingerprints`
 (`FingerprintRepo`); runs / run metrics / positions → `strategy_runs` /
 `strategy_run_metrics` / `strategy_positions` (`StrategyRepo`). See
-[@arch/database.md](database.md). (The legacy `strategy_rules_legacy` +
-`{tpsl1,tpsl2,swing_1}_grouped_sweep_*` tables were dropped in Phase 7.2.)
+[@arch/database.md](database.md). There is no `strategy_rules_legacy` table and no
+per-strategy `*_grouped_sweep_*` family.

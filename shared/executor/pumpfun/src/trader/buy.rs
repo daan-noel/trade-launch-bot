@@ -372,7 +372,7 @@ impl PumpFunTrader {
                 // ephemeral wallets) there is no slot to hold.
                 let (tx, nonce_to_refresh) = self.build_trade_tx(ixs, signer, anchor).await?;
                 let sent: Result<String> = async {
-                    // Write-ahead persist (Phase 2): the signature is fixed the
+                    // Write-ahead persist: the signature is fixed the
                     // instant we sign — before any network round-trip — so hand it to
                     // the hook to durably record the "buy in flight" marker BEFORE the
                     // submit below. A crash anywhere after this point is recoverable; a

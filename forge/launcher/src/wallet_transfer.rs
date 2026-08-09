@@ -1,4 +1,4 @@
-//! Operator wallet-to-wallet SOL transfer (docs/wallet-transfer-plan.md): move SOL
+//! Operator wallet-to-wallet SOL transfer (docs/plans/wallet/wallet-management.md): move SOL
 //! between two managed wallets from the dashboard — no Phantom, no raw private
 //! keys. Primary driver: a managed wallet at 0 SOL can't pay the fee for its own
 //! buy/sell; top it up in two clicks.

@@ -1,7 +1,7 @@
 //! `Fingerprint` — a token-creation shape shared by many strategy rules. Backs
 //! the `fingerprints` table (0004 redesign schema).
 //!
-//! Matching semantics (implemented in `strategies::fingerprint`, Phase 2):
+//! Matching semantics (implemented in `strategies::fingerprint`):
 //! * **Exact** fields: `cu_limit`, `cu_price`, `ix_labels` (exact ordered
 //!   sequence).
 //! * **Bucket-matched** fields (via this row's own `bucket_size_amount`, SSOT

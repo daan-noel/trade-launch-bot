@@ -1,4 +1,4 @@
-//! Simple-threshold sell ladders (token-management-plan.md Phase 4) — the
+//! Simple-threshold sell ladders (docs/arch/launcher.md) — the
 //! subsystem's first automation.
 //!
 //! A ladder is a set of rungs `{ metric, threshold, pct }`. A background evaluator

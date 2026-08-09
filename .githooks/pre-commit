@@ -1,0 +1,4 @@
+#!/bin/sh
+# Repo-tracked hooks. Enable once per clone:
+#     git config core.hooksPath .githooks
+exec "$(git rev-parse --show-toplevel)/scripts/check-docs.sh"

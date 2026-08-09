@@ -1,4 +1,4 @@
-//! Volume-making bots (token-management-plan.md Phase 5) — the subsystem's second
+//! Volume-making bots (docs/arch/launcher.md) — the subsystem's second
 //! automation, and its first autonomous *buy* loop.
 //!
 //! A bot cycles a jittered buy (+ an optional sell-back) across a rotating wallet

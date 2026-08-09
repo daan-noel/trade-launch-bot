@@ -180,8 +180,7 @@ Notes:
   Pump.Fun.
 - The blueprint's rolling-window dip metric and since-entry-peak retrace have since
   shipped as `m_price_window`/`m_position`. See
-  `docs/plans/strategies/wallet-analysis.md` (moved 2026-07-28 from
-  `docs/roadmap/flow-reversion-scalper.md`).
+  `docs/plans/strategies/wallet-analysis.md`.
 
 ## Fingerprint grouping set (the partition, not the sweep)
 

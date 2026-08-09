@@ -1,12 +1,12 @@
 //! Venue-agnostic ingest engine — the shared read-side core.
 //!
-//! Phase G (leaf move): this crate owns the venue-neutral pieces the pump.fun
+//! This crate owns the venue-neutral pieces the pump.fun
 //! decoder + transport in `ingest-pumpfun` build on — the Yellowstone gRPC wire
 //! types ([`proto`]), the host-facing [`event::IngestEvent`] contract, tunables
 //! ([`config`]), slot→time estimation ([`slot_anchor`]), and the RPC-backfill /
 //! raw-tx adapters. **No pump.fun coupling.**
 //!
-//! Phase H added the `IngestVenue` trait seam ([`venue`]), moved the gRPC
+//! The `IngestVenue` trait seam ([`venue`]), moved the gRPC
 //! transport + reconnect loop here ([`transport`], generic over `V`), and the
 //! [`Ingest<V>`] / [`IngestHandle<V>`] session ([`session`]). A venue crate
 //! (`ingest-pumpfun`) supplies the classify/decode/pool-derivation impl; this

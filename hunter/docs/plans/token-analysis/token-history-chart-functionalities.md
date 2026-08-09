@@ -2,22 +2,20 @@
 
 > A feature-by-feature map of the token price/history chart: **what each control,
 > overlay, marker, and interaction does**, how it's triggered, and where it lives in
-> code. This is the *functionality* companion to
-> [`swing-detection-logic.md`](./swing-detection-logic.md) (the swing algorithm); the
-> OHLC/price math lives in the backend price-logic code.
+> code. The OHLC/bar math itself is client-side in `chartBars.ts`; the canonical price
+> definition it renders is [`@plans/database/trades-storage.md`](../database/trades-storage.md).
 > Reuse this file as a prompt to extend or re-implement the chart UI.
 >
-> **Key files** (all under `frontend-react/src/components/token-price-chart/`)
+> **Key files** (all under `hunter/frontend/src/shared/components/token-price-chart/`)
 >
-> - Main component: [`TokenPriceChart.tsx`](../../frontend-react/src/components/token-price-chart/TokenPriceChart.tsx)
-> - Toolbar: [`ChartToolbar.tsx`](../../frontend-react/src/components/token-price-chart/ChartToolbar.tsx)
-> - Bottom zoom/pan slider: [`ChartRangeSlider.tsx`](../../frontend-react/src/components/token-price-chart/ChartRangeSlider.tsx)
-> - Canvas plugins: [`rangeSelectPlugin.ts`](../../frontend-react/src/components/token-price-chart/rangeSelectPlugin.ts), [`walletMarkersPlugin.ts`](../../frontend-react/src/components/token-price-chart/walletMarkersPlugin.ts), [`chainHighlightPlugin.ts`](../../frontend-react/src/components/token-price-chart/chainHighlightPlugin.ts)
-> - Swing overlay geometry: [`swingOverlay.ts`](../../frontend-react/src/components/token-price-chart/swingOverlay.ts)
-> - Tooltips: `BarCrosshairTooltip.tsx`, `SwingCrosshairTooltip.tsx`, `ChainHighlightTooltip.tsx`, `WalletMarkersTooltip.tsx`, `RangeSelectTooltip.tsx`, field renderers `BarCrosshairFields.tsx` / `BarFlowFields.tsx`
-> - Viewport & time helpers: [`chartViewport.ts`](../../frontend-react/src/components/token-price-chart/chartViewport.ts), [`chartTimezone.ts`](../../frontend-react/src/components/token-price-chart/chartTimezone.ts)
-> - Bar math: [`chartBars.ts`](../../frontend-react/src/components/token-price-chart/chartBars.ts) — see `chart-price-logic.md`
-> - Shared types / constants: [`types.ts`](../../frontend-react/src/components/token-price-chart/types.ts), [`constants.ts`](../../frontend-react/src/components/token-price-chart/constants.ts)
+> - Main component: [`TokenPriceChart.tsx`](../../frontend/src/shared/components/token-price-chart/TokenPriceChart.tsx)
+> - Toolbar: [`ChartToolbar.tsx`](../../frontend/src/shared/components/token-price-chart/ChartToolbar.tsx)
+> - Bottom zoom/pan slider: [`ChartRangeSlider.tsx`](../../frontend/src/shared/components/token-price-chart/ChartRangeSlider.tsx)
+> - Canvas plugins: [`rangeSelectPlugin.ts`](../../frontend/src/shared/components/token-price-chart/rangeSelectPlugin.ts), [`walletMarkersPlugin.ts`](../../frontend/src/shared/components/token-price-chart/walletMarkersPlugin.ts)
+> - Tooltips: `BarCrosshairTooltip.tsx`, `WalletMarkersTooltip.tsx`, `RangeSelectTooltip.tsx`, field renderers `BarCrosshairFields.tsx` / `BarFlowFields.tsx`
+> - Viewport & time helpers: [`chartViewport.ts`](../../frontend/src/shared/components/token-price-chart/chartViewport.ts), [`chartTimezone.ts`](../../frontend/src/shared/components/token-price-chart/chartTimezone.ts)
+> - Bar math: [`chartBars.ts`](../../frontend/src/shared/components/token-price-chart/chartBars.ts)
+> - Shared types / constants: [`types.ts`](../../frontend/src/shared/components/token-price-chart/types.ts), [`constants.ts`](../../frontend/src/shared/components/token-price-chart/constants.ts)
 
 ---
 
@@ -31,13 +29,12 @@ independently-toggleable features:
 
 - **Trade-count markers** (per-bar buy/sell arrows)
 - **Wallet markers** (per-tracked-wallet circles)
-- **Swing overlay** (the swing-detection path) + **chain highlight** band
 - **ATH / Migration** reference price lines
 - **Range-select** mode (drag to summarize a time window)
 - A bottom **range slider** for zoom/pan
 
 Most boolean toggles are **persisted to `localStorage`** so the user's chart layout sticks
-across reloads; a few (swing/chain/range modes, selections) are session-only UI state.
+across reloads; a few (range mode, selections) are session-only UI state.
 
 ---
 
@@ -58,7 +55,7 @@ The chart aggregates trades two ways, chosen by the **`groupMode`** toggle (`'ti
   slot mode (see §10).
 - OHLC construction itself (continuous bars, canonical `slot → tx_index → leg_index`
   trade ordering — `tx_index` is the authoritative intra-slot key, no reserve-chain
-  reconstruction — dust filtering) is documented in `chart-price-logic.md` §3–§6.
+  reconstruction — dust filtering) lives in `chartBars.ts`.
 
 ---
 
@@ -68,8 +65,8 @@ The chart aggregates trades two ways, chosen by the **`groupMode`** toggle (`'ti
 
 Toggled by the candle/line icon group in the toolbar (`handleStyleChange`, persisted).
 
-- **Candles** (default): `CandlestickSeries` with `CANDLE_SERIES_OPTIONS`. Selected /
-  swing-selected bars are repainted (filled highlight) via `barsToCandleData(bars, highlightBarTimes)`.
+- **Candles** (default): `CandlestickSeries` with `CANDLE_SERIES_OPTIONS`. Selected bars
+  are repainted (filled highlight) via `barsToCandleData(bars, highlightBarTimes)`.
 - **Line**: `LineSeries` (`LINE_SERIES_OPTIONS`) drawing the close price as a continuous teal line.
 
 ### 3b. Metric (`metric`: `'price'` | `'mc'`)
@@ -80,7 +77,7 @@ Only rendered when the parent passes an `onMetricChange` callback.
 - **MC** — market cap = `TOKEN_TOTAL_SUPPLY × spot`.
 
 The metric is a **parent-controlled** prop (the chart calls `onMetricChange`), and it rescales
-the Y-axis, the swing-overlay prices, and every price formatter.
+the Y-axis and every price formatter.
 
 ### 3c. Price unit & formatting
 
@@ -94,7 +91,7 @@ the Y-axis, the swing-overlay prices, and every price formatter.
 
 The toolbar has two rows. **Row 1**: title + status badges + live crosshair readout, then the
 pill groups (group mode, interval, style, metric) and the marker/line toggles. **Row 2**
-(right-aligned): the swing/chain/range controls.
+(right-aligned): the range controls.
 
 | Control | Type | Effect | Persisted? |
 | --------- | ------ | -------- | :---------: |
@@ -106,9 +103,6 @@ pill groups (group mode, interval, style, metric) and the marker/line toggles. *
 | **Trim gaps** | icon toggle | drop flat/empty bars (`dropEmptyBars`) | ✓ |
 | **ATH** | checkbox | ATH reference price line (§7); disabled if no ATH data | ✓ |
 | **Migration** | checkbox | bonding-curve graduation price line (§7) | ✓ |
-| **Swings** | checkbox | swing-detection overlay (§8); disabled unless `swingOverlayAvailable` | session |
-| **Connect** | icon button | connected vs. per-leg swing segments (§8); needs Swings on | parent/session |
-| **Chain link** | icon toggle | longest-chain highlight band (§9); disabled unless `chainHighlightAvailable` | session |
 | **Range select** | icon toggle | drag-to-select range mode (§6) | session |
 
 ### 4a. Opening state (`DEFAULT_CHART_PREFS`)
@@ -140,7 +134,7 @@ plus optional `Mayhem` and `Cashback` badges, colored per `STATUS_BADGE_COLOR`.
 
 **Live crosshair readout**: an `aria-live="polite"` line under the title showing the hovered
 bar's O/H/L/C (candles) or price (line) + Vol/Liq, rendered by `BarCrosshairFields` in
-`layout="inline"`. It mirrors the floating bar tooltip (§11) so the values are always visible
+`layout="inline"`. It mirrors the floating bar tooltip (§9) so the values are always visible
 even when the pointer is deep in the chart.
 
 Icon-only controls each have an instant dark `HoverTooltip` because their label lives only in
@@ -201,59 +195,7 @@ Both are drawn with `series.createPriceLine()` and respect the active metric/uni
 
 ---
 
-## 8. Swing overlay
-
-When **Swings** is on (`showSwingOverlay`, available only when the parent supplies a
-`swingOverlay` prop), the detected swing legs are drawn as colored line series on top of the
-price chart. Geometry comes from `swingOverlay.ts`; the algorithm that produces the legs is
-`swing-detection-logic.md`.
-
-### 8a. Segment modes (`segmentMode`)
-
-Driven by the **Connect** button (`connectSwings`) and whether a visibility filter is active:
-
-- **`connected`** — one continuous reversal path (first leg's start, then each leg's end),
-  colored per leg. Default when "connect swings" is on.
-- **`perLeg`** — each leg as an isolated start→end segment. Used when connect is off.
-- **`connectedSequential`** — connected **only within runs of legs that are adjacent in the
-  full ledger** (`groupSequentialLegChains`), so a visibility-filtered gap is not bridged with
-  a false line.
-
-### 8b. Colors & series
-
-Swing-high = cyan (`#0eb5ff`), swing-low = magenta (`#e879f9`), 3 px lines with no crosshair
-markers / price line. Each leg's stable key is
-`swingLegKey(leg) = \`${type}-${start_at}-${end_at}\``.
-
-### 8c. Selecting a leg
-
-Clicking the swing path resolves the leg under the pointer
-(`resolveSwingLegAtChartInteraction`) and toggles selection via `onSwingLegClick` /
-`selectedSwingLegKey`. The selected leg's bars are highlighted on the main series.
-
-### 8d. Leg tooltip
-
-Hovering the swing path shows `SwingCrosshairTooltip`: a colored badge (`SWING HIGH` / `SWING
-LOW`) + duration, start/end time & price, Δ%, inflow/outflow/net flow, and trade count.
-
----
-
-## 9. Chain highlight (longest swing chain)
-
-When **Chain link** is on (`showChainHighlight`, available only when the parent passes a
-`highlightChain`), `ChainHighlightPlugin` (`chainHighlightPlugin.ts`) paints a full-height
-**amber translucent band** across the longest swing chain's span, with solid amber edges and a
-top-centered chip label (e.g. `Longest chain · N pairs`). A swing "chain" is defined in
-`swing-detection-logic.md` §9b.
-
-Hovering the chip (hit-tested via `containsLabelPoint`) opens `ChainHighlightTooltip`: pair
-count, in/out/net flow, price Δ + %, and trade counts. The in-band trade counts are computed by
-`computeChainTradeCounts` (trades whose `block_time` falls within the chain's `[startAt,
-endAt]`).
-
----
-
-## 10. Wallet markers (tracked profile wallets)
+## 8. Wallet markers (tracked profile wallets)
 
 When the parent passes `profileWallets` (array of `ProfileWalletInfo`), each tracked wallet's
 trades are marked with a colored **circle** drawn by `WalletMarkersPlugin`
@@ -271,17 +213,15 @@ trades are marked with a colored **circle** drawn by `WalletMarkersPlugin`
 
 ---
 
-## 11. Crosshair tooltips & priority
+## 9. Crosshair tooltips & priority
 
 Hovering the chart can surface one of several floating tooltips. On every crosshair-move the
 component decides **which single tooltip to show** (others are cleared), roughly in this
 priority:
 
-1. **Chain label** hovered → `ChainHighlightTooltip` (§9)
-2. **Range label** hovered → `RangeSelectTooltip` (§6)
-3. **Wallet marker** hovered → `WalletMarkersTooltip` (§10)
-4. **Swing path** hovered → `SwingCrosshairTooltip` (§8d)
-5. Otherwise, over the main series → **bar tooltip** `BarCrosshairTooltip`
+1. **Range label** hovered → `RangeSelectTooltip` (§6)
+2. **Wallet marker** hovered → `WalletMarkersTooltip` (§8)
+3. Otherwise, over the main series → **bar tooltip** `BarCrosshairTooltip`
 
 The **bar tooltip** and the toolbar readout carry **disjoint** facts — never the same ones
 twice, since both are on screen simultaneously:
@@ -304,9 +244,9 @@ Bar age is single-sourced in `chartBars.ts`: `tokenCreatedAtSec` + `buildBarEarl
 
 ---
 
-## 12. Zoom, pan & the bottom range slider
+## 10. Zoom, pan & the bottom range slider
 
-### 12a. Viewport preservation (`chartViewport.ts`)
+### 10a. Viewport preservation (`chartViewport.ts`)
 
 Because bars are rebuilt whenever interval/group/metric/trades change, the chart must not
 "jump" back to fit-content on every update. The helpers:
@@ -328,7 +268,7 @@ Because bars are rebuilt whenever interval/group/metric/trades change, the chart
   a `requestAnimationFrame` because lightweight-charts re-lays-out on the next frame).
 - On first mount the chart `fitContent()`s once, then preserves the user's view.
 
-### 12b. Vertical (price) scale — manual Y zoom is sticky (`dualPriceScaleSync.ts`)
+### 10b. Vertical (price) scale — manual Y zoom is sticky (`dualPriceScaleSync.ts`)
 
 The chart runs **two price scales**: right = token price/MC, left = the vol/non-vol flow
 overlay. `attachDualPriceScaleSync` keeps their Y zoom in lockstep — a drag on one axis
@@ -337,7 +277,7 @@ that scale's `autoScale` off.
 
 Re-arming `autoScale` is therefore a normal part of the dance, but it must **never** be
 driven by a data update. `subscribeVisibleLogicalRangeChange` fires for programmatic range
-changes too — a live trade means `setData` **plus** the §12a viewport restore, i.e. two
+changes too — a live trade means `setData` **plus** the §10a viewport restore, i.e. two
 range changes — so an unconditional re-arm there wiped a hand-set price zoom on the next
 trade. The same held for the flow-overlay effect, whose `alignedFlowLines`/`toValue` deps
 churn on every trade and every SOL/USD tick.
@@ -377,7 +317,7 @@ Consumers key their `reset()` on a string of the non-data inputs
 (`flowLinesVisible|flowBasis|priceUnit|style|groupingKey`) held in a ref, so a data update
 can never reach it.
 
-### 12c. Bottom range slider (`ChartRangeSlider.tsx`)
+### 10c. Bottom range slider (`ChartRangeSlider.tsx`)
 
 Shown when there is more than one bar. It's a miniature scrollbar over the full data span with
 a teal "window" marking the visible range. Three drag modes:
@@ -391,7 +331,7 @@ chart's visible range so dragging on the chart updates the slider.
 
 ---
 
-## 13. Timezone & time formatting (`chartTimezone.ts`)
+## 11. Timezone & time formatting (`chartTimezone.ts`)
 
 Time-mode axis labels and tooltips are timezone-aware via a `useTimezone()` context.
 `createChartTimeFormatters(timezone)` builds:
@@ -404,39 +344,38 @@ as plain `Slot N` strings instead.
 
 ---
 
-## 14. Props & state quick reference
+## 12. Props & state quick reference
 
 **Notable props** (`TokenPriceChartProps` in `types.ts`): `trades`, `loading`/`error`,
 `toValue`/`priceUnit`/`priceLabel`, `metric` + `onMetricChange`, `height`, `onBarClick` /
-`selectedBar`, `onRangeChange`, `swingOverlay` / `highlightChain` / `selectedSwingLegKey` /
-`onSwingLegClick` / `connectSwings` / `onConnectSwingsChange`, `athPriceInSol`,
+`selectedBar`, `onRangeChange`, `athPriceInSol`,
 `isMigrated` / `isMayhemMode` / `isCashbackEnabled`, `profileWallets`, `tokenCreatedAt`,
 `eventMarkers`.
 
 **Persisted (localStorage) state**: `groupMode`, `interval`, `style`, `showTradeMarkers`,
-`showAthLine`, `showMigrationLine`, `trimEmptyBars`.
+`showAthLine`, `showMigrationLine`, `trimEmptyBars`, `showWalletMarkers`,
+`showDevMarkers`, `devMarkersBoundariesOnly`, `showEventMarkers`, `showFlowLines`.
 
-**Session-only UI state**: `showSwingOverlay`, `showChainHighlight`, `connectSwings`,
-`rangeSelectMode`, `selectedRange`, `selectedBar`, and the hover/tooltip states
-(`crosshair`, `barTooltip`, `swingTooltip`, `chainTooltip`, `rangeTooltip`,
+**Session-only UI state**: `rangeSelectMode`, `selectedRange`, `selectedBar`, and the
+hover/tooltip states (`crosshair`, `barTooltip`, `rangeTooltip`,
 `walletMarkersTooltip`), plus `sliderWindow`.
 
 ---
 
-## 15. Extending the chart (checklist)
+## 13. Extending the chart (checklist)
 
 1. **New per-bar marker** → build a `SeriesMarker[]` like `buildTradeMarkers`, or a canvas
    `ISeriesPrimitive` plugin (as `walletMarkersPlugin.ts`) when you need custom geometry/hit-testing.
 2. **New overlay line** → create a `LineSeries`, feed it `{ time, value, color? }` points, and
-   key it so the recreate-effect can diff it (mirror `swingOverlay.ts`).
-3. **New full-height band** → follow `chainHighlightPlugin.ts` / `rangeSelectPlugin.ts`
+   key it so the recreate-effect can diff it.
+3. **New full-height band** → follow `rangeSelectPlugin.ts`
    (`ISeriesPrimitive` paint + a hit-testable label chip + a React tooltip).
 4. **New toggle** → add a control in `ChartToolbar.tsx`, thread the prop/handler, and decide
    persisted (localStorage) vs. session state. Keep `aria-pressed`/tooltips for icon-only buttons.
 5. **Respect the viewport — both axes.** Horizontally: never `fitContent()` on data
    refresh; capture/restore via `chartViewport.ts`. Vertically: never call
    `rearmDualAutoScale` from an effect whose deps include trade/bar data — go through the
-   sync handle's `rearm()` (see §12b), and reserve `reset()` for changes to what an axis
+   sync handle's `rearm()` (see §10b), and reserve `reset()` for changes to what an axis
    means.
 6. **Honor metric/unit** — route every displayed price through the metric converter and
    `createChartPriceFormatter(priceUnit)`.

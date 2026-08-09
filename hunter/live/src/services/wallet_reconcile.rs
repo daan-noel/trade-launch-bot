@@ -1,4 +1,4 @@
-//! Boot wallet-balance sweep — buy-in-flight recovery, **Phase 3** (backstop).
+//! Boot wallet-balance sweep — buy-in-flight recovery (backstop).
 //!
 //! The durable `BuySubmitted` marker (Phases 1–2) makes the *bot's own* buy path
 //! crash-safe: every signed buy is recorded before it can land, so a restart can

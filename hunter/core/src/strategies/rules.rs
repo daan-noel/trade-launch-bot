@@ -2,7 +2,7 @@
 //!
 //! [`RuleDraft`] → [`StrategyRule`] (`strategy_rules`): a fingerprint reference
 //! plus [`RuleParams`] metric conditions — the one generic-engine rule shape (the
-//! legacy per-strategy tpsl1/tpsl2/swing1 CRUD was retired in Phase 7).
+//! there is no per-strategy CRUD.)
 //!
 //! Touches only validation + the repo; never a runtime cache, SSE, or RPC. The
 //! calling edge appends its side effects (`rules_changed` + an engine reload on

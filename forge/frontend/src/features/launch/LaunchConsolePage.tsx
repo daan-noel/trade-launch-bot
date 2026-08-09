@@ -117,7 +117,7 @@ export function LaunchConsolePage() {
   const devShort = devShortfall > 0;
 
   // Status: the confirm watcher PUSHES each terminal launch/bundle transition over
-  // SSE (audit Phase A), so the primary trigger is the `launch_status` stream below
+  // SSE, so the primary trigger is the `launch_status` stream below
   // — it refetches the instant the backend settles. The poll is demoted to a slow
   // 30s gap-heal that only covers a missed/disconnected push, then stops once the
   // bundle is terminal. The launch id is mirrored into the URL (?launch=<id>) on

@@ -1,5 +1,5 @@
-//! Guard: `ManagedWalletRepo` funding-claim atomicity (docs/wallet-funding-plan.md
-//! P1). A treasury→wallet send costs real SOL, so `claim_for_funding` MUST hand a
+//! Guard: `ManagedWalletRepo` funding-claim atomicity (docs/plans/wallet/wallet-management.md)
+//! . A treasury→wallet send costs real SOL, so `claim_for_funding` MUST hand a
 //! given `generated` wallet to exactly one concurrent funder, and `revert_funding`
 //! MUST only touch wallets currently `funding` (never clobber a wallet that raced
 //! ahead to `funded`).

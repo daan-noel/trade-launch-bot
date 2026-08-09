@@ -1,4 +1,4 @@
-//! Wallet funding orchestration (docs/wallet-funding-plan.md): the inverse of
+//! Wallet funding orchestration (docs/plans/wallet/wallet-management.md): the inverse of
 //! `dust_sweep.rs`. Sends SOL treasury -> pool so `generated` wallets become
 //! `funded` and claimable for launches. The pool could already generate wallets
 //! and reclaim dust — this closes the loop by *sending* SOL in.
@@ -188,7 +188,7 @@ async fn build_treasury_pool(
             }
         };
         // Reuse the balance a recent "Refresh balances" wrote when it's still
-        // fresh (audit Phase C2); else read on-chain.
+        // fresh; else read on-chain.
         let balance = match crate::wallet_pool::fresh_cached_balance(&w) {
             Some(b) => b,
             None => rpc
@@ -522,7 +522,7 @@ pub async fn fund_once(
     }
 
     // Push a coarse "pool changed" signal if this pass actually touched wallets, so
-    // the Wallet Pool page refetches instead of polling (audit Phase A2).
+    // the Wallet Pool page refetches instead of polling.
     notify_pool_changed(sink, &report);
     Ok(report)
 }
@@ -603,7 +603,7 @@ fn bad_address_outcome(w: &ManagedWallet) -> WalletFundOutcome {
 /// Submit a funding transfer over a **caller-supplied** blockhash, fire-and-forget.
 /// No retry and no per-send confirmation — the caller reverts the claim on a submit
 /// error, the batched [`promote_funded`] read-back confirms landing, and the operator
-/// re-clicks "Fund pool" to re-attempt a miss. Phase 2.F: the treasury->pool move is
+/// re-clicks "Fund pool" to re-attempt a miss. the treasury->pool move is
 /// a typed `TransferSol` executed through the SSOT
 /// [`crate::plan_exec::execute_transfer_with_blockhash`] (exact lamports, treasury pays the fee).
 async fn send_transfer(

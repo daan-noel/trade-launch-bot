@@ -1,9 +1,9 @@
 # Architecture — workspace skeleton
 
 File-level map of the backend workspace. Read this instead of re-exploring source.
-The old single `backend` crate was split over a shared core and then renamed to the
-`live`/`lab` topology: a shared core lib, the trader lib, two ingest-transport libs, and
-two binaries (`live` = live trading, `lab` = analysis). Deep-dive detail: `@plans/`.
+The topology is `live`/`lab`: a shared core lib, the trader lib, two ingest-transport
+libs, and two binaries (`live` = live trading, `lab` = analysis). Deep-dive detail:
+`@plans/`.
 
 ## Crate map
 
@@ -167,7 +167,7 @@ is built into its own SPA (`@live`/`@lab`) with a static nav. See [@arch/fronten
 | `handlers/trading/portfolio.rs` | `/api/portfolio/{holdings,summary,positions}` — thin reads over `services::portfolio` (holdings + cost basis + PnL + bot tag; wallet KPI summary; cross-strategy open-positions roll-up). Holdings summary also surfaces native SOL (`sol_balance_sol`/`sol_balance_usd`) from the push-fed trader balance cache (no RPC). USDC is `asset_kind: cash` (face-valued, excluded from PnL / paged positions table; rides `cash_holdings` on the summary). Holdings/Home/Live-Trading surfaces |
 | `handlers/trading/cashback.rs` | `get_cashback_status`, `claim_cashback` |
 | `handlers/strategies/positions.rs` | position reads over `StrategyRepo` — by rule / mint / wallet / id; per-row "Sell ALL" / "Sell N%" (`?sell_bps=`) routes the close through `EngineHandle::manual_close`. The `{strategy}` path segment is retained for URL back-compat but ignored (all positions are `'generic'`). The **by-rule** page + summary are thin adapters over the shared core module (below); the rest is deploy-only |
-| `handlers/strategies/engine.rs` | generic rule + fingerprint CRUD + lifecycle (`/strategy-rules/*`, `/fingerprints/*`, activate/pause/stop, pause-all/stop-all) + `/meta/strategy-registry` + `/strategies/armed`, over `RuleRepo`/`FingerprintRepo` + the `EngineHandle`. (The legacy per-`{strategy}` `rules.rs` handler was deleted in Phase 7) |
+| `handlers/strategies/engine.rs` | generic rule + fingerprint CRUD + lifecycle (`/strategy-rules/*`, `/fingerprints/*`, activate/pause/stop, pause-all/stop-all) + `/meta/strategy-registry` + `/strategies/armed`, over `RuleRepo`/`FingerprintRepo` + the `EngineHandle` |
 
 ### Local routes (`lab`, take `LocalState`)
 

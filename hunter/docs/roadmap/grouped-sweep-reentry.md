@@ -1,17 +1,12 @@
-# Grouped sweep — re-entry (successor to grouped-sweep-phase6.md)
+# Grouped sweep — re-entry
 
-Phase 6 items A (fill/cost fidelity) and B (TP/SL migration + bind-time req
-classification) landed and are now documented permanently in
-[../arch/sweep.md](../arch/sweep.md) (*Exit-scan path* + *Pricing* rows, the
-*Metric scope* section, and the *entry is exit-dependent* section). This file
-carries forward only what's still open: Phase 6 item C (re-entry) plus two loose
-acceptance checks A/B never ran. `grouped-sweep-phase6.md` is deleted — its design
-rationale for A/B is superseded by the shipped code + arch doc; nothing here repeats
-it.
+Open work: **re-entry** in the grouped sweep, plus two acceptance checks that were
+never run (below). Fill/cost fidelity and the TP/SL + bind-time req classification are
+shipped and documented in [../arch/sweep.md](../arch/sweep.md) (*Exit-scan path* +
+*Pricing* rows, *Metric scope*, and the *entry is exit-dependent* section).
 
 Read [../plans/strategies/wallet-analysis.md](../plans/strategies/wallet-analysis.md)
-for the WHY and target numbers (moved there 2026-07-28 from
-`flow-reversion-scalper.md`), and [../arch/sweep.md](../arch/sweep.md) for the current
+for the WHY and target numbers, and [../arch/sweep.md](../arch/sweep.md) for the current
 sweep architecture this work extends.
 
 ## Anatomy (so you don't re-explore)

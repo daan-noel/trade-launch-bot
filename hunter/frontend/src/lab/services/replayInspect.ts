@@ -1,4 +1,4 @@
-// Wire types for the event-log replay inspector (redesign FE6 / backend Phase 6):
+// Wire types for the event-log replay inspector :
 // `POST /api/replay/inspect` re-runs the pure engine `reduce` over a recorded live
 // event log and dumps every `event → effects` decision. Lab-only (needs the log).
 // Shapes mirror `hunter/lab/src/strategies/replay_inspect.rs`.

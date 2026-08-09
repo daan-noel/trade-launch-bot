@@ -205,7 +205,7 @@ struct IngestStatusResponse {
     /// `false` when the box booted without Helius creds — no handle exists to toggle.
     configured: bool,
     live: bool,
-    /// Pipeline health (audit Phase B) — absent when ingest isn't configured, or
+    /// Pipeline health — absent when ingest isn't configured, or
     /// omitted from a toggle response (only the status GET carries it).
     #[serde(skip_serializing_if = "Option::is_none")]
     health: Option<IngestHealth>,
@@ -454,7 +454,7 @@ struct FundWalletsBody {
     count: Option<i64>,
 }
 
-/// On-demand treasury -> pool funding pass (docs/wallet-funding-plan.md P4).
+/// On-demand treasury -> pool funding pass (docs/plans/wallet/wallet-management.md).
 /// Requires `FUND_ENABLED=true` (503 otherwise). Best-effort: returns the
 /// per-wallet outcome for every wallet the pass touched.
 async fn wallet_pool_fund(
@@ -500,7 +500,7 @@ struct TransferBody {
     max: Option<bool>,
 }
 
-/// Operator wallet-to-wallet SOL move (docs/wallet-transfer-plan.md). The source
+/// Operator wallet-to-wallet SOL move (docs/plans/wallet/wallet-management.md). The source
 /// signs + pays the fee. Bearer-gated like every mutating route. 503 if the
 /// launcher isn't configured. Returns the `TransferReport` (signature + lamports).
 async fn wallet_pool_transfer(
@@ -1142,7 +1142,7 @@ async fn positions_refresh(
     Ok(HttpResponse::Ok().json(rows))
 }
 
-/// Dry-run a management action (post-launch management, Phase 2): freshen positions
+/// Dry-run a management action (post-launch management): freshen positions
 /// from the **feed** (zero RPC — so tweaking the sell % and re-previewing never hits
 /// the chain), then compute the per-wallet `ActionPlan` WITHOUT placing any trade.
 /// The preview is an estimate; `manage/execute` re-reconciles against chain (fatal

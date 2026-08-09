@@ -114,7 +114,7 @@ pub struct SweepStats {
     pub fired: u64,
 }
 
-/// Largest combo batch whose fold peak stays within the memory budget (Phase 2.5).
+/// Largest combo batch whose fold peak stays within the memory budget .
 ///
 /// With the series-once wave driver, peak for one pass ≈
 ///   `batch × sizeof(ComboAgg)` (folder)
@@ -989,7 +989,7 @@ mod tests {
 
     /// Folding the same corpus in combo batches of 1 must produce byte-identical
     /// per-combo metrics to a single-batch run (combo ids stay global, the fold is
-    /// order-independent), and the same `rows`/`fired` totals — proving Phase 2.5
+    /// order-independent), and the same `rows`/`fired` totals — proving batched folding
     /// chunking is a pure memory/CPU trade with no effect on results.
     #[test]
     fn batched_fold_matches_single_batch() {

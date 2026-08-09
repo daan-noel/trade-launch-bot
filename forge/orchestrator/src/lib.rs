@@ -10,14 +10,15 @@
 //! **forge-only** and LIVE-only — `hunter/live` calls the executor stack directly
 //! (lean snipe, no plan/disguise), and neither lab links it.
 //!
-//! Phase map (executor-redesign-plan.md):
-//!   - **C:** `Operation`/`Plan` + providers.
-//!   - **D (here):** `macros` (fund / bundle_launch / volume_make / exit /
-//!     consolidate) + `personas`/`disguise` (forge-only sticky-persona sampling).
-//!   - **E (here):** `audit` (fingerprint auditor) — a mandatory zero-SOL gate
-//!     that flags/rejects the on-chain linkage + bot tells before execution.
-//!   - **F:** wire the launcher/manage flows onto `Plan` and build real txs
-//!     through an initialized `PumpFunTrader`.
+//! Module map:
+//!   - `plan` / `provider` — `Operation`/`Plan` + the venue variant catalog gate.
+//!   - `macros` — the plan builders (fund / bundle_launch / volume_make / exit /
+//!     consolidate); `personas`/`disguise` — forge-only sticky-persona sampling.
+//!   - `audit` — the fingerprint auditor: a mandatory zero-SOL gate that
+//!     flags/rejects on-chain linkage + bot tells before execution.
+//!
+//! The launcher/manage flows build real txs by running a gated `Plan` through an
+//! initialized `PumpFunTrader` (`launcher::plan_exec`).
 
 pub mod audit;
 pub mod disguise;

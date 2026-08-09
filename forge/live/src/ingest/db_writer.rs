@@ -68,7 +68,7 @@ pub struct DbWriter {
     /// Push bus: freshly-committed trades/tokens are broadcast to connected
     /// browsers over `/api/stream` (audit §1). No-op when no browser is connected.
     sse: SseHub,
-    /// Durable-rows-committed counter surfaced on `GET /api/ingest` (audit Phase B).
+    /// Durable-rows-committed counter surfaced on `GET /api/ingest`.
     /// Bumped once per flush by the rows actually committed.
     events: Arc<AtomicU64>,
 }

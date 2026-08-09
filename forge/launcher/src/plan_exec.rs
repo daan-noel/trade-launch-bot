@@ -1,4 +1,4 @@
-//! Phase 2.F — the **executor bridge**: turn a gated [`orchestrator::Plan`]'s ops
+//! the **executor bridge**: turn a gated [`orchestrator::Plan`]'s ops
 //! into real on-chain txs through an initialized `PumpFunTrader`.
 //!
 //! This is the "providers don't emit instructions (Phase C)" gap closed: each op

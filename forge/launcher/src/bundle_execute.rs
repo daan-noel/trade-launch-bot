@@ -126,7 +126,7 @@ async fn execute_bundle_inner(
     )
     .context("deserialize persisted create_args")?;
 
-    // Phase 2.F: the bundle's executable SSOT is the persisted orchestrator `Plan`.
+    // the bundle's executable SSOT is the persisted orchestrator `Plan`.
     // Deserialize it and re-run the mandatory gate (which recomputes the identical
     // deterministic disguises and re-audits).
     let plan: orchestrator::Plan = serde_json::from_value(

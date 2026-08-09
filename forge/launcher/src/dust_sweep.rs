@@ -115,7 +115,7 @@ async fn sweep_wallet(
         return Ok(WalletSweepOutcome::skipped(wallet, "is the destination treasury"));
     }
     let address = Pubkey::from_str(&wallet.address).context("parse wallet address")?;
-    // Reuse a fresh cached balance when one exists (audit Phase C2) — usually a
+    // Reuse a fresh cached balance when one exists — usually a
     // `used` wallet isn't poller-refreshed, so this falls through to a live read;
     // it only skips the RPC right after an operator "Refresh balances" stamped it.
     // The actual sweep re-reads on-chain (SweepAll probe), so this read is only the
@@ -133,7 +133,7 @@ async fn sweep_wallet(
         return Ok(WalletSweepOutcome::retired_no_sweep(wallet, balance));
     }
 
-    // Phase 2.F: the sweep is a typed `TransferSol` move executed through the SSOT
+    // the sweep is a typed `TransferSol` move executed through the SSOT
     // [`crate::plan_exec::execute_transfer`] (the ONE place a plain SOL transfer is
     // assembled — probe-fee then `balance − fee` so the source lands at exactly 0).
     // Still a plain transfer (no Jito): a dust sweep has no landing urgency.

@@ -505,7 +505,7 @@ fn scan_matches_replay_scale_out_global_sl_mid_ladder() {
     assert_parity("scale_out_sl_mid", params, &tokens, at(1000.0));
 }
 
-// ───────────── flow-scalper metrics parity (Phase 6 sweep wiring) ─────────────
+// ───────────── flow-scalper metrics parity  ─────────────
 //
 // The two new metric classes the flow scalper needs: the windowed price-extrema
 // entry (`m_price_window.trail`, a real precompute column) and the position-scoped

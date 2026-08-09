@@ -108,7 +108,7 @@ impl TokenOutcome {
     }
 }
 
-// ── Cost model (ported from lab sweep; Phase 4 collapses the duplicate) ────────
+// ── Cost model (the ONE copy; the lab sweep re-exports it) ────────────────────
 
 /// pump.fun's protocol fee, **measured, not assumed** (2026-07-28).
 ///

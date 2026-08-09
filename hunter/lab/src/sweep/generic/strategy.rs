@@ -507,7 +507,7 @@ impl Strategy for GenericSweepStrategy {
         _params: &Self::Params,
         ctx: &Self::ExitCtx,
     ) -> TokenOutcome {
-        // AVX-512 toggle still selectable (exit-index plan Phase 5). Default path
+        // AVX-512 toggle still selectable . Default path
         // is the O(log n) index; SIMD remains for A/B. Both must match scalar.
         if crate::sweep::registry::use_simd() {
             resolve_exit_simd(trades, series, bound, entry, &self.pricing, ctx, self.corpus_horizon)
@@ -2056,7 +2056,7 @@ fn open_outcome(
 // `run_replay` (simulate + live) instead ticks every held token to the **corpus-wide**
 // tail `min(as_of, corpus_last_trade + DEAD_QUIET + TAIL_MARGIN)`. In the gap between
 // the two, a position a multi-token simulate closes reads a false `Open` in the sweep
-// — the parity plan's D1 (`docs/roadmap/sweep-sim-parity-close.md`, `sim-parity.md`).
+// — divergence D1 in `docs/plans/sweep/sim-parity.md`.
 //
 // At a frozen price only the rate-1 clocks keep moving — `time` (since creation),
 // `stall` (since the last high; a flat price sets no new high), and `held` (since

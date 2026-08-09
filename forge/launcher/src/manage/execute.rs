@@ -90,7 +90,7 @@ pub async fn execute_action(
     // treasury + RPC for consolidate) so it isn't re-fetched per leg.
     let ctx = ExecContext::resolve(pool, settings, mint, &plan.kind).await?;
 
-    // Phase 2.F: build the action as an orchestrator `Plan` (sell → Exit sell,
+    // build the action as an orchestrator `Plan` (sell → Exit sell,
     // buy → Accumulate buy, consolidate → typed `TransferSol`) and run the
     // mandatory fingerprint-audit gate BEFORE anything executes. The legacy
     // `PlanLeg[]` still drives the (proven) per-leg execution below; the gated plan

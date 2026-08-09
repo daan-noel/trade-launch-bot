@@ -17,7 +17,6 @@ the two standalone read-stack crates onto forge's schema:
   the pump.fun `PumpFunVenue` (classify + decode + pool derivation) plus a
   back-compat façade (`Ingest::builder()…`) so callers compile unchanged.
 
-That pair was the single `ingest-laserstream` crate before the Phase G/H split.
 Ingest ships to the LIVE box only; it must never appear in `forge-lab`'s dep graph.
 
 ## Architecture

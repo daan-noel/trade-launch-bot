@@ -1,4 +1,4 @@
-//! Push-event seam (audit Phase A: poll → push).
+//! Push-event seam (poll → push).
 //!
 //! The launcher's background workers — the bundle-confirm watcher
 //! ([`crate::confirm`]) and the wallet funder ([`crate::wallet_funding`]) — advance

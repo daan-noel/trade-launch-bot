@@ -667,7 +667,7 @@ async fn run_grouped_sweep_job(
     state.sweep_cancel.store(false, Ordering::Release);
     state.sweep_progress.reset();
 
-    // Phase 0.3 — start the RSS/wall-clock trace at admission so every milestone
+    // start the RSS/wall-clock trace at admission so every milestone
     // (corpus loaded, done) is measured from the same origin against the baseline.
     let clock = crate::sweep::obs::SweepClock::start();
     crate::sweep::obs::log_milestone(&clock, "admitted");
@@ -1007,7 +1007,7 @@ async fn run_grouped_sweep_job(
         }
     }
 
-    // Corpus is fully resident here — the Phase 0 baseline's first peak (every
+    // Corpus is fully resident here — the baseline's first peak (every
     // streaming phase is judged against this RSS/seconds reading). It is also the
     // run's permanent resident floor: capture it so the mid-run headroom read
     // (`usable_host_bytes`) treats the corpus as consumed but the fold buffers it is
@@ -1033,7 +1033,7 @@ async fn run_grouped_sweep_job(
     let corpus_last_trade_at = corpus.last_trade_at();
     let grouping_spec = serde_json::to_value(&b.group_by).unwrap_or_else(|_| serde_json::json!([]));
 
-    // Phase 4 — write the run header up front (`status = "running"`) BEFORE the
+    // write the run header up front (`status = "running"`) BEFORE the
     // sweep, so the per-group `append_group` writes (FK → this row) can land
     // incrementally and a cancel/crash keeps whatever finished. `group_count` /
     // `combo_count` are placeholders (0) here, set by the engine's `begin` once

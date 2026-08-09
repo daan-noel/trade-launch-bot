@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 /// One of OUR wallets. `role` ∈ dev | bundler | treasury | trading.
 ///
-/// `status` is the fresh-wallet-pool lifecycle (docs/wallet-pool-plan.md Phase 1):
+/// `status` is the fresh-wallet-pool lifecycle (docs/plans/wallet/wallet-management.md):
 /// `generated` -> `funded` -> `reserved` -> `used` -> `retired`. `used` and
 /// `retired` are terminal — never re-selectable by the atomic claim query.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -180,7 +180,7 @@ pub struct NewLaunch {
 }
 
 /// One wallet's holding of one launched token — the post-launch management read
-/// model (token-management-plan.md Phase 1). Seeded from the launch/bundle fills,
+/// model (docs/arch/launcher.md). Seeded from the launch/bundle fills,
 /// reconciled against the on-chain token balance.
 ///
 /// Amounts are exact base-unit integers (never baked-in floats): `balance_base`
@@ -214,7 +214,7 @@ pub struct TokenPosition {
 }
 
 /// One executed post-launch management action — the audit row for a sell / buy /
-/// consolidate (token-management-plan.md Phase 2). `plan` is the per-wallet legs
+/// consolidate (docs/arch/launcher.md). `plan` is the per-wallet legs
 /// that actually ran (with their confirmed signatures); `selection` is what the
 /// operator picked. Never a FK to `tokens` — an action can target a launch before
 /// its create tx is ingested.
@@ -234,7 +234,7 @@ pub struct ManageAction {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
-/// An armed take-profit sell ladder (token-management-plan.md Phase 4). `rungs` is
+/// An armed take-profit sell ladder (docs/arch/launcher.md). `rungs` is
 /// a JSONB array of `{ metric, threshold, pct, fired }`; the background evaluator
 /// flips a rung's `fired` when the token crosses its milestone and fires a sell of
 /// `pct` across `selection`. Never a FK to `tokens`.
@@ -249,7 +249,7 @@ pub struct SellLadder {
     pub updated_at: DateTime<Utc>,
 }
 
-/// A volume-making bot (token-management-plan.md Phase 5). The background
+/// A volume-making bot (docs/arch/launcher.md). The background
 /// scheduler cycles a jittered buy (+ optional sell-back) across `selection`'s
 /// wallets on a jittered interval, generating trade volume until its SOL budget or
 /// max-cycle cap is hit. `config` is a `VolumeConfig` JSONB (size/interval ranges,
@@ -296,7 +296,7 @@ pub struct Bundle {
     #[serde(default)]
     pub submit_attempts: i32,
     /// The serialized `orchestrator::Plan` this bundle was gated + built from
-    /// (Phase 2.F). The executor rebuilds legs from this and recomputes the
+    ///. The executor rebuilds legs from this and recomputes the
     /// deterministic disguises; `legs` above stays for the confirm watcher + UI.
     #[serde(default)]
     pub plan: Option<Json>,

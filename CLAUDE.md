@@ -23,7 +23,7 @@ Bot/
 ├── CLAUDE.md            this file (super-root)
 ├── Cargo.toml           the ONE [workspace]; default-members = hunter/live, hunter/lab
 ├── RUN.md               how to run the stacks locally
-├── docs/                monorepo-wide docs (e.g. refactor-audit-*)
+├── docs/                monorepo-wide docs (refactor-plan.md, history/)
 ├── deploy/             per-family docker/nginx (deploy/hunter, deploy/forge)
 ├── shared/              standalone drop-in crates — consumed by BOTH products
 │   ├── executor/{core,pumpfun}   venue-agnostic write stack + pump.fun venue (was pump-trader)
@@ -95,7 +95,8 @@ each crate's own decoupled vocabulary (don't leak a product's domain names into 
   **back up first** (`Copy-Item .env .env.backup -Force`) before applying new keys.
 - **Definition of done (shared shape):** `cargo check` clean on the touched bins; clippy
   on touched code; test when logic changed; stay in the owning crate; no new warnings;
-  update the docs tier the change belongs to (below).
+  update the docs tier the change belongs to (below) **and leave it present-tense** — a
+  paragraph your change made inaccurate is part of that change, not a later cleanup.
 
 ## Docs discipline (where a change is written down)
 
@@ -106,10 +107,66 @@ Update the tier that matches what changed — this is what keeps `CLAUDE.md` thi
 | A rule / command / constraint | the nearest **CLAUDE.md** (super-root here, else the product's) |
 | Module structure / data flow / behavior | `docs/arch/<subsystem>.md` — high-level map (crates, files, flow) |
 | Implementation detail / algorithm / decision | `docs/plans/<subsystem>/<topic>.md` — deep-dive reference |
+| Work that is still open | `docs/roadmap/<topic>.md` — deleted or folded into a deep-dive once it lands |
+| An incident/RCA, a superseded approach, a research journal | `docs/history/<YYYY-MM-DD-slug>.md` |
 
 `docs/arch/` is the "read this instead of re-exploring source" tier; `docs/plans/` holds
 permanent deep-dive references (column rationale, invariants, tuning constants, design
 decisions), **not** throwaway plans.
+
+<!-- pt-ok:begin — this section defines the rule, so it quotes the phrasing it forbids -->
+## Present tense only (locked — applies to every edit, docs AND code)
+
+**Everything outside `docs/history/` describes what the system does *now*.** Write the
+**rule**, never the story that produced it. This is not a style preference: `CLAUDE.md` and
+`docs/arch/` are paid on every session, and a paragraph about deleted code is pure cost
+that also reads as if it were still true.
+
+**The one test — does this past fact change what someone does today?**
+
+- **Yes → it stays**, rewritten present-tense with the narrative stripped. Real examples:
+  *"runs stored before 2026-07-28 were priced at 100 bps — they do not compare to a new
+  run"* (that data is still on disk), *"grouped runs before 2026-07-26 carry poisoned
+  aggregates — re-run them"*. Keep the date **only** because it is the cutoff someone has
+  to check against, never as a timeline.
+- **No → it moves to `docs/history/`, or is deleted.** "We used to do Y", "X was removed
+  in Phase 7", "fixed on <date> after N hours of outage" — none of that changes an action.
+
+### What that forbids, concretely
+
+| Never write in `CLAUDE.md`, `docs/arch/`, or a code comment | Write instead |
+| --- | --- |
+| "X was deleted / retired / no longer exists" | describe what *does* exist; if X's absence is load-bearing, say "there is no X" and why re-adding it breaks something |
+| An outage narrative — dates, durations, row counts, SOL figures | the invariant it produced, plus the measurement if the *number* is the rule (a threshold, a cost, a speedup) |
+| "Phase N" / "step 2" labels from a plan doc | what the code does; a phase number outlives the plan and then points nowhere |
+| A pointer to a `.md` that no longer exists | the doc that absorbed it, or nothing |
+| "NOTE: the paths below are stale" | fix the paths and delete the note — a doc that warns it is wrong is worse than one that is right |
+| A second copy of a tracked doc (e.g. under `_local/`) | one copy; two copies drift and each ends up holding what the other lost |
+
+### `docs/history/` — the escape valve
+
+One file per entry, `<YYYY-MM-DD-slug>.md`, shape: **Symptom** (with the numbers) →
+**Cause** (the mechanism) → **Fix** → **The rule this produced** (one line + a link to
+where that rule now lives). A `README.md` indexes each history dir.
+
+- **Never linked** from a `CLAUDE.md` or an `arch/` link table. It is a grep target, so it
+  costs nothing per session. An `arch/` doc may carry at most one inline link to a
+  history entry, where a reader would otherwise ask "why is this odd rule here?".
+- **The bar for writing one: the past left a live consequence.** Stored data is now wrong,
+  a rule looks arbitrary without the story, or a whole approach was refuted (so nobody
+  re-runs it). An ordinary bug fix gets a code comment and **nothing else** — history that
+  grows per-commit is the same bloat in a new place.
+- Every extraction is a **move**: delete from the source and write to history in the same
+  change, so one diff shows both sides. Nothing is lost, ever.
+
+### Code comments
+
+Same rule, one exception. A comment whose job is to stop a future "simplification" from
+reintroducing a bug **keeps its cautionary form** — `// \`?\` here used to strand a
+wallet's SOL when a token-account close failed` earns its past tense, because deleting it
+invites the bug back. That is a regression guard, not history. Everything else is
+present-tense: no phase labels, no "previously", no describing code that was removed.
+<!-- pt-ok:end -->
 
 ## Environment
 

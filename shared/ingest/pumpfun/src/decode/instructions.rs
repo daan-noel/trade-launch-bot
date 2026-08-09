@@ -196,7 +196,7 @@ pub(super) fn label_instruction(
     }
 
     if let Some(name) = program_friendly_name(program_id) {
-        // Phase 4: name the instruction within known open (Anchor) programs
+        // Name the instruction within known open (Anchor) programs
         // (`Jupiter Aggregator V6: Route`); unknown/closed ones stay `: Unknown`.
         let ix = program_instruction_name(program_id, data_bytes).unwrap_or("Unknown");
         return format!("{name}: {ix}");

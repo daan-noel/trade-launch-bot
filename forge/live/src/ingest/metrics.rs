@@ -1,4 +1,4 @@
-//! Read-only health metrics for the ingest pipeline (audit Phase B).
+//! Read-only health metrics for the ingest pipeline.
 //!
 //! The [`watchdog`](super::watchdog) already force-exits on a stall, but that's
 //! invisible from outside until it fires. These counters expose the same signals

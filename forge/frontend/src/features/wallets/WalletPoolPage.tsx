@@ -248,7 +248,7 @@ export function WalletPoolPage() {
     error,
     refetch: refetchWallets,
   } = useWalletPoolQuery(roleFilter || undefined, {
-    // The background funder PUSHES a `wallet_pool` event over SSE (audit Phase A)
+    // The background funder PUSHES a `wallet_pool` event over SSE
     // when a pass moves SOL / promotes wallets, and the subscription below refetches
     // off it. This poll is demoted to a slow 30s gap-heal covering a missed push.
     pollingInterval: 30000,

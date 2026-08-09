@@ -1211,7 +1211,7 @@ async fn run() -> anyhow::Result<()> {
         batch: batch_db,
     } = trading_core::storage::postgres::connect(&settings).await?;
 
-    // Boot wallet-balance sweep (buy-in-flight recovery, Phase 3 backstop): list
+    // Boot wallet-balance sweep (buy-in-flight recovery): list
     // the wallet's on-chain token accounts once and flag any balance no open
     // position across either clone accounts for — a manual transfer, a failed
     // marker persist, or any bug the durable `BuySubmitted` marker doesn't cover.
@@ -1233,7 +1233,7 @@ async fn run() -> anyhow::Result<()> {
     }
 
     // Background SOL-balance safety poll. The wallet balance is now push-fed at feed
-    // speed (see the `on_account` hook above, RPC-reduction Phase 2), so this is a slow
+    // speed (see the `on_account` hook above), so this is a slow
     // FALLBACK for plans/reconnects that don't deliver account pushes — not the primary
     // source. The first tick fires immediately so the affordability cache is non-empty
     // before the first snipe (the feed may not have pushed a wallet update yet); then
@@ -1301,7 +1301,7 @@ async fn run() -> anyhow::Result<()> {
     // Feeds the shared token cache / strategy / SSE / DB. Yields the pool→mint
     // index + migration signal (for DeployState), the strategy receiver, and the
     // long-lived task handles the supervising select watches.
-    // Push feeds riding the same LaserStream subscription (RPC-reduction Phase 2):
+    // Push feeds riding the same LaserStream subscription:
     // block metas feed the recent-blockhash cache (steady state: zero
     // `getLatestBlockhash`), nonce-account updates re-arm durable-nonce slots at
     // feed speed (the executor's post-send poll becomes a stall fallback). Both
@@ -1311,7 +1311,7 @@ async fn run() -> anyhow::Result<()> {
         let nonce_trader = trader.clone();
         let balance_trader = trader.clone();
         // The bot wallet's own account is watched alongside the nonce accounts so its
-        // SOL balance tracks at feed speed (RPC-reduction Phase 2): a pushed `lamports`
+        // SOL balance tracks at feed speed: a pushed `lamports`
         // refreshes the affordability cache, so the steady-state `getBalance` poll below
         // becomes a slow safety fallback instead of the primary source.
         let watched_wallet = trader.wallet_pubkey();
@@ -1442,7 +1442,7 @@ async fn run() -> anyhow::Result<()> {
         settings_tx.clone(),
         sol_price.clone(),
     ));
-    // ── The generic fingerprint + metrics engine (strategy redesign, Phase 4) ──
+    // ── The generic fingerprint + metrics engine ──
     // THE serialized decision loop, driven by the ingest create + trade ping
     // lanes, a tick, and confirmed fills.
     let rule_repo =

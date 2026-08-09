@@ -59,7 +59,7 @@ pub struct LauncherSettings {
     /// `metadata_upload`) — `None` disables metadata-template authoring with a
     /// clear error rather than a required-at-boot var; nothing else needs it.
     pub pinata_jwt: Option<String>,
-    /// Automated treasury→pool funding (docs/wallet-funding-plan.md) — `None`
+    /// Automated treasury→pool funding (docs/plans/wallet/wallet-management.md) — `None`
     /// (the default: `FUND_ENABLED` unset/false) disables the background funder
     /// AND the manual `POST /api/wallet_pool/fund` endpoint. The kill switch.
     pub funding: Option<FundingConfig>,
@@ -68,13 +68,13 @@ pub struct LauncherSettings {
     /// the endpoint — it returns 403. Opt-in per deployment; the endpoint hands
     /// out spendable keys, so it is off unless a secret is set. Serve over TLS.
     pub export_secret: Option<String>,
-    /// Post-launch token management (token-management-plan.md) — `None` (the
+    /// Post-launch token management (docs/arch/launcher.md) — `None` (the
     /// default: `MANAGE_ENABLED` unset/false) hard-disables the destructive
     /// `POST /api/tokens/{mint}/manage/execute` endpoint (503). The kill switch:
     /// previewing a plan and reading holdings are always allowed; firing real
     /// sells/buys is not, unless explicitly enabled. Mirrors `funding`.
     pub manage: Option<ManageConfig>,
-    /// Whether the mandatory fingerprint auditor (Phase 2.F) *waves through* its
+    /// Whether the mandatory fingerprint auditor *waves through* its
     /// fingerprint tells (equal amounts, star funding, same-slot clusters, …). The
     /// audit ALWAYS runs and is persisted regardless; this only decides whether a
     /// tell blocks execution. Default `true` (log + persist, don't block) preserves
@@ -174,8 +174,9 @@ impl LeaderGateConfig {
     }
 }
 
-/// Safety-railed config for autonomous real-SOL funding (docs/wallet-funding-plan.md
-/// P3). Every field is a guard against draining the treasury; all overridable via
+/// Safety-railed config for autonomous real-SOL funding
+/// (docs/plans/wallet/wallet-management.md). Every field is a guard against
+/// draining the treasury; all overridable via
 /// env, with conservative defaults. Only constructed when `FUND_ENABLED=true`.
 #[derive(Debug, Clone)]
 pub struct FundingConfig {

@@ -26,7 +26,7 @@
 //!    sweep seed.
 //!
 //! Phases 1–3 ride the [`additive`](super::additive) scan mode (one shared
-//! precompute per phase). Phase 2 models are built from phase 1 winners; phase 3
+//! precompute per phase). Layer 2 models are built from layer 1 winners; layer 3
 //! models from the interacting components.
 
 use anyhow::Result;
@@ -359,7 +359,7 @@ fn grid_combos(members: &[FamilyMember]) -> usize {
 
 /// Run Layer 2 over a completed Layer-1 [`ScreenReport`].
 ///
-/// Phase 1 grids every family in one additive pass; phase 2 runs the pairwise
+/// Layer 1 grids every family in one additive pass; phase 2 runs the pairwise
 /// interaction checks in a second. Synchronous on the caller's rayon pool, same as
 /// [`run_screen`](super::screen::run_screen).
 #[allow(clippy::too_many_arguments)]

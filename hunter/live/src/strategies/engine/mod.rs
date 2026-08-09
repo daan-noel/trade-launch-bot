@@ -1,4 +1,4 @@
-//! Live adapters around the pure `hunter_engine` fold (strategy redesign, Phase 4).
+//! Live adapters around the pure `hunter_engine` fold.
 //!
 //! The engine (`hunter_engine::reduce`) is a pure `reduce(&mut EngineState, Event)
 //! -> effects` fold — no clock, no I/O, no randomness. This module is the *live*

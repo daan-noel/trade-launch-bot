@@ -65,9 +65,9 @@ Full). Own-wallet trades also call `TradeSignals::observe_own_leg` before the
 durable enqueue so buy/sell confirm can resolve without waiting on DbWriter.
 See `@plans/ingest/backpressure-watchdog.md`.
 
-**Liveness watchdog:** `db_writer.rs` stamps `DbHeartbeat` at the end of a `flush()` **only when it persisted ≥1 row** (`any_ok`) — an all-failed flush leaves it stale. A dedicated OS thread (via `watchdog::spawn_watchdog`) force-exits (`exit(1)`) when live mode is on AND no successful write landed within `watchdog_stall_timeout_secs`. It no longer gates on DB-queue depth: that proxy missed upstream stalls (a dead transport drains the queue empty), so `live + stale` alone now catches both a wedged downstream and a dead upstream. (2026-07-22: stamping unconditionally kept the heartbeat fresh through a pool-exhaustion wedge, so the watchdog never fired for 7h.)
+**Liveness watchdog:** `db_writer.rs` stamps `DbHeartbeat` at the end of a `flush()` **only when it persisted ≥1 row** (`any_ok`) — an all-failed flush leaves it stale. A dedicated OS thread (via `watchdog::spawn_watchdog`) force-exits (`exit(1)`) when live mode is on AND no successful write landed within `watchdog_stall_timeout_secs`. It does **not** gate on DB-queue depth: that proxy misses upstream stalls, because a dead transport drains the queue empty — the healthiest-looking reading there is. `live + stale` alone catches both a wedged downstream and a dead upstream. The heartbeat must stay a measure of *work completed*, never of the flush loop iterating.
 
-**It only polices the steady state (`BootGate`).** The watchdog is armed by `boot_gate.mark_ready()`, latched by the strategy decision loop immediately before it starts consuming; while unset the heartbeat is stamped each check. Startup work competes with `DbWriter` on 2 vCPU, so a slow boot otherwise reads as a wedged pipeline — and killing a *booting* process turns a slow boot into an unbreakable crash loop rather than a recovery. (2026-07-30: force-exited at ~90 s during event-log recovery **70 times in a row**; the engine loop was never reached once, so every strategy ping was shed and no rule ran for 14 h. See `@arch/strategies.md` "Boot recovery is bounded at both ends".) A boot that genuinely hangs now surfaces as a stuck process — check for the absence of `strategy engine loop running`.
+**It only polices the steady state (`BootGate`).** The watchdog is armed by `boot_gate.mark_ready()`, latched by the strategy decision loop immediately before it starts consuming; while unset the heartbeat is stamped each check. Startup work competes with `DbWriter` on 2 vCPU, so a slow boot otherwise reads as a wedged pipeline — and killing a *booting* process turns a slow boot into an unbreakable crash loop rather than a recovery (see `@arch/strategies.md` "Boot recovery is bounded at both ends"). A boot that genuinely hangs surfaces as a stuck process — check for the absence of `strategy engine loop running`.
 
 ## `ingest-laserstream/src/` — crate modules
 
@@ -80,8 +80,8 @@ See `@plans/ingest/backpressure-watchdog.md`.
 + priority fee) from `TransactionStatusMeta.fee`, which the decoder already holds in
 scope; capturing it costs one field read and **zero** RPC/Helius credits. Stamped by all
 three trade paths (`decode_curve_pb`, `decode_amm_live_pb`, the balance-delta fallback)
-and by the RPC backfill (`backfill::meta_from_json`, which previously left the protobuf
-field at its `0` default — an unset fee there reads as "free", not "unknown").
+and by the RPC backfill (`backfill::meta_from_json` — it must set the field, because
+leaving the protobuf at its `0` default reads as "free", not "unknown").
 
 Two invariants a consumer must not break: it is charged **once per transaction**, so
 every leg decoded out of one tx repeats the same value (collapse by `signature` before
@@ -93,7 +93,7 @@ the venue's protocol/LP fee (already inside `sol`).
 | `config.rs` | `IngestConfig` (all tunables, no env reads), `Commitment` enum |
 | `error.rs` | `IngestError`, `Result<T>` alias |
 | `pool.rs` | PDA derivation (`derive_pool`), `register_pool`, `pool_for_mint`; `PoolIndex = Arc<DashMap<String, String>>` |
-| `transport/mod.rs` | gRPC producer: TLS auth, reconnect w/ backoff, gap replay from a retained `ReplayAnchor` (`resolve_from_slot` is the ONE decider — the anchor OUTLIVES a no-progress attempt, bounded by `MAX_REPLAY_ATTEMPTS`; resume is `slot + 1` because nothing dedups by signature before the strategy fold), idle-reconnect timer, backpressure guard; `connect`, `build_subscribe_request`, `TransportConfig`. Rules + the 2026-07-27 blackout RCA: `@plans/ingest/reconnect-restart-flow.md` |
+| `transport/mod.rs` | gRPC producer: TLS auth, reconnect w/ backoff, gap replay from a retained `ReplayAnchor` (`resolve_from_slot` is the ONE decider — the anchor OUTLIVES a no-progress attempt, bounded by `MAX_REPLAY_ATTEMPTS`; resume is `slot + 1` because nothing dedups by signature before the strategy fold), idle-reconnect timer, backpressure guard; `connect`, `build_subscribe_request`, `TransportConfig`. Rules: `@plans/ingest/reconnect-restart-flow.md` |
 | `decode/mod.rs` | `Decoder` (+ `HeliusDecoder` back-compat alias), `TxRelevance`, `DecodeOutput` |
 | `decode/grpc.rs` | `decode_protobuf` (self-classify), `decode_relevant_pb` (hot path), `decode_amm_protobuf` (backfill); `LazyKeys`. **Curve TradeEvents: read "Program data:" logs first, but the validator truncates logs past a byte limit, so a multi-buy bundle can lose trailing legs — when logs are empty OR carry "Log truncated", re-decode from the complete inner-instruction self-CPI events and take the larger set. AMM path is still log-only (latent same risk).** |
 | `decode/trade.rs` | Borsh `RawTradeEvent`, trade helpers |
@@ -158,33 +158,14 @@ It aggregates `trades.ix_labels`, ranks the still-`Unknown (<id>)` programs by f
 - No blocking I/O / `.await`-on-lock / unbounded alloc per event on the ingest hot path; DB+SSE go through channels.
 - `ingest-laserstream` has **zero workspace deps** — standalone drop-in crate.
 - **The transport must be in the log filter.** `ingest_core` + `ingest_laserstream` are
-  named explicitly in `live/main.rs`'s default `EnvFilter`. They were not until
-  2026-08-05, and the box sets no `RUST_LOG` — so every `LaserStream: connecting` /
-  `stream error` / `no transaction update … forcing reconnect` /
-  `pipeline backpressured` line was dropped, and the sole live transport ran
-  invisibly in production. The cost of that: **seven watchdog process kills in one
-  day with no evidence of why the feed stopped** — the log showed a healthy process,
-  then a kill. Every one of those lines is per-connection, never per-message, so
-  there is no hot-path cost to keeping them on. `live::ingest` (host adapter +
-  watchdog) was always covered by `live=info`; the crates *underneath* it were not,
-  which is exactly the layer that knows why a feed died.
+  named explicitly in `live/main.rs`'s default `EnvFilter`, and the box sets no
+  `RUST_LOG` — without them, every `LaserStream: connecting` / `stream error` /
+  `no transaction update … forcing reconnect` / `pipeline backpressured` line is
+  dropped and the sole live transport runs invisibly in production. `live::ingest`
+  (host adapter + watchdog) is covered by `live=info`, but the crates *underneath* it
+  are the layer that knows why a feed died. Every one of those lines is
+  per-connection, never per-message, so there is no hot-path cost to keeping them on.
 
-## Watchdog kills are real outages, not false positives (2026-08-05)
-
-`live::ingest::watchdog` force-exits when no **successful** DB write lands for
-`watchdog_stall_timeout_secs` (90 s) while live+booted. Seven fired on 2026-08-05.
-Checked against the data rather than assumed: `trades` shows a genuine hole at each
-one — 13:44 has **zero** rows in a feed averaging ~1500/min, and 12:08→12:09 decayed
-1538 → 225 → 103 before the 12:09:47 kill. So the watchdog is reporting a true fault.
-
-Two things follow, neither yet fixed:
-
-- **A kill costs 1–2 min of feed data, permanently.** In-process reconnect replays
-  from the last slot (`ReplayAnchor`), but a process exit discards that anchor and
-  the restart comes up live — 13:44 is simply absent from `trades` and was never
-  backfilled. The killer destroys the state the healer needed.
-- **The transport self-heals in ~12 s** (`idle_reconnect_timeout` 10 s +
-  `idle_check_interval` 2 s), far inside the 90 s watchdog window, so a plain feed
-  stall should never reach the watchdog at all. Something is defeating that
-  reconnect for 90 s+. Diagnosing it needs the transport logs above — enable-then-
-  wait, do not guess.
+**A watchdog kill means a real feed outage** — verified against `trades` row counts, not
+assumed. Two consequences are still open (a kill loses 1–2 min of feed permanently, and
+something defeats the ~12 s self-heal): [`@roadmap/ingest-watchdog-kill-recovery.md`](../roadmap/ingest-watchdog-kill-recovery.md).

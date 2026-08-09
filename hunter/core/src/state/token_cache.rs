@@ -46,12 +46,12 @@ pub use hunter_engine::deadness::is_dead_verdict;
 ///
 /// Implements [`TradeRow`] (`Wallet = u32`) so every shared entry/exit fn runs
 /// against it unchanged — exactly as the sweep's `CorpusTrade` does. No
-/// `tx_signature` is retained (Phase B step 1): the live paper fill resolvers work
+/// `tx_signature` is retained: the live paper fill resolvers work
 /// by **trade index**, not sig match, and `tx_signature()` returns `""` (same as
 /// `CorpusTrade`) — the backtest still reads the real sig off the DB `Trade`, and
 /// real mode records it from the on-chain confirm, never the cache.
 ///
-/// The wallet is stored as a token-local interned `u32` (Phase B step 2), not the
+/// The wallet is stored as a token-local interned `u32`, not the
 /// 44-byte base58 String: `TokenState::interner` maps `u32 → address` and is the
 /// only resident copy of each distinct wallet string.
 #[derive(Clone, Debug)]
@@ -159,7 +159,7 @@ impl TradeRow for CachedTrade {
     fn wallet(&self) -> &u32 {
         &self.wallet
     }
-    /// No signature is retained on the cache row (Phase B step 1) — the live paper
+    /// No signature is retained on the cache row — the live paper
     /// resolvers key off the trade index, not the sig. Mirrors `CorpusTrade`.
     fn tx_signature(&self) -> &str {
         ""
@@ -258,7 +258,7 @@ pub struct TokenState {
 
     /// Token-local wallet interner: maps each distinct wallet address to a dense
     /// `u32` id (`CachedTrade::wallet`) and back. The only resident copy of each
-    /// wallet string for this token (Phase B step 2). Grows with distinct wallets
+    /// wallet string for this token. Grows with distinct wallets
     /// seen and is **not** trimmed when `trades` front-trims — the `u32` ids in the
     /// retained rows stay valid because table indices never shift.
     pub interner: WalletInterner,
@@ -973,7 +973,7 @@ mod tests {
         t.real_reserve_sol = Some(7.5);
         t.venue = "amm".into();
 
-        // Intern the wallet against a token-local interner (Phase B step 2), exactly
+        // Intern the wallet against a token-local interner, exactly
         // as the live append path does, then project.
         let mut interner = WalletInterner::default();
         let wallet_id = interner.intern(&t.wallet_address);
@@ -993,7 +993,7 @@ mod tests {
         // the source `Trade`'s wallet address.
         assert_eq!(*c.wallet(), wallet_id);
         assert_eq!(&*interner.into_table()[wallet_id as usize], t.wallet());
-        // The cache row carries no signature (Phase B step 1): `tx_signature()` is
+        // The cache row carries no signature: `tx_signature()` is
         // always `""`, regardless of the source `Trade`'s sig.
         assert_eq!(c.tx_signature(), "");
     }

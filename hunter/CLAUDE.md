@@ -32,10 +32,9 @@ hunter-specific only.
 
 ## Architecture
 
-Six Rust crates + `frontend-react` SPA. The old single `backend` crate was split into two
-bins over a shared core (`live`/`lab` topology). The two standalone drop-in crates moved
-to the monorepo's `shared/` home (see [../CLAUDE.md](../CLAUDE.md)); hunter links them as
-intra-workspace deps.
+Six Rust crates + the `hunter/frontend` SPA: two bins over a shared core (`live`/`lab`
+topology). The two standalone drop-in crates live in the monorepo's `shared/` home
+(see [../CLAUDE.md](../CLAUDE.md)); hunter links them as intra-workspace deps.
 
 | Crate | Kind | Role |
 | --- | --- | --- |
@@ -62,7 +61,7 @@ The frontend split is build-time (no runtime capability advertisement); the fron
 | [docs/arch/strategies.md](docs/arch/strategies.md) | the generic fingerprint+metrics engine: the pure `hunter-engine` fold + the live `strategies/engine/` adapters (decision loop, producers, exec, sinks, event-log) |
 | [docs/arch/trade-execution.md](docs/arch/trade-execution.md) | executor crate: module map, key behaviors |
 | [docs/arch/database.md](docs/arch/database.md) | Postgres schema, pools, every repo→table→fns |
-| [docs/arch/frontend.md](docs/arch/frontend.md) | `frontend-react/src/`: pages, components, hooks, RTK Query/SSE |
+| [docs/arch/frontend.md](docs/arch/frontend.md) | `hunter/frontend/src/`: pages, components, hooks, RTK Query/SSE |
 | [docs/arch/sweep.md](docs/arch/sweep.md) | `sweep/`: param-sweep engine, grouping, persistence, API |
 
 Deep-dive references: [docs/plans/database/lake-pg-read-paths.md](docs/plans/database/lake-pg-read-paths.md)
@@ -135,10 +134,12 @@ notional). Full rationale, the four fixed defects, and the residual gap:
 
 - **Sell-confirm:** no new RPC call — confirm via the `trades` gRPC feed. An RPC poll
   reintroduces latency + double-sell risk. The exit loop polls the **full** window before
-  retrying (buffers the feed's index lag) — preserve when editing `execution/real.rs`.
+  retrying (buffers the feed's index lag) — preserve when editing
+  `live/src/strategies/engine/exec_real.rs`.
 - **Ingest pipeline:** no blocking I/O, `.await`-on-lock, or unbounded per-event alloc.
   DB/SSE writes through channels only.
-- **Strategy eval:** read from `runtime_cache.rs` (in-memory), never DB-per-event.
+- **Strategy eval:** read from the in-memory `TokenCache`
+  (`core/src/state/token_cache.rs`) + the engine's own state, never DB-per-event.
 
 ## Data-scale guardrails
 
@@ -184,7 +185,13 @@ notional). Full rationale, the four fixed defects, and the residual gap:
   instead); no extra re-render on SOL/USD tick or live-trade stream.
 - **Docs — update the tier that changed** (see [../CLAUDE.md](../CLAUDE.md) docs
   discipline): rules → this file; structure/data-flow → `docs/arch/[subsystem].md`;
-  algorithm/decision detail → `docs/plans/[subsystem]/[topic].md`.
+  algorithm/decision detail → `docs/plans/[subsystem]/[topic].md`; still-open work →
+  `docs/roadmap/`; an incident/RCA or superseded approach → `docs/history/`, which is
+  never linked from here or from `docs/arch/`. **`docs/arch/` and this file are
+  present-tense only** — see *Present tense only* in [../CLAUDE.md](../CLAUDE.md) for the
+  test and what it forbids. A history entry is written only when the past left a live
+  consequence (stored runs are now mispriced, a rule looks arbitrary without it, a search
+  is closed) — not per bug fix.
 
 ## SOL vs lamports naming (locked, no exceptions)
 
@@ -264,16 +271,16 @@ check — today: the rule editor's **Max total** and Trader Analysis **Max token
 ## Gotchas (hot-path landmines)
 
 - **A backtest is only as honest as its `CostModelKind`.** Default to
-  **`pumpfun_impact`** — it is the only kind that charges our own price impact
+  **`pumpfun_impact`** — the only kind that charges our own price impact
   (`buy_amount_sol / reserve_sol` per leg), so the only one whose cost responds to buy
   size at all. `pumpfun_fee_only` is size-blind (an optimistic bound) and
-  `pumpfun_default` double-counts against any explicit `FillModel`. Two corrections
-  landed 2026-07-28: the pump.fun fee is **125 bps/leg, not 100**, and nothing charged
-  impact before that — so **every run older than 2026-07-28 understates cost by up to
-  ~3 pp/round-trip** and does not compare to a new one (the constants are not persisted
-  per run). Cost is U-shaped in size — the Jito tip is fixed SOL/leg — so the optimal
-  fixed buy is `sqrt(fixed_per_leg × vsol)`, ~0.27 SOL on a 70 SOL pool, NOT 0.1 or 1.0.
-  Full derivation: [docs/plans/strategies/execution-costs.md](docs/plans/strategies/execution-costs.md).
+  `pumpfun_default` double-counts against any explicit `FillModel`. The fee is
+  **125 bps/leg**, and **runs stored before 2026-07-28 were priced at 100 bps with no <!-- pt-ok: cutoff, those runs are still in the DB -->
+  impact charge: they understate cost by up to ~3 pp/round-trip and do not compare to a
+  new run** (the constants are not persisted per run). Cost is U-shaped in size — the
+  Jito tip is fixed SOL/leg — so the optimal fixed buy is `sqrt(fixed_per_leg × vsol)`,
+  ~0.27 SOL on a 70 SOL pool, NOT 0.1 or 1.0. Full derivation:
+  [docs/plans/strategies/execution-costs.md](docs/plans/strategies/execution-costs.md).
 - **Exit conditions that do not do what they look like.** `m_price_lifetime.stall` is
   *seconds since the last all-time HIGH* and resets only on a new high, so on a
   dip-entry rule it silently caps every hold (~15 s measured) **and** doubles as an
@@ -286,55 +293,51 @@ check — today: the rule editor's **Max total** and Trader Analysis **Max token
   (`ingest/consumer.rs`) `try_send`s onto a 512-deep queue and sheds on full — correct
   (the engine must never back-pressure ingest), but a *wedged* engine sheds 100% of
   pings while ingest keeps writing tokens/trades to PG, so every external signal looks
-  healthy while no rule is evaluated. It shed for 14 h on 2026-07-30 without one log
-  line. Any `try_send`-and-drop on a path that decides trades must be **loud**
-  (rate-limited `warn!`, never a bare counter). Same shape as the 2026-07-22 heartbeat
-  bug: a liveness signal that stays green through a total failure.
+  healthy while no rule is evaluated. Any `try_send`-and-drop on a path that decides
+  trades must be **loud** (rate-limited `warn!`, never a bare counter).
 - **Boot work must be bounded, and the watchdog must not police a booting process.**
-  `recover_armed` read the whole event-log corpus (~8.2 GB) to use its last 30 s; the
-  ingest watchdog then force-exited it mid-recovery at 90 s, **70 boots in a row**, so
-  the decision loop never started. Both halves are now guarded (bounded tail scan +
-  `BootGate`) — don't reintroduce either. Diagnostic: **`strategy engine loop running`
-  absent from the log = the engine never started**, regardless of how healthy ingest
-  looks. Detail: [docs/arch/strategies.md](docs/arch/strategies.md).
+  An unbounded recovery scan starves the runtime, the ingest watchdog then force-exits
+  mid-recovery, and the decision loop never starts — a kill loop, not a recovery. Both
+  halves are guarded (bounded tail scan + `BootGate`); don't reintroduce either.
+  Diagnostic: **`strategy engine loop running` absent from the log = the engine never
+  started**, regardless of how healthy ingest looks. Detail:
+  [docs/arch/strategies.md](docs/arch/strategies.md).
 - **A warm start may rebuild state, never re-decide the past.** The producer's trade
   cursor is RAM-only and the cache seed backfills up to 500 historical trades per mint,
   so after a restart a token's whole past reads as new. Deciding on it is not cosmetic:
-  `reduce` evaluates a trade at `trade.at`, so the decision uses the old price and the
-  fill uses the live one — that sold a real position's last leg on a `stop_loss` that
-  had been true five minutes earlier, at **+79%** (2026-08-06). Cached trades older than
-  the loop's `started_at` go through `hunter_engine::prime_trade` (fold the track, emit
-  nothing, don't log); only newer ones become `Event::Trade`. The 200 ms tick re-decides,
-  so priming defers a decision rather than dropping it. The mirror-image failure is just
-  as real: an adopted position on a token that never prints again keeps a `NaN` price, and
-  `NaN` satisfies no condition — no TP/SL, no trail, **no dead-close** — so `prime_tracked`
-  must keep retrying from the tick until the async seed lands. Full audit:
+  `reduce` evaluates a trade at `trade.at`, so the decision uses the **old** price while
+  the fill uses the live one — that is how a stale `stop_loss` sells a position that is
+  currently well in profit. Cached trades older than the loop's `started_at` go through
+  `hunter_engine::prime_trade` (fold the track, emit nothing, don't log); only newer ones
+  become `Event::Trade`. The 200 ms tick re-decides, so priming defers a decision rather
+  than dropping it. The mirror-image failure is just as real: an adopted position on a
+  token that never prints again keeps a `NaN` price, and `NaN` satisfies no condition —
+  no TP/SL, no trail, **no dead-close** — so `prime_tracked` must keep retrying from the
+  tick until the async seed lands. Full audit:
   [docs/plans/strategies/restart-state-restoration.md](docs/plans/strategies/restart-state-restoration.md).
 - **An unemitted fill event leaks a concurrency slot permanently.** The
   `BuySubmitted` row is durable *before* the send, so every exit from
   `dispatch_buy`/`run_entry` MUST emit `FillConfirmed`/`FillFailed` (use
   `decision_loop::fail_entry`) — a bare `return` strands the arm in `EntryPending`,
   and boot re-adopts the row, so the `max_concurrent_tokens` slot is lost across
-  restarts too. Ten such rows filled a live rule's cap and silenced it for ~17 h on
-  2026-08-02; the cause was a buy send with **no timeout** (the sell path had
-  `SELL_SEND_TIMEOUT`, the buy path had no mirror until `BUY_SEND_TIMEOUT`). Same
-  family as the silent-shed and false-heartbeat bugs above: a failure that leaves
-  every visible signal green. Detail:
-  [docs/arch/position-lifecycle.md](docs/arch/position-lifecycle.md).
+  restarts too. Enough leaked slots silently fill a rule's cap and stop it entering.
+  The send itself must stay bounded (`BUY_SEND_TIMEOUT`, mirroring
+  `SELL_SEND_TIMEOUT`) — an unbounded send is what parks the path with nothing emitted.
+  Detail: [docs/arch/position-lifecycle.md](docs/arch/position-lifecycle.md).
 - **A retry is a NEW trade decision, so it must re-clear the gate that authorized the
   first one.** `reduce`'s `FillFailed` → `EntryPending` branch re-checks
   `entry_enabled && can_enter` at the failure's `at` before re-submitting; without it a
   buy is authorized once and re-fired blind for as long as the attempt ladder lasts.
-  Confirming a revert is *slow* (12.3 s measured), which is exactly when the market has
-  moved most: on 2026-08-07 an `entry liquidity > 10` rule decided at 14.65 SOL, reverted
-  6042 (slippage), and the blind retry filled at **0.276 SOL** — 36x under its own floor.
-  `can_enter` does **not** cover `entry_enabled`, so both are checked (`decide_arm` gates
-  them separately, and a stopped rule stays loaded as a drain rule). This is why
-  `Event::FillFailed` carries `at` — it was the only event with no clock. Failing the
-  re-check re-arms rather than terminating (only an exhausted ladder / `Fatal` is
-  `Done`), so the ONE gate re-decides and the gates a retry cannot express —
-  `exclusive` (which means *wait*), `dead`, `entry_unsatisfiable` — still apply. Full
-  rules: [docs/arch/position-lifecycle.md](docs/arch/position-lifecycle.md).
+  Confirming a revert is *slow* (~12 s measured), which is exactly when the market has
+  moved most — a blind retry can fill orders of magnitude under the rule's own entry
+  floor. `can_enter` does **not** cover `entry_enabled`, so both are checked
+  (`decide_arm` gates them separately, and a stopped rule stays loaded as a drain rule).
+  This is why `Event::FillFailed` carries `at` — it is the only event that would
+  otherwise have no clock. Failing the re-check re-arms rather than terminating (only an
+  exhausted ladder / `Fatal` is `Done`), so the ONE gate re-decides and the gates a retry
+  cannot express — `exclusive` (which means *wait*), `dead`, `entry_unsatisfiable` —
+  still apply. Full rules:
+  [docs/arch/position-lifecycle.md](docs/arch/position-lifecycle.md).
 - **`peak`/`trough` are position-scoped — only prices the position lived through may
   move them.** `fold_entered_extremes` skips any arm whose `entered_at` is newer than
   the trade being folded. This is a no-op live (every event postdates the fill) and
@@ -367,10 +370,9 @@ check — today: the rule editor's **Max total** and Trader Analysis **Max token
   [docs/plans/sweep/sim-parity.md](docs/plans/sweep/sim-parity.md)). **Simulate does**:
   it inherits the same `app_settings` value unless the request overrides it
   (`EngineSimRequest.skip_duplicate_identity`), and stamps the resolved policy on the
-  run (`SimMeta::dupe_guard_window_hours`) — a backtest whose result depends on
-  ambient state it does not record is how the pre-2026-07-28 cost runs became
-  incomparable. Note `app_settings` is **per database**: co-hosted live+lab share one
-  row (one `DATABASE_URL` in `deploy/hunter.compose.yml`), but EC2 and the workstation
+  run (`SimMeta::dupe_guard_window_hours`) — **a backtest whose result depends on ambient
+  state it does not record is not comparable to any other run.** Note `app_settings` is **per database**:
+  co-hosted live+lab share one row (one `DATABASE_URL` in `deploy/hunter.compose.yml`), but EC2 and the workstation
   do not — `db-incremental-sync.ps1` copies data tables, never settings.
 - **Deferred entry fingerprint gates:** a fingerprint axis whose source data isn't settled at
   `TokenCreated` (`first_slot_{buy,sell}_lamports`) can't match synchronously. The engine arms
@@ -386,8 +388,8 @@ check — today: the rule editor's **Max total** and Trader Analysis **Max token
   **live-real, live-paper, and single-rule simulate** are ALL decided inside
   `hunter-engine::reduce` — real vs paper fork *only* at the fill layer (`exec_real` vs
   `exec_paper`), simulate *only* at who feeds events (`lab`'s `replay.rs`). Never add a
-  second decision path or a per-strategy clone (the tpsl1/tpsl2/swing1 stack was retired in
-  Phase 7). A decision fix lands in exactly one place; live closes route through the engine
+  second decision path or a per-strategy clone — that shape existed once and was
+  retired. A decision fix lands in exactly one place; live closes route through the engine
   (`EngineHandle::manual_close` / `reconcile_cleared`), never a separate service. The
   **grouped-sweep** is the ONE allowed re-implementation — a precomputed `MetricSeries` scan
   (`lab/src/sweep/generic/strategy.rs`) that trades exactness for speed. Its hard contract:
@@ -400,11 +402,11 @@ check — today: the rule editor's **Max total** and Trader Analysis **Max token
   a sweep result is a ranking screener, NOT a backtest — always re-run a promoted combo
   through simulate before trusting its PnL** (the sweep's uncapped, per-token-tail numbers
   are optimistic upper bounds).
-- **Analysis-only death-close (`ExitReason::Dead`):** sim/grouped-sweep no longer mislabel
-  silent-death tokens as `Open` at a stale price — the shared deadness verdict
-  (`hunter-engine::deadness` / `token_cache::is_dead_verdict` SSOT, via
-  `strategies::death::find_death_point` for the exact point) books a Dead exit. The live
-  engine folds the same verdict; a dead **real** pool has no liquidity to sell into. See
+- **Analysis-only death-close (`ExitReason::Dead`):** a silent-death token must never be
+  booked `Open` at a stale price. Sim/grouped-sweep book a Dead exit from the shared
+  deadness verdict (`hunter-engine::deadness` / `token_cache::is_dead_verdict` SSOT, via
+  `strategies::death::find_death_point` for the exact point). The live engine folds the
+  same verdict; a dead **real** pool has no liquidity to sell into. See
   [docs/arch/strategies.md](docs/arch/strategies.md).
 - **Truncated logs drop trade legs:** the validator truncates a tx's logs past a byte limit,
   so the curve decoder under-counts legs on multi-buy bundle txs; `decode_curve_pb` recovers
@@ -414,8 +416,9 @@ check — today: the rule editor's **Max total** and Trader Analysis **Max token
 - **`trades`↔`wallet_dict` resolution:** the address lives only in `wallet_dict` (interned
   `wallet_id`), no FK on `trades.wallet_id`, so a missing dict row must never hide a trade —
   all `trades` read paths **LEFT JOIN** with `COALESCE(w.address,'unknown:'||wallet_id)`,
-  never INNER. On the `lab` mirror `wallet_dict` is non-destructively merged each sync. (An
-  INNER join once hid ~58% of the lab's trades — looked like an ingest miss, wasn't.)
+  never INNER. On the `lab` mirror `wallet_dict` is non-destructively merged each sync. An
+  INNER join here hides trades wholesale (~58% of the lab's, when it happened) and reads
+  exactly like an ingest miss.
 - **Flow hash SSOT:** `hunter_engine::metrics::flow_split::{ix_hash,wallet_hash,ix_hash_opt,ix_hash_from_labels_json}`
   are the only hashers for volume/organic classification. Live producer, lake replay, and
   event-log adapters must call them — never roll a private FNV/string join. Patterns compile
@@ -428,8 +431,8 @@ check — today: the rule editor's **Max total** and Trader Analysis **Max token
   `Settled` — evaluated at or past every clock their rules read (`arm::ClockHorizons`) with
   no cross-token input moved since. This is what stops a token that can never go dead (real
   reserves ≥ 30, or no reserve reading at all ⇒ `NaN` liquidity ⇒ "alive") from being swept
-  5x/second for the rest of a run; it was the dominant cost of a multi-day simulate
-  (~180x measured, `engine/tests/tick_bench.rs`). Three rules when editing the fold:
+  5x/second for the rest of a run — the dominant cost of a multi-day simulate
+  (**~180x measured**, `engine/tests/tick_bench.rs`). Three rules when editing the fold:
   a **new metric that moves on a bare tick** needs a `ClockHorizons` field; a **new
   cross-token input** a decision reads must bump `cross_epoch` (go through
   `with_counters` / `record_identity`, the ONE write paths); anything mutating a tracked
@@ -439,8 +442,8 @@ check — today: the rule editor's **Max total** and Trader Analysis **Max token
   [docs/plans/strategies/tick-cost-and-settled-tokens.md](docs/plans/strategies/tick-cost-and-settled-tokens.md).
 - **A trailing-window read is O(1) — keep it that way.** `flow_window` / `flow_split`
   maintain running sums over a **time-sorted** deque and correct only the two
-  out-of-window ends on read. They used to rescan the whole buffer *and* re-derive the
-  window width per element, which a flow-split rule paid once per metric per rule per
-  event. Never reintroduce a full-buffer scan in a `value()`, and never assume the caller
+  out-of-window ends on read. A full-buffer rescan (or re-deriving the window width per
+  element) is paid once per metric per rule per event by a flow-split rule — never
+  reintroduce one in a `value()`, and never assume the caller
   evicted at `now` (`TokenCreated`/`FirstSlotSettled` do not, and a skipped tick leaves
   entries un-evicted by design).

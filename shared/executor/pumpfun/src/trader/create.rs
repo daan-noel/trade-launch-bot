@@ -976,7 +976,7 @@ mod tests {
         assert_eq!(buy_ix.accounts.len(), 27, "must be the 27-account v2 buy layout");
     }
 
-    /// Phase C: an authored `create_layout` reshapes the create tx — a lean `[Core]`
+    /// An authored `create_layout` reshapes the create tx — a lean `[Core]`
     /// layout drops CU + tip, leaving just the create ix (`Core` placed opaque).
     #[test]
     fn create_layout_override_reshapes_the_tx() {

@@ -4,7 +4,7 @@
 //! append-only JSONL file (rotated by day **and** by size, retention-capped).
 //! `Tick` is **not** logged — it's regenerable — and `RulesReloaded` is **not**
 //! logged (rules are reloaded from PG on boot). Any live decision is therefore
-//! reproducible offline by replaying the log ("time-travel debugging", Phase 6),
+//! reproducible offline by replaying the log ("time-travel debugging"),
 //! and boot recovery replays the recent tail to rebuild **armed** state.
 //!
 //! **Why rotation is size-driven, not just daily.** The byte budget below is the

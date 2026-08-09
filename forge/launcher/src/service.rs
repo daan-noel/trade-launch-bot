@@ -641,7 +641,7 @@ pub async fn execute_launch(
                     "bundler pool short — planning a smaller bundle"
                 );
             }
-            // Phase 2.F: build the full launch as an orchestrator `Plan`
+            // build the full launch as an orchestrator `Plan`
             // (create + dev-buy + N bundler co-buys), all catalog-validated, then
             // pass the mandatory fingerprint-audit gate before it's persisted or a
             // single leg is built. The create + dev-buy is now `tx0` of the atomic

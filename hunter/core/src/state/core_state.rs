@@ -128,12 +128,11 @@ impl CoreState {
     // --- New (live/lab remake) data-layer repos -------------------------------
     // Unified strategy domain (strategy_rules/runs/run_metrics/positions),
     // per-venue sync watermarks, the raw_txs source feed, and the trades
-    // wallet-interning dictionary. The old per-strategy tpsl accessors below
-    // remain until Phase 2/3 rewires their consumers.
+    // wallet-interning dictionary.
 
     /// Unified strategy repo spanning `strategy_rules` / `strategy_runs` /
-    /// `strategy_run_metrics` / `strategy_positions` (replaces the per-strategy
-    /// tpsl1/tpsl2 rule/position/paper repos as consumers migrate in Phase 2/3).
+    /// `strategy_run_metrics` / `strategy_positions` — the ONE strategy repo; there
+    /// are no per-strategy rule/position/paper repos.
     pub fn strategy_repo(&self) -> StrategyRepo {
         StrategyRepo::new(self.db.clone())
     }

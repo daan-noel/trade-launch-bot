@@ -6,7 +6,7 @@
 //! here so `crate::strategies::analysis::…` paths keep resolving. The live crate
 //! now holds only the generic fingerprint+metrics [`engine`] — the legacy
 //! registry-dispatched orchestration (`execution` / `service` / `runner`) and the
-//! hand-cloned `tpsl_sniper_{1,2}` live modules were retired in Phase 7.
+//! there are no hand-cloned per-strategy live modules.
 pub use trading_core::strategies::analysis;
 
 pub mod engine;

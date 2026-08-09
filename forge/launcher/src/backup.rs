@@ -1,10 +1,10 @@
-//! Wallet-pool backup (wallet-pool Phase 4): copy the encrypted keystore +
-//! export the current `managed_wallets` table, run after each generation batch.
+//! Wallet-pool backup: copy the encrypted keystore + export the current
+//! `managed_wallets` table, run after each generation batch.
 //!
 //! SECURITY: this backup contains ENCRYPTED keystore blobs + `key_ref`s, never
 //! raw key material and never the KEK passphrase — `LAUNCHER_KEK_PASSPHRASE`
 //! must be stored SEPARATELY from these backups (never bundled together). See
-//! `docs/wallet-pool-plan.md` Phase 4 for the restore runbook.
+//! `docs/plans/wallet/wallet-management.md` for the restore runbook.
 
 use std::path::{Path, PathBuf};
 
@@ -20,7 +20,7 @@ use crate::config::LauncherSettings;
 const BACKUP_README: &str = "This directory holds ENCRYPTED wallet keystore blobs (keystore/) and a \
 managed_wallets export (managed_wallets.json). It does NOT contain the KEK \
 passphrase (LAUNCHER_KEK_PASSPHRASE) -- that must be stored SEPARATELY, never \
-alongside this backup. See docs/wallet-pool-plan.md Phase 4 for the restore \
+alongside this backup. See docs/plans/wallet/wallet-management.md for the restore \
 runbook (decrypt one known wallet and confirm the derived address before \
 trusting the pool).\n";
 

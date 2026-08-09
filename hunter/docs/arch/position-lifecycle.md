@@ -1,9 +1,5 @@
-# Real-trade position lifecycle (post-Console redesign)
+# Real-trade position lifecycle
 
-> Rewritten 2026-07-26 (`strategy-redesign`) after the status split (mig 0013) + manual
-> positions + Console landed. Describes the CURRENT machine; the pre-redesign audit
-> (defect matrix B1-B5 / S1-S7 / M1-M4 / N1-N4) and its decision record are in git
-> history (the `real-trade-console-redesign.md` roadmap plan, deleted once it landed).
 > Companion arch docs: [strategies.md](strategies.md), [trade-execution.md](trade-execution.md),
 > [frontend.md](frontend.md).
 
@@ -21,8 +17,8 @@
 ## 1. Status vocabulary
 
 `hunter_engine::event::PositionStatus` ⇄ `strategy_positions.status` (CHECK in mig 0013).
-`ExitFailed` and `Arming` no longer exist (0013 remapped: `ExitFailed` + entry NULL →
-`EntryFailed`; other `ExitFailed` → `ExitStuck`; `Arming` rows deleted/promoted).
+There is no `ExitFailed` and no `Arming` status — if you see either in an old query or
+fixture it maps to `EntryFailed` (entry NULL) or `ExitStuck` (everything else).
 
 | Status | Partition | Meaning |
 |---|---|---|
@@ -93,33 +89,30 @@ Reaper (`reapers.rs`, boot + 60 s):
 | `close_stale_paper_exit_pending` | paper crash artifact → book End at entry (breakeven) |
 | `close_paper_exit_stuck` | **paper** ExitStuck → book End at the feed price as of `updated_at` (else cache spot, else entry). No bag ⇒ nothing to redrive; every real sweep above is `mode='real'`, so these had no owner at all (§2.2) |
 
-### 2.2 Paper never had an `ExitStuck` owner
+### 2.2 Paper needs its own `ExitStuck` owner
 
-`ExitStuck` means "the sell gave up, the bag is still held" — a real-only premise,
-and every recovery query above filters `mode = 'real'`. A **paper** row that
-reached it therefore stayed open forever: 333 of 742 paper positions (45%) as of
-2026-08-05.
+`ExitStuck` means "the sell gave up, the bag is still held" — a real-only premise, and
+every recovery query above filters `mode = 'real'`. A **paper** row that reaches it has no
+owner and stays open forever unless `close_paper_exit_stuck` claims it.
 
-It reached it constantly because `exec_paper`'s exit resolved with
-`market_fill_on_empty_window = false` while lab replay/simulate and the sweep both
-pass `true`. A `Dead` exit fires *because* the token stopped printing, so its fill
-window is empty by construction: each of the engine's 5 retries re-fired against
-the same last trade, all 5 timed out, `ExitStuck`. Same for a manual close on a
-mint no longer in the cache. The bias is one-directional — the stranded rows are
-exactly the dead-token losers, so paper PnL read high.
+Paper reaches it easily: a `Dead` exit fires *because* the token stopped printing, so its
+fill window is empty by construction — with `market_fill_on_empty_window = false` each of
+the engine's 5 retries re-fires against the same last trade, all 5 time out, `ExitStuck`.
+Same for a manual close on a mint that has aged out of the cache. `exec_paper` therefore
+market-fills like analysis (lab replay/simulate and the sweep both pass `true`), falling
+back to the token's last known spot when no window can price it.
 
-Both halves are closed: the exit leg market-fills like analysis (and falls back to
-the token's last known spot when no window can price it), and the reaper sweep
-above owns any paper row that still fails. The 2026-08-05 backlog (359 local, 329
-server) was healed through that same pricing and both databases now hold zero
-`ExitStuck` rows, so no one-shot script survives — the reaper is the only path.
+**The bias is one-directional, which is why this is not cosmetic:** the stranded rows are
+exactly the dead-token losers, so paper PnL reads high while they sit open.
 
-The one rule to keep if this is ever re-derived: size the closing leg from **cost
-basis × price ratio**, never `price × tokens`. Rows written before the 2026-08-04
-token-scale fix carry `entry_token_amount` 1e6× high, so `price × tokens` books a
-1e6× fantasy PnL (and can overflow `bigint`); `entry_lamports` was always right
-and a price *ratio* is scale-free, so it is correct on both sides of that fix and
-identical on a consistent row.
+Healing is the reaper's job and only the reaper's — no one-shot script. Full incident:
+[`@history/2026-08-05-paper-exitstuck-backlog.md`](../history/2026-08-05-paper-exitstuck-backlog.md).
+
+**Size the closing leg from cost basis × price ratio, never `price × tokens`.** A price
+*ratio* is scale-free; `price × tokens` books a 1e6× fantasy PnL (and can overflow
+`bigint`) against any row whose `entry_token_amount` carries the old token scale, while
+`entry_lamports` was always right. See
+[`@history/2026-08-04-token-scale-1e6-pnl.md`](../history/2026-08-04-token-scale-1e6-pnl.md).
 
 ### 2.3 What "Stop" actually waits on
 
@@ -139,8 +132,8 @@ Three properties that a "stop takes forever" report should be checked against:
 - **Postgres is the authority; SSE is only the fast path.** The watcher re-reads its
   rows every 3 s, on every `Lagged`, and once more at the deadline. It shares the
   512-slot broadcast bus with one frame *per ingested trade*, and a terminal frame is
-  emitted exactly once — so a dropped frame used to be unrecoverable. Never re-derive
-  completion from SSE alone here.
+  emitted exactly once, so a dropped frame is unrecoverable from SSE alone. Never
+  re-derive completion from the stream here.
 - **It gives up out loud** (180 s → `partial`/`failed` naming the stranded count)
   rather than spinning. Anything still open then is the reaper's, not the stop's.
 
@@ -150,8 +143,8 @@ exit is bounded by `exec_paper::FILL_WAIT` (2 s) and retries fire immediately.
 
 ### 2.1 Why a stranded bag needs more than "retry"
 
-Three invariants the 2026-07-28 review established. All three had produced stranded
-real bags; each is now closed at its source.
+Three invariants. Each has produced stranded **real** bags when violated, and each is
+closed at its source — none is defensive-programming filler.
 
 **A durable-nonce sell never expires.** If it doesn't land, `schedule_nonce_refresh`
 re-arms the slot with the *same* hash, so it stays executable indefinitely. Blind
@@ -165,11 +158,11 @@ go to manual Verify.
 
 **6005 `BondingCurveComplete` is proof of migration, not a hint.** The exit loop
 latches the AMM route on it and retries with zero RPC (the pool is a pure PDA
-derivation). It used to re-confirm via `refresh_curve_facts`, whose `Err(_)` fell
-through to `Fatal` — an RPC blip stranded a token that was merely migrated and
+derivation). Do **not** re-confirm it via `refresh_curve_facts`: its `Err(_)` falls
+through to `Fatal`, so an RPC blip strands a token that is merely migrated and
 perfectly sellable. The latch is a **loop-local** `route_migrated`, not the token
 cache: `get_mut` returns `None` on an aged-out entry, which is exactly the long-hold
-case, so a cache-only flip was silently dropped.
+case, so a cache-only flip is silently lost.
 
 **A position's token account is a fact about its own buy.** `SnipeBuy` returns the
 account the buy funded and the position records that. Reading it back from the
@@ -196,14 +189,13 @@ redrive budget. PG-net alone cannot see either case.
 
 ### 2.2 Why a buy failed — `last_entry_error` (mig 0017)
 
-An `EntryFailed` row used to explain nothing. `reduce.rs` emits the terminal delta
-with `reason: None` (there is no `ExitReason` for a position that never opened), and
-the real-exec adapter discarded the one fact that *did* explain it: the `TradeError`
-from the send — not even logged — and the Anchor custom code from the on-chain revert.
-On 2026-07-27 that cost a log-dig: 9 `EntryFailed` rows in an 8 h window, all with
-zero on-chain buys, with no way to tell a **slippage** revert (6002/6042 ⇒ the buy
-floor is too tight for the market — a *tuning* fix, and ~27 landed reverts of burnt
-fees hinge on it) from a structural one.
+Without this column an `EntryFailed` row explains nothing: `reduce.rs` emits the terminal
+delta with `reason: None` (there is no `ExitReason` for a position that never opened), so
+the only facts that *do* explain it — the `TradeError` from the send, and the Anchor
+custom code from the on-chain revert — must be captured by the real-exec adapter or they
+are gone. What that buys you is the ability to tell a **slippage** revert (6002/6042 ⇒
+the buy floor is too tight for the market, a *tuning* fix) from a structural one without
+pulling container logs.
 
 `last_entry_error` is now written at every buy give-up / retry point:
 
@@ -229,11 +221,10 @@ returns without a `FillConfirmed`/`FillFailed` strands the arm in `EntryPending`
 and the row in `BuySubmitted` **forever** — it holds its `max_concurrent_tokens`
 slot for the life of the process, and past it, since boot re-adopts the row as an
 inert arm. Use `decision_loop::fail_entry` (`Fatal` for structural causes,
-`Reverted` where a later attempt can succeed); never a bare `return`. Fixed
-2026-08-03 after 10 such rows silenced a live rule for ~17 h: the buy send had no
-timeout (the sell path's `SELL_SEND_TIMEOUT` had no buy mirror), so a wedged send
-parked `run_entry` with nothing emitted. Two independent guards now exist — the
-bounded `BUY_SEND_TIMEOUT` upstream, and the reaper's no-signature drop below.
+`Reverted` where a later attempt can succeed); never a bare `return`. Two independent
+guards back this up — the bounded `BUY_SEND_TIMEOUT` upstream (an unbounded send is what
+parks `run_entry` with nothing emitted), and the reaper's no-signature drop below.
+Incident: [`@history/2026-08-02-unemitted-fill-leaks-slot.md`](../history/2026-08-02-unemitted-fill-leaks-slot.md).
 
 **A `BuySubmitted` row with zero signatures provably sent no transaction**, so it
 cannot own tokens and the reaper drops it past `UNENTERED_STALE` (600 s) exactly
@@ -252,7 +243,7 @@ terminal write lands *after* — a shared write path would clobber it.
 caller retries briefly, exactly as `mark_buy_submitted` does. The whole path is
 best-effort: a failed diagnostic write never changes the entry's outcome.
 Locked by `position_col_guard::writer_owned_columns_never_enter_the_full_row_write`,
-which also guards the 0012 columns (previously untested).
+which also guards the 0012 columns.
 
 ## 3. Close-action matrix (backend-enforced)
 

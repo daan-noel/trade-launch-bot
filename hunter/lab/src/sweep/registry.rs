@@ -1,5 +1,5 @@
 //! Strategy registry — the seam between `strategy_id` and the grouped sweep. Since
-//! the tpsl/swing retirement (Phase 7) there is exactly one arm, `"generic"`, mapping
+//! there is exactly one arm, `"generic"`, mapping
 //! to the unprefixed `grouped_sweep_*` table triple and the `GenericSweepStrategy`
 //! entry point (fingerprint + metric-condition axes, scanned over precomputed
 //! `MetricSeries`). The handler and repo stay fully table-name-/data-driven, so the
@@ -34,7 +34,7 @@ use crate::sweep::strategy::{ExitCode, ParamSpace, RefineSpec, SweepMethod};
 /// many candidate combos, not one rule — so a sweep group and a single-rule
 /// simulate of the "same" combo only produce identical PnL when the caller
 /// explicitly sets this to the rule's `buy_amount_sol` (parity plan A2; see
-/// `docs/plans/sweep/sweep-sim-parity.md`'s comparison-hygiene note until Phase 3
+/// `docs/plans/sweep/sim-parity.md`'s comparison-hygiene note until Phase 3
 /// makes simulate replay the sweep group directly).
 pub const SWEEP_DEFAULT_BUY_AMOUNT_SOL: f64 = 1.0;
 
@@ -577,7 +577,7 @@ pub fn strategy_ids() -> &'static [&'static str] {
 /// The strategy-agnostic result of a grouped sweep, ready for the generic repo:
 /// the per-group sweep results plus the resolved axes JSON to store on the run.
 /// The combo→param-JSON map is no longer carried here — the engine's [`GroupSink`]
-/// builds each group's write incrementally (Phase 4), so only the final combo
+/// builds each group's write incrementally, so only the final combo
 /// count survives to stamp on the run.
 pub struct GroupedSweepOutput {
     /// Number of param combos evaluated per group.

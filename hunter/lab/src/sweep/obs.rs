@@ -1,6 +1,6 @@
-//! Sweep memory/timing observability (Phase 0.3).
+//! Sweep memory/timing observability.
 //!
-//! The memory plan judges **every** later phase against the Phase 0 baseline on
+//! The memory plan judges every later change against a recorded baseline on
 //! *two* axes — peak resident MB **and** total seconds — so a memory win that
 //! silently regresses wall-clock is caught. This module is the shared, best-effort
 //! instrument: process RSS (via the cross-platform `memory-stats` crate) and a

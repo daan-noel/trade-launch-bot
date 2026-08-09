@@ -1,7 +1,6 @@
 # Decision record (ADR)
 
-Resolutions for the foundation design's *Open decisions* (the foundation plan doc
-was retired to git history once fully implemented). Each entry: **status**, the
+Resolutions for the platform's open design decisions. Each entry: **status**, the
 **choice**, the **rationale**, and **where it lives** in the code so the decision
 can't silently drift.
 

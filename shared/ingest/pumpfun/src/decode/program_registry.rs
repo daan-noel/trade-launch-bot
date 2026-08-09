@@ -81,7 +81,7 @@ pub fn program_friendly_name(id: &str) -> Option<&'static str> {
     registry().get(id).copied()
 }
 
-// ── Instruction-level decode for open (Anchor) programs (Phase 4) ─────────────
+// ── Instruction-level decode for open (Anchor) programs ─────────────
 //
 // The registry names the *program*; this names the *instruction* within it, so a
 // labelled ix goes from `"Jupiter Aggregator V6: Unknown"` to

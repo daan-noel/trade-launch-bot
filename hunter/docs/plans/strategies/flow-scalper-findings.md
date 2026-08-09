@@ -6,8 +6,7 @@ rows survive in [`../../roadmap/data/flow-scalper-ladder.csv`](../../roadmap/dat
 
 Companions: [execution-costs.md](execution-costs.md) (the cost model this produced),
 [armed-trailing-stop.md](armed-trailing-stop.md) (the `arm_above_pct` feature),
-[wallet-analysis.md](wallet-analysis.md) (the wallet analyses themselves — moved here
-2026-07-28 from `docs/roadmap/flow-reversion-scalper.md`).
+[wallet-analysis.md](wallet-analysis.md) (the wallet analyses themselves).
 
 ## The headline: the pattern is real, and it does not clear the fee
 

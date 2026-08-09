@@ -1,4 +1,4 @@
-//! Phase 2.F — the **mandatory plan gate** every forge write flow passes through.
+//! the **mandatory plan gate** every forge write flow passes through.
 //!
 //! The launcher/manage flows no longer hand-roll instructions from free-text
 //! variant strings. Instead each flow assembles an [`orchestrator::Plan`] (via the

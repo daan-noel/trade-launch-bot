@@ -18,7 +18,7 @@ deployed stack still works without ever putting the secret in the browser.
 | nginx Basic-Auth | username + password login (`.htpasswd`) | random internet traffic |
 | backend bearer (fail-closed) | `Authorization: Bearer <API_AUTH_TOKEN>` | anything reaching the backend without nginx's injected token |
 
-Only the **web** (nginx) container is published. `postgres` and `backend` stay on
+Only the **web** (nginx) containers are published. `postgres`, `live-api` and `lab-api` stay on
 the internal compose network — unreachable from outside.
 
 ## Why the token can't live in the frontend
@@ -38,8 +38,8 @@ backend (nginx in prod, the Vite dev proxy in dev) injects the bearer
 | Fail-closed middleware | `live/src/main.rs` — `require_bearer_auth` |
 | Token required at startup | `trading_core/src/config/settings.rs` — `required_non_empty("API_AUTH_TOKEN")` |
 | Prod bearer injection | `nginx/default.conf.template` — `proxy_set_header Authorization "Bearer ${API_AUTH_TOKEN}"` |
-| envsubst wiring | `frontend-react/Dockerfile` (template → `/etc/nginx/templates/`) + `docker-compose.yml` (`API_AUTH_TOKEN`, `NGINX_ENVSUBST_FILTER`) |
-| Dev bearer injection | `frontend-react/vite.live.config.ts` / `vite.lab.config.ts` — dev proxy `headers` |
+| envsubst wiring | `frontend/Dockerfile` (template → `/etc/nginx/templates/`) + `docker-compose.yml` (`API_AUTH_TOKEN`, `NGINX_ENVSUBST_FILTER`) |
+| Dev bearer injection | `frontend/vite.live.config.ts` / `vite.lab.config.ts` — dev proxy `headers` |
 
 ### The middleware rule (`require_bearer_auth`)
 

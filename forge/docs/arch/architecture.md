@@ -9,7 +9,7 @@ root `Bot/Cargo.toml` `members`.
 (`resolver = "1"`, root `Bot/Cargo.toml`) shared with `hunter/` and `shared/`. Forge's bins
 are **not** workspace `default-members`; build/run them with `-p forge-live` / `-p forge-lab`.
 Deep-dive detail: [../decisions.md](../decisions.md), [../roadmap-plan.md](../roadmap-plan.md),
-[../dev-buy-variants.md](../dev-buy-variants.md), [../analysis-workflow.md](../analysis-workflow.md).
+[../plans/launcher/dev-buy-variants.md](../plans/launcher/dev-buy-variants.md).
 
 ## Crate map — 5 forge crates (3 lib + 2 bin) + 3 shared crates
 
@@ -26,7 +26,7 @@ Deep-dive detail: [../decisions.md](../decisions.md), [../roadmap-plan.md](../ro
 | `ingest-pumpfun` | `shared/ingest/pumpfun/` | lib `ingest_laserstream` (dep key `ingest-laserstream`) | shared lib | Helius LaserStream gRPC transport + pump.fun decode; raw `Ingest`/`IngestHandle`/`IngestEvent` API | both products |
 | `http-auth` | `shared/http-auth/` | — | shared lib | `ApiAuth` + `require_bearer_auth` fail-closed bearer gate | both products |
 
-**Folded-in modules (no longer crates):** `lake` → `forge/lab/src/lake/`; `ingest-host` →
+**In-crate modules, not crates:** `lake` → `forge/lab/src/lake/`; `ingest-host` →
 `forge/live/src/ingest/`. `forge/keystore/` and `forge/wallet-backups/` are **data dirs**,
 not crates. `forge/frontend/` is the React SPA (React-Router + RTK-Query + Tailwind).
 
@@ -100,7 +100,7 @@ launcher tasks are each optional; absent, the box still boots and serves HTTP.
 ### `forge/lab/src/main.rs` — ANALYSIS (workstation, 2 worker threads)
 
 Modules: `http`, `lake`. No trader, no ingest, no launcher, no signing keys, no gRPC. Takes
-**no subcommands** (the old `lake-export` stub was removed; the column-SSOT seam survives in
+**no subcommands** (there is no `lake-export`; the column-SSOT seam lives in
 `lake::schema`). Builds DB pools over the local mirror, then serves one actix HTTP server on
 `HOST`/`PORT` (fallback `127.0.0.1:8240`) and `await`s it — no `tokio::select!` fan-out.
 `API_AUTH_TOKEN` is **optional** here (lab moves no SOL; reads pass regardless).

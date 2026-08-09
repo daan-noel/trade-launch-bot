@@ -1,4 +1,4 @@
-//! Portfolio/PnL read endpoints (Phase 1.5) — the `/api/portfolio/*` surface the
+//! Portfolio/PnL read endpoints — the `/api/portfolio/*` surface the
 //! Holdings, Home, and Live-Trading pages read. Thin handlers over
 //! [`crate::services::portfolio`] (the composition SSOT); no logic lives here.
 
@@ -235,7 +235,7 @@ fn default_real() -> bool {
 /// `GET /api/portfolio/positions[?real=true|false]`
 ///
 /// All open **strategy** positions across every rule (the Live-Trading roll-up,
-/// Phase 4). `real` defaults to true (real-money only).
+/// ). `real` defaults to true (real-money only).
 pub async fn get_portfolio_positions(
     app_state: web::Data<Arc<DeployState>>,
     query: web::Query<PositionsQuery>,

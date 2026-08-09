@@ -1,6 +1,6 @@
 //! Back-compat façade over `ingest_core::transport`.
 //!
-//! The generic gRPC transport + reconnect loop moved to `ingest-core` in Phase H
+//! The generic gRPC transport + reconnect loop lives in `ingest-core`
 //! (`transport::run<V>`). This shim preserves the pre-split call surface used by
 //! the standalone one-shot replay path
 //! (`hunter/live/src/services/laserstream_replay.rs`), which opens its own

@@ -216,7 +216,7 @@ fn build_state(
     }
 
     for trade in &trades {
-        // Intern the wallet into the token's `u32` namespace (Phase B step 2) before
+        // Intern the wallet into the token's `u32` namespace before
         // pushing — same path as the live append, so seeded rows match live rows.
         let cached = state.intern_trade(trade);
         state.push_trade_capped(cached);

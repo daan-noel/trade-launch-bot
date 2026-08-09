@@ -6,7 +6,7 @@
 //! reading the **same Parquet lake the grouped sweep reads** ([`LakeSource::load`],
 //! just with `Selection::with_signatures = true`) instead of the old per-chunk PG
 //! `find_by_mints_all` + `backtest_trade_cache` path — so a rule prices identically
-//! whether swept or drilled into (simulate-lake-migration-plan.md).
+//! whether swept or drilled into (docs/plans/database/lake-pg-read-paths.md).
 //!
 //! No `app_state`: the lake root is resolved from `SWEEP_LAKE_DIR` via
 //! [`lake_root`](crate::lake::lake_root) exactly as the grouped-sweep handler does, so

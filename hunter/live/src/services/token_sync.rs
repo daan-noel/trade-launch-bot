@@ -583,7 +583,7 @@ pub async fn run_token_sync(
     // while `recompute_token_state` rebuilds `state.trades` through the 50K
     // retention ring — so the two are not interchangeable for high-volume mints.
     // Project to the slim `CachedTrade` for the cache window, interning each wallet
-    // into the token's `u32` namespace (Phase B step 2); the uncapped `Trade` vec is
+    // into the token's `u32` namespace; the uncapped `Trade` vec is
     // retained for the API output. `recompute_token_state` below carries this
     // interner forward, so the retained ids stay valid. Cold sync path.
     let cached: Vec<CachedTrade> = trades.iter().map(|t| state.intern_trade(t)).collect();

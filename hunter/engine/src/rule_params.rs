@@ -1,6 +1,6 @@
 //! `RuleParams` — the typed form of `strategy_rules.params` (JSONB), the "WHEN
 //! it trades" half of a generic rule. Canonical JSON shape (design SSOT:
-//! `hunter/docs/roadmap/fingerprint-metrics-engine-plan.md` §5):
+//! `hunter/docs/arch/strategies.md`):
 //!
 //! ```json
 //! {
@@ -865,8 +865,8 @@ mod tests {
     use crate::metrics::evaluator::{Condition, Operator};
     use serde_json::json;
 
-    /// The canonical params example from the design docs
-    /// (`Bot/docs/strategy-redesign-answer-1.md`, trailing commas removed).
+    /// The canonical params example — the shape documented in the module header
+    /// above, pinned here so a serde change that breaks it fails a test.
     fn docs_example() -> Value {
         let side = json!({
             "m_snapshot": {

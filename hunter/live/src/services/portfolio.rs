@@ -1,5 +1,5 @@
 //! Portfolio/PnL read service — the composition SSOT the Holdings, Home, and
-//! Live-Trading surfaces all read (Phase 1 keystone). Mirrors
+//! Live-Trading surfaces all read. Mirrors
 //! [`super::wallet_tokens`]: composes on-chain holdings (`state.trader`) + live
 //! Jupiter marks + cost basis ([`TradeRepo::avg_entry_by_wallet_and_mints`]) +
 //! unrealized PnL ([`trading_core::models::portfolio::unrealized_pnl`], the single
@@ -736,7 +736,7 @@ async fn compose(
 mod tests {
     use super::*;
 
-    /// SSOT guard (Phase 1.6): the service's PnL composition is the SSOT
+    /// SSOT guard: the service's PnL composition is the SSOT
     /// `unrealized_pnl` fed with a UI-space average entry — never a re-implemented
     /// formula. Fixture: avg entry 1e-9 SOL/raw at 6 decimals = 1e-3 SOL/UI token;
     /// mark 2e-3 SOL/UI; 1000 UI held ⇒ cost 1.0 SOL, +1.0 SOL, +100%.
