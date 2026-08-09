@@ -181,7 +181,7 @@ pub struct StartGroupedSweepBody {
     /// ⇒ no Pass 2. Stages validated like rule `scale_out`; v1 restricts stage
     /// conditions to `m_position` / `take_profit` so the precompute columns from
     /// the axes grid stay sufficient. See
-    /// `docs/roadmap/scale-out-sweep-overlay-plan.md`.
+    /// `docs/arch/sweep.md` (*Pass-2 overlay*).
     #[serde(default)]
     pub scale_out: Option<serde_json::Value>,
     /// How many best combos per group Pass 2 re-scores. Default 3; ignored when
@@ -2140,7 +2140,7 @@ type ScaleOutGrid = (Vec<Vec<hunter_engine::rule_params::ExitStage>>, usize);
 /// null ⇒ `Ok(None)`. Each ladder is validated like a rule `scale_out` (see
 /// [`parse_scale_out_ladder`]); every top-K combo will be re-scored against every
 /// ladder here plus its own baseline and keep whichever wins — see
-/// `docs/roadmap/scale-out-sweep-overlay-plan.md`.
+/// `docs/arch/sweep.md` (*Pass-2 overlay*).
 fn parse_scale_out_pass2(
     raw: Option<&serde_json::Value>,
     top_k: Option<usize>,

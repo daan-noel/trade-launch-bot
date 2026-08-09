@@ -1480,7 +1480,7 @@ fn manual_buy_retries_with_frozen_lamports_then_entry_failed() {
     assert!(s.manual_rules.is_empty() && s.positions.is_empty());
 }
 
-// ── Scale-out / partial exits (roadmap partial-exits-plan.md §2) ──────────────
+// ── Scale-out / partial exits (docs/plans/strategies/partial-exits.md) ────────
 
 /// Enter-on-arm + fill helper for scale-out scenarios.
 fn enter_holding(s: &mut EngineState, m: &Mint) {

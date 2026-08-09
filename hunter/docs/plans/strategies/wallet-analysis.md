@@ -19,8 +19,9 @@ bucket) behind three durable conclusions, each in its own deep-dive:
 - [armed-trailing-stop.md](armed-trailing-stop.md) - the `arm_above_pct` exit fix this
   investigation produced, and the measurement that justified it.
 
-Current live work: `docs/roadmap/flow-scalper-64hp-rules.md` (the `fs2-*` rule ladder
-calibrated from the `64hP` section below).
+Rule ladders built from this: the `fs2-*` ladder (calibrated from the `64hP` section
+below) is specified in this file; its run status and the `fs3-*` ladder that superseded
+it are in [`../../roadmap/pending-measurement-runs.md`](../../roadmap/pending-measurement-runs.md).
 
 ---
 
@@ -648,10 +649,10 @@ put the true net around **+10..13 SOL/day** - same as the old estimate.
   entries ("other" is the largest single group at 902 entries / 127 mints) -
   reinforces the do-NOT-scope-by-fingerprint conclusion. IX1 is still the thin-token
   outlier (gross60 med 13.5 vs 33-56 for the rest; trail30 med 6.7 vs 14-16).
-- Engine-metric calibration drift (fed the now-retired `fs-*` seed-rule knobs, see
-  `docs/roadmap/flow-scalper-64hp-rules.md` - the omego-calibrated fingerprint A/B was
-  superseded once [flow-scalper-findings.md](flow-scalper-findings.md) confirmed his
-  gross edge doesn't clear the fee):
+- Engine-metric calibration drift (fed the now-retired `fs-*` seed-rule knobs - the
+  omego-calibrated fingerprint A/B was superseded by the `fs2-*` ladder below once
+  [flow-scalper-findings.md](flow-scalper-findings.md) confirmed his gross edge doesn't
+  clear the fee):
   trail30 p25/med/p75 = 3.5/**12.6**/22.7 (was 6.1/14.6/24.5); gross60 p25 = **11.2**
   (was 14.5); liquidity p25/p90 = 56.7/100.4; time p10 = 144s; net2 med -0.2 (an
   `nf>=0` floor still excludes ~half his entries - it remains a backtest-derived
@@ -870,9 +871,8 @@ paying despite carrying half the gross PnL.
 ### Proposed knob deltas for the `fs-%` seed rules (retired - superseded by `fs2-*`)
 
 These deltas against the old omego-calibrated `fs-*` rules were carried out in full in
-`docs/roadmap/flow-scalper-64hp-rules.md`'s `fs2-*` ladder
-(`hunter/scripts/seed-flow-scalper-64hp-rules.sql`). Kept here as the original
-reasoning trail:
+the `fs2-*` ladder below (`hunter/scripts/seed-flow-scalper-64hp-rules.sql`). Kept here
+as the original reasoning trail:
 
 Against the then-current values (trail30 12, gross60 11, liq band 55-100, retrace 5,
 stop_loss 25):
@@ -903,6 +903,63 @@ adoption than the omego-calibrated rules assume.
   further ~13 SOL.
 - Analysis tables (`s64_tr`, `s64_bal`, `s64_ep`, `s64_mkt`, `s64_first`, `s64_sel`)
   were left in the hunter PG for follow-up; drop them when done.
+
+### `fs2-*` ladder - the knob deltas above, carried out
+
+Seeded by [`../../../scripts/seed-flow-scalper-64hp-rules.sql`](../../../scripts/seed-flow-scalper-64hp-rules.sql)
+(paper, `is_active=false`). ONE broad fingerprint (`fs2-ALL broad`; creation shape
+carries no signal once hotness is known - the fingerprint-axis section above) x 12
+rules, each moving exactly ONE knob off `fs2-00 base`, so every comparison is clean.
+
+```
+entry (AND)   m_snapshot.time        >= 30      his p25 first-buy age is 30 s
+              m_snapshot.liquidity   36 .. 70   his first-buy vsol p25-p75
+              m_price_window(30).trail >= 18    dip off the 30 s high; his >-8% bucket is
+                                                his ONLY losing cohort (-0.81%/ep)
+              m_flow_window(60).gross_flow >= 45  his p25 gross60 = 45.6 SOL
+              m_flow_window(2).net_flow   >= 0    sell-exhaustion
+exit (OR)     m_position.retrace     >= 7        his measured trail is 6.8%
+              m_position.arm_above_pct = 2       <- he does NOT have this; see below
+              m_position.held        >= 90       his >90 s cohort is net NEGATIVE
+              m_flow_window(30).gross_flow <= 3  cold-token bailout; he does NOT have this
+              stop_loss              = 12        floor while the trail is unarmed
+buy           0.30 SOL fixed                     pct-of-vsol sizing is unimplemented
+```
+
+Ladder (each row = one knob off base): `01` dip 12 / `02` dip 25 / `03` trail 4 /
+`04` trail 11 / `05` unarmed / `06` no time cap / `07` no dead-flow exit / `08` liq
+30-110 / `09` gross60 20 / `10` size 0.10 SOL / `11` size 0.80 SOL. Param shapes were
+verified against `RuleParams::parse` + `CompiledRule::compile` (entry reqs = 5;
+`arm_above_pct` attaches to `retrace` only, never to `held`; the dead-flow req is
+token-scoped at window 30; `stop_loss` desugars).
+
+Two deliberate departures from his measured behaviour, both measured on his own
+episodes:
+
+1. **Armed trail.** His trail is unarmed (losers exit at a median -7.16% = the trail
+   firing with `peak` still at entry). That mostly works because his median *pre-peak*
+   drawdown is only -1.15%. But **23.6% of his big winners dipped >7% before peaking**,
+   so an unarmed 7% trail cuts them. `arm_above_pct: 2` keeps them; `stop_loss: 12` is
+   the floor until it arms. `fs2-05` reverts to his literal unarmed exit for the A/B.
+   See [armed-trailing-stop.md](armed-trailing-stop.md).
+2. **Dead-flow bailout.** His only defect, quantified above: 227 cold-token episodes
+   costing -225.3 SOL. `fs2-07` removes it for the A/B. **Do NOT express this as
+   `m_price_lifetime.stall`** - it is seconds since the last *new all-time high*, so on
+   a dip-entry rule it is true by construction and just caps position lifetime (the
+   defect that pinned every `fs-*` hold to ~15 s -
+   [flow-scalper-findings.md](flow-scalper-findings.md) finding #2).
+
+**Buy size is the least-grounded knob.** 64hP sizes at 1.859% of vsol capped at 1.5 SOL
+gross (~0.8 SOL in this band), but [execution-costs.md](execution-costs.md)'s
+impact-aware model puts the optimal *fixed* size at `sqrt(fixed_cost_per_leg * vsol)` =
+~0.21-0.27 SOL on this band, not 0.30. `fs2-10`/`fs2-11` bracket it (0.10 / 0.80);
+consider a rule nearer the computed optimum before sweeping.
+
+Calibration caveats specific to this ladder, beyond the window caveats above: it rests
+on **one 5-day window and one wallet**, and entering at token age <1 min (his profile)
+is untested against *our* arm-to-fill latency. Run status, the `fs3-*` supersession and
+the two engine gaps it wants:
+[`../../roadmap/pending-measurement-runs.md`](../../roadmap/pending-measurement-runs.md).
 
 ## Dev-buy size - the one creation axis that predicts OUTCOME (2026-07-28)
 
@@ -1072,7 +1129,7 @@ tokens over the window (~110/day)**, and a 6-day simulate folds in **60 s** inst
 ~20 min. It is an **instant** axis (`has_instant_criterion`), so it matches
 synchronously on `TokenCreated` with no `PendingFirstSlot` deferral.
 
-Seed: [`../../scripts/seed-flow-scalper-dev13-rules.sql`](../../scripts/seed-flow-scalper-dev13-rules.sql)
+Seed: [`../../../scripts/seed-flow-scalper-dev13-rules.sql`](../../../scripts/seed-flow-scalper-dev13-rules.sql)
 (`fs3-*`, paper, `is_active=false`).
 
 ## `trunoest` - momentum-IGNITION pump-rider, a different family (2026-07-31)
@@ -1085,7 +1142,7 @@ legs are in our curve feed: **730 legs / 494 buys / 236 sells / 255 mints**
 (0.25% of the 102,208-mint universe - the most selective wallet studied yet).
 Scratch tables were dropped after the analysis; the numbers below are the record.
 
-Seed: [`../../scripts/seed-trunoest-rules.sql`](../../scripts/seed-trunoest-rules.sql)
+Seed: [`../../../scripts/seed-trunoest-rules.sql`](../../../scripts/seed-trunoest-rules.sql)
 (`tru-00` his size / `tru-01` impact-optimal 0.30 SOL, paper, `is_active=false`;
 the knob->measurement map is in the script header).
 

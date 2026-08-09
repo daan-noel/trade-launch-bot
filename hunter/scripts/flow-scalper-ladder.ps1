@@ -138,8 +138,8 @@ function Set-Age ($p, $v) { $p.entry.m_snapshot.time = @(@{ operator = '>='; val
 function Use-64hpGeometry ($p) {
   # `64hP97Bwr5...` - the SECOND scalper wallet, whose closed-episode economics clear
   # the pump.fun fee by ~2.5pp where omego's are flat. Knobs from the 2026-07-28
-  # section of docs/plans/strategies/wallet-analysis.md (rule-ladder spec:
-  # docs/roadmap/flow-scalper-64hp-rules.md). Every one differs from the omego
+  # section of docs/plans/strategies/wallet-analysis.md (rule-ladder spec: the
+  # "fs2-* ladder" section of that file). Every one differs from the omego
   # calibration this script was originally built around.
   Set-Age       $p 45      # his med token age at first buy is 0.8 min, not 5.3
   Set-Liquidity $p 36 70   # his first-buy vsol p25-p75; 40-55 is his sweet spot

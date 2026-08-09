@@ -34,15 +34,17 @@ at 83.00 SOL, and those marks survive scrutiny (top-3 concentration 13.2%, media
 scalp and lets ~19% ride; on winners that residual marks ~7× its cost basis.
 
 **So his edge is a runner tranche, and the scalp round trip is a fee-paying wash that
-funds it.** `hunter-engine` has **no partial-exit concept** — no tranche, scale-out,
-or sell-percentage anywhere in `arm.rs`/`reduce.rs`; every exit closes 100%. The
-strategy shape we were tuning is structurally incapable of the thing that makes him
-money. That is not a tuning gap.
+funds it.** At the time of this measurement `hunter-engine` had **no partial-exit
+concept** — no tranche, scale-out, or sell-percentage anywhere in `arm.rs`/`reduce.rs`;
+every exit closed 100%. The strategy shape we were tuning was structurally incapable of
+the thing that makes him money. That is not a tuning gap — and it is what motivated the
+scale-out ladder shipped 2026-07-29 ([partial-exits.md](partial-exits.md)), which closed
+the capability but has not yet been re-measured against this pattern.
 
 > `64hP97Bwr5...` is the same family with better economics (+2.54%/SOL cycled net of
 > fees) and **is** the right template — see the `64hP` section of
-> [wallet-analysis.md](wallet-analysis.md), and the live rule ladder built from it at
-> `docs/roadmap/flow-scalper-64hp-rules.md`.
+> [wallet-analysis.md](wallet-analysis.md), including the `fs2-*` rule ladder built
+> from it.
 
 ## Three mechanical defects, all real, all fixed
 

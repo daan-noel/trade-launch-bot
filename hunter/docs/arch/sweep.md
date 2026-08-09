@@ -176,8 +176,9 @@ via `ScaleOutBuilder` (same stage editor as the Rule Editor) rather than
 picking from canned presets: Pass 2 is meant to test a hypothesis you already
 believe in against the sweep's own top-K survivors, not to blind-search a grid
 of guesses — comparing many arbitrary ladders per combo on a small sample is a
-multiple-comparisons trap (looks good by chance, not real edge). See
-[`docs/roadmap/scale-out-sweep-overlay-plan.md`](../roadmap/scale-out-sweep-overlay-plan.md).
+multiple-comparisons trap (looks good by chance, not real edge). The staged exit
+semantics themselves are in
+[`../plans/strategies/partial-exits.md`](../plans/strategies/partial-exits.md).
 
 ### Flow axes (`m_flow_split` / `m_flow_split_window`)
 

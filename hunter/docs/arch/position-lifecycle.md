@@ -2,8 +2,8 @@
 
 > Rewritten 2026-07-26 (`strategy-redesign`) after the status split (mig 0013) + manual
 > positions + Console landed. Describes the CURRENT machine; the pre-redesign audit
-> (defect matrix B1-B5 / S1-S7 / M1-M4 / N1-N4) is in git history of this file, and the
-> decision record is [../roadmap/real-trade-console-redesign.md](../roadmap/real-trade-console-redesign.md).
+> (defect matrix B1-B5 / S1-S7 / M1-M4 / N1-N4) and its decision record are in git
+> history (the `real-trade-console-redesign.md` roadmap plan, deleted once it landed).
 > Companion arch docs: [strategies.md](strategies.md), [trade-execution.md](trade-execution.md),
 > [frontend.md](frontend.md).
 
@@ -27,7 +27,7 @@
 | Status | Partition | Meaning |
 |---|---|---|
 | `BuySubmitted` | Open | buy in flight; stale >600 s (`BUY_SUBMITTED_REVIEW_SECS` SSOT) surfaces `needs_review` via API + SSE |
-| `Holding` | Open | entry filled, SOL deployed (mid-ladder scale-out stays `Holding` after a partial fill; banked fraction is `sold_token_amount` / ledger — see mig 0018 + `docs/roadmap/partial-exits-plan.md`) |
+| `Holding` | Open | entry filled, SOL deployed (mid-ladder scale-out stays `Holding` after a partial fill; banked fraction is `sold_token_amount` / ledger — see `position_fills` + [../plans/strategies/partial-exits.md](../plans/strategies/partial-exits.md)) |
 | `ExitPending` | Open | sell in flight (partial **or** full; portion sized at exec from `Portion`) |
 | `ExitStuck` | Open · attention | sell gave up, **bag still held**; reaper redrives ×`EXIT_REDRIVE_CAP=2` then `exit_parked` (mig 0012 cols) |
 | `ExitUnconfirmed` | Open · attention | sell may/may-not have cleared; auto-re-sold **only** once the original is proven unexecutable (§2.1); bag-cleared reaper heal + manual Verify |

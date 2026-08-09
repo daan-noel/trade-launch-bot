@@ -72,7 +72,7 @@ const MAX_TOKEN_CAP = 100000;
  * uses), not auto-searched candidates. Pass 2 authors and tests exactly ONE
  * ladder at a time: comparing many arbitrary shapes against the same small
  * per-combo sample is a multiple-comparisons trap (a "winner" that's noise,
- * not edge) — see `docs/roadmap/scale-out-sweep-overlay-plan.md`. Loading a
+ * not edge) — see `docs/arch/sweep.md` (*Pass-2 overlay*). Loading a
  * template just seeds the editor; the user still owns and can reshape it.
  */
 const SCALE_OUT_TEMPLATES: { label: string; stages: ExitStage[] }[] = [

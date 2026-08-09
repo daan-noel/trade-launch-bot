@@ -403,7 +403,7 @@ pub enum Event {
 
 /// How much of a held bag a sell should close. `All` is today's full-bag path;
 /// `BpsOfInitial` sells that many basis points of the **initial** entry bag
-/// (partial exits / scale-out / manual Sell N%). See `docs/roadmap/partial-exits-plan.md`.
+/// (partial exits / scale-out / manual Sell N%). See `docs/plans/strategies/partial-exits.md`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Portion {
     /// Close 100% of the remaining bag.
@@ -424,7 +424,7 @@ impl Portion {
     /// `BpsOfInitial` sizes off the **initial** bag (`initial * bps / 10_000`) and
     /// clamps to the still-held remainder (`initial - sold`). `All` sells the
     /// entire remainder. Shared by live exec, paper, lab replay, and orphan sells
-    /// — one formula so legs cannot drift (see `docs/roadmap/partial-exits-plan.md`).
+    /// — one formula so legs cannot drift (see `docs/plans/strategies/partial-exits.md`).
     pub fn token_amount(self, initial: u64, sold: u64) -> u64 {
         let remaining = initial.saturating_sub(sold);
         match self {

@@ -98,7 +98,7 @@ pub struct GroupedSweepRun {
     /// so the winning ladder (if any) is baked directly into that specific
     /// combo's own `_combos.params` / `best_params` at write time — never merged
     /// from this run-level field at read time. See
-    /// `docs/roadmap/scale-out-sweep-overlay-plan.md`.
+    /// `docs/arch/sweep.md` (*Pass-2 overlay*).
     pub scale_out: Option<Value>,
     /// How many best combos per group Pass 2 re-scores. `None` when no overlay.
     pub scale_out_top_k: Option<i32>,

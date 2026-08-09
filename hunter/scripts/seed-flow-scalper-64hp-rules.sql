@@ -8,8 +8,9 @@
 -- pump.fun fee.
 --
 -- Analysis: hunter/docs/plans/strategies/wallet-analysis.md, section "`64hP` - second
--- scalper wallet, same family, better economics (2026-07-28)". Rule-ladder spec:
--- hunter/docs/roadmap/flow-scalper-64hp-rules.md.
+-- scalper wallet, same family, better economics (2026-07-28)"; the rule-ladder spec is
+-- the "`fs2-*` ladder" section of that same file. Run status + the `fs3-*` ladder that
+-- superseded this one: hunter/docs/roadmap/pending-measurement-runs.md.
 --
 -- Design: ONE fingerprint (broad; creation shape carries no signal once hotness is
 -- known) x 9 rules that each move ONE knob off the base, so every comparison is

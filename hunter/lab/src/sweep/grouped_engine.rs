@@ -103,7 +103,7 @@ pub struct GroupResult {
     /// own exit (kept as-is). Read by [`retained_combo_params`] to bake each
     /// combo's own winning ladder directly into its persisted `params` — **not**
     /// a run-wide ladder, since the grid search picks independently per combo.
-    /// See `docs/roadmap/scale-out-sweep-overlay-plan.md`.
+    /// See `docs/arch/sweep.md` (*Pass-2 overlay*).
     pub scale_out_winners: HashMap<u32, serde_json::Value>,
 }
 

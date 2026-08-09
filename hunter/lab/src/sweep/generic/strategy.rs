@@ -119,7 +119,7 @@ pub struct GenericSweepStrategy {
 }
 
 /// A small **grid** of candidate scale-out ladders + per-group top-K for Pass 2
-/// (see `docs/roadmap/scale-out-sweep-overlay-plan.md`). Dynamic, not fixed: each
+/// (see `docs/arch/sweep.md`, *Pass-2 overlay*). Dynamic, not fixed: each
 /// top-K combo is independently re-scored under its own baseline (no ladder) PLUS
 /// every ladder here, and keeps whichever wins — a combo the ladder doesn't help
 /// stays on its own Pass-1 exit. Bounded cost: `variants.len() + 1` staged scans

@@ -107,7 +107,7 @@ pub struct RuleParams {
     /// Exit conditions. `None` = TP/SL/death only.
     pub exit: Option<SideConditions>,
     /// Ordered partial-exit ladder. `None` / empty = no scale-out (legacy full
-    /// close only). See [`ExitStage`] and `docs/roadmap/partial-exits-plan.md`.
+    /// close only). See [`ExitStage`] and `docs/plans/strategies/partial-exits.md`.
     pub scale_out: Option<Vec<ExitStage>>,
     /// Re-entry lifecycle. `None` = one-shot (`Done` is terminal per (token, rule) —
     /// every stored rule's behavior). See [`ReEntry`].
