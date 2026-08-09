@@ -22,7 +22,7 @@ Live money surfaces after Rules Control/Evidence:
 - Tabs: **Open** (non-stuck) · **Waiting** · **Needs attention** (ExitPending/Failed/Unconfirmed) · **Recent** (short tail + PnL).
 - Open columns: Age · Entry ◎ · **MTM ◎** · **PnL%** (bag `unrealized_pnl` SSOT, real mode) · Sell/Trade.
 - Recent columns: PnL ◎ · **PnL%** · Hold · Closed.
-- Row select expands **`rowDetail`**: fact tiles + `FloorMintChart` (entry/exit markers). Waiting also charts the mint; Open/Recent use `FloorPositionDetail`.
+- Row select expands **`rowDetail`**: fact tiles + `FloorMintChart` (entry/exit markers; clicking a candle or dragging a range lists that window's trades under the chart). Waiting also charts the mint; Open/Recent use `FloorPositionDetail`.
 - Page strips: Open MTM by rule · Recent PnL by rule (`FloorBookStrip`).
 - Rule column → Rules Evidence; Recent is not full history.
 - Notify: clean `End` → Rules Evidence; stuck exits → Floor attention; else Floor open/waiting.

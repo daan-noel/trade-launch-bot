@@ -214,7 +214,9 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   boundary, so it downloads when a chart actually mounts. Call sites use
   `LazyTokenTradeChart` / `LazyLabTokenInspect(Modal)` / `LazyTokenChartsGrid` /
   `LazyFloorMintChart` (live Console + `FloorPositionDetail`; Console manual-trade
-  passes `chrome="compact"` so the toolbar collapses behind a Tools toggle) /
+  passes `chrome="compact"` so the toolbar collapses behind a Tools toggle; the
+  candle/range selection is **controlled** — a host wires `useBarTradesSelection` and
+  renders the trades table itself, see below) /
   `LazyLivePositionInspectModal` (live Rules + Rule Analyze) / `LazyFlowPreviewChart` (lab
   Flow Discovery); all lazy Suspense fallbacks share `LoadingState` (`page` / `panel` /
   `inline`). Lab Creation Stats owns `GroupedCreationSection` (lab-only page — no live
@@ -229,6 +231,18 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
     only the lazily-loaded charts import. Verify after any chart-module change: no
     `modulepreload` in `dist/index.html`/`dist/lab.html` should resolve to a chunk that
     statically imports `lightweight-charts`.
+- **Clicking a candle lists that bar's trades — one implementation.** The chart emits the
+  pick only (`onBarClick` / `onRangeChange`); `useBarTradesSelection` holds it (bar and
+  range are mutually exclusive), `token-price-chart/barTrades.ts` (`tradesInBar` /
+  `tradesInRange`) is the ONE matcher keying trades exactly as the chart bars them, and
+  `BarTradesPanel` renders the table (entry/exit row tint from `eventMarkers`, own-wallet
+  accent). `TokenTradeChart` puts it under its chart and can yield it to an outside pick
+  via `externalSelection`; `FloorPositionDetail` uses `MintBarTradesPanel` — same RTK Query
+  cache the chart filled, so no extra request — placed **below** the chart ∥ fills grid,
+  which is the only place with the width for a table. A host outside `token-price-chart`
+  deep-imports (`.../barTrades`, `.../types`), never the barrel, which would drag
+  `lightweight-charts` into a statically-mounted chunk. Detail:
+  [@plans/token-analysis/token-history-chart-functionalities.md](../plans/token-analysis/token-history-chart-functionalities.md) §6a.
 
 ## Pages by mode
 

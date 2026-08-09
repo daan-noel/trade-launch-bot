@@ -31,6 +31,7 @@ import {
   tradeBarSlot,
   tradeBarTime,
 } from 'components/token-price-chart/chartBars';
+import { tradesInBar } from 'components/token-price-chart/barTrades';
 import { BarCrosshairFields } from 'components/token-price-chart/BarCrosshairFields';
 import { BarCrosshairTooltip } from 'components/token-price-chart/BarCrosshairTooltip';
 import { createChartTimeFormatters } from 'components/token-price-chart/chartTimezone';
@@ -182,16 +183,6 @@ function loadFlowChartPrefs(): FlowPreviewChartPrefs {
 
 function saveFlowChartPrefs(prefs: FlowPreviewChartPrefs) {
   setString(STORAGE_KEYS.flowPreviewChartPrefs, JSON.stringify(prefs));
-}
-
-/** Trades within the clicked bar — same bucket-key matching `TokenTradeChart`
- *  uses for its own bar-click selection. */
-function tradesInBar(trades: TradeRecord[], bar: ChartBarSelection): TradeRecord[] {
-  if (bar.groupMode === 'slot') {
-    return trades.filter((t) => t.slot === bar.slot);
-  }
-  const intervalSec = bar.intervalSec ?? 60;
-  return trades.filter((t) => tradeBarTime(t.block_time, intervalSec) === bar.barTime);
 }
 
 /** Vol/non-vol overlay line colors, by what each side represents:

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { buildEventMarkers, type InspectTarget } from 'components/strategy/inspectTarget';
 import { exitReasonBadge } from 'components/strategy/strategyColumns';
@@ -13,6 +13,8 @@ import {
   pctGradeClass,
   signedToneClass,
 } from 'lib/signedTone';
+import { MintBarTradesPanel } from 'components/tokens/MintBarTradesPanel';
+import { useBarTradesSelection } from 'components/tokens/useBarTradesSelection';
 import { LazyFloorMintChart } from './LazyFloorMintChart';
 import { OpenPositionStatusChips } from './openPositionStatus';
 
@@ -92,7 +94,11 @@ export function FloorPositionDetail({
    */
   chartAside?: ReactNode;
 }) {
-  const markers = buildEventMarkers(facts.inspect);
+  const barTrades = useBarTradesSelection();
+  // Memoized: an open position re-renders on every mark tick, and a fresh marker
+  // array would rebuild the chart's markers and the trades table's row tinting
+  // each time.
+  const markers = useMemo(() => buildEventMarkers(facts.inspect), [facts.inspect]);
   const mtmOrPnl = facts.mtmSol ?? facts.pnlSol;
   const pct = facts.pnlPct;
   const statusKey = facts.statusKey ?? facts.status;
@@ -113,6 +119,7 @@ export function FloorPositionDetail({
       tableId="floor-detail"
       height={chartHeight}
       flowPatternKeys={facts.flowPatternKeys ?? null}
+      {...barTrades.chartProps}
     />
   );
 
@@ -288,6 +295,24 @@ export function FloorPositionDetail({
       ) : (
         chart
       )}
+
+      {/* Bar/range trades sit BELOW the chart ∥ aside grid, not inside the chart
+          column — a trades table in ~half a modal's width is unreadable. Mounted
+          only while something is picked, so an unselected detail adds no flex
+          gap; the click guard keeps a click inside the table from collapsing the
+          host's expanded row. */}
+      {barTrades.active ? (
+        <div onClick={(e) => e.stopPropagation()}>
+          <MintBarTradesPanel
+            mint={facts.mint}
+            selection={barTrades}
+            tableId="floor-detail-bar-trades"
+            eventMarkers={markers}
+            flowPatternKeys={facts.flowPatternKeys ?? null}
+            className="border-t border-white/7 pt-2"
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

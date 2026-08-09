@@ -2,28 +2,21 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   CHART_COLORS,
   TokenPriceChart,
-  tradeBarSlot,
-  tradeBarTime,
-  type ChartBarSelection,
+  tradesInBar,
+  tradesInRange,
   type ChartEventMarker,
   type ChartMetric,
-  type ChartRangeSelectionDetail,
 } from 'components/token-price-chart';
-import { DataTable } from 'components/table/DataTable';
-import { tokenTradeColumns } from 'components/tokens/tokenTradeColumns';
-import { Badge } from 'components/ui/Badge';
+import { BarTradesPanel } from 'components/tokens/BarTradesPanel';
+import { useBarTradesSelection } from 'components/tokens/useBarTradesSelection';
 import { usePriceUnit } from 'context/PriceUnitContext';
-import { useTimezone } from 'context/TimezoneContext';
-import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { useProfileWallets } from 'hooks/useProfileWallets';
 import { useWatchTokenTradesLive } from 'hooks/useTokenTradesLive';
-import { formatTimestampMs } from 'utils/date';
 import { apiErrorMessage, useGetTokenTradesQuery } from 'store/apiSlice';
 import type { TokenDetailRecord, TradeRecord } from 'types';
 
 /** Stable empty reference so the chart doesn't re-aggregate on every render. */
 const EMPTY_TRADES: TradeRecord[] = [];
-const tradeRowKey = (t: TradeRecord) => t.id;
 
 /** A selection that lives outside the chart's own bar/range click (e.g. a swing
  *  leg picked in a separate results table) but should drive the trades panel
@@ -67,45 +60,6 @@ interface TokenTradeChartProps {
   flowPatternKeys?: ReadonlySet<string> | null;
 }
 
-/** Maps tx signature → kind for entry/exit row highlighting in the trades table.
- *  Every inspect source carries the real fill signature: TPSL sim/position results
- *  read it off the position, and the grouped-sweep drill-in resolves it from the
- *  `trades` table by (mint, slot, side) — the slim `SweepTrade` the sweep walks has
- *  none, so the backend looks it up before returning the row. */
-function buildEntryExitMap(markers: ChartEventMarker[] | null | undefined): Map<string, 'entry' | 'exit'> {
-  const m = new Map<string, 'entry' | 'exit'>();
-  if (!markers) return m;
-  for (const marker of markers) {
-    if (marker.txSignature) m.set(marker.txSignature, marker.kind);
-  }
-  return m;
-}
-
-/** Trades within the clicked bar, matched the same way the chart buckets them. */
-function tradesInBar(trades: TradeRecord[], bar: ChartBarSelection): TradeRecord[] {
-  if (bar.groupMode === 'slot') {
-    return trades.filter((t) => t.slot === bar.slot);
-  }
-  const intervalSec = bar.intervalSec ?? 60;
-  return trades.filter((t) => tradeBarTime(t.block_time, intervalSec) === bar.barTime);
-}
-
-/** Trades whose bar key falls inside the drag-selected range [lo, hi]. */
-function tradesInRange(
-  trades: TradeRecord[],
-  range: ChartRangeSelectionDetail,
-): TradeRecord[] {
-  const lo = Math.min(range.lo, range.hi);
-  const hi = Math.max(range.lo, range.hi);
-  return trades.filter((t) => {
-    const key =
-      range.groupMode === 'slot' ? tradeBarSlot(t) : tradeBarTime(t.block_time, range.intervalSec);
-    if (key == null) return false;
-    const k = key as number;
-    return k >= lo && k <= hi;
-  });
-}
-
 /**
  * Trade-history price chart for the selected token's detail panel. Pulls the
  * per-mint trades from the shared RTK Query cache (same key as the Swing
@@ -125,13 +79,9 @@ export function TokenTradeChart({
   flowPatternKeys = null,
 }: TokenTradeChartProps) {
   const { unit, usdRate } = usePriceUnit();
-  const { timezone } = useTimezone();
-  const price = usePriceDisplay();
   const [metric, setMetric] = useState<ChartMetric>('price');
-  // Candle click and range drag are mutually exclusive selections: setting one
-  // clears the other so only a single trades table is shown at a time.
-  const [selectedBar, setSelectedBar] = useState<ChartBarSelection | null>(null);
-  const [selectedRange, setSelectedRange] = useState<ChartRangeSelectionDetail | null>(null);
+  // A pick inside the chart hands control back from any external selection.
+  const selection = useBarTradesSelection(externalSelection?.onClear);
 
   const mint = detail?.mint_address ?? '';
   // Live append: `trade_executed` → RTK `getTokenTrades` cache (shared watch set).
@@ -176,102 +126,33 @@ export function TokenTradeChart({
   // takes over the panel below — clear this chart's own bar/range selection so
   // only one selection is shown at a time. Keyed off `.key`, not the object
   // reference, since callers rebuild the object every render.
+  const clearOwnSelection = selection.clear;
   useEffect(() => {
-    if (externalSelection) {
-      setSelectedBar(null);
-      setSelectedRange(null);
-    }
-  }, [externalSelection?.key]);
-
-  const handleBarClick = useCallback((selection: ChartBarSelection | null) => {
-    setSelectedBar(selection);
-    if (selection) {
-      setSelectedRange(null);
-      externalSelection?.onClear();
-    }
-  }, [externalSelection]);
-
-  const handleRangeChange = useCallback((range: ChartRangeSelectionDetail | null) => {
-    setSelectedRange(range);
-    if (range) {
-      setSelectedBar(null);
-      externalSelection?.onClear();
-    }
-  }, [externalSelection]);
+    if (externalSelection) clearOwnSelection();
+  }, [externalSelection?.key, clearOwnSelection]);
 
   const clearSelection = useCallback(() => {
-    setSelectedBar(null);
-    setSelectedRange(null);
+    clearOwnSelection();
     externalSelection?.onClear();
-  }, [externalSelection]);
-
-  const tradeColumns = useMemo(
-    () => tokenTradeColumns(price.unitLabel, { flowPatternKeys }),
-    [price.unitLabel, flowPatternKeys],
-  );
-
-  const entryExitMap = useMemo(() => buildEntryExitMap(eventMarkers), [eventMarkers]);
+  }, [clearOwnSelection, externalSelection]);
 
   const myWalletAddresses = useMemo(
     () => new Set(profileWallets.filter((w) => w.isMine).map((w) => w.address)),
     [profileWallets],
   );
 
-  const tradeRowClassName = useMemo(() => {
-    if (entryExitMap.size === 0 && myWalletAddresses.size === 0) return undefined;
-    return (t: TradeRecord) => {
-      const kind = entryExitMap.get(t.tx_signature);
-      // Entry/exit tint takes the full-row background; "my trade" layers a
-      // left-border accent so both signals stay visible on the same row.
-      const base =
-        kind === 'entry'
-          ? 'bg-[#02c076]/12 hover:bg-[#02c076]/20'
-          : kind === 'exit'
-            ? 'bg-[#f6465d]/12 hover:bg-[#f6465d]/20'
-            : '';
-      const mine =
-        t.wallet_address && myWalletAddresses.has(t.wallet_address)
-          ? 'border-l-2 border-l-[#fbbf24]'
-          : '';
-      return [base, mine].filter(Boolean).join(' ') || undefined;
-    };
-  }, [entryExitMap, myWalletAddresses]);
-
   const selectionTrades = useMemo(() => {
     if (externalSelection) return externalSelection.trades;
-    if (selectedRange) return tradesInRange(trades, selectedRange);
-    if (selectedBar) return tradesInBar(trades, selectedBar);
+    if (selection.range) return tradesInRange(trades, selection.range);
+    if (selection.bar) return tradesInBar(trades, selection.bar);
     return EMPTY_TRADES;
-  }, [trades, selectedBar, selectedRange, externalSelection]);
+  }, [trades, selection.bar, selection.range, externalSelection]);
 
   if (!detail) return null;
 
   const tradesError = apiErrorMessage(tradesErrorRaw, 'Failed to load trades');
   const symbol = detail.symbol || detail.name || mint;
   const priceLabel = metric === 'mc' ? `MC (${unit})` : unit;
-
-  const selectionLabel = selectedRange
-    ? selectedRange.groupMode === 'slot'
-      ? `Slot ${Math.min(selectedRange.lo, selectedRange.hi)} → ${Math.max(selectedRange.lo, selectedRange.hi)}`
-      : `${formatTimestampMs(Math.min(selectedRange.lo, selectedRange.hi) * 1000, timezone)} → ${formatTimestampMs(Math.max(selectedRange.lo, selectedRange.hi) * 1000, timezone)}`
-    : selectedBar
-      ? selectedBar.groupMode === 'slot'
-        ? `Slot ${selectedBar.slot}`
-        : formatTimestampMs(Number(selectedBar.barTime) * 1000, timezone)
-      : '';
-
-  const showSelectionPanel = Boolean(externalSelection || selectedBar || selectedRange);
-  const selectionPanelLabel = externalSelection
-    ? externalSelection.label
-    : selectedRange
-      ? 'Range Trades'
-      : 'Bar Trades';
-  const selectionTimeLabel = externalSelection ? externalSelection.timeLabel : selectionLabel;
-  const selectionEmptyMessage = externalSelection
-    ? externalSelection.emptyMessage
-    : selectedRange
-      ? 'No trades in this range.'
-      : 'No trades in this bar.';
 
   return (
     <div className="border-t border-white/7 pt-2">
@@ -286,9 +167,7 @@ export function TokenTradeChart({
         priceUnit={unit}
         metric={metric}
         onMetricChange={setMetric}
-        selectedBar={selectedBar}
-        onBarClick={handleBarClick}
-        onRangeChange={handleRangeChange}
+        {...selection.chartProps}
         athPriceInSol={detail.ath_price ?? null}
         creatorWallet={detail.creator_wallet}
         isMigrated={detail.is_migrated}
@@ -303,37 +182,17 @@ export function TokenTradeChart({
         flowPatternKeys={flowPatternKeys}
       />
 
-      {showSelectionPanel && (
-        <div className="mt-3 border-t border-white/7 pt-2">
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <span className="text-[9px] font-bold uppercase tracking-widest text-text-dim">
-              {selectionPanelLabel}
-            </span>
-            <span className="font-mono text-[11px] text-text-dim">{selectionTimeLabel}</span>
-            <Badge variant="primary" className="font-mono font-normal">
-              {selectionTrades.length} trade{selectionTrades.length === 1 ? '' : 's'}
-            </Badge>
-            <button
-              type="button"
-              onClick={clearSelection}
-              className="text-[11px] text-text-dim hover:text-text"
-            >
-              Clear
-            </button>
-          </div>
-          <DataTable
-            tableId={tableId}
-            columns={tradeColumns}
-            rows={selectionTrades}
-            rowKey={tradeRowKey}
-            searchable
-            colFilters
-            hoverable
-            rowClassName={tradeRowClassName}
-            emptyMessage={selectionEmptyMessage}
-          />
-        </div>
-      )}
+      <BarTradesPanel
+        trades={selectionTrades}
+        bar={selection.bar}
+        range={selection.range}
+        external={externalSelection}
+        onClear={clearSelection}
+        tableId={tableId}
+        eventMarkers={eventMarkers}
+        myWalletAddresses={myWalletAddresses}
+        flowPatternKeys={flowPatternKeys}
+      />
     </div>
   );
 }

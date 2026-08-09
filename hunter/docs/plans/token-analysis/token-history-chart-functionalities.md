@@ -181,6 +181,35 @@ The selection is also surfaced to the parent via `onRangeChange` (if provided).
 
 ---
 
+## 6a. Selected-trades panel (what a candle is made of)
+
+`TokenPriceChart` owns no trades table — it only *emits* the pick. A click on a bar fires
+`onBarClick` (clicking the same bar again, or empty space, clears it) and a committed drag
+fires `onRangeChange`. A host that wires neither leaves both interactions inert, which is
+what a chart too narrow for a table wants.
+
+Three pieces, all shared, so every chart lists trades the same way:
+
+| Piece | Where | Job |
+| --- | --- | --- |
+| `useBarTradesSelection` | `components/tokens/` | holds the bar + range pick (**mutually exclusive** — one table at a time), returns `chartProps` to spread onto the chart |
+| `tradesInBar` / `tradesInRange` | `token-price-chart/barTrades.ts` | the ONE bucket matcher — same key the chart bars by (`tradeBarTime` / slot), so the table can't list a different set than the candle drawn |
+| `BarTradesPanel` | `components/tokens/` | the heading + count + Clear + `DataTable`; tints entry/exit fill rows from `eventMarkers` and accents our own wallets. Renders nothing when nothing is picked |
+
+Hosts: `TokenTradeChart` (Tokens / Sync / MyWallet / Replay / Lab inspect) renders the panel
+directly under the chart and can hand the panel to an outside pick via `externalSelection`
+(a swing leg chosen in a sibling table). `FloorPositionDetail` (live Console, Portfolio,
+Floor, Rules Evidence) uses `MintBarTradesPanel`, which reads the mint's trades from the
+same RTK Query cache the chart already filled — listing a bar costs no extra request — and
+places the table **below** the chart ∥ fills grid, where it has the full width.
+
+A host outside `token-price-chart` must deep-import (`components/token-price-chart/barTrades`,
+`.../types`) rather than the barrel: the barrel re-exports `TokenPriceChart`, and a
+statically-mounted host must not pull `lightweight-charts` into its chunk (see
+[`@arch/frontend.md`](../../arch/frontend.md) chart code-split).
+
+---
+
 ## 7. Reference price lines (ATH & Migration)
 
 Both are drawn with `series.createPriceLine()` and respect the active metric/unit:

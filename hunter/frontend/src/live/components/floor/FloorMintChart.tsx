@@ -1,8 +1,10 @@
 import { useMemo } from 'react';
 import {
   TokenPriceChart,
+  type ChartBarSelection,
   type ChartChrome,
   type ChartEventMarker,
+  type ChartRangeSelectionDetail,
 } from 'components/token-price-chart';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { useWatchTokenTradesLive } from 'hooks/useTokenTradesLive';
@@ -12,11 +14,17 @@ import type { TradeRecord } from 'types';
 const EMPTY: TradeRecord[] = [];
 
 /**
- * Compact mint price chart for Floor / Portfolio / Console — entry/exit
- * markers only (no trades table under the chart).
+ * Compact mint price chart for Floor / Portfolio / Console — entry/exit markers
+ * plus the candle-click / range-drag selection.
  *
- * Pass `chrome="compact"` in narrow hosts (Console manual-trade column) so the
- * toolbar collapses behind a Tools toggle and the plot keeps the height.
+ * The selection is **controlled**: a host that wants the trades table wires
+ * `useBarTradesSelection` and renders `MintBarTradesPanel` wherever it has the
+ * width for it (`FloorPositionDetail` puts it full-width under the chart ∥ fills
+ * grid). Omitting these props leaves clicks inert, which is what a narrow host
+ * such as the Console manual-trade column wants.
+ *
+ * Pass `chrome="compact"` in narrow hosts so the toolbar collapses behind a
+ * Tools toggle and the plot keeps the height.
  */
 export function FloorMintChart({
   mint,
@@ -26,6 +34,9 @@ export function FloorMintChart({
   chrome = 'full',
   /** Fingerprint `volume_ix_patterns` keys — enables the vol/non-vol overlay. */
   flowPatternKeys = null,
+  selectedBar = null,
+  onBarClick,
+  onRangeChange,
 }: {
   mint: string;
   markers?: ChartEventMarker[] | null;
@@ -33,6 +44,9 @@ export function FloorMintChart({
   tableId?: string;
   chrome?: ChartChrome;
   flowPatternKeys?: ReadonlySet<string> | null;
+  selectedBar?: ChartBarSelection | null;
+  onBarClick?: (selection: ChartBarSelection | null) => void;
+  onRangeChange?: (range: ChartRangeSelectionDetail | null) => void;
 }) {
   const { unit, usdRate } = usePriceUnit();
   useWatchTokenTradesLive(mint || null);
@@ -80,6 +94,9 @@ export function FloorMintChart({
         height={height}
         chrome={chrome}
         eventMarkers={markers ?? null}
+        selectedBar={selectedBar}
+        onBarClick={onBarClick}
+        onRangeChange={onRangeChange}
         tokenCreatedAt={detail?.created_at ?? undefined}
         athPriceInSol={detail?.ath_price ?? null}
         isMigrated={detail?.is_migrated}
