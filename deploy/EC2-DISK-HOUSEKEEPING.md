@@ -7,7 +7,7 @@ and nginx 502s every `/api` request — **check `df -h /` first when the site 50
 [raw-txs-storage.md](../hunter/docs/plans/database/raw-txs-storage.md)
 
 ```bash
-ssh -i ~/.ssh/aws-ec2-key.pem ubuntu@54.93.174.192
+ssh -i ~/.ssh/aws-ec2-key.pem ubuntu@35.158.128.131
 ```
 
 ## Diagnose

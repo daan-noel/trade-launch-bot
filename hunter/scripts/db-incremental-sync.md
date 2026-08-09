@@ -37,7 +37,7 @@ Current-day analysis (DB sync + lake snapshot in one shot):
 ./scripts/db-incremental-sync.ps1 -IncludeToday -ExportLake
 ```
 
-`-SshTarget` (defaults to `ubuntu@54.93.174.192`) and `-LocalPgPort` (defaults to
+`-SshTarget` (defaults to `ubuntu@35.158.128.131`) and `-LocalPgPort` (defaults to
 `5555`, the dockerized local DB) are now baked in — pass `-LocalPgPort 5432` if you
 run a native local Postgres instead.
 
@@ -118,7 +118,7 @@ local DBs.
 
 | Param | Default | Notes |
 | --- | --- | --- |
-| `-SshTarget` | `ubuntu@54.93.174.192` | user@host of the EC2 box |
+| `-SshTarget` | `ubuntu@35.158.128.131` | user@host of the EC2 box |
 | `-SshKey` | `../aws-ec2-key.pem` | Path to the EC2 private key |
 | `-RemoteDir` | `~/trade-launch-bot/hunter` | Where the server's `.env` lives |
 | `-Database` | `hunter_bot` | Local + remote DB name |
@@ -164,7 +164,7 @@ After that the key stays loaded across sessions and the script never prompts.
 
 - **"SSH tunnel exited early"** — wrong host, key rejected, or the server's Postgres
   host port isn't published. Confirm `DB_PORT` in the server's `.env` and
-  that you can `ssh -i aws-ec2-key.pem ubuntu@54.93.174.192` manually.
+  that you can `ssh -i aws-ec2-key.pem ubuntu@35.158.128.131` manually.
 - **"Tunnel port 5433 never opened"** — port `5433` is busy locally; pass a free
   `-TunnelLocalPort`.
 - **"Could not reach server Postgres through the tunnel"** — server creds mismatch,
@@ -192,6 +192,6 @@ The run is safe to re-execute at any point — watermarks + `ON CONFLICT` make i
 
 ## Server reference
 
-- Host: `ubuntu@54.93.174.192`
+- Host: `ubuntu@35.158.128.131`
 - Project: `/home/ubuntu/projects/hunter`
 - Postgres: published on the host's `DB_PORT` (default `5555`), reached via the SSH tunnel
