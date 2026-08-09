@@ -31,11 +31,22 @@
 --       0017 position_last_entry_error       strategy_positions.last_entry_error
 --       0018 position_fills_scale_out        position_fills + scale-out aggregates
 --
+--   * the 0002..0006 chain layered on top of THAT init:
+--       0002 rule_tags                       strategy_rules.tags
+--       0004 run_lifecycle                   strategy_run_metrics n_exit_dead /
+--                                            _metrics / _manual / _migrated
+--       0005 trade_fee                       trades.fee_lamports
+--       0006 pnl_pct_is_capital_return       strategy_position_pnl.pnl_pct becomes
+--                                            money-over-capital, not a price ratio
+--
 -- The pure data-backfill migrations only rewrote pre-existing rows — no-ops on a
 -- fresh database — so they are intentionally NOT reproduced here:
 --   legacy 0006/0008/0010 (JSONB key + paper-entry backfills), 0007 (bucket-width
 --   f32 tidy), 0010 (metric-group renames), 0015 (empty ix_labels -> NULL),
---   0016 (slippage settings reset), 0019 (exit_price unit fix).
+--   0016 (slippage settings reset), 0019 (exit_price unit fix), and 0003
+--   (position_fills backfill for pre-ledger positions — reconstructed one buy/sell
+--   from the `strategy_positions` snapshot so the chart could mark positions whose
+--   `…/fills` returned []; a fresh DB writes the ledger from the first fill).
 --
 -- Naming rule (locked): every column denoting a SOL amount names its unit —
 -- `_lamports` = exact BIGINT, `_sol` = human f64. Ratios keep `_price`/`_pct`.
@@ -46,9 +57,20 @@
 -- the CAggs are created idempotently at boot by `storage::timescale::setup_caggs`.
 --
 -- NOTE (ledger): collapsing the chain changes this file's checksum and removes
--- versions 2..21 from `_sqlx_migrations`. An already-migrated database must be
+-- versions 2..6 from `_sqlx_migrations`. An already-migrated database must be
 -- reconciled once with `scripts/consolidate-migration-ledgers.ps1` before a bin
 -- that embeds this file will boot against it.
+--
+-- ⚠ PRECONDITION, and it is the whole reason a squash is dangerous: reconciling
+-- rewrites the LEDGER and never the SCHEMA. It stamps "version 1 applied" on a
+-- database on the assumption that everything this file creates is already there.
+-- Any folded-in migration that had NOT yet run on that database therefore never
+-- runs at all — the column silently stays missing and the bin fails at query time,
+-- not at boot. So before reconciling ANY database, bring its schema up to this
+-- file's end state with `scripts/squash-catchup.sql` (idempotent, safe to re-run,
+-- safe on a DB that is already current). Order across boxes is EC2 first, because
+-- `hunter/scripts/db-incremental-sync.ps1` copies the server's `_sqlx_migrations`
+-- rows into the local mirror and would re-insert versions you just cleaned.
 --
 -- ONE benign divergence from an incrementally-migrated database, verified by
 -- diffing every column / constraint / index of both: `trades_priced` here expands
@@ -258,8 +280,26 @@ ALTER TABLE raw_txs SET (
     timescaledb.compress,
     timescaledb.compress_orderby = 'slot, tx_index'
 );
-SELECT add_compression_policy('raw_txs', compress_after => INTERVAL '2 days', if_not_exists => TRUE);
-SELECT add_retention_policy('raw_txs', drop_after => INTERVAL '7 days', if_not_exists => TRUE);
+-- Shortest window in the system, and deliberately so: measured 2026-08-09 on the
+-- live box, `raw_txs` was 21.5 GB against `trades`' 13 GB — 58% of the whole
+-- database for a feed nothing routinely reads. Compression barely helps here
+-- (4.5 GB -> 3.8 GB, ~18%) because `payload` is one opaque BYTEA that TOASTs and
+-- is already row-compressed before columnar compression sees it; there is no
+-- repeated value to segment on. Contrast `trades`, which compresses ~84%.
+--
+-- Both policies compare against a chunk's `range_end`, and chunks are 1 day wide,
+-- so `compress_after => 1 day` still leaves ~2 uncompressed days on disk — the
+-- effective lever is `drop_after`. 3 days holds the feed long enough to re-decode
+-- a recent tx by hand while capping the table near ~12 GB instead of 21.5 GB.
+--
+-- Safe to keep this short because `raw_txs` is opt-in on the sync path
+-- (`db-incremental-sync.ps1 -IncludeRawTxs`, OFF by default), so it is not the
+-- workstation's source for anything, and `persist_raw` (an `app_settings` bool)
+-- can switch the writes off entirely. Anything that must outlive 3 days has to be
+-- denormalized onto `trades` at decode time — which is exactly why
+-- `trades.ix_labels` and `trades.fee_lamports` are columns rather than derived.
+SELECT add_compression_policy('raw_txs', compress_after => INTERVAL '1 day', if_not_exists => TRUE);
+SELECT add_retention_policy('raw_txs', drop_after => INTERVAL '3 days', if_not_exists => TRUE);
 
 -- ===========================================================================
 -- trades — high-volume append-only feed (the LaserStream transport IS this
@@ -304,6 +344,31 @@ CREATE TABLE IF NOT EXISTS trades (
     -- byte-for-byte and the ix_count / ix_labels filter helpers in tokens/sql.rs
     -- work verbatim on trades.
     ix_labels              JSONB,
+
+    -- Per-TRANSACTION network fee (0005): base signature fee + priority fee, read
+    -- from `TransactionStatusMeta.fee` on the LaserStream feed we already consume
+    -- (no extra RPC, no Helius credits). NOT the Jito tip (a transfer instruction,
+    -- absent from meta.fee) and NOT the venue's protocol/LP fee (already inside
+    -- amount_lamports).
+    --
+    -- ATTRIBUTION — read before writing any aggregate. The fee is charged ONCE PER
+    -- TX but this table is keyed per LEG, and one tx can emit many legs, so the
+    -- value is denormalized onto every leg of its tx. Correct for per-row display;
+    -- a straight `SUM(fee_lamports)` OVER-COUNTS by the leg multiplier. Collapse by
+    -- signature first:
+    --   SELECT SUM(fee_lamports)
+    --   FROM (SELECT DISTINCT tx_signature, fee_lamports FROM trades WHERE …) s
+    -- Denormalizing beats a per-signature side table, which would add a write per
+    -- tx to the hot ingest path — the write-amplification shape that froze ingest
+    -- before. This costs one more bind on an insert that already runs.
+    --
+    -- NULLABLE, and NULL is load-bearing: rows written before 0005 have no fee and
+    -- can never get one (`raw_txs` is opt-in and 3-day retention regardless, so
+    -- there is nothing to re-decode). NULL means "not captured" — never coalesce it
+    -- to 0 for display, never sum it as 0 in an average. A landed transaction always
+    -- pays at least the 5000-lamport base fee, so a genuine 0 does not exist; ingest
+    -- folds any zero back to NULL at the source (`ingest_core::event::fee_lamports_opt`).
+    fee_lamports           BIGINT,
 
     PRIMARY KEY (block_time, tx_signature, leg_index)  -- partition col first; IS the dedup key
 );
@@ -417,6 +482,24 @@ CREATE TABLE IF NOT EXISTS strategy_rules (
     max_concurrent_tokens BIGINT NOT NULL DEFAULT 1,
     max_total_tokens      BIGINT NOT NULL DEFAULT 0,      -- 0 = unlimited
     params                JSONB NOT NULL,
+    -- Free-form presentational labels (0002) for slicing the Rules board (show only
+    -- `fam:scalper`, hide `stage:experiment`). A typed column and deliberately NOT a
+    -- `params` key: `params` is re-serialized from `RuleParams` on every write (an
+    -- unknown key is dropped on the first save), it IS trading identity
+    -- (`RuleRepo::find_identical` compares it, so a tag there would weaken the
+    -- Duplicate gate), and it is frozen into `strategy_runs.params_snapshot` (so a
+    -- tag rename would read as a strategy change in run history). Tags sit in the
+    -- same bucket as `rule_name`: a label, never identity, never an input to the
+    -- decision kernel — `list_active` is untouched.
+    --
+    -- Array rather than a `rule_tags` join table: the rules list is fetched whole and
+    -- filtered client-side, so there is no server-side tag query to normalize for, and
+    -- the catalog is derivable (`SELECT DISTINCT unnest(tags) FROM strategy_rules`).
+    -- No GIN index for the same reason — add one only alongside a real `WHERE tags && $1`.
+    -- Canonical shape (lowercase, `-` separated, deduped, sorted, no `,`) is enforced
+    -- in ONE place, `trading_core::strategies::rules::normalize_tags`; the DB only
+    -- guarantees non-NULL. Rationale: docs/plans/strategies/rule-tags.md
+    tags                  TEXT[] NOT NULL DEFAULT '{}'::text[],
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -485,6 +568,23 @@ CREATE TABLE IF NOT EXISTS strategy_run_metrics (
     n_exit_stall        INTEGER     NOT NULL,
     n_exit_time         INTEGER     NOT NULL,
     n_exit_liquidity    INTEGER     NOT NULL,
+
+    -- Exit buckets the generic engine actually produces (0004). The set above was
+    -- shaped for the retired tpsl/swing ladder, so `ExitReason::Metrics` — where
+    -- EVERY generic-engine exit lands — the analysis-only death-close, and the
+    -- operator/migration closes had no column: the persisted histogram read
+    -- all-zero beside a non-zero n_closed. These are only reachable now that a run
+    -- ends when its rule stops being active (`set_run_status` had no caller before
+    -- 0004, so `Sink::ensure_run` reused run #1 forever and metrics were never
+    -- rolled up). Runs left 'Running' by that old behavior are NOT healed at
+    -- migration time — the engine finalizes them at boot via
+    -- `StrategyRepo::orphan_running_runs`, which also keeps healing later drift
+    -- (a db-sync from another box, a hand-edited `is_active`).
+    n_exit_dead         INTEGER     NOT NULL DEFAULT 0,
+    n_exit_metrics      INTEGER     NOT NULL DEFAULT 0,
+    n_exit_manual       INTEGER     NOT NULL DEFAULT 0,
+    n_exit_migrated     INTEGER     NOT NULL DEFAULT 0,
+
     n_exit_open         INTEGER     NOT NULL
 );
 
@@ -638,6 +738,39 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_position_fills_sell_tx
     WHERE side = 'sell' AND tx_signature IS NOT NULL AND tx_signature <> '';
 
 -- Derived per-position PnL (never stored).
+--
+-- `pnl_pct` is a MONEY return, not a PRICE return (0006):
+--   realized_pnl_lamports / entry_lamports * 100
+-- and NOT the old (exit_price - entry_price) / entry_price * 100. Two independent
+-- defects made that price ratio disagree with the ◎ on the same row:
+--
+--   1. NO EXECUTION COST. A price ratio charges nothing, but a round trip pays the
+--      venue fee on BOTH legs (125 bps/leg, measured 2026-07-28) plus a fixed tip
+--      per leg plus our own price impact — roughly a +4% move just to break even.
+--      Every trade between 0% and break-even rendered a GREEN percent beside a RED
+--      SOL figure. `realized_pnl_sol` is measured from the lamports that actually
+--      moved, so it already carries all of those costs.
+--   2. SCALE-OUT BLINDNESS. `exit_price` stamps the LAST sell leg only, while the
+--      SOL figure sums every leg via `exit_sol_lamports_total`. On a laddered exit
+--      the two headline numbers described different trades. Both now read the same
+--      CASE.
+--
+-- Because the denominator is capital (always > 0), the sign of `pnl_pct` can no
+-- longer disagree with the sign of `realized_pnl_sol` — the guarantee
+-- `hunter_core::strategies::kernel::weighted_return_pct` gives the aggregate
+-- surfaces, now at per-position grain.
+--
+-- SSOT: this view, `StrategyPosition::pnl_pct` (models/strategy.rs), and
+-- `PNL_PCT_SQL` (the positions table's sort/filter expression in strategy_repo.rs)
+-- are three spellings of ONE formula. Change one, change all three;
+-- `pnl_sql_columns_share_one_numerator` guards the two SQL copies.
+--
+-- Derived, so there is no data to rewrite: every historical position's percent is
+-- recomputed on read, and already-closed rows show a SMALLER (for sub-break-even
+-- winners, NEGATIVE) percent than they did before — that is the correction, not a
+-- regression. `strategy_run_metrics` is untouched: those columns were stamped at
+-- rollup time and are not recomputable from a view, so a run finalized before 0006
+-- keeps its price-based mean and later runs get the money-based one.
 DROP VIEW IF EXISTS strategy_position_pnl;
 CREATE VIEW strategy_position_pnl AS
 SELECT
@@ -650,8 +783,14 @@ SELECT
            THEN p.exit_sol_lamports_total
            ELSE p.exit_lamports
       END - p.entry_lamports)::float8 / 1e9) AS realized_pnl_sol,
-    CASE WHEN p.entry_price > 0
-         THEN (p.exit_price - p.entry_price) / p.entry_price * 100.0 END AS pnl_pct,
+    -- Same numerator as realized_pnl_sol, over the capital deployed. NULL whenever
+    -- the chosen exit column or entry_lamports is absent, so an open position still
+    -- has no percent.
+    ((CASE WHEN p.sold_token_amount > 0
+           THEN p.exit_sol_lamports_total
+           ELSE p.exit_lamports
+      END - p.entry_lamports)::float8
+     / NULLIF(p.entry_lamports, 0) * 100.0)  AS pnl_pct,
     CASE WHEN p.entry_time IS NOT NULL AND p.exit_time IS NOT NULL
          THEN EXTRACT(EPOCH FROM (p.exit_time - p.entry_time)) END     AS holding_secs,
     (p.status = 'End' AND p.exit_time IS NOT NULL)                     AS is_closed

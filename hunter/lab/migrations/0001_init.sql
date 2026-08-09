@@ -24,9 +24,18 @@
 --       0012 exit_metric_slots           n_exit_metrics_by_slot
 --       0013 sweep_scale_out_overlay     scale_out / scale_out_top_k
 --
+--   * the 0002 chain layered on top of THAT init:
+--       0002 drop_n_exit_next_kill       grouped_sweep_results.n_exit_next_kill gone
+--
 -- 0008 (metric-group renames inside axes_spec / best_params / params) was a pure
 -- data backfill over pre-existing rows — a no-op on a fresh database, so it is
 -- intentionally not reproduced here.
+--
+-- NOTE (ledger): as with the core chain, collapsing this one changes the file's
+-- checksum and removes version 2 from `_lab_migrations`. Reconcile an existing lab
+-- database once with `scripts/consolidate-migration-ledgers.ps1`, and run
+-- `scripts/squash-catchup.sql` FIRST — reconciling rewrites the ledger, never the
+-- schema, so a folded-in migration that had not yet run would silently never run.
 --
 -- Written **only by `lab`** (the workstation analysis box); `live`/EC2 never
 -- touches these, which is why they live in the lab-owned migration set (applied
@@ -194,7 +203,10 @@ CREATE TABLE IF NOT EXISTS grouped_sweep_results (
     n_exit_stall        INTEGER NOT NULL,
     n_exit_time         INTEGER NOT NULL,
     n_exit_liquidity    INTEGER NOT NULL,
-    n_exit_next_kill    INTEGER NOT NULL DEFAULT 0,
+    -- No n_exit_next_kill: the swing1-only NextKill counter was retired with the
+    -- named tpsl/swing stack (0002) and nothing emits that exit reason. Historical
+    -- `strategy_positions.exit_reason = 'NextKill'` strings survive as opaque
+    -- labels and roll into the UI's "Other" bucket.
     n_exit_dead         INTEGER NOT NULL DEFAULT 0,
     n_exit_metrics      INTEGER NOT NULL DEFAULT 0,
 

@@ -25,7 +25,7 @@ Replaces the old `raw_transactions` table.
    here (they're rows in `trades`); a raw tx is the whole transaction.
 3. **Shortest retention in the system.** Raw payload is replay/audit/derive-only —
    once `trades` is projected and the recent derive window has passed, it's dead
-   weight. Drop it **well before** `trades` (e.g. 7 days vs 30).
+   weight. Drop it **well before** `trades` (3 days vs 30 — see *Measured cost*).
 4. **PK-only indexing.** Derive paths arrive carrying the trade's `(block_time,
    tx_signature)` → straight PK hit. No signature-only secondary index (pure write
    amplification on the heaviest table).
@@ -69,10 +69,10 @@ ALTER TABLE raw_txs SET (
     timescaledb.compress_orderby = 'slot, tx_index'
 );
 -- Keep compress_after > how far back sync inserts raw payload (same gotcha as trades).
-SELECT add_compression_policy('raw_txs', compress_after => INTERVAL '2 days');
+SELECT add_compression_policy('raw_txs', compress_after => INTERVAL '1 day');
 
 -- Heaviest table → shortest retention.
-SELECT add_retention_policy('raw_txs', drop_after => INTERVAL '7 days');
+SELECT add_retention_policy('raw_txs', drop_after => INTERVAL '3 days');
 ```
 
 Notes / gotchas
@@ -81,12 +81,45 @@ Notes / gotchas
   columnar compression do the work — app-side gzip + Timescale compression wastes CPU
   for little gain and defeats chunk-level compression metadata.
 - **`compress_after` > sync backfill horizon** — if sync writes deep history into an
-  already-compressed chunk the insert is slow/blocked. With a 2-day window, sync that
-  only backfills the last hour or two is safe; widen if it reaches further back.
+  already-compressed chunk the insert is slow/blocked. `db-incremental-sync.ps1` only
+  *reads* the server, and reads work fine against compressed chunks, so the window is
+  bounded by nothing here in practice.
+- **Both policies compare against a chunk's `range_end`, not its start.** With 1-day
+  chunks, `compress_after => 1 day` still leaves ~2 uncompressed days resident: the
+  chunk covering `[Aug 8, Aug 9)` is only eligible once `now() > Aug 10`. Shortening
+  `compress_after` therefore buys much less than it looks — **`drop_after` is the
+  effective lever.**
 - **Retention coupling:** raw_txs is the only place full payload lives. Anything you
   might want to re-derive *must* be derived inside its `drop_after` window. If a derive
-  need outlives 7 days, either widen retention or promote that field to a typed column
-  on `trades`.
+  need outlives 3 days, either widen retention or promote that field to a typed column
+  on `trades` — which is exactly why `trades.ix_labels` and `trades.fee_lamports` are
+  columns written at decode time rather than derived on demand.
+
+### Measured cost (live box, 2026-08-09)
+
+The reason retention here is aggressive, and why compression is not the answer:
+
+| Table | Uncompressed | Compressed | Total | Span | Compression |
+| --- | --- | --- | --- | --- | --- |
+| `raw_txs` | 4.5 GB (1 chunk) | 16.9 GB (5 chunks) | **21.5 GB** | 7 days | **~18%** |
+| `trades` | 11.2 GB (8 chunks) | ~2 GB (9 chunks) | 13 GB | 17 days | **~84%** |
+
+`raw_txs` was **58% of the whole database** for a feed nothing routinely reads, and
+it barely compresses because `payload` is a single opaque `BYTEA`: it TOASTs (hence
+the outsized `pg_toast_*` relations beside each chunk) and is already row-compressed
+before columnar compression ever sees it, and there is no low-cardinality column to
+`segmentby`. `trades` compresses ~6x precisely because it has repeated values to
+segment and order on. **More compression cannot fix this table; less retention can.**
+
+That is affordable because `raw_txs` is opt-in on the sync path
+(`db-incremental-sync.ps1 -IncludeRawTxs`, **off by default**), so it is not the
+workstation's source for anything, and `persist_raw` (an `app_settings` bool read in
+`live/src/ingest/consumer.rs`) can switch the writes off entirely. At 1d/3d the table
+settles near ~12 GB instead of 21.5 GB.
+
+> Note when reading `pg_total_relation_size` output: it **already includes** TOAST,
+> so the `pg_toast_*` rows that appear alongside chunk rows in a size ranking are the
+> same bytes listed twice. Don't sum them.
 
 ---
 
@@ -109,8 +142,10 @@ raw_txs (1 row / tx)  ──<  trades (1 row / leg)
 
 - **`source`** — kept for provenance/debugging (1 row-byte). Drop entirely if you never
   branch on live-vs-sync after ingest.
-- **Retention split** — 7 days (raw) vs 30 (trades) is a starting point; the real driver
-  is "how far back does any re-derive ever reach." Set raw retention to that horizon + margin.
+- **Retention split** — 3 days (raw) vs 30 (trades), tightened from 7/30 on 2026-08-09
+  after the sizing above. The real driver is "how far back does any re-derive ever
+  reach"; set raw retention to that horizon + margin. If nothing re-derives at all,
+  `persist_raw = false` is strictly better than any retention window.
 - **`payload` codec** — protobuf (LaserStream wire form, zero re-encode) vs a tighter
   app bincode. Prefer storing the wire form verbatim: no re-encode cost on the hot path,
   and it's the exact bytes for faithful replay.

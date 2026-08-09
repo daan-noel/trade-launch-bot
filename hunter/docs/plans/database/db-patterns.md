@@ -29,6 +29,17 @@ File naming: `<crate>/migrations/00NN_descriptive-slug.sql`. `0001_init.sql` is 
 
 **Squashing again later is not free.** The ledger keys on `(version, SHA-384 of the file bytes)`, so folding `00NN_*.sql` back into `0001_init.sql` both changes version 1's checksum and orphans versions 2..N — the runner refuses to boot on either. Every already-migrated database must be reconciled once with `scripts/consolidate-migration-ledgers.ps1` (ledger-only). When you squash: fold each later migration into the logical place in the end-state DDL, keep its rationale as a comment there, and **drop the pure data backfills** (they only rewrote pre-existing rows, so they are no-ops on a fresh DB) — note in the header which ones were dropped and why. Then verify by applying the squashed file to a scratch database and diffing `information_schema.columns` + `pg_constraint` + `pg_indexes` against a real, incrementally-migrated one; the diff must be empty.
 
+**The precondition that makes a squash dangerous: every folded-in migration must already be applied on every database you will reconcile.** The reconcile script rewrites the *ledger* and never the *schema* — it stamps "version 1 applied" on the assumption that everything the squashed file creates is already there. A migration that had not yet run on that box therefore never runs at all: sqlx sees version 1 as done and skips the file forever, the column silently stays missing, and the bin fails at **query time, not boot time**. This is easy to hit precisely because a pending migration is the normal state between shipping the file and redeploying the server.
+
+So the deploy order is **catch-up → reconcile → redeploy**, per database, EC2 first (`db-incremental-sync.ps1` copies the server's `_sqlx_migrations` rows into the local mirror, so a stale server ledger re-inserts versions you just cleaned):
+
+```bash
+psql <url> -f scripts/squash-catchup.sql                                   # schema to end state
+pwsh scripts/consolidate-migration-ledgers.ps1 -DatabaseUrl <url> -Apply   # then the ledger
+```
+
+`scripts/squash-catchup.sql` carries the folded DDL in idempotent form (`ADD COLUMN IF NOT EXISTS` / `CREATE OR REPLACE`), so it is safe on a database that is already current and safe to re-run. Rewrite it as part of the next squash rather than accumulating generations in it — it is scratch tooling for one migration event, not a second schema SSOT.
+
 Runner: `sqlx::migrate!("./migrations")` in `storage/postgres.rs::connect()`. Migrations run at every startup on the `hot` pool. `sqlx_migrations` table tracks applied migrations.
 
 **Idempotency rule:** migrations must be safe to inspect but not safe to re-apply (sqlx tracks applied state). Never use `DROP TABLE` in a migration without extreme care. Prefer `ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `CREATE TABLE IF NOT EXISTS` for columns/indexes.

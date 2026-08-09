@@ -151,7 +151,10 @@ notional). Full rationale, the four fixed defects, and the residual gap:
   already-migrated database's ledger and needs a one-off
   `scripts/consolidate-migration-ledgers.ps1` run per DB (**EC2 before the next
   `db-incremental-sync.ps1`**, which copies the server ledger into the local
-  mirror). Rules + the verification step: `docs/plans/database/db-patterns.md`.
+  mirror). That script rewrites the **ledger only** — so a folded-in migration that
+  hadn't yet run on a DB would never run, and the missing column surfaces at query
+  time, not boot. Order per DB is **`scripts/squash-catchup.sql` → reconcile →
+  redeploy**. Rules + the verification step: `docs/plans/database/db-patterns.md`.
 - **Trade-history reads: lake vs PG.** Single-rule simulate + all `lab` analysis read the
   sealed Parquet lake (same corpus/`SweepTrade` as the sweep); only two indexed lookups
   stay on PG. There is ONE deliberate full-history PG carve-out (`GET

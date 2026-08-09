@@ -714,7 +714,8 @@ recalibrated knobs requires **zero engine changes** and should precede any new m
 - Exit inference: a flow-based exit ("sell into the first sizeable market sell after a
   bounce") is observationally near-identical to a 1-1.5% trail; either implementation
   should reproduce the profile.
-- EC2 holds ~30 days of wallet-attributed trades + 7 days raw_txs; a full
+- EC2 holds ~30 days of wallet-attributed trades + 3 days raw_txs (was 7, tightened
+  2026-08-09 — see `docs/plans/database/raw-txs-storage.md`); a full
   `scripts/db-incremental-sync.ps1` run extends this analysis to ~a month at ZERO
   Helius cost (local raw_txs is empty; lake days 07-01..07-08 lack the wallet column).
 - Helius spend is critically sensitive (user directive): no RPC fetches for analysis
