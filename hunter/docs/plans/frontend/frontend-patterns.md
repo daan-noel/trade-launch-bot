@@ -135,6 +135,15 @@ server compare. Percent columns that render `×100` (Win %, Open %) use a local
   (or `lib/flow/flowPatternKeys` for a raw pattern list). Any rule/fingerprint-scoped chart
   (`TokenTable` Charts, Floor inspect, lab inspect) must pass them — omit only on
   mint-only surfaces with no fingerprint.
+- **Pointer x -> chart coordinate goes through `paneCoords`.** lightweight-charts lays the
+  container out as `[left axis][pane][right axis]` and every time-scale coordinate is
+  measured from the PANE, so a bare `clientX - rect.left` is off by
+  `chart.priceScale('left').width()` whenever the left (flow) scale is visible. Use
+  `paneX` / `barTimeAtClientX` (`components/token-price-chart/paneCoords`) for any
+  pointer-driven conversion — drag-to-select range, future hit-tests. Coordinates that
+  arrive from the library itself (`MouseEventParams.point`, `timeToCoordinate`, primitive
+  renderers) are already pane-relative and need no adjustment; `dualPriceScaleSync`'s
+  axis-gutter hit-test deliberately stays in container space.
 
 ## BackgroundJobsContext — `context/BackgroundJobsContext.tsx`
 

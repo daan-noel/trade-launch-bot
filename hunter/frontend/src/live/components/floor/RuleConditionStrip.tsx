@@ -3,7 +3,12 @@ import { useMemo, type ReactNode } from 'react';
 import { cn } from 'lib/cn';
 import { unitSuffix, useStrategyRegistry } from 'lib/strategy/registry';
 import type { MetricUnit } from 'lib/strategy/registry';
-import type { ReadoutAt, RuleConditionRead, RuleReadout } from '@live/store/liveEndpoints';
+import type {
+  ReadoutAt,
+  RuleConditionMeta,
+  RuleConditionRead,
+  RuleReadout,
+} from '@live/store/liveEndpoints';
 
 /**
  * The live rule readout as a chip row: one chip per authored condition, showing the
@@ -30,6 +35,8 @@ export function RuleConditionStrip({
   onAtChange,
   hoveredAtMs = null,
   hoveredBeyondCoverage = false,
+  bandOn = false,
+  onBandToggle,
   className,
 }: {
   readout: RuleReadout | null | undefined;
@@ -44,6 +51,10 @@ export function RuleConditionStrip({
   hoveredAtMs?: number | null;
   /** The row cap truncated the series and the pointer is past where it reaches. */
   hoveredBeyondCoverage?: boolean;
+  /** Whether the chart is drawing the per-condition timeline lanes. */
+  bandOn?: boolean;
+  /** Omit to hide the timeline control — hosts with no chart beside the strip. */
+  onBandToggle?: (on: boolean) => void;
   className?: string;
 }) {
   const { data: registry } = useStrategyRegistry();
@@ -95,13 +106,35 @@ export function RuleConditionStrip({
 
   return (
     <StripShell className={className}>
-      <ReadoutSourceLine
-        readout={readout}
-        at={at}
-        onAtChange={onAtChange}
-        hoveredAtMs={hoveredAtMs}
-        hoveredBeyondCoverage={hoveredBeyondCoverage}
-      />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <ReadoutSourceLine
+          readout={readout}
+          at={at}
+          onAtChange={onAtChange}
+          hoveredAtMs={hoveredAtMs}
+          hoveredBeyondCoverage={hoveredBeyondCoverage}
+        />
+        {onBandToggle ? (
+          <button
+            type="button"
+            onClick={() => onBandToggle(!bandOn)}
+            className={cn(
+              'rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider',
+              bandOn ? 'bg-white/10 text-text' : 'text-text-dim hover:text-text',
+            )}
+            title={
+              // Off by default because turning it on is what pays for the fold —
+              // the same one the crosshair uses, so whichever comes first covers
+              // both and the second is free.
+              bandOn
+                ? 'Hide the per-condition timeline under the chart'
+                : 'Draw each condition as a lane under the chart, filled where it held — the fire windows without scrubbing for them'
+            }
+          >
+            timeline
+          </button>
+        ) : null}
+      </div>
       {groups.map((g) => (
         <div key={g.key} className="flex min-w-0 flex-wrap items-center gap-1.5">
           <span
@@ -296,8 +329,12 @@ function ConditionChip({
  * A desugared TP/SL is renamed but **keeps its threshold**: the chip's value is the
  * live `pnl`, so dropping the target leaves a number with nothing to compare it
  * against — the one thing the chip exists to show.
+ *
+ * Exported because the chart's condition lanes label themselves with it. The band
+ * is only legible as a legend for these chips, which it can only be if the two
+ * names come from one place.
  */
-function conditionLabel(read: RuleConditionRead): string {
+export function conditionLabel(read: RuleConditionMeta): string {
   const name =
     read.origin === 'take_profit'
       ? 'take profit'

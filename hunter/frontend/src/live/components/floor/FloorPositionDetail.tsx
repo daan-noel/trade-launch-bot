@@ -16,6 +16,11 @@ import {
 } from 'lib/signedTone';
 import { MintBarTradesPanel } from 'components/tokens/MintBarTradesPanel';
 import { useBarTradesSelection } from 'components/tokens/useBarTradesSelection';
+import {
+  ConditionBandsProvider,
+  useConditionBands,
+  useConditionBandsStore,
+} from './conditionBands';
 import { CrosshairTimeProvider, useCrosshairTimeStore } from './crosshairTime';
 import { LazyFloorMintChart } from './LazyFloorMintChart';
 import { OpenPositionStatusChips } from './openPositionStatus';
@@ -114,6 +119,11 @@ export function FloorPositionDetail({
   // answers "what did the rule see HERE". A store rather than state: the crosshair
   // moves per frame and must not re-render the chart emitting it.
   const crosshair = useCrosshairTimeStore();
+  // The same wiring in reverse: the strip publishes its condition timeline and the
+  // chart draws it. Relayed, not fetched — this component knows nothing about
+  // positions or readout endpoints, only about `ChartTimeBand`.
+  const bandsStore = useConditionBandsStore();
+  const bands = useConditionBands(bandsStore);
   // Memoized: an open position re-renders on every mark tick, and a fresh marker
   // array would rebuild the chart's markers and the trades table's row tinting
   // each time.
@@ -140,6 +150,8 @@ export function FloorPositionDetail({
       height={chartHeight}
       flowPatternKeys={facts.flowPatternKeys ?? null}
       onCrosshairTimeChange={crosshair.set}
+      timeBands={bands?.lanes ?? null}
+      timeBandCoverage={bands?.coverage ?? null}
       {...barTrades.chartProps}
     />
   );
@@ -342,9 +354,13 @@ export function FloorPositionDetail({
     </div>
   );
 
-  // The provider wraps the chart AND the `conditions` slot — they are the two ends
-  // of the crosshair, and nothing between them needs to know.
-  return <CrosshairTimeProvider value={crosshair}>{body}</CrosshairTimeProvider>;
+  // Both providers wrap the chart AND the `conditions` slot — they are the two ends
+  // of each channel, and nothing between them needs to know.
+  return (
+    <CrosshairTimeProvider value={crosshair}>
+      <ConditionBandsProvider value={bandsStore}>{body}</ConditionBandsProvider>
+    </CrosshairTimeProvider>
+  );
 }
 
 function InlineFact({

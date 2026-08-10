@@ -9,4 +9,6 @@ export type {
   ChartEventMarker,
   ChartRangeSelectionDetail,
   ChartVisibleTimeRange,
+  ChartTimeBand,
+  ChartTimeSpan,
 } from './types';

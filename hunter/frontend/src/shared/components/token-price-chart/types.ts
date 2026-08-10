@@ -182,6 +182,27 @@ export interface ChartVisibleTimeRange {
   to: number;
 }
 
+/** A closed wall-clock interval (unix seconds), `from <= to`. */
+export interface ChartTimeSpan {
+  from: number;
+  to: number;
+}
+
+/**
+ * One bottom-pane lane: the stretches over which some named thing was true.
+ *
+ * Kept vocabulary-free on purpose — the chart is shared by both apps and has no
+ * business knowing that the live app draws rule conditions here.
+ */
+export interface ChartTimeBand {
+  key: string;
+  /** Drawn at the left edge of the lane; keep it short, it renders at 8px. */
+  label: string;
+  /** CSS color for the satisfied stretches. */
+  color: string;
+  spans: ChartTimeSpan[];
+}
+
 /** Tooltip shown when the crosshair hovers the range-selection label chip. */
 export interface ChartRangeTooltipState {
   stats: ChartRangeStats;
@@ -265,6 +286,13 @@ export interface TokenPriceChartProps {
   /** Visible wall-clock window (unix seconds) after pan/zoom. Only emitted in
    *  time-grouping mode (slot mode uses slot indices on the time scale). */
   onVisibleTimeRangeChange?: (range: ChartVisibleTimeRange | null) => void;
+  /** On/off lanes drawn along the bottom of the price pane, one row per lane.
+   *  Time-grouping mode only — slot mode's scale is slot indices, so wall-clock
+   *  spans have nowhere to land. */
+  timeBands?: ChartTimeBand[] | null;
+  /** The stretch {@link timeBands} speaks for, as a dim track behind every lane.
+   *  Without it an unsatisfied lane and an uncovered one look identical. */
+  timeBandCoverage?: ChartTimeSpan | null;
   /** Token ATH spot price in SOL (from tokens_info). */
   athPriceInSol?: number | null;
   isMigrated?: boolean;

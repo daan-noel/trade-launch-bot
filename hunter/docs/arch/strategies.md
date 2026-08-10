@@ -88,10 +88,20 @@ this rule's reqs read** (a 6-condition rule folds 6 columns, against the lab's w
 registry) and evaluates backend-side, so the client declares no windows or horizons:
 the grid's density comes off `CompiledRule::clock_horizons`, with `held_secs` riding on
 the `stall` horizon (measured from the last trade, which is at or after the entry fill,
-so it covers it). Rows are capped well under the lab's 40k and report `truncated` +
-`covered_until` — a silently short series reads exactly like a token that stopped
-trading. The tick grid is load-bearing either way: every decaying metric advances only
-inside a tick, so a trade-only fold never samples a between-trades crossing.
+so it covers it). The tick grid is load-bearing either way: every decaying metric
+advances only inside a tick, so a trade-only fold never samples a between-trades
+crossing.
+
+**The row cap is a coverage duration, not a payload size.** Any rule with a time stop
+holds a horizon open longer than the gaps an actively-traded token leaves, so the grid
+emits `1000/TICK_MS` = 5 rows per second of coverage almost regardless of how often the
+token prints: `MAX_READOUT_SERIES_ROWS` = 8k buys **~22 minutes**, measured from token
+creation, and a fold that runs out reports `truncated` + `covered_until` rather than
+reading as a token that stopped trading. Position windows past that are uncovered, which
+the strip surfaces as `· past coverage` —
+[roadmap](../roadmap/pending-measurement-runs.md) carries what is still open. The
+conversion is pinned by `the_row_cap_buys_a_fixed_span_of_chart_not_a_fixed_payload`,
+since nothing at the call site reveals that a row count is really a clock.
 
 The contract between the two routes is one test: **a series row at an instant equals
 `replay_readout` at that instant**, condition for condition. It holds because they are

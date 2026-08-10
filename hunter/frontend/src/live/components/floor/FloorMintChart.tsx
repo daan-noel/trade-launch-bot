@@ -5,6 +5,8 @@ import {
   type ChartChrome,
   type ChartEventMarker,
   type ChartRangeSelectionDetail,
+  type ChartTimeBand,
+  type ChartTimeSpan,
 } from 'components/token-price-chart';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { useWatchTokenTradesLive } from 'hooks/useTokenTradesLive';
@@ -39,6 +41,8 @@ export function FloorMintChart({
   onRangeChange,
   onCrosshairTimeChange,
   externalCrosshairTimeSec = null,
+  timeBands = null,
+  timeBandCoverage = null,
 }: {
   mint: string;
   markers?: ChartEventMarker[] | null;
@@ -54,6 +58,10 @@ export function FloorMintChart({
   onCrosshairTimeChange?: (timeSec: number | null) => void;
   /** Drive the crosshair from a sibling surface. */
   externalCrosshairTimeSec?: number | null;
+  /** Bottom-pane on/off lanes — the position modal's rule-condition timeline. */
+  timeBands?: ChartTimeBand[] | null;
+  /** The stretch those lanes speak for. */
+  timeBandCoverage?: ChartTimeSpan | null;
 }) {
   const { unit, usdRate } = usePriceUnit();
   useWatchTokenTradesLive(mint || null);
@@ -106,6 +114,8 @@ export function FloorMintChart({
         onRangeChange={onRangeChange}
         onCrosshairTimeChange={onCrosshairTimeChange}
         externalCrosshairTimeSec={externalCrosshairTimeSec}
+        timeBands={timeBands}
+        timeBandCoverage={timeBandCoverage}
         tokenCreatedAt={detail?.created_at ?? undefined}
         athPriceInSol={detail?.ath_price ?? null}
         isMigrated={detail?.is_migrated}

@@ -4,7 +4,6 @@ import {
   createSeriesMarkers,
   LineSeries,
   LineStyle,
-  type Coordinate,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
@@ -77,6 +76,13 @@ import { WalletMarkersTooltip } from './WalletMarkersTooltip';
 import { RangeSelectTooltip, formatRangeDuration } from './RangeSelectTooltip';
 import { WalletMarkersPlugin, asSeriesPrimitive, type WalletMarkerDef, type MarkerShape } from './walletMarkersPlugin';
 import { RangeSelectPlugin, asRangePrimitive } from './rangeSelectPlugin';
+import { barTimeAtClientX } from './paneCoords';
+import {
+  TimeBandsPlugin,
+  asTimeBandsPrimitive,
+  snapSpanToBars,
+  type TimeBandLane,
+} from './timeBandsPlugin';
 import type {
   ChartBarSelection,
   ChartCrosshairInfo,
@@ -484,6 +490,8 @@ export function TokenPriceChart({
   onCrosshairTimeChange,
   externalCrosshairTimeSec = null,
   onVisibleTimeRangeChange,
+  timeBands = null,
+  timeBandCoverage = null,
   athPriceInSol = null,
   isMigrated,
   isMayhemMode,
@@ -551,6 +559,7 @@ export function TokenPriceChart({
   const markersPluginRef = useRef<MarkersPlugin | null>(null);
   const walletMarkersPrimRef = useRef<WalletMarkersPlugin | null>(null);
   const rangeSelectPrimRef = useRef<RangeSelectPlugin | null>(null);
+  const timeBandsPrimRef = useRef<TimeBandsPlugin | null>(null);
   const barsRef = useRef<OhlcBar[]>([]);
   const alignedFlowLinesRef = useRef<FlowLines>({ vol: [], nonVol: [] });
 
@@ -1195,6 +1204,10 @@ export function TokenPriceChart({
         existing.detachPrimitive(asRangePrimitive(rangeSelectPrimRef.current));
         rangeSelectPrimRef.current = null;
       }
+      if (timeBandsPrimRef.current) {
+        existing.detachPrimitive(asTimeBandsPrimitive(timeBandsPrimRef.current));
+        timeBandsPrimRef.current = null;
+      }
       chart.removeSeries(existing);
       seriesRef.current = null;
     }
@@ -1215,6 +1228,10 @@ export function TokenPriceChart({
     const rangePrim = new RangeSelectPlugin();
     series.attachPrimitive(asRangePrimitive(rangePrim));
     rangeSelectPrimRef.current = rangePrim;
+
+    const bandsPrim = new TimeBandsPlugin();
+    series.attachPrimitive(asTimeBandsPrimitive(bandsPrim));
+    timeBandsPrimRef.current = bandsPrim;
 
     if (style === 'line') {
       series.setData(barsToLineData(bars));
@@ -1457,6 +1474,39 @@ export function TokenPriceChart({
     showEventMarkers,
   ]);
 
+  // Bottom-pane on/off lanes. Snapping happens HERE rather than in the primitive
+  // because `timeToCoordinate` resolves only times the scale already knows, and
+  // `bars` — the thing that decides what it knows — lives in this component.
+  useEffect(() => {
+    const prim = timeBandsPrimRef.current;
+    if (!prim || !showChart) return;
+    // Slot mode's time scale carries slot indices, so a wall-clock span has nowhere
+    // to land. Better a missing band than one drawn at the wrong slots.
+    if (!timeBands?.length || groupMode !== 'time' || bars.length === 0) {
+      prim.setLanes([], null);
+      return;
+    }
+    const times = bars.map((b) => Number(b.time));
+    const lanes: TimeBandLane[] = timeBands.map((lane) => ({
+      key: lane.key,
+      label: lane.label,
+      color: lane.color,
+      spans: lane.spans.flatMap((s) => {
+        const snapped = snapSpanToBars(times, s.from, s.to);
+        return snapped
+          ? [{ from: snapped.from as UTCTimestamp, to: snapped.to as UTCTimestamp }]
+          : [];
+      }),
+    }));
+    const track = timeBandCoverage
+      ? snapSpanToBars(times, timeBandCoverage.from, timeBandCoverage.to)
+      : null;
+    prim.setLanes(
+      lanes,
+      track ? { from: track.from as UTCTimestamp, to: track.to as UTCTimestamp } : null,
+    );
+  }, [timeBands, timeBandCoverage, bars, groupMode, showChart, style, groupingKey]);
+
   // Render the committed range selection as a band with a duration chip. Keyed
   // on style/grouping so it re-applies after the series (and its plugin) is
   // recreated; the live drag preview is driven directly from the pointer
@@ -1506,15 +1556,8 @@ export function TokenPriceChart({
     chart.applyOptions({ handleScroll: false, handleScale: false });
     el.style.cursor = 'crosshair';
 
-    const coordToBarTime = (clientX: number): number | null => {
-      const chartBars = barsRef.current;
-      if (chartBars.length === 0) return null;
-      const rect = el.getBoundingClientRect();
-      const logical = chart.timeScale().coordinateToLogical((clientX - rect.left) as Coordinate);
-      if (logical == null) return null;
-      const idx = Math.max(0, Math.min(chartBars.length - 1, Math.round(logical)));
-      return chartBars[idx].time as number;
-    };
+    const coordToBarTime = (clientX: number): number | null =>
+      barTimeAtClientX(chart, el, barsRef.current, clientX);
 
     let dragging = false;
     let startX = 0;

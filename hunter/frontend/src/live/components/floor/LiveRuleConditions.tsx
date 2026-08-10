@@ -11,8 +11,10 @@ import {
   type RuleReadout,
   type RuleReadoutSeries,
 } from '@live/store/liveEndpoints';
+import type { ChartTimeBand } from 'components/token-price-chart';
+import { usePublishConditionBands, type ConditionBands } from './conditionBands';
 import { useCrosshairTimeSec } from './crosshairTime';
-import { RuleConditionStrip } from './RuleConditionStrip';
+import { RuleConditionStrip, conditionLabel } from './RuleConditionStrip';
 
 /**
  * How often an OPEN position's readout re-reads. The engine ticks at `TICK_MS`
@@ -50,24 +52,34 @@ export function LivePositionConditions({ positionId }: { positionId: string }) {
   // walking a lane with ←/→) does not reliably know whether the engine still holds
   // this row, and the answer is authoritative in the payload.
   const [isReplay, setIsReplay] = useState(false);
+  const crosshairTimeSec = useCrosshairTimeSec();
   const { data, isLoading, error } = useGetPositionMetricsQuery(
     { positionId, at },
-    { pollingInterval: isReplay ? 0 : READOUT_POLL_MS, skip: !positionId },
+    {
+      // Paused while the pointer is on the plot: the pin is not on screen then, so
+      // each poll would spend the serialized decision loop a round-trip to refresh
+      // something nobody is reading. The cached pin renders instantly on pointer-out
+      // and the interval resumes, which costs at most one stale second.
+      pollingInterval: isReplay || crosshairTimeSec != null ? 0 : READOUT_POLL_MS,
+      skip: !positionId,
+    },
   );
   useEffect(() => {
     if (data?.source) setIsReplay(data.source === 'replay');
   }, [data?.source]);
 
-  const crosshairTimeSec = useCrosshairTimeSec();
   // Latched: the fetch starts on the FIRST hover and the payload then stays cached
   // for the life of the modal, so leaving and re-entering the plot costs nothing.
   const [scrubbed, setScrubbed] = useState(false);
   useEffect(() => {
     if (crosshairTimeSec != null) setScrubbed(true);
   }, [crosshairTimeSec]);
+  // The timeline lanes want the same payload. One cache entry serves both, so
+  // whichever the user reaches for first pays the fold and the other is free.
+  const [bandOn, setBandOn] = useState(false);
   const { data: series, isLoading: seriesLoading } = useGetPositionMetricSeriesQuery(
     positionId,
-    { skip: !positionId || !scrubbed },
+    { skip: !positionId || (!scrubbed && !bandOn) },
   );
 
   // Hoisted out of the hover path: the crosshair moves per frame and this is one
@@ -77,6 +89,13 @@ export function LivePositionConditions({ positionId }: { positionId: string }) {
     () => readoutAt(series, atSec, crosshairTimeSec),
     [series, atSec, crosshairTimeSec],
   );
+
+  const bands = useMemo(() => (bandOn ? seriesToBands(series, atSec) : null), [
+    bandOn,
+    series,
+    atSec,
+  ]);
+  usePublishConditionBands(bands);
 
   return (
     <RuleConditionStrip
@@ -91,8 +110,59 @@ export function LivePositionConditions({ positionId }: { positionId: string }) {
       onAtChange={setAt}
       hoveredAtMs={hovered?.atMs ?? null}
       hoveredBeyondCoverage={hovered?.beyondCoverage ?? false}
+      bandOn={bandOn}
+      onBandToggle={setBandOn}
     />
   );
+}
+
+/**
+ * Neutral on purpose. The strip refuses a good/bad tone — a satisfied entry
+ * condition is *why we're in* and a satisfied exit condition is *why we're
+ * leaving*, so one green would mean opposite things — and a lane is the same
+ * condition drawn sideways.
+ */
+const LANE_COLOR = 'rgba(226,232,240,0.55)';
+
+/**
+ * The series as chart lanes: per condition, the stretches over which it held.
+ *
+ * A **disarmed** row is not a satisfied one however `ok` reads. The fold skips a
+ * gated trail until its arming gate clears, so filling those rows would draw a stop
+ * that was never being evaluated.
+ *
+ * Conditions with no span keep their (empty) lane. Against the coverage track that
+ * reads as "never fired", which is a real answer and the most common one for the
+ * exits that did not close the position.
+ */
+function seriesToBands(
+  series: RuleReadoutSeries | undefined,
+  atSec: number[] | null,
+): ConditionBands | null {
+  if (!series || !atSec || atSec.length === 0) return null;
+  const lanes: ChartTimeBand[] = series.conditions.map((c, idx) => {
+    const spans: Array<{ from: number; to: number }> = [];
+    let start = -1;
+    for (let i = 0; i < atSec.length; i++) {
+      const on = (c.ok[i] ?? false) && !(c.disarmed?.[i] ?? false);
+      if (on && start < 0) start = i;
+      else if (!on && start >= 0) {
+        spans.push({ from: atSec[start], to: atSec[i - 1] });
+        start = -1;
+      }
+    }
+    if (start >= 0) spans.push({ from: atSec[start], to: atSec[atSec.length - 1] });
+    return {
+      key: `${c.side}-${c.stage ?? ''}-${c.metric}-${c.window_size_sec ?? ''}-${idx}`,
+      label: conditionLabel(c),
+      color: LANE_COLOR,
+      spans,
+    };
+  });
+  return {
+    lanes,
+    coverage: { from: atSec[0], to: atSec[atSec.length - 1] },
+  };
 }
 
 /**

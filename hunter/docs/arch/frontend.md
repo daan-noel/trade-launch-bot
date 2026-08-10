@@ -289,7 +289,9 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   `arms +N%`, a skipped trail is dashed, an inactive ladder stage is dimmed.
   **Hovering the chart moves the instant**: `FloorPositionDetail` publishes the
   crosshair time through `crosshairTime.tsx` — a subscribable store, not state, so a
-  per-frame move re-renders the chips and not the chart that emitted it — and the
+  per-frame move re-renders the chips and not the chart that emitted it (the lanes
+  below travel the same way in reverse, both over the one `publishedStore`; the
+  detail relays them because it is deliberately free of the live endpoints) — and the
   strip swaps to `○ reconstructed at hh:mm:ss` until the pointer leaves, the
   entry/exit pins still visible as what it returns to. The rows come from
   `.../positions/{id}/metric-series`, fetched **lazily on the first crosshair move**
@@ -297,8 +299,14 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   `nearestSeriesIndex`. An open position's hover carries the replay caption too:
   the engine keeps one instant of state, not a history, so a past instant can only
   be reconstructed. A capped series says `· past coverage` rather than repeating its
-  last row silently. Backend contract + the parity traps:
-  [strategies.md](strategies.md) *Rule readout*),
+  last row silently. The strip's **timeline** toggle draws the same payload as
+  bottom-pane lanes on the chart (`timeBandsPlugin`), one per condition, filled
+  where it held — off by default because turning it on is what pays for the fold,
+  and it shares the crosshair's cache entry so whichever comes first covers both.
+  A disarmed row never fills: the fold is skipping that req, not failing it.
+  Lanes thin down rather than vanish as a ladder grows, and the empty ones matter —
+  against the coverage track they read as "never fired". Backend contract + the
+  parity traps: [strategies.md](strategies.md) *Rule readout*),
   Rules/Fingerprints
   (+ `InputSyncStatus`, `wallet/` components; `usePositionNotifications`; `syncTokenSlice`).
 - **Lab (`@lab/pages`):** **Research home** (`LabHomePage` — shortcuts + recent sweeps

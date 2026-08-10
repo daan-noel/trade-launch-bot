@@ -5,7 +5,6 @@ import {
   createSeriesMarkers,
   LineSeries,
   LineStyle,
-  type Coordinate,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
@@ -82,6 +81,7 @@ import {
   type MarkersPlugin,
 } from 'components/token-price-chart/TokenPriceChart';
 import { RangeSelectPlugin, asRangePrimitive } from 'components/token-price-chart/rangeSelectPlugin';
+import { barTimeAtClientX } from 'components/token-price-chart/paneCoords';
 import {
   WalletMarkersPlugin,
   asSeriesPrimitive as asWalletSeriesPrimitive,
@@ -1062,15 +1062,8 @@ export function FlowPreviewChart({
     chart.applyOptions({ handleScroll: false, handleScale: false });
     el.style.cursor = 'crosshair';
 
-    const coordToBarTime = (clientX: number): number | null => {
-      const chartBars = barsRef.current;
-      if (chartBars.length === 0) return null;
-      const rect = el.getBoundingClientRect();
-      const logical = chart.timeScale().coordinateToLogical((clientX - rect.left) as Coordinate);
-      if (logical == null) return null;
-      const idx = Math.max(0, Math.min(chartBars.length - 1, Math.round(logical)));
-      return chartBars[idx].time as number;
-    };
+    const coordToBarTime = (clientX: number): number | null =>
+      barTimeAtClientX(chart, el, barsRef.current, clientX);
 
     let dragging = false;
     let startX = 0;

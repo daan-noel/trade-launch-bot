@@ -1174,6 +1174,54 @@ mod tests {
         assert!(series.conditions.iter().all(|c| c.len() == 50));
     }
 
+    /// The row cap is a **coverage duration**, not a payload size.
+    ///
+    /// The grid emits a tick every `TICK_MS` for as long as any horizon is still
+    /// open, and a rule with a time stop holds one open for longer than any gap an
+    /// actively-traded token leaves. So the series records `1000/TICK_MS` rows per
+    /// second of coverage almost regardless of how often the token prints, and a cap
+    /// of N rows buys `N·TICK_MS/1000` seconds of chart — after which the readout
+    /// stops following the crosshair.
+    ///
+    /// Pinned here because that conversion is the whole basis for choosing a cap,
+    /// and nothing about `MAX_READOUT_SERIES_ROWS` reveals it at the call site.
+    #[test]
+    fn the_row_cap_buys_a_fixed_span_of_chart_not_a_fixed_payload() {
+        let c = rule(serde_json::json!({
+            "exit": { "m_position": { "held": [{ "operator": ">=", "value": 600 }] } }
+        }));
+        let rows_per_sec = 1000 / crate::TICK_MS;
+        const CAP: usize = 8_000;
+
+        // An hour of trading. The print cadence is deliberately varied across the
+        // two runs: if coverage tracked trade COUNT the two would differ, and the
+        // point is that they do not.
+        for cadence_secs in [1_i64, 5] {
+            let n = 3600 / cadence_secs;
+            let trades: Vec<_> = (0..n).map(|i| trade(1.0, i * cadence_secs)).collect();
+            let series = replay_series(
+                &c,
+                trades,
+                &ReplayCtx {
+                    created_at: ts(0),
+                    entry: Some((ts(0), 1.0)),
+                    stage: None,
+                    flow: None,
+                },
+                ts(3600),
+                Some(CAP),
+            );
+            assert!(series.truncated, "an hour must not fit under the cap");
+            let covered = (series.covered_until - ts(0)).num_seconds();
+            let budget = CAP as i64 / rows_per_sec;
+            // Trades occupy rows too, so coverage lands at or just under the budget.
+            assert!(
+                covered <= budget && covered * 4 >= budget * 3,
+                "cadence {cadence_secs}s covered {covered}s, expected ~{budget}s",
+            );
+        }
+    }
+
     /// Without a position, position-scoped reqs read `NaN` and satisfy nothing —
     /// the same behaviour the pre-entry `can_enter` gate relies on.
     #[test]
