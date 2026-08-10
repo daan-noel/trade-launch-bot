@@ -144,9 +144,13 @@ export function disabledRuleRowClass(r: Pick<StrategyRule, 'is_enabled'>): strin
 
 /**
  * Trade-mode left rail — real rules carry a solid `warning` bar plus a faint
- * warm wash, paper a thin `info` bar. Same hues as the Mode badge, so the rail
- * and the badge are one language; the point is that "this row spends real
- * money" survives any sort order, filter, or scroll position.
+ * neutral wash, paper a thin `info` bar. The rail hue matches the Mode badge, so
+ * the rail and the badge are one language; the point is that "this row spends
+ * real money" survives any sort order, filter, or scroll position.
+ *
+ * The wash is white, NOT the rail's amber: `--color-warning` is a pale yellow,
+ * and yellow at single-digit alpha over the near-black surface mixes to olive.
+ * The rail carries the hue; the wash only has to lift the row off the surface.
  *
  * Painted as a background **image**, never a background **color**. Two
  * constraints force that, both of them load-bearing:
@@ -161,7 +165,7 @@ export function disabledRuleRowClass(r: Pick<StrategyRule, 'is_enabled'>): strin
  */
 export function modeRuleRowClass(r: Pick<StrategyRule, 'trade_mode'>): string {
   return r.trade_mode === 'real'
-    ? 'bg-[linear-gradient(90deg,var(--color-warning)_0_3px,color-mix(in_srgb,var(--color-warning)_6%,transparent)_3px)]'
+    ? 'bg-[linear-gradient(90deg,var(--color-warning)_0_3px,color-mix(in_srgb,white_4%,transparent)_3px)]'
     : 'bg-[linear-gradient(90deg,color-mix(in_srgb,var(--color-info)_45%,transparent)_0_2px,transparent_2px)]';
 }
 

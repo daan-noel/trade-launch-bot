@@ -125,6 +125,9 @@ export const ACCORDION_IDS = {
 export interface UiToggles {
   /** Rules board + Simulate rules list: include soft-archived rules. */
   showDisabledRules?: boolean;
+  /** Rules Control: the picked mode names a LEDGER to score every rule on,
+   *  instead of narrowing the board to that mode's rules. */
+  scoreAllModes?: boolean;
   /** My Wallet: hide sub-threshold holdings. */
   hideDust?: boolean;
   /** Console: the collapsible WAITING lane. */

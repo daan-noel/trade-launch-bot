@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { RulesView } from 'components/strategy/RulesView';
 import { DryRunPanel } from '@lab/components/strategy/DryRunPanel';
 import { LabRuleEvidence } from '@lab/components/strategy/LabRuleEvidence';
-import type { TradeMode } from 'lib/strategy/types';
 
 /**
  * Rules page (lab app) — the same scoreboard + Evidence cockpit as live Rules
@@ -21,9 +20,8 @@ import type { TradeMode } from 'lib/strategy/types';
  */
 export function RulesPage() {
   const [scoreScope, setScoreScope] = useState<'current' | 'all'>('all');
-  /** `own` = each rule scored in its own `trade_mode`; `real`/`paper` rank the whole
-   *  list on one ledger, which is the only comparable basis across modes. */
-  const [scoreMode, setScoreMode] = useState<'own' | TradeMode>('own');
+  // The ledger to rank on lives in RulesView's mode picker + its "score all rules
+  // on this ledger" modifier — one control, not a second Paper/Real vocabulary.
 
   return (
     <RulesView
@@ -31,8 +29,6 @@ export function RulesPage() {
       showScores
       scoreScope={scoreScope}
       onScoreScopeChange={setScoreScope}
-      scoreMode={scoreMode}
-      onScoreModeChange={setScoreMode}
       renderDryRun={(draft, canRun) => <DryRunPanel draft={draft} canRun={canRun} />}
       renderAnalyze={({ ruleId, rule, clear }) => (
         <LabRuleEvidence

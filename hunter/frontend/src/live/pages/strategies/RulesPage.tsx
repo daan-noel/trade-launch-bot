@@ -4,7 +4,7 @@ import { RulesView } from 'components/strategy/RulesView';
 import { RuleAnalyzePanel } from 'components/strategy/RuleAnalyzePanel';
 import { LazyLivePositionInspectModal } from '@live/components/strategy/LazyLivePositionInspectModal';
 import { selectOpenByRule, selectRuleOpenCounts } from '@live/slices/liveStatusSlice';
-import type { StrategyRule, TradeMode } from 'lib/strategy/types';
+import type { StrategyRule } from 'lib/strategy/types';
 
 /**
  * Live Rules Control — sticky scoreboard (activate/pause) + Evidence pane
@@ -13,17 +13,14 @@ import type { StrategyRule, TradeMode } from 'lib/strategy/types';
 export function RulesPage() {
   const ruleLiveCounts = useSelector(selectRuleOpenCounts);
   const [scoreScope, setScoreScope] = useState<'current' | 'all'>('current');
-  /** `own` = each rule scored in its own `trade_mode` (the keep/kill board);
-   *  `real`/`paper` score the whole list on that one ledger. */
-  const [scoreMode, setScoreMode] = useState<'own' | TradeMode>('own');
+  // Which ledger the board scores on is NOT held here: it is the page's one mode
+  // picker plus its "score all rules on this ledger" modifier, owned by RulesView.
 
   return (
     <RulesView
       showScores
       scoreScope={scoreScope}
       onScoreScopeChange={setScoreScope}
-      scoreMode={scoreMode}
-      onScoreModeChange={setScoreMode}
       ruleLiveCounts={ruleLiveCounts}
       renderAnalyze={({ ruleId, rule, clear }) => (
         <LiveRuleEvidence

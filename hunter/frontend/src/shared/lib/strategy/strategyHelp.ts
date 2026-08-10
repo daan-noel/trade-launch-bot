@@ -8,6 +8,8 @@
 export interface HelpTip {
   title: string;
   body: string;
+  /** Optional ASCII figure (mono, `whitespace-pre`) drawn above the body. */
+  figure?: string;
 }
 
 // ── Condition grammar (one metric's text box) ────────────────────────────────
@@ -1397,3 +1399,59 @@ export const DISCOVERY_COL_HELP = {
     ].join('\n'),
   },
 } as const satisfies Record<string, HelpTip>;
+
+// ── Rules board (view controls, not rule fields) ─────────────────────────────
+
+/**
+ * The "Score all rules on this ledger" modifier. Written as a builder rather than
+ * a constant because the whole point of the control is that it re-reads the mode
+ * picker beside it — a tip that says "this mode" while the picker says Real is the
+ * same ambiguity the control exists to remove. `mode` is the picker's current
+ * value; `null` = the picker is on All, where the box is disabled.
+ */
+export function scoreLedgerHelp(mode: 'paper' | 'real' | null): HelpTip {
+  const m = mode ?? 'real';
+  const other = m === 'real' ? 'paper' : 'real';
+  // Column-aligned by padding, not by hand-typed spaces: `real` and `paper` are
+  // different widths, so a literal figure would be square in one mode and ragged
+  // in the other.
+  const row = (runs: string, shows: string) => `  ${`${runs} rule`.padEnd(13)}▸  ${shows}`;
+  return {
+    title: 'Score all rules on this ledger',
+    figure: [
+      `picker = ${m.toUpperCase()}${mode === null ? '   (example)' : ''}`,
+      '',
+      'OFF · picker = a ROW FILTER',
+      row(m, `${m} ◎`),
+      row(other, 'row hidden'),
+      '',
+      'ON  · picker = a LEDGER',
+      row(m, `${m} ◎`),
+      row(other, `${m} ◎  [${m}]`),
+      `                  ^ on screen,`,
+      `                    runs ${other}`,
+    ].join('\n'),
+    body: [
+      `This box changes what the Paper/Real picker beside it MEANS. It never changes what any rule does — no rule starts or stops trading, and nothing is written.`,
+      '',
+      `OFF — the picker is a ROW FILTER (label reads "Show").`,
+      `  Picking ${m} hides the ${other} rules. Each remaining rule is scored on its OWN trade mode, so a paper rule shows paper numbers and a real rule shows real ones. This is the keep/kill board, and the default.`,
+      '',
+      `ON — the picker names a LEDGER (label reads "Score on").`,
+      `  Nothing is hidden: ${other} rules stay on screen, but every rule is now scored on its ${m} positions. This is the only way to read a rule's ${m} record while it runs ${other}, and the only basis on which rules in different modes rank against each other — paper and real PnL are different currencies (one is money, one is not), so an "own mode" board never compares them honestly.`,
+      '',
+      'WHAT CHANGES ON SCREEN',
+      `  · The scoreboard tiles, every score column, and the TOTAL strip re-query on the ${m} ledger — these are real per-mode figures from the server, not a client-side filter of what was already loaded.`,
+      `  · A rule with no ${m} positions reads "—", not 0. It has no record here, which is not the same as a flat one.`,
+      `  · Rules that run ${other} get a small ${m} pill beside their PnL: the figure is genuine history, but not that rule's live ledger, and nothing else in the row would say so. The strip below counts them ("N of M rules are not running ${m}").`,
+      `  · The TOTAL strip files each figure under the mode the NUMBERS came from, never the mode the rule is switched to — otherwise a pinned ledger would quietly blend simulated SOL into a real total.`,
+      '',
+      'INDEPENDENT OF Span',
+      '  Span (Current run / All-time) picks WHICH positions count; this box picks WHOSE ledger they come from. Both apply at once.',
+      '',
+      mode === null
+        ? 'Disabled right now because the picker is on All — "All" names no ledger to score on. Pick Paper or Real first.'
+        : 'Needs Paper or Real: on All the box is disabled, since "All" names no ledger to score on.',
+    ].join('\n'),
+  };
+}

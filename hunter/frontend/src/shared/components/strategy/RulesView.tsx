@@ -20,6 +20,8 @@ import {
   TrashIcon,
 } from 'components/ui/icons';
 import { Badge } from 'components/ui/Badge';
+import { Checkbox } from 'components/ui/Checkbox';
+import { InfoTooltip } from 'components/ui/InfoTooltip';
 import { PageHeader } from 'components/ui/PageHeader';
 import { StatTile } from 'components/ui/StatTile';
 import { ToggleGroup } from 'components/ui/ToggleGroup';
@@ -38,7 +40,8 @@ import { useModeFilter } from 'hooks/useModeFilter';
 import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
 import { useTagFilter } from 'hooks/useTagFilter';
 import { useUiToggle } from 'hooks/useUiPrefs';
-import { matchesModeFilter } from 'lib/strategy/mode';
+import { matchesModeFilter, modeBadgeVariant } from 'lib/strategy/mode';
+import { scoreLedgerHelp } from 'lib/strategy/strategyHelp';
 import { includeOnly, matchesTagFilter } from 'lib/strategy/tags';
 import { apiErrorMessage } from 'store/baseApi';
 import {
@@ -103,14 +106,6 @@ export interface RulesViewProps {
    */
   scoreScope?: 'current' | 'all';
   onScoreScopeChange?: (scope: 'current' | 'all') => void;
-  /**
-   * Which trade mode the scoreboard scores every rule in. `own` (default) scores each
-   * rule in its own `trade_mode` — the keep/kill board. `paper`/`real` pin the whole
-   * list to one ledger, the only way to read a rule's paper record while it trades
-   * real, and the only basis on which rules in different modes rank comparably.
-   */
-  scoreMode?: 'own' | TradeMode;
-  onScoreModeChange?: (mode: 'own' | TradeMode) => void;
   /** Live-only: Evidence panel under the Control table for the selected rule. */
   renderAnalyze?: (ctx: {
     ruleId: string;
@@ -136,22 +131,11 @@ export function RulesView({
   showScores,
   scoreScope,
   onScoreScopeChange,
-  scoreMode = 'own',
-  onScoreModeChange,
   renderAnalyze,
 }: RulesViewProps) {
   const dispatch = useDispatch();
-  const { data: rules = [], isLoading, refetch } = useGetStrategyRulesQuery(
-    scoreScope || scoreMode !== 'own'
-      ? { scope: scoreScope, mode: scoreMode === 'own' ? undefined : scoreMode }
-      : undefined,
-  );
   const { data: fps = [] } = useGetFingerprintsQuery();
   const [selectedKey, setSelectedKey] = useSelectionSearchParam(STRATEGY_PARAMS.rule);
-  const selectedRule = useMemo(
-    () => (selectedKey ? rules.find((r) => r.id === selectedKey) : undefined),
-    [rules, selectedKey],
-  );
 
   const actions = useRuleActions({ renderDryRun });
 
@@ -175,6 +159,15 @@ export function RulesView({
   const [modeFilter, setModeFilter] = useModeFilter(
     showScores ? 'rules-control' : 'rules',
   );
+  /**
+   * The modifier that turns the mode picker from a row filter into a **ledger**:
+   * with it on, `Real` stops meaning "show the real rules" and starts meaning
+   * "score every rule on its real positions", rows unfiltered. One picker with a
+   * modifier beats two Paper/Real controls side by side, which read as one
+   * control split in half. Meaningless while the picker is `All` — there is no
+   * ledger named — so the box is disabled there.
+   */
+  const [scoreAllModes, setScoreAllModes] = useUiToggle('scoreAllModes', false);
   const [opErr, setOpErr] = useState<string | null>(null);
   /** Rule ids mid optimistic pause (label "Pausing…" until SSE/refetch confirms). */
   const [pausingIds, setPausingIds] = useState<Set<string>>(() => new Set());
@@ -184,6 +177,29 @@ export function RulesView({
   const [stopByMode, setStopByMode] = useState<Partial<Record<TradeMode, ActionProgress>>>({});
 
   const bulkBusy = pauseAllState.isLoading || stopAllState.isLoading;
+
+  /** The one derivation the merged control exists for: a picked mode is either a
+   *  ledger to score on (`scoreAllModes`) or a row filter, never both at once. */
+  const scoreMode: 'own' | TradeMode =
+    showScores && scoreAllModes && modeFilter !== 'all' ? modeFilter : 'own';
+  /** Scoring on a ledger, so the picker is not narrowing rows any more. */
+  const rowModeFilter = scoreMode === 'own' ? modeFilter : 'all';
+  /** ⓘ body for the modifier — reads the picker, so it names a concrete ledger
+   *  rather than "the selected mode". */
+  const ledgerHelp = useMemo(
+    () => scoreLedgerHelp(modeFilter === 'all' ? null : modeFilter),
+    [modeFilter],
+  );
+
+  const { data: rules = [], isLoading, refetch } = useGetStrategyRulesQuery(
+    scoreScope || scoreMode !== 'own'
+      ? { scope: scoreScope, mode: scoreMode === 'own' ? undefined : scoreMode }
+      : undefined,
+  );
+  const selectedRule = useMemo(
+    () => (selectedKey ? rules.find((r) => r.id === selectedKey) : undefined),
+    [rules, selectedKey],
+  );
 
   const fpById = useMemo(() => new Map(fps.map((f) => [f.id, f])), [fps]);
 
@@ -202,15 +218,26 @@ export function RulesView({
     [enabledRules, tagFilter],
   );
   const modeScopedRules = useMemo(
-    () => enabledRules.filter((r) => matchesModeFilter(r.trade_mode, modeFilter)),
-    [enabledRules, modeFilter],
+    () => enabledRules.filter((r) => matchesModeFilter(r.trade_mode, rowModeFilter)),
+    [enabledRules, rowModeFilter],
   );
   const visibleRules = useMemo(
-    () => tagScopedRules.filter((r) => matchesModeFilter(r.trade_mode, modeFilter)),
-    [tagScopedRules, modeFilter],
+    () => tagScopedRules.filter((r) => matchesModeFilter(r.trade_mode, rowModeFilter)),
+    [tagScopedRules, rowModeFilter],
   );
   const hiddenByTags = modeScopedRules.length - visibleRules.length;
   const hiddenByMode = tagScopedRules.length - visibleRules.length;
+
+  /** Rows scored on a ledger they are not trading in — only possible with a
+   *  pinned `scoreMode`. Counted here and marked per row, so the board never
+   *  quietly presents a rule's paper record as the money it is making. */
+  const offModeCount = useMemo(
+    () =>
+      scoreMode === 'own'
+        ? 0
+        : visibleRules.filter((r) => r.trade_mode !== scoreMode).length,
+    [visibleRules, scoreMode],
+  );
 
   /** Cross-rule rollup for the Control TOTAL strip (same scope as scoreboard). */
   const scoreboardTotals = useMemo(() => {
@@ -497,15 +524,38 @@ export function RulesView({
           group: 'score',
           render: (r: StrategyRule) => {
             const v = r.total_pnl_sol ?? 0;
+            // A pinned score mode scores rules that run the OTHER mode too. Mark
+            // those rows: the figure is real history, but not this rule's live
+            // ledger, and nothing else in the row says so.
+            const offMode = scoreMode !== 'own' && r.trade_mode !== scoreMode;
+            const mark = offMode ? (
+              <Badge
+                variant={modeBadgeVariant(scoreMode as TradeMode)}
+                size="sm"
+                pill
+                className="px-1 py-0 text-[9px]"
+                title={`Scored on ${scoreMode} positions — this rule runs ${r.trade_mode}`}
+              >
+                {scoreMode}
+              </Badge>
+            ) : null;
             if ((r.total_positions ?? 0) === 0) {
-              return <span className="text-text-dim">—</span>;
+              return (
+                <span className="inline-flex items-center gap-1">
+                  <span className="text-text-dim">—</span>
+                  {mark}
+                </span>
+              );
             }
             return (
-              <span
-                className={`tabular-nums text-xs font-semibold ${signedToneClass(v)}`}
-              >
-                {v > 0 ? '+' : ''}
-                {v.toFixed(3)}◎
+              <span className="inline-flex items-center gap-1">
+                <span
+                  className={`tabular-nums text-xs font-semibold ${signedToneClass(v)}`}
+                >
+                  {v > 0 ? '+' : ''}
+                  {v.toFixed(3)}◎
+                </span>
+                {mark}
               </span>
             );
           },
@@ -806,6 +856,7 @@ export function RulesView({
     fpById,
     linkToSimulate,
     showScores,
+    scoreMode,
     pausingIds,
     stopByRule,
     ruleLiveCounts,
@@ -832,56 +883,13 @@ export function RulesView({
         <PageHeader
           className="mb-0"
           title={showScores ? 'Rules Control' : 'Rules'}
+          // The sticky strip carries only what you steer the board with while
+          // scrolling — which rows, and the bulk actions. Everything that decides
+          // how a number is computed lives on the scoreboard it governs, below.
           description={
-            showScores ? (
-              <>
-                {onScoreScopeChange && (
-                  <span className="mr-2 inline-flex align-middle">
-                    <ToggleGroup
-                      aria-label="Scoreboard scope"
-                      tone="primary"
-                      size="sm"
-                      value={scoreScope ?? 'current'}
-                      onChange={onScoreScopeChange}
-                      options={[
-                        { value: 'current', label: 'Current run' },
-                        { value: 'all', label: 'All-time' },
-                      ]}
-                    />
-                  </span>
-                )}
-                {/* Which ledger every row is scored on. Separate from the scope
-                    toggle because they answer different questions — how far back,
-                    and whose money. */}
-                {onScoreModeChange && (
-                  <span className="mr-2 inline-flex align-middle">
-                    <ToggleGroup
-                      aria-label="Scoreboard trade mode"
-                      tone="primary"
-                      size="sm"
-                      value={scoreMode}
-                      onChange={onScoreModeChange}
-                      options={[
-                        { value: 'own', label: 'Own mode' },
-                        { value: 'real', label: 'Real' },
-                        { value: 'paper', label: 'Paper' },
-                      ]}
-                    />
-                  </span>
-                )}
-                <span className="text-xs text-text-dim">
-                  {scoreMode !== 'own'
-                    ? `Scoreboard = every rule's ${scoreMode} positions · ${
-                        (scoreScope ?? 'current') === 'current'
-                          ? 'latest run'
-                          : 'all-time'
-                      }`
-                    : (scoreScope ?? 'current') === 'current'
-                      ? 'Scoreboard = latest run — Pause from Execute or Evidence'
-                      : 'Scoreboard = all-time (real) / latest run (paper)'}
-                </span>
-              </>
-            ) : undefined
+            showScores
+              ? 'Pause from Execute or Evidence — scoring controls sit on the scoreboard'
+              : undefined
           }
           actions={
             <>
@@ -965,11 +973,50 @@ export function RulesView({
             `visibleRules` — otherwise every chip would drop to its own count the
             moment you clicked it. */}
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          {/* One mode picker for the whole page. Bare, it narrows rows; with the
+              modifier beside it, the same pick names the ledger every rule is
+              scored on. The verb prefix says which of the two is live. */}
+          <span className="text-[10px] uppercase tracking-wide text-text-dim">
+            {scoreMode === 'own' ? 'Show' : 'Score on'}
+          </span>
           <RuleModeFilter
             rules={tagScopedRules}
             value={modeFilter}
             onChange={setModeFilter}
           />
+          {showScores && (
+            // The ⓘ sits OUTSIDE the <label> on purpose: inside it, opening the
+            // help would toggle the checkbox (a label forwards its clicks).
+            <span className="flex items-center gap-1">
+              <label
+                className={`flex items-center gap-1.5 text-[10px] ${
+                  modeFilter === 'all'
+                    ? 'cursor-not-allowed text-text-dim/50'
+                    : 'cursor-pointer text-text-dim hover:text-text'
+                }`}
+                title={
+                  modeFilter === 'all'
+                    ? 'Pick Paper or Real first — All names no ledger to score on'
+                    : `Score EVERY rule on its ${modeFilter} positions instead of hiding the ${
+                        modeFilter === 'real' ? 'paper' : 'real'
+                      } ones`
+                }
+              >
+                <Checkbox
+                  boxSize="sm"
+                  checked={scoreMode !== 'own'}
+                  disabled={modeFilter === 'all'}
+                  onChange={(e) => setScoreAllModes(e.target.checked)}
+                />
+                Score all rules on this ledger
+              </label>
+              <InfoTooltip
+                title={ledgerHelp.title}
+                body={ledgerHelp.body}
+                figure={ledgerHelp.figure}
+              />
+            </span>
+          )}
           <RuleTagFilter rules={modeScopedRules} filter={tagFilter} onChange={setTagFilter} />
           {hiddenByTags > 0 && (
             <span className="text-[10px] text-text-dim">{hiddenByTags} hidden by tags</span>
@@ -980,6 +1027,54 @@ export function RulesView({
         </div>
       </div>
       {err && <p className="text-xs text-red">{err}</p>}
+      {showScores && (
+        // The scoring controls live ON the scoreboard, not in the page header —
+        // the row filters above answer "which rules", this bar answers "over what
+        // history", and putting them in one strip is what made the two Paper/Real
+        // vocabularies read as one control.
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-white/6 pb-2">
+          {onScoreScopeChange && (
+            <>
+              <span className="text-[10px] uppercase tracking-wide text-text-dim">Span</span>
+              <ToggleGroup
+                aria-label="Scoreboard span"
+                tone="primary"
+                size="sm"
+                value={scoreScope ?? 'current'}
+                onChange={onScoreScopeChange}
+                options={[
+                  {
+                    value: 'current',
+                    label: 'Current run',
+                    title: 'Score each rule on its latest run only',
+                  },
+                  {
+                    value: 'all',
+                    label: 'All-time',
+                    title: 'Score each rule on its whole position history',
+                  },
+                ]}
+              />
+            </>
+          )}
+          <span className="text-xs text-text-dim">
+            {scoreMode !== 'own'
+              ? `Scoreboard = every rule's ${scoreMode} positions · ${
+                  (scoreScope ?? 'current') === 'current' ? 'latest run' : 'all-time'
+                }`
+              : (scoreScope ?? 'current') === 'current'
+                ? 'Scoreboard = latest run, each rule in its own mode'
+                : 'Scoreboard = all-time (real) / latest run (paper)'}
+            {/* The whole point of a pinned ledger, said where the confusion is:
+                some of these rows are not running the mode they are scored on. */}
+            {offModeCount > 0 && (
+              <span className="ml-1 text-warning">
+                — {offModeCount} of {visibleRules.length} rules are not running {scoreMode}
+              </span>
+            )}
+          </span>
+        </div>
+      )}
       {showScores && (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
           <StatTile
@@ -1063,7 +1158,7 @@ export function RulesView({
           <StatTile
             label="Rules"
             value={visibleRules.length}
-            sub={`${modeFilter === 'all' ? '' : `${modeFilter} · `}${showDisabled ? 'incl. disabled' : 'enabled'
+            sub={`${rowModeFilter === 'all' ? '' : `${rowModeFilter} · `}${showDisabled ? 'incl. disabled' : 'enabled'
               }`}
             tone="muted"
             size="sm"

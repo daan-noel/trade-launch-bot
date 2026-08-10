@@ -26,9 +26,28 @@ Live Rules is a **control board**, not an authoring form with history bolted on.
 
 With a mode pinned, `all` means all-time on **both** sides (`rule_counters_for_all_in_mode`),
 not the legacy paper-latest-run asymmetry above: an explicit comparison across unlike
-spans is worse than no comparison. Every row is stamped with the `score_mode` that
-produced its numbers, and the TOTAL strip buckets by that mode rather than by the rule's
-`trade_mode` — filing a paper figure under `real` is the currency blend the tiles refuse.
+spans is worse than no comparison. A row whose `trade_mode` differs from the pinned
+`score_mode` carries a mode pill on its PnL cell and is counted in the scoreboard caption
+(`N of M rules are not running real`) — the figure is real history, but not the ledger
+that rule is live on, and nothing else in the row says so. The TOTAL strip buckets by
+the mode the numbers came from rather than by the rule's `trade_mode` — filing a paper
+figure under `real` is the currency blend the tiles refuse.
+
+`score_mode` has **no control of its own**. The page carries one Paper/Real picker, and a
+`Score all rules on this ledger` checkbox decides which job that pick does:
+
+| Picker | Modifier | Rows | `score_mode` |
+| --- | --- | --- | --- |
+| `All` | n/a (disabled — `All` names no ledger) | all | absent |
+| `paper`/`real` | off | that mode only | absent |
+| `paper`/`real` | on | **all** — the pick is a ledger, not a filter | that mode |
+
+A picked mode is either a row filter or a ledger, never both, so `RulesView` derives
+`score_mode` and drops the row filter whenever the modifier is on (a board narrowed to
+real rules *and* scored on real is the state the modifier is there to escape). The cost
+is deliberate: filter and ledger can no longer disagree, so "show only the real rules,
+scored on their paper history" is not expressible. Two Paper/Real controls side by side
+cost more — they read as one control split in half.
 
 **Evidence** (`POST …/positions?scope=`):
 
@@ -70,9 +89,13 @@ series).
 ## UI shape
 
 ```text
-┌─ Rules Control (sticky) ── [Current run][All-time] [Own mode][Real][Paper] ─┐
-│ RULE · PnL · Win% · N · Live · Status · Execute(Pause/Activate)             │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌─ Rules Control (sticky) ── Pause All / Stop All ─────────────────────────────┐
+│ SHOW [All][PAPER][REAL]  ☐ Score all rules on this ledger  + tag chips       │
+└──────────────────────────────────────────────────────────────────────────────┘
+  SPAN [Current run][All-time]   Scoreboard = … — 12 of 31 not running real
+┌─ TOTAL tiles ────────────────────────────────────────────────────────────────┐
+│ RULE · PnL(+mode pill when off-ledger) · Win% · N · Live · Status · Execute  │
+└──────────────────────────────────────────────────────────────────────────────┘
          │ select row
          ▼
 ┌─ Evidence ── Pause/Activate in header ───────────────────────────┐
@@ -84,4 +107,15 @@ series).
 ## Files
 
 - Backend: `strategy_repo::{list_runs_with_metrics,find_run_by_seq,rule_counters_for_latest_runs,rule_counters_for_all_in_mode}`, `engine::{list_rules,list_rule_runs}`, `positions` scope `all`/`run`, `rules_with_counters(score_scope, score_mode)`
-- Frontend: `RulesPage` + `RulesView` Control strip (scope + mode toggles); `RuleAnalyzePanel` Evidence; `run_seq` + `mode` columns
+- Frontend: `RulesPage` (owns `score_scope` only) + `RulesView` (owns the mode picker, the
+  `scoreAllModes` modifier and the `score_mode` derivation); `RuleAnalyzePanel` Evidence;
+  `run_seq` + `mode` columns
+
+Two rules keep the controls apart:
+
+- **Place by job.** The sticky strip carries only what steers the board while scrolling —
+  which rows, and the bulk actions. Anything that decides how a number is computed (`Span`,
+  the caption) sits on the scoreboard it governs, above the TOTAL tiles.
+- **Label by verb.** `Span`, `Score on`, `Show` — never a bare `Paper`/`Real`, which every
+  other mode control on the page also spells. The mode picker's own prefix flips between
+  `Show` and `Score on` to name the job the modifier has put it in.

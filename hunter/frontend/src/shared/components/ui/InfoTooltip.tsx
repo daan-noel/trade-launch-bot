@@ -17,6 +17,13 @@ interface InfoTooltipProps {
   title?: string;
   /** Explanation body. */
   body: string;
+  /**
+   * Optional ASCII figure drawn above the body — for controls whose meaning is a
+   * shape (two states side by side, a before/after) that a paragraph has to
+   * describe serially. Rendered `whitespace-pre` in the mono face, so column
+   * alignment survives; the body stays proportional `pre-line` prose.
+   */
+  figure?: string;
   /** Preferred placement relative to the icon (default `bottom`); auto-flips
    *  to the opposite side when there isn't enough room in the viewport. */
   side?: 'top' | 'bottom';
@@ -31,7 +38,13 @@ const WIDTH = 320; // wide enough for detailed help paragraphs
  * a second click, Escape, or an outside pointer. The panel is portaled with
  * `position: fixed` so it escapes ancestor overflow clipping.
  */
-export function InfoTooltip({ title, body, side = 'bottom', className }: InfoTooltipProps) {
+export function InfoTooltip({
+  title,
+  body,
+  figure,
+  side = 'bottom',
+  className,
+}: InfoTooltipProps) {
   const {
     open,
     pinned,
@@ -77,6 +90,13 @@ export function InfoTooltip({ title, body, side = 'bottom', className }: InfoToo
             {title && (
               <span className="mb-1 block text-[11px] font-bold normal-case leading-snug tracking-normal text-text">
                 {title}
+              </span>
+            )}
+            {figure && (
+              // A figure that wraps is worse than one you scroll — the alignment
+              // IS the content, so it gets its own scroller instead of reflowing.
+              <span className="mb-1.5 block overflow-x-auto rounded-sm border border-white/6 bg-black/25 p-1.5 whitespace-pre font-mono text-[10px] font-normal normal-case leading-tight tracking-normal text-text-mid">
+                {figure}
               </span>
             )}
             <span className="block whitespace-pre-line text-[11px] font-normal normal-case leading-snug tracking-normal text-text-dim">
