@@ -45,7 +45,8 @@ run a native local Postgres instead.
 
 ## Prerequisites
 
-- `aws-ec2-key.pem` is at `F:\pumpfun\meme-trading\aws-ec2-key.pem` (gitignored — never commit it).
+- `aws-ec2-key.pem` is at `~/.ssh/aws-ec2-key.pem` (never in the repo). `-SshKey` probes
+  `<repo>/../aws-ec2-key.pem` first and falls back to that, so neither path needs passing.
 - `ssh` and `psql` are on `PATH` (verified: psql 18.4, OpenSSH 10.2).
 - Local Postgres **≥ 16**, and you connect as a **superuser** role
   (the script runs `CREATE EXTENSION postgres_fdw` and `CREATE USER MAPPING`).
@@ -119,7 +120,7 @@ local DBs.
 | Param | Default | Notes |
 | --- | --- | --- |
 | `-SshTarget` | `ubuntu@35.158.128.131` | user@host of the EC2 box |
-| `-SshKey` | `../aws-ec2-key.pem` | Path to the EC2 private key |
+| `-SshKey` | first of `../aws-ec2-key.pem`, `~/.ssh/aws-ec2-key.pem` | Path to the EC2 private key |
 | `-RemoteDir` | `~/trade-launch-bot/hunter` | Where the server's `.env` lives |
 | `-Database` | `hunter_bot` | Local + remote DB name |
 | `-LocalPgHost` | `localhost` | |
@@ -153,7 +154,7 @@ PowerShell:
 ```powershell
 Set-Service ssh-agent -StartupType Manual   # one-time, needs admin
 Start-Service ssh-agent
-ssh-add "F:\pumpfun\meme-trading\aws-ec2-key.pem"   # enter passphrase once
+ssh-add "$HOME\.ssh\aws-ec2-key.pem"   # enter passphrase once
 ```
 
 After that the key stays loaded across sessions and the script never prompts.
