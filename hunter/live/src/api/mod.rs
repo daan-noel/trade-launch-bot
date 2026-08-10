@@ -23,6 +23,13 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
             )
             // Live armed (token, rule) snapshot for the monitor.
             .route("/strategies/armed", web::get().to(handlers::strategies::engine::list_armed))
+            // What the fold currently reads for one ARMED (token, rule) — the
+            // Waiting row's "what is it waiting on". Literal path, three segments,
+            // so it never contests the four-segment `{strategy}/positions/…` set.
+            .route(
+                "/strategies/armed/metrics",
+                web::get().to(handlers::strategies::rule_readout::get_armed_metrics),
+            )
             // Fingerprints CRUD (shared by many rules).
             .route("/fingerprints", web::get().to(handlers::strategies::engine::list_fingerprints))
             .route("/fingerprints", web::post().to(handlers::strategies::engine::create_fingerprint))
@@ -136,6 +143,13 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
             .route(
                 "/strategies/{strategy}/positions/{position_id}/fills",
                 web::get().to(handlers::strategies::positions::get_position_fills),
+            )
+            // The rule's own conditions with their LIVE values, read out of the
+            // decision loop's own state. Open positions only (a closed one has no
+            // engine state). Same `/{position_id}/…` suffix shape as `fills`.
+            .route(
+                "/strategies/{strategy}/positions/{position_id}/metrics",
+                web::get().to(handlers::strategies::rule_readout::get_position_metrics),
             )
             // Console manual buy → a full tracked position (202 {position_id};
             // progress over SSE like a bot buy). Replaces the sync wallet buy.

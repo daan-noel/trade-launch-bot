@@ -42,6 +42,64 @@ export interface ClosesSeries {
   closes: ClosedTradePoint[];
 }
 
+/**
+ * One condition of a rule, with the value the live engine reads for it right now
+ * (mirrors `live::api::handlers::strategies::rule_readout::ConditionOut`).
+ *
+ * `value` is `null` when the metric is unreadable — an unregistered window, a flow
+ * metric with no fingerprint state, or a position metric with no position. Per the
+ * engine convention that satisfies nothing, so `ok` is false.
+ */
+export interface RuleConditionRead {
+  side: 'entry' | 'exit' | 'stage';
+  /** Ladder index; present only on a `stage` read. */
+  stage?: number;
+  /** Whether the fold is currently evaluating this stage. */
+  stage_active?: boolean;
+  metric: string;
+  group: string;
+  unit: string;
+  window_size_sec: number | null;
+  value: number | null;
+  /** Authored DNF: flat `[{operator,value}]` (one AND arm) or nested OR arms. */
+  conditions: unknown;
+  ok: boolean;
+  matched_operator?: string;
+  matched_value?: number;
+  origin: 'authored' | 'take_profit' | 'stop_loss';
+  /** PnL the trailing stop arms at, when gated. */
+  arm_above_pct?: number;
+  /**
+   * The trail is gated and not yet armed, so the fold **skips** this condition —
+   * it is not being evaluated at all. Render it as dormant, never as a failing
+   * condition, or the UI shows a stop that looks live when none is.
+   */
+  disarmed: boolean;
+}
+
+/** Which instant a closed position's replay reads at. */
+export type ReadoutAt = 'exit' | 'entry';
+
+/** `GET .../positions/{id}/metrics` — the rule readout for one position. */
+export interface RuleReadout {
+  mint_address: string;
+  rule_id: string;
+  /**
+   * `engine` — read out of the live fold; exactly what the engine is deciding on.
+   * `replay` — reconstructed by folding stored trades (closed positions). Close, but
+   * stored rows carry an *approximated* real-reserve value and any trade the feed saw
+   * without persisting is absent, so it must be labelled rather than passed off as
+   * engine truth.
+   */
+  source: 'engine' | 'replay';
+  /** Engine arm state (`Armed` | `Entered` | …); `null` on a replay. */
+  arm: string | null;
+  stage: number | null;
+  /** The one instant every `value` in this response is read at. */
+  at: string;
+  conditions: RuleConditionRead[];
+}
+
 export interface SellTokenArgs {
   mint_address: string;
   /// Optional token-account hint (row "Sell All" supplies it to skip a wallet
@@ -196,6 +254,32 @@ export const liveApi = baseApi.injectEndpoints({
       query: (positionId) =>
         `/api/strategies/generic/positions/${encodeURIComponent(positionId)}/fills`,
     }),
+    /**
+     * A position's rule conditions with the values behind them. One endpoint for
+     * open and closed: the backend reads live engine state when it has the position
+     * and replays stored trades when it does not, and `source` says which.
+     *
+     * Polled (see the caller's `pollingInterval`), never pushed: the position SSE
+     * bus already carries one frame per ingested trade and sheds under feed load
+     * (`live::api::handlers::strategies::action_progress`), so a per-tick metric
+     * frame would degrade the stream the cockpit depends on. A replay answer never
+     * changes, so the caller stops polling once it sees one.
+     *
+     * `at` selects the replay instant (`exit` = why it closed, `entry` = what it saw
+     * when it bought) and is ignored on the engine path.
+     */
+    getPositionMetrics: builder.query<RuleReadout, { positionId: string; at?: ReadoutAt }>({
+      query: ({ positionId, at }) =>
+        `/api/strategies/generic/positions/${encodeURIComponent(positionId)}/metrics${
+          at ? `?at=${at}` : ''
+        }`,
+    }),
+    /** The same readout for an ARMED (token, rule) pair — a Waiting row has no
+     *  position id, so it keys on the pair instead. */
+    getArmedMetrics: builder.query<RuleReadout, { mint: string; ruleId: string }>({
+      query: ({ mint, ruleId }) =>
+        `/api/strategies/armed/metrics?mint=${encodeURIComponent(mint)}&rule=${encodeURIComponent(ruleId)}`,
+    }),
     // Accrued pump.fun cashback — a read-only on-chain status (two account
     // reads). Cached, not polled: cashback accrues slowly, so the wallet card
     // refreshes on mount / after a claim, never on the live price tick.
@@ -257,6 +341,8 @@ export const {
   useSellTokenMutation,
   useCloseRulePositionMutation,
   useGetPositionFillsQuery,
+  useGetPositionMetricsQuery,
+  useGetArmedMetricsQuery,
   useGetCashbackStatusQuery,
   useClaimCashbackMutation,
   useGetLiveModeQuery,

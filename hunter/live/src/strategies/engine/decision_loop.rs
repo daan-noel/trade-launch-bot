@@ -703,6 +703,15 @@ async fn handle_command(
             // Handled in `run_loop` — unreachable through this path.
             EventBatch::none()
         }
+        // Read-only: answer from the state this loop owns and fold nothing. A miss
+        // (untracked token / no arm / tracked-only manual) is `None`, not a warning —
+        // a UI polling a position the engine no longer holds is expected, not a fault.
+        EngineCommand::ReadRule { mint, rule_id, ack } => {
+            let readout =
+                hunter_engine::readout::read_state(state, &Mint::from(mint.as_str()), rule_id, Utc::now());
+            let _ = ack.send(readout);
+            EventBatch::none()
+        }
         EngineCommand::ManualClose { pg_position_id, portion } => match registry.engine_id(pg_position_id) {
             Some(position) => EventBatch::one(Event::ManualClose { position, portion }),
             None => {

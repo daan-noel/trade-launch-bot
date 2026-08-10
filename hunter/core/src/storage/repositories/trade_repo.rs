@@ -698,6 +698,55 @@ impl TradeRepo {
         rows.into_iter().map(Trade::try_from).collect()
     }
 
+    /// Find a token's trades up to and including `until`, in execution order, with
+    /// `real_reserve_sol` reconstructed.
+    ///
+    /// The **replay** read (`live`'s closed-position rule readout): a fold to one past
+    /// instant needs the history *up to* it and nothing after, and a memecoin that keeps
+    /// trading for hours past a position's exit would otherwise transfer and walk rows
+    /// that cannot affect the answer. Bounding in SQL keeps that off the deploy box.
+    ///
+    /// `real_reserve_sol` is the same [`approx_real_sol_reserves`] reconstruction
+    /// [`Self::find_by_mints_all`] applies and for the same reason — the column was
+    /// dropped from `trades`, so every offline reader rebuilds it from the priced
+    /// reserve pair. It is an approximation, not the emitted value: a caller
+    /// presenting these numbers must say so.
+    ///
+    /// [`approx_real_sol_reserves`]: crate::config::constants::approx_real_sol_reserves
+    pub async fn find_by_mint_until(
+        &self,
+        mint: &str,
+        until: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<Vec<Trade>> {
+        let rows = sqlx::query_as::<_, TradeDbRow>(
+            r#"
+            SELECT t.mint_address, COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address, t.trade_type, t.venue,
+                   t.amount_lamports, t.token_amount,
+                   t.reserve_lamports, t.reserve_token,
+                   t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature, t.ix_labels,
+                   t.fee_lamports
+            FROM trades t
+            LEFT JOIN wallet_dict w ON w.id = t.wallet_id
+            WHERE t.mint_address = $1 AND t.block_time <= $2
+            ORDER BY t.slot ASC, t.tx_index ASC, t.leg_index ASC
+            "#,
+        )
+        .bind(mint)
+        .bind(until)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                let mut trade = Trade::try_from(row)?;
+                trade.real_reserve_sol = trade
+                    .reserve_sol
+                    .map(|s| crate::config::constants::approx_real_sol_reserves(s, &trade.venue));
+                Ok(trade)
+            })
+            .collect()
+    }
+
     /// Find all trades for a *batch* of tokens in one round-trip, grouped per
     /// mint and each group in the same execution order as [`find_by_mint_all`].
     /// The backtest uses this to fetch a chunk of candidate mints with a single

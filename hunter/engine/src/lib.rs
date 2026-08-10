@@ -20,6 +20,8 @@
 //! * [`rule_params`] — typed, registry-checked `strategy_rules.params`.
 //! * [`identity`] + [`dupe_guard`] — the `(name, symbol)` key a copycat re-launch
 //!   re-uses, and the rolling memory that refuses to buy the same trap twice.
+//! * [`readout`] — the fold's current reading of one rule's conditions, exposed
+//!   read-only for a UI. On demand, never per event.
 
 pub mod arm;
 pub mod cap;
@@ -32,6 +34,7 @@ pub mod grouping;
 mod hash;
 pub mod identity;
 pub mod metrics;
+pub mod readout;
 pub mod reduce;
 pub mod rule_params;
 pub mod state;

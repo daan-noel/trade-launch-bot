@@ -886,12 +886,10 @@ fn evaluate_token(
 }
 
 /// The position an arm owns, when it owns one (keys the manual exit-rule lookup).
+/// Delegates to [`ArmState::position`] so the fold and every out-of-band reader
+/// resolve a manual episode's rule through the one match.
 fn arm_position(arm: &ArmState) -> Option<crate::event::PositionId> {
-    match arm {
-        ArmState::EntryPending { position, .. } => Some(*position),
-        ArmState::Entered(ctx) | ArmState::ExitPending { held: ctx, .. } => Some(ctx.position),
-        _ => None,
-    }
+    arm.position()
 }
 
 /// Decide one arm's fate. Priorities: armed side disarms (dead, then derived-unsat)

@@ -275,7 +275,20 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   buy dialog only — the old free-text header modals are gone; table
   reloads on position/our-wallet SSE),
   **Console** (`console/ConsolePage` — see "Operator clarity" above; `?mint=` prefills
-  the manual-trade panel, `?position=` focuses a row's detail modal), Rules/Fingerprints
+  the manual-trade panel, `?position=` focuses a row's detail modal. Every position /
+  Waiting modal carries a **`RuleConditionStrip`** under the fact strip: one chip per
+  authored condition — `metric op threshold` with the value behind it — fed by
+  `LiveRuleConditions` off `.../positions/{id}/metrics`. Open rows poll it at 1 s
+  (**not** SSE: that bus already carries a frame per ingested trade and sheds under
+  load); a closed row comes back `source: "replay"`, which stops the polling and
+  captions the strip `○ reconstructed at exit` with an entry/exit switch, because a
+  reconstruction must not read as engine truth. Chips are tone-neutral on purpose — a
+  satisfied *entry* condition is why we are in and a satisfied *exit* one is why we are
+  leaving, so one green would mean opposite things; satisfied is emphasized and `✓`-marked
+  instead. TP/SL keep their threshold (`take profit >= 40`), a gated trail shows
+  `arms +N%`, a skipped trail is dashed, an inactive ladder stage is dimmed. Backend
+  contract + the parity traps: [strategies.md](strategies.md) *Rule readout*),
+  Rules/Fingerprints
   (+ `InputSyncStatus`, `wallet/` components; `usePositionNotifications`; `syncTokenSlice`).
 - **Lab (`@lab/pages`):** **Research home** (`LabHomePage` — shortcuts + recent sweeps
   deep-linked with `?run=` + running jobs), Creation Stats (heatmap/trend/grouped

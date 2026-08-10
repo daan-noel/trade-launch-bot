@@ -59,6 +59,12 @@ export interface FloorDetailFacts {
   flowPatternKeys?: ReadonlySet<string> | null;
   /** Optional action slot (Sell / Verify / …) — Console open only. */
   actions?: ReactNode;
+  /**
+   * Live rule-condition readout (`RuleConditionStrip`) — open + waiting only.
+   * A slot rather than a `positionId`, so this component stays free of the live
+   * endpoints and keeps rendering for closed positions, which have no engine state.
+   */
+  conditions?: ReactNode;
   /** Prefill Console manual-trade instead of navigating to `?mint=`. */
   onPrefillTrade?: () => void;
 }
@@ -281,6 +287,11 @@ export function FloorPositionDetail({
         />
         {holdNode ? <InlineFact label="Hold" value={holdNode} /> : null}
       </div>
+
+      {/* The rule's live conditions, directly under the money facts: the two
+          together are the whole answer to "where is this and why". Above the
+          chart because it is read at a glance, not scrubbed. */}
+      {facts.conditions ?? null}
 
       {chartAside ? (
         <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">

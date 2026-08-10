@@ -40,6 +40,7 @@ use trading_core::models::ingest::SseEvent;
 use uuid::Uuid;
 
 use hunter_engine::event::{Fill, IntentId, ManualExit, PositionId, RuleId, TradeMode};
+use hunter_engine::readout::RuleReadout;
 
 pub use decision_loop::{spawn_engine, EngineDeps, EngineHandles};
 
@@ -49,6 +50,10 @@ pub use decision_loop::{spawn_engine, EngineDeps, EngineHandles};
 pub(crate) const RELOAD_ACK_TIMEOUT: Duration = Duration::from_secs(30);
 /// Admin cache reseed waits longer — PG adopt + rule reload under load.
 pub(crate) const RESEED_ACK_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a rule readout waits on the loop. Short on purpose: it is a UI poll, so
+/// a loop busy enough to miss this window has better things to do than answer it,
+/// and the caller degrades to "unavailable" rather than queueing.
+pub(crate) const READ_RULE_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// RAII interlock claiming a PG position id (and optionally a mint) for an
 /// in-flight entry or exit task. Recovery reapers skip ids/mints present in these
@@ -193,6 +198,19 @@ pub enum EngineCommand {
     ReseedFromDb {
         ack: oneshot::Sender<Result<EngineReseedReport, String>>,
     },
+    /// **Read-only.** What the fold currently reads for one (token, rule) arm —
+    /// each of the rule's conditions with its live value and whether it holds
+    /// ([`hunter_engine::readout`]). Folds nothing and emits no effect.
+    ///
+    /// A command rather than a registry the loop publishes into: the readout is for
+    /// a modal that is usually closed, and publishing it would allocate on the hot
+    /// path for every tracked token to serve nobody. This costs the loop one map
+    /// lookup and one condition walk, and only while someone is looking.
+    ReadRule {
+        mint: String,
+        rule_id: RuleId,
+        ack: oneshot::Sender<Option<RuleReadout>>,
+    },
 }
 
 /// Outcome of [`EngineCommand::ReseedFromDb`].
@@ -261,6 +279,32 @@ impl EngineHandle {
             .map_err(|_| EngineReloadError::ChannelClosed)?;
         match tokio::time::timeout(RELOAD_ACK_TIMEOUT, rx).await {
             Ok(Ok(result)) => result.map_err(EngineReloadError::Failed),
+            Ok(Err(_)) => Err(EngineReloadError::ChannelClosed),
+            Err(_) => Err(EngineReloadError::TimedOut),
+        }
+    }
+
+    /// Read what the fold currently sees for one (token, rule) arm.
+    ///
+    /// `Ok(None)` is a legitimate answer, not a failure: the token is untracked, the
+    /// rule has no arm on it, or the arm carries no rule (a tracked-only manual
+    /// position). Only a closed or wedged loop is an `Err`.
+    pub async fn read_rule(
+        &self,
+        mint: &str,
+        rule_id: RuleId,
+    ) -> Result<Option<RuleReadout>, EngineReloadError> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(EngineCommand::ReadRule {
+                mint: mint.to_string(),
+                rule_id,
+                ack: tx,
+            })
+            .await
+            .map_err(|_| EngineReloadError::ChannelClosed)?;
+        match tokio::time::timeout(READ_RULE_ACK_TIMEOUT, rx).await {
+            Ok(Ok(readout)) => Ok(readout),
             Ok(Err(_)) => Err(EngineReloadError::ChannelClosed),
             Err(_) => Err(EngineReloadError::TimedOut),
         }

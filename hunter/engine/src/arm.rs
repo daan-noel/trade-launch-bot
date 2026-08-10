@@ -730,6 +730,42 @@ impl ArmState {
     pub fn is_active(&self) -> bool {
         !matches!(self, ArmState::Done | ArmState::Disarmed(_))
     }
+
+    /// The position this arm owns, if any — the key a manual episode's one-off exit
+    /// rule is stored under ([`EngineState::rule_for`](crate::state::EngineState::rule_for)).
+    /// `EntryPending` counts: its row exists and its rule must resolve.
+    pub fn position(&self) -> Option<PositionId> {
+        match self {
+            ArmState::EntryPending { position, .. } => Some(*position),
+            ArmState::Entered(ctx) | ArmState::ExitPending { held: ctx, .. } => Some(ctx.position),
+            _ => None,
+        }
+    }
+
+    /// The held-position snapshot when a bag is open — `Entered`, or `ExitPending`
+    /// whose `held` is exactly that snapshot (a partial fill restores it). The one
+    /// place a reader gets a [`PositionCtx`] from an arm, so a caller that adds a
+    /// held-side state cannot silently miss it.
+    pub fn held(&self) -> Option<&EnteredCtx> {
+        match self {
+            ArmState::Entered(ctx) | ArmState::ExitPending { held: ctx, .. } => Some(ctx),
+            _ => None,
+        }
+    }
+
+    /// Short stable tag for a UI / log line (never parsed back into a state).
+    pub fn tag(&self) -> &'static str {
+        match self {
+            ArmState::PendingFirstSlot => "PendingFirstSlot",
+            ArmState::Armed => "Armed",
+            ArmState::EntryPending { .. } => "EntryPending",
+            ArmState::Entered(_) => "Entered",
+            ArmState::ExitPending { .. } => "ExitPending",
+            ArmState::Cooldown { .. } => "Cooldown",
+            ArmState::Disarmed(_) => "Disarmed",
+            ArmState::Done => "Done",
+        }
+    }
 }
 
 #[cfg(test)]

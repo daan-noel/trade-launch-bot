@@ -36,6 +36,10 @@ import { FloorPositionDetail } from '@live/components/floor/FloorPositionDetail'
 import { FloorPositionDetailWithFills } from '@live/components/floor/FloorPositionDetailWithFills';
 import { LazyFloorMintChart } from '@live/components/floor/LazyFloorMintChart';
 import {
+  ArmedRuleConditions,
+  LivePositionConditions,
+} from '@live/components/floor/LiveRuleConditions';
+import {
   OPEN_STATUS_LABEL,
   OpenPositionStatusChips,
   PositionModalTitle,
@@ -910,6 +914,9 @@ export function ConsolePage() {
           },
           flowPatternKeys: openFlowPatternKeys,
           actions: openActions(r, 'hint'),
+          // Polls the decision loop while this modal is open — the engine's own
+          // reading of the rule, so the chips agree with what it will act on.
+          conditions: <LivePositionConditions positionId={r.positionId} />,
           onPrefillTrade: () => prefillTrade(r.mint),
         }}
         chartHeight={360}
@@ -1361,6 +1368,14 @@ export function ConsolePage() {
                 exitPrice: null,
               },
               flowPatternKeys: waitingFlowPatternKeys,
+              // The armed side's readout: which entry conditions still fail is
+              // exactly why this row is waiting rather than holding.
+              conditions: (
+                <ArmedRuleConditions
+                  mint={inspectWaiting.mint}
+                  ruleId={inspectWaiting.ruleId}
+                />
+              ),
               onPrefillTrade: () => prefillTrade(inspectWaiting.mint),
             }}
           />

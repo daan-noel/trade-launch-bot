@@ -65,6 +65,45 @@ fold; live, sweep, and the replay debugger all drive it.
 | **`Tick` (in `reduce.rs`)** | Sweeps every tracked token — **except** those `Settled`. A token is settled once a sweep has run **at or past** its horizon (`arm::ClockHorizons`: widest trailing window from the last trade, `time` from creation, `stall` from the last trade, `held` from the entry fill; plus the dead flip and any `Cooldown { until }`) **and** `cross_epoch` has not moved since. This exists because a token whose real reserves stayed above `DEAD_MAX_LIQUIDITY_SOL` (or that has no reserve reading at all) can never go dead, so without this it is never pruned and gets swept 5x/second forever — the dominant cost of a multi-day simulate. Skipping is decision-neutral and guarded differentially by `engine/tests/settled_ticks.rs`; measured ~180x on the quiet-token shape (`engine/tests/tick_bench.rs`). Full rationale: [../plans/strategies/tick-cost-and-settled-tokens.md](../plans/strategies/tick-cost-and-settled-tokens.md) |
 | `kernel.rs` | `CostModel` / `round_trip_with_costs` / `round_trip_multi_leg` (+ `ExitLeg`) + `RunAgg` → `RunMetrics` (≡ `strategy_run_metrics` cols) + the quantile sketch / robust score — one copy of the PnL+summary math shared by live/paper/sweep. Fixed per-leg cost (tip + CU priority) comes from process-wide [`FeeTuning`](../../core/src/config/fee_tuning.rs) (`JITO_MIN_TIP_SOL` + `CU_PRICE_MICRO_LAMPORTS`), installed at boot by both bins. **`FEE_BPS_PER_LEG = 125`** — measured, not assumed. **Runs stored before 2026-07-28 were priced at 100 bps with no impact charge: they understate cost and do not compare to a new run** (the constants are not persisted per run). <!-- pt-ok: cutoff, those runs are still in the DB --> Three `CostModelKind`s: `pumpfun_default` (flat `slippage_bps`, legacy), `pumpfun_fee_only` (size-blind), and **`pumpfun_impact`** — the only one that charges our own `buy_amount_sol / reserve_sol` price impact, so the only one whose cost responds to buy size. Callers pass entry pool depth; `None` ⇒ no impact, never a guess. Scale-out prices through `round_trip_multi_leg` (fixed cost × leg count); the single-exit wrapper stays for legacy / sweep until the staged resolver lands |
 | `event_log.rs` | `LoggedEvent` — the on-disk JSONL format, SSOT for the live recorder (writer) + the lab replay inspector (reader) |
+| `readout.rs` | **Read-only** view of what the fold reads for one (token, rule): `read_rule` walks a `CompiledRule`'s `MetricReq`s through the same `track.value` / `position_value` + `evaluator` the decision uses and returns a `ConditionRead` per condition (metric, window, authored DNF, live value, `ok`, `origin`, `arm_above_pct`, `disarmed`). `read_state` resolves an arm straight off `EngineState` — including a **manual episode's** rule, which lives in `manual_rules` keyed by position and is invisible to a plain `state.rules` get. `replay_readout` reconstructs the same thing for a closed position by folding stored trades to one instant. `RuleReadout.source` (`Engine` \| `Replay`) travels with the numbers because the two are not equally exact. See *Rule readout* below |
+
+## Rule readout (what a position is waiting on / why it closed)
+
+One question, two sources, and the answer says which it used. An **open** position is
+read out of the decision loop's own `TokenTrack`, so a condition shown satisfied is one
+the fold is acting on. A **closed** one has no engine state left and is reconstructed by
+`replay_readout` — folding `TradeRepo::find_by_mint_until` rows through a fresh track to
+the exit (or entry) fill, then reading there.
+
+Deliberately **one instant, not a series**: the lab's `metric-series` computes every
+registry metric at every row of a sparse tick grid, which is right for scrubbing a chart
+and wrong for "which condition closed this". A single linear fold is what makes the
+post-mortem affordable on the deploy box.
+
+Four things a second reader of `MetricReq`s gets wrong, each guarded in
+`engine/src/readout.rs` tests:
+
+- **The two sides use different combinators.** Entry mirrors `reqs_satisfied` (`eval`,
+  so an empty expr is vacuously true); exit and scale-out mirror `reqs_exit_fired`
+  (`first_satisfied_cond`, so an empty expr fires nothing).
+- **`arm_above_pct` gating is HELD-side only.** `reqs_exit_fired` skips a trailing req
+  under its gate, but the pre-entry walk (`can_enter` → `exit_metrics_fired` →
+  `reqs_first_fired`) never consults `trailing_armed` — with no position that req IS
+  evaluated, reads `NaN`, and fires nothing. So `disarmed` is false whenever there is no
+  position; claiming otherwise describes behaviour the engine does not have.
+- **Only the active scale-out stage is evaluated.** Every stage is returned so the
+  ladder is visible, each tagged `active`; an inactive stage's `ok` is what the fold
+  *would* read, never a decision it is making.
+- **A replay compiles `strategy_runs.params_snapshot`, not the rule's current params.**
+  A rule edited after the position closed would otherwise draw thresholds that never
+  applied to it — the most misleading thing a reconstruction can do, since every number
+  beside them is real. Missing/unparseable snapshot falls back to the rule row, logged.
+
+A replay is close to, not identical with, the live reading: `trades` carries no
+real-reserve column, so a stored row's is *reconstructed* (`approx_real_sol_reserves`),
+and any trade the feed observes without persisting is absent. `trades` retention on
+the deploy box also bounds how far back one can go; past that the replay returns nothing
+and says so, and the lake (lab-side) is the only answer.
 
 ## Live adapters — `live/src/strategies/engine/`
 
@@ -82,6 +121,7 @@ side-effects only.
 | `sinks.rs` | `PositionUpdate` → registry + SSE; `BuySubmitted` upserts registry then background `insert_position` (later transitions chain on the handle); `Holding` updates registry sync then backgrounds fill persist; `ExitPending` PG is fire-and-forget; **terminal writes (`End`/`EntryFailed`/`ExitStuck`/`ExitUnconfirmed`) chain-spawn too — NO sink transition awaits PG on the loop** (see below); terminal SSE emits **before** `registry.remove` (so `position_id` / frozen `trade_mode` stay on the wire); `warm_runs` on rule reload (`ensure_run` reuses latest still-`Running` DB run + collapses empty leading shells — does not mint a new `run_seq` on every restart); releases SOL on terminal unentered exits |
 | `reapers.rs` | Boot+60 s: buy orphan adopt/drop/wait (never re-send; stale ⇒ `needs_review` SSE); **externally-cleared Holding** book-close (PG `trades` net, no RPC); exit orphan nudge via `FillFailed` or shared `orphan_exit`; **ExitStuck-with-bag** redrive (PG-gated, backoff, bounded-then-park); `ExitStuck`/`ExitUnconfirmed` bag-gone heal → End; stale `ExitPending` bag-check → `ExitStuck` (real) / breakeven End (paper). Skips `InFlightGuards`-held rows/mints |
 | `orphan_exit.rs` | Shared direct-sell + PG book-close for registry-miss rows (Console close, ExitPending/ExitStuck reapers). Feed-confirm via `run_exit`; sibling mint clear → `ExternallyCleared` / PG End; boot adopts re-install manual TP/SL rules |
+| `rule_readout.rs` (in `live/src/api/handlers/strategies/`) | The readout's HTTP surface. `GET .../positions/{id}/metrics[?at=exit\|entry]` answers from the live fold when `PositionRegistry` still holds the row, else replays the durable row + stored trades (fold under `web::block`); `GET /api/strategies/armed/metrics?mint=&rule=` does the armed pair. Reaches the loop through `EngineCommand::ReadRule` (`oneshot` ack, 2 s — a UI poll must not queue behind trade decisions), **not** a per-tick publish, which would allocate on the hot path for a usually-closed modal. Each `404` keeps its own reason (manual position / deleted rule / trades aged out / never filled); a wedged loop is `503`. Wire carries `metric_spec(id).name`, never `MetricId`, and non-finite readings serialize `null` |
 | `event_log.rs` | JSONL recorder (day + size segmented rotation, age/byte retention) + **conservative, bounded** boot-recovery replay (`recover_armed` = re-arm only; held/filled mints excluded; effects discarded; reads only the recent tail — see below). Dir = `EVENT_LOG_DIR` via `config::dir_from_env`: a relative value anchors to the loaded `.env`'s directory, never the CWD (see below) |
 | `convert.rs` | DB model ↔ engine type converters (re-exports `fingerprint_axes::{fp_to_engine, observed_axes, rule_to_loaded}`) |
 

@@ -1,6 +1,7 @@
 import { Modal } from 'components/ui/Modal';
 import { inspectFromPosition } from 'components/strategy/inspectTarget';
 import { FloorPositionDetailWithFills } from '@live/components/floor/FloorPositionDetailWithFills';
+import { LivePositionConditions } from '@live/components/floor/LiveRuleConditions';
 import {
   OPEN_STATUS_LABEL,
   PositionModalTitle,
@@ -13,10 +14,16 @@ import type { RulePositionRecord } from 'types';
 
 /**
  * The modal for one **closed / persisted** position (a `RulePositionRecord`):
- * chart + fills ledger, no metric panes — the live bin has no `metric-series`
- * route. Rules Evidence opens it with the owning `rule`; Console History opens
- * it with `rule={null}` and just the resolved name, and the flow-overlay keys
- * fall back to the position's `rule_id`.
+ * chart + fills ledger + the rule's conditions reconstructed at the exit fill.
+ *
+ * No metric panes: the full registry over a scrubbable series stays the lab's job.
+ * What a post-mortem needs is narrower — which of *this rule's* conditions were true
+ * when it closed — and that is one fold to one instant, which the deploy box can
+ * afford. The strip labels itself as reconstructed, because it is.
+ *
+ * Rules Evidence opens it with the owning `rule`; Console History opens it with
+ * `rule={null}` and just the resolved name, and the flow-overlay keys fall back to
+ * the position's `rule_id`.
  *
  * This is the ONE closed-position modal. A second copy for History — same title,
  * same `RulePositionRecord` → `FloorDetailFacts` mapping — means every new
@@ -86,6 +93,7 @@ export function LivePositionInspectModal({
           pnlPct,
           inspect: inspectFromPosition(position),
           flowPatternKeys,
+          conditions: <LivePositionConditions positionId={position.id} />,
         }}
       />
     </Modal>
