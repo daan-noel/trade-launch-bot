@@ -33,7 +33,9 @@ use crate::event::{Mint, RuleId};
 use crate::fingerprint::FingerprintId;
 use crate::metrics::evaluator::{eval, first_satisfied_cond, Condition, ConditionExpr};
 use crate::metrics::flow_split::FlowPatterns;
+use crate::metrics::grid::{fold_sparse, SparseGrid};
 use crate::metrics::position::{position_value, trailing_armed, PositionCtx};
+use crate::metrics::series::{MetricSeries, SeriesColumn};
 use crate::metrics::track::TokenTrack;
 use crate::metrics::{MetricId, TradeLite, Ts};
 use crate::state::EngineState;
@@ -114,26 +116,40 @@ pub fn read_rule(
     // The mark every position-scoped read is taken against — one read, as the fold
     // does it, so `retrace`/`pnl` here cannot disagree with the exit decision.
     let price = track.current_price();
+    rule_reqs(rule, stage)
+        .into_iter()
+        .map(|(side, r)| read_req(r, side, track, side_ctx(side, ctx), price, now))
+        .collect()
+}
 
+/// Every req of `rule` paired with the side that owns it, in the fold's own order:
+/// entry reqs, then exit reqs (desugared stop-loss, take-profit, then authored),
+/// then each ladder stage.
+///
+/// The ONE place that order is expressed. [`read_rule`] and [`replay_series`] both
+/// walk it, so a series column and a point read at index `i` are the same condition
+/// by construction rather than by two lists agreeing.
+fn rule_reqs(rule: &CompiledRule, stage: Option<u8>) -> Vec<(ReadSide, &MetricReq)> {
     let stage_reqs: usize = rule.scale_out.iter().map(|s| s.reqs.len()).sum();
     let mut out = Vec::with_capacity(rule.entry_reqs.len() + rule.exit_reqs.len() + stage_reqs);
-
-    // Entry reqs are token-scoped by construction (`m_position` is exit-only), so they
-    // read through the track with no position context — matching `reqs_satisfied`.
-    for r in &rule.entry_reqs {
-        out.push(read_req(r, ReadSide::Entry, track, None, price, now));
-    }
-    for r in &rule.exit_reqs {
-        out.push(read_req(r, ReadSide::Exit, track, ctx, price, now));
-    }
+    out.extend(rule.entry_reqs.iter().map(|r| (ReadSide::Entry, r)));
+    out.extend(rule.exit_reqs.iter().map(|r| (ReadSide::Exit, r)));
     for (i, s) in rule.scale_out.iter().enumerate() {
         let index = i as u8;
         let side = ReadSide::Stage { index, active: stage == Some(index) };
-        for r in &s.reqs {
-            out.push(read_req(r, side, track, ctx, price, now));
-        }
+        out.extend(s.reqs.iter().map(|r| (side, r)));
     }
     out
+}
+
+/// The position context a side reads through. Entry reqs are token-scoped by
+/// construction (`m_position` is exit-only), so they read with **no** position —
+/// matching `reqs_satisfied`, which never consults one.
+fn side_ctx(side: ReadSide, ctx: Option<&PositionCtx>) -> Option<&PositionCtx> {
+    match side {
+        ReadSide::Entry => None,
+        _ => ctx,
+    }
 }
 
 /// Where a readout's numbers come from. Load-bearing for honesty, not decoration:
@@ -288,6 +304,219 @@ pub fn replay_readout(
     }
 }
 
+/// One condition read across a whole series: the req itself (so a caller renders
+/// `metric op threshold` once, not per row) plus one entry per row.
+///
+/// `values` / `ok` / `disarmed` are parallel to [`ReadoutSeries::at`] and to each
+/// other. Reading a row back as the point routes' [`ConditionRead`] is
+/// [`row`](Self::row) — the same judgement body, so the two shapes cannot disagree.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConditionSeries {
+    /// The compiled requirement this column reads — the one the fold evaluates.
+    pub req: MetricReq,
+    pub side: ReadSide,
+    /// The value the fold reads at each row; `NaN` where unreadable.
+    pub values: Vec<f64>,
+    /// Whether the req is satisfied at each row, under its side's combinator.
+    pub ok: Vec<bool>,
+    /// Whether the fold **skips** the req at each row. Per row, not per series: a
+    /// gated trail arms and disarms as the position's PnL crosses `arm_above_pct`,
+    /// so collapsing this to one flag would erase exactly the distinction it exists
+    /// to carry. All-`false` unless `req.arm_above_pct` is set.
+    pub disarmed: Vec<bool>,
+}
+
+impl ConditionSeries {
+    /// Row `i` as the point routes' [`ConditionRead`].
+    pub fn row(&self, i: usize) -> ConditionRead {
+        judge_req(&self.req, self.side, self.values[i], self.disarmed[i])
+    }
+
+    /// Rows recorded.
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+}
+
+/// A rule's whole readout over a token's event stream — [`replay_readout`]'s answer
+/// at every row of the engine's decision grid instead of at one instant.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadoutSeries {
+    /// Row instants, ascending. Trades plus the sparse grid's ticks.
+    pub at: Vec<Ts>,
+    /// One per condition, in [`read_rule`]'s order.
+    pub conditions: Vec<ConditionSeries>,
+    /// A row budget stopped the fold before the tail — coverage ends at
+    /// `covered_until` and the caller must say so. A silently short series reads
+    /// exactly like a token that stopped trading.
+    pub truncated: bool,
+    /// The last instant the series covers.
+    pub covered_until: Ts,
+}
+
+/// The [`MetricSeries`] column a req reads; `None` for a position-scoped req, which
+/// is not a track column at all and folds from the [`PositionCtx`] per row.
+///
+/// Mirrors `read_req`'s `track.value(metric, window, fingerprint, now)` argument for
+/// argument — a [`SeriesColumn`] evaluates to that same call, so a mismatch here
+/// would read a *different* metric rather than fail.
+fn req_column(r: &MetricReq) -> Option<SeriesColumn> {
+    if r.position_scoped {
+        return None;
+    }
+    Some(match (r.fingerprint, r.window) {
+        (Some(fp), w) => SeriesColumn::Flow(r.metric, w, fp),
+        (None, Some(w)) => SeriesColumn::Window(r.metric, w),
+        (None, None) => SeriesColumn::Static(r.metric),
+    })
+}
+
+/// Reconstruct a rule's readout at **every** row of the token's event stream, by
+/// folding stored trades through the shared sparse tick grid.
+///
+/// The series twin of [`replay_readout`], and deliberately built from the same
+/// parts: the same `TokenTrack` (inside a [`MetricSeries`]), the same window
+/// registration, the same position ratchet, and the same [`judge_req`] body. The
+/// contract between them is that **the row at an instant equals `replay_readout` at
+/// that instant**, condition for condition — pinned by a test at the bottom of this
+/// file.
+///
+/// Only the columns *this rule* reads are folded, so a 6-condition rule folds 6
+/// columns where the lab's `metric-series` folds the whole registry. The grid's
+/// density comes off [`CompiledRule::clock_horizons`], so the caller declares
+/// nothing: unlike the lab, the evaluation happens here.
+///
+/// The tick grid is load-bearing, not a nicety. Every decaying metric advances only
+/// inside a tick, so a trade-only fold never samples a between-trades crossing and a
+/// hovered instant in a quiet gap would read as though the last trade had just
+/// landed.
+///
+/// `as_of` bounds the tail (the driver caps it at `last_trade + DEAD_QUIET +
+/// TAIL_MARGIN` regardless); `max_rows` bounds the recorded rows and reports
+/// [`ReadoutSeries::truncated`] when it bites.
+pub fn replay_series(
+    rule: &CompiledRule,
+    trades: impl IntoIterator<Item = TradeLite>,
+    ctx: &ReplayCtx<'_>,
+    as_of: Ts,
+    max_rows: Option<usize>,
+) -> ReadoutSeries {
+    let reqs = rule_reqs(rule, ctx.stage);
+
+    // Deduped columns: two reqs on the same (metric, window, fingerprint) fold once
+    // and read the same column.
+    let mut columns: Vec<SeriesColumn> = Vec::new();
+    let col_of: Vec<Option<usize>> = reqs
+        .iter()
+        .map(|(_, r)| {
+            req_column(r).map(|c| {
+                columns.iter().position(|x| *x == c).unwrap_or_else(|| {
+                    columns.push(c);
+                    columns.len() - 1
+                })
+            })
+        })
+        .collect();
+
+    let mut series = MetricSeries::new(ctx.created_at, columns);
+    // Window + flow setup, in `replay_readout`'s exact order (`new_track` →
+    // `seed_creator`, as the live `TokenCreated` arm does it): the seed back-fills
+    // every flow state already registered.
+    for &w in &rule.flow_windows {
+        series.ensure_window(w);
+    }
+    for &w in &rule.price_windows {
+        series.ensure_price_window(w);
+    }
+    if let Some(f) = &ctx.flow {
+        series.ensure_flow(f.fingerprint, f.patterns, &rule.flow_windows);
+        if let Some(h) = f.creator_wallet_hash {
+            series.seed_creator(h);
+        }
+    }
+
+    let h = rule.clock_horizons;
+    let grid = SparseGrid {
+        max_window_secs: h.max_window_secs,
+        time_horizon_secs: h.time_secs,
+        // `held` climbs from the entry fill and the grid has no slot for it, so it
+        // rides on the `stall` horizon, which is measured from the last trade. Every
+        // instant `held` can still cross is at or after the entry fill, and the entry
+        // fill is at or before the last trade, so `last_trade + held_secs` covers it.
+        // Over-wide costs ticks; too narrow drops the row a crossing lands on.
+        stall_horizon_secs: h.stall_secs.max(h.held_secs),
+    };
+    let fold = fold_sparse(
+        &mut series,
+        ctx.created_at,
+        trades.into_iter().map(|t| (t, None)),
+        &grid,
+        as_of,
+        max_rows,
+    );
+
+    let n = series.n_rows();
+    let mut out: Vec<ConditionSeries> = reqs
+        .iter()
+        .map(|(side, r)| ConditionSeries {
+            req: (*r).clone(),
+            side: *side,
+            values: Vec::with_capacity(n),
+            ok: Vec::with_capacity(n),
+            disarmed: Vec::with_capacity(n),
+        })
+        .collect();
+
+    let mut position = ctx.entry.map(|(at, price)| PositionCtx::at_fill(price, at));
+    for i in 0..n {
+        let now = series.at[i];
+        let price = series.price[i];
+        // Ratchet peak/trough only over prices the position lived through — mirrors
+        // `reduce`'s `fold_entered_extremes`, which runs only on an Entered arm. A
+        // tick row carries the last print, so re-folding it is a no-op.
+        let mut entered = false;
+        if let (Some(p), Some((entered_at, _))) = (position.as_mut(), ctx.entry) {
+            if now >= entered_at {
+                p.fold_price(price);
+                entered = true;
+            }
+        }
+        // Before the entry fill there is no position, so position-scoped reads are
+        // `NaN` — the same thing the live fold sees on an un-entered arm. (The point
+        // replay never lands there: it reads at the entry or exit fill.)
+        let held = if entered { position.as_ref() } else { None };
+
+        for (k, col) in out.iter_mut().enumerate() {
+            // `read_req`'s body, with the value coming off a folded column instead of
+            // a live track — including the entry side reading with no position.
+            let pos = side_ctx(col.side, held);
+            let disarmed = pos.is_some_and(|c| !trailing_armed(col.req.arm_above_pct, c, price));
+            let value = match col_of[k] {
+                Some(idx) => series.value_at(i, idx),
+                None => match pos {
+                    Some(c) => position_value(col.req.metric, c, price, now),
+                    None => f64::NAN,
+                },
+            };
+            let read = judge_req(&col.req, col.side, value, disarmed);
+            col.values.push(read.value);
+            col.ok.push(read.ok);
+            col.disarmed.push(read.disarmed);
+        }
+    }
+
+    ReadoutSeries {
+        at: series.at,
+        conditions: out,
+        truncated: fold.truncated,
+        covered_until: fold.covered_until,
+    }
+}
+
 /// One req's reading. Mirrors the body of `reqs_exit_fired` / `reqs_satisfied`.
 fn read_req(
     r: &MetricReq,
@@ -315,6 +544,18 @@ fn read_req(
         track.value(r.metric, r.window, r.fingerprint, now)
     };
 
+    judge_req(r, side, value, disarmed)
+}
+
+/// Judge one already-read `value` against its req — the half of [`read_req`] that
+/// turns a number into a decision.
+///
+/// Split out so a **series** can reuse it: the per-row read resolves `value` and
+/// `disarmed` from a [`MetricSeries`] column instead of from a live track, then
+/// judges here. Everything a second evaluation gets wrong (the per-side combinator,
+/// the disarmed skip, which condition matched) therefore has exactly one body, and
+/// the point route and the series route cannot disagree about it.
+fn judge_req(r: &MetricReq, side: ReadSide, value: f64, disarmed: bool) -> ConditionRead {
     let matched = if disarmed {
         None
     } else {
@@ -750,6 +991,187 @@ mod tests {
         // Counting the pre-entry 10.0 as the peak would read 90% retrace and fire.
         assert_eq!(read.value, 0.0);
         assert!(!read.ok);
+    }
+
+    /// **The contract between the point route and the series route.** The series
+    /// row at an instant must equal `replay_readout` at that instant, condition for
+    /// condition — otherwise hovering a chart tells a different story from the
+    /// strip's own exit readout, with nothing on screen saying which one lies.
+    ///
+    /// Checked at both kinds of row: a **tick** (where the series' `push_tick` and
+    /// the point replay's closing `on_tick` are literally the same call) and a
+    /// **trade** (where the point replay additionally ticks at the trade's own
+    /// instant — a no-op only because window eviction is idempotent at a fixed
+    /// `now`, which is the part worth pinning).
+    #[test]
+    fn a_series_row_equals_the_point_replay_at_that_instant() {
+        let c = rule(serde_json::json!({
+            "entry": { "m_snapshot": { "liquidity": [{ "operator": ">", "value": 10 }] } },
+            "exit": {
+                "m_position": { "retrace": [{ "operator": ">=", "value": 20 }] },
+                "m_price_lifetime": { "stall": [{ "operator": ">", "value": 15 }] },
+                "m_flow_window": [{
+                    "window_size_sec": 30,
+                    "buy": [{ "operator": "<", "value": 2 }]
+                }]
+            },
+            "take_profit": 60
+        }));
+        let prints = [(1.0, 0_i64), (2.0, 10), (1.5, 20)];
+        let entry = Some((ts(0), 1.0));
+        let replay_ctx = |stage| ReplayCtx {
+            created_at: ts(0),
+            entry,
+            stage,
+            flow: None,
+        };
+
+        let series = replay_series(
+            &c,
+            prints.map(|(p, secs)| trade(p, secs)),
+            &replay_ctx(None),
+            ts(40),
+            None,
+        );
+        assert!(!series.truncated);
+        assert!(series.at.len() > prints.len(), "the grid must emit ticks, not only trades");
+
+        // A trade instant and a tick instant well inside the covered span.
+        for at in [ts(20), ts(15)] {
+            let i = series
+                .at
+                .iter()
+                .position(|t| *t == at)
+                .unwrap_or_else(|| panic!("a row at {at}"));
+            let point = replay_readout(
+                &c,
+                prints.map(|(p, secs)| trade(p, secs)),
+                &replay_ctx(None),
+                at,
+            );
+            assert_eq!(point.reads.len(), series.conditions.len());
+            for (k, col) in series.conditions.iter().enumerate() {
+                assert_eq!(
+                    col.row(i),
+                    point.reads[k],
+                    "condition {k} ({:?}) disagrees at {at}",
+                    col.req.metric,
+                );
+            }
+        }
+    }
+
+    /// The series folds only the columns THIS rule reads, deduped — the reason it is
+    /// affordable on the deploy box where the lab's whole-registry series is not.
+    /// Position-scoped reqs are not track columns at all.
+    #[test]
+    fn only_the_rules_own_columns_are_folded() {
+        let c = rule(serde_json::json!({
+            "exit": {
+                // Two reqs on the SAME (metric, window) pair → one column.
+                "m_flow_window": [{
+                    "window_size_sec": 30,
+                    "buy": [{ "operator": "<", "value": 2 }],
+                    "sell": [{ "operator": ">", "value": 9 }]
+                }],
+                "m_position": { "pnl": [{ "operator": ">=", "value": 40 }] }
+            }
+        }));
+        let reqs = rule_reqs(&c, None);
+        assert_eq!(reqs.len(), 3);
+        let cols: Vec<_> = reqs.iter().filter_map(|(_, r)| req_column(r)).collect();
+        assert_eq!(
+            cols,
+            vec![
+                SeriesColumn::Window(MetricId::Buy, 30.0),
+                SeriesColumn::Window(MetricId::Sell, 30.0),
+            ],
+            "m_position is not a track column",
+        );
+    }
+
+    /// Position-scoped columns are blank before the entry fill — there is no
+    /// position, and the live fold reads `NaN` on an un-entered arm. Hovering the
+    /// pre-entry span must not show a `pnl` measured against a fill that had not
+    /// happened yet.
+    #[test]
+    fn position_columns_are_blank_before_the_entry_fill() {
+        let c = rule(serde_json::json!({
+            "exit": { "m_position": { "pnl": [{ "operator": ">=", "value": 40 }] } }
+        }));
+        let prints = [(1.0, 0_i64), (2.0, 10), (3.0, 20)];
+        let series = replay_series(
+            &c,
+            prints.map(|(p, secs)| trade(p, secs)),
+            &ReplayCtx { created_at: ts(0), entry: Some((ts(10), 2.0)), stage: None, flow: None },
+            ts(20),
+            None,
+        );
+        let pnl = &series.conditions[0];
+        for (i, at) in series.at.iter().enumerate() {
+            if *at < ts(10) {
+                assert!(pnl.values[i].is_nan(), "pre-entry row at {at} has a pnl");
+                assert!(!pnl.ok[i]);
+            }
+        }
+        // At the entry fill: flat. At the +50% print: fired.
+        let at_entry = series.at.iter().position(|t| *t == ts(10)).expect("entry row");
+        assert_eq!(pnl.values[at_entry], 0.0);
+        let at_exit = series.at.iter().position(|t| *t == ts(20)).expect("exit row");
+        assert!((pnl.values[at_exit] - 50.0).abs() < 1e-9);
+        assert!(pnl.ok[at_exit]);
+    }
+
+    /// A gated trail arms and disarms as PnL crosses `arm_above_pct`, so `disarmed`
+    /// is a per-ROW fact. One flag for the whole series would erase the distinction
+    /// the point readout goes out of its way to carry.
+    #[test]
+    fn the_disarmed_flag_moves_row_by_row() {
+        let c = rule(serde_json::json!({
+            "exit": { "m_position": {
+                "arm_above_pct": 50,
+                "retrace": [{ "operator": ">=", "value": 10 }]
+            } }
+        }));
+        // Entry 1.0, +20% (under the gate), +80% (armed), then 20% off that peak.
+        let prints = [(1.0, 0_i64), (1.2, 10), (1.8, 20), (1.44, 30)];
+        let series = replay_series(
+            &c,
+            prints.map(|(p, secs)| trade(p, secs)),
+            &ReplayCtx { created_at: ts(0), entry: Some((ts(0), 1.0)), stage: None, flow: None },
+            ts(30),
+            None,
+        );
+        let trail = &series.conditions[0];
+        let row = |at: Ts| series.at.iter().position(|t| *t == at).expect("row");
+        assert!(trail.disarmed[row(ts(10))], "pnl 20 < gate 50 ⇒ the fold skips it");
+        assert!(!trail.ok[row(ts(10))]);
+        assert!(!trail.disarmed[row(ts(20))], "pnl 80 ⇒ armed");
+        // 1.44 off the 1.8 peak = 20% retrace, past the 10 threshold, and pnl 44 is
+        // back under the gate — the fold stops evaluating it again.
+        assert!(trail.disarmed[row(ts(30))]);
+        assert!(!trail.ok[row(ts(30))]);
+    }
+
+    /// A row budget stops the fold and says so, exactly as the grid reports it — a
+    /// silently short series reads like a token that stopped trading.
+    #[test]
+    fn a_row_budget_truncates_the_series_and_reports_it() {
+        let c = rule(serde_json::json!({
+            "exit": { "m_price_lifetime": { "stall": [{ "operator": ">", "value": 600 }] } }
+        }));
+        let prints = [(1.0, 0_i64), (1.0, 600)];
+        let series = replay_series(
+            &c,
+            prints.map(|(p, secs)| trade(p, secs)),
+            &ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None },
+            ts(600),
+            Some(50),
+        );
+        assert!(series.truncated);
+        assert_eq!(series.at.len(), 50);
+        assert_eq!(series.covered_until, *series.at.last().unwrap());
+        assert!(series.conditions.iter().all(|c| c.len() == 50));
     }
 
     /// Without a position, position-scoped reqs read `NaN` and satisfy nothing —

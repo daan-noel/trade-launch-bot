@@ -286,8 +286,19 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   satisfied *entry* condition is why we are in and a satisfied *exit* one is why we are
   leaving, so one green would mean opposite things; satisfied is emphasized and `✓`-marked
   instead. TP/SL keep their threshold (`take profit >= 40`), a gated trail shows
-  `arms +N%`, a skipped trail is dashed, an inactive ladder stage is dimmed. Backend
-  contract + the parity traps: [strategies.md](strategies.md) *Rule readout*),
+  `arms +N%`, a skipped trail is dashed, an inactive ladder stage is dimmed.
+  **Hovering the chart moves the instant**: `FloorPositionDetail` publishes the
+  crosshair time through `crosshairTime.tsx` — a subscribable store, not state, so a
+  per-frame move re-renders the chips and not the chart that emitted it — and the
+  strip swaps to `○ reconstructed at hh:mm:ss` until the pointer leaves, the
+  entry/exit pins still visible as what it returns to. The rows come from
+  `.../positions/{id}/metric-series`, fetched **lazily on the first crosshair move**
+  (one fold per modal, never per hover) and indexed with the panes' own
+  `nearestSeriesIndex`. An open position's hover carries the replay caption too:
+  the engine keeps one instant of state, not a history, so a past instant can only
+  be reconstructed. A capped series says `· past coverage` rather than repeating its
+  last row silently. Backend contract + the parity traps:
+  [strategies.md](strategies.md) *Rule readout*),
   Rules/Fingerprints
   (+ `InputSyncStatus`, `wallet/` components; `usePositionNotifications`; `syncTokenSlice`).
 - **Lab (`@lab/pages`):** **Research home** (`LabHomePage` — shortcuts + recent sweeps

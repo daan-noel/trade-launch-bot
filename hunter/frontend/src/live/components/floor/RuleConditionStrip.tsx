@@ -28,6 +28,8 @@ export function RuleConditionStrip({
   notFound = null,
   at,
   onAtChange,
+  hoveredAtMs = null,
+  hoveredBeyondCoverage = false,
   className,
 }: {
   readout: RuleReadout | null | undefined;
@@ -38,6 +40,10 @@ export function RuleConditionStrip({
   /** Replay instant, when the host offers the entry/exit switch. */
   at?: ReadoutAt;
   onAtChange?: (at: ReadoutAt) => void;
+  /** Set while `readout` is a chart-crosshair reconstruction rather than a pin. */
+  hoveredAtMs?: number | null;
+  /** The row cap truncated the series and the pointer is past where it reaches. */
+  hoveredBeyondCoverage?: boolean;
   className?: string;
 }) {
   const { data: registry } = useStrategyRegistry();
@@ -89,7 +95,13 @@ export function RuleConditionStrip({
 
   return (
     <StripShell className={className}>
-      <ReadoutSourceLine readout={readout} at={at} onAtChange={onAtChange} />
+      <ReadoutSourceLine
+        readout={readout}
+        at={at}
+        onAtChange={onAtChange}
+        hoveredAtMs={hoveredAtMs}
+        hoveredBeyondCoverage={hoveredBeyondCoverage}
+      />
       {groups.map((g) => (
         <div key={g.key} className="flex min-w-0 flex-wrap items-center gap-1.5">
           <span
@@ -118,17 +130,27 @@ export function RuleConditionStrip({
  * as it moves. A replay does, and prominently: it is a reconstruction from stored
  * trades, at one frozen instant. Presenting the two identically would quietly upgrade
  * an approximation into engine truth.
+ *
+ * Three cases, not two. A **hovered** instant is a replay like any other, but the
+ * instant is the pointer's rather than a fill's, so it says so with a clock instead
+ * of a pin name — and keeps the entry/exit buttons visible, because they are what
+ * the pointer returns to.
  */
 function ReadoutSourceLine({
   readout,
   at,
   onAtChange,
+  hoveredAtMs = null,
+  hoveredBeyondCoverage = false,
 }: {
   readout: RuleReadout;
   at?: ReadoutAt;
   onAtChange?: (at: ReadoutAt) => void;
+  /** Set while the chart crosshair drives the readout. */
+  hoveredAtMs?: number | null;
+  hoveredBeyondCoverage?: boolean;
 }) {
-  if (readout.source === 'engine') {
+  if (readout.source === 'engine' && hoveredAtMs == null) {
     return (
       <span
         className="text-[9px] font-bold uppercase tracking-wider text-text-dim/70"
@@ -142,10 +164,27 @@ function ReadoutSourceLine({
     <div className="flex flex-wrap items-center gap-2">
       <span
         className="text-[9px] font-bold uppercase tracking-wider text-warning/80"
-        title="Reconstructed by folding stored trades back through the engine's metric code. Stored rows carry an approximated real-reserve value and any unpersisted trade is absent, so this is close to — not identical with — what the engine read."
+        title={
+          hoveredAtMs != null
+            ? "Reconstructed at the instant under the crosshair by folding stored trades back through the engine's metric code, on the same tick grid the engine decides on. Even for a position the engine still holds this is a reconstruction — the fold keeps one instant of state, not a history — and stored rows carry an approximated real-reserve value, so it is close to, not identical with, what the engine read here."
+            : "Reconstructed by folding stored trades back through the engine's metric code. Stored rows carry an approximated real-reserve value and any unpersisted trade is absent, so this is close to — not identical with — what the engine read."
+        }
       >
-        ○ reconstructed at {at === 'entry' ? 'entry' : 'exit'}
+        {hoveredAtMs != null
+          ? `○ reconstructed at ${formatClock(hoveredAtMs)}`
+          : `○ reconstructed at ${at === 'entry' ? 'entry' : 'exit'}`}
       </span>
+      {/* The series was capped and the pointer is past where it reaches, so the
+          chips are the last covered row repeated. Saying so beats letting it read
+          as a token that simply went quiet. */}
+      {hoveredBeyondCoverage ? (
+        <span
+          className="text-[9px] font-bold uppercase tracking-wider text-warning/80"
+          title="The reconstruction hit its row ceiling before this point, so these are the values at the last instant it covers — not at the crosshair."
+        >
+          · past coverage
+        </span>
+      ) : null}
       {onAtChange ? (
         <div className="flex items-center gap-1">
           {(['entry', 'exit'] as const).map((k) => (
@@ -175,6 +214,11 @@ function ReadoutSourceLine({
       </span>
     </div>
   );
+}
+
+/** `hh:mm:ss` — the hovered instant, which is read against the chart beside it. */
+function formatClock(ms: number): string {
+  return new Date(ms).toLocaleTimeString();
 }
 
 function StripShell({

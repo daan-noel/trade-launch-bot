@@ -118,6 +118,25 @@ impl MetricSeries {
         }
     }
 
+    /// Register a trailing **flow** window on the track before folding.
+    ///
+    /// [`new`](Self::new) already registers whatever a [`SeriesColumn::Window`]
+    /// needs, so this is for a caller that registers off a *rule* rather than off
+    /// its column set — `CompiledRule::flow_windows` covers `m_flow_split_window`
+    /// too, whose columns are [`SeriesColumn::Flow`] and so are registered by
+    /// [`ensure_flow`](Self::ensure_flow) instead. Registering the same width twice
+    /// is a no-op, which is what lets a caller mirror the live track's setup
+    /// verbatim rather than reasoning about which half owns which width.
+    pub fn ensure_window(&mut self, width_secs: f64) {
+        self.track.ensure_window(width_secs);
+    }
+
+    /// Register a rolling **price-extrema** window (`m_price_window`) — the twin of
+    /// [`ensure_window`](Self::ensure_window) for the other deque family.
+    pub fn ensure_price_window(&mut self, width_secs: f64) {
+        self.track.ensure_price_window(width_secs);
+    }
+
     /// Attach fingerprint-scoped flow state (and optional window sizes) before
     /// folding trades. Required for [`SeriesColumn::Flow`] columns to leave `NaN`.
     pub fn ensure_flow(

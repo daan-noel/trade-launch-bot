@@ -151,12 +151,19 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/{strategy}/positions/{position_id}/fills",
                 web::get().to(handlers::strategies::positions::get_position_fills),
             )
-            // The rule's own conditions with their LIVE values, read out of the
-            // decision loop's own state. Open positions only (a closed one has no
-            // engine state). Same `/{position_id}/…` suffix shape as `fills`.
+            // The rule's own conditions at ONE instant — live engine state where the
+            // loop still holds the position, a replay of stored trades otherwise.
+            // Same `/{position_id}/…` suffix shape as `fills`.
             .route(
                 "/strategies/{strategy}/positions/{position_id}/metrics",
                 web::get().to(handlers::strategies::rule_readout::get_position_metrics),
+            )
+            // The same conditions at EVERY row of the decision grid — one fold per
+            // modal, so a chart crosshair indexes an array instead of re-folding the
+            // token's history per hover.
+            .route(
+                "/strategies/{strategy}/positions/{position_id}/metric-series",
+                web::get().to(handlers::strategies::rule_readout::get_position_metric_series),
             )
             // Console manual buy → a full tracked position (202 {position_id};
             // progress over SSE like a bot buy). Replaces the sync wallet buy.

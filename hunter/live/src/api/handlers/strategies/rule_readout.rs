@@ -9,11 +9,25 @@
 //! ([`hunter_engine::readout::replay_readout`]) — close, but not the same thing, and
 //! `source` carries that distinction to the client rather than blurring it.
 //!
-//! The replay is deliberately **one instant**, not a series: it folds to the exit (or
-//! entry) fill and reads there. That is what makes it affordable on the deploy box —
-//! the lab's `metric-series` computes every registry metric at every row of a sparse
-//! tick grid, which is the right tool for scrubbing a chart and the wrong one for
-//! answering "which condition closed this".
+//! **Two shapes, and the client picks by what it is asking.** [`get_position_metrics`]
+//! answers at **one instant** — it folds to the exit (or entry) fill and reads there,
+//! which is what makes it cheap enough to poll. [`get_position_metric_series`] answers
+//! at **every** row of the engine's decision grid in one pass, so a chart crosshair
+//! indexes an array instead of re-folding per hover: the fold is O(all trades), and
+//! multiplying that by a pointer's move rate on a 2vCPU box is the thing the series
+//! exists to avoid.
+//!
+//! The two share their rule resolution and their flow context ([`resolve_rule`],
+//! [`load_flow_ctx`]) rather than each doing it. Two copies drift, and the
+//! run-snapshot preference is exactly the part that must not: a rule edited after the
+//! position closed would otherwise draw thresholds that never applied to it. The
+//! engine holds the other half of that line — a series row at an instant equals
+//! [`replay_readout`] at that instant, pinned by a test.
+//!
+//! Contrast with the lab's `metric-series`, which computes the whole registry at
+//! every row for a caller that evaluates the conditions itself. Here the backend
+//! evaluates, so only the columns *this rule's* reqs read are folded and the client
+//! declares no windows or horizons at all.
 //!
 //! Scope is deliberately **the rule's own conditions**. The full registry belongs to
 //! the lab's inspect modal; here the question is "what is this position waiting on"
@@ -28,10 +42,12 @@ use uuid::Uuid;
 use hunter_engine::arm::CompiledRule;
 use hunter_engine::event::RuleId;
 use hunter_engine::fingerprint::FingerprintId;
+use hunter_engine::metrics::evaluator::ConditionExpr;
 use hunter_engine::metrics::flow_split::{ix_hash_opt, wallet_hash, FlowPatterns};
-use hunter_engine::metrics::{metric_spec, Side, TradeLite};
+use hunter_engine::metrics::{metric_spec, MetricId, Side, TradeLite};
 use hunter_engine::readout::{
-    replay_readout, ConditionRead, ReadSide, ReadoutSource, ReplayCtx, ReplayFlow, RuleReadout,
+    replay_readout, replay_series, ConditionRead, ConditionSeries, ReadSide, ReadoutSource,
+    ReplayCtx, ReplayFlow, RuleReadout,
 };
 use hunter_engine::rule_params::RuleParams;
 
@@ -42,11 +58,15 @@ use trading_core::models::trade::{Trade, TradeType};
 use trading_core::models::wallet::validate_solana_address;
 use trading_core::models::StrategyPosition;
 
-/// One condition on the wire. `metric` is the registry **name**, not the engine's
-/// `MetricId` — the id is an internal ordinal and must never reach a client (the
-/// `metric-series` route holds the same line).
+/// What a condition **is**, independent of any instant — the half of the wire shape
+/// that does not change row to row, so the series sends it once and the point read
+/// flattens it beside its single value.
+///
+/// `metric` is the registry **name**, not the engine's `MetricId` — the id is an
+/// internal ordinal and must never reach a client (the lab's `metric-series` route
+/// holds the same line).
 #[derive(Debug, serde::Serialize)]
-struct ConditionOut {
+struct ConditionMetaOut {
     /// `entry` | `exit` | `stage`.
     side: &'static str,
     /// Ladder index; present only on a `stage` read.
@@ -60,12 +80,25 @@ struct ConditionOut {
     unit: &'static str,
     /// Trailing-window size for a dynamic metric; `null` for static ones.
     window_size_sec: Option<f64>,
+    /// The authored DNF, `OR` of `AND` arms, as `{operator, value}` objects.
+    conditions: serde_json::Value,
+    /// `authored` | `take_profit` | `stop_loss` — a desugared ladder req keeps its
+    /// label so the UI does not render a TP as a raw `pnl` condition.
+    origin: &'static str,
+    /// PnL the trailing stop arms at, when gated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arm_above_pct: Option<f64>,
+}
+
+/// One condition read at one instant.
+#[derive(Debug, serde::Serialize)]
+struct ConditionOut {
+    #[serde(flatten)]
+    meta: ConditionMetaOut,
     /// The live reading. Non-finite serializes `null` — the engine convention that
     /// an unreadable metric satisfies nothing, carried onto the wire rather than
     /// leaking a `NaN` that JSON cannot represent.
     value: Option<f64>,
-    /// The authored DNF, `OR` of `AND` arms, as `{operator, value}` objects.
-    conditions: serde_json::Value,
     /// Whether this condition holds right now.
     ok: bool,
     /// The operator + threshold that matched, when one did.
@@ -73,15 +106,46 @@ struct ConditionOut {
     matched_operator: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     matched_value: Option<f64>,
-    /// `authored` | `take_profit` | `stop_loss` — a desugared ladder req keeps its
-    /// label so the UI does not render a TP as a raw `pnl` condition.
-    origin: &'static str,
-    /// PnL the trailing stop arms at, when gated.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    arm_above_pct: Option<f64>,
     /// The trail is gated and not yet armed, so the fold **skips** this condition.
     /// Distinct from `ok: false`: it is not being evaluated at all.
     disarmed: bool,
+}
+
+/// One condition across a whole series: the same metadata, then one entry per row of
+/// [`SeriesOut::at`].
+#[derive(Debug, serde::Serialize)]
+struct ConditionSeriesOut {
+    #[serde(flatten)]
+    meta: ConditionMetaOut,
+    /// Per row; non-finite serializes `null`, as on the point read.
+    values: Vec<Option<f64>>,
+    ok: Vec<bool>,
+    /// Per row, and **omitted entirely** unless this condition is a gated trail —
+    /// the only kind the fold ever skips. Per-row rather than a single flag because
+    /// a trail arms and disarms as PnL crosses `arm_above_pct`, which is exactly the
+    /// distinction `disarmed` exists to carry.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    disarmed: Vec<bool>,
+}
+
+/// The series response. `at` is **epoch millis**, not RFC3339: at one row per
+/// decision tick, 25 bytes of quoted timestamp per row is the single largest line
+/// item in the payload and buys the client nothing it cannot do with `new Date(ms)`.
+#[derive(Debug, serde::Serialize)]
+struct SeriesOut {
+    position_id: Uuid,
+    mint_address: String,
+    rule_id: Uuid,
+    /// Always `replay` — a series is a reconstruction by construction, including for
+    /// a position the engine still holds. Carried anyway so the client's honesty
+    /// rendering keys off the payload rather than off which route it called.
+    source: &'static str,
+    at: Vec<i64>,
+    conditions: Vec<ConditionSeriesOut>,
+    /// The row cap cut the fold short; coverage ends at `covered_until`. A silently
+    /// short series reads exactly like a token that stopped trading.
+    truncated: bool,
+    covered_until: chrono::DateTime<chrono::Utc>,
 }
 
 /// The readout response.
@@ -120,28 +184,57 @@ fn origin_name(origin: hunter_engine::arm::ReqOrigin) -> &'static str {
     }
 }
 
-fn condition_out(r: &ConditionRead) -> ConditionOut {
-    let spec = metric_spec(r.metric);
-    let (stage, stage_active) = match r.side {
+/// The instant-independent half of a condition, from the parts every read carries.
+/// ONE mapper for both shapes: the strip renders a hovered series row with exactly
+/// the chips it renders a pinned point read with, so the two cannot describe the
+/// same condition differently.
+fn condition_meta(
+    side: ReadSide,
+    metric: MetricId,
+    window: Option<f64>,
+    conds: &ConditionExpr,
+    origin: hunter_engine::arm::ReqOrigin,
+    arm_above_pct: Option<f64>,
+) -> ConditionMetaOut {
+    let spec = metric_spec(metric);
+    let (stage, stage_active) = match side {
         ReadSide::Stage { index, active } => (Some(index), Some(active)),
         _ => (None, None),
     };
-    ConditionOut {
-        side: side_name(r.side),
+    ConditionMetaOut {
+        side: side_name(side),
         stage,
         stage_active,
         metric: spec.name,
-        group: hunter_engine::metrics::group_spec(hunter_engine::metrics::group_of(r.metric).id).name,
+        group: hunter_engine::metrics::group_spec(hunter_engine::metrics::group_of(metric).id).name,
         unit: spec.unit.as_str(),
-        window_size_sec: r.window,
+        window_size_sec: window,
+        conditions: hunter_engine::metrics::evaluator::condition_expr_to_value(conds),
+        origin: origin_name(origin),
+        arm_above_pct,
+    }
+}
+
+fn condition_out(r: &ConditionRead) -> ConditionOut {
+    ConditionOut {
+        meta: condition_meta(r.side, r.metric, r.window, &r.conds, r.origin, r.arm_above_pct),
         value: r.value.is_finite().then_some(r.value),
-        conditions: hunter_engine::metrics::evaluator::condition_expr_to_value(&r.conds),
         ok: r.ok,
         matched_operator: r.matched.map(|c| c.operator.symbol()),
         matched_value: r.matched.map(|c| c.value),
-        origin: origin_name(r.origin),
-        arm_above_pct: r.arm_above_pct,
         disarmed: r.disarmed,
+    }
+}
+
+fn condition_series_out(c: &ConditionSeries) -> ConditionSeriesOut {
+    let r = &c.req;
+    ConditionSeriesOut {
+        meta: condition_meta(c.side, r.metric, r.window, &r.conds, r.origin, r.arm_above_pct),
+        values: c.values.iter().map(|v| v.is_finite().then_some(*v)).collect(),
+        ok: c.ok.clone(),
+        // Only a gated trail is ever skipped, so every other condition ships an
+        // empty vec and the field vanishes from its JSON object.
+        disarmed: if r.arm_above_pct.is_some() { c.disarmed.clone() } else { Vec::new() },
     }
 }
 
@@ -178,22 +271,31 @@ pub struct PositionMetricsQuery {
     pub at: ReadAt,
 }
 
-/// Reconstruct a closed position's readout by folding its token's stored trades.
+/// A `404` whose body names which absence it is.
+fn not_found(reason: &str) -> HttpResponse {
+    HttpResponse::NotFound().json(serde_json::json!({ "error": reason }))
+}
+
+/// The rule a position's reconstruction must be judged against, compiled.
+struct ResolvedRule {
+    id: RuleId,
+    compiled: CompiledRule,
+    fingerprint_id: FingerprintId,
+}
+
+/// Resolve and compile the rule behind a position — **shared by the point readout
+/// and the series**, because the run-`params_snapshot` preference below is the one
+/// thing two copies must never disagree about.
 ///
-/// Every failure here is a `404` with a distinct reason, because the reasons are not
+/// Every failure is a `404` with a distinct reason, because the reasons are not
 /// interchangeable to someone looking at an empty panel: a manual position never had
-/// a rule, a `trades` table that aged the token out (the deploy box keeps a rolling
-/// window) has nothing to fold, and a position that never filled has no instant to
-/// read at. Collapsing them into one blank strip hides which it is.
-async fn replay_for_position(
+/// a rule, a deleted rule has nothing to compile, and unparseable params are a
+/// different problem from either. Collapsing them into one blank strip hides which
+/// it is.
+async fn resolve_rule(
     app_state: &DeployState,
     position: &StrategyPosition,
-    read_at: ReadAt,
-) -> Result<(RuleReadout, RuleId), HttpResponse> {
-    let not_found = |reason: &str| {
-        HttpResponse::NotFound().json(serde_json::json!({ "error": reason }))
-    };
-
+) -> Result<ResolvedRule, HttpResponse> {
     let Some(rule_uuid) = position.rule_id else {
         return Err(not_found("manual position — no rule conditions to replay"));
     };
@@ -239,25 +341,98 @@ async fn replay_for_position(
             "readout replay: run load failed ({e}) — using the rule's current params",
         ),
     }
-    let compiled = CompiledRule::compile(&loaded);
-
-    Ok((
-        replay_at(app_state, position, &compiled, loaded.fingerprint_id, read_at).await?,
-        rule_id,
-    ))
+    Ok(ResolvedRule {
+        id: rule_id,
+        compiled: CompiledRule::compile(&loaded),
+        fingerprint_id: loaded.fingerprint_id,
+    })
 }
 
-/// Fold the token's trades up to the requested instant and read the rule there.
-async fn replay_at(
+/// The flow context a replay classifies volume vs organic with — the rule's
+/// fingerprint patterns and the token's creator wallet.
+///
+/// Without it every `m_flow_split` condition reads `NaN` and — worse — the creator's
+/// dev buy and dev dump, usually a token's two largest single flows, classify as
+/// organic. Neither half is fatal on its own: an unconfigured fingerprint just omits
+/// the flow columns, and a missing creator is logged rather than silently folded.
+/// See [`ReplayFlow`].
+async fn load_flow_ctx(
+    app_state: &DeployState,
+    mint: &str,
+    fingerprint_id: FingerprintId,
+) -> (Option<FlowPatterns>, Option<u64>) {
+    let patterns = match app_state.fingerprint_repo.find(fingerprint_id.0).await {
+        Ok(Some(fp)) => FlowPatterns::from_metric_config(&fp_to_engine(&fp).metric_config),
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!(fp = %fingerprint_id.0, "readout replay: fingerprint load failed: {e}");
+            None
+        }
+    };
+    // Only pay for the creator lookup on the flow path — a rule with no flow
+    // conditions never needs it.
+    if patterns.is_none() {
+        return (None, None);
+    }
+    let creator_wallet_hash = match app_state.core.token_repo().find_by_mint(mint).await {
+        Ok(Some(t)) if !t.creator_wallet.is_empty() => Some(wallet_hash(&t.creator_wallet)),
+        _ => {
+            tracing::warn!(mint, "readout replay: no creator wallet — flow split unseeded");
+            None
+        }
+    };
+    (patterns, creator_wallet_hash)
+}
+
+/// The token's stored trades up to `until`, as the engine's `TradeLite`.
+///
+/// Bounded in SQL: a memecoin that keeps trading for hours past a position's exit
+/// would otherwise transfer and walk rows that cannot affect the answer.
+async fn load_trades(
+    app_state: &DeployState,
+    mint: &str,
+    until: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<Trade>, HttpResponse> {
+    let trades = app_state
+        .core
+        .trade_repo()
+        .find_by_mint_until(mint, until)
+        .await
+        .map_err(|e| {
+            tracing::error!(mint, "readout replay: trade fetch failed: {e}");
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({ "error": "trade fetch failed" }))
+        })?;
+    if trades.is_empty() {
+        // Almost always retention, not a bug: the deploy box keeps a rolling ingest
+        // window, so a position older than it has no history left to fold.
+        return Err(not_found(
+            "no trade history retained for this token — replay needs the lab",
+        ));
+    }
+    Ok(trades)
+}
+
+/// The entry fill `(time, price)` a `PositionCtx` anchors on; `None` for a position
+/// that never filled, whose `m_position` reads then have no anchor.
+fn entry_fill(position: &StrategyPosition) -> Option<(chrono::DateTime<chrono::Utc>, f64)> {
+    position
+        .entry_time
+        .zip(position.entry_price)
+        .filter(|(_, p)| p.is_finite() && *p > 0.0)
+}
+
+/// Reconstruct a closed position's readout at one instant by folding its token's
+/// stored trades.
+///
+/// A position that never filled has no instant to read at — its own `404`, distinct
+/// from the ones [`resolve_rule`] and [`load_trades`] raise.
+async fn replay_for_position(
     app_state: &DeployState,
     position: &StrategyPosition,
-    compiled: &CompiledRule,
-    fingerprint_id: FingerprintId,
     read_at: ReadAt,
-) -> Result<RuleReadout, HttpResponse> {
-    let not_found = |reason: &str| {
-        HttpResponse::NotFound().json(serde_json::json!({ "error": reason }))
-    };
+) -> Result<(RuleReadout, RuleId), HttpResponse> {
+    let rule = resolve_rule(app_state, position).await?;
 
     // The instant to read. Exit falls back to entry for a row that never closed
     // cleanly, so a stuck/unconfirmed position still answers "what did it see".
@@ -269,61 +444,15 @@ async fn replay_at(
         return Err(not_found("this position never filled — no instant to read at"));
     };
 
-    let trades = match app_state
-        .core
-        .trade_repo()
-        .find_by_mint_until(&position.mint_address, at)
-        .await
-    {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::error!(mint = %position.mint_address, "readout replay: trade fetch failed: {e}");
-            return Err(HttpResponse::InternalServerError()
-                .json(serde_json::json!({ "error": "trade fetch failed" })));
-        }
-    };
-    if trades.is_empty() {
-        // Almost always retention, not a bug: the deploy box keeps a rolling ingest
-        // window, so a position older than it has no history left to fold.
-        return Err(not_found(
-            "no trade history retained for this token — replay needs the lab",
-        ));
-    }
-
-    // The flow context, without which every `m_flow_split` condition reads NaN and —
-    // worse — the creator's dev buy/dump would classify as organic. See `ReplayFlow`.
-    let patterns = match app_state.fingerprint_repo.find(fingerprint_id.0).await {
-        Ok(Some(fp)) => FlowPatterns::from_metric_config(&fp_to_engine(&fp).metric_config),
-        Ok(None) => None,
-        Err(e) => {
-            tracing::warn!(fp = %fingerprint_id.0, "readout replay: fingerprint load failed: {e}");
-            None
-        }
-    };
-    let creator_wallet_hash = match app_state
-        .core
-        .token_repo()
-        .find_by_mint(&position.mint_address)
-        .await
-    {
-        Ok(Some(t)) if !t.creator_wallet.is_empty() => Some(wallet_hash(&t.creator_wallet)),
-        _ => {
-            tracing::warn!(
-                mint = %position.mint_address,
-                "readout replay: no creator wallet — flow split unseeded",
-            );
-            None
-        }
-    };
+    let trades = load_trades(app_state, &position.mint_address, at).await?;
+    let (patterns, creator_wallet_hash) =
+        load_flow_ctx(app_state, &position.mint_address, rule.fingerprint_id).await;
 
     let created_at = trades[0].block_time;
     let lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
-    let entry = position
-        .entry_time
-        .zip(position.entry_price)
-        .filter(|(_, p)| p.is_finite() && *p > 0.0);
+    let entry = entry_fill(position);
     let stage = Some(position.scale_stage);
-    let compiled = compiled.clone();
+    let ResolvedRule { id: rule_id, compiled, fingerprint_id } = rule;
 
     // Off the reactor: this walks every trade the token made before `at`, which for a
     // busy token is tens of thousands of folds. Small next to the lab's full series,
@@ -343,7 +472,7 @@ async fn replay_at(
     })
     .await;
 
-    out.map_err(|e| {
+    out.map(|readout| (readout, rule_id)).map_err(|e| {
         tracing::error!("readout replay: fold task failed: {e}");
         HttpResponse::InternalServerError()
             .json(serde_json::json!({ "error": "replay failed" }))
@@ -443,6 +572,117 @@ pub async fn get_position_metrics(
         }
         Err(resp) => resp,
     }
+}
+
+/// Row ceiling for one series response.
+///
+/// Deliberately well under the lab's 40k: this ships to the 2vCPU box, and the
+/// payload is `rows × conditions` numbers rather than the lab's `rows × registry`.
+/// Hitting it **truncates in time** rather than coarsening the grid — every returned
+/// row stays bit-identical to the engine's `TICK_MS` decision grid, which is the
+/// whole reason to fold on that grid at all — and the response flags the short
+/// coverage so the strip can say so.
+const MAX_READOUT_SERIES_ROWS: usize = 8_000;
+
+/// GET /api/strategies/{strategy}/positions/{position_id}/metric-series
+///
+/// Every condition of the position's rule, at every row of the engine's decision
+/// grid — the crosshair's answer to "what did the rule see *here*".
+///
+/// Always a reconstruction, including for a position the engine still holds: the
+/// engine keeps one instant of state, not a history, so an instant the loop decided
+/// at live can only be reproduced by folding stored trades. That is not the same
+/// arithmetic — stored rows carry an approximated real-reserve value and an
+/// unpersisted trade is simply absent — which is why `source` is `replay` here
+/// unconditionally and the strip labels a hover accordingly.
+///
+/// One fold per modal, not per hover: the fold is O(all trades) and a pointer moves
+/// at frame rate.
+pub async fn get_position_metric_series(
+    app_state: web::Data<Arc<DeployState>>,
+    path: web::Path<(String, Uuid)>,
+) -> impl Responder {
+    let (_strategy, position_id) = path.into_inner();
+
+    let position = match app_state.strategy_repo.find_position(position_id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return HttpResponse::NotFound()
+                .json(serde_json::json!({ "error": "Position not found" }));
+        }
+        Err(e) => {
+            tracing::error!(position = %position_id, "readout series: position load failed: {e}");
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({ "error": "Failed to get position" }));
+        }
+    };
+
+    let rule = match resolve_rule(&app_state, &position).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    // The whole retained history, not just up to the exit: the chart draws past the
+    // close, so the crosshair can reach there and must get an answer rather than the
+    // last row repeated.
+    let as_of = chrono::Utc::now();
+    let trades = match load_trades(&app_state, &position.mint_address, as_of).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let (patterns, creator_wallet_hash) =
+        load_flow_ctx(&app_state, &position.mint_address, rule.fingerprint_id).await;
+
+    let created_at = trades[0].block_time;
+    let lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
+    let entry = entry_fill(&position);
+    let stage = Some(position.scale_stage);
+    let ResolvedRule { id: rule_id, compiled, fingerprint_id } = rule;
+
+    // Off the reactor, for the same reason the point replay is — more so: this folds
+    // the token's whole retained history and evaluates every condition at every row.
+    let out = web::block(move || {
+        let flow = patterns.as_ref().map(|p| ReplayFlow {
+            fingerprint: fingerprint_id,
+            patterns: p,
+            creator_wallet_hash,
+        });
+        replay_series(
+            &compiled,
+            lites,
+            &ReplayCtx { created_at, entry, stage, flow },
+            as_of,
+            Some(MAX_READOUT_SERIES_ROWS),
+        )
+    })
+    .await;
+
+    let series = match out {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("readout series: fold task failed: {e}");
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({ "error": "replay failed" }));
+        }
+    };
+    if series.truncated {
+        tracing::warn!(
+            mint = %position.mint_address,
+            cap = MAX_READOUT_SERIES_ROWS,
+            covered_until = %series.covered_until,
+            "readout series hit the row ceiling — truncating coverage in time",
+        );
+    }
+
+    HttpResponse::Ok().json(SeriesOut {
+        position_id,
+        mint_address: position.mint_address,
+        rule_id: rule_id.0,
+        source: "replay",
+        at: series.at.iter().map(|t| t.timestamp_millis()).collect(),
+        conditions: series.conditions.iter().map(condition_series_out).collect(),
+        truncated: series.truncated,
+        covered_until: series.covered_until,
+    })
 }
 
 /// Query for the armed (pre-entry) readout — a Waiting row has no position id.

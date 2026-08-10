@@ -43,14 +43,10 @@ export interface ClosesSeries {
 }
 
 /**
- * One condition of a rule, with the value the live engine reads for it right now
- * (mirrors `live::api::handlers::strategies::rule_readout::ConditionOut`).
- *
- * `value` is `null` when the metric is unreadable — an unregistered window, a flow
- * metric with no fingerprint state, or a position metric with no position. Per the
- * engine convention that satisfies nothing, so `ok` is false.
+ * What a condition **is**, independent of any instant (mirrors the backend's
+ * `ConditionMetaOut`, which both response shapes flatten).
  */
-export interface RuleConditionRead {
+export interface RuleConditionMeta {
   side: 'entry' | 'exit' | 'stage';
   /** Ladder index; present only on a `stage` read. */
   stage?: number;
@@ -60,21 +56,45 @@ export interface RuleConditionRead {
   group: string;
   unit: string;
   window_size_sec: number | null;
-  value: number | null;
   /** Authored DNF: flat `[{operator,value}]` (one AND arm) or nested OR arms. */
   conditions: unknown;
-  ok: boolean;
-  matched_operator?: string;
-  matched_value?: number;
   origin: 'authored' | 'take_profit' | 'stop_loss';
   /** PnL the trailing stop arms at, when gated. */
   arm_above_pct?: number;
+}
+
+/**
+ * One condition of a rule at ONE instant, with the value the fold reads for it
+ * (mirrors `live::api::handlers::strategies::rule_readout::ConditionOut`).
+ *
+ * `value` is `null` when the metric is unreadable — an unregistered window, a flow
+ * metric with no fingerprint state, or a position metric with no position. Per the
+ * engine convention that satisfies nothing, so `ok` is false.
+ */
+export interface RuleConditionRead extends RuleConditionMeta {
+  value: number | null;
+  ok: boolean;
+  matched_operator?: string;
+  matched_value?: number;
   /**
    * The trail is gated and not yet armed, so the fold **skips** this condition —
    * it is not being evaluated at all. Render it as dormant, never as a failing
    * condition, or the UI shows a stop that looks live when none is.
    */
   disarmed: boolean;
+}
+
+/** The same condition across every row of a series (`ConditionSeriesOut`). */
+export interface RuleConditionSeries extends RuleConditionMeta {
+  /** One per row of {@link RuleReadoutSeries.at}. */
+  values: (number | null)[];
+  ok: boolean[];
+  /**
+   * Per row, and **absent** unless this condition is a gated trail — the only kind
+   * the fold ever skips. A trail arms and disarms as PnL crosses `arm_above_pct`,
+   * so it cannot be one flag for the whole series.
+   */
+  disarmed?: boolean[];
 }
 
 /** Which instant a closed position's replay reads at. */
@@ -98,6 +118,28 @@ export interface RuleReadout {
   /** The one instant every `value` in this response is read at. */
   at: string;
   conditions: RuleConditionRead[];
+}
+
+/**
+ * `GET .../positions/{id}/metric-series` — the same conditions at every row of the
+ * engine's decision grid, so a chart crosshair indexes an array instead of asking
+ * the box to re-fold the token's history per hover.
+ *
+ * Always `replay`: the engine holds one instant of state, not a history, so even an
+ * open position's past instants can only be reconstructed.
+ */
+export interface RuleReadoutSeries {
+  position_id: string;
+  mint_address: string;
+  rule_id: string;
+  source: 'replay';
+  /** Row instants as epoch **milliseconds** — at one row per decision tick, quoted
+   *  RFC3339 timestamps would be the largest line item in the payload. */
+  at: number[];
+  conditions: RuleConditionSeries[];
+  /** The row cap cut the fold short; coverage ends at `covered_until`. */
+  truncated: boolean;
+  covered_until: string;
 }
 
 export interface SellTokenArgs {
@@ -285,6 +327,17 @@ export const liveApi = baseApi.injectEndpoints({
           at ? `?at=${at}` : ''
         }`,
     }),
+    /**
+     * The whole readout as a series — one fold per modal, fetched lazily on the
+     * first crosshair move so modal-open cost is unchanged and the fold is
+     * pay-per-use. Never polled: it is a reconstruction of the past, which does not
+     * move (the tail past `covered_until` grows, but the crosshair lives inside the
+     * span the chart already drew).
+     */
+    getPositionMetricSeries: builder.query<RuleReadoutSeries, string>({
+      query: (positionId) =>
+        `/api/strategies/generic/positions/${encodeURIComponent(positionId)}/metric-series`,
+    }),
     /** The same readout for an ARMED (token, rule) pair — a Waiting row has no
      *  position id, so it keys on the pair instead. */
     getArmedMetrics: builder.query<RuleReadout, { mint: string; ruleId: string }>({
@@ -353,6 +406,7 @@ export const {
   useCloseRulePositionMutation,
   useGetPositionFillsQuery,
   useGetPositionMetricsQuery,
+  useGetPositionMetricSeriesQuery,
   useGetArmedMetricsQuery,
   useGetCashbackStatusQuery,
   useClaimCashbackMutation,

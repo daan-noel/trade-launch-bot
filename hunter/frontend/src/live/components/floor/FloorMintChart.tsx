@@ -37,6 +37,8 @@ export function FloorMintChart({
   selectedBar = null,
   onBarClick,
   onRangeChange,
+  onCrosshairTimeChange,
+  externalCrosshairTimeSec = null,
 }: {
   mint: string;
   markers?: ChartEventMarker[] | null;
@@ -47,6 +49,11 @@ export function FloorMintChart({
   selectedBar?: ChartBarSelection | null;
   onBarClick?: (selection: ChartBarSelection | null) => void;
   onRangeChange?: (range: ChartRangeSelectionDetail | null) => void;
+  /** Wall-clock unix seconds under the crosshair; null on pointer-out. Feeds the
+   *  position modal's rule-condition readout. */
+  onCrosshairTimeChange?: (timeSec: number | null) => void;
+  /** Drive the crosshair from a sibling surface. */
+  externalCrosshairTimeSec?: number | null;
 }) {
   const { unit, usdRate } = usePriceUnit();
   useWatchTokenTradesLive(mint || null);
@@ -97,6 +104,8 @@ export function FloorMintChart({
         selectedBar={selectedBar}
         onBarClick={onBarClick}
         onRangeChange={onRangeChange}
+        onCrosshairTimeChange={onCrosshairTimeChange}
+        externalCrosshairTimeSec={externalCrosshairTimeSec}
         tokenCreatedAt={detail?.created_at ?? undefined}
         athPriceInSol={detail?.ath_price ?? null}
         isMigrated={detail?.is_migrated}

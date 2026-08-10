@@ -75,10 +75,29 @@ the fold is acting on. A **closed** one has no engine state left and is reconstr
 `replay_readout` — folding `TradeRepo::find_by_mint_until` rows through a fresh track to
 the exit (or entry) fill, then reading there.
 
-Deliberately **one instant, not a series**: the lab's `metric-series` computes every
-registry metric at every row of a sparse tick grid, which is right for scrubbing a chart
-and wrong for "which condition closed this". A single linear fold is what makes the
-post-mortem affordable on the deploy box.
+**Two shapes, and the client picks by what it is asking.** `.../metrics` answers at one
+instant, which is what makes it cheap enough to poll. `.../metric-series`
+(`replay_series`) answers at *every* row of the engine's decision grid in one pass, for
+a chart crosshair that would otherwise re-fold the token's history per hover — the fold
+is O(all trades) and a pointer moves at frame rate. Both resolve their rule and flow
+context through one shared path, because the `params_snapshot` preference below is
+exactly what two copies must not disagree about.
+
+The series is affordable where the lab's is not because it folds **only the columns
+this rule's reqs read** (a 6-condition rule folds 6 columns, against the lab's whole
+registry) and evaluates backend-side, so the client declares no windows or horizons:
+the grid's density comes off `CompiledRule::clock_horizons`, with `held_secs` riding on
+the `stall` horizon (measured from the last trade, which is at or after the entry fill,
+so it covers it). Rows are capped well under the lab's 40k and report `truncated` +
+`covered_until` — a silently short series reads exactly like a token that stopped
+trading. The tick grid is load-bearing either way: every decaying metric advances only
+inside a tick, so a trade-only fold never samples a between-trades crossing.
+
+The contract between the two routes is one test: **a series row at an instant equals
+`replay_readout` at that instant**, condition for condition. It holds because they are
+the same parts — the same track, window registration, position ratchet, and the one
+`judge_req` body. Per-row `ok` must never come from a second evaluation; the three
+things a copy gets wrong are the first three below.
 
 Four things a second reader of `MetricReq`s gets wrong, each guarded in
 `engine/src/readout.rs` tests:
@@ -90,7 +109,10 @@ Four things a second reader of `MetricReq`s gets wrong, each guarded in
   under its gate, but the pre-entry walk (`can_enter` → `exit_metrics_fired` →
   `reqs_first_fired`) never consults `trailing_armed` — with no position that req IS
   evaluated, reads `NaN`, and fires nothing. So `disarmed` is false whenever there is no
-  position; claiming otherwise describes behaviour the engine does not have.
+  position; claiming otherwise describes behaviour the engine does not have. On a series
+  it is per **row**, never one flag: a trail arms and disarms as PnL crosses the gate.
+  Position-scoped columns are likewise blank before the entry fill — there is no
+  position there, and the live fold reads `NaN` on an un-entered arm.
 - **Only the active scale-out stage is evaluated.** Every stage is returned so the
   ladder is visible, each tagged `active`; an inactive stage's `ok` is what the fold
   *would* read, never a decision it is making.

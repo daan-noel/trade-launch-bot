@@ -16,6 +16,7 @@ import {
 } from 'lib/signedTone';
 import { MintBarTradesPanel } from 'components/tokens/MintBarTradesPanel';
 import { useBarTradesSelection } from 'components/tokens/useBarTradesSelection';
+import { CrosshairTimeProvider, useCrosshairTimeStore } from './crosshairTime';
 import { LazyFloorMintChart } from './LazyFloorMintChart';
 import { OpenPositionStatusChips } from './openPositionStatus';
 
@@ -109,6 +110,10 @@ export function FloorPositionDetail({
   chartAside?: ReactNode;
 }) {
   const barTrades = useBarTradesSelection();
+  // Published to `facts.conditions` (the rule-condition strip) so hovering the chart
+  // answers "what did the rule see HERE". A store rather than state: the crosshair
+  // moves per frame and must not re-render the chart emitting it.
+  const crosshair = useCrosshairTimeStore();
   // Memoized: an open position re-renders on every mark tick, and a fresh marker
   // array would rebuild the chart's markers and the trades table's row tinting
   // each time.
@@ -134,11 +139,12 @@ export function FloorPositionDetail({
       tableId="floor-detail"
       height={chartHeight}
       flowPatternKeys={facts.flowPatternKeys ?? null}
+      onCrosshairTimeChange={crosshair.set}
       {...barTrades.chartProps}
     />
   );
 
-  return (
+  const body = (
     <div className="flex flex-col gap-3">
       {/* Hero — money first, then identity / status chips */}
       <div className={cn('rounded-lg border px-3 py-2.5', heroWashClass(pct))}>
@@ -335,6 +341,10 @@ export function FloorPositionDetail({
       ) : null}
     </div>
   );
+
+  // The provider wraps the chart AND the `conditions` slot — they are the two ends
+  // of the crosshair, and nothing between them needs to know.
+  return <CrosshairTimeProvider value={crosshair}>{body}</CrosshairTimeProvider>;
 }
 
 function InlineFact({
