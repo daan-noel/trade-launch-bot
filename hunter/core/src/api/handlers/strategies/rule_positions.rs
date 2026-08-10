@@ -59,7 +59,18 @@ pub struct PositionResponse {
     pub target_time: Option<DateTime<Utc>>,
     pub target_tx: Option<String>,
     pub entry_price: Option<f64>,
+    /// SOL-weighted **average** across every sell leg on a scale-out — not a price
+    /// anything filled at. Charts draw `exit_legs` when it is populated and fall
+    /// back to this only for a single-leg close, where the two are the same number.
     pub exit_price: Option<f64>,
+    /// Per-leg sell fills, in fire order, wherever `exit_price` alone cannot describe
+    /// them: a ladder (where it is an average) or a still-open position that has banked
+    /// a leg (where there is no stamp yet). See `StrategyRepo::sell_legs_for_positions`
+    /// for the exact rule. Attached per page by
+    /// [`attach_exit_legs`], so — like enrichment — the SSE-delta / single-position
+    /// paths leave it empty and the client keeps the legs it already holds.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exit_legs: Vec<crate::models::ExitFillLeg>,
     /// First entry leg's signature (display/back-compat); empty until the fill is
     /// adopted. The full per-leg list is `entry_tx_signatures`.
     pub entry_tx: String,
@@ -149,6 +160,9 @@ impl From<StrategyPosition> for PositionResponse {
             target_tx: p.target_tx,
             entry_price: p.entry_price,
             exit_price: p.exit_price,
+            // Legs are attached by the paged handler (`attach_exit_legs`); empty here
+            // so the SSE-delta / single-position paths stay one row, one query.
+            exit_legs: Vec::new(),
             entry_tx: entry_sigs.first().cloned().unwrap_or_default(),
             exit_tx: exit_sigs.last().cloned(),
             entry_tx_signatures: entry_sigs,
@@ -247,6 +261,30 @@ pub async fn enrich_position_responses(repo: &StrategyRepo, responses: &mut [Pos
     }
 }
 
+/// Attach per-leg exit fills to a page of position responses via one bounded batch
+/// fetch — the scale-out twin of [`enrich_position_responses`], and for the same
+/// reason: every row on the page can be drawn as a chart card, so a per-row query
+/// would be an N+1 on the History deck.
+///
+/// A fetch error is logged and leaves the arrays empty: the charts then fall back to
+/// the position-level `exit_*` single arrow, which is exactly the pre-legs behavior.
+pub async fn attach_exit_legs(repo: &StrategyRepo, responses: &mut [PositionResponse]) {
+    if responses.is_empty() {
+        return;
+    }
+    let ids: Vec<Uuid> = responses.iter().map(|r| r.id).collect();
+    match repo.sell_legs_for_positions(&ids).await {
+        Ok(mut by_position) => {
+            for r in responses.iter_mut() {
+                if let Some(legs) = by_position.remove(&r.id) {
+                    r.exit_legs = legs;
+                }
+            }
+        }
+        Err(e) => tracing::warn!("positions exit-leg fetch failed: {e}"),
+    }
+}
+
 /// Stamp the pager total on `X-Total-Count` (and expose it to the browser fetch,
 /// needed when the SPA is served through the dev proxy / a different origin) —
 /// the JSON body stays the plain array-of-positions contract.
@@ -278,6 +316,7 @@ async fn json_positions_enriched(
         })
         .collect();
     enrich_position_responses(repo, &mut responses).await;
+    attach_exit_legs(repo, &mut responses).await;
     HttpResponse::Ok()
         .insert_header(("X-Total-Count", total.to_string()))
         .insert_header(("Access-Control-Expose-Headers", "X-Total-Count"))

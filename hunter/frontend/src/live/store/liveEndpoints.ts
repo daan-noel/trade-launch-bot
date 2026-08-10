@@ -249,10 +249,21 @@ export const liveApi = baseApi.injectEndpoints({
         };
       },
     }),
-    /** Append-only fill ledger for one position (entry + every sell leg). */
+    /**
+     * Append-only fill ledger for one position (entry + every sell leg).
+     *
+     * Tagged per position id so a scale-out leg that lands while the detail is
+     * open refreshes both the ledger and the chart's exit arrows —
+     * `useLivePositionFills` invalidates this off the position SSE. Without the
+     * tag the cache shell's 5-minute retention would keep serving the pre-leg
+     * ledger, and reopening the modal would not refetch either.
+     */
     getPositionFills: builder.query<PositionFill[], string>({
       query: (positionId) =>
         `/api/strategies/generic/positions/${encodeURIComponent(positionId)}/fills`,
+      providesTags: (_result, _error, positionId) => [
+        { type: 'PositionFills' as const, id: positionId },
+      ],
     }),
     /**
      * A position's rule conditions with the values behind them. One endpoint for

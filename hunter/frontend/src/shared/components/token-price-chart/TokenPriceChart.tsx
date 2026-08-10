@@ -1421,7 +1421,10 @@ export function TokenPriceChart({
       }
     }
 
-    if (eventMarkers && eventMarkers.length > 0) {
+    // ONE toggle covers the whole entry/exit overlay — arrows here and the dashed
+    // fill-price lines below. Gating only the lines left the arrows unturnoffable,
+    // which on a scale-out ladder is the densest layer on the chart.
+    if (showEventMarkers && eventMarkers && eventMarkers.length > 0) {
       markers.push(
         ...buildEventSeriesMarkers(eventMarkers, sortedTrades, bars, groupMode, intervalSec),
       );
@@ -1451,6 +1454,7 @@ export function TokenPriceChart({
     devMarkersBoundariesOnly,
     devWallet,
     eventMarkers,
+    showEventMarkers,
   ]);
 
   // Render the committed range selection as a band with a duration chip. Keyed
@@ -1663,7 +1667,7 @@ export function TokenPriceChart({
           lineWidth: 1,
           lineStyle: LineStyle.Dashed,
           axisLabelVisible: true,
-          title: isEntry ? 'Entry' : 'Exit',
+          title: m.lineLabel ?? (isEntry ? 'Entry' : 'Exit'),
         }),
       );
     }

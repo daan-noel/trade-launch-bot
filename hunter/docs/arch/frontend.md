@@ -616,7 +616,17 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   `live` swing1 positions whose legs ride the row) or `@lab/hooks/useSwing1DetectOverlay`'s
   `makeSwing1DetectRowOverlay` (lab swing1 positions/matched/sim + grouped-sweep combos, which
   re-run `swing1-detect` per card keyed off the section's rule/combo params — sim rows carry their
-  legs and skip the fetch). Position tables (Evidence / Simulate / Dry-run / Sweep) share
+  legs and skip the fetch). A scale-out draws **one exit arrow per leg**, never one at
+  `exit_price` — that column is the SOL-weighted average across legs, a price nothing filled
+  at. Legs reach the chart through `InspectTarget.exitLegs`, fed from `exit_legs` on the row
+  (`inspectFromPosition` / `inspectFromSim` share one wire shape and one mapper, so a modeled
+  and a traded ladder render identically); the backend attaches them per **page**, only for a
+  real ladder (>= 2 legs), so a single-leg close still falls through to `exit_*` unchanged.
+  `FloorPositionDetailWithFills` re-derives them from the `position_fills` ledger instead — the
+  only source with the legs of a position still laddering, kept live by `useLivePositionFills`.
+  The chart toolbar's Events toggle covers the whole overlay, arrows *and* dashed fill-price
+  lines; on a ladder each line is titled by its share (`Exit 70%`) so N legs don't read as one
+  exit drawn N times. Position tables (Evidence / Simulate / Dry-run / Sweep) share
   **`PositionChartCardExtra`** (hold · exit · PnL% · size · entry/exit price; multi-episode fold
   when `chartsGroupByMint`). Trader Analysis uses `TraderChartCardExtra` (wallet buys/sells/hold/
   vol). `DataTable` stays token-agnostic: the dependency is one-way (`tokens/` → `table/`),

@@ -4,7 +4,7 @@
 // all five page files; this is the single source.
 import type { ChartEventMarker } from 'components/token-price-chart';
 import type { ChartOverlayHook } from 'components/tokens/TokenChartsGrid';
-import type { RulePositionRecord, SimulatedTokenResult } from 'types';
+import type { ExitFillLeg, RulePositionRecord, SimulatedTokenResult } from 'types';
 
 /** What the token-inspect chart modal needs to draw entry/exit markers for a run. */
 export interface InspectTarget {
@@ -86,6 +86,9 @@ export function buildEventMarkers(target: InspectTarget): ChartEventMarker[] {
         priceInSol: leg.price,
         txSignature: leg.tx ?? null,
         label,
+        // The axis has no room for the reason, but it does need the legs told
+        // apart — three lines all reading "Exit" look like one exit drawn thrice.
+        lineLabel: `Exit${pct}`,
       });
     }
   } else if (target.exitTime != null && target.exitPrice != null) {
@@ -145,19 +148,23 @@ export function inspectFromMint(
   };
 }
 
+/** Wire `exit_legs` → the inspect target's camelCase legs. One mapper for both
+ *  sources (simulated + traded), so a ladder reaches the chart identically. */
+function toInspectLegs(legs: ExitFillLeg[] | null | undefined): InspectTarget['exitLegs'] {
+  if (!legs || legs.length === 0) return null;
+  return legs.map((l) => ({
+    time: l.time,
+    price: l.price,
+    tx: l.tx,
+    sellBps: l.sell_bps,
+    reason: l.reason,
+  }));
+}
+
 /** Map a backtest/simulate result row to an inspect target. */
 export function inspectFromSim(r: SimulatedTokenResult): InspectTarget {
   const fired = r.fired !== false && r.exit_reason !== 'NoEntry';
-  const exitLegs =
-    r.exit_legs && r.exit_legs.length > 0
-      ? r.exit_legs.map((l) => ({
-          time: l.time,
-          price: l.price,
-          tx: l.tx,
-          sellBps: l.sell_bps,
-          reason: l.reason,
-        }))
-      : null;
+  const exitLegs = toInspectLegs(r.exit_legs);
   return {
     mint_address: r.mint_address,
     symbol: r.symbol,
@@ -194,7 +201,12 @@ export function parseEpisodeRowKey(key: string): { mint_address: string; entry_t
   return { mint_address: key.slice(0, sep), entry_time: key.slice(sep + 2) || null };
 }
 
-/** Map a live/paper position row to an inspect target. */
+/** Map a live/paper position row to an inspect target.
+ *
+ *  `exit_legs` is what makes a scale-out honest: the row's `exit_price` is the
+ *  SOL-weighted average across legs, so without them a laddered position draws one
+ *  arrow at a price that never traded. The backend attaches legs only to a real
+ *  ladder, so a single-leg close still falls through to `exit_*` unchanged. */
 export function inspectFromPosition(r: RulePositionRecord): InspectTarget {
   return {
     mint_address: r.mint_address,
@@ -208,5 +220,6 @@ export function inspectFromPosition(r: RulePositionRecord): InspectTarget {
     exitPrice: r.exit_price,
     exitTx: r.exit_tx,
     exitLabel: r.exit_reason ?? null,
+    exitLegs: toInspectLegs(r.exit_legs),
   };
 }

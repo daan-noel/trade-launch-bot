@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { Modal } from 'components/ui/Modal';
 import { inspectFromPosition } from 'components/strategy/inspectTarget';
 import { FloorPositionDetailWithFills } from '@live/components/floor/FloorPositionDetailWithFills';
@@ -46,6 +47,11 @@ export function LivePositionInspectModal({
     ruleId: position.rule_id ?? rule?.id,
   });
 
+  // Identity matters, not just the value: `FloorPositionDetail` memoizes the chart
+  // markers on this object, and a fresh one per render rebuilds the marker set and
+  // re-creates the series-markers plugin on every status tick.
+  const inspect = useMemo(() => inspectFromPosition(position), [position]);
+
   const pnlPct = resolvePnlPct({
     pnlSol: position.pnl_sol,
     entrySol: position.entry_sol,
@@ -91,7 +97,7 @@ export function LivePositionInspectModal({
           holdLabel: holdLabel(position.entry_time, position.exit_time),
           pnlSol: position.pnl_sol,
           pnlPct,
-          inspect: inspectFromPosition(position),
+          inspect,
           flowPatternKeys,
           conditions: <LivePositionConditions positionId={position.id} />,
         }}

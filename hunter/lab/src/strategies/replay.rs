@@ -820,15 +820,10 @@ pub struct EngineBacktestResult {
     pub token: crate::strategies::token_enrich::TokenEnrichment,
 }
 
-/// Wire shape of one scale-out exit leg on a simulate result row.
-#[derive(Clone, serde::Serialize)]
-pub struct EngineExitLeg {
-    pub sell_bps: u16,
-    pub price: f64,
-    pub time: DateTime<Utc>,
-    pub tx: Option<String>,
-    pub reason: Option<String>,
-}
+/// Wire shape of one scale-out exit leg on a simulate result row — the SAME
+/// struct a traded position's `exit_legs` serializes, so a modeled ladder and a
+/// real one reach the chart as one contract with one marker builder.
+pub use trading_core::models::ExitFillLeg as EngineExitLeg;
 
 fn outcome_from_builder(
     b: Builder,

@@ -473,12 +473,40 @@ impl StrategyPosition {
 
     /// Sold fraction of the initial bag in bps (`sold * 10_000 / entry`).
     pub fn sold_bps(&self) -> u16 {
-        let entry = self.entry_token_amount.unwrap_or(0);
-        if entry == 0 {
-            return 0;
-        }
-        ((u128::from(self.sold_token_amount) * 10_000) / u128::from(entry)).min(10_000) as u16
+        bps_of_bag(self.sold_token_amount, self.entry_token_amount)
     }
+}
+
+/// Fraction of the **initial** bag one raw-token quantity represents, in bps.
+/// The ONE definition: the position-level `sold_bps` rollup and every per-leg
+/// `ExitFillLeg::sell_bps` read through it, so a leg and the aggregate can never
+/// scale a share differently. Widened to `u128` because a raw pump.fun bag times
+/// 10_000 overflows `u64`; a zero/absent entry bag yields 0 (nothing to divide).
+pub fn bps_of_bag(part: u64, entry: Option<u64>) -> u16 {
+    let entry = entry.unwrap_or(0);
+    if entry == 0 {
+        return 0;
+    }
+    ((u128::from(part) * 10_000) / u128::from(entry)).min(10_000) as u16
+}
+
+/// One exit fill on the wire, for chart markers: a scale-out ladder draws one
+/// arrow per leg instead of a single arrow at the SOL-weighted average price —
+/// a point that never traded.
+///
+/// SSOT: **the** exit-leg wire shape. Simulate rows (`lab`'s engine results) and
+/// traded positions (`PositionResponse`) both serialize this, so the frontend has
+/// one `exit_legs` contract and one marker builder for a modeled and a real
+/// ladder alike.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExitFillLeg {
+    /// Share of the initial bag this leg sold ([`bps_of_bag`]).
+    pub sell_bps: u16,
+    pub price: f64,
+    pub time: DateTime<Utc>,
+    pub tx: Option<String>,
+    /// Exit reason that fired this leg; `None` on a legacy row with no per-leg reason.
+    pub reason: Option<String>,
 }
 
 /// One append-only fill leg under a `strategy_positions` episode (mig 0018
@@ -686,6 +714,55 @@ mod submitted_exit_sig_tests {
             p.exit_tx_sigs(),
             vec!["sigA".to_string(), "sigB".to_string(), "sigC".to_string()]
         );
+    }
+}
+
+#[cfg(test)]
+mod bps_of_bag_tests {
+    use super::*;
+
+    #[test]
+    fn scales_a_leg_against_the_initial_bag() {
+        assert_eq!(bps_of_bag(700, Some(1_000)), 7_000);
+        assert_eq!(bps_of_bag(1_000, Some(1_000)), 10_000);
+    }
+
+    #[test]
+    fn a_raw_pumpfun_bag_does_not_overflow() {
+        // 1e9 tokens at 6 decimals = 1e15 raw units; times 10_000 that is 1e19,
+        // past u64::MAX — the reason this widens to u128 rather than doing the
+        // multiply in i64/SQL.
+        let bag = 1_000_000_000_u64 * 1_000_000;
+        assert_eq!(bps_of_bag(bag / 2, Some(bag)), 5_000);
+        assert_eq!(bps_of_bag(bag, Some(bag)), 10_000);
+    }
+
+    #[test]
+    fn clamps_a_leg_that_outgrew_its_entry_bag() {
+        // Airdrop / re-buy into the same account can sell more than was entered;
+        // a share over 100% would render as a nonsense marker label.
+        assert_eq!(bps_of_bag(2_000, Some(1_000)), 10_000);
+    }
+
+    #[test]
+    fn no_entry_bag_is_zero_not_a_divide() {
+        assert_eq!(bps_of_bag(500, None), 0);
+        assert_eq!(bps_of_bag(500, Some(0)), 0);
+    }
+
+    #[test]
+    fn sold_bps_reads_through_the_one_formula() {
+        let mut p = StrategyPosition::new(
+            Uuid::new_v4(),
+            "generic".to_string(),
+            Uuid::new_v4(),
+            "real".to_string(),
+            "MINT".to_string(),
+            "WALLET".to_string(),
+        );
+        p.entry_token_amount = Some(1_000);
+        p.sold_token_amount = 250;
+        assert_eq!(p.sold_bps(), bps_of_bag(250, Some(1_000)));
     }
 }
 

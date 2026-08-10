@@ -858,6 +858,44 @@ export function ConsolePage() {
     : (waitingRows.find((r) => r.key === selectedKey) ?? null);
   const waitingFlowPatternKeys = useFlowPatternKeysForRule(inspectWaiting?.ruleId);
 
+  // The detail's chart memoizes its markers on the `inspect` object's identity, and
+  // this page re-renders on every mark tick — an inline literal would rebuild the
+  // marker set and re-create the chart's markers plugin several times a second.
+  // Open rows carry no exit here: the exit arrows come from the fills ledger, which
+  // is the only source that has the legs of a still-laddering position.
+  const openInspect = useMemo(
+    () =>
+      inspectOpen
+        ? {
+            mint_address: inspectOpen.mint,
+            entryTime: inspectOpen.entryTime,
+            entryPrice: inspectOpen.entryPrice,
+            exitTime: null,
+            exitPrice: null,
+            exitLabel: inspectOpen.exitReason,
+          }
+        : null,
+    [
+      inspectOpen?.mint,
+      inspectOpen?.entryTime,
+      inspectOpen?.entryPrice,
+      inspectOpen?.exitReason,
+    ],
+  );
+  const waitingInspect = useMemo(
+    () =>
+      inspectWaiting
+        ? {
+            mint_address: inspectWaiting.mint,
+            entryTime: null,
+            entryPrice: null,
+            exitTime: null,
+            exitPrice: null,
+          }
+        : null,
+    [inspectWaiting?.mint],
+  );
+
   const selectRow = useCallback(
     (key: string | null, mint?: string) => {
       if (!key) {
@@ -904,14 +942,18 @@ export function ConsolePage() {
           exitRedriveCount: r.exitRedriveCount,
           needsReview: r.needsReview,
           isDead: holdingByMint.get(r.mint)?.is_dead ?? false,
-          inspect: {
-            mint_address: r.mint,
-            entryTime: r.entryTime,
-            entryPrice: r.entryPrice,
-            exitTime: null,
-            exitPrice: null,
-            exitLabel: r.exitReason,
-          },
+          // The memo is derived from `inspectOpen`; any other row builds its own.
+          inspect:
+            r === inspectOpen && openInspect
+              ? openInspect
+              : {
+                  mint_address: r.mint,
+                  entryTime: r.entryTime,
+                  entryPrice: r.entryPrice,
+                  exitTime: null,
+                  exitPrice: null,
+                  exitLabel: r.exitReason,
+                },
           flowPatternKeys: openFlowPatternKeys,
           actions: openActions(r, 'hint'),
           // Polls the decision loop while this modal is open — the engine's own
@@ -1360,7 +1402,7 @@ export function ConsolePage() {
               status: 'Waiting',
               statusKey: 'Waiting',
               holdStartMs: inspectWaiting.armedAt,
-              inspect: {
+              inspect: waitingInspect ?? {
                 mint_address: inspectWaiting.mint,
                 entryTime: null,
                 entryPrice: null,

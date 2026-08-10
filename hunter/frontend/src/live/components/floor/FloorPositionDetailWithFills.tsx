@@ -6,15 +6,19 @@ import {
   fillsToExitLegs,
 } from './PositionFillsLedger';
 import { useGetPositionFillsQuery } from '@live/store/liveEndpoints';
+import { useLivePositionFills } from '@live/hooks/useLivePositionFills';
 
 /**
  * Console / Evidence detail body: hero + fact strip + chart ∥ fills.
  *
- * Chart markers come from the position's entry/exit snapshot (`facts.inspect`).
- * The ledger prefers durable `position_fills` rows; when that table is empty
- * we reconstruct display rows from the same snapshot so the table matches the
- * chart. On wide screens chart and fills sit side-by-side so neither leaves a
- * tall empty column.
+ * Chart markers come from the position's entry/exit snapshot (`facts.inspect`),
+ * with the exit arrows re-derived from the durable `position_fills` ledger — the
+ * freshest and most granular source, and the only one an *open* position has
+ * (its `facts.inspect` carries no exit at all). When that table is empty we
+ * reconstruct display rows from the snapshot so the table matches the chart.
+ * {@link useLivePositionFills} refetches the ledger when a leg lands, so a
+ * scale-out that fires while this is open draws its new arrow. On wide screens
+ * chart and fills sit side-by-side so neither leaves a tall empty column.
  */
 export function FloorPositionDetailWithFills({
   positionId,
@@ -28,6 +32,7 @@ export function FloorPositionDetailWithFills({
   const { data: apiFills = [], isFetching } = useGetPositionFillsQuery(positionId, {
     skip: !positionId,
   });
+  useLivePositionFills(positionId);
 
   const { fills, reconstructed } = useMemo(() => {
     if (apiFills.length > 0) return { fills: apiFills, reconstructed: false };

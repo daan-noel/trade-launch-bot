@@ -96,6 +96,23 @@ export interface TokenRecord {
   last_synced_at: string | null;
 }
 
+/**
+ * One exit fill on a scale-out ladder — mirrors the backend `ExitFillLeg`.
+ *
+ * SSOT: the ONE leg shape. A simulated ladder (`SimulatedTokenResult.exit_legs`)
+ * and a traded one (`RulePositionRecord.exit_legs`) serialize the same struct, so
+ * `buildEventMarkers` draws both through one path. Present only on a genuine
+ * ladder (>= 2 legs); a single close is already carried by the `exit_*` fields.
+ */
+export interface ExitFillLeg {
+  /** Share of the initial bag this leg sold. */
+  sell_bps: number;
+  price: number;
+  time: string;
+  tx: string | null;
+  reason: string | null;
+}
+
 export interface RulePositionRecord extends TokenEnrichmentFields {
   id: string;
   mint_address: string;
@@ -117,7 +134,15 @@ export interface RulePositionRecord extends TokenEnrichmentFields {
   entry_token_amount: number | null;
   entry_time: string | null;
   entry_tx: string;
+  /** On a scale-out this is the SOL-weighted **average** across legs, not a price
+   *  anything filled at — charts prefer `exit_legs` and fall back here only for a
+   *  single-leg close, where the two are the same number. */
   exit_price: number | null;
+  /** Per-leg sell fills in fire order, present wherever `exit_price` alone cannot
+   *  describe them — a ladder, or an open position that has banked a leg. Absent on
+   *  a closed single-leg close (identical to `exit_*`) and on the non-paged reads
+   *  (the backend attaches these per page). */
+  exit_legs?: ExitFillLeg[] | null;
   /** Tokens sold at exit; SOL derived as `exit_price × exit_token_amount`. */
   exit_token_amount: number | null;
   /** Running sum of confirmed sell-leg raw token units (scale-out; mig 0018). */
@@ -264,13 +289,7 @@ export interface SimulatedTokenResult extends TokenEnrichmentFields {
   /** Scale-out exit fills in fire order. Absent / empty on legacy single-exit
    *  rows and never-sold opens. Chart markers render one arrow per leg; the
    *  position-level `exit_*` fields still stamp the last leg. */
-  exit_legs?: Array<{
-    sell_bps: number;
-    price: number;
-    time: string;
-    tx: string | null;
-    reason: string | null;
-  }> | null;
+  exit_legs?: ExitFillLeg[] | null;
   holding_secs: number | null;
   pnl_percent: number | null;
   pnl_sol: number | null;

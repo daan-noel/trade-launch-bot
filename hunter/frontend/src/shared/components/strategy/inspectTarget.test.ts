@@ -3,9 +3,11 @@ import {
   buildEventMarkers,
   buildEventMarkersForEpisodes,
   episodeRowKey,
+  inspectFromPosition,
   parseEpisodeRowKey,
   type InspectTarget,
 } from './inspectTarget';
+import type { RulePositionRecord } from 'types';
 
 function target(over: Partial<InspectTarget>): InspectTarget {
   return {
@@ -118,5 +120,56 @@ describe('buildEventMarkers scale-out legs', () => {
       }),
     );
     expect(markers.map((m) => m.label)).toEqual(['Entry', 'Exit · TakeProfit']);
+  });
+
+  it('titles each leg’s price line by its share, not all of them "Exit"', () => {
+    const lines = buildEventMarkers(
+      target({
+        entryTime: '2026-07-20T22:39:35Z',
+        entryPrice: 1,
+        exitLegs: [
+          { time: '2026-07-20T22:42:14Z', price: 1.5, sellBps: 7000, reason: 'TakeProfit' },
+          { time: '2026-07-20T22:47:23Z', price: 1.1, sellBps: 3000, reason: 'TimeStop' },
+        ],
+      }),
+    ).filter((m) => m.kind === 'exit');
+    expect(lines.map((m) => m.lineLabel)).toEqual(['Exit 70%', 'Exit 30%']);
+  });
+});
+
+describe('inspectFromPosition', () => {
+  function position(over: Partial<RulePositionRecord>): RulePositionRecord {
+    return {
+      entry_time: '2026-07-20T22:39:35Z',
+      entry_price: 1,
+      exit_time: '2026-07-20T22:47:23Z',
+      exit_price: 1.38,
+      exit_reason: 'TimeStop',
+      ...over,
+    } as RulePositionRecord;
+  }
+
+  it('draws one arrow per leg instead of one at the weighted-average price', () => {
+    // `exit_price` 1.38 is the SOL-weighted average of the two legs — a price the
+    // position never filled at, so no marker may sit on it.
+    const markers = buildEventMarkers(
+      inspectFromPosition(
+        position({
+          exit_legs: [
+            { time: '2026-07-20T22:42:14Z', price: 1.5, sell_bps: 7000, tx: 'a', reason: 'TakeProfit' },
+            { time: '2026-07-20T22:47:23Z', price: 1.1, sell_bps: 3000, tx: 'b', reason: 'TimeStop' },
+          ],
+        }),
+      ),
+    );
+    const exits = markers.filter((m) => m.kind === 'exit');
+    expect(exits.map((m) => m.priceInSol)).toEqual([1.5, 1.1]);
+    expect(exits.map((m) => m.txSignature)).toEqual(['a', 'b']);
+    expect(exits.some((m) => m.priceInSol === 1.38)).toBe(false);
+  });
+
+  it('keeps the single exit_* arrow when the backend ships no legs', () => {
+    const markers = buildEventMarkers(inspectFromPosition(position({ exit_legs: null })));
+    expect(markers.map((m) => m.label)).toEqual(['Entry', 'Exit · TimeStop']);
   });
 });

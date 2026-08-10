@@ -633,8 +633,8 @@ export function ChartToolbar({
             <IconToggleButton
               active={showEventMarkers}
               onClick={() => onShowEventMarkersChange(!showEventMarkers)}
-              label="Toggle strategy entry/exit price lines"
-              tooltip="Dashed entry/exit fill-price lines"
+              label="Toggle strategy entry/exit overlay"
+              tooltip="Entry/exit fill arrows + dashed fill-price lines"
               activeColor={CHART_COLORS.entry}
             >
               <EntryExitLinesIcon />

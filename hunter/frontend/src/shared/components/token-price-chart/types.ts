@@ -72,6 +72,12 @@ export interface ChartEventMarker {
   /** Short label drawn on the marker / axis, e.g. "Entry" or "Exit · TP". */
   label?: string;
   /**
+   * Axis title for this fill's dashed price line. Defaults to `Entry` / `Exit`.
+   * A scale-out ladder sets it per leg (`Exit 50%`) — otherwise every leg draws an
+   * identically-titled line and the axis reads as one exit repeated.
+   */
+  lineLabel?: string;
+  /**
    * `fill` (default) = backend run/position entry·exit result.
    * `signal` = frontend-computed first metric fire (inspect metric panes).
    * Kept visually distinct so the two never read as the same pointer.

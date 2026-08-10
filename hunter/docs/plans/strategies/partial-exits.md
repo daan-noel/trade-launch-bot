@@ -122,6 +122,17 @@ ExitPending  -> ExitStuck | ExitUnconfirmed   (as before; bag = remainder)
 | **`strategy_positions`** (1 row/episode) | lifecycle status + entry snapshot + running aggregates (`sold_token_amount`, `exit_sol_lamports_total`, `scale_stage`) + on `End` the weighted-average exit stamp so existing PnL SQL keeps working | Console list, `CLOSED_PRED`, portfolio summaries, win/loss, episode counts |
 | **`position_fills`** (N rows/episode) | every leg, entry included: `seq, side, price, sol_lamports, token_amount, at, reason, stage, tx_signature` | row-dialog ledger, per-leg chart markers, multi-leg cost kernel |
 
+Charts must read the ledger layer, not the aggregate one: the `End` stamp is a
+**weighted-average** exit price, so a single arrow at it marks a price no leg traded.
+The paged position reads therefore carry `exit_legs` (`StrategyRepo::sell_legs_for_positions`
+→ `attach_exit_legs`, one bounded batch per page beside token enrichment — never per row,
+since every row on the page can render as a chart card). Legs ship wherever `exit_price`
+alone cannot describe them — a ladder, or a still-open position that has banked a leg and
+has no stamp yet. Only a **closed single-leg** close is omitted: it is already exactly its
+`exit_*` stamp, so shipping it would be the same fact twice. `sell_bps` on a leg and the
+position's `sold_bps` rollup both read
+`models::bps_of_bag`, so a leg's share and the aggregate can never scale differently.
+
 Per-leg **PnL% and hold time are never stored columns** — they derive at read time from
 the ledger + the position's entry (same pattern as `strategy_position_pnl`, extended to
 N legs):

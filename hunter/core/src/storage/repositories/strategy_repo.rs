@@ -3361,6 +3361,71 @@ impl StrategyRepo {
             })
             .collect())
     }
+
+    /// Sell legs of a **page** of positions, keyed by position id and ordered by
+    /// `seq` — what a chart needs to draw one exit arrow per scale-out leg.
+    ///
+    /// One bounded batch per page (same shape as `token_enrichment::fetch_by_mints`),
+    /// never a per-row query: the History deck renders a card for every row it pages.
+    ///
+    /// A **closed single-leg** position is omitted: its one leg is exactly what the
+    /// `exit_price`/`exit_time` stamp already carries, so returning it would ship the
+    /// same fact twice. Everything else is kept — a ladder because the stamp is then a
+    /// SOL-weighted average no leg traded at, and a *still-open* position because it has
+    /// no stamp at all, so its first banked leg is otherwise invisible.
+    pub async fn sell_legs_for_positions(
+        &self,
+        position_ids: &[Uuid],
+    ) -> anyhow::Result<HashMap<Uuid, Vec<crate::models::ExitFillLeg>>> {
+        if position_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            position_id: Uuid,
+            price: f64,
+            token_amount: i64,
+            entry_token_amount: Option<i64>,
+            /// The position carries a final exit stamp (`exit_price` + `exit_time`).
+            exit_stamped: bool,
+            at: DateTime<Utc>,
+            reason: Option<String>,
+            tx_signature: Option<String>,
+        }
+        let rows = sqlx::query_as::<_, Row>(
+            "SELECT f.position_id, f.price, f.token_amount, p.entry_token_amount, \
+                    (p.exit_price IS NOT NULL AND p.exit_time IS NOT NULL) AS exit_stamped, \
+                    f.at, f.reason, f.tx_signature \
+             FROM position_fills f \
+             JOIN strategy_positions p ON p.id = f.position_id \
+             WHERE f.position_id = ANY($1) AND f.side = 'sell' \
+             ORDER BY f.position_id, f.seq ASC",
+        )
+        .bind(position_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut by_position: HashMap<Uuid, (bool, Vec<crate::models::ExitFillLeg>)> =
+            HashMap::new();
+        for r in rows {
+            let entry = by_position.entry(r.position_id).or_insert((r.exit_stamped, Vec::new()));
+            entry.1.push(crate::models::ExitFillLeg {
+                sell_bps: crate::models::bps_of_bag(
+                    r.token_amount.max(0) as u64,
+                    r.entry_token_amount.map(|v| v.max(0) as u64),
+                ),
+                price: r.price,
+                time: r.at,
+                tx: r.tx_signature,
+                reason: r.reason,
+            });
+        }
+        Ok(by_position
+            .into_iter()
+            .filter(|(_, (exit_stamped, legs))| legs.len() >= 2 || !*exit_stamped)
+            .map(|(id, (_, legs))| (id, legs))
+            .collect())
+    }
 }
 
 /// Append one row to `position_fills` inside an open transaction. `seq` is
