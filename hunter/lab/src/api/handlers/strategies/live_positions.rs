@@ -51,13 +51,11 @@ pub async fn get_positions_by_rule(
     body: web::Json<TableRequest>,
 ) -> impl Responder {
     let (_strategy, rule_id) = path.into_inner();
-    let ScopeParam { scope, run_seq } = scope.into_inner();
     rule_positions::rule_positions_page(
         &strategy_repo(&app_state),
         &rule_repo(&app_state),
         rule_id,
-        scope,
-        run_seq,
+        scope.into_inner(),
         body.into_inner(),
     )
     .await
@@ -75,7 +73,6 @@ pub async fn get_positions_summary_by_rule(
     body: web::Json<TableRequest>,
 ) -> impl Responder {
     let (_strategy, rule_id) = path.into_inner();
-    let ScopeParam { scope, run_seq } = scope.into_inner();
     let token_cache = app_state.core.token_cache.clone();
     let price_of = |mint: &str| -> Option<f64> {
         token_cache
@@ -87,8 +84,7 @@ pub async fn get_positions_summary_by_rule(
         &strategy_repo(&app_state),
         &rule_repo(&app_state),
         rule_id,
-        scope,
-        run_seq,
+        scope.into_inner(),
         body.into_inner(),
         price_of,
     )

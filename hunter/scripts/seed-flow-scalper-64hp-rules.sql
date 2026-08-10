@@ -7,10 +7,13 @@
 -- whose closed-episode edge is +2.54% per SOL cycled NET of the measured 125 bps/leg
 -- pump.fun fee.
 --
--- Analysis: hunter/docs/plans/strategies/wallet-analysis.md, section "`64hP` - second
--- scalper wallet, same family, better economics (2026-07-28)"; the rule-ladder spec is
--- the "`fs2-*` ladder" section of that same file. Run status + the `fs3-*` ladder that
--- superseded this one: hunter/docs/roadmap/pending-measurement-runs.md.
+-- Analysis: hunter/docs/plans/strategies/wallet-analysis.md, section "`64hP` - bigger,
+-- same family, and the bag problem"; that file's "Rules that came out of this" section
+-- carries this ladder's status and the `fs3-*` ladder that superseded it.
+--
+-- THIS LADDER IS A BROAD-UNIVERSE CONTROL, NOT A CANDIDATE. It arms ~18,000 tokens/day
+-- against `fs3-*`'s ~110. Two knobs below are also stale, and the `fs3` runs revise
+-- them: the dip gate is best at 25 (not 18) and the vsol band at 40-75 (not 36-70).
 --
 -- Design: ONE fingerprint (broad; creation shape carries no signal once hotness is
 -- known) x 9 rules that each move ONE knob off the base, so every comparison is

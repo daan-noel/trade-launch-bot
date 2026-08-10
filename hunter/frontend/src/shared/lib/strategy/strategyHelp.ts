@@ -576,7 +576,7 @@ export const RULE_FIELD_HELP = {
     body: [
       'Maximum open positions this rule may hold at the same time.',
       '',
-      'While at the cap, new entries are blocked until something exits. Must be ≥ 1.',
+      'While at the cap, new entries are blocked until something exits. Blank (∞) = unlimited — every matching token may be entered at once, so size the buy amount for that.',
     ].join('\n'),
   },
   maxTotal: {
@@ -702,6 +702,24 @@ export const RULE_FIELD_HELP = {
       'Default 0; ties break by rule ID.',
       '',
       'Only matters between two exclusive rules — it is not a general scheduling knob.',
+    ].join('\n'),
+  },
+  buyPctOfVsol: {
+    title: 'Buy % of vSOL',
+    body: [
+      'Size each buy as a percent of the pool’s SOL reserve at the entry instant,',
+      'instead of the fixed buy amount above. Blank = keep the fixed amount.',
+      '',
+      'Why: our own price impact is exactly buy / vsol. A fixed size inside a liquidity',
+      'band that spans 2x therefore moves the price twice as much at one end as the',
+      'other. A percent holds that constant — which is how the wallets worth copying',
+      'size, and why their realised slippage is flat (1.2-1.9% of vsol).',
+      '',
+      'Capped at 10%. If the pool depth is unknown at entry the rule falls back to the',
+      'fixed amount rather than guessing a size.',
+      '',
+      'The grouped sweep IGNORES this and prices every combo at its flat notional —',
+      're-run a percent-sized rule through simulate before trusting a sweep PnL.',
     ].join('\n'),
   },
 } as const satisfies Record<string, HelpTip>;

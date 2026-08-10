@@ -201,9 +201,18 @@ Seeds live under [`hunter/scripts/`](../../../scripts/); all seeded rules are
 | --- | --- | --- |
 | `fs4-*` | `63ot` fixed bracket (buy 0.5, TP 17, SL 28, liq 55–85, trail30 ≥ 15, gross60 ≥ 70) | seeded paper |
 | `fs3-*` | `64hP` + the dev-buy ≥ 12.8 gate | seeded paper |
-| `fs2-*` | `64hP` knob ladder | superseded by `fs3-*` |
+| `fs2-*` | `64hP` knob ladder | **broad-universe control only** — see below |
 | `tru-0*` | `trunoest` (his size / impact-optimal 0.30 SOL) | seeded paper |
 | `fs-*` | omego-calibrated | **retired** — omego is refuted |
+
+**`fs2-*` is a control, not a candidate.** The ladder
+([`seed-flow-scalper-64hp-rules.sql`](../../../scripts/seed-flow-scalper-64hp-rules.sql))
+arms ~18,000 tokens/day against `fs3-*`'s ~110, and `fs3-*` is the first configuration that
+stays PnL-positive under the adversarial `worst` fill — so `fs2` is worth arming only to
+show what the same geometry does on a universe with no selection in it. Its knob
+conclusions survive that demotion, but two are **revised** by the `fs3` runs and the seed
+file is not: the dip gate is best at **25** (not 18) and the vsol band at **40–75** (not
+36–70). Use the revised pair anywhere `fs2` is quoted.
 
 **Closed searches — do not re-run these:**
 

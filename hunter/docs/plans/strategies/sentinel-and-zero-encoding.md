@@ -10,10 +10,18 @@ Two governance caps carry that encoding, and nothing else does:
 | Field | Encoding | Reader |
 | --- | --- | --- |
 | `max_total_tokens` | `0 ⇒ unlimited` | `Cap::zero_unlimited` |
-| `max_concurrent_tokens` | `0 ⇒ the default of 1` (the API rejects `< 1`) | `Cap::zero_defaults_to` |
+| `max_concurrent_tokens` | `0 ⇒ unlimited` | `Cap::zero_unlimited` |
 
-Both decode through the ONE reader `hunter_engine::Cap` — never a re-derived `!= 0` at a
-call site. `UNLIMITED = u32::MAX`, so `allows()` stays a single `<` on the hot path.
+Both decode through the ONE reader `hunter_engine::Cap` — one encoding, one decoder, so
+there is no second reader to disagree with. `UNLIMITED = u32::MAX`, so `allows()` stays a
+single `<` on the hot path. The API rejects only a negative cap.
+
+Unlimited concurrency is an explicit authoring act, never a default: the rule editor opens
+a **new** rule at 1 concurrent, and only a deliberately cleared field stores the sentinel.
+The `strategy_rules.max_concurrent_tokens` DDL default stays `1` for the same reason — a
+hand-written `INSERT` that omits the column gets the bounded value, not an unbounded buy
+fan-out. Every writer in the codebase binds the column explicitly, so that default is
+reached only by hand.
 
 **Slippage bps is NOT such a field.** A typed value is honored literally and `0` is a 400
 (`validate_slippage_bps`), because *blank* — not `0` — carries the per-side policy (buy ⇒
@@ -57,5 +65,7 @@ Locked by `has_any_criterion_agrees_with_engine`,
 ## Surfacing a sentinel in the UI
 
 Where a sentinel stays, the UI marks it with the `Input` `blankZero` prop — never a
-truthiness check. Today that is the rule editor's **Max total** and Trader Analysis **Max
-tokens** (blank / `∞`).
+truthiness check. Today that is the rule editor's **Max concurrent** and **Max total**, and
+Trader Analysis **Max tokens** (blank / `∞`). Both rule caps render and sort through the one
+`capsRuleColumns` pair (`capsDisplayText` / `capSortValue`), so `∞` never gets a second
+formatting.

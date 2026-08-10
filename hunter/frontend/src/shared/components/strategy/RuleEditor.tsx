@@ -125,6 +125,7 @@ function RuleEditorInner({
       reentry: params.reentry,
       exclusive: params.exclusive,
       priority: params.priority,
+      buy_pct_of_vsol: params.buy_pct_of_vsol,
       ...sides,
       disabled:
         sides.disabled || parkedStages
@@ -138,6 +139,7 @@ function RuleEditorInner({
     params.reentry,
     params.exclusive,
     params.priority,
+    params.buy_pct_of_vsol,
     rows,
     scaleStages,
   ]);
@@ -190,7 +192,8 @@ function RuleEditorInner({
         [field]: n ?? NaN,
       },
     }));
-  const finiteOrNull = (v: number | undefined) => (v != null && Number.isFinite(v) ? v : null);
+  const finiteOrNull = (v: number | null | undefined) =>
+    v != null && Number.isFinite(v) ? v : null;
 
   // When editing the JSON tab, fold it back into TP/SL/re-entry, condition rows,
   // and scale-out stages so the builder stays in sync.
@@ -205,6 +208,7 @@ function RuleEditorInner({
         reentry: parsed.reentry,
         exclusive: parsed.exclusive,
         priority: parsed.priority,
+        buy_pct_of_vsol: parsed.buy_pct_of_vsol,
       }));
       setRows(sidesToRows(parsed.entry, parsed.exit, parsed.disabled));
       setScaleStages(stagesToDrafts(parsed.scale_out, parsed.disabled?.scale_out));
@@ -227,8 +231,10 @@ function RuleEditorInner({
   if (!ruleName.trim()) errors.push('rule_name must not be empty');
   if (!fingerprintId) errors.push('a fingerprint is required');
   if (buyLamports <= 0) errors.push('buy amount must be > 0');
-  if ((maxConcurrent ?? 0) < 1) errors.push('max concurrent must be ≥ 1');
-  if ((maxTotal ?? 0) < 0) errors.push('max total must be ≥ 0');
+  // Blank ⇒ `null` ⇒ saved as the `0 = unlimited` sentinel on both caps, so only
+  // a negative typed value is an error.
+  if ((maxConcurrent ?? 0) < 0) errors.push('max concurrent must be ≥ 0 (blank = ∞)');
+  if ((maxTotal ?? 0) < 0) errors.push('max total must be ≥ 0 (blank = ∞)');
   errors.push(...paramErrors);
   if (jsonError) errors.push(`JSON: ${jsonError}`);
   const canSubmit = errors.length === 0 && !submitting;
@@ -240,7 +246,7 @@ function RuleEditorInner({
         fingerprint_id: fingerprintId,
         trade_mode: mode,
         buy_amount_lamports: buyLamports,
-        max_concurrent_tokens: maxConcurrent ?? 1,
+        max_concurrent_tokens: maxConcurrent ?? 0,
         max_total_tokens: maxTotal ?? 0,
         params: ruleParamsToJson(composedParams),
         tags,
@@ -296,12 +302,20 @@ function RuleEditorInner({
             className="w-24"
           />
         </label>
+        {/* The two governance caps are the genuine `0 = off` sentinels left in the
+            rule form: `blankZero` renders a stored 0 as an empty field so "no cap"
+            reads as blank/∞ instead of "capped at zero". Display-only — an untouched
+            0 still saves as 0, which the engine decodes to `Cap::UNLIMITED`. A NEW
+            rule still opens at 1 concurrent, so unbounded is always an explicit
+            authoring act, never a default. */}
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
           <LabelTip tip={RULE_FIELD_HELP.maxConcurrent}>Max concurrent</LabelTip>
           <Input
             fieldSize="sm"
             numeric
             integer
+            blankZero
+            placeholder="∞"
             numericValue={maxConcurrent}
             onNumericChange={setMaxConcurrent}
             className="w-20"
@@ -309,10 +323,6 @@ function RuleEditorInner({
         </label>
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
           <LabelTip tip={RULE_FIELD_HELP.maxTotal}>Max total</LabelTip>
-          {/* The one genuine `0 = off` sentinel left in the rule form: `blankZero`
-              renders the stored 0 as an empty field so "no lifetime cap" reads as
-              blank/∞ instead of "capped at zero". Display-only — an untouched 0
-              still saves as 0, which the engine decodes to `Cap::UNLIMITED`. */}
           <Input
             fieldSize="sm"
             numeric
@@ -443,6 +453,20 @@ function RuleEditorInner({
             />
           </label>
         )}
+        {/* Blank = the rule's fixed buy size. Set = a percent of the pool at entry,
+            which is what holds our own impact constant across a liquidity band. */}
+        <label className="flex flex-col gap-1 text-[11px] text-text-dim">
+          <LabelTip tip={RULE_FIELD_HELP.buyPctOfVsol}>Buy % of vSOL</LabelTip>
+          <Input
+            fieldSize="sm"
+            numeric
+            unit="%"
+            numericValue={finiteOrNull(params.buy_pct_of_vsol)}
+            onNumericChange={(n) => setParams((p) => ({ ...p, buy_pct_of_vsol: n }))}
+            disabled={conditionsLocked}
+            className="w-24"
+          />
+        </label>
       </div>
 
       <Tabs value={tab} onValueChange={switchTab}>

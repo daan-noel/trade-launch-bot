@@ -111,6 +111,28 @@ in-sample and measured **−0.757%/ep** live, failing to survive even a change o
 *exit* config, let alone a new window. Always run the live ladder before believing a
 bucketing result, and never write one into a rule doc first.
 
+`unique_wallets` is now settled by the ladder rather than by argument, and it is the
+strongest form of that rule so far: the gate had *in-sample precision-and-recall evidence*
+(a recall-swept sweep on a fixed base, not a best-of-N bucket pick — the better of the two
+designs) and it still failed out of sample. Built as `m_flow_window.unique_wallets` and run
+on the untouched 07-29..08-09 window against `fs3-00`, **tightening it anti-selects
+monotonically**: replacing `gross_flow >= 45` scores −0.75 %/ep at `>= 20`, −1.22 at 40,
+−1.97 at 60, −2.04 at 80; adding it on top is inert below ~30 (it does not bind — the same
+127 episodes) and actively worse above (−2.47 at 60, −3.94 at 100, where win rate falls to
+41.5%). At matched fire count (121 vs 127) the crowd gate leads the volume gate by 0.43 pp
+against a ±1.07 pp standard error. Every arm is negative, so the "improvement" from a
+looser crowd gate is a bigger sample of a losing book, not an edge. **Do not re-propose the
+crowd gate for this family.** The metric itself stays — it is cheap and correct.
+
+**A finished run that reports `n_open == max_concurrent_tokens` stopped trading.** An exit
+config with no time cap can leave positions that never close — a trail armed above a
+threshold the price never reaches has no floor under it once `stop_loss` is off or wide —
+and each one strands a concurrency slot for the rest of the run. The summary still looks
+ordinary: measured on the `fs3-00` geometry with `held` removed, 79 entries over 18 days at
+`max_concurrent_tokens` 4 against 274 at 50, with the first-week numbers frozen no matter
+how far the window is extended. Check `n_open` against the cap before reading any row, and
+treat a wedged run as no data rather than as a control.
+
 **Mind the noise floor.** Per-episode PnL has a standard deviation of **9–15%**, so
 at typical ladder sample sizes the standard error is ±0.27 to ±0.66 pp — *larger than
 most differences the tables rank*. Check `n` and spread before quoting an ordering.

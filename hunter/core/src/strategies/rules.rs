@@ -103,6 +103,7 @@ pub struct RuleDraft {
     pub fingerprint_id: Uuid,
     pub trade_mode: String,
     pub buy_amount_lamports: i64,
+    /// 0 = unlimited.
     pub max_concurrent_tokens: i64,
     /// 0 = unlimited.
     pub max_total_tokens: i64,
@@ -131,7 +132,7 @@ impl RuleDraft {
                 .unwrap_or("paper")
                 .to_string(),
             buy_amount_lamports: opt_i64(body, "buy_amount_lamports").unwrap_or(0),
-            max_concurrent_tokens: opt_i64(body, "max_concurrent_tokens").unwrap_or(1),
+            max_concurrent_tokens: opt_i64(body, "max_concurrent_tokens").unwrap_or(0),
             max_total_tokens: opt_i64(body, "max_total_tokens").unwrap_or(0),
             params: body.get("params").cloned().unwrap_or_else(|| serde_json::json!({})),
             tags: normalize_tags(&tags_from_json(body).unwrap_or_default()),
@@ -205,8 +206,8 @@ fn validate_rule_fields(
     if buy_amount_lamports <= 0 {
         return Err("buy_amount_lamports must be > 0".into());
     }
-    if max_concurrent_tokens < 1 {
-        return Err("max_concurrent_tokens must be >= 1".into());
+    if max_concurrent_tokens < 0 {
+        return Err("max_concurrent_tokens must be >= 0 (0 = unlimited)".into());
     }
     if max_total_tokens < 0 {
         return Err("max_total_tokens must be >= 0 (0 = unlimited)".into());
@@ -440,8 +441,14 @@ mod generic_tests {
         assert!(matches!(build_rule(&d), Err(e) if e.contains("buy_amount_lamports")));
 
         let mut d = generic_draft(valid_params());
-        d.max_concurrent_tokens = 0;
+        d.max_concurrent_tokens = -1;
         assert!(matches!(build_rule(&d), Err(e) if e.contains("max_concurrent_tokens")));
+
+        // `0` is the unbounded sentinel on BOTH caps, not a rejected value — a
+        // blank Max concurrent in the editor saves as 0 and must round-trip.
+        let mut d = generic_draft(valid_params());
+        d.max_concurrent_tokens = 0;
+        assert_eq!(build_rule(&d).expect("0 = unlimited").max_concurrent_tokens, 0);
 
         let mut d = generic_draft(valid_params());
         d.rule_name = "  ".into();

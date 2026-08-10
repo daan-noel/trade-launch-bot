@@ -202,6 +202,10 @@ pub enum MetricId {
     Buy,
     /// Sell SOL over the trailing window (`m_flow_window`).
     Sell,
+    /// Distinct trading wallets over the trailing window (`m_flow_window`) — how many
+    /// people are in the token, as against `gross_flow`'s how much SOL. One wallet
+    /// churning and a crowd arriving look identical in SOL and different here.
+    UniqueWallets,
     // ── m_flow_split (lifetime; JSON names shared with m_flow_split_window) ─
     VolBuy,
     VolSell,
@@ -245,6 +249,18 @@ impl MetricId {
     pub fn name(self) -> &'static str {
         metric_spec(self).name
     }
+
+    /// Whether this metric's value depends on **who** traded, not just how much.
+    ///
+    /// Offline that is a load-time question, not a fold-time one: the lake leaves the
+    /// `wallet` / `ix_labels` columns out unless a run asks for them, and a fold over
+    /// rows without them sees every trade as one anonymous wallet. The failure is
+    /// silent and reads like a strict gate — `unique_wallets >= 10` simply never fires
+    /// — so the answer lives here, next to the registry, rather than as a group list
+    /// copied into each loader. A new wallet-keyed metric must be added here too.
+    pub fn needs_wallet_identity(self) -> bool {
+        is_flow_metric(self) || matches!(self, MetricId::UniqueWallets)
+    }
 }
 
 impl fmt::Display for MetricId {
@@ -259,6 +275,9 @@ pub enum Unit {
     Seconds,
     Sol,
     Percent,
+    /// A dimensionless tally (wallets, trades). Renders bare — no suffix — because a
+    /// count with a unit glyph reads as a quantity of something else.
+    Count,
 }
 
 impl Unit {
@@ -268,6 +287,7 @@ impl Unit {
             Unit::Seconds => "seconds",
             Unit::Sol => "sol",
             Unit::Percent => "percent",
+            Unit::Count => "count",
         }
     }
 }
@@ -630,6 +650,17 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 0.1,
                 monotonic: false,
                 hue: CANDLE_UP_HUE,
+            },
+            MetricSpec {
+                id: MetricId::UniqueWallets,
+                name: "unique_wallets",
+                // A tally, so the `=` tolerance is half a wallet: anything smaller
+                // would make `== 5` depend on float noise, anything larger would let
+                // it match 6.
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 290,
             },
             MetricSpec {
                 id: MetricId::Sell,

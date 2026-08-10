@@ -115,7 +115,7 @@ impl TokenTrack {
         self.price_lifetime.on_trade(t.price, t.at);
         self.flow_lifetime.on_trade(t.side, t.sol);
         for w in self.windows.values_mut() {
-            w.on_trade(t.side, t.sol, t.at);
+            w.on_trade(t.side, t.sol, t.at, t.wallet_hash);
         }
         for pw in self.price_windows.values_mut() {
             pw.on_trade(t.price, t.at);
@@ -175,7 +175,7 @@ impl TokenTrack {
                     None => f64::NAN,
                 }
             }
-            GrossFlow | NetFlow | Buy | Sell => {
+            GrossFlow | NetFlow | Buy | Sell | UniqueWallets => {
                 match window_secs.and_then(|ws| self.windows.get(&window_key(ws))) {
                     Some(w) => w.value(id, now),
                     None => f64::NAN,

@@ -147,6 +147,11 @@ pub struct SparseFold {
     /// The last instant the series covers (the newest recorded row, or `created`
     /// when nothing was recorded).
     pub covered_until: Ts,
+    /// The first instant the series covers (the oldest recorded row, or `created`
+    /// when nothing was recorded). Equals the first event unless the caller set
+    /// [`MetricSeries::set_record_from`] — coverage is a span, and a caller that
+    /// moves its start must be able to say where it now begins.
+    pub covered_from: Ts,
 }
 
 /// Fold `trades` into `series` on the sparse tick grid, then tick the tail up to
@@ -162,6 +167,12 @@ pub struct SparseFold {
 /// Trades are folded in the caller's order, which for a canonical corpus load
 /// (slot → tx_index → leg) is block-time-monotonic — the order a full `run_replay`
 /// also folds them in, so the two never diverge.
+///
+/// Where the recorded rows *begin* is the series' own knob
+/// ([`MetricSeries::set_record_from`]), not an argument here: this fold always runs
+/// from `created`, because lifetime metrics are defined from there. A withheld row
+/// costs no budget, so `max_rows` then buys its span around the caller's window
+/// instead of around the token's first trade.
 pub fn fold_sparse<I>(
     series: &mut MetricSeries,
     created: Ts,
@@ -215,6 +226,7 @@ where
         rows: series.n_rows(),
         truncated,
         covered_until: series.at.last().copied().unwrap_or(created),
+        covered_from: series.at.first().copied().unwrap_or(created),
     }
 }
 

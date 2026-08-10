@@ -860,7 +860,7 @@ fn evaluate_token(
                 && state.dupe_guard.blocks(c.trade_mode, token.identity, mint, now);
             (
                 decide_arm(c, rule_id, arm, token, dead, dupe_blocked, now),
-                c.buy_amount_lamports,
+                resolve_buy_lamports(c, token.track.current_reserves()),
                 c.concurrent_cap,
                 c.max_total,
                 c.trade_mode,
@@ -970,6 +970,35 @@ fn decide_arm(
         }
         // Pending / in-flight / terminal arms make no sweep decision.
         _ => ArmDecision::None,
+    }
+}
+
+/// The buy size for one entry: the rule's fixed amount, or its percent of the pool's
+/// SOL reserve when it authors one.
+///
+/// Resolved **here**, in the kernel, so live-real, live-paper and simulate cannot size
+/// differently — everything downstream receives absolute lamports on `SubmitBuy` and is
+/// unchanged by this feature.
+///
+/// `reserve_sol` is the depth the fold already holds at the entry instant. It is `NaN`
+/// before the first trade with a decoded reserve, and a percent of an unknown pool is
+/// not a size — so an unusable depth **falls back to the fixed amount** rather than
+/// guessing. That is the conservative direction: the fixed amount is a number a human
+/// authored, where a guessed one is not.
+fn resolve_buy_lamports(c: &CompiledRule, reserve_sol: f64) -> u64 {
+    let Some(pct) = c.buy_pct_of_vsol else { return c.buy_amount_lamports };
+    if !reserve_sol.is_finite() || reserve_sol <= 0.0 {
+        return c.buy_amount_lamports;
+    }
+    let sol = reserve_sol * pct / 100.0;
+    // `as u64` saturates at 0 for a negative and at u64::MAX for an overflow, but a
+    // silent 0 would submit a buy for nothing, so floor at one lamport: the pool being
+    // dust is a reason to buy small, not a reason to emit a malformed order.
+    let lamports = (sol * LAMPORTS_PER_SOL_F64).round();
+    if lamports < 1.0 {
+        1
+    } else {
+        lamports as u64
     }
 }
 
@@ -1186,4 +1215,92 @@ fn rollback_entry(state: &mut EngineState, rule: RuleId) {
 /// Build an `ArmedChanged` effect.
 fn armed(mint: &Mint, rule: RuleId, state: ArmedStateTag) -> Effect {
     Effect::ArmedChanged(ArmedDelta { mint: mint.clone(), rule, state })
+}
+
+#[cfg(test)]
+mod buy_sizing {
+    use super::*;
+    use crate::event::{LoadedRule, TradeMode};
+    use crate::fingerprint::FingerprintId;
+    use crate::rule_params::RuleParams;
+
+    fn rule(pct: Option<f64>) -> CompiledRule {
+        CompiledRule::compile(&LoadedRule {
+            id: RuleId(uuid::Uuid::nil()),
+            fingerprint_id: FingerprintId(uuid::Uuid::nil()),
+            trade_mode: TradeMode::Paper,
+            buy_amount_lamports: 300_000_000, // 0.3 SOL
+            max_concurrent_tokens: 1,
+            max_total_tokens: 0,
+            params: RuleParams { buy_pct_of_vsol: pct, ..Default::default() },
+            entry_enabled: true,
+        })
+    }
+
+    #[test]
+    fn without_a_percent_the_fixed_amount_is_used() {
+        assert_eq!(resolve_buy_lamports(&rule(None), 50.0), 300_000_000);
+        // …including when the pool is unknown, which must not matter here.
+        assert_eq!(resolve_buy_lamports(&rule(None), f64::NAN), 300_000_000);
+    }
+
+    /// The point of the feature: impact is `buy / vsol`, so a percent must hold that
+    /// ratio fixed across the band a fixed size varies over.
+    #[test]
+    fn a_percent_scales_with_the_pool() {
+        let r = rule(Some(1.0));
+        assert_eq!(resolve_buy_lamports(&r, 40.0), 400_000_000);
+        assert_eq!(resolve_buy_lamports(&r, 75.0), 750_000_000);
+        // Same ratio at both ends — the invariant a fixed size breaks.
+        for vsol in [40.0, 75.0] {
+            let sol = resolve_buy_lamports(&r, vsol) as f64 / 1e9;
+            assert!((sol / vsol - 0.01).abs() < 1e-12, "impact drifted at vsol {vsol}");
+        }
+    }
+
+    /// An unusable depth falls back to the authored amount rather than guessing one.
+    /// `NaN` is the pre-first-trade reserve, and a fold can reach an entry decision
+    /// before any trade carries a decoded reserve.
+    #[test]
+    fn an_unknown_pool_falls_back_to_the_fixed_amount() {
+        let r = rule(Some(1.0));
+        for bad in [f64::NAN, 0.0, -5.0, f64::INFINITY] {
+            assert_eq!(
+                resolve_buy_lamports(&r, bad),
+                300_000_000,
+                "reserve {bad} must fall back, not size off it",
+            );
+        }
+    }
+
+    /// A dust pool must still produce a well-formed order. Rounding to zero would
+    /// submit a buy for nothing.
+    #[test]
+    fn a_dust_pool_floors_at_one_lamport() {
+        assert_eq!(resolve_buy_lamports(&rule(Some(0.0001)), 0.000_000_001), 1);
+    }
+
+    /// The ceiling is a real-money rail, so it is enforced at parse — a rule that
+    /// would spend half the pool must not be storable in the first place.
+    #[test]
+    fn an_absurd_percent_is_rejected_at_parse() {
+        let err = RuleParams::parse(&serde_json::json!({ "buy_pct_of_vsol": 50 }))
+            .expect_err("50% of a pool is not a size");
+        assert!(err.contains("buy_pct_of_vsol"), "{err}");
+        for bad in [0, -1] {
+            assert!(RuleParams::parse(&serde_json::json!({ "buy_pct_of_vsol": bad })).is_err());
+        }
+        assert!(RuleParams::parse(&serde_json::json!({ "buy_pct_of_vsol": 1.5 })).is_ok());
+    }
+
+    /// Params round-trip: a stored rule must come back byte-identical, and a rule
+    /// without the knob must not grow the key.
+    #[test]
+    fn the_percent_round_trips_and_stays_absent_by_default() {
+        let json = serde_json::json!({ "buy_pct_of_vsol": 1.25 });
+        let p = RuleParams::parse(&json).unwrap();
+        assert_eq!(p.buy_pct_of_vsol, Some(1.25));
+        assert_eq!(p.to_value(), json);
+        assert_eq!(RuleParams::default().to_value(), serde_json::json!({}));
+    }
 }

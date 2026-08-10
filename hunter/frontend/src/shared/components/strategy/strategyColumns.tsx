@@ -8,6 +8,7 @@ import { amountInDisplayUnit } from 'lib/priceUnitSnapshot';
 import { formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge, type BadgeSize, type BadgeVariant } from 'components/ui/Badge';
+import { ModeBadge } from 'components/strategy/ModeBadge';
 import { coreTokenColumns } from 'components/tokens/sharedTokenColumns';
 import {
   exitReasonLabel,
@@ -344,6 +345,25 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = (
     searchValue: (r) => (r.run_seq != null ? String(r.run_seq) : ''),
     filterValue: (r) => (r.run_seq != null ? String(r.run_seq) : ''),
     filterNumber: (r) => r.run_seq ?? null,
+    sortable: true,
+  },
+  {
+    // Rides with the Run column (both are run identity, both server-sortable).
+    // A rule's `trade_mode` is a switch, not a partition: its all-time history
+    // holds every position from before the flip too, and `#1 paper` vs `#1 real`
+    // are different runs — the Run number alone cannot tell them apart.
+    key: 'mode',
+    label: 'Mode',
+    group: 'run',
+    render: (r) =>
+      r.mode === 'paper' || r.mode === 'real' ? (
+        <ModeBadge mode={r.mode} />
+      ) : (
+        <span className="text-text-dim">—</span>
+      ),
+    sortValue: (r) => r.mode ?? '',
+    searchValue: (r) => r.mode ?? '',
+    filterValue: (r) => r.mode ?? '',
     sortable: true,
   },
   mintColumn<RulePositionRecord>(),

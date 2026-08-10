@@ -91,13 +91,17 @@ export type PositionFetchScope =
   | { kind: 'current' }
   | { kind: 'history' }
   | { kind: 'all' }
-  | { kind: 'run'; runSeq: number }
+  /** `mode` disambiguates `runSeq`, which is monotonic per `(rule, mode)` — a rule
+   *  that has traded in both has two runs numbered `#1`. Omit for the rule's own
+   *  `trade_mode`. */
+  | { kind: 'run'; runSeq: number; mode?: string }
   | { kind: 'legacy' };
 
 function positionScopeQuery(scope: PositionFetchScope | undefined): string {
   if (!scope || scope.kind === 'legacy') return '';
   if (scope.kind === 'run') {
-    return `?scope=run&run_seq=${encodeURIComponent(String(scope.runSeq))}`;
+    const mode = scope.mode ? `&mode=${encodeURIComponent(scope.mode)}` : '';
+    return `?scope=run&run_seq=${encodeURIComponent(String(scope.runSeq))}${mode}`;
   }
   return `?scope=${scope.kind}`;
 }

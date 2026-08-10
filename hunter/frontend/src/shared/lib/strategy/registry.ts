@@ -12,7 +12,7 @@ import type { CompareOp } from 'components/table/numericFilter';
 export type Operator = CompareOp;
 
 /** A metric's (and its condition values') unit. */
-export type MetricUnit = 'seconds' | 'sol' | 'percent';
+export type MetricUnit = 'seconds' | 'sol' | 'percent' | 'count';
 
 /** Whether a group's metrics are rule-independent (`static`) or need per-rule
  *  strict params like `window_size_sec` (`dynamic`). */
@@ -115,6 +115,10 @@ export function unitSuffix(unit: MetricUnit): string {
       return '◎';
     case 'percent':
       return '%';
+    // A tally is bare: "12 wallets" already says what it is, and any glyph here would
+    // read as a quantity of something else.
+    case 'count':
+      return '';
   }
 }
 

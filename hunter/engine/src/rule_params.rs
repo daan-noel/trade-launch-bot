@@ -94,6 +94,14 @@ pub const MAX_EXPLICIT_SCALE_STAGES: usize = 3;
 /// exit). `9900` = 99% of the initial bag.
 pub const MAX_SCALE_SELL_BPS: u16 = 9900;
 
+/// Ceiling on [`RuleParams::buy_pct_of_vsol`], in percent of the pool's SOL reserve.
+///
+/// A rail on real money rather than a view on strategy: this figure multiplies a live
+/// pool balance into a buy size, so an authoring slip has to stay survivable. The
+/// wallets this feature exists to imitate size at 1.2-1.9% of vsol, and our own impact
+/// is `buy / vsol` exactly — 10% is already a 10% self-inflicted move.
+pub const MAX_BUY_PCT_OF_VSOL: f64 = 10.0;
+
 /// Typed, registry-checked `params`. See module docs for the JSON shape.
 /// `default()` is the legal empty rule (fingerprint-only, no TP/SL/conditions).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -109,6 +117,17 @@ pub struct RuleParams {
     /// Ordered partial-exit ladder. `None` / empty = no scale-out (legacy full
     /// close only). See [`ExitStage`] and `docs/plans/strategies/partial-exits.md`.
     pub scale_out: Option<Vec<ExitStage>>,
+    /// Size the buy as a percent of the pool's SOL reserve instead of a fixed amount.
+    /// `None` (every stored rule) = use the rule's `buy_amount_lamports`.
+    ///
+    /// Why it exists: `impact_per_leg = buy / vsol` exactly, so a fixed size inside a
+    /// liquidity band that spans 2× moves our own price by 2× as much at one end as at
+    /// the other. Sizing as a fraction of the pool holds impact constant — which is how
+    /// the wallets worth copying size, and why their realised slippage is flat.
+    /// Resolved at the entry decision against the depth the fold already holds, so
+    /// live-real, live-paper and simulate get one answer. See
+    /// `docs/plans/strategies/execution-costs.md`.
+    pub buy_pct_of_vsol: Option<f64>,
     /// Re-entry lifecycle. `None` = one-shot (`Done` is terminal per (token, rule) —
     /// every stored rule's behavior). See [`ReEntry`].
     pub reentry: Option<ReEntry>,
@@ -288,6 +307,9 @@ impl RuleParams {
             }
             root.insert("disabled".into(), Value::Object(o));
         }
+        if let Some(pct) = self.buy_pct_of_vsol {
+            root.insert("buy_pct_of_vsol".into(), pct.into());
+        }
         // Defaults stay absent so every stored rule round-trips byte-identically.
         if self.exclusive {
             root.insert("exclusive".into(), Value::Bool(true));
@@ -314,6 +336,7 @@ impl RuleParams {
                     | "exclusive"
                     | "priority"
                     | "disabled"
+                    | "buy_pct_of_vsol"
             ) {
                 return Err(format!("unknown params key '{key}'"));
             }
@@ -328,6 +351,10 @@ impl RuleParams {
             exclusive: parse_opt_bool(obj.get("exclusive"), "exclusive")?,
             priority: parse_opt_priority(obj.get("priority"))?,
             disabled: parse_opt_disabled(obj.get("disabled"))?,
+            buy_pct_of_vsol: parse_opt_number(
+                obj.get("buy_pct_of_vsol"),
+                "buy_pct_of_vsol",
+            )?,
         })
     }
 
@@ -339,6 +366,18 @@ impl RuleParams {
                 if !v.is_finite() || v <= 0.0 {
                     return Err(format!("{name} must be a finite number > 0"));
                 }
+            }
+        }
+        // The ceiling is a safety rail on REAL money, not a modelling opinion: this
+        // number multiplies a live pool balance into a buy size, so a fat-fingered
+        // `50` would spend half the pool. The wallets worth copying size at 1-2% of
+        // vsol, so `MAX_BUY_PCT_OF_VSOL` sits an order of magnitude above them and
+        // still far below anything that could drain an account.
+        if let Some(pct) = self.buy_pct_of_vsol {
+            if !pct.is_finite() || pct <= 0.0 || pct > MAX_BUY_PCT_OF_VSOL {
+                return Err(format!(
+                    "buy_pct_of_vsol must be a finite number in (0, {MAX_BUY_PCT_OF_VSOL}]"
+                ));
             }
         }
         // Parked sides validate exactly like live ones (`is_entry` and all), so a
@@ -1253,6 +1292,7 @@ mod tests {
             exclusive: false,
             priority: 0,
             disabled: None,
+            buy_pct_of_vsol: None,
         };
         let e = p.validate().unwrap_err();
         assert!(e.contains("must be finite"), "{e}");

@@ -4,6 +4,7 @@ import { HoverPopover } from 'components/ui/HoverPopover';
 import { ModeBadge } from './ModeBadge';
 import { ruleParamsCell } from './RuleParamsSummary';
 import { fingerprintParamsCell } from './FingerprintParamsSummary';
+import { capsDisplayText } from './capsRuleColumns';
 import { lamportsToSol, type Fingerprint, type StrategyRule } from 'lib/strategy/types';
 
 function sectionLabel(text: string): ReactNode {
@@ -33,9 +34,7 @@ export function RuleDetailCard({
       </div>
       <div className="flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[11px] tabular-nums text-text-dim">
         <span>buy {lamportsToSol(rule.buy_amount_lamports)}◎</span>
-        <span>
-          caps {rule.max_concurrent_tokens}/{rule.max_total_tokens || '∞'}
-        </span>
+        <span>caps {capsDisplayText(rule)}</span>
       </div>
       {fingerprint ? (
         <div className="flex flex-col gap-1">

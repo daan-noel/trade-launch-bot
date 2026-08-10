@@ -586,6 +586,17 @@ pub fn round_for_unit(v: f64, unit: Unit) -> f64 {
                 10.0
             }
         }
+        // A tally has no sub-unit to round to — a gate of "4.5 wallets" is not a gate
+        // a human would author, and every step below stays an integer.
+        Unit::Count => {
+            if mag < 20.0 {
+                1.0
+            } else if mag < 100.0 {
+                5.0
+            } else {
+                25.0
+            }
+        }
     };
     let r = (v / step).round() * step;
     // Kill float dust from the divide/multiply (`0.30000000000000004`) and `-0.0`.

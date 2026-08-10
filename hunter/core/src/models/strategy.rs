@@ -26,7 +26,7 @@ pub struct StrategyRule {
     pub is_enabled: bool,
     /// Buy size per fired token — exact lamports at rest.
     pub buy_amount_lamports: i64,
-    /// Cap on concurrently-open tokens.
+    /// Cap on concurrently-open tokens (0 = unlimited).
     pub max_concurrent_tokens: i64,
     /// Cap on total tokens across the rule's lifetime (0 = unlimited).
     pub max_total_tokens: i64,

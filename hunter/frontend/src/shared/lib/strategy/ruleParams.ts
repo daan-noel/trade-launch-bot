@@ -122,6 +122,10 @@ export interface RuleParams {
   priority: number;
   /** Conditions toggled off but kept. `null`/absent = nothing parked. */
   disabled?: DisabledConditions | null;
+  /** Size the buy as a percent of the pool's SOL reserve instead of the rule's fixed
+   *  amount. `null`/absent = fixed. Holds our own price impact (`buy / vsol`) constant
+   *  across a liquidity band a fixed size varies over. */
+  buy_pct_of_vsol?: number | null;
 }
 
 /** An empty rule (fingerprint-only, no TP/SL/conditions). */
@@ -136,6 +140,7 @@ export function emptyRuleParams(): RuleParams {
     exclusive: false,
     priority: 0,
     disabled: null,
+    buy_pct_of_vsol: null,
   };
 }
 
@@ -175,6 +180,9 @@ export function ruleParamsToJson(p: RuleParams): Record<string, unknown> {
   if (parkedStages) parked.scale_out = parkedStages;
   if (Object.keys(parked).length) root.disabled = parked;
   // Defaults stay off the wire so existing rules round-trip unchanged.
+  if (p.buy_pct_of_vsol != null && Number.isFinite(p.buy_pct_of_vsol)) {
+    root.buy_pct_of_vsol = p.buy_pct_of_vsol;
+  }
   if (p.exclusive) root.exclusive = true;
   if (Number.isFinite(p.priority) && p.priority !== 0) root.priority = p.priority;
   return root;
@@ -221,6 +229,10 @@ export function ruleParamsFromJson(json: unknown, reg: StrategyRegistry | undefi
     exit: sideFromJson(obj.exit, reg) ?? {},
     scale_out: scaleOutFromJson(obj.scale_out, reg),
     reentry: reentryFromJson(obj.reentry),
+    buy_pct_of_vsol:
+      typeof obj.buy_pct_of_vsol === 'number' && Number.isFinite(obj.buy_pct_of_vsol)
+        ? obj.buy_pct_of_vsol
+        : null,
     exclusive: obj.exclusive === true,
     priority: typeof obj.priority === 'number' && Number.isFinite(obj.priority) ? obj.priority : 0,
     disabled: disabledFromJson(obj.disabled, reg),

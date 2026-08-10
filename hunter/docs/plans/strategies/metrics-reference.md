@@ -22,10 +22,35 @@ registry `MetricId`s so lifetime can be monotonic while the window is not.
 | `sell` | sell SOL | SOL | 0.1 | ✓ |
 | `net_flow` | `buy − sell` | SOL | 0.1 | ✗ |
 | `gross_flow` | `buy + sell` | SOL | 0.1 | ✓ |
+| `unique_wallets` | distinct trading wallets (window only) | count | 0.5 | ✗ |
 
 Non-finite / negative SOL is ignored. Windowed variants are never monotonic.
 Lifetime is the maturity / critical-mass gate; window is the hot-right-now filter.
 No fingerprint config — unlike the split groups below.
+
+`unique_wallets` counts **people, not SOL**: one wallet churning and a crowd arriving are
+identical in `gross_flow` and different here. It keeps a per-wallet occurrence map beside
+the SOL deque, so a wallet leaves the count only when its **last** entry leaves the window
+— eviction that `remove()`s on the first drops a wallet that is still trading. Its `=`
+tolerance is half a wallet: a tally has no sub-unit, and anything wider would make `== 5`
+also match 6.
+
+> **Measured and refuted as an entry gate** (2026-08-10, OOS 07-29..08-09 on `fs3-00`):
+> tightening it *anti-selects*, monotonically — `>= 20` replacing `gross_flow >= 45` scores
+> −0.75 %/ep against −1.22 at 40, −1.97 at 60 and −2.04 at 80, and stacking it on top of the
+> volume gate is either inert (it does not bind below ~30) or worse (−2.47 at 60, −3.94 at
+> 100). At matched fire count the crowd gate beats the volume gate by 0.43 pp, well inside
+> the ±1.07 pp standard error. See [flow-scalper-findings.md](flow-scalper-findings.md).
+> The metric stays because it is a real, cheap capability — but do not re-propose it as a
+> selection gate on this family without new evidence.
+
+**Wallet-keyed metrics oblige the loader.** Offline, the lake omits the `wallet` /
+`ix_labels` columns unless the run asks for them, and a fold over rows without them sees
+every trade as one anonymous wallet — so `unique_wallets` reads `1` forever and a gate on it
+never fires, which looks like a strategy result rather than a load error. The answer lives
+on the metric (`MetricId::needs_wallet_identity`) rather than as a group list copied into
+each loader, because a wallet-keyed metric in an otherwise SOL-only group is exactly what a
+group list misses. **A new wallet-keyed metric must be added there.**
 
 ### A trailing-window read is O(1) — keep it that way
 

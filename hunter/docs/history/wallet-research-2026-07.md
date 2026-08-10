@@ -946,9 +946,13 @@ consider a rule nearer the computed optimum before sweeping.
 
 Calibration caveats specific to this ladder, beyond the window caveats above: it rests
 on **one 5-day window and one wallet**, and entering at token age <1 min (his profile)
-is untested against *our* arm-to-fill latency. Run status, the `fs3-*` supersession and
-the two engine gaps it wants:
-[`../../roadmap/pending-measurement-runs.md`](../roadmap/pending-measurement-runs.md).
+is untested against *our* arm-to-fill latency. The `fs3-*` supersession and this ladder's
+demotion to a broad-universe control are in
+[`wallet-analysis.md`](../plans/strategies/wallet-analysis.md). Both engine gaps it wanted
+are now closed: `unique_wallets` is built and measured — it anti-selects, see
+[`metrics-reference.md`](../plans/strategies/metrics-reference.md) — and percent-of-vsol
+sizing ships as `buy_pct_of_vsol`
+([`execution-costs.md`](../plans/strategies/execution-costs.md)).
 
 ## Dev-buy size - the one creation axis that predicts OUTCOME (2026-07-28)
 

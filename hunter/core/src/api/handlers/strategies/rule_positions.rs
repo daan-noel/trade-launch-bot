@@ -207,10 +207,14 @@ impl From<StrategyPosition> for PositionResponse {
 // ---------------------------------------------------------------------------
 
 /// Run-split selector for the by-rule positions + summary views.
-/// - `Current` — the rule's latest run only (the "Current run" section).
-/// - `History` — every prior run (all runs except the latest; the "Old runs" section).
+/// - `Current` — the latest run **in the rule's own mode** (the "Current run" section).
+/// - `History` — every run except that one, across both modes ("Old runs").
 /// - `All`     — every run for the rule (real + paper); rows stamped with `run_seq`.
-/// - `Run`     — one run selected by the `run_seq` query param.
+/// - `Run`     — one run selected by `run_seq` + the `mode` it belongs to.
+///
+/// Only `Current` is mode-scoped: a rule owns its whole position history regardless
+/// of which mode recorded it, and `trade_mode` is a live switch — scoping the history
+/// to it would hide every position the rule took in the mode it is no longer in.
 ///
 /// Absent (`None`) preserves the legacy behavior (paper = latest run, real = all runs)
 /// for any caller that doesn't opt into the split.
@@ -235,6 +239,23 @@ pub struct ScopeParam {
     pub scope: Option<PositionScope>,
     /// Required when `scope=run`.
     pub run_seq: Option<i64>,
+    /// Which mode's `run_seq` — `run_seq` is monotonic per `(rule_id, mode)`, so
+    /// `#3` names two different runs once a rule has traded in both. Absent ⇒ the
+    /// rule's own `trade_mode`. Only `scope=run` reads it.
+    pub mode: Option<String>,
+}
+
+impl ScopeParam {
+    /// The mode `scope=run` resolves `run_seq` in: the requested one when it names a
+    /// real mode, else the rule's own. Unknown text falls back rather than 400s — a
+    /// stale link should degrade to the rule's mode, not break the panel.
+    fn run_mode<'a>(&'a self, rule_mode: &'a str) -> &'a str {
+        match self.mode.as_deref() {
+            Some("real") => "real",
+            Some("paper") => "paper",
+            _ => rule_mode,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -350,15 +371,14 @@ pub async fn rule_positions_page(
     strategy_repo: &StrategyRepo,
     rule_repo: &RuleRepo,
     rule_id: Uuid,
-    scope: Option<PositionScope>,
-    run_seq: Option<i64>,
+    params: ScopeParam,
     body: TableRequest,
 ) -> HttpResponse {
     let (limit, offset) = body.pagination.bounds();
     let pq = PositionQuery::from(body);
     let repo = strategy_repo;
 
-    // The rule's trade_mode drives run selection.
+    // The rule's trade_mode picks the *current* run; every history scope spans modes.
     let rule = match rule_repo.find(rule_id).await {
         Ok(Some(rule)) => rule,
         Ok(None) => return json_positions_with_total(Vec::new(), 0),
@@ -367,12 +387,12 @@ pub async fn rule_positions_page(
 
     // Page the rows and count the (filtered) population for the pager. The scope
     // selects which run(s):
-    //   `current` — the rule's latest run only (both modes);
-    //   `history` — every prior run, each row stamped with its `run_seq`;
+    //   `current` — the latest run in the rule's own mode;
+    //   `history` — every other run, each row stamped with its `run_seq`;
     //   `all`     — every run (incl. current), rows stamped with `run_seq`;
-    //   `run`     — one run by `run_seq` query param;
+    //   `run`     — one run by `run_seq` + `mode`;
     //   absent    — legacy: paper = latest run, real = full lifetime history.
-    let (result, total, seq_map) = match scope {
+    let (result, total, seq_map) = match params.scope {
         Some(PositionScope::Current) => match repo.latest_run(rule_id, &rule.trade_mode).await {
             Ok(Some(run)) => (
                 repo.find_positions_by_run_paged(run.id, limit, offset, &pq).await,
@@ -383,14 +403,19 @@ pub async fn rule_positions_page(
             Err(e) => return list_error("load current run", e),
         },
         Some(PositionScope::History) => {
-            let runs = match repo.run_seqs_for_rule(rule_id, &rule.trade_mode).await {
+            // Runs across BOTH modes: the page below is scoped by `rule_id`, so a
+            // mode-filtered map would blank the run stamp on every row the rule
+            // recorded in its other mode.
+            let runs = match repo.run_seqs_for_rule(rule_id, None).await {
                 Ok(runs) => runs,
                 Err(e) => return list_error("load runs", e),
             };
-            // Need a current run to exclude AND at least one prior run for there to
+            // Need a current run to exclude AND at least one other run for there to
             // be any history — otherwise the "old runs" section is empty.
-            let Some(&(latest_run_id, _)) = runs.first() else {
-                return json_positions_with_total(Vec::new(), 0);
+            let latest_run_id = match repo.latest_run(rule_id, &rule.trade_mode).await {
+                Ok(Some(run)) => run.id,
+                Ok(None) => return json_positions_with_total(Vec::new(), 0),
+                Err(e) => return list_error("load current run", e),
             };
             if runs.len() <= 1 {
                 return json_positions_with_total(Vec::new(), 0);
@@ -410,7 +435,8 @@ pub async fn rule_positions_page(
             )
         }
         Some(PositionScope::All) => {
-            let runs = match repo.run_seqs_for_rule(rule_id, &rule.trade_mode).await {
+            // Cross-mode for the same reason as `History` — all-time means all-time.
+            let runs = match repo.run_seqs_for_rule(rule_id, None).await {
                 Ok(runs) => runs,
                 Err(e) => return list_error("load runs", e),
             };
@@ -422,11 +448,11 @@ pub async fn rule_positions_page(
             )
         }
         Some(PositionScope::Run) => {
-            let Some(seq) = run_seq else {
+            let Some(seq) = params.run_seq else {
                 return HttpResponse::BadRequest()
                     .json(serde_json::json!({"error": "scope=run requires run_seq"}));
             };
-            match repo.find_run_by_seq(rule_id, &rule.trade_mode, seq).await {
+            match repo.find_run_by_seq(rule_id, params.run_mode(&rule.trade_mode), seq).await {
                 Ok(Some(run)) => {
                     let mut seq_map = HashMap::new();
                     seq_map.insert(run.id, run.run_seq);
@@ -499,8 +525,7 @@ pub async fn rule_positions_summary<F>(
     strategy_repo: &StrategyRepo,
     rule_repo: &RuleRepo,
     rule_id: Uuid,
-    scope: Option<PositionScope>,
-    run_seq: Option<i64>,
+    params: ScopeParam,
     body: TableRequest,
     price_of: F,
 ) -> HttpResponse
@@ -518,7 +543,7 @@ where
 
     // Mirror the scope semantics of `rule_positions_page` so the summary card
     // aggregates exactly the population its table pages.
-    let result = match scope {
+    let result = match params.scope {
         Some(PositionScope::Current) => match repo.latest_run(rule_id, &rule.trade_mode).await {
             Ok(Some(run)) => repo.positions_summary_by_run(run.id, &pq, price_of).await,
             Ok(None) => Ok(PositionsSummary::default()),
@@ -534,11 +559,11 @@ where
         },
         Some(PositionScope::All) => repo.positions_summary_by_rule(rule_id, &pq, price_of).await,
         Some(PositionScope::Run) => {
-            let Some(seq) = run_seq else {
+            let Some(seq) = params.run_seq else {
                 return HttpResponse::BadRequest()
                     .json(serde_json::json!({"error": "scope=run requires run_seq"}));
             };
-            match repo.find_run_by_seq(rule_id, &rule.trade_mode, seq).await {
+            match repo.find_run_by_seq(rule_id, params.run_mode(&rule.trade_mode), seq).await {
                 Ok(Some(run)) => repo.positions_summary_by_run(run.id, &pq, price_of).await,
                 Ok(None) => Ok(PositionsSummary::default()),
                 Err(e) => return list_error("load run by seq", e),
@@ -682,8 +707,14 @@ pub async fn rules_with_counters(
     HttpResponse::Ok().json(out)
 }
 
-/// `GET /strategy-rules/{id}/runs` — the rule's run history with finalized metrics,
-/// newest first. Drives the Evidence run navigator (chips + cross-run PnL trend).
+/// `GET /strategy-rules/{id}/runs` — the rule's run history with finalized metrics.
+/// Drives the Evidence run navigator (chips + cross-run PnL trend).
+///
+/// Both modes, ordered **rule's own mode first**, newest-first within each — so the
+/// head of the list is the current run whatever the rule was flipped to, and the
+/// runs from the other mode stay reachable instead of disappearing with the toggle.
+/// Every row carries its `mode`, which is what disambiguates the per-mode `run_seq`
+/// the client sends back as `scope=run`.
 pub async fn rule_runs(
     strategy_repo: &StrategyRepo,
     rule_repo: &RuleRepo,
@@ -696,8 +727,13 @@ pub async fn rule_runs(
         }
         Err(e) => return list_error("load rule", e),
     };
-    match strategy_repo.list_runs_with_metrics(rule_id, &rule.trade_mode).await {
-        Ok(rows) => HttpResponse::Ok().json(rows),
+    match strategy_repo.list_runs_with_metrics(rule_id, None).await {
+        Ok(mut rows) => {
+            // Stable, so the repo's `(mode, run_seq DESC)` order survives inside
+            // each block.
+            rows.sort_by_key(|r| r.mode != rule.trade_mode);
+            HttpResponse::Ok().json(rows)
+        }
         Err(e) => list_error("list rule runs", e),
     }
 }
@@ -748,5 +784,36 @@ pub async fn position_fills(strategy_repo: &StrategyRepo, position_id: Uuid) -> 
     match strategy_repo.list_position_fills(position_id).await {
         Ok(fills) => HttpResponse::Ok().json(fills),
         Err(e) => list_error("list position fills", e),
+    }
+}
+
+#[cfg(test)]
+mod run_scope_tests {
+    //! No-DB guard on the `scope=run` mode resolution. `run_seq` is monotonic per
+    //! `(rule_id, mode)`, so the mode is half the key: resolving `#1` in the wrong
+    //! mode serves a different run's positions under the run the user clicked.
+    use super::*;
+
+    fn param(mode: Option<&str>) -> ScopeParam {
+        ScopeParam {
+            scope: Some(PositionScope::Run),
+            run_seq: Some(1),
+            mode: mode.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn requested_mode_wins_over_the_rule_s_own() {
+        // The whole point: a rule flipped to paper can still open its real runs.
+        assert_eq!(param(Some("real")).run_mode("paper"), "real");
+        assert_eq!(param(Some("paper")).run_mode("real"), "paper");
+    }
+
+    #[test]
+    fn absent_or_unknown_mode_falls_back_to_the_rule() {
+        assert_eq!(param(None).run_mode("paper"), "paper");
+        // A stale link degrades to the rule's mode instead of 400-ing the panel.
+        assert_eq!(param(Some("REAL")).run_mode("paper"), "paper");
+        assert_eq!(param(Some("")).run_mode("real"), "real");
     }
 }

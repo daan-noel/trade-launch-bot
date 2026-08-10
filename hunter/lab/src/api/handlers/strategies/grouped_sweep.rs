@@ -2075,16 +2075,38 @@ fn short_id(id: Uuid) -> String {
     id.to_string().chars().take(8).collect()
 }
 
-/// Cheap pre-resolve check: does the axes JSON mention a flow group name?
+/// Cheap pre-resolve check: does the axes JSON reference anything that needs the
+/// lake's wallet / label columns?
+///
+/// Group name alone is not the test. A wallet-keyed metric can live in an otherwise
+/// SOL-only group (`m_flow_window.unique_wallets`), and loading without the wallet
+/// column makes every trade one anonymous wallet — a gate that silently never fires
+/// rather than an error. So the group check stays for the flow-split families (whose
+/// every metric is fingerprint-keyed) and the metric name is checked against the
+/// registry's own answer, `MetricId::needs_wallet_identity`.
 fn axes_json_references_flow(axes: &serde_json::Value) -> bool {
+    use hunter_engine::metrics::{group_spec, MetricGroupId, REGISTRY};
+
     let Some(arr) = axes.get("axes").and_then(|v| v.as_array()) else {
         return false;
     };
+    let wallet_keyed = |group: &str, metric: &str| {
+        REGISTRY
+            .iter()
+            .filter(|g| g.name == group)
+            .flat_map(|g| g.metrics.iter())
+            .any(|m| m.name == metric && m.id.needs_wallet_identity())
+    };
     arr.iter().any(|a| {
-        matches!(
-            a.get("group").and_then(|g| g.as_str()),
-            Some("m_flow_split" | "m_flow_split_window")
-        )
+        let group = a.get("group").and_then(|g| g.as_str()).unwrap_or_default();
+        if group == group_spec(MetricGroupId::FlowSplit).name
+            || group == group_spec(MetricGroupId::FlowSplitWindow).name
+        {
+            return true;
+        }
+        a.get("metric")
+            .and_then(|m| m.as_str())
+            .is_some_and(|metric| wallet_keyed(group, metric))
     })
 }
 

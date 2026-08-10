@@ -146,6 +146,15 @@ struct SeriesOut {
     /// short series reads exactly like a token that stopped trading.
     truncated: bool,
     covered_until: chrono::DateTime<chrono::Utc>,
+    /// Where coverage *starts*. On an entered position the budget is spent around the
+    /// entry rather than around token creation, so this is not the first trade and the
+    /// client cannot assume it is — a crosshair left of here has no row either.
+    covered_from: chrono::DateTime<chrono::Utc>,
+    /// The window the server asked for, or `null` when it recorded the whole history.
+    /// `covered_from` alone cannot tell the client *why* the head starts where it does,
+    /// and the two cases read oppositely: with a window, rows left of it exist and were
+    /// withheld; without one, the token simply had not traded yet.
+    record_from: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// The readout response.
@@ -638,6 +647,20 @@ pub async fn get_position_metric_series(
     let stage = Some(position.scale_stage);
     let ResolvedRule { id: rule_id, compiled, fingerprint_id } = rule;
 
+    // Spend the row budget on the position's own window rather than on the token's
+    // first N rows. The budget is a fixed *span* of grid (~22 min at 8k), so on a token
+    // entered later than that the whole position would otherwise fall outside coverage
+    // — the one case a post-mortem is opened for.
+    //
+    // The fold still runs from creation; only recording starts here. Pre-roll is the
+    // rule's own widest metric window, floored at a minute, because the question the
+    // modal is usually opened on is "why did this arm fire" — which is answered by the
+    // approach, not by the entry instant alone.
+    let record_from = entry.map(|(entered_at, _)| {
+        let pre_roll = compiled.clock_horizons.max_window_secs.max(60.0);
+        entered_at - chrono::Duration::milliseconds((pre_roll * 1000.0) as i64)
+    });
+
     // Off the reactor, for the same reason the point replay is — more so: this folds
     // the token's whole retained history and evaluates every condition at every row.
     let out = web::block(move || {
@@ -652,6 +675,7 @@ pub async fn get_position_metric_series(
             &ReplayCtx { created_at, entry, stage, flow },
             as_of,
             Some(MAX_READOUT_SERIES_ROWS),
+            record_from,
         )
     })
     .await;
@@ -668,6 +692,7 @@ pub async fn get_position_metric_series(
         tracing::warn!(
             mint = %position.mint_address,
             cap = MAX_READOUT_SERIES_ROWS,
+            covered_from = %series.covered_from,
             covered_until = %series.covered_until,
             "readout series hit the row ceiling — truncating coverage in time",
         );
@@ -682,6 +707,8 @@ pub async fn get_position_metric_series(
         conditions: series.conditions.iter().map(condition_series_out).collect(),
         truncated: series.truncated,
         covered_until: series.covered_until,
+        covered_from: series.covered_from,
+        record_from,
     })
 }
 

@@ -70,10 +70,17 @@ const TABLE_RELOAD_STATUSES = new Set([
   'ExitUnconfirmed',
 ]);
 
-/** Evidence scope: current run · one run #N · all-time. */
+/**
+ * Evidence scope: current run · one run #N · all-time.
+ *
+ * A run is keyed by `(runSeq, mode)`, never `runSeq` alone — `run_seq` restarts per
+ * mode, so a rule toggled from real to paper owns two runs called `#1`. `all` spans
+ * both modes (the rule's whole history, not the history of its current switch
+ * position); `current` is the newest run in the mode the rule is in now.
+ */
 export type EvidenceScope =
   | { kind: 'current' }
-  | { kind: 'run'; runSeq: number }
+  | { kind: 'run'; runSeq: number; mode: string }
   | { kind: 'all' };
 
 const analyzePositionRowKey = (r: RulePositionRecord) => r.id;
@@ -132,12 +139,12 @@ function evidenceChartPoints(rows: RulePositionRecord[]): PositionChartPoint[] {
 }
 
 function toFetchScope(s: EvidenceScope): PositionFetchScope {
-  if (s.kind === 'run') return { kind: 'run', runSeq: s.runSeq };
+  if (s.kind === 'run') return { kind: 'run', runSeq: s.runSeq, mode: s.mode };
   return { kind: s.kind };
 }
 
 function scopeKey(s: EvidenceScope): string {
-  return s.kind === 'run' ? `run:${s.runSeq}` : s.kind;
+  return s.kind === 'run' ? `run:${s.mode}:${s.runSeq}` : s.kind;
 }
 
 function formatRunPnl(run: StrategyRuleRun): string {
@@ -240,17 +247,27 @@ export function RuleAnalyzePanel({
   const [pause] = usePauseStrategyRuleMutation();
   const [stop] = useStopStrategyRuleMutation();
 
-  const currentRun = runs[0] ?? null;
-  const priorRuns = runs.slice(1);
+  // The endpoint serves both modes, the rule's own mode first (newest-first within
+  // each). Split them here: "current" and the PnL trend only mean something inside
+  // one mode, while the other mode's runs stay reachable as their own chips —
+  // flipping `trade_mode` must not hide the history the rule already recorded.
+  const ownMode = rule?.trade_mode ?? runs[0]?.mode ?? 'real';
+  const ownRuns = useMemo(() => runs.filter((r) => r.mode === ownMode), [runs, ownMode]);
+  const otherRuns = useMemo(() => runs.filter((r) => r.mode !== ownMode), [runs, ownMode]);
 
-  // Runs with a finalized PnL, oldest→newest, for the cross-run trend strip.
+  const currentRun = ownRuns[0] ?? null;
+  const priorRuns = ownRuns.slice(1);
+
+  // Runs with a finalized PnL, oldest→newest, for the cross-run trend strip. Own
+  // mode only: paper PnL and real PnL are not one series (paper pays no slippage a
+  // real fill pays), so one strip mixing them reads as decay that never happened.
   const trendRuns = useMemo(
     () =>
-      runs
+      ownRuns
         .filter((r) => r.has_metrics && r.total_pnl_sol != null)
         .slice()
         .reverse(),
-    [runs],
+    [ownRuns],
   );
 
   const focusFilters = useMemo(
@@ -364,13 +381,19 @@ export function RuleAnalyzePanel({
     [inspectId, items],
   );
 
+  // Run + Mode are run-identity columns: they earn their width only where a row's
+  // run isn't already fixed by the scope, i.e. all-time. Mode stays on for a
+  // single-run scope in the *other* mode too — that is the one place the header
+  // says one thing and every mode-carrying row would otherwise say nothing.
   const showRunCol = scope.kind === 'all';
+  const showModeCol = showRunCol || (scope.kind === 'run' && scope.mode !== ownMode);
   const tableColumns = useMemo(
     () =>
-      showRunCol
-        ? positionColumns
-        : positionColumns.filter((c) => c.key !== 'run_seq'),
-    [showRunCol],
+      positionColumns.filter(
+        (c) =>
+          (c.key !== 'run_seq' || showRunCol) && (c.key !== 'mode' || showModeCol),
+      ),
+    [showRunCol, showModeCol],
   );
   const tableKeys = useMemo(
     () => new Set(tableColumns.map((c) => c.key)),
@@ -454,8 +477,11 @@ export function RuleAnalyzePanel({
         ? `Current run #${currentRun.run_seq}`
         : 'Current run'
       : scope.kind === 'all'
-        ? 'All-time'
-        : `Run #${scope.runSeq}`;
+        ? otherRuns.length > 0
+          ? 'All-time · paper + real'
+          : 'All-time'
+        : // The mode is part of the run's identity once the rule has both.
+          `Run #${scope.runSeq}${scope.mode === ownMode ? '' : ` (${scope.mode})`}`;
 
   return (
     <div
@@ -557,7 +583,11 @@ export function RuleAnalyzePanel({
           runs={trendRuns}
           activeRunSeq={
             scope.kind === 'run'
-              ? scope.runSeq
+              ? // The strip only plots `ownMode`, so a run picked in the other mode
+                // highlights nothing rather than the same number in this one.
+                scope.mode === ownMode
+                ? scope.runSeq
+                : null
               : scope.kind === 'current'
                 ? currentRun?.run_seq ?? null
                 : null
@@ -566,7 +596,7 @@ export function RuleAnalyzePanel({
             selectScope(
               currentRun && runSeq === currentRun.run_seq
                 ? { kind: 'current' }
-                : { kind: 'run', runSeq },
+                : { kind: 'run', runSeq, mode: ownMode },
             )
           }
         />
@@ -592,10 +622,31 @@ export function RuleAnalyzePanel({
           {priorRuns.slice(0, 12).map((r) => (
             <ScopeChip
               key={r.id}
-              active={scope.kind === 'run' && scope.runSeq === r.run_seq}
-              onClick={() => selectScope({ kind: 'run', runSeq: r.run_seq })}
+              active={
+                scope.kind === 'run' && scope.mode === r.mode && scope.runSeq === r.run_seq
+              }
+              onClick={() => selectScope({ kind: 'run', runSeq: r.run_seq, mode: r.mode })}
               title={runTitle(r)}
               label={`#${r.run_seq}`}
+              sub={formatRunPnl(r)}
+              tone={r.total_pnl_sol}
+              win={r.has_metrics ? r.win_rate : undefined}
+              n={r.has_metrics ? r.n_closed : undefined}
+            />
+          ))}
+          {/* Runs from the mode the rule is no longer in. Badged, because `#2` here
+              and `#2` above are different runs — the badge is the disambiguator, not
+              decoration. */}
+          {otherRuns.slice(0, 12).map((r) => (
+            <ScopeChip
+              key={r.id}
+              active={
+                scope.kind === 'run' && scope.mode === r.mode && scope.runSeq === r.run_seq
+              }
+              onClick={() => selectScope({ kind: 'run', runSeq: r.run_seq, mode: r.mode })}
+              title={runTitle(r)}
+              label={`#${r.run_seq}`}
+              badge={r.mode}
               sub={formatRunPnl(r)}
               tone={r.total_pnl_sol}
               win={r.has_metrics ? r.win_rate : undefined}
@@ -606,6 +657,7 @@ export function RuleAnalyzePanel({
             active={scope.kind === 'all'}
             onClick={() => selectScope({ kind: 'all' })}
             label="All-time"
+            sub={otherRuns.length > 0 ? 'paper + real' : undefined}
           />
         </div>
       </div>
@@ -652,9 +704,9 @@ export function RuleAnalyzePanel({
         defaultCols={EVIDENCE_DEFAULT_COLS}
         emptyMessage={
           scope.kind === 'all'
-            ? 'No positions in any run.'
+            ? 'No positions in any run, in either mode.'
             : scope.kind === 'run'
-              ? `No positions in run #${scope.runSeq}.`
+              ? `No positions in ${scope.mode} run #${scope.runSeq}.`
               : 'No positions in the current run yet — pick a prior run or All-time.'
         }
       />
@@ -674,6 +726,7 @@ function ScopeChip({
   active,
   onClick,
   label,
+  badge,
   sub,
   tone,
   win,
@@ -683,6 +736,9 @@ function ScopeChip({
   active: boolean;
   onClick: () => void;
   label: string;
+  /** Trade mode pill beside the label — set only when the chip's mode differs from
+   *  the rule's, where the run number alone is ambiguous. */
+  badge?: string;
   sub?: string;
   tone?: number | null;
   /** Win rate (0–1 fraction) for the stat line; omit to hide. */
@@ -703,7 +759,10 @@ function ScopeChip({
           : 'bg-white/5 text-text-dim hover:bg-white/8'
       }`}
     >
-      <span className="block leading-tight">{label}</span>
+      <span className="flex items-center gap-1 leading-tight">
+        {label}
+        {(badge === 'paper' || badge === 'real') && <ModeBadge mode={badge} size="sm" />}
+      </span>
       {sub && (
         <span
           className={`block text-[10px] font-medium tabular-nums ${

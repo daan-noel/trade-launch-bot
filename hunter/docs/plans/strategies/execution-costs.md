@@ -73,6 +73,28 @@ Two consequences worth internalising:
 - **The flat `slippage_bps` is wrong in both directions.** It over-charges a small
   order in a deep pool and under-charges a large one in a shallow pool.
 
+### Sizing as a fraction of the pool — `buy_pct_of_vsol`
+
+A rule can size each buy as a percent of the pool's SOL reserve instead of a fixed
+amount (`RuleParams.buy_pct_of_vsol`; blank ⇒ the rule's `buy_amount_lamports`). Since
+impact is `B / vsol` exactly, that is the knob that holds impact constant across a
+liquidity band a fixed size varies over — `fs3-*` gates vsol 40–75, nearly 2×, so a
+fixed size charges twice the impact at one end as the other.
+
+It resolves in the kernel at the entry decision (`reduce::resolve_buy_lamports`) against
+the depth the fold already holds, so live-real, live-paper and simulate size identically
+and everything downstream still receives absolute lamports. Two guarantees worth knowing:
+an unusable depth (`NaN` before the first decoded reserve, or a non-positive one)
+**falls back to the fixed amount** rather than guessing, and the value is capped at
+`MAX_BUY_PCT_OF_VSOL` = 10% at parse — a rail on real money, since this multiplies a
+live pool balance into an order.
+
+A percentage is not automatically the right size, only a *constant-impact* one: cost is
+U-shaped (§3), so the target to sit near is `sqrt(fixed_per_leg × vsol)`. A percent
+tracks that optimum only where the band is narrow enough for a straight line to fit the
+square root. **The grouped sweep ignores this knob** and prices every combo at its flat
+notional — divergence D8 in [../sweep/sim-parity.md](../sweep/sim-parity.md).
+
 ### Which cost model to use
 
 | kind | charges | use when |

@@ -177,5 +177,49 @@ escalation, per-stage re-entry, and a continuous dynamic trail (`trail_pct = f(p
 or dynamic `arm_above_pct`) — the last is approximated arbitrarily well by adding
 stages, so build it only if measurement demands it.
 
-Pending measurement runs (paper smoke, `fs3-00` re-measure with a banked tranche):
-[../../roadmap/pending-measurement-runs.md](../../roadmap/pending-measurement-runs.md).
+## Measured: a banked tranche does not pay on `fs3-00`
+
+The motivating shape — a bare armed trail that "gives back 25-30% of every winner" — is
+`fs3-00 dev13 base` (64hP geometry, liq 40–75, dip 25, arm 2, trail 7, held 90). Adding one
+partial into strength was measured against it directly:
+`flow-scalper-ladder.ps1 -Plan so13`, fingerprint `fs3-dev big`, buy 0.30,
+`pumpfun_impact`, rows in [../../roadmap/data/flow-scalper-ladder.csv](../../roadmap/data/flow-scalper-ladder.csv).
+
+Money over capital per episode, 2026-07-22..08-09 (`first` fill, n = 229):
+
+| config | win | %/ep |
+| --- | --- | --- |
+| control, no ladder | 52.8% | **+0.77** |
+| bank 30% @ +15 | 58.5% | +0.34 |
+| bank 50% @ +15 | 58.5% | +0.01 |
+| bank 50% @ +10 | 72.5% | −0.05 |
+| bank 50% @ +25 | 52.8% | −0.55 |
+
+Under the `worst` fill live paper books, the same comparison is −3.68 %/ep for the control
+against −4.22 %/ep for `bank 50% @ +15` (n = 218 each). The shorter 07-22..07-28 window
+agrees in direction against a much stronger control (+5.25 %/ep vs +3.31…+4.55).
+
+**Every tranche trades tail for win rate and loses money doing it**, monotonically in
+tranche size: banking at +10 lifts the win rate 52.8 → 72.5% while turning the book
+negative. That is the tail cap the design principles warn about, plus one extra leg's fixed
+cost, and it reproduces across two windows and both fill models. Single gaps are ~1
+standard error at this `n` (per-episode sd is 9–15%) — the direction repeating across five
+configurations is the evidence, not any one row.
+
+This does **not** refute scale-out. It refutes the cheapest shape of it on the one geometry
+whose give-back motivated the build: a rule whose exit is already a *trailing* stop has
+banked its own tranche by construction, so a TP stage only cuts the winners the trail was
+going to ride. The shapes still unmeasured are those where the stub gets a policy the
+global side cannot express — and note the global `exit` side always closes 100% at any
+stage, so a stage never *replaces* the trail, it races it.
+
+> A remainder stage is also load-bearing for liveness, not just for policy. The one
+> configuration here that drops the global `held >= 90` cap wedges: four positions never
+> close, the concurrency cap stays full, and the run silently stops entering — 79 entries
+> over 18 days against 274 at `max_concurrent_tokens` 50. Adding the remainder time stop
+> un-wedges it. **`n_open == max_concurrent_tokens` on a finished run means it stopped
+> trading, not that it ended flat.**
+
+The one thing the golden tests cannot cover — sink → SSE → Console chip → dialog ledger on
+a live paper position — is a post-deploy check:
+[../../roadmap/scale-out-paper-smoke.md](../../roadmap/scale-out-paper-smoke.md).

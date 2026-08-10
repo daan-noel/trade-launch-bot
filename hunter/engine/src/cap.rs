@@ -1,9 +1,9 @@
 //! [`Cap`] — a governance limit with its `0 = unlimited` storage encoding already
 //! decoded away.
 //!
-//! `strategy_rules.max_total_tokens` is `BIGINT NOT NULL DEFAULT 0` where `0`
-//! means "unlimited". That is the *legitimate* sentinel case (a cap of zero is
-//! not a meaningful value of the domain — see hunter/CLAUDE.md *Zero-as-unbound*),
+//! Both `strategy_rules.max_total_tokens` and `strategy_rules.max_concurrent_tokens`
+//! store `0` for "unlimited". That is the *legitimate* sentinel case (a cap of zero
+//! is not a meaningful value of the domain — see hunter/CLAUDE.md *Zero-as-unbound*),
 //! and it decodes in exactly ONE place. An ad-hoc decode re-derived at each site
 //! (`max_total != 0 && counters.total >= max_total`, `(r.max_total_tokens != 0).then_some(..)`)
 //! is how the two fingerprint sentinel bugs happened — a sentinel with two readers
@@ -30,22 +30,11 @@ impl Cap {
     /// No bound. `u32::MAX` in practice, so `allows` never has to special-case it.
     pub const UNLIMITED: Cap = Cap(u32::MAX);
 
-    /// Decode the stored `0 = unlimited` encoding (`max_total_tokens`).
+    /// Decode the stored `0 = unlimited` encoding — the ONE decoder, shared by
+    /// both governance caps (`max_total_tokens`, `max_concurrent_tokens`).
     pub const fn zero_unlimited(stored: u32) -> Self {
         if stored == 0 {
             Self::UNLIMITED
-        } else {
-            Self(stored)
-        }
-    }
-
-    /// Decode a cap whose stored `0` means "fall back to `default`" rather than
-    /// "unlimited" — `max_concurrent_tokens`, where a cap of zero would stop the
-    /// rule dead and the DB default is 1. (The API already rejects `< 1`; this is
-    /// the defensive decode for a row written before that check.)
-    pub const fn zero_defaults_to(stored: u32, default: u32) -> Self {
-        if stored == 0 {
-            Self(default)
         } else {
             Self(stored)
         }
@@ -108,13 +97,11 @@ mod tests {
     }
 
     #[test]
-    fn concurrency_zero_falls_back_to_the_default_not_unlimited() {
-        // The distinction the old ad-hoc decodes blurred: `0` means "unlimited"
-        // for the lifetime cap but "1" for the concurrency cap.
-        let cap = Cap::zero_defaults_to(0, 1);
-        assert!(!cap.is_unlimited());
-        assert_eq!(cap.bounded(), Some(1));
-        assert!(cap.allows(0));
-        assert!(!cap.allows(1));
+    fn both_governance_caps_share_the_one_decoder() {
+        // Concurrency and lifetime read `0` the same way — a blank field in the
+        // rule editor is "no bound" on either, so there is no second decoder to
+        // disagree with this one.
+        assert_eq!(Cap::zero_unlimited(0), Cap::UNLIMITED);
+        assert!(Cap::zero_unlimited(0).allows(4_000));
     }
 }

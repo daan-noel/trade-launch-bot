@@ -356,6 +356,10 @@ pub struct ReadoutSeries {
     pub truncated: bool,
     /// The last instant the series covers.
     pub covered_until: Ts,
+    /// The first instant the series covers — the first event unless the caller passed
+    /// a `record_from`. Coverage is a span with two ends, and a client that only knows
+    /// the far one cannot tell "before the window" from "at the window's first row".
+    pub covered_from: Ts,
 }
 
 /// The [`MetricSeries`] column a req reads; `None` for a position-scoped req, which
@@ -398,12 +402,19 @@ fn req_column(r: &MetricReq) -> Option<SeriesColumn> {
 /// `as_of` bounds the tail (the driver caps it at `last_trade + DEAD_QUIET +
 /// TAIL_MARGIN` regardless); `max_rows` bounds the recorded rows and reports
 /// [`ReadoutSeries::truncated`] when it bites.
+///
+/// `record_from` moves where the recorded span *starts* without moving where the fold
+/// starts: rows before it are folded and then discarded, so `max_rows` buys its span
+/// around the caller's window instead of around the token's first trade. `None` records
+/// everything. It cannot change a value — lifetime metrics still fold from creation.
+/// See [`MetricSeries::set_record_from`].
 pub fn replay_series(
     rule: &CompiledRule,
     trades: impl IntoIterator<Item = TradeLite>,
     ctx: &ReplayCtx<'_>,
     as_of: Ts,
     max_rows: Option<usize>,
+    record_from: Option<Ts>,
 ) -> ReadoutSeries {
     let reqs = rule_reqs(rule, ctx.stage);
 
@@ -437,6 +448,9 @@ pub fn replay_series(
         if let Some(h) = f.creator_wallet_hash {
             series.seed_creator(h);
         }
+    }
+    if let Some(from) = record_from {
+        series.set_record_from(from);
     }
 
     let h = rule.clock_horizons;
@@ -514,6 +528,7 @@ pub fn replay_series(
         conditions: out,
         truncated: fold.truncated,
         covered_until: fold.covered_until,
+        covered_from: fold.covered_from,
     }
 }
 
@@ -1032,6 +1047,7 @@ mod tests {
             &replay_ctx(None),
             ts(40),
             None,
+            None,
         );
         assert!(!series.truncated);
         assert!(series.at.len() > prints.len(), "the grid must emit ticks, not only trades");
@@ -1106,6 +1122,7 @@ mod tests {
             &ReplayCtx { created_at: ts(0), entry: Some((ts(10), 2.0)), stage: None, flow: None },
             ts(20),
             None,
+            None,
         );
         let pnl = &series.conditions[0];
         for (i, at) in series.at.iter().enumerate() {
@@ -1141,6 +1158,7 @@ mod tests {
             &ReplayCtx { created_at: ts(0), entry: Some((ts(0), 1.0)), stage: None, flow: None },
             ts(30),
             None,
+            None,
         );
         let trail = &series.conditions[0];
         let row = |at: Ts| series.at.iter().position(|t| *t == at).expect("row");
@@ -1167,11 +1185,81 @@ mod tests {
             &ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None },
             ts(600),
             Some(50),
+            None,
         );
         assert!(series.truncated);
         assert_eq!(series.at.len(), 50);
         assert_eq!(series.covered_until, *series.at.last().unwrap());
         assert!(series.conditions.iter().all(|c| c.len() == 50));
+    }
+
+    /// `record_from` moves the recorded window; it must NEVER move the fold.
+    ///
+    /// The trap it guards: "start folding later" looks like the same optimisation and
+    /// is not. `m_price_lifetime`/`time` are defined from token creation, so a later
+    /// fold start silently reports different numbers — a wrong answer rather than a
+    /// missing one. Here the same rows are compared with and without the window, and
+    /// the values on the overlap must be bit-identical.
+    #[test]
+    fn record_from_moves_coverage_but_never_a_value() {
+        let c = rule(serde_json::json!({
+            "exit": { "m_price_lifetime": { "stall": [{ "operator": ">=", "value": 900 }] } }
+        }));
+        let trades: Vec<_> = (0..600).map(|i| trade(1.0 + i as f64 * 0.001, i)).collect();
+        let ctx = ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None };
+
+        let full = replay_series(&c, trades.clone(), &ctx, ts(600), None, None);
+        let windowed = replay_series(&c, trades, &ctx, ts(600), None, Some(ts(300)));
+
+        assert_eq!(full.covered_from, full.at[0], "no window ⇒ coverage starts at row 0");
+        assert!(windowed.covered_from >= ts(300), "the window must clip the head");
+        assert!(windowed.at.len() < full.at.len(), "withheld rows are not recorded");
+        assert_eq!(
+            windowed.covered_until, full.covered_until,
+            "the tail is untouched — only the start moved",
+        );
+
+        // Every windowed row is the full fold's row at the same instant, value for
+        // value. If the fold had restarted at `record_from`, `stall` (measured from
+        // the all-time high, which is before it) would differ here.
+        let offset = full.at.iter().position(|t| *t == windowed.at[0]).expect("row");
+        for (i, at) in windowed.at.iter().enumerate() {
+            assert_eq!(*at, full.at[offset + i]);
+            for (w, f) in windowed.conditions.iter().zip(&full.conditions) {
+                assert_eq!(
+                    w.values[i], f.values[offset + i],
+                    "value drift at {at} — the fold moved, not just the window",
+                );
+                assert_eq!(w.ok[i], f.ok[offset + i]);
+            }
+        }
+    }
+
+    /// A withheld row costs no budget, so the cap buys its span around the window.
+    ///
+    /// This is the whole point of `record_from`: an 8k budget is ~22 minutes of grid,
+    /// and a position entered later than that is otherwise *entirely* uncovered.
+    #[test]
+    fn record_from_spends_the_row_budget_on_the_requested_window() {
+        let c = rule(serde_json::json!({
+            "exit": { "m_position": { "held": [{ "operator": ">=", "value": 600 }] } }
+        }));
+        let trades: Vec<_> = (0..3600).map(|i| trade(1.0, i)).collect();
+        let ctx = ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None };
+        const CAP: usize = 1_000;
+
+        let head = replay_series(&c, trades.clone(), &ctx, ts(3600), Some(CAP), None);
+        let windowed = replay_series(&c, trades, &ctx, ts(3600), Some(CAP), Some(ts(3000)));
+
+        assert!(head.truncated && windowed.truncated);
+        assert_eq!(head.at.len(), CAP);
+        assert_eq!(windowed.at.len(), CAP, "the budget is spent, just later");
+        assert!(
+            head.covered_until < ts(3000) && windowed.covered_from >= ts(3000),
+            "the same budget covers a different span: {} vs {}",
+            head.covered_until,
+            windowed.covered_from,
+        );
     }
 
     /// The row cap is a **coverage duration**, not a payload size.
@@ -1210,6 +1298,7 @@ mod tests {
                 },
                 ts(3600),
                 Some(CAP),
+                None,
             );
             assert!(series.truncated, "an hour must not fit under the cap");
             let covered = (series.covered_until - ts(0)).num_seconds();

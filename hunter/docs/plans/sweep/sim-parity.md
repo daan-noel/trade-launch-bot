@@ -38,6 +38,17 @@ condition `eval`, `CompiledRule::compile`.
    `n_fired` / `total_pnl_sol` are therefore **upper bounds** vs. a live rule under its
    own caps. Caps make token outcomes order-dependent, which would serialize the rayon
    token fan-out.
+- **D8 · Percent-of-pool sizing ignored in sweep** (`RuleParams.buy_pct_of_vsol`). The
+   kernel resolves a buy against the pool's SOL reserve at the entry instant
+   (`reduce::resolve_buy_lamports`), so live-real, live-paper and simulate all size the
+   same. A sweep does not: it prices every combo at the flat `pricing.buy_amount_sol`,
+   because a sweep explores candidate *conditions* rather than replaying a stored rule
+   and usually has no rule to inherit sizing from (`compile_combo`'s existing notional
+   caveat, one level further). The consequence is specific and worth stating, because
+   the honest cost model is size-sensitive: impact is `buy / vsol`, so a fixed notional
+   over a liquidity band charges the wrong impact at both ends, and a percent-sized rule
+   ranked in a sweep is priced as something it is not. **Re-run it through simulate
+   before trusting its PnL** — the standing rule, with one more reason behind it.
 - **D4 · Single-position-per-token exclusivity ignored in sweep** (`RuleParams.exclusive`
    / `priority`). `reduce` lets an `exclusive` rule stand down while ANY other arm on the
    token holds a position, with `priority` deciding who claims it when two contest the

@@ -240,6 +240,11 @@ pub struct CompiledRule {
     pub fingerprint_id: FingerprintId,
     pub trade_mode: TradeMode,
     pub buy_amount_lamports: u64,
+    /// Percent-of-pool sizing, when the rule authors it. `None` ⇒ the fixed
+    /// [`buy_amount_lamports`](Self::buy_amount_lamports) above. Resolved per entry by
+    /// [`resolve_buy_lamports`], never here — the size depends on the pool at the
+    /// entry instant, which a compiled rule cannot know.
+    pub buy_pct_of_vsol: Option<f64>,
     /// Both caps arrive **already decoded** out of their `0 = …` storage encoding
     /// ([`Cap`]) — the fold never re-derives the sentinel, it just asks `allows`.
     pub concurrent_cap: Cap,
@@ -410,6 +415,7 @@ impl CompiledRule {
             fingerprint_id: rule.fingerprint_id,
             trade_mode: rule.trade_mode,
             buy_amount_lamports: rule.buy_amount_lamports,
+            buy_pct_of_vsol: rule.params.buy_pct_of_vsol,
             concurrent_cap: rule.concurrent_cap(),
             max_total: rule.total_cap(),
             take_profit: rule.params.take_profit,

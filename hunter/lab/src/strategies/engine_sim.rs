@@ -549,20 +549,25 @@ fn history_cache_key(
     AnalysisCacheKey::new(strategy, fp.id.0.to_string(), since, until)
 }
 
-/// True when the rule's params reference a flow metric group (needs lake flow cols).
+/// True when the rule reads any metric that needs the lake's wallet / label columns.
+///
+/// Asks each metric itself (`MetricId::needs_wallet_identity`) rather than listing
+/// groups here: a group list silently excludes a wallet-keyed metric that lives in an
+/// otherwise SOL-only group, and the run then folds every trade as one anonymous
+/// wallet — which reads as a gate that never fires, not as a load error.
+///
+/// **Scale-out stages count.** A stage reuses the full exit grammar, so a ladder can
+/// be the only thing in the rule referencing a flow metric.
 fn rule_needs_flow(loaded: &LoadedRule) -> bool {
-    use hunter_engine::metrics::MetricGroupId;
-    for side in [loaded.params.entry.as_ref(), loaded.params.exit.as_ref()]
+    let stages = loaded.params.scale_out.iter().flatten().map(|s| &s.conditions);
+    [loaded.params.entry.as_ref(), loaded.params.exit.as_ref()]
         .into_iter()
         .flatten()
-    {
-        if side.0.contains_key(&MetricGroupId::FlowSplit)
-            || side.0.contains_key(&MetricGroupId::FlowSplitWindow)
-        {
-            return true;
-        }
-    }
-    false
+        .chain(stages)
+        .flat_map(|side| side.0.values())
+        .flat_map(|instances| instances.iter())
+        .flat_map(|g| g.metrics.keys())
+        .any(|m| m.needs_wallet_identity())
 }
 
 /// Scan (or reuse) the fingerprint's **matched** candidate set: every token whose
@@ -711,5 +716,68 @@ mod dupe_guard_resolution {
             resolve_dupe_guard(Some(true), &settings(true, 0)),
             Some(hunter_engine::dupe_guard::DEFAULT_WINDOW_HOURS)
         );
+    }
+}
+
+/// Which lake columns a rule's metrics oblige the loader to fetch.
+#[cfg(test)]
+mod flow_column_needs {
+    use super::*;
+
+    fn rule_with(params: serde_json::Value) -> LoadedRule {
+        use hunter_engine::event::{RuleId, TradeMode};
+        use hunter_engine::fingerprint::FingerprintId;
+        LoadedRule {
+            id: RuleId(Uuid::nil()),
+            fingerprint_id: FingerprintId(Uuid::nil()),
+            trade_mode: TradeMode::Paper,
+            buy_amount_lamports: 100_000_000,
+            max_concurrent_tokens: 1,
+            max_total_tokens: 0,
+            params: hunter_engine::rule_params::RuleParams::parse(&params).expect("params"),
+            entry_enabled: true,
+        }
+    }
+
+    /// A wallet-keyed metric must pull the lake's flow columns even when its GROUP is
+    /// otherwise SOL-only.
+    ///
+    /// The bug this pins is silent and looks like a strategy result, not a load error:
+    /// without the `wallet` column every trade folds as one anonymous wallet, so
+    /// `unique_wallets >= N` reads 1 forever and the run reports zero entries — which
+    /// is indistinguishable from "the gate is simply strict".
+    #[test]
+    fn unique_wallets_forces_the_flow_columns() {
+        let uw = rule_with(serde_json::json!({
+            "entry": { "m_flow_window": {
+                "window_size_sec": 60,
+                "unique_wallets": [{ "operator": ">=", "value": 20 }]
+            } }
+        }));
+        assert!(rule_needs_flow(&uw), "unique_wallets needs the wallet column");
+
+        let sol_only = rule_with(serde_json::json!({
+            "entry": { "m_flow_window": {
+                "window_size_sec": 60,
+                "gross_flow": [{ "operator": ">=", "value": 45 }]
+            } }
+        }));
+        assert!(!rule_needs_flow(&sol_only), "a SOL-only window must not pay for flow");
+    }
+
+    /// A ladder stage reuses the full exit grammar, so it can be the ONLY part of a
+    /// rule that reads a flow metric. Checking `entry`/`exit` alone missed it.
+    #[test]
+    fn a_scale_out_stage_can_be_what_needs_flow() {
+        let staged = rule_with(serde_json::json!({
+            "scale_out": [{
+                "sell_bps": 5000,
+                "conditions": { "m_flow_window": {
+                    "window_size_sec": 30,
+                    "unique_wallets": [{ "operator": "<=", "value": 3 }]
+                } }
+            }]
+        }));
+        assert!(rule_needs_flow(&staged), "a stage's flow metric counts too");
     }
 }

@@ -21,12 +21,24 @@ Live Rules is a **control board**, not an authoring form with history bolted on.
 
 **Evidence** (`POST …/positions?scope=`):
 
-- `current` — latest run
-- `run` + `run_seq=N` — one finished/prior run
-- `all` — every run (rows stamped with `run_seq`)
-- `history` — prior runs only (kept for back-compat)
+- `current` — latest run **in the rule's own `trade_mode`**
+- `run` + `run_seq=N` (+ `mode=real|paper`) — one finished/prior run
+- `all` — every run in **both** modes (rows stamped with `run_seq` + `mode`)
+- `history` — every run except the current one, both modes (kept for back-compat)
 
-**Run navigator:** `GET /api/strategy-rules/{id}/runs` — runs newest-first with optional finalized `strategy_run_metrics`.
+`trade_mode` is a switch, not a partition: a rule owns every position it ever took,
+and only `current` is mode-scoped. Scoping the history to the live toggle position
+would hide the whole real ledger the moment the rule is flipped to paper.
+
+`run_seq` is monotonic per `(rule, mode)`, so it is half a key — `#1 paper` and
+`#1 real` are different runs. `scope=run` therefore carries the `mode` too
+(absent ⇒ the rule's own), and any cross-mode scope shows the Mode column beside Run.
+
+**Run navigator:** `GET /api/strategy-rules/{id}/runs` — both modes, the rule's own
+first, newest-first within each, with optional finalized `strategy_run_metrics`. Each
+row carries its `mode`; the panel chips the other mode's runs with a mode badge and
+keeps the cross-run PnL trend strip inside one mode (paper and real PnL are not one
+series).
 
 ## UI shape
 
@@ -37,8 +49,8 @@ Live Rules is a **control board**, not an authoring form with history bolted on.
          │ select row
          ▼
 ┌─ Evidence ── Pause/Activate in header ───────────────────────────┐
-│ Runs: [#12 current] #11 #10 … [All-time]                         │
-│ Summary · Temporal · Positions (+ Run col when All-time)         │
+│ Runs: [#12 current] #11 #10 … #3 PAPER … [All-time]              │
+│ Summary · Temporal · Positions (+ Run/Mode cols when All-time)   │
 └──────────────────────────────────────────────────────────────────┘
 ```
 

@@ -75,6 +75,9 @@ pub struct MetricSeries {
     /// The dead-token verdict at each event — the same `is_dead_verdict` the live
     /// engine computes per token per event, precomputed once here.
     pub dead: Vec<bool>,
+    /// Suppress **recording** (not folding) before this instant. See
+    /// [`set_record_from`](Self::set_record_from). `None` records from the first event.
+    record_from: Option<Ts>,
 }
 
 /// Register a windowed column's backing deque on `track`, routed to the buffer its
@@ -115,7 +118,25 @@ impl MetricSeries {
             price: Vec::new(),
             reserve_sol: Vec::new(),
             dead: Vec::new(),
+            record_from: None,
         }
+    }
+
+    /// Start **recording** rows at `from` while still folding every event from
+    /// creation.
+    ///
+    /// The two are not the same knob and must not be collapsed into one. Lifetime
+    /// metrics (`m_price_lifetime`, `time`) are defined from token creation, so a fold
+    /// that *starts* later reports different numbers — a silent wrong answer. A fold
+    /// that starts at creation and merely withholds early rows reports the same numbers
+    /// over a narrower span, which is an honest one.
+    ///
+    /// The reason to want it: a row budget buys a fixed *span* of grid, so where that
+    /// span sits decides whether it covers the position anyone opened the modal to look
+    /// at. Suppressed rows cost no budget, so the whole budget lands on the window the
+    /// caller asked for.
+    pub fn set_record_from(&mut self, from: Ts) {
+        self.record_from = Some(from);
     }
 
     /// Register a trailing **flow** window on the track before folding.
@@ -186,6 +207,11 @@ impl MetricSeries {
     }
 
     fn record(&mut self, now: Ts, slot: Option<u64>) {
+        // Withheld rows are folded but not stored — the track has already advanced by
+        // the time we get here, so skipping the append changes coverage, never a value.
+        if self.record_from.is_some_and(|from| now < from) {
+            return;
+        }
         // Append this row's columns into the flat buffer (stride `n_cols`); the
         // buffer grows by one row per event with no per-row allocation.
         self.values.reserve(self.n_cols);

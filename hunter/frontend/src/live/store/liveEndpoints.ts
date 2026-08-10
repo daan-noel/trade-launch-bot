@@ -140,6 +140,14 @@ export interface RuleReadoutSeries {
   /** The row cap cut the fold short; coverage ends at `covered_until`. */
   truncated: boolean;
   covered_until: string;
+  /** Where coverage **starts**. On an entered position the row budget is spent around
+   *  the entry, not around token creation, so this is not the first trade — a
+   *  crosshair left of it has no row either. */
+  covered_from: string;
+  /** The window the server recorded, or `null` for the whole history. Distinguishes
+   *  the two reasons the head can start late: with a window, rows to its left exist
+   *  and were withheld; without one, the token had simply not traded yet. */
+  record_from: string | null;
 }
 
 export interface SellTokenArgs {

@@ -28,7 +28,12 @@ param(
   # with any dev buy. A fingerprint with zero configured axes matches NOTHING, which
   # is why "broad" is spelled as one very wide bucket.
   [string]$FingerprintId = 'a23cf424-8d4c-45ae-aa51-37ba4f2fc6ca',
-  [string]$OutCsv     = "$PSScriptRoot/../docs/roadmap/data/flow-scalper-ladder.csv",
+  # NOT `$PSScriptRoot` alone: it is empty in a param default under some invocations
+  # (observed via `Start-Process powershell -File …`), and the path then degrades to
+  # `/../docs/…`, which resolves against the DRIVE ROOT — the ladder runs, reports
+  # success, and appends every row to `C:\docs\roadmap\data\` where nobody looks.
+  # `$PSCommandPath` is populated in the same places and survives that.
+  [string]$OutCsv     = (Join-Path (Split-Path -Parent $PSCommandPath) '../docs/roadmap/data/flow-scalper-ladder.csv'),
   # Per-run, not per-ladder. Fold cost varies by more than an order of magnitude with
   # the GEOMETRY, not just the window: the omego anchor folds a 5-day window in ~8 min
   # because `stall >= 15` caps every hold at ~15 s, while the 64hP geometry
@@ -134,6 +139,38 @@ function Set-Gross ($p, $v) {
   $p.entry.m_flow_window[0].gross_flow = @(@{ operator = '>='; value = $v })
 }
 function Set-Age ($p, $v) { $p.entry.m_snapshot.time = @(@{ operator = '>='; value = $v }) }
+
+# `scale_out` - the ordered partial-exit ladder (docs/plans/strategies/partial-exits.md).
+# Wire shape per stage is { sell_bps?, take_profit?, conditions? }: `sell_bps` omitted
+# means the REMAINDER stage (sells all that is left, must be last), and `conditions` is
+# a nested SideConditions object, NOT flattened into the stage.
+#
+# The one semantic that decides how a row must be read: the authored global `exit` side
+# still closes 100% at any stage. So a ladder does not replace the trail, it races it -
+# whichever fires first wins, and after a partial banks, the stub is still governed by
+# that same global exit. A stage therefore measures "bank a tranche BEFORE the trail
+# gets there", which is exactly the give-back this ladder is built to probe.
+function Set-ScaleOut ($p, $stages) {
+  if ($null -eq $stages) { $p.Remove('scale_out') } else { $p.scale_out = $stages }
+}
+function New-TpStage   ($SellBps, $Tp) { @{ sell_bps = $SellBps; take_profit = $Tp } }
+function New-HeldStage ($Secs) {
+  # Remainder stage: no `sell_bps` key at all, so the stub closes on a pure time stop.
+  @{ conditions = @{ m_position = @{ held = @(@{ operator = '>='; value = $Secs }) } } }
+}
+
+function Set-UniqueWallets ($p, $v) {
+  # `m_flow_window(60).unique_wallets >= N` - distinct buyers in the window, the crowd
+  # gate. Element 0 is the 60 s instance the gross gate already lives on, so this rides
+  # the SAME window rather than registering another one.
+  if ($null -eq $v) { $p.entry.m_flow_window[0].Remove('unique_wallets') }
+  else { $p.entry.m_flow_window[0].unique_wallets = @(@{ operator = '>='; value = $v }) }
+}
+function Remove-GrossGate ($p) {
+  # Drop `gross_flow` from the 60 s instance, keeping the instance itself (its window
+  # is what `unique_wallets` reads). For the REPLACE arm of the crowd-vs-volume test.
+  $p.entry.m_flow_window[0].Remove('gross_flow')
+}
 
 function Use-64hpGeometry ($p) {
   # `64hP97Bwr5...` - the SECOND scalper wallet, whose closed-episode economics clear
@@ -705,6 +742,127 @@ $ladders = @{
        apply = { param($p) Use-64hpGeometry $p; Set-ArmAbove $p 3; Set-StopLoss $p 10 }; buy = 0.2 }
     @{ name = 'V64c-2 armed g3 + stop 15'
        apply = { param($p) Use-64hpGeometry $p; Set-ArmAbove $p 3; Set-StopLoss $p 15 }; buy = 0.2 }
+  )
+  # THE CROWD GATE, OUT OF SAMPLE. `m_flow_window.unique_wallets` = distinct wallets in
+  # the window, against `gross_flow`'s SOL. The evidence for it was contested: a
+  # gate-payoff SQL sweep called it "worth building" (monotone precision lift, strictly
+  # dominating gross at matched recall), while flow-scalper-findings.md lists it among
+  # four post-hoc bucket picks on this dataset that did NOT generalise. Both were
+  # in-sample, so this ladder is the tiebreak the methodology rule demands.
+  #
+  # Window: 07-29..08-09, untouched by every fs3 calibration (fp13/fp13b tuned on
+  # 07-25..07-28). Run it and nothing else on that window, or it stops being OOS.
+  #
+  #   ./hunter/scripts/flow-scalper-ladder.ps1 -Plan uw13 `
+  #       -Since 2026-07-29T00:00:00Z -Until 2026-08-09T00:00:00Z `
+  #       -FingerprintId 49471cf5-41d5-4929-973a-4bc0afc63754
+  #
+  # Two arms, because the SQL made two different claims: ADD (U1/U2 — crowd on top of
+  # volume, which the SQL said is worse than crowd alone) and REPLACE (U3/U4 — crowd
+  # instead of volume, the claim that it dominates). U0 is the shared control.
+  uw13 = @(
+    @{ name = 'U0 control (gross60 >= 45)'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2 } }
+    @{ name = 'U1 add uw60 >= 20'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2; Set-UniqueWallets $p 20 } }
+    @{ name = 'U2 add uw60 >= 30'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2; Set-UniqueWallets $p 30 } }
+    @{ name = 'U3 uw60 >= 20 INSTEAD of gross'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2; Remove-GrossGate $p; Set-UniqueWallets $p 20 } }
+    @{ name = 'U4 uw60 >= 30 INSTEAD of gross'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2; Remove-GrossGate $p; Set-UniqueWallets $p 30 } }
+    # A gate that only helps by firing less is not an edge - it is a smaller sample.
+    # This one is deliberately loose: if the lift is real it should survive here too.
+    @{ name = 'U5 add uw60 >= 10'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2; Set-UniqueWallets $p 10 } }
+  )
+  # Round 2 of the crowd gate, same OOS window. `uw13` established two things: at 10-30
+  # the crowd gate is LOOSER than `gross60 >= 45` (adding it changes nothing at all -
+  # U0/U1/U2/U5 are the same 127 episodes), and replacing gross with it fires MORE
+  # (u20 = 151, u30 = 144). So the SQL's "crowd dominates volume" claim was never
+  # tested by those rows: they compare different sample sizes.
+  #
+  # This round tightens the crowd gate until it fires like the volume gate, which is
+  # the only comparison that means anything - a gate that just fires less is not an
+  # edge, it is a smaller sample. Target n ~ 127.
+  uw13c = @(
+    @{ name = 'W1 uw60 >= 40 instead of gross'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2; Remove-GrossGate $p; Set-UniqueWallets $p 40 } }
+    @{ name = 'W2 uw60 >= 60 instead of gross'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2; Remove-GrossGate $p; Set-UniqueWallets $p 60 } }
+    @{ name = 'W3 uw60 >= 80 instead of gross'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2; Remove-GrossGate $p; Set-UniqueWallets $p 80 } }
+    # And the ADD arm at a threshold that can actually bind, now that 10-30 cannot.
+    @{ name = 'W4 add uw60 >= 60'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2; Set-UniqueWallets $p 60 } }
+    @{ name = 'W5 add uw60 >= 100'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2; Set-UniqueWallets $p 100 } }
+  )
+  # THE SCALE-OUT RE-MEASURE. Contract: docs/plans/strategies/partial-exits.md.
+  #
+  # Base = `fs3-00 dev13 base`, which IS the fp13 `N1` row (64hP geometry, liq 40-75,
+  # dip 25, arm 2, trail 7, held 90) - a bare armed trail, i.e. exactly the "gives back
+  # 25-30% of every winner" shape a banked tranche is supposed to fix. Run it with the
+  # big-dev-buy fingerprint and the WIDE window, because N1 closed only 74 episodes on
+  # 07-25..07-28 and the per-episode sd is 9-15%: a scale-out delta on 74 episodes sits
+  # inside the noise.
+  #
+  #   ./hunter/scripts/flow-scalper-ladder.ps1 -Plan so13 `
+  #       -Since 2026-07-22T00:00:00Z -Until 2026-07-28T00:00:00Z `
+  #       -FingerprintId 49471cf5-41d5-4929-973a-4bc0afc63754
+  #
+  # Two families, and they are NOT comparable to each other - only within a family:
+  #   S0-S4, S7  bank a tranche while the global trail stays exactly N1's. ONE knob vs
+  #              S0, so the delta is attributable to the tranche alone.
+  #   S5-S6      does the STUB want its own policy? The global `held >= 90` has to go,
+  #              or it closes the stub before a remainder stage can act - and dropping
+  #              it leaves an armed trail with no floor below +2% (the V64b-1 trap:
+  #              win rate up, PnL down, losers unbounded), so a `stop_loss` comes back
+  #              in. That is two knobs, hence S5 as the family's own control.
+  so13 = @(
+    @{ name = 'S0 N1 control (no ladder)'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2 } }
+    # Where is "strength"? N1's median closed episode is +2.9%, so +10 already banks
+    # well into the right tail and +25 will fire on few positions.
+    @{ name = 'S1 bank 50% @ +10'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2; Set-ScaleOut $p @((New-TpStage 5000 10)) } }
+    @{ name = 'S2 bank 50% @ +15'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2; Set-ScaleOut $p @((New-TpStage 5000 15)) } }
+    @{ name = 'S3 bank 50% @ +25'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2; Set-ScaleOut $p @((New-TpStage 5000 25)) } }
+    # Tranche SIZE at the middle level - how much tail is worth keeping.
+    @{ name = 'S4 bank 30% @ +15'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2; Set-ScaleOut $p @((New-TpStage 3000 15)) } }
+    # --- stub-policy family: its own control first ---
+    @{ name = 'S5 stub-family control (stop 15, no held cap)'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2; Set-Held $p $null; Set-StopLoss $p 15 } }
+    @{ name = 'S6 bank 50% @ +15, stub = pure time stop 300'; buy = 0.30
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2; Set-Held $p $null; Set-StopLoss $p 15
+                 Set-ScaleOut $p @((New-TpStage 5000 15), (New-HeldStage 300)) } }
+    # The bar that decides real money: live paper books `worst`. Every extra leg pays
+    # the fixed per-leg cost again, so an adversarial fill hurts a ladder more than it
+    # hurts S0 - if the tranche survives here it survives.
+    @{ name = 'S7 bank 50% @ +15 WORST fill'; buy = 0.30; fill = 'worst'
+       apply = { param($p) Use-64hpGeometry $p; Set-Liquidity $p 40 75; Set-Dip $p 25
+                 Set-ArmAbove $p 2; Set-ScaleOut $p @((New-TpStage 5000 15)) } }
   )
 }
 

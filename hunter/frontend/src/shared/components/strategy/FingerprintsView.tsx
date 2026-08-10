@@ -14,6 +14,7 @@ import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { ModeBadge } from './ModeBadge';
 import { FingerprintForm } from './FingerprintForm';
 import { ruleParamsCell } from './RuleParamsSummary';
+import { capsDisplayText } from './capsRuleColumns';
 import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
 import { apiErrorMessage } from 'store/baseApi';
 import {
@@ -139,9 +140,7 @@ function FingerprintUsedByDetail({ rules }: { rules: StrategyRule[] }) {
               </div>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] tabular-nums text-text-dim">
                 <span>buy {lamportsToSol(r.buy_amount_lamports)}◎</span>
-                <span>
-                  caps {r.max_concurrent_tokens}/{r.max_total_tokens || '∞'}
-                </span>
+                <span>caps {capsDisplayText(r)}</span>
               </div>
               {ruleParamsCell(r.params)}
             </Link>

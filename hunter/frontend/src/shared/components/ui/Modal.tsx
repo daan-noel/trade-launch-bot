@@ -20,10 +20,18 @@ const MODAL_WIDTH: Record<Exclude<NonNullable<ModalProps['size']>, 'viewport'>, 
   xxl: 'max-w-[1600px]',
 };
 
+/**
+ * The shell is the ONE height authority: capped so it always fits inside the
+ * backdrop's padding box (`p-5` = 2.5rem total), which is what lets the backdrop
+ * stay `overflow-hidden` — the body below is the single scroller. A second
+ * `overflow-y-auto` on the backdrop would only ever add an idle scrollbar.
+ */
+const SHELL_MAX_H = 'max-h-[min(92vh,calc(100vh-2.5rem))]';
+
 const MODAL_SHELL: Record<NonNullable<ModalProps['size']>, string> = {
-  md: 'max-h-[92vh] w-full',
-  xl: 'max-h-[92vh] w-full',
-  xxl: 'max-h-[92vh] w-full',
+  md: `${SHELL_MAX_H} w-full`,
+  xl: `${SHELL_MAX_H} w-full`,
+  xxl: `${SHELL_MAX_H} w-full`,
   viewport: 'h-[98vh] max-h-[98vh] w-[98vw] max-w-[98vw]',
 };
 
@@ -162,7 +170,8 @@ export function Modal({
     <div
       className={cn(
         'fixed inset-0 z-[200] flex justify-center bg-black/65 backdrop-blur-sm',
-        size === 'viewport' ? 'items-center overflow-hidden p-0' : 'overflow-y-auto p-5',
+        'items-center overflow-hidden',
+        size === 'viewport' ? 'p-0' : 'p-5',
       )}
       onMouseDown={(e) => {
         pressedOnBackdrop.current = e.target === e.currentTarget;

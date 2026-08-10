@@ -14,7 +14,11 @@ import {
 import type { ChartTimeBand } from 'components/token-price-chart';
 import { usePublishConditionBands, type ConditionBands } from './conditionBands';
 import { useCrosshairTimeSec } from './crosshairTime';
-import { RuleConditionStrip, conditionLabel } from './RuleConditionStrip';
+import {
+  RuleConditionStrip,
+  conditionLabel,
+  type HoverCoverage,
+} from './RuleConditionStrip';
 
 /**
  * How often an OPEN position's readout re-reads. The engine ticks at `TICK_MS`
@@ -109,7 +113,7 @@ export function LivePositionConditions({ positionId }: { positionId: string }) {
       at={at}
       onAtChange={setAt}
       hoveredAtMs={hovered?.atMs ?? null}
-      hoveredBeyondCoverage={hovered?.beyondCoverage ?? false}
+      hoveredCoverage={hovered?.coverage ?? 'in'}
       bandOn={bandOn}
       onBandToggle={setBandOn}
     />
@@ -172,16 +176,21 @@ function seriesToBands(
  * the lab resolves a hovered instant with. The rows are the engine's decision grid,
  * so "nearest" is at worst half a tick from the pointer.
  *
- * `beyondCoverage` is set when the row cap truncated the fold and the pointer is past
- * where it reaches. The nearest row is then the last one, repeated for the rest of
- * the chart — which reads exactly like a token that went quiet, so the strip says so
- * rather than answering a question it no longer has the data for.
+ * `coverage` says whether the pointer is inside the recorded span, and if not, which
+ * end it fell off. Either way `nearestSeriesIndex` clamps to an edge row and the strip
+ * would otherwise present that row's values as if they were the crosshair's:
+ *
+ * - `'after'` — the row cap truncated the fold. The last row repeats for the rest of
+ *   the chart, which reads exactly like a token that went quiet.
+ * - `'before'` — the server recorded a window around the entry (`record_from`), so
+ *   rows to its left exist and were not shipped. Without a window there is nothing to
+ *   the left to miss, so that case stays `'in'`.
  */
 function readoutAt(
   series: RuleReadoutSeries | undefined,
   atSec: number[] | null,
   timeSec: number | null,
-): { readout: RuleReadout; atMs: number; beyondCoverage: boolean } | null {
+): { readout: RuleReadout; atMs: number; coverage: HoverCoverage } | null {
   if (!series || !atSec || timeSec == null || !atSec.length) return null;
   const i = nearestSeriesIndex(atSec, timeSec);
   if (i == null) return null;
@@ -198,7 +207,7 @@ function readoutAt(
   );
   return {
     atMs: series.at[i],
-    beyondCoverage: series.truncated && timeSec > atSec[atSec.length - 1],
+    coverage: hoverCoverage(series, atSec, timeSec),
     readout: {
       mint_address: series.mint_address,
       rule_id: series.rule_id,
@@ -211,6 +220,30 @@ function readoutAt(
       conditions,
     },
   };
+}
+
+/**
+ * Which side of the recorded span the pointer is on.
+ *
+ * Both edges clamp to a real row, so the danger is identical at either end: the strip
+ * would show that row's values as though they were the crosshair's. They are reported
+ * separately because the fix differs — the tail wants a bigger budget, the head wants
+ * a different window.
+ */
+function hoverCoverage(
+  series: RuleReadoutSeries,
+  atSec: number[],
+  timeSec: number,
+): HoverCoverage {
+  if (timeSec > atSec[atSec.length - 1]) {
+    // Past the end without truncation is not a gap: the fold ran to the tail, so the
+    // last row IS the token's final state.
+    return series.truncated ? 'after' : 'in';
+  }
+  // Left of the start only hides something when a window was recorded. Without one the
+  // first row is the token's first trade and there is nothing earlier to miss.
+  if (timeSec < atSec[0]) return series.record_from ? 'before' : 'in';
+  return 'in';
 }
 
 /**

@@ -59,7 +59,9 @@ fn build(dense: bool, n_tokens: usize) -> EngineState {
         fingerprint_id: fp.id,
         trade_mode: TradeMode::Paper,
         buy_amount_lamports: 100_000_000,
-        max_concurrent_tokens: 0,
+        // Explicit `1`, not the `0` unlimited sentinel: the measured workload is
+        // one open position while the rest of the corpus keeps ticking.
+        max_concurrent_tokens: 1,
         max_total_tokens: 0,
         params: RuleParams::parse(&json!({
             "entry": {

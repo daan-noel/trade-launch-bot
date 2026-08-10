@@ -282,7 +282,7 @@ pub struct LoadedRule {
     pub trade_mode: TradeMode,
     /// Buy size per fired token, exact lamports.
     pub buy_amount_lamports: u64,
-    /// Cap on concurrently open+in-flight tokens (`0` ⇒ treated as `1`).
+    /// Cap on concurrently open+in-flight tokens (`0` ⇒ unlimited).
     pub max_concurrent_tokens: u32,
     /// Cap on total successful entries over the rule's life (`0` ⇒ unlimited).
     /// With re-entry configured this counts **episodes**, not distinct tokens —
@@ -296,10 +296,10 @@ pub struct LoadedRule {
 }
 
 impl LoadedRule {
-    /// Effective concurrency cap (`0` in the DB means the default of 1).
-    /// The ONE decode of that sentinel — see [`crate::cap::Cap`].
+    /// Effective concurrency cap (`0` in the DB means unlimited). The ONE decode
+    /// of that sentinel — see [`crate::cap::Cap`].
     pub fn concurrent_cap(&self) -> Cap {
-        Cap::zero_defaults_to(self.max_concurrent_tokens, 1)
+        Cap::zero_unlimited(self.max_concurrent_tokens)
     }
 
     /// Effective lifetime cap (`0` in the DB means unlimited). The ONE decode of

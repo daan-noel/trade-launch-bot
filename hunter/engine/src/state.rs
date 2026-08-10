@@ -439,6 +439,8 @@ fn compile_manual_exit_rule(rule: RuleId, exit: &ManualExit) -> CompiledRule {
         exclusive: false,
         priority: 0,
         disabled: None,
+        // Exit-only rule: there is no buy to size.
+        buy_pct_of_vsol: None,
     };
     let loaded = LoadedRule {
         id: rule,

@@ -11,6 +11,16 @@ import type {
 } from '@live/store/liveEndpoints';
 
 /**
+ * Where a hovered instant sits relative to the series' recorded span.
+ *
+ * `'in'` is the only state whose chips answer the question the pointer asked; the
+ * other two clamp to an edge row. They stay distinct because the cause differs — the
+ * tail is a spent row budget, the head is a recorded window that starts after the
+ * token did.
+ */
+export type HoverCoverage = 'in' | 'before' | 'after';
+
+/**
  * The live rule readout as a chip row: one chip per authored condition, showing the
  * value the **decision loop itself** currently reads and whether the condition holds.
  *
@@ -34,7 +44,7 @@ export function RuleConditionStrip({
   at,
   onAtChange,
   hoveredAtMs = null,
-  hoveredBeyondCoverage = false,
+  hoveredCoverage = 'in',
   bandOn = false,
   onBandToggle,
   className,
@@ -49,8 +59,9 @@ export function RuleConditionStrip({
   onAtChange?: (at: ReadoutAt) => void;
   /** Set while `readout` is a chart-crosshair reconstruction rather than a pin. */
   hoveredAtMs?: number | null;
-  /** The row cap truncated the series and the pointer is past where it reaches. */
-  hoveredBeyondCoverage?: boolean;
+  /** Whether the pointer is inside the recorded span, and if not, which end it fell
+   *  off. Either way the chips are an edge row, not the crosshair's row. */
+  hoveredCoverage?: HoverCoverage;
   /** Whether the chart is drawing the per-condition timeline lanes. */
   bandOn?: boolean;
   /** Omit to hide the timeline control — hosts with no chart beside the strip. */
@@ -112,7 +123,7 @@ export function RuleConditionStrip({
           at={at}
           onAtChange={onAtChange}
           hoveredAtMs={hoveredAtMs}
-          hoveredBeyondCoverage={hoveredBeyondCoverage}
+          hoveredCoverage={hoveredCoverage}
         />
         {onBandToggle ? (
           <button
@@ -174,14 +185,14 @@ function ReadoutSourceLine({
   at,
   onAtChange,
   hoveredAtMs = null,
-  hoveredBeyondCoverage = false,
+  hoveredCoverage = 'in',
 }: {
   readout: RuleReadout;
   at?: ReadoutAt;
   onAtChange?: (at: ReadoutAt) => void;
   /** Set while the chart crosshair drives the readout. */
   hoveredAtMs?: number | null;
-  hoveredBeyondCoverage?: boolean;
+  hoveredCoverage?: HoverCoverage;
 }) {
   if (readout.source === 'engine' && hoveredAtMs == null) {
     return (
@@ -207,15 +218,19 @@ function ReadoutSourceLine({
           ? `○ reconstructed at ${formatClock(hoveredAtMs)}`
           : `○ reconstructed at ${at === 'entry' ? 'entry' : 'exit'}`}
       </span>
-      {/* The series was capped and the pointer is past where it reaches, so the
-          chips are the last covered row repeated. Saying so beats letting it read
-          as a token that simply went quiet. */}
-      {hoveredBeyondCoverage ? (
+      {/* The pointer is outside the recorded span, so the chips are an edge row
+          repeated rather than the crosshair's row. Saying which end beats letting it
+          read as a token that simply went quiet. */}
+      {hoveredCoverage !== 'in' ? (
         <span
           className="text-[9px] font-bold uppercase tracking-wider text-warning/80"
-          title="The reconstruction hit its row ceiling before this point, so these are the values at the last instant it covers — not at the crosshair."
+          title={
+            hoveredCoverage === 'after'
+              ? 'The reconstruction hit its row ceiling before this point, so these are the values at the last instant it covers — not at the crosshair.'
+              : 'The reconstruction records a window around the entry, and this is earlier than it starts — so these are the values at its first instant, not at the crosshair.'
+          }
         >
-          · past coverage
+          {hoveredCoverage === 'after' ? '· past coverage' : '· before coverage'}
         </span>
       ) : null}
       {onAtChange ? (

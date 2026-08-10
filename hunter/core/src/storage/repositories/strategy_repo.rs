@@ -744,6 +744,11 @@ fn position_sort_sql(key: &str) -> Option<&'static str> {
         // The positions "Holding" column shows the raw exit-token count held.
         "holding" => "sp.exit_token_amount",
         "status" => "sp.status",
+        // Sortable because the per-rule Evidence table mixes modes on its
+        // all-time scope (a rule's `trade_mode` can be flipped mid-life), so
+        // grouping the page by mode has to happen server-side like every other
+        // column — the client only holds one page.
+        "mode" => "sp.mode",
         "exit_reason" => "sp.exit_reason",
         _ => return enrich_sort_sql(key),
     })
@@ -1142,18 +1147,23 @@ impl StrategyRepo {
         Ok(res.rows_affected())
     }
 
-    /// `(run_id, run_seq)` for every run of a rule in a mode, newest first. Backs
-    /// the run-history positions view: the caller takes the first (latest) run as
-    /// the "current run" to exclude, and maps the rest onto each history position's
-    /// `run_seq` for the run column + banding.
+    /// `(run_id, run_seq)` for a rule's runs, newest first. Backs the run-history
+    /// positions view: the caller maps `run_id → run_seq` onto each position's run
+    /// column + banding.
+    ///
+    /// `mode` = `None` spans both modes — the all-time scope pages positions by
+    /// `rule_id` alone, so a mode-filtered map would leave every row from the
+    /// rule's *other* mode with a blank run. `run_seq` is monotonic per
+    /// `(rule_id, mode)`, so a cross-mode map can hold the same seq twice; it is a
+    /// display stamp, never a key.
     pub async fn run_seqs_for_rule(
         &self,
         rule_id: Uuid,
-        mode: &str,
+        mode: Option<&str>,
     ) -> anyhow::Result<Vec<(Uuid, i64)>> {
         let rows: Vec<(Uuid, i64)> = sqlx::query_as(
-            "SELECT id, run_seq FROM strategy_runs WHERE rule_id = $1 AND mode = $2 \
-             ORDER BY run_seq DESC",
+            "SELECT id, run_seq FROM strategy_runs WHERE rule_id = $1 \
+             AND ($2::text IS NULL OR mode = $2) ORDER BY run_seq DESC",
         )
         .bind(rule_id)
         .bind(mode)
@@ -1181,13 +1191,18 @@ impl StrategyRepo {
         Ok(row.map(StrategyRun::from))
     }
 
-    /// Runs for a rule (newest first) with optional finalized
+    /// Runs for a rule with optional finalized
     /// [`strategy_run_metrics`](crate::models::StrategyRunMetrics) (LEFT JOIN — null
     /// while Running / never rolled up). Backs `GET …/strategy-rules/{id}/runs`.
+    ///
+    /// `mode` = `None` spans both modes, grouped by mode and newest-first within
+    /// each — flipping a rule's `trade_mode` does not erase the runs it already
+    /// recorded, and the navigator has to be able to reach them. Every row carries
+    /// its own `mode`, which is what disambiguates the per-mode `run_seq`.
     pub async fn list_runs_with_metrics(
         &self,
         rule_id: Uuid,
-        mode: &str,
+        mode: Option<&str>,
     ) -> anyhow::Result<Vec<RuleRunListRow>> {
         let rows = sqlx::query_as::<_, RuleRunListDbRow>(
             r#"
@@ -1197,8 +1212,8 @@ impl StrategyRepo {
                    m.n_exit_stall, m.n_exit_time, m.n_exit_liquidity
             FROM strategy_runs r
             LEFT JOIN strategy_run_metrics m ON m.run_id = r.id
-            WHERE r.rule_id = $1 AND r.mode = $2
-            ORDER BY r.run_seq DESC
+            WHERE r.rule_id = $1 AND ($2::text IS NULL OR r.mode = $2)
+            ORDER BY r.mode, r.run_seq DESC
             "#,
         )
         .bind(rule_id)
@@ -3681,6 +3696,14 @@ mod filter_sql_tests {
             FilterSpec { op: FilterOp::Eq, val: serde_json::json!("paper"), ..Default::default() },
         );
         assert!(mode.contains("sp.mode"), "mode filter must reach SQL: {mode}");
+    }
+
+    /// The per-rule Evidence table shows a Mode column on its cross-mode scopes, and
+    /// a server-side table can only group by what the whitelist resolves — a
+    /// client-side `sortValue` sorts one page, which is a lie about the population.
+    #[test]
+    fn mode_sorts_server_side() {
+        assert_eq!(position_sort_sql("mode"), Some("sp.mode"));
     }
 
     #[test]
