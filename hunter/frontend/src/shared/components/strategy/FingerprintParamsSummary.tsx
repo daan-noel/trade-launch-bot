@@ -3,7 +3,7 @@
 // shows a fingerprint reads the same. Null / empty axes are omitted; bucket is
 // always shown (every fingerprint has a width).
 
-import type { CSSProperties, ReactNode } from 'react';
+import { useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
 import { formatCompact, formatDecimalTrim } from 'utils/format';
 import {
   configuredIxLabels,
@@ -11,6 +11,7 @@ import {
   ixLabelsActions,
   ixLabelsCountTail,
 } from 'lib/ixLabels';
+import { cn } from 'lib/cn';
 import { hashHue, metricColorStyle } from 'lib/strategy/metricColors';
 import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
 import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
@@ -54,11 +55,22 @@ export function axisTint(label: string): CSSProperties {
 /** Exported so other surfaces (e.g. a discovery/sweep group-key header) can
  *  render their own key=value chips in the same visual language as the axis
  *  chips below, instead of inventing a second chip style. */
-export function chip(text: ReactNode, opts?: { style?: CSSProperties; title?: string }): ReactNode {
+export function chip(
+  text: ReactNode,
+  opts?: {
+    style?: CSSProperties;
+    title?: string;
+    onClick?: (e: MouseEvent) => void;
+  },
+): ReactNode {
   return (
     <span
       title={opts?.title}
-      className="inline-block rounded border border-white/10 bg-surface px-1.5 py-0.5 font-mono text-[11px] leading-tight"
+      onClick={opts?.onClick}
+      className={cn(
+        'inline-block rounded border border-white/10 bg-surface px-1.5 py-0.5 font-mono text-[11px] leading-tight',
+        opts?.onClick && 'cursor-pointer',
+      )}
       style={opts?.style}
     >
       {text}
@@ -77,18 +89,40 @@ export function chip(text: ReactNode, opts?: { style?: CSSProperties; title?: st
  * / rule-tag chips use, so no second hash — which makes any difference visible
  * without widening the chip or adding an opaque token to read. It is a *hint*:
  * two sequences can land on neighboring hues, so identity stays in the tooltip
- * (actions + full JSON) and, on text-only surfaces, in `ixLabelsCountTail`.
+ * (the JSON array, which is also what a click copies) and, on text-only
+ * surfaces, in `ixLabelsCountTail`.
  */
-export function ixLabelsChip(labels: string[]): ReactNode {
+export function IxLabelsChip({ labels }: { labels: string[] }) {
+  const [copied, setCopied] = useState(false);
   const hue = hashHue(labels.join('|'));
-  return chip(`${labels.length}ix`, {
-    title: `${ixLabelsActions(labels)}\n\n${formatIxLabelsText(labels)}`,
-    style: {
-      ...axisTint('ix'),
-      boxShadow: `inset 3px 0 0 hsl(${hue}, 72%, 58%)`,
-      paddingLeft: '0.5rem',
-    },
-  });
+  const json = formatIxLabelsText(labels);
+
+  const copy = async (e: MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(json);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  return (
+    <>
+      {chip(`${labels.length}ix`, {
+        title: copied ? 'Copied!' : json,
+        onClick: copy,
+        style: {
+          ...axisTint('ix'),
+          boxShadow: `inset 3px 0 0 hsl(${hue}, 72%, 58%)`,
+          paddingLeft: '0.5rem',
+          // Visible ack — the title only re-reads on the next hover.
+          ...(copied ? { filter: 'brightness(1.45)' } : undefined),
+        },
+      })}
+    </>
+  );
 }
 
 function solChip(label: string, lamports: number | null): ReactNode | null {
@@ -131,7 +165,7 @@ export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
     solChip('spend', fp.spendable_lamports_in),
     solChip('fs_buy', fp.first_slot_buy_lamports),
     solChip('fs_sell', fp.first_slot_sell_lamports),
-    ix ? ixLabelsChip(ix) : null,
+    ix ? <IxLabelsChip key="ix" labels={ix} /> : null,
     // `exact` carries no unit — appending ◎ would read as a zero-width bucket.
     chip(
       `bkt=${formatBucketWidth(fp.bucket_size_amount, 4)}${fp.bucket_size_amount == null ? '' : '◎'}`,

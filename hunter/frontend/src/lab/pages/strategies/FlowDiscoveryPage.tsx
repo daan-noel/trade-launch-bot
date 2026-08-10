@@ -21,7 +21,7 @@ import {
   fingerprintParamsCell,
   chip as paramChip,
   axisTint,
-  ixLabelsChip,
+  IxLabelsChip,
 } from 'components/strategy/FingerprintParamsSummary';
 import { LabelTip } from 'components/strategy/LabelTip';
 import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeControl';
@@ -202,9 +202,9 @@ const MISSING_GROUP_VALUE = '∅';
  *  sequence doesn't compress into a `label=value` chip, so it renders as
  *  pretty-printed JSON via `IxLabelsDisplay` instead (same as the sweep
  *  table's group-key column). It DOES still get an `Nix` chip in the row
- *  though — the shared `ixLabelsChip`, so the count, the hashed ribbon, and
- *  the tooltip read exactly as they do for a fingerprint's own `ix_labels`
- *  axis a few lines below. */
+ *  though — the shared `IxLabelsChip`, so the count, the hashed ribbon, and
+ *  the click-to-copy tooltip read exactly as they do for a fingerprint's own
+ *  `ix_labels` axis a few lines below. */
 function groupKeyChips(gk: Record<string, string>) {
   const entries = Object.entries(gk);
   if (entries.length === 0) {
@@ -233,7 +233,7 @@ function groupKeyChips(gk: Record<string, string>) {
               </span>
             );
           })}
-          {ixParts && <span>{ixLabelsChip(ixParts)}</span>}
+          {ixParts && <IxLabelsChip labels={ixParts} />}
         </div>
       )}
       {ixValue != null && (
