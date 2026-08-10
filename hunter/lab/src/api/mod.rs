@@ -43,6 +43,11 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/{strategy}/positions/{position_id}/fills",
                 web::get().to(handlers::strategies::live_positions::get_position_fills),
             )
+            // Re-entry history for one mint — the inspect chart's marker overlay.
+            .route(
+                "/strategies/{strategy}/positions/mint/{mint}/episodes",
+                web::get().to(handlers::strategies::live_positions::get_mint_episodes),
+            )
             // Redesign: time-travel debugger — replay a recorded event log through
             // the engine and dump every event→effect decision (plan 6.1)
             .route(

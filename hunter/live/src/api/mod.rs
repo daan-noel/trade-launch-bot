@@ -119,6 +119,13 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/{strategy}/positions",
                 web::get().to(handlers::strategies::positions::list_positions),
             )
+            // Re-entry history for one mint (chart marker overlay). Registered before
+            // the bare `positions/mint/{mint}` open-holdings read: the extra
+            // `/episodes` segment makes it strictly more specific.
+            .route(
+                "/strategies/{strategy}/positions/mint/{mint}/episodes",
+                web::get().to(handlers::strategies::positions::get_mint_episodes),
+            )
             .route(
                 "/strategies/{strategy}/positions/mint/{mint}",
                 web::get().to(handlers::strategies::positions::get_positions_by_mint),

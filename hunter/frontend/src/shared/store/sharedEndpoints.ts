@@ -9,6 +9,7 @@ import type {
   CreationStatsResponse,
 } from 'components/creation-stats/creationStats';
 import type {
+  RulePositionRecord,
   TokenDetailRecord,
   TokenRecord,
   TradeRecord,
@@ -220,6 +221,25 @@ export const sharedApi = baseApi.injectEndpoints({
           : '/api/strategy-rules',
       providesTags: ['StrategyRule'],
     }),
+    /**
+     * Every **entered** episode on one mint, oldest first, with `exit_legs` — the
+     * token chart's re-entry overlay, so a modal opened on one position still draws
+     * the mint's whole trade history (`Entry 1..N` / every leg of every exit).
+     *
+     * Shared because BOTH bins serve this URL: live off its own `strategy_positions`,
+     * lab off the synced mirror. Mode-scoped — paper fills are modeled and real ones
+     * are money, so they never share a chart.
+     */
+    getMintEpisodes: builder.query<
+      RulePositionRecord[],
+      { mint: string; mode?: string | null }
+    >({
+      query: ({ mint, mode }) =>
+        `/api/strategies/generic/positions/mint/${encodeURIComponent(mint)}/episodes?mode=${
+          mode === 'paper' ? 'paper' : 'real'
+        }`,
+      providesTags: (_result, _error, { mint }) => [{ type: 'MintEpisodes' as const, id: mint }],
+    }),
     /** Run navigator — live-only route; Evidence pane is the sole consumer. */
     getStrategyRuleRuns: builder.query<
       import('lib/strategy/types').StrategyRuleRun[],
@@ -411,6 +431,7 @@ export const {
   useUpdateFingerprintMutation,
   useDeleteFingerprintMutation,
   useGetStrategyRulesQuery,
+  useGetMintEpisodesQuery,
   useGetStrategyRuleRunsQuery,
   useCreateStrategyRuleMutation,
   useUpdateStrategyRuleMutation,

@@ -76,6 +76,46 @@ describe('buildEventMarkersForEpisodes', () => {
     expect(entry1?.priceInSol).toBe(1);
   });
 
+  it('tags the focused episode so it is identifiable among its siblings', () => {
+    const first = target({ entryTime: '2026-07-20T22:39:35Z', entryPrice: 1 });
+    const second = target({ entryTime: '2026-07-20T22:42:59Z', entryPrice: 3 });
+    const labels = buildEventMarkersForEpisodes([first, second], second).map((m) => m.label);
+    expect(labels).toEqual(['Entry 1', 'Entry 2 ◂']);
+  });
+
+  it('does not tag anything when the mint has a single episode', () => {
+    const only = target({ entryTime: '2026-07-20T22:39:35Z', entryPrice: 1 });
+    expect(buildEventMarkersForEpisodes([only], only).map((m) => m.label)).toEqual(['Entry']);
+  });
+
+  it('carries every episode’s legs, numbered per episode', () => {
+    const first = target({
+      entryTime: '2026-07-20T22:39:35Z',
+      entryPrice: 1,
+      exitLegs: [
+        { time: '2026-07-20T22:40:00Z', price: 1.5, sellBps: 6000, reason: 'TakeProfit' },
+        { time: '2026-07-20T22:41:00Z', price: 1.2, sellBps: 4000, reason: 'TimeStop' },
+      ],
+    });
+    const second = target({
+      entryTime: '2026-07-20T22:42:59Z',
+      entryPrice: 2,
+      exitLegs: [{ time: '2026-07-20T22:44:00Z', price: 2.4, sellBps: 10000, reason: 'TakeProfit' }],
+    });
+    const markers = buildEventMarkersForEpisodes([second, first], first);
+    // 1 entry + 2 legs, then 1 entry + 1 leg — the whole traded history, in order.
+    expect(markers.map((m) => m.label)).toEqual([
+      'Entry 1 ◂',
+      'Exit 60% · TakeProfit 1 ◂',
+      'Exit 40% · TimeStop 1 ◂',
+      'Entry 2',
+      'Exit · TakeProfit 2',
+    ]);
+    expect(markers.filter((m) => m.kind === 'exit').map((m) => m.priceInSol)).toEqual([
+      1.5, 1.2, 2.4,
+    ]);
+  });
+
   it('is the union of each episode’s own markers', () => {
     const eps = [
       target({ entryTime: '2026-07-20T22:39:35Z', entryPrice: 1, exitTime: '2026-07-20T22:42:14Z', exitPrice: 2 }),

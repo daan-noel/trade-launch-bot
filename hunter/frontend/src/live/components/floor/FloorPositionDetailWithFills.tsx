@@ -7,6 +7,7 @@ import {
 } from './PositionFillsLedger';
 import { useGetPositionFillsQuery } from '@live/store/liveEndpoints';
 import { useLivePositionFills } from '@live/hooks/useLivePositionFills';
+import { useMintEpisodeMarkers } from 'hooks/useMintEpisodeMarkers';
 
 /**
  * Console / Evidence detail body: hero + fact strip + chart ∥ fills.
@@ -32,7 +33,7 @@ export function FloorPositionDetailWithFills({
   const { data: apiFills = [], isFetching } = useGetPositionFillsQuery(positionId, {
     skip: !positionId,
   });
-  useLivePositionFills(positionId);
+  useLivePositionFills(positionId, facts.mint);
 
   const { fills, reconstructed } = useMemo(() => {
     if (apiFills.length > 0) return { fills: apiFills, reconstructed: false };
@@ -70,9 +71,19 @@ export function FloorPositionDetailWithFills({
     return { ...facts.inspect, exitLegs };
   }, [facts.inspect, fills, entryTokenAmount]);
 
+  // Widen the chart to every episode on the mint. `inspect` (this position, with the
+  // ledger's legs) is substituted for its server copy, so the focused episode keeps
+  // the freshest legs while its siblings come from the read.
+  const episodeMarkers = useMintEpisodeMarkers({
+    mint: facts.mint,
+    mode: facts.mode,
+    focus: inspect,
+    focusPositionId: positionId,
+  });
+
   return (
     <FloorPositionDetail
-      facts={{ ...facts, inspect }}
+      facts={{ ...facts, inspect, episodeMarkers }}
       chartHeight={chartHeight}
       chartAside={
         <div className="flex flex-col gap-1">

@@ -1,8 +1,11 @@
+import { useMemo } from 'react';
 import { RuleAnalyzePanel } from 'components/strategy/RuleAnalyzePanel';
 import { inspectFromPosition } from 'components/strategy/inspectTarget';
 import { InlineAlert } from 'components/ui/Modal';
+import { useMintEpisodeMarkers } from 'hooks/useMintEpisodeMarkers';
 import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
 import type { StrategyRule } from 'lib/strategy/types';
+import type { RulePositionRecord } from 'types';
 
 /**
  * Lab Evidence — the shared rule-evidence panel over the **traded** (real/paper)
@@ -46,21 +49,50 @@ export function LabRuleEvidence({
         </InlineAlert>
       }
       renderInspect={({ position, rule: inspectRule, onClose: close }) => (
-        <LazyLabTokenInspectModal
-          target={inspectFromPosition(position)}
-          titleSuffix="Position inspect"
-          ruleOverride={
-            inspectRule
-              ? {
-                  paramsJson: inspectRule.params,
-                  fingerprintId: inspectRule.fingerprint_id,
-                  label: inspectRule.rule_name,
-                }
-              : null
-          }
-          onClose={close}
-        />
+        <LabPositionInspect position={position} rule={inspectRule} onClose={close} />
       )}
+    />
+  );
+}
+
+/**
+ * One traded position's inspect modal, drawing the mint's **whole** traded history —
+ * every episode, every exit leg — not just the row that was clicked. Its own
+ * component rather than an inline `renderInspect` body because the episode overlay
+ * is a hook, and hooks cannot live in a render callback.
+ */
+function LabPositionInspect({
+  position,
+  rule,
+  onClose,
+}: {
+  position: RulePositionRecord;
+  rule: StrategyRule | null;
+  onClose: () => void;
+}) {
+  const target = useMemo(() => inspectFromPosition(position), [position]);
+  const eventMarkers = useMintEpisodeMarkers({
+    mint: position.mint_address,
+    mode: position.mode,
+    focus: target,
+    focusPositionId: position.id,
+  });
+
+  return (
+    <LazyLabTokenInspectModal
+      target={target}
+      eventMarkers={eventMarkers}
+      titleSuffix="Position inspect"
+      ruleOverride={
+        rule
+          ? {
+              paramsJson: rule.params,
+              fingerprintId: rule.fingerprint_id,
+              label: rule.rule_name,
+            }
+          : null
+      }
+      onClose={onClose}
     />
   );
 }

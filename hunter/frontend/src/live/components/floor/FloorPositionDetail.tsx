@@ -1,6 +1,7 @@
 import { useMemo, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { buildEventMarkers, type InspectTarget } from 'components/strategy/inspectTarget';
+import type { ChartEventMarker } from 'components/token-price-chart';
 import { exitReasonBadge } from 'components/strategy/strategyColumns';
 import { ElapsedCell } from 'components/table/ElapsedCell';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
@@ -55,6 +56,13 @@ export interface FloorDetailFacts {
   isDead?: boolean;
   /** Open vs closed chart markers. */
   inspect: InspectTarget;
+  /**
+   * Markers for **every** episode on the mint, when the host can resolve them
+   * (`useMintEpisodeMarkers`). Overrides the single-episode set built from
+   * `inspect`, so the chart shows the token's whole traded history rather than
+   * just the row that was clicked. Omit where there is no position to widen from.
+   */
+  episodeMarkers?: ChartEventMarker[] | null;
   /** Fingerprint `volume_ix_patterns` keys for the chart vol/non-vol overlay. */
   flowPatternKeys?: ReadonlySet<string> | null;
   /** Optional action slot (Sell / Verify / …) — Console open only. */
@@ -104,7 +112,8 @@ export function FloorPositionDetail({
   // Memoized: an open position re-renders on every mark tick, and a fresh marker
   // array would rebuild the chart's markers and the trades table's row tinting
   // each time.
-  const markers = useMemo(() => buildEventMarkers(facts.inspect), [facts.inspect]);
+  const singleMarkers = useMemo(() => buildEventMarkers(facts.inspect), [facts.inspect]);
+  const markers = facts.episodeMarkers ?? singleMarkers;
   const mtmOrPnl = facts.mtmSol ?? facts.pnlSol;
   const pct = facts.pnlPct;
   const statusKey = facts.statusKey ?? facts.status;

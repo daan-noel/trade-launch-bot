@@ -624,6 +624,15 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   real ladder (>= 2 legs), so a single-leg close still falls through to `exit_*` unchanged.
   `FloorPositionDetailWithFills` re-derives them from the `position_fills` ledger instead — the
   only source with the legs of a position still laddering, kept live by `useLivePositionFills`.
+  **An inspect modal draws every episode on the mint, not just the row that was clicked** —
+  `hooks/useMintEpisodeMarkers` (shared; the traded twin of the lab's
+  `useSimMintEpisodeOverlay`) reads `positions/mint/{mint}/episodes` off either bin and folds
+  them through `buildEventMarkersForEpisodes`, so a re-entered token shows `Entry 1..N` with
+  every leg of every exit. It is **mode-scoped** — paper fills are modeled and real ones are
+  money, so they never share a chart — but NOT rule-scoped: the chart's subject is the token's
+  whole traded history. The focused episode is substituted into the union (so it keeps the
+  ledger's fresher legs) and tagged `◂`. The per-row chart-card decks stay single-episode by
+  design: there a card *is* one position row, and folding them is `chartsGroupByMint`'s job.
   The chart toolbar's Events toggle covers the whole overlay, arrows *and* dashed fill-price
   lines; on a ladder each line is titled by its share (`Exit 70%`) so N legs don't read as one
   exit drawn N times. Position tables (Evidence / Simulate / Dry-run / Sweep) share

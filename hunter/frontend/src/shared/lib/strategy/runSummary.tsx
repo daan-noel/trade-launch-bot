@@ -118,6 +118,16 @@ export interface RunMetrics {
   profit_factor: number | null;
   /** Mean pnl% over all fired incl. open marks — present on sweep/sim wire. */
   mtm_pnl_pct?: number;
+  /** Arithmetic **sum** of the closed positions' per-trade PnL% — the positions
+   *  table's PnL% column added up, rendered as its own `Σ trade %` tile.
+   *
+   *  A tally, not a return: it weights every position equally regardless of buy
+   *  size and grows with trade count, so it answers "what do my trades add up to"
+   *  and not "what did my capital return" (that stays `bandReturnPct`). Carried
+   *  only on the **realized** band — an open position has no realized percent to
+   *  add, so the MTM band leaves it `null` and the tile drops rather than
+   *  printing a sum over a different cohort than its ◎. */
+  sum_pnl_pct?: number | null;
   score: number | null;
   avg_holding_secs: number;
   median_holding_secs: number;
@@ -603,7 +613,15 @@ function metricsOf(
   // equal-weighted mean can therefore disagree in sign with the ◎ beside it. A
   // fixed-notional backtest ships no `entry_sol`, this stays `null`, and
   // `bandReturnPct` falls back to `mean_pnl_pct`, which is the same number there.
-  const capital = closed.reduce((s, r) => s + (r.entry_sol ?? 0), 0);
+  //
+  // All-or-nothing: the numerator sums EVERY row's PnL, so a denominator built
+  // from only the rows that happen to carry a cost is a ratio between two
+  // different cohorts, and it overstates the return without ever looking wrong.
+  // Better to report no percent than a confidently inflated one.
+  const hasCapital =
+    closed.length > 0 &&
+    closed.every((r) => r.entry_sol != null && Number.isFinite(r.entry_sol) && r.entry_sol > 0);
+  const capital = hasCapital ? closed.reduce((s, r) => s + (r.entry_sol as number), 0) : 0;
   return {
     n_fired: nFired,
     n_open: nOpen,
@@ -614,6 +632,9 @@ function metricsOf(
     expectancy_sol: n ? total / n : 0,
     mean_pnl_pct: n ? pcts.reduce((s, v) => s + v, 0) / n : 0,
     return_pct: weightedReturnPct(total, capital),
+    // The column sum. `null` on an empty cohort so the tile drops instead of
+    // asserting a measured `+0%`, matching how `median_pnl_pct` handles absence.
+    sum_pnl_pct: n ? pcts.reduce((s, v) => s + v, 0) : null,
     median_pnl_pct: median(pcts),
     p90_pnl_pct: n ? [...pcts].sort((a, b) => a - b)[Math.round((n - 1) * 0.9)] : 0,
     // reduce, not `Math.max(...pcts)` — a group can hold thousands of rows, past
@@ -650,6 +671,10 @@ export function runSummaryFromRows(rows: RunOutcomeRow[]): RunSummary {
   const mtm = metricsOf(fired, fired.length, open.length, openPnl, zeroExitCounts());
   realized.mtm_pnl_pct = mtmPct;
   mtm.mtm_pnl_pct = mtmPct;
+  // The column sum is realized-only: the MTM band folded the open rows in, and an
+  // open position contributes a `0` percent it never earned. Dropping the tile
+  // there beats summing a cohort the ◎ beside it doesn't describe.
+  mtm.sum_pnl_pct = null;
   return { realized, mtm };
 }
 
@@ -688,6 +713,19 @@ function bandStats(m: RunMetrics, extended = false): SummaryStat[] {
       cls: empty ? undefined : pctGradeClass(bandReturnPct(m)),
     },
     { label: 'Best %', value: empty ? '—' : pctText(m.best_pnl_pct), cls: empty ? undefined : pctGradeClass(m.best_pnl_pct) },
+    // Dropped, not dashed, when the band has no per-trade sum: the MTM band and
+    // any wire that predates the aggregate genuinely don't measure this, and a
+    // `—` between two real percents reads as a failed measurement instead.
+    ...(!empty && m.sum_pnl_pct != null
+      ? [{
+          label: 'Σ trade %',
+          value: pctText(m.sum_pnl_pct),
+          // Toned by sign only. `pctGradeClass` grades against per-trade
+          // thresholds, and this figure is a tally of N trades — a +180% sum over
+          // 300 closes is not a 180% trade and must not wear that badge.
+          cls: goodBad(m.sum_pnl_pct),
+        }]
+      : []),
     { label: 'Worst %', value: empty ? '—' : pctText(m.worst_pnl_pct), cls: empty ? undefined : pctGradeClass(m.worst_pnl_pct) },
   ];
   // Extended tiles — the distribution's tails/spread, shown only where the summary

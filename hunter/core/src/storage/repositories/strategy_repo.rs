@@ -526,6 +526,13 @@ struct PositionsSummaryRow {
     /// `total_entry_lamports`, which spans all entered incl. still-open positions).
     closed_entry_lamports: i64,
     sum_hold_secs: f64,
+    /// Arithmetic **sum** of the closed positions' per-trade `pnl_pct` — the
+    /// History table's PnL% column added up, so the strip can report the figure a
+    /// reader would get by summing the column by hand. Deliberately not a return:
+    /// it treats every position as one equal unit, so it scales with trade count
+    /// and is not comparable across cohorts of different size. The capital-weighted
+    /// `return_pct` stays the headline.
+    sum_pnl_pct: f64,
     best_pct: Option<f64>,
     worst_pct: Option<f64>,
     migrated: i64,
@@ -2021,6 +2028,7 @@ impl StrategyRepo {
                COALESCE(SUM(EXTRACT(EPOCH FROM (sp.exit_time - sp.entry_time))) \
                         FILTER (WHERE sp.entry_time IS NOT NULL AND sp.exit_time IS NOT NULL \
                                   AND sp.status = 'End'), 0)::DOUBLE PRECISION AS sum_hold_secs, \
+               COALESCE(SUM({PNL_PCT_SQL}) FILTER (WHERE {CLOSED_PRED}), 0)::DOUBLE PRECISION AS sum_pnl_pct, \
                MAX(((CASE WHEN sp.sold_token_amount > 0 \
                           THEN sp.exit_sol_lamports_total ELSE sp.exit_lamports END) \
                     - sp.entry_lamports)::float8 / NULLIF(sp.entry_lamports, 0) * 100.0) \
@@ -2108,6 +2116,7 @@ impl StrategyRepo {
             total_gains_sol: lamports_to_sol(row.total_gains_lamports),
             total_losses_sol: lamports_to_sol(row.total_losses_lamports),
             avg_hold_secs,
+            sum_pnl_pct: row.sum_pnl_pct,
             best_pct: row.best_pct,
             worst_pct: row.worst_pct,
             migrated: row.migrated,
@@ -3360,6 +3369,36 @@ impl StrategyRepo {
                 tx_signature: r.tx_signature,
             })
             .collect())
+    }
+
+    /// Every **entered** episode on one mint, oldest first — the re-entry history a
+    /// token chart overlays as `Entry 1..N` / `Exit 1..N`.
+    ///
+    /// Mode-scoped on purpose: paper fills are modeled and real ones are money, so
+    /// drawing both on one chart would state something false. Rules are NOT scoped —
+    /// the chart's job is the whole trade history of the mint, whichever rule traded it.
+    /// Rows with no entry fill (`EntryFailed`, still-arming) are excluded here rather
+    /// than shipped and dropped client-side: they contribute no marker by definition.
+    /// Bounded like every list read; re-entry is capped per run, so the limit is a
+    /// backstop, not a pager.
+    pub async fn find_entered_episodes_by_mint(
+        &self,
+        mint: &str,
+        mode: &str,
+        limit: i64,
+    ) -> anyhow::Result<Vec<StrategyPosition>> {
+        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+            "SELECT {POSITION_COLS} FROM strategy_positions \
+             WHERE mint_address = $1 AND mode = $2 \
+               AND entry_price IS NOT NULL AND entry_time IS NOT NULL \
+             ORDER BY entry_time ASC LIMIT $3"
+        ))
+        .bind(mint)
+        .bind(mode)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(StrategyPosition::from).collect())
     }
 
     /// Sell legs of a **page** of positions, keyed by position id and ordered by

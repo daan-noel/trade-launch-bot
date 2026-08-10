@@ -176,6 +176,17 @@ pub struct PositionsSummary {
     pub total_losses_sol: f64,
     /// Mean hold time (seconds) across closed positions (0 when none).
     pub avg_hold_secs: f64,
+    /// Arithmetic **sum** of the closed positions' [`StrategyPosition::pnl_pct`] —
+    /// the History table's PnL% column added up.
+    ///
+    /// Every position counts as one equal unit here, so this is a *tally*, not a
+    /// return: it grows with trade count (100 closes at +1% reads `+100%`) and two
+    /// cohorts of different size can't be compared by it. `return_pct` remains the
+    /// canonical figure — see
+    /// [pnl-percent-definition.md](../../../docs/plans/strategies/pnl-percent-definition.md).
+    /// Shipped so a reader who sums the PnL% column by hand lands on the same
+    /// number the strip shows, exactly past the page and the client row cap.
+    pub sum_pnl_pct: f64,
     /// Best closed PnL % (`None` when nothing closed).
     pub best_pct: Option<f64>,
     /// Worst closed PnL % (`None` when nothing closed).

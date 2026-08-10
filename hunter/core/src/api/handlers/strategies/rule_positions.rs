@@ -223,6 +223,13 @@ pub enum PositionScope {
     Run,
 }
 
+/// `?mode=real|paper` for the mint-episode overlay. Absent ⇒ `real`; real and paper
+/// never share a chart (see [`mint_episodes`]).
+#[derive(Deserialize)]
+pub struct EpisodeModeParam {
+    pub mode: Option<String>,
+}
+
 #[derive(Deserialize)]
 pub struct ScopeParam {
     pub scope: Option<PositionScope>,
@@ -692,6 +699,38 @@ pub async fn rule_runs(
     match strategy_repo.list_runs_with_metrics(rule_id, &rule.trade_mode).await {
         Ok(rows) => HttpResponse::Ok().json(rows),
         Err(e) => list_error("list rule runs", e),
+    }
+}
+
+/// Cap on episodes overlaid on one token chart. Re-entry is capped per run, so a
+/// mint reaching this has a pathological rule, not a legible chart.
+const MAX_MINT_EPISODES: i64 = 200;
+
+/// `GET /strategies/{strategy}/positions/mint/{mint}/episodes?mode=real` — every
+/// entered episode on one mint, oldest first, legs attached.
+///
+/// The chart's whole trade history for a token: N entries and N exit ladders, not
+/// just the one row that was clicked. Both bins serve it so Console/Evidence (live)
+/// and Evidence (lab mirror) overlay the same set; `mode` defaults to `real`.
+pub async fn mint_episodes(
+    strategy_repo: &StrategyRepo,
+    mint: &str,
+    mode: Option<&str>,
+) -> HttpResponse {
+    let mode = match mode {
+        Some("paper") => "paper",
+        _ => "real",
+    };
+    match strategy_repo.find_entered_episodes_by_mint(mint, mode, MAX_MINT_EPISODES).await {
+        Ok(positions) => {
+            let mut responses: Vec<PositionResponse> =
+                positions.into_iter().map(PositionResponse::from).collect();
+            // Legs, but no token enrichment: these rows draw markers, they never
+            // populate a table, so the enrichment batch would be a wasted round trip.
+            attach_exit_legs(strategy_repo, &mut responses).await;
+            HttpResponse::Ok().json(responses)
+        }
+        Err(e) => list_error("load mint episodes", e),
     }
 }
 

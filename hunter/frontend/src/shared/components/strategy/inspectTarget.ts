@@ -104,14 +104,25 @@ export function buildEventMarkers(target: InspectTarget): ChartEventMarker[] {
   return markers;
 }
 
+/** Marks the episode the view is actually about, among all of them on the chart. */
+const FOCUS_GLYPH = '◂';
+
 /** Build the chart markers for **all re-entry episodes** of one token — the union
  *  of every episode's signal/entry/exit markers on a single chart, so a token a
  *  rule re-entered N times shows N entry arrows + N exit arrows together. Episodes
  *  are ordered by entry time and, when there's more than one, each marker's label is
  *  suffixed with its episode number (`Entry 1` … `Exit 3`) so overlapping arrows stay
  *  legible. A single-episode token is unchanged (no suffix). Pass every fired
- *  `InspectTarget` for the mint; unentered/`NoEntry` targets contribute nothing. */
-export function buildEventMarkersForEpisodes(targets: InspectTarget[]): ChartEventMarker[] {
+ *  `InspectTarget` for the mint; unentered/`NoEntry` targets contribute nothing.
+ *
+ *  `focus` (compared by identity, so pass the same object you put in `targets`) tags
+ *  the episode the surrounding view describes — without it, a modal opened on one
+ *  position shows N indistinguishable entry arrows and none of them reads as "this
+ *  one". Ignored when there is only one episode. */
+export function buildEventMarkersForEpisodes(
+  targets: InspectTarget[],
+  focus?: InspectTarget | null,
+): ChartEventMarker[] {
   const ordered = [...targets].sort((a, b) => {
     const ta = a.entryTime ? Date.parse(a.entryTime) : 0;
     const tb = b.entryTime ? Date.parse(b.entryTime) : 0;
@@ -121,8 +132,12 @@ export function buildEventMarkersForEpisodes(targets: InspectTarget[]): ChartEve
   return ordered.flatMap((t, i) => {
     const markers = buildEventMarkers(t);
     if (!numbered) return markers;
-    const n = i + 1;
-    return markers.map((m) => ({ ...m, label: `${m.label} ${n}` }));
+    const suffix = ` ${i + 1}${focus != null && t === focus ? ` ${FOCUS_GLYPH}` : ''}`;
+    return markers.map((m) => ({
+      ...m,
+      label: `${m.label}${suffix}`,
+      lineLabel: m.lineLabel ? `${m.lineLabel}${suffix}` : undefined,
+    }));
   });
 }
 

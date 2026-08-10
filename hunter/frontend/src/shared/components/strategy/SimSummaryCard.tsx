@@ -69,6 +69,10 @@ function toRunSummary(s: PositionsSummary): RunSummary {
     // positions). `bandStats` renders it as "Return %".
     mean_pnl_pct: s.return_pct,
     return_pct: s.return_pct,
+    // The PnL% column summed over the same filtered cohort, straight off the SQL
+    // aggregate — so it stays exact past the page and past the client row cap.
+    // Absent on an older live binary, and the tile drops rather than showing 0.
+    sum_pnl_pct: s.sum_pnl_pct ?? null,
     median_pnl_pct: null,
     p90_pnl_pct: null,
     best_pnl_pct: s.best_pct,
@@ -114,6 +118,10 @@ function toRunSummary(s: PositionsSummary): RunSummary {
     total_pnl_sol: mtmPnlSol,
     return_pct: mtmReturnPct,
     mean_pnl_pct: mtmReturnPct ?? 0,
+    // Realized-only, so it must not ride the spread onto this band — the open
+    // positions have no realized percent to add and their marks are already in
+    // the ◎ above, which would leave the tile summing a narrower cohort.
+    sum_pnl_pct: null,
   };
   return { realized, mtm };
 }

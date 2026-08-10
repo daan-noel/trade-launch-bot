@@ -155,6 +155,13 @@ export function positionsToRunOutcomes(
       pnl_sol: r.pnl_sol ?? 0,
       pnl_pct: pctOf(r) ?? 0,
       holding_secs: holdSecondsOf(r.entry_time, r.exit_time) ?? 0,
+      // Required on a live/paper cohort: buy size is editable mid-run, so without
+      // it the fold has no denominator and `bandReturnPct` silently falls back to
+      // an equal-weighted mean of percents — the one thing the canonical
+      // definition forbids, and it renders a plausible number in the wrong
+      // direction. `undefined` (not `null`) so a row that never recorded a cost
+      // trips the fold's all-or-nothing capital guard rather than deflating it.
+      entry_sol: r.entry_sol ?? undefined,
     });
   }
   return out;

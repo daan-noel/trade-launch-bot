@@ -24,7 +24,9 @@ use std::sync::Arc;
 use actix_web::{web, Responder};
 use uuid::Uuid;
 
-use trading_core::api::handlers::strategies::rule_positions::{self, ScopeParam};
+use trading_core::api::handlers::strategies::rule_positions::{
+    self, EpisodeModeParam, ScopeParam,
+};
 use trading_core::api::table_query::TableRequest;
 use trading_core::storage::repositories::rule_repo::RuleRepo;
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
@@ -91,6 +93,17 @@ pub async fn get_positions_summary_by_rule(
         price_of,
     )
     .await
+}
+
+/// GET `/api/strategies/{strategy}/positions/mint/{mint}/episodes` (lab twin) —
+/// the mint's re-entry history for the inspect chart's marker overlay.
+pub async fn get_mint_episodes(
+    app_state: web::Data<Arc<LocalState>>,
+    path: web::Path<(String, String)>,
+    query: web::Query<EpisodeModeParam>,
+) -> impl Responder {
+    let (_strategy, mint) = path.into_inner();
+    rule_positions::mint_episodes(&strategy_repo(&app_state), &mint, query.mode.as_deref()).await
 }
 
 /// GET `/api/strategies/{strategy}/positions/{position_id}/fills` (lab twin) —

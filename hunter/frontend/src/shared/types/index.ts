@@ -229,6 +229,13 @@ export interface PositionsSummary {
   total_gains_sol: number;
   total_losses_sol: number;
   avg_hold_secs: number;
+  /** Arithmetic **sum** of the closed positions' per-trade PnL% — the History
+   *  table's PnL% column added up. A tally, not a return: every position counts
+   *  as one equal unit, so it grows with trade count (100 closes at +1% reads
+   *  `+100%`) and two cohorts of different size can't be compared by it.
+   *  `return_pct` stays the canonical figure. Optional for older live binaries
+   *  that predate the aggregate. */
+  sum_pnl_pct?: number;
   best_pct: number | null;
   worst_pct: number | null;
   /** Entered tokens that graduated to AMM (`is_migrated`) — counted among

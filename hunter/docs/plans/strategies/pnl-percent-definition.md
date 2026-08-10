@@ -137,6 +137,31 @@ Two other percents are correct by construction and unrelated: `WalletMintPnl::re
 (already `realized_pnl_sol / cost_basis_matched`) and the sweep/sim `pnl_percent`, which
 comes straight out of `round_trip_with_costs` and is a cost-inclusive SOL return.
 
+### `Σ trade %` — a tally, not a return
+
+`PositionsSummary::sum_pnl_pct` is the plain arithmetic sum of the closed positions'
+per-trade `pnl_pct`: the History table's PnL% column added up, so a reader who sums that
+column by hand lands on the number the strip shows. It renders as its own `Σ trade %`
+tile beside `Return %`, never in place of it.
+
+The rule above still holds, because this is not a return — nothing divides by capital, so
+there is no denominator to get wrong. It weights every position as one equal unit and
+therefore **scales with trade count**: 100 closes at +1% reads `+180%`-shaped, and two
+cohorts of different size cannot be compared by it. Three guards keep that from reading
+as a return:
+
+- **Realized band only.** An open position has no realized percent to add, so the MTM
+  band leaves it `null` and the tile drops — summing a narrower cohort than the ◎ beside
+  it is the failure mode.
+- **Toned by sign, never graded.** `pctGradeClass` grades against per-trade thresholds;
+  a tally wearing that badge claims to be one trade's return.
+- **Absent, not zero.** An empty cohort and a live binary predating the aggregate both
+  yield `null`, and the tile drops rather than asserting a measured `+0%`.
+
+It is computed once per path from the shared `PNL_PCT_SQL` (server aggregate, exact past
+the page and the client row cap) and from the same `pnl_pct` values in `metricsOf` (the
+client fold under a lens SQL can't express), so the two paths cannot disagree.
+
 ## Backfill
 
 None, and none is possible. The view is derived, so every historical position's percent

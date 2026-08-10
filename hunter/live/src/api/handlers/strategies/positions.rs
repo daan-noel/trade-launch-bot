@@ -26,7 +26,7 @@ use trading_core::models::wallet::validate_solana_address;
 use trading_core::models::StrategyPosition;
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 
-pub use rule_positions::{PositionResponse, PositionScope, ScopeParam};
+pub use rule_positions::{EpisodeModeParam, PositionResponse, PositionScope, ScopeParam};
 
 /// Query params for the list views. Bounds every list query so a growing
 /// `strategy_positions` table can't be fetched whole in one request.
@@ -169,6 +169,20 @@ pub async fn get_positions_by_mint(
         Ok(positions) => json_positions(positions),
         Err(e) => list_error("load positions for mint", e),
     }
+}
+
+/// GET /api/strategies/{strategy}/positions/mint/{mint}/episodes
+///
+/// Every entered episode on the mint (re-entry history) for the token chart's
+/// marker overlay. Thin adapter over the shared core read — the lab bin serves the
+/// same endpoint off the synced mirror.
+pub async fn get_mint_episodes(
+    app_state: web::Data<Arc<DeployState>>,
+    path: web::Path<(String, String)>,
+    query: web::Query<EpisodeModeParam>,
+) -> impl Responder {
+    let (_strategy, mint) = path.into_inner();
+    rule_positions::mint_episodes(repo(&app_state), &mint, query.mode.as_deref()).await
 }
 
 /// GET /api/strategies/{strategy}/positions/wallet/{wallet}

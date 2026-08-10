@@ -133,6 +133,12 @@ has no stamp yet. Only a **closed single-leg** close is omitted: it is already e
 position's `sold_bps` rollup both read
 `models::bps_of_bag`, so a leg's share and the aggregate can never scale differently.
 
+Legs are one axis; **episodes** are the other, and a chart needs both to tell the truth
+about a token. An inspect modal opened on one position therefore draws the mint's whole
+traded history via `positions/mint/{mint}/episodes` (`find_entered_episodes_by_mint`, served
+by both bins). That read is mode-scoped — a modeled paper fill and real money must never
+share a chart — and drops rows with no entry fill, which contribute no marker by definition.
+
 Per-leg **PnL% and hold time are never stored columns** — they derive at read time from
 the ledger + the position's entry (same pattern as `strategy_position_pnl`, extended to
 N legs):

@@ -81,6 +81,18 @@ describe('runSummaryFromRows return %', () => {
     expect(bandReturnPct(mtm)).toBeCloseTo(-15, 10);
   });
 
+  it('refuses a denominator built from only the rows that carry a cost', () => {
+    // The numerator sums every row. Summing capital over the subset that happens
+    // to have it divides two different cohorts: here +0.1 over 1.0 reads a tidy
+    // +10% while the book is down 0.1 ◎ — inflated, and green beside a red ◎.
+    const { realized } = runSummaryFromRows([
+      row({ pnl_sol: 0.1, pnl_pct: 10, entry_sol: 1.0 }),
+      row({ pnl_sol: -0.2, pnl_pct: -20 }),
+    ]);
+    expect(realized.total_pnl_sol).toBeCloseTo(-0.1, 10);
+    expect(realized.return_pct).toBeNull();
+  });
+
   it('falls back to the mean when rows carry no entry cost (fixed-notional backtest)', () => {
     // The sweep prices every round trip at one notional and ships no per-row
     // entry, where the mean already IS the capital-weighted return.
