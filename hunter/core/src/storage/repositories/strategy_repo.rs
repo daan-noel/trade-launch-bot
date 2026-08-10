@@ -2212,13 +2212,26 @@ impl StrategyRepo {
     /// All-time per-rule counters for **real** positions — Rules scoreboard (live).
     /// Paper rules use [`rule_counters_for_latest_paper_runs`] (current run only).
     pub async fn rule_counters_for_all_real(&self) -> anyhow::Result<HashMap<Uuid, RuleCounters>> {
+        self.rule_counters_for_all_in_mode("real").await
+    }
+
+    /// All-time per-rule counters in one mode, across every run. Backs the
+    /// scoreboard's explicit per-mode board, where "all-time" has to mean the same
+    /// thing for paper as for real — the default board's paper side is deliberately
+    /// latest-run only, and mixing the two under one word would make the modes
+    /// look comparable when they are not.
+    pub async fn rule_counters_for_all_in_mode(
+        &self,
+        mode: &str,
+    ) -> anyhow::Result<HashMap<Uuid, RuleCounters>> {
         let sql = format!(
             "SELECT p.rule_id AS rule_id, {RULE_COUNTERS_AGGS} \
              FROM strategy_positions p \
-             WHERE p.mode = 'real' AND p.rule_id IS NOT NULL \
+             WHERE p.mode = $1 AND p.rule_id IS NOT NULL \
              GROUP BY p.rule_id"
         );
         let rows = sqlx::query_as::<_, RuleCountersRow>(&sql)
+            .bind(mode)
             .fetch_all(&self.pool)
             .await?;
         Ok(map_rule_counters(rows))

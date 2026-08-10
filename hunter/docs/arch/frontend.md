@@ -569,7 +569,10 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
     `useResolvedFlowPatternKeys`) and `lib/flow/flowPatternKeys` resolve fingerprint
     `volume_ix_patterns` → `flowPatternKeys`. Wired into Evidence `TokenTable` charts,
     `LivePositionInspectModal`, Console History/open/waiting detail, fingerprint matched-tokens,
-    and sweep combo charts (run patterns; omit/empty ⇒ toolbar disabled).
+    the Creation Stats grouped drill-in (keys come from the **applied** scope fingerprint, so a
+    manual group-by drill-in has none), and sweep combo charts (run patterns). Omit/empty is
+    not a blank chart — the overlay falls back to a creator-vs-rest split and only goes dark
+    on a token with no creator wallet either.
     The open-count selector lives in that leaf so a status tick re-renders the panel, not `RulesView`.
   - **lab** (`@lab/components/strategy/LabRuleEvidence`) passes `notice` + `renderInspect` + `scoreScope`
     (Evidence default follows the list's scoreboard scope) and serves

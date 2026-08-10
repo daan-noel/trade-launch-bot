@@ -208,7 +208,9 @@ impl From<StrategyPosition> for PositionResponse {
 
 /// Run-split selector for the by-rule positions + summary views.
 /// - `Current` — the latest run **in the rule's own mode** (the "Current run" section).
-/// - `History` — every run except that one, across both modes ("Old runs").
+/// - `History` — every run except that one, across both modes ("Old runs"). With no
+///   run in the rule's own mode there is no current run to exclude, so this is every
+///   run the rule has.
 /// - `All`     — every run for the rule (real + paper); rows stamped with `run_seq`.
 /// - `Run`     — one run selected by `run_seq` + the `mode` it belongs to.
 ///
@@ -410,29 +412,37 @@ pub async fn rule_positions_page(
                 Ok(runs) => runs,
                 Err(e) => return list_error("load runs", e),
             };
-            // Need a current run to exclude AND at least one other run for there to
-            // be any history — otherwise the "old runs" section is empty.
-            let latest_run_id = match repo.latest_run(rule_id, &rule.trade_mode).await {
-                Ok(Some(run)) => run.id,
-                Ok(None) => return json_positions_with_total(Vec::new(), 0),
+            if runs.is_empty() {
+                return json_positions_with_total(Vec::new(), 0);
+            }
+            // The run to exclude. A rule whose own `trade_mode` has no run at all
+            // has no *current* run, so there is nothing to exclude and every run it
+            // recorded in the other mode is history — excluding-nothing is exactly
+            // the `All` population. Returning empty here instead blanked the section
+            // for any rule flipped into a mode it has never traded in.
+            let current_run_id = match repo.latest_run(rule_id, &rule.trade_mode).await {
+                Ok(run) => run.map(|r| r.id),
                 Err(e) => return list_error("load current run", e),
             };
-            if runs.len() <= 1 {
+            // With a current run, a lone run means that run IS the whole history.
+            if current_run_id.is_some() && runs.len() <= 1 {
                 return json_positions_with_total(Vec::new(), 0);
             }
             let seq_map: HashMap<Uuid, i64> = runs.into_iter().collect();
-            (
-                repo.find_positions_by_rule_excluding_run_paged(
-                    rule_id,
-                    latest_run_id,
-                    limit,
-                    offset,
-                    &pq,
-                )
-                .await,
-                repo.count_positions_by_rule_excluding_run(rule_id, latest_run_id, &pq).await,
-                Some(seq_map),
-            )
+            let (rows, total) = match current_run_id {
+                Some(exclude) => (
+                    repo.find_positions_by_rule_excluding_run_paged(
+                        rule_id, exclude, limit, offset, &pq,
+                    )
+                    .await,
+                    repo.count_positions_by_rule_excluding_run(rule_id, exclude, &pq).await,
+                ),
+                None => (
+                    repo.find_positions_by_rule_paged(rule_id, limit, offset, &pq).await,
+                    repo.count_positions_by_rule(rule_id, &pq).await,
+                ),
+            };
+            (rows, total, Some(seq_map))
         }
         Some(PositionScope::All) => {
             // Cross-mode for the same reason as `History` — all-time means all-time.
@@ -554,7 +564,10 @@ where
             Ok(Some(run)) => {
                 repo.positions_summary_by_rule_excluding_run(rule_id, run.id, &pq, price_of).await
             }
-            Ok(None) => Ok(PositionsSummary::default()),
+            // No run in the rule's own mode ⇒ no current run to exclude ⇒ every run
+            // it recorded is history. Mirrors the page, which is the whole point of
+            // this match existing.
+            Ok(None) => repo.positions_summary_by_rule(rule_id, &pq, price_of).await,
             Err(e) => return list_error("load current run", e),
         },
         Some(PositionScope::All) => repo.positions_summary_by_rule(rule_id, &pq, price_of).await,
@@ -623,9 +636,33 @@ pub enum ScoreScope {
     All,
 }
 
+/// Which trade mode the rule-list scoreboard scores every rule in.
+///
+/// Absent is NOT the same as either value: it scores each rule in its **own**
+/// `trade_mode`, which is the board you keep/kill on. An explicit mode scores every
+/// rule in that one mode instead — the only way to read a rule's paper record while
+/// it trades real, or to rank the whole list on one comparable basis.
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ScoreMode {
+    Paper,
+    Real,
+}
+
+impl ScoreMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            ScoreMode::Paper => "paper",
+            ScoreMode::Real => "real",
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub struct ScoreScopeParam {
     pub score_scope: Option<ScoreScope>,
+    /// Absent ⇒ score each rule in its own `trade_mode` (the default board).
+    pub score_mode: Option<ScoreMode>,
 }
 
 /// `GET /strategy-rules?score_scope=current|all` — every rule with its position
@@ -638,19 +675,42 @@ pub struct ScoreScopeParam {
 /// scores the same on both boards, and the analysis app can rank/compare real
 /// performance without a second scoring implementation to keep in step.
 ///
+/// `score_mode` pins every rule to one mode's counters instead of its own — paper
+/// and real are separate ledgers (paper pays no slippage a real fill pays), so a
+/// board mixing them ranks on a number that means two different things.
+///
 /// A counters lookup failure degrades to zeros for that mode rather than failing the
 /// list — a scoreboard column going blank beats the Rules page not rendering.
 pub async fn rules_with_counters(
     strategy_repo: &StrategyRepo,
     rule_repo: &RuleRepo,
     score_scope: ScoreScope,
+    score_mode: Option<ScoreMode>,
 ) -> HttpResponse {
     let rules = match rule_repo.list().await {
         Ok(v) => v,
         Err(e) => return list_error("list rules", e),
     };
-    let (paper, real) = match score_scope {
-        ScoreScope::Current => (
+    // One map when a mode is pinned (every rule reads from it), two when each rule
+    // is scored in its own mode. `All` + a pinned mode is all-time on BOTH sides —
+    // the paper/latest-run asymmetry below is the legacy default board's, and
+    // carrying it into an explicit comparison would silently compare unlike spans.
+    let (paper, real) = match (score_mode, score_scope) {
+        (Some(m), ScoreScope::Current) => {
+            let c = strategy_repo
+                .rule_counters_for_latest_runs("generic", m.as_str())
+                .await
+                .unwrap_or_default();
+            (c.clone(), c)
+        }
+        (Some(m), ScoreScope::All) => {
+            let c = strategy_repo
+                .rule_counters_for_all_in_mode(m.as_str())
+                .await
+                .unwrap_or_default();
+            (c.clone(), c)
+        }
+        (None, ScoreScope::Current) => (
             strategy_repo
                 .rule_counters_for_latest_runs("generic", "paper")
                 .await
@@ -660,7 +720,7 @@ pub async fn rules_with_counters(
                 .await
                 .unwrap_or_default(),
         ),
-        ScoreScope::All => (
+        (None, ScoreScope::All) => (
             strategy_repo
                 .rule_counters_for_latest_paper_runs("generic")
                 .await
@@ -671,6 +731,8 @@ pub async fn rules_with_counters(
     let out: Vec<serde_json::Value> = rules
         .into_iter()
         .map(|r| {
+            // With a mode pinned both maps are the same one, so the rule's own
+            // `trade_mode` stops steering which ledger it is scored on.
             let counters = if r.trade_mode == "paper" {
                 paper.get(&r.id)
             } else {
@@ -699,6 +761,14 @@ pub async fn rules_with_counters(
                         ScoreScope::Current => "current",
                         ScoreScope::All => "all",
                     }),
+                );
+                // Which ledger the numbers above came from — `null` = the rule's own
+                // `trade_mode`. Stamped on the row (like `score_scope`) so a board
+                // is self-describing: the numbers say which basis produced them
+                // rather than relying on what the caller believes it asked for.
+                map.insert(
+                    "score_mode".into(),
+                    serde_json::json!(score_mode.map(ScoreMode::as_str)),
                 );
             }
             v

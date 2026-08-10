@@ -119,7 +119,10 @@ classifier but folds a *different corpus* (PG-only `/api/tokens/:mint/trades`, v
 sealed lake + PG tail the endpoint reads) and renders in the chart's display unit and
 flow basis. Compare it to `m_flow_split.nonvol_net` only in SOL on the `cost_sol` basis,
 and expect drift wherever the two corpora differ (PG retention has dropped a token's
-early trades; pre-V0 lake days null-fill `ix_labels`/`wallet`).
+early trades; pre-V0 lake days null-fill `ix_labels`/`wallet`). With **no** configured
+patterns the overlay still draws, but the structural test never fires and the two lines
+are creator-plus-contagion vs the rest — a cohort split, not the metric. The chart
+toolbar names which of the two is on screen.
 
 ## Hash SSOT
 

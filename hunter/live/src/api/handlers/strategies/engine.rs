@@ -165,16 +165,21 @@ pub async fn delete_fingerprint(
 /// `?score_scope=current|all` (default `all`):
 /// - `all` — real = all-time positions; paper = latest run (legacy scoreboard)
 /// - `current` — latest run for **both** modes (Rules Control keep/kill board)
+///
+/// `?score_mode=paper|real` scores **every** rule in that one mode instead of its own
+/// `trade_mode`; with it, `all` is all-time on both sides.
 pub async fn list_rules(
     app_state: web::Data<Arc<DeployState>>,
     query: web::Query<ScoreScopeParam>,
 ) -> impl Responder {
     // Shared with the lab bin — the scoreboard is a position rollup, so both apps
     // score a rule identically off whichever `strategy_positions` they can see.
+    let q = query.into_inner();
     rule_positions::rules_with_counters(
         &app_state.strategy_repo,
         &app_state.rule_repo,
-        query.into_inner().score_scope.unwrap_or(ScoreScope::All),
+        q.score_scope.unwrap_or(ScoreScope::All),
+        q.score_mode,
     )
     .await
 }

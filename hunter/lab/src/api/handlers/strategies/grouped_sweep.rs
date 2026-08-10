@@ -940,11 +940,12 @@ async fn run_grouped_sweep_job(
     // Skipped entirely on a scoped run so a stale filter left in the form can't
     // narrow (or contradict) what the engine matched.
     if scope_fp.is_none() {
-        // Optional exact-set ix_labels filter (applied post-fingerprint, in-memory so
+        // Optional exact ix_labels filter (applied post-fingerprint, in-memory so
         // the unfiltered Parquet corpus cache is reused across filter values): keep only
-        // tokens whose label set equals the requested set. Normalize the request set the
-        // same way the fingerprint is, so the `==` is order/dup-insensitive. An empty
-        // request set is "no filter" (not "tokens with no labels").
+        // tokens whose label SEQUENCE equals the requested one. Normalize the request the
+        // same way the fingerprint is, so the `==` keeps on-chain order and repeated
+        // labels — same axis semantics a rule matches on. An empty request is
+        // "no filter" (not "tokens with no labels").
         if let Some(want) = b
             .ix_labels_filter
             .as_ref()

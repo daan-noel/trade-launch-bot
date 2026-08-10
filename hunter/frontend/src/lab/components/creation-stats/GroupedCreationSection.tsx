@@ -34,6 +34,7 @@ import { CreationHeatmap } from 'components/creation-stats/CreationHeatmap';
 import { DOW_ROWS } from 'components/creation-stats/creationStats';
 import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeControl';
 import { useFingerprintMatches } from '@lab/components/strategy/useFingerprintMatches';
+import { useFlowPatternKeys } from 'hooks/useFlowPatternKeys';
 import { CREATION_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import { useGetFingerprintsQuery, useCreateFingerprintMutation } from 'store/sharedEndpoints';
 import {
@@ -477,6 +478,11 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   if (drillData?.items) drillItemsRef.current = drillData.items;
   const drillTokens = drillArgs ? drillData?.items ?? drillItemsRef.current : EMPTY_DRILL_TOKENS;
   const drillTotal = drillArgs ? drillData?.total ?? 0 : 0;
+  // Fingerprint-scoped drill-in ⇒ these rows ARE the fingerprint's matched
+  // tokens, so their charts / inspect modal draw the vol/non-vol overlay from
+  // the SCOPED (applied, not draft) fingerprint's `volume_ix_patterns`. Manual
+  // group-by drill-ins have no fingerprint and stay unconfigured (`null`).
+  const drillFlowPatternKeys = useFlowPatternKeys(applied?.fingerprintId ?? null);
 
   return (
     <section className="rounded-lg border border-white/8 bg-white/2 p-3">
@@ -817,6 +823,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
                   resetKey={drillResetKey}
                   charts
                   chartsDefaultOn
+                  flowPatternKeys={drillFlowPatternKeys}
                   searchable
                   colToggle
                   hoverable
@@ -835,6 +842,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
             <LazyLabTokenInspectModal
               target={inspectFromMint(inspectedToken.mint, inspectedToken.symbol)}
               titleSuffix="Token inspect"
+              flowPatternKeys={drillFlowPatternKeys}
               onClose={() => setInspectedToken(null)}
             />
           )}

@@ -103,6 +103,14 @@ export interface RulesViewProps {
    */
   scoreScope?: 'current' | 'all';
   onScoreScopeChange?: (scope: 'current' | 'all') => void;
+  /**
+   * Which trade mode the scoreboard scores every rule in. `own` (default) scores each
+   * rule in its own `trade_mode` — the keep/kill board. `paper`/`real` pin the whole
+   * list to one ledger, the only way to read a rule's paper record while it trades
+   * real, and the only basis on which rules in different modes rank comparably.
+   */
+  scoreMode?: 'own' | TradeMode;
+  onScoreModeChange?: (mode: 'own' | TradeMode) => void;
   /** Live-only: Evidence panel under the Control table for the selected rule. */
   renderAnalyze?: (ctx: {
     ruleId: string;
@@ -128,11 +136,15 @@ export function RulesView({
   showScores,
   scoreScope,
   onScoreScopeChange,
+  scoreMode = 'own',
+  onScoreModeChange,
   renderAnalyze,
 }: RulesViewProps) {
   const dispatch = useDispatch();
   const { data: rules = [], isLoading, refetch } = useGetStrategyRulesQuery(
-    scoreScope ?? undefined,
+    scoreScope || scoreMode !== 'own'
+      ? { scope: scoreScope, mode: scoreMode === 'own' ? undefined : scoreMode }
+      : undefined,
   );
   const { data: fps = [] } = useGetFingerprintsQuery();
   const [selectedKey, setSelectedKey] = useSelectionSearchParam(STRATEGY_PARAMS.rule);
@@ -224,11 +236,16 @@ export function RulesView({
     const closedPnlByMode: Record<TradeMode, number> = { paper: 0, real: 0 };
     for (const r of visibleRules) {
       if (!showScores) break;
+      // The bucket is the mode the NUMBERS came from, not the mode the rule is
+      // switched to. With a pinned score mode those differ for every rule in the
+      // other mode, and filing a paper figure under `real` is exactly the currency
+      // blend the tiles above refuse to do.
+      const bucket: TradeMode = scoreMode === 'own' ? r.trade_mode : scoreMode;
       const n = r.total_positions ?? 0;
       if (n > 0) {
         pnl += r.total_pnl_sol ?? 0;
-        pnlByMode[r.trade_mode] += r.total_pnl_sol ?? 0;
-        tradedByMode[r.trade_mode] += 1;
+        pnlByMode[bucket] += r.total_pnl_sol ?? 0;
+        tradedByMode[bucket] += 1;
       }
       wins += r.win_count ?? 0;
       losses += r.loss_count ?? 0;
@@ -237,8 +254,8 @@ export function RulesView({
       if (r.is_active && r.is_enabled) active += 1;
       const capital = r.closed_entry_sol ?? 0;
       if (capital > 0 && Number.isFinite(capital)) {
-        capitalByMode[r.trade_mode] += capital;
-        closedPnlByMode[r.trade_mode] += r.total_pnl_sol ?? 0;
+        capitalByMode[bucket] += capital;
+        closedPnlByMode[bucket] += r.total_pnl_sol ?? 0;
       }
     }
     const closed = wins + losses;
@@ -277,7 +294,7 @@ export function RulesView({
       livePending,
       traded: visibleRules.filter((r) => (r.total_positions ?? 0) > 0).length,
     };
-  }, [visibleRules, showScores, ruleLiveCounts]);
+  }, [visibleRules, showScores, ruleLiveCounts, scoreMode]);
 
   // Tint fingerprint cells when ≥2 rules share the same fingerprint_id.
   const fpTints = useMemo(
@@ -833,10 +850,35 @@ export function RulesView({
                     />
                   </span>
                 )}
+                {/* Which ledger every row is scored on. Separate from the scope
+                    toggle because they answer different questions — how far back,
+                    and whose money. */}
+                {onScoreModeChange && (
+                  <span className="mr-2 inline-flex align-middle">
+                    <ToggleGroup
+                      aria-label="Scoreboard trade mode"
+                      tone="primary"
+                      size="sm"
+                      value={scoreMode}
+                      onChange={onScoreModeChange}
+                      options={[
+                        { value: 'own', label: 'Own mode' },
+                        { value: 'real', label: 'Real' },
+                        { value: 'paper', label: 'Paper' },
+                      ]}
+                    />
+                  </span>
+                )}
                 <span className="text-xs text-text-dim">
-                  {(scoreScope ?? 'current') === 'current'
-                    ? 'Scoreboard = latest run — Pause from Execute or Evidence'
-                    : 'Scoreboard = all-time (real) / latest run (paper)'}
+                  {scoreMode !== 'own'
+                    ? `Scoreboard = every rule's ${scoreMode} positions · ${
+                        (scoreScope ?? 'current') === 'current'
+                          ? 'latest run'
+                          : 'all-time'
+                      }`
+                    : (scoreScope ?? 'current') === 'current'
+                      ? 'Scoreboard = latest run — Pause from Execute or Evidence'
+                      : 'Scoreboard = all-time (real) / latest run (paper)'}
                 </span>
               </>
             ) : undefined
@@ -978,7 +1020,9 @@ export function RulesView({
                   scoreboardTotals.returnPctByMode.paper ?? 0,
                   1,
                 )}`
-                : `on capital · ${(scoreScope ?? 'current') === 'current' ? 'current run' : 'all-time'}`
+                : `on capital · ${(scoreScope ?? 'current') === 'current' ? 'current run' : 'all-time'}${
+                    scoreMode === 'own' ? '' : ` · ${scoreMode}`
+                  }`
             }
             size="sm"
           />

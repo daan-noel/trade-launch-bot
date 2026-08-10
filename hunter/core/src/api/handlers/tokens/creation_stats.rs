@@ -348,7 +348,7 @@ pub struct GroupedCreationQuery {
     /// JSON object `{"cu_limit":["300000"],"is_cashback_enabled":["true"]}` (keys =
     /// `GroupField` tags, values = allowed string forms matching the group key).
     /// Independent of `group_by`. Omitted/empty ⇒ no filter. `ix_labels` is handled
-    /// by `ix_labels_filter` below (set-equality, not value-in).
+    /// by `ix_labels_filter` below (ordered-sequence equality, not value-in).
     ///
     /// The five bucketed SOL fields take `SolFilter` syntax — an exact amount
     /// (`"1.515"`) or a bucket range (`"1.5–1.6"`) — and are validated, never
@@ -359,8 +359,10 @@ pub struct GroupedCreationQuery {
     /// actually surfaces a small elite group over a big group of mediocre
     /// launches (raw `trades` still scales with group size like `count` does).
     pub rank_by: Option<String>,
-    /// Exact instruction-label set filter as a JSON array (`["A","B"]`): keep only
-    /// tokens whose `ix_labels` set equals these labels (order-independent).
+    /// Exact instruction-label filter as a JSON array (`["A","B"]`): keep only
+    /// tokens whose `ix_labels` **sequence** equals these labels — same on-chain
+    /// order, same repeated labels, same length, exactly as
+    /// `hunter_engine::fingerprint::matches` grades the axis.
     /// Omitted/empty ⇒ no filter.
     pub ix_labels_filter: Option<String>,
     /// Optional saved-fingerprint scope — same contract as the sweep's/flow
@@ -474,7 +476,7 @@ fn resolve_precision(exact_sol: Option<bool>, bucket_width: Option<f64>) -> SolP
 
 /// Parse the `field_filters` JSON object into ordered `(field, allowed-values)`
 /// pairs. Blank/missing ⇒ empty (no filter). `ix_labels` is ignored here (it has
-/// its own set-equality filter). Empty value lists and blank values are dropped so
+/// its own ordered-sequence filter). Empty value lists and blank values are dropped so
 /// an empty box never pins "no values". `Err(msg)` on malformed JSON / unknown tag.
 fn parse_field_filters(raw: Option<&str>) -> Result<Vec<(GroupField, Vec<String>)>, String> {
     let raw = raw.unwrap_or("").trim();

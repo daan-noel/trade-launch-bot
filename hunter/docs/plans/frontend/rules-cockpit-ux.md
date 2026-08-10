@@ -14,17 +14,44 @@ Live Rules is a **control board**, not an authoring form with history bolted on.
 
 ## Scopes
 
-**Control scoreboard** (`GET /api/strategy-rules?score_scope=`):
+**Control scoreboard** (`GET /api/strategy-rules?score_scope=&score_mode=`):
 
-- `current` (default on live) — latest-run counters for paper **and** real
-- `all` — real = all-time; paper = latest run (legacy)
+- `score_scope=current` (default on live) — latest-run counters for paper **and** real
+- `score_scope=all` — real = all-time; paper = latest run (legacy)
+- `score_mode=paper|real` — score **every** rule on that one ledger instead of its own
+  `trade_mode`. Absent is a third state, not a default: it is the per-rule "own mode"
+  board you keep/kill on. Pinning a mode is the only way to read a rule's paper record
+  while it trades real, and the only basis on which rules in different modes rank
+  against each other — paper pays no slippage a real fill pays.
+
+With a mode pinned, `all` means all-time on **both** sides (`rule_counters_for_all_in_mode`),
+not the legacy paper-latest-run asymmetry above: an explicit comparison across unlike
+spans is worse than no comparison. Every row is stamped with the `score_mode` that
+produced its numbers, and the TOTAL strip buckets by that mode rather than by the rule's
+`trade_mode` — filing a paper figure under `real` is the currency blend the tiles refuse.
 
 **Evidence** (`POST …/positions?scope=`):
 
 - `current` — latest run **in the rule's own `trade_mode`**
 - `run` + `run_seq=N` (+ `mode=real|paper`) — one finished/prior run
 - `all` — every run in **both** modes (rows stamped with `run_seq` + `mode`)
-- `history` — every run except the current one, both modes (kept for back-compat)
+- `all` + the server-side `mode` filter — the same population as one trade mode's
+  ledger. Paper and real are not one result set (paper pays no slippage a real fill
+  pays), so the panel offers a per-mode All-time chip beside the combined one
+  whenever the rule has runs in both. It is a **filter, not a fourth scope**: one
+  predicate narrows the page, the pager total, the summary card and the chart series
+  together, and the Mode column drops out because every row now says the same word.
+- `history` — every run except the current one, both modes (kept for back-compat).
+  With no run in the rule's own mode there is no current run to exclude, so this is
+  every run the rule has — same population as `all`, never empty.
+
+**An empty `current` falls back to `all`, once.** A restarted rule opens on a fresh
+`run_seq` that has traded nothing yet, and a rule flipped into a mode it has never
+traded in has no current run at all; either way the default scope pages an empty
+table while the rule's whole history sits one chip away, which reads as "this rule
+never traded". The panel re-scopes to All-time on the first settled load of the
+pristine view only — after the user picks a scope, filters, or focuses, an empty
+result is theirs and stays put.
 
 `trade_mode` is a switch, not a partition: a rule owns every position it ever took,
 and only `current` is mode-scoped. Scoping the history to the live toggle position
@@ -43,18 +70,18 @@ series).
 ## UI shape
 
 ```text
-┌─ Rules Control (sticky) ── [Current run] [All-time] ─────────────┐
-│ RULE · PnL · Win% · N · Live · Status · Execute(Pause/Activate) │
-└──────────────────────────────────────────────────────────────────┘
+┌─ Rules Control (sticky) ── [Current run][All-time] [Own mode][Real][Paper] ─┐
+│ RULE · PnL · Win% · N · Live · Status · Execute(Pause/Activate)             │
+└─────────────────────────────────────────────────────────────────────────────┘
          │ select row
          ▼
 ┌─ Evidence ── Pause/Activate in header ───────────────────────────┐
-│ Runs: [#12 current] #11 #10 … #3 PAPER … [All-time]              │
+│ Runs: [#12 current] #11 … #3 PAPER … [All-time][All REAL][All PAPER] │
 │ Summary · Temporal · Positions (+ Run/Mode cols when All-time)   │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 ## Files
 
-- Backend: `strategy_repo::{list_runs_with_metrics,find_run_by_seq,rule_counters_for_latest_runs}`, `engine::{list_rules,list_rule_runs}`, `positions` scope `all`/`run`
-- Frontend: `RulesPage` + `RulesView` Control strip; `RuleAnalyzePanel` Evidence; `run_seq` column
+- Backend: `strategy_repo::{list_runs_with_metrics,find_run_by_seq,rule_counters_for_latest_runs,rule_counters_for_all_in_mode}`, `engine::{list_rules,list_rule_runs}`, `positions` scope `all`/`run`, `rules_with_counters(score_scope, score_mode)`
+- Frontend: `RulesPage` + `RulesView` Control strip (scope + mode toggles); `RuleAnalyzePanel` Evidence; `run_seq` + `mode` columns

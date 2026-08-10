@@ -314,9 +314,11 @@ export interface TokenPriceChartProps {
   eventMarkers?: ChartEventMarker[] | null;
   /**
    * `JSON.stringify(labels)` keys of fingerprint `volume_ix_patterns` for the
-   * vol/non-vol overlay. Overlay + toolbar toggle are enabled only when this
-   * set is non-empty (same gate as the trades-table Vol badge). Omit/empty ⇒
-   * no lines (creator-only classification alone is not shown as vol/non-vol).
+   * vol/non-vol overlay. Omit/empty is NOT a blank chart — the structural test
+   * simply never fires and the split degrades to creator-vs-rest, which the
+   * toolbar tooltip names. Only a token with neither patterns nor a creator
+   * wallet disables the toggle. (The trades-table Vol badge keeps the stricter
+   * gate: it marks a per-trade STRUCTURAL match, which needs patterns.)
    */
   flowPatternKeys?: ReadonlySet<string> | null;
   /** Cumulative flow-line basis (default `cost_sol`). */
@@ -355,8 +357,12 @@ export interface ChartToolbarProps {
   trimEmptyBars: boolean;
   /** Vol/non-vol cumulative overlay lines (left price scale). */
   showFlowLines: boolean;
-  /** False when fingerprint has no `volume_ix_patterns` — toggle disabled. */
+  /** False only when nothing can classify (no patterns AND no creator wallet)
+   *  — toggle disabled. */
   flowLinesAvailable: boolean;
+  /** True when the split comes from fingerprint `volume_ix_patterns`; false ⇒ the
+   *  lines are the creator-vs-rest degradation (labelled as such in the tooltip). */
+  flowPatternsConfigured: boolean;
   /** Range-select (drag-to-highlight) mode is active. */
   rangeSelectMode: boolean;
   crosshair: ChartCrosshairInfo | null;

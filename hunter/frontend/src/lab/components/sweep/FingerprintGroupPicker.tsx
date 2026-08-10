@@ -384,7 +384,7 @@ export function FingerprintGroupPicker({
                       ? 'Disabled: grouping by instruction labels. Uncheck to pin a specific label set here.'
                       : filtersLocked
                         ? 'Disabled while scoped to a saved fingerprint.'
-                        : 'Filter to tokens whose instruction-label set exactly matches this JSON array (order-independent).\nLeave empty = all label sets included.'
+                        : 'Filter to tokens whose instruction-label sequence exactly matches this JSON array — same order, same repeats, same length (what a rule matches on).\nLeave empty = all label sets included.'
                   }
                 />
               </div>

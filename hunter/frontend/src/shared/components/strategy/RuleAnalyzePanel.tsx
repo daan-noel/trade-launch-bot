@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { InlineAlert } from 'components/ui/Modal';
 import { Badge } from 'components/ui/Badge';
@@ -45,6 +45,7 @@ import {
 } from 'store/sharedEndpoints';
 import { useTimezone } from 'context/TimezoneContext';
 import type { TableQuery } from 'components/table/types';
+import type { FilterSpec } from 'components/table/numericFilter';
 import type { PositionsSummary, RulePositionRecord } from 'types';
 import type { StrategyRule, StrategyRuleRun } from 'lib/strategy/types';
 import type { TemporalRow } from 'lib/strategy/temporalSummary';
@@ -71,17 +72,22 @@ const TABLE_RELOAD_STATUSES = new Set([
 ]);
 
 /**
- * Evidence scope: current run · one run #N · all-time.
+ * Evidence scope: current run · one run #N · all-time (both modes or one).
  *
  * A run is keyed by `(runSeq, mode)`, never `runSeq` alone — `run_seq` restarts per
  * mode, so a rule toggled from real to paper owns two runs called `#1`. `all` spans
  * both modes (the rule's whole history, not the history of its current switch
  * position); `current` is the newest run in the mode the rule is in now.
+ *
+ * `all` + `mode` is the same all-time population narrowed to one trade mode — the
+ * per-mode ledger, which is what you compare against. It rides the server-side `mode`
+ * filter rather than a fourth server scope: one predicate for the page, the pager
+ * total, the summary card and the chart series, so they cannot drift apart.
  */
 export type EvidenceScope =
   | { kind: 'current' }
   | { kind: 'run'; runSeq: number; mode: string }
-  | { kind: 'all' };
+  | { kind: 'all'; mode?: string };
 
 const analyzePositionRowKey = (r: RulePositionRecord) => r.id;
 
@@ -140,11 +146,20 @@ function evidenceChartPoints(rows: RulePositionRecord[]): PositionChartPoint[] {
 
 function toFetchScope(s: EvidenceScope): PositionFetchScope {
   if (s.kind === 'run') return { kind: 'run', runSeq: s.runSeq, mode: s.mode };
+  // A mode-pinned all-time is still `scope=all` on the wire — the narrowing is a
+  // filter, so it lands on the summary and the series with no second code path.
   return { kind: s.kind };
 }
 
 function scopeKey(s: EvidenceScope): string {
-  return s.kind === 'run' ? `run:${s.mode}:${s.runSeq}` : s.kind;
+  if (s.kind === 'run') return `run:${s.mode}:${s.runSeq}`;
+  if (s.kind === 'all' && s.mode) return `all:${s.mode}`;
+  return s.kind;
+}
+
+/** The server-side filter a mode-pinned all-time scope narrows with, if any. */
+function scopeFiltersFor(s: EvidenceScope): Record<string, FilterSpec> {
+  return s.kind === 'all' && s.mode ? { mode: { op: 'eq', val: s.mode } } : {};
 }
 
 function formatRunPnl(run: StrategyRuleRun): string {
@@ -239,6 +254,11 @@ export function RuleAnalyzePanel({
   const [opErr, setOpErr] = useState<string | null>(null);
   const [pausing, setPausing] = useState(false);
   const [inspectId, setInspectId] = useState<string | null>(null);
+  /** Guards the one-shot empty-current-run fallback below; set once it has fired or
+   *  the user has picked a scope, so their choice is never overridden. */
+  const autoScoped = useRef(false);
+  const wasLoading = useRef(false);
+  const loadSettled = useRef(false);
 
   const { data: runs = [], isFetching: runsLoading } = useGetStrategyRuleRunsQuery(ruleId, {
     skip: !ruleId,
@@ -258,6 +278,14 @@ export function RuleAnalyzePanel({
   const currentRun = ownRuns[0] ?? null;
   const priorRuns = ownRuns.slice(1);
 
+  // Modes to offer as their own all-time ledger, the rule's own first. Only when it
+  // has actually traded in both: with one mode "All-time" already IS that mode, and
+  // a second chip repeating it is noise.
+  const allTimeModes = useMemo(() => {
+    const others = [...new Set(otherRuns.map((r) => r.mode))];
+    return others.length > 0 ? [ownMode, ...others] : [];
+  }, [otherRuns, ownMode]);
+
   // Runs with a finalized PnL, oldest→newest, for the cross-run trend strip. Own
   // mode only: paper PnL and real PnL are not one series (paper pays no slippage a
   // real fill pays), so one strip mixing them reads as decay that never happened.
@@ -275,29 +303,38 @@ export function RuleAnalyzePanel({
     [focus, chartPoints, timezone],
   );
 
+  // The scope's own narrowing (mode-pinned all-time) rides with the focus lenses:
+  // both are wrapper-injected predicates the user never typed, and both must reach
+  // the page, the pager total AND the summary card or those three disagree.
+  const scopeFilters = useMemo(() => scopeFiltersFor(scope), [scope]);
+  const injectedFilters = useMemo(
+    () => ({ ...scopeFilters, ...focusFilters }),
+    [scopeFilters, focusFilters],
+  );
+
   const body = useMemo(() => {
     const base = toTableRequest(query, POS_NUMERIC);
-    if (Object.keys(focusFilters).length === 0) return base;
+    if (Object.keys(injectedFilters).length === 0) return base;
     return {
       ...base,
       filters: {
         ...base.filters,
-        ...focusFilters,
+        ...injectedFilters,
       },
     };
-  }, [query, focusFilters]);
+  }, [query, injectedFilters]);
 
   const summaryBody = useMemo(() => {
     const base = toSummaryBody(query, POS_NUMERIC);
-    if (Object.keys(focusFilters).length === 0) return base;
+    if (Object.keys(injectedFilters).length === 0) return base;
     return {
       ...base,
       filters: {
         ...base.filters,
-        ...focusFilters,
+        ...injectedFilters,
       },
     };
-  }, [query, focusFilters]);
+  }, [query, injectedFilters]);
 
   const fetchScope = useMemo(() => toFetchScope(scope), [scope]);
 
@@ -326,7 +363,33 @@ export function RuleAnalyzePanel({
     setInspectId(null);
     setChartPoints([]);
     setTemporalBaseRows([]);
+    autoScoped.current = false;
+    loadSettled.current = false;
   }, [ruleId, initialScopeKind]);
+
+  // One-shot fallback out of an empty "current run". Restarting a rule opens a
+  // brand-new run that has traded nothing yet, and flipping `trade_mode` leaves it
+  // with no current run at all — either way the default scope pages an empty table
+  // while the rule's whole history sits one chip away, which reads as "the rule has
+  // no positions". Fires only on a settled load of the pristine view, so an empty
+  // run the user picked (or filtered down to) stays empty and stays put.
+  const queryIsPristine =
+    !query.search &&
+    Object.keys(query.colFilters).length === 0 &&
+    Object.keys(query.structuredFilters ?? {}).length === 0;
+  useEffect(() => {
+    // Latched, not edge-triggered: the run list arrives on its own request, so the
+    // decision often can't be made on the tick the page load lands.
+    if (wasLoading.current && !loading) loadSettled.current = true;
+    wasLoading.current = loading;
+    if (!loadSettled.current || autoScoped.current) return;
+    if (scope.kind !== 'current' || error || total !== 0) return;
+    if (!queryIsPristine || focus.length > 0) return;
+    // Nothing to fall back to when the current run is the rule's only run.
+    if (runs.length === 0 || (currentRun != null && runs.length === 1)) return;
+    autoScoped.current = true;
+    setScope({ kind: 'all' });
+  }, [loading, error, total, scope.kind, queryIsPristine, focus.length, runs.length, currentRun]);
 
   const [seriesTick, setSeriesTick] = useState(0);
   useEffect(() => {
@@ -353,7 +416,13 @@ export function RuleAnalyzePanel({
   useEffect(() => {
     if (!ruleId) return;
     const ctrl = new AbortController();
-    const seriesBody = toSummaryBody(query, POS_NUMERIC);
+    // Scope filters only — the focus lenses filter *against* this cohort, so folding
+    // them in here would shrink the very population the lenses are drawn from.
+    const base = toSummaryBody(query, POS_NUMERIC);
+    const seriesBody =
+      Object.keys(scopeFilters).length === 0
+        ? base
+        : { ...base, filters: { ...base.filters, ...scopeFilters } };
     void fetchAllTablePages(
       (b, signal) => fetchRulePositionsPage(STRATEGY_SEG, ruleId, b, fetchScope, signal),
       seriesBody,
@@ -372,7 +441,7 @@ export function RuleAnalyzePanel({
         }
       });
     return () => ctrl.abort();
-  }, [ruleId, fetchScope, tableFilterKey, seriesTick]);
+  }, [ruleId, fetchScope, scopeFilters, tableFilterKey, seriesTick]);
 
   // Selected position for the injected inspect modal. Resolved off the current page
   // rather than held as a row, so a reload/refilter can't strand a stale copy.
@@ -384,9 +453,12 @@ export function RuleAnalyzePanel({
   // Run + Mode are run-identity columns: they earn their width only where a row's
   // run isn't already fixed by the scope, i.e. all-time. Mode stays on for a
   // single-run scope in the *other* mode too — that is the one place the header
-  // says one thing and every mode-carrying row would otherwise say nothing.
+  // says one thing and every mode-carrying row would otherwise say nothing. A
+  // mode-pinned all-time drops it again: every row says the same word.
   const showRunCol = scope.kind === 'all';
-  const showModeCol = showRunCol || (scope.kind === 'run' && scope.mode !== ownMode);
+  const showModeCol =
+    (scope.kind === 'all' && !scope.mode) ||
+    (scope.kind === 'run' && scope.mode !== ownMode);
   const tableColumns = useMemo(
     () =>
       positionColumns.filter(
@@ -435,6 +507,8 @@ export function RuleAnalyzePanel({
   };
 
   const selectScope = (next: EvidenceScope) => {
+    // A scope the user picked is theirs to keep, empty or not.
+    autoScoped.current = true;
     setScope(next);
     setQuery((q) => ({ ...q, page: 1 }));
     setFocus([]);
@@ -477,9 +551,11 @@ export function RuleAnalyzePanel({
         ? `Current run #${currentRun.run_seq}`
         : 'Current run'
       : scope.kind === 'all'
-        ? otherRuns.length > 0
-          ? 'All-time · paper + real'
-          : 'All-time'
+        ? scope.mode
+          ? `All-time · ${scope.mode}`
+          : allTimeModes.length > 0
+            ? 'All-time · paper + real'
+            : 'All-time'
         : // The mode is part of the run's identity once the rule has both.
           `Run #${scope.runSeq}${scope.mode === ownMode ? '' : ` (${scope.mode})`}`;
 
@@ -654,11 +730,24 @@ export function RuleAnalyzePanel({
             />
           ))}
           <ScopeChip
-            active={scope.kind === 'all'}
+            active={scope.kind === 'all' && !scope.mode}
             onClick={() => selectScope({ kind: 'all' })}
             label="All-time"
-            sub={otherRuns.length > 0 ? 'paper + real' : undefined}
+            sub={allTimeModes.length > 0 ? 'paper + real' : undefined}
           />
+          {/* The same all-time population, one trade mode at a time. Paper and real
+              are not one ledger — paper pays no slippage a real fill pays — so the
+              combined chip above is for coverage, these are for reading results. */}
+          {allTimeModes.map((m) => (
+            <ScopeChip
+              key={`all-${m}`}
+              active={scope.kind === 'all' && scope.mode === m}
+              onClick={() => selectScope({ kind: 'all', mode: m })}
+              label="All-time"
+              badge={m}
+              title={`Every ${m} run of this rule`}
+            />
+          ))}
         </div>
       </div>
 
@@ -704,7 +793,9 @@ export function RuleAnalyzePanel({
         defaultCols={EVIDENCE_DEFAULT_COLS}
         emptyMessage={
           scope.kind === 'all'
-            ? 'No positions in any run, in either mode.'
+            ? scope.mode
+              ? `No ${scope.mode} positions in any run.`
+              : 'No positions in any run, in either mode.'
             : scope.kind === 'run'
               ? `No positions in ${scope.mode} run #${scope.runSeq}.`
               : 'No positions in the current run yet — pick a prior run or All-time.'

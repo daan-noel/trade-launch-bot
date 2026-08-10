@@ -129,12 +129,16 @@ server compare. Percent columns that render `×100` (Win %, Open %) use a local
   route or from `TokenTable`. Use `LazyTokenTradeChart`, `LazyLabTokenInspect(Modal)`, and
   `TokenTable`'s `LazyTokenChartsGrid` (Charts toggle). Creation-stats trend charts
   are lazy inside the page/section so the control shell paints first.
-- **Vol/non-vol overlay gate:** `TokenPriceChart` only draws the lines when
-  `flowPatternKeys` is a non-empty set (fingerprint `volume_ix_patterns`). Resolve via
-  `hooks/useFlowPatternKeys` / `useFlowPatternKeysForRule` / `useResolvedFlowPatternKeys`
-  (or `lib/flow/flowPatternKeys` for a raw pattern list). Any rule/fingerprint-scoped chart
-  (`TokenTable` Charts, Floor inspect, lab inspect) must pass them — omit only on
-  mint-only surfaces with no fingerprint.
+- **Vol/non-vol overlay gate:** `TokenPriceChart` draws the lines whenever *something* can
+  classify — fingerprint `volume_ix_patterns` **or** just the token's creator wallet. With
+  patterns the split is the engine's volume-maker vs organic; without, it degrades to
+  creator + wallets they traded with vs the rest, and the toolbar tooltip says so. Only a
+  token with neither disables the toggle. The per-trade **Vol badge keeps the stricter
+  gate** (non-empty patterns) — it asserts a structural match, not a cohort.
+  Resolve keys via `hooks/useFlowPatternKeys` / `useFlowPatternKeysForRule` /
+  `useResolvedFlowPatternKeys` (or `lib/flow/flowPatternKeys` for a raw pattern list). Any
+  rule/fingerprint-scoped chart (`TokenTable` Charts, Floor inspect, lab inspect) still
+  passes them, or the reader silently gets the weaker split.
 - **Pointer x -> chart coordinate goes through `paneCoords`.** lightweight-charts lays the
   container out as `[left axis][pane][right axis]` and every time-scale coordinate is
   measured from the PANE, so a bare `clientX - rect.left` is off by

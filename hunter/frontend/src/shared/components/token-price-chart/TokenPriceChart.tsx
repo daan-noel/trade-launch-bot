@@ -287,6 +287,10 @@ function walletGlyph(w: ProfileWalletInfo): string {
  *  exit (fee/rounding dust rarely leaves the balance at exactly zero). */
 const SELL_ALL_DUST_FRACTION = 0.02;
 
+/** Stable empty pattern set — an unconfigured fingerprint classifies on the
+ *  creator wallet alone, and a fresh `new Set()` per render would re-run the fold. */
+const EMPTY_FLOW_PATTERN_KEYS: ReadonlySet<string> = new Set();
+
 export function buildWalletMarkerDefs(
   // Must be in canonical order (`slot → tx_index → leg_index`) — position tracking
   // for first_buy/sell_all replays each wallet's trades in execution order.
@@ -589,8 +593,15 @@ export function TokenPriceChart({
   );
   const [showEventMarkers, setShowEventMarkers] = useState(initialPrefs.showEventMarkers);
   const [showFlowLines, setShowFlowLines] = useState(initialPrefs.showFlowLines);
-  /** Same gate as the trades-table Vol badge — empty/omit ⇒ no overlay. */
-  const flowLinesAvailable = flowPatternKeys != null && flowPatternKeys.size > 0;
+  /** True once the fingerprint supplies `volume_ix_patterns` — the split is then
+   *  the engine's own volume-maker vs organic classification. */
+  const flowPatternsConfigured = flowPatternKeys != null && flowPatternKeys.size > 0;
+  /** Draw the overlay whenever SOMETHING can classify: patterns, or just the
+   *  creator wallet (which alone splits creator + everyone they traded with off
+   *  from the rest — see `classifyFlow`). Both readings are useful on a chart,
+   *  so the toggle only goes dead when neither input exists; the toolbar tooltip
+   *  says which of the two you're looking at. */
+  const flowLinesAvailable = flowPatternsConfigured || !!creatorWallet;
   const flowLinesVisible = showFlowLines && flowLinesAvailable;
   const flowLinesAvailableRef = useRef(flowLinesAvailable);
   flowLinesAvailableRef.current = flowLinesAvailable;
@@ -1254,14 +1265,15 @@ export function TokenPriceChart({
     }
   }, [bars, style, showChart, groupingKey, priceUnit, highlightBarKey, snapshotVisibleViewport]);
 
-  // Vol/non-vol cumulative overlay (left price scale) — only when fingerprint
-  // has non-empty volume_ix_patterns (matches trades-table Vol badge gate).
+  // Vol/non-vol cumulative overlay (left price scale). With no configured
+  // patterns the structural test never fires and the split degrades to
+  // creator-vs-rest — still drawn, and labelled as such by the toolbar.
   const flowLines = useMemo(() => {
-    if (!flowLinesAvailable || !flowPatternKeys) {
+    if (!flowLinesAvailable) {
       return { vol: [], nonVol: [] } satisfies FlowLines;
     }
     return buildFlowLines(sortedTrades, groupMode, intervalSec, flowBasis as FlowBasis, {
-      patternKeys: flowPatternKeys,
+      patternKeys: flowPatternKeys ?? EMPTY_FLOW_PATTERN_KEYS,
       creatorWallet,
     });
   }, [
@@ -1794,6 +1806,7 @@ export function TokenPriceChart({
         trimEmptyBars={trimEmptyBars}
         showFlowLines={showFlowLines}
         flowLinesAvailable={flowLinesAvailable}
+        flowPatternsConfigured={flowPatternsConfigured}
         rangeSelectMode={rangeSelectMode}
         crosshair={crosshair}
         formatFlow={formatFlow}

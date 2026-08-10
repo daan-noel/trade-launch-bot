@@ -165,14 +165,17 @@ pub async fn delete_fingerprint(
 /// live twin, scored over the traded positions in the synced mirror. That's what
 /// makes the lab Rules list a real scoreboard (PnL / Avg% / Win% / W-L / N) rather
 /// than a bare list, so rules can be ranked and compared here off live results.
+/// `?score_mode=paper|real` pins every rule to one mode's ledger — same contract.
 pub async fn list_rules(
     app_state: web::Data<Arc<LocalState>>,
     query: web::Query<ScoreScopeParam>,
 ) -> impl Responder {
+    let q = query.into_inner();
     rule_positions::rules_with_counters(
         &app_state.core.strategy_repo(),
         &rule_repo(&app_state),
-        query.into_inner().score_scope.unwrap_or(ScoreScope::All),
+        q.score_scope.unwrap_or(ScoreScope::All),
+        q.score_mode,
     )
     .await
 }

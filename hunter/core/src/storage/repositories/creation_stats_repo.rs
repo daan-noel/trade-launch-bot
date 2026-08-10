@@ -249,15 +249,6 @@ pub struct GroupedGroupRow {
     /// `trades::float8 / total::float8` — the per-token figure `rank_by=
     /// trades_per_token` ranks on; `total` is never 0 for a returned group.
     pub trades_avg: f64,
-    /// Set when `ix_labels` is **not** in `group_by` but an `ix_labels_filter`
-    /// is active: the **mode** (most common) on-chain-ordered label sequence
-    /// across the group's rows (see `grouped()`'s `MODE() WITHIN GROUP`). Folded
-    /// into `group_key["ix_labels"]` before returning so a filtered-but-ungrouped
-    /// card still seeds a fingerprint with a real ordered axis. The set-equality
-    /// filter is order-blind, so rows can disagree on order — mode picks the
-    /// majority rather than requiring unanimity (which left most cards empty).
-    /// `None` ⇒ fall back to the filter's own label list in `grouped()`.
-    pub ix_labels_ordered: Option<Vec<String>>,
 }
 
 /// One day-of-week × hour-of-day cell for group `g` (count only).
@@ -529,30 +520,13 @@ fn field_filter_pred(
     }
 }
 
-/// SQL expression for `base`'s per-row `ordered_labels` column (see `grouped()`).
-/// Only worth computing when an `ix_labels_filter` is active AND `ix_labels`
-/// isn't itself a group field — otherwise `group_key` either has no ix_labels
-/// axis to safely fill in, or already carries the real (grouped) one, so the
-/// column is a constant `NULL` and costs nothing extra per row.
-fn ordered_labels_group_expr(ix_labels_filter: Option<&[String]>, fields: &[GroupField]) -> String {
-    let include = ix_labels_filter.is_some() && !fields.contains(&GroupField::IxLabels);
-    if include {
-        format!(
-            "ARRAY(SELECT e FROM {} WITH ORDINALITY AS x(e, ord) ORDER BY ord)",
-            ix_labels_elements_sql("t.ix_labels")
-        )
-    } else {
-        "NULL::text[]".to_string()
-    }
-}
-
 /// Fold an ordered label sequence into a `group_key` object using the SAME
 /// `" | "`-joined shape `group_field_sql(IxLabels, ..)` renders when `ix_labels`
 /// is an actual group field — so a filtered-but-ungrouped card reads identically
 /// to a grouped one everywhere downstream (fingerprint identity, the "already a
 /// fingerprint" badge, the card's own key display). A no-op when `ordered` is
 /// `None`/empty, or `group_key` already has an `ix_labels` entry (the real
-/// grouped case, or a prior MODE fold) — never overwrites.
+/// grouped case) — never overwrites.
 fn fold_ordered_labels_into_group_key(group_key: &mut JsonValue, ordered: Option<Vec<String>>) {
     let Some(labels) = ordered else { return };
     if labels.is_empty() {
@@ -785,10 +759,11 @@ impl CreationStatsRepo {
         // SSOT for how one lowers: discrete fields compare the rendered group-key
         // TEXT against a bound `text[]`, the bucketed SOL fields pin an exact
         // amount on their raw lamports column (they have no typeable group-key
-        // form). `ix_labels` is a set-equality match (order-independent) against
-        // the sorted-distinct label array. Binds start at `$7` (after top=$6);
-        // only a predicate that returned a bind advances `idx`, so predicate index
-        // and bind order stay in lockstep.
+        // form). `ix_labels` is an **exact ordered sequence** match through the
+        // `ix_labels_ordered_eq_sql` SSOT — same semantics as the engine matcher
+        // and the scoped path. Binds start at `$7` (after top=$6); only a
+        // predicate that returned a bind advances `idx`, so predicate index and
+        // bind order stay in lockstep.
         let mut preds = String::new();
         let mut filter_binds: Vec<Vec<String>> = Vec::new();
         let mut idx = 7;
@@ -801,29 +776,14 @@ impl CreationStatsRepo {
             }
         }
         if let Some(labels) = ix_labels_filter {
-            let mut sorted: Vec<String> = labels.to_vec();
-            sorted.sort();
-            sorted.dedup();
-            let elems = ix_labels_elements_sql("t.ix_labels");
             preds.push_str(&format!(
-                "\n  AND (SELECT array_agg(DISTINCT e.val ORDER BY e.val) \
-                 FROM {elems} AS e(val)) = ${idx}"
+                "\n  AND {}",
+                ix_labels_ordered_eq_sql("t.ix_labels", &format!("${idx}"))
             ));
-            filter_binds.push(sorted);
+            filter_binds.push(labels.to_vec());
             idx += 1;
         }
         let _ = idx;
-
-        // When `ix_labels` isn't itself a group field but a filter narrowed the
-        // corpus by *sorted, de-duplicated* label set (order-blind), a group's
-        // rows can still disagree on the real on-chain-ordered sequence. Compute
-        // each row's exact ordered sequence so `ranked` can take the MODE (most
-        // common) — a fingerprint's `ix_labels` match is exact-ordered (see
-        // `hunter_engine::fingerprint::matches`), so we need a concrete sequence,
-        // not the filter's set. Unanimity was too strict and left most filtered
-        // cards without `ix_labels`. Skipped (constant `NULL`) when there's no
-        // filter or ix_labels is already grouped.
-        let ordered_labels_expr = ordered_labels_group_expr(ix_labels_filter, fields);
 
         // Shared CTE: window+segment-filtered rows with their group key + time
         // dimensions, then the top-N groups ranked by volume (g = 0-based rank).
@@ -838,8 +798,7 @@ impl CreationStatsRepo {
                        EXTRACT(DOW  FROM (t.created_at AT TIME ZONE $1))::int AS dow,
                        EXTRACT(HOUR FROM (t.created_at AT TIME ZONE $1))::int AS hour,
                        {bkt} AS bkt,
-                       ti.trade_count AS trade_count,
-                       {ordered_labels} AS ordered_labels
+                       ti.trade_count AS trade_count
                 FROM tokens t
                 LEFT JOIN tokens_info ti ON ti.mint_address = t.mint_address
                 WHERE t.created_at >= $2 AND t.created_at < $3
@@ -849,8 +808,7 @@ impl CreationStatsRepo {
             ranked AS (
                 SELECT gkey, COUNT(*) AS total,
                        COALESCE(SUM(trade_count), 0)::bigint AS trades,
-                       (row_number() OVER (ORDER BY {order}) - 1) AS g,
-                       mode() WITHIN GROUP (ORDER BY ordered_labels) AS ix_labels_ordered
+                       (row_number() OVER (ORDER BY {order}) - 1) AS g
                 FROM base
                 GROUP BY gkey
                 ORDER BY {order}
@@ -858,7 +816,6 @@ impl CreationStatsRepo {
             )
             "#,
             gkey = gkey_sql,
-            ordered_labels = ordered_labels_expr,
         );
 
         // SQL strings bound to named locals so the queries (which borrow them)
@@ -866,8 +823,7 @@ impl CreationStatsRepo {
         // per-field filter arrays; applied identically to all three sub-queries.
         let groups_sql = format!(
             "{cte} SELECT g::bigint AS g, gkey AS group_key, total::bigint AS total, \
-             trades::bigint AS trades, (trades::float8 / total::float8) AS trades_avg, \
-             ix_labels_ordered \
+             trades::bigint AS trades, (trades::float8 / total::float8) AS trades_avg \
              FROM ranked ORDER BY g"
         );
         let cells_sql = format!(
@@ -901,13 +857,12 @@ impl CreationStatsRepo {
         let cells = run!(&cells_sql, GroupedHeatCellRow);
         let points = run!(&points_sql, GroupedTrendPointRow);
 
-        // Prefer the MODE on-chain sequence; if SQL returned nothing (e.g. all
-        // NULL), fall back to the filter's own label list so create-from-card
-        // never silently drops the axis the user already pinned on the corpus.
-        for g in &mut groups {
-            let ordered = g.ix_labels_ordered.take();
-            fold_ordered_labels_into_group_key(&mut g.group_key, ordered);
-            if let Some(labels) = ix_labels_filter {
+        // The filter is an exact ordered sequence, so every row in every group
+        // carries EXACTLY these labels — fold them straight into the key so a
+        // filtered-but-ungrouped card seeds a fingerprint with the real axis
+        // instead of silently dropping what the user pinned on the corpus.
+        if let Some(labels) = ix_labels_filter {
+            for g in &mut groups {
                 fold_ordered_labels_into_group_key(&mut g.group_key, Some(labels.to_vec()));
             }
         }
@@ -937,9 +892,9 @@ impl CreationStatsRepo {
             preds.push_str(&format!("\n  AND {clause}"));
         }
         // ix_labels: ordered exact match over the unwrapped label sequence
-        // (handles bare-array + `{instructions:[…]}`) — NOT `grouped()`'s
-        // sorted-set-equality `ix_labels_filter`. Bound as `text[]`. Owned so
-        // it can be re-bound across all three queries.
+        // (handles bare-array + `{instructions:[…]}`) — the same
+        // `ix_labels_ordered_eq_sql` SSOT `grouped()`'s `ix_labels_filter` uses.
+        // Bound as `text[]`. Owned so it can be re-bound across all three queries.
         let ix_bind: Option<Vec<String>> =
             configured_labels(fp.ix_labels.as_deref()).map(<[String]>::to_vec);
         if ix_bind.is_some() {
@@ -974,8 +929,7 @@ impl CreationStatsRepo {
         let groups_sql = format!(
             "{cte} SELECT 0::bigint AS g, '{{}}'::jsonb AS group_key, COUNT(*)::bigint AS total, \
              COALESCE(SUM(trade_count), 0)::bigint AS trades, \
-             (COALESCE(SUM(trade_count), 0)::float8 / COUNT(*)::float8) AS trades_avg, \
-             NULL::text[] AS ix_labels_ordered \
+             (COALESCE(SUM(trade_count), 0)::float8 / COUNT(*)::float8) AS trades_avg \
              FROM base HAVING COUNT(*) > 0"
         );
         let cells_sql = format!(
@@ -1098,17 +1052,12 @@ pub fn build_grouped_tokens_where(
         }
         clauses.push(pred);
     }
+    // Exact ordered sequence — the same `ix_labels_ordered_eq_sql` SSOT
+    // `grouped()` filters the corpus with, so the drill-down's rows are exactly
+    // the rows the card counted.
     if let Some(labels) = ix_labels_filter {
-        let mut sorted: Vec<String> = labels.to_vec();
-        sorted.sort();
-        sorted.dedup();
-        args.push(SqlArg::StrArray(sorted));
-        let elems = ix_labels_elements_sql("t.ix_labels");
-        clauses.push(format!(
-            "(SELECT array_agg(DISTINCT e.val ORDER BY e.val) \
-              FROM {elems} AS e(val)) = ${}",
-            args.len()
-        ));
+        args.push(SqlArg::StrArray(labels.to_vec()));
+        clauses.push(ix_labels_ordered_eq_sql("t.ix_labels", &format!("${}", args.len())));
     }
 
     // Recurring weekly slot (a heatmap tile): every occurrence of this
@@ -1534,28 +1483,8 @@ mod grouped_tokens_tests {
     }
 
     #[test]
-    fn ordered_labels_expr_only_when_filtered_and_ungrouped() {
-        let labels = vec!["Pump.Fun: Create".to_string(), "Pump.Fun: Buy".to_string()];
-
-        // Filter active, grouping by something else ⇒ compute the real ordered
-        // sequence so `ranked` can check unanimity.
-        let sql = ordered_labels_group_expr(Some(&labels), &[GroupField::CuLimit]);
-        assert!(sql.contains("WITH ORDINALITY"), "expected ordinality expr, got: {sql}");
-
-        // No filter ⇒ nothing to verify, constant NULL (zero added cost).
-        assert_eq!(ordered_labels_group_expr(None, &[GroupField::CuLimit]), "NULL::text[]");
-
-        // Already grouped by ix_labels ⇒ group_key has the real thing already;
-        // redundant to also compute it here.
-        assert_eq!(
-            ordered_labels_group_expr(Some(&labels), &[GroupField::IxLabels]),
-            "NULL::text[]"
-        );
-    }
-
-    #[test]
     fn fold_ordered_labels_fills_missing_ix_labels_only() {
-        // Mode / verified sequence ⇒ folded in, on-chain order preserved
+        // The filter's own sequence ⇒ folded in, on-chain order preserved
         // (not sorted alphabetically — "Buy" before "Create" here).
         let mut gk = serde_json::json!({"cu_limit": "200000"});
         fold_ordered_labels_into_group_key(
@@ -1808,6 +1737,42 @@ mod grouped_tokens_tests {
         fp.spendable_lamports_in = Some(1_050_000_000); // 1.05 SOL @ 0.1 ⇒ [1.0, 1.1)
         let gk = group_key_from_fingerprint(&fp);
         assert_eq!(gk["spendable_lamports_in"], "1.0–1.1");
+    }
+
+    /// **The bug this locks.** The label filter used to lower to
+    /// `array_agg(DISTINCT …) = sorted_deduped_input`, so a 7-label sequence
+    /// carrying `"System Program: Transfer"` twice was compared as a 6-label
+    /// SET — matching tokens with one Transfer, and tokens with the same labels
+    /// in a different order. `ix_labels` is an exact ORDERED sequence
+    /// everywhere else (`hunter_engine::fingerprint::matches`,
+    /// `normalize_label_vec`, `grouped_scoped`); this surface must not be the
+    /// one reader that disagrees.
+    #[test]
+    fn ix_labels_filter_is_ordered_and_keeps_duplicates() {
+        let labels = [
+            "Compute Budget: SetComputeUnitLimit".to_string(),
+            "Pump.Fun: Create_v2".to_string(),
+            "System Program: Transfer".to_string(),
+            "System Program: Transfer".to_string(),
+        ];
+        let (where_sql, args) = build_grouped_tokens_where(
+            &[],
+            &[],
+            &[],
+            Some(&labels),
+            SOL_BUCKET_WIDTH,
+            None,
+            None,
+            "",
+            filter(now(), now()),
+        );
+        assert!(where_sql.contains("WITH ORDINALITY"), "not an ordered compare: {where_sql}");
+        assert!(!where_sql.contains("DISTINCT"), "still de-duplicating: {where_sql}");
+        match args.last() {
+            // Bound verbatim: both Transfers survive, in on-chain order.
+            Some(SqlArg::StrArray(a)) => assert_eq!(a.as_slice(), labels.as_slice()),
+            other => panic!("expected StrArray, got {other:?}"),
+        }
     }
 
     #[test]

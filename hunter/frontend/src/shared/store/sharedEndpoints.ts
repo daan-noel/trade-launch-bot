@@ -26,6 +26,18 @@ import type {
 } from 'lib/strategy/types';
 
 /**
+ * How the Rules scoreboard scores each rule. A bare string is the legacy scope-only
+ * form; the object form adds `mode`, which pins every rule to ONE trade mode's ledger
+ * instead of its own `trade_mode`. Omitting `mode` is not the same as picking one —
+ * it is the per-rule "own mode" board.
+ */
+export type RuleScoreArg =
+  | 'current'
+  | 'all'
+  | { scope?: 'current' | 'all'; mode?: TradeMode }
+  | void;
+
+/**
  * Args for the server-side paginated Tokens view: the backend filters/sorts/pages so
  * only one page crosses the wire. Mirrors the DataTable view-state; page-owned
  * quick filters (Created / Dead / Migrated) and mint-set arrive already folded
@@ -212,13 +224,22 @@ export const sharedApi = baseApi.injectEndpoints({
     }),
 
     // ── Strategy rules (generic engine, live bin) ────────────────────────────
-    // `scoreScope`: `current` = latest-run counters (Control keep/kill);
+    // `scope`: `current` = latest-run counters (Control keep/kill);
     // omit/`all` = legacy (real all-time, paper latest run).
-    getStrategyRules: builder.query<StrategyRule[], 'current' | 'all' | void>({
-      query: (scoreScope) =>
-        scoreScope === 'current'
-          ? '/api/strategy-rules?score_scope=current'
-          : '/api/strategy-rules',
+    // `mode`: score EVERY rule in that one trade mode instead of its own — the only
+    // way to read a rule's paper record while it trades real. Omit for the rule's own
+    // mode. With a mode pinned, `all` is all-time on both sides (no paper/real span
+    // asymmetry). The bare-string arg is the legacy scope-only form, kept because
+    // most callers want the plain list.
+    getStrategyRules: builder.query<StrategyRule[], RuleScoreArg>({
+      query: (arg) => {
+        const { scope, mode } = typeof arg === 'string' ? { scope: arg, mode: undefined } : arg ?? {};
+        const q = new URLSearchParams();
+        if (scope === 'current') q.set('score_scope', 'current');
+        if (mode) q.set('score_mode', mode);
+        const qs = q.toString();
+        return qs ? `/api/strategy-rules?${qs}` : '/api/strategy-rules';
+      },
       providesTags: ['StrategyRule'],
     }),
     /**
