@@ -5,7 +5,7 @@ use sqlx::{types::Json, PgPool};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::api::table_query::{FilterOp, FilterSpec, MAX_FILTER_IN_VALUES, TableRequest};
+use crate::api::table_query::{as_flag, FilterOp, FilterSpec, MAX_FILTER_IN_VALUES, TableRequest};
 use crate::config::constants::{lamports_to_sol, sol_to_lamports};
 use crate::strategies::kernel::{round_trip_with_costs, weighted_return_pct, CostModel};
 use crate::strategies::run_rollup::{self, RunRollup};
@@ -869,6 +869,21 @@ fn push_filter_predicate(
         }
         // A numeric op on a text column is meaningless → drop.
         (FilterKind::Text, _) => {}
+
+        // -- Boolean columns: equality only, against a real `bool` bind --------
+        // The operand goes through the one flag vocabulary, so the DataTable
+        // dropdown (`yes`/`no`) and the summary tiles (`true`/`false`) narrow the
+        // same column identically. An unrecognized operand drops the predicate.
+        (FilterKind::Bool, FilterOp::Eq | FilterOp::Contains) => {
+            let Some(b) = as_flag(&spec.val) else { return };
+            qb.push(" AND ").push(col).push(" = ").push_bind(b);
+        }
+        (FilterKind::Bool, FilterOp::Neq) => {
+            let Some(b) = as_flag(&spec.val) else { return };
+            qb.push(" AND ").push(col).push(" IS DISTINCT FROM ").push_bind(b);
+        }
+        // Ordering / set ops on a boolean are meaningless → drop.
+        (FilterKind::Bool, _) => {}
 
         // -- Numeric columns: numeric comparisons -------------------------------
         // `In` is a text-only set op; on a numeric column it's a no-op.
@@ -3696,6 +3711,40 @@ mod filter_sql_tests {
             FilterSpec { op: FilterOp::Eq, val: serde_json::json!("paper"), ..Default::default() },
         );
         assert!(mode.contains("sp.mode"), "mode filter must reach SQL: {mode}");
+    }
+
+    /// A flag column binds a real `bool`, for every spelling the UI can send. As a
+    /// `::text` compare it only matched the producer's own spelling — the
+    /// DataTable's `yes` against a column rendering `true` matched NOTHING, so
+    /// "Migrated = Yes" emptied a table full of migrated rows.
+    #[test]
+    fn flag_filters_bind_a_bool_for_every_spelling() {
+        for key in ["migrated", "dead", "mayhem_mode", "cashback"] {
+            for val in ["yes", "true", "1"] {
+                let sql = where_sql(
+                    key,
+                    FilterSpec {
+                        op: FilterOp::Eq,
+                        val: serde_json::json!(val),
+                        ..Default::default()
+                    },
+                );
+                assert!(sql.contains(" = $1"), "{key}={val} must bind a bool: {sql}");
+                assert!(!sql.contains("ILIKE"), "{key}={val} must not text-compare: {sql}");
+            }
+        }
+    }
+
+    /// An operand outside the flag vocabulary drops the predicate rather than
+    /// binding a guess — the same "shape mismatch → no constraint" contract the
+    /// numeric arms follow.
+    #[test]
+    fn unrecognized_flag_operand_drops_the_predicate() {
+        let sql = where_sql(
+            "migrated",
+            FilterSpec { op: FilterOp::Eq, val: serde_json::json!("maybe"), ..Default::default() },
+        );
+        assert!(!sql.contains("is_migrated"), "must drop, not guess: {sql}");
     }
 
     /// The per-rule Evidence table shows a Mode column on its cross-mode scopes, and

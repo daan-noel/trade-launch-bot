@@ -393,7 +393,10 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       },
       searchValue: (r: { instruction_labels?: unknown }) => ixLabelsText(r),
     },
-    // flags — enum filter row (Yes/No); wire values match backend tri-state (`eq`/`contains` → `yes`/`no`).
+    // flags — enum filter row (All/Yes/No), emitted as `{op:'eq', val:'yes'|'no'}`.
+    // Every backend reads that through the one Rust `as_flag` vocabulary (the
+    // Tokens tri-state, the SQL `FilterKind::Bool` whitelist, and the in-memory
+    // `ColKind::Bool` evaluator), so a flag narrows identically on every table.
     {
       key: 'migrated',
       label: 'Migrated',

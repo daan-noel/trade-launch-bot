@@ -225,11 +225,16 @@ pub async fn fetch_by_mints(
 /// Filter-column type: decides which filter operators are legal and how the
 /// value binds. `Text` cols honor substring / exact string match (`ILIKE`);
 /// `Numeric` cols honor the comparison ops with the value bound as `f64` (the
-/// expr is the **uncast** numeric so the compare is numeric, not `::text`).
+/// expr is the **uncast** numeric so the compare is numeric, not `::text`);
+/// `Bool` cols honor equality only, with the operand read through the one
+/// [`as_flag`][crate::api::table_query::as_flag] vocabulary (`yes`/`no`,
+/// `true`/`false`, `1`/`0`) and bound as a real `bool` — never a `::text` compare,
+/// which only matches whichever spelling the producer happened to send.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterKind {
     Text,
     Numeric,
+    Bool,
 }
 
 /// Map a frontend column key to its **trusted** whitelisted `ORDER BY` expression
@@ -275,13 +280,12 @@ pub fn enrich_sort_sql(key: &str) -> Option<&'static str> {
 /// Map a frontend column key to its **trusted** whitelisted filter expression +
 /// type for the enrichment (`t.`/`i.`) columns. `None` = not a known enrichment
 /// filter key. `Numeric` returns the **uncast** expr so numeric operators compare
-/// numerically. Mirrors [`enrich_sort_sql`]'s columns. The boolean columns stay
-/// sort-only except `is_migrated`, which the position-summary Migrated tile
-/// filters on — without it that spec hits the "unknown key → ignored" contract
-/// and is silently dropped, so the lens narrows the charts (a client-side fold)
-/// but never the server-paged table under them.
+/// numerically. Mirrors [`enrich_sort_sql`]'s columns. Every boolean column is
+/// filterable as [`FilterKind::Bool`] — a missing entry hits the "unknown key →
+/// ignored" contract, so the flag dropdown reads as if it filtered while the
+/// server-paged table under it shows everything.
 pub fn enrich_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
-    use FilterKind::{Numeric, Text};
+    use FilterKind::{Bool, Numeric, Text};
     Some(match key {
         // tokens
         "symbol" => ("t.symbol", Text),
@@ -299,13 +303,15 @@ pub fn enrich_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
         "trade_count" => ("i.trade_count", Numeric),
         "first_slot_buy" => ("i.first_slot_buy_lamports", Numeric),
         "first_slot_sell" => ("i.first_slot_sell_lamports", Numeric),
-        // Graduation flag, as text so the `Eq` (ILIKE) arm matches `'true'` /
-        // `'false'` — the boolean columns are otherwise sort-only. COALESCEd for
-        // the same reason `exit_reason` is: the LEFT JOIN leaves a token with no
-        // `tokens_info` row NULL, and `NULL ILIKE 'false'` is NULL, so an
-        // un-enriched token would silently vanish from a "not migrated" cohort
-        // instead of counting as what it is — not known to have migrated.
-        "is_migrated" | "migrated" => ("COALESCE(i.is_migrated, false)::text", Text),
+        // Flags. COALESCEd for the same reason `exit_reason` is: the LEFT JOIN
+        // leaves a token with no `tokens_info` row NULL, and `NULL = false` is
+        // NULL, so an un-enriched token would silently vanish from a "not
+        // migrated" cohort instead of counting as what it is — not known to have
+        // migrated. `t.*` flags are NOT NULL on their own row, so they bind bare.
+        "is_migrated" | "migrated" => ("COALESCE(i.is_migrated, false)", Bool),
+        "is_dead" | "dead" => ("COALESCE(i.is_dead, false)", Bool),
+        "is_mayhem_mode" | "mayhem_mode" | "mayhem" => ("t.is_mayhem_mode", Bool),
+        "is_cashback_enabled" | "cashback" => ("t.is_cashback_enabled", Bool),
         // initial_buy_instruction JSONB — text in JSONB, cast to numeric so the
         // comparison ops work.
         "token_amount" => ("(t.initial_buy_instruction->>'token_amount')::numeric", Numeric),
@@ -337,24 +343,35 @@ mod market_cap_ssot_tests {
         assert_eq!(enrich_filter_sql("market_cap"), Some((MARKET_CAP_SQL, FilterKind::Numeric)));
     }
 
-    /// The Migrated summary tile sends `is_migrated: {op:'eq', val:'true'|'false'}`.
-    /// An unknown key is *silently ignored* by the filter builder, so a missing
-    /// whitelist entry doesn't fail — it just stops narrowing, and the tile reads
-    /// as if it filtered while the table under it shows everything. That is
-    /// exactly what happened before this entry existed, so pin both spellings.
+    /// Every flag column the DataTable renders an All/Yes/No dropdown for is
+    /// filterable, under both the display key and the `is_*` field spelling (the
+    /// Migrated summary tile sends the latter). An unknown key is *silently
+    /// ignored* by the filter builder, so a missing entry doesn't fail — it just
+    /// stops narrowing, and the dropdown reads as if it filtered while the table
+    /// under it shows everything.
     #[test]
-    fn migrated_is_filterable_by_both_spellings() {
-        let expected = Some(("COALESCE(i.is_migrated, false)::text", FilterKind::Text));
-        assert_eq!(enrich_filter_sql("is_migrated"), expected);
-        assert_eq!(enrich_filter_sql("migrated"), expected);
+    fn every_flag_is_filterable_by_both_spellings() {
+        for (display, field, expr) in [
+            ("migrated", "is_migrated", "COALESCE(i.is_migrated, false)"),
+            ("dead", "is_dead", "COALESCE(i.is_dead, false)"),
+            ("mayhem_mode", "is_mayhem_mode", "t.is_mayhem_mode"),
+            ("cashback", "is_cashback_enabled", "t.is_cashback_enabled"),
+        ] {
+            let expected = Some((expr, FilterKind::Bool));
+            assert_eq!(enrich_filter_sql(display), expected, "{display}");
+            assert_eq!(enrich_filter_sql(field), expected, "{field}");
+        }
     }
 
-    /// COALESCE, not a bare cast: the position reads LEFT JOIN `tokens_info`, and
-    /// `NULL ILIKE 'false'` is NULL — an un-enriched token would vanish from a
-    /// "not migrated" cohort rather than count as not known to have migrated.
+    /// COALESCE, not a bare column: the position reads LEFT JOIN `tokens_info`,
+    /// and `NULL = false` is NULL — an un-enriched token would vanish from a "not
+    /// migrated" cohort rather than count as not known to have migrated. The
+    /// `t.*` flags sit on the row's own table and need no such guard.
     #[test]
-    fn migrated_filter_survives_a_missing_tokens_info_row() {
-        let (sql, _) = enrich_filter_sql("is_migrated").expect("whitelisted");
-        assert!(sql.starts_with("COALESCE("), "is_migrated filter must COALESCE the NULL side");
+    fn tokens_info_flags_survive_a_missing_row() {
+        for key in ["is_migrated", "is_dead"] {
+            let (sql, _) = enrich_filter_sql(key).expect("whitelisted");
+            assert!(sql.starts_with("COALESCE("), "{key} filter must COALESCE the NULL side");
+        }
     }
 }

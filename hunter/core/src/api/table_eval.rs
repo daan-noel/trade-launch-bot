@@ -18,15 +18,20 @@
 
 use serde_json::Value;
 
-use super::table_query::{FilterOp, FilterSpec, SortSpec, TableRequest};
+use super::table_query::{as_flag, FilterOp, FilterSpec, SortSpec, TableRequest};
 
 /// Column type for a row field — decides which ops are legal and how a value
-/// compares (string `contains`/`eq` vs numeric compare), mirroring the SQL
-/// `FilterKind`.
+/// compares (string `contains`/`eq` vs numeric compare vs boolean equality),
+/// mirroring the SQL `FilterKind`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ColKind {
     Text,
     Number,
+    /// Flag column (All/Yes/No dropdown). Equality only, with the operand read
+    /// through the one [`as_flag`] vocabulary — a flag filtered as a `Number`
+    /// silently drops `"yes"`, and one filtered as `Text` silently drops
+    /// whichever spelling the producer didn't send. Sorts as 0/1.
+    Bool,
 }
 
 /// Resolves a frontend column key to the JSON field it reads + its type. `None` =
@@ -61,7 +66,7 @@ const SEARCH_FIELDS: [&str; 2] = ["mint_address", "symbol"];
 /// — it's row-owned and diverges per table (a position's vs. a token's date), so
 /// each host maps it itself.
 pub fn resolve_token_enrichment_key(key: &str) -> Option<(&'static str, ColKind)> {
-    use ColKind::{Number, Text};
+    use ColKind::{Bool, Number, Text};
     Some(match key {
         "name" => ("name", Text),
         "creator" | "creator_wallet" => ("creator_wallet", Text),
@@ -84,11 +89,12 @@ pub fn resolve_token_enrichment_key(key: &str) -> Option<(&'static str, ColKind)
         "cu_limit" => ("cu_limit", Number),
         "cu_price" => ("cu_price", Number),
         "ix_count" | "ix_labels_count" => ("ix_labels_count", Number),
-        // Booleans sort/filter via the evaluator's bool→0/1 coercion.
-        "migrated" | "is_migrated" => ("is_migrated", Number),
-        "dead" | "is_dead" => ("is_dead", Number),
-        "mayhem_mode" | "is_mayhem_mode" => ("is_mayhem_mode", Number),
-        "cashback" | "is_cashback_enabled" => ("is_cashback_enabled", Number),
+        // Flags: equality against the shared yes/no/true/false vocabulary, sorted
+        // via the evaluator's bool→0/1 coercion.
+        "migrated" | "is_migrated" => ("is_migrated", Bool),
+        "dead" | "is_dead" => ("is_dead", Bool),
+        "mayhem_mode" | "is_mayhem_mode" => ("is_mayhem_mode", Bool),
+        "cashback" | "is_cashback_enabled" => ("is_cashback_enabled", Bool),
         _ => return None,
     })
 }
@@ -118,6 +124,12 @@ fn field_text(row: &Value, field: &str) -> Option<String> {
         Some(Value::Number(n)) => Some(n.to_string()),
         _ => None,
     }
+}
+
+/// Read a JSON field as a boolean, through the same vocabulary the operand uses
+/// (`true`/`yes`/`1`); `None` if absent/null/unrecognized.
+fn field_flag(row: &Value, field: &str) -> Option<bool> {
+    row.get(field).and_then(as_flag)
 }
 
 /// Raw (case-sensitive) `mint` string for the stable sort tiebreak — mirrors the SQL
@@ -186,6 +198,20 @@ fn row_matches(row: &Value, field: &str, kind: ColKind, spec: &FilterSpec) -> bo
         // Other numeric op on a text field → not a constraint.
         (ColKind::Text, _) => true,
 
+        // Flags: equality only, both sides through the one flag vocabulary. An
+        // unrecognized operand is not a constraint (mirrors the SQL side dropping
+        // the predicate); an absent/unrecognized *field* is not the flag.
+        (ColKind::Bool, FilterOp::Eq | FilterOp::Contains) => match as_flag(&spec.val) {
+            Some(want) => field_flag(row, field) == Some(want),
+            None => true,
+        },
+        (ColKind::Bool, FilterOp::Neq) => match as_flag(&spec.val) {
+            Some(want) => field_flag(row, field) != Some(want),
+            None => true,
+        },
+        // Ordering / set ops on a boolean are meaningless → not a constraint.
+        (ColKind::Bool, _) => true,
+
         (ColKind::Number, FilterOp::Between) => {
             match (operand_num(&spec.min), operand_num(&spec.max)) {
                 (Some(min), Some(max)) => {
@@ -243,7 +269,9 @@ fn cmp_opt<T: PartialOrd>(a: Option<T>, b: Option<T>, desc: bool) -> std::cmp::O
 /// Compare two rows under one resolved sort key.
 fn cmp_by_key(a: &Value, b: &Value, field: &str, kind: ColKind, desc: bool) -> std::cmp::Ordering {
     match kind {
-        ColKind::Number => cmp_opt(field_num(a, field), field_num(b, field), desc),
+        // Flags sort as 0/1 (`field_num` coerces the JSON bool), so a `desc` sort
+        // still puts Yes first exactly as it did when they were `Number` columns.
+        ColKind::Number | ColKind::Bool => cmp_opt(field_num(a, field), field_num(b, field), desc),
         ColKind::Text => cmp_opt(field_text(a, field), field_text(b, field), desc),
     }
 }
@@ -445,6 +473,51 @@ mod tests {
             vec!["a", "m", "z"],
             "trades ASC breaks the pnl tie (a=2 first); m,z tie on both → mint ASC"
         );
+    }
+
+    /// A flag column narrows on the DataTable dropdown's `yes`/`no` AND on a
+    /// summary tile's `true`/`false`. Resolved as `Number`, `"yes"` parsed as no
+    /// number at all and the predicate was silently dropped — the dropdown moved
+    /// and the row count never changed.
+    #[test]
+    fn flag_filters_accept_every_spelling() {
+        let rows = vec![
+            json!({"mint_address":"a","is_migrated":true,"is_dead":false}),
+            json!({"mint_address":"b","is_migrated":false,"is_dead":true}),
+            json!({"mint_address":"c","is_migrated":true,"is_dead":true}),
+        ];
+        for val in [json!("yes"), json!("true"), json!(true), json!(1)] {
+            let (_, total) = apply_table_request(
+                &rows,
+                &req(json!({"filters":{"migrated":{"op":"eq","val":val}}})),
+                resolve_token_enrichment_key,
+            );
+            assert_eq!(total, 2, "migrated={val} keeps a + c");
+        }
+        for val in [json!("no"), json!("false"), json!(false), json!(0)] {
+            let (_, total) = apply_table_request(
+                &rows,
+                &req(json!({"filters":{"is_migrated":{"op":"eq","val":val}}})),
+                resolve_token_enrichment_key,
+            );
+            assert_eq!(total, 1, "migrated={val} keeps b");
+        }
+    }
+
+    /// Flags still sort as 0/1, so `desc` puts Yes first — the behavior they had
+    /// as `Number` columns, kept when they became `Bool`.
+    #[test]
+    fn flag_sort_puts_yes_first_on_desc() {
+        let rows = vec![
+            json!({"mint_address":"a","is_migrated":false}),
+            json!({"mint_address":"b","is_migrated":true}),
+        ];
+        let (page, _) = apply_table_request(
+            &rows,
+            &req(json!({"sorting":[{"col":"migrated","dir":"desc"}]})),
+            resolve_token_enrichment_key,
+        );
+        assert_eq!(page[0]["mint_address"], "b");
     }
 
     #[test]

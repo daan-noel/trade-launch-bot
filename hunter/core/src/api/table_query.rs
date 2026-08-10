@@ -123,6 +123,25 @@ pub struct FilterSpec {
     pub max: serde_json::Value,
 }
 
+/// Coerce a filter operand to a boolean for a **flag** (tri-state All/Yes/No)
+/// column. The DataTable dropdown emits `yes`/`no`; the position-summary Migrated
+/// tile emits `true`/`false`; a JSON bool or `1`/`0` says the same thing. One
+/// parser so every flag producer speaks one vocabulary and no backend has to
+/// string-compare a boolean column. Anything else → `None`, which makes the caller
+/// drop the predicate (the "unrecognized operand → not a constraint" contract).
+pub fn as_flag(v: &serde_json::Value) -> Option<bool> {
+    match v {
+        serde_json::Value::Bool(b) => Some(*b),
+        serde_json::Value::Number(n) => n.as_f64().map(|f| f != 0.0),
+        serde_json::Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "yes" | "true" | "1" => Some(true),
+            "no" | "false" | "0" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// The comparison operator for a [`FilterSpec`]. `Contains` is the default and the
 /// only substring op on text columns (current `ILIKE '%…%'` behavior); the numeric
 /// ops require a numeric-typed column (see `strategy_repo` whitelists). `In` is a

@@ -907,9 +907,12 @@ fn lower_range(
     }
 }
 
-/// Lower a flag column: the panel's tri-state (`"yes"`/`"no"`) drives the `f` map;
-/// any other value (a DataTable substring like `"true"`/`"false"`) stays a per-column
-/// text filter.
+/// Lower a flag column onto the panel's tri-state `f` map. Every spelling of the
+/// flag vocabulary (`yes`/`no` from the dropdown, `true`/`false` from a summary
+/// tile, `1`/`0`) resolves through the one
+/// [`as_flag`][crate::api::table_query::as_flag] reader and normalizes to the
+/// `"yes"`/`"no"` the tri-state clause builder speaks; anything else stays a
+/// per-column text filter.
 fn lower_flag(
     f: &mut HashMap<&'static str, String>,
     col_filters: &mut Vec<(String, String)>,
@@ -917,10 +920,13 @@ fn lower_flag(
     col_key: &str,
     val: &str,
 ) {
-    match val {
-        "yes" | "no" => put_str(f, flag_key, val),
-        "" => {}
-        other => col_filters.push((col_key.to_string(), other.to_string())),
+    if val.is_empty() {
+        return;
+    }
+    match crate::api::table_query::as_flag(&Value::String(val.to_string())) {
+        Some(true) => put_str(f, flag_key, "yes"),
+        Some(false) => put_str(f, flag_key, "no"),
+        None => col_filters.push((col_key.to_string(), val.to_string())),
     }
 }
 
@@ -1855,15 +1861,30 @@ mod lowering_tests {
         assert!(q.col_filters_slice().is_empty(), "panel-routed filters don't hit col_filters");
     }
 
+    /// Every spelling of the flag vocabulary lands on the SAME tri-state, so the
+    /// DataTable dropdown (`yes`/`no`) and a summary tile (`true`/`false`) narrow
+    /// a flag column identically. Comparing the raw string instead let one
+    /// producer's spelling match nothing at all.
     #[test]
-    fn flag_substring_stays_a_col_filter() {
-        // A DataTable substring on a flag column ("true") is NOT the panel tri-state,
-        // so it stays a per-column text filter (unchanged behavior).
+    fn flag_spellings_all_lower_to_the_tri_state() {
+        for (sent, want) in [("yes", "yes"), ("true", "yes"), ("1", "yes"),
+                             ("no", "no"), ("false", "no"), ("0", "no")] {
+            let q = TokenQuery::from_table_request(&req(json!({
+                "filters": {"migrated": {"op":"eq","val":sent}}
+            })));
+            assert_eq!(q.f_get("migrated"), Some(want), "sent {sent}");
+            assert!(q.col_filters_slice().is_empty(), "sent {sent}");
+        }
+    }
+
+    #[test]
+    fn unrecognized_flag_value_stays_a_col_filter() {
+        // Not a flag word → the per-column text path, exactly as before.
         let q = TokenQuery::from_table_request(&req(json!({
-            "filters": {"migrated": {"op":"contains","val":"true"}}
+            "filters": {"migrated": {"op":"contains","val":"maybe"}}
         })));
         assert!(q.f_get("migrated").is_none());
-        assert_eq!(q.col_filters_slice(), &[("migrated".to_string(), "true".to_string())]);
+        assert_eq!(q.col_filters_slice(), &[("migrated".to_string(), "maybe".to_string())]);
     }
 
     #[test]
