@@ -722,7 +722,7 @@ async fn run_grouped_sweep_job(
             return;
         }
     };
-    let sel = Selection {
+    let mut sel = Selection {
         mints: None,
         token_cap,
         created_after: b.created_after,
@@ -748,6 +748,70 @@ async fn run_grouped_sweep_job(
     // `CorpusTrade` buffers in the same launch-window order the engine expects.
     let root = crate::lake::lake_root();
     let src = LakeSource::new(root.clone());
+
+    // ── Saved-fingerprint scope, resolved BEFORE the trade scan ─────────────────
+    // Matching goes through the ENGINE's `fingerprint::matches` SSOT, so the swept
+    // slice is exactly the token set the live entry gate would arm on: exact axes
+    // stay exact, the continuous SOL axes match by bucket. The manual
+    // `field_filters` cannot express that (they compare exact values), which is why
+    // this is a separate path rather than a prefill.
+    //
+    // Resolving the scope here rather than as a `retain` on the *loaded* corpus is
+    // what makes `token_cap` bound **matched** tokens instead of candidates. The cap
+    // is a `LIMIT` on a `created_at DESC` candidate scan, so a fingerprint whose
+    // tokens span more days than the cap covers used to lose every match older than
+    // the newest-N slice — silently, since the run still reported a healthy token
+    // count. `matching_mints` answers the same question off the tokens dimension
+    // alone (one small Parquet file, no trade scan), so the load below only ever
+    // touches matched mints. Same contract as flow / metric discovery.
+    let mut scope_fp: Option<Fingerprint> = None;
+    let mut scope_capped = false;
+    if let Some(fp_id) = b.fingerprint_id {
+        let fp_repo = FingerprintRepo::new(state.db.clone());
+        let fp = match fp_repo.find(fp_id).await {
+            Ok(Some(f)) => f,
+            Ok(None) => {
+                let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": format!("fingerprint {fp_id} not found")
+                })));
+                return;
+            }
+            Err(e) => {
+                tracing::error!("grouped sweep: fingerprint lookup failed: {e}");
+                let _ = early_tx.send(HttpResponse::InternalServerError()
+                    .json(serde_json::json!({ "error": "database error" })));
+                return;
+            }
+        };
+        let engine_fp = trading_core::strategies::fingerprint_axes::fp_to_engine(&fp);
+        let (mints, capped) = match src.matching_mints(&sel, engine_fp).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("grouped sweep: fingerprint mint scan failed: {e}");
+                let _ = early_tx.send(HttpResponse::InternalServerError()
+                    .json(serde_json::json!({ "error": e.to_string() })));
+                return;
+            }
+        };
+        if mints.is_empty() {
+            let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": format!(
+                    "no tokens in that window match fingerprint “{}” — widen the date range or token cap",
+                    fp.name
+                )
+            })));
+            return;
+        }
+        tracing::info!(
+            fingerprint = %fp.name,
+            matched = mints.len(),
+            capped,
+            "grouped sweep: saved-fingerprint scope resolved before the corpus load"
+        );
+        scope_capped = capped;
+        sel.mints = Some(mints);
+        scope_fp = Some(fp);
+    }
 
     // Reuse the in-memory corpus cache when the last sweep loaded the **same
     // selection against the same lake version** (the hash folds both). This skips a
@@ -829,9 +893,13 @@ async fn run_grouped_sweep_job(
     // Flag the **candidate** select (not `corpus.len()`): `curve_only` / empty
     // histories can leave the loaded corpus below the cap even when older mints
     // were dropped (sim-parity B10). Simulate has no such cap.
-    if corpus.candidates_capped {
+    // On a fingerprint-scoped run the cap bounds *matched* tokens, so the clip bit
+    // comes from `matching_mints` — `candidates_capped` is always false there
+    // (an explicit mint list is caller-sized).
+    if corpus.candidates_capped || scope_capped {
+        let scoped = if scope_capped { "matching" } else { "" };
         let msg = format!(
-            "Corpus hit the {token_cap}-token cap — only the newest {token_cap} tokens in \
+            "Corpus hit the {token_cap}-token cap — only the newest {token_cap} {scoped} tokens in \
              this date range were swept ({} kept after trade filters). Narrow the range \
              or raise token_cap (max {}) to cover it all.",
             corpus.tokens.len(),
@@ -889,52 +957,10 @@ async fn run_grouped_sweep_job(
         });
     }
 
-    // Saved-fingerprint scope (mutually exclusive with the manual filters below —
-    // same contract as flow discovery). Matching goes through the ENGINE's
-    // `fingerprint::matches` SSOT so the swept slice is exactly the token set the
-    // live entry gate would arm on: exact axes stay exact, the continuous SOL axes
-    // match by bucket. The manual `field_filters` cannot express that (they compare
-    // exact values), which is why this is a separate path rather than a prefill.
-    let mut scope_fp: Option<Fingerprint> = None;
-    if let Some(fp_id) = b.fingerprint_id {
-        let fp_repo = FingerprintRepo::new(state.db.clone());
-        let fp = match fp_repo.find(fp_id).await {
-            Ok(Some(f)) => f,
-            Ok(None) => {
-                let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({
-                    "error": format!("fingerprint {fp_id} not found")
-                })));
-                return;
-            }
-            Err(e) => {
-                tracing::error!("grouped sweep: fingerprint lookup failed: {e}");
-                let _ = early_tx.send(HttpResponse::InternalServerError()
-                    .json(serde_json::json!({ "error": "database error" })));
-                return;
-            }
-        };
-        let engine_fp = trading_core::strategies::fingerprint_axes::fp_to_engine(&fp);
-        let before = corpus.tokens.len();
-        corpus
-            .tokens
-            .retain(|t| hunter_engine::fingerprint::matches(&engine_fp, &t.fp));
-        tracing::info!(
-            fingerprint = %fp.name,
-            kept = corpus.tokens.len(),
-            dropped = before - corpus.tokens.len(),
-            "grouped sweep: saved-fingerprint scope applied"
-        );
-        if corpus.tokens.is_empty() {
-            let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({
-                "error": format!(
-                    "no tokens in that window match fingerprint “{}” — widen the date range or token cap",
-                    fp.name
-                )
-            })));
-            return;
-        }
-        scope_fp = Some(fp);
-    }
+    // The saved-fingerprint scope resolved before the load, so `corpus.tokens` is
+    // already exactly the matched set — nothing to re-filter here. A scoped run that
+    // loaded no trades for any matched mint still fails closed, same as an unscoped
+    // empty corpus (checked right after the load above).
 
     // Manual corpus filters — the `else` arm of the saved-fingerprint scope above.
     // Skipped entirely on a scoped run so a stale filter left in the form can't
