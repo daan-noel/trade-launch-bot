@@ -26,6 +26,28 @@
 //! * **min-N gate** — a combo with `n_closed < min_closed` is unrankable (its "edge"
 //!   is noise). Reported, never silently dropped (see [`ScoreOutcome::is_gated`]).
 //!
+//! ## The gate is cohort-aware, and its edge is a ramp, not a cliff
+//!
+//! A fixed `min_closed = 20` is right for a five-figure corpus and wrong for a
+//! single-fingerprint cohort: a regime-scoped run leaves tens-to-hundreds of tokens,
+//! a selective gate fires on a third of them, and *every* pick lands under the cliff —
+//! the whole screen then reads "no metric has an edge" when what actually happened is
+//! "this cohort cannot support a 20-trade gate". Two changes, both in
+//! [`DiscoveryWeights`]:
+//!
+//! * **[`DiscoveryWeights::effective_min_closed`]** scales the gate with the cohort
+//!   (`min_closed_frac` of the tokens), clamped to `[min_closed_floor, min_closed]`.
+//!   It can only ever *relax* the configured gate, never tighten it, and the effective
+//!   value is reported so a reader knows which gate ran.
+//! * **[`DiscoveryWeights::confidence`]** discounts a score by its sample size as a
+//!   share of the full `min_closed`, so a 12-closed combo ranks *low* instead of
+//!   vanishing, while anything at or above `min_closed` is untouched. On a corpus big
+//!   enough that the two coincide the ramp is identically 1 — the historical behaviour.
+//!
+//! Note the ramp is applied on top of `fire_rate`, which already penalises selectivity
+//! linearly; it is deliberately flat (=1) above `min_closed` so a healthy sample is
+//! never double-charged for being selective.
+//!
 //! Like [`checklist_score`], the score is multiplicative over a signed profit term,
 //! so the ordering among *negative* combos is not meaningful — the objective exists
 //! to rank the profitable top, and callers filter to `> 0` before trusting a rank.
@@ -41,9 +63,18 @@ use crate::sweep::aggregate::ComboMetrics;
 /// tuned against real cohorts, not in the abstract.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DiscoveryWeights {
-    /// Minimum **closed** trades for a combo to be rankable. Below this the "edge"
-    /// is sampling noise; the combo is gated out (scored `None`), not ranked low.
+    /// Minimum **closed** trades a combo needs to be scored at full confidence. The
+    /// hard gate is [`Self::effective_min_closed`], which relaxes this on a small
+    /// cohort; between the two the score is ramped by [`Self::confidence`].
     pub min_closed: u64,
+    /// Hard floor under the cohort-scaled gate. Below this many closed trades a combo
+    /// is unrankable no matter how small the cohort — a handful of trades is noise at
+    /// any scale.
+    pub min_closed_floor: u64,
+    /// Share of the cohort's tokens the gate scales with. The effective gate is
+    /// `clamp(round(frac × cohort_tokens), min_closed_floor, min_closed)`, so it can
+    /// only ever relax `min_closed`, never tighten it.
+    pub min_closed_frac: f64,
     /// Discount `∈ [0, 1]` on the mark-to-last-price contribution of still-open
     /// positions, so unrealised paper gains can't read as realised profit.
     pub open_haircut: f64,
@@ -60,10 +91,41 @@ impl Default for DiscoveryWeights {
     fn default() -> Self {
         Self {
             min_closed: 20,
+            // 8 closed trades is the floor a median is worth reading at all; 5% of the
+            // cohort is roughly "a gate that fires on one token in twenty still gets a
+            // hearing". Both are D1 seeds — see the module docs.
+            min_closed_floor: 8,
+            min_closed_frac: 0.05,
             open_haircut: 0.5,
             profit_factor_cap: 3.0,
             win_rate_floor: 0.01,
         }
+    }
+}
+
+impl DiscoveryWeights {
+    /// The gate that actually runs on a cohort of `cohort_tokens` tokens: the
+    /// configured [`Self::min_closed`], relaxed toward [`Self::min_closed_floor`] when
+    /// the cohort is too small to support it. Never exceeds `min_closed`.
+    pub fn effective_min_closed(&self, cohort_tokens: u64) -> u64 {
+        let floor = self.min_closed_floor.min(self.min_closed);
+        let scaled = (self.min_closed_frac.max(0.0) * cohort_tokens as f64).round();
+        let scaled = if scaled.is_finite() { scaled as u64 } else { self.min_closed };
+        scaled.clamp(floor, self.min_closed)
+    }
+
+    /// The small-sample discount applied to a rankable combo's score: sample size as a
+    /// share of the full [`Self::min_closed`], capped at `1`. A combo scored under a
+    /// relaxed gate is therefore ranked *below* an equally-profitable one measured on a
+    /// full sample, instead of being erased or trusted equally.
+    ///
+    /// Identically `1` whenever the effective gate equals `min_closed` (any cohort big
+    /// enough to afford the full gate), so this is a no-op on a large corpus.
+    pub fn confidence(&self, n_closed: u64) -> f64 {
+        if self.min_closed == 0 {
+            return 1.0;
+        }
+        (n_closed as f64 / self.min_closed as f64).clamp(0.0, 1.0)
     }
 }
 
@@ -134,8 +196,10 @@ impl ComboStats {
 pub enum ScoreOutcome {
     /// A rankable combo and its discovery score (may be negative — see module doc).
     Ranked(f64),
-    /// Fired, but fewer than `min_closed` closed trades — noise, not ranked.
-    BelowMinClosed { n_closed: u64 },
+    /// Fired, but fewer closed trades than the cohort's effective gate
+    /// ([`DiscoveryWeights::effective_min_closed`]) — noise, not ranked. Carries the
+    /// gate it failed so a report can say *which* gate ran, not just that one did.
+    BelowMinClosed { n_closed: u64, gate: u64 },
     /// Never fired (or the group matched no tokens) — nothing to rank.
     NoFire,
 }
@@ -166,9 +230,13 @@ pub fn discovery_score(s: ComboStats, matched: u64, w: DiscoveryWeights) -> Scor
         return ScoreOutcome::NoFire;
     }
     // Min-N gate — the anti-overfit backbone. An edge on a handful of closed trades
-    // is noise no matter how large its profit%.
-    if s.n_closed < w.min_closed {
-        return ScoreOutcome::BelowMinClosed { n_closed: s.n_closed };
+    // is noise no matter how large its profit%. The gate scales down with the cohort
+    // (a regime-scoped run cannot afford the corpus-wide gate), and the shortfall
+    // between it and `min_closed` is charged as a confidence discount below rather
+    // than waved through.
+    let gate = w.effective_min_closed(matched);
+    if s.n_closed < gate {
+        return ScoreOutcome::BelowMinClosed { n_closed: s.n_closed, gate };
     }
 
     let fired = s.n_fired as f64;
@@ -193,7 +261,11 @@ pub fn discovery_score(s: ComboStats, matched: u64, w: DiscoveryWeights) -> Scor
         .unwrap_or(w.profit_factor_cap);
     let win_component = s.win_rate.max(w.win_rate_floor) * (pf / w.profit_factor_cap);
 
-    ScoreOutcome::Ranked(robust_profit * fire_rate * win_component)
+    // Small-sample discount — the soft half of the gate (module docs). A no-op once
+    // the sample clears `min_closed`.
+    let confidence = w.confidence(s.n_closed);
+
+    ScoreOutcome::Ranked(robust_profit * fire_rate * win_component * confidence)
 }
 
 #[cfg(test)]
@@ -225,15 +297,48 @@ mod tests {
 
     #[test]
     fn min_n_gate_kills_thin_combos() {
-        let w = DiscoveryWeights::default(); // min_closed = 20
-        let thin = closed(19, 1.0, 500.0, 500.0, None);
+        let w = DiscoveryWeights::default(); // min_closed 20, floor 8
+        // A 100-token cohort cannot afford the full gate: 5% ⇒ 5, clamped up to the
+        // floor of 8. Below the floor is still noise at any cohort size.
+        assert_eq!(w.effective_min_closed(100), 8);
+        let thin = closed(7, 1.0, 500.0, 500.0, None);
         let out = discovery_score(thin, 100, w);
-        assert_eq!(out, ScoreOutcome::BelowMinClosed { n_closed: 19 });
+        assert_eq!(out, ScoreOutcome::BelowMinClosed { n_closed: 7, gate: 8 });
         assert!(out.is_gated());
         assert_eq!(out.score(), None);
         // One more closed trade clears the gate.
-        let ok = closed(20, 1.0, 5.0, 5.0, Some(2.0));
+        let ok = closed(8, 1.0, 5.0, 5.0, Some(2.0));
         assert!(matches!(discovery_score(ok, 100, w), ScoreOutcome::Ranked(_)));
+    }
+
+    /// The gate scales with the cohort but can only ever *relax* `min_closed`: a
+    /// fingerprint-scoped run must not read as "no metric has an edge" purely because
+    /// the corpus-wide gate is unaffordable there.
+    #[test]
+    fn gate_scales_with_the_cohort_and_never_tightens() {
+        let w = DiscoveryWeights::default();
+        assert_eq!(w.effective_min_closed(0), 8, "an empty cohort still floors at 8");
+        assert_eq!(w.effective_min_closed(60), 8, "5% of 60 is under the floor");
+        assert_eq!(w.effective_min_closed(240), 12, "5% of 240");
+        assert_eq!(w.effective_min_closed(400), 20, "5% of 400 reaches the full gate");
+        assert_eq!(w.effective_min_closed(100_000), 20, "never above min_closed");
+    }
+
+    /// A combo measured under a relaxed gate is discounted, not trusted equally — and
+    /// a full sample is never charged for it.
+    #[test]
+    fn confidence_discounts_small_samples_and_is_a_no_op_at_full_size() {
+        let w = DiscoveryWeights::default();
+        assert!((w.confidence(20) - 1.0).abs() < 1e-9);
+        assert!((w.confidence(200) - 1.0).abs() < 1e-9, "capped at 1, never a bonus");
+        assert!((w.confidence(10) - 0.5).abs() < 1e-9);
+
+        // Same book, half the closed sample ⇒ half the score.
+        let full = discovery_score(closed(20, 1.0, 10.0, 10.0, None), 100, w).score().unwrap();
+        let half = discovery_score(closed(10, 1.0, 10.0, 10.0, None), 100, w).score().unwrap();
+        // fire_rate also halves (10 vs 20 fired of 100), so the confidence ramp is the
+        // *second* factor of two.
+        assert!((full - 4.0 * half).abs() < 1e-9, "{full} vs {half}");
     }
 
     #[test]

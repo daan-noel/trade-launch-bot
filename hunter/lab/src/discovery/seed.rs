@@ -100,9 +100,15 @@ pub fn build_sweep_seed(screen: &ScreenReport, family: &FamilyReport) -> SweepSe
         .filter_map(near_miss_axis)
         .collect();
     if !optional_axes.is_empty() {
+        let leads = screen
+            .responses
+            .iter()
+            .filter(|r| matches!(r.verdict, Verdict::DropNegative { .. }))
+            .count();
         notes.push(format!(
-            "{} near-miss axis(es) available as optional (DropNoEdge with score > 0)",
-            optional_axes.len()
+            "{} near-miss axis(es) available as optional (DropNoEdge with score > 0, plus {leads} \
+             that lifted a losing baseline — those are worth the TP/SL ladder)",
+            optional_axes.len(),
         ));
     }
 
@@ -121,8 +127,18 @@ fn keep_axis(r: &MetricResponse) -> Option<AxisSpec> {
     Some(metric_axis(r, narrowed))
 }
 
-/// Near-miss: DropNoEdge whose best ranked curve score is strictly positive.
+/// Near-miss axes worth offering as optional sweep rows:
+///
+/// * `DropNoEdge` whose best ranked pick is strictly positive — it just missed the
+///   lift bar, and a different TP/SL may clear it.
+/// * `DropNegative` at **any** sign — the metric measurably lifted its baseline and
+///   only failed because that baseline loses money here. Filtering it on `> 0` would
+///   discard the one class of drop the sweep is most likely to convert, since the
+///   sweep re-tries it across the whole TP/SL ladder.
 fn near_miss_axis(r: &MetricResponse) -> Option<AxisSpec> {
+    if matches!(r.verdict, Verdict::DropNegative { .. }) {
+        return negative_lead_axis(r);
+    }
     if !matches!(r.verdict, Verdict::DropNoEdge { .. }) {
         return None;
     }
@@ -149,6 +165,25 @@ fn near_miss_axis(r: &MetricResponse) -> Option<AxisSpec> {
         // best matched above but somehow empty — shouldn't happen; use best alone.
         scored.push(best);
     }
+    let mut values: Vec<f64> = scored.into_iter().map(|(v, _)| v).collect();
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    values.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+    Some(metric_axis(r, &values))
+}
+
+/// The best-scoring values of a `DropNegative` curve, sign ignored — the metric's own
+/// ranking, carried into a sweep that will re-price it under other brackets.
+fn negative_lead_axis(r: &MetricResponse) -> Option<AxisSpec> {
+    let mut scored: Vec<(f64, f64)> = r
+        .curve
+        .iter()
+        .filter_map(|p| Some((p.value?, p.outcome.score()?)))
+        .collect();
+    if scored.is_empty() {
+        return None;
+    }
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(3);
     let mut values: Vec<f64> = scored.into_iter().map(|(v, _)| v).collect();
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     values.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
@@ -330,12 +365,7 @@ mod tests {
         MetricResponse {
             metric: screen_metric(metric, side),
             operator: Operator::Gte,
-            curve: vec![ResponsePoint {
-                value: None,
-                outcome: ScoreOutcome::Ranked(1.0),
-                n_fired: 10,
-                n_closed: 10,
-            }],
+            curve: vec![point(None, 1.0)],
             baseline: Some(1.0),
             verdict: Verdict::Keep {
                 best_value: narrowed[0],
@@ -346,24 +376,23 @@ mod tests {
         }
     }
 
+    fn point(value: Option<f64>, score: f64) -> ResponsePoint {
+        ResponsePoint {
+            value,
+            outcome: ScoreOutcome::Ranked(score),
+            n_fired: 10,
+            n_closed: 10,
+            win_rate: 0.5,
+            median_pnl_pct: score,
+            total_pnl_sol: score,
+        }
+    }
+
     fn drop_no_edge_positive(metric: MetricId, side: AxisSide) -> MetricResponse {
         MetricResponse {
             metric: screen_metric(metric, side),
             operator: Operator::Gte,
-            curve: vec![
-                ResponsePoint {
-                    value: None,
-                    outcome: ScoreOutcome::Ranked(0.5),
-                    n_fired: 10,
-                    n_closed: 10,
-                },
-                ResponsePoint {
-                    value: Some(10.0),
-                    outcome: ScoreOutcome::Ranked(0.6),
-                    n_fired: 10,
-                    n_closed: 10,
-                },
-            ],
+            curve: vec![point(None, 0.5), point(Some(10.0), 0.6)],
             baseline: Some(0.5),
             verdict: Verdict::DropNoEdge { best_lift: 0.1 },
         }
@@ -379,7 +408,9 @@ mod tests {
         ScreenReport {
             cohort_tokens: 10,
             baseline: baseline(),
+            baseline_stats: None,
             weights: DiscoveryWeights::default(),
+            effective_min_closed: DiscoveryWeights::default().effective_min_closed(10),
             thresholds: ScreenThresholds::default(),
             responses,
             shortlist,
@@ -401,6 +432,7 @@ mod tests {
                     operator: r.operator,
                     values: narrowed.clone(),
                     lift: *lift,
+                    rescued: false,
                 }),
                 _ => None,
             })
@@ -428,6 +460,7 @@ mod tests {
             },
             interactions: vec![],
             joints: vec![],
+            rescues: vec![],
             combos_scanned: 0,
         }
     }
@@ -488,12 +521,14 @@ mod tests {
             operator: Operator::Gte,
             values: vec![5.0],
             lift: 3.0,
+            rescued: false,
         };
         let price = FamilyMember {
             metric: screen_metric(MetricId::Trail, AxisSide::Entry),
             operator: Operator::Gte,
             values: vec![10.0],
             lift: 2.0,
+            rescued: false,
         };
         family.families = vec![
             FamilyResult {

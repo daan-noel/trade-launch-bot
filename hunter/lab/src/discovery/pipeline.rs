@@ -32,10 +32,11 @@ use crate::sweep::corpus::Corpus;
 use crate::sweep::generic::Pricing;
 use crate::sweep::progress::SweepObserver;
 
+use super::baseline::{select_baseline, BaselineGrid, BaselineSelection};
 use super::candidates::ScreenConfig;
 use super::family::{run_family_layer, FamilyLimits, FamilyReport};
 use super::objective::DiscoveryWeights;
-use super::screen::{run_screen, ScreenBaseline, ScreenReport, ScreenThresholds};
+use super::screen::{run_screen, ScreenBaseline, ScreenReport, ScreenThresholds, Verdict};
 use super::validate::{
     candidates_from_family_report, split_tokens, validate_candidates, SplitPolicy,
     ValidationReport, ValidationThresholds,
@@ -48,7 +49,13 @@ pub struct PipelineConfig {
     /// Candidate-generation + screen-plan knobs (windows, flow patterns, sampling).
     pub screen: ScreenConfig,
     /// The fixed TP/SL every metric is screened against — part of the run's identity.
+    /// Used as-is when [`Self::baseline_grid`] holds fewer than two brackets.
     pub baseline: ScreenBaseline,
+    /// Candidate brackets to measure before screening
+    /// ([`baseline`](super::baseline)). With two or more, the winner **replaces**
+    /// [`Self::baseline`] for every later layer; with fewer, the caller's baseline
+    /// stands and no selection pass runs.
+    pub baseline_grid: Option<BaselineGrid>,
     /// Objective constants (D1), shared by all three layers so a combo is scored the
     /// same everywhere it appears.
     pub weights: DiscoveryWeights,
@@ -74,6 +81,7 @@ impl Default for PipelineConfig {
             // No `Default` on `ScreenBaseline` by design — pick the canonical dip
             // scalper exit as the pipeline's seed. Callers override per run.
             baseline: ScreenBaseline { take_profit_pct: Some(30.0), stop_loss_pct: Some(15.0) },
+            baseline_grid: None,
             weights: DiscoveryWeights::default(),
             screen_thresholds: ScreenThresholds::default(),
             family_limits: FamilyLimits::default(),
@@ -102,6 +110,9 @@ pub struct PipelineReport {
     /// Tokens Layers 1–2 fit on (the train slice, or the whole cohort when the split
     /// was degenerate).
     pub fit_tokens: usize,
+    /// Layer 0 — `None` when the caller named a single baseline and no brackets were
+    /// measured.
+    pub baseline_selection: Option<BaselineSelection>,
     /// Layer 1.
     pub screen: ScreenReport,
     /// Layer 2.
@@ -112,6 +123,14 @@ pub struct PipelineReport {
     pub validation: Option<ValidationReport>,
     /// Set exactly when `validation` is `None`.
     pub no_validation: Option<NoValidationReason>,
+    /// Plain-language findings about the **run**, not about any one metric: which gate
+    /// ran, whether the baseline was profitable, how much of the field failed for lack
+    /// of data, how much statistical power the validate slice actually had.
+    ///
+    /// These are the questions a reader otherwise has to reverse-engineer out of a
+    /// wall of drop reasons — and the ones that decide whether a shortlist means
+    /// anything at all. Stated, never left to be inferred.
+    pub diagnostics: Vec<String>,
 }
 
 /// Run the whole pipeline over one loaded, already-scoped corpus.
@@ -139,10 +158,30 @@ pub fn run_pipeline(
         borrow_corpus(corpus, split.train.clone())
     };
 
+    // Layer 0: pick the bracket that fits this cohort, on the *fit* slice only — a
+    // baseline chosen with the validate slice in view would leak the held-out data
+    // into every number Layer 1 produces.
+    let baseline_selection = match &cfg.baseline_grid {
+        Some(grid) if grid.brackets().len() > 1 => Some(select_baseline(
+            &fit,
+            &cfg.screen,
+            grid,
+            pricing,
+            as_of,
+            cfg.weights,
+            observer,
+        )?),
+        _ => None,
+    };
+    let baseline = baseline_selection.as_ref().map_or(cfg.baseline, |s| s.chosen);
+    if observer.cancelled() {
+        anyhow::bail!("discovery pipeline cancelled");
+    }
+
     let screen = run_screen(
         &fit,
         &cfg.screen,
-        cfg.baseline,
+        baseline,
         pricing,
         as_of,
         cfg.weights,
@@ -189,14 +228,167 @@ pub fn run_pipeline(
         (Some(report), None)
     };
 
+    let diagnostics = diagnose(
+        cohort_tokens,
+        fit.token_count(),
+        baseline_selection.as_ref(),
+        &screen,
+        &family,
+        validation.as_ref(),
+        cfg,
+    );
+
     Ok(PipelineReport {
         cohort_tokens,
         fit_tokens: fit.token_count(),
+        baseline_selection,
         screen,
         family,
         validation,
         no_validation,
+        diagnostics,
     })
+}
+
+/// Turn the run's shape into the handful of sentences that decide how to read it.
+///
+/// Every entry answers a question the layer reports can only answer by arithmetic
+/// across sections — "was the thing I lifted profitable", "which gate ran", "did the
+/// held-out slice have the power to conclude anything". A run whose shortlist is empty
+/// for a *structural* reason must say so here; silence would read as "no edge exists".
+#[allow(clippy::too_many_arguments)]
+fn diagnose(
+    cohort_tokens: usize,
+    fit_tokens: usize,
+    selection: Option<&BaselineSelection>,
+    screen: &ScreenReport,
+    family: &FamilyReport,
+    validation: Option<&ValidationReport>,
+    cfg: &PipelineConfig,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let bracket = |b: &ScreenBaseline| match (b.take_profit_pct, b.stop_loss_pct) {
+        (Some(tp), Some(sl)) => format!("TP {tp}% / SL {sl}%"),
+        (Some(tp), None) => format!("TP {tp}% (no stop)"),
+        (None, Some(sl)) => format!("SL {sl}% (no take-profit)"),
+        (None, None) => "no bracket".to_string(),
+    };
+
+    // ── the reference line ──────────────────────────────────────────────────
+    if let Some(s) = selection {
+        out.push(format!(
+            "Measured {} bracket(s); screened against {} — the best-scoring one on the fit slice.",
+            s.candidates.len(),
+            bracket(&s.chosen),
+        ));
+        if s.all_unprofitable {
+            out.push(
+                "No bracket was profitable bare on this cohort. Every Keep below is a rescue \
+                 from a losing baseline, not an improvement on a working one — re-check the \
+                 cohort before trusting a shortlist."
+                    .to_string(),
+            );
+        }
+    }
+    if let Some(b) = &screen.baseline_stats {
+        let m = &b.metrics;
+        out.push(format!(
+            "Reference line ({}, no metric gate): {} fired / {} closed, {:.0}% win, median {:.1}%, {:.3} ◎.",
+            bracket(&screen.baseline),
+            m.n_fired,
+            m.n_closed,
+            m.win_rate * 100.0,
+            m.median_pnl_pct,
+            m.total_pnl_sol,
+        ));
+        if selection.is_none() && b.is_unprofitable() {
+            out.push(format!(
+                "The bare {} loses money here, so a metric can only ever be ranked on how much \
+                 of that loss it removes. Supply a bracket menu to let the run pick a baseline \
+                 that fits this cohort.",
+                bracket(&screen.baseline),
+            ));
+        }
+    }
+
+    // ── the gate ────────────────────────────────────────────────────────────
+    if screen.effective_min_closed < cfg.weights.min_closed {
+        out.push(format!(
+            "Cohort of {fit_tokens} fit token(s) cannot support the {}-closed gate — relaxed to \
+             {}. Combos scored under it are discounted by sample size, not trusted equally.",
+            cfg.weights.min_closed, screen.effective_min_closed,
+        ));
+    }
+
+    // ── how the field died ──────────────────────────────────────────────────
+    let thin = screen
+        .responses
+        .iter()
+        .filter(|r| matches!(r.verdict, Verdict::DropThin { .. }))
+        .count();
+    let negative = screen
+        .responses
+        .iter()
+        .filter(|r| matches!(r.verdict, Verdict::DropNegative { .. }))
+        .count();
+    let total = screen.responses.len();
+    if thin > 0 {
+        out.push(format!(
+            "{thin} of {total} screened metric(s) never cleared the {}-closed gate — too few \
+             trades to judge, not evidence of no edge. Widen the cohort to screen them.",
+            screen.effective_min_closed,
+        ));
+    }
+    if negative > 0 {
+        out.push(format!(
+            "{negative} metric(s) lifted the baseline but stayed unprofitable — real signal on a \
+             bracket that does not fit. They are seeded as optional sweep axes."
+        ));
+    }
+    if screen.shortlist.is_empty() && total > 0 {
+        out.push(
+            "Nothing was kept: no metric beat its own `off` pick by the lift threshold. Check the \
+             reference line above before concluding the cohort has no structure."
+                .to_string(),
+        );
+    }
+
+    // ── the rescue ──────────────────────────────────────────────────────────
+    let rescued = family.rescues.iter().filter(|r| r.verdict.is_keep()).count();
+    if rescued > 0 {
+        out.push(format!(
+            "{rescued} metric(s) had no standalone edge but earned an axis once the strongest \
+             winner was pinned — conditional edges, valid only alongside that pin."
+        ));
+    }
+
+    // ── validation power ────────────────────────────────────────────────────
+    if let Some(v) = validation {
+        let gate = cfg.weights.effective_min_closed(v.validate_tokens as u64);
+        let cant_tell = v
+            .candidates
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c.verdict,
+                    super::validate::ValidationVerdict::ThinValidate { .. }
+                        | super::validate::ValidationVerdict::NoFireValidate
+                )
+            })
+            .count();
+        out.push(format!(
+            "Held out {} of {cohort_tokens} token(s); a candidate needs {gate} closed trade(s) \
+             there to return a verdict at all.",
+            v.validate_tokens,
+        ));
+        if cant_tell > 0 {
+            out.push(format!(
+                "{cant_tell} candidate(s) could not be judged out-of-sample — neither a pass nor \
+                 a failure. Widen the cohort or lower the train split."
+            ));
+        }
+    }
+    out
 }
 
 /// A sub-corpus over `tokens` that carries the parent's identity flags. Keeps the
@@ -258,6 +450,63 @@ mod tests {
                 assert!(candidates_from_family_report(&out.family).is_empty());
             }
             other => panic!("unexpected validation state: {other:?}"),
+        }
+    }
+
+    /// Layer 0 measures the bracket menu and the rest of the run screens against the
+    /// winner — a mis-chosen bracket must not be able to read as "no metric has an
+    /// edge here".
+    #[test]
+    fn baseline_grid_selects_the_bracket_layers_1_to_3_run_against() {
+        let c = corpus(24);
+        let cfg = PipelineConfig {
+            baseline_grid: Some(BaselineGrid {
+                take_profit_pct: vec![Some(20.0), Some(60.0)],
+                stop_loss_pct: vec![Some(15.0), Some(40.0)],
+            }),
+            ..cfg()
+        };
+        let out = run_pipeline(&c, &cfg, pricing(), as_of(), &NoopObserver).unwrap();
+
+        let sel = out.baseline_selection.as_ref().expect("a 4-bracket grid runs Layer 0");
+        assert_eq!(sel.candidates.len(), 4);
+        // The chosen bracket — not the config's — is what Layer 1 screened against.
+        assert_eq!(out.screen.baseline, sel.chosen);
+        assert_eq!(out.family.baseline, sel.chosen);
+        // …and it is genuinely the best of the table, not just the first.
+        let best = sel.candidates[sel.chosen_index].score().unwrap_or(f64::NEG_INFINITY);
+        assert!(sel
+            .candidates
+            .iter()
+            .all(|x| x.score().unwrap_or(f64::NEG_INFINITY) <= best));
+
+        // A single-bracket grid is the caller naming a baseline: no pass, no override.
+        let single = PipelineConfig {
+            baseline_grid: Some(BaselineGrid::single(cfg.baseline)),
+            ..cfg.clone()
+        };
+        let out = run_pipeline(&c, &single, pricing(), as_of(), &NoopObserver).unwrap();
+        assert!(out.baseline_selection.is_none());
+        assert_eq!(out.screen.baseline, cfg.baseline);
+    }
+
+    /// The gate that ran, the reference line, and why the field died are stated — a
+    /// reader must never have to reverse-engineer them out of the drop table.
+    #[test]
+    fn diagnostics_state_the_gate_and_the_reference_line() {
+        let c = corpus(24);
+        // A cohort this small cannot afford the default 20-closed gate.
+        let cfg = PipelineConfig { weights: DiscoveryWeights::default(), ..cfg() };
+        let out = run_pipeline(&c, &cfg, pricing(), as_of(), &NoopObserver).unwrap();
+
+        assert!(out.screen.effective_min_closed < cfg.weights.min_closed);
+        let joined = out.diagnostics.join("\n");
+        assert!(joined.contains("relaxed"), "the relaxed gate must be stated: {joined}");
+        assert!(joined.contains("Reference line"), "the reference line must be stated: {joined}");
+        // Nothing is asserted about *which* verdicts appear — only that a structurally
+        // empty shortlist explains itself instead of reading as "no edge exists".
+        if out.screen.shortlist.is_empty() && !out.screen.responses.is_empty() {
+            assert!(joined.contains("Nothing was kept"), "{joined}");
         }
     }
 

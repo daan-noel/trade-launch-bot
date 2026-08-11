@@ -194,7 +194,13 @@ pub struct SegmentError {
 
 // ───────────────────────────── response curves ─────────────────────────────
 
-/// One point on a metric's response curve: the value swept and what it scored.
+/// One point on a metric's response curve: the value swept, what it scored, and the
+/// money behind that score.
+///
+/// The objective is a unitless product (median pnl% × fire rate × win quality ×
+/// confidence), so a lift of `2.0` is a **ranking key and nothing else**. The realised
+/// columns travel alongside it so a reader can answer "…and how much SOL was that?"
+/// without re-running the combo through simulate.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResponsePoint {
     /// `None` = the `off` pick (the baseline this metric is measured against).
@@ -202,11 +208,31 @@ pub struct ResponsePoint {
     pub outcome: ScoreOutcome,
     pub n_fired: u64,
     pub n_closed: u64,
+    /// Realised win rate over closed trades (`0..=1`).
+    pub win_rate: f64,
+    /// Realised median per-trade pnl% (closed only) — the objective's profit centre.
+    pub median_pnl_pct: f64,
+    /// Realised PnL in SOL at the run's `buy_amount_sol` — the only column in money.
+    pub total_pnl_sol: f64,
 }
 
 impl ResponsePoint {
     fn score(&self) -> Option<f64> {
         self.outcome.score()
+    }
+
+    /// Project a scored sweep row into a curve point. Shared with Layer 2's synergy
+    /// rescue so a rescued curve is built exactly like a screened one.
+    pub(super) fn from_row(value: Option<f64>, m: &ComboMetrics, outcome: ScoreOutcome) -> Self {
+        Self {
+            value,
+            outcome,
+            n_fired: m.n_fired,
+            n_closed: m.n_closed,
+            win_rate: m.win_rate,
+            median_pnl_pct: m.median_pnl_pct,
+            total_pnl_sol: m.total_pnl_sol,
+        }
     }
 }
 
@@ -228,6 +254,12 @@ pub enum Verdict {
     },
     /// Flat — the best pick never meaningfully beats its own `off`.
     DropNoEdge { best_lift: f64 },
+    /// The metric **does** lift its baseline, but the best pick is still a losing
+    /// combo. Split out of [`Verdict::DropNoEdge`] deliberately: "no signal here" and
+    /// "real signal, unprofitable baseline" call for opposite next moves, and reading
+    /// the second as the first is what makes a run against a losing bracket look like
+    /// a dead cohort.
+    DropNegative { best_value: f64, lift: f64, best_score: f64 },
     /// A single spike surrounded by noise — the overfit signature.
     DropSpike { best_value: f64, lift: f64, plateau: f64 },
     /// Every candidate value fell under the min-N gate (`n_closed` too small).
@@ -262,6 +294,50 @@ impl MetricResponse {
             _ => None,
         }
     }
+
+    /// The menu this metric was screened over, read back off the curve (`off` first,
+    /// then the values ascending) — exactly the axis the sweep ran. Layer 2's synergy
+    /// rescue re-screens a dropped metric over this same menu rather than
+    /// re-measuring the cohort's percentiles.
+    pub fn menu_values(&self) -> Vec<Option<f64>> {
+        self.curve.iter().map(|p| p.value).collect()
+    }
+
+    /// The best score any non-`off` pick reached, whatever the verdict. The ranking
+    /// key for which dropped metrics are worth a rescue attempt.
+    pub fn best_pick_score(&self) -> Option<f64> {
+        self.curve
+            .iter()
+            .filter(|p| p.value.is_some())
+            .filter_map(ResponsePoint::score)
+            .fold(None, |acc: Option<f64>, s| Some(acc.map_or(s, |a| a.max(s))))
+    }
+}
+
+/// What the run's bare TP/SL bracket did on the cohort, with no metric gate at all.
+///
+/// It is the `off` pick of every segment — identical across them by construction, so
+/// it is hoisted here once and becomes the report's **reference line**: every Keep's
+/// `lift` is measured against exactly this, and a reader can see immediately whether
+/// the thing being lifted was profitable to begin with.
+#[derive(Clone, Debug)]
+pub struct BaselineStats {
+    pub outcome: ScoreOutcome,
+    /// The full row, so the reference line carries money and not just a score.
+    pub metrics: ComboMetrics,
+}
+
+impl BaselineStats {
+    pub fn score(&self) -> Option<f64> {
+        self.outcome.score()
+    }
+
+    /// True when the bare bracket loses money on this cohort. Every `Keep` is then a
+    /// rescue from a losing baseline rather than an improvement on a working one, and
+    /// the report says so instead of leaving it to be inferred.
+    pub fn is_unprofitable(&self) -> bool {
+        self.outcome.score().is_none_or(|s| s <= 0.0)
+    }
 }
 
 /// The Layer-1 deliverable: a ranked metric shortlist plus everything that did not
@@ -271,7 +347,14 @@ pub struct ScreenReport {
     /// Tokens in the cohort — the `fire_rate` denominator every score used.
     pub cohort_tokens: usize,
     pub baseline: ScreenBaseline,
+    /// The bare bracket's own result — the reference line every `lift` is measured
+    /// against. `None` only when nothing was screened at all.
+    pub baseline_stats: Option<BaselineStats>,
     pub weights: DiscoveryWeights,
+    /// The min-N gate that actually ran, after cohort scaling
+    /// ([`DiscoveryWeights::effective_min_closed`]). Reported because a relaxed gate
+    /// changes what "gated" means and a reader must not have to re-derive it.
+    pub effective_min_closed: u64,
     pub thresholds: ScreenThresholds,
     /// One entry per screened `(metric, operator)`, in plan order.
     pub responses: Vec<MetricResponse>,
@@ -373,11 +456,14 @@ pub fn screen_with_menus(
     }
 
     let matched = corpus.token_count() as u64;
+    let effective_min_closed = weights.effective_min_closed(matched);
     if segments.is_empty() {
         return Ok(ScreenReport {
             cohort_tokens: corpus.token_count(),
             baseline,
+            baseline_stats: None,
             weights,
+            effective_min_closed,
             thresholds,
             responses: Vec::new(),
             shortlist: Vec::new(),
@@ -408,6 +494,14 @@ pub fn screen_with_menus(
         responses.push(r);
     }
 
+    // The reference line: pick 0 of any segment is the bare bracket with no metric
+    // gate, and every segment's is the same combo. Take the first rather than
+    // re-simulating it — a second measurement of the same thing can only disagree.
+    let baseline_stats = rows_by_segment.first().and_then(|rows| rows.first()).map(|m| BaselineStats {
+        outcome: discovery_score(ComboStats::from_combo_metrics(m), matched, weights),
+        metrics: m.clone(),
+    });
+
     let mut shortlist: Vec<usize> = (0..responses.len()).filter(|i| responses[*i].verdict.is_keep()).collect();
     shortlist.sort_by(|a, b| {
         let la = responses[*a].lift().unwrap_or(f64::NEG_INFINITY);
@@ -418,7 +512,9 @@ pub fn screen_with_menus(
     Ok(ScreenReport {
         cohort_tokens: corpus.token_count(),
         baseline,
+        baseline_stats,
         weights,
+        effective_min_closed,
         thresholds,
         responses,
         shortlist,
@@ -447,12 +543,7 @@ fn analyse(
         if outcome.is_gated() {
             gated += 1;
         }
-        curve.push(ResponsePoint {
-            value: seg.values[pick],
-            outcome,
-            n_fired: m.n_fired,
-            n_closed: m.n_closed,
-        });
+        curve.push(ResponsePoint::from_row(seg.values[pick], m, outcome));
     }
     let verdict = classify(&curve, th);
     let baseline = curve.first().and_then(ResponsePoint::score);
@@ -461,7 +552,11 @@ fn analyse(
 
 /// Classify a response curve. `curve[0]` is the `off` pick; `curve[1..]` the values
 /// ascending.
-fn classify(curve: &[ResponsePoint], th: ScreenThresholds) -> Verdict {
+///
+/// Shared with Layer 2's synergy rescue ([`family`](super::family)), which measures a
+/// dropped metric's curve *given a pinned winner* — same shape, same verdict rules, so
+/// "keep-grade" means one thing across the pipeline.
+pub(super) fn classify(curve: &[ResponsePoint], th: ScreenThresholds) -> Verdict {
     // The off pick must exist and be rankable — it *is* the with-vs-without baseline.
     let Some(first) = curve.first() else { return Verdict::DropNoBaseline };
     if first.value.is_some() {
@@ -484,8 +579,14 @@ fn classify(curve: &[ResponsePoint], th: ScreenThresholds) -> Verdict {
 
     let lift = best - baseline;
     let required = (th.min_lift_ratio * baseline.abs()).max(th.min_abs_lift);
-    if lift <= required || best <= 0.0 {
+    if lift <= required {
         return Verdict::DropNoEdge { best_lift: lift };
+    }
+    // Real lift, still a losing combo — its own verdict, not "flat". A metric here is
+    // a genuine signal measured against a baseline that loses money; the fix is the
+    // baseline, not the metric.
+    if best <= 0.0 {
+        return Verdict::DropNegative { best_value, lift, best_score: best };
     }
 
     // Across-neighbour stability: how much of the lift the best adjacent candidate
@@ -562,10 +663,13 @@ mod tests {
             value,
             outcome: match score {
                 Some(s) => ScoreOutcome::Ranked(s),
-                None => ScoreOutcome::BelowMinClosed { n_closed },
+                None => ScoreOutcome::BelowMinClosed { n_closed, gate: 8 },
             },
             n_fired: n_closed,
             n_closed,
+            win_rate: 0.5,
+            median_pnl_pct: score.unwrap_or(0.0),
+            total_pnl_sol: score.unwrap_or(0.0),
         }
     }
 
@@ -630,6 +734,36 @@ mod tests {
         }
     }
 
+    /// Lift with a still-losing best is its own verdict — reading it as `DropNoEdge`
+    /// is what makes a run against an unprofitable bracket look like a dead cohort.
+    #[test]
+    fn real_lift_on_a_losing_baseline_is_not_flat() {
+        let curve = vec![
+            point(None, Some(-10.0), 50),
+            point(Some(5.0), Some(-8.0), 50),
+            point(Some(10.0), Some(-2.0), 50), // best: lifted 8, still negative
+            point(Some(20.0), Some(-6.0), 50),
+        ];
+        match classify(&curve, ScreenThresholds::default()) {
+            Verdict::DropNegative { best_value, lift, best_score } => {
+                assert_eq!(best_value, 10.0);
+                assert!((lift - 8.0).abs() < 1e-9);
+                assert!(best_score < 0.0);
+            }
+            other => panic!("expected a negative-baseline drop, got {other:?}"),
+        }
+        // …while a genuinely flat curve is still flat, negative baseline or not.
+        let flat = vec![
+            point(None, Some(-10.0), 50),
+            point(Some(5.0), Some(-10.1), 50),
+            point(Some(10.0), Some(-9.9), 50),
+        ];
+        assert!(matches!(
+            classify(&flat, ScreenThresholds::default()),
+            Verdict::DropNoEdge { .. }
+        ));
+    }
+
     #[test]
     fn all_picks_gated_reports_thin_not_flat() {
         let curve = vec![point(None, Some(5.0), 50), point(Some(5.0), None, 3), point(Some(9.0), None, 7)];
@@ -664,6 +798,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(report.cohort_tokens, 12);
+        // The reference line is the bare bracket — hoisted, not re-simulated, so it is
+        // exactly pick 0 of the first segment.
+        let stats = report.baseline_stats.as_ref().expect("a screened run has a baseline");
+        let first = &report.responses[0].curve[0];
+        assert_eq!(first.value, None);
+        assert_eq!(stats.metrics.n_fired, first.n_fired);
+        assert_eq!(stats.score(), first.outcome.score());
         let plan = screen_plan(&cfg);
         // Every screened metric is either a response, a menu gap, or a segment error.
         for m in &plan.metrics {

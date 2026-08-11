@@ -14,13 +14,16 @@ use serde::Serialize;
 
 use hunter_engine::metrics::group_spec;
 
+use super::baseline::{BaselineCandidate, BaselineSelection};
 use super::family::{
     BestCombo, DropReason, FamilyReport, FamilyResult, Interaction, InteractionVerdict,
-    JointResult,
+    JointResult, Rescue,
 };
 use super::objective::ScoreOutcome;
 use super::pipeline::{NoValidationReason, PipelineReport};
-use super::screen::{MetricResponse, ResponsePoint, ScreenReport, Verdict};
+use super::screen::{
+    BaselineStats, MetricResponse, ResponsePoint, ScreenBaseline, ScreenReport, Verdict,
+};
 use super::seed::{SeedCluster, SweepSeed};
 use super::validate::{
     CandidateValidation, SliceScore, ValidationReport, ValidationVerdict,
@@ -33,6 +36,17 @@ use super::validate::{
 pub struct PipelineDto {
     pub cohort_tokens: usize,
     pub fit_tokens: usize,
+    /// Whether the cohort hit the run's `token_cap` — set by the handler, which is the
+    /// only layer that knows the cap. A truncated cohort silently scores "the newest N
+    /// tokens" instead of the range that was asked for, so it can never be a flag the
+    /// reader has to go looking for.
+    pub cohort_capped: bool,
+    /// The cap that produced [`Self::cohort_capped`] (handler-set).
+    pub token_cap: Option<usize>,
+    /// Layer 0 — the measured bracket table, absent when the caller named one baseline.
+    pub baseline_selection: Option<BaselineSelectionDto>,
+    /// Run-level findings in plain language (see `PipelineReport::diagnostics`).
+    pub diagnostics: Vec<String>,
     pub screen: ScreenDto,
     pub family: FamilyDto,
     pub validation: Option<ValidationDto>,
@@ -48,11 +62,97 @@ impl PipelineDto {
         Self {
             cohort_tokens: r.cohort_tokens,
             fit_tokens: r.fit_tokens,
+            cohort_capped: false,
+            token_cap: None,
+            baseline_selection: r.baseline_selection.as_ref().map(BaselineSelectionDto::from),
+            diagnostics: r.diagnostics.clone(),
             screen: ScreenDto::from_report(&r.screen),
             family: FamilyDto::from_report(&r.family),
             validation: r.validation.as_ref().map(ValidationDto::from_report),
             no_validation: r.no_validation.map(no_validation_tag),
             sweep_seed: SweepSeedDto::from(&seed),
+        }
+    }
+}
+
+// ───────────────────────────── Layer 0 ─────────────────────────────────────
+
+/// A TP/SL bracket on the wire. `null` on either side means that guard is omitted.
+#[derive(Debug, Serialize, Clone, Copy)]
+pub struct BracketDto {
+    pub take_profit_pct: Option<f64>,
+    pub stop_loss_pct: Option<f64>,
+}
+
+impl From<&ScreenBaseline> for BracketDto {
+    fn from(b: &ScreenBaseline) -> Self {
+        Self { take_profit_pct: b.take_profit_pct, stop_loss_pct: b.stop_loss_pct }
+    }
+}
+
+/// One scored row, in score **and** in money. The objective is unitless, so a report
+/// that shows only the score cannot be checked against anything.
+#[derive(Debug, Serialize)]
+pub struct ScoredRowDto {
+    pub score: Option<f64>,
+    /// One of `ranked` | `below_min_closed` | `no_fire`.
+    pub outcome: String,
+    pub n_fired: u64,
+    pub n_closed: u64,
+    pub win_rate: f64,
+    pub median_pnl_pct: f64,
+    pub total_pnl_sol: f64,
+}
+
+impl ScoredRowDto {
+    fn new(outcome: ScoreOutcome, m: &crate::sweep::aggregate::ComboMetrics) -> Self {
+        Self {
+            score: outcome.score(),
+            outcome: outcome_tag(outcome),
+            n_fired: m.n_fired,
+            n_closed: m.n_closed,
+            win_rate: m.win_rate,
+            median_pnl_pct: m.median_pnl_pct,
+            total_pnl_sol: m.total_pnl_sol,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct BaselineSelectionDto {
+    pub chosen: BracketDto,
+    pub chosen_index: usize,
+    /// True when nothing measured positive — every downstream Keep is a rescue from a
+    /// losing baseline.
+    pub all_unprofitable: bool,
+    pub combos_scanned: usize,
+    pub candidates: Vec<BaselineCandidateDto>,
+}
+
+impl From<&BaselineSelection> for BaselineSelectionDto {
+    fn from(s: &BaselineSelection) -> Self {
+        Self {
+            chosen: BracketDto::from(&s.chosen),
+            chosen_index: s.chosen_index,
+            all_unprofitable: s.all_unprofitable,
+            combos_scanned: s.combos_scanned,
+            candidates: s.candidates.iter().map(BaselineCandidateDto::from).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct BaselineCandidateDto {
+    pub bracket: BracketDto,
+    #[serde(flatten)]
+    pub row: ScoredRowDto,
+}
+
+impl From<&BaselineCandidate> for BaselineCandidateDto {
+    fn from(c: &BaselineCandidate) -> Self {
+        Self {
+            bracket: BracketDto::from(&c.baseline),
+            row: ScoredRowDto::new(c.outcome, &c.metrics),
         }
     }
 }
@@ -72,6 +172,15 @@ pub struct ScreenDto {
     pub cohort_tokens: usize,
     pub combos_scanned: usize,
     pub n_gated: usize,
+    /// The bracket every `lift` on this page is measured against.
+    pub baseline: BracketDto,
+    /// What that bracket did bare — the reference line. `null` only when nothing was
+    /// screened.
+    pub baseline_stats: Option<ScoredRowDto>,
+    /// The min-N gate that actually ran, after cohort scaling.
+    pub effective_min_closed: u64,
+    /// The configured gate the effective one was relaxed from (equal when it wasn't).
+    pub min_closed: u64,
     /// The kept metrics, best lift first — the shortlist.
     pub shortlist: Vec<MetricResponseDto>,
     /// Every screened metric (kept or dropped), in plan order, so the UI can show the
@@ -89,6 +198,12 @@ impl ScreenDto {
             cohort_tokens: r.cohort_tokens,
             combos_scanned: r.combos_scanned,
             n_gated: r.n_gated,
+            baseline: BracketDto::from(&r.baseline),
+            baseline_stats: r.baseline_stats.as_ref().map(|b: &BaselineStats| {
+                ScoredRowDto::new(b.outcome, &b.metrics)
+            }),
+            effective_min_closed: r.effective_min_closed,
+            min_closed: r.weights.min_closed,
             shortlist: r.shortlisted().map(MetricResponseDto::from).collect(),
             responses: r.responses.iter().map(MetricResponseDto::from).collect(),
             skipped: r
@@ -122,12 +237,16 @@ pub struct MetricResponseDto {
     pub metric: String,
     pub operator: String,
     pub window_sec: Option<f64>,
-    /// One of `keep` | `drop_no_edge` | `drop_spike` | `drop_thin` | `drop_no_baseline`.
+    /// One of `keep` | `drop_no_edge` | `drop_negative` | `drop_spike` | `drop_thin`
+    /// | `drop_no_baseline`.
     pub verdict: String,
     /// The `off`-pick score this metric was measured against (`null` = unrankable).
     pub baseline: Option<f64>,
-    /// `best − off`, present only on a keep.
+    /// `best − off`, present on a keep and on the two drops that still measured one.
     pub lift: Option<f64>,
+    /// The best pick's absolute score — the number that separates "lifted into profit"
+    /// from "lifted, still losing".
+    pub best_score: Option<f64>,
     /// Neighbour retention, present only on a keep.
     pub plateau: Option<f64>,
     pub best_value: Option<f64>,
@@ -139,24 +258,29 @@ pub struct MetricResponseDto {
 
 impl From<&MetricResponse> for MetricResponseDto {
     fn from(r: &MetricResponse) -> Self {
-        let (verdict, lift, plateau, best_value, narrowed) = match &r.verdict {
+        // Tag from the one table (`verdict_tag`); only the payload varies here.
+        let (lift, plateau, best_value, narrowed) = match &r.verdict {
             Verdict::Keep { best_value, lift, plateau, narrowed } => {
-                ("keep", Some(*lift), Some(*plateau), Some(*best_value), narrowed.clone())
+                (Some(*lift), Some(*plateau), Some(*best_value), narrowed.clone())
             }
-            Verdict::DropNoEdge { best_lift } => ("drop_no_edge", Some(*best_lift), None, None, vec![]),
+            Verdict::DropNoEdge { best_lift } => (Some(*best_lift), None, None, vec![]),
+            Verdict::DropNegative { best_value, lift, .. } => {
+                (Some(*lift), None, Some(*best_value), vec![])
+            }
             Verdict::DropSpike { best_value, lift, plateau } => {
-                ("drop_spike", Some(*lift), Some(*plateau), Some(*best_value), vec![])
+                (Some(*lift), Some(*plateau), Some(*best_value), vec![])
             }
-            Verdict::DropThin { .. } => ("drop_thin", None, None, None, vec![]),
-            Verdict::DropNoBaseline => ("drop_no_baseline", None, None, None, vec![]),
+            Verdict::DropThin { .. } => (None, None, None, vec![]),
+            Verdict::DropNoBaseline => (None, None, None, vec![]),
         };
         Self {
+            best_score: r.best_pick_score(),
             side: side_str(r.metric.side),
             group: group_spec(r.metric.group).name.to_string(),
             metric: r.metric.metric.name().to_string(),
             operator: r.operator.symbol().to_string(),
             window_sec: r.metric.window,
-            verdict: verdict.to_string(),
+            verdict: verdict_tag(&r.verdict).to_string(),
             baseline: r.baseline,
             lift,
             plateau,
@@ -177,6 +301,12 @@ pub struct ResponsePointDto {
     pub outcome: String,
     pub n_fired: u64,
     pub n_closed: u64,
+    /// The gate this pick failed, when it was gated.
+    pub gate: Option<u64>,
+    pub win_rate: f64,
+    pub median_pnl_pct: f64,
+    /// Realised PnL in SOL — the only column on the curve that is in money.
+    pub total_pnl_sol: f64,
 }
 
 impl From<&ResponsePoint> for ResponsePointDto {
@@ -187,6 +317,13 @@ impl From<&ResponsePoint> for ResponsePointDto {
             outcome: outcome_tag(p.outcome),
             n_fired: p.n_fired,
             n_closed: p.n_closed,
+            gate: match p.outcome {
+                ScoreOutcome::BelowMinClosed { gate, .. } => Some(gate),
+                _ => None,
+            },
+            win_rate: p.win_rate,
+            median_pnl_pct: p.median_pnl_pct,
+            total_pnl_sol: p.total_pnl_sol,
         }
     }
 }
@@ -216,6 +353,8 @@ pub struct FamilyDto {
     pub interactions: Vec<InteractionDto>,
     /// Joint grids over interacting connected components.
     pub joints: Vec<JointResultDto>,
+    /// Every synergy-rescue attempt, kept or refused.
+    pub rescues: Vec<RescueDto>,
 }
 
 impl FamilyDto {
@@ -225,7 +364,53 @@ impl FamilyDto {
             families: r.families.iter().map(FamilyResultDto::from).collect(),
             interactions: r.interactions.iter().map(InteractionDto::from).collect(),
             joints: r.joints.iter().map(JointResultDto::from).collect(),
+            rescues: r.rescues.iter().map(RescueDto::from).collect(),
         }
+    }
+}
+
+/// One Layer-1 reject re-screened under a pinned winner.
+#[derive(Debug, Serialize)]
+pub struct RescueDto {
+    pub side: String,
+    pub group: String,
+    pub metric: String,
+    pub operator: String,
+    /// The family whose winner was pinned.
+    pub pinned: String,
+    /// The pinned-alone score this rescue's lift is measured against.
+    pub pinned_score: f64,
+    /// Same tag vocabulary as a Layer-1 verdict — `keep` means rescued.
+    pub verdict: String,
+    /// Lift given the pin, on a successful rescue.
+    pub lift: Option<f64>,
+}
+
+impl From<&Rescue> for RescueDto {
+    fn from(r: &Rescue) -> Self {
+        Self {
+            side: side_str(r.metric.side),
+            group: group_spec(r.metric.group).name.to_string(),
+            metric: r.metric.metric.name().to_string(),
+            operator: r.operator.symbol().to_string(),
+            pinned: r.pinned.as_str().to_string(),
+            pinned_score: r.pinned_score,
+            verdict: verdict_tag(&r.verdict).to_string(),
+            lift: r.lift(),
+        }
+    }
+}
+
+/// The stable wire tag for a Layer-1 verdict. One table, so a rescue's verdict and a
+/// screened metric's verdict can never drift into two vocabularies.
+fn verdict_tag(v: &Verdict) -> &'static str {
+    match v {
+        Verdict::Keep { .. } => "keep",
+        Verdict::DropNoEdge { .. } => "drop_no_edge",
+        Verdict::DropNegative { .. } => "drop_negative",
+        Verdict::DropSpike { .. } => "drop_spike",
+        Verdict::DropThin { .. } => "drop_thin",
+        Verdict::DropNoBaseline => "drop_no_baseline",
     }
 }
 
@@ -257,6 +442,7 @@ impl From<&FamilyResult> for FamilyResultDto {
                     operator: m.operator.symbol().to_string(),
                     values: m.values.clone(),
                     lift: m.lift,
+                    rescued: m.rescued,
                 })
                 .collect(),
             dropped: f
@@ -284,6 +470,9 @@ pub struct FamilyMemberDto {
     pub operator: String,
     pub values: Vec<f64>,
     pub lift: f64,
+    /// True when the synergy rescue supplied this axis — its lift is conditional on
+    /// the pinned winner, not standalone.
+    pub rescued: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -372,6 +561,7 @@ impl From<&JointResult> for JointResultDto {
                     operator: m.operator.symbol().to_string(),
                     values: m.values.clone(),
                     lift: m.lift,
+                    rescued: m.rescued,
                 })
                 .collect(),
             dropped: j
@@ -437,6 +627,10 @@ impl From<&SeedCluster> for SeedClusterDto {
 pub struct ValidationDto {
     pub train_tokens: usize,
     pub validate_tokens: usize,
+    /// Closed trades a candidate needs on the held-out slice to return a verdict at
+    /// all — the slice's own cohort-scaled gate. Without it, `thin_validate` reads as
+    /// a property of the candidate rather than of the slice's size.
+    pub effective_min_closed: u64,
     /// RFC3339 of the split boundary (first validate-side `created_at`).
     pub boundary: Option<String>,
     pub candidates: Vec<CandidateValidationDto>,
@@ -447,6 +641,7 @@ impl ValidationDto {
         Self {
             train_tokens: r.train_tokens,
             validate_tokens: r.validate_tokens,
+            effective_min_closed: r.effective_min_closed,
             boundary: r.boundary.map(|b| b.to_rfc3339()),
             candidates: r.candidates.iter().map(CandidateValidationDto::from).collect(),
         }
@@ -569,13 +764,35 @@ mod tests {
         assert_eq!(j["cohort_tokens"], 24);
         assert!(j["screen"]["responses"].as_array().unwrap().len() > 0);
         // Every response verdict is one of the stable tags — no Debug leakage.
-        let allowed = ["keep", "drop_no_edge", "drop_spike", "drop_thin", "drop_no_baseline"];
+        let allowed = [
+            "keep",
+            "drop_no_edge",
+            "drop_negative",
+            "drop_spike",
+            "drop_thin",
+            "drop_no_baseline",
+        ];
         for r in j["screen"]["responses"].as_array().unwrap() {
             let v = r["verdict"].as_str().unwrap();
             assert!(allowed.contains(&v), "unexpected verdict tag {v}");
             // Operators are JSON symbols, never enum Debug.
             assert!([">=", "<", ">", "<=", "=", "!="].contains(&r["operator"].as_str().unwrap()));
+            // Every curve point carries money, not just a ranking score.
+            for p in r["curve"].as_array().unwrap() {
+                assert!(p["total_pnl_sol"].is_number(), "a curve point must carry SOL");
+                assert!(p["median_pnl_pct"].is_number());
+                assert!(p["win_rate"].is_number());
+            }
         }
+        // A rescue speaks the same verdict vocabulary as a screened metric.
+        for r in j["family"]["rescues"].as_array().unwrap() {
+            assert!(allowed.contains(&r["verdict"].as_str().unwrap()));
+        }
+        // The reference line and the gate that ran are always on the wire.
+        assert!(j["screen"]["effective_min_closed"].is_number());
+        assert!(j["screen"]["min_closed"].is_number());
+        assert!(j["screen"]["baseline"].is_object());
+        assert!(j["diagnostics"].is_array(), "a run always explains how to read it");
         assert!(j["family"]["families"].is_array());
         assert!(j["family"]["joints"].is_array());
         assert!(j["sweep_seed"]["axes"].is_array());

@@ -315,9 +315,9 @@ touch*. Four rules keep that bounded — the first is the one that matters:
 ## Metric-combo discovery pipeline (`lab/src/discovery/`)
 
 Lab-only, built entirely on top of the generic sweep engine above (no new engine)
-— an automated screen → family-grid → joint-interacting → out-of-sample-validate
-pipeline whose **primary deliverable is a grouped-sweep seed** (`SweepSeed` /
-`AxisSpec[]`): which metrics deserve axes, which narrowed value menus (incl. `off`)
+— an automated baseline-select → screen → family-grid → joint-interacting →
+out-of-sample-validate pipeline whose **primary deliverable is a grouped-sweep seed**
+(`SweepSeed` / `AxisSpec[]`): which metrics deserve axes, which narrowed value menus (incl. `off`)
 are worth gridding, and which families must be gridded jointly. Promote into the
 shared rule editor remains a secondary exit on OOS survivors. Nothing ships to
 EC2; live/paper are untouched. Registry-driven throughout: a metric added to
@@ -326,29 +326,49 @@ all it reads).
 
 | File | Role |
 | --- | --- |
-| `discovery/objective.rs` | `DiscoveryWeights` (tunable constants below) + `discovery_score(ComboStats) → Ranked \| BelowMinClosed \| NoFire` — a pure re-rank over persisted `ComboMetrics`, not a `checklist_score`/kernel edit (that stays the live/paper/sweep SSOT) |
+| `discovery/objective.rs` | `DiscoveryWeights` (tunable constants below) + `discovery_score(ComboStats) → Ranked \| BelowMinClosed \| NoFire` — a pure re-rank over persisted `ComboMetrics`, not a `checklist_score`/kernel edit (that stays the live/paper/sweep SSOT). The min-N gate is **cohort-aware**: `effective_min_closed = clamp(min_closed_frac × cohort, min_closed_floor, min_closed)` relaxes it on a regime-scoped cohort (never tightens it), and `confidence = n_closed / min_closed` discounts what the relaxed gate lets through, so a thin combo ranks low instead of vanishing |
+| `discovery/baseline.rs` | **Layer 0**: `BaselineGrid` → one single-combo segment per `(tp, sl)` in ONE additive pass → `BaselineSelection{chosen, candidates, all_unprofitable}`. Layers 1–3 screen against the winner. Runs only when the grid holds 2+ brackets; a one-bracket grid is the caller naming a baseline. Fits on the **train slice only** — a bracket chosen with the held-out slice in view leaks into every Layer-1 number |
 | `discovery/candidates.rs` | `screen_plan` (registry → screenable metrics + `SkipReason`) → `collect_percentiles` (measured `[p05..p99]` per metric, via the engine's own `MetricSeries` — deliberately **not** DuckDB SQL, else percentile semantics could drift from `hunter_engine`) → `build_menus` (`p10/p25/p50/p75/p90` + `off`, rounded by unit) → feeds `AxesModel` directly; the hand-derived table in [axis-value-candidates.md](../plans/sweep/axis-value-candidates.md) is now generated, not authored |
-| `discovery/screen.rs` | Layer 1: `ScreenStrategy`, an additive scan mode (`GenericSweepStrategy::share_precompute`) that sweeps every candidate metric alone against a fixed TP/SL baseline over **one** shared per-token precompute (~6N combos, not 6^N) → `Verdict{Keep\|DropNoEdge\|DropSpike\|DropThin\|DropNoBaseline}` per metric → ranked shortlist |
-| `discovery/family.rs` | Layer 2: `plan_families` groups the Layer-1 shortlist by the registry's `MetricFamily` tag (`price`/`flow`/`flow_split`/`liquidity-age`), grids within each family, then runs an O(families²) pairwise interaction check (pin A's best, sweep B) → `Independent \| Interacting \| Inconclusive`. **L2b** builds connected components of undirected `Interacting` pairs and product-grids them under `FamilyLimits` (enforced, not advisory) → `JointResult` winners |
-| `discovery/validate.rs` | Layer 3: `split_tokens` (age-based train/validate split) + `validate_candidates` re-scores each Layer-2 family **and** joint winner on the held-out slice via `simulate_one_combo` under the run's own `Pricing`/`as_of` → `ValidationVerdict{Holds\|Degraded\|Failed\|ThinValidate\|NoFireValidate\|UnrankableTrain}` (the two "can't tell" outcomes are never silently a pass) |
-| `discovery/seed.rs` | `build_sweep_seed` — Keep axes (`off` + narrowed) + TP/SL menus expanded ±1 rung on the canonical ladders + near-miss `optional_axes` (`DropNoEdge` with best score > 0) + cluster notes. Pure projection onto the same `AxisSpec` wire the generic sweep consumes |
-| `discovery/pipeline.rs` | `run_pipeline` — splits the cohort first, fits Layers 1–2 (+ L2b) on train, validates on the held-out slice (a degenerate split fits the whole cohort and reports `no_validation` rather than a vacuous pass) |
-| `discovery/dto.rs` + `api/handlers/strategies/metric_discovery.rs` | `PipelineDto` (incl. `sweep_seed`) + `POST /api/strategies/metric-discovery` (+`/cancel`/`/last`/`/{run_id}`, SSE progress, single-flight mutually exclusive with sweep/flow-discovery, cohort scoping by fingerprint/`ix_labels`/field filters) |
-| `frontend/src/lab/pages/strategies/MetricDiscoveryPage.tsx` | shortlist + curves/drop reasons → family winners + joint grids + interaction map → validation; primary **Open as sweep** writes a sessionStorage handoff that `GenericSweepConfigForm` applies once; **Promote…** secondary on winners |
+| `discovery/screen.rs` | Layer 1: `ScreenStrategy`, an additive scan mode (`GenericSweepStrategy::share_precompute`) that sweeps every candidate metric alone against the run's TP/SL baseline over **one** shared per-token precompute (~6N combos, not 6^N) → `Verdict{Keep\|DropNoEdge\|DropNegative\|DropSpike\|DropThin\|DropNoBaseline}` per metric → ranked shortlist. Every `ResponsePoint` carries win rate / median pnl% / **SOL** beside the unitless score, and the bare bracket's own row is hoisted to `ScreenReport::baseline_stats` — the reference line every `lift` is a delta against |
+| `discovery/family.rs` | Layer 2: `plan_families` groups the Layer-1 shortlist by the registry's `MetricFamily` tag (`price`/`flow`/`flow_split`/`liquidity-age`), grids within each family, then runs an O(families²) pairwise interaction check (pin A's best, sweep B) → `Independent \| Interacting \| Inconclusive`. **L2b** builds connected components of undirected `Interacting` pairs and product-grids them under `FamilyLimits` (enforced, not advisory) → `JointResult` winners. **L1b** is the *synergy rescue*: the strongest winner is pinned and up to `rescue_cap` Layer-1 rejects re-screened under it through the same `classify`, so a metric with no standalone lift can still earn an axis — flagged `rescued`, because that lift is conditional on the pin |
+| `discovery/validate.rs` | Layer 3: `split_tokens` (age-based train/validate split) + `validate_candidates` re-scores each Layer-2 family **and** joint winner on the held-out slice via `simulate_one_combo` under the run's own `Pricing`/`as_of` → `ValidationVerdict{Holds\|Degraded\|Failed\|ThinValidate\|NoFireValidate\|UnrankableTrain}` (the two "can't tell" outcomes are never silently a pass). The slice carries its **own** cohort-scaled gate (`effective_min_closed`), reported so `ThinValidate` reads as a statement about the slice's size rather than about the candidate |
+| `discovery/seed.rs` | `build_sweep_seed` — Keep axes (`off` + narrowed) + TP/SL menus expanded ±1 rung on the canonical ladders + near-miss `optional_axes` + cluster notes. Near-miss is `DropNoEdge` with best score > 0 **and every `DropNegative` at any sign** — the latter measurably lifted its baseline and failed only because that baseline loses money, which is exactly what the sweep's TP/SL ladder re-prices. Pure projection onto the same `AxisSpec` wire the generic sweep consumes |
+| `discovery/pipeline.rs` | `run_pipeline` — splits the cohort first, selects the baseline (L0) and fits Layers 1–2 (+ L1b/L2b) on train, validates on the held-out slice (a degenerate split fits the whole cohort and reports `no_validation` rather than a vacuous pass). `diagnose` emits the run-level findings a reader would otherwise have to derive across sections: which gate ran, whether the reference line was profitable, how much of the field died for want of data, how much power the validate slice had |
+| `discovery/dto.rs` + `api/handlers/strategies/metric_discovery.rs` | `PipelineDto` (incl. `sweep_seed`, `diagnostics`, `baseline_selection`, `cohort_capped`) + `POST /api/strategies/metric-discovery` (+`/cancel`/`/last`/`/{run_id}`, SSE progress, single-flight mutually exclusive with sweep/flow-discovery, cohort scoping by fingerprint/`ix_labels`/field filters, `take_profit_menu`/`stop_loss_menu` for L0). The handler is the only layer that knows `token_cap`, so it is the only one that can set `cohort_capped` — and it does so **on the result**, not only as an SSE notice a reader has long since missed |
+| `frontend/src/lab/pages/strategies/MetricDiscoveryPage.tsx` | diagnostics + reference line (with the measured bracket table) → shortlist with money columns → drops ordered most-actionable-first → rescues → family winners + joint grids + interaction map → validation; primary **Open as sweep** writes a sessionStorage handoff that `GenericSweepConfigForm` applies once; **Promote…** secondary on winners |
 
 **Objective (Layer 1's ranking core):** `robust_profit × fire_rate × win_component ×
-min_n_gate`, where `robust_profit` is median-anchored (not mean — one whale winner can't
-carry a combo) with an open-position mark discounted by `OPEN_HAIRCUT`, `win_component`
-blends `win_rate` with a capped `profit_factor`, and `min_n_gate` hard-zeroes any combo
-with `n_closed < MIN_CLOSED` (the anti-overfit backbone — no profit% lets a 4-trade
-"edge" rank). **Open (unpinned) constant:** `OPEN_HAIRCUT` / `profit_factor` cap /
+min_n_gate × confidence`, where `robust_profit` is median-anchored (not mean — one whale
+winner can't carry a combo) with an open-position mark discounted by `OPEN_HAIRCUT`,
+`win_component` blends `win_rate` with a capped `profit_factor`, `min_n_gate` hard-zeroes
+any combo under the cohort's **effective** gate (the anti-overfit backbone — no profit%
+lets a 4-trade "edge" rank), and `confidence` discounts the band between that gate and
+`MIN_CLOSED` so a relaxed gate buys a lower rank, not equal trust. The score is
+unitless: it ranks, and only the money columns beside it can be checked against a trade. **Open (unpinned) constant:** `OPEN_HAIRCUT` / `profit_factor` cap /
 `MIN_CLOSED` / plateau-penalty weight are seeded from the `axis-value-candidates.md`
 anchors but never validated-and-pinned as a permanent tuning — revisit once a discovery
 run's picks are checked against live/paper outcomes.
 
-**Honest L1 limit:** synergistic-only metrics (no univariate lift) never enter Keep /
-joint grids; they can only appear as seed `optional_axes` when they are
-`DropNoEdge` with a positive best score, or be added manually in the sweep form.
+**Reading a run** — three things decide whether a shortlist means anything, and each is
+stated on the result rather than left to be inferred:
+
+- **The reference line** (`screen.baseline_stats`): the chosen bracket's own bare
+  result. A `lift` is a delta against it, so a shortlist read without it cannot
+  separate "makes money" from "loses less than doing nothing". When it is negative the
+  page says so and every `Keep` is a rescue, not an improvement.
+- **The gate that ran** (`screen.effective_min_closed`): a regime-scoped cohort cannot
+  afford the corpus-wide 20-closed gate, so it is relaxed toward the floor and the run
+  reports both numbers. `DropThin` is a statement about cohort size, never evidence
+  that a metric has no edge.
+- **`cohort_capped`**: a cap hit means the run scored the newest N *matched* tokens,
+  not the range that was asked for.
+
+**Honest L1 limit:** Layer 1 is univariate, so a metric with no standalone lift never
+reaches a family grid on its own. L1b's synergy rescue is the bounded repair — the
+strongest winner pinned, up to `rescue_cap` rejects re-screened under it — and it is
+deliberately *conditional*: a rescued axis is valid alongside that pin, not by itself,
+and carries the `rescued` flag everywhere it appears. Rejects the rescue does not
+reclaim can still be seeded as `optional_axes`, or added by hand in the sweep form.
 
 **Perf shape is scan/precompute-bound, not fold-bound** (few combos; cost is the corpus
 load + per-token `MetricSeries` build + the exit scan). A discovery run should therefore
@@ -363,7 +383,9 @@ N re-loads.
 the tradable universe (a backfill gap, not a design choice) — this throttles Layer-2/3
 *grouping/scoping* only; Layer-1 metric-axis screening runs over the full trade corpus
 unaffected. Default to a tight single-regime cohort (one fingerprint scope or
-`ix_labels`-only) — widen only when a regime can't clear `MIN_CLOSED`.
+`ix_labels`-only): the cohort-aware gate is what makes that affordable, and the run
+reports the relaxed gate so the trade-off stays visible. Widen when the `DropThin` tally
+dominates the drop table.
 
 ## Adding a strategy
 

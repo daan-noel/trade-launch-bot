@@ -262,6 +262,12 @@ pub struct ValidationReport {
     pub thresholds: ValidationThresholds,
     pub train_tokens: usize,
     pub validate_tokens: usize,
+    /// The min-N gate the **validate slice** was scored under, from its own token
+    /// count ([`DiscoveryWeights::effective_min_closed`]). A held-out slice is smaller
+    /// than the cohort by construction, so it carries a different — and always
+    /// reported — gate: `ThinValidate` otherwise reads as a verdict on the candidate
+    /// when it is a statement about the slice's size.
+    pub effective_min_closed: u64,
     /// Where the cut fell (first validate-side `created_at`).
     pub boundary: Option<DateTime<Utc>>,
     /// One entry per candidate, in the order they were supplied.
@@ -301,6 +307,7 @@ pub fn validate_candidates(
         thresholds,
         train_tokens: train.len(),
         validate_tokens: validate.len(),
+        effective_min_closed: weights.effective_min_closed(validate.len() as u64),
         boundary: validate.first().map(|t| t.created_at),
         candidates,
     };
@@ -385,7 +392,7 @@ fn classify(train: &SliceScore, validate: &SliceScore, th: ValidationThresholds)
     };
     let v = match validate.outcome {
         ScoreOutcome::Ranked(v) => v,
-        ScoreOutcome::BelowMinClosed { n_closed } => {
+        ScoreOutcome::BelowMinClosed { n_closed, .. } => {
             return ValidationVerdict::ThinValidate { n_closed }
         }
         ScoreOutcome::NoFire => return ValidationVerdict::NoFireValidate,
@@ -495,7 +502,7 @@ mod tests {
         let th = ValidationThresholds::default();
         let train = slice(100, ScoreOutcome::Ranked(10.0));
         assert_eq!(
-            classify(&train, &slice(50, ScoreOutcome::BelowMinClosed { n_closed: 4 }), th),
+            classify(&train, &slice(50, ScoreOutcome::BelowMinClosed { n_closed: 4, gate: 8 }), th),
             ValidationVerdict::ThinValidate { n_closed: 4 }
         );
         assert_eq!(
@@ -633,6 +640,7 @@ mod tests {
                 best: Some(best),
                 n_gated: 0,
             }],
+            rescues: vec![],
             combos_scanned: 0,
         };
         let cands = candidates_from_family_report(&report);

@@ -5,14 +5,50 @@
 import type { AxisSpecWire } from '@lab/components/sweep/genericAxes';
 import type { FieldFilterValue } from '@lab/components/sweep/fingerprintFilters';
 
+export type ScoreOutcome = 'ranked' | 'below_min_closed' | 'no_fire';
+
+/** A TP/SL bracket. `null` on a side means that guard is omitted. */
+export interface Bracket {
+  take_profit_pct: number | null;
+  stop_loss_pct: number | null;
+}
+
+/**
+ * One scored row in score **and** in money. The discovery objective is unitless, so
+ * `score` alone can only ever rank — these columns are what makes it checkable.
+ */
+export interface ScoredRow {
+  score: number | null;
+  outcome: ScoreOutcome;
+  n_fired: number;
+  n_closed: number;
+  win_rate: number;
+  median_pnl_pct: number;
+  total_pnl_sol: number;
+}
+
 /** One point on a metric's Layer-1 response curve. */
 export interface ResponsePoint {
   value: number | null; // null = the `off` pick
   score: number | null;
-  outcome: 'ranked' | 'below_min_closed' | 'no_fire';
+  outcome: ScoreOutcome;
   n_fired: number;
   n_closed: number;
+  /** The gate this pick failed, when it was gated. */
+  gate: number | null;
+  win_rate: number;
+  median_pnl_pct: number;
+  total_pnl_sol: number;
 }
+
+export type ScreenVerdict =
+  | 'keep'
+  | 'drop_no_edge'
+  /** Lifted the baseline but stayed unprofitable — signal on a bracket that doesn't fit. */
+  | 'drop_negative'
+  | 'drop_spike'
+  | 'drop_thin'
+  | 'drop_no_baseline';
 
 export interface MetricResponse {
   side: 'entry' | 'exit';
@@ -20,13 +56,28 @@ export interface MetricResponse {
   metric: string;
   operator: string;
   window_sec: number | null;
-  verdict: 'keep' | 'drop_no_edge' | 'drop_spike' | 'drop_thin' | 'drop_no_baseline';
+  verdict: ScreenVerdict;
   baseline: number | null;
   lift: number | null;
+  /** Best pick's absolute score — separates "lifted into profit" from "still losing". */
+  best_score: number | null;
   plateau: number | null;
   best_value: number | null;
   narrowed: number[];
   curve: ResponsePoint[];
+}
+
+export interface BaselineCandidate extends ScoredRow {
+  bracket: Bracket;
+}
+
+/** Layer 0 — the measured bracket table. */
+export interface BaselineSelection {
+  chosen: Bracket;
+  chosen_index: number;
+  all_unprofitable: boolean;
+  combos_scanned: number;
+  candidates: BaselineCandidate[];
 }
 
 export interface SkippedMetric {
@@ -40,6 +91,14 @@ export interface ScreenDto {
   cohort_tokens: number;
   combos_scanned: number;
   n_gated: number;
+  /** The bracket every `lift` on the page is measured against. */
+  baseline: Bracket;
+  /** What that bracket did bare — the reference line. */
+  baseline_stats: ScoredRow | null;
+  /** The min-N gate that actually ran, after cohort scaling. */
+  effective_min_closed: number;
+  /** The configured gate it was relaxed from (equal when it wasn't). */
+  min_closed: number;
   shortlist: MetricResponse[];
   responses: MetricResponse[];
   skipped: SkippedMetric[];
@@ -53,6 +112,21 @@ export interface FamilyMember {
   operator: string;
   values: number[];
   lift: number;
+  /** Supplied by the synergy rescue — its lift is conditional on the pinned winner. */
+  rescued: boolean;
+}
+
+/** One Layer-1 reject re-screened under a pinned winner. */
+export interface Rescue {
+  side: 'entry' | 'exit';
+  group: string;
+  metric: string;
+  operator: string;
+  pinned: string;
+  pinned_score: number;
+  /** Same tags as a Layer-1 verdict — `keep` means the rescue succeeded. */
+  verdict: ScreenVerdict;
+  lift: number | null;
 }
 
 export interface DroppedMember {
@@ -102,6 +176,8 @@ export interface FamilyDto {
   interactions: Interaction[];
   /** Present on new runs; older cached results may omit it. */
   joints?: JointResult[];
+  /** Present on new runs; older cached results may omit it. */
+  rescues?: Rescue[];
 }
 
 export interface SliceScore {
@@ -135,6 +211,12 @@ export interface CandidateValidation {
 export interface ValidationDto {
   train_tokens: number;
   validate_tokens: number;
+  /**
+   * Closed trades a candidate needs on the held-out slice to return a verdict at all.
+   * Without it `thin_validate` reads as a verdict on the candidate when it is a
+   * statement about the slice's size.
+   */
+  effective_min_closed: number;
   boundary: string | null;
   candidates: CandidateValidation[];
 }
@@ -175,6 +257,13 @@ export interface DiscoverySweepHandoff {
 export interface PipelineDto {
   cohort_tokens: number;
   fit_tokens: number;
+  /** The cohort was truncated to the newest `token_cap` matches. */
+  cohort_capped?: boolean;
+  token_cap?: number | null;
+  /** Layer 0 — absent when the caller named a single baseline. */
+  baseline_selection?: BaselineSelection | null;
+  /** Run-level findings in plain language. Present on new runs. */
+  diagnostics?: string[];
   screen: ScreenDto;
   family: FamilyDto;
   validation: ValidationDto | null;
@@ -201,6 +290,13 @@ export interface MetricDiscoveryStartArgs {
   buy_amount_sol?: number;
   take_profit_pct?: number | null;
   stop_loss_pct?: number | null;
+  /**
+   * Candidate TP rungs for baseline selection; crossed with `stop_loss_menu` into the
+   * bracket grid Layer 0 measures. A `null` entry means "no take-profit guard".
+   * Omit (or send one value) to screen against `take_profit_pct` directly.
+   */
+  take_profit_menu?: (number | null)[];
+  stop_loss_menu?: (number | null)[];
   min_closed?: number;
   split_fraction?: number;
   entry_window_sec?: number;

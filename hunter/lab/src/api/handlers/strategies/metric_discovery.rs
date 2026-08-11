@@ -18,6 +18,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::api::handlers::strategies::grouped_sweep::matches_field_filter;
+use crate::discovery::baseline::BaselineGrid;
 use crate::discovery::dto::PipelineDto;
 use crate::discovery::objective::DiscoveryWeights;
 use crate::discovery::pipeline::{run_pipeline, PipelineConfig};
@@ -62,12 +63,21 @@ pub struct StartMetricDiscoveryBody {
     #[serde(default = "default_buy_amount_sol")]
     pub buy_amount_sol: f64,
     /// The fixed take-profit % the whole screen runs against (`null` ⇒ no TP guard —
-    /// but at least one of TP/SL must be set).
+    /// but at least one of TP/SL must be set). Ignored when a bracket menu below
+    /// resolves to more than one candidate.
     #[serde(default = "default_take_profit")]
     pub take_profit_pct: Option<f64>,
     /// The fixed stop-loss % the whole screen runs against.
     #[serde(default = "default_stop_loss")]
     pub stop_loss_pct: Option<f64>,
+    /// Candidate take-profit rungs for baseline selection. With the stop-loss menu
+    /// these cross into the bracket grid Layer 0 measures; a `null` entry means "no
+    /// take-profit guard". Absent/single ⇒ no selection pass, `take_profit_pct` stands.
+    #[serde(default)]
+    pub take_profit_menu: Option<Vec<Option<f64>>>,
+    /// Candidate stop-loss rungs — see [`Self::take_profit_menu`].
+    #[serde(default)]
+    pub stop_loss_menu: Option<Vec<Option<f64>>>,
     /// Minimum closed trades for a combo to be rankable (the anti-overfit gate).
     #[serde(default = "default_min_closed")]
     pub min_closed: u64,
@@ -303,13 +313,29 @@ async fn run_job(
     state.metric_discovery_progress.reset();
 
     // Validate the baseline up front so a bad TP/SL fails the request, not the job.
+    // A bracket menu (Layer 0) supersedes the single baseline; either way the run must
+    // end up with at least one bracket carrying a guard.
     let baseline = ScreenBaseline { take_profit_pct: b.take_profit_pct, stop_loss_pct: b.stop_loss_pct };
-    if baseline.take_profit_pct.is_none() && baseline.stop_loss_pct.is_none() {
-        let msg = "at least one of take_profit_pct / stop_loss_pct is required";
+    let baseline_grid = match (&b.take_profit_menu, &b.stop_loss_menu) {
+        (None, None) => None,
+        (tp, sl) => Some(BaselineGrid {
+            take_profit_pct: tp.clone().unwrap_or_else(|| vec![baseline.take_profit_pct]),
+            stop_loss_pct: sl.clone().unwrap_or_else(|| vec![baseline.stop_loss_pct]),
+        }),
+    };
+    let brackets = baseline_grid.as_ref().map_or(1, |g| g.brackets().len());
+    if brackets == 0 || (baseline_grid.is_none() && baseline.take_profit_pct.is_none() && baseline.stop_loss_pct.is_none())
+    {
+        let msg = "at least one of take_profit_pct / stop_loss_pct is required (or a bracket menu carrying one)";
         gate.error = Some(msg.into());
         let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })));
         return;
     }
+    // A one-bracket menu is just a named baseline — use it and skip the selection pass.
+    let baseline = baseline_grid
+        .as_ref()
+        .filter(|g| g.brackets().len() == 1)
+        .map_or(baseline, |g| g.brackets()[0]);
 
     let flow_patterns = b
         .volume_ix_patterns
@@ -475,6 +501,7 @@ async fn run_job(
             ..ScreenConfig::default()
         },
         baseline,
+        baseline_grid: baseline_grid.filter(|g| g.brackets().len() > 1),
         weights: DiscoveryWeights { min_closed: b.min_closed, ..DiscoveryWeights::default() },
         split: SplitPolicy::AgeFraction(b.split_fraction.clamp(0.0, 1.0)),
         validation_thresholds: ValidationThresholds::default(),
@@ -495,6 +522,11 @@ async fn run_job(
     let threads = std::thread::available_parallelism()
         .map(|n| n.get().saturating_sub(2).max(1))
         .unwrap_or(1);
+    // The handler is the only layer that knows the cap, so it is the only one that can
+    // report a truncated cohort. It rides the result rather than the SSE notice alone:
+    // a notice is gone by the time someone reads the shortlist, and "the newest N
+    // tokens" is not the cohort the run was asked for.
+    let cohort_capped = corpus.candidates_capped || scope_capped;
     let corpus = Arc::new(corpus);
     let result = tokio::task::spawn_blocking({
         let observer = observer.clone();
@@ -508,7 +540,18 @@ async fn run_job(
             pool.install(|| {
                 observer.set_phase("pipeline");
                 let report = run_pipeline(&corpus, &cfg, pricing, as_of, observer.as_ref())?;
-                let dto = PipelineDto::from_report(&report);
+                let mut dto = PipelineDto::from_report(&report);
+                dto.cohort_capped = cohort_capped;
+                dto.token_cap = Some(token_cap);
+                if cohort_capped {
+                    dto.diagnostics.insert(
+                        0,
+                        format!(
+                            "Cohort hit the {token_cap}-token cap — only the newest {token_cap} \
+                             matching token(s) were scored, not the whole selected range."
+                        ),
+                    );
+                }
                 Ok(serde_json::to_value(&dto)?)
             })
         }

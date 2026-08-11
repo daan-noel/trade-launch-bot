@@ -9,6 +9,9 @@
 //!   the candidate value menus they generate (step 2).
 //! * [`additive`] — the shared scan mode: N sub-models as one flat combo space over
 //!   ONE per-token precompute (the pipeline's dominant performance lever).
+//! * [`baseline`] — Layer 0: measure the candidate TP/SL brackets and screen against
+//!   the one that fits the cohort, so a mis-chosen bracket can't read as "no metric
+//!   has an edge here".
 //! * [`screen`] — Layer 1: the additive per-metric scan, its response curves, and
 //!   the ranked metric shortlist (step 3).
 //! * [`family`] — Layer 2: a grid per registry metric family over Layer 1's narrowed
@@ -22,6 +25,7 @@
 //! with no edit (extensibility contract, plan §5).
 
 pub mod additive;
+pub mod baseline;
 pub mod candidates;
 pub mod dto;
 pub mod family;
