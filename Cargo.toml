@@ -102,4 +102,8 @@ solana-sdk = "1.17.27"
 solana-client = "1.17.27"
 
 [profile.dev]
-debug = true
+# Backtraces keep file/line, but the full type info is dropped. `debug = true` puts
+# rustc's peak memory on `hunter-lab` over what a 16 GB workstation has free, and an
+# OOM there reads as a mystery toolchain error, not as "out of RAM". Changing this
+# invalidates every artifact once, incl. a full DuckDB C++ rebuild — set it and leave it.
+debug = "line-tables-only"

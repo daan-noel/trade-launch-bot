@@ -156,19 +156,8 @@ pub fn select_baseline(
         bail!("baseline selection measured no bracket — the grid resolved to an empty scan");
     }
 
-    // Best by score; an unrankable bracket can still win only if nothing ranked, in
-    // which case the run is explicitly flagged rather than reading as a normal choice.
-    let chosen_index = candidates
-        .iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| {
-            let sa = a.score().unwrap_or(f64::NEG_INFINITY);
-            let sb = b.score().unwrap_or(f64::NEG_INFINITY);
-            sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|(i, _)| i)
-        .expect("non-empty");
-    let all_unprofitable = candidates.iter().all(|c| c.score().is_none_or(|s| s <= 0.0));
+    let (chosen_index, all_unprofitable) =
+        choose_bracket(candidates.iter().map(|c| (c.score(), c.metrics.total_pnl_sol)));
 
     Ok(BaselineSelection {
         chosen: candidates[chosen_index].baseline,
@@ -177,6 +166,37 @@ pub fn select_baseline(
         all_unprofitable,
         combos_scanned,
     })
+}
+
+/// Pick the winning bracket from `(score, realised ◎)` pairs, returning its index
+/// and whether the choice had to fall back to money.
+///
+/// The rank runs over the **positive** scores only. The objective is multiplicative
+/// over a signed profit term, so below zero a larger `fire_rate` drives the score
+/// *further* negative and a bare `max_by` crowns whichever bracket barely trades —
+/// the "ordering among negative combos is not meaningful" caveat in
+/// [`objective`](super::objective), which this is the caller-side half of.
+///
+/// With nothing positive there is no meaningful rank to take at all, so the fallback
+/// is realised money: the least-bad bracket in ◎. That is monotone in the quantity a
+/// reader actually cares about, and the returned flag says the run took it.
+fn choose_bracket(rows: impl Iterator<Item = (Option<f64>, f64)>) -> (usize, bool) {
+    let rows: Vec<(Option<f64>, f64)> = rows.collect();
+    let all_unprofitable = rows.iter().all(|(s, _)| s.is_none_or(|s| s <= 0.0));
+    let key = |(score, pnl_sol): &(Option<f64>, f64)| {
+        if all_unprofitable {
+            *pnl_sol
+        } else {
+            score.filter(|s| *s > 0.0).unwrap_or(f64::NEG_INFINITY)
+        }
+    };
+    let idx = rows
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| key(a).partial_cmp(&key(b)).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    (idx, all_unprofitable)
 }
 
 /// One bracket as a single-combo model: its TP/SL axes and nothing else.
@@ -267,13 +287,62 @@ mod tests {
         assert_eq!(out.candidates.len(), 4);
         assert_eq!(out.combos_scanned, 4, "one combo per bracket — nothing multiplicative");
         assert_eq!(out.chosen, out.candidates[out.chosen_index].baseline);
-        let best = out.candidates[out.chosen_index].score().unwrap_or(f64::NEG_INFINITY);
-        for c in &out.candidates {
-            assert!(c.score().unwrap_or(f64::NEG_INFINITY) <= best, "a better bracket was passed over");
-        }
         assert_eq!(
             out.all_unprofitable,
             out.candidates.iter().all(|c| c.score().is_none_or(|s| s <= 0.0)),
         );
+        let winner = &out.candidates[out.chosen_index];
+        if out.all_unprofitable {
+            // No rankable bracket ⇒ the pick is by realised money, not by score.
+            for c in &out.candidates {
+                assert!(
+                    c.metrics.total_pnl_sol <= winner.metrics.total_pnl_sol,
+                    "a bracket that lost less was passed over",
+                );
+            }
+        } else {
+            let best = winner.score().expect("a profitable winner is rankable");
+            assert!(best > 0.0, "a rankable winner must be positive, got {best}");
+            for c in &out.candidates {
+                assert!(
+                    c.score().unwrap_or(f64::NEG_INFINITY) <= best,
+                    "a better bracket was passed over",
+                );
+            }
+        }
+    }
+
+    /// The inverted-ranking guard. Among losing brackets the objective scores a
+    /// *higher* fire rate *lower*, so a bare `max_by` crowns whichever bracket barely
+    /// trades. With nothing positive the choice must fall back to realised money.
+    #[test]
+    fn a_losing_grid_is_chosen_by_money_not_by_an_inverted_score() {
+        // A bracket that traded a lot for −2 ◎ vs one that barely traded for −8 ◎.
+        // Below zero the score prefers the second (closer to zero); money prefers the
+        // first, and money is the one that means something.
+        let barely_trades = (Some(-0.4_f64), -8.0_f64);
+        let trades_a_lot = (Some(-9.0_f64), -2.0_f64);
+        assert!(
+            barely_trades.0 > trades_a_lot.0,
+            "precondition: the raw score ranking is inverted below zero",
+        );
+        let (idx, fell_back) = choose_bracket([barely_trades, trades_a_lot].into_iter());
+        assert!(fell_back, "an all-losing grid must report the fallback");
+        assert_eq!(idx, 1, "the least-bad bracket by money wins, not the least-traded");
+    }
+
+    /// Above zero the rank is the score, and an unrankable (gated) bracket never wins
+    /// over a rankable one just by being unmeasured.
+    #[test]
+    fn a_profitable_grid_ranks_by_score_and_ignores_gated_brackets() {
+        let rows = [
+            (None, 99.0),        // gated: huge ◎ but unrankable
+            (Some(2.0), 1.0),
+            (Some(5.0), 0.5),    // best score, less money — the score is the rank
+            (Some(-3.0), 0.2),
+        ];
+        let (idx, fell_back) = choose_bracket(rows.into_iter());
+        assert!(!fell_back, "a positive score exists, so no money fallback");
+        assert_eq!(idx, 2);
     }
 }

@@ -320,6 +320,27 @@ fn diagnose(
         ));
     }
 
+    // ── can this cohort measure a selective gate at all? ────────────────────
+    // The scan opens at most one position per token, so `n_closed <= fit_tokens` and a
+    // gate must fire on `gate / fit_tokens` of the slice merely to be *scored*. Past a
+    // quarter, the selective end of every menu (the p75/p90 rungs — the ones most
+    // likely to carry an edge) cannot clear the gate no matter what it screens, and
+    // the whole run reads as `DropThin`. Indistinguishable from "no edge here" unless
+    // the arithmetic is stated, so it is stated.
+    let gate = screen.effective_min_closed;
+    if fit_tokens > 0 && gate > 0 {
+        let required = gate as f64 / fit_tokens as f64;
+        if required > 0.25 {
+            out.push(format!(
+                "Fit slice of {fit_tokens} token(s) against a {gate}-closed gate: a gate must fire \
+                 on {:.0}% of the slice just to be scored, so the selective end of every menu is \
+                 unmeasurable on this cohort. Widen the time range or loosen the scope before \
+                 reading any drop here as an absence of edge.",
+                required * 100.0,
+            ));
+        }
+    }
+
     // ── how the field died ──────────────────────────────────────────────────
     let thin = screen
         .responses
@@ -508,6 +529,26 @@ mod tests {
         if out.screen.shortlist.is_empty() && !out.screen.responses.is_empty() {
             assert!(joined.contains("Nothing was kept"), "{joined}");
         }
+    }
+
+    /// A cohort too small to score a selective gate must say so *with the
+    /// arithmetic*. Otherwise `DropThin` across the whole field reads as "this cohort
+    /// has no edge", when what it measured was "no gate here can clear the floor".
+    #[test]
+    fn a_cohort_too_small_for_the_gate_states_the_arithmetic() {
+        let c = corpus(24);
+        let cfg = PipelineConfig { weights: DiscoveryWeights::default(), ..cfg() };
+        let out = run_pipeline(&c, &cfg, pricing(), as_of(), &NoopObserver).unwrap();
+
+        // 24 tokens on the default 70/30 split leave ~16 to fit on, against a gate
+        // that floors at 8 — half the slice.
+        let required = out.screen.effective_min_closed as f64 / out.fit_tokens as f64;
+        assert!(required > 0.25, "precondition: this cohort cannot afford its gate");
+        let joined = out.diagnostics.join("\n");
+        assert!(
+            joined.contains("just to be scored"),
+            "the cohort/gate arithmetic must be stated: {joined}",
+        );
     }
 
     /// Too small to split → Layers 1–2 still run on the whole cohort, and the report

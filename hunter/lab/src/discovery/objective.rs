@@ -14,10 +14,9 @@
 //! DiscoveryScore = robust_profit × fire_rate × win_component      (min-N gated)
 //! ```
 //!
-//! * **`robust_profit`** — median-anchored, not mean, so a couple of whale winners
-//!   can't inflate it (the exact failure the objective must avoid). Open positions
-//!   are marked to last price and **haircut** so paper gains can't masquerade as
-//!   realised edge.
+//! * **`robust_profit`** — the combo's **capital-weighted return**, so its sign is
+//!   locked to the money it made. Open positions are marked to last price and
+//!   **haircut** so paper gains can't masquerade as realised edge.
 //! * **`fire_rate`** = `n_fired / matched` — frequency; a combo that fires on 3 of
 //!   500 tokens is penalised ~166× vs one that fires on all 500.
 //! * **`win_component`** = `win_rate × clamp(profit_factor)` — win-rate alone rewards
@@ -25,6 +24,30 @@
 //!   wins actually outweigh the losses.
 //! * **min-N gate** — a combo with `n_closed < min_closed` is unrankable (its "edge"
 //!   is noise). Reported, never silently dropped (see [`ScoreOutcome::is_gated`]).
+//!
+//! ## Why the profit centre is capital-weighted return, not a median
+//!
+//! `Keep` requires a **positive** score ([`classify`]), and the score's sign is the
+//! profit centre's sign. A median-anchored centre therefore demands a positive
+//! *median trade*, which on a fixed notional means a **win rate above 50%** — and
+//! that rejects every asymmetric-payoff strategy, which is the shape this cohort
+//! trades in. Measured over the stored corpus: not one combo under a 50% win rate
+//! has a positive median, while 61% of the combos that actually made money sit
+//! there. A median centre scores the corpus's single best combo (313 closed trades,
+//! profit factor 1.89, +7.4 ◎) as negative and drops it.
+//!
+//! [`ComboStats::return_pct`] is the SSOT `weighted_return_pct(Σ pnl, Σ capital)`:
+//! the sweep deploys a fixed notional per trade, so `Σ pnl / (n · notional)` reduces
+//! exactly to `mean_pnl_pct` (`kernel::weighted_return_pct`'s own documented
+//! identity). It is therefore sign-locked to `total_pnl_sol` — pinned by
+//! [`mean_pnl_pct_is_the_capital_weighted_return`]. **If per-trade sizing ever
+//! varies within a sweep (percent-of-vsol), that identity breaks and this must read
+//! a real capital sum instead.**
+//!
+//! Whale resistance does not depend on the median and never did: `win_component`
+//! multiplies win-rate by a capped profit-factor, which already ranks a steady combo
+//! above a whale-carried one by ~3× (pinned by
+//! [`whales_lose_to_steady_on_win_component_alone`]).
 //!
 //! ## The gate is cohort-aware, and its edge is a ramp, not a cliff
 //!
@@ -139,11 +162,12 @@ pub struct ComboStats {
     pub n_closed: u64,
     /// Realised win-rate over closed trades (`0..=1`).
     pub win_rate: f64,
-    /// Realised **mean** per-trade pnl% (closed only). Used only to recover the
-    /// open-mark mean; never the profit center itself.
+    /// Realised **mean** per-trade pnl% (closed only) — under the sweep's fixed
+    /// per-trade notional this *is* the capital-weighted return, so it is the
+    /// profit centre. Read it through [`Self::return_pct`], never directly.
     pub mean_pnl_pct: f64,
-    /// Realised **median** per-trade pnl% (closed only) — the stability-robust
-    /// profit center.
+    /// Realised **median** per-trade pnl% (closed only). Carried for the report's
+    /// money columns; deliberately **not** the profit centre (module docs).
     pub median_pnl_pct: f64,
     /// Mean per-trade pnl% over **all fired** positions, still-open marks included.
     pub mtm_pnl_pct: f64,
@@ -164,6 +188,17 @@ impl ComboStats {
             mtm_pnl_pct: m.mtm_pnl_pct,
             profit_factor: m.profit_factor,
         }
+    }
+
+    /// The realised **capital-weighted return %** over closed trades — the profit
+    /// centre, sign-locked to the combo's `total_pnl_sol` (module docs).
+    ///
+    /// The sweep deploys a fixed notional per trade, so
+    /// `weighted_return_pct(Σ pnl, n · notional)` reduces exactly to the mean of the
+    /// per-trade percents. This reads that identity, not a mean-of-percents for its
+    /// own sake — the distinction matters the moment sizing stops being fixed.
+    pub fn return_pct(&self) -> f64 {
+        self.mean_pnl_pct
     }
 
     /// Mean mark over just the **open** positions, recovered from the persisted
@@ -245,10 +280,11 @@ pub fn discovery_score(s: ComboStats, matched: u64, w: DiscoveryWeights) -> Scor
     let closed_share = closed / fired;
     let open_share = open / fired;
 
-    // Median-anchored profit, open positions marked-to-last and haircut so paper
-    // gains can't masquerade as realised edge.
+    // Capital-weighted return, open positions marked-to-last and haircut so paper
+    // gains can't masquerade as realised edge. Sign-locked to the money made — a
+    // median here would demand a >50% win rate to score positive at all (module docs).
     let robust_profit =
-        s.median_pnl_pct * closed_share + s.mean_open_pct() * open_share * w.open_haircut;
+        s.return_pct() * closed_share + s.mean_open_pct() * open_share * w.open_haircut;
 
     // Frequency.
     let fire_rate = (fired / matched as f64).min(1.0);
@@ -271,6 +307,7 @@ pub fn discovery_score(s: ComboStats, matched: u64, w: DiscoveryWeights) -> Scor
 #[cfg(test)]
 mod tests {
     use super::*;
+    use trading_core::strategies::kernel::weighted_return_pct;
 
     /// A closed-only combo (no open positions) with a given median / mean / win-rate.
     fn closed(n_closed: u64, win_rate: f64, median: f64, mean: f64, pf: Option<f64>) -> ComboStats {
@@ -341,30 +378,73 @@ mod tests {
         assert!((full - 4.0 * half).abs() < 1e-9, "{full} vs {half}");
     }
 
+    /// Whale resistance lives in `win_component`, not in a median profit centre. A
+    /// steady combo still out-ranks a whale-carried one by a wide margin on the
+    /// capital-weighted centre — which is why the median is not needed for the job it
+    /// was introduced to do (module docs).
     #[test]
-    fn median_not_mean_drives_profit_so_whales_dont_win() {
+    fn whales_lose_to_steady_on_win_component_alone() {
         // Combo A: +5% on every one of 40 tokens — steady.
-        // Combo B: two +400% whales dragging a mean up, but median is −20%.
+        // Combo B: a couple of whales dragging the mean up on a 10% win rate.
         let w = DiscoveryWeights::default();
         let matched = 40;
         let steady = closed(40, 1.0, 5.0, 5.0, None);
-        // B: same fire count + a *higher mean*, but a negative median and a mediocre
-        // win-rate — the "one or two big profits" the objective must NOT reward.
         let whales = ComboStats {
             n_fired: 40,
             n_open: 0,
             n_closed: 40,
             win_rate: 0.10,
-            mean_pnl_pct: 40.0,   // inflated by the whales
-            median_pnl_pct: -20.0, // most tokens lost
+            mean_pnl_pct: 40.0, // inflated by the whales
+            median_pnl_pct: -20.0,
             mtm_pnl_pct: 40.0,
             profit_factor: Some(1.2),
         };
         let a = discovery_score(steady, matched, w).score().unwrap();
         let b = discovery_score(whales, matched, w).score().unwrap();
-        assert!(a > 0.0, "steady combo should score positive: {a}");
-        assert!(b < 0.0, "whale combo has a negative median ⇒ negative profit center: {b}");
-        assert!(a > b, "median-anchored objective must rank steady over whales ({a} vs {b})");
+        assert!(a > b, "steady must out-rank whales ({a} vs {b})");
+        // …and by a margin `win_component` alone supplies: 1.0 vs 0.10 × (1.2/3.0).
+        assert!(a > 3.0 * b, "the margin must be decisive, not marginal ({a} vs {b})");
+        // The whale combo did make money, so it ranks low rather than being erased —
+        // the objective's job is to rank, and only `classify` decides keep/drop.
+        assert!(b > 0.0, "a profitable combo must not score negative: {b}");
+    }
+
+    /// The profit centre is the SSOT capital-weighted return. Under the sweep's fixed
+    /// per-trade notional `weighted_return_pct(Σ pnl, n · notional)` reduces exactly
+    /// to `mean_pnl_pct`; this pins that identity so the day sizing stops being fixed,
+    /// the copy fails loudly instead of drifting (the no-DB guard-test rule).
+    #[test]
+    fn mean_pnl_pct_is_the_capital_weighted_return() {
+        let notional = 0.126_f64; // the measured optimal fixed buy
+        let n = 40_u64;
+        let mean_pct = 23.7_f64;
+        // Fixed notional ⇒ Σ pnl = notional × Σ pct/100 = notional × n × mean/100.
+        let sum_pnl_sol = notional * n as f64 * mean_pct / 100.0;
+        let sum_capital_sol = notional * n as f64;
+
+        let s = closed(n, 0.444, -14.9, mean_pct, Some(1.89));
+        let ssot = weighted_return_pct(sum_pnl_sol, sum_capital_sol);
+        assert!(
+            (s.return_pct() - ssot).abs() < 1e-9,
+            "profit centre {} must equal weighted_return_pct {ssot}",
+            s.return_pct(),
+        );
+        // …and the sign lock that buys: positive money ⇒ positive centre.
+        assert!(sum_pnl_sol > 0.0 && s.return_pct() > 0.0);
+    }
+
+    /// The regression this objective was rebuilt for. These are the corpus's single
+    /// best-earning combo's real numbers: 313 closed trades, profit factor 1.89,
+    /// +7.4 ◎ — and a 44.4% win rate, so its median trade is −14.9%. A
+    /// median-anchored centre scored it negative and dropped it.
+    #[test]
+    fn profitable_combo_under_a_50pct_win_rate_scores_positive() {
+        let w = DiscoveryWeights::default();
+        let best = closed(313, 0.444, -14.9, 23.7, Some(1.89));
+        let score = discovery_score(best, 400, w).score().expect("313 closed clears any gate");
+        assert!(score > 0.0, "the corpus's best combo must be rankable, got {score}");
+        // It is exactly the median that used to sink it.
+        assert!(best.median_pnl_pct < 0.0 && best.return_pct() > 0.0);
     }
 
     #[test]

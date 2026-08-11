@@ -571,10 +571,25 @@ pub(super) fn classify(curve: &[ResponsePoint], th: ScreenThresholds) -> Verdict
         let best_n_closed = picks.iter().map(|p| p.n_closed).max().unwrap_or(0);
         return Verdict::DropThin { best_n_closed };
     }
-    let (best_i, best) = ranked
-        .iter()
-        .copied()
-        .fold((0usize, f64::NEG_INFINITY), |acc, x| if x.1 > acc.1 { x } else { acc });
+    // The rank is only meaningful above zero (`objective` module docs), so the argmax
+    // runs over the **positive** picks. With none, the curve cannot be ranked at all:
+    // below zero a pick that fires more scores *worse*, so a bare max would return the
+    // most restrictive gate on the menu — and `narrow` would then hand Layer 2 a range
+    // built around it. Fall back to realised money, which stays monotone either side
+    // of zero. The verdict below is unchanged: a non-positive best is still a drop.
+    let (best_i, best) = match ranked.iter().copied().filter(|(_, s)| *s > 0.0).reduce(
+        |acc, x| if x.1 > acc.1 { x } else { acc },
+    ) {
+        Some(top) => top,
+        None => {
+            let i = ranked
+                .iter()
+                .map(|(i, _)| *i)
+                .reduce(|a, b| if picks[b].total_pnl_sol > picks[a].total_pnl_sol { b } else { a })
+                .expect("ranked is non-empty");
+            (i, picks[i].score().expect("a ranked pick has a score"))
+        }
+    };
     let best_value = picks[best_i].value.unwrap_or(f64::NAN);
 
     let lift = best - baseline;
@@ -762,6 +777,36 @@ mod tests {
             classify(&flat, ScreenThresholds::default()),
             Verdict::DropNoEdge { .. }
         ));
+    }
+
+    /// Below zero the score ranks backwards — a pick that fires more scores *worse* —
+    /// so the argmax must not run over negatives. The reported `best_value` (and the
+    /// range `narrow` builds around it) has to follow realised money instead of
+    /// crowning the most restrictive gate on the menu.
+    #[test]
+    fn a_losing_curve_reports_the_money_best_pick_not_the_least_traded() {
+        let pt = |value: Option<f64>, score: f64, pnl_sol: f64| ResponsePoint {
+            value,
+            outcome: ScoreOutcome::Ranked(score),
+            n_fired: 50,
+            n_closed: 50,
+            win_rate: 0.4,
+            median_pnl_pct: -5.0,
+            total_pnl_sol: pnl_sol,
+        };
+        let curve = vec![
+            pt(None, -12.0, -9.0),      // the bare bracket
+            pt(Some(5.0), -9.0, -2.0),  // loose gate: trades a lot, loses the least
+            pt(Some(40.0), -0.4, -8.0), // tight gate: barely trades, score nearest zero
+        ];
+        match classify(&curve, ScreenThresholds::default()) {
+            Verdict::DropNegative { best_value, best_score, lift } => {
+                assert_eq!(best_value, 5.0, "the money-best pick must be the one reported");
+                assert_eq!(best_score, -9.0);
+                assert!((lift - 3.0).abs() < 1e-9, "lift is measured against the bare bracket");
+            }
+            other => panic!("expected a negative drop, got {other:?}"),
+        }
     }
 
     #[test]

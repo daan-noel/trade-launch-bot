@@ -6,9 +6,10 @@ playbook fingerprints**. Session handoff context lives in
 in [mx-metric-rules.md](mx-metric-rules.md). Wallet-copy ladders (`fs*`) are a
 separate calibration track ([wallet-analysis.md](wallet-analysis.md)).
 
-Phase 2 here picks the *search shape*; the step-by-step recipe for landing the
-**values** on one fingerprint — screen all 38 metrics, grid the survivors, validate,
-ship a `--- v<n>` rule — is
+Phase 2 here picks the *search shape*; the step-by-step recipe for finding the
+**metrics and their values** on one fingerprint - build a candidate pool from the
+whole catalog, select forward and backward until it stabilizes, tune values,
+validate, ship a `--- v<n>` rule - is
 [rule-value-tuning-playbook.md](rule-value-tuning-playbook.md).
 
 ---

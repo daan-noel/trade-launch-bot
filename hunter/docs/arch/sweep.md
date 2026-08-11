@@ -82,7 +82,7 @@ entry class. **Re-run them, and expect the crown to move.** Incident:
 
 ### Corpus scope: saved fingerprint vs manual filters
 
-Two mutually-exclusive ways the start request narrows the loaded corpus, both applied in-memory *after* the lake load (so the unfiltered Parquet/`sweep_corpus_cache` entry stays reusable):
+Two mutually-exclusive ways the start request narrows the loaded corpus, and they narrow at **different stages**. `fingerprint_id` resolves to an explicit `Selection::mints` *before* the lake load (rule 1 of the lake read discipline below), so the scope is part of the corpus identity and therefore part of the `sweep_corpus_cache` key — switching scopes costs a fresh Parquet read. The manual filters apply in-memory *after* the load, so one unfiltered corpus entry serves every filter value over the same selection:
 
 - **`fingerprint_id`** (sweep form → *Group by fingerprint* → *Scope by saved fingerprint*, mirroring the Flow-discovery control) — keeps only tokens `hunter_engine::fingerprint::matches` accepts for that saved fingerprint: the **engine match SSOT**, exact axes exact and the continuous SOL axes by **bucket**, i.e. the token set the live entry gate would arm on. `group_by` still partitions *within* the matched slice (empty ⇒ one `ALL` group).
 - **`ix_labels_filter` + `field_filters`** — the manual path: exact **ordered-sequence** label match (same on-chain order, same repeated labels, same length — the axis semantics `hunter_engine::fingerprint::matches` grades on, so `normalize_label_vec` never sorts or de-duplicates) and exact-value field pins. These cannot express a bucket axis, which is why scoping is a separate request field rather than a filter prefill. Ignored (and stored as `NULL`) whenever `fingerprint_id` is set.
@@ -211,7 +211,7 @@ Grouped sweep runs hard **inside** a reserved slice of the analysis box so the d
 | Fold batch budget | `usable / 4` clamped to 32..=512 MB; hard max **65 536** combos/batch (8192 when under reserve) |
 | Driver (large groups) | **wave-outer** when shard fits (series once/token); else **pass-outer** with disk **spill** of finalized metrics |
 | Driver (small groups) | `sweep_group_serial`: **token-outer** (series built once/token, combos folded in batches over it) when the full `n_combos × ComboAgg` set fits across all workers; else **batch-outer** fallback (bounded `batch × ComboAgg`, series rebuilt once/batch). Single-batch groups are token-outer either way. The fit test reads `usable_host_bytes()`, which prices the run's **permanent** resident set (the corpus) as consumed but its own **transient** fold buffers as reusable headroom — without that, the sweep's own RSS drives `usable → 0` mid-run and token-outer never fires at all (measured 0/405 groups before the fix vs 152/405 normal and 601/601 under tight reserve after, with a 7.9× faster coarse pass on the tight run). Before/after: [../plans/sweep/ram-sizing.md](../plans/sweep/ram-sizing.md#measured-performance-2026-07-19) |
-| Exit-scan path | **Bind-time req classification, then a per-class search.** `BoundCombo::new` classifies every exit req once per combo (`ExitClass`): a monotone `m_position.pnl` bound → prefix-extrema hull, **O(log n)**; a `>=` bound on `m_position.held` → binary search on `series.at`, **O(log n)**; `m_position.retrace` → running-peak scan, **O(n)** (vectorized — *not* O(log n); a running peak is not a static prefix query); `m_position.bounce` → running-trough scan, **O(n)**; anything else (token-scoped column, multi-arm DNF, `=`/`!=`) → `General`. One `General` req drops the whole rule to the scalar walk. `bound.fast_exit` = no `General`, and it — not `has_exit_metrics()` — is what gates building the index (`wants_exit_index`). The earliest row across the classified reqs wins, ties broken by `exit_reqs` order (so desugared SL > TP > authored); `Dead` outranks all. Optional **AVX-512** toggle (`resolve_exit_simd`, 8×`f64`) for A/B on the pure-`pnl`-bound shape, comparing **in pnl space** per lane (IEEE ops are exactly rounded ⇒ bit-identical to scalar, so no threshold inversion is needed); other shapes delegate to the index path. **Byte-identical** to scalar (guards `index_exit_scan_matches_scalar_*` + `simd_exit_scan_matches_scalar_across_paths`), plus a **reachability** guard (`tp_sl_rules_actually_reach_the_exit_index`) — the Phase-2 desugaring made `has_exit_metrics()` true for every TP/SL rule, which silently disabled both fast paths for a whole phase without breaking a single equality test. Money math stays the one `kernel` copy. Lab-only. AVX-512 measured: scalar linear **0.63 s** → SIMD **0.29 s** (2.2×, release); SIMD is ~2.3× *slower* in debug — leave the toggle off under plain `cargo run`. |
+| Exit-scan path | **Bind-time req classification, then a per-class search.** `BoundCombo::new` classifies every exit req once per combo (`ExitClass`): a monotone `m_position.pnl` bound → prefix-extrema hull, **O(log n)**; a `>=` bound on `m_position.held` → binary search on `series.at`, **O(log n)**; `m_position.retrace` → running-peak scan, **O(n)** (vectorized — *not* O(log n); a running peak is not a static prefix query); `m_position.bounce` → running-trough scan, **O(n)**; anything else (token-scoped column, multi-arm DNF, `=`/`!=`) → `General`. One `General` req drops the whole rule to the scalar walk. `bound.fast_exit` = no `General`, and it — not `has_exit_metrics()` — is what gates building the index (`wants_exit_index`). The earliest row across the classified reqs wins, ties broken by `exit_reqs` order (so desugared SL > TP > authored); `Dead` outranks all. Optional **AVX-512** toggle (`resolve_exit_simd`, 8×`f64`) for A/B on the pure-`pnl`-bound shape, comparing **in pnl space** per lane (IEEE ops are exactly rounded ⇒ bit-identical to scalar, so no threshold inversion is needed); other shapes delegate to the index path. **Byte-identical** to scalar (guards `index_exit_scan_matches_scalar_*` + `simd_exit_scan_matches_scalar_across_paths`), plus a **reachability** guard (`tp_sl_rules_actually_reach_the_exit_index`) — the Phase-2 desugaring made `has_exit_metrics()` true for every TP/SL rule, which silently disabled both fast paths for a whole phase without breaking a single equality test. Money math stays the one `kernel` copy. Lab-only. **The AVX-512 toggle buys nothing against the index and stays off.** Its 2.2× (0.63 s → 0.29 s) is measured against the *linear* scalar scan, which the O(log n) index replaced as the default — head-to-head on the current default path a 4541-token × 1600-combo pure-TP/SL run is **3.2 s toggle-off vs 4.3 s toggle-on**. It survives for A/B only; in debug it is ~2.3× *slower* still. The cost that matters is the `General` fallback: the same corpus with `m_flow_split` / `m_price_lifetime` exits takes **62 s** against 4 s, so a metric-exit rule is ~15× a TP/SL one and the scalar walk — not the vector kernel — is the optimization target. |
 | Pricing (fill + cost model) | **Part of a run's identity, chosen per run.** `Pricing { buy_amount_sol, fill_model, cost }` threads from the request through `run_grouped` → `GenericSweepStrategy` → every scan fn. `fill_model` picks which trade in the window prices each leg (the same `FillModel` `ReplayConfig` threads — fill *eligibility* is identical across models, so the taken set never moves, only the price); `cost_model` picks `pumpfun_default` vs `pumpfun_fee_only`. Both persist on the run row (migration `0010`) and the drill-in re-simulates under the run's own pair, for the same reason it re-uses the run's `as_of` (parity plan B7). `NULL` ⇒ the legacy pair (`worst_case` + `pumpfun_default`). **Fixed per-leg tip/priority** inside either cost model comes from process-wide `FeeTuning` (`JITO_MIN_TIP_SOL` + `CU_PRICE_MICRO_LAMPORTS` — same knobs live applies to the trader; lab installs at boot). **Pair fill + cost coherently:** an explicit fill model already prices execution slippage, so `pumpfun_default` charges it twice — and since `fixed_cost_sol_per_leg` is per-leg, that haircut scales with how often a combo fires, i.e. it is *not* rank-preserving across combos. The FE warns when a run carries that pair. Guard: `assert_parity` runs scan ≡ `run_replay` under **every** `FillModel`. |
 | Sharding | large `N` split into RAM-sized combo ranges; up to 4 shards in parallel (RAM-capped); spill+merge |
 | Smarter search | full `grid` with ≥200k combos and no refine → auto `lhs:50000` + refine (override with explicit `refine:` / `random:`) |
@@ -332,14 +332,17 @@ all it reads).
 | `discovery/screen.rs` | Layer 1: `ScreenStrategy`, an additive scan mode (`GenericSweepStrategy::share_precompute`) that sweeps every candidate metric alone against the run's TP/SL baseline over **one** shared per-token precompute (~6N combos, not 6^N) → `Verdict{Keep\|DropNoEdge\|DropNegative\|DropSpike\|DropThin\|DropNoBaseline}` per metric → ranked shortlist. Every `ResponsePoint` carries win rate / median pnl% / **SOL** beside the unitless score, and the bare bracket's own row is hoisted to `ScreenReport::baseline_stats` — the reference line every `lift` is a delta against |
 | `discovery/family.rs` | Layer 2: `plan_families` groups the Layer-1 shortlist by the registry's `MetricFamily` tag (`price`/`flow`/`flow_split`/`liquidity-age`), grids within each family, then runs an O(families²) pairwise interaction check (pin A's best, sweep B) → `Independent \| Interacting \| Inconclusive`. **L2b** builds connected components of undirected `Interacting` pairs and product-grids them under `FamilyLimits` (enforced, not advisory) → `JointResult` winners. **L1b** is the *synergy rescue*: the strongest winner is pinned and up to `rescue_cap` Layer-1 rejects re-screened under it through the same `classify`, so a metric with no standalone lift can still earn an axis — flagged `rescued`, because that lift is conditional on the pin |
 | `discovery/validate.rs` | Layer 3: `split_tokens` (age-based train/validate split) + `validate_candidates` re-scores each Layer-2 family **and** joint winner on the held-out slice via `simulate_one_combo` under the run's own `Pricing`/`as_of` → `ValidationVerdict{Holds\|Degraded\|Failed\|ThinValidate\|NoFireValidate\|UnrankableTrain}` (the two "can't tell" outcomes are never silently a pass). The slice carries its **own** cohort-scaled gate (`effective_min_closed`), reported so `ThinValidate` reads as a statement about the slice's size rather than about the candidate |
-| `discovery/seed.rs` | `build_sweep_seed` — Keep axes (`off` + narrowed) + TP/SL menus expanded ±1 rung on the canonical ladders + near-miss `optional_axes` + cluster notes. Near-miss is `DropNoEdge` with best score > 0 **and every `DropNegative` at any sign** — the latter measurably lifted its baseline and failed only because that baseline loses money, which is exactly what the sweep's TP/SL ladder re-prices. Pure projection onto the same `AxisSpec` wire the generic sweep consumes |
+| `discovery/seed.rs` | `build_sweep_seed` — Keep axes (`off` + narrowed) + TP/SL menus expanded ±1 rung on the canonical ladders + near-miss `optional_axes` + cluster notes. Near-miss is `DropNoEdge` **or `DropSpike`** with a positive-scoring pick, **and every `DropNegative` at any sign**; the ladder re-prices exactly what each of them failed on — a losing baseline for the negative lead, an unsupported peak for the spike. The seed note counts the three classes separately and flags the spikes unstable, since a spike converts far less often than the other two. Pure projection onto the same `AxisSpec` wire the generic sweep consumes |
 | `discovery/pipeline.rs` | `run_pipeline` — splits the cohort first, selects the baseline (L0) and fits Layers 1–2 (+ L1b/L2b) on train, validates on the held-out slice (a degenerate split fits the whole cohort and reports `no_validation` rather than a vacuous pass). `diagnose` emits the run-level findings a reader would otherwise have to derive across sections: which gate ran, whether the reference line was profitable, how much of the field died for want of data, how much power the validate slice had |
 | `discovery/dto.rs` + `api/handlers/strategies/metric_discovery.rs` | `PipelineDto` (incl. `sweep_seed`, `diagnostics`, `baseline_selection`, `cohort_capped`) + `POST /api/strategies/metric-discovery` (+`/cancel`/`/last`/`/{run_id}`, SSE progress, single-flight mutually exclusive with sweep/flow-discovery, cohort scoping by fingerprint/`ix_labels`/field filters, `take_profit_menu`/`stop_loss_menu` for L0). The handler is the only layer that knows `token_cap`, so it is the only one that can set `cohort_capped` — and it does so **on the result**, not only as an SSE notice a reader has long since missed |
 | `frontend/src/lab/pages/strategies/MetricDiscoveryPage.tsx` | diagnostics + reference line (with the measured bracket table) → shortlist with money columns → drops ordered most-actionable-first → rescues → family winners + joint grids + interaction map → validation; primary **Open as sweep** writes a sessionStorage handoff that `GenericSweepConfigForm` applies once; **Promote…** secondary on winners |
 
 **Objective (Layer 1's ranking core):** `robust_profit × fire_rate × win_component ×
-min_n_gate × confidence`, where `robust_profit` is median-anchored (not mean — one whale
-winner can't carry a combo) with an open-position mark discounted by `OPEN_HAIRCUT`,
+min_n_gate × confidence`, where `robust_profit` is the combo's **capital-weighted
+return** — the SSOT `weighted_return_pct(Σ pnl, Σ capital)`, which under the sweep's
+fixed per-trade notional reduces exactly to `mean_pnl_pct` (pinned by a no-DB guard test;
+**percent-of-vsol sizing inside a sweep breaks that identity and needs a real capital
+sum**) — with an open-position mark discounted by `OPEN_HAIRCUT`,
 `win_component` blends `win_rate` with a capped `profit_factor`, `min_n_gate` hard-zeroes
 any combo under the cohort's **effective** gate (the anti-overfit backbone — no profit%
 lets a 4-trade "edge" rank), and `confidence` discounts the band between that gate and
@@ -349,7 +352,20 @@ unitless: it ranks, and only the money columns beside it can be checked against 
 anchors but never validated-and-pinned as a permanent tuning — revisit once a discovery
 run's picks are checked against live/paper outcomes.
 
-**Reading a run** — three things decide whether a shortlist means anything, and each is
+**The profit centre is sign-locked to money, never a median.** `Keep` requires a positive
+score, and the score's sign is the centre's sign — so a median centre demands a positive
+*median trade*, i.e. a **win rate above 50%**, and rejects every asymmetric-payoff combo,
+which is the shape this cohort trades. Whale resistance lives in `win_component`
+(`win_rate ×` capped `profit_factor`), which out-ranks a whale-carried combo ~3× on its
+own; the centre is not a second copy of that job.
+
+**The rank is only meaningful above zero.** The score is multiplicative over a *signed*
+profit term, so below zero a higher `fire_rate` scores **worse** and a bare `max_by`
+returns whichever option trades least. Every argmax — `select_baseline`'s bracket,
+`classify`'s `best_value` (which `narrow` then builds Layer 2's range around) — ranks over
+the positive picks only, and falls back to realised ◎ when none is positive.
+
+**Reading a run** — four things decide whether a shortlist means anything, and each is
 stated on the result rather than left to be inferred:
 
 - **The reference line** (`screen.baseline_stats`): the chosen bracket's own bare
@@ -360,6 +376,11 @@ stated on the result rather than left to be inferred:
   afford the corpus-wide 20-closed gate, so it is relaxed toward the floor and the run
   reports both numbers. `DropThin` is a statement about cohort size, never evidence
   that a metric has no edge.
+- **The cohort's reach against that gate**: the scan opens at most one position per
+  token, so `n_closed <= fit_tokens` and a gate must fire on `gate / fit_tokens` of the
+  slice merely to be scored. Past a quarter, the p75/p90 rungs — the ones most likely to
+  carry an edge — cannot clear the gate whatever they screen, and `diagnose` states the
+  arithmetic rather than letting a field of `DropThin` read as "no edge here".
 - **`cohort_capped`**: a cap hit means the run scored the newest N *matched* tokens,
   not the range that was asked for.
 
@@ -373,11 +394,12 @@ reclaim can still be seeded as `optional_axes`, or added by hand in the sweep fo
 **Perf shape is scan/precompute-bound, not fold-bound** (few combos; cost is the corpus
 load + per-token `MetricSeries` build + the exit scan). A discovery run should therefore
 pick a **tighter RAM reserve** (bigger resident series wave, fewer precompute rebuilds)
-and **AVX-512 on in release builds** (2.2× on the pnl-bound exit scan every TP/SL
-baseline carries) rather than inherit the interactive sweep's defaults — see
-`discovery/screen.rs`'s knob table. The dominant lever regardless is precompute reuse:
-one corpus load + one series-union precompute shared across every metric screen, not
-N re-loads.
+rather than inherit the interactive sweep's defaults — see `discovery/screen.rs`'s knob
+table. **Leave the AVX-512 toggle off**: it does not beat the index path (§ exit-scan
+path). The dominant lever regardless is precompute reuse: one corpus load + one
+series-union precompute shared across every metric screen, not N re-loads — and, because
+a metric-exit rule costs ~15× a TP/SL one, batching many axes into one run rather than
+splitting them across runs.
 
 **Data reality:** the fingerprint dimension (`tokens`/`tokens_info`) covers only ~7% of
 the tradable universe (a backfill gap, not a design choice) — this throttles Layer-2/3

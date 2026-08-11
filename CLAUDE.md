@@ -27,7 +27,13 @@ cargo check -p hunter-live --target-dir "C:/Users/User/Documents/Bot/target-chec
 ```
 
 Pass `--target-dir` when a bin `.exe` is running (it locks `target/`) — **absolute path,
-forward slashes, always the same dir**, else DuckDB rebuilds at ~20 GB a copy. Detail:
+forward slashes, always the same dir**, else DuckDB rebuilds at ~20 GB a copy.
+**Never re-enable `rustc-wrapper = "sccache"`** — measured at 0 cache hits and 19 failures
+here, with an error that blames the sysroot. That same error also means "a previous build
+died mid-flight"; `cargo clean` + one uninterrupted run before blaming anything else.
+**A build OOM does not look like one**: 16 cores against a fixed ~64 GB commit limit means
+cargo's default `-j` dies as `STATUS_STACK_BUFFER_OVERRUN` in some unrelated small crate —
+hence `[build] jobs = 4` and `[profile.dev] debug = "line-tables-only"`. All of it:
 [docs/build-and-env.md](docs/build-and-env.md).
 
 ## Rules for both products
@@ -69,7 +75,9 @@ never the story that produced it. A past fact stays only if it changes what some
 today, rewritten present-tense, keeping a date only as a cutoff to check against. The one
 exception is a code comment guarding a re-introduced bug.
 
-`sh scripts/check-docs.sh --all` gates present tense + path resolution; CI runs the same.
+`scripts/check-docs.sh` gates present tense + path resolution. The pre-commit hook runs it
+over the STAGED files and CI runs `--all` over the tree, so a session needs neither — reach
+for `sh scripts/check-docs.sh --all` only to sweep a docs change that spans many files.
 The `pt-ok`/`ref-ok` escapes, the tier rationale, and the bar for a history entry:
 [docs/docs-discipline.md](docs/docs-discipline.md).
 

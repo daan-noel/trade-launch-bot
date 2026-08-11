@@ -4,8 +4,8 @@
 //! [`AxisSpec`](crate::sweep::generic::axes::AxisSpec) grid for the generic
 //! sweep, built from Layer-1 Keep metrics (narrowed menus), TP/SL ladders
 //! around the run baseline, and cluster notes from the Layer-2 interaction map
-//! (incl. joint grids). Near-miss `DropNoEdge` metrics with a positive best
-//! score land in [`SweepSeed::optional_axes`] (off by default in the UI).
+//! (incl. joint grids). Near-miss drops land in [`SweepSeed::optional_axes`]
+//! (off by default in the UI) — see [`near_miss_axis`] for which drops qualify.
 
 use hunter_engine::metrics::group_spec;
 use hunter_engine::metrics::MetricFamily;
@@ -94,20 +94,26 @@ pub fn build_sweep_seed(screen: &ScreenReport, family: &FamilyReport) -> SweepSe
         }
     }
 
-    let optional_axes: Vec<AxisSpec> = screen
-        .responses
-        .iter()
-        .filter_map(near_miss_axis)
-        .collect();
+    // Near-miss axes, counted by *why* they missed: the three classes call for three
+    // different reads, so one flat count would hide which one the reader has.
+    let mut optional_axes: Vec<AxisSpec> = Vec::new();
+    let (mut leads, mut spikes) = (0usize, 0usize);
+    for r in &screen.responses {
+        let Some(axis) = near_miss_axis(r) else { continue };
+        match r.verdict {
+            Verdict::DropNegative { .. } => leads += 1,
+            Verdict::DropSpike { .. } => spikes += 1,
+            _ => {}
+        }
+        optional_axes.push(axis);
+    }
     if !optional_axes.is_empty() {
-        let leads = screen
-            .responses
-            .iter()
-            .filter(|r| matches!(r.verdict, Verdict::DropNegative { .. }))
-            .count();
+        let flat = optional_axes.len() - leads - spikes;
         notes.push(format!(
-            "{} near-miss axis(es) available as optional (DropNoEdge with score > 0, plus {leads} \
-             that lifted a losing baseline — those are worth the TP/SL ladder)",
+            "{} near-miss axis(es) available as optional: {flat} flat-but-positive, {leads} that \
+             lifted a losing baseline (those are worth the TP/SL ladder), {spikes} single spike(s) \
+             whose neighbours collapsed — a spike is UNSTABLE, keep it only if the sweep \
+             reproduces it under a different bracket",
             optional_axes.len(),
         ));
     }
@@ -131,26 +137,27 @@ fn keep_axis(r: &MetricResponse) -> Option<AxisSpec> {
 ///
 /// * `DropNoEdge` whose best ranked pick is strictly positive — it just missed the
 ///   lift bar, and a different TP/SL may clear it.
+/// * `DropSpike` on the same terms. The peak's neighbours collapsed, so this is the
+///   least trustworthy of the three — but re-pricing it across the whole TP/SL ladder
+///   is exactly the test a spike needs, and withholding it leaves a spike-dominated
+///   run with a TP/SL-only handoff, which reads as "nothing was found" when what
+///   happened is "nothing was found *at this bracket*". The seed note flags it.
 /// * `DropNegative` at **any** sign — the metric measurably lifted its baseline and
 ///   only failed because that baseline loses money here. Filtering it on `> 0` would
 ///   discard the one class of drop the sweep is most likely to convert, since the
 ///   sweep re-tries it across the whole TP/SL ladder.
 fn near_miss_axis(r: &MetricResponse) -> Option<AxisSpec> {
-    if matches!(r.verdict, Verdict::DropNegative { .. }) {
-        return negative_lead_axis(r);
+    match r.verdict {
+        Verdict::DropNegative { .. } => negative_lead_axis(r),
+        Verdict::DropNoEdge { .. } | Verdict::DropSpike { .. } => positive_pick_axis(r),
+        _ => None,
     }
-    if !matches!(r.verdict, Verdict::DropNoEdge { .. }) {
-        return None;
-    }
-    let best = r
-        .curve
-        .iter()
-        .filter(|p| p.value.is_some())
-        .filter_map(|p| p.outcome.score().map(|s| (p.value.unwrap(), s)))
-        .filter(|(_, s)| *s > 0.0)
-        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))?;
-    // Up to 3 positive-scoring non-off values, best first then by value.
-    let mut scored: Vec<(f64, f64)> = r
+}
+
+/// The up-to-3 best **positive-scoring** values of a curve. `None` when no value
+/// scored above zero — there is nothing there for a sweep to re-price.
+fn positive_pick_axis(r: &MetricResponse) -> Option<AxisSpec> {
+    let scored: Vec<(f64, f64)> = r
         .curve
         .iter()
         .filter_map(|p| {
@@ -159,26 +166,23 @@ fn near_miss_axis(r: &MetricResponse) -> Option<AxisSpec> {
             (s > 0.0).then_some((v, s))
         })
         .collect();
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    scored.truncate(3);
-    if scored.is_empty() {
-        // best matched above but somehow empty — shouldn't happen; use best alone.
-        scored.push(best);
-    }
-    let mut values: Vec<f64> = scored.into_iter().map(|(v, _)| v).collect();
-    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    values.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
-    Some(metric_axis(r, &values))
+    top_scoring_axis(r, scored)
 }
 
 /// The best-scoring values of a `DropNegative` curve, sign ignored — the metric's own
 /// ranking, carried into a sweep that will re-price it under other brackets.
 fn negative_lead_axis(r: &MetricResponse) -> Option<AxisSpec> {
-    let mut scored: Vec<(f64, f64)> = r
+    let scored: Vec<(f64, f64)> = r
         .curve
         .iter()
         .filter_map(|p| Some((p.value?, p.outcome.score()?)))
         .collect();
+    top_scoring_axis(r, scored)
+}
+
+/// The 3 best-scoring `(value, score)` picks as an axis, values ascending and deduped
+/// — an axis's order is its menu's order, never the ranking's.
+fn top_scoring_axis(r: &MetricResponse, mut scored: Vec<(f64, f64)>) -> Option<AxisSpec> {
     if scored.is_empty() {
         return None;
     }
@@ -398,6 +402,23 @@ mod tests {
         }
     }
 
+    /// A spike shaped like a real one: the peak's neighbours give the lift straight
+    /// back, and one of them is outright destructive.
+    fn drop_spike_positive(metric: MetricId, side: AxisSide) -> MetricResponse {
+        MetricResponse {
+            metric: screen_metric(metric, side),
+            operator: Operator::Gte,
+            curve: vec![
+                point(None, 4.36),
+                point(Some(1.0), -0.26),
+                point(Some(8.0), 4.80),
+                point(Some(25.0), 4.31),
+            ],
+            baseline: Some(4.36),
+            verdict: Verdict::DropSpike { best_value: 8.0, lift: 0.44, plateau: -0.11 },
+        }
+    }
+
     fn screen_of(responses: Vec<MetricResponse>) -> ScreenReport {
         let shortlist: Vec<usize> = responses
             .iter()
@@ -506,6 +527,41 @@ mod tests {
         assert_eq!(seed.optional_axes[0].metric.as_deref(), Some("liquidity"));
         assert!(seed.combo_estimate >= 3 * 3 * 3);
         assert!(!seed.notes.is_empty());
+    }
+
+    /// A spike is the least trustworthy near-miss, but withholding it hands a
+    /// spike-dominated run a TP/SL-only seed — which reads as "nothing was found"
+    /// rather than "nothing was found at this bracket".
+    #[test]
+    fn positive_spike_is_offered_as_an_optional_axis() {
+        let screen = screen_of(vec![drop_spike_positive(MetricId::Liquidity, AxisSide::Entry)]);
+        let family = empty_family(&screen);
+        let seed = build_sweep_seed(&screen, &family);
+
+        assert!(
+            seed.axes.iter().all(|a| a.kind != "metric"),
+            "an empty shortlist still seeds no metric axis"
+        );
+        assert_eq!(seed.optional_axes.len(), 1);
+        // `off` plus the two positive-scoring picks, ascending — the destructive value
+        // is not worth a sweep row.
+        assert_eq!(seed.optional_axes[0].values, vec![None, Some(8.0), Some(25.0)]);
+        assert!(
+            seed.notes.iter().any(|n| n.contains("spike")),
+            "the note must flag the spike as unstable: {:?}",
+            seed.notes
+        );
+    }
+
+    /// A spike with nothing positive on its curve is still not an axis — there is no
+    /// value there for the sweep to re-price.
+    #[test]
+    fn spike_with_no_positive_pick_is_not_offered() {
+        let mut r = drop_spike_positive(MetricId::Liquidity, AxisSide::Entry);
+        r.curve = vec![point(None, 4.36), point(Some(1.0), -0.26), point(Some(8.0), -0.10)];
+        let screen = screen_of(vec![r]);
+        let family = empty_family(&screen);
+        assert!(build_sweep_seed(&screen, &family).optional_axes.is_empty());
     }
 
     #[test]

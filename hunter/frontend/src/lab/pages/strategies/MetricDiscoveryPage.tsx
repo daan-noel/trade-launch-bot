@@ -581,7 +581,15 @@ function Results({
           Open as sweep
         </button>
         {seed && seed.optional_axes.length > 0 && (
-          <label className="flex items-center gap-1.5 text-[11px] text-text-mid">
+          <label
+            className="flex items-center gap-1.5 text-[11px] text-text-mid"
+            title={
+              'Metrics that missed the Keep bar but still scored positive somewhere: flat-but-positive, ' +
+              'lifted-a-losing-baseline, and single spikes. The sweep re-prices them across the whole ' +
+              'TP/SL ladder. A spike is unstable — keep it only if the sweep reproduces it. See Seed notes ' +
+              'for the split.'
+            }
+          >
             <Checkbox
               checked={includeOptional}
               onChange={(e) => onIncludeOptional(e.target.checked)}
@@ -653,7 +661,10 @@ function Results({
           <table className="w-full text-xs">
             <thead>
               <tr>
-                <Th>metric</Th><Th>verdict</Th><Th right>lift</Th><Th right>best score</Th>
+                {/* `op` is not decoration: without it a curve point reads as
+                    "metric at 6" with no way to tell `>= 6` from `< 6`, which
+                    inverts the conclusion. */}
+                <Th>metric</Th><Th>op</Th><Th>verdict</Th><Th right>lift</Th><Th right>best score</Th>
                 <Th right>closed/gate</Th><Th>curve</Th>
               </tr>
             </thead>
@@ -946,6 +957,7 @@ function DroppedRow({ m }: { m: MetricResponse }) {
         <span className="font-mono">{m.side}·{m.group}.{m.metric}</span>
         {m.window_sec != null && <span className="text-text-dim"> @{m.window_sec}s</span>}
       </Td>
+      <Td>{m.operator}</Td>
       <Td>
         <Badge variant={badgeVariant(m.verdict)} size="sm" title={verdictHelp[m.verdict] ?? ''}>
           {m.verdict}
