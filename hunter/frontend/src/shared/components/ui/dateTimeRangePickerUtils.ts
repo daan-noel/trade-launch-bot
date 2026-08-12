@@ -32,6 +32,25 @@ export function joinDt(date: string, time: string): string {
   return `${date}T${time || '00:00'}`;
 }
 
+/**
+ * The two adapters between a UTC-ISO cohort bound and the picker's bare
+ * wall-clock wire value, for callers running the picker with `timeZone="UTC"`
+ * (Console History, Portfolio). One pair, so the two windows can never disagree
+ * about what a typed `13:00` means.
+ */
+export function isoToPickerInput(iso: string | null): string {
+  if (!iso) return '';
+  return iso.slice(0, 16);
+}
+export function pickerInputToIso(v: string): string | null {
+  // Shape-check first: `Date` accepts far more than a wall-clock (`'x:00Z'`
+  // parses as 2000-01-01), so parsing alone would turn a malformed bound into a
+  // real window instead of "no bound".
+  if (!DT_RE.test(v)) return null;
+  const d = new Date(`${v}:00Z`);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 export function ymdKey(y: number, m: number, d: number): string {
   return `${y}-${pad2(m + 1)}-${pad2(d)}`;
 }

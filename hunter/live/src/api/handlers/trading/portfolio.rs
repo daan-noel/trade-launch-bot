@@ -280,6 +280,11 @@ pub async fn get_portfolio_recent_closes(
 pub struct PerformanceQuery {
     #[serde(default = "default_perf_range")]
     pub range: String,
+    /// Custom window bounds (UTC, `to` exclusive) — read only for `range=custom`.
+    #[serde(default)]
+    pub from: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub to: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default = "default_perf_mode")]
     pub mode: String,
 }
@@ -291,14 +296,22 @@ fn default_perf_mode() -> String {
     "real".into()
 }
 
-/// `GET /api/portfolio/performance?range=today|7d|30d|all&mode=real|paper`
+/// `GET /api/portfolio/performance?range=today|7d|30d|all|custom[&from=&to=]&mode=real|paper`
 ///
 /// Cross-rule closed-trade rollup for the Portfolio page.
 pub async fn get_portfolio_performance(
     app_state: web::Data<Arc<DeployState>>,
     query: web::Query<PerformanceQuery>,
 ) -> impl Responder {
-    match portfolio::performance(app_state.get_ref(), &query.range, &query.mode).await {
+    match portfolio::performance(
+        app_state.get_ref(),
+        &query.range,
+        query.from,
+        query.to,
+        &query.mode,
+    )
+    .await
+    {
         Ok(body) => HttpResponse::Ok().json(body),
         Err(e) => {
             tracing::warn!("get_portfolio_performance failed: {e}");
@@ -311,6 +324,11 @@ pub async fn get_portfolio_performance(
 pub struct ClosesSeriesQuery {
     #[serde(default = "default_perf_range")]
     pub range: String,
+    /// Custom window bounds (UTC, `to` exclusive) — read only for `range=custom`.
+    #[serde(default)]
+    pub from: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub to: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default = "default_perf_mode")]
     pub mode: String,
     /// Restrict to one rule; absent = all rules.
@@ -318,7 +336,7 @@ pub struct ClosesSeriesQuery {
     pub rule_id: Option<uuid::Uuid>,
 }
 
-/// `GET /api/portfolio/closes-series?range=&mode=&rule_id=` (B2)
+/// `GET /api/portfolio/closes-series?range=[&from=&to=]&mode=&rule_id=` (B2)
 ///
 /// The per-close array behind every portfolio chart. One fetch feeds the equity
 /// curve, the PnL histogram, the calendar/hour heatmap and the per-rule
@@ -330,6 +348,8 @@ pub async fn get_portfolio_closes_series(
     match portfolio::closes_series(
         app_state.get_ref(),
         &query.range,
+        query.from,
+        query.to,
         &query.mode,
         query.rule_id,
     )

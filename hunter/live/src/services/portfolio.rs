@@ -381,6 +381,8 @@ pub struct PortfolioPerformance {
     pub range: String,
     pub mode: String,
     pub since: Option<chrono::DateTime<chrono::Utc>>,
+    /// Exclusive window end; `None` = up to now (every non-custom range).
+    pub until: Option<chrono::DateTime<chrono::Utc>>,
     pub realized_pnl_sol: f64,
     pub closed: i64,
     pub win: i64,
@@ -396,37 +398,59 @@ pub struct PortfolioPerformance {
     pub by_rule: Vec<trading_core::storage::repositories::strategy_repo::RulePeriodPnlRow>,
 }
 
-/// Resolve a calendar-range keyword to `(canonical label, UTC window start)`.
-/// `today` = UTC midnight; `7d`/`30d` = rolling; anything else = all-time. The
-/// ONE range grammar for the portfolio window endpoints (`performance`,
-/// `closes-series`).
-fn range_since(
+/// A resolved portfolio window: canonical label + `[since, until)` UTC bounds.
+/// `None` on a bound means unbounded on that side.
+struct Window {
+    label: &'static str,
+    since: Option<chrono::DateTime<chrono::Utc>>,
+    until: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Resolve a calendar-range keyword to its UTC window. `today` = UTC midnight;
+/// `7d`/`30d` = rolling; `custom` = the caller's explicit `from`/`to` bounds
+/// (either may be absent — an open-ended custom window is legal); anything else
+/// = all-time. The ONE range grammar for the portfolio window endpoints
+/// (`performance`, `closes-series`), matching Console History's cohort.
+fn range_window(
     range: &str,
+    from: Option<chrono::DateTime<chrono::Utc>>,
+    to: Option<chrono::DateTime<chrono::Utc>>,
     now: chrono::DateTime<chrono::Utc>,
-) -> (&'static str, Option<chrono::DateTime<chrono::Utc>>) {
+) -> Window {
+    let bounded = |label, since| Window { label, since, until: None };
     match range {
-        "today" => (
+        "today" => bounded(
             "today",
             Some(now.date_naive().and_hms_opt(0, 0, 0).expect("00:00:00").and_utc()),
         ),
-        "7d" => ("7d", Some(now - chrono::Duration::days(7))),
-        "30d" => ("30d", Some(now - chrono::Duration::days(30))),
-        _ => ("all", None),
+        "7d" => bounded("7d", Some(now - chrono::Duration::days(7))),
+        "30d" => bounded("30d", Some(now - chrono::Duration::days(30))),
+        // A custom window with no bounds at all is all-time by another name;
+        // labelling it `all` keeps the wire label honest about what was queried.
+        "custom" if from.is_some() || to.is_some() => Window {
+            label: "custom",
+            since: from,
+            until: to,
+        },
+        _ => bounded("all", None),
     }
 }
 
-/// `range`: `today` | `7d` | `30d` | `all`. `mode`: `real` | `paper`.
+/// `range`: `today` | `7d` | `30d` | `all` | `custom` (`from`/`to` carry the
+/// window). `mode`: `real` | `paper`.
 pub async fn performance(
     state: &DeployState,
     range: &str,
+    from: Option<chrono::DateTime<chrono::Utc>>,
+    to: Option<chrono::DateTime<chrono::Utc>>,
     mode: &str,
 ) -> anyhow::Result<PortfolioPerformance> {
     let now = chrono::Utc::now();
-    let (range_label, since) = range_since(range, now);
+    let Window { label: range_label, since, until } = range_window(range, from, to, now);
     let mode = if mode == "paper" { "paper" } else { "real" };
     let by_rule = state
         .strategy_repo()
-        .portfolio_pnl_by_rule(mode, since)
+        .portfolio_pnl_by_rule(mode, since, until)
         .await?;
     let closed: i64 = by_rule.iter().map(|r| r.closed).sum();
     let win: i64 = by_rule.iter().map(|r| r.win).sum();
@@ -447,6 +471,7 @@ pub async fn performance(
         range: range_label.into(),
         mode: mode.into(),
         since,
+        until,
         realized_pnl_sol,
         closed,
         win,
@@ -467,32 +492,37 @@ pub struct ClosesSeries {
     pub range: String,
     pub mode: String,
     pub since: Option<chrono::DateTime<chrono::Utc>>,
+    /// Exclusive window end; `None` = up to now (every non-custom range).
+    pub until: Option<chrono::DateTime<chrono::Utc>>,
     /// Buys that never filled in the window — no SOL deployed, so excluded from
     /// `closes`; surfaced as a count so the UI can show entry-failure pressure.
     pub entry_failed: i64,
     pub closes: Vec<trading_core::storage::repositories::strategy_repo::ClosedTradePoint>,
 }
 
-/// `range`: `today` | `7d` | `30d` | `all`. `mode`: `real` | `paper`.
-/// `rule_id = None` ⇒ all rules.
+/// `range`: `today` | `7d` | `30d` | `all` | `custom` (`from`/`to` carry the
+/// window). `mode`: `real` | `paper`. `rule_id = None` ⇒ all rules.
 pub async fn closes_series(
     state: &DeployState,
     range: &str,
+    from: Option<chrono::DateTime<chrono::Utc>>,
+    to: Option<chrono::DateTime<chrono::Utc>>,
     mode: &str,
     rule_id: Option<uuid::Uuid>,
 ) -> anyhow::Result<ClosesSeries> {
     let now = chrono::Utc::now();
-    let (range_label, since) = range_since(range, now);
+    let Window { label: range_label, since, until } = range_window(range, from, to, now);
     let mode = if mode == "paper" { "paper" } else { "real" };
     let repo = state.strategy_repo();
     let (closes, entry_failed) = tokio::try_join!(
-        repo.closes_series(mode, since, None, rule_id),
-        repo.entry_failed_count(mode, since, None, rule_id),
+        repo.closes_series(mode, since, until, rule_id),
+        repo.entry_failed_count(mode, since, until, rule_id),
     )?;
     Ok(ClosesSeries {
         range: range_label.into(),
         mode: mode.into(),
         since,
+        until,
         entry_failed,
         closes,
     })

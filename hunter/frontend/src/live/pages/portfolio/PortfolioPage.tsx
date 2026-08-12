@@ -6,7 +6,11 @@ import { PageHeader } from 'components/ui/PageHeader';
 import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { ModeToggle } from 'components/strategy/ModeToggle';
 import { LinkIcon } from 'components/ui/icons';
-import { consoleHistoryHref, rulesHref } from 'lib/strategy/nav';
+import {
+  isoToPickerInput,
+  pickerInputToIso,
+} from 'components/ui/dateTimeRangePickerUtils';
+import { OPS_PARAMS, consoleHistoryHref, rulesHref } from 'lib/strategy/nav';
 import { weightedReturnPct } from 'lib/strategy/runSummary';
 import {
   formatSigned,
@@ -24,22 +28,24 @@ import {
 import {
   useGetPortfolioClosesSeriesQuery,
   useGetPortfolioPerformanceQuery,
-} from '@live/store/liveEndpoints';
-import type { PortfolioRulePnl } from 'types';
-import {
-  PortfolioRulePositions,
   type PortfolioRange as Range,
-} from './PortfolioRulePositions';
+} from '@live/store/liveEndpoints';
+import { presetStart } from '@live/pages/console/historyCohort';
+import type { PortfolioRulePnl } from 'types';
+import { PortfolioRulePositions } from './PortfolioRulePositions';
 
 const portfolioRuleRowKey = (r: PortfolioRulePnl) => r.rule_id;
 
 type Mode = 'real' | 'paper';
 
-const PORTFOLIO_RANGE_PRESETS: { value: Range; label: string }[] = [
-  { value: 'today', label: 'Today' },
+/** The same window vocabulary the Console History cohort offers — one picker
+ *  grammar across the two review surfaces, `custom` included. */
+const PORTFOLIO_RANGE_PRESETS: { value: Range; label: string; description?: string }[] = [
+  { value: 'today', label: 'Today', description: 'UTC midnight → now' },
   { value: '7d', label: '7 days' },
   { value: '30d', label: '30 days' },
   { value: 'all', label: 'All-time' },
+  { value: 'custom', label: 'Custom' },
 ];
 
 /** Trades per rolling window for the decay comparison. Small enough that a
@@ -59,14 +65,25 @@ function expectancySol(r: PortfolioRulePnl): number | null {
 export function PortfolioPage() {
   const [params, setParams] = useSearchParams();
   const { timezone } = useTimezone();
-  const rawRange = params.get('range');
+  // Frozen per mount, like the Console cohort: a preset `from` that slides on
+  // every render would refetch the whole page continuously.
+  const [nowMs] = useState(() => Date.now());
+  const rawRange = params.get(OPS_PARAMS.range);
   const range: Range =
     rawRange === 'today' ||
     rawRange === '7d' ||
     rawRange === '30d' ||
-    rawRange === 'all'
+    rawRange === 'all' ||
+    rawRange === 'custom'
       ? rawRange
       : '7d';
+  const customFrom = params.get(OPS_PARAMS.from);
+  const customTo = params.get(OPS_PARAMS.to);
+  /** The window the page actually queries — the same derivation the History
+   *  cohort runs, so `7d` here and `7d` there are the same seven days. A preset
+   *  has no `to` bound (it runs up to now); `custom` carries both explicitly. */
+  const fromIso = range === 'custom' ? (customFrom || null) : presetStart(range, nowMs);
+  const toIso = range === 'custom' ? (customTo || null) : null;
   const mode = (params.get('mode') as Mode | null) ?? 'real';
   const selectedRule = params.get('rule');
   /** Position open in the drill-down's inspect modal — deep-linkable alongside
@@ -94,11 +111,24 @@ export function PortfolioPage() {
   /** The three writers below also drop `pos`: the open position belongs to one
    *  rule inside one window, so changing either leaves an id the drill-down can
    *  no longer resolve — and a modal that silently fails to open reads as a bug.
-   *  They still touch only keys this page owns (see the patch-never-rebuild rule). */
+   *  They still touch only keys this page owns (see the patch-never-rebuild rule).
+   *
+   *  `setRange` additionally drops the bounds when leaving `custom` rather than
+   *  parking them: a stale `from`/`to` on a preset URL reads as a window that is
+   *  not being applied. */
   const setRange = useCallback(
-    (r: Range) =>
+    (r: Range, from?: string | null, to?: string | null) =>
       patchParams((p) => {
-        p.set('range', r);
+        p.set(OPS_PARAMS.range, r);
+        if (r === 'custom') {
+          if (from) p.set(OPS_PARAMS.from, from);
+          else p.delete(OPS_PARAMS.from);
+          if (to) p.set(OPS_PARAMS.to, to);
+          else p.delete(OPS_PARAMS.to);
+        } else {
+          p.delete(OPS_PARAMS.from);
+          p.delete(OPS_PARAMS.to);
+        }
         p.delete('pos');
       }),
     [patchParams],
@@ -138,9 +168,23 @@ export function PortfolioPage() {
     [decayOnly, patchParams],
   );
 
-  const { data, isLoading, isFetching } = useGetPortfolioPerformanceQuery({ range, mode });
+  // One window object for both reads, so the scoreboard and the series can
+  // never be fetched over different bounds.
+  const pnlWindow = useMemo(
+    () => ({ range, from: fromIso, to: toIso }),
+    [range, fromIso, toIso],
+  );
+  /** The same window as a Console History deep link — the cohort reads `from`/
+   *  `to` as UTC ISO, so a custom window survives the hand-off instead of the
+   *  link silently landing on History's own default. */
+  const historyLink = useMemo(
+    () => ({ range, mode, from: fromIso ?? undefined, to: toIso ?? undefined }),
+    [range, mode, fromIso, toIso],
+  );
+
+  const { data, isLoading, isFetching } = useGetPortfolioPerformanceQuery({ ...pnlWindow, mode });
   // B2 series — portfolio spark + decay alerts/Form share one fold with History.
-  const { data: series } = useGetPortfolioClosesSeriesQuery({ range, mode });
+  const { data: series } = useGetPortfolioClosesSeriesQuery({ ...pnlWindow, mode });
 
   const ruleNameOf = useCallback(
     (id: string) => data?.by_rule.find((r) => r.rule_id === id)?.rule_name ?? `${id.slice(0, 8)}…`,
@@ -391,7 +435,7 @@ export function PortfolioPage() {
         width: '72px',
         render: (r) => (
           <Link
-            to={consoleHistoryHref({ ruleId: r.rule_id, range, mode })}
+            to={consoleHistoryHref({ ruleId: r.rule_id, ...historyLink })}
             className="text-[11px] font-semibold text-accent hover:underline"
             onClick={(e) => e.stopPropagation()}
             title="Open this rule's trades in Console History"
@@ -402,7 +446,7 @@ export function PortfolioPage() {
         searchValue: () => '',
       },
     ],
-    [mode, range, trendByRule],
+    [historyLink, trendByRule],
   );
 
   const entryFailed = series?.entry_failed ?? 0;
@@ -424,11 +468,26 @@ export function PortfolioPage() {
           <DateTimeRangePicker
             aria-label="Date range"
             size="sm"
-            zoneLabel={null}
-            allowCustom={false}
+            timeZone="UTC"
+            zoneLabel="UTC"
+            emptyLabel="Select date range"
             presets={PORTFOLIO_RANGE_PRESETS}
-            value={{ preset: range, from: '', to: '' }}
-            onChange={({ preset }) => setRange(preset)}
+            customPreset="custom"
+            value={{
+              // The computed preset bounds ride along so the popover seeds
+              // Custom from the active window and the trigger can show the
+              // compact "7 days · MM/DD → now" hint (same as History).
+              preset: range,
+              from: isoToPickerInput(fromIso),
+              to: isoToPickerInput(toIso),
+            }}
+            onChange={({ preset, from, to }) => {
+              if (preset !== 'custom') {
+                setRange(preset);
+                return;
+              }
+              setRange('custom', pickerInputToIso(from), pickerInputToIso(to));
+            }}
           />
           <ModeToggle
             includeAll={false}
@@ -485,7 +544,7 @@ export function PortfolioPage() {
           </span>
         )}
         <Link
-          to={consoleHistoryHref({ range, mode })}
+          to={consoleHistoryHref(historyLink)}
           className="ml-auto text-[11px] font-semibold text-accent hover:underline"
         >
           Review all trades →
@@ -573,6 +632,8 @@ export function PortfolioPage() {
           ruleId={selectedRule}
           ruleRow={selectedRuleRow}
           range={range}
+          fromIso={fromIso}
+          toIso={toIso}
           mode={mode}
           selectedPositionId={selectedPosition}
           onSelectPosition={selectPosition}

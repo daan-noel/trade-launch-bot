@@ -10,10 +10,31 @@ import type {
   PositionFill,
 } from 'types';
 import type { ArmedEntry } from 'lib/strategy/types';
+import type { HistoryRange } from 'lib/strategy/nav';
 
 /** The calendar windows the portfolio endpoints accept (the server's `range`
- *  grammar — `live::services::portfolio::range_since`). */
-export type PortfolioRange = 'today' | '7d' | '30d' | 'all';
+ *  grammar — `live::services::portfolio::range_window`). Same vocabulary as the
+ *  Console History cohort, `custom` included: the explicit `from`/`to` bounds
+ *  carry the window then. */
+export type PortfolioRange = HistoryRange;
+
+/** A resolved portfolio window as the endpoints take it — the preset plus the
+ *  `custom` bounds (UTC ISO, `to` exclusive; either side may be open). */
+export interface PortfolioWindow {
+  range?: PortfolioRange;
+  from?: string | null;
+  to?: string | null;
+}
+
+/** `range` + the two bounds, dropped when absent so a preset URL stays clean. */
+function windowParams(w: PortfolioWindow, fallbackRange: PortfolioRange): URLSearchParams {
+  const q = new URLSearchParams({ range: w.range ?? fallbackRange });
+  if (w.range === 'custom') {
+    if (w.from) q.set('from', w.from);
+    if (w.to) q.set('to', w.to);
+  }
+  return q;
+}
 
 /** One closed trade — the atom of the charts deck (mirrors the backend
  *  `ClosedTradePoint`). `win` is `pnl_sol > 0` on a clean `End`. */
@@ -36,6 +57,8 @@ export interface ClosesSeries {
   range: string;
   mode: string;
   since: string | null;
+  /** Exclusive window end; `null` = up to now (every non-custom range). */
+  until: string | null;
   /** Buys that never filled in the window — no SOL deployed, so never part of
    *  `closes`; carried as a count so entry-failure pressure stays visible. */
   entry_failed: number;
@@ -194,12 +217,13 @@ export const liveApi = baseApi.injectEndpoints({
      */
     getPortfolioPerformance: builder.query<
       PortfolioPerformance,
-      { range?: PortfolioRange; mode?: 'real' | 'paper' } | void
+      (PortfolioWindow & { mode?: 'real' | 'paper' }) | void
     >({
       query: (arg) => {
-        const range = arg && typeof arg === 'object' ? (arg.range ?? 'today') : 'today';
-        const mode = arg && typeof arg === 'object' ? (arg.mode ?? 'real') : 'real';
-        return `/api/portfolio/performance?range=${range}&mode=${mode}`;
+        const a = arg && typeof arg === 'object' ? arg : {};
+        const q = windowParams(a, 'today');
+        q.set('mode', a.mode ?? 'real');
+        return `/api/portfolio/performance?${q.toString()}`;
       },
       providesTags: ['WalletHoldings', 'PortfolioPerf'],
     }),
@@ -211,11 +235,12 @@ export const liveApi = baseApi.injectEndpoints({
      */
     getPortfolioClosesSeries: builder.query<
       ClosesSeries,
-      { range?: PortfolioRange; mode?: 'real' | 'paper'; ruleId?: string | null } | void
+      (PortfolioWindow & { mode?: 'real' | 'paper'; ruleId?: string | null }) | void
     >({
       query: (arg) => {
         const a = arg && typeof arg === 'object' ? arg : {};
-        const q = new URLSearchParams({ range: a.range ?? '7d', mode: a.mode ?? 'real' });
+        const q = windowParams(a, '7d');
+        q.set('mode', a.mode ?? 'real');
         if (a.ruleId) q.set('rule_id', a.ruleId);
         return `/api/portfolio/closes-series?${q.toString()}`;
       },

@@ -37,16 +37,16 @@ import type { PortfolioRulePnl, RulePositionRecord } from 'types';
 import { usePositionArrowNav } from '@live/components/floor/usePositionArrowNav';
 import { LazyLivePositionInspectModal } from '@live/components/strategy/LazyLivePositionInspectModal';
 import { historyColumns } from '@live/components/history/HistoryTable';
-import { presetStart, type HistoryCohort } from '@live/pages/console/historyCohort';
+import type { HistoryCohort } from '@live/pages/console/historyCohort';
 import { historyCohortKey, historyTableBody } from '@live/pages/console/historyRequest';
-
-export type PortfolioRange = 'today' | '7d' | '30d' | 'all';
+import type { PortfolioRange } from '@live/store/liveEndpoints';
 
 const RANGE_LABEL: Record<PortfolioRange, string> = {
   today: 'today',
   '7d': 'last 7 days',
   '30d': 'last 30 days',
   all: 'all-time',
+  custom: 'custom window',
 };
 
 /**
@@ -82,6 +82,8 @@ export const PortfolioRulePositions = memo(function PortfolioRulePositions({
   ruleId,
   ruleRow,
   range,
+  fromIso,
+  toIso,
   mode,
   selectedPositionId,
   onSelectPosition,
@@ -92,16 +94,17 @@ export const PortfolioRulePositions = memo(function PortfolioRulePositions({
    *  panel must reconcile with, so they are shown side by side in the header. */
   ruleRow: PortfolioRulePnl | null;
   range: PortfolioRange;
+  /** The window the scoreboard above was computed over, already resolved by the
+   *  page — the panel must not re-derive it, or a preset drill-down can count a
+   *  different seven days than the row it drilled into. `to` is exclusive. */
+  fromIso: string | null;
+  toIso: string | null;
   mode: 'real' | 'paper';
   selectedPositionId: string | null;
   onSelectPosition: (positionId: string | null) => void;
   onClose: () => void;
 }) {
   const { timezone } = useTimezone();
-  // Frozen per mount, like the Console's cohort: a preset window whose `from`
-  // slides on every render refetches the table continuously. The panel unmounts
-  // on deselect, so it re-freezes whenever it is re-opened.
-  const [nowMs] = useState(() => Date.now());
 
   // The table's own view state (search + column filters + page + sort).
   const [query, setQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
@@ -114,8 +117,8 @@ export const PortfolioRulePositions = memo(function PortfolioRulePositions({
   const cohort = useMemo<HistoryCohort>(
     () => ({
       range,
-      fromIso: presetStart(range, nowMs),
-      toIso: null,
+      fromIso,
+      toIso,
       ruleId,
       mode,
       // `lane` rather than `status: 'End'` — the lane is the aggregate's own
@@ -126,9 +129,11 @@ export const PortfolioRulePositions = memo(function PortfolioRulePositions({
       outcome: null,
       migrated: null,
       focus: null,
-      seriesRange: range,
+      // The series endpoint takes presets only, so a custom window rides as
+      // `all` here — same collapse the Console cohort makes.
+      seriesRange: range === 'custom' ? 'all' : range,
     }),
-    [range, nowMs, ruleId, mode],
+    [range, fromIso, toIso, ruleId, mode],
   );
 
   const body = useMemo(

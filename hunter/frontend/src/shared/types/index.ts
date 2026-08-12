@@ -690,6 +690,8 @@ export interface PortfolioPerformance {
   range: 'today' | '7d' | 'all' | string;
   mode: string;
   since: string | null;
+  /** Exclusive window end; `null` = up to now (every non-custom range). */
+  until: string | null;
   realized_pnl_sol: number;
   closed: number;
   win: number;

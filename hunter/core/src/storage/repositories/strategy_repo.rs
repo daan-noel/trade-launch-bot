@@ -2389,12 +2389,14 @@ impl StrategyRepo {
     }
 
     /// Cross-rule closed-trade rollup for the Portfolio page — one row per rule
-    /// with closes in the window. `since = None` ⇒ all-time. Win = clean `End`
-    /// with positive realized SOL (same predicate as [`RuleCounters`]).
+    /// with closes in the window. `since = None` ⇒ all-time; `until` exclusive,
+    /// `None` ⇒ up to now. Win = clean `End` with positive realized SOL (same
+    /// predicate as [`RuleCounters`]).
     pub async fn portfolio_pnl_by_rule(
         &self,
         mode: &str,
         since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
     ) -> anyhow::Result<Vec<RulePeriodPnlRow>> {
         let rows = sqlx::query_as::<_, RulePeriodPnlDbRow>(
             r#"
@@ -2428,6 +2430,7 @@ impl StrategyRepo {
               AND p.rule_id IS NOT NULL
               AND p.status = 'End'
               AND ($2::timestamptz IS NULL OR p.exit_time >= $2)
+              AND ($3::timestamptz IS NULL OR p.exit_time < $3)
             GROUP BY p.rule_id, r.rule_name
             HAVING COUNT(*) FILTER (
               WHERE p.entry_lamports IS NOT NULL
@@ -2438,6 +2441,7 @@ impl StrategyRepo {
         )
         .bind(mode)
         .bind(since)
+        .bind(until)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(RulePeriodPnlRow::from).collect())

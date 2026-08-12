@@ -8,6 +8,10 @@
 import { memo, useMemo } from 'react';
 import { Button } from 'components/ui/Button';
 import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
+import {
+  isoToPickerInput,
+  pickerInputToIso,
+} from 'components/ui/dateTimeRangePickerUtils';
 import { SearchableSelect } from 'components/ui/SearchableSelect';
 import { ModeBadge } from 'components/strategy/ModeBadge';
 import { ModeToggle } from 'components/strategy/ModeToggle';
@@ -60,17 +64,6 @@ const STATUSES: { value: string; label: string }[] = [
   { value: 'ExitUnconfirmed', label: 'Exit unconfirmed' },
   { value: 'BuySubmitted', label: 'Buy submitted' },
 ];
-
-/** `datetime-local` wants a `YYYY-MM-DDTHH:MM` wall-clock; the cohort stores UTC ISO. */
-function isoToLocalInput(iso: string | null): string {
-  if (!iso) return '';
-  return iso.slice(0, 16);
-}
-function localInputToIso(v: string): string | null {
-  if (!v) return null;
-  const d = new Date(`${v}:00Z`);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
-}
 
 export const HistoryFilterBar = memo(function HistoryFilterBar({
   cohort,
@@ -133,8 +126,8 @@ export const HistoryFilterBar = memo(function HistoryFilterBar({
             // Pass computed preset bounds too so the popover draft is seeded
             // (Custom starts from the active window) and the trigger can show
             // a compact "7 days · MM/DD → now" hint.
-            from: isoToLocalInput(cohort.fromIso),
-            to: isoToLocalInput(cohort.toIso),
+            from: isoToPickerInput(cohort.fromIso),
+            to: isoToPickerInput(cohort.toIso),
           }}
           onChange={({ preset, from, to }) => {
             if (preset !== 'custom') {
@@ -143,8 +136,8 @@ export const HistoryFilterBar = memo(function HistoryFilterBar({
             }
             cohort.set({
               range: 'custom',
-              fromIso: localInputToIso(from),
-              toIso: localInputToIso(to),
+              fromIso: pickerInputToIso(from),
+              toIso: pickerInputToIso(to),
             });
           }}
         />

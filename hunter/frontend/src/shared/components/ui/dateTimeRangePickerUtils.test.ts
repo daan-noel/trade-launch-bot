@@ -5,8 +5,10 @@ import {
   defaultZoneBadge,
   formatCompact,
   formatYmdCompact,
+  isoToPickerInput,
   isYmdOutOfBounds,
   joinDt,
+  pickerInputToIso,
   normalizeTime,
   rangeDayRole,
   resolvePreviewBounds,
@@ -155,5 +157,25 @@ describe('normalizeTime / zone helpers', () => {
     expect(isYmdOutOfBounds('2026-08-06', undefined, '2026-08-06')).toBe(false);
     const cells = buildMonthCells(2026, 7); // August
     expect(cells.filter((c) => c.day != null)).toHaveLength(31);
+  });
+});
+
+describe('isoToPickerInput / pickerInputToIso', () => {
+  it('round-trips a UTC cohort bound through the picker wire value', () => {
+    expect(isoToPickerInput('2026-08-06T14:30:00.000Z')).toBe('2026-08-06T14:30');
+    expect(pickerInputToIso('2026-08-06T14:30')).toBe('2026-08-06T14:30:00.000Z');
+  });
+
+  it('maps an absent bound both ways', () => {
+    expect(isoToPickerInput(null)).toBe('');
+    expect(pickerInputToIso('')).toBeNull();
+  });
+
+  it('reads the wall-clock as UTC, never as the browser zone', () => {
+    expect(pickerInputToIso('2026-01-01T00:00')).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('rejects an unparseable wall-clock instead of emitting Invalid Date', () => {
+    expect(pickerInputToIso('not-a-date')).toBeNull();
   });
 });

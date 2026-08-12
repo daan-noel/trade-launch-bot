@@ -318,6 +318,7 @@ not Rules Control current-run / all-time scores.
 
 | Control | Behavior |
 | --- | --- |
+| Window | The History range picker — `today`/`7d`/`30d`/`all` plus a UTC `custom` window, over the shared `?range` + `?from`/`?to` keys. `from`/`to` exist only under `custom`, and the resolved window (not the preset name) is what the two reads and the History links carry |
 | Window strip | Portfolio spark + realized ◎ + closed/rules counts; entry-failed hint; link to all-trades History |
 | Rule alerts | Named decaying rules (same `foldPnlDeck` verdict as Home) → Rules Evidence; "Show only decaying" toggles `?decay=1` |
 | `RankedPnlBars` | Hero rank by realized PnL; click toggles `?rule=` selection (synced with table) |
@@ -352,7 +353,7 @@ builder Console History's table, strip, and deck share — so both surfaces agre
 | --- | --- |
 | Columns are `historyColumns` minus `rule` + `status` | Both are constant under this cohort; a column that renders one value everywhere spends width to say nothing and offers a sort that can't reorder |
 | Charts toggle starts **off** (persists per `tableId`) | A card is a per-token trade fetch; selecting a rule must not fire a page of them. Same choice as History, opposite of Rules Evidence, where the chart *is* the read |
-| `nowMs` frozen per mount | A preset window whose `from` slides on every render refetches continuously; the panel unmounts on deselect, so it re-freezes on re-open |
+| Window bounds passed in, never re-derived | The page resolves `from`/`to` once (with `nowMs` frozen per mount, so a preset `from` cannot slide per render); a panel resolving its own `7d` could count a different seven days than the row it drilled into |
 | `?pos=` dropped when rule / window / mode changes | The id belongs to one population; a modal that silently fails to open reads as a bug |
 | `resetKey` = cohort only (not the table's search/filters) | Changing the population snaps to page 1; a keystroke must not reset the table that produced it |
 
@@ -389,4 +390,4 @@ any date opens; the Console page only ever had rows still in the session's live 
 | B1 handler | `core/src/api/handlers/strategies/rule_positions.rs::portfolio_positions_page` |
 | B1 repo | `core/src/storage/repositories/strategy_repo.rs::{find_positions_all_paged,count_positions_all}` |
 | B2 repo | `core/src/storage/repositories/strategy_repo.rs::{closes_series,entry_failed_count}` |
-| B2 service | `live/src/services/portfolio.rs::closes_series` (+ `range_since`, the ONE range grammar) |
+| B2 service | `live/src/services/portfolio.rs::closes_series` (+ `range_window`, the ONE range grammar — presets plus the `custom` `from`/`to` window Portfolio and History share) |

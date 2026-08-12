@@ -53,9 +53,9 @@ semantics at the query boundary:
 
 | Surface | `timeZone` / badge | Boundary |
 | --- | --- | --- |
-| History / Simulate / lab Created | `UTC` | wall-clock treated as UTC ISO |
+| History / Portfolio / Simulate / lab Created | `UTC` | wall-clock treated as UTC ISO, through the one `isoToPickerInput`/`pickerInputToIso` pair |
 | Tokens Created | project IANA (`TokensFilterBar` `timezone`) | `datetimeLocalToUtcWallClock` |
-| Portfolio / creation-stats / trader look-back | `zoneLabel={null}`, `allowCustom={false}` | day/preset enums only |
+| creation-stats / trader look-back | `zoneLabel={null}`, `allowCustom={false}` | day/preset enums only |
 
 Preset clicks commit immediately; calendar edits stay in a draft until Apply.
 Clear + Apply with empty bounds commits the `all` / "All" preset when one is
