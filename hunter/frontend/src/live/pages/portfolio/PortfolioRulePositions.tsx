@@ -29,6 +29,7 @@ import { CloseIcon } from 'components/ui/icons';
 import type { TableQuery } from 'components/table/types';
 import { numericColKeys } from 'services/tableRequest';
 import { fetchPortfolioPositionsPage } from 'services/api';
+import { useFlowPatternKeysForRule } from 'hooks/useFlowPatternKeys';
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
 import { formatSigned, signedToneClass } from 'lib/signedTone';
 import { useTimezone } from 'context/TimezoneContext';
@@ -104,6 +105,11 @@ export const PortfolioRulePositions = memo(function PortfolioRulePositions({
 
   // The table's own view state (search + column filters + page + sort).
   const [query, setQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
+
+  // One set for the whole grid: the panel is scoped to a single rule, so every
+  // card classifies flow against the same fingerprint — the same set the row's
+  // inspect modal resolves, so a card and its modal can't disagree.
+  const flowPatternKeys = useFlowPatternKeysForRule(ruleId);
 
   const cohort = useMemo<HistoryCohort>(
     () => ({
@@ -212,6 +218,7 @@ export const PortfolioRulePositions = memo(function PortfolioRulePositions({
         charts
         useRowOverlay={rulePositionRowOverlay}
         renderChartCardExtra={rulePositionChartCardExtra}
+        flowPatternKeys={flowPatternKeys}
         // Changing rule / window / mode is a new population — snap back to page 1.
         // The table's own search + filters are deliberately absent from the key,
         // or every keystroke would reset the table that produced it.

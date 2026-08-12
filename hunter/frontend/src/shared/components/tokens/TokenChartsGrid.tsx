@@ -29,9 +29,22 @@ export type ChartOverlayHook<R> = (row: R, mint: string) => RowChartOverlay;
  *  over as an immediate seed/fallback while the hook's own fetch is in flight. */
 export type MintGroupOverlayHook<R> = (mint: string, rows: R[]) => RowChartOverlay;
 
+/**
+ * Resolve ONE row's saved `volume_ix_patterns` keys, for a grid whose rows span
+ * different fingerprints (Console History lists positions from many rules), where
+ * a single grid-wide set would misclassify most cards. Called once per card as a
+ * **hook** — same rules-of-hooks contract as {@link ChartOverlayHook}. Under
+ * `groupByMint` it receives the group's representative row.
+ *
+ * An open app-wide pattern draft still layers over whatever this returns (see
+ * `useEffectiveFlowPatternKeys`); this only decides a card's SAVED baseline.
+ */
+export type FlowPatternKeysHook<R> = (row: R, mint: string) => ReadonlySet<string> | null;
+
 const NO_OVERLAY: RowChartOverlay = {};
 /** Stable default so cards always call a hook (rules-of-hooks) when none passed. */
 const useNoRowOverlay: ChartOverlayHook<unknown> = () => NO_OVERLAY;
+const useNoRowFlowKeys: FlowPatternKeysHook<unknown> = () => null;
 
 /**
  * A grid of per-token trade-history charts, one card per row — the generalized
@@ -96,6 +109,9 @@ interface TokenChartCardProps<R> {
    *  card. `undefined` ⇒ use the hook; `null`/array ⇒ override. */
   eventMarkersOverride?: ChartEventMarker[] | null;
   flowPatternKeys?: ReadonlySet<string> | null;
+  /** Resolves this card's own pattern keys (called as a hook); wins over the
+   *  grid-wide `flowPatternKeys` whenever it returns a set. */
+  useFlowKeys: FlowPatternKeysHook<R>;
   /** Extra content rendered in the card header (per-row context). */
   extra?: ReactNode;
   selected?: boolean;
@@ -112,6 +128,7 @@ function TokenChartCard<R>({
   useOverlay,
   eventMarkersOverride,
   flowPatternKeys,
+  useFlowKeys,
   extra,
   selected,
   onSelect,
@@ -121,6 +138,8 @@ function TokenChartCard<R>({
   // Always call the overlay hook (rules of hooks); the override wins when present.
   const { eventMarkers: hookMarkers } = useOverlay(row, mint);
   const eventMarkers = eventMarkersOverride !== undefined ? eventMarkersOverride : hookMarkers;
+  // Per-row keys win; the grid-wide set is the fallback for a uniform cohort.
+  const rowFlowKeys = useFlowKeys(row, mint);
   const selectable = !!onSelect;
 
   return (
@@ -170,7 +189,7 @@ function TokenChartCard<R>({
           eventMarkers={eventMarkers ?? null}
           highlightWallet={highlightWallet ?? null}
           tableId={chartTableId}
-          flowPatternKeys={flowPatternKeys}
+          flowPatternKeys={rowFlowKeys ?? flowPatternKeys}
         />
       </div>
     </div>
@@ -221,8 +240,13 @@ export interface TokenChartsGridProps<R> {
   /** Hook-based alternative to {@link mintGroupOverlay} — see
    *  {@link MintGroupOverlayHook}. Takes precedence when both are supplied. */
   useMintGroupOverlay?: MintGroupOverlayHook<R>;
-  /** Fingerprint volume_ix_patterns keys for the vol/non-vol overlay on every card. */
+  /** Fingerprint volume_ix_patterns keys for the vol/non-vol overlay on every card.
+   *  Use when one set is right for the whole grid (a rule-scoped cohort); when the
+   *  rows span fingerprints, pass {@link useRowFlowPatternKeys} instead. */
   flowPatternKeys?: ReadonlySet<string> | null;
+  /** Per-card pattern keys for a grid whose rows span fingerprints — see
+   *  {@link FlowPatternKeysHook}. Wins over {@link flowPatternKeys} per card. */
+  useRowFlowPatternKeys?: FlowPatternKeysHook<R>;
 }
 
 const mintOfRow = <R,>(row: R): string =>
@@ -242,8 +266,10 @@ export function TokenChartsGrid<R>({
   mintGroupOverlay,
   useMintGroupOverlay,
   flowPatternKeys,
+  useRowFlowPatternKeys,
 }: TokenChartsGridProps<R>) {
   const useOverlay = (useRowOverlay ?? useNoRowOverlay) as ChartOverlayHook<R>;
+  const useFlowKeys = (useRowFlowPatternKeys ?? useNoRowFlowKeys) as FlowPatternKeysHook<R>;
   if (rows.length === 0) return null;
 
   // Group-by-mint: one card per token, its markers built from ALL of that mint's
@@ -290,6 +316,7 @@ export function TokenChartsGrid<R>({
                 useOverlay={overlayHook}
                 eventMarkersOverride={eventMarkersOverride}
                 flowPatternKeys={flowPatternKeys}
+                useFlowKeys={useFlowKeys}
                 extra={renderChartCardExtra?.(rep, groupRows)}
                 selected={selected}
                 onSelect={
@@ -321,6 +348,7 @@ export function TokenChartsGrid<R>({
               chartTableId={chartTableId}
               useOverlay={useOverlay}
               flowPatternKeys={flowPatternKeys}
+              useFlowKeys={useFlowKeys}
               extra={renderChartCardExtra?.(row)}
               selected={selected}
               onSelect={

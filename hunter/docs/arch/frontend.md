@@ -570,7 +570,14 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
     `volume_ix_patterns` → `flowPatternKeys`. Wired into Evidence `TokenTable` charts,
     `LivePositionInspectModal`, Console History/open/waiting detail, fingerprint matched-tokens,
     the Creation Stats grouped drill-in (keys come from the **applied** scope fingerprint, so a
-    manual group-by drill-in has none), and sweep combo charts (run patterns). Omit/empty is
+    manual group-by drill-in has none), and sweep combo charts (run patterns). A charts grid
+    takes `flowPatternKeys` when ONE set covers every card (Portfolio's rule-scoped drill-in)
+    and `useRowChartFlowPatternKeys` — a per-card hook, `FlowPatternKeysHook`, resolved next to
+    `useRowOverlay` — when its rows span fingerprints (Console History spans rules, so one set
+    would misclassify every card from another rule). Per-card keys win over the grid-wide set;
+    a table with neither leaves the draft as the only source (All Tokens, Trader Analysis, and
+    the other hosts with no fingerprint to resolve from). A grid and its rows' inspect modals
+    read the same hook, so a card and its modal cannot disagree. Omit/empty is
     not a blank chart — the overlay falls back to a creator-vs-rest split and only goes dark
     on a token with no creator wallet either. Those saved keys are the BASE: an app-wide
     draft (`context/VolumePatternDraftContext`, provider in `AppProviders`) layers over them

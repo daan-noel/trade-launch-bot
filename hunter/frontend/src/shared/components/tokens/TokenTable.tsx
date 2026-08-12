@@ -5,7 +5,12 @@ import type { FilterSpec } from 'components/table/numericFilter';
 import { appendedTokenColumns } from './sharedTokenColumns';
 import { MintSetInput } from './MintSetInput';
 import { LazyTokenChartsGrid } from './LazyTokenChartsGrid';
-import type { ChartOverlayHook, MintGroupOverlayHook, RowChartOverlay } from './TokenChartsGrid';
+import type {
+  ChartOverlayHook,
+  FlowPatternKeysHook,
+  MintGroupOverlayHook,
+  RowChartOverlay,
+} from './TokenChartsGrid';
 import { cn } from 'lib/cn';
 import { getTableCharts, setTableCharts } from 'lib/storage';
 
@@ -99,8 +104,14 @@ interface TokenTableCommon<R> {
   titleOf?: (row: R) => string;
   /** Wallet to spotlight on every chart (Trader Analysis). */
   highlightWallet?: string | null;
-  /** Fingerprint volume_ix_patterns keys for the charts-grid vol/non-vol overlay. */
+  /** Fingerprint volume_ix_patterns keys for the charts-grid vol/non-vol overlay —
+   *  one set for the whole grid. Use {@link useRowChartFlowPatternKeys} instead when
+   *  the rows span fingerprints. */
   flowPatternKeys?: ReadonlySet<string> | null;
+  /** Per-card pattern keys for a table whose rows span fingerprints (Console
+   *  History mixes rules). Called as a hook per card — see {@link FlowPatternKeysHook}.
+   *  Wins over {@link flowPatternKeys} for the cards it resolves. */
+  useRowChartFlowPatternKeys?: FlowPatternKeysHook<R>;
   rowActions?: (row: R) => ReactNode;
   rowClassName?: (row: R) => string | undefined;
   cellGroupClassName?: (group: string | undefined, row: R) => string | undefined;
@@ -177,6 +188,7 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
     mintChartGroupOverlay,
     useMintChartGroupOverlay,
     flowPatternKeys,
+    useRowChartFlowPatternKeys,
   } = props;
   const mintOf = mintAddressOf;
   const [chartsOn, setChartsOn] = useState(() =>
@@ -261,6 +273,7 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
           mintGroupOverlay={mintChartGroupOverlay}
           useMintGroupOverlay={useMintChartGroupOverlay}
           flowPatternKeys={flowPatternKeys}
+          useRowFlowPatternKeys={useRowChartFlowPatternKeys}
         />
       )}
     </>
