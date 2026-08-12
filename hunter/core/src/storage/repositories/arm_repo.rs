@@ -28,9 +28,11 @@ const ARM_COLS: &str = "a.rule_id, a.mint_address, a.mode, a.armed_at, a.ended_a
 /// Seconds this episode has waited: to its end, or to now while it is live. THE
 /// definition — the projection, the sort whitelist and the filter whitelist all
 /// reference this const, so the column cannot sort by one fact and filter by
-/// another.
+/// another. `EXTRACT` yields `NUMERIC`, so the cast is part of the definition:
+/// `waited_sec` decodes as `f64` here and in `PERCENTILE_CONT` over the same
+/// expression.
 const WAITED_SEC_SQL: &str =
-    "EXTRACT(EPOCH FROM (COALESCE(a.ended_at, now()) - a.armed_at))";
+    "EXTRACT(EPOCH FROM (COALESCE(a.ended_at, now()) - a.armed_at))::float8";
 
 /// The episode's "when" instant for a time-range read. `armed_at`, not
 /// `ended_at`: the range picker asks "what did the bot look at during this
