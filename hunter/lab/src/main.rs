@@ -268,13 +268,15 @@ async fn run_lake_export(include_today: bool) -> anyhow::Result<()> {
     info!(
         days_written = summary.days_written.len(),
         days_skipped = summary.days_skipped,
+        days_pruned = summary.days_pruned.len(),
         tokens = summary.tokens_written,
         "lake-export: done"
     );
     println!(
-        "lake-export complete: {} day(s) written, {} skipped, {} token rows -> {}",
+        "lake-export complete: {} day(s) written, {} skipped, {} pruned, {} token rows -> {}",
         summary.days_written.len(),
         summary.days_skipped,
+        summary.days_pruned.len(),
         summary.tokens_written,
         root.display()
     );

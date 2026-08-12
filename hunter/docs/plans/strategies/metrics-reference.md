@@ -179,6 +179,23 @@ derived-unsatisfiability disarm (`arm.rs` reads the registry flag).
 Rule save **warns** (does not reject) when params reference flow groups but the
 fingerprint is unconfigured.
 
+## Semantics that read as one thing and mean another
+
+Six facts that produce silently wrong rules rather than errors. None is derivable from the
+registry, and each has cost a search run.
+
+| fact | what goes wrong without it |
+| --- | --- |
+| **`m_flow_split*` is all `NaN` without `volume_ix_patterns`** — on the request *and* in the fingerprint's `metric_config` | `NaN` satisfies nothing, so the conditions read as present and never fire. Rule save warns; the sweep does not. |
+| **`m_snapshot.liquidity` is the REAL SOL reserve** — `TradeLite::reserve_sol` from `real_reserve_sol`, which is `vsol - 30` on the curve. Floors at **0** (empty curve), tops near **85** (migration). | A gate written against the virtual 30/115 scale sits ~30 too high. `liquidity >= 85` fires only on tokens that actually migrate. |
+| **`m_price_lifetime.stall` is seconds since the last ALL-TIME HIGH**, not since the last trade | An exit below ~60 fires on ordinary chop. It caps every hold, so it doubles as an entry filter. `m_position.held` is the time stop. |
+| **`m_position.retrace` without `arm_above_pct` is a hard stop from entry** — the peak seeds at entry | Reads as a trailing stop, behaves as a fixed stop. |
+| **`m_position` is exit-only** | It reads `NaN` before a fill, so it could never fire on entry. The sweep rejects it there. |
+| **`take_profit` / `stop_loss` axes reject `null`** | To test "no take-profit", omit the axis or pass an unreachable value (`1000` TP, `100` SL). |
+
+Combination semantics: **entry conditions AND together, exit conditions OR together.** Adding
+an exit condition can only make exits fire earlier or as early, never later.
+
 ## Discovery scoring (lab authoring aid)
 
 `lab/src/strategies/flow_discovery.rs` + `POST /api/strategies/flow-discovery`.

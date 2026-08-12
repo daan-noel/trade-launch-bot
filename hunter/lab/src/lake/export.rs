@@ -30,6 +30,11 @@ use super::{tokens_file, trades_day_file, trades_day_meta};
 /// (mirrors the corpus-cache writer).
 const FLUSH_ROWS: usize = 1 << 20;
 
+/// Days of lake history kept by [`prune_lake`]. PG `trades` retention is 30 days, so
+/// a longer lake window holds days PG can no longer re-seal; a shorter one throws away
+/// history that is still analysable. Override with `LAKE_RETENTION_DAYS`.
+const DEFAULT_RETENTION_DAYS: i64 = 30;
+
 /// What an export run touched — surfaced to the caller/CLI for a one-line summary.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ExportSummary {
@@ -40,6 +45,8 @@ pub struct ExportSummary {
     pub days_skipped: usize,
     /// Token-dimension rows rewritten.
     pub tokens_written: usize,
+    /// Day partitions removed because they fell outside the retention window.
+    pub days_pruned: Vec<NaiveDate>,
 }
 
 /// Seal sidecar written next to each day file so a later export can detect an
@@ -181,13 +188,68 @@ pub async fn export_lake(pool: &PgPool, root: &Path, include_today: bool) -> Res
     }
 
     summary.tokens_written = export_tokens(pool, root).await?;
+    summary.days_pruned = prune_lake(root, today, retention_days())?;
     tracing::info!(
         days_written = summary.days_written.len(),
         days_skipped = summary.days_skipped,
+        days_pruned = summary.days_pruned.len(),
         tokens = summary.tokens_written,
         "lake: export complete"
     );
     Ok(summary)
+}
+
+/// Retention window in days, from `LAKE_RETENTION_DAYS`. A value of `0` disables
+/// pruning — 0 days of history is never a wanted outcome, so it is the off switch
+/// rather than a bound.
+fn retention_days() -> i64 {
+    std::env::var("LAKE_RETENTION_DAYS")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|d| *d >= 0)
+        .unwrap_or(DEFAULT_RETENTION_DAYS)
+}
+
+/// Drop `dt=YYYY-MM-DD` partitions older than `keep_days` before `today`, so the lake
+/// stays bounded the way PG's `trades` retention already does. Without this the lake
+/// is the only store in the system that grows without limit.
+///
+/// A directory whose name does not parse as a date is left alone: the lake root also
+/// holds `tokens/`, sim results and the corpus cache, and deleting an unrecognised
+/// name is how a pruner eats something it does not own.
+fn prune_lake(root: &Path, today: NaiveDate, keep_days: i64) -> Result<Vec<NaiveDate>> {
+    let mut pruned = Vec::new();
+    if keep_days <= 0 {
+        return Ok(pruned);
+    }
+    let cutoff = today - chrono::Duration::days(keep_days);
+    let dir = super::trades_dir(root);
+    if !dir.exists() {
+        return Ok(pruned);
+    }
+    for entry in std::fs::read_dir(&dir).with_context(|| format!("read_dir {}", dir.display()))? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(day) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix("dt="))
+            .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+        else {
+            continue;
+        };
+        if day >= cutoff {
+            continue;
+        }
+        std::fs::remove_dir_all(entry.path())
+            .with_context(|| format!("prune {}", entry.path().display()))?;
+        tracing::info!(day = %day, "lake: pruned day outside retention window");
+        pruned.push(day);
+    }
+    pruned.sort_unstable();
+    Ok(pruned)
 }
 
 /// Whether an existing day file may be skipped (`Complete`) or must be rewritten.
@@ -594,8 +656,36 @@ async fn export_tokens(pool: &PgPool, root: &Path) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lake::trades_dir;
     use arrow::array::{BooleanArray, Float64Array, Int64Array, StringArray};
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    #[test]
+    fn prune_drops_only_dated_dirs_outside_the_window() {
+        let dir = std::env::temp_dir().join(format!("lake_prune_{}", std::process::id()));
+        let today = NaiveDate::from_ymd_opt(2026, 8, 12).unwrap();
+        let mk = |n: &str| std::fs::create_dir_all(trades_dir(&dir).join(n)).unwrap();
+        mk("dt=2026-08-11"); // inside
+        mk("dt=2026-07-13"); // exactly at the cutoff, kept
+        mk("dt=2026-07-12"); // outside
+        mk("dt=2026-06-01"); // outside
+        mk("corpus_cache"); // not a day partition — never touched
+
+        let pruned = prune_lake(&dir, today, 30).unwrap();
+        assert_eq!(
+            pruned,
+            vec![
+                NaiveDate::from_ymd_opt(2026, 6, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 7, 12).unwrap()
+            ]
+        );
+        assert!(trades_dir(&dir).join("dt=2026-07-13").exists());
+        assert!(trades_dir(&dir).join("corpus_cache").exists());
+        // 0 is the off switch, not a zero-day window.
+        assert!(prune_lake(&dir, today, 0).unwrap().is_empty());
+        assert!(trades_dir(&dir).join("dt=2026-08-11").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn seal_ok_when_meta_matches_pg_count() {
