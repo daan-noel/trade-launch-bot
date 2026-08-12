@@ -363,6 +363,9 @@ export interface ChartToolbarProps {
   /** True when the split comes from fingerprint `volume_ix_patterns`; false ⇒ the
    *  lines are the creator-vs-rest degradation (labelled as such in the tooltip). */
   flowPatternsConfigured: boolean;
+  /** The patterns come from an UNSAVED app-wide draft, not this chart's own
+   *  fingerprint — the overlay is a preview until it's saved. */
+  flowPatternsDraft?: boolean;
   /** Range-select (drag-to-highlight) mode is active. */
   rangeSelectMode: boolean;
   crosshair: ChartCrosshairInfo | null;

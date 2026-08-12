@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyFlowTrades, patternKeysFrom } from './classifyFlow';
+import { classifyFlowTrades, flowReasonsById, patternKeysFrom } from './classifyFlow';
 
 /** Fixture mirrors `hunter_engine::metrics::flow_split` tests (Rust SSOT:
  *  hunter/engine/src/metrics/flow_split.rs) — the decision order and
@@ -51,6 +51,72 @@ describe('classifyFlowTrades', () => {
     const trades = [{ wallet_address: 'w9', sol: 2, ix_labels: null }];
     const out = classifyFlowTrades(trades, { patternKeys });
     expect(out[0]).toMatchObject({ isVol: false, nonVolSol: 2 });
+  });
+});
+
+/** The badge in the trades table tests structure alone; these reasons are how a
+ *  row that the LINES count as volume explains itself. `isVol` must stay exactly
+ *  what it was — the reason is additive. */
+describe('classifyFlowTrades reasons', () => {
+  const A = ['Compute Budget: SetComputeUnitLimit', 'Pump.Fun: Buy'];
+  const B = ['Compute Budget: SetComputeUnitLimit', 'Pump.Fun: Sell'];
+  const patternKeys = patternKeysFrom([A]);
+
+  it('names the structural match, then contagion on the same wallet', () => {
+    const trades = [
+      { wallet_address: 'w1', sol: 1, ix_labels: A },
+      { wallet_address: 'w1', sol: 3, ix_labels: B },
+      { wallet_address: 'w2', sol: 2, ix_labels: B },
+    ];
+    const out = classifyFlowTrades(trades, { patternKeys });
+    expect(out.map((t) => t.reason)).toEqual(['structural', 'wallet', null]);
+  });
+
+  it('separates the creator from ordinary contagion', () => {
+    const trades = [
+      { wallet_address: 'creator', sol: 4, ix_labels: B },
+      { wallet_address: 'w1', sol: 1, ix_labels: A },
+    ];
+    const out = classifyFlowTrades(trades, { patternKeys, creatorWallet: 'creator' });
+    expect(out.map((t) => t.reason)).toEqual(['creator', 'structural']);
+  });
+
+  it('a structural match on an already-tagged wallet still reads as contagion', () => {
+    const trades = [
+      { wallet_address: 'w1', sol: 1, ix_labels: A },
+      { wallet_address: 'w1', sol: 1, ix_labels: A },
+    ];
+    const out = classifyFlowTrades(trades, { patternKeys });
+    expect(out.map((t) => t.reason)).toEqual(['structural', 'wallet']);
+  });
+
+  it('reason is null exactly when the trade is organic', () => {
+    const trades = [
+      { wallet_address: 'w1', sol: 1, ix_labels: A },
+      { wallet_address: 'w2', sol: 2, ix_labels: B },
+    ];
+    for (const t of classifyFlowTrades(trades, { patternKeys })) {
+      expect(t.reason == null).toBe(!t.isVol);
+    }
+  });
+});
+
+describe('flowReasonsById', () => {
+  const A = ['Pump.Fun: Buy'];
+  const patternKeys = patternKeysFrom([A]);
+
+  it('keys volume trades by id and omits organic ones', () => {
+    const map = flowReasonsById(
+      [
+        { id: 't1', wallet_address: 'w1', sol: 1, ix_labels: A },
+        { id: 't2', wallet_address: 'w2', sol: 2, ix_labels: ['Pump.Fun: Sell'] },
+        { id: 't3', wallet_address: 'w1', sol: 3, ix_labels: ['Pump.Fun: Sell'] },
+      ],
+      { patternKeys },
+    );
+    expect(map.get('t1')).toBe('structural');
+    expect(map.has('t2')).toBe(false);
+    expect(map.get('t3')).toBe('wallet');
   });
 });
 

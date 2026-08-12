@@ -10,6 +10,7 @@ import {
 import { BarTradesPanel } from 'components/tokens/BarTradesPanel';
 import { useBarTradesSelection } from 'components/tokens/useBarTradesSelection';
 import { usePriceUnit } from 'context/PriceUnitContext';
+import { useFlowReasons } from 'hooks/useFlowReasons';
 import { useProfileWallets } from 'hooks/useProfileWallets';
 import { useWatchTokenTradesLive } from 'hooks/useTokenTradesLive';
 import { apiErrorMessage, useGetTokenTradesQuery } from 'store/apiSlice';
@@ -142,6 +143,10 @@ export function TokenTradeChart({
     [profileWallets],
   );
 
+  // Classified over the full history, not the selection — contagion is
+  // forward-only, so a bar's rows alone can't reconstruct it.
+  const flowReasons = useFlowReasons(trades, flowPatternKeys, detail?.creator_wallet);
+
   const selectionTrades = useMemo(() => {
     if (externalSelection) return externalSelection.trades;
     if (selection.range) return tradesInRange(trades, selection.range);
@@ -193,6 +198,7 @@ export function TokenTradeChart({
         eventMarkers={eventMarkers}
         myWalletAddresses={myWalletAddresses}
         flowPatternKeys={flowPatternKeys}
+        flowReasons={flowReasons}
       />
     </div>
   );

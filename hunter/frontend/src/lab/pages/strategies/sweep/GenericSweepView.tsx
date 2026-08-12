@@ -38,6 +38,7 @@ import {
 } from 'lib/strategy/positionFocus';
 import type { PositionChartPoint } from 'lib/strategy/positionChartPoints';
 import { cn } from 'lib/cn';
+import { VolumePatternScope } from 'context/VolumePatternDraftContext';
 import { flowPatternKeysOf } from 'lib/flow/flowPatternKeys';
 import { formatSigned, formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { useBackgroundJobActions, useBackgroundJobsState } from '@lab/context/BackgroundJobsContext';
@@ -1067,6 +1068,10 @@ function ComboTokenResults({
   const existingKeys = useMemo(() => new Set(columns.map((c) => c.key)), [columns]);
 
   return (
+    // A finished run's numbers were computed under the run's OWN stored
+    // volume_ix_patterns, so redrawing this drill-in against an unrelated pattern
+    // draft would misreport it. Locked: read the snapshot, edit it elsewhere.
+    <VolumePatternScope locked>
     <div className="mt-4">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <h3 className="text-sm font-bold text-secondary">Tokens for combo #{comboId}</h3>
@@ -1162,6 +1167,7 @@ function ComboTokenResults({
         />
       )}
     </div>
+    </VolumePatternScope>
   );
 }
 

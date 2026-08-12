@@ -208,6 +208,41 @@ A host outside `token-price-chart` must deep-import (`components/token-price-cha
 statically-mounted host must not pull `lightweight-charts` into its chunk (see
 [`@arch/frontend.md`](../../arch/frontend.md) chart code-split).
 
+### 6b. Staging `volume_ix_patterns` from the trades table
+
+The panel's **Vol** badge is the editing control for `m_flow_split.volume_ix_patterns`:
+clicking it stages/unstages that row's ordered `instruction_labels`, and every chart in the
+app redraws its vol/non-vol overlay against the staged set on the same tick.
+
+One app-wide draft (`VolumePatternDraftProvider`, mounted in `AppProviders`) holds it,
+because `volume_ix_patterns` is a **corpus-wide** fact, not a per-page one — a draft opened
+on a Console position survives the jump to Simulate. `useEffectiveFlowPatternKeys(propKeys)`
+is the ONE place a host's saved keys and the draft are reconciled; both `TokenPriceChart`'s
+overlay and `BarTradesPanel`'s column read it, so they cannot classify against different
+sets. `togglePattern` in `lib/flow/volumePatterns.ts` is the ONE toggler — Flow Discovery's
+structure checkboxes call it too.
+
+Three rules the surface exists to enforce:
+
+- **The badge tests structure; the lines apply contagion.** A row reads `Non-vol` while its
+  SOL sits on the vol line whenever the wallet was already tagged. `useFlowReasons` runs
+  `flowReasonsById` over the host's **full** history (contagion is forward-only, so a
+  single bar's rows cannot reconstruct it) and the cell appends `via creator` / `via
+  wallet`. Without that marker a toggle that "does nothing" looks like a bug.
+- **The first staged pattern reveals the overlay.** `flowLinesAvailable` is false with no
+  patterns and no creator wallet, and `showFlowLines` is a persisted pref — so the chart
+  auto-enables the lines on the transition to classifiable while a draft is open. Turning
+  them back off mid-draft stays the user's call.
+- **A run snapshot is not editable.** `<VolumePatternScope locked>` marks a subtree whose
+  patterns are a stored fact — the grouped-sweep drill-in, whose numbers were computed under
+  the run's own `volume_ix_patterns`. Locked subtrees ignore the draft and show `run
+  snapshot` instead of the edit control.
+
+Saving is a separate, explicitly-targeted act (`VolumePatternDraftBar`): pick the
+fingerprint, see how many **active** rules use it, then write. `metric_config` is not part
+of fingerprint identity, so a write does not fork the row — it lands on the same id and
+every rule bound to it starts classifying flow differently. Nothing auto-saves.
+
 ---
 
 ## 7. Reference price lines (ATH & Migration)

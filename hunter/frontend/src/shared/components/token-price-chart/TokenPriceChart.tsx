@@ -52,6 +52,7 @@ import { ChartRangeSlider } from './ChartRangeSlider';
 import { ChartToolbar } from './ChartToolbar';
 import { createChartTimeFormatters } from './chartTimezone';
 import { useTimezone } from 'context/TimezoneContext';
+import { useEffectiveFlowPatternKeys } from 'context/VolumePatternDraftContext';
 import { useStoredField } from 'hooks/useLocalStorage';
 import { useProfileWallets } from 'hooks/useProfileWallets';
 import { cn } from 'lib/cn';
@@ -593,9 +594,25 @@ export function TokenPriceChart({
   );
   const [showEventMarkers, setShowEventMarkers] = useState(initialPrefs.showEventMarkers);
   const [showFlowLines, setShowFlowLines] = useState(initialPrefs.showFlowLines);
-  /** True once the fingerprint supplies `volume_ix_patterns` — the split is then
-   *  the engine's own volume-maker vs organic classification. */
-  const flowPatternsConfigured = flowPatternKeys != null && flowPatternKeys.size > 0;
+  /** An open pattern draft layers over the host's saved set, so every chart in
+   *  the app classifies against whatever is being staged right now. */
+  const { keys: effectiveFlowPatternKeys, draftActive: flowPatternsDraft } =
+    useEffectiveFlowPatternKeys(flowPatternKeys);
+  /** True once `volume_ix_patterns` are supplied — the split is then the engine's
+   *  own volume-maker vs organic classification. */
+  const flowPatternsConfigured =
+    effectiveFlowPatternKeys != null && effectiveFlowPatternKeys.size > 0;
+  // Staging the first pattern is only feedback if the lines are on screen. The
+  // overlay toggle is a persisted pref and the button is dead until something
+  // can classify, so a draft's first toggle would otherwise change nothing
+  // visible. Fires on the transition only — turning the lines back off mid-draft
+  // stays the user's call.
+  const wasFlowPatternsConfigured = useRef(flowPatternsConfigured);
+  useEffect(() => {
+    const was = wasFlowPatternsConfigured.current;
+    wasFlowPatternsConfigured.current = flowPatternsConfigured;
+    if (!was && flowPatternsConfigured && flowPatternsDraft) setShowFlowLines(true);
+  }, [flowPatternsConfigured, flowPatternsDraft]);
   /** Draw the overlay whenever SOMETHING can classify: patterns, or just the
    *  creator wallet (which alone splits creator + everyone they traded with off
    *  from the rest — see `classifyFlow`). Both readings are useful on a chart,
@@ -1273,7 +1290,7 @@ export function TokenPriceChart({
       return { vol: [], nonVol: [] } satisfies FlowLines;
     }
     return buildFlowLines(sortedTrades, groupMode, intervalSec, flowBasis as FlowBasis, {
-      patternKeys: flowPatternKeys ?? EMPTY_FLOW_PATTERN_KEYS,
+      patternKeys: effectiveFlowPatternKeys ?? EMPTY_FLOW_PATTERN_KEYS,
       creatorWallet,
     });
   }, [
@@ -1282,7 +1299,7 @@ export function TokenPriceChart({
     intervalSec,
     flowBasis,
     flowLinesAvailable,
-    flowPatternKeys,
+    effectiveFlowPatternKeys,
     creatorWallet,
   ]);
   const alignedFlowLines = useMemo(() => alignFlowToBars(flowLines, bars), [flowLines, bars]);
@@ -1807,6 +1824,7 @@ export function TokenPriceChart({
         showFlowLines={showFlowLines}
         flowLinesAvailable={flowLinesAvailable}
         flowPatternsConfigured={flowPatternsConfigured}
+        flowPatternsDraft={flowPatternsDraft}
         rangeSelectMode={rangeSelectMode}
         crosshair={crosshair}
         formatFlow={formatFlow}

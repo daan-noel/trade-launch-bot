@@ -1,4 +1,5 @@
 import type { ColumnDef } from 'components/table/types';
+import type { FlowReason } from 'lib/flow/classifyFlow';
 import type { TradeRecord } from 'types';
 import { DateCell } from 'components/table/DateCell';
 import { formatDecimal } from 'utils/format';
@@ -11,11 +12,24 @@ import { formatIxLabelsText } from 'lib/ixLabels';
 
 export interface TokenTradeColumnsOpts {
   /**
-   * Fingerprint `volume_ix_patterns` keys (`JSON.stringify(labels)`). When
-   * non-empty, prepends a read-only Vol/Non-vol badge (structural ix match
-   * only — no creator/wallet contagion). Omit or empty → column hidden.
+   * `volume_ix_patterns` keys (`JSON.stringify(labels)`) to test each row's
+   * structure against. When non-empty, prepends the Vol/Non-vol badge column.
+   * Omit or empty → column hidden, unless {@link onTogglePattern} is set.
    */
   flowPatternKeys?: ReadonlySet<string> | null;
+  /**
+   * Makes the badge a click-to-stage control: adds/removes that row's ordered
+   * `instruction_labels` in the app-wide pattern draft. Set ⇒ the column always
+   * renders, because authoring starts from an EMPTY set and the rows you click
+   * into it are the whole point.
+   */
+  onTogglePattern?: ((labels: readonly string[]) => void) | null;
+  /**
+   * Effective (contagion-aware) classification per trade id — what the chart's
+   * lines actually did with the row. The badge tests structure alone, so without
+   * this a row reading "Non-vol" whose SOL sits on the vol line looks like a bug.
+   */
+  flowReasons?: ReadonlyMap<string, FlowReason> | null;
 }
 
 /** True when ordered `instruction_labels` exact-match a volume_ix_patterns row. */
@@ -25,6 +39,15 @@ export function isVolumeIxPattern(
 ): boolean {
   return !!labels && labels.length > 0 && patternKeys.has(JSON.stringify(labels));
 }
+
+/** Stable empty set so an unconfigured column doesn't allocate per render. */
+const EMPTY_PATTERN_KEYS: ReadonlySet<string> = new Set<string>();
+
+/** Why the chart counted a row as volume when its own structure didn't. */
+const CONTAGION_NOTE: Record<Exclude<FlowReason, 'structural'>, string> = {
+  creator: 'via creator',
+  wallet: 'via wallet',
+};
 
 /**
  * Takes only the unit *label* (not the whole `usePriceDisplay` object) so the
@@ -38,34 +61,88 @@ export function tokenTradeColumns(
   unit: string,
   opts?: TokenTradeColumnsOpts,
 ): ColumnDef<TradeRecord>[] {
-  const patternKeys = opts?.flowPatternKeys;
-  const showVol = patternKeys != null && patternKeys.size > 0;
+  const keys = opts?.flowPatternKeys ?? EMPTY_PATTERN_KEYS;
+  const onToggle = opts?.onTogglePattern ?? null;
+  const reasons = opts?.flowReasons ?? null;
+  const showVol = keys.size > 0 || onToggle != null;
 
   const leading: ColumnDef<TradeRecord>[] = [];
 
   if (showVol) {
-    const keys = patternKeys;
     leading.push({
       key: 'is_volume_ix_pattern',
       label: 'Vol',
-      tooltip:
-        'Structural volume ix-pattern match — this trade’s ordered instruction_labels ' +
-        'exact-match a fingerprint volume_ix_patterns row (no creator/wallet contagion).',
+      tooltip: onToggle
+        ? 'Structural volume ix-pattern match. Click to stage/unstage this trade’s ordered ' +
+          'instruction_labels as a volume_ix_pattern — the chart’s vol/non-vol lines redraw ' +
+          'immediately. “via creator/wallet” = the lines already count this row through ' +
+          'contagion, whatever its own structure is.'
+        : 'Structural volume ix-pattern match — this trade’s ordered instruction_labels ' +
+          'exact-match a volume_ix_patterns row (no creator/wallet contagion).',
       render: (t) => {
         const labels = t.instruction_labels;
         if (!labels || labels.length === 0) {
           return <span className="text-text-dim/40">—</span>;
         }
         const isVol = isVolumeIxPattern(labels, keys);
-        return (
-          <Badge variant={isVol ? 'danger' : 'neutral'} size="sm">
+        const reason = reasons?.get(t.id) ?? null;
+        const note = reason && reason !== 'structural' ? CONTAGION_NOTE[reason] : null;
+        const badge = (
+          <Badge
+            variant={isVol ? 'danger' : 'neutral'}
+            size="sm"
+            className={onToggle ? 'cursor-pointer' : undefined}
+          >
             {isVol ? 'Vol' : 'Non-vol'}
           </Badge>
         );
+        const cell = (
+          <span className="inline-flex items-center gap-1">
+            {onToggle ? (
+              <button
+                type="button"
+                aria-pressed={isVol}
+                title={
+                  isVol
+                    ? 'Staged as a volume_ix_pattern — click to remove'
+                    : 'Click to stage this structure as a volume_ix_pattern'
+                }
+                onClick={(e) => {
+                  // The row itself is selectable on several hosts; a stage click
+                  // must not also change the table's selection.
+                  e.stopPropagation();
+                  onToggle(labels);
+                }}
+                className="rounded-md focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+              >
+                {badge}
+              </button>
+            ) : (
+              badge
+            )}
+            {note && (
+              <span className="text-[9px] uppercase tracking-wide text-text-dim/70">
+                {note}
+              </span>
+            )}
+          </span>
+        );
+        return cell;
       },
-      sortValue: (t) => (isVolumeIxPattern(t.instruction_labels, keys) ? 1 : 0),
-      searchValue: (t) =>
-        isVolumeIxPattern(t.instruction_labels, keys) ? 'vol' : 'non-vol',
+      // Structure outranks contagion: sorting this column is for finding the rows
+      // whose pattern you can actually toggle.
+      sortValue: (t) =>
+        isVolumeIxPattern(t.instruction_labels, keys)
+          ? 2
+          : reasons?.get(t.id)
+            ? 1
+            : 0,
+      searchValue: (t) => {
+        const structural = isVolumeIxPattern(t.instruction_labels, keys);
+        const reason = reasons?.get(t.id) ?? null;
+        const note = reason && reason !== 'structural' ? CONTAGION_NOTE[reason] : '';
+        return `${structural ? 'vol' : 'non-vol'}${note ? ` ${note}` : ''}`;
+      },
     });
   }
 

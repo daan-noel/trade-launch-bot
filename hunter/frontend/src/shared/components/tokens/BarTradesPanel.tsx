@@ -1,10 +1,16 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { tokenTradeColumns } from 'components/tokens/tokenTradeColumns';
+import { VolumePatternDraftBar } from 'components/tokens/VolumePatternDraftBar';
 import { Badge } from 'components/ui/Badge';
 import { useTimezone } from 'context/TimezoneContext';
+import {
+  useEffectiveFlowPatternKeys,
+  useVolumePatternDraft,
+} from 'context/VolumePatternDraftContext';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { formatTimestampMs } from 'utils/date';
+import type { FlowReason } from 'lib/flow/classifyFlow';
 import type {
   ChartBarSelection,
   ChartEventMarker,
@@ -41,8 +47,13 @@ export interface BarTradesPanelProps {
   eventMarkers?: ChartEventMarker[] | null;
   /** Our own wallets — adds a left-border accent to their rows. */
   myWalletAddresses?: ReadonlySet<string> | null;
-  /** Fingerprint `volume_ix_patterns` keys — adds the Vol/Non-vol column. */
+  /** The host's SAVED `volume_ix_patterns` keys — adds the Vol/Non-vol column.
+   *  An open pattern draft layers over this (see `useEffectiveFlowPatternKeys`). */
   flowPatternKeys?: ReadonlySet<string> | null;
+  /** Effective (contagion-aware) classification per trade id, from the host's
+   *  FULL trade history — a bar's rows alone can't reconstruct contagion. Omit
+   *  and the badge reports structure only, as it always has. */
+  flowReasons?: ReadonlyMap<string, FlowReason> | null;
   /** Outer spacing — override in a host that already spaces its children (e.g.
    *  a `flex flex-col gap-*`, where the default top margin double-spaces). */
   className?: string;
@@ -81,14 +92,30 @@ export function BarTradesPanel({
   eventMarkers = null,
   myWalletAddresses = null,
   flowPatternKeys = null,
+  flowReasons = null,
   className = 'mt-3 border-t border-white/7 pt-2',
 }: BarTradesPanelProps) {
   const { timezone } = useTimezone();
   const price = usePriceDisplay();
 
+  const draft = useVolumePatternDraft();
+  const { keys: effectiveKeys, locked } = useEffectiveFlowPatternKeys(flowPatternKeys);
+  const draftToggle = draft.toggle;
+  const onTogglePattern = useCallback(
+    (labels: readonly string[]) => draftToggle(labels, flowPatternKeys),
+    [draftToggle, flowPatternKeys],
+  );
+
   const columns = useMemo(
-    () => tokenTradeColumns(price.unitLabel, { flowPatternKeys }),
-    [price.unitLabel, flowPatternKeys],
+    () =>
+      tokenTradeColumns(price.unitLabel, {
+        flowPatternKeys: effectiveKeys,
+        // A locked subtree shows a stored run's own patterns — clicking a badge
+        // there would edit a set that isn't this chart's to change.
+        onTogglePattern: locked ? null : onTogglePattern,
+        flowReasons,
+      }),
+    [price.unitLabel, effectiveKeys, locked, onTogglePattern, flowReasons],
   );
 
   const entryExitMap = useMemo(() => buildEntryExitMap(eventMarkers), [eventMarkers]);
@@ -152,6 +179,7 @@ export function BarTradesPanel({
         >
           Clear
         </button>
+        <VolumePatternDraftBar savedKeys={flowPatternKeys} />
       </div>
       <DataTable
         tableId={tableId}

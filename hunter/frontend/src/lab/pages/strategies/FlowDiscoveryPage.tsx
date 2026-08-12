@@ -56,6 +56,7 @@ import {
 import { StructureTable } from '@lab/components/flow/StructureTable';
 import { TokenPreviewPanel } from '@lab/components/flow/TokenPreviewPanel';
 import { patternKeysFrom } from 'lib/flow/classifyFlow';
+import { togglePattern } from 'lib/flow/volumePatterns';
 import { FingerprintGroupPicker } from '@lab/components/sweep/FingerprintGroupPicker';
 import { parseIxLabelsFilter, buildFieldFilters } from '@lab/components/sweep/fingerprintFilters';
 import {
@@ -714,12 +715,9 @@ export function FlowDiscoveryPage() {
   }
 
   function toggleStructure(labels: string[]) {
-    const key = JSON.stringify(labels);
-    setDraftPatterns((prev) => {
-      const has = prev.some((p) => JSON.stringify(p) === key);
-      if (has) return prev.filter((p) => JSON.stringify(p) !== key);
-      return [...prev, labels];
-    });
+    // Same toggler the chart trades-table badge uses — one definition of what
+    // staging a structure means, so the two surfaces can't drift.
+    setDraftPatterns((prev) => togglePattern(prev, labels));
     setApplyOk(null);
   }
 

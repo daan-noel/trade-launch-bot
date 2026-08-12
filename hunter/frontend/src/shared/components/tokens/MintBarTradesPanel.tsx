@@ -1,8 +1,9 @@
 import { useMemo } from 'react';
 import { tradesInBar, tradesInRange } from 'components/token-price-chart/barTrades';
 import { BarTradesPanel } from 'components/tokens/BarTradesPanel';
+import { useFlowReasons } from 'hooks/useFlowReasons';
 import { useProfileWallets } from 'hooks/useProfileWallets';
-import { useGetTokenTradesQuery } from 'store/apiSlice';
+import { useGetTokenDetailQuery, useGetTokenTradesQuery } from 'store/apiSlice';
 import type { ChartEventMarker } from 'components/token-price-chart/types';
 import type { TradeRecord } from 'types';
 import type { BarTradesSelection } from './useBarTradesSelection';
@@ -34,8 +35,12 @@ export function MintBarTradesPanel({
   className?: string;
 }) {
   // Only subscribes once something is picked — an unopened detail row pays
-  // nothing, and by then the chart has already filled this cache entry.
-  const { data } = useGetTokenTradesQuery(mint, { skip: !mint || !selection.active });
+  // nothing, and by then the chart has already filled these cache entries. The
+  // detail is read for the creator wallet alone: it seeds flow contagion, so
+  // without it the badge's verdict would drift from the lines above it.
+  const skip = !mint || !selection.active;
+  const { data } = useGetTokenTradesQuery(mint, { skip });
+  const { data: detail } = useGetTokenDetailQuery(mint, { skip });
   const trades = data ?? EMPTY_TRADES;
 
   const myWalletAddresses = useProfileWallets();
@@ -43,6 +48,8 @@ export function MintBarTradesPanel({
     () => new Set(myWalletAddresses.filter((w) => w.isMine).map((w) => w.address)),
     [myWalletAddresses],
   );
+
+  const flowReasons = useFlowReasons(trades, flowPatternKeys, detail?.creator_wallet);
 
   const rows = useMemo(() => {
     if (selection.range) return tradesInRange(trades, selection.range);
@@ -60,6 +67,7 @@ export function MintBarTradesPanel({
       eventMarkers={eventMarkers}
       myWalletAddresses={mine}
       flowPatternKeys={flowPatternKeys}
+      flowReasons={flowReasons}
       className={className}
     />
   );

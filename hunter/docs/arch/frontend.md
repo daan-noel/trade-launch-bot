@@ -572,7 +572,18 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
     the Creation Stats grouped drill-in (keys come from the **applied** scope fingerprint, so a
     manual group-by drill-in has none), and sweep combo charts (run patterns). Omit/empty is
     not a blank chart — the overlay falls back to a creator-vs-rest split and only goes dark
-    on a token with no creator wallet either.
+    on a token with no creator wallet either. Those saved keys are the BASE: an app-wide
+    draft (`context/VolumePatternDraftContext`, provider in `AppProviders`) layers over them
+    through `useEffectiveFlowPatternKeys`, the ONE resolver both the overlay and the trades
+    table read. Clicking a Vol badge stages that row's ordered `instruction_labels`
+    (`lib/flow/volumePatterns.togglePattern`, shared with Flow Discovery) and every chart
+    redraws; `useFlowReasons` supplies the contagion-aware `via creator` / `via wallet`
+    marker so the structural badge and the lines stop disagreeing silently.
+    `<VolumePatternScope locked>` opts a subtree out (the grouped-sweep drill-in reads a run
+    snapshot). Saving goes through `VolumePatternDraftBar` — explicit fingerprint pick +
+    active-rule count, because `metric_config` is not part of fingerprint identity and a
+    write changes every rule bound to that id. Detail:
+    [`@plans/token-analysis/token-history-chart-functionalities.md`](../plans/token-analysis/token-history-chart-functionalities.md) §6b.
     The open-count selector lives in that leaf so a status tick re-renders the panel, not `RulesView`.
   - **lab** (`@lab/components/strategy/LabRuleEvidence`) passes `notice` + `renderInspect` + `scoreScope`
     (Evidence default follows the list's scoreboard scope) and serves

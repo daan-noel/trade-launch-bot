@@ -329,6 +329,7 @@ export function ChartToolbar({
   showFlowLines,
   flowLinesAvailable,
   flowPatternsConfigured,
+  flowPatternsDraft = false,
   rangeSelectMode,
   crosshair,
   formatFlow,
@@ -658,10 +659,14 @@ export function ChartToolbar({
             label="Toggle vol/non-vol flow lines"
             tooltip={
               !flowLinesAvailable
-                ? 'Needs a creator wallet or fingerprint volume_ix_patterns to classify against'
-                : flowPatternsConfigured
-                  ? 'Cumulative volume-maker (red) vs non-volume (gold) overlay — classified via fingerprint volume_ix_patterns + creator/wallet contagion'
-                  : 'No fingerprint volume_ix_patterns — showing creator + wallets they traded with (red) vs the rest (gold). Configure patterns for the true volume-maker split.'
+                ? 'Needs a creator wallet or volume_ix_patterns to classify against'
+                : flowPatternsDraft && flowPatternsConfigured
+                  ? 'Cumulative volume-maker (red) vs non-volume (gold) overlay — classified against your UNSAVED pattern draft + creator/wallet contagion. Save it to a fingerprint to make it real.'
+                  : flowPatternsDraft
+                    ? 'Pattern draft is empty — showing creator + wallets they traded with (red) vs the rest (gold). Click a Vol badge in the trades table to stage a pattern.'
+                    : flowPatternsConfigured
+                      ? 'Cumulative volume-maker (red) vs non-volume (gold) overlay — classified via fingerprint volume_ix_patterns + creator/wallet contagion'
+                      : 'No fingerprint volume_ix_patterns — showing creator + wallets they traded with (red) vs the rest (gold). Configure patterns for the true volume-maker split.'
             }
             activeColor={FLOW_VOL_LINE_COLOR}
           >
