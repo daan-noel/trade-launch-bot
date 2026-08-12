@@ -41,7 +41,8 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   (`liveNav`) = `Live Trading` / `LIVE` (pulsing) + Live-mode toggle; lab nav (`labNav`) =
   `Research & Backtesting` / `LAB`, no toggle.   Live money nav is collapsed to
   **Console** (`/console` — one page: the Attention/Open+Manual-trade/Waiting lanes plus the
-  **History** section;
+  **History** and **Arms** sections (both collapsible, and collapsed means NO fetch —
+  the body unmounts, since each pays for a server page plus an aggregate);
   redirects from `/floor`, `/trade`, `/ops`, `/positions`, `/live-trading`,
   `/strategies/armed`, `/strategies/monitor`, query preserved) · **Portfolio** (`/portfolio`) · **Wallet**. Rules Evidence is
   `/strategies/rules/:ruleId`. Lab flattens single-child groups (Tokens, Trader Analysis
@@ -120,6 +121,16 @@ parallel Maps). Legacy `LiveTradingPage` / `MonitorPage` are gone — `/position
 **Armed leave-Waiting:** engine Enter does not emit `ArmedChanged(Disarmed)`; the
 position sink clears `ArmedRegistry` + emits `disarmed`/`entered` on `BuySubmitted` /
 `Holding`. `GET /api/strategies/armed` also filters out mints with unsettled positions.
+Both the snapshot and every `strategy_armed_changed` frame carry **`armed_at`** — the
+server's instant for the episode, on the arm AND the disarm. A client that stamped its
+own arrival time restarted every Waiting row's age on reconnect and disagreed with the
+arm ledger about the same episode.
+
+**Waiting (live) vs Arms (durable):** the Waiting lane reads the in-RAM registry and
+loses a row the instant it disarms; the **Arms** section pages `strategy_arms` over a
+date range and keeps every episode, including the ones that never traded. Two readers
+of one fact on purpose — the lane must patch per-event with no round trip
+([arm-ledger.md](@plans/strategies/arm-ledger.md)).
 
 **Live trading notify SSOT (one EventSource, writers):**
 

@@ -270,6 +270,11 @@ pub enum SseEvent {
         mint_address: String,
         state: String,
         reason: Option<String>,
+        /// When the episode this frame describes was armed — the SERVER's instant,
+        /// on both the arm and the disarm. Without it a client stamps its own
+        /// arrival time, so a reconnect restarts every Waiting row's age and the
+        /// lane disagrees with the arm ledger about the same episode.
+        armed_at: chrono::DateTime<chrono::Utc>,
         /// `"real"` | `"paper"` when the sink still has the rule loaded.
         trade_mode: Option<String>,
         rule_name: Option<String>,

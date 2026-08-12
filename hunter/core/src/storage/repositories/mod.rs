@@ -1,4 +1,8 @@
 pub mod amm_pool_facts_repo;
+// The arm ledger is its own repo, not a `strategy_repo` arm: `strategy_arms` has
+// a retention policy and no FK to `strategy_positions`, so the two tables' write
+// paths and lifetimes are deliberately independent.
+pub mod arm_repo;
 pub mod creation_stats_repo;
 pub mod fingerprint_repo;
 // `grouped_sweep_repo` stays in `backend`: it depends on the sweep engine's

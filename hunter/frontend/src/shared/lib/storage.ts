@@ -137,6 +137,12 @@ export interface UiToggles {
   consoleWaitingOpen?: boolean;
   /** Console: the collapsible Manual-trade panel (forced open when `?mint=` prefills). */
   consoleManualOpen?: boolean;
+  /** Console: the collapsible HISTORY section. Closed unmounts its body, so this
+   *  also decides whether the page pays for the summary + cohort walk. */
+  consoleHistoryOpen?: boolean;
+  /** Console: the collapsible ARMS section (the durable arm ledger). Defaults
+   *  closed — the ledger is a review surface, and closed means no fetch. */
+  consoleArmsOpen?: boolean;
 }
 
 // ── raw string accessors ────────────────────────────────────────────────────

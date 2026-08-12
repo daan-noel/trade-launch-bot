@@ -148,6 +148,44 @@ export function fetchPortfolioPositionsPage(
 }
 
 /**
+ * POST one page of the **arm ledger** (`strategy_arms`) — the Console Arms
+ * section. Same {@link TableRequestBody} contract as the positions pair, so the
+ * table's paging/sort/filters and the section's date range travel in one body.
+ *
+ * This is the DURABLE read. `GET /api/strategies/armed` is its live twin (the
+ * in-RAM registry behind the Waiting lane) and answers a different question —
+ * see `docs/plans/strategies/arm-ledger.md`.
+ */
+export function fetchArmsPage(
+  body: TableRequestBody,
+  signal?: AbortSignal,
+): Promise<{ items: import('lib/strategy/types').StrategyArmRecord[]; total: number }> {
+  return postTablePage(
+    '/api/strategies/arms/query',
+    body,
+    (json) => json as import('lib/strategy/types').StrategyArmRecord[],
+    signal,
+  );
+}
+
+/**
+ * POST the arm funnel over the same cohort {@link fetchArmsPage} pages
+ * (pagination/sort ignored). Aggregated in Postgres, so the counts stay exact
+ * past the page size instead of re-stating themselves on every page turn.
+ */
+export function fetchArmsSummary(
+  body: TableRequestBody,
+  signal?: AbortSignal,
+): Promise<import('lib/strategy/types').ArmFunnel> {
+  return request(`${API_BASE}/api/strategies/arms/summary`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  });
+}
+
+/**
  * POST the **cross-rule** Positions Summary aggregate (Console History's summary
  * strip). Aggregate twin of {@link fetchPortfolioPositionsPage}: identical body,
  * identical cohort, pagination/sort ignored — so the strip totals exactly the

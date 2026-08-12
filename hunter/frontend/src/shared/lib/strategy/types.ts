@@ -229,6 +229,42 @@ export interface ArmedEntry {
   rule_id: string;
   mint_address: string;
   state: string;
+  /** When the engine armed this pair (ISO). Server-stamped, so the Waiting row's
+   *  age survives a reconnect and matches the arm ledger's episode. */
+  armed_at: string;
+}
+
+/** One arming episode from `POST /api/strategies/arms/query` — the durable twin
+ *  of a Waiting row. `end_reason` is `null` while the episode is still live. */
+export interface StrategyArmRecord {
+  rule_id: string;
+  mint_address: string;
+  mode: string;
+  armed_at: string;
+  ended_at: string | null;
+  /** `entered` | `dead` | `migrated` | `unsatisfiable` | `paused` |
+   *  `duplicate_identity`; `null` while the engine is still evaluating entry. */
+  end_reason: string | null;
+  /** The position this episode became — set only with `end_reason === 'entered'`. */
+  position_id: string | null;
+  symbol: string | null;
+  /** Seconds from `armed_at` to `ended_at`, or to now while live (server-computed). */
+  waited_sec: number | null;
+}
+
+/** `POST /api/strategies/arms/summary` — the arm funnel over one cohort. */
+export interface ArmFunnel {
+  armed: number;
+  entered: number;
+  live: number;
+  dead: number;
+  migrated: number;
+  unsatisfiable: number;
+  paused: number;
+  duplicate_identity: number;
+  /** `entered / armed × 100` (0 when nothing armed). */
+  entry_rate_pct: number;
+  median_waited_sec: number | null;
 }
 
 /** One computed metric column from `GET /api/tokens/{mint}/metric-series`. */
@@ -355,8 +391,12 @@ export interface ArmedChangedEvent {
   mint_address: string;
   /** `"armed"` | `"disarmed"`. */
   state: string;
-  /** Disarm reason (`dead` | `migrated` | `unsatisfiable`) when disarmed. */
+  /** Disarm reason (`dead` | `migrated` | `unsatisfiable` | `paused` |
+   *  `duplicate_identity` | `entered`) when disarmed. */
   reason?: string | null;
+  /** When the episode this frame describes was armed (ISO) — present on the arm
+   *  AND the disarm, so the client never stamps its own arrival time. */
+  armed_at?: string | null;
   /** `"real"` | `"paper"` when the engine still has the rule loaded. */
   trade_mode?: string | null;
   rule_name?: string | null;

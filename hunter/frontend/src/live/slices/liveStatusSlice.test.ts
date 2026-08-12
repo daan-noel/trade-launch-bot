@@ -16,7 +16,7 @@ describe('liveStatusSlice', () => {
     const next = reducer(
       empty,
       applySnapshot({
-        armed: [{ rule_id: 'r1', mint_address: 'm2', state: 'armed' }],
+        armed: [{ rule_id: 'r1', mint_address: 'm2', state: 'armed', armed_at: '2026-08-12T00:00:00Z' }],
         positions: [
           {
             id: 'p1',
@@ -41,7 +41,7 @@ describe('liveStatusSlice', () => {
     const next = reducer(
       empty,
       applySnapshot({
-        armed: [{ rule_id: 'r1', mint_address: 'm1', state: 'armed' }],
+        armed: [{ rule_id: 'r1', mint_address: 'm1', state: 'armed', armed_at: '2026-08-12T00:00:00Z' }],
         positions: [
           {
             id: 'p1',

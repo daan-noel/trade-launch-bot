@@ -30,6 +30,17 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/armed/metrics",
                 web::get().to(handlers::strategies::rule_readout::get_armed_metrics),
             )
+            // The durable arm ledger (`strategy_arms`) — the Console Arms section.
+            // POST + a `/query` suffix, like the positions pair, so neither
+            // contests the literal `/strategies/armed` GET above.
+            .route(
+                "/strategies/arms/query",
+                web::post().to(handlers::strategies::arms::query_arms),
+            )
+            .route(
+                "/strategies/arms/summary",
+                web::post().to(handlers::strategies::arms::arms_summary),
+            )
             // Fingerprints CRUD (shared by many rules).
             .route("/fingerprints", web::get().to(handlers::strategies::engine::list_fingerprints))
             .route("/fingerprints", web::post().to(handlers::strategies::engine::create_fingerprint))

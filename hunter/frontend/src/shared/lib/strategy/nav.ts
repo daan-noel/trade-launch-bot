@@ -105,6 +105,20 @@ export const OPS_PARAMS = {
   hLane: 'hlane',
   /** History: summary Migrated tile lens (`1|0` — graduated to AMM or not). */
   hMigrated: 'hmigrated',
+  // Arms section (the durable arm ledger). Its OWN `a*` channel, deliberately
+  // not shared with History's `h*`: narrowing a PnL review must not silently
+  // narrow the arm funnel, which describes a different population.
+  /** Arms: calendar window preset (`today|7d|30d|all|custom`). */
+  aRange: 'arange',
+  /** Arms: custom window bounds (UTC wall-clock), used when `arange=custom`. */
+  aFrom: 'afrom',
+  aTo: 'ato',
+  /** Arms: rule filter. */
+  aRule: 'arule',
+  /** Arms: mode filter (`real|paper|all`). */
+  aMode: 'amode',
+  /** Arms: end-reason filter (`entered|dead|…`, or `waiting` for a live episode). */
+  aReason: 'areason',
 } as const;
 
 /** Deep-link into the Console **History** section with a preset cohort — the

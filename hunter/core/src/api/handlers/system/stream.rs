@@ -357,6 +357,7 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
             mint_address,
             state: armed_state,
             reason,
+            armed_at,
             trade_mode,
             rule_name,
         } => {
@@ -369,6 +370,7 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
                     "mint_address": mint_address,
                     "state": armed_state,
                     "reason": reason,
+                    "armed_at": armed_at,
                     "trade_mode": trade_mode,
                     "rule_name": rule_name,
                 }),

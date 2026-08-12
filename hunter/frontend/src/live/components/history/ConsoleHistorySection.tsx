@@ -20,6 +20,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTimezone } from 'context/TimezoneContext';
+import { useUiToggle } from 'hooks/useUiPrefs';
+import { OPS_PARAMS } from 'lib/strategy/nav';
 import { connectStrategyPositionUpdate } from 'services/sse';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import {
@@ -63,7 +65,62 @@ const CHART_SCAN_MAX = 20_000;
 
 const NO_ROWS: RulePositionRecord[] = [];
 
+/** Every URL key the cohort reads. A deep link carrying any of them must open
+ *  the section — landing on a scoped cohort behind a closed header shows the
+ *  operator nothing and looks like the link failed. */
+const HISTORY_COHORT_PARAMS = [
+  OPS_PARAMS.range,
+  OPS_PARAMS.from,
+  OPS_PARAMS.to,
+  OPS_PARAMS.hRule,
+  OPS_PARAMS.hMode,
+  OPS_PARAMS.hStatus,
+  OPS_PARAMS.hExit,
+  OPS_PARAMS.hFocus,
+  OPS_PARAMS.hOutcome,
+  OPS_PARAMS.hLane,
+  OPS_PARAMS.hMigrated,
+];
+
+/**
+ * Collapsible shell. **Collapsed means no fetch**: the body mounts a summary
+ * aggregate AND a cohort walk of up to `CHART_SCAN_MAX` rows, so rendering it
+ * behind a closed header would pay for the page's most expensive read on every
+ * Console visit. Any deep link that targets this section — the `scroll=history`
+ * marker or any `h*` cohort param — forces it open first, so a landing cohort is
+ * never invisible.
+ */
 export const ConsoleHistorySection = memo(function ConsoleHistorySection({
+  selectedKey,
+  onSelect,
+}: {
+  selectedKey: string | null;
+  onSelect: (positionId: string | null, mint?: string) => void;
+}) {
+  const [params] = useSearchParams();
+  const [open, setOpen] = useUiToggle('consoleHistoryOpen', true);
+  const deepLinked =
+    params.get('scroll') === 'history' || HISTORY_COHORT_PARAMS.some((k) => params.has(k));
+  useEffect(() => {
+    if (deepLinked) setOpen(true);
+  }, [deepLinked, setOpen]);
+
+  return (
+    <section id="console-history" className="flex flex-col gap-2">
+      <button
+        type="button"
+        className="text-left text-xs font-bold uppercase tracking-wider text-text-dim hover:text-text"
+        onClick={() => setOpen((v) => !v)}
+      >
+        {open ? '▾' : '▸'} History
+      </button>
+      {open && <HistorySectionBody selectedKey={selectedKey} onSelect={onSelect} />}
+    </section>
+  );
+});
+
+/** The fetching half — mounted only while the section is open. */
+function HistorySectionBody({
   selectedKey,
   onSelect,
 }: {
@@ -228,9 +285,7 @@ export const ConsoleHistorySection = memo(function ConsoleHistorySection({
   }, [wantsScroll, setParams]);
 
   return (
-    <section id="console-history" className="flex flex-col gap-2">
-      <h2 className="text-xs font-bold uppercase tracking-wider text-text-dim">History</h2>
-
+    <>
       <HistoryFilterBar
         cohort={cohort}
         closedCount={chartsLoading ? null : parentCloses.length}
@@ -275,6 +330,6 @@ export const ConsoleHistorySection = memo(function ConsoleHistorySection({
         onSelect={onSelect}
         reloadNonce={reloadNonce}
       />
-    </section>
+    </>
   );
-});
+}

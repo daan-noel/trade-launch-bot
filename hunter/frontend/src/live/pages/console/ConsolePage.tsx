@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { DataTable } from 'components/table/DataTable';
+import { TokenTable } from 'components/tokens/TokenTable';
+import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
 import { ElapsedCell } from 'components/table/ElapsedCell';
 import type { ColumnDef } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
@@ -30,6 +32,7 @@ import {
   signedToneClass,
 } from 'lib/signedTone';
 import { apiErrorMessage } from 'store/apiSlice';
+import { ConsoleArmsSection } from '@live/components/arms/ConsoleArmsSection';
 import { ConsoleHistorySection } from '@live/components/history/ConsoleHistorySection';
 import { FloorBookStrip } from '@live/components/floor/FloorBookStrip';
 import { FloorPositionDetail } from '@live/components/floor/FloorPositionDetail';
@@ -44,7 +47,12 @@ import {
   OpenPositionStatusChips,
   PositionModalTitle,
 } from '@live/components/floor/openPositionStatus';
+import { PositionChartCardExtra } from 'components/strategy/PositionChartCardExtra';
 import { usePositionArrowNav } from '@live/components/floor/usePositionArrowNav';
+import {
+  ArmChartCardExtra,
+  liveOpenRowOverlay,
+} from '@live/components/floor/liveChartCards';
 import {
   useCloseRulePositionMutation,
   useGetPortfolioHoldingsQuery,
@@ -69,6 +77,19 @@ const MINT_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 /** Stable DataTable row keys — hoisted so live re-renders don't defeat row memo. */
 const openPositionRowKey = (r: LiveOpenRow) => r.positionId;
 const waitingRowKey = (r: LiveArmedRow) => r.key;
+
+/** Each chart card classifies vol/non-vol against ITS OWN rule's
+ *  `volume_ix_patterns` — both cockpit lanes mix rules, so one grid-wide set
+ *  would misclassify every card that isn't from that rule. Called once per card
+ *  as a hook (see `FlowPatternKeysHook`); hoisted so the grid doesn't remount. */
+const useOpenRowFlowPatternKeys = (r: LiveOpenRow) => useFlowPatternKeysForRule(r.ruleId);
+const useWaitingRowFlowPatternKeys = (r: LiveArmedRow) => useFlowPatternKeysForRule(r.ruleId);
+
+/** An armed card carries no markers (an arming episode has no fill price) — its
+ *  facts go in the header instead. See `liveChartCards`. */
+const waitingChartCardExtra = (r: LiveArmedRow) => (
+  <ArmChartCardExtra armedAtIso={new Date(r.armedAt).toISOString()} ruleName={r.ruleName} />
+);
 
 type CloseAction = 'retry' | 'dump' | 'writeoff' | 'verify';
 
@@ -111,7 +132,8 @@ function loadTradeLog(): LogEntry[] {
 /**
  * The unified real-trade Console (`/console`) — replaces Floor + Trade.
  * Lanes, top to bottom: ATTENTION (always first — every row has an action),
- * OPEN beside the MANUAL TRADE panel, WAITING (collapsible), then HISTORY.
+ * OPEN beside the MANUAL TRADE panel, WAITING (collapsible), then HISTORY and
+ * ARMS (both collapsible, both fetch nothing while closed).
  *
  * The three lanes above History are the **cockpit**: live, SSE-driven, scoped to
  * what is still actionable. History is the **review** surface — server-paged over
@@ -231,7 +253,7 @@ export function ConsolePage() {
   const openMark = useCallback(
     (row: LiveOpenRow): { mtmSol: number | null; mtmPct: number | null } => {
       if (row.mode !== 'real') return { mtmSol: null, mtmPct: null };
-      const h = holdingByMint.get(row.mint);
+      const h = holdingByMint.get(row.mint_address);
       if (!h) return { mtmSol: null, mtmPct: null };
       return {
         mtmSol: h.unrealized_pnl_sol ?? null,
@@ -239,6 +261,33 @@ export function ConsolePage() {
       };
     },
     [holdingByMint],
+  );
+
+  /** An Open card's header, so it reads like its table row: live mark-to-market
+   *  from the same bag join the Status column uses. `holdSecs` runs from the
+   *  entry, not the last status change — an open card's hold is a hold. */
+  const openChartCardExtra = useCallback(
+    (r: LiveOpenRow) => {
+      const { mtmSol, mtmPct } = openMark(r);
+      const entryMs = r.entryTime ? Date.parse(r.entryTime) : NaN;
+      return (
+        <PositionChartCardExtra
+          facts={{
+            holdSecs: Number.isFinite(entryMs)
+              ? Math.max(0, Math.floor((Date.now() - entryMs) / 1000))
+              : null,
+            pnlSol: mtmSol,
+            pnlPct: mtmPct,
+            entrySol: r.entrySol,
+            entryPrice: r.entryPrice,
+            exitPrice: null,
+            exitReason: r.exitReason,
+            isOpen: true,
+          }}
+        />
+      );
+    },
+    [openMark],
   );
 
   // ── Lane partitioning (status truth from the slice; zero inference) ─────────
@@ -268,7 +317,7 @@ export function ConsolePage() {
       const label =
         r.origin === 'manual'
           ? 'manual'
-          : (r.ruleName ?? (r.ruleId ? r.ruleId.slice(0, 8) : r.mint.slice(0, 8)));
+          : (r.ruleName ?? (r.ruleId ? r.ruleId.slice(0, 8) : r.mint_address.slice(0, 8)));
       const prev = acc.get(key);
       acc.set(key, { label, value: (prev?.value ?? 0) + mtmSol });
     }
@@ -280,7 +329,7 @@ export function ConsolePage() {
   // ── Row actions (legality mirrors the backend close-action matrix) ──────────
   const onAction = useCallback(
     async (row: LiveOpenRow, action: CloseAction, sellBps?: number) => {
-      const mint8 = `${row.mint.slice(0, 8)}…`;
+      const mint8 = `${row.mint_address.slice(0, 8)}…`;
       const pctLabel = sellBps != null ? `${(sellBps / 100).toFixed(sellBps % 100 === 0 ? 0 : 1)}%` : null;
       const prompt =
         action === 'dump'
@@ -316,15 +365,15 @@ export function ConsolePage() {
                   ? 'verified — all buy attempts reverted, row dropped'
                   : 'verified — still ambiguous, leave it to the reaper';
           setActionNotice(`${mint8}: ${note}`);
-          pushLog('Verify', row.mint, note, true);
+          pushLog('Verify', row.mint_address, note, true);
           setBusyId(null);
         } else if (res.closed || res.written_off) {
-          pushLog(action === 'writeoff' ? 'Write off' : 'Sell', row.mint, 'booked closed', true);
+          pushLog(action === 'writeoff' ? 'Write off' : 'Sell', row.mint_address, 'booked closed', true);
           setBusyId(null);
         } else {
           pushLog(
             action === 'dump' ? 'Dump' : pctLabel ? `Sell ${pctLabel}` : 'Sell',
-            row.mint,
+            row.mint_address,
             'sell submitted',
             true,
           );
@@ -333,7 +382,7 @@ export function ConsolePage() {
         setBusyId(null);
         const msg = apiErrorMessage(e as never) ?? 'action failed';
         setActionErr(`${mint8}: ${msg}`);
-        pushLog(action, row.mint, msg, false);
+        pushLog(action, row.mint_address, msg, false);
       }
     },
     [closePosition, pushLog],
@@ -367,7 +416,7 @@ export function ConsolePage() {
       await setManualExit({ positionId: tpslFor.positionId, tp_pct: tp, sl_pct: sl }).unwrap();
       pushLog(
         'TP/SL',
-        tpslFor.mint,
+        tpslFor.mint_address,
         tp === undefined && sl === undefined
           ? 'cleared — tracked-only again'
           : `set ${tp !== undefined ? `TP ${tp}%` : ''} ${sl !== undefined ? `SL ${sl}%` : ''}`.trim(),
@@ -440,7 +489,7 @@ export function ConsolePage() {
     }
     // A tracked row should be closed through ITS actions (position-aware,
     // engine-coordinated) — the wallet sweep is for external/Phantom bags.
-    const tracked = openAll.find((r) => r.mint === mint && r.mode === 'real');
+    const tracked = openAll.find((r) => r.mint_address === mint && r.mode === 'real');
     const prompt = tracked
       ? `A tracked position exists for ${mint.slice(0, 8)}… (${tracked.status}). Prefer its row's Sell. Sweep the WALLET balance anyway?`
       : `Sell the wallet's ENTIRE balance of ${mint.slice(0, 8)}…? For external bags with no tracked row.`;
@@ -491,7 +540,7 @@ export function ConsolePage() {
   const tokenCell = (r: LiveOpenRow) => (
     <span className="inline-flex items-center gap-1.5">
       {originDot(r)}
-      <AddressDisplay address={r.mint} kind="token" />
+      <AddressDisplay address={r.mint_address} kind="token" />
     </span>
   );
 
@@ -507,7 +556,7 @@ export function ConsolePage() {
         exitParked: r.exitParked,
         exitRedriveCount: r.exitRedriveCount,
         needsReview: r.needsReview,
-        isDead: holdingByMint.get(r.mint)?.is_dead ?? false,
+        isDead: holdingByMint.get(r.mint_address)?.is_dead ?? false,
         exitReason: r.exitReason,
         pnlSol: openMark(r).mtmSol,
       }}
@@ -701,7 +750,7 @@ export function ConsolePage() {
         key: 'mint',
         label: 'Token',
         render: tokenCell,
-        searchValue: (r) => r.mint,
+        searchValue: (r) => r.mint_address,
       },
       {
         key: 'rule',
@@ -802,8 +851,8 @@ export function ConsolePage() {
       {
         key: 'mint',
         label: 'Token',
-        render: (r) => <AddressDisplay address={r.mint} kind="token" />,
-        searchValue: (r) => r.mint,
+        render: (r) => <AddressDisplay address={r.mint_address} kind="token" />,
+        searchValue: (r) => r.mint_address,
       },
       {
         key: 'rule',
@@ -832,7 +881,7 @@ export function ConsolePage() {
             className="text-[11px] font-semibold text-accent hover:text-primary hover:underline"
             onClick={(e) => {
               e.stopPropagation();
-              setTradeMint(r.mint);
+              setTradeMint(r.mint_address);
             }}
             title="Prefill the manual-trade panel with this mint"
           >
@@ -867,7 +916,7 @@ export function ConsolePage() {
     () =>
       inspectOpen
         ? {
-            mint_address: inspectOpen.mint,
+            mint_address: inspectOpen.mint_address,
             entryTime: inspectOpen.entryTime,
             entryPrice: inspectOpen.entryPrice,
             exitTime: null,
@@ -876,7 +925,7 @@ export function ConsolePage() {
           }
         : null,
     [
-      inspectOpen?.mint,
+      inspectOpen?.mint_address,
       inspectOpen?.entryTime,
       inspectOpen?.entryPrice,
       inspectOpen?.exitReason,
@@ -886,14 +935,14 @@ export function ConsolePage() {
     () =>
       inspectWaiting
         ? {
-            mint_address: inspectWaiting.mint,
+            mint_address: inspectWaiting.mint_address,
             entryTime: null,
             entryPrice: null,
             exitTime: null,
             exitPrice: null,
           }
         : null,
-    [inspectWaiting?.mint],
+    [inspectWaiting?.mint_address],
   );
 
   const selectRow = useCallback(
@@ -923,7 +972,7 @@ export function ConsolePage() {
       <FloorPositionDetailWithFills
         positionId={r.positionId}
         facts={{
-          mint: r.mint,
+          mint: r.mint_address,
           ruleId: r.ruleId,
           ruleName: r.origin === 'manual' ? 'manual' : r.ruleName,
           mode: r.mode,
@@ -941,13 +990,13 @@ export function ConsolePage() {
           exitParked: r.exitParked,
           exitRedriveCount: r.exitRedriveCount,
           needsReview: r.needsReview,
-          isDead: holdingByMint.get(r.mint)?.is_dead ?? false,
+          isDead: holdingByMint.get(r.mint_address)?.is_dead ?? false,
           // The memo is derived from `inspectOpen`; any other row builds its own.
           inspect:
             r === inspectOpen && openInspect
               ? openInspect
               : {
-                  mint_address: r.mint,
+                  mint_address: r.mint_address,
                   entryTime: r.entryTime,
                   entryPrice: r.entryPrice,
                   exitTime: null,
@@ -959,7 +1008,7 @@ export function ConsolePage() {
           // Polls the decision loop while this modal is open — the engine's own
           // reading of the rule, so the chips agree with what it will act on.
           conditions: <LivePositionConditions positionId={r.positionId} />,
-          onPrefillTrade: () => prefillTrade(r.mint),
+          onPrefillTrade: () => prefillTrade(r.mint_address),
         }}
         chartHeight={360}
       />
@@ -970,7 +1019,7 @@ export function ConsolePage() {
     const { mtmSol, mtmPct } = openMark(r);
     return (
       <PositionModalTitle
-        mint={r.mint}
+        mint={r.mint_address}
         status={r.status}
         exitReason={r.exitReason}
         pnlSol={mtmSol}
@@ -1034,11 +1083,11 @@ export function ConsolePage() {
     (key: string) => {
       const open = [...attentionRows, ...openRows].find((r) => r.positionId === key);
       if (open) {
-        selectRow(key, open.mint);
+        selectRow(key, open.mint_address);
         return;
       }
       const wait = waitingRows.find((r) => r.key === key);
-      if (wait) selectRow(key, wait.mint);
+      if (wait) selectRow(key, wait.mint_address);
     },
     [attentionRows, openRows, waitingRows, selectRow],
   );
@@ -1163,7 +1212,7 @@ export function ConsolePage() {
             selectedKey={selectedKey}
             onSelect={(key) => {
               const row = attentionRows.find((r) => r.positionId === key);
-              selectRow(key, row?.mint);
+              selectRow(key, row?.mint_address);
             }}
           />
         )}
@@ -1187,18 +1236,23 @@ export function ConsolePage() {
               empty="No bag marks yet."
             />
           )}
-          <DataTable
+          <TokenTable
             columns={openColsBase}
+            existingKeys={ALL_TOKEN_INFO_KEYS}
             rows={openRows}
             rowKey={openPositionRowKey}
             searchable
             colFilters
+            charts
+            useRowOverlay={liveOpenRowOverlay}
+            useRowChartFlowPatternKeys={useOpenRowFlowPatternKeys}
+            renderChartCardExtra={openChartCardExtra}
             tableId="console-open"
             emptyMessage="No open positions."
             selectedKey={selectedKey}
             onSelect={(key) => {
               const row = openRows.find((r) => r.positionId === key);
-              selectRow(key, row?.mint);
+              selectRow(key, row?.mint_address);
             }}
           />
         </section>
@@ -1345,17 +1399,21 @@ export function ConsolePage() {
           {waitingOpen ? '▾' : '▸'} Waiting ({waitingRows.length})
         </button>
         {waitingOpen && (
-          <DataTable
+          <TokenTable
             columns={waitingCols}
+            existingKeys={ALL_TOKEN_INFO_KEYS}
             rows={waitingRows}
             rowKey={waitingRowKey}
             searchable
+            charts
+            useRowChartFlowPatternKeys={useWaitingRowFlowPatternKeys}
+            renderChartCardExtra={waitingChartCardExtra}
             tableId="console-waiting"
             emptyMessage="No armed (waiting) rules."
             selectedKey={selectedKey}
             onSelect={(key) => {
               const row = waitingRows.find((r) => r.key === key);
-              selectRow(key, row?.mint);
+              selectRow(key, row?.mint_address);
             }}
           />
         )}
@@ -1365,6 +1423,12 @@ export function ConsolePage() {
           the charts deck above it. Supersedes the old 50-row Recent-closed lane
           (which could only show the session's SSE tail). */}
       <ConsoleHistorySection selectedKey={selectedKey} onSelect={selectRow} />
+
+      {/* ARMS — the durable arm ledger: every (rule, token) episode, including
+          the ones that never traded. History's twin on the other side of the
+          entry decision, with its own cohort (`a*` params) so narrowing a PnL
+          review never silently re-scopes the arm funnel. */}
+      <ConsoleArmsSection />
 
       {/* Detail modals (deep-link + row click). */}
       {inspectOpen && (
@@ -1376,7 +1440,7 @@ export function ConsolePage() {
         <Modal
           title={
             <span className="inline-flex flex-wrap items-center gap-2">
-              <span className="font-mono">{inspectWaiting.mint.slice(0, 8)}…</span>
+              <span className="font-mono">{inspectWaiting.mint_address.slice(0, 8)}…</span>
               <Badge variant="warning" size="sm">
                 Waiting
               </Badge>
@@ -1396,14 +1460,14 @@ export function ConsolePage() {
           <FloorPositionDetail
             chartHeight={360}
             facts={{
-              mint: inspectWaiting.mint,
+              mint: inspectWaiting.mint_address,
               ruleId: inspectWaiting.ruleId,
               ruleName: inspectWaiting.ruleName,
               status: 'Waiting',
               statusKey: 'Waiting',
               holdStartMs: inspectWaiting.armedAt,
               inspect: waitingInspect ?? {
-                mint_address: inspectWaiting.mint,
+                mint_address: inspectWaiting.mint_address,
                 entryTime: null,
                 entryPrice: null,
                 exitTime: null,
@@ -1414,11 +1478,11 @@ export function ConsolePage() {
               // exactly why this row is waiting rather than holding.
               conditions: (
                 <ArmedRuleConditions
-                  mint={inspectWaiting.mint}
+                  mint={inspectWaiting.mint_address}
                   ruleId={inspectWaiting.ruleId}
                 />
               ),
-              onPrefillTrade: () => prefillTrade(inspectWaiting.mint),
+              onPrefillTrade: () => prefillTrade(inspectWaiting.mint_address),
             }}
           />
         </Modal>
@@ -1427,7 +1491,7 @@ export function ConsolePage() {
       {/* Manual TP/SL editor. */}
       {tpslFor && (
         <Modal
-          title={`${tpslFor.mint.slice(0, 8)}… — TP/SL`}
+          title={`${tpslFor.mint_address.slice(0, 8)}… — TP/SL`}
           open
           onClose={() => setTpslFor(null)}
         >

@@ -51,6 +51,7 @@ use hunter_engine::event::{
 };
 
 use trading_core::models::ingest::SseEvent;
+use trading_core::models::strategy_arm::ArmLedgerWrite;
 use trading_core::models::{StrategyPosition, StrategyRun};
 use trading_core::state::token_cache::TokenCache;
 use trading_core::storage::repositories::strategy_repo::{RunFinalize, StrategyRepo};
@@ -58,6 +59,7 @@ use trading_core::storage::repositories::strategy_repo::{RunFinalize, StrategyRe
 use crate::ingest::HeldPoolGate;
 use crate::trader::PumpFunTrader;
 
+use super::arm_ledger::ArmLedger;
 use super::{ArmedRegistry, FillSigStore, PositionMeta, PositionRegistry};
 
 /// Per-rule facts the sink needs when it materializes a position/run (mode, the
@@ -146,6 +148,9 @@ pub struct Sink {
     sse_tx: broadcast::Sender<SseEvent>,
     registry: PositionRegistry,
     armed: ArmedRegistry,
+    /// The durable twin of `armed`: queues one row per arming episode for the
+    /// batching writer. Never awaits — see `engine::arm_ledger`.
+    ledger: ArmLedger,
     fill_sigs: FillSigStore,
     /// Real trader — used to release SOL commitments on terminal unentered exits.
     trader: Option<Arc<PumpFunTrader>>,
@@ -192,6 +197,7 @@ impl Sink {
         sse_tx: broadcast::Sender<SseEvent>,
         registry: PositionRegistry,
         armed: ArmedRegistry,
+        ledger: ArmLedger,
         fill_sigs: FillSigStore,
         wallet: String,
         trader: Option<Arc<PumpFunTrader>>,
@@ -203,6 +209,7 @@ impl Sink {
             sse_tx,
             registry,
             armed,
+            ledger,
             fill_sigs,
             trader,
             held_pools,
@@ -455,22 +462,48 @@ impl Sink {
     /// Consume one `ArmedChanged`: push the arming SSE (armed state is push-only
     /// under the redesign — there is no PG row for an un-entered arm).
     pub fn on_armed_changed(&self, delta: &ArmedDelta) {
-        let (state, reason) = match delta.state {
+        let info = self.rules.get(&delta.rule);
+        let (state, reason, armed_at) = match delta.state {
             ArmedStateTag::Armed => {
-                self.armed.set_armed(delta.rule.0, delta.mint.to_string());
-                ("armed", None)
+                let (armed_at, fresh) = self.armed.set_armed(delta.rule.0, delta.mint.to_string());
+                // Only a NEW episode opens a ledger row. A rules reload re-emits
+                // `Armed` for a pair that is already armed; booking that as a
+                // second episode would invent arms the engine never made.
+                if fresh {
+                    self.ledger.record(ArmLedgerWrite::Armed {
+                        rule_id: delta.rule.0,
+                        mint_address: delta.mint.to_string(),
+                        mode: info.map(|i| mode_str(i.mode)).unwrap_or("paper").to_string(),
+                        armed_at,
+                    });
+                }
+                ("armed", None, armed_at)
             }
             ArmedStateTag::Disarmed(r) => {
-                self.armed.clear(delta.rule.0, delta.mint.as_str());
-                ("disarmed", Some(disarm_reason_str(r)))
+                let reason = disarm_reason_str(r);
+                let ended_at = Utc::now();
+                // No arm on record ⇒ nothing to close and no episode start to
+                // report; the frame still goes out (it clears the client's row).
+                let armed_at = self.armed.clear(delta.rule.0, delta.mint.as_str());
+                if let Some(armed_at) = armed_at {
+                    self.ledger.record(ArmLedgerWrite::Ended {
+                        rule_id: delta.rule.0,
+                        mint_address: delta.mint.to_string(),
+                        armed_at,
+                        ended_at,
+                        end_reason: reason.to_string(),
+                        position_id: None,
+                    });
+                }
+                ("disarmed", Some(reason), armed_at.unwrap_or(ended_at))
             }
         };
-        let info = self.rules.get(&delta.rule);
         let _ = self.sse_tx.send(SseEvent::StrategyArmedChanged {
             rule_id: delta.rule.0,
             mint_address: delta.mint.to_string(),
             state: state.to_string(),
             reason: reason.map(str::to_string),
+            armed_at,
             trade_mode: info.map(|i| mode_str(i.mode).to_string()),
             rule_name: info
                 .map(|i| i.name.clone())
@@ -584,12 +617,13 @@ impl Sink {
         self.pending_pg.insert(pg_id, handle);
         // Leave Waiting: Enter does not emit ArmedChanged(Disarmed). Clear the
         // armed registry (+ SSE) so snapshots cannot re-inject a stale Waiting row.
-        self.leave_waiting(delta.rule.0, delta.mint.as_str());
+        self.leave_waiting(delta.rule.0, delta.mint.as_str(), Some(pg_id));
     }
 
     async fn on_holding(&mut self, delta: &PositionDelta) {
         // Safety net if BuySubmitted skipped leave_waiting (unknown rule / crash recovery).
-        self.leave_waiting(delta.rule.0, delta.mint.as_str());
+        let pg_id = self.registry.get(delta.position).map(|m| m.pg_id);
+        self.leave_waiting(delta.rule.0, delta.mint.as_str(), pg_id);
         let Some(meta) = self.registry.get(delta.position) else { return };
         let Some(fill) = delta.fill else { return };
         self.retain_held_pool(&meta.mint, meta.trade_mode);
@@ -929,14 +963,30 @@ impl Sink {
     /// not emit `ArmedChanged(Disarmed)` from the pure engine — without this,
     /// `GET /api/strategies/armed` keeps the mint and every snapshot re-injects
     /// a stale Waiting row next to Open.
-    fn leave_waiting(&self, rule_id: uuid::Uuid, mint: &str) {
-        self.armed.clear(rule_id, mint);
+    ///
+    /// This is also where the ledger books an `entered` ending. `clear` handing
+    /// back the arm instant is what makes the second (safety-net) call a no-op:
+    /// nothing was armed, so nothing is closed twice.
+    fn leave_waiting(&self, rule_id: uuid::Uuid, mint: &str, position_id: Option<uuid::Uuid>) {
+        let ended_at = Utc::now();
+        let armed_at = self.armed.clear(rule_id, mint);
+        if let Some(armed_at) = armed_at {
+            self.ledger.record(ArmLedgerWrite::Ended {
+                rule_id,
+                mint_address: mint.to_string(),
+                armed_at,
+                ended_at,
+                end_reason: "entered".to_string(),
+                position_id,
+            });
+        }
         let info = self.rules.get(&RuleId(rule_id));
         let _ = self.sse_tx.send(SseEvent::StrategyArmedChanged {
             rule_id,
             mint_address: mint.to_string(),
             state: "disarmed".to_string(),
             reason: Some("entered".to_string()),
+            armed_at: armed_at.unwrap_or(ended_at),
             trade_mode: info.map(|i| mode_str(i.mode).to_string()),
             rule_name: info
                 .map(|i| i.name.clone())
@@ -1120,6 +1170,63 @@ fn disarm_reason_str(r: DisarmReason) -> &'static str {
         DisarmReason::Unsatisfiable => "unsatisfiable",
         DisarmReason::Paused => "paused",
         DisarmReason::DuplicateIdentity => "duplicate_identity",
+    }
+}
+
+#[cfg(test)]
+mod arm_reason_vocabulary_guard {
+    //! The arm-ending vocabulary exists three times by necessity — this mapper,
+    //! `ARM_END_REASONS` in core (the wire + frontend contract), and the
+    //! `strategy_arms_end_reason_check` constraint in migration 0002. They can't
+    //! be one const: the engine owns the enum, core owns the wire, and the DB
+    //! owns the CHECK. So this pins the two Rust copies together, and any string
+    //! that passes here but not the CHECK fails the very first ledger write.
+    use super::disarm_reason_str;
+    use hunter_engine::event::DisarmReason;
+    use trading_core::models::ARM_END_REASONS;
+
+    /// The sink's own member — the engine's Enter path emits no `ArmedChanged`,
+    /// so `leave_waiting` writes this one directly.
+    const SINK_MEMBER: &str = "entered";
+
+    #[test]
+    fn every_disarm_reason_is_a_known_end_reason() {
+        for r in [
+            DisarmReason::Dead,
+            DisarmReason::Migrated,
+            DisarmReason::Unsatisfiable,
+            DisarmReason::Paused,
+            DisarmReason::DuplicateIdentity,
+        ] {
+            let s = disarm_reason_str(r);
+            assert!(
+                ARM_END_REASONS.contains(&s),
+                "{s:?} would fail the strategy_arms end_reason CHECK"
+            );
+        }
+    }
+
+    /// Exactly covered, both ways: an unmatched member of either list means the
+    /// ledger can write a reason the UI can't name, or offer a filter that
+    /// matches nothing.
+    #[test]
+    fn end_reasons_are_exactly_the_disarms_plus_entered() {
+        let from_engine: Vec<&str> = [
+            DisarmReason::Dead,
+            DisarmReason::Migrated,
+            DisarmReason::Unsatisfiable,
+            DisarmReason::Paused,
+            DisarmReason::DuplicateIdentity,
+        ]
+        .into_iter()
+        .map(disarm_reason_str)
+        .chain(std::iter::once(SINK_MEMBER))
+        .collect();
+        let mut a = from_engine;
+        a.sort_unstable();
+        let mut b = ARM_END_REASONS.to_vec();
+        b.sort_unstable();
+        assert_eq!(a, b, "ARM_END_REASONS drifted from the engine's DisarmReason set");
     }
 }
 

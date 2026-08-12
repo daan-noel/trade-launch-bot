@@ -5,6 +5,7 @@ pub mod ingest;
 pub mod portfolio;
 pub mod raw_tx;
 pub mod strategy;
+pub mod strategy_arm;
 pub mod token;
 pub mod token_info;
 pub mod token_sync_state;
@@ -22,5 +23,6 @@ pub use strategy::{
     bps_of_bag, ExitFillLeg, PositionFill, PositionsSummary, StrategyPosition, StrategyRule,
     StrategyRun, StrategyRunMetrics,
 };
+pub use strategy_arm::{ArmFunnel, ArmLedgerWrite, StrategyArm, ARM_END_REASONS};
 pub use token::Token;
 pub use token_sync_state::TokenSyncState;

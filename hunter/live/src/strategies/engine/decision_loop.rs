@@ -173,12 +173,22 @@ async fn run_loop(
     // Everything already cached at this instant is history, not signal — see the
     // `producers` module docs (the restart rail).
     let mut producer = Producer::new(token_cache.clone(), Utc::now());
+    // The arm ledger's writer. On the `hot` pool (batched strategy writes, same
+    // as the position sink) and detached: dropping its handle only detaches the
+    // task, and dropping the loop's `ArmLedger` at shutdown is what stops it —
+    // after one last flush.
+    let (arm_ledger, _arm_ledger_task) = super::arm_ledger::spawn_arm_ledger(
+        trading_core::storage::repositories::arm_repo::ArmRepo::new(
+            strategy_repo.pool().clone(),
+        ),
+    );
     let mut sink = Sink::new(
         strategy_repo.clone(),
         token_cache.clone(),
         sse_tx.clone(),
         registry.clone(),
         armed,
+        arm_ledger,
         fill_sigs.clone(),
         wallet.clone(),
         Some(trader.clone()),

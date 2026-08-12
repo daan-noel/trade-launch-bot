@@ -43,10 +43,15 @@ export function armedKey(ruleId: string, mint: string): string {
 export interface LiveArmedRow {
   key: string;
   ruleId: string;
-  mint: string;
+  /** The one token-data key across the stack — never a bare `mint`. `TokenTable`
+   *  reads it to drive the Waiting lane's charts grid. */
+  mint_address: string;
   ruleName: string | null;
   tradeMode: string | null;
-  /** Client wall time when we first saw this arm (session age). */
+  /** When the ENGINE armed this pair (`armed_at`, server-stamped on both the
+   *  snapshot and the SSE delta). Not the client's first sighting: that restarted
+   *  every row's age on reconnect and disagreed with the arm ledger about the
+   *  same episode. */
   armedAt: number;
 }
 
@@ -55,7 +60,8 @@ export interface LiveOpenRow {
   strategyId: string;
   ruleId: string | null;
   ruleName: string | null;
-  mint: string;
+  /** The one token-data key across the stack — never a bare `mint`. */
+  mint_address: string;
   mode: string;
   status: string;
   entryPrice: number | null;
@@ -116,7 +122,7 @@ function openFromPortfolio(
     strategyId: p.strategy_id,
     ruleId,
     ruleName: (ruleId && ruleNames[ruleId]) || null,
-    mint: p.mint_address,
+    mint_address: p.mint_address,
     mode: p.mode,
     status: p.status,
     entryPrice: p.entry_price ?? null,
@@ -162,10 +168,10 @@ const liveStatusSlice = createSlice({
         nextArmed[key] = {
           key,
           ruleId: e.rule_id,
-          mint: e.mint_address,
+          mint_address: e.mint_address,
           ruleName: ruleNames[e.rule_id] ?? prev?.ruleName ?? null,
           tradeMode: prev?.tradeMode ?? null,
-          armedAt: prev?.armedAt ?? now,
+          armedAt: Date.parse(e.armed_at) || prev?.armedAt || now,
         };
       }
       const nextOpen: Record<string, LiveOpenRow> = {};
@@ -183,7 +189,7 @@ const liveStatusSlice = createSlice({
         if (prev?.entryTime != null && row.entryTime == null) row.entryTime = prev.entryTime;
         if (prev?.entryPrice != null && row.entryPrice == null) row.entryPrice = prev.entryPrice;
         nextOpen[row.positionId] = row;
-        if (row.ruleId) openKeys.add(armedKey(row.ruleId, row.mint));
+        if (row.ruleId) openKeys.add(armedKey(row.ruleId, row.mint_address));
       }
       // Snapshot must not resurrect Waiting for mints already Open.
       for (const key of openKeys) {
@@ -204,17 +210,17 @@ const liveStatusSlice = createSlice({
       if (d.state === 'armed') {
         // Ignore arm if this mint is already an open position for the rule.
         const occupied = Object.values(state.open).some(
-          (o) => o.ruleId === d.rule_id && o.mint === d.mint_address,
+          (o) => o.ruleId === d.rule_id && o.mint_address === d.mint_address,
         );
         if (occupied) return;
         const prev = state.armed[key];
         state.armed[key] = {
           key,
           ruleId: d.rule_id,
-          mint: d.mint_address,
+          mint_address: d.mint_address,
           ruleName: d.rule_name ?? prev?.ruleName ?? null,
           tradeMode: d.trade_mode ?? prev?.tradeMode ?? null,
-          armedAt: prev?.armedAt ?? Date.now(),
+          armedAt: Date.parse(d.armed_at ?? '') || prev?.armedAt || Date.now(),
         };
       } else {
         delete state.armed[key];
@@ -235,7 +241,7 @@ const liveStatusSlice = createSlice({
           strategyId: prev?.strategyId ?? 'generic',
           ruleId: d.rule_id,
           ruleName: d.rule_name ?? prev?.ruleName ?? null,
-          mint: d.mint_address,
+          mint_address: d.mint_address,
           mode: d.trade_mode ?? prev?.mode ?? 'real',
           status: d.status,
           entryPrice: d.entry_price ?? prev?.entryPrice ?? null,

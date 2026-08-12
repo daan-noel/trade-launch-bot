@@ -16,9 +16,12 @@
 //!   confirmed from the trades feed + a confirmation watchdog (plan 4.3).
 //! * [`exec_paper`] — worst-case paper fill model → `FillConfirmed` (plan 4.4).
 //! * [`sinks`] — `PositionUpdate` → PG writer, `ArmedChanged` → SSE (plan 4.5).
+//! * [`arm_ledger`] — `ArmedChanged` → batched `strategy_arms` rows, off the hot
+//!   path (`docs/plans/strategies/arm-ledger.md`).
 //! * [`event_log`] — event recorder + boot-recovery replay (plan 4.6).
 //! * [`convert`] — DB model ↔ engine type converters (no conversion existed).
 
+pub mod arm_ledger;
 pub mod boot;
 pub mod convert;
 pub mod decision_loop;
@@ -524,11 +527,20 @@ pub struct ArmedEntry {
     pub mint_address: String,
     /// `"armed"` while watching for entry; a disarm removes the entry.
     pub state: String,
+    /// When this arming episode began — the ledger's episode key, and the age the
+    /// Waiting lane shows. Server-stamped, so a reconnecting client no longer
+    /// restarts every row's clock at its own mount.
+    pub armed_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Shared snapshot of currently-armed (token, rule) pairs — the sink writes it on
 /// every `ArmedChanged`, `GET /api/strategies/armed` reads it. Keyed by
 /// `(rule_id, mint)`; a disarm removes the key (the SSE delta carries the reason).
+///
+/// This is the SSOT for **what is armed right now**, and only that. The durable
+/// history of arming episodes is `strategy_arms` (see
+/// `docs/plans/strategies/arm-ledger.md`) — the two overlap on live episodes on
+/// purpose, because this one must patch per-event with no round trip.
 #[derive(Debug, Clone, Default)]
 pub struct ArmedRegistry(Arc<dashmap::DashMap<(Uuid, String), ArmedEntry>>);
 
@@ -537,15 +549,32 @@ impl ArmedRegistry {
         Self::default()
     }
 
-    pub fn set_armed(&self, rule_id: Uuid, mint: String) {
+    /// Record an arm and hand back its `armed_at`. Re-arming a pair that is
+    /// already armed keeps the ORIGINAL instant: it is the same episode, and a
+    /// refreshed stamp would both reset the visible age and orphan the ledger row
+    /// the end write has to find.
+    pub fn set_armed(&self, rule_id: Uuid, mint: String) -> (chrono::DateTime<chrono::Utc>, bool) {
+        let key = (rule_id, mint.clone());
+        if let Some(existing) = self.0.get(&key) {
+            return (existing.armed_at, false);
+        }
+        let armed_at = chrono::Utc::now();
         self.0.insert(
-            (rule_id, mint.clone()),
-            ArmedEntry { rule_id, mint_address: mint, state: "armed".to_string() },
+            key,
+            ArmedEntry {
+                rule_id,
+                mint_address: mint,
+                state: "armed".to_string(),
+                armed_at,
+            },
         );
+        (armed_at, true)
     }
 
-    pub fn clear(&self, rule_id: Uuid, mint: &str) {
-        self.0.remove(&(rule_id, mint.to_string()));
+    /// Drop the arm and hand back when it started, so the caller can close the
+    /// ledger episode without a read. `None` = nothing was armed for this pair.
+    pub fn clear(&self, rule_id: Uuid, mint: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.0.remove(&(rule_id, mint.to_string())).map(|(_, e)| e.armed_at)
     }
 
     /// A cloned snapshot of all currently-armed entries (for the HTTP endpoint).

@@ -787,7 +787,7 @@ fn position_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
 /// wildcards `%` `_` and the escape char `\` are neutralized so they match
 /// literally (the value still binds as a parameter — this only affects semantics,
 /// not injection). Wrapped `%needle%` for a contains-match by the callers.
-fn like_escape(s: &str) -> String {
+pub(crate) fn like_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     for c in s.chars() {
         if matches!(c, '%' | '_' | '\\') {
@@ -826,7 +826,7 @@ fn as_text(v: &serde_json::Value) -> Option<String> {
 /// operand, missing `between` bound) is a no-op — the filter is silently dropped,
 /// matching the whitelist's "unknown key → ignored" contract. Reused by the
 /// position + token-scoped filter builders.
-fn push_filter_predicate(
+pub(crate) fn push_filter_predicate(
     qb: &mut sqlx::QueryBuilder<sqlx::Postgres>,
     col: &str,
     kind: FilterKind,
