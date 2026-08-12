@@ -126,7 +126,11 @@ export interface RunMetrics {
    *  and not "what did my capital return" (that stays `bandReturnPct`). Carried
    *  only on the **realized** band — an open position has no realized percent to
    *  add, so the MTM band leaves it `null` and the tile drops rather than
-   *  printing a sum over a different cohort than its ◎. */
+   *  printing a sum over a different cohort than its ◎.
+   *
+   *  Absent on the Rust wire, which discards the sum after dividing it into
+   *  `mean_pnl_pct`; [`withSumPct`] reverses that division for the realized band
+   *  so simulate and grouped sweep show the tile too. */
   sum_pnl_pct?: number | null;
   score: number | null;
   avg_holding_secs: number;
@@ -173,6 +177,32 @@ export interface RunSummary {
 export function bandReturnPct(m: RunMetrics): number | null {
   if (m.return_pct != null && Number.isFinite(m.return_pct)) return m.return_pct;
   return Number.isFinite(m.mean_pnl_pct) ? m.mean_pnl_pct : null;
+}
+
+/**
+ * Fill the realized band's `sum_pnl_pct` where the wire omits it but the value is
+ * **exactly** recoverable, so `Σ trade %` shows on every surface rather than only
+ * the two that happen to compute it.
+ *
+ * The Rust `RunMetrics` carries no sum field — it derives `mean_pnl_pct` from a
+ * `Σ pct / n_closed` it then discards — so simulate and grouped sweep, both of
+ * which serialize that struct, dropped the tile. `mean × n_closed` reverses that
+ * division exactly; it is the same number the live SQL aggregate sums directly.
+ *
+ * Two guards, both load-bearing:
+ * - `return_pct != null` ⇒ leave alone. There the notional varies, `mean_pnl_pct`
+ *   holds the capital-weighted return instead of a mean of percents, and the
+ *   product is a sum of nothing. That band already ships a real `sum_pnl_pct`.
+ * - The MTM band is never touched. It reclassifies the open positions as settled,
+ *   so its `n_closed` covers a cohort with no realized percent to add — the same
+ *   reason both existing builders force it `null`. Absent stays absent, and the
+ *   tile drops there as it should.
+ */
+function withSumPct(s: RunSummary): RunSummary {
+  const r = s.realized;
+  if (r.sum_pnl_pct != null || r.return_pct != null) return s;
+  if (r.n_closed === 0 || !Number.isFinite(r.mean_pnl_pct)) return s;
+  return { ...s, realized: { ...r, sum_pnl_pct: r.mean_pnl_pct * r.n_closed } };
 }
 
 /** A fired position, in the minimal form the client-side builder needs. */
@@ -896,7 +926,7 @@ export function runSummarySections(
 } {
   const extended = extras.extended ?? false;
   const ix = extras.interaction;
-  const { realized, mtm } = s;
+  const { realized, mtm } = withSumPct(s);
   const nFired = realized.n_fired;
   const nOpen = realized.n_open;
   const nClosed = realized.n_closed;

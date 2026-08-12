@@ -8,7 +8,13 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { runSummaryFromRows, type RunOutcomeRow } from './runSummary';
+import {
+  runSummaryFromRows,
+  runSummarySections,
+  type RunMetrics,
+  type RunOutcomeRow,
+  type RunSummary,
+} from './runSummary';
 import { toRunSummaryFromPositions } from 'components/strategy/SimSummaryCard';
 import type { PositionsSummary } from 'types';
 
@@ -87,5 +93,55 @@ describe('live/paper summary → Σ trade %', () => {
     // `undefined` on the wire must not render as a measured `+0%`.
     const { realized } = toRunSummaryFromPositions(positionsSummary({ sum_pnl_pct: undefined }));
     expect(realized.sum_pnl_pct).toBeNull();
+  });
+});
+
+/**
+ * The server wire: the Rust `RunMetrics` derives `mean_pnl_pct` from a per-trade
+ * sum it then discards, and ships no `return_pct` (a backtest's notional is
+ * fixed). Simulate and grouped sweep both serialize that struct, so strip both
+ * fields to reproduce exactly what those surfaces receive.
+ */
+const serverWire = (rows: RunOutcomeRow[]): RunSummary => {
+  const strip = (m: RunMetrics): RunMetrics => {
+    const { sum_pnl_pct: _sum, return_pct: _ret, ...rest } = m;
+    return rest as RunMetrics;
+  };
+  const { realized, mtm } = runSummaryFromRows(rows);
+  return { realized: strip(realized), mtm: strip(mtm) };
+};
+
+const tileOf = (s: RunSummary, section: string, label: string) =>
+  runSummarySections(s).sections.find((x) => x.title === section)?.stats.find((t) => t.label === label);
+
+describe('runSummarySections Σ trade % on a server summary', () => {
+  it('recovers the sum from mean × n_closed', () => {
+    // Ten at -5% and ten at +20%: the tile must read the same +150% the live SQL
+    // aggregate sums directly, not the +7.5% mean sitting one tile away.
+    const rows: RunOutcomeRow[] = [
+      ...Array.from({ length: 10 }, () => row({ pnl_sol: -0.05, pnl_pct: -5 })),
+      ...Array.from({ length: 10 }, () => row({ pnl_sol: 0.01, pnl_pct: 20 })),
+    ];
+    expect(tileOf(serverWire(rows), 'Realized', 'Σ trade %')?.value).toBe('+150%');
+  });
+
+  it('leaves the MTM band without one', () => {
+    // The open row is reclassified as settled there, so a sum would cover a
+    // cohort with no realized percent in it.
+    const s = serverWire([
+      row({ pnl_sol: 0.2, pnl_pct: 20 }),
+      row({ exit: 'Open', pnl_sol: -0.5, pnl_pct: -50 }),
+    ]);
+    expect(tileOf(s, 'Realized', 'Σ trade %')?.value).toBe('+20%');
+    expect(tileOf(s, 'Incl. open (MTM)', 'Σ trade %')).toBeUndefined();
+  });
+
+  it('never derives one where the notional varies', () => {
+    // `return_pct` present ⇒ `mean_pnl_pct` carries the capital-weighted return,
+    // and mean × n is a sum of nothing. That wire ships its own real sum, so the
+    // guard costs the tile nothing — dropping it here is the whole point.
+    const { realized } = toRunSummaryFromPositions(positionsSummary({ sum_pnl_pct: undefined }));
+    const s: RunSummary = { realized, mtm: realized };
+    expect(tileOf(s, 'Realized', 'Σ trade %')).toBeUndefined();
   });
 });
