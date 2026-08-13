@@ -74,6 +74,8 @@ export const STORAGE_KEYS = {
   flowDiscoveryConfig: `${PREFIX}form.flowDiscovery`,
   /** Metric-discovery form draft. */
   metricDiscoveryConfig: `${PREFIX}form.metricDiscovery`,
+  /** Rule-search form draft. */
+  ruleSearchConfig: `${PREFIX}form.ruleSearch`,
   /** FlowPreviewChart toolbar toggle state (flow-discovery). */
   flowPreviewChartPrefs: `${PREFIX}flow.previewChart.prefs`,
 

@@ -465,6 +465,11 @@ export async function cancelFlowDiscovery(): Promise<void> {
   await request(`${API_BASE}/api/strategies/flow-discovery/cancel`, { method: 'POST' });
 }
 
+/** Cooperative cancel for the in-flight rule-search job. */
+export async function cancelRuleSearch(): Promise<void> {
+  await request(`${API_BASE}/api/strategies/rule-search/cancel`, { method: 'POST' });
+}
+
 /** Strategy-agnostic cancel for a rule's in-flight simulation (the backend keys
  *  the cancel flag by rule_id across both tpsl snipers). No-op if none running. */
 export async function cancelSimulation(ruleId: string): Promise<void> {

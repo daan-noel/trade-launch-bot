@@ -75,6 +75,11 @@ pub fn discovery_result_path(root: &Path) -> PathBuf {
     root.join("flow-discovery").join("last.json")
 }
 
+/// On-disk last-rule-search-result file (`<root>/rule-search/last.json`).
+pub fn rule_search_result_path(root: &Path) -> PathBuf {
+    root.join("rule-search").join("last.json")
+}
+
 /// Directory holding the day-partitioned trade files (`<root>/trades`).
 pub fn trades_dir(root: &Path) -> PathBuf {
     root.join("trades")

@@ -336,6 +336,8 @@ only. Flow state keys by `FingerprintId` on `TokenTrack`. Unconfigured fingerpri
 
 Lab authoring: `POST /api/strategies/flow-discovery` scores ix-structures per
 sweep `GroupKey`; the Flow discovery page toggles patterns into `metric_config`.
+`POST /api/strategies/rule-search` fills registry roles for one fingerprint and
+datetime range and boards a champion `RuleParams` (Promote → inactive paper).
 
 ## Two-phase first-slot fingerprint gate
 
@@ -373,7 +375,7 @@ with a first-slot axis arms `PendingFirstSlot` and resolves on `FirstSlotSettled
   fingerprint `metric_config`.
 - **`strategies/flow_discovery.rs`** + **`api/handlers/strategies/flow_discovery.rs`** —
   lab-only job: score trade ix-structures per fingerprint group → toggle
-  `volume_ix_patterns` (mutual `409` with sweeps; ephemeral in-RAM results).
+  `volume_ix_patterns` (mutual `409` with sweep / metric-discovery / rule-search).
 - **`sweep/generic/`** — the precompute-then-scan grouped sweep. `GenericSweepStrategy`
   implements the existing `sweep::strategy::Strategy` trait (so partition / two-phase
   pool / `GroupSink` persistence / refine / `ComboAgg` and the whole

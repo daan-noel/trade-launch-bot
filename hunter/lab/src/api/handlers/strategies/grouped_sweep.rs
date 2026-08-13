@@ -538,23 +538,11 @@ pub async fn start_grouped_sweep(
         }
     };
 
-    // Mutual exclusion with flow-discovery (shared Duck/RAM).
-    if state.discovery_running.load(Ordering::Acquire) {
-        return HttpResponse::Conflict().json(serde_json::json!({
-            "error": "a flow-discovery job is already running — wait or cancel it before sweeping"
-        }));
-    }
-
-    // Single-flight: claim the shared sweep gate or reject. Claimed synchronously
-    // here so a concurrent request gets its 409 immediately; the spawned job owns
-    // the matching release (`run_grouped_sweep_job`'s `Gate`).
-    if state
-        .sweep_running
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return HttpResponse::Conflict()
-            .json(serde_json::json!({"error": "a sweep is already running"}));
+    // Single-flight vs flow-discovery / metric-discovery / rule-search (shared Duck/RAM).
+    // Claimed synchronously so a concurrent request gets its 409 immediately; the
+    // spawned job owns the matching release (`run_grouped_sweep_job`'s `Gate`).
+    if let Err(msg) = state.claim_heavy(crate::state::local_state::HeavyJob::Sweep) {
+        return HttpResponse::Conflict().json(serde_json::json!({ "error": msg }));
     }
 
     // Apply this run's desktop RAM reserve now that the gate is ours — every

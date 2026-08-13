@@ -216,6 +216,23 @@ pub enum SseEvent {
         run_id: uuid::Uuid,
         message: String,
     },
+    /// Progress of an in-flight rule-search job (lab only). `phase` is `"corpus"`,
+    /// `"cuts"`, `"score"`, `"extra-or"`, or `"replay"`.
+    RuleSearchProgress {
+        run_id: uuid::Uuid,
+        phase: String,
+        processed: u64,
+        total: u64,
+    },
+    RuleSearchFinished {
+        run_id: uuid::Uuid,
+        cancelled: bool,
+        error: Option<String>,
+    },
+    RuleSearchNotice {
+        run_id: uuid::Uuid,
+        message: String,
+    },
     /// A generic-engine position transition, emitted by the engine's
     /// `PositionUpdate` sink. Mint-scoped. `status` is the `strategy_positions`
     /// lifecycle string (`BuySubmitted` | `Holding` | `ExitPending` | `End` |

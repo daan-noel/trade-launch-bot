@@ -26,6 +26,8 @@ export const STRATEGY_PATHS = {
   simulate: '/strategies/simulate',
   /** Lab app only. */
   flowDiscovery: '/strategies/flow-discovery',
+  /** Lab app only. */
+  ruleSearch: '/strategies/rule-search',
 } as const;
 
 export const STRATEGY_PARAMS = {
@@ -59,6 +61,12 @@ export function simulateHref(ruleId?: string | null): string {
 export function flowDiscoveryHref(fpId?: string | null): string {
   if (!fpId) return STRATEGY_PATHS.flowDiscovery;
   return `${STRATEGY_PATHS.flowDiscovery}?${STRATEGY_PARAMS.fingerprint}=${encodeURIComponent(fpId)}`;
+}
+
+/** Lab-only. Deep-link to Rule search scoped to a saved fingerprint. */
+export function ruleSearchHref(fpId?: string | null): string {
+  if (!fpId) return STRATEGY_PATHS.ruleSearch;
+  return `${STRATEGY_PATHS.ruleSearch}?${STRATEGY_PARAMS.fingerprint}=${encodeURIComponent(fpId)}`;
 }
 
 /** The calendar windows the portfolio/history surfaces share. `custom` means the

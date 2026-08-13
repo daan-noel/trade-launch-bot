@@ -311,6 +311,35 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
             "metric_discovery_notice",
             json!({ "run_id": run_id, "message": message }),
         ),
+        SseEvent::RuleSearchProgress {
+            run_id,
+            phase,
+            processed,
+            total,
+        } => (
+            None,
+            "rule_search_progress",
+            json!({
+                "run_id": run_id,
+                "phase": phase,
+                "processed": processed,
+                "total": total,
+            }),
+        ),
+        SseEvent::RuleSearchFinished {
+            run_id,
+            cancelled,
+            error,
+        } => (
+            None,
+            "rule_search_finished",
+            json!({ "run_id": run_id, "cancelled": cancelled, "error": error }),
+        ),
+        SseEvent::RuleSearchNotice { run_id, message } => (
+            None,
+            "rule_search_notice",
+            json!({ "run_id": run_id, "message": message }),
+        ),
         SseEvent::StrategyPositionUpdate {
             rule_id,
             mint_address,

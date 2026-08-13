@@ -27,9 +27,12 @@ import { DryRunPanel } from '@lab/components/strategy/DryRunPanel';
 export function PromoteRuleModal({
   draft,
   onClose,
+  sourceTag = 'src:sweep',
 }: {
   draft: PromotedRuleDraft | null;
   onClose: () => void;
+  /** Provenance tag stamped on the new rule. */
+  sourceTag?: string;
 }) {
   const [createRule, { isLoading: creating }] = useCreateStrategyRuleMutation();
   const { data: existingRules = [] } = useGetStrategyRulesQuery();
@@ -52,13 +55,13 @@ export function PromoteRuleModal({
             max_total_tokens: draft.max_total_tokens,
             params: draft.params,
             // Seed provenance: a promoted combo is worth being able to find as a
-            // group later ("what came out of the sweep?"). Editable before save.
-            tags: ['src:sweep'],
+            // group later. Editable before save.
+            tags: [sourceTag],
             created_at: '',
             updated_at: '',
           }
         : undefined,
-    [draft],
+    [draft, sourceTag],
   );
 
   const submit = async (d: RuleEditorDraft) => {

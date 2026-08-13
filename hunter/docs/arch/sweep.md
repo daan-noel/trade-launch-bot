@@ -299,7 +299,7 @@ touch*. Four rules keep that bounded — the first is the one that matters:
    row-identical (order included — the fold's f64 summation is order-sensitive).
 4. **Reuse the corpus across runs.** `sweep_corpus_cache` is keyed on
    `LakeSource::selection_hash` = *(selection, lake version)*. Grouped sweep, flow
-   discovery, and metric discovery all read and write it, so re-running any of them
+   discovery, metric discovery, and rule search all read and write it, so re-running any of them
    over one selection — the normal tune-and-re-run loop — costs one Parquet read
    rather than one each, and a fresh `lake-export` moves the lake version so a stale
    corpus can never be served. Always cache the **unfiltered** selection corpus: the
@@ -334,7 +334,7 @@ all it reads).
 | `discovery/validate.rs` | Layer 3: `split_tokens` (age-based train/validate split) + `validate_candidates` re-scores each Layer-2 family **and** joint winner on the held-out slice via `simulate_one_combo` under the run's own `Pricing`/`as_of` → `ValidationVerdict{Holds\|Degraded\|Failed\|ThinValidate\|NoFireValidate\|UnrankableTrain}` (the two "can't tell" outcomes are never silently a pass). The slice carries its **own** cohort-scaled gate (`effective_min_closed`), reported so `ThinValidate` reads as a statement about the slice's size rather than about the candidate |
 | `discovery/seed.rs` | `build_sweep_seed` — Keep axes (`off` + narrowed) + TP/SL menus expanded ±1 rung on the canonical ladders + near-miss `optional_axes` + cluster notes. Near-miss is `DropNoEdge` **or `DropSpike`** with a positive-scoring pick, **and every `DropNegative` at any sign**; the ladder re-prices exactly what each of them failed on — a losing baseline for the negative lead, an unsupported peak for the spike. The seed note counts the three classes separately and flags the spikes unstable, since a spike converts far less often than the other two. Pure projection onto the same `AxisSpec` wire the generic sweep consumes |
 | `discovery/pipeline.rs` | `run_pipeline` — splits the cohort first, selects the baseline (L0) and fits Layers 1–2 (+ L1b/L2b) on train, validates on the held-out slice (a degenerate split fits the whole cohort and reports `no_validation` rather than a vacuous pass). `diagnose` emits the run-level findings a reader would otherwise have to derive across sections: which gate ran, whether the reference line was profitable, how much of the field died for want of data, how much power the validate slice had |
-| `discovery/dto.rs` + `api/handlers/strategies/metric_discovery.rs` | `PipelineDto` (incl. `sweep_seed`, `diagnostics`, `baseline_selection`, `cohort_capped`) + `POST /api/strategies/metric-discovery` (+`/cancel`/`/last`/`/{run_id}`, SSE progress, single-flight mutually exclusive with sweep/flow-discovery, cohort scoping by fingerprint/`ix_labels`/field filters, `take_profit_menu`/`stop_loss_menu` for L0). The handler is the only layer that knows `token_cap`, so it is the only one that can set `cohort_capped` — and it does so **on the result**, not only as an SSE notice a reader has long since missed |
+| `discovery/dto.rs` + `api/handlers/strategies/metric_discovery.rs` | `PipelineDto` (incl. `sweep_seed`, `diagnostics`, `baseline_selection`, `cohort_capped`) + `POST /api/strategies/metric-discovery` (+`/cancel`/`/last`/`/{run_id}`, SSE progress, single-flight mutually exclusive with sweep / flow-discovery / rule-search, cohort scoping by fingerprint/`ix_labels`/field filters, `take_profit_menu`/`stop_loss_menu` for L0). The handler is the only layer that knows `token_cap`, so it is the only one that can set `cohort_capped` — and it does so **on the result**, not only as an SSE notice a reader has long since missed |
 | `frontend/src/lab/pages/strategies/MetricDiscoveryPage.tsx` | diagnostics + reference line (with the measured bracket table) → shortlist with money columns → drops ordered most-actionable-first → rescues → family winners + joint grids + interaction map → validation; primary **Open as sweep** writes a sessionStorage handoff that `GenericSweepConfigForm` applies once; **Promote…** secondary on winners |
 
 **Objective (Layer 1's ranking core):** `robust_profit × fire_rate × win_component ×
@@ -408,6 +408,29 @@ unaffected. Default to a tight single-regime cohort (one fingerprint scope or
 `ix_labels`-only): the cohort-aware gate is what makes that affordable, and the run
 reports the relaxed gate so the trade-off stays visible. Widen when the `DropThin` tally
 dominates the drop table.
+
+## Rule search (`lab/src/rule_search/`)
+
+Lab-only job that finds one champion `RuleParams` for a **single fingerprint** and
+a datetime range. Sibling of grouped sweep / flow discovery / metric discovery — not
+a sweep mode. The form does not expose metrics, windows, or thresholds; those come
+from this range's cuts and the registry. An incumbent rule is compare-only (never a
+seed). Method: [rule-search-method.md](../plans/strategies/rule-search-method.md).
+Job: [rule-search.md](../plans/strategies/rule-search.md).
+
+| File | Role |
+| --- | --- |
+| `rule_search/roles.rs` | Registry flags → entry roles / exit bags / compete keys. New registry rows join by flags. |
+| `rule_search/cuts.rs` | Cohort windows + phase samples → threshold menus. Declared `m_position` exits stay on the menu. |
+| `rule_search/generator.rs` | Entry fillings × exit bags → complete `RuleParams`. Empty entry and empty exit are combos. Extra OR on the top 3 after scoring. |
+| `rule_search/scorer.rs` | `CompiledRule` series walk (shared entry across bags) then copycat (+ caps) time-order merge. Horizon is Simulate's (`as_of` / corpus last trade), not sweep's per-token tail cap. |
+| `rule_search/report.rs` | Report columns are `run_replay`: champion, empty-entry, incumbent, top archive. Verdict refuse / ungated / candidate. Optimistic fill is `FirstInWindow`. |
+| `api/handlers/strategies/rule_search.rs` | `POST /api/strategies/rule-search` (+`/cancel`/`/last`/`/{run_id}`). `202`, SSE progress, persist last result under `$SWEEP_LAKE_DIR/rule-search/last.json`. Fingerprint mint scan **before** the lake load. `as_of` freezes at session open. Single-flight vs sweep / flow-discovery / metric-discovery. |
+| `frontend/src/lab/pages/strategies/RuleSearchPage.tsx` | Form (required fingerprint, range, buy, fill, cost, copycat default ON, optional incumbent) → board (verdict, three columns, champion params, archive, Promote / Simulate) |
+
+Fill/cost defaults: worst fill + `pumpfun_impact`. Buy and caps come from the
+incumbent when one is set, else the form. Copycat is ON unless the request sets it
+off — empty-entry vs champion needs the guard.
 
 ## Adding a strategy
 

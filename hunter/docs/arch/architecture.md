@@ -194,5 +194,5 @@ is built into its own SPA (`@live`/`@lab`) with a static nav. See [@arch/fronten
 
 The DB heartbeat + watchdog live in `live/src/ingest/watchdog.rs` (not in `state/`).
 Local-only state (`job_progress`, `sim_results`, `sim_summary`, `analysis_cache`,
-`discovery_result_cache`) lives in `lab/src/state/`. See
+`discovery_result_cache`, `rule_search_cache`) lives in `lab/src/state/`. See
 [@arch/database.md](@arch/database.md) for pools + repos.

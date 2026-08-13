@@ -30,6 +30,10 @@ import type {
   MetricDiscoveryResult,
   MetricDiscoveryStartArgs,
 } from '@lab/lib/metricDiscoveryTypes';
+import type {
+  RuleSearchResult,
+  RuleSearchStartArgs,
+} from '@lab/lib/ruleSearchTypes';
 
 /** Body for `POST /api/strategies/flow-discovery`. */
 export interface FlowDiscoveryStartArgs {
@@ -441,6 +445,25 @@ export const labApi = baseApi.injectEndpoints({
     getLastMetricDiscovery: builder.query<MetricDiscoveryResult, void>({
       query: () => '/api/strategies/metric-discovery/last',
     }),
+    // Rule search — registry-role champion for one fingerprint + range. Returns
+    // `202 { run_id }` and runs detached; collect via getRuleSearch once the
+    // `rule_search_finished` SSE fires.
+    startRuleSearch: builder.mutation<
+      { run_id: string; status: string },
+      RuleSearchStartArgs
+    >({
+      query: (body) => ({
+        url: '/api/strategies/rule-search',
+        method: 'POST',
+        body,
+      }),
+    }),
+    getRuleSearch: builder.query<RuleSearchResult, string>({
+      query: (runId) => `/api/strategies/rule-search/${encodeURIComponent(runId)}`,
+    }),
+    getLastRuleSearch: builder.query<RuleSearchResult, void>({
+      query: () => '/api/strategies/rule-search/last',
+    }),
   }),
 });
 
@@ -468,4 +491,7 @@ export const {
   useStartMetricDiscoveryMutation,
   useLazyGetMetricDiscoveryQuery,
   useGetLastMetricDiscoveryQuery,
+  useStartRuleSearchMutation,
+  useLazyGetRuleSearchQuery,
+  useGetLastRuleSearchQuery,
 } = labApi;

@@ -13,11 +13,13 @@ import {
   connectFlowDiscoveryFinished,
   connectSimulationFinished,
   connectSweepFinished,
+  connectRuleSearchFinished,
   sseSubscribe,
 } from 'services/sse';
 import {
   cancelFlowDiscovery,
   cancelGroupedSweep,
+  cancelRuleSearch,
   cancelSimulation,
   getJobsStatus,
 } from 'services/api';
@@ -31,6 +33,8 @@ import type {
   SweepGroupDoneEvent,
   SweepNoticeEvent,
   SweepProgressEvent,
+  RuleSearchNoticeEvent,
+  RuleSearchProgressEvent,
 } from 'types';
 
 /**
@@ -63,7 +67,7 @@ import type {
  * `jobs`/`isRunning` and is consumed by the global indicator (and the sweep
  * page's run-state check) alone.
  */
-export type JobKind = 'sweep' | 'simulation' | 'discovery';
+export type JobKind = 'sweep' | 'simulation' | 'discovery' | 'rule_search';
 
 /** Progress state for one named phase of a sweep (corpus / coarse / sweep). */
 export interface PhaseProgress {
@@ -85,10 +89,17 @@ const PHASE_LABELS: Record<string, string> = {
   coarse: 'Coarse sweep',
   sweep: 'Sweep',
   score: 'Scoring structures',
+  cuts: 'Cut table',
+  generate: 'Generating combos',
+  'extra-or': 'Extra OR',
+  replay: 'Replay report',
 };
 
 /** Singleton key for the single-flight flow-discovery job. */
 const DISCOVERY_KEY = 'discovery';
+
+/** Singleton key for the single-flight rule-search job. */
+const RULE_SEARCH_KEY = 'rule_search';
 
 export interface BackgroundJob {
   kind: JobKind;
@@ -212,7 +223,15 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
           kind,
           id,
           label:
-            patch.label ?? existing?.label ?? (kind === 'sweep' ? 'Grouped sweep' : 'Simulation'),
+            patch.label ??
+            existing?.label ??
+            (kind === 'sweep'
+              ? 'Grouped sweep'
+              : kind === 'discovery'
+                ? 'Flow discovery'
+                : kind === 'rule_search'
+                  ? 'Rule search'
+                  : 'Simulation'),
           processed,
           total: patch.total !== undefined ? patch.total : existing?.total ?? null,
           cancelling: patch.cancelling ?? existing?.cancelling ?? false,
@@ -287,6 +306,13 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
             label: 'Flow discovery',
             processed: status.discovery.processed,
             total: status.discovery.total,
+          });
+        }
+        if (status.rule_search) {
+          upsert('rule_search', RULE_SEARCH_KEY, {
+            label: 'Rule search',
+            processed: status.rule_search.processed,
+            total: status.rule_search.total,
           });
         }
         for (const s of status.simulations) {
@@ -382,6 +408,35 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
         /* ignore malformed frames */
       }
     });
+    const offRuleSearchProgress = sseSubscribe('rule_search_progress', (e) => {
+      if (typeof e.data !== 'string') return;
+      try {
+        const p = JSON.parse(e.data) as RuleSearchProgressEvent;
+        const sized = p.total > 0;
+        upsert(
+          'rule_search',
+          RULE_SEARCH_KEY,
+          {
+            label: 'Rule search',
+            processed: sized ? p.processed : null,
+            total: sized ? p.total : null,
+            runId: p.run_id,
+          },
+          p.phase,
+        );
+      } catch {
+        /* ignore malformed frames */
+      }
+    });
+    const offRuleSearchNotice = sseSubscribe('rule_search_notice', (e) => {
+      if (typeof e.data !== 'string') return;
+      try {
+        const n = JSON.parse(e.data) as RuleSearchNoticeEvent;
+        addToast('Rule search', n.message, 'info');
+      } catch {
+        /* ignore malformed frames */
+      }
+    });
     const sweepFinished = connectSweepFinished((ev) => {
       remove('sweep', SWEEP_KEY);
       // A finished sweep persisted a new run — refresh the runs list app-wide.
@@ -399,6 +454,10 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
       remove('discovery', DISCOVERY_KEY);
       if (ev.error) addToast('Flow discovery problem', ev.error, 'danger');
     });
+    const ruleSearchFinished = connectRuleSearchFinished((ev) => {
+      remove('rule_search', RULE_SEARCH_KEY);
+      if (ev.error) addToast('Rule search problem', ev.error, 'danger');
+    });
 
     return () => {
       alive = false;
@@ -408,9 +467,12 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
       offSimProgress();
       offDiscoveryProgress();
       offDiscoveryNotice();
+      offRuleSearchProgress();
+      offRuleSearchNotice();
       sweepFinished.close();
       simFinished.close();
       discoveryFinished.close();
+      ruleSearchFinished.close();
       if (groupsInvalidateTimer.current) {
         clearTimeout(groupsInvalidateTimer.current);
         groupsInvalidateTimer.current = null;
@@ -456,7 +518,9 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
           ? cancelGroupedSweep()
           : job.kind === 'discovery'
             ? cancelFlowDiscovery()
-            : cancelSimulation(job.id);
+            : job.kind === 'rule_search'
+              ? cancelRuleSearch()
+              : cancelSimulation(job.id);
       req.catch(() => upsert(job.kind, job.id, { cancelling: false }));
     },
     [upsert],

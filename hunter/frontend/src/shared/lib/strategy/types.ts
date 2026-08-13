@@ -379,6 +379,8 @@ export interface EngineSimRequest {
   until?: string;
   fill_model?: FillModelId;
   cost_model?: CostModelId;
+  /** Override the box copycat guard for this run. Absent ⇒ inherit Settings. */
+  skip_duplicate_identity?: boolean;
 }
 
 /** `202` response of `POST /api/strategies/simulate`. `run_id` = the rule id for

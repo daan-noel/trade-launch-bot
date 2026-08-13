@@ -18,6 +18,7 @@ const RulesPage = lazy(() => import('@lab/pages/strategies/RulesPage').then((m) 
 const FingerprintsPage = lazy(() => import('@lab/pages/strategies/FingerprintsPage').then((m) => ({ default: m.FingerprintsPage })));
 const FlowDiscoveryPage = lazy(() => import('@lab/pages/strategies/FlowDiscoveryPage').then((m) => ({ default: m.FlowDiscoveryPage })));
 const MetricDiscoveryPage = lazy(() => import('@lab/pages/strategies/MetricDiscoveryPage').then((m) => ({ default: m.MetricDiscoveryPage })));
+const RuleSearchPage = lazy(() => import('@lab/pages/strategies/RuleSearchPage').then((m) => ({ default: m.RuleSearchPage })));
 const SimulatePage = lazy(() => import('@lab/pages/strategies/SimulatePage').then((m) => ({ default: m.SimulatePage })));
 const GenericSweepPage = lazy(() => import('@lab/pages/strategies/sweep/GenericSweepPage').then((m) => ({ default: m.GenericSweepPage })));
 const ReplayViewerPage = lazy(() => import('@lab/pages/strategies/ReplayViewerPage').then((m) => ({ default: m.ReplayViewerPage })));
@@ -54,6 +55,7 @@ export default function App() {
                 <Route path="strategies/fingerprints" element={<FingerprintsPage />} />
                 <Route path="strategies/flow-discovery" element={<FlowDiscoveryPage />} />
                 <Route path="strategies/metric-discovery" element={<MetricDiscoveryPage />} />
+                <Route path="strategies/rule-search" element={<RuleSearchPage />} />
                 <Route path="strategies/simulate" element={<SimulatePage />} />
                 <Route path="strategies/metric-panes" element={<MetricPanesRedirect />} />
                 <Route path="strategies/sweep" element={<GenericSweepPage />} />

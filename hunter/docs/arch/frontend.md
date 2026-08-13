@@ -495,8 +495,15 @@ next load (no per-metric frontend work).
   *Launch shapes · this token* (only while a token is picked in `TokenPreviewPanel` —
   applies that token's own `first_slot_ix_labels`, which bypasses the table entirely:
   uncapped, unfloored, per token). See `plans/strategies/metrics-reference.md` for why
-  the group answer cannot stand in for the per-token one. Job kind `discovery` in `BackgroundJobsContext`
+  the group answer cannot stand in for the per-token one.   Job kind `discovery` in `BackgroundJobsContext`
   (SSE `flow_discovery_*`, mutual exclusion with sweeps).
+- Lab **Rule search** (`/strategies/rule-search`, `RuleSearchPage`) — one required
+  fingerprint + datetime range + buy/fill/cost/copycat (default ON) + optional
+  incumbent (compare only). Job kind `rule_search` in `BackgroundJobsContext`
+  (SSE `rule_search_*`, single-flight vs sweep / flow-discovery / metric-discovery).
+  Board: refuse / ungated / candidate, champion vs empty-entry vs incumbent (SOL
+  plus first-in-window spread), `ruleParamsCell` for the champion, top archive,
+  Promote (`src:rule-search`) and a draft Simulate of the unsaved champion.
 - The lab `RulesPage` injects `@lab/components/strategy/DryRunPanel` via `renderDryRun`
   (inline draft → `POST /api/strategies/simulate` → funnel summary + trades table),
   boundary-clean. Finished dry-run trades share Simulate's chart path: `useRowOverlay`

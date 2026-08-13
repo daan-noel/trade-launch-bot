@@ -115,19 +115,8 @@ pub async fn start_flow_discovery(
     state: web::Data<Arc<LocalState>>,
     body: web::Json<StartFlowDiscoveryBody>,
 ) -> impl Responder {
-    if state.sweep_running.load(Ordering::Acquire) {
-        return HttpResponse::Conflict().json(serde_json::json!({
-            "error": "a sweep is already running — wait or cancel it before discovery"
-        }));
-    }
-    if state
-        .discovery_running
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return HttpResponse::Conflict().json(serde_json::json!({
-            "error": "a flow-discovery job is already running"
-        }));
+    if let Err(msg) = state.claim_heavy(crate::state::local_state::HeavyJob::Discovery) {
+        return HttpResponse::Conflict().json(serde_json::json!({ "error": msg }));
     }
 
     let b = body.into_inner();

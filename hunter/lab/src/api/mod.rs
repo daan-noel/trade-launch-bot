@@ -259,6 +259,23 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             .route(
                 "/strategies/metric-discovery/{run_id}",
                 web::get().to(handlers::strategies::metric_discovery::get_metric_discovery),
+            )
+            // ── Rule search (registry-role champion for one fingerprint + range) ──
+            .route(
+                "/strategies/rule-search",
+                web::post().to(handlers::strategies::rule_search::start_rule_search),
+            )
+            .route(
+                "/strategies/rule-search/cancel",
+                web::post().to(handlers::strategies::rule_search::cancel_rule_search),
+            )
+            .route(
+                "/strategies/rule-search/last",
+                web::get().to(handlers::strategies::rule_search::get_last_rule_search),
+            )
+            .route(
+                "/strategies/rule-search/{run_id}",
+                web::get().to(handlers::strategies::rule_search::get_rule_search),
             ),
     );
 }

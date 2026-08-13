@@ -114,6 +114,12 @@ pub struct LocalState {
     /// (single-flight run) — an authoring aid, not durable state, so a lab restart
     /// simply re-runs. `None` until the first pipeline completes.
     pub metric_discovery_result: Arc<RwLock<Option<(Uuid, serde_json::Value)>>>,
+    /// Single-flight gate for rule search. Mutually exclusive with sweep /
+    /// flow-discovery / metric-discovery.
+    pub rule_search_running: Arc<AtomicBool>,
+    pub rule_search_cancel: Arc<AtomicBool>,
+    pub rule_search_progress: Arc<ProgressCell>,
+    pub rule_search_result: Arc<super::rule_search_cache::RuleSearchCache>,
 }
 
 impl LocalState {
@@ -138,6 +144,93 @@ impl LocalState {
             metric_discovery_cancel: Arc::new(AtomicBool::new(false)),
             metric_discovery_progress: Arc::new(ProgressCell::default()),
             metric_discovery_result: Arc::new(RwLock::new(None)),
+            rule_search_running: Arc::new(AtomicBool::new(false)),
+            rule_search_cancel: Arc::new(AtomicBool::new(false)),
+            rule_search_progress: Arc::new(ProgressCell::default()),
+            rule_search_result: Arc::new(super::rule_search_cache::RuleSearchCache::new()),
+        }
+    }
+
+    /// Why a heavy analysis job cannot start (`None` = free).
+    pub fn heavy_job_block(&self) -> Option<&'static str> {
+        use std::sync::atomic::Ordering::Acquire;
+        if self.sweep_running.load(Acquire) {
+            Some("a grouped sweep is already running — wait or cancel it first")
+        } else if self.discovery_running.load(Acquire) {
+            Some("a flow-discovery job is already running — wait or cancel it first")
+        } else if self.metric_discovery_running.load(Acquire) {
+            Some("a metric-discovery pipeline is already running — wait or cancel it first")
+        } else if self.rule_search_running.load(Acquire) {
+            Some("a rule-search job is already running — wait or cancel it first")
+        } else {
+            None
+        }
+    }
+
+    /// Claim this job's running flag. Releases and returns `Err` if another
+    /// heavy job snuck in between the check and the claim.
+    pub fn claim_heavy(&self, kind: HeavyJob) -> Result<(), &'static str> {
+        use std::sync::atomic::Ordering::{AcqRel, Acquire, Release};
+        let flag = match kind {
+            HeavyJob::Sweep => &self.sweep_running,
+            HeavyJob::Discovery => &self.discovery_running,
+            HeavyJob::MetricDiscovery => &self.metric_discovery_running,
+            HeavyJob::RuleSearch => &self.rule_search_running,
+        };
+        if flag
+            .compare_exchange(false, true, AcqRel, Acquire)
+            .is_err()
+        {
+            return Err(kind.busy_msg());
+        }
+        let other = match kind {
+            HeavyJob::Sweep => {
+                self.discovery_running.load(Acquire)
+                    || self.metric_discovery_running.load(Acquire)
+                    || self.rule_search_running.load(Acquire)
+            }
+            HeavyJob::Discovery => {
+                self.sweep_running.load(Acquire)
+                    || self.metric_discovery_running.load(Acquire)
+                    || self.rule_search_running.load(Acquire)
+            }
+            HeavyJob::MetricDiscovery => {
+                self.sweep_running.load(Acquire)
+                    || self.discovery_running.load(Acquire)
+                    || self.rule_search_running.load(Acquire)
+            }
+            HeavyJob::RuleSearch => {
+                self.sweep_running.load(Acquire)
+                    || self.discovery_running.load(Acquire)
+                    || self.metric_discovery_running.load(Acquire)
+            }
+        };
+        if other {
+            flag.store(false, Release);
+            return Err(self.heavy_job_block().unwrap_or(
+                "another analysis job is already running — wait or cancel it first",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The four Duck/RAM-hungry lab jobs — one at a time.
+#[derive(Clone, Copy)]
+pub enum HeavyJob {
+    Sweep,
+    Discovery,
+    MetricDiscovery,
+    RuleSearch,
+}
+
+impl HeavyJob {
+    fn busy_msg(self) -> &'static str {
+        match self {
+            HeavyJob::Sweep => "a grouped sweep is already running",
+            HeavyJob::Discovery => "a flow-discovery job is already running",
+            HeavyJob::MetricDiscovery => "a metric-discovery pipeline is already running",
+            HeavyJob::RuleSearch => "a rule-search job is already running",
         }
     }
 }

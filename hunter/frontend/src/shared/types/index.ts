@@ -441,6 +441,10 @@ export interface JobsStatus {
   simulations: { rule_id: string; processed: number; total: number }[];
   /** Present iff the single-flight flow-discovery job is running. */
   discovery: { processed: number; total: number } | null;
+  /** Present iff the single-flight metric-discovery pipeline is running. */
+  metric_discovery: { processed: number; total: number } | null;
+  /** Present iff the single-flight rule-search job is running. */
+  rule_search: { processed: number; total: number } | null;
 }
 
 /** Payload of the `flow_discovery_progress` SSE event. */
@@ -460,6 +464,27 @@ export interface FlowDiscoveryFinishedEvent {
 
 /** Payload of the `flow_discovery_notice` SSE event. */
 export interface FlowDiscoveryNoticeEvent {
+  run_id: string;
+  message: string;
+}
+
+/** Payload of the `rule_search_progress` SSE event. */
+export interface RuleSearchProgressEvent {
+  run_id: string;
+  phase: string;
+  processed: number;
+  total: number;
+}
+
+/** Payload of the `rule_search_finished` SSE event. */
+export interface RuleSearchFinishedEvent {
+  run_id: string;
+  cancelled: boolean;
+  error?: string | null;
+}
+
+/** Payload of the `rule_search_notice` SSE event. */
+export interface RuleSearchNoticeEvent {
   run_id: string;
   message: string;
 }

@@ -225,21 +225,8 @@ pub async fn start_metric_discovery(
     state: web::Data<Arc<LocalState>>,
     body: web::Json<StartMetricDiscoveryBody>,
 ) -> impl Responder {
-    if state.sweep_running.load(Ordering::Acquire)
-        || state.discovery_running.load(Ordering::Acquire)
-    {
-        return HttpResponse::Conflict().json(serde_json::json!({
-            "error": "a sweep or discovery job is already running — wait or cancel it first"
-        }));
-    }
-    if state
-        .metric_discovery_running
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return HttpResponse::Conflict().json(serde_json::json!({
-            "error": "a metric-discovery pipeline is already running"
-        }));
+    if let Err(msg) = state.claim_heavy(crate::state::local_state::HeavyJob::MetricDiscovery) {
+        return HttpResponse::Conflict().json(serde_json::json!({ "error": msg }));
     }
 
     let b = body.into_inner();
