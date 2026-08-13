@@ -19,7 +19,7 @@ use uuid::Uuid;
 use hunter_engine::fingerprint::configured_labels;
 
 use crate::config::constants::{lamports_to_sol, tidy_sol_decimal};
-use crate::grouping::MIN_BUCKET_WIDTH_SOL;
+use crate::grouping::{MIN_BUCKET_WIDTH_SOL, SOL_BUCKET_WIDTH};
 
 /// Read an optional integer field from an HTTP JSON body (accepts a JSON number
 /// or a numeric string). Shared SSOT for the generic-engine CRUD parse paths.
@@ -153,6 +153,13 @@ impl Fingerprint {
             || configured_labels(self.ix_labels.as_deref()).is_some()
     }
 
+    /// How this row's SOL axes match — delegated to the engine's
+    /// `SolPrecision::from_width` so the DB model and the match-time copy can
+    /// never read the same stored width differently.
+    pub fn precision(&self) -> hunter_engine::grouping::SolPrecision {
+        hunter_engine::grouping::SolPrecision::from_width(self.bucket_size_amount)
+    }
+
     /// The ONE write-edge gate for a persisted fingerprint — called by the live +
     /// lab create/update handlers (for a 400) and again by `FingerprintRepo`
     /// insert/update (backstop for non-HTTP writers like sweep promotion). The DB
@@ -171,13 +178,6 @@ impl Fingerprint {
     ///   spelling, so the two readers of this field can't disagree. (Distinct again
     ///   from a `None` **axis**, which means "not part of identity" — a fingerprint
     ///   axis of `0` SOL is a real bucket, `[0, width)`.)
-    /// How this row's SOL axes match — delegated to the engine's
-    /// `SolPrecision::from_width` so the DB model and the match-time copy can
-    /// never read the same stored width differently.
-    pub fn precision(&self) -> hunter_engine::grouping::SolPrecision {
-        hunter_engine::grouping::SolPrecision::from_width(self.bucket_size_amount)
-    }
-
     pub fn validate(&self) -> Result<(), String> {
         if !self.has_any_criterion() {
             return Err("fingerprint must configure at least one match criterion".into());
@@ -191,6 +191,130 @@ impl Fingerprint {
             }
         }
         Ok(())
+    }
+
+    /// Compact label from the match axes — the one auto-name every create path
+    /// uses (sweep promote, creation-stats, flow-discovery bind, blank form).
+    /// Identity stays on the axes; this is a picker/log handle. Chip tokens, ix
+    /// first, default `0.1` bucket omitted. Detail:
+    /// `docs/plans/strategies/fingerprint-auto-name.md`.
+    pub fn auto_name(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(labels) = configured_labels(self.ix_labels.as_deref()) {
+            parts.push(ix_labels_count_tail(labels));
+        }
+        if let Some(n) = self.cu_limit {
+            parts.push(format!("cu_limit={}", format_compact_int(n)));
+        }
+        if let Some(n) = self.cu_price {
+            parts.push(format!("cu_price={}", format_compact_int(n)));
+        }
+        push_sol_part(&mut parts, "init", self.init_buy_lamports);
+        push_sol_part(&mut parts, "max", self.max_cost_lamports);
+        push_sol_part(&mut parts, "spend", self.spendable_lamports_in);
+        push_sol_part(&mut parts, "fs_buy", self.first_slot_buy_lamports);
+        push_sol_part(&mut parts, "fs_sell", self.first_slot_sell_lamports);
+        match self.bucket_size_amount {
+            None => parts.push("bkt=exact".into()),
+            Some(w) => {
+                let width = tidy_sol_decimal(w);
+                if width != SOL_BUCKET_WIDTH {
+                    parts.push(format!("bkt={}", format_decimal_trim(width, 4)));
+                }
+            }
+        }
+        if parts.is_empty() {
+            "ALL".into()
+        } else {
+            parts.join(" · ")
+        }
+    }
+
+    /// True when `name` is blank or a retired auto-label (`sweep {id} · group N`,
+    /// `c · …` / `f · …` / `s · …`, `flow-discovery bind`). Nicknames stay.
+    pub fn has_legacy_auto_name(&self) -> bool {
+        is_legacy_auto_name(&self.name)
+    }
+
+    /// Replace a blank / legacy auto-label with [`Self::auto_name`]. A nickname
+    /// is left untouched.
+    pub fn ensure_auto_name(&mut self) {
+        if self.has_legacy_auto_name() {
+            self.name = self.auto_name();
+        }
+    }
+}
+
+/// Retired auto-name shapes. Mirrored in the TS `isLegacyAutoName` helper —
+/// the two lists stay equal (guarded by the golden-string tests on `auto_name`).
+pub fn is_legacy_auto_name(name: &str) -> bool {
+    let n = name.trim();
+    if n.is_empty() {
+        return true;
+    }
+    if n.eq_ignore_ascii_case("flow-discovery bind") {
+        return true;
+    }
+    if let Some(rest) = n.strip_prefix("sweep ") {
+        if rest.contains(" · group ") {
+            return true;
+        }
+    }
+    n.starts_with("c · ") || n.starts_with("f · ") || n.starts_with("s · ")
+}
+
+fn push_sol_part(parts: &mut Vec<String>, label: &str, lamports: Option<i64>) {
+    if let Some(l) = lamports {
+        parts.push(format!("{label}={}", format_decimal_trim(lamports_to_sol(l), 4)));
+    }
+}
+
+/// `"Pump.Fun: Buy"` → `"Buy"`. Split on the last `": "` so a program name
+/// containing a colon still resolves. Mirrors TS `ixLabelAction`.
+fn ix_label_action(label: &str) -> &str {
+    match label.rfind(": ") {
+        Some(i) => label[i + 2..].trim(),
+        None => label.trim(),
+    }
+}
+
+/// `"3ix:Buy"` — count plus trailing action. Mirrors TS `ixLabelsCountTail`.
+fn ix_labels_count_tail(labels: &[String]) -> String {
+    let n = labels.len();
+    let tail = labels.last().map(|s| ix_label_action(s)).unwrap_or("");
+    if tail.is_empty() {
+        format!("{n}ix")
+    } else {
+        format!("{n}ix:{tail}")
+    }
+}
+
+/// `toFixed(decimals)` then strip trailing zeros — mirrors TS `formatDecimalTrim`.
+fn format_decimal_trim(value: f64, decimals: usize) -> String {
+    let s = format!("{value:.decimals$}");
+    if !s.contains('.') {
+        return s;
+    }
+    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+    if trimmed.is_empty() || trimmed == "-" {
+        s
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Chip-aligned compact int (`80K`, `200K`). Mirrors TS `formatCompact(n, 1)`.
+fn format_compact_int(n: i64) -> String {
+    let abs = n.unsigned_abs();
+    let sign = if n < 0 { "-" } else { "" };
+    if abs >= 1_000_000_000 {
+        format!("{sign}{}G", format_decimal_trim(abs as f64 / 1_000_000_000.0, 1))
+    } else if abs >= 1_000_000 {
+        format!("{sign}{}M", format_decimal_trim(abs as f64 / 1_000_000.0, 1))
+    } else if abs >= 1_000 {
+        format!("{sign}{}K", format_decimal_trim(abs as f64 / 1_000.0, 1))
+    } else {
+        n.to_string()
     }
 }
 
@@ -315,5 +439,98 @@ mod tests {
         let fp = Fingerprint::from_json(&body, Uuid::nil(), Utc::now());
         assert_eq!(fp.spendable_lamports_in, Some(0));
         assert_eq!(fp.cu_limit, None);
+    }
+
+    fn bare() -> Fingerprint {
+        let mut fp = fp_with(Some(0.1));
+        fp.cu_limit = None;
+        fp
+    }
+
+    /// Golden strings — keep byte-equal with the TS `fingerprintAutoName` tests.
+    #[test]
+    fn auto_name_golden() {
+        let mut fp = bare();
+        fp.ix_labels = Some(vec![
+            "Pump.Fun: Create_v2".into(),
+            "Associated Token: CreateIdempotent".into(),
+            "Pump.Fun: Buy".into(),
+        ]);
+        fp.max_cost_lamports = Some(1_000_000_000);
+        fp.bucket_size_amount = Some(1.0);
+        assert_eq!(fp.auto_name(), "3ix:Buy · max=1 · bkt=1");
+
+        let mut fp = bare();
+        fp.ix_labels = Some(vec![
+            "Pump.Fun: Create_v2".into(),
+            "Associated Token: CreateIdempotent".into(),
+            "Pump.Fun: Buy".into(),
+        ]);
+        fp.first_slot_buy_lamports = Some(19_500_000_000);
+        fp.first_slot_sell_lamports = Some(0);
+        fp.max_cost_lamports = Some(0);
+        fp.bucket_size_amount = Some(0.5);
+        assert_eq!(fp.auto_name(), "3ix:Buy · max=0 · fs_buy=19.5 · fs_sell=0 · bkt=0.5");
+
+        let mut buy = bare();
+        buy.cu_limit = Some(80_000);
+        buy.ix_labels = Some(vec![
+            "Pump.Fun: Create_v2".into(),
+            "Associated Token: Create".into(),
+            "Pump.Fun: Buy".into(),
+        ]);
+        let mut exact = buy.clone();
+        exact.ix_labels = Some(vec![
+            "Pump.Fun: Create_v2".into(),
+            "Associated Token: Create".into(),
+            "Pump.Fun: BuyExactSolIn".into(),
+        ]);
+        assert_eq!(buy.auto_name(), "3ix:Buy · cu_limit=80K");
+        assert_eq!(exact.auto_name(), "3ix:BuyExactSolIn · cu_limit=80K");
+        assert_ne!(buy.auto_name(), exact.auto_name());
+
+        let mut fp = bare();
+        fp.first_slot_buy_lamports = Some(19_500_000_000);
+        fp.ix_labels = Some(vec!["A".into(), "B".into()]);
+        assert_eq!(fp.auto_name(), "2ix:B · fs_buy=19.5");
+
+        let mut fp = bare();
+        fp.cu_limit = Some(200_000);
+        assert_eq!(fp.auto_name(), "cu_limit=200K");
+
+        assert_eq!(bare().auto_name(), "ALL");
+
+        let mut fp = bare();
+        fp.max_cost_lamports = Some(1_000_000_000);
+        fp.ix_labels = Some(vec!["Pump.Fun: Buy".into()]);
+        fp.bucket_size_amount = None;
+        assert_eq!(fp.auto_name(), "1ix:Buy · max=1 · bkt=exact");
+    }
+
+    #[test]
+    fn legacy_auto_name_detects_retired_shapes_only() {
+        assert!(is_legacy_auto_name(""));
+        assert!(is_legacy_auto_name("  "));
+        assert!(is_legacy_auto_name("sweep 0f53d622 · group 12"));
+        assert!(is_legacy_auto_name("c · max1 · b1"));
+        assert!(is_legacy_auto_name("f · cu200000"));
+        assert!(is_legacy_auto_name("s · ALL"));
+        assert!(is_legacy_auto_name("flow-discovery bind"));
+        assert!(!is_legacy_auto_name("3ix:Buy · max=1 · bkt=1"));
+        assert!(!is_legacy_auto_name("max-buy launcher"));
+    }
+
+    #[test]
+    fn ensure_auto_name_replaces_legacy_keeps_nickname() {
+        let mut fp = bare();
+        fp.max_cost_lamports = Some(1_000_000_000);
+        fp.bucket_size_amount = Some(1.0);
+        fp.name = "sweep 0f53d622 · group 12".into();
+        fp.ensure_auto_name();
+        assert_eq!(fp.name, "max=1 · bkt=1");
+
+        fp.name = "max-buy launcher".into();
+        fp.ensure_auto_name();
+        assert_eq!(fp.name, "max-buy launcher");
     }
 }

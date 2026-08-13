@@ -734,6 +734,9 @@ export const FINGERPRINT_FIELD_HELP = {
     body: [
       'Human label for this matcher. Rules pick a fingerprint by id; the name is for you.',
       '',
+      'Create/promote auto-fills a compact label from the axes (`3ix:Buy · max=1 · bkt=1`).',
+      'Edit it to a nickname any time — identity stays on the axes, not the name.',
+      '',
       'Many rules can share one fingerprint.',
     ].join('\n'),
   },

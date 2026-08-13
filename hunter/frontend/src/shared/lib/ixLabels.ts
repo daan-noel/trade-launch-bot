@@ -102,7 +102,7 @@ export function ixLabelAction(label: string): string {
  * **A label set's identity is the sequence, never its length.** Two sets that
  * differ only in one action (`Buy` vs `BuyExactSolIn`) are different match
  * criteria that arm on different tokens, so any surface collapsing them to a
- * bare `Nix` count renders — and, via `fingerprintNameFromGroupKey`, *names* —
+ * bare `Nix` count renders — and, via `fingerprintAutoName`, *names* —
  * two distinct fingerprints identically. Use this wherever the full JSON
  * doesn't fit (tooltips, filter text).
  */

@@ -1,8 +1,137 @@
 import { describe, expect, it } from 'vitest';
-import { fingerprintNameFromGroupKey } from './fingerprintNameFromGroupKey';
+import {
+  fingerprintAutoName,
+  fingerprintNameFromGroupKey,
+  isLegacyAutoName,
+} from './fingerprintNameFromGroupKey';
 
-describe('fingerprintNameFromGroupKey (C3)', () => {
-  it('skips ∅ axes, glues lo-edge buckets, collapses ix, appends non-default bucket', () => {
+const buyIx = [
+  'Pump.Fun: Create_v2',
+  'Associated Token: CreateIdempotent',
+  'Pump.Fun: Buy',
+];
+
+describe('fingerprintAutoName', () => {
+  // Golden strings — keep byte-equal with Rust `auto_name_golden`.
+  it('puts ix first and uses chip tokens', () => {
+    expect(
+      fingerprintAutoName({
+        cu_limit: null,
+        cu_price: null,
+        init_buy_lamports: null,
+        max_cost_lamports: 1_000_000_000,
+        spendable_lamports_in: null,
+        first_slot_buy_lamports: null,
+        first_slot_sell_lamports: null,
+        bucket_size_amount: 1,
+        ix_labels: buyIx,
+      }),
+    ).toBe('3ix:Buy · max=1 · bkt=1');
+  });
+
+  it('keeps axis order after ix and omits default 0.1 bucket', () => {
+    expect(
+      fingerprintAutoName({
+        cu_limit: null,
+        cu_price: null,
+        init_buy_lamports: null,
+        max_cost_lamports: 0,
+        spendable_lamports_in: null,
+        first_slot_buy_lamports: 19_500_000_000,
+        first_slot_sell_lamports: 0,
+        bucket_size_amount: 0.5,
+        ix_labels: buyIx,
+      }),
+    ).toBe('3ix:Buy · max=0 · fs_buy=19.5 · fs_sell=0 · bkt=0.5');
+  });
+
+  it('separates two label sets that differ only past the count', () => {
+    const axes = (last: string) =>
+      fingerprintAutoName({
+        cu_limit: 80_000,
+        cu_price: null,
+        init_buy_lamports: null,
+        max_cost_lamports: null,
+        spendable_lamports_in: null,
+        first_slot_buy_lamports: null,
+        first_slot_sell_lamports: null,
+        bucket_size_amount: 0.1,
+        ix_labels: [
+          'Pump.Fun: Create_v2',
+          'Associated Token: Create',
+          `Pump.Fun: ${last}`,
+        ],
+      });
+    expect(axes('Buy')).toBe('3ix:Buy · cu_limit=80K');
+    expect(axes('BuyExactSolIn')).toBe('3ix:BuyExactSolIn · cu_limit=80K');
+    expect(axes('Buy')).not.toBe(axes('BuyExactSolIn'));
+  });
+
+  it('omits bkt when width is the default 0.1', () => {
+    expect(
+      fingerprintAutoName({
+        cu_limit: null,
+        cu_price: null,
+        init_buy_lamports: null,
+        max_cost_lamports: null,
+        spendable_lamports_in: null,
+        first_slot_buy_lamports: 19_500_000_000,
+        first_slot_sell_lamports: null,
+        bucket_size_amount: 0.1,
+        ix_labels: ['A', 'B'],
+      }),
+    ).toBe('2ix:B · fs_buy=19.5');
+  });
+
+  it('compacts cu and drops grouping-only axes (via group-key wrapper)', () => {
+    expect(fingerprintAutoName({
+      cu_limit: 200_000,
+      cu_price: null,
+      init_buy_lamports: null,
+      max_cost_lamports: null,
+      spendable_lamports_in: null,
+      first_slot_buy_lamports: null,
+      first_slot_sell_lamports: null,
+      bucket_size_amount: 0.1,
+      ix_labels: null,
+    })).toBe('cu_limit=200K');
+  });
+
+  it('falls back to ALL when nothing configured', () => {
+    expect(
+      fingerprintAutoName({
+        cu_limit: null,
+        cu_price: null,
+        init_buy_lamports: null,
+        max_cost_lamports: null,
+        spendable_lamports_in: null,
+        first_slot_buy_lamports: null,
+        first_slot_sell_lamports: null,
+        bucket_size_amount: 0.1,
+        ix_labels: null,
+      }),
+    ).toBe('ALL');
+  });
+
+  it('always shows bkt=exact', () => {
+    expect(
+      fingerprintAutoName({
+        cu_limit: null,
+        cu_price: null,
+        init_buy_lamports: null,
+        max_cost_lamports: 1_000_000_000,
+        spendable_lamports_in: null,
+        first_slot_buy_lamports: null,
+        first_slot_sell_lamports: null,
+        bucket_size_amount: null,
+        ix_labels: ['Pump.Fun: Buy'],
+      }),
+    ).toBe('1ix:Buy · max=1 · bkt=exact');
+  });
+});
+
+describe('fingerprintNameFromGroupKey', () => {
+  it('names from group-key lo-edges the same as identity axes', () => {
     expect(
       fingerprintNameFromGroupKey(
         {
@@ -15,47 +144,33 @@ describe('fingerprintNameFromGroupKey (C3)', () => {
           ix_labels:
             'Pump.Fun: Create_v2 | Associated Token: CreateIdempotent | Pump.Fun: Buy',
         },
-        'c',
         0.5,
       ),
-    ).toBe('c · fsb19.5 · fss0 · max0 · 3ix:Buy · b0.5');
+    ).toBe('3ix:Buy · max=0 · fs_buy=19.5 · fs_sell=0 · bkt=0.5');
   });
 
-  it('separates two label sets that differ only past the count', () => {
-    const name = (last: string) =>
-      fingerprintNameFromGroupKey(
-        {
-          cu_limit: '80000',
-          ix_labels: `Pump.Fun: Create_v2 | Associated Token: Create | Pump.Fun: ${last}`,
-        },
-        'c',
-      );
-    expect(name('Buy')).toBe('c · cu80000 · 3ix:Buy');
-    expect(name('BuyExactSolIn')).toBe('c · cu80000 · 3ix:BuyExactSolIn');
-    expect(name('Buy')).not.toBe(name('BuyExactSolIn'));
-  });
-
-  it('omits b{width} when bucket is the default 0.1', () => {
-    expect(
-      fingerprintNameFromGroupKey(
-        { first_slot_buy_sol: '19.5–19.6', ix_labels: 'A | B' },
-        'c',
-        0.1,
-      ),
-    ).toBe('c · fsb19.5 · 2ix:B');
-  });
-
-  it('uses flow provenance and skips grouping-only axes', () => {
+  it('skips grouping-only axes and ∅', () => {
     expect(
       fingerprintNameFromGroupKey(
         { cu_limit: '200000', is_cashback_enabled: 'true' },
-        'f',
+        0.1,
       ),
-    ).toBe('f · cu200000');
+    ).toBe('cu_limit=200K');
+    expect(fingerprintNameFromGroupKey({}, 0.1)).toBe('ALL');
+    expect(fingerprintNameFromGroupKey({ cu_limit: '∅' }, 0.1)).toBe('ALL');
   });
+});
 
-  it('falls back to SOURCE · ALL when nothing configured', () => {
-    expect(fingerprintNameFromGroupKey({}, 'c')).toBe('c · ALL');
-    expect(fingerprintNameFromGroupKey({ cu_limit: '∅' }, 'c')).toBe('c · ALL');
+describe('isLegacyAutoName', () => {
+  it('detects retired generator shapes only', () => {
+    expect(isLegacyAutoName('')).toBe(true);
+    expect(isLegacyAutoName('  ')).toBe(true);
+    expect(isLegacyAutoName('sweep 0f53d622 · group 12')).toBe(true);
+    expect(isLegacyAutoName('c · max1 · b1')).toBe(true);
+    expect(isLegacyAutoName('f · cu200000')).toBe(true);
+    expect(isLegacyAutoName('s · ALL')).toBe(true);
+    expect(isLegacyAutoName('flow-discovery bind')).toBe(true);
+    expect(isLegacyAutoName('3ix:Buy · max=1 · bkt=1')).toBe(false);
+    expect(isLegacyAutoName('max-buy launcher')).toBe(false);
   });
 });

@@ -3,7 +3,9 @@
 //! A fingerprint is a token-creation shape shared by many rules (see
 //! [`crate::models::Fingerprint`]). `find_or_create` is the sweep-promotion
 //! entry point: promoting a winning group reuses an identity-identical row
-//! instead of minting duplicates.
+//! instead of minting duplicates. `name` is a label (`Fingerprint::auto_name`
+//! when blank/legacy); identity ignores it. `list`/`find` rewrite retired
+//! auto-labels (`sweep {id} · group N`, `c · …`) in place.
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
@@ -86,6 +88,7 @@ impl FingerprintRepo {
     /// so a bad `bucket_size_amount` can't reach the matcher through a side door.
     pub async fn insert(&self, fp: &Fingerprint) -> anyhow::Result<()> {
         fp.validate().map_err(|e| anyhow::anyhow!("invalid fingerprint: {e}"))?;
+        let name = stored_name(fp);
         sqlx::query(
             r#"
             INSERT INTO fingerprints
@@ -96,7 +99,7 @@ impl FingerprintRepo {
             "#,
         )
         .bind(fp.id)
-        .bind(&fp.name)
+        .bind(&name)
         .bind(fp.cu_limit)
         .bind(fp.cu_price)
         .bind(fp.init_buy_lamports)
@@ -119,6 +122,7 @@ impl FingerprintRepo {
     /// killing every rule bound to it) or to a degenerate bucket width.
     pub async fn update(&self, fp: &Fingerprint) -> anyhow::Result<()> {
         fp.validate().map_err(|e| anyhow::anyhow!("invalid fingerprint: {e}"))?;
+        let name = stored_name(fp);
         sqlx::query(
             r#"
             UPDATE fingerprints SET
@@ -138,7 +142,7 @@ impl FingerprintRepo {
             "#,
         )
         .bind(fp.id)
-        .bind(&fp.name)
+        .bind(&name)
         .bind(fp.cu_limit)
         .bind(fp.cu_price)
         .bind(fp.init_buy_lamports)
@@ -161,7 +165,11 @@ impl FingerprintRepo {
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(Fingerprint::from))
+        let mut fp = row.map(Fingerprint::from);
+        if let Some(fp) = fp.as_mut() {
+            self.persist_legacy_relabel(fp).await?;
+        }
+        Ok(fp)
     }
 
     pub async fn list(&self) -> anyhow::Result<Vec<Fingerprint>> {
@@ -170,7 +178,13 @@ impl FingerprintRepo {
         ))
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(Fingerprint::from).collect())
+        let mut fps: Vec<Fingerprint> = rows.into_iter().map(Fingerprint::from).collect();
+        for fp in &mut fps {
+            if let Err(e) = self.persist_legacy_relabel(fp).await {
+                tracing::warn!(id = %fp.id, "fingerprint legacy-name relabel failed: {e}");
+            }
+        }
+        Ok(fps)
     }
 
     /// Delete a fingerprint. Fails (FK) while any `strategy_rules` row still
@@ -202,9 +216,43 @@ impl FingerprintRepo {
         .fetch_optional(&self.pool)
         .await?;
         if let Some(row) = existing {
-            return Ok(row.into());
+            let mut existing = Fingerprint::from(row);
+            self.persist_legacy_relabel(&mut existing).await?;
+            return Ok(existing);
         }
-        self.insert(fp).await?;
-        Ok(fp.clone())
+        let mut fresh = fp.clone();
+        fresh.ensure_auto_name();
+        self.insert(&fresh).await?;
+        Ok(fresh)
+    }
+
+    /// Persist [`Fingerprint::auto_name`] over a retired auto-label. Nicknames
+    /// stay. One-shot backfill: after the first list/find, leftover `sweep … ·
+    /// group N` / `c · …` rows are gone.
+    async fn persist_legacy_relabel(&self, fp: &mut Fingerprint) -> anyhow::Result<()> {
+        if !fp.has_legacy_auto_name() {
+            return Ok(());
+        }
+        let new_name = fp.auto_name();
+        if new_name == fp.name {
+            return Ok(());
+        }
+        sqlx::query("UPDATE fingerprints SET name = $2, updated_at = now() WHERE id = $1")
+            .bind(fp.id)
+            .bind(&new_name)
+            .execute(&self.pool)
+            .await?;
+        fp.name = new_name;
+        Ok(())
+    }
+}
+
+/// Name written on insert/update: auto-name when the submitted label is blank
+/// or a retired generator shape; otherwise the caller's nickname.
+fn stored_name(fp: &Fingerprint) -> String {
+    if fp.has_legacy_auto_name() {
+        fp.auto_name()
+    } else {
+        fp.name.clone()
     }
 }

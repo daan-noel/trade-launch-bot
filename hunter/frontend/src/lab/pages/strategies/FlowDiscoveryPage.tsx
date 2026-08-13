@@ -771,7 +771,7 @@ export function FlowDiscoveryPage() {
           // the form's precision would arm on a window the card never showed.
           ...(runWidth == null ? { exact_sol: true } : { bucket_width_sol: runWidth }),
           volume_ix_patterns: patterns,
-          name: fingerprintNameFromGroupKey(boundKey, 'f', runWidth),
+          name: fingerprintNameFromGroupKey(boundKey, runWidth),
         }).unwrap();
         setTargetFpId(fp.id);
         setApplyOk(`Bound fingerprint “${fp.name}”.`);

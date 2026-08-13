@@ -32,6 +32,10 @@ export function solToLamports(s: number | null | undefined): number | null {
  */
 export const MIN_BUCKET_WIDTH_SOL = 1e-6;
 
+/** Default fingerprint SOL bucket width. Mirrors `grouping::SOL_BUCKET_WIDTH`.
+ *  The auto-name omits `bkt=` when the stored width equals this. */
+export const DEFAULT_BUCKET_WIDTH_SOL = 0.1;
+
 /** A `fingerprints` row (response shape). All `*_lamports` axes are lamports. */
 export interface Fingerprint {
   id: string;

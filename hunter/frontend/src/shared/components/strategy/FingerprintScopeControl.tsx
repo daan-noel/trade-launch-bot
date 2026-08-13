@@ -13,7 +13,12 @@ import { LinkIcon } from 'components/ui/icons';
 import { formatWithCommas } from 'utils/format';
 import { SearchableSelect, type SearchableSelectOption } from 'components/ui/SearchableSelect';
 import { LabelTip } from './LabelTip';
-import { fingerprintParamsCell } from './FingerprintParamsSummary';
+import {
+  FingerprintOptionBody,
+  fingerprintParamsCell,
+  fingerprintParamsSearchText,
+  fingerprintSelectLabel,
+} from './FingerprintParamsSummary';
 import { fingerprintsHref } from 'lib/strategy/nav';
 import type { Fingerprint } from 'lib/strategy/types';
 import type { HelpTip } from 'lib/strategy/strategyHelp';
@@ -80,7 +85,8 @@ export function FingerprintScopeControl({
     () =>
       fingerprints.map((f) => ({
         value: f.id,
-        label: `${f.name || f.id.slice(0, 8)}${f.used_by != null ? ` · used by ${f.used_by}` : ''}`,
+        label: fingerprintSelectLabel(f),
+        searchText: fingerprintParamsSearchText(f),
         data: f,
       })),
     [fingerprints],
@@ -103,6 +109,7 @@ export function FingerprintScopeControl({
           emptyOptionLabel={emptyOptionLabel}
           noResultsLabel="No fingerprints match"
           fieldSize="sm"
+          renderOption={(opt) => <FingerprintOptionBody fp={opt.data} label={opt.label} />}
         />
       </label>
       {selected ? (

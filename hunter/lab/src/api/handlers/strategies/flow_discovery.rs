@@ -199,7 +199,7 @@ pub async fn bind_flow_discovery(
     body: web::Json<BindFlowDiscoveryBody>,
 ) -> impl Responder {
     let b = body.into_inner();
-    let name = b.name.unwrap_or_else(|| "flow-discovery bind".to_string());
+    let name = b.name.filter(|s| !s.trim().is_empty()).unwrap_or_default();
     let metric_config = serde_json::json!({
         "m_flow_split": { "volume_ix_patterns": b.volume_ix_patterns }
     });
@@ -215,6 +215,7 @@ pub async fn bind_flow_discovery(
         SolPrecision::from_width(Some(b.bucket_width_sol))
     };
     let mut draft = fingerprint_from_group_key(&b.group_key, precision, name);
+    draft.ensure_auto_name();
     draft.metric_config = metric_config.clone();
     if !draft.has_any_criterion() {
         return HttpResponse::BadRequest().json(serde_json::json!({

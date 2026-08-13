@@ -393,7 +393,7 @@ its own form state**, for two reasons:
 Precision is part of identity: an exact fingerprint and a bucketed one with equal
 axes are different rules that arm on different token sets, so `withIxLabelsFilter`
 and the width both feed `findFingerprintForGroupKey`, and an exact-mode auto-name
-ends in `bexact` rather than a width.
+ends in `bkt=exact` rather than a width.
 
 Discovery has no `GroupSelection` resolver — that seam is grouped-sweep-only
 (`lab/src/sweep/selection.rs`), because a discovery run has no persisted run row to

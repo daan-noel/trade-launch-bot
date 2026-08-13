@@ -107,7 +107,8 @@ pub async fn create_fingerprint(
     app_state: web::Data<Arc<LocalState>>,
     body: web::Json<serde_json::Value>,
 ) -> impl Responder {
-    let fp = Fingerprint::from_json(&body, Uuid::new_v4(), chrono::Utc::now());
+    let mut fp = Fingerprint::from_json(&body, Uuid::new_v4(), chrono::Utc::now());
+    fp.ensure_auto_name();
     if let Err(e) = fp.validate() {
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
     }
@@ -128,7 +129,8 @@ pub async fn update_fingerprint(
     path: web::Path<Uuid>,
     body: web::Json<serde_json::Value>,
 ) -> impl Responder {
-    let fp = Fingerprint::from_json(&body, path.into_inner(), chrono::Utc::now());
+    let mut fp = Fingerprint::from_json(&body, path.into_inner(), chrono::Utc::now());
+    fp.ensure_auto_name();
     if let Err(e) = fp.validate() {
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
     }

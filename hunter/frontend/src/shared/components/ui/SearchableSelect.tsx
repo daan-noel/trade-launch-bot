@@ -4,10 +4,10 @@
 // callers keep their own domain type (no string-only enum needed).
 //
 // Kept intentionally single-purpose: substring match (case-insensitive) on
-// `label`, arrow-key navigation, Enter to commit, Escape/click-outside to
-// close without committing. Not a general-purpose multiselect/autocomplete —
-// if a second call site needs different matching or multi-value support,
-// extend this one rather than forking it.
+// `label` plus optional `searchText`, arrow-key navigation, Enter to commit,
+// Escape/click-outside to close without committing. Not a general-purpose
+// multiselect/autocomplete — if a second call site needs different matching or
+// multi-value support, extend this one rather than forking it.
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { cn } from 'lib/cn';
@@ -17,6 +17,8 @@ import { CloseIcon, SearchIcon } from './icons';
 export interface SearchableSelectOption<T> {
   value: string;
   label: string;
+  /** Extra haystack for type-to-filter; the closed input still shows `label`. */
+  searchText?: string;
   data: T;
 }
 
@@ -40,9 +42,16 @@ interface SearchableSelectProps<T> extends FieldProps {
 }
 
 /** Case/diacritic-insensitive-enough substring match — good enough for names
- *  and short ids; not meant to be a fuzzy matcher. */
-function matches(label: string, query: string): boolean {
-  return label.toLowerCase().includes(query.trim().toLowerCase());
+ *  and short ids; not meant to be a fuzzy matcher. `searchText` lets a row
+ *  match axis chips / ids without stuffing that haystack into the closed label. */
+function matches(
+  opt: { label: string; searchText?: string },
+  query: string,
+): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  if (opt.label.toLowerCase().includes(q)) return true;
+  return (opt.searchText ?? '').toLowerCase().includes(q);
 }
 
 export function SearchableSelect<T>({
@@ -67,7 +76,7 @@ export function SearchableSelect<T>({
   const selected = useMemo(() => options.find((o) => o.value === value) ?? null, [options, value]);
 
   const filtered = useMemo(
-    () => (query.trim() ? options.filter((o) => matches(o.label, query)) : options),
+    () => (query.trim() ? options.filter((o) => matches(o, query)) : options),
     [options, query],
   );
 

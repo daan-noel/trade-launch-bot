@@ -1,85 +1,88 @@
-// Compact auto-name for a fingerprint created/bound from a group_key (C3).
-// Name is a label only — match identity lives on the axes. Skip unset/`∅`,
-// glue short axis keys to compact values, collapse ix to `Nix:Tail`, append
-// `bW` only when bucket width ≠ default 0.1.
+// Compact auto-name for a fingerprint — a picker/log handle, not identity.
+// Chip-aligned tokens, ix first, default 0.1 bucket omitted, no provenance
+// prefix. Example: `3ix:Buy · max=1 · bkt=1`
 //
-// Example: `c · fsb19.5 · 3ix:Buy · b0.5`
-//
-// The ix part carries the trailing action, not just the count: a bare `3ix`
-// named `[…, Pump.Fun: Buy]` and `[…, Pump.Fun: BuyExactSolIn]` identically,
-// so two fingerprints that arm on different tokens were indistinguishable in
-// every picker and table that shows a name. A name has no color to carry the
-// chip's ribbon, so it needs the text discriminator.
+// Rust SSOT: `Fingerprint::auto_name`. This file is the TS mirror; golden
+// strings in the two test files stay byte-equal.
+// Detail: hunter/docs/plans/strategies/fingerprint-auto-name.md
 
-import { ixLabelsCountTail } from 'lib/ixLabels';
-import { formatDecimalTrim, tidySolDecimal } from 'utils/format';
+import { configuredIxLabels, ixLabelsCountTail } from 'lib/ixLabels';
+import { formatCompact, formatDecimalTrim, tidySolDecimal } from 'utils/format';
+import { fingerprintIdentityFromGroupKey, type FingerprintIdentity } from './matchGroupFingerprint';
+import { DEFAULT_BUCKET_WIDTH_SOL, lamportsToSol } from './types';
 
-/** Provenance tag — creation-stats / flow-discovery / sweep. */
-export type FingerprintNameSource = 'c' | 'f' | 's';
+/** Axes the auto-name reads — identity fields only (`name` is the output). */
+export type FingerprintAutoNameAxes = Pick<
+  FingerprintIdentity,
+  | 'cu_limit'
+  | 'cu_price'
+  | 'init_buy_lamports'
+  | 'max_cost_lamports'
+  | 'spendable_lamports_in'
+  | 'first_slot_buy_lamports'
+  | 'first_slot_sell_lamports'
+  | 'bucket_size_amount'
+  | 'ix_labels'
+>;
 
-/** Default SOL bucket width — mirrors `grouping::SOL_BUCKET_WIDTH` / lab
- *  `SOL_BUCKET_WIDTH`. Kept local so this shared helper never imports `@lab`. */
-const DEFAULT_BUCKET_WIDTH = 0.1;
+/**
+ * Build the auto-name from stored axes (lamports + SOL width).
+ *
+ * Order: `Nix:Tail`, then `cu_limit` / `cu_price` / `init` / `max` / `spend` /
+ * `fs_buy` / `fs_sell`, then `bkt=exact` or `bkt={width}` when width ≠ 0.1.
+ * Unset axes skipped. Empty → `ALL`.
+ */
+export function fingerprintAutoName(fp: FingerprintAutoNameAxes): string {
+  const parts: string[] = [];
+  const ix = configuredIxLabels(fp.ix_labels);
+  if (ix) parts.push(ixLabelsCountTail(ix));
+  if (fp.cu_limit != null) parts.push(`cu_limit=${formatCompact(fp.cu_limit, 1)}`);
+  if (fp.cu_price != null) parts.push(`cu_price=${formatCompact(fp.cu_price, 1)}`);
+  pushSol(parts, 'init', fp.init_buy_lamports);
+  pushSol(parts, 'max', fp.max_cost_lamports);
+  pushSol(parts, 'spend', fp.spendable_lamports_in);
+  pushSol(parts, 'fs_buy', fp.first_slot_buy_lamports);
+  pushSol(parts, 'fs_sell', fp.first_slot_sell_lamports);
+  if (fp.bucket_size_amount == null) {
+    parts.push('bkt=exact');
+  } else {
+    const width = tidySolDecimal(fp.bucket_size_amount);
+    if (width !== DEFAULT_BUCKET_WIDTH_SOL) {
+      parts.push(`bkt=${formatDecimalTrim(width, 4)}`);
+    }
+  }
+  return parts.length === 0 ? 'ALL' : parts.join(' · ');
+}
 
-/** Group-key field → short name token (C3). */
-const AXIS_SHORT: Record<string, string> = {
-  cu_limit: 'cu',
-  cu_price: 'cup',
-  initial_buy_sol: 'init',
-  max_cost_lamports: 'max',
-  spendable_lamports_in: 'spend',
-  first_slot_buy_sol: 'fsb',
-  first_slot_sell_sol: 'fss',
-};
-
-/** Backend grouping sentinel for a missing axis value. */
-const MISSING_VALUE = '∅';
-
-/** Lo-edge of a `"lo–hi"` bucket label, trailing zeros trimmed. */
-function compactBucketLo(label: string): string {
-  const lo = label.split('–')[0]?.trim() ?? label;
-  const n = Number(lo);
-  if (!Number.isFinite(n)) return lo;
-  return formatDecimalTrim(n, 6);
+function pushSol(parts: string[], label: string, lamports: number | null): void {
+  const s = lamportsToSol(lamports);
+  if (s == null) return;
+  parts.push(`${label}=${formatDecimalTrim(s, 4)}`);
 }
 
 /**
- * Build a C3 fingerprint name from a stored group key.
+ * Auto-name from a stored group key. SOL axes use the bucket lo-edge (same
+ * representative `fingerprintIdentityFromGroupKey` feeds `find_or_create`).
  *
- * @param gk group_key map (may include `∅` and grouping-only axes)
- * @param source one-letter provenance (`c` / `f` / `s`)
- * @param bucketWidthSol width used for SOL axes; `b{width}` appended when ≠ 0.1.
- *        `null` is the **exact**-amount mode (`SolPrecision::Exact` / NULL stored
- *        width) and appends `bexact` — never a width. Two fingerprints with the
- *        same axes but different precision are different rules that arm on
- *        different token sets, so the name has to tell them apart; `exact` is the
- *        same word `formatBucketWidth` and `BucketChip` use for this mode.
+ * @param bucketWidthSol width used for SOL axes; `null` is exact mode and
+ *        appends `bkt=exact`.
  */
 export function fingerprintNameFromGroupKey(
   gk: Record<string, string>,
-  source: FingerprintNameSource,
-  bucketWidthSol: number | null = DEFAULT_BUCKET_WIDTH,
+  bucketWidthSol: number | null = DEFAULT_BUCKET_WIDTH_SOL,
 ): string {
-  const parts: string[] = [source];
-  for (const [k, v] of Object.entries(gk)) {
-    if (v === MISSING_VALUE) continue;
-    if (k === 'is_cashback_enabled' || k === 'token_program_id') continue;
-    if (k === 'ix_labels') {
-      parts.push(ixLabelsCountTail(v.split(' | ').filter((s) => s.length > 0)));
-      continue;
-    }
-    const short = AXIS_SHORT[k] ?? k;
-    const val = v.includes('–') ? compactBucketLo(v) : v;
-    parts.push(`${short}${val}`);
-  }
-  if (bucketWidthSol == null) {
-    parts.push('bexact');
-  } else {
-    const width = tidySolDecimal(bucketWidthSol);
-    if (width !== DEFAULT_BUCKET_WIDTH) {
-      parts.push(`b${formatDecimalTrim(width, 4)}`);
-    }
-  }
-  if (parts.length === 1) parts.push('ALL');
-  return parts.join(' · ');
+  return fingerprintAutoName(fingerprintIdentityFromGroupKey(gk, bucketWidthSol));
+}
+
+/**
+ * Retired generator shapes — `sweep {id} · group N`, C3 provenance prefixes,
+ * the flow-discovery fallback, and a blank. Nicknames return false.
+ * Mirrors Rust `is_legacy_auto_name`.
+ */
+export function isLegacyAutoName(name: string): boolean {
+  const n = name.trim();
+  if (n === '') return true;
+  if (n.toLowerCase() === 'flow-discovery bind') return true;
+  if (n.startsWith('sweep ') && n.includes(' · group ')) return true;
+  return n.startsWith('c · ') || n.startsWith('f · ') || n.startsWith('s · ');
 }

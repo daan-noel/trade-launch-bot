@@ -426,7 +426,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
       const gk = withIxLabelsFilter(group.group_key, appliedIxLabels);
       const identity = fingerprintIdentityFromGroupKey(gk, appliedBucketWidth);
       await createFingerprint({
-        name: fingerprintNameFromGroupKey(gk, 'c', appliedBucketWidth),
+        name: fingerprintNameFromGroupKey(gk, appliedBucketWidth),
         ...identity,
         metric_config: {},
       }).unwrap();

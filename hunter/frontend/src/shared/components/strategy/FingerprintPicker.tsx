@@ -11,6 +11,11 @@ import {
   useCreateFingerprintMutation,
 } from 'store/sharedEndpoints';
 import { FingerprintForm } from './FingerprintForm';
+import {
+  FingerprintOptionBody,
+  fingerprintParamsSearchText,
+  fingerprintSelectLabel,
+} from './FingerprintParamsSummary';
 import type { Fingerprint, FingerprintDraft } from 'lib/strategy/types';
 
 export interface FingerprintPickerProps {
@@ -22,9 +27,10 @@ export interface FingerprintPickerProps {
 
 /**
  * Fingerprint selector for the rule editor: searchable dropdown of saved
- * fingerprints (with used-by count) plus "+ new" to create one inline. Controls
- * only — axis chips live in `FingerprintParamsById` so parents can place them
- * full-width below sibling fields (see RuleEditor's fingerprint + TP/SL row).
+ * fingerprints (with used-by count) plus "+ new" to create one inline. The
+ * dropdown shows the axis chips and searches them; the closed input stays the
+ * name. Full-width chips under the field still live in `FingerprintParamsById`
+ * (see RuleEditor's fingerprint + TP/SL row).
  */
 export function FingerprintPicker({
   value,
@@ -41,7 +47,8 @@ export function FingerprintPicker({
     () =>
       fps.map((f) => ({
         value: f.id,
-        label: `${f.name || f.id.slice(0, 8)}${f.used_by != null ? ` · used by ${f.used_by}` : ''}`,
+        label: fingerprintSelectLabel(f),
+        searchText: fingerprintParamsSearchText(f),
         data: f,
       })),
     [fps],
@@ -70,6 +77,7 @@ export function FingerprintPicker({
           noResultsLabel="No fingerprints match"
           fieldSize="sm"
           className="min-w-0 flex-1"
+          renderOption={(opt) => <FingerprintOptionBody fp={opt.data} label={opt.label} />}
         />
         <IconButton
           variant="success"

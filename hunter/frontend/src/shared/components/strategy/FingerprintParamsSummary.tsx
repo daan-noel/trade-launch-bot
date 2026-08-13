@@ -218,6 +218,28 @@ export function fingerprintParamsSearchText(fp: Fingerprint | undefined, fallbac
   return parts.join(' ');
 }
 
+/** Closed-input / dropdown title for a fingerprint option. */
+export function fingerprintSelectLabel(fp: Fingerprint): string {
+  const name = fp.name || fp.id.slice(0, 8);
+  return fp.used_by != null ? `${name} · used by ${fp.used_by}` : name;
+}
+
+/** Dropdown row: name plus the same axis chips the tables show. */
+export function FingerprintOptionBody({
+  fp,
+  label,
+}: {
+  fp: Fingerprint;
+  label: string;
+}): ReactNode {
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <span className="truncate font-medium">{label}</span>
+      {fingerprintParamsCell(fp)}
+    </div>
+  );
+}
+
 /**
  * Stable identity string for a whole fingerprint — every match axis in a fixed
  * order, so two byte-identical fingerprints produce the same key (and sort

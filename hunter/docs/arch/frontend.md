@@ -434,7 +434,9 @@ next load (no per-metric frontend work).
   `FingerprintPicker`/`FingerprintForm` (registry-driven
   `metric_config` section + `VolumeIxPatternsEditor` for `m_flow_split.volume_ix_patterns`
   — add-row / remove-row / **Delete all** footer, the last confirming via the shared
-  `clearPrompt` also used by the flow-discovery cart),
+  `clearPrompt` also used by the flow-discovery cart). The form auto-fills
+  `Fingerprint::auto_name` from the axes (`3ix:Buy · max=1 · bkt=1`) and keeps a
+  typed nickname; pickers search axis text and show the chip row in the dropdown.
   `RulesView`/`FingerprintsView` (shared list+editor, mounted by both apps'
   `RulesPage`/`FingerprintsPage`; cross-page selection via `?rule=` / `?fp=`
   (`useSelectionSearchParam` + `lib/strategy/nav.ts` — same-tab Router `Link`,

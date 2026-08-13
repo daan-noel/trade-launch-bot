@@ -1,8 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { Input } from 'components/ui/Input';
 import { IconButton } from 'components/ui/IconButton';
-import { SaveIcon, SpinnerIcon } from 'components/ui/icons';
+import { SaveIcon, SpinnerIcon, RefreshIcon } from 'components/ui/icons';
 import { Button } from 'components/ui/Button';
 import { Checkbox } from 'components/ui/Checkbox';
 import { IxLabelsInput } from 'components/ui/IxLabelsInput';
@@ -21,6 +21,7 @@ import {
   volumeIxPatternsFromConfig,
 } from 'lib/strategy/registry';
 import { FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
+import { fingerprintAutoName, isLegacyAutoName } from 'lib/strategy/fingerprintNameFromGroupKey';
 import { tidySolDecimal } from 'utils/format';
 import { LabelTip } from './LabelTip';
 import { VolumeIxPatternsEditor } from './VolumeIxPatternsEditor';
@@ -148,8 +149,28 @@ export function FingerprintForm({
   const fpConfigGroups = groupsWithFingerprintConfig(registry);
 
   const ixParsed = useMemo(() => parseIxLabelsText(s.ix_labels), [s.ix_labels]);
+  const draft = useMemo(() => toDraft(s), [s]);
+  const autoName = useMemo(() => fingerprintAutoName(draft), [draft]);
+  const prevAutoRef = useRef<string | null>(null);
+
+  // Keep the name glued to the auto-label while it is blank, still the previous
+  // auto-name, or a retired generator shape. A typed nickname is left alone.
+  useEffect(() => {
+    setS((p) => {
+      const synced =
+        p.name === '' ||
+        p.name === prevAutoRef.current ||
+        p.name === autoName ||
+        isLegacyAutoName(p.name);
+      if (!synced) return p;
+      prevAutoRef.current = autoName;
+      if (autoName === 'ALL' || p.name === autoName) return p;
+      return { ...p, name: autoName };
+    });
+  }, [autoName]);
+
   const criteria = criterionCount(s, ixParsed.labels);
-  const nameOk = s.name.trim().length > 0;
+  const nameOk = s.name.trim().length > 0 || autoName !== 'ALL';
   // In exact mode the width is unused, so a stale value must not block submit.
   const widthError = s.exact_sol ? null : bucketWidthError(s.bucket_size_amount);
   const canSubmit = criteria > 0 && nameOk && !submitting && !ixParsed.error && !widthError;
@@ -171,12 +192,28 @@ export function FingerprintForm({
     <div className="flex flex-col gap-3">
       <label className="flex flex-col gap-1 text-[11px] text-text-dim">
         <LabelTip tip={FINGERPRINT_FIELD_HELP.name}>Name</LabelTip>
-        <Input
-          fieldSize="sm"
-          value={s.name}
-          onChange={(e) => set('name', e.target.value)}
-          placeholder="e.g. 3.5◎ create_v2 6-ix"
-        />
+        <div className="flex items-center gap-1">
+          <Input
+            fieldSize="sm"
+            className="min-w-0 flex-1"
+            value={s.name}
+            onChange={(e) => set('name', e.target.value)}
+            placeholder={autoName !== 'ALL' ? autoName : 'auto-filled from axes'}
+          />
+          <IconButton
+            variant="ghost"
+            size="sm"
+            disabled={submitting || autoName === 'ALL' || s.name === autoName}
+            onClick={() => {
+              prevAutoRef.current = autoName;
+              set('name', autoName);
+            }}
+            title="Reset to auto-name from axes"
+            aria-label="Reset to auto-name from axes"
+          >
+            <RefreshIcon />
+          </IconButton>
+        </div>
       </label>
 
       <div className="grid grid-cols-2 gap-2">
@@ -288,7 +325,11 @@ export function FingerprintForm({
             variant="primary"
             size="lg"
             disabled={!canSubmit}
-            onClick={() => onSubmit(toDraft(s))}
+            onClick={() => {
+              const body = toDraft(s);
+              if (!body.name) body.name = fingerprintAutoName(body);
+              onSubmit(body);
+            }}
             label={submitting ? 'Saving…' : initial ? 'Save' : 'Create'}
             title={submitting ? 'Saving…' : initial ? 'Save' : 'Create'}
           >

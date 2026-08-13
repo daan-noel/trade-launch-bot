@@ -2008,8 +2008,7 @@ pub async fn promote_group(
         // create a match-identical twin (see `is_scope_only`).
         scope_fp.clone().expect("is_scope_only implies a scope fingerprint")
     } else {
-        let name = format!("sweep {} · group {}", short_id(run_id), group.group_index);
-        let mut draft_fp = match selection.materialize(name) {
+        let mut draft_fp = match selection.materialize(String::new()) {
             Ok(f) => f,
             // **Fail closed.** A clause with no fingerprint expression is refused
             // here, with the clause named — never dropped to produce a wider gate.
@@ -2046,6 +2045,7 @@ pub async fn promote_group(
                 return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
             }
         }
+        draft_fp.ensure_auto_name();
         match fp_repo.find_or_create(&draft_fp).await {
             Ok(f) => f,
             Err(e) => {
@@ -2095,11 +2095,6 @@ pub async fn promote_group(
         "fingerprint": fp,
     });
     HttpResponse::Ok().json(draft)
-}
-
-/// First 8 chars of a UUID, for a compact human label.
-fn short_id(id: Uuid) -> String {
-    id.to_string().chars().take(8).collect()
 }
 
 /// Cheap pre-resolve check: does the axes JSON reference anything that needs the
