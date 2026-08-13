@@ -151,6 +151,14 @@ the bounce is fast and its peak is unpredictable.
 Combined with §3, **60 pre-registered rule variants across both entry regimes produce
 zero positive out-of-sample cells.** Treat the long side of this fingerprint as closed.
 
+## 3b. Per-tier verdicts
+
+The blacklist above pools all six funding tiers. Searched one tier at a time, they differ.
+**Group 1** (the 2 SOL preset, this document's cohort) is an exclusion filter, not an
+entry fingerprint: any long-entry rule on it is an execution bet (authority vs
+optimistic fill), not an edge. **Group 2** (the 1 SOL preset, fp `e6299eac`) is a
+different tier. A verdict on one tier says nothing about another.
+
 ## 4. Use it as an exclusion filter
 
 The positive-expectancy roles in this structure are (a) being inside the creation

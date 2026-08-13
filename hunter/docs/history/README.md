@@ -15,7 +15,6 @@ lives).
 
 | Entry | One-line |
 | --- | --- |
-| [2026-08-05 watchdog kills are real outages](2026-08-05-watchdog-kills-are-real-outages.md) | 7 process kills/day were true feed holes; the transport wasn't in the log filter, so nothing said why |
 | [2026-08-05 paper `ExitStuck` backlog](2026-08-05-paper-exitstuck-backlog.md) | 45% of paper positions stranded open; the bias was one-directional, so paper PnL read high |
 | [2026-08-04 group-key unit drift](2026-08-04-group-key-unit-drift.md) | One wire field, three readers, three units — plus a `to_char` mask that overflowed into a *valid* wrong group |
 | [2026-08-04 token-scale 1e6 PnL](2026-08-04-token-scale-1e6-pnl.md) | A factor that cancelled out of SOL PnL but not out of the stored token count |

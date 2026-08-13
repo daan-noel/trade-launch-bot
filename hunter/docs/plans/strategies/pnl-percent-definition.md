@@ -162,6 +162,15 @@ It is computed once per path from the shared `PNL_PCT_SQL` (server aggregate, ex
 the page and the client row cap) and from the same `pnl_pct` values in `metricsOf` (the
 client fold under a lens SQL can't express), so the two paths cannot disagree.
 
+A third path recovers it rather than computing it. The Rust `RunMetrics` — the wire for
+simulate and grouped sweep — divides its per-trade sum into `mean_pnl_pct` and discards
+it, so `withSumPct` reverses that division as `mean_pnl_pct × n_closed`, exact by
+construction and gated on `return_pct == null`. That gate is the whole safety of it:
+where the notional varies, `mean_pnl_pct` carries the capital-weighted return instead of
+a mean of percents, and the product would be a sum of nothing — those surfaces ship a
+real `sum_pnl_pct` anyway. Prefer a served value over a derived one; recovery exists so
+one summary component can render every surface, not as a second definition.
+
 ## Backfill
 
 None, and none is possible. The view is derived, so every historical position's percent
