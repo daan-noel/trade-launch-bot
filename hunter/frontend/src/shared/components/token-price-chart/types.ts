@@ -203,6 +203,30 @@ export interface ChartTimeBand {
   spans: ChartTimeSpan[];
 }
 
+/**
+ * One bottom-pane VALUE lane: some named quantity's real reading over time, drawn
+ * against the threshold it is judged by.
+ *
+ * The on/off {@link ChartTimeBand} says *whether* something held; this says *what it
+ * was*. Both are needed to explain a decision: a band alone cannot be checked, and a
+ * reader with no line to look at will reach for whatever number the chart does draw —
+ * which is how a cumulative overlay ends up being compared against a trailing-window
+ * threshold.
+ *
+ * `points` are wall-clock seconds and the chart snaps them onto its own bars, so the
+ * publisher needs to know nothing about grouping mode or interval.
+ */
+export interface ChartValueLane {
+  key: string;
+  /** Short — it renders as the pane's series title. */
+  label: string;
+  color: string;
+  /** Ascending by `timeSec`. `null` value = unreadable at that instant (NaN). */
+  points: { timeSec: number; value: number | null }[];
+  /** Drawn as a dashed horizontal line; omit when the quantity has no threshold. */
+  threshold?: number | null;
+}
+
 /** Tooltip shown when the crosshair hovers the range-selection label chip. */
 export interface ChartRangeTooltipState {
   stats: ChartRangeStats;
@@ -290,6 +314,8 @@ export interface TokenPriceChartProps {
    *  Time-grouping mode only — slot mode's scale is slot indices, so wall-clock
    *  spans have nowhere to land. */
   timeBands?: ChartTimeBand[] | null;
+  /** Metric reading drawn in its own bottom pane (see {@link ChartValueLane}). */
+  valueLane?: ChartValueLane | null;
   /** The stretch {@link timeBands} speaks for, as a dim track behind every lane.
    *  Without it an unsatisfied lane and an uncovered one look identical. */
   timeBandCoverage?: ChartTimeSpan | null;
@@ -366,6 +392,10 @@ export interface ChartToolbarProps {
   /** The patterns come from an UNSAVED app-wide draft, not this chart's own
    *  fingerprint — the overlay is a preview until it's saved. */
   flowPatternsDraft?: boolean;
+  /** A draft IS open but this chart is locked to its own saved patterns (a report
+   *  of a decision already taken). Surfaced so a reader never hand-sums a split the
+   *  decision was not made under — see `EffectiveFlowPatternKeys.draftIgnored`. */
+  flowPatternsDraftIgnored?: boolean;
   /** Range-select (drag-to-highlight) mode is active. */
   rangeSelectMode: boolean;
   crosshair: ChartCrosshairInfo | null;

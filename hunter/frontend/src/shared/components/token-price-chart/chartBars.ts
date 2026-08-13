@@ -45,6 +45,86 @@ export function tokenCreatedAtSec(createdAt?: string | null): number | null {
   return tradeTimestampSec(createdAt);
 }
 
+/** Nominal Solana slot duration, used only to place a bar that holds no trade. */
+const SLOT_SECS = 0.4;
+
+/**
+ * Wall-clock instant (epoch seconds, fractional) each bar's coverage **ends** at —
+ * for EVERY bar, including slot bars that hold no trade.
+ *
+ * This is what a hovered candle means when something off-chart is asked "what was
+ * true here": a candle summarises an interval, so the answer is the state at the end
+ * of it. The end rather than the start because the start is a moment the candle's own
+ * trades had not happened yet — hovering the candle an exit fired in would otherwise
+ * report the reading from just before it.
+ *
+ * **Empty bars are the point.** In slot mode a bar's key is a slot NUMBER, so a slot
+ * with no trade has no timestamp to look up, and a caller that resolves by trade
+ * lookup gets `null` and silently falls back to whatever it shows when nothing is
+ * hovered. Those bars are interpolated from the neighbouring slots at
+ * {@link SLOT_SECS}, clamped so a bar never lands past the next bar that does have a
+ * trade. A quiet stretch is exactly where a trailing-window metric decays, so these
+ * are the bars whose reading matters most.
+ */
+export function buildBarWallEndSec(
+  bars: readonly OhlcBar[],
+  sortedTrades: readonly ChartTrade[],
+  groupMode: ChartGroupMode,
+  intervalSec: number,
+): Map<number, number> {
+  const out = new Map<number, number>();
+  if (groupMode !== 'slot') {
+    // A time bar covers [key, key + interval); its last instant is just inside.
+    for (const bar of bars) {
+      out.set(bar.time as number, (bar.time as number) + intervalSec - 0.001);
+    }
+    return out;
+  }
+  // Latest real trade per slot — the anchors every empty slot is placed between.
+  const anchor = new Map<number, number>();
+  for (const trade of sortedTrades) {
+    const slot = trade.slot;
+    if (slot == null) continue;
+    const ms = Date.parse(trade.block_time);
+    if (Number.isNaN(ms)) continue;
+    const sec = ms / 1000;
+    const prev = anchor.get(slot);
+    if (prev == null || sec > prev) anchor.set(slot, sec);
+  }
+  const keys = bars.map((b) => b.time as number);
+  // Forward pass: carry the last anchor and step SLOT_SECS per empty slot.
+  let lastSlot: number | null = null;
+  let lastSec = 0;
+  for (const key of keys) {
+    const known = anchor.get(key);
+    if (known != null) {
+      out.set(key, known);
+      lastSlot = key;
+      lastSec = known;
+    } else if (lastSlot != null) {
+      out.set(key, lastSec + SLOT_SECS * (key - lastSlot));
+    }
+  }
+  // Backward pass: bars before the first anchor, and a clamp so interpolation can
+  // never overshoot the next real trade (slots are nominal, gaps are not).
+  let nextSlot: number | null = null;
+  let nextSec = 0;
+  for (let i = keys.length - 1; i >= 0; i--) {
+    const key = keys[i];
+    const known = anchor.get(key);
+    if (known != null) {
+      nextSlot = key;
+      nextSec = known;
+      continue;
+    }
+    if (nextSlot == null) continue;
+    const ceiling = nextSec - SLOT_SECS * (nextSlot - key);
+    const forward = out.get(key);
+    out.set(key, forward == null ? ceiling : Math.min(forward, ceiling));
+  }
+  return out;
+}
+
 /**
  * Earliest real trade time (epoch seconds) per bar key, keyed exactly as bars are
  * bucketed: slot number in slot mode, bucket-start seconds in time mode. Feeds

@@ -16,6 +16,7 @@ import {
 } from 'lib/signedTone';
 import { MintBarTradesPanel } from 'components/tokens/MintBarTradesPanel';
 import { useBarTradesSelection } from 'components/tokens/useBarTradesSelection';
+import { VolumePatternScope } from 'context/VolumePatternDraftContext';
 import {
   ConditionBandsProvider,
   useConditionBands,
@@ -152,6 +153,7 @@ export function FloorPositionDetail({
       onCrosshairTimeChange={crosshair.set}
       timeBands={bands?.lanes ?? null}
       timeBandCoverage={bands?.coverage ?? null}
+      valueLane={bands?.valueLane ?? null}
       {...barTrades.chartProps}
     />
   );
@@ -356,10 +358,19 @@ export function FloorPositionDetail({
 
   // Both providers wrap the chart AND the `conditions` slot — they are the two ends
   // of each channel, and nothing between them needs to know.
+  //
+  // `VolumePatternScope locked` is the third, and it is a correctness rail, not a
+  // permission: every number in this view is a REPORT OF AN ENGINE DECISION taken
+  // under the fingerprint's SAVED `volume_ix_patterns`. An app-wide draft layered on
+  // top would re-classify the same trades a different way, so the chart's vol /
+  // non-vol split — and any sum a reader takes off it by hand — would not be the
+  // split the exit was decided on. Same reason a finished sweep run locks.
   return (
-    <CrosshairTimeProvider value={crosshair}>
-      <ConditionBandsProvider value={bandsStore}>{body}</ConditionBandsProvider>
-    </CrosshairTimeProvider>
+    <VolumePatternScope locked>
+      <CrosshairTimeProvider value={crosshair}>
+        <ConditionBandsProvider value={bandsStore}>{body}</ConditionBandsProvider>
+      </CrosshairTimeProvider>
+    </VolumePatternScope>
   );
 }
 

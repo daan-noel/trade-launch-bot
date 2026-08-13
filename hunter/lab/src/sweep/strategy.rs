@@ -195,6 +195,10 @@ pub struct TokenOutcome {
     /// The authored condition **threshold** paired with `exit_metric` — not the
     /// live metric reading at exit, mirroring `ExitReason::Metrics::value`.
     pub exit_metric_value: Option<f64>,
+    /// Trailing-window size of the req that fired (`None` for a static metric),
+    /// mirroring `ExitReason::Metrics::window`. Without it the drill-in row labels a
+    /// windowed burst as its lifetime twin — the two share every metric name.
+    pub exit_metric_window: Option<f64>,
     /// 0-based position among this rule's OWN authored exit reqs (capped at
     /// `N_EXIT_METRIC_SLOTS - 1`) — the aggregate's bounded per-metric bucket
     /// index. `None` for every non-metric exit.
@@ -228,6 +232,7 @@ impl TokenOutcome {
             exit_metric: None,
             exit_operator: None,
             exit_metric_value: None,
+            exit_metric_window: None,
             exit_metric_slot: None,
             entry_time: None,
             entry_price: None,

@@ -920,7 +920,7 @@ pub struct BoundCombo {
     /// `N_EXIT_METRIC_SLOTS - 1` so the aggregate's per-combo counters stay a
     /// fixed size. Bind-time only — depends solely on the compiled rule, so
     /// resolving an exit looks this up instead of computing anything per token.
-    exit_metric_label: Vec<Option<(MetricId, Operator, f64, u8)>>,
+    exit_metric_label: Vec<Option<(MetricId, Operator, f64, Option<f64>, u8)>>,
     /// `true` ⇔ **every** exit req classified (no [`ExitClass::General`]) **and**
     /// the rule has no `scale_out` — so the index / SIMD paths can resolve the
     /// whole exit as a single full-bag close. Scale-out forces the staged scalar
@@ -975,7 +975,9 @@ impl BoundCombo {
 /// Precompute [`BoundCombo::exit_metric_label`] — one entry per `exit_reqs`,
 /// `Some` only for `ReqOrigin::Authored` reqs, slot-numbered among just those.
 /// Bind-time only (never per token/row).
-fn exit_metric_labels(exit_reqs: &[MetricReq]) -> Vec<Option<(MetricId, Operator, f64, u8)>> {
+fn exit_metric_labels(
+    exit_reqs: &[MetricReq],
+) -> Vec<Option<(MetricId, Operator, f64, Option<f64>, u8)>> {
     let mut authored_slots: u8 = 0;
     exit_reqs
         .iter()
@@ -988,7 +990,7 @@ fn exit_metric_labels(exit_reqs: &[MetricReq]) -> Vec<Option<(MetricId, Operator
             r.conds
                 .first()
                 .and_then(|arm| arm.first())
-                .map(|c| (r.metric, c.operator, c.value, slot))
+                .map(|c| (r.metric, c.operator, c.value, r.window, slot))
         })
         .collect()
 }
@@ -1943,6 +1945,7 @@ fn open_staged(
         exit_metric: None,
         exit_operator: None,
         exit_metric_value: None,
+        exit_metric_window: None,
         exit_metric_slot: None,
         entry_time: Some(entry_at),
         entry_price: Some(entry_price),
@@ -1959,7 +1962,7 @@ fn open_staged(
 #[allow(clippy::too_many_arguments)]
 fn closed_multi(
     exit: ExitCode,
-    label: Option<(MetricId, Operator, f64, u8)>,
+    label: Option<(MetricId, Operator, f64, Option<f64>, u8)>,
     entry_price: f64,
     entry_at: DateTime<Utc>,
     entry_slot: Option<u64>,
@@ -1993,10 +1996,11 @@ fn closed_multi(
         pnl_percent: pnl_pct as f32,
         pnl_sol: pnl_sol as f32,
         exit,
-        exit_metric: label.map(|(m, _, _, _)| m),
-        exit_operator: label.map(|(_, op, _, _)| op),
-        exit_metric_value: label.map(|(_, _, v, _)| v),
-        exit_metric_slot: label.map(|(_, _, _, s)| s),
+        exit_metric: label.map(|(m, _, _, _, _)| m),
+        exit_operator: label.map(|(_, op, _, _, _)| op),
+        exit_metric_value: label.map(|(_, _, v, _, _)| v),
+        exit_metric_window: label.and_then(|(_, _, _, w, _)| w),
+        exit_metric_slot: label.map(|(_, _, _, _, s)| s),
         entry_time: Some(entry_at),
         entry_price: Some(entry_price),
         entry_slot,
@@ -2039,6 +2043,7 @@ fn open_outcome(
         exit_metric: None,
         exit_operator: None,
         exit_metric_value: None,
+        exit_metric_window: None,
         exit_metric_slot: None,
         entry_time: Some(entry_at),
         entry_price: Some(entry_price),
@@ -2998,7 +3003,7 @@ pub(crate) fn scan_with_horizon(
 #[allow(clippy::too_many_arguments)]
 fn closed(
     exit: ExitCode,
-    label: Option<(MetricId, Operator, f64, u8)>,
+    label: Option<(MetricId, Operator, f64, Option<f64>, u8)>,
     entry_price: f64,
     entry_at: DateTime<Utc>,
     entry_slot: Option<u64>,
@@ -3021,10 +3026,11 @@ fn closed(
         pnl_percent: pnl_pct as f32,
         pnl_sol: pnl_sol as f32,
         exit,
-        exit_metric: label.map(|(m, _, _, _)| m),
-        exit_operator: label.map(|(_, op, _, _)| op),
-        exit_metric_value: label.map(|(_, _, v, _)| v),
-        exit_metric_slot: label.map(|(_, _, _, s)| s),
+        exit_metric: label.map(|(m, _, _, _, _)| m),
+        exit_operator: label.map(|(_, op, _, _, _)| op),
+        exit_metric_value: label.map(|(_, _, v, _, _)| v),
+        exit_metric_window: label.and_then(|(_, _, _, w, _)| w),
+        exit_metric_slot: label.map(|(_, _, _, _, s)| s),
         entry_time: Some(entry_at),
         entry_price: Some(entry_price),
         entry_slot,

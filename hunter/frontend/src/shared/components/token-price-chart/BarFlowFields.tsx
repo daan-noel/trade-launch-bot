@@ -40,7 +40,14 @@ function FlowField({
 
 /**
  * Per-bar order flow readout: net flow, inflow, outflow, price change percent,
- * and — when present — cumulative vol-maker / non-vol amounts.
+ * and — when present — the vol-maker / non-vol overlay lines.
+ *
+ * The two flow fields are labelled `∑net` because that is exactly what they are:
+ * the overlay is a RUNNING NET (buy − sell) since token creation, not a per-bar
+ * amount and not a buys-only total. Unlabelled, they read as a rule metric — and a
+ * reader who compares `NonVol` against an `m_flow_split_window.nonvol_buy` threshold
+ * is comparing a lifetime net against a trailing-window buy sum. Different span,
+ * different direction, no relationship.
  */
 export function BarFlowFields({ crosshair, formatVol, formatFlow, layout }: BarFlowFieldsProps) {
   const { open, close, inflow, outflow, flowVol, flowNonVol } = crosshair;
@@ -61,14 +68,14 @@ export function BarFlowFields({ crosshair, formatVol, formatFlow, layout }: BarF
     flowVol != null || flowNonVol != null ? (
       <>
         <FlowField
-          label="VolMk"
+          label="VolMk∑net"
           value={flowVol != null ? formatFlow(flowVol) : '—'}
           color={FLOW_VOL_LINE_COLOR}
           layout={layout}
         />
         {layout === 'inline' ? ' ' : null}
         <FlowField
-          label="NonVol"
+          label="NonVol∑net"
           value={flowNonVol != null ? formatFlow(flowNonVol) : '—'}
           color={FLOW_NON_VOL_LINE_COLOR}
           layout={layout}

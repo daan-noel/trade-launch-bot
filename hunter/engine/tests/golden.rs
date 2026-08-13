@@ -327,6 +327,7 @@ fn metrics_exit_on_time_condition() {
             metric: hunter_engine::metrics::MetricId::Time,
             operator: hunter_engine::metrics::evaluator::Operator::Gt,
             value: 5.0,
+            window: None,
         }]
     );
 }
@@ -379,6 +380,7 @@ fn position_retrace_is_a_trailing_stop_off_the_since_entry_peak() {
             metric: hunter_engine::metrics::MetricId::Retrace,
             operator: hunter_engine::metrics::evaluator::Operator::Gte,
             value: 3.0,
+            window: None,
         }]
     );
 }
@@ -403,6 +405,7 @@ fn position_held_is_a_time_stop() {
             metric: hunter_engine::metrics::MetricId::Held,
             operator: hunter_engine::metrics::evaluator::Operator::Gte,
             value: 5.0,
+            window: None,
         }]
     );
 }
@@ -490,6 +493,7 @@ fn stall_exit_on_quiet_token_is_tick_driven() {
             metric: hunter_engine::metrics::MetricId::Stall,
             operator: hunter_engine::metrics::evaluator::Operator::Gt,
             value: 3.0,
+            window: None,
         }]
     );
 }
@@ -1143,6 +1147,7 @@ fn flow_entry_on_vol_net_and_exit_when_organic_goes_quiet() {
             metric: hunter_engine::metrics::MetricId::WinNonvolGross,
             operator: hunter_engine::metrics::evaluator::Operator::Eq,
             value: 0.0,
+            window: Some(5.0),
         }]
     );
 }

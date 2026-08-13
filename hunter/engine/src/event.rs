@@ -85,9 +85,10 @@ pub enum TradeMode {
 }
 
 /// Why a position closed. Persisted as a short string label ([`ExitReason::label`]):
-/// `TakeProfit | StopLoss | Dead | Manual | Migrated | {name} {op} {value}`
-/// (e.g. `stall > 3`, `trail >= 20`). Legacy rows may still store bare `Metrics`
-/// or the brief `{name}{op}` form (`stall>`).
+/// `TakeProfit | StopLoss | Dead | Manual | Migrated | {name}[({w}s)] {op} {value}`
+/// (e.g. `stall > 3`, `trail >= 20`, `nonvol_buy(2s) >= 0.9`). Legacy rows may still
+/// store bare `Metrics`, the brief `{name}{op}` form (`stall>`), or a windowed exit
+/// with no `({w}s)` — see [`parse_metric_exit_label`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ExitReason {
     /// Price reached `entry_price · (1 + take_profit/100)`.
@@ -100,6 +101,15 @@ pub enum ExitReason {
         operator: Operator,
         /// Authored condition threshold (not the live metric reading).
         value: f64,
+        /// Trailing-window size of the req that fired, `None` for a static metric.
+        ///
+        /// Load-bearing, not decoration: a dynamic group and its lifetime twin share
+        /// every metric *name* (`m_flow_split.nonvol_buy` and
+        /// `m_flow_split_window.nonvol_buy` are both `"nonvol_buy"`), so without the
+        /// window the label names a monotone lifetime total when what actually fired
+        /// was a burst over `window` seconds — two readings that move in opposite
+        /// ways. Multi-window rules make it worse: several reqs print identically.
+        window: Option<f64>,
     },
     /// The token was judged dead (liquidity gone + silent).
     Dead,
@@ -111,7 +121,7 @@ pub enum ExitReason {
 
 impl ExitReason {
     /// Persisted / displayed label. Ladder reasons keep PascalCase; metric exits
-    /// are spaced `name op value` (`stall > 3`, `nonvol_gross = 0`).
+    /// are spaced `name[({w}s)] op value` (`stall > 3`, `nonvol_buy(2s) >= 0.9`).
     pub fn label(self) -> Cow<'static, str> {
         match self {
             Self::TakeProfit => Cow::Borrowed("TakeProfit"),
@@ -123,7 +133,8 @@ impl ExitReason {
                 metric,
                 operator,
                 value,
-            } => Cow::Owned(format_metric_exit_label(metric, operator, value)),
+                window,
+            } => Cow::Owned(format_metric_exit_label(metric, operator, value, window)),
         }
     }
 
@@ -147,14 +158,35 @@ pub fn format_metric_threshold(v: f64) -> String {
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
-/// Spaced metric-exit label SSOT: `name op value`.
-pub fn format_metric_exit_label(metric: MetricId, operator: Operator, value: f64) -> String {
+/// Spaced metric-exit label SSOT: `name[({w}s)] op value`.
+///
+/// The `({w}s)` qualifier rides on the **name**, not as a fourth token, so the
+/// existing three-token split still parses every form and a reader scanning a
+/// column of reasons sees the metric and its window as one word.
+pub fn format_metric_exit_label(
+    metric: MetricId,
+    operator: Operator,
+    value: f64,
+    window: Option<f64>,
+) -> String {
     format!(
         "{} {} {}",
-        metric.name(),
+        format_metric_exit_name(metric, window),
         operator.symbol(),
         format_metric_threshold(value)
     )
+}
+
+/// The name half of a metric exit label: `nonvol_buy` or `nonvol_buy(2s)`.
+/// Shared with every UI that renders a condition beside its reason, so a chart
+/// legend and a persisted reason can never disagree about which req is meant.
+pub fn format_metric_exit_name(metric: MetricId, window: Option<f64>) -> String {
+    match window {
+        Some(w) if w.is_finite() && w > 0.0 => {
+            format!("{}({}s)", metric.name(), format_metric_threshold(w))
+        }
+        _ => metric.name().to_string(),
+    }
 }
 
 impl fmt::Display for ExitReason {
@@ -190,11 +222,12 @@ pub fn parse_exit_reason(s: &str) -> Option<ExitReason> {
         "Dead" => Some(ExitReason::Dead),
         "Manual" => Some(ExitReason::Manual),
         "Migrated" => Some(ExitReason::Migrated),
-        other => parse_metric_exit_label(other).map(|(metric, operator, value)| {
+        other => parse_metric_exit_label(other).map(|(metric, operator, value, window)| {
             ExitReason::Metrics {
                 metric,
                 operator,
                 value,
+                window,
             }
         }),
     }
@@ -214,23 +247,30 @@ const METRIC_OPS: &[(&str, Operator)] = &[
     ("=", Operator::Eq),
 ];
 
-/// Parse `name op value` (`stall > 3`) or legacy compact `name{op}` (`stall>`).
-/// Compact forms return `value = 0.0` as a placeholder (rollup detection only).
-pub fn parse_metric_exit_label(s: &str) -> Option<(MetricId, Operator, f64)> {
+/// Parse `name[({w}s)] op value` (`stall > 3`, `nonvol_buy(2s) >= 0.9`) or legacy
+/// compact `name{op}` (`stall>`). Compact forms return `value = 0.0` as a
+/// placeholder (rollup detection only).
+///
+/// The window is what disambiguates a dynamic group from its lifetime twin, so it
+/// also **selects** the `MetricId`: qualified ⇒ the `Dynamic`-group metric of that
+/// name, bare ⇒ the `Static` one. Rows written before the qualifier existed are bare
+/// whichever group fired, so a bare name falls back to any group — the same answer
+/// this returned before, never a parse failure on a real stored reason.
+pub fn parse_metric_exit_label(s: &str) -> Option<(MetricId, Operator, f64, Option<f64>)> {
     let s = s.trim();
     // Spaced form: split on whitespace into [name, op, value, ...].
     let parts: Vec<&str> = s.split_whitespace().collect();
     if parts.len() >= 3 {
-        let name = parts[0];
+        let (name, window) = split_window_qualifier(parts[0]);
         let op_sym = parts[1];
         let val_str = parts[2];
-        let metric = metric_id_by_name(name)?;
+        let metric = metric_id_by_name_windowed(name, window.is_some())?;
         let operator = METRIC_OPS
             .iter()
             .find(|(sym, _)| *sym == op_sym)
             .map(|(_, op)| *op)?;
         let value: f64 = val_str.parse().ok()?;
-        return Some((metric, operator, value));
+        return Some((metric, operator, value, window));
     }
     // Legacy compact `{name}{op}` (no threshold).
     for &(sym, op) in METRIC_OPS {
@@ -238,12 +278,46 @@ pub fn parse_metric_exit_label(s: &str) -> Option<(MetricId, Operator, f64)> {
             if name.is_empty() || name.chars().any(|c| c.is_whitespace()) {
                 continue;
             }
-            if let Some(metric) = metric_id_by_name(name) {
-                return Some((metric, op, 0.0));
+            let (name, window) = split_window_qualifier(name);
+            if let Some(metric) = metric_id_by_name_windowed(name, window.is_some()) {
+                return Some((metric, op, 0.0, window));
             }
         }
     }
     None
+}
+
+/// Split `nonvol_buy(2s)` into `("nonvol_buy", Some(2.0))`. Anything that is not a
+/// well-formed `({number}s)` suffix is left on the name, so an unrecognised
+/// qualifier fails the name lookup instead of silently parsing as a bare metric.
+fn split_window_qualifier(token: &str) -> (&str, Option<f64>) {
+    let Some(open) = token.find('(') else {
+        return (token, None);
+    };
+    let Some(inner) = token[open + 1..].strip_suffix(')') else {
+        return (token, None);
+    };
+    let Some(secs) = inner.strip_suffix('s') else {
+        return (token, None);
+    };
+    match secs.parse::<f64>() {
+        Ok(w) if w.is_finite() && w > 0.0 => (&token[..open], Some(w)),
+        _ => (token, None),
+    }
+}
+
+/// Resolve a metric name to the dynamic (windowed) or static variant.
+///
+/// `windowed = false` prefers a static group but accepts a dynamic one, because a
+/// pre-qualifier row stored a bare name whichever group fired and rejecting it would
+/// turn old reasons into unparseable strings.
+fn metric_id_by_name_windowed(name: &str, windowed: bool) -> Option<MetricId> {
+    let want = if windowed {
+        crate::metrics::MetricKind::Dynamic
+    } else {
+        crate::metrics::MetricKind::Static
+    };
+    crate::metrics::metric_id_by_name_kind(name, want).or_else(|| metric_id_by_name(name))
 }
 
 /// Why a submitted buy/sell did not confirm. Drives the fold's retry policy.
@@ -538,6 +612,83 @@ pub enum ArmedStateTag {
     Armed,
     /// The (token, rule) disarmed for the given reason.
     Disarmed(DisarmReason),
+}
+
+#[cfg(test)]
+mod exit_label_tests {
+    use super::*;
+    use crate::metrics::{metric_id_by_name_kind, MetricKind};
+
+    fn win(name: &str) -> MetricId {
+        metric_id_by_name_kind(name, MetricKind::Dynamic).expect("dynamic metric")
+    }
+    fn stat(name: &str) -> MetricId {
+        metric_id_by_name_kind(name, MetricKind::Static).expect("static metric")
+    }
+
+    /// The whole point of the qualifier: `m_flow_split.nonvol_buy` and
+    /// `m_flow_split_window.nonvol_buy` share a name, so a label without the window
+    /// names a monotone lifetime total when a 2 s burst is what fired.
+    #[test]
+    fn window_qualifier_round_trips_and_selects_the_right_metric() {
+        let windowed = ExitReason::Metrics {
+            metric: win("nonvol_buy"),
+            operator: Operator::Gte,
+            value: 0.9,
+            window: Some(2.0),
+        };
+        assert_eq!(windowed.label(), "nonvol_buy(2s) >= 0.9");
+        assert_eq!(parse_exit_reason(&windowed.label()), Some(windowed));
+
+        let lifetime = ExitReason::Metrics {
+            metric: stat("nonvol_buy"),
+            operator: Operator::Gte,
+            value: 0.9,
+            window: None,
+        };
+        assert_eq!(lifetime.label(), "nonvol_buy >= 0.9");
+        assert_eq!(parse_exit_reason(&lifetime.label()), Some(lifetime));
+
+        // The two must not collapse onto each other.
+        assert_ne!(windowed.label(), lifetime.label());
+        assert_ne!(win("nonvol_buy"), stat("nonvol_buy"));
+    }
+
+    #[test]
+    fn fractional_and_large_windows_survive_the_round_trip() {
+        for w in [0.5f64, 2.0, 45.0, 300.0] {
+            let r = ExitReason::Metrics {
+                metric: win("nonvol_buy"),
+                operator: Operator::Lte,
+                value: 0.2,
+                window: Some(w),
+            };
+            assert_eq!(parse_exit_reason(&r.label()), Some(r), "window {w}");
+        }
+    }
+
+    /// Rows written before the qualifier existed are bare whichever group fired.
+    /// They must keep parsing — a stored reason that stops resolving reads to the
+    /// console exactly like a deleted metric.
+    #[test]
+    fn legacy_labels_still_parse() {
+        assert!(matches!(parse_exit_reason("stall > 3"), Some(ExitReason::Metrics { .. })));
+        assert!(matches!(parse_exit_reason("nonvol_buy >= 0.9"), Some(ExitReason::Metrics { .. })));
+        assert!(matches!(parse_exit_reason("stall>"), Some(ExitReason::Metrics { .. })));
+        assert_eq!(parse_exit_reason("TakeProfit"), Some(ExitReason::TakeProfit));
+        assert!(is_metric_exit_label("Metrics"));
+        assert!(is_metric_exit_label("nonvol_buy(2s) >= 0.9"));
+        assert!(!is_metric_exit_label("Dead"));
+    }
+
+    /// A qualifier that is not `({number}s)` stays on the name, so it fails the
+    /// lookup instead of silently parsing as the bare metric.
+    #[test]
+    fn malformed_qualifiers_do_not_degrade_to_the_lifetime_metric() {
+        for s in ["nonvol_buy(2) >= 0.9", "nonvol_buy(xs) >= 0.9", "nonvol_buy(2s >= 0.9"] {
+            assert_eq!(parse_exit_reason(s), None, "{s}");
+        }
+    }
 }
 
 #[cfg(test)]

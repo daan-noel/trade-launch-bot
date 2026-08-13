@@ -306,14 +306,29 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   strip swaps to `○ reconstructed at hh:mm:ss` until the pointer leaves, the
   entry/exit pins still visible as what it returns to. The rows come from
   `.../positions/{id}/metric-series`, fetched **lazily on the first crosshair move**
-  (one fold per modal, never per hover) and indexed with the panes' own
-  `nearestSeriesIndex`. An open position's hover carries the replay caption too:
+  (one fold per modal, never per hover) and indexed with `seriesIndexAsOf` — the last
+  row AT OR BEFORE the hovered instant. The chart resolves a hovered candle to the
+  end of its coverage (`buildBarWallEndSec`, which answers for **every** bar, empty
+  slot bars included), so the pair reads "what had the rule seen by the end of this
+  candle". Two rails hold that honest: a nearest-row lookup may answer with a row
+  from after the instant, and an unresolvable bar must **not** fall back to the
+  pinned readout — the strip says `no reading here` instead, because a pinned value
+  repeated on every gap bar reads as a metric frozen at its exit value.
+  The condition that closed the position is also drawn as a **value line in its own
+  pane** with its threshold dashed across it (`ChartValueLane`), so the number a
+  decision was taken on is on the chart rather than only in a chip. An open position's hover carries the replay caption too:
   the engine keeps one instant of state, not a history, so a past instant can only
   be reconstructed. A capped series says `· past coverage` rather than repeating its
   last row silently. The strip's **timeline** toggle draws the same payload as
   bottom-pane lanes on the chart (`timeBandsPlugin`), one per condition, filled
   where it held — off by default because turning it on is what pays for the fold,
   and it shares the crosshair's cache entry so whichever comes first covers both.
+  Lanes snap through each bar's wall-clock end, so they draw in **slot** mode too.
+  The whole detail is a `VolumePatternScope locked`: every number in it reports an
+  engine decision taken under the fingerprint's SAVED `volume_ix_patterns`, so an
+  app-wide draft must not re-classify it — the flow toggle's tooltip says the draft
+  is being ignored. Without that, a reader hand-summing the vol / non-vol split gets
+  a number the exit was never decided on.
   A disarmed row never fills: the fold is skipping that req, not failing it.
   Lanes thin down rather than vanish as a ladder grows, and the empty ones matter —
   against the coverage track they read as "never fired". Backend contract + the

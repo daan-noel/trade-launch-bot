@@ -83,19 +83,29 @@ impl TokenTrack {
 
     /// Register fingerprint-scoped flow state (idempotent). `windows` are the
     /// distinct `m_flow_split_window` sizes to track under this fingerprint.
+    /// Re-registering an existing fingerprint **adopts the new pattern set**. A
+    /// reload happens because the operator edited `volume_ix_patterns`, and keeping
+    /// the compiled-at-first-sight set would leave every token the engine is already
+    /// tracking classifying against the pre-edit list for the rest of its life — an
+    /// edit that visibly takes effect on new tokens and silently does nothing on the
+    /// ones on screen. Trades already folded keep the classification they were folded
+    /// under (the totals are running sums; nothing retains the trades to redo), so an
+    /// edit moves the *future* of a live token, never its past.
     pub fn ensure_flow(
         &mut self,
         fp: FingerprintId,
         patterns: &FlowPatterns,
         windows: &[f64],
     ) {
+        let creator = self.creator_wallet_hash;
         let state = self.flow.entry(fp).or_insert_with(|| {
             let mut s = FlowState::new(patterns.clone());
-            if let Some(h) = self.creator_wallet_hash {
+            if let Some(h) = creator {
                 s.set_creator(h);
             }
             s
         });
+        state.set_patterns(patterns);
         for &w in windows {
             state.ensure_window(w);
         }
@@ -245,6 +255,47 @@ mod tests {
 
     fn fp(n: u128) -> FingerprintId {
         FingerprintId(Uuid::from_u128(n))
+    }
+
+    /// A pattern edit must reach a token the engine is ALREADY tracking. Before this,
+    /// `ensure_flow` kept the set compiled at first sight, so an operator adding a
+    /// missing volume pattern saw it work on new tokens and do nothing on the open
+    /// ones — the exact shape that makes an exit look unexplainable.
+    #[test]
+    fn reload_adopts_an_edited_pattern_set_on_a_live_token() {
+        use crate::metrics::flow_split::ix_hash;
+        use std::collections::BTreeSet;
+        let fp = FingerprintId(Uuid::nil());
+        let bot = ix_hash(&["bot", "buy"]);
+        let mut track = TokenTrack::new(ts(0.0));
+        track.ensure_flow(fp, &FlowPatterns::default(), &[]);
+
+        // Unconfigured: the bot buy reads as organic.
+        track.on_trade(TradeLite {
+            side: Side::Buy,
+            sol: 1.0,
+            price: 1.0,
+            reserve_sol: 10.0,
+            at: ts(1.0),
+            ix_hash: Some(bot),
+            wallet_hash: 11,
+        });
+        assert_eq!(track.value(MetricId::NonvolBuy, None, Some(fp), ts(1.0)), 1.0);
+
+        // Operator adds the pattern; the reload re-registers the same fingerprint.
+        track.ensure_flow(fp, &FlowPatterns::new(BTreeSet::from([bot])), &[]);
+        track.on_trade(TradeLite {
+            side: Side::Buy,
+            sol: 2.0,
+            price: 1.0,
+            reserve_sol: 10.0,
+            at: ts(2.0),
+            ix_hash: Some(bot),
+            wallet_hash: 12,
+        });
+        // The new trade classifies volume-side; the already-folded one keeps its past.
+        assert_eq!(track.value(MetricId::VolBuy, None, Some(fp), ts(2.0)), 2.0);
+        assert_eq!(track.value(MetricId::NonvolBuy, None, Some(fp), ts(2.0)), 1.0);
     }
 
     #[test]

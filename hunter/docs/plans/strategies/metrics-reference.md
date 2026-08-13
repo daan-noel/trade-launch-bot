@@ -93,6 +93,20 @@ unless wallet-tagged/creator.
 Flow state is **fingerprint-scoped** on `TokenTrack` (`BTreeMap<FingerprintId, FlowState>`),
 not token-scoped — two fingerprints with different pattern sets diverge.
 
+**A pattern list carries VARIANTS or it carries nothing.** Matching hashes the whole
+ordered label list, so one instruction of difference is a complete miss: the same
+launch bot appears with and without a trailing `System Program: Transfer` (the tip)
+and with `Associated Token: Create` vs `CreateIdempotent`, which is four sequences for
+one behaviour. A list holding some of them books the rest as **organic demand**, and
+an organic-flow gate then fires on bot traffic — an exit that is arithmetically
+correct and impossible to explain from the trades. Audit a list by variant, never by
+example.
+
+A rules reload **adopts** an edited set on tokens already being tracked
+(`TokenTrack::ensure_flow`). Trades already folded keep the classification they were
+folded under — the totals are running sums and no trades are retained to redo — so an
+edit moves a live token's future, never its past.
+
 ### The flow context is patterns **AND** creator — every consumer seeds both
 
 `ensure_flow` alone is not a complete flow context. The creator seed is rule 3 of the

@@ -435,6 +435,18 @@ impl FlowState {
         self.tagged_wallets.insert(hash);
     }
 
+    /// Adopt an edited pattern set (rules reload). Cheap no-op when unchanged, which
+    /// is the common case — a reload fires for any rule edit, not just a pattern one.
+    ///
+    /// Contagion tags are deliberately **kept**: a wallet already shown to be a
+    /// volume maker does not stop being one because the pattern that caught it was
+    /// re-worded, and dropping the set would reclassify its future trades as organic.
+    pub fn set_patterns(&mut self, patterns: &FlowPatterns) {
+        if &self.patterns != patterns {
+            self.patterns = patterns.clone();
+        }
+    }
+
     pub fn ensure_window(&mut self, window_secs: f64) {
         self.windows
             .entry(window_key(window_secs))

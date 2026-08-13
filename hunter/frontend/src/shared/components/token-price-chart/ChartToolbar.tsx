@@ -330,6 +330,7 @@ export function ChartToolbar({
   flowLinesAvailable,
   flowPatternsConfigured,
   flowPatternsDraft = false,
+  flowPatternsDraftIgnored = false,
   rangeSelectMode,
   crosshair,
   formatFlow,
@@ -660,7 +661,9 @@ export function ChartToolbar({
             tooltip={
               !flowLinesAvailable
                 ? 'Needs a creator wallet or volume_ix_patterns to classify against'
-                : flowPatternsDraft && flowPatternsConfigured
+                : flowPatternsDraftIgnored
+                  ? 'Cumulative volume-maker (red) vs non-volume (gold) overlay — classified with the rule’s SAVED volume_ix_patterns, the set this position was decided under. Your unsaved pattern draft is deliberately IGNORED here, so what you see is what the bot saw.'
+                  : flowPatternsDraft && flowPatternsConfigured
                   ? 'Cumulative volume-maker (red) vs non-volume (gold) overlay — classified against your UNSAVED pattern draft + creator/wallet contagion. Save it to a fingerprint to make it real.'
                   : flowPatternsDraft
                     ? 'Pattern draft is empty — showing creator + wallets they traded with (red) vs the rest (gold). Click a Vol badge in the trades table to stage a pattern.'

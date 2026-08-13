@@ -38,6 +38,7 @@ export type HoverCoverage = 'in' | 'before' | 'after';
  */
 export function RuleConditionStrip({
   readout,
+  hoverUnresolved = false,
   loading = false,
   error = null,
   notFound = null,
@@ -50,6 +51,10 @@ export function RuleConditionStrip({
   className,
 }: {
   readout: RuleReadout | null | undefined;
+  /** The pointer is on the plot but left of the recorded span, so there is no row
+   *  to read. Rendered as its own message: the alternative — showing the pinned
+   *  readout instead — is a different question answered without saying so. */
+  hoverUnresolved?: boolean;
   loading?: boolean;
   error?: string | null;
   /** The backend's own 404 reason (aged-out trades, manual position, …). */
@@ -99,9 +104,18 @@ export function RuleConditionStrip({
   }
   // Absent readout while loading is the first fetch.
   if (!readout) {
-    return loading ? (
+    if (loading) {
+      return (
+        <StripShell className={className}>
+          <span className="text-[11px] text-text-dim">Reading rule…</span>
+        </StripShell>
+      );
+    }
+    return hoverUnresolved ? (
       <StripShell className={className}>
-        <span className="text-[11px] text-text-dim">Reading rule…</span>
+        <span className="text-[11px] text-text-dim">
+          No reading here — this candle is before the reconstructed window.
+        </span>
       </StripShell>
     ) : null;
   }

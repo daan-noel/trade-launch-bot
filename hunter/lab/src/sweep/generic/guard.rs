@@ -1361,6 +1361,7 @@ fn replay_outcome_to_token(po: &PositionOutcome, cost: &CostModel) -> TokenOutco
         exit_metric: None,
         exit_operator: None,
         exit_metric_value: None,
+        exit_metric_window: None,
         exit_metric_slot: None,
         entry_time: None,
         entry_price: None,

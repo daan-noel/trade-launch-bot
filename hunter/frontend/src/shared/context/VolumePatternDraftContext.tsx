@@ -173,6 +173,15 @@ export interface EffectiveFlowPatternKeys {
   draftActive: boolean;
   /** This subtree may not edit patterns (see {@link VolumePatternScope}). */
   locked: boolean;
+  /**
+   * A draft IS open but this subtree is locked, so the saved set is winning.
+   *
+   * Must be surfaced wherever it is true. The failure it exists to prevent is
+   * silent and expensive: the reader sums the vol / non-vol split off a locked
+   * chart, gets a number that disagrees with an engine decision, and concludes the
+   * engine is wrong — when in fact their own unsaved draft is what disagrees.
+   */
+  draftIgnored: boolean;
 }
 
 /**
@@ -186,12 +195,14 @@ export function useEffectiveFlowPatternKeys(
   const draft = useVolumePatternDraft();
   const locked = useVolumePatternLocked();
   const draftActive = draft.keys != null && !locked;
+  const draftIgnored = draft.keys != null && locked;
   return useMemo(
     () => ({
       keys: draftActive ? draft.keys : (propKeys ?? null),
       draftActive,
       locked,
+      draftIgnored,
     }),
-    [draftActive, draft.keys, propKeys, locked],
+    [draftActive, draftIgnored, draft.keys, propKeys, locked],
   );
 }

@@ -41,6 +41,7 @@ import {
   barsToLineData,
   barSelectionMarker,
   buildBarEarliestTradeSec,
+  buildBarWallEndSec,
   compareTradesChronologically,
   computeRangeStats,
   dropEmptyBars,
@@ -496,6 +497,7 @@ export function TokenPriceChart({
   externalCrosshairTimeSec = null,
   onVisibleTimeRangeChange,
   timeBands = null,
+  valueLane = null,
   timeBandCoverage = null,
   athPriceInSol = null,
   isMigrated,
@@ -567,6 +569,8 @@ export function TokenPriceChart({
   const timeBandsPrimRef = useRef<TimeBandsPlugin | null>(null);
   const barsRef = useRef<OhlcBar[]>([]);
   const alignedFlowLinesRef = useRef<FlowLines>({ vol: [], nonVol: [] });
+  const valueLaneSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const valueLaneLineRef = useRef<IPriceLine | null>(null);
 
   // Height tracks width unless the caller pins it (`fixedHeight`). A fluid width
   // with a fixed height renders wide-and-flat on a big monitor; deriving height
@@ -596,8 +600,11 @@ export function TokenPriceChart({
   const [showFlowLines, setShowFlowLines] = useState(initialPrefs.showFlowLines);
   /** An open pattern draft layers over the host's saved set, so every chart in
    *  the app classifies against whatever is being staged right now. */
-  const { keys: effectiveFlowPatternKeys, draftActive: flowPatternsDraft } =
-    useEffectiveFlowPatternKeys(flowPatternKeys);
+  const {
+    keys: effectiveFlowPatternKeys,
+    draftActive: flowPatternsDraft,
+    draftIgnored: flowPatternsDraftIgnored,
+  } = useEffectiveFlowPatternKeys(flowPatternKeys);
   /** True once `volume_ix_patterns` are supplied — the split is then the engine's
    *  own volume-maker vs organic classification. */
   const flowPatternsConfigured =
@@ -690,6 +697,16 @@ export function TokenPriceChart({
 
   // Token creation time (epoch seconds) for per-bar tx age in the crosshair tooltip.
   const createdAtSec = useMemo(() => tokenCreatedAtSec(tokenCreatedAt), [tokenCreatedAt]);
+
+  /** Wall-clock end of every bar — what a hovered candle resolves to for the
+   *  condition strip and the condition-value pane. Includes empty slot bars, which
+   *  is the whole reason it exists (see `buildBarWallEndSec`). */
+  const barWallEndSec = useMemo(
+    () => buildBarWallEndSec(bars, sortedTrades, groupMode, intervalSec),
+    [bars, sortedTrades, groupMode, intervalSec],
+  );
+  const barWallEndSecRef = useRef(barWallEndSec);
+  barWallEndSecRef.current = barWallEndSec;
 
   const barEarliestTradeSec = useMemo(
     () => buildBarEarliestTradeSec(sortedTrades, groupMode, intervalSec),
@@ -890,7 +907,7 @@ export function TokenPriceChart({
       color: FLOW_VOL_LINE_COLOR,
       lineWidth: 2,
       priceScaleId: 'left',
-      title: 'Vol makers',
+      title: 'Vol makers (∑net)',
       lastValueVisible: true,
       priceLineVisible: false,
       visible: false,
@@ -899,7 +916,7 @@ export function TokenPriceChart({
       color: FLOW_NON_VOL_LINE_COLOR,
       lineWidth: 2,
       priceScaleId: 'left',
-      title: 'Non-vol',
+      title: 'Non-vol (∑net)',
       lastValueVisible: true,
       priceLineVisible: false,
       visible: false,
@@ -1024,23 +1041,17 @@ export function TokenPriceChart({
         flowNonVol: flow.nonVol,
       };
       setCrosshair(info);
-      // Resolve wall-clock seconds for sibling panes (metric series). Time mode
-      // uses the bar key directly; slot mode maps to the last trade in that slot.
-      if (groupModeRef.current === 'time') {
-        setCrosshairTimeSec(Number(param.time));
-      } else {
-        const slot = Number(param.time);
-        let wall: number | null = null;
-        for (let i = sortedTradesRef.current.length - 1; i >= 0; i--) {
-          const t = sortedTradesRef.current[i];
-          if (t.slot === slot) {
-            const ms = Date.parse(t.block_time);
-            wall = Number.isFinite(ms) ? ms / 1000 : null;
-            break;
-          }
-        }
-        setCrosshairTimeSec(wall);
-      }
+      // Resolve wall-clock seconds for sibling panes (metric series): the instant
+      // the hovered candle's coverage ENDS, in both grouping modes.
+      //
+      // This used to answer with the bar key in time mode (the bar's START — the
+      // state before anything in the candle happened) and with a per-slot trade
+      // lookup in slot mode, which returned `null` on every empty slot. A `null`
+      // reads downstream as "pointer is off the plot", so the strip fell back to its
+      // pinned readout and every gap bar showed the SAME borrowed numbers — which
+      // reads exactly like a metric that never moved. `buildBarWallEndSec` has an
+      // answer for every bar, so `null` now means only what it says.
+      setCrosshairTimeSec(barWallEndSecRef.current.get(Number(param.time)) ?? null);
       const onWalletMarker =
         param.point != null &&
         (walletMarkersPrimRef.current?.containsPoint(param.point.x, param.point.y) ?? false);
@@ -1503,19 +1514,102 @@ export function TokenPriceChart({
     showEventMarkers,
   ]);
 
+  // ── Condition-value pane ────────────────────────────────────────────────────
+  //
+  // A SEPARATE pane, not another overlay on the price scale: this is the quantity a
+  // decision was actually taken on, and it must be readable against its own threshold
+  // rather than squeezed onto an axis it shares nothing with.
+  //
+  // Points arrive in wall-clock seconds and are snapped onto whatever bars this chart
+  // is drawing — one point per bar, the last reading at or before that bar's end
+  // (`barWallEndSec`), which is the same instant the crosshair reports. That keeps the
+  // line, the hovered chips and the engine's own decision describing one moment.
+  useEffect(() => {
+    if (!showChart) return;
+    const chart = chartRef.current;
+    if (!chart) return;
+
+    if (!valueLane || valueLane.points.length === 0 || bars.length === 0) {
+      if (valueLaneSeriesRef.current) {
+        chart.removeSeries(valueLaneSeriesRef.current);
+        valueLaneSeriesRef.current = null;
+        valueLaneLineRef.current = null;
+      }
+      return;
+    }
+
+    let series = valueLaneSeriesRef.current;
+    if (!series) {
+      // Pane 1 — created on demand so a chart with no lane keeps its full height.
+      series = chart.addSeries(
+        LineSeries,
+        { lineWidth: 2, priceLineVisible: false, lastValueVisible: true },
+        1,
+      );
+      valueLaneSeriesRef.current = series;
+    }
+    series.applyOptions({ color: valueLane.color, title: valueLane.label });
+
+    // Walk bars and points together — both ascending, so this stays linear.
+    const points = valueLane.points;
+    const data: { time: UTCTimestamp; value: number }[] = [];
+    let p = 0;
+    let carried: number | null = null;
+    for (const bar of bars) {
+      const end = barWallEndSec.get(bar.time as number);
+      if (end == null) continue;
+      while (p < points.length && points[p].timeSec <= end) {
+        carried = points[p].value;
+        p += 1;
+      }
+      // A `null` reading is unreadable (NaN in the engine), which satisfies nothing —
+      // so the line breaks rather than drawing a flat zero that looks like a value.
+      if (carried != null && Number.isFinite(carried)) {
+        data.push({ time: bar.time, value: carried });
+      }
+    }
+    series.setData(data);
+
+    if (valueLaneLineRef.current) {
+      series.removePriceLine(valueLaneLineRef.current);
+      valueLaneLineRef.current = null;
+    }
+    if (valueLane.threshold != null && Number.isFinite(valueLane.threshold)) {
+      valueLaneLineRef.current = series.createPriceLine({
+        price: valueLane.threshold,
+        color: CHART_COLORS.text,
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: 'threshold',
+      });
+    }
+  }, [valueLane, bars, barWallEndSec, showChart, style, groupingKey]);
+
   // Bottom-pane on/off lanes. Snapping happens HERE rather than in the primitive
   // because `timeToCoordinate` resolves only times the scale already knows, and
   // `bars` — the thing that decides what it knows — lives in this component.
   useEffect(() => {
     const prim = timeBandsPrimRef.current;
     if (!prim || !showChart) return;
-    // Slot mode's time scale carries slot indices, so a wall-clock span has nowhere
-    // to land. Better a missing band than one drawn at the wrong slots.
-    if (!timeBands?.length || groupMode !== 'time' || bars.length === 0) {
+    if (!timeBands?.length || bars.length === 0) {
       prim.setLanes([], null);
       return;
     }
-    const times = bars.map((b) => Number(b.time));
+    // Snap through each bar's WALL-CLOCK end rather than its key, so slot mode works
+    // too: a slot number is not a clock, but every bar now has an instant
+    // (`barWallEndSec`, empty slots included). Slot mode used to drop the lanes
+    // entirely — silently, and exactly in the view a launch is inspected in.
+    const keys = bars.map((b) => Number(b.time));
+    const walls = keys.map((k) => barWallEndSec.get(k));
+    const usable = walls.every((w) => w != null);
+    if (!usable) {
+      prim.setLanes([], null);
+      return;
+    }
+    const wallSecs = walls as number[];
+    const toBarKey = (wall: number) => keys[wallSecs.indexOf(wall)] ?? wall;
+    const times = wallSecs;
     const lanes: TimeBandLane[] = timeBands.map((lane) => ({
       key: lane.key,
       label: lane.label,
@@ -1523,7 +1617,12 @@ export function TokenPriceChart({
       spans: lane.spans.flatMap((s) => {
         const snapped = snapSpanToBars(times, s.from, s.to);
         return snapped
-          ? [{ from: snapped.from as UTCTimestamp, to: snapped.to as UTCTimestamp }]
+          ? [
+              {
+                from: toBarKey(snapped.from) as UTCTimestamp,
+                to: toBarKey(snapped.to) as UTCTimestamp,
+              },
+            ]
           : [];
       }),
     }));
@@ -1532,9 +1631,14 @@ export function TokenPriceChart({
       : null;
     prim.setLanes(
       lanes,
-      track ? { from: track.from as UTCTimestamp, to: track.to as UTCTimestamp } : null,
+      track
+        ? {
+            from: toBarKey(track.from) as UTCTimestamp,
+            to: toBarKey(track.to) as UTCTimestamp,
+          }
+        : null,
     );
-  }, [timeBands, timeBandCoverage, bars, groupMode, showChart, style, groupingKey]);
+  }, [timeBands, timeBandCoverage, bars, barWallEndSec, showChart, style, groupingKey]);
 
   // Render the committed range selection as a band with a duration chip. Keyed
   // on style/grouping so it re-applies after the series (and its plugin) is
@@ -1825,6 +1929,7 @@ export function TokenPriceChart({
         flowLinesAvailable={flowLinesAvailable}
         flowPatternsConfigured={flowPatternsConfigured}
         flowPatternsDraft={flowPatternsDraft}
+        flowPatternsDraftIgnored={flowPatternsDraftIgnored}
         rangeSelectMode={rangeSelectMode}
         crosshair={crosshair}
         formatFlow={formatFlow}

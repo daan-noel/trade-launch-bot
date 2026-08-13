@@ -1007,7 +1007,7 @@ export function ConsolePage() {
           actions: openActions(r, 'hint'),
           // Polls the decision loop while this modal is open — the engine's own
           // reading of the rule, so the chips agree with what it will act on.
-          conditions: <LivePositionConditions positionId={r.positionId} />,
+          conditions: <LivePositionConditions positionId={r.positionId} exitReason={r.exitReason} />,
           onPrefillTrade: () => prefillTrade(r.mint_address),
         }}
         chartHeight={360}

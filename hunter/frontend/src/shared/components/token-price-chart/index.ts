@@ -11,4 +11,5 @@ export type {
   ChartVisibleTimeRange,
   ChartTimeBand,
   ChartTimeSpan,
+  ChartValueLane,
 } from './types';

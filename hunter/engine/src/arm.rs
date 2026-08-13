@@ -560,6 +560,7 @@ fn reqs_exit_fired(
                     metric: r.metric,
                     operator: c.operator,
                     value: c.value,
+                    window: r.window,
                 },
             });
         }

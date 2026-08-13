@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useSyncExternalStore } from 'react';
 
-import type { ChartTimeBand, ChartTimeSpan } from 'components/token-price-chart';
+import type { ChartTimeBand, ChartTimeSpan, ChartValueLane } from 'components/token-price-chart';
 import { createPublishedStore, type PublishedStore } from './publishedStore';
 
 /**
@@ -18,6 +18,14 @@ export interface ConditionBands {
   lanes: ChartTimeBand[];
   /** The stretch the lanes speak for — the reconstruction's covered range. */
   coverage: ChartTimeSpan | null;
+  /**
+   * The condition drawn as a VALUE line in its own pane — normally the one that
+   * closed the position. A lane says only whether a condition held; without the
+   * reading beside it nothing on the chart can be checked against the threshold, and
+   * the only numbers left to reach for are the flow overlay's, which answer a
+   * different question entirely.
+   */
+  valueLane: ChartValueLane | null;
 }
 
 export type ConditionBandsStore = PublishedStore<ConditionBands | null>;

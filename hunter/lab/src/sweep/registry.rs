@@ -909,7 +909,7 @@ fn exit_label(code: ExitCode) -> &'static str {
 fn exit_reason_string(o: &crate::sweep::strategy::TokenOutcome) -> String {
     match (o.exit_metric, o.exit_operator, o.exit_metric_value) {
         (Some(metric), Some(op), Some(value)) => {
-            hunter_engine::event::format_metric_exit_label(metric, op, value)
+            hunter_engine::event::format_metric_exit_label(metric, op, value, o.exit_metric_window)
         }
         _ => exit_label(o.exit).to_string(),
     }

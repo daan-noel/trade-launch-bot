@@ -939,6 +939,22 @@ pub fn metric_id_by_name(name: &str) -> Option<MetricId> {
         .map(|m| m.id)
 }
 
+/// Resolve a metric name **within one group kind**.
+///
+/// A dynamic group and its lifetime twin deliberately share every metric name
+/// (`m_flow_split.nonvol_buy` / `m_flow_split_window.nonvol_buy`), so
+/// [`metric_id_by_name`] alone cannot answer which one a persisted exit label meant.
+/// The window qualifier on the label is the discriminator, and this is how it is
+/// applied. See `event::parse_metric_exit_label`.
+pub fn metric_id_by_name_kind(name: &str, kind: MetricKind) -> Option<MetricId> {
+    REGISTRY
+        .iter()
+        .filter(|g| g.kind == kind)
+        .flat_map(|g| g.metrics.iter())
+        .find(|m| m.name == name)
+        .map(|m| m.id)
+}
+
 /// The group a metric belongs to.
 pub fn group_of(id: MetricId) -> &'static GroupSpec {
     REGISTRY

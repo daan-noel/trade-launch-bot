@@ -369,6 +369,31 @@ export function findRuleFireMarkers(
   return markers;
 }
 
+/**
+ * Last series index at or before a wall-clock unix second — the state **as of**
+ * `timeSec`, which is what a hovered candle is asking for.
+ *
+ * Distinct from {@link nearestSeriesIndex}, and the difference is not cosmetic: a
+ * series row lands on every trade, so "nearest" can jump FORWARD past trades the
+ * hovered instant had not seen yet, reporting a reading that had not happened. Rows
+ * are ascending, so this is a binary search.
+ *
+ * `null` only when every row is later than `timeSec` (the pointer is left of the
+ * recorded span) — a real answer the caller must render as "no reading here" rather
+ * than clamping to row 0.
+ */
+export function seriesIndexAsOf(atSec: number[], timeSec: number): number | null {
+  if (!atSec.length || timeSec < atSec[0]) return null;
+  let lo = 0;
+  let hi = atSec.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (atSec[mid] <= timeSec) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
 /** Nearest series index to a wall-clock unix second (or null). */
 export function nearestSeriesIndex(atSec: number[], timeSec: number): number | null {
   if (!atSec.length) return null;

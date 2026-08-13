@@ -7,6 +7,7 @@ import {
   type ChartRangeSelectionDetail,
   type ChartTimeBand,
   type ChartTimeSpan,
+  type ChartValueLane,
 } from 'components/token-price-chart';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { useWatchTokenTradesLive } from 'hooks/useTokenTradesLive';
@@ -43,6 +44,7 @@ export function FloorMintChart({
   externalCrosshairTimeSec = null,
   timeBands = null,
   timeBandCoverage = null,
+  valueLane = null,
 }: {
   mint: string;
   markers?: ChartEventMarker[] | null;
@@ -62,6 +64,7 @@ export function FloorMintChart({
   timeBands?: ChartTimeBand[] | null;
   /** The stretch those lanes speak for. */
   timeBandCoverage?: ChartTimeSpan | null;
+  valueLane?: ChartValueLane | null;
 }) {
   const { unit, usdRate } = usePriceUnit();
   useWatchTokenTradesLive(mint || null);
@@ -116,6 +119,7 @@ export function FloorMintChart({
         externalCrosshairTimeSec={externalCrosshairTimeSec}
         timeBands={timeBands}
         timeBandCoverage={timeBandCoverage}
+        valueLane={valueLane}
         tokenCreatedAt={detail?.created_at ?? undefined}
         athPriceInSol={detail?.ath_price ?? null}
         isMigrated={detail?.is_migrated}

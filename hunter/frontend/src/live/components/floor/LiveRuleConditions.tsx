@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import { nearestSeriesIndex } from 'lib/strategy/metricPanes';
+import { seriesIndexAsOf } from 'lib/strategy/metricPanes';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
   useGetArmedMetricsQuery,
@@ -8,6 +8,7 @@ import {
   useGetPositionMetricsQuery,
   type ReadoutAt,
   type RuleConditionRead,
+  type RuleConditionSeries,
   type RuleReadout,
   type RuleReadoutSeries,
 } from '@live/store/liveEndpoints';
@@ -50,7 +51,18 @@ const READOUT_POLL_MS = 1000;
  * whose trades have aged out of the box's rolling window. The strip renders the
  * reason instead of an error.
  */
-export function LivePositionConditions({ positionId }: { positionId: string }) {
+export function LivePositionConditions({
+  positionId,
+  exitReason,
+}: {
+  positionId: string;
+  /**
+   * The position's persisted exit reason, when the host has it. Selects which
+   * condition the chart draws as a line — without it the pane falls back to the
+   * first exit condition, which may not be the one that closed the position.
+   */
+  exitReason?: string | null;
+}) {
   const [at, setAt] = useState<ReadoutAt>('exit');
   // Latched from the response rather than passed in: the caller (a modal that may be
   // walking a lane with ←/→) does not reliably know whether the engine still holds
@@ -94,16 +106,22 @@ export function LivePositionConditions({ positionId }: { positionId: string }) {
     [series, atSec, crosshairTimeSec],
   );
 
-  const bands = useMemo(() => (bandOn ? seriesToBands(series, atSec) : null), [
-    bandOn,
-    series,
-    atSec,
-  ]);
+  const bands = useMemo(
+    () => (bandOn ? seriesToBands(series, atSec, exitReason) : null),
+    [bandOn, series, atSec, exitReason],
+  );
   usePublishConditionBands(bands);
 
+  // The pointer is ON the plot: the pinned readout must NOT stand in for a hovered
+  // one. Every bar now resolves to an instant, so a `null` row means the pointer is
+  // genuinely left of the reconstructed window — and saying so is the whole fix. The
+  // old `?? data` fallback showed the exit-instant values on every unresolvable bar,
+  // identical bar after bar, which reads as a metric frozen at its exit value.
+  const scrubbing = crosshairTimeSec != null;
   return (
     <RuleConditionStrip
-      readout={hovered?.readout ?? data ?? null}
+      readout={hovered?.readout ?? (scrubbing ? null : (data ?? null))}
+      hoverUnresolved={scrubbing && hovered == null && !seriesLoading}
       // The strip's own loading state covers the first series fetch: until it lands
       // there is nothing to show at the hovered instant, and showing the pinned
       // readout instead would silently answer a different question.
@@ -113,7 +131,7 @@ export function LivePositionConditions({ positionId }: { positionId: string }) {
       at={at}
       onAtChange={setAt}
       hoveredAtMs={hovered?.atMs ?? null}
-      hoveredCoverage={hovered?.coverage ?? 'in'}
+      hoveredCoverage={hovered?.coverage ?? (scrubbing ? 'before' : 'in')}
       bandOn={bandOn}
       onBandToggle={setBandOn}
     />
@@ -127,6 +145,9 @@ export function LivePositionConditions({ positionId }: { positionId: string }) {
  * condition drawn sideways.
  */
 const LANE_COLOR = 'rgba(226,232,240,0.55)';
+
+/** The drawn condition's own line — brighter than a lane, it is the subject. */
+const VALUE_LANE_COLOR = '#7DD3FC';
 
 /**
  * The series as chart lanes: per condition, the stretches over which it held.
@@ -142,6 +163,7 @@ const LANE_COLOR = 'rgba(226,232,240,0.55)';
 function seriesToBands(
   series: RuleReadoutSeries | undefined,
   atSec: number[] | null,
+  exitReason: string | null | undefined,
 ): ConditionBands | null {
   if (!series || !atSec || atSec.length === 0) return null;
   const lanes: ChartTimeBand[] = series.conditions.map((c, idx) => {
@@ -163,18 +185,76 @@ function seriesToBands(
       spans,
     };
   });
+  const drawn = valueLaneCondition(series, exitReason);
   return {
     lanes,
+    valueLane: drawn
+      ? {
+          key: `value-${drawn.metric}-${drawn.window_size_sec ?? ''}`,
+          label: conditionLabel(drawn),
+          color: VALUE_LANE_COLOR,
+          points: atSec.map((t, i) => ({ timeSec: t, value: drawn.values[i] ?? null })),
+          threshold: soleThreshold(drawn),
+        }
+      : null,
     coverage: { from: atSec[0], to: atSec[atSec.length - 1] },
   };
+}
+
+/** The condition whose reading gets drawn: the one that closed the position when the
+ *  exit reason names it, else the first exit condition — a post-mortem is opened on
+ *  "why did it leave", so the exit side is the useful default. */
+function valueLaneCondition(
+  series: RuleReadoutSeries,
+  exitReason: string | null | undefined,
+) {
+  const exits: RuleConditionSeries[] = series.conditions.filter((c) => c.side === 'exit');
+  if (exits.length === 0) return null;
+  const named = exitReason ? matchExitReason(exits, exitReason) : null;
+  return named ?? exits[0];
+}
+
+/**
+ * Resolve a persisted exit reason to the condition it names.
+ *
+ * Accepts both label forms: `nonvol_buy(2s) >= 0.9` (current — the window qualifier
+ * is what separates a dynamic group from its identically-named lifetime twin) and the
+ * bare `nonvol_buy >= 0.9` still stored on older rows. Matching by name ALONE would
+ * be free to pick the lifetime condition for a windowed exit, which is the mismatch
+ * this whole pane exists to make impossible, so a bare label only matches when it is
+ * unambiguous.
+ */
+function matchExitReason(exits: RuleConditionSeries[], reason: string) {
+  const m = /^\s*([a-z0-9_]+)(?:\((\d*\.?\d+)s\))?\s/i.exec(reason);
+  if (!m) return null;
+  const [, name, windowStr] = m;
+  const window = windowStr ? Number(windowStr) : null;
+  const byName = exits.filter((c) => c.metric === name);
+  if (byName.length === 0) return null;
+  if (window != null) {
+    return byName.find((c) => c.window_size_sec === window) ?? null;
+  }
+  return byName.length === 1 ? byName[0] : null;
+}
+
+/** The condition's threshold when it authors exactly one — a DNF with several arms
+ *  has no single line to draw, and inventing one would misstate the rule. */
+function soleThreshold(c: RuleConditionSeries): number | null {
+  const conds = c.conditions;
+  if (!Array.isArray(conds) || conds.length !== 1) return null;
+  const only = conds[0] as { value?: unknown };
+  return typeof only?.value === 'number' && Number.isFinite(only.value) ? only.value : null;
 }
 
 /**
  * The series row nearest `timeSec`, as the point routes' readout shape.
  *
- * Row lookup is the panes' own `nearestSeriesIndex` — already shared, already what
- * the lab resolves a hovered instant with. The rows are the engine's decision grid,
- * so "nearest" is at worst half a tick from the pointer.
+ * Row lookup is `seriesIndexAsOf` — the last row AT OR BEFORE the instant, never the
+ * nearest one. The chart resolves a hovered candle to the end of its coverage, so the
+ * pair answers "what had the rule seen by the end of this candle". Nearest-row would
+ * be free to answer with a row from *after* the hovered instant, reporting trades that
+ * had not happened there — on a launch, where a whole position can live inside one
+ * candle, that is the difference between seeing the crossing and not.
  *
  * `coverage` says whether the pointer is inside the recorded span, and if not, which
  * end it fell off. Either way `nearestSeriesIndex` clamps to an edge row and the strip
@@ -192,7 +272,7 @@ function readoutAt(
   timeSec: number | null,
 ): { readout: RuleReadout; atMs: number; coverage: HoverCoverage } | null {
   if (!series || !atSec || timeSec == null || !atSec.length) return null;
-  const i = nearestSeriesIndex(atSec, timeSec);
+  const i = seriesIndexAsOf(atSec, timeSec);
   if (i == null) return null;
   // The series' metadata IS the point shape's metadata (the backend flattens one
   // `ConditionMetaOut` into both), so the row is that metadata plus three cells.

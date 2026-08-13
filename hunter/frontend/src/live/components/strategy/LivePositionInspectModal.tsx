@@ -99,7 +99,12 @@ export function LivePositionInspectModal({
           pnlPct,
           inspect,
           flowPatternKeys,
-          conditions: <LivePositionConditions positionId={position.id} />,
+          conditions: (
+            <LivePositionConditions
+              positionId={position.id}
+              exitReason={position.exit_reason}
+            />
+          ),
         }}
       />
     </Modal>
