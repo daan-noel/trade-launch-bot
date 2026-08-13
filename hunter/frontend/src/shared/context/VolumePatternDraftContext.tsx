@@ -76,8 +76,34 @@ const INERT: VolumePatternDraft = {
 
 const DraftContext = createContext<VolumePatternDraft>(INERT);
 
-/** Marks a subtree whose pattern set is NOT the user's to edit here. */
-const LockedContext = createContext(false);
+/**
+ * How a subtree treats the app-wide draft. Three states, because "may I edit here"
+ * and "does the draft change what I am reading" are different questions and
+ * collapsing them into one boolean loses one of them:
+ *
+ * - `free` — the draft applies ambiently. Discovery / simulate / plain token charts,
+ *   where the whole point is to see the staged set redraw everything.
+ * - `decision` — this view REPORTS A DECISION already taken (a position and its
+ *   engine-stamped exit). Editing stays available, but the draft is applied only
+ *   when the reader asks for it, and is marked while it is. At rest the view shows
+ *   the classification the decision was actually made under.
+ * - `locked` — a stored run's own frozen `volume_ix_patterns`. Not the user's to
+ *   edit here and never redrawn under anything else.
+ */
+export type VolumePatternScopeMode = 'free' | 'decision' | 'locked';
+
+interface ScopeState {
+  mode: VolumePatternScopeMode;
+  /** `decision` only: the reader has asked to see the draft applied. */
+  preview: boolean;
+  setPreview: (on: boolean) => void;
+}
+
+const ScopeContext = createContext<ScopeState>({
+  mode: 'free',
+  preview: false,
+  setPreview: () => {},
+});
 
 function loadDraft(): StoredDraft | null {
   const raw = getJSON<StoredDraft | null>(STORAGE_KEYS.volumePatternDraft, null);
@@ -143,27 +169,46 @@ export function VolumePatternDraftProvider({ children }: { children: ReactNode }
 }
 
 /**
- * Marks its subtree read-only for pattern editing. Use it wherever the pattern
- * set is a SNAPSHOT rather than a live setting — a finished sweep run's numbers
- * were computed under its own stored `volume_ix_patterns`, so redrawing it under
- * an unrelated draft would misreport that run.
+ * Declares how its subtree treats the draft (see {@link VolumePatternScopeMode}).
+ *
+ * `locked` is kept as a shorthand for `mode="locked"` — a finished sweep run's
+ * numbers were computed under its own stored `volume_ix_patterns`, so redrawing it
+ * under an unrelated draft would misreport that run.
+ *
+ * `preview` is per-scope state, not global: two modals open on different positions
+ * each answer for themselves, and it resets to off on mount so a view always opens
+ * showing what was decided.
  */
 export function VolumePatternScope({
+  mode,
   locked = false,
   children,
 }: {
+  mode?: VolumePatternScopeMode;
   locked?: boolean;
   children: ReactNode;
 }) {
-  return <LockedContext.Provider value={locked}>{children}</LockedContext.Provider>;
+  const resolved: VolumePatternScopeMode = mode ?? (locked ? 'locked' : 'free');
+  const [preview, setPreview] = useState(false);
+  const value = useMemo<ScopeState>(
+    () => ({ mode: resolved, preview: resolved === 'decision' && preview, setPreview }),
+    [resolved, preview],
+  );
+  return <ScopeContext.Provider value={value}>{children}</ScopeContext.Provider>;
+}
+
+/** The subtree's scope state — mode plus the `decision` preview switch. */
+export function useVolumePatternScope(): ScopeState {
+  return useContext(ScopeContext);
 }
 
 export function useVolumePatternDraft(): VolumePatternDraft {
   return useContext(DraftContext);
 }
 
+/** True where patterns are not this subtree's to edit (`locked` only). */
 export function useVolumePatternLocked(): boolean {
-  return useContext(LockedContext);
+  return useContext(ScopeContext).mode === 'locked';
 }
 
 export interface EffectiveFlowPatternKeys {
@@ -173,6 +218,10 @@ export interface EffectiveFlowPatternKeys {
   draftActive: boolean;
   /** This subtree may not edit patterns (see {@link VolumePatternScope}). */
   locked: boolean;
+  /** The scope this resolution happened in. */
+  mode: VolumePatternScopeMode;
+  /** A draft is open and this scope can show it on request — render the switch. */
+  canPreviewDraft: boolean;
   /**
    * A draft IS open but this subtree is locked, so the saved set is winning.
    *
@@ -189,20 +238,44 @@ export interface EffectiveFlowPatternKeys {
  * place that resolution happens — the chart's overlay and the trades table's
  * badge both go through it, so they can never classify against different sets.
  */
+/**
+ * Which set a subtree classifies with, as a pure function of its inputs — the whole
+ * scope decision in one testable place, since the hook around it needs a React tree
+ * and this repo's tests run on `node`.
+ *
+ * `draftIgnored` is not bookkeeping: a staged-but-not-applied draft MUST be
+ * surfaced, or a reader hand-sums a split that disagrees with the decision beside it
+ * and concludes the engine is wrong.
+ */
+export function resolveFlowPatternKeys(input: {
+  mode: VolumePatternScopeMode;
+  preview: boolean;
+  draftKeys: ReadonlySet<string> | null;
+  propKeys: ReadonlySet<string> | null | undefined;
+}): EffectiveFlowPatternKeys {
+  const { mode, preview, draftKeys, propKeys } = input;
+  const open = draftKeys != null;
+  // `decision` applies the draft only on request — a view that reports a decision
+  // must open showing the classification that decision was made under.
+  const draftActive = open && (mode === 'free' || (mode === 'decision' && preview));
+  return {
+    keys: draftActive ? draftKeys : (propKeys ?? null),
+    draftActive,
+    locked: mode === 'locked',
+    draftIgnored: open && !draftActive,
+    mode,
+    canPreviewDraft: mode === 'decision' && open,
+  };
+}
+
 export function useEffectiveFlowPatternKeys(
   propKeys: ReadonlySet<string> | null | undefined,
 ): EffectiveFlowPatternKeys {
   const draft = useVolumePatternDraft();
-  const locked = useVolumePatternLocked();
-  const draftActive = draft.keys != null && !locked;
-  const draftIgnored = draft.keys != null && locked;
+  const { mode, preview } = useVolumePatternScope();
+  const draftKeys = draft.keys;
   return useMemo(
-    () => ({
-      keys: draftActive ? draft.keys : (propKeys ?? null),
-      draftActive,
-      locked,
-      draftIgnored,
-    }),
-    [draftActive, draftIgnored, draft.keys, propKeys, locked],
+    () => resolveFlowPatternKeys({ mode, preview, draftKeys, propKeys }),
+    [mode, preview, draftKeys, propKeys],
   );
 }

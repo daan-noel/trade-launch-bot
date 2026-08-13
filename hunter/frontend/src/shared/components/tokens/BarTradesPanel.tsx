@@ -110,8 +110,10 @@ export function BarTradesPanel({
     () =>
       tokenTradeColumns(price.unitLabel, {
         flowPatternKeys: effectiveKeys,
-        // A locked subtree shows a stored run's own patterns — clicking a badge
-        // there would edit a set that isn't this chart's to change.
+        // Only a LOCKED subtree refuses the edit — it shows a stored run's own
+        // patterns and clicking a badge would edit a set that isn't this chart's to
+        // change. A `decision` scope still stages freely: it merely declines to
+        // redraw itself under the draft until asked (chart Preview switch).
         onTogglePattern: locked ? null : onTogglePattern,
         flowReasons,
       }),

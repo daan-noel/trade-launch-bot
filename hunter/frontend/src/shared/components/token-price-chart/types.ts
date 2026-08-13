@@ -392,10 +392,16 @@ export interface ChartToolbarProps {
   /** The patterns come from an UNSAVED app-wide draft, not this chart's own
    *  fingerprint — the overlay is a preview until it's saved. */
   flowPatternsDraft?: boolean;
-  /** A draft IS open but this chart is locked to its own saved patterns (a report
-   *  of a decision already taken). Surfaced so a reader never hand-sums a split the
+  /** A draft IS open but this chart is showing its own saved patterns (a report of a
+   *  decision already taken). Surfaced so a reader never hand-sums a split the
    *  decision was not made under — see `EffectiveFlowPatternKeys.draftIgnored`. */
   flowPatternsDraftIgnored?: boolean;
+  /** This chart can show the draft on request (a `decision` scope with one open) —
+   *  render the Preview switch. */
+  flowDraftPreviewAvailable?: boolean;
+  /** The Preview switch is on: the overlay is the STAGED set, not the decided one. */
+  flowDraftPreview?: boolean;
+  onFlowDraftPreviewChange?: (on: boolean) => void;
   /** Range-select (drag-to-highlight) mode is active. */
   rangeSelectMode: boolean;
   crosshair: ChartCrosshairInfo | null;

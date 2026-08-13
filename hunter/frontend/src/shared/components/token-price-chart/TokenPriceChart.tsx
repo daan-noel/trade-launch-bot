@@ -53,7 +53,10 @@ import { ChartRangeSlider } from './ChartRangeSlider';
 import { ChartToolbar } from './ChartToolbar';
 import { createChartTimeFormatters } from './chartTimezone';
 import { useTimezone } from 'context/TimezoneContext';
-import { useEffectiveFlowPatternKeys } from 'context/VolumePatternDraftContext';
+import {
+  useEffectiveFlowPatternKeys,
+  useVolumePatternScope,
+} from 'context/VolumePatternDraftContext';
 import { useStoredField } from 'hooks/useLocalStorage';
 import { useProfileWallets } from 'hooks/useProfileWallets';
 import { cn } from 'lib/cn';
@@ -604,7 +607,10 @@ export function TokenPriceChart({
     keys: effectiveFlowPatternKeys,
     draftActive: flowPatternsDraft,
     draftIgnored: flowPatternsDraftIgnored,
+    canPreviewDraft: flowDraftPreviewAvailable,
   } = useEffectiveFlowPatternKeys(flowPatternKeys);
+  const { preview: flowDraftPreview, setPreview: setFlowDraftPreview } =
+    useVolumePatternScope();
   /** True once `volume_ix_patterns` are supplied — the split is then the engine's
    *  own volume-maker vs organic classification. */
   const flowPatternsConfigured =
@@ -1930,6 +1936,9 @@ export function TokenPriceChart({
         flowPatternsConfigured={flowPatternsConfigured}
         flowPatternsDraft={flowPatternsDraft}
         flowPatternsDraftIgnored={flowPatternsDraftIgnored}
+        flowDraftPreviewAvailable={flowDraftPreviewAvailable}
+        flowDraftPreview={flowDraftPreview}
+        onFlowDraftPreviewChange={setFlowDraftPreview}
         rangeSelectMode={rangeSelectMode}
         crosshair={crosshair}
         formatFlow={formatFlow}

@@ -324,11 +324,18 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   where it held — off by default because turning it on is what pays for the fold,
   and it shares the crosshair's cache entry so whichever comes first covers both.
   Lanes snap through each bar's wall-clock end, so they draw in **slot** mode too.
-  The whole detail is a `VolumePatternScope locked`: every number in it reports an
-  engine decision taken under the fingerprint's SAVED `volume_ix_patterns`, so an
-  app-wide draft must not re-classify it — the flow toggle's tooltip says the draft
-  is being ignored. Without that, a reader hand-summing the vol / non-vol split gets
-  a number the exit was never decided on.
+  The whole detail is a `VolumePatternScope mode="decision"`. The scope has three
+  modes because "may I edit patterns here" and "does the draft change what I am
+  reading" are different questions: `free` applies the draft ambiently, `locked` (a
+  stored sweep run) neither applies nor edits, and `decision` **stages freely but
+  applies only on request** — the chart's `Preview draft` switch, off on mount, with
+  the overlay marked while it is on. Every number in the detail reports an engine
+  decision taken under the fingerprint's SAVED `volume_ix_patterns`, so a view at rest
+  shows that set and the flow tooltip says a draft is staged but not applied;
+  otherwise a reader hand-summing the vol / non-vol split gets a number the exit was
+  never decided on. Staging from the trades table's Vol badge keeps working — that is
+  how a misclassified bot tx gets found. The resolution is one pure
+  `resolveFlowPatternKeys`.
   A disarmed row never fills: the fold is skipping that req, not failing it.
   Lanes thin down rather than vanish as a ladder grows, and the empty ones matter —
   against the coverage track they read as "never fired". Backend contract + the
