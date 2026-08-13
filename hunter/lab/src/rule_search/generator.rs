@@ -4,13 +4,13 @@
 //! combos. Entry can-fail is 0–2 (selector + extra pooled); trigger stays 0–1.
 //! Exit bags are 0–2 different metrics; giveback and clock still compete.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use hunter_engine::metrics::evaluator::{Condition, Operator};
 use hunter_engine::metrics::{group_spec, MetricGroupId, MetricId, MetricKind};
 use hunter_engine::rule_params::{GroupConditions, RuleParams, SideConditions};
 
-use super::cuts::{Cut, CutPhase, CutTable};
+use super::cuts::{fill_key, Cut, CutPhase, CutTable, MIN_SPLIT};
 use super::roles::{
     entry_compete, entry_role, exit_competes, exit_role, EntryRole, ExitRole, TriggerFamily,
 };
@@ -57,7 +57,7 @@ pub struct GeneratedCombo {
 }
 
 pub fn generate(cuts: &CutTable) -> Vec<GeneratedCombo> {
-    let entries = entry_fillings(&cuts.entry);
+    let entries = entry_fillings(cuts);
     let exits = exit_bags(&cuts.exit);
     let mut out = Vec::with_capacity(entries.len() * exits.len());
     for e in &entries {
@@ -75,8 +75,10 @@ pub fn generate(cuts: &CutTable) -> Vec<GeneratedCombo> {
 /// Top-3 extra-OR candidates: unused exit cuts as one extra clause on a full rule.
 pub fn extra_or_candidates(base: &GeneratedCombo, cuts: &CutTable) -> Vec<GeneratedCombo> {
     let used: Vec<MetricId> = base.exit.clauses.iter().map(|c| c.metric).collect();
+    let mut ranked = cuts.exit.clone();
+    ranked.sort_by_key(|c| c.phase.menu_rank());
     let mut out = Vec::new();
-    for cut in &cuts.exit {
+    for cut in &ranked {
         if used.contains(&cut.metric) {
             continue;
         }
@@ -93,17 +95,21 @@ pub fn extra_or_candidates(base: &GeneratedCombo, cuts: &CutTable) -> Vec<Genera
             entry: base.entry.clone(),
             exit,
         });
+        if out.len() >= 16 {
+            break;
+        }
     }
     out
 }
 
 /// Cap on can-fail singles in the product (selector + extra pooled).
-const CAN_FAIL_CAP: usize = 8;
+const CAN_FAIL_CAP: usize = 10;
+const RETUNE_CAP: usize = 12;
 
-fn entry_fillings(cuts: &[Cut]) -> Vec<EntryFilling> {
+fn entry_fillings(cuts: &CutTable) -> Vec<EntryFilling> {
     let mut can_fail: Vec<Clause> = Vec::new();
     let mut triggers: BTreeMap<TriggerFamily, Vec<Clause>> = BTreeMap::new();
-    for c in cuts {
+    for c in &cuts.entry {
         match entry_role(c.metric) {
             Some(EntryRole::Selector) | Some(EntryRole::Extra) => {
                 can_fail.push(Clause::from(*c));
@@ -120,7 +126,8 @@ fn entry_fillings(cuts: &[Cut]) -> Vec<EntryFilling> {
             .cmp(&b.phase.menu_rank())
             .then_with(|| format!("{:?}", a.metric).cmp(&format!("{:?}", b.metric)))
     });
-    // One cut per metric (best phase), then cap.
+    // One cut per metric (best phase), then cap. Contrast outranks FillMoment,
+    // so a 1.5× snapshot cannot erase the peak knife for the same metric.
     let mut seen = Vec::new();
     can_fail.retain(|c| {
         if seen.contains(&c.metric) {
@@ -154,6 +161,9 @@ fn entry_fillings(cuts: &[Cut]) -> Vec<EntryFilling> {
             if has_entry_compete_clash(&pair) {
                 continue;
             }
+            if !pair_cooccurs(&pair[0], &pair[1], &cuts.winner_fill) {
+                continue;
+            }
             fail_opts.push(pair.to_vec());
         }
     }
@@ -175,6 +185,92 @@ fn entry_fillings(cuts: &[Cut]) -> Vec<EntryFilling> {
         out.push(EntryFilling { clauses: vec![] });
     }
     out
+}
+
+fn pair_cooccurs(a: &Clause, b: &Clause, fills: &[HashMap<(MetricId, i64), f64>]) -> bool {
+    // Peak contrast pairs are not gated on the 1.5× snapshot — that clock
+    // drops knives that only hold later. Fill-moment pairs still must co-occur
+    // at fill-moment.
+    if a.phase != CutPhase::FillMoment || b.phase != CutPhase::FillMoment {
+        return true;
+    }
+    if fills.len() < MIN_SPLIT {
+        return true;
+    }
+    let n = fills
+        .iter()
+        .filter(|m| match (m.get(&fill_key(a.metric, a.window)), m.get(&fill_key(b.metric, b.window))) {
+            (Some(&va), Some(&vb)) => clause_holds(a, va) && clause_holds(b, vb),
+            _ => false,
+        })
+        .count();
+    n >= MIN_SPLIT
+}
+
+fn clause_holds(c: &Clause, v: f64) -> bool {
+    match c.op {
+        Operator::Gt => v > c.threshold,
+        Operator::Gte => v >= c.threshold,
+        Operator::Lt => v < c.threshold,
+        Operator::Lte => v <= c.threshold,
+        Operator::Eq => (v - c.threshold).abs() < 1e-9,
+        Operator::Ne => (v - c.threshold).abs() >= 1e-9,
+    }
+}
+
+/// Same-metric neighbors from the table. Does not add a metric.
+pub fn retune_candidates(base: &GeneratedCombo, cuts: &CutTable) -> Vec<GeneratedCombo> {
+    let mut out = Vec::new();
+    for (i, c) in base.entry.clauses.iter().enumerate() {
+        for n in neighbors(c, &cuts.entry) {
+            let mut entry = base.entry.clone();
+            entry.clauses[i] = n;
+            if has_entry_compete_clash(&entry.clauses) {
+                continue;
+            }
+            out.push(GeneratedCombo {
+                params: assemble(&entry, &base.exit),
+                entry,
+                exit: base.exit.clone(),
+            });
+            if out.len() >= RETUNE_CAP {
+                return out;
+            }
+        }
+    }
+    for (i, c) in base.exit.clauses.iter().enumerate() {
+        for n in neighbors(c, &cuts.exit) {
+            if base.exit.clauses.iter().enumerate().any(|(j, o)| {
+                j != i && (o.metric == n.metric || exit_competes(o.metric, n.metric))
+            }) {
+                continue;
+            }
+            let mut exit = base.exit.clone();
+            exit.clauses[i] = n;
+            out.push(GeneratedCombo {
+                params: assemble(&base.entry, &exit),
+                entry: base.entry.clone(),
+                exit,
+            });
+            if out.len() >= RETUNE_CAP {
+                return out;
+            }
+        }
+    }
+    out
+}
+
+fn neighbors(c: &Clause, cuts: &[Cut]) -> Vec<Clause> {
+    cuts.iter()
+        .filter(|n| n.metric == c.metric && n.group == c.group && n.phase == c.phase)
+        .filter(|n| {
+            n.window != c.window
+                || n.op != c.op
+                || (n.threshold - c.threshold).abs() > 1e-9
+        })
+        .copied()
+        .map(Clause::from)
+        .collect()
 }
 
 fn has_entry_compete_clash(clauses: &[Clause]) -> bool {
@@ -203,7 +299,7 @@ fn exit_bags(cuts: &[Cut]) -> Vec<ExitBag> {
         let cap = match role {
             ExitRole::Giveback | ExitRole::Clock => 2,
             ExitRole::Progress => 3,
-            ExitRole::Flow => 4,
+            ExitRole::Flow => 8,
         };
         if already >= cap {
             continue;
@@ -337,6 +433,7 @@ mod tests {
             windows: vec![10.0],
             entry: vec![],
             exit: vec![],
+            winner_fill: vec![],
         };
         let g = generate(&table);
         assert_eq!(g.len(), 1);
@@ -356,6 +453,7 @@ mod tests {
                 cut(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 15.0),
                 cut(MetricGroupId::PriceLifetime, MetricId::Stall, Operator::Gte, 30.0),
             ],
+            winner_fill: vec![],
         };
         let bags = exit_bags(&table.exit);
         assert!(bags.iter().any(|b| b.clauses.is_empty()));
@@ -393,6 +491,7 @@ mod tests {
                 cut(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 15.0),
                 cut(MetricGroupId::PriceLifetime, MetricId::Stall, Operator::Gte, 40.0),
             ],
+            winner_fill: vec![],
         };
         let extra = extra_or_candidates(&base, &table);
         assert!(extra.iter().all(|g| !g.exit.clauses.iter().any(|c| c.metric == MetricId::Retrace)));
@@ -447,8 +546,9 @@ mod tests {
                 },
             ],
             exit: vec![],
+            winner_fill: vec![],
         };
-        let entries = entry_fillings(&table.entry);
+        let entries = entry_fillings(&table);
         assert!(entries.iter().any(|e| e.clauses.is_empty()));
         assert!(entries.iter().any(|e| {
             e.clauses.len() == 2
@@ -471,6 +571,185 @@ mod tests {
                 })
                 .count()
                 <= 2
+        }));
+    }
+
+    #[test]
+    fn retune_swaps_threshold_not_metric() {
+        let base = GeneratedCombo {
+            entry: EntryFilling { clauses: vec![] },
+            exit: ExitBag {
+                clauses: vec![clause(
+                    MetricGroupId::PriceLifetime,
+                    MetricId::Trail,
+                    Operator::Gte,
+                    12.0,
+                )],
+            },
+            params: RuleParams::default(),
+        };
+        let table = CutTable {
+            windows: vec![],
+            entry: vec![],
+            exit: vec![
+                cut(MetricGroupId::PriceLifetime, MetricId::Trail, Operator::Gte, 12.0),
+                cut(MetricGroupId::PriceLifetime, MetricId::Trail, Operator::Gte, 18.0),
+                cut(MetricGroupId::PriceLifetime, MetricId::Stall, Operator::Gte, 40.0),
+            ],
+            winner_fill: vec![],
+        };
+        let r = retune_candidates(&base, &table);
+        assert!(r.iter().any(|g| {
+            g.exit.clauses.len() == 1
+                && g.exit.clauses[0].metric == MetricId::Trail
+                && (g.exit.clauses[0].threshold - 18.0).abs() < 1e-9
+        }));
+        assert!(r.iter().all(|g| !g.exit.clauses.iter().any(|c| c.metric == MetricId::Stall)));
+    }
+
+    #[test]
+    fn cooccur_drops_pairs_that_never_happen_together() {
+        use std::collections::HashMap;
+        let mut fill = HashMap::new();
+        fill.insert(fill_key(MetricId::Time, None), 10.0);
+        fill.insert(fill_key(MetricId::Liquidity, None), 80.0);
+        let fills = vec![fill; 10];
+        let time = Clause {
+            group: MetricGroupId::Snapshot,
+            metric: MetricId::Time,
+            window: None,
+            op: Operator::Lt,
+            threshold: 5.0,
+            phase: CutPhase::FillMoment,
+        };
+        let liq = Clause {
+            group: MetricGroupId::Snapshot,
+            metric: MetricId::Liquidity,
+            window: None,
+            op: Operator::Gte,
+            threshold: 20.0,
+            phase: CutPhase::FillMoment,
+        };
+        assert!(!pair_cooccurs(&time, &liq, &fills));
+        let time_ok = Clause {
+            group: MetricGroupId::Snapshot,
+            metric: MetricId::Time,
+            window: None,
+            op: Operator::Lt,
+            threshold: 40.0,
+            phase: CutPhase::FillMoment,
+        };
+        assert!(pair_cooccurs(&time_ok, &liq, &fills));
+        // Peak contrast is not gated on the 1.5× snapshot.
+        let peak_time = clause(MetricGroupId::Snapshot, MetricId::Time, Operator::Lt, 5.0);
+        let peak_liq = clause(MetricGroupId::Snapshot, MetricId::Liquidity, Operator::Gte, 20.0);
+        assert!(pair_cooccurs(&peak_time, &peak_liq, &fills));
+    }
+
+    #[test]
+    fn contrast_beats_fill_moment_on_same_metric() {
+        let table = CutTable {
+            windows: vec![],
+            entry: vec![
+                Cut {
+                    group: MetricGroupId::Snapshot,
+                    metric: MetricId::Liquidity,
+                    window: None,
+                    op: Operator::Gte,
+                    threshold: 90.0,
+                    phase: CutPhase::FillMoment,
+                },
+                Cut {
+                    group: MetricGroupId::Snapshot,
+                    metric: MetricId::Liquidity,
+                    window: None,
+                    op: Operator::Gte,
+                    threshold: 47.0,
+                    phase: CutPhase::Contrast,
+                },
+                cut(MetricGroupId::Snapshot, MetricId::Time, Operator::Lt, 40.0),
+            ],
+            exit: vec![],
+            winner_fill: vec![],
+        };
+        let entries = entry_fillings(&table);
+        let liq_singles: Vec<&EntryFilling> = entries
+            .iter()
+            .filter(|e| e.clauses.len() == 1 && e.clauses[0].metric == MetricId::Liquidity)
+            .collect();
+        assert!(
+            liq_singles
+                .iter()
+                .any(|e| (e.clauses[0].threshold - 47.0).abs() < 1e-9
+                    && e.clauses[0].phase == CutPhase::Contrast),
+            "peak contrast liq must be a filling"
+        );
+        assert!(
+            liq_singles
+                .iter()
+                .all(|e| (e.clauses[0].threshold - 90.0).abs() > 1e-9),
+            "fill-moment must not replace peak contrast for the same metric"
+        );
+    }
+
+    #[test]
+    fn retune_stays_same_phase() {
+        let base = GeneratedCombo {
+            entry: EntryFilling {
+                clauses: vec![Clause {
+                    group: MetricGroupId::Snapshot,
+                    metric: MetricId::Liquidity,
+                    window: None,
+                    op: Operator::Gte,
+                    threshold: 47.0,
+                    phase: CutPhase::Contrast,
+                }],
+            },
+            exit: ExitBag { clauses: vec![] },
+            params: RuleParams::default(),
+        };
+        let table = CutTable {
+            windows: vec![],
+            entry: vec![
+                Cut {
+                    group: MetricGroupId::Snapshot,
+                    metric: MetricId::Liquidity,
+                    window: None,
+                    op: Operator::Gte,
+                    threshold: 47.0,
+                    phase: CutPhase::Contrast,
+                },
+                Cut {
+                    group: MetricGroupId::Snapshot,
+                    metric: MetricId::Liquidity,
+                    window: None,
+                    op: Operator::Gte,
+                    threshold: 55.0,
+                    phase: CutPhase::Contrast,
+                },
+                Cut {
+                    group: MetricGroupId::Snapshot,
+                    metric: MetricId::Liquidity,
+                    window: None,
+                    op: Operator::Gte,
+                    threshold: 90.0,
+                    phase: CutPhase::FillMoment,
+                },
+            ],
+            exit: vec![],
+            winner_fill: vec![],
+        };
+        let r = retune_candidates(&base, &table);
+        assert!(r.iter().any(|g| {
+            g.entry.clauses.len() == 1
+                && (g.entry.clauses[0].threshold - 55.0).abs() < 1e-9
+                && g.entry.clauses[0].phase == CutPhase::Contrast
+        }));
+        assert!(r.iter().all(|g| {
+            !g.entry
+                .clauses
+                .iter()
+                .any(|c| c.phase == CutPhase::FillMoment)
         }));
     }
 }

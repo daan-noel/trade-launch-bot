@@ -24,7 +24,7 @@ use trading_core::strategies::kernel::CostModel;
 use trading_core::strategies::paper_fill::FillModel;
 
 use cuts::build_cut_table;
-use generator::{extra_or_candidates, generate};
+use generator::{extra_or_candidates, generate, retune_candidates};
 use report::{build_report, Report, ReplayOpts};
 use scorer::{score_combos, to_replay_tokens, ScoreConfig};
 
@@ -74,7 +74,7 @@ pub fn run_search(
     };
     let mut archive = score_combos(&input.corpus.tokens, &combos, &cfg, observer)?;
 
-    // Extra OR on the top 3 full rules ([method] §3).
+    // Extra OR on the top 5 full rules ([method] §3).
     let mut ranked: Vec<usize> = (0..archive.len()).collect();
     ranked.sort_by(|&a, &b| {
         archive[b]
@@ -83,7 +83,7 @@ pub fn run_search(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let mut extras = Vec::new();
-    for &i in ranked.iter().take(3) {
+    for &i in ranked.iter().take(5) {
         extras.extend(extra_or_candidates(&combos[i], &cuts));
     }
     if !extras.is_empty() && !observer.cancelled() {
@@ -94,6 +94,34 @@ pub fn run_search(
             .map(|a| a.total_pnl_sol)
             .fold(f64::NEG_INFINITY, f64::max);
         for (row, combo) in extra_archive.into_iter().zip(extras) {
+            if row.total_pnl_sol > best {
+                let mut r = row;
+                r.combo_idx = combos.len();
+                archive.push(r);
+                combos.push(combo);
+            }
+        }
+    }
+
+    ranked = (0..archive.len()).collect();
+    ranked.sort_by(|&a, &b| {
+        archive[b]
+            .total_pnl_sol
+            .partial_cmp(&archive[a].total_pnl_sol)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut retunes = Vec::new();
+    for &i in ranked.iter().take(3) {
+        retunes.extend(retune_candidates(&combos[i], &cuts));
+    }
+    if !retunes.is_empty() && !observer.cancelled() {
+        observer.notice("retune");
+        let retune_archive = score_combos(&input.corpus.tokens, &retunes, &cfg, observer)?;
+        let best = archive
+            .iter()
+            .map(|a| a.total_pnl_sol)
+            .fold(f64::NEG_INFINITY, f64::max);
+        for (row, combo) in retune_archive.into_iter().zip(retunes) {
             if row.total_pnl_sol > best {
                 let mut r = row;
                 r.combo_idx = combos.len();

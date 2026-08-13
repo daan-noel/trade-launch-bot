@@ -32,7 +32,7 @@ import {
   type PromotedRuleDraft,
 } from 'lib/strategy/types';
 import type { RuleEditorDraft } from 'components/strategy/RuleEditor';
-import { EXECUTION_MODEL_HELP } from 'lib/strategy/strategyHelp';
+import { EXECUTION_MODEL_HELP, type HelpTip } from 'lib/strategy/strategyHelp';
 import { STRATEGY_PARAMS } from 'lib/strategy/nav';
 import { PromoteRuleModal } from '@lab/components/sweep/PromoteRuleModal';
 import { DryRunDetail } from '@lab/components/strategy/DryRunDetail';
@@ -92,19 +92,74 @@ const VERDICT: Record<RuleSearchVerdict, { variant: 'danger' | 'warning' | 'succ
   refuse: {
     variant: 'danger',
     label: 'Refuse',
-    help: 'Nothing paid. Paper the next launch burst, or pick a new range.',
+    help: 'Nothing paid on this range — not the champion, not empty-entry. Paper the next launch burst, or pick a new range.',
   },
   ungated: {
     variant: 'warning',
     label: 'Ungated',
-    help: 'Juice is ungated: empty-entry (buy everything) is not beaten by a selector.',
+    help: 'Empty-entry (buy everything that matches) pays as well as or better than any selector. The juice is ungated — a filter does not add SOL here.',
   },
   candidate: {
     variant: 'success',
     label: 'Candidate',
-    help: 'A selector beats empty-entry on this range. Promote to inactive paper, then Simulate.',
+    help: 'A selector beats empty-entry on authority SOL. Promote to inactive paper, then Simulate before going live.',
   },
 };
+
+const TIPS = {
+  tokenCap: {
+    title: 'Token cap',
+    body: 'Hard cap on tokens loaded for this fingerprint + range. Raise it only if the matched count is larger and you want the full cohort.',
+  },
+  buySol: {
+    title: 'Buy SOL',
+    body: 'Size of each simulated buy. When an incumbent is set, that rule\'s buy size and concurrency caps replace this field.',
+  },
+  incumbent: {
+    title: 'Incumbent',
+    body: 'A saved rule scored on this same range for comparison. It never seeds the search — the champion is built from this cohort\'s cuts, not from the incumbent\'s clauses.',
+  },
+  champion: {
+    title: 'Champion',
+    body: 'Best selector on this range after replay. Ranking, verdict, and archive order use authority SOL (this run\'s Fill), not the first-in-window number.',
+  },
+  emptyEntry: {
+    title: 'Empty-entry',
+    body: 'Buy every matched token; same exit bag as the champion. If this column wins, a selector is not adding SOL — verdict Ungated.',
+  },
+  incumbentCol: {
+    title: 'Incumbent',
+    body: 'Your saved rule, replayed on this range with the same Fill / cost / copycat. Compare only.',
+  },
+  solPair: {
+    title: 'Authority vs first-in-window',
+    body: 'Left (authority) uses the Fill you ran with — default Worst-case — and is the only number that ranks champion, verdict, and archive. Right re-prices the same closed trades at the next print after the signal (first-in-window). A gap is fill sensitivity, not a second ranking.',
+  },
+  nClosed: {
+    title: 'Closed (n)',
+    body: 'Round-trips that entered and exited. Too few closed trades → no rule, even if SOL looks large.',
+  },
+  pf: {
+    title: 'Profit factor',
+    body: 'Gross wins ÷ gross losses under authority Fill. Above 1 means winners cover losers. Ranking still uses total SOL, not PF.',
+  },
+  enterPct: {
+    title: 'Enter %',
+    body: 'Share of matched tokens that entered, with copycat ON (this job\'s default). A selective claim wants this well below 100% — necessary, not sufficient.',
+  },
+  unguarded: {
+    title: 'Unguarded enter %',
+    body: 'Same enter rate with copycat OFF. If this is much higher than enter %, the guard is doing a lot of the selecting.',
+  },
+  archive: {
+    title: 'Archive',
+    body: 'Top combos by authority (replay) SOL. Row 1 is the champion. Promote any row; Simulate is champion-only.',
+  },
+  nMatched: {
+    title: 'Matched / combos',
+    body: 'Matched = tokens this fingerprint hit in the range (after the cap). Combos = entry × exit fillings scored. The board is the replay of the top archive, not the fast walk.',
+  },
+} satisfies Record<string, HelpTip>;
 
 /**
  * Lab page: run rule search for one fingerprint + datetime range and board the
@@ -293,11 +348,17 @@ export function RuleSearchPage() {
     <div className="pt-2">
       <PageHeader
         title="Rule search"
-        description="One fingerprint, one datetime range — the registry fills roles from this cohort's cuts"
+        description="One fingerprint + one range. The registry fills roles from this cohort's cuts — you do not pick metrics. Board: champion vs buy-everything vs your saved rule."
       />
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
-        <Field label="Created range · UTC">
+        <Field
+          label="Created range · UTC"
+          tip={{
+            title: 'Created range',
+            body: 'Tokens created in this UTC window. Empty = all history this fingerprint has matched. The search scores that cohort only.',
+          }}
+        >
           <DateTimeRangePicker
             aria-label="Created range"
             zoneLabel="UTC"
@@ -316,6 +377,7 @@ export function RuleSearchPage() {
         </Field>
         <NumField
           label="Token cap"
+          tip={TIPS.tokenCap}
           value={config.tokenCap}
           min={1}
           max={100000}
@@ -324,6 +386,7 @@ export function RuleSearchPage() {
         />
         <NumField
           label="Buy SOL"
+          tip={TIPS.buySol}
           value={config.buyAmountSol}
           min={0.01}
           onChange={(v) => set('buyAmountSol', v)}
@@ -419,7 +482,7 @@ export function RuleSearchPage() {
       </div>
 
       <div className="mb-4 max-w-md">
-        <Field label="Incumbent (compare only)">
+        <Field label="Incumbent (compare only)" tip={TIPS.incumbent}>
           <SearchableSelect
             options={incumbentOptions}
             value={config.incumbentRuleId}
@@ -450,25 +513,45 @@ export function RuleSearchPage() {
             <Badge variant={verdict.variant} size="md" title={verdict.help}>
               {verdict.label}
             </Badge>
-            <span className="text-xs text-text-dim">
-              {result.n_matched} matched · {result.n_combos} combos
-            </span>
+            <LabelTip tip={TIPS.nMatched}>
+              <span className="text-xs text-text-dim">
+                {result.n_matched} matched tokens · {result.n_combos} combos scored
+              </span>
+            </LabelTip>
             {result.archive_replay_disagree && (
-              <Badge variant="warning" size="sm">
-                archive ≠ replay — champion is the replay one
+              <Badge
+                variant="warning"
+                size="sm"
+                title="Fast walk and replay disagreed. The board uses replay — champion is the replay winner, not a shorter prefix of the fast ranking."
+              >
+                archive ≠ replay — board uses replay
               </Badge>
             )}
           </div>
-          <p className="text-xs text-text-dim">{verdict.help}</p>
+          <p className="text-xs text-text-mid">{verdict.help}</p>
           {result.diagnostics.map((d) => (
             <p key={d} className="text-xs text-text-dim">
               {d}
             </p>
           ))}
 
+          <p className="rounded-md border border-white/8 bg-white/2 px-3 py-2 text-[11px] leading-snug text-text-mid">
+            <LabelTip tip={TIPS.solPair}>
+              <span className="font-medium text-text">SOL pair</span>
+            </LabelTip>
+            {' — '}
+            <span className="text-text">left = authority</span>
+            {' (this run\'s Fill; ranks champion, verdict, archive). '}
+            <span className="text-text">right = first-in-window</span>
+            {' (same trades, next print after the signal). A gap is fill sensitivity, not a second ranking.'}
+          </p>
+
           <div className="grid gap-3 sm:grid-cols-3">
             <ScoreCard
               title="Champion"
+              blurb="Best selector. Ranking uses authority SOL."
+              tip={TIPS.champion}
+              emptyHint="No paying selector on this range."
               row={result.champion}
               actions={
                 result.champion ? (
@@ -477,6 +560,7 @@ export function RuleSearchPage() {
                       type="button"
                       className="rounded border border-white/20 px-2 py-0.5 text-[11px] text-text-mid transition hover:bg-white/5"
                       onClick={() => result.champion && promote(result.champion, 'champion')}
+                      title="Save as an inactive paper rule"
                     >
                       Promote…
                     </button>
@@ -486,7 +570,7 @@ export function RuleSearchPage() {
                       onClick={() => void simulateChampion()}
                       disabled={simBusy}
                       label={simBusy ? 'Simulating…' : 'Simulate'}
-                      title="Replay the champion with this form's range, fill, cost, and copycat"
+                      title="Full Simulate of the unsaved champion — same range, Fill, cost, copycat as this form"
                     >
                       {simBusy ? <SpinnerIcon /> : <SimulateIcon />}
                     </IconButton>
@@ -494,8 +578,20 @@ export function RuleSearchPage() {
                 ) : null
               }
             />
-            <ScoreCard title="Empty-entry" row={result.empty_entry} />
-            <ScoreCard title="Incumbent" row={result.incumbent} />
+            <ScoreCard
+              title="Empty-entry"
+              blurb="Buy everything that matched. Same exit bag as the champion."
+              tip={TIPS.emptyEntry}
+              emptyHint="No empty-entry score on this run."
+              row={result.empty_entry}
+            />
+            <ScoreCard
+              title="Incumbent"
+              blurb="Your saved rule on this range. Compare only — never a seed."
+              tip={TIPS.incumbentCol}
+              emptyHint="No incumbent on this run. Pick a saved rule above to compare."
+              row={result.incumbent}
+            />
           </div>
 
           {result.champion && (
@@ -503,25 +599,40 @@ export function RuleSearchPage() {
               <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-mid">
                 Champion params
               </h2>
+              <p className="mb-2 text-[11px] text-text-dim">
+                Clauses the search landed on. Promote writes these; Simulate runs them unsaved.
+              </p>
               {ruleParamsCell(result.champion.params)}
             </div>
           )}
 
           {result.archive.length > 0 && (
             <div>
-              <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-mid">
-                Archive
-                <span className="ml-1.5 text-text-dim">({result.archive.length})</span>
+              <h2 className="mb-1 text-xs font-semibold uppercase tracking-wide text-text-mid">
+                <LabelTip tip={TIPS.archive}>
+                  Archive
+                  <span className="ml-1.5 font-normal normal-case tracking-normal text-text-dim">
+                    ({result.archive.length} · ranked by authority SOL)
+                  </span>
+                </LabelTip>
               </h2>
               <div className="overflow-x-auto rounded-md border border-white/8">
                 <table className="w-full text-left text-xs">
                   <thead className="text-[10px] uppercase tracking-wide text-text-dim">
                     <tr>
                       <th className="px-2 py-1.5">Params</th>
-                      <th className="px-2 py-1.5 text-right">n</th>
-                      <th className="px-2 py-1.5 text-right">SOL</th>
-                      <th className="px-2 py-1.5 text-right">PF</th>
-                      <th className="px-2 py-1.5 text-right">Enter%</th>
+                      <th className="px-2 py-1.5 text-right">
+                        <LabelTip tip={TIPS.nClosed} className="justify-end">Closed</LabelTip>
+                      </th>
+                      <th className="px-2 py-1.5 text-right">
+                        <LabelTip tip={TIPS.solPair} className="justify-end">Auth / first ◎</LabelTip>
+                      </th>
+                      <th className="px-2 py-1.5 text-right">
+                        <LabelTip tip={TIPS.pf} className="justify-end">PF</LabelTip>
+                      </th>
+                      <th className="px-2 py-1.5 text-right">
+                        <LabelTip tip={TIPS.enterPct} className="justify-end">Enter%</LabelTip>
+                      </th>
                       <th className="px-2 py-1.5" />
                     </tr>
                   </thead>
@@ -567,29 +678,38 @@ export function RuleSearchPage() {
 
 function ScoreCard({
   title,
+  blurb,
+  tip,
+  emptyHint,
   row,
   actions,
 }: {
   title: string;
+  blurb: string;
+  tip: HelpTip;
+  emptyHint: string;
   row: RuleSearchScored | null;
   actions?: ReactNode;
 }) {
   return (
     <div className="rounded-lg border border-white/8 bg-white/2 p-3">
-      <h3 className="mb-2 text-[10px] font-bold uppercase tracking-wider text-text-dim">{title}</h3>
+      <h3 className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
+        <LabelTip tip={tip}>{title}</LabelTip>
+      </h3>
+      <p className="mb-2 text-[11px] leading-snug text-text-dim">{blurb}</p>
       {!row ? (
-        <p className="text-xs text-text-dim">—</p>
+        <p className="text-xs text-text-dim">{emptyHint}</p>
       ) : (
         <>
-          <p className="font-mono text-lg text-text">
-            <SolCell row={row} />
-          </p>
-          <p className="mt-1 text-[11px] text-text-dim">
-            n {row.n_closed} · PF {fmt(row.profit_factor)} · enter {pct(row.enter_pct)}
-            {row.enter_pct_unguarded != null && row.enter_pct_unguarded !== row.enter_pct
-              ? ` / unguarded ${pct(row.enter_pct_unguarded)}`
-              : ''}
-          </p>
+          <SolCell row={row} variant="card" />
+          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-text-dim">
+            <Stat tip={TIPS.nClosed} label="closed" value={String(row.n_closed)} />
+            <Stat tip={TIPS.pf} label="PF" value={fmt(row.profit_factor)} />
+            <Stat tip={TIPS.enterPct} label="enter" value={pct(row.enter_pct)} />
+            {row.enter_pct_unguarded != null && row.enter_pct_unguarded !== row.enter_pct && (
+              <Stat tip={TIPS.unguarded} label="unguarded" value={pct(row.enter_pct_unguarded)} />
+            )}
+          </div>
           {actions}
         </>
       )}
@@ -597,40 +717,95 @@ function ScoreCard({
   );
 }
 
-function SolCell({ row }: { row: RuleSearchScored }) {
+function Stat({ tip, label, value }: { tip: HelpTip; label: string; value: string }) {
+  return (
+    <span className="inline-flex items-baseline gap-1" title={`${tip.title}: ${tip.body}`}>
+      <span className="text-text-dim/80">{label}</span>
+      <span className="font-mono text-text-mid">{value}</span>
+    </span>
+  );
+}
+
+function SolCell({
+  row,
+  variant = 'inline',
+}: {
+  row: RuleSearchScored;
+  variant?: 'inline' | 'card';
+}) {
   const auth = fmt(row.total_pnl_sol, 3);
   const opti =
     row.total_pnl_sol_optimistic != null ? fmt(row.total_pnl_sol_optimistic, 3) : null;
+  const spread = opti != null && opti !== auth;
+
+  if (variant === 'card') {
+    return (
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <p className="font-mono text-lg leading-tight text-text">{auth} ◎</p>
+          <p className="text-[10px] leading-tight text-text-dim">authority · ranks</p>
+        </div>
+        <div>
+          {spread ? (
+            <>
+              <p className="font-mono text-lg leading-tight text-text-mid">{opti} ◎</p>
+              <p className="text-[10px] leading-tight text-text-dim">first-in-window</p>
+            </>
+          ) : (
+            <p className="pt-1 text-[10px] leading-tight text-text-dim">
+              first-in-window matches
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <span>
-      {auth} ◎
-      {opti != null && opti !== auth && (
-        <span className="ml-1 text-[11px] text-text-dim" title="First-in-window fill (optimistic)">
-          / {opti}
+    <span className="inline-flex flex-col items-end leading-tight">
+      <span>
+        {auth}
+        {spread && <span className="text-text-dim"> / {opti}</span>}
+      </span>
+      {spread && (
+        <span className="text-[9px] font-sans normal-case tracking-normal text-text-dim">
+          auth / first
         </span>
       )}
     </span>
   );
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function Field({
+  label,
+  tip,
+  children,
+}: {
+  label: string;
+  tip?: HelpTip;
+  children: ReactNode;
+}) {
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80">{label}</span>
+      <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80">
+        {tip ? <LabelTip tip={tip}>{label}</LabelTip> : label}
+      </span>
       {children}
     </div>
   );
 }
 
 function NumField({
-  label, value, min, max, onChange, width, step,
+  label, tip, value, min, max, onChange, width, step,
 }: {
-  label: string; value: number; min?: number; max?: number; step?: number;
+  label: string; tip?: HelpTip; value: number; min?: number; max?: number; step?: number;
   onChange: (v: number) => void; width: string;
 }) {
   return (
     <div className={`flex flex-col gap-1 ${width}`}>
-      <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80">{label}</span>
+      <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80">
+        {tip ? <LabelTip tip={tip}>{label}</LabelTip> : label}
+      </span>
       <Input
         type="number"
         min={min}

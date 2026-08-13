@@ -17,9 +17,10 @@ params are not an input. Search the range you picked; do not hide a tail of it.
               ▼
   2. cut table
        label paths (ran vs never-ran; dumpers)
-       entry: contrast + winner floor (mixed peak if the split is thin)
-       exit:  dump-lead + runner after-dump + dumper p90
-       windows: cohort clocks, plus winner burst
+       entry: peak contrast + winner floor
+              fill-moment extra (does not replace peak)
+       exit:  dump-lead + runner after-dump + dumper p90 + outcome held
+       windows: winner burst + never-ran grind
               │
               ▼
   3. REGISTRY → entry roles and exit bags
@@ -33,8 +34,8 @@ params are not an input. Search the range you picked; do not hide a tail of it.
   5. score every combo; archive every full rule
               │
               ▼
-  6. top 3 archive rules × each unused exit cut
-       (one extra OR; any exit-legal metric)
+  6. top 5 archive rules × unused exit cut (extra OR)
+     top 3 × neighbor cuts of the same metrics (retune)
               │
               ▼
      champion = archive max, then run_replay
@@ -114,22 +115,27 @@ never-ran, or in the **seconds before ATH breaks** on dumpers.
 
 | Cut | Source |
 | --- | --- |
-| Windows | trade spacing; time-to-peak of everyone; winner burst (median TTP of ran tokens). Three to four sizes. |
-| Entry contrast | per metric, median at peak of ran vs never-ran. If they differ, one threshold in the gap; operator toward the ran side (`>=` if ran is higher, `<=` if ran is lower). |
-| Entry winner floor | p10 of ran tokens at peak, `>=`. A floor winners fail is not on the menu. |
+| Windows | trade spacing; winner burst (0.25 × median TTP of ran); never-ran grind when it differs; near everyone's TTP. At most four sizes. |
+| Entry contrast | median at **peak** (ATH neighborhood) of ran vs never-ran. If they differ, one threshold in the gap; operator toward the ran side. This is the primary entry knife. |
+| Entry winner floor | p10 of ran tokens at peak, `>=`. |
+| Entry fill-moment | extra alternative: one snapshot at first 1.5× (losers: the median winner time-to-1.5×). Does **not** replace peak contrast. Time `Lt` at this clock is p75 of ran time-to-1.5×. |
 | Entry fallback | early / peak p50 of everyone, only when the ran/never-ran split is thinner than 8+8. |
-| Exit dump-lead | last 3 s **before** ATH on ran dumpers (all dumpers if that set is thin). p50 and p90. This is a lead, not after-dump. |
+| Exit dump-lead | last 3 s **before** ATH on ran dumpers (all dumpers if that set is thin). p50 and p90. |
 | Exit after-dump | rows after price has left ATH, **ran dumpers only** (everyone's after-dump if that set is thin). |
-| Exit dumper p90 | p90 of that after-dump set, not p90 of every row. |
-| Position exits | declared menu (`retrace` / `bounce` / `held` / `pnl`). |
+| Exit dumper p90 | p90 of that after-dump set. |
+| Exit held | p50 / p75 of (dump − fill-moment) on ran dumpers. Declared 60/120/300 only when that set is thin. |
+| Position bounce / pnl / retrace | declared menu. |
 
 A clause is `(metric, side, operator, threshold, window?)`. Threshold and window
 come from this table. A curve fact (real reserve tops near 85) appears only if
 this cohort's liquidity distribution reaches it — one candidate, not a required
 cell.
 
+Can-fail pairs that are fill-moment cuts must co-occur at fill-moment on at
+least 8 ran tokens. Peak contrast pairs are not gated on the 1.5× snapshot.
+
 Retune after a combo wins uses neighbors in this table only (nearby quantile,
-nearby window). Retune does not add a metric.
+nearby window, **same phase**). Retune does not add a metric or swap clocks.
 
 ## 3. Roles
 
@@ -177,10 +183,15 @@ There is no kitchen-sink entry and no greedy add/drop on entry. Entry fillings
 are the role product. Champion is the archive max, not the end of a path that
 added or dropped one clause at a time.
 
-After every entry × bag is scored, take the top 3 full rules and try each
-**unused** exit cut as one extra OR. Any exit-legal metric is a candidate,
-including `m_position`. Re-simulate the whole rule. The extra clause stays only
-if that full rule beats what is already in the archive.
+The generator keeps one cut per metric (best `menu_rank`). Peak contrast
+outranks fill-moment, so a 1.5× snapshot cannot erase the knife that times
+entries away from the rip. Fill-moment fills holes (no peak gap for that
+metric).
+
+After every entry × bag is scored, take the top 5 full rules and try each
+**unused** exit cut as one extra OR (dump-lead first). Any exit-legal metric is
+a candidate, including `m_position`. Then retune the top 3: same metrics,
+neighbor cuts only (same phase). A candidate stays only if the full rule beats the archive.
 
 Each `scale_out` stage is the same exit bag plus a size. This search scores
 entry + the global exit; staged scale-out is the same generator on a third bag.
@@ -236,4 +247,7 @@ promote are the live test. One update per ablation — five sources at once
 cannot say which one paid.
 
 The board prints the champion's cut phases in diagnostics (`contrast`,
-`dump-lead`, `winner-floor`, …) so a page run shows which source fired.
+`fill-moment`, `dump-lead`, `outcome`, …) so a page run shows which source
+fired. If the top archive slice has no paying replay, the board scores the
+next slice. A champion whose authority and first-in-window disagree in sign
+is called out as a violent fill window.

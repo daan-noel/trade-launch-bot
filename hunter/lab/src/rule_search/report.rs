@@ -18,7 +18,7 @@ use super::generator::{is_empty_entry, same_exit_bag, GeneratedCombo};
 use super::scorer::{loaded_from_params, ArchiveRow};
 
 pub const MIN_CLOSED: u64 = 8;
-pub const TOP_ARCHIVE: usize = 8;
+pub const TOP_ARCHIVE: usize = 12;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -79,30 +79,12 @@ pub fn build_report(
     let ranked = rank_archive(archive, combos);
     let fast_best = ranked.first().copied();
 
-    let empty_idx = fast_best.and_then(|i| {
-        combos.iter().position(|c| {
-            is_empty_entry(&c.entry) && same_exit_bag(&c.exit, &combos[i].exit)
-        })
-    });
-
-    let mut replay_idxs: Vec<usize> = ranked.iter().copied().take(TOP_ARCHIVE.min(5)).collect();
-    if let Some(i) = empty_idx {
-        if !replay_idxs.contains(&i) {
-            replay_idxs.push(i);
-        }
-    }
-
+    // Report columns are `run_replay`. Replay the whole board (not a shorter
+    // prefix) so a lower-ranked fast row cannot show a series-walk SOL the
+    // champion never raced.
     let mut replayed: HashMap<usize, (ScoredRule, f64)> = HashMap::new();
-    for &i in &replay_idxs {
-        let loaded = loaded_from_params(
-            combos[i].params.clone(),
-            fp.id,
-            opts.buy_sol,
-            0,
-            0,
-        );
-        let (auth, opti) = replay_pair(tokens, fp, &loaded, opts);
-        replayed.insert(i, (auth, opti));
+    for &i in ranked.iter().take(TOP_ARCHIVE) {
+        replayed.insert(i, replay_combo(tokens, fp, &combos[i].params, opts));
     }
 
     let incumbent_row = incumbent_loaded.as_ref().map(|loaded| {
@@ -113,16 +95,18 @@ pub fn build_report(
     });
     let _ = incumbent;
 
-    // Replay champion among the replayed set; fall back to fast archive max.
-    let replay_best = replayed
-        .iter()
-        .max_by(|a, b| {
-            a.1 .0
-                .total_pnl_sol
-                .partial_cmp(&b.1 .0.total_pnl_sol)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|(&i, _)| i);
+    // Fill-moment rules can crowd the fast-archive head, then lose on replay.
+    // One extra slice gives a quieter peak-contrast row a chance to be champion.
+    if !slice_pays(&replayed) && ranked.len() > TOP_ARCHIVE {
+        diagnostics.push(
+            "No paying rule in the top archive slice; scoring the next slice.".into(),
+        );
+        for &i in ranked.iter().skip(TOP_ARCHIVE).take(TOP_ARCHIVE) {
+            replayed.insert(i, replay_combo(tokens, fp, &combos[i].params, opts));
+        }
+    }
+
+    let replay_best = replay_champion_idx(&replayed);
 
     let archive_replay_disagree = matches!((fast_best, replay_best), (Some(a), Some(b)) if a != b);
     if archive_replay_disagree {
@@ -132,6 +116,18 @@ pub fn build_report(
     }
 
     let champ_idx = replay_best.or(fast_best);
+    // Empty-entry shares the champion's exit bag, not the fast-archive winner's.
+    let empty_idx = champ_idx.and_then(|i| {
+        combos.iter().position(|c| {
+            is_empty_entry(&c.entry) && same_exit_bag(&c.exit, &combos[i].exit)
+        })
+    });
+    if let Some(i) = empty_idx {
+        replayed
+            .entry(i)
+            .or_insert_with(|| replay_combo(tokens, fp, &combos[i].params, opts));
+    }
+
     if let Some(i) = champ_idx {
         let phases: Vec<&str> = combos[i]
             .entry
@@ -142,6 +138,13 @@ pub fn build_report(
             .collect();
         if !phases.is_empty() {
             diagnostics.push(format!("Champion cut phases: {}.", phases.join(", ")));
+        }
+        if let Some((row, opti)) = replayed.get(&i) {
+            if row.total_pnl_sol < 0.0 && *opti > 0.0 {
+                diagnostics.push(
+                    "Champion fill window is violent: authority and first-in-window disagree in sign.".into(),
+                );
+            }
         }
     }
     let mut champion = champ_idx.and_then(|i| {
@@ -178,18 +181,23 @@ pub fn build_report(
         diagnostics.push("Juice is ungated: empty-entry (buy everything) is not beaten by a selector.".into());
     }
 
-    let archive_out: Vec<ScoredRule> = ranked
+    let mut archive_out: Vec<ScoredRule> = ranked
         .iter()
-        .take(TOP_ARCHIVE)
+        .filter(|i| replayed.contains_key(i))
         .filter_map(|&i| {
-            if let Some((r, o)) = replayed.get(&i) {
+            replayed.get(&i).map(|(r, o)| {
                 let mut row = r.clone();
                 row.total_pnl_sol_optimistic = Some(*o);
-                return Some(row);
-            }
-            archive.get(i).map(|a| scored_from_archive(a, &combos[i], n_matched))
+                row
+            })
         })
         .collect();
+    archive_out.sort_by(|a, b| {
+        b.total_pnl_sol
+            .partial_cmp(&a.total_pnl_sol)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    archive_out.truncate(TOP_ARCHIVE);
 
     if champion.is_none() {
         champion = archive_out.first().cloned();
@@ -220,19 +228,31 @@ fn rank_archive(archive: &[ArchiveRow], _combos: &[GeneratedCombo]) -> Vec<usize
     idx
 }
 
-fn scored_from_archive(a: &ArchiveRow, combo: &GeneratedCombo, n_matched: u64) -> ScoredRule {
-    ScoredRule {
-        params: combo.params.to_value(),
-        n_fired: a.n_fired,
-        n_closed: a.n_closed,
-        n_tokens_entered: a.n_fired,
-        enter_pct: a.enter_pct(n_matched),
-        enter_pct_unguarded: Some(a.enter_pct(n_matched)),
-        total_pnl_sol: a.total_pnl_sol,
-        total_pnl_sol_optimistic: None,
-        profit_factor: a.profit_factor,
-        win_rate: a.win_rate,
-    }
+fn replay_champion_idx(replayed: &HashMap<usize, (ScoredRule, f64)>) -> Option<usize> {
+    replayed
+        .iter()
+        .max_by(|a, b| {
+            a.1 .0
+                .total_pnl_sol
+                .partial_cmp(&b.1 .0.total_pnl_sol)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.1 .0.n_closed.cmp(&b.1 .0.n_closed))
+        })
+        .map(|(&i, _)| i)
+}
+
+fn slice_pays(replayed: &HashMap<usize, (ScoredRule, f64)>) -> bool {
+    replayed.values().any(|(r, _)| pays(r))
+}
+
+fn replay_combo(
+    tokens: &[ReplayToken],
+    fp: &EngineFingerprint,
+    params: &RuleParams,
+    opts: &ReplayOpts,
+) -> (ScoredRule, f64) {
+    let loaded = loaded_from_params(params.clone(), fp.id, opts.buy_sol, 0, 0);
+    replay_pair(tokens, fp, &loaded, opts)
 }
 
 fn replay_pair(
@@ -435,5 +455,21 @@ mod tests {
             verdict_of(Some(&ch), Some(&em), &HashMap::new(), &[], &[]),
             Verdict::Candidate
         );
+    }
+
+    #[test]
+    fn replay_picks_higher_authority() {
+        let mut replayed = HashMap::new();
+        replayed.insert(0, (row(-0.12, 20, 0.7), 0.545));
+        replayed.insert(1, (row(0.113, 20, 1.2), 0.119));
+        assert_eq!(replay_champion_idx(&replayed), Some(1));
+        assert!(slice_pays(&replayed));
+    }
+
+    #[test]
+    fn empty_slice_does_not_pay() {
+        let mut replayed = HashMap::new();
+        replayed.insert(0, (row(-0.12, 20, 0.7), 0.545));
+        assert!(!slice_pays(&replayed));
     }
 }

@@ -1,9 +1,10 @@
 //! Cut table from this range's metric paths ([rule-search-method.md] §2).
 //!
 //! Labels are path facts (ran vs never-ran, dumpers), not a rule. Entry uses
-//! contrast + winner floor when the split is thick; mixed peak otherwise. Exit
-//! uses dump-lead, runner after-dump, and dumper p90. Position-scoped metrics
-//! have no token path — they use a declared menu.
+//! peak contrast + winner floor when the split is thick; fill-moment is an
+//! extra alternative, not a replacement. Mixed early/peak only when the split
+//! is thin. Exit uses dump-lead, runner after-dump, dumper p90, and held from
+//! fill-to-dump. Position bounce/pnl stay on a declared menu.
 
 use std::collections::HashMap;
 
@@ -28,7 +29,7 @@ use super::roles::{entry_role, is_position, EntryRole};
 /// Seconds before ATH that count as dump-lead.
 const DUMP_LEAD_SEC: i64 = 3;
 /// Minimum tokens on each side before contrast / dump-lead prefer the split.
-const MIN_SPLIT: usize = 8;
+pub(crate) const MIN_SPLIT: usize = 8;
 const DUMP_FRAC: f64 = 0.85;
 const MIN_ATH_MULT: f64 = 1.5;
 
@@ -45,6 +46,8 @@ pub enum CutPhase {
     DumpLead,
     WinnerFloor,
     DumperP90,
+    FillMoment,
+    Outcome,
 }
 
 impl CutPhase {
@@ -60,20 +63,25 @@ impl CutPhase {
             Self::DumpLead => "dump-lead",
             Self::WinnerFloor => "winner-floor",
             Self::DumperP90 => "dumper-p90",
+            Self::FillMoment => "fill-moment",
+            Self::Outcome => "outcome",
         }
     }
 
     /// Lower is kept first when the generator truncates the menu.
+    /// Peak contrast outranks fill-moment so a 1.5× snapshot cannot erase
+    /// the clock that times entries away from the rip.
     pub fn menu_rank(self) -> u8 {
         match self {
             Self::Contrast => 0,
             Self::WinnerFloor => 1,
             Self::DumpLead => 2,
-            Self::DumperP90 | Self::AfterDump => 3,
+            Self::Outcome | Self::DumperP90 | Self::AfterDump => 3,
             Self::Peak => 4,
             Self::Early => 5,
-            Self::After | Self::P90 => 6,
-            Self::Declared => 7,
+            Self::FillMoment => 6,
+            Self::After | Self::P90 => 7,
+            Self::Declared => 8,
         }
     }
 }
@@ -93,6 +101,8 @@ pub struct CutTable {
     pub windows: Vec<f64>,
     pub entry: Vec<Cut>,
     pub exit: Vec<Cut>,
+    /// One snapshot per ran token at fill-moment, keyed by `fill_key`.
+    pub winner_fill: Vec<HashMap<(MetricId, i64), f64>>,
 }
 
 impl CutTable {
@@ -101,8 +111,16 @@ impl CutTable {
             windows: Vec::new(),
             entry: Vec::new(),
             exit: Vec::new(),
+            winner_fill: Vec::new(),
         }
     }
+}
+
+pub fn fill_key(metric: MetricId, window: Option<f64>) -> (MetricId, i64) {
+    (
+        metric,
+        window.map(|w| (w * 1000.0).round() as i64).unwrap_or(-1),
+    )
 }
 
 /// Declared position-scoped exit menus (no token-independent distribution).
@@ -119,6 +137,10 @@ struct TokenPath {
     ttp: f64,
     winner: bool,
     dumper: bool,
+    first_price: f64,
+    /// First time price reaches `MIN_ATH_MULT` × first, if ever.
+    t15: Option<DateTime<Utc>>,
+    dump_at: Option<DateTime<Utc>>,
 }
 
 /// Build the cut table for this cohort. `flow` / `flow_fp` enable split metrics.
@@ -133,11 +155,12 @@ pub fn build_cut_table(
     let paths = label_paths(tokens);
     let windows = cohort_windows(tokens, &paths);
     let columns = cut_columns(&windows, flow.is_some(), flow_fp);
-    let samples = sample_phases(tokens, &paths, &columns, flow, flow_fp);
+    let sampled = sample_phases(tokens, &paths, &columns, flow, flow_fp);
     let thick = paths.iter().filter(|p| p.winner).count() >= MIN_SPLIT
         && paths.iter().filter(|p| !p.winner).count() >= MIN_SPLIT;
-    let lead_n = samples_n(&samples, Bucket::DumpLead);
-    let dump_run_n = samples_n(&samples, Bucket::AfterDumpRun);
+    let fill_n = samples_n(&sampled.by, Bucket::FillWinner);
+    let lead_n = samples_n(&sampled.by, Bucket::DumpLead);
+    let dump_run_n = samples_n(&sampled.by, Bucket::AfterDumpRun);
 
     let mut entry = Vec::new();
     let mut exit = Vec::new();
@@ -151,7 +174,7 @@ pub fn build_cut_table(
             if !matches!(role, EntryRole::WaitOnly) {
                 push_entry(
                     &mut entry,
-                    &samples,
+                    &sampled.by,
                     ci,
                     group,
                     metric,
@@ -159,12 +182,13 @@ pub fn build_cut_table(
                     unit,
                     role,
                     thick,
+                    fill_n,
                 );
             }
         }
         push_exit(
             &mut exit,
-            &samples,
+            &sampled.by,
             ci,
             group,
             metric,
@@ -175,6 +199,9 @@ pub fn build_cut_table(
         );
     }
     for &(id, op, vals) in POSITION_EXIT {
+        if id == MetricId::Held && sampled.held_ran.len() >= MIN_SPLIT {
+            continue;
+        }
         let group = group_of(id).id;
         for &v in vals {
             exit.push(Cut {
@@ -187,10 +214,12 @@ pub fn build_cut_table(
             });
         }
     }
+    push_outcome_held(&mut exit, &sampled.held_ran);
     CutTable {
         windows,
         entry,
         exit,
+        winner_fill: sampled.winner_fill,
     }
 }
 
@@ -254,16 +283,18 @@ enum Bucket {
     DumpLeadAll,
     WinnerPeak,
     LoserPeak,
+    FillWinner,
+    FillLoser,
 }
 
 struct PhaseSamples {
     by: HashMap<(usize, Bucket), Vec<f64>>,
+    winner_fill: Vec<HashMap<(MetricId, i64), f64>>,
+    held_ran: Vec<f64>,
 }
 
-fn samples_n(samples: &PhaseSamples, bucket: Bucket) -> usize {
-    samples
-        .by
-        .iter()
+fn samples_n(by: &HashMap<(usize, Bucket), Vec<f64>>, bucket: Bucket) -> usize {
+    by.iter()
         .filter(|((_, b), _)| *b == bucket)
         .map(|(_, v)| v.len())
         .max()
@@ -271,47 +302,63 @@ fn samples_n(samples: &PhaseSamples, bucket: Bucket) -> usize {
 }
 
 fn label_paths(tokens: &[CorpusToken]) -> Vec<TokenPath> {
-    let unpacked: Vec<(f64, DateTime<Utc>, f64, bool, f64)> = tokens
+    let mut paths: Vec<TokenPath> = tokens
         .iter()
         .map(|t| {
             let (ath_price, ath_at) = token_ath(t);
             let ttp = (ath_at - t.created_at).num_milliseconds() as f64 / 1000.0;
-            let first = t
+            let first_price = t
                 .trades
                 .first()
                 .map(|tr| tr.price_per_token)
                 .filter(|p| p.is_finite() && *p > 0.0)
                 .unwrap_or(1.0);
-            let ath_mult = if first > 0.0 && ath_price.is_finite() {
-                ath_price / first
-            } else {
-                1.0
-            };
-            let dumper = t.trades.iter().any(|tr| {
-                tr.block_time > ath_at
+            let t15 = t.trades.iter().find_map(|tr| {
+                (tr.price_per_token.is_finite()
+                    && first_price > 0.0
+                    && tr.price_per_token >= first_price * MIN_ATH_MULT)
+                    .then_some(tr.block_time)
+            });
+            let dump_at = t.trades.iter().find_map(|tr| {
+                (tr.block_time > ath_at
                     && tr.price_per_token.is_finite()
                     && ath_price.is_finite()
-                    && tr.price_per_token < ath_price * DUMP_FRAC
+                    && tr.price_per_token < ath_price * DUMP_FRAC)
+                    .then_some(tr.block_time)
             });
-            (ath_price, ath_at, ttp, dumper, ath_mult)
+            TokenPath {
+                ath_price,
+                ath_at,
+                ttp,
+                winner: false,
+                dumper: dump_at.is_some(),
+                first_price,
+                t15,
+                dump_at,
+            }
         })
         .collect();
-    let mut ath_mults: Vec<f64> = unpacked
+    let mut mults: Vec<f64> = paths
         .iter()
-        .filter(|r| r.4.is_finite())
-        .map(|r| r.4)
-        .collect();
-    let bar = winner_bar(&mut ath_mults);
-    unpacked
-        .into_iter()
-        .map(|(ath_price, ath_at, ttp, dumper, ath_mult)| TokenPath {
-            ath_price,
-            ath_at,
-            ttp,
-            winner: ath_mult >= bar && ttp > 0.0,
-            dumper,
+        .map(|p| {
+            if p.first_price > 0.0 && p.ath_price.is_finite() {
+                p.ath_price / p.first_price
+            } else {
+                1.0
+            }
         })
-        .collect()
+        .filter(|m| m.is_finite())
+        .collect();
+    let bar = winner_bar(&mut mults);
+    for p in &mut paths {
+        let m = if p.first_price > 0.0 && p.ath_price.is_finite() {
+            p.ath_price / p.first_price
+        } else {
+            1.0
+        };
+        p.winner = m >= bar && p.ttp > 0.0;
+    }
+    paths
 }
 
 fn winner_bar(ath_mults: &mut [f64]) -> f64 {
@@ -343,6 +390,17 @@ fn sample_phases(
         })
         .collect();
     let lead = Duration::seconds(DUMP_LEAD_SEC);
+    let mut win_fill_secs: Vec<f64> = paths
+        .iter()
+        .zip(tokens.iter())
+        .filter(|(p, _)| p.winner)
+        .filter_map(|(p, t)| {
+            p.t15.map(|at| (at - t.created_at).num_milliseconds() as f64 / 1000.0)
+        })
+        .collect();
+    let med_fill_secs = median(&mut win_fill_secs).unwrap_or(10.0).max(1.0);
+    let mut winner_fill = Vec::new();
+    let mut held_ran = Vec::new();
 
     for (token, path) in tokens.iter().zip(paths.iter()) {
         if token.trades.is_empty() {
@@ -354,6 +412,9 @@ fn sample_phases(
         let peak_hi =
             path.ath_at + Duration::milliseconds(((ttp.abs().max(1.0) * 0.1) * 1000.0) as i64);
         let lead_lo = path.ath_at - lead;
+        let fill_at = path.t15.unwrap_or(
+            token.created_at + Duration::milliseconds((med_fill_secs * 1000.0) as i64),
+        );
 
         let mut series = MetricSeries::new(token.created_at, columns.to_vec());
         if let Some(patterns) = flow {
@@ -363,6 +424,8 @@ fn sample_phases(
             series.push_trade(to_trade_lite(t));
         }
         let n = series.n_rows();
+        let mut snapped = false;
+        let mut snap: HashMap<(MetricId, i64), f64> = HashMap::new();
         for row in 0..n {
             let at = series.at[row];
             let price = series.price[row];
@@ -372,6 +435,7 @@ fn sample_phases(
                 && at > path.ath_at;
             let in_lead = path.dumper && at >= lead_lo && at <= path.ath_at;
             let at_peak = at <= path.ath_at && at >= peak_lo;
+            let at_fill = !snapped && at >= fill_at;
 
             for (ci, col) in columns.iter().enumerate() {
                 let Some(idx) = series.col_index(*col) else {
@@ -382,6 +446,19 @@ fn sample_phases(
                     continue;
                 }
                 by.entry((ci, Bucket::All)).or_default().push(v);
+                if at_fill {
+                    let fill_bucket = if path.winner {
+                        Bucket::FillWinner
+                    } else {
+                        Bucket::FillLoser
+                    };
+                    by.entry((ci, fill_bucket)).or_default().push(v);
+                    if path.winner {
+                        let (group, metric, window) = col_meta(*col);
+                        let _ = group;
+                        snap.insert(fill_key(metric, window), v);
+                    }
+                }
                 if in_lead {
                     by.entry((ci, Bucket::DumpLeadAll)).or_default().push(v);
                     if path.winner {
@@ -409,9 +486,27 @@ fn sample_phases(
                     by.entry((ci, Bucket::After)).or_default().push(v);
                 }
             }
+            if at_fill {
+                snapped = true;
+            }
+        }
+        if path.winner && !snap.is_empty() {
+            winner_fill.push(snap);
+        }
+        if path.winner {
+            if let Some(dump_at) = path.dump_at {
+                let secs = (dump_at - fill_at).num_milliseconds() as f64 / 1000.0;
+                if secs.is_finite() && secs > 0.0 {
+                    held_ran.push(secs);
+                }
+            }
         }
     }
-    PhaseSamples { by }
+    PhaseSamples {
+        by,
+        winner_fill,
+        held_ran,
+    }
 }
 
 fn token_ath(token: &CorpusToken) -> (f64, DateTime<Utc>) {
@@ -469,8 +564,8 @@ fn emit(
     });
 }
 
-fn median_of(samples: &PhaseSamples, ci: usize, bucket: Bucket) -> Option<f64> {
-    let mut xs = samples.by.get(&(ci, bucket))?.clone();
+fn median_of(by: &HashMap<(usize, Bucket), Vec<f64>>, ci: usize, bucket: Bucket) -> Option<f64> {
+    let mut xs = by.get(&(ci, bucket))?.clone();
     if xs.len() < MIN_SPLIT {
         return None;
     }
@@ -479,9 +574,51 @@ fn median_of(samples: &PhaseSamples, ci: usize, bucket: Bucket) -> Option<f64> {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn emit_entry_contrast(
+    out: &mut Vec<Cut>,
+    by: &HashMap<(usize, Bucket), Vec<f64>>,
+    ci: usize,
+    group: MetricGroupId,
+    metric: MetricId,
+    window: Option<f64>,
+    unit: Unit,
+    win_b: Bucket,
+    lose_b: Bucket,
+    phase: CutPhase,
+    floor_phase: CutPhase,
+) {
+    if metric == MetricId::Time {
+        if let Some(mut xs) = by.get(&(ci, win_b)).cloned() {
+            if let Some(v) = rung(&mut xs, 0.75, unit) {
+                emit(out, group, metric, window, Operator::Lt, v, phase);
+            }
+        }
+    } else if let (Some(mw), Some(ml)) = (median_of(by, ci, win_b), median_of(by, ci, lose_b)) {
+        let scale = mw.abs().max(ml.abs()).max(1e-9);
+        if (mw - ml).abs() / scale >= 0.15 {
+            let toward_high = mw > ml;
+            let op = if toward_high {
+                Operator::Gte
+            } else {
+                Operator::Lte
+            };
+            let mid = round_for_unit((mw + ml) * 0.5, unit);
+            emit(out, group, metric, window, op, mid, phase);
+        }
+    }
+    if metric != MetricId::Time {
+        if let Some(mut xs) = by.get(&(ci, win_b)).cloned() {
+            if let Some(v) = rung(&mut xs, 0.10, unit) {
+                emit(out, group, metric, window, Operator::Gte, v, floor_phase);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn push_entry(
     out: &mut Vec<Cut>,
-    samples: &PhaseSamples,
+    by: &HashMap<(usize, Bucket), Vec<f64>>,
     ci: usize,
     group: MetricGroupId,
     metric: MetricId,
@@ -489,44 +626,39 @@ fn push_entry(
     unit: Unit,
     role: EntryRole,
     thick: bool,
+    fill_n: usize,
 ) {
     if thick {
-        if metric == MetricId::Time {
-            if let Some(mut xs) = samples.by.get(&(ci, Bucket::WinnerPeak)).cloned() {
-                if let Some(v) = rung(&mut xs, 0.75, unit) {
-                    emit(out, group, metric, window, Operator::Lt, v, CutPhase::Contrast);
-                }
-            }
-        } else if let (Some(mw), Some(ml)) = (
-            median_of(samples, ci, Bucket::WinnerPeak),
-            median_of(samples, ci, Bucket::LoserPeak),
-        ) {
-            let scale = mw.abs().max(ml.abs()).max(1e-9);
-            if (mw - ml).abs() / scale >= 0.15 {
-                let toward_high = mw > ml;
-                let op = if toward_high {
-                    Operator::Gte
-                } else {
-                    Operator::Lte
-                };
-                let mid = round_for_unit((mw + ml) * 0.5, unit);
-                emit(out, group, metric, window, op, mid, CutPhase::Contrast);
-            }
-        }
-        if metric != MetricId::Time {
-            if let Some(mut xs) = samples.by.get(&(ci, Bucket::WinnerPeak)).cloned() {
-                if let Some(v) = rung(&mut xs, 0.10, unit) {
-                    emit(
-                        out,
-                        group,
-                        metric,
-                        window,
-                        Operator::Gte,
-                        v,
-                        CutPhase::WinnerFloor,
-                    );
-                }
-            }
+        // Peak contrast is the primary knife (ATH neighborhood, quieter fill
+        // window). Fill-moment at first 1.5× is an extra alternative — it must
+        // not replace peak, or the product only times the rip.
+        emit_entry_contrast(
+            out,
+            by,
+            ci,
+            group,
+            metric,
+            window,
+            unit,
+            Bucket::WinnerPeak,
+            Bucket::LoserPeak,
+            CutPhase::Contrast,
+            CutPhase::WinnerFloor,
+        );
+        if fill_n >= MIN_SPLIT {
+            emit_entry_contrast(
+                out,
+                by,
+                ci,
+                group,
+                metric,
+                window,
+                unit,
+                Bucket::FillWinner,
+                Bucket::FillLoser,
+                CutPhase::FillMoment,
+                CutPhase::FillMoment,
+            );
         }
         return;
     }
@@ -542,21 +674,21 @@ fn push_entry(
         (Bucket::Early, CutPhase::Early, 0.50, op_primary),
         (Bucket::Peak, CutPhase::Peak, 0.50, op_primary),
     ] {
-        if let Some(mut xs) = samples.by.get(&(ci, bucket)).cloned() {
+        if let Some(mut xs) = by.get(&(ci, bucket)).cloned() {
             if let Some(v) = rung(&mut xs, q, unit) {
                 emit(out, group, metric, window, op, v, phase);
             }
         }
     }
     if metric == MetricId::Time {
-        if let Some(mut xs) = samples.by.get(&(ci, Bucket::Peak)).cloned() {
+        if let Some(mut xs) = by.get(&(ci, Bucket::Peak)).cloned() {
             if let Some(v) = rung(&mut xs, 0.75, unit) {
                 emit(out, group, metric, window, Operator::Lt, v, CutPhase::Peak);
             }
         }
     }
     if metric == MetricId::Liquidity {
-        if let Some(mut xs) = samples.by.get(&(ci, Bucket::Peak)).cloned() {
+        if let Some(mut xs) = by.get(&(ci, Bucket::Peak)).cloned() {
             if let Some(v) = rung(&mut xs, 0.75, unit) {
                 emit(out, group, metric, window, Operator::Lte, v, CutPhase::Peak);
             }
@@ -567,7 +699,7 @@ fn push_entry(
 #[allow(clippy::too_many_arguments)]
 fn push_exit(
     out: &mut Vec<Cut>,
-    samples: &PhaseSamples,
+    by: &HashMap<(usize, Bucket), Vec<f64>>,
     ci: usize,
     group: MetricGroupId,
     metric: MetricId,
@@ -586,7 +718,7 @@ fn push_exit(
     } else {
         Bucket::AfterDump
     };
-    if let Some(mut xs) = samples.by.get(&(ci, lead_bucket)).cloned() {
+    if let Some(mut xs) = by.get(&(ci, lead_bucket)).cloned() {
         if let Some(v) = rung(&mut xs, 0.50, unit) {
             emit(
                 out,
@@ -610,7 +742,7 @@ fn push_exit(
             );
         }
     }
-    if let Some(mut xs) = samples.by.get(&(ci, dump_bucket)).cloned() {
+    if let Some(mut xs) = by.get(&(ci, dump_bucket)).cloned() {
         if let Some(v) = rung(&mut xs, 0.50, unit) {
             emit(
                 out,
@@ -639,6 +771,7 @@ fn push_exit(
 fn cohort_windows(tokens: &[CorpusToken], paths: &[TokenPath]) -> Vec<f64> {
     let mut ttp_all = Vec::new();
     let mut ttp_win = Vec::new();
+    let mut ttp_lose = Vec::new();
     let mut spacing = Vec::new();
     for (t, p) in tokens.iter().zip(paths.iter()) {
         if t.trades.len() < 2 {
@@ -648,6 +781,8 @@ fn cohort_windows(tokens: &[CorpusToken], paths: &[TokenPath]) -> Vec<f64> {
             ttp_all.push(p.ttp);
             if p.winner {
                 ttp_win.push(p.ttp);
+            } else {
+                ttp_lose.push(p.ttp);
             }
         }
         let mut prev = t.trades[0].block_time;
@@ -662,17 +797,48 @@ fn cohort_windows(tokens: &[CorpusToken], paths: &[TokenPath]) -> Vec<f64> {
     let med_space = median(&mut spacing).unwrap_or(3.0).clamp(1.0, 30.0);
     let med_ttp = median(&mut ttp_all).unwrap_or(60.0).clamp(med_space, 600.0);
     let med_win = median(&mut ttp_win).unwrap_or(med_ttp).clamp(med_space, 600.0);
+    let med_lose = median(&mut ttp_lose).unwrap_or(med_ttp).clamp(med_space, 600.0);
     let short = round_for_unit(med_space.max(2.0), Unit::Seconds);
     let burst = round_for_unit((0.25 * med_win).clamp(short, 120.0), Unit::Seconds);
     let near = round_for_unit((0.6 * med_ttp).clamp(burst, 300.0), Unit::Seconds);
+    let grind = round_for_unit((0.25 * med_lose).clamp(short, 180.0), Unit::Seconds);
     let mut w = vec![short, burst, near];
+    if (grind - burst).abs() >= 1.0 && (grind - near).abs() >= 1.0 {
+        w.push(grind);
+    }
     w.retain(|x| *x > 0.0 && x.is_finite());
     w.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     w.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+    if w.len() > 4 {
+        w.truncate(4);
+    }
     if w.is_empty() {
         w = vec![3.0, 10.0, 30.0];
     }
     w
+}
+
+fn push_outcome_held(out: &mut Vec<Cut>, held_ran: &[f64]) {
+    if held_ran.len() < MIN_SPLIT {
+        return;
+    }
+    let mut xs = held_ran.to_vec();
+    let group = group_of(MetricId::Held).id;
+    for q in [0.50, 0.75] {
+        if let Some(v) = rung(&mut xs, q, Unit::Seconds) {
+            if v >= 2.0 {
+                emit(
+                    out,
+                    group,
+                    MetricId::Held,
+                    None,
+                    Operator::Gte,
+                    v,
+                    CutPhase::Outcome,
+                );
+            }
+        }
+    }
 }
 
 fn median(xs: &mut [f64]) -> Option<f64> {
@@ -772,7 +938,7 @@ mod tests {
             .collect();
         assert!(
             liq.iter().any(|c| c.phase == CutPhase::Contrast),
-            "expected contrast liq, got {:?}",
+            "expected peak contrast liq, got {:?}",
             liq.iter().map(|c| (c.phase, c.op, c.threshold)).collect::<Vec<_>>()
         );
         let contrast = liq
@@ -808,12 +974,81 @@ mod tests {
                 .map(|c| (c.phase, c.threshold, c.window))
                 .collect::<Vec<_>>()
         );
-        // Losers spike amount_sol=8 in the lead; winners stay at 0.4. Mixed
-        // after-dump smears both. Dump-lead must sit with the spike.
+        // Ran dumpers spike amount_sol=8 in the lead; never-ran stay at 0.4.
         assert!(
             buy_lead.iter().any(|c| c.threshold >= 3.0),
             "dump-lead buy too low: {:?}",
             buy_lead.iter().map(|c| c.threshold).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn fill_moment_time_cap_is_before_peak() {
+        let tokens = contrast_corpus();
+        let t = build_cut_table(&tokens, None, FingerprintId(uuid::Uuid::nil()));
+        let time: Vec<&Cut> = t.entry.iter().filter(|c| c.metric == MetricId::Time).collect();
+        let fill = time
+            .iter()
+            .find(|c| c.phase == CutPhase::FillMoment)
+            .expect("fill-moment time");
+        let peak = time
+            .iter()
+            .find(|c| c.phase == CutPhase::Contrast)
+            .expect("peak contrast time");
+        // 1.5× lands near t=2 on the winner path; TTP is ~12. Fill-moment is an
+        // extra; peak contrast must still be on the table.
+        assert!(
+            fill.threshold < 8.0,
+            "fill-moment time cap {} is not a time-to-1.5× knife",
+            fill.threshold
+        );
+        assert!(
+            peak.threshold > fill.threshold,
+            "peak time {} should be later than fill-moment {}",
+            peak.threshold,
+            fill.threshold
+        );
+        assert_eq!(fill.op, Operator::Lt);
+        assert_eq!(peak.op, Operator::Lt);
+    }
+
+    #[test]
+    fn thick_split_keeps_peak_when_fill_moment_exists() {
+        let tokens = contrast_corpus();
+        let t = build_cut_table(&tokens, None, FingerprintId(uuid::Uuid::nil()));
+        let time: Vec<&Cut> = t.entry.iter().filter(|c| c.metric == MetricId::Time).collect();
+        assert!(
+            time.iter().any(|c| c.phase == CutPhase::Contrast),
+            "peak contrast time must stay, got {:?}",
+            time.iter().map(|c| (c.phase, c.threshold)).collect::<Vec<_>>()
+        );
+        assert!(
+            time.iter().any(|c| c.phase == CutPhase::FillMoment),
+            "fill-moment time is an extra when the clocks differ, got {:?}",
+            time.iter().map(|c| (c.phase, c.threshold)).collect::<Vec<_>>()
+        );
+        let liq: Vec<&Cut> = t
+            .entry
+            .iter()
+            .filter(|c| c.metric == MetricId::Liquidity)
+            .collect();
+        assert!(
+            liq.iter().any(|c| c.phase == CutPhase::Contrast),
+            "peak contrast liq must stay, got {:?}",
+            liq.iter().map(|c| (c.phase, c.threshold)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn held_comes_from_fill_to_dump_not_declared_minutes() {
+        let tokens = contrast_corpus();
+        let t = build_cut_table(&tokens, None, FingerprintId(uuid::Uuid::nil()));
+        let held: Vec<&Cut> = t.exit.iter().filter(|c| c.metric == MetricId::Held).collect();
+        assert!(
+            held.iter().any(|c| c.phase == CutPhase::Outcome && c.threshold < 60.0),
+            "expected outcome held from a ~15s dump, got {:?}",
+            held.iter().map(|c| (c.phase, c.threshold)).collect::<Vec<_>>()
+        );
+        assert!(held.iter().all(|c| c.phase != CutPhase::Declared || c.threshold < 60.0));
     }
 }

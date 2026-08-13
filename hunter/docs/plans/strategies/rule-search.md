@@ -150,8 +150,14 @@ Refuse is a finished run, not an empty page.
 - Exit bags are 0–2 different metrics; giveback and clock still compete.
 - Entry can-fail is 0–2 independent clauses (selector and extra pooled); trigger
   stays 0–1.
-- Cut table: contrast + winner floor on entry; dump-lead + runner after-dump +
-  dumper p90 on exit. Mixed-everyone quantiles only when the split is thin.
+- Cut table: peak contrast + winner floor on entry; fill-moment is an extra
+  alternative, not a replacement. Dump-lead + runner after-dump + dumper p90
+  + outcome held on exit. Mixed-everyone quantiles only when the split is thin.
+- Can-fail pairs that are fill-moment cuts co-occur at 1.5×. Peak contrast
+  pairs are not gated on that snapshot. Retune is same-metric, same-phase
+  neighbors only.
+- A fill-sensitive top archive slice (no paying replay) scores the next
+  slice so a quieter rule can still be champion.
 - Do not rank an exit bag on empty-entry before it meets an entry.
 - Staged scale-out is the same generator on a third bag; this job scores entry +
   the global exit until that bag exists.
