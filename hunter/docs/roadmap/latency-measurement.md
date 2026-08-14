@@ -29,11 +29,51 @@ S3/S4 need a `PingStamp`. The create lane always records one; the trade lane rec
 one only under `LATENCY_TRACE`, so **a flow rule logs `decide_to_ack_ms` alone until
 that flag is set**.
 
-## Baseline (2026-08-14, EC2, 7 d of `trades` + 14 d of `strategy_positions`)
+## Measured (2026-08-14, EC2, live instrumentation)
 
-Measured before the instrumentation above existed, from Postgres alone. Both
-numbers are ceilings on our own cost, not stage timings — keep them as the bar the
-log lines have to beat.
+Per-stage, real buys on the **trade lane** (n=3, 30 min post-deploy):
+
+| Stage | Field | Measured |
+| --- | --- | --- |
+| rule armed → entry condition true | `strategy_arms.armed_at` → `created_at` | **6 354 ms** (p50) |
+| frame at socket → ping | `recv_to_ping_ms` | 0–1 ms |
+| ping → decision (`reduce`) | `ping_to_decide_ms` | **0 ms** |
+| decision → sender ACK | `decide_to_ack_ms` | 8–10 ms (all of it `send_ms`; `prep_ms`/`anchor_ms` = 0) |
+| ACK → own fill on the feed | `ack_to_fill_ms` | 37–82 ms |
+| exit decision → sell ACK | `exit_latency` | 7–10 ms |
+| exit ACK → bag cleared | `ack_to_clear_ms` | 296–717 ms |
+
+**The pipeline is 10 ms and the strategy wait is 6.35 s — a factor of ~635.** Nothing
+in the code path is a lever on entry timing; the rules' entry conditions are.
+
+Strategy wait is **bimodal**, never in between (n=28, 14 d, real):
+
+| armed → decided | n |
+| --- | --- |
+| <0.1 s | 11 |
+| 5–30 s | 12 |
+| >30 s | 5 |
+
+Half of entries fire the instant the rule arms; the other half wait 5–48 s for a
+metric gate. That split is a strategy choice, not lag.
+
+Cross-check: `decide_to_ack` (10 ms) + `ack_to_fill` (37–82 ms) = 47–92 ms, against
+the historical PG proxy's p50 of 97 ms over 395 positions. The two agree, so the
+older number was measuring what it claimed to.
+
+### `feed_lag`'s absolute value is NOT transport lag
+
+30 windows (~4 500 slots) read mean **0.82 s**, range 0.77–0.85 — suspiciously
+stable. It is not lag: `ack_to_fill_ms` of 37–82 ms proves this bot sees its **own**
+transaction on the feed in well under a tenth of a second, which is impossible if
+the stream ran 0.8 s behind. The reading is dominated by the offset between
+Solana's `block_time` (a stake-weighted cluster-clock estimate that trails wall
+time) and the host clock, plus whole-second truncation.
+
+Read the gauge as a **relative** health signal — a jump to 5 s is a real backlog —
+and never as an absolute segment. `ack_to_fill_ms` is the honest freshness measure.
+
+## Historical baseline (Postgres only, before the instrumentation existed)
 
 | Measure | n | p50 | p90 | p99 |
 | --- | --- | --- | --- | --- |
@@ -41,21 +81,15 @@ log lines have to beat.
 | our buy slot − previous trade slot on the mint | 170 | **1** | 11 | 13 |
 | same, quiet mints only (ambient inter-trade gap ≥ 3 slots) | 44 | **1** | 8 | — |
 
-55 % of buys (94/170) land in the very next slot after the print they reacted to,
-and on quiet mints — where trade density cannot manufacture a small gap — it is
-still 48 % (21/44). **The path does reach the physical floor.** The tail is the
-open question: 20/44 quiet-mint fills land ≥3 slots (1.2 s+) behind, and Postgres
-cannot say whether that is strategy wait or pipeline, because `created_at` is
-stamped after `reduce` has already decided.
+55 % of buys land in the very next slot after the print they reacted to.
 
 Two traps in re-deriving these:
 
 - **`trades.block_time` is the ingest clock, not chain time** — a transaction frame
   carries no block time, so the decoder stamps `received_at`. Any "feed lag" query
-  against that column returns zero by construction. Use `feed_lag`.
+  against that column returns zero by construction.
 - **"Slots behind the previous trade" is confounded by trade density.** On a busy
   mint some wallet trades every slot, so the gap is ~1 regardless of our speed.
-  Only the ambient-gap-filtered subset measures us.
 
 ## Harvesting
 
@@ -85,12 +119,12 @@ docker exec hunter-live-api hunter-live probe fanout 1 --tip --confirm
 
 ## Still open
 
-### S6 is two segments, not one
+### The exit detects 10x slower than the entry
 
-`ack_to_fill_ms` spans leader inclusion **and** the feed's return trip. Splitting
-them needs a chain clock finer than `feed_lag`'s whole seconds; pair the two before
-concluding which half owns a wide reading. The `sig` field on `snipe_latency` joins
-to `trades.tx_signature` for the exact landed slot when that matters.
+Both legs ACK in under 10 ms, but the entry sees its fill in 37–82 ms while the exit
+takes 296–717 ms to see the bag clear. The entry gets `observe_own_leg`'s early wake;
+`confirm_sell` polls on a ≥250 ms rate limit. This delays neither sell nor buy — only
+the *detection*, which holds the position's concurrency slot open longer than needed.
 
 ### Pure-snipe corpus
 

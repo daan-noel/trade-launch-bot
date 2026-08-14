@@ -24,7 +24,7 @@ this roadmap entry.
 | | Rule |
 | --- | --- |
 | Clock | Age from `created_at`. Entry contrast is cross-section at the same age. Exit contrast is relative to that token's ATH (dump is per-token). |
-| Time | The index of the habit, not a peak-sampled cut. Every draft has `time in (t_lo, t_hi)`, and `t_lo >= 2 s` — p25 of `t15_ran` is sub-second on real cohorts, so an unfloored band swallows the create slot. |
+| Time | The index of the habit, not a peak-sampled cut. A draft carries `time in (t_lo, t_hi)` with `t_lo >= 2 s` (p25 of `t15_ran` is sub-second on real cohorts, so an unfloored band swallows the create slot) — **unless a state clause already acts as the clock**: the promoted g4 enters on `liquidity > 20` with no time band, because reaching that liquidity *is* the timing. Mandating the band on every draft is not supported. |
 | Regime | A draft is valid only for the range it is fitted on. The board carries a **prior-period column**: the frozen draft replayed on the preceding equal-length window. Paying there too = durable; not = regime-scoped, expect decay and re-search per range. |
 | Metrics | Registry is the catalog. A row earns a clause only via a phase signature (below). Unique-wallets is not an entry gate ([flow-scalper-findings.md](../plans/strategies/flow-scalper-findings.md)). Lifetime monotonic floors are wait-only, not selectors. `stall` is not an entry clause and not a time stop (`held` is). |
 | Draft shape | Time band AND 0–1 state band AND 0–1 start event; exit OR of 1–2 end events. No third entry AND. |
@@ -139,7 +139,7 @@ differs by ≥ 15%, operator toward the ran side.
 | --- | --- | --- |
 | Clock (always) | `time` | band `(t_lo, t_hi)` — not from a contrast test |
 | State | `liquidity` | band: p10 ran at climb ≥, p90 ran at climb ≤ |
-| Start event (one family) | windowed `gross_flow` / `buy`; organic `nonvol_buy` / `nonvol_net`; dip `trail`; rise `rise` | floor at p50 of ran in climb, window from §1. Prefer organic or flow over rise. A rise-only thesis carries a latency-risk flag. |
+| Start event (one family) | windowed `gross_flow` / `buy`; organic `nonvol_buy` / `nonvol_net`; dip `trail`; rise `rise` | floor at a rung of ran in climb, window from §1 — **or a band**, when the ran distribution is non-monotone in outcome (its top decile scores worse than its middle). A floor cannot express "enough crowd, but not bot-flood"; without the band that habit is invisible rather than absent. Prefer organic or flow over rise. A rise-only thesis carries a latency-risk flag. |
 | End event | dump-lead or giveback of flow / organic / `trail`; `held` | p25 / p50 / p75 of that event set (`>=`) |
 
 One start family per thesis (dip XOR rise XOR accumulation XOR organic). Giveback
@@ -164,8 +164,14 @@ Each thesis is a full `RuleParams`. Enumerate only:
 3. time + one start event (each earned start family × each of its p25/p50/p75)
 4. time + liq + one start event (same)
 
-**Exit** (OR), 1–2 different metrics from earned end events (giveback and clock
-still compete). Empty exit is a thesis only as a diagnostic, not a draft.
+**Exit** (OR) is the **primary search axis, not the tail of the entry search.**
+The promoted incumbents carry a trivial entry (g4 is `liquidity > 20`, no time
+band) and a four-term exit; on that cohort every exit term *alone* loses 30–50%
+per trade while their OR pays, because an OR fires at the earliest alarm and the
+edge is getting out fast on any of several independent signals. So: 2–4 terms,
+drawn from flow / organic / `stall` / liquidity-ceiling. A price trail is the
+weakest term available — it loses on entries the OR makes profitable — and never
+stands alone. Empty exit is a diagnostic, not a draft.
 
 Cap: a few dozen full rules, not the registry product. Extra-OR after scoring
 may add one unused **earned** end event to the top 5 theses if the full rule
@@ -211,19 +217,29 @@ the expensive scorer:
 
 ## Portrait (what the board must show)
 
-Enough to see why the draft's metrics exist:
+The portrait is the product; the draft is its executable form. So the portrait is
+**prose, not a dashboard** — five plain-language answers, each one sentence, in
+creator terms. A metric name may appear only after the sentence that explains it.
+Numbers back the sentences up and stay collapsed until asked for.
 
-- clock: `t_lo`, `t_hi`, median `ttp_ran`, `create_markup` share
-- create-slot refuse or not
-- earned signatures: metric, phase, direction, rounded threshold, window
-- unused signatures (add/drop menu)
-- draft clauses (checked subset) with phase labels
-- three columns: draft / empty-entry / incumbent
-- **per-window rows, never one aggregate**: fit / holdout / prior-period, each
-  with per-day PnL sign. One pooled number hides a rule that pays in exactly one
-  four-day pocket and is flat on either side of it.
-- **fill ladder** (0 / 0.2 / 0.5 / 1.0 s) as a row, so a sign flip is visible
-- Open in editor (RuleEditor, no save required) · Simulate · Promote
+| Question | The answer says |
+| --- | --- |
+| What does this creator do? | how many of his tokens run, how fast they peak, how fast they dump |
+| What separates his winners from his duds? | the one earned signature, in words ("winners draw 25+ buyers in 3 s; duds never do") |
+| What is the rule? | wait / buy / sell, in seconds and plain thresholds |
+| Can I trust it? | separately: as a filter (vs the ungated band) and as a money-maker (vs zero), each naming the windows it holds in |
+| Is he changing? | how the portrait's **own numbers** moved across the range — ran share, time-to-peak, the earned threshold. A habit is a sequence of portraits; one portrait is a photograph of it. |
+| What can I change? | the unused signatures, as add/drop, each with its own one-line reason |
+
+A refusal is the same shape and shorter: the verdict, then one sentence of why.
+
+Backing detail, collapsed: clock (`t_lo`/`t_hi`, `ttp_ran`, `create_markup`
+share), earned + unused signatures with phase/direction/threshold/window, the
+per-window rows (fit / holdout / prior-period, per-day PnL sign — never one
+pooled number), the fill ladder (0 / 0.2 / 0.5 / 1.0 s), and draft /
+empty-entry / incumbent columns.
+
+Actions: Open in editor (RuleEditor, no save required) · Simulate · Promote.
 
 Round thresholds with the existing `round_for_unit`.
 
