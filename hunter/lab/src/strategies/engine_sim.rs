@@ -456,6 +456,7 @@ async fn run_engine_backtest(
                     skip_duplicate_identity: dupe_guard_window_hours.is_some(),
                     duplicate_identity_window_hours: dupe_guard_window_hours
                         .unwrap_or(hunter_engine::dupe_guard::DEFAULT_WINDOW_HOURS),
+                    ..Default::default()
                 },
             );
             outcomes

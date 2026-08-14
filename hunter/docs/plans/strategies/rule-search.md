@@ -115,10 +115,16 @@ Horizon is Simulate's (`as_of` / corpus last trade), not sweep's per-token tail
 cap. Quiet tokens close the same way as Simulate.
 
 **Report columns are `run_replay`.** Same fill, cost, guard, buy, `as_of` as
-`POST /api/strategies/simulate`. Paying replays rank by authority SOL, then
-tighter fill spread. If the top archive slice has no paying replay, the board
-scores the next slice. If the fast archive winner and the replay winner
-disagree, the champion is the replay one.
+`POST /api/strategies/simulate`. Paying, sign-agreeing replays rank by
+spread-discounted authority SOL; the 1 s latency-ladder gate then picks the
+champion ([method §4](rule-search-method.md#4-report)). If the top archive
+slice has no paying, sign-agreeing replay, the board scores the next slice. If
+the fast archive winner and the replay winner disagree, the champion is the
+replay one.
+
+Extra replays stay bounded: the ladder races champion + top 3 at 1 s and fills
+the champion's 250/500 ms rungs, and the ablation replays the champion minus
+each clause — ~20 authority replays at most, all over the one loaded corpus.
 
 Guard test: `run_replay` of one draft equals HTTP Simulate summary on the same
 fingerprint, range, fill, cost, guard, and buy.
@@ -130,9 +136,11 @@ search; one Simulate (or promote) for the champion the operator wants to inspect
 
 | Block | Content |
 | --- | --- |
-| Verdict | refuse / juice ungated / candidate — [method report](rule-search-method.md#4-report) |
+| Verdict | refuse / juice ungated / candidate — [method report](rule-search-method.md#4-report); a latency-fragile run carries a danger badge |
 | Three columns | champion, empty-entry (same exit bag), incumbent; n, SOL, PF, enter%; fill spread next to every SOL number |
 | Champion params | readable entry AND / exit OR clauses |
+| Champion robustness | latency decay curve (0/250/500/1000 ms), per-quartile PnL, sibling z, exit efficiency, expectancy |
+| Per-clause ablation | champion minus each clause: enter%, tokens, authority SOL, Δ vs champion |
 | Archive | top few full rules, including stacked different-metric exits when they won |
 | Actions | Promote (existing `PromoteRuleModal`, inactive paper) · open in Simulate |
 

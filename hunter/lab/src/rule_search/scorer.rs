@@ -33,14 +33,22 @@ use crate::sweep::strategy::TokenOutcome;
 use super::generator::{Clause, GeneratedCombo};
 use hunter_engine::metrics::flow_split::FlowPatterns;
 
+/// Time blocks a range is split into for the robust (trimmed) rank and the
+/// per-quartile PnL row.
+pub const N_BLOCKS: usize = 4;
+
 /// One combo's slim archive row (ranking only — not a Simulate persist).
 #[derive(Clone, Debug)]
 pub struct ArchiveRow {
     pub combo_idx: usize,
     pub n_fired: u64,
     pub n_closed: u64,
+    /// Distinct tokens entered after guards — the effective n (trades cluster).
+    pub n_tokens: u64,
     pub n_fired_unguarded: u64,
     pub total_pnl_sol: f64,
+    /// Realized SOL per time quartile of the search range (entry-time bucketed).
+    pub block_pnl_sol: [f64; N_BLOCKS],
     pub profit_factor: Option<f64>,
     pub win_rate: f64,
 }
@@ -54,11 +62,53 @@ impl ArchiveRow {
         }
     }
 
-    pub fn pays(&self, min_closed: u64) -> bool {
-        self.n_closed >= min_closed
+    /// Trimmed rank key: total minus the best block (the sum of the other
+    /// blocks), so an edge that lives entirely in one launch burst cannot
+    /// outrank one that pays across the range.
+    pub fn robust_sol(&self) -> f64 {
+        let best = self
+            .block_pnl_sol
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        if best.is_finite() {
+            self.total_pnl_sol - best.max(0.0)
+        } else {
+            self.total_pnl_sol
+        }
+    }
+
+    pub fn pays(&self, min_tokens: u64, expectancy_floor_sol: f64) -> bool {
+        self.n_tokens >= min_tokens
             && self.total_pnl_sol > 0.0
             && self.profit_factor.map(|p| p > 1.0).unwrap_or(true)
+            && (self.n_closed == 0
+                || self.total_pnl_sol / self.n_closed as f64 >= expectancy_floor_sol)
     }
+}
+
+/// `[min created_at, max created_at]` of the corpus — the range block buckets
+/// split. One definition for the fast archive and the replay report.
+pub fn corpus_range(created: impl Iterator<Item = DateTime<Utc>>) -> (DateTime<Utc>, DateTime<Utc>) {
+    let mut lo: Option<DateTime<Utc>> = None;
+    let mut hi: Option<DateTime<Utc>> = None;
+    for at in created {
+        lo = Some(lo.map_or(at, |v| v.min(at)));
+        hi = Some(hi.map_or(at, |v| v.max(at)));
+    }
+    let lo = lo.unwrap_or_else(Utc::now);
+    (lo, hi.unwrap_or(lo))
+}
+
+/// Which of the `N_BLOCKS` equal time blocks of `[lo, hi]` holds `at` (clamped).
+pub fn block_of(at: DateTime<Utc>, range: (DateTime<Utc>, DateTime<Utc>)) -> usize {
+    let (lo, hi) = range;
+    let span_ms = (hi - lo).num_milliseconds();
+    if span_ms <= 0 {
+        return 0;
+    }
+    let off_ms = (at - lo).num_milliseconds().clamp(0, span_ms);
+    ((off_ms * N_BLOCKS as i64) / (span_ms + 1)) as usize
 }
 
 pub struct ScoreConfig<'a> {
@@ -148,7 +198,8 @@ pub fn score_combos(
         anyhow::bail!("cancelled");
     }
 
-    Ok(merge_archive(tokens, combos, &per_token, cfg))
+    let range = corpus_range(tokens.iter().map(|t| t.created_at));
+    Ok(merge_archive(tokens, combos, &per_token, cfg, range))
 }
 
 fn compile_params(params: &hunter_engine::rule_params::RuleParams, cfg: &ScoreConfig<'_>) -> CompiledRule {
@@ -273,6 +324,7 @@ fn merge_archive(
     combos: &[GeneratedCombo],
     per_token: &[Vec<TokenOutcome>],
     cfg: &ScoreConfig<'_>,
+    range: (DateTime<Utc>, DateTime<Utc>),
 ) -> Vec<ArchiveRow> {
     let n_combos = combos.len();
     let mut rows = Vec::with_capacity(n_combos);
@@ -302,22 +354,29 @@ fn merge_archive(
         });
         let kept = apply_guards(&fired, tokens, cfg);
         let mut agg = ComboAgg::default();
+        let mut block_pnl_sol = [0.0f64; N_BLOCKS];
         for f in &kept {
             agg.record(&f.outcome);
+            // Realized only — an open mark must not buy a block its trade never closed.
+            if f.outcome.exit != trading_core::strategies::kernel::ExitCode::Open {
+                block_pnl_sol[block_of(f.entry_time, range)] += f.outcome.pnl_sol as f64;
+            }
         }
         let m = agg.finalize(ci as u32);
         rows.push(ArchiveRow {
             combo_idx: ci,
             n_fired: m.n_fired,
             n_closed: m.n_closed,
+            n_tokens: kept.len() as u64,
             n_fired_unguarded: unguarded_m.n_fired,
             total_pnl_sol: m.total_pnl_sol,
+            block_pnl_sol,
             profit_factor: m.profit_factor,
             win_rate: m.win_rate,
         });
     }
-        rows
-    }
+    rows
+}
 
 fn apply_guards<'a>(fired: &'a [Fired], tokens: &[CorpusToken], cfg: &ScoreConfig<'_>) -> Vec<&'a Fired> {
     let window = Duration::hours(cfg.duplicate_identity_window_hours as i64);
@@ -432,6 +491,40 @@ mod tests {
                 exit_slot: None,
             },
         }
+    }
+
+    #[test]
+    fn blocks_split_the_range_into_quartiles() {
+        let lo = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        let hi = Utc.timestamp_opt(1_700_000_400, 0).unwrap();
+        assert_eq!(block_of(lo, (lo, hi)), 0);
+        assert_eq!(block_of(Utc.timestamp_opt(1_700_000_150, 0).unwrap(), (lo, hi)), 1);
+        assert_eq!(block_of(hi, (lo, hi)), N_BLOCKS - 1);
+        // Degenerate range: everything lands in block 0.
+        assert_eq!(block_of(hi, (lo, lo)), 0);
+    }
+
+    #[test]
+    fn robust_sol_trims_the_best_block() {
+        let mut row = ArchiveRow {
+            combo_idx: 0,
+            n_fired: 10,
+            n_closed: 10,
+            n_tokens: 10,
+            n_fired_unguarded: 10,
+            total_pnl_sol: 4.0,
+            block_pnl_sol: [1.0, 1.0, 1.0, 1.0],
+            profit_factor: Some(1.5),
+            win_rate: 0.5,
+        };
+        assert!((row.robust_sol() - 3.0).abs() < 1e-9, "steady edge keeps 3 of 4");
+        // Same total, all in one burst — trimmed to zero.
+        row.block_pnl_sol = [0.0, 4.0, 0.0, 0.0];
+        assert!((row.robust_sol() - 0.0).abs() < 1e-9, "one-burst edge trims away");
+        // A negative best block is not subtracted (nothing to trim).
+        row.block_pnl_sol = [-1.0, -1.0, -1.0, -1.0];
+        row.total_pnl_sol = -4.0;
+        assert!((row.robust_sol() + 4.0).abs() < 1e-9);
     }
 
     #[test]

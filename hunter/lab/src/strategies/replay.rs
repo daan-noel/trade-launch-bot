@@ -153,6 +153,12 @@ pub struct ReplayConfig {
     /// Guard memory horizon in hours; ignored unless
     /// [`skip_duplicate_identity`](Self::skip_duplicate_identity) is set.
     pub duplicate_identity_window_hours: u64,
+    /// Latency-ladder delay: both legs' fill windows open at the first print at
+    /// or after `decision + delay` instead of the deciding trade itself. `0` is
+    /// the undelayed replay every other caller uses. An entry whose delayed
+    /// window is empty books `FillFailed` (nothing printed to fill against); an
+    /// exit falls back to the last-spot mark, same as an empty undelayed window.
+    pub fill_delay_ms: i64,
 }
 
 impl Default for ReplayConfig {
@@ -162,6 +168,7 @@ impl Default for ReplayConfig {
             fill_model: FillModel::WorstCase,
             skip_duplicate_identity: false,
             duplicate_identity_window_hours: hunter_engine::dupe_guard::DEFAULT_WINDOW_HOURS,
+            fill_delay_ms: 0,
         }
     }
 }
@@ -534,7 +541,19 @@ impl Replay {
             self.pending_buys.insert(mint.clone(), intent);
             return;
         };
-        match find_paper_entry_at(trades.as_slice(), trigger_idx, true, self.cfg.fill_model) {
+        let Some(fill_from_idx) = delayed_idx(trades.as_slice(), trigger_idx, self.cfg.fill_delay_ms)
+        else {
+            // Delayed window is empty — nothing ever printed late enough to fill
+            // against, so the order dies unfilled (the honest ladder outcome).
+            self.pending_targets.remove(mint);
+            work.push(Event::FillFailed {
+                intent,
+                reason: FillFailReason::Timeout,
+                at: Some(trades[trigger_idx].block_time),
+            });
+            return;
+        };
+        match find_paper_entry_at(trades.as_slice(), fill_from_idx, true, self.cfg.fill_model) {
             None => {
                 self.pending_targets.remove(mint);
                 work.push(Event::FillFailed {
@@ -576,8 +595,10 @@ impl Replay {
         if let (Some(&fire_idx), Some(trades)) =
             (self.last_trade_idx.get(mint), self.trades.get(mint).cloned())
         {
-            if let Some(fill) =
-                find_paper_exit_at(trades.as_slice(), fire_idx, true, self.cfg.fill_model)
+            if let Some(fill) = delayed_idx(trades.as_slice(), fire_idx, self.cfg.fill_delay_ms)
+                .and_then(|from| {
+                    find_paper_exit_at(trades.as_slice(), from, true, self.cfg.fill_model)
+                })
             {
                 let sol = token_amount as f64 * fill.price;
                 let event = Event::FillConfirmed {
@@ -762,6 +783,23 @@ impl Replay {
             .filter(|p| p.is_finite() && *p > 0.0)
     }
 
+}
+
+/// First corpus index whose print is at or after `decision + delay` — where a
+/// latency-laddered fill window opens. `delay_ms <= 0` keeps the deciding trade
+/// itself (undelayed behavior, byte-identical fills). `None` ⇒ nothing printed
+/// late enough.
+fn delayed_idx(trades: &[CorpusTrade], decision_idx: usize, delay_ms: i64) -> Option<usize> {
+    if delay_ms <= 0 {
+        return Some(decision_idx);
+    }
+    let open_at = trades[decision_idx].block_time + Duration::milliseconds(delay_ms);
+    trades
+        .iter()
+        .enumerate()
+        .skip(decision_idx)
+        .find(|(_, t)| t.block_time >= open_at)
+        .map(|(i, _)| i)
 }
 
 /// Human-SOL → lamports (`u64`, saturating at 0) for the first-slot axes the
@@ -1026,6 +1064,65 @@ mod tests {
         assert_eq!(out[0].target_price, Some(1.0), "trigger trade is the target");
         assert_eq!(out[0].entry_price, 1.1, "worst-case fill is the entry");
         assert!(out[0].exit_price.unwrap() >= 2.0);
+    }
+
+    /// A latency-laddered entry fills against the first print at or after
+    /// `decision + delay`, not the trigger's own window.
+    #[test]
+    fn fill_delay_moves_the_entry_to_the_late_print() {
+        let rules = [rule(1, 1, serde_json::json!({ "take_profit": 1000 }), 1)];
+        let fps = [fp(1)];
+        let t = token(
+            "ddd",
+            0.0,
+            vec![
+                trade(0.0, true, 1.0, 1.0, 100.0), // trigger
+                trade(0.4, true, 1.0, 1.1, 100.0), // undelayed worst-case fill
+                // First print ≥ 1 s after the decision, beyond the undelayed
+                // worst-case window (same 10 s gap the TP test relies on).
+                trade(10.0, true, 1.0, 1.6, 100.0),
+            ],
+        );
+        let undelayed = run_replay(
+            &rules,
+            &fps,
+            vec![t.clone()],
+            ReplayConfig { as_of: at(400.0), ..Default::default() },
+        );
+        assert_eq!(undelayed[0].entry_price, 1.1);
+        let delayed = run_replay(
+            &rules,
+            &fps,
+            vec![t],
+            ReplayConfig { as_of: at(400.0), fill_delay_ms: 1000, ..Default::default() },
+        );
+        assert_eq!(delayed.len(), 1);
+        assert_eq!(
+            delayed[0].entry_price, 1.6,
+            "delayed window opens at the 10 s print"
+        );
+    }
+
+    /// A delayed entry whose window holds no later print never fills — no row.
+    #[test]
+    fn fill_delay_with_no_late_print_books_no_entry() {
+        let rules = [rule(1, 1, serde_json::json!({ "take_profit": 1000 }), 1)];
+        let fps = [fp(1)];
+        let t = token(
+            "eee",
+            0.0,
+            vec![
+                trade(0.0, true, 1.0, 1.0, 100.0),
+                trade(0.4, true, 1.0, 1.1, 100.0), // last print, 0.4 s in
+            ],
+        );
+        let out = run_replay(
+            &rules,
+            &fps,
+            vec![t],
+            ReplayConfig { as_of: at(400.0), fill_delay_ms: 1000, ..Default::default() },
+        );
+        assert!(out.is_empty(), "nothing printed ≥ 1 s after the decision");
     }
 
     /// Stop-loss fires when the price falls past the SL threshold.

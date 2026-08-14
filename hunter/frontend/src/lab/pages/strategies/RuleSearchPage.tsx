@@ -47,6 +47,8 @@ import {
   useStartRuleSearchMutation,
 } from '@lab/store/labEndpoints';
 import type {
+  RuleSearchAblationRow,
+  RuleSearchLadderRung,
   RuleSearchReport,
   RuleSearchScored,
   RuleSearchVerdict,
@@ -158,6 +160,34 @@ const TIPS = {
   nMatched: {
     title: 'Matched / combos',
     body: 'Matched = tokens this fingerprint hit in the range (after the cap). Combos = entry × exit fillings scored. The board is the replay of the top archive, not the fast walk.',
+  },
+  ladder: {
+    title: 'Latency ladder',
+    body: 'Champion authority SOL with both legs\' fill windows delayed 0 / 250 / 500 / 1000 ms. The champion is the best-ranked rule that keeps its sign at 1 s; a curve that decays to zero is an edge the box cannot reach.',
+  },
+  latencyFragile: {
+    title: 'Latency-fragile',
+    body: 'Every ladder-raced candidate flips sign at 1 s fill delay. The edge exists only at fills faster than the box gets — do not promote.',
+  },
+  siblingZ: {
+    title: 'Sibling z',
+    body: 'Champion\'s fast-archive SOL vs all other entries on the same exit bag, in standard deviations. Below 1 the "champion" sits inside the archive\'s own scatter — selected noise, and the verdict downgrades to Ungated.',
+  },
+  quartiles: {
+    title: 'PnL by range quartile',
+    body: 'Realized authority SOL in each quarter of the search range. A front-loaded row means the habit died mid-range — pick a fresher range before promoting.',
+  },
+  efficiency: {
+    title: 'Exit efficiency',
+    body: 'Champion realized SOL over gross attainable (buy-and-hold to each token\'s post-entry ATH). Low efficiency says the next unit of work is the exit bag, not the entry.',
+  },
+  expectancy: {
+    title: 'Expectancy',
+    body: 'Mean realized SOL per closed trade. A paying rule must clear 2× the round-trip cost at this buy size — total SOL alone can be trade count, not edge.',
+  },
+  ablation: {
+    title: 'Per-clause ablation',
+    body: 'The champion replayed with each clause removed (authority fill). A clause whose removal changes nothing is dead weight; a clause whose removal raises SOL is hurting.',
   },
 } satisfies Record<string, HelpTip>;
 
@@ -565,6 +595,11 @@ export function RuleSearchPage() {
                 archive ≠ replay — board uses replay
               </Badge>
             )}
+            {result.latency_fragile && (
+              <Badge variant="danger" size="sm" title={`${TIPS.latencyFragile.title}: ${TIPS.latencyFragile.body}`}>
+                latency-fragile — flips sign at 1 s delay
+              </Badge>
+            )}
           </div>
           <p className="text-xs text-text-mid">{verdict.help}</p>
           {result.diagnostics.map((d) => (
@@ -642,6 +677,19 @@ export function RuleSearchPage() {
               </p>
               {ruleParamsCell(result.champion.params)}
             </div>
+          )}
+
+          {result.champion && (
+            <ChampionRobustness
+              champion={result.champion}
+              ladder={result.champion_ladder ?? []}
+              siblingZ={result.sibling_z ?? null}
+              exitEfficiency={result.exit_efficiency ?? null}
+            />
+          )}
+
+          {(result.champion_ablation?.length ?? 0) > 0 && result.champion && (
+            <AblationTable rows={result.champion_ablation ?? []} champion={result.champion} />
           )}
 
           {result.archive.length > 0 && (
@@ -751,6 +799,142 @@ function ScoreCard({
           {actions}
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * Champion robustness: latency decay curve, per-quartile PnL, sibling z, exit
+ * efficiency, expectancy — the numbers that say whether the SOL is reachable,
+ * steady, and actually selected rather than noise.
+ */
+function ChampionRobustness({
+  champion,
+  ladder,
+  siblingZ,
+  exitEfficiency,
+}: {
+  champion: RuleSearchScored;
+  ladder: RuleSearchLadderRung[];
+  siblingZ: number | null;
+  exitEfficiency: number | null;
+}) {
+  const quartiles = champion.block_pnl_sol ?? [];
+  const hasAny =
+    ladder.length > 0 || quartiles.length > 0 || siblingZ != null || exitEfficiency != null;
+  if (!hasAny) return null;
+  return (
+    <div className="rounded-lg border border-white/8 bg-white/2 p-3">
+      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-mid">
+        Champion robustness
+      </h2>
+      <div className="flex flex-wrap gap-x-6 gap-y-2 text-[11px]">
+        {ladder.length > 0 && (
+          <div>
+            <p className="mb-0.5 text-text-dim">
+              <LabelTip tip={TIPS.ladder}>Latency ladder · authority ◎</LabelTip>
+            </p>
+            <p className="font-mono text-text-mid">
+              {ladder.map((r, i) => (
+                <span key={r.delay_ms}>
+                  {i > 0 && <span className="text-text-dim"> · </span>}
+                  <span className="text-text-dim">{r.delay_ms}ms </span>
+                  <span className={r.total_pnl_sol < 0 ? 'text-red-400' : undefined}>
+                    {fmt(r.total_pnl_sol, 3)}
+                  </span>
+                </span>
+              ))}
+            </p>
+          </div>
+        )}
+        {quartiles.length > 0 && (
+          <div>
+            <p className="mb-0.5 text-text-dim">
+              <LabelTip tip={TIPS.quartiles}>PnL by range quartile ◎</LabelTip>
+            </p>
+            <p className="font-mono text-text-mid">
+              {quartiles.map((q, i) => (
+                <span key={i}>
+                  {i > 0 && <span className="text-text-dim"> · </span>}
+                  <span className={q < 0 ? 'text-red-400' : undefined}>{fmt(q, 3)}</span>
+                </span>
+              ))}
+            </p>
+          </div>
+        )}
+        <div className="flex flex-wrap items-end gap-x-4">
+          {siblingZ != null && (
+            <Stat tip={TIPS.siblingZ} label="sibling z" value={fmt(siblingZ, 2)} />
+          )}
+          {exitEfficiency != null && (
+            <Stat tip={TIPS.efficiency} label="exit eff" value={pct(exitEfficiency)} />
+          )}
+          {champion.expectancy_sol != null && (
+            <Stat
+              tip={TIPS.expectancy}
+              label="expectancy"
+              value={`${fmt(champion.expectancy_sol, 4)} ◎`}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Champion minus each clause — dead weight and harmful clauses become visible. */
+function AblationTable({
+  rows,
+  champion,
+}: {
+  rows: RuleSearchAblationRow[];
+  champion: RuleSearchScored;
+}) {
+  return (
+    <div>
+      <h2 className="mb-1 text-xs font-semibold uppercase tracking-wide text-text-mid">
+        <LabelTip tip={TIPS.ablation}>Per-clause ablation</LabelTip>
+      </h2>
+      <p className="mb-2 text-[11px] text-text-dim">
+        Champion replayed without each clause. Δ◎ is champion minus the ablated rule — near
+        zero means the clause is dead weight; negative means it hurts.
+      </p>
+      <div className="overflow-x-auto rounded-md border border-white/8">
+        <table className="w-full text-left text-xs">
+          <thead className="text-[10px] uppercase tracking-wide text-text-dim">
+            <tr>
+              <th className="px-2 py-1.5">Removed clause</th>
+              <th className="px-2 py-1.5">Side</th>
+              <th className="px-2 py-1.5 text-right">Enter%</th>
+              <th className="px-2 py-1.5 text-right">Tokens</th>
+              <th className="px-2 py-1.5 text-right">Auth ◎</th>
+              <th className="px-2 py-1.5 text-right">Δ◎</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => {
+              const delta = champion.total_pnl_sol - row.total_pnl_sol;
+              return (
+                <tr key={i} className="border-t border-white/6">
+                  <td className="px-2 py-1.5 font-mono">{row.removed}</td>
+                  <td className="px-2 py-1.5">{row.side}</td>
+                  <td className="px-2 py-1.5 text-right font-mono">{pct(row.enter_pct)}</td>
+                  <td className="px-2 py-1.5 text-right font-mono">{row.n_tokens_entered}</td>
+                  <td className="px-2 py-1.5 text-right font-mono">{fmt(row.total_pnl_sol, 3)}</td>
+                  <td
+                    className={`px-2 py-1.5 text-right font-mono ${
+                      delta < 0 ? 'text-red-400' : 'text-text-mid'
+                    }`}
+                    title={delta < 0 ? 'Removing this clause improves the rule' : undefined}
+                  >
+                    {fmt(delta, 3)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

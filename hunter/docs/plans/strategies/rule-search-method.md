@@ -39,7 +39,8 @@ params are not an input. Search the range you picked; do not hide a tail of it.
      top 3 × same-metric, same-phase neighbors (retune)
               │
               ▼
-     champion = paying replay max (authority, then tighter fill spread)
+     champion = first ladder-robust rule by spread-discounted authority
+                (paying, sign-agreeing replays; 1 s fill-delay gate)
               │
               ▼
      champion  vs  empty-entry  vs  incumbent
@@ -107,6 +108,7 @@ one extra, so an earlier clock can win without erasing the quiet one.
 | Windows | trade spacing; winner burst (0.25 × median TTP of ran); never-ran grind when it differs; near everyone's TTP. At most four sizes. |
 | Entry contrast | median at peak (ATH neighborhood) of ran vs never-ran. Gap threshold; operator toward the ran side. |
 | Entry winner floor | p10 of ran at peak, `>=`. |
+| Entry winner ceil | p90 of ran at peak, `<=` — exists only to pair with the floor into a **band** (one can-fail filling), never a standalone single. |
 | Entry run-lead | last 3 s **before** first 1.5× on ran (never-ran: median winner time-to-1.5×). |
 | Entry launch | first print (within 2 s of create). Ran vs never-ran. |
 | Entry fill-moment | snapshot at first 1.5× (losers: median winner time-to-1.5×). Time `Lt` is p75 of ran time-to-1.5×. |
@@ -121,6 +123,13 @@ one extra, so an earlier clock can win without erasing the quiet one.
 A clause is `(metric, side, operator, threshold, window?)`. A curve fact (real
 reserve tops near 85) appears only if this cohort's liquidity distribution
 reaches it.
+
+**Admission gate.** A cut joins the table only if it is false on at least 10%
+of the cohort's sampled rows — a threshold at the metric's floor or ceiling
+(`nonvol_buy >= 0`) selects nothing and is dropped before any combo is scored.
+Cuts with no sampled column (position-scoped, declared menus) are kept; a
+winner ceil rides its floor's gate (a ceiling above every row is rare-tail
+insurance inside a band, not a selector).
 
 Can-fail pairs that share an extra clock (run-lead / launch / fill-moment)
 must co-occur on that clock on at least 8 ran tokens. Peak contrast pairs are
@@ -145,7 +154,7 @@ Can-fail is selector and extra pooled. Three can-fail ANDs are not a filling.
 
 | Role | How it joins | Who may fill it |
 | --- | --- | --- |
-| Can-fail | 0–2, different metrics | selector (`time` / `liquidity` / other bounded token metrics) and extra (windowed flow / wallets / split floors) |
+| Can-fail | 0–2, different metrics; a **band** (winner floor `>=` + winner ceil `<=` on ONE metric, one AND-arm) fills a single slot | selector (`time` / `liquidity` / other bounded token metrics) and extra (windowed flow / wallets / split floors) |
 | Trigger | times the buy | one family: dip **or** rise **or** accumulation **or** organic **or** a new exclusive family — never two |
 | Giveback | exit OR, compete | `trail` XOR `retrace` |
 | Clock | exit OR, compete | `stall` XOR `held` |
@@ -174,14 +183,24 @@ entry + the global exit.
 
 ## 4. Report
 
+**Champion selection.** The fast archive ranks by trimmed SOL — the range
+splits into four time blocks and the best block is subtracted, so an edge that
+lives in one launch burst cannot buy the top slice. Among the replayed slice, a
+candidate must pay AND agree in sign between authority and first-in-window;
+those rank by spread-discounted authority (`authority − 0.25 × spread`). The
+top four race a 1 s fill-delay replay, and the champion is the first that keeps
+its sign — when none does, the run is flagged **latency-fragile**.
+
 | Check | Meaning |
 | --- | --- |
 | Champion vs empty-entry (same exit bag) | If it does not beat buy-everything, the juice is ungated |
-| n floor | Too few closed trades → no rule |
+| n floor | Counted in distinct entered TOKENS (copycat-merged trades cluster); too few → no rule |
 | PF > 1 under authority | |
-| Fill spread | Authority ranks; first-in-window quoted beside every SOL number. Among paying replays, tighter spread breaks an authority tie. |
+| Expectancy floor | Mean realized SOL per closed trade ≥ 2× the round-trip cost at this buy size — total SOL alone can be trade count, not edge |
+| Fill spread | Authority ranks after a 0.25 × spread discount; a sign disagreement between authority and first-in-window disqualifies the rule (score the next slice) |
+| Latency ladder | Champion + top 3 replayed at 1 s fill delay; the champion keeps its sign there, and its 0/250/500/1000 ms decay curve prints on the board |
+| Sibling z | Champion's fast SOL vs same-exit-bag siblings; below 1 standard deviation a Candidate downgrades to Ungated (selection noise) |
 | Selective claim | enter% of matched, guard OFF, ≲ 60% — necessary, not sufficient |
-| Empty entry / no selector | latency ladder; a 1 s entry floor must still pay |
 
 | empty-entry | other combos | report |
 | --- | --- | --- |
@@ -192,10 +211,13 @@ entry + the global exit.
 Refuse is a finished run. Paper the next launch burst; if the habit moved, pick
 a new range and run again.
 
-If the top archive slice has no paying replay, the board scores the next slice.
-A champion whose authority and first-in-window disagree in sign is a violent
-fill window. Diagnostics print the champion's cut phases (`contrast`,
-`run-lead`, `launch`, `dump-lead`, `giveback-lead`, …).
+If the top archive slice has no paying, sign-agreeing replay, the board scores
+the next slice. Diagnostics print the champion's cut phases (`contrast`,
+`run-lead`, `launch`, `dump-lead`, `giveback-lead`, …); the board also carries
+per-quartile PnL (a front-loaded row = the habit died mid-range), a per-clause
+ablation table (champion minus each clause, authority replay — dead-weight and
+harmful clauses become visible), and exit efficiency (realized over gross
+attainable to each token's post-entry ATH — low says work the exit bag next).
 
 ## 5. Prove an update
 

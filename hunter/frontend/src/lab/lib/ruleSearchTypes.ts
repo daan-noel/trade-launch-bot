@@ -14,6 +14,26 @@ export interface RuleSearchScored {
   total_pnl_sol_optimistic: number | null;
   profit_factor: number | null;
   win_rate: number;
+  /** Mean realized SOL per closed trade (null when nothing closed). */
+  expectancy_sol?: number | null;
+  /** Realized SOL per time quartile of the search range. */
+  block_pnl_sol?: number[];
+}
+
+/** Champion replayed with both legs' fill windows delayed by `delay_ms`. */
+export interface RuleSearchLadderRung {
+  delay_ms: number;
+  total_pnl_sol: number;
+  n_closed: number;
+}
+
+/** Champion minus one clause, authority replay. */
+export interface RuleSearchAblationRow {
+  side: 'entry' | 'exit';
+  removed: string;
+  total_pnl_sol: number;
+  n_tokens_entered: number;
+  enter_pct: number;
 }
 
 export interface RuleSearchReport {
@@ -26,6 +46,15 @@ export interface RuleSearchReport {
   archive: RuleSearchScored[];
   archive_replay_disagree: boolean;
   diagnostics: string[];
+  /** Champion authority SOL at 0 / 250 / 500 / 1000 ms fill delay. */
+  champion_ladder?: RuleSearchLadderRung[];
+  /** Every ladder-raced candidate flips sign at 1 s fill delay. */
+  latency_fragile?: boolean;
+  /** Champion fast-archive SOL vs same-exit-bag siblings, in std deviations. */
+  sibling_z?: number | null;
+  champion_ablation?: RuleSearchAblationRow[];
+  /** Champion realized SOL over gross attainable (entry → post-entry ATH). */
+  exit_efficiency?: number | null;
 }
 
 /** `GET …/rule-search/{run_id}` and `/last` both return this envelope. */

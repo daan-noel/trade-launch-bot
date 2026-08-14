@@ -10,7 +10,7 @@ use hunter_engine::metrics::evaluator::{Condition, Operator};
 use hunter_engine::metrics::{group_spec, MetricGroupId, MetricId, MetricKind};
 use hunter_engine::rule_params::{GroupConditions, RuleParams, SideConditions};
 
-use super::cuts::{fill_key, Cut, CutPhase, CutTable, MIN_SPLIT};
+use super::cuts::{cut_holds, fill_key, Cut, CutPhase, CutTable, MIN_SPLIT};
 use super::roles::{
     entry_compete, entry_role, exit_competes, exit_role, EntryRole, ExitRole, TriggerFamily,
 };
@@ -106,13 +106,44 @@ pub fn extra_or_candidates(base: &GeneratedCombo, cuts: &CutTable) -> Vec<Genera
 const CAN_FAIL_CAP: usize = 10;
 const EXTRA_PHASE_CAP: usize = 6;
 const RETUNE_CAP: usize = 12;
+/// Cap on floor+ceiling band fillings in the product.
+const BAND_CAP: usize = 6;
+
+/// Two clauses forming a floor + ceiling on one quantity — the band counts as
+/// ONE can-fail filling, never a same-metric compete clash.
+pub fn is_band_pair(a: &Clause, b: &Clause) -> bool {
+    a.metric == b.metric
+        && a.group == b.group
+        && same_window(a.window, b.window)
+        && matches!(
+            (a.op, b.op),
+            (Operator::Gte | Operator::Gt, Operator::Lte | Operator::Lt)
+                | (Operator::Lte | Operator::Lt, Operator::Gte | Operator::Gt)
+        )
+}
 
 fn entry_fillings(cuts: &CutTable) -> Vec<EntryFilling> {
     let mut can_fail: Vec<Clause> = Vec::new();
+    let mut ceils: Vec<Clause> = Vec::new();
+    let mut floors: Vec<Clause> = Vec::new();
     let mut triggers: BTreeMap<TriggerFamily, Vec<Clause>> = BTreeMap::new();
     for c in &cuts.entry {
+        // Ceilings exist only to pair with their floor into a band.
+        if c.phase == CutPhase::WinnerCeil {
+            ceils.push(Clause::from(*c));
+            continue;
+        }
         match entry_role(c.metric) {
             Some(EntryRole::Selector) | Some(EntryRole::Extra) => {
+                // Floors are collected pre-dedup: a metric whose contrast cut
+                // wins the singles menu still gets its p10..p90 band.
+                if c.phase == CutPhase::WinnerFloor
+                    && !floors
+                        .iter()
+                        .any(|f| f.metric == c.metric && same_window(f.window, c.window))
+                {
+                    floors.push(Clause::from(*c));
+                }
                 can_fail.push(Clause::from(*c));
             }
             Some(EntryRole::Trigger(fam)) => {
@@ -160,6 +191,41 @@ fn entry_fillings(cuts: &CutTable) -> Vec<EntryFilling> {
                 continue;
             }
             fail_opts.push(pair.to_vec());
+        }
+    }
+    // Bands: floor (winner-floor) + its ceiling on one metric/window = ONE
+    // can-fail filling — alone and beside one different-metric single (the
+    // band occupies one of the two can-fail slots).
+    let bands: Vec<[Clause; 2]> = floors
+        .iter()
+        .filter_map(|f| {
+            ceils
+                .iter()
+                .find(|c| is_band_pair(f, c))
+                .map(|c| [*f, *c])
+        })
+        .take(BAND_CAP)
+        .collect();
+    let mut band_pairs = 0usize;
+    for band in &bands {
+        fail_opts.push(band.to_vec());
+        for single in &can_fail {
+            if band_pairs >= BAND_CAP * 4 {
+                break;
+            }
+            if single.metric == band[0].metric {
+                continue;
+            }
+            let mut clauses = band.to_vec();
+            clauses.push(*single);
+            if has_entry_compete_clash(&clauses) {
+                continue;
+            }
+            if !pair_cooccurs(&band[0], single, cuts) {
+                continue;
+            }
+            fail_opts.push(clauses);
+            band_pairs += 1;
         }
     }
 
@@ -232,14 +298,7 @@ fn pair_cooccurs(a: &Clause, b: &Clause, cuts: &CutTable) -> bool {
 }
 
 fn clause_holds(c: &Clause, v: f64) -> bool {
-    match c.op {
-        Operator::Gt => v > c.threshold,
-        Operator::Gte => v >= c.threshold,
-        Operator::Lt => v < c.threshold,
-        Operator::Lte => v <= c.threshold,
-        Operator::Eq => (v - c.threshold).abs() < 1e-9,
-        Operator::Ne => (v - c.threshold).abs() >= 1e-9,
-    }
+    cut_holds(c.op, c.threshold, v)
 }
 
 /// Same-metric neighbors from the table. Does not add a metric.
@@ -300,6 +359,9 @@ fn neighbors(c: &Clause, cuts: &[Cut]) -> Vec<Clause> {
 fn has_entry_compete_clash(clauses: &[Clause]) -> bool {
     for (i, a) in clauses.iter().enumerate() {
         for b in clauses.iter().skip(i + 1) {
+            if is_band_pair(a, b) {
+                continue; // floor + ceiling on one quantity is ONE filling, not a clash
+            }
             match (entry_compete(a.metric), entry_compete(b.metric)) {
                 (Some(x), Some(y)) if x == y => return true,
                 _ => {}
@@ -348,7 +410,7 @@ fn exit_bags(cuts: &[Cut]) -> Vec<ExitBag> {
     bags
 }
 
-fn assemble(entry: &EntryFilling, exit: &ExitBag) -> RuleParams {
+pub(crate) fn assemble(entry: &EntryFilling, exit: &ExitBag) -> RuleParams {
     let mut rp = RuleParams::default();
     if !entry.clauses.is_empty() {
         rp.entry = Some(side_from(&entry.clauses));
@@ -377,15 +439,42 @@ fn side_from(clauses: &[Clause]) -> SideConditions {
                 instances.last_mut().expect("just pushed")
             }
         };
-        gc.metrics
-            .entry(c.metric)
-            .or_default()
-            .push(vec![Condition {
-                operator: c.op,
-                value: c.threshold,
-            }]);
+        // The expr is DNF (OR of AND-arms). Same-metric clauses here are only
+        // ever a band's floor + ceiling, which must AND — one arm, not two.
+        let arms = gc.metrics.entry(c.metric).or_default();
+        let cond = Condition {
+            operator: c.op,
+            value: c.threshold,
+        };
+        match arms.first_mut() {
+            Some(arm) => arm.push(cond),
+            None => arms.push(vec![cond]),
+        }
     }
     sc
+}
+
+/// Human label for one authored clause — the ablation table's row key.
+pub fn clause_label(c: &Clause) -> String {
+    let op = match c.op {
+        Operator::Gt => ">",
+        Operator::Gte => ">=",
+        Operator::Lt => "<",
+        Operator::Lte => "<=",
+        Operator::Eq => "=",
+        Operator::Ne => "!=",
+    };
+    let window = c
+        .window
+        .map(|w| format!("({w:.0}s)"))
+        .unwrap_or_default();
+    format!(
+        "{} {}{window} {op} {} [{}]",
+        c.group.name(),
+        c.metric.name(),
+        c.threshold,
+        c.phase.label()
+    )
 }
 
 fn same_window(a: Option<f64>, b: Option<f64>) -> bool {
@@ -779,6 +868,83 @@ mod tests {
                 && e.clauses[0].phase == CutPhase::RunLead
                 && (e.clauses[0].threshold - 8.0).abs() < 1e-9
         }));
+    }
+
+    #[test]
+    fn band_is_one_filling_and_one_and_arm() {
+        let table = CutTable {
+            windows: vec![],
+            entry: vec![
+                Cut {
+                    group: MetricGroupId::Snapshot,
+                    metric: MetricId::Liquidity,
+                    window: None,
+                    op: Operator::Gte,
+                    threshold: 20.0,
+                    phase: CutPhase::WinnerFloor,
+                },
+                Cut {
+                    group: MetricGroupId::Snapshot,
+                    metric: MetricId::Liquidity,
+                    window: None,
+                    op: Operator::Lte,
+                    threshold: 70.0,
+                    phase: CutPhase::WinnerCeil,
+                },
+                cut(MetricGroupId::Snapshot, MetricId::Time, Operator::Lt, 40.0),
+            ],
+            exit: vec![],
+            winner_fill: vec![],
+            winner_lead: vec![],
+            winner_launch: vec![],
+        };
+        let entries = entry_fillings(&table);
+        let band = entries
+            .iter()
+            .find(|e| {
+                e.clauses.len() == 2
+                    && e.clauses.iter().all(|c| c.metric == MetricId::Liquidity)
+            })
+            .expect("floor + ceil band filling");
+        // The band + one different-metric single occupies both can-fail slots.
+        assert!(entries.iter().any(|e| {
+            e.clauses.len() == 3
+                && e.clauses.iter().filter(|c| c.metric == MetricId::Liquidity).count() == 2
+                && e.clauses.iter().any(|c| c.metric == MetricId::Time)
+        }));
+        // DNF: the band must assemble as ONE AND-arm, not floor OR ceil.
+        let rp = assemble(band, &ExitBag { clauses: vec![] });
+        let side = rp.entry.expect("entry");
+        let inst = &side.0[&MetricGroupId::Snapshot];
+        let arms = &inst[0].metrics[&MetricId::Liquidity];
+        assert_eq!(arms.len(), 1, "one OR-arm");
+        assert_eq!(arms[0].len(), 2, "floor AND ceil in that arm");
+    }
+
+    #[test]
+    fn band_pair_is_not_a_compete_clash() {
+        let floor = Clause {
+            group: MetricGroupId::Snapshot,
+            metric: MetricId::Liquidity,
+            window: None,
+            op: Operator::Gte,
+            threshold: 20.0,
+            phase: CutPhase::WinnerFloor,
+        };
+        let ceil = Clause {
+            op: Operator::Lte,
+            threshold: 70.0,
+            phase: CutPhase::WinnerCeil,
+            ..floor
+        };
+        assert!(is_band_pair(&floor, &ceil));
+        assert!(!has_entry_compete_clash(&[floor, ceil]));
+        // Two floors on one metric still clash.
+        let floor2 = Clause {
+            threshold: 30.0,
+            ..floor
+        };
+        assert!(has_entry_compete_clash(&[floor, floor2]));
     }
 
     #[test]

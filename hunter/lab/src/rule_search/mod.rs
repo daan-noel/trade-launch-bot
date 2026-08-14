@@ -74,12 +74,13 @@ pub fn run_search(
     };
     let mut archive = score_combos(&input.corpus.tokens, &combos, &cfg, observer)?;
 
-    // Extra OR on the top 5 full rules ([method] §3).
+    // Extra OR on the top 5 full rules ([method] §3). Ranked by the trimmed
+    // (worst-blocks) SOL so a one-burst edge cannot pick every expansion base.
     let mut ranked: Vec<usize> = (0..archive.len()).collect();
     ranked.sort_by(|&a, &b| {
         archive[b]
-            .total_pnl_sol
-            .partial_cmp(&archive[a].total_pnl_sol)
+            .robust_sol()
+            .partial_cmp(&archive[a].robust_sol())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let mut extras = Vec::new();
@@ -91,10 +92,10 @@ pub fn run_search(
         let extra_archive = score_combos(&input.corpus.tokens, &extras, &cfg, observer)?;
         let best = archive
             .iter()
-            .map(|a| a.total_pnl_sol)
+            .map(|a| a.robust_sol())
             .fold(f64::NEG_INFINITY, f64::max);
         for (row, combo) in extra_archive.into_iter().zip(extras) {
-            if row.total_pnl_sol > best {
+            if row.robust_sol() > best {
                 let mut r = row;
                 r.combo_idx = combos.len();
                 archive.push(r);
@@ -106,8 +107,8 @@ pub fn run_search(
     ranked = (0..archive.len()).collect();
     ranked.sort_by(|&a, &b| {
         archive[b]
-            .total_pnl_sol
-            .partial_cmp(&archive[a].total_pnl_sol)
+            .robust_sol()
+            .partial_cmp(&archive[a].robust_sol())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let mut retunes = Vec::new();
@@ -119,10 +120,10 @@ pub fn run_search(
         let retune_archive = score_combos(&input.corpus.tokens, &retunes, &cfg, observer)?;
         let best = archive
             .iter()
-            .map(|a| a.total_pnl_sol)
+            .map(|a| a.robust_sol())
             .fold(f64::NEG_INFINITY, f64::max);
         for (row, combo) in retune_archive.into_iter().zip(retunes) {
-            if row.total_pnl_sol > best {
+            if row.robust_sol() > best {
                 let mut r = row;
                 r.combo_idx = combos.len();
                 archive.push(r);
@@ -148,7 +149,6 @@ pub fn run_search(
         &combos,
         &archive,
         input.corpus.tokens.len() as u64,
-        input.incumbent.as_ref(),
         incumbent_loaded,
         &ReplayOpts {
             as_of: input.as_of,
@@ -158,6 +158,7 @@ pub fn run_search(
             skip_duplicate_identity: input.skip_duplicate_identity,
             duplicate_identity_window_hours: input.duplicate_identity_window_hours,
             buy_sol: input.pricing.buy_amount_sol,
+            range: scorer::corpus_range(input.corpus.tokens.iter().map(|t| t.created_at)),
         },
     );
     Ok(report)

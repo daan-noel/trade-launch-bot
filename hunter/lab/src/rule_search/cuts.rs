@@ -35,6 +35,10 @@ const LAUNCH_SEC: i64 = 2;
 pub(crate) const MIN_SPLIT: usize = 8;
 const DUMP_FRAC: f64 = 0.85;
 const MIN_ATH_MULT: f64 = 1.5;
+/// Admission gate: a clause must be false on at least this share of the
+/// cohort's sampled rows, or it selects nothing (`nonvol_buy >= 0`) and is
+/// dropped before any combo is scored.
+const MIN_REJECT_SHARE: f64 = 0.10;
 
 /// Path phase a threshold was measured on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +52,9 @@ pub enum CutPhase {
     Contrast,
     DumpLead,
     WinnerFloor,
+    /// p90-of-ran ceiling — pairs with [`WinnerFloor`](Self::WinnerFloor) into a
+    /// band (one can-fail filling), never a standalone single.
+    WinnerCeil,
     DumperP90,
     FillMoment,
     Outcome,
@@ -68,6 +75,7 @@ impl CutPhase {
             Self::Contrast => "contrast",
             Self::DumpLead => "dump-lead",
             Self::WinnerFloor => "winner-floor",
+            Self::WinnerCeil => "winner-ceil",
             Self::DumperP90 => "dumper-p90",
             Self::FillMoment => "fill-moment",
             Self::Outcome => "outcome",
@@ -89,7 +97,7 @@ impl CutPhase {
     pub fn menu_rank(self) -> u8 {
         match self {
             Self::Contrast => 0,
-            Self::WinnerFloor => 1,
+            Self::WinnerFloor | Self::WinnerCeil => 1,
             Self::RunLead => 2,
             Self::DumpLead => 3,
             Self::GivebackLead => 4,
@@ -245,6 +253,21 @@ pub fn build_cut_table(
         }
     }
     push_outcome_held(&mut exit, &sampled.held_ran);
+
+    // Vacuous-cut admission gate: drop clauses that reject (almost) nothing on
+    // this cohort. Position-scoped / declared cuts have no sampled column and
+    // are kept — the sample basis, not an exemption list, decides.
+    let col_ix: HashMap<(MetricId, i64), usize> = columns
+        .iter()
+        .enumerate()
+        .map(|(ci, col)| {
+            let (_, metric, window) = col_meta(*col);
+            (fill_key(metric, window), ci)
+        })
+        .collect();
+    admit_cuts(&mut entry, &sampled.by, &col_ix);
+    admit_cuts(&mut exit, &sampled.by, &col_ix);
+
     CutTable {
         windows,
         entry,
@@ -253,6 +276,47 @@ pub fn build_cut_table(
         winner_lead: sampled.winner_lead,
         winner_launch: sampled.winner_launch,
     }
+}
+
+/// Whether a cut's condition holds for `v` (the one comparison rule search
+/// evaluates outside the engine — generator co-occurrence reuses it).
+pub(crate) fn cut_holds(op: Operator, threshold: f64, v: f64) -> bool {
+    match op {
+        Operator::Gt => v > threshold,
+        Operator::Gte => v >= threshold,
+        Operator::Lt => v < threshold,
+        Operator::Lte => v <= threshold,
+        Operator::Eq => (v - threshold).abs() < 1e-9,
+        Operator::Ne => (v - threshold).abs() >= 1e-9,
+    }
+}
+
+/// Drop cuts that hold on more than `1 - MIN_REJECT_SHARE` of the cohort's
+/// sampled rows. A cut whose column has no / thin samples is kept (no basis to
+/// judge it on).
+fn admit_cuts(
+    cuts: &mut Vec<Cut>,
+    by: &HashMap<(usize, Bucket), Vec<f64>>,
+    col_ix: &HashMap<(MetricId, i64), usize>,
+) {
+    cuts.retain(|c| {
+        // A ceiling only ever ships inside a band; the floor beside it carries
+        // the selectivity gate (a ceil above every row is rare-tail insurance).
+        if c.phase == CutPhase::WinnerCeil {
+            return true;
+        }
+        let Some(&ci) = col_ix.get(&fill_key(c.metric, c.window)) else {
+            return true;
+        };
+        let Some(xs) = by.get(&(ci, Bucket::All)) else {
+            return true;
+        };
+        if xs.len() < MIN_SPLIT {
+            return true;
+        }
+        let rejected = xs.iter().filter(|v| !cut_holds(c.op, c.threshold, **v)).count();
+        rejected as f64 / xs.len() as f64 >= MIN_REJECT_SHARE
+    });
 }
 
 fn col_meta(col: SeriesColumn) -> (MetricGroupId, MetricId, Option<f64>) {
@@ -703,6 +767,12 @@ fn emit_entry_contrast(
             if let Some(v) = rung(&mut xs, 0.10, unit) {
                 emit(out, group, metric, window, Operator::Gte, v, floor_phase);
             }
+            // p90 ceiling beside the p10 floor — the band pair (one filling).
+            if floor_phase == CutPhase::WinnerFloor {
+                if let Some(v) = rung(&mut xs, 0.90, unit) {
+                    emit(out, group, metric, window, Operator::Lte, v, CutPhase::WinnerCeil);
+                }
+            }
         }
     }
 }
@@ -1068,6 +1138,76 @@ mod tests {
         let t = build_cut_table(&[], None, FingerprintId(uuid::Uuid::nil()));
         assert!(t.entry.is_empty());
         assert!(t.exit.is_empty());
+    }
+
+    #[test]
+    fn admission_drops_a_cut_that_rejects_nothing() {
+        // `>= 0` on a non-negative metric holds on every sampled row — vacuous.
+        let mut by: HashMap<(usize, Bucket), Vec<f64>> = HashMap::new();
+        by.insert((0, Bucket::All), (0..40).map(|i| i as f64).collect());
+        let mut col_ix = HashMap::new();
+        col_ix.insert(fill_key(MetricId::Liquidity, None), 0usize);
+        let group = group_of(MetricId::Liquidity).id;
+        let mut cuts = vec![
+            Cut {
+                group,
+                metric: MetricId::Liquidity,
+                window: None,
+                op: Operator::Gte,
+                threshold: 0.0,
+                phase: CutPhase::WinnerFloor,
+            },
+            Cut {
+                group,
+                metric: MetricId::Liquidity,
+                window: None,
+                op: Operator::Gte,
+                threshold: 20.0,
+                phase: CutPhase::Contrast,
+            },
+        ];
+        admit_cuts(&mut cuts, &by, &col_ix);
+        assert_eq!(cuts.len(), 1, "vacuous >= 0 floor must be dropped");
+        assert!((cuts[0].threshold - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn admission_keeps_cuts_with_no_sample_basis() {
+        let by: HashMap<(usize, Bucket), Vec<f64>> = HashMap::new();
+        let col_ix = HashMap::new();
+        let group = group_of(MetricId::Retrace).id;
+        let mut cuts = vec![Cut {
+            group,
+            metric: MetricId::Retrace,
+            window: None,
+            op: Operator::Gte,
+            threshold: 10.0,
+            phase: CutPhase::Declared,
+        }];
+        admit_cuts(&mut cuts, &by, &col_ix);
+        assert_eq!(cuts.len(), 1, "no sampled column ⇒ kept");
+    }
+
+    #[test]
+    fn winner_ceil_pairs_the_floor_on_thick_splits() {
+        let tokens = contrast_corpus();
+        let t = build_cut_table(&tokens, None, FingerprintId(uuid::Uuid::nil()));
+        let liq: Vec<&Cut> = t
+            .entry
+            .iter()
+            .filter(|c| c.metric == MetricId::Liquidity)
+            .collect();
+        let floor = liq.iter().find(|c| c.phase == CutPhase::WinnerFloor);
+        let ceil = liq.iter().find(|c| c.phase == CutPhase::WinnerCeil);
+        assert!(floor.is_some(), "winner floor expected");
+        let (floor, ceil) = (floor.unwrap(), ceil.expect("winner ceil beside the floor"));
+        assert_eq!(ceil.op, Operator::Lte);
+        assert!(
+            ceil.threshold >= floor.threshold,
+            "ceil {} must sit at or above floor {}",
+            ceil.threshold,
+            floor.threshold
+        );
     }
 
     #[test]
