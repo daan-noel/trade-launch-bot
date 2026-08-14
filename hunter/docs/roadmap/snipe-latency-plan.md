@@ -14,7 +14,7 @@ Shipped (folded into arch docs — do not re-cover here):
 | **D** classify off account keys + `TxRelevance::Create` | [arch/ingest.md](../arch/ingest.md) |
 | **E** create fast lane (transport→decode split + dedicated create strategy ping + biased `create_rx`) | [arch/ingest.md](../arch/ingest.md), [arch/strategies.md](../arch/strategies.md) |
 | **G** `curve_buy_cu` 150k → **110k** (measured off 40 live buys: p99=86_389) | `executor-core` `ComputeBudgetCfg` |
-| **L0** `snipe_latency` structured log (`create_to_ping_ms` / `ping_to_decide_ms` / `decide_to_ack_ms`) | `exec_real::run_entry` |
+| **L0** `snipe_latency` structured log (`recv_to_ping_ms` / `ping_to_decide_ms` / `decide_to_ack_ms` / `recv_to_ack_ms` / `lane`) | [arch/trade-execution.md](../arch/trade-execution.md) |
 
 ---
 

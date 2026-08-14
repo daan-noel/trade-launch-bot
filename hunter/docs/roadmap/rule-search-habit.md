@@ -24,13 +24,14 @@ this roadmap entry.
 | | Rule |
 | --- | --- |
 | Clock | Age from `created_at`. Entry contrast is cross-section at the same age. Exit contrast is relative to that token's ATH (dump is per-token). |
-| Time | The index of the habit, not a peak-sampled cut. Every draft has `time in (t_lo, t_hi)`. |
+| Time | The index of the habit, not a peak-sampled cut. Every draft has `time in (t_lo, t_hi)`, and `t_lo >= 2 s` — p25 of `t15_ran` is sub-second on real cohorts, so an unfloored band swallows the create slot. |
+| Regime | A draft is valid only for the range it is fitted on. The board carries a **prior-period column**: the frozen draft replayed on the preceding equal-length window. Paying there too = durable; not = regime-scoped, expect decay and re-search per range. |
 | Metrics | Registry is the catalog. A row earns a clause only via a phase signature (below). Unique-wallets is not an entry gate ([flow-scalper-findings.md](../plans/strategies/flow-scalper-findings.md)). Lifetime monotonic floors are wait-only, not selectors. `stall` is not an entry clause and not a time stop (`held` is). |
 | Draft shape | Time band AND 0–1 state band AND 0–1 start event; exit OR of 1–2 end events. No third entry AND. |
 | Empty-entry | Scored for the Ungated / Candidate verdict only. Never the draft. |
 | Incumbent | Compare only. Never a seed. |
-| Create-slot | If the move is already gone in the first 2 s, refuse — no draft. Template: [maxbuy-launcher-fingerprint.md](../plans/strategies/maxbuy-launcher-fingerprint.md). |
-| Buy snapshots | Launch (first 2 s) and fill-moment (first 1.5×) are portrait diagnostics, not draft clocks. |
+| Create-slot | If the move is already gone in the first 2 s, refuse — no draft. Template: [maxbuy-launcher-fingerprint.md](../plans/strategies/maxbuy-launcher-fingerprint.md). The create-slot move itself is a first-fill race: positive at next-print fill, negative one print later — never a rule-search product. |
+| Buy snapshots | Launch (first 2 s) and fill-moment (first 1.5×) are portrait diagnostics, not draft clocks **and not entry clauses** — first-2 s gates select nothing profitable at one-print fill delay. |
 
 Labels (path facts, not a rule): **ran** = ATH multiple ≥ max(cohort p67, 1.5×);
 **never-ran** = the rest; **dumper** = price leaves ATH by 15%+. A token can be
@@ -107,10 +108,13 @@ label is known only at the end of the path. Features at age `t` must not use
 prices after `t`.
 
 **Entry (cross-section).** At each 1 s bucket `t` in `[t_lo, t_hi)`, among
-tokens that have a print in that bucket, compare future-ran vs future-never-ran
-on every legal registry metric (the windows from §1). Need ≥ 8 tokens per side
-(`MIN_SPLIT`). This is the only honest entry contrast: same age, outcome still
-ahead.
+tokens that have a print in that bucket, contrast on every legal registry metric
+(the windows from §1). Need ≥ 8 tokens per side (`MIN_SPLIT`). The entry-side
+label is **remaining-move at `t`**: `max(spot after t) / spot(t) >= 1.5` — not
+the path-level ran label. Path-ran tokens hold most of their multiple *before*
+`t` (at age 10 s, ~58% of print-active tokens are path-ran but only ~22% still
+have 1.5× ahead), so path-labelled signatures select moves already spent. The
+path label stays for the §1 clock and the create-slot share only.
 
 **Exit (event-aligned).** Dump-lead / giveback-lead / after-dump stay relative
 to each token's ATH. Held duration = (dump − first 1.5×) on ran dumpers; if that
@@ -144,9 +148,10 @@ is `trail` XOR `retrace`. Clock exit is `held` (not `stall`).
 Metrics with no signature do not join the menu. Peak-desc medians may print on
 the portrait as "what winners look like at the top"; they do not author clauses.
 
-Threshold grid for earned metrics: **p25, p50, p75** of the earning sample
-(plus the liq p10/p90 band). Neighbor retune stays inside that grid and the same
-phase. A value that sits between two rungs can exist.
+Threshold grid for earned metrics: **p25, p50, p75, p90** of the earning sample
+(plus the liq p10/p90 band). The paying region sits at the selective end — a
+grid stopping at p75 misses it. Neighbor retune stays inside that grid and the
+same phase. A value that sits between two rungs can exist.
 
 ### 4. Theses (not a kitchen product)
 
@@ -176,9 +181,31 @@ best selector thesis (not empty-entry).
 
 Unchanged authority: realized PnL, worst fill + `pumpfun_impact`, copycat ON,
 same buy as the incumbent when one exists. Report columns are `run_replay`.
-Expectancy floor, token-n floor, sign agreement, latency ladder, sibling z,
-ablation, quartile PnL, exit efficiency stay as **board diagnostics**. They do
-not replace a paying thesis with a different-metric combo.
+Selection is **expectancy plus day-block sign agreement** — train-half
+expectancy margins between neighbor rungs are noise-thin, and day-sign is what
+separates a real rung from a lucky one. Expectancy floor, token-n floor,
+latency ladder, sibling z, ablation, quartile PnL, exit efficiency stay as
+**board diagnostics**. They do not replace a paying thesis with a
+different-metric combo. The drift check (early-half vs late-half clock) needs
+≥ 30 ran per half before it may claim drift.
+
+Three gates decide whether a thesis is reportable at all, and they run **before**
+the expensive scorer:
+
+1. **Fill-timing sensitivity.** Re-price the thesis at entry+exit fill delays of
+   0 / 0.2 / 0.5 / 1.0 s. A thesis whose sign flips inside that band is not a
+   draft — it is priced on a microstructure artifact, and live latency is not
+   controllable to 200 ms. Only a thesis positive across the whole band is
+   reportable.
+2. **Avoidance vs profit, scored apart.** Two questions, two verdicts: does the
+   gate beat the *ungated* same-band control (avoidance), and does it beat zero
+   (profit)? A gate can be a stable, valuable filter — reliably turning a −9%
+   band into a flat one — while never paying on its own. Report both; never let
+   a strong avoidance number read as an edge.
+3. **Walk-forward, not split-half.** A regime boundary can land anywhere, so a
+   median split can hand one half the entire pocket. Fit on trailing K days,
+   trade day K+1 frozen, roll. The equity of that process is the tool's real
+   score.
 
 ---
 
@@ -192,6 +219,10 @@ Enough to see why the draft's metrics exist:
 - unused signatures (add/drop menu)
 - draft clauses (checked subset) with phase labels
 - three columns: draft / empty-entry / incumbent
+- **per-window rows, never one aggregate**: fit / holdout / prior-period, each
+  with per-day PnL sign. One pooled number hides a rule that pays in exactly one
+  four-day pocket and is flat on either side of it.
+- **fill ladder** (0 / 0.2 / 0.5 / 1.0 s) as a row, so a sign flip is visible
 - Open in editor (RuleEditor, no save required) · Simulate · Promote
 
 Round thresholds with the existing `round_for_unit`.
@@ -203,7 +234,15 @@ Round thresholds with the existing `round_for_unit`.
 Pass without the lake. Same bar as method §5: a new source lands in the gap /
 lead, the mixed-everyone quantile does not.
 
-- [ ] Time band equals `(p25 t15_ran, p75 ttp_ran)`, not `time < p75 at ATH`.
+- [ ] Time band equals `(max(2, p25 t15_ran), p75 ttp_ran)`, not `time < p75 at ATH`.
+- [ ] Entry samples labelled by remaining move at `t`: a token at 1.6× of its
+      eventual 1.7× ATH at age `t` is a negative sample, however the path ends.
+- [ ] Prior-period column: the frozen draft replays on the preceding
+      equal-length window and the verdict names durable vs regime-scoped.
+- [ ] A thesis positive at one fill delay and negative at another inside
+      0–1 s is withheld, not drafted.
+- [ ] Walk-forward equity (fit trailing K, trade day K+1) is the reported
+      score; a median split that puts one regime in one half does not pass.
 - [ ] Age-aligned climb split on liq (ran ~80 vs never-ran ~15 at the same age)
       earns a liq band; sampling those same tokens at each token's ATH is not
       the entry knife.

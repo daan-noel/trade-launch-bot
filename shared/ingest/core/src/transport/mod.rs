@@ -73,10 +73,18 @@ pub struct PushHooks {
     /// Extra account pubkeys (base58) subscribed via an `accounts` filter.
     /// Updates arrive at `on_account`. Empty ⇒ no accounts filter.
     pub watch_accounts: Vec<String>,
-    /// Called on every `blocks_meta` update with `(slot, blockhash)`. `Some` ⇒
-    /// a `blocks_meta` filter is added to the subscription.
+    /// Called on every `blocks_meta` update with `(slot, blockhash,
+    /// block_time_unix_secs)`. `Some` ⇒ a `blocks_meta` filter is added to the
+    /// subscription.
+    ///
+    /// `block_time_unix_secs` is the chain's own clock for that slot and is the
+    /// ONLY chain-time reference on the stream — a *transaction* frame carries a
+    /// slot but no block time, so a venue decoder has nothing but its own receive
+    /// clock to stamp. A host measuring feed lag (`now - block_time`) must read it
+    /// here. Resolution is **whole seconds**, so a single sample bounds lag rather
+    /// than timing it; the distribution over many slots is the usable signal.
     #[allow(clippy::type_complexity)]
-    pub on_block_meta: Option<Box<dyn Fn(u64, &str) + Send + Sync>>,
+    pub on_block_meta: Option<Box<dyn Fn(u64, &str, Option<i64>) + Send + Sync>>,
     /// Called on every watched-account update with `(slot, pubkey_base58,
     /// lamports, account_data)`. `lamports` is the account's balance from the
     /// Yellowstone update — the value carrier for System accounts (e.g. a watched
@@ -601,7 +609,7 @@ async fn run_once<V: IngestVenue>(
                         // metas keep flowing even when it silently dies.
                         Some(UpdateOneof::BlockMeta(meta)) => {
                             if let Some(hook) = &push.on_block_meta {
-                                hook(meta.slot, &meta.blockhash);
+                                hook(meta.slot, &meta.blockhash, meta.block_time.map(|t| t.timestamp));
                             }
                         }
                         Some(UpdateOneof::Account(acc)) => {
@@ -849,7 +857,7 @@ mod tests {
 
         let wired = PushHooks {
             watch_accounts: vec!["a".into()],
-            on_block_meta: Some(Box::new(|_, _| {})),
+            on_block_meta: Some(Box::new(|_, _, _| {})),
             on_account: Some(Box::new(|_, _, _, _| {})),
         };
         assert!(wired.wants_blocks_meta());

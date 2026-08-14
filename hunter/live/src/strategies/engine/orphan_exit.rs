@@ -112,6 +112,9 @@ pub fn spawn_orphan_sell(
         token_program_id: position.token_program_id.clone(),
         cashback_enabled: false,
         slippage_bps: slippage,
+        // No rule decided this one — an orphan sweep reacts to a stranded bag, so
+        // stamping `now` would log the sweep's own scheduling as exit latency.
+        decided_at: None,
     };
 
     let (fill_tx, mut fill_rx) = mpsc::channel::<Event>(4);
@@ -128,7 +131,7 @@ pub fn spawn_orphan_sell(
         buy_journal: SubmittedBuyJournal::new(),
         registry: deps.registry.clone(),
         engine_fill_tx: Some(deps.fill_tx.clone()),
-        create_stamps: Arc::new(dashmap::DashMap::new()),
+        ping_stamps: Arc::new(dashmap::DashMap::new()),
     };
 
     let repo = deps.strategy_repo.clone();

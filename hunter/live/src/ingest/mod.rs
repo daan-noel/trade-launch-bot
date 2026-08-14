@@ -7,6 +7,7 @@
 
 pub mod consumer;
 pub mod db_writer;
+pub mod feed_lag;
 pub mod held_pools;
 pub mod watchdog;
 

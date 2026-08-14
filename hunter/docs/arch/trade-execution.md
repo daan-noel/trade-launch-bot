@@ -59,6 +59,41 @@ Deep-dive detail: `@plans/trade-execution/module-details.md`, `@plans/trade-exec
 - **AMM `pool_v2` (Apr-2026):** a `pool_v2`-era pool's swaps append PDA(`["pool-v2", base_mint]`) readonly immediately before the buyback-fee pair. Presence is **independent of `coin_creator`** (a `pool_v2` pool can carry a zero creator — the old `coin_creator != default` inference wrongly dropped it), so it is decided by whether the `pool_v2` PDA exists on-chain; `pool_v2` and the legacy per-coin fee-share marker are mutually exclusive. Omitting `pool_v2` when required reverts with `InvalidPoolV2` (6062 — live name; published IDL still says `BuybackFeeRecipientMissing`). Cashback swaps that need `pool_v2` do **not** also carry the legacy `PUMP_AMM_CASHBACK_GLOBAL` marker. Harvest accepts any buyback-fee whitelist member at the trailing slot (live swaps rotate).
 - **Stale-creator (2006) self-heal:** a `bonding_curve.creator` (curve) or pool `coin_creator` (AMM) can rotate on-chain after a cache read, reverting the next buy/sell with Anchor `ConstraintSeeds` (2006). Two triggers share one `swap_retry::classify_swap_revert` decision: (1) **sync** — every `confirm=true` swap (`sell_token`/`buy_token`/`amm_sell`/`amm_buy`) catches a confirmed 2006, refreshes the creator/pool cache, and resends ONCE with a fresh nonce (a confirmed revert bought/sold nothing, so this can't double-spend); refresh returning "unchanged" or erroring stops instead of re-paying fees. (2) **async** — `live`'s feed-confirmed bot sell loop and curve-buy snipe retry classify a landed revert the same way after their own poll window, refreshing the creator and continuing their existing attempt loop. See `stale-creator-2006-unify-plan.md` (repo root) for the design rationale.
 
+## Stage timers (`snipe_latency` / `exit_latency`)
+
+One structured log line per real submit, emitted by `exec_real::run_entry` and
+`run_exit`. Together with `feed_lag` ([ingest.md](ingest.md)) they are the whole
+per-stage picture; nothing else times the pipeline.
+
+| Field | Segment |
+| --- | --- |
+| `recv_to_ping_ms` | transport receipt → strategy ping enqueued (decode + classify + pipeline + consumer) |
+| `ping_to_decide_ms` | ping queue wait + `reduce` + dispatch — **includes intentional metric waits**, so it is large by design on a rule that gates on token age |
+| `decide_to_ack_ms` | post-`reduce` → sender ACK: reserve read, nonce acquire, build, sign, journal append, HTTP fan-out |
+| `prep_ms` / `anchor_ms` / `send_ms` | that ACK split three ways — PDA+template+ix build · nonce acquire and sign · fan-out to first ACK (`SubmitStages`). Absent when the send failed or timed out |
+| `sig` | join key to `trades.tx_signature` — recovers the landed slot |
+| `recv_to_ack_ms` | the sum — the only number that answers "how late were we" |
+| `lane` | `create` or `trade`; the two have different floors, so never pool them |
+
+`decide_to_ack_ms` is the **only** field present on every line. The other three need
+a `PingStamp`, which the create lane always records and the trade lane records only
+under `LATENCY_TRACE` — a flow-triggered rule logs the bare form until that flag is
+set. `exit_latency` carries `decide_to_ack_ms` + `route`, on the **first** attempt
+only (attempt 1+ is a tip-escalating retry whose clock is the previous attempt's
+confirm window), and is skipped entirely for orphan/reaper exits, which react to a
+stranded bag rather than to a decision.
+
+Two follow-on lines close the segments after the ACK: `entry_landed`
+(`ack_to_fill_ms` — ACK → this bot seeing its own buy on the feed, filled outcomes
+only) and `exit_landed` (`ack_to_clear_ms` + `attempt`). Both span leader inclusion
+*and* the feed's return trip; pair them with `feed_lag` before blaming either half.
+
+Reading them: a large `recv_to_ping_ms` is ingest cost, a large `ping_to_decide_ms`
+with a metric-gated rule is the strategy waiting on purpose, and a large
+`decide_to_ack_ms` against a fast `probe fanout` is nonce or build cost rather than
+the wire. Baseline numbers and what is still unresolved:
+[roadmap/latency-measurement.md](../roadmap/latency-measurement.md).
+
 Deep-dive on the full end-to-end workflow: [@plans/trade-execution/execution-workflow.md](@plans/trade-execution/execution-workflow.md)
 
 ## Unit tests

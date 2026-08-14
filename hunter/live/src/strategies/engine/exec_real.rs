@@ -168,15 +168,21 @@ pub struct RealExecDeps {
     /// Orphan sells use a private fill_tx for their own outcome, so they pass the
     /// loop channel here separately.
     pub engine_fill_tx: Option<mpsc::Sender<Event>>,
-    /// Create-lane stamps (`received_at` → pinged) keyed by mint — L0 latency.
-    pub create_stamps: Arc<dashmap::DashMap<String, CreateStamp>>,
+    /// Transport→ping stamps keyed by mint — L0 latency. Always populated for the
+    /// create lane; for the trade lane only under `LATENCY_TRACE`.
+    pub ping_stamps: Arc<dashmap::DashMap<String, PingStamp>>,
 }
 
-/// Transport → decision-loop stamp for a create (L0 snipe latency).
+/// Transport → decision-loop stamp for the ping that triggered an entry (L0).
+/// Holds the two clocks bracketing the ingest half of the pipeline: the frame
+/// hitting our socket, and the ping reaching the decision loop.
 #[derive(Debug, Clone, Copy)]
-pub struct CreateStamp {
+pub struct PingStamp {
     pub received_at: chrono::DateTime<chrono::Utc>,
     pub pinged_at: chrono::DateTime<chrono::Utc>,
+    /// Which lane delivered it — a create snipe and a flow reaction have different
+    /// floors, so mixing them into one distribution hides both.
+    pub lane: &'static str,
 }
 
 /// Everything a buy submit needs, resolved by the loop from the cache + rule.
@@ -193,8 +199,9 @@ pub struct BuyOrder {
     /// Passed back as the buy's account override so a retry cannot mint a second
     /// seeded account and split this position's bag across two of them.
     pub token_account: Option<String>,
-    /// Create-lane observation stamp (if this mint was seen via `TokenCreated`).
-    pub create_stamp: Option<CreateStamp>,
+    /// Observation stamp for the ping that triggered this entry, when one was
+    /// recorded (always for a create; under `LATENCY_TRACE` for a trade).
+    pub ping_stamp: Option<PingStamp>,
     /// Wall clock when `dispatch_buy` spawned this submit (post-`reduce`).
     pub decided_at: chrono::DateTime<chrono::Utc>,
 }
@@ -210,6 +217,11 @@ pub struct SellOrder {
     pub token_program_id: Option<String>,
     pub cashback_enabled: bool,
     pub slippage_bps: Option<u64>,
+    /// Wall clock when the exit was decided (post-`reduce` dispatch), or `None`
+    /// for an exit no rule decided — an orphan sweep or a reaper nudge, whose
+    /// "latency" is the age of the bag, not a reaction time. Twin of
+    /// [`BuyOrder::decided_at`], and the start of `exit_latency`.
+    pub decided_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Submit a real buy, then confirm the fill off the feed (RPC watchdog fallback),
@@ -382,32 +394,46 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
     // L0: one structured line per buy submit. `decide_to_ack_ms` is the true
     // post-decision pipeline; `ping_to_decide_ms` includes intentional metric
     // waits when the rule is not a pure create sniper.
+    //
+    // The stamped branch needs `lane` to be read at all: a `create` line measures
+    // a snipe against the mint's birth, a `trade` line measures a flow reaction
+    // against the print that moved the metric, and the two have different floors.
+    // Neither exists without a stamp — the trade lane carries one only under
+    // `LATENCY_TRACE` (see `ingest::consumer::latency_trace`).
+    //
+    // `prep_ms`/`anchor_ms`/`send_ms` split `decide_to_ack_ms` into the three costs
+    // it blends (see `SubmitStages`) — present only when the submit returned, since
+    // a timed-out or failed send never produced a split. `sig` is the join key: it
+    // resolves against `trades.tx_signature` to recover the slot this buy landed in,
+    // which is what turns the line's own timestamp into an ACK→land measurement.
+    let ack_at = chrono::Utc::now();
     {
-        let ack_at = chrono::Utc::now();
         let decide_to_ack_ms = (ack_at - order.decided_at).num_milliseconds();
-        if let Some(stamp) = order.create_stamp {
-            let create_to_ping_ms = (stamp.pinged_at - stamp.received_at).num_milliseconds();
-            let ping_to_decide_ms = (order.decided_at - stamp.pinged_at).num_milliseconds();
-            let create_to_ack_ms = (ack_at - stamp.received_at).num_milliseconds();
-            info!(
-                mint = %order.mint,
-                pg = %order.pg_id,
-                create_to_ping_ms,
-                ping_to_decide_ms,
-                decide_to_ack_ms,
-                create_to_ack_ms,
-                send_ok = matches!(submit, Some(Ok(_))),
-                "snipe_latency"
-            );
-        } else {
-            info!(
-                mint = %order.mint,
-                pg = %order.pg_id,
-                decide_to_ack_ms,
-                send_ok = matches!(submit, Some(Ok(_))),
-                "snipe_latency"
-            );
-        }
+        let stages = match &submit {
+            Some(Ok(buy)) => Some(buy.stages),
+            _ => None,
+        };
+        info!(
+            mint = %order.mint,
+            pg = %order.pg_id,
+            lane = order.ping_stamp.map(|s| s.lane).unwrap_or("unstamped"),
+            recv_to_ping_ms = order
+                .ping_stamp
+                .map(|s| (s.pinged_at - s.received_at).num_milliseconds()),
+            ping_to_decide_ms = order
+                .ping_stamp
+                .map(|s| (order.decided_at - s.pinged_at).num_milliseconds()),
+            decide_to_ack_ms,
+            recv_to_ack_ms = order
+                .ping_stamp
+                .map(|s| (ack_at - s.received_at).num_milliseconds()),
+            prep_ms = stages.map(|s| s.prep_ms),
+            anchor_ms = stages.map(|s| s.anchor_ms),
+            send_ms = stages.map(|s| s.send_ms),
+            sig = submit.as_ref().and_then(|r| r.as_ref().ok()).map(|b| b.signature.as_str()),
+            send_ok = matches!(submit, Some(Ok(_))),
+            "snipe_latency"
+        );
     }
 
     let signed_sig = signed.lock().unwrap().clone();
@@ -450,6 +476,23 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
             let outcome =
                 confirm_entry(&deps, &guard_sig, &wallet, &order.mint, &sig, ENTRY_FEED_WINDOW)
                     .await;
+            // The last unmeasured entry segment: ACK → this bot seeing its own buy
+            // on the feed. It spans leader inclusion AND the feed's return trip, and
+            // the two are only separable by pairing it with `feed_lag` — on its own
+            // it is the honest "how long until the fill was actionable".
+            //
+            // Filled outcomes only: a revert or a timeout measures the confirm
+            // window, not a landing, and would swamp the distribution.
+            if let EntryOutcome::Filled(legs) = &outcome {
+                info!(
+                    mint = %order.mint,
+                    pg = %order.pg_id,
+                    ack_to_fill_ms = (chrono::Utc::now() - ack_at).num_milliseconds(),
+                    fill_seen_at = %legs.last_block_time,
+                    sig = %sig,
+                    "entry_landed"
+                );
+            }
             emit_entry_outcome(&deps, &order, sig, funded_account, outcome, send_error).await;
         }
         (None, None) => {
@@ -872,9 +915,41 @@ pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
             }
         };
 
+        // L0 twin of `snipe_latency` for the exit leg. Emitted on the FIRST
+        // attempt only: attempt 1+ is a tip-escalating retry whose clock is the
+        // previous attempt's confirm window, not a reaction time, so folding it in
+        // would inflate the distribution with waits the exit chose to take.
+        // `decided_at` is `None` for orphan/reaper exits — those have no decision
+        // to measure from.
+        let ack_at = chrono::Utc::now();
+        if attempt == 0 {
+            if let Some(decided_at) = order.decided_at {
+                info!(
+                    mint = %order.mint,
+                    pg = %order.pg_id,
+                    decide_to_ack_ms = (ack_at - decided_at).num_milliseconds(),
+                    route = if is_migrated { "amm" } else { "curve" },
+                    sig = sig.as_deref(),
+                    send_ok = sig.is_some(),
+                    "exit_latency"
+                );
+            }
+        }
+
         if let Some(legs) =
             confirm_sell(&deps, &feed_guard, &wallet, &order, &sell_sigs, SELL_CONFIRM_WINDOW).await
         {
+            // ACK → bag observed cleared on the feed: the exit twin of
+            // `entry_landed`, and the last unmeasured segment on this leg.
+            // `attempt` is carried because a later attempt's clock starts at ITS
+            // send, so the two are not comparable without it.
+            info!(
+                mint = %order.mint,
+                pg = %order.pg_id,
+                ack_to_clear_ms = (chrono::Utc::now() - ack_at).num_milliseconds(),
+                attempt,
+                "exit_landed"
+            );
             finish_cleared_sell(&deps, &order, &sell_sigs, legs).await;
             return;
         }

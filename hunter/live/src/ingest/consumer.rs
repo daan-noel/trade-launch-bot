@@ -52,6 +52,26 @@ const STRATEGY_SHED_LOG_EVERY: u64 = 5_000;
 /// counted.
 pub const DB_RETRY_CAP: usize = 4096;
 
+/// `LATENCY_TRACE=1` ⇒ trade/migrate/creator pings carry their transport receive
+/// stamp, so `snipe_latency` can report `recv_to_ping_ms` / `ping_to_decide_ms`
+/// for a **flow-triggered** rule instead of only the create lane.
+///
+/// Off by default, and deliberately a flag rather than always-on: the create lane
+/// fires a few times a second, the trade lane hundreds, and stamping costs a mint
+/// `String` clone plus a `DashMap` insert **per ping** — the per-event allocation
+/// the hot-path budget forbids. Turn it on to measure, read the distribution, turn
+/// it back off. Read once and cached: an env lookup per trade is itself a hot-path
+/// cost.
+fn latency_trace() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        matches!(
+            std::env::var("LATENCY_TRACE").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE")
+        )
+    })
+}
+
 /// Counts of intentionally-shed messages under back-pressure.
 #[derive(Default)]
 pub struct ShedCounters {
@@ -321,7 +341,14 @@ impl IngestConsumer {
             self.trader.update_live_reserves(&mint, token_reserves as f64, sol_reserves, is_amm);
         }
 
-        self.ping_strategy(mint.clone(), IngestKind::Trade, None);
+        // Stamped only under `LATENCY_TRACE` — see `latency_trace()`. Off (the
+        // default) this is `None` and the trade lane behaves exactly as it did
+        // before the flag existed.
+        self.ping_strategy(
+            mint.clone(),
+            IngestKind::Trade,
+            latency_trace().then_some(e.received_at),
+        );
 
         // Own-wallet preview + early wake *before* durable enqueue so buy/sell
         // confirm can resolve without waiting on DbWriter commit.

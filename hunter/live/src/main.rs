@@ -1308,6 +1308,7 @@ async fn run() -> anyhow::Result<()> {
     // callbacks are cheap parses running on the transport task.
     let push_hooks = {
         let bh_trader = trader.clone();
+        let feed_lag = Arc::new(ingest::feed_lag::FeedLagGauge::new());
         let nonce_trader = trader.clone();
         let balance_trader = trader.clone();
         // The bot wallet's own account is watched alongside the nonce accounts so its
@@ -1320,10 +1321,14 @@ async fn run() -> anyhow::Result<()> {
         watch_accounts.push(watched_wallet.clone());
         ingest_laserstream::PushHooks {
             watch_accounts,
-            on_block_meta: Some(Box::new(move |slot, blockhash| {
+            on_block_meta: Some(Box::new(move |slot, blockhash, block_time| {
                 if let Ok(hash) = blockhash.parse::<solana_sdk::hash::Hash>() {
                     bh_trader.set_cached_blockhash(hash, slot);
                 }
+                // Block metas are the ONLY frame carrying the chain's own clock, so
+                // this is the one place feed lag is observable — every downstream
+                // stage timer starts at our receive clock and is blind to it.
+                feed_lag.observe(slot, block_time);
             })),
             on_account: Some(Box::new(move |slot, pubkey, lamports, data| {
                 // The wallet is a System account — its balance rides in `lamports`,

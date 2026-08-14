@@ -196,7 +196,7 @@ async fn run_loop(
     );
     let recorder = EventLogRecorder::from_env();
 
-    let create_stamps = Arc::new(dashmap::DashMap::new());
+    let ping_stamps = Arc::new(dashmap::DashMap::new());
     let real_deps = RealExecDeps {
         trader: trader.clone(),
         token_cache: token_cache.clone(),
@@ -210,7 +210,7 @@ async fn run_loop(
         buy_journal,
         registry: registry.clone(),
         engine_fill_tx: Some(fill_tx.clone()),
-        create_stamps: create_stamps.clone(),
+        ping_stamps: ping_stamps.clone(),
     };
 
     // Run-lifecycle boot reconcile (two bounded queries, no position rows loaded):
@@ -344,20 +344,16 @@ async fn run_loop(
             // must not wait behind hundreds of curve/AMM pings. `reduce` stays
             // the sole decider — only arrival order changes.
             Some(ping) = create_rx.recv() => {
-                if let Some(received_at) = ping.received_at {
-                    create_stamps.insert(
-                        ping.mint.clone(),
-                        super::exec_real::CreateStamp {
-                            received_at,
-                            pinged_at: Utc::now(),
-                        },
-                    );
-                }
+                stamp_ping(&ping_stamps, &ping, "create");
                 let produced = producer.on_ping(&ping);
                 prime(&mut state, produced.prime);
                 EventBatch::many(produced.events.into_vec())
             }
             Some(ping) = ping_rx.recv() => {
+                // Costs nothing unless `LATENCY_TRACE` is on: without it the
+                // consumer leaves `received_at` empty on this lane and the stamp
+                // is skipped before any clone.
+                stamp_ping(&ping_stamps, &ping, "trade");
                 let produced = producer.on_ping(&ping);
                 prime(&mut state, produced.prime);
                 EventBatch::many(produced.events.into_vec())
@@ -371,7 +367,7 @@ async fn run_loop(
                     // selective rule that rarely buys cannot grow the map forever.
                     let cutoff = Utc::now()
                         - chrono::Duration::seconds(MAX_SNIPE_AGE_SECS);
-                    create_stamps.retain(|_, stamp| stamp.received_at >= cutoff);
+                    ping_stamps.retain(|_, stamp| stamp.received_at >= cutoff);
                 }
                 // Cold-start priming for tracked mints this process has never
                 // produced for (adopted positions, tokens re-armed from the log).
@@ -506,6 +502,27 @@ async fn dispatch(
 /// unknown rule) **and** the pre-submit SOL guards, which re-evaluate identically
 /// because the engine's retry is immediate. `Reverted` is reserved for a buy that
 /// actually reached the chain and provably did not fill.
+/// Record transport-receipt → ping-arrival for the mint this ping is about, so an
+/// entry it triggers can report the ingest half of the pipeline (`recv_to_ping_ms`
+/// / `ping_to_decide_ms` on the `snipe_latency` line).
+///
+/// A ping with no `received_at` is skipped **before** the mint clone: that is what
+/// keeps the trade lane free when `LATENCY_TRACE` is off, since only the consumer
+/// decides whether to carry the stamp. Entries are pruned on the same
+/// `MAX_SNIPE_AGE_SECS` cutoff as every other stamp, so the map stays bounded by
+/// the freshness window rather than by ping volume.
+fn stamp_ping(
+    stamps: &dashmap::DashMap<String, super::exec_real::PingStamp>,
+    ping: &StrategyPing,
+    lane: &'static str,
+) {
+    let Some(received_at) = ping.received_at else { return };
+    stamps.insert(
+        ping.mint.clone(),
+        super::exec_real::PingStamp { received_at, pinged_at: Utc::now(), lane },
+    );
+}
+
 fn fail_entry(fill_tx: &mpsc::Sender<Event>, intent: IntentId, reason: FillFailReason) {
     let tx = fill_tx.clone();
     tokio::spawn(async move {
@@ -620,7 +637,7 @@ fn dispatch_buy(
             registry.update(position, |m| {
                 m.inflight_intent = Some(intent.clone());
             });
-            let create_stamp = real_deps.create_stamps.get(&mint_s).map(|e| *e);
+            let ping_stamp = real_deps.ping_stamps.get(&mint_s).map(|e| *e);
             let order = BuyOrder {
                 intent,
                 pg_id: meta.pg_id,
@@ -634,7 +651,7 @@ fn dispatch_buy(
                 // the retry then buys straight into it instead of minting a second
                 // seeded account for the same position.
                 token_account: meta.token_account.clone(),
-                create_stamp,
+                ping_stamp,
                 decided_at: Utc::now(),
             };
             tokio::spawn(super::exec_real::run_entry(real_deps.clone(), order));
@@ -694,6 +711,7 @@ fn dispatch_sell(
                 token_program_id: meta.token_program_id,
                 cashback_enabled: meta.cashback_enabled,
                 slippage_bps: sell_slippage(settings),
+                decided_at: Some(Utc::now()),
             };
             tokio::spawn(super::exec_real::run_exit(real_deps.clone(), order));
         }

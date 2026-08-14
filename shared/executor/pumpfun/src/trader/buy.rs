@@ -24,6 +24,7 @@ use spl_associated_token_account::{
 use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -55,6 +56,29 @@ pub type BuySignedHook =
 pub struct SnipeBuy {
     pub signature: String,
     pub user_token_account: Pubkey,
+    /// Where the submit's wall-clock went. A caller timing its own pipeline sees
+    /// only one number for this whole call, which blends six different costs.
+    pub stages: SubmitStages,
+}
+
+/// Wall-clock split of one submit, in milliseconds. Reported by the buy path so a
+/// host measuring end-to-end latency can attribute the send stage instead of
+/// guessing at it. Purely observational — nothing branches on these.
+///
+/// The three add up to the call's own duration; they do NOT include confirmation
+/// (`skip_confirm = false` callers wait beyond `send_ms`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SubmitStages {
+    /// PDA derivation, token-account resolve (template pool acquire on the snipe
+    /// path), the slippage reserve read on the manual path, and instruction build.
+    pub prep_ms: u64,
+    /// `build_trade_tx`: durable-nonce slot acquire (or recent-blockhash read) plus
+    /// signing. This is the one that grows under nonce contention — `TxAnchor::Entry`
+    /// caps it at ~40 ms by falling back to a blockhash.
+    pub anchor_ms: u64,
+    /// Fan-out to the sender endpoints until the first ACK. The wire term: compare
+    /// it against `probe fanout` to tell a slow network from slow local work.
+    pub send_ms: u64,
 }
 
 impl PumpFunTrader {
@@ -89,7 +113,7 @@ impl PumpFunTrader {
             TxAnchor::Standard,
         )
         .await
-        .map(|(sig, _account)| sig)
+        .map(|(sig, _account, _stages)| sig)
     }
 
     /// Latency-optimized write-ahead buy for fresh-token snipes. Identical to
@@ -150,7 +174,11 @@ impl PumpFunTrader {
             TxAnchor::Entry,
         )
         .await
-        .map(|(signature, user_token_account)| SnipeBuy { signature, user_token_account })
+        .map(|(signature, user_token_account, stages)| SnipeBuy {
+            signature,
+            user_token_account,
+            stages,
+        })
     }
 
     // Trade-path fn — the buy needs every routing/slippage/skip input threaded in;
@@ -189,7 +217,7 @@ impl PumpFunTrader {
         // blockhash in ~40 ms rather than spin up to 4 s); `Standard` on the
         // manual/API buy, which has no slot budget to protect.
         anchor: TxAnchor,
-    ) -> Result<(String, Pubkey)> {
+    ) -> Result<(String, Pubkey, SubmitStages)> {
         let t0 = Instant::now();
         // Guard the real spend before any work: both curve public entries
         // (`buy_token`, `buy_token_snipe_write_ahead`) funnel through here, so this single
@@ -349,6 +377,14 @@ impl PumpFunTrader {
             // itself isn't tip-related, but the second send still competes in
             // the same auction and a free re-bid is cheap insurance.
             let mut tip_level = tip_level;
+            // Stage split (observational only). `prep_ms` closes at the first
+            // instruction build; `anchor_ms`/`send_ms` are re-measured per loop turn
+            // so a stale-creator heal reports the send that actually landed rather
+            // than the one that reverted.
+            let mut stages = SubmitStages { prep_ms: t0.elapsed().as_millis() as u64, ..Default::default() };
+            // The send happens inside an `async` block whose value is the signature,
+            // so the elapsed time rides out through a cell rather than the return.
+            let send_ms = AtomicU64::new(0);
             loop {
                 let ixs = self.build_curve_buy_ixs(
                     mint,
@@ -370,7 +406,9 @@ impl PumpFunTrader {
                 // the build/send/confirm below, always freed via
                 // `schedule_nonce_refresh`; in recent-blockhash mode (forge's
                 // ephemeral wallets) there is no slot to hold.
+                let anchor_started = Instant::now();
                 let (tx, nonce_to_refresh) = self.build_trade_tx(ixs, signer, anchor).await?;
+                stages.anchor_ms = anchor_started.elapsed().as_millis() as u64;
                 let sent: Result<String> = async {
                     // Write-ahead persist: the signature is fixed the
                     // instant we sign — before any network round-trip — so hand it to
@@ -394,11 +432,13 @@ impl PumpFunTrader {
                     // back to a recent blockhash under nonce contention and must
                     // keep rebroadcasting when it does (a blockhash outlives the 5 s
                     // window ~12x). The manual/confirm path sends once as before.
+                    let send_started = Instant::now();
                     let sig = if matches!(anchor, TxAnchor::Entry) {
                         self.send_transaction_rebroadcast(&tx).await?
                     } else {
                         self.send_transaction(&tx).await?
                     };
+                    send_ms.store(send_started.elapsed().as_millis() as u64, AtomicOrdering::Relaxed);
                     info!(
                         "📤 Buy sent — sig: {} | SOL: {} | {}ms",
                         sig,
@@ -418,6 +458,7 @@ impl PumpFunTrader {
                     Ok(sig)
                 }
                 .await;
+                stages.send_ms = send_ms.load(AtomicOrdering::Relaxed);
 
                 if let Some(nonce_pubkey) = nonce_to_refresh {
                     self.schedule_nonce_refresh(nonce_pubkey);
@@ -443,11 +484,11 @@ impl PumpFunTrader {
                             }
                             // Unchanged creator or the refresh itself failed — stop
                             // rather than re-pay fees on a resend that can't fix anything.
-                            Ok(None) | Err(_) => return sent.map(|s| (s, user_token_account)),
+                            Ok(None) | Err(_) => return sent.map(|s| (s, user_token_account, stages)),
                         }
                     }
                 }
-                return sent.map(|s| (s, user_token_account));
+                return sent.map(|s| (s, user_token_account, stages));
             }
         }
         .await
