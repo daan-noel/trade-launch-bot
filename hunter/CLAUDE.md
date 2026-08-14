@@ -50,7 +50,13 @@ cargo run   -p hunter-live -- probe <ladder|fanout|pin-senders|simulate-*|sim-ma
 cd frontend; npm run dev               # both apps: live :5173, lab :5174
 npm run build:live                     # tsc (BOTH trees) + vite → lab-free dist/index.html (the EC2 artifact)
 npm run lint                           # import-boundary gate ONLY: shared⊬@live/@lab, live⊬@lab, lab⊬@live
+npm test                               # tsc -p tsconfig.test.json + vitest — the ONLY typecheck covering the tests
 ```
+
+`tsconfig.json` (what `build:*` runs) **excludes every test file**: the UI image's build context is
+`hunter/frontend/` alone, so a test reading a sibling crate's fixture — the `flow_split_parity.json`
+the Rust suite shares — cannot resolve on the server. Tests typecheck via `tsconfig.test.json`,
+which `vitest.config.ts` also feeds to `vite-tsconfig-paths` for the `@shared`/`components` aliases.
 
 Clippy `too_many_arguments` is `#[allow]`-ed on trade-path fns by design.
 

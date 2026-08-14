@@ -33,5 +33,10 @@
       "lib/*": ["./src/shared/lib/*"]
     }
   },
-  "include": ["src"]
+  "include": ["src"],
+  // Tests are dev-only and never enter the bundle. They stay out of the build
+  // typecheck because some read fixtures from sibling crates (`hunter/engine/`),
+  // which the UI image's build context does not contain — see tsconfig.test.json,
+  // which typechecks them on the workstation where those paths resolve.
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
 }

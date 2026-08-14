@@ -1,0 +1,10 @@
+{
+  // Workstation-only typecheck that ADDS the test files back. `tsconfig.json`
+  // (the shipped build) excludes them: the UI image's build context is
+  // `hunter/frontend/` alone, so a test importing a sibling crate's fixture —
+  // e.g. `classifyFlow.parity.test.ts` reading `hunter/engine/fixtures/` — cannot
+  // resolve there. Run via `npm test`, which typechecks then executes vitest.
+  "extends": "./tsconfig.json",
+  "include": ["src"],
+  "exclude": []
+}
