@@ -16,7 +16,6 @@ import {
 } from 'lib/signedTone';
 import { MintBarTradesPanel } from 'components/tokens/MintBarTradesPanel';
 import { useBarTradesSelection } from 'components/tokens/useBarTradesSelection';
-import { VolumePatternScope } from 'context/VolumePatternDraftContext';
 import {
   ConditionBandsProvider,
   useConditionBands,
@@ -72,6 +71,10 @@ export interface FloorDetailFacts {
   episodeMarkers?: ChartEventMarker[] | null;
   /** Fingerprint `volume_ix_patterns` keys for the chart vol/non-vol overlay. */
   flowPatternKeys?: ReadonlySet<string> | null;
+  /** Fingerprint those keys came from — the trades table's Vol-badge write target
+   *  (see `BarTradesPanel`). Resolve it with {@link flowPatternKeys} from one
+   *  `hooks/useFlowPatternKeys` source, never as a second lookup. */
+  flowFingerprintId?: string | null;
   /** Optional action slot (Sell / Verify / …) — Console open only. */
   actions?: ReactNode;
   /**
@@ -349,6 +352,7 @@ export function FloorPositionDetail({
             tableId="floor-detail-bar-trades"
             eventMarkers={markers}
             flowPatternKeys={facts.flowPatternKeys ?? null}
+            flowFingerprintId={facts.flowFingerprintId ?? null}
             className="border-t border-white/7 pt-2"
           />
         </div>
@@ -359,20 +363,16 @@ export function FloorPositionDetail({
   // Both providers wrap the chart AND the `conditions` slot — they are the two ends
   // of each channel, and nothing between them needs to know.
   //
-  // `VolumePatternScope mode="decision"` is the third, and it is a correctness rail
-  // rather than a permission: every number in this view is a REPORT OF AN ENGINE
-  // DECISION taken under the fingerprint's SAVED `volume_ix_patterns`, so the view
-  // opens classified under that set — a draft layered on silently would make the
-  // vol / non-vol split, and any sum a reader takes off it by hand, disagree with the
-  // exit it sits next to. It is NOT locked: staging a pattern from the trades table
-  // is exactly how a misclassified bot tx gets found, and the chart's Preview switch
-  // shows the staged set on request, marked while it is on.
+  // Nothing scopes the flow classification here any more: every number in this view
+  // is a report of an engine decision taken under the fingerprint's saved
+  // `volume_ix_patterns`, and that saved set is now the only one any surface draws
+  // from. Editing a pattern from the trades table writes it straight to the
+  // fingerprint, so the split a reader sums by hand and the exit beside it can never
+  // be classified under different sets.
   return (
-    <VolumePatternScope mode="decision">
-      <CrosshairTimeProvider value={crosshair}>
-        <ConditionBandsProvider value={bandsStore}>{body}</ConditionBandsProvider>
-      </CrosshairTimeProvider>
-    </VolumePatternScope>
+    <CrosshairTimeProvider value={crosshair}>
+      <ConditionBandsProvider value={bandsStore}>{body}</ConditionBandsProvider>
+    </CrosshairTimeProvider>
   );
 }
 

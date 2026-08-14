@@ -25,6 +25,8 @@ export function MintBarTradesPanel({
   tableId,
   eventMarkers = null,
   flowPatternKeys = null,
+  flowFingerprintId = null,
+  flowReadOnly = false,
   className,
 }: {
   mint: string;
@@ -32,6 +34,11 @@ export function MintBarTradesPanel({
   tableId?: string;
   eventMarkers?: ChartEventMarker[] | null;
   flowPatternKeys?: ReadonlySet<string> | null;
+  /** Fingerprint the keys came from — the Vol badge's write target
+   *  (see {@link BarTradesPanel}). */
+  flowFingerprintId?: string | null;
+  /** A stored run's frozen patterns — display only (see {@link BarTradesPanel}). */
+  flowReadOnly?: boolean;
   className?: string;
 }) {
   // Only subscribes once something is picked — an unopened detail row pays
@@ -67,6 +74,8 @@ export function MintBarTradesPanel({
       eventMarkers={eventMarkers}
       myWalletAddresses={mine}
       flowPatternKeys={flowPatternKeys}
+      flowFingerprintId={flowFingerprintId}
+      flowReadOnly={flowReadOnly}
       flowReasons={flowReasons}
       className={className}
     />

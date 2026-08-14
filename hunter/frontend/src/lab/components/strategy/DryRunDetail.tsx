@@ -26,7 +26,7 @@ import {
 import { fetchEngineSimPage, fetchEngineSimSummary, fetchEngineSimTimeSummary } from 'services/api';
 import { toSummaryBody, toTableRequest, type TableRequestBody } from 'services/tableRequest';
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
-import { useFlowPatternKeys } from 'hooks/useFlowPatternKeys';
+import { useFlowPatternSource } from 'hooks/useFlowPatternKeys';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { useTimezone } from 'context/TimezoneContext';
@@ -68,7 +68,7 @@ export function DryRunDetail({
 }) {
   // Wall bins are civil buckets — the server must floor them in the app zone.
   const { timezone } = useTimezone();
-  const flowPatternKeys = useFlowPatternKeys(draft.fingerprint_id);
+  const flowSource = useFlowPatternSource(draft.fingerprint_id);
 
   const [simQuery, setSimQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   // Matched-but-not-entered `NoEntry` rows are hidden by default — a dry-run's
@@ -271,7 +271,8 @@ export function DryRunDetail({
             useMintChartGroupOverlay={(mint, pageRows) =>
               useSimMintEpisodeOverlay(runId, mint, pageRows)
             }
-            flowPatternKeys={flowPatternKeys}
+            flowPatternKeys={flowSource.keys}
+            flowFingerprintId={flowSource.fingerprintId}
             renderChartCardExtra={(row, group) => (
               <PositionChartCardExtra facts={positionChartFactsFromSim(group ?? [row])} />
             )}

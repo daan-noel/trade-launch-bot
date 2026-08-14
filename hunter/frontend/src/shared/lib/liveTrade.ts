@@ -1,4 +1,5 @@
-import type { LiveTrade, TradeRecord } from 'types';
+import { normalizeIxLabels } from 'lib/ixLabels';
+import type { LiveTrade, TokenLiveStats, TradeRecord } from 'types';
 
 /**
  * Convert a `trade_executed` SSE frame into the REST chart-history row shape.
@@ -34,8 +35,32 @@ export function liveTradeToTradeRecord(t: LiveTrade): TradeRecord {
     // appended row that drops them is counted as non-vol AND fails to tag its
     // wallet — the cumulative pair then diverges from that trade onward, which is
     // why the overlay was wrong on a still-open position and right once it closed.
-    instruction_labels: t.instruction_labels ?? null,
+    // Normalized here for the same reason the REST twin (`getTokenTrades`) does it:
+    // both persisted `ix_labels` shapes have to reach readers as an ordered list.
+    instruction_labels: normalizeIxLabels(t.instruction_labels),
   };
+}
+
+/**
+ * Apply a `trade_executed` frame's `live` stats snapshot onto a cached token row.
+ *
+ * The ONE writer of pushed stats into a cache entry — the token grid's rows and
+ * the chart's `getTokenDetail` share it so the two surfaces can't drift on which
+ * fields tick. Field names are identical across `TokenLiveStats`, `TokenRecord`
+ * and `TokenDetailRecord` (the backend `live_stats` mirrors them), so the target
+ * is typed structurally: adding a stat is one edit here, not one per call site.
+ *
+ * The snapshot is cumulative and backend-authoritative, so last-frame-wins is
+ * correct — no per-field max is needed to keep `ath_price` monotone.
+ */
+export function applyTokenLiveStats(target: TokenLiveStats, s: TokenLiveStats): void {
+  target.current_price = s.current_price;
+  target.volume_sol_total = s.volume_sol_total;
+  target.market_cap = s.market_cap;
+  target.trade_count = s.trade_count;
+  target.ath_price = s.ath_price;
+  target.ath_timestamp = s.ath_timestamp;
+  target.last_trade_at = s.last_trade_at;
 }
 
 /** Dedup key for appends into a TradeRecord[] cache (one leg per signature). */

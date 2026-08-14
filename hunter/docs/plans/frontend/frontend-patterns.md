@@ -135,10 +135,18 @@ server compare. Percent columns that render `×100` (Win %, Open %) use a local
   creator + wallets they traded with vs the rest, and the toolbar tooltip says so. Only a
   token with neither disables the toggle. The per-trade **Vol badge keeps the stricter
   gate** (non-empty patterns) — it asserts a structural match, not a cohort.
-  Resolve keys via `hooks/useFlowPatternKeys` / `useFlowPatternKeysForRule` /
-  `useResolvedFlowPatternKeys` (or `lib/flow/flowPatternKeys` for a raw pattern list). Any
-  rule/fingerprint-scoped chart (`TokenTable` Charts, Floor inspect, lab inspect) still
-  passes them, or the reader silently gets the weaker split.
+  Resolve through `hooks/useFlowPatternKeys` — `useFlowPatternSource` /
+  `useFlowPatternSourceForRule` / `useResolvedFlowPatternSource` (or
+  `lib/flow/flowPatternKeys` for a raw pattern list). Any rule/fingerprint-scoped chart
+  (`TokenTable` Charts, Floor inspect, lab inspect) still passes them, or the reader
+  silently gets the weaker split.
+- **Never split a `FlowPatternSource`.** The keys and the `fingerprintId` answer different
+  questions — "classify with what" and "edit which row" — so pass `flowPatternKeys` and
+  `flowFingerprintId` together down the whole chain (host → `TokenTradeChart` /
+  `TokenChartsGrid` → `BarTradesPanel`). Dropping the id does not degrade gracefully: the
+  Vol badge's write target then has to be guessed from the pattern set, and an unconfigured
+  fingerprint's set is empty, which matches every other unconfigured row. The badge goes
+  dead when several match and edits an unrelated rule's fingerprint when one does.
 - **Pointer x -> chart coordinate goes through `paneCoords`.** lightweight-charts lays the
   container out as `[left axis][pane][right axis]` and every time-scale coordinate is
   measured from the PANE, so a bare `clientX - rect.left` is off by

@@ -43,7 +43,7 @@ import { holdLabel } from 'lib/holdLabel';
 import { resolvePnlPct } from 'lib/pnlPct';
 import { ruleAnalyzeHref } from 'lib/strategy/nav';
 import { fetchPortfolioPositionsPage } from 'services/api';
-import { useFlowPatternKeysForRule } from 'hooks/useFlowPatternKeys';
+import { useFlowPatternSourceForRule } from 'hooks/useFlowPatternKeys';
 import { useServerTable } from 'hooks/useServerTable';
 import type { RulePositionRecord } from 'types';
 import type { HistoryCohort } from '@live/pages/console/historyCohort';
@@ -71,9 +71,10 @@ const historyChartCardExtra = (r: RulePositionRecord) => (
  *  `volume_ix_patterns` — a History page spans rules, so one grid-wide set would
  *  misclassify every card that isn't from that rule. Resolved through the same
  *  hook the row's inspect modal uses, so a card and its modal always agree.
- *  Called once per card as a hook (see `FlowPatternKeysHook`). */
-const useHistoryRowFlowPatternKeys = (r: RulePositionRecord) =>
-  useFlowPatternKeysForRule(r.rule_id);
+ *  Called once per card as a hook (see `FlowPatternSourceHook`). Carries the
+ *  fingerprint id too, so a card's Vol badge edits its own rule's row. */
+const useHistoryRowFlowPatternSource = (r: RulePositionRecord) =>
+  useFlowPatternSourceForRule(r.rule_id);
 
 /**
  * Columns. Keys that filter/sort server-side must match the backend whitelist
@@ -329,7 +330,7 @@ export const HistoryTable = memo(function HistoryTable({
         charts
         useRowOverlay={historyRowOverlay}
         renderChartCardExtra={historyChartCardExtra}
-        useRowChartFlowPatternKeys={useHistoryRowFlowPatternKeys}
+        useRowChartFlowPatternSource={useHistoryRowFlowPatternSource}
         loading={loading}
         serverSide={!clientScanFocus}
         serverTotal={clientScanFocus ? rows.length : total}

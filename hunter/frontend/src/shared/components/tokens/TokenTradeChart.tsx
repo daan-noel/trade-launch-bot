@@ -60,6 +60,11 @@ interface TokenTradeChartProps {
    * hides the per-trade Vol badge, which is a structural match by definition.
    */
   flowPatternKeys?: ReadonlySet<string> | null;
+  /** Fingerprint {@link flowPatternKeys} came from — the trades table's Vol-badge
+   *  write target (see `BarTradesPanel`). Pass it wherever the host knows one. */
+  flowFingerprintId?: string | null;
+  /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */
+  flowReadOnly?: boolean;
 }
 
 /**
@@ -79,6 +84,8 @@ export function TokenTradeChart({
   externalCrosshairTimeSec = null,
   onVisibleTimeRangeChange,
   flowPatternKeys = null,
+  flowFingerprintId = null,
+  flowReadOnly = false,
 }: TokenTradeChartProps) {
   const { unit, usdRate } = usePriceUnit();
   const [metric, setMetric] = useState<ChartMetric>('price');
@@ -198,6 +205,8 @@ export function TokenTradeChart({
         eventMarkers={eventMarkers}
         myWalletAddresses={myWalletAddresses}
         flowPatternKeys={flowPatternKeys}
+        flowFingerprintId={flowFingerprintId}
+        flowReadOnly={flowReadOnly}
         flowReasons={flowReasons}
       />
     </div>

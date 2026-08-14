@@ -13,8 +13,11 @@
 //! keeps the associated type.
 
 use chrono::{DateTime, Utc};
+use serde_json::Value;
 
-use hunter_engine::metrics::flow_split::{ix_hash_from_labels_json, wallet_hash};
+use hunter_engine::metrics::flow_split::{
+    ix_hash_from_labels_json, ix_hash_from_labels_value, wallet_hash,
+};
 use hunter_engine::metrics::{Side, TradeLite};
 
 use trading_core::config::constants::approx_real_sol_reserves;
@@ -92,10 +95,22 @@ pub struct FlowKeys {
 
 impl FlowKeys {
     /// Hash a row's stored label JSON + wallet address through the flow-split SSOT.
-    /// `None` inputs stay the missing sentinel.
+    /// `None` inputs stay the missing sentinel. The lake read path: `export.rs`
+    /// already funnels the column through `normalize_labels`, so a lake row's text
+    /// is always the bare-array form.
     pub fn from_stored(ix_labels: Option<&str>, wallet: Option<&str>) -> Self {
         Self {
             ix_hash: ix_labels.and_then(ix_hash_from_labels_json),
+            wallet_hash: wallet.map(wallet_hash).unwrap_or(0),
+        }
+    }
+
+    /// Same contract for a row holding `ix_labels` as a decoded `Value` — the
+    /// Postgres `Trade` shape, which (unlike the lake's export) still carries
+    /// **either** persisted shape, so it must go through the shape-complete reader.
+    pub fn from_value(ix_labels: &Value, wallet: Option<&str>) -> Self {
+        Self {
+            ix_hash: ix_hash_from_labels_value(ix_labels),
             wallet_hash: wallet.map(wallet_hash).unwrap_or(0),
         }
     }
@@ -253,10 +268,7 @@ pub fn project_pg_tail(trades: &[Trade], with_flow: bool) -> Vec<CorpusTrade> {
             is_buy: t.is_buy(),
             tx_signature: None,
             flow: if with_flow {
-                FlowKeys::from_stored(
-                    Some(&t.instruction_labels.to_string()),
-                    Some(t.wallet_address.as_str()),
-                )
+                FlowKeys::from_value(&t.instruction_labels, Some(t.wallet_address.as_str()))
             } else {
                 FlowKeys::default()
             },
@@ -363,5 +375,35 @@ mod tests {
         let flow_rows = project_pg_tail(&[curve], true);
         assert_eq!(flow_rows[0].flow.wallet_hash, wallet_hash("wallet"));
         assert_eq!(flow_rows[0].real_reserve_sol, Some(curve_real));
+    }
+
+    /// `trades.ix_labels` holds **either** persisted shape (see
+    /// `trading_core::storage::ix_labels_sql`), and the PG tail reads the column
+    /// decoded rather than through the lake export's `normalize_labels`. Both shapes
+    /// must therefore resolve to the same volume-pattern hash here.
+    ///
+    /// The failure this guards is silent, not loud: an object-shaped row that hashes
+    /// to `None` is indistinguishable from a row that genuinely has no labels, so it
+    /// is simply booked organic — deflating `vol_*`, inflating `nonvol_*`, and making
+    /// the metric pane disagree with a chart that classified the same trade correctly.
+    #[test]
+    fn pg_tail_hashes_both_ix_label_shapes_alike() {
+        let labels = ["Pump.Fun: Create", "Pump.Fun: Buy"];
+        let want = hunter_engine::metrics::flow_split::ix_hash(&labels);
+
+        let mut bare = curve_trade(1.0, 1_000_000, 44.89, 900_000);
+        bare.instruction_labels = serde_json::json!(labels);
+
+        let mut wrapped = curve_trade(1.0, 1_000_000, 44.89, 900_000);
+        wrapped.instruction_labels = serde_json::json!({ "instructions": labels });
+
+        let rows = project_pg_tail(&[bare, wrapped], true);
+        assert_eq!(rows[0].flow.ix_hash, Some(want), "bare array");
+        assert_eq!(rows[1].flow.ix_hash, Some(want), "object wrapper");
+
+        // A row with genuinely no labels still reports the missing sentinel.
+        let mut none = curve_trade(1.0, 1_000_000, 44.89, 900_000);
+        none.instruction_labels = serde_json::Value::Null;
+        assert_eq!(project_pg_tail(&[none], true)[0].flow.ix_hash, None);
     }
 }

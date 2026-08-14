@@ -42,9 +42,6 @@ export const STORAGE_KEYS = {
   pnlDistDensity: `${PREFIX}ui.pnlDistDensity`,
   /** Metric-panes selection prefs (panes, windows, rule, autoPanes). */
   metricPanes: `${PREFIX}ui.metricPanes`,
-  /** App-wide `volume_ix_patterns` staging area — `{ patterns, base }`. Absent
-   *  ⇒ no draft open, and every chart reads its own saved patterns. */
-  volumePatternDraft: `${PREFIX}ui.volumePatternDraft`,
 
   // ── tables (one map per concern, keyed by `tableId`) ───────────────────────
   /** Map of `{ [tableId]: visibleColumnKey[] }` — all DataTable column toggles. */

@@ -58,10 +58,18 @@ Clippy `too_many_arguments` is `#[allow]`-ed on trade-path fns by design.
 
 - **The token-data key is `mint_address`** — one name across DB columns, Rust/TS DTOs, the
   filter/sort grammar, and frontend column keys. A bare `mint` on a token-data path is a
-  bug. Reuse the existing anchors, never re-derive: `MARKET_CAP_SQL`, `market_cap_sol`,
+  bug. Reuse the existing anchors, never re-derive: `TradeRow::chart_spot_price`,
+  `MARKET_CAP_SQL`, `market_cap_sol`,
   `config::constants::{sol_to_lamports,lamports_to_sol}`, the lake `schema.rs` column
   names, `token_enrichment::ENRICH_SELECT`, the TS `TokenEnrichmentFields` base. The
   executor, ingest and `lake/` crates keep their own decoupled `mint` vocabulary.
+- **What a trade is worth comes from `TradeRow::chart_spot_price`** — reserve-pair spot,
+  execution price only as the last rung. The raw `price_per_token` column is the
+  *execution* price and is NOT that: for a buy it is the average along the curve, below
+  the post-trade spot the chart plots, so anything derived from it (ATH, current price,
+  market cap) silently disagrees with every bar. `price_per_token` is right only where
+  the question really is "what did this fill cost" — a `Fill::price`, a cost basis.
+  The frontend twin is `tradeSpotPriceSol` (`chartBars.ts`).
 - **Every SOL amount names its unit.** `_lamports` = exact integer (`BIGINT`/`i64`/`u64`),
   `_sol` = human `f64`; same base name across layers, converted only at the repo boundary
   through the one shared pair. Ratios keep `_price`/`_pct`. Rules + rationale:

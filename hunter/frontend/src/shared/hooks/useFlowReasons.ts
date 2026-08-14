@@ -1,6 +1,5 @@
 import { useMemo } from 'react';
 import { compareTradesChronologically } from 'components/token-price-chart/chartBars';
-import { useEffectiveFlowPatternKeys } from 'context/VolumePatternDraftContext';
 import { flowReasonsById, type FlowReason } from 'lib/flow/classifyFlow';
 import type { TradeRecord } from 'types';
 
@@ -11,8 +10,9 @@ import type { TradeRecord } from 'types';
  *
  * Classifies the host's FULL trade history: contagion is forward-only, so
  * running it over one candle's rows would miss the earlier trade that tagged the
- * wallet. Resolves the pattern set through the shared draft, so a staged pattern
- * moves the table and the lines in the same tick.
+ * wallet. Classifies with the fingerprint's SAVED patterns — the same row the
+ * chart lines and the backend's `m_flow_split` fold read, so the table's reason
+ * and the overlay can never disagree.
  *
  * `null` when nothing can classify — the badge then falls back to structure only.
  *
@@ -22,10 +22,9 @@ import type { TradeRecord } from 'types';
  */
 export function useFlowReasons(
   trades: readonly TradeRecord[],
-  savedKeys: ReadonlySet<string> | null | undefined,
+  keys: ReadonlySet<string> | null | undefined,
   creatorWallet?: string | null,
 ): ReadonlyMap<string, FlowReason> | null {
-  const { keys } = useEffectiveFlowPatternKeys(savedKeys);
   return useMemo(() => {
     const hasPatterns = keys != null && keys.size > 0;
     if (!hasPatterns && !creatorWallet) return null;

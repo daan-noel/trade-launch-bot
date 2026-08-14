@@ -20,7 +20,7 @@ import { DateCell } from 'components/table/DateCell';
 import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
 import type { ColumnDef, TableQuery } from 'components/table/types';
 import { ModeBadge } from 'components/strategy/ModeBadge';
-import { useFlowPatternKeysForRule } from 'hooks/useFlowPatternKeys';
+import { useFlowPatternSourceForRule } from 'hooks/useFlowPatternKeys';
 import { useServerTable } from 'hooks/useServerTable';
 import { fetchArmsPage } from 'services/api';
 import { formatDurationShort } from 'utils/format';
@@ -38,8 +38,10 @@ export const armRowKey = (r: StrategyArmRecord) =>
 
 /** Each card classifies vol/non-vol against ITS OWN rule's `volume_ix_patterns`
  *  — the Arms table spans rules, so one grid-wide set would misclassify every
- *  card that isn't from that rule. Called once per card as a hook. */
-const useArmRowFlowPatternKeys = (r: StrategyArmRecord) => useFlowPatternKeysForRule(r.rule_id);
+ *  card that isn't from that rule. Called once per card as a hook, and carries
+ *  the fingerprint id so the card's Vol badge edits its own rule's row. */
+const useArmRowFlowPatternSource = (r: StrategyArmRecord) =>
+  useFlowPatternSourceForRule(r.rule_id);
 
 const armChartCardExtra = (r: StrategyArmRecord) => (
   <ArmChartCardExtra
@@ -192,7 +194,7 @@ export const ArmsTable = memo(function ArmsTable({
         searchable
         colFilters
         charts
-        useRowChartFlowPatternKeys={useArmRowFlowPatternKeys}
+        useRowChartFlowPatternSource={useArmRowFlowPatternSource}
         renderChartCardExtra={armChartCardExtra}
         loading={loading}
         serverSide

@@ -399,12 +399,23 @@ impl TokenState {
             }
         }
 
-        let price = trade.price_per_token();
+        // Price every snapshot from the ONE canonical definition
+        // (`TradeRow::chart_spot_price` — reserve-pair spot, execution price only as
+        // the last resort), the same one the chart, the swing analyzer, the live
+        // strategies and the sweep read. The raw `price_per_token` column is the
+        // *execution* price (`sol / tokens`), which for a buy is the average along
+        // the curve and therefore below the post-trade spot the chart plots — an
+        // execution-priced ATH sits under the very candle it is supposed to cap.
+        // `market_cap_sol` and the paper last-resort fill already document their
+        // input as spot.
+        let spot = trade.chart_spot_price();
 
         // All-time high is a max — order-independent, so always considered.
-        if self.ath_price.is_none() || price > self.ath_price.unwrap_or(0.0) {
-            self.ath_price = Some(price);
-            self.ath_timestamp = Some(trade.block_time());
+        if let Some(price) = spot {
+            if self.ath_price.is_none_or(|ath| price > ath) {
+                self.ath_price = Some(price);
+                self.ath_timestamp = Some(trade.block_time());
+            }
         }
 
         // "Latest" snapshots — last_trade_at, current_price, reserves, market cap —
@@ -413,7 +424,7 @@ impl TokenState {
         // (the same inversion `is_dead` Signal 3 defends against). Advance them only
         // when this trade is at least as new as the newest seen, so a lag-delayed
         // old trade can't rewind price/liquidity and mis-flag deadness.
-        let is_newest = self.last_trade_at.map_or(true, |t| trade.block_time() >= t);
+        let is_newest = self.last_trade_at.is_none_or(|t| trade.block_time() >= t);
         if is_newest {
             self.last_trade_at = Some(trade.block_time());
             // Only advance the meaningful-trade clock for non-dust trades so bot
@@ -421,9 +432,14 @@ impl TokenState {
             if trade.amount_sol() >= DEAD_MEANINGFUL_TRADE_SOL {
                 self.last_meaningful_trade_at = Some(trade.block_time());
             }
-            self.current_price = Some(price);
+            // Only a priceable trade moves price/market cap — mirrors the reserve
+            // rule below, so a row carrying no usable price can't shadow the last
+            // real reading with a zero.
+            if let Some(price) = spot {
+                self.current_price = Some(price);
+                self.update_market_cap(price);
+            }
             self.update_reserves(trade);
-            self.update_market_cap(price);
         }
     }
 
@@ -996,5 +1012,88 @@ mod tests {
         // The cache row carries no signature: `tx_signature()` is
         // always `""`, regardless of the source `Trade`'s sig.
         assert_eq!(c.tx_signature(), "");
+    }
+
+    /// Trade carrying the post-swap reserve pair, so `chart_spot_price` resolves
+    /// through its first rung (the spot the chart plots) rather than the
+    /// execution fallback.
+    fn trade_with_reserves(
+        at: DateTime<Utc>,
+        sol: f64,
+        tokens: u64,
+        reserve_sol: f64,
+        reserve_token: u64,
+    ) -> Trade {
+        let mut t = Trade::new(
+            "MINT-spot".into(),
+            "buyer".into(),
+            TradeType::Buy,
+            sol,
+            tokens,
+            "sig-spot".into(),
+            1,
+            at,
+        );
+        t.reserve_sol = Some(reserve_sol);
+        t.reserve_token = Some(reserve_token);
+        t
+    }
+
+    #[test]
+    fn price_snapshots_use_chart_spot_not_execution_price() {
+        // The aggregates must price from the ONE canonical `chart_spot_price` the
+        // chart draws. Pricing them off the raw `price_per_token` column (the
+        // execution price, which for a buy is the curve average and so sits BELOW
+        // the post-trade spot) left the ATH line under the very candle it caps.
+        let now = Utc::now();
+        // Launch seed = 0.001/1e6 = 1e-9, below both candidate prices below, so it
+        // can't be what the assertions land on.
+        let mut state =
+            TokenState::new(token_with_launch(now - ChronoDuration::hours(1), 0.001, 1_000_000));
+        // exec = 1.0/1_000 = 1e-3; spot = 30.0/1_000_000 = 3e-5 — deliberately
+        // apart, and spot is the LOWER of the two, so an exec-priced ATH cannot
+        // pass by coincidence.
+        let t = trade_with_reserves(now, 1.0, 1_000, 30.0, 1_000_000);
+        let spot = t.chart_spot_price().expect("reserve pair prices");
+        state.add_trade(t);
+
+        assert_eq!(state.ath_price, Some(spot));
+        assert_eq!(state.current_price, Some(spot));
+        assert_eq!(state.market_cap, Some(market_cap_sol(spot, false)));
+        assert_eq!(state.ath_timestamp, Some(now));
+    }
+
+    #[test]
+    fn unpriceable_trade_does_not_shadow_the_last_real_price() {
+        // A row with no reserve pair and no usable execution price must leave the
+        // last real reading alone (same rule the reserve snapshots follow) instead
+        // of writing a zero over it.
+        let now = Utc::now();
+        let mut state =
+            TokenState::new(token_with_launch(now - ChronoDuration::hours(1), 0.001, 1_000_000));
+        let priced = trade_with_reserves(now - ChronoDuration::seconds(10), 1.0, 1_000, 30.0, 1_000_000);
+        let spot = priced.chart_spot_price().expect("reserve pair prices");
+        state.add_trade(priced);
+
+        // Zero tokens ⇒ no reserve pair, and `Trade::new` prices it 0.0, so the
+        // execution fallback is non-positive ⇒ `chart_spot_price` is None.
+        let blank = Trade::new(
+            "MINT-spot".into(),
+            "buyer".into(),
+            TradeType::Buy,
+            0.5,
+            0,
+            "sig-blank".into(),
+            2,
+            now,
+        );
+        assert_eq!(blank.chart_spot_price(), None);
+        state.add_trade(blank);
+
+        assert_eq!(state.current_price, Some(spot));
+        assert_eq!(state.ath_price, Some(spot));
+        // The trade still counts for volume and the deadness clock.
+        assert_eq!(state.trade_count, 2);
+        assert_eq!(state.last_trade_at, Some(now));
     }
 }

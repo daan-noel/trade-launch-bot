@@ -17,14 +17,6 @@ export function patternKey(labels: VolumePattern): string {
   return JSON.stringify(labels);
 }
 
-export function hasPattern(
-  patterns: readonly VolumePattern[],
-  labels: VolumePattern,
-): boolean {
-  const key = patternKey(labels);
-  return patterns.some((p) => patternKey(p) === key);
-}
-
 /**
  * Remove `labels` if the set already has it, else append it. Surviving patterns
  * keep their order; a re-added pattern lands at the end (position carries no
@@ -65,29 +57,6 @@ export function patternsFromKeys(
   return out;
 }
 
-/** Drop blank labels and empty patterns — the shape the backend accepts. */
-export function cleanPatterns(patterns: readonly VolumePattern[]): string[][] {
-  return patterns
-    .map((p) => p.map((s) => s.trim()).filter(Boolean))
-    .filter((p) => p.length > 0);
-}
-
-export interface PatternsDiff {
-  added: number;
-  removed: number;
-  dirty: boolean;
-}
-
-/** How a staged set differs from the one it was seeded from. */
-export function patternsDiff(
-  draft: readonly VolumePattern[],
-  base: readonly VolumePattern[],
-): PatternsDiff {
-  const baseKeys = new Set(base.map(patternKey));
-  const draftKeys = new Set(draft.map(patternKey));
-  let added = 0;
-  for (const k of draftKeys) if (!baseKeys.has(k)) added++;
-  let removed = 0;
-  for (const k of baseKeys) if (!draftKeys.has(k)) removed++;
-  return { added, removed, dirty: added > 0 || removed > 0 };
-}
+// Blank-label / empty-pattern sanitizing lives in `metricConfigWithVolumePatterns`
+// (lib/strategy/registry), the one function that builds the persisted shape — a
+// second copy here would be the same rule written twice, free to drift.

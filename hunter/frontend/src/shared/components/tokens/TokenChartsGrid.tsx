@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { NO_FLOW_PATTERN_SOURCE, type FlowPatternSource } from 'hooks/useFlowPatternKeys';
 import { useGetTokenDetailQuery } from 'store/sharedEndpoints';
 import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import type { ChartEventMarker } from 'components/token-price-chart';
@@ -36,15 +37,19 @@ export type MintGroupOverlayHook<R> = (mint: string, rows: R[]) => RowChartOverl
  * **hook** — same rules-of-hooks contract as {@link ChartOverlayHook}. Under
  * `groupByMint` it receives the group's representative row.
  *
- * An open app-wide pattern draft still layers over whatever this returns (see
- * `useEffectiveFlowPatternKeys`); this only decides a card's SAVED baseline.
+ * What it returns IS what the card classifies with — the fingerprint's saved
+ * patterns, the same set the engine decides on. Nothing layers over it.
+ *
+ * It returns the fingerprint id ALONGSIDE the keys because a card's trades table
+ * can edit those patterns, and the write needs the row they came from — keys alone
+ * cannot be traced back to one (see `hooks/useFlowPatternKeys`).
  */
-export type FlowPatternKeysHook<R> = (row: R, mint: string) => ReadonlySet<string> | null;
+export type FlowPatternSourceHook<R> = (row: R, mint: string) => FlowPatternSource;
 
 const NO_OVERLAY: RowChartOverlay = {};
 /** Stable default so cards always call a hook (rules-of-hooks) when none passed. */
 const useNoRowOverlay: ChartOverlayHook<unknown> = () => NO_OVERLAY;
-const useNoRowFlowKeys: FlowPatternKeysHook<unknown> = () => null;
+const useNoRowFlowSource: FlowPatternSourceHook<unknown> = () => NO_FLOW_PATTERN_SOURCE;
 
 /**
  * A grid of per-token trade-history charts, one card per row — the generalized
@@ -109,9 +114,14 @@ interface TokenChartCardProps<R> {
    *  card. `undefined` ⇒ use the hook; `null`/array ⇒ override. */
   eventMarkersOverride?: ChartEventMarker[] | null;
   flowPatternKeys?: ReadonlySet<string> | null;
-  /** Resolves this card's own pattern keys (called as a hook); wins over the
-   *  grid-wide `flowPatternKeys` whenever it returns a set. */
-  useFlowKeys: FlowPatternKeysHook<R>;
+  /** Grid-wide fingerprint for {@link flowPatternKeys} — the Vol-badge write
+   *  target when every card shares one (see `BarTradesPanel`). */
+  flowFingerprintId?: string | null;
+  /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */
+  flowReadOnly?: boolean;
+  /** Resolves this card's own pattern source (called as a hook); wins over the
+   *  grid-wide props whenever it resolves a fingerprint or a set. */
+  useFlowSource: FlowPatternSourceHook<R>;
   /** Extra content rendered in the card header (per-row context). */
   extra?: ReactNode;
   selected?: boolean;
@@ -128,7 +138,9 @@ function TokenChartCard<R>({
   useOverlay,
   eventMarkersOverride,
   flowPatternKeys,
-  useFlowKeys,
+  flowFingerprintId,
+  flowReadOnly,
+  useFlowSource,
   extra,
   selected,
   onSelect,
@@ -138,8 +150,10 @@ function TokenChartCard<R>({
   // Always call the overlay hook (rules of hooks); the override wins when present.
   const { eventMarkers: hookMarkers } = useOverlay(row, mint);
   const eventMarkers = eventMarkersOverride !== undefined ? eventMarkersOverride : hookMarkers;
-  // Per-row keys win; the grid-wide set is the fallback for a uniform cohort.
-  const rowFlowKeys = useFlowKeys(row, mint);
+  // Per-row source wins; the grid-wide props are the fallback for a uniform
+  // cohort. Keys and id fall back independently: a row hook that resolves the
+  // fingerprint but finds no patterns on it still owns this card's write target.
+  const rowFlowSource = useFlowSource(row, mint);
   const selectable = !!onSelect;
 
   return (
@@ -189,7 +203,9 @@ function TokenChartCard<R>({
           eventMarkers={eventMarkers ?? null}
           highlightWallet={highlightWallet ?? null}
           tableId={chartTableId}
-          flowPatternKeys={rowFlowKeys ?? flowPatternKeys}
+          flowPatternKeys={rowFlowSource.keys ?? flowPatternKeys}
+          flowFingerprintId={rowFlowSource.fingerprintId ?? flowFingerprintId}
+          flowReadOnly={flowReadOnly}
         />
       </div>
     </div>
@@ -244,9 +260,14 @@ export interface TokenChartsGridProps<R> {
    *  Use when one set is right for the whole grid (a rule-scoped cohort); when the
    *  rows span fingerprints, pass {@link useRowFlowPatternKeys} instead. */
   flowPatternKeys?: ReadonlySet<string> | null;
-  /** Per-card pattern keys for a grid whose rows span fingerprints — see
-   *  {@link FlowPatternKeysHook}. Wins over {@link flowPatternKeys} per card. */
-  useRowFlowPatternKeys?: FlowPatternKeysHook<R>;
+  /** Fingerprint {@link flowPatternKeys} came from — the Vol-badge write target
+   *  for every card (see `BarTradesPanel`). */
+  flowFingerprintId?: string | null;
+  /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */
+  flowReadOnly?: boolean;
+  /** Per-card pattern source for a grid whose rows span fingerprints — see
+   *  {@link FlowPatternSourceHook}. Wins over the grid-wide props per card. */
+  useRowFlowPatternSource?: FlowPatternSourceHook<R>;
 }
 
 const mintOfRow = <R,>(row: R): string =>
@@ -266,10 +287,12 @@ export function TokenChartsGrid<R>({
   mintGroupOverlay,
   useMintGroupOverlay,
   flowPatternKeys,
-  useRowFlowPatternKeys,
+  flowFingerprintId,
+  flowReadOnly,
+  useRowFlowPatternSource,
 }: TokenChartsGridProps<R>) {
   const useOverlay = (useRowOverlay ?? useNoRowOverlay) as ChartOverlayHook<R>;
-  const useFlowKeys = (useRowFlowPatternKeys ?? useNoRowFlowKeys) as FlowPatternKeysHook<R>;
+  const useFlowSource = (useRowFlowPatternSource ?? useNoRowFlowSource) as FlowPatternSourceHook<R>;
   if (rows.length === 0) return null;
 
   // Group-by-mint: one card per token, its markers built from ALL of that mint's
@@ -316,7 +339,9 @@ export function TokenChartsGrid<R>({
                 useOverlay={overlayHook}
                 eventMarkersOverride={eventMarkersOverride}
                 flowPatternKeys={flowPatternKeys}
-                useFlowKeys={useFlowKeys}
+                flowFingerprintId={flowFingerprintId}
+                flowReadOnly={flowReadOnly}
+                useFlowSource={useFlowSource}
                 extra={renderChartCardExtra?.(rep, groupRows)}
                 selected={selected}
                 onSelect={
@@ -348,7 +373,9 @@ export function TokenChartsGrid<R>({
               chartTableId={chartTableId}
               useOverlay={useOverlay}
               flowPatternKeys={flowPatternKeys}
-              useFlowKeys={useFlowKeys}
+              flowFingerprintId={flowFingerprintId}
+              flowReadOnly={flowReadOnly}
+              useFlowSource={useFlowSource}
               extra={renderChartCardExtra?.(row)}
               selected={selected}
               onSelect={

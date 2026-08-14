@@ -130,6 +130,12 @@ export const labApi = baseApi.injectEndpoints({
         const q = params.toString();
         return `/api/tokens/${encodeURIComponent(mint)}/metric-series${q ? `?${q}` : ''}`;
       },
+      // The flow columns are folded server-side from the fingerprint's saved
+      // `volume_ix_patterns`, so a pattern edit changes these numbers. Without the
+      // tag the pane keeps serving the pre-edit series while the chart — which
+      // re-derives its keys from the same invalidated fingerprint — already moved,
+      // and the two disagree for the rest of the cache window.
+      providesTags: ['Fingerprint'],
       keepUnusedDataFor: 60,
     }),
     getGroupedSweepRuns: builder.query<

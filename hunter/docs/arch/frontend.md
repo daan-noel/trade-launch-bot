@@ -136,7 +136,7 @@ of one fact on purpose — the lane must patch per-event with no round trip
 
 | Domain | Push | Client sink |
 | --- | --- | --- |
-| On-chain trades | `trade_executed` (includes `tx_index`/`leg_index`/reserves/`fee_sol`/`instruction_labels`) | Tokens table row patch; chart `getTokenTrades` append via `watchTokenTradesMint` + `liveTradeToTradeRecord`; `useMintTradeStream` for mint-filtered feeds |
+| On-chain trades | `trade_executed` (includes `tx_index`/`leg_index`/reserves/`fee_sol`/`instruction_labels`, plus the cumulative `live` stats snapshot) | Tokens table row patch; chart `getTokenTrades` append via `watchTokenTradesMint` + `liveTradeToTradeRecord`, **and** `getTokenDetail` stats patch via `applyTokenLiveStats`; `useMintTradeStream` for mint-filtered feeds |
 | Strategy inventory | `strategy_position_update` / `strategy_armed_changed` | `liveStatusSlice` only |
 | Portfolio money | bag-changing position events + `trade_executed` for `mine` wallets | `usePortfolioRealtime` invalidates `WalletHoldings` **and** fans out via `onPortfolioBagRefresh` (Wallet imperative table — no second SSE filter) |
 | Display marks | `trade_executed` tip (SOL spot → USD) | `useWalletMarksLive` patches Home holdings + Jupiter price cache; Wallet page tips page rows locally. Jupiter oracle (liquidity/24h/cold) refetches on mount / bag refresh / tab focus — no interval |
@@ -151,6 +151,15 @@ from that trade onward and only heals on a refetch. For the same reason
 `tokenTradesLive` is an `onSseReopen` consumer: a gap (reconnect or `sse_resync`)
 refetches each watched mint's history and merges the appended tail back over it, since
 a dropped frame leaves a hole a cumulative series reads as real flow.
+
+**A chart's bars and its reference lines read different caches**, so both have to be
+patched. Bars come from `getTokenTrades`; the ATH line, the ATH/FEP readout and the
+detail stat cards come from `getTokenDetail` — a one-shot query with no poll and no
+invalidating tag. Patching only the trades cache paints new highs above an ATH line
+frozen at mount time, so `tokenTradesLive` writes the frame's `live` snapshot into
+`getTokenDetail` too, through the one `applyTokenLiveStats` writer the Tokens grid
+shares. The snapshot is cumulative and backend-authoritative — last frame wins, and a
+missed frame heals on the next one (unlike the append log, which needs the resync).
 
 Mount points in live `App` `NotificationMount`: `useLiveStatusBootstrap`,
 `usePortfolioRealtime`, `useWalletMarksLive`, `useTokenTradesLiveBootstrap`,
@@ -324,18 +333,12 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   where it held — off by default because turning it on is what pays for the fold,
   and it shares the crosshair's cache entry so whichever comes first covers both.
   Lanes snap through each bar's wall-clock end, so they draw in **slot** mode too.
-  The whole detail is a `VolumePatternScope mode="decision"`. The scope has three
-  modes because "may I edit patterns here" and "does the draft change what I am
-  reading" are different questions: `free` applies the draft ambiently, `locked` (a
-  stored sweep run) neither applies nor edits, and `decision` **stages freely but
-  applies only on request** — the chart's `Preview draft` switch, off on mount, with
-  the overlay marked while it is on. Every number in the detail reports an engine
-  decision taken under the fingerprint's SAVED `volume_ix_patterns`, so a view at rest
-  shows that set and the flow tooltip says a draft is staged but not applied;
-  otherwise a reader hand-summing the vol / non-vol split gets a number the exit was
-  never decided on. Staging from the trades table's Vol badge keeps working — that is
-  how a misclassified bot tx gets found. The resolution is one pure
-  `resolveFlowPatternKeys`.
+  Every number in the detail reports an engine decision taken under the
+  fingerprint's saved `volume_ix_patterns`, and that saved row is the only set any
+  surface classifies from — so the vol / non-vol split a reader sums by hand and the
+  exit beside it can never be classified differently. Editing from the trades table's
+  Vol badge stays available (it is how a misclassified bot tx gets found) and writes
+  straight to the fingerprint.
   A disarmed row never fills: the fold is skipping that req, not failing it.
   Lanes thin down rather than vanish as a ladder grows, and the empty ones matter —
   against the coverage track they read as "never fired". Backend contract + the
@@ -609,31 +612,38 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
     + a resolved `ruleName`, so the `RulePositionRecord` → `FloorDetailFacts` mapping and the
     modal header exist once. The header itself is `PositionModalTitle` in
     `@live/components/floor/openPositionStatus`, shared with the Console's open-row modal.
-    Vol/non-vol overlay SSOT: `hooks/useFlowPatternKeys` (+ `useFlowPatternKeysForRule` /
-    `useResolvedFlowPatternKeys`) and `lib/flow/flowPatternKeys` resolve fingerprint
-    `volume_ix_patterns` → `flowPatternKeys`. Wired into Evidence `TokenTable` charts,
-    `LivePositionInspectModal`, Console History/open/waiting detail, fingerprint matched-tokens,
-    the Creation Stats grouped drill-in (keys come from the **applied** scope fingerprint, so a
-    manual group-by drill-in has none), and sweep combo charts (run patterns). A charts grid
-    takes `flowPatternKeys` when ONE set covers every card (Portfolio's rule-scoped drill-in)
-    and `useRowChartFlowPatternKeys` — a per-card hook, `FlowPatternKeysHook`, resolved next to
-    `useRowOverlay` — when its rows span fingerprints (Console History spans rules, so one set
-    would misclassify every card from another rule). Per-card keys win over the grid-wide set;
-    a table with neither leaves the draft as the only source (All Tokens, Trader Analysis, and
-    the other hosts with no fingerprint to resolve from). A grid and its rows' inspect modals
-    read the same hook, so a card and its modal cannot disagree. Omit/empty is
-    not a blank chart — the overlay falls back to a creator-vs-rest split and only goes dark
-    on a token with no creator wallet either. Those saved keys are the BASE: an app-wide
-    draft (`context/VolumePatternDraftContext`, provider in `AppProviders`) layers over them
-    through `useEffectiveFlowPatternKeys`, the ONE resolver both the overlay and the trades
-    table read. Clicking a Vol badge stages that row's ordered `instruction_labels`
-    (`lib/flow/volumePatterns.togglePattern`, shared with Flow Discovery) and every chart
-    redraws; `useFlowReasons` supplies the contagion-aware `via creator` / `via wallet`
-    marker so the structural badge and the lines stop disagreeing silently.
-    `<VolumePatternScope locked>` opts a subtree out (the grouped-sweep drill-in reads a run
-    snapshot). Saving goes through `VolumePatternDraftBar` — explicit fingerprint pick +
-    active-rule count, because `metric_config` is not part of fingerprint identity and a
-    write changes every rule bound to that id. Detail:
+    Vol/non-vol overlay SSOT: `hooks/useFlowPatternKeys` (`useFlowPatternSource` /
+    `useFlowPatternSourceForRule` / `useResolvedFlowPatternSource`) and
+    `lib/flow/flowPatternKeys` resolve a fingerprint's `volume_ix_patterns` into a
+    `FlowPatternSource` — `{ fingerprintId, keys }`. **Both halves travel together**: the keys
+    say what to classify with, the id says which row an edit writes to, and a key set alone
+    cannot be traced back to one (`metric_config` is not part of fingerprint identity, and
+    every unconfigured row carries the same empty set). There is deliberately no keys-only
+    variant. Wired into Evidence `TokenTable` charts, `LivePositionInspectModal`, Console
+    History/open/waiting detail, fingerprint matched-tokens, the Creation Stats grouped
+    drill-in (from the **applied** scope fingerprint, so a manual group-by drill-in has none),
+    and sweep combo charts (run patterns). A charts grid takes `flowPatternKeys` +
+    `flowFingerprintId` when ONE fingerprint covers every card (Portfolio's rule-scoped
+    drill-in) and `useRowChartFlowPatternSource` — a per-card hook, `FlowPatternSourceHook`,
+    resolved next to `useRowOverlay` — when its rows span fingerprints (Console History spans
+    rules, so one set would misclassify every card from another rule). The per-card source wins
+    per half independently. A grid and its rows' inspect modals read the same hook, so a card
+    and its modal cannot disagree. Omit/empty is not a blank chart — the overlay falls back to
+    a creator-vs-rest split and only goes dark on a token with no creator wallet either.
+    Clicking a Vol badge **persists**: `useVolumePatternTarget` writes that row's ordered
+    `instruction_labels` (`lib/flow/volumePatterns.togglePattern`, shared with Flow Discovery)
+    straight into the target fingerprint's `metric_config`, and the engine picks it up on its
+    next rules reload. There is no staging copy — it would be a second answer to "what counts
+    as volume". `useFlowReasons` supplies the contagion-aware `via creator` / `via wallet`
+    marker so the structural badge and the lines stop disagreeing silently. `flowReadOnly` opts
+    a subtree out (the grouped-sweep drill-in reads a run snapshot) and skips the hook's
+    fetches. Target precedence is `resolveVolumePatternTarget` — explicit pick > the host's
+    `flowFingerprintId` > a lone pattern-set match, in that order, since a match on the SET
+    can never outrank an id (an empty set matches every unconfigured row at once). A match is
+    taken only when exactly one row carries the set and is flagged as inferred; picking away
+    from the host is flagged as off-host, because the badges then answer for a different row
+    than the chart's lines. `VolumePatternBar` renders the target, both flags and the
+    active-rule count, because a write changes every rule bound to that id. Detail:
     [`@plans/token-analysis/token-history-chart-functionalities.md`](../plans/token-analysis/token-history-chart-functionalities.md) §6b.
     The open-count selector lives in that leaf so a status tick re-renders the panel, not `RulesView`.
   - **lab** (`@lab/components/strategy/LabRuleEvidence`) passes `notice` + `renderInspect` + `scoreScope`

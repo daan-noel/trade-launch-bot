@@ -3,6 +3,7 @@ import type { AppSettings } from 'services/api';
 import type { SortEntry } from 'components/table/types';
 import type { FilterSpec } from 'components/table/numericFilter';
 import { toTableRequest } from 'services/tableRequest';
+import { normalizeIxLabels } from 'lib/ixLabels';
 import { TOKEN_INFO_AMOUNT_COLS } from 'components/tokens/sharedTokenColumns';
 import type {
   CreationStatsArgs,
@@ -165,6 +166,19 @@ export const sharedApi = baseApi.injectEndpoints({
       // first-N cap left the tail of a high-volume token off the chart and mis-snapped
       // the exit / later swing legs. This is a cold, deliberately-opened path.
       query: (mint) => `/api/tokens/${encodeURIComponent(mint)}/trades`,
+      // `trades.ix_labels` is persisted in EITHER shape (bare array or
+      // `{instructions:[…]}`) and `get_trades` ships the column verbatim, so the wire
+      // rows do not yet satisfy the declared `string[]`. Normalizing at this one REST
+      // entry point (SSE's twin is `liveTradeToTradeRecord`) makes the type true for
+      // every downstream reader — chart lines, Vol badge, pattern toggle — instead of
+      // asking each to unwrap. Skipping it is silent: an object-shaped row looks like
+      // a trade with no labels, so it classifies organic and stages an empty pattern.
+      transformResponse: (rows: TradeRecord[]) =>
+        rows.map((t) =>
+          Array.isArray(t.instruction_labels)
+            ? t
+            : { ...t, instruction_labels: normalizeIxLabels(t.instruction_labels) },
+        ),
     }),
     // Wallet profiles — read by the chart-marker consumers (Swing detection,
     // Sync token) to overlay tracked wallets. Folded into the cache so those two

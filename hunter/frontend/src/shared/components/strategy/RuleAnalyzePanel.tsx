@@ -20,7 +20,7 @@ import {
   PositionChartCardExtra,
   positionChartFactsFromRule,
 } from 'components/strategy/PositionChartCardExtra';
-import { useResolvedFlowPatternKeys } from 'hooks/useFlowPatternKeys';
+import { useResolvedFlowPatternSource } from 'hooks/useFlowPatternKeys';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { useServerTable, DEFAULT_POSITIONS_QUERY } from 'hooks/useServerTable';
 import { numericColKeys, toSummaryBody, toTableRequest } from 'services/tableRequest';
@@ -240,7 +240,7 @@ export function RuleAnalyzePanel({
 }: RuleAnalyzePanelProps) {
   const price = usePriceDisplay();
   const { timezone } = useTimezone();
-  const flowPatternKeys = useResolvedFlowPatternKeys({
+  const flowSource = useResolvedFlowPatternSource({
     fingerprintId: rule?.fingerprint_id,
     ruleId,
   });
@@ -781,7 +781,8 @@ export function RuleAnalyzePanel({
         useRowOverlay={posRowOverlay}
         charts
         chartsDefaultOn
-        flowPatternKeys={flowPatternKeys}
+        flowPatternKeys={flowSource.keys}
+        flowFingerprintId={flowSource.fingerprintId}
         renderChartCardExtra={(row) => (
           <PositionChartCardExtra facts={positionChartFactsFromRule(row)} />
         )}

@@ -1,13 +1,17 @@
 import { connectTradeStream, onSseReopen } from 'services/sse';
 import type { AppDispatch } from 'store/types';
 import { sharedApi } from 'store/sharedEndpoints';
-import { liveTradeToTradeRecord, tradeDedupeKey } from 'lib/liveTrade';
-import type { LiveTrade, TradeRecord } from 'types';
+import {
+  applyTokenLiveStats,
+  liveTradeToTradeRecord,
+  tradeDedupeKey,
+} from 'lib/liveTrade';
+import type { LiveTrade, TokenLiveStats, TradeRecord } from 'types';
 
 /**
  * Ref-counted mint watch set for live chart history. Charts register while
  * mounted; a single module-level SSE consumer patches only watched mints into
- * the RTK `getTokenTrades` cache (append + dedupe).
+ * the RTK `getTokenTrades` (bars) and `getTokenDetail` (reference lines) caches.
  */
 const watchCounts = new Map<string, number>();
 const watched = new Set<string>();
@@ -38,6 +42,9 @@ function flushPending(): void {
   pending = [];
 
   const byMint = new Map<string, LiveTrade[]>();
+  // Freshest stats snapshot per mint in this batch — cumulative, so only the
+  // last one is worth writing (see `applyTokenLiveStats`).
+  const statsByMint = new Map<string, TokenLiveStats>();
   for (const t of batch) {
     if (!watched.has(t.mint_address)) continue;
     let list = byMint.get(t.mint_address);
@@ -46,11 +53,34 @@ function flushPending(): void {
       byMint.set(t.mint_address, list);
     }
     list.push(t);
+    if (t.live) statsByMint.set(t.mint_address, t.live);
   }
 
   for (const [mint, trades] of byMint) {
     mergeIntoCache(mint, trades.map(liveTradeToTradeRecord));
   }
+  for (const [mint, stats] of statsByMint) {
+    mergeDetailStats(mint, stats);
+  }
+}
+
+/**
+ * Patch a mint's pushed stats into the `getTokenDetail` cache.
+ *
+ * The chart's reference lines (ATH, and the ATH/FEP + price readouts beside it)
+ * read `getTokenDetail`, which is a one-shot query — no polling, no invalidating
+ * tag. Without this the bars stream in and print new highs while the ATH line
+ * stays pinned to whatever was fetched when the chart mounted, so a live token
+ * renders candles above its own all-time high. The token grid patches the same
+ * snapshot into its rows (`TokensPage`); charts need it too.
+ */
+function mergeDetailStats(mint: string, stats: TokenLiveStats): void {
+  if (!dispatchRef) return;
+  dispatchRef(
+    sharedApi.util.updateQueryData('getTokenDetail', mint, (draft) => {
+      applyTokenLiveStats(draft, stats);
+    }),
+  );
 }
 
 /** Append `rows` to a mint's cached history, dropping ones already there and

@@ -18,12 +18,19 @@ export interface TokenTradeColumnsOpts {
    */
   flowPatternKeys?: ReadonlySet<string> | null;
   /**
-   * Makes the badge a click-to-stage control: adds/removes that row's ordered
-   * `instruction_labels` in the app-wide pattern draft. Set ⇒ the column always
-   * renders, because authoring starts from an EMPTY set and the rows you click
-   * into it are the whole point.
+   * Makes the badge an edit control: adds/removes that row's ordered
+   * `instruction_labels` in the target fingerprint's saved `volume_ix_patterns`.
+   * Set ⇒ the column always renders, because authoring starts from an EMPTY set
+   * and the rows you click into it are the whole point.
+   *
+   * There is no staging step — a click PERSISTS, and every active rule bound to
+   * that fingerprint classifies flow differently from the engine's next rules
+   * reload on. Pass {@link toggleTargetName} so the row says which one.
    */
   onTogglePattern?: ((labels: readonly string[]) => void) | null;
+  /** Name of the fingerprint {@link onTogglePattern} writes to — named in the
+   *  badge tooltip, since the click is an immediate save and not a local edit. */
+  toggleTargetName?: string | null;
   /**
    * Effective (contagion-aware) classification per trade id — what the chart's
    * lines actually did with the row. The badge tests structure alone, so without
@@ -65,6 +72,7 @@ export function tokenTradeColumns(
   const onToggle = opts?.onTogglePattern ?? null;
   const reasons = opts?.flowReasons ?? null;
   const showVol = keys.size > 0 || onToggle != null;
+  const targetLabel = opts?.toggleTargetName ? `“${opts.toggleTargetName}”` : 'the fingerprint';
 
   const leading: ColumnDef<TradeRecord>[] = [];
 
@@ -73,10 +81,11 @@ export function tokenTradeColumns(
       key: 'is_volume_ix_pattern',
       label: 'Vol',
       tooltip: onToggle
-        ? 'Structural volume ix-pattern match. Click to stage/unstage this trade’s ordered ' +
-          'instruction_labels as a volume_ix_pattern — the chart’s vol/non-vol lines redraw ' +
-          'immediately. “via creator/wallet” = the lines already count this row through ' +
-          'contagion, whatever its own structure is.'
+        ? `Structural volume ix-pattern match. Clicking SAVES this trade’s ordered ` +
+          `instruction_labels to ${targetLabel} as a volume_ix_pattern — there is no staging ` +
+          `step, and every active rule bound to it classifies flow differently from the ` +
+          `engine’s next rules reload on. “via creator/wallet” = the lines already count this ` +
+          `row through contagion, whatever its own structure is.`
         : 'Structural volume ix-pattern match — this trade’s ordered instruction_labels ' +
           'exact-match a volume_ix_patterns row (no creator/wallet contagion).',
       render: (t) => {
@@ -104,11 +113,11 @@ export function tokenTradeColumns(
                 aria-pressed={isVol}
                 title={
                   isVol
-                    ? 'Staged as a volume_ix_pattern — click to remove'
-                    : 'Click to stage this structure as a volume_ix_pattern'
+                    ? `Saved as a volume_ix_pattern on ${targetLabel} — click to remove it`
+                    : `Click to save this structure as a volume_ix_pattern on ${targetLabel}`
                 }
                 onClick={(e) => {
-                  // The row itself is selectable on several hosts; a stage click
+                  // The row itself is selectable on several hosts; an edit click
                   // must not also change the table's selection.
                   e.stopPropagation();
                   onToggle(labels);

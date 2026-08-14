@@ -3,6 +3,26 @@
 // Shared by FingerprintForm, FingerprintGroupPicker, creation-stats, and table filters.
 // Paste also accepts newline- or comma-separated legacy text (no leading `[`).
 
+/**
+ * Collect a persisted `ix_labels` value into an ordered label list — the TS mirror
+ * of Rust `hunter_engine::grouping::normalize_labels`, preserving exact on-chain
+ * order and count (no sort, no dedup).
+ *
+ * The column accepts **two** shapes and always has: the bare array `["A","B"]` and
+ * the object wrapper `{"instructions":["A","B"]}` (see Rust
+ * `storage::ix_labels_sql`). A reader that understands only the array form counts
+ * every object-shaped row as having no labels, which never surfaces as an error —
+ * "this trade has no labels" is a legal state — it just silently classifies the
+ * trade organic and stages an empty volume pattern. Anything unrecognized ⇒ `[]`.
+ */
+export function normalizeIxLabels(raw: unknown): string[] {
+  const arr = Array.isArray(raw)
+    ? raw
+    : (raw as { instructions?: unknown } | null)?.instructions;
+  if (!Array.isArray(arr)) return [];
+  return arr.filter((x): x is string => typeof x === 'string');
+}
+
 export interface ParseIxLabelsResult {
   /** Parsed labels, or `null` when empty / no usable labels (no filter / no criterion). */
   labels: string[] | null;

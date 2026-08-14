@@ -7,7 +7,7 @@ import { MintSetInput } from './MintSetInput';
 import { LazyTokenChartsGrid } from './LazyTokenChartsGrid';
 import type {
   ChartOverlayHook,
-  FlowPatternKeysHook,
+  FlowPatternSourceHook,
   MintGroupOverlayHook,
   RowChartOverlay,
 } from './TokenChartsGrid';
@@ -105,13 +105,18 @@ interface TokenTableCommon<R> {
   /** Wallet to spotlight on every chart (Trader Analysis). */
   highlightWallet?: string | null;
   /** Fingerprint volume_ix_patterns keys for the charts-grid vol/non-vol overlay —
-   *  one set for the whole grid. Use {@link useRowChartFlowPatternKeys} instead when
-   *  the rows span fingerprints. */
+   *  one set for the whole grid. Use {@link useRowChartFlowPatternSource} instead
+   *  when the rows span fingerprints. */
   flowPatternKeys?: ReadonlySet<string> | null;
-  /** Per-card pattern keys for a table whose rows span fingerprints (Console
-   *  History mixes rules). Called as a hook per card — see {@link FlowPatternKeysHook}.
-   *  Wins over {@link flowPatternKeys} for the cards it resolves. */
-  useRowChartFlowPatternKeys?: FlowPatternKeysHook<R>;
+  /** Fingerprint {@link flowPatternKeys} came from — the Vol-badge write target on
+   *  every card (see `BarTradesPanel`). Pass it whenever the cohort has one. */
+  flowFingerprintId?: string | null;
+  /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */
+  flowReadOnly?: boolean;
+  /** Per-card pattern source for a table whose rows span fingerprints (Console
+   *  History mixes rules). Called as a hook per card — see
+   *  {@link FlowPatternSourceHook}. Wins over the table-wide props per card. */
+  useRowChartFlowPatternSource?: FlowPatternSourceHook<R>;
   rowActions?: (row: R) => ReactNode;
   rowClassName?: (row: R) => string | undefined;
   cellGroupClassName?: (group: string | undefined, row: R) => string | undefined;
@@ -188,7 +193,9 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
     mintChartGroupOverlay,
     useMintChartGroupOverlay,
     flowPatternKeys,
-    useRowChartFlowPatternKeys,
+    flowFingerprintId,
+    flowReadOnly,
+    useRowChartFlowPatternSource,
   } = props;
   const mintOf = mintAddressOf;
   const [chartsOn, setChartsOn] = useState(() =>
@@ -273,7 +280,9 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
           mintGroupOverlay={mintChartGroupOverlay}
           useMintGroupOverlay={useMintChartGroupOverlay}
           flowPatternKeys={flowPatternKeys}
-          useRowFlowPatternKeys={useRowChartFlowPatternKeys}
+          flowFingerprintId={flowFingerprintId}
+          flowReadOnly={flowReadOnly}
+          useRowFlowPatternSource={useRowChartFlowPatternSource}
         />
       )}
     </>

@@ -7,7 +7,7 @@ import {
   OPEN_STATUS_LABEL,
   PositionModalTitle,
 } from '@live/components/floor/openPositionStatus';
-import { useResolvedFlowPatternKeys } from 'hooks/useFlowPatternKeys';
+import { useResolvedFlowPatternSource } from 'hooks/useFlowPatternKeys';
 import { holdLabel } from 'lib/holdLabel';
 import { resolvePnlPct } from 'lib/pnlPct';
 import type { StrategyRule } from 'lib/strategy/types';
@@ -42,7 +42,7 @@ export function LivePositionInspectModal({
   ruleName?: string | null;
   onClose: () => void;
 }) {
-  const flowPatternKeys = useResolvedFlowPatternKeys({
+  const flowSource = useResolvedFlowPatternSource({
     fingerprintId: rule?.fingerprint_id,
     ruleId: position.rule_id ?? rule?.id,
   });
@@ -98,7 +98,8 @@ export function LivePositionInspectModal({
           pnlSol: position.pnl_sol,
           pnlPct,
           inspect,
-          flowPatternKeys,
+          flowPatternKeys: flowSource.keys,
+          flowFingerprintId: flowSource.fingerprintId,
           conditions: (
             <LivePositionConditions
               positionId={position.id}

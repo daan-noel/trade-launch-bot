@@ -19,6 +19,7 @@ import { Badge } from 'components/ui/Badge';
 import { PageHeader } from 'components/ui/PageHeader';
 import { StatusButton } from 'components/ui/StatusButton';
 import { cn } from 'lib/cn';
+import { applyTokenLiveStats } from 'lib/liveTrade';
 import { FALLBACK_POLL_INTERVAL_MS } from 'services/config';
 import { connectTokenCreatedStream, connectTradeStream } from 'services/sse';
 import type { LiveTrade, TokenDetailRecord, TokenLiveStats, TokenRecord } from 'types';
@@ -256,13 +257,7 @@ export function TokensPage({
           for (const item of draft.items) {
             const s = updates.get(item.mint_address);
             if (!s) continue;
-            item.current_price = s.current_price;
-            item.volume_sol_total = s.volume_sol_total;
-            item.market_cap = s.market_cap;
-            item.trade_count = s.trade_count;
-            item.ath_price = s.ath_price;
-            item.ath_timestamp = s.ath_timestamp;
-            item.last_trade_at = s.last_trade_at;
+            applyTokenLiveStats(item, s);
           }
         }),
       );

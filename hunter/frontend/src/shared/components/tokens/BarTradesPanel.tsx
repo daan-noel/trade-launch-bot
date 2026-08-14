@@ -1,14 +1,11 @@
-import { useCallback, useMemo } from 'react';
+import { useMemo } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { tokenTradeColumns } from 'components/tokens/tokenTradeColumns';
-import { VolumePatternDraftBar } from 'components/tokens/VolumePatternDraftBar';
+import { VolumePatternBar } from 'components/tokens/VolumePatternBar';
 import { Badge } from 'components/ui/Badge';
 import { useTimezone } from 'context/TimezoneContext';
-import {
-  useEffectiveFlowPatternKeys,
-  useVolumePatternDraft,
-} from 'context/VolumePatternDraftContext';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
+import { useVolumePatternTarget } from 'hooks/useVolumePatternTarget';
 import { formatTimestampMs } from 'utils/date';
 import type { FlowReason } from 'lib/flow/classifyFlow';
 import type {
@@ -47,9 +44,18 @@ export interface BarTradesPanelProps {
   eventMarkers?: ChartEventMarker[] | null;
   /** Our own wallets — adds a left-border accent to their rows. */
   myWalletAddresses?: ReadonlySet<string> | null;
-  /** The host's SAVED `volume_ix_patterns` keys — adds the Vol/Non-vol column.
-   *  An open pattern draft layers over this (see `useEffectiveFlowPatternKeys`). */
+  /** The host's saved `volume_ix_patterns` keys — adds the Vol/Non-vol column.
+   *  This is the set the chart lines, the metric panes and the engine all use, so
+   *  the badge and the overlay can never report different classifications. */
   flowPatternKeys?: ReadonlySet<string> | null;
+  /** The fingerprint {@link flowPatternKeys} came from — the row a Vol-badge edit
+   *  writes to. Pass it wherever the host knows one (`hooks/useFlowPatternKeys`
+   *  resolves both together): without it the panel can only guess its write
+   *  target from the pattern set, and an empty set matches every unconfigured
+   *  fingerprint at once, which leaves the badge uneditable. */
+  flowFingerprintId?: string | null;
+  /** A stored run's frozen patterns — display only, never edited from here. */
+  flowReadOnly?: boolean;
   /** Effective (contagion-aware) classification per trade id, from the host's
    *  FULL trade history — a bar's rows alone can't reconstruct contagion. Omit
    *  and the badge reports structure only, as it always has. */
@@ -92,32 +98,36 @@ export function BarTradesPanel({
   eventMarkers = null,
   myWalletAddresses = null,
   flowPatternKeys = null,
+  flowFingerprintId = null,
+  flowReadOnly = false,
   flowReasons = null,
   className = 'mt-3 border-t border-white/7 pt-2',
 }: BarTradesPanelProps) {
   const { timezone } = useTimezone();
   const price = usePriceDisplay();
 
-  const draft = useVolumePatternDraft();
-  const { keys: effectiveKeys, locked } = useEffectiveFlowPatternKeys(flowPatternKeys);
-  const draftToggle = draft.toggle;
-  const onTogglePattern = useCallback(
-    (labels: readonly string[]) => draftToggle(labels, flowPatternKeys),
-    [draftToggle, flowPatternKeys],
-  );
+  // A toggle edits the fingerprint's saved patterns directly, so the badge, the
+  // chart lines and the engine are always reading the same row.
+  const patternTarget = useVolumePatternTarget({
+    fingerprintId: flowFingerprintId,
+    savedKeys: flowPatternKeys,
+    enabled: !flowReadOnly,
+  });
+  const onTogglePattern = flowReadOnly ? null : patternTarget.toggle;
 
   const columns = useMemo(
     () =>
       tokenTradeColumns(price.unitLabel, {
-        flowPatternKeys: effectiveKeys,
-        // Only a LOCKED subtree refuses the edit — it shows a stored run's own
-        // patterns and clicking a badge would edit a set that isn't this chart's to
-        // change. A `decision` scope still stages freely: it merely declines to
-        // redraw itself under the draft until asked (chart Preview switch).
-        onTogglePattern: locked ? null : onTogglePattern,
+        // The target's keys, not the prop: a badge must report the row its own
+        // click writes to. They are the same set in the normal case, and differ
+        // only when the reader deliberately picks another fingerprint — which
+        // `VolumePatternBar` flags rather than letting the two drift silently.
+        flowPatternKeys: patternTarget.keys,
+        onTogglePattern,
+        toggleTargetName: patternTarget.target?.name ?? null,
         flowReasons,
       }),
-    [price.unitLabel, effectiveKeys, locked, onTogglePattern, flowReasons],
+    [price.unitLabel, patternTarget.keys, patternTarget.target, onTogglePattern, flowReasons],
   );
 
   const entryExitMap = useMemo(() => buildEntryExitMap(eventMarkers), [eventMarkers]);
@@ -181,7 +191,7 @@ export function BarTradesPanel({
         >
           Clear
         </button>
-        <VolumePatternDraftBar savedKeys={flowPatternKeys} />
+        <VolumePatternBar target={patternTarget} readOnly={flowReadOnly} />
       </div>
       <DataTable
         tableId={tableId}

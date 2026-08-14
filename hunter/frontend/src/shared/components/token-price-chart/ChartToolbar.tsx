@@ -329,11 +329,6 @@ export function ChartToolbar({
   showFlowLines,
   flowLinesAvailable,
   flowPatternsConfigured,
-  flowPatternsDraft = false,
-  flowPatternsDraftIgnored = false,
-  flowDraftPreviewAvailable = false,
-  flowDraftPreview = false,
-  onFlowDraftPreviewChange,
   rangeSelectMode,
   crosshair,
   formatFlow,
@@ -664,45 +659,14 @@ export function ChartToolbar({
             tooltip={
               !flowLinesAvailable
                 ? 'Needs a creator wallet or volume_ix_patterns to classify against'
-                : flowPatternsDraftIgnored
-                  ? 'Cumulative volume-maker (red) vs non-volume (gold) overlay — classified with the rule’s SAVED volume_ix_patterns, the set this position was decided under. Your unsaved draft is staged but NOT applied here — use Preview draft to see it.'
-                  : flowPatternsDraft && flowPatternsConfigured
-                  ? 'Cumulative volume-maker (red) vs non-volume (gold) overlay — classified against your UNSAVED pattern draft + creator/wallet contagion. Save it to a fingerprint to make it real.'
-                  : flowPatternsDraft
-                    ? 'Pattern draft is empty — showing creator + wallets they traded with (red) vs the rest (gold). Click a Vol badge in the trades table to stage a pattern.'
-                    : flowPatternsConfigured
-                      ? 'Cumulative volume-maker (red) vs non-volume (gold) overlay — classified via fingerprint volume_ix_patterns + creator/wallet contagion'
-                      : 'No fingerprint volume_ix_patterns — showing creator + wallets they traded with (red) vs the rest (gold). Configure patterns for the true volume-maker split.'
+                : flowPatternsConfigured
+                  ? 'Cumulative volume-maker (red) vs non-volume (gold) overlay — classified via the fingerprint’s saved volume_ix_patterns + creator/wallet contagion, the same set the engine decides on'
+                  : 'No fingerprint volume_ix_patterns — showing creator + wallets they traded with (red) vs the rest (gold). Configure patterns for the true volume-maker split.'
             }
             activeColor={FLOW_VOL_LINE_COLOR}
           >
             <FlowLinesIcon />
           </IconToggleButton>
-
-          {/* Only where a decision is being reported AND something is staged. The
-              default is OFF so such a view always opens on the classification the
-              decision was taken under; turning it on is the reader's explicit "show
-              me what my draft would do", and it says so while it is on. */}
-          {flowDraftPreviewAvailable && (
-            <button
-              type="button"
-              onClick={() => onFlowDraftPreviewChange?.(!flowDraftPreview)}
-              aria-pressed={flowDraftPreview}
-              title={
-                flowDraftPreview
-                  ? 'PREVIEW: the split is your UNSAVED draft, not the set this position was decided under. The rule readout beside the chart still reports the decided values.'
-                  : 'Showing the SAVED patterns this position was decided under. Click to preview your unsaved draft instead.'
-              }
-              className="rounded-md px-2 py-1 text-[11px] font-semibold transition-colors"
-              style={
-                flowDraftPreview
-                  ? { backgroundColor: CHART_COLORS.sell, color: '#0a0a0a' }
-                  : { backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }
-              }
-            >
-              {flowDraftPreview ? 'Draft preview' : 'Preview draft'}
-            </button>
-          )}
 
           <button
             type="button"

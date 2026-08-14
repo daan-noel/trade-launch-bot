@@ -4,7 +4,7 @@ import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
 import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import { Accordion } from 'components/ui/Accordion';
 import type { ChartEventMarker, ChartVisibleTimeRange } from 'components/token-price-chart';
-import { useFlowPatternKeys } from 'hooks/useFlowPatternKeys';
+import { useFlowPatternSource } from 'hooks/useFlowPatternKeys';
 import { ACCORDION_IDS } from 'lib/storage';
 import type { TokenDetailRecord } from 'types';
 import {
@@ -32,6 +32,8 @@ export function LabTokenInspect({
   positionEntry = null,
   /** Explicit pattern keys; when omitted, resolved from `ruleOverride.fingerprintId`. */
   flowPatternKeys: flowPatternKeysProp = null,
+  flowFingerprintId: flowFingerprintIdProp = null,
+  flowReadOnly = false,
   /** `inspect` = graphs on the right, values under chart (modal). `page` = all stacked. */
   metricLayout = 'inspect',
 }: {
@@ -47,6 +49,11 @@ export function LabTokenInspect({
   /** Inspected run's entry fill — drives the `m_position` panes (see MetricPanes). */
   positionEntry?: { time: string; price: number } | null;
   flowPatternKeys?: ReadonlySet<string> | null;
+  /** Fingerprint the keys came from — the Vol-badge write target. Like
+   *  {@link flowPatternKeys}, falls back to `ruleOverride.fingerprintId`. */
+  flowFingerprintId?: string | null;
+  /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */
+  flowReadOnly?: boolean;
   metricLayout?: 'page' | 'inspect';
 }) {
   const [crosshairTimeSec, setCrosshairTimeSec] = useState<number | null>(null);
@@ -55,10 +62,15 @@ export function LabTokenInspect({
   const [visibleTimeRange, setVisibleTimeRange] = useState<ChartVisibleTimeRange | null>(null);
   const [paneMarkers, setPaneMarkers] = useState<ChartEventMarker[]>([]);
 
-  const resolvedFlowKeys = useFlowPatternKeys(
-    flowPatternKeysProp != null ? null : ruleOverride?.fingerprintId,
-  );
-  const flowPatternKeys = flowPatternKeysProp ?? resolvedFlowKeys;
+  // Resolve the SOURCE, not just the keys: the inspected run's fingerprint is the
+  // row a Vol-badge edit writes to, and every inspect host (sim, sweep promote,
+  // dry-run, rule analyze) already knows it — so no reader has to re-pick it.
+  // Resolved even when the caller passed explicit keys: "classify with what" and
+  // "edit which row" are different questions, and the run this inspect belongs to
+  // answers the second one whether or not it overrode the first.
+  const resolvedFlowSource = useFlowPatternSource(ruleOverride?.fingerprintId);
+  const flowPatternKeys = flowPatternKeysProp ?? resolvedFlowSource.keys;
+  const flowFingerprintId = flowFingerprintIdProp ?? resolvedFlowSource.fingerprintId;
 
   const onEventMarkersChange = useCallback((markers: ChartEventMarker[]) => {
     setPaneMarkers(markers);
@@ -100,6 +112,8 @@ export function LabTokenInspect({
       externalCrosshairTimeSec={crosshairSource === 'panes' ? crosshairTimeSec : null}
       onVisibleTimeRangeChange={setVisibleTimeRange}
       flowPatternKeys={flowPatternKeys}
+      flowFingerprintId={flowFingerprintId}
+      flowReadOnly={flowReadOnly}
     />
   );
 

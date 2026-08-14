@@ -18,6 +18,7 @@ export function LabTokenInspectModal({
   titleSuffix = 'Token inspect',
   ruleOverride = null,
   flowPatternKeys = null,
+  flowReadOnly = false,
   eventMarkers = null,
   onClose,
 }: {
@@ -28,6 +29,8 @@ export function LabTokenInspectModal({
   /** Explicit overlay keys (e.g. sweep run `volume_ix_patterns`); when omitted,
    *  resolved from `ruleOverride.fingerprintId` inside LabTokenInspect. */
   flowPatternKeys?: ReadonlySet<string> | null;
+  /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */
+  flowReadOnly?: boolean;
   /** Precomputed fill markers to draw instead of the single `target`'s — used to
    *  overlay **all re-entry episodes** of the token on one chart. Falls back to the
    *  single-target markers when null/absent. */
@@ -70,6 +73,7 @@ export function LabTokenInspectModal({
         extraEventMarkers={extraEventMarkers}
         ruleOverride={ruleOverride}
         flowPatternKeys={flowPatternKeys}
+        flowReadOnly={flowReadOnly}
         positionEntry={positionEntry}
       />
     </Modal>

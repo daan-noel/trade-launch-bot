@@ -83,7 +83,7 @@ import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
-import { useFlowPatternKeys } from 'hooks/useFlowPatternKeys';
+import { useFlowPatternSource } from 'hooks/useFlowPatternKeys';
 import { STORAGE_KEYS } from 'lib/storage';
 import { rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
@@ -755,7 +755,7 @@ function RuleSimPositionsPanel({
   onInspect: (v: { key: string; target: InspectTarget; rule: StrategyRule } | null) => void;
   inspectKey: string | null;
 }) {
-  const flowPatternKeys = useFlowPatternKeys(rule.fingerprint_id);
+  const flowSource = useFlowPatternSource(rule.fingerprint_id);
 
   const { timezone } = useTimezone();
   const [simQuery, setSimQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
@@ -1073,7 +1073,8 @@ function RuleSimPositionsPanel({
             useMintChartGroupOverlay={(mint, rows) =>
               useSimMintEpisodeOverlay(rule.id, mint, rows)
             }
-            flowPatternKeys={flowPatternKeys}
+            flowPatternKeys={flowSource.keys}
+            flowFingerprintId={flowSource.fingerprintId}
             renderChartCardExtra={(row, group) => (
               <PositionChartCardExtra facts={positionChartFactsFromSim(group ?? [row])} />
             )}

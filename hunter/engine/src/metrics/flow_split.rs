@@ -11,6 +11,7 @@ use serde_json::Value;
 use super::flow_window::{push_sorted, window_key, window_width};
 use super::{MetricId, Side, TradeLite, Ts};
 
+use crate::grouping::normalize_labels;
 use crate::hash::{fnv1a_byte, fnv1a_bytes, HashedSet, FNV_OFFSET};
 
 /// Stable hash of an ordered instruction-label sequence (exact-order match
@@ -42,29 +43,41 @@ pub fn ix_hash_opt(labels: &[impl AsRef<str>]) -> Option<u64> {
     }
 }
 
-/// [`ix_hash_opt`] over labels still in their stored **JSON array** form, without
-/// allocating.
+/// [`ix_hash_opt`] over labels still in their stored **JSON** form, without
+/// allocating on the hot shape.
 ///
-/// Both the lake (`normalize_labels`) and Postgres (`trades.ix_labels`) hold the
-/// label sequence as a JSON array of strings. Turning each row back into a
-/// `Vec<String>` just to feed [`ix_hash`] costs a `serde_json` parse plus one heap
-/// allocation per label, **per trade**, on corpora of millions of rows — so the
-/// offline paths must not: this walks the array in place.
+/// Turning each row back into a `Vec<String>` just to feed [`ix_hash`] costs a
+/// `serde_json` parse plus one heap allocation per label, **per trade**, on corpora
+/// of millions of rows — so the offline paths must not: this walks the common
+/// bare-array form in place.
 ///
 /// Exactness is not traded away: the scanner handles only the shape the writers
-/// actually emit (a flat array of unescaped strings) and **falls back to
-/// `serde_json`** the moment it meets an escape or anything unexpected, so the
-/// result is by construction whatever `ix_hash_opt(&parsed)` would have returned —
-/// including the "unparseable ⇒ `None` ⇒ organic" behaviour. Locked by
-/// `json_scanner_matches_the_parsed_hash`.
+/// emit most (a flat array of unescaped strings) and **falls back to
+/// [`ix_hash_from_labels_value`]** the moment it meets an escape, the object
+/// wrapper, or anything unexpected — so the result is by construction whatever the
+/// shape-complete reader would have returned, including the "unparseable ⇒ `None`
+/// ⇒ organic" behaviour. Locked by `json_scanner_matches_the_normalized_hash`.
 pub fn ix_hash_from_labels_json(json: &str) -> Option<u64> {
     match scan_labels_json(json.as_bytes()) {
         Some(h) => h,
         None => {
-            let labels: Vec<String> = serde_json::from_str(json).ok()?;
-            ix_hash_opt(&labels)
+            let value: Value = serde_json::from_str(json).ok()?;
+            ix_hash_from_labels_value(&value)
         }
     }
+}
+
+/// [`ix_hash_opt`] over labels already decoded into a [`Value`] — the shape a
+/// Postgres `trades.ix_labels` / `tokens.ix_labels` row arrives in.
+///
+/// Goes through [`normalize_labels`], so **both** persisted shapes hash alike: the
+/// bare array `["A","B"]` and the object wrapper `{"instructions":["A","B"]}`.
+/// Every reader of that column must be shape-complete or it books object-shaped
+/// rows as organic — silently, because "this trade has no labels" is a legal state
+/// that looks identical. That is the same class of defect
+/// `storage::ix_labels_sql` exists to prevent on the SQL side.
+pub fn ix_hash_from_labels_value(labels: &Value) -> Option<u64> {
+    ix_hash_opt(&normalize_labels(labels))
 }
 
 /// In-place hash of a JSON array of unescaped strings.
@@ -545,12 +558,13 @@ mod tests {
         );
     }
 
-    /// The in-place JSON scanner must agree with "parse, then hash" on every input
-    /// — the happy shapes the writers emit, the degenerate ones, and the escaped /
-    /// malformed ones where it is required to fall back rather than guess. This is
-    /// the whole safety argument for skipping the per-trade `serde_json` parse.
+    /// The in-place JSON scanner must agree with "decode, normalize, then hash" on
+    /// every input — the happy shapes the writers emit, the degenerate ones, the
+    /// object wrapper, and the escaped / malformed ones where it is required to fall
+    /// back rather than guess. This is the whole safety argument for skipping the
+    /// per-trade `serde_json` parse.
     #[test]
-    fn json_scanner_matches_the_parsed_hash() {
+    fn json_scanner_matches_the_normalized_hash() {
         let cases = [
             r#"["Pump.Fun: Create","Pump.Fun: Buy"]"#,
             r#"["Pump.Fun: Buy"]"#,
@@ -566,6 +580,13 @@ mod tests {
             r#"["tab\there"]"#,
             r#"["unicode é"]"#,
             r#"["émoji ✨ raw"]"#,     // multi-byte but unescaped ⇒ fast path
+            // Object wrapper — the second persisted shape (see `ix_labels_sql`).
+            r#"{"instructions":["Pump.Fun: Create","Pump.Fun: Buy"]}"#,
+            r#"{ "instructions" : [ "a" , "b" ] }"#,
+            r#"{"instructions":[]}"#,
+            r#"{"instructions":null}"#,
+            r#"{"other":["a"]}"#,
+            "{}",
             "null",            // unparseable ⇒ None
             "not json",
             "[1,2]",           // wrong element type ⇒ None
@@ -574,10 +595,10 @@ mod tests {
             "",
         ];
         for case in cases {
-            let parsed: Vec<String> = serde_json::from_str(case).unwrap_or_default();
+            let value: Value = serde_json::from_str(case).unwrap_or(Value::Null);
             assert_eq!(
                 ix_hash_from_labels_json(case),
-                ix_hash_opt(&parsed),
+                ix_hash_opt(&normalize_labels(&value)),
                 "scanner disagreed on {case:?}"
             );
         }
@@ -586,6 +607,30 @@ mod tests {
             ix_hash_from_labels_json(r#"["Pump.Fun: Create","Pump.Fun: Buy"]"#),
             Some(ix_hash(&["Pump.Fun: Create", "Pump.Fun: Buy"])),
         );
+    }
+
+    /// The two persisted `ix_labels` shapes are the SAME label sequence, so they
+    /// must hash to the same volume-pattern identity — whichever entry point a
+    /// caller reaches them through (stored text or a decoded `Value`).
+    ///
+    /// A reader that understands only the bare array books every object-shaped row
+    /// as organic, which is silent: "no labels" is a legal state, so the flow split
+    /// just quietly under-counts volume and over-counts organic.
+    #[test]
+    fn both_persisted_label_shapes_hash_alike() {
+        let want = Some(ix_hash(&["Pump.Fun: Create", "Pump.Fun: Buy"]));
+        let bare = json!(["Pump.Fun: Create", "Pump.Fun: Buy"]);
+        let wrapped = json!({ "instructions": ["Pump.Fun: Create", "Pump.Fun: Buy"] });
+
+        assert_eq!(ix_hash_from_labels_value(&bare), want);
+        assert_eq!(ix_hash_from_labels_value(&wrapped), want);
+        assert_eq!(ix_hash_from_labels_json(&bare.to_string()), want);
+        assert_eq!(ix_hash_from_labels_json(&wrapped.to_string()), want);
+
+        // Absent / empty stays the missing sentinel in both shapes.
+        assert_eq!(ix_hash_from_labels_value(&json!([])), None);
+        assert_eq!(ix_hash_from_labels_value(&json!({ "instructions": [] })), None);
+        assert_eq!(ix_hash_from_labels_value(&Value::Null), None);
     }
 
     #[test]
@@ -753,6 +798,80 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    /// The shared parity fixture, from the Rust side. Its twin is
+    /// `classifyFlow.parity.test.ts`, which asserts the SAME file with the chart's
+    /// TS port — the two implementations exist because the chart must redraw
+    /// without a round trip, and that is only safe while they agree.
+    ///
+    /// The drift this catches is silent: a misclassified trade still yields a
+    /// plausible split, so it surfaces as "the chart and the metric pane disagree"
+    /// long after the change that caused it.
+    #[test]
+    fn flow_split_matches_the_shared_parity_fixture() {
+        #[derive(serde::Deserialize)]
+        struct Case {
+            name: String,
+            patterns: Vec<Vec<String>>,
+            creator: Option<String>,
+            trades: Vec<FixtureTrade>,
+            expect: Expect,
+        }
+        #[derive(serde::Deserialize)]
+        struct FixtureTrade {
+            wallet: String,
+            side: String,
+            sol: f64,
+            labels: Option<Vec<String>>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Expect {
+            vol_buy: f64,
+            vol_sell: f64,
+            nonvol_buy: f64,
+            nonvol_sell: f64,
+        }
+        #[derive(serde::Deserialize)]
+        struct Fixture {
+            cases: Vec<Case>,
+        }
+
+        let raw = include_str!("../../fixtures/flow_split_parity.json");
+        let fixture: Fixture = serde_json::from_str(raw).expect("parity fixture parses");
+        assert!(!fixture.cases.is_empty(), "fixture must carry cases");
+
+        for case in fixture.cases {
+            let mut st = FlowState::new(FlowPatterns::from_label_sequences(&case.patterns));
+            if let Some(creator) = &case.creator {
+                st.set_creator(wallet_hash(creator));
+            }
+            for (i, t) in case.trades.iter().enumerate() {
+                st.on_trade(&TradeLite {
+                    side: if t.side == "buy" { Side::Buy } else { Side::Sell },
+                    sol: t.sol,
+                    price: 1.0,
+                    reserve_sol: 10.0,
+                    at: ts(i as f64),
+                    ix_hash: t.labels.as_deref().and_then(ix_hash_opt),
+                    wallet_hash: wallet_hash(&t.wallet),
+                });
+            }
+            let now = ts(case.trades.len() as f64);
+            for (id, want, label) in [
+                (MetricId::VolBuy, case.expect.vol_buy, "vol_buy"),
+                (MetricId::VolSell, case.expect.vol_sell, "vol_sell"),
+                (MetricId::NonvolBuy, case.expect.nonvol_buy, "nonvol_buy"),
+                (MetricId::NonvolSell, case.expect.nonvol_sell, "nonvol_sell"),
+            ] {
+                let got = st.value(id, None, now);
+                assert!(
+                    (got - want).abs() < 1e-9,
+                    "case {:?}: {label} = {got}, expected {want}",
+                    case.name,
+                );
             }
         }
     }

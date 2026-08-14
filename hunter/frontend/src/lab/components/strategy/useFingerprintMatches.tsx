@@ -23,7 +23,7 @@ import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
 import { tokenColumns } from 'components/tokens/tokenColumns';
 import { inspectFromMint } from 'components/strategy/inspectTarget';
 import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
-import { useFlowPatternKeys } from 'hooks/useFlowPatternKeys';
+import { useFlowPatternSource } from 'hooks/useFlowPatternKeys';
 import { apiErrorMessage } from 'store/apiSlice';
 import { useGetGroupedCreationTokensQuery } from '@lab/store/labEndpoints';
 import {
@@ -83,7 +83,7 @@ function FingerprintMatchesModal({
   const [query, setQuery] = useState<TableQuery>(INITIAL_QUERY);
   const columns = useMemo(() => tokenColumns(), []);
   const [inspected, setInspected] = useState<{ mint: string; symbol?: string } | null>(null);
-  const flowPatternKeys = useFlowPatternKeys(fingerprintId);
+  const flowSource = useFlowPatternSource(fingerprintId);
 
   const args = useMemo(() => scopedArgs(fingerprintId, query), [fingerprintId, query]);
   const { data, isFetching, isError, error } = useGetGroupedCreationTokensQuery(args);
@@ -113,7 +113,8 @@ function FingerprintMatchesModal({
           loading={isFetching}
           charts
           chartsDefaultOn
-          flowPatternKeys={flowPatternKeys}
+          flowPatternKeys={flowSource.keys}
+          flowFingerprintId={flowSource.fingerprintId}
           searchable
           colToggle
           hoverable
@@ -130,7 +131,7 @@ function FingerprintMatchesModal({
         <LazyLabTokenInspectModal
           target={inspectFromMint(inspected.mint, inspected.symbol)}
           titleSuffix="Token inspect"
-          flowPatternKeys={flowPatternKeys}
+          flowPatternKeys={flowSource.keys}
           onClose={() => setInspected(null)}
         />
       )}

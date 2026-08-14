@@ -16,7 +16,7 @@ import { StatTile } from 'components/ui/StatTile';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { BuyIcon, LinkIcon, SellIcon, SpinnerIcon } from 'components/ui/icons';
 import { ModeToggle } from 'components/strategy/ModeToggle';
-import { useFlowPatternKeysForRule } from 'hooks/useFlowPatternKeys';
+import { useFlowPatternSourceForRule } from 'hooks/useFlowPatternKeys';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { useSseStatus } from 'hooks/useSseStatus';
 import { useUiToggle } from 'hooks/useUiPrefs';
@@ -80,10 +80,12 @@ const waitingRowKey = (r: LiveArmedRow) => r.key;
 
 /** Each chart card classifies vol/non-vol against ITS OWN rule's
  *  `volume_ix_patterns` — both cockpit lanes mix rules, so one grid-wide set
- *  would misclassify every card that isn't from that rule. Called once per card
- *  as a hook (see `FlowPatternKeysHook`); hoisted so the grid doesn't remount. */
-const useOpenRowFlowPatternKeys = (r: LiveOpenRow) => useFlowPatternKeysForRule(r.ruleId);
-const useWaitingRowFlowPatternKeys = (r: LiveArmedRow) => useFlowPatternKeysForRule(r.ruleId);
+ *  would misclassify every card that isn't from that rule. Resolves the SOURCE so
+ *  a card's trades table also knows which fingerprint a Vol-badge edit writes to.
+ *  Called once per card as a hook (see `FlowPatternSourceHook`); hoisted so the
+ *  grid doesn't remount. */
+const useOpenRowFlowPatternSource = (r: LiveOpenRow) => useFlowPatternSourceForRule(r.ruleId);
+const useWaitingRowFlowPatternSource = (r: LiveArmedRow) => useFlowPatternSourceForRule(r.ruleId);
 
 /** An armed card carries no markers (an arming episode has no fill price) — its
  *  facts go in the header instead. See `liveChartCards`. */
@@ -898,14 +900,14 @@ export function ConsolePage() {
   const selectedKey = positionParam;
   const inspectOpen =
     [...attentionRows, ...openRows].find((r) => r.positionId === selectedKey) ?? null;
-  const openFlowPatternKeys = useFlowPatternKeysForRule(inspectOpen?.ruleId);
+  const openFlowSource = useFlowPatternSourceForRule(inspectOpen?.ruleId);
   // A closed row's detail modal belongs to the History section — it holds the
   // full DB record, so it can open a position from any date, not just one still
   // in the session's open lane.
   const inspectWaiting = inspectOpen
     ? null
     : (waitingRows.find((r) => r.key === selectedKey) ?? null);
-  const waitingFlowPatternKeys = useFlowPatternKeysForRule(inspectWaiting?.ruleId);
+  const waitingFlowSource = useFlowPatternSourceForRule(inspectWaiting?.ruleId);
 
   // The detail's chart memoizes its markers on the `inspect` object's identity, and
   // this page re-renders on every mark tick — an inline literal would rebuild the
@@ -1003,7 +1005,8 @@ export function ConsolePage() {
                   exitPrice: null,
                   exitLabel: r.exitReason,
                 },
-          flowPatternKeys: openFlowPatternKeys,
+          flowPatternKeys: openFlowSource.keys,
+          flowFingerprintId: openFlowSource.fingerprintId,
           actions: openActions(r, 'hint'),
           // Polls the decision loop while this modal is open — the engine's own
           // reading of the rule, so the chips agree with what it will act on.
@@ -1245,7 +1248,7 @@ export function ConsolePage() {
             colFilters
             charts
             useRowOverlay={liveOpenRowOverlay}
-            useRowChartFlowPatternKeys={useOpenRowFlowPatternKeys}
+            useRowChartFlowPatternSource={useOpenRowFlowPatternSource}
             renderChartCardExtra={openChartCardExtra}
             tableId="console-open"
             emptyMessage="No open positions."
@@ -1406,7 +1409,7 @@ export function ConsolePage() {
             rowKey={waitingRowKey}
             searchable
             charts
-            useRowChartFlowPatternKeys={useWaitingRowFlowPatternKeys}
+            useRowChartFlowPatternSource={useWaitingRowFlowPatternSource}
             renderChartCardExtra={waitingChartCardExtra}
             tableId="console-waiting"
             emptyMessage="No armed (waiting) rules."
@@ -1473,7 +1476,8 @@ export function ConsolePage() {
                 exitTime: null,
                 exitPrice: null,
               },
-              flowPatternKeys: waitingFlowPatternKeys,
+              flowPatternKeys: waitingFlowSource.keys,
+              flowFingerprintId: waitingFlowSource.fingerprintId,
               // The armed side's readout: which entry conditions still fail is
               // exactly why this row is waiting rather than holding.
               conditions: (
