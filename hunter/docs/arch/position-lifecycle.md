@@ -81,6 +81,7 @@ Reaper (`reapers.rs`, boot + 60 s):
 |---|---|
 | `resolve_buy_submitted` (shared with Verify) | adopt indexed fill → Holding; drop only when EVERY sig confirmed-reverted; else wait. Past review window → `needs_review` SSE flag |
 | `heal_exit_pending_cleared` | ExitPending net ≤ dust (+ sell on record) → book End (runs BEFORE redrive) |
+| *(all "bag gone → book End" sweeps)* | price the leg from the feed, **healing it from the row's exit sigs first**; unresolvable → park, never a zero-proceeds close (§2.1b) |
 | `redrive_orphaned_exit_pending` | nudge engine / orphan sell |
 | `redrive_exit_stuck` | ExitStuck-with-bag (`find_bags_by_status`, excl. parked) → orphan sell + backoff; at cap → `park_or_recover` |
 | `heal_cleared_by_status("ExitStuck"/"ExitUnconfirmed")` | bag gone → book End (the ExitUnconfirmed heal that never existed pre-split) |
@@ -88,6 +89,36 @@ Reaper (`reapers.rs`, boot + 60 s):
 | `mark_stale_exit_pending_stuck` | real ExitPending >300 s: bag-check first — heal-eligible rows are left to the heal; the rest flip `ExitStuck` (never a blind terminal stamp) |
 | `close_stale_paper_exit_pending` | paper crash artifact → book End at entry (breakeven) |
 | `close_paper_exit_stuck` | **paper** ExitStuck → book End at the feed price as of `updated_at` (else cache spot, else entry). No bag ⇒ nothing to redrive; every real sweep above is `mode='real'`, so these had no owner at all (§2.2) |
+
+### 2.1b A cleared bag is proof a sell landed — never book it at zero
+
+Every "bag gone → book End" sweep above prices its closing leg from
+`orphan_exit::fill_from_latest_sell`, i.e. from the `trades` feed. When the trigger is
+the **on-chain** bag check (`reconcile_bag_onchain` → `OnChainBag::Cleared`), that feed
+has already been shown to be wrong: an empty wallet with no sell row means the sell
+landed and the feed missed it. Asking it for the proceeds anyway returns nothing, and a
+zero-proceeds `End` is a permanent −100% stamped on a position that may have won.
+
+Two rules close that:
+
+- **Heal the feed, don't price around it.** `fill_from_latest_sell` first re-fetches the
+  row's own `exit_tx_signatures` (`sell_backfill::heal_missing_sell_legs`: one batched
+  `getTransaction` → `rpc_to_protobuf` → the ONE ingest decoder → `trades`). Repairing
+  `trades` fixes the bag net, the sibling close and the token's chart in the same write,
+  and keeps the healed fill on the same `user_quote_amount_out` convention as every
+  feed-confirmed one. `exec_real`'s extended-poll timeout does the same before giving up,
+  but only when the RPC says the signature **succeeded**.
+- **Unresolvable ⇒ park, never zero.** `book_cleared_or_park` books `None` as
+  `exit_parked` for a manual decision. The one honest zero is a position with no
+  remainder left to sell (a finished scale-out ladder).
+
+A row that reaches these paths also keeps **its own** `exit_reason`; `"Manual"` is the
+fallback for a row that has none, which is what `ExitCode::Manual` means. Stamping it
+over a rule's reason claims a human sold.
+
+The AMM feed is where this bites: a pool's swaps only reach `trades` once ingest is
+subscribed to it, so our own first sell into a freshly graduated pool can land seconds
+before the feed carries it.
 
 ### 2.2 Paper needs its own `ExitStuck` owner
 

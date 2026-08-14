@@ -97,7 +97,10 @@ recorded divergences: [docs/arch/strategies.md](docs/arch/strategies.md).
 ## Performance budgets (hot path — violation = bug)
 
 - **Sell-confirm:** no new RPC call — confirm via the `trades` feed. The exit loop polls the
-  **full** window before retrying, buffering the feed's index lag (`exec_real.rs`).
+  **full** window before retrying, buffering the feed's index lag (`exec_real.rs`). Once
+  that window is spent and the signature is known landed, one batched `getTransaction`
+  heals the missing leg into `trades` rather than losing the fill — the degraded branch
+  only, never per attempt.
 - **Ingest:** no blocking I/O, `.await`-on-lock, or unbounded per-event alloc; DB/SSE writes
   go through channels.
 - **Strategy eval:** read the in-memory `TokenCache` (`token_cache.rs`) and engine state,
@@ -131,6 +134,7 @@ The rule is here; the linked doc carries the mechanism. Read the doc before edit
 | Backtest honesty | Default `CostModelKind::pumpfun_impact` — the only kind that charges our own price impact, so the only one whose cost responds to buy size. Fee **125 bps/leg**; cost is U-shaped, so the optimal fixed buy is `sqrt(fixed_per_leg × vsol)`. Runs stored before 2026-07-28 are priced at 100 bps with no impact charge and do not compare. <!-- pt-ok: cutoff, those runs are still in the DB --> [costs](docs/plans/strategies/execution-costs.md) |
 | Exit conditions that lie | `m_price_lifetime.stall` is *seconds since the last all-time high* — it caps every hold and doubles as an entry filter. Use `m_position.held` for a time stop, and `arm_above_pct` to arm a trail (an unarmed `retrace` is a hard stop from entry). [traps](docs/plans/strategies/flow-scalper-findings.md) |
 | Restart rebuilds state, never re-decides it | Cached trades older than the loop's `started_at` prime the fold and emit nothing; deciding on them prices at the old trade and fills at the live one. Inversely, an adopted position with no new prints holds `NaN` — which satisfies no exit at all — so priming retries until the seed lands. Only prices the position lived through may move `peak`/`trough`. [restart](docs/plans/strategies/restart-state-restoration.md) |
+| A cleared bag is a landed sell | "Bag gone, feed shows no sell" means the feed MISSED it — never price that as zero. Heal `trades` from the row's `exit_tx_signatures` first; still unresolvable ⇒ **park**, never a `−100%` `End`. An RPC failure in the bag check returns `Unchanged`, never `Cleared`. A row keeps its OWN `exit_reason`; `"Manual"` is only the no-reason fallback. [lifecycle](docs/arch/position-lifecycle.md) |
 | A leaked slot is permanent | Every exit from the buy path MUST emit `FillConfirmed`/`FillFailed` — a bare `return` strands the arm in `EntryPending`, boot re-adopts it, and the concurrency slot is lost across restarts. Keep the send bounded. A retry is a NEW decision: re-check `entry_enabled && can_enter` before re-firing. [lifecycle](docs/arch/position-lifecycle.md) |
 | Copycat guard | `skip_duplicate_identity` blocks a *different* mint sharing a normalized `(name, symbol)`. Global, records at the entry **attempt**, exempts the recording mint, separate paper/real memories, and `app_settings` is **per database**. [engine](docs/arch/strategies.md) |
 | A tick may skip a token, never a decision | `reduce` skips `Settled` tokens (~180x on a multi-day simulate). New tick-moving metric ⇒ a `ClockHorizons` field; new cross-token input ⇒ bump `cross_epoch`; mutating a tracked token outside the sweep ⇒ `unsettle()`/`touch_token`. [ticks](docs/plans/strategies/tick-cost-and-settled-tokens.md) |

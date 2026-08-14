@@ -1428,7 +1428,7 @@ async fn write_metrics(
 
 // ── IngestEvent → trading_core type translators ───────────────────────────────
 
-fn trade_from_ingest_event(e: &ingest_laserstream::event::Trade) -> Trade {
+pub(crate) fn trade_from_ingest_event(e: &ingest_laserstream::event::Trade) -> Trade {
     use uuid::Uuid;
     Trade {
         id: Uuid::new_v4(),

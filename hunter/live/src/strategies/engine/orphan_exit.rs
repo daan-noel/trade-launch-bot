@@ -3,7 +3,10 @@
 //!
 //! Helius budget: no account/balance RPC here. Cleared/stranded detection is
 //! Postgres `trades` net only. Sell send + existing feed confirm live inside
-//! `run_exit`.
+//! `run_exit`. The one exception is [`fill_from_latest_sell`], which spends a
+//! single batched `getTransaction` to heal a feed-missed sell — only when a bag
+//! is already known cleared and PG still shows no sell leg, i.e. the alternative
+//! is booking a false −100%.
 
 use std::sync::Arc;
 
@@ -222,6 +225,13 @@ pub fn spawn_orphan_sell(
 
 /// Book one position closed from an external/manual clear (no sell). Prefer
 /// folding `ExternallyCleared` when the engine still owns the row; else PG-only.
+///
+/// The row keeps **its own** `exit_reason` when it has one. A bot exit that
+/// reached this path was still decided by its rule — the bag merely cleared
+/// outside the sell loop — and stamping `"Manual"` over it claimed a human sold
+/// (2026-08-14, `FfuX44…pump`, whose real reason was `buy(50s) < 10`).
+/// `"Manual"` stays the fallback for a row with no reason at all, which is
+/// exactly the operator-closed case [`ExitCode::Manual`] means.
 pub async fn book_externally_cleared(
     deps: &OrphanExitDeps,
     pos: &StrategyPosition,
@@ -234,7 +244,51 @@ pub async fn book_externally_cleared(
             .await;
         return Ok(());
     }
-    book_externally_cleared_pg(&deps.strategy_repo, pos.id, fill, "Manual").await
+    let reason = pos.exit_reason.as_deref().unwrap_or("Manual");
+    book_externally_cleared_pg(&deps.strategy_repo, pos.id, fill, reason).await
+}
+
+/// Book an externally-cleared row, or **park it** when the proceeds cannot be
+/// established.
+///
+/// `fill = None` means no sell leg exists for this bag anywhere — not that we were
+/// paid nothing. Booking it as a zero-proceeds close writes a −100% loss onto a
+/// position that may well have been a winner, and `End` is terminal, so the lie
+/// is permanent and silent. Parking keeps the row open and visible for a manual
+/// decision instead, which is what every other unresolvable exit in the reaper
+/// already does ("never auto-written-off").
+///
+/// A position with nothing left to sell is the one honest zero: a completed
+/// scale-out ladder has no remainder, so a zero fill closes it correctly.
+pub async fn book_cleared_or_park(
+    deps: &OrphanExitDeps,
+    pos: &StrategyPosition,
+    fill: Option<Fill>,
+) -> anyhow::Result<()> {
+    match fill {
+        Some(fill) => book_externally_cleared(deps, pos, fill).await,
+        None if pos.remaining_token_amount() == 0 => {
+            book_externally_cleared(
+                deps,
+                pos,
+                Fill {
+                    price: pos.exit_price.or(pos.entry_price).unwrap_or(0.0),
+                    sol: 0.0,
+                    token_amount: 0,
+                    at: Utc::now(),
+                },
+            )
+            .await
+        }
+        None => {
+            warn!(
+                position_id = %pos.id, mint = %pos.mint_address,
+                "orphan_exit: bag cleared but no sell leg found — parking rather than \
+                 booking a zero-proceeds close"
+            );
+            deps.strategy_repo.set_exit_parked(pos.id, true).await
+        }
+    }
 }
 
 /// PG-only externally-cleared close (registry miss / reaper heal).
@@ -279,32 +333,49 @@ pub async fn book_externally_cleared_pg(
     Ok(())
 }
 
-/// Resolve a Manual/Recovery fill from the wallet's latest sell on the mint (PG).
+/// Resolve a Manual/Recovery fill from the wallet's latest sell on the mint (PG),
+/// healing the feed from the row's own exit signatures first when it has to.
+///
+/// `None` when no sell leg for this bag exists anywhere — the caller must NOT
+/// substitute a zero (see [`book_cleared_or_park`]). Previously this returned a
+/// `sol: 0.0` fill in that case, which made a zero-proceeds close unavoidable in
+/// precisely the branch built for "the sell landed, the feed missed it".
 pub async fn fill_from_latest_sell(
     trade_repo: &TradeRepo,
+    trader: &Arc<PumpFunTrader>,
     wallet: &str,
     pos: &StrategyPosition,
-) -> Fill {
-    let last_sell = trade_repo
+) -> Option<Fill> {
+    let mut last_sell = trade_repo
         .find_latest_by_wallet_mint_type(wallet, &pos.mint_address, TradeType::Sell)
         .await
         .ok()
         .flatten();
-    let token_amount = pos.remaining_token_amount();
-    match last_sell {
-        Some(s) => Fill {
-            price: s.price_per_token,
-            sol: s.price_per_token * token_amount as f64,
-            token_amount,
-            at: s.block_time,
-        },
-        None => Fill {
-            price: pos.entry_price.unwrap_or(0.0),
-            sol: 0.0,
-            token_amount,
-            at: Utc::now(),
-        },
+    if last_sell.is_none() {
+        // The bag is gone but the feed shows no sell — the exact gap the
+        // signatures on the row exist to close.
+        let healed = super::sell_backfill::heal_missing_sell_legs(
+            trader,
+            trade_repo,
+            &pos.mint_address,
+            &pos.exit_tx_sigs(),
+        )
+        .await;
+        if healed > 0 {
+            last_sell = trade_repo
+                .find_latest_by_wallet_mint_type(wallet, &pos.mint_address, TradeType::Sell)
+                .await
+                .ok()
+                .flatten();
+        }
     }
+    let token_amount = pos.remaining_token_amount();
+    last_sell.map(|s| Fill {
+        price: s.price_per_token,
+        sol: s.price_per_token * token_amount as f64,
+        token_amount,
+        at: s.block_time,
+    })
 }
 
 /// After a mint's wallet bag is cleared (PG net), close every other unsettled real
@@ -342,7 +413,12 @@ pub async fn close_siblings_if_mint_cleared(
             let _ = engine_fill_tx
                 .send(Event::ExternallyCleared { position: engine_id, fill })
                 .await;
-        } else if let Err(e) = book_externally_cleared_pg(repo, sib.id, fill, "Manual").await {
+            continue;
+        }
+        // The sibling's own reason, not a blanket `"Manual"` — its rule decided
+        // this exit too; the leader's sell merely cleared the shared bag first.
+        let reason = sib.exit_reason.clone().unwrap_or_else(|| "Manual".to_string());
+        if let Err(e) = book_externally_cleared_pg(repo, sib.id, fill, &reason).await {
             warn!(position_id = %sib.id, "orphan_exit: sibling book-close failed: {e}");
         }
     }
@@ -376,8 +452,9 @@ pub async fn reconcile_externally_cleared_holdings(deps: &OrphanExitDeps) {
             }
         };
         for pos in positions {
-            let fill = fill_from_latest_sell(&deps.trade_repo, &wallet, &pos).await;
-            match book_externally_cleared(deps, &pos, fill).await {
+            let fill =
+                fill_from_latest_sell(&deps.trade_repo, &deps.trader, &wallet, &pos).await;
+            match book_cleared_or_park(deps, &pos, fill).await {
                 Ok(()) => closed += 1,
                 Err(e) => warn!(position_id = %pos.id, "orphan_exit: cleared-Holding book failed: {e}"),
             }

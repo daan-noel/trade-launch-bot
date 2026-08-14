@@ -204,6 +204,12 @@ impl PumpFunTrader {
     /// mint-filtered `getTokenAccountsByOwner` covers both token programs (the
     /// owning program is implied by the mint). Manual-only path — the extra RPC is
     /// acceptable off the hot path.
+    ///
+    /// **An absent `result` is an error, never an empty wallet.** Callers use the
+    /// empty vec as proof the bag is gone and close the position on it, so a
+    /// JSON-RPC error object, a rate-limit body, or any other malformed response
+    /// must not be able to impersonate "holds nothing" (that read a landed-sell
+    /// heal onto positions that still held their tokens).
     pub async fn get_all_token_accounts_for_mint(
         &self,
         mint: &str,
@@ -230,26 +236,7 @@ impl PumpFunTrader {
             .json()
             .await?;
 
-        let mut out = Vec::new();
-        let Some(accounts) = resp["result"]["value"].as_array() else {
-            return Ok(out);
-        };
-        for account in accounts {
-            let Some(pubkey_str) = account["pubkey"].as_str() else {
-                continue;
-            };
-            let pk = match Pubkey::from_str(pubkey_str) {
-                Ok(pk) => pk,
-                Err(_) => continue,
-            };
-            let amount: u64 = account["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"]
-                .as_str()
-                .unwrap_or("0")
-                .parse()
-                .unwrap_or(0);
-            out.push((pk, amount));
-        }
-        Ok(out)
+        parse_token_accounts_by_owner(&resp, mint)
     }
 
     /// The in-memory cached token account for `mint`, if a buy/sell on this trader
@@ -740,5 +727,98 @@ impl PumpFunTrader {
             is_migrated: routing.is_migrated,
             cashback_enabled: routing.cashback_enabled,
         })
+    }
+}
+
+/// Decode a `getTokenAccountsByOwner` response into `(account, raw_amount)` pairs.
+///
+/// Split out of [`PumpFunTrader::get_all_token_accounts_for_mint`] so the one rule
+/// that matters here is testable without a network: **only a well-formed
+/// `result.value` array may produce `Ok`.** An empty array means the wallet really
+/// holds nothing; a JSON-RPC `error`, a truncated body, or a rate-limit payload
+/// means we do not know — and callers treat "holds nothing" as proof a sell landed,
+/// so the two must never collapse into the same value.
+fn parse_token_accounts_by_owner(
+    resp: &serde_json::Value,
+    mint: &str,
+) -> Result<Vec<(Pubkey, u64)>> {
+    let Some(accounts) = resp["result"]["value"].as_array() else {
+        if let Some(err) = resp.get("error") {
+            bail!("getTokenAccountsByOwner failed for {mint}: {err}");
+        }
+        bail!("getTokenAccountsByOwner returned no result for {mint}: {resp}");
+    };
+    let mut out = Vec::with_capacity(accounts.len());
+    for account in accounts {
+        let Some(pubkey_str) = account["pubkey"].as_str() else {
+            continue;
+        };
+        let pk = match Pubkey::from_str(pubkey_str) {
+            Ok(pk) => pk,
+            Err(_) => continue,
+        };
+        let amount: u64 = account["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"]
+            .as_str()
+            .unwrap_or("0")
+            .parse()
+            .unwrap_or(0);
+        out.push((pk, amount));
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_token_accounts_by_owner;
+    use serde_json::json;
+
+    const MINT: &str = "FfuX44yjzy5dn9KGprdyaSS86SfKA8XMzbiEUry1pump";
+    const ACCT: &str = "bByaS6oD5FaWJGQuH467VuhUqiCq6iuBXqaxBQMuryY";
+
+    fn account(amount: &str) -> serde_json::Value {
+        json!({
+            "pubkey": ACCT,
+            "account": { "data": { "parsed": { "info": {
+                "tokenAmount": { "amount": amount, "decimals": 6 }
+            }}}}
+        })
+    }
+
+    #[test]
+    fn empty_wallet_is_ok_empty() {
+        let resp = json!({ "jsonrpc": "2.0", "id": 1, "result": { "value": [] } });
+        assert!(parse_token_accounts_by_owner(&resp, MINT).unwrap().is_empty());
+    }
+
+    #[test]
+    fn balances_are_parsed_as_raw_u64() {
+        let resp = json!({ "result": { "value": [account("406039279995"), account("0")] } });
+        let out = parse_token_accounts_by_owner(&resp, MINT).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].1, 406_039_279_995);
+        // Zero-balance accounts are kept — the caller decides (sell vs rent reclaim).
+        assert_eq!(out[1].1, 0);
+    }
+
+    /// The false-`Cleared` guard: an RPC failure must NOT read as an empty bag.
+    /// A reaper that takes an empty vec as "the sell landed" would otherwise book
+    /// a zero-proceeds close over a position that still holds its tokens.
+    #[test]
+    fn rpc_error_is_err_not_empty() {
+        let resp = json!({
+            "jsonrpc": "2.0", "id": 1,
+            "error": { "code": -32005, "message": "Too many requests" }
+        });
+        assert!(parse_token_accounts_by_owner(&resp, MINT).is_err());
+    }
+
+    #[test]
+    fn malformed_body_is_err_not_empty() {
+        for resp in [json!({}), json!({ "result": null }), json!({ "result": { "value": {} } })] {
+            assert!(
+                parse_token_accounts_by_owner(&resp, MINT).is_err(),
+                "malformed body must not read as an empty wallet: {resp}"
+            );
+        }
     }
 }

@@ -586,8 +586,9 @@ async fn heal_exit_pending_cleared(deps: &ReaperDeps) {
         if deps.inflight.exit_held(pos.id) || deps.inflight.exit_mint_held(&pos.mint_address) {
             continue;
         }
-        let fill = orphan_exit::fill_from_latest_sell(&deps.trade_repo, &wallet, &pos).await;
-        if orphan_exit::book_externally_cleared(&orphan, &pos, fill).await.is_ok() {
+        let fill =
+            orphan_exit::fill_from_latest_sell(&deps.trade_repo, &deps.trader, &wallet, &pos).await;
+        if orphan_exit::book_cleared_or_park(&orphan, &pos, fill).await.is_ok() {
             n += 1;
         }
     }
@@ -638,9 +639,14 @@ async fn redrive_exit_stuck(deps: &ReaperDeps, backoff: &mut HashMap<Uuid, u8>) 
             OrphanStart::Busy => {}
             OrphanStart::NothingToSell => {
                 let wallet = deps.trader.wallet_pubkey();
-                let fill =
-                    orphan_exit::fill_from_latest_sell(&deps.trade_repo, &wallet, &position).await;
-                let _ = orphan_exit::book_externally_cleared(&orphan, &position, fill).await;
+                let fill = orphan_exit::fill_from_latest_sell(
+                    &deps.trade_repo,
+                    &deps.trader,
+                    &wallet,
+                    &position,
+                )
+                .await;
+                let _ = orphan_exit::book_cleared_or_park(&orphan, &position, fill).await;
             }
         }
     }
@@ -731,8 +737,14 @@ async fn park_or_recover(deps: &ReaperDeps, position: &StrategyPosition, status:
         OnChainBag::Cleared => {
             let orphan = deps.orphan_deps();
             let wallet = deps.trader.wallet_pubkey();
-            let fill = orphan_exit::fill_from_latest_sell(&deps.trade_repo, &wallet, position).await;
-            let _ = orphan_exit::book_externally_cleared(&orphan, position, fill).await;
+            // `fill_from_latest_sell` heals the feed from this row's exit
+            // signatures before it answers — the bag being gone is precisely the
+            // proof that a sell landed, so "PG has no sell leg" here means the
+            // feed missed it, not that we were paid nothing.
+            let fill =
+                orphan_exit::fill_from_latest_sell(&deps.trade_repo, &deps.trader, &wallet, position)
+                    .await;
+            let _ = orphan_exit::book_cleared_or_park(&orphan, position, fill).await;
         }
         OnChainBag::Repointed => {
             // The redrives so far were aimed at the wrong account, so they are not
@@ -834,9 +846,14 @@ async fn redrive_exit_unconfirmed(deps: &ReaperDeps, backoff: &mut HashMap<Uuid,
             OrphanStart::Busy => {}
             OrphanStart::NothingToSell => {
                 let wallet = deps.trader.wallet_pubkey();
-                let fill =
-                    orphan_exit::fill_from_latest_sell(&deps.trade_repo, &wallet, &position).await;
-                let _ = orphan_exit::book_externally_cleared(&orphan, &position, fill).await;
+                let fill = orphan_exit::fill_from_latest_sell(
+                    &deps.trade_repo,
+                    &deps.trader,
+                    &wallet,
+                    &position,
+                )
+                .await;
+                let _ = orphan_exit::book_cleared_or_park(&orphan, &position, fill).await;
             }
         }
     }
@@ -867,8 +884,9 @@ async fn heal_cleared_by_status(deps: &ReaperDeps, status: &str) {
         if deps.inflight.exit_held(pos.id) || deps.inflight.exit_mint_held(&pos.mint_address) {
             continue;
         }
-        let fill = orphan_exit::fill_from_latest_sell(&deps.trade_repo, &wallet, &pos).await;
-        if orphan_exit::book_externally_cleared(&orphan, &pos, fill).await.is_ok() {
+        let fill =
+            orphan_exit::fill_from_latest_sell(&deps.trade_repo, &deps.trader, &wallet, &pos).await;
+        if orphan_exit::book_cleared_or_park(&orphan, &pos, fill).await.is_ok() {
             n += 1;
         }
     }
@@ -987,7 +1005,10 @@ async fn close_stale_paper_exit_pending(deps: &ReaperDeps) {
             token_amount: pos.remaining_token_amount(),
             at: Utc::now(),
         };
-        if orphan_exit::book_externally_cleared_pg(&deps.strategy_repo, pos.id, fill, "Manual")
+        // Keep the row's own reason — the rule still decided this exit; only the
+        // simulated sell failed. `"Manual"` is the fallback for a row with none.
+        let reason = pos.exit_reason.clone().unwrap_or_else(|| "Manual".to_string());
+        if orphan_exit::book_externally_cleared_pg(&deps.strategy_repo, pos.id, fill, &reason)
             .await
             .is_ok()
         {

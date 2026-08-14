@@ -419,11 +419,15 @@ pub async fn close_position(
                 .await
             {
                 if net <= BAG_CLEARED_THRESHOLD_RAW {
-                    let fill =
-                        orphan_exit::fill_from_latest_sell(&app_state.trade_repo(), &wallet, &pos)
-                            .await;
+                    let fill = orphan_exit::fill_from_latest_sell(
+                        &app_state.trade_repo(),
+                        &app_state.trader,
+                        &wallet,
+                        &pos,
+                    )
+                    .await;
                     let deps = orphan_deps_from_state(&app_state);
-                    return match orphan_exit::book_externally_cleared(&deps, &pos, fill).await {
+                    return match orphan_exit::book_cleared_or_park(&deps, &pos, fill).await {
                         Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "closed": true })),
                         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
                             "error": format!("Failed to book cleared position: {e}")
@@ -484,13 +488,27 @@ async fn verify_position(
                 }
             };
             if net <= BAG_CLEARED_THRESHOLD_RAW {
-                let fill =
-                    orphan_exit::fill_from_latest_sell(&app_state.trade_repo(), &wallet, &pos)
-                        .await;
+                let fill = orphan_exit::fill_from_latest_sell(
+                    &app_state.trade_repo(),
+                    &app_state.trader,
+                    &wallet,
+                    &pos,
+                )
+                .await;
+                // Proceeds unresolvable ⇒ `book_cleared_or_park` parks instead of
+                // closing. Say so rather than reporting a close that didn't happen.
+                let booked = fill.is_some() || pos.remaining_token_amount() == 0;
                 let deps = orphan_deps_from_state(app_state);
-                match orphan_exit::book_externally_cleared(&deps, &pos, fill).await {
-                    Ok(()) => HttpResponse::Ok()
+                match orphan_exit::book_cleared_or_park(&deps, &pos, fill).await {
+                    Ok(()) if booked => HttpResponse::Ok()
                         .json(serde_json::json!({ "verified": true, "cleared": true })),
+                    Ok(()) => HttpResponse::Ok().json(serde_json::json!({
+                        "verified": true,
+                        "cleared": false,
+                        "parked": true,
+                        "error": "bag is gone but no sell leg could be resolved — parked for \
+                                  manual resolution rather than booked at zero proceeds",
+                    })),
                     Err(e) => HttpResponse::InternalServerError()
                         .json(serde_json::json!({"error": format!("heal failed: {e}")})),
                 }

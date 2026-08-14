@@ -32,6 +32,7 @@ pub mod orphan_exit;
 pub mod producers;
 pub mod reapers;
 pub mod reload_scheduler;
+pub mod sell_backfill;
 pub mod sinks;
 
 use std::sync::Arc;

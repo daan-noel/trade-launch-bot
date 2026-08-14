@@ -35,7 +35,7 @@ use trading_core::storage::repositories::trade_repo::{SigLegs, TradeRepo};
 
 use crate::trader::{PumpFunTrader, SigStatus};
 
-use super::orphan_exit;
+use super::{orphan_exit, sell_backfill};
 use super::{FillSigStore, FillSigs, InFlightGuards, PositionRegistry, SubmittedBuyJournal};
 
 /// How long to wait for the entry fill on the feed before the RPC watchdog fires
@@ -900,6 +900,33 @@ pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
                 {
                     finish_cleared_sell(&deps, &order, &sell_sigs, legs).await;
                     return;
+                }
+                // The signature is KNOWN to have succeeded — the RPC just said so —
+                // and only its leg amounts are missing. Dropping it here is what
+                // booked a landed +431% sell as a −100% close (2026-08-14,
+                // `FfuX44…pump`): the feed never carried the AMM leg, so every later
+                // reader, reaper included, priced the exit from silence. Heal the
+                // feed from the signature and re-confirm once. A `Pending` sig gets
+                // no heal: there is nothing on chain to fetch yet, and it stays
+                // Unconfirmed exactly as before.
+                if matches!(state, Ok(SigStatus::Succeeded))
+                    && sell_backfill::heal_missing_sell_legs(
+                        &deps.trader,
+                        &deps.trade_repo,
+                        &order.mint,
+                        &sell_sigs,
+                    )
+                    .await
+                        > 0
+                {
+                    if let Some(legs) =
+                        confirm_sell(&deps, &feed_guard, &wallet, &order, &sell_sigs, Duration::ZERO)
+                            .await
+                    {
+                        info!(mint = %order.mint, "sell confirmed from healed feed legs");
+                        finish_cleared_sell(&deps, &order, &sell_sigs, legs).await;
+                        return;
+                    }
                 }
                 info!(mint = %order.mint, "sell unconfirmed after extended poll — not re-sending");
                 fail_exit(&deps, &order, &sell_sigs, FillFailReason::Unconfirmed).await;
