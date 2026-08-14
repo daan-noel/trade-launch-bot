@@ -128,3 +128,18 @@ Attention · Open (+ manual trade) · Waiting · History · **Arms**.
   scrolling.
 - Arms owns its own cohort params (`a`-prefixed) and its own date range. It does not
   share History's, so narrowing a PnL review does not silently narrow the arm funnel.
+- **Clicking an episode opens `ArmDetailModal`** (←/→ walks the page, as on History).
+  The table owns it for the reason History owns the closed-position modal: the row it
+  opens lives on the current page, not in the live registry the lanes above read.
+  Selection stays section-local — an episode has no position id, so it cannot ride the
+  page's `position` param.
+- That modal rides `FloorPositionDetail`'s `header` slot. Chart, crosshair ↔
+  condition-band wiring and the bar-trades panel are the shared part; the hero and the
+  money strip are not, because an episode has no fill — the default header renders a
+  `—%` over a row of dashes. The header states outcome, armed/ended and waited instead,
+  and an `entered` row's `position_id` is **shown, not linked** (the closed-position
+  modal only opens a row on History's current page).
+- The modal's condition strip pins at **`ended_at`** for a finished episode —
+  `ArmedRuleConditions` takes `endedAt`, skips the live readout and reconstructs from
+  the series instead. A disarmed pair has no engine state, so the live pin is a
+  permanent 404 that still costs the decision loop a round trip per second.

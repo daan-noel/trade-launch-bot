@@ -27,8 +27,10 @@ import { formatDurationShort } from 'utils/format';
 import { ruleAnalyzeHref } from 'lib/strategy/nav';
 import type { StrategyArmRecord } from 'lib/strategy/types';
 import { ARM_END_LABEL, ArmChartCardExtra, armEndBadge } from '@live/components/floor/liveChartCards';
+import { usePositionArrowNav } from '@live/components/floor/usePositionArrowNav';
 import type { ArmCohort } from '@live/pages/console/armCohort';
 import { armCohortKey, armTableBody } from '@live/pages/console/armRequest';
+import { ArmDetailModal } from './ArmDetailModal';
 
 /** Stable row key. An episode is unique by `(rule, mint, armed_at)` — the same
  *  natural key the table is stored under, so a re-arm of the same pair is its
@@ -142,6 +144,7 @@ export const ArmsTable = memo(function ArmsTable({
   numericCols,
   query,
   onQueryChange,
+  ruleNameOf,
   selectedKey,
   onSelect,
   reloadNonce,
@@ -153,6 +156,7 @@ export const ArmsTable = memo(function ArmsTable({
   /** Owned by the section, so the funnel narrows with this table. */
   query: TableQuery;
   onQueryChange: (q: TableQuery) => void;
+  ruleNameOf: (id: string | null) => string | null;
   selectedKey: string | null;
   onSelect: (key: string | null, mint?: string) => void;
   /** Bumped by live arm SSE frames — refetches the current page. */
@@ -183,6 +187,21 @@ export const ArmsTable = memo(function ArmsTable({
     [items, onSelect],
   );
 
+  // The selected episode's full ledger record — the table owns the modal for the
+  // same reason History does: the row it opens lives on this page, not in the
+  // page's live registry (an ended episode is in neither lane above).
+  const inspect = selectedKey
+    ? (items.find((r) => armRowKey(r) === selectedKey) ?? null)
+    : null;
+
+  const navKeys = useMemo(() => items.map(armRowKey), [items]);
+  usePositionArrowNav({
+    enabled: !!inspect,
+    keys: navKeys,
+    selectedKey,
+    onSelect: handleSelect,
+  });
+
   return (
     <>
       {error && <InlineAlert variant="error">Arms failed to load: {error}</InlineAlert>}
@@ -208,6 +227,14 @@ export const ArmsTable = memo(function ArmsTable({
         selectedKey={selectedKey}
         onSelect={handleSelect}
       />
+
+      {inspect && (
+        <ArmDetailModal
+          arm={inspect}
+          ruleName={ruleNameOf(inspect.rule_id)}
+          onClose={() => onSelect(null)}
+        />
+      )}
     </>
   );
 });

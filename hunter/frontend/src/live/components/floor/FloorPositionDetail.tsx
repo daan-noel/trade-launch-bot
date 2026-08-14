@@ -108,6 +108,7 @@ export function FloorPositionDetail({
   facts,
   chartHeight = 220,
   chartAside,
+  header,
 }: {
   facts: FloorDetailFacts;
   /** Chart height — taller when the detail is shown in a modal vs. an inline row. */
@@ -117,6 +118,15 @@ export function FloorPositionDetail({
    * Avoids a short fact-tile column that leaves empty space beside the chart.
    */
   chartAside?: ReactNode;
+  /**
+   * Replaces the position hero **and** the money fact strip, for a host whose row
+   * is not a position: an arming episode has no fill, no PnL and no exit price, so
+   * the default header would be a column of dashes under a `—%` in 3xl type.
+   * Everything below it — the conditions slot, the chart, the crosshair ↔ condition
+   * -band wiring and the bar-trades panel — is the shared part and is why such a
+   * host reuses this component rather than assembling its own.
+   */
+  header?: ReactNode;
 }) {
   const barTrades = useBarTradesSelection();
   // Published to `facts.conditions` (the rule-condition strip) so hovering the chart
@@ -161,107 +171,156 @@ export function FloorPositionDetail({
     />
   );
 
-  const body = (
-    <div className="flex flex-col gap-3">
-      {/* Hero — money first, then identity / status chips */}
-      <div className={cn('rounded-lg border px-3 py-2.5', heroWashClass(pct))}>
-        <div className="flex flex-wrap items-start gap-3">
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <span
-                className={facts.origin === 'manual' ? 'text-accent' : 'text-primary'}
-                title={facts.origin === 'manual' ? 'manual position' : 'bot position'}
-              >
-                {facts.origin === 'manual' ? '○' : '●'}
-              </span>
-              <AddressDisplay
-                address={facts.mint}
-                kind="token"
-                display={facts.symbol ?? undefined}
-                reveal="always"
-                actionsPlacement="right"
-              />
-            </div>
-            <div className="mt-1.5">
-              <OpenPositionStatusChips
-                facts={{
-                  status: statusKey,
-                  origin: facts.origin,
-                  mode: facts.mode,
-                  showRealMode: true,
-                  soldBps: facts.soldBps,
-                  scaleStage: facts.scaleStage,
-                  exitParked: facts.exitParked,
-                  exitRedriveCount: facts.exitRedriveCount,
-                  needsReview: facts.needsReview,
-                  isDead: facts.isDead,
-                  exitReason: facts.exitReason,
-                  pnlSol: mtmOrPnl,
-                }}
-              />
-            </div>
+  // Hero — money first, then identity / status chips.
+  const hero = (
+    <div className={cn('rounded-lg border px-3 py-2.5', heroWashClass(pct))}>
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className={facts.origin === 'manual' ? 'text-accent' : 'text-primary'}
+              title={facts.origin === 'manual' ? 'manual position' : 'bot position'}
+            >
+              {facts.origin === 'manual' ? '○' : '●'}
+            </span>
+            <AddressDisplay
+              address={facts.mint}
+              kind="token"
+              display={facts.symbol ?? undefined}
+              reveal="always"
+              actionsPlacement="right"
+            />
           </div>
-
-          <div className="ml-auto text-right">
-            <div
-              className={cn(
-                'text-3xl leading-none tabular-nums tracking-tight',
-                pctGradeClass(pct),
-              )}
-            >
-              {pct != null ? formatSignedPct(pct, 1) : '—'}
-            </div>
-            <div
-              className={cn(
-                'mt-1 text-base font-semibold tabular-nums',
-                signedToneClass(mtmOrPnl),
-              )}
-            >
-              {mtmOrPnl != null ? `${formatSigned(mtmOrPnl, 3)}◎` : '—'}
-              <span className="ml-1 text-[10px] font-bold uppercase tracking-wider text-text-dim">
-                {solLabel}
-              </span>
-            </div>
-            {holdNode ? (
-              <div className="mt-1 text-[11px] text-text-dim">Hold {holdNode}</div>
-            ) : null}
+          <div className="mt-1.5">
+            <OpenPositionStatusChips
+              facts={{
+                status: statusKey,
+                origin: facts.origin,
+                mode: facts.mode,
+                showRealMode: true,
+                soldBps: facts.soldBps,
+                scaleStage: facts.scaleStage,
+                exitParked: facts.exitParked,
+                exitRedriveCount: facts.exitRedriveCount,
+                needsReview: facts.needsReview,
+                isDead: facts.isDead,
+                exitReason: facts.exitReason,
+                pnlSol: mtmOrPnl,
+              }}
+            />
           </div>
         </div>
 
-        <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px]">
-          {facts.ruleId ? (
-            <Link
-              to={rulesHref(facts.ruleId)}
-              className="font-semibold text-accent hover:underline"
-              onClick={(e) => e.stopPropagation()}
-            >
-              Evidence · {facts.ruleName ?? facts.ruleId.slice(0, 8)}
-            </Link>
-          ) : facts.ruleName === 'manual' || facts.origin === 'manual' ? (
-            <span className="text-text-dim">manual</span>
+        <div className="ml-auto text-right">
+          <div
+            className={cn(
+              'text-3xl leading-none tabular-nums tracking-tight',
+              pctGradeClass(pct),
+            )}
+          >
+            {pct != null ? formatSignedPct(pct, 1) : '—'}
+          </div>
+          <div
+            className={cn(
+              'mt-1 text-base font-semibold tabular-nums',
+              signedToneClass(mtmOrPnl),
+            )}
+          >
+            {mtmOrPnl != null ? `${formatSigned(mtmOrPnl, 3)}◎` : '—'}
+            <span className="ml-1 text-[10px] font-bold uppercase tracking-wider text-text-dim">
+              {solLabel}
+            </span>
+          </div>
+          {holdNode ? (
+            <div className="mt-1 text-[11px] text-text-dim">Hold {holdNode}</div>
           ) : null}
-          {facts.onPrefillTrade ? (
-            <button
-              type="button"
-              className="font-semibold text-accent hover:underline"
-              onClick={(e) => {
-                e.stopPropagation();
-                facts.onPrefillTrade?.();
-              }}
-            >
-              Prefill trade
-            </button>
-          ) : (
-            <Link
-              to={`/console?mint=${encodeURIComponent(facts.mint)}`}
-              className="font-semibold text-accent hover:underline"
-              onClick={(e) => e.stopPropagation()}
-            >
-              Trade
-            </Link>
-          )}
         </div>
       </div>
+
+      <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px]">
+        {facts.ruleId ? (
+          <Link
+            to={rulesHref(facts.ruleId)}
+            className="font-semibold text-accent hover:underline"
+            onClick={(e) => e.stopPropagation()}
+          >
+            Evidence · {facts.ruleName ?? facts.ruleId.slice(0, 8)}
+          </Link>
+        ) : facts.ruleName === 'manual' || facts.origin === 'manual' ? (
+          <span className="text-text-dim">manual</span>
+        ) : null}
+        {facts.onPrefillTrade ? (
+          <button
+            type="button"
+            className="font-semibold text-accent hover:underline"
+            onClick={(e) => {
+              e.stopPropagation();
+              facts.onPrefillTrade?.();
+            }}
+          >
+            Prefill trade
+          </button>
+        ) : (
+          <Link
+            to={`/console?mint=${encodeURIComponent(facts.mint)}`}
+            className="font-semibold text-accent hover:underline"
+            onClick={(e) => e.stopPropagation()}
+          >
+            Trade
+          </Link>
+        )}
+      </div>
+    </div>
+  );
+
+  // Compact fact strip — one row, no tall empty column beside the chart.
+  const factStrip = (
+    <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1.5 rounded-lg border border-white/8 bg-bg-panel/80 px-3 py-2 text-[12px]">
+      <InlineFact
+        label="Entry"
+        value={facts.entrySol != null ? `${formatCompact(facts.entrySol, 3)}◎` : '—'}
+      />
+      <InlineFact
+        label="Entry px"
+        value={facts.entryPrice != null ? formatCompact(facts.entryPrice, 6) : '—'}
+        muted
+      />
+      <InlineFact
+        label="Exit px"
+        value={facts.exitPrice != null ? formatCompact(facts.exitPrice, 6) : '—'}
+        muted
+      />
+      <InlineFact
+        label={solLabel}
+        value={
+          mtmOrPnl != null ? (
+            <span className={signedToneClass(mtmOrPnl)}>{formatSigned(mtmOrPnl, 3)}◎</span>
+          ) : (
+            '—'
+          )
+        }
+      />
+      <InlineFact
+        label="PnL%"
+        value={
+          pct != null ? (
+            <span className={pctGradeClass(pct)}>{formatSignedPct(pct, 1)}</span>
+          ) : (
+            '—'
+          )
+        }
+      />
+      <InlineFact
+        label="Exit"
+        value={facts.exitReason ? exitReasonBadge(facts.exitReason, mtmOrPnl, null, 'sm') : '—'}
+      />
+      {holdNode ? <InlineFact label="Hold" value={holdNode} /> : null}
+    </div>
+  );
+
+  const body = (
+    <div className="flex flex-col gap-3">
+      {header ?? hero}
 
       {facts.actions ? (
         <div
@@ -275,50 +334,9 @@ export function FloorPositionDetail({
         </div>
       ) : null}
 
-      {/* Compact fact strip — one row, no tall empty column beside the chart */}
-      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1.5 rounded-lg border border-white/8 bg-bg-panel/80 px-3 py-2 text-[12px]">
-        <InlineFact
-          label="Entry"
-          value={facts.entrySol != null ? `${formatCompact(facts.entrySol, 3)}◎` : '—'}
-        />
-        <InlineFact
-          label="Entry px"
-          value={facts.entryPrice != null ? formatCompact(facts.entryPrice, 6) : '—'}
-          muted
-        />
-        <InlineFact
-          label="Exit px"
-          value={facts.exitPrice != null ? formatCompact(facts.exitPrice, 6) : '—'}
-          muted
-        />
-        <InlineFact
-          label={solLabel}
-          value={
-            mtmOrPnl != null ? (
-              <span className={signedToneClass(mtmOrPnl)}>{formatSigned(mtmOrPnl, 3)}◎</span>
-            ) : (
-              '—'
-            )
-          }
-        />
-        <InlineFact
-          label="PnL%"
-          value={
-            pct != null ? (
-              <span className={pctGradeClass(pct)}>{formatSignedPct(pct, 1)}</span>
-            ) : (
-              '—'
-            )
-          }
-        />
-        <InlineFact
-          label="Exit"
-          value={
-            facts.exitReason ? exitReasonBadge(facts.exitReason, mtmOrPnl, null, 'sm') : '—'
-          }
-        />
-        {holdNode ? <InlineFact label="Hold" value={holdNode} /> : null}
-      </div>
+      {/* A custom header replaces the money strip too — it is the SAME reading of
+          the same fill, so a host that has no fill has neither. */}
+      {header ? null : factStrip}
 
       {/* The rule's live conditions, directly under the money facts: the two
           together are the whole answer to "where is this and why". Above the
@@ -376,7 +394,9 @@ export function FloorPositionDetail({
   );
 }
 
-function InlineFact({
+/** One `LABEL value` pair of a fact strip. Exported so a host supplying its own
+ *  `header` builds a strip that reads identically to the default one. */
+export function InlineFact({
   label,
   value,
   muted,

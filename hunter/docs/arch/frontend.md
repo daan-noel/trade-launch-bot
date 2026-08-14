@@ -71,7 +71,12 @@ part of that cohort (one builder, `console/historyRequest.ts`), so filtering the
 narrows the strip and the charts with it; the strip's tiles (Closed / Open / Win% /
 Migrated) filter back the other way. It replaced the old 50-row "Recent closed" lane, and it owns closed rows
 outright (there is no session-local closes buffer any more — see "Live Status SSOT" below).
-Detail: [review-surfaces.md](../plans/frontend/review-surfaces.md).
+**Arms is History's twin on the other side of the entry decision** and reads the same way:
+its own `a*` cohort, a funnel strip, a server-paged table, and a row click opening
+`ArmDetailModal` (←/→ walks the page). Both tables own their modal, because the row each
+opens lives on its own page rather than in the live registry the cockpit lanes read.
+Detail: [review-surfaces.md](../plans/frontend/review-surfaces.md),
+[arm-ledger.md](@plans/strategies/arm-ledger.md).
 
 Portfolio = the **keep/kill review board** (default window `7d`): window spark + realized,
 named decay alerts → Rules, ranked PnL bars + compact table (Rule · PnL · Return% · Exp ·
@@ -347,7 +352,12 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   one live instant cannot answer, and Waiting is the row an operator stares at
   longest. It passes the arm instant so coverage centres on why it is *still* waiting,
   and its value line is drawn from the **entry** side: nothing has exited, so the
-  condition holding the row out is an entry one. `ConditionSeriesStrip` +
+  condition holding the row out is an entry one. **An ENDED episode** — an Arms
+  ledger row in `ArmDetailModal` — passes `endedAt` and inverts the two sources: the
+  live readout is skipped (the pair is out of the registry, so it is a permanent 404
+  that would still cost the decision loop a round trip a second) and the pin becomes
+  the fold's row at the disarm instant, captioned with that clock rather than `at
+  exit`, which an episode never had. `ConditionSeriesStrip` +
   `useConditionSeriesGate` are that whole crosshair/timeline half, shared by both
   hosts — split at the gate because *whether to fetch* is decided in the strip (first
   hover, or lanes on) but must be known by the host that owns the query. Backend

@@ -133,7 +133,8 @@ function ArmsSectionBody() {
   }, []);
 
   // Selection is section-local: an episode has no position id, so it cannot ride
-  // the page's `position` deep-link param (which the modals key on).
+  // the page's `position` deep-link param (which the position modals key on). The
+  // table below opens the episode's own detail modal off this key.
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const onSelect = useCallback((key: string | null) => setSelectedKey(key), []);
 
@@ -147,6 +148,7 @@ function ArmsSectionBody() {
         numericCols={numericCols}
         query={query}
         onQueryChange={setQuery}
+        ruleNameOf={ruleNameOf}
         selectedKey={selectedKey}
         onSelect={onSelect}
         reloadNonce={reloadNonce}

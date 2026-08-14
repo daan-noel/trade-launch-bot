@@ -136,6 +136,8 @@ function ConditionSeriesStrip({
   exitReason,
   at,
   onAtChange,
+  pinAtMs = null,
+  pinCoverage = 'in',
 }: {
   gate: ConditionSeriesGate;
   series: RuleReadoutSeries | undefined;
@@ -149,6 +151,15 @@ function ConditionSeriesStrip({
   exitReason?: string | null;
   at?: ReadoutAt;
   onAtChange?: (at: ReadoutAt) => void;
+  /**
+   * The instant the pin was reconstructed at, when the host built it from the
+   * series rather than naming an `entry`/`exit` fill. Without it the source line
+   * captions every replay pin "reconstructed at exit" — which an arming episode
+   * never had.
+   */
+  pinAtMs?: number | null;
+  /** Whether that instant is inside the series' recorded span. */
+  pinCoverage?: HoverCoverage;
 }) {
   const { crosshairTimeSec, bandOn, setBandOn } = gate;
   // Hoisted out of the hover path: the crosshair moves per frame and this is one
@@ -183,8 +194,8 @@ function ConditionSeriesStrip({
       notFound={isNotFound(error)}
       at={at}
       onAtChange={onAtChange}
-      hoveredAtMs={hovered?.atMs ?? null}
-      hoveredCoverage={hovered?.coverage ?? (scrubbing ? 'before' : 'in')}
+      hoveredAtMs={hovered?.atMs ?? (scrubbing ? null : pinAtMs)}
+      hoveredCoverage={hovered?.coverage ?? (scrubbing ? 'before' : pinCoverage)}
       bandOn={bandOn}
       onBandToggle={setBandOn}
     />
@@ -416,19 +427,30 @@ function hoverCoverage(
  * The series is fetched lazily (first hover / lanes on) and never polled, while the
  * pinned readout keeps polling the engine at ~1 Hz: the pin is live state and moves,
  * the fold is the past and does not.
+ *
+ * **An ENDED episode inverts that.** Once the arm is disarmed the engine holds no
+ * state for the pair, so the live pin is a permanent 404 that would still cost the
+ * decision loop a round-trip every second. Pass `endedAt` and the pin becomes the
+ * fold's row at that instant — what the rule read as it let the token go, which is
+ * the whole question a ledger row is opened to answer — and the series is fetched up
+ * front rather than on first hover, because it is now the only source there is.
  */
 export function ArmedRuleConditions({
   mint,
   ruleId,
   armedAt,
+  endedAt,
 }: {
   mint: string;
   ruleId: string | null;
   /** When the arm was raised — centres the series' row budget on why this row is
    *  *still* waiting rather than on the token's first minutes. */
   armedAt?: string | null;
+  /** When the episode disarmed. Omit for a live arm (the Waiting lane). */
+  endedAt?: string | null;
 }) {
   const gate = useConditionSeriesGate();
+  const ended = !!endedAt;
   const { data, isLoading, error } = useGetArmedMetricsQuery(
     { mint, ruleId: ruleId ?? '' },
     {
@@ -436,22 +458,32 @@ export function ArmedRuleConditions({
       // off screen, so polling it spends the decision loop a round-trip on something
       // nobody is reading.
       pollingInterval: gate.crosshairTimeSec != null ? 0 : READOUT_POLL_MS,
-      skip: !mint || !ruleId,
+      skip: !mint || !ruleId || ended,
     },
   );
   const { data: series, isLoading: seriesLoading } = useGetArmedMetricSeriesQuery(
     { mint, ruleId: ruleId ?? '', armedAt },
-    { skip: !mint || !ruleId || !gate.wanted },
+    { skip: !mint || !ruleId || !(gate.wanted || ended) },
   );
+  // The disarm instant's row, through the same resolver the crosshair uses — so the
+  // pin and a hover onto the same candle can never disagree.
+  const endPin = useMemo(() => {
+    if (!ended || !series) return null;
+    const endMs = Date.parse(endedAt ?? '');
+    if (!Number.isFinite(endMs)) return null;
+    return readoutAt(series, series.at.map((ms) => ms / 1000), endMs / 1000);
+  }, [ended, series, endedAt]);
   if (!ruleId) return null;
   return (
     <ConditionSeriesStrip
       gate={gate}
       series={series}
       seriesLoading={seriesLoading}
-      readout={data ?? null}
-      loading={isLoading}
-      error={error}
+      readout={ended ? (endPin?.readout ?? null) : (data ?? null)}
+      loading={ended ? seriesLoading : isLoading}
+      error={ended ? null : error}
+      pinAtMs={endPin?.atMs ?? null}
+      pinCoverage={endPin?.coverage ?? 'in'}
       // Nothing has exited, so there is no exit reason and no exit line worth
       // drawing — the row is being held out by an ENTRY condition.
       drawSide="entry"
