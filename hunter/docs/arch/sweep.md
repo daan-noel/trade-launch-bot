@@ -417,6 +417,8 @@ a sweep mode. The form does not expose metrics, windows, or thresholds; those co
 from this range's cuts and the registry. An incumbent rule is compare-only (never a
 seed). Method: [rule-search-method.md](../plans/strategies/rule-search-method.md).
 Job: [rule-search.md](../plans/strategies/rule-search.md).
+Open replacement of the cut-table product:
+[rule-search-habit.md](../roadmap/rule-search-habit.md).
 
 | File | Role |
 | --- | --- |

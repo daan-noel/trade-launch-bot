@@ -4,6 +4,8 @@
 **Output:** one champion `RuleParams` for that slice.
 
 Lab job that runs this method: [rule-search.md](rule-search.md).
+Open replacement of §1–4 (habit portrait → signatures → sparse draft):
+[rule-search-habit.md](../../roadmap/rule-search-habit.md).
 
 Inputs are the registry, this range's tokens, and the scorer. Another rule's
 params are not an input. Search the range you picked; do not hide a tail of it.

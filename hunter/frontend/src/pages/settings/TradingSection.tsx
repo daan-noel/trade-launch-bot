@@ -172,7 +172,7 @@ export function TradingSection({ settings, saving, update, setError }: TradingSe
         >
           <NumberField
             label="Memory (hours)"
-            hint="Default 168 (7 days). Copycats land within hours; a long window bans common names."
+            hint="Default 4. Copycats land within hours; a long window bans common names."
             min={1}
             max={MAX_DUPE_WINDOW_HOURS}
             step={1}

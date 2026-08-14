@@ -4,7 +4,11 @@ The mechanisms (latency ladder, spread gate, trimmed block ranking, sibling z,
 admission gate, entry bands, expectancy floor, token-n floor, ablation /
 quartile / exit-efficiency diagnostics) are implemented and documented in
 [rule-search-method.md](../plans/strategies/rule-search-method.md) §2–§4.
-Open work is proving them on real cohorts:
+Which metrics and which clock the champion uses is
+[rule-search-habit.md](rule-search-habit.md) — this file is only the robustness
+gates already in the method.
+
+Open work is proving the gates on real cohorts:
 
 - Grade each upgrade with the method's §5 same-form ablation: freeze
   fingerprint, range, buy, fill, cost, copycat, incumbent; one cut source /

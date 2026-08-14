@@ -153,3 +153,5 @@ Refuse is a finished run, not an empty page.
 - Report columns are `run_replay`. Fast archive is ranking only.
 - Algorithm (cuts, roles, caps, ranking, how to grade a change):
   [rule-search-method.md](rule-search-method.md).
+  Open replacement of the cut-table product:
+  [rule-search-habit.md](../../roadmap/rule-search-habit.md).

@@ -33,11 +33,13 @@ use crate::event::{Mint, TradeMode};
 use crate::identity::IdentityHash;
 use crate::metrics::Ts;
 
-/// Default memory horizon: 7 days. Long enough to cover the re-launch pattern
-/// (copycats land within hours), short enough that a common name — every
-/// `PEPE`/`MOON` on the curve — does not accumulate into a permanent ban.
+/// Default memory horizon: 4 hours. Copycats re-launch within hours, so this
+/// covers the re-launch pattern; anything longer mostly bans common names —
+/// every `PEPE`/`MOON` on the curve shares an identity with the last one, and a
+/// multi-day horizon turns that base rate into a blanket skip whose cost is
+/// invisible (a trade that never happened leaves no evidence).
 /// Operator-tunable via `strategy.duplicate_identity_window_hours`.
-pub const DEFAULT_WINDOW_HOURS: u64 = 24 * 7;
+pub const DEFAULT_WINDOW_HOURS: u64 = 4;
 
 /// How often (in **event** time, never wall clock) expired entries are swept.
 /// The map is small; this only keeps the tick from walking it 5× a second.
@@ -196,6 +198,11 @@ mod tests {
     use crate::identity::token_identity_hash;
     use chrono::{TimeZone, Utc};
 
+    /// The default horizon in seconds. Derived, never a literal: a test that
+    /// spells the window out passes for the wrong reason the day the default
+    /// moves — it would still assert against the old horizon.
+    const WINDOW_SECS: i64 = DEFAULT_WINDOW_HOURS as i64 * 3600;
+
     fn ts(secs: i64) -> Ts {
         Utc.timestamp_opt(1_700_000_000 + secs, 0).unwrap()
     }
@@ -241,7 +248,7 @@ mod tests {
         let b = Mint::from("mint-b");
         g.record(TradeMode::Real, id(), &a, ts(0));
 
-        let almost = 24 * 7 * 3600 - 1;
+        let almost = WINDOW_SECS - 1;
         assert!(g.blocks(TradeMode::Real, id(), &b, ts(almost)));
         assert!(!g.blocks(TradeMode::Real, id(), &b, ts(almost + 2)));
     }
@@ -290,7 +297,7 @@ mod tests {
         g.prune(ts(PRUNE_INTERVAL_SECS + 1));
         assert_eq!(g.len(TradeMode::Real), 1);
         // ...past it the identity is gone entirely, not just skipped on read.
-        g.prune(ts(24 * 7 * 3600 + PRUNE_INTERVAL_SECS + 2));
+        g.prune(ts(WINDOW_SECS + PRUNE_INTERVAL_SECS + 2));
         assert!(g.is_empty(TradeMode::Real));
     }
 
@@ -303,7 +310,7 @@ mod tests {
         g.record(TradeMode::Real, id(), &a, ts(1000));
 
         // The block on a copycat now runs from the newer attempt.
-        let past_first_window = 24 * 7 * 3600 + 500;
+        let past_first_window = WINDOW_SECS + 500;
         assert!(g.blocks(TradeMode::Real, id(), &b, ts(past_first_window)));
     }
 

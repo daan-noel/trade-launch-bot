@@ -82,10 +82,10 @@ pub mod keys {
     /// upgrade).
     pub const SKIP_DUPLICATE_IDENTITY: Setting<bool> =
         Setting::new("strategy.skip_duplicate_identity", || false);
-    /// How long a traded `(name, symbol)` stays blocked, in hours. Default 168
-    /// (7 days): copycats re-launch within hours, while a common name
-    /// (`PEPE`/`MOON`) would accumulate into a permanent ban if this never
-    /// expired. `0` ⇒ the default (a zero window would read as enabled while
+    /// How long a traded `(name, symbol)` stays blocked, in hours. Default 4:
+    /// copycats re-launch within hours, while a common name (`PEPE`/`MOON`)
+    /// relaunches all day, so a multi-day horizon bans the base rate rather than
+    /// the trap. `0` ⇒ the default (a zero window would read as enabled while
     /// blocking nothing).
     pub const DUPLICATE_IDENTITY_WINDOW_HOURS: Setting<u64> =
         Setting::new("strategy.duplicate_identity_window_hours", || {
@@ -154,7 +154,7 @@ pub struct AppSettings {
     /// Copycat guard: skip a token whose `(name, symbol)` was already traded on a
     /// different mint inside the window. Default false.
     pub skip_duplicate_identity: bool,
-    /// Copycat-guard memory horizon in hours. Default 168 (7 days).
+    /// Copycat-guard memory horizon in hours. Default 4.
     pub duplicate_identity_window_hours: u64,
     /// RFC3339 instant the copycat guard was first enabled — the floor of the
     /// boot rebuild. `None` = never enabled.
