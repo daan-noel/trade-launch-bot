@@ -30,6 +30,12 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/armed/metrics",
                 web::get().to(handlers::strategies::rule_readout::get_armed_metrics),
             )
+            // The same conditions at EVERY grid row — the Waiting modal's chart
+            // crosshair + condition timeline. Fetched lazily, never polled.
+            .route(
+                "/strategies/armed/metric-series",
+                web::get().to(handlers::strategies::rule_readout::get_armed_metric_series),
+            )
             // The durable arm ledger (`strategy_arms`) — the Console Arms section.
             // POST + a `/query` suffix, like the positions pair, so neither
             // contests the literal `/strategies/armed` GET above.

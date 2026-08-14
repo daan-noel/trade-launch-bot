@@ -2,13 +2,18 @@
 // uses, evaluate conditions the same way the engine does (DNF: OR of AND arms +
 // `=` bucket tolerance), and find first entry/exit fire indices for chart markers.
 
-import type { ChartEventMarker } from 'components/token-price-chart';
-import type { Condition, ConditionExpr } from './grammar';
+import type {
+  ChartEventMarker,
+  ChartTimeBand,
+  ChartTimeSpan,
+  ChartValueLane,
+} from 'components/token-price-chart';
+import { formatConditions, type Condition, type ConditionExpr } from './grammar';
 import type { RuleParams, SideConditions } from './ruleParams';
 import type { StrategyRegistry } from './registry';
 import type { MetricSeriesColumn, MetricSeriesResponse, StrategyRule } from './types';
 import { ruleParamsFromJson, sideInstances } from './ruleParams';
-import { formatMetricExitLabel } from './exitReason';
+import { formatMetricExitLabel, parseMetricExitTarget } from './exitReason';
 
 const DEFAULT_WINDOWS = [10, 30, 60];
 
@@ -152,19 +157,23 @@ function seriesLookup(series: MetricSeriesColumn[]): Map<string, MetricSeriesCol
   return map;
 }
 
+/** One authored condition: a metric in a group instance, with its DNF arms and the
+ *  trailing window the instance runs at (`null` for a lifetime/static group). */
+interface SideMetricRow {
+  groupName: string;
+  metric: string;
+  arms: ConditionExpr;
+  dynamic: boolean;
+  window: number | null;
+}
+
 /** Collect authored (group, metric, arms) rows for one side. */
 function sideMetricRows(
   side: SideConditions | undefined,
   registry: StrategyRegistry | undefined,
-): Array<{ groupName: string; metric: string; arms: ConditionExpr; dynamic: boolean; window: number | null }> {
+): SideMetricRow[] {
   if (!side) return [];
-  const out: Array<{
-    groupName: string;
-    metric: string;
-    arms: ConditionExpr;
-    dynamic: boolean;
-    window: number | null;
-  }> = [];
+  const out: SideMetricRow[] = [];
   for (const [groupName, group] of sideInstances(side)) {
     const gSpec = registry?.groups.find((g) => g.name === groupName);
     const w =
@@ -199,6 +208,70 @@ function firstSatisfiedCondition(
   return null;
 }
 
+/** Registry `=`/`!=` bucket width for a row's metric (0 when the group is unknown). */
+function rowTolerance(row: SideMetricRow, registry: StrategyRegistry | undefined): number {
+  return (
+    registry?.groups
+      .find((g) => g.name === row.groupName)
+      ?.metrics.find((m) => m.name === row.metric)?.eq_tolerance ?? 0
+  );
+}
+
+/** The series column a row evaluates against — its metric at ITS window. A dynamic
+ *  group instance reads the windowed column; a lifetime group reads the unwindowed
+ *  one, and the two share a metric name. */
+function rowColumnKey(row: SideMetricRow): string {
+  return metricColKey(row.metric, row.dynamic ? row.window : null);
+}
+
+/** The atom that satisfies `row` at `idx`, or `null` when the row does not hold
+ *  there (including a missing / non-finite reading). */
+function rowFiredAt(
+  row: SideMetricRow,
+  idx: number,
+  byKey: Map<string, MetricSeriesColumn>,
+  registry: StrategyRegistry | undefined,
+): Condition | null {
+  const reading = byKey.get(rowColumnKey(row))?.values[idx];
+  if (reading == null || !Number.isFinite(reading)) return null;
+  return firstSatisfiedCondition(row.arms, reading, rowTolerance(row, registry));
+}
+
+/** One authored condition together with the atom satisfying it at an instant. */
+interface FiredCondition {
+  row: SideMetricRow;
+  cond: Condition;
+}
+
+/**
+ * The rows that justify a side pass at `idx`, or `null` when the side does not pass.
+ *
+ * Combinator mirrors the engine (`arm.rs`): entry ANDs across metrics, so a pass
+ * returns **every** authored row; exit ORs, so a pass returns the single satisfied
+ * one. Within a metric, DNF still applies. An empty side returns `null` — callers
+ * that need the engine's vacuous entry-true use {@link sidePassesAt}.
+ */
+function firedRowsAt(
+  rows: SideMetricRow[],
+  idx: number,
+  byKey: Map<string, MetricSeriesColumn>,
+  registry: StrategyRegistry | undefined,
+  combinator: 'and' | 'or',
+): FiredCondition[] | null {
+  if (rows.length === 0) return null;
+  const out: FiredCondition[] = [];
+  for (const row of rows) {
+    const cond = rowFiredAt(row, idx, byKey, registry);
+    if (cond == null) {
+      if (combinator === 'and') return null;
+      continue;
+    }
+    if (combinator === 'or') return [{ row, cond }];
+    out.push({ row, cond });
+  }
+  return combinator === 'and' ? out : null;
+}
+
 /**
  * Side combinator mirrors the engine (`arm.rs`): entry ANDs across metrics;
  * exit ORs (any one satisfied metric fires). Within a metric, DNF still applies.
@@ -213,77 +286,121 @@ function sidePassesAt(
   const rows = sideMetricRows(side, registry);
   // Empty ⇒ vacuous entry-true / exit-false matching the engine.
   if (rows.length === 0) return combinator === 'and';
-  return firstFiredMetricLabel(side, idx, byKey, registry, combinator) != null;
+  return firedRowsAt(rows, idx, byKey, registry, combinator) != null;
+}
+
+/** `nonvol_buy@2s >= 0.85` — one satisfied condition in the lanes' vocabulary, so a
+ *  marker reads as the legend of the lane it fired on. The window qualifier is not
+ *  decoration: `nonvol_buy` names both a lifetime metric and its windowed twin, and
+ *  a bare name sends the reader to whichever line is on screen. */
+function firedConditionLabel({ row, cond }: FiredCondition): string {
+  return formatMetricExitLabel(conditionMetricName(row), cond.operator, cond.value);
+}
+
+/** How many conditions a marker spells out before it summarises the rest. A marker
+ *  is drawn inside a candle's width; past two the text is wider than the chart. */
+const MARKER_LABEL_MAX = 2;
+
+/** A set of satisfied conditions as one marker label (`a + b +2`). */
+function firedLabel(fired: FiredCondition[]): string | null {
+  if (fired.length === 0) return null;
+  const shown = fired.slice(0, MARKER_LABEL_MAX).map(firedConditionLabel).join(' + ');
+  const rest = fired.length - MARKER_LABEL_MAX;
+  return rest > 0 ? `${shown} +${rest}` : shown;
 }
 
 /**
- * Spaced label for the metric that justifies a side pass at `idx`:
- * `name op value` (e.g. `stall > 3`). Exit OR → first satisfied metric; entry
- * AND → first authored metric (all must hold). `null` when the side does not
- * pass (or is empty — callers that need vacuous-true use {@link sidePassesAt}).
+ * The conditions that *changed the answer* at `idx` — satisfied here and not on the
+ * row before.
+ *
+ * Entry is a conjunction, so the rows that were already holding decided nothing about
+ * the timing. Naming one of them anyway is how a **monotone lifetime** metric comes to
+ * label a fire that two trailing windows produced: it crosses once, stays true forever,
+ * and (being first in the params JSON) wins every label from then on. The reader then
+ * compares the marker against a line that crossed minutes earlier and concludes the
+ * engine entered late.
+ *
+ * Empty when nothing flipped — `idx` 0, or entry unblocked because an exit metric
+ * stopped vetoing it. Callers fall back to the whole conjunction, which is still true.
  */
-function firstFiredMetricLabel(
-  side: SideConditions | undefined,
+function newlyFiredRows(
+  fired: FiredCondition[],
   idx: number,
   byKey: Map<string, MetricSeriesColumn>,
   registry: StrategyRegistry | undefined,
-  combinator: 'and' | 'or',
-): string | null {
-  const rows = sideMetricRows(side, registry);
-  if (rows.length === 0) return null;
-
-  let andLabel: string | null = null;
-  for (const row of rows) {
-    const gSpec = registry?.groups.find((g) => g.name === row.groupName);
-    const col = byKey.get(metricColKey(row.metric, row.dynamic ? row.window : null));
-    const reading = col?.values[idx];
-    const tol = gSpec?.metrics.find((m) => m.name === row.metric)?.eq_tolerance ?? 0;
-    if (reading == null || !Number.isFinite(reading)) {
-      if (combinator === 'and') return null;
-      continue;
-    }
-    const cond = firstSatisfiedCondition(row.arms, reading, tol);
-    if (cond == null) {
-      if (combinator === 'and') return null;
-      continue;
-    }
-    const label = formatMetricExitLabel(row.metric, cond.operator, cond.value);
-    if (combinator === 'or') return label;
-    if (andLabel == null) andLabel = label;
-  }
-  return combinator === 'and' ? andLabel : null;
+): FiredCondition[] {
+  if (idx === 0) return fired;
+  return fired.filter((f) => rowFiredAt(f.row, idx - 1, byKey, registry) == null);
 }
 
-/** Per-metric pass/fail at one series index (for the crosshair readout). */
+/** One authored condition's pass/fail at a hovered instant. */
+export interface MetricConditionState {
+  side: 'entry' | 'exit';
+  metric: string;
+  /** The trailing window the condition runs at; `null` for a lifetime/static group. */
+  window: number | null;
+  /**
+   * Series-column key (`metric` or `metric@Ns`) — the identity a pane is keyed by.
+   * A rule that constrains `nonvol_buy` lifetime AND `nonvol_buy` at 2 s produces two
+   * states with the same `metric`, and keying a readout by the name alone paints the
+   * windowed pane with the lifetime verdict.
+   */
+  key: string;
+  ok: boolean;
+  value: number | null;
+}
+
+/** Per-condition pass/fail at one series index (for the crosshair readout). */
 export function metricConditionStatesAt(
   params: RuleParams,
   idx: number,
   data: MetricSeriesResponse,
   registry: StrategyRegistry | undefined,
-): Array<{ side: 'entry' | 'exit'; metric: string; ok: boolean; value: number | null }> {
+): MetricConditionState[] {
   const byKey = seriesLookup(data.series);
-  const out: Array<{ side: 'entry' | 'exit'; metric: string; ok: boolean; value: number | null }> =
-    [];
+  const out: MetricConditionState[] = [];
   for (const sideName of ['entry', 'exit'] as const) {
-    const side = params[sideName];
-    if (!side) continue;
-    for (const [groupName, group] of sideInstances(side)) {
-      const gSpec = registry?.groups.find((g) => g.name === groupName);
-      const w =
-        typeof group.strict.window_size_sec === 'number' && group.strict.window_size_sec > 0
-          ? group.strict.window_size_sec
-          : null;
-      for (const [metric, arms] of Object.entries(group.metrics)) {
-        if (!arms?.length) continue;
-        const col = byKey.get(metricColKey(metric, gSpec?.kind === 'dynamic' ? w : null));
-        const value = col?.values[idx] ?? null;
-        const tol = gSpec?.metrics.find((m) => m.name === metric)?.eq_tolerance ?? 0;
-        out.push({
-          side: sideName,
-          metric,
-          value,
-          ok: value != null && evalMetricConditions(arms, value, tol),
-        });
+    for (const row of sideMetricRows(params[sideName], registry)) {
+      const key = rowColumnKey(row);
+      const value = byKey.get(key)?.values[idx] ?? null;
+      out.push({
+        side: sideName,
+        metric: row.metric,
+        window: row.dynamic ? row.window : null,
+        key,
+        value,
+        ok: value != null && evalMetricConditions(row.arms, value, rowTolerance(row, registry)),
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Entry/exit threshold values a rule places on ONE series column — the lines a pane
+ * draws under its sparkline.
+ *
+ * Scoped by window, not by metric name: `m_flow_split.nonvol_buy >= 5.5` and
+ * `m_flow_split_window.nonvol_buy >= 0.9` are different conditions on different
+ * readings, and drawing both on both panes puts a line on a chart the rule never
+ * placed there.
+ */
+export function metricThresholdsFor(
+  params: RuleParams,
+  metric: string,
+  window: number | null,
+  registry: StrategyRegistry | undefined,
+): Array<{ side: 'entry' | 'exit'; value: number }> {
+  const key = metricColKey(metric, window);
+  const out: Array<{ side: 'entry' | 'exit'; value: number }> = [];
+  for (const side of ['entry', 'exit'] as const) {
+    for (const row of sideMetricRows(params[side], registry)) {
+      if (rowColumnKey(row) !== key) continue;
+      // `arms` is DNF (`Condition[][]`) — flatten arms → atoms.
+      for (const arm of row.arms) {
+        for (const c of arm) {
+          if (Number.isFinite(c.value)) out.push({ side, value: c.value });
+        }
       }
     }
   }
@@ -291,12 +408,181 @@ export function metricConditionStatesAt(
 }
 
 /**
+ * Side tag on a condition's chart lane / threshold line. `entry`/`exit` both start
+ * with "e", so they get distinct words — the color alone isn't a readable
+ * difference at 9px, and a lane stack that mixes both sides is unreadable without
+ * one.
+ */
+export const CONDITION_SIDE_TAG = { entry: 'IN', exit: 'OUT' } as const;
+
+/**
+ * Neutral on purpose. A lane refuses a good/bad tone — a satisfied entry condition
+ * is *why we're in* and a satisfied exit condition is *why we're leaving*, so one
+ * green would mean opposite things two lanes apart.
+ */
+export const CONDITION_LANE_COLOR = 'rgba(226,232,240,0.55)';
+
+/** The condition drawn as a VALUE line in its own pane — brighter than a lane,
+ *  because it is the subject rather than the backdrop. */
+export const CONDITION_VALUE_LANE_COLOR = '#7DD3FC';
+
+/** The chart's bottom-pane view of a rule over one token: one on/off lane per
+ *  authored condition, plus the one condition whose reading is drawn as a line. */
+export interface MetricConditionLanes {
+  lanes: ChartTimeBand[];
+  valueLane: ChartValueLane | null;
+  /** The stretch the lanes speak for — without it "never held" and "not covered"
+   *  draw identically. */
+  coverage: ChartTimeSpan;
+}
+
+/**
+ * `nonvol_buy` / `nonvol_buy@2s` — the name half of every condition label the lab
+ * draws: lanes, the value line, and the metric-fire markers.
+ *
+ * ONE namer for all three, and it always carries the window. The lifetime and windowed
+ * registry entries share every metric name, so a surface that drops the qualifier
+ * cannot say which reading it means — and the lifetime twin is usually monotone, which
+ * makes the wrong reading look permanently satisfied. Matches the live position
+ * modal's chips (`conditionLabel`), so a lane reads as their legend.
+ */
+function conditionMetricName(row: { metric: string; dynamic: boolean; window: number | null }): string {
+  return row.dynamic && row.window != null ? `${row.metric}@${row.window}s` : row.metric;
+}
+
+/** `nonvol_buy@2s >= 0.9` — an authored condition, human-side. */
+function conditionLaneLabel(row: SideMetricRow): string {
+  const name = conditionMetricName(row);
+  const expr = formatConditions(row.arms);
+  return expr ? `${name} ${expr}` : name;
+}
+
+/**
+ * Every authored condition as a chart lane: the stretches over which it held,
+ * folded over the whole metric series rather than one hovered instant.
+ *
+ * The lab twin of the live position modal's condition timeline. Both draw the same
+ * `ChartTimeBand` vocabulary, but from different sources — live replays a persisted
+ * position server-side, this folds the metric series the panes already fetched, so
+ * turning it on costs no request.
+ *
+ * It is the panes' answer, with the panes' limits: no arming gate (`arm_above_pct`)
+ * and no ladder-stage state, exactly like {@link findRuleFireMarkers} beside it. A
+ * gated trailing stop therefore reads as satisfied over stretches the engine was
+ * skipping it — read the lane as "the condition's own reading crossed", not as
+ * "the engine would have sold here".
+ *
+ * A condition with no crossing keeps its (empty) lane: against the coverage track
+ * that reads as "never fired", which is a real answer and the common one for the
+ * exits that did not close the position.
+ */
+export function metricConditionBands(
+  params: RuleParams,
+  data: MetricSeriesResponse,
+  registry: StrategyRegistry | undefined,
+  /** The run's persisted exit reason — selects which condition gets the value
+   *  line. Without it the pane falls back to the first exit condition, which may
+   *  not be the one that closed the position. */
+  exitReason?: string | null,
+): MetricConditionLanes | null {
+  const atSec = parseSeriesAtSec(data.at);
+  if (atSec.length === 0) return null;
+  const byKey = seriesLookup(data.series);
+
+  const rows = (['entry', 'exit'] as const).flatMap((side) =>
+    sideMetricRows(params[side], registry).map((row) => ({ side, ...row })),
+  );
+  if (rows.length === 0) return null;
+
+  const lanes: ChartTimeBand[] = rows.map((row, idx) => {
+    const col = byKey.get(rowColumnKey(row));
+    const tol = rowTolerance(row, registry);
+    const spans: ChartTimeSpan[] = [];
+    let start = -1;
+    for (let i = 0; i < atSec.length; i++) {
+      const value = col?.values[i];
+      const on =
+        value != null && Number.isFinite(value) && evalMetricConditions(row.arms, value, tol);
+      if (on && start < 0) start = i;
+      else if (!on && start >= 0) {
+        spans.push({ from: atSec[start], to: atSec[i - 1] });
+        start = -1;
+      }
+    }
+    if (start >= 0) spans.push({ from: atSec[start], to: atSec[atSec.length - 1] });
+    return {
+      key: `${row.side}-${row.groupName}-${row.metric}-${row.window ?? ''}-${idx}`,
+      label: `${CONDITION_SIDE_TAG[row.side]} ${conditionLaneLabel(row)}`,
+      color: CONDITION_LANE_COLOR,
+      spans,
+    };
+  });
+
+  const drawn = valueLaneRow(rows, exitReason);
+  const drawnCol = drawn ? byKey.get(rowColumnKey(drawn)) : null;
+
+  return {
+    lanes,
+    valueLane:
+      drawn && drawnCol
+        ? {
+          key: `value-${drawn.metric}-${drawn.window ?? ''}`,
+          label: conditionLaneLabel(drawn),
+          color: CONDITION_VALUE_LANE_COLOR,
+          points: atSec.map((timeSec, i) => ({
+            timeSec,
+            value: drawnCol.values[i] ?? null,
+          })),
+          threshold: soleThreshold(drawn.arms),
+        }
+        : null,
+    coverage: { from: atSec[0], to: atSec[atSec.length - 1] },
+  };
+}
+
+/** The condition whose reading gets drawn: the one the exit reason names when it
+ *  names one, else the first exit condition — an inspect is opened on "why did it
+ *  leave", so the exit side is the useful default. */
+function valueLaneRow<T extends SideMetricRow & { side: 'entry' | 'exit' }>(
+  rows: T[],
+  exitReason: string | null | undefined,
+): T | null {
+  const exits = rows.filter((r) => r.side === 'exit');
+  if (exits.length === 0) return null;
+  const target = parseMetricExitTarget(exitReason);
+  if (!target) return exits[0];
+  const byName = exits.filter((r) => r.metric === target.metric);
+  if (byName.length === 0) return exits[0];
+  if (target.windowSec != null) {
+    // Matching by NAME alone is free to pick the lifetime twin of a windowed exit —
+    // the mismatch the window qualifier exists to make impossible.
+    return byName.find((r) => r.window === target.windowSec) ?? exits[0];
+  }
+  return byName.length === 1 ? byName[0] : exits[0];
+}
+
+/** The threshold a condition authors when it authors exactly one — a DNF with
+ *  several atoms has no single line to draw, and inventing one misstates the rule. */
+function soleThreshold(arms: ConditionExpr): number | null {
+  if (arms.length !== 1 || arms[0].length !== 1) return null;
+  const only = arms[0][0];
+  return Number.isFinite(only.value) ? only.value : null;
+}
+
+/**
  * First trade index where entry may fire (entry AND holds and exit OR does not —
  * mirrors `CompiledRule::can_enter`); then first later exit.
  *
- * Markers are `role: 'signal'` with spaced `name op value` labels (e.g.
- * `stall > 3`) — the frontend condition-fire estimate, never the backend fill
- * pointers.
+ * Markers are `role: 'signal'` with spaced `name[@Ns] op value` labels (e.g.
+ * `vol_buy@2s >= 0.85`) — the frontend condition-fire estimate, never the backend
+ * fill pointers.
+ *
+ * **The entry label names what fired, not what was authored first.** Entry is a
+ * conjunction, so the marker carries the condition(s) that flipped true *at* the
+ * marker's instant; a condition already holding did not decide the timing, and
+ * labelling the fire with one is how the monotone `m_flow_split.nonvol_buy` came to
+ * explain entries produced by two trailing windows. The rest of the conjunction is
+ * still on the chart — as lanes ({@link metricConditionBands}).
  */
 export function findRuleFireMarkers(
   params: RuleParams,
@@ -306,23 +592,24 @@ export function findRuleFireMarkers(
   const n = data.at.length;
   if (n === 0) return [];
   const byKey = seriesLookup(data.series);
-  const hasEntry = sideInstances(params.entry).some(([, g]) =>
-    Object.values(g.metrics).some((c) => c?.length),
-  );
-  const hasExit = sideInstances(params.exit).some(([, g]) =>
-    Object.values(g.metrics).some((c) => c?.length),
-  );
+  const entryRows = sideMetricRows(params.entry, registry);
+  const exitRows = sideMetricRows(params.exit, registry);
+  const hasEntry = entryRows.length > 0;
+  const hasExit = exitRows.length > 0;
 
   let entryIdx: number | null = null;
   let entryLabel: string | null = null;
   if (hasEntry) {
     for (let i = 0; i < n; i++) {
-      const label = firstFiredMetricLabel(params.entry, i, byKey, registry, 'and');
-      if (label == null) continue;
+      const fired = firedRowsAt(entryRows, i, byKey, registry, 'and');
+      if (fired == null) continue;
       // Engine refuses entry while exit metrics already hold.
       if (hasExit && sidePassesAt(params.exit, i, byKey, registry, 'or')) continue;
       entryIdx = i;
-      entryLabel = label;
+      // Nothing flipped ⇒ the conjunction was already whole and an exit metric had
+      // been vetoing; naming the whole conjunction is then the honest answer.
+      const flipped = newlyFiredRows(fired, i, byKey, registry);
+      entryLabel = firedLabel(flipped.length ? flipped : fired);
       break;
     }
   }
@@ -332,10 +619,10 @@ export function findRuleFireMarkers(
   if (hasExit) {
     const start = entryIdx != null ? entryIdx + 1 : 0;
     for (let i = start; i < n; i++) {
-      const label = firstFiredMetricLabel(params.exit, i, byKey, registry, 'or');
-      if (label != null) {
+      const fired = firedRowsAt(exitRows, i, byKey, registry, 'or');
+      if (fired != null) {
         exitIdx = i;
-        exitLabel = label;
+        exitLabel = firedLabel(fired);
         break;
       }
     }

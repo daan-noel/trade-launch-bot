@@ -40,7 +40,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use hunter_engine::arm::CompiledRule;
-use hunter_engine::event::RuleId;
+use hunter_engine::event::{LoadedRule, RuleId};
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::evaluator::ConditionExpr;
 use hunter_engine::metrics::flow_split::{ix_hash_opt, wallet_hash, FlowPatterns};
@@ -133,7 +133,10 @@ struct ConditionSeriesOut {
 /// item in the payload and buys the client nothing it cannot do with `new Date(ms)`.
 #[derive(Debug, serde::Serialize)]
 struct SeriesOut {
-    position_id: Uuid,
+    /// Absent on the **armed** series: a Waiting row has no position yet, and
+    /// inventing a nil UUID would read as one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    position_id: Option<Uuid>,
     mint_address: String,
     rule_id: Uuid,
     /// Always `replay` — a series is a reconstruction by construction, including for
@@ -292,15 +295,54 @@ struct ResolvedRule {
     fingerprint_id: FingerprintId,
 }
 
+/// Load one rule row and convert it the way the decision loop does.
+///
+/// Every failure is a `404` with a distinct reason, because the reasons are not
+/// interchangeable to someone looking at an empty panel: a deleted rule has nothing
+/// to compile and unparseable params are a different problem. Collapsing them into
+/// one blank strip hides which it is.
+async fn load_rule(
+    app_state: &DeployState,
+    rule_uuid: Uuid,
+) -> Result<LoadedRule, HttpResponse> {
+    let rule_row = match app_state.rule_repo.find(rule_uuid).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return Err(not_found("that rule is deleted")),
+        Err(e) => {
+            tracing::error!(rule = %rule_uuid, "readout replay: rule load failed: {e}");
+            return Err(HttpResponse::InternalServerError()
+                .json(serde_json::json!({ "error": "rule load failed" })));
+        }
+    };
+    // Converted through the SAME function the decision loop reloads with, so the
+    // replay evaluates the rule the engine would, not a parallel reading of `params`.
+    rule_to_loaded(&rule_row).map_err(|e| {
+        tracing::warn!(rule = %rule_uuid, "readout replay: invalid rule params: {e}");
+        not_found("the rule's params no longer parse")
+    })
+}
+
+/// The rule as the engine is evaluating it **right now** — the armed (pre-entry)
+/// path, where there is no run to freeze against.
+///
+/// Deliberately no `params_snapshot` step: a Waiting row is being judged by the
+/// live rule this instant, so its current params ARE the right thresholds. The
+/// position path below is the one that must reach back for a frozen copy.
+async fn resolve_live_rule(
+    app_state: &DeployState,
+    rule_uuid: Uuid,
+) -> Result<ResolvedRule, HttpResponse> {
+    let loaded = load_rule(app_state, rule_uuid).await?;
+    Ok(ResolvedRule {
+        id: RuleId(rule_uuid),
+        compiled: CompiledRule::compile(&loaded),
+        fingerprint_id: loaded.fingerprint_id,
+    })
+}
+
 /// Resolve and compile the rule behind a position — **shared by the point readout
 /// and the series**, because the run-`params_snapshot` preference below is the one
 /// thing two copies must never disagree about.
-///
-/// Every failure is a `404` with a distinct reason, because the reasons are not
-/// interchangeable to someone looking at an empty panel: a manual position never had
-/// a rule, a deleted rule has nothing to compile, and unparseable params are a
-/// different problem from either. Collapsing them into one blank strip hides which
-/// it is.
 async fn resolve_rule(
     app_state: &DeployState,
     position: &StrategyPosition,
@@ -308,23 +350,7 @@ async fn resolve_rule(
     let Some(rule_uuid) = position.rule_id else {
         return Err(not_found("manual position — no rule conditions to replay"));
     };
-    let rule_id = RuleId(rule_uuid);
-
-    let rule_row = match app_state.rule_repo.find(rule_uuid).await {
-        Ok(Some(r)) => r,
-        Ok(None) => return Err(not_found("the rule that opened this position is deleted")),
-        Err(e) => {
-            tracing::error!(rule = %rule_uuid, "readout replay: rule load failed: {e}");
-            return Err(HttpResponse::InternalServerError()
-                .json(serde_json::json!({ "error": "rule load failed" })));
-        }
-    };
-    // Compiled through the SAME converter the decision loop reloads with, so the
-    // replay evaluates the rule the engine would, not a parallel reading of `params`.
-    let mut loaded = rule_to_loaded(&rule_row).map_err(|e| {
-        tracing::warn!(rule = %rule_uuid, "readout replay: invalid rule params: {e}");
-        not_found("the rule's params no longer parse")
-    })?;
+    let mut loaded = load_rule(app_state, rule_uuid).await?;
 
     // Prefer the RUN's frozen params over the rule's current ones. A rule edited
     // after this position closed would otherwise have the post-mortem drawing
@@ -351,7 +377,7 @@ async fn resolve_rule(
         ),
     }
     Ok(ResolvedRule {
-        id: rule_id,
+        id: RuleId(rule_uuid),
         compiled: CompiledRule::compile(&loaded),
         fingerprint_id: loaded.fingerprint_id,
     })
@@ -630,35 +656,75 @@ pub async fn get_position_metric_series(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    series_response(
+        &app_state,
+        position.mint_address.clone(),
+        rule,
+        SeriesAnchor {
+            position_id: Some(position_id),
+            // Spend the row budget on the position's own window rather than on the
+            // token's first N rows. The budget is a fixed *span* of grid (~22 min at
+            // 8k), so on a token entered later than that the whole position would
+            // otherwise fall outside coverage — the one case a post-mortem is opened
+            // for.
+            //
+            // The entry *time*, not `entry_fill` — centring needs an instant, and a
+            // row that stamped an entry with an unusable price (a failed or stuck
+            // fill) is precisely the one worth covering. The fold's anchor below
+            // still demands a real price.
+            centre: position.entry_time,
+            entry: entry_fill(&position),
+            stage: Some(position.scale_stage),
+        },
+    )
+    .await
+}
+
+/// Where a series spends its row budget, and what position context the fold folds
+/// under. The two handlers differ ONLY in this — everything downstream is shared, so
+/// an armed series and a position series can never disagree about a row.
+struct SeriesAnchor {
+    /// Echoed to the client; `None` on the armed path.
+    position_id: Option<Uuid>,
+    /// The instant coverage is centred on (recording starts one pre-roll before it).
+    /// `None` records from the token's first trade.
+    centre: Option<chrono::DateTime<chrono::Utc>>,
+    /// Entry fill anchoring the `m_position` metrics; `None` pre-entry, whose
+    /// position-scoped reads then stay `NaN` — exactly what `can_enter` sees.
+    entry: Option<(chrono::DateTime<chrono::Utc>, f64)>,
+    stage: Option<u8>,
+}
+
+/// Fold one token's retained history through one compiled rule and answer with the
+/// whole series. **The one body behind both series routes.**
+async fn series_response(
+    app_state: &DeployState,
+    mint: String,
+    rule: ResolvedRule,
+    anchor: SeriesAnchor,
+) -> HttpResponse {
     // The whole retained history, not just up to the exit: the chart draws past the
     // close, so the crosshair can reach there and must get an answer rather than the
     // last row repeated.
     let as_of = chrono::Utc::now();
-    let trades = match load_trades(&app_state, &position.mint_address, as_of).await {
+    let trades = match load_trades(app_state, &mint, as_of).await {
         Ok(t) => t,
         Err(resp) => return resp,
     };
-    let (patterns, creator_wallet_hash) =
-        load_flow_ctx(&app_state, &position.mint_address, rule.fingerprint_id).await;
+    let (patterns, creator_wallet_hash) = load_flow_ctx(app_state, &mint, rule.fingerprint_id).await;
 
     let created_at = trades[0].block_time;
     let lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
-    let entry = entry_fill(&position);
-    let stage = Some(position.scale_stage);
+    let SeriesAnchor { position_id, centre, entry, stage } = anchor;
     let ResolvedRule { id: rule_id, compiled, fingerprint_id } = rule;
 
-    // Spend the row budget on the position's own window rather than on the token's
-    // first N rows. The budget is a fixed *span* of grid (~22 min at 8k), so on a token
-    // entered later than that the whole position would otherwise fall outside coverage
-    // — the one case a post-mortem is opened for.
-    //
     // The fold still runs from creation; only recording starts here. Pre-roll is the
-    // rule's own widest metric window, floored at a minute, because the question the
-    // modal is usually opened on is "why did this arm fire" — which is answered by the
-    // approach, not by the entry instant alone.
-    let record_from = entry.map(|(entered_at, _)| {
+    // rule's own widest metric window, floored at a minute, because the question a
+    // readout is opened on is "why did this arm fire" / "why has it not" — which is
+    // answered by the approach, not by the anchor instant alone.
+    let record_from = centre.map(|at| {
         let pre_roll = compiled.clock_horizons.max_window_secs.max(60.0);
-        entered_at - chrono::Duration::milliseconds((pre_roll * 1000.0) as i64)
+        at - chrono::Duration::milliseconds((pre_roll * 1000.0) as i64)
     });
 
     // Off the reactor, for the same reason the point replay is — more so: this folds
@@ -690,7 +756,7 @@ pub async fn get_position_metric_series(
     };
     if series.truncated {
         tracing::warn!(
-            mint = %position.mint_address,
+            mint = %mint,
             cap = MAX_READOUT_SERIES_ROWS,
             covered_from = %series.covered_from,
             covered_until = %series.covered_until,
@@ -700,7 +766,7 @@ pub async fn get_position_metric_series(
 
     HttpResponse::Ok().json(SeriesOut {
         position_id,
-        mint_address: position.mint_address,
+        mint_address: mint,
         rule_id: rule_id.0,
         source: "replay",
         at: series.at.iter().map(|t| t.timestamp_millis()).collect(),
@@ -717,6 +783,19 @@ pub async fn get_position_metric_series(
 pub struct ArmedReadoutQuery {
     pub mint: String,
     pub rule: Uuid,
+}
+
+/// Query for the armed series: the point query plus where to centre coverage.
+#[derive(Debug, Deserialize)]
+pub struct ArmedSeriesQuery {
+    pub mint: String,
+    pub rule: Uuid,
+    /// The instant the arm was raised. Coverage centres one pre-roll before it, so a
+    /// token that has been tracked longer than the row budget still covers *why it is
+    /// still waiting* rather than its first 22 minutes. Omit to record from the
+    /// token's first trade.
+    #[serde(default)]
+    pub armed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// GET /api/strategies/armed/metrics?mint=&rule=
@@ -743,4 +822,41 @@ pub async fn get_armed_metrics(
             .json(serde_json::json!({ "error": "token not tracked for this rule" })),
         Err(e) => engine_error(e),
     }
+}
+
+/// GET /api/strategies/armed/metric-series?mint=&rule=[&armed_at=]
+///
+/// The series twin of [`get_armed_metrics`]: every condition of the rule at every row
+/// of the decision grid, for a token it is **armed on but has not entered**. What the
+/// Waiting modal's chart crosshair and condition timeline read.
+///
+/// Same fold, same grid and same honesty as the position series — only the anchor
+/// differs. Pre-entry there is no entry fill and no ladder stage, so the
+/// position-scoped conditions read `null` throughout, which is exactly what the
+/// `can_enter` gate itself sees.
+///
+/// The rule is taken **live**, not from a run snapshot: nothing has been decided yet,
+/// so the thresholds this row is being judged by are the current ones.
+///
+/// Lazily fetched by the client (first crosshair move or timeline toggle), never
+/// polled: the fold is O(all trades) and this box has two cores.
+pub async fn get_armed_metric_series(
+    app_state: web::Data<Arc<DeployState>>,
+    query: web::Query<ArmedSeriesQuery>,
+) -> impl Responder {
+    let ArmedSeriesQuery { mint, rule, armed_at } = query.into_inner();
+    if let Err(e) = validate_solana_address(&mint) {
+        return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
+    }
+    let resolved = match resolve_live_rule(&app_state, rule).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    series_response(
+        &app_state,
+        mint,
+        resolved,
+        SeriesAnchor { position_id: None, centre: armed_at, entry: None, stage: None },
+    )
+    .await
 }

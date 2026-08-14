@@ -1171,6 +1171,53 @@ mod tests {
         assert!(!trail.ok[row(ts(30))]);
     }
 
+    /// The **armed** series shape: no entry fill, no stage, so a Waiting row's
+    /// entry conditions read real values while its position-scoped ones stay blank.
+    ///
+    /// That asymmetry IS the answer the Waiting modal exists to give — "which entry
+    /// condition is holding this out" — and it is exactly what `can_enter` sees
+    /// pre-entry. The trap: an exit condition that reads `NaN` must never come back
+    /// `ok`, or the strip would show a row leaving before it ever entered.
+    #[test]
+    fn an_armed_series_reads_entry_conditions_and_blanks_position_ones() {
+        let c = rule(serde_json::json!({
+            "entry": { "m_snapshot": { "liquidity": [{ "operator": ">=", "value": 20 }] } },
+            "exit": { "m_position": { "pnl": [{ "operator": ">=", "value": 40 }] } }
+        }));
+        let prints = [(1.0, 0_i64), (2.0, 10), (3.0, 20)];
+        let series = replay_series(
+            &c,
+            prints.map(|(p, secs)| trade(p, secs)),
+            // The armed anchor: nothing has filled and no ladder is running.
+            &ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None },
+            ts(20),
+            None,
+            None,
+        );
+        let entry = series
+            .conditions
+            .iter()
+            .find(|c| c.req.metric == MetricId::Liquidity)
+            .expect("the entry condition");
+        let pnl = series
+            .conditions
+            .iter()
+            .find(|c| c.req.metric == MetricId::Pnl)
+            .expect("the position condition");
+
+        assert!(
+            entry.values.iter().any(|v| v.is_finite()),
+            "the entry side must read the token, not the absent position",
+        );
+        // `reserve_sol` 30 − the 30 virtual floor = 0 real, under the 20 threshold:
+        // a readable value that simply does not hold, which is the useful answer.
+        assert!(entry.values.iter().all(|v| v.is_finite()));
+        for (i, v) in pnl.values.iter().enumerate() {
+            assert!(v.is_nan(), "row {i} has a pnl with no entry fill");
+            assert!(!pnl.ok[i], "row {i} satisfies an exit on an unreadable metric");
+        }
+    }
+
     /// A row budget stops the fold and says so, exactly as the grid reports it — a
     /// silently short series reads like a token that stopped trading.
     #[test]

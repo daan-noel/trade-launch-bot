@@ -43,6 +43,34 @@ export function isMetricExitReason(reason: string | null | undefined): boolean {
   return reason === 'Metrics' || parseMetricExitParts(reason) != null;
 }
 
+/** Which authored condition a metric exit reason names. */
+export interface MetricExitTarget {
+  metric: string;
+  /** The trailing window the label qualifies itself with, `null` when it carries
+   *  none — and a bare name is genuinely ambiguous whenever the rule authors both
+   *  a windowed condition and its identically-named lifetime twin. */
+  windowSec: number | null;
+}
+
+/**
+ * The condition a persisted exit reason points at, for surfaces that draw *that*
+ * condition (the chart's value lane).
+ *
+ * Accepts every stored form: `nonvol_buy(2s) >= 0.9` (current — the window
+ * qualifier is what separates a dynamic group from its lifetime twin), the bare
+ * `nonvol_buy >= 0.9` still on older rows, and legacy compact `stall>`. Returns
+ * `null` for a non-metric reason (`TakeProfit`, `Dead`, …), which names no
+ * condition to draw.
+ */
+export function parseMetricExitTarget(
+  reason: string | null | undefined,
+): MetricExitTarget | null {
+  if (!reason) return null;
+  const m = /^\s*([a-z][a-z0-9_]*)(?:\((\d*\.?\d+)s\))?\s*(?:>=|<=|!=|>|<|=)/i.exec(reason);
+  if (!m) return null;
+  return { metric: m[1], windowSec: m[2] ? Number(m[2]) : null };
+}
+
 /** Format a metric fire as spaced `name op value` (frontend signal markers). */
 export function formatMetricExitLabel(
   name: string,

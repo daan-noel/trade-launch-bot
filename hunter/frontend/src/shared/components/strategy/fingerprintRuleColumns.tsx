@@ -21,7 +21,6 @@ import {
   fingerprintIdentityKey,
   fingerprintParamsCell,
   fingerprintParamsSearchText,
-  flowStatusBadge,
 } from './FingerprintParamsSummary';
 
 type FpSortAxis = {
@@ -117,7 +116,6 @@ export function buildFingerprintRuleColumns<R extends FingerprintRuleRow>(
         <div className="flex min-w-48 flex-col gap-1">
           <div className="flex items-center justify-center gap-1">
             <span className="font-mono text-[12px] text-text-dim">{label}</span>
-            {fp ? flowStatusBadge(fp) : null}
             <Link
               to={fingerprintsHref(r.fingerprint_id)}
               title={`Open fingerprint “${label}”`}

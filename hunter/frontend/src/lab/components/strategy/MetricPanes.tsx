@@ -16,17 +16,21 @@ import { cn } from 'lib/cn';
 import { ACCORDION_IDS, STORAGE_KEYS, getJSON, setJSON } from 'lib/storage';
 import { useStrategyRegistry, unitSuffix, type MetricUnit } from 'lib/strategy/registry';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
-import { ruleParamsFromJson, sideInstances, type RuleParams } from 'lib/strategy/ruleParams';
+import { ruleParamsFromJson, type RuleParams } from 'lib/strategy/ruleParams';
 import {
+  CONDITION_SIDE_TAG,
   DEFAULT_WINDOWS,
   extractRuleMetricPrefs,
   findRuleFireMarkers,
   metricClockHorizons,
   metricColKey,
+  metricConditionBands,
   metricConditionStatesAt,
   metricPrefsFromParams,
+  metricThresholdsFor,
   nearestSeriesIndex,
   parseSeriesAtSec,
+  type MetricConditionLanes,
 } from 'lib/strategy/metricPanes';
 import { useGetMetricSeriesQuery } from '@lab/store/labEndpoints';
 import type { ChartEventMarker, ChartVisibleTimeRange } from 'components/token-price-chart';
@@ -45,6 +49,8 @@ interface Prefs {
   ruleId: string | null;
   /** When true, panes follow the selected rule's metrics (cleared on manual toggle). */
   autoPanes: boolean;
+  /** Draw the rule's conditions as on/off lanes under the price chart. */
+  timeline: boolean;
 }
 
 function loadPrefs(): Prefs {
@@ -55,6 +61,7 @@ function loadPrefs(): Prefs {
     windows: [...DEFAULT_WINDOWS],
     ruleId: null,
     autoPanes: true,
+    timeline: false,
     ...(stored ?? {}),
   };
 }
@@ -82,6 +89,15 @@ export interface MetricPanesProps {
   onCrosshairTimeChange?: (timeSec: number | null) => void;
   /** Emit first metric entry/exit fires as chart markers. */
   onEventMarkersChange?: (markers: ChartEventMarker[]) => void;
+  /**
+   * Emit the rule's conditions as chart bottom-pane lanes (the "timeline"). Wiring
+   * it is what surfaces the toggle — a host with no chart beside the panes has
+   * nowhere to draw them, so it stays hidden there rather than inert.
+   */
+  onConditionBandsChange?: (bands: MetricConditionLanes | null) => void;
+  /** The inspected run's exit reason — picks which condition the timeline draws as
+   *  a value line. Without it the line falls back to the first exit condition. */
+  exitReason?: string | null;
   /** When set, overlay these params (not the dropdown rule's). */
   ruleOverride?: MetricPanesRuleOverride | null;
   /** Inspected run's entry fill. Supplies the position-scoped `m_position`
@@ -109,6 +125,8 @@ function useMetricPanesModel({
   visibleTimeRange = null,
   onCrosshairTimeChange,
   onEventMarkersChange,
+  onConditionBandsChange,
+  exitReason = null,
   ruleOverride = null,
   positionEntry = null,
   layout = 'page',
@@ -199,6 +217,25 @@ function useMetricPanesModel({
     onEventMarkersChange(findRuleFireMarkers(ruleParams, data, registry));
   }, [data, ruleParams, registry, onEventMarkersChange]);
 
+  // The lanes fold the series the panes already fetched, so the toggle costs no
+  // request — only the fold, which is why it still gates on `prefs.timeline`
+  // rather than running for every inspect that never opens it.
+  const conditionBands = useMemo(
+    () =>
+      prefs.timeline && data && ruleParams && registry
+        ? metricConditionBands(ruleParams, data, registry, exitReason)
+        : null,
+    [prefs.timeline, data, ruleParams, registry, exitReason],
+  );
+
+  // Cleared on unmount so a modal that switches to a run with no overlay does not
+  // leave the previous one's lanes on the chart.
+  useEffect(() => {
+    if (!onConditionBandsChange) return;
+    onConditionBandsChange(conditionBands);
+    return () => onConditionBandsChange(null);
+  }, [conditionBands, onConditionBandsChange]);
+
   const allColumns = useMemo(() => {
     const cols: Array<{
       key: string;
@@ -277,12 +314,17 @@ function useMetricPanesModel({
     return metricConditionStatesAt(ruleParams, crosshairIdx, data, registry);
   }, [crosshairIdx, ruleParams, data, registry]);
 
-  const conditionByMetric = useMemo(() => {
+  // Keyed by SERIES COLUMN (`metric` / `metric@Ns`), never by metric name: a rule is
+  // free to constrain `nonvol_buy` lifetime and `nonvol_buy` at 2 s at once, and those
+  // are different readings with different verdicts. Keying by name paints both panes
+  // with whichever condition wrote last — and since the lifetime twin is monotone,
+  // that is a green pane under a windowed metric sitting at zero.
+  const conditionByColumn = useMemo(() => {
     const map = new Map<string, { ok: boolean; side: 'entry' | 'exit' }>();
     for (const s of conditionStates) {
       // Prefer a failing side if both exist; otherwise last write wins.
-      const prev = map.get(s.metric);
-      if (!prev || (prev.ok && !s.ok)) map.set(s.metric, { ok: s.ok, side: s.side });
+      const prev = map.get(s.key);
+      if (!prev || (prev.ok && !s.ok)) map.set(s.key, { ok: s.ok, side: s.side });
     }
     return map;
   }, [conditionStates]);
@@ -303,7 +345,7 @@ function useMetricPanesModel({
       const raw = idx != null ? col.values[idx] : null;
       const suffix = unitSuffix(meta.unit);
       const text = raw != null && Number.isFinite(raw) ? `${formatMetric(raw)}${suffix}` : '—';
-      const cond = conditionByMetric.get(meta.metric);
+      const cond = conditionByColumn.get(key);
       return {
         key,
         label: key,
@@ -311,7 +353,7 @@ function useMetricPanesModel({
         ok: cond ? cond.ok : null,
       };
     });
-  }, [panes, allColumns, seriesByKey, crosshairIdx, conditionByMetric]);
+  }, [panes, allColumns, seriesByKey, crosshairIdx, conditionByColumn]);
 
   const togglePane = (key: string) =>
     setPrefs((p) => ({
@@ -383,10 +425,15 @@ function useMetricPanesModel({
     seriesByKey,
     xDomain,
     ruleParams,
-    conditionByMetric,
+    conditionByColumn,
     crosshairTimeSec,
     handlePanePointer,
     handlePaneLeave,
+    /** The host draws lanes — without one the toggle has nowhere to point. */
+    timelineSupported: !!onConditionBandsChange,
+    timelineOn: prefs.timeline,
+    laneCount: conditionBands?.lanes.length ?? 0,
+    setTimelineOn: (on: boolean) => setPrefs((p) => ({ ...p, timeline: on })),
   };
 }
 
@@ -532,15 +579,45 @@ function MetricPanesSelector() {
 }
 
 function MetricPanesValues() {
-  const { allColumns, valueStrip, groupKeys, crosshairIdx } = useMetricPanesCtx();
+  const {
+    allColumns,
+    valueStrip,
+    groupKeys,
+    crosshairIdx,
+    ruleParams,
+    timelineSupported,
+    timelineOn,
+    laneCount,
+    setTimelineOn,
+  } = useMetricPanesCtx();
 
-  if (valueStrip.length === 0) return null;
+  const timelineAvailable = timelineSupported && ruleParams != null;
+  if (valueStrip.length === 0 && !timelineAvailable) return null;
 
   return (
     <div className="sticky top-0 z-10 flex flex-col gap-y-1.5 rounded-md border border-white/10 bg-bg-panel/95 px-2.5 py-2 backdrop-blur-sm">
-      <span className="text-[10px] font-semibold uppercase tracking-wider text-text-dim">
-        {crosshairIdx != null ? 'at crosshair' : 'latest'}
-      </span>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-text-dim">
+          {crosshairIdx != null ? 'at crosshair' : 'latest'}
+        </span>
+        {timelineAvailable && (
+          <button
+            type="button"
+            onClick={() => setTimelineOn(!timelineOn)}
+            className={cn(
+              'rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider',
+              timelineOn ? 'bg-white/10 text-text' : 'text-text-dim hover:text-text',
+            )}
+            title={
+              timelineOn
+                ? `Hide the per-condition timeline under the chart (${laneCount} lanes)`
+                : "Draw each of the rule's conditions as a lane under the chart, filled where it held — the fire windows without scrubbing for them. Reads the same series as these panes, so it models no arming gate or ladder stage."
+            }
+          >
+            timeline
+          </button>
+        )}
+      </div>
       {groupKeys(valueStrip, (v) => v.key).map(({ group, items }) => {
         const rows = colsByWindow(
           items.map((v) => {
@@ -601,6 +678,7 @@ function MetricPanesValues() {
 function MetricPanesGraphs() {
   const {
     layout,
+    registry,
     panes,
     allColumns,
     groupKeys,
@@ -610,7 +688,7 @@ function MetricPanesGraphs() {
     crosshairTimeSec,
     crosshairIdx,
     ruleParams,
-    conditionByMetric,
+    conditionByColumn,
     handlePanePointer,
     handlePaneLeave,
     error,
@@ -687,8 +765,12 @@ function MetricPanesGraphs() {
                           xDomain={xDomain}
                           crosshairTimeSec={crosshairTimeSec}
                           crosshairIdx={crosshairIdx}
-                          thresholds={ruleParams ? metricThresholds(ruleParams, meta.metric) : []}
-                          conditionOk={conditionByMetric.get(meta.metric)?.ok ?? null}
+                          thresholds={
+                            ruleParams
+                              ? metricThresholdsFor(ruleParams, meta.metric, meta.window, registry)
+                              : []
+                          }
+                          conditionOk={conditionByColumn.get(key)?.ok ?? null}
                           onPointerTime={handlePanePointer}
                           compact={compact}
                         />
@@ -770,35 +852,7 @@ function formatMetric(v: number): string {
   return v.toPrecision(2);
 }
 
-/** Entry/exit threshold values a rule places on one metric (any group). */
-function metricThresholds(
-  params: RuleParams,
-  metric: string,
-): Array<{ side: 'entry' | 'exit'; value: number }> {
-  const out: Array<{ side: 'entry' | 'exit'; value: number }> = [];
-  for (const side of ['entry', 'exit'] as const) {
-    const sc = params[side];
-    if (!sc) continue;
-    for (const [, g] of sideInstances(sc)) {
-      // `metrics[metric]` is DNF (`Condition[][]`) — flatten arms → atoms.
-      const arms = g.metrics[metric];
-      if (!arms) continue;
-      for (const arm of arms) {
-        for (const c of arm) {
-          if (Number.isFinite(c.value)) out.push({ side, value: c.value });
-        }
-      }
-    }
-  }
-  return out;
-}
-
 const PANE_H = 64;
-
-/** Short tag for a threshold line. `entry`/`exit` both start with "e", so they get
- *  distinct words — the color alone (primary vs warning) isn't a readable difference
- *  on a 9px overlay. */
-const THRESHOLD_TAG = { entry: 'IN', exit: 'OUT' } as const;
 
 const thresholdColor = (side: 'entry' | 'exit') =>
   side === 'entry' ? 'var(--color-primary)' : 'var(--color-warning)';
@@ -827,7 +881,7 @@ function ThresholdLabels({
           }}
           title={`${t.side} threshold`}
         >
-          {THRESHOLD_TAG[t.side]} {formatMetric(t.value)}
+          {CONDITION_SIDE_TAG[t.side]} {formatMetric(t.value)}
         </span>
       ))}
     </>

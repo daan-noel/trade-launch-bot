@@ -1,8 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import { seriesIndexAsOf } from 'lib/strategy/metricPanes';
+import {
+  CONDITION_LANE_COLOR,
+  CONDITION_VALUE_LANE_COLOR,
+  seriesIndexAsOf,
+} from 'lib/strategy/metricPanes';
+import { parseMetricExitTarget } from 'lib/strategy/exitReason';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
+  useGetArmedMetricSeriesQuery,
   useGetArmedMetricsQuery,
   useGetPositionMetricSeriesQuery,
   useGetPositionMetricsQuery,
@@ -68,7 +74,7 @@ export function LivePositionConditions({
   // walking a lane with ←/→) does not reliably know whether the engine still holds
   // this row, and the answer is authoritative in the payload.
   const [isReplay, setIsReplay] = useState(false);
-  const crosshairTimeSec = useCrosshairTimeSec();
+  const gate = useConditionSeriesGate();
   const { data, isLoading, error } = useGetPositionMetricsQuery(
     { positionId, at },
     {
@@ -76,7 +82,7 @@ export function LivePositionConditions({
       // each poll would spend the serialized decision loop a round-trip to refresh
       // something nobody is reading. The cached pin renders instantly on pointer-out
       // and the interval resumes, which costs at most one stale second.
-      pollingInterval: isReplay || crosshairTimeSec != null ? 0 : READOUT_POLL_MS,
+      pollingInterval: isReplay || gate.crosshairTimeSec != null ? 0 : READOUT_POLL_MS,
       skip: !positionId,
     },
   );
@@ -84,20 +90,67 @@ export function LivePositionConditions({
     if (data?.source) setIsReplay(data.source === 'replay');
   }, [data?.source]);
 
-  // Latched: the fetch starts on the FIRST hover and the payload then stays cached
-  // for the life of the modal, so leaving and re-entering the plot costs nothing.
-  const [scrubbed, setScrubbed] = useState(false);
-  useEffect(() => {
-    if (crosshairTimeSec != null) setScrubbed(true);
-  }, [crosshairTimeSec]);
-  // The timeline lanes want the same payload. One cache entry serves both, so
-  // whichever the user reaches for first pays the fold and the other is free.
-  const [bandOn, setBandOn] = useState(false);
+  // The crosshair and the timeline lanes want the same payload. One cache entry
+  // serves both, so whichever the user reaches for first pays the fold.
   const { data: series, isLoading: seriesLoading } = useGetPositionMetricSeriesQuery(
     positionId,
-    { skip: !positionId || (!scrubbed && !bandOn) },
+    { skip: !positionId || !gate.wanted },
   );
 
+  return (
+    <ConditionSeriesStrip
+      gate={gate}
+      series={series}
+      seriesLoading={seriesLoading}
+      readout={data ?? null}
+      loading={isLoading}
+      error={error}
+      // A post-mortem is opened on "why did it leave", so the drawn line is the exit
+      // side's.
+      drawSide="exit"
+      exitReason={exitReason}
+      at={at}
+      onAtChange={setAt}
+    />
+  );
+}
+
+/**
+ * The crosshair + timeline half of a condition strip, over whichever series its host
+ * fetched. **One implementation for both hosts** — a position modal and a Waiting
+ * modal must resolve a hovered bar, publish lanes and caption their honesty
+ * identically, and two copies of this drift on the first fix to either.
+ *
+ * Split from the fetch because the two hosts key their series differently, and split
+ * at {@link useConditionSeriesGate} because whether to fetch at all is decided *here*
+ * (first hover, or lanes on) but must be known *there*.
+ */
+function ConditionSeriesStrip({
+  gate,
+  series,
+  seriesLoading,
+  readout,
+  loading,
+  error,
+  drawSide,
+  exitReason,
+  at,
+  onAtChange,
+}: {
+  gate: ConditionSeriesGate;
+  series: RuleReadoutSeries | undefined;
+  seriesLoading: boolean;
+  /** The pinned (non-hovered) readout — engine state or a fill-instant replay. */
+  readout: RuleReadout | null;
+  loading: boolean;
+  error: unknown;
+  /** Which side's condition gets the chart's value line. */
+  drawSide: ReadSide;
+  exitReason?: string | null;
+  at?: ReadoutAt;
+  onAtChange?: (at: ReadoutAt) => void;
+}) {
+  const { crosshairTimeSec, bandOn, setBandOn } = gate;
   // Hoisted out of the hover path: the crosshair moves per frame and this is one
   // array as long as the series.
   const atSec = useMemo(() => series?.at.map((ms) => ms / 1000) ?? null, [series]);
@@ -107,29 +160,29 @@ export function LivePositionConditions({
   );
 
   const bands = useMemo(
-    () => (bandOn ? seriesToBands(series, atSec, exitReason) : null),
-    [bandOn, series, atSec, exitReason],
+    () => (bandOn ? seriesToBands(series, atSec, drawSide, exitReason) : null),
+    [bandOn, series, atSec, drawSide, exitReason],
   );
   usePublishConditionBands(bands);
 
   // The pointer is ON the plot: the pinned readout must NOT stand in for a hovered
   // one. Every bar now resolves to an instant, so a `null` row means the pointer is
   // genuinely left of the reconstructed window — and saying so is the whole fix. The
-  // old `?? data` fallback showed the exit-instant values on every unresolvable bar,
+  // old `?? readout` fallback showed the pin's values on every unresolvable bar,
   // identical bar after bar, which reads as a metric frozen at its exit value.
   const scrubbing = crosshairTimeSec != null;
   return (
     <RuleConditionStrip
-      readout={hovered?.readout ?? (scrubbing ? null : (data ?? null))}
+      readout={hovered?.readout ?? (scrubbing ? null : readout)}
       hoverUnresolved={scrubbing && hovered == null && !seriesLoading}
       // The strip's own loading state covers the first series fetch: until it lands
       // there is nothing to show at the hovered instant, and showing the pinned
       // readout instead would silently answer a different question.
-      loading={isLoading || (crosshairTimeSec != null && seriesLoading)}
+      loading={loading || (scrubbing && seriesLoading)}
       error={readoutError(error)}
       notFound={isNotFound(error)}
       at={at}
-      onAtChange={setAt}
+      onAtChange={onAtChange}
       hoveredAtMs={hovered?.atMs ?? null}
       hoveredCoverage={hovered?.coverage ?? (scrubbing ? 'before' : 'in')}
       bandOn={bandOn}
@@ -138,16 +191,37 @@ export function LivePositionConditions({
   );
 }
 
-/**
- * Neutral on purpose. The strip refuses a good/bad tone — a satisfied entry
- * condition is *why we're in* and a satisfied exit condition is *why we're
- * leaving*, so one green would mean opposite things — and a lane is the same
- * condition drawn sideways.
- */
-const LANE_COLOR = 'rgba(226,232,240,0.55)';
+/** Which side of the rule the chart draws as a value line. */
+type ReadSide = 'entry' | 'exit';
 
-/** The drawn condition's own line — brighter than a lane, it is the subject. */
-const VALUE_LANE_COLOR = '#7DD3FC';
+interface ConditionSeriesGate {
+  /** Wall-clock second under the chart crosshair; `null` on pointer-out. */
+  crosshairTimeSec: number | null;
+  bandOn: boolean;
+  setBandOn: (on: boolean) => void;
+  /** The series is worth fetching: the plot has been touched at least once, or the
+   *  lanes are on. */
+  wanted: boolean;
+}
+
+/**
+ * Whether the (expensive) series fetch has been earned yet.
+ *
+ * Lives outside {@link ConditionSeriesStrip} because the host owns the query, and the
+ * host cannot know the answer — it depends on a crosshair the chart publishes and a
+ * toggle the strip renders. `scrubbed` is **latched**: the fetch starts on the FIRST
+ * hover and the payload then stays cached for the life of the modal, so leaving and
+ * re-entering the plot costs nothing.
+ */
+function useConditionSeriesGate(): ConditionSeriesGate {
+  const crosshairTimeSec = useCrosshairTimeSec();
+  const [scrubbed, setScrubbed] = useState(false);
+  useEffect(() => {
+    if (crosshairTimeSec != null) setScrubbed(true);
+  }, [crosshairTimeSec]);
+  const [bandOn, setBandOn] = useState(false);
+  return { crosshairTimeSec, bandOn, setBandOn, wanted: scrubbed || bandOn };
+}
 
 /**
  * The series as chart lanes: per condition, the stretches over which it held.
@@ -163,6 +237,7 @@ const VALUE_LANE_COLOR = '#7DD3FC';
 function seriesToBands(
   series: RuleReadoutSeries | undefined,
   atSec: number[] | null,
+  drawSide: ReadSide,
   exitReason: string | null | undefined,
 ): ConditionBands | null {
   if (!series || !atSec || atSec.length === 0) return null;
@@ -181,18 +256,18 @@ function seriesToBands(
     return {
       key: `${c.side}-${c.stage ?? ''}-${c.metric}-${c.window_size_sec ?? ''}-${idx}`,
       label: conditionLabel(c),
-      color: LANE_COLOR,
+      color: CONDITION_LANE_COLOR,
       spans,
     };
   });
-  const drawn = valueLaneCondition(series, exitReason);
+  const drawn = valueLaneCondition(series, drawSide, exitReason);
   return {
     lanes,
     valueLane: drawn
       ? {
           key: `value-${drawn.metric}-${drawn.window_size_sec ?? ''}`,
           label: conditionLabel(drawn),
-          color: VALUE_LANE_COLOR,
+          color: CONDITION_VALUE_LANE_COLOR,
           points: atSec.map((t, i) => ({ timeSec: t, value: drawn.values[i] ?? null })),
           threshold: soleThreshold(drawn),
         }
@@ -201,38 +276,40 @@ function seriesToBands(
   };
 }
 
-/** The condition whose reading gets drawn: the one that closed the position when the
- *  exit reason names it, else the first exit condition — a post-mortem is opened on
- *  "why did it leave", so the exit side is the useful default. */
+/**
+ * The condition whose reading gets drawn.
+ *
+ * `drawSide` is the question the host is asking. A post-mortem asks "why did it
+ * leave" ⇒ the exit condition the reason names, else the first one. A Waiting row
+ * asks "why has it NOT entered" ⇒ an entry condition, where no reason exists to name
+ * one, so the first authored one is drawn — stable across refreshes, unlike
+ * "whichever is currently failing", which would swap lines as the token moves.
+ */
 function valueLaneCondition(
   series: RuleReadoutSeries,
+  drawSide: ReadSide,
   exitReason: string | null | undefined,
 ) {
-  const exits: RuleConditionSeries[] = series.conditions.filter((c) => c.side === 'exit');
-  if (exits.length === 0) return null;
-  const named = exitReason ? matchExitReason(exits, exitReason) : null;
-  return named ?? exits[0];
+  const side: RuleConditionSeries[] = series.conditions.filter((c) => c.side === drawSide);
+  if (side.length === 0) return null;
+  const named = drawSide === 'exit' && exitReason ? matchExitReason(side, exitReason) : null;
+  return named ?? side[0];
 }
 
 /**
  * Resolve a persisted exit reason to the condition it names.
  *
- * Accepts both label forms: `nonvol_buy(2s) >= 0.9` (current — the window qualifier
- * is what separates a dynamic group from its identically-named lifetime twin) and the
- * bare `nonvol_buy >= 0.9` still stored on older rows. Matching by name ALONE would
- * be free to pick the lifetime condition for a windowed exit, which is the mismatch
- * this whole pane exists to make impossible, so a bare label only matches when it is
- * unambiguous.
+ * Matching by name ALONE would be free to pick the lifetime condition for a windowed
+ * exit, which is the mismatch this whole pane exists to make impossible — so a label
+ * carrying no window qualifier only matches when it is unambiguous.
  */
 function matchExitReason(exits: RuleConditionSeries[], reason: string) {
-  const m = /^\s*([a-z0-9_]+)(?:\((\d*\.?\d+)s\))?\s/i.exec(reason);
-  if (!m) return null;
-  const [, name, windowStr] = m;
-  const window = windowStr ? Number(windowStr) : null;
-  const byName = exits.filter((c) => c.metric === name);
+  const target = parseMetricExitTarget(reason);
+  if (!target) return null;
+  const byName = exits.filter((c) => c.metric === target.metric);
   if (byName.length === 0) return null;
-  if (window != null) {
-    return byName.find((c) => c.window_size_sec === window) ?? null;
+  if (target.windowSec != null) {
+    return byName.find((c) => c.window_size_sec === target.windowSec) ?? null;
   }
   return byName.length === 1 ? byName[0] : null;
 }
@@ -330,25 +407,54 @@ function hoverCoverage(
  * The same readout for an ARMED (token, rule) pair — the Waiting lane's "why has
  * this not entered yet". Exit conditions come back too, position-scoped ones with
  * no reading, which is exactly what the pre-entry `can_enter` gate sees.
+ *
+ * Beside a chart it gets the **whole** surface a held position gets: hovering moves
+ * the instant and the timeline draws each condition's fire windows. A Waiting row is
+ * the one a reader stares at longest — the question is always "how close is it" — and
+ * that is a question about the approach, which one live instant cannot answer.
+ *
+ * The series is fetched lazily (first hover / lanes on) and never polled, while the
+ * pinned readout keeps polling the engine at ~1 Hz: the pin is live state and moves,
+ * the fold is the past and does not.
  */
 export function ArmedRuleConditions({
   mint,
   ruleId,
+  armedAt,
 }: {
   mint: string;
   ruleId: string | null;
+  /** When the arm was raised — centres the series' row budget on why this row is
+   *  *still* waiting rather than on the token's first minutes. */
+  armedAt?: string | null;
 }) {
+  const gate = useConditionSeriesGate();
   const { data, isLoading, error } = useGetArmedMetricsQuery(
     { mint, ruleId: ruleId ?? '' },
-    { pollingInterval: READOUT_POLL_MS, skip: !mint || !ruleId },
+    {
+      // Same pause as the position strip: while the pointer is on the plot the pin is
+      // off screen, so polling it spends the decision loop a round-trip on something
+      // nobody is reading.
+      pollingInterval: gate.crosshairTimeSec != null ? 0 : READOUT_POLL_MS,
+      skip: !mint || !ruleId,
+    },
+  );
+  const { data: series, isLoading: seriesLoading } = useGetArmedMetricSeriesQuery(
+    { mint, ruleId: ruleId ?? '', armedAt },
+    { skip: !mint || !ruleId || !gate.wanted },
   );
   if (!ruleId) return null;
   return (
-    <RuleConditionStrip
+    <ConditionSeriesStrip
+      gate={gate}
+      series={series}
+      seriesLoading={seriesLoading}
       readout={data ?? null}
       loading={isLoading}
-      error={readoutError(error)}
-      notFound={isNotFound(error)}
+      error={error}
+      // Nothing has exited, so there is no exit reason and no exit line worth
+      // drawing — the row is being held out by an ENTRY condition.
+      drawSide="entry"
     />
   );
 }

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { patternKeysFrom } from './classifyFlow';
-import { patternsFromKeys, togglePattern } from './volumePatterns';
+import {
+  formatVolumePatternsText,
+  patternsFromKeys,
+  togglePattern,
+  volumePatternsActions,
+  volumePatternsIdentity,
+} from './volumePatterns';
 
 const A = ['Compute Budget: SetComputeUnitLimit', 'Pump.Fun: Buy'];
 const B = ['Compute Budget: SetComputeUnitLimit', 'Pump.Fun: Sell'];
@@ -37,6 +43,44 @@ describe('togglePattern', () => {
     const [staged] = togglePattern([], source);
     source.push('mutated');
     expect(staged).toEqual(A);
+  });
+});
+
+describe('volumePatternsActions / formatVolumePatternsText', () => {
+  it('reads each pattern as its action sequence, one per line', () => {
+    expect(volumePatternsActions([A, B])).toBe(
+      'SetComputeUnitLimit > Buy\nSetComputeUnitLimit > Sell',
+    );
+  });
+
+  it('is empty for an unconfigured set', () => {
+    expect(volumePatternsActions([])).toBe('');
+    expect(formatVolumePatternsText([])).toBe('');
+    expect(formatVolumePatternsText([[]])).toBe('');
+  });
+
+  it('copies back as re-pastable JSON', () => {
+    expect(JSON.parse(formatVolumePatternsText([A, B]))).toEqual([A, B]);
+  });
+});
+
+describe('volumePatternsIdentity', () => {
+  it('is order-insensitive — the set is matched by membership', () => {
+    expect(volumePatternsIdentity([A, B])).toBe(volumePatternsIdentity([B, A]));
+  });
+
+  it('splits sets that differ only in a sequence, not in size', () => {
+    const near = ['Compute Budget: SetComputeUnitLimit', 'Pump.Fun: BuyExactSolIn'];
+    expect(volumePatternsIdentity([A])).not.toBe(volumePatternsIdentity([near]));
+  });
+
+  it('splits a re-ordered sequence — ix_labels are ordered', () => {
+    expect(volumePatternsIdentity([A])).not.toBe(volumePatternsIdentity([[...A].reverse()]));
+  });
+
+  it('treats an empty pattern as absent', () => {
+    expect(volumePatternsIdentity([[], A])).toBe(volumePatternsIdentity([A]));
+    expect(volumePatternsIdentity([])).toBe('');
   });
 });
 

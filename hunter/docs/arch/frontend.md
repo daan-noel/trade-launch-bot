@@ -341,8 +341,17 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   straight to the fingerprint.
   A disarmed row never fills: the fold is skipping that req, not failing it.
   Lanes thin down rather than vanish as a ladder grows, and the empty ones matter —
-  against the coverage track they read as "never fired". Backend contract + the
-  parity traps: [strategies.md](strategies.md) *Rule readout*),
+  against the coverage track they read as "never fired".
+  **A Waiting row gets the identical surface** off `.../armed/metric-series` — hover
+  and timeline both — because "how close is it" is a question about the approach that
+  one live instant cannot answer, and Waiting is the row an operator stares at
+  longest. It passes the arm instant so coverage centres on why it is *still* waiting,
+  and its value line is drawn from the **entry** side: nothing has exited, so the
+  condition holding the row out is an entry one. `ConditionSeriesStrip` +
+  `useConditionSeriesGate` are that whole crosshair/timeline half, shared by both
+  hosts — split at the gate because *whether to fetch* is decided in the strip (first
+  hover, or lanes on) but must be known by the host that owns the query. Backend
+  contract + the parity traps: [strategies.md](strategies.md) *Rule readout*),
   Rules/Fingerprints
   (+ `InputSyncStatus`, `wallet/` components; `usePositionNotifications`; `syncTokenSlice`).
 - **Lab (`@lab/pages`):** **Research home** (`LabHomePage` — shortcuts + recent sweeps
@@ -361,7 +370,13 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   **+ Evidence over the traded real/paper positions from the synced mirror**, where a
   fill opens the metric panes — see the Rule Evidence bullet below)/Fingerprints/
   **Flow discovery**/Simulate (sim table demotes live Active/Mode into a muted rule
-  subtitle)/Replay, and the generic Grouped Sweep (sticky Run › Group › Combo
+  subtitle)/**Replay** (decision timeline left, `LabTokenInspect` right — the page's
+  subject is *why* a decision came out the way it did, and fill markers alone only say
+  that it did, so the chart is pinned to the rule the replay decided under. One walk of
+  the focused mint's effects yields the markers, the entry fill the `m_position` panes
+  anchor on, the exit reason the timeline's value line follows, and the rule id itself;
+  the params come off the CURRENT rule row because that is literally what the replay
+  re-decided under — `rule_to_loaded`, no snapshot), and the generic Grouped Sweep (sticky Run › Group › Combo
   breadcrumb; Simple = configure→promote; Full drill = combo/token inspect via
   `SweepTokenInspectModal` with metric panes; `sweep/` + `strategy/` components,
   `useStreamedSweepResults`, `BackgroundJobsContext`).
@@ -371,10 +386,23 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   crosshair / visible range (`TokenPriceChart.onCrosshairTimeChange` /
   `onVisibleTimeRangeChange`); selecting a rule auto-loads its metrics/windows,
   overlays thresholds, and paints first metric entry/exit fires as `eventMarkers`
-  with `role: 'signal'` and spaced `name op value` labels (e.g. `stall > 3`) —
-  visually distinct from backend fill markers (`role: 'fill'`, green/red arrows +
-  price lines). Entry fire skips rows where exit metrics already hold — same
-  `can_enter` gate as the engine.
+  with `role: 'signal'` and spaced `name[@Ns] op value` labels (e.g.
+  `vol_buy@2s >= 0.85`) — visually distinct from backend fill markers
+  (`role: 'fill'`, green/red arrows + price lines). Entry fire skips rows where exit
+  metrics already hold — same `can_enter` gate as the engine.
+  **The entry marker names the condition(s) that FLIPPED at that instant**, joined by
+  `+` and summarised past two (`… +2`). Entry is a conjunction, so a condition that
+  was already holding decided nothing about the timing; labelling with the first
+  authored one lets a monotone lifetime metric explain a fire two trailing windows
+  produced, minutes after its own line crossed. Nothing flipped (the exit veto
+  cleared) ⇒ the whole conjunction. The rest of the conjunction is always on the
+  chart as lanes.
+  **Every condition label carries its window**, from the one `conditionMetricName`
+  namer shared by markers, lanes and the value line — the lifetime and windowed
+  registry entries share every metric name. For the same reason pane verdicts and
+  threshold lines key on the **series column** (`metric` / `metric@Ns`,
+  `metricThresholdsFor`), never on the metric name: a rule may constrain both twins,
+  and the monotone one would otherwise paint the windowed pane.
   Values are **readout-first**: a sticky strip lists every selected metric's
   crosshair/latest number; each pane has a large value rail + sparkline min/max
   and labeled thresholds (shape is secondary). Series from
@@ -387,6 +415,17 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   trailing metrics and `metricClockHorizons(params)` supplies the `time`/`stall`
   ceilings that size the backend's sparse grid. A response can come back
   `truncated` (row ceiling) — render the coverage notice, never a silent partial.
+  The value strip's **timeline** toggle is the lab twin of the live position modal's:
+  `metricConditionBands` folds the same series into one `ChartTimeBand` lane per
+  authored condition (`IN`/`OUT`-tagged, filled where it held) plus the run's exit
+  condition as a `ChartValueLane` with its threshold dashed across, and
+  `LabTokenInspect` relays them into `TokenTradeChart`. It costs no request — the
+  panes already fetched the series — but it is the **panes'** answer, so it models
+  no arming gate and no ladder stage, exactly like the `signal` markers beside it:
+  a lane says the condition's own reading crossed, not that the engine would have
+  sold there. Lane colors, the side tag and the exit-reason→condition match
+  (`parseMetricExitTarget`) are shared with the live strip, so the two timelines can
+  never label the same condition differently.
   The shared `TokenTradeChart`/`TokenPriceChart` take an optional `highlightWallet` — its
   markers render larger with a gold glow+ring (`ProfileWalletInfo.isHighlighted` →
   `walletMarkersPlugin`), and a non-tracked input address gets a synthetic marker entry.
@@ -484,8 +523,13 @@ next load (no per-metric frontend work).
   Flow Discovery seed/target badges, and live Armed rule names also deep-link),
   `RuleParamsSummary` (`ruleParamsCell` — TP/SL + in/out metric chips; used by Rules,
   Simulate, and the generic sweep tables),
-  `FingerprintParamsSummary` (`fingerprintParamsCell` — set match-axis chips + bucket;
-  used by Rules, Simulate, and `FingerprintPicker`).
+  `FingerprintParamsSummary` (`fingerprintParamsCell` — set match-axis chips, plus the
+  always-shown bucket and `FlowPatternsChip`; used by Rules, Simulate, and
+  `FingerprintPicker`). `IxLabelsChip` and `FlowPatternsChip` share `ContentsChip`: a
+  count body over a `hashHue` ribbon of the **contents**, since neither axis is its
+  count — the tooltip carries the sequences and a click copies them as JSON. An
+  unconfigured pattern set stays visible as a dimmed `flow✗`, because an empty set is
+  the verdict "every trade classifies organic", not a dropped criterion.
 - Lab **Flow discovery** (`/strategies/flow-discovery`, `FlowDiscoveryPage`) — corpus
   window + optional **Scope by saved fingerprint** (sends `fingerprint_id`; engine
   match SSOT fills the corpus) or manual `FingerprintGroupPicker` → ranked

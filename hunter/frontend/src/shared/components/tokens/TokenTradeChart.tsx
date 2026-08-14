@@ -6,6 +6,9 @@ import {
   tradesInRange,
   type ChartEventMarker,
   type ChartMetric,
+  type ChartTimeBand,
+  type ChartTimeSpan,
+  type ChartValueLane,
 } from 'components/token-price-chart';
 import { BarTradesPanel } from 'components/tokens/BarTradesPanel';
 import { useBarTradesSelection } from 'components/tokens/useBarTradesSelection';
@@ -65,6 +68,12 @@ interface TokenTradeChartProps {
   flowFingerprintId?: string | null;
   /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */
   flowReadOnly?: boolean;
+  /** Bottom-pane on/off lanes — the inspect's rule-condition timeline. */
+  timeBands?: ChartTimeBand[] | null;
+  /** The stretch those lanes speak for. */
+  timeBandCoverage?: ChartTimeSpan | null;
+  /** One condition's reading drawn against its threshold, in its own pane. */
+  valueLane?: ChartValueLane | null;
 }
 
 /**
@@ -86,6 +95,9 @@ export function TokenTradeChart({
   flowPatternKeys = null,
   flowFingerprintId = null,
   flowReadOnly = false,
+  timeBands = null,
+  timeBandCoverage = null,
+  valueLane = null,
 }: TokenTradeChartProps) {
   const { unit, usdRate } = usePriceUnit();
   const [metric, setMetric] = useState<ChartMetric>('price');
@@ -193,6 +205,9 @@ export function TokenTradeChart({
         externalCrosshairTimeSec={externalCrosshairTimeSec}
         onVisibleTimeRangeChange={onVisibleTimeRangeChange}
         flowPatternKeys={flowPatternKeys}
+        timeBands={timeBands}
+        timeBandCoverage={timeBandCoverage}
+        valueLane={valueLane}
       />
 
       <BarTradesPanel

@@ -1484,6 +1484,7 @@ export function ConsolePage() {
                 <ArmedRuleConditions
                   mint={inspectWaiting.mint_address}
                   ruleId={inspectWaiting.ruleId}
+                  armedAt={new Date(inspectWaiting.armedAt).toISOString()}
                 />
               ),
               onPrefillTrade: () => prefillTrade(inspectWaiting.mint_address),

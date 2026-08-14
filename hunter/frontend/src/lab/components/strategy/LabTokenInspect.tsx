@@ -6,6 +6,7 @@ import { Accordion } from 'components/ui/Accordion';
 import type { ChartEventMarker, ChartVisibleTimeRange } from 'components/token-price-chart';
 import { useFlowPatternSource } from 'hooks/useFlowPatternKeys';
 import { ACCORDION_IDS } from 'lib/storage';
+import type { MetricConditionLanes } from 'lib/strategy/metricPanes';
 import type { TokenDetailRecord } from 'types';
 import {
   MetricPanes,
@@ -30,6 +31,7 @@ export function LabTokenInspect({
   extraEventMarkers = [],
   ruleOverride = null,
   positionEntry = null,
+  exitReason = null,
   /** Explicit pattern keys; when omitted, resolved from `ruleOverride.fingerprintId`. */
   flowPatternKeys: flowPatternKeysProp = null,
   flowFingerprintId: flowFingerprintIdProp = null,
@@ -48,6 +50,8 @@ export function LabTokenInspect({
   ruleOverride?: MetricPanesRuleOverride | null;
   /** Inspected run's entry fill — drives the `m_position` panes (see MetricPanes). */
   positionEntry?: { time: string; price: number } | null;
+  /** The run's exit reason — picks the condition the timeline draws as a value line. */
+  exitReason?: string | null;
   flowPatternKeys?: ReadonlySet<string> | null;
   /** Fingerprint the keys came from — the Vol-badge write target. Like
    *  {@link flowPatternKeys}, falls back to `ruleOverride.fingerprintId`. */
@@ -61,6 +65,9 @@ export function LabTokenInspect({
   const [crosshairSource, setCrosshairSource] = useState<'chart' | 'panes' | null>(null);
   const [visibleTimeRange, setVisibleTimeRange] = useState<ChartVisibleTimeRange | null>(null);
   const [paneMarkers, setPaneMarkers] = useState<ChartEventMarker[]>([]);
+  // The panes publish the rule's condition lanes; the chart draws them in its
+  // bottom pane. Same shape the live position modal's timeline uses.
+  const [conditionBands, setConditionBands] = useState<MetricConditionLanes | null>(null);
 
   // Resolve the SOURCE, not just the keys: the inspected run's fingerprint is the
   // row a Vol-badge edit writes to, and every inspect host (sim, sweep promote,
@@ -74,6 +81,10 @@ export function LabTokenInspect({
 
   const onEventMarkersChange = useCallback((markers: ChartEventMarker[]) => {
     setPaneMarkers(markers);
+  }, []);
+
+  const onConditionBandsChange = useCallback((bands: MetricConditionLanes | null) => {
+    setConditionBands(bands);
   }, []);
 
   const eventMarkers = useMemo(
@@ -99,6 +110,8 @@ export function LabTokenInspect({
     visibleTimeRange,
     onCrosshairTimeChange: onPanesCrosshair,
     onEventMarkersChange,
+    onConditionBandsChange,
+    exitReason,
     ruleOverride,
     positionEntry,
   };
@@ -114,6 +127,9 @@ export function LabTokenInspect({
       flowPatternKeys={flowPatternKeys}
       flowFingerprintId={flowFingerprintId}
       flowReadOnly={flowReadOnly}
+      timeBands={conditionBands?.lanes ?? null}
+      timeBandCoverage={conditionBands?.coverage ?? null}
+      valueLane={conditionBands?.valueLane ?? null}
     />
   );
 

@@ -10,11 +10,53 @@
  * structure" means.
  */
 
+import { ixLabelsActions } from 'lib/ixLabels';
+
 export type VolumePattern = readonly string[];
 
 /** Identity of one ordered label sequence. */
 export function patternKey(labels: VolumePattern): string {
   return JSON.stringify(labels);
+}
+
+/** The set as re-pastable JSON — `[["A","B"],["C"]]`. Empty ⇒ `""`. The twin of
+ *  `formatIxLabelsText` one level up: that one serializes a single sequence,
+ *  this one the set of sequences a fingerprint matches. */
+export function formatVolumePatternsText(patterns: readonly VolumePattern[]): string {
+  const list = patterns.filter((p) => p.length > 0);
+  return list.length === 0 ? '' : JSON.stringify(list, null, 2);
+}
+
+/**
+ * Readable action sequences, one pattern per line —
+ * `"Create_v2 > Create > Buy"` / `"CreateIdempotent > Buy > Transfer"`. For
+ * tooltips and filter text, where the JSON is too wide to read.
+ *
+ * **A pattern set's identity is its sequences, never its size** — the same rule
+ * `ixLabelsActions` carries, one level up: `[Create, Buy]` and
+ * `[CreateIdempotent, Buy, Transfer]` both count as one pattern while
+ * classifying different trades as volume, so any surface collapsing a set to a
+ * bare count renders two distinct fingerprints identically.
+ */
+export function volumePatternsActions(patterns: readonly VolumePattern[]): string {
+  return patterns
+    .filter((p) => p.length > 0)
+    .map((p) => ixLabelsActions([...p]))
+    .join('\n');
+}
+
+/**
+ * Stable identity string for a whole set. Sorted by {@link patternKey}, because
+ * position carries no meaning here (`togglePattern` appends a re-added pattern
+ * at the end) — two fingerprints matching the same structures in a different
+ * order are the same match criterion and must key the same.
+ */
+export function volumePatternsIdentity(patterns: readonly VolumePattern[]): string {
+  return patterns
+    .filter((p) => p.length > 0)
+    .map(patternKey)
+    .sort()
+    .join('');
 }
 
 /**

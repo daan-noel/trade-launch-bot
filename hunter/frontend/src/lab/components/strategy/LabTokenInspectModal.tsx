@@ -75,6 +75,7 @@ export function LabTokenInspectModal({
         flowPatternKeys={flowPatternKeys}
         flowReadOnly={flowReadOnly}
         positionEntry={positionEntry}
+        exitReason={target.exitLabel ?? null}
       />
     </Modal>
   );

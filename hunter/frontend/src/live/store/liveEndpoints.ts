@@ -152,7 +152,8 @@ export interface RuleReadout {
  * open position's past instants can only be reconstructed.
  */
 export interface RuleReadoutSeries {
-  position_id: string;
+  /** Absent on the **armed** series — a Waiting row has no position yet. */
+  position_id?: string;
   mint_address: string;
   rule_id: string;
   source: 'replay';
@@ -377,6 +378,22 @@ export const liveApi = baseApi.injectEndpoints({
       query: ({ mint, ruleId }) =>
         `/api/strategies/armed/metrics?mint=${encodeURIComponent(mint)}&rule=${encodeURIComponent(ruleId)}`,
     }),
+    /**
+     * The armed readout as a series — the Waiting modal's crosshair + timeline.
+     * Lazily fetched and never polled, exactly like the position series.
+     *
+     * `armedAt` centres the row budget on why the row is *still* waiting; without it
+     * a token tracked longer than the budget covers only its first minutes.
+     */
+    getArmedMetricSeries: builder.query<
+      RuleReadoutSeries,
+      { mint: string; ruleId: string; armedAt?: string | null }
+    >({
+      query: ({ mint, ruleId, armedAt }) =>
+        `/api/strategies/armed/metric-series?mint=${encodeURIComponent(mint)}&rule=${encodeURIComponent(ruleId)}${
+          armedAt ? `&armed_at=${encodeURIComponent(armedAt)}` : ''
+        }`,
+    }),
     // Accrued pump.fun cashback — a read-only on-chain status (two account
     // reads). Cached, not polled: cashback accrues slowly, so the wallet card
     // refreshes on mount / after a claim, never on the live price tick.
@@ -441,6 +458,7 @@ export const {
   useGetPositionMetricsQuery,
   useGetPositionMetricSeriesQuery,
   useGetArmedMetricsQuery,
+  useGetArmedMetricSeriesQuery,
   useGetCashbackStatusQuery,
   useClaimCashbackMutation,
   useGetLiveModeQuery,

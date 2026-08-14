@@ -33,6 +33,8 @@ import {
 } from 'lib/ixLabels';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
 import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
+import { volumePatternsActions } from 'lib/flow/volumePatterns';
+import { FlowPatternsChip } from './FingerprintParamsSummary';
 import { flowDiscoveryHref, rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
   formatBucketWidth,
@@ -374,15 +376,16 @@ export function FingerprintsView({
         label: 'flow patterns',
         group: 'ix',
         render: (r) => {
-          const n = volumeIxPatternsFromConfig(r.metric_config).length;
-          if (n === 0) return dash();
-          return (
-            <Badge variant="primary" className="font-mono tabular-nums">
-              {n}
-            </Badge>
-          );
+          const patterns = volumeIxPatternsFromConfig(r.metric_config);
+          // The chip, not a bare count Badge: `1` and `1` are different criteria
+          // when the sequences differ, and the ribbon + tooltip is where that
+          // shows. The numeric sort/filter below still reads the count.
+          return patterns.length === 0 ? dash() : <FlowPatternsChip patterns={patterns} />;
         },
-        searchValue: (r) => String(volumeIxPatternsFromConfig(r.metric_config).length),
+        searchValue: (r) => {
+          const patterns = volumeIxPatternsFromConfig(r.metric_config);
+          return `${patterns.length} ${volumePatternsActions(patterns)}`;
+        },
         sortValue: (r) => volumeIxPatternsFromConfig(r.metric_config).length,
         filterNumber: (r) => volumeIxPatternsFromConfig(r.metric_config).length || null,
         sortable: true,

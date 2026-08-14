@@ -102,9 +102,22 @@ the strip surfaces as `· past coverage`. The conversion is pinned by
 `the_row_cap_buys_a_fixed_span_of_chart_not_a_fixed_payload`, since nothing at the call
 site reveals that a row count is really a clock.
 
-**So the budget is spent on the position's window, not on the token's first N rows.**
+**Armed rows get the same pair.** `GET /api/strategies/armed/metrics` and
+`.../armed/metric-series?mint=&rule=[&armed_at=]` answer for a (token, rule) the engine is
+armed on but has **not entered** — the Waiting modal's "how close is it". One
+`SeriesAnchor` is the only difference between the two series routes: pre-entry there is no
+entry fill and no ladder stage, so the position-scoped conditions read `null` throughout,
+which is exactly what the `can_enter` gate itself sees. The rule is taken **live**, with no
+`params_snapshot` step — nothing has been decided yet, so the current thresholds are the
+ones this row is being judged by, and reaching back for a frozen copy would draw a rule
+nobody is applying.
+
+**So the budget is spent on the anchor's window, not on the token's first N rows.**
 `MetricSeries::set_record_from` withholds rows before an instant while the fold still runs
-from creation, and the series route sets it to `entry − max(widest window, 60 s)`. Raising
+from creation, and the series routes set it to `anchor − max(widest window, 60 s)` — the
+entry fill for a position, the arm instant for a Waiting row, which is what keeps a
+long-tracked token's coverage on *why it is still waiting* rather than on its first
+minutes. Raising
 the cap would only *move* the boundary — cost is linear in rows and this ships to 2vCPU —
 whereas placing it covers the position that was actually opened for inspection. Without it
 a position entered later than the cap's span falls entirely outside coverage, which is the
@@ -174,7 +187,7 @@ side-effects only.
 | `sinks.rs` | `PositionUpdate` → registry + SSE; `BuySubmitted` upserts registry then background `insert_position` (later transitions chain on the handle); `Holding` updates registry sync then backgrounds fill persist; `ExitPending` PG is fire-and-forget; **terminal writes (`End`/`EntryFailed`/`ExitStuck`/`ExitUnconfirmed`) chain-spawn too — NO sink transition awaits PG on the loop** (see below); terminal SSE emits **before** `registry.remove` (so `position_id` / frozen `trade_mode` stay on the wire); `warm_runs` on rule reload (`ensure_run` reuses latest still-`Running` DB run + collapses empty leading shells — does not mint a new `run_seq` on every restart); releases SOL on terminal unentered exits |
 | `reapers.rs` | Boot+60 s: buy orphan adopt/drop/wait (never re-send; stale ⇒ `needs_review` SSE); **externally-cleared Holding** book-close (PG `trades` net, no RPC); exit orphan nudge via `FillFailed` or shared `orphan_exit`; **ExitStuck-with-bag** redrive (PG-gated, backoff, bounded-then-park); `ExitStuck`/`ExitUnconfirmed` bag-gone heal → End; stale `ExitPending` bag-check → `ExitStuck` (real) / breakeven End (paper). Skips `InFlightGuards`-held rows/mints |
 | `orphan_exit.rs` | Shared direct-sell + PG book-close for registry-miss rows (Console close, ExitPending/ExitStuck reapers). Feed-confirm via `run_exit`; sibling mint clear → `ExternallyCleared` / PG End; boot adopts re-install manual TP/SL rules |
-| `rule_readout.rs` (in `live/src/api/handlers/strategies/`) | The readout's HTTP surface. `GET .../positions/{id}/metrics[?at=exit\|entry]` answers from the live fold when `PositionRegistry` still holds the row, else replays the durable row + stored trades (fold under `web::block`); `GET /api/strategies/armed/metrics?mint=&rule=` does the armed pair. Reaches the loop through `EngineCommand::ReadRule` (`oneshot` ack, 2 s — a UI poll must not queue behind trade decisions), **not** a per-tick publish, which would allocate on the hot path for a usually-closed modal. Each `404` keeps its own reason (manual position / deleted rule / trades aged out / never filled); a wedged loop is `503`. Wire carries `metric_spec(id).name`, never `MetricId`, and non-finite readings serialize `null` |
+| `rule_readout.rs` (in `live/src/api/handlers/strategies/`) | The readout's HTTP surface. `GET .../positions/{id}/metrics[?at=exit\|entry]` answers from the live fold when `PositionRegistry` still holds the row, else replays the durable row + stored trades (fold under `web::block`); `GET /api/strategies/armed/metrics?mint=&rule=` and `.../armed/metric-series` do the armed pair. Both series routes share ONE body (`series_response`) differing only in a `SeriesAnchor`, so an armed row and a position row can never disagree about a grid row. Reaches the loop through `EngineCommand::ReadRule` (`oneshot` ack, 2 s — a UI poll must not queue behind trade decisions), **not** a per-tick publish, which would allocate on the hot path for a usually-closed modal. Each `404` keeps its own reason (manual position / deleted rule / trades aged out / never filled); a wedged loop is `503`. Wire carries `metric_spec(id).name`, never `MetricId`, and non-finite readings serialize `null` |
 | `event_log.rs` | JSONL recorder (day + size segmented rotation, age/byte retention) + **conservative, bounded** boot-recovery replay (`recover_armed` = re-arm only; held/filled mints excluded; effects discarded; reads only the recent tail — see below). Dir = `EVENT_LOG_DIR` via `config::dir_from_env`: a relative value anchors to the loaded `.env`'s directory, never the CWD (see below) |
 | `convert.rs` | DB model ↔ engine type converters (re-exports `fingerprint_axes::{fp_to_engine, observed_axes, rule_to_loaded}`) |
 

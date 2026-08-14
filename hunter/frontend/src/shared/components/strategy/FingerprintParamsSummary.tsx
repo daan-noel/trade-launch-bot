@@ -11,6 +11,11 @@ import {
   ixLabelsActions,
   ixLabelsCountTail,
 } from 'lib/ixLabels';
+import {
+  formatVolumePatternsText,
+  volumePatternsActions,
+  volumePatternsIdentity,
+} from 'lib/flow/volumePatterns';
 import { cn } from 'lib/cn';
 import { hashHue, metricColorStyle } from 'lib/strategy/metricColors';
 import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
@@ -79,28 +84,42 @@ export function chip(
 }
 
 /**
- * The `Nix` chip — amber body (the ix family tone), plus a hashed color ribbon
- * on the leading edge.
+ * A count chip whose count is NOT its axis — family tint for the body, plus a
+ * `hashHue` ribbon on the leading edge over the *contents*, and a click that
+ * copies the re-pastable JSON.
  *
- * The count alone is NOT the axis: `[Create_v2, Create, Buy]` and
- * `[Create_v2, Create, BuyExactSolIn]` are different match criteria that both
- * render `3ix`, so two fingerprints looked identical wherever this chip appears.
- * The ribbon hue is `hashHue` over the joined sequence — the same FNV the metric
- * / rule-tag chips use, so no second hash — which makes any difference visible
- * without widening the chip or adding an opaque token to read. It is a *hint*:
- * two sequences can land on neighboring hues, so identity stays in the tooltip
- * (the JSON array, which is also what a click copies) and, on text-only
- * surfaces, in `ixLabelsCountTail`.
+ * Both label axes need exactly this: `[Create_v2, Create, Buy]` and
+ * `[Create_v2, Create, BuyExactSolIn]` both render `3ix`; a one-pattern
+ * `[Create, Buy]` and a one-pattern `[CreateIdempotent, Buy, Transfer]` both
+ * render `flow 1`. Either way two fingerprints that arm on different tokens look
+ * identical wherever the chip appears. The ribbon reuses the FNV the metric /
+ * rule-tag chips use (no second hash) and makes the difference visible without
+ * widening the chip. It is a *hint*: two contents can land on neighboring hues,
+ * so identity stays in the tooltip and, on text-only surfaces, in
+ * `ixLabelsCountTail` / `volumePatternsActions`.
  */
-export function IxLabelsChip({ labels }: { labels: string[] }) {
+function ContentsChip({
+  text,
+  identity,
+  title,
+  copyText,
+  tint,
+}: {
+  text: string;
+  /** Hashed for the ribbon hue — the contents, not the count. */
+  identity: string;
+  /** Hover text; a click copies `copyText`. */
+  title: string;
+  copyText: string;
+  tint: CSSProperties;
+}) {
   const [copied, setCopied] = useState(false);
-  const hue = hashHue(labels.join('|'));
-  const json = formatIxLabelsText(labels);
+  const hue = hashHue(identity);
 
   const copy = async (e: MouseEvent) => {
     e.stopPropagation();
     try {
-      await navigator.clipboard.writeText(json);
+      await navigator.clipboard.writeText(copyText);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -110,11 +129,11 @@ export function IxLabelsChip({ labels }: { labels: string[] }) {
 
   return (
     <>
-      {chip(`${labels.length}ix`, {
-        title: copied ? 'Copied!' : json,
+      {chip(text, {
+        title: copied ? 'Copied!' : title,
         onClick: copy,
         style: {
-          ...axisTint('ix'),
+          ...tint,
           boxShadow: `inset 3px 0 0 hsl(${hue}, 72%, 58%)`,
           paddingLeft: '0.5rem',
           // Visible ack — the title only re-reads on the next hover.
@@ -122,6 +141,46 @@ export function IxLabelsChip({ labels }: { labels: string[] }) {
         },
       })}
     </>
+  );
+}
+
+/** The `Nix` chip — amber body (the ix family tone). See {@link ContentsChip}. */
+export function IxLabelsChip({ labels }: { labels: string[] }) {
+  const json = formatIxLabelsText(labels);
+  return (
+    <ContentsChip
+      text={`${labels.length}ix`}
+      identity={labels.join('|')}
+      title={json}
+      copyText={json}
+      tint={axisTint('ix')}
+    />
+  );
+}
+
+/**
+ * The `flow N` chip — cyan body (the flow-split family tone). See
+ * {@link ContentsChip}; the tooltip lists each pattern as its action sequence
+ * and a click copies the whole set as JSON.
+ *
+ * Unlike every other axis, the unconfigured state stays VISIBLE as a dimmed
+ * `flow✗`: an empty set is not a dropped criterion, it is the verdict "every
+ * trade on this fingerprint classifies organic", which silently changes what
+ * `nonvol_*` reads. A missing chip among nine reads as "didn't look".
+ */
+export function FlowPatternsChip({ patterns }: { patterns: string[][] }) {
+  const n = patterns.length;
+  if (n === 0) {
+    return <>{chip('flow✗', { title: 'no volume ix patterns', style: OFF_TINT })}</>;
+  }
+  return (
+    <ContentsChip
+      text={`flow ${n}`}
+      identity={volumePatternsIdentity(patterns)}
+      title={`${n} volume ix pattern${n === 1 ? '' : 's'}\n${volumePatternsActions(patterns)}`}
+      copyText={formatVolumePatternsText(patterns)}
+      tint={axisTint('flow')}
+    />
   );
 }
 
@@ -136,25 +195,8 @@ function intChip(label: string, n: number | null): ReactNode | null {
   return chip(`${label}=${formatCompact(n, 1)}`, { style: axisTint(label) });
 }
 
-/** Distinct at-a-glance flow-split status pill, meant to sit next to the
- *  fingerprint NAME (not among the mono axis chips) so presence/absence of
- *  volume ix patterns is noticeable separately. `flow N` (cyan) when configured,
- *  a dimmed `flow✗` when not. */
-export function flowStatusBadge(fp: Fingerprint): ReactNode {
-  const n = volumeIxPatternsFromConfig(fp.metric_config).length;
-  const on = n > 0;
-  return (
-    <span
-      title={on ? `${n} volume ix pattern${n === 1 ? '' : 's'} configured` : 'no volume ix patterns'}
-      className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase leading-none tracking-wide"
-      style={on ? axisTint('flow') : OFF_TINT}
-    >
-      {on ? `flow ${n}` : 'flow✗'}
-    </span>
-  );
-}
-
-/** Axis chips only (no name) — set criteria + always-on bucket width. */
+/** Axis chips only (no name) — set criteria, plus the always-on bucket width and
+ *  flow-pattern axes. */
 export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
   const ix = configuredIxLabels(fp.ix_labels);
   const chips: ReactNode[] = [
@@ -166,6 +208,7 @@ export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
     solChip('fs_buy', fp.first_slot_buy_lamports),
     solChip('fs_sell', fp.first_slot_sell_lamports),
     ix ? <IxLabelsChip key="ix" labels={ix} /> : null,
+    <FlowPatternsChip key="flow" patterns={volumeIxPatternsFromConfig(fp.metric_config)} />,
     // `exact` carries no unit — appending ◎ would read as a zero-width bucket.
     chip(
       `bkt=${formatBucketWidth(fp.bucket_size_amount, 4)}${fp.bucket_size_amount == null ? '' : '◎'}`,
@@ -210,10 +253,19 @@ export function fingerprintParamsSearchText(fp: Fingerprint | undefined, fallbac
     parts.push(ixLabelsActions(ix));
     parts.push(formatIxLabelsText(ix));
   }
-  const flowCount = volumeIxPatternsFromConfig(fp.metric_config).length;
-  // Match the `flowStatusBadge` pill text (`flow N` / `flow✗`) so filtering by
-  // what's actually shown works; the `flow=N` form stays matchable too.
-  parts.push(flowCount > 0 ? `flow ${flowCount} flow=${flowCount}` : 'flow✗');
+  const patterns = volumeIxPatternsFromConfig(fp.metric_config);
+  // Match the `FlowPatternsChip` text (`flow N` / `flow✗`) so filtering by what's
+  // actually shown works; the `flow=N` form stays matchable too. The action
+  // sequences go in for the same reason `ixLabelsActions` does — searching
+  // `Transfer` must find the fingerprints that classify it as volume, which a
+  // count alone can never answer.
+  if (patterns.length > 0) {
+    parts.push(`flow ${patterns.length} flow=${patterns.length}`);
+    parts.push(volumePatternsActions(patterns));
+    parts.push(formatVolumePatternsText(patterns));
+  } else {
+    parts.push('flow✗');
+  }
   parts.push(`bkt=${formatBucketWidth(fp.bucket_size_amount, 4)}`);
   return parts.join(' ');
 }
@@ -250,7 +302,6 @@ export function FingerprintOptionBody({
  */
 export function fingerprintIdentityKey(fp: Fingerprint | undefined, fallbackId?: string): string {
   if (!fp) return `~${fallbackId ?? ''}`;
-  const flowCount = volumeIxPatternsFromConfig(fp.metric_config).length;
   return [
     fp.name || fp.id,
     fp.cu_limit ?? '',
@@ -262,6 +313,8 @@ export function fingerprintIdentityKey(fp: Fingerprint | undefined, fallbackId?:
     fp.first_slot_sell_lamports ?? '',
     formatBucketWidth(fp.bucket_size_amount, 4),
     (configuredIxLabels(fp.ix_labels) ?? []).join(','),
-    flowCount,
+    // The pattern SEQUENCES, not their count: two fingerprints matching one
+    // pattern each are the same criterion only if it is the same pattern.
+    volumePatternsIdentity(volumeIxPatternsFromConfig(fp.metric_config)),
   ].join('\u0001');
 }

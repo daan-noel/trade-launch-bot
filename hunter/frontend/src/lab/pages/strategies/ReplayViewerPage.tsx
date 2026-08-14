@@ -12,10 +12,11 @@ import { Accordion } from 'components/ui/Accordion';
 import { InlineAlert } from 'components/ui/Modal';
 import { PageHeader } from 'components/ui/PageHeader';
 import { StatTile } from 'components/ui/StatTile';
-import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
+import { LazyLabTokenInspect } from '@lab/components/strategy/LazyLabTokenInspect';
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
 import type { ChartEventMarker } from 'components/token-price-chart';
 import { apiErrorMessage, useGetTokenDetailQuery } from 'store/apiSlice';
+import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { useInspectReplayMutation } from '@lab/store/labEndpoints';
 import {
   eventBody,
@@ -185,27 +186,63 @@ export function ReplayViewerPage() {
   // Entry/exit markers for the focused token, derived from the run's PositionUpdate
   // fills. The selected step's timestamp is the "cursor" — shown in the header and
   // (when it carries a price) added as an extra marker so it reads on the chart.
-  const markers = useMemo<ChartEventMarker[]>(() => {
-    if (!focusMint) return [];
-    const out: ChartEventMarker[] = [];
+  //
+  // The same walk yields the two things the metric panes need — the entry fill the
+  // `m_position` metrics anchor on, and the exit reason that picks which condition
+  // the timeline draws as a line — so it collects all three in one pass.
+  const focus = useMemo(() => {
+    const markers: ChartEventMarker[] = [];
+    let entry: { time: string; price: number } | null = null;
+    let exitReason: string | null = null;
+    let ruleId: string | null = null;
+    if (!focusMint) return { markers, entry, exitReason, ruleId };
     for (const step of steps) {
       for (const fx of step.effects) {
-        if (fx.effect !== 'PositionUpdate' || fx.mint !== focusMint || !fx.fill) continue;
+        if (fx.mint !== focusMint) continue;
+        // Whichever rule acted on this token in THIS replay — the one whose
+        // thresholds the panes must draw. `intent.rule` on a submit, `rule` on an
+        // armed change; the first is enough, a token is one rule's per episode.
+        ruleId ??= fx.intent?.rule ?? fx.rule ?? null;
+        if (fx.effect !== 'PositionUpdate' || !fx.fill) continue;
         const isExit =
           fx.status === 'End' ||
           fx.status === 'ExitPending' ||
           fx.status === 'ExitStuck' ||
           fx.status === 'ExitUnconfirmed';
-        out.push({
+        if (isExit) exitReason = fx.reason ?? exitReason;
+        else entry ??= { time: fx.fill.at, price: fx.fill.price };
+        markers.push({
           kind: isExit ? 'exit' : 'entry',
+          role: 'fill',
           time: fx.fill.at,
           priceInSol: fx.fill.price,
           label: isExit ? `Exit${fx.reason ? ` · ${fx.reason}` : ''}` : 'Entry',
         });
       }
     }
-    return out;
+    return { markers, entry, exitReason, ruleId };
   }, [steps, focusMint]);
+
+  // The replay loads rules straight from the DB (`rule_to_loaded`), so the rule's
+  // CURRENT params are exactly the ones it just re-decided under — no snapshot to
+  // reach for, unlike a live post-mortem. A rule deleted since simply leaves the
+  // panes on their own dropdown.
+  const { data: rules = [] } = useGetStrategyRulesQuery();
+  const focusRule = useMemo(
+    () => (focus.ruleId ? rules.find((r) => r.id === focus.ruleId) ?? null : null),
+    [rules, focus.ruleId],
+  );
+  const ruleOverride = useMemo(
+    () =>
+      focusRule
+        ? {
+          paramsJson: focusRule.params,
+          fingerprintId: focusRule.fingerprint_id,
+          label: focusRule.rule_name,
+        }
+        : null,
+    [focusRule],
+  );
 
   return (
     <div className="flex flex-col gap-3 p-4">
@@ -450,7 +487,21 @@ export function ReplayViewerPage() {
                 {focusMint ? (
                   <div className="flex flex-col gap-2">
                     <TokenDetailPanel detail={detail ?? null} loading={detailLoading} error={null} />
-                    <LazyTokenTradeChart tableId="replay_inspect_trades" detail={detail ?? null} eventMarkers={markers} />
+                    {/* Chart + metric panes, pinned to the rule this replay decided
+                        under: the page's whole subject is *why* a decision came out
+                        the way it did, and the fill markers alone only say that it
+                        did. The panes' `timeline` toggle then draws each condition's
+                        fire windows beside the steps that produced them. */}
+                    <LazyLabTokenInspect
+                      detail={detail ?? null}
+                      showDetailPanel={false}
+                      tableId="replay_inspect_trades"
+                      metricLayout="page"
+                      extraEventMarkers={focus.markers}
+                      ruleOverride={ruleOverride}
+                      positionEntry={focus.entry}
+                      exitReason={focus.exitReason}
+                    />
                   </div>
                 ) : (
                   <div className="rounded-md border border-white/10 bg-surface p-3 text-sm text-text-dim">
