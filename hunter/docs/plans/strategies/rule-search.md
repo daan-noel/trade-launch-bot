@@ -66,8 +66,9 @@ No axis rows, no harvest templates, no metric checklist.
 ## Job
 
 `hunter-lab` owns the search. Lab-only route, lab-only API. Same job shell as
-sweep/discovery: `POST` → `202`, SSE progress, cancel, persist the run,
-single-flight against sweep / flow-discovery / metric-discovery.
+sweep/discovery: `POST` → `202` after fingerprint/incumbent admission (corpus
+load is in-job), SSE progress, cancel, persist the run, single-flight against
+sweep / flow-discovery / metric-discovery.
 
 `as_of` freezes at session open so every combo shares one deadness "now".
 
@@ -75,7 +76,7 @@ Load histories with flow columns when the fingerprint has split config;
 otherwise every `m_flow_split` clause is silent.
 
 Generator, scorer, and report live in `hunter-lab`. The page starts the job and
-renders the archive.
+renders the archive when `rule_search_finished` lands.
 
 ## Scorer
 

@@ -268,6 +268,15 @@ async fn run_job(
         }
     }
 
+    // 202 after cheap admission so the HTTP request is not held for the lake
+    // load. Empty-corpus / load failures land on `rule_search_finished`.
+    let _ = early_tx.send(HttpResponse::Accepted().json(serde_json::json!({
+        "run_id": run_id,
+        "status": "started",
+    })));
+    // Freeze deadness "now" at session open so every combo shares one horizon.
+    let as_of = chrono::Utc::now();
+
     let mut sel = Selection {
         mints: None,
         token_cap,
@@ -294,19 +303,14 @@ async fn run_job(
         Err(e) => {
             tracing::error!("rule-search: fingerprint mint scan failed: {e}");
             gate.error = Some(e.to_string());
-            let _ = early_tx.send(HttpResponse::InternalServerError().json(
-                serde_json::json!({ "error": e.to_string() }),
-            ));
             return;
         }
     };
     if mints.is_empty() {
-        let msg = format!(
+        gate.error = Some(format!(
             "no tokens match fingerprint “{}” — widen the range or cap",
             fp_row.name
-        );
-        gate.error = Some(msg.clone());
-        let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })));
+        ));
         return;
     }
     sel.mints = Some(mints);
@@ -316,17 +320,12 @@ async fn run_job(
         Err(e) => {
             tracing::error!("rule-search: lake load failed: {e}");
             gate.error = Some(e.to_string());
-            let _ = early_tx.send(
-                HttpResponse::InternalServerError().json(serde_json::json!({ "error": e.to_string() })),
-            );
             return;
         }
     };
 
     if corpus.tokens.is_empty() {
-        let msg = "no tokens in that date range — widen the selection";
-        gate.error = Some(msg.into());
-        let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })));
+        gate.error = Some("no tokens in that date range — widen the selection".into());
         return;
     }
     if corpus.candidates_capped || scope_capped {
@@ -338,13 +337,6 @@ async fn run_job(
         });
     }
 
-    let _ = early_tx.send(HttpResponse::Accepted().json(serde_json::json!({
-        "run_id": run_id,
-        "status": "started",
-    })));
-
-    // Freeze deadness "now" at session open so every combo shares one horizon.
-    let as_of = chrono::Utc::now();
     let settings = state.core.settings();
     let dupe_hours = match settings.duplicate_identity_window_hours {
         0 => hunter_engine::dupe_guard::DEFAULT_WINDOW_HOURS,

@@ -19,7 +19,7 @@ import { PageHeader } from 'components/ui/PageHeader';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { apiErrorMessage } from 'store/baseApi';
-import { connectSimulationFinished } from 'services/sse';
+import { connectRuleSearchFinished, connectSimulationFinished, onSseReopen } from 'services/sse';
 import { useGetFingerprintsQuery, useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import {
   COST_MODELS,
@@ -195,8 +195,50 @@ export function RuleSearchPage() {
   const [simDraft, setSimDraft] = useState<RuleEditorDraft | null>(null);
   const [simBusy, setSimBusy] = useState(false);
   const simHandle = useRef<{ close: () => void } | null>(null);
+  const searchRunId = useRef<string | null>(null);
 
   useEffect(() => () => simHandle.current?.close(), []);
+
+  // Board lands on `rule_search_finished` (then GET), same as sweep — no poll
+  // deadline. Reopen retries GET in case the terminal frame was missed.
+  useEffect(() => {
+    const apply = async (runId: string, missingOk: boolean) => {
+      try {
+        const res = await fetchResult(runId).unwrap();
+        setResult(res.result);
+        setError(null);
+        searchRunId.current = null;
+        markFinished('rule_search', 'rule_search');
+      } catch (e) {
+        if (missingOk) return;
+        setError(apiErrorMessage(e as never, 'Failed to load rule-search result'));
+        markFinished('rule_search', 'rule_search');
+      }
+    };
+
+    const handle = connectRuleSearchFinished((ev) => {
+      if (searchRunId.current && ev.run_id !== searchRunId.current) return;
+      searchRunId.current = null;
+      if (ev.error) {
+        setError(ev.error);
+        markFinished('rule_search', 'rule_search');
+        return;
+      }
+      if (ev.cancelled) {
+        markFinished('rule_search', 'rule_search');
+        return;
+      }
+      void apply(ev.run_id, false);
+    });
+    const offReopen = onSseReopen(() => {
+      const id = searchRunId.current;
+      if (id) void apply(id, true);
+    });
+    return () => {
+      handle.close();
+      offReopen();
+    };
+  }, [fetchResult, markFinished]);
 
   useEffect(() => {
     if (lastResult && !result) setResult(lastResult.result);
@@ -250,21 +292,17 @@ export function RuleSearchPage() {
         incumbent_rule_id: config.incumbentRuleId ?? undefined,
         token_cap: config.tokenCap,
       }).unwrap();
-
-      for (let i = 0; i < 600; i++) {
-        await new Promise((r) => setTimeout(r, 500));
-        try {
-          const res = await fetchResult(run_id).unwrap();
-          setResult(res.result);
-          markFinished('rule_search', 'rule_search');
-          return;
-        } catch {
-          /* still running */
-        }
+      searchRunId.current = run_id;
+      try {
+        const res = await fetchResult(run_id).unwrap();
+        setResult(res.result);
+        searchRunId.current = null;
+        markFinished('rule_search', 'rule_search');
+      } catch {
+        /* still running — board lands on rule_search_finished */
       }
-      markFinished('rule_search', 'rule_search');
-      setError('Timed out waiting for the rule-search result.');
     } catch (e) {
+      searchRunId.current = null;
       markFinished('rule_search', 'rule_search');
       setError(apiErrorMessage(e as never, 'Failed to start rule search'));
     }

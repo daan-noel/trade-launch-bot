@@ -501,7 +501,8 @@ next load (no per-metric frontend work).
   fingerprint + datetime range + buy/fill/cost/copycat (default ON) + optional
   incumbent (compare only). Job kind `rule_search` in `BackgroundJobsContext`
   (SSE `rule_search_*`, single-flight vs sweep / flow-discovery / metric-discovery).
-  Board: refuse / ungated / candidate, champion vs empty-entry vs incumbent
+  The page collects the board on `rule_search_finished` (then GET) — no poll
+  deadline. Board: refuse / ungated / candidate, champion vs empty-entry vs incumbent
   (authority SOL ranks, then tighter fill spread; first-in-window quoted beside
   it), `ruleParamsCell` for the champion, top archive, diagnostics (cut phases),
   Promote (`src:rule-search`) and a draft Simulate of the unsaved champion.
