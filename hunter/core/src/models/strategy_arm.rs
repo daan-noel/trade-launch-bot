@@ -40,6 +40,10 @@ pub struct StrategyArm {
     pub end_reason: Option<String>,
     /// The position this episode became — set only with `end_reason = "entered"`.
     pub position_id: Option<Uuid>,
+    /// What the entry was short of, captured by the fold at the disarm instant.
+    /// Set only with `end_reason = "unsatisfiable"` — the one ending whose name
+    /// does not answer "why". Shape: `live`'s `entry_blockers_json`.
+    pub end_detail: Option<serde_json::Value>,
     /// Token symbol via the `tokens` LEFT JOIN (`None` when the token row is
     /// gone — `tokens` and this ledger expire on different clocks).
     pub symbol: Option<String>,
@@ -83,6 +87,39 @@ impl ArmFunnel {
     }
 }
 
+/// One bar of the `unsatisfiable` breakdown: how many episodes a given entry
+/// condition was the representative blocker for.
+///
+/// This is the answer the funnel's `unsatisfiable` tile cannot give — "4 000
+/// episodes aged out" is a symptom, "3 800 of them never reached
+/// `m_flow_window.gross_flow >= 40`" is the thing to act on.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ArmBlockedBy {
+    /// The metric path (`group.metric`) from `end_detail->>'blocked_by'`.
+    pub blocked_by: String,
+    pub n: i64,
+}
+
+/// `POST /api/strategies/arms/summary` — the funnel plus its `unsatisfiable`
+/// breakdown.
+///
+/// The funnel is `#[serde(flatten)]`ed so the wire shape stays what it was: this
+/// adds a key, it does not re-nest one, and a client reading `armed` keeps
+/// reading `armed`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ArmSummary {
+    #[serde(flatten)]
+    pub funnel: ArmFunnel,
+    /// Descending by count, capped — see [`BLOCKED_BY_LIMIT`]. Empty when the
+    /// cohort holds no `unsatisfiable` episode carrying a detail.
+    pub blocked_by: Vec<ArmBlockedBy>,
+}
+
+/// How many distinct blockers the breakdown returns. A rule authors a handful of
+/// entry conditions and the cohort spans a handful of rules, so this is a guard
+/// against a pathological cohort, not a real ceiling.
+pub const BLOCKED_BY_LIMIT: i64 = 12;
+
 /// One ledger write, queued by the engine sink and drained by the writer task.
 ///
 /// `Armed` and `Ended` carry the full episode key (`rule_id`, `mint_address`,
@@ -98,6 +135,9 @@ pub enum ArmLedgerWrite {
         ended_at: DateTime<Utc>,
         end_reason: String,
         position_id: Option<Uuid>,
+        /// See [`StrategyArm::end_detail`] — `None` for every ending but
+        /// `unsatisfiable`.
+        end_detail: Option<serde_json::Value>,
     },
 }
 

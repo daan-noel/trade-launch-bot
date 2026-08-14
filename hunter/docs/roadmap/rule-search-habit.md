@@ -5,7 +5,11 @@ Open replacement of the cut-table × role product in
 Job wiring stays [rule-search.md](../plans/strategies/rule-search.md). Scorer,
 fill, cost, copycat, and `run_replay` stay.
 
-**Input:** one fingerprint + one datetime range.
+**Input:** one fingerprint + one datetime range. Scope the cohort through
+`hunter_engine::fingerprint::matches` — the same SSOT simulate uses. An
+ix-labels-only approximation took 3,403 tokens where the engine took 264, and the
+ranking of two rules **inverted** between the two populations: a search on an
+approximate cohort ranks rules for a creator set that does not exist.
 **Output:** a habit portrait and one sparse `RuleParams` **draft** the operator
 can add/drop/nudge. Empty-entry and incumbent stay comparison columns. The draft
 is never empty-entry.

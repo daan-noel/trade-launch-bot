@@ -33,6 +33,7 @@ import {
 } from '@live/components/floor/FloorPositionDetail';
 import { ArmedRuleConditions } from '@live/components/floor/LiveRuleConditions';
 import { ARM_END_LABEL, armEndBadge } from '@live/components/floor/liveChartCards';
+import { ArmEndDetailLine } from './armBlockers';
 
 export function ArmDetailModal({
   arm,
@@ -95,6 +96,12 @@ export function ArmDetailModal({
             </div>
           </div>
         </div>
+
+        {/* The disarm's recorded reason, above the fold. The condition strip
+            below reconstructs the same instant from stored trades, but that is
+            retention-bound and reads the rule's CURRENT params — this is what
+            the fold actually saw, and it is the first thing to look at. */}
+        <ArmEndDetailLine detail={arm.end_detail} />
 
         <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px]">
           <Link

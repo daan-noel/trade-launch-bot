@@ -114,7 +114,16 @@ async fn flush(repo: &ArmRepo, pending: &mut Vec<ArmLedgerWrite>) {
                 ended_at,
                 end_reason,
                 position_id,
-            } => ends.push((rule_id, mint_address, armed_at, ended_at, end_reason, position_id)),
+                end_detail,
+            } => ends.push((
+                rule_id,
+                mint_address,
+                armed_at,
+                ended_at,
+                end_reason,
+                position_id,
+                end_detail,
+            )),
         }
     }
     if let Err(e) = repo.insert_arms(&arms).await {

@@ -109,6 +109,57 @@ impl MonoMetricKill {
                 Some(b) => b.crossed(value),
             })
     }
+
+    /// The bound that crossed **last** — the one whose crossing is what ended the
+    /// episode, and so the only one worth naming as the deadline. `None` while any
+    /// OR arm is still satisfiable, which makes this the whole kill test as well.
+    ///
+    /// Every arm is `Some` whenever [`permanently_false`](Self::permanently_false)
+    /// holds (a `None` arm never dies), so the reduce always yields a bound.
+    pub fn binding_bound(&self, value: f64) -> Option<MonoBound> {
+        if !self.permanently_false(value) {
+            return None;
+        }
+        self.arms.iter().flatten().copied().reduce(|a, b| {
+            // Later on a rising metric = the higher threshold; at a tie the strict
+            // `>` form (`cross_at_ge == false`), which needs one more step to cross.
+            let later = b.threshold > a.threshold
+                || (b.threshold == a.threshold && a.cross_at_ge && !b.cross_at_ge);
+            if later {
+                b
+            } else {
+                a
+            }
+        })
+    }
+}
+
+/// One entry requirement that was **not** satisfied at the disarm instant, with
+/// the reading that failed it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockedReq {
+    pub metric: MetricId,
+    pub window: Option<f64>,
+    /// The value the fold read. `NaN` when unreadable — which, per the engine
+    /// convention, satisfies nothing and is therefore itself a blocker.
+    pub value: f64,
+    /// The authored DNF this req judged `value` against.
+    pub conds: ConditionExpr,
+}
+
+/// Why an entry became permanently unsatisfiable, captured at the instant the
+/// fold gave up on it — the durable answer to "the rule watched this token for a
+/// minute and passed; what was it short of".
+///
+/// [`killed_by`](Self::killed_by) is only ever the deadline (`time` is the sole
+/// monotonic metric), so it says *when* the episode ended and never *why*. The
+/// why is [`unmet`](Self::unmet): the entry conditions still failing as the clock
+/// ran out. An **empty** `unmet` is its own answer — everything else held and the
+/// token simply qualified too late.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntryBlockers {
+    pub killed_by: MonoBound,
+    pub unmet: Vec<BlockedReq>,
 }
 
 /// Tightest mono upper bound in one AND arm, if any.
@@ -522,13 +573,48 @@ impl CompiledRule {
         self.entry_satisfied(track, now) && !self.exit_metrics_satisfied(track, now)
     }
 
-    /// Whether a monotonic entry metric is permanently unsatisfiable at `now` —
+    /// The monotonic entry bound that is permanently crossed at `now`, if any —
     /// the entry can never re-satisfy, so the arm should disarm
-    /// ([`DisarmReason::Unsatisfiable`]).
-    pub fn entry_unsatisfiable(&self, track: &TokenTrack, now: Ts) -> bool {
-        self.mono_kills.iter().any(|k| {
-            k.permanently_false(track.value(k.metric, k.window, k.fingerprint, now))
+    /// ([`DisarmReason::Unsatisfiable`]). Returns the bound rather than a `bool`
+    /// so the disarm can name its own deadline; the hot path only tests `is_some`.
+    pub fn entry_unsatisfiable(&self, track: &TokenTrack, now: Ts) -> Option<MonoBound> {
+        self.mono_kills.iter().find_map(|k| {
+            k.binding_bound(track.value(k.metric, k.window, k.fingerprint, now))
         })
+    }
+
+    /// Every entry req still unmet at `now`, beside the deadline that killed the
+    /// arm — [`EntryBlockers`]'s payload.
+    ///
+    /// **Cold path.** Called once per episode, from the disarm itself, never per
+    /// event: it walks the entry reqs without short-circuiting (the point is the
+    /// whole failing set, not the first member) and clones each authored DNF.
+    /// [`entry_satisfied`](Self::entry_satisfied) stays the hot-path test.
+    ///
+    /// The req `killed_by` came from is excluded — at this instant it is failing
+    /// *by construction*, and listing it beside the real blockers is what makes a
+    /// disarm read as two problems when it is one.
+    pub fn entry_blockers(
+        &self,
+        track: &TokenTrack,
+        now: Ts,
+        killed_by: MonoBound,
+    ) -> EntryBlockers {
+        let unmet = self
+            .entry_reqs
+            .iter()
+            .filter(|r| !(r.metric == killed_by.metric && r.window == killed_by.window))
+            .filter_map(|r| {
+                let value = track.value(r.metric, r.window, r.fingerprint, now);
+                (!eval(&r.conds, value, r.tolerance)).then(|| BlockedReq {
+                    metric: r.metric,
+                    window: r.window,
+                    value,
+                    conds: r.conds.clone(),
+                })
+            })
+            .collect();
+        EntryBlockers { killed_by, unmet }
     }
 }
 
@@ -1123,6 +1209,99 @@ mod tests {
             ..Default::default()
         });
         assert!(compiled.can_enter(&track, now));
+    }
+
+    /// The disarm must name the condition the entry was SHORT OF, not the clock.
+    /// `time` is the only monotonic metric, so the kill is always the deadline —
+    /// reporting it as the reason answers nothing.
+    #[test]
+    fn unsatisfiable_disarm_names_what_the_entry_was_short_of() {
+        use crate::metrics::{Side, TradeLite};
+        use chrono::{Duration, TimeZone, Utc};
+
+        let c = CompiledRule::compile(&rule(json!({
+            "entry": {
+                "m_snapshot": {
+                    "time": [{"operator": ">", "value": 10}, {"operator": "<", "value": 50}],
+                    "liquidity": [{"operator": ">", "value": 10}, {"operator": "<", "value": 45}]
+                },
+                "m_flow_window": {
+                    "window_size_sec": 60,
+                    "gross_flow": [{"operator": ">=", "value": 40}]
+                }
+            }
+        })));
+
+        let created = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        let mut track = TokenTrack::new(created);
+        for w in &c.flow_windows {
+            track.ensure_window(*w);
+        }
+        // One burst and then silence: liquidity lands inside its band and stays
+        // there, gross_flow tops out at half what the entry asks for.
+        track.on_trade(TradeLite {
+            side: Side::Buy, sol: 20.0, price: 1.0, reserve_sol: 20.0, at: created,
+            ..Default::default()
+        });
+
+        // Inside the entry window there is nothing to give up on yet.
+        assert!(c.entry_unsatisfiable(&track, created + Duration::seconds(30)).is_none());
+
+        let late = created + Duration::seconds(50);
+        let killed = c.entry_unsatisfiable(&track, late).expect("time < 50 crossed at 50s");
+        assert_eq!(killed.metric, MetricId::Time);
+        assert_eq!(killed.threshold, 50.0);
+
+        let b = c.entry_blockers(&track, late, killed);
+        // `time` fails by construction at this instant and `liquidity` held the
+        // whole way, so exactly one condition is the answer.
+        assert_eq!(b.unmet.len(), 1, "only gross_flow blocked entry: {:?}", b.unmet);
+        assert_eq!(b.unmet[0].metric, MetricId::GrossFlow);
+        assert_eq!(b.unmet[0].window, Some(60.0));
+        assert_eq!(b.unmet[0].value, 20.0);
+    }
+
+    /// Every other condition held and the arm still died: the token qualified too
+    /// late. An EMPTY blocker set is that finding — a different one from "it never
+    /// came close" — so it must not be filled in with the deadline.
+    #[test]
+    fn ran_out_of_clock_with_nothing_else_unmet_reports_no_blocker() {
+        use crate::metrics::{Side, TradeLite};
+        use chrono::{Duration, TimeZone, Utc};
+
+        let c = CompiledRule::compile(&rule(json!({
+            "entry": {
+                "m_snapshot": {
+                    "time": [{"operator": "<", "value": 50}],
+                    "liquidity": [{"operator": ">", "value": 10}]
+                }
+            }
+        })));
+        let created = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        let mut track = TokenTrack::new(created);
+        track.on_trade(TradeLite {
+            side: Side::Buy, sol: 20.0, price: 1.0, reserve_sol: 20.0, at: created,
+            ..Default::default()
+        });
+
+        let late = created + Duration::seconds(50);
+        let killed = c.entry_unsatisfiable(&track, late).expect("crossed");
+        assert!(c.entry_blockers(&track, late, killed).unmet.is_empty());
+    }
+
+    /// Two upper bounds on one metric: the deadline is the one that crosses LAST,
+    /// because that is the crossing the episode actually died on.
+    #[test]
+    fn binding_bound_is_the_last_to_cross() {
+        let c = CompiledRule::compile(&rule(json!({
+            "entry": { "m_snapshot": { "time": [
+                [{"operator": "<", "value": 20}],
+                [{"operator": "<", "value": 40}]
+            ] } }
+        })));
+        let k = &c.mono_kills[0];
+        assert!(k.binding_bound(25.0).is_none(), "the 40s arm is still open at 25s");
+        assert_eq!(k.binding_bound(40.0).expect("both crossed").threshold, 40.0);
     }
 
     #[test]

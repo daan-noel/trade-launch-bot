@@ -75,6 +75,10 @@ outright (there is no session-local closes buffer any more — see "Live Status 
 its own `a*` cohort, a funnel strip, a server-paged table, and a row click opening
 `ArmDetailModal` (←/→ walks the page). Both tables own their modal, because the row each
 opens lives on its own page rather than in the live registry the cockpit lanes read.
+The Arms funnel breaks its `Unsat` tile down by the entry condition that held each
+episode out (`armBlockers.tsx` renders `end_detail` for the strip, the **Blocked by**
+column and the modal's verdict line, off ONE string builder); each bar is a lens on its
+own `ablocked` cohort key, which composes with the reason lens rather than replacing it.
 Detail: [review-surfaces.md](../plans/frontend/review-surfaces.md),
 [arm-ledger.md](@plans/strategies/arm-ledger.md).
 

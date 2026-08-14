@@ -603,6 +603,14 @@ pub struct ArmedDelta {
     pub mint: Mint,
     pub rule: RuleId,
     pub state: ArmedStateTag,
+    /// What the rule was short of when it gave up — set **only** on
+    /// [`DisarmReason::Unsatisfiable`], the one ending whose name does not answer
+    /// "why". Every other transition carries `None`: `dead`, `migrated`, `paused`
+    /// and `duplicate_identity` each state their own cause.
+    ///
+    /// Boxed so the common `None` costs a pointer: this rides an effect the fold
+    /// pushes on every arm and disarm, and only one of those cases ever fills it.
+    pub detail: Option<Box<crate::arm::EntryBlockers>>,
 }
 
 /// The armed-side state an [`ArmedDelta`] reports.

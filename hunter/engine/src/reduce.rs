@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 
 use smallvec::SmallVec;
 
-use crate::arm::{ArmState, ClockHorizons, CompiledRule, EnteredCtx};
+use crate::arm::{ArmState, ClockHorizons, CompiledRule, EnteredCtx, EntryBlockers};
 use crate::cap::Cap;
 use crate::deadness::{is_dead_verdict, DEAD_MEANINGFUL_TRADE_SOL, DEAD_QUIET_SECS};
 use crate::event::{
@@ -665,7 +665,10 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
 /// The pure per-(token, rule) verdict for a trade/tick sweep. No mutation.
 enum ArmDecision {
     None,
-    Disarm(DisarmReason),
+    /// The detail is captured **in the verdict**, not at apply time: this is the
+    /// one instant the failing readings still exist, and `decide_arm` is where the
+    /// track is in hand. It is `Some` only for `Unsatisfiable`.
+    Disarm(DisarmReason, Option<Box<EntryBlockers>>),
     Enter,
     Exit(ExitReason),
     /// Scale-out leg: sell `sell_bps` of the initial bag; fill restores Entered.
@@ -914,17 +917,24 @@ fn decide_arm(
                 return ArmDecision::None;
             }
             if dead {
-                return ArmDecision::Disarm(DisarmReason::Dead);
+                return ArmDecision::Disarm(DisarmReason::Dead, None);
             }
-            if c.entry_unsatisfiable(&token.track, now) {
-                return ArmDecision::Disarm(DisarmReason::Unsatisfiable);
+            // Capture what the entry was short of before the state is gone. Once
+            // this returns, the arm is terminal and the track keeps moving — the
+            // readings that explain the disarm exist only here. One extra walk of
+            // the entry reqs, once per episode, on the branch that ends it.
+            if let Some(killed_by) = c.entry_unsatisfiable(&token.track, now) {
+                return ArmDecision::Disarm(
+                    DisarmReason::Unsatisfiable,
+                    Some(Box::new(c.entry_blockers(&token.track, now, killed_by))),
+                );
             }
             // Copycat guard: a different mint with this token's `(name, symbol)`
             // was traded inside the window. A **Disarm**, not `exclusive`'s wait —
             // the block outlives any curve token, so waiting would re-ask a fixed
             // question on every tick until the token dies.
             if dupe_blocked {
-                return ArmDecision::Disarm(DisarmReason::DuplicateIdentity);
+                return ArmDecision::Disarm(DisarmReason::DuplicateIdentity, None);
             }
             // Exclusivity: any other arm holding the token (in-flight buy/sell
             // included, manual arms included) blocks this entry. Stays `Armed` so it
@@ -1019,9 +1029,11 @@ fn apply_decision(
 ) {
     match decision {
         ArmDecision::None => {}
-        ArmDecision::Disarm(reason) => {
+        ArmDecision::Disarm(reason, detail) => {
+            // `ArmState` keeps only the reason: it is per-(token, rule) RAM that
+            // outlives the episode, and the detail's one consumer is the effect.
             token.arms.insert(rule_id, ArmState::Disarmed(reason));
-            fx.push(armed(mint, rule_id, ArmedStateTag::Disarmed(reason)));
+            fx.push(disarmed(mint, rule_id, reason, detail));
         }
         ArmDecision::Enter => {
             // Caps enforced at entry (not arm): concurrency + lifetime. Over a cap ⇒
@@ -1214,7 +1226,23 @@ fn rollback_entry(state: &mut EngineState, rule: RuleId) {
 
 /// Build an `ArmedChanged` effect.
 fn armed(mint: &Mint, rule: RuleId, state: ArmedStateTag) -> Effect {
-    Effect::ArmedChanged(ArmedDelta { mint: mint.clone(), rule, state })
+    Effect::ArmedChanged(ArmedDelta { mint: mint.clone(), rule, state, detail: None })
+}
+
+/// Build a disarm `ArmedChanged`, carrying whatever the decision captured about
+/// why the entry was hopeless (`Unsatisfiable` only — see [`ArmedDelta::detail`]).
+fn disarmed(
+    mint: &Mint,
+    rule: RuleId,
+    reason: DisarmReason,
+    detail: Option<Box<EntryBlockers>>,
+) -> Effect {
+    Effect::ArmedChanged(ArmedDelta {
+        mint: mint.clone(),
+        rule,
+        state: ArmedStateTag::Disarmed(reason),
+        detail,
+    })
 }
 
 #[cfg(test)]

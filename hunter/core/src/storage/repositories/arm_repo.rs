@@ -16,14 +16,20 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::api::table_query::{FilterSpec, TableRequest};
-use crate::models::strategy_arm::{ArmFunnel, StrategyArm};
+use crate::models::strategy_arm::{ArmBlockedBy, ArmFunnel, StrategyArm, BLOCKED_BY_LIMIT};
 use crate::storage::repositories::strategy_repo::{like_escape, push_filter_predicate};
 use crate::storage::token_enrichment::FilterKind;
 
 /// Projection for [`StrategyArm`]. `waited_sec` is computed, never stored — a
 /// stored copy would go stale on every live episode the moment it is read.
 const ARM_COLS: &str = "a.rule_id, a.mint_address, a.mode, a.armed_at, a.ended_at, \
-    a.end_reason, a.position_id, t.symbol";
+    a.end_reason, a.position_id, a.end_detail, t.symbol";
+
+/// The representative blocker, lifted out of `end_detail`. THE definition — the
+/// sort whitelist, the filter whitelist and the summary's `GROUP BY` all
+/// reference this const, so a breakdown bar and the rows the column filters to
+/// can never describe different populations.
+const BLOCKED_BY_SQL: &str = "(a.end_detail ->> 'blocked_by')";
 
 /// Seconds this episode has waited: to its end, or to now while it is live. THE
 /// definition — the projection, the sort whitelist and the filter whitelist all
@@ -79,6 +85,7 @@ fn arm_sort_sql(key: &str) -> Option<&'static str> {
         "armed_at" => "a.armed_at",
         "ended_at" => "a.ended_at",
         "end_reason" => "a.end_reason",
+        "blocked_by" => BLOCKED_BY_SQL,
         "waited_sec" => WAITED_SEC_SQL,
         _ => return None,
     })
@@ -96,6 +103,10 @@ fn arm_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
         // COALESCE or filtering for it never matches a live row (the same trap
         // `exit_reason` has on the positions whitelist).
         "end_reason" => ("COALESCE(a.end_reason, 'waiting')", Text),
+        // NULL on every ending but `unsatisfiable` — and deliberately NOT
+        // COALESCEd: "no blocker recorded" is absence, not a bucket, and giving
+        // it a name would file every `dead` episode under it.
+        "blocked_by" => (BLOCKED_BY_SQL, Text),
         "position_id" => ("a.position_id::text", Text),
         "waited_sec" => (WAITED_SEC_SQL, Numeric),
         _ => return None,
@@ -146,7 +157,15 @@ pub type ArmInsertRow = (Uuid, String, String, DateTime<Utc>);
 
 /// One row for [`ArmRepo::end_arms`]: the episode key
 /// (`rule_id`, `mint_address`, `armed_at`) plus how it ended.
-pub type ArmEndRow = (Uuid, String, DateTime<Utc>, DateTime<Utc>, String, Option<Uuid>);
+pub type ArmEndRow = (
+    Uuid,
+    String,
+    DateTime<Utc>,
+    DateTime<Utc>,
+    String,
+    Option<Uuid>,
+    Option<serde_json::Value>,
+);
 
 #[derive(Clone)]
 pub struct ArmRepo {
@@ -190,18 +209,24 @@ impl ArmRepo {
         }
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
             "UPDATE strategy_arms a SET ended_at = v.ended_at, \
-             end_reason = v.end_reason, position_id = v.position_id FROM (",
+             end_reason = v.end_reason, position_id = v.position_id, \
+             end_detail = v.end_detail FROM (",
         );
-        qb.push_values(rows, |mut b, (rule_id, mint, armed_at, ended_at, reason, pos)| {
+        qb.push_values(rows, |mut b, (rule_id, mint, armed_at, ended_at, reason, pos, detail)| {
             b.push_bind(*rule_id)
                 .push_bind(mint)
                 .push_bind(*armed_at)
                 .push_bind(*ended_at)
                 .push_bind(reason)
-                .push_bind(*pos);
+                .push_bind(*pos)
+                // `VALUES` gives an all-NULL column no type to infer, and every
+                // ending but `unsatisfiable` is NULL — so the cast is load-bearing,
+                // not decoration.
+                .push_bind(detail)
+                .push_unseparated("::jsonb");
         });
         qb.push(
-            ") AS v(rule_id, mint_address, armed_at, ended_at, end_reason, position_id) \
+            ") AS v(rule_id, mint_address, armed_at, ended_at, end_reason, position_id, end_detail) \
              WHERE a.rule_id = v.rule_id AND a.mint_address = v.mint_address \
              AND a.armed_at = v.armed_at AND a.ended_at IS NULL",
         );
@@ -264,6 +289,30 @@ impl ArmRepo {
         let funnel = qb.build_query_as::<ArmFunnel>().fetch_one(&self.pool).await?;
         Ok(funnel.with_entry_rate())
     }
+
+    /// Which entry condition held the cohort's `unsatisfiable` episodes out, by
+    /// count — the breakdown behind that tile.
+    ///
+    /// Its own statement rather than another `COUNT(*) FILTER` on
+    /// [`ArmRepo::arm_funnel`]: this one groups by a value only the rows know, so
+    /// it cannot be a column of a fixed-shape aggregate. Same JOIN and same WHERE,
+    /// so it counts exactly the population that funnel describes.
+    ///
+    /// `WHERE <blocked_by> IS NOT NULL` also drops the episodes that ran out of
+    /// clock with **everything else satisfied** — they have a detail but no
+    /// blocker, and they are not a bucket (see `entry_blockers_json`).
+    pub async fn arm_blocked_by(&self, query: &ArmQuery) -> anyhow::Result<Vec<ArmBlockedBy>> {
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(
+            "SELECT {BLOCKED_BY_SQL} AS blocked_by, COUNT(*) AS n FROM strategy_arms a \
+             LEFT JOIN tokens t ON t.mint_address = a.mint_address \
+             WHERE {BLOCKED_BY_SQL} IS NOT NULL"
+        ));
+        push_arm_where(&mut qb, query);
+        qb.push(format!(
+            " GROUP BY {BLOCKED_BY_SQL} ORDER BY n DESC, blocked_by LIMIT {BLOCKED_BY_LIMIT}"
+        ));
+        Ok(qb.build_query_as::<ArmBlockedBy>().fetch_all(&self.pool).await?)
+    }
 }
 
 #[cfg(test)]
@@ -277,6 +326,23 @@ mod tests {
     fn waited_sec_sorts_and_filters_on_one_expression() {
         assert_eq!(arm_sort_sql("waited_sec"), Some(WAITED_SEC_SQL));
         assert_eq!(arm_filter_sql("waited_sec").map(|(sql, _)| sql), Some(WAITED_SEC_SQL));
+    }
+
+    /// Same contract as `waited_sec`, and it matters more here: the summary's
+    /// breakdown groups by this expression and the column filters by it, so a
+    /// divergence would show a bar whose rows the filter then can't produce.
+    #[test]
+    fn blocked_by_sorts_filters_and_groups_on_one_expression() {
+        assert_eq!(arm_sort_sql("blocked_by"), Some(BLOCKED_BY_SQL));
+        assert_eq!(arm_filter_sql("blocked_by").map(|(sql, _)| sql), Some(BLOCKED_BY_SQL));
+    }
+
+    /// A missing blocker is absence, not a bucket. COALESCEing it would file
+    /// every `dead` / `migrated` / `paused` episode under one invented name.
+    #[test]
+    fn blocked_by_filter_does_not_coalesce() {
+        let (sql, _) = arm_filter_sql("blocked_by").expect("whitelisted");
+        assert!(!sql.contains("COALESCE"), "absence would become a bucket: {sql}");
     }
 
     /// Unknown keys are dropped, never interpolated — the injection contract.

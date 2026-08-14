@@ -254,6 +254,41 @@ export interface StrategyArmRecord {
   symbol: string | null;
   /** Seconds from `armed_at` to `ended_at`, or to now while live (server-computed). */
   waited_sec: number | null;
+  /** What the entry was short of, captured by the fold at the disarm instant.
+   *  Set only with `end_reason === 'unsatisfiable'` — every other ending states
+   *  its own cause. */
+  end_detail: ArmEndDetail | null;
+}
+
+/** One entry condition still failing when the arm gave up. */
+export interface ArmUnmetCondition {
+  /** `group.metric`, e.g. `m_flow_window.gross_flow`. */
+  metric: string;
+  /** Trailing-window size for a dynamic metric; `null` for static ones. */
+  window_size_sec: number | null;
+  /** The reading that failed it; `null` when the metric was unreadable. */
+  value: number | null;
+  /** The authored DNF, `OR` of `AND` arms, as `{operator, value}` objects — the
+   *  same shape the readout strip renders. */
+  conditions: unknown;
+}
+
+/** `strategy_arms.end_detail` — why an entry became permanently unsatisfiable. */
+export interface ArmEndDetail {
+  /** The representative blocker (first unmet in the rule's own order), and the
+   *  key the `blocked_by` column filters and the summary groups on. `null` when
+   *  nothing but the clock was unmet — the token qualified too late. */
+  blocked_by: string | null;
+  /** The deadline that ended the episode. Always the `time` bound today, so it
+   *  says *when*, never *why*. */
+  killed_by: { metric: string; threshold: number; operator: string };
+  unmet: ArmUnmetCondition[];
+}
+
+/** One bar of the `unsatisfiable` breakdown. */
+export interface ArmBlockedBy {
+  blocked_by: string;
+  n: number;
 }
 
 /** `POST /api/strategies/arms/summary` — the arm funnel over one cohort. */
@@ -269,6 +304,9 @@ export interface ArmFunnel {
   /** `entered / armed × 100` (0 when nothing armed). */
   entry_rate_pct: number;
   median_waited_sec: number | null;
+  /** Which entry condition held the `unsatisfiable` episodes out, busiest first.
+   *  Empty when the cohort holds none carrying a detail. */
+  blocked_by: ArmBlockedBy[];
 }
 
 /** One computed metric column from `GET /api/tokens/{mint}/metric-series`. */

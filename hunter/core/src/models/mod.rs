@@ -23,6 +23,8 @@ pub use strategy::{
     bps_of_bag, ExitFillLeg, PositionFill, PositionsSummary, StrategyPosition, StrategyRule,
     StrategyRun, StrategyRunMetrics,
 };
-pub use strategy_arm::{ArmFunnel, ArmLedgerWrite, StrategyArm, ARM_END_REASONS};
+pub use strategy_arm::{
+    ArmBlockedBy, ArmFunnel, ArmLedgerWrite, ArmSummary, StrategyArm, ARM_END_REASONS,
+};
 pub use token::Token;
 pub use token_sync_state::TokenSyncState;

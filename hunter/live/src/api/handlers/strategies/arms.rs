@@ -16,6 +16,7 @@ use std::sync::Arc;
 use actix_web::{web, HttpResponse, Responder};
 
 use trading_core::api::table_query::TableRequest;
+use trading_core::models::ArmSummary;
 use trading_core::storage::repositories::arm_repo::{ArmQuery, ArmRepo};
 
 use crate::state::deploy_state::DeployState;
@@ -46,20 +47,26 @@ pub async fn query_arms(
     }
 }
 
-/// `POST /api/strategies/arms/summary` — the funnel over the same cohort.
+/// `POST /api/strategies/arms/summary` — the funnel over the same cohort, plus
+/// the `unsatisfiable` breakdown.
 ///
 /// Same body as [`query_arms`], aggregated in Postgres. Aggregating server-side
 /// rather than folding the fetched page is what keeps the funnel exact past the
 /// page size: a count taken from 25 visible rows would re-state itself on every
 /// page turn.
+///
+/// The breakdown is a second statement (it groups by a per-row value, which a
+/// fixed-shape aggregate cannot carry) issued **concurrently** on the same pool:
+/// they answer one question for one screen, and running them in series would
+/// make the strip wait on the slower of two identical scans.
 pub async fn arms_summary(
     app_state: web::Data<Arc<DeployState>>,
     body: web::Json<TableRequest>,
 ) -> impl Responder {
     let repo = ArmRepo::new(app_state.db.clone());
     let query = ArmQuery::from(body.into_inner());
-    match repo.arm_funnel(&query).await {
-        Ok(funnel) => HttpResponse::Ok().json(funnel),
+    match tokio::try_join!(repo.arm_funnel(&query), repo.arm_blocked_by(&query)) {
+        Ok((funnel, blocked_by)) => HttpResponse::Ok().json(ArmSummary { funnel, blocked_by }),
         Err(e) => {
             tracing::warn!("arms_summary failed: {e}");
             HttpResponse::InternalServerError().json(serde_json::json!({ "error": e.to_string() }))

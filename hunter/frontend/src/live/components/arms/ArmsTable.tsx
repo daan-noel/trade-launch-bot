@@ -30,6 +30,7 @@ import { ARM_END_LABEL, ArmChartCardExtra, armEndBadge } from '@live/components/
 import { usePositionArrowNav } from '@live/components/floor/usePositionArrowNav';
 import type { ArmCohort } from '@live/pages/console/armCohort';
 import { armCohortKey, armTableBody } from '@live/pages/console/armRequest';
+import { ArmBlockedByCell } from './armBlockers';
 import { ArmDetailModal } from './ArmDetailModal';
 
 /** Stable row key. An episode is unique by `(rule, mint, armed_at)` — the same
@@ -56,7 +57,7 @@ const armChartCardExtra = (r: StrategyArmRecord) => (
 /**
  * Columns. Keys that sort/filter server-side must match the backend whitelist
  * (`arm_sort_sql` / `arm_filter_sql`): `mint_address`, `symbol`, `rule_id`,
- * `mode`, `armed_at`, `ended_at`, `end_reason`, `waited_sec`. `rule` is
+ * `mode`, `armed_at`, `ended_at`, `end_reason`, `blocked_by`, `waited_sec`. `rule` is
  * display-only (the name is resolved client-side), so it is deliberately not
  * sortable — a header that sorts nothing is worse than one that doesn't offer to.
  */
@@ -92,6 +93,16 @@ export function armColumns(
       render: (r) => armEndBadge(r.end_reason),
       sortValue: (r) => r.end_reason ?? '',
       searchValue: (r) => (r.end_reason ? (ARM_END_LABEL[r.end_reason] ?? r.end_reason) : 'waiting'),
+    },
+    {
+      // The half `Outcome` cannot state: `unsatisfiable` says the entry window
+      // closed, this says what the entry was still failing when it did.
+      key: 'blocked_by',
+      label: 'Blocked by',
+      sortable: true,
+      render: (r) => <ArmBlockedByCell detail={r.end_detail} />,
+      sortValue: (r) => r.end_detail?.blocked_by ?? '',
+      searchValue: (r) => r.end_detail?.blocked_by ?? '',
     },
     {
       key: 'armed_at',

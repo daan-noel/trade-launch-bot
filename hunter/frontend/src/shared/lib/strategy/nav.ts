@@ -127,6 +127,10 @@ export const OPS_PARAMS = {
   aMode: 'amode',
   /** Arms: end-reason filter (`entered|dead|…`, or `waiting` for a live episode). */
   aReason: 'areason',
+  /** Arms: blocking-condition filter — a `group.metric` path from `end_detail`.
+   *  Its own channel rather than a value of `aReason`: it narrows *within*
+   *  `unsatisfiable` and the two compose. */
+  aBlocked: 'ablocked',
 } as const;
 
 /** Deep-link into the Console **History** section with a preset cohort — the

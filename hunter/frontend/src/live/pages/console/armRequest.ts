@@ -36,6 +36,10 @@ export function armCohortFilters(cohort: ArmCohort): Record<string, FilterSpec> 
   // COALESCEs NULL (a live episode) to it, so an eq here matches exactly the
   // episodes still evaluating entry.
   if (cohort.reason) filters.end_reason = { op: 'eq', val: cohort.reason };
+  // Only an `unsatisfiable` episode records a blocker, so this narrows to that
+  // ending by itself — and it is NOT COALESCEd server-side, so it can never
+  // sweep in the endings that have no detail.
+  if (cohort.blockedBy) filters.blocked_by = { op: 'eq', val: cohort.blockedBy };
   return filters;
 }
 

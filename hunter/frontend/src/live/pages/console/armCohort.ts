@@ -43,6 +43,11 @@ export interface ArmCohort {
   mode: ArmMode;
   /** `null` = every ending, live episodes included. */
   reason: ArmReason | null;
+  /** The `group.metric` that held the episode out (`end_detail.blocked_by`);
+   *  `null` = every blocker. Composes with `reason` rather than replacing it —
+   *  only an `unsatisfiable` episode carries one, so setting this narrows to
+   *  that ending on its own. */
+  blockedBy: string | null;
 }
 
 export interface ArmCohortApi extends ArmCohort {
@@ -87,6 +92,7 @@ export function useArmCohort(nowMs: number): ArmCohortApi {
     rawMode === 'paper' || rawMode === 'all' || rawMode === 'real' ? rawMode : 'all';
   const rawReason = params.get(OPS_PARAMS.aReason);
   const reason = isArmReason(rawReason) ? rawReason : null;
+  const blockedBy = params.get(OPS_PARAMS.aBlocked);
 
   const cohort = useMemo<ArmCohort>(
     () => ({
@@ -96,8 +102,9 @@ export function useArmCohort(nowMs: number): ArmCohortApi {
       ruleId,
       mode,
       reason,
+      blockedBy,
     }),
-    [range, customFrom, customTo, ruleId, mode, reason, nowMs],
+    [range, customFrom, customTo, ruleId, mode, reason, blockedBy, nowMs],
   );
 
   // Functional form, patching `prev`: the Console has several independent
@@ -138,6 +145,7 @@ export function useArmCohort(nowMs: number): ArmCohortApi {
         if ('ruleId' in patch) put(OPS_PARAMS.aRule, patch.ruleId);
         if ('mode' in patch) put(OPS_PARAMS.aMode, patch.mode === 'all' ? null : patch.mode);
         if ('reason' in patch) put(OPS_PARAMS.aReason, patch.reason);
+        if ('blockedBy' in patch) put(OPS_PARAMS.aBlocked, patch.blockedBy);
       });
     },
     [patchParams],
@@ -152,6 +160,7 @@ export function useArmCohort(nowMs: number): ArmCohortApi {
         OPS_PARAMS.aRule,
         OPS_PARAMS.aMode,
         OPS_PARAMS.aReason,
+        OPS_PARAMS.aBlocked,
       ]) {
         next.delete(key);
       }
@@ -159,7 +168,11 @@ export function useArmCohort(nowMs: number): ArmCohortApi {
   }, [patchParams]);
 
   const active =
-    range !== DEFAULT_RANGE || ruleId != null || mode !== 'all' || reason != null;
+    range !== DEFAULT_RANGE ||
+    ruleId != null ||
+    mode !== 'all' ||
+    reason != null ||
+    blockedBy != null;
 
   return { ...cohort, set, reset, active };
 }
@@ -175,5 +188,6 @@ export function hasArmCohortParams(params: URLSearchParams): boolean {
     OPS_PARAMS.aRule,
     OPS_PARAMS.aMode,
     OPS_PARAMS.aReason,
+    OPS_PARAMS.aBlocked,
   ].some((k) => params.has(k));
 }

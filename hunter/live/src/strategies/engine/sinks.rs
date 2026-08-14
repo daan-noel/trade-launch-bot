@@ -45,10 +45,13 @@ use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
+use hunter_engine::arm::EntryBlockers;
 use hunter_engine::event::{
     ArmedDelta, ArmedStateTag, DisarmReason, LoadedRule, PositionDelta, PositionStatus, RuleId,
     TradeMode,
 };
+use hunter_engine::metrics::evaluator::condition_expr_to_value;
+use hunter_engine::metrics::{group_of, group_spec, metric_spec, MetricId};
 
 use trading_core::models::ingest::SseEvent;
 use trading_core::models::strategy_arm::ArmLedgerWrite;
@@ -493,6 +496,7 @@ impl Sink {
                         ended_at,
                         end_reason: reason.to_string(),
                         position_id: None,
+                        end_detail: delta.detail.as_deref().map(entry_blockers_json),
                     });
                 }
                 ("disarmed", Some(reason), armed_at.unwrap_or(ended_at))
@@ -978,6 +982,8 @@ impl Sink {
                 ended_at,
                 end_reason: "entered".to_string(),
                 position_id,
+                // An entry needs no explaining — the position IS the detail.
+                end_detail: None,
             });
         }
         let info = self.rules.get(&RuleId(rule_id));
@@ -1171,6 +1177,49 @@ fn disarm_reason_str(r: DisarmReason) -> &'static str {
         DisarmReason::Paused => "paused",
         DisarmReason::DuplicateIdentity => "duplicate_identity",
     }
+}
+
+/// A metric's stable wire path, `group.metric` — `m_flow_window.gross_flow`.
+///
+/// The registry **names**, never the `MetricId` ordinal, which is internal and
+/// must not reach a client or a stored row (the same line the readout routes
+/// hold). This is a ledger column that outlives any given build, so an ordinal
+/// would silently re-point every stored row the day a metric is inserted.
+fn metric_path(metric: MetricId) -> String {
+    let group = group_spec(group_of(metric).id).name;
+    format!("{group}.{}", metric_spec(metric).name)
+}
+
+/// [`EntryBlockers`] as the `strategy_arms.end_detail` JSON.
+///
+/// `blocked_by` is the **representative** blocker — the first unmet req in the
+/// rule's own compiled order — and exists so the column can be filtered, sorted
+/// and grouped without the client parsing `unmet`. It is a representative, not a
+/// ranking: entry is an AND, so every member of `unmet` was equally binding, and
+/// `unmet` ships in full beside it rather than being summarized away.
+///
+/// `null` when nothing but the clock was unmet — the token qualified too late,
+/// which is a different finding from "it never came close" and must not read as
+/// the same one.
+fn entry_blockers_json(b: &EntryBlockers) -> serde_json::Value {
+    serde_json::json!({
+        "blocked_by": b.unmet.first().map(|r| metric_path(r.metric)),
+        "killed_by": {
+            "metric": metric_path(b.killed_by.metric),
+            "threshold": b.killed_by.threshold,
+            // The operator the bound is enforced with, so the UI states the
+            // deadline the way the rule authored it.
+            "operator": if b.killed_by.cross_at_ge { "<" } else { "<=" },
+        },
+        "unmet": b.unmet.iter().map(|r| serde_json::json!({
+            "metric": metric_path(r.metric),
+            "window_size_sec": r.window,
+            // Non-finite serializes `null`: an unreadable metric satisfies
+            // nothing, and a `NaN` is not representable in JSON anyway.
+            "value": r.value.is_finite().then_some(r.value),
+            "conditions": condition_expr_to_value(&r.conds),
+        })).collect::<Vec<_>>(),
+    })
 }
 
 #[cfg(test)]
