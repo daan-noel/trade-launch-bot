@@ -4,7 +4,7 @@
 //! combos. Entry can-fail is 0–2 (selector + extra pooled); trigger stays 0–1.
 //! Exit bags are 0–2 different metrics; giveback and clock still compete.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use hunter_engine::metrics::evaluator::{Condition, Operator};
 use hunter_engine::metrics::{group_spec, MetricGroupId, MetricId, MetricKind};
@@ -104,6 +104,7 @@ pub fn extra_or_candidates(base: &GeneratedCombo, cuts: &CutTable) -> Vec<Genera
 
 /// Cap on can-fail singles in the product (selector + extra pooled).
 const CAN_FAIL_CAP: usize = 10;
+const EXTRA_PHASE_CAP: usize = 6;
 const RETUNE_CAP: usize = 12;
 
 fn entry_fillings(cuts: &CutTable) -> Vec<EntryFilling> {
@@ -126,18 +127,7 @@ fn entry_fillings(cuts: &CutTable) -> Vec<EntryFilling> {
             .cmp(&b.phase.menu_rank())
             .then_with(|| format!("{:?}", a.metric).cmp(&format!("{:?}", b.metric)))
     });
-    // One cut per metric (best phase), then cap. Contrast outranks FillMoment,
-    // so a 1.5× snapshot cannot erase the peak knife for the same metric.
-    let mut seen = Vec::new();
-    can_fail.retain(|c| {
-        if seen.contains(&c.metric) {
-            false
-        } else {
-            seen.push(c.metric);
-            true
-        }
-    });
-    can_fail.truncate(CAN_FAIL_CAP);
+    can_fail = take_can_fail(can_fail);
 
     let trigger_opts: Vec<Option<Clause>> = {
         let mut v = vec![None];
@@ -146,6 +136,11 @@ fn entry_fillings(cuts: &CutTable) -> Vec<EntryFilling> {
             ranked.sort_by_key(|c| c.phase.menu_rank());
             if let Some(c) = ranked.first() {
                 v.push(Some(*c));
+            }
+            if let Some(c) = ranked.iter().find(|c| c.phase == CutPhase::RunLead) {
+                if ranked.first().map(|f| f.phase) != Some(CutPhase::RunLead) {
+                    v.push(Some(*c));
+                }
             }
         }
         v
@@ -161,7 +156,7 @@ fn entry_fillings(cuts: &CutTable) -> Vec<EntryFilling> {
             if has_entry_compete_clash(&pair) {
                 continue;
             }
-            if !pair_cooccurs(&pair[0], &pair[1], &cuts.winner_fill) {
+            if !pair_cooccurs(&pair[0], &pair[1], cuts) {
                 continue;
             }
             fail_opts.push(pair.to_vec());
@@ -187,17 +182,46 @@ fn entry_fillings(cuts: &CutTable) -> Vec<EntryFilling> {
     out
 }
 
-fn pair_cooccurs(a: &Clause, b: &Clause, fills: &[HashMap<(MetricId, i64), f64>]) -> bool {
-    // Peak contrast pairs are not gated on the 1.5× snapshot — that clock
-    // drops knives that only hold later. Fill-moment pairs still must co-occur
-    // at fill-moment.
-    if a.phase != CutPhase::FillMoment || b.phase != CutPhase::FillMoment {
+fn take_can_fail(cuts: Vec<Clause>) -> Vec<Clause> {
+    let mut primary = Vec::new();
+    let mut extra = Vec::new();
+    let mut seen = Vec::new();
+    for c in cuts {
+        if !seen.contains(&c.metric) {
+            seen.push(c.metric);
+            primary.push(c);
+        } else if c.phase.is_entry_extra() {
+            extra.push(c);
+        }
+    }
+    primary.truncate(CAN_FAIL_CAP);
+    let mut extra_seen = Vec::new();
+    extra.retain(|c| {
+        if extra_seen.contains(&c.metric) {
+            false
+        } else {
+            extra_seen.push(c.metric);
+            true
+        }
+    });
+    extra.truncate(EXTRA_PHASE_CAP);
+    primary.extend(extra);
+    primary
+}
+
+fn pair_cooccurs(a: &Clause, b: &Clause, cuts: &CutTable) -> bool {
+    // Same-clock extra pairs must co-occur on that clock. Peak contrast pairs
+    // are not gated on a 1.5× snapshot.
+    let snaps = match (a.phase, b.phase) {
+        (CutPhase::RunLead, CutPhase::RunLead) => &cuts.winner_lead,
+        (CutPhase::Launch, CutPhase::Launch) => &cuts.winner_launch,
+        (CutPhase::FillMoment, CutPhase::FillMoment) => &cuts.winner_fill,
+        _ => return true,
+    };
+    if snaps.len() < MIN_SPLIT {
         return true;
     }
-    if fills.len() < MIN_SPLIT {
-        return true;
-    }
-    let n = fills
+    let n = snaps
         .iter()
         .filter(|m| match (m.get(&fill_key(a.metric, a.window)), m.get(&fill_key(b.metric, b.window))) {
             (Some(&va), Some(&vb)) => clause_holds(a, va) && clause_holds(b, vb),
@@ -434,6 +458,8 @@ mod tests {
             entry: vec![],
             exit: vec![],
             winner_fill: vec![],
+            winner_lead: vec![],
+            winner_launch: vec![],
         };
         let g = generate(&table);
         assert_eq!(g.len(), 1);
@@ -454,6 +480,8 @@ mod tests {
                 cut(MetricGroupId::PriceLifetime, MetricId::Stall, Operator::Gte, 30.0),
             ],
             winner_fill: vec![],
+            winner_lead: vec![],
+            winner_launch: vec![],
         };
         let bags = exit_bags(&table.exit);
         assert!(bags.iter().any(|b| b.clauses.is_empty()));
@@ -492,6 +520,8 @@ mod tests {
                 cut(MetricGroupId::PriceLifetime, MetricId::Stall, Operator::Gte, 40.0),
             ],
             winner_fill: vec![],
+            winner_lead: vec![],
+            winner_launch: vec![],
         };
         let extra = extra_or_candidates(&base, &table);
         assert!(extra.iter().all(|g| !g.exit.clauses.iter().any(|c| c.metric == MetricId::Retrace)));
@@ -547,6 +577,8 @@ mod tests {
             ],
             exit: vec![],
             winner_fill: vec![],
+            winner_lead: vec![],
+            winner_launch: vec![],
         };
         let entries = entry_fillings(&table);
         assert!(entries.iter().any(|e| e.clauses.is_empty()));
@@ -597,6 +629,8 @@ mod tests {
                 cut(MetricGroupId::PriceLifetime, MetricId::Stall, Operator::Gte, 40.0),
             ],
             winner_fill: vec![],
+            winner_lead: vec![],
+            winner_launch: vec![],
         };
         let r = retune_candidates(&base, &table);
         assert!(r.iter().any(|g| {
@@ -614,6 +648,10 @@ mod tests {
         fill.insert(fill_key(MetricId::Time, None), 10.0);
         fill.insert(fill_key(MetricId::Liquidity, None), 80.0);
         let fills = vec![fill; 10];
+        let table = CutTable {
+            winner_fill: fills,
+            ..CutTable::empty()
+        };
         let time = Clause {
             group: MetricGroupId::Snapshot,
             metric: MetricId::Time,
@@ -630,7 +668,7 @@ mod tests {
             threshold: 20.0,
             phase: CutPhase::FillMoment,
         };
-        assert!(!pair_cooccurs(&time, &liq, &fills));
+        assert!(!pair_cooccurs(&time, &liq, &table));
         let time_ok = Clause {
             group: MetricGroupId::Snapshot,
             metric: MetricId::Time,
@@ -639,11 +677,10 @@ mod tests {
             threshold: 40.0,
             phase: CutPhase::FillMoment,
         };
-        assert!(pair_cooccurs(&time_ok, &liq, &fills));
-        // Peak contrast is not gated on the 1.5× snapshot.
+        assert!(pair_cooccurs(&time_ok, &liq, &table));
         let peak_time = clause(MetricGroupId::Snapshot, MetricId::Time, Operator::Lt, 5.0);
         let peak_liq = clause(MetricGroupId::Snapshot, MetricId::Liquidity, Operator::Gte, 20.0);
-        assert!(pair_cooccurs(&peak_time, &peak_liq, &fills));
+        assert!(pair_cooccurs(&peak_time, &peak_liq, &table));
     }
 
     #[test]
@@ -671,6 +708,8 @@ mod tests {
             ],
             exit: vec![],
             winner_fill: vec![],
+            winner_lead: vec![],
+            winner_launch: vec![],
         };
         let entries = entry_fillings(&table);
         let liq_singles: Vec<&EntryFilling> = entries
@@ -687,9 +726,59 @@ mod tests {
         assert!(
             liq_singles
                 .iter()
-                .all(|e| (e.clauses[0].threshold - 90.0).abs() > 1e-9),
-            "fill-moment must not replace peak contrast for the same metric"
+                .any(|e| (e.clauses[0].threshold - 90.0).abs() < 1e-9
+                    && e.clauses[0].phase == CutPhase::FillMoment),
+            "fill-moment stays as an extra filling for the same metric"
         );
+    }
+
+    #[test]
+    fn run_lead_is_kept_as_extra_beside_contrast() {
+        let table = CutTable {
+            windows: vec![],
+            entry: vec![
+                Cut {
+                    group: MetricGroupId::Snapshot,
+                    metric: MetricId::Time,
+                    window: None,
+                    op: Operator::Lt,
+                    threshold: 40.0,
+                    phase: CutPhase::Contrast,
+                },
+                Cut {
+                    group: MetricGroupId::Snapshot,
+                    metric: MetricId::Time,
+                    window: None,
+                    op: Operator::Lt,
+                    threshold: 8.0,
+                    phase: CutPhase::RunLead,
+                },
+                Cut {
+                    group: MetricGroupId::Snapshot,
+                    metric: MetricId::Liquidity,
+                    window: None,
+                    op: Operator::Gte,
+                    threshold: 47.0,
+                    phase: CutPhase::Contrast,
+                },
+            ],
+            exit: vec![],
+            winner_fill: vec![],
+            winner_lead: vec![],
+            winner_launch: vec![],
+        };
+        let entries = entry_fillings(&table);
+        assert!(entries.iter().any(|e| {
+            e.clauses.len() == 1
+                && e.clauses[0].metric == MetricId::Time
+                && e.clauses[0].phase == CutPhase::Contrast
+        }));
+        assert!(entries.iter().any(|e| {
+            e.clauses.len() == 1
+                && e.clauses[0].metric == MetricId::Time
+                && e.clauses[0].phase == CutPhase::RunLead
+                && (e.clauses[0].threshold - 8.0).abs() < 1e-9
+        }));
     }
 
     #[test]
@@ -738,6 +827,8 @@ mod tests {
             ],
             exit: vec![],
             winner_fill: vec![],
+            winner_lead: vec![],
+            winner_launch: vec![],
         };
         let r = retune_candidates(&base, &table);
         assert!(r.iter().any(|g| {

@@ -502,8 +502,8 @@ next load (no per-metric frontend work).
   incumbent (compare only). Job kind `rule_search` in `BackgroundJobsContext`
   (SSE `rule_search_*`, single-flight vs sweep / flow-discovery / metric-discovery).
   Board: refuse / ungated / candidate, champion vs empty-entry vs incumbent
-  (authority SOL ranks; first-in-window quoted beside it), `ruleParamsCell` for the
-  champion, top archive,
+  (authority SOL ranks, then tighter fill spread; first-in-window quoted beside
+  it), `ruleParamsCell` for the champion, top archive, diagnostics (cut phases),
   Promote (`src:rule-search`) and a draft Simulate of the unsaved champion.
 - The lab `RulesPage` injects `@lab/components/strategy/DryRunPanel` via `renderDryRun`
   (inline draft → `POST /api/strategies/simulate` → funnel summary + trades table),

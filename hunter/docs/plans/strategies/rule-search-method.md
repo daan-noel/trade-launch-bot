@@ -16,10 +16,11 @@ params are not an input. Search the range you picked; do not hide a tail of it.
               │
               ▼
   2. cut table
-       label paths (ran vs never-ran; dumpers)
-       entry: peak contrast + winner floor
-              fill-moment extra (does not replace peak)
-       exit:  dump-lead + runner after-dump + dumper p90 + outcome held
+       labels: ran vs never-ran; dumpers
+       entry: peak contrast + winner floor (primary)
+              run-lead / launch / fill-moment (extra fillings)
+       exit:  dump-lead + giveback-lead + after-dump + dumper p90
+              + outcome held
        windows: winner burst + never-ran grind
               │
               ▼
@@ -34,11 +35,11 @@ params are not an input. Search the range you picked; do not hide a tail of it.
   5. score every combo; archive every full rule
               │
               ▼
-  6. top 5 archive rules × unused exit cut (extra OR)
-     top 3 × neighbor cuts of the same metrics (retune)
+  6. top 5 × unused exit cut (extra OR)
+     top 3 × same-metric, same-phase neighbors (retune)
               │
               ▼
-     champion = archive max, then run_replay
+     champion = paying replay max (authority, then tighter fill spread)
               │
               ▼
      champion  vs  empty-entry  vs  incumbent
@@ -49,10 +50,8 @@ params are not an input. Search the range you picked; do not hide a tail of it.
 buy size as the incumbent when one exists, else a fixed size for the run. The
 candidate is always a complete rule, never a metric scored alone.
 
-The archive inner loop is a `CompiledRule` series walk (shared entry across exit
-bags, copycat merge after). Report columns (champion, empty-entry, incumbent)
-are `run_replay` — the same kernel as Simulate. How that job is wired:
-[rule-search.md](rule-search.md).
+Report columns are `run_replay` (same kernel as Simulate). Fast archive is a
+`CompiledRule` series walk. Job wiring: [rule-search.md](rule-search.md).
 
 No metric is privileged. A new registry row joins by flags (`scope`, `monotonic`,
 `kind`, `family`, unit). Unknown / `Standalone` is its own exclusive alternative
@@ -61,39 +60,25 @@ and may OR with other families.
 ## 1. Enter only when exit is not already true
 
 `can_enter` = entry AND holds, and **no token-scoped exit already holds**.
-Otherwise the next event after fill would sell. This is the rule, not a side
-effect.
+Otherwise the next event after fill would sell.
 
 ```
-  want to buy now?
-
   entry AND true?  ──no──► wait
          │ yes
          ▼
-  any token-scoped exit already true?  ──yes──► wait (do not buy)
+  any token-scoped exit already true?  ──yes──► wait
          │ no
          ▼
-  BUY
-         │
-         ▼
-  after fill: any exit OR true?  ──► SELL
+  BUY → after fill, any exit OR true?  ──► SELL
 ```
 
-So `exit: buy(3s) > 10` is two clauses at once:
-
-| when | meaning |
-| --- | --- |
-| before fill | enter only while `buy(3s) <= 10` (or NaN) |
-| after fill | sell when `buy(3s) > 10` |
-
-Several token-scoped exits OR together: **any** one that is already true blocks
-entry. Adding an exit can change who gets in, not only when you sell.
+So `exit: buy(3s) > 10` is two clauses at once: before fill it is a wait-gate
+(`buy(3s) <= 10` or NaN); after fill it is a sell. Several token-scoped exits
+OR together: **any** one that already holds blocks entry. Adding an exit can
+change who gets in, not only when you sell.
 
 `m_position` (`retrace` / `bounce` / `pnl` / `held`) reads `NaN` before fill, so
-it does **not** veto. `trail` as an exit can; `retrace` as an exit cannot. That
-is one reason they are different fillings, not two names for the same stop.
-
-Entry and exit are not independent searches. Score the full `RuleParams`.
+it does not veto. `trail` as an exit can; `retrace` as an exit cannot.
 
 Do not rank an exit bag on empty-entry before it meets an entry. A dump floor
 that is already true at t=0 looks like a bad empty-entry rule because it vetoes
@@ -106,43 +91,48 @@ metric that is legal on that side gets a row. Windows are shared.
 
 Labels are path facts, not a rule. **Ran** = ATH multiple at or above this
 cohort's p67, floored at 1.5×. **Never-ran** = the rest. **Dumper** = price
-leaves ATH by 15%+. A token can be ran and a dumper (the usual meme). Another
-rule's fills are not a label.
+leaves ATH by 15%+. A token can be ran and a dumper. Another rule's fills are
+not a label.
 
-A mixed quantile of everyone sits with the never-ran majority. The knife that
-changes who gets in or when you sell sits in the **gap** between ran and
-never-ran, or in the **seconds before ATH breaks** on dumpers.
+A mixed quantile of everyone sits with the never-ran majority. The knife sits
+in the **gap** between ran and never-ran, or in the **seconds before / after**
+a labeled event (ATH break, first 1.5×).
+
+Peak contrast is the primary entry clock. Run-lead, launch, and fill-moment
+are extra fillings for the same metric — the generator keeps peak and at most
+one extra, so an earlier clock can win without erasing the quiet one.
 
 | Cut | Source |
 | --- | --- |
 | Windows | trade spacing; winner burst (0.25 × median TTP of ran); never-ran grind when it differs; near everyone's TTP. At most four sizes. |
-| Entry contrast | median at **peak** (ATH neighborhood) of ran vs never-ran. If they differ, one threshold in the gap; operator toward the ran side. This is the primary entry knife. |
-| Entry winner floor | p10 of ran tokens at peak, `>=`. |
-| Entry fill-moment | extra alternative: one snapshot at first 1.5× (losers: the median winner time-to-1.5×). Does **not** replace peak contrast. Time `Lt` at this clock is p75 of ran time-to-1.5×. |
-| Entry fallback | early / peak p50 of everyone, only when the ran/never-ran split is thinner than 8+8. |
+| Entry contrast | median at peak (ATH neighborhood) of ran vs never-ran. Gap threshold; operator toward the ran side. |
+| Entry winner floor | p10 of ran at peak, `>=`. |
+| Entry run-lead | last 3 s **before** first 1.5× on ran (never-ran: median winner time-to-1.5×). |
+| Entry launch | first print (within 2 s of create). Ran vs never-ran. |
+| Entry fill-moment | snapshot at first 1.5× (losers: median winner time-to-1.5×). Time `Lt` is p75 of ran time-to-1.5×. |
+| Entry fallback | early / peak p50 of everyone, only when the split is thinner than 8+8. |
 | Exit dump-lead | last 3 s **before** ATH on ran dumpers (all dumpers if that set is thin). p50 and p90. |
-| Exit after-dump | rows after price has left ATH, **ran dumpers only** (everyone's after-dump if that set is thin). |
+| Exit giveback-lead | first 3 s **after** ATH, before the 15% dump, on ran dumpers (everyone's post-ATH lead if thin). p50 and p90. |
+| Exit after-dump | rows after price has left ATH, ran dumpers only (everyone's after-dump if thin). |
 | Exit dumper p90 | p90 of that after-dump set. |
 | Exit held | p50 / p75 of (dump − fill-moment) on ran dumpers. Declared 60/120/300 only when that set is thin. |
 | Position bounce / pnl / retrace | declared menu. |
 
-A clause is `(metric, side, operator, threshold, window?)`. Threshold and window
-come from this table. A curve fact (real reserve tops near 85) appears only if
-this cohort's liquidity distribution reaches it — one candidate, not a required
-cell.
+A clause is `(metric, side, operator, threshold, window?)`. A curve fact (real
+reserve tops near 85) appears only if this cohort's liquidity distribution
+reaches it.
 
-Can-fail pairs that are fill-moment cuts must co-occur at fill-moment on at
-least 8 ran tokens. Peak contrast pairs are not gated on the 1.5× snapshot.
+Can-fail pairs that share an extra clock (run-lead / launch / fill-moment)
+must co-occur on that clock on at least 8 ran tokens. Peak contrast pairs are
+not gated on those snapshots.
 
-Retune after a combo wins uses neighbors in this table only (nearby quantile,
-nearby window, **same phase**). Retune does not add a metric or swap clocks.
+Retune uses neighbors in this table only (nearby quantile, nearby window,
+**same phase**). Retune does not add a metric or swap clocks.
 
 ## 3. Roles
 
-A metric is a quantity. Side + operator + cut make the clause. Token-scoped
-metrics are legal on entry and on exit. `m_position` is exit-only and optional.
-
-Entry ANDs; exit ORs.
+Token-scoped metrics are legal on entry and on exit. `m_position` is exit-only
+and optional. Entry ANDs; exit ORs.
 
 ```
   ENTRY (AND, sparse)                 EXIT (OR, sparse)
@@ -151,50 +141,36 @@ Entry ANDs; exit ORs.
   empty entry is a combo
 ```
 
-Can-fail is selector and extra pooled: two independent facts (`time` AND `liq`,
-or `liq` AND `wallets`). Trigger stays one family. Three can-fail ANDs are not
-a filling — that is kitchen-sink.
+Can-fail is selector and extra pooled. Three can-fail ANDs are not a filling.
 
 | Role | How it joins | Who may fill it |
 | --- | --- | --- |
 | Can-fail | 0–2, different metrics | selector (`time` / `liquidity` / other bounded token metrics) and extra (windowed flow / wallets / split floors) |
 | Trigger | times the buy | one family: dip **or** rise **or** accumulation **or** organic **or** a new exclusive family — never two |
-| Giveback | exit OR, compete | `trail` XOR `retrace` (token ATH vs since-entry peak) |
-| Clock | exit OR, compete | `stall` XOR `held` (token quiet vs our fill) |
-| Progress | exit OR, stack | `pnl` / `bounce` / `rise` — different metrics may OR |
-| Flow | exit OR, stack | any distinct flow or split metric (lifetime or windowed) — different metrics may OR |
+| Giveback | exit OR, compete | `trail` XOR `retrace` |
+| Clock | exit OR, compete | `stall` XOR `held` |
+| Progress | exit OR, stack | `pnl` / `bounce` / `rise` |
+| Flow | exit OR, stack | any distinct flow or split metric |
 | Wait-only | monotonic lifetime floor, no cap | not a selector |
 
-**Compete** (at most one per combo): same metric (one threshold); giveback pair;
-clock pair; trigger family on entry.
+**Compete** (at most one per combo): same metric; giveback pair; clock pair;
+trigger family on entry.
 
 **Stack** (may OR, subject to the 0–2 cap): two different metrics that are not a
-compete pair. Flow is not one slot. `buy(window)` and `nonvol_net` are two
-metrics; they may share an exit bag. A new metric with an unknown family stacks
-with the others.
+compete pair. `buy(window)` and `nonvol_net` are two metrics.
 
 Same quantity, different thesis by side: `trail` as a dip trigger is not `trail`
-as a dump sell. Generate both from the cut table; do not copy one onto the other.
+as a dump sell. Generate both from the cut table.
 
 Same-window clauses on one dynamic group merge (`window_size_sec` unique per
 group array).
 
-There is no kitchen-sink entry and no greedy add/drop on entry. Entry fillings
-are the role product. Champion is the archive max, not the end of a path that
-added or dropped one clause at a time.
-
-The generator keeps one cut per metric (best `menu_rank`). Peak contrast
-outranks fill-moment, so a 1.5× snapshot cannot erase the knife that times
-entries away from the rip. Fill-moment fills holes (no peak gap for that
-metric).
-
-After every entry × bag is scored, take the top 5 full rules and try each
-**unused** exit cut as one extra OR (dump-lead first). Any exit-legal metric is
-a candidate, including `m_position`. Then retune the top 3: same metrics,
-neighbor cuts only (same phase). A candidate stays only if the full rule beats the archive.
+There is no kitchen-sink entry and no greedy add/drop on entry. After the
+entry × bag archive, extra-OR (dump-lead first) and same-phase retune may add
+a candidate only if the full rule beats the archive.
 
 Each `scale_out` stage is the same exit bag plus a size. This search scores
-entry + the global exit; staged scale-out is the same generator on a third bag.
+entry + the global exit.
 
 ## 4. Report
 
@@ -203,10 +179,9 @@ entry + the global exit; staged scale-out is the same generator on a third bag.
 | Champion vs empty-entry (same exit bag) | If it does not beat buy-everything, the juice is ungated |
 | n floor | Too few closed trades → no rule |
 | PF > 1 under authority | |
-| Fill spread (optimistic / authority) | Quote next to every SOL number |
+| Fill spread | Authority ranks; first-in-window quoted beside every SOL number. Among paying replays, tighter spread breaks an authority tie. |
 | Selective claim | enter% of matched, guard OFF, ≲ 60% — necessary, not sufficient |
 | Empty entry / no selector | latency ladder; a 1 s entry floor must still pay |
-| Exit bag | a useful champion may carry two different-metric exits; a one-clause bag is not a required shape |
 
 | empty-entry | other combos | report |
 | --- | --- | --- |
@@ -214,40 +189,33 @@ entry + the global exit; staged scale-out is the same generator on a third bag.
 | pays | all lose | juice is ungated |
 | either | one pays | that filling is the candidate |
 
-Refuse is a valid result. Paper the next launch burst; if the habit moved, pick
+Refuse is a finished run. Paper the next launch burst; if the habit moved, pick
 a new range and run again.
+
+If the top archive slice has no paying replay, the board scores the next slice.
+A champion whose authority and first-in-window disagree in sign is a violent
+fill window. Diagnostics print the champion's cut phases (`contrast`,
+`run-lead`, `launch`, `dump-lead`, `giveback-lead`, …).
 
 ## 5. Prove an update
 
 A cut-table change is helpful only if it puts a **better full rule** on the
-board. Coverage ("the clause exists") is not enough. Grade in this order:
+board. Coverage ("the clause exists") is not enough.
 
-**Constructed corpus** (`cargo test -p hunter-lab rule_search`, no lake). Build
-tokens whose ran vs never-ran (or dump-lead vs after-dump) distributions are
-known. Pass if the new cut lands in the gap / lead, and the mixed-everyone
-quantile does not. This is how a source earns a row in §2.
+**Constructed corpus** (`cargo test -p hunter-lab --lib rule_search`, no lake).
+Pass if the new cut lands in the gap / lead, and the mixed-everyone quantile
+does not.
 
-**Same-form ablation** on the Rule search page. Freeze fingerprint, datetime
-range, buy, fill, cost, copycat, incumbent. Run, save the three columns. Change
-one cut source (or the can-fail cap). Re-run the same form.
+**Same-form ablation** on the Rule search page. Freeze fingerprint, range, buy,
+fill, cost, copycat, incumbent. Grade one cut source per run.
 
 | Grade | Pass |
 | --- | --- |
 | Beats incumbent | champion authority SOL > incumbent, n ≥ floor, PF > 1, beats empty-entry |
-| Known miss | dump-lead (or stacked exit) appears in the champion or top archive, and that row beats the incumbent |
+| Known miss | the new clock appears in the champion or top archive, and that row beats the incumbent |
 | Harmless | champion not worse than the previous champion on this same form |
 | Fail | n starves, ungated, or champion loses to both the previous champion and the incumbent |
 
-Incumbent is the baseline to beat, not a shape to clone. g4 / g8 / g12 promoted
-rules are the ablation incumbents; a new fingerprint is green on the same
-verdict table with no incumbent.
-
-Do not hide a tail of the search range as holdout. Next week's tokens after
-promote are the live test. One update per ablation — five sources at once
-cannot say which one paid.
-
-The board prints the champion's cut phases in diagnostics (`contrast`,
-`fill-moment`, `dump-lead`, `outcome`, …) so a page run shows which source
-fired. If the top archive slice has no paying replay, the board scores the
-next slice. A champion whose authority and first-in-window disagree in sign
-is called out as a violent fill window.
+Incumbent is the baseline to beat, not a shape to clone. Promoted g4 / g8 / g12
+rules are the ablation incumbents. Do not hide a tail of the search range as
+holdout; tokens after promote are the live test.

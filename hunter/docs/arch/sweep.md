@@ -421,10 +421,10 @@ Job: [rule-search.md](../plans/strategies/rule-search.md).
 | File | Role |
 | --- | --- |
 | `rule_search/roles.rs` | Registry flags → entry roles / exit bags / compete keys. New registry rows join by flags. |
-| `rule_search/cuts.rs` | Cohort windows + phase samples → threshold menus. Declared `m_position` exits stay on the menu. |
-| `rule_search/generator.rs` | Entry fillings × exit bags → complete `RuleParams`. Empty entry and empty exit are combos. Extra OR on the top 3 after scoring. |
+| `rule_search/cuts.rs` | Cohort windows + phase samples → threshold menus (peak contrast primary; run-lead / launch / fill-moment extras; dump-lead / giveback-lead / after-dump / outcome held on exit). Declared `m_position` exits stay on the menu. |
+| `rule_search/generator.rs` | Entry fillings × exit bags → complete `RuleParams`. Empty entry and empty exit are combos. One extra phase per metric beside peak. Extra OR on the top 5 after scoring; same-phase retune on the top 3. |
 | `rule_search/scorer.rs` | `CompiledRule` series walk (shared entry across bags) then copycat (+ caps) time-order merge. Horizon is Simulate's (`as_of` / corpus last trade), not sweep's per-token tail cap. |
-| `rule_search/report.rs` | Report columns are `run_replay` for the whole board (champion, empty-entry, incumbent, all archive rows). Champion is the replay max, not a shorter prefix of the fast ranking. Verdict refuse / ungated / candidate. Optimistic fill is `FirstInWindow`. |
+| `rule_search/report.rs` | Report columns are `run_replay` for the board (champion, empty-entry, incumbent, archive). Paying replays rank by authority SOL, then tighter fill spread. Extra archive slice when the top slice has no paying replay. Verdict refuse / ungated / candidate. Optimistic fill is `FirstInWindow`. |
 | `api/handlers/strategies/rule_search.rs` | `POST /api/strategies/rule-search` (+`/cancel`/`/last`/`/{run_id}`). `202`, SSE progress, persist last result under `$SWEEP_LAKE_DIR/rule-search/last.json`. Fingerprint mint scan **before** the lake load. `as_of` freezes at session open. Single-flight vs sweep / flow-discovery / metric-discovery. |
 | `frontend/src/lab/pages/strategies/RuleSearchPage.tsx` | Form (required fingerprint, range, buy, fill, cost, copycat default ON, optional incumbent) → board (verdict, three columns, champion params, archive, Promote / Simulate) |
 

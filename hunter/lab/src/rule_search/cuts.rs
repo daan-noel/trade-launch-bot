@@ -1,10 +1,11 @@
 //! Cut table from this range's metric paths ([rule-search-method.md] §2).
 //!
 //! Labels are path facts (ran vs never-ran, dumpers), not a rule. Entry uses
-//! peak contrast + winner floor when the split is thick; fill-moment is an
-//! extra alternative, not a replacement. Mixed early/peak only when the split
-//! is thin. Exit uses dump-lead, runner after-dump, dumper p90, and held from
-//! fill-to-dump. Position bounce/pnl stay on a declared menu.
+//! peak contrast + winner floor when the split is thick. Run-lead (seconds
+//! before first 1.5×), launch (first print), and fill-moment are extras — they
+//! do not replace peak. Mixed early/peak only when the split is thin. Exit uses
+//! dump-lead, giveback-lead (seconds after ATH), runner after-dump, dumper p90,
+//! and held from fill-to-dump. Position bounce/pnl stay on a declared menu.
 
 use std::collections::HashMap;
 
@@ -26,8 +27,10 @@ use crate::sweep::projection::to_trade_lite;
 
 use super::roles::{entry_role, is_position, EntryRole};
 
-/// Seconds before ATH that count as dump-lead.
-const DUMP_LEAD_SEC: i64 = 3;
+/// Seconds before ATH / before 1.5× / after ATH that count as a lead window.
+const LEAD_SEC: i64 = 3;
+/// Seconds after create that count as the launch snapshot window (first print).
+const LAUNCH_SEC: i64 = 2;
 /// Minimum tokens on each side before contrast / dump-lead prefer the split.
 pub(crate) const MIN_SPLIT: usize = 8;
 const DUMP_FRAC: f64 = 0.85;
@@ -48,6 +51,9 @@ pub enum CutPhase {
     DumperP90,
     FillMoment,
     Outcome,
+    RunLead,
+    Launch,
+    GivebackLead,
 }
 
 impl CutPhase {
@@ -65,23 +71,35 @@ impl CutPhase {
             Self::DumperP90 => "dumper-p90",
             Self::FillMoment => "fill-moment",
             Self::Outcome => "outcome",
+            Self::RunLead => "run-lead",
+            Self::Launch => "launch",
+            Self::GivebackLead => "giveback-lead",
         }
     }
 
+    /// Extra entry clocks that may sit beside peak contrast for the same metric.
+    pub fn is_entry_extra(self) -> bool {
+        matches!(self, Self::RunLead | Self::Launch | Self::FillMoment)
+    }
+
     /// Lower is kept first when the generator truncates the menu.
-    /// Peak contrast outranks fill-moment so a 1.5× snapshot cannot erase
-    /// the clock that times entries away from the rip.
+    /// Peak contrast outranks extras so a 1.5× snapshot cannot erase
+    /// the clock that times entries away from the rip. Run-lead outranks
+    /// launch and fill-moment among extras.
     pub fn menu_rank(self) -> u8 {
         match self {
             Self::Contrast => 0,
             Self::WinnerFloor => 1,
-            Self::DumpLead => 2,
-            Self::Outcome | Self::DumperP90 | Self::AfterDump => 3,
-            Self::Peak => 4,
-            Self::Early => 5,
-            Self::FillMoment => 6,
-            Self::After | Self::P90 => 7,
-            Self::Declared => 8,
+            Self::RunLead => 2,
+            Self::DumpLead => 3,
+            Self::GivebackLead => 4,
+            Self::Launch => 5,
+            Self::Outcome | Self::DumperP90 | Self::AfterDump => 6,
+            Self::Peak => 7,
+            Self::Early => 8,
+            Self::FillMoment => 9,
+            Self::After | Self::P90 => 10,
+            Self::Declared => 11,
         }
     }
 }
@@ -103,6 +121,10 @@ pub struct CutTable {
     pub exit: Vec<Cut>,
     /// One snapshot per ran token at fill-moment, keyed by `fill_key`.
     pub winner_fill: Vec<HashMap<(MetricId, i64), f64>>,
+    /// Last row in the run-lead window (just before 1.5×) per ran token.
+    pub winner_lead: Vec<HashMap<(MetricId, i64), f64>>,
+    /// First-print snapshot per ran token.
+    pub winner_launch: Vec<HashMap<(MetricId, i64), f64>>,
 }
 
 impl CutTable {
@@ -112,6 +134,8 @@ impl CutTable {
             entry: Vec::new(),
             exit: Vec::new(),
             winner_fill: Vec::new(),
+            winner_lead: Vec::new(),
+            winner_launch: Vec::new(),
         }
     }
 }
@@ -159,8 +183,11 @@ pub fn build_cut_table(
     let thick = paths.iter().filter(|p| p.winner).count() >= MIN_SPLIT
         && paths.iter().filter(|p| !p.winner).count() >= MIN_SPLIT;
     let fill_n = samples_n(&sampled.by, Bucket::FillWinner);
+    let run_lead_n = samples_n(&sampled.by, Bucket::RunLeadWin);
+    let launch_n = samples_n(&sampled.by, Bucket::LaunchWin);
     let lead_n = samples_n(&sampled.by, Bucket::DumpLead);
     let dump_run_n = samples_n(&sampled.by, Bucket::AfterDumpRun);
+    let gb_n = samples_n(&sampled.by, Bucket::GivebackLead);
 
     let mut entry = Vec::new();
     let mut exit = Vec::new();
@@ -183,6 +210,8 @@ pub fn build_cut_table(
                     role,
                     thick,
                     fill_n,
+                    run_lead_n,
+                    launch_n,
                 );
             }
         }
@@ -196,6 +225,7 @@ pub fn build_cut_table(
             unit,
             lead_n,
             dump_run_n,
+            gb_n,
         );
     }
     for &(id, op, vals) in POSITION_EXIT {
@@ -220,6 +250,8 @@ pub fn build_cut_table(
         entry,
         exit,
         winner_fill: sampled.winner_fill,
+        winner_lead: sampled.winner_lead,
+        winner_launch: sampled.winner_launch,
     }
 }
 
@@ -285,11 +317,19 @@ enum Bucket {
     LoserPeak,
     FillWinner,
     FillLoser,
+    RunLeadWin,
+    RunLeadLose,
+    LaunchWin,
+    LaunchLose,
+    GivebackLead,
+    GivebackLeadAll,
 }
 
 struct PhaseSamples {
     by: HashMap<(usize, Bucket), Vec<f64>>,
     winner_fill: Vec<HashMap<(MetricId, i64), f64>>,
+    winner_lead: Vec<HashMap<(MetricId, i64), f64>>,
+    winner_launch: Vec<HashMap<(MetricId, i64), f64>>,
     held_ran: Vec<f64>,
 }
 
@@ -389,7 +429,8 @@ fn sample_phases(
             _ => None,
         })
         .collect();
-    let lead = Duration::seconds(DUMP_LEAD_SEC);
+    let lead = Duration::seconds(LEAD_SEC);
+    let launch_hi_off = Duration::seconds(LAUNCH_SEC);
     let mut win_fill_secs: Vec<f64> = paths
         .iter()
         .zip(tokens.iter())
@@ -400,6 +441,8 @@ fn sample_phases(
         .collect();
     let med_fill_secs = median(&mut win_fill_secs).unwrap_or(10.0).max(1.0);
     let mut winner_fill = Vec::new();
+    let mut winner_lead = Vec::new();
+    let mut winner_launch = Vec::new();
     let mut held_ran = Vec::new();
 
     for (token, path) in tokens.iter().zip(paths.iter()) {
@@ -415,6 +458,9 @@ fn sample_phases(
         let fill_at = path.t15.unwrap_or(
             token.created_at + Duration::milliseconds((med_fill_secs * 1000.0) as i64),
         );
+        let run_lead_lo = fill_at - lead;
+        let launch_hi = token.created_at + launch_hi_off;
+        let gb_hi = path.ath_at + lead;
 
         let mut series = MetricSeries::new(token.created_at, columns.to_vec());
         if let Some(patterns) = flow {
@@ -425,7 +471,10 @@ fn sample_phases(
         }
         let n = series.n_rows();
         let mut snapped = false;
+        let mut snapped_launch = false;
         let mut snap: HashMap<(MetricId, i64), f64> = HashMap::new();
+        let mut lead_snap: HashMap<(MetricId, i64), f64> = HashMap::new();
+        let mut launch_snap: HashMap<(MetricId, i64), f64> = HashMap::new();
         for row in 0..n {
             let at = series.at[row];
             let price = series.price[row];
@@ -434,8 +483,11 @@ fn sample_phases(
                 && price < path.ath_price * DUMP_FRAC
                 && at > path.ath_at;
             let in_lead = path.dumper && at >= lead_lo && at <= path.ath_at;
+            let in_run_lead = at >= run_lead_lo && at < fill_at && at >= token.created_at;
+            let in_gb = at > path.ath_at && at <= gb_hi && !dumped_now;
             let at_peak = at <= path.ath_at && at >= peak_lo;
             let at_fill = !snapped && at >= fill_at;
+            let at_launch = !snapped_launch && at <= launch_hi;
 
             for (ci, col) in columns.iter().enumerate() {
                 let Some(idx) = series.col_index(*col) else {
@@ -454,15 +506,44 @@ fn sample_phases(
                     };
                     by.entry((ci, fill_bucket)).or_default().push(v);
                     if path.winner {
-                        let (group, metric, window) = col_meta(*col);
-                        let _ = group;
+                        let (_, metric, window) = col_meta(*col);
                         snap.insert(fill_key(metric, window), v);
+                    }
+                }
+                if in_run_lead {
+                    let b = if path.winner {
+                        Bucket::RunLeadWin
+                    } else {
+                        Bucket::RunLeadLose
+                    };
+                    by.entry((ci, b)).or_default().push(v);
+                    if path.winner {
+                        let (_, metric, window) = col_meta(*col);
+                        lead_snap.insert(fill_key(metric, window), v);
+                    }
+                }
+                if at_launch {
+                    let b = if path.winner {
+                        Bucket::LaunchWin
+                    } else {
+                        Bucket::LaunchLose
+                    };
+                    by.entry((ci, b)).or_default().push(v);
+                    if path.winner {
+                        let (_, metric, window) = col_meta(*col);
+                        launch_snap.insert(fill_key(metric, window), v);
                     }
                 }
                 if in_lead {
                     by.entry((ci, Bucket::DumpLeadAll)).or_default().push(v);
                     if path.winner {
                         by.entry((ci, Bucket::DumpLead)).or_default().push(v);
+                    }
+                }
+                if in_gb {
+                    by.entry((ci, Bucket::GivebackLeadAll)).or_default().push(v);
+                    if path.winner && path.dumper {
+                        by.entry((ci, Bucket::GivebackLead)).or_default().push(v);
                     }
                 }
                 if dumped_now {
@@ -489,9 +570,18 @@ fn sample_phases(
             if at_fill {
                 snapped = true;
             }
+            if at_launch {
+                snapped_launch = true;
+            }
         }
         if path.winner && !snap.is_empty() {
             winner_fill.push(snap);
+        }
+        if path.winner && !lead_snap.is_empty() {
+            winner_lead.push(lead_snap);
+        }
+        if path.winner && !launch_snap.is_empty() {
+            winner_launch.push(launch_snap);
         }
         if path.winner {
             if let Some(dump_at) = path.dump_at {
@@ -505,6 +595,8 @@ fn sample_phases(
     PhaseSamples {
         by,
         winner_fill,
+        winner_lead,
+        winner_launch,
         held_ran,
     }
 }
@@ -627,11 +719,13 @@ fn push_entry(
     role: EntryRole,
     thick: bool,
     fill_n: usize,
+    run_lead_n: usize,
+    launch_n: usize,
 ) {
     if thick {
         // Peak contrast is the primary knife (ATH neighborhood, quieter fill
-        // window). Fill-moment at first 1.5× is an extra alternative — it must
-        // not replace peak, or the product only times the rip.
+        // window). Run-lead / launch / fill-moment are extras — they must not
+        // replace peak, or the product only times the rip.
         emit_entry_contrast(
             out,
             by,
@@ -645,6 +739,36 @@ fn push_entry(
             CutPhase::Contrast,
             CutPhase::WinnerFloor,
         );
+        if run_lead_n >= MIN_SPLIT {
+            emit_entry_contrast(
+                out,
+                by,
+                ci,
+                group,
+                metric,
+                window,
+                unit,
+                Bucket::RunLeadWin,
+                Bucket::RunLeadLose,
+                CutPhase::RunLead,
+                CutPhase::RunLead,
+            );
+        }
+        if launch_n >= MIN_SPLIT {
+            emit_entry_contrast(
+                out,
+                by,
+                ci,
+                group,
+                metric,
+                window,
+                unit,
+                Bucket::LaunchWin,
+                Bucket::LaunchLose,
+                CutPhase::Launch,
+                CutPhase::Launch,
+            );
+        }
         if fill_n >= MIN_SPLIT {
             emit_entry_contrast(
                 out,
@@ -697,6 +821,28 @@ fn push_entry(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn emit_exit_rungs(
+    out: &mut Vec<Cut>,
+    by: &HashMap<(usize, Bucket), Vec<f64>>,
+    ci: usize,
+    group: MetricGroupId,
+    metric: MetricId,
+    window: Option<f64>,
+    unit: Unit,
+    bucket: Bucket,
+    phase: CutPhase,
+) {
+    if let Some(mut xs) = by.get(&(ci, bucket)).cloned() {
+        if let Some(v) = rung(&mut xs, 0.50, unit) {
+            emit(out, group, metric, window, Operator::Gte, v, phase);
+        }
+        if let Some(v) = rung(&mut xs, 0.90, unit) {
+            emit(out, group, metric, window, Operator::Gte, v, phase);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn push_exit(
     out: &mut Vec<Cut>,
     by: &HashMap<(usize, Bucket), Vec<f64>>,
@@ -707,6 +853,7 @@ fn push_exit(
     unit: Unit,
     lead_n: usize,
     dump_run_n: usize,
+    gb_n: usize,
 ) {
     let lead_bucket = if lead_n >= MIN_SPLIT {
         Bucket::DumpLead
@@ -718,30 +865,13 @@ fn push_exit(
     } else {
         Bucket::AfterDump
     };
-    if let Some(mut xs) = by.get(&(ci, lead_bucket)).cloned() {
-        if let Some(v) = rung(&mut xs, 0.50, unit) {
-            emit(
-                out,
-                group,
-                metric,
-                window,
-                Operator::Gte,
-                v,
-                CutPhase::DumpLead,
-            );
-        }
-        if let Some(v) = rung(&mut xs, 0.90, unit) {
-            emit(
-                out,
-                group,
-                metric,
-                window,
-                Operator::Gte,
-                v,
-                CutPhase::DumpLead,
-            );
-        }
-    }
+    let gb_bucket = if gb_n >= MIN_SPLIT {
+        Bucket::GivebackLead
+    } else {
+        Bucket::GivebackLeadAll
+    };
+    emit_exit_rungs(out, by, ci, group, metric, window, unit, lead_bucket, CutPhase::DumpLead);
+    emit_exit_rungs(out, by, ci, group, metric, window, unit, gb_bucket, CutPhase::GivebackLead);
     if let Some(mut xs) = by.get(&(ci, dump_bucket)).cloned() {
         if let Some(v) = rung(&mut xs, 0.50, unit) {
             emit(
@@ -862,7 +992,18 @@ mod tests {
         reserve: f64,
         lead_buy: f64,
     ) -> CorpusToken {
-        let peak_i = n / 2;
+        path_token_peak(mint, n, n / 2, peak_mult, reserve, lead_buy)
+    }
+
+    fn path_token_peak(
+        mint: &str,
+        n: usize,
+        peak_i: usize,
+        peak_mult: f64,
+        reserve: f64,
+        lead_buy: f64,
+    ) -> CorpusToken {
+        let peak_i = peak_i.max(1).min(n.saturating_sub(1));
         let trades: Vec<_> = (0..n)
             .map(|i| {
                 let price = if i <= peak_i {
@@ -872,7 +1013,7 @@ mod tests {
                     peak_mult * (1.0 - 0.5 * fall)
                 };
                 let mut t = trade(i as i64, price, reserve, true);
-                if i + DUMP_LEAD_SEC as usize >= peak_i && i <= peak_i {
+                if i + LEAD_SEC as usize >= peak_i && i <= peak_i {
                     t.amount_sol = lead_buy;
                 } else {
                     t.amount_sol = 0.4;
@@ -897,6 +1038,17 @@ mod tests {
         }
         for i in 0..20 {
             tokens.push(path_token(&format!("l{i}"), 24, 1.2, 15.0, 0.4));
+        }
+        tokens
+    }
+
+    fn slow_run_corpus() -> Vec<CorpusToken> {
+        let mut tokens = Vec::new();
+        for i in 0..10 {
+            tokens.push(path_token_peak(&format!("w{i}"), 40, 30, 4.0, 80.0, 8.0));
+        }
+        for i in 0..20 {
+            tokens.push(path_token_peak(&format!("l{i}"), 40, 30, 1.2, 15.0, 0.4));
         }
         tokens
     }
@@ -1050,5 +1202,85 @@ mod tests {
             held.iter().map(|c| (c.phase, c.threshold)).collect::<Vec<_>>()
         );
         assert!(held.iter().all(|c| c.phase != CutPhase::Declared || c.threshold < 60.0));
+    }
+
+    #[test]
+    fn run_lead_time_is_before_fill_moment() {
+        let tokens = slow_run_corpus();
+        let t = build_cut_table(&tokens, None, FingerprintId(uuid::Uuid::nil()));
+        let time: Vec<&Cut> = t.entry.iter().filter(|c| c.metric == MetricId::Time).collect();
+        let lead = time
+            .iter()
+            .find(|c| c.phase == CutPhase::RunLead)
+            .expect("run-lead time");
+        let fill = time
+            .iter()
+            .find(|c| c.phase == CutPhase::FillMoment)
+            .expect("fill-moment time");
+        let peak = time
+            .iter()
+            .find(|c| c.phase == CutPhase::Contrast)
+            .expect("peak contrast time");
+        assert!(
+            lead.threshold < fill.threshold,
+            "run-lead {} should be before fill-moment {}",
+            lead.threshold,
+            fill.threshold
+        );
+        assert!(
+            fill.threshold < peak.threshold,
+            "fill-moment {} should be before peak {}",
+            fill.threshold,
+            peak.threshold
+        );
+        assert_eq!(lead.op, Operator::Lt);
+    }
+
+    #[test]
+    fn launch_time_exists_beside_peak() {
+        let tokens = slow_run_corpus();
+        let t = build_cut_table(&tokens, None, FingerprintId(uuid::Uuid::nil()));
+        let time: Vec<&Cut> = t.entry.iter().filter(|c| c.metric == MetricId::Time).collect();
+        assert!(
+            time.iter().any(|c| c.phase == CutPhase::Launch),
+            "launch time must be an extra, got {:?}",
+            time.iter().map(|c| (c.phase, c.threshold)).collect::<Vec<_>>()
+        );
+        assert!(time.iter().any(|c| c.phase == CutPhase::Contrast));
+    }
+
+    #[test]
+    fn giveback_lead_is_after_ath_not_dump_lead() {
+        let tokens = slow_run_corpus();
+        let t = build_cut_table(&tokens, None, FingerprintId(uuid::Uuid::nil()));
+        let buy_dump: Vec<&Cut> = t
+            .exit
+            .iter()
+            .filter(|c| c.metric == MetricId::Buy && c.phase == CutPhase::DumpLead)
+            .collect();
+        let buy_gb: Vec<&Cut> = t
+            .exit
+            .iter()
+            .filter(|c| c.metric == MetricId::Buy && c.phase == CutPhase::GivebackLead)
+            .collect();
+        assert!(
+            !buy_dump.is_empty(),
+            "dump-lead buy must stay"
+        );
+        assert!(
+            !buy_gb.is_empty(),
+            "giveback-lead buy must exist, exit phases {:?}",
+            t.exit
+                .iter()
+                .filter(|c| c.metric == MetricId::Buy)
+                .map(|c| (c.phase, c.threshold))
+                .collect::<Vec<_>>()
+        );
+        let dump_hi = buy_dump.iter().map(|c| c.threshold).fold(0.0, f64::max);
+        let gb_hi = buy_gb.iter().map(|c| c.threshold).fold(0.0, f64::max);
+        assert!(
+            dump_hi > gb_hi,
+            "dump-lead buy {dump_hi} should spike above giveback-lead {gb_hi}"
+        );
     }
 }

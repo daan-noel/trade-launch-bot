@@ -229,16 +229,33 @@ fn rank_archive(archive: &[ArchiveRow], _combos: &[GeneratedCombo]) -> Vec<usize
 }
 
 fn replay_champion_idx(replayed: &HashMap<usize, (ScoredRule, f64)>) -> Option<usize> {
-    replayed
+    let paying: Vec<(&usize, &(ScoredRule, f64))> = replayed
         .iter()
+        .filter(|(_, (r, _))| pays(r))
+        .collect();
+    let pool: Vec<(&usize, &(ScoredRule, f64))> = if paying.is_empty() {
+        replayed.iter().collect()
+    } else {
+        paying
+    };
+    pool.into_iter()
         .max_by(|a, b| {
             a.1 .0
                 .total_pnl_sol
                 .partial_cmp(&b.1 .0.total_pnl_sol)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    fill_spread(&b.1 .0, b.1 .1)
+                        .partial_cmp(&fill_spread(&a.1 .0, a.1 .1))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
                 .then_with(|| a.1 .0.n_closed.cmp(&b.1 .0.n_closed))
         })
         .map(|(&i, _)| i)
+}
+
+fn fill_spread(row: &ScoredRule, opti: f64) -> f64 {
+    (opti - row.total_pnl_sol).abs()
 }
 
 fn slice_pays(replayed: &HashMap<usize, (ScoredRule, f64)>) -> bool {
@@ -464,6 +481,14 @@ mod tests {
         replayed.insert(1, (row(0.113, 20, 1.2), 0.119));
         assert_eq!(replay_champion_idx(&replayed), Some(1));
         assert!(slice_pays(&replayed));
+    }
+
+    #[test]
+    fn tighter_spread_breaks_authority_tie() {
+        let mut replayed = HashMap::new();
+        replayed.insert(0, (row(0.113, 20, 1.2), 0.545));
+        replayed.insert(1, (row(0.113, 20, 1.2), 0.119));
+        assert_eq!(replay_champion_idx(&replayed), Some(1));
     }
 
     #[test]

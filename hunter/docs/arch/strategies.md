@@ -338,6 +338,8 @@ Lab authoring: `POST /api/strategies/flow-discovery` scores ix-structures per
 sweep `GroupKey`; the Flow discovery page toggles patterns into `metric_config`.
 `POST /api/strategies/rule-search` fills registry roles for one fingerprint and
 datetime range and boards a champion `RuleParams` (Promote → inactive paper).
+Method: [`rule-search-method.md`](../plans/strategies/rule-search-method.md).
+Job: [`rule-search.md`](../plans/strategies/rule-search.md).
 
 ## Two-phase first-slot fingerprint gate
 

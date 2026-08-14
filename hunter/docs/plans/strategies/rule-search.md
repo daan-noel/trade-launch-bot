@@ -1,29 +1,29 @@
 # Rule search — lab job
 
 Lab page that runs [rule-search-method.md](rule-search-method.md) for one fingerprint
-and one datetime range. It is a sibling of Grouped sweep, Flow discovery, and Metric
-discovery, not a sweep mode.
+and one datetime range. Sibling of Grouped sweep, Flow discovery, and Metric
+discovery — not a sweep mode.
 
-**Input (the form):** fingerprint, datetime range, buy size, fill model, cost model,
-copycat guard. Optional incumbent rule (compare only).
-**Output (the board):** champion `RuleParams`, empty-entry, incumbent, verdict,
-top archive rows. Promote uses the existing sweep modal.
+**Input:** fingerprint, datetime range, buy, fill, cost, copycat. Optional
+incumbent (compare only).
+**Output:** champion `RuleParams`, empty-entry, incumbent, verdict, top archive.
+Promote uses the existing sweep modal.
 
 The form does not expose metrics, windows, or thresholds. Those come from the
-cohort and the registry. Another rule's params are not an input.
+cohort and the registry.
 
 ```
   LAB  Strategies → Rule search
 
   form                                      hunter-lab job
   ────                                      ──────────────
-  fingerprint                               load matched + lake once
-  datetime range                            cut table from this range
-  buy / fill / cost / copycat               role product → full RuleParams
-  [optional incumbent]                      fast archive (series + shared entry)
-                                            copycat (+ caps) time-order merge
-                                            run_replay: champion, empty-entry,
-                                                        incumbent, top few
+    fingerprint                               load matched + lake once
+    datetime range                            cut table from this range
+    buy / fill / cost / copycat               role product → full RuleParams
+    [optional incumbent]                      fast archive (series + shared entry)
+                                              copycat (+ caps) time-order merge
+                                              run_replay: champion, empty-entry,
+                                                          incumbent, top archive
               │
               ▼
   board:  champion vs empty-entry vs incumbent
@@ -66,13 +66,13 @@ No axis rows, no harvest templates, no metric checklist.
 ## Job
 
 `hunter-lab` owns the search. Lab-only route, lab-only API. Same job shell as
-sweep/discovery: `POST` → `202`, SSE progress, cancel, persist the run, single-flight
-against sweep / flow-discovery / metric-discovery (one heavy analysis job).
+sweep/discovery: `POST` → `202`, SSE progress, cancel, persist the run,
+single-flight against sweep / flow-discovery / metric-discovery.
 
 `as_of` freezes at session open so every combo shares one deadness "now".
 
-Load histories with flow columns when the fingerprint has split config; otherwise
-every `m_flow_split` clause is silent.
+Load histories with flow columns when the fingerprint has split config;
+otherwise every `m_flow_split` clause is silent.
 
 Generator, scorer, and report live in `hunter-lab`. The page starts the job and
 renders the archive.
@@ -99,38 +99,33 @@ leaf live, Simulate, and sweep already use). There is no third engine.
   archive = those summaries
 
   run_replay (shared event queue) ONLY
-    champion, empty-entry, incumbent, top few archive rows
+    champion, empty-entry, incumbent, top archive
 ```
 
-The generator is entry × exit, so the entry walk is shared across bags. Re-walking
-entry per pair is not an inner loop.
+The generator is entry × exit, so the entry walk is shared across bags.
 
-Copycat and caps are a merge after per-token scoring, not a reason to fold one
-global event stream per combo. Sweep dropped that merge because a 100k-combo
-token fan-out cannot keep cross-token state. This corpus is one fingerprint, so
-the merge is cheap and required: empty-entry eats copycats; a selector often does
-not. Ranking with the guard off inflates ungated PnL and can flip the verdict.
+Copycat and caps are a merge after per-token scoring. Sweep dropped that merge
+because a 100k-combo token fan-out cannot keep cross-token state. This corpus
+is one fingerprint, so the merge is required: empty-entry eats copycats; a
+selector often does not. Ranking with the guard off inflates ungated PnL and
+can flip the verdict.
 
 Horizon is Simulate's (`as_of` / corpus last trade), not sweep's per-token tail
 cap. Quiet tokens close the same way as Simulate.
 
 **Report columns are `run_replay`.** Same fill, cost, guard, buy, `as_of` as
-`POST /api/strategies/simulate`. If the fast archive winner and the replay winner
-disagree, the board shows both and the champion is the replay one.
+`POST /api/strategies/simulate`. Paying replays rank by authority SOL, then
+tighter fill spread. If the top archive slice has no paying replay, the board
+scores the next slice. If the fast archive winner and the replay winner
+disagree, the champion is the replay one.
 
 Guard test: `run_replay` of one draft equals HTTP Simulate summary on the same
 fingerprint, range, fill, cost, guard, and buy.
-
-A small corpus (hundreds of tokens × hundreds of combos) may run combo-parallel
-`run_replay` on a shared queue instead of the series loop. The report columns stay
-`run_replay` either way. Swap only the inner archive.
 
 Do not persist every archive row as a Simulate result. Slim summaries during
 search; one Simulate (or promote) for the champion the operator wants to inspect.
 
 ## Board
-
-Not a 100k-row sweep table.
 
 | Block | Content |
 | --- | --- |
@@ -144,25 +139,8 @@ Refuse is a finished run, not an empty page.
 
 ## Locked
 
-- No metric is privileged. New registry rows join by flags.
-- Incumbent is compare-only.
-- No kitchen-sink entry, no greedy add/drop on entry.
-- Exit bags are 0–2 different metrics; giveback and clock still compete.
-- Entry can-fail is 0–2 independent clauses (selector and extra pooled); trigger
-  stays 0–1.
-- Cut table: peak contrast + winner floor on entry; fill-moment is an extra
-  alternative, not a replacement. Dump-lead + runner after-dump + dumper p90
-  + outcome held on exit. Mixed-everyone quantiles only when the split is thin.
-- Can-fail pairs that are fill-moment cuts co-occur at 1.5×. Peak contrast
-  pairs are not gated on that snapshot. Retune is same-metric, same-phase
-  neighbors only.
-- A fill-sensitive top archive slice (no paying replay) scores the next
-  slice so a quieter rule can still be champion.
-- Do not rank an exit bag on empty-entry before it meets an entry.
-- Staged scale-out is the same generator on a third bag; this job scores entry +
-  the global exit until that bag exists.
-
-An algorithm change is graded by [method §5](rule-search-method.md#5-prove-an-update).
-The board's three columns (champion / empty-entry / incumbent) are the operator
-ablation. Constructed-corpus tests own the cut sources; the page owns whether
-the champion pays.
+- Incumbent is compare-only; never a seed.
+- Does not call sweep `scan` as the PnL authority.
+- Report columns are `run_replay`. Fast archive is ranking only.
+- Algorithm (cuts, roles, caps, ranking, how to grade a change):
+  [rule-search-method.md](rule-search-method.md).
