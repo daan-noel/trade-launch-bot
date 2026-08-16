@@ -18,8 +18,10 @@
 //! [family-search-plan.md]: ../../docs/roadmap/family-search-plan.md
 
 pub mod attribution;
+pub mod family;
 pub mod gates;
 pub mod oracle;
+pub mod score;
 
 #[cfg(test)]
 pub mod fixtures;

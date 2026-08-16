@@ -121,3 +121,30 @@ pub fn metric_exit(
 pub fn tp_exit(pnl_sol: f64) -> TokenOutcome {
     TokenOutcome { exit: ExitCode::TakeProfit, ..outcome_at(created_at(), 1.0, pnl_sol) }
 }
+
+/// A `fingerprints` row shaped like the charter's reference family:
+/// `3ix:BuyExactSolIn · bkt=exact`. A caller varies exactly one axis off this base to
+/// build siblings — every other axis stays put, which is what makes them siblings.
+pub fn fp_row(name: &str) -> trading_core::models::Fingerprint {
+    trading_core::models::Fingerprint {
+        id: uuid::Uuid::new_v4(),
+        name: name.into(),
+        cu_limit: Some(200_000),
+        cu_price: Some(50),
+        init_buy_lamports: Some(trading_core::config::constants::sol_to_lamports(0.5)),
+        max_cost_lamports: None,
+        spendable_lamports_in: None,
+        first_slot_buy_lamports: None,
+        first_slot_sell_lamports: None,
+        // `bkt=exact` — a NULL width is an exact compare, not an unset one.
+        bucket_size_amount: None,
+        ix_labels: Some(vec![
+            "Pump.Fun: CreateIdempotent".into(),
+            "Pump.Fun: Create".into(),
+            "Pump.Fun: BuyExactSolIn".into(),
+        ]),
+        metric_config: serde_json::json!({}),
+        created_at: created_at(),
+        updated_at: created_at(),
+    }
+}

@@ -1,10 +1,12 @@
 //! Refuse gates — the checks a run fails *before* it can report a number.
 //!
-//! Slice 1 lands the freshness gate (charter D7). The axis-duplication gate (D-2c)
-//! joins it once the family loop exists.
+//! Two of them: **freshness** (charter D7), which refuses a run whose range outruns
+//! the data, and **axis duplication** (plan §2c), which refuses an entry clause that
+//! is really a second reading of the fingerprint axis the family varies.
 
 use chrono::{DateTime, Utc};
 
+use crate::family_search::score::spearman;
 use crate::sweep::corpus::Corpus;
 
 /// Default tolerance between a request's `until` and the lake's newest print. A lake
@@ -85,6 +87,64 @@ pub fn check_freshness(
     }
 }
 
+// ─────────────────────────── axis duplication (plan §2c) ──────────────────────
+//
+// `liquidity > 20` admits 84% / 66% of the spend=4 / spend=5 cohorts but only 36–44%
+// of spend=1 / 1.5 / 2 / 3 — because a larger initial buy mechanically creates the
+// liquidity. Such a clause is not an entry filter; it is the fingerprint axis read
+// twice, and it will look like a working entry rule on every family that varies that
+// axis. Entry logic does not transfer (unlike exit logic), which is exactly why the
+// entry side needs a gate the exit side does not.
+//
+// Costs **zero extra runs**: `enter_pct` per cohort already falls out of the scoring
+// the family loop performs.
+
+/// |ρ| at or above which an entry clause is refused as an axis proxy.
+pub const AXIS_DUPLICATION_RHO: f64 = 0.8;
+
+/// One entry clause measured against the family's varied axis.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AxisDuplication {
+    pub clause: String,
+    /// Spearman(admit rate, varied-axis value) over the family. `None` when it can't
+    /// be computed — one cohort, or a constant on either side.
+    pub rho: Option<f64>,
+}
+
+impl AxisDuplication {
+    /// Whether the clause tracks the axis closely enough to be a proxy for it. Both
+    /// signs refuse: a clause that anti-selects on the axis re-reads it just as much.
+    pub fn duplicates(&self) -> bool {
+        self.rho.is_some_and(|r| r.abs() >= AXIS_DUPLICATION_RHO)
+    }
+
+    /// Why it was refused, for the board. `None` when the clause stands.
+    pub fn refuse_reason(&self) -> Option<String> {
+        let r = self.rho?;
+        self.duplicates().then(|| {
+            format!(
+                "`{}` admits in lockstep with the varied fingerprint axis (rho {r:+.2}) — \
+                 it re-reads the axis rather than filtering within it. Demote to a \
+                 diagnostic.",
+                self.clause
+            )
+        })
+    }
+}
+
+/// Measure one entry clause against the family's varied axis.
+///
+/// `admit_rate[i]` is the clause's admit rate on family member `i`; `axis_value[i]` is
+/// that member's varied-axis value, in the same order. Both are already in hand from
+/// the family loop's own scoring.
+pub fn axis_duplication(
+    clause: impl Into<String>,
+    admit_rate: &[f64],
+    axis_value: &[f64],
+) -> AxisDuplication {
+    AxisDuplication { clause: clause.into(), rho: spearman(admit_rate, axis_value) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,5 +194,46 @@ mod tests {
         let c = corpus_of(vec![]);
         assert!(check_freshness(&c, created_at(), i64::MAX).is_err());
         assert_eq!(freshness(&c, created_at(), 0).last_trade_at, None);
+    }
+
+    /// The charter's own numbers: `liquidity > 20` on the reference family, ordered
+    /// spend = 1 / 1.5 / 2 / 3 / 4 / 5.
+    const SPEND: [f64; 6] = [1.0, 1.5, 2.0, 3.0, 4.0, 5.0];
+    const LIQ_ADMIT: [f64; 6] = [0.36, 0.40, 0.42, 0.44, 0.84, 0.66];
+
+    #[test]
+    fn an_entry_clause_tracking_the_varied_axis_is_refused() {
+        let d = axis_duplication("liquidity > 20", &LIQ_ADMIT, &SPEND);
+        assert!(d.rho.unwrap() >= AXIS_DUPLICATION_RHO, "rho {:?}", d.rho);
+        assert!(d.duplicates());
+        assert!(d.refuse_reason().unwrap().contains("liquidity > 20"));
+    }
+
+    #[test]
+    fn a_clause_that_anti_selects_on_the_axis_is_refused_too() {
+        // A perfect inverse re-reads the axis exactly as much as a perfect match.
+        let inverted: Vec<f64> = LIQ_ADMIT.iter().rev().copied().collect();
+        let d = axis_duplication("liquidity < 20", &inverted, &SPEND);
+        assert!(d.rho.unwrap() < 0.0);
+        assert!(d.duplicates(), "both signs refuse: rho {:?}", d.rho);
+    }
+
+    #[test]
+    fn a_clause_independent_of_the_axis_stands() {
+        // Admits scattered against the axis — a real filter, not a second reading.
+        let admit = [0.55, 0.30, 0.61, 0.28, 0.58, 0.33];
+        let d = axis_duplication("nonvol_buy >= 1.6", &admit, &SPEND);
+        assert!(!d.duplicates(), "rho {:?}", d.rho);
+        assert_eq!(d.refuse_reason(), None);
+    }
+
+    #[test]
+    fn one_cohort_cannot_measure_duplication_and_never_refuses() {
+        // A family of one: nothing to correlate, so the gate stays silent rather
+        // than refusing (or clearing) a clause it cannot judge.
+        let d = axis_duplication("liquidity > 20", &[0.84], &[5.0]);
+        assert_eq!(d.rho, None);
+        assert!(!d.duplicates());
+        assert_eq!(d.refuse_reason(), None);
     }
 }

@@ -206,8 +206,8 @@ mod tests {
         }
         let theirs = agg.finalize(0).n_exit_metrics_by_slot;
 
-        for slot in 0..N_EXIT_METRIC_SLOTS {
-            let want = theirs[slot] as u64;
+        for (slot, &theirs_n) in theirs.iter().enumerate() {
+            let want = theirs_n as u64;
             let got = mine.by_slot.iter().find(|r| r.slot as usize == slot).map_or(0, |r| r.n);
             assert_eq!(got, want, "slot {slot}");
         }

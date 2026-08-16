@@ -225,11 +225,11 @@ Progress reporting: the family loop emits per-cohort phase labels through the sa
         UNLOCKS: exit terms gradeable in ONE run;
                  entry gradeable WITHOUT an exit rule
 
-  SLICE 2  the family
-    [ ] family.rs  sibling resolve
-    [ ] score.rs   pooled fit + rho self-test
-    [ ] gates.rs   axis-duplication refuse
-    [ ] narrow re-check of the finalist
+  SLICE 2  the family                                                      DONE
+    [x] family.rs  sibling resolve
+    [x] score.rs   pooled fit + rho self-test
+    [x] gates.rs   axis-duplication refuse
+    [x] score.rs   narrow re-check of the finalist
         UNLOCKS: cohort quality separated from rule quality
 
   SLICE 3  the generator
@@ -260,10 +260,10 @@ Pass without the lake, same bar as
 - [x] Per-alarm counts equal the sweep's `n_exit_metrics_by_slot` on a shared fixture.
 - [x] Two exit terms with the same metric name but different windows occupy distinct
       slots (a dynamic group and its lifetime twin share `metric.name()`).
-- [ ] Pooled fit equals `Σpnl / Σentry`; swapping two cohorts' order does not move it,
+- [x] Pooled fit equals `Σpnl / Σentry`; swapping two cohorts' order does not move it,
       and a mean-of-percents implementation fails the case.
-- [ ] A family of one degrades to single-cohort and reports no `rho`.
-- [ ] An entry clause whose admit rate tracks the varied axis is refused.
+- [x] A family of one degrades to single-cohort and reports no `rho`.
+- [x] An entry clause whose admit rate tracks the varied axis is refused.
 - [ ] Emptying the `rules` table changes nothing in the output (D5).
 - [x] A request whose `until` outruns `Corpus::last_trade_at` is refused.
 - [ ] The generated candidate set spans ≥ 3 end-event families.

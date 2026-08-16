@@ -166,7 +166,7 @@ mod tests {
         let t = token_from_prices(&[1.0, 5.0, 2.0, 9.0, 3.0]);
         let got = suffix_peak(&t.trades);
         // Naive: for every i, the max over trades[i..].
-        for i in 0..t.trades.len() {
+        for (i, &got_i) in got.iter().enumerate() {
             let want = t.trades[i..]
                 .iter()
                 .filter_map(|tr| {
@@ -175,9 +175,8 @@ mod tests {
                 })
                 .fold(f64::NEG_INFINITY, f64::max);
             assert!(
-                (got[i] as f64 - want).abs() < 1e-9 * want.abs().max(1.0),
-                "row {i}: {} vs {want}",
-                got[i]
+                (got_i as f64 - want).abs() < 1e-9 * want.abs().max(1.0),
+                "row {i}: {got_i} vs {want}"
             );
         }
         // An empty history has no peak to report, not a fabricated zero.
