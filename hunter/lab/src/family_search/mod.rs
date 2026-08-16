@@ -20,6 +20,7 @@
 pub mod attribution;
 pub mod family;
 pub mod gates;
+pub mod generator;
 pub mod oracle;
 pub mod score;
 

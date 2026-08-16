@@ -232,9 +232,9 @@ Progress reporting: the family loop emits per-cohort phase labels through the sa
     [x] score.rs   narrow re-check of the finalist
         UNLOCKS: cohort quality separated from rule quality
 
-  SLICE 3  the generator
-    [ ] signature-earned candidate menu
-    [ ] per-family diversity quota at generate AND expansion
+  SLICE 3  the generator                                                   DONE
+    [x] signature-earned candidate menu
+    [x] per-family diversity quota at generate AND expansion
 
   SLICE 4  board + wiring
     [ ] handler, routes, SSE, HeavyJob::FamilySearch, result cache
@@ -264,9 +264,9 @@ Pass without the lake, same bar as
       and a mean-of-percents implementation fails the case.
 - [x] A family of one degrades to single-cohort and reports no `rho`.
 - [x] An entry clause whose admit rate tracks the varied axis is refused.
-- [ ] Emptying the `rules` table changes nothing in the output (D5).
+- [x] Emptying the `rules` table changes nothing in the output (D5).
 - [x] A request whose `until` outruns `Corpus::last_trade_at` is refused.
-- [ ] The generated candidate set spans ≥ 3 end-event families.
+- [x] The generated candidate set spans ≥ 3 end-event families.
 - [ ] Family search's replay of a draft equals HTTP Simulate on the same fingerprint,
       range, fill, cost, guard, and buy.
 
