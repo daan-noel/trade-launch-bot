@@ -120,6 +120,12 @@ pub struct LocalState {
     pub rule_search_cancel: Arc<AtomicBool>,
     pub rule_search_progress: Arc<ProgressCell>,
     pub rule_search_result: Arc<super::rule_search_cache::RuleSearchCache>,
+    /// Single-flight gate for family search. Mutually exclusive with every other
+    /// heavy job — it holds two corpora at once, so it is the RAM-hungriest of them.
+    pub family_search_running: Arc<AtomicBool>,
+    pub family_search_cancel: Arc<AtomicBool>,
+    pub family_search_progress: Arc<ProgressCell>,
+    pub family_search_result: Arc<super::family_search_cache::FamilySearchCache>,
 }
 
 impl LocalState {
@@ -148,6 +154,10 @@ impl LocalState {
             rule_search_cancel: Arc::new(AtomicBool::new(false)),
             rule_search_progress: Arc::new(ProgressCell::default()),
             rule_search_result: Arc::new(super::rule_search_cache::RuleSearchCache::new()),
+            family_search_running: Arc::new(AtomicBool::new(false)),
+            family_search_cancel: Arc::new(AtomicBool::new(false)),
+            family_search_progress: Arc::new(ProgressCell::default()),
+            family_search_result: Arc::new(super::family_search_cache::FamilySearchCache::new()),
         }
     }
 
@@ -162,8 +172,22 @@ impl LocalState {
             Some("a metric-discovery pipeline is already running — wait or cancel it first")
         } else if self.rule_search_running.load(Acquire) {
             Some("a rule-search job is already running — wait or cancel it first")
+        } else if self.family_search_running.load(Acquire) {
+            Some("a family-search job is already running — wait or cancel it first")
         } else {
             None
+        }
+    }
+
+    /// This job's single-flight flag — the ONE mapping from job to flag, so a new
+    /// `HeavyJob` variant cannot be added to some of the checks and missed by others.
+    fn running_flag(&self, kind: HeavyJob) -> &Arc<AtomicBool> {
+        match kind {
+            HeavyJob::Sweep => &self.sweep_running,
+            HeavyJob::Discovery => &self.discovery_running,
+            HeavyJob::MetricDiscovery => &self.metric_discovery_running,
+            HeavyJob::RuleSearch => &self.rule_search_running,
+            HeavyJob::FamilySearch => &self.family_search_running,
         }
     }
 
@@ -171,40 +195,17 @@ impl LocalState {
     /// heavy job snuck in between the check and the claim.
     pub fn claim_heavy(&self, kind: HeavyJob) -> Result<(), &'static str> {
         use std::sync::atomic::Ordering::{AcqRel, Acquire, Release};
-        let flag = match kind {
-            HeavyJob::Sweep => &self.sweep_running,
-            HeavyJob::Discovery => &self.discovery_running,
-            HeavyJob::MetricDiscovery => &self.metric_discovery_running,
-            HeavyJob::RuleSearch => &self.rule_search_running,
-        };
-        if flag
-            .compare_exchange(false, true, AcqRel, Acquire)
-            .is_err()
-        {
+        let flag = self.running_flag(kind);
+        if flag.compare_exchange(false, true, AcqRel, Acquire).is_err() {
             return Err(kind.busy_msg());
         }
-        let other = match kind {
-            HeavyJob::Sweep => {
-                self.discovery_running.load(Acquire)
-                    || self.metric_discovery_running.load(Acquire)
-                    || self.rule_search_running.load(Acquire)
-            }
-            HeavyJob::Discovery => {
-                self.sweep_running.load(Acquire)
-                    || self.metric_discovery_running.load(Acquire)
-                    || self.rule_search_running.load(Acquire)
-            }
-            HeavyJob::MetricDiscovery => {
-                self.sweep_running.load(Acquire)
-                    || self.discovery_running.load(Acquire)
-                    || self.rule_search_running.load(Acquire)
-            }
-            HeavyJob::RuleSearch => {
-                self.sweep_running.load(Acquire)
-                    || self.discovery_running.load(Acquire)
-                    || self.metric_discovery_running.load(Acquire)
-            }
-        };
+        // Mutual exclusion over EVERY other heavy job, derived from `HeavyJob::ALL`
+        // rather than hand-enumerated per variant: the old shape listed the other
+        // three inside each arm, so adding a job meant editing every arm and a miss
+        // let two RAM-hungry jobs run together.
+        let other = HeavyJob::ALL
+            .iter()
+            .any(|&k| !k.same_as(kind) && self.running_flag(k).load(Acquire));
         if other {
             flag.store(false, Release);
             return Err(self.heavy_job_block().unwrap_or(
@@ -215,22 +216,37 @@ impl LocalState {
     }
 }
 
-/// The four Duck/RAM-hungry lab jobs — one at a time.
-#[derive(Clone, Copy)]
+/// The Duck/RAM-hungry lab jobs — one at a time.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum HeavyJob {
     Sweep,
     Discovery,
     MetricDiscovery,
     RuleSearch,
+    FamilySearch,
 }
 
 impl HeavyJob {
+    /// Every variant — the list `claim_heavy` derives mutual exclusion from.
+    pub const ALL: [HeavyJob; 5] = [
+        HeavyJob::Sweep,
+        HeavyJob::Discovery,
+        HeavyJob::MetricDiscovery,
+        HeavyJob::RuleSearch,
+        HeavyJob::FamilySearch,
+    ];
+
+    fn same_as(self, other: HeavyJob) -> bool {
+        self == other
+    }
+
     fn busy_msg(self) -> &'static str {
         match self {
             HeavyJob::Sweep => "a grouped sweep is already running",
             HeavyJob::Discovery => "a flow-discovery job is already running",
             HeavyJob::MetricDiscovery => "a metric-discovery pipeline is already running",
             HeavyJob::RuleSearch => "a rule-search job is already running",
+            HeavyJob::FamilySearch => "a family-search job is already running",
         }
     }
 }

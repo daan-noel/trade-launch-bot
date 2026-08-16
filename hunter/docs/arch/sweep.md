@@ -434,6 +434,40 @@ Fill/cost defaults: worst fill + `pumpfun_impact`. Buy and caps come from the
 incumbent when one is set, else the form. Copycat is ON unless the request sets it
 off — empty-entry vs champion needs the guard.
 
+## Family search (`lab/src/family_search/`)
+
+Lab-only job that grades **one fingerprint's sibling family**: siblings share
+`ix_labels` and `bucket_size_amount` and differ on exactly one axis, resolved
+mechanically off the `fingerprints` table. Rank comes from a pooled fit across the
+family, level from the held-out target cohort alone. Rule search is not modified;
+every change to shared sweep code is additive. Charter + decisions:
+[family-search.md](../roadmap/family-search.md); build plan:
+[family-search-plan.md](../roadmap/family-search-plan.md).
+
+| File | Role |
+| --- | --- |
+| `family_search/family.rs` | Sibling resolve off the `fingerprints` table. Same shape, identical on every axis but one; a dropped axis is a different population, not a sibling. A family of one degrades to single-cohort. Unpinned ties land on the first axis in `AXES`. |
+| `family_search/generator.rs` | Signature-earned candidates (rule search's cut table, read-only) bucketed by end-event family (flow · organic · stall-clock · liquidity-ceiling · price-trail); no family exceeds 40% of slots, at generation **and** at expansion. Price trail stays in the library, flagged. `ungated_control` is the exit-less diagnostic, kept apart. |
+| `family_search/score.rs` | Pooled fit `Σpnl_sol / Σentry_sol` (never a mean of per-cohort percents), Spearman ρ as the procedure's self-test, and the narrow re-check of the finalist term by term. |
+| `family_search/oracle.rs` | Capture ratio against the oracle exit — the best price printed after the fill, priced through the same cost and fill as the realized exit. `n_no_upside` is its own line and grades the **entry**. |
+| `family_search/attribution.rs` | Per authored exit slot: n, Σpnl_sol, Σentry_sol. Bucketing mirrors `ComboAgg::record`, pinned equal by a no-DB test. |
+| `family_search/gates.rs` | Freshness refuse (`Corpus::last_trade_at` vs the requested `until`) and the axis-duplication refuse (an entry clause whose admit rate tracks the varied axis at \|ρ\| ≥ 0.8). |
+| `family_search/report.rs` | Board payload + the portrait prose. Every candidate row carries the rank-only `fit_ret_pct` beside the reportable `target_ret_pct`. |
+| `api/handlers/strategies/family_search.rs` | `POST /api/strategies/family-search` (+`/cancel`/`/last`/`/{run_id}`). Scope resolves for every member up front (dimension-only), then the **target cohort stays resident** while fit siblings load one at a time. Persists the last result under `$SWEEP_LAKE_DIR/family-search/last.json`. Single-flight against every other heavy job. |
+
+Two tiers: the fit stage stops at `score_combos`' archive fold (it needs a ranking,
+and candidates are near-free against the token walk), and `run_replay` is the
+authority pass on the **target cohort and the finalist only**.
+
+Buy size, caps, fill, cost and the copycat setting come from the **request** only. An
+incumbent rule is a display column and supplies none of them — cost is U-shaped under
+`pumpfun_impact`, so an incumbent's buy size silently moves the economics, and its
+caps change which tokens are entered at all.
+
+`Selection::with_oracle` is the one additive corpus field the job adds: it builds
+`CorpusToken::peak_after` (`projection::suffix_peak`) at load, 4 B/row, opt-in, and
+folded into `lake_hash` so an oracle load and a plain load cannot share a cache entry.
+
 ## Adding a strategy
 
 `strategies/<x>.rs` (`Strategy`+`ParamSpace`+`AxesSpec`) + `registry.rs` arm (table triple + dispatch) + `<x>_grouped_sweep_*` tables in a `lab/migrations/` SQL file + frontend param-key list + axes defs. Engine, grouping, repo, handler, and page are reused unchanged.

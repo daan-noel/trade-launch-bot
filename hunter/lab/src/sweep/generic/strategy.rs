@@ -975,7 +975,13 @@ impl BoundCombo {
 /// Precompute [`BoundCombo::exit_metric_label`] — one entry per `exit_reqs`,
 /// `Some` only for `ReqOrigin::Authored` reqs, slot-numbered among just those.
 /// Bind-time only (never per token/row).
-fn exit_metric_labels(
+///
+/// `pub(crate)` so the **replay** path can number a rule's authored exit reqs by the
+/// same rule the sweep numbers them by. A `run_replay` outcome carries an
+/// `ExitReason::Metrics { metric, operator, value, window }` but no slot, and a
+/// second slot-numbering implementation would let a replay-sourced attribution
+/// disagree with the sweep's `n_exit_metrics_by_slot` on the same rule.
+pub(crate) fn exit_metric_labels(
     exit_reqs: &[MetricReq],
 ) -> Vec<Option<(MetricId, Operator, f64, Option<f64>, u8)>> {
     let mut authored_slots: u8 = 0;

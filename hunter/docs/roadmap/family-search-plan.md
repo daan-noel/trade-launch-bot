@@ -236,10 +236,17 @@ Progress reporting: the family loop emits per-cohort phase labels through the sa
     [x] signature-earned candidate menu
     [x] per-family diversity quota at generate AND expansion
 
-  SLICE 4  board + wiring
-    [ ] handler, routes, SSE, HeavyJob::FamilySearch, result cache
-    [ ] portrait prose + draft columns (ungated control · oracle · optional incumbent)
+  SLICE 4  board + wiring                                                   DONE
+    [x] handler, routes, SSE, HeavyJob::FamilySearch, result cache
+    [x] portrait prose + draft columns (ungated control · oracle · optional incumbent)
+    [ ] a lab page over the report payload
 ```
+
+All four slices are code-complete and the module is documented in
+[../arch/sweep.md](../arch/sweep.md). **Nothing below has run against the lake yet** —
+until it does, the acceptance numbers in §1–3 and the last line of §6 stay open, and
+this file stays. First run needs
+`scripts/db-incremental-sync.ps1 -IncludeToday -ExportLake`.
 
 Slice 1 does not reorder. Every finding in the charter is rank-only: which exit is
 better, never how much of the available money any of them leaves behind — and one
@@ -268,7 +275,8 @@ Pass without the lake, same bar as
 - [x] A request whose `until` outruns `Corpus::last_trade_at` is refused.
 - [x] The generated candidate set spans ≥ 3 end-event families.
 - [ ] Family search's replay of a draft equals HTTP Simulate on the same fingerprint,
-      range, fill, cost, guard, and buy.
+      range, fill, cost, guard, and buy. (Needs the lake — the one test here that
+      cannot be constructed.)
 
 ---
 

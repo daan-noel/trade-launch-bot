@@ -80,6 +80,11 @@ pub fn rule_search_result_path(root: &Path) -> PathBuf {
     root.join("rule-search").join("last.json")
 }
 
+/// On-disk last-family-search-result file (`<root>/family-search/last.json`).
+pub fn family_search_result_path(root: &Path) -> PathBuf {
+    root.join("family-search").join("last.json")
+}
+
 /// Directory holding the day-partitioned trade files (`<root>/trades`).
 pub fn trades_dir(root: &Path) -> PathBuf {
     root.join("trades")

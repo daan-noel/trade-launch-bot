@@ -340,6 +340,35 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
             "rule_search_notice",
             json!({ "run_id": run_id, "message": message }),
         ),
+        SseEvent::FamilySearchProgress {
+            run_id,
+            phase,
+            processed,
+            total,
+        } => (
+            None,
+            "family_search_progress",
+            json!({
+                "run_id": run_id,
+                "phase": phase,
+                "processed": processed,
+                "total": total,
+            }),
+        ),
+        SseEvent::FamilySearchFinished {
+            run_id,
+            cancelled,
+            error,
+        } => (
+            None,
+            "family_search_finished",
+            json!({ "run_id": run_id, "cancelled": cancelled, "error": error }),
+        ),
+        SseEvent::FamilySearchNotice { run_id, message } => (
+            None,
+            "family_search_notice",
+            json!({ "run_id": run_id, "message": message }),
+        ),
         SseEvent::StrategyPositionUpdate {
             rule_id,
             mint_address,

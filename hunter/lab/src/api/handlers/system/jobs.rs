@@ -1,5 +1,6 @@
 //! Cross-cutting status + control for long-running background jobs (grouped
-//! sweep, flow-discovery, metric-discovery, rule-search, rule simulation), so a
+//! sweep, flow-discovery, metric-discovery, rule-search, family-search, rule
+//! simulation), so a
 //! freshly-loaded or reconnecting dashboard can recover the in-flight progress
 //! that SSE (future-only) can't replay.
 //!
@@ -45,6 +46,8 @@ struct JobsStatus {
     metric_discovery: Option<SweepStatus>,
     /// Present iff the single-flight rule-search job is running.
     rule_search: Option<SweepStatus>,
+    /// Present iff the single-flight family-search job is running.
+    family_search: Option<SweepStatus>,
 }
 
 /// `GET /api/jobs/status` — snapshot of every running background job.
@@ -77,6 +80,13 @@ pub async fn job_status(state: web::Data<Arc<LocalState>>) -> impl Responder {
         None
     };
 
+    let family_search = if state.family_search_running.load(Ordering::Acquire) {
+        let (processed, total) = state.family_search_progress.snapshot();
+        Some(SweepStatus { processed, total })
+    } else {
+        None
+    };
+
     let simulations = state
         .sim_progress
         .iter()
@@ -96,6 +106,7 @@ pub async fn job_status(state: web::Data<Arc<LocalState>>) -> impl Responder {
         discovery,
         metric_discovery,
         rule_search,
+        family_search,
     })
 }
 

@@ -233,6 +233,24 @@ pub enum SseEvent {
         run_id: uuid::Uuid,
         message: String,
     },
+    /// Progress of an in-flight family-search job (lab only). `phase` names the
+    /// stage AND the cohort it is on (`"corpus spend=2"`, `"fit spend=2"`), because
+    /// a family run folds one cohort at a time and an unlabelled bar looks stalled.
+    FamilySearchProgress {
+        run_id: uuid::Uuid,
+        phase: String,
+        processed: u64,
+        total: u64,
+    },
+    FamilySearchFinished {
+        run_id: uuid::Uuid,
+        cancelled: bool,
+        error: Option<String>,
+    },
+    FamilySearchNotice {
+        run_id: uuid::Uuid,
+        message: String,
+    },
     /// A generic-engine position transition, emitted by the engine's
     /// `PositionUpdate` sink. Mint-scoped. `status` is the `strategy_positions`
     /// lifecycle string (`BuySubmitted` | `Holding` | `ExitPending` | `End` |
