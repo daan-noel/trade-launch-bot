@@ -923,6 +923,7 @@ mod tests {
             ),
             fp: Default::default(),
         identity: None,
+            peak_after: None,
         };
         let cfg = ScreenConfig::default();
         let plan = screen_plan(&cfg);

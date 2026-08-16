@@ -1098,6 +1098,7 @@ mod tests {
             trades: Arc::new(trades),
             fp: Default::default(),
             identity: None,
+            peak_after: None,
         }
     }
 

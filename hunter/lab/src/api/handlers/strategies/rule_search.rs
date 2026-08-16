@@ -288,6 +288,8 @@ async fn run_job(
         with_signatures: false,
         with_flow,
         with_flow_text: false,
+        // Only family search reads the oracle curve; every other run pays zero.
+        with_oracle: false,
     };
 
     let _ = state.sse_tx.send(SseEvent::RuleSearchProgress {

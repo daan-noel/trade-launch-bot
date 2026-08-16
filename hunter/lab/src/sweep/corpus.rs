@@ -19,7 +19,7 @@ use chrono::{DateTime, Utc};
 
 use crate::models::trade::TradeRow;
 use crate::sweep::grouping::TokenFingerprint;
-use crate::sweep::projection::{project_trades, CorpusTrade};
+use crate::sweep::projection::{project_trades, suffix_peak, CorpusTrade};
 
 /// One token's trade history, ready for `simulate`. `trades` is the slim
 /// [`CorpusTrade`] projection (~3× smaller than `Trade`), shared (`Arc`) so building
@@ -47,6 +47,11 @@ pub struct CorpusToken {
     /// before the column existed (re-run `lake-export`). Only the duplicate-identity
     /// guard reads it; every other analysis path ignores it.
     pub identity: Option<u64>,
+    /// [`suffix_peak`] over `trades` — the oracle price curve, `peak_after[i]` = the
+    /// best price still printed at or after row `i`. `None` unless the load asked for
+    /// it via [`Selection::with_oracle`], so every other sweep pays zero. Lockstep
+    /// with `trades`, `Arc`-shared for the same refcount-clone reason.
+    pub peak_after: Option<Arc<Vec<f32>>>,
 }
 
 impl CorpusToken {
@@ -69,7 +74,18 @@ impl CorpusToken {
             // PG-sourced corpora carry no tokens-dimension row; the lake path fills
             // this in `attach_fingerprints`.
             identity: None,
+            // Opt-in at the lake load only (`Selection::with_oracle`); see
+            // [`Self::with_oracle`] for the after-the-fact attach.
+            peak_after: None,
         }
+    }
+
+    /// Attach the oracle curve to an already-projected token. The lake load builds it
+    /// inline; this covers the paths that assemble a `CorpusToken` themselves (tests,
+    /// the PG-tail splice) without a second projection pass.
+    pub fn with_oracle(mut self) -> Self {
+        self.peak_after = Some(Arc::new(suffix_peak(&self.trades)));
+        self
     }
 }
 
@@ -176,6 +192,12 @@ pub struct Selection {
     /// hashes, so keeping two heap strings per trade there is pure RAM. Implies
     /// nothing on its own — pair it with `with_flow`.
     pub with_flow_text: bool,
+    /// Build each token's [`CorpusToken::peak_after`] oracle curve at load
+    /// ([`suffix_peak`]). Default `false`: only **family search** asks the "what money
+    /// was available after entry" question, and 4 B/row is not free for the sweeps
+    /// that never read it. Changes no loaded row and no price — purely an extra
+    /// column derived from rows already in hand.
+    pub with_oracle: bool,
 }
 
 impl Default for Selection {
@@ -191,6 +213,7 @@ impl Default for Selection {
             with_signatures: false,
             with_flow: false,
             with_flow_text: false,
+            with_oracle: false,
         }
     }
 }

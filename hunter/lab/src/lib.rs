@@ -14,6 +14,7 @@ pub use trading_core::models;
 
 pub mod api;
 pub mod discovery;
+pub mod family_search;
 pub mod lake;
 pub mod rule_search;
 pub mod state;

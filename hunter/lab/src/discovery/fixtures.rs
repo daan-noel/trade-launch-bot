@@ -69,6 +69,7 @@ pub fn token(mint: &str, n: usize) -> CorpusToken {
         trades: Arc::new(trades),
         fp: Default::default(),
         identity: None,
+        peak_after: None,
     }
 }
 

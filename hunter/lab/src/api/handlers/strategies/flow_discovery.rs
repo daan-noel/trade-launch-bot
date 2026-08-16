@@ -281,6 +281,8 @@ async fn run_flow_discovery_job(
         // Discovery is the ONE consumer that reports label text / groups by wallet
         // address, so it is the ONE load that keeps the raw strings.
         with_flow_text: true,
+        // Only family search reads the oracle curve; every other run pays zero.
+        with_oracle: false,
     };
 
     let _ = state.sse_tx.send(SseEvent::FlowDiscoveryProgress {

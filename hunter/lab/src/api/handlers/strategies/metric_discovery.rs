@@ -343,6 +343,8 @@ async fn run_job(
         with_flow,
         // Hash-resolved flow keys only — no consumer here reads label text.
         with_flow_text: false,
+        // Only family search reads the oracle curve; every other run pays zero.
+        with_oracle: false,
     };
 
     let _ = state.sse_tx.send(SseEvent::MetricDiscoveryProgress {

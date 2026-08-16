@@ -666,6 +666,7 @@ mod tests {
                 ix_labels: vec![],
             },
             identity: None,
+            peak_after: None,
         }
     }
 

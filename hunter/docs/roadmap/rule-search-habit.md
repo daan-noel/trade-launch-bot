@@ -6,10 +6,17 @@ Job wiring stays [rule-search.md](../plans/strategies/rule-search.md). Scorer,
 fill, cost, copycat, and `run_replay` stay.
 
 **Input:** one fingerprint + one datetime range. Scope the cohort through
-`hunter_engine::fingerprint::matches` — the same SSOT simulate uses. An
-ix-labels-only approximation took 3,403 tokens where the engine took 264, and the
-ranking of two rules **inverted** between the two populations: a search on an
-approximate cohort ranks rules for a creator set that does not exist.
+`hunter_engine::fingerprint::matches` — the same SSOT simulate uses — never a
+hand-rolled predicate. A fingerprint matches on **every** non-null axis, not just
+`ix_labels`: `cu_limit`, `cu_price`, `init_buy_lamports`, `max_cost_lamports`,
+`spendable_lamports_in`, the two first-slot axes, and `bucket_size_amount` — where
+a NULL bucket means an **exact** compare, not an unset one. An ix-labels-only
+approximation of `3ix:BuyExactSolIn · spend=5 · bkt=exact` took 3,440 tokens where
+the engine took 264 (that label cohort spreads over 12 distinct
+`spendable_lamports_in` values; the fingerprint's is 7.7% of it), and the ranking of
+two rules **inverted** between the two populations: a search on an approximate
+cohort ranks rules for a creator set that does not exist. Cheapest guard —
+`n_matched` against a hand count on every run.
 **Output:** a habit portrait and one sparse `RuleParams` **draft** the operator
 can add/drop/nudge. Empty-entry and incumbent stay comparison columns. The draft
 is never empty-entry.

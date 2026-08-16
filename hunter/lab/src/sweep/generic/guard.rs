@@ -133,6 +133,7 @@ fn token_at(mint: &str, created_secs: f64, trades: Vec<CorpusTrade>) -> (CorpusT
         trades: trades.clone(),
         fp: tf.clone(),
         identity: None,
+        peak_after: None,
     };
     let replay = ReplayToken {
         mint: mint.to_string(),

@@ -198,6 +198,34 @@ pub fn creation_slot(trades: &[CorpusTrade]) -> Option<u64> {
     trades.first().map(|t| t.slot)
 }
 
+/// `peak_after[i]` = the maximum [`TradeRow::chart_spot_price`] over `trades[i..]` —
+/// the best price still printed at or after row `i`.
+///
+/// The **oracle** denominator (family search D3): what an exit could have got, as a
+/// property of `(token, entry moment)` alone, so it is computed once per corpus and
+/// reused by every candidate of every stage. One backward pass at load, O(1) at any
+/// entry index afterwards; `f32` because 4 B against `CorpusTrade`'s ~100 B keeps the
+/// opt-in under 5% and a spot price carries nowhere near f32's 7 significant digits
+/// of meaning.
+///
+/// Rows with no usable price contribute nothing; a suffix holding no priced row at all
+/// reads `f32::NEG_INFINITY` — the "no exit available" sentinel every reader filters
+/// with `is_finite()`, never a fabricated 0.
+pub fn suffix_peak(trades: &[CorpusTrade]) -> Vec<f32> {
+    let mut out = vec![f32::NEG_INFINITY; trades.len()];
+    let mut best = f32::NEG_INFINITY;
+    for (i, t) in trades.iter().enumerate().rev() {
+        if let Some(p) = t.chart_spot_price() {
+            let p = p as f32;
+            if p.is_finite() && p > best {
+                best = p;
+            }
+        }
+        out[i] = best;
+    }
+    out
+}
+
 /// Project a token's chronological trade slice into the slim rows. Generic over any
 /// [`TradeRow`] whose `Wallet` is a `String`, so it projects the full [`Trade`]
 /// field-for-field; no decision data is lost. Signature-free (the sweep resolves the

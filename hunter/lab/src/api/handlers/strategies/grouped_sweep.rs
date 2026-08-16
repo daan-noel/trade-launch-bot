@@ -728,6 +728,8 @@ async fn run_grouped_sweep_job(
         with_flow,
         // Hash-resolved flow keys only — no consumer here reads label text.
         with_flow_text: false,
+        // Only family search reads the oracle curve; every other run pays zero.
+        with_oracle: false,
     };
 
     // Load the corpus from the immutable Parquet lake via DuckDB (the sole sweep
@@ -2471,6 +2473,8 @@ pub async fn list_token_results(
             with_flow: run.volume_ix_patterns.is_some(),
             // Hash-resolved flow keys only — no consumer here reads label text.
             with_flow_text: false,
+            // Only family search reads the oracle curve; every other run pays zero.
+            with_oracle: false,
         };
         let root = crate::lake::lake_root();
         match LakeSource::new(root).load(&sel).await {
