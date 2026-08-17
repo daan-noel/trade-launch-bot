@@ -97,6 +97,26 @@ export function FamilySearchBoard({
         </InlineAlert>
       ))}
 
+      {report.standing_terms.length > 0 && (
+        <div className="rounded-lg border border-dashed border-white/12 bg-white/2 p-3">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
+              Standing exit
+            </span>
+            {report.standing_terms.map((t) => (
+              <Badge key={t} variant="neutral" size="sm">
+                {t}
+              </Badge>
+            ))}
+          </div>
+          <p className="mt-1 text-[11px] leading-snug text-text-dim">
+            Carried by every rule scored here, the ungated control included — mechanics you
+            asked for, so the numbers describe a rule you would actually run. Never searched,
+            never ablated, and never credited with the edge.
+          </p>
+        </div>
+      )}
+
       {/* ── Can this shape pay for execution at all? ─────────────────────── */}
       {(report.cost_clearance || report.spread) && (
         <Section
@@ -192,13 +212,27 @@ export function FamilySearchBoard({
             tip={TIPS.draft}
             blurb="The finalist, replayed on the held-out target cohort."
             value={draft ? pctText(draft.target_ret_pct) : null}
-            emptyHint="No candidate survived the fit."
+            emptyHint={
+              report.selection?.none_cleared
+                ? `Nothing cleared both bars — ${report.selection.n_rejected} tried. The entry side had to win more than ${report.selection.win_bar_pct.toFixed(0)}% of its closes and the exit side had to make money.`
+                : 'No candidate survived the fit.'
+            }
             stats={
               draft
                 ? [
+                    {
+                      label: 'win rate',
+                      value:
+                        draft.target_win_pct == null
+                          ? '—'
+                          : `${draft.target_win_pct.toFixed(0)}% of ${draft.target_n_closed}`,
+                    },
                     { label: 'PnL', value: `${fmt(draft.target_pnl_sol, 3)} ◎` },
                     { label: 'entered', value: `${pct01(draft.target_enter_pct)} of matched` },
-                    { label: 'tokens', value: String(draft.target_n_tokens) },
+                    {
+                      label: 'shape',
+                      value: `${draft.n_entry_quantities} entry · ${draft.n_alarms} alarms`,
+                    },
                   ]
                 : []
             }
@@ -246,6 +280,13 @@ export function FamilySearchBoard({
             stats={
               ungated
                 ? [
+                    {
+                      label: 'win rate (the bar)',
+                      value:
+                        ungated.target_win_pct == null
+                          ? '—'
+                          : `${ungated.target_win_pct.toFixed(0)}%`,
+                    },
                     { label: 'PnL', value: `${fmt(ungated.target_pnl_sol, 3)} ◎` },
                     { label: 'tokens', value: String(ungated.target_n_tokens) },
                   ]
@@ -274,18 +315,19 @@ export function FamilySearchBoard({
             emptyHint="No entry had a profitable exit available — that grades the entry, not the exit."
             stats={[
               { label: 'had upside', value: String(capture.n_with_upside) },
-              { label: 'never did', value: String(capture.n_no_upside) },
+              {
+                label: 'never did',
+                value:
+                  capture.no_upside_pct == null
+                    ? String(capture.n_no_upside)
+                    : `${capture.n_no_upside} · ${capture.no_upside_pct.toFixed(0)}%`,
+              },
               {
                 label: 'took / available',
                 value: `${fmt(capture.realized_pnl_sol, 3)} / ${fmt(capture.oracle_pnl_sol, 3)} ◎`,
               },
             ]}
-            footer={
-              <p className="text-[10px] leading-tight text-text-dim">
-                the second count grades the <span className="text-text-mid">entry</span> — those
-                tokens had nothing for any exit to take
-              </p>
-            }
+            footer={<EntryFilterLine report={report} />}
           />
         </div>
 
@@ -359,6 +401,9 @@ export function FamilySearchBoard({
               <Th align="right" tip={TIPS.cohortUngated}>
                 Ungated return
               </Th>
+              <Th align="right" tip={TIPS.cohortUngatedWin}>
+                Ungated win
+              </Th>
             </tr>
           </thead>
           <tbody>
@@ -388,6 +433,9 @@ export function FamilySearchBoard({
                 <Td align="right" mono>
                   {m.ungated_ret_pct == null ? '—' : pctText(m.ungated_ret_pct)}
                 </Td>
+                <Td align="right" mono>
+                  {m.ungated_win_pct == null ? '—' : `${m.ungated_win_pct.toFixed(0)}%`}
+                </Td>
               </tr>
             ))}
           </tbody>
@@ -410,6 +458,9 @@ export function FamilySearchBoard({
               <tr>
                 <Th>Exit term</Th>
                 <Th align="right">Closed</Th>
+                <Th align="right" tip={TIPS.alarmWin}>
+                  Win rate
+                </Th>
                 <Th align="right" tip={TIPS.level}>
                   Asked → got
                 </Th>
@@ -428,9 +479,25 @@ export function FamilySearchBoard({
                       <span className="font-mono text-text-mid">
                         {a.label ?? `slot ${a.slot} (unnamed)`}
                       </span>
+                      {a.standing && (
+                        <span className="ml-1.5 align-middle">
+                          <Badge
+                            variant="neutral"
+                            size="sm"
+                            title="A mechanical exit you asked for, not a discovered alarm — never credited with the edge"
+                          >
+                            standing
+                          </Badge>
+                        </span>
+                      )}
                     </Td>
                     <Td align="right" mono>
                       {a.n}
+                    </Td>
+                    <Td align="right" mono>
+                      {a.win_rate_pct == null
+                        ? '—'
+                        : `${a.win_rate_pct.toFixed(0)}% (${a.n_wins})`}
                     </Td>
                     <Td align="right" mono>
                       <LevelCell row={a} />
@@ -454,6 +521,7 @@ export function FamilySearchBoard({
                     {report.attribution_other_n}
                   </Td>
                   <Td align="right">—</Td>
+                  <Td align="right">—</Td>
                   <Td align="right" mono>
                     {fmt(report.attribution_other_pnl_sol, 3)}
                   </Td>
@@ -468,36 +536,52 @@ export function FamilySearchBoard({
       {/* ── Narrow re-check ──────────────────────────────────────────────── */}
       {report.narrow_recheck.length > 0 && (
         <Section
-          title="What each term is worth here"
-          caption="The draft re-scored on the target cohort with one term dropped. A broad fit is blind to a term that only one cohort needs, which is what this catches."
+          title="What each condition is worth here"
+          caption="The draft re-scored on the target cohort with one condition dropped. Each side is graded in its own currency: an ENTRY condition earns its place by raising the win rate, an EXIT alarm by raising the return. Grading both on money alone is what deletes every entry condition."
         >
           <TableShell>
             <thead className="text-[10px] uppercase tracking-wide text-text-dim">
               <tr>
-                <Th>Dropped term</Th>
-                <Th align="right">With it</Th>
-                <Th align="right">Without it</Th>
-                <Th align="right">Δ</Th>
+                <Th>Dropped condition</Th>
+                <Th>Side</Th>
+                <Th align="right" tip={TIPS.winDelta}>
+                  Win rate Δ
+                </Th>
+                <Th align="right">Return Δ</Th>
+                <Th align="right">With → without</Th>
                 <Th />
               </tr>
             </thead>
             <tbody>
               {report.narrow_recheck.map((t) => (
-                <tr key={t.label} className="border-t border-white/6">
+                <tr key={`${t.is_entry}-${t.label}`} className="border-t border-white/6">
                   <Td>
                     <span className="font-mono text-text-mid">{t.label}</span>
                   </Td>
-                  <Td align="right" mono>
-                    {pctText(t.ret_full_pct)}
+                  <Td>
+                    <Badge variant={t.is_entry ? 'primary' : 'info'} size="sm">
+                      {t.is_entry ? 'entry · safety' : 'exit · profit'}
+                    </Badge>
                   </Td>
-                  <Td align="right" mono>
-                    {pctText(t.ret_without_pct)}
+                  <Td
+                    align="right"
+                    mono
+                    tone={
+                      t.win_delta_pp == null ? undefined : t.win_delta_pp < 0 ? 'bad' : 'good'
+                    }
+                  >
+                    {t.win_delta_pp == null ? '—' : ppText(t.win_delta_pp)}
                   </Td>
                   <Td align="right" mono tone={t.delta_pct < 0 ? 'bad' : 'good'}>
                     {ppText(t.delta_pct)}
                   </Td>
+                  <Td align="right" mono>
+                    <span className="text-text-dim">
+                      {pctText(t.ret_full_pct)} → {pctText(t.ret_without_pct)}
+                    </span>
+                  </Td>
                   <Td>
-                    {t.inert && (
+                    {t.inert ? (
                       <Badge
                         variant="neutral"
                         size="sm"
@@ -505,16 +589,90 @@ export function FamilySearchBoard({
                       >
                         inert
                       </Badge>
+                    ) : t.earns_its_place ? (
+                      <Badge variant="success" size="sm" title="It pays in its own side's currency">
+                        earns it
+                      </Badge>
+                    ) : (
+                      <Badge variant="warning" size="sm" title="It costs more than it buys">
+                        costs
+                      </Badge>
                     )}
                   </Td>
                 </tr>
               ))}
             </tbody>
           </TableShell>
-          <p className="mt-2 text-[11px] text-text-dim">
-            Δ is the draft minus the version without that term: positive means the term earns its
-            place, negative means it costs money.
+          <p className="mt-2 text-[11px] leading-snug text-text-dim">
+            Δ is the draft minus the version without that condition, so positive means the
+            condition earns its place. An entry condition that costs a point of return while
+            buying ten of win rate is doing exactly its job.
           </p>
+        </Section>
+      )}
+
+      {/* ── Enrich ───────────────────────────────────────────────────────── */}
+      {report.enrich.length > 0 && (
+        <Section
+          title="Conditions offered to the draft"
+          caption="Every other condition this cohort earns, tried one at a time on top of the fitted rule — the only stage that can make a rule denser. An entry idea has to raise the win rate, an exit alarm has to raise the return, and each accepted one is re-checked against the rule as it grows so two forms of the same idea cannot both get in."
+          right={
+            <span className="text-[11px] text-text-dim">
+              {report.enrich.filter((e) => e.accepted).length} of {report.enrich.length} accepted
+            </span>
+          }
+        >
+          <TableShell>
+            <thead className="text-[10px] uppercase tracking-wide text-text-dim">
+              <tr>
+                <Th>Condition</Th>
+                <Th>Side</Th>
+                <Th align="right">Win rate Δ</Th>
+                <Th align="right">Return Δ</Th>
+                <Th align="right">Closes after</Th>
+                <Th>Verdict</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.enrich.map((e) => (
+                <tr
+                  key={`${e.is_entry}-${e.label}`}
+                  className={cn('border-t border-white/6', e.accepted && 'bg-green/5')}
+                >
+                  <Td>
+                    <span className="font-mono text-text-mid">{e.label}</span>
+                  </Td>
+                  <Td>
+                    <Badge variant={e.is_entry ? 'primary' : 'info'} size="sm">
+                      {e.is_entry ? 'entry · safety' : 'exit · profit'}
+                    </Badge>
+                  </Td>
+                  <Td
+                    align="right"
+                    mono
+                    tone={e.win_delta_pp == null ? undefined : e.win_delta_pp < 0 ? 'bad' : 'good'}
+                  >
+                    {e.win_delta_pp == null ? '—' : ppText(e.win_delta_pp)}
+                  </Td>
+                  <Td align="right" mono tone={e.ret_delta_pct < 0 ? 'bad' : 'good'}>
+                    {ppText(e.ret_delta_pct)}
+                  </Td>
+                  <Td align="right" mono>
+                    {e.n_closed_after}
+                  </Td>
+                  <Td>
+                    {e.accepted ? (
+                      <Badge variant="success" size="sm">
+                        added
+                      </Badge>
+                    ) : (
+                      <span className="text-[11px] text-text-dim">{e.refused ?? 'refused'}</span>
+                    )}
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </TableShell>
         </Section>
       )}
 
@@ -670,6 +828,12 @@ export function FamilySearchBoard({
                 <Th align="right" tip={TIPS.targetCol}>
                   Target return
                 </Th>
+                <Th align="right" tip={TIPS.winCol}>
+                  Win rate
+                </Th>
+                <Th align="right" tip={TIPS.shapeCol}>
+                  Shape
+                </Th>
                 <Th align="right">◎</Th>
                 <Th align="right">Enter%</Th>
                 <Th />
@@ -694,6 +858,14 @@ export function FamilySearchBoard({
                   </Td>
                   <Td align="right" mono tone={row.target_ret_pct < 0 ? 'bad' : 'good'}>
                     {pctText(row.target_ret_pct)}
+                  </Td>
+                  <Td align="right" mono>
+                    {row.target_win_pct == null ? '—' : `${row.target_win_pct.toFixed(0)}%`}
+                  </Td>
+                  <Td align="right" mono>
+                    <span className="text-text-dim">
+                      {row.n_entry_quantities}e · {row.n_alarms}x
+                    </span>
                   </Td>
                   <Td align="right" mono>
                     {fmt(row.target_pnl_sol, 3)}
@@ -770,6 +942,32 @@ function LevelCell({ row }: { row: FamilyAlarmRow }) {
         {fmt(row.realized_level_pct, 1)}
       </span>
     </span>
+  );
+}
+
+/**
+ * Did the entry conditions reject losers, or just trade less? The oracle answers it
+ * with no exit rule involved: the share of entries that never had a profitable exit,
+ * against the same share for buying everything.
+ */
+function EntryFilterLine({ report }: { report: FamilySearchReport }) {
+  const mine = report.capture.no_upside_pct;
+  const theirs = report.ungated_capture?.no_upside_pct ?? null;
+  if (mine == null || theirs == null) {
+    return (
+      <p className="text-[10px] leading-tight text-text-dim">
+        the second count grades the <span className="text-text-mid">entry</span> — those tokens
+        had nothing for any exit to take
+      </p>
+    );
+  }
+  const better = mine + 1 < theirs;
+  return (
+    <p className={cn('text-[11px] leading-snug', better ? 'text-green' : 'text-warning')}>
+      {mine.toFixed(0)}% of its buys had no upside at all, against {theirs.toFixed(0)}% for
+      buying everything —{' '}
+      {better ? 'the entry rejects real losers' : 'the entry trades less without picking better'}
+    </p>
   );
 }
 
@@ -979,6 +1177,26 @@ const TIPS = {
   delay: {
     title: 'Delay added',
     body: 'Seconds this clause adds to the mean time from token creation to the entry fill (the draft minus the draft without it). Positive means it holds entries back.',
+  },
+  alarmWin: {
+    title: 'Win rate',
+    body: 'Of the positions this alarm closed, the share that closed up. Money alone cannot separate "fires often and wins rarely" from "fires rarely and wins" — one large win hides a hundred small losses in a sum.',
+  },
+  winDelta: {
+    title: 'Win rate Δ',
+    body: 'Points of win rate the condition is worth: the draft minus the draft without it. This is the currency of the ENTRY side — an entry condition that costs a point of return while buying ten of win rate is doing exactly its job, and grading it on money is what makes a search delete every entry condition.',
+  },
+  winCol: {
+    title: 'Win rate',
+    body: 'Share of closed positions that closed up, on the held-out cohort. Entry decides safety and exit decides profit, so the draft has to clear a win-rate bar as well as make money — the bar is whatever buying everything achieves on this cohort.',
+  },
+  shapeCol: {
+    title: 'Shape',
+    body: 'Entry IDEAS and exit alarms. A band (floor + ceiling on one quantity) is one idea written as two clauses, which is why a rule showing five entry metrics carries three. Alarms count only searched ones — a standing term is a mechanic, not an alarm.',
+  },
+  cohortUngatedWin: {
+    title: 'Ungated win',
+    body: 'What share of trades buying everything wins on this cohort. On the target cohort this is the bar the entry side of the draft must beat: a gate that does not enter more safely than buying everything is not filtering anything.',
   },
   captureDelta: {
     title: 'Capture delta',

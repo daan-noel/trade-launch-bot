@@ -77,6 +77,9 @@ interface Config {
   variedAxis: FamilyAxisName | '';
   freshnessSlackHours: number;
   costClearanceMargin: number;
+  minWinRatePct: number;
+  minClosed: number;
+  standingExit: string;
   maxConcurrentTokens: number;
   maxTotalTokens: number;
   incumbentRuleId: string | null;
@@ -95,10 +98,26 @@ const DEFAULTS: Config = {
   variedAxis: '',
   freshnessSlackHours: 1,
   costClearanceMargin: 0,
+  minWinRatePct: 0,
+  minClosed: 8,
+  standingExit: '',
   maxConcurrentTokens: 0,
   maxTotalTokens: 0,
   incumbentRuleId: null,
 };
+
+/**
+ * Standing exit terms, one per line — mechanics that ride into every candidate and
+ * the ungated control but are never searched, ablated or credited. Written exactly as
+ * the attribution table prints them, so a term can be copied straight back out of a
+ * result: `liquidity >= 85`, `nonvol_buy(2s) >= 0.9`.
+ */
+function standingTerms(raw: string): string[] {
+  return raw
+    .split(/\r?\n/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
 
 function toUtc(local: string): string | undefined {
   if (!local) return undefined;
@@ -142,6 +161,18 @@ const TIPS = {
   caps: {
     title: 'Concurrency caps',
     body: 'Max concurrent / total tokens the simulated engine may hold, 0 = unlimited. They change which tokens are entered at all, so they come from this form and never from a saved rule.',
+  },
+  minWin: {
+    title: 'Min win rate %',
+    body: 'An absolute floor on top of the bar the cohort sets for itself. The draft must clear BOTH this and the ungated control’s own win rate — entry decides safety, so a gate that does not enter more safely than buying everything is not filtering anything. 0 leaves the control as the only bar.',
+  },
+  minClosed: {
+    title: 'Min closes',
+    body: 'Closed positions a candidate needs before its win rate is believed. Three wins in four trades is not a 75% win rate, and without this floor the search picks whichever rule traded least.',
+  },
+  standing: {
+    title: 'Standing exit terms',
+    body: 'Mechanical alarms you always want, one per line, written exactly as the attribution table prints them: `liquidity >= 85` (sell at migration), `nonvol_buy(2s) >= 0.9`. Each rides into every candidate AND the ungated control, so the numbers describe a rule you would really run — and none of them is searched, ablated or credited with the edge. A term that does not parse fails the run rather than being silently dropped.',
   },
   incumbent: {
     title: 'Incumbent (display only)',
@@ -286,6 +317,9 @@ export function FamilySearchPage() {
         slots: config.slots,
         freshness_slack_secs: Math.round(config.freshnessSlackHours * 3600),
         cost_clearance_margin: config.costClearanceMargin,
+        min_win_rate_pct: config.minWinRatePct,
+        min_closed: config.minClosed,
+        standing_exit: standingTerms(config.standingExit),
         incumbent_rule_id: config.incumbentRuleId ?? undefined,
       }).unwrap();
       searchRunId.current = run_id;
@@ -562,6 +596,24 @@ export function FamilySearchPage() {
               width="w-[100px]"
             />
             <NumField
+              label="Min win %"
+              tip={TIPS.minWin}
+              value={config.minWinRatePct}
+              min={0}
+              max={100}
+              step={1}
+              onChange={(v) => set('minWinRatePct', v)}
+              width="w-[95px]"
+            />
+            <NumField
+              label="Min closes"
+              tip={TIPS.minClosed}
+              value={config.minClosed}
+              min={1}
+              onChange={(v) => set('minClosed', v)}
+              width="w-[95px]"
+            />
+            <NumField
               label="Max concurrent"
               tip={TIPS.caps}
               value={config.maxConcurrentTokens}
@@ -591,6 +643,18 @@ export function FamilySearchPage() {
                 copycat
               </LabelTip>
             </label>
+            <div className="w-full max-w-md">
+              <Field label="Standing exit (one per line)" tip={TIPS.standing}>
+                <textarea
+                  rows={2}
+                  spellCheck={false}
+                  value={config.standingExit}
+                  onChange={(e) => set('standingExit', e.target.value)}
+                  placeholder={'liquidity >= 85'}
+                  className="w-full rounded border border-white/15 bg-black/20 px-2 py-1 font-mono text-xs text-text-mid placeholder:text-text-dim/50 focus:border-primary/50 focus:outline-none"
+                />
+              </Field>
+            </div>
             <div className="w-full max-w-md">
               <Field label="Incumbent (display only)" tip={TIPS.incumbent}>
                 <SearchableSelect

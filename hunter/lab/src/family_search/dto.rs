@@ -90,12 +90,33 @@ pub struct StartFamilySearchBody {
     /// `1.0` is the stricter bar the dump-scalp result sets.
     #[serde(default = "default_cost_clearance_margin")]
     pub cost_clearance_margin: f64,
+    /// **Standing exit terms** (D10): mechanical alarms the operator always wants,
+    /// written as the board prints them — `"liquidity >= 85"` (sell at migration),
+    /// `"nonvol_buy(2s) >= 0.9"`. Each rides into every candidate **and** the ungated
+    /// control, so the numbers describe a rule someone would actually run; none is
+    /// searched, ablated, or credited with the rule's edge. A term that does not parse
+    /// fails the run rather than being dropped.
+    #[serde(default)]
+    pub standing_exit: Vec<String>,
+    /// Absolute win-rate floor, in percent, on top of the cohort's own bar (D11). The
+    /// draft must clear **both** this and the ungated control's win rate — an entry
+    /// gate that does not enter more safely than buying everything is not filtering.
+    /// `0.0` (the default) leaves the control as the only bar.
+    #[serde(default)]
+    pub min_win_rate_pct: f64,
+    /// Closes a candidate needs before its win rate is believed. Three wins in four
+    /// trades is not a 75% win rate.
+    #[serde(default = "default_min_closed")]
+    pub min_closed: u64,
     /// **Display only** (D6): an incumbent is an artifact, not a baseline. It is
     /// scored as one more column and supplies no buy size, no cap, no threshold, and
     /// no structure. Off by default.
     #[serde(default)]
     pub incumbent_rule_id: Option<Uuid>,
 }
+
+/// Closes below which a win rate is not yet a measurement.
+pub const DEFAULT_MIN_CLOSED: u64 = 8;
 
 fn default_buy() -> f64 {
     SWEEP_DEFAULT_BUY_AMOUNT_SOL
@@ -117,4 +138,7 @@ fn default_freshness_slack() -> i64 {
 }
 fn default_cost_clearance_margin() -> f64 {
     crate::family_search::gates::DEFAULT_COST_CLEARANCE_MARGIN
+}
+fn default_min_closed() -> u64 {
+    DEFAULT_MIN_CLOSED
 }

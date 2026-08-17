@@ -29,6 +29,14 @@ pub struct AlarmRow {
     pub label: Option<String>,
     /// Positions this term closed.
     pub n: u64,
+    /// Of those, the ones that closed up. An alarm that fires often and wins rarely
+    /// is a different thing from one that fires rarely and wins — and money alone
+    /// does not separate them, because one big win hides a hundred small losses.
+    pub n_wins: u64,
+    /// A **standing** term: a mechanical exit the operator always wants (sell at
+    /// migration), not a discovered alarm. It is never searched and never credited
+    /// with the rule's edge, so the board reports it apart from the findings.
+    pub standing: bool,
     /// Realized SOL over those positions.
     pub pnl_sol: f64,
     /// Capital those positions committed — the percentage's denominator.
@@ -58,6 +66,11 @@ impl AlarmRow {
     /// percents and never a count share.
     pub fn pnl_pct(&self) -> f64 {
         weighted_return_pct(self.pnl_sol, self.entry_sol)
+    }
+
+    /// Wins over closes for this alarm, as a percent. `None` when it never fired.
+    pub fn win_rate_pct(&self) -> Option<f64> {
+        (self.n > 0).then(|| 100.0 * self.n_wins as f64 / self.n as f64)
     }
 
     /// How far past its own threshold the term actually closed, in percentage points.
@@ -104,11 +117,20 @@ pub struct AttributionAcc {
     slots: [SlotAcc; N_EXIT_METRIC_SLOTS],
     n_other: u64,
     other_pnl_sol: f64,
+    /// The run's standing terms, so a mechanical exit is labelled as one rather than
+    /// appearing among the findings. Matched on `(metric, window, value)` — never on
+    /// slot order, since `SideConditions` groups clauses by group and window and the
+    /// compiled req order need not follow the authored one.
+    standing: Vec<StandingKey>,
 }
+
+/// `(metric, window, authored value)` — the standing identity.
+type StandingKey = (hunter_engine::metrics::MetricId, Option<f64>, f64);
 
 #[derive(Clone, Copy, Debug, Default)]
 struct SlotAcc {
     n: u64,
+    n_wins: u64,
     pnl_sol: f64,
     label: Option<LabelKey>,
     /// Σ gross `exit ÷ entry − 1` in percent, and how many positions could be priced
@@ -134,7 +156,14 @@ impl AttributionAcc {
             slots: [SlotAcc::default(); N_EXIT_METRIC_SLOTS],
             n_other: 0,
             other_pnl_sol: 0.0,
+            standing: Vec::new(),
         }
+    }
+
+    /// Declare the run's standing terms so their rows are labelled, not credited.
+    pub fn with_standing(mut self, standing: Vec<StandingKey>) -> Self {
+        self.standing = standing;
+        self
     }
 
     /// Fold one outcome. Bucketing mirrors
@@ -154,6 +183,9 @@ impl AttributionAcc {
         let idx = (slot as usize).min(N_EXIT_METRIC_SLOTS - 1);
         let s = &mut self.slots[idx];
         s.n += 1;
+        if o.pnl_sol > 0.0 {
+            s.n_wins += 1;
+        }
         s.pnl_sol += o.pnl_sol as f64;
         if let (Some(entry), Some(exit)) = (o.entry_price, o.exit_price) {
             if entry > 0.0 && exit.is_finite() {
@@ -182,6 +214,12 @@ impl AttributionAcc {
                     .label
                     .map(|l| format_metric_exit_label(l.metric, l.operator, l.value, l.window)),
                 n: s.n,
+                n_wins: s.n_wins,
+                standing: s.label.is_some_and(|l| {
+                    self.standing.iter().any(|(m, w, v)| {
+                        *m == l.metric && *w == l.window && (v - l.value).abs() < f64::EPSILON
+                    })
+                }),
                 pnl_sol: s.pnl_sol,
                 entry_sol: s.n as f64 * self.buy_amount_sol,
                 authored_level: s.label.map(|l| l.value),
@@ -208,7 +246,17 @@ pub fn rollup<'a>(
     outcomes: impl IntoIterator<Item = &'a TokenOutcome>,
     buy_amount_sol: f64,
 ) -> Attribution {
-    let mut acc = AttributionAcc::new(buy_amount_sol);
+    rollup_with_standing(outcomes, buy_amount_sol, &[])
+}
+
+/// [`rollup`] with the run's standing terms declared, so a mechanical exit reads as
+/// one instead of joining the findings.
+pub fn rollup_with_standing<'a>(
+    outcomes: impl IntoIterator<Item = &'a TokenOutcome>,
+    buy_amount_sol: f64,
+    standing: &[StandingKey],
+) -> Attribution {
+    let mut acc = AttributionAcc::new(buy_amount_sol).with_standing(standing.to_vec());
     for o in outcomes {
         acc.record(o);
     }
@@ -350,5 +398,53 @@ mod tests {
         assert_eq!(a.by_slot[0].label.as_deref(), Some("nonvol_buy >= 0.9"));
         assert_eq!(a.by_slot[1].label.as_deref(), Some("nonvol_buy(2s) >= 0.9"));
         assert_ne!(a.by_slot[0].label, a.by_slot[1].label);
+    }
+
+    /// Money alone cannot separate "fires often and wins rarely" from "fires rarely
+    /// and wins": one large win hides a hundred small losses in a single sum.
+    #[test]
+    fn each_alarm_carries_its_own_win_rate() {
+        let mut outs = Vec::new();
+        for i in 0..10 {
+            // Slot 0: 3 wins in 10, but the wins are big — positive on money.
+            let pnl = if i < 3 { 0.05 } else { -0.01 };
+            outs.push(metric_exit(0, MetricId::Stall, Operator::Gte, 30.0, None, pnl));
+        }
+        for _ in 0..4 {
+            outs.push(metric_exit(1, MetricId::Retrace, Operator::Gte, 36.0, None, 0.002));
+        }
+        let a = rollup(&outs, 0.01);
+
+        let loud = &a.by_slot[0];
+        assert_eq!((loud.n, loud.n_wins), (10, 3));
+        assert!((loud.win_rate_pct().unwrap() - 30.0).abs() < 1e-9);
+        assert!(loud.pnl_sol > 0.0, "positive on money while losing 7 trades in 10");
+
+        let safe = &a.by_slot[1];
+        assert_eq!((safe.n, safe.n_wins), (4, 4));
+        assert!((safe.win_rate_pct().unwrap() - 100.0).abs() < 1e-9);
+    }
+
+    /// A hand-added "sell at migration" is a mechanic, not a finding — it appears in
+    /// the table so the closes add up, labelled so it is never read as an edge.
+    #[test]
+    fn a_standing_term_is_labelled_rather_than_credited() {
+        let outs = vec![
+            metric_exit(0, MetricId::GrossFlow, Operator::Lt, 15.0, Some(10.0), 0.03),
+            metric_exit(1, MetricId::Liquidity, Operator::Gte, 85.0, None, 0.20),
+        ];
+        let standing = [(MetricId::Liquidity, None, 85.0)];
+        let a = rollup_with_standing(&outs, 0.01, &standing);
+
+        assert!(!a.by_slot[0].standing, "a searched alarm is a finding");
+        assert!(a.by_slot[1].standing, "the migration sell is a mechanic");
+        // It still closes a position and still carries its money — the counts have to
+        // cover the whole population or the table stops adding up.
+        assert_eq!(a.n_closed(), 2);
+        assert!((a.by_slot[1].pnl_sol - 0.20).abs() < 1e-6);
+
+        // A different threshold on the same metric is NOT the standing term.
+        let other = [(MetricId::Liquidity, None, 12.0)];
+        assert!(!rollup_with_standing(&outs, 0.01, &other).by_slot[1].standing);
     }
 }

@@ -1,8 +1,8 @@
 //! Shared no-DB fixtures for the family-search tests. Every constructed test in
-//! [family-search-plan.md] §6 runs against these, at the same bar as
+//! [family-search.md] §8 names these, at the same bar as
 //! [rule-search-method.md] §5: no lake, no Postgres, no network.
 //!
-//! [family-search-plan.md]: ../../../docs/roadmap/family-search-plan.md
+//! [family-search.md]: ../../../docs/roadmap/family-search.md
 //! [rule-search-method.md]: ../../../docs/plans/strategies/rule-search-method.md
 
 use std::sync::Arc;

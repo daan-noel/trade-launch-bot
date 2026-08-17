@@ -17,6 +17,8 @@ export interface FamilySiblingRow {
   n_matched: number;
   /** The ungated control on this cohort: what it pays with no gate at all. */
   ungated_ret_pct: number | null;
+  /** Its win rate — the bar an entry gate has to beat on the target cohort. */
+  ungated_win_pct: number | null;
 }
 
 /** One candidate, scored broad (rank) and narrow (level). */
@@ -35,6 +37,15 @@ export interface FamilyCandidateRow {
   target_n_tokens: number;
   /** Share of the target cohort's matched tokens this candidate entered (0..1). */
   target_enter_pct: number;
+  /** Held-out win rate — the SAFETY half. Entry decides safety, exit decides profit,
+   *  so a board printing only return grades half the rule. */
+  target_win_pct: number | null;
+  target_n_closed: number;
+  /** Entry IDEAS, not clauses: a band (floor + ceiling on one quantity) counts once.
+   *  This is why a rule showing five entry metrics carries three. */
+  n_entry_quantities: number;
+  /** Searched alarms in the exit OR, standing terms excluded. */
+  n_alarms: number;
 }
 
 /** One entry clause measured against the family's varied fingerprint axis. */
@@ -50,6 +61,14 @@ export interface FamilyAlarmRow {
   slot: number;
   label: string | null;
   n: number;
+  n_wins: number;
+  /** Wins over closes for this alarm. One large win hides a hundred small losses in
+   *  a money column; this is what separates them. */
+  win_rate_pct: number | null;
+  /** A mechanical exit the operator always wants (sell at migration), not a
+   *  discovered alarm — reported so the closes add up, labelled so it is never read
+   *  as an edge. */
+  standing: boolean;
   pnl_sol: number;
   entry_sol: number;
   /** Money over capital — a count-only table ranks 200 small losses over 20 wins. */
@@ -113,11 +132,52 @@ export interface FamilyEntryTimingRow {
 /** One term's narrow contribution — the finalist re-scored with it dropped. */
 export interface FamilyTermRow {
   label: string;
+  /** Which side it sits on — the two are graded by different jobs and must never be
+   *  ranked in one list: entry buys safety, exit buys profit. */
+  is_entry: boolean;
   ret_full_pct: number;
   ret_without_pct: number;
   delta_pct: number;
+  win_full_pct: number | null;
+  win_without_pct: number | null;
+  /** Win-rate points the term is worth — the entry side's own currency. */
+  win_delta_pp: number | null;
   /** Dropping it changed nothing at all on this cohort. */
   inert: boolean;
+  /** It pays in the currency of its own side. */
+  earns_its_place: boolean;
+}
+
+/** One idea the enrich stage offered the skeleton, and what it did. */
+export interface FamilyEnrichRow {
+  label: string;
+  is_entry: boolean;
+  ret_before_pct: number;
+  ret_after_pct: number;
+  ret_delta_pct: number;
+  win_before_pct: number | null;
+  win_after_pct: number | null;
+  win_delta_pp: number | null;
+  n_closed_after: number;
+  accepted: boolean;
+  /** Why it was refused. Null when accepted — density is never silent either way. */
+  refused: string | null;
+}
+
+/** The two-sided bars and what they decided. */
+export interface FamilySelection {
+  /** The bar the entry side had to clear: the stricter of the operator's floor and
+   *  the ungated control's own win rate. */
+  win_bar_pct: number;
+  control_win_pct: number | null;
+  floor_win_pct: number;
+  min_closed: number;
+  /** Candidates the bars turned away before one cleared. */
+  n_rejected: number;
+  /** Why the ranking's own head is not the draft. Empty when they agree. */
+  top_rejected: string[];
+  /** Nothing cleared both bars — there is no draft, and the reason is above. */
+  none_cleared: boolean;
 }
 
 /** How much of the money that was available the finalist took (D3). */
@@ -125,6 +185,10 @@ export interface FamilyCaptureDto {
   capture_pct: number | null;
   n_with_upside: number;
   n_no_upside: number;
+  /** `n_no_upside` as a share of the entries — the ENTRY's own score, readable with
+   *  no exit rule at all. Against the ungated control's share it says whether the
+   *  gate filters losers or merely trades less. */
+  no_upside_pct: number | null;
   oracle_pnl_sol: number;
   realized_pnl_sol: number;
 }
@@ -166,11 +230,20 @@ export interface FamilySearchReport {
   rho: number | null;
   /** False ⇒ fit-broad does not hold here; the ordering is unestablished. */
   fit_broad_holds: boolean;
-  /** The finalist: best pooled fit, level from the target cohort. */
+  /** The finalist: highest-ranked candidate clearing BOTH the win-rate and the
+   *  return bar on the held-out cohort. Null when nothing cleared. */
   draft: FamilyCandidateRow | null;
+  /** What the bars decided, and why the ranking's head is or is not the draft. */
+  selection: FamilySelection | null;
   /** What the fingerprint pays with NO gate — a property of the cohort. */
   ungated_control: FamilyCandidateRow | null;
   capture: FamilyCaptureDto;
+  /** The same for the ungated control — the entry side's comparison. */
+  ungated_capture: FamilyCaptureDto | null;
+  /** Standing exit terms this run carried, as the operator wrote them. */
+  standing_terms: string[];
+  /** Every idea the enrich stage offered the skeleton, accepted or refused. */
+  enrich: FamilyEnrichRow[];
   /** Whether the cohort clears its own execution cost. Measured on the ungated
    *  control before the generator runs — `refused` means no search happened. */
   cost_clearance: FamilyCostClearance | null;
@@ -231,5 +304,13 @@ export interface FamilySearchStartArgs {
   /** Round trips of headroom the cohort's typical best exit must leave before a
    *  search runs. `0` refuses only the unarguable case. */
   cost_clearance_margin?: number;
+  /** Mechanical alarms that ride into EVERY candidate and the ungated control, written
+   *  as the board prints them (`"liquidity >= 85"`). None is searched, ablated or
+   *  credited; one that does not parse fails the run rather than being dropped. */
+  standing_exit?: string[];
+  /** Absolute win-rate floor in percent, on top of the ungated control's own rate. */
+  min_win_rate_pct?: number;
+  /** Closes a candidate needs before its win rate is believed. */
+  min_closed?: number;
   incumbent_rule_id?: string;
 }

@@ -23,13 +23,13 @@
 //! it); the fit siblings iterate one at a time. The load phase is the RAM spike, and
 //! six concurrent corpora is how a run OOMs.
 //!
-//! Charter: [family-search.md] · plan: [family-search-plan.md].
+//! Reference: [family-search.md] — purpose, decisions D1-D12, evidence, how to run.
 //!
 //! [family-search.md]: ../../docs/roadmap/family-search.md
-//! [family-search-plan.md]: ../../docs/roadmap/family-search-plan.md
 
 pub mod attribution;
 pub mod dto;
+pub mod enrich;
 pub mod family;
 pub mod gates;
 pub mod generator;
@@ -72,8 +72,22 @@ use score::CohortScore;
 pub type ExitSlotLabel = Option<(MetricId, Operator, f64, Option<f64>, u8)>;
 
 /// One cohort's fit-tier output: per-candidate scores, per-candidate admit rate, and
-/// the ungated control's return when it was scored alongside.
-pub type CohortScored = (Vec<CohortScore>, Vec<f64>, Option<f64>);
+/// the ungated control's score when it was scored alongside.
+pub type CohortScored = (Vec<CohortScore>, Vec<f64>, Option<CohortScore>);
+
+/// A fast-tier archive row as a [`CohortScore`].
+///
+/// `n_wins` is reconstructed from the row's own win **rate** — the fold keeps a rate,
+/// not a count — and rounding it back to a count is exact for any rate the fold can
+/// produce, since the rate is `wins / n_closed` with both integers.
+fn archive_score(a: &crate::rule_search::scorer::ArchiveRow, buy: f64) -> CohortScore {
+    CohortScore {
+        pnl_sol: a.total_pnl_sol,
+        entry_sol: a.n_tokens as f64 * buy,
+        n_closed: a.n_closed,
+        n_wins: (a.win_rate * a.n_closed as f64).round() as u64,
+    }
+}
 
 /// Everything a run reads, all of it from the request (D5). No field here may be
 /// populated from a `rules` row.
@@ -133,9 +147,20 @@ pub fn earn_candidates(
     flow: Option<&FlowPatterns>,
     fp: FingerprintId,
     cfg: &GeneratorConfig,
+    standing: &[generator::StandingTerm],
 ) -> QuotaOutcome<Candidate> {
     let cuts = build_cut_table(tokens, flow, fp);
-    generator::generate(&cuts, cfg)
+    generator::generate(&cuts, cfg, standing)
+}
+
+/// The cohort's own cut table — the enrich stage's menu comes from the same earning
+/// pass the generator used, never from a wider registry sweep.
+pub fn cut_table(
+    tokens: &[CorpusToken],
+    flow: Option<&FlowPatterns>,
+    fp: FingerprintId,
+) -> crate::rule_search::cuts::CutTable {
+    build_cut_table(tokens, flow, fp)
 }
 
 /// One cohort's contribution: the per-candidate ranking numbers, nothing else.
@@ -152,8 +177,10 @@ pub struct CohortRun {
     /// Per candidate: share of matched tokens admitted **before** the guards. This is
     /// what the axis-duplication gate reads, and it costs zero extra runs.
     pub enter_pct: Vec<f64>,
-    /// The ungated control on this cohort (D6) — `None` when it was not scored.
-    pub ungated_ret_pct: Option<f64>,
+    /// The ungated control on this cohort (D6) — `None` when it was not scored. Its
+    /// **win rate** is the entry side's bar: a gate that does not enter more safely
+    /// than buying everything is not filtering anything (D11).
+    pub ungated: Option<CohortScore>,
 }
 
 /// Score a fixed candidate menu on one cohort — the **fit tier**. Stops at the
@@ -185,17 +212,9 @@ pub fn score_cohort(
     let archive = score_combos(tokens, &combos, &sc, observer)?;
     let n_matched = tokens.len() as u64;
     let buy = cfg.pricing.buy_amount_sol;
-    let scores: Vec<CohortScore> = archive
-        .iter()
-        .take(n)
-        .map(|a| CohortScore { pnl_sol: a.total_pnl_sol, entry_sol: a.n_tokens as f64 * buy })
-        .collect();
+    let scores: Vec<CohortScore> = archive.iter().take(n).map(|a| archive_score(a, buy)).collect();
     let enter_pct: Vec<f64> = archive.iter().take(n).map(|a| a.enter_pct(n_matched)).collect();
-    let ungated = extra.map(|_| {
-        let a = &archive[n];
-        score::CohortScore { pnl_sol: a.total_pnl_sol, entry_sol: a.n_tokens as f64 * buy }
-            .ret_pct()
-    });
+    let ungated = extra.map(|_| archive_score(&archive[n], buy));
     Ok((scores, enter_pct, ungated))
 }
 
@@ -294,13 +313,19 @@ pub fn authority(
     let mut token_idx = Vec::with_capacity(outcomes_raw.len());
     let mut mints: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut pnl_sol = 0.0f64;
+    let (mut n_closed, mut n_wins) = (0u64, 0u64);
     for po in &outcomes_raw {
         let Some(&ti) = index.get(po.mint.as_str()) else { continue };
         mints.insert(po.mint.as_str());
         let o = replay_to_outcome(po, &labels, cfg.pricing.buy_amount_sol, &cfg.pricing.cost);
-        // Realized only — an open mark must not read as money the rule made.
+        // Realized only — an open mark must not read as money the rule made, and an
+        // open position has not won anything yet either.
         if o.exit != ExitCode::Open {
             pnl_sol += o.pnl_sol as f64;
+            n_closed += 1;
+            if o.pnl_sol > 0.0 {
+                n_wins += 1;
+            }
         }
         outcomes.push(o);
         token_idx.push(ti);
@@ -309,7 +334,12 @@ pub fn authority(
     Authority {
         outcomes,
         token_idx,
-        score: CohortScore { pnl_sol, entry_sol: n_tokens as f64 * cfg.pricing.buy_amount_sol },
+        score: CohortScore {
+            pnl_sol,
+            entry_sol: n_tokens as f64 * cfg.pricing.buy_amount_sol,
+            n_closed,
+            n_wins,
+        },
         n_tokens,
     }
 }
@@ -317,6 +347,16 @@ pub fn authority(
 /// A rule's authored exit slots, numbered exactly as the sweep numbers them.
 fn authored_exit_labels(loaded: &LoadedRule) -> Vec<ExitSlotLabel> {
     exit_metric_labels(&CompiledRule::compile(loaded).exit_reqs)
+}
+
+/// The share of a rule's entries that never had a profitable exit available — the
+/// **entry**'s own score, readable with no exit rule at all (D3).
+///
+/// An entry gate's job is to admit fewer of these. Against the ungated control's share
+/// it says, in one number, whether the gate is filtering losers or just trading less.
+pub fn no_upside_pct(c: &oracle::Capture) -> Option<f64> {
+    let n = c.n_entered();
+    (n > 0).then(|| 100.0 * c.n_no_upside as f64 / n as f64)
 }
 
 /// The capture ratio for one authority pass (D3).
@@ -328,25 +368,77 @@ pub fn capture_of(tokens: &[CorpusToken], a: &Authority, pricing: &Pricing) -> o
     acc.finish()
 }
 
-/// Re-score the finalist on the target cohort with each exit term dropped in turn —
-/// the **narrow** re-check. A term worth nothing across the family can be worth ten
-/// points here, and only this stage sees it.
+/// Re-score the finalist on the target cohort with each term dropped in turn — the
+/// **narrow** re-check. A term worth nothing across the family can be worth ten points
+/// here, and only this stage sees it.
+///
+/// Both sides are ablated, because each is graded in its own currency (D11): an entry
+/// idea earns its place by lifting the **win rate**, an exit alarm by lifting the
+/// **return**. Grading an entry clause on return alone is the recorded reason a search
+/// deletes every entry condition.
+///
+/// Standing terms are never dropped: a mechanical exit is not a finding, and a board
+/// row asking whether to keep "sell at migration" is noise.
 pub fn narrow_recheck(
     tokens: &[CorpusToken],
     fp: &EngineFingerprint,
     finalist: &GeneratedCombo,
+    n_standing: usize,
     cfg: &RunConfig,
     full: CohortScore,
 ) -> Vec<score::TermContribution> {
-    use crate::rule_search::generator::{assemble, ExitBag};
+    use crate::rule_search::generator::{assemble, EntryFilling, ExitBag};
     let mut dropped = Vec::new();
-    for i in 0..finalist.exit.clauses.len() {
+    for i in 0..finalist.entry.clauses.len() {
+        let mut clauses = finalist.entry.clauses.clone();
+        let removed = clause_label(&clauses.remove(i));
+        let params = assemble(&EntryFilling { clauses }, &finalist.exit);
+        dropped.push((removed, true, authority(tokens, fp, &params, cfg).score));
+    }
+    let searched = finalist.exit.clauses.len().saturating_sub(n_standing);
+    for i in 0..searched {
         let mut clauses = finalist.exit.clauses.clone();
         let removed = clause_label(&clauses.remove(i));
         let params = assemble(&finalist.entry, &ExitBag { clauses });
-        dropped.push((removed, authority(tokens, fp, &params, cfg).score));
+        dropped.push((removed, false, authority(tokens, fp, &params, cfg).score));
     }
     score::narrow_recheck(full, &dropped)
+}
+
+/// The **enrich** stage (D12): offer the finalist every earned idea it does not carry
+/// and keep what pays, each side judged in its own currency.
+///
+/// The inverse of [`narrow_recheck`], and the only stage in the job that can make a
+/// rule denser. Bounded at [`enrich::MAX_TRIALS`] + [`enrich::MAX_ACCEPTED`] replays of
+/// one rule over the already-resident target cohort.
+pub fn narrow_enrich(
+    tokens: &[CorpusToken],
+    fp: &EngineFingerprint,
+    finalist: &Candidate,
+    cuts: &crate::rule_search::cuts::CutTable,
+    standing: &[generator::StandingTerm],
+    min_closed: u64,
+    cfg: &RunConfig,
+) -> enrich::Enriched {
+    let (entry_menu, exit_menu) = generator::unused_clauses(
+        cuts,
+        &finalist.combo.entry.clauses,
+        finalist.searched_exit(),
+        standing,
+    );
+    let score = |e: &crate::rule_search::generator::EntryFilling,
+                 x: &crate::rule_search::generator::ExitBag|
+     -> CohortScore {
+        authority(tokens, fp, &generator::reassemble(e, x), cfg).score
+    };
+    enrich::enrich(
+        &finalist.combo,
+        finalist.n_standing,
+        &entry_menu,
+        &exit_menu,
+        min_closed,
+        score,
+    )
 }
 
 /// Measure every entry clause the finalist uses against the family's varied axis
@@ -465,8 +557,12 @@ pub fn spread(tokens: &[CorpusToken], auth: &Authority, opt: &Authority, buy: f6
         }
     }
     let entry_sol = n as f64 * buy;
-    let authority_ret_pct = CohortScore { pnl_sol: a_sol, entry_sol }.ret_pct();
-    let optimistic_ret_pct = CohortScore { pnl_sol: o_sol, entry_sol }.ret_pct();
+    // Return only: the spread is one taken set priced twice, and a win count over the
+    // intersection would invite reading it as a second, differently-scoped grade.
+    let authority_ret_pct =
+        CohortScore { pnl_sol: a_sol, entry_sol, ..Default::default() }.ret_pct();
+    let optimistic_ret_pct =
+        CohortScore { pnl_sol: o_sol, entry_sol, ..Default::default() }.ret_pct();
     Spread {
         authority_ret_pct,
         optimistic_ret_pct,
@@ -746,6 +842,28 @@ mod tests {
         assert_eq!(e.to_string(), "cancelled");
     }
 
+    /// A win rate is a rate, so it has to survive the trip through the fast tier's
+    /// rate-only archive row and come back as the counts a pooled rate needs.
+    #[test]
+    fn the_fast_tier_round_trips_a_win_rate_back_into_counts() {
+        let row = crate::rule_search::scorer::ArchiveRow {
+            combo_idx: 0,
+            n_fired: 253,
+            n_closed: 253,
+            n_tokens: 253,
+            n_fired_unguarded: 300,
+            total_pnl_sol: 0.31,
+            block_pnl_sol: [0.0; crate::rule_search::scorer::N_BLOCKS],
+            profit_factor: Some(1.4),
+            win_rate: 62.0 / 253.0,
+        };
+        let s = archive_score(&row, 0.01);
+        assert_eq!(s.n_closed, 253);
+        assert_eq!(s.n_wins, 62, "the rate is wins/closes, so it rounds back exactly");
+        assert!((s.win_rate_pct().unwrap() - 100.0 * 62.0 / 253.0).abs() < 1e-9);
+        assert!((s.entry_sol - 2.53).abs() < 1e-9);
+    }
+
     /// The band has to be derived rather than measured once and hard-coded, because
     /// it is **U-shaped in buy size**: the fixed per-leg cost shrinks as a share of a
     /// larger notional while our own price impact grows into the same pool, so the
@@ -783,9 +901,11 @@ mod tests {
     #[test]
     fn the_entry_gate_stays_silent_on_a_family_of_one() {
         let cand = Candidate {
-            combo: generator::ungated_control(),
+            combo: generator::ungated_control(&[]),
             families: Default::default(),
             flags: Vec::new(),
+            n_entry_quantities: 0,
+            n_standing: 0,
         };
         let one = vec![CohortRun {
             fp_id: Uuid::nil(),
@@ -795,7 +915,7 @@ mod tests {
             n_matched: 10,
             scores: vec![CohortScore::default()],
             enter_pct: vec![0.5],
-            ungated_ret_pct: None,
+            ungated: None,
         }];
         assert!(entry_gates(&cand, 0, &one).is_empty());
     }

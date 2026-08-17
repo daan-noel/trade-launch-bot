@@ -288,6 +288,22 @@ are the incumbents to beat. Coverage ("the clause exists") is not a pass.
 
 ---
 
+## Robustness gates — still unproven on real cohorts
+
+The mechanisms (latency ladder, spread gate, trimmed block ranking, sibling z,
+admission gate, entry bands, expectancy floor, token-n floor, ablation / quartile /
+exit-efficiency diagnostics) are implemented and documented in
+[rule-search-method.md](../plans/strategies/rule-search-method.md) §2-§4. What is open
+is proving them:
+
+- Grade each with the method's §5 same-form ablation: freeze fingerprint, range, buy,
+  fill, cost, copycat, incumbent; one cut source / gate per run.
+- Re-run the fingerprints the pilots killed for latency or spread (g2, g6, g8 v1, g12)
+  and confirm the gates refuse or downgrade them with no operator reading numbers.
+- Watch whether the 10% admission share and the 0.25 spread discount need tuning -
+  both are constants in `hunter-lab`'s `rule_search` (`cuts.rs`, `report.rs`), chosen
+  from pilot history, not fitted.
+
 ## Land slices
 
 - [ ] **Portrait** — timeline + age-aligned samples + create-slot refuse; print

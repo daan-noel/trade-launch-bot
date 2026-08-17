@@ -1,4 +1,4 @@
-//! Fit broad, validate narrow (charter D1/D2).
+//! Fit broad, validate narrow (charter D1/D2), then select on **both sides**.
 //!
 //! Exit logic is portable — the same exit improves 6 of 6 cohorts, losers included —
 //! so the **ordering** comes from a pooled fit across the family. Level does not
@@ -9,6 +9,14 @@
 //! ρ (Spearman between fit rank and held-out rank) is a **self-test, not a result**:
 //! it grades the *procedure* on this family. Where it collapses, fit-broad does not
 //! apply here and the board says so instead of ranking anyway.
+//!
+//! **The two sides are graded by their own jobs (charter D11).** Entry decides
+//! *safety* and exit decides *profit*, so the ranking alone cannot pick a draft: a
+//! candidate must also clear a **win-rate** bar and a **return** bar, both read on the
+//! held-out target. The win-rate bar is the ungated control's own win rate — an entry
+//! gate that does not enter more safely than buying everything is not filtering
+//! anything, and unlike an absolute figure that bar is a property of the cohort and
+//! exists before any rule does (D6).
 
 use trading_core::strategies::kernel::weighted_return_pct;
 
@@ -17,18 +25,31 @@ use trading_core::strategies::kernel::weighted_return_pct;
 /// board that ranks anyway under a collapsed ρ is reporting noise as an ordering.
 pub const RHO_FLOOR: f64 = 0.5;
 
-/// One candidate's realized result on one cohort. Both sums travel together so a
-/// re-weighting anywhere upstream stays exact: percent is never carried alone.
+/// One candidate's realized result on one cohort.
+///
+/// Every quantity travels as its own **sum** so re-weighting upstream stays exact:
+/// a percent is never carried alone and a rate is never averaged. Pooling six cohorts
+/// that differ by ~6× in size is the case that punishes any other choice.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct CohortScore {
     pub pnl_sol: f64,
     /// Capital committed — `n_entered × buy_amount_sol`.
     pub entry_sol: f64,
+    /// Positions that closed — the win rate's denominator.
+    pub n_closed: u64,
+    /// Of those, the ones that closed up.
+    pub n_wins: u64,
 }
 
 impl CohortScore {
     pub fn ret_pct(&self) -> f64 {
         weighted_return_pct(self.pnl_sol, self.entry_sol)
+    }
+
+    /// Wins over closes, as a percent. `None` when nothing closed — a rule that never
+    /// traded has no win rate, and 0% would read as "it lost every time".
+    pub fn win_rate_pct(&self) -> Option<f64> {
+        (self.n_closed > 0).then(|| 100.0 * self.n_wins as f64 / self.n_closed as f64)
     }
 }
 
@@ -39,6 +60,14 @@ pub fn pooled_return_pct(scores: &[CohortScore]) -> f64 {
     let pnl: f64 = scores.iter().map(|s| s.pnl_sol).sum();
     let entry: f64 = scores.iter().map(|s| s.entry_sol).sum();
     weighted_return_pct(pnl, entry)
+}
+
+/// Pool a win rate the same way money pools: `Σwins ÷ Σcloses`. A mean of per-cohort
+/// rates would let a 12-trade cohort weigh as much as a 700-trade one.
+pub fn pooled_win_rate_pct(scores: &[CohortScore]) -> Option<f64> {
+    let closed: u64 = scores.iter().map(|s| s.n_closed).sum();
+    let wins: u64 = scores.iter().map(|s| s.n_wins).sum();
+    (closed > 0).then(|| 100.0 * wins as f64 / closed as f64)
 }
 
 /// Fractional ranks (1-based, ties averaged), ascending. Ties must average or a
@@ -96,6 +125,8 @@ pub struct BroadFit {
     /// Held-out target-cohort return per candidate, in candidate order. This is the
     /// number a report prints.
     pub ret_validate: Vec<f64>,
+    /// Held-out win rate per candidate, in candidate order. The **safety** half.
+    pub win_validate: Vec<Option<f64>>,
     /// Spearman(fit, held-out) across candidates. `None` when it cannot be computed
     /// (a family of one, or fewer than two candidates).
     pub rho: Option<f64>,
@@ -108,8 +139,8 @@ impl BroadFit {
         self.rho.is_some_and(|r| r >= RHO_FLOOR)
     }
 
-    /// The fit stage's pick: best pooled fit. The **level** to report for it is
-    /// `ret_validate[winner]`, never `ret_fit[winner]`.
+    /// The fit stage's pick, **ignoring the two-sided bars** — the ordering's head.
+    /// [`select`] is what a board reports; this stays for the archive's row 1.
     pub fn winner(&self) -> Option<usize> {
         self.rank_fit.first().copied()
     }
@@ -126,6 +157,7 @@ pub fn broad_fit(fit: &[Vec<CohortScore>], validate: &[CohortScore]) -> BroadFit
     let single_cohort = fit.iter().all(|f| f.is_empty());
     let ret_fit: Vec<f64> = fit.iter().map(|f| pooled_return_pct(f)).collect();
     let ret_validate: Vec<f64> = validate.iter().map(|s| s.ret_pct()).collect();
+    let win_validate: Vec<Option<f64>> = validate.iter().map(|s| s.win_rate_pct()).collect();
 
     let key = if single_cohort { &ret_validate } else { &ret_fit };
     let mut rank_fit: Vec<usize> = (0..fit.len()).collect();
@@ -136,7 +168,120 @@ pub fn broad_fit(fit: &[Vec<CohortScore>], validate: &[CohortScore]) -> BroadFit
     // With no fit set there is no second opinion to correlate against — reporting a
     // ρ of 1.0 from `ret_validate` against itself would be a self-test that cannot fail.
     let rho = (!single_cohort).then(|| spearman(&ret_fit, &ret_validate)).flatten();
-    BroadFit { rank_fit, ret_fit, ret_validate, rho }
+    BroadFit { rank_fit, ret_fit, ret_validate, win_validate, rho }
+}
+
+// ─────────────────────────── two-sided selection (charter D11) ────────────────
+
+/// The bars a candidate must clear on the **held-out target** to be the draft.
+///
+/// Both are read narrow, never on the fit set: every candidate can be negative on the
+/// pooled fit while the winner pays +31% on the target, so a profit bar applied to the
+/// fit level would refuse the whole library.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SelectionBars {
+    /// Win rate the ungated control achieves on the target, if it closed anything.
+    /// The entry side has to beat *buying everything* or it is not filtering.
+    pub control_win_pct: Option<f64>,
+    /// An absolute floor the operator sets on top. `0.0` leaves the control as the
+    /// only bar.
+    pub floor_win_pct: f64,
+    /// Closes a candidate needs before its win rate is believed. A 3-of-4 rule is not
+    /// a 75% win rate.
+    pub min_closed: u64,
+}
+
+impl SelectionBars {
+    /// The effective win-rate bar: the stricter of the operator's floor and the
+    /// cohort's own ungated rate.
+    pub fn win_bar_pct(&self) -> f64 {
+        self.control_win_pct.unwrap_or(0.0).max(self.floor_win_pct)
+    }
+}
+
+/// Why a candidate is, or is not, the draft.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rejected {
+    /// Fewer closes than the bar — the win rate is not yet a measurement.
+    TooFewCloses,
+    /// The entry does not enter more safely than buying everything.
+    WinRate,
+    /// The exit does not make money on the held-out cohort.
+    Return,
+}
+
+impl Rejected {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::TooFewCloses => "too few closes",
+            Self::WinRate => "win rate below the ungated control",
+            Self::Return => "negative on the held-out cohort",
+        }
+    }
+}
+
+/// What the two-sided selection decided.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Selection {
+    /// The draft: the highest-ranked candidate clearing **both** bars. `None` when
+    /// nothing does.
+    pub chosen: Option<usize>,
+    /// The ranking's own head, whether or not it cleared. Always reported, so a board
+    /// can say "the best-ranked rule was refused, and here is why".
+    pub top_ranked: Option<usize>,
+    /// Why `top_ranked` is not `chosen`. Empty when they agree.
+    pub top_rejected: Vec<Rejected>,
+    /// Candidates the bars turned away, in rank order.
+    pub n_rejected: usize,
+    pub bars: SelectionBars,
+}
+
+/// Walk the fit ordering and take the first candidate that clears both bars.
+///
+/// Rank comes from the pooled family (validated at ρ = 0.833 on the reference family);
+/// the bars come from the held-out cohort. Selecting on rank alone reports whichever
+/// shape the search happened to favour; selecting on the bars alone throws away the
+/// only cross-cohort evidence there is.
+pub fn select(bf: &BroadFit, validate: &[CohortScore], bars: SelectionBars) -> Selection {
+    let judge = |ci: usize| -> Vec<Rejected> {
+        let s = validate.get(ci).copied().unwrap_or_default();
+        let mut out = Vec::new();
+        if s.n_closed < bars.min_closed {
+            out.push(Rejected::TooFewCloses);
+        }
+        match s.win_rate_pct() {
+            Some(w) if w >= bars.win_bar_pct() => {}
+            Some(_) => out.push(Rejected::WinRate),
+            None => out.push(Rejected::TooFewCloses),
+        }
+        // Spelled out because the obvious `<= 0.0` is **false** for NaN and would let
+        // an unmeasurable return through the profit bar. A rule has to be positively
+        // positive.
+        let ret = bf.ret_validate.get(ci).copied().unwrap_or(0.0);
+        if !ret.is_finite() || ret <= 0.0 {
+            out.push(Rejected::Return);
+        }
+        out.dedup();
+        out
+    };
+
+    let mut chosen = None;
+    let mut n_rejected = 0;
+    for &ci in &bf.rank_fit {
+        if judge(ci).is_empty() {
+            chosen = Some(ci);
+            break;
+        }
+        n_rejected += 1;
+    }
+    let top_ranked = bf.winner();
+    Selection {
+        chosen,
+        top_ranked,
+        top_rejected: top_ranked.map(judge).unwrap_or_default(),
+        n_rejected,
+        bars,
+    }
 }
 
 /// One term's contribution to the finalist, measured **narrow** — on the target
@@ -144,15 +289,24 @@ pub fn broad_fit(fit: &[Vec<CohortScore>], validate: &[CohortScore]) -> BroadFit
 #[derive(Clone, Debug, PartialEq)]
 pub struct TermContribution {
     pub label: String,
+    /// Which side of the rule the term sits on — the two are graded by different
+    /// jobs, so a board must never rank them in one list.
+    pub is_entry: bool,
     pub ret_full_pct: f64,
     pub ret_without_pct: f64,
+    pub win_full_pct: Option<f64>,
+    pub win_without_pct: Option<f64>,
 }
 
 impl TermContribution {
-    /// Points the term is worth on the target cohort. Zero ⇒ the drop changed
-    /// nothing at all.
+    /// Points of return the term is worth on the target cohort.
     pub fn delta_pct(&self) -> f64 {
         self.ret_full_pct - self.ret_without_pct
+    }
+
+    /// Points of **win rate** the term is worth — the entry side's own currency.
+    pub fn win_delta_pp(&self) -> Option<f64> {
+        Some(self.win_full_pct? - self.win_without_pct?)
     }
 
     /// Whether dropping the term left the cohort byte-identical — the shape a broad
@@ -160,24 +314,58 @@ impl TermContribution {
     /// points on the sixth.
     pub fn inert(&self) -> bool {
         self.ret_full_pct == self.ret_without_pct
+            && self.win_full_pct == self.win_without_pct
+    }
+
+    /// Does this term earn its place? An entry term earns it by making the rule
+    /// **safer**, an exit term by making it **richer** — grading both on return alone
+    /// is what deletes every entry condition.
+    pub fn earns_its_place(&self) -> bool {
+        if self.inert() {
+            return false;
+        }
+        if self.is_entry {
+            self.win_delta_pp().is_some_and(|d| d > 0.0) || self.delta_pct() > 0.0
+        } else {
+            self.delta_pct() > 0.0
+        }
     }
 }
 
 /// Re-score the finalist on the **target cohort** with each term dropped in turn.
 /// The caller supplies the re-scores; this is the comparison, ranked by the points
 /// each term is worth so the load-bearing one reads first.
-pub fn narrow_recheck(full: CohortScore, dropped: &[(String, CohortScore)]) -> Vec<TermContribution> {
-    let ret_full_pct = full.ret_pct();
+pub fn narrow_recheck(
+    full: CohortScore,
+    dropped: &[(String, bool, CohortScore)],
+) -> Vec<TermContribution> {
     let mut out: Vec<TermContribution> = dropped
         .iter()
-        .map(|(label, s)| TermContribution {
+        .map(|(label, is_entry, s)| TermContribution {
             label: label.clone(),
-            ret_full_pct,
+            is_entry: *is_entry,
+            ret_full_pct: full.ret_pct(),
             ret_without_pct: s.ret_pct(),
+            win_full_pct: full.win_rate_pct(),
+            win_without_pct: s.win_rate_pct(),
         })
         .collect();
+    // Entry terms first (safety), then exit (profit) — each ranked in its own
+    // currency, because sorting both by return buries every working entry gate.
     out.sort_by(|a, b| {
-        b.delta_pct().partial_cmp(&a.delta_pct()).unwrap_or(std::cmp::Ordering::Equal)
+        b.is_entry
+            .cmp(&a.is_entry)
+            .then_with(|| {
+                if a.is_entry {
+                    b.win_delta_pp()
+                        .unwrap_or(0.0)
+                        .partial_cmp(&a.win_delta_pp().unwrap_or(0.0))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    b.delta_pct().partial_cmp(&a.delta_pct()).unwrap_or(std::cmp::Ordering::Equal)
+                }
+            })
+            .then_with(|| a.label.cmp(&b.label))
     });
     out
 }
@@ -187,7 +375,11 @@ mod tests {
     use super::*;
 
     fn s(pnl: f64, entry: f64) -> CohortScore {
-        CohortScore { pnl_sol: pnl, entry_sol: entry }
+        CohortScore { pnl_sol: pnl, entry_sol: entry, n_closed: 100, n_wins: 50 }
+    }
+
+    fn sw(pnl: f64, entry: f64, closed: u64, wins: u64) -> CohortScore {
+        CohortScore { pnl_sol: pnl, entry_sol: entry, n_closed: closed, n_wins: wins }
     }
 
     #[test]
@@ -197,37 +389,43 @@ mod tests {
         let small = s(0.198, 0.99);
         let pooled = pooled_return_pct(&[big, small]);
 
-        // Σpnl / Σentry, exactly.
         let want = 100.0 * (big.pnl_sol + small.pnl_sol) / (big.entry_sol + small.entry_sol);
         assert!((pooled - want).abs() < 1e-12);
-
-        // Swapping the cohorts' order does not move it.
         assert_eq!(pooled, pooled_return_pct(&[small, big]));
 
-        // A mean-of-percents implementation reads ~+9.5% — a rank-flipping difference
-        // from the +2.1% the money actually pays.
         let mean_of_pcts = (big.ret_pct() + small.ret_pct()) / 2.0;
         assert!(
             (pooled - mean_of_pcts).abs() > 5.0,
             "pooled {pooled} vs mean-of-percents {mean_of_pcts}"
         );
         assert!(pooled > 0.0 && pooled < 5.0, "{pooled}");
-        // An empty pool has no capital and therefore no return to invent.
         assert_eq!(pooled_return_pct(&[]), 0.0);
+    }
+
+    /// A win rate pools like money does: by its own denominator, never as a mean.
+    #[test]
+    fn a_win_rate_pools_by_closes_not_by_cohort() {
+        // 700 closes at 30% and 12 closes at 100%.
+        let big = sw(0.0, 7.0, 700, 210);
+        let small = sw(0.0, 0.12, 12, 12);
+        let pooled = pooled_win_rate_pct(&[big, small]).unwrap();
+        assert!((pooled - 100.0 * 222.0 / 712.0).abs() < 1e-9, "{pooled}");
+        // A mean of rates reads 65% — the 12-trade cohort weighing as much as 700.
+        let mean = (big.win_rate_pct().unwrap() + small.win_rate_pct().unwrap()) / 2.0;
+        assert!(mean > 60.0 && pooled < 35.0, "pooled {pooled} vs mean {mean}");
+        // Nothing closed ⇒ no rate at all, never a 0 that reads as "lost every time".
+        assert_eq!(sw(0.0, 0.0, 0, 0).win_rate_pct(), None);
+        assert_eq!(pooled_win_rate_pct(&[]), None);
     }
 
     #[test]
     fn spearman_measures_rank_agreement_and_tolerates_ties() {
-        // Perfectly ordered, wildly different levels — rank transfers, level does not.
         let fit = [-1.24, -3.0, -8.5, -12.0];
         let holdout = [31.0, 12.0, 4.0, -9.0];
         assert!((spearman(&fit, &holdout).unwrap() - 1.0).abs() < 1e-12);
-        // Reversed ⇒ −1.
         let flipped: Vec<f64> = holdout.iter().rev().copied().collect();
         assert!((spearman(&fit, &flipped).unwrap() + 1.0).abs() < 1e-12);
-        // Ties average rather than taking their input order as an ordering.
         assert_eq!(spearman(&[1.0, 1.0, 2.0], &[5.0, 5.0, 9.0]), Some(1.0));
-        // No ordering to agree with ⇒ no correlation, never a fabricated 0.
         assert_eq!(spearman(&[1.0, 1.0, 1.0], &[1.0, 2.0, 3.0]), None);
         assert_eq!(spearman(&[1.0], &[1.0]), None);
         assert_eq!(spearman(&[1.0, 2.0], &[1.0]), None);
@@ -235,8 +433,6 @@ mod tests {
 
     #[test]
     fn the_fit_ranks_and_the_target_supplies_the_level() {
-        // Three candidates. Every one is NEGATIVE on the fit set; the best of them
-        // pays +31% on the held-out target. That is the expected shape, not a bug.
         let fit = vec![
             vec![s(-0.0124, 1.0), s(-0.02, 1.0)], // candidate 0: best fit
             vec![s(-0.05, 1.0), s(-0.06, 1.0)],
@@ -249,14 +445,12 @@ mod tests {
         assert!(bf.ret_fit.iter().all(|&r| r < 0.0), "the fit level is negative throughout");
         assert!((bf.rho.unwrap() - 1.0).abs() < 1e-12);
         assert!(bf.holds());
-        // The winner's reportable number comes from the held-out cohort.
         let w = bf.winner().unwrap();
         assert!((bf.ret_validate[w] - 31.0).abs() < 1e-9);
     }
 
     #[test]
     fn a_collapsed_rho_stops_the_board_from_ranking_anyway() {
-        // Fit order and holdout order disagree completely.
         let fit = vec![vec![s(0.3, 1.0)], vec![s(0.2, 1.0)], vec![s(0.1, 1.0)]];
         let validate = vec![s(-0.1, 1.0), s(0.5, 1.0), s(0.2, 1.0)];
         let bf = broad_fit(&fit, &validate);
@@ -266,36 +460,104 @@ mod tests {
 
     #[test]
     fn a_family_of_one_reports_no_rho_and_ranks_on_the_target() {
-        // No fit cohorts at all — the run degrades to single-cohort.
         let fit = vec![Vec::new(), Vec::new()];
         let validate = vec![s(0.05, 1.0), s(0.40, 1.0)];
         let bf = broad_fit(&fit, &validate);
         assert_eq!(bf.rho, None, "there is no second opinion to self-test against");
         assert!(!bf.holds());
-        // Ranking still happens — off the only cohort there is.
         assert_eq!(bf.rank_fit, vec![1, 0]);
         assert_eq!(bf.winner(), Some(1));
     }
 
+    /// Entry is safety and exit is profit, so the draft has to clear BOTH — and the
+    /// safety bar is the cohort's own ungated rate, not a number someone picked.
     #[test]
-    fn the_narrow_recheck_finds_a_term_a_broad_fit_is_blind_to() {
-        // The finalist pays +31% on the target. Dropping `nonvol_buy >= 1.6 @2s`
-        // costs 10 points there while leaving two other cohorts byte-identical —
-        // only this stage sees it.
-        let full = s(0.31, 1.0);
+    fn selection_takes_the_first_ranked_candidate_clearing_both_bars() {
+        // Rank order 0,1,2. Candidate 0 is rich but no safer than buying everything;
+        // candidate 1 is safer AND positive; candidate 2 is safe but loses.
+        let fit = vec![
+            vec![sw(0.30, 1.0, 100, 40)],
+            vec![sw(0.20, 1.0, 100, 62)],
+            vec![sw(0.10, 1.0, 100, 80)],
+        ];
+        let validate = vec![
+            sw(0.31, 1.0, 100, 40), // 40% — at the control's rate, no safer
+            sw(0.18, 1.0, 100, 62), // 62% and +18%
+            sw(-0.05, 1.0, 100, 80),
+        ];
+        let bf = broad_fit(&fit, &validate);
+        assert_eq!(bf.rank_fit, vec![0, 1, 2]);
+
+        let bars =
+            SelectionBars { control_win_pct: Some(45.0), floor_win_pct: 0.0, min_closed: 8 };
+        let sel = select(&bf, &validate, bars);
+
+        assert_eq!(sel.top_ranked, Some(0));
+        assert_eq!(sel.top_rejected, vec![Rejected::WinRate], "richest, but not safer");
+        assert_eq!(sel.chosen, Some(1), "the draft is the first to clear both");
+        assert_eq!(sel.n_rejected, 1);
+        assert!((sel.bars.win_bar_pct() - 45.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_thin_win_rate_is_not_a_measurement_and_an_absolute_floor_can_raise_the_bar() {
+        // 3 of 4 is not a 75% win rate.
+        let validate = vec![sw(0.9, 0.04, 4, 3)];
+        let bf = broad_fit(&[vec![]], &validate);
+        let bars = SelectionBars { control_win_pct: Some(40.0), floor_win_pct: 0.0, min_closed: 8 };
+        let sel = select(&bf, &validate, bars);
+        assert_eq!(sel.chosen, None);
+        assert_eq!(sel.top_rejected, vec![Rejected::TooFewCloses]);
+
+        // An operator floor above the control's rate is the stricter of the two.
+        let strict =
+            SelectionBars { control_win_pct: Some(40.0), floor_win_pct: 55.0, min_closed: 1 };
+        assert!((strict.win_bar_pct() - 55.0).abs() < 1e-9);
+        assert_eq!(select(&bf, &validate, strict).chosen, Some(0), "75% clears a 55% floor");
+    }
+
+    #[test]
+    fn nothing_clearing_the_bars_is_reported_as_no_draft_with_a_reason() {
+        let validate = vec![sw(-0.2, 1.0, 100, 20), sw(-0.1, 1.0, 100, 25)];
+        let bf = broad_fit(&[vec![], vec![]], &validate);
+        let bars = SelectionBars { control_win_pct: Some(50.0), floor_win_pct: 0.0, min_closed: 8 };
+        let sel = select(&bf, &validate, bars);
+        assert_eq!(sel.chosen, None);
+        assert_eq!(sel.n_rejected, 2);
+        assert!(sel.top_rejected.contains(&Rejected::WinRate));
+        assert!(sel.top_rejected.contains(&Rejected::Return));
+    }
+
+    /// An entry term earns its place by raising the WIN RATE. Grading it on return
+    /// alone is the recorded reason a search deletes every entry condition.
+    #[test]
+    fn the_narrow_recheck_grades_each_side_in_its_own_currency() {
+        let full = sw(0.31, 1.0, 100, 62);
         let dropped = vec![
-            ("stall >= 30".to_string(), s(0.29, 1.0)),
-            ("nonvol_buy(2s) >= 1.6".to_string(), s(0.21, 1.0)),
-            ("gross_flow(10s) < 15".to_string(), s(0.31, 1.0)),
+            // Exit alarm: worth 10 points of return.
+            ("nonvol_buy(2s) >= 1.6".to_string(), false, sw(0.21, 1.0, 120, 60)),
+            // Entry idea: costs a little return but buys 14 points of win rate —
+            // exactly the trade the operator is making, and it must read as a keeper.
+            ("liquidity > 30".to_string(), true, sw(0.46, 1.4, 140, 67)),
+            // Dead weight on both counts.
+            ("gross_flow(10s) < 15".to_string(), false, sw(0.31, 1.0, 100, 62)),
         ];
         let rows = narrow_recheck(full, &dropped);
 
-        // Ranked by what each term is worth, so the load-bearing one reads first.
-        assert_eq!(rows[0].label, "nonvol_buy(2s) >= 1.6");
-        assert!((rows[0].delta_pct() - 10.0).abs() < 1e-9);
-        assert!((rows[1].delta_pct() - 2.0).abs() < 1e-9);
-        // A term whose removal changes nothing is visibly inert, not a small number.
-        assert!(rows[2].inert());
+        // Entry rows lead, ranked by win rate.
+        assert!(rows[0].is_entry && rows[0].label == "liquidity > 30");
+        let win_gain = rows[0].win_delta_pp().unwrap();
+        assert!((win_gain - (62.0 - 100.0 * 67.0 / 140.0)).abs() < 1e-9, "{win_gain}");
+        assert!(win_gain > 13.0 && rows[0].delta_pct() < 0.0);
+        assert!(rows[0].earns_its_place(), "safety is the entry side's currency");
+
+        // Exit rows follow, ranked by money.
+        assert!(!rows[1].is_entry && rows[1].label == "nonvol_buy(2s) >= 1.6");
+        assert!((rows[1].delta_pct() - 10.0).abs() < 1e-9);
+        assert!(rows[1].earns_its_place());
+
+        // Inert on both counts ⇒ visibly dead weight, not a small number.
+        assert!(rows[2].inert() && !rows[2].earns_its_place());
         assert_eq!(rows[2].delta_pct(), 0.0);
     }
 }

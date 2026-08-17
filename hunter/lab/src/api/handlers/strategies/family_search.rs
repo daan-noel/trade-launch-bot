@@ -19,15 +19,16 @@ use actix_web::{web, HttpResponse, Responder};
 use uuid::Uuid;
 
 use crate::family_search::dto::StartFamilySearchBody;
-use crate::family_search::generator::{Candidate, GeneratorConfig};
+use crate::family_search::generator::{parse_standing_all, Candidate, GeneratorConfig, StandingTerm};
 use crate::family_search::report::{
-    attribution_rows, CandidateRow, FamilyDto, FreshnessDto, LibraryDto, Report, SiblingRow,
+    attribution_rows, CandidateRow, FamilyDto, FreshnessDto, LibraryDto, Report, SelectionDto,
+    SiblingRow,
 };
-use crate::family_search::score::{broad_fit, CohortScore};
+use crate::family_search::score::{broad_fit, select, CohortScore, SelectionBars};
 use crate::family_search::{
-    attribution, authority, capture_of, check_cancelled, earn_candidates, entry_gates,
-    entry_timing, family, gates, narrow_recheck, optimistic, score_cohort, spread, Authority,
-    CohortRun, RunConfig,
+    attribution, authority, capture_of, check_cancelled, cut_table, earn_candidates, entry_gates,
+    entry_timing, family, gates, narrow_enrich, narrow_recheck, optimistic, score_cohort, spread,
+    Authority, CohortRun, RunConfig,
 };
 use crate::lake::duck::LakeSource;
 use crate::models::ingest::SseEvent;
@@ -208,6 +209,15 @@ async fn run_job(
     };
     state.family_search_cancel.store(false, Ordering::Release);
     state.family_search_progress.reset();
+
+    // D10: a standing term that does not parse fails the run. Dropping one silently
+    // would score a rule the operator did not ask for and report it as theirs.
+    if let Err(e) = parse_standing_all(&b.standing_exit) {
+        let msg = e.to_string();
+        gate.error = Some(msg.clone());
+        let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })));
+        return;
+    }
 
     let repo = FingerprintRepo::new(state.db.clone());
     let fam = match family::resolve(&repo, b.fingerprint_id, b.varied_axis.map(Into::into)).await {
@@ -434,7 +444,11 @@ async fn drive(
     // the **ungated control's** oracle — rule-free, and no exit rule beats the best
     // exit. The control pass is not extra work: it is the board's ungated column,
     // moved earlier.
-    let control = crate::family_search::generator::ungated_control();
+    // Parsed up front in `run_job`; this cannot fail.
+    let standing: Vec<StandingTerm> = parse_standing_all(&b.standing_exit)?;
+    // The control carries the standing terms too — comparing a gated rule that sells
+    // at migration against a control that does not is comparing two different rules.
+    let control = crate::family_search::generator::ungated_control(&standing);
     let target_fp = target_scope.1.clone();
     phase("clearance");
     let (control_auth, clearance) = {
@@ -472,17 +486,43 @@ async fn drive(
         state.family_search_result.store(run_id, report).await;
         return Ok(());
     }
+    // The entry side's own score, with no rule at all: what share of everything this
+    // cohort offers never had a profitable exit. The draft has to beat it (D11).
+    let ungated_capture = {
+        let corpus = target_corpus.clone();
+        let pricing = cfg.pricing;
+        pool.install(|| capture_of(&corpus.tokens, &control_auth, &pricing))
+    };
 
     // ── Earn the candidate menu from the target's own paths (D5). ───────────
     check_cancelled(observer.as_ref())?;
     phase("signatures");
-    let library = {
+    let cuts = {
         let corpus = target_corpus.clone();
         let flow = flow.clone();
         let fp_id = target_scope.1.id;
-        let gcfg = cfg.generator;
-        pool.install(move || earn_candidates(&corpus.tokens, flow.as_ref(), fp_id, &gcfg))
+        pool.install(move || cut_table(&corpus.tokens, flow.as_ref(), fp_id))
     };
+    let library = crate::family_search::generator::generate(&cuts, &cfg.generator, &standing);
+    // `earn_candidates` is the same two steps; the table is kept because the enrich
+    // stage draws its menu from the very same earning pass, never a second one.
+    debug_assert_eq!(
+        library.kept.len(),
+        {
+            let corpus = target_corpus.clone();
+            let flow = flow.clone();
+            earn_candidates(
+                &corpus.tokens,
+                flow.as_ref(),
+                target_scope.1.id,
+                &cfg.generator,
+                &standing,
+            )
+            .kept
+            .len()
+        },
+        "the generator and the cut table must come from one earning pass"
+    );
     if library.kept.is_empty() {
         anyhow::bail!("the signature menu earned no candidate on this cohort");
     }
@@ -515,7 +555,7 @@ async fn drive(
         }
 
         let n_matched = corpus.tokens.len() as u64;
-        let (scores, enter_pct, ungated_ret_pct) = {
+        let (scores, enter_pct, ungated) = {
             let corpus = corpus.clone();
             let candidates = candidates.clone();
             let flow = flow.clone();
@@ -548,7 +588,7 @@ async fn drive(
             n_matched,
             scores,
             enter_pct,
-            ungated_ret_pct,
+            ungated,
         });
         // The sibling's corpus drops here — one at a time, never six.
     }
@@ -574,37 +614,89 @@ async fn drive(
         (0..n).map(|ci| target_run.scores.get(ci).copied().unwrap_or_default()).collect();
     let bf = broad_fit(&fit, &validate);
 
-    // ── Authority pass: the target cohort and the finalist only. ────────────
+    // ── Two-sided selection (D11): rank broad, then clear BOTH bars narrow. ─
+    //
+    // Entry decides safety and exit decides profit, so the ranking alone cannot pick a
+    // draft. The win-rate bar is the ungated control's own rate — a gate that does not
+    // enter more safely than buying everything is not filtering anything — raised by
+    // whatever absolute floor the request set.
+    let bars = SelectionBars {
+        control_win_pct: target_run.ungated.and_then(|u| u.win_rate_pct()),
+        floor_win_pct: b.min_win_rate_pct,
+        min_closed: b.min_closed,
+    };
+    let sel = select(&bf, &validate, bars);
+    // With nothing clearing the bars there is still a rule to show and explain; the
+    // report carries `none_cleared` so the board never presents it as a draft.
+    let winner = sel.chosen.or(sel.top_ranked).unwrap_or(0);
+    let skeleton = candidates[winner].clone();
+
+    // ── Authority pass + enrich: the target cohort and the finalist only. ───
     check_cancelled(observer.as_ref())?;
     phase("authority");
-    let winner = bf.winner().unwrap_or(0);
-    let finalist = candidates[winner].clone();
-
-    let (auth, capture, narrow, timing, spread_of_draft, incumbent_auth) = {
+    let (finalist, auth, capture, narrow, timing, spread_of_draft, incumbent_auth, enriched) = {
         let corpus = target_corpus.clone();
         let cfg2 = cfg.clone();
         let fp2 = target_fp.clone();
-        let finalist2 = finalist.clone();
+        let skeleton2 = skeleton.clone();
         let incumbent2 = incumbent.clone();
+        let standing2 = standing.clone();
+        let cuts2 = cuts.clone();
+        let min_closed = b.min_closed;
         let pool = pool.clone();
         tokio::task::spawn_blocking(move || {
             pool.install(|| {
-                let a = authority(&corpus.tokens, &fp2, &finalist2.combo.params, &cfg2);
+                // D12: the only stage that can make a rule DENSER. Offer every earned
+                // idea the skeleton lacks, judge each in its own side's currency, keep
+                // what pays — then everything below grades the enriched rule.
+                let en = narrow_enrich(
+                    &corpus.tokens,
+                    &fp2,
+                    &skeleton2,
+                    &cuts2,
+                    &standing2,
+                    min_closed,
+                    &cfg2,
+                );
+                let mut fin = skeleton2.clone();
+                if let Some(combo) = en.combo.clone() {
+                    fin.n_entry_quantities += en
+                        .trials
+                        .iter()
+                        .filter(|t| t.accepted && t.is_entry)
+                        .count();
+                    fin.combo = combo;
+                }
+                let a = authority(&corpus.tokens, &fp2, &fin.combo.params, &cfg2);
                 let cap = capture_of(&corpus.tokens, &a, &cfg2.pricing);
-                let nr = narrow_recheck(&corpus.tokens, &fp2, &finalist2.combo, &cfg2, a.score);
-                let tm = entry_timing(&corpus.tokens, &fp2, &finalist2.combo, &cfg2, &a);
+                let nr = narrow_recheck(
+                    &corpus.tokens,
+                    &fp2,
+                    &fin.combo,
+                    fin.n_standing,
+                    &cfg2,
+                    a.score,
+                );
+                let tm = entry_timing(&corpus.tokens, &fp2, &fin.combo, &cfg2, &a);
                 // D8 corollary: the same taken set at the friendliest honest fill.
-                let opt = optimistic(&corpus.tokens, &fp2, &finalist2.combo.params, &cfg2);
-                let sp =
-                    spread(&corpus.tokens, &a, &opt, cfg2.pricing.buy_amount_sol);
+                let opt = optimistic(&corpus.tokens, &fp2, &fin.combo.params, &cfg2);
+                let sp = spread(&corpus.tokens, &a, &opt, cfg2.pricing.buy_amount_sol);
                 let inc = incumbent2.map(|p| authority(&corpus.tokens, &fp2, &p, &cfg2));
-                (a, cap, nr, tm, sp, inc)
+                (fin, a, cap, nr, tm, sp, inc, en)
             })
         })
         .await?
     };
 
-    let attribution = attribution::rollup(&auth.outcomes, cfg.pricing.buy_amount_sol);
+    let standing_keys: Vec<_> = standing
+        .iter()
+        .map(|s| (s.clause.metric, s.clause.window, s.clause.threshold))
+        .collect();
+    let attribution = attribution::rollup_with_standing(
+        &auth.outcomes,
+        cfg.pricing.buy_amount_sol,
+        &standing_keys,
+    );
     let (alarm_rows, other_n, other_pnl) = attribution_rows(&attribution);
     let gate_rows: Vec<_> = entry_gates(&finalist, winner, &cohorts)
         .into_iter()
@@ -614,6 +706,7 @@ async fn drive(
     // ── Board. ─────────────────────────────────────────────────────────────
     let row_of = |ci: usize| -> CandidateRow {
         let c = &candidates[ci];
+        let s = target_run.scores[ci];
         CandidateRow {
             key: c.key(),
             params: c.combo.params.to_value(),
@@ -621,10 +714,13 @@ async fn drive(
             flags: c.flags.iter().map(|s| s.to_string()).collect(),
             fit_ret_pct: bf.ret_fit[ci],
             target_ret_pct: bf.ret_validate[ci],
-            target_pnl_sol: target_run.scores[ci].pnl_sol,
-            target_n_tokens: (target_run.scores[ci].entry_sol / cfg.pricing.buy_amount_sol).round()
-                as u64,
+            target_pnl_sol: s.pnl_sol,
+            target_n_tokens: (s.entry_sol / cfg.pricing.buy_amount_sol).round() as u64,
             target_enter_pct: target_run.enter_pct[ci],
+            target_win_pct: s.win_rate_pct(),
+            target_n_closed: s.n_closed,
+            n_entry_quantities: c.n_entry_quantities,
+            n_alarms: c.searched_exit().len(),
         }
     };
     let plain_row = |name: &str, a: &Authority, params: &RuleParams| CandidateRow {
@@ -642,15 +738,27 @@ async fn drive(
         } else {
             a.n_tokens as f64 / target_run.n_matched as f64
         },
+        target_win_pct: a.score.win_rate_pct(),
+        target_n_closed: a.score.n_closed,
+        n_entry_quantities: 0,
+        n_alarms: 0,
     };
 
     let mut archive: Vec<CandidateRow> = bf.rank_fit.iter().take(24).map(|&ci| row_of(ci)).collect();
     // The draft's level is the HELD-OUT number, replayed under the authority pass —
-    // never the fast archive's, and never the fit level.
+    // never the fast archive's, and never the fit level. It also describes the
+    // ENRICHED rule, which the fast tier never scored.
     let mut draft = row_of(winner);
+    draft.key = finalist.key();
+    draft.params = finalist.combo.params.to_value();
+    draft.families = finalist.families.iter().map(|f| f.label().to_string()).collect();
+    draft.n_entry_quantities = finalist.n_entry_quantities;
+    draft.n_alarms = finalist.searched_exit().len();
     draft.target_ret_pct = auth.score.ret_pct();
     draft.target_pnl_sol = auth.score.pnl_sol;
     draft.target_n_tokens = auth.n_tokens;
+    draft.target_win_pct = auth.score.win_rate_pct();
+    draft.target_n_closed = auth.score.n_closed;
     draft.target_enter_pct = if target_run.n_matched == 0 {
         0.0
     } else {
@@ -674,7 +782,8 @@ async fn drive(
                     axis_value: c.axis_value,
                     is_target: c.is_target,
                     n_matched: c.n_matched,
-                    ungated_ret_pct: c.ungated_ret_pct,
+                    ungated_ret_pct: c.ungated.map(|u| u.ret_pct()),
+                    ungated_win_pct: c.ungated.and_then(|u| u.win_rate_pct()),
                 })
                 .collect(),
         },
@@ -690,9 +799,23 @@ async fn drive(
         },
         rho: bf.rho,
         fit_broad_holds: bf.holds(),
-        draft: Some(draft),
+        // A rule nothing cleared the bars for is not a draft. It still boards, as the
+        // archive's head with the refusal spelled out beside it.
+        draft: sel.chosen.is_some().then(|| draft.clone()),
+        selection: Some(SelectionDto {
+            win_bar_pct: bars.win_bar_pct(),
+            control_win_pct: bars.control_win_pct,
+            floor_win_pct: bars.floor_win_pct,
+            min_closed: bars.min_closed,
+            n_rejected: sel.n_rejected,
+            top_rejected: sel.top_rejected.iter().map(|r| r.label().to_string()).collect(),
+            none_cleared: sel.chosen.is_none(),
+        }),
         ungated_control: Some(plain_row("ungated control", &control_auth, &control.params)),
         capture: capture.into(),
+        ungated_capture: Some(ungated_capture.into()),
+        standing_terms: standing.iter().map(|s| s.label.clone()).collect(),
+        enrich: enriched.trials.into_iter().map(Into::into).collect(),
         cost_clearance: Some(clearance.into()),
         spread: Some(spread_of_draft.into()),
         entry_timing: timing.into_iter().map(Into::into).collect(),
@@ -709,6 +832,16 @@ async fn drive(
         portrait: Vec::new(),
         diagnostics: Vec::new(),
     };
+    if sel.chosen.is_none() {
+        report.diagnostics.push(format!(
+            "No candidate cleared both bars on the held-out cohort, so there is no draft. \
+             {} were tried; the entry side had to win more than {:.0}% of its closes (what \
+             buying everything achieves here) and the exit side had to make money. The row \
+             below is the ranking's head, shown so you can see how close it came.",
+            sel.n_rejected,
+            bars.win_bar_pct()
+        ));
+    }
     if !report.fit_broad_holds && !report.family.single_cohort {
         report.diagnostics.push(
             "Fit-broad does not hold on this family: the pooled ordering did not transfer to \
@@ -767,6 +900,7 @@ fn refusal_report(
                     n_matched: mints.len() as u64,
                     // Nothing was scored, so there is no per-cohort number to give.
                     ungated_ret_pct: None,
+                    ungated_win_pct: None,
                 })
                 .collect(),
         },
@@ -775,8 +909,12 @@ fn refusal_report(
         rho: None,
         fit_broad_holds: false,
         draft: None,
+        selection: None,
         ungated_control: None,
         capture: Default::default(),
+        ungated_capture: None,
+        standing_terms: Vec::new(),
+        enrich: Vec::new(),
         cost_clearance: Some(clearance.into()),
         spread: None,
         entry_timing: Vec::new(),

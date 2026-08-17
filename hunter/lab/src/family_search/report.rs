@@ -30,6 +30,9 @@ pub struct SiblingRow {
     pub axis_value: Option<f64>,
     /// The held-out cohort the reported level comes from.
     pub is_target: bool,
+    /// The ungated control's win rate here — the bar an entry gate has to beat on the
+    /// target, and context for how safe this cohort is at all.
+    pub ungated_win_pct: Option<f64>,
     /// Tokens the fingerprint matched — check it against a hand count every run: an
     /// ix-labels-only approximation of one reference cohort takes 3,440 tokens where
     /// the engine takes 264, and two rules invert in rank between the two.
@@ -57,6 +60,15 @@ pub struct CandidateRow {
     pub target_n_tokens: u64,
     /// Share of the target cohort's matched tokens this candidate entered.
     pub target_enter_pct: f64,
+    /// Held-out win rate — the **safety** half of the grade. Entry decides safety and
+    /// exit decides profit, so a board that prints only return grades half the rule.
+    pub target_win_pct: Option<f64>,
+    pub target_n_closed: u64,
+    /// Entry **ideas**, not clauses: a band (floor + ceiling on one quantity) counts
+    /// once. This is why a rule showing five entry metrics carries three.
+    pub n_entry_quantities: usize,
+    /// Searched alarms in the exit OR, standing terms excluded.
+    pub n_alarms: usize,
 }
 
 /// One entry clause measured against the family's varied fingerprint axis.
@@ -85,6 +97,14 @@ pub struct AlarmRowDto {
     pub slot: u8,
     pub label: Option<String>,
     pub n: u64,
+    pub n_wins: u64,
+    /// Wins over closes for this alarm. One large win hides a hundred small losses in
+    /// a money column; this is the column that separates them.
+    pub win_rate_pct: Option<f64>,
+    /// A mechanical exit the operator always wants (sell at migration), not a
+    /// discovered alarm — reported so the closes add up, labelled so it is never read
+    /// as an edge.
+    pub standing: bool,
     pub pnl_sol: f64,
     pub entry_sol: f64,
     /// Money over capital. A count-only table ranks a term that fires 200× for
@@ -193,23 +213,89 @@ impl From<EntryTiming> for EntryTimingRow {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TermRow {
     pub label: String,
+    /// Which side it sits on. The two are graded by different jobs, so a board must
+    /// never rank them in one list: entry buys safety, exit buys profit.
+    pub is_entry: bool,
     pub ret_full_pct: f64,
     pub ret_without_pct: f64,
     pub delta_pct: f64,
+    pub win_full_pct: Option<f64>,
+    pub win_without_pct: Option<f64>,
+    /// Win-rate points the term is worth — the entry side's own currency.
+    pub win_delta_pp: Option<f64>,
     /// Dropping it changed nothing at all on this cohort.
     pub inert: bool,
+    /// It pays in the currency of its own side.
+    pub earns_its_place: bool,
 }
 
 impl From<TermContribution> for TermRow {
     fn from(t: TermContribution) -> Self {
         Self {
             delta_pct: t.delta_pct(),
+            win_delta_pp: t.win_delta_pp(),
             inert: t.inert(),
+            earns_its_place: t.earns_its_place(),
             label: t.label,
+            is_entry: t.is_entry,
             ret_full_pct: t.ret_full_pct,
             ret_without_pct: t.ret_without_pct,
+            win_full_pct: t.win_full_pct,
+            win_without_pct: t.win_without_pct,
         }
     }
+}
+
+/// One idea the enrich stage offered the skeleton, and what it did (D12).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EnrichRow {
+    pub label: String,
+    pub is_entry: bool,
+    pub ret_before_pct: f64,
+    pub ret_after_pct: f64,
+    pub ret_delta_pct: f64,
+    pub win_before_pct: Option<f64>,
+    pub win_after_pct: Option<f64>,
+    pub win_delta_pp: Option<f64>,
+    pub n_closed_after: u64,
+    pub accepted: bool,
+    /// Why it was refused. `None` when accepted — density is never silent either way.
+    pub refused: Option<String>,
+}
+
+impl From<crate::family_search::enrich::Trial> for EnrichRow {
+    fn from(t: crate::family_search::enrich::Trial) -> Self {
+        Self {
+            ret_delta_pct: t.ret_delta_pct(),
+            win_delta_pp: t.win_delta_pp(),
+            refused: t.refused.map(str::to_string),
+            label: t.label,
+            is_entry: t.is_entry,
+            ret_before_pct: t.ret_before_pct,
+            ret_after_pct: t.ret_after_pct,
+            win_before_pct: t.win_before_pct,
+            win_after_pct: t.win_after_pct,
+            n_closed_after: t.n_closed_after,
+            accepted: t.accepted,
+        }
+    }
+}
+
+/// The two-sided bars and what they decided (D11).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SelectionDto {
+    /// The bar the entry side had to clear: the stricter of the operator's floor and
+    /// the ungated control's own win rate.
+    pub win_bar_pct: f64,
+    pub control_win_pct: Option<f64>,
+    pub floor_win_pct: f64,
+    pub min_closed: u64,
+    /// Candidates the bars turned away before one cleared.
+    pub n_rejected: usize,
+    /// Why the ranking's own head is not the draft. Empty when they agree.
+    pub top_rejected: Vec<String>,
+    /// Nothing cleared both bars — there is no draft, and the reason is above.
+    pub none_cleared: bool,
 }
 
 /// How much of the money that was available the finalist took, and how many entries
@@ -219,6 +305,10 @@ pub struct CaptureDto {
     pub capture_pct: Option<f64>,
     pub n_with_upside: u64,
     pub n_no_upside: u64,
+    /// `n_no_upside` as a share of the entries — the **entry**'s own score, readable
+    /// with no exit rule at all. Against the ungated control's share it says whether
+    /// the gate filters losers or merely trades less.
+    pub no_upside_pct: Option<f64>,
     pub oracle_pnl_sol: f64,
     pub realized_pnl_sol: f64,
 }
@@ -229,6 +319,7 @@ impl From<Capture> for CaptureDto {
             capture_pct: c.capture_pct,
             n_with_upside: c.n_with_upside,
             n_no_upside: c.n_no_upside,
+            no_upside_pct: crate::family_search::no_upside_pct(&c),
             oracle_pnl_sol: c.oracle_pnl_sol,
             realized_pnl_sol: c.realized_pnl_sol,
         }
@@ -292,12 +383,22 @@ pub struct Report {
     /// `false` ⇒ the board states fit-broad does not hold here instead of ranking
     /// anyway. Also `false` when ρ could not be computed at all.
     pub fit_broad_holds: bool,
-    /// The finalist: best pooled fit, level from the target cohort.
+    /// The finalist: highest-ranked candidate clearing **both** the win-rate and the
+    /// return bar on the held-out cohort (D11). `None` when nothing cleared.
     pub draft: Option<CandidateRow>,
+    /// What the bars decided, and why the ranking's head is or is not the draft.
+    pub selection: Option<SelectionDto>,
     /// What the fingerprint pays with **no gate** — a property of the cohort (D6).
     pub ungated_control: Option<CandidateRow>,
     /// The oracle half of the draft's grade (D3).
     pub capture: CaptureDto,
+    /// The same, for the ungated control: the entry side's comparison. A gate that
+    /// admits the same share of no-upside tokens as buying everything is not filtering.
+    pub ungated_capture: Option<CaptureDto>,
+    /// Standing exit terms this run carried, as the operator wrote them (D10).
+    pub standing_terms: Vec<String>,
+    /// Every idea the enrich stage offered the skeleton, accepted or refused (D12).
+    pub enrich: Vec<EnrichRow>,
     /// Whether the cohort clears its own execution cost (D8). Measured on the ungated
     /// control, before the generator runs — `refused` means no search happened.
     pub cost_clearance: Option<CostClearanceDto>,
@@ -333,6 +434,9 @@ pub fn attribution_rows(a: &Attribution) -> (Vec<AlarmRowDto>, u64, f64) {
             slot: r.slot,
             label: r.label.clone(),
             n: r.n,
+            n_wins: r.n_wins,
+            win_rate_pct: r.win_rate_pct(),
+            standing: r.standing,
             pnl_sol: r.pnl_sol,
             entry_sol: r.entry_sol,
             pnl_pct: r.pnl_pct(),
@@ -418,22 +522,105 @@ pub fn portrait(r: &Report) -> Vec<String> {
     // What is the rule, and what does it pay here?
     match (&r.draft, &r.ungated_control) {
         (Some(d), Some(u)) => out.push(format!(
-            "The draft enters {:.0}% of this cohort's tokens and pays {:+.1}% on it, against \
-             {:+.1}% for entering everything ungated.",
+            "The draft waits on {} entry condition{} and bails on {} independent alarm{}. It \
+             enters {:.0}% of this cohort's tokens and pays {:+.1}% on them, against {:+.1}% \
+             for entering everything ungated.",
+            d.n_entry_quantities,
+            plural(d.n_entry_quantities),
+            d.n_alarms,
+            plural(d.n_alarms),
             d.target_enter_pct * 100.0,
             d.target_ret_pct,
             u.target_ret_pct
         )),
         (Some(d), None) => out.push(format!(
-            "The draft enters {:.0}% of this cohort's tokens and pays {:+.1}% on it.",
+            "The draft waits on {} entry condition{} and bails on {} independent alarm{}, \
+             entering {:.0}% of this cohort's tokens for {:+.1}%.",
+            d.n_entry_quantities,
+            plural(d.n_entry_quantities),
+            d.n_alarms,
+            plural(d.n_alarms),
             d.target_enter_pct * 100.0,
             d.target_ret_pct
         )),
-        (None, _) => out.push(
-            "No candidate survived the gates, so there is no draft — only the diagnostics \
-             below."
+        (None, _) => out.push(match &r.selection {
+            Some(s) if s.none_cleared && !s.top_rejected.is_empty() => format!(
+                "No candidate cleared both bars, so there is no draft. The best-ranked one was \
+                 refused because it {} (the entry had to beat a {:.0}% win rate — what buying \
+                 everything achieves here).",
+                s.top_rejected.join(" and "),
+                s.win_bar_pct
+            ),
+            _ => "No candidate survived the gates, so there is no draft — only the \
+                  diagnostics below."
                 .to_string(),
-        ),
+        }),
+    }
+
+    // Safety and profit, named as the two different jobs they are.
+    if let Some(d) = &r.draft {
+        if let (Some(win), Some(sel)) = (d.target_win_pct, &r.selection) {
+            let against = match sel.control_win_pct {
+                Some(c) => format!("{c:.0}% for buying everything"),
+                None => "no ungated comparison".to_string(),
+            };
+            out.push(format!(
+                "It closes {} positions and wins {win:.0}% of them, against {against}. The entry \
+                 side is what buys that: it decides which tokens are safe to hold, and the exit \
+                 side decides how much they pay.",
+                d.target_n_closed
+            ));
+        }
+        // Did the entry actually filter, or just trade less?
+        if let (Some(drafted), Some(ungated)) =
+            (r.capture.no_upside_pct, r.ungated_capture.as_ref().and_then(|c| c.no_upside_pct))
+        {
+            out.push(if drafted + 1.0 < ungated {
+                format!(
+                    "Of the tokens it buys, {drafted:.0}% never had a profitable exit at all — \
+                     down from {ungated:.0}% for buying everything, so the entry conditions are \
+                     rejecting real losers rather than merely trading less."
+                )
+            } else {
+                format!(
+                    "Of the tokens it buys, {drafted:.0}% never had a profitable exit at all, \
+                     against {ungated:.0}% for buying everything — the entry conditions are \
+                     trading less without picking better."
+                )
+            });
+        }
+    }
+
+    // What the enrich stage added, and what it refused.
+    let accepted: Vec<&EnrichRow> = r.enrich.iter().filter(|e| e.accepted).collect();
+    if !accepted.is_empty() {
+        out.push(format!(
+            "{} further condition{} earned {} place after the fit: {}. Each one had to pay in \
+             its own currency — an entry idea by raising the win rate, an exit alarm by raising \
+             the return.",
+            accepted.len(),
+            plural(accepted.len()),
+            if accepted.len() == 1 { "its" } else { "their" },
+            accepted.iter().map(|e| e.label.as_str()).collect::<Vec<_>>().join(", ")
+        ));
+    } else if !r.enrich.is_empty() {
+        out.push(format!(
+            "All {} extra conditions offered to the draft were refused — nothing else this \
+             cohort earns makes it safer or richer, so the rule is as dense as the evidence \
+             supports.",
+            r.enrich.len()
+        ));
+    }
+
+    // Terms carried but not discovered.
+    if !r.standing_terms.is_empty() {
+        out.push(format!(
+            "{} standing exit term{} rode into every rule scored here ({}) — mechanics you \
+             asked for, never searched and never credited with the edge.",
+            r.standing_terms.len(),
+            plural(r.standing_terms.len()),
+            r.standing_terms.join(", ")
+        ));
     }
 
     // The two halves of the grade, reported apart (D3).
@@ -506,12 +693,20 @@ pub fn portrait(r: &Report) -> Vec<String> {
         }
     }
 
-    // Which alarm did the work.
-    if let Some(top) = r.attribution.iter().max_by(|a, b| {
-        a.pnl_sol.partial_cmp(&b.pnl_sol).unwrap_or(std::cmp::Ordering::Equal)
-    }) {
+    // Which alarm did the work. Standing terms are excluded: a mechanic the operator
+    // asked for is not a finding about this launch shape.
+    if let Some(top) = r
+        .attribution
+        .iter()
+        .filter(|a| !a.standing)
+        .max_by(|a, b| a.pnl_sol.partial_cmp(&b.pnl_sol).unwrap_or(std::cmp::Ordering::Equal))
+    {
+        let win = match top.win_rate_pct {
+            Some(w) => format!(", winning {w:.0}% of them"),
+            None => String::new(),
+        };
         out.push(format!(
-            "Most of the money came out on `{}`, which closed {} positions for {:+.3} SOL \
+            "Most of the money came out on `{}`, which closed {} positions{win} for {:+.3} SOL \
              ({:+.1}% of the capital they committed).",
             top.label.as_deref().unwrap_or("an unnamed term"),
             top.n,
@@ -551,6 +746,14 @@ pub fn portrait(r: &Report) -> Vec<String> {
     out
 }
 
+fn plural(n: usize) -> &'static str {
+    if n == 1 {
+        ""
+    } else {
+        "s"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -579,8 +782,12 @@ mod tests {
             rho: None,
             fit_broad_holds: false,
             draft: None,
+            selection: None,
             ungated_control: None,
             capture: CaptureDto::default(),
+            ungated_capture: None,
+            standing_terms: Vec::new(),
+            enrich: Vec::new(),
             cost_clearance: None,
             spread: None,
             entry_timing: Vec::new(),
@@ -596,6 +803,24 @@ mod tests {
         }
     }
 
+    fn candidate_row(entry_ideas: usize, alarms: usize) -> CandidateRow {
+        CandidateRow {
+            key: "k".into(),
+            params: serde_json::json!({}),
+            families: Vec::new(),
+            flags: Vec::new(),
+            fit_ret_pct: -1.2,
+            target_ret_pct: 31.0,
+            target_pnl_sol: 0.31,
+            target_n_tokens: 100,
+            target_enter_pct: 0.42,
+            target_win_pct: Some(62.0),
+            target_n_closed: 100,
+            n_entry_quantities: entry_ideas,
+            n_alarms: alarms,
+        }
+    }
+
     #[test]
     fn the_portrait_reports_the_two_halves_of_the_grade_apart() {
         let mut r = base();
@@ -603,6 +828,7 @@ mod tests {
             capture_pct: Some(31.0),
             n_with_upside: 180,
             n_no_upside: 84,
+            no_upside_pct: Some(100.0 * 84.0 / 264.0),
             oracle_pnl_sol: 1.0,
             realized_pnl_sol: 0.31,
         };
@@ -634,6 +860,143 @@ mod tests {
         let prose = portrait(&r);
         assert!(prose[0].contains("no sibling fingerprint"));
         assert!(prose.iter().any(|s| s.contains("no second cohort")));
+    }
+
+    /// The two sides do different jobs, and the prose has to say which is which or a
+    /// reader grades the whole rule on money and deletes every entry condition.
+    #[test]
+    fn the_portrait_names_the_shape_and_grades_the_two_sides_apart() {
+        let mut r = base();
+        r.draft = Some(candidate_row(3, 4));
+        r.selection = Some(SelectionDto {
+            win_bar_pct: 45.0,
+            control_win_pct: Some(45.0),
+            floor_win_pct: 0.0,
+            min_closed: 8,
+            n_rejected: 2,
+            top_rejected: Vec::new(),
+            none_cleared: false,
+        });
+        r.capture = CaptureDto { no_upside_pct: Some(22.0), ..Default::default() };
+        r.ungated_capture = Some(CaptureDto { no_upside_pct: Some(41.0), ..Default::default() });
+        let prose = portrait(&r);
+
+        // The shape, in the operator's own terms.
+        let shape = prose.iter().find(|s| s.contains("entry condition")).expect("shape line");
+        assert!(shape.contains("3 entry conditions") && shape.contains("4 independent alarms"));
+
+        // Safety, named as the entry side's job.
+        let safety = prose.iter().find(|s| s.contains("wins 62%")).expect("safety line");
+        assert!(safety.contains("45% for buying everything"));
+        assert!(safety.contains("exit side decides how much they pay"));
+
+        // And whether the entry filtered or merely traded less.
+        let filt = prose.iter().find(|s| s.contains("never had a profitable exit")).unwrap();
+        assert!(filt.contains("rejecting real losers"), "{filt}");
+    }
+
+    #[test]
+    fn a_gate_that_only_trades_less_is_said_so_plainly() {
+        let mut r = base();
+        r.draft = Some(candidate_row(2, 3));
+        r.capture = CaptureDto { no_upside_pct: Some(40.0), ..Default::default() };
+        r.ungated_capture = Some(CaptureDto { no_upside_pct: Some(41.0), ..Default::default() });
+        let prose = portrait(&r);
+        let filt = prose.iter().find(|s| s.contains("never had a profitable exit")).unwrap();
+        assert!(filt.contains("trading less without picking better"), "{filt}");
+    }
+
+    /// No draft is a result, and it has to name the bar that refused it.
+    #[test]
+    fn a_refused_top_candidate_says_which_bar_it_failed() {
+        let mut r = base();
+        r.selection = Some(SelectionDto {
+            win_bar_pct: 45.0,
+            control_win_pct: Some(45.0),
+            floor_win_pct: 0.0,
+            min_closed: 8,
+            n_rejected: 12,
+            top_rejected: vec!["win rate below the ungated control".into()],
+            none_cleared: true,
+        });
+        let prose = portrait(&r);
+        let line = prose.iter().find(|s| s.contains("no draft")).expect("refusal line");
+        assert!(line.contains("win rate below the ungated control"));
+        assert!(line.contains("45% win rate"), "{line}");
+    }
+
+    /// Density is never silent: what was added, or that nothing was.
+    #[test]
+    fn the_enrich_stage_reports_both_outcomes() {
+        let row = |label: &str, accepted: bool| EnrichRow {
+            label: label.into(),
+            is_entry: true,
+            ret_before_pct: 21.0,
+            ret_after_pct: 20.0,
+            ret_delta_pct: -1.0,
+            win_before_pct: Some(48.0),
+            win_after_pct: Some(62.0),
+            win_delta_pp: Some(14.0),
+            n_closed_after: 150,
+            accepted,
+            refused: (!accepted).then(|| "did not make the entry safer".to_string()),
+        };
+        let mut r = base();
+        r.enrich = vec![row("time >= 20", true)];
+        assert!(portrait(&r)
+            .iter()
+            .any(|s| s.contains("earned its place after the fit") && s.contains("time >= 20")));
+
+        r.enrich = vec![row("time >= 20", false), row("stall >= 45", false)];
+        assert!(portrait(&r)
+            .iter()
+            .any(|s| s.contains("as dense as the evidence supports")));
+    }
+
+    /// A mechanic the operator asked for is never presented as a discovery.
+    #[test]
+    fn a_standing_term_is_named_as_carried_not_as_found() {
+        let mut r = base();
+        r.standing_terms = vec!["liquidity >= 85".into()];
+        r.attribution = vec![
+            AlarmRowDto {
+                slot: 0,
+                label: Some("stall >= 30".into()),
+                n: 40,
+                n_wins: 20,
+                win_rate_pct: Some(50.0),
+                standing: false,
+                pnl_sol: 0.2,
+                entry_sol: 0.4,
+                pnl_pct: 50.0,
+                authored_level: Some(30.0),
+                realized_level_pct: None,
+                level_is_return: false,
+                level_overshoot_pp: None,
+            },
+            AlarmRowDto {
+                slot: 1,
+                label: Some("liquidity >= 85".into()),
+                n: 10,
+                n_wins: 10,
+                win_rate_pct: Some(100.0),
+                standing: true,
+                // Richest row in the table — and still not a finding.
+                pnl_sol: 2.0,
+                entry_sol: 0.1,
+                pnl_pct: 2000.0,
+                authored_level: Some(85.0),
+                realized_level_pct: None,
+                level_is_return: false,
+                level_overshoot_pp: None,
+            },
+        ];
+        let prose = portrait(&r);
+        assert!(prose.iter().any(|s| s.contains("standing exit term") && s.contains("liquidity >= 85")));
+        // The "most of the money" line names the searched alarm, not the mechanic.
+        let money = prose.iter().find(|s| s.contains("Most of the money")).expect("money line");
+        assert!(money.contains("stall >= 30"), "{money}");
+        assert!(money.contains("winning 50%"));
     }
 
     #[test]

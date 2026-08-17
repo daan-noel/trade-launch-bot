@@ -13,6 +13,10 @@ const row = (retPct: number): FamilyCandidateRow => ({
   target_pnl_sol: 0.31,
   target_n_tokens: 180,
   target_enter_pct: 0.68,
+  target_win_pct: 62,
+  target_n_closed: 180,
+  n_entry_quantities: 3,
+  n_alarms: 4,
 });
 
 /** The charter's reference family: six cohorts varying `spendable_lamports_in`. */
@@ -30,6 +34,7 @@ function base(): FamilySearchReport {
         is_target: i === 5,
         n_matched: 264,
         ungated_ret_pct: 1,
+        ungated_win_pct: 45,
       })),
     },
     freshness: {
@@ -48,9 +53,29 @@ function base(): FamilySearchReport {
       capture_pct: 31,
       n_with_upside: 180,
       n_no_upside: 84,
+      no_upside_pct: (100 * 84) / 264,
       oracle_pnl_sol: 1,
       realized_pnl_sol: 0.31,
     },
+    selection: {
+      win_bar_pct: 45,
+      control_win_pct: 45,
+      floor_win_pct: 0,
+      min_closed: 8,
+      n_rejected: 2,
+      top_rejected: [],
+      none_cleared: false,
+    },
+    ungated_capture: {
+      capture_pct: 12,
+      n_with_upside: 200,
+      n_no_upside: 180,
+      no_upside_pct: (100 * 180) / 380,
+      oracle_pnl_sol: 2,
+      realized_pnl_sol: 0.24,
+    },
+    standing_terms: [],
+    enrich: [],
     cost_clearance: {
       band_pct: 6.93,
       median_move_pct: 24.0,
