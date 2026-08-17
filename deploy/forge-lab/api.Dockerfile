@@ -11,15 +11,19 @@
 # Build context = MONOREPO root (the single cargo workspace + shared/ crates).
 # No DATABASE_URL at build time (runtime sqlx::query + embedded migrations).
 #
-# CACHE CONTRACT: the per-image `id=` on the target/ mount, the shared (unlocked)
-# registry/git mounts, and why `docker builder prune -a` must never run after a
-# build are all explained in deploy/hunter-live/api.Dockerfile — read that header
+# CACHE CONTRACT: the per-image `id=` on the target/ mount, the one shared
+# (unlocked) CARGO_HOME mount, and why `docker builder prune -a` must never run
+# after a build are all explained in deploy/hunter-live/api.Dockerfile — read that header
 # before editing a --mount line here.
 # ---------------------------------------------------------------------------
 
 FROM rust:1.95-bookworm AS chef
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    cargo install cargo-chef --locked
+# CARGO_HOME lives in ONE cache mount so cargo's package-cache lock is shared
+# with the registry it guards (CACHE CONTRACT above). `--root /usr/local` keeps
+# the cargo-chef binary in the image layer, outside that cache mount.
+ENV CARGO_HOME=/cargo
+RUN --mount=type=cache,target=/cargo,id=cargo-home \
+    cargo install cargo-chef --locked --root /usr/local
 WORKDIR /app
 
 FROM chef AS planner
@@ -35,13 +39,11 @@ ARG CARGO_BUILD_JOBS=2
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 COPY --from=planner /app/recipe.json recipe.json
 # `-p forge-lab` scopes by package (default-members are the hunter bins only).
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/cargo,id=cargo-home \
     --mount=type=cache,target=/app/target,id=forge-lab-target,sharing=locked \
     cargo chef cook --release --recipe-path recipe.json -p forge-lab --bin forge-lab
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/cargo,id=cargo-home \
     --mount=type=cache,target=/app/target,id=forge-lab-target,sharing=locked \
     cargo build --release -p forge-lab --bin forge-lab \
     && cp /app/target/release/forge-lab /usr/local/bin/forge-lab

@@ -77,26 +77,62 @@ fn each_image_owns_a_distinct_target_cache() {
 }
 
 #[test]
-fn the_shared_cargo_caches_are_not_locked() {
-    // A `sharing=locked` mount holds its lock for the WHOLE RUN step, not just
-    // while cargo touches it. On the registry/git mounts — which are shared
-    // across all four images on purpose (same crates, one download) — that
-    // serialises every concurrent image build behind whichever started first,
-    // turning compose's parallel build into a sum of build times. Cargo does its
-    // own locking on the registry (.package-cache), so shared access is safe.
+fn the_shared_cargo_cache_covers_cargo_home() {
+    // Cargo's package-cache lock lives at $CARGO_HOME/.package-cache, one level
+    // ABOVE registry/ and git/. Mounting only those two shares the crate unpack
+    // dir across concurrently building images WITHOUT the lock that guards it,
+    // and two builds then unpack the same crate on top of each other:
+    //   failed to unpack package `zerovec v0.11.6` ... .cargo-ok: File exists.
+    // One mount over the whole CARGO_HOME puts the lock inside the shared cache.
     for path in API_DOCKERFILES {
-        for line in read(path).lines().map(str::trim) {
+        let text = read(path);
+
+        assert!(
+            text.contains("ENV CARGO_HOME=/cargo"),
+            "{path}: no `ENV CARGO_HOME=/cargo`. The cargo cache mount only guards \
+             concurrent builds when it covers CARGO_HOME, lock file included."
+        );
+        assert!(
+            text.contains("cargo install cargo-chef --locked --root /usr/local"),
+            "{path}: install cargo-chef with `--root /usr/local`. With CARGO_HOME on a \
+             cache mount, a plain `cargo install` drops the binary into that mount, which \
+             is not persisted into the image layer."
+        );
+
+        let mut cargo_home_mounts = 0;
+        for line in text.lines().map(str::trim) {
             if !line.contains("type=cache") {
                 continue;
             }
-            let is_shared_cargo_cache = line.contains("target=/usr/local/cargo/registry")
-                || line.contains("target=/usr/local/cargo/git");
             assert!(
-                !(is_shared_cargo_cache && line.contains("sharing=locked")),
-                "{path}: `sharing=locked` on a cross-image cargo cache serialises concurrent \
-                 image builds for the full duration of the RUN. Drop it (the default, \
-                 sharing=shared, is safe here):\n  {line}"
+                !line.contains("target=/usr/local/cargo/"),
+                "{path}: mount CARGO_HOME (/cargo) itself, not a subdirectory of it — a \
+                 registry/ or git/ mount shares the crate unpack dir without cargo's \
+                 .package-cache lock, so parallel image builds corrupt each other:\n  {line}"
+            );
+            let mounts_cargo_home = line
+                .split(',')
+                .any(|f| f.trim().split_whitespace().next() == Some("target=/cargo"));
+            if !mounts_cargo_home {
+                continue;
+            }
+            cargo_home_mounts += 1;
+            assert!(
+                line.contains("id=cargo-home"),
+                "{path}: the CARGO_HOME cache mount needs `id=cargo-home` so all four images \
+                 share ONE crate download:\n  {line}"
+            );
+            assert!(
+                !line.contains("sharing=locked"),
+                "{path}: `sharing=locked` on the shared CARGO_HOME cache holds the mount for \
+                 the full RUN, serialising every concurrent image build. Cargo's own lock \
+                 already covers download/unpack — keep the default sharing=shared:\n  {line}"
             );
         }
+        assert!(
+            cargo_home_mounts >= 2,
+            "{path}: expected the CARGO_HOME cache mount on every cargo RUN (chef install, \
+             chef cook, build), found {cargo_home_mounts}"
+        );
     }
 }

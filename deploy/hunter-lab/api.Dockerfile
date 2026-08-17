@@ -14,17 +14,21 @@
 # No DATABASE_URL needed at build time: queries are runtime sqlx::query() and
 # migrations are embedded via sqlx::migrate!("./migrations").
 #
-# CACHE CONTRACT: the per-image `id=` on the target/ mount, the shared (unlocked)
-# registry/git mounts, and why `docker builder prune -a` must never run after a
-# build are all explained in deploy/hunter-live/api.Dockerfile — read that header
+# CACHE CONTRACT: the per-image `id=` on the target/ mount, the one shared
+# (unlocked) CARGO_HOME mount, and why `docker builder prune -a` must never run
+# after a build are all explained in deploy/hunter-live/api.Dockerfile — read that header
 # before editing a --mount line here. It matters MOST for this image: an lab build
 # sharing hunter-live's target dir is what forces libduckdb to recompile.
 # ---------------------------------------------------------------------------
 
 # Pin to the toolchain the project already builds on locally (rustc 1.95).
 FROM rust:1.95-bookworm AS chef
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    cargo install cargo-chef --locked
+# CARGO_HOME lives in ONE cache mount so cargo's package-cache lock is shared
+# with the registry it guards (CACHE CONTRACT above). `--root /usr/local` keeps
+# the cargo-chef binary in the image layer, outside that cache mount.
+ENV CARGO_HOME=/cargo
+RUN --mount=type=cache,target=/cargo,id=cargo-home \
+    cargo install cargo-chef --locked --root /usr/local
 WORKDIR /app
 
 # --- Plan: compute the dependency recipe from the full source ---------------
@@ -44,15 +48,13 @@ FROM chef AS builder
 ARG CARGO_BUILD_JOBS=2
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 COPY --from=planner /app/recipe.json recipe.json
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/cargo,id=cargo-home \
     --mount=type=cache,target=/app/target,id=hunter-lab-target,sharing=locked \
     cargo chef cook --release --recipe-path recipe.json --bin hunter-lab
 COPY . .
 # target/ is a cache mount, so it is NOT persisted into the image layer —
 # copy the finished binary out within the same RUN.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/cargo,id=cargo-home \
     --mount=type=cache,target=/app/target,id=hunter-lab-target,sharing=locked \
     cargo build --release --bin hunter-lab \
     && cp /app/target/release/hunter-lab /usr/local/bin/hunter-lab

@@ -23,11 +23,20 @@
 #     target dir. They resolve different feature sets over the same shared deps,
 #     so each build invalidates the previous one's artifacts: a permanent
 #     recompile ping-pong that looks exactly like "the cache isn't working".
-#   * registry/git are DELIBERATELY shared across images (same crates, one
-#     download) and use the default sharing=shared. `sharing=locked` holds the
-#     lock for the WHOLE RUN, so it serialises every concurrent image build
-#     behind whichever one started first. Cargo does its own locking on the
-#     registry (.package-cache), so shared access is safe.
+#   * The crate download cache is ONE mount covering the whole CARGO_HOME
+#     (`/cargo`, id=cargo-home), DELIBERATELY shared across images: same crates,
+#     one download. It has to be CARGO_HOME and not registry/ + git/, because
+#     cargo's package-cache lock lives at $CARGO_HOME/.package-cache — one level
+#     ABOVE those two. Mounting only registry/ and git/ shares the unpack dir
+#     without the lock guarding it, so concurrent image builds unpack the same
+#     crate on top of each other and one dies with `failed to unpack package ...
+#     failed to open .cargo-ok ... File exists (os error 17)`. Keep the default
+#     sharing=shared: cargo's lock serialises only the download/unpack, whereas
+#     `sharing=locked` holds the mount for the WHOLE RUN and serialises every
+#     concurrent image build behind whichever started first. Since the mount is
+#     CARGO_HOME, the chef stage installs cargo-chef with `--root /usr/local` to
+#     keep the binary in an image layer; never mount /usr/local/cargo itself,
+#     which holds the rustup proxies PATH resolves `cargo` through.
 #   * `docker builder prune -a` DELETES cache mounts. Since target/ lives only in
 #     a cache mount, that wipes every cooked dependency and the next build is a
 #     full cold compile. Cap the prune by size instead — see EC2-DISK-HOUSEKEEPING.md.
@@ -35,8 +44,12 @@
 
 # Pin to the toolchain the project already builds on locally (rustc 1.95).
 FROM rust:1.95-bookworm AS chef
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    cargo install cargo-chef --locked
+# CARGO_HOME lives in ONE cache mount so cargo's package-cache lock is shared
+# with the registry it guards (CACHE CONTRACT above). `--root /usr/local` keeps
+# the cargo-chef binary in the image layer, outside that cache mount.
+ENV CARGO_HOME=/cargo
+RUN --mount=type=cache,target=/cargo,id=cargo-home \
+    cargo install cargo-chef --locked --root /usr/local
 WORKDIR /app
 
 # --- Plan: compute the dependency recipe from the full source ---------------
@@ -57,16 +70,14 @@ COPY --from=planner /app/recipe.json recipe.json
 # the BuildKit cache mounts add a second safety net so that even when this
 # layer DOES re-run (e.g. a Cargo.toml/lock change), already-downloaded crates
 # and already-compiled deps are reused instead of fetched/built from scratch.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/cargo,id=cargo-home \
     --mount=type=cache,target=/app/target,id=hunter-live-target,sharing=locked \
     cargo chef cook --release --recipe-path recipe.json --bin hunter-live
 # Now bring in the real source and build just the live bin.
 COPY . .
 # target/ is a cache mount, so it is NOT persisted into the image layer —
 # copy the finished binary out within the same RUN.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/cargo,id=cargo-home \
     --mount=type=cache,target=/app/target,id=hunter-live-target,sharing=locked \
     cargo build --release --bin hunter-live \
     && cp /app/target/release/hunter-live /usr/local/bin/hunter-live
