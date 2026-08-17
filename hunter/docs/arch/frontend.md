@@ -580,16 +580,23 @@ next load (no per-metric frontend work).
   states what they currently are. Every one of them is sent from the form: a saved
   rule supplies none of them, so there is no control whose value can silently come
   from somewhere else.
-  The board is ordered as the argument it makes — **verdict → portrait → grade →
-  evidence**. The verdict (`lab/lib/familySearchVerdict.ts`, unit-tested) blends
-  nothing: it names which of four gates decided (family · rank transfer ρ · beats the
-  ungated control · freshness) and prints all four beside the headline with their
-  numbers, so a reader who disagrees can see the deciding line. A gate that costs
-  money outranks a collapsed ρ for the headline, since it is actionable on its own.
-  Then the portrait prose (the product), the grade as three cards — draft (held-out
-  level) ∥ ungated control ∥ oracle capture, with an incumbent demoted to a dashed
-  `display only` strip — the draft's clauses, the family table, per-alarm
-  attribution, the narrow re-check, the entry-gate ρ table, and the archive.
+  The board is ordered as the argument it makes — **verdict → portrait → execution →
+  grade → evidence**. The verdict (`lab/lib/familySearchVerdict.ts`, unit-tested)
+  blends nothing: it names which of five gates decided (clears execution · family ·
+  rank transfer ρ · beats the ungated control · freshness) and prints all five beside
+  the headline with their numbers, so a reader who disagrees can see the deciding
+  line. The headline ladder is ordered by what invalidates what — a refused cohort
+  (the search never ran, which is not the same statement as "found nothing"), then a
+  missing draft, then **fill luck** (whether the number is real at all), then a gate
+  that costs money, then single-cohort, then a collapsed ρ, then thin headroom.
+  Then the portrait prose (the product); the **Execution** section — cost clearance
+  (the typical best available exit against one round trip, in `x`) ∥ fill spread (the
+  same closes repriced at the friendliest honest fill); the grade as three cards —
+  draft (held-out level) ∥ ungated control ∥ oracle capture, with an incumbent demoted
+  to a dashed `display only` strip — the draft's clauses, the family table, per-alarm
+  attribution with an **Asked → got** column (the authored threshold against the mean
+  realized *gross* return, rendered only where the units match), the narrow re-check,
+  the entry-timing table, the entry-gate ρ table, and the archive.
   **`fit_ret_pct` is dimmed and labelled `rank only` wherever it appears**: it
   produced the ordering and is negative for every candidate on the reference family
   while the winner pays +31% on the held-out cohort, so printing it as a level is the

@@ -16,9 +16,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::family_search::attribution::Attribution;
-use crate::family_search::gates::{AxisDuplication, Freshness};
+use crate::family_search::gates::{AxisDuplication, CostClearance, EntryTiming, Freshness};
 use crate::family_search::oracle::Capture;
 use crate::family_search::score::TermContribution;
+use crate::family_search::Spread;
 
 /// One family member and what the cohort itself pays, before any rule.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -89,6 +90,103 @@ pub struct AlarmRowDto {
     /// Money over capital. A count-only table ranks a term that fires 200× for
     /// −0.4◎ level with one that fires 20× for +1.1◎.
     pub pnl_pct: f64,
+    /// The threshold the rule authored.
+    pub authored_level: Option<f64>,
+    /// Mean **gross** return at the close — the same quantity `m_position.pnl` reads.
+    pub realized_level_pct: Option<f64>,
+    /// Only then may a board print the two side by side.
+    pub level_is_return: bool,
+    /// Percentage points past the authored level the term actually closed. `None`
+    /// unless the two are one quantity. A `pnl <= -8` realizing −20 is a stop that
+    /// does not stop: prints are sparse and price gaps straight through the level.
+    pub level_overshoot_pp: Option<f64>,
+}
+
+/// The same rule and the same taken set, priced two ways (D8 corollary).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SpreadDto {
+    pub authority_ret_pct: f64,
+    pub optimistic_ret_pct: f64,
+    pub spread_pp: f64,
+    pub n_common: u64,
+    pub n_authority_only: u64,
+    pub n_optimistic_only: u64,
+    /// The two passes took the same positions, so both numbers describe one set.
+    pub clean: bool,
+    /// The edge is no larger than the run's own uncertainty about the fill.
+    pub fill_luck: bool,
+}
+
+impl From<Spread> for SpreadDto {
+    fn from(s: Spread) -> Self {
+        Self {
+            clean: s.clean(),
+            fill_luck: s.fill_luck(),
+            authority_ret_pct: s.authority_ret_pct,
+            optimistic_ret_pct: s.optimistic_ret_pct,
+            spread_pp: s.spread_pp,
+            n_common: s.n_common,
+            n_authority_only: s.n_authority_only,
+            n_optimistic_only: s.n_optimistic_only,
+        }
+    }
+}
+
+/// Whether the cohort can pay for its own execution, measured before any rule exists.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CostClearanceDto {
+    pub band_pct: f64,
+    pub median_move_pct: Option<f64>,
+    /// `median_move_pct ÷ band_pct` — round trips of headroom the best exit leaves.
+    pub headroom: Option<f64>,
+    pub n_priced: u64,
+    pub n_with_upside: u64,
+    pub margin: f64,
+    /// The search never ran: this cohort is untradeable at this buy size.
+    pub refused: bool,
+    /// It clears, but by less than one round trip.
+    pub thin: bool,
+    pub reason: Option<String>,
+}
+
+impl From<CostClearance> for CostClearanceDto {
+    fn from(c: CostClearance) -> Self {
+        Self {
+            headroom: c.headroom(),
+            refused: c.refuses(),
+            thin: c.thin(),
+            reason: c.refuse_reason(),
+            band_pct: c.band_pct,
+            median_move_pct: c.median_move_pct,
+            n_priced: c.n_priced,
+            n_with_upside: c.n_with_upside,
+            margin: c.margin,
+        }
+    }
+}
+
+/// One entry clause's effect on the entry **instant** (plan §4d). Diagnostic only.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EntryTimingRow {
+    pub clause: String,
+    pub delay_added_secs: f64,
+    pub capture_delta_pp: Option<f64>,
+    pub admit_delta_pct: f64,
+    pub lagging: bool,
+    pub note: Option<String>,
+}
+
+impl From<EntryTiming> for EntryTimingRow {
+    fn from(t: EntryTiming) -> Self {
+        Self {
+            lagging: t.lagging(),
+            note: t.note(),
+            clause: t.clause,
+            delay_added_secs: t.delay_added_secs,
+            capture_delta_pp: t.capture_delta_pp,
+            admit_delta_pct: t.admit_delta_pct,
+        }
+    }
 }
 
 /// One term's narrow contribution — the finalist re-scored with it dropped.
@@ -200,6 +298,13 @@ pub struct Report {
     pub ungated_control: Option<CandidateRow>,
     /// The oracle half of the draft's grade (D3).
     pub capture: CaptureDto,
+    /// Whether the cohort clears its own execution cost (D8). Measured on the ungated
+    /// control, before the generator runs — `refused` means no search happened.
+    pub cost_clearance: Option<CostClearanceDto>,
+    /// The draft, priced twice on one taken set (D8 corollary).
+    pub spread: Option<SpreadDto>,
+    /// What each entry clause does to the entry instant.
+    pub entry_timing: Vec<EntryTimingRow>,
     /// Display only, off by default. An incumbent is an artifact, not a baseline.
     pub incumbent: Option<CandidateRow>,
     /// Which authored exit term did the work, by money as well as by count (D4).
@@ -231,6 +336,10 @@ pub fn attribution_rows(a: &Attribution) -> (Vec<AlarmRowDto>, u64, f64) {
             pnl_sol: r.pnl_sol,
             entry_sol: r.entry_sol,
             pnl_pct: r.pnl_pct(),
+            authored_level: r.authored_level,
+            realized_level_pct: r.realized_level_pct,
+            level_is_return: r.level_is_return,
+            level_overshoot_pp: r.level_overshoot_pp(),
         })
         .collect();
     (rows, a.n_other, a.other_pnl_sol)
@@ -240,6 +349,37 @@ pub fn attribution_rows(a: &Attribution) -> (Vec<AlarmRowDto>, u64, f64) {
 /// own uncertainty; a metric name appears only after the sentence that explains it.
 pub fn portrait(r: &Report) -> Vec<String> {
     let mut out = Vec::new();
+
+    // Can this cohort pay for its own execution? Answered before anything else,
+    // because a "no" means nothing below it was searched.
+    if let Some(c) = &r.cost_clearance {
+        if let Some(m) = c.median_move_pct {
+            out.push(if c.refused {
+                format!(
+                    "The best exit available on the typical entry pays {m:+.2}%, against \
+                     a {:.2}% round trip at this buy size — this launch shape cannot pay \
+                     for its own execution, so no search was run. The loss is a ratio, \
+                     and no threshold changes a ratio.",
+                    c.band_pct
+                )
+            } else if c.thin {
+                format!(
+                    "Execution costs {:.2}% of every round trip here and the typical \
+                     entry's best available exit pays {m:+.2}% — under one round trip of \
+                     headroom, and a rule only ever takes a fraction of the best exit.",
+                    c.band_pct
+                )
+            } else {
+                format!(
+                    "Execution costs {:.2}% per round trip and the typical entry's best \
+                     available exit pays {m:+.2}% — {:.1}x the cost, so there is room \
+                     for a rule to work here.",
+                    c.band_pct,
+                    c.headroom.unwrap_or(0.0)
+                )
+            });
+        }
+    }
 
     // What was searched.
     let n = r.family.members.len();
@@ -312,6 +452,59 @@ pub fn portrait(r: &Report) -> Vec<String> {
             c.n_no_upside
         ),
     });
+
+    // How much of the number is the fill rather than the signal.
+    if let Some(s) = &r.spread {
+        out.push(if s.fill_luck {
+            format!(
+                "Repricing the same {} closes at the friendliest honest fill moves the \
+                 result from {:+.1}% to {:+.1}% — a {:.1}pp swing that is larger than \
+                 the edge itself, so this draft is priced on fill luck rather than on \
+                 signal.",
+                s.n_common, s.authority_ret_pct, s.optimistic_ret_pct, s.spread_pp
+            )
+        } else {
+            format!(
+                "Repricing the same {} closes at the friendliest honest fill reads \
+                 {:+.1}% against {:+.1}% — a {:.1}pp execution swing the edge survives.",
+                s.n_common, s.optimistic_ret_pct, s.authority_ret_pct, s.spread_pp
+            )
+        });
+        if !s.clean {
+            out.push(format!(
+                "The two pricings did not close on the same positions ({} only at the \
+                 run's fill, {} only at the optimistic one), so read the swing as \
+                 indicative rather than as one taken set measured twice.",
+                s.n_authority_only, s.n_optimistic_only
+            ));
+        }
+    }
+
+    // A stop that does not stop.
+    if let Some(worst) = r
+        .attribution
+        .iter()
+        .filter(|a| a.level_is_return)
+        .filter_map(|a| a.level_overshoot_pp.map(|d| (a, d)))
+        .filter(|(_, d)| *d < -1.0)
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+    {
+        out.push(format!(
+            "`{}` closed at {:+.1}% on average — {:.1} points past the level it asked \
+             for. Prints are sparse enough here that price gaps straight through a \
+             stop, so that level is a wish rather than a floor.",
+            worst.0.label.as_deref().unwrap_or("the stop"),
+            worst.0.realized_level_pct.unwrap_or(0.0),
+            -worst.1
+        ));
+    }
+
+    // An entry gate the move itself creates.
+    for t in r.entry_timing.iter().filter(|t| t.lagging) {
+        if let Some(note) = &t.note {
+            out.push(note.clone());
+        }
+    }
 
     // Which alarm did the work.
     if let Some(top) = r.attribution.iter().max_by(|a, b| {
@@ -388,6 +581,9 @@ mod tests {
             draft: None,
             ungated_control: None,
             capture: CaptureDto::default(),
+            cost_clearance: None,
+            spread: None,
+            entry_timing: Vec::new(),
             incumbent: None,
             attribution: Vec::new(),
             attribution_other_n: 0,

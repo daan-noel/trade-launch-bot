@@ -33,6 +33,24 @@ pub struct AlarmRow {
     pub pnl_sol: f64,
     /// Capital those positions committed — the percentage's denominator.
     pub entry_sol: f64,
+    /// The threshold the rule authored, as the engine reports it
+    /// ([`ExitReason::Metrics::value`](hunter_engine::event::ExitReason)) — the level
+    /// the term *asked* to close at.
+    pub authored_level: Option<f64>,
+    /// The level the term actually closed at: mean **gross** `exit ÷ entry − 1`, in
+    /// percent, over the positions this slot closed.
+    ///
+    /// Gross on purpose. It is the quantity `m_position.pnl` itself reads, so it is
+    /// the only realized number directly comparable to `authored_level`; the further
+    /// gap down to the realized *net* return is the execution band, which the spread
+    /// row reports separately. Conflating the two would blame gapping for cost.
+    pub realized_level_pct: Option<f64>,
+    /// Whether [`authored_level`](Self::authored_level) and
+    /// [`realized_level_pct`](Self::realized_level_pct) are the same quantity, so a
+    /// board may print them side by side. True for `m_position.pnl`, whose realized
+    /// counterpart is exactly the gross return; false for `stall`, `held`, a flow
+    /// term — different units, and printing them as a pair would be nonsense.
+    pub level_is_return: bool,
 }
 
 impl AlarmRow {
@@ -40,6 +58,18 @@ impl AlarmRow {
     /// percents and never a count share.
     pub fn pnl_pct(&self) -> f64 {
         weighted_return_pct(self.pnl_sol, self.entry_sol)
+    }
+
+    /// How far past its own threshold the term actually closed, in percentage points.
+    /// `None` unless the two are the same quantity.
+    ///
+    /// This is the `pnl <= -8` that realizes −19.4%: prints are sparse and price gaps
+    /// straight past the level, so a price stop on this token class does not stop.
+    pub fn level_overshoot_pp(&self) -> Option<f64> {
+        if !self.level_is_return {
+            return None;
+        }
+        Some(self.realized_level_pct? - self.authored_level?)
     }
 }
 
@@ -81,6 +111,10 @@ struct SlotAcc {
     n: u64,
     pnl_sol: f64,
     label: Option<LabelKey>,
+    /// Σ gross `exit ÷ entry − 1` in percent, and how many positions could be priced
+    /// (an outcome missing either price contributes to neither).
+    gross_pct_sum: f64,
+    n_gross: u64,
 }
 
 /// The condition triple an outcome stamps, kept `Copy` so the accumulator allocates
@@ -121,6 +155,12 @@ impl AttributionAcc {
         let s = &mut self.slots[idx];
         s.n += 1;
         s.pnl_sol += o.pnl_sol as f64;
+        if let (Some(entry), Some(exit)) = (o.entry_price, o.exit_price) {
+            if entry > 0.0 && exit.is_finite() {
+                s.gross_pct_sum += 100.0 * (exit / entry - 1.0);
+                s.n_gross += 1;
+            }
+        }
         if s.label.is_none() {
             if let (Some(metric), Some(operator), Some(value)) =
                 (o.exit_metric, o.exit_operator, o.exit_metric_value)
@@ -144,6 +184,14 @@ impl AttributionAcc {
                 n: s.n,
                 pnl_sol: s.pnl_sol,
                 entry_sol: s.n as f64 * self.buy_amount_sol,
+                authored_level: s.label.map(|l| l.value),
+                realized_level_pct: (s.n_gross > 0)
+                    .then(|| s.gross_pct_sum / s.n_gross as f64),
+                // `m_position.pnl` is "signed percent vs the entry price" — literally
+                // the gross return, so the pair is comparable. Nothing else is.
+                level_is_return: s
+                    .label
+                    .is_some_and(|l| l.metric == hunter_engine::metrics::MetricId::Pnl),
             })
             .collect();
         Attribution {
@@ -244,6 +292,48 @@ mod tests {
         // −20% against +550% — the ranking a count-only table hides entirely.
         assert!((loud.pnl_pct() + 20.0).abs() < 1e-3, "{}", loud.pnl_pct());
         assert!((quiet.pnl_pct() - 550.0).abs() < 1e-3, "{}", quiet.pnl_pct());
+    }
+
+    /// The stop that does not stop: `pnl <= -8` realizing far past its own level
+    /// because prints are sparse and price gaps straight through it. The pair only
+    /// prints where the two are the same quantity.
+    #[test]
+    fn a_stop_that_gaps_past_its_level_shows_both_numbers() {
+        use crate::family_search::fixtures::filled_at;
+        // Authored −8%. Two closes land at −19% and −21% gross: mean −20%.
+        let outs = vec![
+            filled_at(
+                metric_exit(0, MetricId::Pnl, Operator::Lte, -8.0, None, -0.002),
+                1.0,
+                0.81,
+            ),
+            filled_at(
+                metric_exit(0, MetricId::Pnl, Operator::Lte, -8.0, None, -0.0022),
+                1.0,
+                0.79,
+            ),
+            // A seconds-unit term on the same rule: comparable numbers do not exist,
+            // so the pair must NOT be offered for it.
+            filled_at(
+                metric_exit(1, MetricId::Stall, Operator::Gte, 30.0, None, 0.004),
+                1.0,
+                1.4,
+            ),
+        ];
+        let a = rollup(&outs, 0.01);
+        let stop = &a.by_slot[0];
+        assert_eq!(stop.authored_level, Some(-8.0));
+        assert!((stop.realized_level_pct.unwrap() + 20.0).abs() < 1e-9);
+        assert!(stop.level_is_return);
+        // Twelve points past the level it asked for — the whole finding on one row.
+        assert!((stop.level_overshoot_pp().unwrap() + 12.0).abs() < 1e-9);
+
+        let stall = &a.by_slot[1];
+        assert_eq!(stall.authored_level, Some(30.0));
+        assert!(!stall.level_is_return, "seconds and percent are not one quantity");
+        assert_eq!(stall.level_overshoot_pp(), None);
+        // The gross mean is still measured for it — only the comparison is withheld.
+        assert!((stall.realized_level_pct.unwrap() - 40.0).abs() < 1e-9);
     }
 
     /// A dynamic group and its lifetime twin share `metric.name()`, so a label that

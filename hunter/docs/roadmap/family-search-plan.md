@@ -20,7 +20,7 @@ new enum variant. No existing signature, default, or behaviour moves.
     oracle.rs        suffix-peak + capture ratio
     attribution.rs   per-alarm rollup (n + pnl per authored exit slot)
     generator.rs     signature-earned candidates + per-family diversity quota
-    gates.rs         axis-duplication refuse · freshness · fill-timing ladder
+    gates.rs         axis-duplication refuse · freshness · cost-clearance · fill-timing ladder
     score.rs         pooled fit (Σpnl/Σentry) · Spearman rho
     dto.rs           request / report wire types
     report.rs        the board payload
@@ -187,7 +187,107 @@ is byte-identical with the `rules` table emptied.
 
 ---
 
-## 4. Performance
+## 4. Slice 5 — execution honesty
+
+Amendments from the dump-scalp execution-gap result
+([2026-08-16-dump-scalp-execution-gap.md](../history/2026-08-16-dump-scalp-execution-gap.md)):
+a family whose signal was near-breakeven lost ~7 pp/trade to the round trip alone,
+and no threshold could have fixed it. Nothing here changes a shipped decision path —
+each item is a measurement or a pre-generation refusal.
+
+### 4a. Cost-clearance refuse gate (`gates.rs`, D8)
+
+Runs on the **ungated control's** authority pass, before the generator. The control
+enters every matched token with no gate, so its oracle is rule-free — a property of
+the cohort, which is what makes it usable before any candidate exists. It costs
+nothing: the control pass is the board's ungated column, moved earlier.
+
+The oracle pnl is already net of the same round trip as a realized exit, so the gate
+is one comparison: the **median net oracle move** against the execution band. Two
+details are load-bearing and are not what a first reading suggests:
+
+- The median runs over **every priceable entry, losers included**. A median over the
+  with-upside entries is positive by construction and could never refuse anything.
+- The bar is `median <= margin × band`, `margin` from the request. The default `0.0`
+  refuses only the unarguable case — the typical entry's *best available* exit does
+  not clear its own costs, and no exit rule beats the best exit. `1.0` is the stricter
+  dump-scalp bar. Between `0` and one band the run is **badged `thin`**, not refused:
+  a rule takes a fraction of the oracle, so that band is the shape that looks
+  tradeable offline and is not.
+
+The band is `round_trip_with_costs` on a flat trade at the requested buy and the
+cohort's median entry depth — derived, never a hard-coded 6 pp. It is **U-shaped in
+buy size** (fixed per-leg cost shrinks as a share of a larger notional while our own
+impact grows), so the bar moves in both directions with the form.
+
+A refusal **boards a report** rather than erroring out: unlike the freshness gate,
+which can only say "re-sync", this one has a measurement behind it, and burying it in
+an error string would hide the one number that decides whether the launch shape is
+worth revisiting. `draft` is `None` and `library` is empty — zero candidates generated
+is the finding.
+
+### 4b. Dual-pricing spread per finalist (`report.rs`)
+
+Score the finalist a second time at `FirstInWindow` + `pumpfun_fee_only` and print the
+spread beside the authority number. A finalist whose edge is smaller than its own
+spread is priced on fill luck; badge it, same spirit as the fill-timing ladder.
+
+**This is a second fold, not a repricing of outcomes in hand.** The fill price is
+chosen *inside* the kernel; reconstructing it outside would be a second implementation
+of the fill model, which the one-kernel contract forbids. The cost is one replay of
+**one** rule over the already-resident target cohort, against a fit tier that folds
+every candidate across every cohort — call it once, on the finalist.
+
+The taken set is then enforced rather than assumed: the two passes are intersected on
+mint and both returns are computed over the **common** set, with the drift counted on
+each side. `FillModel` fixes eligibility across models, so the sets normally match
+(the reference run held 5,872 entries under both pricings) — but a price-sensitive
+exit can still move a close, and a concurrency cap can then admit a different token.
+A non-empty drift is reported, never averaged over.
+
+### 4c. Realized-vs-authored level per alarm (`attribution.rs`)
+
+`AlarmRow` gains the mean **realized** level beside the **authored** threshold — the
+column that exposes `pnl <= -8` realizing far past the level because prints gap
+through it. Free: both fill prices per fired term are already in the outcome.
+
+The realized level is the mean **gross** `exit ÷ entry − 1`, because that is exactly
+the quantity `m_position.pnl` reads. Comparing the authored threshold to the *net*
+return would blame gapping for the execution band; that half is 4b's job, and the two
+must not be folded into one number. The pair is offered only where the units match
+(`level_is_return`) — `stall >= 30` has no comparable realized figure, and printing
+seconds against a percent would be nonsense.
+
+### 4d. Lagging-entry-clause diagnostic (`gates.rs`)
+
+The **entry-side twin of the narrow re-check**: drop each entry clause in turn and
+measure what it did to the entry *instant* rather than to the return — seconds added
+to the mean entry delay, points of oracle capture given up, entries filtered. A clause
+that holds entries back **and** whose kept entries have less upside left is created by
+the move it is trying to precede (`gross_flow(60) >= 55` on the scalp family, which
+raised volume *and* quality when dropped). Diagnostic only, never a refuse — waiting
+for confirmation is a legitimate edge, and only the pairing makes it a finding.
+
+Leave-one-out rather than literal last-to-become-true: per-clause first-true instants
+are not stamped anywhere, and stamping them is an engine change, not a measurement.
+The delay delta is the observable that answers the same question.
+
+### 4e. Cancel between cohorts
+
+A corpus load cannot be cancelled mid-flight (a known simulate weakness, out of
+scope), so the loop's checkpoints are the whole cancellation story — the difference
+between a 30-second abort and killing the process. `mod.rs` owns the testable unit
+(`check_cancelled`); the **loop** lives in the handler, because loading is async and
+the RAM budget is a loading decision. Checkpoints: after scope resolve, before every
+sibling load, and before the authority pass.
+
+**Acceptance:** a cohort whose available moves live inside the cost band is refused
+with zero candidates generated, and a finalist's spread column reproduces the
+worst-vs-first gap on a fixture.
+
+---
+
+## 5. Performance
 
 The budget: a family of 6 × ~40 candidates. The plan targets **6 corpus loads and 6
 folds**, not 240 runs.
@@ -203,7 +303,10 @@ folds**, not 240 runs.
 | **Settled-tick skip** | Already ~180× on multi-day ranges. Anything new that moves a tick must declare a `ClockHorizons` field — see the landmine table in [../../CLAUDE.md](../../CLAUDE.md). |
 | **Attribution is free** | The slot is resolved at bind time and the outcome field already exists; the rollup is one pass over outcomes already in hand. |
 | **The axis-duplication gate is free** | Reads `enter_pct` the family loop already computed. |
+| **Cost-clearance is the cheapest refusal** | Reads the oracle the load already produced and runs before generation — a refused cohort costs one load, not a search. |
+| **Dual pricing is one extra rule, not one extra search** | It is a second fold — the fill price is chosen inside the kernel and may not be reconstructed outside it — but of **one** rule over the already-resident target cohort, against a fit tier that folds every candidate across every cohort. |
 | **DuckDB spill** | Per-connection spill dir, as the existing lake sessions use. A shared `temp_directory` is what produces `Unknown exception in Finalize!` under concurrency. |
+| **Sims strictly sequential** | Concurrent DuckDB runs starve each other (`usable_mb=0`, then failures) — measured, not theoretical. The one-cohort-at-a-time rule above is load-bearing. |
 
 What is explicitly **not** a lever: shrinking `token_cap` on fit cohorts, sampling
 tokens, or lowering fill fidelity on the fit stage. Each changes the ranking that
@@ -214,7 +317,7 @@ Progress reporting: the family loop emits per-cohort phase labels through the sa
 
 ---
 
-## 5. Land order
+## 6. Land order
 
 ```
   SLICE 1  measurement — no new decisions                                   DONE
@@ -240,13 +343,22 @@ Progress reporting: the family loop emits per-cohort phase labels through the sa
     [x] handler, routes, SSE, HeavyJob::FamilySearch, result cache
     [x] portrait prose + draft columns (ungated control · oracle · optional incumbent)
     [x] a lab page over the report payload
+
+  SLICE 5  execution honesty — from the dump-scalp result                   DONE
+    [x] gates.rs       cost-clearance refuse (D8), pre-generation
+    [x] report.rs      dual-pricing spread per finalist
+    [x] attribution.rs realized-vs-authored level per alarm slot
+    [x] gates.rs       lagging-entry-clause diagnostic
+    [x] mod.rs         cancel check between sibling loads
+        UNLOCKS: an untradeable cohort refused for one load, not a search;
+                 fill-luck finalists and gap-past-the-level stops visible
 ```
 
-All four slices are code-complete and the module is documented in
+All five slices are code-complete and the module is documented in
 [../arch/sweep.md](../arch/sweep.md) and [../arch/frontend.md](../arch/frontend.md).
 **Nothing below has run against the lake yet** —
-until it does, the acceptance numbers in §1–3 and the last line of §6 stay open, and
-this file stays. First run needs
+until it does, the acceptance numbers in §1–3, §4 and the last line of §7 stay open,
+and this file stays. First run needs
 `scripts/db-incremental-sync.ps1 -IncludeToday -ExportLake`.
 
 Slice 1 does not reorder. Every finding in the charter is rank-only: which exit is
@@ -256,7 +368,7 @@ both are fixed with mechanisms already in the repo, and neither adds a decision 
 
 ---
 
-## 6. Constructed tests
+## 7. Constructed tests
 
 Pass without the lake, same bar as
 [rule-search-method.md](../plans/strategies/rule-search-method.md) §5.
@@ -279,11 +391,26 @@ Pass without the lake, same bar as
       range, fill, cost, guard, and buy. (Needs the lake — the one test here that
       cannot be constructed.)
 
+Slice 5 additions:
+
+- [x] A cohort whose median net oracle move sits inside the cost band is refused
+      before generation; raising the margin flips an admitted cohort to refused, and
+      a winners-only median (which can never refuse) fails the case.
+- [x] The execution band is derived, not constant: it is U-shaped in buy size and
+      rises as the pool thins.
+- [x] The spread is computed over the positions **both** pricings closed, and a mint
+      only one side took is excluded from both numbers and counted as drift.
+- [x] An authored `pnl <= -8` whose fills land at −20 prints both numbers on its
+      alarm row; a `stall >= 30` on the same rule is offered no such pair.
+- [x] A clause that delays entry **and** costs capture reads as lagging; one that
+      delays and *gains* capture does not.
+- [x] A cancel raised between sibling loads stops the run before the next load.
+
 ---
 
-## 7. Fold-in
+## 8. Fold-in
 
-When Slices 1–3 run, fold the charter's decisions into
+When Slices 1–5 run, fold the charter's decisions into
 [rule-search-method.md](../plans/strategies/rule-search-method.md) and the job wiring
 into [rule-search.md](../plans/strategies/rule-search.md), move the module map into
 [../arch/sweep.md](../arch/sweep.md), and delete both roadmap files.

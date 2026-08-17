@@ -51,6 +51,28 @@ function base(): FamilySearchReport {
       oracle_pnl_sol: 1,
       realized_pnl_sol: 0.31,
     },
+    cost_clearance: {
+      band_pct: 6.93,
+      median_move_pct: 24.0,
+      headroom: 24.0 / 6.93,
+      n_priced: 264,
+      n_with_upside: 180,
+      margin: 0,
+      refused: false,
+      thin: false,
+      reason: null,
+    },
+    spread: {
+      authority_ret_pct: 31.0,
+      optimistic_ret_pct: 37.9,
+      spread_pp: 6.9,
+      n_common: 180,
+      n_authority_only: 0,
+      n_optimistic_only: 0,
+      clean: true,
+      fill_luck: false,
+    },
+    entry_timing: [],
     incumbent: null,
     attribution: [],
     attribution_other_n: 0,
@@ -107,6 +129,45 @@ describe('familyVerdict', () => {
     const v = familyVerdict(r);
     expect(v.label).toBe('Ordering unvalidated');
     expect(v.gates.find((g) => g.key === 'transfer')?.ok).toBe(false);
+  });
+
+  it('says the search never ran, not that it found nothing, when the cohort is refused', () => {
+    const r = base();
+    r.cost_clearance = {
+      ...r.cost_clearance!,
+      median_move_pct: -0.4,
+      headroom: -0.4 / 6.93,
+      refused: true,
+      reason: 'the typical entry pays -0.40% against a 6.93% round trip',
+    };
+    r.draft = null;
+    const v = familyVerdict(r);
+    expect(v.label).toBe('Cohort refused');
+    expect(v.tone).toBe('danger');
+    // The reason carries the measurement, so the board is not a bare "no".
+    expect(v.body).toContain('6.93');
+    expect(v.gates.find((g) => g.key === 'execution')?.ok).toBe(false);
+  });
+
+  it('puts fill luck ahead of what the number says', () => {
+    // The edge is smaller than the run's own uncertainty about the fill, so whether
+    // it beats the ungated control is beside the point.
+    const r = base();
+    r.spread = { ...r.spread!, authority_ret_pct: 4.0, spread_pp: 6.9, fill_luck: true };
+    const v = familyVerdict(r);
+    expect(v.label).toBe('Priced on fill luck');
+    expect(v.edgePp).toBeGreaterThan(0);
+  });
+
+  it('refuses to call a thin cohort promotable', () => {
+    // Everything else clears, but the whole cohort clears its round trip by 0.9x —
+    // and a rule only ever takes a fraction of the best available exit.
+    const r = base();
+    r.cost_clearance = { ...r.cost_clearance!, median_move_pct: 6.2, headroom: 0.9, thin: true };
+    const v = familyVerdict(r);
+    expect(v.label).toBe('Thin headroom');
+    expect(v.tone).toBe('warning');
+    expect(v.gates.find((g) => g.key === 'execution')?.ok).toBe(false);
   });
 
   it('has no verdict to give without a draft', () => {

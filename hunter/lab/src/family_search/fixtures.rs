@@ -117,6 +117,13 @@ pub fn metric_exit(
     }
 }
 
+/// Stamp the round trip's two fill prices on an outcome. The realized level column
+/// reads `exit ÷ entry − 1`, so a fixture that left them equal could never show a
+/// close landing past its own threshold.
+pub fn filled_at(o: TokenOutcome, entry_price: f64, exit_price: f64) -> TokenOutcome {
+    TokenOutcome { entry_price: Some(entry_price), exit_price: Some(exit_price), ..o }
+}
+
 /// A close that is not an authored term — the "other" bucket.
 pub fn tp_exit(pnl_sol: f64) -> TokenOutcome {
     TokenOutcome { exit: ExitCode::TakeProfit, ..outcome_at(created_at(), 1.0, pnl_sol) }

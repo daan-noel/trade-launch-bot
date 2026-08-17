@@ -10,6 +10,7 @@ import type { HelpTip } from 'lib/strategy/strategyHelp';
 import { cn } from 'lib/cn';
 import { familyVerdict, type FamilyGate } from '@lab/lib/familySearchVerdict';
 import type {
+  FamilyAlarmRow,
   FamilyCandidateRow,
   FamilySearchReport,
 } from '@lab/lib/familySearchTypes';
@@ -95,6 +96,89 @@ export function FamilySearchBoard({
           {d}
         </InlineAlert>
       ))}
+
+      {/* ── Can this shape pay for execution at all? ─────────────────────── */}
+      {(report.cost_clearance || report.spread) && (
+        <Section
+          title="Execution"
+          caption="Asked before the search and again of its answer. A launch shape whose available moves live inside the round trip cannot be traded at this buy size — the loss is a ratio, and no threshold changes a ratio."
+        >
+          <div className="grid gap-3 lg:grid-cols-2">
+            {report.cost_clearance && (
+              <GradeCard
+                tone="neutral"
+                title="Cost clearance"
+                tip={TIPS.clearance}
+                blurb="The typical entry's BEST available exit, against what one round trip costs. Measured with no rule at all."
+                value={
+                  report.cost_clearance.headroom != null
+                    ? `${report.cost_clearance.headroom.toFixed(1)}x`
+                    : null
+                }
+                emptyHint="The cohort's available upside was not measurable on this run."
+                stats={[
+                  {
+                    label: 'best exit (median)',
+                    value: pctText(report.cost_clearance.median_move_pct),
+                  },
+                  { label: 'round trip', value: `${fmt(report.cost_clearance.band_pct, 2)}%` },
+                  {
+                    label: 'priced',
+                    value: `${report.cost_clearance.n_priced} · ${report.cost_clearance.n_with_upside} with upside`,
+                  },
+                ]}
+                footer={
+                  <p
+                    className={cn(
+                      'text-[11px] leading-snug',
+                      report.cost_clearance.refused
+                        ? 'text-red'
+                        : report.cost_clearance.thin
+                          ? 'text-warning'
+                          : 'text-text-dim',
+                    )}
+                  >
+                    {report.cost_clearance.refused
+                      ? 'refused — no search was run'
+                      : report.cost_clearance.thin
+                        ? 'clears by less than one round trip'
+                        : `bar: ${report.cost_clearance.margin.toFixed(1)}x the round trip`}
+                  </p>
+                }
+              />
+            )}
+            {report.spread && (
+              <GradeCard
+                tone="neutral"
+                title="Fill spread"
+                tip={TIPS.spread}
+                blurb="The same closes, repriced at the friendliest honest fill. The gap is what execution costs, not what the signal is worth."
+                value={ppText(report.spread.spread_pp)}
+                emptyHint="No spread on this run."
+                stats={[
+                  { label: 'this run', value: pctText(report.spread.authority_ret_pct) },
+                  { label: 'optimistic', value: pctText(report.spread.optimistic_ret_pct) },
+                  { label: 'closes', value: String(report.spread.n_common) },
+                ]}
+                footer={
+                  <p
+                    className={cn(
+                      'text-[11px] leading-snug',
+                      report.spread.fill_luck ? 'text-warning' : 'text-text-dim',
+                    )}
+                  >
+                    {report.spread.fill_luck
+                      ? 'the swing is larger than the edge — priced on fill luck'
+                      : 'the edge survives its own execution swing'}
+                    {!report.spread.clean &&
+                      ` · taken sets differ (${report.spread.n_authority_only} / ${report.spread.n_optimistic_only})`}
+                  </p>
+                }
+              />
+            )}
+          </div>
+        </Section>
+      )}
 
       {/* ── The grade ────────────────────────────────────────────────────── */}
       <Section
@@ -326,6 +410,9 @@ export function FamilySearchBoard({
               <tr>
                 <Th>Exit term</Th>
                 <Th align="right">Closed</Th>
+                <Th align="right" tip={TIPS.level}>
+                  Asked → got
+                </Th>
                 <Th align="right">PnL ◎</Th>
                 <Th align="right" tip={TIPS.pnlPct}>
                   Return
@@ -345,6 +432,9 @@ export function FamilySearchBoard({
                     <Td align="right" mono>
                       {a.n}
                     </Td>
+                    <Td align="right" mono>
+                      <LevelCell row={a} />
+                    </Td>
                     <Td align="right" mono tone={a.pnl_sol < 0 ? 'bad' : 'good'}>
                       {fmt(a.pnl_sol, 3)}
                     </Td>
@@ -363,6 +453,7 @@ export function FamilySearchBoard({
                   <Td align="right" mono>
                     {report.attribution_other_n}
                   </Td>
+                  <Td align="right">—</Td>
                   <Td align="right" mono>
                     {fmt(report.attribution_other_pnl_sol, 3)}
                   </Td>
@@ -423,6 +514,76 @@ export function FamilySearchBoard({
           <p className="mt-2 text-[11px] text-text-dim">
             Δ is the draft minus the version without that term: positive means the term earns its
             place, negative means it costs money.
+          </p>
+        </Section>
+      )}
+
+      {/* ── Entry timing ─────────────────────────────────────────────────── */}
+      {report.entry_timing.length > 0 && (
+        <Section
+          title="What each entry clause does to the timing"
+          caption="The draft re-run without each entry clause. A clause that holds entries back AND whose kept entries have less upside left is created by the move it is trying to precede — it selects moments after the move, not before it."
+        >
+          <TableShell>
+            <thead className="text-[10px] uppercase tracking-wide text-text-dim">
+              <tr>
+                <Th>Entry clause</Th>
+                <Th align="right" tip={TIPS.delay}>
+                  Delay added
+                </Th>
+                <Th align="right" tip={TIPS.captureDelta}>
+                  Capture
+                </Th>
+                <Th align="right">Entries filtered</Th>
+                <Th>Verdict</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.entry_timing.map((t) => (
+                <tr key={t.clause} className="border-t border-white/6">
+                  <Td>
+                    <span className="font-mono text-text-mid">{t.clause}</span>
+                  </Td>
+                  <Td align="right" mono tone={t.delay_added_secs > 0 ? 'bad' : 'good'}>
+                    {`${signed(t.delay_added_secs, 1)}s`}
+                  </Td>
+                  <Td
+                    align="right"
+                    mono
+                    tone={
+                      t.capture_delta_pp != null && t.capture_delta_pp < 0 ? 'bad' : 'good'
+                    }
+                  >
+                    {t.capture_delta_pp == null ? '—' : ppText(t.capture_delta_pp)}
+                  </Td>
+                  <Td align="right" mono>
+                    {ppText(t.admit_delta_pct)}
+                  </Td>
+                  <Td>
+                    {t.lagging ? (
+                      <span className="inline-flex flex-col gap-0.5">
+                        <Badge variant="warning" size="sm">
+                          lagging
+                        </Badge>
+                        {t.note && (
+                          <span className="text-[11px] leading-snug text-text-dim">{t.note}</span>
+                        )}
+                      </span>
+                    ) : (
+                      <span className="text-[11px] text-text-dim">
+                        {t.delay_added_secs > 0 ? 'waits, and the wait pays' : 'does not bind timing'}
+                      </span>
+                    )}
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </TableShell>
+          <p className="mt-2 text-[11px] leading-snug text-text-dim">
+            Every column is the draft minus that clause: a positive delay means the clause pushes
+            the entry later, and a negative capture means the entries it keeps took less of the
+            money that was available. Diagnostic only — waiting for confirmation is a legitimate
+            edge, and it is the pair that makes a finding.
           </p>
         </Section>
       )}
@@ -581,6 +742,34 @@ function GateLine({ gate }: { gate: FamilyGate }) {
         <span className="text-text-dim"> — {gate.detail}</span>
       </span>
     </p>
+  );
+}
+
+/**
+ * The authored threshold against the level the term actually closed at — printed as a
+ * pair only where the two are the same quantity. `pnl <= -8` realizing −20 is a stop
+ * that does not stop; `stall >= 30` has no comparable realized number at all.
+ */
+function LevelCell({ row }: { row: FamilyAlarmRow }) {
+  if (row.authored_level == null) return <span className="text-text-dim">—</span>;
+  if (!row.level_is_return || row.realized_level_pct == null) {
+    return <span className="text-text-dim">{fmt(row.authored_level, 2)}</span>;
+  }
+  const over = row.level_overshoot_pp ?? 0;
+  return (
+    <span
+      className="inline-flex items-baseline gap-1"
+      title={`Authored ${fmt(row.authored_level, 1)}%, actually closed at ${fmt(
+        row.realized_level_pct,
+        1,
+      )}% gross — ${Math.abs(over).toFixed(1)} points ${over < 0 ? 'worse' : 'better'} than the level it asked for.`}
+    >
+      <span className="text-text-dim">{fmt(row.authored_level, 1)}</span>
+      <span className="text-text-dim/60">→</span>
+      <span className={over < -1 ? 'text-red' : 'text-text-mid'}>
+        {fmt(row.realized_level_pct, 1)}
+      </span>
+    </span>
   );
 }
 
@@ -774,5 +963,25 @@ const TIPS = {
   targetCol: {
     title: 'Target return',
     body: 'The held-out cohort\'s return — the number to report. Row 1 carries the authority replay; the rest carry the fast archive fold.',
+  },
+  clearance: {
+    title: 'Cost clearance',
+    body: 'Median net oracle round trip over every priceable entry (losers included), against what one round trip costs at this buy size and the cohort\'s median pool depth. Measured on the ungated control, before any candidate exists — no exit rule beats the best exit, so a cohort under 1x here is refused or badged rather than searched. The band is derived from the run\'s own cost model, and cost is U-shaped in buy size, so it moves with the form.',
+  },
+  spread: {
+    title: 'Fill spread',
+    body: 'The same closes repriced at the friendliest honest fill (first-in-window + fee-only) against the run\'s own pricing. On one dump-scalp family this gap was 6.93pp/trade while the signal itself was near breakeven — execution was the entire loss. An edge smaller than its own spread is priced on fill luck, and live paper books the pessimistic side.',
+  },
+  level: {
+    title: 'Asked → got',
+    body: 'The threshold the term authored against the mean GROSS return it actually closed at. Gross on purpose: that is the quantity `m_position.pnl` reads, so the pair is comparable — the further gap down to the net return is execution, which the fill spread reports separately. Shown only where the units match; `stall >= 30` has no comparable realized number.',
+  },
+  delay: {
+    title: 'Delay added',
+    body: 'Seconds this clause adds to the mean time from token creation to the entry fill (the draft minus the draft without it). Positive means it holds entries back.',
+  },
+  captureDelta: {
+    title: 'Capture delta',
+    body: 'Points of oracle capture the clause costs. Negative means the entries it keeps took LESS of the money that was available than the entries it turned away — combined with a positive delay, that is a gate the move itself creates.',
   },
 } satisfies Record<string, HelpTip>;

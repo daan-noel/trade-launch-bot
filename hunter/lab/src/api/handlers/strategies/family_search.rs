@@ -25,8 +25,9 @@ use crate::family_search::report::{
 };
 use crate::family_search::score::{broad_fit, CohortScore};
 use crate::family_search::{
-    attribution, authority, capture_of, earn_candidates, entry_gates, family, gates,
-    narrow_recheck, score_cohort, Authority, CohortRun, RunConfig,
+    attribution, authority, capture_of, check_cancelled, earn_candidates, entry_gates,
+    entry_timing, family, gates, narrow_recheck, optimistic, score_cohort, spread, Authority,
+    CohortRun, RunConfig,
 };
 use crate::lake::duck::LakeSource;
 use crate::models::ingest::SseEvent;
@@ -274,6 +275,11 @@ async fn run_job(
     }
 }
 
+/// One family member's resolved scope: the row, its engine form, the varied axis's
+/// value, whether it is the held-out target, its matched mints, and whether the cap
+/// truncated them.
+type Scope = (Fingerprint, EngineFingerprint, Option<f64>, bool, Vec<String>, bool);
+
 /// Scope resolve is **dimension-only** (`matching_mints` reads the tokens Parquet and
 /// never scans trades), so every cohort's scope is resolved up front: an empty cohort
 /// then fails before any trade load.
@@ -282,7 +288,7 @@ async fn resolve_scopes(
     sel: &Selection,
     fam: &family::Family,
     rows: &[Fingerprint],
-) -> anyhow::Result<Vec<(Fingerprint, EngineFingerprint, Option<f64>, bool, Vec<String>, bool)>> {
+) -> anyhow::Result<Vec<Scope>> {
     let mut out = Vec::new();
     for m in &fam.members {
         let Some(row) = rows.iter().find(|r| r.id == m.fp_id) else { continue };
@@ -421,7 +427,54 @@ async fn drive(
     let freshness =
         gates::check_freshness(&target_corpus, requested_until, b.freshness_slack_secs)?;
 
+    // ── D8: can this cohort pay for its own execution? ─────────────────────
+    //
+    // Before the generator, because a search over a cohort whose available moves live
+    // inside the round trip is spent on a question with no answer. The instrument is
+    // the **ungated control's** oracle — rule-free, and no exit rule beats the best
+    // exit. The control pass is not extra work: it is the board's ungated column,
+    // moved earlier.
+    let control = crate::family_search::generator::ungated_control();
+    let target_fp = target_scope.1.clone();
+    phase("clearance");
+    let (control_auth, clearance) = {
+        let corpus = target_corpus.clone();
+        let cfg2 = cfg.clone();
+        let fp2 = target_fp.clone();
+        let control2 = control.clone();
+        let margin = b.cost_clearance_margin;
+        let pool = pool.clone();
+        tokio::task::spawn_blocking(move || {
+            pool.install(|| {
+                let a = authority(&corpus.tokens, &fp2, &control2.params, &cfg2);
+                let moves = crate::family_search::oracle::oracle_moves(
+                    &corpus.tokens,
+                    &a.outcomes,
+                    &a.token_idx,
+                    &cfg2.pricing,
+                );
+                let band = crate::family_search::oracle::execution_band_pct(
+                    &cfg2.pricing,
+                    crate::family_search::oracle::median(&moves.depth_sol),
+                );
+                let c = gates::cost_clearance(&moves.pct, moves.n_with_upside, band, margin);
+                (a, c)
+            })
+        })
+        .await?
+    };
+    if let Some(why) = clearance.refuse_reason() {
+        notice(format!("refused before generating: {why}"));
+        // A refusal still boards. The freshness gate can only say "re-sync"; this one
+        // has a measurement behind it, and burying that in an error string would hide
+        // the one number that decides whether this launch shape is worth revisiting.
+        let report = refusal_report(target_row, fam, &scopes, freshness, clearance, why);
+        state.family_search_result.store(run_id, report).await;
+        return Ok(());
+    }
+
     // ── Earn the candidate menu from the target's own paths (D5). ───────────
+    check_cancelled(observer.as_ref())?;
     phase("signatures");
     let library = {
         let corpus = target_corpus.clone();
@@ -434,14 +487,14 @@ async fn drive(
         anyhow::bail!("the signature menu earned no candidate on this cohort");
     }
     let candidates: Arc<Vec<Candidate>> = Arc::new(library.kept.clone());
-    let control = crate::family_search::generator::ungated_control();
 
     // ── Score every cohort. Target first (resident), siblings one at a time. ─
     let mut cohorts: Vec<CohortRun> = Vec::new();
     for (row, engine_fp, axis_value, is_target, mints, _) in &scopes {
-        if state.family_search_cancel.load(Ordering::Acquire) {
-            anyhow::bail!("cancelled");
-        }
+        // A corpus load cannot be cancelled mid-flight, so this checkpoint — between
+        // one sibling's fold and the next one's load — is the whole cancellation story
+        // for the longest phase of the run.
+        check_cancelled(observer.as_ref())?;
         if mints.is_empty() {
             notice(format!("{}: no matched tokens — excluded from the fit", row.name));
             continue;
@@ -522,28 +575,30 @@ async fn drive(
     let bf = broad_fit(&fit, &validate);
 
     // ── Authority pass: the target cohort and the finalist only. ────────────
+    check_cancelled(observer.as_ref())?;
     phase("authority");
     let winner = bf.winner().unwrap_or(0);
     let finalist = candidates[winner].clone();
-    let target_fp = target_scope.1.clone();
 
-    let (auth, capture, narrow, incumbent_auth, control_auth) = {
+    let (auth, capture, narrow, timing, spread_of_draft, incumbent_auth) = {
         let corpus = target_corpus.clone();
         let cfg2 = cfg.clone();
         let fp2 = target_fp.clone();
         let finalist2 = finalist.clone();
         let incumbent2 = incumbent.clone();
-        let control2 = control.clone();
         let pool = pool.clone();
         tokio::task::spawn_blocking(move || {
             pool.install(|| {
                 let a = authority(&corpus.tokens, &fp2, &finalist2.combo.params, &cfg2);
                 let cap = capture_of(&corpus.tokens, &a, &cfg2.pricing);
                 let nr = narrow_recheck(&corpus.tokens, &fp2, &finalist2.combo, &cfg2, a.score);
-                let inc = incumbent2
-                    .map(|p| authority(&corpus.tokens, &fp2, &p, &cfg2));
-                let ctl = authority(&corpus.tokens, &fp2, &control2.params, &cfg2);
-                (a, cap, nr, inc, ctl)
+                let tm = entry_timing(&corpus.tokens, &fp2, &finalist2.combo, &cfg2, &a);
+                // D8 corollary: the same taken set at the friendliest honest fill.
+                let opt = optimistic(&corpus.tokens, &fp2, &finalist2.combo.params, &cfg2);
+                let sp =
+                    spread(&corpus.tokens, &a, &opt, cfg2.pricing.buy_amount_sol);
+                let inc = incumbent2.map(|p| authority(&corpus.tokens, &fp2, &p, &cfg2));
+                (a, cap, nr, tm, sp, inc)
             })
         })
         .await?
@@ -638,6 +693,9 @@ async fn drive(
         draft: Some(draft),
         ungated_control: Some(plain_row("ungated control", &control_auth, &control.params)),
         capture: capture.into(),
+        cost_clearance: Some(clearance.into()),
+        spread: Some(spread_of_draft.into()),
+        entry_timing: timing.into_iter().map(Into::into).collect(),
         incumbent: incumbent_auth
             .as_ref()
             .zip(incumbent.as_ref())
@@ -658,8 +716,80 @@ async fn drive(
                 .into(),
         );
     }
+    if clearance.thin() {
+        report.diagnostics.push(format!(
+            "This cohort clears its execution cost by less than one round trip \
+             ({:.1}x). A rule takes a fraction of the best available exit, so the \
+             headroom a draft actually has is smaller than it looks.",
+            clearance.headroom().unwrap_or(0.0)
+        ));
+    }
+    if !spread_of_draft.clean() {
+        report.diagnostics.push(format!(
+            "The two pricings did not close the same positions ({} authority-only, {} \
+             optimistic-only), so the spread is indicative rather than one taken set \
+             measured twice.",
+            spread_of_draft.n_authority_only, spread_of_draft.n_optimistic_only
+        ));
+    }
     report.portrait = crate::family_search::report::portrait(&report);
 
     state.family_search_result.store(run_id, report).await;
     Ok(())
+}
+
+/// The board for a cohort refused on execution cost (D8).
+///
+/// It carries the family, the freshness it passed, and the measurement that refused
+/// it — everything except a draft, because no search ran. `library` is deliberately
+/// empty rather than absent: zero candidates generated is the finding.
+fn refusal_report(
+    target_row: &Fingerprint,
+    fam: &family::Family,
+    scopes: &[Scope],
+    freshness: gates::Freshness,
+    clearance: gates::CostClearance,
+    why: String,
+) -> Report {
+    let mut report = Report {
+        fingerprint_id: target_row.id,
+        fingerprint_name: target_row.name.clone(),
+        family: FamilyDto {
+            varied_axis: fam.varied.map(|a| a.column().to_string()),
+            single_cohort: fam.is_single(),
+            members: scopes
+                .iter()
+                .map(|(row, _, axis_value, is_target, mints, _)| SiblingRow {
+                    fp_id: row.id,
+                    name: row.name.clone(),
+                    axis_value: *axis_value,
+                    is_target: *is_target,
+                    n_matched: mints.len() as u64,
+                    // Nothing was scored, so there is no per-cohort number to give.
+                    ungated_ret_pct: None,
+                })
+                .collect(),
+        },
+        freshness: FreshnessDto::from(freshness),
+        library: LibraryDto::default(),
+        rho: None,
+        fit_broad_holds: false,
+        draft: None,
+        ungated_control: None,
+        capture: Default::default(),
+        cost_clearance: Some(clearance.into()),
+        spread: None,
+        entry_timing: Vec::new(),
+        incumbent: None,
+        attribution: Vec::new(),
+        attribution_other_n: 0,
+        attribution_other_pnl_sol: 0.0,
+        narrow_recheck: Vec::new(),
+        entry_gates: Vec::new(),
+        archive: Vec::new(),
+        portrait: Vec::new(),
+        diagnostics: vec![format!("Search refused before generating: {why}")],
+    };
+    report.portrait = crate::family_search::report::portrait(&report);
+    report
 }

@@ -76,6 +76,7 @@ interface Config {
   slots: number;
   variedAxis: FamilyAxisName | '';
   freshnessSlackHours: number;
+  costClearanceMargin: number;
   maxConcurrentTokens: number;
   maxTotalTokens: number;
   incumbentRuleId: string | null;
@@ -93,6 +94,7 @@ const DEFAULTS: Config = {
   slots: 40,
   variedAxis: '',
   freshnessSlackHours: 1,
+  costClearanceMargin: 0,
   maxConcurrentTokens: 0,
   maxTotalTokens: 0,
   incumbentRuleId: null,
@@ -132,6 +134,10 @@ const TIPS = {
   slack: {
     title: 'Freshness slack',
     body: 'How far the requested upper bound may outrun the lake\'s newest print before the run refuses. A sealed-day export is routinely under an hour behind; two days behind is a silently shorter range answering a different question.',
+  },
+  clearance: {
+    title: 'Cost bar (x round trip)',
+    body: 'How much headroom over one round trip the cohort\'s typical best available exit must leave before a search runs at all. 0 refuses only the unarguable case — the best exit does not clear its own costs, so no exit rule can beat it. 1 is the stricter bar the dump-scalp result sets: a rule only ever takes a fraction of the best exit, so a cohort clearing by less than its own cost looks tradeable offline and is not.',
   },
   caps: {
     title: 'Concurrency caps',
@@ -279,6 +285,7 @@ export function FamilySearchPage() {
         varied_axis: config.variedAxis || undefined,
         slots: config.slots,
         freshness_slack_secs: Math.round(config.freshnessSlackHours * 3600),
+        cost_clearance_margin: config.costClearanceMargin,
         incumbent_rule_id: config.incumbentRuleId ?? undefined,
       }).unwrap();
       searchRunId.current = run_id;
@@ -544,6 +551,15 @@ export function FamilySearchPage() {
               step={0.5}
               onChange={(v) => set('freshnessSlackHours', v)}
               width="w-[90px]"
+            />
+            <NumField
+              label="Cost bar (x)"
+              tip={TIPS.clearance}
+              value={config.costClearanceMargin}
+              min={0}
+              step={0.5}
+              onChange={(v) => set('costClearanceMargin', v)}
+              width="w-[100px]"
             />
             <NumField
               label="Max concurrent"

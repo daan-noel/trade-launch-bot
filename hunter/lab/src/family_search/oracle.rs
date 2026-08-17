@@ -108,6 +108,95 @@ fn first_row_after(token: &CorpusToken, at: DateTime<Utc>) -> usize {
     token.trades.partition_point(|t| t.block_time <= at)
 }
 
+/// The SOL-side pool depth this entry's impact is charged against — the entry row's
+/// own reserve, the shape [`round_trip_with_costs`] defines.
+fn entry_depth(token: &CorpusToken, at: DateTime<Utc>) -> Option<f64> {
+    first_row_after(token, at)
+        .checked_sub(1)
+        .and_then(|i| token.trades.get(i))
+        .and_then(|t| t.real_reserve_sol)
+        .filter(|r| r.is_finite() && *r > 0.0)
+}
+
+/// Every priceable entry's **net** oracle round trip, as a percent of notional, and
+/// the entry depths that priced them.
+///
+/// This is the cohort's upside distribution: what the *best* exit available after
+/// each fill would have paid, after the same round trip a realized exit pays. Feed it
+/// the **ungated control's** outcomes and it is rule-free — a property of the cohort,
+/// which is what makes it usable before a generator has produced anything (D8).
+///
+/// Losers are kept. A distribution filtered to the winners has a positive median by
+/// construction and can never refuse anything.
+pub struct OracleMoves {
+    /// Net oracle round trip per priceable entry, in percent of notional.
+    pub pct: Vec<f64>,
+    /// Entry-row pool depth per priceable entry, in the same order.
+    pub depth_sol: Vec<f64>,
+    /// Entries whose oracle round trip pays > 0 — context for the median, never a
+    /// filter on it.
+    pub n_with_upside: u64,
+}
+
+/// Fold a cohort's outcomes into its [`OracleMoves`]. `token_idx[i]` is the corpus
+/// index `outcomes[i]` belongs to.
+pub fn oracle_moves(
+    tokens: &[CorpusToken],
+    outcomes: &[TokenOutcome],
+    token_idx: &[usize],
+    pricing: &Pricing,
+) -> OracleMoves {
+    let mut out =
+        OracleMoves { pct: Vec::new(), depth_sol: Vec::new(), n_with_upside: 0 };
+    if pricing.buy_amount_sol <= 0.0 {
+        return out;
+    }
+    for (o, &ti) in outcomes.iter().zip(token_idx) {
+        if !o.fired {
+            continue;
+        }
+        let Some(token) = tokens.get(ti) else { continue };
+        let Some(sol) = oracle_pnl_sol(token, o, pricing) else { continue };
+        if sol > 0.0 {
+            out.n_with_upside += 1;
+        }
+        out.pct.push(100.0 * sol / pricing.buy_amount_sol);
+        if let Some(d) = o.entry_time.and_then(|at| entry_depth(token, at)) {
+            out.depth_sol.push(d);
+        }
+    }
+    out
+}
+
+/// The middle value of a sample. `None` on an empty one; an even count averages the
+/// two middles.
+pub fn median(values: &[f64]) -> Option<f64> {
+    let mut v: Vec<f64> = values.iter().copied().filter(|x| x.is_finite()).collect();
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = v.len();
+    Some(if n % 2 == 1 { v[n / 2] } else { 0.5 * (v[n / 2 - 1] + v[n / 2]) })
+}
+
+/// What **one round trip costs** at this buy size and pool depth, as a percent of
+/// notional — the move a rule must clear before it earns anything (D8).
+///
+/// Priced as a flat trade (entry price == exit price) through the run's own
+/// [`CostModel`](trading_core::strategies::kernel::CostModel), so it moves with the
+/// buy size, the fee tuning and the pool depth instead of being a constant somebody
+/// measured once on one family. The result is independent of the price level: gross
+/// return is `exit ÷ entry`, so a flat trade leaves nothing but cost.
+pub fn execution_band_pct(pricing: &Pricing, depth_sol: Option<f64>) -> f64 {
+    if pricing.buy_amount_sol <= 0.0 {
+        return 0.0;
+    }
+    let (pnl_sol, _) =
+        round_trip_with_costs(1.0, 1.0, pricing.buy_amount_sol, depth_sol, &pricing.cost);
+    -100.0 * pnl_sol / pricing.buy_amount_sol
+}
+
 /// The best price still printed after `at` — what an exit could have got.
 ///
 /// `None` when the corpus was loaded without [`Selection::with_oracle`], when no
@@ -140,11 +229,7 @@ pub fn oracle_pnl_sol(
     let entry_price = outcome.entry_price?;
     let entry_at = outcome.entry_time?;
     let exit_price = oracle_exit_price(token, entry_at)?;
-    let depth = first_row_after(token, entry_at)
-        .checked_sub(1)
-        .and_then(|i| token.trades.get(i))
-        .and_then(|t| t.real_reserve_sol)
-        .filter(|r| r.is_finite() && *r > 0.0);
+    let depth = entry_depth(token, entry_at);
     let (pnl_sol, _) = round_trip_with_costs(
         entry_price,
         exit_price,

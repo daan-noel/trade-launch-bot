@@ -18,7 +18,7 @@ export type FamilyVerdictTone = 'success' | 'warning' | 'danger';
 
 /** One named check, with the number that decided it. `ok: null` = not measurable. */
 export interface FamilyGate {
-  key: 'family' | 'transfer' | 'beats-ungated' | 'freshness';
+  key: 'execution' | 'family' | 'transfer' | 'beats-ungated' | 'freshness';
   label: string;
   ok: boolean | null;
   detail: string;
@@ -51,7 +51,25 @@ export function familyVerdict(r: FamilySearchReport): FamilyVerdict {
 
   const nMembers = r.family.members.length;
   const familyOk = !r.family.single_cohort && nMembers > 1;
+  const cc = r.cost_clearance;
   const gates: FamilyGate[] = [
+    {
+      key: 'execution',
+      label: 'Clears execution',
+      ok: cc == null || cc.median_move_pct == null ? null : !cc.refused && !cc.thin,
+      detail:
+        cc == null || cc.median_move_pct == null
+          ? 'the cohort\'s available upside was not measurable'
+          : cc.refused
+            ? `the typical entry's best available exit pays ${pctText(
+                cc.median_move_pct,
+              )} against a ${cc.band_pct.toFixed(2)}% round trip — no search was run`
+            : `best available exit ${pctText(
+                cc.median_move_pct,
+              )} against a ${cc.band_pct.toFixed(2)}% round trip — ${(
+                cc.headroom ?? 0
+              ).toFixed(1)}x headroom${cc.thin ? ', under one round trip' : ''}`,
+    },
     {
       key: 'family',
       label: 'Family',
@@ -102,12 +120,41 @@ export function familyVerdict(r: FamilySearchReport): FamilyVerdict {
     },
   ];
 
+  // The search never ran. That is a different statement from "the search found
+  // nothing", and it must not read as one.
+  if (cc?.refused) {
+    return {
+      tone: 'danger',
+      label: 'Cohort refused',
+      headline: 'This launch shape cannot pay for its own execution.',
+      body:
+        cc.reason ??
+        'The typical entry\'s best available exit does not clear the round trip, so no exit rule can exist here. Nothing was generated.',
+      gates,
+      edgePp,
+    };
+  }
+
   if (!draft) {
     return {
       tone: 'danger',
       label: 'No draft',
       headline: 'Nothing survived this run.',
       body: 'No candidate came out of the fit. Read the diagnostics below, then widen the range or raise the candidate slots.',
+      gates,
+      edgePp,
+    };
+  }
+
+  // Whether the number is real at all outranks what the number says.
+  if (r.spread?.fill_luck) {
+    return {
+      tone: 'warning',
+      label: 'Priced on fill luck',
+      headline: `The same closes repriced at the friendliest honest fill swing ${pp(
+        r.spread.spread_pp,
+      )} — more than the edge itself.`,
+      body: 'Execution, not signal, is deciding this result. Live paper books the pessimistic fill, so treat the draft as unproven until it clears its own spread — or trade a larger target size where the round trip is affordable overhead.',
       gates,
       edgePp,
     };
@@ -142,6 +189,22 @@ export function familyVerdict(r: FamilySearchReport): FamilyVerdict {
       label: 'Ordering unvalidated',
       headline: 'The pooled ordering did not transfer to the held-out cohort.',
       body: 'Fitting broad does not apply to this family — the draft is the top of a ranking that means nothing here. Its level is still a real replay of the target cohort, so read it as one measured rule rather than as the winner of a search.',
+      gates,
+      edgePp,
+    };
+  }
+
+  // Everything else passed, but the cohort clears its own round trip by less than
+  // one. A rule takes a fraction of the best available exit, so this is the shape
+  // that looks tradeable offline and is not.
+  if (cc?.thin) {
+    return {
+      tone: 'warning',
+      label: 'Thin headroom',
+      headline: `The draft pays ${pctText(draft.target_ret_pct)}, but the whole cohort clears its round trip by only ${(
+        cc.headroom ?? 0
+      ).toFixed(1)}x.`,
+      body: 'Execution eats most of what is available on this launch shape, and a rule only ever takes a fraction of the best exit. Confirm with Simulate at the pessimistic fill before promoting, and expect the live number to sit below this one.',
       gates,
       edgePp,
     };

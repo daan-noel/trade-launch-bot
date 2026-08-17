@@ -54,6 +54,60 @@ export interface FamilyAlarmRow {
   entry_sol: number;
   /** Money over capital — a count-only table ranks 200 small losses over 20 wins. */
   pnl_pct: number;
+  /** The threshold the rule authored. */
+  authored_level: number | null;
+  /** Mean GROSS return at the close — the quantity `m_position.pnl` itself reads. */
+  realized_level_pct: number | null;
+  /** Only then may the two be printed side by side (percent vs seconds). */
+  level_is_return: boolean;
+  /** Points past the authored level the term actually closed. A `pnl <= -8` that
+   *  realizes −20 is a stop that does not stop: price gaps straight through it. */
+  level_overshoot_pp: number | null;
+}
+
+/** The same rule and the same taken set, priced two ways (D8 corollary). */
+export interface FamilySpread {
+  authority_ret_pct: number;
+  optimistic_ret_pct: number;
+  spread_pp: number;
+  n_common: number;
+  n_authority_only: number;
+  n_optimistic_only: number;
+  /** Both passes closed the same positions, so the numbers describe one set. */
+  clean: boolean;
+  /** The edge is no larger than the run's own uncertainty about the fill. */
+  fill_luck: boolean;
+}
+
+/** Whether the cohort can pay for its own execution, measured before any rule (D8). */
+export interface FamilyCostClearance {
+  /** One round trip's cost at this buy size and the cohort's median pool depth. */
+  band_pct: number;
+  /** Median NET oracle round trip over every priceable entry, losers included. */
+  median_move_pct: number | null;
+  /** `median_move_pct ÷ band_pct` — round trips of headroom the best exit leaves. */
+  headroom: number | null;
+  n_priced: number;
+  n_with_upside: number;
+  margin: number;
+  /** The search never ran: this cohort is untradeable at this buy size. */
+  refused: boolean;
+  /** It clears, but by less than one round trip. */
+  thin: boolean;
+  reason: string | null;
+}
+
+/** One entry clause's effect on the entry INSTANT. Diagnostic, never a refusal. */
+export interface FamilyEntryTimingRow {
+  clause: string;
+  /** Seconds the clause adds to the mean entry delay. Positive ⇒ it holds entries back. */
+  delay_added_secs: number;
+  /** Points of capture the clause costs. Negative ⇒ removing it captured more. */
+  capture_delta_pp: number | null;
+  admit_delta_pct: number;
+  /** Binds the instant AND its entries have less upside left — a gate the move creates. */
+  lagging: boolean;
+  note: string | null;
 }
 
 /** One term's narrow contribution — the finalist re-scored with it dropped. */
@@ -117,6 +171,13 @@ export interface FamilySearchReport {
   /** What the fingerprint pays with NO gate — a property of the cohort. */
   ungated_control: FamilyCandidateRow | null;
   capture: FamilyCaptureDto;
+  /** Whether the cohort clears its own execution cost. Measured on the ungated
+   *  control before the generator runs — `refused` means no search happened. */
+  cost_clearance: FamilyCostClearance | null;
+  /** The draft, priced twice on one taken set. */
+  spread: FamilySpread | null;
+  /** What each entry clause does to the entry instant. */
+  entry_timing: FamilyEntryTimingRow[];
   /** Display only. An incumbent is an artifact, not a baseline. */
   incumbent: FamilyCandidateRow | null;
   attribution: FamilyAlarmRow[];
@@ -167,5 +228,8 @@ export interface FamilySearchStartArgs {
   varied_axis?: FamilyAxisName;
   slots?: number;
   freshness_slack_secs?: number;
+  /** Round trips of headroom the cohort's typical best exit must leave before a
+   *  search runs. `0` refuses only the unarguable case. */
+  cost_clearance_margin?: number;
   incumbent_rule_id?: string;
 }

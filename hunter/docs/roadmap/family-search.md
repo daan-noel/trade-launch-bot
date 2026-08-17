@@ -81,6 +81,9 @@ Conditions for every number below: buy 0.01 SOL, entry `m_snapshot.liquidity > 2
 | **The exit is an OR, and the OR is the edge** | OR +30.97% / +31.66%; `stall >= 30` alone +14.21 / +21.02; `gross_flow < 15 @10s` alone +8.69 / +27.63; `nonvol_buy >= 1.6 @2s` alone −1.87 / +10.22; `retrace >= 36` alone −39.50 / −44.20 (15d / 7d) | Exit is the primary search axis. An unarmed `retrace` is a hard stop from entry — see the landmine table in [hunter/CLAUDE.md](../../CLAUDE.md). |
 | **A price trail destroys a working exit** | adding `trail >= 15 @10s`: spend=5 +30.7 → −15.3, spend=4 +40.8 → −14.1, spend=1.5 −13.8 → −14.2 | Trail stays in the library, flagged. A library that cannot express a refuted term cannot re-refute it on the next family. |
 | **Pool by money, not by mean** | pooled = `Σpnl_sol / Σentry_sol`, same rule as [PnL %](../plans/strategies/pnl-percent-definition.md) | A mean of per-cohort percents lets a 99-token cohort outvote a 565-token one. |
+| **Execution can be the entire loss** | on a dump-scalp family, the same taken set repriced worst-fill + impact vs first-fill + fee-only differs by **6.93 pp/trade** (n = 5,872); the signal is near-breakeven (PF 0.95 optimistic) and the round trip eats it — a rule targeting 3–12% moves cannot clear a ~6 pp cost, and no threshold changes a ratio ([2026-08-16-dump-scalp-execution-gap.md](../history/2026-08-16-dump-scalp-execution-gap.md)) | Refuse a cohort whose available moves live inside the execution band **before** generating anything (D8), and print the dual-pricing spread beside every finalist. |
+| **A stop does not stop on sparse prints** | authored `pnl <= -8` realizes a **−19.4%** mean (worst −102%) — prints are sparse and price gaps straight past the level | Attribution carries mean **realized** level beside the **authored** threshold, per alarm slot. |
+| **A gate the move itself creates is a lagging gate** | `gross_flow(60) >= 55` selected post-move moments and was the AND-binding clause deciding entry timing; dropping it improved quality *and* volume (5,872 vs 4,747) | Flag an entry clause that binds timing **and** correlates with low capture — the event-proxy sibling of the axis-duplication gate. |
 
 Per-cohort counts for the reference family, useful as a totals sanity check: a
 four-term exit closes 1,086 = 253 + 697 + 136 over spend=1 / 2 / 3. A low `n` is not
@@ -160,6 +163,17 @@ off-by-default display column and let it touch nothing.
 ([corpus.rs](../../lab/src/sweep/corpus.rs)) exists precisely so a run can state how
 fresh its data is. A run whose `until` outruns it is silently shorter than requested.
 Refuse, or badge loudly.
+
+**D8 — a cohort must clear execution before a search runs.** Compare the cohort's
+oracle upside distribution (net — the oracle is already charged the same round trip
+as a realized exit, D3) against the execution band. Where the typical available move
+lives inside that band, **no rule can exist there**: the loss is a ratio, and
+thresholds do not change ratios. Refuse the cohort before the generator spends
+anything on it. The gate is free once the oracle exists, and it is the cheapest
+refusal in the whole pipeline — it saves the entire search, not a candidate.
+Corollary, per finalist: report the worst-fill vs first-fill spread on the **same
+taken set**; a finalist whose edge is smaller than its own spread is priced on fill
+luck, not signal.
 
 ---
 

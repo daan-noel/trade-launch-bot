@@ -84,6 +84,12 @@ pub struct StartFamilySearchBody {
     /// run is refused (D7).
     #[serde(default = "default_freshness_slack")]
     pub freshness_slack_secs: i64,
+    /// How much headroom over one round trip the cohort's typical best exit must
+    /// leave, in bands, before a search runs (D8). `0.0` (the default) refuses only
+    /// the unarguable case — the best available exit does not clear its own costs.
+    /// `1.0` is the stricter bar the dump-scalp result sets.
+    #[serde(default = "default_cost_clearance_margin")]
+    pub cost_clearance_margin: f64,
     /// **Display only** (D6): an incumbent is an artifact, not a baseline. It is
     /// scored as one more column and supplies no buy size, no cap, no threshold, and
     /// no structure. Off by default.
@@ -108,4 +114,7 @@ fn default_slots() -> usize {
 }
 fn default_freshness_slack() -> i64 {
     DEFAULT_FRESHNESS_SLACK_SECS
+}
+fn default_cost_clearance_margin() -> f64 {
+    crate::family_search::gates::DEFAULT_COST_CLEARANCE_MARGIN
 }

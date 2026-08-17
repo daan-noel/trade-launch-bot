@@ -449,9 +449,9 @@ every change to shared sweep code is additive. Charter + decisions:
 | `family_search/family.rs` | Sibling resolve off the `fingerprints` table. Same shape, identical on every axis but one; a dropped axis is a different population, not a sibling. A family of one degrades to single-cohort. Unpinned ties land on the first axis in `AXES`. |
 | `family_search/generator.rs` | Signature-earned candidates (rule search's cut table, read-only) bucketed by end-event family (flow · organic · stall-clock · liquidity-ceiling · price-trail); no family exceeds 40% of slots, at generation **and** at expansion. Price trail stays in the library, flagged. `ungated_control` is the exit-less diagnostic, kept apart. |
 | `family_search/score.rs` | Pooled fit `Σpnl_sol / Σentry_sol` (never a mean of per-cohort percents), Spearman ρ as the procedure's self-test, and the narrow re-check of the finalist term by term. |
-| `family_search/oracle.rs` | Capture ratio against the oracle exit — the best price printed after the fill, priced through the same cost and fill as the realized exit. `n_no_upside` is its own line and grades the **entry**. |
-| `family_search/attribution.rs` | Per authored exit slot: n, Σpnl_sol, Σentry_sol. Bucketing mirrors `ComboAgg::record`, pinned equal by a no-DB test. |
-| `family_search/gates.rs` | Freshness refuse (`Corpus::last_trade_at` vs the requested `until`) and the axis-duplication refuse (an entry clause whose admit rate tracks the varied axis at \|ρ\| ≥ 0.8). |
+| `family_search/oracle.rs` | Capture ratio against the oracle exit — the best price printed after the fill, priced through the same cost and fill as the realized exit. `n_no_upside` is its own line and grades the **entry**. Also the cohort's net-move distribution and `execution_band_pct`, which the cost gate reads. |
+| `family_search/attribution.rs` | Per authored exit slot: n, Σpnl_sol, Σentry_sol, plus the **authored threshold against the mean realized gross return** — offered only where the two are one quantity (`m_position.pnl`), so a stop that gaps past its level is visible without blaming gapping for execution cost. Bucketing mirrors `ComboAgg::record`, pinned equal by a no-DB test. |
+| `family_search/gates.rs` | Four gates: freshness refuse (D7), **cost-clearance refuse** (D8), the axis-duplication refuse (an entry clause whose admit rate tracks the varied axis at \|ρ\| ≥ 0.8), and the lagging-entry-clause diagnostic. |
 | `family_search/report.rs` | Board payload + the portrait prose. Every candidate row carries the rank-only `fit_ret_pct` beside the reportable `target_ret_pct`. |
 | `api/handlers/strategies/family_search.rs` | `POST /api/strategies/family-search` (+`/cancel`/`/last`/`/{run_id}`). Scope resolves for every member up front (dimension-only), then the **target cohort stays resident** while fit siblings load one at a time. Persists the last result under `$SWEEP_LAKE_DIR/family-search/last.json`. Single-flight against every other heavy job. |
 
@@ -470,6 +470,23 @@ caps change which tokens are entered at all.
 `Selection::with_oracle` is the one additive corpus field the job adds: it builds
 `CorpusToken::peak_after` (`projection::suffix_peak`) at load, 4 B/row, opt-in, and
 folded into `lake_hash` so an oracle load and a plain load cannot share a cache entry.
+
+**Execution honesty (D8).** Before the generator runs, the ungated control's authority
+pass supplies a rule-free oracle distribution, and the **median net move over every
+priceable entry** (losers included — a winners-only median is positive by construction)
+is compared against `execution_band_pct`, one round trip priced on a flat trade at the
+run's buy and the cohort's median pool depth. Under `margin × band` the search is
+refused before a candidate exists; between there and one band the run is badged
+`thin`, because a rule takes only a fraction of the best available exit. A refusal
+**boards a report** with an empty library rather than erroring — the measurement is the
+finding. The finalist then carries a **dual-pricing spread**: a second replay of that
+one rule at `FirstInWindow` + `pumpfun_fee_only`, intersected with the authority pass
+on mint so both returns cover one taken set, with any drift counted rather than
+averaged over. An edge no larger than its own spread is priced on fill luck.
+
+A corpus load cannot be cancelled mid-flight, so `check_cancelled` runs after the scope
+resolve, before every sibling load, and before the authority pass — those checkpoints
+are the whole cancellation story.
 
 ## Adding a strategy
 

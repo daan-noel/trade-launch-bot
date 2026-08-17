@@ -383,6 +383,165 @@ pub fn entry_gates(
 /// only ever a fill-sensitivity diagnostic.
 pub const FILL_OPTIMISTIC: FillModel = FillModel::FirstInWindow;
 
+/// The same rule and the same taken set, priced two ways (charter D8, corollary).
+///
+/// A dump-scalp family read −7.30%/trade at worst-fill + impact and −0.37%/trade at
+/// first-fill + fee-only on the identical 5,872 entries. The signal was near
+/// breakeven; execution was the entire loss. A finalist whose edge is smaller than
+/// this spread is priced on fill luck, not on signal.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spread {
+    /// The run's own pricing — the number the board reports everywhere else.
+    pub authority_ret_pct: f64,
+    /// [`FILL_OPTIMISTIC`] + fee-only cost: the best pricing an honest reading allows.
+    pub optimistic_ret_pct: f64,
+    /// Optimistic minus authority, in percentage points. Always ≥ 0 in practice.
+    pub spread_pp: f64,
+    /// Positions both passes took — the population both numbers are computed over.
+    pub n_common: u64,
+    /// Positions only one pass took. Non-zero means the two passes did not decide
+    /// alike and the comparison is no longer "the same taken set": the fill layer
+    /// fixes *eligibility* across models, but a price-sensitive exit can still shift
+    /// the close, and a concurrency cap can then let a different token in.
+    pub n_authority_only: u64,
+    pub n_optimistic_only: u64,
+}
+
+impl Spread {
+    /// The taken sets matched, so the two numbers describe one population.
+    pub fn clean(&self) -> bool {
+        self.n_authority_only == 0 && self.n_optimistic_only == 0
+    }
+
+    /// The edge is smaller than the run's own uncertainty about the fill. Sign-agnostic
+    /// on purpose: an edge of +2pp under a 7pp spread is fill luck whichever way the
+    /// authority number leans.
+    pub fn fill_luck(&self) -> bool {
+        self.authority_ret_pct <= self.spread_pp
+    }
+}
+
+/// The optimistic twin of [`authority`]: the same rule under [`FILL_OPTIMISTIC`] and
+/// a fee-only cost model.
+///
+/// It is a second fold, not a repricing of outcomes in hand — the fill price is chosen
+/// *inside* the kernel, and reconstructing it outside would be a second implementation
+/// of the fill model, which the one-kernel rule forbids. It costs one replay of one
+/// rule over the already-resident target cohort, against a fit tier that folds every
+/// candidate across every cohort; call it once, on the finalist.
+pub fn optimistic(
+    tokens: &[CorpusToken],
+    fp: &EngineFingerprint,
+    params: &RuleParams,
+    cfg: &RunConfig,
+) -> Authority {
+    let mut opt = cfg.clone();
+    opt.pricing.fill_model = FILL_OPTIMISTIC;
+    opt.pricing.cost = CostModel::pumpfun_fee_only();
+    authority(tokens, fp, params, &opt)
+}
+
+/// Pair an authority pass with its optimistic twin over the **positions both took**.
+///
+/// The intersection is the point: quoting two returns computed over two different
+/// populations would fold "different trades" into a number that is supposed to mean
+/// "same trades, different fills".
+pub fn spread(tokens: &[CorpusToken], auth: &Authority, opt: &Authority, buy: f64) -> Spread {
+    let mints = |a: &Authority| -> std::collections::HashMap<&str, f64> {
+        a.outcomes
+            .iter()
+            .zip(&a.token_idx)
+            .filter(|(o, _)| o.exit != ExitCode::Open)
+            .filter_map(|(o, &ti)| tokens.get(ti).map(|t| (t.mint.as_str(), o.pnl_sol as f64)))
+            .collect()
+    };
+    let (a, o) = (mints(auth), mints(opt));
+    let (mut a_sol, mut o_sol, mut n) = (0.0, 0.0, 0u64);
+    for (mint, pnl) in &a {
+        if let Some(other) = o.get(mint) {
+            a_sol += pnl;
+            o_sol += other;
+            n += 1;
+        }
+    }
+    let entry_sol = n as f64 * buy;
+    let authority_ret_pct = CohortScore { pnl_sol: a_sol, entry_sol }.ret_pct();
+    let optimistic_ret_pct = CohortScore { pnl_sol: o_sol, entry_sol }.ret_pct();
+    Spread {
+        authority_ret_pct,
+        optimistic_ret_pct,
+        spread_pp: optimistic_ret_pct - authority_ret_pct,
+        n_common: n,
+        n_authority_only: (a.len() as u64).saturating_sub(n),
+        n_optimistic_only: (o.len() as u64).saturating_sub(n),
+    }
+}
+
+/// Mean seconds from a token's creation to its entry fill, over an authority pass.
+/// `None` when nothing entered.
+fn mean_entry_delay_secs(tokens: &[CorpusToken], a: &Authority) -> Option<f64> {
+    let (mut sum, mut n) = (0.0f64, 0u64);
+    for (o, &ti) in a.outcomes.iter().zip(&a.token_idx) {
+        let (Some(at), Some(t)) = (o.entry_time, tokens.get(ti)) else { continue };
+        sum += (at - t.created_at).num_milliseconds() as f64 / 1000.0;
+        n += 1;
+    }
+    (n > 0).then(|| sum / n as f64)
+}
+
+/// The **entry**-side twin of [`narrow_recheck`] (plan §4d): drop each entry clause in
+/// turn and measure what it was doing to the entry *instant*, not to the return.
+///
+/// A clause that holds entries back and whose kept entries have less upside left is
+/// created by the move it is trying to precede — `gross_flow(60) >= 55` on the scalp
+/// family raised volume *and* quality when it was dropped. Diagnostic only, never a
+/// refusal: waiting for confirmation is a legitimate edge, and only the pairing of
+/// "binds the instant" with "captures less" makes it a finding.
+pub fn entry_timing(
+    tokens: &[CorpusToken],
+    fp: &EngineFingerprint,
+    finalist: &GeneratedCombo,
+    cfg: &RunConfig,
+    full: &Authority,
+) -> Vec<gates::EntryTiming> {
+    use crate::rule_search::generator::{assemble, EntryFilling};
+    let n_matched = tokens.len().max(1) as f64;
+    let full_delay = mean_entry_delay_secs(tokens, full);
+    let full_capture = capture_of(tokens, full, &cfg.pricing).capture_pct;
+
+    let mut out = Vec::new();
+    for i in 0..finalist.entry.clauses.len() {
+        let mut clauses = finalist.entry.clauses.clone();
+        let removed = clause_label(&clauses.remove(i));
+        let params = assemble(&EntryFilling { clauses }, &finalist.exit);
+        let without = authority(tokens, fp, &params, cfg);
+        let without_delay = mean_entry_delay_secs(tokens, &without);
+        let without_capture = capture_of(tokens, &without, &cfg.pricing).capture_pct;
+        out.push(gates::EntryTiming {
+            clause: removed,
+            delay_added_secs: match (full_delay, without_delay) {
+                (Some(f), Some(w)) => f - w,
+                _ => 0.0,
+            },
+            capture_delta_pp: full_capture.zip(without_capture).map(|(f, w)| f - w),
+            admit_delta_pct: 100.0
+                * (without.n_tokens as f64 - full.n_tokens as f64)
+                / n_matched,
+        });
+    }
+    out
+}
+
+/// The cancel check the cohort loop makes **between** sibling loads (plan §4e).
+///
+/// A corpus load cannot be cancelled mid-flight — a known simulate weakness, out of
+/// scope here — so the loop's own checkpoints are the whole cancellation story. Miss
+/// them and the difference is a 30-second abort versus killing the process.
+pub fn check_cancelled(observer: &dyn SweepObserver) -> anyhow::Result<()> {
+    anyhow::ensure!(!observer.cancelled(), "cancelled");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -504,6 +663,121 @@ mod tests {
             a.n_tokens as f64 * cfg().pricing.buy_amount_sol,
             "capital committed is n_tokens x the REQUEST's buy size"
         );
+    }
+
+    /// The whole dump-scalp finding on one assertion: the SAME closes, priced two
+    /// ways, and the gap is the answer.
+    #[test]
+    fn the_spread_prices_one_taken_set_twice_and_excludes_anything_only_one_side_took() {
+        use crate::family_search::fixtures::{outcome_at, token_from_prices};
+
+        let mut tokens = Vec::new();
+        for i in 0..3 {
+            let mut t = token_from_prices(&[1.0, 2.0]);
+            t.mint = format!("m{i}");
+            tokens.push(t);
+        }
+        let at = tokens[0].trades[0].block_time;
+        let buy = 0.01;
+
+        // Both passes take m0 and m1; only the authority pass reaches m2.
+        let auth = Authority {
+            outcomes: vec![
+                outcome_at(at, 1.0, -0.002),
+                outcome_at(at, 1.0, -0.001),
+                outcome_at(at, 1.0, -0.005),
+            ],
+            token_idx: vec![0, 1, 2],
+            score: CohortScore::default(),
+            n_tokens: 3,
+        };
+        let opt = Authority {
+            outcomes: vec![outcome_at(at, 1.0, 0.0), outcome_at(at, 1.0, 0.001)],
+            token_idx: vec![0, 1],
+            score: CohortScore::default(),
+            n_tokens: 2,
+        };
+
+        let s = spread(&tokens, &auth, &opt, buy);
+        // m2 is in neither number — a return over a different population is not the
+        // same taken set, which is the only thing this measurement claims to be.
+        assert_eq!(s.n_common, 2);
+        assert_eq!(s.n_authority_only, 1);
+        assert_eq!(s.n_optimistic_only, 0);
+        assert!(!s.clean(), "a drifted taken set must say so, not average over it");
+
+        // −0.003 over 0.02 committed = −15%; +0.001 over 0.02 = +5%. 20pp apart.
+        assert!((s.authority_ret_pct + 15.0).abs() < 1e-4, "{}", s.authority_ret_pct);
+        assert!((s.optimistic_ret_pct - 5.0).abs() < 1e-4, "{}", s.optimistic_ret_pct);
+        assert!((s.spread_pp - 20.0).abs() < 1e-4);
+        // The edge is smaller than the run's own uncertainty about the fill.
+        assert!(s.fill_luck());
+    }
+
+    #[test]
+    fn an_edge_larger_than_its_own_spread_is_not_fill_luck() {
+        let s = Spread {
+            authority_ret_pct: 31.0,
+            optimistic_ret_pct: 37.9,
+            spread_pp: 6.9,
+            n_common: 180,
+            n_authority_only: 0,
+            n_optimistic_only: 0,
+        };
+        assert!(s.clean() && !s.fill_luck());
+    }
+
+    /// A corpus load cannot be cancelled mid-flight, so the loop's checkpoint between
+    /// one sibling's fold and the next one's load is the whole cancellation story.
+    #[test]
+    fn a_cancel_between_sibling_loads_stops_the_run() {
+        struct Flag(std::sync::atomic::AtomicBool);
+        impl SweepObserver for Flag {
+            fn set_total(&self, _: usize, _: usize) {}
+            fn token_done(&self, _: usize) {}
+            fn cancelled(&self) -> bool {
+                self.0.load(std::sync::atomic::Ordering::Acquire)
+            }
+        }
+        let f = Flag(std::sync::atomic::AtomicBool::new(false));
+        assert!(check_cancelled(&f).is_ok(), "an uncancelled run proceeds");
+        f.0.store(true, std::sync::atomic::Ordering::Release);
+        let e = check_cancelled(&f).expect_err("a raised cancel stops the loop");
+        assert_eq!(e.to_string(), "cancelled");
+    }
+
+    /// The band has to be derived rather than measured once and hard-coded, because
+    /// it is **U-shaped in buy size**: the fixed per-leg cost shrinks as a share of a
+    /// larger notional while our own price impact grows into the same pool, so the
+    /// bar a cohort must clear moves — in both directions — with the run's own knobs.
+    #[test]
+    fn the_execution_band_is_derived_from_the_run_s_own_cost_model() {
+        use crate::family_search::oracle::execution_band_pct;
+        let depth = 40.0;
+        let band_at = |buy: f64| {
+            execution_band_pct(&Pricing { buy_amount_sol: buy, ..pricing() }, Some(depth))
+        };
+        assert!(band_at(0.01) > 0.0, "a round trip is never free");
+
+        // `sqrt(fixed_per_leg x depth)` is the cost-minimising buy — either side of it
+        // costs more, and a constant band would be wrong on both sides.
+        let optimal = (0.000225f64 * depth).sqrt();
+        let floor = band_at(optimal);
+        assert!(band_at(optimal / 10.0) > floor, "a tiny buy is all fixed cost");
+        assert!(band_at(optimal * 10.0) > floor, "a large buy is all price impact");
+
+        // And it responds to the pool it trades into.
+        assert!(
+            band_at_depth(optimal, 4.0) > band_at_depth(optimal, depth),
+            "a thinner pool costs more impact for the same buy"
+        );
+    }
+
+    fn band_at_depth(buy: f64, depth: f64) -> f64 {
+        crate::family_search::oracle::execution_band_pct(
+            &Pricing { buy_amount_sol: buy, ..pricing() },
+            Some(depth),
+        )
     }
 
     #[test]
