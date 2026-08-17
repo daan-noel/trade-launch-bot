@@ -160,11 +160,14 @@ type BulkTag = TradeMode | 'filtered';
 const DASH = <span className="text-text-dim/60">—</span>;
 
 /** One distinct hue per fill model so equal values read the same at a glance,
- *  ordered as a pessimism spectrum: worst-case (red) → first-in-window (neutral
- *  blue) → signal-price (green, optimistic bound). */
+ *  ordered as a pessimism spectrum: worst-case (red) → the reachable next-slot
+ *  pair (neutral) → first-in-window and signal-price (green, both reachable only
+ *  in part or not at all, so both read as an optimistic bound). */
 const FILL_MODEL_VARIANT: Record<FillModelId, BadgeVariant> = {
   worst_case: 'danger',
-  first_in_window: 'info',
+  first_in_window: 'success',
+  next_slot_first: 'info',
+  next_slot_median: 'primary',
   signal_price: 'success',
 };
 /** `pumpfun_default` double-counts slippage against an explicit fill model (see

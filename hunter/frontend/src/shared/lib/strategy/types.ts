@@ -360,15 +360,24 @@ export interface EngineRuleDraft {
  *  `trading_core::strategies::paper_fill::FillModel`). `worst_case` is what live
  *  paper + the sweep book; the others reprice the SAME taken set for the
  *  fill-sensitivity analysis (the honest bottom line was measured under
- *  `first_in_window`). */
-export type FillModelId = 'worst_case' | 'first_in_window' | 'signal_price';
+ *  `first_in_window`). The `next_slot_*` pair drops the signal's own slot, whose
+ *  prints a +1-slot landing can never reach. */
+export type FillModelId =
+  | 'worst_case'
+  | 'first_in_window'
+  | 'next_slot_first'
+  | 'next_slot_median'
+  | 'signal_price';
 
-/** Selectable fill models for the Simulate / dry-run controls. `worst` is the
- *  default (pessimistic, live-paper parity); `first` is the realistic fast-bot
- *  next-print; `signal` is the zero-slippage optimistic bound. */
+/** Selectable fill models for the Simulate / dry-run controls, ordered as a
+ *  pessimism spectrum. `worst_case` is the default (live-paper parity) and
+ *  `signal_price` the unreachable ceiling; the two `next_slot_*` models are the
+ *  reachable middle — same window, minus the signal's own slot. */
 export const FILL_MODELS: ReadonlyArray<{ id: FillModelId; label: string; hint: string }> = [
   { id: 'worst_case', label: 'Worst-case', hint: 'Adverse fill — live paper + sweep parity (default)' },
-  { id: 'first_in_window', label: 'First-in-window', hint: 'Next print after the signal — realistic fast bot' },
+  { id: 'first_in_window', label: 'First-in-window', hint: 'Next print after the signal — may be same-slot, so partly unreachable' },
+  { id: 'next_slot_first', label: 'Next-slot first', hint: 'First print at slot S+1 — earliest a +1-slot landing can hit' },
+  { id: 'next_slot_median', label: 'Next-slot median', hint: 'Adverse median at slot S+1 — mid-dispersion, still a real print' },
   { id: 'signal_price', label: 'Signal price', hint: 'Zero-slippage — optimistic bound' },
 ];
 

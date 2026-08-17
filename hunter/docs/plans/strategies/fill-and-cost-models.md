@@ -15,7 +15,9 @@ they are). Code: [`core/src/strategies/paper_fill.rs`](../../../core/src/strateg
 | dropdown | mode | picks / charges | use it when |
 | --- | --- | --- | --- |
 | Fill | `worst_case` | most adverse print in the window | you want the pessimistic bound, or parity with live paper / the sweep |
-| Fill | `first_in_window` | the *next* print after the signal | you want the realistic fast bot |
+| Fill | `first_in_window` | the *next* print after the signal | you want the loosest "we react to the tape" reading |
+| Fill | `next_slot_first` | the first print at slot **S+1** | you want the earliest price a +1-slot landing can reach |
+| Fill | `next_slot_median` | the adverse median at slot **S+1** | you want the middle of the fill dispersion, not either tail |
 | Fill | `signal_price` | the signal trade's own spot | you want the zero-slippage ceiling |
 | Cost | `pumpfun_impact` | fee + tip + **our own** `B/vsol` impact | **default choice.** The only size-aware one |
 | Cost | `pumpfun_fee_only` | fee + tip | you want a zero-impact upper bound |
@@ -40,50 +42,93 @@ of the window entirely, and the window is then just `S`.
 
 The fill model chooses **which candidate in that window prices the leg**. Nothing else.
 
-## Entry, priced three ways
+## Half that window is unreachable
+
+Slot `S` is the block the signal landed in. Pricing against a print there means our
+transaction was already inside that block — built and submitted before the signal
+existed. When the print is a bundle leg it is unreachable outright: bundle txs are
+atomic and ordered, so nothing sequences between them.
+
+Measured p50 landing is **+1 slot**. So slot `S` prints are prices we cannot hit, and
+slot `S+1` is where we actually arrive. That split is what the two `next_slot_*` models
+encode — same window, same eligibility, candidates restricted to `S+1`.
+
+## Entry, priced five ways
 
 Signal fires on the trade at index 0. Real tape after it:
 
 | idx | slot | side | price | in window? |
 | --- | --- | --- | --- | --- |
 | **0** | 100 | buy | **1.0** | ← the signal itself |
-| 1 | 100 | buy | 1.2 | yes (same slot S) |
+| 1 | 100 | buy | 1.2 | yes (same slot S — *unreachable*) |
 | 2 | 101 | buy | 1.5 | yes (the one admitted next slot) |
 | 3 | 101 | buy | 1.8 | yes |
-| 4 | 102 | buy | 2.0 | **no** — slot 102 is a *second* later slot |
+| 4 | 101 | buy | 1.6 | yes |
+| 5 | 102 | buy | 2.0 | **no** — slot 102 is a *second* later slot |
 
 | fill model | picks | price you buy at |
 | --- | --- | --- |
 | `worst_case` | idx 3 — the **highest** buy in the window | **1.8** |
 | `first_in_window` | idx 1 — the **first** buy after the signal | **1.2** |
+| `next_slot_first` | idx 2 — the first buy at **slot 101** | **1.5** |
+| `next_slot_median` | idx 4 — the **middle** of slot 101's three | **1.6** |
 | `signal_price` | idx 0 — the signal's own spot | **1.0** |
 
 (These are the exact numbers asserted by `fill_models_reprice_a_fixed_entry_set` in
 `paper_fill.rs` — the doc and the test can't drift.)
 
-## Exit, priced three ways — and the one that surprises people
+## Exit, priced five ways — and the one that surprises people
 
 Ladder fires on the trade at index 0:
 
 | idx | slot | side | price | in window? |
 | --- | --- | --- | --- | --- |
 | **0** | 100 | buy | **1.0** | ← the fire itself |
-| 1 | 100 | buy | 1.4 | yes |
+| 1 | 100 | buy | 1.4 | yes (same slot S — *unreachable*) |
 | 2 | 101 | sell | 1.1 | yes |
 | 3 | 101 | buy | 1.3 | yes |
+| 4 | 101 | buy | 1.2 | yes |
 
 | fill model | picks | price you sell at |
 | --- | --- | --- |
 | `worst_case` | idx 2 — the **lowest** print in the window | **1.1** |
 | `first_in_window` | idx 1 — the **first** print after the fire | **1.4** |
+| `next_slot_first` | idx 2 — the first print at **slot 101** | **1.1** |
+| `next_slot_median` | idx 4 — the **middle** of slot 101's three | **1.2** |
 | `signal_price` | idx 0 — the fire's own spot | **1.0** |
 
-Note what `first_in_window` did: **1.4 — better than both other models.** It is *not*
+Note what `first_in_window` did: **1.4 — better than every other model.** It is *not*
 "halfway between worst and signal". It takes whatever printed next, which can be
-anywhere. Over a corpus it averages out near-neutral; on any single trade it is
-neither a floor nor a ceiling.
+anywhere — and here that next print is in slot 100, a price no order of ours reaches.
 
-## The three differences between entry and exit
+Note also that `next_slot_first` lands on **1.1, the same row as `worst_case`**. That is
+coincidence, not design: the first print at S+1 happened to be the low one. The
+next-slot models are unbiased within their slot, not systematically kinder.
+
+## How the two next-slot models pick
+
+Both drop slot `S` and keep only slot `S+1`'s qualifying prints. They differ in which
+of those they take:
+
+- **`next_slot_first`** takes the earliest. It reads as "we react to the signal and hit
+  the first thing available", which is mildly optimistic — ordering inside a block is
+  the leader's call, so being first in it is not something speed buys.
+- **`next_slot_median`** takes the **adverse median**: on an odd count the middle print;
+  on an even count the *adverse* of the two middles (entry the higher, exit the lower,
+  mirroring how `worst_case` mirrors). Equal prices break by tape order, so the pick is
+  deterministic.
+
+The median is always **a real print**, never an average of two. A synthetic price would
+have no corpus row behind it, and a `PaperFill` carries `trade_idx` / `slot` /
+`tx_signature` pointing at one.
+
+**When the window admits no `S+1`** — the next observed slot is more than
+`MAX_FILL_WAIT_SLOTS` away, so the window is slot `S` alone — both fall back to
+`worst_case` over what remains. Returning "no fill" instead would change the
+taken-position set and break the reprice invariant below; sparse tape means filling into
+a gap at an unknown price, so the adverse end is the defensible assumption.
+
+## The differences between entry and exit
 
 1. **Direction of "adverse".** Entry worst = the *highest* price; exit worst = the
    *lowest*. Same pessimism, mirrored.
@@ -93,14 +138,20 @@ neither a floor nor a ceiling.
    *qualifying buy*; exit takes the next slot containing *any* trade. So a slot full of
    sells extends the entry window past it, but ends the exit window at it.
 
-## What is identical across all three models
+4. **Which way the median leans.** Entry takes the higher of two middle prints, exit
+   the lower — the same mirroring as `worst_case`, at half the amplitude.
+
+## What is identical across all five models
 
 **The set of positions taken.** Every model shares the same fill *eligibility* — a
 qualifying candidate must exist in the window, or the empty-window fallback applies.
 So switching model is a **controlled reprice of a fixed trade set**, never a different
 trade population. If a rule takes 412 positions under `worst_case`, it takes exactly
 412 under `signal_price`. That is what makes the comparison meaningful: the delta is
-purely fill pessimism.
+purely fill pessimism. The `next_slot_*` pair narrows the *candidates* and never
+eligibility — hence its fallback, and hence
+`fill_models_share_entry_eligibility` asserting the property across every model on both
+legs.
 
 **Empty window.** When no candidate exists, `market_fill_on_empty_window` decides:
 
@@ -116,16 +167,30 @@ purely fill pessimism.
   really are skewed lower — the pessimism is not a safety margin, it is the mechanism.
   Its cost: it penalises short holds and fast exits hardest, so a grid run under it
   drifts toward wide retraces and long holds.
-- **`first_in_window`** — the honest "we react to the print and take the next one"
-  model, and the one the fill-sensitivity work reported the bottom line under. Use it
-  when the question is *is there edge at all*, rather than *what is the floor*.
-- **`signal_price`** — zero feed-reaction slippage. Only ever an upper bound. **If a
-  strategy is not profitable under `signal_price`, no amount of speed will save it** —
-  that is exactly the question this mode answers, and the reason it exists.
+  What `worst_case` is *not* is a latency penalty you can outrun. The dump-scalp
+  measurement puts the ~6 pp first-fill-to-worst-fill gap on fill **dispersion** —
+  prints inside one window are simply far apart, and this model takes the tail of that
+  spread every time. Speed moves you to *one arbitrary print* in the window, not toward
+  its good end.
+- **`first_in_window`** — "we react to the print and take the next one", and the model
+  the fill-sensitivity work reported its bottom line under. Read it knowing it is biased
+  optimistic: whenever the next print sits in the signal's own slot, it prices something
+  unreachable.
+- **`next_slot_first`** / **`next_slot_median`** — the reachable central case. Same
+  reaction story as `first_in_window` with the impossible half of the window removed.
+  Prefer `next_slot_median` when the question is *what does a typical fill look like*
+  (it reads the middle of the dispersion `worst_case` takes the tail of) and
+  `next_slot_first` when you want that reading's optimistic edge.
+- **`signal_price`** — zero feed-reaction slippage, and not reachable at all. Only ever
+  an upper bound. **If a strategy is not profitable under `signal_price`, no amount of
+  speed will save it** — that is exactly the question this mode answers, and the reason
+  it exists.
 
-The productive move is to run all three and read the spread. A rule that is +8% under
-signal and −4% under worst is a latency bet; one that is +6% / +5% / +4% is a real
-edge.
+The productive move is to run the spread rather than one number. A rule that is +8%
+under signal and −4% under worst is a latency bet; one that is +6% / +5% / +4% is a real
+edge. A large gap between `first_in_window` and `next_slot_first` says the specific
+thing that the edge lives in same-slot prints — i.e. it is a same-block race, not a
+reaction.
 
 ---
 
@@ -190,7 +255,9 @@ whenever the pool grew during the hold, i.e. it errs pessimistic on winners.
 |  | `pumpfun_impact` | `pumpfun_fee_only` | `pumpfun_default` |
 | --- | --- | --- | --- |
 | `worst_case` | **honest floor** | floor, no size cost | ✗ double-counts |
-| `first_in_window` | **honest central case** | central, no size cost | ✗ double-counts |
+| `first_in_window` | loose central case | central, no size cost | ✗ double-counts |
+| `next_slot_first` | reachable, optimistic edge | same, no size cost | ✗ double-counts |
+| `next_slot_median` | **honest central case** | central, no size cost | ✗ double-counts |
 | `signal_price` | ceiling, size-aware | absolute ceiling | ✗ double-counts |
 
 The ✗ column: a `FillModel` chooses **which market print we transact against**;

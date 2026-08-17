@@ -64,8 +64,13 @@ fn pricing_for(fill_model: FillModel) -> Pricing {
 
 /// Every selectable fill model — parity must hold under each, never under one
 /// hardcoded model.
-const FILL_MODELS: [FillModel; 3] =
-    [FillModel::WorstCase, FillModel::FirstInWindow, FillModel::SignalPrice];
+const FILL_MODELS: [FillModel; 5] = [
+    FillModel::WorstCase,
+    FillModel::FirstInWindow,
+    FillModel::NextSlotFirst,
+    FillModel::NextSlotMedian,
+    FillModel::SignalPrice,
+];
 
 fn base() -> Ts {
     Utc.timestamp_opt(1_700_000_000, 0).unwrap()

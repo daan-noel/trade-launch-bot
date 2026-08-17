@@ -9,6 +9,9 @@
 //! * **entry** = highest qualifying **buy** price in the window (adverse for us)
 //! * **exit** = lowest price of any trade in the window (adverse for us)
 //!
+//! That pick is what [`FillModel`] varies — and only that; the window, the
+//! eligibility rules and so the taken-position set are the same under every model.
+//!
 //! Analysis paths and live paper entry pass `market_fill_on_empty_window = true`
 //! so a trigger/fire with an empty window still books a market fill at that trade
 //! (sparse / gappy prints) — same taken-position set across sim and live paper.
@@ -55,8 +58,15 @@ fn paper_fill_from<T: TradeRow>(trades: &[T], idx: usize) -> PaperFill {
 /// exist), so the taken-position SET is identical across models and only the fill
 /// PRICE varies — a controlled reprice, not a different entry population.
 /// Serde: the canonical name is `snake_case` (`worst_case` / `first_in_window` /
-/// `signal_price`); the short aliases (`worst` / `first` / `signal`) match the
+/// `next_slot_first` / `next_slot_median` / `signal_price`); the short aliases
+/// (`worst` / `first` / `next_first` / `next_median` / `signal`) match the
 /// fill-sensitivity analysis doc's column labels so a request can use either.
+///
+/// The two `NextSlot*` models restrict candidates to the **reachable** half of the
+/// window. A print in the signal's own slot `S` prices a block our transaction had
+/// to already be inside — i.e. built before the signal existed — and a bundle leg
+/// there is unreachable outright, since nothing sequences between atomic bundle
+/// txs. Dropping slot `S` leaves the slot we actually land in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FillModel {
@@ -66,13 +76,86 @@ pub enum FillModel {
     #[serde(alias = "worst")]
     WorstCase,
     /// Entry/exit = the FIRST qualifying trade after the signal in the window — a
-    /// neutral "take the next print" reaction (no worst-case cherry-pick).
+    /// neutral "take the next print" reaction (no worst-case cherry-pick). Biased
+    /// optimistic whenever that print is in the signal's own slot; the `NextSlot*`
+    /// pair drops exactly those.
     #[serde(alias = "first")]
     FirstInWindow,
+    /// Entry/exit = the first qualifying trade at the **next** slot, skipping the
+    /// signal's own slot entirely. The earliest price a +1-slot landing can hit.
+    #[serde(alias = "next_first")]
+    NextSlotFirst,
+    /// Entry/exit = the **adverse median** of the next slot's qualifying trades.
+    /// Ordering inside a block is the leader's call, so we are effectively random
+    /// within that slot rather than first — this reads the middle of the
+    /// dispersion instead of either tail. Always a real print (see
+    /// [`adverse_median_in`]), never a synthetic average.
+    #[serde(alias = "next_median")]
+    NextSlotMedian,
     /// Fill at the trigger/fire trade's own spot — zero feed-reaction slippage, the
     /// optimistic bound approximating a same-slot landing.
     #[serde(alias = "signal")]
     SignalPrice,
+}
+
+/// The contiguous run of trades at the window's **next** slot, plus its offset into
+/// `post`. Empty when the window admits no later slot (nothing after `signal_slot`,
+/// or the next one is past [`MAX_FILL_WAIT_SLOTS`]) — the `NextSlot*` models then
+/// fall back to [`FillModel::WorstCase`], which keeps eligibility identical.
+///
+/// `post` is chronological and slots are non-decreasing along it, so one slot's
+/// trades are contiguous — the same ordering `next_slot` itself relies on. Bounding
+/// to this run is what keeps the median's pairwise scan off the whole tape.
+fn next_slot_run<T: TradeRow>(
+    post: &[T],
+    signal_slot: u64,
+    next_slot: Option<u64>,
+) -> (usize, &[T]) {
+    let Some(ns) = next_slot.filter(|&s| s <= signal_slot + MAX_FILL_WAIT_SLOTS) else {
+        return (0, &[]);
+    };
+    let Some(start) = post.iter().position(|t| t.slot() == ns) else {
+        return (0, &[]);
+    };
+    let end = post[start..]
+        .iter()
+        .position(|t| t.slot() != ns)
+        .map_or(post.len(), |rel| start + rel);
+    (start, &post[start..end])
+}
+
+/// Index into `run` of the adverse-median qualifying trade, or `None` when `run`
+/// holds none.
+///
+/// An even count has two middle prints straddling the median: `adverse_high` takes
+/// the upper (entry — a higher buy price is the adverse one), otherwise the lower
+/// (exit). Both are REAL prints, so the fill keeps a genuine corpus row — a true
+/// average of the two would be a price no trade ever printed, and `PaperFill`
+/// carries `trade_idx` / `slot` / `tx_signature` pointing at one.
+///
+/// Equal prices break by tape order, so the pick is deterministic. `run` is one
+/// slot's worth of trades, so the pairwise rank scan is bounded and allocation-free.
+fn adverse_median_in<T: TradeRow>(
+    run: &[T],
+    qualifies: impl Fn(&T) -> bool,
+    adverse_high: bool,
+) -> Option<usize> {
+    let n = run.iter().filter(|t| qualifies(t)).count();
+    if n == 0 {
+        return None;
+    }
+    let k = if adverse_high { n / 2 } else { (n - 1) / 2 };
+    let before = |j: usize, i: usize| {
+        match run[j].price_per_token().total_cmp(&run[i].price_per_token()) {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Equal => j < i,
+            std::cmp::Ordering::Greater => false,
+        }
+    };
+    (0..run.len()).find(|&i| {
+        qualifies(&run[i])
+            && (0..run.len()).filter(|&j| qualifies(&run[j]) && before(j, i)).count() == k
+    })
 }
 
 /// Paper entry keyed by the trigger trade's index, priced per [`FillModel`].
@@ -118,22 +201,32 @@ pub fn find_paper_entry_at<T: TradeRow>(
             None
         };
     }
-    match model {
-        // Zero-slippage: the trigger's own spot (fill row = the trigger trade).
-        FillModel::SignalPrice => Some(paper_fill_from(trades, target_idx)),
-        // The first qualifying buy after the trigger.
-        FillModel::FirstInWindow => post
-            .iter()
-            .position(qualifies)
-            .map(|rel| paper_fill_from(trades, target_idx + 1 + rel)),
-        // The highest qualifying buy price in the window (adverse — the original).
-        FillModel::WorstCase => post
-            .iter()
+    // The highest qualifying buy price in the window (adverse — the original), and
+    // the `NextSlot*` fallback when the window admits no later slot.
+    let worst = || {
+        post.iter()
             .enumerate()
             .filter(|(_, t)| qualifies(t))
             .max_by(|(_, a), (_, b)| a.price_per_token().total_cmp(&b.price_per_token()))
-            .map(|(rel, _)| paper_fill_from(trades, target_idx + 1 + rel)),
-    }
+            .map(|(rel, _)| rel)
+    };
+    let (run_base, run) = next_slot_run(post, trigger_slot, next_slot);
+    let rel = match model {
+        // Zero-slippage: the trigger's own spot (fill row = the trigger trade).
+        FillModel::SignalPrice => return Some(paper_fill_from(trades, target_idx)),
+        // The first qualifying buy after the trigger.
+        FillModel::FirstInWindow => post.iter().position(qualifies),
+        // The first qualifying buy at the next slot — the trigger's own slot dropped.
+        FillModel::NextSlotFirst => {
+            run.iter().position(qualifies).map(|rel| run_base + rel).or_else(worst)
+        }
+        // The adverse median of the next slot's qualifying buys.
+        FillModel::NextSlotMedian => adverse_median_in(run, qualifies, true)
+            .map(|rel| run_base + rel)
+            .or_else(worst),
+        FillModel::WorstCase => worst(),
+    };
+    rel.map(|rel| paper_fill_from(trades, target_idx + 1 + rel))
 }
 
 /// Paper exit keyed by the firing trade's index, priced per [`FillModel`].
@@ -161,19 +254,35 @@ pub fn find_paper_exit_at<T: TradeRow>(
     };
     let priced = |t: &T| in_window(t.slot()) && t.price_per_token() > 0.0;
 
+    // The lowest price in the window (adverse — the original), and the `NextSlot*`
+    // fallback when the window admits no later slot.
+    let worst = || {
+        post.iter()
+            .enumerate()
+            .filter(|(_, t)| priced(t))
+            .min_by(|(_, a), (_, b)| a.price_per_token().total_cmp(&b.price_per_token()))
+            .map(|(rel, _)| rel)
+    };
+    let (run_base, run) = next_slot_run(post, fire_slot, next_slot);
     let fill_idx = if post.iter().any(priced) {
         match model {
             // Zero-slippage: sell at the fire trade's own spot.
             FillModel::SignalPrice => (fire.price_per_token() > 0.0).then_some(fire_idx),
             // The first priced trade in the window.
             FillModel::FirstInWindow => post.iter().position(priced).map(|rel| fire_idx + 1 + rel),
-            // The lowest price in the window (adverse — the original).
-            FillModel::WorstCase => post
+            // The first priced trade at the next slot — the fire's own slot dropped.
+            FillModel::NextSlotFirst => run
                 .iter()
-                .enumerate()
-                .filter(|(_, t)| priced(t))
-                .min_by(|(_, a), (_, b)| a.price_per_token().total_cmp(&b.price_per_token()))
-                .map(|(rel, _)| fire_idx + 1 + rel),
+                .position(priced)
+                .map(|rel| run_base + rel)
+                .or_else(worst)
+                .map(|rel| fire_idx + 1 + rel),
+            // The adverse median of the next slot's priced trades.
+            FillModel::NextSlotMedian => adverse_median_in(run, priced, false)
+                .map(|rel| run_base + rel)
+                .or_else(worst)
+                .map(|rel| fire_idx + 1 + rel),
+            FillModel::WorstCase => worst().map(|rel| fire_idx + 1 + rel),
         }
     } else {
         None
@@ -369,26 +478,98 @@ mod tests {
 
     // ── fill models (lever #2 sim knob) ─────────────────────────────────────
 
+    /// Every selectable model — a parity/eligibility assertion must cover each,
+    /// never one hardcoded model.
+    const ALL_MODELS: [FillModel; 5] = [
+        FillModel::WorstCase,
+        FillModel::FirstInWindow,
+        FillModel::NextSlotFirst,
+        FillModel::NextSlotMedian,
+        FillModel::SignalPrice,
+    ];
+
     #[test]
     fn fill_models_reprice_a_fixed_entry_set() {
-        // trigger @100, then buys 1.2 (idx1,s100), 1.5 (idx2,s101), 1.8 (idx3,s101).
+        // trigger @100, then buys 1.2 (idx1,s100), then 1.5/1.8/1.6 at s101,
+        // then 2.0 at s102 — a SECOND later slot, so out of the window entirely.
         let trades = vec![
             leg(1.0, 1.0, 100, 0, 0),
             leg(1.2, 1.0, 100, 1, 0),
             leg(1.5, 1.0, 101, 0, 1),
             leg(1.8, 1.0, 101, 1, 1),
+            leg(1.6, 1.0, 101, 2, 1),
+            leg(2.0, 1.0, 102, 0, 2),
         ];
-        // Worst = highest buy (1.8); First = earliest qualifying buy (1.2);
-        // Signal = the trigger's own spot (1.0). All fill the SAME trigger (idx 0).
-        let worst = find_paper_entry_at(&trades, 0, false, FillModel::WorstCase).unwrap();
-        let first = find_paper_entry_at(&trades, 0, false, FillModel::FirstInWindow).unwrap();
-        let signal = find_paper_entry_at(&trades, 0, false, FillModel::SignalPrice).unwrap();
-        assert_eq!(worst.price, 1.8);
-        assert_eq!(first.price, 1.2);
-        assert_eq!(signal.price, 1.0);
-        assert_eq!(signal.trade_idx, 0, "signal-price fill rows at the trigger");
+        let at = |m| find_paper_entry_at(&trades, 0, false, m).unwrap();
+        // Worst = highest buy in the window (1.8); First = earliest qualifying buy,
+        // which is in the trigger's OWN slot (1.2); NextSlotFirst = earliest buy at
+        // s101 (1.5); NextSlotMedian = middle of s101's three (1.6); Signal = the
+        // trigger's own spot (1.0). All fill the SAME trigger (idx 0).
+        assert_eq!(at(FillModel::WorstCase).price, 1.8);
+        assert_eq!(at(FillModel::FirstInWindow).price, 1.2);
+        assert_eq!(at(FillModel::NextSlotFirst).price, 1.5);
+        assert_eq!(at(FillModel::NextSlotMedian).price, 1.6);
+        assert_eq!(at(FillModel::SignalPrice).price, 1.0);
+        assert_eq!(at(FillModel::SignalPrice).trade_idx, 0, "signal-price fill rows at the trigger");
+        // The whole point of the NextSlot pair: never a print in the trigger's slot.
+        for m in [FillModel::NextSlotFirst, FillModel::NextSlotMedian] {
+            assert!(at(m).slot > 100, "{m:?} must skip the trigger's own slot");
+        }
+        // The median is a REAL print, not an average — its row prices it.
+        let median = at(FillModel::NextSlotMedian);
+        assert_eq!(trades[median.trade_idx].price_per_token(), median.price);
         // Worst-case wrapper stays byte-identical to the parameterized WorstCase.
-        assert_eq!(find_worst_case_paper_entry_at(&trades, 0, false).unwrap(), worst);
+        assert_eq!(
+            find_worst_case_paper_entry_at(&trades, 0, false).unwrap(),
+            at(FillModel::WorstCase)
+        );
+    }
+
+    #[test]
+    fn next_slot_models_fall_back_to_worst_when_the_window_has_no_next_slot() {
+        // Next buy is past MAX_FILL_WAIT_SLOTS, so the window is the trigger slot
+        // alone and the NextSlot pair has no reachable candidate.
+        let trades = vec![
+            leg(1.0, 1.0, 100, 0, 0),
+            leg(1.5, 1.0, 100, 1, 0),
+            leg(2.0, 1.0, 100 + MAX_FILL_WAIT_SLOTS + 1, 0, 5),
+        ];
+        let worst = find_paper_entry_at(&trades, 0, false, FillModel::WorstCase).unwrap();
+        assert_eq!(worst.price, 1.5);
+        for m in [FillModel::NextSlotFirst, FillModel::NextSlotMedian] {
+            assert_eq!(find_paper_entry_at(&trades, 0, false, m).unwrap(), worst, "{m:?}");
+        }
+        // Same on the exit leg.
+        let worst_exit = find_paper_exit_at(&trades, 0, false, FillModel::WorstCase).unwrap();
+        for m in [FillModel::NextSlotFirst, FillModel::NextSlotMedian] {
+            assert_eq!(find_paper_exit_at(&trades, 0, false, m).unwrap(), worst_exit, "{m:?}");
+        }
+    }
+
+    #[test]
+    fn the_adverse_median_leans_the_adverse_way_on_an_even_count() {
+        // Two prints at s101 straddle the median: entry takes the higher (paying
+        // more is adverse), exit the lower (selling for less is adverse).
+        let trades =
+            vec![leg(1.0, 1.0, 100, 0, 0), leg(1.2, 1.0, 101, 0, 1), leg(1.6, 1.0, 101, 1, 1)];
+        let entry = find_paper_entry_at(&trades, 0, false, FillModel::NextSlotMedian).unwrap();
+        let exit = find_paper_exit_at(&trades, 0, false, FillModel::NextSlotMedian).unwrap();
+        assert_eq!(entry.price, 1.6, "entry median leans high");
+        assert_eq!(exit.price, 1.2, "exit median leans low");
+    }
+
+    #[test]
+    fn the_adverse_median_breaks_equal_prices_by_tape_order() {
+        // Three prints at s101, two of them equal: the rank is still total, so the
+        // pick is one determinate row rather than whichever the scan reached first.
+        let trades = vec![
+            leg(1.0, 1.0, 100, 0, 0),
+            leg(1.4, 1.0, 101, 0, 1),
+            leg(1.4, 1.0, 101, 1, 1),
+            leg(1.9, 1.0, 101, 2, 1),
+        ];
+        let entry = find_paper_entry_at(&trades, 0, false, FillModel::NextSlotMedian).unwrap();
+        assert_eq!((entry.price, entry.trade_idx), (1.4, 2), "the LATER of the equal pair");
     }
 
     #[test]
@@ -398,6 +579,8 @@ mod tests {
         for (json_name, want) in [
             ("worst_case", FillModel::WorstCase),
             ("first_in_window", FillModel::FirstInWindow),
+            ("next_slot_first", FillModel::NextSlotFirst),
+            ("next_slot_median", FillModel::NextSlotMedian),
             ("signal_price", FillModel::SignalPrice),
         ] {
             let got: FillModel = serde_json::from_value(json!(json_name)).unwrap();
@@ -407,6 +590,8 @@ mod tests {
         for (alias, want) in [
             ("worst", FillModel::WorstCase),
             ("first", FillModel::FirstInWindow),
+            ("next_first", FillModel::NextSlotFirst),
+            ("next_median", FillModel::NextSlotMedian),
             ("signal", FillModel::SignalPrice),
         ] {
             let got: FillModel = serde_json::from_value(json!(alias)).unwrap();
@@ -416,6 +601,7 @@ mod tests {
         assert_eq!(FillModel::default(), FillModel::WorstCase);
         // Serialize emits the canonical snake_case name.
         assert_eq!(serde_json::to_value(FillModel::FirstInWindow).unwrap(), json!("first_in_window"));
+        assert_eq!(serde_json::to_value(FillModel::NextSlotMedian).unwrap(), json!("next_slot_median"));
     }
 
     #[test]
@@ -424,36 +610,64 @@ mod tests {
         // when the empty-window fallback is off, so the taken-position set is
         // identical; models differ only in price.
         let trades = vec![leg(1.0, 1.0, 100, 0, 0), sell(0.9, 1.0, 101, 0, 1)];
-        for m in [FillModel::WorstCase, FillModel::FirstInWindow, FillModel::SignalPrice] {
+        for m in ALL_MODELS {
             assert!(find_paper_entry_at(&trades, 0, false, m).is_none(), "{m:?}");
         }
         // With the analysis fallback on, every model fills at the SAME trigger
         // (taken-position set stays identical; price is the trigger spot for all).
-        for m in [FillModel::WorstCase, FillModel::FirstInWindow, FillModel::SignalPrice] {
+        for m in ALL_MODELS {
             let fill = find_paper_entry_at(&trades, 0, true, m).expect("market");
             assert_eq!(fill.trade_idx, 0, "{m:?}");
             assert_eq!(fill.price, 1.0, "{m:?}");
+        }
+        // The NextSlot pair narrows the CANDIDATES, never eligibility: wherever a
+        // fill exists at all, it exists under every model — otherwise a model
+        // change would move the taken-position set and stop being a reprice.
+        let mixed = vec![
+            leg(1.0, 1.0, 100, 0, 0),
+            leg(1.3, 1.0, 100, 1, 0),
+            sell(0.9, 1.0, 101, 0, 1),
+            leg(1.7, 1.0, 101, 1, 1),
+        ];
+        for idx in 0..mixed.len() {
+            let want = find_paper_entry_at(&mixed, idx, false, FillModel::WorstCase).is_some();
+            for m in ALL_MODELS {
+                let got = find_paper_entry_at(&mixed, idx, false, m).is_some();
+                assert_eq!(got, want, "entry eligibility at {idx} under {m:?}");
+                let want_x = find_paper_exit_at(&mixed, idx, false, FillModel::WorstCase).is_some();
+                let got_x = find_paper_exit_at(&mixed, idx, false, m).is_some();
+                assert_eq!(got_x, want_x, "exit eligibility at {idx} under {m:?}");
+            }
         }
     }
 
     #[test]
     fn fill_models_reprice_a_fixed_exit_set() {
-        // fire @100 (price 1.0); window has sell 1.1 (idx2,s101) and buy 1.3 (idx3,s101).
+        // fire @100 (price 1.0); s101 holds sell 1.1 (idx2), buy 1.3 (idx3), buy 1.2 (idx4).
         let trades = vec![
             leg(1.0, 1.0, 100, 0, 0),
             leg(1.4, 1.0, 100, 1, 0),
             sell(1.1, 1.0, 101, 0, 1),
             leg(1.3, 1.0, 101, 1, 1),
+            leg(1.2, 1.0, 101, 2, 1),
         ];
-        // Worst = lowest in window (1.1); First = first priced after fire (1.4, idx1);
-        // Signal = the fire's own spot (1.0, idx0).
-        let worst = find_paper_exit_at(&trades, 0, false, FillModel::WorstCase).unwrap();
-        let first = find_paper_exit_at(&trades, 0, false, FillModel::FirstInWindow).unwrap();
-        let signal = find_paper_exit_at(&trades, 0, false, FillModel::SignalPrice).unwrap();
-        assert_eq!(worst.price, 1.1);
-        assert_eq!((first.price, first.trade_idx), (1.4, 1));
-        assert_eq!((signal.price, signal.trade_idx), (1.0, 0));
-        assert_eq!(find_worst_case_paper_exit_at(&trades, 0, false).unwrap(), worst);
+        let at = |m| find_paper_exit_at(&trades, 0, false, m).unwrap();
+        // Worst = lowest in window (1.1); First = first priced after the fire, which
+        // is in the fire's OWN slot (1.4, idx1); NextSlotFirst = first print at s101
+        // — here the low one, so it AGREES with worst by coincidence, not by design;
+        // NextSlotMedian = middle of s101's three (1.2); Signal = the fire's spot.
+        assert_eq!(at(FillModel::WorstCase).price, 1.1);
+        assert_eq!((at(FillModel::FirstInWindow).price, at(FillModel::FirstInWindow).trade_idx), (1.4, 1));
+        assert_eq!((at(FillModel::NextSlotFirst).price, at(FillModel::NextSlotFirst).trade_idx), (1.1, 2));
+        assert_eq!((at(FillModel::NextSlotMedian).price, at(FillModel::NextSlotMedian).trade_idx), (1.2, 4));
+        assert_eq!((at(FillModel::SignalPrice).price, at(FillModel::SignalPrice).trade_idx), (1.0, 0));
+        for m in [FillModel::NextSlotFirst, FillModel::NextSlotMedian] {
+            assert!(at(m).slot > 100, "{m:?} must skip the fire's own slot");
+        }
+        assert_eq!(
+            find_worst_case_paper_exit_at(&trades, 0, false).unwrap(),
+            at(FillModel::WorstCase)
+        );
     }
 
     #[test]
