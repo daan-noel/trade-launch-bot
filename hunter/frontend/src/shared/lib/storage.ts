@@ -73,6 +73,8 @@ export const STORAGE_KEYS = {
   metricDiscoveryConfig: `${PREFIX}form.metricDiscovery`,
   /** Rule-search form draft. */
   ruleSearchConfig: `${PREFIX}form.ruleSearch`,
+  /** Family-search form draft. */
+  familySearchConfig: `${PREFIX}form.familySearch`,
   /** FlowPreviewChart toolbar toggle state (flow-discovery). */
   flowPreviewChartPrefs: `${PREFIX}flow.previewChart.prefs`,
 
@@ -121,6 +123,8 @@ export const ACCORDION_IDS = {
   metricSelectorInspect: 'metricSelector.inspect',
   /** Generic sweep "Run details" panel. */
   sweepDetailsGeneric: 'sweep.detailsOpen.generic',
+  /** Family search: the execution/scope knobs behind the two required fields. */
+  familySearchAdvanced: 'familySearch.advanced',
 } as const;
 
 /** App-wide show/hide switches, stored together under `mt:ui.toggles`. */

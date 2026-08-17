@@ -455,6 +455,9 @@ every change to shared sweep code is additive. Charter + decisions:
 | `family_search/report.rs` | Board payload + the portrait prose. Every candidate row carries the rank-only `fit_ret_pct` beside the reportable `target_ret_pct`. |
 | `api/handlers/strategies/family_search.rs` | `POST /api/strategies/family-search` (+`/cancel`/`/last`/`/{run_id}`). Scope resolves for every member up front (dimension-only), then the **target cohort stays resident** while fit siblings load one at a time. Persists the last result under `$SWEEP_LAKE_DIR/family-search/last.json`. Single-flight against every other heavy job. |
 
+The board is `/strategies/family-search` in the lab app — see
+[frontend.md](frontend.md) "Lab **Family search**".
+
 Two tiers: the fit stage stops at `score_combos`' archive fold (it needs a ranking,
 and candidates are near-free against the token walk), and `run_replay` is the
 authority pass on the **target cohort and the finalist only**.

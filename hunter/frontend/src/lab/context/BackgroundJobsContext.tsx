@@ -14,9 +14,11 @@ import {
   connectSimulationFinished,
   connectSweepFinished,
   connectRuleSearchFinished,
+  connectFamilySearchFinished,
   sseSubscribe,
 } from 'services/sse';
 import {
+  cancelFamilySearch,
   cancelFlowDiscovery,
   cancelGroupedSweep,
   cancelRuleSearch,
@@ -35,6 +37,8 @@ import type {
   SweepProgressEvent,
   RuleSearchNoticeEvent,
   RuleSearchProgressEvent,
+  FamilySearchNoticeEvent,
+  FamilySearchProgressEvent,
 } from 'types';
 
 /**
@@ -67,7 +71,7 @@ import type {
  * `jobs`/`isRunning` and is consumed by the global indicator (and the sweep
  * page's run-state check) alone.
  */
-export type JobKind = 'sweep' | 'simulation' | 'discovery' | 'rule_search';
+export type JobKind = 'sweep' | 'simulation' | 'discovery' | 'rule_search' | 'family_search';
 
 /** Progress state for one named phase of a sweep (corpus / coarse / sweep). */
 export interface PhaseProgress {
@@ -93,6 +97,12 @@ const PHASE_LABELS: Record<string, string> = {
   generate: 'Generating combos',
   'extra-or': 'Extra OR',
   replay: 'Replay report',
+  // Family search. Its per-cohort phases are `fit <fingerprint name>`, which is
+  // already readable, so they fall through to the raw string on purpose.
+  scope: 'Resolving cohorts',
+  'corpus target': 'Loading target cohort',
+  signatures: 'Earning candidates',
+  authority: 'Authority replay',
 };
 
 /** Singleton key for the single-flight flow-discovery job. */
@@ -100,6 +110,9 @@ const DISCOVERY_KEY = 'discovery';
 
 /** Singleton key for the single-flight rule-search job. */
 const RULE_SEARCH_KEY = 'rule_search';
+
+/** Singleton key for the single-flight family-search job. */
+const FAMILY_SEARCH_KEY = 'family_search';
 
 export interface BackgroundJob {
   kind: JobKind;
@@ -231,7 +244,9 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
                 ? 'Flow discovery'
                 : kind === 'rule_search'
                   ? 'Rule search'
-                  : 'Simulation'),
+                  : kind === 'family_search'
+                    ? 'Family search'
+                    : 'Simulation'),
           processed,
           total: patch.total !== undefined ? patch.total : existing?.total ?? null,
           cancelling: patch.cancelling ?? existing?.cancelling ?? false,
@@ -313,6 +328,13 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
             label: 'Rule search',
             processed: status.rule_search.processed,
             total: status.rule_search.total,
+          });
+        }
+        if (status.family_search) {
+          upsert('family_search', FAMILY_SEARCH_KEY, {
+            label: 'Family search',
+            processed: status.family_search.processed,
+            total: status.family_search.total,
           });
         }
         for (const s of status.simulations) {
@@ -437,6 +459,38 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
         /* ignore malformed frames */
       }
     });
+    const offFamilySearchProgress = sseSubscribe('family_search_progress', (e) => {
+      if (typeof e.data !== 'string') return;
+      try {
+        const p = JSON.parse(e.data) as FamilySearchProgressEvent;
+        const sized = p.total > 0;
+        upsert(
+          'family_search',
+          FAMILY_SEARCH_KEY,
+          {
+            label: 'Family search',
+            processed: sized ? p.processed : null,
+            total: sized ? p.total : null,
+            runId: p.run_id,
+          },
+          p.phase,
+        );
+      } catch {
+        /* ignore malformed frames */
+      }
+    });
+    // Per-cohort matched counts. They are the run's cheapest scope guard — an
+    // approximate cohort reads as a plausible run — so they toast rather than
+    // sitting only in the progress phase text.
+    const offFamilySearchNotice = sseSubscribe('family_search_notice', (e) => {
+      if (typeof e.data !== 'string') return;
+      try {
+        const n = JSON.parse(e.data) as FamilySearchNoticeEvent;
+        addToast('Family search', n.message, 'info');
+      } catch {
+        /* ignore malformed frames */
+      }
+    });
     const sweepFinished = connectSweepFinished((ev) => {
       remove('sweep', SWEEP_KEY);
       // A finished sweep persisted a new run — refresh the runs list app-wide.
@@ -458,6 +512,10 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
       remove('rule_search', RULE_SEARCH_KEY);
       if (ev.error) addToast('Rule search problem', ev.error, 'danger');
     });
+    const familySearchFinished = connectFamilySearchFinished((ev) => {
+      remove('family_search', FAMILY_SEARCH_KEY);
+      if (ev.error) addToast('Family search problem', ev.error, 'danger');
+    });
 
     return () => {
       alive = false;
@@ -469,10 +527,13 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
       offDiscoveryNotice();
       offRuleSearchProgress();
       offRuleSearchNotice();
+      offFamilySearchProgress();
+      offFamilySearchNotice();
       sweepFinished.close();
       simFinished.close();
       discoveryFinished.close();
       ruleSearchFinished.close();
+      familySearchFinished.close();
       if (groupsInvalidateTimer.current) {
         clearTimeout(groupsInvalidateTimer.current);
         groupsInvalidateTimer.current = null;
@@ -520,7 +581,9 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
             ? cancelFlowDiscovery()
             : job.kind === 'rule_search'
               ? cancelRuleSearch()
-              : cancelSimulation(job.id);
+              : job.kind === 'family_search'
+                ? cancelFamilySearch()
+                : cancelSimulation(job.id);
       req.catch(() => upsert(job.kind, job.id, { cancelling: false }));
     },
     [upsert],

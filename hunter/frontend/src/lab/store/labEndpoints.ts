@@ -34,6 +34,10 @@ import type {
   RuleSearchResult,
   RuleSearchStartArgs,
 } from '@lab/lib/ruleSearchTypes';
+import type {
+  FamilySearchResult,
+  FamilySearchStartArgs,
+} from '@lab/lib/familySearchTypes';
 
 /** Body for `POST /api/strategies/flow-discovery`. */
 export interface FlowDiscoveryStartArgs {
@@ -470,6 +474,26 @@ export const labApi = baseApi.injectEndpoints({
     getLastRuleSearch: builder.query<RuleSearchResult, void>({
       query: () => '/api/strategies/rule-search/last',
     }),
+    // Family search — grades one fingerprint's sibling family, fitting the
+    // ordering broad and taking the level from the held-out target cohort.
+    // Same detached shape as rule search: `202 { run_id }`, then collect via
+    // getFamilySearch once `family_search_finished` fires.
+    startFamilySearch: builder.mutation<
+      { run_id: string; status: string },
+      FamilySearchStartArgs
+    >({
+      query: (body) => ({
+        url: '/api/strategies/family-search',
+        method: 'POST',
+        body,
+      }),
+    }),
+    getFamilySearch: builder.query<FamilySearchResult, string>({
+      query: (runId) => `/api/strategies/family-search/${encodeURIComponent(runId)}`,
+    }),
+    getLastFamilySearch: builder.query<FamilySearchResult, void>({
+      query: () => '/api/strategies/family-search/last',
+    }),
   }),
 });
 
@@ -500,4 +524,7 @@ export const {
   useStartRuleSearchMutation,
   useLazyGetRuleSearchQuery,
   useGetLastRuleSearchQuery,
+  useStartFamilySearchMutation,
+  useLazyGetFamilySearchQuery,
+  useGetLastFamilySearchQuery,
 } = labApi;

@@ -567,6 +567,37 @@ next load (no per-metric frontend work).
   (authority SOL ranks, then tighter fill spread; first-in-window quoted beside
   it), `ruleParamsCell` for the champion, top archive, diagnostics (cut phases),
   Promote (`src:rule-search`) and a draft Simulate of the unsaved champion.
+- Lab **Family search** (`/strategies/family-search`, `FamilySearchPage` +
+  `@lab/components/family/FamilySearchBoard`) — rule search's sibling over a whole
+  **fingerprint family**. Job kind `family_search` in `BackgroundJobsContext` (SSE
+  `family_search_*`, single-flight against every other heavy job), same
+  finished-then-GET collection with no poll deadline; each cohort's matched count
+  arrives as a `family_search_notice` toast, because that count is the run's cheapest
+  scope guard.
+  The form is **two required fields** (fingerprint + created range) plus buy size;
+  fill / cost / copycat / slots / token cap / varied axis / freshness slack /
+  concurrency caps / incumbent sit in one persisted `Accordion` whose collapsed badge
+  states what they currently are. Every one of them is sent from the form: a saved
+  rule supplies none of them, so there is no control whose value can silently come
+  from somewhere else.
+  The board is ordered as the argument it makes — **verdict → portrait → grade →
+  evidence**. The verdict (`lab/lib/familySearchVerdict.ts`, unit-tested) blends
+  nothing: it names which of four gates decided (family · rank transfer ρ · beats the
+  ungated control · freshness) and prints all four beside the headline with their
+  numbers, so a reader who disagrees can see the deciding line. A gate that costs
+  money outranks a collapsed ρ for the headline, since it is actionable on its own.
+  Then the portrait prose (the product), the grade as three cards — draft (held-out
+  level) ∥ ungated control ∥ oracle capture, with an incumbent demoted to a dashed
+  `display only` strip — the draft's clauses, the family table, per-alarm
+  attribution, the narrow re-check, the entry-gate ρ table, and the archive.
+  **`fit_ret_pct` is dimmed and labelled `rank only` wherever it appears**: it
+  produced the ordering and is negative for every candidate on the reference family
+  while the winner pays +31% on the held-out cohort, so printing it as a level is the
+  one mistake the fit/validate split exists to prevent. Promote (`src:family-search`)
+  binds to the **run's** target fingerprint rather than the form's current pick, and
+  Simulate replays the unsaved draft through `DryRunDetail`. A freshness refusal is
+  caught by message and rendered with the sync command that fixes it — it is the
+  likeliest first-run failure and the backend gate is fatal, not advisory.
 - The lab `RulesPage` injects `@lab/components/strategy/DryRunPanel` via `renderDryRun`
   (inline draft → `POST /api/strategies/simulate` → funnel summary + trades table),
   boundary-clean. Finished dry-run trades share Simulate's chart path: `useRowOverlay`

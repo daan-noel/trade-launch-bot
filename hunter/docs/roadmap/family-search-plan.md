@@ -239,11 +239,12 @@ Progress reporting: the family loop emits per-cohort phase labels through the sa
   SLICE 4  board + wiring                                                   DONE
     [x] handler, routes, SSE, HeavyJob::FamilySearch, result cache
     [x] portrait prose + draft columns (ungated control · oracle · optional incumbent)
-    [ ] a lab page over the report payload
+    [x] a lab page over the report payload
 ```
 
 All four slices are code-complete and the module is documented in
-[../arch/sweep.md](../arch/sweep.md). **Nothing below has run against the lake yet** —
+[../arch/sweep.md](../arch/sweep.md) and [../arch/frontend.md](../arch/frontend.md).
+**Nothing below has run against the lake yet** —
 until it does, the acceptance numbers in §1–3 and the last line of §6 stay open, and
 this file stays. First run needs
 `scripts/db-incremental-sync.ps1 -IncludeToday -ExportLake`.

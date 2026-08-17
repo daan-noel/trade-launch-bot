@@ -445,6 +445,8 @@ export interface JobsStatus {
   metric_discovery: { processed: number; total: number } | null;
   /** Present iff the single-flight rule-search job is running. */
   rule_search: { processed: number; total: number } | null;
+  /** Present iff the single-flight family-search job is running. */
+  family_search: { processed: number; total: number } | null;
 }
 
 /** Payload of the `flow_discovery_progress` SSE event. */
@@ -485,6 +487,29 @@ export interface RuleSearchFinishedEvent {
 
 /** Payload of the `rule_search_notice` SSE event. */
 export interface RuleSearchNoticeEvent {
+  run_id: string;
+  message: string;
+}
+
+/** Payload of the `family_search_progress` SSE event. `phase` names the cohort
+ *  being folded (`fit <fingerprint>`), so it is per-run text, not a fixed set. */
+export interface FamilySearchProgressEvent {
+  run_id: string;
+  phase: string;
+  processed: number;
+  total: number;
+}
+
+/** Payload of the `family_search_finished` SSE event. */
+export interface FamilySearchFinishedEvent {
+  run_id: string;
+  cancelled: boolean;
+  error?: string | null;
+}
+
+/** Payload of the `family_search_notice` SSE event — one per cohort's matched
+ *  count, which is the run's cheapest scope guard. */
+export interface FamilySearchNoticeEvent {
   run_id: string;
   message: string;
 }

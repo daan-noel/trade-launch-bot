@@ -27,6 +27,7 @@ export const labNav: NavConfig = {
         { to: '/strategies/flow-discovery', label: 'Flow discovery' },
         { to: '/strategies/metric-discovery', label: 'Metric discovery' },
         { to: '/strategies/rule-search', label: 'Rule search' },
+        { to: '/strategies/family-search', label: 'Family search' },
         { to: '/strategies/simulate', label: 'Simulate' },
         { to: '/strategies/sweep', label: 'Grouped sweep' },
         { to: '/strategies/replay', label: 'Replay viewer' },

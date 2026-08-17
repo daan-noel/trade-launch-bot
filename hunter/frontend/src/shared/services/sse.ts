@@ -256,6 +256,21 @@ export function connectRuleSearchFinished(
   return { close: unsub };
 }
 
+/** Terminal signal for the in-flight family-search job. */
+export function connectFamilySearchFinished(
+  onFinished: (ev: import('types').FamilySearchFinishedEvent) => void,
+): StreamHandle {
+  const unsub = subscribe('family_search_finished', (e) => {
+    if (typeof e.data !== 'string') return;
+    try {
+      onFinished(JSON.parse(e.data) as import('types').FamilySearchFinishedEvent);
+    } catch {
+      /* ignore malformed frames */
+    }
+  });
+  return { close: unsub };
+}
+
 /**
  * Generic-engine armed-state stream (`strategy_armed_changed`) — a (token, rule)
  * pair armed or disarmed. The live monitor keeps its own armed map from these
