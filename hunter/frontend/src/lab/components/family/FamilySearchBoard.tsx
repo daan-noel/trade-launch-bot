@@ -13,6 +13,7 @@ import type {
   FamilyAlarmRow,
   FamilyCandidateRow,
   FamilySearchReport,
+  FamilyThresholdLadder,
 } from '@lab/lib/familySearchTypes';
 
 /**
@@ -221,11 +222,17 @@ export function FamilySearchBoard({
               draft
                 ? [
                     {
-                      label: 'win rate',
+                      label: report.selection?.win_within_noise
+                        ? 'win rate (inside noise)'
+                        : 'win rate',
                       value:
                         draft.target_win_pct == null
                           ? '—'
-                          : `${draft.target_win_pct.toFixed(0)}% of ${draft.target_n_closed}`,
+                          : `${draft.target_win_pct.toFixed(0)}% of ${draft.target_n_closed}${
+                              report.selection?.draft_win_low_pct == null
+                                ? ''
+                                : ` (≥${report.selection.draft_win_low_pct.toFixed(0)}%)`
+                            }`,
                     },
                     { label: 'PnL', value: `${fmt(draft.target_pnl_sol, 3)} ◎` },
                     { label: 'entered', value: `${pct01(draft.target_enter_pct)} of matched` },
@@ -238,10 +245,19 @@ export function FamilySearchBoard({
             }
             footer={
               draft ? (
-                <p className="text-[10px] leading-tight text-text-dim">
-                  fit {pctText(draft.fit_ret_pct)}{' '}
-                  <span className="text-text-dim/70">· rank only, never a level</span>
-                </p>
+                <>
+                  <p className="text-[10px] leading-tight text-text-dim">
+                    fit {pctText(draft.fit_ret_pct)}{' '}
+                    <span className="text-text-dim/70">· rank only, never a level</span>
+                  </p>
+                  {report.selection?.win_within_noise && (
+                    <p className="mt-1 text-[11px] leading-snug text-warning">
+                      the win rate clears the {report.selection.win_bar_pct.toFixed(0)}% bar as a
+                      point estimate, but its lower bound does not — the safety edge is inside
+                      this sample&apos;s noise
+                    </p>
+                  )}
+                </>
               ) : null
             }
             actions={
@@ -533,6 +549,80 @@ export function FamilySearchBoard({
         </Section>
       )}
 
+      {/* ── Was firing right? ────────────────────────────────────────────── */}
+      {report.alarm_regret.length > 0 && (
+        <Section
+          title="Was each alarm right to fire?"
+          caption="The table above says which alarm made the money; this one says whether it fired at the right moment. Every close is graded against two counterfactuals it costs nothing to compute: the best exit still available afterwards, and simply holding to the token's last print."
+        >
+          <TableShell>
+            <thead className="text-[10px] uppercase tracking-wide text-text-dim">
+              <tr>
+                <Th>Exit term</Th>
+                <Th align="right">Graded</Th>
+                <Th align="right" tip={TIPS.forfeit}>
+                  Left on the table
+                </Th>
+                <Th align="right" tip={TIPS.vsHold}>
+                  vs holding on
+                </Th>
+                <Th>Verdict</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.alarm_regret.map((a) => (
+                <tr key={a.slot} className="border-t border-white/6">
+                  <Td>
+                    <span className="font-mono text-text-mid">
+                      {a.label ?? `slot ${a.slot} (unnamed)`}
+                    </span>
+                    {a.standing && (
+                      <span className="ml-1.5 align-middle">
+                        <Badge
+                          variant="neutral"
+                          size="sm"
+                          title="A mechanical exit you asked for — reported, never a finding"
+                        >
+                          standing
+                        </Badge>
+                      </span>
+                    )}
+                  </Td>
+                  <Td align="right" mono>
+                    <span title={`${a.n} closed, ${a.n_priced} with a print after them to grade against`}>
+                      {a.n_priced} / {a.n}
+                    </span>
+                  </Td>
+                  <Td
+                    align="right"
+                    mono
+                    tone={a.forfeit_pp > a.band_pct ? 'bad' : 'good'}
+                  >
+                    {a.n_priced === 0 ? '—' : ppText(a.forfeit_pp)}
+                  </Td>
+                  <Td
+                    align="right"
+                    mono
+                    tone={a.realized_vs_terminal_pp < 0 ? 'bad' : 'good'}
+                  >
+                    {a.n_terminal === 0 ? '—' : ppText(a.realized_vs_terminal_pp)}
+                  </Td>
+                  <Td>
+                    <RegretVerdictCell verdict={a.verdict} band={a.band_pct} />
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </TableShell>
+          <p className="mt-2 text-[11px] leading-snug text-text-dim">
+            &ldquo;Left on the table&rdquo; under one round trip is not forfeited money — it could
+            not have been collected. An alarm that leaves real upside behind is still doing its
+            job while holding on would have paid less; only when BOTH go the wrong way is it
+            cutting winners.
+          </p>
+        </Section>
+      )}
+
       {/* ── Narrow re-check ──────────────────────────────────────────────── */}
       {report.narrow_recheck.length > 0 && (
         <Section
@@ -608,6 +698,187 @@ export function FamilySearchBoard({
             condition earns its place. An entry condition that costs a point of return while
             buying ten of win rate is doing exactly its job.
           </p>
+        </Section>
+      )}
+
+      {/* ── Threshold ladders ────────────────────────────────────────────── */}
+      {report.threshold_ladders.length > 0 && (
+        <Section
+          title="Is each threshold a level, or a lucky number?"
+          caption="The draft replayed at neighbouring cuts, one clause at a time. A cut whose neighbours score alike is a REGION the launch shape defines; one that collapses a step either way is a value fitted to this cohort's noise. Each side is read in its own currency — win rate for an entry clause, return for an exit alarm."
+          right={
+            <span className="text-[11px] text-text-dim">
+              {report.threshold_ladders.filter((l) => l.verdict === 'fragile').length} of{' '}
+              {report.threshold_ladders.length} on a spike
+            </span>
+          }
+        >
+          <div className="space-y-2">
+            {report.threshold_ladders.map((l) => (
+              <LadderRow key={`${l.is_entry}-${l.clause}`} ladder={l} />
+            ))}
+          </div>
+          <p className="mt-2 text-[11px] leading-snug text-text-dim">
+            The bar under each threshold is that cut&apos;s grade against the best on the ladder;
+            the outlined one is the draft&apos;s own value. This is the check that catches the
+            recorded failure mode — the entry band being the whole cost of a rule — which a
+            single-point test cannot see.
+          </p>
+        </Section>
+      )}
+
+      {/* ── Fill sensitivity, per clause ─────────────────────────────────── */}
+      {report.fill_sensitivity.length > 0 && (
+        <Section
+          title="Which conditions survive the fill"
+          caption="Each condition's contribution measured twice: once at this run's pricing, once at the friendliest honest fill. The whole-rule spread above asks whether the RESULT is real; this asks the same of every clause that produced it — a contribution that flips or collapses between the two is selecting fill luck."
+        >
+          <TableShell>
+            <thead className="text-[10px] uppercase tracking-wide text-text-dim">
+              <tr>
+                <Th>Condition</Th>
+                <Th>Side</Th>
+                <Th align="right" tip={TIPS.deltaAuthority}>
+                  Worth (this fill)
+                </Th>
+                <Th align="right">Worth (optimistic)</Th>
+                <Th>Verdict</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.fill_sensitivity.map((f) => (
+                <tr
+                  key={`${f.is_entry}-${f.clause}`}
+                  className={cn('border-t border-white/6', f.fill_dependent && 'bg-warning/5')}
+                >
+                  <Td>
+                    <span className="font-mono text-text-mid">{f.clause}</span>
+                  </Td>
+                  <Td>
+                    <Badge variant={f.is_entry ? 'primary' : 'info'} size="sm">
+                      {f.is_entry ? 'entry · win rate' : 'exit · return'}
+                    </Badge>
+                  </Td>
+                  <Td
+                    align="right"
+                    mono
+                    tone={
+                      f.delta_authority == null
+                        ? undefined
+                        : f.delta_authority < 0
+                          ? 'bad'
+                          : 'good'
+                    }
+                  >
+                    {f.delta_authority == null ? '—' : ppText(f.delta_authority)}
+                  </Td>
+                  <Td
+                    align="right"
+                    mono
+                    tone={
+                      f.delta_optimistic == null
+                        ? undefined
+                        : f.delta_optimistic < 0
+                          ? 'bad'
+                          : 'good'
+                    }
+                  >
+                    {f.delta_optimistic == null ? '—' : ppText(f.delta_optimistic)}
+                  </Td>
+                  <Td>
+                    {f.fill_dependent ? (
+                      <Badge
+                        variant="warning"
+                        size="sm"
+                        title="The contribution flips sign or keeps under a quarter of itself between the two pricings"
+                      >
+                        fill-shaped
+                      </Badge>
+                    ) : (
+                      <span className="text-[11px] text-text-dim">holds across pricings</span>
+                    )}
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </TableShell>
+        </Section>
+      )}
+
+      {/* ── Entry redundancy ─────────────────────────────────────────────── */}
+      {report.entry_redundancy.length > 0 && (
+        <Section
+          title="Does each entry condition filter anything of its own?"
+          caption="Dropping one condition is a first-order test: two conditions that turn away the same tokens each look near-worthless alone, because the other covers for it. This adds the two views that see it — the condition on its own, and how much of what it vetoes a sibling already vetoes."
+        >
+          <TableShell>
+            <thead className="text-[10px] uppercase tracking-wide text-text-dim">
+              <tr>
+                <Th>Entry condition</Th>
+                <Th align="right" tip={TIPS.vetoed}>
+                  Turns away
+                </Th>
+                <Th align="right" tip={TIPS.solo}>
+                  On its own
+                </Th>
+                <Th align="right" tip={TIPS.overlap}>
+                  Overlap
+                </Th>
+                <Th>Verdict</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.entry_redundancy.map((x) => (
+                <tr
+                  key={x.clause}
+                  className={cn('border-t border-white/6', x.redundant && 'bg-warning/5')}
+                >
+                  <Td>
+                    <span className="font-mono text-text-mid">{x.clause}</span>
+                  </Td>
+                  <Td align="right" mono>
+                    {x.n_vetoed}
+                  </Td>
+                  <Td align="right" mono>
+                    <span
+                      title={`Alone with the full exit bag: ${pctText(x.solo_ret_pct)} over ${x.solo_n_closed} closes`}
+                    >
+                      {x.solo_win_pct == null ? '—' : `${x.solo_win_pct.toFixed(0)}%`}
+                      <span className="ml-1 text-text-dim">{pctText(x.solo_ret_pct)}</span>
+                    </span>
+                  </Td>
+                  <Td align="right" mono>
+                    {x.max_overlap_pct == null ? (
+                      '—'
+                    ) : (
+                      <span title={x.overlap_with ? `with \`${x.overlap_with}\`` : undefined}>
+                        {x.max_overlap_pct.toFixed(0)}%
+                      </span>
+                    )}
+                  </Td>
+                  <Td>
+                    {x.redundant ? (
+                      <span className="inline-flex flex-col gap-0.5">
+                        <Badge variant="warning" size="sm">
+                          covered for
+                        </Badge>
+                        {x.overlap_with && (
+                          <span className="text-[11px] leading-snug text-text-dim">
+                            {x.max_overlap_pct?.toFixed(0)}% of its vetoes are also{' '}
+                            <code className="text-text-mid">{x.overlap_with}</code>&apos;s
+                          </span>
+                        )}
+                      </span>
+                    ) : (
+                      <span className="text-[11px] text-text-dim">
+                        {x.n_vetoed === 0 ? 'turns nothing away here' : 'filters on its own'}
+                      </span>
+                    )}
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </TableShell>
         </Section>
       )}
 
@@ -946,6 +1217,139 @@ function LevelCell({ row }: { row: FamilyAlarmRow }) {
 }
 
 /**
+ * One clause's threshold ladder as a bar strip: each cut's grade against the best on
+ * the ladder, the draft's own value outlined. The shape is the finding — a flat strip
+ * is a region the launch shape defines, a lone tall bar is a value fitted to noise.
+ *
+ * Bars are drawn from the ladder's own min so a strip of similar grades reads as
+ * similar. Scaling from zero would flatten every real difference on a cohort whose
+ * grades all sit near 30%, which is exactly the case this chart exists to resolve.
+ */
+function LadderRow({ ladder }: { ladder: FamilyThresholdLadder }) {
+  const grade = (p: FamilyThresholdLadder['points'][number]): number | null =>
+    ladder.is_entry ? p.win_pct : p.ret_pct;
+  const graded = ladder.points.filter((p) => grade(p) != null);
+  const values = graded.map((p) => grade(p) as number);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min;
+  const height = (v: number): string =>
+    span <= 0 ? '55%' : `${12 + 88 * ((v - min) / span)}%`;
+
+  const tone =
+    ladder.verdict === 'fragile'
+      ? 'danger'
+      : ladder.verdict === 'plateau'
+        ? 'success'
+        : 'neutral';
+
+  return (
+    <div className="rounded-md border border-white/8 bg-white/2 p-2.5">
+      <div className="mb-1.5 flex flex-wrap items-center gap-2">
+        <span className="font-mono text-xs text-text-mid">{ladder.clause}</span>
+        <Badge variant={ladder.is_entry ? 'primary' : 'info'} size="sm">
+          {ladder.is_entry ? 'entry · win rate' : 'exit · return'}
+        </Badge>
+        <Badge variant={tone} size="sm" title={LADDER_VERDICTS[ladder.verdict]}>
+          {ladder.verdict}
+        </Badge>
+        <span className="text-[11px] text-text-dim">{LADDER_VERDICTS[ladder.verdict]}</span>
+      </div>
+      {graded.length === 0 ? (
+        <p className="text-[11px] text-text-dim">
+          No neighbouring cut produced a comparable grade on this cohort.
+        </p>
+      ) : (
+        <div className="flex items-end gap-1.5" style={{ height: '3.25rem' }}>
+          {graded.map((p) => {
+            const g = grade(p) as number;
+            return (
+              <div
+                key={p.threshold}
+                className="flex min-w-0 flex-1 flex-col items-center justify-end gap-0.5"
+                title={`${fmt(p.threshold, 3)} → ${
+                  ladder.is_entry
+                    ? `${g.toFixed(1)}% win rate`
+                    : `${pctText(g)} return`
+                } over ${p.n_closed} closes`}
+              >
+                <span
+                  className={cn(
+                    'w-full rounded-sm',
+                    p.chosen
+                      ? 'bg-primary/70 ring-1 ring-primary'
+                      : g === max
+                        ? 'bg-green/40'
+                        : 'bg-white/15',
+                  )}
+                  style={{ height: height(g) }}
+                />
+                <span
+                  className={cn(
+                    'truncate text-[9px] leading-none',
+                    p.chosen ? 'text-text-mid' : 'text-text-dim/70',
+                  )}
+                >
+                  {fmt(p.threshold, 2)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const LADDER_VERDICTS: Record<string, string> = {
+  plateau: 'neighbouring cuts score alike — the level is a region, not a lucky value',
+  fragile: 'one step either way gives back more than half the range — tuned to this cohort',
+  flat: 'the cohort barely responds to this threshold at all',
+  sparse: 'too few comparable cuts to judge',
+};
+
+/** An alarm's timing verdict, with the sentence that makes it actionable. */
+function RegretVerdictCell({ verdict, band }: { verdict: string; band: number }) {
+  if (verdict === 'premature') {
+    return (
+      <span className="inline-flex flex-col gap-0.5">
+        <Badge variant="warning" size="sm">
+          cuts winners
+        </Badge>
+        <span className="text-[11px] leading-snug text-text-dim">
+          it left real upside AND holding on would have paid more
+        </span>
+      </span>
+    );
+  }
+  if (verdict === 'protective') {
+    return (
+      <span className="inline-flex flex-col gap-0.5">
+        <Badge variant="success" size="sm">
+          early, and right
+        </Badge>
+        <span className="text-[11px] leading-snug text-text-dim">
+          it left money, but holding on would have lost more
+        </span>
+      </span>
+    );
+  }
+  if (verdict === 'timed') {
+    return (
+      <span className="inline-flex flex-col gap-0.5">
+        <Badge variant="success" size="sm">
+          timed
+        </Badge>
+        <span className="text-[11px] leading-snug text-text-dim">
+          nothing beyond the {band.toFixed(1)}% round trip was left after it
+        </span>
+      </span>
+    );
+  }
+  return <span className="text-[11px] text-text-dim">no print after the close to grade against</span>;
+}
+
+/**
  * Did the entry conditions reject losers, or just trade less? The oracle answers it
  * with no exit rule involved: the share of entries that never had a profitable exit,
  * against the same share for buying everything.
@@ -1201,5 +1605,29 @@ const TIPS = {
   captureDelta: {
     title: 'Capture delta',
     body: 'Points of oracle capture the clause costs. Negative means the entries it keeps took LESS of the money that was available than the entries it turned away — combined with a positive delay, that is a gate the move itself creates.',
+  },
+  forfeit: {
+    title: 'Left on the table',
+    body: 'Points the best exit still available AFTER each close would have paid over what the alarm took, pooled by money across the closes that had a print to grade against. Under one round trip it is not forfeited money — it could not have been collected at this buy size.',
+  },
+  vsHold: {
+    title: 'vs holding on',
+    body: 'The same closes against simply riding to the token\'s last print. Positive means firing beat holding. On this token class the last print is routinely near zero, which is why an alarm that leaves upside behind can still be exactly right — only when this AND the forfeit both go the wrong way is it cutting winners.',
+  },
+  deltaAuthority: {
+    title: 'Worth (this fill)',
+    body: 'The condition\'s drop-one contribution in its own side\'s currency — win-rate points for an entry condition, return points for an exit alarm — at this run\'s pricing. The next column is the same measurement at first-in-window fills with fee-only costs.',
+  },
+  vetoed: {
+    title: 'Turns away',
+    body: 'Tokens the draft would have entered without this condition and does not with it — the condition\'s own veto set, read off the drop-one replay at no extra cost.',
+  },
+  solo: {
+    title: 'On its own',
+    body: 'The condition alone as the entire entry gate, with the draft\'s full exit bag. Together with the full rule and the drop-one variant it triangulates the three cases ablation alone cannot separate: synergy, redundancy, and dead weight.',
+  },
+  overlap: {
+    title: 'Overlap',
+    body: 'The largest share of this condition\'s vetoes that another entry condition also vetoes. At 90% or more it is flagged: its filtering is a subset of a sibling\'s, so drop-one ablation shows a small delta only because the sibling covers for it.',
   },
 } satisfies Record<string, HelpTip>;

@@ -28,6 +28,7 @@
 //! [family-search.md]: ../../docs/roadmap/family-search.md
 
 pub mod attribution;
+pub mod diagnose;
 pub mod dto;
 pub mod enrich;
 pub mod family;

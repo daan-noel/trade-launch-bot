@@ -209,6 +209,62 @@ pub fn oracle_exit_price(token: &CorpusToken, at: DateTime<Utc>) -> Option<f64> 
     (p.is_finite() && p > 0.0).then_some(p as f64)
 }
 
+/// The best exit still available **after** a given moment, priced as the same round
+/// trip the realized exit pays — the counterfactual an already-closed position is
+/// graded against.
+///
+/// Called with the position's own exit time it answers "what did closing here
+/// forfeit"; the entry's depth is charged on both legs, exactly as
+/// [`oracle_pnl_sol`] charges it. `None` when nothing prints after `after` at all —
+/// an exit at the last print forfeited nothing measurable.
+pub fn best_after_pnl_sol(
+    token: &CorpusToken,
+    outcome: &TokenOutcome,
+    after: DateTime<Utc>,
+    pricing: &Pricing,
+) -> Option<f64> {
+    let entry_price = outcome.entry_price?;
+    let entry_at = outcome.entry_time?;
+    let exit_price = oracle_exit_price(token, after)?;
+    let depth = entry_depth(token, entry_at);
+    let (pnl_sol, _) = round_trip_with_costs(
+        entry_price,
+        exit_price,
+        pricing.buy_amount_sol,
+        depth,
+        &pricing.cost,
+    );
+    Some(pnl_sol)
+}
+
+/// The hold-to-the-end counterfactual: the same entry closed at the token's **last
+/// print**, through the same round trip.
+///
+/// Against a realized exit it says whether firing beat simply holding on — the
+/// "saved" half of an alarm's grade, where [`best_after_pnl_sol`] is the "forfeited"
+/// half. On this token class the last print is routinely near zero, which is exactly
+/// why an alarm that leaves upside on the table can still be right.
+pub fn terminal_pnl_sol(
+    token: &CorpusToken,
+    outcome: &TokenOutcome,
+    pricing: &Pricing,
+) -> Option<f64> {
+    use crate::models::trade::TradeRow;
+    let entry_price = outcome.entry_price?;
+    let entry_at = outcome.entry_time?;
+    let last = token.trades.last()?;
+    let terminal = last.chart_spot_price().filter(|p| p.is_finite() && *p > 0.0)?;
+    let depth = entry_depth(token, entry_at);
+    let (pnl_sol, _) = round_trip_with_costs(
+        entry_price,
+        terminal,
+        pricing.buy_amount_sol,
+        depth,
+        &pricing.cost,
+    );
+    Some(pnl_sol)
+}
+
 /// The oracle round-trip for one realized entry, in SOL.
 ///
 /// Charged the **same** round trip as the realized exit — [`round_trip_with_costs`]
@@ -294,6 +350,34 @@ mod tests {
         assert_eq!(oracle, want);
         // Costs are actually charged: a 4x gross is NOT 3x the notional net.
         assert!(oracle < 3.0 * p.buy_amount_sol, "the round trip must cost something");
+    }
+
+    /// The two counterfactuals an alarm's close is graded against: the best print
+    /// still ahead of it, and the token's last print.
+    #[test]
+    fn best_after_and_terminal_price_the_same_round_trip_from_the_close_onward() {
+        // Peak at row 3 (price 6), then the die-off to 0.5 at the last print.
+        let t = token_from_prices(&[1.0, 2.0, 4.0, 6.0, 1.0, 0.5]).with_oracle();
+        let p = pricing();
+        let entry_at = t.trades[0].block_time;
+        let o = outcome_at(entry_at, 1.0, 0.0);
+
+        // Exiting after row 1: the 6.0 is still ahead.
+        let exit_at = t.trades[1].block_time;
+        let best = best_after_pnl_sol(&t, &o, exit_at, &p).expect("prints follow");
+        let depth = t.trades[0].real_reserve_sol;
+        let (want, _) = round_trip_with_costs(1.0, 6.0, p.buy_amount_sol, depth, &p.cost);
+        assert_eq!(best, want);
+
+        // Holding to the end closes at the last print's 0.5 — a loss after costs.
+        let term = terminal_pnl_sol(&t, &o, &p).expect("a last print exists");
+        let (want_term, _) = round_trip_with_costs(1.0, 0.5, p.buy_amount_sol, depth, &p.cost);
+        assert_eq!(term, want_term);
+        assert!(term < 0.0, "riding to the end loses money here");
+
+        // An exit at the last print forfeited nothing measurable.
+        let last_at = t.trades[5].block_time;
+        assert_eq!(best_after_pnl_sol(&t, &o, last_at, &p), None);
     }
 
     #[test]

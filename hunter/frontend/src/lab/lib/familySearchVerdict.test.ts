@@ -65,6 +65,9 @@ function base(): FamilySearchReport {
       n_rejected: 2,
       top_rejected: [],
       none_cleared: false,
+      // 62% of 180 closes: the lower bound clears the 45% bar comfortably.
+      draft_win_low_pct: 54.8,
+      win_within_noise: false,
     },
     ungated_capture: {
       capture_pct: 12,
@@ -103,6 +106,57 @@ function base(): FamilySearchReport {
     attribution_other_n: 0,
     attribution_other_pnl_sol: 0,
     narrow_recheck: [],
+    // A clean run: every cut a region, every alarm timed, every contribution
+    // surviving the reprice. The tiers below flip one of these at a time.
+    threshold_ladders: [
+      {
+        clause: 'nonvol_buy(2s) >= 1.6',
+        is_entry: false,
+        verdict: 'plateau',
+        points: [
+          { threshold: 1.36, ret_pct: 29.5, win_pct: 61, n_closed: 178, chosen: false },
+          { threshold: 1.6, ret_pct: 31.0, win_pct: 62, n_closed: 180, chosen: true },
+          { threshold: 1.84, ret_pct: 28.9, win_pct: 60, n_closed: 182, chosen: false },
+        ],
+      },
+    ],
+    alarm_regret: [
+      {
+        slot: 0,
+        label: 'stall >= 30',
+        standing: false,
+        n: 40,
+        n_priced: 36,
+        realized_ret_pct: 8,
+        best_later_ret_pct: 10,
+        forfeit_pp: 2,
+        n_terminal: 40,
+        realized_vs_terminal_pp: 60,
+        band_pct: 6.93,
+        verdict: 'timed',
+      },
+    ],
+    entry_redundancy: [
+      {
+        clause: 'liquidity > 30',
+        n_vetoed: 40,
+        solo_ret_pct: 10,
+        solo_win_pct: 55,
+        solo_n_closed: 90,
+        max_overlap_pct: 35,
+        overlap_with: 'time >= 20',
+        redundant: false,
+      },
+    ],
+    fill_sensitivity: [
+      {
+        clause: 'nonvol_buy(2s) >= 1.6',
+        is_entry: false,
+        delta_authority: 6.0,
+        delta_optimistic: 5.4,
+        fill_dependent: false,
+      },
+    ],
     entry_gates: [],
     archive: [],
     portrait: [],
@@ -202,5 +256,81 @@ describe('familyVerdict', () => {
     expect(v.tone).toBe('danger');
     expect(v.edgePp).toBeNull();
     expect(v.gates.find((g) => g.key === 'beats-ungated')?.ok).toBeNull();
+  });
+
+  it('refuses to call a draft promotable when its own clauses do not hold up', () => {
+    // Everything structural clears — the tier exists for exactly this case: a rule
+    // that survived the family and the ungated control on a threshold that only
+    // works at one value.
+    const r = base();
+    r.threshold_ladders = [{ ...r.threshold_ladders[0], verdict: 'fragile' }];
+    const v = familyVerdict(r);
+    expect(v.label).toBe('Fragile draft');
+    expect(v.tone).toBe('warning');
+    expect(v.headline).toContain('spike');
+    expect(v.gates.find((g) => g.key === 'robustness')?.ok).toBe(false);
+    // The structural gates still read as passes — the finding is narrower than that.
+    expect(v.gates.find((g) => g.key === 'transfer')?.ok).toBe(true);
+    expect(v.gates.find((g) => g.key === 'beats-ungated')?.ok).toBe(true);
+  });
+
+  it('names every kind of reliability failure it found, not just the first', () => {
+    const r = base();
+    r.threshold_ladders = [{ ...r.threshold_ladders[0], verdict: 'fragile' }];
+    r.alarm_regret = [{ ...r.alarm_regret[0], verdict: 'premature', forfeit_pp: 20 }];
+    r.fill_sensitivity = [
+      { ...r.fill_sensitivity[0], delta_optimistic: 0.4, fill_dependent: true },
+    ];
+    r.entry_redundancy = [
+      { ...r.entry_redundancy[0], max_overlap_pct: 95, redundant: true },
+    ];
+    r.selection = { ...r.selection!, draft_win_low_pct: 41, win_within_noise: true };
+    const v = familyVerdict(r);
+
+    expect(v.label).toBe('Fragile draft');
+    expect(v.robustness.fragile).toEqual(['nonvol_buy(2s) >= 1.6']);
+    expect(v.robustness.premature).toEqual(['stall >= 30']);
+    expect(v.robustness.fillDependent).toEqual(['nonvol_buy(2s) >= 1.6']);
+    expect(v.robustness.redundant).toEqual(['liquidity > 30']);
+    expect(v.robustness.winWithinNoise).toBe(true);
+    // Repricing leads: whether the number is real outranks what it says.
+    expect(v.headline.indexOf('repricing')).toBeGreaterThan(-1);
+    expect(v.headline).toContain('cut winners early');
+    expect(v.headline).toContain('sample noise');
+  });
+
+  it('never lets a standing term be accused of cutting winners', () => {
+    // A mechanic the operator asked for is not a finding about the launch shape.
+    const r = base();
+    r.alarm_regret = [
+      { ...r.alarm_regret[0], standing: true, verdict: 'premature', forfeit_pp: 35 },
+    ];
+    const v = familyVerdict(r);
+    expect(v.robustness.premature).toEqual([]);
+    expect(v.label).toBe('Promotable draft');
+  });
+
+  it('reports execution and fill luck ahead of any per-clause finding', () => {
+    // A cohort that cannot pay for execution is a statement about whether there is
+    // anything here at all; a fragile cut is a statement about a draft. Ordering.
+    const r = base();
+    r.threshold_ladders = [{ ...r.threshold_ladders[0], verdict: 'fragile' }];
+    r.spread = { ...r.spread!, authority_ret_pct: 4.0, spread_pp: 6.9, fill_luck: true };
+    const v = familyVerdict(r);
+    expect(v.label).toBe('Priced on fill luck');
+    // ...and the per-clause findings still ride along for the board to render.
+    expect(v.robustness.fragile).toEqual(['nonvol_buy(2s) >= 1.6']);
+  });
+
+  it('does not claim clauses held up when nothing measured them', () => {
+    const r = base();
+    r.threshold_ladders = [];
+    r.alarm_regret = [];
+    r.fill_sensitivity = [];
+    r.entry_redundancy = [];
+    const v = familyVerdict(r);
+    expect(v.label).toBe('Promotable draft');
+    // Not measurable is distinct from passed — the gate must not read as a ✓.
+    expect(v.gates.find((g) => g.key === 'robustness')?.ok).toBeNull();
   });
 });

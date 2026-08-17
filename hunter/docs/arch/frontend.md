@@ -582,13 +582,21 @@ next load (no per-metric frontend work).
   from somewhere else.
   The board is ordered as the argument it makes — **verdict → portrait → execution →
   grade → evidence**. The verdict (`lab/lib/familySearchVerdict.ts`, unit-tested)
-  blends nothing: it names which of five gates decided (clears execution · family ·
-  rank transfer ρ · beats the ungated control · freshness) and prints all five beside
-  the headline with their numbers, so a reader who disagrees can see the deciding
-  line. The headline ladder is ordered by what invalidates what — a refused cohort
-  (the search never ran, which is not the same statement as "found nothing"), then a
-  missing draft, then **fill luck** (whether the number is real at all), then a gate
-  that costs money, then single-cohort, then a collapsed ρ, then thin headroom.
+  blends nothing: it names which of six gates decided (clears execution · family ·
+  rank transfer ρ · beats the ungated control · clauses hold up · freshness) and prints
+  all six beside the headline with their numbers, so a reader who disagrees can see the
+  deciding line. The headline ladder is ordered by what invalidates what — a refused
+  cohort (the search never ran, which is not the same statement as "found nothing"),
+  then a missing draft, then **fill luck** (whether the number is real at all), then a
+  gate that costs money, then single-cohort, then a collapsed ρ, then thin headroom,
+  and last **Fragile draft** — the D13 per-clause findings, which come last because
+  they judge a draft that already cleared everything structural. `familyRobustness`
+  only *counts* backend verdicts; it never re-derives one, and a finding downgrades a
+  draft rather than removing it, because the backend keeps diagnostics out of
+  selection. The four D13 sections each pair a table with the sentence that makes it
+  actionable; `LadderRow` draws a threshold ladder as a bar strip scaled from the
+  ladder's own minimum, since scaling from zero flattens exactly the differences the
+  chart exists to resolve.
   Then the portrait prose (the product); the **Execution** section — cost clearance
   (the typical best available exit against one round trip, in `x`) ∥ fill spread (the
   same closes repriced at the friendliest honest fill); the grade as three cards —

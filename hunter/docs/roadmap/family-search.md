@@ -121,6 +121,12 @@ heuristic. The reference family, all `3ix:BuyExactSolIn · bkt=exact`, varying
   │           per-alarm attribution, ablation both sides, fill spread,     │
   │           axis-duplication refuse, lagging-clause diagnostic           │
   └───────────────────────────────┬───────────────────────────────────────┘
+  ┌───────────────────────────────▼───────────────────────────────────────┐
+  │ DIAGNOSE  is the draft's own arithmetic load-bearing? (D13)            │
+  │           threshold ladders · alarm regret · entry redundancy          │
+  │           per-clause fill sensitivity · Wilson bound on the win bar    │
+  │           GRADES the draft — never picks, tunes or un-selects one      │
+  └───────────────────────────────┬───────────────────────────────────────┘
              portrait (prose) + draft + ungated control + oracle
 ```
 
@@ -212,6 +218,33 @@ offers each earned idea the skeleton lacks, keeps what pays in its own currency,
 re-confirms each acceptance against the growing rule (two ideas that each pay alone
 can be the same idea twice), and reports everything tried — accepted or refused.
 
+**D13 — depth on the target buys *diagnosis*, never selection.** The target cohort is
+the held-out set, so every further decision it is allowed to make leaks it: a
+threshold nudged because it scores better *here*, a clause kept because it pays
+*here*, and the validation numbers are fit numbers again. Replays on the resident
+target are nearly free, so the budget is real — it is spent on grading the draft, not
+on searching harder. Four instruments, each answering a question no earlier stage
+sees:
+
+```
+  ladders     each clause replayed at 6 neighbouring cuts (x0.5 .. x1.5)
+              plateau (a region) vs fragile (one lucky value)
+  regret      each alarm's closes vs the best exit still ahead of them AND vs
+              holding to the last print. Both wrong ⇒ it cuts winners
+  redundancy  solo score + veto-set overlap; >=90% shared ⇒ a sibling covers for it
+  fill        each clause's drop-one contribution under BOTH pricings; a flip or a
+              collapse ⇒ the contribution is the fill model, not the launch shape
+```
+
+Plus a Wilson lower bound on the draft's win rate: a 3 pp lift over the control on a
+few hundred closes is inside binomial noise, and a board that prints point estimates
+reports noise as safety. A failed diagnostic means *do not promote* or *re-run on
+another family* — never *auto-tune*. The enrich cap (D12) is the same principle
+already applied: past three accepts a rule stops being a thesis.
+
+Search depth, when it is wanted, belongs on the **siblings**, where candidates are
+near-free inside the fold and nothing held out is spent.
+
 ---
 
 ## 5. What the measurements say
@@ -272,6 +305,8 @@ The budget for a family of 6 × ~40 candidates is **6 corpus loads and 6 folds**
 | Fit stops at the **archive fold** | It only needs a ranking; the full `run_replay` runs on the target and finalists only. |
 | Scope is **dimension-only** and resolved up front | `matching_mints` never scans trades, so an empty cohort fails before any load. |
 | Attribution, the axis gate and cost clearance are **free** | All read numbers the run already produced. |
+| Alarm regret and the Wilson bound are **free** | Regret reads the resident oracle column and the outcomes in hand; the bound is arithmetic. |
+| Diagnostics replay **one rule on one resident cohort** | `~6(E+X)` ladder replays plus `2(E+X)+E+1` variants — the tier where a replay is milliseconds, against a fit tier that folds every candidate across every cohort. Never a second corpus load. |
 | Cancel is checked **between** sibling loads | A corpus load cannot be cancelled mid-flight; this is the difference between a 30 s abort and killing the process. |
 
 **Not levers:** shrinking `token_cap` on fit cohorts, sampling tokens, or lowering fill
@@ -300,15 +335,21 @@ themselves. Form fields worth setting:
 | **Slots** | 40. Every candidate is now g4-shaped, so the budget buys depth rather than filtering out junk. |
 
 Board order is the argument: verdict and its gates → portrait → execution → grade →
-the draft → family → which alarm made the money → what each condition is worth →
-conditions offered → entry timing → entry gates → archive.
+the draft → family → which alarm made the money → *was each alarm right to fire* →
+what each condition is worth → *is each threshold a level* → *which conditions survive
+the fill* → *does each entry condition filter anything of its own* → conditions offered
+→ entry timing → entry gates → archive.
 
 The one presentation rule the payload imposes: **`fit_ret_pct` ranks, `target_ret_pct`
-reports.** Every fit number is dimmed and labelled `rank only`.
+reports.** Every fit number is dimmed and labelled `rank only`. The D13 sections carry
+a second: a diagnostic verdict downgrades a draft to **Fragile draft** and never
+removes it — the backend keeps diagnostics out of selection, so the board must not
+imply otherwise.
 
-Verification: `cargo test -p hunter-lab --lib family_search` (73 no-DB tests covering
+Verification: `cargo test -p hunter-lab --lib family_search` (84 no-DB tests covering
 the pooling rules, both selection bars, the composer's shape guarantees, the standing
-split, the enrich acceptance rules, and the attribution/sweep parity guard).
+split, the enrich acceptance rules, the attribution/sweep parity guard, and the four
+D13 verdicts), plus `npm test` in `hunter/frontend` for the board's verdict tiers.
 
 ---
 
@@ -317,6 +358,15 @@ split, the enrich acceptance rules, and the attribution/sweep parity guard).
 - **Never run against the lake.** Every acceptance number is still open: ρ ≈ 0.83 on
   the reference family, `liquidity > 20` flagged as axis-duplicating, the composer's
   top candidate carrying ≥ 2 entry ideas and ≥ 3 alarm kinds on real signatures.
+- **What the D13 verdicts read on a real cohort.** The thresholds
+  (`FLAT_SPAN_PP` 1.0, half-range for fragile, `REDUNDANT_OVERLAP_PCT` 90,
+  `FILL_SHRINK_RATIO` 0.25) are reasoned, not measured. The first real run should ask
+  whether a plausible draft trips every check at once — which would mean the bars are
+  too tight, not that the draft is worthless.
+- **Ladder depth vs the entry band.** Six multiplicative steps resolve a spike from a
+  plateau; they do not locate a band's *edges*. If entry bands keep reading fragile,
+  the answer is laddering the pair (floor and ceiling together) on the **siblings**,
+  never a finer search on the held-out target (D13).
 - The one test that cannot be constructed: family search's replay of a draft equals
   HTTP Simulate on the same fingerprint, range, fill, cost, guard and buy.
 - Whether fit-broad holds on a family varying `cu_price` or `ix_labels` rather than

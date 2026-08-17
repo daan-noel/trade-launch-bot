@@ -11,6 +11,13 @@
  * report is fresh by construction and the gate renders as a pass with its own
  * shortfall. It is kept here because the DTO carries the flag and a future
  * badge-instead-of-refuse mode must not read as a clean run.
+ *
+ * The reliability checks sit **last** among the verdict tiers, and deliberately so:
+ * "this cohort cannot pay for execution" and "the gate costs money" are statements
+ * about whether there is anything here at all, while "this threshold is a spike" is
+ * a statement about a draft that already cleared everything structural. They also
+ * never un-select — the backend keeps every diagnostic out of selection so the
+ * held-out cohort is not leaked — so the worst they produce here is a warning.
  */
 import type { FamilySearchReport } from '@lab/lib/familySearchTypes';
 
@@ -18,10 +25,56 @@ export type FamilyVerdictTone = 'success' | 'warning' | 'danger';
 
 /** One named check, with the number that decided it. `ok: null` = not measurable. */
 export interface FamilyGate {
-  key: 'execution' | 'family' | 'transfer' | 'beats-ungated' | 'freshness';
+  key: 'execution' | 'family' | 'transfer' | 'beats-ungated' | 'freshness' | 'robustness';
   label: string;
   ok: boolean | null;
   detail: string;
+}
+
+/** What the Slice 7 diagnostics found wrong with the draft, each already a verdict
+ *  on the backend. Counting is all this layer does — it never re-derives one. */
+export interface FamilyRobustness {
+  /** Thresholds sitting on a spike rather than a plateau. */
+  fragile: string[];
+  /** Alarms that left money AND that holding on would have beaten. */
+  premature: string[];
+  /** Clauses whose contribution does not survive repricing. */
+  fillDependent: string[];
+  /** Entry clauses another clause already covers for. */
+  redundant: string[];
+  /** The win-rate clearance is inside this sample's noise. */
+  winWithinNoise: boolean;
+  /** Anything at all to report. */
+  any: boolean;
+}
+
+/** Collect the backend's own reliability verdicts. Standing terms are excluded from
+ *  the regret count: a mechanic the operator asked for is never a finding. */
+export function familyRobustness(r: FamilySearchReport): FamilyRobustness {
+  const fragile = (r.threshold_ladders ?? [])
+    .filter((l) => l.verdict === 'fragile')
+    .map((l) => l.clause);
+  const premature = (r.alarm_regret ?? [])
+    .filter((a) => !a.standing && a.verdict === 'premature')
+    .map((a) => a.label ?? `slot ${a.slot}`);
+  const fillDependent = (r.fill_sensitivity ?? [])
+    .filter((f) => f.fill_dependent)
+    .map((f) => f.clause);
+  const redundant = (r.entry_redundancy ?? []).filter((x) => x.redundant).map((x) => x.clause);
+  const winWithinNoise = r.selection?.win_within_noise === true;
+  return {
+    fragile,
+    premature,
+    fillDependent,
+    redundant,
+    winWithinNoise,
+    any:
+      fragile.length > 0 ||
+      premature.length > 0 ||
+      fillDependent.length > 0 ||
+      redundant.length > 0 ||
+      winWithinNoise,
+  };
 }
 
 export interface FamilyVerdict {
@@ -35,6 +88,9 @@ export interface FamilyVerdict {
   gates: FamilyGate[];
   /** Draft minus ungated control, in percentage points. Null when either is absent. */
   edgePp: number | null;
+  /** What the reliability diagnostics found. Always populated, whatever decided the
+   *  headline — a draft can be refused on execution and still have fragile cuts. */
+  robustness: FamilyRobustness;
 }
 
 const pp = (n: number): string => `${n >= 0 ? '+' : ''}${n.toFixed(1)}pp`;
@@ -52,6 +108,11 @@ export function familyVerdict(r: FamilySearchReport): FamilyVerdict {
   const nMembers = r.family.members.length;
   const familyOk = !r.family.single_cohort && nMembers > 1;
   const cc = r.cost_clearance;
+  const rob = familyRobustness(r);
+  const nMeasured =
+    (r.threshold_ladders?.length ?? 0) +
+    (r.alarm_regret?.length ?? 0) +
+    (r.fill_sensitivity?.length ?? 0);
   const gates: FamilyGate[] = [
     {
       key: 'execution',
@@ -107,6 +168,17 @@ export function familyVerdict(r: FamilySearchReport): FamilyVerdict {
             )} buying everything — ${pp(edgePp)}`,
     },
     {
+      key: 'robustness',
+      label: 'Clauses hold up',
+      ok: nMeasured === 0 ? null : !rob.any,
+      detail:
+        nMeasured === 0
+          ? 'no per-clause diagnostics on this run'
+          : rob.any
+            ? `${robustnessSummary(rob)} — the draft's specifics are not load-bearing`
+            : `every threshold is a plateau, every alarm timed, and every contribution survives repricing (${nMeasured} checks)`,
+    },
+    {
       key: 'freshness',
       label: 'Freshness',
       ok: !r.freshness.stale,
@@ -132,6 +204,7 @@ export function familyVerdict(r: FamilySearchReport): FamilyVerdict {
         'The typical entry\'s best available exit does not clear the round trip, so no exit rule can exist here. Nothing was generated.',
       gates,
       edgePp,
+      robustness: rob,
     };
   }
 
@@ -143,6 +216,7 @@ export function familyVerdict(r: FamilySearchReport): FamilyVerdict {
       body: 'No candidate came out of the fit. Read the diagnostics below, then widen the range or raise the candidate slots.',
       gates,
       edgePp,
+      robustness: rob,
     };
   }
 
@@ -157,6 +231,7 @@ export function familyVerdict(r: FamilySearchReport): FamilyVerdict {
       body: 'Execution, not signal, is deciding this result. Live paper books the pessimistic fill, so treat the draft as unproven until it clears its own spread — or trade a larger target size where the round trip is affordable overhead.',
       gates,
       edgePp,
+      robustness: rob,
     };
   }
 
@@ -169,6 +244,7 @@ export function familyVerdict(r: FamilySearchReport): FamilyVerdict {
       body: 'The edge on this launch shape is ungated — selecting within it costs money here. Promote the draft only if you want the exit bag; the entry side is not earning its place.',
       gates,
       edgePp,
+      robustness: rob,
     };
   }
 
@@ -180,6 +256,7 @@ export function familyVerdict(r: FamilySearchReport): FamilyVerdict {
       body: 'This fingerprint has no sibling to fit across, so the ordering that picked the draft was never validated on unseen data. Treat the number as in-sample and confirm it with Simulate before promoting.',
       gates,
       edgePp,
+      robustness: rob,
     };
   }
 
@@ -191,6 +268,7 @@ export function familyVerdict(r: FamilySearchReport): FamilyVerdict {
       body: 'Fitting broad does not apply to this family — the draft is the top of a ranking that means nothing here. Its level is still a real replay of the target cohort, so read it as one measured rule rather than as the winner of a search.',
       gates,
       edgePp,
+      robustness: rob,
     };
   }
 
@@ -207,6 +285,26 @@ export function familyVerdict(r: FamilySearchReport): FamilyVerdict {
       body: 'Execution eats most of what is available on this launch shape, and a rule only ever takes a fraction of the best exit. Confirm with Simulate at the pessimistic fill before promoting, and expect the live number to sit below this one.',
       gates,
       edgePp,
+      robustness: rob,
+    };
+  }
+
+  // Everything structural passed. What is left is whether the draft's own numbers
+  // are load-bearing: a cut that only works at one value, an alarm that cuts
+  // winners, a contribution that is really the fill model, or a safety edge inside
+  // the sample's noise. None of these un-selects the draft — the backend never lets
+  // a diagnostic touch selection — but a reader must not promote past them.
+  if (rob.any) {
+    return {
+      tone: 'warning',
+      label: 'Fragile draft',
+      headline: `The draft pays ${pctText(
+        draft.target_ret_pct,
+      )}, but ${robustnessSummary(rob)}.`,
+      body: 'The structure held up; the specifics did not. Re-run on another family before promoting — a finding that survives a second launch shape is a thesis, and one that does not was this cohort\'s noise. The per-clause tables below name every failure.',
+      gates,
+      edgePp,
+      robustness: rob,
     };
   }
 
@@ -216,8 +314,44 @@ export function familyVerdict(r: FamilySearchReport): FamilyVerdict {
     headline: `The draft pays ${pctText(draft.target_ret_pct)} on the held-out cohort, ${pp(
       edgePp ?? 0,
     )} over buying everything.`,
-    body: 'The ordering was fitted across the siblings and transferred to a cohort it never saw. Promote to an inactive paper rule, then Simulate before it touches real money.',
+    body: 'The ordering was fitted across the siblings and transferred to a cohort it never saw, and every clause survived its own robustness check. Promote to an inactive paper rule, then Simulate before it touches real money.',
     gates,
     edgePp,
+    robustness: rob,
   };
 }
+
+/** The reliability failures as one clause, worst first. */
+function robustnessSummary(rob: FamilyRobustness): string {
+  const parts: string[] = [];
+  if (rob.fillDependent.length > 0) {
+    parts.push(
+      `${rob.fillDependent.length} clause${
+        rob.fillDependent.length === 1 ? "'s contribution does" : "s' contributions do"
+      } not survive repricing`,
+    );
+  }
+  if (rob.premature.length > 0) {
+    parts.push(`${rob.premature.length} alarm${plural(rob.premature.length)} cut winners early`);
+  }
+  if (rob.fragile.length > 0) {
+    parts.push(
+      `${rob.fragile.length} threshold${plural(rob.fragile.length)} sit${
+        rob.fragile.length === 1 ? 's' : ''
+      } on a spike`,
+    );
+  }
+  if (rob.redundant.length > 0) {
+    parts.push(
+      `${rob.redundant.length} entry clause${plural(rob.redundant.length)} ${
+        rob.redundant.length === 1 ? 'is' : 'are'
+      } covered for by a sibling`,
+    );
+  }
+  if (rob.winWithinNoise) {
+    parts.push('its win-rate edge sits inside the sample noise');
+  }
+  return parts.join(', ');
+}
+
+const plural = (n: number): string => (n === 1 ? '' : 's');

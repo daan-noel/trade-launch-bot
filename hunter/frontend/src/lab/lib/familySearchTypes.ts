@@ -178,6 +178,80 @@ export interface FamilySelection {
   top_rejected: string[];
   /** Nothing cleared both bars — there is no draft, and the reason is above. */
   none_cleared: boolean;
+  /** Lower bound of the 95% Wilson interval on the draft's held-out win rate. */
+  draft_win_low_pct: number | null;
+  /** The draft clears the win bar as a point estimate but its lower bound does not —
+   *  the safety edge is inside this sample's noise. Diagnostic: it never un-selects. */
+  win_within_noise: boolean;
+}
+
+/** One threshold tried on a clause's ladder. */
+export interface FamilyLadderPoint {
+  threshold: number;
+  ret_pct: number;
+  win_pct: number | null;
+  n_closed: number;
+  /** The finalist's own value — the point the verdict is about. */
+  chosen: boolean;
+}
+
+/** What moving one clause's threshold does, everything else held fixed. */
+export interface FamilyThresholdLadder {
+  clause: string;
+  is_entry: boolean;
+  /** `flat` (the cohort barely responds) · `plateau` (the cut is a region) ·
+   *  `fragile` (one lucky value — a step either way gives back half the range) ·
+   *  `sparse` (too few measurable points to say). */
+  verdict: string;
+  /** Ascending by threshold, the chosen point included. */
+  points: FamilyLadderPoint[];
+}
+
+/** One alarm's closes against its two counterfactuals. */
+export interface FamilyAlarmRegret {
+  slot: number;
+  label: string | null;
+  standing: boolean;
+  n: number;
+  /** Closes with a print after them to grade against. */
+  n_priced: number;
+  realized_ret_pct: number;
+  best_later_ret_pct: number;
+  /** Points the best still-available exit beat the realized close by. */
+  forfeit_pp: number;
+  n_terminal: number;
+  /** Realized minus hold-to-the-end. Positive ⇒ firing beat holding on. */
+  realized_vs_terminal_pp: number;
+  band_pct: number;
+  /** `timed` · `protective` · `premature` · `unmeasured`. */
+  verdict: string;
+}
+
+/** One entry clause's standing in the AND: what it filters alone, and how much of
+ *  that filtering a sibling clause already does. */
+export interface FamilyEntryRedundancy {
+  clause: string;
+  /** Tokens this clause alone turns away from the full rule's entry set. */
+  n_vetoed: number;
+  solo_ret_pct: number;
+  solo_win_pct: number | null;
+  solo_n_closed: number;
+  max_overlap_pct: number | null;
+  overlap_with: string | null;
+  /** Nearly all its vetoes are also another clause's — dead weight that drop-one
+   *  ablation cannot see, because the sibling covers for it. */
+  redundant: boolean;
+}
+
+/** One clause's drop-one contribution under both pricings, in its side's currency. */
+export interface FamilyClauseFill {
+  clause: string;
+  is_entry: boolean;
+  delta_authority: number | null;
+  delta_optimistic: number | null;
+  /** Flips sign or keeps under a quarter of itself between the two pricings — the
+   *  contribution is fill luck, not signal. */
+  fill_dependent: boolean;
 }
 
 /** How much of the money that was available the finalist took (D3). */
@@ -257,6 +331,15 @@ export interface FamilySearchReport {
   attribution_other_n: number;
   attribution_other_pnl_sol: number;
   narrow_recheck: FamilyTermRow[];
+  /** Each clause's threshold replayed at neighbouring cuts — plateau or spike. */
+  threshold_ladders: FamilyThresholdLadder[];
+  /** Each alarm's closes against the best exit still available after them, and
+   *  against holding to the last print. */
+  alarm_regret: FamilyAlarmRegret[];
+  /** Solo scores and veto-set overlap per entry clause. */
+  entry_redundancy: FamilyEntryRedundancy[];
+  /** Each clause's drop-one contribution under both pricings. */
+  fill_sensitivity: FamilyClauseFill[];
   entry_gates: FamilyEntryGateRow[];
   archive: FamilyCandidateRow[];
   /** Plain-language sentences in creator terms — the product. */

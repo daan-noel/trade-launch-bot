@@ -70,6 +70,27 @@ pub fn pooled_win_rate_pct(scores: &[CohortScore]) -> Option<f64> {
     (closed > 0).then(|| 100.0 * wins as f64 / closed as f64)
 }
 
+/// Lower bound of the 95% Wilson interval on a win rate, in percent. `None` when
+/// nothing closed — no interval exists around a rate that is not a measurement.
+///
+/// This is the honesty layer under the win-rate bar: on a cohort with 150 closes a
+/// 3pp lift over the ungated control sits well inside binomial noise, and a board
+/// that presents point estimates as "cleared the bar" reports noise as safety. The
+/// bound is a **diagnostic**, never a selection input — tightening selection on the
+/// held-out cohort would leak it.
+pub fn wilson_low_pct(wins: u64, n_closed: u64) -> Option<f64> {
+    if n_closed == 0 {
+        return None;
+    }
+    let z = 1.96f64;
+    let n = n_closed as f64;
+    let p = wins as f64 / n;
+    let z2 = z * z;
+    let center = p + z2 / (2.0 * n);
+    let half = z * ((p * (1.0 - p) + z2 / (4.0 * n)) / n).sqrt();
+    Some(100.0 * ((center - half) / (1.0 + z2 / n)).max(0.0))
+}
+
 /// Fractional ranks (1-based, ties averaged), ascending. Ties must average or a
 /// family where several candidates score identically would get an ordering invented
 /// by input order.
@@ -416,6 +437,21 @@ mod tests {
         // Nothing closed ⇒ no rate at all, never a 0 that reads as "lost every time".
         assert_eq!(sw(0.0, 0.0, 0, 0).win_rate_pct(), None);
         assert_eq!(pooled_win_rate_pct(&[]), None);
+    }
+
+    /// The bound narrows with n and vanishes without closes — a 62% rate on 8 closes
+    /// and on 800 are different claims, and the bar comparison has to know it.
+    #[test]
+    fn the_wilson_bound_narrows_with_sample_size_and_refuses_an_empty_one() {
+        assert_eq!(wilson_low_pct(5, 0), None, "no closes, no interval");
+        let thin = wilson_low_pct(5, 8).unwrap(); // 62.5% of 8
+        let thick = wilson_low_pct(500, 800).unwrap(); // 62.5% of 800
+        assert!(thin < thick, "thin {thin} vs thick {thick}");
+        assert!(thick > 59.0 && thick < 62.5, "{thick}");
+        assert!(thin < 35.0, "8 closes cannot pin a rate: {thin}");
+        // Degenerate rates stay inside [0, 100].
+        assert_eq!(wilson_low_pct(0, 20).unwrap(), 0.0);
+        assert!(wilson_low_pct(20, 20).unwrap() < 100.0);
     }
 
     #[test]

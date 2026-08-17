@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::family_search::attribution::Attribution;
+use crate::family_search::diagnose::{AlarmRegret, ClauseFill, EntryRedundancy, ThresholdLadder};
 use crate::family_search::gates::{AxisDuplication, CostClearance, EntryTiming, Freshness};
 use crate::family_search::oracle::Capture;
 use crate::family_search::score::TermContribution;
@@ -296,6 +297,151 @@ pub struct SelectionDto {
     pub top_rejected: Vec<String>,
     /// Nothing cleared both bars — there is no draft, and the reason is above.
     pub none_cleared: bool,
+    /// Lower bound of the 95% Wilson interval on the draft's held-out win rate.
+    /// `None` when there is no draft or it closed nothing.
+    #[serde(default)]
+    pub draft_win_low_pct: Option<f64>,
+    /// The draft cleared the win bar as a point estimate but its lower bound does
+    /// not — the safety edge is inside the noise of this many closes. Diagnostic
+    /// only: it never un-selects the draft, it says how much to trust the clearance.
+    #[serde(default)]
+    pub win_within_noise: bool,
+}
+
+/// One clause's threshold ladder — the finalist replayed at neighbouring cuts.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct LadderPointDto {
+    pub threshold: f64,
+    pub ret_pct: f64,
+    pub win_pct: Option<f64>,
+    pub n_closed: u64,
+    pub chosen: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ThresholdLadderDto {
+    pub clause: String,
+    pub is_entry: bool,
+    /// `flat` / `plateau` / `fragile` / `sparse`. A fragile cut is one lucky value:
+    /// one step either way loses more than half the ladder's range.
+    pub verdict: String,
+    pub points: Vec<LadderPointDto>,
+}
+
+impl From<ThresholdLadder> for ThresholdLadderDto {
+    fn from(l: ThresholdLadder) -> Self {
+        Self {
+            verdict: l.verdict().label().to_string(),
+            points: l
+                .points
+                .iter()
+                .map(|p| LadderPointDto {
+                    threshold: p.threshold,
+                    ret_pct: p.ret_pct,
+                    win_pct: p.win_pct,
+                    n_closed: p.n_closed,
+                    chosen: p.chosen,
+                })
+                .collect(),
+            clause: l.clause,
+            is_entry: l.is_entry,
+        }
+    }
+}
+
+/// One alarm's closes against its two counterfactuals — the best exit still
+/// available after each close, and holding to the last print.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AlarmRegretDto {
+    pub slot: u8,
+    pub label: Option<String>,
+    pub standing: bool,
+    pub n: u64,
+    pub n_priced: u64,
+    pub realized_ret_pct: f64,
+    pub best_later_ret_pct: f64,
+    /// Points the best still-available exit beat the realized close by.
+    pub forfeit_pp: f64,
+    pub n_terminal: u64,
+    /// Realized minus hold-to-the-end. Positive ⇒ firing beat holding on.
+    pub realized_vs_terminal_pp: f64,
+    pub band_pct: f64,
+    /// `timed` / `protective` / `premature` / `unmeasured`.
+    pub verdict: String,
+}
+
+impl From<AlarmRegret> for AlarmRegretDto {
+    fn from(r: AlarmRegret) -> Self {
+        Self {
+            forfeit_pp: r.forfeit_pp(),
+            verdict: r.verdict().label().to_string(),
+            slot: r.slot,
+            label: r.label,
+            standing: r.standing,
+            n: r.n,
+            n_priced: r.n_priced,
+            realized_ret_pct: r.realized_ret_pct,
+            best_later_ret_pct: r.best_later_ret_pct,
+            n_terminal: r.n_terminal,
+            realized_vs_terminal_pp: r.realized_vs_terminal_pp,
+            band_pct: r.band_pct,
+        }
+    }
+}
+
+/// One entry clause's standing in the AND: what it filters alone and how much of
+/// that another clause already filters.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EntryRedundancyDto {
+    pub clause: String,
+    pub n_vetoed: u64,
+    pub solo_ret_pct: f64,
+    pub solo_win_pct: Option<f64>,
+    pub solo_n_closed: u64,
+    pub max_overlap_pct: Option<f64>,
+    pub overlap_with: Option<String>,
+    /// Nearly all of this clause's vetoes are also another clause's — dead weight
+    /// even when drop-one ablation shows a small delta.
+    pub redundant: bool,
+}
+
+impl From<EntryRedundancy> for EntryRedundancyDto {
+    fn from(r: EntryRedundancy) -> Self {
+        Self {
+            redundant: r.redundant(),
+            clause: r.clause,
+            n_vetoed: r.n_vetoed,
+            solo_ret_pct: r.solo_ret_pct,
+            solo_win_pct: r.solo_win_pct,
+            solo_n_closed: r.solo_n_closed,
+            max_overlap_pct: r.max_overlap_pct,
+            overlap_with: r.overlap_with,
+        }
+    }
+}
+
+/// One clause's drop-one contribution under both pricings, in its side's currency.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClauseFillDto {
+    pub clause: String,
+    pub is_entry: bool,
+    pub delta_authority: Option<f64>,
+    pub delta_optimistic: Option<f64>,
+    /// The contribution flips sign or keeps under a quarter of itself between the
+    /// two pricings — it is selecting fill luck, not signal.
+    pub fill_dependent: bool,
+}
+
+impl From<ClauseFill> for ClauseFillDto {
+    fn from(f: ClauseFill) -> Self {
+        Self {
+            fill_dependent: f.fill_dependent(),
+            clause: f.clause,
+            is_entry: f.is_entry,
+            delta_authority: f.delta_authority,
+            delta_optimistic: f.delta_optimistic,
+        }
+    }
 }
 
 /// How much of the money that was available the finalist took, and how many entries
@@ -416,6 +562,20 @@ pub struct Report {
     pub attribution_other_pnl_sol: f64,
     /// The finalist re-scored on the target with each term dropped.
     pub narrow_recheck: Vec<TermRow>,
+    /// Each clause's threshold replayed at neighbouring cuts — plateau or spike
+    /// (Slice 7). Diagnostic only: a verdict here grades trust, never selection.
+    #[serde(default)]
+    pub threshold_ladders: Vec<ThresholdLadderDto>,
+    /// Each alarm's closes against the best exit still available after them and
+    /// against holding to the last print (Slice 7).
+    #[serde(default)]
+    pub alarm_regret: Vec<AlarmRegretDto>,
+    /// Solo scores and veto-set overlap per entry clause (Slice 7).
+    #[serde(default)]
+    pub entry_redundancy: Vec<EntryRedundancyDto>,
+    /// Each clause's drop-one contribution under both pricings (Slice 7).
+    #[serde(default)]
+    pub fill_sensitivity: Vec<ClauseFillDto>,
     /// Entry clauses measured against the varied fingerprint axis.
     pub entry_gates: Vec<EntryGateRow>,
     pub archive: Vec<CandidateRow>,
@@ -686,6 +846,74 @@ pub fn portrait(r: &Report) -> Vec<String> {
         ));
     }
 
+    // A win-rate clearance the sample cannot actually support.
+    if let Some(sel) = &r.selection {
+        if sel.win_within_noise {
+            if let (Some(low), Some(d)) = (sel.draft_win_low_pct, &r.draft) {
+                out.push(format!(
+                    "The draft clears the {:.0}% win-rate bar as a point estimate, but over \
+                     its {} closes the rate's lower bound is {low:.0}% — the safety edge is \
+                     inside the noise of this sample, so treat \"safer than buying \
+                     everything\" as unproven rather than established.",
+                    sel.win_bar_pct, d.target_n_closed
+                ));
+            }
+        }
+    }
+
+    // A threshold that only works at exactly one value.
+    let fragile: Vec<&ThresholdLadderDto> =
+        r.threshold_ladders.iter().filter(|l| l.verdict == "fragile").collect();
+    if !fragile.is_empty() {
+        out.push(format!(
+            "{} threshold{} sit{} on a spike rather than a plateau: {}. One step in either \
+             direction gives back more than half the available range, so read {} as tuned \
+             to this cohort's noise rather than as a level the launch shape defines.",
+            fragile.len(),
+            plural(fragile.len()),
+            if fragile.len() == 1 { "s" } else { "" },
+            fragile.iter().map(|l| format!("`{}`", l.clause)).collect::<Vec<_>>().join(", "),
+            if fragile.len() == 1 { "that cut" } else { "those cuts" }
+        ));
+    }
+
+    // An alarm that cuts winners instead of catching dumps.
+    for a in r.alarm_regret.iter().filter(|a| !a.standing && a.verdict == "premature") {
+        out.push(format!(
+            "`{}` fires early here: over the {} closes with a print after them, the best \
+             exit still available pays {:+.1}pp more than the alarm took, and holding to \
+             the end would ALSO have beaten it — it is cutting winners on this cohort, not \
+             catching dumps.",
+            a.label.as_deref().unwrap_or("an unnamed alarm"),
+            a.n_priced,
+            a.forfeit_pp
+        ));
+    }
+
+    // A clause whose contribution is the fill model, not the launch shape.
+    let fill_dep: Vec<&ClauseFillDto> =
+        r.fill_sensitivity.iter().filter(|f| f.fill_dependent).collect();
+    if !fill_dep.is_empty() {
+        out.push(format!(
+            "The measured contribution of {} does not survive repricing at the friendliest \
+             honest fill — it flips or collapses between the two pricings, so what it is \
+             \"worth\" is fill luck rather than signal.",
+            fill_dep.iter().map(|f| format!("`{}`", f.clause)).collect::<Vec<_>>().join(", ")
+        ));
+    }
+
+    // A clause another clause already covers for.
+    for red in r.entry_redundancy.iter().filter(|x| x.redundant) {
+        if let (Some(o), Some(with)) = (red.max_overlap_pct, &red.overlap_with) {
+            out.push(format!(
+                "`{}` filters almost nothing of its own: {o:.0}% of the {} tokens it turns \
+                 away are also turned away by `{with}`. Drop-one ablation cannot see this — \
+                 the sibling covers for it — which is exactly why the overlap is measured.",
+                red.clause, red.n_vetoed
+            ));
+        }
+    }
+
     // An entry gate the move itself creates.
     for t in r.entry_timing.iter().filter(|t| t.lagging) {
         if let Some(note) = &t.note {
@@ -796,6 +1024,10 @@ mod tests {
             attribution_other_n: 0,
             attribution_other_pnl_sol: 0.0,
             narrow_recheck: Vec::new(),
+            threshold_ladders: Vec::new(),
+            alarm_regret: Vec::new(),
+            entry_redundancy: Vec::new(),
+            fill_sensitivity: Vec::new(),
             entry_gates: Vec::new(),
             archive: Vec::new(),
             portrait: Vec::new(),
@@ -876,6 +1108,8 @@ mod tests {
             n_rejected: 2,
             top_rejected: Vec::new(),
             none_cleared: false,
+            draft_win_low_pct: Some(52.0),
+            win_within_noise: false,
         });
         r.capture = CaptureDto { no_upside_pct: Some(22.0), ..Default::default() };
         r.ungated_capture = Some(CaptureDto { no_upside_pct: Some(41.0), ..Default::default() });
@@ -918,6 +1152,8 @@ mod tests {
             n_rejected: 12,
             top_rejected: vec!["win rate below the ungated control".into()],
             none_cleared: true,
+            draft_win_low_pct: None,
+            win_within_noise: false,
         });
         let prose = portrait(&r);
         let line = prose.iter().find(|s| s.contains("no draft")).expect("refusal line");
@@ -997,6 +1233,95 @@ mod tests {
         let money = prose.iter().find(|s| s.contains("Most of the money")).expect("money line");
         assert!(money.contains("stall >= 30"), "{money}");
         assert!(money.contains("winning 50%"));
+    }
+
+    /// The Slice 7 diagnostics each earn a sentence — and each names the thing it
+    /// distrusts, so the portrait stays an argument rather than a status dump.
+    #[test]
+    fn the_portrait_reports_reliability_findings_in_plain_terms() {
+        let mut r = base();
+        r.draft = Some(candidate_row(2, 3));
+        r.selection = Some(SelectionDto {
+            win_bar_pct: 45.0,
+            control_win_pct: Some(45.0),
+            floor_win_pct: 0.0,
+            min_closed: 8,
+            n_rejected: 0,
+            top_rejected: Vec::new(),
+            none_cleared: false,
+            draft_win_low_pct: Some(41.0),
+            win_within_noise: true,
+        });
+        r.threshold_ladders = vec![ThresholdLadderDto {
+            clause: "nonvol_buy(2s) >= 1.6".into(),
+            is_entry: false,
+            verdict: "fragile".into(),
+            points: Vec::new(),
+        }];
+        r.alarm_regret = vec![AlarmRegretDto {
+            slot: 0,
+            label: Some("stall >= 30".into()),
+            standing: false,
+            n: 40,
+            n_priced: 36,
+            realized_ret_pct: 8.0,
+            best_later_ret_pct: 28.0,
+            forfeit_pp: 20.0,
+            n_terminal: 40,
+            realized_vs_terminal_pp: -5.0,
+            band_pct: 4.0,
+            verdict: "premature".into(),
+        }];
+        r.fill_sensitivity = vec![ClauseFillDto {
+            clause: "gross_flow(10s) < 15".into(),
+            is_entry: false,
+            delta_authority: Some(5.0),
+            delta_optimistic: Some(0.4),
+            fill_dependent: true,
+        }];
+        r.entry_redundancy = vec![EntryRedundancyDto {
+            clause: "liquidity > 30".into(),
+            n_vetoed: 40,
+            solo_ret_pct: 10.0,
+            solo_win_pct: Some(55.0),
+            solo_n_closed: 90,
+            max_overlap_pct: Some(95.0),
+            overlap_with: Some("time >= 20".into()),
+            redundant: true,
+        }];
+        let prose = portrait(&r);
+
+        let noise = prose.iter().find(|s| s.contains("lower bound is 41%")).expect("noise line");
+        assert!(noise.contains("unproven"), "{noise}");
+        let frag = prose.iter().find(|s| s.contains("spike rather than a plateau")).unwrap();
+        assert!(frag.contains("nonvol_buy(2s) >= 1.6"));
+        let early = prose.iter().find(|s| s.contains("fires early")).expect("regret line");
+        assert!(early.contains("stall >= 30") && early.contains("+20.0pp"), "{early}");
+        let fill = prose.iter().find(|s| s.contains("fill luck rather than signal")).unwrap();
+        assert!(fill.contains("gross_flow(10s) < 15"));
+        let red = prose.iter().find(|s| s.contains("filters almost nothing")).unwrap();
+        assert!(red.contains("liquidity > 30") && red.contains("time >= 20"), "{red}");
+    }
+
+    /// A premature STANDING alarm is the operator's own mechanic — never accused.
+    #[test]
+    fn a_standing_alarms_regret_stays_out_of_the_portrait() {
+        let mut r = base();
+        r.alarm_regret = vec![AlarmRegretDto {
+            slot: 1,
+            label: Some("liquidity >= 85".into()),
+            standing: true,
+            n: 10,
+            n_priced: 10,
+            realized_ret_pct: 5.0,
+            best_later_ret_pct: 40.0,
+            forfeit_pp: 35.0,
+            n_terminal: 10,
+            realized_vs_terminal_pp: -2.0,
+            band_pct: 4.0,
+            verdict: "premature".into(),
+        }];
+        assert!(!portrait(&r).iter().any(|s| s.contains("fires early")));
     }
 
     #[test]

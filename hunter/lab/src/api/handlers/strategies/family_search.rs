@@ -24,7 +24,7 @@ use crate::family_search::report::{
     attribution_rows, CandidateRow, FamilyDto, FreshnessDto, LibraryDto, Report, SelectionDto,
     SiblingRow,
 };
-use crate::family_search::score::{broad_fit, select, CohortScore, SelectionBars};
+use crate::family_search::score::{broad_fit, select, wilson_low_pct, CohortScore, SelectionBars};
 use crate::family_search::{
     attribution, authority, capture_of, check_cancelled, cut_table, earn_candidates, entry_gates,
     entry_timing, family, gates, narrow_enrich, narrow_recheck, optimistic, score_cohort, spread,
@@ -634,15 +634,23 @@ async fn drive(
     // ── Authority pass + enrich: the target cohort and the finalist only. ───
     check_cancelled(observer.as_ref())?;
     phase("authority");
-    let (finalist, auth, capture, narrow, timing, spread_of_draft, incumbent_auth, enriched) = {
+    let standing_keys: Vec<_> = standing
+        .iter()
+        .map(|s| (s.clause.metric, s.clause.window, s.clause.threshold))
+        .collect();
+    let (finalist, auth, capture, narrow, timing, spread_of_draft, incumbent_auth, enriched, diag) = {
         let corpus = target_corpus.clone();
         let cfg2 = cfg.clone();
         let fp2 = target_fp.clone();
         let skeleton2 = skeleton.clone();
         let incumbent2 = incumbent.clone();
         let standing2 = standing.clone();
+        let standing_keys2 = standing_keys.clone();
         let cuts2 = cuts.clone();
         let min_closed = b.min_closed;
+        // The regret verdicts read the cohort's own round trip — upside inside the
+        // band is not forfeitable.
+        let band = clearance.band_pct;
         let pool = pool.clone();
         tokio::task::spawn_blocking(move || {
             pool.install(|| {
@@ -682,16 +690,23 @@ async fn drive(
                 let opt = optimistic(&corpus.tokens, &fp2, &fin.combo.params, &cfg2);
                 let sp = spread(&corpus.tokens, &a, &opt, cfg2.pricing.buy_amount_sol);
                 let inc = incumbent2.map(|p| authority(&corpus.tokens, &fp2, &p, &cfg2));
-                (fin, a, cap, nr, tm, sp, inc, en)
+                // Slice 7: reliability diagnostics on the finalist — ladders, regret,
+                // redundancy, per-clause fill. Grades trust, never selection.
+                let dg = crate::family_search::diagnose::diagnose(
+                    &corpus.tokens,
+                    &fp2,
+                    &fin,
+                    &a,
+                    &cfg2,
+                    band,
+                    &standing_keys2,
+                );
+                (fin, a, cap, nr, tm, sp, inc, en, dg)
             })
         })
         .await?
     };
 
-    let standing_keys: Vec<_> = standing
-        .iter()
-        .map(|s| (s.clause.metric, s.clause.window, s.clause.threshold))
-        .collect();
     let attribution = attribution::rollup_with_standing(
         &auth.outcomes,
         cfg.pricing.buy_amount_sol,
@@ -802,15 +817,27 @@ async fn drive(
         // A rule nothing cleared the bars for is not a draft. It still boards, as the
         // archive's head with the refusal spelled out beside it.
         draft: sel.chosen.is_some().then(|| draft.clone()),
-        selection: Some(SelectionDto {
-            win_bar_pct: bars.win_bar_pct(),
-            control_win_pct: bars.control_win_pct,
-            floor_win_pct: bars.floor_win_pct,
-            min_closed: bars.min_closed,
-            n_rejected: sel.n_rejected,
-            top_rejected: sel.top_rejected.iter().map(|r| r.label().to_string()).collect(),
-            none_cleared: sel.chosen.is_none(),
-        }),
+        selection: {
+            // The honesty layer under the win bar (Slice 7): the bound is computed on
+            // the reported draft (the enriched finalist's authority pass) and is a
+            // diagnostic only — it never un-selects.
+            let draft_win_low_pct = sel
+                .chosen
+                .is_some()
+                .then(|| wilson_low_pct(auth.score.n_wins, auth.score.n_closed))
+                .flatten();
+            Some(SelectionDto {
+                win_bar_pct: bars.win_bar_pct(),
+                control_win_pct: bars.control_win_pct,
+                floor_win_pct: bars.floor_win_pct,
+                min_closed: bars.min_closed,
+                n_rejected: sel.n_rejected,
+                top_rejected: sel.top_rejected.iter().map(|r| r.label().to_string()).collect(),
+                none_cleared: sel.chosen.is_none(),
+                win_within_noise: draft_win_low_pct.is_some_and(|l| l < bars.win_bar_pct()),
+                draft_win_low_pct,
+            })
+        },
         ungated_control: Some(plain_row("ungated control", &control_auth, &control.params)),
         capture: capture.into(),
         ungated_capture: Some(ungated_capture.into()),
@@ -827,6 +854,10 @@ async fn drive(
         attribution_other_n: other_n,
         attribution_other_pnl_sol: other_pnl,
         narrow_recheck: narrow.into_iter().map(Into::into).collect(),
+        threshold_ladders: diag.ladders.into_iter().map(Into::into).collect(),
+        alarm_regret: diag.regret.into_iter().map(Into::into).collect(),
+        entry_redundancy: diag.redundancy.into_iter().map(Into::into).collect(),
+        fill_sensitivity: diag.fill_sensitivity.into_iter().map(Into::into).collect(),
         entry_gates: gate_rows,
         archive,
         portrait: Vec::new(),
@@ -923,6 +954,10 @@ fn refusal_report(
         attribution_other_n: 0,
         attribution_other_pnl_sol: 0.0,
         narrow_recheck: Vec::new(),
+        threshold_ladders: Vec::new(),
+        alarm_regret: Vec::new(),
+        entry_redundancy: Vec::new(),
+        fill_sensitivity: Vec::new(),
         entry_gates: Vec::new(),
         archive: Vec::new(),
         portrait: Vec::new(),
