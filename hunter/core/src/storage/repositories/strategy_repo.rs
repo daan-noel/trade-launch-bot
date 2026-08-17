@@ -166,17 +166,21 @@ struct StrategyPositionDbRow {
     target_token_amount: Option<i64>,
     target_time: Option<DateTime<Utc>>,
     target_tx: Option<String>,
+    // Slot (BIGINT) → u64 in the model. NULL stays None — a slot is measured.
+    target_slot: Option<i64>,
     entry_price: Option<f64>,
     entry_token_amount: Option<i64>,
     // Lamports (BIGINT) → human SOL f64 in the model.
     entry_lamports: Option<i64>,
     entry_time: Option<DateTime<Utc>>,
     entry_tx_signatures: Json<Value>,
+    entry_slot: Option<i64>,
     exit_price: Option<f64>,
     exit_token_amount: Option<i64>,
     exit_lamports: Option<i64>,
     exit_time: Option<DateTime<Utc>>,
     exit_tx_signatures: Json<Value>,
+    exit_slot: Option<i64>,
     sold_token_amount: i64,
     exit_sol_lamports_total: i64,
     scale_stage: i16,
@@ -215,16 +219,19 @@ impl From<StrategyPositionDbRow> for StrategyPosition {
             target_token_amount: r.target_token_amount.map(|v| v as u64),
             target_time: r.target_time,
             target_tx: r.target_tx,
+            target_slot: r.target_slot.map(|v| v as u64),
             entry_price: r.entry_price,
             entry_token_amount: r.entry_token_amount.map(|v| v as u64),
             entry_sol: r.entry_lamports.map(lamports_to_sol),
             entry_time: r.entry_time,
             entry_tx_signatures: r.entry_tx_signatures.0,
+            entry_slot: r.entry_slot.map(|v| v as u64),
             exit_price: r.exit_price,
             exit_token_amount: r.exit_token_amount.map(|v| v as u64),
             exit_sol: r.exit_lamports.map(lamports_to_sol),
             exit_time: r.exit_time,
             exit_tx_signatures: r.exit_tx_signatures.0,
+            exit_slot: r.exit_slot.map(|v| v as u64),
             sold_token_amount: r.sold_token_amount.max(0) as u64,
             exit_sol_total: lamports_to_sol(r.exit_sol_lamports_total),
             scale_stage: r.scale_stage.max(0) as u8,
@@ -596,8 +603,11 @@ fn truncate_chars(s: &str, max: usize) -> String {
 /// test tells you exactly which copy you missed.
 const POSITION_COLS: &str = "id, run_id, strategy_id, rule_id, mode, mint_address, wallet, \
     token_program_id, token_account, target_price, target_token_amount, target_time, target_tx, \
+    target_slot, \
     entry_price, entry_token_amount, entry_lamports, entry_time, entry_tx_signatures, \
+    entry_slot, \
     exit_price, exit_token_amount, exit_lamports, exit_time, exit_tx_signatures, \
+    exit_slot, \
     sold_token_amount, exit_sol_lamports_total, scale_stage, \
     submitted_buy_signatures, status, exit_reason, origin, manual_exit, \
     exit_redrive_count, exit_parked, last_entry_error, extra, created_at, updated_at";
@@ -606,9 +616,12 @@ const POSITION_COLS: &str = "id, run_id, strategy_id, rule_id, mode, mint_addres
 /// `tokens` (so the server can sort/filter by token-enrichment columns too).
 const POSITION_COLS_SP: &str = "sp.id, sp.run_id, sp.strategy_id, sp.rule_id, sp.mode, sp.mint_address, \
     sp.wallet, sp.token_program_id, sp.token_account, sp.target_price, sp.target_token_amount, \
-    sp.target_time, sp.target_tx, sp.entry_price, sp.entry_token_amount, sp.entry_lamports, \
-    sp.entry_time, sp.entry_tx_signatures, sp.exit_price, sp.exit_token_amount, sp.exit_lamports, \
-    sp.exit_time, sp.exit_tx_signatures, sp.sold_token_amount, sp.exit_sol_lamports_total, \
+    sp.target_time, sp.target_tx, sp.target_slot, \
+    sp.entry_price, sp.entry_token_amount, sp.entry_lamports, \
+    sp.entry_time, sp.entry_tx_signatures, sp.entry_slot, \
+    sp.exit_price, sp.exit_token_amount, sp.exit_lamports, \
+    sp.exit_time, sp.exit_tx_signatures, sp.exit_slot, \
+    sp.sold_token_amount, sp.exit_sol_lamports_total, \
     sp.scale_stage, sp.submitted_buy_signatures, sp.status, sp.exit_reason, \
     sp.origin, sp.manual_exit, sp.exit_redrive_count, sp.exit_parked, sp.last_entry_error, \
     sp.extra, sp.created_at, sp.updated_at";
@@ -617,9 +630,12 @@ const POSITION_COLS_SP: &str = "sp.id, sp.run_id, sp.strategy_id, sp.rule_id, sp
 /// (which also has an `id` column, so the bare list is ambiguous there).
 const POSITION_COLS_P: &str = "p.id, p.run_id, p.strategy_id, p.rule_id, p.mode, p.mint_address, \
     p.wallet, p.token_program_id, p.token_account, p.target_price, p.target_token_amount, \
-    p.target_time, p.target_tx, p.entry_price, p.entry_token_amount, p.entry_lamports, \
-    p.entry_time, p.entry_tx_signatures, p.exit_price, p.exit_token_amount, p.exit_lamports, \
-    p.exit_time, p.exit_tx_signatures, p.sold_token_amount, p.exit_sol_lamports_total, \
+    p.target_time, p.target_tx, p.target_slot, \
+    p.entry_price, p.entry_token_amount, p.entry_lamports, \
+    p.entry_time, p.entry_tx_signatures, p.entry_slot, \
+    p.exit_price, p.exit_token_amount, p.exit_lamports, \
+    p.exit_time, p.exit_tx_signatures, p.exit_slot, \
+    p.sold_token_amount, p.exit_sol_lamports_total, \
     p.scale_stage, p.submitted_buy_signatures, p.status, p.exit_reason, \
     p.origin, p.manual_exit, p.exit_redrive_count, p.exit_parked, p.last_entry_error, \
     p.extra, p.created_at, p.updated_at";
@@ -1464,13 +1480,15 @@ impl StrategyRepo {
             r#"
             INSERT INTO strategy_positions
                 (id, run_id, strategy_id, rule_id, mode, mint_address, wallet, token_program_id,
-                 target_price, target_token_amount, target_time, target_tx,
+                 target_price, target_token_amount, target_time, target_tx, target_slot,
                  entry_price, entry_token_amount, entry_lamports, entry_time, entry_tx_signatures,
+                 entry_slot,
                  exit_price, exit_token_amount, exit_lamports, exit_time, exit_tx_signatures,
+                 exit_slot,
                  submitted_buy_signatures, status, exit_reason, origin, manual_exit, extra,
                  created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                    $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
+                    $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)
             "#,
         )
         .bind(p.id)
@@ -1485,16 +1503,19 @@ impl StrategyRepo {
         .bind(p.target_token_amount.map(|v| v as i64))
         .bind(p.target_time)
         .bind(p.target_tx.as_ref())
+        .bind(p.target_slot.map(|v| v as i64))
         .bind(p.entry_price)
         .bind(p.entry_token_amount.map(|v| v as i64))
         .bind(p.entry_sol.map(sol_to_lamports))
         .bind(p.entry_time)
         .bind(Json(&p.entry_tx_signatures))
+        .bind(p.entry_slot.map(|v| v as i64))
         .bind(p.exit_price)
         .bind(p.exit_token_amount.map(|v| v as i64))
         .bind(p.exit_sol.map(sol_to_lamports))
         .bind(p.exit_time)
         .bind(Json(&p.exit_tx_signatures))
+        .bind(p.exit_slot.map(|v| v as i64))
         .bind(&p.submitted_buy_signatures)
         .bind(&p.status)
         .bind(p.exit_reason.as_ref())
@@ -1523,22 +1544,25 @@ impl StrategyRepo {
                 target_token_amount = $10,
                 target_time = $11,
                 target_tx = $12,
-                entry_price = $13,
-                entry_token_amount = $14,
-                entry_lamports = $15,
-                entry_time = $16,
-                entry_tx_signatures = $17,
-                exit_price = $18,
-                exit_token_amount = $19,
-                exit_lamports = $20,
-                exit_time = $21,
-                exit_tx_signatures = $22,
-                submitted_buy_signatures = $23,
-                status = $24,
-                exit_reason = $25,
-                origin = $26,
-                manual_exit = $27,
-                extra = $28,
+                target_slot = $13,
+                entry_price = $14,
+                entry_token_amount = $15,
+                entry_lamports = $16,
+                entry_time = $17,
+                entry_tx_signatures = $18,
+                entry_slot = $19,
+                exit_price = $20,
+                exit_token_amount = $21,
+                exit_lamports = $22,
+                exit_time = $23,
+                exit_tx_signatures = $24,
+                exit_slot = $25,
+                submitted_buy_signatures = $26,
+                status = $27,
+                exit_reason = $28,
+                origin = $29,
+                manual_exit = $30,
+                extra = $31,
                 updated_at = now()
             WHERE id = $1
             "#,
@@ -1555,16 +1579,19 @@ impl StrategyRepo {
         .bind(p.target_token_amount.map(|v| v as i64))
         .bind(p.target_time)
         .bind(p.target_tx.as_ref())
+        .bind(p.target_slot.map(|v| v as i64))
         .bind(p.entry_price)
         .bind(p.entry_token_amount.map(|v| v as i64))
         .bind(p.entry_sol.map(sol_to_lamports))
         .bind(p.entry_time)
         .bind(Json(&p.entry_tx_signatures))
+        .bind(p.entry_slot.map(|v| v as i64))
         .bind(p.exit_price)
         .bind(p.exit_token_amount.map(|v| v as i64))
         .bind(p.exit_sol.map(sol_to_lamports))
         .bind(p.exit_time)
         .bind(Json(&p.exit_tx_signatures))
+        .bind(p.exit_slot.map(|v| v as i64))
         .bind(&p.submitted_buy_signatures)
         .bind(&p.status)
         .bind(p.exit_reason.as_ref())
@@ -2605,11 +2632,12 @@ impl StrategyRepo {
         token_amount: u64,
         time: DateTime<Utc>,
         tx: &str,
+        slot: Option<u64>,
     ) -> anyhow::Result<()> {
         sqlx::query(
             "UPDATE strategy_positions \
              SET target_price = $2, target_token_amount = $3, target_time = $4, \
-                 target_tx = $5, updated_at = now() \
+                 target_tx = $5, target_slot = $6, updated_at = now() \
              WHERE id = $1",
         )
         .bind(id)
@@ -2617,6 +2645,7 @@ impl StrategyRepo {
         .bind(token_amount as i64)
         .bind(time)
         .bind(tx)
+        .bind(slot.map(|v| v as i64))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -2636,6 +2665,10 @@ impl StrategyRepo {
         // reads it from the row (survives restarts). `None` keeps the existing value
         // (`COALESCE`) — a later fill never blanks an already-recorded account.
         token_account: Option<&str>,
+        // Slot the buy landed in (mig 0004). `None` for a paper fill — a simulated
+        // fill has no on-chain slot and must not borrow the trigger's, or the
+        // latency read would report a fabricated zero.
+        entry_slot: Option<u64>,
     ) -> anyhow::Result<StrategyPosition> {
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
@@ -2643,6 +2676,7 @@ impl StrategyRepo {
              SET entry_tx_signatures = $2, entry_token_amount = $3, entry_price = $4, \
                  entry_lamports = $5, entry_time = $6, \
                  token_account = COALESCE($7, token_account), \
+                 entry_slot = $8, \
                  status = 'Holding', updated_at = now() \
              WHERE id = $1 \
              RETURNING {POSITION_COLS}"
@@ -2654,6 +2688,7 @@ impl StrategyRepo {
         .bind(sol_to_lamports(entry_sol))
         .bind(entry_time)
         .bind(token_account)
+        .bind(entry_slot.map(|v| v as i64))
         .fetch_one(&mut *tx)
         .await?;
         append_fill_tx(
@@ -2693,6 +2728,10 @@ impl StrategyRepo {
         stage: Option<u8>,
         tx_signatures: &[String],
         final_close: bool,
+        // Slot this sell leg landed in (mig 0004). `None` for a paper fill, and
+        // `None` never blanks an already-stamped slot (`COALESCE`) — on a
+        // scale-out the column tracks the most recent leg that resolved one.
+        exit_slot: Option<u64>,
     ) -> anyhow::Result<StrategyPosition> {
         let lamports = sol_to_lamports(sol);
         let sig0 = tx_signatures.first().map(|s| s.as_str()).filter(|s| !s.is_empty());
@@ -2752,6 +2791,7 @@ impl StrategyRepo {
                          ELSE $5 END, \
                      exit_time = $6, \
                      exit_reason = COALESCE($7, exit_reason), \
+                     exit_slot = COALESCE($8, exit_slot), \
                      status = 'End', \
                      updated_at = now() \
                  WHERE id = $1 \
@@ -2764,6 +2804,7 @@ impl StrategyRepo {
             .bind(price)
             .bind(at)
             .bind(reason)
+            .bind(exit_slot.map(|v| v as i64))
             .fetch_one(&mut *db_tx)
             .await?
         } else {
@@ -2772,6 +2813,7 @@ impl StrategyRepo {
                      sold_token_amount = sold_token_amount + $2, \
                      exit_sol_lamports_total = exit_sol_lamports_total + $3, \
                      scale_stage = COALESCE($4, scale_stage), \
+                     exit_slot = COALESCE($5, exit_slot), \
                      status = 'Holding', \
                      updated_at = now() \
                  WHERE id = $1 \
@@ -2781,6 +2823,7 @@ impl StrategyRepo {
             .bind(token_amount as i64)
             .bind(lamports)
             .bind(next_stage)
+            .bind(exit_slot.map(|v| v as i64))
             .fetch_one(&mut *db_tx)
             .await?
         };

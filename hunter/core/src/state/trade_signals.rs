@@ -53,6 +53,12 @@ pub struct ObservedLegs {
     pub amount_sol: f64,
     pub first_block_time: DateTime<Utc>,
     pub last_block_time: DateTime<Utc>,
+    /// Earliest / latest leg slot (mig 0004 `entry_slot` / `exit_slot`). Carried
+    /// here and not only on the PG path because this preview is the FAST confirm:
+    /// a snipe that resolves from it would otherwise record no slot at all, and
+    /// the latency histogram would then describe only the slow fills.
+    pub first_slot: Option<u64>,
+    pub last_slot: Option<u64>,
 }
 
 struct OwnLegEntry {
@@ -102,6 +108,7 @@ impl TradeSignals {
         token_amount: u64,
         amount_sol: f64,
         block_time: DateTime<Utc>,
+        slot: u64,
     ) {
         if !self.has_waiter(wallet, mint) {
             return;
@@ -117,6 +124,10 @@ impl TradeSignals {
                 if block_time > e.legs.last_block_time {
                     e.legs.last_block_time = block_time;
                 }
+                // Slot extremes track independently of the block-time extremes:
+                // legs of one tx share a slot, but a multi-sig rollup need not.
+                e.legs.first_slot = Some(e.legs.first_slot.map_or(slot, |s| s.min(slot)));
+                e.legs.last_slot = Some(e.legs.last_slot.map_or(slot, |s| s.max(slot)));
                 e.seen_at = Instant::now();
             })
             .or_insert_with(|| OwnLegEntry {
@@ -125,6 +136,8 @@ impl TradeSignals {
                     amount_sol,
                     first_block_time: block_time,
                     last_block_time: block_time,
+                    first_slot: Some(slot),
+                    last_slot: Some(slot),
                 },
                 seen_at: Instant::now(),
             });
@@ -161,6 +174,14 @@ impl TradeSignals {
                     if legs.last_block_time > a.last_block_time {
                         a.last_block_time = legs.last_block_time;
                     }
+                    a.first_slot = match (a.first_slot, legs.first_slot) {
+                        (Some(x), Some(y)) => Some(x.min(y)),
+                        (x, y) => x.or(y),
+                    };
+                    a.last_slot = match (a.last_slot, legs.last_slot) {
+                        (Some(x), Some(y)) => Some(x.max(y)),
+                        (x, y) => x.or(y),
+                    };
                     a
                 }
             });
@@ -384,7 +405,7 @@ mod tests {
             let notified = guard.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            signals.observe_own_leg("WALLET", "MINT", "sig1", 100, 0.5, at);
+            signals.observe_own_leg("WALLET", "MINT", "sig1", 100, 0.5, at, 300);
             tokio::time::timeout(Duration::from_secs(1), notified.as_mut())
                 .await
                 .expect("waiter should wake on observe_own_leg");
@@ -392,16 +413,21 @@ mod tests {
 
         let legs = signals.observed_legs("sig1").expect("preview present");
         assert_eq!(legs.token_amount, 100);
-        signals.observe_own_leg("WALLET", "MINT", "sig1", 50, 0.25, at);
+        signals.observe_own_leg("WALLET", "MINT", "sig1", 50, 0.25, at, 302);
         let legs = signals.observed_legs("sig1").expect("preview present");
         assert_eq!(legs.token_amount, 150);
         assert!((legs.amount_sol - 0.75).abs() < 1e-9);
+        // Slot extremes span the rollup — `entry_slot` takes the earliest leg and
+        // `exit_slot` the latest, so a multi-slot signature set cannot collapse
+        // both onto whichever leg happened to arrive last.
+        assert_eq!(legs.first_slot, Some(300));
+        assert_eq!(legs.last_slot, Some(302));
     }
 
     #[test]
     fn observe_own_leg_noop_without_waiter() {
         let signals = TradeSignals::new();
-        signals.observe_own_leg("WALLET", "MINT", "sig1", 100, 0.5, Utc::now());
+        signals.observe_own_leg("WALLET", "MINT", "sig1", 100, 0.5, Utc::now(), 300);
         assert!(signals.observed_legs("sig1").is_none());
         assert!(signals.own_legs.is_empty());
     }

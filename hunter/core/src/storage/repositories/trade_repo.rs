@@ -887,13 +887,23 @@ impl TradeRepo {
             .map(|s| sig_base58_to_bytes(s))
             .collect::<anyhow::Result<_>>()?;
 
-        let row: (i64, i64, i64, Option<DateTime<Utc>>, Option<DateTime<Utc>>) = sqlx::query_as(
+        let row: (
+            i64,
+            i64,
+            i64,
+            Option<DateTime<Utc>>,
+            Option<DateTime<Utc>>,
+            Option<i64>,
+            Option<i64>,
+        ) = sqlx::query_as(
             r#"
             SELECT COUNT(*)::bigint,
                    COALESCE(SUM(token_amount), 0)::bigint,
                    COALESCE(SUM(amount_lamports), 0)::bigint,
                    MIN(block_time),
-                   MAX(block_time)
+                   MAX(block_time),
+                   MIN(slot),
+                   MAX(slot)
             FROM trades
             WHERE wallet_id = $1
               AND mint_address = $2
@@ -908,7 +918,7 @@ impl TradeRepo {
         .fetch_one(&self.pool)
         .await?;
 
-        let (leg_count, token_sum, lamports_sum, first, last) = row;
+        let (leg_count, token_sum, lamports_sum, first, last, first_slot, last_slot) = row;
         if leg_count == 0 {
             return Ok(None);
         }
@@ -918,6 +928,11 @@ impl TradeRepo {
             amount_sol: lamports_to_sol(lamports_sum),
             first_block_time: first.unwrap_or_else(Utc::now),
             last_block_time: last.unwrap_or_else(Utc::now),
+            // Unlike the block times there is no `now()` fallback: a missing slot
+            // stays None. Substituting anything here would fabricate a latency
+            // reading, which is worse than not having one.
+            first_slot: first_slot.map(|v| v as u64),
+            last_slot: last_slot.map(|v| v as u64),
         }))
     }
 
@@ -1115,6 +1130,12 @@ pub struct SigLegs {
     pub first_block_time: DateTime<Utc>,
     /// Latest leg's block time (the fill's exit time).
     pub last_block_time: DateTime<Utc>,
+    /// Earliest leg's slot — the entry fill's `entry_slot` (mig 0004). `None`
+    /// when no leg carried one; never defaulted, so a latency read is either
+    /// real or absent.
+    pub first_slot: Option<u64>,
+    /// Latest leg's slot — the exit fill's `exit_slot`.
+    pub last_slot: Option<u64>,
 }
 
 /// Rolled-up manual-buy cost basis for one `(wallet, mint)` — the Σ of the

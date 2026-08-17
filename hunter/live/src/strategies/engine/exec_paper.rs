@@ -46,7 +46,7 @@ use trading_core::strategies::paper_fill::{
     exit_fill_window_closed, find_worst_case_paper_entry_at, find_worst_case_paper_exit_at,
 };
 
-use super::{PaperTarget, PositionId, PositionRegistry};
+use super::{TargetSnapshot, PositionId, PositionRegistry};
 
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 
@@ -59,7 +59,7 @@ const FILL_POLL: Duration = Duration::from_millis(100);
 /// `trigger_abs_idx` is the absolute cache trade index of the deciding trade
 /// (`trades_base + offset`). `None` means no trade yet (enter-on-arm) — wait for
 /// the first print and use that as the trigger. When a trigger resolves, its
-/// snapshot is written to [`PositionMeta::paper_target`] so the sink can persist
+/// snapshot is written to [`PositionMeta::target_snapshot`] so the sink can persist
 /// `target_*` alongside the worst-case entry fill. Empty window market-fills at
 /// the trigger (`market_fill_on_empty_window = true`) so live paper takes the
 /// same position set as lab replay/sweep.
@@ -76,7 +76,7 @@ pub async fn run_entry(
     let event = match wait_entry_fill(&token_cache, &mint, trigger_abs_idx).await {
         Some((fill, trigger)) => {
             if let Some(pid) = position {
-                registry.update(pid, |m| m.paper_target = Some(trigger));
+                registry.update(pid, |m| m.target_snapshot = Some(trigger));
             }
             let sol = lamports as f64 / LAMPORTS_PER_SOL;
             // `fill.price` is SOL per RAW unit ⇒ the quotient is already raw units.
@@ -143,8 +143,8 @@ struct ResolvedFill {
     block_time: chrono::DateTime<chrono::Utc>,
 }
 
-fn paper_target_from(t: &CachedTrade) -> PaperTarget {
-    PaperTarget {
+fn target_snapshot_from(t: &CachedTrade) -> TargetSnapshot {
+    TargetSnapshot {
         price: t.price_per_token,
         // `CachedTrade::token_amount` is already raw SPL units (same as entry fill).
         token_amount: t.token_amount.round().max(0.0) as u64,
@@ -152,6 +152,7 @@ fn paper_target_from(t: &CachedTrade) -> PaperTarget {
         // Cache rows are signature-free; sink persists an empty tx (UI still shows
         // the target↔entry price gap).
         tx: String::new(),
+        slot: Some(t.slot),
     }
 }
 
@@ -159,7 +160,7 @@ async fn wait_entry_fill(
     token_cache: &Arc<TokenCache>,
     mint: &str,
     mut trigger_abs: Option<u64>,
-) -> Option<(ResolvedFill, PaperTarget)> {
+) -> Option<(ResolvedFill, TargetSnapshot)> {
     let deadline = tokio::time::Instant::now() + FILL_WAIT;
     loop {
         if let Some((trades, base)) = cache_trades(token_cache, mint) {
@@ -174,7 +175,7 @@ async fn wait_entry_fill(
                     let max_slot = trades.last().map(|t| t.slot).unwrap_or(trigger_slot);
                     let timed_out = tokio::time::Instant::now() >= deadline;
                     if exit_fill_window_closed(trigger_slot, max_slot) || timed_out {
-                        let trigger = paper_target_from(&trades[rel]);
+                        let trigger = target_snapshot_from(&trades[rel]);
                         return find_worst_case_paper_entry_at(trades.as_slice(), rel, true).map(
                             |f| {
                                 (
@@ -196,7 +197,7 @@ async fn wait_entry_fill(
                 (trigger_abs, cache_trades(token_cache, mint))
             {
                 if let Some(rel) = abs_to_rel(t_abs, base, trades.len()) {
-                    let trigger = paper_target_from(&trades[rel]);
+                    let trigger = target_snapshot_from(&trades[rel]);
                     return find_worst_case_paper_entry_at(trades.as_slice(), rel, true).map(|f| {
                         (
                             ResolvedFill { price: f.price, block_time: f.block_time },
@@ -404,4 +405,17 @@ pub fn latest_trade_abs_idx(token_cache: &TokenCache, mint: &str) -> Option<u64>
         let s = e.value();
         (!s.trades.is_empty()).then(|| s.trades_base + s.trades.len() as u64 - 1)
     })
+}
+
+/// The trigger snapshot for a **real** entry — the most recent cached print at
+/// dispatch time, which is the trade the fold just decided on.
+///
+/// Paper resolves its trigger inside the fill loop (it has to: the worst-case
+/// fill is chosen relative to it). Real submits immediately and learns its fill
+/// slot only on confirm, so the trigger has to be captured here or it is lost.
+/// Without it a real position stores `entry_slot` with no `target_slot` to
+/// subtract, and the row cannot answer what it cost to be late (mig 0004).
+pub fn latest_trade_target(token_cache: &TokenCache, mint: &str) -> Option<TargetSnapshot> {
+    let (trades, _) = cache_trades(token_cache, mint)?;
+    trades.last().map(target_snapshot_from)
 }

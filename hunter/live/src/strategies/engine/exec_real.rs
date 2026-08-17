@@ -571,6 +571,8 @@ async fn adopt_existing_fill(
                         amount_sol: obs.amount_sol,
                         first_block_time: obs.first_block_time,
                         last_block_time: obs.last_block_time,
+                        first_slot: obs.first_slot,
+                        last_slot: obs.last_slot,
                     },
                 ));
             }
@@ -598,8 +600,12 @@ async fn emit_entry_filled(
     // cache is unreliable under concurrent same-mint snipes (see `SnipeBuy`).
     let token_account =
         funded_account.or_else(|| deps.trader.cached_token_account(&order.mint));
-    deps.fill_sigs
-        .put(order.intent.clone(), FillSigs { sigs: vec![sig], token_account });
+    deps.fill_sigs.put(
+        order.intent.clone(),
+        // Earliest leg — the buy's `entry_slot`, matching `first_block_time`
+        // semantics (`legs.last_block_time` is the fill's exit-side stamp).
+        FillSigs { sigs: vec![sig], token_account, slot: legs.first_slot },
+    );
     let _ = deps
         .fill_tx
         .send(Event::FillConfirmed {
@@ -809,6 +815,8 @@ async fn poll_feed_buy(
                     amount_sol: obs.amount_sol,
                     first_block_time: obs.first_block_time,
                     last_block_time: obs.last_block_time,
+                    first_slot: obs.first_slot,
+                    last_slot: obs.last_slot,
                 });
             }
         }
@@ -1112,7 +1120,8 @@ async fn fail_exit(
             order.token_account.clone().or_else(|| deps.trader.cached_token_account(&order.mint));
         deps.fill_sigs.put(
             order.intent.clone(),
-            FillSigs { sigs: sell_sigs.to_vec(), token_account },
+            // A failed sell has no resolved legs, so no slot to record.
+            FillSigs { sigs: sell_sigs.to_vec(), token_account, slot: None },
         );
     }
     let _ = deps
@@ -1131,7 +1140,8 @@ async fn finish_cleared_sell(
         order.token_account.clone().or_else(|| deps.trader.cached_token_account(&order.mint));
     deps.fill_sigs.put(
         order.intent.clone(),
-        FillSigs { sigs: sell_sigs.to_vec(), token_account },
+        // Latest leg — the sell's `exit_slot`, matching `last_block_time` below.
+        FillSigs { sigs: sell_sigs.to_vec(), token_account, slot: legs.last_slot },
     );
     let fill = Fill {
         price: legs.price_per_token(),
@@ -1262,6 +1272,8 @@ async fn confirm_sell(
                         amount_sol: obs.amount_sol,
                         first_block_time: obs.first_block_time,
                         last_block_time: obs.last_block_time,
+                        first_slot: obs.first_slot,
+                        last_slot: obs.last_slot,
                     });
                 }
             }

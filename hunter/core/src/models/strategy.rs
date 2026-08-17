@@ -280,6 +280,11 @@ pub struct StrategyPosition {
     pub target_token_amount: Option<u64>,
     pub target_time: Option<DateTime<Utc>>,
     pub target_tx: Option<String>,
+    /// Slot of the trigger trade (mig 0004). Pairs with `entry_slot` to give
+    /// execution latency in slots — the only unit a curve price moves in, and the
+    /// one `target_time` cannot express (`block_time` is the ingest clock).
+    /// `None` when the trigger is unknown.
+    pub target_slot: Option<u64>,
     // Entry fill.
     pub entry_price: Option<f64>,
     /// Raw token units (exact integer).
@@ -288,6 +293,10 @@ pub struct StrategyPosition {
     pub entry_sol: Option<f64>,
     pub entry_time: Option<DateTime<Utc>>,
     pub entry_tx_signatures: Value,
+    /// Slot the entry buy landed in (mig 0004). `None` for a paper fill — a
+    /// simulated fill never lands on chain, so it has no slot and must not
+    /// borrow the trigger's.
+    pub entry_slot: Option<u64>,
     // Exit fill.
     pub exit_price: Option<f64>,
     /// Raw token units (exact integer).
@@ -296,6 +305,9 @@ pub struct StrategyPosition {
     pub exit_sol: Option<f64>,
     pub exit_time: Option<DateTime<Utc>>,
     pub exit_tx_signatures: Value,
+    /// Slot the exit sell landed in (mig 0004); most recent leg on a scale-out.
+    /// `None` for a paper fill, as `entry_slot`.
+    pub exit_slot: Option<u64>,
     /// Running sum of confirmed sell-leg raw token units (mig 0018). Ledger is
     /// authority; this is the denormalized cache for list/sizing.
     #[serde(default)]
@@ -447,16 +459,19 @@ impl StrategyPosition {
             target_token_amount: None,
             target_time: None,
             target_tx: None,
+            target_slot: None,
             entry_price: None,
             entry_token_amount: None,
             entry_sol: None,
             entry_time: None,
             entry_tx_signatures: json!([]),
+            entry_slot: None,
             exit_price: None,
             exit_token_amount: None,
             exit_sol: None,
             exit_time: None,
             exit_tx_signatures: json!([]),
+            exit_slot: None,
             sold_token_amount: 0,
             exit_sol_total: 0.0,
             scale_stage: 0,
@@ -543,11 +558,20 @@ pub struct PositionFill {
 
 impl StrategyPosition {
     /// Record the target (trigger-trade) snapshot that armed this position.
-    pub fn set_target(&mut self, price: f64, amount: u64, time: DateTime<Utc>, tx: String) {
+    /// `slot` is the trigger's slot — `None` only when no print resolved it.
+    pub fn set_target(
+        &mut self,
+        price: f64,
+        amount: u64,
+        time: DateTime<Utc>,
+        tx: String,
+        slot: Option<u64>,
+    ) {
         self.target_price = Some(price);
         self.target_token_amount = Some(amount);
         self.target_time = Some(time);
         self.target_tx = Some(tx);
+        self.target_slot = slot;
         self.updated_at = Utc::now();
     }
 
@@ -567,12 +591,14 @@ impl StrategyPosition {
         sol: f64,
         time: DateTime<Utc>,
         tx_signatures: Vec<String>,
+        slot: Option<u64>,
     ) {
         self.entry_price = Some(price);
         self.entry_token_amount = Some(token_amount);
         self.entry_sol = Some(sol);
         self.entry_time = Some(time);
         self.entry_tx_signatures = json!(tx_signatures);
+        self.entry_slot = slot;
         self.status = "Holding".to_string();
         self.updated_at = Utc::now();
     }

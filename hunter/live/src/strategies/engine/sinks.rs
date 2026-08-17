@@ -605,7 +605,7 @@ impl Sink {
                 entry_price: None,
                 entry_sol: None,
                 entry_time: None,
-                paper_target: None,
+                target_snapshot: None,
                 cashback_enabled: cashback,
                 inflight_intent: None,
             },
@@ -642,7 +642,8 @@ impl Sink {
         let fs = delta.intent.as_ref().and_then(|i| self.fill_sigs.take(i)).unwrap_or_default();
         let entry_tx = fs.sigs.first().cloned().unwrap_or_default();
         let token_account = fs.token_account.clone();
-        let paper_target = meta.paper_target.clone();
+        let entry_slot = fs.slot;
+        let target_snapshot = meta.target_snapshot.clone();
 
         // Registry first so Pass-2 / next Trade can size a sell without waiting on PG.
         self.registry.update(delta.position, |m| {
@@ -652,7 +653,7 @@ impl Sink {
             m.entry_time = Some(fill.at);
             m.sold_token_amount = 0;
             m.scale_stage = 0;
-            m.paper_target = None;
+            m.target_snapshot = None;
             if token_account.is_some() {
                 m.token_account = token_account.clone();
             }
@@ -665,9 +666,12 @@ impl Sink {
             if let Some(h) = prev {
                 let _ = h.await;
             }
-            // Paper: persist the trigger (`target_*`) before the worst-case entry fill
-            // so the UI can show the modeled adverse-slippage gap.
-            if let Some(target) = paper_target {
+            // Persist the trigger (`target_*`) before the entry fill. In paper the
+            // gap is the MODELED worst-case slippage; in real it is measured, and
+            // `entry_slot - target_slot` is the only latency reading this system
+            // produces (mig 0004). Both modes record it — the field is named
+            // `target_snapshot` for history, not because real skips it.
+            if let Some(target) = target_snapshot {
                 if let Err(e) = repo
                     .record_target(
                         pg_id,
@@ -675,6 +679,7 @@ impl Sink {
                         target.token_amount,
                         target.time,
                         &target.tx,
+                        target.slot,
                     )
                     .await
                 {
@@ -690,6 +695,7 @@ impl Sink {
                     fill.sol,
                     fill.at,
                     token_account.as_deref(),
+                    entry_slot,
                 )
                 .await
             {
@@ -735,6 +741,7 @@ impl Sink {
                     stage,
                     &fs.sigs,
                     false,
+                    fs.slot,
                 )
                 .await
             {
@@ -809,6 +816,7 @@ impl Sink {
                     stage,
                     &fs.sigs,
                     true,
+                    fs.slot,
                 )
                 .await
             {

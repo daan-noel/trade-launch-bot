@@ -360,6 +360,7 @@ impl IngestConsumer {
                 e.tokens,
                 e.sol,
                 e.block_time,
+                e.slot,
             );
         }
 

@@ -233,6 +233,7 @@ async fn resolve_buy_submitted_inner(
                     legs.amount_sol,
                     legs.last_block_time,
                     token_account.as_deref(),
+                    legs.first_slot,
                 )
                 .await
             {

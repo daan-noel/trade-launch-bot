@@ -634,8 +634,17 @@ fn dispatch_buy(
                 })
                 .unwrap_or_default();
             let slippage_bps = buy_slippage(settings);
+            // Capture the trigger print BEFORE the submit — this is the last moment
+            // the deciding trade is identifiable. The sink pairs it with the
+            // confirmed fill's slot to give `entry_slot - target_slot` (mig 0004),
+            // the one execution-latency reading this system produces. Paper sets
+            // this inside its fill loop instead; both land in the same sink.
+            let target = exec_paper::latest_trade_target(token_cache, &mint_s);
             registry.update(position, |m| {
                 m.inflight_intent = Some(intent.clone());
+                if target.is_some() {
+                    m.target_snapshot = target.clone();
+                }
             });
             let ping_stamp = real_deps.ping_stamps.get(&mint_s).map(|e| *e);
             let order = BuyOrder {

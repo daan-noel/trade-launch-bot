@@ -330,6 +330,9 @@ pub async fn book_externally_cleared_pg(
         None,
         &[],
         true,
+        // An externally-cleared bag is reconstructed, not observed landing — there
+        // is no leg of ours to take a slot from.
+        None,
     )
     .await?;
     info!(position_id = %pg_id, reason, "orphan_exit: booked externally cleared → End");
@@ -586,7 +589,7 @@ pub fn adopt_holding_into_engine(
             entry_price: pos.entry_price,
             entry_sol: pos.entry_sol,
             entry_time: pos.entry_time,
-            paper_target: None,
+            target_snapshot: None,
             cashback_enabled: false,
             inflight_intent: None,
         },
@@ -717,7 +720,7 @@ pub fn adopt_buy_submitted_into_engine(
             entry_price: pos.entry_price,
             entry_sol: pos.entry_sol,
             entry_time: pos.entry_time,
-            paper_target: None,
+            target_snapshot: None,
             cashback_enabled: false,
             inflight_intent: Some(intent),
         },

@@ -430,7 +430,7 @@ pub struct PositionMeta {
     pub entry_time: Option<chrono::DateTime<chrono::Utc>>,
     /// Paper-only: trigger-trade snapshot for `target_*` (armed signal, distinct
     /// from the worst-case entry fill). Consumed by the sink on `Holding`.
-    pub paper_target: Option<PaperTarget>,
+    pub target_snapshot: Option<TargetSnapshot>,
     pub cashback_enabled: bool,
     /// The intent currently in flight for this position (entry or exit). The exit
     /// reaper uses it to emit `FillFailed` back into the engine when a sell task
@@ -440,11 +440,15 @@ pub struct PositionMeta {
 
 /// Trigger-trade snapshot the paper fill model arms from (→ DB `target_*`).
 #[derive(Debug, Clone)]
-pub struct PaperTarget {
+pub struct TargetSnapshot {
     pub price: f64,
     pub token_amount: u64,
     pub time: chrono::DateTime<chrono::Utc>,
     pub tx: String,
+    /// Slot of the trigger trade (mig 0004 `target_slot`). This one IS knowable in
+    /// paper — the trigger is a real print off the feed, unlike the simulated fill
+    /// it is compared against.
+    pub slot: Option<u64>,
 }
 
 /// Shared engine-position ↔ PG-row registry. The sink writes it; the executor and
@@ -592,6 +596,12 @@ impl ArmedRegistry {
 pub struct FillSigs {
     pub sigs: Vec<String>,
     pub token_account: Option<String>,
+    /// Slot the fill landed in (mig 0004 `entry_slot` / `exit_slot`). Rides this
+    /// side-channel rather than `Event::FillConfirmed`'s `Fill` on purpose: the
+    /// engine is the pure decision fold and no decision reads a slot, so putting
+    /// it on the event would widen the kernel's input for a bookkeeping value.
+    /// `None` for a paper fill — simulated, so it never lands in a slot.
+    pub slot: Option<u64>,
 }
 
 /// Shared intent → [`FillSigs`] store (executor writes, sink reads-and-clears).
