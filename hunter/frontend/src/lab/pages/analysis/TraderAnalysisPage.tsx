@@ -19,6 +19,8 @@ import { useTimezone } from 'context/TimezoneContext';
 import { apiErrorMessage } from 'store/apiSlice';
 import { useGetTraderTokensQuery } from '@lab/store/labEndpoints';
 import { useProfileWallets } from 'hooks/useProfileWallets';
+import { useLocalStorage } from 'hooks/useLocalStorage';
+import { STORAGE_KEYS } from 'lib/storage';
 import type { ProfileWalletInfo } from 'components/token-price-chart/types';
 import type { TraderTokenRow } from 'types';
 
@@ -106,11 +108,34 @@ const parseLimit = (raw: string) => {
  * that was never tracked won't show. Charts are lazily mounted when the toggle
  * is on.
  */
+/** Persisted query knobs (`mt:form.traderAnalysis`). `days` is the look-back
+ *  picker's preset (day count as a string); `limit` keeps the raw input so the
+ *  blank / `0` "every mint" sentinel round-trips. */
+interface TraderForm {
+  wallet: string;
+  days: string;
+  limit: string;
+}
+const DEFAULT_FORM: TraderForm = {
+  wallet: '',
+  days: String(DEFAULT_DAYS),
+  limit: String(DEFAULT_LIMIT),
+};
+
 export function TraderAnalysisPage() {
   const { timezone } = useTimezone();
-  const [walletInput, setWalletInput] = useState('');
-  const [daysInput, setDaysInput] = useState(String(DEFAULT_DAYS));
-  const [limitInput, setLimitInput] = useState(String(DEFAULT_LIMIT));
+  // One persisted draft for the query knobs: the same wallet is studied over the
+  // same look-back across sessions, so a refresh must not clear the address or
+  // silently reset the window / row cap the numbers were read under.
+  const [form, setForm] = useLocalStorage<TraderForm>(
+    STORAGE_KEYS.traderAnalysisConfig,
+    DEFAULT_FORM,
+  );
+  const { wallet: walletInput, days: daysInput, limit: limitInput } = form;
+  const patch = useCallback(
+    (p: Partial<TraderForm>) => setForm((prev) => ({ ...prev, ...p })),
+    [setForm],
+  );
   const [query, setQuery] = useState<TraderQuery | null>(null);
   // Table column/search cohort (pre-pagination). Pinned when focus activates so
   // the analytics deck's parent base doesn't collapse to the focused slice
@@ -173,7 +198,7 @@ export function TraderAnalysisPage() {
   // is async, so pass the address straight to `run`).
   const handlePickWallet = (address: string) => {
     if (!address) return;
-    setWalletInput(address);
+    patch({ wallet: address });
     run(address);
   };
 
@@ -229,7 +254,7 @@ export function TraderAnalysisPage() {
           Wallet address
           <Input
             value={walletInput}
-            onChange={(e) => setWalletInput(e.target.value)}
+            onChange={(e) => patch({ wallet: e.target.value })}
             onKeyDown={(e) => {
               if (e.key === 'Enter') run();
             }}
@@ -268,7 +293,7 @@ export function TraderAnalysisPage() {
             emptyLabel="Days"
             presets={[...TRADER_LOOKBACK_PRESETS]}
             value={{ preset: daysInput, from: '', to: '' }}
-            onChange={({ preset }) => setDaysInput(preset)}
+            onChange={({ preset }) => patch({ days: preset })}
           />
         </label>
         <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
@@ -279,7 +304,7 @@ export function TraderAnalysisPage() {
             blankZero
             placeholder="∞"
             value={limitInput}
-            onChange={(e) => setLimitInput(e.target.value)}
+            onChange={(e) => patch({ limit: e.target.value })}
             onKeyDown={(e) => {
               if (e.key === 'Enter') run();
             }}

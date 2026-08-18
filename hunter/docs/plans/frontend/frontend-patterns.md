@@ -327,7 +327,8 @@ the tab, and follow a `storage` event across tabs.
 | `mt:table.{cols,knownCols,prefs,pins,charts}` | per-`tableId` maps: visible columns, the column set at write time, sort/pageSize/pinsCollapsed/filtersOpen, pinned rows + snapshots, charts-grid on/off |
 | `mt:page.creationStats` | Creation Stats page **and** its grouped section (one blob, one field per control) |
 | `mt:tokens.filters` / `mt:tokens.live` | Tokens page quick filters; live-stream toggle |
-| `mt:form.flowDiscovery` / `mt:form.metricDiscovery` / `mt:sweep.config*` | form drafts |
+| `mt:form.flowDiscovery` / `mt:form.metricDiscovery` / `mt:form.ruleSearch` / `mt:form.familySearch` / `mt:form.replay` / `mt:form.traderAnalysis` / `mt:sweep.config*` | form drafts — **one blob per page**, every input of that form in it |
+| `mt:simulate.runPrefs` | Simulate run parameters: created window + fill/cost model (what a run scans and how it prices) |
 | `mt:flow.previewChart.prefs` | FlowPreviewChart toolbar |
 | `mt:sweep.sel.*` · `mt:sweep.showNotFired` · `mt:simulate.showNotFired` | run selection; the two **deliberately separate** not-fired toggles (a sweep row is a combo token, a sim row a position — Simulate and Dry-run *do* share theirs) |
 | `mt:filter.tags.<pageId>` / `mt:filter.mode.<pageId>` | URL-mirrored view filters; **the URL stays authoritative**, storage only restores the last-used value when the URL carries no param |
@@ -336,9 +337,16 @@ the tab, and follow a `storage` event across tabs.
 ### Persist vs do-not-persist
 
 Persist **view preferences**: collapse state, column visibility/sort/page size/pins,
-show-hide toggles, chart toolbar prefs, form drafts. Do **not** persist modal/popover
-open, focus chips or row selection, in-flight busy flags, or a cohort filter the URL
-already owns. An accordion whose default follows the data (`defaultOpen={runs.length === 0}`)
+show-hide toggles, chart toolbar prefs, and form drafts — including the run knobs that
+decide what a query covers (date range, look-back, row cap, fill/cost model), which
+otherwise reset to a *different* scope than the numbers on screen were read under. Do
+**not** persist modal/popover open, focus chips or row selection, in-flight busy flags,
+results, or a cohort filter the URL already owns (Console History, Portfolio) — nor the
+target of a one-shot operation (the mint on Sync Token, a create-form's fields).
+
+A form persists as **one blob per page** with every input in it, and each value has
+exactly one writer: the page's draft, or the URL, never both. A picker split across two
+homes restores two different windows on refresh. An accordion whose default follows the data (`defaultOpen={runs.length === 0}`)
 must stay unpersisted — otherwise the first visit's data shape sticks forever.
 
 ### Retiring a key

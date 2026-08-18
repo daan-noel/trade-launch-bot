@@ -75,11 +75,18 @@ export const STORAGE_KEYS = {
   ruleSearchConfig: `${PREFIX}form.ruleSearch`,
   /** Family-search form draft. */
   familySearchConfig: `${PREFIX}form.familySearch`,
+  /** Replay-viewer form draft (log dir/date, mint, window, step knobs). */
+  replayConfig: `${PREFIX}form.replay`,
+  /** Trader-analysis form draft (wallet, look-back days, max tokens). */
+  traderAnalysisConfig: `${PREFIX}form.traderAnalysis`,
   /** FlowPreviewChart toolbar toggle state (flow-discovery). */
   flowPreviewChartPrefs: `${PREFIX}flow.previewChart.prefs`,
 
   // ── strategy surfaces ─────────────────────────────────────────────────────
   sweepConfig: `${PREFIX}sweep.config`,
+  /** Simulate run parameters — created window + fill/cost model. The controls
+   *  bound what a run scans and how it prices, so they outlive one page visit. */
+  simulateRunPrefs: `${PREFIX}simulate.runPrefs`,
   /** Pending discovery → sweep seed (sessionStorage). Cleared once the sweep form applies it. */
   sweepDiscoverySeed: `${PREFIX}sweep.discoverySeed`,
   /** Base key for persisted sweep run selection; append `.${strategyId}` for per-strategy key. */
@@ -146,6 +153,8 @@ export interface UiToggles {
   /** Console: the collapsible ARMS section (the durable arm ledger). Defaults
    *  closed — the ledger is a review surface, and closed means no fetch. */
   consoleArmsOpen?: boolean;
+  /** Tokens: narrow the board to tracked mints (the All / Tracked scope). */
+  tokensTrackedOnly?: boolean;
 }
 
 // ── raw string accessors ────────────────────────────────────────────────────
@@ -396,6 +405,9 @@ const LEGACY_TABLE_CHARTS_PREFIX = `${PREFIX}tablecharts:`;
  *  the registry never match; third-party keys never match. */
 function isLegacyStorageKey(key: string): boolean {
   if (key.startsWith('hunter.')) return true;
+  // Date-range pickers persist inside their page's draft blob, never in a
+  // second home of their own. Purge, don't move: the draft is the one writer.
+  if (key === `${PREFIX}ui.dateRanges`) return true;
   if (key.startsWith(LEGACY_TABLE_CHARTS_PREFIX)) return true;
   if (LEGACY_JSON_MOVES.some((m) => m.from === key)) return true;
   if (LEGACY_STRING_MOVES.some((m) => m.from === key)) return true;

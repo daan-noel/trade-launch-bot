@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from 'lib/cn';
 import { IconButton } from 'components/ui/IconButton';
 import { IconButtonGroup } from 'components/ui/IconButtonGroup';
@@ -18,6 +18,8 @@ import type { ChartEventMarker } from 'components/token-price-chart';
 import { apiErrorMessage, useGetTokenDetailQuery } from 'store/apiSlice';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { useInspectReplayMutation } from '@lab/store/labEndpoints';
+import { useLocalStorage } from 'hooks/useLocalStorage';
+import { STORAGE_KEYS } from 'lib/storage';
 import {
   eventBody,
   eventKind,
@@ -115,15 +117,39 @@ function effectSummary(fx: InspectEffect): string {
   }
 }
 
+/** Persisted replay form (`mt:form.replay`). `since`/`until` are wall-clock UTC,
+ *  blank on either end meaning the full slice. */
+interface ReplayForm {
+  dir: string;
+  date: string;
+  mint: string;
+  since: string;
+  until: string;
+  syntheticTicks: boolean;
+  activeOnly: boolean;
+  maxSteps: number;
+}
+const DEFAULT_FORM: ReplayForm = {
+  dir: '',
+  date: '',
+  mint: '',
+  since: '',
+  until: '',
+  syntheticTicks: true,
+  activeOnly: false,
+  maxSteps: 10000,
+};
+
 export function ReplayViewerPage() {
-  const [dir, setDir] = useState('');
-  const [date, setDate] = useState('');
-  const [mint, setMint] = useState('');
-  const [since, setSince] = useState('');
-  const [until, setUntil] = useState('');
-  const [syntheticTicks, setSyntheticTicks] = useState(true);
-  const [activeOnly, setActiveOnly] = useState(false);
-  const [maxSteps, setMaxSteps] = useState(10000);
+  // One persisted draft for the whole form: a replay is re-run against the same
+  // log slice across sessions, so a refresh must not clear the dir/date/mint the
+  // user typed or widen the window back to the full slice.
+  const [form, setForm] = useLocalStorage<ReplayForm>(STORAGE_KEYS.replayConfig, DEFAULT_FORM);
+  const { dir, date, mint, since, until, syntheticTicks, activeOnly, maxSteps } = form;
+  const patch = useCallback(
+    (p: Partial<ReplayForm>) => setForm((prev) => ({ ...prev, ...p })),
+    [setForm],
+  );
 
   const [inspect, { data: run, isLoading, error }] = useInspectReplayMutation();
   const runErr = apiErrorMessage(error, 'Replay failed');
@@ -256,18 +282,26 @@ export function ReplayViewerPage() {
         <div className="flex flex-col gap-3">
           <div className="flex flex-wrap items-end gap-3">
             <Field label="Dir" hint="blank = EVENT_LOG_DIR" className="w-[180px]">
-              <Input value={dir} onChange={(e) => setDir(e.target.value)} placeholder="event_log" />
+              <Input
+                value={dir}
+                onChange={(e) => patch({ dir: e.target.value })}
+                placeholder="event_log"
+              />
             </Field>
             <Field label="Date" hint="one day-file" className="w-fit">
               <DatePicker
                 aria-label="Replay day-file date"
                 emptyLabel="Pick day"
                 value={date}
-                onChange={setDate}
+                onChange={(d) => patch({ date: d })}
               />
             </Field>
             <Field label="Mint" hint="focus one token" className="w-[280px]">
-              <Input value={mint} onChange={(e) => setMint(e.target.value)} placeholder="all tokens" />
+              <Input
+                value={mint}
+                onChange={(e) => patch({ mint: e.target.value })}
+                placeholder="all tokens"
+              />
             </Field>
             <Field label="Window" hint="UTC" className="w-fit">
               <DateTimeRangePicker
@@ -276,10 +310,7 @@ export function ReplayViewerPage() {
                 emptyLabel="Full slice"
                 customPreset="custom"
                 value={{ preset: 'custom', from: since, to: until }}
-                onChange={({ from, to }) => {
-                  setSince(from);
-                  setUntil(to);
-                }}
+                onChange={({ from, to }) => patch({ since: from, until: to })}
               />
             </Field>
             <Field label="Max steps" className="w-[120px]">
@@ -287,15 +318,21 @@ export function ReplayViewerPage() {
                 type="number"
                 min={1}
                 value={maxSteps}
-                onChange={(e) => setMaxSteps(Math.max(1, Number(e.target.value) || 1))}
+                onChange={(e) => patch({ maxSteps: Math.max(1, Number(e.target.value) || 1) })}
               />
             </Field>
             <label className="flex h-[34px] items-center gap-1.5 text-sm text-text-mid">
-              <Checkbox checked={syntheticTicks} onChange={(e) => setSyntheticTicks(e.target.checked)} />
+              <Checkbox
+                checked={syntheticTicks}
+                onChange={(e) => patch({ syntheticTicks: e.target.checked })}
+              />
               <span>synthetic ticks</span>
             </label>
             <label className="flex h-[34px] items-center gap-1.5 text-sm text-text-mid">
-              <Checkbox checked={activeOnly} onChange={(e) => setActiveOnly(e.target.checked)} />
+              <Checkbox
+                checked={activeOnly}
+                onChange={(e) => patch({ activeOnly: e.target.checked })}
+              />
               <span>active rules only</span>
             </label>
             <IconButton

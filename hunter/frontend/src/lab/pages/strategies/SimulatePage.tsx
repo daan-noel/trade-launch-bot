@@ -163,6 +163,22 @@ const DASH = <span className="text-text-dim/60">—</span>;
  *  ordered as a pessimism spectrum: worst-case (red) → the reachable next-slot
  *  pair (neutral) → first-in-window and signal-price (green, both reachable only
  *  in part or not at all, so both read as an optimistic bound). */
+/** Persisted run parameters (`mt:simulate.runPrefs`). The creation window is the
+ *  same wire shape as the grouped sweep's "Created range" — wall-clock UTC, blank
+ *  on either end meaning unbounded. */
+interface SimulateRunPrefs {
+  fillModel: FillModelId;
+  costModel: CostModelId;
+  since: string;
+  until: string;
+}
+const DEFAULT_RUN_PREFS: SimulateRunPrefs = {
+  fillModel: 'worst_case',
+  costModel: 'pumpfun_default',
+  since: '',
+  until: '',
+};
+
 const FILL_MODEL_VARIANT: Record<FillModelId, BadgeVariant> = {
   worst_case: 'danger',
   first_in_window: 'success',
@@ -220,18 +236,23 @@ export function SimulatePage() {
   // Which bulk run is in flight: a trade-mode ('paper'/'real') or the table's
   // current filter cohort ('filtered'). Guards all three "Simulate All" buttons.
   const [bulkMode, setBulkMode] = useState<BulkTag | null>(null);
-  const [fillModel, setFillModel] = useState<FillModelId>('worst_case');
-  // Kept alongside fillModel — pairing an explicit fill model with the default
-  // cost model double-counts slippage (see `COST_MODELS`), so the two travel
-  // together. Default stays `pumpfun_default` (the historically hardcoded value)
-  // so a user who never touches this control sees unchanged numbers.
-  const [costModel, setCostModel] = useState<CostModelId>('pumpfun_default');
-  // Optional creation-time window bounding which tokens the run scans
-  // (`EngineSimRequest.since/until`, same semantics as the grouped sweep's
-  // "Created range") — blank on both ends means all history, unchanged from
-  // before this control existed.
-  const [since, setSince] = useState('');
-  const [until, setUntil] = useState('');
+  /** Run parameters — how a run prices (fill + cost model) and which tokens it
+   *  scans (creation window). One persisted blob: they are a scope the user sets
+   *  once and re-runs against, so a refresh must not silently reset the pricing
+   *  or widen the window back to all history. Defaults are the historically
+   *  hardcoded values, so a user who never touches them sees unchanged numbers —
+   *  and pairing an explicit fill model with the default cost model
+   *  double-counts slippage (see `COST_MODELS`), which is why the two travel
+   *  together in one blob. */
+  const [runPrefs, setRunPrefs] = useLocalStorage<SimulateRunPrefs>(
+    STORAGE_KEYS.simulateRunPrefs,
+    DEFAULT_RUN_PREFS,
+  );
+  const { fillModel, costModel, since, until } = runPrefs;
+  const patchRunPrefs = useCallback(
+    (patch: Partial<SimulateRunPrefs>) => setRunPrefs((prev) => ({ ...prev, ...patch })),
+    [setRunPrefs],
+  );
   // Read through a ref in the run handlers: `runRule` is captured inside the
   // memoized `columns` (deps: runs/fpById/fpTints), so a plain closure over
   // `fillModel`/`costModel`/`since`/`until` would go stale until one of those
@@ -499,10 +520,7 @@ export function SimulatePage() {
               emptyLabel="All history"
               customPreset="custom"
               value={{ preset: 'custom', from: since, to: until }}
-              onChange={({ from, to }) => {
-                setSince(from);
-                setUntil(to);
-              }}
+              onChange={({ from, to }) => patchRunPrefs({ since: from, until: to })}
             />
           </div>
 
@@ -514,7 +532,7 @@ export function SimulatePage() {
             <Select
               fieldSize="sm"
               value={fillModel}
-              onChange={(e) => setFillModel(e.target.value as FillModelId)}
+              onChange={(e) => patchRunPrefs({ fillModel: e.target.value as FillModelId })}
               className="w-36"
               title={FILL_MODELS.find((m) => m.id === fillModel)?.hint}
             >
@@ -533,7 +551,7 @@ export function SimulatePage() {
             <Select
               fieldSize="sm"
               value={costModel}
-              onChange={(e) => setCostModel(e.target.value as CostModelId)}
+              onChange={(e) => patchRunPrefs({ costModel: e.target.value as CostModelId })}
               className="w-36"
               title={COST_MODELS.find((m) => m.id === costModel)?.hint}
             >

@@ -937,7 +937,9 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   (`mt:` namespace); column visibility in one `mt:table.cols` map keyed by `tableId`.
 - **Durable UI prefs have one gate:** `lib/storage.ts` (`STORAGE_KEYS` + `ACCORDION_IDS` +
   `migrateLegacyStorage`) with `hooks/useLocalStorage` (`useLocalStorage` / `useStoredField`) and
-  `hooks/useUiPrefs` (`useAccordionOpen` / `useUiToggle`) on top. Related prefs group into blobs
+  `hooks/useUiPrefs` (`useAccordionOpen` / `useUiToggle`) on top. A run form keeps ONE draft blob
+  per page (`mt:form.*`, `mt:sweep.config`, `mt:simulate.runPrefs`) holding every input including
+  its date range, so a refresh restores the exact scope the numbers were read under. Related prefs group into blobs
   (`mt:ui.accordion`, `mt:ui.toggles`, `mt:table.*`, `mt:page.creationStats`) rather than one flat
   key each; a raw `localStorage.*` in a component fails `lib/storageGate.test.ts`. Key table,
   persist-vs-not policy, and how to retire a key:

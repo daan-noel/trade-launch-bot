@@ -31,6 +31,7 @@ import {
 import { sharedApi } from 'store/sharedEndpoints';
 import type { AppDispatch } from 'store/types';
 import { useTimezone } from 'context/TimezoneContext';
+import { useUiToggle } from 'hooks/useUiPrefs';
 import { STORAGE_KEYS, getJSON, setJSON } from 'lib/storage';
 
 const LS_LIVE_KEY = STORAGE_KEYS.tokensLive;
@@ -78,7 +79,9 @@ export function TokensPage({
   const columns = useMemo(() => tokenColumns(), []);
 
   const [live, setLive] = useState(loadLive);
-  const [trackedOnly, setTrackedOnly] = useState(false);
+  // Persisted beside the quick filters it sits with in the bar — an All/Tracked
+  // scope that silently reset to All on refresh reads as "the board lost rows".
+  const [trackedOnly, setTrackedOnly] = useUiToggle('tokensTrackedOnly', false);
   const [quickFilters, setQuickFilters] = useState<TokensQuickFilters>(loadStoredQuickFilters);
   const [selectedMint, setSelectedMint] = useState<string | null>(mintFromUrl);
   // View-state emitted by the DataTable (page/sort/search/col-filters). The
