@@ -1472,7 +1472,10 @@ async fn run() -> anyhow::Result<()> {
             use trading_core::services::veteran_roster::{refresh_roster, DEFAULT_LOOKBACK_DAYS};
             const ROSTER_REFRESH_SECS: u64 = 3600;
             loop {
-                match rule_repo.list_active().await {
+                // Every rule that READS `m_bundle`, not just the active ones: a rule
+                // being tuned needs a roster on its fingerprint before it is switched
+                // on, or its first live minutes read `NaN` and enter nothing.
+                match rule_repo.list().await {
                     Ok(rules) => {
                         let mut seen = std::collections::HashSet::new();
                         for rule in rules.iter().filter(|r| {

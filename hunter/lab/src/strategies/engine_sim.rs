@@ -34,6 +34,7 @@ use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 use trading_core::storage::repositories::rule_repo::RuleRepo;
 use trading_core::storage::repositories::settings_repo::AppSettings;
 use trading_core::storage::repositories::token_repo::TokenRepo;
+use trading_core::services::veteran_roster;
 use trading_core::strategies::fingerprint_axes::{fp_to_engine, observed_axes, rule_to_loaded};
 
 use crate::state::analysis_cache::AnalysisCacheKey;
@@ -131,6 +132,10 @@ struct ResolvedTarget {
     loaded: LoadedRule,
     fp: EngineFingerprint,
     buy_amount_sol: f64,
+    /// Whether the rule reads `m_bundle`. Decides whether the backtest pays for a
+    /// walk-forward veteran roster (see [`run_engine_backtest`]) - every other
+    /// metric is folded from the corpus itself and needs no such rebuild.
+    reads_bundle: bool,
 }
 
 /// Start a generic engine simulation. Resolves the target, then spawns a detached
@@ -256,7 +261,9 @@ async fn resolve_target(
         let loaded = backtest_armed(rule_to_loaded(&rule).map_err(|e| {
             HttpResponse::BadRequest().json(err(&format!("invalid rule params: {e}")))
         })?);
+        let reads_bundle = hunter_engine::metrics::bundle::params_reference_bundle(&rule.params);
         return Ok(ResolvedTarget {
+            reads_bundle,
             run_id: rule_id,
             buy_amount_sol: rule.buy_amount_sol(),
             fp: fp_to_engine(&fp),
@@ -290,6 +297,7 @@ async fn resolve_target(
         HttpResponse::BadRequest().json(err(&format!("invalid draft params: {e}")))
     })?);
     Ok(ResolvedTarget {
+        reads_bundle: hunter_engine::metrics::bundle::params_reference_bundle(&synthetic.params),
         run_id: synthetic.id,
         buy_amount_sol: draft.buy_amount_sol,
         fp: fp_to_engine(&fp),
@@ -360,7 +368,7 @@ async fn run_engine_backtest(
     // stages vs this total also exposes the un-timed remainder (build set, sort, JSON).
     let _total = crate::sweep::obs::Stage::start("sim_backtest_total");
 
-    let fp = target.fp.clone();
+    let mut fp = target.fp.clone();
 
     // The matched candidate set — every token whose observed creation axes match the
     // fingerprint's instant axes (see [`scan_matched_candidates`]). Shared, cached,
@@ -381,6 +389,36 @@ async fn run_engine_backtest(
     } else {
         tokens
     };
+
+    // `m_bundle` is the one metric whose input does not come from the corpus: the
+    // veteran roster is a stored snapshot, and the stored one was built from launches
+    // that lie in the FUTURE of nearly every token replayed here. Reading it would
+    // score a three-week-old token against today's answer. So the driver rebuilds the
+    // roster once per day of the run window and hands the engine a timeline instead -
+    // each token then sees only launches older than itself.
+    if target.reads_bundle {
+        let _stage = crate::sweep::obs::Stage::start("sim_roster");
+        let span = tokens
+            .iter()
+            .map(|t| t.created_at)
+            .min()
+            .zip(tokens.iter().map(|t| t.created_at).max());
+        if let Some((from, to)) = span {
+            let min_launches = veteran_roster::configured_min_launches(&fp.metric_config);
+            let timeline = veteran_roster::walk_forward_timeline(
+                &app_state.db,
+                &TokenRepo::new(app_state.db.clone()),
+                &fp,
+                min_launches,
+                from,
+                to,
+                veteran_roster::DEFAULT_LOOKBACK_DAYS,
+            )
+            .await
+            .map_err(|e| anyhow!("veteran roster rebuild failed: {e}"))?;
+            veteran_roster::install_timeline(&mut fp.metric_config, min_launches, timeline);
+        }
+    }
 
     let progress = Arc::new(SimProgress::new(
         app_state.sse_tx.clone(),

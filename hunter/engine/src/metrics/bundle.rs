@@ -15,8 +15,14 @@
 //! by later trading. It also makes the group **monotonic-free**: the values simply stop
 //! moving, so no unsatisfiability derivation applies.
 //!
-//! Sells are ignored. The question is who *funded* the launch; a launch-window sell is
-//! an exit from a position taken in the same window and would double-count the wallet.
+//! Read the share as "the fingerprint's REGULARS opened this token, rather than wallets
+//! never seen on it before" - not as "the launcher's own bundlers funded it". Most
+//! launch-window wallets are one-shot and rotate away; what the roster catches is the
+//! small persistent crowd that does not. Same number, different reason to trust it - see
+//! `hunter/docs/plans/strategies/veteran-wallets.md`.
+//!
+//! Sells are ignored. The question is whose money OPENED the token; a launch-window sell
+//! is an exit from a position taken in the same window and would double-count the wallet.
 //!
 //! Undefined (`NaN`) until the first launch-window buy — with no bundle observed there is
 //! no share to compare, and a `NaN` satisfies no condition (evaluator contract).
@@ -68,6 +74,83 @@ pub fn veterans_from_metric_config(cfg: &Value) -> Option<HashedSet> {
         set.insert(wallet_hash(w.as_str()?));
     }
     Some(set)
+}
+
+/// A fingerprint's veteran roster **as a function of time**.
+///
+/// Live carries a single roster — "as of the last refresh" — and reads it for every
+/// token, which is sound because the refresh always precedes the tokens that read it.
+/// A backtest cannot borrow that property: the stored roster was built from launches
+/// that lie in the *future* of most of the corpus, so scoring those tokens against it
+/// is look-ahead. A timeline restores the ordering by carrying one snapshot per
+/// re-anchor point — a token created at `t` reads the newest snapshot whose
+/// `from <= t`, and therefore only ever sees launches older than itself.
+///
+/// Shape (written into an **in-memory** `metric_config` by the backtest driver, never
+/// persisted — the stored row keeps the flat `veteran_wallets` that live reads):
+/// ```json
+/// { "m_bundle": { "veteran_timeline": [
+///     { "from": "2026-08-01T00:00:00Z", "wallets": ["Addr1"] },
+///     { "from": "2026-08-02T00:00:00Z", "wallets": ["Addr1", "Addr2"] }
+/// ] } }
+/// ```
+/// A flat `veteran_wallets` parses as one snapshot open from the beginning of time, so
+/// live and backtest read the roster through the same path.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RosterTimeline {
+    /// Snapshots by `from` ascending. Empty ⇒ a configured-empty roster.
+    snaps: Vec<(Ts, HashedSet)>,
+}
+
+impl RosterTimeline {
+    /// Parse a fingerprint's `metric_config`. `None` ⇒ no `m_bundle` config at all, so
+    /// `m_bundle` metrics read `NaN` and no rule on them can fire — the same
+    /// "not set up" contract [`veterans_from_metric_config`] carries.
+    pub fn from_metric_config(cfg: &Value) -> Option<Self> {
+        let obj = cfg.get("m_bundle")?;
+        if !obj.is_object() {
+            return None;
+        }
+        let Some(Value::Array(entries)) = obj.get("veteran_timeline") else {
+            // No timeline — the flat roster, in force from the beginning of time.
+            return veterans_from_metric_config(cfg)
+                .map(|set| Self { snaps: vec![(Ts::MIN_UTC, set)] });
+        };
+        let mut snaps = Vec::with_capacity(entries.len());
+        for e in entries {
+            let from = e.get("from")?.as_str()?.parse::<Ts>().ok()?;
+            let mut set = HashedSet::default();
+            if let Some(Value::Array(wallets)) = e.get("wallets") {
+                for w in wallets {
+                    set.insert(wallet_hash(w.as_str()?));
+                }
+            }
+            snaps.push((from, set));
+        }
+        snaps.sort_by_key(|(from, _)| *from);
+        Some(Self { snaps })
+    }
+
+    /// The roster in force for a token created at `at` — the newest snapshot at or
+    /// before it.
+    ///
+    /// `None` when every snapshot starts after `at`. That is the honest answer for a
+    /// token older than any history the driver built: no roster is known for it, so
+    /// the metric stays `NaN` and the rule stands down, rather than borrowing a
+    /// roster assembled from its own future.
+    pub fn at(&self, at: Ts) -> Option<&HashedSet> {
+        let idx = self.snaps.partition_point(|(from, _)| *from <= at);
+        (idx > 0).then(|| &self.snaps[idx - 1].1)
+    }
+
+    /// Number of snapshots — `1` for a flat roster. Diagnostics only.
+    pub fn len(&self) -> usize {
+        self.snaps.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.snaps.is_empty()
+    }
 }
 
 /// True when `params` (rule entry/exit JSON) references the `m_bundle` group.
@@ -276,5 +359,53 @@ mod tests {
         s.on_trade(&buy(1.0, 2, ts(10)), t0());
         // The first trade keeps the classification it was folded under.
         assert_eq!(s.veteran_share(), 50.0);
+    }
+
+    #[test]
+    fn a_flat_roster_parses_as_one_snapshot_open_from_the_beginning_of_time() {
+        let cfg = serde_json::json!({ "m_bundle": { "veteran_wallets": ["A", "B"] } });
+        let tl = RosterTimeline::from_metric_config(&cfg).expect("configured");
+        assert_eq!(tl.len(), 1);
+        assert_eq!(tl.at(t0()).map(HashedSet::len), Some(2));
+    }
+
+    #[test]
+    fn no_m_bundle_config_is_unconfigured_not_empty() {
+        assert!(RosterTimeline::from_metric_config(&serde_json::json!({})).is_none());
+        // Present but with no wallet list is a *configured empty* roster: every wallet
+        // reads fresh, which is a real answer, not a missing one.
+        let tl = RosterTimeline::from_metric_config(&serde_json::json!({ "m_bundle": {} }))
+            .expect("configured");
+        assert_eq!(tl.at(t0()).map(HashedSet::len), Some(0));
+    }
+
+    #[test]
+    fn a_timeline_reads_the_newest_snapshot_at_or_before_the_token() {
+        let cfg = serde_json::json!({ "m_bundle": { "veteran_timeline": [
+            { "from": "2026-08-02T00:00:00Z", "wallets": ["A", "B"] },
+            { "from": "2026-08-01T00:00:00Z", "wallets": ["A"] }
+        ] } });
+        let tl = RosterTimeline::from_metric_config(&cfg).expect("configured");
+        assert_eq!(tl.len(), 2);
+        let at = |s: &str| tl.at(s.parse::<Ts>().unwrap()).map(HashedSet::len);
+        // Sorted on parse, so input order does not matter.
+        assert_eq!(at("2026-08-01T12:00:00Z"), Some(1));
+        assert_eq!(at("2026-08-02T00:00:00Z"), Some(2)); // the anchor itself is inclusive
+        assert_eq!(at("2026-08-09T00:00:00Z"), Some(2));
+        // Older than every snapshot: no roster is known for this token, so the metric
+        // stays NaN rather than borrowing one built from its own future.
+        assert_eq!(at("2026-07-31T23:59:59Z"), None);
+    }
+
+    #[test]
+    fn a_timeline_wins_over_a_flat_roster_on_the_same_config() {
+        // The backtest driver replaces the flat key, but a config carrying both must
+        // never read the (look-ahead) flat one.
+        let cfg = serde_json::json!({ "m_bundle": {
+            "veteran_wallets": ["A", "B", "C"],
+            "veteran_timeline": [{ "from": "2026-08-01T00:00:00Z", "wallets": ["A"] }]
+        } });
+        let tl = RosterTimeline::from_metric_config(&cfg).expect("configured");
+        assert_eq!(tl.at("2026-08-05T00:00:00Z".parse::<Ts>().unwrap()).map(HashedSet::len), Some(1));
     }
 }

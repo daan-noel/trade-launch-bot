@@ -149,7 +149,7 @@ pub enum MetricGroupId {
     FlowSplit,
     /// `m_flow_split_window` — volume/organic trailing-window totals (fingerprint-scoped).
     FlowSplitWindow,
-    /// `m_bundle` — who funded the launch window (fingerprint-scoped).
+    /// `m_bundle` — regulars vs first-timers in the launch window (fingerprint-scoped).
     Bundle,
     /// `m_position` — metrics anchored on YOUR entry fill (position-scoped, exit-only).
     Position,
@@ -233,7 +233,8 @@ pub enum MetricId {
     WinVolShare,
     // ── m_bundle (launch-window, fingerprint-scoped; frozen after the window) ──
     /// Percent of launch-window buy SOL from wallets that bought this fingerprint's
-    /// **earlier** launches (`m_bundle`). Reads who funded the launch, not how much.
+    /// **earlier** launches (`m_bundle`). Reads WHOSE SOL opened the token, not how much:
+    /// high = the fingerprint's regulars, low = wallets never seen on it before.
     VeteranShare,
     /// Distinct veteran wallets buying in the launch window (`m_bundle`).
     VeteranWallets,
