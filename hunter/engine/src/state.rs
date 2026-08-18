@@ -14,6 +14,7 @@ use crate::event::{IntentId, LoadedRule, ManualExit, Mint, PositionId, RuleId, T
 use crate::fingerprint::{Fingerprint, FingerprintId};
 use crate::identity::IdentityHash;
 use crate::grouping::TokenFingerprint;
+use crate::metrics::bundle::veterans_from_metric_config;
 use crate::metrics::flow_split::FlowPatterns;
 use crate::metrics::track::TokenTrack;
 use crate::metrics::Ts;
@@ -416,6 +417,12 @@ impl EngineState {
         for fp in fps {
             if let Some(patterns) = FlowPatterns::from_metric_config(&fp.metric_config) {
                 track.ensure_flow(fp.id, &patterns, windows);
+            }
+            // Seeded here, before the first trade, because the launch window is only
+            // one second wide — a roster arriving later would classify part of the
+            // bundle against an empty set and read the share low.
+            if let Some(vets) = veterans_from_metric_config(&fp.metric_config) {
+                track.ensure_bundle(fp.id, &vets);
             }
         }
     }

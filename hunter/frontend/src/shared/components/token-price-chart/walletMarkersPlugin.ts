@@ -12,6 +12,8 @@ import type {
   PrimitivePaneViewZOrder,
 } from 'lightweight-charts';
 
+import { DEFAULT_BAR_SPACING } from './constants';
+
 /** Silhouette encodes wallet CLASS (orthogonal to color=identity, border=direction):
  *  diamond = the user's own (`mine`) wallet, triangle = the token's dev/creator
  *  wallet, hexagon = the focused/input wallet, circle = every other tracked wallet. */
@@ -60,7 +62,6 @@ const MIN_RADIUS = 2.5;  // CSS px — floor when zoomed out
 const MAX_RADIUS = 7;    // CSS px — cap when zoomed in (regular tier)
 const LIFECYCLE_MULT = 1.25; // first_buy / sell_all, relative to base
 const HIGHLIGHT_MULT = 1.5;  // focused wallet, relative to base
-const DEFAULT_BAR_SPACING = 6; // lightweight-charts default; fallback if unavailable
 const GLYPH_MIN_RADIUS = 3.5; // below this the disc is too small for a legible letter
 const GAP = 5;      // CSS px gap between bar edge and nearest marker center
 const SPACING = 2;  // CSS px between stacked markers

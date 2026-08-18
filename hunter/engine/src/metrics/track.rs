@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 
 use crate::fingerprint::FingerprintId;
 
+use super::bundle::BundleState;
 use super::flow_lifetime::FlowLifetimeState;
 use super::flow_split::{FlowPatterns, FlowState};
 use super::flow_window::{window_key, WindowState};
@@ -28,6 +29,7 @@ use super::price_lifetime::PriceLifetimeState;
 use super::price_window::PriceWindowState;
 use super::snapshot::SnapshotState;
 use super::{MetricId, TradeLite, Ts};
+use crate::hash::HashedSet;
 
 /// All metric state for one token.
 #[derive(Debug, Clone)]
@@ -45,6 +47,8 @@ pub struct TokenTrack {
     price_windows: BTreeMap<u64, PriceWindowState>,
     /// Flow classifier state, keyed by fingerprint (pattern sets differ).
     flow: BTreeMap<FingerprintId, FlowState>,
+    /// Launch-bundle state, keyed by fingerprint (veteran rosters differ).
+    bundle: BTreeMap<FingerprintId, BundleState>,
     /// Creator wallet hash from `TokenCreated` — applied to every FlowState.
     creator_wallet_hash: Option<u64>,
 }
@@ -60,6 +64,7 @@ impl TokenTrack {
             windows: BTreeMap::new(),
             price_windows: BTreeMap::new(),
             flow: BTreeMap::new(),
+            bundle: BTreeMap::new(),
             creator_wallet_hash: None,
         }
     }
@@ -111,6 +116,21 @@ impl TokenTrack {
         }
     }
 
+    /// Register fingerprint-scoped launch-bundle state (idempotent). `veterans` are
+    /// the wallet hashes that bought this fingerprint's EARLIER launches; re-registering
+    /// adopts a refreshed roster, on the same "moves the future, not the past" contract
+    /// as [`ensure_flow`](Self::ensure_flow).
+    ///
+    /// Must be called before the token's first trade, or the launch window is already
+    /// partly folded against an empty roster and the share reads low. The engine does
+    /// this when it arms a rule referencing `m_bundle`, which happens on `TokenCreated`.
+    pub fn ensure_bundle(&mut self, fp: FingerprintId, veterans: &HashedSet) {
+        self.bundle
+            .entry(fp)
+            .or_insert_with(|| BundleState::new(veterans.clone()))
+            .set_veterans(veterans);
+    }
+
     /// Seed the creator wallet (volume-side unconditionally) on every flow state.
     pub fn seed_creator(&mut self, hash: u64) {
         self.creator_wallet_hash = Some(hash);
@@ -132,6 +152,9 @@ impl TokenTrack {
         }
         for flow in self.flow.values_mut() {
             flow.on_trade(&t);
+        }
+        for b in self.bundle.values_mut() {
+            b.on_trade(&t, self.created_at);
         }
     }
 
@@ -199,6 +222,15 @@ impl TokenTrack {
                 };
                 match self.flow.get(&fp) {
                     Some(f) => f.value(id, window_secs, now),
+                    None => f64::NAN,
+                }
+            }
+            VeteranShare | VeteranWallets | FreshWallets => {
+                let Some(fp) = fingerprint else {
+                    return f64::NAN;
+                };
+                match self.bundle.get(&fp) {
+                    Some(b) => b.value(id),
                     None => f64::NAN,
                 }
             }

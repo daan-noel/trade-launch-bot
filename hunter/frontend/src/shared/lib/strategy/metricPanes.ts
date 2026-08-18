@@ -533,7 +533,7 @@ export function metricConditionBands(
             timeSec,
             value: drawnCol.values[i] ?? null,
           })),
-          threshold: soleThreshold(drawn.arms),
+          thresholds: conditionThresholds(drawn.arms),
         }
         : null,
     coverage: { from: atSec[0], to: atSec[atSec.length - 1] },
@@ -561,12 +561,17 @@ function valueLaneRow<T extends SideMetricRow & { side: 'entry' | 'exit' }>(
   return byName.length === 1 ? byName[0] : exits[0];
 }
 
-/** The threshold a condition authors when it authors exactly one — a DNF with
- *  several atoms has no single line to draw, and inventing one misstates the rule. */
-function soleThreshold(arms: ConditionExpr): number | null {
-  if (arms.length !== 1 || arms[0].length !== 1) return null;
-  const only = arms[0][0];
-  return Number.isFinite(only.value) ? only.value : null;
+/**
+ * The horizontal lines a condition is judged against: every threshold of its ONE AND
+ * arm, so a band (`> 20, < 50`) draws both of its edges rather than none.
+ *
+ * Several OR arms is deliberately empty — they disagree about where the line sits, so
+ * any single set would misstate the rule. Requiring a single *atom* instead left
+ * every two-sided condition unlabelled, which is most entry conditions.
+ */
+function conditionThresholds(arms: ConditionExpr): number[] {
+  if (arms.length !== 1) return [];
+  return arms[0].filter((a) => Number.isFinite(a.value)).map((a) => a.value);
 }
 
 /**

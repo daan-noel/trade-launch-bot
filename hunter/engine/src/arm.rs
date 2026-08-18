@@ -19,7 +19,7 @@ use crate::metrics::evaluator::{eval, first_satisfied_cond, Condition, Condition
 use crate::metrics::position::{is_trailing, position_value, trailing_armed, PositionCtx};
 use crate::metrics::track::TokenTrack;
 use crate::metrics::{
-    group_of, group_spec, is_flow_metric, metric_spec, MetricGroupId, MetricId, MetricKind,
+    group_of, group_spec, is_fingerprint_scoped, metric_spec, MetricGroupId, MetricId, MetricKind,
     MetricScope, Ts,
 };
 use crate::rule_params::ReEntry;
@@ -723,7 +723,7 @@ fn build_reqs(
                 out.push(MetricReq {
                     metric: *metric_id,
                     window,
-                    fingerprint: is_flow_metric(*metric_id).then_some(fingerprint_id),
+                    fingerprint: is_fingerprint_scoped(*metric_id).then_some(fingerprint_id),
                     tolerance: metric_spec(*metric_id).eq_tolerance,
                     conds: conds.clone(),
                     position_scoped,

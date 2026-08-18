@@ -222,6 +222,30 @@ file is not: the dip gate is best at **25** (not 18) and the vsol band at **40�
   artifacts; none replicated out of sample.
 - **A `flow(2).net >= 0` bounce gate on the dip-reversion family.** It contradicts the
   measured entry — these wallets buy into negative 2 s flow by design.
+- **Cloning `8dtx2tr4` (`wallet_id` 2720) from creation-time or tape features.** Its edge
+  is token *selection*, not the trigger: on its own picks the reconstructed rule prints
+  +7.7 % mean (PF 1.53) and on everything else −32.8 %, from one simulate run at identical
+  fills and costs. Every feature we ingest was scored against that +7.8 % ceiling and none
+  is worth more than a few points. Full grid:
+  [`../../history/2026-08-17-wallet-8dtx-clone-refuted.md`](../../history/2026-08-17-wallet-8dtx-clone-refuted.md).
+
+**Two rules that generalise past that refutation.**
+
+**Token death is the dominant cost on an unselected universe, and
+`m_flow_lifetime.gross_flow` is the lever that controls it.** A dip-turn rule with no
+liveness floor exits `Dead` on ~22 % of its fills; a `gross_flow >= 30` floor (with
+`time <= 300`, `trail <= 30`) cuts that to 4.6 % and moves mean PnL −26.3 → −9.3 %.
+Ablation isolates the floor as the whole effect. Put it on any rule that arms a broad
+universe. Beware the shape of the tuning curve, though: past that point each further
+tightening buys its gain by removing trades and converges on zero **from below** — a
+config walking toward breakeven on a shrinking `n` has no edge, it has less exposure.
+
+**Read a copy-target's exit as an *armed* trail before authoring it.** Measure the
+in-hold peak gain and the retrace off that peak separately: `8dtx`'s median hold peaks
++11.6 % then exits −18.4 % off the peak, which an unarmed `m_position.retrace >= 12`
+mis-renders as a −12 % hard stop from entry (the peak seeds at the entry fill). Getting
+this wrong inverts the exit's effect — a trail amplifies selection quality in both
+directions, improving good picks and worsening bad ones.
 
 **Still open:** `64hP`'s 3.3% bag cohort (a timed bail-out looks profitable at every
 horizon tested, but was never implemented or measured live), and whether `63ot`'s at-touch

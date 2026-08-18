@@ -1,7 +1,9 @@
 # Metrics reference — flow groups
 
 Deep-dive for aggregate flow (`m_flow_lifetime` / `m_flow_window`) and the
-volume/organic split (`m_flow_split` / `m_flow_split_window`). High-level map:
+volume/organic split (`m_flow_split` / `m_flow_split_window`). The third wallet-keyed
+group, `m_bundle` (launch-window veteran share), has its own file:
+[`veteran-wallets.md`](veteran-wallets.md). High-level map:
 [`arch/strategies.md`](../../arch/strategies.md). The split's origin roadmap
 (`roadmap/volume-flow-split-plan.md`) is deleted — fully shipped and superseded by
 this file.

@@ -138,6 +138,7 @@ function ConditionSeriesStrip({
   onAtChange,
   pinAtMs = null,
   pinCoverage = 'in',
+  preEntry = false,
 }: {
   gate: ConditionSeriesGate;
   series: RuleReadoutSeries | undefined;
@@ -160,6 +161,8 @@ function ConditionSeriesStrip({
   pinAtMs?: number | null;
   /** Whether that instant is inside the series' recorded span. */
   pinCoverage?: HoverCoverage;
+  /** No fill yet, so the exit side is also the `can_enter` veto (see the strip). */
+  preEntry?: boolean;
 }) {
   const { crosshairTimeSec, bandOn, setBandOn } = gate;
   // Hoisted out of the hover path: the crosshair moves per frame and this is one
@@ -198,6 +201,7 @@ function ConditionSeriesStrip({
       hoveredCoverage={hovered?.coverage ?? (scrubbing ? 'before' : pinCoverage)}
       bandOn={bandOn}
       onBandToggle={setBandOn}
+      preEntry={preEntry}
     />
   );
 }
@@ -280,7 +284,7 @@ function seriesToBands(
           label: conditionLabel(drawn),
           color: CONDITION_VALUE_LANE_COLOR,
           points: atSec.map((t, i) => ({ timeSec: t, value: drawn.values[i] ?? null })),
-          threshold: soleThreshold(drawn),
+          thresholds: conditionThresholds(drawn),
         }
       : null,
     coverage: { from: atSec[0], to: atSec[atSec.length - 1] },
@@ -291,10 +295,15 @@ function seriesToBands(
  * The condition whose reading gets drawn.
  *
  * `drawSide` is the question the host is asking. A post-mortem asks "why did it
- * leave" ⇒ the exit condition the reason names, else the first one. A Waiting row
- * asks "why has it NOT entered" ⇒ an entry condition, where no reason exists to name
- * one, so the first authored one is drawn — stable across refreshes, unlike
+ * leave" ⇒ the exit condition the reason names, else the first authored one. A
+ * Waiting row asks "why has it NOT entered" ⇒ an entry condition, where no reason
+ * exists to name one, so an authored one is drawn — stable across refreshes, unlike
  * "whichever is currently failing", which would swap lines as the token moves.
+ *
+ * `time` is skipped while anything else is authored. Conditions arrive in the fold's
+ * order, which sorts `m_snapshot.time` first on most rules, so taking the head
+ * blindly spends the chart's one value pane on a straight ramp of the x axis —
+ * a quantity the reader already has, drawn against the price of a pane.
  */
 function valueLaneCondition(
   series: RuleReadoutSeries,
@@ -304,7 +313,9 @@ function valueLaneCondition(
   const side: RuleConditionSeries[] = series.conditions.filter((c) => c.side === drawSide);
   if (side.length === 0) return null;
   const named = drawSide === 'exit' && exitReason ? matchExitReason(side, exitReason) : null;
-  return named ?? side[0];
+  if (named) return named;
+  // A rule that authors nothing but the clock keeps it rather than losing the pane.
+  return side.find((c) => c.metric !== 'time') ?? side[0];
 }
 
 /**
@@ -325,13 +336,35 @@ function matchExitReason(exits: RuleConditionSeries[], reason: string) {
   return byName.length === 1 ? byName[0] : null;
 }
 
-/** The condition's threshold when it authors exactly one — a DNF with several arms
- *  has no single line to draw, and inventing one would misstate the rule. */
-function soleThreshold(c: RuleConditionSeries): number | null {
+/**
+ * The horizontal lines the drawn condition is judged against: every threshold of its
+ * ONE AND arm, so a band (`> 20, < 50`) draws both of its edges rather than none.
+ *
+ * A DNF with several OR arms is deliberately empty. Its arms disagree about where the
+ * line sits, so any single set would misstate the rule — and most entry conditions
+ * are two-sided bands, which is why "exactly one condition or no line at all" left
+ * the common case unlabelled.
+ *
+ * Wire shape mirrors the engine's, as in `describeConditions`: a flat
+ * `[{operator,value}]` is one AND arm; nested arrays are OR arms.
+ */
+function conditionThresholds(c: RuleConditionSeries): number[] {
   const conds = c.conditions;
-  if (!Array.isArray(conds) || conds.length !== 1) return null;
-  const only = conds[0] as { value?: unknown };
-  return typeof only?.value === 'number' && Number.isFinite(only.value) ? only.value : null;
+  if (!Array.isArray(conds) || conds.length === 0) return [];
+  if (Array.isArray(conds[0])) {
+    return conds.length === 1 ? armThresholds(conds[0] as unknown[]) : [];
+  }
+  return armThresholds(conds as unknown[]);
+}
+
+/** The finite `value`s of one AND arm, in authored order. */
+function armThresholds(arm: unknown[]): number[] {
+  const out: number[] = [];
+  for (const c of arm) {
+    const v = (c as { value?: unknown } | null)?.value;
+    if (typeof v === 'number' && Number.isFinite(v)) out.push(v);
+  }
+  return out;
 }
 
 /**
@@ -487,6 +520,9 @@ export function ArmedRuleConditions({
       // Nothing has exited, so there is no exit reason and no exit line worth
       // drawing — the row is being held out by an ENTRY condition.
       drawSide="entry"
+      // An arming episode has no fill by definition, so every exit condition on it is
+      // reported as the entry veto it actually is.
+      preEntry
     />
   );
 }

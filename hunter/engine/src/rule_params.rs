@@ -969,6 +969,46 @@ mod tests {
     }
 
     #[test]
+    /// The shipped `FP108-VET-1` shape. `m_bundle` is a static, fingerprint-scoped
+    /// group with no strict params, so it must parse exactly like `m_snapshot` — and
+    /// it must NOT be accepted as an exit condition dressed up with a window.
+    #[test]
+    fn bundle_group_parses_as_a_static_entry_group() {
+        let p = RuleParams::parse(&json!({
+            "entry": {
+                "m_bundle": { "veteran_share": [{"operator": ">=", "value": 90}] },
+                "m_flow_window": {
+                    "window_size_sec": 1,
+                    "unique_wallets": [{"operator": "<=", "value": 9}]
+                }
+            },
+            "exit": { "m_position": { "held": [{"operator": ">=", "value": 120}] } },
+            "take_profit": 10.0,
+            "stop_loss": 25.0
+        }))
+        .expect("the shipped veteran-bundle rule must parse");
+        assert!(p.entry.is_some());
+        assert_eq!(p.take_profit, Some(10.0));
+
+        // A window on a static group is a silent no-op if tolerated, so it is rejected.
+        let e = RuleParams::parse(&json!({
+            "entry": { "m_bundle": {
+                "window_size_sec": 30,
+                "veteran_share": [{"operator": ">=", "value": 90}]
+            }}
+        }))
+        .unwrap_err();
+        assert!(e.contains("window_size_sec"), "{e}");
+
+        // Typos in the new metric names fail loudly rather than never firing.
+        let e = RuleParams::parse(
+            &json!({"entry": {"m_bundle": {"veteran_shares": [{"operator": ">=", "value": 90}]}}}),
+        )
+        .unwrap_err();
+        assert!(e.contains("unknown metric or param 'veteran_shares'"), "{e}");
+    }
+
+    #[test]
     fn unknown_names_rejected() {
         // Unknown top-level key.
         let e = RuleParams::parse(&json!({"take_profits": 1})).unwrap_err();

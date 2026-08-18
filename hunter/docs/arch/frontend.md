@@ -333,8 +333,14 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   pinned readout — the strip says `no reading here` instead, because a pinned value
   repeated on every gap bar reads as a metric frozen at its exit value.
   The condition that closed the position is also drawn as a **value line in its own
-  pane** with its threshold dashed across it (`ChartValueLane`), so the number a
-  decision was taken on is on the chart rather than only in a chip. An open position's hover carries the replay caption too:
+  pane** with its thresholds dashed across it (`ChartValueLane`), so the number a
+  decision was taken on is on the chart rather than only in a chip. A two-sided
+  condition draws **both** edges — with one line there is no seeing where a band stops
+  holding — and a DNF of several OR arms draws none, because its arms disagree about
+  where the line sits. The line stops at the last recorded point instead of carrying
+  it rightward: a flat tail past coverage is the same "metric frozen at its final
+  value" the chips refuse to show. On the entry side the drawn condition skips
+  `m_snapshot.time`, which sorts first on most rules and is a ramp of the x axis. An open position's hover carries the replay caption too:
   the engine keeps one instant of state, not a history, so a past instant can only
   be reconstructed. A capped series says `· past coverage` rather than repeating its
   last row silently. The strip's **timeline** toggle draws the same payload as
@@ -342,6 +348,11 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   where it held — off by default because turning it on is what pays for the fold,
   and it shares the crosshair's cache entry so whichever comes first covers both.
   Lanes snap through each bar's wall-clock end, so they draw in **slot** mode too.
+  That array is bar **ends**, not bar keys, and both edges of a span round **outward**
+  to the bar the instant falls inside — rounding the end edge inward drops the bar the
+  span finishes in, and the renderer then paints centre-to-centre for another half bar
+  at each end, so a span reads about two bars narrower than the truth and a brief
+  satisfaction disappears. Spans are painted edge to edge off `barSpacing`.
   Every number in the detail reports an engine decision taken under the
   fingerprint's saved `volume_ix_patterns`, and that saved row is the only set any
   surface classifies from — so the vol / non-vol split a reader sums by hand and the
@@ -356,7 +367,10 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   one live instant cannot answer, and Waiting is the row an operator stares at
   longest. It passes the arm instant so coverage centres on why it is *still* waiting,
   and its value line is drawn from the **entry** side: nothing has exited, so the
-  condition holding the row out is an entry one. **An ENDED episode** — an Arms
+  condition holding the row out is an entry one. With no fill the engine gate is
+  `entry_satisfied && !exit_metrics_satisfied`, so the strip marks a satisfied **exit**
+  chip `blocks entry` and says so on the group — otherwise every entry chip can read
+  green on a row that was never enterable. **An ENDED episode** — an Arms
   ledger row in `ArmDetailModal` — passes `endedAt` and inverts the two sources: the
   live readout is skipped (the pair is out of the registry, so it is a permanent 404
   that would still cost the decision loop a round trip a second) and the pin becomes

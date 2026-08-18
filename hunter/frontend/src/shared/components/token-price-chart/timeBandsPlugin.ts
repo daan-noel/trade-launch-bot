@@ -10,6 +10,8 @@ import type {
   UTCTimestamp,
 } from 'lightweight-charts';
 
+import { DEFAULT_BAR_SPACING } from './constants';
+
 /**
  * Horizontal on/off lanes along the bottom of the price pane — "this was true from
  * here to here", stacked one row per thing being tracked.
@@ -162,23 +164,30 @@ export class TimeBandsPlugin
     }
     const ts = chart.timeScale();
     const x = (t: UTCTimestamp) => ts.timeToCoordinate(t);
+    // `timeToCoordinate` answers with a bar's CENTRE, so a span painted straight from
+    // one coordinate to the other covers neither of its end bars fully — half a bar
+    // is lost at each end. The span owns whole bars, so it is drawn edge to edge.
+    const half = (ts.options().barSpacing ?? DEFAULT_BAR_SPACING) / 2;
+    /** The x range of the bars `from..to`, edge to edge, never thinner than a tick. */
+    const rect = (from: UTCTimestamp, to: UTCTimestamp): [number, number] | null => {
+      const a = x(from);
+      const b = x(to);
+      // `timeToCoordinate` resolves only times the scale knows, which is why the
+      // host snaps span ends to bar times before handing them over.
+      if (a == null || b == null) return null;
+      const x1 = a - half;
+      return [x1, Math.max(b + half, x1 + MIN_SPAN_W)];
+    };
 
-    this._track = null;
-    if (this._coverage) {
-      const a = x(this._coverage.from);
-      const b = x(this._coverage.to);
-      if (a != null && b != null) this._track = [a, Math.max(b, a + MIN_SPAN_W)];
-    }
+    this._track = this._coverage
+      ? rect(this._coverage.from, this._coverage.to)
+      : null;
 
     this._rendered = this._lanes.map((lane) => {
       const rects: Array<[number, number]> = [];
       for (const s of lane.spans) {
-        const a = x(s.from);
-        const b = x(s.to);
-        // `timeToCoordinate` resolves only times the scale knows, which is why the
-        // host snaps span ends to bar times before handing them over.
-        if (a == null || b == null) continue;
-        rects.push([a, Math.max(b, a + MIN_SPAN_W)]);
+        const r = rect(s.from, s.to);
+        if (r) rects.push(r);
       }
       return { label: lane.label, color: lane.color, rects };
     });
@@ -216,29 +225,35 @@ export interface SnappedSpan {
 }
 
 /**
- * Move a wall-clock span onto bar times, which are the only times the chart's scale
- * can turn into an x coordinate.
+ * Move a wall-clock span onto the bars it covers, which are the only times the
+ * chart's scale can turn into an x coordinate.
  *
- * The span becomes the bars it covers: first bar at or after `from`, last bar at or
- * before `to`. A span **shorter than one bar** covers none, and dropping it would
- * silently hide every brief satisfaction — so it collapses onto the single nearest
- * bar instead, which the renderer widens to a visible tick. The cost is that a
- * sub-bar span reads as one bar wide; at the bar widths this is drawn at, that is
- * under two pixels of overstatement and the alternative is showing nothing.
+ * `barEnds` holds each bar's wall-clock **end**, ascending (`buildBarWallEndSec`), so
+ * the bar at index `i` covers `(barEnds[i-1], barEnds[i]]` and the bar holding an
+ * instant `t` is the first one whose end is at or after `t`. A span therefore becomes
+ * every bar it **overlaps**, with both edges rounding OUTWARD to the bar the instant
+ * falls inside.
  *
- * `barTimes` must be ascending, which is what the chart's own bar list already is.
+ * Rounding the end edge inward instead — the last bar to have *finished* by `to` —
+ * drops the bar the span ends in. That is a whole bar of understatement on every
+ * span, which turns a two-bar satisfaction into a one-bar one and is invisible
+ * precisely where the band matters most: a brief condition on a busy launch.
+ *
+ * A span shorter than one bar collapses onto the single bar containing it rather than
+ * covering none, and the renderer widens that to a visible tick.
  */
 export function snapSpanToBars(
-  barTimes: number[],
+  barEnds: number[],
   from: number,
   to: number,
 ): SnappedSpan | null {
-  if (barTimes.length === 0) return null;
-  const lo = lowerBound(barTimes, from);
-  const hi = upperBound(barTimes, to) - 1;
-  if (lo <= hi) return { from: barTimes[lo], to: barTimes[hi] };
-  const j = nearestIndex(barTimes, (from + to) / 2);
-  return { from: barTimes[j], to: barTimes[j] };
+  if (barEnds.length === 0) return null;
+  const last = barEnds.length - 1;
+  const lo = Math.min(lowerBound(barEnds, from), last);
+  // `to >= from` for every span the callers build, but clamping to `lo` keeps a
+  // reversed pair a degenerate one-bar span rather than an inverted rect.
+  const hi = Math.max(Math.min(lowerBound(barEnds, to), last), lo);
+  return { from: barEnds[lo], to: barEnds[hi] };
 }
 
 /** First index whose value is >= `t`, or `length` if there is none. */
@@ -251,23 +266,4 @@ function lowerBound(xs: number[], t: number): number {
     else hi = mid;
   }
   return lo;
-}
-
-/** First index whose value is > `t`, or `length` if there is none. */
-function upperBound(xs: number[], t: number): number {
-  let lo = 0;
-  let hi = xs.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (xs[mid] <= t) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
-}
-
-function nearestIndex(xs: number[], t: number): number {
-  const i = lowerBound(xs, t);
-  if (i === 0) return 0;
-  if (i >= xs.length) return xs.length - 1;
-  return t - xs[i - 1] <= xs[i] - t ? i - 1 : i;
 }

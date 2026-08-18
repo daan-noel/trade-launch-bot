@@ -48,6 +48,7 @@ export function RuleConditionStrip({
   hoveredCoverage = 'in',
   bandOn = false,
   onBandToggle,
+  preEntry = false,
   className,
 }: {
   readout: RuleReadout | null | undefined;
@@ -71,6 +72,13 @@ export function RuleConditionStrip({
   bandOn?: boolean;
   /** Omit to hide the timeline control — hosts with no chart beside the strip. */
   onBandToggle?: (on: boolean) => void;
+  /**
+   * There is no fill yet (an arming episode), so the engine gate is
+   * `entry_satisfied && !exit_metrics_satisfied` — a token-scoped EXIT condition that
+   * holds **blocks the buy**. Without this the exit row reads as future tense and a
+   * reader can watch every entry chip go green on a row that was never enterable.
+   */
+  preEntry?: boolean;
   className?: string;
 }) {
   const { data: registry } = useStrategyRegistry();
@@ -84,7 +92,10 @@ export function RuleConditionStrip({
     return map;
   }, [registry]);
 
-  const groups = useMemo(() => groupConditions(readout?.conditions ?? []), [readout]);
+  const groups = useMemo(
+    () => groupConditions(readout?.conditions ?? [], preEntry),
+    [readout, preEntry],
+  );
 
   if (error) {
     return (
@@ -173,6 +184,7 @@ export function RuleConditionStrip({
               key={`${c.side}-${c.stage ?? ''}-${c.metric}-${c.window_size_sec ?? ''}-${i}`}
               read={c}
               unit={unitOf.get(c.metric) ?? null}
+              preEntry={preEntry}
             />
           ))}
         </div>
@@ -306,9 +318,12 @@ function StripShell({
 function ConditionChip({
   read,
   unit,
+  preEntry = false,
 }: {
   read: RuleConditionRead;
   unit: MetricUnit | null;
+  /** No fill yet, so a satisfied EXIT condition is holding the buy back. */
+  preEntry?: boolean;
 }) {
   const suffix = unit ? unitSuffix(unit) : '';
   const label = conditionLabel(read);
@@ -320,6 +335,9 @@ function ConditionChip({
   // `disarmed` = the fold is skipping this req (a held trail under its gate).
   // Dormant, not failing — a dashed chip, never the plain unsatisfied style.
   const dormant = read.disarmed || inactiveStage;
+  // Pre-entry, a satisfied exit metric is the `can_enter` veto — the ✓ alone would
+  // read as progress toward a buy when it is the thing preventing one.
+  const blocksEntry = preEntry && read.side === 'exit' && read.ok && !dormant;
 
   return (
     <span
@@ -329,11 +347,13 @@ function ConditionChip({
           ? 'border-dashed border-white/12 text-text-dim/70'
           : inactiveStage
             ? 'border-white/8 text-text-dim/60'
-            : read.ok
-              ? 'border-white/25 bg-white/6 text-text'
-              : 'border-white/10 text-text-dim',
+            : blocksEntry
+              ? 'border-warning/40 bg-warning/8 text-text'
+              : read.ok
+                ? 'border-white/25 bg-white/6 text-text'
+                : 'border-white/10 text-text-dim',
       )}
-      title={chipTitle(read, inactiveStage)}
+      title={chipTitle(read, inactiveStage, blocksEntry)}
     >
       <span>{label}</span>
       <span className={cn('tabular-nums', !dormant && read.ok && 'font-semibold')}>
@@ -347,7 +367,13 @@ function ConditionChip({
           arms +{read.arm_above_pct}%
         </span>
       ) : null}
-      {read.ok && !dormant ? <span aria-hidden>✓</span> : null}
+      {blocksEntry ? (
+        <span className="text-[9px] font-bold uppercase tracking-wider text-warning/90">
+          blocks entry
+        </span>
+      ) : read.ok && !dormant ? (
+        <span aria-hidden>✓</span>
+      ) : null}
     </span>
   );
 }
@@ -376,7 +402,11 @@ export function conditionLabel(read: RuleConditionMeta): string {
   return expr ? `${name} ${expr}` : name;
 }
 
-function chipTitle(read: RuleConditionRead, inactiveStage: boolean): string {
+function chipTitle(
+  read: RuleConditionRead,
+  inactiveStage: boolean,
+  blocksEntry = false,
+): string {
   const parts: string[] = [`${read.group}.${read.metric}`];
   if (read.window_size_sec != null) parts.push(`${read.window_size_sec}s window`);
   if (read.origin !== 'authored') {
@@ -390,8 +420,17 @@ function chipTitle(read: RuleConditionRead, inactiveStage: boolean): string {
     parts.push(
       `stage ${(read.stage ?? 0) + 1} — not the active stage, so the engine is not evaluating it`,
     );
+  } else if (blocksEntry) {
+    parts.push(
+      'satisfied now — and with no fill yet that BLOCKS the buy: the engine enters only while every entry condition holds and no exit metric does',
+    );
   } else {
     parts.push(read.ok ? 'satisfied now' : 'not satisfied');
+  }
+  // The backend already resolved which arm of the DNF matched; naming it saves
+  // reading the expression against the value by hand.
+  if (read.ok && read.matched_operator != null && read.matched_value != null) {
+    parts.push(`matched ${read.matched_operator} ${formatValue(read.matched_value)}`);
   }
   if (read.value == null) {
     parts.push('no reading — an unreadable metric satisfies nothing');
@@ -448,7 +487,10 @@ interface ConditionGroup {
  * entry, then stop-loss → take-profit → authored exits, then each ladder stage).
  * One row per stage so a ladder reads as a ladder.
  */
-function groupConditions(conditions: RuleConditionRead[]): ConditionGroup[] {
+function groupConditions(
+  conditions: RuleConditionRead[],
+  preEntry: boolean,
+): ConditionGroup[] {
   const buckets = new Map<string, ConditionGroup>();
   for (const c of conditions) {
     const key = c.side === 'stage' ? `stage-${c.stage ?? 0}` : c.side;
@@ -464,9 +506,15 @@ function groupConditions(conditions: RuleConditionRead[]): ConditionGroup[] {
               : `Stage ${(c.stage ?? 0) + 1}`,
         title:
           c.side === 'entry'
-            ? 'Entry conditions — ALL must hold to buy'
+            ? preEntry
+              ? 'Entry conditions — ALL must hold to buy, and no exit condition may hold either'
+              : 'Entry conditions — ALL must hold to buy'
             : c.side === 'exit'
-              ? 'Exit conditions — ANY one fires the sell'
+              ? preEntry
+                ? // The pre-entry half of `can_enter`. Stated on the group because it
+                  // is true of the whole row, not only of the members holding now.
+                  'Exit conditions — ANY one fires the sell, and with no fill yet ANY one also BLOCKS the buy'
+                : 'Exit conditions — ANY one fires the sell'
               : `Scale-out stage ${(c.stage ?? 0) + 1}${
                 c.stage_active ? ' (active)' : ' (not the active stage)'
               }`,

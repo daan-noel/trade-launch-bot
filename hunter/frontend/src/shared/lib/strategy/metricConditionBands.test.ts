@@ -116,7 +116,7 @@ describe('metricConditionBands', () => {
     // name-only match is free to draw the lifetime twin of a windowed fire.
     const windowed = metricConditionBands(PARAMS, DATA, REGISTRY, 'nonvol_buy(2s) >= 0.9')!;
     expect(windowed.valueLane?.label).toBe('nonvol_buy@2s >= 0.9');
-    expect(windowed.valueLane?.threshold).toBe(0.9);
+    expect(windowed.valueLane?.thresholds).toEqual([0.9]);
     expect(windowed.valueLane?.points.at(-1)).toEqual({ timeSec: t(3), value: 1.4 });
   });
 
@@ -132,7 +132,43 @@ describe('metricConditionBands', () => {
     } as RuleParams;
     const resolved = metricConditionBands(oneExit, DATA, REGISTRY, 'nonvol_buy >= 5')!;
     expect(resolved.valueLane?.label).toBe('nonvol_buy >= 5');
-    expect(resolved.valueLane?.threshold).toBe(5);
+    expect(resolved.valueLane?.thresholds).toEqual([5]);
+  });
+
+  // A two-sided condition is the common shape of an entry band, and drawing only one
+  // of its edges (or, as before, neither) leaves no way to see where it stopped
+  // holding.
+  it('draws BOTH edges of a two-sided condition', () => {
+    const banded = {
+      ...PARAMS,
+      exit: {
+        m_flow_split_window: [
+          {
+            strict: { window_size_sec: 2 },
+            metrics: { nonvol_buy: [[{ operator: '>', value: 0.2 }, { operator: '<', value: 0.9 }]] },
+          },
+        ],
+      },
+    } as unknown as RuleParams;
+    const bands = metricConditionBands(banded, DATA, REGISTRY, null)!;
+    expect(bands.valueLane?.thresholds).toEqual([0.2, 0.9]);
+  });
+
+  // Two OR arms disagree about where the line sits, so there is no honest set.
+  it('draws no line when the condition ORs several arms', () => {
+    const ored = {
+      ...PARAMS,
+      exit: {
+        m_flow_split_window: [
+          {
+            strict: { window_size_sec: 2 },
+            metrics: { nonvol_buy: [[{ operator: '>=', value: 0.9 }], [{ operator: '<', value: 0.1 }]] },
+          },
+        ],
+      },
+    } as unknown as RuleParams;
+    const bands = metricConditionBands(ored, DATA, REGISTRY, null)!;
+    expect(bands.valueLane?.thresholds).toEqual([]);
   });
 
   it('falls back to the first exit condition for a non-metric exit reason', () => {

@@ -569,7 +569,8 @@ export function TokenPriceChart({
   const barsRef = useRef<OhlcBar[]>([]);
   const alignedFlowLinesRef = useRef<FlowLines>({ vol: [], nonVol: [] });
   const valueLaneSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
-  const valueLaneLineRef = useRef<IPriceLine | null>(null);
+  /** One price line per authored threshold — a band draws both of its edges. */
+  const valueLaneLinesRef = useRef<IPriceLine[]>([]);
 
   // Height tracks width unless the caller pins it (`fixedHeight`). A fluid width
   // with a fixed height renders wide-and-flat on a big monitor; deriving height
@@ -1523,7 +1524,7 @@ export function TokenPriceChart({
       if (valueLaneSeriesRef.current) {
         chart.removeSeries(valueLaneSeriesRef.current);
         valueLaneSeriesRef.current = null;
-        valueLaneLineRef.current = null;
+        valueLaneLinesRef.current = [];
       }
       return;
     }
@@ -1542,6 +1543,11 @@ export function TokenPriceChart({
 
     // Walk bars and points together — both ascending, so this stays linear.
     const points = valueLane.points;
+    // Coverage ends with the last recorded point. Past it there is no reading, and
+    // carrying the last one forward would draw a flat line across the rest of the
+    // chart that the reconstruction never observed — the same "metric frozen at its
+    // final value" misreading the condition chips refuse to show.
+    const lastSec = points[points.length - 1].timeSec;
     const data: { time: UTCTimestamp; value: number }[] = [];
     let p = 0;
     let carried: number | null = null;
@@ -1557,23 +1563,27 @@ export function TokenPriceChart({
       if (carried != null && Number.isFinite(carried)) {
         data.push({ time: bar.time, value: carried });
       }
+      // This bar is the one holding the last point, so it is the last bar with a
+      // reading — stop rather than repeating it rightward.
+      if (end >= lastSec) break;
     }
     series.setData(data);
 
-    if (valueLaneLineRef.current) {
-      series.removePriceLine(valueLaneLineRef.current);
-      valueLaneLineRef.current = null;
-    }
-    if (valueLane.threshold != null && Number.isFinite(valueLane.threshold)) {
-      valueLaneLineRef.current = series.createPriceLine({
-        price: valueLane.threshold,
-        color: CHART_COLORS.text,
-        lineWidth: 1,
-        lineStyle: LineStyle.Dashed,
-        axisLabelVisible: true,
-        title: 'threshold',
-      });
-    }
+    for (const line of valueLaneLinesRef.current) series.removePriceLine(line);
+    // One line per threshold, so a BAND (`> 20, < 50`) draws both of its edges — a
+    // single line cannot say where a two-sided condition stops holding.
+    valueLaneLinesRef.current = (valueLane.thresholds ?? [])
+      .filter((t) => Number.isFinite(t))
+      .map((t) =>
+        series.createPriceLine({
+          price: t,
+          color: CHART_COLORS.text,
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: 'threshold',
+        }),
+      );
   }, [valueLane, bars, barWallEndSec, showChart, style, groupingKey]);
 
   // Bottom-pane on/off lanes. Snapping happens HERE rather than in the primitive
@@ -1597,9 +1607,13 @@ export function TokenPriceChart({
       prim.setLanes([], null);
       return;
     }
-    const wallSecs = walls as number[];
-    const toBarKey = (wall: number) => keys[wallSecs.indexOf(wall)] ?? wall;
-    const times = wallSecs;
+    const times = walls as number[];
+    // Built once rather than scanned per span end: the snap answers in wall seconds
+    // and the scale keys on bar keys, and a lane can hold as many spans as the token
+    // has crossings.
+    const barKeyByWall = new Map<number, number>();
+    times.forEach((wall, i) => barKeyByWall.set(wall, keys[i]));
+    const toBarKey = (wall: number) => barKeyByWall.get(wall) ?? wall;
     const lanes: TimeBandLane[] = timeBands.map((lane) => ({
       key: lane.key,
       label: lane.label,

@@ -209,6 +209,15 @@ export function responsiveChartHeight(
   return Math.round(Math.min(max, Math.max(min, width / aspect)));
 }
 
+/**
+ * Pixels per candle to assume when the time scale cannot be asked.
+ *
+ * lightweight-charts' own default. Every primitive that sizes itself against candle
+ * width reads `timeScale().options().barSpacing` and falls back to this, so a marker
+ * radius and a band's bar edges can never disagree about how wide a candle is.
+ */
+export const DEFAULT_BAR_SPACING = 6;
+
 /** Shared by dual-axis charts so range-select teardown restores the same policy. */
 export const DUAL_CHART_HANDLE_SCALE = {
   mouseWheel: true,

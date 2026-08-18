@@ -223,8 +223,13 @@ export interface ChartValueLane {
   color: string;
   /** Ascending by `timeSec`. `null` value = unreadable at that instant (NaN). */
   points: { timeSec: number; value: number | null }[];
-  /** Drawn as a dashed horizontal line; omit when the quantity has no threshold. */
-  threshold?: number | null;
+  /**
+   * Drawn as dashed horizontal lines, one per entry. A two-sided condition
+   * (`> 20, < 50`) supplies BOTH edges — with one line there is no way to see where
+   * such a condition stops holding. Empty/omitted when the quantity has no single
+   * set of lines to draw.
+   */
+  thresholds?: number[] | null;
 }
 
 /** Tooltip shown when the crosshair hovers the range-selection label chip. */

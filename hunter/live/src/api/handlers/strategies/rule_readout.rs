@@ -43,7 +43,7 @@ use hunter_engine::arm::CompiledRule;
 use hunter_engine::event::{LoadedRule, RuleId};
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::evaluator::ConditionExpr;
-use hunter_engine::metrics::flow_split::{ix_hash_opt, wallet_hash, FlowPatterns};
+use hunter_engine::metrics::flow_split::{ix_hash_from_labels_value, wallet_hash, FlowPatterns};
 use hunter_engine::metrics::{metric_spec, MetricId, Side, TradeLite};
 use hunter_engine::readout::{
     replay_readout, replay_series, ConditionRead, ConditionSeries, ReadSide, ReadoutSource,
@@ -448,6 +448,38 @@ async fn load_trades(
     Ok(trades)
 }
 
+/// The instant a replay's metric clock starts — the token's own creation time, the
+/// same anchor the fold uses live (`reduce`'s `TokenCreated`).
+///
+/// It is NOT the first retained trade. `time` is measured from this instant, `stall`
+/// and the lifetime price/flow state are re-based on it, and the 200 ms tick grid is
+/// phased from it — so anchoring on `trades[0]` shifts every one of them by however
+/// much of the token's head has aged out of the rolling ingest window. On a token
+/// whose whole history is still retained the two are within a slot of each other,
+/// which is exactly why the difference goes unnoticed until it is large.
+///
+/// Falls back to the first trade when the token row is gone (retention drops trades
+/// and tokens independently): a clock anchored a little late still beats refusing to
+/// answer at all, and it is the reading this had before.
+async fn replay_created_at(
+    app_state: &DeployState,
+    mint: &str,
+    trades: &[Trade],
+) -> chrono::DateTime<chrono::Utc> {
+    let first_trade = trades[0].block_time;
+    match app_state.core.token_repo().find_by_mint(mint).await {
+        Ok(Some(token)) => token.created_at,
+        Ok(None) => first_trade,
+        Err(e) => {
+            tracing::warn!(
+                mint,
+                "readout replay: token lookup failed, anchoring on first trade: {e}"
+            );
+            first_trade
+        }
+    }
+}
+
 /// The entry fill `(time, price)` a `PositionCtx` anchors on; `None` for a position
 /// that never filled, whose `m_position` reads then have no anchor.
 fn entry_fill(position: &StrategyPosition) -> Option<(chrono::DateTime<chrono::Utc>, f64)> {
@@ -483,7 +515,7 @@ async fn replay_for_position(
     let (patterns, creator_wallet_hash) =
         load_flow_ctx(app_state, &position.mint_address, rule.fingerprint_id).await;
 
-    let created_at = trades[0].block_time;
+    let created_at = replay_created_at(app_state, &position.mint_address, &trades).await;
     let lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
     let entry = entry_fill(position);
     let stage = Some(position.scale_stage);
@@ -525,25 +557,14 @@ fn trade_lite(t: &Trade) -> TradeLite {
         price: t.price_per_token,
         reserve_sol: t.real_reserve_sol.unwrap_or(f64::NAN),
         at: t.block_time,
-        ix_hash: ix_hash_of(&t.instruction_labels),
+        // The ONE shape-complete reader of `trades.ix_labels` — the same
+        // `normalize_labels` + hash the live `CachedTrade` uses, so both persisted
+        // shapes (bare array and `{"instructions":[…]}`) hash alike. A local reader
+        // that only accepts the bare array books every object-shaped row as organic,
+        // silently, and the whole flow split downstream of it goes with it.
+        ix_hash: ix_hash_from_labels_value(&t.instruction_labels),
         wallet_hash: wallet_hash(&t.wallet_address),
     }
-}
-
-/// [`ix_hash_opt`] over `trades.ix_labels` in its stored JSON form, borrowing rather
-/// than rebuilding a `Vec<String>` per trade.
-///
-/// Anything that is not a flat array of strings yields `None` — the same
-/// "unparseable ⇒ `None` ⇒ organic" answer `ix_hash_from_labels_json` gives, and the
-/// reason this rejects a non-string element instead of skipping it: skipping would
-/// hash a *different* label sequence and silently reclassify the trade.
-fn ix_hash_of(labels: &serde_json::Value) -> Option<u64> {
-    let arr = labels.as_array()?;
-    let mut out: Vec<&str> = Vec::with_capacity(arr.len());
-    for v in arr {
-        out.push(v.as_str()?);
-    }
-    ix_hash_opt(&out)
 }
 
 /// Map an engine-handle failure to a response. A wedged or shutting-down loop is a
@@ -713,7 +734,7 @@ async fn series_response(
     };
     let (patterns, creator_wallet_hash) = load_flow_ctx(app_state, &mint, rule.fingerprint_id).await;
 
-    let created_at = trades[0].block_time;
+    let created_at = replay_created_at(app_state, &mint, &trades).await;
     let lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
     let SeriesAnchor { position_id, centre, entry, stage } = anchor;
     let ResolvedRule { id: rule_id, compiled, fingerprint_id } = rule;

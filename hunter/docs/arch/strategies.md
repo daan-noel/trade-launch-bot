@@ -75,6 +75,15 @@ the fold is acting on. A **closed** one has no engine state left and is reconstr
 `replay_readout` — folding `TradeRepo::find_by_mint_until` rows through a fresh track to
 the exit (or entry) fill, then reading there.
 
+A replay anchors its metric clock on the **token's own `created_at`**, the same instant
+`TokenCreated` gives the live fold — never on the first retained trade. `time` is measured
+from it, `stall` and the lifetime price/flow state are re-based on it, and the tick grid is
+phased from it, so anchoring on `trades[0]` shifts all three by however much of the token's
+head has aged out of the rolling ingest window. Its two clocks agree with the fold's for the
+same reason its hashes do: `trades.ix_labels` goes through the engine's shape-complete
+`ix_hash_from_labels_value`, so both persisted shapes hash alike and an object-shaped row is
+not silently booked organic.
+
 **Two shapes, and the client picks by what it is asking.** `.../metrics` answers at one
 instant, which is what makes it cheap enough to poll. `.../metric-series`
 (`replay_series`) answers at *every* row of the engine's decision grid in one pass, for

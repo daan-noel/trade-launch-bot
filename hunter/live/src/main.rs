@@ -1454,6 +1454,56 @@ async fn run() -> anyhow::Result<()> {
         trading_core::storage::repositories::rule_repo::RuleRepo::new(db.clone());
     let fingerprint_repo =
         trading_core::storage::repositories::fingerprint_repo::FingerprintRepo::new(db.clone());
+    // Veteran-roster refresh for `m_bundle`. The roster is launch HISTORY, which the
+    // engine (a pure fold) cannot query, so it is precomputed here and parked on
+    // `fingerprints.metric_config`. Only fingerprints carrying an active rule that
+    // reads `m_bundle` are refreshed — the scan is a token-table sweep, not free.
+    //
+    // Slow on purpose: a wallet's launch count moves by one per launch and the gate
+    // sits on a bimodal distribution, so hourly is far finer than the signal. The
+    // first tick fires immediately so a fresh deploy is not left reading an empty
+    // roster (which classifies every wallet fresh and silently never fires).
+    {
+        let rule_repo = rule_repo.clone();
+        let fingerprint_repo = fingerprint_repo.clone();
+        let token_repo = trading_core::storage::repositories::token_repo::TokenRepo::new(db.clone());
+        let pool = db.clone();
+        tokio::spawn(async move {
+            use trading_core::services::veteran_roster::{refresh_roster, DEFAULT_LOOKBACK_DAYS};
+            const ROSTER_REFRESH_SECS: u64 = 3600;
+            loop {
+                match rule_repo.list_active().await {
+                    Ok(rules) => {
+                        let mut seen = std::collections::HashSet::new();
+                        for rule in rules.iter().filter(|r| {
+                            hunter_engine::metrics::bundle::params_reference_bundle(&r.params)
+                        }) {
+                            if !seen.insert(rule.fingerprint_id) {
+                                continue;
+                            }
+                            if let Err(e) = refresh_roster(
+                                &pool,
+                                &token_repo,
+                                &fingerprint_repo,
+                                rule.fingerprint_id,
+                                DEFAULT_LOOKBACK_DAYS,
+                            )
+                            .await
+                            {
+                                warn!(
+                                    "Veteran-roster refresh failed for {}: {e}",
+                                    rule.fingerprint_id
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => warn!("Veteran-roster refresh could not list rules: {e}"),
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(ROSTER_REFRESH_SECS)).await;
+            }
+        });
+    }
+
     let engine_handles = strategies::engine::spawn_engine(strategies::engine::EngineDeps {
         ping_rx: strategy_rx,
         create_rx,

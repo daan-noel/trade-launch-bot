@@ -20,6 +20,7 @@ use crate::storage::repositories::rule_repo::RuleRepo;
 
 use super::rule_params::RuleParams;
 
+pub use hunter_engine::metrics::bundle::bundle_unconfigured_warning;
 pub use hunter_engine::metrics::flow_split::flow_unconfigured_warning;
 
 /// Outcome of a rule CRUD write, mapped to an HTTP status by the calling edge.
@@ -380,7 +381,10 @@ async fn flow_warning_for(
     params: &Value,
 ) -> Option<String> {
     match fp_repo.find(fingerprint_id).await {
-        Ok(Some(fp)) => flow_unconfigured_warning(params, &fp.metric_config),
+        // Both groups are fingerprint-scoped and fail the same silent way (NaN reads,
+        // rule never fires), so one call site reports whichever is unconfigured.
+        Ok(Some(fp)) => flow_unconfigured_warning(params, &fp.metric_config)
+            .or_else(|| bundle_unconfigured_warning(params, &fp.metric_config)),
         _ => None,
     }
 }

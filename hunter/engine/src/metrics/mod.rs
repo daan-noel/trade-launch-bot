@@ -14,6 +14,8 @@
 //!   over a trailing window
 //! * `m_flow_split` (static, fingerprint-scoped) — vol/organic lifetime totals
 //! * `m_flow_split_window` (dynamic, fingerprint-scoped) — same metrics over a window
+//! * `m_bundle` (static, fingerprint-scoped) — `veteran_share`, `veteran_wallets`,
+//!   `fresh_wallets` over the launch window; frozen once the window closes
 //! * `m_position` (static, **position-scoped**, exit-only) — `retrace`, `bounce`,
 //!   `pnl`, `held` (anchored on your entry fill; TP/SL desugar into `pnl` — see `arm.rs`)
 //!
@@ -23,6 +25,7 @@
 //! all read it — adding a metric here (plus its compute logic in the group file)
 //! makes it immediately usable everywhere, with no schema change.
 
+pub mod bundle;
 pub mod evaluator;
 pub mod flow_lifetime;
 pub mod flow_split;
@@ -146,6 +149,8 @@ pub enum MetricGroupId {
     FlowSplit,
     /// `m_flow_split_window` — volume/organic trailing-window totals (fingerprint-scoped).
     FlowSplitWindow,
+    /// `m_bundle` — who funded the launch window (fingerprint-scoped).
+    Bundle,
     /// `m_position` — metrics anchored on YOUR entry fill (position-scoped, exit-only).
     Position,
 }
@@ -226,6 +231,14 @@ pub enum MetricId {
     WinNonvolNet,
     WinNonvolGross,
     WinVolShare,
+    // ── m_bundle (launch-window, fingerprint-scoped; frozen after the window) ──
+    /// Percent of launch-window buy SOL from wallets that bought this fingerprint's
+    /// **earlier** launches (`m_bundle`). Reads who funded the launch, not how much.
+    VeteranShare,
+    /// Distinct veteran wallets buying in the launch window (`m_bundle`).
+    VeteranWallets,
+    /// Distinct first-time wallets buying in the launch window (`m_bundle`).
+    FreshWallets,
     // ── m_position (position-scoped; anchored on the entry fill; exit-only) ──
     /// Percent below the since-entry peak — the trailing stop.
     Retrace,
@@ -245,6 +258,16 @@ pub fn is_flow_metric(id: MetricId) -> bool {
     )
 }
 
+/// True for metrics whose **state** is keyed by fingerprint — flow split and
+/// `m_bundle` — and which therefore need a `FingerprintId` to read a value.
+///
+/// Distinct from [`is_flow_metric`] on purpose: that one means "is a flow-split
+/// metric" and additionally selects a *flow* series column offline, which
+/// `m_bundle` is not. Conflating them would route bundle reads at a flow column.
+pub fn is_fingerprint_scoped(id: MetricId) -> bool {
+    is_flow_metric(id) || group_of(id).id == MetricGroupId::Bundle
+}
+
 impl MetricId {
     pub fn name(self) -> &'static str {
         metric_spec(self).name
@@ -259,7 +282,14 @@ impl MetricId {
     /// — so the answer lives here, next to the registry, rather than as a group list
     /// copied into each loader. A new wallet-keyed metric must be added here too.
     pub fn needs_wallet_identity(self) -> bool {
-        is_flow_metric(self) || matches!(self, MetricId::UniqueWallets)
+        is_flow_metric(self)
+            || matches!(
+                self,
+                MetricId::UniqueWallets
+                    | MetricId::VeteranShare
+                    | MetricId::VeteranWallets
+                    | MetricId::FreshWallets
+            )
     }
 }
 
@@ -401,7 +431,8 @@ pub enum MetricFamily {
     Price,
     /// Unclassified SOL flow — lifetime and trailing-window aggregates.
     Flow,
-    /// Classifier-split flow (volume vs organic), lifetime and windowed.
+    /// Flow split by a **wallet classifier** — volume vs organic (lifetime and
+    /// windowed), and launch-window veteran vs fresh.
     FlowSplit,
     /// Token state that is neither price nor flow: age and liquidity.
     LiquidityAge,
@@ -847,6 +878,57 @@ pub const REGISTRY: &[GroupSpec] = &[
         ],
     },
     GroupSpec {
+        id: MetricGroupId::Bundle,
+        name: "m_bundle",
+        kind: MetricKind::Static,
+        scope: MetricScope::Token,
+        // Same family as `m_flow_split`: both partition SOL by a WALLET CLASSIFIER
+        // (bot-volume vs organic there, veteran vs fresh here) rather than by
+        // magnitude, so discovery must measure their interaction instead of blindly
+        // crossing them. It is orthogonal to the magnitude metrics — measured |r| <=
+        // 0.19 against liquidity, gross flow and `unique_wallets`.
+        family: MetricFamily::FlowSplit,
+        strict_params: &[],
+        // The veteran roster is derived per fingerprint from launch history by the
+        // refresher, not authored on the fingerprint; `min_launches` is the one knob
+        // that decides who counts as a veteran.
+        fingerprint_config: &[FpConfigFieldSpec {
+            name: "veteran_min_launches",
+            value_type: "number",
+            required: false,
+        }],
+        // Violet family (~262–276) — clear of m_flow_window's magenta (290) and the
+        // blue snapshot band (212–236).
+        metrics: &[
+            MetricSpec {
+                id: MetricId::VeteranShare,
+                name: "veteran_share",
+                unit: Unit::Percent,
+                eq_tolerance: 1.0,
+                // Frozen once the launch window closes, so it neither rises nor falls
+                // monotonically — no derived unsatisfiability applies.
+                monotonic: false,
+                hue: 111,
+            },
+            MetricSpec {
+                id: MetricId::VeteranWallets,
+                name: "veteran_wallets",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 113,
+            },
+            MetricSpec {
+                id: MetricId::FreshWallets,
+                name: "fresh_wallets",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 115,
+            },
+        ],
+    },
+    GroupSpec {
         id: MetricGroupId::Position,
         name: "m_position",
         kind: MetricKind::Static,
@@ -1103,7 +1185,10 @@ mod tests {
         }
         assert_eq!(by_family["price"], vec!["m_price_lifetime", "m_price_window", "m_position"]);
         assert_eq!(by_family["flow"], vec!["m_flow_lifetime", "m_flow_window"]);
-        assert_eq!(by_family["flow_split"], vec!["m_flow_split", "m_flow_split_window"]);
+        assert_eq!(
+            by_family["flow_split"],
+            vec!["m_flow_split", "m_flow_split_window", "m_bundle"]
+        );
         assert_eq!(by_family["liquidity_age"], vec!["m_snapshot"]);
         // Nothing is unclassified today; a new group that lands in `Standalone` is
         // gridded alone (correct, just more compute) and this assert is the prompt
@@ -1264,7 +1349,7 @@ mod tests {
         // Which family a group belongs to (`None` = its own group, never exempt).
         let family = |g: MetricGroupId| -> Option<u8> {
             match g {
-                FlowSplit | FlowSplitWindow => Some(0),
+                FlowSplit | FlowSplitWindow | Bundle => Some(0),
                 PriceLifetime | PriceWindow | Position => Some(1),
                 FlowLifetime | FlowWindow => Some(2),
                 _ => None,
