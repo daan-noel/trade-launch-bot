@@ -22,7 +22,7 @@ use trading_core::{
     config::constants::POOL_SUBSCRIBE_ACTIVITY_WINDOW_SECONDS,
     models::{
         ingest::{IngestKind, SseEvent, StrategyPing},
-        token::Token,
+        token::{create_meta, Token},
         trade::{Trade, TradeType},
     },
     state::token_cache::{TokenCache, TokenState},
@@ -638,6 +638,7 @@ fn token_from_event(e: TokenCreated) -> Token {
         creation_slot: Some(e.slot),
         first_slot_buy_sol: None,
         first_slot_sell_sol: None,
+        meta: create_meta(e.uri.as_deref()),
         created_at: e.block_time,
     }
 }

@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::api::handlers::tokens::SqlArg;
 use crate::config::constants::{lamports_to_sol, sol_to_lamports, total_supply_for};
-use crate::models::token::Token;
+use crate::models::token::{create_meta, Token};
 use crate::storage::token_enrichment::MARKET_CAP_SQL;
 
 /// Bind an ordered `SqlArg` slice onto a `query_as` builder, in `$1..$n` order.
@@ -202,6 +202,9 @@ impl From<TokenDbRow> for Token {
             creation_slot: r.creation_slot.map(|v| v as u64),
             first_slot_buy_sol: None,
             first_slot_sell_sol: None,
+            // Not in `TOKEN_COLS`: `meta` is write-only on this path, so no list
+            // query pays for the JSONB. Select it explicitly where it is needed.
+            meta: create_meta(None),
             created_at: r.created_at,
         }
     }
@@ -250,7 +253,7 @@ impl TokenRepo {
              (mint_address, creator_wallet, name, symbol, token_program_id, \
               bonding_curve_address, initial_supply_token, total_supply_token, initial_buy_lamports, initial_buy_instruction, \
               cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels, \
-              creation_tx_signature, creation_slot, created_at) ",
+              creation_tx_signature, creation_slot, meta, created_at) ",
         );
         qb.push_values(tokens, |mut b, t| {
             b.push_bind(&t.mint_address)
@@ -272,6 +275,7 @@ impl TokenRepo {
                 .push_bind(Json(&t.instruction_labels))
                 .push_bind(&t.creation_tx_signature)
                 .push_bind(t.creation_slot.map(|v| v as i64))
+                .push_bind(Json(&t.meta))
                 .push_bind(t.created_at);
         });
         qb.push(" ON CONFLICT (mint_address) DO NOTHING");
@@ -286,8 +290,8 @@ impl TokenRepo {
             INSERT INTO tokens
                 (mint_address, creator_wallet, name, symbol, token_program_id,
                     bonding_curve_address, initial_supply_token, total_supply_token, initial_buy_lamports, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels,
-                    creation_tx_signature, creation_slot, created_at)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                    creation_tx_signature, creation_slot, meta, created_at)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
             ON CONFLICT (mint_address) DO NOTHING
             "#,
         )
@@ -309,6 +313,7 @@ impl TokenRepo {
         .bind(Json(&token.instruction_labels))
         .bind(&token.creation_tx_signature)
         .bind(token.creation_slot.map(|v| v as i64))
+        .bind(Json(&token.meta))
         .bind(token.created_at)
         .execute(&self.pool)
         .await?;
@@ -323,8 +328,8 @@ impl TokenRepo {
             INSERT INTO tokens
                 (mint_address, creator_wallet, name, symbol, token_program_id,
                     bonding_curve_address, initial_supply_token, total_supply_token, initial_buy_lamports, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels,
-                    creation_tx_signature, creation_slot, created_at)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                    creation_tx_signature, creation_slot, meta, created_at)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
             ON CONFLICT (mint_address) DO UPDATE SET
                 creator_wallet = EXCLUDED.creator_wallet,
                 name = EXCLUDED.name,
@@ -342,6 +347,10 @@ impl TokenRepo {
                 ix_labels = EXCLUDED.ix_labels,
                 creation_tx_signature = EXCLUDED.creation_tx_signature,
                 creation_slot = COALESCE(EXCLUDED.creation_slot, tokens.creation_slot),
+                -- Concat, not replace: the off-chain document behind `meta.uri` is
+                -- merged into this object out-of-band, and a re-upsert of the
+                -- creation facts must not drop it. EXCLUDED wins per key.
+                meta = tokens.meta || EXCLUDED.meta,
                 created_at = LEAST(tokens.created_at, EXCLUDED.created_at)
             "#,
         )
@@ -363,6 +372,7 @@ impl TokenRepo {
         .bind(Json(&token.instruction_labels))
         .bind(&token.creation_tx_signature)
         .bind(token.creation_slot.map(|v| v as i64))
+        .bind(Json(&token.meta))
         .bind(token.created_at)
         .execute(&self.pool)
         .await?;

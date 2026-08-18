@@ -89,6 +89,15 @@ summing); and `0` is impossible on a landed tx, so `fee_lamports_opt` folds the
 protobuf's ambiguous zero to `None` at the source rather than letting each decode site
 invent its own rule. It excludes the Jito tip (a transfer instruction, not a fee) and
 the venue's protocol/LP fee (already inside `sol`).
+
+**`TokenCreated.uri`** — the token's off-chain metadata pointer, read from whichever of
+the `create` instruction args or the `CreateEvent` log is present (log first, matching
+`name`/`symbol`). Like `fee_lamports` it comes from bytes the decoder already holds, so
+it costs zero RPC/Helius credits. An empty uri maps to `None`, because absence is a fact
+a token filter reads rather than a default to substitute. The create transaction is the
+only place it appears on the wire and `raw_txs` drops after 3 days, so a uri not captured
+live is gone; the host persists it into `tokens.meta` — see
+[@plans/database/token-storage.md](../plans/database/token-storage.md).
 | `protocol.rs` | `Protocol` descriptor: pre-decoded program IDs (`ProgramId` w/ bytes + base58) + discriminators decoded once at build time |
 | `config.rs` | `IngestConfig` (all tunables, no env reads), `Commitment` enum |
 | `error.rs` | `IngestError`, `Result<T>` alias |

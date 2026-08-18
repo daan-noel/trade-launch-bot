@@ -46,6 +46,7 @@ async fn pump_fun_events_project_onto_the_schema() {
         mint: MINT.to_string(),
         creator: "ROUNDTRIP_creator".to_string(),
         name: "Roundtrip".to_string(),
+        uri: Some("ipfs://QmRoundtrip".to_string()),
         symbol: "RT".to_string(),
         token_program_id: Some("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string()),
         bonding_curve: Some("ROUNDTRIP_curve".to_string()),

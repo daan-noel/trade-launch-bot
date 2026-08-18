@@ -74,6 +74,12 @@ impl Decoder {
         let symbol = create_log.map(|e| e.symbol.clone())
             .or_else(|| ix_info.as_ref().map(|i| i.symbol.clone()))
             .unwrap_or_else(|| "UNKNOWN".to_string());
+        // Off-chain metadata pointer (IPFS/Arweave) carried by the create ix and its
+        // log. Absence is itself a signal, so an empty string maps to `None` rather
+        // than being persisted verbatim.
+        let uri = create_log.map(|e| e.uri.clone())
+            .or_else(|| ix_info.as_ref().map(|i| i.uri.clone()))
+            .filter(|u| !u.is_empty());
         let is_mayhem_mode = create_log.map(|e| e.is_mayhem_mode)
             .or_else(|| ix_info.as_ref().map(|i| i.is_mayhem_mode))
             .unwrap_or(false);
@@ -114,6 +120,7 @@ impl Decoder {
                 creator,
                 name,
                 symbol,
+                uri,
                 token_program_id,
                 bonding_curve,
                 initial_supply,
@@ -140,7 +147,6 @@ impl Decoder {
 struct RawCreateEvent {
     name: String,
     symbol: String,
-    #[allow(dead_code)]
     uri: String,
     mint: [u8; 32],
     bonding_curve: [u8; 32],
@@ -168,6 +174,7 @@ struct RawCreateEvent {
 pub(super) struct DecodedCreateEvent {
     pub(super) name: String,
     pub(super) symbol: String,
+    pub(super) uri: String,
     pub(super) mint: String,
     pub(super) bonding_curve: Option<String>,
     pub(super) user: String,
@@ -193,6 +200,7 @@ pub(super) fn decode_create_events_from_logs(logs: &[&str], disc: &[u8; 8]) -> V
             Ok(raw) => events.push(DecodedCreateEvent {
                 name: raw.name,
                 symbol: raw.symbol,
+                uri: raw.uri,
                 mint: bs58::encode(raw.mint).into_string(),
                 bonding_curve: Some(bs58::encode(raw.bonding_curve).into_string()),
                 user: bs58::encode(raw.user).into_string(),
@@ -251,6 +259,7 @@ fn extract_pump_buy_instruction_data(datas: &[&[u8]], p: &Protocol) -> Option<Bu
 struct CreateInstructionInfo {
     name: String,
     symbol: String,
+    uri: String,
     creator: String,
     is_v2: bool,
     is_mayhem_mode: bool,
@@ -267,7 +276,7 @@ fn decode_create_info(data: &[u8], p: &Protocol) -> Option<CreateInstructionInfo
     let mut offset = 8;
     let name = read_anchor_string(data, &mut offset)?;
     let symbol = read_anchor_string(data, &mut offset)?;
-    read_anchor_string(data, &mut offset)?; // uri — consumed but not used
+    let uri = read_anchor_string(data, &mut offset)?;
     let creator = read_pubkey(data, &mut offset)
         .map(|pk| bs58::encode(pk).into_string())?;
 
@@ -280,7 +289,7 @@ fn decode_create_info(data: &[u8], p: &Protocol) -> Option<CreateInstructionInfo
         (false, false)
     };
 
-    Some(CreateInstructionInfo { name, symbol, creator, is_v2, is_mayhem_mode, is_cashback_enabled })
+    Some(CreateInstructionInfo { name, symbol, uri, creator, is_v2, is_mayhem_mode, is_cashback_enabled })
 }
 
 fn pump_user_account(pump_accounts: &[String], is_v2: bool) -> Option<String> {
@@ -315,4 +324,43 @@ fn read_anchor_string(data: &[u8], offset: &mut usize) -> Option<String> {
     let s = std::str::from_utf8(data.get(*offset..*offset + len)?).ok()?.to_string();
     *offset += len;
     Some(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::Protocol;
+
+    /// Anchor-encode a `create` instruction: 8-byte discriminator, then three
+    /// length-prefixed strings, then the creator pubkey.
+    fn create_ix_bytes(p: &Protocol, name: &str, symbol: &str, uri: &str) -> Vec<u8> {
+        let mut out = p.discriminators.create_ix.to_vec();
+        for s in [name, symbol, uri] {
+            out.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            out.extend_from_slice(s.as_bytes());
+        }
+        out.extend_from_slice(&[7u8; 32]); // creator
+        out
+    }
+
+    /// The uri is the only off-chain metadata pointer the create tx carries, and
+    /// nothing else on the feed repeats it — so it has to survive the ix decode.
+    #[test]
+    fn create_ix_decode_keeps_the_uri() {
+        let p = Protocol::pump_fun();
+        let data = create_ix_bytes(&p, "Test Coin", "TEST", "ipfs://QmExample");
+        let info = decode_create_info(&data, &p).expect("decodes");
+        assert_eq!(info.name, "Test Coin");
+        assert_eq!(info.symbol, "TEST");
+        assert_eq!(info.uri, "ipfs://QmExample");
+    }
+
+    /// Reading the uri must not shift the fields decoded after it.
+    #[test]
+    fn create_ix_decode_still_reaches_the_creator() {
+        let p = Protocol::pump_fun();
+        let data = create_ix_bytes(&p, "N", "S", "ipfs://QmLongerThanTheOthers");
+        let info = decode_create_info(&data, &p).expect("decodes");
+        assert_eq!(info.creator, bs58::encode([7u8; 32]).into_string());
+    }
 }

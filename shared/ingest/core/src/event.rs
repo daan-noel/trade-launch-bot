@@ -108,6 +108,10 @@ pub struct TokenCreated {
     pub creator: String,
     pub name: String,
     pub symbol: String,
+    /// Off-chain metadata pointer (IPFS/Arweave) from the create instruction.
+    /// `None` when the venue emitted no uri or an empty one — absence is a fact
+    /// worth keeping, not a value to substitute a default for.
+    pub uri: Option<String>,
     pub token_program_id: Option<String>,
     pub bonding_curve: Option<String>,
     pub initial_supply: Option<u64>,

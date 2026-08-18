@@ -52,7 +52,22 @@ pub struct Token {
     /// [`first_slot_buy_sol`](Self::first_slot_buy_sol).
     #[serde(default)]
     pub first_slot_sell_sol: Option<f64>,
+    /// Creation-time metadata, mirroring the `tokens.meta` JSONB column. Built by
+    /// [`create_meta`] at ingest; the off-chain document behind `meta.uri` is
+    /// fetched out-of-band and merged into the same object later. Write-only on
+    /// the token read paths — no list query selects it.
+    #[serde(default)]
+    pub meta: Value,
     pub created_at: DateTime<Utc>,
+}
+
+/// The one builder for a token's creation-time `meta` object. Every ingest path
+/// goes through it so the key names are defined once.
+pub fn create_meta(uri: Option<&str>) -> Value {
+    match uri {
+        Some(u) => serde_json::json!({ "uri": u }),
+        None => serde_json::json!({}),
+    }
 }
 
 impl Token {
@@ -95,6 +110,7 @@ impl Token {
             creation_slot,
             first_slot_buy_sol: None,
             first_slot_sell_sol: None,
+            meta: create_meta(None),
             created_at,
         }
     }

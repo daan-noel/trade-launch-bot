@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS tokens (
     ix_labels               JSONB       NOT NULL DEFAULT '[]',
     initial_buy_instruction JSONB,
 
-    meta                    JSONB       NOT NULL DEFAULT '{}',  -- future static attrs w/o a migration
+    meta                    JSONB       NOT NULL DEFAULT '{}',  -- off-chain metadata (see below)
     created_at              TIMESTAMPTZ NOT NULL
 );
 
@@ -90,6 +90,18 @@ Notes
 - `mint_address` is the PK — the old surrogate `id UUID` + separate `UNIQUE` are gone.
 - `name`/`symbol` treated as static (fixed at launch). If on-chain metadata renames
   become relevant, they move to `tokens_info` (dynamic) — see open questions.
+- `meta` holds the token's off-chain metadata, keyed. Ingest writes `{"uri": ...}` from
+  the `create` instruction / `CreateEvent` log — the only place the pointer appears, and
+  it costs no RPC. The key is absent when the venue emits no uri, which is itself a
+  signal: absence and reuse are what token-quality filters read, not the string's
+  content. Anything fetched from the document behind that uri (socials, image) merges
+  into the same object out-of-band, so `upsert` concatenates (`tokens.meta ||
+  EXCLUDED.meta`) rather than replacing — a re-upsert of the creation facts must not
+  drop an enrichment. `meta` is deliberately **not** in `TOKEN_COLS`: no list query
+  pays for the JSONB, so read it explicitly where it is needed.
+- The pointer is unrecoverable after the fact. It lives only in the create transaction,
+  and `raw_txs` drops after 3 days — nothing backfills a token created before ingest
+  started capturing it.
 - `creation_slot` is a write-once creation fact (known at `TokenCreated`). It is the
   slot key for the same-slot activity sums on `tokens_info` (`first_slot_*_sol`), so
   it lives on `tokens` (creation fact), while the derived-from-trades sums live on
