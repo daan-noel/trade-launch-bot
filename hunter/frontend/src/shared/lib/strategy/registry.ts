@@ -5,7 +5,7 @@
 // messages. Adding a metric in Rust ⇒ it appears everywhere on the next load with
 // zero frontend work (extensibility contract, backend plan §8 / FE plan §1).
 
-import { useGetStrategyRegistryQuery } from 'store/sharedEndpoints';
+import { REGISTRY_STALE_SECS, useGetStrategyRegistryQuery } from 'store/sharedEndpoints';
 import type { CompareOp } from 'components/table/numericFilter';
 
 /** The six comparison operators, shared with the condition grammar. */
@@ -93,6 +93,36 @@ export function volumeIxPatternsFromConfig(
   );
 }
 
+/** `m_bundle` roster as stored on a fingerprint's `metric_config`. */
+export interface VeteranRoster {
+  minLaunches: number | null;
+  wallets: string[];
+}
+
+/**
+ * Read `m_bundle` from a fingerprint's `metric_config`. `null` means the key is
+ * absent — i.e. unconfigured, so every `m_bundle` metric reads `NaN` and a rule on
+ * one can never fire. An **empty** `wallets` is a configured-empty roster (nobody
+ * qualifies yet); the form has to tell those two apart, so this cannot collapse
+ * them to `[]`.
+ *
+ * Read-only: the roster is written by `services::veteran_roster`, never by hand.
+ */
+export function veteranRosterFromConfig(
+  cfg: Record<string, unknown> | null | undefined,
+): VeteranRoster | null {
+  const bundle = cfg?.m_bundle;
+  if (!bundle || typeof bundle !== 'object') return null;
+  const { veteran_min_launches: min, veteran_wallets: wallets } = bundle as {
+    veteran_min_launches?: unknown;
+    veteran_wallets?: unknown;
+  };
+  return {
+    minLaunches: typeof min === 'number' && Number.isFinite(min) ? min : null,
+    wallets: Array.isArray(wallets) ? wallets.filter((w): w is string => typeof w === 'string') : [],
+  };
+}
+
 /** Build `metric_config` for flow patterns. Empty ⇒ `{}` (unconfigured). */
 export function metricConfigWithVolumePatterns(patterns: string[][]): Record<string, unknown> {
   const cleaned = patterns.map((p) => p.map((s) => s.trim()).filter(Boolean)).filter((p) => p.length > 0);
@@ -140,7 +170,14 @@ export function findMetric(
  * Cached, app-wide access to the registry. The payload is static for the backend
  * process lifetime, so it is fetched once and held for the session (see the long
  * `keepUnusedDataFor` on the endpoint). Every rule-authoring surface reads it.
+ *
+ * The tab, however, outlives the backend process. `refetchOnMountOrArgChange`
+ * overrides the app-wide `false` so a copy older than `REGISTRY_STALE_SECS` is
+ * re-read on the next mount — otherwise a restart that adds a metric group leaves
+ * the pickers silently rendering the previous vocabulary for a full hour.
  */
 export function useStrategyRegistry() {
-  return useGetStrategyRegistryQuery();
+  return useGetStrategyRegistryQuery(undefined, {
+    refetchOnMountOrArgChange: REGISTRY_STALE_SECS,
+  });
 }

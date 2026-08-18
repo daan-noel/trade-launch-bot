@@ -476,6 +476,13 @@ next load (no per-metric frontend work).
   `useStrategyRegistry()` hook (RTK Query, 1 h). `unitSuffix`/`findGroup`/`findMetric`.
   New engine groups (e.g. `m_flow_lifetime`) appear in rule/sweep pickers from this
   payload alone; `strategyHelp.ts` `GROUP_HELP` / `METRIC_HELP` supplies the ⓘ copy.
+  The payload is static per backend **process**, not per tab, so the hook passes
+  `refetchOnMountOrArgChange: REGISTRY_STALE_SECS` (60 s) over the app-wide `false`:
+  a restart that adds a metric group otherwise leaves the pickers rendering the
+  previous vocabulary for an hour with no error, while authored rules already show
+  the new group because `RuleParamsSummary` falls back to raw params.
+  `veteranRosterFromConfig` reads `metric_config.m_bundle` for the fingerprint form's
+  read-only roster line; absent vs configured-empty stay distinct.
 - `lib/strategy/grammar.ts` — the condition grammar (`">10, <=30"` → `{operator,value}`
   list; `1..10` → `>=1 AND <=10`), wrapping the shared compound `numericFilter` parser.
 - `lib/strategy/ruleParams.ts` — the ONE generic `params` JSONB ⇄ form serializer

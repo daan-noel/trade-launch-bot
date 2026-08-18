@@ -18,6 +18,7 @@ import {
   groupsWithFingerprintConfig,
   metricConfigWithVolumePatterns,
   useStrategyRegistry,
+  veteranRosterFromConfig,
   volumeIxPatternsFromConfig,
 } from 'lib/strategy/registry';
 import { FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
@@ -53,7 +54,8 @@ interface FormState {
   ix_labels: string;
   /** `m_flow_split.volume_ix_patterns` rows (other metric_config keys preserved on save). */
   volume_ix_patterns: string[][];
-  /** Original metric_config minus flow key — merged back on save. */
+  /** Original metric_config minus flow key — merged back on save. This is what
+   *  preserves machine-written groups (notably `m_bundle`) across an edit. */
   metric_config_rest: Record<string, unknown>;
 }
 
@@ -147,6 +149,10 @@ export function FingerprintForm({
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setS((p) => ({ ...p, [k]: v }));
   const { data: registry } = useStrategyRegistry();
   const fpConfigGroups = groupsWithFingerprintConfig(registry);
+  // Read-only: the roster is rebuilt from launch history by the backend refresher,
+  // so the form shows it rather than editing it — and `metric_config_rest` is what
+  // carries it through a save untouched.
+  const roster = useMemo(() => veteranRosterFromConfig(initial?.metric_config), [initial]);
 
   const ixParsed = useMemo(() => parseIxLabelsText(s.ix_labels), [s.ix_labels]);
   const draft = useMemo(() => toDraft(s), [s]);
@@ -287,6 +293,28 @@ export function FingerprintForm({
           error={ixParsed.error}
         />
       </label>
+
+      {roster && (
+        <div className="flex flex-col gap-1 text-[11px] text-text-dim">
+          <LabelTip tip={FINGERPRINT_FIELD_HELP.veteran_wallets}>
+            veteran roster (m_bundle)
+          </LabelTip>
+          <div className="rounded-md border border-white/10 bg-surface px-2 py-1.5 text-text-mid">
+            {roster.wallets.length === 0 ? (
+              // Configured but empty is a real state, not an error: the refresher ran
+              // and no wallet cleared the bar yet.
+              <span className="text-text-dim">
+                no wallet has reached the bar yet — bundle metrics read 0% until one does
+              </span>
+            ) : (
+              <span>
+                <span className="text-text">{roster.wallets.length}</span> wallets
+                {roster.minLaunches != null && <> · ≥ {roster.minLaunches} prior launches</>}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {fpConfigGroups.some((g) =>
         (g.fingerprint_config ?? []).some((f) => f.name === 'volume_ix_patterns'),

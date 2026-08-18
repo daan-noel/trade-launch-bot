@@ -182,6 +182,22 @@ export const GROUP_HELP: Record<string, HelpTip> = {
       'Metric names mirror m_flow_split (vol_*, nonvol_*, vol_share). Kind: dynamic.',
     ].join('\n'),
   },
+  m_bundle: {
+    title: 'm_bundle — who funded the launch',
+    body: [
+      'Reads WHO bought in the first second of the token, not how much moved. A',
+      'veteran is a wallet that bought >= veteran_min_launches (default 25) of this',
+      "fingerprint's EARLIER launches; the roster is refreshed hourly onto the",
+      'fingerprint and is never hand-authored.',
+      '',
+      '• veteran_share — % of launch-window buy SOL from veterans.',
+      '• veteran_wallets / fresh_wallets — distinct launch-window buyers of each kind.',
+      '',
+      'The window FREEZES after 1s, so the value reads the same at time=2 as at',
+      'time=200 — it describes the launch, and later trading can never re-trigger it.',
+      'Unconfigured fingerprint (no roster) ⇒ all NaN. Kind: static.',
+    ].join('\n'),
+  },
   m_position: {
     title: 'm_position — your open position (EXIT ONLY)',
     body: [
@@ -468,6 +484,36 @@ export const METRIC_HELP: Record<string, HelpTip> = {
       'nonvol_buy + nonvol_sell — total organic tape (direction ignored).',
       '',
       'Example: >3 → meaningful organic churn alongside (or instead of) volume-side flow.',
+    ].join('\n'),
+  },
+  veteran_share: {
+    title: 'veteran_share — veteran share of the launch bundle (%)',
+    body: [
+      'Veteran buy SOL / total buy SOL in the first second × 100. Sell-side ignored.',
+      'NaN until the first launch-window buy (so it never fires on absent data).',
+      '',
+      'The distribution is typically BIMODAL — a bundle is either almost all veteran',
+      'money or almost all fresh wallets — so the exact threshold matters little.',
+      '',
+      'Examples:',
+      '  >=90    bundle funded by the launcher regulars',
+      '  <=10    a fresh crowd nobody recognises',
+      '',
+      'Unit is percent (not SOL). Unconfigured fingerprint ⇒ NaN.',
+    ].join('\n'),
+  },
+  veteran_wallets: {
+    title: 'veteran_wallets — veteran buyers in the launch window',
+    body: [
+      'Distinct wallets with launch history that bought in the first second.',
+      'A wallet buying twice still counts once. Kind: count.',
+    ].join('\n'),
+  },
+  fresh_wallets: {
+    title: 'fresh_wallets — first-time buyers in the launch window',
+    body: [
+      'Distinct wallets with NO launch history that bought in the first second.',
+      'The twin of veteran_wallets; a high count means an unrecognised crowd.',
     ].join('\n'),
   },
   vol_share: {
@@ -839,6 +885,20 @@ export const FINGERPRINT_FIELD_HELP = {
       'are NaN (never fire). Aggregate flow (m_flow_lifetime / m_flow_window) does not',
       'use this config.',
       'Discover candidates on Lab → Flow discovery, then Apply back here.',
+    ].join('\n'),
+  },
+  veteran_wallets: {
+    title: 'Veteran roster (m_bundle)',
+    body: [
+      'Wallets that bought at least veteran_min_launches of THIS fingerprint\'s',
+      'earlier launches. Drives m_bundle.veteran_share / veteran_wallets / fresh_wallets.',
+      '',
+      'Read-only here. The backend refresher rebuilds it hourly from launch history and',
+      'writes metric_config.m_bundle. Hand-editing it breaks the causality contract:',
+      'a roster must contain only launches EARLIER than the token it scores.',
+      '',
+      'Missing m_bundle key => the bundle metrics are NaN and a rule on them never fires.',
+      'Present but empty => configured, nobody has reached the bar yet (share reads 0%).',
     ].join('\n'),
   },
 } as const satisfies Record<string, HelpTip>;

@@ -27,6 +27,14 @@ import type {
 } from 'lib/strategy/types';
 
 /**
+ * Age at which a cached strategy registry is re-read on the next mount.
+ *
+ * Long enough that ordinary navigation still reuses one fetch; short enough that
+ * restarting a backend with a new metric group shows up without a hard reload.
+ */
+export const REGISTRY_STALE_SECS = 60;
+
+/**
  * How the Rules scoreboard scores each rule. A bare string is the legacy scope-only
  * form; the object form adds `mode`, which pins every rule to ONE trade mode's ledger
  * instead of its own `trade_mode`. Omitting `mode` is not the same as picking one —
@@ -207,9 +215,16 @@ export const sharedApi = baseApi.injectEndpoints({
     }),
     // The strategy metric registry (`hunter_engine::metrics::registry_json`) — the
     // self-describing vocabulary the whole rule-authoring UI renders from. Static
-    // for the backend process lifetime, so cache it for an hour and never refetch
-    // on remount: one request per session drives every group picker / metric row /
-    // sweep axis / chart pane / validation message.
+    // for the backend process **lifetime**, so hold it for an hour: one request
+    // drives every group picker / metric row / sweep axis / chart pane / message.
+    //
+    // But the TAB outlives the process. A backend restart that adds a metric group
+    // leaves an open tab rendering the previous vocabulary with no error — authored
+    // rules still show the new group (params render from raw JSON) while the
+    // editor's pickers do not offer it. `useStrategyRegistry` therefore passes
+    // `refetchOnMountOrArgChange: REGISTRY_STALE_SECS` at the hook: the option is
+    // not an endpoint-definition field, and the one shared accessor is the place
+    // that covers every surface. A restart then costs one 5 KB GET.
     getStrategyRegistry: builder.query<StrategyRegistry, void>({
       query: () => '/api/meta/strategy-registry',
       keepUnusedDataFor: 3600,
