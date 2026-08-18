@@ -98,10 +98,13 @@ pub async fn launch_history(
     // window is its online approximation (r = 0.999 on the cohort this was derived on).
     let rows = sqlx::query(
         r#"
+        -- `SUM(bigint)` is NUMERIC in Postgres, which does not decode as `i64` - the
+        -- cast is what keeps this readable as one. Safe: these are per-(mint, wallet)
+        -- creation-slot totals, orders of magnitude below the i64 ceiling.
         SELECT tr.mint_address,
-               w.address                                                      AS wallet,
-               SUM(tr.amount_lamports) FILTER (WHERE tr.trade_type = 'buy')   AS buy_lamports,
-               SUM(tr.amount_lamports) FILTER (WHERE tr.trade_type = 'sell')  AS sell_lamports
+               w.address                                                              AS wallet,
+               SUM(tr.amount_lamports) FILTER (WHERE tr.trade_type = 'buy')::bigint   AS buy_lamports,
+               SUM(tr.amount_lamports) FILTER (WHERE tr.trade_type = 'sell')::bigint  AS sell_lamports
           FROM trades tr
           JOIN tokens  tk ON tk.mint_address = tr.mint_address
           JOIN wallet_dict w ON w.id = tr.wallet_id

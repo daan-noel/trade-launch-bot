@@ -226,7 +226,8 @@ file is not: the dip gate is best at **25** (not 18) and the vsol band at **40�
   is token *selection*, not the trigger: on its own picks the reconstructed rule prints
   +7.7 % mean (PF 1.53) and on everything else −32.8 %, from one simulate run at identical
   fills and costs. Every feature we ingest was scored against that +7.8 % ceiling and none
-  is worth more than a few points. Full grid:
+  is worth more than a few points. Mechanism spec — his entry bands, the armed trail, the
+  quiet gate, what transfers: [wallet-8dtx-logic.md](wallet-8dtx-logic.md). Full grid:
   [`../../history/2026-08-17-wallet-8dtx-clone-refuted.md`](../../history/2026-08-17-wallet-8dtx-clone-refuted.md).
 
 **Two rules that generalise past that refutation.**
@@ -235,8 +236,11 @@ file is not: the dip gate is best at **25** (not 18) and the vsol band at **40�
 `m_flow_lifetime.gross_flow` is the lever that controls it.** A dip-turn rule with no
 liveness floor exits `Dead` on ~22 % of its fills; a `gross_flow >= 30` floor (with
 `time <= 300`, `trail <= 30`) cuts that to 4.6 % and moves mean PnL −26.3 → −9.3 %.
-Ablation isolates the floor as the whole effect. Put it on any rule that arms a broad
-universe. Beware the shape of the tuning curve, though: past that point each further
+Ablation isolates the floor as the whole effect. It is **not** an addition to the seeded
+ladders — a windowed `gross_flow` floor already implies it, so every `fs*`/`tru-*` rule
+carries a stronger one; it is the safe **replacement** when a windowed hot gate is dropped,
+and it is load-bearing from the start on any entry that wants a *quiet* tape
+([metrics-reference.md](metrics-reference.md)). Beware the shape of the tuning curve, though: past that point each further
 tightening buys its gain by removing trades and converges on zero **from below** — a
 config walking toward breakeven on a shrinking `n` has no edge, it has less exposure.
 

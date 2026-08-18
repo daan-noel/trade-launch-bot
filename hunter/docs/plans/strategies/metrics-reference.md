@@ -30,6 +30,25 @@ Non-finite / negative SOL is ignored. Windowed variants are never monotonic.
 Lifetime is the maturity / critical-mass gate; window is the hot-right-now filter.
 No fingerprint config — unlike the split groups below.
 
+**A windowed `gross_flow` floor subsumes the lifetime one.** The window is a sub-interval
+of the token's life and both metrics are the same `buy + sell` SOL, so
+`m_flow_window(W).gross_flow >= X` implies `m_flow_lifetime.gross_flow >= X` for every `W`.
+Stacking a lower lifetime floor under a windowed one is a **no-op clause** — every seeded
+rule family already carries `m_flow_window(60).gross_flow >= 45…70`, so none of them needs
+one.
+
+**Where the lifetime floor earns its place is as the *replacement* for a windowed hot gate,
+not an addition to it.** A liveness floor is worth ~12.5 pp of mean PnL by ablation on a
+broad universe (it is what holds the `Dead` exit rate down — see
+[wallet-8dtx-logic.md](wallet-8dtx-logic.md)), but a *windowed* one risks selecting
+post-move moments created by the very move it gates on, which is what the entry-timing
+diagnostic (`family_search::gates`) exists to catch and what dropping `gross_flow(60) >= 55`
+from the scalp family confirmed. The lifetime floor cannot have that defect: it reads
+cumulative maturity and does not bind the entry instant. So when the diagnostic flags a
+windowed hot gate, swap it for `m_flow_lifetime.gross_flow >= 30` rather than leaving the
+rule with no liveness gate at all. The same applies to any entry whose window gate points
+*downward* (a quiet-tape gate) — there the lifetime floor is load-bearing from the start.
+
 `unique_wallets` counts **people, not SOL**: one wallet churning and a crowd arriving are
 identical in `gross_flow` and different here. It keeps a per-wallet occurrence map beside
 the SOL deque, so a wallet leaves the count only when its **last** entry leaves the window

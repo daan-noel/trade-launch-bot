@@ -10,6 +10,11 @@ profiles a *launch client*.
 The whole move is consumed inside the creation slot by the launcher's own bundle.
 Use it as an exclusion filter, not an entry gate.**
 
+> **Scope.** That verdict covers the *funding-tier* fingerprints as wholes. The tool's
+> launches are not homogeneous: cut any tier by creation-slot bundle SOL and the 15-30 SOL
+> band is positive while the rest carries the loss — see
+> [maxbuy-launcher-bundle-band.md](maxbuy-launcher-bundle-band.md).
+
 ## 1. What the fingerprint actually selects
 
 `group 1` axes: `spendable_lamports_in = 2_000_000_000` (exact, `bucket_size_amount
