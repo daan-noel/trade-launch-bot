@@ -62,6 +62,16 @@ pub struct Producer {
     trade_cursor: HashMap<String, u64>,
     /// Mints whose first-slot settlement has been emitted (one-shot).
     first_slot_emitted: HashSet<String>,
+    /// Highest slot seen on any drained trade — the proof a creation slot has
+    /// closed. The feed delivers per block, so observing slot `S+1` anywhere means
+    /// every slot-`S` trade has already been delivered. Waiting instead for a
+    /// later-slot trade **on the token itself** costs the slots the token is quiet
+    /// for, which on a bundled launch is exactly where the edge is.
+    slot_watermark: u64,
+    /// Mints awaiting first-slot settlement, keyed to their creation slot. Bounded
+    /// by the settle sweep: an entry leaves the moment the watermark passes it, or
+    /// when the token ages past the snipe rail.
+    pending_first_slot: HashMap<String, u64>,
     /// Mints whose migration has been emitted (one-shot).
     migrated_emitted: HashSet<String>,
     /// When this engine loop started. **The history/live boundary**: a cached trade
@@ -76,6 +86,8 @@ impl Producer {
             token_cache,
             trade_cursor: HashMap::new(),
             first_slot_emitted: HashSet::new(),
+            slot_watermark: 0,
+            pending_first_slot: HashMap::new(),
             migrated_emitted: HashSet::new(),
             started_at,
         }
@@ -138,6 +150,14 @@ impl Producer {
         let tf = observed_axes(&token, None, None);
         let creator_wallet_hash = (!token.creator_wallet.is_empty())
             .then(|| wallet_hash(&token.creator_wallet));
+        // Queue the deferred first-slot resolve. The watermark sweep settles it as
+        // soon as any token trades in a later slot, so a quiet launch no longer waits
+        // for its own next trade.
+        if let Some(creation_slot) = token.creation_slot {
+            if !self.first_slot_emitted.contains(mint) {
+                self.pending_first_slot.insert(mint.to_string(), creation_slot);
+            }
+        }
         out.push(Event::TokenCreated {
             mint: Mint::from(mint),
             fp: Box::new(tf),
@@ -155,31 +175,22 @@ impl Producer {
             return Produced::default();
         };
 
-        // The creation slot has closed (a later-slot trade landed): resolve any
-        // deferred first-slot fingerprint. One-shot per mint, and only while the
-        // token is still snipe-fresh — after a restart every seeded token's first
-        // trade ping would otherwise settle a creation slot that closed hours ago.
-        let (window_closed, buy_sol, sell_sol) = {
+        // The creation slot has closed for this token (a later-slot trade landed on
+        // it): resolve any deferred first-slot fingerprint. The tick's watermark
+        // sweep usually gets there first — this stays as the path for a mint that
+        // never went through `on_token_created` in this process (an adopted or
+        // log-re-armed token, whose creation slot the producer never queued).
+        let window_closed = {
             let Some(entry) = self.token_cache.get(mint) else {
                 return out;
             };
-            let s = entry.value();
-            let fresh = Utc::now().signed_duration_since(s.token.created_at).num_seconds()
-                <= MAX_SNIPE_AGE_SECS;
-            (
-                fresh && !s.first_slot_window_open,
-                s.first_slot_buy_sol,
-                s.first_slot_sell_sol,
-            )
+            !entry.value().first_slot_window_open
         };
-        if window_closed && !self.first_slot_emitted.contains(mint) {
-            self.first_slot_emitted.insert(mint.to_string());
-            out.events.push(Event::FirstSlotSettled {
-                mint: Mint::from(mint),
-                buy_lamports: sol_to_lamports_u64(buy_sol),
-                sell_lamports: sol_to_lamports_u64(sell_sol),
-                at: Utc::now(),
-            });
+        if window_closed {
+            self.pending_first_slot.remove(mint);
+            if let Some(ev) = self.settle_first_slot(mint) {
+                out.events.push(ev);
+            }
         }
         out
     }
@@ -204,6 +215,7 @@ impl Producer {
         let start = cursor.saturating_sub(trades_base).min(trades.len() as u64) as usize;
         let mut out = Produced::default();
         for ct in &trades[start..] {
+            self.slot_watermark = self.slot_watermark.max(ct.slot);
             self.split_trade(mint, ct, &mut out);
         }
         self.trade_cursor.insert(mint.to_string(), total);
@@ -227,6 +239,64 @@ impl Producer {
         } else {
             out.events.push(Event::Trade { mint: Mint::from(mint), trade });
         }
+    }
+
+    /// Emit `FirstSlotSettled` for `mint` once, reading the creation-slot sums the
+    /// cache has accumulated. `None` when already emitted, uncached, or past the
+    /// snipe-freshness rail (a restart must not re-settle slots that closed hours
+    /// ago). Read-only on the cache: a late same-slot trade may still grow the sums,
+    /// but nothing reads them after the event — the same tolerance
+    /// `first_slot_window_open` already documents.
+    fn settle_first_slot(&mut self, mint: &str) -> Option<Event> {
+        if self.first_slot_emitted.contains(mint) {
+            return None;
+        }
+        let (fresh, buy_sol, sell_sol) = {
+            let entry = self.token_cache.get(mint)?;
+            let s = entry.value();
+            (
+                Utc::now().signed_duration_since(s.token.created_at).num_seconds()
+                    <= MAX_SNIPE_AGE_SECS,
+                s.first_slot_buy_sol,
+                s.first_slot_sell_sol,
+            )
+        };
+        if !fresh {
+            return None;
+        }
+        self.first_slot_emitted.insert(mint.to_string());
+        Some(Event::FirstSlotSettled {
+            mint: Mint::from(mint),
+            buy_lamports: sol_to_lamports_u64(buy_sol),
+            sell_lamports: sol_to_lamports_u64(sell_sol),
+            at: Utc::now(),
+        })
+    }
+
+    /// Settle every pending creation slot the watermark has passed. Called once per
+    /// clock tick, so a launch resolves within `TICK_MS` of the chain moving on
+    /// rather than whenever the token happens to trade again. Entries that can no
+    /// longer settle (uncached, or aged past the snipe rail) are dropped so the map
+    /// stays bounded by tokens created in the last few slots.
+    pub fn settle_ready(&mut self) -> ProducedEvents {
+        let mut out = ProducedEvents::new();
+        if self.pending_first_slot.is_empty() {
+            return out;
+        }
+        let watermark = self.slot_watermark;
+        let ready: Vec<String> = self
+            .pending_first_slot
+            .iter()
+            .filter(|(_, &slot)| watermark > slot)
+            .map(|(m, _)| m.clone())
+            .collect();
+        for mint in ready {
+            self.pending_first_slot.remove(&mint);
+            if let Some(ev) = self.settle_first_slot(&mint) {
+                out.push(ev);
+            }
+        }
+        out
     }
 
     fn on_migrated(&mut self, mint: &str) -> ProducedEvents {
@@ -315,6 +385,18 @@ mod tests {
             None,
             Utc::now() - ChronoDuration::seconds(created_ago_secs),
         )
+    }
+
+    /// A freshly created token carrying its creation slot — what the watermark
+    /// sweep needs in order to queue a pending settle.
+    fn token_at_slot(creation_slot: u64) -> Token {
+        let mut t = token(0);
+        t.creation_slot = Some(creation_slot);
+        t
+    }
+
+    fn created_ping() -> StrategyPing {
+        StrategyPing { mint: MINT.into(), kind: IngestKind::TokenCreated, received_at: None }
     }
 
     /// A trade `secs` before now (negative ⇒ after).
@@ -429,5 +511,75 @@ mod tests {
             !out.events.iter().any(|e| matches!(e, Event::FirstSlotSettled { .. })),
             "a creation slot that closed long ago is not news"
         );
+    }
+
+    /// The whole point of the watermark: a launch whose token does not trade again
+    /// still settles, because some *other* token traded in a later slot. Before
+    /// this, the creation slot stayed unresolved until this mint's next trade —
+    /// which on a bundled launch is several slots of price movement later.
+    #[test]
+    fn watermark_settles_a_launch_that_never_trades_again() {
+        let cache = Arc::new(TokenCache::new());
+        let mut state = TokenState::new(token_at_slot(100));
+        state.add_trade(trade(0, 100)); // creation-slot trade only
+        cache.insert(MINT.into(), state);
+        let mut p = Producer::new(cache, Utc::now() - ChronoDuration::seconds(30));
+
+        p.on_ping(&created_ping());
+        assert!(p.settle_ready().is_empty(), "watermark still at the creation slot");
+
+        p.slot_watermark = 101; // another token traded in the next slot
+        let out = p.settle_ready();
+        assert_eq!(out.len(), 1, "the chain moved on ⇒ the creation slot is closed");
+        assert!(matches!(out[0], Event::FirstSlotSettled { .. }));
+    }
+
+    /// Draining any mint's trades advances the watermark — that is what makes the
+    /// sweep work without a second feed subscription.
+    #[test]
+    fn draining_trades_advances_the_watermark() {
+        let cache = cache_with(0, vec![trade(0, 7), trade(0, 9)]);
+        let mut p = Producer::new(cache, Utc::now() - ChronoDuration::seconds(30));
+        p.on_ping(&ping());
+        assert_eq!(p.slot_watermark, 9);
+    }
+
+    /// One settle per mint, whichever path gets there first.
+    #[test]
+    fn watermark_and_trade_paths_never_double_settle() {
+        let cache = Arc::new(TokenCache::new());
+        let mut state = TokenState::new(token_at_slot(100));
+        state.add_trade(trade(0, 100));
+        cache.insert(MINT.into(), state);
+        let mut p = Producer::new(cache.clone(), Utc::now() - ChronoDuration::seconds(30));
+
+        p.on_ping(&created_ping());
+        p.slot_watermark = 101;
+        assert_eq!(p.settle_ready().len(), 1);
+
+        // The token finally trades in a later slot: the old path must stay quiet.
+        cache.get_mut(MINT).unwrap().value_mut().add_trade(trade(0, 102));
+        let out = p.on_ping(&ping());
+        assert!(
+            !out.events.iter().any(|e| matches!(e, Event::FirstSlotSettled { .. })),
+            "already settled by the watermark sweep"
+        );
+        assert!(p.settle_ready().is_empty(), "and the pending entry is gone");
+    }
+
+    /// The restart rail applies to the sweep too: a creation slot that closed hours
+    /// ago is not news, however far the watermark has advanced.
+    #[test]
+    fn watermark_does_not_settle_a_stale_token() {
+        let cache = Arc::new(TokenCache::new());
+        let mut state = TokenState::new(token(MAX_SNIPE_AGE_SECS + 60));
+        state.token.creation_slot = Some(100);
+        state.add_trade(trade(MAX_SNIPE_AGE_SECS + 60, 100));
+        cache.insert(MINT.into(), state);
+        let mut p = Producer::new(cache, Utc::now() - ChronoDuration::seconds(60));
+
+        p.pending_first_slot.insert(MINT.into(), 100);
+        p.slot_watermark = 999;
+        assert!(p.settle_ready().is_empty(), "stale creation slots stay unsettled");
     }
 }

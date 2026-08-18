@@ -334,14 +334,16 @@ impl Replay {
                 let mut fs_sell = 0.0;
                 let mut settle_at: Option<Ts> = None;
                 for (trade_idx, ct) in trades.iter().enumerate() {
+                    // The settle point is the LAST creation-slot trade, not the first
+                    // later-slot one: live resolves off a feed-wide slot watermark
+                    // (`Producer::settle_ready`), so it settles as soon as the chain
+                    // moves on — never waiting for this token to trade again.
                     if ct.slot == creation_slot {
                         if ct.is_buy {
                             fs_buy += ct.amount_sol;
                         } else {
                             fs_sell += ct.amount_sol;
                         }
-                    } else if settle_at.is_none() {
-                        // First trade in a later slot ⇒ the creation slot has closed.
                         settle_at = Some(ct.block_time);
                     }
                     // One Trade event per trade.
@@ -360,9 +362,9 @@ impl Replay {
                         Some(self.last_trade_at.map_or(ct.block_time, |m| m.max(ct.block_time)));
                 }
 
-                // Settle the first slot: at the first later-slot trade if one exists,
-                // else immediately after the last creation-slot trade (a token that
-                // never traded past its creation slot still resolves its full identity).
+                // Settle the first slot immediately after its last creation-slot
+                // trade — the replay twin of live's slot-watermark sweep. A token
+                // that never traded at all still resolves its full identity.
                 let settle_at = settle_at.unwrap_or_else(|| {
                     trades.last().map(|t| t.block_time).unwrap_or(t.created_at)
                 });

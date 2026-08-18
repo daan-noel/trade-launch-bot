@@ -388,6 +388,10 @@ async fn run_loop(
                         warm.events.extend(produced.events);
                     }
                 }
+                // Resolve every creation slot the chain has moved past. Ordered
+                // before the tick so the same tick decides on the settled
+                // fingerprint instead of waiting another `TICK_MS`.
+                warm.events.extend(producer.settle_ready());
                 warm.events.push(Event::Tick { now: Utc::now() });
                 warm
             }

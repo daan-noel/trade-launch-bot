@@ -371,6 +371,21 @@ synchronously. Instant axes match on `TokenCreated` (`MatchPhase::Instant`); a r
 with a first-slot axis arms `PendingFirstSlot` and resolves on `FirstSlotSettled`
 (fired when the creation slot closes). No hot-path sleep/poll.
 
+**The creation slot closes on a feed-wide slot watermark, not on the token's own next
+trade.** `Producer` tracks the highest slot seen on any drained trade; the 200 ms tick
+calls `Producer::settle_ready`, which settles every pending creation slot the watermark
+has passed. The feed delivers per block, so seeing slot `S+1` anywhere proves every
+slot-`S` trade has already arrived. Waiting for a later-slot trade *on the token itself*
+instead costs however many slots the launch stays quiet — on a bundled launch that is
+several slots of price movement, and the measured cost is the entire edge
+([fp-4sol-launcher.md](../plans/strategies/fp-4sol-launcher.md): +0.48% vs +3.97% per
+trade on the same rule). `Producer::on_trade` keeps the same-mint path as the fallback
+for a token this process never saw created (adopted or log-re-armed), and the two paths
+share one `settle_first_slot` body, so a mint settles exactly once whichever fires first.
+The snipe-freshness rail applies to both — a restart never re-settles a slot that closed
+hours ago. `replay.rs` mirrors it by stamping the settle at the **last creation-slot
+trade**, so simulate and live resolve at the same point.
+
 ## Analysis — replay, simulate, sweep (`lab`)
 
 - **`strategies/replay.rs`** — expands the matched `ReplayToken`s into ONE globally
