@@ -285,3 +285,12 @@ export function SpinnerIcon({ className }: IconProps) {
     </svg>
   );
 }
+
+export function ChartIcon({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <path d="M3.5 16.5h13" {...stroke} />
+      <path d="M6 16.5v-5M10 16.5v-9M14 16.5v-3" {...stroke} />
+    </Svg>
+  );
+}

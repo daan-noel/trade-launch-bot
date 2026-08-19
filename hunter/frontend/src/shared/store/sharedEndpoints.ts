@@ -155,13 +155,16 @@ export const sharedApi = baseApi.injectEndpoints({
     // toggle is a pure client re-color. Cached 120s; the page floors `from` to the
     // hour so the cache key stays stable across renders within the hour.
     getCreationStats: builder.query<CreationStatsResponse, CreationStatsArgs>({
-      query: ({ view, bucket, tz, from, segment }) => {
+      query: ({ view, bucket, tz, from, to, segment }) => {
         const p = new URLSearchParams();
         p.set('view', view);
         p.set('bucket', bucket);
         p.set('tz', tz);
         p.set('segment', segment);
         if (from) p.set('from', from);
+        // Omitted `to` = an open window ending at the server's `now` — only a
+        // closed (custom / civil-day) window sends an upper bound.
+        if (to) p.set('to', to);
         return `/api/tokens/creation-stats?${p.toString()}`;
       },
       keepUnusedDataFor: 120,

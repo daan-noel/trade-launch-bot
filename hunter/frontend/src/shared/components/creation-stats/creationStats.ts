@@ -3,6 +3,9 @@
 // `creation_stats.rs`). All three color metrics ship in one payload, so the
 // metric toggle is a pure client-side re-color (no refetch).
 
+import { datetimeLocalToUtcWallClock, utcIsoToDatetimeLocal } from 'utils/date';
+import { todayInZone } from 'components/ui/dateTimeRangePickerUtils';
+
 export type CreationView = 'heatmap' | 'trend';
 export type CreationBucket =
   | '10m'
@@ -86,6 +89,8 @@ export interface CreationStatsArgs {
   tz: string;
   /** RFC3339; omit to use the backend default (last 30d). */
   from?: string;
+  /** RFC3339 upper bound; omit for an open window (`→ now`). */
+  to?: string;
   segment: CreationSegment;
 }
 
@@ -247,4 +252,161 @@ export function windowFrom(days: number): string {
   d.setMinutes(0, 0, 0);
   d.setHours(d.getHours() - days * 24);
   return d.toISOString();
+}
+
+// ---------------------------------------------------------------------------
+// Look-back window — presets + an absolute custom range
+// ---------------------------------------------------------------------------
+
+/** Shortcut or `custom`. `today`/`yesterday` are CIVIL days in the display zone
+ *  (not rolling 24h windows); the numeric values are rolling look-back days. */
+export type CreationRangePreset =
+  | 'today'
+  | 'yesterday'
+  | '1'
+  | '3'
+  | '7'
+  | '30'
+  | '90'
+  | '180'
+  | 'custom';
+
+/** The window a creation-stats surface asks for. `from`/`to` are wall-clock
+ *  `YYYY-MM-DDTHH:mm` in the DISPLAY timezone (the picker's wire shape) and are
+ *  read only under `preset === 'custom'`; `''` = that bound stays open. */
+export interface CreationWindow {
+  preset: CreationRangePreset;
+  from: string;
+  to: string;
+}
+
+export const DEFAULT_CREATION_WINDOW: CreationWindow = { preset: '7', from: '', to: '' };
+
+/** Shortcut list for `DateTimeRangePicker` — the civil-day pair, the rolling
+ *  look-backs (from {@link RANGE_OPTIONS}, the one place the day set lives), and
+ *  the custom sentinel. */
+export const CREATION_RANGE_PRESETS: {
+  value: CreationRangePreset;
+  label: string;
+  description?: string;
+}[] = [
+  { value: 'today', label: 'Today', description: 'midnight -> now' },
+  { value: 'yesterday', label: 'Yesterday', description: 'full civil day' },
+  ...RANGE_OPTIONS.map((o) => ({
+    value: String(o.value) as CreationRangePreset,
+    label: `Last ${o.label}`,
+  })),
+  { value: 'custom', label: 'Custom', description: 'exact date + time bounds' },
+];
+
+const CREATION_PRESET_VALUES = new Set<string>(CREATION_RANGE_PRESETS.map((o) => o.value));
+
+/** Read a persisted window, tolerating the legacy shape (a bare look-back day
+ *  count) and an unknown/stale preset. */
+export function toCreationWindow(stored: unknown): CreationWindow {
+  if (typeof stored === 'number' && Number.isFinite(stored)) {
+    const preset = String(stored);
+    return CREATION_PRESET_VALUES.has(preset)
+      ? { preset: preset as CreationRangePreset, from: '', to: '' }
+      : DEFAULT_CREATION_WINDOW;
+  }
+  if (stored && typeof stored === 'object') {
+    const w = stored as Partial<CreationWindow>;
+    if (typeof w.preset === 'string' && CREATION_PRESET_VALUES.has(w.preset)) {
+      return {
+        preset: w.preset as CreationRangePreset,
+        from: typeof w.from === 'string' ? w.from : '',
+        to: typeof w.to === 'string' ? w.to : '',
+      };
+    }
+  }
+  return DEFAULT_CREATION_WINDOW;
+}
+
+/** A window lowered to what the API takes, plus the span the bucket gate reads.
+ *  `to` is `undefined` for an open upper bound (the backend then uses `now`). */
+export interface ResolvedCreationWindow {
+  /** RFC3339 lower bound. */
+  from: string;
+  to?: string;
+  /** Span in days — feeds {@link bucketOptionsForRange} / {@link clampBucketToRange}. */
+  spanDays: number;
+}
+
+const DAY_MS = 86_400_000;
+/** Look-back applied when a custom window leaves its lower bound open — the
+ *  backend's own `DEFAULT_WINDOW_DAYS`, resolved here so the bucket gate sees
+ *  the same span the query does. */
+const DEFAULT_WINDOW_DAYS = 30;
+
+/** Zone-local wall-clock (`YYYY-MM-DDTHH:mm[:ss]`) -> RFC3339 instant. */
+function zonedToIso(wall: string, timezone: string, bound: 'lower' | 'upper'): string {
+  const utc = datetimeLocalToUtcWallClock(wall, timezone, bound);
+  return utc ? `${utc}Z` : '';
+}
+
+/** Shift a `YYYY-MM-DD` civil day key by whole days. */
+function shiftYmd(ymd: string, days: number): string {
+  const d = new Date(`${ymd}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function spanDaysOf(from: string, to: string | undefined): number {
+  const f = Date.parse(from);
+  const t = to ? Date.parse(to) : Date.now();
+  if (Number.isNaN(f) || Number.isNaN(t) || t <= f) return DEFAULT_WINDOW_DAYS;
+  return (t - f) / DAY_MS;
+}
+
+/**
+ * Lower a {@link CreationWindow} to `[from, to)` for the API. Civil-day presets
+ * resolve against `timezone` (so "Today" is the operator's midnight — the same
+ * zone the buckets are cut in), rolling presets floor to the hour so the RTK
+ * cache key doesn't churn on every render, and a custom range converts each
+ * bound with the inclusion-safe DST tie-break (`lower`/`upper`).
+ *
+ * A custom range with an open lower bound falls back to the default look-back;
+ * a span past the backend's 366d cap is clamped server-side.
+ */
+export function resolveCreationWindow(
+  win: CreationWindow,
+  timezone: string,
+): ResolvedCreationWindow {
+  if (win.preset === 'today' || win.preset === 'yesterday') {
+    const { ymd } = todayInZone(timezone);
+    const startYmd = win.preset === 'today' ? ymd : shiftYmd(ymd, -1);
+    const from = zonedToIso(`${startYmd}T00:00`, timezone, 'lower');
+    // Yesterday closes at today's midnight; Today stays open so the newest
+    // bucket keeps filling.
+    const to =
+      win.preset === 'yesterday' ? zonedToIso(`${ymd}T00:00`, timezone, 'lower') : undefined;
+    return { from, to, spanDays: spanDaysOf(from, to) };
+  }
+
+  if (win.preset === 'custom') {
+    const from = win.from
+      ? zonedToIso(win.from, timezone, 'lower')
+      : windowFrom(DEFAULT_WINDOW_DAYS);
+    const to = win.to ? zonedToIso(win.to, timezone, 'upper') : undefined;
+    return { from, to, spanDays: spanDaysOf(from, to) };
+  }
+
+  const days = Number(win.preset);
+  return { from: windowFrom(days), spanDays: days };
+}
+
+/** The picker draft for `win`: custom keeps the typed bounds, a preset shows the
+ *  bounds it currently resolves to (so switching to Custom starts from them). */
+export function creationWindowDraft(
+  win: CreationWindow,
+  timezone: string,
+): { preset: CreationRangePreset; from: string; to: string } {
+  if (win.preset === 'custom') return { preset: 'custom', from: win.from, to: win.to };
+  const { from, to } = resolveCreationWindow(win, timezone);
+  return {
+    preset: win.preset,
+    from: utcIsoToDatetimeLocal(from, timezone),
+    to: to ? utcIsoToDatetimeLocal(to, timezone) : '',
+  };
 }

@@ -55,7 +55,8 @@ semantics at the query boundary:
 | --- | --- | --- |
 | History / Portfolio / Simulate / lab Created | `UTC` | wall-clock treated as UTC ISO, through the one `isoToPickerInput`/`pickerInputToIso` pair |
 | Tokens Created | project IANA (`TokensFilterBar` `timezone`) | `datetimeLocalToUtcWallClock` |
-| creation-stats / trader look-back | `zoneLabel={null}`, `allowCustom={false}` | day/preset enums only |
+| creation-stats windows | project IANA (display zone) | `CreationWindowPicker` → `resolveCreationWindow` |
+| trader look-back | `zoneLabel={null}`, `allowCustom={false}` | day/preset enums only |
 
 Preset clicks commit immediately; calendar edits stay in a draft until Apply.
 Clear + Apply with empty bounds commits the `all` / "All" preset when one is
@@ -63,6 +64,20 @@ in `presets` (History All time). Pass `presets` for History-style shortcuts;
 omit for calendar-only fields (Simulate Created, Tokens Created).
 `allowCustom={false}` hides the calendar and only lists shortcuts. Pure helpers
 live in `dateTimeRangePickerUtils.ts` (guarded by unit tests).
+
+### `CreationWindowPicker`
+
+Every creation-stats surface (page heatmap/trend, grouped section) takes its
+window from this one wrapper, so they share a vocabulary: civil-day shortcuts
+(Today / Yesterday, resolved in the DISPLAY zone), the rolling look-backs from
+`RANGE_OPTIONS`, and `Custom` for absolute date+time bounds.
+`resolveCreationWindow` (in `creationStats.ts`, unit-tested) lowers a window to
+the API's `from`/`to` plus the `spanDays` the bucket-granularity gate reads —
+civil days convert with `datetimeLocalToUtcWallClock`, rolling presets floor to
+the hour so the RTK cache key stays stable, and an open upper bound is sent as
+no `to` at all (the server ends the window at its own `now`). Persistence reads
+the legacy bare day count through `toCreationWindow`, so a stored look-back
+survives the upgrade.
 
 ## `ToggleGroup`
 

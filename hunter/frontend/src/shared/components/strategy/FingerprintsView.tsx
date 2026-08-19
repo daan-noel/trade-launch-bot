@@ -5,7 +5,14 @@ import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
 import { IconButton } from 'components/ui/IconButton';
 import { IconButtonGroup } from 'components/ui/IconButtonGroup';
-import { DuplicateIcon, EditIcon, LinkIcon, PlusIcon, TrashIcon } from 'components/ui/icons';
+import {
+  ChartIcon,
+  DuplicateIcon,
+  EditIcon,
+  LinkIcon,
+  PlusIcon,
+  TrashIcon,
+} from 'components/ui/icons';
 import { Badge } from 'components/ui/Badge';
 import { Modal } from 'components/ui/Modal';
 import { EmptyState } from 'components/ui/EmptyState';
@@ -161,10 +168,15 @@ function FingerprintUsedByDetail({ rules }: { rules: StrategyRule[] }) {
  */
 export function FingerprintsView({
   linkToFlowDiscovery = false,
+  onViewMatches,
 }: {
   /** Lab-only: show a per-row deep-link into Flow discovery scoped to that
    *  fingerprint. Off in the live app (Flow discovery is a lab surface). */
   linkToFlowDiscovery?: boolean;
+  /** Lab-only: opens that fingerprint's matched tokens (creation-stats heatmap +
+   *  trend + token table). Omitted ⇒ no such row button, because the endpoints
+   *  behind it are lab-only and `shared ⊬ @lab`, so the page owns the modal. */
+  onViewMatches?: (fingerprint: Fingerprint) => void;
 } = {}) {
   const { data: fps = [], isLoading } = useGetFingerprintsQuery();
   const { data: rules = [] } = useGetStrategyRulesQuery();
@@ -468,6 +480,17 @@ export function FingerprintsView({
         rowDetail={rowDetail}
         rowActions={(r) => (
           <IconButtonGroup>
+            {onViewMatches && (
+              <IconButton
+                variant="primary"
+                size="md"
+                title="Matched tokens — creation heatmap, trend and table"
+                aria-label="Matched tokens"
+                onClick={() => onViewMatches(r)}
+              >
+                <ChartIcon />
+              </IconButton>
+            )}
             <IconButton
               variant="accent"
               size="md"

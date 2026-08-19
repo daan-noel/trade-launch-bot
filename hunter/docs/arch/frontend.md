@@ -520,7 +520,13 @@ next load (no per-metric frontend work).
   `Fingerprint::auto_name` from the axes (`3ix:Buy · max=1 · bkt=1`) and keeps a
   typed nickname; pickers search axis text and show the chip row in the dropdown.
   `RulesView`/`FingerprintsView` (shared list+editor, mounted by both apps'
-  `RulesPage`/`FingerprintsPage`; cross-page selection via `?rule=` / `?fp=`
+  `RulesPage`/`FingerprintsPage`; the lab page passes `onViewMatches`, which puts a
+  chart row-action on every fingerprint opening its **matched tokens** dashboard —
+  day x hour creation heatmap + calendar trend + the paged token table, all from the
+  fingerprint-scoped grouped endpoints (`useFingerprintMatchesFor`, the row-driven
+  twin of `useFingerprintMatches`). One `CreationWindowPicker` drives charts and table, and
+  a heatmap tile click narrows the table to that recurring weekly slot. The prop is
+  optional because those endpoints are lab-only and `shared` cannot import `@lab`; cross-page selection via `?rule=` / `?fp=`
   (`useSelectionSearchParam` + `lib/strategy/nav.ts` — same-tab Router `Link`,
   Ctrl/middle-click still opens a new tab). Rules support soft-archive via
   `is_enabled` (Enable/Disable endpoints; Disabled hidden by default on Rules +

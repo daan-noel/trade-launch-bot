@@ -15,7 +15,12 @@ import {
 import type { FieldFilterValue } from '@lab/components/sweep/fingerprintFilters';
 import { ixLabelsCountTail } from 'lib/ixLabels';
 import { WALLET_MARKER_COLORS } from 'components/token-price-chart/constants';
-import type { CreationBucket, CreationSegment } from 'components/creation-stats/creationStats';
+import {
+  DOW_ROWS,
+  type CreationBucket,
+  type CreationHeatCell,
+  type CreationSegment,
+} from 'components/creation-stats/creationStats';
 import type { SortEntry, TableQuery } from 'components/table/types';
 import type { FilterSpec } from 'components/table/numericFilter';
 import { toTableRequest } from 'services/tableRequest';
@@ -64,6 +69,26 @@ export interface GroupedCreationPoint {
   count: number;
 }
 
+/** A `GroupedCreationCell` lacks the outcome/trade fields `CreationHeatmap`
+ *  reads; the count view never touches them, so zero-fill is safe (count =
+ *  volume). Per-cell trades are deferred (trade-counts plan §5) — every grouped
+ *  heatmap (section small-multiples, fingerprint matches) shows `metric="count"`.
+ *  One SSOT so those surfaces can never zero-fill differently. */
+export function toHeatCell(c: GroupedCreationCell): CreationHeatCell {
+  return {
+    dow: c.dow,
+    hour: c.hour,
+    count: c.count,
+    matured: 0,
+    known: 0,
+    migrated: 0,
+    dead: 0,
+    trades: 0,
+    trades_avg: null,
+    trades_per_day: 0,
+  };
+}
+
 export interface GroupedCreationResponse {
   bucket: CreationBucket;
   tz: string;
@@ -103,6 +128,8 @@ export interface GroupedCreationResponse {
 export interface GroupedCreationTokensArgs {
   tz: string;
   from?: string;
+  /** RFC3339 upper bound; omit for an open window (`-> now`). */
+  to?: string;
   segment: CreationSegment;
   groupBy: GroupField[];
   bucketWidth?: number;
@@ -166,6 +193,8 @@ export interface GroupedCreationArgs {
   tz: string;
   /** RFC3339; omit to use the backend default (last 30d). */
   from?: string;
+  /** RFC3339 upper bound; omit for an open window (`-> now`). */
+  to?: string;
   segment: CreationSegment;
   /** Compound-key fields, in selection order. */
   groupBy: GroupField[];
@@ -214,6 +243,7 @@ export function groupedCreationArgsEqual(
     a.bucket !== b.bucket ||
     a.tz !== b.tz ||
     a.from !== b.from ||
+    a.to !== b.to ||
     a.segment !== b.segment ||
     a.top !== b.top ||
     a.bucketWidth !== b.bucketWidth ||
@@ -290,4 +320,11 @@ export function groupShortLabel(group: GroupedCreationGroup): string {
       return `${label}=${v}`;
     })
     .join(' · ');
+}
+
+/** A recurring weekly slot rendered as `Mon 15:00` — the label every heatmap-tile
+ *  drill-down (section small-multiples, fingerprint matches) puts on its scope. */
+export function weeklySlotLabel(dow: number, hour: number): string {
+  const day = DOW_ROWS.find((r) => r.dow === dow)?.label ?? String(dow);
+  return `${day} ${String(hour).padStart(2, '0')}:00`;
 }

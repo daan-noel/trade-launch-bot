@@ -1,7 +1,6 @@
 import { lazy, Suspense, useMemo } from 'react';
 import { LoadingState } from 'components/ui/LoadingState';
 import { Button } from 'components/ui/Button';
-import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { Select } from 'components/ui/Select';
 import { TimezoneSelect } from 'components/ui/TimezoneSelect';
 import { StatCard } from 'components/ui/StatCard';
@@ -11,19 +10,22 @@ import { apiErrorMessage } from 'store/apiSlice';
 import { useStoredField } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { CreationHeatmap } from 'components/creation-stats/CreationHeatmap';
+import { CreationWindowPicker } from 'components/creation-stats/CreationWindowPicker';
 import { GroupedCreationSection } from '@lab/components/creation-stats/GroupedCreationSection';
 import {
+  DEFAULT_CREATION_WINDOW,
   METRIC_KIND,
   METRIC_OPTIONS,
-  RANGE_OPTIONS,
   SEGMENT_OPTIONS,
   bucketOptionsForRange,
   clampBucketToRange,
   formatPct,
-  windowFrom,
+  resolveCreationWindow,
+  toCreationWindow,
   type CreationBucket,
   type CreationMetric,
   type CreationSegment,
+  type CreationWindow,
 } from 'components/creation-stats/creationStats';
 import { formatWithCommas } from 'utils/format';
 
@@ -34,11 +36,6 @@ const CreationTrendChart = lazy(() =>
   })),
 );
 
-const LOOKBACK_PRESETS = RANGE_OPTIONS.map((o) => ({
-  value: String(o.value),
-  label: `Last ${o.label}`,
-}));
-
 /** Token creation analysis: heatmap + trend + grouped (lab) section. */
 export function CreationStatsPage() {
   const { timezone } = useTimezone();
@@ -48,14 +45,24 @@ export function CreationStatsPage() {
   const [metric, setMetric] = useStoredField<CreationMetric>(P, 'metric', 'count');
   const [segment, setSegment] = useStoredField<CreationSegment>(P, 'segment', 'all');
   const [bucket, setBucket] = useStoredField<CreationBucket>(P, 'bucket', 'hour');
-  const [rangeDays, setRangeDays] = useStoredField<number>(P, 'range', 7);
+  // `range` also holds the legacy bare day count, which `toCreationWindow` reads
+  // as the equivalent preset — a stored look-back survives the upgrade.
+  const [storedWindow, setStoredWindow] = useStoredField<CreationWindow | number>(
+    P,
+    'range',
+    DEFAULT_CREATION_WINDOW,
+  );
+  const win = useMemo(() => toCreationWindow(storedWindow), [storedWindow]);
 
-  const from = useMemo(() => windowFrom(rangeDays), [rangeDays]);
+  const { from, to, spanDays } = useMemo(
+    () => resolveCreationWindow(win, timezone),
+    [win, timezone],
+  );
 
-  // Range-gated bucket granularities; clamp the current pick so a range change
+  // Span-gated bucket granularities; clamp the current pick so a window change
   // (e.g. 10m → 180d) never leaves an out-of-range bucket selected.
-  const bucketOpts = useMemo(() => bucketOptionsForRange(rangeDays), [rangeDays]);
-  const effBucket = clampBucketToRange(bucket, rangeDays);
+  const bucketOpts = useMemo(() => bucketOptionsForRange(spanDays), [spanDays]);
+  const effBucket = clampBucketToRange(bucket, spanDays);
 
   // Two cache entries: the heatmap fold + the absolute-time trend. The metric
   // toggle re-colors the heatmap client-side (all metrics ship in one payload),
@@ -65,6 +72,7 @@ export function CreationStatsPage() {
     bucket: 'day',
     tz: timezone,
     from,
+    to,
     segment,
   });
   const trend = useGetCreationStatsQuery({
@@ -72,6 +80,7 @@ export function CreationStatsPage() {
     bucket: effBucket,
     tz: timezone,
     from,
+    to,
     segment,
   });
 
@@ -91,15 +100,11 @@ export function CreationStatsPage() {
       <div className="flex flex-wrap items-center gap-2">
         <TimezoneSelect />
 
-        <DateTimeRangePicker
-          aria-label="Look-back window"
-          size="sm"
-          zoneLabel={null}
-          allowCustom={false}
-          emptyLabel="Look-back"
-          presets={LOOKBACK_PRESETS}
-          value={{ preset: String(rangeDays), from: '', to: '' }}
-          onChange={({ preset }) => setRangeDays(Number(preset))}
+        <CreationWindowPicker
+          aria-label="Creation window"
+          value={win}
+          onChange={setStoredWindow}
+          timezone={timezone}
         />
 
         <Select

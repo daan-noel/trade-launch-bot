@@ -178,3 +178,19 @@ export function datetimeLocalToUtcWallClock(
   );
 }
 
+
+/**
+ * Inverse of {@link datetimeLocalToUtcWallClock}: a UTC instant (RFC3339, or the
+ * bare `YYYY-MM-DDTHH:mm:ss` wall-clock the API echoes) → the `YYYY-MM-DDTHH:mm`
+ * a `datetime-local` / `DateTimeRangePicker` field shows in `timeZone`.
+ *
+ * Used to seed a picker draft from an already-resolved window, so switching a
+ * preset to Custom starts from the bounds that preset just applied.
+ * Unparseable input → `''`.
+ */
+export function utcIsoToDatetimeLocal(iso: string, timeZone: string): string {
+  if (!iso) return '';
+  const ms = Date.parse(/[Zz]|[+-]\d{2}:\d{2}$/.test(iso) ? iso : `${iso}Z`);
+  if (Number.isNaN(ms)) return '';
+  return formatTimestampMs(ms, timeZone).replace(' ', 'T').slice(0, 16);
+}

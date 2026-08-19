@@ -268,6 +268,7 @@ export const labApi = baseApi.injectEndpoints({
         bucket,
         tz,
         from,
+        to,
         segment,
         groupBy,
         top,
@@ -283,6 +284,9 @@ export const labApi = baseApi.injectEndpoints({
         p.set('tz', tz);
         p.set('segment', segment);
         if (from) p.set('from', from);
+        // Omitted `to` = an open window ending at the server's `now` — only a
+        // closed (custom / civil-day) window sends an upper bound.
+        if (to) p.set('to', to);
         // Scoped by a saved fingerprint ⇒ the backend ignores group_by/top/
         // field_filters/ix_labels_filter/bucket_width/rank_by entirely (same
         // contract as the sweep's/flow discovery's fingerprint_id) — don't
@@ -335,6 +339,7 @@ export const labApi = baseApi.injectEndpoints({
           filters: a.filters ?? {},
           tz: a.tz,
           from: a.from,
+          to: a.to,
           segment: a.segment,
           // `group_key` is a required (non-defaulted) field on the backend
           // request struct, so it must always be present or serde 400s

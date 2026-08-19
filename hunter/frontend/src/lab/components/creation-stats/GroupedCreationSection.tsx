@@ -5,7 +5,6 @@ import { STORAGE_KEYS } from 'lib/storage';
 import { skipToken } from '@reduxjs/toolkit/query/react';
 import { Button } from 'components/ui/Button';
 import { Badge } from 'components/ui/Badge';
-import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { Select } from 'components/ui/Select';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { LoadingState } from 'components/ui/LoadingState';
@@ -31,7 +30,7 @@ import { formatWithCommas } from 'utils/format';
 import { ixLabelsCountTail } from 'lib/ixLabels';
 import { cn } from 'lib/cn';
 import { CreationHeatmap } from 'components/creation-stats/CreationHeatmap';
-import { DOW_ROWS } from 'components/creation-stats/creationStats';
+import { CreationWindowPicker } from 'components/creation-stats/CreationWindowPicker';
 import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeControl';
 import { useFingerprintMatches } from '@lab/components/strategy/useFingerprintMatches';
 import { useFlowPatternSource } from 'hooks/useFlowPatternKeys';
@@ -49,19 +48,17 @@ const GroupedCreationTrendChart = lazy(() =>
   import('./GroupedCreationTrendChart').then((m) => ({ default: m.GroupedCreationTrendChart })),
 );
 import {
-  RANGE_OPTIONS,
+  DEFAULT_CREATION_WINDOW,
   bucketOptionsForRange,
   clampBucketToRange,
-  windowFrom,
+  resolveCreationWindow,
+  toCreationWindow,
   type CreationBucket,
   type CreationHeatCell,
   type CreationSegment,
+  type CreationWindow,
 } from 'components/creation-stats/creationStats';
 
-const LOOKBACK_PRESETS = RANGE_OPTIONS.map((o) => ({
-  value: String(o.value),
-  label: `Last ${o.label}`,
-}));
 import {
   GROUP_FIELDS,
   GROUP_FIELD_LABELS,
@@ -71,9 +68,10 @@ import {
   groupColor,
   groupValueParts,
   drillTokenFilters,
+  toHeatCell,
+  weeklySlotLabel,
   groupedCreationArgsEqual,
   type GroupedCreationArgs,
-  type GroupedCreationCell,
   type GroupedCreationGroup,
   type GroupedCreationTokensArgs,
   type GroupField,
@@ -105,36 +103,12 @@ const SCALAR_FILTER_FIELDS: GroupField[] = [
   'first_slot_sell_sol',
 ];
 
-/** A `GroupedCreationCell` lacks the outcome/trade fields `CreationHeatmap`
- *  reads; the count view never touches them, so zero-fill is safe (count =
- *  volume). Per-cell trades are deferred (trade-counts plan §5) — the
- *  small-multiple heatmaps here always show `metric="count"`. */
-function toHeatCell(c: GroupedCreationCell): CreationHeatCell {
-  return {
-    dow: c.dow,
-    hour: c.hour,
-    count: c.count,
-    matured: 0,
-    known: 0,
-    migrated: 0,
-    dead: 0,
-    trades: 0,
-    trades_avg: null,
-    trades_per_day: 0,
-  };
-}
-
 /** What the shared drill-down section is currently showing: one group card
  *  (`dow`/`hour` both `null`), or one of its heatmap tiles (both set). */
 interface DrillTarget {
   g: number;
   dow: number | null;
   hour: number | null;
-}
-
-/** Short label for a recurring weekly slot, e.g. "Mon 15:00 (every week)". */
-function dowLabel(dow: number): string {
-  return DOW_ROWS.find((r) => r.dow === dow)?.label ?? String(dow);
 }
 
 /** Stable empty reference so the drill-down table doesn't remount on every
@@ -191,7 +165,13 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   const [exactSol, setExactSol] = useStoredField<boolean>(P, 'groupedExactSol', true);
   // Hour bins: a launch tool's activity is a burst, and a day bin flattens it.
   const [bucket, setBucket] = useStoredField<CreationBucket>(P, 'groupedBucket', 'hour');
-  const [rangeDays, setRangeDays] = useStoredField<number>(P, 'groupedRange', 30);
+  // `groupedRange` also holds the legacy bare day count, which `toCreationWindow`
+  // reads as the equivalent preset — a stored look-back survives the upgrade.
+  const [storedWindow, setStoredWindow] = useStoredField<CreationWindow | number>(
+    P,
+    'groupedRange',
+    { ...DEFAULT_CREATION_WINDOW, preset: '30' },
+  );
   const [fieldFiltersText, setFieldFiltersText] = useStoredField<Record<string, string>>(
     P,
     'groupedFilters',
@@ -249,9 +229,13 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   // inline panel (as the Tokens page uses) has nowhere good to land.
   const [inspectedToken, setInspectedToken] = useState<{ mint: string; symbol?: string } | null>(null);
 
-  const from = useMemo(() => windowFrom(rangeDays), [rangeDays]);
-  const bucketOpts = useMemo(() => bucketOptionsForRange(rangeDays), [rangeDays]);
-  const effBucket = clampBucketToRange(bucket, rangeDays);
+  const win = useMemo(() => toCreationWindow(storedWindow), [storedWindow]);
+  const { from, to, spanDays } = useMemo(
+    () => resolveCreationWindow(win, tz),
+    [win, tz],
+  );
+  const bucketOpts = useMemo(() => bucketOptionsForRange(spanDays), [spanDays]);
+  const effBucket = clampBucketToRange(bucket, spanDays);
 
   // Parse the ix_labels textarea once; an active parse error blocks Analyze.
   const ixFilter = useMemo(() => parseIxLabelsFilter(ixLabelsText), [ixLabelsText]);
@@ -282,6 +266,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
         bucket: effBucket,
         tz,
         from,
+        to,
         segment,
         groupBy: [],
         top,
@@ -295,6 +280,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
       bucket: effBucket,
       tz,
       from,
+      to,
       segment,
       groupBy,
       top,
@@ -319,6 +305,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
     effBucket,
     tz,
     from,
+    to,
     segment,
     groupBy,
     top,
@@ -447,6 +434,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
     return {
       tz: applied.tz,
       from: applied.from,
+      to: applied.to,
       segment: applied.segment,
       groupBy: applied.groupBy,
       bucketWidth: applied.bucketWidth,
@@ -494,18 +482,14 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {/* Look-back window (section-local, independent of page range). */}
-          <DateTimeRangePicker
-            aria-label="Look-back window"
-            size="sm"
-            zoneLabel={null}
-            allowCustom={false}
-            emptyLabel="Look-back"
-            presets={LOOKBACK_PRESETS}
-            value={{ preset: String(rangeDays), from: '', to: '' }}
-            onChange={({ preset }) => setRangeDays(Number(preset))}
+          {/* Look-back window (section-local, independent of the page window). */}
+          <CreationWindowPicker
+            aria-label="Grouped creation window"
+            value={win}
+            onChange={setStoredWindow}
+            timezone={tz}
           />
-          {/* Bucket granularity (range-gated). */}
+          {/* Bucket granularity (span-gated). */}
           <Select
             value={effBucket}
             onChange={(e) => setBucket(e.target.value as CreationBucket)}
@@ -793,8 +777,8 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
                     <>
                       <span className="text-text-dim">·</span>
                       <span className="text-text-dim">
-                        {dowLabel(drillTarget.dow)} {String(drillTarget.hour).padStart(2, '0')}:00
-                        (every week in window)
+                        {weeklySlotLabel(drillTarget.dow, drillTarget.hour)} (every week in
+                        window)
                       </span>
                     </>
                   )}
