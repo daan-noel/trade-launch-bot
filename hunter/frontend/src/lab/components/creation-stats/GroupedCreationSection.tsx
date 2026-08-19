@@ -466,11 +466,18 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   if (drillData?.items) drillItemsRef.current = drillData.items;
   const drillTokens = drillArgs ? drillData?.items ?? drillItemsRef.current : EMPTY_DRILL_TOKENS;
   const drillTotal = drillArgs ? drillData?.total ?? 0 : 0;
-  // Fingerprint-scoped drill-in ⇒ these rows ARE the fingerprint's matched
-  // tokens, so their charts / inspect modal draw the vol/non-vol overlay from
-  // the SCOPED (applied, not draft) fingerprint's `volume_ix_patterns`. Manual
-  // group-by drill-ins have no fingerprint and stay unconfigured (`null`).
-  const drillFlowSource = useFlowPatternSource(applied?.fingerprintId ?? null);
+  // The drilled card's OWN fingerprint drives the vol/non-vol overlay on its
+  // charts / inspect modal, so a manual group-by that lands on a saved
+  // fingerprint classifies with that row's `volume_ix_patterns` — the same set
+  // the engine decides on — instead of degrading to creator-vs-rest. The scoped
+  // id is the fallback (under a fingerprint scope `fpByGroup` already resolves
+  // to it, so this only matters before the groups arrive); a card that matches
+  // nothing stays unconfigured (`null`).
+  const drillFingerprintId =
+    (drillTarget ? fpByGroup.get(drillTarget.g)?.matched?.id : null) ??
+    applied?.fingerprintId ??
+    null;
+  const drillFlowSource = useFlowPatternSource(drillFingerprintId);
 
   return (
     <section className="rounded-lg border border-white/8 bg-white/2 p-3">

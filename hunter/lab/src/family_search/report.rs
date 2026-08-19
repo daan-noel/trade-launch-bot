@@ -476,7 +476,9 @@ impl From<Capture> for CaptureDto {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct FreshnessDto {
     pub last_trade_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub requested_until: chrono::DateTime<chrono::Utc>,
+    /// The upper bound the request named. `None` for an open-ended range, which the
+    /// gate never measures — the lake's tail is the range.
+    pub requested_until: Option<chrono::DateTime<chrono::Utc>>,
     pub shortfall_secs: i64,
     pub slack_secs: i64,
     pub stale: bool,
@@ -1001,7 +1003,7 @@ mod tests {
             },
             freshness: FreshnessDto {
                 last_trade_at: None,
-                requested_until: chrono::Utc::now(),
+                requested_until: Some(chrono::Utc::now()),
                 shortfall_secs: 0,
                 slack_secs: 3600,
                 stale: false,

@@ -270,7 +270,9 @@ export interface FamilyCaptureDto {
 /** How fresh the scanned data is, against the range the run asked for (D7). */
 export interface FamilyFreshnessDto {
   last_trade_at: string | null;
-  requested_until: string;
+  /** The upper bound the request named. Null ⇒ open-ended: the lake's tail is the
+   *  range, so there is nothing for it to fall short of. */
+  requested_until: string | null;
   shortfall_secs: number;
   slack_secs: number;
   stale: boolean;

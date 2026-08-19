@@ -321,7 +321,10 @@ async fn drive(
     let token_cap = clamp_token_cap(b.token_cap);
     // Freeze deadness "now" at session open so every cohort shares one horizon.
     let as_of = chrono::Utc::now();
-    let requested_until = b.created_before.unwrap_or(as_of);
+    // The bound the OPERATOR named, never a fabricated one: an absent `created_before`
+    // asks for whatever the lake holds, and substituting `now` there refuses every
+    // open-ended run because a sealed-day export is always hours behind the clock.
+    let requested_until = b.created_before;
 
     let target_row = rows
         .iter()
@@ -436,6 +439,14 @@ async fn drive(
     // different question and nothing downstream can detect it.
     let freshness =
         gates::check_freshness(&target_corpus, requested_until, b.freshness_slack_secs)?;
+    // An open-ended range cannot be refused, so it says out loud what it covered —
+    // "everything the lake holds" is only an answer once the operator sees where the
+    // lake ends.
+    if requested_until.is_none() {
+        if let Some(last) = freshness.last_trade_at {
+            notice(format!("no upper bound set — the run covers through {last} (lake tail)."));
+        }
+    }
 
     // ── D8: can this cohort pay for its own execution? ─────────────────────
     //

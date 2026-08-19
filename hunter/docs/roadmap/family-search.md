@@ -90,7 +90,7 @@ heuristic. The reference family, all `3ix:BuyExactSolIn · bkt=exact`, varying
   │           Dimension-only, no trade scan — an empty cohort fails first. │
   └───────────────────────────────┬───────────────────────────────────────┘
   ┌───────────────────────────────▼───────────────────────────────────────┐
-  │ GATE 1  freshness (D7)   `until` outruns the lake  ⇒ REFUSE, fatal     │
+  │ GATE 1  freshness (D7)   a NAMED `until` outruns the lake ⇒ REFUSE     │
   │ GATE 2  cost clearance (D8)  the cohort's typical BEST available exit  │
   │         sits inside one round trip ⇒ REFUSE before generating anything │
   └───────────────────────────────┬───────────────────────────────────────┘
@@ -178,6 +178,12 @@ display-only, touching nothing.
 **D7 — freshness is a gate, not a footnote.** A run whose `until` outruns
 `Corpus::last_trade_at` is silently shorter than requested and nothing downstream can
 detect it. Fatal refusal, with the sync command in the message.
+
+The gate measures the bound the operator **named**, never a substituted `now`. An
+open-ended range (`until` absent) asks for whatever the lake holds, so it has no
+shortfall and never refuses — it posts a notice naming the lake tail it covered
+instead. Substituting `now` there refuses *every* open-ended run, because a lake
+export seals whole days and its tail is permanently hours behind the wall clock.
 
 **D8 — a cohort must clear execution before a search runs.** Compare the cohort's
 median net oracle move (losers included — a median over winners is positive by

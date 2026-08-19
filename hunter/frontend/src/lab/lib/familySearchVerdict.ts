@@ -186,9 +186,13 @@ export function familyVerdict(r: FamilySearchReport): FamilyVerdict {
         ? `the lake ends ${(r.freshness.shortfall_secs / 3600).toFixed(
             1,
           )}h before the requested bound`
-        : `the lake reaches the requested bound (${(
-            r.freshness.shortfall_secs / 3600
-          ).toFixed(1)}h behind, ${(r.freshness.slack_secs / 3600).toFixed(1)}h allowed)`,
+        : r.freshness.requested_until === null
+          ? `no upper bound was set, so the run covers the lake through ${
+              r.freshness.last_trade_at ?? 'its tail'
+            }`
+          : `the lake reaches the requested bound (${(
+              r.freshness.shortfall_secs / 3600
+            ).toFixed(1)}h behind, ${(r.freshness.slack_secs / 3600).toFixed(1)}h allowed)`,
     },
   ];
 

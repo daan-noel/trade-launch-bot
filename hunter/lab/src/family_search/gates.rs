@@ -28,9 +28,11 @@ pub struct Freshness {
     /// `Corpus::last_trade_at` — the newest print anywhere in the loaded corpus.
     /// `None` for a trade-less corpus, which is itself a refusal.
     pub last_trade_at: Option<DateTime<Utc>>,
-    /// The upper bound the request named.
-    pub requested_until: DateTime<Utc>,
-    /// Seconds the request outruns the data. `0` when the corpus reaches the bound.
+    /// The upper bound the request **named**. `None` for an open-ended range, which
+    /// asks for whatever the lake holds and so cannot outrun it.
+    pub requested_until: Option<DateTime<Utc>>,
+    /// Seconds the request outruns the data. `0` when the corpus reaches the bound,
+    /// and always `0` for an open-ended range.
     pub shortfall_secs: i64,
     /// The tolerance this run allowed.
     pub slack_secs: i64,
@@ -40,6 +42,11 @@ impl Freshness {
     /// Whether the run's range is silently shorter than requested by more than the
     /// slack it set. A corpus with no trades at all is stale under **any** slack —
     /// there is no range for it to be fresh for.
+    ///
+    /// An **open-ended** request is never stale on shortfall: it named no bound, so
+    /// the lake's tail *is* the range and nothing was silently shortened. Measuring it
+    /// against `now` instead refuses every open-ended run, because a lake export seals
+    /// whole days and its tail is always hours behind the wall clock.
     pub fn stale(&self) -> bool {
         self.last_trade_at.is_none() || self.shortfall_secs > self.slack_secs
     }
@@ -55,29 +62,46 @@ impl Freshness {
             return None;
         }
         let hours = self.shortfall_secs as f64 / 3_600.0;
-        Some(match self.last_trade_at {
-            Some(last) => format!(
-                "lake data ends {last} but the request runs to {} — {hours:.1}h short \
-                 (slack {}s). Re-run `scripts/db-incremental-sync.ps1 -IncludeToday \
-                 -ExportLake`, or lower the range's upper bound.",
-                self.requested_until, self.slack_secs
+        Some(match (self.last_trade_at, self.requested_until) {
+            (Some(last), Some(until)) => format!(
+                "lake data ends {last} but the request runs to {until} — {hours:.1}h \
+                 short (slack {}s). Re-run `scripts/db-incremental-sync.ps1 \
+                 -IncludeToday -ExportLake`, or lower the range's upper bound.",
+                self.slack_secs
             ),
-            None => format!(
+            // Unreachable while an open-ended range reports no shortfall, but the
+            // message stays honest about which bound it is talking about.
+            (Some(last), None) => format!(
+                "lake data ends {last}, {hours:.1}h short of the run's horizon \
+                 (slack {}s).",
+                self.slack_secs
+            ),
+            (None, Some(until)) => format!(
                 "the corpus holds no trades at all, so nothing covers the requested \
-                 range ending {}.",
-                self.requested_until
+                 range ending {until}."
             ),
+            (None, None) => "the corpus holds no trades at all, so there is no range \
+                 for it to cover."
+                .to_string(),
         })
     }
 }
 
-/// Measure a loaded corpus against the range the request asked for.
-pub fn freshness(corpus: &Corpus, requested_until: DateTime<Utc>, slack_secs: i64) -> Freshness {
+/// Measure a loaded corpus against the range the request asked for. `requested_until`
+/// is the bound the request **named** — `None` for an open-ended range, which has no
+/// shortfall to measure.
+pub fn freshness(
+    corpus: &Corpus,
+    requested_until: Option<DateTime<Utc>>,
+    slack_secs: i64,
+) -> Freshness {
     let last_trade_at = corpus.last_trade_at();
-    let shortfall_secs = match last_trade_at {
-        Some(last) => (requested_until - last).num_seconds().max(0),
+    let shortfall_secs = match (last_trade_at, requested_until) {
+        (Some(last), Some(until)) => (until - last).num_seconds().max(0),
+        // No bound named: the lake's tail is the range, so nothing is short.
+        (Some(_), None) => 0,
         // No data at all: the whole request is shortfall, and it always refuses.
-        None => i64::MAX,
+        (None, _) => i64::MAX,
     };
     Freshness { last_trade_at, requested_until, shortfall_secs, slack_secs: slack_secs.max(0) }
 }
@@ -85,7 +109,7 @@ pub fn freshness(corpus: &Corpus, requested_until: DateTime<Utc>, slack_secs: i6
 /// [`freshness`] then refuse — the one call the orchestrator makes.
 pub fn check_freshness(
     corpus: &Corpus,
-    requested_until: DateTime<Utc>,
+    requested_until: Option<DateTime<Utc>>,
     slack_secs: i64,
 ) -> anyhow::Result<Freshness> {
     let f = freshness(corpus, requested_until, slack_secs);
@@ -322,10 +346,10 @@ mod tests {
 
         // Two days past the data, one hour of slack.
         let until = last + Duration::days(2);
-        let f = freshness(&c, until, DEFAULT_FRESHNESS_SLACK_SECS);
+        let f = freshness(&c, Some(until), DEFAULT_FRESHNESS_SLACK_SECS);
         assert_eq!(f.shortfall_secs, 2 * 86_400);
         assert!(f.stale());
-        assert!(check_freshness(&c, until, DEFAULT_FRESHNESS_SLACK_SECS).is_err());
+        assert!(check_freshness(&c, Some(until), DEFAULT_FRESHNESS_SLACK_SECS).is_err());
         // The refusal names the shortfall, so it is actionable rather than a bare no.
         assert!(f.refuse_reason().unwrap().contains("48.0h short"));
     }
@@ -335,22 +359,37 @@ mod tests {
         let c = corpus_of(vec![token_from_prices(&[1.0, 2.0, 3.0])]);
         let last = created_at() + Duration::seconds(2);
         // Inside the slack: a sealed-day export is routinely minutes behind.
-        let f = check_freshness(&c, last + Duration::minutes(20), 3_600).expect("passes");
+        let f = check_freshness(&c, Some(last + Duration::minutes(20)), 3_600).expect("passes");
         assert!(!f.stale());
         assert_eq!(f.shortfall_secs, 20 * 60);
         assert_eq!(f.last_trade_at, Some(last));
         // A bound the data fully covers reports no shortfall at all, never a negative.
-        let past = freshness(&c, last - Duration::hours(1), 0);
+        let past = freshness(&c, Some(last - Duration::hours(1)), 0);
         assert_eq!(past.shortfall_secs, 0);
         assert!(!past.stale());
+    }
+
+    /// The regression: an open-ended range names no upper bound, so the lake's tail
+    /// IS the range. Measuring it against `now` refuses every such run — a sealed-day
+    /// export is permanently hours behind the wall clock.
+    #[test]
+    fn an_open_ended_range_is_fresh_however_old_the_lake_is() {
+        let c = corpus_of(vec![token_from_prices(&[1.0, 2.0, 3.0])]);
+        let f = check_freshness(&c, None, 0).expect("an unbounded range cannot outrun the lake");
+        assert_eq!(f.shortfall_secs, 0);
+        assert_eq!(f.requested_until, None);
+        assert!(!f.stale());
+        assert_eq!(f.refuse_reason(), None);
     }
 
     #[test]
     fn a_trade_less_corpus_always_refuses() {
         // Zero slack or a year of it — with no data there is no range to be fresh for.
         let c = corpus_of(vec![]);
-        assert!(check_freshness(&c, created_at(), i64::MAX).is_err());
-        assert_eq!(freshness(&c, created_at(), 0).last_trade_at, None);
+        assert!(check_freshness(&c, Some(created_at()), i64::MAX).is_err());
+        assert_eq!(freshness(&c, Some(created_at()), 0).last_trade_at, None);
+        // Open-ended is no escape hatch: with no data there is nothing to cover.
+        assert!(check_freshness(&c, None, i64::MAX).is_err());
     }
 
     /// The charter's own numbers: `liquidity > 20` on the reference family, ordered
