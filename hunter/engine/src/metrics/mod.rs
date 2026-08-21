@@ -69,6 +69,13 @@ mod finite_f64 {
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
         Ok(Option::<f64>::deserialize(d)?.unwrap_or(f64::NAN))
     }
+
+    /// `#[serde(default)]` for a field whose "unknown" is `NaN` — an event-log line
+    /// written before the field existed deserializes to "depth unknown", not to `0.0`
+    /// (which the cost model would read as a real, infinitely thin pool).
+    pub fn nan() -> f64 {
+        f64::NAN
+    }
 }
 
 /// Every timestamp in the engine arrives on an event — the engine never reads a
@@ -109,6 +116,24 @@ pub struct TradeLite {
     /// symmetric: it serializes `NaN` as `null` but fails to deserialize `null`).
     #[serde(with = "finite_f64")]
     pub reserve_sol: f64,
+    /// SOL-side depth to charge **price impact** against — the *priced* reserve
+    /// (`vsol`), not the real one.
+    ///
+    /// On a constant-product curve, spending `B` pays an average price of
+    /// `(vsol + B) / vtok`, exactly `1 + B/vsol` times the pre-trade spot, so impact
+    /// is `B / vsol`. [`reserve_sol`](Self::reserve_sol) is the **real** reserve
+    /// (`vsol - PUMP_INITIAL_VIRTUAL_SOL` on the curve) because the `liquidity` metric
+    /// and the deadness verdict both mean real deposited SOL. Charging impact against
+    /// that overcharges by `vsol / (vsol - 30)` — 1.6x at `liquidity 50`, 11x at
+    /// `liquidity 3`.
+    ///
+    /// This is carried rather than re-derived because the real reserve is **clamped at
+    /// zero**, so `real -> priced` is not invertible exactly where the pool is thinnest
+    /// and the error is largest. On the AMM the two are equal.
+    ///
+    /// `NaN` ⇒ depth unknown, and the cost model then charges no impact — never a guess.
+    #[serde(with = "finite_f64", default = "finite_f64::nan")]
+    pub priced_reserve_sol: f64,
     pub at: Ts,
     /// FNV-1a of the trade's ordered `ix_labels`; `None` when labels are absent.
     #[serde(default)]
@@ -125,6 +150,7 @@ impl Default for TradeLite {
             sol: 0.0,
             price: 0.0,
             reserve_sol: 0.0,
+            priced_reserve_sol: f64::NAN,
             at: DateTime::from_timestamp(0, 0).expect("unix epoch"),
             ix_hash: None,
             wallet_hash: 0,
@@ -174,6 +200,13 @@ pub enum MetricId {
     Time,
     /// SOL reserves (`m_snapshot`).
     Liquidity,
+    /// Instruction count of the token's CREATION transaction (`m_snapshot`).
+    ///
+    /// A launch-tooling fingerprint reduced to one number: a plain creation is a few
+    /// instructions, an elaborate one is many. Static from `TokenCreated` onward, so an
+    /// entry gate on it is a token filter, not a timing signal, and it can never
+    /// re-trigger. `NaN` when the creation labels are unknown.
+    IxCount,
     /// Seconds since the price last set a **new all-time high** (`m_price_lifetime`)
     /// — NOT "since the last trade". Only a strictly higher price resets the clock,
     /// so on a token trading actively below its peak `stall` keeps climbing. Read
@@ -211,6 +244,16 @@ pub enum MetricId {
     /// people are in the token, as against `gross_flow`'s how much SOL. One wallet
     /// churning and a crowd arriving look identical in SOL and different here.
     UniqueWallets,
+    /// Share of the trailing window's SOL that is buys — `buy / (buy + sell)`, in
+    /// percent (`m_flow_window`).
+    ///
+    /// The DIRECTION of the tape, independent of its size. `net_flow` conflates the
+    /// two: +5 SOL net is a different situation on 6 SOL of turnover than on 200.
+    /// Reads high when one side is being absorbed rather than matched.
+    ///
+    /// `NaN` on an empty window — no flow, no direction to report, and a `NaN`
+    /// satisfies no condition (evaluator contract).
+    BuyShare,
     // ── m_flow_split (lifetime; JSON names shared with m_flow_split_window) ─
     VolBuy,
     VolSell,
@@ -519,6 +562,17 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 212,
             },
             MetricSpec {
+                id: MetricId::IxCount,
+                name: "ix_count",
+                // A tally, so half an instruction: `<= 5` must not turn on float noise.
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                // Static after creation - it never moves, so no monotonic derivation.
+                monotonic: false,
+                // Between `time` (212) and `liquidity` (236) - inside the snapshot family.
+                hue: 224,
+            },
+            MetricSpec {
                 id: MetricId::Liquidity,
                 name: "liquidity",
                 unit: Unit::Sol,
@@ -682,6 +736,19 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 0.1,
                 monotonic: false,
                 hue: CANDLE_UP_HUE,
+            },
+            MetricSpec {
+                id: MetricId::BuyShare,
+                name: "buy_share",
+                // A ratio in percent: 0.5pp is below any threshold worth authoring and
+                // above float noise on a sum of f64 SOL amounts.
+                unit: Unit::Percent,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                // Inside the group's violet family, NOT the candle up-hue: this is a
+                // ratio, and the candle hues stay reserved for `buy`/`sell` so a
+                // direction chip is recognizable at a glance.
+                hue: 284,
             },
             MetricSpec {
                 id: MetricId::UniqueWallets,

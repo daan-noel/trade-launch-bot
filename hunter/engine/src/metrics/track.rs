@@ -51,6 +51,10 @@ pub struct TokenTrack {
     bundle: BTreeMap<FingerprintId, BundleState>,
     /// Creator wallet hash from `TokenCreated` — applied to every FlowState.
     creator_wallet_hash: Option<u64>,
+    /// Last observed *priced* SOL depth (`vsol`), for price impact only. Not a
+    /// metric: no rule reads it, and it is deliberately NOT the `liquidity` reading.
+    /// See [`TradeLite::priced_reserve_sol`].
+    priced_reserves: f64,
 }
 
 impl TokenTrack {
@@ -63,6 +67,7 @@ impl TokenTrack {
             flow_lifetime: FlowLifetimeState::default(),
             windows: BTreeMap::new(),
             price_windows: BTreeMap::new(),
+            priced_reserves: f64::NAN,
             flow: BTreeMap::new(),
             bundle: BTreeMap::new(),
             creator_wallet_hash: None,
@@ -139,9 +144,16 @@ impl TokenTrack {
         }
     }
 
+    /// Seed the creation-transaction instruction count from the token's fingerprint.
+    /// Static for the token's whole life — see [`SnapshotState::seed_ix_count`].
+    pub fn seed_ix_count(&mut self, n: usize) {
+        self.snapshot.seed_ix_count(n);
+    }
+
     /// Fold one trade into every group.
     pub fn on_trade(&mut self, t: TradeLite) {
         self.snapshot.on_trade(t.reserve_sol);
+        self.priced_reserves = t.priced_reserve_sol;
         self.price_lifetime.on_trade(t.price, t.at);
         self.flow_lifetime.on_trade(t.side, t.sol);
         for w in self.windows.values_mut() {
@@ -186,6 +198,13 @@ impl TokenTrack {
         self.value(MetricId::Liquidity, None, None, self.created_at)
     }
 
+    /// The most recently observed **priced** SOL depth (`vsol`; `NaN` before the first
+    /// trade or when the adapter did not carry it) — the basis price impact is charged
+    /// against, and NOT the `liquidity` reading. See [`TradeLite::priced_reserve_sol`].
+    pub fn current_priced_reserves(&self) -> f64 {
+        self.priced_reserves
+    }
+
     /// Value of one metric at `now`. `window_secs` is required for dynamic
     /// metrics and ignored for static ones. `fingerprint` is required for flow
     /// groups (absent / unregistered ⇒ `NaN`). An unregistered window yields
@@ -199,7 +218,7 @@ impl TokenTrack {
     ) -> f64 {
         use MetricId::*;
         match id {
-            Time | Liquidity => self.snapshot.value(id, self.created_at, now),
+            Time | Liquidity | IxCount => self.snapshot.value(id, self.created_at, now),
             Stall | Trail | LifeRise => self.price_lifetime.value(id, now),
             LifeGrossFlow | LifeNetFlow | LifeBuy | LifeSell => self.flow_lifetime.value(id),
             WinTrail | WinRise => {
@@ -208,7 +227,7 @@ impl TokenTrack {
                     None => f64::NAN,
                 }
             }
-            GrossFlow | NetFlow | Buy | Sell | UniqueWallets => {
+            GrossFlow | NetFlow | Buy | Sell | UniqueWallets | BuyShare => {
                 match window_secs.and_then(|ws| self.windows.get(&window_key(ws))) {
                     Some(w) => w.value(id, now),
                     None => f64::NAN,
@@ -308,6 +327,7 @@ mod tests {
             sol: 1.0,
             price: 1.0,
             reserve_sol: 10.0,
+            priced_reserve_sol: 10.0,
             at: ts(1.0),
             ix_hash: Some(bot),
             wallet_hash: 11,
@@ -321,6 +341,7 @@ mod tests {
             sol: 2.0,
             price: 1.0,
             reserve_sol: 10.0,
+            priced_reserve_sol: 10.0,
             at: ts(2.0),
             ix_hash: Some(bot),
             wallet_hash: 12,

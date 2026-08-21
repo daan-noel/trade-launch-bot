@@ -176,6 +176,10 @@ pub fn to_trade_lite(ct: &CorpusTrade) -> TradeLite {
         sol: ct.amount_sol,
         price: ct.price_per_token,
         reserve_sol: ct.real_reserve_sol.unwrap_or(f64::NAN),
+        // `reserve_sol` on the corpus row IS the priced reserve (`vsol`); the lake
+        // derives `real_reserve_sol` from it per venue. Impact is charged on the
+        // priced one — see `TradeLite::priced_reserve_sol`.
+        priced_reserve_sol: ct.reserve_sol.unwrap_or(f64::NAN),
         at: ct.block_time,
         ix_hash: ct.flow.ix_hash,
         wallet_hash: ct.flow.wallet_hash,
@@ -361,6 +365,48 @@ mod tests {
             assert_eq!(want, cached[i].chart_spot_price(), "CachedTrade row {i}");
             assert_eq!(want, sweep_rows[i].chart_spot_price(), "CorpusTrade row {i}");
         }
+    }
+
+    /// Regression guard: the two reserve channels on a `TradeLite` mean different
+    /// things and must not re-converge.
+    ///
+    /// `reserve_sol` is the **real** deposited SOL — what the `liquidity` metric and the
+    /// deadness verdict read. `priced_reserve_sol` is the **priced** reserve (`vsol`) —
+    /// the only correct basis for price impact, because spending `B` on a
+    /// constant-product curve pays `1 + B/vsol` times spot. They differ by exactly
+    /// `PUMP_INITIAL_VIRTUAL_SOL` on the curve and are equal on the AMM.
+    ///
+    /// Collapsing them (which the sweep did, charging impact on the real reserve)
+    /// overcharges by `vsol / (vsol - 30)`: 1.6x at `liquidity 50`, 11x at
+    /// `liquidity 3`, and unbounded as the pool thins. The real reserve is clamped at
+    /// zero, so the priced value cannot be recovered from it — hence a carried field
+    /// rather than a derivation.
+    #[test]
+    fn impact_depth_is_the_priced_reserve_not_the_real_one() {
+        use trading_core::config::constants::{approx_real_sol_reserves, PUMP_INITIAL_VIRTUAL_SOL};
+
+        let vsol = 44.89;
+        let curve = project_pg_tail(&[curve_trade(1.0, 1_000_000, vsol, 900_000)], false);
+        let lite = to_trade_lite(&curve[0]);
+        assert_eq!(lite.priced_reserve_sol, vsol, "impact is charged on the priced reserve");
+        assert_eq!(lite.reserve_sol, approx_real_sol_reserves(vsol, "curve"));
+        assert!(
+            (lite.priced_reserve_sol - lite.reserve_sol - PUMP_INITIAL_VIRTUAL_SOL).abs() < 1e-9,
+            "curve: the two channels differ by exactly the initial virtual SOL"
+        );
+
+        // AMM: no virtual offset, so the two channels agree.
+        let mut amm_t = curve_trade(1.0, 1_000_000, 25.0, 900_000);
+        amm_t.venue = "amm".into();
+        let amm = project_pg_tail(&[amm_t], false);
+        let amm_lite = to_trade_lite(&amm[0]);
+        assert_eq!(amm_lite.priced_reserve_sol, amm_lite.reserve_sol, "amm: real == priced");
+
+        // The bug this guards: charging impact on the real reserve at liquidity 3
+        // costs 11x what the curve actually takes.
+        let thin = 33.0_f64;
+        let real = approx_real_sol_reserves(thin, "curve");
+        assert!((thin / real - 11.0).abs() < 1e-9, "11x overcharge at liquidity 3");
     }
 
     /// Regression guard: a Postgres-read curve `Trade` never carries the program's

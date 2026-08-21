@@ -109,12 +109,17 @@ fn first_row_after(token: &CorpusToken, at: DateTime<Utc>) -> usize {
 }
 
 /// The SOL-side pool depth this entry's impact is charged against — the entry row's
-/// own reserve, the shape [`round_trip_with_costs`] defines.
+/// own **priced** reserve (`vsol`), the shape [`round_trip_with_costs`] defines.
+///
+/// Not `real_reserve_sol`: impact on a constant-product curve is `B / vsol`, and the
+/// real reserve is `vsol - PUMP_INITIAL_VIRTUAL_SOL` clamped at zero. Charging the real
+/// one overcharges by `vsol / (vsol - 30)` and is unbounded as the pool thins. See
+/// `TradeLite::priced_reserve_sol`.
 fn entry_depth(token: &CorpusToken, at: DateTime<Utc>) -> Option<f64> {
     first_row_after(token, at)
         .checked_sub(1)
         .and_then(|i| token.trades.get(i))
-        .and_then(|t| t.real_reserve_sol)
+        .and_then(|t| t.reserve_sol)
         .filter(|r| r.is_finite() && *r > 0.0)
 }
 
@@ -345,7 +350,7 @@ mod tests {
         let oracle = oracle_pnl_sol(&t, &o, &p).expect("priced");
 
         // The identical call the realized close makes, at the oracle's exit price.
-        let depth = t.trades[0].real_reserve_sol;
+        let depth = t.trades[0].reserve_sol;
         let (want, _) = round_trip_with_costs(1.0, 4.0, p.buy_amount_sol, depth, &p.cost);
         assert_eq!(oracle, want);
         // Costs are actually charged: a 4x gross is NOT 3x the notional net.
@@ -365,7 +370,7 @@ mod tests {
         // Exiting after row 1: the 6.0 is still ahead.
         let exit_at = t.trades[1].block_time;
         let best = best_after_pnl_sol(&t, &o, exit_at, &p).expect("prints follow");
-        let depth = t.trades[0].real_reserve_sol;
+        let depth = t.trades[0].reserve_sol;
         let (want, _) = round_trip_with_costs(1.0, 6.0, p.buy_amount_sol, depth, &p.cost);
         assert_eq!(best, want);
 

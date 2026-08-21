@@ -42,6 +42,7 @@ use uuid::Uuid;
 use hunter_engine::arm::CompiledRule;
 use hunter_engine::event::{LoadedRule, RuleId};
 use hunter_engine::fingerprint::FingerprintId;
+use hunter_engine::grouping::normalize_labels;
 use hunter_engine::metrics::evaluator::ConditionExpr;
 use hunter_engine::metrics::flow_split::{ix_hash_from_labels_value, wallet_hash, FlowPatterns};
 use hunter_engine::metrics::{metric_spec, MetricId, Side, TradeLite};
@@ -419,6 +420,28 @@ async fn load_flow_ctx(
     (patterns, creator_wallet_hash)
 }
 
+/// The token's creation-transaction instruction COUNT, for `m_snapshot.ix_count`.
+///
+/// Read through the SSOT [`normalize_labels`] so both persisted shapes (bare array and
+/// `{"instructions":[...]}`) count alike — a local reader that only accepts the bare
+/// array would report 0 for every object-shaped row and silently show an
+/// `ix_count <= N` condition as met when it is not.
+///
+/// `None` ⇒ the metric reads `NaN` and no `ix_count` condition matches, which is the
+/// honest reading for a token whose creation labels were never stored.
+async fn load_ix_count(app_state: &DeployState, mint: &str) -> Option<usize> {
+    match app_state.core.token_repo().find_by_mint(mint).await {
+        Ok(Some(t)) => {
+            let n = normalize_labels(&t.instruction_labels).len();
+            (n > 0).then_some(n)
+        }
+        _ => {
+            tracing::warn!(mint, "readout replay: no token row - ix_count unseeded");
+            None
+        }
+    }
+}
+
 /// The token's stored trades up to `until`, as the engine's `TradeLite`.
 ///
 /// Bounded in SQL: a memecoin that keeps trading for hours past a position's exit
@@ -514,6 +537,7 @@ async fn replay_for_position(
     let trades = load_trades(app_state, &position.mint_address, at).await?;
     let (patterns, creator_wallet_hash) =
         load_flow_ctx(app_state, &position.mint_address, rule.fingerprint_id).await;
+    let ix_count = load_ix_count(app_state, &position.mint_address).await;
 
     let created_at = replay_created_at(app_state, &position.mint_address, &trades).await;
     let lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
@@ -533,7 +557,7 @@ async fn replay_for_position(
         replay_readout(
             &compiled,
             lites,
-            &ReplayCtx { created_at, entry, stage, flow },
+            &ReplayCtx { created_at, entry, stage, flow, ix_count },
             at,
         )
     })
@@ -547,15 +571,16 @@ async fn replay_for_position(
 }
 
 /// One stored trade as the engine's `TradeLite` — the offline mirror of the live
-/// `producers::trade_lite` and the lab's `to_trade_lite`. Same three choices as both:
+/// `producers::trade_lite` and the lab's `to_trade_lite`. Same four choices as both:
 /// the canonical `price_per_token`, REAL reserves (absent ⇒ `NaN`, which reads as
-/// "alive" rather than dead), and the flow hashes.
+/// "alive" rather than dead), the PRICED reserve for impact, and the flow hashes.
 fn trade_lite(t: &Trade) -> TradeLite {
     TradeLite {
         side: if t.trade_type == TradeType::Buy { Side::Buy } else { Side::Sell },
         sol: t.amount_sol,
         price: t.price_per_token,
         reserve_sol: t.real_reserve_sol.unwrap_or(f64::NAN),
+        priced_reserve_sol: t.reserve_sol.unwrap_or(f64::NAN),
         at: t.block_time,
         // The ONE shape-complete reader of `trades.ix_labels` — the same
         // `normalize_labels` + hash the live `CachedTrade` uses, so both persisted
@@ -733,6 +758,7 @@ async fn series_response(
         Err(resp) => return resp,
     };
     let (patterns, creator_wallet_hash) = load_flow_ctx(app_state, &mint, rule.fingerprint_id).await;
+    let ix_count = load_ix_count(app_state, &mint).await;
 
     let created_at = replay_created_at(app_state, &mint, &trades).await;
     let lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
@@ -759,7 +785,7 @@ async fn series_response(
         replay_series(
             &compiled,
             lites,
-            &ReplayCtx { created_at, entry, stage, flow },
+            &ReplayCtx { created_at, entry, stage, flow, ix_count },
             as_of,
             Some(MAX_READOUT_SERIES_ROWS),
             record_from,

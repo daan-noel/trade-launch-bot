@@ -207,6 +207,17 @@ impl WindowState {
             MetricId::Sell => sell,
             MetricId::GrossFlow => buy + sell,
             MetricId::NetFlow => buy - sell,
+            // Direction of the window's flow, independent of its size. Undefined on an
+            // empty window: with no SOL either way there is no share to report, and a
+            // `0.0` would read as "all sells" to a `buy_share <= X` condition.
+            MetricId::BuyShare => {
+                let gross = buy + sell;
+                if gross > 0.0 {
+                    buy / gross * 100.0
+                } else {
+                    f64::NAN
+                }
+            }
             MetricId::UniqueWallets => self.unique_wallets(now),
             _ => f64::NAN,
         }
@@ -439,8 +450,52 @@ mod tests {
                     assert!(eq(got(MetricId::Sell), sell), "sell w={window} at={at} p={probe}");
                     assert!(eq(got(MetricId::GrossFlow), buy + sell), "gross w={window}");
                     assert!(eq(got(MetricId::NetFlow), buy - sell), "net w={window}");
+                    let share = got(MetricId::BuyShare);
+                    if buy + sell > 0.0 {
+                        assert!(
+                            eq(share, buy / (buy + sell) * 100.0),
+                            "buy_share w={window} at={at} p={probe}"
+                        );
+                    } else {
+                        assert!(share.is_nan(), "buy_share is NaN on an empty window");
+                    }
                 }
             }
         }
+    }
+
+    /// `buy_share` reads the DIRECTION of the window, independent of its size, and is
+    /// undefined when nothing traded.
+    ///
+    /// The empty case must be `NaN`, not `0.0`: a `0.0` reads as "every SOL was a sell"
+    /// to a `buy_share <= X` condition, so an untraded window would satisfy a
+    /// sell-pressure gate it has no evidence for.
+    #[test]
+    fn buy_share_is_direction_not_size_and_nan_when_empty() {
+        let mut w = WindowState::new(60.0);
+        assert!(w.value(MetricId::BuyShare, ts(0.0)).is_nan(), "empty window is undefined");
+
+        // 6 SOL of turnover, 5 of it buys.
+        w.on_trade(Side::Buy, 5.0, ts(1.0), 1);
+        w.on_trade(Side::Sell, 1.0, ts(2.0), 2);
+        let small = w.value(MetricId::BuyShare, ts(3.0));
+        assert!((small - 500.0 / 6.0).abs() < 1e-9, "got {small}");
+
+        // Same 5:1 direction at 100x the size reads identically - which `net_flow`
+        // cannot do (+4 SOL against +400 SOL).
+        let mut big = WindowState::new(60.0);
+        big.on_trade(Side::Buy, 500.0, ts(1.0), 1);
+        big.on_trade(Side::Sell, 100.0, ts(2.0), 2);
+        assert!((big.value(MetricId::BuyShare, ts(3.0)) - small).abs() < 1e-9);
+        assert!(
+            (big.value(MetricId::NetFlow, ts(3.0)) - w.value(MetricId::NetFlow, ts(3.0))).abs()
+                > 1.0,
+            "net_flow conflates direction with size; buy_share is the point"
+        );
+
+        // All buys, no sells - a full 100%, not a divide-by-zero.
+        let mut one = WindowState::new(60.0);
+        one.on_trade(Side::Buy, 2.0, ts(1.0), 1);
+        assert!((one.value(MetricId::BuyShare, ts(2.0)) - 100.0).abs() < 1e-9);
     }
 }

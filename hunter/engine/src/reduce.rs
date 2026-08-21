@@ -86,6 +86,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             if let Some(h) = creator_wallet_hash {
                 track.seed_creator(h);
             }
+            track.seed_ix_count(fp.ix_labels.len());
             let mut token = TokenState {
                 created_at: at,
                 tf: *fp,

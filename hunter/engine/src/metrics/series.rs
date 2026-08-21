@@ -70,8 +70,13 @@ pub struct MetricSeries {
     pub slot: Vec<Option<u64>>,
     /// Canonical spot price at each event (`NaN` before the first trade).
     pub price: Vec<f64>,
-    /// SOL reserves at each event (`NaN` before the first trade).
+    /// **Real** SOL reserves at each event (`NaN` before the first trade) — the
+    /// `liquidity` reading and the deadness input.
     pub reserve_sol: Vec<f64>,
+    /// **Priced** SOL depth (`vsol`) at each event, for price impact only. Charging
+    /// impact against `reserve_sol` overcharges by `vsol / (vsol - 30)` on the curve;
+    /// see [`TradeLite::priced_reserve_sol`](super::TradeLite::priced_reserve_sol).
+    pub priced_reserve_sol: Vec<f64>,
     /// The dead-token verdict at each event — the same `is_dead_verdict` the live
     /// engine computes per token per event, precomputed once here.
     pub dead: Vec<bool>,
@@ -117,6 +122,7 @@ impl MetricSeries {
             slot: Vec::new(),
             price: Vec::new(),
             reserve_sol: Vec::new(),
+            priced_reserve_sol: Vec::new(),
             dead: Vec::new(),
             record_from: None,
         }
@@ -174,6 +180,15 @@ impl MetricSeries {
         self.track.seed_creator(hash);
     }
 
+    /// Seed the creation-transaction instruction count (`m_snapshot.ix_count`).
+    ///
+    /// Must be called before the first fold on every path that records a series, or
+    /// `ix_count` reads `NaN` for the whole token and any `ix_count <= N` entry gate is
+    /// silently unsatisfiable — the token is never entered, with no error anywhere.
+    pub fn seed_ix_count(&mut self, n: usize) {
+        self.track.seed_ix_count(n);
+    }
+
     /// The deadness clock (newest meaningful-trade time) after every fold so far —
     /// the sparse-grid builder reads it to place the dead-flip tick (plan §P2).
     pub fn last_meaningful_at(&self) -> Ts {
@@ -224,6 +239,7 @@ impl MetricSeries {
         self.slot.push(slot);
         self.price.push(self.track.current_price());
         self.reserve_sol.push(reserves);
+        self.priced_reserve_sol.push(self.track.current_priced_reserves());
         self.dead.push(dead);
     }
 

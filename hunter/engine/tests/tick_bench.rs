@@ -100,6 +100,7 @@ fn build(dense: bool, n_tokens: usize) -> EngineState {
                         sol: 1.0,
                         price: 1.0 + k as f64 * 0.01,
                         reserve_sol: 90.0,
+                        priced_reserve_sol: 90.0,
                         at: ts(k as f64 * 0.5),
                         ix_hash: None,
                         wallet_hash: k as u64,

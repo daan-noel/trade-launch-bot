@@ -337,6 +337,10 @@ fn trade_lite(ct: &CachedTrade) -> TradeLite {
         // Deadness + liquidity read REAL reserves (SSOT parity with the live
         // `is_dead` signal); absent ⇒ NaN (no snapshot ⇒ alive).
         reserve_sol: ct.real_reserve_sol.unwrap_or(f64::NAN),
+        // Price impact is charged on the PRICED reserve (`vsol`), which is what the
+        // reserve pair carries; `real_reserve_sol` is `vsol - 30` on the curve and is
+        // the wrong basis. See `TradeLite::priced_reserve_sol`.
+        priced_reserve_sol: ct.reserve_sol.unwrap_or(f64::NAN),
         at: ct.block_time,
         // Hashed once at cache ingest (`CachedTrade::from_trade`).
         ix_hash: ct.ix_hash,

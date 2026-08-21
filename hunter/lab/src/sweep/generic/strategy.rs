@@ -690,6 +690,8 @@ pub(crate) fn build_series_with_flow(
 ) -> MetricSeries {
     let created = token.created_at;
     let mut series = MetricSeries::new(created, columns);
+    // Static token facts first, exactly as the live `TokenCreated` arm orders them.
+    series.seed_ix_count(token.fp.ix_labels.len());
     if let Some(patterns) = flow_patterns {
         let windows: Vec<f64> = series
             .columns()
@@ -1846,7 +1848,7 @@ fn stage_fill_price(
     });
     let exit_row = series_row_for_trade_idx(series, fill.trade_idx).unwrap_or(fire_row);
     let reserve = series
-        .reserve_sol
+        .priced_reserve_sol
         .get(exit_row)
         .copied()
         .filter(|r| r.is_finite() && *r > 0.0)
@@ -1883,7 +1885,7 @@ fn close_staged(
     });
     let exit_row = series_row_for_trade_idx(series, fill.trade_idx).unwrap_or(fire_row);
     let reserve = series
-        .reserve_sol
+        .priced_reserve_sol
         .get(exit_row)
         .copied()
         .filter(|r| r.is_finite() && *r > 0.0)
@@ -2017,10 +2019,14 @@ fn closed_multi(
 }
 
 /// SOL-side pool depth at the entry row, for [`CostModel::price_impact`]. `None`
-/// when the series has no reserve yet (pre-first-trade rows are `NaN`), which the
+/// when the series has no depth yet (pre-first-trade rows are `NaN`), which the
 /// cost model treats as "depth unknown" and charges no impact — never a guess.
+///
+/// Reads the **priced** depth (`vsol`), not `reserve_sol`: impact on a
+/// constant-product curve is `B / vsol`, and the real reserve is `vsol - 30` clamped
+/// at zero. See [`TradeLite::priced_reserve_sol`].
 fn entry_depth(series: &MetricSeries, fill_row: usize) -> Option<f64> {
-    series.reserve_sol.get(fill_row).copied().filter(|r| r.is_finite() && *r > 0.0)
+    series.priced_reserve_sol.get(fill_row).copied().filter(|r| r.is_finite() && *r > 0.0)
 }
 
 /// The still-`Open` outcome, marked to `last_price`. One copy shared by every exit

@@ -6,6 +6,10 @@
 //!   `reserve_sol`. Undefined (`NaN`) until the first trade — with no market
 //!   data there is no liquidity to compare, and a `NaN` satisfies no condition
 //!   (evaluator contract), so a rule can never fire on absent data.
+//! * `ix_count` — how many instructions the token's CREATION transaction carried.
+//!   Seeded once from `TokenCreated` and never moves, so it is a token property, not
+//!   a market reading. Undefined (`NaN`) when the creation fingerprint carried no
+//!   labels, which is how an unknown launch stays unmatched by any `ix_count` gate.
 //!
 //! Static state is shared by every rule armed on the token (computed once).
 
@@ -16,6 +20,9 @@ use super::{secs_between, MetricId, Ts};
 pub struct SnapshotState {
     /// SOL reserves at the most recent trade. `None` until the first trade.
     reserve_sol: Option<f64>,
+    /// Instruction count of the creation transaction, seeded from `TokenCreated`.
+    /// `None` when the fingerprint carried no labels.
+    ix_count: Option<u32>,
 }
 
 impl SnapshotState {
@@ -24,6 +31,20 @@ impl SnapshotState {
         if reserve_sol.is_finite() {
             self.reserve_sol = Some(reserve_sol);
         }
+    }
+
+    /// Seed the creation-transaction instruction count. Called once, from
+    /// `TokenCreated`; an empty label sequence stays `None` ("unknown launch") rather
+    /// than becoming a real `0`, which would satisfy an `ix_count <= 5` gate.
+    pub fn seed_ix_count(&mut self, n: usize) {
+        if n > 0 {
+            self.ix_count = Some(n as u32);
+        }
+    }
+
+    /// `ix_count` — creation-transaction instruction count; `NaN` when unknown.
+    pub fn ix_count(&self) -> f64 {
+        self.ix_count.map_or(f64::NAN, f64::from)
     }
 
     /// `time` — seconds since creation. Free function: needs no state.
@@ -42,6 +63,7 @@ impl SnapshotState {
         match id {
             MetricId::Time => Self::time(created_at, now),
             MetricId::Liquidity => self.liquidity(),
+            MetricId::IxCount => self.ix_count(),
             _ => f64::NAN,
         }
     }

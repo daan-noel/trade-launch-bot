@@ -224,16 +224,22 @@ than forward decay - but nothing was tuned to it.
 
 ## Shipping it: what the engine already has
 
-### The kernel's impact basis decides which rule to ship first
+### The kernel's impact basis — FIXED
 
-`leg_impact` charges `size_sol / reserve` and the lab hands it `real_reserve_sol`
-([oracle.rs](../../../lab/src/family_search/oracle.rs)), i.e. `vsol - 30`, while the
-kernel's own comment states the intended grain is `B / vsol`. The overcharge is
-`vsol / (vsol - 30)`, and these islands sit in thin pools by construction - median
-liquidity **17.8 SOL**, so the **median overcharge is 2.68x** and 42% of entries are
-charged more than 3x their real impact.
+`leg_impact` charges `size_sol / reserve`, and every caller used to hand it the **real**
+reserve (`vsol - 30` on the curve) because one `TradeLite` field served both the
+`liquidity` metric and the impact depth. The constant-product identity is `B / vsol`, so
+that overcharged by `vsol / (vsol - 30)`. These islands sit in thin pools by
+construction - median liquidity **17.8 SOL**, so the **median overcharge was 2.68x** and
+42% of entries were charged more than 3x their real impact.
 
-What the engine will therefore report against the correct basis:
+`TradeLite` now carries `priced_reserve_sol` beside `reserve_sol`, and the sweep, the
+oracle, the live producer and the readout all charge impact against the priced one.
+The depth is **carried, not derived**: the real reserve is clamped at zero, so it cannot
+be inverted back to `vsol` exactly where the pool is thinnest and the error is largest.
+`impact_depth_is_the_priced_reserve_not_the_real_one` in `sweep::projection` guards it.
+
+What the old basis cost, and therefore what the fix returns:
 
 | rule | size | correct | kernel | gap |
 | --- | ---: | ---: | ---: | ---: |
@@ -242,21 +248,27 @@ What the engine will therefore report against the correct basis:
 | **1 AND 3, re-entry** | 0.05 | +34.37 | +32.42 | **-5.7%** |
 | 1 AND 3, re-entry | 0.10 | +69.90 | +62.33 | -10.8% |
 
-**The concentrated rule is nearly immune, the high-volume union is not.** A thin
+**The concentrated rule was nearly immune, the high-volume union was not.** A thin
 +2.86%/trade edge loses a quarter of itself to the overcharge; a +12.40% edge loses a
-twentieth. At 0.10 SOL the bug even flips the union's one-per-token stability to 6/7 days.
-So `1 AND 3` can be trusted through the kernel as it stands; a union backtest cannot be
-read until the basis is fixed.
+twentieth. At 0.10 SOL the old basis even flipped the union's one-per-token stability to
+6/7 days. Backtests run before the fix understate every island, most where the pool is
+thinnest — re-run anything being compared against these numbers.
 
-### Metric availability
+### Metric availability — the two gaps are now filled
 
-The registry has `Time`, `Liquidity`, `NetFlow`, `WinRise`, `LifeGrossFlow` and
-`UniqueWallets`. It has **no `buy_share` and no trade count** on `m_flow_window`, and no
-creation-ix-count entry term. Two substitutions close most of that gap:
+`m_flow_window.buy_share` (percent of the window's SOL that is buys, `NaN` on an empty
+window) and `m_snapshot.ix_count` (the creation transaction's instruction count, seeded
+once from `TokenCreated` and static thereafter) are both in the registry, so all four
+rules are authorable directly. `ix_count` is seeded on the live path (`reduce`), the
+sweep (`build_series_with_flow`) and the readout replay; an unseeded path reads `NaN`,
+which matches no condition rather than silently matching every one.
 
-- **`UniqueWallets(30) > 6` replaces the trade count outright** - and slightly improves it:
-  +48.23 SOL against +46.34, 7/7 days, +9.26% net/trade against +8.96%. The two axes
-  correlate 0.91-0.92. **No new count metric is needed.**
+The measured substitutions below still stand, and one is worth keeping on its merits:
+
+- **`UniqueWallets(30) > 6` replaces a raw trade count outright** - and slightly improves
+  it: +48.23 SOL against +46.34, 7/7 days, +9.26% net/trade against +8.96%. The two axes
+  correlate 0.91-0.92, so no trade-count metric was added; the shipped rules use
+  `unique_wallets`.
 - **Fingerprint scope replaces `ix count <= 5`** at a cost: scoping island 3 to the standard
   client takes +48.71 to +33.81 (-31%) but lifts net/trade from +5.88% to +9.00%. It is a
   subset of the population, not a different one.
@@ -271,9 +283,20 @@ creation-ix-count entry term. Two substitutions close most of that gap:
 | **2** | + ix-count term | 1 AND 3, `ix <= 5`, `uw > 6` | 720 | +33.35 | +13.23% | 7/7 |
 | **2** | + ix-count term | union 1 or 3, re-entry | 11,237 | +112.57 | +2.86% | 7/7 |
 
-**Tier 0 runs today with no code change at all** - `m_flow_window(0.4).net_flow >= 0.5`,
-`m_price_window(3).rise <= 9`, `m_snapshot` bounds, and the fingerprint scope that already
-exists. Tier 1 is one metric. Tier 2 is one entry term and unlocks the full population.
+Both tiers are now unblocked: `buy_share` and `ix_count` ship in the registry, so every
+rule above is authorable as written, `ix count <= 5` spans the whole population rather
+than one fingerprint, and the fingerprint scope is optional rather than a workaround.
+
+### The four rules, as authored
+
+`hunter/engine/tests/island_rules.rs` holds all four in the canonical
+`strategy_rules.params` JSON and asserts each one parses through `RuleParams::parse` -
+the same gate a rule save runs - so a registry typo fails the build instead of producing
+a rule that silently never matches. They are kept as **four separate rules**, one per
+island plus the conjunction, so each can be armed and measured on its own.
+
+Every one shares the settled exit and carries **no take-profit**: `stop_loss 3` plus
+`m_position.retrace >= 20`.
 
 ## What this does not claim
 

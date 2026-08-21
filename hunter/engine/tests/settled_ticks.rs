@@ -210,6 +210,7 @@ fn stream(seed: u64, n_events: usize) -> Vec<Event> {
                     // Straddles DEAD_MAX_LIQUIDITY_SOL (30) so both the prunable and
                     // the never-dies (and therefore never-pruned) token exist here.
                     reserve_sol: rng.frac() * 60.0,
+                    priced_reserve_sol: rng.frac() * 60.0,
                     at: ts(now),
                     ix_hash: (rng.frac() < 0.4)
                         .then(|| hunter_engine::metrics::flow_split::ix_hash(&["Pump.Fun: Buy"])),
