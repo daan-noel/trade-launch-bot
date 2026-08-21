@@ -243,3 +243,56 @@ fill, cost, copycat, incumbent. Grade one cut source per run.
 Incumbent is the baseline to beat, not a shape to clone. Promoted g4 / g8 / g12
 rules are the ablation incumbents. Do not hide a tail of the search range as
 holdout; tokens after promote are the live test.
+
+## 6. Screen validity gates
+
+These apply to any search over a population, not just a per-fingerprint one.
+A screen that skips them reports a confident false positive or a confident
+false negative. Each is a measured failure, sourced in
+[the inverted token search](../../history/2026-08-18-inverted-token-search.md).
+
+**Clear the cost bar, and name it first.** At constant-impact sizing
+`B = sqrt(F * vsol)` the round trip costs `2.53% + 4*sqrt(F/vsol)`, about **3.6%**
+at vsol 30. State that number before reading any result. The full observable
+universe supplies **+2.6% gross** at its best, so a screen reporting a small
+positive net is reporting an error.
+
+**Reproduce a known number before trusting an unknown one.** A blind 60s hold
+over the token universe is **-8.6%**. A new pipeline that does not land there
+has a fill, cost or coverage defect, whatever else it claims.
+
+**Screen against the outcome the exit harvests.** Terminal return and MFE rank
+features with **opposite sign**: buy flow predicts that a token pops *and* that it
+ends lower. Screening a trail-exit strategy against terminal return therefore
+discards the features that make it work.
+
+**Stratify, then test.** Rank features by AUC within
+`day x log-age x vsol x market-regime` strata. Raw decile spread is confounded:
+`f_age` and `f_conc` led the raw screen and both collapsed to 0.50 under control.
+
+**Run a permutation null.** Twelve reps of a random feature through the same
+strata put the noise floor for |AUC separation| at **0.005**. Without it, a
+separation of 0.002 reads as a finding.
+
+**Check monotonicity before believing an AUC.** A rank statistic reads a
+non-monotone feature as separation. `f_retail` separated at -0.051, ten times the
+noise floor, yet its best bucket is the middle and its day gap flips sign on 2 of
+8 days.
+
+**A tuned exit pinned at the grid boundary is converging on "do not trade".**
+Read the implied **gross**: the tight-trail optimum here reached -3.14% net on
+**+0.19% gross**, i.e. it bought nothing and paid the fee. Extend the grid or
+report the gross, never the net alone.
+
+**Ingest coverage sets the study window.** `trades` chunks run 100-280 MB/day
+before 2026-08-11 and 1.7-2.0 GB/day after. Mixing the two invents bag-rate and
+liquidity effects that are feed artifacts.
+
+**Known-dead axes.** `tx_index` / block position (separation 0.0018, under the
+noise floor) and `f_retail` as an entry filter. `trades.fee_lamports` is NULL for
+every row, so priority-fee competition is unmeasurable, not refuted; likewise
+`tokens.meta`, which holds only `uri`.
+
+**Live exclusion.** `tokens.is_cashback_enabled` off is worth **+4.8pp** on
+`net60`, stable 8/8 days and present in every age band. Apply it as an exclusion,
+not an entry reason.

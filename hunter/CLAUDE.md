@@ -38,6 +38,12 @@ Read before trusting any backtest number:
 [fill-and-cost-models.md](docs/plans/strategies/fill-and-cost-models.md). Open work lives in
 [`docs/roadmap/`](docs/roadmap/), never in `docs/plans/`.
 
+**Searching for a new trading rule? Start at
+[convexity-search-workflow.md](docs/plans/strategies/convexity-search-workflow.md)** - a
+self-contained guide to the purpose, the method, the measurement rules, the cost model, the
+gate checklist and the pitfalls. It needs no other file. The islands it has produced so far
+are in [island-map.md](docs/plans/strategies/island-map.md).
+
 ## Commands
 
 ```powershell
