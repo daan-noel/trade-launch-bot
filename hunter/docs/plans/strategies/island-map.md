@@ -298,6 +298,42 @@ island plus the conjunction, so each can be armed and measured on its own.
 Every one shares the settled exit and carries **no take-profit**: `stop_loss 3` plus
 `m_position.retrace >= 20`.
 
+## Confirmed on the engine
+
+Seeded by [`seed-island-rules.sql`](../../../scripts/seed-island-rules.sql) and run
+through the lab's own `POST /api/strategies/simulate` - the real kernel, not the search
+harness. One creation day (2026-08-13), `first_in_window`, `pumpfun_impact`, 0.05 SOL,
+26,470 tokens matched:
+
+| rule | entered | engine/day | harness/day | win | median | mean | PF |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `isl-3-impulse` | 2,008 | **+3.56** | 2,368 | 28.3% | -9.43% | +3.55% | 1.30 |
+| `isl-1and3-confirmed` | 678 | **+3.25** | 693 | **32.4%** | -8.67% | **+9.57%** | **1.84** |
+| `isl-1-absorption` | 1,282 | +1.86 | 1,477 | 24.6% | -10.13% | +2.91% | 1.22 |
+| `isl-2-quiet-accum` | 298 | **-1.46** | 236 | 21.1% | -14.63% | -9.78% | 0.60 |
+
+**The entries transfer.** Engine trade counts land within ~15% of the harness on every
+rule, so the conditions mean the same thing in both. **The ranking transfers too**:
+`1 AND 3` is the best rule by win rate, mean and profit factor, exactly as derived.
+
+**The engine is more pessimistic, for two identified reasons - not noise:**
+
+- **Dead exits book near -100%** (`worst_pnl_pct` = -102). This method marks a dead exit
+  at the curve instead, because a pre-migration bonding curve is always its own
+  counterparty. 3% of island-3 exits are dead, so the convention alone is worth ~2pp.
+- **The stop fills ~6pp past its threshold** - median -9.4% on a 3% stop. The first print
+  past a threshold has already gapped; that is the known ~2.5pp exit-fill tax, and it
+  compounds with booking dead at zero.
+
+**`isl-2-quiet-accum` does not survive the engine** (-1.46 SOL, PF 0.60, on only 298
+trades). It was already the island that adds 0.3% to the union and is the smallest
+sample of the four. Treat it as **refuted for live use** until re-derived; keep islands
+1, 3 and their conjunction.
+
+**Running the full week needs scoping.** The broad fingerprint matches all 172,477 tokens
+in the window and the load phase alone exceeds this box's RAM. Run day by day, or narrow
+with `mints`.
+
 ## What this does not claim
 
 - **These are three readings of one mechanism, not three unrelated trades.** They share a
