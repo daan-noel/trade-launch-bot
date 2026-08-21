@@ -33,6 +33,7 @@ import {
   ruleRowEnabled,
   ruleRowIsTrailing,
   ruleRowNeedsWindow,
+  setRowInstanceStrict,
   type RuleConditionRow,
   type RuleConditionSide,
 } from 'lib/strategy/ruleConditionRows';
@@ -84,6 +85,14 @@ export function ConditionBuilder({
 
   const setRow = (id: string, patch: Partial<RuleConditionRow>) =>
     onChange(rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  // A strict param (`arm_above_pct`) belongs to the GROUP INSTANCE, not the row:
+  // every row folding into that instance carries the same bag and `rowsToSide`
+  // merges them all, so patching one row alone is undone on save by a sibling row
+  // still holding the old value. Write the bag to the whole instance instead —
+  // only the trailing row shows the control, and its siblings are exactly the rows
+  // that would resurrect the value.
+  const setInstanceStrict = (id: string, strict: Record<string, number>) =>
+    onChange(setRowInstanceStrict(rows, id, strict));
   const removeRow = (id: string) => onChange(rows.filter((r) => r.id !== id));
   const addRow = (side: RuleConditionSide) => onChange([...rows, newRuleConditionRow(side)]);
   const toggleRow = (id: string) =>
@@ -113,6 +122,7 @@ export function ConditionBuilder({
             allowToggle={allowToggle}
             onAdd={() => addRow(side)}
             onPatch={setRow}
+            onPatchStrict={setInstanceStrict}
             onRemove={removeRow}
             onFlip={flipSide}
             onToggle={toggleRow}
@@ -140,6 +150,7 @@ function ConditionColumn({
   allowToggle,
   onAdd,
   onPatch,
+  onPatchStrict,
   onRemove,
   onFlip,
   onToggle,
@@ -153,6 +164,7 @@ function ConditionColumn({
   allowToggle: boolean;
   onAdd: () => void;
   onPatch: (id: string, patch: Partial<RuleConditionRow>) => void;
+  onPatchStrict: (id: string, strict: Record<string, number>) => void;
   onRemove: (id: string) => void;
   onFlip: (id: string) => void;
   onToggle: (id: string) => void;
@@ -200,6 +212,7 @@ function ConditionColumn({
               allowFlip={allowFlip}
               allowToggle={allowToggle}
               onPatch={(patch) => onPatch(row.id, patch)}
+              onPatchStrict={(strict) => onPatchStrict(row.id, strict)}
               onRemove={() => onRemove(row.id)}
               onFlip={() => onFlip(row.id)}
               onToggle={() => onToggle(row.id)}
@@ -218,6 +231,7 @@ function ConditionRow({
   allowFlip,
   allowToggle,
   onPatch,
+  onPatchStrict,
   onRemove,
   onFlip,
   onToggle,
@@ -228,6 +242,7 @@ function ConditionRow({
   allowFlip: boolean;
   allowToggle: boolean;
   onPatch: (patch: Partial<RuleConditionRow>) => void;
+  onPatchStrict: (strict: Record<string, number>) => void;
   onRemove: () => void;
   onFlip: () => void;
   onToggle: () => void;
@@ -244,15 +259,16 @@ function ConditionRow({
   const armText = armValue == null ? '' : String(armValue);
 
   const onArm = (text: string) => {
+    // Empty = off: drop the key rather than write 0 — `arm_above_pct: 0` is a real
+    // value (arm at break-even), so the two stay distinguishable.
     if (text.trim() === '') {
-      if (!row.strict) return;
-      const { arm_above_pct: _drop, ...rest } = row.strict;
-      onPatch({ strict: rest });
+      const { arm_above_pct: _drop, ...rest } = row.strict ?? {};
+      onPatchStrict(rest);
       return;
     }
     const v = Number(text);
     if (!Number.isFinite(v)) return;
-    onPatch({ strict: { ...row.strict, arm_above_pct: v } });
+    onPatchStrict({ ...row.strict, arm_above_pct: v });
   };
   // Only drives the input's unit adornment; the field is disabled until a metric is
   // chosen, so the fallback is never user-visible.

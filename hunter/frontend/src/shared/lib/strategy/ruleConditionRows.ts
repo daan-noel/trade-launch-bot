@@ -95,6 +95,35 @@ function rowWindow(row: RuleConditionRow): number | null {
   return row.window.trim() !== '' && Number.isFinite(w) && w > 0 ? w : null;
 }
 
+/** Key of the `GroupConditions` instance a row folds into: rows sharing it are
+ *  merged into ONE instance by {@link rowsToSide}, so they share that instance's
+ *  strict bag (`window_size_sec`, `arm_above_pct`, …). Live and parked rows land in
+ *  different bags, hence different instances. */
+export function ruleRowInstanceKey(row: RuleConditionRow): string {
+  const on = ruleRowEnabled(row) ? 'on' : 'off';
+  return `${on}|${row.side}|${row.group}|${rowWindow(row) ?? '∅'}`;
+}
+
+/**
+ * Set the strict bag of the instance a row belongs to, across EVERY row of that
+ * instance. `rowsToSide` merges the bags of all rows folding into one instance, so
+ * a bag written to a single row is silently overwritten on save by a sibling row
+ * still carrying the old value — clearing `arm_above_pct` on the `retrace` row does
+ * nothing while the instance's `pnl` row still holds it. The invariant this keeps:
+ * **rows of one instance agree on `strict`** (which is also what `sideToRows`
+ * produces when loading a rule).
+ */
+export function setRowInstanceStrict(
+  rows: RuleConditionRow[],
+  id: string,
+  strict: Record<string, number>,
+): RuleConditionRow[] {
+  const target = rows.find((r) => r.id === id);
+  if (!target) return rows;
+  const key = ruleRowInstanceKey(target);
+  return rows.map((r) => (ruleRowInstanceKey(r) === key ? { ...r, strict: { ...strict } } : r));
+}
+
 function sameWindow(a: number | undefined, b: number | null): boolean {
   const av = typeof a === 'number' ? a : null;
   if (av == null && b == null) return true;
@@ -139,7 +168,7 @@ export function armAbovePctOrphanError(rows: RuleConditionRow[]): string | null 
     // Live and parked rows land in different bags, so they form different group
     // instances — an arm on a live row is NOT satisfied by a parked trailing row.
     // (This is the check that catches "I parked `retrace` and orphaned its arm".)
-    const key = `${ruleRowEnabled(row) ? 'on' : 'off'}|${row.side}|${rowWindow(row) ?? '∅'}`;
+    const key = ruleRowInstanceKey(row);
     const inst = instances.get(key) ?? { hasArm: false, hasTrailing: false };
     if (row.strict?.arm_above_pct != null) inst.hasArm = true;
     if (ruleRowIsTrailing(row)) inst.hasTrailing = true;
@@ -167,10 +196,10 @@ export function duplicateConditionRowError(rows: RuleConditionRow[]): string | n
     if (!row.group || !row.metric) continue;
     const w = rowWindow(row);
     const on = ruleRowEnabled(row);
-    // Keyed by live/parked too: a parked row and a live one on the same
-    // (side, group, window, metric) go to different bags and cannot collide — that
-    // pairing is exactly what the toggle is for (park a value, try another).
-    const key = `${on ? 'on' : 'off'}|${row.side}|${row.group}|${w ?? '∅'}|${row.metric}`;
+    // Keyed by the instance (so live/parked and each window are their own bag — that
+    // pairing is exactly what the toggle is for: park a value, try another) plus the
+    // metric, which is what actually collides inside one instance.
+    const key = `${ruleRowInstanceKey(row)}|${row.metric}`;
     if (seen.has(key)) {
       const at = w != null ? `@${w}s` : '';
       const where = on ? row.side : `disabled ${row.side}`;

@@ -10,6 +10,7 @@ import {
   ruleRowIsTrailing,
   rowsToSide,
   rowsToSides,
+  setRowInstanceStrict,
   sideToRows,
   sidesToRows,
   type RuleConditionRow,
@@ -318,6 +319,43 @@ describe('non-window strict params', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].strict).toEqual({ arm_above_pct: 2 });
     expect(rowsToSide(rows, 'exit')).toEqual(side);
+  });
+
+  it('clears arm_above_pct for the WHOLE instance, not just the edited row', () => {
+    // The arm control renders on the trailing row only, but every row of the
+    // instance carries the bag and `rowsToSide` merges them — patching one row
+    // alone lets the sibling `pnl` row put the old value straight back on save.
+    const side = {
+      m_position: [
+        {
+          strict: { arm_above_pct: 2 },
+          metrics: {
+            retrace: [[{ operator: '>=' as const, value: 3 }]],
+            pnl: [[{ operator: '<=' as const, value: -8 }]],
+          },
+        },
+      ],
+    };
+    const rows = sideToRows(side, 'exit');
+    const trailing = rows.find((r) => ruleRowIsTrailing(r))!;
+
+    const cleared = setRowInstanceStrict(rows, trailing.id, {});
+    expect(cleared.every((r) => r.strict?.arm_above_pct == null)).toBe(true);
+    expect(rowsToSide(cleared, 'exit').m_position[0].strict).toEqual({});
+
+    const retuned = setRowInstanceStrict(rows, trailing.id, { arm_above_pct: 5 });
+    expect(rowsToSide(retuned, 'exit').m_position[0].strict).toEqual({ arm_above_pct: 5 });
+  });
+
+  it('scopes an instance strict edit to that instance', () => {
+    // Two windows of one group = two instances; and a parked row is its own bag.
+    const rows = [
+      row({ id: 'a', side: 'exit', group: 'm_price_window', metric: 'trail', window: '5', arms: [[{ operator: '>=', value: 3 }]], strict: { arm_above_pct: 2 } }),
+      row({ id: 'b', side: 'exit', group: 'm_price_window', metric: 'trail', window: '30', arms: [[{ operator: '>=', value: 3 }]], strict: { arm_above_pct: 2 } }),
+      row({ id: 'c', side: 'exit', enabled: false, group: 'm_price_window', metric: 'trail', window: '5', arms: [[{ operator: '>=', value: 3 }]], strict: { arm_above_pct: 2 } }),
+    ];
+    const out = setRowInstanceStrict(rows, 'a', {});
+    expect(out.map((r) => r.strict?.arm_above_pct)).toEqual([undefined, 2, 2]);
   });
 
   it('keeps arm_above_pct: 0 distinct from the param being absent', () => {
