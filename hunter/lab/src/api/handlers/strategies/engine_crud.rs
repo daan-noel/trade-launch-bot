@@ -17,9 +17,7 @@ use trading_core::api::handlers::strategies::rule_positions::{
     self, ScoreScope, ScoreScopeParam,
 };
 use trading_core::models::Fingerprint;
-use trading_core::services::veteran_roster;
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
-use trading_core::storage::repositories::token_repo::TokenRepo;
 use trading_core::storage::repositories::rule_repo::RuleRepo;
 use trading_core::strategies::rules::{self, apply_rule_update, RuleDraft, RuleError};
 
@@ -101,41 +99,6 @@ pub async fn get_fingerprint(
             HttpResponse::NotFound().json(serde_json::json!({ "error": "fingerprint not found" }))
         }
         Err(e) => srv_err("get fingerprint", e),
-    }
-}
-
-/// POST `/api/fingerprints/{id}/refresh-roster`.
-///
-/// Rebuild this fingerprint's `m_bundle` veteran roster now. The lab twin of the live
-/// route: a roster is *derived* from the fingerprint's own launch history and never
-/// hand-authored, so a fingerprint created today carries none, every `m_bundle` metric
-/// on it reads `NaN`, and a rule reading one can never fire. This is the bootstrap.
-///
-/// (A simulate does NOT depend on this - it rebuilds its own walk-forward roster per
-/// run. The stored one is what LIVE reads, so refreshing here is how you check what
-/// the roster currently looks like before switching a rule on.)
-pub async fn refresh_fingerprint_roster(
-    app_state: web::Data<Arc<LocalState>>,
-    path: web::Path<Uuid>,
-) -> impl Responder {
-    let id = path.into_inner();
-    let token_repo = TokenRepo::new(app_state.db.clone());
-    match veteran_roster::refresh_roster(
-        &app_state.db,
-        &token_repo,
-        &fp_repo(&app_state),
-        id,
-        veteran_roster::DEFAULT_LOOKBACK_DAYS,
-    )
-    .await
-    {
-        Ok(stats) => HttpResponse::Ok().json(serde_json::json!({
-            "launches": stats.launches,
-            "wallets": stats.wallets,
-            "veterans": stats.veterans,
-            "lookback_days": veteran_roster::DEFAULT_LOOKBACK_DAYS,
-        })),
-        Err(e) => srv_err("refresh veteran roster", e),
     }
 }
 

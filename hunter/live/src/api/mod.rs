@@ -62,12 +62,6 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/fingerprints/{id}",
                 web::delete().to(handlers::strategies::engine::delete_fingerprint),
             )
-            // Rebuild the `m_bundle` veteran roster on demand (the bootstrap path -
-            // a fresh fingerprint has no roster until something builds one).
-            .route(
-                "/fingerprints/{id}/refresh-roster",
-                web::post().to(handlers::strategies::engine::refresh_fingerprint_roster),
-            )
             // Generic rules CRUD + activate/pause/stop.
             .route("/strategy-rules", web::get().to(handlers::strategies::engine::list_rules))
             .route("/strategy-rules", web::post().to(handlers::strategies::engine::create_rule))

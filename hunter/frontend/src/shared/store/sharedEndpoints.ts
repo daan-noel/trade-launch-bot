@@ -24,7 +24,6 @@ import type {
   CreateRuleBody,
   UpdateRuleBody,
   TradeMode,
-  VeteranRosterRefresh,
 } from 'lib/strategy/types';
 
 /**
@@ -255,15 +254,6 @@ export const sharedApi = baseApi.injectEndpoints({
       query: (id) => ({ url: `/api/fingerprints/${id}`, method: 'DELETE' }),
       invalidatesTags: ['Fingerprint'],
     }),
-    // Rebuild the `m_bundle` veteran roster from launch history. The roster is
-    // derived, never hand-authored, so this is the ONLY way to fill it in on a
-    // fingerprint the background refresher has not reached yet -- until it exists,
-    // every m_bundle metric reads NaN and a rule on one can never fire.
-    refreshVeteranRoster: builder.mutation<VeteranRosterRefresh, string>({
-      query: (id) => ({ url: `/api/fingerprints/${id}/refresh-roster`, method: 'POST' }),
-      invalidatesTags: ['Fingerprint'],
-    }),
-
     // ── Strategy rules (generic engine, live bin) ────────────────────────────
     // `scope`: `current` = latest-run counters (Control keep/kill);
     // omit/`all` = legacy (real all-time, paper latest run).
@@ -492,7 +482,6 @@ export const {
   useCreateFingerprintMutation,
   useUpdateFingerprintMutation,
   useDeleteFingerprintMutation,
-  useRefreshVeteranRosterMutation,
   useGetStrategyRulesQuery,
   useGetMintEpisodesQuery,
   useGetStrategyRuleRunsQuery,

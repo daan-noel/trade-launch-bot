@@ -125,12 +125,6 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/fingerprints/{id}",
                 web::delete().to(handlers::strategies::engine_crud::delete_fingerprint),
             )
-            // Rebuild the `m_bundle` veteran roster on demand (the bootstrap path -
-            // a fresh fingerprint has no roster until something builds one).
-            .route(
-                "/fingerprints/{id}/refresh-roster",
-                web::post().to(handlers::strategies::engine_crud::refresh_fingerprint_roster),
-            )
             .route(
                 "/strategy-rules",
                 web::get().to(handlers::strategies::engine_crud::list_rules),

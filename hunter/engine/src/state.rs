@@ -14,7 +14,6 @@ use crate::event::{IntentId, LoadedRule, ManualExit, Mint, PositionId, RuleId, T
 use crate::fingerprint::{Fingerprint, FingerprintId};
 use crate::identity::IdentityHash;
 use crate::grouping::TokenFingerprint;
-use crate::metrics::bundle::RosterTimeline;
 use crate::metrics::flow_split::FlowPatterns;
 use crate::metrics::track::TokenTrack;
 use crate::metrics::Ts;
@@ -146,15 +145,6 @@ pub struct EngineState {
     pub manual_rules: BTreeMap<PositionId, CompiledRule>,
     /// Loaded fingerprints (input order preserved for multi-match).
     pub fps: Vec<Fingerprint>,
-    /// Each loaded fingerprint's veteran roster over time, parsed once per reload
-    /// out of `metric_config.m_bundle` (see [`RosterTimeline`]). A missing id means
-    /// the fingerprint carries no `m_bundle` config, so its bundle metrics read
-    /// `NaN` and no rule on them can fire.
-    ///
-    /// Parsed here rather than at every `TokenCreated` because a roster is a list of
-    /// wallet ADDRESSES: re-hashing a few hundred strings per token is real cost on a
-    /// corpus-wide replay, and the answer only changes on a reload.
-    pub bundle_rosters: BTreeMap<FingerprintId, RosterTimeline>,
     /// Union of every rule's distinct **flow** `window_size_sec` (`m_flow_window` +
     /// `m_flow_split_window`) — ensured on each new track.
     pub all_windows: Vec<f64>,
@@ -353,12 +343,6 @@ impl EngineState {
     pub fn reload(&mut self, rules: &[LoadedRule], fps: &[Fingerprint]) {
         self.rules = rules.iter().map(|r| (r.id, CompiledRule::compile(r))).collect();
         self.fps = fps.to_vec();
-        self.bundle_rosters = fps
-            .iter()
-            .filter_map(|fp| {
-                RosterTimeline::from_metric_config(&fp.metric_config).map(|t| (fp.id, t))
-            })
-            .collect();
 
         let mut all_windows: Vec<f64> = Vec::new();
         let mut all_price_windows: Vec<f64> = Vec::new();
@@ -388,11 +372,9 @@ impl EngineState {
         for token in self.tokens.values_mut() {
             Self::ensure_track_windows_and_flow(
                 &mut token.track,
-                token.created_at,
                 &self.all_windows,
                 &self.all_price_windows,
                 &self.fps,
-                &self.bundle_rosters,
             );
         }
     }
@@ -403,11 +385,9 @@ impl EngineState {
         let mut track = TokenTrack::new(at);
         Self::ensure_track_windows_and_flow(
             &mut track,
-            at,
             &self.all_windows,
             &self.all_price_windows,
             &self.fps,
-            &self.bundle_rosters,
         );
         track
     }
@@ -423,11 +403,9 @@ impl EngineState {
 
     fn ensure_track_windows_and_flow(
         track: &mut TokenTrack,
-        created_at: Ts,
         windows: &[f64],
         price_windows: &[f64],
         fps: &[Fingerprint],
-        rosters: &BTreeMap<FingerprintId, RosterTimeline>,
     ) {
         for &w in windows {
             track.ensure_window(w);
@@ -438,16 +416,6 @@ impl EngineState {
         for fp in fps {
             if let Some(patterns) = FlowPatterns::from_metric_config(&fp.metric_config) {
                 track.ensure_flow(fp.id, &patterns, windows);
-            }
-            // Seeded here, before the first trade, because the launch window is only
-            // one second wide: a roster arriving later would classify part of the
-            // bundle against an empty set and read the share low.
-            //
-            // Keyed on THIS token's birth instant, so a timeline-carrying backtest
-            // seeds the roster that was known before the token existed. Live carries
-            // one snapshot open from the beginning of time, so it reads it unchanged.
-            if let Some(vets) = rosters.get(&fp.id).and_then(|t| t.at(created_at)) {
-                track.ensure_bundle(fp.id, vets);
             }
         }
     }

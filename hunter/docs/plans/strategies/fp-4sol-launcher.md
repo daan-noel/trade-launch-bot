@@ -143,8 +143,10 @@ bound on what the engine books.
   trade at every exit. There is no bounce.
 * **Dip entry.** `win_trail >= 6/10/15/25` at 2 s, 5 s or 10 s: −6% to −8% everywhere.
 * **Late entry / momentum.** Edge decays monotonically with entry slot.
-* **`m_bundle` gates.** `veteran_share >= 90/99`, `fresh_wallets <= 0/1` — weakly positive
-  but dominated by the first-slot sum and adding nothing on top of it.
+* **Launch-bundle wallet gates.** A veteran-share screen over the launch window scores
+  weakly positive but is dominated by the first-slot sum and adds nothing on top of it.
+  The `m_bundle` group that measured it is removed — see
+  [`history/2026-08-22-m-bundle-removed.md`](../../history/2026-08-22-m-bundle-removed.md).
 * **Trailing stops, exit-on-dev-sell, `unique_wallets` exits, time-of-day, launch cadence** —
   negative or inert.
 
@@ -152,9 +154,9 @@ bound on what the engine books.
 
 Only a lower decide-to-land latency changes the answer: the edge sits at a slot-1/slot-2
 fill and dies at slot 3. That means settling the first slot **on a clock** rather than on the
-next trade (the `m_bundle` launch window already approximates the creation slot at
-`created_at + 1 s`, and reproduces the slot-exact share at r = 0.999), or a creation-slot
-signal that needs no settle at all. Absent one of those, this fingerprint is a **negative
+next trade (a one-second launch window from `created_at` approximates the creation slot
+closely enough to reproduce the slot-exact share at r = 0.999), or a creation-slot signal
+that needs no settle at all. Absent one of those, this fingerprint is a **negative
 screen** — the 8.51 preset loses −1.32% per trade over 642 launches — and nothing more.
 
 A `m_flow_split`-based gate additionally depends on the fingerprint's configured

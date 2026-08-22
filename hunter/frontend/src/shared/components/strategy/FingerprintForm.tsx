@@ -18,11 +18,9 @@ import {
   groupsWithFingerprintConfig,
   metricConfigWithVolumePatterns,
   useStrategyRegistry,
-  veteranRosterFromConfig,
   volumeIxPatternsFromConfig,
 } from 'lib/strategy/registry';
 import { FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
-import { useRefreshVeteranRosterMutation } from 'store/sharedEndpoints';
 import { fingerprintAutoName, isLegacyAutoName } from 'lib/strategy/fingerprintNameFromGroupKey';
 import { tidySolDecimal } from 'utils/format';
 import { LabelTip } from './LabelTip';
@@ -56,7 +54,7 @@ interface FormState {
   /** `m_flow_split.volume_ix_patterns` rows (other metric_config keys preserved on save). */
   volume_ix_patterns: string[][];
   /** Original metric_config minus flow key — merged back on save. This is what
-   *  preserves machine-written groups (notably `m_bundle`) across an edit. */
+   *  preserves machine-written groups across an edit. */
   metric_config_rest: Record<string, unknown>;
 }
 
@@ -150,13 +148,6 @@ export function FingerprintForm({
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setS((p) => ({ ...p, [k]: v }));
   const { data: registry } = useStrategyRegistry();
   const fpConfigGroups = groupsWithFingerprintConfig(registry);
-  // Read-only: the roster is rebuilt from launch history by the backend refresher,
-  // so the form shows it rather than editing it — and `metric_config_rest` is what
-  // carries it through a save untouched.
-  const roster = useMemo(() => veteranRosterFromConfig(initial?.metric_config), [initial]);
-  const [rebuildRoster, { isLoading: rebuilding, data: rebuilt, error: rebuildError }] =
-    useRefreshVeteranRosterMutation();
-
   const ixParsed = useMemo(() => parseIxLabelsText(s.ix_labels), [s.ix_labels]);
   const draft = useMemo(() => toDraft(s), [s]);
   const autoName = useMemo(() => fingerprintAutoName(draft), [draft]);
@@ -296,60 +287,6 @@ export function FingerprintForm({
           error={ixParsed.error}
         />
       </label>
-
-      {/* Shown for any SAVED fingerprint, not only one that already carries a roster:
-          the no-roster state is exactly when Rebuild is needed, and it is the state
-          every freshly-created fingerprint starts in. */}
-      {initial?.id && (
-        <div className="flex flex-col gap-1 text-[11px] text-text-dim">
-          <div className="flex items-center justify-between gap-2">
-            <LabelTip tip={FINGERPRINT_FIELD_HELP.veteran_wallets}>
-              veteran roster (m_bundle)
-            </LabelTip>
-            <Button
-              type="button"
-              variant="ghost"
-              className="h-6 px-2 text-[11px]"
-              disabled={rebuilding}
-              onClick={() => void rebuildRoster(initial.id)}
-            >
-              {rebuilding ? 'rebuilding…' : 'rebuild'}
-            </Button>
-          </div>
-          <div className="rounded-md border border-white/10 bg-surface px-2 py-1.5 text-text-mid">
-            {!roster ? (
-              // Unconfigured is NOT the same as empty: m_bundle metrics read NaN, so a
-              // rule on one never fires at all. Say so, because it looks like silence.
-              <span className="text-text-dim">
-                not built yet — m_bundle metrics read NaN and a rule on one never fires
-              </span>
-            ) : roster.wallets.length === 0 ? (
-              // Configured but empty is a real state, not an error: the refresher ran
-              // and no wallet cleared the bar yet.
-              <span className="text-text-dim">
-                no wallet has reached the bar yet — bundle metrics read 0% until one does
-              </span>
-            ) : (
-              <span>
-                <span className="text-text">{roster.wallets.length}</span> wallets
-                {roster.minLaunches != null && <> · ≥ {roster.minLaunches} prior launches</>}
-              </span>
-            )}
-          </div>
-          {rebuildError && (
-            <span className="text-danger">roster rebuild failed — see the server log</span>
-          )}
-          {rebuilt && !rebuildError && (
-            // The denominator matters: 0 launches means the fingerprint matched
-            // nothing in the lookback, which is a fingerprint problem, not a roster one.
-            <span>
-              read {rebuilt.launches} launches · {rebuilt.wallets} wallets ·{' '}
-              <span className="text-text">{rebuilt.veterans}</span> veterans (last{' '}
-              {rebuilt.lookback_days}d)
-            </span>
-          )}
-        </div>
-      )}
 
       {fpConfigGroups.some((g) =>
         (g.fingerprint_config ?? []).some((f) => f.name === 'volume_ix_patterns'),

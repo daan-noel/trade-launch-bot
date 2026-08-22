@@ -23,8 +23,6 @@ use trading_core::api::handlers::strategies::rule_positions::{
     self, ScoreScope, ScoreScopeParam,
 };
 use trading_core::models::Fingerprint;
-use trading_core::services::veteran_roster;
-use trading_core::storage::repositories::token_repo::TokenRepo;
 use trading_core::strategies::rules::{self, apply_rule_update, RuleDraft, RuleError};
 use uuid::Uuid;
 
@@ -97,46 +95,6 @@ pub async fn get_fingerprint(
         Ok(Some(fp)) => HttpResponse::Ok().json(fp),
         Ok(None) => HttpResponse::NotFound().json(json!({"error": "fingerprint not found"})),
         Err(e) => server_error("get fingerprint", e),
-    }
-}
-
-/// POST /api/fingerprints/{id}/refresh-roster
-///
-/// Rebuild this fingerprint's `m_bundle` veteran roster now, rather than waiting for
-/// the background refresher.
-///
-/// The bootstrap path. A roster is *derived* (a recurrence count over the
-/// fingerprint's own launch history), never hand-authored - so a fingerprint created
-/// today carries no roster at all, every `m_bundle` metric on it reads `NaN`, and a
-/// rule reading one can never fire. Without this there is no way to fill it in except
-/// activating the rule and waiting out the refresher's period.
-pub async fn refresh_fingerprint_roster(
-    app_state: web::Data<Arc<DeployState>>,
-    path: web::Path<Uuid>,
-) -> impl Responder {
-    let id = path.into_inner();
-    let token_repo = TokenRepo::new(app_state.core.db.clone());
-    match veteran_roster::refresh_roster(
-        &app_state.core.db,
-        &token_repo,
-        &app_state.fingerprint_repo,
-        id,
-        veteran_roster::DEFAULT_LOOKBACK_DAYS,
-    )
-    .await
-    {
-        Ok(stats) => {
-            // The roster lives on the fingerprint row the engine loads, so a live
-            // rule reading it must see the new set without a restart.
-            schedule_engine_reload(&app_state);
-            HttpResponse::Ok().json(json!({
-                "launches": stats.launches,
-                "wallets": stats.wallets,
-                "veterans": stats.veterans,
-                "lookback_days": veteran_roster::DEFAULT_LOOKBACK_DAYS,
-            }))
-        }
-        Err(e) => server_error("refresh veteran roster", e),
     }
 }
 
@@ -370,25 +328,6 @@ async fn set_active(app_state: &DeployState, id: Uuid, active: bool) -> HttpResp
     if active && !rule.is_enabled {
         return HttpResponse::BadRequest()
             .json(json!({"error": "rule is disabled; enable it before activating"}));
-    }
-    // Refresh the veteran roster BEFORE the rule goes live, not after. The roster is
-    // a stored snapshot on the fingerprint row; a rule activated against a stale or
-    // absent one reads `NaN`/0 and quietly enters nothing, which looks like a bad
-    // rule rather than a missing input. Synchronous on purpose - activation is a
-    // deliberate operator action, and seconds here beat an hour of silence.
-    if active && hunter_engine::metrics::bundle::params_reference_bundle(&rule.params) {
-        let token_repo = TokenRepo::new(app_state.core.db.clone());
-        if let Err(e) = veteran_roster::refresh_roster(
-            &app_state.core.db,
-            &token_repo,
-            &app_state.fingerprint_repo,
-            rule.fingerprint_id,
-            veteran_roster::DEFAULT_LOOKBACK_DAYS,
-        )
-        .await
-        {
-            tracing::warn!("veteran-roster refresh on activate ({}): {e}", rule.fingerprint_id);
-        }
     }
     rule.is_active = active;
     rule.updated_at = Utc::now();

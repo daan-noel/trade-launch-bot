@@ -93,36 +93,6 @@ export function volumeIxPatternsFromConfig(
   );
 }
 
-/** `m_bundle` roster as stored on a fingerprint's `metric_config`. */
-export interface VeteranRoster {
-  minLaunches: number | null;
-  wallets: string[];
-}
-
-/**
- * Read `m_bundle` from a fingerprint's `metric_config`. `null` means the key is
- * absent — i.e. unconfigured, so every `m_bundle` metric reads `NaN` and a rule on
- * one can never fire. An **empty** `wallets` is a configured-empty roster (nobody
- * qualifies yet); the form has to tell those two apart, so this cannot collapse
- * them to `[]`.
- *
- * Read-only: the roster is written by `services::veteran_roster`, never by hand.
- */
-export function veteranRosterFromConfig(
-  cfg: Record<string, unknown> | null | undefined,
-): VeteranRoster | null {
-  const bundle = cfg?.m_bundle;
-  if (!bundle || typeof bundle !== 'object') return null;
-  const { veteran_min_launches: min, veteran_wallets: wallets } = bundle as {
-    veteran_min_launches?: unknown;
-    veteran_wallets?: unknown;
-  };
-  return {
-    minLaunches: typeof min === 'number' && Number.isFinite(min) ? min : null,
-    wallets: Array.isArray(wallets) ? wallets.filter((w): w is string => typeof w === 'string') : [],
-  };
-}
-
 /** Build `metric_config` for flow patterns. Empty ⇒ `{}` (unconfigured). */
 export function metricConfigWithVolumePatterns(patterns: string[][]): Record<string, unknown> {
   const cleaned = patterns.map((p) => p.map((s) => s.trim()).filter(Boolean)).filter((p) => p.length > 0);

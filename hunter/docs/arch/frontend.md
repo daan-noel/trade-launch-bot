@@ -481,13 +481,6 @@ next load (no per-metric frontend work).
   a restart that adds a metric group otherwise leaves the pickers rendering the
   previous vocabulary for an hour with no error, while authored rules already show
   the new group because `RuleParamsSummary` falls back to raw params.
-  `veteranRosterFromConfig` reads `metric_config.m_bundle` for the fingerprint form's
-  read-only roster line; absent vs configured-empty stay distinct. The line renders for
-  every SAVED fingerprint, not only one already carrying a roster — no-roster is the
-  state a new fingerprint starts in, and the one the adjacent `rebuild` button
-  (`useRefreshVeteranRosterMutation` → `POST /api/fingerprints/{id}/refresh-roster`)
-  exists to leave. The roster is derived from launch history and never hand-authored, so
-  the button is the only way to fill it in on demand.
 - `lib/strategy/grammar.ts` — the condition grammar (`">10, <=30"` → `{operator,value}`
   list; `1..10` → `>=1 AND <=10`), wrapping the shared compound `numericFilter` parser.
 - `lib/strategy/ruleParams.ts` — the ONE generic `params` JSONB ⇄ form serializer

@@ -73,6 +73,9 @@ Surviving conclusions live in
 | Entry | One-line |
 | --- | --- |
 | [Trailing exits were hard stops](2026-08-21-trailing-exit-peak-bug.md) | A fancy-index `out=` no-op pinned the running peak at entry, so every trail in the island extract silently became a fixed stop |
+| [`m_bundle` removed](2026-08-22-m-bundle-removed.md) | The launch-bundle group produced one refuted rule and kept charging an hourly launch-history sweep on the live box |
+| [The island is a same-slot artifact](2026-08-22-island-is-a-same-slot-artifact.md) | 95% of the impulse island's money needs a fill inside a 10 ms same-slot gap; nothing in the space is positive at +100 ms |
+| [ix-structure cuts](2026-08-22-ix-structure-cuts.md) | Blacklisting launcher / trigger / impulse-driver ix structures is worth +46% expectancy LODO — the one part of the island that holds up |
 
 
 | Entry | One-line |

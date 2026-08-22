@@ -37,17 +37,6 @@ export const MIN_BUCKET_WIDTH_SOL = 1e-6;
 export const DEFAULT_BUCKET_WIDTH_SOL = 0.1;
 
 /** A `fingerprints` row (response shape). All `*_lamports` axes are lamports. */
-/** Result of a `POST /api/fingerprints/{id}/refresh-roster` rebuild. */
-export interface VeteranRosterRefresh {
-  /** Matched launches the rebuild read. */
-  launches: number;
-  /** Distinct creation-slot buyers across them. */
-  wallets: number;
-  /** Of those, how many cleared `veteran_min_launches` and are now the roster. */
-  veterans: number;
-  lookback_days: number;
-}
-
 export interface Fingerprint {
   id: string;
   name: string;

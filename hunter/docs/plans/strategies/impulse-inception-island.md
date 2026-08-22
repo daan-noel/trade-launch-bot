@@ -1,5 +1,15 @@
 # The impulse-inception island
 
+> **REFUTED on execution, 2026-08-22. Do not activate.** Every number below is a
+> next-print fill. The edge exists only in the gap between the trigger print and the next
+> print, and 95% of it is in trades where that gap is under 10 ms — pairs that are 100%
+> same-slot, a median 0.49 ms apart on the feed clock. At a +50 ms fill the rule is
+> −22.30 SOL and 1/7 days; at +100 ms a search re-run from scratch finds no positive
+> threshold on any axis. Kept as the record of the state search and of the
+> instruction-structure cuts, which do hold up.
+> [`history/2026-08-22-island-is-a-same-slot-artifact.md`](../../history/2026-08-22-island-is-a-same-slot-artifact.md)
+> · [`history/2026-08-22-ix-structure-cuts.md`](../../history/2026-08-22-ix-structure-cuts.md)
+
 The profitable region found by searching market **state** universe-wide rather than fitting
 a wallet. Read [signal-search-mandate.md](signal-search-mandate.md) for the standing gates
 and [island-search.md](island-search.md) for the decision-point extract this runs on.
