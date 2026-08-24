@@ -425,11 +425,11 @@ async fn run_flow_discovery_job(
     {
         let cached_tokens = Arc::new(corpus.tokens.clone());
         let mut cache = state.sweep_corpus_cache.write().await;
-        *cache = Some(SweepCorpusCache {
-            corpus_hash: corpus.hash.clone(),
-            tokens: cached_tokens,
-            candidates_capped: corpus.candidates_capped,
-        });
+        *cache = Some(SweepCorpusCache::new(
+            corpus.hash.clone(),
+            cached_tokens,
+            corpus.candidates_capped,
+        ));
     }
 
     // The scoped path caps on matched mints (`scope_capped`), the unscoped one on

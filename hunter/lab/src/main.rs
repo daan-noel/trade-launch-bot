@@ -163,6 +163,10 @@ async fn main() -> anyhow::Result<()> {
         trading_core::config::constants::LAB_TOKEN_LIST_WINDOW_DAYS,
     ));
 
+    // Return analysis caches to the OS once nothing is using them. Gated on
+    // `LocalState::is_idle`, so it never competes with a sweep or a backtest.
+    tokio::spawn(state::idle_reaper::run_idle_reaper(local_state.clone()));
+
     // SOL/USD price: prime the cache, then poll.
     match services::sol_price::fetch_latest_sol_price().await {
         Ok(price) => {

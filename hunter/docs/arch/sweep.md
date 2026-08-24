@@ -222,6 +222,36 @@ Grouped sweep runs hard **inside** a reserved slice of the analysis box so the d
 
 Start log includes cores, threads, wave, planned/shard-peak combos, RSS, host total/available MB.
 
+### Idle reclamation — the caches are given back when nothing is using them
+
+The fences above bound a run's **peak**. They say nothing about what the lab holds
+*after* a run, and two caches outlive their job:
+
+| Cache | Held | Reclaimed by |
+| --- | --- | --- |
+| `LocalState::sweep_corpus_cache` | one whole loaded corpus (trades + fingerprints) written at the end of every sweep / flow-discovery, so drilling into a combo skips the Parquet read and `attach_fingerprints` | idle reaper, after 10 min with no read **or** under host pressure |
+| `LocalState::analysis_cache` | fingerprint-scoped candidate scans + lake histories, 60 min TTL | idle reaper, every pass (`AnalysisCache::gc`) |
+
+`hunter/lab/src/state/idle_reaper.rs` runs a 60 s pass and is gated on `LocalState::is_idle()` — no
+heavy Duck job **and** no in-flight backtest. `is_idle` is the SSOT for that question:
+`heavy_job_block` alone covers only the five single-flight jobs, while simulations are
+gated by `backtest_sem`, so a reaper checking the heavy flags would reap out from under
+a "Simulate All" batch.
+
+**Neither reclamation can slow analysis.** `gc` sweeps only entries past `CACHE_TTL`,
+which `get_candidates`/`get_histories` already refuse — dead bytes, never a hit
+(locked by `gc_never_evicts_a_live_entry`). The corpus is released only after
+`CORPUS_IDLE_TTL` (10 min) with no read, and any read `touch()`es it, so an actively
+drilled corpus never expires. The pressure override (host available < 2 GB) exists
+because a corpus that far under pressure is already resident in the pagefile: re-reading
+it from Parquet is not slower than faulting it back in, and holding the slot costs the
+rest of the box.
+
+**Why it matters on a 16 GB workstation.** Without the reaper the corpus is held until
+the *next* load happens to find a different hash — a lab that finished its last job kept
+~8 GB of commit indefinitely, measured at 86% paged out, which the OS then pays disk I/O
+to evict and fault back.
+
 **Last-resort corpus/combo shrink knobs** (manual UI / rare opt-in; change *what* is computed) — use only when admission still fails after thread reduction:
 
 | Knob | Where | Effect | Fidelity cost |

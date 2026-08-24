@@ -940,11 +940,11 @@ async fn run_grouped_sweep_job(
         let corpus_hash = corpus.hash.clone();
         let candidates_capped = corpus.candidates_capped;
         let mut cache = state.sweep_corpus_cache.write().await;
-        *cache = Some(SweepCorpusCache {
+        *cache = Some(SweepCorpusCache::new(
             corpus_hash,
-            tokens: cached_tokens,
+            cached_tokens,
             candidates_capped,
-        });
+        ));
     }
 
     // The saved-fingerprint scope resolved before the load, so `corpus.tokens` is
@@ -2443,6 +2443,8 @@ pub async fn list_token_results(
         let cache = state.sweep_corpus_cache.read().await;
         if cache.as_ref().map(|c| c.corpus_hash.as_str()) == run.corpus_hash.as_deref() {
             tracing::debug!("token-results: Option A cache hit");
+            // Reset the idle clock: an actively-drilled corpus must never be reaped.
+            cache.as_ref().unwrap().touch();
             Some(apply_filters((*cache.as_ref().unwrap().tokens).clone()))
         } else {
             None

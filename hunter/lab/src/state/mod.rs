@@ -7,6 +7,7 @@
 pub use trading_core::state::{core_state, token_cache, token_list_cache, token_metrics, trade_signals};
 
 pub mod local_state;
+pub mod idle_reaper;
 pub mod job_progress;
 pub mod analysis_cache;
 pub mod discovery_result_cache;

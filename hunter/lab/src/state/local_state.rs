@@ -1,5 +1,6 @@
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use uuid::Uuid;
@@ -24,6 +25,40 @@ pub struct SweepCorpusCache {
     pub tokens: Arc<Vec<CorpusToken>>,
     /// See [`crate::sweep::corpus::Corpus::candidates_capped`].
     pub candidates_capped: bool,
+    /// When this corpus was last written or read, for the idle reaper
+    /// ([`crate::state::idle_reaper`]). `Mutex` rather than a plain field because
+    /// a *read* must record the touch, and reads hold only `RwLock::read`.
+    touched: Mutex<Instant>,
+}
+
+impl SweepCorpusCache {
+    pub fn new(
+        corpus_hash: String,
+        tokens: Arc<Vec<CorpusToken>>,
+        candidates_capped: bool,
+    ) -> Self {
+        Self {
+            corpus_hash,
+            tokens,
+            candidates_capped,
+            touched: Mutex::new(Instant::now()),
+        }
+    }
+
+    /// Record a cache hit, so drilling into results keeps the corpus warm.
+    pub fn touch(&self) {
+        if let Ok(mut t) = self.touched.lock() {
+            *t = Instant::now();
+        }
+    }
+
+    /// How long since the last write or read.
+    pub fn idle(&self) -> Duration {
+        self.touched
+            .lock()
+            .map(|t| t.elapsed())
+            .unwrap_or(Duration::ZERO)
+    }
 }
 
 /// Max concurrent backtests across both strategies. Each one streams the `tokens`
@@ -179,6 +214,17 @@ impl LocalState {
         }
     }
 
+    /// True when nothing is running that could be reading a cache: no heavy Duck
+    /// job **and** no in-flight backtest. The reaper's sole gate.
+    ///
+    /// `sim_progress` is the backtest term and is not optional: simulations are
+    /// gated by `backtest_sem`, not by [`Self::heavy_job_block`], so a check
+    /// against the heavy flags alone would happily reap out from under a
+    /// "Simulate All" batch.
+    pub fn is_idle(&self) -> bool {
+        self.heavy_job_block().is_none() && self.sim_progress.is_empty()
+    }
+
     /// This job's single-flight flag — the ONE mapping from job to flag, so a new
     /// `HeavyJob` variant cannot be added to some of the checks and missed by others.
     fn running_flag(&self, kind: HeavyJob) -> &Arc<AtomicBool> {
@@ -255,5 +301,33 @@ impl std::ops::Deref for LocalState {
     type Target = CoreState;
     fn deref(&self) -> &CoreState {
         &self.core
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cache() -> SweepCorpusCache {
+        SweepCorpusCache::new("hash".into(), Arc::new(Vec::new()), false)
+    }
+
+    /// A cache hit resets the idle clock, so a corpus the user is actively
+    /// drilling into is never reaped out from under them.
+    #[test]
+    fn touch_resets_the_idle_clock() {
+        let c = cache();
+        std::thread::sleep(Duration::from_millis(20));
+        let before = c.idle();
+        assert!(before >= Duration::from_millis(20));
+        c.touch();
+        assert!(c.idle() < before, "touch must reset idle");
+    }
+
+    /// A freshly written corpus is not idle — the reaper's TTL is measured from
+    /// the write, not from process start.
+    #[test]
+    fn a_fresh_corpus_is_not_idle() {
+        assert!(cache().idle() < Duration::from_secs(1));
     }
 }
