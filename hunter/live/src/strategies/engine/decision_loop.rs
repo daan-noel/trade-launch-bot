@@ -170,6 +170,34 @@ async fn run_loop(
     let buy_journal = super::SubmittedBuyJournal::new();
 
     let mut state = EngineState::new();
+    // `m_snapshot.prior_launches` is a running tally over `TokenCreated`, so a fresh
+    // process would read EVERY creator as a first-time launcher until it had seen them
+    // launch again — which does not weaken a `prior_launches = 0` rule, it inverts it
+    // into "match everything". One query at boot is what makes a restart safe.
+    {
+        let since = Utc::now()
+            - chrono::Duration::days(
+                trading_core::config::constants::PRIOR_LAUNCH_WINDOW_DAYS,
+            );
+        let repo = trading_core::storage::repositories::token_repo::TokenRepo::new(
+            strategy_repo.pool().clone(),
+        );
+        match repo.creator_launch_counts(since, Utc::now(), &[]).await {
+            Ok(rows) => {
+                let n = rows.len();
+                state.prime_creator_launches(rows.into_iter().map(|(w, c)| {
+                    (hunter_engine::metrics::flow_split::wallet_hash(w.as_str()), c.max(0) as u32)
+                }));
+                tracing::info!(creators = n, "prior_launches primed");
+            }
+            // Not fatal, but every `prior_launches` rule is unsafe until it is fixed:
+            // say so loudly rather than start with an empty tally in silence.
+            Err(e) => tracing::error!(
+                error = %e,
+                "prior_launches UNPRIMED - every creator reads as a first-time launcher;                  do not arm a prior_launches rule until this boot query succeeds"
+            ),
+        }
+    }
     // Everything already cached at this instant is history, not signal — see the
     // `producers` module docs (the restart rail).
     let mut producer = Producer::new(token_cache.clone(), Utc::now());

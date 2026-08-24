@@ -1,20 +1,28 @@
 //! The island rules, authored as the engine's own `strategy_rules.params` JSON.
 //!
-//! Four rules, kept separate so each island can be shipped and evaluated on its own.
 //! They are the rules derived in `hunter/docs/plans/strategies/island-map.md`, and this
 //! file is the contract that they PARSE and VALIDATE against the live registry through
 //! `RuleParams::parse` — the same gate a rule save runs — so a typo in a group, metric
 //! or operator name fails at build time rather than silently never matching.
 //!
 //! It also pins the shape of each island: the entry terms that define it and the shared
-//! `stop 3 / trail 20` exit, so a later edit that quietly drops a term is caught.
+//! `stop 5 / trail 20` exit, so a later edit that quietly drops a term is caught.
+//!
+//! Three rules, not the previous four. `island-map.md` records why the impulse and
+//! quiet-accumulation islands are gone: both were positive only at a fill that arrives
+//! before the next print, and both are negative on cohorts the search never saw.
 
+use hunter_engine::metrics::evaluator::Operator;
 use hunter_engine::metrics::MetricId;
-use hunter_engine::rule_params::RuleParams;
+use hunter_engine::rule_params::{RuleParams, SideConditions};
 
-/// Island 1 — absorption. A minute of buyer-dominated tape on a live but unrun token.
-const ISLAND_1: &str = r#"{
-  "stop_loss": 3,
+/// Absorption — a minute of buyer-dominated tape on a live but unrun token.
+///
+/// The one island of the previous map that survives its own execution. The entry is
+/// unchanged; only the exit moved, from `stop 3 / trail 5` to `stop 5 / trail 20`,
+/// which is worth +5.62 -> +18.93 SOL over the study week on the entry alone.
+const ABSORPTION: &str = r#"{
+  "stop_loss": 5,
   "entry": {
     "m_snapshot": {
       "time": [{"operator": ">", "value": 5}],
@@ -24,102 +32,150 @@ const ISLAND_1: &str = r#"{
     "m_flow_lifetime": { "gross_flow": [{"operator": "<=", "value": 148}] },
     "m_flow_window": [
       { "window_size_sec": 60, "buy_share": [{"operator": ">", "value": 84}] },
-      { "window_size_sec": 30, "unique_wallets": [{"operator": ">", "value": 6}] }
+      { "window_size_sec": 30, "trade_count": [{"operator": ">", "value": 8}] }
     ]
   },
   "exit": { "m_position": { "retrace": [{"operator": ">=", "value": 20}] } }
 }"#;
 
-/// Island 2 — quiet accumulation. Real net inflow while almost nobody is trading.
-const ISLAND_2: &str = r#"{
-  "stop_loss": 3,
+/// Island A — continuation. Buy what has ALREADY tripled and is still being bought,
+/// then leave on a clock. The only rule in the map confirmed on the real kernel.
+///
+/// The direct inversion of the refuted impulse island, which required `rise(3) <= 9`:
+/// anticipating a move needs a reaction the bot does not have, joining one does not.
+/// Carries no `liquidity` ceiling and no lifetime-flow gate — `rise(30) >= 207` already
+/// selects a token that has run, so the previous map's "has not run yet" filter would
+/// contradict it.
+///
+/// The exit is a TIME CAP with a wide disaster stop, not a stop-and-trail. Same entry,
+/// same trades, same 95 ms fill: `stop 5 + retrace 20` books -2.56 SOL and
+/// `stop 20 + held 40` books +2.53. A reactive exit fires right after an adverse move and
+/// then waits 95 ms, into the continuation of that move; a clock fires at an instant the
+/// market did not choose, so its fill is not selected against.
+const CONTINUATION: &str = r#"{
+  "stop_loss": 20,
   "entry": {
     "m_snapshot": {
       "time": [{"operator": ">", "value": 5}],
-      "liquidity": [{"operator": ">=", "value": 3}, {"operator": "<=", "value": 64}],
-      "ix_count": [{"operator": "<=", "value": 5}]
+      "liquidity": [{"operator": ">=", "value": 3}]
     },
-    "m_flow_lifetime": { "gross_flow": [{"operator": "<=", "value": 148}] },
     "m_flow_window": [
-      { "window_size_sec": 60, "buy_share": [{"operator": ">", "value": 75}] },
       {
         "window_size_sec": 30,
-        "unique_wallets": [{"operator": "<=", "value": 6}],
-        "net_flow": [{"operator": ">", "value": 6.5}]
+        "net_flow": [{"operator": ">=", "value": 26.9}],
+        "buy_share": [{"operator": ">=", "value": 92.1}]
       }
+    ],
+    "m_price_window": [{ "window_size_sec": 30, "rise": [{"operator": ">=", "value": 207}] }]
+  },
+  "exit": { "m_position": { "held": [{"operator": ">=", "value": 40}] } }
+}"#;
+
+/// Island B — the quiet pause. A large move, then the tape stops.
+///
+/// Two terms, the cheapest island in the map to state, and the flattest across the lag
+/// ladder: it keeps 98% of its money when every fill is resolved at the bot's p90
+/// reaction instead of its p50.
+const QUIET_PAUSE: &str = r#"{
+  "stop_loss": 5,
+  "entry": {
+    "m_snapshot": {
+      "time": [{"operator": ">", "value": 5}],
+      "liquidity": [{"operator": ">=", "value": 3}]
+    },
+    "m_flow_window": [
+      { "window_size_sec": 10, "trade_count": [{"operator": "<=", "value": 22}] }
+    ],
+    "m_price_window": [{ "window_size_sec": 60, "rise": [{"operator": ">=", "value": 322}] }]
+  },
+  "exit": { "m_position": { "retrace": [{"operator": ">=", "value": 20}] } }
+}"#;
+
+/// A and B agreeing — the quality peak: +0.98% net per trade against +0.53% and +0.36%
+/// standalone, 42.8% win forward, and only 3% of its money inside a 50 ms gap.
+const A_AND_B: &str = r#"{
+  "stop_loss": 5,
+  "entry": {
+    "m_snapshot": {
+      "time": [{"operator": ">", "value": 5}],
+      "liquidity": [{"operator": ">=", "value": 3}]
+    },
+    "m_flow_window": [
+      {
+        "window_size_sec": 30,
+        "net_flow": [{"operator": ">=", "value": 26.9}],
+        "buy_share": [{"operator": ">=", "value": 92.1}]
+      },
+      { "window_size_sec": 10, "trade_count": [{"operator": "<=", "value": 22}] }
+    ],
+    "m_price_window": [
+      { "window_size_sec": 30, "rise": [{"operator": ">=", "value": 207}] },
+      { "window_size_sec": 60, "rise": [{"operator": ">=", "value": 322}] }
     ]
   },
   "exit": { "m_position": { "retrace": [{"operator": ">=", "value": 20}] } }
 }"#;
 
-/// Island 3 — impulse inception. A one-slot buy impulse, before price has moved.
-const ISLAND_3: &str = r#"{
-  "stop_loss": 3,
-  "entry": {
-    "m_snapshot": {
-      "time": [{"operator": ">", "value": 5}],
-      "liquidity": [{"operator": ">=", "value": 3}],
-      "ix_count": [{"operator": "<=", "value": 5}]
-    },
-    "m_flow_window": [{ "window_size_sec": 0.4, "net_flow": [{"operator": ">=", "value": 0.5}] }],
-    "m_price_window": [{ "window_size_sec": 3, "rise": [{"operator": "<=", "value": 9}] }]
-  },
-  "exit": { "m_position": { "retrace": [{"operator": ">=", "value": 20}] } }
-}"#;
-
-/// Islands 1 AND 3 — both readings agree. The highest-quality, most cap-proof rule.
-const ISLAND_1_AND_3: &str = r#"{
-  "stop_loss": 3,
-  "entry": {
-    "m_snapshot": {
-      "time": [{"operator": ">", "value": 5}],
-      "liquidity": [{"operator": ">=", "value": 3}, {"operator": "<=", "value": 64}],
-      "ix_count": [{"operator": "<=", "value": 5}]
-    },
-    "m_flow_lifetime": { "gross_flow": [{"operator": "<=", "value": 148}] },
-    "m_flow_window": [
-      { "window_size_sec": 60, "buy_share": [{"operator": ">", "value": 84}] },
-      { "window_size_sec": 30, "unique_wallets": [{"operator": ">", "value": 6}] },
-      { "window_size_sec": 0.4, "net_flow": [{"operator": ">=", "value": 0.5}] }
-    ],
-    "m_price_window": [{ "window_size_sec": 3, "rise": [{"operator": "<=", "value": 9}] }]
-  },
-  "exit": { "m_position": { "retrace": [{"operator": ">=", "value": 20}] } }
-}"#;
-
-pub const ISLANDS: &[(&str, &str)] = &[
-    ("island-1-absorption", ISLAND_1),
-    ("island-2-quiet-accumulation", ISLAND_2),
-    ("island-3-impulse-inception", ISLAND_3),
-    ("island-1-and-3", ISLAND_1_AND_3),
+const ISLANDS: &[(&str, &str)] = &[
+    ("absorption", ABSORPTION),
+    ("A continuation", CONTINUATION),
+    ("B quiet pause", QUIET_PAUSE),
+    ("A AND B", A_AND_B),
 ];
 
 fn parse(json: &str) -> RuleParams {
-    let v: serde_json::Value = serde_json::from_str(json).expect("rule JSON is valid JSON");
-    RuleParams::parse(&v).expect("rule parses against the live metric registry")
+    let v: serde_json::Value = serde_json::from_str(json).expect("rule JSON is well formed");
+    RuleParams::parse(&v).unwrap_or_else(|e| panic!("rule failed the save gate: {e}"))
 }
 
-/// Is `id` conditioned on anywhere in this side (any group, any window)?
-fn has(side: &hunter_engine::rule_params::SideConditions, id: MetricId) -> bool {
+fn has(side: &SideConditions, id: MetricId) -> bool {
     side.0.values().flatten().any(|g| g.metrics.contains_key(&id))
 }
 
-/// Every island parses and validates. A group, metric or operator name that does not
-/// exist in [`hunter_engine::metrics::REGISTRY`] fails the save in production;
-/// `RuleParams::parse` is that same gate, so this catches it at build time instead.
+/// Every authored `(operator, value)` on `id`, flattened out of the DNF, paired with the
+/// window its group instance was authored at.
+fn terms(side: &SideConditions, id: MetricId) -> Vec<(Operator, f64, Option<f64>)> {
+    side.0
+        .values()
+        .flatten()
+        .flat_map(|g| {
+            let w = g.strict_param("window_size_sec");
+            g.metrics
+                .get(&id)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(move |c| (c.operator, c.value, w))
+        })
+        .collect()
+}
+
+/// Every window any condition on this side is authored at.
+fn windows(side: &SideConditions) -> Vec<f64> {
+    side.0
+        .values()
+        .flatten()
+        .filter(|g| !g.metrics.is_empty())
+        .filter_map(|g| g.strict_param("window_size_sec"))
+        .collect()
+}
+
 #[test]
 fn every_island_rule_parses_and_validates() {
     for (name, json) in ISLANDS {
         let p = parse(json);
         assert!(p.entry.is_some(), "{name}: entry conditions are the island");
         assert!(p.exit.is_some(), "{name}: needs the trailing exit");
-        assert_eq!(p.stop_loss, Some(3.0), "{name}: the falsification stop is 3%");
+        assert!(p.stop_loss.is_some(), "{name}: every island carries a disaster stop");
         assert_eq!(
             p.take_profit, None,
             "{name}: a static take-profit caps the right tail the book is paid by"
         );
         let exit = p.exit.as_ref().expect("exit present");
-        assert!(has(exit, MetricId::Retrace), "{name}: the wide trail IS the exit");
+        assert!(
+            has(exit, MetricId::Retrace) || has(exit, MetricId::Held),
+            "{name}: the exit is either the wide trail or the clock"
+        );
     }
 }
 
@@ -135,42 +191,81 @@ fn every_island_rule_round_trips() {
     }
 }
 
-/// The two metrics this work added must actually be reachable from rule JSON.
-///
-/// `buy_share` is what makes islands 1 and 2 expressible at all, and `ix_count` is the
-/// token filter that carries the edge across a one-slot fill delay. Without them these
-/// rules could only parse by matching some *other* metric, so assert the exact ids.
+/// The confirmed rule exits on a CLOCK, and its stop is a disaster brake rather than a
+/// working part. Both halves are load-bearing and were measured on the real kernel:
+/// swapping this exit for `stop 5 + retrace 20` takes the same entry from +2.53 to -2.56,
+/// and tightening the stop from 20 to 8 costs 12% in-sample and 51% forward.
 #[test]
-fn the_new_metrics_are_reachable_from_rule_json() {
-    let p = parse(ISLAND_1);
-    let entry = p.entry.expect("island 1 has entry conditions");
-    assert!(has(&entry, MetricId::BuyShare), "buy_share reaches the rule");
-    assert!(has(&entry, MetricId::IxCount), "ix_count reaches the rule");
-    assert!(has(&entry, MetricId::UniqueWallets), "the trade-count stand-in reaches it");
-    assert!(has(&entry, MetricId::LifeGrossFlow), "the not-yet-run gate reaches it");
+fn the_confirmed_island_exits_on_a_clock_with_a_wide_stop() {
+    let p = parse(CONTINUATION);
+    assert_eq!(p.stop_loss, Some(20.0), "the stop is a disaster brake, not a working part");
+    let exit = p.exit.as_ref().expect("exit");
+    assert!(has(exit, MetricId::Held), "the clock IS the exit");
+    assert!(
+        !has(exit, MetricId::Retrace),
+        "a reactive exit is adversely selected at its own fill - that is the whole finding"
+    );
+    let held = terms(exit, MetricId::Held);
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].1, 40.0, "forty seconds");
 }
 
-/// Island 3 is the tier-0 rule: apart from the token filter it uses only metrics that
-/// predate this work, so it can ship fingerprint-scoped on an engine without them.
+/// `trade_count` is what island B is built on, and it is a real metric rather than the
+/// `unique_wallets` stand-in the previous map used. One wallet re-entering ten times is
+/// ten trades and one wallet, and B's "the tape has gone quiet" means the former.
 #[test]
-fn island_3_needs_no_buy_share() {
-    let p = parse(ISLAND_3);
-    let entry = p.entry.expect("island 3 has entry conditions");
-    assert!(!has(&entry, MetricId::BuyShare), "island 3 is authorable without buy_share");
-    assert!(has(&entry, MetricId::NetFlow), "the one-slot impulse is the trigger");
-    assert!(has(&entry, MetricId::WinRise), "rise(3) conditions it on not-yet-moved");
+fn trade_count_is_reachable_and_is_not_unique_wallets() {
+    for (name, json) in [("B quiet pause", QUIET_PAUSE), ("absorption", ABSORPTION)] {
+        let e = parse(json).entry.expect("entry");
+        assert!(has(&e, MetricId::TradeCount), "{name}: trade_count reaches the rule");
+        assert!(
+            !has(&e, MetricId::UniqueWallets),
+            "{name}: the stand-in is replaced, not kept alongside"
+        );
+    }
 }
 
-/// Islands 1 and 3 are separate readings, and their conjunction must carry BOTH sets of
-/// entry terms — a merge that silently dropped one side would look like a working rule.
+/// The surviving islands buy tokens that HAVE moved. A `rise` lower bound is the term
+/// that inverts the refuted impulse island, so assert its direction, not just that a
+/// `rise` condition exists — an edit flipping it back to `<=` would rebuild the rule
+/// that does not survive its own fill.
+#[test]
+fn the_new_islands_buy_a_move_that_has_already_happened() {
+    for (name, json) in [("A continuation", CONTINUATION), ("B quiet pause", QUIET_PAUSE)] {
+        let e = parse(json).entry.expect("entry");
+        let rises = terms(&e, MetricId::WinRise);
+        assert!(!rises.is_empty(), "{name}: a rise term defines the island");
+        for (op, v, w) in rises {
+            assert!(
+                matches!(op, Operator::Gte | Operator::Gt),
+                "{name}: rise {} {v} at {w:?}s must be a LOWER bound — an upper bound                  rebuilds the refuted impulse island",
+                op.symbol(),
+            );
+        }
+    }
+}
+
+/// No island may read a window narrower than 2 seconds. A sub-slot window cannot survive
+/// the bot's 95 ms reaction, and that is the single finding that killed the previous map.
+#[test]
+fn no_island_reads_a_sub_slot_window() {
+    for (name, json) in ISLANDS {
+        let e = parse(json).entry.expect("entry");
+        for w in windows(&e) {
+            assert!(w >= 2.0, "{name}: reads a {w}s window — below 2s is unreachable at 95 ms");
+        }
+    }
+}
+
+/// The conjunction must carry BOTH islands' terms — a merge that silently dropped one
+/// side would look like a working rule while being only half of one.
 #[test]
 fn the_conjunction_carries_both_islands() {
-    let p = parse(ISLAND_1_AND_3);
-    let e = p.entry.expect("entry");
-    for id in [MetricId::BuyShare, MetricId::UniqueWallets] {
-        assert!(has(&e, id), "{id:?} comes from island 1");
-    }
-    for id in [MetricId::NetFlow, MetricId::WinRise] {
-        assert!(has(&e, id), "{id:?} comes from island 3");
-    }
+    let e = parse(A_AND_B).entry.expect("entry");
+    assert!(has(&e, MetricId::NetFlow), "A's inflow term");
+    assert!(has(&e, MetricId::BuyShare), "A's direction term");
+    assert!(has(&e, MetricId::TradeCount), "B's quiet-tape term");
+    let mut ws: Vec<f64> = terms(&e, MetricId::WinRise).iter().map(|t| t.2.unwrap()).collect();
+    ws.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(ws, vec![30.0, 60.0], "both islands' rise terms, at 30s and 60s");
 }

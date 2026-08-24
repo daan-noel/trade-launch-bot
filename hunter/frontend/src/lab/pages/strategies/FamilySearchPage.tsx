@@ -27,6 +27,7 @@ import {
   type CostModelId,
   type EngineRuleDraft,
   type FillModelId,
+  fillModelLabel,
   type Fingerprint,
   type PromotedRuleDraft,
 } from 'lib/strategy/types';
@@ -498,7 +499,7 @@ export function FamilySearchPage() {
           title={<span className="text-xs text-text-mid">Execution, scope and comparison</span>}
           badge={
             <span className="text-[11px] text-text-dim">
-              {FILL_MODELS.find((m) => m.id === config.fillModel)?.label} ·{' '}
+              {fillModelLabel(config.fillModel)} ·{' '}
               {COST_MODELS.find((m) => m.id === config.costModel)?.label} ·{' '}
               {config.skipDuplicateIdentity ? 'copycat on' : 'copycat off'} · {config.slots} slots
               {config.incumbentRuleId ? ' · incumbent set' : ''}

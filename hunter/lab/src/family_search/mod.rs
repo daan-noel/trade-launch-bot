@@ -130,6 +130,9 @@ impl RunConfig {
             skip_duplicate_identity: self.skip_duplicate_identity,
             duplicate_identity_window_hours: self.duplicate_identity_window_hours,
             fill_delay_ms: 0,
+            // The lake corpus carries no creator wallet, so `m_snapshot.prior_launches`
+            // cannot be primed here and reads `NaN` (see `LAKE_BLIND_METRICS`).
+            creator_launches: Default::default(),
         }
     }
 }

@@ -1954,3 +1954,104 @@ fn dupe_guard_forgets_past_the_window() {
     let fx = reduce(&mut s, created(&after, 3601.0, "Moon Dog", "MDOG"));
     assert_eq!(buys(&fx), vec![(rid(1), BUY)], "past the window it is tradeable again");
 }
+
+/// `m_snapshot.prior_launches` counts a creator's launches STRICTLY BEFORE each
+/// token, so their first reads `0` — the value a first-launch rule selects on.
+///
+/// The unknown-creator case is the one that matters: a `TokenCreated` with no
+/// `creator_wallet_hash` must leave the metric `NaN`, never `0`. Seeding `0` there
+/// would quietly widen a `prior_launches == 0` gate to every token whose creator the
+/// feed failed to resolve.
+#[test]
+fn prior_launches_counts_strictly_prior_and_never_guesses_zero() {
+    use hunter_engine::metrics::MetricId;
+
+    let mut s = EngineState::new();
+    // A rule that arms but can never enter, so every created token stays tracked and
+    // its metric is readable (`reduce` drops a token with no live arm).
+    reduce(
+        &mut s,
+        reload(
+            vec![rule(
+                1,
+                1,
+                json!({ "entry": { "m_snapshot": {
+                    "time": [{ "operator": ">=", "value": 1e9 }] } } }),
+            )],
+            vec![cu_fp(1)],
+        ),
+    );
+    // History that predates the stream — without this a live restart or a
+    // corpus-scoped backtest reads every creator as a first-time launcher.
+    s.prime_creator_launches([(77u64, 4u32)]);
+
+    let read = |s: &EngineState, mint: &str| -> f64 {
+        s.tokens[&Mint::from(mint)].track.value(MetricId::PriorLaunches, None, None, ts(1.0))
+    };
+
+    for (i, mint) in ["a", "b", "c"].iter().enumerate() {
+        reduce(
+            &mut s,
+            Event::TokenCreated {
+                mint: Mint::from(*mint),
+                fp: cu_token(),
+                at: ts(i as f64),
+                creator_wallet_hash: Some(9),
+                identity: None,
+            },
+        );
+    }
+    assert_eq!(read(&s, "a"), 0.0, "a creator's first launch is 0, not 1");
+    assert_eq!(read(&s, "b"), 1.0);
+    assert_eq!(read(&s, "c"), 2.0);
+
+    // Primed history is the floor the tally continues from.
+    reduce(
+        &mut s,
+        Event::TokenCreated {
+            mint: Mint::from("d"),
+            fp: cu_token(),
+            at: ts(9.0),
+            creator_wallet_hash: Some(77),
+            identity: None,
+        },
+    );
+    assert_eq!(read(&s, "d"), 4.0, "primed count must not restart at 0");
+
+    // Unknown creator ⇒ unknown count.
+    reduce(
+        &mut s,
+        Event::TokenCreated {
+            mint: Mint::from("e"),
+            fp: cu_token(),
+            at: ts(10.0),
+            creator_wallet_hash: None,
+            identity: None,
+        },
+    );
+    assert!(read(&s, "e").is_nan(), "unknown creator must not read as a first launch");
+
+    // A duplicate creation is idempotent in the reducer, so it must not advance the
+    // tally either — a replayed event would otherwise inflate every later token.
+    reduce(
+        &mut s,
+        Event::TokenCreated {
+            mint: Mint::from("c"),
+            fp: cu_token(),
+            at: ts(2.0),
+            creator_wallet_hash: Some(9),
+            identity: None,
+        },
+    );
+    reduce(
+        &mut s,
+        Event::TokenCreated {
+            mint: Mint::from("f"),
+            fp: cu_token(),
+            at: ts(11.0),
+            creator_wallet_hash: Some(9),
+            identity: None,
+        },
+    );
+    assert_eq!(read(&s, "f"), 3.0, "a duplicate creation must not advance the tally");
+}

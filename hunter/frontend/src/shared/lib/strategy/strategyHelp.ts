@@ -104,8 +104,14 @@ export const GROUP_HELP: Record<string, HelpTip> = {
       '',
       '• time — seconds since token creation (age).',
       '• liquidity — current pool SOL reserves.',
+      '• ix_count — instructions in the CREATION transaction (a launch-tooling tell).',
+      '• prior_launches — tokens this creator launched BEFORE this one.',
       '',
-      'Use for age gates and pool-depth filters on entry or exit. Kind: static.',
+      'The last two are creation-time facts: static from birth, so a gate on either is',
+      'a token filter that can never re-trigger. Both read NaN when unknown, so an',
+      'unknown launch stays unmatched rather than counting as 0.',
+      '',
+      'Use for age gates, pool-depth filters and creator / tooling screens. Kind: static.',
     ].join('\n'),
   },
   m_price_lifetime: {
@@ -154,11 +160,15 @@ export const GROUP_HELP: Record<string, HelpTip> = {
       'Sums buys/sells over the last N seconds (N = window_size_sec, required).',
       'Unlike m_flow_lifetime (totals since birth), this lookback rolls forward.',
       '',
-      'Metrics (all SOL):',
-      '• gross_flow — buys + sells (activity)',
-      '• net_flow — buys − sells (direction)',
-      '• buy — buys only',
-      '• sell — sells only',
+      'Metrics:',
+      '• gross_flow — buys + sells, SOL (activity)',
+      '• net_flow — buys − sells, SOL (direction)',
+      '• buy / sell — one side only, SOL',
+      '• buy_share — buy / (buy + sell) in PERCENT 0-100, not 0-1: direction',
+      '  independent of size. NaN on an empty window, so it never fires on silence.',
+      '• unique_wallets — how many distinct people traded (a count)',
+      '• trade_count — how many trades landed (a count). One wallet re-entering ten',
+      '  times reads 10 here and 1 in unique_wallets.',
       '',
       'If you use any metric here, you must set window_size_sec (e.g. 10). Kind: dynamic.',
     ].join('\n'),
@@ -226,6 +236,101 @@ export const METRIC_HELP: Record<string, HelpTip> = {
       '  <30 | >=70       outside band — thin OR very deep (comma form <30, >=70 auto-ORs)',
       '',
       'Common on exit for “rug thin” or “overheated depth” signals.',
+    ].join('\n'),
+  },
+  ix_count: {
+    title: 'ix_count — instructions in the creation transaction',
+    body: [
+      'How many instructions the token’s CREATE transaction carried — a launch-tooling',
+      'fingerprint reduced to one number. A plain launch is a handful; a bundled one,',
+      'or one built by a launcher bot, is many.',
+      '',
+      'Static from birth: it never moves, so a gate on it is a TOKEN FILTER, not a',
+      'timing signal, and an arm it disarms can never re-arm.',
+      '',
+      'Examples:',
+      '  <=5      plain creations only — screen out elaborate tooling',
+      '  >=12     only the heavily-bundled launches',
+      '',
+      'NaN when the creation labels are unknown, and NaN satisfies nothing — so an',
+      'unknown launch is excluded by any ix_count gate rather than assumed simple.',
+    ].join('\n'),
+  },
+  prior_launches: {
+    title: 'prior_launches — the creator’s launches before this token',
+    body: [
+      'How many tokens this token’s creator launched BEFORE it. 0 = a first-time',
+      'launcher; a large number = a serial one running a factory.',
+      '',
+      'Counted over a trailing window (30 days), not all of history — so the same',
+      'creator reads the same number live and in a backtest. Static from birth: a',
+      'token filter, never a timing signal.',
+      '',
+      'Examples:',
+      '  =0        the creator’s first launch in the window',
+      '  <=5       new-ish creators only',
+      '  >=100     only factory output (usually the side to AVOID)',
+      '',
+      'NaN when the creator is unknown, so an unresolved launch is excluded rather',
+      'than counted as a first one — which would quietly widen "=0" to everything.',
+      '',
+      'Reads the creator across OTHER tokens, so it needs the tokens table: available',
+      'live and in Simulate, rejected by a grouped sweep (the lake corpus has no',
+      'creator column and every cell would score on zero trades).',
+    ].join('\n'),
+  },
+  buy_share: {
+    title: 'buy_share — share of window SOL that is buys (percent)',
+    body: [
+      'buy / (buy + sell) over the trailing window, in PERCENT 0-100 — not 0-1. The',
+      'DIRECTION of the tape, independent of its size.',
+      '',
+      'net_flow conflates the two: +5◎ net is a different situation on 6◎ of turnover',
+      'than on 200◎. This reads high when one side is being ABSORBED rather than',
+      'matched.',
+      '',
+      'Examples:',
+      '  >=80      four out of five SOL traded is buying',
+      '  >=95      near one-sided — nobody is selling into it',
+      '  <=30      distribution',
+      '',
+      'NaN on an empty window (no flow, no direction to report), so it never fires on',
+      'silence. Needs window_size_sec.',
+    ].join('\n'),
+  },
+  unique_wallets: {
+    title: 'unique_wallets — distinct traders in the window (count)',
+    body: [
+      'How many DIFFERENT people traded the token over the last N seconds — as against',
+      'gross_flow’s how much SOL, and trade_count’s how many trades.',
+      '',
+      'One wallet churning and a crowd arriving look identical in SOL and different',
+      'here. Pair the two to tell a real crowd from one bot: high gross_flow with low',
+      'unique_wallets is wash volume.',
+      '',
+      'Examples:',
+      '  >=10     a real crowd, not one bot',
+      '  <=2      one or two wallets are the whole tape',
+      '',
+      'Needs window_size_sec. Wallet-keyed: an offline run loaded without wallet',
+      'identity sees every trade as one anonymous wallet, so this reads 1.',
+    ].join('\n'),
+  },
+  trade_count: {
+    title: 'trade_count — trades in the window (count)',
+    body: [
+      'How many trades landed over the last N seconds — how BUSY the tape is, as',
+      'against unique_wallets’ how many people are on it.',
+      '',
+      'One wallet re-entering ten times reads 10 here and 1 there. Unlike',
+      'unique_wallets this needs no wallet column, so it survives an offline load that',
+      'did not ask for wallet identity.',
+      '',
+      'Examples:',
+      '  >=8      an active tape',
+      '  <=3      a quiet one — pairs with a high buy_share for "quiet accumulation"',
+      '',
+      'Needs window_size_sec.',
     ].join('\n'),
   },
   stall: {
@@ -495,13 +600,24 @@ export function metricHelpBody(
     METRIC_HELP[metric]?.body ??
     'Registry metric — type a condition in the box, or leave empty to ignore.';
   if (!spec) return base;
-  const unit =
-    spec.unit === 'seconds' ? 'seconds' : spec.unit === 'percent' ? 'percent' : 'SOL';
+  // Every registry unit, named. This used to be a two-branch ternary falling through
+  // to 'SOL', which documented every `count` metric (`unique_wallets`, `trade_count`,
+  // `ix_count`, `prior_launches`) as SOL and told the reader their `=` bucket was
+  // "+/-0.25 SOL". A metric added with a new unit should read wrong loudly, not
+  // silently become SOL, hence the explicit map plus a passthrough default.
+  const UNIT_NAME: Record<string, string> = {
+    seconds: 'seconds',
+    percent: 'percent',
+    sol: 'SOL',
+    count: '',
+  };
+  const unit = UNIT_NAME[spec.unit] ?? spec.unit;
+  const amount = (n: number) => (unit ? `${n} ${unit}` : String(n));
   const half = spec.eq_tolerance / 2;
   const bits = [
     '',
-    `Unit: ${unit}.`,
-    `= / != bucket: values within ±${half} ${unit} of the target count as equal (tol ${spec.eq_tolerance}).`,
+    `Unit: ${unit || 'a plain count'}.`,
+    `= / != bucket: values within ±${amount(half)} of the target count as equal (tol ${spec.eq_tolerance}).`,
   ];
   if (spec.monotonic) {
     bits.push(
@@ -518,7 +634,8 @@ export const STRICT_PARAM_HELP: Record<string, HelpTip> = {
     title: 'window_size_sec — trailing lookback',
     body: [
       'How many seconds of recent trades to include for dynamic groups:',
-      '  • m_flow_window — gross_flow, net_flow, buy, sell',
+      '  • m_flow_window — gross_flow, net_flow, buy, sell, buy_share,',
+      '    unique_wallets, trade_count',
       '  • m_flow_split_window — vol_*, nonvol_*, vol_share (same split as lifetime)',
       '  • m_price_window — trail, rise',
       '',

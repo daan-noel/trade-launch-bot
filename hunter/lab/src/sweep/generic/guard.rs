@@ -64,12 +64,13 @@ fn pricing_for(fill_model: FillModel) -> Pricing {
 
 /// Every selectable fill model — parity must hold under each, never under one
 /// hardcoded model.
-const FILL_MODELS: [FillModel; 5] = [
+const FILL_MODELS: [FillModel; 6] = [
     FillModel::WorstCase,
     FillModel::FirstInWindow,
     FillModel::NextSlotFirst,
     FillModel::NextSlotMedian,
     FillModel::SignalPrice,
+    FillModel::LagMs(115),
 ];
 
 fn base() -> Ts {

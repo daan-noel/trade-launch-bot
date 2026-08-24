@@ -196,6 +196,16 @@ pub struct EngineState {
     pub tokens: BTreeMap<Mint, TokenState>,
     /// Open positions' owners, for manual-close targeting.
     pub positions: BTreeMap<PositionId, PositionRef>,
+    /// Launches seen per creator wallet hash — the tally behind
+    /// `m_snapshot.prior_launches`. Incremented on every `TokenCreated`, read
+    /// (strictly before the increment) to seed the new token's metric.
+    ///
+    /// A live process starts empty, which would read every creator as a first-time
+    /// launcher; [`prime_creator_launches`](Self::prime_creator_launches) is how a
+    /// host loads real history in first. It is deliberately NOT pruned: a creator's
+    /// count is the whole signal, and dropping a cold entry would resurrect exactly
+    /// the "everyone is new" bias priming exists to remove.
+    pub(crate) creator_launches: std::collections::HashMap<u64, u32>,
     /// Rolling memory of recently-traded `(name, symbol)` identities — the
     /// copycat guard. Disabled (and empty) unless the operator turns it on via
     /// [`set_dupe_guard_policy`](Self::set_dupe_guard_policy).
@@ -216,6 +226,30 @@ impl EngineState {
     pub fn next_intent(&mut self, rule: RuleId, mint: Mint) -> IntentId {
         self.intent_seq += 1;
         IntentId { rule, mint, seq: self.intent_seq }
+    }
+
+    /// Load known launch history into the `prior_launches` tally, before any event
+    /// is folded. `(creator_wallet_hash, launches_so_far)` pairs; a repeated hash
+    /// keeps the LARGER count, so priming twice cannot lose depth.
+    ///
+    /// Without this a fresh process reads every creator as a first-time launcher —
+    /// which is not a small error but an inverted one, since `prior_launches == 0`
+    /// is the value a rule selects ON. Offline this is free (the corpus is the
+    /// history); live it wants a query over the `tokens` table at boot.
+    pub fn prime_creator_launches(&mut self, seen: impl IntoIterator<Item = (u64, u32)>) {
+        for (hash, n) in seen {
+            let slot = self.creator_launches.entry(hash).or_insert(0);
+            *slot = (*slot).max(n);
+        }
+    }
+
+    /// Take this creator's launch count and record the launch — the strictly-prior
+    /// count, so the creator's own first token reads `0`.
+    pub(crate) fn take_prior_launches(&mut self, creator: u64) -> u32 {
+        let slot = self.creator_launches.entry(creator).or_insert(0);
+        let prior = *slot;
+        *slot = slot.saturating_add(1);
+        prior
     }
 
     /// Mint the next position id.

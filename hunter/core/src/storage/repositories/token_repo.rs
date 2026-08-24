@@ -391,6 +391,54 @@ impl TokenRepo {
         Ok(row.map(Token::from))
     }
 
+    /// How many tokens this creator launched **strictly before** `before` — the
+    /// `m_snapshot.prior_launches` value for a single token.
+    ///
+    /// Point lookup for the readout/replay paths, which reconstruct one token at a
+    /// time and have no running tally. The live engine does NOT use this: it counts
+    /// in memory as creations arrive (see `EngineState::take_prior_launches`), so
+    /// the hot path pays no query at all.
+    pub async fn count_prior_launches(
+        &self,
+        creator_wallet: &str,
+        before: DateTime<Utc>,
+    ) -> anyhow::Result<i64> {
+        let n: (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM tokens WHERE creator_wallet = $1 AND created_at < $2",
+        )
+        .bind(creator_wallet)
+        .bind(before)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(n.0)
+    }
+
+    /// `(creator_wallet, launches)` over `[since, before)` — one query, to prime an
+    /// in-memory `prior_launches` tally with the history that precedes a run.
+    ///
+    /// Without it a fresh process (or a corpus-scoped backtest) reads every creator
+    /// as a first-time launcher, which inverts a `prior_launches == 0` rule into
+    /// "match everything". Bounded on both ends: `since` for the same reason
+    /// [`find_recent_active`](Self::find_recent_active) is bounded, and `before` so a
+    /// backtest primes with the past only and never with its own future.
+    ///
+    /// `creators` narrows the group-by to the wallets a run actually contains; pass
+    /// an empty slice for every creator in the window.
+    pub async fn creator_launch_counts(
+        &self,
+        since: DateTime<Utc>,
+        before: DateTime<Utc>,
+        creators: &[String],
+    ) -> anyhow::Result<Vec<(String, i64)>> {
+        let filter = if creators.is_empty() { "" } else { " AND creator_wallet = ANY($3)" };
+        let sql = format!(
+            "SELECT creator_wallet, count(*) FROM tokens              WHERE created_at >= $1 AND created_at < $2 AND creator_wallet <> ''{filter}              GROUP BY creator_wallet"
+        );
+        let q = sqlx::query_as::<_, (String, i64)>(&sql).bind(since).bind(before);
+        let q = if creators.is_empty() { q } else { q.bind(creators) };
+        Ok(q.fetch_all(&self.pool).await?)
+    }
+
     /// Load the most-recent tokens created since `since` for cache seeding on
     /// startup, capped at `limit`. Bounded on *both* axes — recency window and row
     /// cap — rather than an unbounded full-table scan over the continuously growing

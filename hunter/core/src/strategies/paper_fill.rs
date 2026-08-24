@@ -67,35 +67,150 @@ fn paper_fill_from<T: TradeRow>(trades: &[T], idx: usize) -> PaperFill {
 /// to already be inside — i.e. built before the signal existed — and a bundle leg
 /// there is unreachable outright, since nothing sequences between atomic bundle
 /// txs. Dropping slot `S` leaves the slot we actually land in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FillModel {
     /// Entry = highest qualifying buy, exit = lowest price in the window. The
     /// pessimistic bound; what live paper and the sweep book.
     #[default]
-    #[serde(alias = "worst")]
     WorstCase,
     /// Entry/exit = the FIRST qualifying trade after the signal in the window — a
     /// neutral "take the next print" reaction (no worst-case cherry-pick). Biased
     /// optimistic whenever that print is in the signal's own slot; the `NextSlot*`
     /// pair drops exactly those.
-    #[serde(alias = "first")]
     FirstInWindow,
     /// Entry/exit = the first qualifying trade at the **next** slot, skipping the
     /// signal's own slot entirely. The earliest price a +1-slot landing can hit.
-    #[serde(alias = "next_first")]
     NextSlotFirst,
     /// Entry/exit = the **adverse median** of the next slot's qualifying trades.
     /// Ordering inside a block is the leader's call, so we are effectively random
     /// within that slot rather than first — this reads the middle of the
     /// dispersion instead of either tail. Always a real print (see
     /// [`adverse_median_in`]), never a synthetic average.
-    #[serde(alias = "next_median")]
     NextSlotMedian,
     /// Fill at the trigger/fire trade's own spot — zero feed-reaction slippage, the
     /// optimistic bound approximating a same-slot landing.
-    #[serde(alias = "signal")]
     SignalPrice,
+    /// Entry/exit = the first qualifying trade whose `block_time` is at least `ms`
+    /// milliseconds after the signal's own — the only model keyed to a **measured**
+    /// reaction time rather than to slot structure.
+    ///
+    /// The slot-shaped models bracket reality but cannot express it: `FirstInWindow`
+    /// assumes we are always the very next print (an ordering nobody outside the
+    /// leader can buy), while the `NextSlot*` pair assumes we never make the signal's
+    /// own slot — yet the live book lands in it. A wall-clock lag states the one
+    /// number that is actually measurable end to end, so a rule can be graded at the
+    /// bot's own decide-to-fill latency instead of at a bound.
+    ///
+    /// `block_time` is the **ingest** clock (a Yellowstone transaction frame carries
+    /// no chain time, so the decoder stamps `received_at`), which is the correct
+    /// clock here: it measures when a print could first have been reacted to.
+    ///
+    /// Falls back to [`WorstCase`](FillModel::WorstCase) when the window holds no
+    /// qualifying trade that late, exactly as the `NextSlot*` pair does — eligibility
+    /// stays identical across every model.
+    ///
+    /// Serde: `"lag_115"` — a bare string like every other variant, so the grouped
+    /// sweep's `TEXT` column, the request DTOs and the frontend all round-trip it
+    /// with no payload-variant special case. The legacy `{"lag_ms": 115}` object form
+    /// still parses, so anything already stored keeps its meaning.
+    LagMs(u32),
+}
+
+/// The canonical wire name of each unit variant, paired with the short alias the
+/// fill-sensitivity doc's column labels use. ONE table, read by both directions of
+/// the codec, so a name can never serialize as one string and parse from another.
+const FILL_MODEL_NAMES: &[(FillModel, &str, &str)] = &[
+    (FillModel::WorstCase, "worst_case", "worst"),
+    (FillModel::FirstInWindow, "first_in_window", "first"),
+    (FillModel::NextSlotFirst, "next_slot_first", "next_first"),
+    (FillModel::NextSlotMedian, "next_slot_median", "next_median"),
+    (FillModel::SignalPrice, "signal_price", "signal"),
+];
+
+/// Prefix of the parameterized wall-clock-lag variant: `lag_115` = 115 ms.
+const LAG_PREFIX: &str = "lag_";
+
+impl FillModel {
+    /// The canonical wire/display name. Always a plain string — including for
+    /// [`LagMs`](FillModel::LagMs), which is what lets a `TEXT` column, a query
+    /// param and a TypeScript union all carry the full set.
+    pub fn as_str(self) -> std::borrow::Cow<'static, str> {
+        match self {
+            FillModel::LagMs(ms) => std::borrow::Cow::Owned(format!("{LAG_PREFIX}{ms}")),
+            other => FILL_MODEL_NAMES
+                .iter()
+                .find(|(m, _, _)| *m == other)
+                .map(|(_, name, _)| std::borrow::Cow::Borrowed(*name))
+                .unwrap_or(std::borrow::Cow::Borrowed("worst_case")),
+        }
+    }
+
+    /// Parse a wire name: canonical, short alias, or `lag_<ms>`.
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim();
+        if let Some(ms) = s.strip_prefix(LAG_PREFIX) {
+            return ms.parse::<u32>().ok().map(FillModel::LagMs);
+        }
+        FILL_MODEL_NAMES
+            .iter()
+            .find(|(_, name, alias)| *name == s || *alias == s)
+            .map(|(m, _, _)| *m)
+    }
+
+    /// The measured decide-to-fill lag in ms, for the models keyed to one.
+    pub fn lag_ms(self) -> Option<u32> {
+        match self {
+            FillModel::LagMs(ms) => Some(ms),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for FillModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.as_str())
+    }
+}
+
+impl std::str::FromStr for FillModel {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or_else(|| format!("unknown fill model `{s}`"))
+    }
+}
+
+impl Serialize for FillModel {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_str(&self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for FillModel {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = FillModel;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a fill-model name such as `worst_case` or `lag_115`")
+            }
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<FillModel, E> {
+                FillModel::parse(s).ok_or_else(|| E::custom(format!("unknown fill model `{s}`")))
+            }
+            /// The pre-string encoding of the lag variant (`{"lag_ms": 115}`), kept so
+            /// a payload written before the codec landed still parses.
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut m: A) -> Result<FillModel, A::Error> {
+                let mut out = None;
+                while let Some(k) = m.next_key::<String>()? {
+                    let v: serde_json::Value = m.next_value()?;
+                    if k == "lag_ms" || k == "lag" || k == "LagMs" {
+                        out = v.as_u64().map(|n| FillModel::LagMs(n as u32));
+                    }
+                }
+                out.ok_or_else(|| serde::de::Error::custom("unknown fill model object"))
+            }
+        }
+        de.deserialize_any(V)
+    }
 }
 
 /// The contiguous run of trades at the window's **next** slot, plus its offset into
@@ -224,6 +339,13 @@ pub fn find_paper_entry_at<T: TradeRow>(
         FillModel::NextSlotMedian => adverse_median_in(run, qualifies, true)
             .map(|rel| run_base + rel)
             .or_else(worst),
+        // The first qualifying buy at least `ms` after the trigger was observable.
+        FillModel::LagMs(ms) => {
+            let floor = trigger.block_time() + chrono::Duration::milliseconds(i64::from(ms));
+            post.iter()
+                .position(|t| qualifies(t) && t.block_time() >= floor)
+                .or_else(worst)
+        }
         FillModel::WorstCase => worst(),
     };
     rel.map(|rel| paper_fill_from(trades, target_idx + 1 + rel))
@@ -282,6 +404,14 @@ pub fn find_paper_exit_at<T: TradeRow>(
                 .map(|rel| run_base + rel)
                 .or_else(worst)
                 .map(|rel| fire_idx + 1 + rel),
+            // The first priced trade at least `ms` after the fire was observable.
+            FillModel::LagMs(ms) => {
+                let floor = fire.block_time() + chrono::Duration::milliseconds(i64::from(ms));
+                post.iter()
+                    .position(|t| priced(t) && t.block_time() >= floor)
+                    .or_else(worst)
+                    .map(|rel| fire_idx + 1 + rel)
+            }
             FillModel::WorstCase => worst().map(|rel| fire_idx + 1 + rel),
         }
     } else {
@@ -335,6 +465,14 @@ mod tests {
 
     fn base_time() -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000, 0).unwrap()
+    }
+
+    /// Like [`leg`] with millisecond resolution — the granularity a wall-clock
+    /// lag model has to be tested at, since a whole second is already two slots.
+    fn leg_ms(sol: f64, tokens: f64, slot: u64, leg_i: u32, ms: i64) -> Trade {
+        let mut tr = leg(sol, tokens, slot, leg_i, 0);
+        tr.block_time = base_time() + chrono::Duration::milliseconds(ms);
+        tr
     }
 
     fn leg(sol: f64, tokens: f64, slot: u64, leg: u32, secs: i64) -> Trade {
@@ -480,12 +618,13 @@ mod tests {
 
     /// Every selectable model — a parity/eligibility assertion must cover each,
     /// never one hardcoded model.
-    const ALL_MODELS: [FillModel; 5] = [
+    const ALL_MODELS: [FillModel; 6] = [
         FillModel::WorstCase,
         FillModel::FirstInWindow,
         FillModel::NextSlotFirst,
         FillModel::NextSlotMedian,
         FillModel::SignalPrice,
+        FillModel::LagMs(115),
     ];
 
     #[test]
@@ -570,6 +709,89 @@ mod tests {
         ];
         let entry = find_paper_entry_at(&trades, 0, false, FillModel::NextSlotMedian).unwrap();
         assert_eq!((entry.price, entry.trade_idx), (1.4, 2), "the LATER of the equal pair");
+    }
+
+
+    /// The lag model is the only one keyed to wall-clock reaction time, and the
+    /// only one that can fill inside the signal's OWN slot while still charging a
+    /// delay. That combination is the whole point: the live book lands in the
+    /// trigger's slot about half the time, so a model that always skips the slot
+    /// (the `NextSlot*` pair) overcharges, while `FirstInWindow` charges nothing.
+    #[test]
+    fn the_lag_model_charges_wall_clock_not_slot_structure() {
+        // Trigger at t=0 (slot 100), then two more buys in the SAME slot at
+        // +50ms / +200ms, then the next slot a full second later.
+        let trades = vec![
+            leg_ms(1.0, 1.0, 100, 0, 0),
+            leg_ms(1.2, 1.0, 100, 1, 50),
+            leg_ms(1.4, 1.0, 100, 2, 200),
+            leg_ms(1.5, 1.0, 101, 0, 1_000),
+        ];
+        let at = |m| find_paper_entry_at(&trades, 0, false, m).unwrap();
+
+        // Zero lag is exactly "the next print" — the optimistic bound.
+        assert_eq!(at(FillModel::LagMs(0)).price, at(FillModel::FirstInWindow).price);
+        // 115ms (the measured decide->fill p50) skips the +50ms print and takes the
+        // +200ms one — still slot 100, so a delay is charged WITHOUT pretending we
+        // missed the block.
+        let lagged = at(FillModel::LagMs(115));
+        assert_eq!(lagged.price, 1.4);
+        assert_eq!(lagged.slot, 100, "a lag inside the slot must not skip the slot");
+        // The slot-shaped models bracket it and cannot express it: first is cheaper,
+        // next-slot is dearer.
+        assert!(at(FillModel::FirstInWindow).price < lagged.price);
+        assert!(at(FillModel::NextSlotFirst).price > lagged.price);
+        // A lag past everything in the window falls back to worst-case, keeping
+        // eligibility identical across models (same rule as the `NextSlot*` pair).
+        assert_eq!(
+            at(FillModel::LagMs(60_000)).price,
+            at(FillModel::WorstCase).price,
+            "a lag past the window degrades to worst-case, never to no-fill"
+        );
+    }
+
+    /// The exit leg charges the same delay from the firing trade.
+    #[test]
+    fn the_lag_model_charges_the_exit_leg_too() {
+        let trades = vec![
+            leg_ms(1.0, 1.0, 100, 0, 0),
+            leg_ms(0.9, 1.0, 100, 1, 50),
+            leg_ms(0.7, 1.0, 100, 2, 200),
+        ];
+        let at = |m| find_paper_exit_at(&trades, 0, false, m).unwrap();
+        assert_eq!(at(FillModel::LagMs(0)).price, 0.9, "zero lag = the next print");
+        assert_eq!(at(FillModel::LagMs(115)).price, 0.7, "115ms skips the +50ms print");
+    }
+
+    /// The lag model is a BARE STRING on the wire like every other variant. That is
+    /// the whole contract: a payload-shaped variant cannot live in the sweep's `TEXT`
+    /// column, cannot be a TypeScript string union, and renders as `[object Object]`
+    /// wherever the UI prints the model name — which is how it first showed up.
+    #[test]
+    fn the_lag_model_is_a_bare_string_on_the_wire() {
+        use serde_json::json;
+        assert_eq!(serde_json::to_value(FillModel::LagMs(115)).unwrap(), json!("lag_115"));
+        let got: FillModel = serde_json::from_value(json!("lag_115")).unwrap();
+        assert_eq!(got, FillModel::LagMs(115));
+        // Every variant round-trips through the string form, so no caller needs a
+        // special case for one of them.
+        for m in ALL_MODELS {
+            let wire = serde_json::to_value(m).unwrap();
+            assert!(wire.is_string(), "{m:?} did not serialize as a string: {wire}");
+            let back: FillModel = serde_json::from_value(wire).unwrap();
+            assert_eq!(back, m);
+            assert_eq!(FillModel::parse(&m.as_str()), Some(m));
+        }
+        // The pre-codec object form still parses, so anything already stored keeps
+        // its meaning rather than failing the whole request it rides in.
+        let legacy: FillModel = serde_json::from_value(json!({"lag_ms": 115})).unwrap();
+        assert_eq!(legacy, FillModel::LagMs(115));
+        let alias: FillModel = serde_json::from_value(json!({"lag": 250})).unwrap();
+        assert_eq!(alias, FillModel::LagMs(250));
+        // A garbage name is an error, never a silent fall back to the default - which
+        // would book a different fill model than the one that was asked for.
+        assert!(serde_json::from_value::<FillModel>(json!("lag_")).is_err());
+        assert!(serde_json::from_value::<FillModel>(json!("nope")).is_err());
     }
 
     #[test]

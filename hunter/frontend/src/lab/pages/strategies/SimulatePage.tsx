@@ -91,6 +91,8 @@ import {
   lamportsToSol,
   COST_MODELS,
   FILL_MODELS,
+  fillModelLabel,
+  fillModelLagMs,
   type CostModelId,
   type Fingerprint,
   type FillModelId,
@@ -179,13 +181,24 @@ const DEFAULT_RUN_PREFS: SimulateRunPrefs = {
   until: '',
 };
 
-const FILL_MODEL_VARIANT: Record<FillModelId, BadgeVariant> = {
-  worst_case: 'danger',
-  first_in_window: 'success',
-  next_slot_first: 'info',
-  next_slot_median: 'primary',
-  signal_price: 'success',
-};
+/** Badge color per fill model. A function, not a `Record`, because `lag_<ms>` is an
+ *  open family — the lag is a measured number, so the id set is not enumerable. */
+function fillModelVariant(id: string): BadgeVariant {
+  if (fillModelLagMs(id) != null) return 'warning';
+  switch (id) {
+    case 'worst_case':
+      return 'danger';
+    case 'next_slot_first':
+      return 'info';
+    case 'next_slot_median':
+      return 'primary';
+    case 'first_in_window':
+    case 'signal_price':
+      return 'success';
+    default:
+      return 'info';
+  }
+}
 /** `pumpfun_default` double-counts slippage against an explicit fill model (see
  *  `COST_MODELS`), so it reads as the cautionary color; `pumpfun_impact` is the
  *  honest pairing and `pumpfun_fee_only` the size-blind middle ground. */
@@ -1276,15 +1289,15 @@ function buildColumns(
         const id = run.summary.fill_model ?? 'worst_case';
         const model = FILL_MODELS.find((m) => m.id === id);
         return (
-          <Badge variant={FILL_MODEL_VARIANT[id]} size="sm" title={model?.hint}>
-            {model?.label ?? id}
+          <Badge variant={fillModelVariant(id)} size="sm" title={model?.hint}>
+            {fillModelLabel(id)}
           </Badge>
         );
       },
       sortValue: (r) => summaryOf(r)?.fill_model ?? null,
       searchValue: (r) => {
         const id = summaryOf(r)?.fill_model;
-        return id ? (FILL_MODELS.find((m) => m.id === id)?.label ?? id) : '';
+        return id ? fillModelLabel(id) : '';
       },
     },
     {

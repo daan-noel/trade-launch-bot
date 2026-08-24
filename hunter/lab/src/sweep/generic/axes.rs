@@ -438,6 +438,14 @@ fn resolve_one(spec: &AxisSpec) -> Result<ResolvedAxis, String> {
             let mspec = group
                 .metric_by_name(metric_name)
                 .ok_or_else(|| format!("metric `{metric_name}` not in group `{group_name}`"))?;
+            // Creator-history metrics need the PG `tokens` row; the lake corpus a sweep
+            // folds carries no creator column, so the value would be `NaN` for every
+            // token and the axis would silently sweep a gate that never fires.
+            if mspec.id.needs_creator_history() {
+                return Err(format!(
+                    "metric `{metric_name}` reads the token's CREATOR history, which the                      lake corpus does not carry - a sweep on it would score every cell on                      zero trades. Use `simulate`, which loads the creator from `tokens`."
+                ));
+            }
             let window = match group.kind {
                 MetricKind::Dynamic => Some(match spec.window {
                     Some(w) if w.is_finite() && w > 0.0 => w,

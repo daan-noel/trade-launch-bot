@@ -425,6 +425,41 @@ async fn run_engine_backtest(
             })
         })
         .collect();
+    // Prime `m_snapshot.prior_launches` with the history BEFORE this corpus. The
+    // replay tallies creations as it folds them, but the corpus is one fingerprint
+    // over one window, so without this a serial launcher reads as a first-timer —
+    // and `prior_launches == 0` is exactly the value a rule selects on.
+    let creator_launches = {
+        let start = replay_tokens
+            .iter()
+            .map(|t| t.created_at)
+            .min()
+            .or(since)
+            .unwrap_or_else(Utc::now);
+        let from = start
+            - chrono::Duration::days(trading_core::config::constants::PRIOR_LAUNCH_WINDOW_DAYS);
+        let creators: Vec<String> = tokens
+            .iter()
+            .filter(|t| !t.creator_wallet.is_empty())
+            .map(|t| t.creator_wallet.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        match app_state.core.token_repo().creator_launch_counts(from, start, &creators).await {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|(w, n)| {
+                    (hunter_engine::metrics::flow_split::wallet_hash(&w), n.max(0) as u32)
+                })
+                .collect::<Vec<_>>(),
+            Err(e) => {
+                tracing::warn!(error = %e, "prior_launches unprimed - every creator reads as new");
+                Vec::new()
+            }
+        }
+    };
+    let creator_launches: Arc<[(u64, u32)]> = Arc::from(creator_launches);
+
     // Token → (symbol, created_at) for building result rows off the outcomes.
     let meta: std::collections::HashMap<String, (String, DateTime<Utc>)> = tokens
         .iter()
@@ -456,6 +491,7 @@ async fn run_engine_backtest(
                     skip_duplicate_identity: dupe_guard_window_hours.is_some(),
                     duplicate_identity_window_hours: dupe_guard_window_hours
                         .unwrap_or(hunter_engine::dupe_guard::DEFAULT_WINDOW_HOURS),
+                    creator_launches,
                     ..Default::default()
                 },
             );

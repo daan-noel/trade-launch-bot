@@ -9,7 +9,7 @@ import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { useRenameGroupedSweepRunMutation } from '@lab/store/labEndpoints';
 import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 import { fingerprintsHref } from 'lib/strategy/nav';
-import { COST_MODELS, FILL_MODELS } from 'lib/strategy/types';
+import { COST_MODELS, FILL_MODELS, fillModelLabel } from 'lib/strategy/types';
 import {
   GROUP_FIELD_LABELS,
   type GroupField,
@@ -149,7 +149,7 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
   const costModel = run.cost_model ?? 'pumpfun_default';
   const fill = FILL_MODELS.find((m) => m.id === fillModel);
   const cost = COST_MODELS.find((m) => m.id === costModel);
-  const fillLabel = fill?.label ?? fillModel;
+  const fillLabel = fillModelLabel(fillModel);
   const costLabel = cost?.label ?? costModel;
   const fillHint = fill?.hint;
   const costHint = cost?.hint;

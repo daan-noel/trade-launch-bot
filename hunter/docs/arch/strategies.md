@@ -343,7 +343,21 @@ ghost Holding.
 Classifier-free SOL totals: `buy` / `sell` / `net_flow` / `gross_flow`. Lifetime is
 static (two running counters on `TokenTrack`); window is dynamic (`window_size_sec`,
 ring buffer). Use lifetime for maturity / critical-mass gates; window for
-hot-right-now. Formulas + monotonic flags:
+hot-right-now. The window adds three that lifetime has no analogue for: `buy_share`
+(direction, PERCENT 0-100), `unique_wallets` (how many people) and `trade_count` (how
+many trades — the same tape read without needing a wallet column). Formulas + monotonic
+flags:
+[`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md).
+
+## Creator history (`m_snapshot.prior_launches`)
+
+Launches by this token's creator before it, over a trailing 30-day window. The tally is
+`EngineState.creator_launches`, keyed by `creator_wallet_hash`, read strictly before its
+own increment at `TokenCreated` — one counter shared by live and `simulate`, primed from
+`TokenRepository::creator_launch_counts` so a fresh process does not read every creator
+as new. Unknown creator ⇒ `NaN`, never `0`. The lake corpus carries no creator column, so
+`MetricId::needs_creator_history` marks it and the sweep's axis resolver rejects it.
+Semantics + priming contract:
 [`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md).
 
 ## Volume/organic flow split (`m_flow_split` / `m_flow_split_window`)

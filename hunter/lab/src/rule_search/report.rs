@@ -599,6 +599,9 @@ fn replay_loaded(
             skip_duplicate_identity: opts.skip_duplicate_identity,
             duplicate_identity_window_hours: opts.duplicate_identity_window_hours,
             fill_delay_ms,
+            // The lake corpus carries no creator wallet, so `m_snapshot.prior_launches`
+            // cannot be primed here and reads `NaN` (see `LAKE_BLIND_METRICS`).
+            creator_launches: Default::default(),
         },
     );
     let row = summarize(

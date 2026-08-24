@@ -189,6 +189,15 @@ impl MetricSeries {
         self.track.seed_ix_count(n);
     }
 
+    /// Seed the creator's prior-launch count (`m_snapshot.prior_launches`).
+    ///
+    /// Same before-the-first-fold contract as [`seed_ix_count`](Self::seed_ix_count),
+    /// and the same silent failure when skipped: the metric reads `NaN` for the whole
+    /// token, so a `prior_launches == 0` gate never fires and nothing reports why.
+    pub fn seed_prior_launches(&mut self, n: u32) {
+        self.track.seed_prior_launches(n);
+    }
+
     /// The deadness clock (newest meaningful-trade time) after every fold so far —
     /// the sparse-grid builder reads it to place the dead-flip tick (plan §P2).
     pub fn last_meaningful_at(&self) -> Ts {

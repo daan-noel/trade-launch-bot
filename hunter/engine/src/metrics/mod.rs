@@ -202,6 +202,21 @@ pub enum MetricId {
     /// entry gate on it is a token filter, not a timing signal, and it can never
     /// re-trigger. `NaN` when the creation labels are unknown.
     IxCount,
+    /// How many tokens this token's creator launched **before** it (`m_snapshot`).
+    ///
+    /// A creator-history filter, not a market reading: `0` is a first-time launcher,
+    /// a large value is a serial one. Seeded once at `TokenCreated` from a running
+    /// per-creator tally and never moves, so an entry gate on it is a token filter
+    /// that can never re-trigger.
+    ///
+    /// `NaN` when the creator is unknown (no `creator_wallet_hash` on the creation
+    /// event) — an unknown creator stays unmatched by any `prior_launches` gate
+    /// rather than counting as a first launch, which is the direction that would
+    /// silently widen a `== 0` rule to everything.
+    ///
+    /// The tally is only as deep as the history the host primed it with (see
+    /// [`crate::reduce`]); a run that primes nothing counts only within itself.
+    PriorLaunches,
     /// Seconds since the price last set a **new all-time high** (`m_price_lifetime`)
     /// — NOT "since the last trade". Only a strictly higher price resets the clock,
     /// so on a token trading actively below its peak `stall` keeps climbing. Read
@@ -239,6 +254,13 @@ pub enum MetricId {
     /// people are in the token, as against `gross_flow`'s how much SOL. One wallet
     /// churning and a crowd arriving look identical in SOL and different here.
     UniqueWallets,
+    /// Trades over the trailing window (`m_flow_window`) — how BUSY the tape is, as
+    /// against `unique_wallets`' how many people are on it. One wallet re-entering ten
+    /// times reads 10 here and 1 there.
+    ///
+    /// Unlike `unique_wallets` this needs no wallet column, so it survives an offline
+    /// load that did not request wallet identity (see [`needs_wallet_identity`]).
+    TradeCount,
     /// Share of the trailing window's SOL that is buys — `buy / (buy + sell)`, in
     /// percent (`m_flow_window`).
     ///
@@ -317,6 +339,23 @@ impl MetricId {
     pub fn needs_wallet_identity(self) -> bool {
         is_flow_metric(self)
             || matches!(self, MetricId::UniqueWallets)
+    }
+
+    /// Whether this metric's value depends on the token's **creator identity across
+    /// other tokens**, not on anything inside the token's own trade stream.
+    ///
+    /// Sibling of [`needs_wallet_identity`](Self::needs_wallet_identity), and the same
+    /// class of silent failure: the lake's tokens dimension carries no creator column,
+    /// so a corpus-driven path (the grouped sweep, rule search, family search) has
+    /// nothing to seed the value from and reads `NaN` for every token — which looks
+    /// exactly like a strict gate that never fires.
+    ///
+    /// The paths that CAN serve it read the creator off the PG `tokens` row: the live
+    /// engine (a running tally over `TokenCreated`), `simulate`, and the rule readout.
+    /// Callers on a corpus path must reject a rule that uses one of these rather than
+    /// run it blind.
+    pub fn needs_creator_history(self) -> bool {
+        matches!(self, MetricId::PriorLaunches)
     }
 }
 
@@ -562,6 +601,18 @@ pub const REGISTRY: &[GroupSpec] = &[
                 monotonic: false,
                 hue: 236,
             },
+            MetricSpec {
+                id: MetricId::PriorLaunches,
+                name: "prior_launches",
+                // A tally, so half a launch: `== 0` must not turn on float noise.
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                // Static after creation - it never moves, so no monotonic derivation.
+                monotonic: false,
+                // Top of the snapshot family (212-246), still >= 30 off the violet
+                // flow family at 278.
+                hue: 246,
+            },
         ],
     },
     GroupSpec {
@@ -742,6 +793,15 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 0.5,
                 monotonic: false,
                 hue: 290,
+            },
+            MetricSpec {
+                id: MetricId::TradeCount,
+                name: "trade_count",
+                // A tally, so half a trade — same reasoning as `unique_wallets`.
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 294,
             },
             MetricSpec {
                 id: MetricId::Sell,

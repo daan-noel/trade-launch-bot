@@ -130,7 +130,11 @@ struct TargetSnap {
 }
 
 /// Config for a replay run.
-#[derive(Clone, Copy)]
+///
+/// `Clone` but not `Copy`: [`creator_launches`](Self::creator_launches) carries real
+/// data, and an `Arc` slice is the cheap way to hand the same history to every run
+/// without copying it per call.
+#[derive(Clone)]
 pub struct ReplayConfig {
     /// The run's wall-clock present — the deadness "now" every synthetic tick
     /// advances toward (plan 5.1: run-time as-of). Captured once by the caller.
@@ -159,6 +163,15 @@ pub struct ReplayConfig {
     /// window is empty books `FillFailed` (nothing printed to fill against); an
     /// exit falls back to the last-spot mark, same as an empty undelayed window.
     pub fill_delay_ms: i64,
+    /// Launch history to prime `m_snapshot.prior_launches` with, as
+    /// `(creator_wallet_hash, launches strictly before the run window)`.
+    ///
+    /// The replay tallies creations as it folds them, but its corpus is a FILTERED
+    /// slice — one fingerprint, one date window — so a creator on their 500th launch
+    /// would read as their 1st or 2nd. Empty means "count only within this run",
+    /// which is right for a fixture and wrong for a real backtest, so the caller that
+    /// has a token history is the one that must fill this.
+    pub creator_launches: Arc<[(u64, u32)]>,
 }
 
 impl Default for ReplayConfig {
@@ -169,6 +182,7 @@ impl Default for ReplayConfig {
             skip_duplicate_identity: false,
             duplicate_identity_window_hours: hunter_engine::dupe_guard::DEFAULT_WINDOW_HOURS,
             fill_delay_ms: 0,
+            creator_launches: Arc::from(Vec::new()),
         }
     }
 }
@@ -274,6 +288,9 @@ struct Builder {
 impl Replay {
     fn new(rules: &[LoadedRule], fps: &[EngineFingerprint], cfg: ReplayConfig) -> Self {
         let mut state = EngineState::new();
+        // Before any event: the tally has to know the history that precedes the
+        // corpus, or every creator in it reads as a first-time launcher.
+        state.prime_creator_launches(cfg.creator_launches.iter().copied());
         // The copycat guard is an operator policy, not a market input — set from the
         // run config, exactly as the live loop sets it from `app_settings`.
         state.set_dupe_guard_policy(
@@ -1244,7 +1261,7 @@ mod tests {
             ]
         };
         let cfg = ReplayConfig { as_of: at(1000.0), ..Default::default() };
-        let a = run_replay(&rules, &fps, mk(), cfg);
+        let a = run_replay(&rules, &fps, mk(), cfg.clone());
         let b = run_replay(&rules, &fps, mk(), cfg);
         let key = |o: &[PositionOutcome]| {
             let mut v: Vec<_> = o

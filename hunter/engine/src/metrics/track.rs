@@ -130,6 +130,12 @@ impl TokenTrack {
         self.snapshot.seed_ix_count(n);
     }
 
+    /// Seed the creator's prior-launch count (`m_snapshot.prior_launches`). Static
+    /// for the token's whole life — see [`SnapshotState::seed_prior_launches`].
+    pub fn seed_prior_launches(&mut self, n: u32) {
+        self.snapshot.seed_prior_launches(n);
+    }
+
     /// Fold one trade into every group.
     pub fn on_trade(&mut self, t: TradeLite) {
         self.snapshot.on_trade(t.reserve_sol);
@@ -195,7 +201,9 @@ impl TokenTrack {
     ) -> f64 {
         use MetricId::*;
         match id {
-            Time | Liquidity | IxCount => self.snapshot.value(id, self.created_at, now),
+            Time | Liquidity | IxCount | PriorLaunches => {
+                self.snapshot.value(id, self.created_at, now)
+            }
             Stall | Trail | LifeRise => self.price_lifetime.value(id, now),
             LifeGrossFlow | LifeNetFlow | LifeBuy | LifeSell => self.flow_lifetime.value(id),
             WinTrail | WinRise => {
@@ -204,7 +212,7 @@ impl TokenTrack {
                     None => f64::NAN,
                 }
             }
-            GrossFlow | NetFlow | Buy | Sell | UniqueWallets | BuyShare => {
+            GrossFlow | NetFlow | Buy | Sell | UniqueWallets | TradeCount | BuyShare => {
                 match window_secs.and_then(|ws| self.windows.get(&window_key(ws))) {
                     Some(w) => w.value(id, now),
                     None => f64::NAN,

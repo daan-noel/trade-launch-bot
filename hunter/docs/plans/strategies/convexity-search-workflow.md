@@ -1,7 +1,11 @@
 # Convexity search: the from-scratch guide
 
-**This file stands alone.** It assumes no other document, no session history and no prior
-result. Read it start to finish and you can run the search that produces tradable rules.
+**Read [edge-at-real-latency.md](edge-at-real-latency.md) first.** It states the fill,
+cost and exit-shape constraints that decide whether any result here is real, and it
+governs this file — where the two disagree, that one wins.
+
+**Otherwise this file stands alone.** It assumes no session history and no prior result.
+Read it start to finish and you can run the search that produces tradable rules.
 
 Results produced by this method live elsewhere; nothing here depends on them.
 
@@ -66,36 +70,56 @@ episodes return more than +100%, and those pay for everything else.
 Three independent questions. Answer them separately, then combine. Confusing them is the
 single most common way to waste a week.
 
+**Order by what each answer depends on.** Some facts hold no matter what else is decided;
+others are meaningless until something upstream is fixed. Do the independent ones first.
+
 ```
-   WHICH TOKEN?              WHICH MOMENT?            WHERE NEVER TO GO?
-   creation-time facts       multi-window tape state  dead zones
-   (fingerprint, ix count,   (flow, price, activity   (regions with ~0 runner
-    launch client)            at 0.4s .. lifetime)     rate and 0/7 days)
-          |                         |                        |
-          +-------------------------+------------------------+
-                                    |
-                        two-regime exit (stop + wide trail)
-                                    |
-                              gates, then ship
+  INDEPENDENT of exit and fill          DEPENDS on the exit
+  ----------------------------          -------------------------------
+  "this token rugs to -90%"             "is this moment convex?"
+  loses under EVERY exit, at            the SAME 16,874 entries price
+  EVERY latency                         -65.44 SOL under one exit and
+                                        -20.66 SOL under another
+          |                                          |
+          v                                          v
+   1. CUT the poison           ->    2. FIX the exit SHAPE    ->    3. Find the MOMENT
+      never-enter blacklist            armed / cause-based            on clean tokens,
+      decision-time facts only         (section 5)                    with a working exit
+          |                                                                 |
+          +-------------------- 4. tune thresholds, re-check the cut once ---+
+                                            |
+                                    gates, then ship
 ```
 
 - An island has **two coordinates**: which token you are in, and which moment inside it.
-  Searching only the moment leaves most of the available edge on the table.
+  Searching only the moment leaves most of the available edge on the table, and the token
+  axis is the under-searched one.
+- **The cut pays first and costs nothing.** Loss avoidance by never entering beats loss
+  avoidance by exiting well: no fee, no impact and no adverse fill, because the trade never
+  happens.
+- **The cut is also what makes the moment search possible.** A greedy search cannot start
+  from a deeply negative universe - no single term is positive there, so it reports an empty
+  space. Rug and instant-death tokens contaminate every region equally; removing them raises
+  the baseline and lifts signal-to-noise in every remaining metric at once.
 - They do **not** multiply cleanly. A good token still has ~150 buyable moments and only a
   handful are the right one. Expect the token axis to add ~1.2-1.5x on top of state, not 3x.
-- **The dead-zone question is separate and pays first.** Loss avoidance by never entering
-  beats loss avoidance by exiting well, because you pay nothing at all. Look for dead zones
-  before tuning any exit.
 
 ### The five phases, in order
 
+0. **Fix cost first.** Size as a fraction of pool depth, because impact is exactly
+   `buy / vsol`. Arithmetic, not search - see [execution-costs.md](execution-costs.md).
 1. **Build the decision-point extract** (section 4). One pass over the tape; every later
    question becomes an in-memory scan.
-2. **Fix the exit a priori** (section 5). Do not search for it. Choose the shape from its
-   mechanism, tune only thresholds, and only after the entry is settled.
-3. **Partition the whole space** (section 6) into readable leaves, and price every leaf.
-4. **Gate everything that survives** (section 8).
-5. **Name the mechanism in one sentence per island.** If you cannot, you have not found an
+2. **Cut the poison tokens.** Build the never-enter blacklist from decision-time facts
+   alone. This is the only step whose answer does not move when the exit changes, which is
+   why it is the only one that can be settled before the exit.
+3. **Settle the exit (section 5) BEFORE the moment search, not after.** Choose the shape
+   from its mechanism, then tune thresholds on the cut population. Entry edge dies at
+   latency and exit edge does not, so this is where the money is.
+4. **Partition the remaining space** (section 6) into readable leaves, and price every leaf.
+5. **Gate everything that survives** (section 8), then tune thresholds and re-check the cut
+   once - the cut and the exit are coupled, the moment is separable.
+6. **Name the mechanism in one sentence per island.** If you cannot, you have not found an
    island - you have found a fit.
 
 ---
@@ -168,25 +192,31 @@ points of pure fiction.
 **Do not select an exit by its own measured performance.** This fails reliably: a shape
 chosen because it scored best in-sample flips sign out of sample.
 
-Choose the shape from mechanism:
+Choose the shape from mechanism — and the mechanism is set by the fill, not by the
+price path. A stop or trail waits for adverse movement, so it is adversely selected at its
+own fill and cannot be modelled as filling at its level. See
+[edge-at-real-latency.md](edge-at-real-latency.md) §2.
 
 ```
-EXIT   stop_loss S   OR   retrace >= T off the RUNNING PEAK
+EXIT   arm_above_pct A + retrace >= T      # armed: trails only from strength
+       OR a cause-based leg                # flow reversal, before price turns
 ```
 
+- **Arming is required, not optional.** An unarmed `retrace >= N` is a hard -N% stop:
+  `PositionCtx::at_fill` seeds `peak_price = entry_price`, so retrace measures
+  drop-from-entry until price rises. Unarmed trails turn 21% of winners into losers and no
+  width from 2-20 rescues it. See [armed-trailing-stop.md](armed-trailing-stop.md).
 - **The stop is a falsification leg.** The thesis was "demand is arriving". If price
-  immediately goes the other way, the thesis is wrong. Small: a few percent.
-- **The trail must be WIDE.** A tight trail sells the first pullback of a move that has not
-  finished, and the band that pays for the book is `>= +50%`. Expect the optimum well above
-  10%.
+  immediately goes the other way, the thesis is wrong. Small: a few percent — and priced at
+  the honest fill, ~3.5% past its own level.
+- **Trail width is an empirical question, not a prior.** Tighter beats wider on some
+  populations once the fill is charged. Report the surface, not the best cell: **if it is
+  not a plateau, it is not real.**
 - **No take-profit, no hold cap.** Both cap the right tail.
 
-Then tune only the two thresholds, and only after the entry is settled. Report the whole
-`(stop x trail)` surface, not the best cell: **if it is not a plateau, it is not real.**
-
-**Arming (a tight trail that widens after the position proves itself) is usually
-unnecessary.** A flat wide trail already is the proven-thesis regime. Test it, but do not
-assume it helps.
+**The exit is worth more than the entry** — on one island the exit alone moves expectancy
+by +0.0028 SOL/trade. Settle it on a known population before searching entries; an entry
+search wearing a bad exit reports an empty space.
 
 ### The bug that will cost you a week
 
@@ -270,15 +300,18 @@ approximately nothing. Conditional on an impulse trigger it is materially positi
 Measuring the average when the conditional binds makes every impulse rule look about two
 points worse than it is.
 
-**Price at the honest fill.** Two models matter:
+**Price at the honest fill, on BOTH legs.** `FillModel::LagMs(115)` - the measured
+decide-to-fill p50 - is the number to believe. The slot-shaped models only bracket it:
+`FirstInWindow` assumes an ordering privilege no latency buys, and the `NextSlot*` pair
+assumes the signal's own slot is never reached when the live book reaches it ~52.6% of the
+time. **A latency correction applied to one leg is not a latency correction** - the exit-leg
+artifact is the larger of the two. See
+[edge-at-real-latency.md](edge-at-real-latency.md) and
+[fill-and-cost-models.md](fill-and-cost-models.md).
 
-- `FirstInWindow` - the next print. Roughly half of these land in the signal's own slot, a
-  block your transaction had to already be inside.
-- `NextSlotFirst` - the first print of a strictly LATER slot. **This is the honest reactor
-  counterfactual and the one to believe.**
-
-**A term that only pays at the next print is buying fill luck, not signal.** Always price
-candidate terms both ways; some invert.
+**A term that only pays at the next print is buying fill luck, not signal.** Always report
+the zero-lag column beside the honest one; the ratio is the artifact size, and some terms
+invert.
 
 **Audit every feature for look-ahead.** Time-until-the-next-print is not knowable at the
 decision instant. Neither is anything derived from the fill.
@@ -308,12 +341,15 @@ Nothing ships without all of these. Each has killed a plausible result.
 | **Days positive** | per-day sign, not just the total | one day carries the week |
 | **Fill model** | price at next-slot as well as next-print | term only pays on same-slot fills |
 | **Beat random** | compare against ~20 random draws of equal size | the region is not special |
+| **Runner rate** | does `>= +50%` frequency SURVIVE the cut | expectancy rose by deleting the right tail |
+| **Decision-time only** | is every cut term knowable BEFORE entry | the filter reads the outcome it predicts |
 
 **A plateau, not a peak.** Report the whole surface around a chosen threshold. If neighbours
 are negative, it is noise.
 
-**Latency ladder.** Price at next print, +1, +2, +3 and +5 slots. A real edge decays
-gradually. An edge that dies at +1 slot is an execution race you will lose.
+**Latency ladder.** Price at 0 / 50 / 115 / 200 ms on both legs. A real edge decays
+gradually. An edge whose sign is already gone by 50 ms is a same-block race, not a
+reaction, and no hardware wins it.
 
 **Concurrency cap.** Unlimited simultaneous positions is not a live setting. Re-run with a
 cap; the cap binds on trade count first and tells you the real operating point.

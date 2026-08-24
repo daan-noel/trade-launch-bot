@@ -429,6 +429,28 @@ async fn load_flow_ctx(
 ///
 /// `None` ⇒ the metric reads `NaN` and no `ix_count` condition matches, which is the
 /// honest reading for a token whose creation labels were never stored.
+/// The creator's launches strictly before this token, for `m_snapshot.prior_launches`.
+/// `None` when the token row or its creator is unknown — the metric then reads `NaN`,
+/// which is the honest answer and never a `0` a `== 0` gate would match.
+async fn load_prior_launches(app_state: &DeployState, mint: &str) -> Option<u32> {
+    let t = app_state.core.token_repo().find_by_mint(mint).await.ok().flatten()?;
+    if t.creator_wallet.is_empty() {
+        return None;
+    }
+    match app_state
+        .core
+        .token_repo()
+        .count_prior_launches(&t.creator_wallet, t.created_at)
+        .await
+    {
+        Ok(n) => Some(n.max(0) as u32),
+        Err(e) => {
+            tracing::warn!(mint, error = %e, "readout replay: prior_launches unseeded");
+            None
+        }
+    }
+}
+
 async fn load_ix_count(app_state: &DeployState, mint: &str) -> Option<usize> {
     match app_state.core.token_repo().find_by_mint(mint).await {
         Ok(Some(t)) => {
@@ -538,6 +560,7 @@ async fn replay_for_position(
     let (patterns, creator_wallet_hash) =
         load_flow_ctx(app_state, &position.mint_address, rule.fingerprint_id).await;
     let ix_count = load_ix_count(app_state, &position.mint_address).await;
+    let prior_launches = load_prior_launches(app_state, &position.mint_address).await;
 
     let created_at = replay_created_at(app_state, &position.mint_address, &trades).await;
     let lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
@@ -557,7 +580,7 @@ async fn replay_for_position(
         replay_readout(
             &compiled,
             lites,
-            &ReplayCtx { created_at, entry, stage, flow, ix_count },
+            &ReplayCtx { created_at, entry, stage, flow, ix_count, prior_launches },
             at,
         )
     })
@@ -759,6 +782,7 @@ async fn series_response(
     };
     let (patterns, creator_wallet_hash) = load_flow_ctx(app_state, &mint, rule.fingerprint_id).await;
     let ix_count = load_ix_count(app_state, &mint).await;
+    let prior_launches = load_prior_launches(app_state, &mint).await;
 
     let created_at = replay_created_at(app_state, &mint, &trades).await;
     let lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
@@ -785,7 +809,7 @@ async fn series_response(
         replay_series(
             &compiled,
             lites,
-            &ReplayCtx { created_at, entry, stage, flow, ix_count },
+            &ReplayCtx { created_at, entry, stage, flow, ix_count, prior_launches },
             as_of,
             Some(MAX_READOUT_SERIES_ROWS),
             record_from,

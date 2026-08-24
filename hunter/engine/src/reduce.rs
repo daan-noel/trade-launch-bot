@@ -85,6 +85,10 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             let mut track = state.new_track(at);
             if let Some(h) = creator_wallet_hash {
                 track.seed_creator(h);
+                // Strictly-prior count, and the increment happens here so the tally
+                // advances exactly once per creation — the duplicate-creation guard
+                // above has already returned, so a replayed event cannot double-count.
+                track.seed_prior_launches(state.take_prior_launches(h));
             }
             track.seed_ix_count(fp.ix_labels.len());
             let mut token = TokenState {

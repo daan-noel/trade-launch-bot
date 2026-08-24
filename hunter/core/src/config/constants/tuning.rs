@@ -143,6 +143,15 @@ pub const LAB_TOKEN_LIST_LIMIT: i64 = 1_000_000;
 /// Only tokens created within this window are pulled into the startup cache seed.
 /// Tokens older than this aren't tracked live until they trade again.
 pub const SEED_ACTIVITY_WINDOW_DAYS: i64 = 7;
+/// How far back a `m_snapshot.prior_launches` tally is primed — the trailing window
+/// a creator's launch count is counted over.
+///
+/// The metric is a creator-history filter, and history has to be bounded somewhere:
+/// unbounded would make the count depend on how long the `tokens` table has existed,
+/// so the same creator would read differently in a backtest than live. A trailing
+/// window makes it one definition on both sides. Widening it is a rule change, not a
+/// tuning knob — every `prior_launches` threshold is denominated in it.
+pub const PRIOR_LAUNCH_WINDOW_DAYS: i64 = 30;
 /// Lab's token-list snapshot window: how far back the full in-RAM list base reaches.
 /// Wider than the live tracking seed window because lab analyzes historical tokens,
 /// not just the live-tracked recent set. Tune up for deeper local history.

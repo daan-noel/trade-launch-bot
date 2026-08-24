@@ -367,19 +367,45 @@ export type FillModelId =
   | 'first_in_window'
   | 'next_slot_first'
   | 'next_slot_median'
-  | 'signal_price';
+  | 'signal_price'
+  /** Wall-clock reaction lag in ms (`lag_115`). The only model keyed to a MEASURED
+   *  decide-to-fill latency rather than to slot structure — it can fill inside the
+   *  signal's own slot and still charge a delay, which the slot-shaped models
+   *  bracket but cannot express. Backend `FillModel::LagMs`. */
+  | `lag_${number}`;
 
 /** Selectable fill models for the Simulate / dry-run controls, ordered as a
  *  pessimism spectrum. `worst_case` is the default (live-paper parity) and
  *  `signal_price` the unreachable ceiling; the two `next_slot_*` models are the
- *  reachable middle — same window, minus the signal's own slot. */
+ *  reachable middle — same window, minus the signal's own slot. The two `lag_*`
+ *  presets are the bot's own measured decide-to-fill p50 / p90. */
 export const FILL_MODELS: ReadonlyArray<{ id: FillModelId; label: string; hint: string }> = [
   { id: 'worst_case', label: 'Worst-case', hint: 'Adverse fill — live paper + sweep parity (default)' },
   { id: 'first_in_window', label: 'First-in-window', hint: 'Next print after the signal — may be same-slot, so partly unreachable' },
+  { id: 'lag_115', label: 'Lag 115 ms (p50)', hint: "The bot's measured decide-to-fill median — first print at least 115 ms after the signal" },
+  { id: 'lag_235', label: 'Lag 235 ms (p90)', hint: "The bot's decide-to-fill p90 — the stress read; a real edge survives it" },
   { id: 'next_slot_first', label: 'Next-slot first', hint: 'First print at slot S+1 — earliest a +1-slot landing can hit' },
   { id: 'next_slot_median', label: 'Next-slot median', hint: 'Adverse median at slot S+1 — mid-dispersion, still a real print' },
   { id: 'signal_price', label: 'Signal price', hint: 'Zero-slippage — optimistic bound' },
 ];
+
+/** The lag in ms a `lag_<ms>` id carries, or `null` for every other model. */
+export function fillModelLagMs(id: string | null | undefined): number | null {
+  const m = /^lag_(\d+)$/.exec(id ?? '');
+  return m ? Number(m[1]) : null;
+}
+
+/** Display label for ANY fill model id, including a `lag_<ms>` the preset list does
+ *  not name. Never returns an object: the backend used to serialize the lag model as
+ *  `{lag_ms: 115}`, which React renders as a crash, so every call site goes through
+ *  this instead of printing the raw value. */
+export function fillModelLabel(id: string | null | undefined): string {
+  if (!id) return FILL_MODELS[0].label;
+  const known = FILL_MODELS.find((m) => m.id === id);
+  if (known) return known.label;
+  const lag = fillModelLagMs(id);
+  return lag != null ? `Lag ${lag} ms` : String(id);
+}
 
 /** Which execution-cost model prices a simulated round-trip (backend
  *  `trading_core::strategies::kernel::CostModelKind`). */

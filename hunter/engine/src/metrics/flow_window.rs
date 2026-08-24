@@ -219,6 +219,15 @@ impl WindowState {
                 }
             }
             MetricId::UniqueWallets => self.unique_wallets(now),
+            // Trades in `(now - w, now]`. `buf` holds one entry per trade, so this is
+            // the same two-ended correction the SOL sums use, on a count instead.
+            MetricId::TradeCount => {
+                let cutoff = now - self.width;
+                let n = self.buf.len()
+                    - self.buf.iter().take_while(|&&(ts, _)| ts < cutoff).count()
+                    - self.buf.iter().rev().take_while(|&&(ts, _)| ts > now).count();
+                n as f64
+            }
             _ => f64::NAN,
         }
     }
@@ -370,6 +379,49 @@ mod tests {
         assert_eq!(w.value(MetricId::UniqueWallets, ts(10.5)), 1.0);
         w.evict(ts(18.5)); // now the last one goes too
         assert_eq!(w.value(MetricId::UniqueWallets, ts(18.5)), 0.0);
+    }
+
+    /// `trade_count` counts TRADES where `unique_wallets` counts PEOPLE, and it must
+    /// survive the same adversarial read instants as every other window read.
+    #[test]
+    fn trade_count_counts_trades_not_wallets() {
+        let script: &[(Side, f64, f64, u64)] = &[
+            (Side::Buy, 3.0, 0.0, 1),
+            (Side::Sell, 1.0, 4.0, 2),
+            (Side::Buy, 2.0, 9.0, 1), // wallet 1 again - a second TRADE, same person
+            (Side::Buy, 5.0, 7.0, 3), // regressed
+            (Side::Sell, 4.0, 12.0, 2),
+            (Side::Buy, 1.5, 11.0, 4), // regressed
+            (Side::Sell, 0.5, 25.0, 1),
+        ];
+        for window in [1.0_f64, 5.0, 10.0, 60.0] {
+            let mut w = WindowState::new(window);
+            for &(side, sol, at, wallet) in script {
+                w.on_trade(side, sol, ts(at), wallet);
+                for probe in [-30.0, -3.0, 0.0, 0.5, 3.0, 12.0] {
+                    let now = ts(at + probe);
+                    let brute = w
+                        .buf
+                        .iter()
+                        .filter(|&&(t, _)| in_window(t, now, window))
+                        .count() as f64;
+                    assert_eq!(
+                        w.value(MetricId::TradeCount, now),
+                        brute,
+                        "w={window} at={at} probe={probe}",
+                    );
+                }
+            }
+        }
+
+        // One wallet churning is 1 wallet and 3 trades - the whole reason this metric
+        // is not a rename of `unique_wallets`.
+        let mut w = WindowState::new(60.0);
+        for at in [0.0, 1.0, 2.0] {
+            w.on_trade(Side::Buy, 1.0, ts(at), 7);
+        }
+        assert_eq!(w.value(MetricId::UniqueWallets, ts(2.0)), 1.0);
+        assert_eq!(w.value(MetricId::TradeCount, ts(2.0)), 3.0);
     }
 
     /// The distinct count must survive the same adversarial read instants the SOL

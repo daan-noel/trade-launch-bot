@@ -212,9 +212,31 @@ derived-unsatisfiability disarm (`arm.rs` reads the registry flag).
 Rule save **warns** (does not reject) when params reference flow groups but the
 fingerprint is unconfigured.
 
+## Creator history (`m_snapshot.prior_launches`)
+
+How many tokens the token's creator launched **before** it, counted over a trailing
+`PRIOR_LAUNCH_WINDOW_DAYS` (30) window. A creator-history filter: `0` is a first-time
+launcher, a large value a factory. Static from `TokenCreated`, so a gate on it is a token
+filter that can never re-trigger.
+
+The tally lives in `EngineState.creator_launches`, keyed by `creator_wallet_hash`, and is
+read strictly before its own increment — so a creator's first token reads `0`. It is ONE
+tally shared by every path that folds events, which is what keeps live and `simulate` from
+disagreeing.
+
+| fact | why |
+| --- | --- |
+| **`0` is a real value; unknown is `NaN`** | A creation event with no `creator_wallet_hash` leaves the metric unseeded. Seeding `0` there would widen `= 0` to every token whose creator the feed failed to resolve — the one direction that silently inflates the rule. |
+| **The tally must be PRIMED** | A fresh process starts empty and reads every creator as new. `EngineState::prime_creator_launches` loads real history first: live from `TokenRepository::creator_launch_counts` at boot, `simulate` from the same query bounded to `[corpus_start - 30d, corpus_start)`. |
+| **The window is part of the rule** | Every threshold is denominated in `PRIOR_LAUNCH_WINDOW_DAYS`. Widening it re-scales every `prior_launches` condition already authored. |
+| **Unavailable on lake-corpus paths** | The lake's tokens dimension carries no creator column, so the grouped sweep, rule search and family search cannot seed it. `MetricId::needs_creator_history` flags this and the sweep's axis resolver REJECTS the axis rather than scoring every cell on zero trades. Use `simulate`, which reads the creator off the PG `tokens` row. |
+
+Same class of load-time hazard as `needs_wallet_identity`: the value depends on data the
+loader may not have asked for, and the failure looks like a strict gate that never fires.
+
 ## Semantics that read as one thing and mean another
 
-Six facts that produce silently wrong rules rather than errors. None is derivable from the
+Seven facts that produce silently wrong rules rather than errors. None is derivable from the
 registry, and each has cost a search run.
 
 | fact | what goes wrong without it |
@@ -224,6 +246,7 @@ registry, and each has cost a search run.
 | **`m_price_lifetime.stall` is seconds since the last ALL-TIME HIGH**, not since the last trade | An exit below ~60 fires on ordinary chop. It caps every hold, so it doubles as an entry filter. `m_position.held` is the time stop. |
 | **`m_position.retrace` without `arm_above_pct` is a hard stop from entry** — the peak seeds at entry | Reads as a trailing stop, behaves as a fixed stop. |
 | **`m_position` is exit-only** | It reads `NaN` before a fill, so it could never fire on entry. The sweep rejects it there. |
+| **`m_flow_window.buy_share` is PERCENT 0-100, not a 0-1 ratio** | An analysis carrying it as a ratio and authoring `>= 0.8` writes a gate every token passes, which reads as a working rule that took every trade in the universe. |
 | **`take_profit` / `stop_loss` axes reject `null`** | To test "no take-profit", omit the axis or pass an unreachable value (`1000` TP, `100` SL). |
 
 Combination semantics: **entry conditions AND together, exit conditions OR together.** Adding

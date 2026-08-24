@@ -10,6 +10,10 @@
 //!   Seeded once from `TokenCreated` and never moves, so it is a token property, not
 //!   a market reading. Undefined (`NaN`) when the creation fingerprint carried no
 //!   labels, which is how an unknown launch stays unmatched by any `ix_count` gate.
+//! * `prior_launches` — how many tokens the creator launched before this one. Seeded
+//!   once from the reducer's running per-creator tally and never moves. Undefined
+//!   (`NaN`) when the creator is unknown, so an unknown creator stays unmatched
+//!   rather than reading as a first launch.
 //!
 //! Static state is shared by every rule armed on the token (computed once).
 
@@ -23,6 +27,9 @@ pub struct SnapshotState {
     /// Instruction count of the creation transaction, seeded from `TokenCreated`.
     /// `None` when the fingerprint carried no labels.
     ix_count: Option<u32>,
+    /// Creator's launches strictly before this token, seeded from `TokenCreated`.
+    /// `None` when the creator is unknown.
+    prior_launches: Option<u32>,
 }
 
 impl SnapshotState {
@@ -47,6 +54,21 @@ impl SnapshotState {
         self.ix_count.map_or(f64::NAN, f64::from)
     }
 
+    /// Seed the creator's prior-launch count. Called once, from `TokenCreated`.
+    ///
+    /// Unlike [`seed_ix_count`](Self::seed_ix_count) a `0` here is a REAL value — the
+    /// creator's first launch is the whole point of the metric — so absence has to be
+    /// carried by not calling this at all, never by seeding `0`.
+    pub fn seed_prior_launches(&mut self, n: u32) {
+        self.prior_launches = Some(n);
+    }
+
+    /// `prior_launches` — the creator's launches before this token; `NaN` when the
+    /// creator is unknown.
+    pub fn prior_launches(&self) -> f64 {
+        self.prior_launches.map_or(f64::NAN, f64::from)
+    }
+
     /// `time` — seconds since creation. Free function: needs no state.
     pub fn time(created_at: Ts, now: Ts) -> f64 {
         secs_between(created_at, now)
@@ -64,6 +86,7 @@ impl SnapshotState {
             MetricId::Time => Self::time(created_at, now),
             MetricId::Liquidity => self.liquidity(),
             MetricId::IxCount => self.ix_count(),
+            MetricId::PriorLaunches => self.prior_launches(),
             _ => f64::NAN,
         }
     }
@@ -96,6 +119,19 @@ mod tests {
         assert_eq!(s.liquidity(), 12.5);
         s.on_trade(9.0); // most recent wins
         assert_eq!(s.liquidity(), 9.0);
+    }
+
+    /// `0` prior launches is the metric's most useful value, so it must survive the
+    /// round-trip as `0.0` and not be swallowed as "unknown" the way `ix_count`'s
+    /// empty-label case is.
+    #[test]
+    fn prior_launches_zero_is_a_real_value_not_absence() {
+        let mut s = SnapshotState::default();
+        assert!(s.prior_launches().is_nan(), "unseeded creator is unknown, not first");
+        s.seed_prior_launches(0);
+        assert_eq!(s.prior_launches(), 0.0);
+        s.seed_prior_launches(137);
+        assert_eq!(s.prior_launches(), 137.0);
     }
 
     #[test]

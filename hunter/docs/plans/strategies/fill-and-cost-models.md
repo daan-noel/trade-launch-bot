@@ -19,9 +19,18 @@ they are). Code: [`core/src/strategies/paper_fill.rs`](../../../core/src/strateg
 | Fill | `next_slot_first` | the first print at slot **S+1** | you want the earliest price a +1-slot landing can reach |
 | Fill | `next_slot_median` | the adverse median at slot **S+1** | you want the middle of the fill dispersion, not either tail |
 | Fill | `signal_price` | the signal trade's own spot | you want the zero-slippage ceiling |
+| Fill | `lag_<ms>` | the first print `<ms>` after the signal | **you want the verdict.** The only model keyed to the bot's measured reaction time |
 | Cost | `pumpfun_impact` | fee + tip + **our own** `B/vsol` impact | **default choice.** The only size-aware one |
 | Cost | `pumpfun_fee_only` | fee + tip | you want a zero-impact upper bound |
 | Cost | `pumpfun_default` | fee + tip + flat 1%/leg slippage | never, for a new run — legacy only |
+
+`lag_<ms>` is a **bare string** on the wire like every other model — `lag_115`, not
+`{"lag_ms": 115}`. That is what lets it live in the sweep's `TEXT` column, a request DTO
+and a TypeScript union without a payload-variant special case; a JSON object there
+serialized into the sweep as `NULL` (silently re-reading as `worst_case`) and rendered in
+the UI as `[object Object]`. `FillModel::parse` also accepts the legacy object form, so
+anything already stored keeps its meaning. The dropdown carries `lag_115` (the bot's
+measured decide-to-fill p50) and `lag_235` (its p90 — the stress read).
 
 ---
 
@@ -42,16 +51,25 @@ of the window entirely, and the window is then just `S`.
 
 The fill model chooses **which candidate in that window prices the leg**. Nothing else.
 
-## Half that window is unreachable
+## Half that window is unreachable — but not the half the slot models assume
 
-Slot `S` is the block the signal landed in. Pricing against a print there means our
-transaction was already inside that block — built and submitted before the signal
-existed. When the print is a bundle leg it is unreachable outright: bundle txs are
-atomic and ordered, so nothing sequences between them.
+Two different things get confused here, and the distinction decides which model is
+honest.
 
-Measured p50 landing is **+1 slot**. So slot `S` prints are prices we cannot hit, and
-slot `S+1` is where we actually arrive. That split is what the two `next_slot_*` models
-encode — same window, same eligibility, candidates restricted to `S+1`.
+**Landing in slot `S` is reachable.** The live book puts `entry_slot - target_slot` at
+p50 **0**, with **52.6%** of real buys landing in the trigger's own slot (n=76 real
+positions). A slot is ~400 ms wide; a trigger that prints early in one leaves room for
+a 115 ms round trip to make the same block.
+
+**Being sequenced immediately after a chosen print is not.** Order inside a block is the
+leader's call, not something speed buys. A bundle leg is unreachable outright — bundle
+txs are atomic, so nothing sequences between them.
+
+So `first_in_window` is optimistic for a reason that has nothing to do with speed: it
+assumes we are always the *very next print*, an ordering privilege no latency buys. The
+`next_slot_*` pair removes that privilege, but overcorrects — it drops slot `S`
+entirely, and we land there half the time. The two bracket reality without expressing
+it, which is what `lag_ms` exists for.
 
 ## Entry, priced five ways
 
@@ -128,6 +146,46 @@ have no corpus row behind it, and a `PaperFill` carries `trade_idx` / `slot` /
 taken-position set and break the reprice invariant below; sparse tape means filling into
 a gap at an unknown price, so the adverse end is the defensible assumption.
 
+## The wall-clock model — `lag_ms`
+
+Every model above is shaped by **slot structure**. `lag_ms` is shaped by the clock: it
+takes the first qualifying candidate whose `block_time` is at least `N` ms after the
+signal's, inside the same window.
+
+That is the only model that can be pointed at a *measured* number. The bot's
+decide→fill is p50 **115 ms** (send path 8 ms, ACK→fill 107 ms), so `{"lag_ms": 115}`
+grades a rule at the latency it actually trades under, instead of at a bound.
+
+Signal fires at t=0 in slot 100:
+
+| idx | slot | t | price |
+| --- | --- | --- | --- |
+| **0** | 100 | 0 ms | **1.0** ← the signal |
+| 1 | 100 | +50 ms | 1.2 |
+| 2 | 100 | +200 ms | 1.4 |
+| 3 | 101 | +1000 ms | 1.5 |
+
+| fill model | picks | price |
+| --- | --- | --- |
+| `first_in_window` | idx 1 — the next print, no delay charged | **1.2** |
+| **`lag_ms: 115`** | **idx 2 — first print ≥115 ms out, still slot 100** | **1.4** |
+| `next_slot_first` | idx 3 — slot 100 dropped entirely | **1.5** |
+
+This is the behaviour neither bracket has: a delay is charged **without** pretending we
+missed the block. (Exact numbers from `the_lag_model_charges_wall_clock_not_slot_structure`
+in `paper_fill.rs`.)
+
+`block_time` is the **ingest** clock — a Yellowstone transaction frame carries no chain
+time, so the decoder stamps `received_at`. That is the correct clock here: it measures
+when a print could first have been reacted to, which is exactly what a reaction-time
+model needs.
+
+**Fallback and scope.** When the window holds no candidate that late it degrades to
+`worst_case`, exactly as the `next_slot_*` pair does, so eligibility stays identical.
+Serde is `{"lag_ms": 115}` (alias `{"lag": 115}`). Simulate-only: the grouped sweep
+persists its fill model as a bare string and cannot round-trip a payload variant, and
+books `worst_case` by design regardless.
+
 ## The differences between entry and exit
 
 1. **Direction of "adverse".** Entry worst = the *highest* price; exit worst = the
@@ -141,7 +199,7 @@ a gap at an unknown price, so the adverse end is the defensible assumption.
 4. **Which way the median leans.** Entry takes the higher of two middle prints, exit
    the lower — the same mirroring as `worst_case`, at half the amplitude.
 
-## What is identical across all five models
+## What is identical across all six models
 
 **The set of positions taken.** Every model shares the same fill *eligibility* — a
 qualifying candidate must exist in the window, or the empty-window fallback applies.
@@ -185,12 +243,25 @@ legs.
   an upper bound. **If a strategy is not profitable under `signal_price`, no amount of
   speed will save it** — that is exactly the question this mode answers, and the reason
   it exists.
+- **`lag_ms`** — the one that settles an argument. The slot models give a bound; a
+  negative under `next_slot_first` only proves "negative at ~400 ms" and says nothing
+  about 115 ms. Grade the candidate at the measured decide→fill number and read the
+  sign there. Run 50 / 115 / 200 together: where the sign flips tells you whether there
+  is a latency budget worth spending on, or none at all.
 
 The productive move is to run the spread rather than one number. A rule that is +8%
 under signal and −4% under worst is a latency bet; one that is +6% / +5% / +4% is a real
 edge. A large gap between `first_in_window` and `next_slot_first` says the specific
 thing that the edge lives in same-slot prints — i.e. it is a same-block race, not a
 reaction.
+
+**Rank on a priced fill, never on `first_in_window`.** A search that scores candidates
+at the next print walks straight into the densest bursts, because that is where the
+unearned ordering privilege is worth most. Any entry search reports the
+gap-to-next-print distribution of its selected trades beside the PnL: money concentrated
+under ~50 ms is an artifact, not an edge. See
+[island-fill-artifact.md](../../history/2026-08-22-island-is-a-same-slot-artifact.md)
+for the case that established this.
 
 ---
 
