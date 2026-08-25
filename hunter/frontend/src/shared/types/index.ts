@@ -885,6 +885,26 @@ export interface TraderTokenRow extends TokenRecord {
   /** The wallet sold more than it bought in the window (opening buy predates the
    *  window) — every PnL figure above is a partial-window estimate. */
   wallet_partial_data: boolean;
+
+  // ── Position + curve depth (first buy / last sell legs) ────────────────────
+  /** The wallet's first BUY in the window — the position's entry. Distinct from
+   *  `wallet_first_trade_at` (first trade of *either* side): `null` when the
+   *  window caught only the exit. */
+  wallet_entry_at: string | null;
+  /** `wallet_entry_at` pre-parsed to epoch-ms (labEndpoints transform). */
+  wallet_entry_at_ms?: number | null;
+  /** The wallet's last SELL in the window — `null` while it is still holding. */
+  wallet_exit_at: string | null;
+  wallet_exit_at_ms?: number | null;
+  /** Real (non-virtual) SOL in the pool immediately BEFORE the entry buy — the
+   *  curve depth the wallet bought into, with its own impact backed out. */
+  wallet_entry_curve_sol: number | null;
+  /** The same depth as a percent of the ~85 SOL graduation finish line. Over 100
+   *  on a post-migration pool. */
+  wallet_entry_curve_pct: number | null;
+  /** Real SOL depth immediately before the exit sell. */
+  wallet_exit_curve_sol: number | null;
+  wallet_exit_curve_pct: number | null;
 }
 
 /** Per-token live stats pushed alongside each trade (backend `live_stats`).

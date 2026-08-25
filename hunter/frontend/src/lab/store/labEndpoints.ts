@@ -396,6 +396,11 @@ export const labApi = baseApi.injectEndpoints({
           created_at_ms: Date.parse(r.created_at),
           wallet_first_trade_at_ms: Date.parse(r.wallet_first_trade_at),
           wallet_last_trade_at_ms: Date.parse(r.wallet_last_trade_at),
+          // Entry/exit are per-SIDE and nullable (exit-only window / still
+          // holding) — keep `null` rather than a NaN from parsing undefined, so
+          // the age columns can tell "no such leg" from "unparseable".
+          wallet_entry_at_ms: r.wallet_entry_at != null ? Date.parse(r.wallet_entry_at) : null,
+          wallet_exit_at_ms: r.wallet_exit_at != null ? Date.parse(r.wallet_exit_at) : null,
         })),
       keepUnusedDataFor: 60,
     }),

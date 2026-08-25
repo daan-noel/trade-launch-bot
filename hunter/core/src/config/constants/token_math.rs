@@ -35,6 +35,19 @@ pub fn approx_real_sol_reserves(reserve_sol: f64, venue: &str) -> f64 {
     }
 }
 
+/// Real (non-virtual) SOL a pump.fun bonding curve holds when it completes and
+/// the token migrates to the AMM — the denominator of every "curve progress"
+/// figure. THE single definition; do not re-literal 85 at a call site.
+pub const PUMP_GRADUATION_REAL_SOL: f64 = 85.0;
+
+/// Bonding-curve completion as a percent of [`PUMP_GRADUATION_REAL_SOL`], from
+/// the pool's **real** SOL reserves (see [`approx_real_sol_reserves`]). Not
+/// clamped at 100: a migrated pool keeps growing past the finish line and reads
+/// above it, which is the honest signal that the row is post-graduation.
+pub fn curve_progress_pct(real_sol: f64) -> f64 {
+    real_sol / PUMP_GRADUATION_REAL_SOL * 100.0
+}
+
 /// Total token supply (raw units) for a token, accounting for Mayhem-mode
 /// tokens which are minted via `create_v2` with 2× the standard supply
 /// (2B vs 1B). Use this anywhere FDV / market cap is computed as `supply × price`.

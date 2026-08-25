@@ -17,6 +17,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use trading_core::api::handlers::tokens::TokenSummary;
+use trading_core::config::constants::curve_progress_pct;
 use trading_core::state::core_state::CoreState;
 use trading_core::storage::repositories::trade_repo::WalletTradedMint;
 use trading_core::strategies::kernel::wallet_mint_pnl;
@@ -92,6 +93,24 @@ struct WalletTokenRow {
     /// The wallet sold more than it bought in the window (its opening buy
     /// predates `since`) — every PnL figure above is a partial estimate.
     wallet_partial_data: bool,
+
+    // ── Position + curve depth (the first buy / last sell legs) ──────────────
+    /// The wallet's first BUY in the window — the position's entry. Distinct
+    /// from `wallet_first_trade_at` (first trade of *either* side): `null` when
+    /// the window caught only the exit.
+    wallet_entry_at: Option<DateTime<Utc>>,
+    /// The wallet's last SELL in the window — the position's exit. `null` while
+    /// it is still holding.
+    wallet_exit_at: Option<DateTime<Utc>>,
+    /// Real (non-virtual) SOL in the pool immediately BEFORE the entry buy — the
+    /// curve depth the wallet bought into, its own impact backed out.
+    wallet_entry_curve_sol: Option<f64>,
+    /// Same depth as a percent of the graduation finish line
+    /// (`PUMP_GRADUATION_REAL_SOL`). Over 100 on a post-migration pool.
+    wallet_entry_curve_pct: Option<f64>,
+    /// Real SOL depth immediately before the exit sell.
+    wallet_exit_curve_sol: Option<f64>,
+    wallet_exit_curve_pct: Option<f64>,
 }
 
 /// `GET /api/wallets/:wallet/tokens` — full token rows for every mint the wallet
@@ -181,5 +200,11 @@ fn wallet_token_row(token: TokenSummary, t: WalletTradedMint) -> WalletTokenRow 
         wallet_total_pnl_sol: pnl.total_pnl_sol,
         wallet_is_open: pnl.is_open,
         wallet_partial_data: pnl.partial_data,
+        wallet_entry_at: t.entry_at,
+        wallet_exit_at: t.exit_at,
+        wallet_entry_curve_sol: t.entry_curve_sol,
+        wallet_entry_curve_pct: t.entry_curve_sol.map(curve_progress_pct),
+        wallet_exit_curve_sol: t.exit_curve_sol,
+        wallet_exit_curve_pct: t.exit_curve_sol.map(curve_progress_pct),
     }
 }

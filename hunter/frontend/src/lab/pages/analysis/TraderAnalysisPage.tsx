@@ -10,6 +10,7 @@ import { Input } from 'components/ui/Input';
 import { TraderChartCardExtra } from '@lab/components/analysis/TraderChartCardExtra';
 import { WalletAnalyticsPanel } from '@lab/components/analysis/WalletAnalyticsPanel';
 import { filterTraderRowsByFocus } from '@lab/components/analysis/walletFocus';
+import { walletTokenColumns } from '@lab/components/analysis/walletTokenColumns';
 import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
 import { inspectFromMint } from 'components/strategy/inspectTarget';
 import type { PositionFocusLens } from 'lib/strategy/positionFocus';
@@ -40,6 +41,14 @@ const TRADER_LOOKBACK_PRESETS = [
   { value: '60', label: '60 days' },
   { value: '90', label: '90 days' },
 ] as const;
+
+/** Group header labels. Only the appended wallet groups are named — the shared
+ *  token groups keep the blank header every other token table shows, so the two
+ *  halves of the row read apart at a glance. */
+const COLUMN_GROUP_LABELS: Record<string, string> = {
+  wallet_pos: 'Position',
+  wallet_curve: 'Bonding curve',
+};
 
 /** Stable empty reference so derived memos don't recompute while loading. */
 const EMPTY_ROWS: TraderTokenRow[] = [];
@@ -91,14 +100,14 @@ const parseLimit = (raw: string) => {
 /**
  * Trader Analysis — paste a wallet address and see every token it traded in the
  * look-back window as the standard full token table (client-side sort / filter /
- * search — identical columns to every other token table), a wallet-level PnL
- * analytics deck (summary + interactive charts with focus chips, re-derived from
- * the table's current filtered cohort — see
- * `@lab/components/analysis/walletPnlStats.ts` / `walletFocus.ts`), and the shared
- * `TokenTable` Charts toggle for a per-token grid mirroring the current page.
- * Each chart card carries the wallet-specific stats (buys/sells/last traded,
- * reconstructed PnL, avg buy/sell price, open/partial-data flags) so the trader
- * dimension never duplicates the token columns.
+ * search) EXTENDED with the wallet's own position and bonding-curve columns
+ * (`@lab/components/analysis/walletTokenColumns.tsx` — entry/exit + their token
+ * ages, hold, leg counts, SOL in/out, PnL, fee, and the curve progress it bought
+ * into and sold at), a wallet-level PnL analytics deck (summary + interactive
+ * charts with focus chips, re-derived from the table's current filtered cohort —
+ * see `walletPnlStats.ts` / `walletFocus.ts`), and the shared `TokenTable` Charts
+ * toggle for a per-token grid mirroring the current page. Each chart card repeats
+ * the headline wallet stats so a card read on its own still says who did what.
  *
  * Every PnL figure is an avg-cost reconstruction over this per-mint grain, NOT a
  * true per-episode ledger (a wallet that re-entered a mint many times collapses
@@ -175,14 +184,28 @@ export function TraderAnalysisPage() {
     setInspected(null);
   }, [query]);
 
-  // Exactly the standard shared token columns — identical to every other token
-  // table (SSOT), no additions/removals. The wallet-specific data lives in the
-  // chart cards below, not here, so nothing duplicates the token columns. Rows
-  // arrive recent-first from the backend, which is the default order.
-  const columns = useMemo(
-    () => tokenColumns() as unknown as ColumnDef<TraderTokenRow>[],
-    [],
-  );
+  // The standard shared token columns (SSOT — unchanged, so every other token
+  // table keeps the same layout) with the wallet's own position + bonding-curve
+  // columns SPLICED IN directly after the identity block. The splice happens
+  // HERE, never inside `tokenColumns()`: a wallet-only field must not leak into
+  // All Tokens or the strategy tables.
+  //
+  // Position sits ahead of the token's own activity/price/market columns because
+  // this page answers "what did this wallet do", and the answer should be
+  // readable without scrolling past twenty token fields first. Rows arrive
+  // recent-first from the backend, which is the default order.
+  const columns = useMemo(() => {
+    const base = tokenColumns() as unknown as ColumnDef<TraderTokenRow>[];
+    // One past the LAST identity column (symbol / name / mint / creator /
+    // create_tx). A `-1` from `lastIndexOf` becomes 0, putting the wallet block
+    // first — the right fallback if the shared set ever drops that group.
+    let lastIdentity = -1;
+    base.forEach((c, i) => {
+      if (c.group === 'identity') lastIdentity = i;
+    });
+    const at = lastIdentity + 1;
+    return [...base.slice(0, at), ...walletTokenColumns(), ...base.slice(at)];
+  }, []);
 
   const run = (walletOverride?: string) => {
     const wallet = (walletOverride ?? walletInput).trim();
@@ -365,6 +388,7 @@ export function TraderAnalysisPage() {
           colToggle
           hoverable
           loading={isFetching}
+          groupLabels={COLUMN_GROUP_LABELS}
           tableId="trader_analysis_tokens"
           highlightWallet={query.wallet}
           titleOf={(r) => r.symbol || r.name || shortAddr(r.mint_address)}

@@ -631,6 +631,20 @@ impl TradeRepo {
             sell_lamports: i64,
             buy_token_amount: i64,
             sell_token_amount: i64,
+            // Entry = the FIRST buy leg, exit = the LAST sell leg (execution
+            // order), each with the reserve snapshot and own size needed to
+            // reconstruct the curve depth it traded into. All `Option`: a mint
+            // the wallet only exited in the window has no buy side, and
+            // `reserve_lamports` is nullable for rows ingested without a
+            // reserve snapshot.
+            entry_at: Option<DateTime<Utc>>,
+            entry_reserve_lamports: Option<i64>,
+            entry_leg_lamports: Option<i64>,
+            entry_venue: Option<String>,
+            exit_at: Option<DateTime<Utc>>,
+            exit_reserve_lamports: Option<i64>,
+            exit_leg_lamports: Option<i64>,
+            exit_venue: Option<String>,
         }
 
         let rows: Vec<WalletTradedMintRow> = sqlx::query_as(
@@ -643,7 +657,21 @@ impl TradeRepo {
                    COALESCE(SUM(amount_lamports) FILTER (WHERE trade_type = 'buy'), 0)::BIGINT  AS buy_lamports,
                    COALESCE(SUM(amount_lamports) FILTER (WHERE trade_type = 'sell'), 0)::BIGINT AS sell_lamports,
                    COALESCE(SUM(token_amount) FILTER (WHERE trade_type = 'buy'), 0)::BIGINT  AS buy_token_amount,
-                   COALESCE(SUM(token_amount) FILTER (WHERE trade_type = 'sell'), 0)::BIGINT AS sell_token_amount
+                   COALESCE(SUM(token_amount) FILTER (WHERE trade_type = 'sell'), 0)::BIGINT AS sell_token_amount,
+                   -- Entry/exit leg picks. `(ARRAY_AGG(x ORDER BY …) FILTER (…))[1]`
+                   -- is the per-side first/last row without a second scan or a
+                   -- correlated subquery; the arrays are per (wallet, mint) so they
+                   -- stay tiny. Execution order is (slot, tx_index, leg_index) — the
+                   -- same key `find_by_mint_all` orders by, NOT `block_time`, which
+                   -- is only second-precision and ties across a whole slot.
+                   (ARRAY_AGG(block_time       ORDER BY slot, tx_index, leg_index) FILTER (WHERE trade_type = 'buy'))[1]  AS entry_at,
+                   (ARRAY_AGG(reserve_lamports ORDER BY slot, tx_index, leg_index) FILTER (WHERE trade_type = 'buy'))[1]  AS entry_reserve_lamports,
+                   (ARRAY_AGG(amount_lamports  ORDER BY slot, tx_index, leg_index) FILTER (WHERE trade_type = 'buy'))[1]  AS entry_leg_lamports,
+                   (ARRAY_AGG(venue            ORDER BY slot, tx_index, leg_index) FILTER (WHERE trade_type = 'buy'))[1]  AS entry_venue,
+                   (ARRAY_AGG(block_time       ORDER BY slot DESC, tx_index DESC, leg_index DESC) FILTER (WHERE trade_type = 'sell'))[1] AS exit_at,
+                   (ARRAY_AGG(reserve_lamports ORDER BY slot DESC, tx_index DESC, leg_index DESC) FILTER (WHERE trade_type = 'sell'))[1] AS exit_reserve_lamports,
+                   (ARRAY_AGG(amount_lamports  ORDER BY slot DESC, tx_index DESC, leg_index DESC) FILTER (WHERE trade_type = 'sell'))[1] AS exit_leg_lamports,
+                   (ARRAY_AGG(venue            ORDER BY slot DESC, tx_index DESC, leg_index DESC) FILTER (WHERE trade_type = 'sell'))[1] AS exit_venue
             FROM trades
             WHERE wallet_id = $1
               AND block_time >= $2
@@ -670,6 +698,20 @@ impl TradeRepo {
                 sell_sol: lamports_to_sol(r.sell_lamports),
                 buy_token_amount: r.buy_token_amount,
                 sell_token_amount: r.sell_token_amount,
+                entry_at: r.entry_at,
+                exit_at: r.exit_at,
+                entry_curve_sol: pre_trade_real_sol(
+                    r.entry_reserve_lamports,
+                    r.entry_leg_lamports,
+                    r.entry_venue.as_deref(),
+                    TradeType::Buy,
+                ),
+                exit_curve_sol: pre_trade_real_sol(
+                    r.exit_reserve_lamports,
+                    r.exit_leg_lamports,
+                    r.exit_venue.as_deref(),
+                    TradeType::Sell,
+                ),
             })
             .collect())
     }
@@ -1186,6 +1228,51 @@ pub struct WalletTradedMint {
     /// predates `since`), not that anything here underflowed.
     pub buy_token_amount: i64,
     pub sell_token_amount: i64,
+    /// The wallet's FIRST buy leg in the window — the position's entry. `None`
+    /// when the window holds no buy (the entry predates `since`).
+    pub entry_at: Option<DateTime<Utc>>,
+    /// The wallet's LAST sell leg in the window — the position's exit. `None`
+    /// while the bag is still held.
+    pub exit_at: Option<DateTime<Utc>>,
+    /// Real (non-virtual) SOL in the pool **immediately before** the entry buy
+    /// landed — the curve depth the wallet bought into, with its own impact
+    /// backed out. `None` when there is no entry leg or the row carries no
+    /// reserve snapshot. See [`pre_trade_real_sol`].
+    pub entry_curve_sol: Option<f64>,
+    /// Same for the exit sell — the depth it sold into, before its own impact.
+    pub exit_curve_sol: Option<f64>,
+}
+
+/// Real SOL reserves **before** one leg executed, from that leg's post-trade
+/// reserve snapshot and its own size.
+///
+/// `reserve_lamports` is the venue-neutral SOL side of the reserve pair *after*
+/// the swap settled, so a leg's own impact is already inside it. A buy adds its
+/// `amount_lamports` to the pool and a sell removes it, so the pre-trade reserve
+/// is the snapshot minus (buy) or plus (sell) the leg. The virtual offset is
+/// stripped afterwards by the [`approx_real_sol_reserves`] SSOT, which is
+/// venue-dependent — the curve carries a 30-SOL virtual seed, the AMM does not.
+///
+/// `None` propagates when any input is missing: an absent reserve snapshot must
+/// read as "unknown depth", never as depth 0.
+///
+/// [`approx_real_sol_reserves`]: crate::config::constants::approx_real_sol_reserves
+fn pre_trade_real_sol(
+    reserve_lamports: Option<i64>,
+    leg_lamports: Option<i64>,
+    venue: Option<&str>,
+    side: TradeType,
+) -> Option<f64> {
+    let post = lamports_to_sol(reserve_lamports?);
+    let leg = lamports_to_sol(leg_lamports.unwrap_or(0));
+    let pre = match side {
+        TradeType::Buy => post - leg,
+        TradeType::Sell => post + leg,
+    };
+    Some(crate::config::constants::approx_real_sol_reserves(
+        pre.max(0.0),
+        venue.unwrap_or("curve"),
+    ))
 }
 
 impl SigLegs {
@@ -1271,6 +1358,62 @@ mod tests {
     /// `len() as i16` past it → a Postgres parse error). Pin the chunk so adding a
     /// bound column re-checks the ceiling here instead of surfacing as a runtime
     /// parse error on the backfill path.
+    // ── pre_trade_real_sol (Trader Analysis entry/exit curve depth) ─────────
+
+    /// A buy's own SOL is already inside its post-trade snapshot, so backing it
+    /// out is what makes the figure "the depth it bought into". 62.5 vSOL after
+    /// a 2.5 SOL buy = 60.0 vSOL before = 30.0 real once the curve's virtual
+    /// seed is stripped.
+    #[test]
+    fn pre_trade_real_sol_backs_a_buy_out_of_its_own_snapshot() {
+        let sol = pre_trade_real_sol(
+            Some(sol_to_lamports(62.5)),
+            Some(sol_to_lamports(2.5)),
+            Some("curve"),
+            TradeType::Buy,
+        )
+        .unwrap();
+        assert!((sol - 30.0).abs() < 1e-6, "got {sol}");
+    }
+
+    /// A sell REMOVES SOL, so its pre-trade pool is larger than the snapshot —
+    /// the opposite sign. 57.5 vSOL after a 2.5 SOL sell = 60.0 before.
+    #[test]
+    fn pre_trade_real_sol_adds_a_sell_back() {
+        let sol = pre_trade_real_sol(
+            Some(sol_to_lamports(57.5)),
+            Some(sol_to_lamports(2.5)),
+            Some("curve"),
+            TradeType::Sell,
+        )
+        .unwrap();
+        assert!((sol - 30.0).abs() < 1e-6, "got {sol}");
+    }
+
+    /// The AMM carries no virtual seed: subtracting 30 there would understate
+    /// every post-migration pool.
+    #[test]
+    fn pre_trade_real_sol_skips_the_virtual_offset_on_amm() {
+        let sol = pre_trade_real_sol(
+            Some(sol_to_lamports(62.5)),
+            Some(sol_to_lamports(2.5)),
+            Some("amm"),
+            TradeType::Buy,
+        )
+        .unwrap();
+        assert!((sol - 60.0).abs() < 1e-6, "got {sol}");
+    }
+
+    /// A row with no reserve snapshot has UNKNOWN depth. Reading it as 0 would
+    /// paint a fresh-launch entry on every un-snapshotted leg.
+    #[test]
+    fn pre_trade_real_sol_is_none_without_a_snapshot() {
+        assert_eq!(
+            pre_trade_real_sol(None, Some(sol_to_lamports(2.5)), Some("curve"), TradeType::Buy),
+            None
+        );
+    }
+
     #[test]
     fn trade_insert_chunk_stays_under_param_ceiling() {
         const BINDS_PER_ROW: usize = 15;

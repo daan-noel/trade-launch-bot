@@ -861,10 +861,24 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   exit drawn N times. Position tables (Evidence / Simulate / Dry-run / Sweep) share
   **`PositionChartCardExtra`** (hold · exit · PnL% · size · entry/exit price; multi-episode fold
   when `chartsGroupByMint`). Trader Analysis uses `TraderChartCardExtra` (wallet buys/sells/hold/
-  vol). `DataTable` stays token-agnostic: the dependency is one-way (`tokens/` → `table/`),
+  vol), repeating the headline wallet stats its table columns also carry so a card read on its own
+  still says who did what. `DataTable` stays token-agnostic: the dependency is one-way (`tokens/` → `table/`),
   asserted by `components/table/DataTable.boundary.test.ts`. **Every** token-row table now renders
   through `TokenTable`. Trader Analysis row / chart-card select opens `LazyLabTokenInspectModal`
   via `inspectFromMint`.
+- **Trader Analysis wallet columns (`lab/components/analysis/walletTokenColumns.tsx`).** The page
+  splices `walletTokenColumns()` into `tokenColumns()` directly after the **identity** block, so the
+  wallet's position reads before the token's own activity/price/market fields. The splice happens at
+  the page, never inside `tokenColumns()`, which stays the SSOT every other token table shares. Two groups
+  (`groupLabels`: Position · Bonding curve): entry / exit instants and their **token ages**
+  (creation -> first buy / last sell), hold span, buy+sell leg counts, SOL in / out, avg buy/sell
+  price, total PnL and PnL%, the protocol fee the reconstruction charges, an open/partial/closed
+  state cell, and **entry / exit curve progress** with the gain across the hold. Curve progress is
+  the pool's real SOL just **before** that leg (the wallet's own impact backed out) over
+  `PUMP_GRADUATION_REAL_SOL`; >100% reads as a migrated pool. Second-order columns (`w_entry`,
+  `w_exit`, `w_avg_buy`, `w_avg_sell`, `w_fee`) default hidden. Every field is the per-mint window
+  grain, not one round trip — a wallet that re-entered shows its first buy, its last sell, and a
+  span covering both.
 - **Trader Analysis wallet PnL analytics (`lab/components/analysis/`).** The per-mint rows returned by
   `/api/wallets/:wallet/tokens` (`WalletTokenRow` in `lab/api/handlers/wallets.rs`, backed by
   `strategies::kernel::wallet_mint_pnl` — an avg-cost reconstruction over that wallet's in-window trades on
