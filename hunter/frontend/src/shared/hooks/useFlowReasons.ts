@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { compareTradesChronologically } from 'components/token-price-chart/chartBars';
-import { flowReasonsById, type FlowReason } from 'lib/flow/classifyFlow';
+import { flowReasonsById, type FlowReason, type FlowSide } from 'lib/flow/classifyFlow';
 import type { TradeRecord } from 'types';
 
 /**
@@ -26,10 +26,16 @@ export function useFlowReasons(
   creatorWallet?: string | null,
   /** Lens overrides — structural-only reads and excluded wallets. Omitted ⇒ the
    *  engine's own behavior (contagion on, nothing excluded). */
-  opts?: { contagion?: boolean; excludeWallets?: ReadonlySet<string> | null },
+  opts?: {
+    contagion?: boolean;
+    excludeWallets?: ReadonlySet<string> | null;
+    /** Classify one leg only — see `FlowClassifyOptions.side`. */
+    side?: FlowSide | null;
+  },
 ): ReadonlyMap<string, FlowReason> | null {
   const contagion = opts?.contagion;
   const excludeWallets = opts?.excludeWallets ?? null;
+  const side = opts?.side ?? null;
   return useMemo(() => {
     const hasPatterns = keys != null && keys.size > 0;
     // With contagion off the creator is no longer a classification of its own,
@@ -42,8 +48,15 @@ export function useFlowReasons(
         wallet_address: t.wallet_address ?? '',
         sol: t.amount_sol ?? 0,
         ix_labels: t.instruction_labels,
+        side: t.trade_type,
       })),
-      { patternKeys: keys ?? new Set<string>(), creatorWallet, contagion, excludeWallets },
+      {
+        patternKeys: keys ?? new Set<string>(),
+        creatorWallet,
+        contagion,
+        excludeWallets,
+        side,
+      },
     );
-  }, [trades, keys, creatorWallet, contagion, excludeWallets]);
+  }, [trades, keys, creatorWallet, contagion, excludeWallets, side]);
 }

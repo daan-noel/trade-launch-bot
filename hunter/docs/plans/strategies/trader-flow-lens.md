@@ -32,7 +32,7 @@ never a side effect of editing a lens.
 
 ## Classifier options a lens needs
 
-`FlowClassifyOptions` gains two knobs; both default to the engine's behavior, so
+`FlowClassifyOptions` gains three knobs; all default to the engine's behavior, so
 every other surface is unchanged.
 
 - **`contagion`** (lens default **off**). The engine tags a wallet forward: one
@@ -43,6 +43,16 @@ every other surface is unchanged.
   own labels alone and the creator carries no special rule.
 - **`excludeWallets`** (lens default: the studied wallet). A trader must not
   classify itself, or the lines describe the subject instead of its surroundings.
+- **`side`** (lens default **both**). A pattern is an ordered `ix_labels`
+  sequence and those labels carry no direction — an aggregator's structure is
+  byte-identical on the buy and on the sell that unwinds it — so one key matches
+  both legs and an unnarrowed line sums two opposite events. The readings are
+  different theses: a matched structure BUYING before a trade is a crowd impulse
+  joined, the same structure SELLING is exit liquidity absorbed, and mixed they
+  partially cancel. Narrowing filters TRADES, not patterns: no set edit, and it
+  composes with the group chips, so Axiom-buy vs Axiom-sell falls out of the two
+  together. An off-side trade books non-volume and never seeds contagion; a trade
+  with no side is off-side under any narrowing.
 
 The lines are already **net** (`buy − sell`) per basis — see
 `lib/flow/flowChartData.ts`. Only the per-trade `volSol`/`nonVolSol` fields are

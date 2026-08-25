@@ -46,3 +46,53 @@ describe('classifyFlowTrades contagion', () => {
     expect(out.map((t) => t.isVol)).toEqual([false, false, false, false]);
   });
 });
+
+/** The same structure `A` on both legs — what a real aggregator pattern looks
+ *  like, since `ix_labels` carry no direction. */
+const bothLegs = [
+  { wallet_address: 'w1', sol: 1, ix_labels: ['A'], side: 'buy' as const },
+  { wallet_address: 'w2', sol: 2, ix_labels: ['A'], side: 'sell' as const },
+  { wallet_address: 'w3', sol: 4, ix_labels: ['Z'], side: 'buy' as const },
+];
+
+describe('classifyFlowTrades side narrowing', () => {
+  it('counts both legs of one pattern when unnarrowed', () => {
+    const out = classifyFlowTrades(bothLegs, { patternKeys: keys, contagion: false });
+    expect(out.map((t) => t.isVol)).toEqual([true, true, false]);
+  });
+
+  it('keeps only the asked leg, and books the other as non-volume', () => {
+    const buys = classifyFlowTrades(bothLegs, {
+      patternKeys: keys,
+      contagion: false,
+      side: 'buy',
+    });
+    expect(buys.map((t) => t.isVol)).toEqual([true, false, false]);
+    expect(buys[1].nonVolSol).toBe(2);
+
+    const sells = classifyFlowTrades(bothLegs, {
+      patternKeys: keys,
+      contagion: false,
+      side: 'sell',
+    });
+    expect(sells.map((t) => t.isVol)).toEqual([false, true, false]);
+  });
+
+  it('an off-side trade cannot seed contagion', () => {
+    const out = classifyFlowTrades(
+      [...bothLegs, { wallet_address: 'w2', sol: 8, ix_labels: ['Z'], side: 'buy' as const }],
+      { patternKeys: keys, side: 'buy' },
+    );
+    // w2's only match is its SELL, which the lens is not asking about — so its
+    // later buy stays organic.
+    expect(out.map((t) => t.isVol)).toEqual([true, false, false, false]);
+  });
+
+  it('a trade with no side is off-side under any narrowing', () => {
+    const out = classifyFlowTrades([{ wallet_address: 'w1', sol: 1, ix_labels: ['A'] }], {
+      patternKeys: keys,
+      side: 'buy',
+    });
+    expect(out[0].isVol).toBe(false);
+  });
+});

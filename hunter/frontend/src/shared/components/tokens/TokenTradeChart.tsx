@@ -173,6 +173,7 @@ export function TokenTradeChart({
   const flowReasons = useFlowReasons(trades, flowPatternKeys, detail?.creator_wallet, {
     contagion: lens?.contagion,
     excludeWallets: lens?.excludeWallets ?? null,
+    side: lens?.side ?? null,
   });
 
   const selectionTrades = useMemo(() => {

@@ -12,6 +12,7 @@ import { FLOW_NON_VOL_LINE_COLOR, FLOW_VOL_LINE_COLOR } from 'lib/flow/flowChart
 import { BarCrosshairFields, crosshairInlineRows } from './BarCrosshairFields';
 import { Checkbox } from 'components/ui/Checkbox';
 import { cn } from 'lib/cn';
+import { anyFlowLineVisible, type FlowLineVisibility } from './flowLineVisibility';
 import type { ChartMetric, ChartStyle, ChartToolbarProps } from './types';
 
 const CHART_METRICS: ChartMetric[] = ['price', 'mc'];
@@ -74,23 +75,96 @@ export function RangeSelectIcon() {
   );
 }
 
-/** Two overlaid cumulative curves — vol (red) / non-vol (gold). */
-export function FlowLinesIcon() {
+/**
+ * One cumulative curve, half of the flow overlay pair.
+ *
+ * The stroke must NOT be the cohort color unconditionally: an active
+ * `IconToggleButton` fills its pill with `activeColor`, which for these two IS
+ * the cohort color — a red curve on a red pill is invisible. So the curve is
+ * drawn in its cohort color while OFF (the only cue to which curve the button
+ * owns) and in the dark pill foreground while ON, where the pill itself already
+ * carries the color.
+ */
+function FlowLineIcon({ color, active, low }: { color: string; active?: boolean; low?: boolean }) {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
       <path
-        d="M3 15 C7 14 9 8 17 5"
-        stroke={FLOW_VOL_LINE_COLOR}
-        strokeWidth="1.6"
-        strokeLinecap="round"
-      />
-      <path
-        d="M3 16.5 C8 16 11 12 17 11"
-        stroke={FLOW_NON_VOL_LINE_COLOR}
-        strokeWidth="1.6"
+        d={low ? 'M3 16.5 C8 16 11 12 17 11' : 'M3 15 C7 14 9 8 17 5'}
+        stroke={active ? CHART_COLORS.pillForeground : color}
+        strokeWidth="2"
         strokeLinecap="round"
       />
     </svg>
+  );
+}
+
+/** Cumulative volume-maker curve (red). */
+export function FlowVolLineIcon({ active }: { active?: boolean }) {
+  return <FlowLineIcon color={FLOW_VOL_LINE_COLOR} active={active} />;
+}
+
+/** Cumulative non-volume curve (gold). */
+export function FlowNonVolLineIcon({ active }: { active?: boolean }) {
+  return <FlowLineIcon color={FLOW_NON_VOL_LINE_COLOR} active={active} low />;
+}
+
+/**
+ * The two flow-overlay curves toggled independently, grouped so a crowded
+ * toolbar still reads them as one control. Independent booleans rather than a
+ * 3-state cycle: state has to be readable without hovering, and "both" is the
+ * common case that a cycle would put an extra click away.
+ *
+ * `available` is the classification gate, so it disables the pair as a unit.
+ */
+export function FlowLineToggles({
+  visibility,
+  available,
+  patternsConfigured,
+  onChange,
+}: {
+  visibility: FlowLineVisibility;
+  available: boolean;
+  /** True when the split comes from fingerprint `volume_ix_patterns`; false =>
+   *  the creator + contagion fallback. Only changes the tooltip wording. */
+  patternsConfigured?: boolean;
+  onChange: (next: FlowLineVisibility) => void;
+}) {
+  const basis = !available
+    ? 'Needs a creator wallet or volume_ix_patterns to classify against'
+    : patternsConfigured === false
+      ? 'No fingerprint volume_ix_patterns — showing creator + wallets they traded with (red) vs the rest (gold). Configure patterns for the true volume-maker split.'
+      : 'Classified via the fingerprint’s saved volume_ix_patterns + creator/wallet contagion, the same set the engine decides on';
+  const scaleNote =
+    ' Both curves share the left price scale, so hiding one rescales the axis to the other.';
+  return (
+    // Hairline border, not a fill: an inactive IconToggleButton is already
+    // CHART_COLORS.grid, so a grid-colored group box would swallow the gap and
+    // the pair would read as one wide button.
+    <div
+      className="inline-flex items-center gap-1 rounded-md p-px"
+      style={{ border: `1px solid ${CHART_COLORS.border}` }}
+    >
+      <IconToggleButton
+        active={available && visibility.vol}
+        onClick={() => onChange({ ...visibility, vol: !visibility.vol })}
+        disabled={!available}
+        label="Toggle the cumulative volume-maker flow line"
+        tooltip={`Cumulative volume-maker (red) line. ${basis}.${scaleNote}`}
+        activeColor={FLOW_VOL_LINE_COLOR}
+      >
+        <FlowVolLineIcon active={available && visibility.vol} />
+      </IconToggleButton>
+      <IconToggleButton
+        active={available && visibility.nonVol}
+        onClick={() => onChange({ ...visibility, nonVol: !visibility.nonVol })}
+        disabled={!available}
+        label="Toggle the cumulative non-volume flow line"
+        tooltip={`Cumulative non-volume (gold) line. ${basis}.${scaleNote}`}
+        activeColor={FLOW_NON_VOL_LINE_COLOR}
+      >
+        <FlowNonVolLineIcon active={available && visibility.nonVol} />
+      </IconToggleButton>
+    </div>
   );
 }
 
@@ -326,7 +400,7 @@ export function ChartToolbar({
   athLineAvailable,
   showMigrationLine,
   trimEmptyBars,
-  showFlowLines,
+  flowLines,
   flowLinesAvailable,
   flowPatternsConfigured,
   rangeSelectMode,
@@ -347,7 +421,7 @@ export function ChartToolbar({
   onShowAthLineChange,
   onShowMigrationLineChange,
   onTrimEmptyBarsChange,
-  onShowFlowLinesChange,
+  onFlowLinesChange,
   onRangeSelectModeChange,
 }: ChartToolbarProps) {
   const [showMore, setShowMore] = useState(false);
@@ -372,12 +446,15 @@ export function ChartToolbar({
         layout="inline"
       />
       {flowLinesAvailable && (
+        // Both cohorts stay readable even when one CURVE is hidden — reading a
+        // number costs nothing, and losing it on toggle-off is the annoying part.
+        // A hidden curve's value is dimmed so the readout still matches the chart.
         <div>
-          <span style={{ color: FLOW_VOL_LINE_COLOR }}>
+          <span style={{ color: FLOW_VOL_LINE_COLOR, opacity: flowLines.vol ? 1 : 0.45 }}>
             <span className="font-semibold">VolMk</span>{' '}
             {crosshair.flowVol != null ? formatFlow(crosshair.flowVol) : '—'}
           </span>{' '}
-          <span style={{ color: FLOW_NON_VOL_LINE_COLOR }}>
+          <span style={{ color: FLOW_NON_VOL_LINE_COLOR, opacity: flowLines.nonVol ? 1 : 0.45 }}>
             <span className="font-semibold">NonVol</span>{' '}
             {crosshair.flowNonVol != null ? formatFlow(crosshair.flowNonVol) : '—'}
           </span>
@@ -394,7 +471,7 @@ export function ChartToolbar({
     trimEmptyBars ||
     showAthLine ||
     showMigrationLine ||
-    (showFlowLines && flowLinesAvailable) ||
+    (flowLinesAvailable && anyFlowLineVisible(flowLines)) ||
     rangeSelectMode ||
     (showDevMarkers && devMarkersBoundariesOnly);
 
@@ -651,22 +728,12 @@ export function ChartToolbar({
             <TrimGapsIcon />
           </IconToggleButton>
 
-          <IconToggleButton
-            active={showFlowLines && flowLinesAvailable}
-            onClick={() => onShowFlowLinesChange(!showFlowLines)}
-            disabled={!flowLinesAvailable}
-            label="Toggle vol/non-vol flow lines"
-            tooltip={
-              !flowLinesAvailable
-                ? 'Needs a creator wallet or volume_ix_patterns to classify against'
-                : flowPatternsConfigured
-                  ? 'Cumulative volume-maker (red) vs non-volume (gold) overlay — classified via the fingerprint’s saved volume_ix_patterns + creator/wallet contagion, the same set the engine decides on'
-                  : 'No fingerprint volume_ix_patterns — showing creator + wallets they traded with (red) vs the rest (gold). Configure patterns for the true volume-maker split.'
-            }
-            activeColor={FLOW_VOL_LINE_COLOR}
-          >
-            <FlowLinesIcon />
-          </IconToggleButton>
+          <FlowLineToggles
+            visibility={flowLines}
+            available={flowLinesAvailable}
+            patternsConfigured={flowPatternsConfigured}
+            onChange={onFlowLinesChange}
+          />
 
           <button
             type="button"

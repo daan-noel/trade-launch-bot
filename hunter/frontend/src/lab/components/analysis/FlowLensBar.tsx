@@ -20,6 +20,7 @@ import {
   useGetFingerprintsQuery,
   useUpdateFingerprintMutation,
 } from 'store/sharedEndpoints';
+import type { FlowSide } from 'lib/flow/classifyFlow';
 import type { TraderFlowLens } from './useTraderFlowLens';
 
 const shortAddr = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
@@ -144,6 +145,10 @@ export function FlowLensBar({ lens, wallet }: { lens: TraderFlowLens; wallet: st
             </Button>
           </>
         )}
+
+        <span className="mx-1 h-4 w-px bg-white/10" />
+
+        <SideControl lens={lens} />
 
         <span className="mx-1 h-4 w-px bg-white/10" />
 
@@ -274,6 +279,56 @@ function mergePatterns(current: IxPattern[], incoming: IxPattern[]): IxPattern[]
   return [...kept, ...incoming.filter((p) => !keptKeys.has(JSON.stringify(p.ix_labels)))];
 }
 
+/** Leg narrowing: Both / Buy / Sell.
+ *
+ * `ix_labels` carry no direction — an aggregator's structure is byte-identical
+ * on the buy and on the sell that unwinds it — so one pattern key matches both
+ * legs and an unnarrowed line sums two opposite events. Narrowing is a filter
+ * over TRADES, not over patterns: no set edit, and it composes with the group
+ * chips (Axiom-buy vs Axiom-sell falls out of the two together). */
+function SideControl({ lens }: { lens: TraderFlowLens }) {
+  const options: { value: FlowSide | null; label: string; title: string }[] = [
+    {
+      value: null,
+      label: 'Both',
+      title: 'Classify every leg — the engine’s own behavior. One pattern counts a matched structure buying AND the same structure selling.',
+    },
+    {
+      value: 'buy',
+      label: 'Buy',
+      title: 'Only matched BUYS count as volume — the crowd impulse a trade joins.',
+    },
+    {
+      value: 'sell',
+      label: 'Sell',
+      title: 'Only matched SELLS count as volume — the exit liquidity a trade absorbs.',
+    },
+  ];
+  return (
+    <div className="flex items-center gap-1">
+      <span className="text-[9px] font-bold uppercase tracking-widest text-text-dim">Side</span>
+      <div className="flex overflow-hidden rounded-md border border-white/10">
+        {options.map((o) => {
+          const on = lens.side === o.value;
+          return (
+            <button
+              key={o.label}
+              type="button"
+              onClick={() => lens.setSide(o.value)}
+              title={o.title}
+              className={cn(
+                'px-2 py-0.5 text-[11px] transition-colors',
+                on ? 'bg-primary/20 text-primary' : 'text-text-dim hover:text-text',
+              )}
+            >
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 function RenameControl({ lens }: { lens: TraderFlowLens }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState('');

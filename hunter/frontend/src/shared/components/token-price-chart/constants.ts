@@ -79,6 +79,10 @@ export const CHART_COLORS = {
   panelText: '#e0e0e0',
   panelTextDim: '#888888',
   activePill: '#13ceaf',
+  /** Foreground on an active (color-filled) toolbar pill. An icon that draws its
+   *  own stroke must switch to this when active, or a pill whose `activeColor`
+   *  equals the icon's own color renders that icon invisible. */
+  pillForeground: '#0a0a0a',
   athLine: '#f0b429',
   migrationLine: '#5dade2',
   /** Strategy entry/exit overlay (TPSL result inspection): bright green/red,
@@ -185,7 +189,11 @@ export const DEFAULT_CHART_PREFS = {
   showDevMarkers: true,
   devMarkersBoundariesOnly: true,
   showEventMarkers: true,
-  showFlowLines: true,
+  // Split per curve: the two share the left price scale, so hiding one rescales
+  // the axis to the other (see `flowLineVisibility`). A pre-split blob stored one
+  // `showFlowLines` boolean; `loadPrefs` seeds BOTH of these from it.
+  showFlowVol: true,
+  showFlowNonVol: true,
 };
 
 /** Responsive chart height. The chart width fills its container (fluid), so on a

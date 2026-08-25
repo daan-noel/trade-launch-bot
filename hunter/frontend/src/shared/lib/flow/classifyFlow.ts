@@ -14,7 +14,16 @@ export interface FlowTradeLite {
   /** Signed by convention of the caller — this module only reads magnitude. */
   sol: number;
   ix_labels: readonly string[] | null | undefined;
+  /** Which leg this is. Required only under a {@link FlowClassifyOptions.side}
+   *  narrowing; absent there, the trade cannot prove it is on the asked side and
+   *  is treated as off-side. */
+  side?: FlowSide | null;
 }
+
+/** One leg of a trade. `ix_labels` do NOT encode this — an aggregator's launch
+ *  structure is byte-identical on the way in and the way out — so a side read is
+ *  a filter over trades, never over patterns. */
+export type FlowSide = 'buy' | 'sell';
 
 export interface FlowClassifyOptions {
   /** `JSON.stringify(labels)` keys of the checked volume_ix_patterns. */
@@ -34,6 +43,21 @@ export interface FlowClassifyOptions {
    * default it off — the engine's own classification is never computed here.
    */
   contagion?: boolean;
+  /**
+   * Narrow classification to ONE leg — `'buy'`, `'sell'`, or `null`/absent for
+   * both (the engine's behavior).
+   *
+   * A pattern key is an ordered `ix_labels` sequence, and those labels carry no
+   * direction: the same aggregator structure matches a buy and the sell that
+   * unwinds it, so an unnarrowed lens sums two opposite events onto one line.
+   * The two readings are different theses — a matched structure BUYING just
+   * before a trade is a crowd impulse joined, the same structure SELLING is exit
+   * liquidity absorbed — and mixed they partially cancel.
+   *
+   * Off-side trades classify non-volume and never tag a wallet, so a narrowed
+   * lens answers only about the leg asked for.
+   */
+  side?: FlowSide | null;
   /** Wallets that can never be volume-side and never tag anything — the studied
    *  trader itself, typically, so a lens does not classify its own subject. */
   excludeWallets?: ReadonlySet<string> | null;
@@ -68,6 +92,7 @@ export function classifyFlowTrades<T extends FlowTradeLite>(
 ): (T & FlowClassified)[] {
   const contagion = opts.contagion !== false;
   const excluded = opts.excludeWallets;
+  const side = opts.side ?? null;
   const taggedWallets = new Set<string>();
   // The creator seeds contagion, so it is only a tag when contagion is on. With
   // it off, the creator's trades are judged by their structure like everyone
@@ -76,7 +101,9 @@ export function classifyFlowTrades<T extends FlowTradeLite>(
 
   const out: (T & FlowClassified)[] = [];
   for (const t of trades) {
-    if (excluded?.has(t.wallet_address)) {
+    // Off-side and excluded are the same verdict: non-volume, and no tagging —
+    // a trade the lens is not asking about must not seed contagion either.
+    if (excluded?.has(t.wallet_address) || (side !== null && t.side !== side)) {
       const mag = Math.abs(t.sol);
       out.push({ ...t, isVol: false, reason: null, volSol: 0, nonVolSol: mag });
       continue;

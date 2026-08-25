@@ -115,7 +115,7 @@ this chart is used for — **what a token did in its first seconds**:
 | `interval` | `1s` | a `1m` candle swallows the entire window that decides an entry |
 | `groupMode` / `style` | `time` / `candles` | — |
 | `showDevMarkers` + `devMarkersBoundariesOnly` | both **on** | the dev's `first_buy`/`sell_all` are the signal; their manufactured mid-position churn is noise |
-| `showWalletMarkers`, `showEventMarkers`, `showAthLine`, `showMigrationLine`, `showFlowLines` | on | read every time; the toolbar disables each when its data is absent, so they cost nothing |
+| `showWalletMarkers`, `showEventMarkers`, `showAthLine`, `showMigrationLine`, `showFlowVol`, `showFlowNonVol` | on | read every time; the toolbar disables each when its data is absent, so they cost nothing |
 | `showTradeMarkers` | **off** | the per-bar buy/sell count badge is one badge per candle at `1s` — it hides the price action it annotates |
 | `trimEmptyBars` | **off** | no-trade gaps ARE information (a stalled token); dropping them distorts the time axis |
 
@@ -241,8 +241,8 @@ Three further rules the surface exists to enforce:
   single bar's rows cannot reconstruct it) and the cell appends `via creator` / `via
   wallet`. Without that marker a toggle that "does nothing" looks like a bug.
 - **The first pattern reveals the overlay.** `flowLinesAvailable` is false with no patterns
-  and no creator wallet, and `showFlowLines` is a persisted pref — so the chart auto-enables
-  the lines on the transition to classifiable. Turning them back off stays the user's call.
+  and no creator wallet, and the per-curve flags are persisted prefs — so the chart auto-enables
+  BOTH lines on the transition to classifiable. Turning them back off stays the user's call.
 - **A run snapshot is not editable.** `flowReadOnly` marks a subtree whose patterns are a
   stored fact — the grouped-sweep drill-in, whose numbers were computed under the run's own
   `volume_ix_patterns`. It shows `run snapshot` instead of the edit control and skips the
@@ -302,7 +302,9 @@ twice, since both are on screen simultaneously:
 
 - **Toolbar readout** (`BarCrosshairFields`, `layout="inline"`) = the *price* view: for candles
   **O/H/L/C** (colors from `CHART_OHLC_COLORS`) plus Vol/Liq; for line, Price + Vol/Liq. Plus
-  the cumulative VolMk/NonVol pair when flow lines are available.
+  the cumulative VolMk/NonVol pair when flow lines are *available* — both values, whichever
+  curves are drawn, with a hidden curve's value dimmed. The numbers cost nothing to read and
+  losing one on toggle-off is the annoying part.
 - **Bar tooltip** (`BarCrosshairTooltip`) = what the toolbar *cannot* say — **which** bar is
   hovered (timezone/slot-formatted bar time + `+age` since token creation) and its per-bar
   **order flow** via `BarFlowFields`: Net / In / Out / Δ%, then VolMk / NonVol.
@@ -345,7 +347,11 @@ Because bars are rebuilt whenever interval/group/metric/trades change, the chart
 ### 10b. Vertical (price) scale — manual Y zoom is sticky (`dualPriceScaleSync.ts`)
 
 The chart runs **two price scales**: right = token price/MC, left = the vol/non-vol flow
-overlay. `attachDualPriceScaleSync` keeps their Y zoom in lockstep — a drag on one axis
+overlay. Both flow curves share that left scale and vol normally dwarfs non-vol, which is
+why the toolbar toggles them **separately** (`flowLineVisibility.ts`): hiding vol lets the
+left scale autoscale to non-vol alone, the only way its shape is readable. The scale itself
+is visible iff at least one curve is — and the autoscale-reset key carries BOTH flags, since
+hiding either one changes what the axis means. `attachDualPriceScaleSync` keeps their Y zoom in lockstep — a drag on one axis
 mirrors the *relative* zoom onto the other via `setVisibleRange`, which implicitly turns
 that scale's `autoScale` off.
 
@@ -428,7 +434,7 @@ as plain `Slot N` strings instead.
 
 **Persisted (localStorage) state**: `groupMode`, `interval`, `style`, `showTradeMarkers`,
 `showAthLine`, `showMigrationLine`, `trimEmptyBars`, `showWalletMarkers`,
-`showDevMarkers`, `devMarkersBoundariesOnly`, `showEventMarkers`, `showFlowLines`.
+`showDevMarkers`, `devMarkersBoundariesOnly`, `showEventMarkers`, `showFlowVol`, `showFlowNonVol`.
 
 **Session-only UI state**: `rangeSelectMode`, `selectedRange`, `selectedBar`, and the
 hover/tooltip states (`crosshair`, `barTooltip`, `rangeTooltip`,

@@ -11,6 +11,7 @@ import {
   type IxPattern,
   type IxPatternSet,
 } from 'lib/flow/ixPatternSets';
+import type { FlowSide } from 'lib/flow/classifyFlow';
 import type { FlowLensValue } from 'context/FlowLensContext';
 import {
   useCreateIxPatternSetMutation,
@@ -27,6 +28,9 @@ interface LensPrefs {
   groupsBySet: Record<string, string[]>;
   contagion: boolean;
   excludeSelf: boolean;
+  /** `null` ⇒ both legs. Absent in prefs written before the knob existed, which
+   *  reads as both — the previous behavior. */
+  side: FlowSide | null;
 }
 
 const DEFAULT_PREFS: LensPrefs = {
@@ -39,6 +43,9 @@ const DEFAULT_PREFS: LensPrefs = {
   contagion: false,
   // The studied wallet classifies itself otherwise, which is never the question.
   excludeSelf: true,
+  // Both legs by default: narrowing is a deliberate act, and a lens that
+  // silently showed one side would misread as "this structure is rare here".
+  side: null,
 };
 
 export interface TraderFlowLens {
@@ -59,6 +66,9 @@ export interface TraderFlowLens {
   setContagion: (on: boolean) => void;
   excludeSelf: boolean;
   setExcludeSelf: (on: boolean) => void;
+  /** Which leg the split classifies; `null` ⇒ both. */
+  side: FlowSide | null;
+  setSide: (side: FlowSide | null) => void;
   /** Replace the selected set's patterns (paste import), or create a new set. */
   savePatterns: (patterns: IxPattern[]) => Promise<void>;
   createSet: (name: string, patterns: IxPattern[]) => Promise<void>;
@@ -168,11 +178,12 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
     () => ({
       contagion: prefs.contagion,
       excludeWallets,
+      side: prefs.side ?? null,
       target: set
         ? { name: set.name, patterns: set.patterns, activeGroup, toggle, saving, error }
         : null,
     }),
-    [prefs.contagion, excludeWallets, set, activeGroup, toggle, saving, error],
+    [prefs.contagion, prefs.side, excludeWallets, set, activeGroup, toggle, saving, error],
   );
 
   const selectSet = useCallback(
@@ -264,6 +275,8 @@ export function useTraderFlowLens(wallet: string | null): TraderFlowLens {
     setContagion: (on) => setPrefs((p) => ({ ...p, contagion: on })),
     excludeSelf: prefs.excludeSelf,
     setExcludeSelf: (on) => setPrefs((p) => ({ ...p, excludeSelf: on })),
+    side: prefs.side ?? null,
+    setSide: (side) => setPrefs((p) => ({ ...p, side })),
     savePatterns: writeSet,
     createSet,
     renameSet,

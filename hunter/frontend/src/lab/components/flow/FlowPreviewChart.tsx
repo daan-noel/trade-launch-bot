@@ -35,8 +35,14 @@ import { BarCrosshairFields } from 'components/token-price-chart/BarCrosshairFie
 import { BarCrosshairTooltip } from 'components/token-price-chart/BarCrosshairTooltip';
 import { createChartTimeFormatters } from 'components/token-price-chart/chartTimezone';
 import {
+  applyFlowLineVisibility,
+  flowLineVisibilityFromPrefs,
+  type FlowLineVisibility,
+} from 'components/token-price-chart/flowLineVisibility';
+import {
   BuySellCountsIcon,
   CandlesIcon,
+  FlowLineToggles,
   IconToggleButton,
   LineIcon,
   RangeSelectIcon,
@@ -131,7 +137,10 @@ interface FlowPreviewChartPrefs {
   showAthLine: boolean;
   showMigrationLine: boolean;
   highlightVolumeBars: boolean;
-  showFlowLines: boolean;
+  /** Per-curve visibility of the vol/non-vol overlay. Split because the two share
+   *  the left price scale — hiding one rescales the axis to the other. */
+  showFlowVol: boolean;
+  showFlowNonVol: boolean;
 }
 
 const DEFAULT_FLOW_CHART_PREFS: FlowPreviewChartPrefs = {
@@ -155,7 +164,8 @@ const DEFAULT_FLOW_CHART_PREFS: FlowPreviewChartPrefs = {
   // Default ON: this chart exists to separate manufactured volume from organic
   // flow, and the bar highlight is what makes that split visible at a glance.
   highlightVolumeBars: true,
-  showFlowLines: true,
+  showFlowVol: true,
+  showFlowNonVol: true,
 };
 
 /** Toolbar toggles persist across sessions (mirrors `TokenPriceChart`'s
@@ -165,8 +175,15 @@ function loadFlowChartPrefs(): FlowPreviewChartPrefs {
   try {
     const raw = getString(STORAGE_KEYS.flowPreviewChartPrefs);
     if (raw) {
-      const parsed = JSON.parse(raw) as Partial<FlowPreviewChartPrefs>;
+      const parsed = JSON.parse(raw) as Partial<FlowPreviewChartPrefs> & {
+        showFlowLines?: boolean;
+      };
       const merged = { ...DEFAULT_FLOW_CHART_PREFS, ...parsed };
+      // A pre-split blob holds one `showFlowLines` for both curves — seed both
+      // per-curve flags from it instead of resetting the saved state.
+      const flow = flowLineVisibilityFromPrefs(parsed);
+      merged.showFlowVol = flow.vol;
+      merged.showFlowNonVol = flow.nonVol;
       // Guard the basis against a stale persisted value — earlier builds stored
       // 'sol' (two-way toggle) and later 'net_sol'/'real_sol', none of which
       // exist now (basis is cost_sol/token/value_sol). Fall back to the default.
@@ -220,16 +237,6 @@ function VolumeBarsIcon() {
       <rect x="3" y="8" width="3" height="8" rx="0.5" fill="currentColor" opacity="0.4" />
       <rect x="8.5" y="4" width="3" height="12" rx="0.5" fill="currentColor" />
       <rect x="14" y="9.5" width="3" height="6.5" rx="0.5" fill="currentColor" opacity="0.4" />
-    </svg>
-  );
-}
-
-/** Two overlaid cumulative curves — the vol/non-vol flow-line pair. */
-function FlowLinesIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
-      <path d="M3 15 C7 14 9 8 17 5" stroke={VOL_LINE_COLOR} strokeWidth="1.6" strokeLinecap="round" />
-      <path d="M3 16.5 C8 16 11 12 17 11" stroke={NON_VOL_COLOR} strokeWidth="1.6" strokeLinecap="round" />
     </svg>
   );
 }
@@ -450,7 +457,10 @@ export function FlowPreviewChart({
   const [showAthLine, setShowAthLine] = useState(initialPrefs.showAthLine);
   const [showMigrationLine, setShowMigrationLine] = useState(initialPrefs.showMigrationLine);
   const [highlightVolumeBars, setHighlightVolumeBars] = useState(initialPrefs.highlightVolumeBars);
-  const [showFlowLines, setShowFlowLines] = useState(initialPrefs.showFlowLines);
+  const [flowLineVis, setFlowLineVis] = useState<FlowLineVisibility>({
+    vol: initialPrefs.showFlowVol,
+    nonVol: initialPrefs.showFlowNonVol,
+  });
   const [rangeSelectMode, setRangeSelectMode] = useState(false);
   const [showMore, setShowMore] = useState(false);
   const [selectedRange, setSelectedRange] = useState<ChartRangeSelection | null>(null);
@@ -547,7 +557,8 @@ export function FlowPreviewChart({
       showAthLine,
       showMigrationLine,
       highlightVolumeBars,
-      showFlowLines,
+      showFlowVol: flowLineVis.vol,
+      showFlowNonVol: flowLineVis.nonVol,
     });
   }, [
     style,
@@ -563,7 +574,7 @@ export function FlowPreviewChart({
     showAthLine,
     showMigrationLine,
     highlightVolumeBars,
-    showFlowLines,
+    flowLineVis,
   ]);
 
   // Bar time-keys whose trades are ALL volume-classified (checked ix-patterns +
@@ -578,6 +589,7 @@ export function FlowPreviewChart({
         wallet_address: t.wallet_address,
         sol: t.amount_sol,
         ix_labels: t.instruction_labels,
+        side: t.trade_type,
         block_time: t.block_time,
         slot: t.slot,
       })),
@@ -882,14 +894,17 @@ export function FlowPreviewChart({
     nonVolSeriesRef.current?.setData(toData(alignedLines.nonVol));
   }, [alignedLines, basis, priceUnit, solUnitScale]);
 
-  // Show/hide the two flow-split overlay lines (and their shared left price
-  // scale) as one unit. Re-applied after any series recreation (structural deps)
-  // so the toggle survives a style/group/interval change.
+  // Show/hide each flow-split overlay line and their shared left price scale.
+  // Re-applied after any series recreation (structural deps) so the toggles
+  // survive a style/group/interval change.
   useEffect(() => {
-    volSeriesRef.current?.applyOptions({ visible: showFlowLines });
-    nonVolSeriesRef.current?.applyOptions({ visible: showFlowLines });
-    chartRef.current?.priceScale('left').applyOptions({ visible: showFlowLines });
-  }, [showFlowLines, style, groupMode, intervalSec]);
+    applyFlowLineVisibility({
+      volSeries: volSeriesRef.current,
+      nonVolSeries: nonVolSeriesRef.current,
+      chart: chartRef.current,
+      visibility: flowLineVis,
+    });
+  }, [flowLineVis, style, groupMode, intervalSec]);
 
   // Trade (buy/sell count) markers + the selected-bar marker + line-mode
   // volume-bar highlight (candle mode spotlights via the setData effect above).
@@ -1261,14 +1276,7 @@ export function FlowPreviewChart({
           <TrimGapsIcon />
         </IconToggleButton>
 
-        <IconToggleButton
-          active={showFlowLines}
-          onClick={() => setShowFlowLines((v) => !v)}
-          label="Toggle vol/non-vol flow lines"
-          tooltip="Show/hide the cumulative volume-maker (red) vs non-volume (gold) overlay lines"
-        >
-          <FlowLinesIcon />
-        </IconToggleButton>
+        <FlowLineToggles visibility={flowLineVis} available onChange={setFlowLineVis} />
 
         <IconToggleButton
           active={highlightVolumeBars}

@@ -1,3 +1,4 @@
+import type { FlowLineVisibility } from './flowLineVisibility';
 import type { UTCTimestamp } from 'lightweight-charts';
 import type { PriceUnit } from 'types';
 
@@ -386,8 +387,8 @@ export interface ChartToolbarProps {
   athLineAvailable: boolean;
   showMigrationLine: boolean;
   trimEmptyBars: boolean;
-  /** Vol/non-vol cumulative overlay lines (left price scale). */
-  showFlowLines: boolean;
+  /** Per-curve visibility of the vol/non-vol cumulative overlay (left price scale). */
+  flowLines: FlowLineVisibility;
   /** False only when nothing can classify (no patterns AND no creator wallet)
    *  — toggle disabled. */
   flowLinesAvailable: boolean;
@@ -414,6 +415,6 @@ export interface ChartToolbarProps {
   onShowAthLineChange: (show: boolean) => void;
   onShowMigrationLineChange: (show: boolean) => void;
   onTrimEmptyBarsChange: (trim: boolean) => void;
-  onShowFlowLinesChange: (show: boolean) => void;
+  onFlowLinesChange: (next: FlowLineVisibility) => void;
   onRangeSelectModeChange: (active: boolean) => void;
 }

@@ -85,6 +85,12 @@ import {
   snapSpanToBars,
   type TimeBandLane,
 } from './timeBandsPlugin';
+import {
+  applyFlowLineVisibility,
+  flowLineVisibilityFromPrefs,
+  flowLineVisibilityKey,
+  type FlowLineVisibility,
+} from './flowLineVisibility';
 import type {
   ChartBarSelection,
   ChartCrosshairInfo,
@@ -109,10 +115,18 @@ function loadPrefs(): ChartPrefs {
   try {
     const raw = getString(LS_CHART_PREFS_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as Partial<ChartPrefs>;
+      const parsed = JSON.parse(raw) as Partial<ChartPrefs> & { showFlowLines?: boolean };
       // Merge over defaults so a key added after this blob was written falls back
-      // instead of coming through undefined.
-      return { ...DEFAULT_CHART_PREFS, ...parsed };
+      // instead of coming through undefined. The flow overlay is the one exception:
+      // a pre-split blob holds a single `showFlowLines`, so seed both per-curve
+      // flags from it rather than resetting the user's saved state.
+      const flow = flowLineVisibilityFromPrefs(parsed);
+      return {
+        ...DEFAULT_CHART_PREFS,
+        ...parsed,
+        showFlowVol: flow.vol,
+        showFlowNonVol: flow.nonVol,
+      };
     }
   } catch {
     /* ignore */
@@ -607,13 +621,17 @@ export function TokenPriceChart({
     initialPrefs.devMarkersBoundariesOnly,
   );
   const [showEventMarkers, setShowEventMarkers] = useState(initialPrefs.showEventMarkers);
-  const [showFlowLines, setShowFlowLines] = useState(initialPrefs.showFlowLines);
+  const [flowLineVis, setFlowLineVis] = useState<FlowLineVisibility>({
+    vol: initialPrefs.showFlowVol,
+    nonVol: initialPrefs.showFlowNonVol,
+  });
   // A page-wide flow lens (Trader Analysis) overrides HOW the split is computed:
   // structural-only reads and excluded wallets. Absent everywhere else, where the
   // chart classifies exactly as the engine does.
   const lens = useFlowLensContext();
   const flowContagion = lens?.contagion ?? true;
   const flowExcludeWallets = lens?.excludeWallets ?? null;
+  const flowSide = lens?.side ?? null;
   /** True once `volume_ix_patterns` are supplied — the split is then the engine's
    *  own volume-maker vs organic classification. */
   const flowPatternsConfigured = flowPatternKeys != null && flowPatternKeys.size > 0;
@@ -625,7 +643,7 @@ export function TokenPriceChart({
   useEffect(() => {
     const was = wasFlowPatternsConfigured.current;
     wasFlowPatternsConfigured.current = flowPatternsConfigured;
-    if (!was && flowPatternsConfigured) setShowFlowLines(true);
+    if (!was && flowPatternsConfigured) setFlowLineVis({ vol: true, nonVol: true });
   }, [flowPatternsConfigured]);
   /** Draw the overlay whenever SOMETHING can classify: patterns, or just the
    *  creator wallet (which alone splits creator + everyone they traded with off
@@ -635,7 +653,6 @@ export function TokenPriceChart({
    *  creator rule to fall back on, so with contagion off the overlay needs
    *  patterns or it has nothing to say. */
   const flowLinesAvailable = flowPatternsConfigured || (!!creatorWallet && flowContagion);
-  const flowLinesVisible = showFlowLines && flowLinesAvailable;
   const flowLinesAvailableRef = useRef(flowLinesAvailable);
   flowLinesAvailableRef.current = flowLinesAvailable;
   const { timezone: chartTimezone } = useTimezone();
@@ -858,9 +875,9 @@ export function TokenPriceChart({
     savePrefs({ showEventMarkers: next });
   }, []);
 
-  const handleShowFlowLinesChange = useCallback((next: boolean) => {
-    setShowFlowLines(next);
-    savePrefs({ showFlowLines: next });
+  const handleFlowLinesChange = useCallback((next: FlowLineVisibility) => {
+    setFlowLineVis(next);
+    savePrefs({ showFlowVol: next.vol, showFlowNonVol: next.nonVol });
   }, []);
 
   const handleSliderChange = useCallback((from: number, to: number) => {
@@ -1314,6 +1331,7 @@ export function TokenPriceChart({
       creatorWallet,
       contagion: flowContagion,
       excludeWallets: flowExcludeWallets,
+      side: flowSide,
     });
   }, [
     sortedTrades,
@@ -1325,6 +1343,7 @@ export function TokenPriceChart({
     creatorWallet,
     flowContagion,
     flowExcludeWallets,
+    flowSide,
   ]);
   const alignedFlowLines = useMemo(() => alignFlowToBars(flowLines, bars), [flowLines, bars]);
   alignedFlowLinesRef.current = alignedFlowLines;
@@ -1356,8 +1375,8 @@ export function TokenPriceChart({
         value:
           flowBasis === 'token' ? p.value / tokenScale : toValue(p.value),
       }));
-    volSeriesRef.current?.applyOptions({ priceFormat, visible: flowLinesVisible });
-    nonVolSeriesRef.current?.applyOptions({ priceFormat, visible: flowLinesVisible });
+    volSeriesRef.current?.applyOptions({ priceFormat });
+    nonVolSeriesRef.current?.applyOptions({ priceFormat });
     const chart = chartRef.current;
     if (chart) {
       // Re-fit only when what an axis MEANS changed (overlay toggled, unit/basis
@@ -1365,13 +1384,21 @@ export function TokenPriceChart({
       // deps of this effect and both churn on every live trade / SOL-price tick,
       // so an unconditional re-fit here re-armed autoScale continuously and threw
       // away the user's hand-set price zoom.
-      const resetKey = `${flowLinesVisible}|${flowBasis}|${priceUnit}|${style}|${groupingKey}`;
+      // Per-curve, not just any-curve: hiding one rescales the shared left axis
+      // to the other, which is exactly a change in what the axis MEANS.
+      const resetKey = `${flowLinesAvailable}|${flowLineVisibilityKey(flowLineVis)}|${flowBasis}|${priceUnit}|${style}|${groupingKey}`;
       if (flowScaleResetKeyRef.current !== resetKey) {
         flowScaleResetKeyRef.current = resetKey;
         scaleSyncRef.current?.reset();
       }
-      chart.priceScale('left').applyOptions({ visible: flowLinesVisible });
     }
+    applyFlowLineVisibility({
+      volSeries: volSeriesRef.current,
+      nonVolSeries: nonVolSeriesRef.current,
+      chart,
+      visibility: flowLineVis,
+      available: flowLinesAvailable,
+    });
     volSeriesRef.current?.setData(toData(alignedFlowLines.vol));
     nonVolSeriesRef.current?.setData(toData(alignedFlowLines.nonVol));
   }, [
@@ -1379,7 +1406,8 @@ export function TokenPriceChart({
     flowBasis,
     priceUnit,
     toValue,
-    flowLinesVisible,
+    flowLineVis,
+    flowLinesAvailable,
     showChart,
     style,
     groupingKey,
@@ -1951,7 +1979,7 @@ export function TokenPriceChart({
         athLineAvailable={athLineAvailable}
         showMigrationLine={showMigrationLine}
         trimEmptyBars={trimEmptyBars}
-        showFlowLines={showFlowLines}
+        flowLines={flowLineVis}
         flowLinesAvailable={flowLinesAvailable}
         flowPatternsConfigured={flowPatternsConfigured}
         rangeSelectMode={rangeSelectMode}
@@ -1972,7 +2000,7 @@ export function TokenPriceChart({
         onShowAthLineChange={handleShowAthLineChange}
         onShowMigrationLineChange={handleShowMigrationLineChange}
         onTrimEmptyBarsChange={handleTrimEmptyBarsChange}
-        onShowFlowLinesChange={handleShowFlowLinesChange}
+        onFlowLinesChange={handleFlowLinesChange}
         onRangeSelectModeChange={setRangeSelectMode}
       />
       <div className="relative" style={{ height: chartHeight, width: '100%' }}>

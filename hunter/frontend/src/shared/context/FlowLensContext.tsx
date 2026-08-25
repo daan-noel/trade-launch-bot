@@ -1,5 +1,6 @@
 import { createContext, useContext } from 'react';
 
+import type { FlowSide } from 'lib/flow/classifyFlow';
 import type { IxPattern } from 'lib/flow/ixPatternSets';
 
 /**
@@ -36,6 +37,10 @@ export interface FlowLensValue {
   contagion: boolean;
   /** Wallets never classified as volume (the studied trader itself). */
   excludeWallets: ReadonlySet<string> | null;
+  /** Classify one leg only — `null` ⇒ both, the engine's behavior. Patterns are
+   *  side-blind, so this is the only way to tell a structure buying from the
+   *  same structure selling. See `FlowClassifyOptions.side`. */
+  side: FlowSide | null;
   /** `null` ⇒ read-only lens (no set picked, or nothing to write to). */
   target: FlowLensTarget | null;
 }

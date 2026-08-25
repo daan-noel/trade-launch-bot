@@ -56,6 +56,7 @@ export function buildFlowLines(
       wallet_address: t.wallet_address ?? '',
       sol: t.amount_sol ?? 0,
       ix_labels: t.instruction_labels,
+      side: t.trade_type,
       raw: t,
     })),
     classifyOpts,
