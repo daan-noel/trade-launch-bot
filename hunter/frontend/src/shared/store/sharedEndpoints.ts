@@ -1,4 +1,4 @@
-import { baseApi } from './baseApi';
+import { baseApi, OVERRIDE_ENDPOINTS_ON_HMR } from './baseApi';
 import type { AppSettings } from 'services/api';
 import type { SortEntry } from 'components/table/types';
 import type { FilterSpec } from 'components/table/numericFilter';
@@ -134,6 +134,7 @@ function withCreatedMs(r: TokensResponse): TokensResponse {
  * so each build's store registers them for side-effect.
  */
 export const sharedApi = baseApi.injectEndpoints({
+  overrideExisting: OVERRIDE_ENDPOINTS_ON_HMR,
   endpoints: (builder) => ({
     // Server-side paginated/filtered/sorted token list over the **unified**
     // `POST /api/tokens` [`TableRequest`] body — the SAME contract the strategy

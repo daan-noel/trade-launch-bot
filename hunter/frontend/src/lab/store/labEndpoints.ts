@@ -1,4 +1,4 @@
-import { baseApi } from 'store/baseApi';
+import { baseApi, OVERRIDE_ENDPOINTS_ON_HMR } from 'store/baseApi';
 import type { FieldFilterValue } from '@lab/components/sweep/fingerprintFilters';
 import type {
   GroupedSweepRunRecord,
@@ -62,6 +62,7 @@ export interface FlowDiscoveryStartArgs {
  * backend serves none of these.
  */
 export const labApi = baseApi.injectEndpoints({
+  overrideExisting: OVERRIDE_ENDPOINTS_ON_HMR,
   endpoints: (builder) => ({
     // Generic-engine simulate (redesign 5.2). Start a run for a saved rule or an
     // inline dry-run draft; the run is detached and its result stored server-side,

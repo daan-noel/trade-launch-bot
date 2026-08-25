@@ -1,4 +1,4 @@
-import { baseApi } from './baseApi';
+import { baseApi, OVERRIDE_ENDPOINTS_ON_HMR } from './baseApi';
 import type {
   ActionPlan,
   BootstrapPayload,
@@ -313,7 +313,7 @@ export const api = baseApi.injectEndpoints({
       invalidatesTags: ['Volume'],
     }),
   }),
-  overrideExisting: false,
+  overrideExisting: OVERRIDE_ENDPOINTS_ON_HMR,
 });
 
 export const {

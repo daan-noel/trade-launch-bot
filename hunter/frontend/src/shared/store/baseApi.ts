@@ -3,6 +3,13 @@ import type { FetchBaseQueryError } from '@reduxjs/toolkit/query';
 import type { SerializedError } from '@reduxjs/toolkit';
 import { API_BASE } from 'services/config';
 
+/** `injectEndpoints` KEEPS an already-registered definition unless told otherwise,
+ *  so a Vite hot update that re-runs an endpoint module against this surviving
+ *  `baseApi` silently keeps the PREVIOUS `query` builder — the page sends new
+ *  args to an old URL. True in dev so a hot update actually replaces the
+ *  definition; false in prod, where a duplicate name is a real mistake. */
+export const OVERRIDE_ENDPOINTS_ON_HMR = import.meta.env.DEV;
+
 /**
  * Central RTK Query cache **shell**. Endpoint definitions are attached from
  * per-mode modules (`sharedEndpoints` / `liveEndpoints` / `labEndpoints`)

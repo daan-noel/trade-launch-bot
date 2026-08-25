@@ -1,4 +1,4 @@
-import { baseApi } from 'store/baseApi';
+import { baseApi, OVERRIDE_ENDPOINTS_ON_HMR } from 'store/baseApi';
 import type {
   WalletHolding,
   WalletPrice,
@@ -189,6 +189,7 @@ export interface SellTokenArgs {
  * switch. The lab (local) backend serves none of these.
  */
 export const liveApi = baseApi.injectEndpoints({
+  overrideExisting: OVERRIDE_ENDPOINTS_ON_HMR,
   endpoints: (builder) => ({
     // Portfolio holdings — the position-manager read (full wallet RPC scan +
     // Jupiter marks + cost basis + unrealized PnL + bot-managed tag + token
