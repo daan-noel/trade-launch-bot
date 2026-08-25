@@ -116,13 +116,21 @@ applies no such filter, so the NATS task screens failures locally via
 `convert::json_tx_failed`. Without that, failed transactions decode into phantom trades
 on one source and not the other.
 
-### Known fidelity limit
+### Instruction data the node consumes
 
-Instructions belonging to a program the RPC node parses (`spl-token`, `system`, ATA)
-arrive as `{program, parsed}` with raw `data` dropped, and carry an empty `data` here.
-Nothing reads it: the pump.fun decoders take balances from `pre/postTokenBalances`, and
-pump.fun and ComputeBudget instructions are not in the node's parsed set, so they still
-arrive raw with base58 `data`.
+Instructions belonging to a program the RPC node parses (`system`, `spl-token`,
+`spl-token-2022`, ATA) arrive as `{program, parsed}` with raw `data` dropped.
+`convert::data_from_parsed` re-encodes those bytes from `parsed`, because `ix_labels` is
+built from the instruction discriminator: an empty `data` labels every one of them
+`"System Program: Unknown"`, which blinds the ix-pattern fingerprints on the whole NATS
+feed. The rebuild is **byte-exact or nothing** — an uncovered instruction type keeps an
+empty `data` and its `Unknown` label, so a payload is never short or invented.
+`system_rebuild_matches_the_sdk_encoder` pins the system layouts against
+`solana_sdk::system_instruction` itself, so the tags cannot drift from the SDK's.
+
+pump.fun and ComputeBudget are not in the node's parsed set, so they arrive raw with
+base58 `data` on either encoding — trade decode and the `cu_limit`/`cu_price` extraction
+are unaffected by the publisher's choice.
 
 ## Slow-consumer defence
 
@@ -172,7 +180,7 @@ transport handles the current shape — but both are strictly better.
 
 | Ask | Why |
 | --- | --- |
-| `encoding: "base64"` instead of `jsonParsed` | About half the bytes on the wire, and the converter takes the bincode path: no pubkey→index remapping, no `spl-token` data loss |
+| `encoding: "base64"` instead of `jsonParsed` | About half the bytes on the wire, and the converter takes the bincode path: no pubkey→index remapping, no instruction-data rebuild |
 | One subject per stream, no mirrored duplicate | A relay that publishes the same frames to both a specific and a catch-all subject doubles bandwidth for no extra data |
 
 Alongside `base64`, `transactionDetails: "full"` and `maxSupportedTransactionVersion: 0`

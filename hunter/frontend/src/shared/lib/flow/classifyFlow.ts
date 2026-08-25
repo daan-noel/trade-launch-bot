@@ -22,6 +22,21 @@ export interface FlowClassifyOptions {
   /** Token creator wallet address — always classified as volume-side, and
    *  seeds the contagion set (mirrors `FlowState::set_creator`). */
   creatorWallet?: string | null;
+  /**
+   * Forward-only wallet tagging, the Rust classifier's behavior — default `true`.
+   *
+   * Set `false` for a STRUCTURAL-ONLY read: every trade is judged by its own
+   * `ix_labels` alone, and neither a match nor the creator wallet taints the
+   * wallet's later trades. Contagion answers "who is in the volume crew"; with
+   * it on, one match makes a wallet volume-side forever, which smears a study of
+   * "which STRUCTURES are around this moment" into a single wallet set within
+   * seconds. Analysis-only surfaces (the Trader Analysis flow lens) therefore
+   * default it off — the engine's own classification is never computed here.
+   */
+  contagion?: boolean;
+  /** Wallets that can never be volume-side and never tag anything — the studied
+   *  trader itself, typically, so a lens does not classify its own subject. */
+  excludeWallets?: ReadonlySet<string> | null;
 }
 
 /**
@@ -51,11 +66,21 @@ export function classifyFlowTrades<T extends FlowTradeLite>(
   trades: readonly T[],
   opts: FlowClassifyOptions,
 ): (T & FlowClassified)[] {
+  const contagion = opts.contagion !== false;
+  const excluded = opts.excludeWallets;
   const taggedWallets = new Set<string>();
-  if (opts.creatorWallet) taggedWallets.add(opts.creatorWallet);
+  // The creator seeds contagion, so it is only a tag when contagion is on. With
+  // it off, the creator's trades are judged by their structure like everyone
+  // else's — otherwise "structural only" would still carry one wallet rule.
+  if (contagion && opts.creatorWallet) taggedWallets.add(opts.creatorWallet);
 
   const out: (T & FlowClassified)[] = [];
   for (const t of trades) {
+    if (excluded?.has(t.wallet_address)) {
+      const mag = Math.abs(t.sol);
+      out.push({ ...t, isVol: false, reason: null, volSol: 0, nonVolSol: mag });
+      continue;
+    }
     const structuralMatch =
       !!t.ix_labels &&
       t.ix_labels.length > 0 &&
@@ -64,7 +89,7 @@ export function classifyFlowTrades<T extends FlowTradeLite>(
     // structural match is reported as `structural` and only its later trades as
     // `wallet` — otherwise every trade of a tagged wallet looks like contagion
     // and nothing points back at the pattern that started it.
-    const wasTagged = taggedWallets.has(t.wallet_address);
+    const wasTagged = contagion && taggedWallets.has(t.wallet_address);
     const isVol = wasTagged || structuralMatch;
     const reason: FlowReason | null = wasTagged
       ? t.wallet_address === opts.creatorWallet
@@ -73,7 +98,7 @@ export function classifyFlowTrades<T extends FlowTradeLite>(
       : structuralMatch
         ? 'structural'
         : null;
-    if (isVol) taggedWallets.add(t.wallet_address);
+    if (contagion && isVol) taggedWallets.add(t.wallet_address);
     const g = Math.abs(t.sol);
     out.push({ ...t, isVol, reason, volSol: isVol ? g : 0, nonVolSol: isVol ? 0 : g });
   }

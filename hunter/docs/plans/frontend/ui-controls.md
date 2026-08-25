@@ -56,7 +56,7 @@ semantics at the query boundary:
 | History / Portfolio / Simulate / lab Created | `UTC` | wall-clock treated as UTC ISO, through the one `isoToPickerInput`/`pickerInputToIso` pair |
 | Tokens Created | project IANA (`TokensFilterBar` `timezone`) | `datetimeLocalToUtcWallClock` |
 | creation-stats windows | project IANA (display zone) | `CreationWindowPicker` → `resolveCreationWindow` |
-| trader look-back | `zoneLabel={null}`, `allowCustom={false}` | day/preset enums only |
+| trader look-back | project IANA (`TimezoneContext`) | day presets go as `days=N`; `Custom` goes as `from`/`to` through `datetimeLocalToUtcWallClock` + a `Z` |
 
 Preset clicks commit immediately; calendar edits stay in a draft until Apply.
 Clear + Apply with empty bounds commits the `all` / "All" preset when one is

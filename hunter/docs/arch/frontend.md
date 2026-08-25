@@ -455,8 +455,15 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   (`parseMetricExitTarget`) are shared with the live strip, so the two timelines can
   never label the same condition differently.
   The shared `TokenTradeChart`/`TokenPriceChart` take an optional `highlightWallet` — its
-  markers render larger with a gold glow+ring (`ProfileWalletInfo.isHighlighted` →
-  `walletMarkersPlugin`), and a non-tracked input address gets a synthetic marker entry.
+  markers render at ~2.4x the base radius (with a `HIGHLIGHT_MIN_RADIUS` floor so a
+  wide zoom can't shrink it into the crowd) plus a gold glow+ring
+  (`ProfileWalletInfo.isHighlighted` → `walletMarkersPlugin`), take the stack row
+  nearest the bar edge (`focusFirst`), and a non-tracked input address gets a synthetic
+  marker entry. Marker stacks pack EDGE to EDGE from each marker's own outer extent, so
+  an oversized tier pushes its neighbours out instead of overlapping them.
+  `TokenTradeChart` forwards the same address to `BarTradesPanel`, which paints those
+  rows gold (background + 4px left accent, outranking the entry/exit tint and the
+  `myWalletAddresses` amber accent) and heads the panel with an `N of M by <addr>` chip.
   **Tracked-wallet markers are a structural invariant:** `TokenPriceChart` defaults
   `profileWallets` to `useProfileWallets()` when the prop is omitted, so *every* token trade
   chart shows tracked-wallet markers by construction (pass an explicit list to override,
@@ -866,6 +873,18 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   asserted by `components/table/DataTable.boundary.test.ts`. **Every** token-row table now renders
   through `TokenTable`. Trader Analysis row / chart-card select opens `LazyLabTokenInspectModal`
   via `inspectFromMint`.
+- **Trader Analysis look-back window (`lab/pages/analysis/TraderAnalysisPage.tsx`).** One
+  `DateTimeRangePicker` covers both shapes: the rolling day presets (1 / 3 / 7 / 14 / 30 / 60 / 90)
+  and `Custom`, an exact `from → to` on the two-month calendar with time fields. The preset value
+  lives in the persisted draft's `days`; `Custom` parks the sentinel there and the bounds in
+  `from`/`to` as wall-clock in the **project zone**, converted at the query boundary by
+  `datetimeLocalToUtcWallClock` (+`Z`) — a `lower`/`upper` bound each, so a DST-ambiguous hour stays
+  inside the range. A day preset still hands the picker its resolved lower bound, so the trigger
+  reads `7 days · 08/18 → now` and opening `Custom` starts from that window rather than a blank
+  calendar. On the wire only the active shape goes out (`days=N`, or `from=&to=`), and the summary
+  sentence under the inputs names the window the rows were read over, not just a day count. The 90d
+  clamp is the backend's (`resolve_window`), which also swaps a reversed pair and, on an over-long
+  span, keeps the upper bound — the page reads end-first.
 - **Trader Analysis wallet columns (`lab/components/analysis/walletTokenColumns.tsx`).** The page
   splices `walletTokenColumns()` into `tokenColumns()` directly after the **identity** block, so the
   wallet's position reads before the token's own activity/price/market fields. The splice happens at
@@ -897,6 +916,22 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   live-updates every chart without a refetch. Every figure is a per-mint aggregate, not a per-episode
   ledger: a wallet that re-entered a mint several times in the window collapses to one row (see the doc
   comment on `kernel::wallet_mint_pnl`).
+- **Trader Analysis flow lens (`lab/components/analysis/FlowLensBar.tsx` +
+  `useTraderFlowLens.ts`).** The page's tokens belong to no cohort, so there is no fingerprint to read
+  `volume_ix_patterns` off and the charts' vol/non-vol overlay has nothing to classify with. The lens is
+  the second owner of that same fact: a named `ix_pattern_sets` row (lab-only table, CRUD at
+  `/api/ix-pattern-sets`) holding `[{ group, ix_labels }]`, picked once above the grid and applied to
+  every card. Keys ride the existing `flowPatternKeys` prop path; the classifier options and the
+  Vol-badge write target ride `context/FlowLensContext`, which the page provides and
+  `TokenPriceChart` / `TokenTradeChart` / `BarTradesPanel` consume — absent everywhere else, where the
+  chart stack classifies exactly as the engine does. A lens defaults to **contagion off** (each trade
+  judged by its own `ix_labels`, no forward wallet tagging) and **excludes the studied wallet**, because
+  it answers "which structures surround this moment", not "who is in the volume crew". A Vol badge under
+  a lens writes to the pattern set, never a fingerprint; the one path into the engine is the explicit
+  **Copy to fingerprint**. Paste accepts a `{ "patterns": [...] }` study file, a `[{ tool, ix_labels }]`
+  list, bare label arrays, or one JSON array per line, and reports accepted / duplicate / skipped counts
+  (`lib/flow/ixPatternSets.ts`). Group chips narrow which patterns classify (view state, per set).
+  Detail: [@plans/strategies/trader-flow-lens.md](@plans/strategies/trader-flow-lens.md).
 - **One in-memory evaluator, in Rust only.** Token tables whose rows are RAM-resident on the backend (the
   lab Simulated table; the live Holdings composition) page/sort/filter through
   `trading_core::api::table_eval::apply_table_request` with a per-table `ColResolver` grammar; the shared

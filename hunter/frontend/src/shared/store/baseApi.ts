@@ -42,6 +42,10 @@ export const baseApi = createApi({
     // `refetchOnMountOrArgChange: false`, an untagged entry would serve the
     // pre-leg ledger for five minutes, including across a close/reopen.
     'PositionFills',
+    // Analysis-owned ix_labels pattern sets (Trader Analysis' flow lens). Its own
+    // tag, not `Fingerprint`: the two are separate owners of the same fact and a
+    // lens edit must not invalidate the rule-facing fingerprint cache.
+    'IxPatternSet',
     // A mint's re-entry episodes (chart marker overlay), keyed by mint. A new entry
     // on a mint already on screen has to redraw the overlay, same as a leg does.
     'MintEpisodes',

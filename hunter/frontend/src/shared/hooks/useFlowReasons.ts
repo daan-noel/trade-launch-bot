@@ -24,10 +24,17 @@ export function useFlowReasons(
   trades: readonly TradeRecord[],
   keys: ReadonlySet<string> | null | undefined,
   creatorWallet?: string | null,
+  /** Lens overrides — structural-only reads and excluded wallets. Omitted ⇒ the
+   *  engine's own behavior (contagion on, nothing excluded). */
+  opts?: { contagion?: boolean; excludeWallets?: ReadonlySet<string> | null },
 ): ReadonlyMap<string, FlowReason> | null {
+  const contagion = opts?.contagion;
+  const excludeWallets = opts?.excludeWallets ?? null;
   return useMemo(() => {
     const hasPatterns = keys != null && keys.size > 0;
-    if (!hasPatterns && !creatorWallet) return null;
+    // With contagion off the creator is no longer a classification of its own,
+    // so a creator alone is not enough to have anything to report.
+    if (!hasPatterns && (contagion === false || !creatorWallet)) return null;
     const sorted = [...trades].sort(compareTradesChronologically);
     return flowReasonsById(
       sorted.map((t) => ({
@@ -36,7 +43,7 @@ export function useFlowReasons(
         sol: t.amount_sol ?? 0,
         ix_labels: t.instruction_labels,
       })),
-      { patternKeys: keys ?? new Set<string>(), creatorWallet },
+      { patternKeys: keys ?? new Set<string>(), creatorWallet, contagion, excludeWallets },
     );
-  }, [trades, keys, creatorWallet]);
+  }, [trades, keys, creatorWallet, contagion, excludeWallets]);
 }

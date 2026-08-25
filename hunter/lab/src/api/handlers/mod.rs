@@ -3,6 +3,7 @@
 //! rule-authoring + backtest edge. Composed with `trading_core`'s core routes by
 //! `configure_local_routes`.
 
+pub mod ix_pattern_sets;
 pub mod replay;
 pub mod strategies;
 pub mod system;

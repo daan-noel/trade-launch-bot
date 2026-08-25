@@ -59,6 +59,25 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/wallets/{wallet}/tokens",
                 web::get().to(handlers::wallets::list_wallet_tokens),
             )
+            // ── Analysis-owned ix_labels pattern sets (Trader Analysis flow
+            //    lens): the same vol/non-vol classification a fingerprint's
+            //    volume_ix_patterns drives, for tokens that belong to no cohort.
+            .route(
+                "/ix-pattern-sets",
+                web::get().to(handlers::ix_pattern_sets::list_sets),
+            )
+            .route(
+                "/ix-pattern-sets",
+                web::post().to(handlers::ix_pattern_sets::create_set),
+            )
+            .route(
+                "/ix-pattern-sets/{id}",
+                web::put().to(handlers::ix_pattern_sets::update_set),
+            )
+            .route(
+                "/ix-pattern-sets/{id}",
+                web::delete().to(handlers::ix_pattern_sets::delete_set),
+            )
             // Background-job status + control (sweep / simulation)
             .route("/jobs/status", web::get().to(handlers::system::job_status))
             .route(

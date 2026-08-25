@@ -17,6 +17,7 @@ import type {
   TraderTokenRow,
   FlowDiscoveryResult,
 } from 'types';
+import type { IxPatternSet, IxPatternSetDraft } from 'lib/flow/ixPatternSets';
 import type { InspectRequest, InspectRun } from '@lab/services/replayInspect';
 import type {
   EngineSimRequest,
@@ -376,17 +377,26 @@ export const labApi = baseApi.injectEndpoints({
       keepUnusedDataFor: 30,
     }),
     // Trader Analysis: full token rows (+ the wallet's per-mint stats) for every
-    // mint a wallet traded in the last `days`, most-recent-trade first
-    // (`limit <= 0` ⇒ unbounded; positive ⇒ capped). PG-backed on purpose — the
-    // 7-day default window includes today, which the sealed-days lake lacks. The
-    // page renders these through the shared token columns (client-side
-    // sort/filter) + a synced charts grid.
+    // mint a wallet traded in the window, most-recent-trade first (`limit <= 0` ⇒
+    // unbounded; positive ⇒ capped). The window is either rolling (`days`) or an
+    // explicit `from`/`to` pair of UTC ISO instants — sending `from` makes the
+    // backend ignore `days`, so only the active shape goes on the wire. PG-backed
+    // on purpose — the 7-day default window includes today, which the sealed-days
+    // lake lacks. The page renders these through the shared token columns
+    // (client-side sort/filter) + a synced charts grid.
     getTraderTokens: builder.query<
       TraderTokenRow[],
-      { wallet: string; days: number; limit: number }
+      { wallet: string; days: number; limit: number; from?: string; to?: string }
     >({
-      query: ({ wallet, days, limit }) =>
-        `/api/wallets/${encodeURIComponent(wallet)}/tokens?days=${days}&limit=${limit}`,
+      query: ({ wallet, days, limit, from, to }) => {
+        const qs = new URLSearchParams({ limit: String(limit) });
+        // An explicit lower bound replaces the rolling window; `to` alone still
+        // rides `days` (backend anchors the rolling span to that upper bound).
+        if (from) qs.set('from', from);
+        else qs.set('days', String(days));
+        if (to) qs.set('to', to);
+        return `/api/wallets/${encodeURIComponent(wallet)}/tokens?${qs.toString()}`;
+      },
       // Pre-parse created_at + the wallet trade timestamps to epoch-ms so the
       // shared AgeCell and the PnL analytics panel (heatmap/equity-curve/scatter
       // bucketing) never re-parse the ISO strings per render.
@@ -504,6 +514,36 @@ export const labApi = baseApi.injectEndpoints({
     getLastFamilySearch: builder.query<FamilySearchResult, void>({
       query: () => '/api/strategies/family-search/last',
     }),
+    // ── Flow lens: analysis-owned ix_labels pattern sets ─────────────────────
+    // The study twin of a fingerprint's `volume_ix_patterns` — same classifier,
+    // different owner, so a wallet study can split vol/non-vol on tokens that
+    // belong to no cohort. Lab-only table; nothing the engine reads.
+    getIxPatternSets: builder.query<IxPatternSet[], void>({
+      query: () => '/api/ix-pattern-sets',
+      providesTags: ['IxPatternSet'],
+    }),
+    createIxPatternSet: builder.mutation<IxPatternSet, IxPatternSetDraft>({
+      query: (body) => ({ url: '/api/ix-pattern-sets', method: 'POST', body }),
+      invalidatesTags: ['IxPatternSet'],
+    }),
+    updateIxPatternSet: builder.mutation<
+      IxPatternSet,
+      { id: string; body: IxPatternSetDraft }
+    >({
+      query: ({ id, body }) => ({
+        url: `/api/ix-pattern-sets/${encodeURIComponent(id)}`,
+        method: 'PUT',
+        body,
+      }),
+      invalidatesTags: ['IxPatternSet'],
+    }),
+    deleteIxPatternSet: builder.mutation<void, string>({
+      query: (id) => ({
+        url: `/api/ix-pattern-sets/${encodeURIComponent(id)}`,
+        method: 'DELETE',
+      }),
+      invalidatesTags: ['IxPatternSet'],
+    }),
   }),
 });
 
@@ -537,4 +577,8 @@ export const {
   useStartFamilySearchMutation,
   useLazyGetFamilySearchQuery,
   useGetLastFamilySearchQuery,
+  useGetIxPatternSetsQuery,
+  useCreateIxPatternSetMutation,
+  useUpdateIxPatternSetMutation,
+  useDeleteIxPatternSetMutation,
 } = labApi;

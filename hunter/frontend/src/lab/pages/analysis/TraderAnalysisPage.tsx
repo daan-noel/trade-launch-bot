@@ -7,7 +7,9 @@ import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { IconButton } from 'components/ui/IconButton';
 import { SearchIcon, SpinnerIcon } from 'components/ui/icons';
 import { Input } from 'components/ui/Input';
+import { FlowLensBar } from '@lab/components/analysis/FlowLensBar';
 import { TraderChartCardExtra } from '@lab/components/analysis/TraderChartCardExtra';
+import { useTraderFlowLens } from '@lab/components/analysis/useTraderFlowLens';
 import { WalletAnalyticsPanel } from '@lab/components/analysis/WalletAnalyticsPanel';
 import { filterTraderRowsByFocus } from '@lab/components/analysis/walletFocus';
 import { walletTokenColumns } from '@lab/components/analysis/walletTokenColumns';
@@ -16,7 +18,9 @@ import { inspectFromMint } from 'components/strategy/inspectTarget';
 import type { PositionFocusLens } from 'lib/strategy/positionFocus';
 import { Select } from 'components/ui/Select';
 import { SectionDivider } from 'components/ui/SectionDivider';
+import { FlowLensProvider } from 'context/FlowLensContext';
 import { useTimezone } from 'context/TimezoneContext';
+import { datetimeLocalToUtcWallClock, utcIsoToDatetimeLocal } from 'utils/date';
 import { apiErrorMessage } from 'store/apiSlice';
 import { useGetTraderTokensQuery } from '@lab/store/labEndpoints';
 import { useProfileWallets } from 'hooks/useProfileWallets';
@@ -25,12 +29,18 @@ import { STORAGE_KEYS } from 'lib/storage';
 import type { ProfileWalletInfo } from 'components/token-price-chart/types';
 import type { TraderTokenRow } from 'types';
 
-// Look-back clamp mirrors the backend. Max tokens uses the zero-as-unbound
-// sentinel (`0` / blank ⇒ every mint in the window) — same as mint-trades
-// `limit<=0` and the rule editor's Max total.
+// Look-back clamp mirrors the backend (`MAX_WINDOW_DAYS` in
+// `lab/src/api/handlers/wallets.rs`), and bounds the custom range's SPAN too.
+// Max tokens uses the zero-as-unbound sentinel (`0` / blank ⇒ every mint in the
+// window) — same as mint-trades `limit<=0` and the rule editor's Max total.
 const DEFAULT_DAYS = 7;
 const DEFAULT_LIMIT = 0;
 const MAX_DAYS = 90;
+const DAY_MS = 86_400_000;
+
+/** The picker's custom-range sentinel — `days` holds this instead of a day count
+ *  while the window is an explicit `from`/`to` pair. */
+const CUSTOM_PRESET = 'custom';
 
 const TRADER_LOOKBACK_PRESETS = [
   { value: '1', label: '1 day' },
@@ -40,7 +50,26 @@ const TRADER_LOOKBACK_PRESETS = [
   { value: '30', label: '30 days' },
   { value: '60', label: '60 days' },
   { value: '90', label: '90 days' },
+  {
+    value: CUSTOM_PRESET,
+    label: 'Custom',
+    description: `Exact from → to, max ${MAX_DAYS}d span`,
+  },
 ] as const;
+
+/** A wall-clock `YYYY-MM-DDTHH:mm` in `tz` for an instant — the picker's wire
+ *  shape. Seeds the popover draft from whatever window is active, so switching a
+ *  day preset to Custom starts from that preset's bounds instead of blank. */
+const msToWallClock = (ms: number, tz: string) =>
+  utcIsoToDatetimeLocal(new Date(ms).toISOString(), tz);
+
+/** The picker's wall-clock (project zone) → the UTC RFC3339 instant the API
+ *  takes. `bound` keeps a DST-ambiguous hour inside the range (see
+ *  `datetimeLocalToUtcWallClock`). Blank in ⇒ blank out (no bound). */
+const wallClockToUtcIso = (wall: string, tz: string, bound: 'lower' | 'upper') => {
+  const utc = datetimeLocalToUtcWallClock(wall, tz, bound);
+  return utc ? `${utc}Z` : '';
+};
 
 /** Group header labels. Only the appended wallet groups are named — the shared
  *  token groups keep the blank header every other token table shows, so the two
@@ -59,6 +88,19 @@ interface TraderQuery {
   wallet: string;
   days: number;
   limit: number;
+  /** Explicit window bounds as UTC RFC3339, `''` when the window is the rolling
+   *  `days` one. `from` set ⇒ the backend ignores `days`; `to` alone anchors the
+   *  rolling span to that instant instead of now. */
+  from: string;
+  to: string;
+}
+
+/** What the row-count sentence says the numbers were read over. */
+function windowLabel(q: TraderQuery, tz: string): string {
+  const at = (iso: string) => utcIsoToDatetimeLocal(iso, tz).replace('T', ' ');
+  if (q.from) return `${at(q.from)} → ${q.to ? at(q.to) : 'now'}`;
+  if (q.to) return `the ${q.days}d up to ${at(q.to)}`;
+  return `the last ${q.days}d`;
 }
 
 const shortAddr = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
@@ -118,17 +160,22 @@ const parseLimit = (raw: string) => {
  * is on.
  */
 /** Persisted query knobs (`mt:form.traderAnalysis`). `days` is the look-back
- *  picker's preset (day count as a string); `limit` keeps the raw input so the
- *  blank / `0` "every mint" sentinel round-trips. */
+ *  picker's preset — a day count as a string, or `CUSTOM_PRESET` when `from`/`to`
+ *  (wall-clock in the project zone) drive the window instead; `limit` keeps the
+ *  raw input so the blank / `0` "every mint" sentinel round-trips. */
 interface TraderForm {
   wallet: string;
   days: string;
   limit: string;
+  from: string;
+  to: string;
 }
 const DEFAULT_FORM: TraderForm = {
   wallet: '',
   days: String(DEFAULT_DAYS),
   limit: String(DEFAULT_LIMIT),
+  from: '',
+  to: '',
 };
 
 export function TraderAnalysisPage() {
@@ -140,7 +187,16 @@ export function TraderAnalysisPage() {
     STORAGE_KEYS.traderAnalysisConfig,
     DEFAULT_FORM,
   );
-  const { wallet: walletInput, days: daysInput, limit: limitInput } = form;
+  // `from`/`to` default in-place: a draft persisted before the custom range
+  // existed has neither field, and an `undefined` would reach the picker as a
+  // controlled-input value.
+  const {
+    wallet: walletInput,
+    days: daysInput,
+    limit: limitInput,
+    from: fromInput = '',
+    to: toInput = '',
+  } = form;
   const patch = useCallback(
     (p: Partial<TraderForm>) => setForm((prev) => ({ ...prev, ...p })),
     [setForm],
@@ -159,6 +215,13 @@ export function TraderAnalysisPage() {
 
   // Tracked wallets from the shared profiles cache (same SSOT the chart markers
   // read) — a picker to fill the wallet input from a saved profile wallet.
+  // The page-wide flow lens: an analysis-owned ix_labels pattern set standing in
+  // for the fingerprint these tokens don't have, so every chart can draw its
+  // vol/non-vol split and every candle's trades table gets its Vol column.
+  // Follows the COMMITTED wallet, not the input box — the exclusion it applies
+  // must match the wallet the rows on screen belong to.
+  const lens = useTraderFlowLens(query?.wallet ?? null);
+
   const profileWallets = useProfileWallets();
   const profileGroups = useMemo(() => groupByProfile(profileWallets), [profileWallets]);
   // Reflect the picker's selection only while the input still holds a known
@@ -169,9 +232,10 @@ export function TraderAnalysisPage() {
     data,
     isFetching,
     error: rawError,
-  } = useGetTraderTokensQuery(query ?? { wallet: '', days: DEFAULT_DAYS, limit: DEFAULT_LIMIT }, {
-    skip: !query,
-  });
+  } = useGetTraderTokensQuery(
+    query ?? { wallet: '', days: DEFAULT_DAYS, limit: DEFAULT_LIMIT, from: '', to: '' },
+    { skip: !query },
+  );
   const error = apiErrorMessage(rawError, 'Failed to load trader tokens');
   const rows = data ?? EMPTY_ROWS;
 
@@ -207,13 +271,32 @@ export function TraderAnalysisPage() {
     return [...base.slice(0, at), ...walletTokenColumns(), ...base.slice(at)];
   }, []);
 
+  const isCustomWindow = daysInput === CUSTOM_PRESET;
+  // Seed instant for the day presets. Recomputed only when the preset (or zone)
+  // changes rather than every render — it feeds a draft and a trigger hint, not
+  // the query, which resolves its own `now` at Analyze time.
+  const presetFromWallClock = useMemo(
+    () =>
+      isCustomWindow
+        ? ''
+        : msToWallClock(
+            Date.now() - clampInt(daysInput, DEFAULT_DAYS, 1, MAX_DAYS) * DAY_MS,
+            timezone,
+          ),
+    [isCustomWindow, daysInput, timezone],
+  );
+
   const run = (walletOverride?: string) => {
     const wallet = (walletOverride ?? walletInput).trim();
     if (!wallet) return;
     setQuery({
       wallet,
-      days: clampInt(daysInput, DEFAULT_DAYS, 1, MAX_DAYS),
+      // Custom with both bounds blank degrades to the rolling default rather
+      // than an empty window, so Analyze always answers something.
+      days: isCustomWindow ? DEFAULT_DAYS : clampInt(daysInput, DEFAULT_DAYS, 1, MAX_DAYS),
       limit: parseLimit(limitInput),
+      from: isCustomWindow ? wallClockToUtcIso(fromInput, timezone, 'lower') : '',
+      to: isCustomWindow ? wallClockToUtcIso(toInput, timezone, 'upper') : '',
     });
   };
 
@@ -261,6 +344,7 @@ export function TraderAnalysisPage() {
   }, [rows, focus, focusOpts]);
 
   return (
+    <FlowLensProvider value={lens.value}>
     <div className="p-4">
       <h2 className="text-lg font-extrabold text-text">Trader Analysis</h2>
       <p className="mt-0.5 text-xs text-text-dim">
@@ -309,14 +393,26 @@ export function TraderAnalysisPage() {
         <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
           Look-back
           <DateTimeRangePicker
-            aria-label="Look-back days"
+            aria-label="Look-back window"
             size="sm"
-            zoneLabel={null}
-            allowCustom={false}
-            emptyLabel="Days"
+            timeZone={timezone}
+            emptyLabel="Pick a range"
+            customPreset={CUSTOM_PRESET}
             presets={[...TRADER_LOOKBACK_PRESETS]}
-            value={{ preset: daysInput, from: '', to: '' }}
-            onChange={({ preset }) => patch({ days: preset })}
+            // A day preset still hands the picker its resolved bounds, so the
+            // trigger reads "7 days · 08/18 → now" and switching to Custom opens
+            // on that window instead of a blank calendar. Only `from` is seeded:
+            // a rolling preset's upper bound IS now, which the trigger renders.
+            value={{
+              preset: daysInput,
+              from: isCustomWindow ? fromInput : presetFromWallClock,
+              to: isCustomWindow ? toInput : '',
+            }}
+            onChange={({ preset, from, to }) =>
+              preset === CUSTOM_PRESET
+                ? patch({ days: CUSTOM_PRESET, from, to })
+                : patch({ days: preset, from: '', to: '' })
+            }
           />
         </label>
         <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
@@ -349,11 +445,13 @@ export function TraderAnalysisPage() {
 
       {error && <p className="mb-2 text-sm text-red">{error}</p>}
 
+      <FlowLensBar lens={lens} wallet={query?.wallet ?? null} />
+
       {query && !isFetching && !error && (
         <p className="mb-3 text-xs text-text-dim">
           {rows.length === 0
-            ? 'No tracked tokens traded by this wallet in the window.'
-            : `${rows.length} token${rows.length === 1 ? '' : 's'} traded by ${shortAddr(query.wallet)} in the last ${query.days}d`}
+            ? `No tracked tokens traded by this wallet in ${windowLabel(query, timezone)}.`
+            : `${rows.length} token${rows.length === 1 ? '' : 's'} traded by ${shortAddr(query.wallet)} in ${windowLabel(query, timezone)}`}
         </p>
       )}
 
@@ -400,6 +498,7 @@ export function TraderAnalysisPage() {
           onFilteredRowsChange={handleFilteredRows}
           emptyMessage="No tokens match the filters"
           renderChartCardExtra={(row) => <TraderChartCardExtra row={row} timezone={timezone} />}
+          flowPatternKeys={lens.keys}
         />
       )}
 
@@ -411,5 +510,6 @@ export function TraderAnalysisPage() {
         />
       )}
     </div>
+    </FlowLensProvider>
   );
 }

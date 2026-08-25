@@ -61,10 +61,14 @@ const CANDLE_RADIUS_RATIO = 0.5; // base radius as a fraction of barSpacing (px/
 const MIN_RADIUS = 2.5;  // CSS px — floor when zoomed out
 const MAX_RADIUS = 7;    // CSS px — cap when zoomed in (regular tier)
 const LIFECYCLE_MULT = 1.25; // first_buy / sell_all, relative to base
-const HIGHLIGHT_MULT = 1.5;  // focused wallet, relative to base
+const HIGHLIGHT_MULT = 2.4;  // focused wallet, relative to base
+/** The focused wallet must be findable at any zoom, so its marker also gets an
+ *  absolute floor — at wide zoom the base unit sits at MIN_RADIUS and a pure
+ *  multiple would still be a dot among dots. */
+const HIGHLIGHT_MIN_RADIUS = 7;
 const GLYPH_MIN_RADIUS = 3.5; // below this the disc is too small for a legible letter
-const GAP = 5;      // CSS px gap between bar edge and nearest marker center
-const SPACING = 2;  // CSS px between stacked markers
+const GAP = 5;      // CSS px gap between bar edge and nearest marker EDGE
+const SPACING = 2;  // CSS px between stacked marker edges
 /** Diamond/hexagon need a slightly larger bound than a circle to fit the glyph. */
 const POLY_SCALE = 1.15;
 
@@ -133,7 +137,7 @@ class WalletMarkersRenderer implements IPrimitivePaneRenderer {
         ctx.save();
         if (p.highlighted) {
           ctx.shadowColor = p.ringColor ?? p.color;
-          ctx.shadowBlur = 9 * s;
+          ctx.shadowBlur = 14 * s;
         }
         traceShape(ctx, cx, cy, r, p.shape);
         ctx.fillStyle = p.color;
@@ -159,8 +163,8 @@ class WalletMarkersRenderer implements IPrimitivePaneRenderer {
           ctx.stroke();
         }
         if (p.highlighted) {
-          ringR += 3 * s;
-          ctx.lineWidth = 2 * s;
+          ringR += 3.5 * s;
+          ctx.lineWidth = 3 * s;
           ctx.strokeStyle = p.ringColor ?? '#fff';
           ctx.beginPath();
           ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
@@ -235,22 +239,28 @@ export class WalletMarkersPlugin
     );
 
     const pts: RenderedPoint[] = [];
-    for (const d of this._defs) {
+    // Stacks are packed EDGE to EDGE, accumulated per (bar, direction) in
+    // stackIndex order — an oversized tier (focus, lifecycle) pushes the rows
+    // behind it outward instead of overlapping them.
+    const stackOffsets = new Map<string, number>();
+    const ordered = [...this._defs].sort((a, b) => a.stackIndex - b.stackIndex);
+    for (const d of ordered) {
       const x = chart.timeScale().timeToCoordinate(d.barTime);
       const baseY = series.priceToCoordinate(d.barEdgePrice);
       if (x == null || baseY == null) continue;
 
       const radius = d.highlighted
-        ? unit * HIGHLIGHT_MULT
+        ? Math.max(HIGHLIGHT_MIN_RADIUS, unit * HIGHLIGHT_MULT)
         : d.role
           ? unit * LIFECYCLE_MULT
           : unit;
       const dir = d.type === 'sell' ? -1 : 1;
-      // Stack offset uses the shared base radius (regular-tier diameter) so rows
-      // stay evenly spaced regardless of any one marker's tier.
-      const y =
-        baseY +
-        dir * (GAP + radius + d.stackIndex * (unit * 2 + SPACING));
+      const stackKey = `${d.barTime}:${d.type}`;
+      // Extent, not radius: a diamond/hexagon reaches POLY_SCALE further out.
+      const extent = radius * (d.shape === 'circle' ? 1 : POLY_SCALE);
+      const filled = stackOffsets.get(stackKey) ?? GAP;
+      const y = baseY + dir * (filled + extent);
+      stackOffsets.set(stackKey, filled + extent * 2 + SPACING);
 
       pts.push({
         x,
@@ -272,7 +282,8 @@ export class WalletMarkersPlugin
     for (const p of this._pts) {
       const dx = p.x - x;
       const dy = p.y - y;
-      if (dx * dx + dy * dy <= p.radius * p.radius) return true;
+      const hit = p.radius * (p.shape === 'circle' ? 1 : POLY_SCALE);
+      if (dx * dx + dy * dy <= hit * hit) return true;
     }
     return false;
   }

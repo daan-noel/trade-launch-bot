@@ -6,6 +6,7 @@ import { Badge } from 'components/ui/Badge';
 import { useTimezone } from 'context/TimezoneContext';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { useVolumePatternTarget } from 'hooks/useVolumePatternTarget';
+import { useFlowLensContext, type FlowLensTarget } from 'context/FlowLensContext';
 import { formatTimestampMs } from 'utils/date';
 import type { FlowReason } from 'lib/flow/classifyFlow';
 import type {
@@ -44,6 +45,10 @@ export interface BarTradesPanelProps {
   eventMarkers?: ChartEventMarker[] | null;
   /** Our own wallets — adds a left-border accent to their rows. */
   myWalletAddresses?: ReadonlySet<string> | null;
+  /** The focused/input wallet (Trader Analysis). Its rows are painted gold — the
+   *  same signal the chart's oversized gold marker carries — and counted in the
+   *  heading, so the wallet under study is findable without reading addresses. */
+  highlightWallet?: string | null;
   /** The host's saved `volume_ix_patterns` keys — adds the Vol/Non-vol column.
    *  This is the set the chart lines, the metric panes and the engine all use, so
    *  the badge and the overlay can never report different classifications. */
@@ -97,6 +102,7 @@ export function BarTradesPanel({
   tableId,
   eventMarkers = null,
   myWalletAddresses = null,
+  highlightWallet = null,
   flowPatternKeys = null,
   flowFingerprintId = null,
   flowReadOnly = false,
@@ -106,14 +112,28 @@ export function BarTradesPanel({
   const { timezone } = useTimezone();
   const price = usePriceDisplay();
 
-  // A toggle edits the fingerprint's saved patterns directly, so the badge, the
-  // chart lines and the engine are always reading the same row.
+  // A page-wide flow lens (Trader Analysis) OWNS the pattern set on pages with no
+  // fingerprint behind their tokens. When one is provided it is the write target:
+  // clicks land in `ix_pattern_sets`, never on a fingerprint, so nothing a study
+  // toggles can change how a live rule classifies flow.
+  const lens = useFlowLensContext();
+  const lensTarget = flowReadOnly ? null : (lens?.target ?? null);
+
+  // Without a lens, a toggle edits the fingerprint's saved patterns directly, so
+  // the badge, the chart lines and the engine are always reading the same row.
   const patternTarget = useVolumePatternTarget({
     fingerprintId: flowFingerprintId,
     savedKeys: flowPatternKeys,
-    enabled: !flowReadOnly,
+    enabled: !flowReadOnly && !lensTarget,
   });
-  const onTogglePattern = flowReadOnly ? null : patternTarget.toggle;
+  const onTogglePattern = flowReadOnly
+    ? null
+    : (lensTarget?.toggle ?? patternTarget.toggle);
+  // The badge reports what the CHART classified with. Under a lens that is the
+  // narrowed key set the page handed down (group filters applied); a toggle still
+  // edits the whole stored set, filing new patterns under the lens' active group.
+  const badgeKeys = lensTarget ? (flowPatternKeys ?? null) : patternTarget.keys;
+  const toggleTargetName = lensTarget?.name ?? patternTarget.target?.name ?? null;
 
   const columns = useMemo(
     () =>
@@ -122,36 +142,48 @@ export function BarTradesPanel({
         // click writes to. They are the same set in the normal case, and differ
         // only when the reader deliberately picks another fingerprint — which
         // `VolumePatternBar` flags rather than letting the two drift silently.
-        flowPatternKeys: patternTarget.keys,
+        flowPatternKeys: badgeKeys,
         onTogglePattern,
-        toggleTargetName: patternTarget.target?.name ?? null,
+        toggleTargetName,
         flowReasons,
       }),
-    [price.unitLabel, patternTarget.keys, patternTarget.target, onTogglePattern, flowReasons],
+    [price.unitLabel, badgeKeys, toggleTargetName, onTogglePattern, flowReasons],
   );
 
   const entryExitMap = useMemo(() => buildEntryExitMap(eventMarkers), [eventMarkers]);
 
+  const focusAddr = highlightWallet?.trim() || null;
+  const focusCount = useMemo(
+    () => (focusAddr ? trades.filter((t) => t.wallet_address === focusAddr).length : 0),
+    [trades, focusAddr],
+  );
+
   const rowClassName = useMemo(() => {
     const mineCount = myWalletAddresses?.size ?? 0;
-    if (entryExitMap.size === 0 && mineCount === 0) return undefined;
+    if (entryExitMap.size === 0 && mineCount === 0 && !focusAddr) return undefined;
     return (t: TradeRecord) => {
       const kind = entryExitMap.get(t.tx_signature);
-      // Entry/exit tint takes the full-row background; "my trade" layers a
-      // left-border accent so both signals stay visible on the same row.
-      const base =
-        kind === 'entry'
+      // The focused wallet outranks the entry/exit tint for the row background —
+      // finding HIM is the whole reason the page is open, and the fill's own
+      // direction is still on the row in its side column.
+      const focused = !!focusAddr && t.wallet_address === focusAddr;
+      const base = focused
+        ? 'bg-[#fde047]/16 hover:bg-[#fde047]/24 font-semibold'
+        : kind === 'entry'
           ? 'bg-[#02c076]/12 hover:bg-[#02c076]/20'
           : kind === 'exit'
             ? 'bg-[#f6465d]/12 hover:bg-[#f6465d]/20'
             : '';
-      const mine =
-        t.wallet_address && myWalletAddresses?.has(t.wallet_address)
+      // Left accent: focus (gold, 4px) beats "my trade" (amber, 2px) — a wallet
+      // can be both, and only one border fits.
+      const accent = focused
+        ? 'border-l-4 border-l-[#fde047]'
+        : t.wallet_address && myWalletAddresses?.has(t.wallet_address)
           ? 'border-l-2 border-l-[#fbbf24]'
           : '';
-      return [base, mine].filter(Boolean).join(' ') || undefined;
+      return [base, accent].filter(Boolean).join(' ') || undefined;
     };
-  }, [entryExitMap, myWalletAddresses]);
+  }, [entryExitMap, myWalletAddresses, focusAddr]);
 
   if (!external && !bar && !range) return null;
 
@@ -184,6 +216,14 @@ export function BarTradesPanel({
         <Badge variant="primary" className="font-mono font-normal">
           {rows.length} trade{rows.length === 1 ? '' : 's'}
         </Badge>
+        {focusAddr && (
+          <span
+            className="rounded border border-[#fde047]/60 bg-[#fde047]/16 px-1.5 py-px font-mono text-[10px] text-[#fde047]"
+            title={`${focusAddr} — the wallet under analysis`}
+          >
+            {focusCount} of {rows.length} by {focusAddr.slice(0, 4)}…{focusAddr.slice(-4)}
+          </span>
+        )}
         <button
           type="button"
           onClick={onClear}
@@ -191,7 +231,11 @@ export function BarTradesPanel({
         >
           Clear
         </button>
-        <VolumePatternBar target={patternTarget} readOnly={flowReadOnly} />
+        {lensTarget ? (
+          <FlowLensStrip target={lensTarget} patternCount={badgeKeys?.size ?? 0} />
+        ) : (
+          <VolumePatternBar target={patternTarget} readOnly={flowReadOnly} />
+        )}
       </div>
       <DataTable
         tableId={tableId}
@@ -205,5 +249,45 @@ export function BarTradesPanel({
         emptyMessage={emptyMessage}
       />
     </div>
+  );
+}
+
+
+/**
+ * The lens twin of {@link VolumePatternBar}: what a Vol-badge click writes to
+ * when the page owns the pattern set instead of a fingerprint. No picker — the
+ * set is chosen on the page, above every chart — and no active-rule warning,
+ * because a lens is analysis-only and no rule can be bound to it.
+ */
+function FlowLensStrip({
+  target,
+  patternCount,
+}: {
+  target: FlowLensTarget;
+  /** Patterns actually classifying right now — the narrowed set, which is what
+   *  the badges below report against. */
+  patternCount: number;
+}) {
+  const total = target.patterns.length;
+  return (
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <Badge variant="info" size="sm">
+        Flow lens
+      </Badge>
+      <span className="font-mono text-[11px] text-text">{target.name}</span>
+      <span
+        className="font-mono text-[11px] text-text-dim"
+        title="Patterns classifying this chart / patterns in the whole set"
+      >
+        {patternCount}/{total} pattern{total === 1 ? '' : 's'}
+      </span>
+      <span className="text-[11px] text-text-dim">
+        Vol badges add/remove here
+        {target.activeGroup ? ` (group "${target.activeGroup}")` : ''} — analysis only, no
+        rule reads it.
+      </span>
+      {target.saving && <span className="text-[11px] text-text-dim">Saving…</span>}
+      {target.error && <span className="text-[11px] text-red">{target.error}</span>}
+    </span>
   );
 }

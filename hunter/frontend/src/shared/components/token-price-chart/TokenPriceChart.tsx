@@ -23,6 +23,7 @@ import {
   type FlowBasis,
   type FlowLines,
 } from 'lib/flow/flowChartData';
+import { useFlowLensContext } from 'context/FlowLensContext';
 import { attachDualPriceScaleSync, type DualPriceScaleSync } from './dualPriceScaleSync';
 import {
   barsShape,
@@ -278,6 +279,13 @@ function walletShape(w: ProfileWalletInfo): MarkerShape {
   return 'circle';
 }
 
+/** Focused wallet first — it is drawn largest, so it takes the stack row closest
+ *  to the bar edge where nothing can crowd it. Order is otherwise unchanged. */
+function focusFirst(wallets: ProfileWalletInfo[]): ProfileWalletInfo[] {
+  if (wallets.length < 2 || !wallets.some((w) => w.isHighlighted)) return wallets;
+  return [...wallets].sort((a, b) => Number(!!b.isHighlighted) - Number(!!a.isHighlighted));
+}
+
 function walletGlyph(w: ProfileWalletInfo): string {
   if (w.isMine) return '★';
   if (w.isDev) return 'D';
@@ -368,8 +376,10 @@ export function buildWalletMarkerDefs(
 
     // Buys stack downward below the bar low, sells stack upward above the bar high
     // — the two sides never collide, so each restarts its own stack index at 0.
+    // The focused wallet takes the row nearest the bar so its oversized marker is
+    // never buried behind the rest of the crowd.
     let buyStack = 0;
-    for (const w of buy) {
+    for (const w of focusFirst(buy)) {
       defs.push({
         barTime,
         barEdgePrice: bar.low,
@@ -385,7 +395,7 @@ export function buildWalletMarkerDefs(
       });
     }
     let sellStack = 0;
-    for (const w of sell) {
+    for (const w of focusFirst(sell)) {
       defs.push({
         barTime,
         barEdgePrice: bar.high,
@@ -598,6 +608,12 @@ export function TokenPriceChart({
   );
   const [showEventMarkers, setShowEventMarkers] = useState(initialPrefs.showEventMarkers);
   const [showFlowLines, setShowFlowLines] = useState(initialPrefs.showFlowLines);
+  // A page-wide flow lens (Trader Analysis) overrides HOW the split is computed:
+  // structural-only reads and excluded wallets. Absent everywhere else, where the
+  // chart classifies exactly as the engine does.
+  const lens = useFlowLensContext();
+  const flowContagion = lens?.contagion ?? true;
+  const flowExcludeWallets = lens?.excludeWallets ?? null;
   /** True once `volume_ix_patterns` are supplied — the split is then the engine's
    *  own volume-maker vs organic classification. */
   const flowPatternsConfigured = flowPatternKeys != null && flowPatternKeys.size > 0;
@@ -615,8 +631,10 @@ export function TokenPriceChart({
    *  creator wallet (which alone splits creator + everyone they traded with off
    *  from the rest — see `classifyFlow`). Both readings are useful on a chart,
    *  so the toggle only goes dead when neither input exists; the toolbar tooltip
-   *  says which of the two you're looking at. */
-  const flowLinesAvailable = flowPatternsConfigured || !!creatorWallet;
+   *  says which of the two you're looking at. A structural-only lens has no
+   *  creator rule to fall back on, so with contagion off the overlay needs
+   *  patterns or it has nothing to say. */
+  const flowLinesAvailable = flowPatternsConfigured || (!!creatorWallet && flowContagion);
   const flowLinesVisible = showFlowLines && flowLinesAvailable;
   const flowLinesAvailableRef = useRef(flowLinesAvailable);
   flowLinesAvailableRef.current = flowLinesAvailable;
@@ -1294,6 +1312,8 @@ export function TokenPriceChart({
     return buildFlowLines(sortedTrades, groupMode, intervalSec, flowBasis as FlowBasis, {
       patternKeys: flowPatternKeys ?? EMPTY_FLOW_PATTERN_KEYS,
       creatorWallet,
+      contagion: flowContagion,
+      excludeWallets: flowExcludeWallets,
     });
   }, [
     sortedTrades,
@@ -1303,6 +1323,8 @@ export function TokenPriceChart({
     flowLinesAvailable,
     flowPatternKeys,
     creatorWallet,
+    flowContagion,
+    flowExcludeWallets,
   ]);
   const alignedFlowLines = useMemo(() => alignFlowToBars(flowLines, bars), [flowLines, bars]);
   alignedFlowLinesRef.current = alignedFlowLines;

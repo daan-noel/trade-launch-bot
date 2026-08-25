@@ -4,3 +4,4 @@
 pub use trading_core::storage::repositories::*;
 
 pub mod grouped_sweep_repo;
+pub mod ix_pattern_set_repo;

@@ -22,13 +22,22 @@ use trading_core::state::core_state::CoreState;
 use trading_core::storage::repositories::trade_repo::WalletTradedMint;
 use trading_core::strategies::kernel::wallet_mint_pnl;
 
-/// Query string for `GET /api/wallets/{wallet}/tokens`. Both knobs are the two
-/// user-facing inputs on the page (look-back days + max tokens).
+/// Query string for `GET /api/wallets/{wallet}/tokens` — the page's look-back
+/// picker (a rolling day count OR an explicit `from`/`to` range) plus max tokens.
+///
+/// The window is EITHER rolling or explicit, never both: `from` (and optionally
+/// `to`) present ⇒ `days` is ignored. `to` alone means "everything up to that
+/// instant", so a past window can be read without also naming its start.
 #[derive(Deserialize)]
 pub struct WalletTokensParams {
-    /// Look-back window in days (default 7). Clamped to 1..=90.
+    /// Rolling look-back in days (default 7), used only when `from` is absent.
+    /// Clamped to 1..=90.
     #[serde(default = "default_days")]
     pub days: i64,
+    /// Explicit window lower bound (RFC3339, e.g. `2026-08-18T00:00:00Z`).
+    pub from: Option<DateTime<Utc>>,
+    /// Explicit window upper bound, INCLUSIVE. Absent ⇒ open (up to now).
+    pub to: Option<DateTime<Utc>>,
     /// Max tokens returned, recent-first. `<= 0` (the default) ⇒ every mint in
     /// the window; a positive value caps the response. Charts on the page are
     /// lazily mounted, so an unbounded token list does not fan out fetches.
@@ -41,6 +50,38 @@ fn default_days() -> i64 {
 }
 fn default_limit() -> i64 {
     0
+}
+
+/// Widest window a single read may scan — the same bar the rolling `days` clamp
+/// enforces, applied to explicit ranges so a hand-typed `from` can't turn one
+/// page load into a full-history hypertable scan. An over-long range keeps its
+/// UPPER bound and moves `from` up, since the page is read end-first (rows are
+/// most-recent-trade first).
+const MAX_WINDOW_DAYS: i64 = 90;
+
+/// Resolve the query's window to `(since, until)`, `until = None` meaning open.
+/// Explicit bounds win over `days`; a reversed pair is swapped rather than
+/// rejected (the picker can hand back either order after an edit), and the span
+/// is clamped to [`MAX_WINDOW_DAYS`].
+fn resolve_window(
+    q: &WalletTokensParams,
+    now: DateTime<Utc>,
+) -> (DateTime<Utc>, Option<DateTime<Utc>>) {
+    let max_span = chrono::Duration::days(MAX_WINDOW_DAYS);
+    let (from, to) = match (q.from, q.to) {
+        (Some(f), Some(t)) if f > t => (Some(t), Some(f)),
+        pair => pair,
+    };
+    let until = to;
+    let since = match from {
+        Some(f) => f,
+        // No lower bound given: hang the rolling window off the upper bound when
+        // there is one, else off now, so `to` alone still reads a real window.
+        None => until.unwrap_or(now) - chrono::Duration::days(q.days.clamp(1, MAX_WINDOW_DAYS)),
+    };
+    let end = until.unwrap_or(now);
+    let since = if end - since > max_span { end - max_span } else { since };
+    (since, until)
 }
 
 /// One row of the Trader Analysis token table: the full token record (flattened,
@@ -114,10 +155,11 @@ struct WalletTokenRow {
 }
 
 /// `GET /api/wallets/:wallet/tokens` — full token rows for every mint the wallet
-/// traded in the last `days`, most-recent-trade first (`limit <= 0` ⇒ every mint
-/// in the window; positive ⇒ capped), each merged with the wallet's interaction
-/// stats + reconstructed PnL (see [`WalletTokenRow`]). Both buys and sells count
-/// (a mint the wallet only exited in the window still shows).
+/// traded in the request's window (rolling `days`, or the explicit `from`/`to`
+/// range — see [`resolve_window`]), most-recent-trade first (`limit <= 0` ⇒ every
+/// mint in the window; positive ⇒ capped), each merged with the wallet's
+/// interaction stats + reconstructed PnL (see [`WalletTokenRow`]). Both buys and
+/// sells count (a mint the wallet only exited in the window still shows).
 ///
 /// Two indexed reads: `wallet_traded_mints` (recent-first mint set + stats) then
 /// `find_list_rows_for_mints` (the same batch token projection the All Tokens /
@@ -129,12 +171,11 @@ pub async fn list_wallet_tokens(
     query: web::Query<WalletTokensParams>,
 ) -> impl Responder {
     let wallet = path.into_inner();
-    let days = query.days.clamp(1, 90);
     // `<= 0` ⇒ unbounded (see `wallet_traded_mints`); positive stays capped as asked.
     let limit = if query.limit <= 0 { 0 } else { query.limit };
-    let since = Utc::now() - chrono::Duration::days(days);
+    let (since, until) = resolve_window(&query, Utc::now());
 
-    let traded = match state.trade_repo().wallet_traded_mints(&wallet, since, limit).await {
+    let traded = match state.trade_repo().wallet_traded_mints(&wallet, since, until, limit).await {
         Ok(t) => t,
         Err(e) => {
             tracing::error!("DB error fetching traded mints for {wallet}: {e}");
@@ -206,5 +247,96 @@ fn wallet_token_row(token: TokenSummary, t: WalletTradedMint) -> WalletTokenRow 
         wallet_entry_curve_pct: t.entry_curve_sol.map(curve_progress_pct),
         wallet_exit_curve_sol: t.exit_curve_sol,
         wallet_exit_curve_pct: t.exit_curve_sol.map(curve_progress_pct),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params(days: i64, from: Option<&str>, to: Option<&str>) -> WalletTokensParams {
+        let parse = |s: &str| DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc);
+        WalletTokensParams {
+            days,
+            from: from.map(parse),
+            to: to.map(parse),
+            limit: 0,
+        }
+    }
+
+    fn now() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-08-25T12:00:00Z").unwrap().with_timezone(&Utc)
+    }
+
+    /// The wire shapes the page actually sends. Guards the two things a typo
+    /// here would break silently: a missing `from`/`to` must read as "no bound"
+    /// (not a 400), and the RFC3339 instant the frontend builds must parse.
+    #[test]
+    fn query_string_parses_both_window_shapes() {
+        let rolling = web::Query::<WalletTokensParams>::from_query("days=30&limit=0")
+            .expect("rolling window parses")
+            .into_inner();
+        assert_eq!(rolling.days, 30);
+        assert!(rolling.from.is_none() && rolling.to.is_none());
+
+        let explicit = web::Query::<WalletTokensParams>::from_query(
+            "limit=0&from=2026-08-18T00%3A00%3A00Z&to=2026-08-20T23%3A59%3A00Z",
+        )
+        .expect("explicit range parses")
+        .into_inner();
+        assert_eq!(explicit.days, 7, "days falls back to its default");
+        assert_eq!(explicit.from.unwrap().to_rfc3339(), "2026-08-18T00:00:00+00:00");
+        assert_eq!(explicit.to.unwrap().to_rfc3339(), "2026-08-20T23:59:00+00:00");
+    }
+
+    #[test]
+    fn rolling_days_when_no_explicit_bounds() {
+        let (since, until) = resolve_window(&params(7, None, None), now());
+        assert_eq!(since, now() - chrono::Duration::days(7));
+        assert!(until.is_none());
+    }
+
+    #[test]
+    fn explicit_range_wins_over_days() {
+        let (since, until) = resolve_window(
+            &params(7, Some("2026-08-01T00:00:00Z"), Some("2026-08-03T06:30:00Z")),
+            now(),
+        );
+        assert_eq!(since.to_rfc3339(), "2026-08-01T00:00:00+00:00");
+        assert_eq!(until.unwrap().to_rfc3339(), "2026-08-03T06:30:00+00:00");
+    }
+
+    #[test]
+    fn upper_bound_alone_anchors_the_rolling_window() {
+        let (since, until) = resolve_window(&params(2, None, Some("2026-08-10T00:00:00Z")), now());
+        assert_eq!(since.to_rfc3339(), "2026-08-08T00:00:00+00:00");
+        assert_eq!(until.unwrap().to_rfc3339(), "2026-08-10T00:00:00+00:00");
+    }
+
+    #[test]
+    fn reversed_bounds_are_swapped() {
+        let (since, until) = resolve_window(
+            &params(7, Some("2026-08-10T00:00:00Z"), Some("2026-08-01T00:00:00Z")),
+            now(),
+        );
+        assert_eq!(since.to_rfc3339(), "2026-08-01T00:00:00+00:00");
+        assert_eq!(until.unwrap().to_rfc3339(), "2026-08-10T00:00:00+00:00");
+    }
+
+    #[test]
+    fn over_long_range_keeps_its_upper_bound() {
+        let (since, until) = resolve_window(
+            &params(7, Some("2025-01-01T00:00:00Z"), Some("2026-08-10T00:00:00Z")),
+            now(),
+        );
+        assert_eq!(until.unwrap() - since, chrono::Duration::days(MAX_WINDOW_DAYS));
+        assert_eq!(until.unwrap().to_rfc3339(), "2026-08-10T00:00:00+00:00");
+    }
+
+    #[test]
+    fn open_ended_over_long_range_clamps_against_now() {
+        let (since, until) = resolve_window(&params(7, Some("2025-01-01T00:00:00Z"), None), now());
+        assert_eq!(now() - since, chrono::Duration::days(MAX_WINDOW_DAYS));
+        assert!(until.is_none());
     }
 }

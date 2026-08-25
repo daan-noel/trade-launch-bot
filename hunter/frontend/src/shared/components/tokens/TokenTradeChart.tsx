@@ -11,6 +11,7 @@ import {
   type ChartValueLane,
 } from 'components/token-price-chart';
 import { BarTradesPanel } from 'components/tokens/BarTradesPanel';
+import { useFlowLensContext } from 'context/FlowLensContext';
 import { useBarTradesSelection } from 'components/tokens/useBarTradesSelection';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { useFlowReasons } from 'hooks/useFlowReasons';
@@ -48,8 +49,9 @@ interface TokenTradeChartProps {
   /** Passed to DataTable so column visibility is persisted per call-site. */
   tableId?: string;
   /** Wallet to spotlight (Trader Analysis): its markers render larger with a
-   *  gold glow/ring, standing out among the other tracked wallets. If it isn't
-   *  a saved profile wallet, a synthetic marker entry is injected so it shows. */
+   *  gold glow/ring at ~2.4x the regular marker size, standing out among the other
+   *  tracked wallets. If it isn't a saved profile wallet, a synthetic marker entry
+   *  is injected so it shows. Its rows in the trades panel are painted gold too. */
   highlightWallet?: string | null;
   /** Wall-clock crosshair time for sibling panes (metric series). */
   onCrosshairTimeChange?: (timeSec: number | null) => void;
@@ -164,7 +166,14 @@ export function TokenTradeChart({
 
   // Classified over the full history, not the selection — contagion is
   // forward-only, so a bar's rows alone can't reconstruct it.
-  const flowReasons = useFlowReasons(trades, flowPatternKeys, detail?.creator_wallet);
+  // Under a page-wide lens the table's reasons must be computed the SAME way the
+  // overlay lines were (structural-only, exclusions) or the badge and the line
+  // disagree on the same trade.
+  const lens = useFlowLensContext();
+  const flowReasons = useFlowReasons(trades, flowPatternKeys, detail?.creator_wallet, {
+    contagion: lens?.contagion,
+    excludeWallets: lens?.excludeWallets ?? null,
+  });
 
   const selectionTrades = useMemo(() => {
     if (externalSelection) return externalSelection.trades;
@@ -219,6 +228,7 @@ export function TokenTradeChart({
         tableId={tableId}
         eventMarkers={eventMarkers}
         myWalletAddresses={myWalletAddresses}
+        highlightWallet={highlightWallet}
         flowPatternKeys={flowPatternKeys}
         flowFingerprintId={flowFingerprintId}
         flowReadOnly={flowReadOnly}

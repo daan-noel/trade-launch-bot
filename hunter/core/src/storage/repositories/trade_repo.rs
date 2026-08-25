@@ -590,21 +590,26 @@ impl TradeRepo {
             .collect())
     }
 
-    /// Distinct token mints this wallet traded in the `since..now` window,
-    /// ordered by the wallet's most-recent trade on each mint (recent first).
-    /// `limit <= 0` returns every mint in the window (unbounded); a positive
-    /// `limit` caps the response. Powers the Trader Analysis page's per-wallet
-    /// token list.
+    /// Distinct token mints this wallet traded in the `since..=until` window
+    /// (`until = None` ⇒ open-ended, i.e. up to now), ordered by the wallet's
+    /// most-recent trade on each mint (recent first). `limit <= 0` returns every
+    /// mint in the window (unbounded); a positive `limit` caps the response.
+    /// Powers the Trader Analysis page's per-wallet token list.
+    ///
+    /// Every aggregate below (counts, per-side sums, entry/exit legs) is scoped
+    /// to the SAME window, so a closed upper bound reads the wallet exactly as it
+    /// looked at that instant — no leg after `until` leaks into the PnL.
     ///
     /// Counts **both** buys and sells, so a mint the wallet only *exited* in the
     /// window (its buy predates `since`) still appears. An unknown wallet has no
     /// trades, so returns an empty vec without touching `trades`. Bounded by
-    /// the `block_time >= since` window (and optionally `limit`), which rides the
+    /// the `block_time` window (and optionally `limit`), which rides the
     /// hypertable's `block_time` partitioning.
     pub async fn wallet_traded_mints(
         &self,
         wallet: &str,
         since: DateTime<Utc>,
+        until: Option<DateTime<Utc>>,
         limit: i64,
     ) -> anyhow::Result<Vec<WalletTradedMint>> {
         let Some(wallet_id) = WalletDictRepo::new(self.pool.clone()).id_for(wallet).await? else {
@@ -675,13 +680,17 @@ impl TradeRepo {
             FROM trades
             WHERE wallet_id = $1
               AND block_time >= $2
+              -- Open upper bound stays a plain NULL bind (no second SQL string);
+              -- the cast is what lets Postgres type the parameter.
+              AND ($3::timestamptz IS NULL OR block_time <= $3)
             GROUP BY mint_address
             ORDER BY last_trade_at DESC
-            LIMIT $3
+            LIMIT $4
             "#,
         )
         .bind(wallet_id)
         .bind(since)
+        .bind(until)
         .bind(limit_opt)
         .fetch_all(&self.pool)
         .await?;

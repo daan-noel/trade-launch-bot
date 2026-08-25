@@ -79,6 +79,9 @@ export const STORAGE_KEYS = {
   replayConfig: `${PREFIX}form.replay`,
   /** Trader-analysis form draft (wallet, look-back days, max tokens). */
   traderAnalysisConfig: `${PREFIX}form.traderAnalysis`,
+  /** Trader-analysis flow lens (pattern set, per-set group filter, classifier
+   *  knobs). Separate from the query draft: the lens outlives one wallet. */
+  traderFlowLens: `${PREFIX}form.traderFlowLens`,
   /** FlowPreviewChart toolbar toggle state (flow-discovery). */
   flowPreviewChartPrefs: `${PREFIX}flow.previewChart.prefs`,
 
