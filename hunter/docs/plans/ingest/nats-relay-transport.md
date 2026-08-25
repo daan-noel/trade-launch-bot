@@ -132,6 +132,59 @@ pump.fun and ComputeBudget are not in the node's parsed set, so they arrive raw 
 base58 `data` on either encoding — trade decode and the `cu_limit`/`cu_price` extraction
 are unaffected by the publisher's choice.
 
+### Instruction `accounts` on a parsed instruction
+
+jsonParsed carries **no `accounts` array** on a `{program, parsed}` instruction: the node
+folds the accounts into `parsed.info` under role names, and `info` serialises as a sorted
+object, so the order is gone from the JSON. It is not gone from the parser, though —
+solana-transaction-status writes every role as `"<role>": account_keys[accounts[N]]`, so
+`convert::accounts_from_parsed` reads that mapping back in index order. The role tables
+are transcribed from solana-transaction-status's `parse_system`, `parse_token` and
+`parse_associated_token` modules, including the `parse_signers` tail (one authority, or a
+multisig authority followed by its `signers`). `system_accounts_match_the_sdk_builders`
+pins the system order against the `solana_program::system_instruction` builders
+themselves.
+
+### What jsonParsed cannot round-trip, and what to emit instead
+
+A few instructions have **more than one valid encoding**, and the parsed view records the
+call rather than the encoding. Measured against chain (`getTransaction encoding=json`,
+public RPC, free), all four shapes below occur in both forms on this feed, so no rule
+recovers the original — the choice is which valid encoding to emit.
+
+| Shape | Forms on chain | Emitted |
+| --- | --- | --- |
+| ATA `create` data | `[0]` discriminant, or zero bytes (pre-1.0.5) | `[0]` — 20 of 25 sampled, and what the rest of the family encodes |
+| ATA `create`/`createIdempotent` accounts | 6, or 7 with a trailing rent sysvar (pre-1.0.4) | the required 6 |
+| `system:createAccountWithSeed` accounts, `base == source` | 3 (Rust SDK), or 2 (`@solana/web3.js`) | the required 2 |
+| `spl-memo` accounts | the signer accounts, or none | none — the parser discards their identity |
+
+The rule is **the minimal list the program accepts for that instruction**: it stays a
+valid encoding of the same call under either builder, and never names an account the
+instruction does not touch. Dropping the list entirely would not be valid — an empty
+`accounts` claims the instruction touches nothing. A role whose *identity* the parsed view
+does not carry is never invented.
+
+None of the four changes what the instruction does, and none changes `ix_labels`:
+`label_instruction` reads `Create` from an ATA `data` of `[0]` or of zero bytes alike. A
+memo's `data` **is** recoverable — the parsed string's UTF-8 bytes are the instruction
+data — so only its accounts are lost.
+
+Verified end to end against chain over 120 captured transactions: **584 of 593
+instructions byte-identical**, the 9 differences being exactly the shapes above.
+
+### Arrays that must not be silently short
+
+An index-aligned array that quietly drops one element shifts every account above it, and
+the trade prices against a different wallet. `pre/postBalances` (indexed by account
+position by `decode::grpc::compute_sol_change`), the loaded-address vectors (which extend
+the flat key space) and the token balances (which carry the trade's token amount) are
+therefore **all-or-nothing**: one malformed element rejects the whole transaction, which
+surfaces as `unparseable` in the NATS stats instead of as a wrong trade. `json_tx_to_protobuf`
+additionally rejects a frame whose balance arrays disagree in length with the resolved key
+space. Log lines and address-table indexes carry no positional meaning to any decoder and
+stay lenient.
+
 ## Slow-consumer defence
 
 Core NATS is at-most-once with no history. A consumer that falls behind is **disconnected

@@ -109,7 +109,20 @@ pub fn json_tx_to_protobuf(result: &Value) -> Option<SubscribeUpdateTransaction>
         .or_else(|| transaction.signatures.first().cloned())
         .unwrap_or_default();
 
-    let meta = meta_from_json(meta_json, keys.as_ref(), split);
+    let meta = meta_from_json(meta_json, keys.as_ref(), split)?;
+
+    // `pre/postBalances` are read by account position, and they cover the FULL
+    // resolved key space — statics plus every loaded address. A length that
+    // disagrees is a frame whose balances cannot be trusted to line up, which
+    // prices the trade against another account's lamport delta. Reject it: a
+    // missing trade is recoverable, a wrong one is not.
+    let flat = transaction.message.as_ref().map_or(0, |m| m.account_keys.len())
+        + meta.loaded_writable_addresses.len()
+        + meta.loaded_readonly_addresses.len();
+    let aligned = |b: &[u64]| b.is_empty() || b.len() == flat;
+    if !aligned(&meta.pre_balances) || !aligned(&meta.post_balances) {
+        return None;
+    }
 
     Some(SubscribeUpdateTransaction {
         transaction: Some(SubscribeUpdateTransactionInfo {
@@ -354,7 +367,18 @@ fn compiled_parts(ix: &Value, index: &KeyIndex<'_>) -> Option<(u32, Vec<u8>, Vec
             }
             out
         }
-        None => Vec::new(),
+        None => match accounts_from_parsed(ix) {
+            // `{program, parsed}` instructions carry no `accounts` array; the
+            // node folded it into `parsed.info` (see [`accounts_from_parsed`]).
+            Some(names) => {
+                let mut out = Vec::with_capacity(names.len());
+                for name in names {
+                    out.push(u8::try_from(*index.get(name)?).ok()?);
+                }
+                out
+            }
+            None => Vec::new(),
+        },
     };
 
     // `{program, parsed}` instructions carry no `data` — the node consumed the
@@ -368,6 +392,214 @@ fn compiled_parts(ix: &Value, index: &KeyIndex<'_>) -> Option<(u32, Vec<u8>, Vec
     Some((program_id_index, accounts, data))
 }
 
+
+// -- jsonParsed instruction accounts ------------------------------------------
+
+/// Rebuild the account list a `{program, parsed}` instruction dropped, in
+/// instruction order, or `None` when this instruction type is not covered.
+///
+/// jsonParsed carries no `accounts` array: the node folds the accounts into
+/// `parsed.info` under role names, and `info` serialises as a sorted object, so
+/// the order is gone from the JSON itself. It is **not** gone from the parser,
+/// though — solana-transaction-status writes each role as
+/// `"<role>": account_keys[instruction.accounts[N]]`, so the role names below are
+/// that mapping read back in index order, not an inference. The account counts
+/// these lists reproduce are the `check_num_accounts` minimums the parser
+/// enforces for the same instruction.
+///
+/// # The rule where a role is optional
+///
+/// A few instructions accept a redundant trailing account, and the parsed view
+/// does not record whether the builder sent it — both forms are live on chain.
+/// Emit the **minimal list the program accepts for that instruction**: it is a
+/// valid encoding of the same call under either builder, and it never names an
+/// account the instruction does not touch. Dropping the list entirely would not
+/// be valid — an empty `accounts` claims the instruction touches nothing, which
+/// no instruction here does.
+///
+/// Never guessed, though: a role whose *identity* the parsed view does not carry
+/// (an `spl-memo` signer) is not invented. That instruction keeps the empty list,
+/// which for memo is itself a form the program accepts.
+fn accounts_from_parsed(ix: &Value) -> Option<Vec<&str>> {
+    let parsed = ix.get("parsed")?;
+    let ty = parsed.get("type")?.as_str()?;
+    let info = parsed.get("info")?;
+    match ix.get("program")?.as_str()? {
+        "system" => system_accounts(ty, info),
+        "spl-token" | "spl-token-2022" => token_accounts(ty, info),
+        "spl-associated-token-account" => ata_accounts(ty, info),
+        // `spl-memo` parses to a bare string with its accounts discarded — the
+        // one shape on this feed that genuinely cannot be rebuilt.
+        _ => None,
+    }
+}
+
+/// Account order per `parse_system.rs`, cross-checked against the builders in
+/// `solana_program::system_instruction` by `system_accounts_match_the_sdk_builders`.
+fn system_accounts<'i>(ty: &str, info: &'i Value) -> Option<Vec<&'i str>> {
+    let names: &[&str] = match ty {
+        "createAccount" => &["source", "newAccount"],
+        "assign" => &["account"],
+        "transfer" => &["source", "destination"],
+        "advanceNonce" => &["nonceAccount", "recentBlockhashesSysvar", "nonceAuthority"],
+        "withdrawFromNonce" => &[
+            "nonceAccount",
+            "destination",
+            "recentBlockhashesSysvar",
+            "rentSysvar",
+            "nonceAuthority",
+        ],
+        // The authority is an argument here, not an account.
+        "initializeNonce" => &["nonceAccount", "recentBlockhashesSysvar", "rentSysvar"],
+        "authorizeNonce" => &["nonceAccount", "nonceAuthority"],
+        "upgradeNonce" => &["nonceAccount"],
+        "allocate" => &["account"],
+        // `base` is both an argument and the signing account at index 1; the
+        // seeded address is a hash of the base, so the two never coincide.
+        "allocateWithSeed" => &["account", "base"],
+        "assignWithSeed" => &["account", "base"],
+        "transferWithSeed" => &["source", "sourceBase", "destination"],
+        "createAccountWithSeed" => {
+            // The base signs, so it is a third account whenever it differs from
+            // the funder. When it IS the funder the account is redundant and
+            // optional — both forms are live on chain (the Rust SDK always emits
+            // it, `@solana/web3.js` omits it) and `info` cannot say which built
+            // this one. Emit the two-account form: it is the minimal list the
+            // program accepts for exactly this instruction, so it stays a valid
+            // encoding of the same call either way, where dropping the accounts
+            // entirely would not be.
+            let source = info.get("source")?.as_str()?;
+            let new_account = info.get("newAccount")?.as_str()?;
+            let base = info.get("base")?.as_str()?;
+            return Some(if base == source {
+                vec![source, new_account]
+            } else {
+                vec![source, new_account, base]
+            });
+        }
+        _ => return None,
+    };
+    roles(info, names)
+}
+
+/// Account order per `parse_token.rs`, shared by spl-token and token-2022. The
+/// trailing authority is written by the parser's `parse_signers`: one `owner`
+/// key, or a `multisigOwner` plus its `signers` — see [`signer_tail`].
+fn token_accounts<'i>(ty: &str, info: &'i Value) -> Option<Vec<&'i str>> {
+    // (accounts named by a fixed role, then the signer pair `parse_signers` used)
+    let (fixed, signers): (&[&str], Option<(&str, &str)>) = match ty {
+        "initializeMint" => (&["mint", "rentSysvar"], None),
+        "initializeMint2" => (&["mint"], None),
+        "initializeAccount" => (&["account", "mint", "owner", "rentSysvar"], None),
+        "initializeAccount2" => (&["account", "mint", "rentSysvar"], None),
+        "initializeAccount3" => (&["account", "mint"], None),
+        "syncNative" => (&["account"], None),
+        "getAccountDataSize" => (&["mint"], None),
+        "initializeImmutableOwner" => (&["account"], None),
+        "amountToUiAmount" => (&["mint"], None),
+        "uiAmountToAmount" => (&["mint"], None),
+        "createNativeMint" => (&["payer", "nativeMint", "systemProgram"], None),
+        "initializeNonTransferableMint" => (&["mint"], None),
+        "transfer" => (
+            &["source", "destination"],
+            Some(("authority", "multisigAuthority")),
+        ),
+        "approve" => (&["source", "delegate"], Some(("owner", "multisigOwner"))),
+        "revoke" => (&["source"], Some(("owner", "multisigOwner"))),
+        "mintTo" | "mintToChecked" => (
+            &["mint", "account"],
+            Some(("mintAuthority", "multisigMintAuthority")),
+        ),
+        "burn" | "burnChecked" => (
+            &["account", "mint"],
+            Some(("authority", "multisigAuthority")),
+        ),
+        "closeAccount" => (&["account", "destination"], Some(("owner", "multisigOwner"))),
+        "freezeAccount" | "thawAccount" => (
+            &["account", "mint"],
+            Some(("freezeAuthority", "multisigFreezeAuthority")),
+        ),
+        "transferChecked" => (
+            &["source", "mint", "destination"],
+            Some(("authority", "multisigAuthority")),
+        ),
+        "approveChecked" => (
+            &["source", "mint", "delegate"],
+            Some(("owner", "multisigOwner")),
+        ),
+        "withdrawExcessLamports" => (
+            &["source", "destination"],
+            Some(("authority", "multisigAuthority")),
+        ),
+        // The parser names index 0 `mint` or `account` depending on the authority
+        // type, so read back whichever one it wrote.
+        "setAuthority" => {
+            let owned = ["account", "mint"]
+                .into_iter()
+                .find_map(|k| info.get(k)?.as_str())?;
+            let mut out = vec![owned];
+            out.extend(signer_tail(info, "authority", "multisigAuthority")?);
+            return Some(out);
+        }
+        // `initializeMultisig*` and the token-2022 extension instructions carry
+        // account lists the parsed view does not fully name.
+        _ => return None,
+    };
+    let mut out = roles(info, fixed)?;
+    if let Some((single, multi)) = signers {
+        out.extend(signer_tail(info, single, multi)?);
+    }
+    Some(out)
+}
+
+/// Account order per `parse_associated_token`.
+///
+/// `create` / `createIdempotent` also accept a trailing rent sysvar (the
+/// pre-1.0.4 layout, ignored by the program and discarded by the parser), so the
+/// real list is 6 or 7 entries. Emit the 6 the program requires — see the
+/// optional-role rule on [`accounts_from_parsed`].
+fn ata_accounts<'i>(ty: &str, info: &'i Value) -> Option<Vec<&'i str>> {
+    let names: &[&str] = match ty {
+        "create" | "createIdempotent" => &[
+            "source",
+            "account",
+            "wallet",
+            "mint",
+            "systemProgram",
+            "tokenProgram",
+        ],
+        "recoverNested" => &[
+            "nestedSource",
+            "nestedMint",
+            "destination",
+            "nestedOwner",
+            "ownerMint",
+            "wallet",
+            "tokenProgram",
+        ],
+        _ => return None,
+    };
+    roles(info, names)
+}
+
+/// The pubkeys `info` holds under `names`, in that order.
+fn roles<'i>(info: &'i Value, names: &[&str]) -> Option<Vec<&'i str>> {
+    names.iter().map(|n| info.get(*n)?.as_str()).collect()
+}
+
+/// The trailing authority accounts. `parse_signers` writes either the single
+/// `owner_field`, or a `multisig_field` followed by every remaining signer, so
+/// the tail is one account, or one plus the `signers` array.
+fn signer_tail<'i>(info: &'i Value, single: &str, multisig: &str) -> Option<Vec<&'i str>> {
+    if let Some(s) = info.get(single).and_then(Value::as_str) {
+        return Some(vec![s]);
+    }
+    let mut out = vec![info.get(multisig)?.as_str()?];
+    for s in info.get("signers")?.as_array()? {
+        out.push(s.as_str()?);
+    }
+    Some(out)
+}
 // -- jsonParsed instruction data ----------------------------------------------
 
 /// Rebuild the raw instruction `data` that a `{program, parsed}` instruction
@@ -387,13 +619,20 @@ fn compiled_parts(ix: &Value, index: &KeyIndex<'_>) -> Option<(u32, Vec<u8>, Vec
 /// its empty `data` and its `Unknown` label — the pre-existing behaviour.
 fn data_from_parsed(ix: &Value) -> Option<Vec<u8>> {
     let parsed = ix.get("parsed")?;
+    // `spl-memo` parses to a bare string rather than `{type, info}`, and a memo's
+    // instruction data IS that string's UTF-8 bytes — the node only reached this
+    // shape by decoding them, so re-encoding is exact. (A memo that is not valid
+    // UTF-8 fails to parse and arrives raw with base58 `data` instead.)
+    if ix.get("program")?.as_str()? == "spl-memo" {
+        return parsed.as_str().map(|s| s.as_bytes().to_vec());
+    }
     let ty = parsed.get("type")?.as_str()?;
     let info = parsed.get("info")?;
     match ix.get("program")?.as_str()? {
         "system" => system_data(ty, info),
         "spl-token" | "spl-token-2022" => token_data(ty, info),
         "spl-associated-token-account" => ata_data(ty),
-        // `vote`, `stake`, the loaders, `spl-memo` and address-lookup-table are
+        // `vote`, `stake`, the loaders and address-lookup-table are
         // also parsed by the node; no label path names their instructions, so
         // rebuilding them would buy nothing.
         _ => None,
@@ -468,13 +707,21 @@ fn token_data(ty: &str, info: &Value) -> Option<Vec<u8>> {
     .into())
 }
 
-/// `AssociatedTokenAccountInstruction`: a bare `u8` tag, and the legacy `Create`
-/// is genuinely zero bytes. Without this, `createIdempotent` — which carries the
-/// same empty `data` as `Create` under jsonParsed — labels as `Create`, a *wrong*
-/// label rather than an unknown one.
+/// `AssociatedTokenAccountInstruction`: the Borsh discriminant, one `u8`.
+///
+/// Without this, `createIdempotent` — which carries the same empty `data` as
+/// `create` under jsonParsed — labels as `Create`, a *wrong* label rather than an
+/// unknown one.
+///
+/// `create` has two encodings the program accepts and the parsed view cannot tell
+/// apart: the discriminant `[0]`, and zero bytes (the pre-1.0.5 form, still
+/// honoured by a `data.is_empty()` branch). Emit the discriminant — it is what the
+/// rest of this family encodes, and what the live feed mostly carries (20 of 25
+/// sampled against chain). Either way `label_instruction` reads `Create`, so
+/// `ix_labels` does not depend on the choice.
 fn ata_data(ty: &str) -> Option<Vec<u8>> {
     match ty {
-        "create" => Some(Vec::new()),
+        "create" => Some(vec![0]),
         "createIdempotent" => Some(vec![1]),
         "recoverNested" => Some(vec![2]),
         _ => None,
@@ -552,16 +799,24 @@ impl From<Enc> for Vec<u8> {
 }
 
 // -- meta ---------------------------------------------------------------------
+//
+// Strict where an array is index-aligned or money-bearing, lenient where it is
+// informational. `pre/postBalances` are indexed by account position
+// (`decode::grpc::compute_sol_change`) and the loaded-address vectors extend the
+// flat key space, so one silently skipped element shifts every account after it
+// and prices a trade against the wrong wallet. Those reject the transaction.
+// Logs and address-table indexes carry no positional meaning to any decoder, so
+// a malformed element there is dropped rather than costing the whole frame.
 
 fn meta_from_json(
     meta: &Value,
     index: Option<&KeyIndex<'_>>,
     split: LoadedSplit,
-) -> scb::TransactionStatusMeta {
+) -> Option<scb::TransactionStatusMeta> {
     // `loadedAddresses` is present on base64 frames and absent on jsonParsed ones
     // (already inlined, and lifted back out into `split`).
     let loaded = meta.get("loadedAddresses");
-    scb::TransactionStatusMeta {
+    Some(scb::TransactionStatusMeta {
         err: meta
             .get("err")
             .filter(|e| !e.is_null())
@@ -573,24 +828,25 @@ fn meta_from_json(
         // "unknown". `event::fee_lamports_opt` folds a real 0 back to None.
         fee: meta.get("fee").and_then(Value::as_u64).unwrap_or(0),
         log_messages: str_vec(meta.get("logMessages")),
-        pre_balances: u64_vec(meta.get("preBalances")),
-        post_balances: u64_vec(meta.get("postBalances")),
-        inner_instructions: inner_from_json(meta.get("innerInstructions"), index),
-        pre_token_balances: token_balances_from_json(meta.get("preTokenBalances")),
-        post_token_balances: token_balances_from_json(meta.get("postTokenBalances")),
-        loaded_writable_addresses: loaded
-            .and_then(|l| l.get("writable"))
-            .map(key_vec)
-            .unwrap_or(split.writable),
-        loaded_readonly_addresses: loaded
-            .and_then(|l| l.get("readonly"))
-            .map(key_vec)
-            .unwrap_or(split.readonly),
+        pre_balances: u64_vec(meta.get("preBalances"))?,
+        post_balances: u64_vec(meta.get("postBalances"))?,
+        inner_instructions: inner_from_json(meta.get("innerInstructions"), index)?,
+        pre_token_balances: token_balances_from_json(meta.get("preTokenBalances"))?,
+        post_token_balances: token_balances_from_json(meta.get("postTokenBalances"))?,
+        loaded_writable_addresses: match loaded.and_then(|l| l.get("writable")) {
+            Some(v) => key_vec(v)?,
+            None => split.writable,
+        },
+        loaded_readonly_addresses: match loaded.and_then(|l| l.get("readonly")) {
+            Some(v) => key_vec(v)?,
+            None => split.readonly,
+        },
         compute_units_consumed: meta.get("computeUnitsConsumed").and_then(Value::as_u64),
         ..Default::default()
-    }
+    })
 }
 
+/// Log lines. Not positional: a decoder scans them, never indexes them.
 fn str_vec(v: Option<&Value>) -> Vec<String> {
     v.and_then(Value::as_array)
         .map(|a| {
@@ -601,12 +857,16 @@ fn str_vec(v: Option<&Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn u64_vec(v: Option<&Value>) -> Vec<u64> {
-    v.and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_u64).collect())
-        .unwrap_or_default()
+/// Lamport balances, indexed by account position — all or nothing.
+fn u64_vec(v: Option<&Value>) -> Option<Vec<u64>> {
+    match v.filter(|v| !v.is_null()) {
+        None => Some(Vec::new()),
+        Some(v) => v.as_array()?.iter().map(Value::as_u64).collect(),
+    }
 }
 
+/// Address-table indexes. Informational here: the keys they select are already
+/// resolved inline, and no decoder reads `address_table_lookups`.
 fn u8_vec(v: Option<&Value>) -> Vec<u8> {
     v.and_then(Value::as_array)
         .map(|a| {
@@ -618,36 +878,36 @@ fn u8_vec(v: Option<&Value>) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-fn key_vec(v: &Value) -> Vec<Vec<u8>> {
-    v.as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_str)
-                .filter_map(|s| bs58::decode(s).into_vec().ok())
-                .collect()
-        })
-        .unwrap_or_default()
+/// Loaded addresses, which extend the flat key space — all or nothing.
+fn key_vec(v: &Value) -> Option<Vec<Vec<u8>>> {
+    v.as_array()?
+        .iter()
+        .map(|k| bs58::decode(k.as_str()?).into_vec().ok())
+        .collect()
 }
 
-fn inner_from_json(v: Option<&Value>, index: Option<&KeyIndex<'_>>) -> Vec<scb::InnerInstructions> {
-    v.and_then(Value::as_array)
-        .map(|groups| {
-            groups
-                .iter()
-                .filter_map(|g| {
-                    Some(scb::InnerInstructions {
-                        index: g.get("index")?.as_u64()? as u32,
-                        instructions: g
-                            .get("instructions")?
-                            .as_array()?
-                            .iter()
-                            .filter_map(|ix| inner_ix_from_json(ix, index))
-                            .collect(),
-                    })
-                })
-                .collect()
+fn inner_from_json(
+    v: Option<&Value>,
+    index: Option<&KeyIndex<'_>>,
+) -> Option<Vec<scb::InnerInstructions>> {
+    let Some(groups) = v.filter(|v| !v.is_null()) else {
+        return Some(Vec::new());
+    };
+    groups
+        .as_array()?
+        .iter()
+        .map(|g| {
+            Some(scb::InnerInstructions {
+                index: u32::try_from(g.get("index")?.as_u64()?).ok()?,
+                instructions: g
+                    .get("instructions")?
+                    .as_array()?
+                    .iter()
+                    .map(|ix| inner_ix_from_json(ix, index))
+                    .collect::<Option<Vec<_>>>()?,
+            })
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 fn inner_ix_from_json(ix: &Value, index: Option<&KeyIndex<'_>>) -> Option<scb::InnerInstruction> {
@@ -666,28 +926,29 @@ fn inner_ix_from_json(ix: &Value, index: Option<&KeyIndex<'_>>) -> Option<scb::I
     })
 }
 
-fn token_balances_from_json(v: Option<&Value>) -> Vec<scb::TokenBalance> {
-    v.and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(|tb| {
-                    Some(scb::TokenBalance {
-                        account_index: tb.get("accountIndex")?.as_u64()? as u32,
-                        mint: tb.get("mint")?.as_str()?.to_string(),
-                        ui_token_amount: tb
-                            .get("uiTokenAmount")
-                            .and_then(|u| u.get("amount"))
-                            .and_then(Value::as_str)
-                            .map(|amount| scb::UiTokenAmount {
-                                amount: amount.to_string(),
-                                ..Default::default()
-                            }),
-                        ..Default::default()
-                    })
-                })
-                .collect()
+/// Token balances carry the trade's token amount (`decode::grpc`'s
+/// `compute_token_change_pb` looks one up by `account_index` + `mint`). A dropped
+/// entry reads as a zero balance, so a malformed one rejects the transaction
+/// rather than halving a trade size.
+fn token_balances_from_json(v: Option<&Value>) -> Option<Vec<scb::TokenBalance>> {
+    let Some(balances) = v.filter(|v| !v.is_null()) else {
+        return Some(Vec::new());
+    };
+    balances
+        .as_array()?
+        .iter()
+        .map(|tb| {
+            Some(scb::TokenBalance {
+                account_index: u32::try_from(tb.get("accountIndex")?.as_u64()?).ok()?,
+                mint: tb.get("mint")?.as_str()?.to_string(),
+                ui_token_amount: Some(scb::UiTokenAmount {
+                    amount: tb.get("uiTokenAmount")?.get("amount")?.as_str()?.to_string(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 #[cfg(test)]
@@ -1001,13 +1262,13 @@ mod tests {
         assert_eq!(data_from_parsed(&close), Some(vec![9]));
     }
 
-    /// `createIdempotent` shares the legacy `Create`'s empty jsonParsed `data`, so
-    /// without the rebuild it labels as `Create` — a wrong label, not an unknown
-    /// one. The legacy `Create` really is zero bytes on chain.
+    /// Every ATA variant arrives with an empty jsonParsed `data`, so without the
+    /// rebuild `createIdempotent` labels as `Create` — a wrong label, not an
+    /// unknown one. Each maps to its Borsh discriminant.
     #[test]
     fn ata_create_idempotent_is_distinguishable_from_create() {
         let ata = |ty| parsed_ix("spl-associated-token-account", ty, json!({"wallet": key(1)}));
-        assert_eq!(data_from_parsed(&ata("create")), Some(vec![]));
+        assert_eq!(data_from_parsed(&ata("create")), Some(vec![0]));
         assert_eq!(data_from_parsed(&ata("createIdempotent")), Some(vec![1]));
         assert_eq!(data_from_parsed(&ata("recoverNested")), Some(vec![2]));
     }
@@ -1033,5 +1294,308 @@ mod tests {
         );
         // A raw (unparsed) instruction has no `parsed` at all.
         assert_eq!(data_from_parsed(&json!({"programId": key(1), "data": "3Bxs"})), None);
+    }
+
+    // -- index-aligned arrays are all-or-nothing ------------------------------
+
+    /// Balances are read by account position, so a silently skipped element
+    /// prices the trade against the next account's lamport delta. Every one of
+    /// these frames must be rejected outright rather than half-converted.
+    #[test]
+    fn a_misaligned_or_malformed_balance_array_rejects_the_transaction() {
+        // An element that is not a number.
+        let mut f = parsed_frame();
+        f["transaction"]["meta"]["preBalances"] = json!([10u64, "0", 0, 0]);
+        assert!(json_tx_to_protobuf(&f).is_none(), "converted a non-numeric balance");
+
+        // Fewer balances than the resolved key space holds.
+        let mut f = parsed_frame();
+        f["transaction"]["meta"]["postBalances"] = json!([9u64, 0]);
+        assert!(json_tx_to_protobuf(&f).is_none(), "converted a short balance array");
+
+        // A negative balance is not a lamport count.
+        let mut f = parsed_frame();
+        f["transaction"]["meta"]["preBalances"] = json!([10u64, 0, 0, -1i64]);
+        assert!(json_tx_to_protobuf(&f).is_none(), "converted a negative balance");
+
+        // The unmutated fixture still converts, so the guard is not just always-off.
+        assert!(json_tx_to_protobuf(&parsed_frame()).is_some());
+    }
+
+    /// A token balance is looked up by `account_index` + `mint`; a dropped entry
+    /// reads as a zero balance, which halves or zeroes a trade size.
+    #[test]
+    fn a_malformed_token_balance_rejects_the_transaction() {
+        let mut f = parsed_frame();
+        f["transaction"]["meta"]["postTokenBalances"] = json!([
+            {"accountIndex": 1, "mint": key(5), "uiTokenAmount": {"amount": "17"}},
+            {"accountIndex": 2, "mint": key(5)},
+        ]);
+        assert!(json_tx_to_protobuf(&f).is_none());
+
+        // Well-formed entries convert, keeping the raw integer amount as a string.
+        f["transaction"]["meta"]["postTokenBalances"] = json!([
+            {"accountIndex": 1, "mint": key(5), "uiTokenAmount": {"amount": "17", "decimals": 6}},
+        ]);
+        let u = json_tx_to_protobuf(&f).unwrap();
+        let tb = &u.transaction.unwrap().meta.unwrap().post_token_balances[0];
+        assert_eq!(tb.account_index, 1);
+        assert_eq!(tb.ui_token_amount.as_ref().unwrap().amount, "17");
+    }
+
+    /// `loadedAddresses` (the base64 frame shape, and an override wherever it
+    /// appears) extends the flat key space, so one undecodable entry shifts every
+    /// account index above it into a different wallet.
+    #[test]
+    fn an_undecodable_loaded_address_rejects_the_transaction() {
+        let mut f = parsed_frame();
+        f["transaction"]["meta"]["loadedAddresses"] =
+            json!({"writable": [key(3)], "readonly": [key(4)]});
+        assert!(json_tx_to_protobuf(&f).is_some(), "well-formed override converts");
+
+        f["transaction"]["meta"]["loadedAddresses"] =
+            json!({"writable": [key(3), "not-base58-0OIl"], "readonly": []});
+        assert!(json_tx_to_protobuf(&f).is_none());
+    }
+
+    /// Absent optional sections are not malformed ones: a frame with no inner
+    /// instructions and no token balances still converts.
+    #[test]
+    fn absent_optional_meta_sections_still_convert() {
+        let mut f = parsed_frame();
+        let meta = &mut f["transaction"]["meta"];
+        meta["innerInstructions"] = Value::Null;
+        meta["preTokenBalances"] = Value::Null;
+        meta["postTokenBalances"] = Value::Null;
+        meta["logMessages"] = Value::Null;
+        let u = json_tx_to_protobuf(&f).unwrap();
+        let m = u.transaction.unwrap().meta.unwrap();
+        assert!(m.inner_instructions.is_empty());
+        assert!(m.post_token_balances.is_empty());
+        assert!(m.log_messages.is_empty());
+    }
+
+    // -- jsonParsed instruction accounts --------------------------------------
+
+    /// The account ORDER is the half `parsed.info` cannot show — it serialises
+    /// sorted — so pin it against the builders in solana-program: the pubkeys
+    /// `system_instruction` puts in each `AccountMeta`, in order, are exactly
+    /// what `accounts_from_parsed` must read back out of the parsed view.
+    #[test]
+    fn system_accounts_match_the_sdk_builders() {
+        use solana_sdk::{instruction::Instruction, pubkey::Pubkey, system_instruction};
+
+        let pk = |b: u8| Pubkey::new_from_array([b; 32]);
+        let metas = |ix: Instruction| -> Vec<String> {
+            ix.accounts.iter().map(|a| a.pubkey.to_string()).collect()
+        };
+        // Named rather than pulled from `solana_sdk::sysvar` so the deprecated
+        // `recent_blockhashes` module is not touched.
+        let blockhashes = "SysvarRecentB1ockHashes11111111111111111111";
+        let rent = "SysvarRent111111111111111111111111111111111";
+
+        let cases: Vec<(Value, Vec<String>)> = vec![
+            (
+                parsed_ix(
+                    "system",
+                    "transfer",
+                    json!({"source": key(1), "destination": key(2), "lamports": 1u64}),
+                ),
+                metas(system_instruction::transfer(&pk(1), &pk(2), 1)),
+            ),
+            (
+                parsed_ix(
+                    "system",
+                    "createAccount",
+                    json!({"source": key(1), "newAccount": key(2), "lamports": 1u64, "space": 8u64, "owner": key(3)}),
+                ),
+                metas(system_instruction::create_account(&pk(1), &pk(2), 1, 8, &pk(3))),
+            ),
+            (
+                parsed_ix(
+                    "system",
+                    "advanceNonce",
+                    json!({"nonceAccount": key(1), "recentBlockhashesSysvar": blockhashes, "nonceAuthority": key(2)}),
+                ),
+                metas(system_instruction::advance_nonce_account(&pk(1), &pk(2))),
+            ),
+            (
+                parsed_ix(
+                    "system",
+                    "withdrawFromNonce",
+                    json!({
+                        "nonceAccount": key(1), "destination": key(2),
+                        "recentBlockhashesSysvar": blockhashes, "rentSysvar": rent,
+                        "nonceAuthority": key(3), "lamports": 5u64,
+                    }),
+                ),
+                metas(system_instruction::withdraw_nonce_account(&pk(1), &pk(3), &pk(2), 5)),
+            ),
+            (
+                parsed_ix(
+                    "system",
+                    "authorizeNonce",
+                    json!({"nonceAccount": key(1), "nonceAuthority": key(2), "newAuthorized": key(3)}),
+                ),
+                metas(system_instruction::authorize_nonce_account(&pk(1), &pk(2), &pk(3))),
+            ),
+            (
+                parsed_ix("system", "upgradeNonce", json!({"nonceAccount": key(1)})),
+                metas(system_instruction::upgrade_nonce_account(pk(1))),
+            ),
+            (
+                parsed_ix("system", "allocate", json!({"account": key(1), "space": 8u64})),
+                metas(system_instruction::allocate(&pk(1), 8)),
+            ),
+            (
+                parsed_ix("system", "assign", json!({"account": key(1), "owner": key(3)})),
+                metas(system_instruction::assign(&pk(1), &pk(3))),
+            ),
+            (
+                parsed_ix(
+                    "system",
+                    "allocateWithSeed",
+                    json!({"account": key(1), "base": key(2), "seed": "s", "space": 8u64, "owner": key(3)}),
+                ),
+                metas(system_instruction::allocate_with_seed(&pk(1), &pk(2), "s", 8, &pk(3))),
+            ),
+            (
+                parsed_ix(
+                    "system",
+                    "assignWithSeed",
+                    json!({"account": key(1), "base": key(2), "seed": "s", "owner": key(3)}),
+                ),
+                metas(system_instruction::assign_with_seed(&pk(1), &pk(2), "s", &pk(3))),
+            ),
+            (
+                parsed_ix(
+                    "system",
+                    "transferWithSeed",
+                    json!({
+                        "source": key(1), "sourceBase": key(2), "destination": key(4),
+                        "lamports": 5u64, "sourceSeed": "s", "sourceOwner": key(3),
+                    }),
+                ),
+                metas(system_instruction::transfer_with_seed(
+                    &pk(1), &pk(2), "s".into(), &pk(3), &pk(4), 5,
+                )),
+            ),
+            (
+                parsed_ix(
+                    "system",
+                    "createAccountWithSeed",
+                    json!({
+                        "source": key(1), "newAccount": key(2), "base": key(4),
+                        "seed": "s", "lamports": 1u64, "space": 8u64, "owner": key(3),
+                    }),
+                ),
+                metas(system_instruction::create_account_with_seed(
+                    &pk(1), &pk(2), &pk(4), "s", 1, 8, &pk(3),
+                )),
+            ),
+        ];
+
+        for (ix, want) in cases {
+            let got: Vec<String> = accounts_from_parsed(&ix)
+                .unwrap_or_else(|| panic!("no accounts rebuilt for {ix}"))
+                .into_iter()
+                .map(String::from)
+                .collect();
+            assert_eq!(got, want, "{ix}");
+        }
+    }
+
+    /// The two shapes whose account list the parsed view cannot pin exactly, and
+    /// what each falls back to. Both real forms are observed on chain, so this is
+    /// a choice between valid encodings, not a guess at the missing one.
+    #[test]
+    fn an_optional_account_falls_back_to_the_minimal_valid_list() {
+        // `createAccountWithSeed` with base == source: on chain the account list
+        // is [source, newAccount, source] (Rust SDK) or [source, newAccount]
+        // (web3.js). Emit the two the program requires.
+        let ix = parsed_ix(
+            "system",
+            "createAccountWithSeed",
+            json!({
+                "source": key(1), "newAccount": key(2), "base": key(1),
+                "seed": "s", "lamports": 1u64, "space": 8u64, "owner": key(3),
+            }),
+        );
+        let got: Vec<String> = accounts_from_parsed(&ix)
+            .unwrap()
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(got, vec![key(1), key(2)]);
+        assert!(data_from_parsed(&ix).is_some(), "the data is still exact");
+
+        // A memo's signer accounts are discarded by the parser, so its identity
+        // cannot be recovered — but its DATA is the string itself, byte for byte.
+        let memo = json!({"program": "spl-memo", "programId": key(1), "parsed": "hello"});
+        assert_eq!(accounts_from_parsed(&memo), None);
+        assert_eq!(data_from_parsed(&memo), Some(b"hello".to_vec()));
+    }
+
+    /// spl-token account order per `parse_token.rs`, including the `parse_signers`
+    /// tail: a single authority, or a multisig authority plus its signers.
+    #[test]
+    fn token_and_ata_accounts_follow_the_parser_order() {
+        let checked = parsed_ix(
+            "spl-token",
+            "transferChecked",
+            json!({
+                "source": key(1), "mint": key(2), "destination": key(3),
+                "authority": key(4), "tokenAmount": {"amount": "1", "decimals": 0},
+            }),
+        );
+        let got: Vec<String> = accounts_from_parsed(&checked)
+            .unwrap()
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(got, vec![key(1), key(2), key(3), key(4)]);
+
+        // Multisig: the authority slot is the multisig account, then its signers.
+        let multi = parsed_ix(
+            "spl-token",
+            "transfer",
+            json!({
+                "source": key(1), "destination": key(2),
+                "multisigAuthority": key(3), "signers": [key(4), key(5)], "amount": "1",
+            }),
+        );
+        let got: Vec<String> = accounts_from_parsed(&multi).unwrap().into_iter().map(String::from).collect();
+        assert_eq!(got, vec![key(1), key(2), key(3), key(4), key(5)]);
+
+        // ATA `create`: funder, ata, wallet, mint, system, token — in that order.
+        let ata = parsed_ix(
+            "spl-associated-token-account",
+            "createIdempotent",
+            json!({
+                "source": key(1), "account": key(2), "wallet": key(3),
+                "mint": key(4), "systemProgram": key(5), "tokenProgram": key(6),
+            }),
+        );
+        let got: Vec<String> = accounts_from_parsed(&ata).unwrap().into_iter().map(String::from).collect();
+        assert_eq!(got, vec![key(1), key(2), key(3), key(4), key(5), key(6)]);
+    }
+
+    /// End to end: a parsed instruction with no `accounts` on the wire reaches the
+    /// decoder with the same index list a gRPC-sourced one carries.
+    #[test]
+    fn a_parsed_instruction_without_accounts_still_gets_them() {
+        let mut f = parsed_frame();
+        f["transaction"]["transaction"]["message"]["instructions"][1] = parsed_ix(
+            "system",
+            "transfer",
+            json!({"source": key(3), "destination": key(1), "lamports": 7u64}),
+        );
+        f["transaction"]["transaction"]["message"]["instructions"][1]["programId"] = json!(key(2));
+
+        let u = json_tx_to_protobuf(&f).unwrap();
+        let m = u.transaction.unwrap().transaction.unwrap().message.unwrap();
+        // key(3) is the lookup-table writable at flat index 2, key(1) is static 0.
+        assert_eq!(m.instructions[1].accounts, vec![2u8, 0]);
+        assert_eq!(m.instructions[1].data, [&[2u8, 0, 0, 0][..], &7u64.to_le_bytes()].concat());
     }
 }
