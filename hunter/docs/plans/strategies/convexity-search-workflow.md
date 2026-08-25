@@ -209,9 +209,16 @@ EXIT   arm_above_pct A + retrace >= T      # armed: trails only from strength
 - **The stop is a falsification leg.** The thesis was "demand is arriving". If price
   immediately goes the other way, the thesis is wrong. Small: a few percent — and priced at
   the honest fill, ~3.5% past its own level.
-- **Trail width is an empirical question, not a prior.** Tighter beats wider on some
-  populations once the fill is charged. Report the surface, not the best cell: **if it is
-  not a plateau, it is not real.**
+- **A WIDE trail is REFUTED as a prior.** On two separate islands, priced at the honest
+  fill, performance is monotone in tightness - wider is worse at every step. Island 3:
+  `retrace 20` -> `retrace 10` gains. A scalping island: expectancy runs
+  `-0.000025` (tight) / `-0.000525` (20% trail) / `-0.001415` (30% trail), and days-positive
+  falls 2/7 -> 0/7 as the trail widens. Median hold rises 66s -> 260s across the same
+  ladder. Start tight and widen only if the surface says so; report the surface, not the
+  best cell: **if it is not a plateau, it is not real.**
+- **Match the exit to what the island IS.** A convexity harvest and a scalp want opposite
+  exits, and the wrong prescription costs more than any threshold. Read the median hold
+  and the exit mix before choosing a shape.
 - **No take-profit, no hold cap.** Both cap the right tail.
 
 **The exit is worth more than the entry** — on one island the exit alone moves expectancy

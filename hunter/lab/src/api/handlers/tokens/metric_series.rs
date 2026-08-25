@@ -40,6 +40,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use hunter_engine::fingerprint::FingerprintId;
+use hunter_engine::grouping::normalize_labels;
 use hunter_engine::metrics::flow_split::{wallet_hash, FlowPatterns};
 use hunter_engine::metrics::grid::{estimate_sparse_rows, fold_sparse, SparseGrid};
 use hunter_engine::metrics::position::PositionCtx;
@@ -143,11 +144,20 @@ pub async fn token_metric_series(
         _ => None,
     };
 
-    let flow_ctx = match resolve_flow_ctx(&state, &mint, query.fingerprint_id.as_deref()).await {
+    // The static token facts every recorded series must be seeded with, read once
+    // (see `TokenFacts`). The flow context borrows the creator hash from it rather
+    // than repeating the lookup.
+    let facts = load_token_facts(&state, &mint).await;
+    let flow_ctx = match resolve_flow_ctx(&state, query.fingerprint_id.as_deref(), &facts).await {
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    let with_flow = flow_ctx.is_some();
+    // Wallet identity is a LOAD-time decision: the lake leaves the wallet column out
+    // unless asked, and a fold over rows without it sees every trade as one anonymous
+    // wallet — `unique_wallets` then reads 1 for a hundred traders, silently. This
+    // endpoint records every registry column, so it needs the wallet column whenever
+    // any recorded metric is wallet-keyed, not only on the flow path.
+    let with_flow = flow_ctx.is_some() || records_wallet_keyed_metric();
 
     let trades =
         match fetch_full_history_one_opts(&state.trade_repo(), &mint, query.curve_only, with_flow)
@@ -169,7 +179,7 @@ pub async fn token_metric_series(
     }
 
     let result = web::block(move || {
-        build_series(&mint, &trades, &windows, &grid, flow_ctx.as_ref(), entry)
+        build_series(&mint, &trades, &windows, &grid, flow_ctx.as_ref(), entry, &facts)
     })
     .await;
     match result {
@@ -180,6 +190,89 @@ pub async fn token_metric_series(
                 .json(serde_json::json!({ "error": "metric-series compute failed" }))
         }
     }
+}
+
+/// The static token facts a fold must be seeded with **before its first event**, all
+/// off one `tokens` read.
+///
+/// Every one of them is a metric that reads `NaN` for the whole token when unseeded,
+/// and a `NaN` satisfies nothing: an `ix_count <= 5` or `prior_launches == 0` pane
+/// draws blank and the condition timeline shows the rule as never firing — the exact
+/// silent failure the seeding contract on `MetricSeries::seed_ix_count` warns about.
+/// The live engine seeds all three on `TokenCreated` (`reduce.rs`) and the rule
+/// readout replay loads them the same way, so a series without them disagrees with
+/// the decision it is drawn next to.
+#[derive(Debug, Default, Clone, Copy)]
+struct TokenFacts {
+    /// FNV hash of the creator wallet — volume-side unconditionally, and the seed of
+    /// the flow-split contagion set.
+    creator_wallet_hash: Option<u64>,
+    /// Creation-transaction instruction count (`m_snapshot.ix_count`).
+    ix_count: Option<usize>,
+    /// The creator's launches strictly before this token (`m_snapshot.prior_launches`).
+    prior_launches: Option<u32>,
+}
+
+/// Read the `tokens` row once and derive every static fact the fold needs.
+///
+/// One indexed PK lookup plus, when the creator is known, one counting query — the
+/// same pair the live rule readout runs (`load_ix_count` / `load_prior_launches`), so
+/// the two surfaces seed from identical values. A missing row is non-fatal and never
+/// silent: each fact stays `None`, its metric reads `NaN`, and the reason is logged.
+async fn load_token_facts(state: &LocalState, mint: &str) -> TokenFacts {
+    let repo = TokenRepo::new(state.core.db.clone());
+    let token = match repo.find_by_mint(mint).await {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            tracing::warn!(mint, "metric-series: no tokens row - ix_count/prior_launches unseeded");
+            return TokenFacts::default();
+        }
+        Err(e) => {
+            tracing::warn!(mint, error = %e, "metric-series: token lookup failed - ix_count/prior_launches unseeded");
+            return TokenFacts::default();
+        }
+    };
+    // Through the SSOT `normalize_labels` so both persisted shapes (bare array and
+    // `{"instructions":[...]}`) count alike; a zero count is "never stored", not a
+    // creation transaction with no instructions.
+    let n = normalize_labels(&token.instruction_labels).len();
+    let ix_count = (n > 0).then_some(n);
+
+    if token.creator_wallet.is_empty() {
+        tracing::warn!(mint, "metric-series: no creator wallet - flow split + prior_launches unseeded");
+        return TokenFacts { creator_wallet_hash: None, ix_count, prior_launches: None };
+    }
+    let prior_launches = match repo
+        .count_prior_launches(&token.creator_wallet, token.created_at)
+        .await
+    {
+        Ok(n) => Some(n.max(0) as u32),
+        Err(e) => {
+            tracing::warn!(mint, error = %e, "metric-series: prior_launches unseeded");
+            None
+        }
+    };
+    TokenFacts {
+        creator_wallet_hash: Some(wallet_hash(&token.creator_wallet)),
+        ix_count,
+        prior_launches,
+    }
+}
+
+/// Whether any column this endpoint records outside the flow groups is wallet-keyed
+/// (`m_flow_window.unique_wallets` today). Registry-derived rather than a name list,
+/// so the answer follows `MetricId::needs_wallet_identity` instead of drifting from it.
+fn records_wallet_keyed_metric() -> bool {
+    REGISTRY
+        .iter()
+        .filter(|g| {
+            !matches!(
+                g.id,
+                MetricGroupId::FlowSplit | MetricGroupId::FlowSplitWindow | MetricGroupId::Position
+            )
+        })
+        .flat_map(|g| g.metrics.iter())
+        .any(|m| m.id.needs_wallet_identity())
 }
 
 struct FlowCtx {
@@ -196,8 +289,8 @@ struct FlowCtx {
 
 async fn resolve_flow_ctx(
     state: &LocalState,
-    mint: &str,
     fingerprint_id: Option<&str>,
+    facts: &TokenFacts,
 ) -> Result<Option<FlowCtx>, HttpResponse> {
     let Some(raw) = fingerprint_id.filter(|s| !s.is_empty()) else {
         return Ok(None);
@@ -220,24 +313,14 @@ async fn resolve_flow_ctx(
         // Fingerprint present but unconfigured — omit flow columns (same as no id).
         return Ok(None);
     };
-    // One indexed PK lookup, and only on the flow path — a series without flow columns
-    // never pays for it. A missing row is non-fatal: the series still folds, it just
-    // can't seed the creator (logged, never silent — an unseeded fold misclassifies).
-    let creator_wallet_hash = match TokenRepo::new(state.core.db.clone()).find_by_mint(mint).await {
-        Ok(Some(t)) if !t.creator_wallet.is_empty() => Some(wallet_hash(&t.creator_wallet)),
-        Ok(_) => {
-            tracing::warn!(mint, "metric-series: no creator wallet — flow split unseeded");
-            None
-        }
-        Err(e) => {
-            tracing::warn!(mint, error = %e, "metric-series: creator lookup failed — flow split unseeded");
-            None
-        }
-    };
+    // The creator comes off the one `tokens` read every series already does
+    // ([`load_token_facts`]). A missing row is non-fatal: the series still folds, it
+    // just can't seed the creator (logged there, never silent — an unseeded fold
+    // misclassifies the dev buy and dump as organic).
     Ok(Some(FlowCtx {
         fp_id: engine_fp.id,
         patterns,
-        creator_wallet_hash,
+        creator_wallet_hash: facts.creator_wallet_hash,
     }))
 }
 
@@ -270,6 +353,7 @@ fn build_series(
     grid: &SparseGrid,
     flow: Option<&FlowCtx>,
     entry: Option<(Ts, f64)>,
+    facts: &TokenFacts,
 ) -> serde_json::Value {
     let mut columns: Vec<SeriesColumn> = Vec::new();
     let mut labels: Vec<(SeriesColumn, Option<f64>)> = Vec::new();
@@ -318,6 +402,15 @@ fn build_series(
 
     let created_at = trades[0].block_time;
     let mut series = MetricSeries::new(created_at, columns);
+    // Static token facts first, in the same order the live `TokenCreated` arm seeds
+    // them (`reduce.rs`), and always BEFORE the first fold — a seed after it would
+    // leave the early rows reading `NaN` while the late ones read a value.
+    if let Some(n) = facts.ix_count {
+        series.seed_ix_count(n);
+    }
+    if let Some(n) = facts.prior_launches {
+        series.seed_prior_launches(n);
+    }
     if let Some(ctx) = flow {
         // Same order as the live `TokenCreated` arm (`new_track` → `seed_creator`):
         // `seed_creator` back-fills every flow state already registered.
@@ -603,7 +696,7 @@ mod tests {
         ];
         let grid = SparseGrid::for_windows(&[10.0]);
 
-        let seeded = build_series("mint", &trades, &[10.0], &grid, Some(&ctx), None);
+        let seeded = build_series("mint", &trades, &[10.0], &grid, Some(&ctx), None, &TokenFacts::default());
         assert_eq!(last_lifetime(&seeded, "vol_buy"), 7.0, "dev + pattern bot");
         assert_eq!(last_lifetime(&seeded, "nonvol_buy"), 3.0, "the stranger only");
         assert_eq!(last_lifetime(&seeded, "nonvol_net"), 3.0);
@@ -611,9 +704,105 @@ mod tests {
         // Unseeded (the pre-fix behavior) the dev's 5 SOL crosses into organic —
         // the exact drift this seed exists to prevent.
         let unseeded = FlowCtx { creator_wallet_hash: None, ..ctx };
-        let out = build_series("mint", &trades, &[10.0], &grid, Some(&unseeded), None);
+        let out = build_series("mint", &trades, &[10.0], &grid, Some(&unseeded), None, &TokenFacts::default());
         assert_eq!(last_lifetime(&out, "vol_buy"), 2.0);
         assert_eq!(last_lifetime(&out, "nonvol_buy"), 8.0);
+    }
+
+    /// Every value of a lifetime column, `None` where the metric read non-finite.
+    fn lifetime_values(resp: &serde_json::Value, metric: &str) -> Vec<Option<f64>> {
+        resp["series"]
+            .as_array()
+            .expect("series array")
+            .iter()
+            .find(|s| s["metric"] == metric && s["window_size_sec"].is_null())
+            .unwrap_or_else(|| panic!("{metric} lifetime column present"))["values"]
+            .as_array()
+            .expect("values array")
+            .iter()
+            .map(serde_json::Value::as_f64)
+            .collect()
+    }
+
+    /// The seeding contract for the static `m_snapshot` facts: they must be on the
+    /// track before the first fold, so EVERY row carries them — not just the rows
+    /// after some later seed. Unseeded they read `null` for the whole token, which is
+    /// what made an `ix_count <= 5` pane draw blank and its condition timeline show a
+    /// rule that fires live as never firing.
+    #[test]
+    fn snapshot_facts_are_seeded_on_every_row() {
+        let trades = [corpus_trade(5.0, "dev", None, 0), corpus_trade(3.0, "normie", None, 1)];
+        let grid = SparseGrid::for_windows(&[10.0]);
+        let facts = TokenFacts { creator_wallet_hash: None, ix_count: Some(7), prior_launches: Some(3) };
+
+        let out = build_series("mint", &trades, &[10.0], &grid, None, None, &facts);
+        for (metric, want) in [("ix_count", 7.0), ("prior_launches", 3.0)] {
+            let vals = lifetime_values(&out, metric);
+            assert!(!vals.is_empty(), "{metric} has rows");
+            assert!(vals.iter().all(|v| *v == Some(want)), "{metric} on every row: {vals:?}");
+        }
+
+        // Absent facts stay `null` — the honest reading for a token whose creation
+        // labels / creator were never stored, and never a `0` an `== 0` gate matches.
+        let out = build_series("mint", &trades, &[10.0], &grid, None, None, &TokenFacts::default());
+        for metric in ["ix_count", "prior_launches"] {
+            assert!(
+                lifetime_values(&out, metric).iter().all(Option::is_none),
+                "{metric} unseeded reads null",
+            );
+        }
+    }
+
+    /// The extensibility contract, as a guard: a metric added to `REGISTRY` must
+    /// appear as a column here with **no** change to this file. The response is what
+    /// every chart pane and the lab condition timeline read, so a metric missing from
+    /// it is a metric that does not exist on the frontend — and the omission is
+    /// silent, since a pane with no column simply draws nothing.
+    #[test]
+    fn every_registry_metric_is_a_column() {
+        let patterns = FlowPatterns::new(std::collections::BTreeSet::from([ix_hash(&[
+            "Pump.Fun: Buy",
+        ])]));
+        let ctx = FlowCtx {
+            fp_id: FingerprintId(Uuid::new_v4()),
+            patterns,
+            creator_wallet_hash: Some(wallet_hash("dev")),
+        };
+        let trades = [corpus_trade(5.0, "dev", None, 0), corpus_trade(3.0, "normie", None, 1)];
+        let grid = SparseGrid::for_windows(&[10.0]);
+        let out = build_series(
+            "mint",
+            &trades,
+            &[10.0],
+            &grid,
+            Some(&ctx),
+            // An entry context, so the position-scoped group is computed too.
+            Some((ts(0), 1.0)),
+            &TokenFacts { creator_wallet_hash: None, ix_count: Some(3), prior_launches: Some(1) },
+        );
+        let cols: Vec<(String, String)> = out["series"]
+            .as_array()
+            .expect("series array")
+            .iter()
+            .map(|c| (c["group"].as_str().unwrap().to_string(), c["metric"].as_str().unwrap().to_string()))
+            .collect();
+        for g in REGISTRY {
+            for m in g.metrics {
+                assert!(
+                    cols.iter().any(|(cg, cm)| cg == g.name && cm == m.name),
+                    "{}.{} has no column - the pane for it draws nothing",
+                    g.name,
+                    m.name,
+                );
+            }
+        }
+    }
+
+    /// `unique_wallets` is wallet-keyed, so this endpoint must load the wallet column
+    /// on every request — not only when a fingerprint puts it on the flow path.
+    #[test]
+    fn the_endpoint_declares_it_needs_wallet_identity() {
+        assert!(records_wallet_keyed_metric());
     }
 
     #[test]
