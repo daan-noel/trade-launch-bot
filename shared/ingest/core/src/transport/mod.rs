@@ -32,7 +32,8 @@ use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 use tonic::{Request, Status};
 use tracing::{error, info, warn};
 
-use crate::config::Auth;
+use crate::config::{Auth, CurveSource, SubscriptionRole};
+use crate::dedupe::SignatureDedupe;
 use crate::proto::geyser::geyser_client::GeyserClient;
 use crate::proto::geyser::subscribe_update::UpdateOneof;
 use crate::proto::geyser::{
@@ -104,6 +105,15 @@ impl PushHooks {
         } else {
             Vec::new()
         }
+    }
+
+    /// Whether the push feeds alone justify holding the subscription open.
+    ///
+    /// Decides what happens when the venue has no accounts to watch (the relay
+    /// carries the curve and no pool is tracked yet): with push feeds the stream
+    /// stays up carrying only `blocks_meta` / `accounts`, without them it idles.
+    fn wants_stream(&self) -> bool {
+        self.wants_blocks_meta() || !self.account_filter().is_empty()
     }
 }
 
@@ -243,8 +253,10 @@ pub async fn connect(
         .await
         .map_err(crate::error::IngestError::Transport)?;
 
-    Ok(GeyserClient::with_interceptor(channel, XTokenInterceptor { token })
-        .max_decoding_message_size(cfg.max_decoding_message_size))
+    Ok(
+        GeyserClient::with_interceptor(channel, XTokenInterceptor { token })
+            .max_decoding_message_size(cfg.max_decoding_message_size),
+    )
 }
 
 /// Build a `Subscribe` request. `filter_key` is the transaction filter-map key
@@ -259,18 +271,25 @@ pub fn build_subscribe_request(
     blocks_meta: bool,
     watch_accounts: Vec<String>,
 ) -> SubscribeRequest {
+    // An empty `account_include` is not "no transactions" to Yellowstone — it is
+    // a filter that matches EVERY transaction on chain. Omit the filter entirely
+    // instead, which is what "watch no transactions" actually means. This is the
+    // shape used when the relay carries the curve and no pool is tracked yet: the
+    // subscription still exists to carry the push feeds below.
     let mut transactions = HashMap::new();
-    transactions.insert(
-        filter_key.to_string(),
-        SubscribeRequestFilterTransactions {
-            vote: Some(false),
-            failed: Some(false),
-            signature: None,
-            account_include,
-            account_exclude: Vec::new(),
-            account_required: Vec::new(),
-        },
-    );
+    if !account_include.is_empty() {
+        transactions.insert(
+            filter_key.to_string(),
+            SubscribeRequestFilterTransactions {
+                vote: Some(false),
+                failed: Some(false),
+                signature: None,
+                account_include,
+                account_exclude: Vec::new(),
+                account_required: Vec::new(),
+            },
+        );
+    }
     let mut req = SubscribeRequest {
         transactions,
         commitment: Some(commitment as i32),
@@ -367,12 +386,15 @@ pub async fn run<V: IngestVenue>(
     cfg: Arc<TransportConfig>,
     mut gap_replay_rx: watch::Receiver<(bool, u64)>,
     push: Arc<PushHooks>,
+    mut source_rx: watch::Receiver<CurveSource>,
+    dedupe: Option<Arc<SignatureDedupe>>,
 ) {
     let mut anchor: Option<ReplayAnchor> = None;
     let mut backoff = cfg.reconnect_base;
     let mut counts = ReconnectCounts::default();
     // Consecutive replay attempts that made no progress (see MAX_REPLAY_ATTEMPTS).
     let mut replay_attempts: u32 = 0;
+    let pools_changed = venue.pools_changed();
 
     loop {
         while !*live_rx.borrow() {
@@ -380,6 +402,34 @@ pub async fn run<V: IngestVenue>(
             if live_rx.changed().await.is_err() {
                 return;
             }
+        }
+
+        // When another transport carries the bonding curve, this subscription is
+        // pool PDAs only — and that set is empty until the first migration is
+        // tracked. An empty `account_include` matches EVERY transaction on chain,
+        // so
+        // idle rather than subscribe to the firehose — unless the push feeds still
+        // need the stream: `blocks_meta` backs the host blockhash cache, and losing
+        // it silently reverts to paid `getLatestBlockhash` polling.
+        let mut role = role_for(*source_rx.borrow_and_update());
+        while venue.subscription_accounts(role).is_empty() && !push.wants_stream() {
+            info!(
+                role = ?role,
+                "LaserStream: no accounts to watch — idle until a pool is tracked \
+                 or the curve source changes"
+            );
+            tokio::select! {
+                _ = pools_changed.notified() => {}
+                r = source_rx.changed() => if r.is_err() { return; },
+                r = live_rx.changed() => if r.is_err() { return; },
+            }
+            if !*live_rx.borrow() {
+                break;
+            }
+            role = role_for(*source_rx.borrow());
+        }
+        if !*live_rx.borrow() {
+            continue;
         }
 
         // Resolve the resume point HERE, immediately before subscribing, so the
@@ -399,6 +449,9 @@ pub async fn run<V: IngestVenue>(
             from_slot,
             &cfg,
             &push,
+            role,
+            &mut source_rx,
+            dedupe.as_deref(),
         )
         .await;
         let reason = attempt.reason;
@@ -528,6 +581,17 @@ fn resolve_from_slot(
     Some(a.slot + 1)
 }
 
+/// Which slice of the venue this transport covers, given who owns the curve feed.
+///
+/// The whole switch mechanism reduces to this: when NATS carries the curve, the
+/// gRPC subscription drops the venue program id and keeps only tracked pools.
+fn role_for(source: CurveSource) -> SubscriptionRole {
+    match source {
+        CurveSource::Grpc => SubscriptionRole::All,
+        CurveSource::Nats => SubscriptionRole::AmmOnly,
+    }
+}
+
 // ── Single connection attempt ─────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -541,13 +605,19 @@ async fn run_once<V: IngestVenue>(
     from_slot: Option<u64>,
     cfg: &TransportConfig,
     push: &PushHooks,
+    mut role: SubscriptionRole,
+    source_rx: &mut watch::Receiver<CurveSource>,
+    dedupe: Option<&SignatureDedupe>,
 ) -> Attempt {
     // Highest slot seen on THIS attempt + when it arrived. Local (the attempt is
     // single-tasked) and returned to the caller, which owns the durable anchor.
     let mut progress: Option<ReplayAnchor> = None;
     macro_rules! done {
         ($reason:expr) => {
-            return Attempt { reason: $reason, progress }
+            return Attempt {
+                reason: $reason,
+                progress,
+            }
         };
     }
 
@@ -569,7 +639,7 @@ async fn run_once<V: IngestVenue>(
     let (req_tx, req_rx) = mpsc::channel::<SubscribeRequest>(REQUEST_QUEUE_CAP);
     let initial = build_subscribe_request(
         filter_key,
-        venue.subscription_accounts(),
+        venue.subscription_accounts(role),
         from_slot,
         cfg.commitment,
         push.wants_blocks_meta(),
@@ -589,8 +659,9 @@ async fn run_once<V: IngestVenue>(
     };
     let mut stream = response.into_inner();
     info!(
+        role = ?role,
         "LaserStream: subscribed ({} account(s))",
-        venue.subscription_accounts().len()
+        venue.subscription_accounts(role).len()
     );
 
     let mut last_update = tokio::time::Instant::now();
@@ -627,6 +698,18 @@ async fn run_once<V: IngestVenue>(
                                 progress = Some(ReplayAnchor { slot: tx.slot, at: now });
                                 last_update = now;
                             }
+                            // A migration tx matches both the curve feed and the
+                            // AMM pool filter, so with two transports running the
+                            // same signature legitimately arrives twice. `None`
+                            // (single transport) skips the check entirely.
+                            let fresh = match dedupe {
+                                Some(d) => tx
+                                    .transaction
+                                    .as_ref()
+                                    .is_some_and(|t| d.insert_new(&t.signature)),
+                                None => true,
+                            };
+                            if fresh {
                             if let Some(relevance) = venue.classify(&tx) {
                                 let received_at = Utc::now();
                                 let lane = if V::is_create_lane(relevance) {
@@ -659,6 +742,7 @@ async fn run_once<V: IngestVenue>(
                                     }
                                 }
                             }
+                            }
                         }
                         _ => {}
                         }
@@ -683,7 +767,7 @@ async fn run_once<V: IngestVenue>(
                 }
                 let req = build_subscribe_request(
                     filter_key,
-                    venue.subscription_accounts(),
+                    venue.subscription_accounts(role),
                     None,
                     cfg.commitment,
                     push.wants_blocks_meta(),
@@ -705,6 +789,42 @@ async fn run_once<V: IngestVenue>(
                 }
             }
 
+            result = source_rx.changed() => {
+                if result.is_err() {
+                    info!("LaserStream: curve-source sender dropped — stopping (no reconnect)");
+                    done!(DisconnectReason::DownstreamClosed);
+                }
+                let next = role_for(*source_rx.borrow());
+                if next != role {
+                    role = next;
+                    let accounts = venue.subscription_accounts(role);
+                    // Nothing left to watch under the new role — hand back to the
+                    // outer loop, which idles until a pool is tracked.
+                    if accounts.is_empty() && !push.wants_stream() {
+                        info!(role = ?role, "LaserStream: curve source changed — nothing to watch, idling");
+                        done!(DisconnectReason::Graceful);
+                    }
+                    info!(
+                        role = ?role,
+                        "LaserStream: curve source changed — resubscribing ({} account(s))",
+                        accounts.len()
+                    );
+                    // Resubscribe in place: the stream stays open, so the switch
+                    // costs no reconnect and leaves no gap on the AMM side.
+                    let req = build_subscribe_request(
+                        filter_key,
+                        accounts,
+                        None,
+                        cfg.commitment,
+                        push.wants_blocks_meta(),
+                        push.account_filter(),
+                    );
+                    if req_tx.send(req).await.is_err() {
+                        done!(DisconnectReason::Graceful);
+                    }
+                }
+            }
+
             _ = idle_check.tick() => {
                 let idle = last_update.elapsed();
                 if idle >= cfg.idle_reconnect_timeout {
@@ -723,13 +843,21 @@ mod tests {
     #[test]
     fn reason_labels_are_distinct() {
         assert_eq!(DisconnectReason::Graceful.label(), "graceful");
-        assert_eq!(DisconnectReason::DownstreamClosed.label(), "downstream_closed");
+        assert_eq!(
+            DisconnectReason::DownstreamClosed.label(),
+            "downstream_closed"
+        );
         assert!(DisconnectReason::DownstreamClosed.is_terminal());
         assert!(!DisconnectReason::Graceful.is_terminal());
         assert_eq!(DisconnectReason::IdleTimeout.label(), "idle_timeout");
-        assert_eq!(DisconnectReason::PipelineBackpressure.label(), "pipeline_backpressure");
+        assert_eq!(
+            DisconnectReason::PipelineBackpressure.label(),
+            "pipeline_backpressure"
+        );
         assert_eq!(DisconnectReason::ConnectError.label(), "connect_error");
-        assert!(DisconnectReason::StreamError(tonic::Code::Unavailable).label().starts_with("stream_error"));
+        assert!(DisconnectReason::StreamError(tonic::Code::Unavailable)
+            .label()
+            .starts_with("stream_error"));
     }
 
     fn anchor(slot: u64, age_secs: u64) -> Option<ReplayAnchor> {
@@ -815,7 +943,10 @@ mod tests {
         );
         assert!(req.transactions.contains_key("myvenue"));
         assert_eq!(req.from_slot, Some(42));
-        assert_eq!(req.transactions["myvenue"].account_include, vec!["acct".to_string()]);
+        assert_eq!(
+            req.transactions["myvenue"].account_include,
+            vec!["acct".to_string()]
+        );
         // No push hooks → no extra filters (a push-less host's subscription is
         // byte-identical to the pre-push one).
         assert!(req.blocks_meta.is_empty());
@@ -824,6 +955,58 @@ mod tests {
 
     /// Push hooks ride the SAME subscription: `blocks_meta` + `accounts` filters
     /// appear only when the corresponding hook is set.
+    /// An empty `account_include` means "watch nothing", but Yellowstone reads it
+    /// as "watch everything" — so the filter must be omitted, not sent empty.
+    #[test]
+    fn an_empty_account_set_omits_the_transactions_filter() {
+        let req = build_subscribe_request(
+            "pumpfun",
+            Vec::new(),
+            None,
+            CommitmentLevel::Processed,
+            true,
+            Vec::new(),
+        );
+        assert!(
+            req.transactions.is_empty(),
+            "empty account_include must not send a tx filter"
+        );
+        // The push feed still rides the subscription.
+        assert!(req.blocks_meta.contains_key("pumpfun"));
+
+        let req = build_subscribe_request(
+            "pumpfun",
+            vec!["pool".into()],
+            None,
+            CommitmentLevel::Processed,
+            false,
+            Vec::new(),
+        );
+        assert_eq!(
+            req.transactions["pumpfun"].account_include,
+            vec!["pool".to_string()]
+        );
+    }
+
+    #[test]
+    fn push_hooks_decide_whether_an_empty_venue_holds_the_stream() {
+        let none = PushHooks::default();
+        assert!(!none.wants_stream());
+
+        let metas = PushHooks {
+            on_block_meta: Some(Box::new(|_, _, _| {})),
+            ..Default::default()
+        };
+        assert!(metas.wants_stream());
+
+        let accounts = PushHooks {
+            watch_accounts: vec!["wallet".into()],
+            on_account: Some(Box::new(|_, _, _, _| {})),
+            ..Default::default()
+        };
+        assert!(accounts.wants_stream());
+    }
+
     #[test]
     fn build_subscribe_request_adds_push_filters() {
         let req = build_subscribe_request(
@@ -884,8 +1067,14 @@ mod tests {
     /// (endpoint + `Auth`); it type-checks with no change to this crate.
     #[test]
     fn provider_swap_is_config() {
-        let _helius = (String::from("https://mainnet.helius-rpc.com"), Auth::XToken("k".into()));
-        let _triton = (String::from("https://grpc.triton.one"), Auth::XToken("k2".into()));
+        let _helius = (
+            String::from("https://mainnet.helius-rpc.com"),
+            Auth::XToken("k".into()),
+        );
+        let _triton = (
+            String::from("https://grpc.triton.one"),
+            Auth::XToken("k2".into()),
+        );
         let _selfhosted = (String::from("http://localhost:10000"), Auth::None);
     }
 }

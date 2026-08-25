@@ -14,6 +14,7 @@ use dashmap::DashMap;
 use tokio::sync::Notify;
 
 use ingest_core::proto::geyser::SubscribeUpdateTransaction;
+use ingest_core::config::SubscriptionRole;
 use ingest_core::venue::{DecodeOutput, IngestVenue, PoolIndex};
 
 use crate::config::IngestConfig;
@@ -59,9 +60,16 @@ impl IngestVenue for PumpFunVenue {
         "pumpfun"
     }
 
-    fn subscription_accounts(&self) -> Vec<String> {
-        let mut accounts = Vec::with_capacity(self.pool_index.len() + 1);
-        accounts.push(self.protocol.programs.pump_fun.base58.clone());
+    /// `All` = the pump.fun program + every tracked pool PDA. `AmmOnly` = pool
+    /// PDAs alone, for when the NATS relay is carrying bonding-curve traffic;
+    /// with no pools tracked that is legitimately empty, and the transport idles
+    /// rather than subscribing to the whole chain.
+    fn subscription_accounts(&self, role: SubscriptionRole) -> Vec<String> {
+        let curve = matches!(role, SubscriptionRole::All);
+        let mut accounts = Vec::with_capacity(self.pool_index.len() + usize::from(curve));
+        if curve {
+            accounts.push(self.protocol.programs.pump_fun.base58.clone());
+        }
         accounts.extend(self.pool_index.iter().map(|e| e.key().clone()));
         accounts
     }

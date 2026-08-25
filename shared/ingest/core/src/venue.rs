@@ -14,6 +14,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use tokio::sync::Notify;
 
+use crate::config::SubscriptionRole;
 use crate::event::IngestEvent;
 use crate::proto::geyser::SubscribeUpdateTransaction;
 
@@ -48,9 +49,17 @@ pub trait IngestVenue: Send + Sync + 'static {
     /// gRPC transaction-filter map key (was the hardcoded `"pumpfun"`).
     fn filter_key(&self) -> &'static str;
 
-    /// Accounts to place in the gRPC `account_include` filter — the venue's
-    /// program id(s) plus every tracked pool PDA (read from its `PoolIndex`).
-    fn subscription_accounts(&self) -> Vec<String>;
+    /// Accounts to place in the gRPC `account_include` filter.
+    ///
+    /// [`SubscriptionRole::All`] is the venue's program id(s) plus every tracked
+    /// pool PDA. [`SubscriptionRole::AmmOnly`] must omit the program id(s) and
+    /// return pool PDAs only — another transport is carrying curve traffic, and
+    /// leaving the program id in would pay the provider for it twice.
+    ///
+    /// An empty result means "nothing to watch": the transport idles instead of
+    /// subscribing, because an empty `account_include` matches *every*
+    /// transaction on chain.
+    fn subscription_accounts(&self, role: SubscriptionRole) -> Vec<String>;
 
     /// Cheap pre-filter over a raw update (log scan); `None` ⇒ ignore (do not
     /// forward to `decode`). Runs once, in the transport task.

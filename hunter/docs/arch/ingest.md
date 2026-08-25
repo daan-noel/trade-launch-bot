@@ -1,7 +1,15 @@
-# Ingest — LaserStream (the sole live transport)
+# Ingest — LaserStream + the NATS relay
 
-File-level map of `ingest-laserstream/` (standalone crate) and `live/src/ingest/` (host adapter). Helius LaserStream (Yellowstone gRPC) is the **only** live ingest path.
-Logic explainers: `@plans/ingest/laserstream-workflow.md`, `@plans/ingest/token_sync-workflow.md`, `@plans/ingest/backpressure-watchdog.md`, `@plans/ingest/reconnect-restart-flow.md`.
+File-level map of `ingest-laserstream/` (standalone crate) and `live/src/ingest/` (host adapter).
+
+**Two transports, two roles.** Helius LaserStream (Yellowstone gRPC) always carries AMM
+pool traffic, because its filter is keyed on *this bot's* tracked pool PDAs. Bonding-curve
+traffic rides whichever source `ingest.curve_source` selects — LaserStream or a
+third-party NATS relay — switchable at runtime with no restart. Both converge on
+`SubscribeUpdateTransaction` before anything decodes, so everything below the transport
+is source-agnostic.
+
+Logic explainers: `@plans/ingest/laserstream-workflow.md`, `@plans/ingest/nats-relay-transport.md`, `@plans/ingest/token_sync-workflow.md`, `@plans/ingest/backpressure-watchdog.md`, `@plans/ingest/reconnect-restart-flow.md`.
 
 ## Architecture
 
@@ -12,7 +20,9 @@ Ingest::builder().build()?.start(live)
   -> (Receiver<IngestEvent>, IngestHandle)
 
 Internal crate topology:
-  transport::run()  (gRPC, classify)
+  nats::run()       (relay, role CURVE)     -- convert::json_tx_to_protobuf -->  transport::run()  (gRPC, role ALL|AmmOnly) ---------------------------------> dedupe
+                                                                                  |
+                                                                              classify
     --create lane-->  decode task (Create)
     --normal lane-->  decode task (Curve/Amm)
     --IngestEvent-->  host event channel (both lanes merge)
@@ -102,7 +112,11 @@ live is gone; the host persists it into `tokens.meta` — see
 | `config.rs` | `IngestConfig` (all tunables, no env reads), `Commitment` enum |
 | `error.rs` | `IngestError`, `Result<T>` alias |
 | `pool.rs` | PDA derivation (`derive_pool`), `register_pool`, `pool_for_mint`; `PoolIndex = Arc<DashMap<String, String>>` |
-| `transport/mod.rs` | gRPC producer: TLS auth, reconnect w/ backoff, gap replay from a retained `ReplayAnchor` (`resolve_from_slot` is the ONE decider — the anchor OUTLIVES a no-progress attempt, bounded by `MAX_REPLAY_ATTEMPTS`; resume is `slot + 1` because nothing dedups by signature before the strategy fold), idle-reconnect timer, backpressure guard; `connect`, `build_subscribe_request`, `TransportConfig`. Rules: `@plans/ingest/reconnect-restart-flow.md` |
+| `transport/mod.rs` | gRPC producer, scoped by `SubscriptionRole` (`All` = pump program + pool PDAs; `AmmOnly` = pool PDAs only, when the relay carries the curve). An empty account set idles instead of subscribing — an empty `account_include` matches every transaction on chain. A source switch resubscribes **on the open stream**, so AMM sees no gap. TLS auth, reconnect w/ backoff, gap replay from a retained `ReplayAnchor` (`resolve_from_slot` is the ONE decider — the anchor OUTLIVES a no-progress attempt, bounded by `MAX_REPLAY_ATTEMPTS`; resume is `slot + 1` because nothing dedups by signature before the strategy fold), idle-reconnect timer, backpressure guard; `connect`, `build_subscribe_request`, `TransportConfig`. Rules: `@plans/ingest/reconnect-restart-flow.md` |
+| `nats/mod.rs` (ingest-core) | Relay producer for the CURVE role: subscribe, shed-on-full reader, JSON parse, failure screen, dedupe, classify. Idles disconnected unless selected — **`nats` feature**. Rules: `@plans/ingest/nats-relay-transport.md` |
+| `nats/client.rs` (ingest-core) | Hand-rolled NATS core client (connect / SUB / MSG / PING) on tokio TCP. No crate dependency: every NATS crate hard-depends on `nkeys`, whose dalek 4.x `zeroize` bound conflicts with the curve25519-dalek 3.2.1 solana 1.17.27 pins |
+| `convert.rs` (ingest-core) | `json_tx_to_protobuf` — the ONE JSON→protobuf adapter, shared by the RPC backfill and every JSON live feed. Auto-detects `base64` vs `jsonParsed`; splits jsonParsed's inlined ALT keys back into `account_keys` + `loaded_*` so both sources produce identically-shaped updates — **`json-tx` feature** |
+| `dedupe.rs` (ingest-core) | `SignatureDedupe` — lock-free fixed ring over signature prefixes. Absorbs the switch overlap and the migration tx that matches both transports. Built only when a relay is configured |
 | `decode/mod.rs` | `Decoder` (+ `HeliusDecoder` back-compat alias), `TxRelevance`, `DecodeOutput` |
 | `decode/grpc.rs` | `decode_protobuf` (self-classify), `decode_relevant_pb` (hot path), `decode_amm_protobuf` (backfill); `LazyKeys`. **Curve TradeEvents: read "Program data:" logs first, but the validator truncates logs past a byte limit, so a multi-buy bundle can lose trailing legs — when logs are empty OR carry "Log truncated", re-decode from the complete inner-instruction self-CPI events and take the larger set. AMM path is still log-only (latent same risk).** |
 | `decode/trade.rs` | Borsh `RawTradeEvent`, trade helpers |
@@ -117,9 +131,11 @@ live is gone; the host persists it into `tokens.meta` — see
 | Feature | Unlocks |
 | --- | --- |
 | `raw-tx` | `IngestEvent::RawTx` (carries protobuf `payload` bytes), `raw_tx::encode_payload` |
-| `rpc-backfill` | `serde_json` dep, `backfill::rpc_to_protobuf` |
+| `json-tx` | `serde_json` dep, `convert::json_tx_to_protobuf` — implied by both feature gates below |
+| `rpc-backfill` | `backfill::rpc_to_protobuf` (a thin wrapper over `convert`) + the JSON-RPC pager |
+| `nats` | `nats::run` relay transport + its client (`tokio/net`, `tokio/io-util`) |
 
-`live` enables both. `IngestHandle` exposes `set_live`, `track_pools`, `untrack_pools`, `pool_index`, `pools_changed`. (Liveness is tracked host-side by `live`'s own `DbHeartbeat`, not an ingest health channel.)
+`hunter-live` enables all four; `forge-live` takes `rpc-backfill` only and never links the relay. `IngestHandle` exposes `set_live`, `set_curve_source`, `curve_source`, `set_gap_replay`, `track_pools`, `untrack_pools`, `pool_index`, `pools_changed`. (Liveness is tracked host-side by `live`'s own `DbHeartbeat`, not an ingest health channel.)
 
 **Push hooks (`ingest_core::PushHooks`, optional):** the same subscription can carry a `blocks_meta` filter and an `accounts` filter for host-chosen pubkeys; the two callbacks run on the transport task (cheap parse + store only). Hunter's `main.rs` bridges block metas → `Engine::set_cached_blockhash` (blockhash cache, 0 steady-state `getLatestBlockhash`) + `ingest::feed_lag::FeedLagGauge` (below), and nonce-account updates → `Engine::on_nonce_account_update` (durable-nonce push re-arm). Hosts that don't opt in (forge) get a byte-identical subscription. Push updates deliberately don't feed the idle watchdog — it guards the *transaction* stream.
 

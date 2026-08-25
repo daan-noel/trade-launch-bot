@@ -1351,6 +1351,8 @@ async fn run() -> anyhow::Result<()> {
     let ingest_result = ingest::spawn_ingest(
         settings.helius_laserstream_url.clone(),
         settings.helius_api_key.clone(),
+        settings.nats_url.clone(),
+        settings.nats_subject.clone(),
         db.clone(),
         token_cache.clone(),
         sse_tx.clone(),

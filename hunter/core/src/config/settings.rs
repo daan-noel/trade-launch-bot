@@ -29,6 +29,22 @@ pub struct Settings {
     /// `helius_api_key` via x-token.
     pub helius_laserstream_url: String,
 
+    // --- NATS relay (shared, OPTIONAL) ---
+    /// A third-party NATS relay rebroadcasting Helius `transactionNotification`
+    /// frames for the bonding curve. Empty (the default) disables the NATS
+    /// transport entirely, leaving the curve on LaserStream.
+    ///
+    /// Connection details are env, not an operator setting: which relay to talk
+    /// to is deployment configuration. **Which source is live** is the operator
+    /// setting `ingest.curve_source`, switchable at runtime.
+    pub nats_url: String,
+    /// Subject carrying the curve stream.
+    ///
+    /// Use an exact subject, not a wildcard: relays commonly mirror the same
+    /// frames onto a catch-all subject, and a wildcard then pulls every frame
+    /// twice for no extra data.
+    pub nats_subject: String,
+
     // --- Database ---
     pub database_url: String,
     /// **Hot-path** pool — ingest (`DbWriter`), `StrategyRunner`, maintenance,
@@ -76,6 +92,8 @@ impl Settings {
             helius_api_key: env_or("HELIUS_API_KEY", ""),
             helius_rpc_url: env_or("HELIUS_RPC_URL", ""),
             helius_laserstream_url: env_or("HELIUS_LASERSTREAM_URL", ""),
+            nats_url: env_or("NATS_URL", ""),
+            nats_subject: env_or("NATS_SUBJECT", "helius.raw.bondingcurve"),
             database_url: required("DATABASE_URL")?,
             db_max_connections: env_parse_min("DB_MAX_CONNECTIONS", 64u32, 1)?,
             db_min_connections: env_parse("DB_MIN_CONNECTIONS", 4u32)?,

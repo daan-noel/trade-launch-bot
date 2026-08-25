@@ -18,6 +18,7 @@ pub mod proto {
 }
 
 pub mod config;
+pub mod dedupe;
 pub mod error;
 pub mod event;
 pub mod session;
@@ -25,13 +26,22 @@ pub mod slot_anchor;
 pub mod transport;
 pub mod venue;
 
+/// Shared JSON -> protobuf adapter for every non-gRPC transaction source
+/// (RPC backfill, NATS relay, WebSocket).
+#[cfg(feature = "json-tx")]
+pub mod convert;
+
+#[cfg(feature = "nats")]
+pub mod nats;
+
 #[cfg(feature = "rpc-backfill")]
 pub mod backfill;
 
 #[cfg(feature = "raw-tx")]
 pub mod raw_tx;
 
-pub use config::{Auth, Commitment, IngestConfig};
+pub use config::{Auth, Commitment, CurveSource, IngestConfig, NatsConfig, SubscriptionRole};
+pub use dedupe::SignatureDedupe;
 pub use error::{IngestError, Result};
 pub use event::IngestEvent;
 pub use session::{Ingest, IngestHandle};

@@ -113,6 +113,8 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
             // Live mode toggle
             .route("/system/live", web::get().to(handlers::system::get_live_mode))
             .route("/system/live", web::put().to(handlers::system::set_live_mode))
+            .route("/system/curve-source", web::get().to(handlers::system::get_curve_source))
+            .route("/system/curve-source", web::put().to(handlers::system::set_curve_source))
             .route(
                 "/system/reload-caches",
                 web::post().to(handlers::system::reload_caches),

@@ -224,3 +224,21 @@ variation rather than sampling noise, and one week carries the average. Adding t
 terms degrades it further, from -0.35 alone to -3.52 with the full stack.
 
 Treat the term as the sharpest available descriptor of his decision and not as a rule.
+
+
+## Set the exit before reading any entry result
+
+An `arm_above_pct 10` + `retrace 18` exit never arms on most tokens, holds to death on 67% of
+them, and drags the median hold to 228s. It also throttles entries through
+`max_concurrent_tokens`, cutting 14,997 fires to 3,100 and understating how loose the rule
+is. With `m_position.held >= 20` the median hold is 17.0s against his 19.8s and every exit
+fires on the rule.
+
+The rule's sign flips with the fill model - -6.08% under `WorstCase` against +2.39% under
+`first_in_window` across the corpus - so it is an execution bet rather than an edge, and it
+does not go live.
+
+Splitting a run into "tokens he traded" against "other tokens" does NOT measure his token
+selection, even within a single engine run over a single corpus. The label is defined by an
+event after the entry, so the split is forward-conditioned no matter how the arms are
+gathered. Controlling on survival alone cuts the apparent gap from 6pp to 1.1pp.

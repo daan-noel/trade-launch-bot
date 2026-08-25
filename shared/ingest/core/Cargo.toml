@@ -13,10 +13,19 @@ default = []
 # Enables IngestEvent::RawTx + encode_payload: verbatim protobuf wire bytes of a
 # SubscribeUpdateTransaction, persisted to raw_txs.payload (BYTEA). No JSON.
 raw-tx = []
+# Enables `convert` - the ONE JSON-transaction -> SubscribeUpdateTransaction
+# adapter, shared by the RPC backfill and every JSON live feed (NATS, WebSocket).
+# Both `rpc-backfill` and `nats` turn it on; it is not useful alone.
+json-tx = ["dep:serde_json"]
 # Enables rpc_to_protobuf (backfill: RPC base64 -> SubscribeUpdateTransaction)
 # AND the getSignaturesForAddress / batched-getTransaction JSON-RPC pager. Parses
 # RPC JSON (serde_json) and issues the JSON-RPC calls (reqwest + anyhow).
-rpc-backfill = ["dep:serde_json", "dep:reqwest", "dep:anyhow"]
+rpc-backfill = ["json-tx", "dep:reqwest", "dep:anyhow"]
+# Enables the NATS relay curve transport (`nats`). The client is implemented
+# directly on tokio TCP (see `nats::client`): NATS core is a small line protocol,
+# and every off-the-shelf crate pulls an ed25519/curve25519 stack for nkey auth
+# that cannot co-exist with solana 1.17's pinned curve25519-dalek 3.x.
+nats = ["json-tx", "tokio/net", "tokio/io-util"]
 
 [dependencies]
 # gRPC wire types + transport (generated geyser client uses tonic; prost for

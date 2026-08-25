@@ -38,7 +38,15 @@ pub mod protocol;
 pub mod transport;
 pub mod venue;
 
-pub use ingest_core::{Commitment, IngestConfig, IngestError, IngestEvent, PushHooks, Result};
+pub use ingest_core::{
+    Commitment, CurveSource, IngestConfig, IngestError, IngestEvent, NatsConfig, PushHooks, Result,
+    SubscriptionRole,
+};
+
+/// The NATS relay curve transport (see `ingest_core::nats`). Only the host's
+/// probe/diagnostic paths need this; the session wires it internally.
+#[cfg(feature = "nats")]
+pub use ingest_core::nats;
 pub use pool::PoolIndex;
 pub use protocol::Protocol;
 pub use venue::PumpFunVenue;

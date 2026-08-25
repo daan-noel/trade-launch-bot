@@ -3362,6 +3362,7 @@ dependencies = [
  "chrono",
  "dashmap 4.0.2",
  "ingest-core",
+ "serde_json",
  "solana-sdk",
  "tokio",
  "tracing",

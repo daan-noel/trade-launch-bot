@@ -17,6 +17,9 @@ default = []
 # (and the backfill module) exist when a consumer requests the feature.
 raw-tx = ["ingest-core/raw-tx"]
 rpc-backfill = ["ingest-core/rpc-backfill"]
+# NATS relay curve transport. Opt-in per consumer: hunter-live enables it, and
+# bins that only speak gRPC skip the async-nats dependency entirely.
+nats = ["ingest-core/nats"]
 
 [dependencies]
 # Venue-agnostic engine: gRPC transport + reconnect, IngestVenue seam, generic
@@ -42,3 +45,8 @@ borsh = { version = "1", features = ["derive"] }
 
 # Solana SDK: PDA derivation in pool.rs
 solana-sdk = "1.17.27"
+
+[dev-dependencies]
+# The `nats_probe` example unwraps the relay envelope before handing the result
+# to `ingest_core::convert`.
+serde_json = "1"

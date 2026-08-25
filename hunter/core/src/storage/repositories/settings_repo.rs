@@ -73,6 +73,24 @@ pub mod keys {
     /// a huge backlog. Default 300 s (5 min).
     pub const GAP_REPLAY_MAX_WINDOW_SECS: Setting<u64> =
         Setting::new("ingest.gap_replay_max_window_secs", || 300);
+    /// Which transport carries bonding-curve traffic: `"grpc"` (LaserStream) or
+    /// `"nats"` (a third-party relay). AMM pool traffic always stays on gRPC,
+    /// whose filter is keyed on the pool PDAs this bot tracks.
+    ///
+    /// Switchable live from the Settings page — the ingest session re-points the
+    /// curve feed and re-scopes the gRPC subscription without a restart. `"nats"`
+    /// is ignored (and logged) when `NATS_URL` is unset. Default `"grpc"`: the
+    /// only source that can replay a gap and whose filter this bot controls.
+    /// The default reads `CURVE_SOURCE` from the environment so a fresh box can
+    /// pick its source from `.env` alone; a stored row (written via
+    /// `PUT /api/system/curve-source`) overrides it from then on.
+    pub const CURVE_SOURCE: Setting<String> = Setting::new("ingest.curve_source", || {
+        std::env::var("CURVE_SOURCE")
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "grpc".to_string())
+    });
     /// Skip entering a token whose `(name, symbol)` matches a **different** mint
     /// the engine already traded inside
     /// [`DUPLICATE_IDENTITY_WINDOW_HOURS`] — the copycat / re-launch guard. One
@@ -151,6 +169,9 @@ pub struct AppSettings {
     /// Maximum gap-replay window in seconds. Gaps beyond this trigger a clean
     /// re-subscribe instead of replaying a large backlog. Default 300 s.
     pub gap_replay_max_window_secs: u64,
+    /// Which transport carries bonding-curve traffic: `"grpc"` or `"nats"`.
+    /// Applied live. Default `"grpc"`.
+    pub curve_source: String,
     /// Copycat guard: skip a token whose `(name, symbol)` was already traded on a
     /// different mint inside the window. Default false.
     pub skip_duplicate_identity: bool,
@@ -188,6 +209,7 @@ impl AppSettings {
             max_committed_sol: pick(map, &keys::MAX_COMMITTED_SOL),
             gap_replay_on_reconnect: pick(map, &keys::GAP_REPLAY_ON_RECONNECT),
             gap_replay_max_window_secs: pick(map, &keys::GAP_REPLAY_MAX_WINDOW_SECS),
+            curve_source: pick(map, &keys::CURVE_SOURCE),
             skip_duplicate_identity: pick(map, &keys::SKIP_DUPLICATE_IDENTITY),
             duplicate_identity_window_hours: pick(map, &keys::DUPLICATE_IDENTITY_WINDOW_HOURS),
             duplicate_identity_since: pick(map, &keys::DUPLICATE_IDENTITY_SINCE),
