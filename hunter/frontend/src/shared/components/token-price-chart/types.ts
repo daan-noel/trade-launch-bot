@@ -56,6 +56,18 @@ export interface ProfileWalletInfo {
    *  + a fixed static color (`CHART_COLORS.dev`) so dev entries/exits (first_buy,
    *  sell_all) are unmistakable and never collide with the `mine` diamond. */
   isDev?: boolean;
+  /** True for a wallet in the active comparison set (Trader Analysis "Compare
+   *  with") — draws a square silhouette at ~1.7x with an outer ring in its own
+   *  color, a tier between the focused wallet and the rest of the crowd. Its
+   *  color also comes from `COMPARE_MARKER_COLORS` keyed by comparison slot, so
+   *  two compared wallets never land on neighbouring hues. */
+  isCompared?: boolean;
+  /** True for a tracked wallet that is neither the focus nor in the comparison
+   *  set WHILE a comparison is active — renders at reduced opacity with no
+   *  glyph. Contrast is relative: pushing the crowd back is what makes the two
+   *  wallets under comparison readable at a glance, and it costs no extra
+   *  encoding on a marker that already spends shape, fill, border and rings. */
+  dimmed?: boolean;
 }
 
 /**

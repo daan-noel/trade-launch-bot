@@ -160,6 +160,55 @@ export const WALLET_MARKER_COLORS = [
   '#ef4444', // red
 ] as const;
 
+/**
+ * Reserved hues for the comparison wallets (Trader Analysis "Compare with"),
+ * assigned by comparison SLOT — `with[0]` always takes the first entry — rather
+ * than by the global tracked-wallet rotation.
+ *
+ * Slot-keyed is the whole point: the rotation hands a comparison wallet whatever
+ * color its position in the profile list happens to land on, so two compared
+ * wallets can come out adjacent hues and the question the page exists to answer
+ * ("which of them is this marker") needs the glyph. All are brighter than their
+ * rotation counterparts (the uncompared crowd renders dimmed alongside them),
+ * and none is the gold {@link CHART_COLORS.highlightRing} owns.
+ *
+ * ONE hue per comparison slot the backend accepts — the list is as long as
+ * `MAX_COMPARE_WALLETS` (`@lab/components/analysis/coTrade.ts`, guarded by its
+ * test), so `compareWalletColor`'s modulo can never hand two compared wallets
+ * the same color. The first four take the freest bands and are maximally
+ * separated; the last four fill what the dev violet, the buy green, the sell red
+ * and the focus gold leave, so they sit closer to their neighbours and lean on
+ * the marker glyph to finish the job.
+ */
+export const COMPARE_MARKER_COLORS = [
+  '#22d3ee', // cyan
+  '#f472b6', // pink
+  '#fb923c', // orange
+  '#a3e635', // lime
+  '#60a5fa', // blue
+  '#e879f9', // fuchsia
+  '#2dd4bf', // teal
+  '#f87171', // salmon
+] as const;
+
+/**
+ * The color a comparison wallet renders in, given its slot in the comparison
+ * list. SSOT for the chart markers AND the `CoTradeSummary` swatch: the strip is
+ * the legend for those markers, so a second copy of this rule is a legend that
+ * can lie.
+ *
+ * A `mine` wallet keeps its own fixed color — the one identity the chart never
+ * recolors — and leans on its diamond silhouette plus the comparison ring to
+ * carry the tier instead.
+ */
+export function compareWalletColor(
+  slot: number,
+  wallet?: { color?: string; isMine?: boolean },
+): string {
+  if (wallet?.isMine && wallet.color) return wallet.color;
+  return COMPARE_MARKER_COLORS[slot % COMPARE_MARKER_COLORS.length];
+}
+
 export const CHART_GROUP_MODES: ChartGroupMode[] = ['time', 'slot'];
 
 export const CHART_GROUP_MODE_LABELS: Record<ChartGroupMode, string> = {

@@ -464,6 +464,30 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   `TokenTradeChart` forwards the same address to `BarTradesPanel`, which paints those
   rows gold (background + 4px left accent, outranking the entry/exit tint and the
   `myWalletAddresses` amber accent) and heads the panel with an `N of M by <addr>` chip.
+  `compareWallets` (Trader Analysis "Compare with", plumbed `TokenTable` →
+  `TokenChartsGrid` → `TokenTradeChart`) adds the **middle tier** between that focus and
+  the crowd: `isCompared` → a square silhouette at `COMPARE_MULT` with a
+  `COMPARE_MIN_RADIUS` floor and an outer ring in the marker's OWN color, and the
+  comparison tier outranks the lifecycle tier on size (whose marker it is beats which leg
+  it was). Class still wins the silhouette, so a compared `mine`/dev wallet keeps its
+  diamond/triangle and only the ring and size carry the tier. Size and shape are
+  deliberately redundant: size is the cue that survives a color-blind read, shape the one
+  that survives zooming out, and the tier has to hold at both.
+  While the list is non-empty every OTHER tracked wallet is flagged `dimmed` — drawn at
+  `DIM_ALPHA` with no glyph. Dimming the crowd, not only enlarging the tiers above it, is
+  what makes the comparison readable at a glance, and it spends no encoding on a marker
+  that already uses shape, fill, border and two rings; with no comparison armed the crowd
+  IS the content and stays at full strength.
+  A comparison wallet's color comes from `compareWalletColor(slot, wallet)` keyed by its
+  **comparison slot**, not by the tracked-wallet rotation — the rotation can hand two
+  compared wallets adjacent hues, which is exactly the distinction the page exists to
+  make. A `mine` wallet keeps its fixed color, the one identity the chart never recolors.
+  That helper is the SSOT for the markers, for `CoTradeSummary`'s swatch (drawn square to
+  match) AND for the `co_trade` column chips: the strip is the legend for those markers,
+  so a second copy of the rule is a legend that can lie, and a chip reading the profile
+  rotation instead gives one wallet two colors on one page. `COMPARE_MARKER_COLORS` holds
+  one hue per slot the co-trade read accepts, so the helper's modulo never collides
+  (`coTrade.test.ts` asserts the length against the cap).
   **Tracked-wallet markers are a structural invariant:** `TokenPriceChart` defaults
   `profileWallets` to `useProfileWallets()` when the prop is omitted, so *every* token trade
   chart shows tracked-wallet markers by construction (pass an explicit list to override,
@@ -899,21 +923,45 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   grain, not one round trip — a wallet that re-entered shows its first buy, its last sell, and a
   span covering both.
 - **Trader Analysis co-trade (`lab/components/analysis/coTrade.ts` + `coTradeColumns.tsx` +
-  `CoTradeSummary.tsx`).** "Compare with" names up to 8 tracked wallets (`?with=` on
+  `CoTradeSummary.tsx`).** "Compare with" names up to `MAX_COMPARE_WALLETS` tracked wallets (`?with=` on
   `/api/wallets/:wallet/tokens`); the page stays **primary-shaped** and the comparison set is purely
-  additive. Only the primary's mints make rows — a comparison wallet's own tokens never add any — and
+  additive. That constant mirrors the handler's `MAX_COMPARISON_WALLETS`, which drops the excess
+  silently, so the picker refuses past it, `run` slices the wire list, an over-cap draft chip strikes
+  through, and `coTrade.test.ts` reads the Rust source and fails when the two numbers drift. Only the primary's mints make rows — a comparison wallet's own tokens never add any — and
   each row carries `co_traders[]`: that wallet's entry, its curve depth, and `entry_lag_slots` /
   `entry_lag_tx` signed against the primary (**negative = it entered first**). Ordering is the entry
   leg's `(slot, tx_index)`, never `block_time`, which is second-precision and ties across a whole slot.
   Columns (group `co_trade`): Also (count) · Co-traders (colored chips, entry order, each with its lag)
   · First In · Lag · Coupling. `coTrade.ts` holds every derivation pure and DB-free — `tightestCoTrader`
-  (smallest |lag|, ties toward the wallet that was ahead), `firstMover`, `coTradeMix` — unit-tested in
-  `coTrade.test.ts`. `<CoTradeSummary>` reports the overlap count AND the bucket mix: read the mix, since
-  two busy wallets share some memecoins by chance alone and that coincidence lands in `independent`,
-  while a shared tape trigger concentrates in `co-slot`/`leads`/`follows`. "Co-traded only" is a
-  `co_traders.length > 0` client filter — no refetch. Chip colors come from `useProfileWallets()`, the
-  same source as the charts' wallet markers, so a wallet reads identically in the table and on every
-  chart. The primary stays the subject of the PnL deck, the flow lens' `excludeSelf`, and every
+  (smallest |lag|, ties toward the wallet that was ahead), `firstMover`, `coTradeMix`,
+  `coTradePerWallet` — unit-tested in `coTrade.test.ts`. `<CoTradeSummary>` reports the bucket mix and,
+  ahead of it, **one chip per comparison wallet** carrying that wallet's own overlap count and coupled
+  share: the totals count each row once on its tightest coupling, so they are the SET ceiling and one
+  busy wallet can carry them alone. Read the mix, not the overlap count — two busy wallets share some
+  memecoins by chance alone and that coincidence lands in `independent`, while a shared tape trigger
+  concentrates in `co-slot`/`leads`/`follows`.
+  A chip is also a **focus toggle**: with a wallet focused, `pickCoTrader` re-points Lag / Coupling
+  (label, sort and filter keys included), the strip's totals and the "co-traded only" filter at that
+  wallet alone, blank on the rows it is absent from; unfocused they answer on the row's tightest
+  coupling. Without it the second and third wallet on a shared row are unsortable and unfilterable —
+  visible only as chips, which reads as the page working with the first comparison wallet only.
+  "Co-traded only" stays a client-side filter — no refetch — and carries a **depth**: `passesCoFilter`
+  keeps the rows holding at least N of the comparison wallets, N = 1 being the union (any one of them,
+  which two busy wallets satisfy by coincidence) and N = the set size the INTERSECTION, i.e. only the
+  tokens the primary and EVERY named wallet were on. A focus composes with it rather than replacing it.
+  `<CoTradeSummary>`'s depth ladder (`coDepthCounts`, cumulative) shows what each rung costs before it is
+  picked and doubles as the control: a set whose ladder reads 987 / 180 / 12 / 0 has no four-wallet
+  intersection at all, which an empty table alone would not distinguish from a broken filter.
+  The **coupling badges select too** — an OR set over `CO_BUCKET_KEYS` (the four buckets plus `unordered`,
+  which is an answer about the window, not a gap), matched by `matchesCoBuckets` on the same
+  `coBucketKey` the counts come from, so a badge and its own filter cannot disagree. `CO_BUCKET_VARIANT`
+  is the one bucket→color map the Coupling column and the badges share.
+  Every strip control previews over the cohort narrowed by the OTHER controls and never by itself: a
+  count that collapsed onto its own selection could not offer the switch back, and one blind to the rest
+  would promise rows the click cannot deliver. Column filters stay out of the previews — the controls
+  preview over the query, the totals beside them describe what is on screen. Chip and First In colors come
+  from `compareWalletColor(slot)`, the same call the chart markers and the strip's swatches make, so a
+  wallet reads identically in the table and on every chart. The primary stays the subject of the PnL deck, the flow lens' `excludeSelf`, and every
   `wallet_*` column.
 - **Trader Analysis wallet PnL analytics (`lab/components/analysis/`).** The per-mint rows returned by
   `/api/wallets/:wallet/tokens` (`WalletTokenRow` in `lab/api/handlers/wallets.rs`, backed by

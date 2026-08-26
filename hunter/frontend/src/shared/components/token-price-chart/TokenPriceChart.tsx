@@ -285,21 +285,33 @@ export function sortSeriesMarkers(
 }
 
 /** Silhouette per wallet CLASS: `mine` → diamond (identity wins, permanent),
- *  dev/creator → triangle, else focused/input → hexagon, else circle. Focus still
- *  layers its gold ring on top of whatever shape, so a focused `mine` wallet stays
- *  a diamond and a focused dev stays a triangle. */
+ *  dev/creator → triangle, else focused/input → hexagon, else comparison-set →
+ *  square, else circle. Focus still layers its gold ring on top of whatever
+ *  shape, so a focused `mine` wallet stays a diamond and a focused dev stays a
+ *  triangle — and a compared `mine`/dev wallet keeps its class shape while the
+ *  comparison ring carries the tier.
+ *
+ *  Shape is deliberately redundant with size here rather than economical: size
+ *  is the cue that survives a color-blind read, shape is the one that survives
+ *  zooming out, and the comparison tier has to hold at both. */
 function walletShape(w: ProfileWalletInfo): MarkerShape {
   if (w.isMine) return 'diamond';
   if (w.isDev) return 'triangle';
   if (w.isHighlighted) return 'hexagon';
+  if (w.isCompared) return 'square';
   return 'circle';
 }
 
-/** Focused wallet first — it is drawn largest, so it takes the stack row closest
- *  to the bar edge where nothing can crowd it. Order is otherwise unchanged. */
+/** Rank inside a bar's stack: focus, then the comparison set, then everyone else.
+ *  The stack packs outward from the bar edge, so the oversized tiers take the
+ *  rows nearest the bar where nothing can crowd them and the dimmed crowd gets
+ *  pushed out behind them. Order within a tier is unchanged. */
+const walletTier = (w: ProfileWalletInfo): number =>
+  w.isHighlighted ? 2 : w.isCompared ? 1 : 0;
+
 function focusFirst(wallets: ProfileWalletInfo[]): ProfileWalletInfo[] {
-  if (wallets.length < 2 || !wallets.some((w) => w.isHighlighted)) return wallets;
-  return [...wallets].sort((a, b) => Number(!!b.isHighlighted) - Number(!!a.isHighlighted));
+  if (wallets.length < 2 || !wallets.some((w) => walletTier(w) > 0)) return wallets;
+  return [...wallets].sort((a, b) => walletTier(b) - walletTier(a));
 }
 
 function walletGlyph(w: ProfileWalletInfo): string {
@@ -408,6 +420,8 @@ export function buildWalletMarkerDefs(
         role: roles.get(`${w.address}:${t}:buy`),
         highlighted: w.isHighlighted,
         ringColor: CHART_COLORS.highlightRing,
+        compared: w.isCompared,
+        dimmed: w.dimmed,
       });
     }
     let sellStack = 0;
@@ -424,6 +438,8 @@ export function buildWalletMarkerDefs(
         role: roles.get(`${w.address}:${t}:sell`),
         highlighted: w.isHighlighted,
         ringColor: CHART_COLORS.highlightRing,
+        compared: w.isCompared,
+        dimmed: w.dimmed,
       });
     }
   }

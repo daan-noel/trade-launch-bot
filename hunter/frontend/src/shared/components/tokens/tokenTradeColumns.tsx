@@ -74,6 +74,16 @@ function LensIcon() {
   );
 }
 
+/** The glyph's box. A button and its spacer MUST share it: a row that renders one
+ *  and a row that renders neither would start their content at different x, which
+ *  reads as a ragged column. */
+const LENS_SLOT = 'block size-3 shrink-0 p-px';
+
+/** Holds the slot open on a row that has nothing to arm (no labels captured). */
+function LensSpacer() {
+  return <span className={LENS_SLOT} aria-hidden />;
+}
+
 /**
  * The one control that arms a highlight lens. Lit while its target is the armed
  * one, so a row can say "this is what the chart is washing" without a legend.
@@ -101,7 +111,8 @@ function LensButton({
         onClick();
       }}
       className={cn(
-        'shrink-0 rounded p-px transition focus:outline-none focus-visible:ring-1 focus-visible:ring-primary',
+        LENS_SLOT,
+        'rounded transition focus:outline-none focus-visible:ring-1 focus-visible:ring-primary',
         armed ? 'opacity-100' : 'opacity-30 hover:opacity-90',
       )}
       style={{ color: armed ? color : undefined }}
@@ -243,24 +254,32 @@ export function tokenTradeColumns(
     render: (t) => {
       const labels = t.instruction_labels ?? [];
       return (
-        <span className="inline-flex items-start gap-1">
-          {onLensStructure && labels.length > 0 && (
-            <LensButton
-              armed={lensStructureKey === patternKey(labels)}
-              color={CHART_COLORS.lensStructure}
-              title={
-                lensStructureKey === patternKey(labels)
-                  ? 'Stop highlighting this ix structure'
-                  : 'Highlight every candle and row with this exact ordered structure'
-              }
-              onClick={() => onLensStructure(labels)}
-            />
-          )}
+        <span className="flex items-start gap-1">
+          {onLensStructure &&
+            (labels.length > 0 ? (
+              <LensButton
+                armed={lensStructureKey === patternKey(labels)}
+                color={CHART_COLORS.lensStructure}
+                title={
+                  lensStructureKey === patternKey(labels)
+                    ? 'Stop highlighting this ix structure'
+                    : 'Highlight every candle and row with this exact ordered structure'
+                }
+                onClick={() => onLensStructure(labels)}
+              />
+            ) : (
+              <LensSpacer />
+            ))}
+          {/* `flex-1` restores what the bare `<pre>` had as a direct cell child:
+              it fills the rest of the column instead of shrinking to its own text,
+              which is what keeps the scroll edge of a tall structure lined up with
+              every other row's. */}
           <IxLabelsDisplay
             labels={labels}
             empty="—"
             copyJson
             maxHeight="4.5rem"
+            className="flex-1"
           />
         </span>
       );
@@ -299,19 +318,22 @@ export function tokenTradeColumns(
           'nothing is saved, and it clears with the token.'
         : undefined,
       render: (t) => (
-        <span className="inline-flex items-center gap-1">
-          {onLensWallet && t.wallet_address && (
-            <LensButton
-              armed={lensWallet === t.wallet_address}
-              color={CHART_COLORS.lensWallet}
-              title={
-                lensWallet === t.wallet_address
-                  ? 'Stop highlighting this wallet'
-                  : 'Highlight every candle and row this wallet traded in'
-              }
-              onClick={() => onLensWallet(t.wallet_address)}
-            />
-          )}
+        <span className="flex items-start gap-1">
+          {onLensWallet &&
+            (t.wallet_address ? (
+              <LensButton
+                armed={lensWallet === t.wallet_address}
+                color={CHART_COLORS.lensWallet}
+                title={
+                  lensWallet === t.wallet_address
+                    ? 'Stop highlighting this wallet'
+                    : 'Highlight every candle and row this wallet traded in'
+                }
+                onClick={() => onLensWallet(t.wallet_address)}
+              />
+            ) : (
+              <LensSpacer />
+            ))}
           <AddressDisplay address={t.wallet_address} kind="account" />
         </span>
       ),

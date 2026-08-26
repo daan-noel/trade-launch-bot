@@ -8,6 +8,12 @@ import { IconButton } from 'components/ui/IconButton';
 import { SearchIcon, SpinnerIcon } from 'components/ui/icons';
 import { Input } from 'components/ui/Input';
 import { CoTradeSummary } from '@lab/components/analysis/CoTradeSummary';
+import type { CoBucketKey } from '@lab/components/analysis/coTrade';
+import {
+  matchesCoBuckets,
+  MAX_COMPARE_WALLETS,
+  passesCoFilter,
+} from '@lab/components/analysis/coTrade';
 import { coTradeColumns } from '@lab/components/analysis/coTradeColumns';
 import { FlowLensBar } from '@lab/components/analysis/FlowLensBar';
 import { TraderChartCardExtra } from '@lab/components/analysis/TraderChartCardExtra';
@@ -29,6 +35,7 @@ import { useGetTraderTokensQuery } from '@lab/store/labEndpoints';
 import { useProfileWallets } from 'hooks/useProfileWallets';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
+import { compareWalletColor } from 'components/token-price-chart/constants';
 import type { ProfileWalletInfo } from 'components/token-price-chart/types';
 import type { TraderTokenRow } from 'types';
 
@@ -138,6 +145,18 @@ const clampInt = (raw: string, fallback: number, min: number, max: number) => {
 };
 
 /** Parse Max tokens: blank / 0 / non-finite ⇒ 0 (unlimited); positive stays as asked. */
+/**
+ * The comparison wallets a query actually carries, from the draft set and the
+ * primary it is read against.
+ *
+ * A wallet cannot compare against itself, and the backend takes only the first
+ * [`MAX_COMPARE_WALLETS`] of what is left — silently. ONE rule, called by the
+ * committed query and by the draft chips alike, so a chip can never promise a
+ * wallet (or a slot color) the query drops.
+ */
+const comparisonWire = (compare: string[], primary: string): string[] =>
+  compare.filter((a) => a !== primary).slice(0, MAX_COMPARE_WALLETS);
+
 const parseLimit = (raw: string) => {
   const trimmed = raw.trim();
   if (!trimmed) return 0;
@@ -168,9 +187,17 @@ const parseLimit = (raw: string) => {
  *
  * **Co-trade mode.** Naming comparison wallets ("Compare with") annotates every
  * row with which of them were also on that mint and where their entry sat
- * against the primary's — see `coTradeColumns.tsx` / `coTrade.ts`. The page stays
- * PRIMARY-shaped on purpose: the PnL deck, the flow lens (which excludes the
- * studied wallet from its own classification) and the wallet columns all answer
+ * against the primary's — see `coTradeColumns.tsx` / `coTrade.ts`. Up to
+ * `MAX_COMPARE_WALLETS` of them (the backend's own cap, which drops the excess
+ * silently — so the picker refuses past it). Every wallet is a full citizen: the
+ * summary strip splits overlap and coupled share PER wallet, and focusing one
+ * there re-points the single-answer columns, the totals and the co-traded-only
+ * filter at it alone. Unfocused, those columns answer on each row's TIGHTEST
+ * coupling, which is the set's headline and not any one wallet's evidence.
+ *
+ * The page stays PRIMARY-shaped on purpose: the PnL deck, the flow lens (which
+ * excludes the studied wallet from its own classification) and the wallet
+ * columns all answer
  * for one wallet, and the comparison set is purely additive on top. The mint set
  * is the primary's, so a comparison wallet's own tokens do not add rows.
  *
@@ -198,7 +225,22 @@ interface TraderForm {
   /** Show only tokens at least one comparison wallet also traded. A pure
    *  client-side narrowing of the same rows — toggling it never refetches. */
   coOnly: boolean;
+  /** How many of the comparison wallets a row must carry while `coOnly` is on:
+   *  1 = the union (any of them), the set's own size = the INTERSECTION, i.e.
+   *  only the tokens the primary and every named wallet were on. Persisted with
+   *  the rest of the draft, and clamped to the committed set at read time so a
+   *  threshold left over from a wider comparison cannot silently empty the
+   *  table. */
+  coMin: number;
+  /** Coupling buckets selected in the summary strip — an OR set, empty meaning no
+   *  narrowing. Independent of `coOnly`: a bucket only exists on a shared token,
+   *  so picking one already implies co-traded. */
+  coBuckets: CoBucketKey[];
 }
+/** Stable empty default for the persisted bucket set — a fresh `[]` per render
+ *  would re-run every memo that keys off it. */
+const EMPTY_BUCKETS: CoBucketKey[] = [];
+
 const DEFAULT_FORM: TraderForm = {
   wallet: '',
   days: String(DEFAULT_DAYS),
@@ -207,6 +249,8 @@ const DEFAULT_FORM: TraderForm = {
   to: '',
   compare: [],
   coOnly: false,
+  coMin: 1,
+  coBuckets: [],
 };
 
 export function TraderAnalysisPage() {
@@ -229,12 +273,18 @@ export function TraderAnalysisPage() {
     to: toInput = '',
     compare = [],
     coOnly = false,
+    coMin = 1,
+    coBuckets = EMPTY_BUCKETS,
   } = form;
   const patch = useCallback(
     (p: Partial<TraderForm>) => setForm((prev) => ({ ...prev, ...p })),
     [setForm],
   );
   const [query, setQuery] = useState<TraderQuery | null>(null);
+  // Which comparison wallet the single-answer surfaces speak for (`null` = the
+  // whole set, answering on each row's tightest coupling). Page state, not draft
+  // state: it re-reads rows already in hand and never touches the query.
+  const [coFocus, setCoFocus] = useState<string | null>(null);
   // Table column/search cohort (pre-pagination). Pinned when focus activates so
   // the analytics deck's parent base doesn't collapse to the focused slice
   // (same pin pattern as Sweep drill-in).
@@ -263,10 +313,27 @@ export function TraderAnalysisPage() {
   // Co-trade surfaces follow the COMMITTED query, never the draft: the columns
   // read `co_traders`, which only the rows fetched under that query carry.
   const comparisonActive = (query?.with.length ?? 0) > 0;
+  const comparisonSize = query?.with.length ?? 0;
+  // The depth threshold the filter actually applies. Clamped to the COMMITTED
+  // set: a draft that asked for "all 5" and is now read against three wallets
+  // would otherwise hide every row and look like a broken filter.
+  const coMinEff = Math.min(Math.max(1, coMin), Math.max(1, comparisonSize));
   // Everything tracked except the primary — the comparison picker's menu.
   const comparisonChoices = useMemo(
     () => profileWallets.filter((w) => w.address !== walletInput && !compare.includes(w.address)),
     [profileWallets, walletInput, compare],
+  );
+  // The backend caps the co-trade read and drops the excess without saying so,
+  // so the picker refuses past the same number rather than handing back a chip
+  // that scores zero overlaps on every token forever.
+  const comparisonFull = compare.length >= MAX_COMPARE_WALLETS;
+  // Draft address → the comparison slot `run` would send it in (absent ⇒ the
+  // wallet is dropped: it IS the primary, or it sits past the cap). Built with
+  // the SAME filter + slice `run` applies, so the chips below can never promise
+  // a wallet — or a color — the query will not carry.
+  const draftSlots = useMemo(
+    () => new Map(comparisonWire(compare, walletInput.trim()).map((a, i) => [a, i] as const)),
+    [compare, walletInput],
   );
   const labelFor = useCallback(
     (address: string) =>
@@ -292,6 +359,9 @@ export function TraderAnalysisPage() {
     setCohortPinned(null);
     setFilteredRows(EMPTY_ROWS);
     setInspected(null);
+    // A comparison focus outliving its query would point the columns at a wallet
+    // the new rows carry nothing for, i.e. an all-blank Lag column.
+    setCoFocus(null);
   }, [query]);
 
   // The standard shared token columns (SSOT — unchanged, so every other token
@@ -318,9 +388,11 @@ export function TraderAnalysisPage() {
     // read as one question ("what did he do here, and who else was here") — and
     // only exist while the COMMITTED query names comparison wallets, so the
     // single-wallet page keeps exactly the layout it had.
-    const co = comparisonActive ? coTradeColumns(profileWallets) : [];
+    const co = comparisonActive
+      ? coTradeColumns(profileWallets, query!.with, coFocus)
+      : [];
     return [...base.slice(0, at), ...walletTokenColumns(), ...co, ...base.slice(at)];
-  }, [comparisonActive, profileWallets]);
+  }, [comparisonActive, profileWallets, query, coFocus]);
 
   const isCustomWindow = daysInput === CUSTOM_PRESET;
   // Seed instant for the day presets. Recomputed only when the preset (or zone)
@@ -348,9 +420,11 @@ export function TraderAnalysisPage() {
       limit: parseLimit(limitInput),
       from: isCustomWindow ? wallClockToUtcIso(fromInput, timezone, 'lower') : '',
       to: isCustomWindow ? wallClockToUtcIso(toInput, timezone, 'upper') : '',
-      // The primary can't compare against itself; dropping it here keeps the
-      // wire list and the summary strip agreeing on who is being compared.
-      with: compare.filter((a) => a !== wallet),
+      // Self dropped, capped at what the backend accepts — see `comparisonWire`.
+      // Both keep the wire list and the summary strip agreeing on who is being
+      // compared: the strip is a legend, and a legend that names an unqueried
+      // wallet reads as that wallet having no overlaps.
+      with: comparisonWire(compare, wallet),
     });
   };
 
@@ -392,14 +466,33 @@ export function TraderAnalysisPage() {
 
   // Focus narrows the table's input set (client-side); column filters still
   // apply inside DataTable on top of this. When unfocused, pass the full API set.
-  const rowsForTable = useMemo(() => {
-    const focused = focus.length === 0 ? rows : filterTraderRowsByFocus(rows, focus, focusOpts);
-    // Co-traded-only is the last narrowing, applied to whatever focus left. The
-    // backend already answered for every token, so this is a `length` test — the
-    // toggle is instant and costs no query.
-    if (!coOnly || !comparisonActive) return focused;
-    return focused.filter((r) => r.co_traders.length > 0);
-  }, [rows, focus, focusOpts, coOnly, comparisonActive]);
+  const lensRows = useMemo(
+    () => (focus.length === 0 ? rows : filterTraderRowsByFocus(rows, focus, focusOpts)),
+    [rows, focus, focusOpts],
+  );
+  // The two co-trade narrowings, each as its own predicate. Both are client-side
+  // `co_traders` tests — the backend already answered for every token, so every
+  // one of these controls is instant and costs no query.
+  const depthPass = useCallback(
+    (r: TraderTokenRow) =>
+      !coOnly || !comparisonActive || passesCoFilter(r, coFocus, coMinEff),
+    [coOnly, comparisonActive, coFocus, coMinEff],
+  );
+  const bucketPass = useCallback(
+    (r: TraderTokenRow) => !comparisonActive || matchesCoBuckets(r, coFocus, coBuckets),
+    [comparisonActive, coFocus, coBuckets],
+  );
+  // Each strip control PREVIEWS over the cohort narrowed by the OTHER controls but
+  // never by itself: a count that collapsed onto its own selection could not offer
+  // the switch back, and a count blind to the rest would promise rows the click
+  // cannot deliver. Column filters stay out of both — the controls preview over the
+  // query, the totals below them describe what is on screen.
+  const ladderBase = useMemo(() => lensRows.filter(bucketPass), [lensRows, bucketPass]);
+  const bucketBase = useMemo(() => lensRows.filter(depthPass), [lensRows, depthPass]);
+  const rowsForTable = useMemo(
+    () => bucketBase.filter(bucketPass),
+    [bucketBase, bucketPass],
+  );
 
   return (
     <FlowLensProvider value={lens.value}>
@@ -497,14 +590,22 @@ export function TraderAnalysisPage() {
               value=""
               onChange={(e) => {
                 const address = e.target.value;
-                if (address) patch({ compare: [...compare, address] });
+                if (address && !comparisonFull) patch({ compare: [...compare, address] });
               }}
-              disabled={comparisonChoices.length === 0}
+              disabled={comparisonChoices.length === 0 || comparisonFull}
               className="min-w-[200px] font-normal normal-case tracking-normal"
-              title="Wallets to check against this one. Their entries are measured against the primary's on the tape, and each gets its own color on every chart."
+              title={
+                comparisonFull
+                  ? `${MAX_COMPARE_WALLETS} comparison wallets is the cap the co-trade read accepts. Remove one to add another; a whole family beyond this belongs in a sweep.`
+                  : "Wallets to check against this one. Their entries are measured against the primary's on the tape, and each gets its own color on every chart."
+              }
             >
               <option value="">
-                {comparisonChoices.length === 0 ? 'No other tracked wallets' : 'Add a wallet…'}
+                {comparisonFull
+                  ? `Max ${MAX_COMPARE_WALLETS} wallets`
+                  : comparisonChoices.length === 0
+                    ? 'No other tracked wallets'
+                    : 'Add a wallet…'}
               </option>
               {comparisonChoices.map((w) => (
                 <option key={w.address} value={w.address}>
@@ -536,15 +637,33 @@ export function TraderAnalysisPage() {
           </span>
           {compare.map((address) => {
             const info = profileWallets.find((w) => w.address === address);
+            // The slot `run` will actually send this wallet in — dropping the
+            // primary shifts everyone behind it, and slot is what picks the
+            // color, so reading the draft index here would give a chip one hue
+            // and that wallet's markers another.
+            const slot = draftSlots.get(address);
+            // Dropped: either the primary itself, or past the cap the backend
+            // enforces. Say so on the chip rather than letting it ride into a
+            // legend it will never appear in.
+            const dropped = slot == null;
             return (
               <span
                 key={address}
-                className="inline-flex items-center gap-1.5 rounded border border-white/10 bg-white/5 px-1.5 py-0.5"
-                title={address}
+                className={`inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 ${
+                  dropped
+                    ? 'border-red/40 bg-red/5 line-through opacity-60'
+                    : 'border-white/10 bg-white/5'
+                }`}
+                title={
+                  dropped
+                    ? `${address}
+Not queried: a wallet cannot compare against itself, and the read takes the first ${MAX_COMPARE_WALLETS} of the rest. Remove an earlier wallet to include it.`
+                    : address
+                }
               >
                 <span
                   className="size-1.5 rounded-full"
-                  style={{ background: info?.color ?? '#888' }}
+                  style={{ background: dropped ? '#888' : compareWalletColor(slot, info) }}
                 />
                 <span className="text-text">{labelFor(address)}</span>
                 <button
@@ -589,20 +708,64 @@ export function TraderAnalysisPage() {
         <>
           <CoTradeSummary
             rows={tableFilterCohort}
+            depthRows={ladderBase}
+            bucketRows={bucketBase}
             comparison={query!.with}
             profileWallets={profileWallets}
+            focus={coFocus}
+            onFocusChange={setCoFocus}
+            buckets={coBuckets}
+            onBucketsChange={(next) => patch({ coBuckets: next })}
+            minWallets={coMinEff}
+            // A rung is a filter control, so clicking one arms the filter as well
+            // as setting its depth - a rung that highlights and changes nothing
+            // reads as broken. The checkbox is still the way off.
+            onMinWalletsChange={(n) => patch({ coMin: n, coOnly: true })}
           />
-          <label className="mb-3 flex w-fit items-center gap-2 text-xs text-text-dim">
-            <Checkbox
-              boxSize="sm"
-              checked={coOnly}
-              onChange={(e) => patch({ coOnly: e.target.checked })}
-            />
-            Co-traded only
+          <div className="mb-3 flex w-fit flex-wrap items-center gap-2 text-xs text-text-dim">
+            <label className="flex items-center gap-2">
+              <Checkbox
+                boxSize="sm"
+                checked={coOnly}
+                onChange={(e) => patch({ coOnly: e.target.checked })}
+              />
+              Co-traded only
+            </label>
+            {/* Depth. Only meaningful with more than one wallet compared: at 1 the
+                filter is the union any single wallet satisfies, at the set size it
+                is the INTERSECTION — the tokens the primary and every named wallet
+                were on. */}
+            {comparisonSize > 1 && (
+              <Select
+                value={String(coMinEff)}
+                onChange={(e) => patch({ coMin: Number(e.target.value), coOnly: true })}
+                className="h-6 py-0 text-[11px] font-normal normal-case tracking-normal"
+                title="How many of the comparison wallets a token must carry. 'any' is the union - one wallet is enough, which two busy wallets hit by coincidence. 'all' is the intersection: only the tokens every named wallet was also on."
+              >
+                {Array.from({ length: comparisonSize }, (_, i) => i + 1).map((n) => (
+                  <option key={n} value={n}>
+                    {n === 1
+                      ? 'any wallet'
+                      : n === comparisonSize
+                        ? `all ${n} wallets`
+                        : `${n}+ wallets`}
+                  </option>
+                ))}
+              </Select>
+            )}
+            {/* The two narrowings compose, so the hint states both — a focus that
+                silently ANDed with a depth threshold would read as the depth
+                filter being broken. */}
             <span className="text-text-dim/70">
-              — hide the tokens none of the comparison wallets touched
+              {`— keep only the tokens ${
+                coMinEff === 1
+                  ? 'at least one comparison wallet'
+                  : coMinEff === comparisonSize
+                    ? 'EVERY comparison wallet'
+                    : `at least ${coMinEff} comparison wallets`
+              } was also on${coFocus ? `, ${labelFor(coFocus)} among them` : ''}`}
             </span>
-          </label>
+          </div>
         </>
       )}
 
@@ -640,6 +803,7 @@ export function TraderAnalysisPage() {
           groupLabels={COLUMN_GROUP_LABELS}
           tableId="trader_analysis_tokens"
           highlightWallet={query.wallet}
+          compareWallets={query.with}
           titleOf={(r) => r.symbol || r.name || shortAddr(r.mint_address)}
           selectedKey={inspected?.mint ?? null}
           onSelect={(mint) => {

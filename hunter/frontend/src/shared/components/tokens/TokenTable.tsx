@@ -104,6 +104,9 @@ interface TokenTableCommon<R> {
   titleOf?: (row: R) => string;
   /** Wallet to spotlight on every chart (Trader Analysis). */
   highlightWallet?: string | null;
+  /** Wallets compared against {@link highlightWallet} on every chart, in
+   *  comparison-slot order — see `TokenTradeChart`'s `compareWallets`. */
+  compareWallets?: readonly string[] | null;
   /** Fingerprint volume_ix_patterns keys for the charts-grid vol/non-vol overlay —
    *  one set for the whole grid. Use {@link useRowChartFlowPatternSource} instead
    *  when the rows span fingerprints. */
@@ -184,6 +187,7 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
     renderChartCardExtra,
     titleOf,
     highlightWallet,
+    compareWallets,
     tableId,
     onVisibleRowsChange,
     selectedKey,
@@ -270,6 +274,7 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
           rows={visibleRows}
           titleOf={titleOf}
           highlightWallet={highlightWallet}
+          compareWallets={compareWallets}
           chartTableId={tableId ? `${tableId}_charts` : undefined}
           useRowOverlay={useRowOverlay}
           renderChartCardExtra={renderChartCardExtra}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   CHART_COLORS,
+  compareWalletColor,
   TokenPriceChart,
   tradesInBar,
   tradesInRange,
@@ -9,6 +10,7 @@ import {
   type ChartTimeBand,
   type ChartTimeSpan,
   type ChartValueLane,
+  type ProfileWalletInfo,
 } from 'components/token-price-chart';
 import { BarTradesPanel } from 'components/tokens/BarTradesPanel';
 import { useFlowLensContext } from 'context/FlowLensContext';
@@ -54,6 +56,14 @@ interface TokenTradeChartProps {
    *  tracked wallets. If it isn't a saved profile wallet, a synthetic marker entry
    *  is injected so it shows. Its rows in the trades panel are painted gold too. */
   highlightWallet?: string | null;
+  /** Wallets under comparison against {@link highlightWallet} (Trader Analysis
+   *  "Compare with"), in comparison-slot order. Slot order is what drives their
+   *  colors, so a comparison wallet keeps ONE hue across every chart on the page.
+   *  Their markers take the tier between the focused wallet and the crowd — a
+   *  square silhouette at ~1.7x with a ring in their own color — and every other
+   *  tracked wallet DIMS while this list is non-empty. An address that isn't a
+   *  saved profile wallet gets a synthetic entry, same as {@link highlightWallet}. */
+  compareWallets?: readonly string[] | null;
   /** Wall-clock crosshair time for sibling panes (metric series). */
   onCrosshairTimeChange?: (timeSec: number | null) => void;
   /** Drive the price-chart crosshair from metric-pane hover (unix seconds). */
@@ -92,6 +102,7 @@ export function TokenTradeChart({
   externalSelection = null,
   tableId,
   highlightWallet = null,
+  compareWallets = null,
   onCrosshairTimeChange,
   externalCrosshairTimeSec = null,
   onVisibleTimeRangeChange,
@@ -129,26 +140,60 @@ export function TokenTradeChart({
   // page's own `highlightWallet` still wins when both are set, since that one is
   // the reason the page is open.
   const spotlightWallet = highlightWallet?.trim() || highlight.lens.wallet || null;
+  // Comparison list flattened to a primitive so the memo below survives a caller
+  // that rebuilds the array every render.
+  const compareKey = (compareWallets ?? []).join(',');
+  // Three marker tiers out of one pass: the spotlight wallet, the comparison set,
+  // and the rest of the tracked crowd — which DIMS while a comparison is running.
   const profileWallets = useMemo(() => {
     const addr = spotlightWallet;
-    if (!addr) return profileWalletsBase;
+    const compareSlot = new Map(
+      (compareKey ? compareKey.split(',') : []).filter(Boolean).map((a, i) => [a, i] as const),
+    );
+    if (!addr && compareSlot.size === 0) return profileWalletsBase;
+    // Dimming is only ever relative to something worth reading against: with no
+    // comparison armed the crowd IS the content, so it stays at full strength.
+    const comparing = compareSlot.size > 0;
+
     let matched = false;
-    const flagged = profileWalletsBase.map((w) => {
-      if (w.address !== addr) return w;
-      matched = true;
-      return { ...w, isHighlighted: true };
+    const flagged: ProfileWalletInfo[] = profileWalletsBase.map((w) => {
+      const isHighlighted = w.address === addr;
+      if (isHighlighted) matched = true;
+      const slot = compareSlot.get(w.address);
+      if (slot == null) {
+        if (isHighlighted) return { ...w, isHighlighted: true };
+        return comparing ? { ...w, dimmed: true } : w;
+      }
+      compareSlot.delete(w.address);
+      return {
+        ...w,
+        isCompared: true,
+        isHighlighted,
+        // Slot-keyed hue replaces the rotating palette (see `compareWalletColor`).
+        color: compareWalletColor(slot, w),
+      };
     });
-    if (matched) return flagged;
-    return [
-      ...flagged,
-      {
+
+    // Anything still in the map has no profile entry — append it in slot order so
+    // a synthetic comparison wallet keeps the color its slot owns.
+    for (const [address, slot] of compareSlot) {
+      flagged.push({
+        address,
+        label: `${address.slice(0, 4)}…${address.slice(-4)}`,
+        color: compareWalletColor(slot),
+        isCompared: true,
+      });
+    }
+    if (addr && !matched) {
+      flagged.push({
         address: addr,
         label: `${addr.slice(0, 4)}…${addr.slice(-4)}`,
         color: CHART_COLORS.highlightRing,
         isHighlighted: true,
-      },
-    ];
-  }, [profileWalletsBase, spotlightWallet]);
+      });
+    }
+    return flagged;
+  }, [profileWalletsBase, spotlightWallet, compareKey]);
 
   const toChartValue = useCallback(
     (sol: number) => (unit === 'USD' && usdRate != null ? sol * usdRate : sol),

@@ -106,6 +106,7 @@ interface TokenChartCardProps<R> {
   /** Header title; falls back to the fetched detail's symbol/name, then the mint. */
   title?: string;
   highlightWallet?: string | null;
+  compareWallets?: readonly string[] | null;
   chartTableId: string;
   /** Resolves this row's entry/exit + swing overlay (called as a hook). */
   useOverlay: ChartOverlayHook<R>;
@@ -134,6 +135,7 @@ function TokenChartCard<R>({
   mint_address: mint,
   title,
   highlightWallet,
+  compareWallets,
   chartTableId,
   useOverlay,
   eventMarkersOverride,
@@ -202,6 +204,7 @@ function TokenChartCard<R>({
           detail={detail ?? null}
           eventMarkers={eventMarkers ?? null}
           highlightWallet={highlightWallet ?? null}
+          compareWallets={compareWallets ?? null}
           tableId={chartTableId}
           flowPatternKeys={rowFlowSource.keys ?? flowPatternKeys}
           flowFingerprintId={rowFlowSource.fingerprintId ?? flowFingerprintId}
@@ -221,6 +224,9 @@ export interface TokenChartsGridProps<R> {
   chartTableId?: string;
   /** Wallet to spotlight on every chart (Trader Analysis). */
   highlightWallet?: string | null;
+  /** Wallets compared against {@link highlightWallet} on every chart, in
+   *  comparison-slot order — see `TokenTradeChart`'s `compareWallets`. */
+  compareWallets?: readonly string[] | null;
   /** Per-row entry/exit + swing overlay (matches the row's inspect modal). Called
    *  as a hook per card — see {@link ChartOverlayHook}. Omit for a plain chart. */
   useRowOverlay?: ChartOverlayHook<R>;
@@ -278,6 +284,7 @@ export function TokenChartsGrid<R>({
   titleOf,
   chartTableId = 'token_charts_grid',
   highlightWallet,
+  compareWallets,
   useRowOverlay,
   renderChartCardExtra,
   selectedKey,
@@ -335,6 +342,7 @@ export function TokenChartsGrid<R>({
                 mint_address={mint}
                 title={titleOf?.(rep)}
                 highlightWallet={highlightWallet}
+                compareWallets={compareWallets}
                 chartTableId={chartTableId}
                 useOverlay={overlayHook}
                 eventMarkersOverride={eventMarkersOverride}
@@ -370,6 +378,7 @@ export function TokenChartsGrid<R>({
               mint_address={mint}
               title={titleOf?.(row)}
               highlightWallet={highlightWallet}
+              compareWallets={compareWallets}
               chartTableId={chartTableId}
               useOverlay={useOverlay}
               flowPatternKeys={flowPatternKeys}

@@ -16,8 +16,9 @@ import { DEFAULT_BAR_SPACING } from './constants';
 
 /** Silhouette encodes wallet CLASS (orthogonal to color=identity, border=direction):
  *  diamond = the user's own (`mine`) wallet, triangle = the token's dev/creator
- *  wallet, hexagon = the focused/input wallet, circle = every other tracked wallet. */
-export type MarkerShape = 'circle' | 'diamond' | 'triangle' | 'hexagon';
+ *  wallet, hexagon = the focused/input wallet, square = a wallet in the active
+ *  comparison set, circle = every other tracked wallet. */
+export type MarkerShape = 'circle' | 'diamond' | 'triangle' | 'hexagon' | 'square';
 
 export interface WalletMarkerDef {
   barTime: UTCTimestamp;
@@ -39,6 +40,15 @@ export interface WalletMarkerDef {
   highlighted?: boolean;
   /** Glow/outer-ring color for a highlighted marker. */
   ringColor?: string;
+  /** Comparison-set wallet — the tier between focus and the crowd: larger than
+   *  base, its own floor radius, and an outer ring in its OWN color. The ring
+   *  reuses the fill rather than introducing a hue because color already means
+   *  identity here; a new hue would be a fifth thing to memorize, and gold has
+   *  to keep meaning "this is the primary". */
+  compared?: boolean;
+  /** Neither focus nor comparison while a comparison is active — drawn at
+   *  {@link DIM_ALPHA} with no glyph so the two tiers above it carry the eye. */
+  dimmed?: boolean;
 }
 
 interface RenderedPoint {
@@ -52,6 +62,8 @@ interface RenderedPoint {
   role?: 'first_buy' | 'sell_all';
   highlighted?: boolean;
   ringColor?: string;
+  compared?: boolean;
+  dimmed?: boolean;
 }
 
 // Marker radius tracks candle width so markers shrink/grow as you scroll-zoom.
@@ -61,15 +73,24 @@ const CANDLE_RADIUS_RATIO = 0.5; // base radius as a fraction of barSpacing (px/
 const MIN_RADIUS = 2.5;  // CSS px — floor when zoomed out
 const MAX_RADIUS = 7;    // CSS px — cap when zoomed in (regular tier)
 const LIFECYCLE_MULT = 1.25; // first_buy / sell_all, relative to base
+const COMPARE_MULT = 1.7;    // comparison-set wallet, relative to base
 const HIGHLIGHT_MULT = 2.4;  // focused wallet, relative to base
 /** The focused wallet must be findable at any zoom, so its marker also gets an
  *  absolute floor — at wide zoom the base unit sits at MIN_RADIUS and a pure
  *  multiple would still be a dot among dots. */
 const HIGHLIGHT_MIN_RADIUS = 7;
+/** Same argument one tier down, and it is what keeps the comparison tier from
+ *  collapsing into the crowd when zoomed out: the base unit clamps to
+ *  MIN_RADIUS there, so a pure multiple would read as barely-bigger dot. Sits
+ *  above GLYPH_MIN_RADIUS on purpose — a compared marker always shows its
+ *  letter, which is what separates two compared wallets from each other. */
+const COMPARE_MIN_RADIUS = 5.5;
+/** Opacity for the un-compared crowd while a comparison is active. */
+const DIM_ALPHA = 0.55;
 const GLYPH_MIN_RADIUS = 3.5; // below this the disc is too small for a legible letter
 const GAP = 5;      // CSS px gap between bar edge and nearest marker EDGE
 const SPACING = 2;  // CSS px between stacked marker edges
-/** Diamond/hexagon need a slightly larger bound than a circle to fit the glyph. */
+/** Diamond/hexagon/square need a slightly larger bound than a circle to fit the glyph. */
 const POLY_SCALE = 1.15;
 
 /** Trace a marker silhouette centered at (cx, cy). Radius is in device px. */
@@ -92,6 +113,12 @@ function traceShape(
     ctx.lineTo(cx, cy + rr);
     ctx.lineTo(cx - rr, cy);
     ctx.closePath();
+    return;
+  }
+  if (shape === 'square') {
+    // Axis-aligned square of half-side rr — its vertical extent is exactly rr,
+    // which is what the stacking/hit math already assumes for a POLY_SCALE shape.
+    ctx.rect(cx - rr, cy - rr, rr * 2, rr * 2);
     return;
   }
   if (shape === 'triangle') {
@@ -132,6 +159,11 @@ class WalletMarkersRenderer implements IPrimitivePaneRenderer {
         // diamond/hexagon's corners never poke through them.
         const ringBase = p.shape === 'circle' ? r : r * POLY_SCALE;
 
+        // The whole marker — fill, border, every ring, glyph — fades together, so
+        // a dimmed wallet recedes as one object instead of losing its outline
+        // while keeping a full-strength letter.
+        ctx.globalAlpha = p.dimmed ? DIM_ALPHA : 1;
+
         // Filled silhouette — glow only for the focused wallet, isolated in its own
         // save/restore so the shadow never bleeds onto neighbouring markers.
         ctx.save();
@@ -162,6 +194,17 @@ class WalletMarkersRenderer implements IPrimitivePaneRenderer {
           ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
           ctx.stroke();
         }
+        // Comparison ring — in the marker's OWN color, one tier thinner than the
+        // focus ring. Only one of the two can apply (the primary is never in its
+        // own comparison set), so they never stack.
+        if (p.compared) {
+          ringR += 3 * s;
+          ctx.lineWidth = 2 * s;
+          ctx.strokeStyle = p.color;
+          ctx.beginPath();
+          ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
+          ctx.stroke();
+        }
         if (p.highlighted) {
           ringR += 3.5 * s;
           ctx.lineWidth = 3 * s;
@@ -171,8 +214,10 @@ class WalletMarkersRenderer implements IPrimitivePaneRenderer {
           ctx.stroke();
         }
 
-        // Glyph scales with the disc; skip it once the disc is too small to read.
-        if (p.radius >= GLYPH_MIN_RADIUS) {
+        // Glyph scales with the disc; skip it once the disc is too small to read,
+        // and on the dimmed crowd at any size — a field of letters is exactly the
+        // noise the comparison tiers have to be read against.
+        if (p.radius >= GLYPH_MIN_RADIUS && !p.dimmed) {
           ctx.font = `bold ${Math.round(p.radius * 1.15 * s)}px sans-serif`;
           ctx.fillStyle = '#fff';
           ctx.fillText(p.letter, cx, cy);
@@ -249,11 +294,17 @@ export class WalletMarkersPlugin
       const baseY = series.priceToCoordinate(d.barEdgePrice);
       if (x == null || baseY == null) continue;
 
+      // Tiers, outermost first: focus > comparison > lifecycle > base. Comparison
+      // outranks lifecycle so a compared wallet's mid-position add stays bigger
+      // than an uncompared wallet's entry — the question on screen is whose
+      // marker this is, not which leg it was.
       const radius = d.highlighted
         ? Math.max(HIGHLIGHT_MIN_RADIUS, unit * HIGHLIGHT_MULT)
-        : d.role
-          ? unit * LIFECYCLE_MULT
-          : unit;
+        : d.compared
+          ? Math.max(COMPARE_MIN_RADIUS, unit * COMPARE_MULT)
+          : d.role
+            ? unit * LIFECYCLE_MULT
+            : unit;
       const dir = d.type === 'sell' ? -1 : 1;
       const stackKey = `${d.barTime}:${d.type}`;
       // Extent, not radius: a diamond/hexagon reaches POLY_SCALE further out.
@@ -273,6 +324,8 @@ export class WalletMarkersPlugin
         role: d.role,
         highlighted: d.highlighted,
         ringColor: d.ringColor,
+        compared: d.compared,
+        dimmed: d.dimmed,
       });
     }
     this._pts = pts;
