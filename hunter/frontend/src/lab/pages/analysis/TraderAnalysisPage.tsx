@@ -7,6 +7,8 @@ import { DateTimeRangePicker } from 'components/ui/DateTimeRangePicker';
 import { IconButton } from 'components/ui/IconButton';
 import { SearchIcon, SpinnerIcon } from 'components/ui/icons';
 import { Input } from 'components/ui/Input';
+import { CoTradeSummary } from '@lab/components/analysis/CoTradeSummary';
+import { coTradeColumns } from '@lab/components/analysis/coTradeColumns';
 import { FlowLensBar } from '@lab/components/analysis/FlowLensBar';
 import { TraderChartCardExtra } from '@lab/components/analysis/TraderChartCardExtra';
 import { useTraderFlowLens } from '@lab/components/analysis/useTraderFlowLens';
@@ -16,6 +18,7 @@ import { walletTokenColumns } from '@lab/components/analysis/walletTokenColumns'
 import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
 import { inspectFromMint } from 'components/strategy/inspectTarget';
 import type { PositionFocusLens } from 'lib/strategy/positionFocus';
+import { Checkbox } from 'components/ui/Checkbox';
 import { Select } from 'components/ui/Select';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { FlowLensProvider } from 'context/FlowLensContext';
@@ -77,6 +80,7 @@ const wallClockToUtcIso = (wall: string, tz: string, bound: 'lower' | 'upper') =
 const COLUMN_GROUP_LABELS: Record<string, string> = {
   wallet_pos: 'Position',
   wallet_curve: 'Bonding curve',
+  co_trade: 'Co-trade',
 };
 
 /** Stable empty reference so derived memos don't recompute while loading. */
@@ -93,6 +97,9 @@ interface TraderQuery {
    *  rolling span to that instant instead of now. */
   from: string;
   to: string;
+  /** Comparison wallets for the co-trade columns. Empty ⇒ the plain
+   *  single-wallet page, and the backend skips its second query entirely. */
+  with: string[];
 }
 
 /** What the row-count sentence says the numbers were read over. */
@@ -158,6 +165,20 @@ const parseLimit = (raw: string) => {
  * Scope caveat: only tokens this box ingests appear — a coin the wallet traded
  * that was never tracked won't show. Charts are lazily mounted when the toggle
  * is on.
+ *
+ * **Co-trade mode.** Naming comparison wallets ("Compare with") annotates every
+ * row with which of them were also on that mint and where their entry sat
+ * against the primary's — see `coTradeColumns.tsx` / `coTrade.ts`. The page stays
+ * PRIMARY-shaped on purpose: the PnL deck, the flow lens (which excludes the
+ * studied wallet from its own classification) and the wallet columns all answer
+ * for one wallet, and the comparison set is purely additive on top. The mint set
+ * is the primary's, so a comparison wallet's own tokens do not add rows.
+ *
+ * Ordering comes from the entry leg's `(slot, tx_index)`, never from a
+ * timestamp: `block_time` is second-precision and ties across a whole slot,
+ * which is exactly the resolution these wallets sit at. Read the summary
+ * strip's coupling mix before the overlap count — two busy wallets share some
+ * memecoins by chance alone.
  */
 /** Persisted query knobs (`mt:form.traderAnalysis`). `days` is the look-back
  *  picker's preset — a day count as a string, or `CUSTOM_PRESET` when `from`/`to`
@@ -169,6 +190,14 @@ interface TraderForm {
   limit: string;
   from: string;
   to: string;
+  /** Comparison wallets for the co-trade read — the "which of this family was
+   *  also here" set. Persisted with the rest of the draft: a family is studied
+   *  over several sessions, and re-picking it every reload is the friction that
+   *  stops the question being asked. */
+  compare: string[];
+  /** Show only tokens at least one comparison wallet also traded. A pure
+   *  client-side narrowing of the same rows — toggling it never refetches. */
+  coOnly: boolean;
 }
 const DEFAULT_FORM: TraderForm = {
   wallet: '',
@@ -176,6 +205,8 @@ const DEFAULT_FORM: TraderForm = {
   limit: String(DEFAULT_LIMIT),
   from: '',
   to: '',
+  compare: [],
+  coOnly: false,
 };
 
 export function TraderAnalysisPage() {
@@ -196,6 +227,8 @@ export function TraderAnalysisPage() {
     limit: limitInput,
     from: fromInput = '',
     to: toInput = '',
+    compare = [],
+    coOnly = false,
   } = form;
   const patch = useCallback(
     (p: Partial<TraderForm>) => setForm((prev) => ({ ...prev, ...p })),
@@ -227,13 +260,26 @@ export function TraderAnalysisPage() {
   // Reflect the picker's selection only while the input still holds a known
   // tracked address; typing a custom address falls back to the placeholder.
   const pickedWallet = profileWallets.some((w) => w.address === walletInput) ? walletInput : '';
+  // Co-trade surfaces follow the COMMITTED query, never the draft: the columns
+  // read `co_traders`, which only the rows fetched under that query carry.
+  const comparisonActive = (query?.with.length ?? 0) > 0;
+  // Everything tracked except the primary — the comparison picker's menu.
+  const comparisonChoices = useMemo(
+    () => profileWallets.filter((w) => w.address !== walletInput && !compare.includes(w.address)),
+    [profileWallets, walletInput, compare],
+  );
+  const labelFor = useCallback(
+    (address: string) =>
+      profileWallets.find((w) => w.address === address)?.label ?? shortAddr(address),
+    [profileWallets],
+  );
 
   const {
     data,
     isFetching,
     error: rawError,
   } = useGetTraderTokensQuery(
-    query ?? { wallet: '', days: DEFAULT_DAYS, limit: DEFAULT_LIMIT, from: '', to: '' },
+    query ?? { wallet: '', days: DEFAULT_DAYS, limit: DEFAULT_LIMIT, from: '', to: '', with: [] },
     { skip: !query },
   );
   const error = apiErrorMessage(rawError, 'Failed to load trader tokens');
@@ -268,8 +314,13 @@ export function TraderAnalysisPage() {
       if (c.group === 'identity') lastIdentity = i;
     });
     const at = lastIdentity + 1;
-    return [...base.slice(0, at), ...walletTokenColumns(), ...base.slice(at)];
-  }, []);
+    // Co-trade columns ride directly behind the wallet's own block — the two
+    // read as one question ("what did he do here, and who else was here") — and
+    // only exist while the COMMITTED query names comparison wallets, so the
+    // single-wallet page keeps exactly the layout it had.
+    const co = comparisonActive ? coTradeColumns(profileWallets) : [];
+    return [...base.slice(0, at), ...walletTokenColumns(), ...co, ...base.slice(at)];
+  }, [comparisonActive, profileWallets]);
 
   const isCustomWindow = daysInput === CUSTOM_PRESET;
   // Seed instant for the day presets. Recomputed only when the preset (or zone)
@@ -297,6 +348,9 @@ export function TraderAnalysisPage() {
       limit: parseLimit(limitInput),
       from: isCustomWindow ? wallClockToUtcIso(fromInput, timezone, 'lower') : '',
       to: isCustomWindow ? wallClockToUtcIso(toInput, timezone, 'upper') : '',
+      // The primary can't compare against itself; dropping it here keeps the
+      // wire list and the summary strip agreeing on who is being compared.
+      with: compare.filter((a) => a !== wallet),
     });
   };
 
@@ -339,9 +393,13 @@ export function TraderAnalysisPage() {
   // Focus narrows the table's input set (client-side); column filters still
   // apply inside DataTable on top of this. When unfocused, pass the full API set.
   const rowsForTable = useMemo(() => {
-    if (focus.length === 0) return rows;
-    return filterTraderRowsByFocus(rows, focus, focusOpts);
-  }, [rows, focus, focusOpts]);
+    const focused = focus.length === 0 ? rows : filterTraderRowsByFocus(rows, focus, focusOpts);
+    // Co-traded-only is the last narrowing, applied to whatever focus left. The
+    // backend already answered for every token, so this is a `length` test — the
+    // toggle is instant and costs no query.
+    if (!coOnly || !comparisonActive) return focused;
+    return focused.filter((r) => r.co_traders.length > 0);
+  }, [rows, focus, focusOpts, coOnly, comparisonActive]);
 
   return (
     <FlowLensProvider value={lens.value}>
@@ -350,7 +408,8 @@ export function TraderAnalysisPage() {
       <p className="mt-0.5 text-xs text-text-dim">
         Every token a wallet traded in the window — full token table (sort / filter /
         search) plus a synced charts grid with its buys/sells spotlighted. Recent trade
-        first. Only tokens this box ingests appear.
+        first. Only tokens this box ingests appear. Add comparison wallets to see which
+        of them were on the same mints, and who entered first.
       </p>
 
       <SectionDivider />
@@ -431,6 +490,30 @@ export function TraderAnalysisPage() {
             title="Blank or 0 = every token in the window"
           />
         </label>
+        {profileWallets.length > 0 && (
+          <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
+            Compare with
+            <Select
+              value=""
+              onChange={(e) => {
+                const address = e.target.value;
+                if (address) patch({ compare: [...compare, address] });
+              }}
+              disabled={comparisonChoices.length === 0}
+              className="min-w-[200px] font-normal normal-case tracking-normal"
+              title="Wallets to check against this one. Their entries are measured against the primary's on the tape, and each gets its own color on every chart."
+            >
+              <option value="">
+                {comparisonChoices.length === 0 ? 'No other tracked wallets' : 'Add a wallet…'}
+              </option>
+              {comparisonChoices.map((w) => (
+                <option key={w.address} value={w.address}>
+                  {w.label} · {shortAddr(w.address)}
+                </option>
+              ))}
+            </Select>
+          </label>
+        )}
         <IconButton
           variant="primary"
           size="lg"
@@ -443,6 +526,51 @@ export function TraderAnalysisPage() {
         </IconButton>
       </div>
 
+      {/* The picked comparison set, still a DRAFT until Analyze — the chips sit
+          under the inputs rather than in the summary strip, which reports what
+          the committed query actually returned. */}
+      {compare.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px]">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-text-dim">
+            Compare with
+          </span>
+          {compare.map((address) => {
+            const info = profileWallets.find((w) => w.address === address);
+            return (
+              <span
+                key={address}
+                className="inline-flex items-center gap-1.5 rounded border border-white/10 bg-white/5 px-1.5 py-0.5"
+                title={address}
+              >
+                <span
+                  className="size-1.5 rounded-full"
+                  style={{ background: info?.color ?? '#888' }}
+                />
+                <span className="text-text">{labelFor(address)}</span>
+                <button
+                  type="button"
+                  className="text-text-dim hover:text-red"
+                  onClick={() => patch({ compare: compare.filter((a) => a !== address) })}
+                  aria-label={`Remove ${labelFor(address)} from the comparison`}
+                >
+                  ×
+                </button>
+              </span>
+            );
+          })}
+          <button
+            type="button"
+            className="text-text-dim underline-offset-2 hover:text-text hover:underline"
+            onClick={() => patch({ compare: [] })}
+          >
+            clear
+          </button>
+          <span className="text-text-dim">
+            {comparisonActive ? '' : '— press Analyze to apply'}
+          </span>
+        </div>
+      )}
+
       {error && <p className="mb-2 text-sm text-red">{error}</p>}
 
       <FlowLensBar lens={lens} wallet={query?.wallet ?? null} />
@@ -453,6 +581,29 @@ export function TraderAnalysisPage() {
             ? `No tracked tokens traded by this wallet in ${windowLabel(query, timezone)}.`
             : `${rows.length} token${rows.length === 1 ? '' : 's'} traded by ${shortAddr(query.wallet)} in ${windowLabel(query, timezone)}`}
         </p>
+      )}
+
+      {/* Co-trade headline for the committed query. Reads the table's current
+          cohort, so a column filter re-scopes the mix with it. */}
+      {comparisonActive && !isFetching && !error && rows.length > 0 && (
+        <>
+          <CoTradeSummary
+            rows={tableFilterCohort}
+            comparison={query!.with}
+            profileWallets={profileWallets}
+          />
+          <label className="mb-3 flex w-fit items-center gap-2 text-xs text-text-dim">
+            <Checkbox
+              boxSize="sm"
+              checked={coOnly}
+              onChange={(e) => patch({ coOnly: e.target.checked })}
+            />
+            Co-traded only
+            <span className="text-text-dim/70">
+              — hide the tokens none of the comparison wallets touched
+            </span>
+          </label>
+        </>
       )}
 
       {/* Wallet-level PnL analytics — summary + interactive chart deck. Driven by
@@ -506,6 +657,10 @@ export function TraderAnalysisPage() {
         <LazyLabTokenInspectModal
           target={inspectFromMint(inspected.mint, inspected.symbol)}
           titleSuffix="Token inspect"
+          // Same lens the grid's cards draw under. Without it the modal has no
+          // fingerprint to fall back on (`ruleOverride` is null here), so its
+          // chart and Vol column classify with nothing.
+          flowPatternKeys={lens.keys}
           onClose={() => setInspected(null)}
         />
       )}

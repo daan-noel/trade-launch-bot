@@ -905,7 +905,58 @@ export interface TraderTokenRow extends TokenRecord {
   /** Real SOL depth immediately before the exit sell. */
   wallet_exit_curve_sol: number | null;
   wallet_exit_curve_pct: number | null;
+  /** Tape position of the entry / exit legs. `block_time` is second-precision
+   *  and ties across a whole slot, so `(slot, tx_index)` is the only key that
+   *  can order two wallets' entries — see `CoTrader.entry_lag_slots`. */
+  wallet_entry_slot: number | null;
+  wallet_entry_tx_index: number | null;
+  wallet_exit_slot: number | null;
+  wallet_exit_tx_index: number | null;
+
+  /** The comparison wallets that were ALSO on this mint in the window, earliest
+   *  entry first. Empty unless the query named any (`with=`), so the page's
+   *  "co-traded only" filter is a `length > 0` test — no refetch to toggle. */
+  co_traders: CoTrader[];
 }
+
+/** How one comparison wallet's entry sits against the PRIMARY wallet's on the
+ *  same mint (backend `wallets.rs::CoTrader`). The point of the multi-wallet
+ *  read: not "they both bought it" but *who moved first and by how much*. */
+export interface CoTrader {
+  wallet: string;
+  /** This wallet's first buy on the mint in the window, and its tape position. */
+  entry_at: string | null;
+  entry_slot: number | null;
+  entry_tx_index: number | null;
+  /** Real SOL depth it bought into — directly comparable to the primary's
+   *  `wallet_entry_curve_sol`, since both back out their own impact. */
+  entry_curve_sol: number | null;
+  entry_curve_pct: number | null;
+  exit_at: string | null;
+  buy_count: number;
+  sell_count: number;
+  buy_sol: number;
+  sell_sol: number;
+  /** Realized + mark-to-market, from the same reconstruction as the primary's. */
+  total_pnl_sol: number;
+  is_open: boolean;
+  partial_data: boolean;
+  /** `this.entry_slot - primary.entry_slot`. **Negative = entered ahead of the
+   *  primary.** `null` when either side has no entry leg in the window — an
+   *  unknown ordering, never 0. */
+  entry_lag_slots: number | null;
+  /** Intra-slot ordering (`tx_index` delta). Only meaningful at
+   *  `entry_lag_slots === 0`, where it IS the entire difference between the two
+   *  entries. */
+  entry_lag_tx: number | null;
+  /** `entry_lag_slots` bucketed. `co-slot` (same slot — both reacted to the same
+   *  tape event, which is a shared trigger, NOT one copying the other),
+   *  `leads` / `follows` (within 3 slots either side), `independent` beyond
+   *  that. `null` when the lag is unknown. */
+  bucket: CoTradeBucket | null;
+}
+
+export type CoTradeBucket = 'co-slot' | 'leads' | 'follows' | 'independent';
 
 /** Per-token live stats pushed alongside each trade (backend `live_stats`).
  *  Field names mirror {@link TokenRecord} so they patch straight into a row. */

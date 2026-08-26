@@ -59,6 +59,11 @@ function row(overrides: Partial<TraderTokenRow>): TraderTokenRow {
     wallet_entry_curve_pct: null,
     wallet_exit_curve_sol: null,
     wallet_exit_curve_pct: null,
+    wallet_entry_slot: null,
+    wallet_entry_tx_index: null,
+    wallet_exit_slot: null,
+    wallet_exit_tx_index: null,
+    co_traders: [],
   };
   return { ...base, ...overrides };
 }

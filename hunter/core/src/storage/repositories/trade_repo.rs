@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
@@ -596,9 +596,9 @@ impl TradeRepo {
     /// mint in the window (unbounded); a positive `limit` caps the response.
     /// Powers the Trader Analysis page's per-wallet token list.
     ///
-    /// Every aggregate below (counts, per-side sums, entry/exit legs) is scoped
-    /// to the SAME window, so a closed upper bound reads the wallet exactly as it
-    /// looked at that instant — no leg after `until` leaks into the PnL.
+    /// Every aggregate is scoped to the SAME window, so a closed upper bound
+    /// reads the wallet exactly as it looked at that instant — no leg after
+    /// `until` leaks into the PnL.
     ///
     /// Counts **both** buys and sells, so a mint the wallet only *exited* in the
     /// window (its buy predates `since`) still appears. An unknown wallet has no
@@ -615,18 +615,79 @@ impl TradeRepo {
         let Some(wallet_id) = WalletDictRepo::new(self.pool.clone()).id_for(wallet).await? else {
             return Ok(Vec::new());
         };
+        let by_id = HashMap::from([(wallet_id, wallet.to_string())]);
+        self.traded_mints_agg(&by_id, None, since, until, limit).await
+    }
+
+    /// The same per-`(wallet, mint)` rollup as [`wallet_traded_mints`](Self::wallet_traded_mints),
+    /// for a SET of wallets, restricted to an explicit `mints` slice — the Trader
+    /// Analysis page's **co-trade** read: which of these other wallets were also
+    /// on the mints already on screen, and where in the tape did each enter.
+    ///
+    /// Scoping to the caller's mint set (rather than reading each wallet's whole
+    /// window and intersecting in Rust) is what keeps this cheap: the primary
+    /// wallet's mints are already known, and a comparison wallet's activity
+    /// *outside* them cannot answer a co-trade question. Addresses absent from
+    /// `wallet_dict` and `(wallet, mint)` pairs with no leg in the window drop
+    /// out — never a zero row.
+    ///
+    /// Deliberately unbounded (no `limit`): the caller already bounded the mints.
+    pub async fn wallets_traded_mints_on(
+        &self,
+        wallets: &[String],
+        mints: &[String],
+        since: DateTime<Utc>,
+        until: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<Vec<WalletTradedMint>> {
+        if wallets.is_empty() || mints.is_empty() {
+            return Ok(Vec::new());
+        }
+        let dict = WalletDictRepo::new(self.pool.clone());
+        let mut by_id: HashMap<i32, String> = HashMap::new();
+        for w in wallets {
+            // Cache-first per address; an untracked one resolves to nothing and
+            // drops out rather than failing the whole read.
+            if let Some(id) = dict.id_for(w).await? {
+                by_id.insert(id, w.clone());
+            }
+        }
+        if by_id.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.traded_mints_agg(&by_id, Some(mints), since, until, 0).await
+    }
+
+    /// The shared `(wallet_id, mint)` aggregate behind both readers above — ONE
+    /// SQL string, so the single-wallet and co-trade paths can never drift on
+    /// what an entry/exit leg or a per-side sum means.
+    ///
+    /// `by_id` is the resolved `wallet_dict` id → address map: its keys are the
+    /// `= ANY` filter, its values re-attach the address to each row. `mints =
+    /// None` ⇒ every mint in the window. `limit` is only meaningful for a SINGLE
+    /// wallet — across several, `ORDER BY last_trade_at DESC LIMIT n` would cut
+    /// through the union rather than per wallet, so multi-wallet callers pass 0.
+    async fn traded_mints_agg(
+        &self,
+        by_id: &HashMap<i32, String>,
+        mints: Option<&[String]>,
+        since: DateTime<Utc>,
+        until: Option<DateTime<Utc>>,
+        limit: i64,
+    ) -> anyhow::Result<Vec<WalletTradedMint>> {
         // `LIMIT NULL` = all rows (same trick as `find_by_mint_paged`). Binding
         // an `Option<i64>` lets one SQL string serve both the capped and full-
         // window callers without string-building the query.
         let limit_opt: Option<i64> = if limit <= 0 { None } else { Some(limit) };
+        let wallet_ids: Vec<i32> = by_id.keys().copied().collect();
         // `amount_lamports`/`token_amount` sums per side feed the Trader Analysis
         // page's avg-cost PnL reconstruction (`kernel::wallet_mint_pnl`) — both are
         // exact-integer `SUM(...)::BIGINT` (never NULL: `COALESCE` guards the
         // FILTER'd sum when a mint has only one side in the window). A named
-        // `FromRow` (rather than a 9-tuple) keeps every field labelled at the call
-        // site and avoids a positional mapping mistake as the column count grows.
+        // `FromRow` (rather than a wide tuple) keeps every field labelled at the
+        // call site and avoids a positional mapping mistake as the count grows.
         #[derive(sqlx::FromRow)]
         struct WalletTradedMintRow {
+            wallet_id: i32,
             mint_address: String,
             first_trade_at: DateTime<Utc>,
             last_trade_at: DateTime<Utc>,
@@ -638,15 +699,21 @@ impl TradeRepo {
             sell_token_amount: i64,
             // Entry = the FIRST buy leg, exit = the LAST sell leg (execution
             // order), each with the reserve snapshot and own size needed to
-            // reconstruct the curve depth it traded into. All `Option`: a mint
-            // the wallet only exited in the window has no buy side, and
-            // `reserve_lamports` is nullable for rows ingested without a
-            // reserve snapshot.
+            // reconstruct the curve depth it traded into, PLUS the leg's
+            // `(slot, tx_index)` tape position — the only ordering key fine
+            // enough to say who entered first (see the ARRAY_AGG note below).
+            // All `Option`: a mint the wallet only exited in the window has no
+            // buy side, and `reserve_lamports` is nullable for rows ingested
+            // without a reserve snapshot.
             entry_at: Option<DateTime<Utc>>,
+            entry_slot: Option<i64>,
+            entry_tx_index: Option<i32>,
             entry_reserve_lamports: Option<i64>,
             entry_leg_lamports: Option<i64>,
             entry_venue: Option<String>,
             exit_at: Option<DateTime<Utc>>,
+            exit_slot: Option<i64>,
+            exit_tx_index: Option<i32>,
             exit_reserve_lamports: Option<i64>,
             exit_leg_lamports: Option<i64>,
             exit_venue: Option<String>,
@@ -654,7 +721,8 @@ impl TradeRepo {
 
         let rows: Vec<WalletTradedMintRow> = sqlx::query_as(
             r#"
-            SELECT mint_address,
+            SELECT wallet_id,
+                   mint_address,
                    MIN(block_time) AS first_trade_at,
                    MAX(block_time) AS last_trade_at,
                    COUNT(*) FILTER (WHERE trade_type = 'buy')  AS buy_count,
@@ -670,57 +738,74 @@ impl TradeRepo {
                    -- same key `find_by_mint_all` orders by, NOT `block_time`, which
                    -- is only second-precision and ties across a whole slot.
                    (ARRAY_AGG(block_time       ORDER BY slot, tx_index, leg_index) FILTER (WHERE trade_type = 'buy'))[1]  AS entry_at,
+                   (ARRAY_AGG(slot             ORDER BY slot, tx_index, leg_index) FILTER (WHERE trade_type = 'buy'))[1]  AS entry_slot,
+                   (ARRAY_AGG(tx_index         ORDER BY slot, tx_index, leg_index) FILTER (WHERE trade_type = 'buy'))[1]  AS entry_tx_index,
                    (ARRAY_AGG(reserve_lamports ORDER BY slot, tx_index, leg_index) FILTER (WHERE trade_type = 'buy'))[1]  AS entry_reserve_lamports,
                    (ARRAY_AGG(amount_lamports  ORDER BY slot, tx_index, leg_index) FILTER (WHERE trade_type = 'buy'))[1]  AS entry_leg_lamports,
                    (ARRAY_AGG(venue            ORDER BY slot, tx_index, leg_index) FILTER (WHERE trade_type = 'buy'))[1]  AS entry_venue,
                    (ARRAY_AGG(block_time       ORDER BY slot DESC, tx_index DESC, leg_index DESC) FILTER (WHERE trade_type = 'sell'))[1] AS exit_at,
+                   (ARRAY_AGG(slot             ORDER BY slot DESC, tx_index DESC, leg_index DESC) FILTER (WHERE trade_type = 'sell'))[1] AS exit_slot,
+                   (ARRAY_AGG(tx_index         ORDER BY slot DESC, tx_index DESC, leg_index DESC) FILTER (WHERE trade_type = 'sell'))[1] AS exit_tx_index,
                    (ARRAY_AGG(reserve_lamports ORDER BY slot DESC, tx_index DESC, leg_index DESC) FILTER (WHERE trade_type = 'sell'))[1] AS exit_reserve_lamports,
                    (ARRAY_AGG(amount_lamports  ORDER BY slot DESC, tx_index DESC, leg_index DESC) FILTER (WHERE trade_type = 'sell'))[1] AS exit_leg_lamports,
                    (ARRAY_AGG(venue            ORDER BY slot DESC, tx_index DESC, leg_index DESC) FILTER (WHERE trade_type = 'sell'))[1] AS exit_venue
             FROM trades
-            WHERE wallet_id = $1
+            WHERE wallet_id = ANY($1)
               AND block_time >= $2
               -- Open upper bound stays a plain NULL bind (no second SQL string);
-              -- the cast is what lets Postgres type the parameter.
+              -- the cast is what lets Postgres type the parameter. Same for the
+              -- optional mint scope: NULL ⇒ every mint in the window.
               AND ($3::timestamptz IS NULL OR block_time <= $3)
-            GROUP BY mint_address
+              AND ($4::text[] IS NULL OR mint_address = ANY($4))
+            GROUP BY wallet_id, mint_address
             ORDER BY last_trade_at DESC
-            LIMIT $4
+            LIMIT $5
             "#,
         )
-        .bind(wallet_id)
+        .bind(&wallet_ids)
         .bind(since)
         .bind(until)
+        .bind(mints)
         .bind(limit_opt)
         .fetch_all(&self.pool)
         .await?;
 
         Ok(rows
             .into_iter()
-            .map(|r| WalletTradedMint {
-                mint_address: r.mint_address,
-                first_trade_at: r.first_trade_at,
-                last_trade_at: r.last_trade_at,
-                buy_count: r.buy_count,
-                sell_count: r.sell_count,
-                buy_sol: lamports_to_sol(r.buy_lamports),
-                sell_sol: lamports_to_sol(r.sell_lamports),
-                buy_token_amount: r.buy_token_amount,
-                sell_token_amount: r.sell_token_amount,
-                entry_at: r.entry_at,
-                exit_at: r.exit_at,
-                entry_curve_sol: pre_trade_real_sol(
-                    r.entry_reserve_lamports,
-                    r.entry_leg_lamports,
-                    r.entry_venue.as_deref(),
-                    TradeType::Buy,
-                ),
-                exit_curve_sol: pre_trade_real_sol(
-                    r.exit_reserve_lamports,
-                    r.exit_leg_lamports,
-                    r.exit_venue.as_deref(),
-                    TradeType::Sell,
-                ),
+            .filter_map(|r| {
+                // The id came from `by_id`'s own keys, so this lookup always hits;
+                // `filter_map` just avoids an unwrap on that invariant.
+                let wallet_address = by_id.get(&r.wallet_id)?.clone();
+                Some(WalletTradedMint {
+                    wallet_address,
+                    mint_address: r.mint_address,
+                    first_trade_at: r.first_trade_at,
+                    last_trade_at: r.last_trade_at,
+                    buy_count: r.buy_count,
+                    sell_count: r.sell_count,
+                    buy_sol: lamports_to_sol(r.buy_lamports),
+                    sell_sol: lamports_to_sol(r.sell_lamports),
+                    buy_token_amount: r.buy_token_amount,
+                    sell_token_amount: r.sell_token_amount,
+                    entry_at: r.entry_at,
+                    entry_slot: r.entry_slot,
+                    entry_tx_index: r.entry_tx_index,
+                    exit_at: r.exit_at,
+                    exit_slot: r.exit_slot,
+                    exit_tx_index: r.exit_tx_index,
+                    entry_curve_sol: pre_trade_real_sol(
+                        r.entry_reserve_lamports,
+                        r.entry_leg_lamports,
+                        r.entry_venue.as_deref(),
+                        TradeType::Buy,
+                    ),
+                    exit_curve_sol: pre_trade_real_sol(
+                        r.exit_reserve_lamports,
+                        r.exit_leg_lamports,
+                        r.exit_venue.as_deref(),
+                        TradeType::Sell,
+                    ),
+                })
             })
             .collect())
     }
@@ -1217,6 +1302,10 @@ pub struct AvgEntry {
 /// the missing cost basis.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WalletTradedMint {
+    /// The wallet these stats belong to. Redundant on the single-wallet read,
+    /// load-bearing on the co-trade one ([`TradeRepo::wallets_traded_mints_on`]),
+    /// where one mint carries a row per wallet.
+    pub wallet_address: String,
     pub mint_address: String,
     /// The wallet's first trade on this mint *within the window* (not lifetime) —
     /// paired with `last_trade_at` as a hold-duration proxy for the per-mint grain.
@@ -1240,9 +1329,18 @@ pub struct WalletTradedMint {
     /// The wallet's FIRST buy leg in the window — the position's entry. `None`
     /// when the window holds no buy (the entry predates `since`).
     pub entry_at: Option<DateTime<Utc>>,
+    /// The entry leg's tape position. `block_time` is only second-precision and
+    /// ties across a whole slot, so `(slot, tx_index)` is the ONLY key that can
+    /// order two wallets' entries against each other — the co-trade read's
+    /// entire content. `None` exactly when `entry_at` is.
+    pub entry_slot: Option<i64>,
+    pub entry_tx_index: Option<i32>,
     /// The wallet's LAST sell leg in the window — the position's exit. `None`
     /// while the bag is still held.
     pub exit_at: Option<DateTime<Utc>>,
+    /// The exit leg's tape position, same convention as the entry pair.
+    pub exit_slot: Option<i64>,
+    pub exit_tx_index: Option<i32>,
     /// Real (non-virtual) SOL in the pool **immediately before** the entry buy
     /// landed — the curve depth the wallet bought into, with its own impact
     /// backed out. `None` when there is no entry leg or the row carries no

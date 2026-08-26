@@ -898,6 +898,23 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   `w_exit`, `w_avg_buy`, `w_avg_sell`, `w_fee`) default hidden. Every field is the per-mint window
   grain, not one round trip — a wallet that re-entered shows its first buy, its last sell, and a
   span covering both.
+- **Trader Analysis co-trade (`lab/components/analysis/coTrade.ts` + `coTradeColumns.tsx` +
+  `CoTradeSummary.tsx`).** "Compare with" names up to 8 tracked wallets (`?with=` on
+  `/api/wallets/:wallet/tokens`); the page stays **primary-shaped** and the comparison set is purely
+  additive. Only the primary's mints make rows — a comparison wallet's own tokens never add any — and
+  each row carries `co_traders[]`: that wallet's entry, its curve depth, and `entry_lag_slots` /
+  `entry_lag_tx` signed against the primary (**negative = it entered first**). Ordering is the entry
+  leg's `(slot, tx_index)`, never `block_time`, which is second-precision and ties across a whole slot.
+  Columns (group `co_trade`): Also (count) · Co-traders (colored chips, entry order, each with its lag)
+  · First In · Lag · Coupling. `coTrade.ts` holds every derivation pure and DB-free — `tightestCoTrader`
+  (smallest |lag|, ties toward the wallet that was ahead), `firstMover`, `coTradeMix` — unit-tested in
+  `coTrade.test.ts`. `<CoTradeSummary>` reports the overlap count AND the bucket mix: read the mix, since
+  two busy wallets share some memecoins by chance alone and that coincidence lands in `independent`,
+  while a shared tape trigger concentrates in `co-slot`/`leads`/`follows`. "Co-traded only" is a
+  `co_traders.length > 0` client filter — no refetch. Chip colors come from `useProfileWallets()`, the
+  same source as the charts' wallet markers, so a wallet reads identically in the table and on every
+  chart. The primary stays the subject of the PnL deck, the flow lens' `excludeSelf`, and every
+  `wallet_*` column.
 - **Trader Analysis wallet PnL analytics (`lab/components/analysis/`).** The per-mint rows returned by
   `/api/wallets/:wallet/tokens` (`WalletTokenRow` in `lab/api/handlers/wallets.rs`, backed by
   `strategies::kernel::wallet_mint_pnl` — an avg-cost reconstruction over that wallet's in-window trades on

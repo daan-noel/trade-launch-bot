@@ -387,15 +387,19 @@ export const labApi = baseApi.injectEndpoints({
     // (client-side sort/filter) + a synced charts grid.
     getTraderTokens: builder.query<
       TraderTokenRow[],
-      { wallet: string; days: number; limit: number; from?: string; to?: string }
+      { wallet: string; days: number; limit: number; from?: string; to?: string; with?: string[] }
     >({
-      query: ({ wallet, days, limit, from, to }) => {
+      query: ({ wallet, days, limit, from, to, with: comparison }) => {
         const qs = new URLSearchParams({ limit: String(limit) });
         // An explicit lower bound replaces the rolling window; `to` alone still
         // rides `days` (backend anchors the rolling span to that upper bound).
         if (from) qs.set('from', from);
         else qs.set('days', String(days));
         if (to) qs.set('to', to);
+        // Comparison wallets for the co-trade columns. Omitted when empty so the
+        // backend skips its second query entirely — the single-wallet page (the
+        // common case) costs exactly what it did before.
+        if (comparison?.length) qs.set('with', comparison.join(','));
         return `/api/wallets/${encodeURIComponent(wallet)}/tokens?${qs.toString()}`;
       },
       // Pre-parse created_at + the wallet trade timestamps to epoch-ms so the
@@ -412,6 +416,9 @@ export const labApi = baseApi.injectEndpoints({
           // the age columns can tell "no such leg" from "unparseable".
           wallet_entry_at_ms: r.wallet_entry_at != null ? Date.parse(r.wallet_entry_at) : null,
           wallet_exit_at_ms: r.wallet_exit_at != null ? Date.parse(r.wallet_exit_at) : null,
+          // Always an array so every consumer can test `.length` without a guard
+          // — the field is absent from a response served before co-trade existed.
+          co_traders: r.co_traders ?? [],
         })),
       keepUnusedDataFor: 60,
     }),
