@@ -13,6 +13,7 @@ import {
 import { BarTradesPanel } from 'components/tokens/BarTradesPanel';
 import { useFlowLensContext } from 'context/FlowLensContext';
 import { useBarTradesSelection } from 'components/tokens/useBarTradesSelection';
+import { useTokenHighlight } from 'components/tokens/useTokenHighlight';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { useFlowReasons } from 'hooks/useFlowReasons';
 import { useProfileWallets } from 'hooks/useProfileWallets';
@@ -115,12 +116,21 @@ export function TokenTradeChart({
     error: tradesErrorRaw,
   } = useGetTokenTradesQuery(mint, { skip: !mint });
   const trades = tradesData ?? EMPTY_TRADES;
+  // Ephemeral per-token highlight lenses. Keyed on the mint so switching tokens
+  // can't carry a wallet or a structure onto candles it has nothing to do with.
+  const highlight = useTokenHighlight(trades, mint);
+
   const profileWalletsBase = useProfileWallets();
   // Spotlight the focused wallet: flag it highlighted if it's already tracked,
   // otherwise append a synthetic marker entry so an arbitrary input address
   // still shows its buys/sells. The other tracked wallets ride along unchanged.
+  // An armed wallet lens gets the focus treatment on the marker layer too — the
+  // wash says WHEN, the oversized gold marker says which leg and which side. The
+  // page's own `highlightWallet` still wins when both are set, since that one is
+  // the reason the page is open.
+  const spotlightWallet = highlightWallet?.trim() || highlight.lens.wallet || null;
   const profileWallets = useMemo(() => {
-    const addr = highlightWallet?.trim();
+    const addr = spotlightWallet;
     if (!addr) return profileWalletsBase;
     let matched = false;
     const flagged = profileWalletsBase.map((w) => {
@@ -138,7 +148,7 @@ export function TokenTradeChart({
         isHighlighted: true,
       },
     ];
-  }, [profileWalletsBase, highlightWallet]);
+  }, [profileWalletsBase, spotlightWallet]);
 
   const toChartValue = useCallback(
     (sol: number) => (unit === 'USD' && usdRate != null ? sol * usdRate : sol),
@@ -215,6 +225,8 @@ export function TokenTradeChart({
         externalCrosshairTimeSec={externalCrosshairTimeSec}
         onVisibleTimeRangeChange={onVisibleTimeRangeChange}
         flowPatternKeys={flowPatternKeys}
+        highlightLens={highlight.lens}
+        onHighlightLensMatch={highlight.onLensMatch}
         timeBands={timeBands}
         timeBandCoverage={timeBandCoverage}
         valueLane={valueLane}
@@ -234,6 +246,7 @@ export function TokenTradeChart({
         flowFingerprintId={flowFingerprintId}
         flowReadOnly={flowReadOnly}
         flowReasons={flowReasons}
+        highlight={highlight}
       />
     </div>
   );

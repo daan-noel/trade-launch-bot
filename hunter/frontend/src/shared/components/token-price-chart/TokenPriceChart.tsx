@@ -77,6 +77,8 @@ import { BarCrosshairTooltip } from './BarCrosshairTooltip';
 import { WalletMarkersTooltip } from './WalletMarkersTooltip';
 import { RangeSelectTooltip, formatRangeDuration } from './RangeSelectTooltip';
 import { WalletMarkersPlugin, asSeriesPrimitive, type WalletMarkerDef, type MarkerShape } from './walletMarkersPlugin';
+import { BarTintPlugin, EMPTY_BAR_TINTS, asBarTintPrimitive } from './barTintPlugin';
+import { EMPTY_LENS_MATCH, buildLensMatch } from './lensTint';
 import { RangeSelectPlugin, asRangePrimitive } from './rangeSelectPlugin';
 import { barTimeAtClientX } from './paneCoords';
 import {
@@ -532,6 +534,8 @@ export function TokenPriceChart({
   eventMarkers = null,
   flowPatternKeys = null,
   flowBasis = 'cost_sol',
+  highlightLens = null,
+  onHighlightLensMatch,
 }: TokenPriceChartProps) {
   // Tracked-wallet markers are a project-wide invariant: EVERY token trade chart
   // renders them. Callers may supply `profileWallets` (e.g. `TokenTradeChart`,
@@ -590,6 +594,7 @@ export function TokenPriceChart({
   const walletMarkersPrimRef = useRef<WalletMarkersPlugin | null>(null);
   const rangeSelectPrimRef = useRef<RangeSelectPlugin | null>(null);
   const timeBandsPrimRef = useRef<TimeBandsPlugin | null>(null);
+  const barTintPrimRef = useRef<BarTintPlugin | null>(null);
   const barsRef = useRef<OhlcBar[]>([]);
   const alignedFlowLinesRef = useRef<FlowLines>({ vol: [], nonVol: [] });
   const valueLaneSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
@@ -758,6 +763,43 @@ export function TokenPriceChart({
     [highlightBarTimes],
   );
 
+  // ── Highlight lenses ────────────────────────────────────────────────────────
+  //
+  // "Where did this wallet trade / where did this structure appear", washed behind
+  // the candles. Computed HERE and nowhere else: the share a wash paints is
+  // matched SOL over `OhlcBar.volume`, so it can only be honest in the one place
+  // that owns the bars. `onHighlightLensMatch` hands the same numbers back out so
+  // a host's chips can never quote a different count from the tint.
+  const lensWallet = highlightLens?.wallet?.trim() || null;
+  const lensStructureKey = highlightLens?.structureKey || null;
+
+  const walletLensMatch = useMemo(
+    () =>
+      lensWallet
+        ? buildLensMatch(sortedTrades, bars, groupMode, intervalSec, metric, (t) =>
+            t.wallet_address === lensWallet,
+          )
+        : EMPTY_LENS_MATCH,
+    [lensWallet, sortedTrades, bars, groupMode, intervalSec, metric],
+  );
+
+  const structureLensMatch = useMemo(
+    () =>
+      lensStructureKey
+        ? buildLensMatch(sortedTrades, bars, groupMode, intervalSec, metric, (t) => {
+            // Ordered, exact, whole-sequence — the identity `volumePatterns.patternKey`
+            // builds. Inlined rather than imported so this folder stays portable; a
+            // set/subset match here would silently mean something else than it does
+            // everywhere else in the app.
+            const labels = t.instruction_labels;
+            return (
+              !!labels && labels.length > 0 && JSON.stringify(labels) === lensStructureKey
+            );
+          })
+        : EMPTY_LENS_MATCH,
+    [lensStructureKey, sortedTrades, bars, groupMode, intervalSec, metric],
+  );
+
   const formatChartPrice = useMemo(
     () => createChartPriceFormatter(priceUnit),
     [priceUnit],
@@ -890,6 +932,37 @@ export function TokenPriceChart({
   }, []);
 
   const showChart = Boolean(id) && !loading && !error && trades.length > 0 && bars.length > 0;
+
+  // `style`/`bars` are deps because a series rebuild hands us a FRESH plugin with
+  // no tints — without them an armed lens silently blanks on a line/candle flip.
+  useEffect(() => {
+    if (!showChart) return;
+    const hasWallet = walletLensMatch.tint.length > 0;
+    const hasStructure = structureLensMatch.tint.length > 0;
+    barTintPrimRef.current?.setTints(
+      !hasWallet && !hasStructure
+        ? EMPTY_BAR_TINTS
+        : {
+            primary: hasWallet
+              ? { color: CHART_COLORS.lensWallet, tints: walletLensMatch.tint }
+              : null,
+            secondary: hasStructure
+              ? { color: CHART_COLORS.lensStructure, tints: structureLensMatch.tint }
+              : null,
+          },
+    );
+  }, [walletLensMatch, structureLensMatch, showChart, style, bars]);
+
+  const onHighlightLensMatchRef = useRef(onHighlightLensMatch);
+  onHighlightLensMatchRef.current = onHighlightLensMatch;
+  const lensMatches = useMemo(
+    () => ({ wallet: walletLensMatch, structure: structureLensMatch }),
+    [walletLensMatch, structureLensMatch],
+  );
+  useEffect(() => {
+    onHighlightLensMatchRef.current?.(lensMatches);
+  }, [lensMatches]);
+
 
   useEffect(() => {
     if (prevIdRef.current !== id || prevGroupingKeyRef.current !== groupingKey) {
@@ -1178,6 +1251,7 @@ export function TokenPriceChart({
       markersPluginRef.current?.detach();
       markersPluginRef.current = null;
       walletMarkersPrimRef.current = null;
+      barTintPrimRef.current = null;
       rangeSelectPrimRef.current = null;
       seriesRef.current = null;
       volSeriesRef.current = null;
@@ -1273,6 +1347,10 @@ export function TokenPriceChart({
         existing.detachPrimitive(asTimeBandsPrimitive(timeBandsPrimRef.current));
         timeBandsPrimRef.current = null;
       }
+      if (barTintPrimRef.current) {
+        existing.detachPrimitive(asBarTintPrimitive(barTintPrimRef.current));
+        barTintPrimRef.current = null;
+      }
       chart.removeSeries(existing);
       seriesRef.current = null;
     }
@@ -1285,6 +1363,10 @@ export function TokenPriceChart({
     });
     seriesRef.current = series as ISeriesApi<'Line' | 'Candlestick'>;
     mountedSeriesStyleRef.current = style;
+
+    const tintPrim = new BarTintPlugin();
+    series.attachPrimitive(asBarTintPrimitive(tintPrim));
+    barTintPrimRef.current = tintPrim;
 
     const walletPrim = new WalletMarkersPlugin();
     series.attachPrimitive(asSeriesPrimitive(walletPrim));

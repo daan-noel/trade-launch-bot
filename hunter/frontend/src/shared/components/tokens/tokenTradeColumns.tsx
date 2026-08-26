@@ -9,6 +9,10 @@ import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { formatIxLabelsText } from 'lib/ixLabels';
+import { patternKey } from 'lib/flow/volumePatterns';
+// Deep import: `constants` is type-only w.r.t. lightweight-charts, so the wash
+// colors come along without dragging the charting library into this chunk.
+import { CHART_COLORS } from 'components/token-price-chart/constants';
 
 export interface TokenTradeColumnsOpts {
   /**
@@ -37,6 +41,74 @@ export interface TokenTradeColumnsOpts {
    * this a row reading "Non-vol" whose SOL sits on the vol line looks like a bug.
    */
   flowReasons?: ReadonlyMap<string, FlowReason> | null;
+  /**
+   * Arms the ephemeral WALLET highlight lens from a row — adds a target button to
+   * the Wallet cell. Nothing is persisted: this only washes candles and rows.
+   */
+  onLensWallet?: ((address: string) => void) | null;
+  /** The armed wallet, so its own rows render the button lit. */
+  lensWallet?: string | null;
+  /**
+   * Arms the ephemeral IX-STRUCTURE lens from a row. Deliberately separate from
+   * {@link onTogglePattern}, which lives one column over and SAVES to the
+   * fingerprint the engine reads — asking "where else did this shape appear" must
+   * never change how a live rule classifies flow.
+   */
+  onLensStructure?: ((labels: readonly string[]) => void) | null;
+  /** `patternKey` of the armed structure, so matching rows render the button lit. */
+  lensStructureKey?: string | null;
+}
+
+/** Target glyph for a highlight-lens toggle — reads as "find this everywhere". */
+function LensIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden className="size-3">
+      <circle cx="8" cy="8" r="3.25" stroke="currentColor" strokeWidth="1.4" />
+      <path
+        d="M8 1.5v2.2M8 12.3v2.2M1.5 8h2.2M12.3 8h2.2"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+/**
+ * The one control that arms a highlight lens. Lit while its target is the armed
+ * one, so a row can say "this is what the chart is washing" without a legend.
+ */
+function LensButton({
+  armed,
+  color,
+  title,
+  onClick,
+}: {
+  armed: boolean;
+  color: string;
+  title: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={armed}
+      title={title}
+      onClick={(e) => {
+        // Several hosts make the row itself selectable; arming a lens must not
+        // also move the table's selection.
+        e.stopPropagation();
+        onClick();
+      }}
+      className={cn(
+        'shrink-0 rounded p-px transition focus:outline-none focus-visible:ring-1 focus-visible:ring-primary',
+        armed ? 'opacity-100' : 'opacity-30 hover:opacity-90',
+      )}
+      style={{ color: armed ? color : undefined }}
+    >
+      <LensIcon />
+    </button>
+  );
 }
 
 /** True when ordered `instruction_labels` exact-match a volume_ix_patterns row. */
@@ -72,6 +144,10 @@ export function tokenTradeColumns(
   const onToggle = opts?.onTogglePattern ?? null;
   const reasons = opts?.flowReasons ?? null;
   const showVol = keys.size > 0 || onToggle != null;
+  const onLensWallet = opts?.onLensWallet ?? null;
+  const lensWallet = opts?.lensWallet ?? null;
+  const onLensStructure = opts?.onLensStructure ?? null;
+  const lensStructureKey = opts?.lensStructureKey ?? null;
   const targetLabel = opts?.toggleTargetName ? `“${opts.toggleTargetName}”` : 'the fingerprint';
 
   const leading: ColumnDef<TradeRecord>[] = [];
@@ -158,15 +234,37 @@ export function tokenTradeColumns(
   leading.push({
     key: 'ix_structure',
     label: 'ix_labels',
-    tooltip: 'Ordered instruction-label structure of this trade — the flow-split matching key.',
-    render: (t) => (
-      <IxLabelsDisplay
-        labels={t.instruction_labels ?? []}
-        empty="—"
-        copyJson
-        maxHeight="4.5rem"
-      />
-    ),
+    tooltip:
+      'Ordered instruction-label structure of this trade — the flow-split matching key. ' +
+      (onLensStructure
+        ? 'Click the target to wash every candle this exact ordered structure appeared in. ' +
+          'View-only: unlike the Vol badge, it saves nothing and no rule reads it.'
+        : ''),
+    render: (t) => {
+      const labels = t.instruction_labels ?? [];
+      return (
+        <span className="inline-flex items-start gap-1">
+          {onLensStructure && labels.length > 0 && (
+            <LensButton
+              armed={lensStructureKey === patternKey(labels)}
+              color={CHART_COLORS.lensStructure}
+              title={
+                lensStructureKey === patternKey(labels)
+                  ? 'Stop highlighting this ix structure'
+                  : 'Highlight every candle and row with this exact ordered structure'
+              }
+              onClick={() => onLensStructure(labels)}
+            />
+          )}
+          <IxLabelsDisplay
+            labels={labels}
+            empty="—"
+            copyJson
+            maxHeight="4.5rem"
+          />
+        </span>
+      );
+    },
     searchValue: (t) => formatIxLabelsText(t.instruction_labels ?? []),
   });
 
@@ -196,8 +294,26 @@ export function tokenTradeColumns(
     {
       key: 'wallet',
       label: 'Wallet',
+      tooltip: onLensWallet
+        ? 'Click the target to wash every candle this wallet traded in. View-only — ' +
+          'nothing is saved, and it clears with the token.'
+        : undefined,
       render: (t) => (
-        <AddressDisplay address={t.wallet_address} kind="account" />
+        <span className="inline-flex items-center gap-1">
+          {onLensWallet && t.wallet_address && (
+            <LensButton
+              armed={lensWallet === t.wallet_address}
+              color={CHART_COLORS.lensWallet}
+              title={
+                lensWallet === t.wallet_address
+                  ? 'Stop highlighting this wallet'
+                  : 'Highlight every candle and row this wallet traded in'
+              }
+              onClick={() => onLensWallet(t.wallet_address)}
+            />
+          )}
+          <AddressDisplay address={t.wallet_address} kind="account" />
+        </span>
       ),
       sortValue: (t) => t.wallet_address,
       searchValue: (t) => t.wallet_address,

@@ -167,7 +167,10 @@ export function barAgeSec(
 }
 
 /** Matches backend `MIN_TRADE_SOL` (10k lamports); safety net for pre-filter data. */
-const MIN_CHART_SOL = 1e-5;
+/** Dust floor: a trade below this SOL never contributes to a bar. Exported so the
+ *  lens tint can apply the SAME filter — a share computed over trades the bar
+ *  itself dropped can exceed the candle it paints. */
+export const MIN_CHART_SOL = 1e-5;
 
 /**
  * Spot price from the venue-neutral reserve pair: reserve_sol / reserve_token

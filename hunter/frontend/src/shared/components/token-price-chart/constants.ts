@@ -107,6 +107,12 @@ export const CHART_COLORS = {
    *  Analysis input wallet). Gold, distinct from `mine` so a wallet can be both
    *  the focus AND one of yours without the two signals colliding. */
   highlightRing: '#fde047',
+  /** Highlight-lens washes behind the candles — an EPHEMERAL "where did this
+   *  happen" overlay, never a saved classification. Wallet reuses the focus gold
+   *  so one wallet reads the same whether you armed it or the page did; structure
+   *  takes cyan, the one hue no marker, candle or flow line claims. */
+  lensWallet: '#fde047',
+  lensStructure: '#22d3ee',
   /** User-drawn range selection band (teal wash + solid label chip) */
   rangeBandFill: 'rgba(19, 206, 175, 0.12)',
   rangeBandBorder: 'rgba(19, 206, 175, 0.7)',

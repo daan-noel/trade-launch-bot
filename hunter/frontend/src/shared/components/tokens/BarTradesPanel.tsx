@@ -14,6 +14,10 @@ import type {
   ChartEventMarker,
   ChartRangeSelectionDetail,
 } from 'components/token-price-chart/types';
+import { ixLabelsActions } from 'lib/ixLabels';
+import { CHART_COLORS } from 'components/token-price-chart/constants';
+import type { LensMatch } from 'components/token-price-chart/lensTint';
+import type { TokenHighlight } from 'components/tokens/useTokenHighlight';
 import type { TradeRecord } from 'types';
 
 const EMPTY_TRADES: TradeRecord[] = [];
@@ -65,6 +69,10 @@ export interface BarTradesPanelProps {
    *  FULL trade history — a bar's rows alone can't reconstruct contagion. Omit
    *  and the badge reports structure only, as it always has. */
   flowReasons?: ReadonlyMap<string, FlowReason> | null;
+  /** The token's two ephemeral highlight lenses (`useTokenHighlight`). Wires the
+   *  per-row target buttons, paints matched rows, and renders the armed chips.
+   *  Omit on a host that doesn't offer lenses. */
+  highlight?: TokenHighlight | null;
   /** Outer spacing — override in a host that already spaces its children (e.g.
    *  a `flex flex-col gap-*`, where the default top margin double-spaces). */
   className?: string;
@@ -107,6 +115,7 @@ export function BarTradesPanel({
   flowFingerprintId = null,
   flowReadOnly = false,
   flowReasons = null,
+  highlight = null,
   className = 'mt-3 border-t border-white/7 pt-2',
 }: BarTradesPanelProps) {
   const { timezone } = useTimezone();
@@ -135,9 +144,22 @@ export function BarTradesPanel({
   const badgeKeys = lensTarget ? (flowPatternKeys ?? null) : patternTarget.keys;
   const toggleTargetName = lensTarget?.name ?? patternTarget.target?.name ?? null;
 
+  // Pulled apart rather than passed as one object: `useTokenHighlight` returns a
+  // fresh literal every render, and depending on it would rebuild every column —
+  // and re-render the whole table — on each one. The four pieces are stable
+  // (two `useCallback`s and two strings).
+  const onLensWallet = highlight?.toggleWallet ?? null;
+  const onLensStructure = highlight?.toggleStructure ?? null;
+  const armedLensWallet = highlight?.lens.wallet ?? null;
+  const armedLensStructureKey = highlight?.lens.structureKey ?? null;
+
   const columns = useMemo(
     () =>
       tokenTradeColumns(price.unitLabel, {
+        onLensWallet,
+        lensWallet: armedLensWallet,
+        onLensStructure,
+        lensStructureKey: armedLensStructureKey,
         // The target's keys, not the prop: a badge must report the row its own
         // click writes to. They are the same set in the normal case, and differ
         // only when the reader deliberately picks another fingerprint — which
@@ -147,7 +169,17 @@ export function BarTradesPanel({
         toggleTargetName,
         flowReasons,
       }),
-    [price.unitLabel, badgeKeys, toggleTargetName, onTogglePattern, flowReasons],
+    [
+      price.unitLabel,
+      badgeKeys,
+      toggleTargetName,
+      onTogglePattern,
+      flowReasons,
+      onLensWallet,
+      onLensStructure,
+      armedLensWallet,
+      armedLensStructureKey,
+    ],
   );
 
   const entryExitMap = useMemo(() => buildEntryExitMap(eventMarkers), [eventMarkers]);
@@ -158,15 +190,33 @@ export function BarTradesPanel({
     [trades, focusAddr],
   );
 
+  // The wallet LENS and the page's focused wallet are the same signal — "this is
+  // the trader you are looking at" — so they share the gold, exactly as they share
+  // it on the chart. The structure lens is a different question and takes its own
+  // edge; the row background is already spoken for three ways over.
+  const lensWalletAddr = armedLensWallet;
+  const isStructureMatch = highlight?.isStructureMatch ?? null;
+  const structureArmed = armedLensStructureKey != null;
+
   const rowClassName = useMemo(() => {
     const mineCount = myWalletAddresses?.size ?? 0;
-    if (entryExitMap.size === 0 && mineCount === 0 && !focusAddr) return undefined;
+    if (
+      entryExitMap.size === 0 &&
+      mineCount === 0 &&
+      !focusAddr &&
+      !lensWalletAddr &&
+      !structureArmed
+    ) {
+      return undefined;
+    }
     return (t: TradeRecord) => {
       const kind = entryExitMap.get(t.tx_signature);
       // The focused wallet outranks the entry/exit tint for the row background —
       // finding HIM is the whole reason the page is open, and the fill's own
       // direction is still on the row in its side column.
-      const focused = !!focusAddr && t.wallet_address === focusAddr;
+      const focused =
+        (!!focusAddr && t.wallet_address === focusAddr) ||
+        (!!lensWalletAddr && t.wallet_address === lensWalletAddr);
       const base = focused
         ? 'bg-[#fde047]/16 hover:bg-[#fde047]/24 font-semibold'
         : kind === 'entry'
@@ -181,11 +231,29 @@ export function BarTradesPanel({
         : t.wallet_address && myWalletAddresses?.has(t.wallet_address)
           ? 'border-l-2 border-l-[#fbbf24]'
           : '';
-      return [base, accent].filter(Boolean).join(' ') || undefined;
+      // Right edge, not the background: a row can be the focused wallet AND carry
+      // the armed structure, and that overlap is the cell worth spotting.
+      const structure =
+        structureArmed && isStructureMatch?.(t) ? 'border-r-2 border-r-[#22d3ee]' : '';
+      return [base, accent, structure].filter(Boolean).join(' ') || undefined;
     };
-  }, [entryExitMap, myWalletAddresses, focusAddr]);
+  }, [
+    entryExitMap,
+    myWalletAddresses,
+    focusAddr,
+    lensWalletAddr,
+    structureArmed,
+    isStructureMatch,
+  ]);
 
-  if (!external && !bar && !range) return null;
+  const lensActive = highlight?.active ?? false;
+  if (!external && !bar && !range) {
+    return lensActive && highlight ? (
+      <div className={className}>
+        <LensChips highlight={highlight} />
+      </div>
+    ) : null;
+  }
 
   const chartTimeLabel = range
     ? range.groupMode === 'slot'
@@ -237,6 +305,7 @@ export function BarTradesPanel({
           <VolumePatternBar target={patternTarget} readOnly={flowReadOnly} />
         )}
       </div>
+      {highlight && lensActive && <LensChips highlight={highlight} />}
       <DataTable
         tableId={tableId}
         columns={columns}
@@ -252,6 +321,106 @@ export function BarTradesPanel({
   );
 }
 
+
+/** Short address for a chip — the address itself is a column away. */
+function shortAddr(addr: string): string {
+  return addr.length > 12 ? `${addr.slice(0, 4)}…${addr.slice(-4)}` : addr;
+}
+
+/** `+4.21` / `-0.08` — sign always shown, because the sign is the point. */
+function signedSol(match: LensMatch): string {
+  const net = match.buySol - match.sellSol;
+  return `${net >= 0 ? '+' : '−'}${Math.abs(net).toFixed(3)}`;
+}
+
+/**
+ * One armed lens, stated in full: what is washed, how much of the token it is,
+ * and the button that turns it off.
+ *
+ * The counts come from the CHART's own match (`onHighlightLensMatch`), not from a
+ * second pass over the rows — a chip that quoted a different number from the wash
+ * beside it would make the reader distrust both.
+ */
+function LensChip({
+  color,
+  label,
+  title,
+  match,
+  note,
+  onClear,
+}: {
+  color: string;
+  label: string;
+  title: string;
+  match: LensMatch;
+  note?: string | null;
+  onClear: () => void;
+}) {
+  const total = match.buys + match.sells;
+  return (
+    <span
+      className="inline-flex max-w-full items-center gap-1.5 rounded border px-1.5 py-px font-mono text-[10px]"
+      style={{ borderColor: `${color}99`, backgroundColor: `${color}1f`, color }}
+      title={title}
+    >
+      <span className="truncate">{label}</span>
+      <span className="text-text-dim">
+        {total} tx ({match.buys}b/{match.sells}s) · net {signedSol(match)} SOL
+      </span>
+      {note && <span className="text-text-dim">· {note}</span>}
+      <button
+        type="button"
+        onClick={onClear}
+        title="Stop highlighting"
+        className="leading-none opacity-70 hover:opacity-100"
+      >
+        ×
+      </button>
+    </span>
+  );
+}
+
+/**
+ * The armed highlight lenses for this token, shown wherever the trades panel is —
+ * including with no candle selected, so the control that disarms a lens never
+ * hides behind the table it is washing.
+ *
+ * Counts are bar-aligned: they cover exactly the trades the chart could paint, so
+ * dust legs the candles drop are absent here too.
+ */
+function LensChips({ highlight }: { highlight: TokenHighlight }) {
+  const { lens, matches, structureLabels, unlabeled, toggleWallet, toggleStructure } =
+    highlight;
+  const structureText = structureLabels ? ixLabelsActions([...structureLabels]) : '';
+  return (
+    <div className="mb-2 flex flex-wrap items-center gap-2">
+      {lens.wallet && (
+        <LensChip
+          color={CHART_COLORS.lensWallet}
+          label={shortAddr(lens.wallet)}
+          title={`${lens.wallet} — every candle this wallet traded in is washed gold`}
+          match={matches.wallet}
+          onClear={() => toggleWallet(null)}
+        />
+      )}
+      {lens.structureKey && (
+        <LensChip
+          color={CHART_COLORS.lensStructure}
+          label={structureText || 'ix structure'}
+          title={
+            `${structureText}
+
+Every candle carrying this EXACT ordered structure is ` +
+            `washed cyan. View-only — no fingerprint or rule reads it.`
+          }
+          match={matches.structure}
+          note={unlabeled > 0 ? `${unlabeled} unlabeled` : null}
+          onClear={() => toggleStructure(null)}
+        />
+      )}
+    </div>
+  );
+}
 
 /**
  * The lens twin of {@link VolumePatternBar}: what a Vol-badge click writes to

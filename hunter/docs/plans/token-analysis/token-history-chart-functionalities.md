@@ -253,6 +253,52 @@ That count is the whole warning: `metric_config` is not part of fingerprint iden
 write does not fork the row — it lands on the same id and every rule bound to it starts
 classifying flow differently.
 
+### 6c. Highlight lenses (where did this wallet / this ix structure appear)
+
+Two independent, **ephemeral** lenses over one token's history: *when did this wallet trade*
+and *when did this exact ordered ix structure appear*. Either, both, or neither. Each is
+armed from the trades table's target button — the Wallet cell for the first, the `ix_labels`
+cell for the second — and disarmed by the same button or its chip's `x`.
+
+| Piece | Where | Job |
+| --- | --- | --- |
+| `useTokenHighlight` | `components/tokens/` | holds both targets, disarms both when the mint changes, exposes row predicates |
+| `buildLensMatch` | `token-price-chart/lensTint.ts` | buckets the matched trades against the bars already drawn |
+| `BarTintPlugin` | `token-price-chart/barTintPlugin.ts` | the washes themselves, `zOrder: 'bottom'` |
+| `LensChips` | inside `BarTradesPanel` | states what is armed, what it matched, and turns it off |
+
+**A wash is share-weighted, never binary.** Its alpha tracks matched SOL over
+`OhlcBar.volume`, so one dust leg in a busy slot renders faint and a slot the target owns
+renders solid. A binary tint would overstate every bar it paints, and in time mode — where a
+60s candle holds many wallets — it would be actively misleading. `buildLensMatch` therefore
+mirrors `collectTradeBuckets`' dust and validity guards exactly: counting a trade the bar
+itself dropped puts the share above 1 on a candle that never held it.
+
+**The two lenses cannot share a channel.** A candlestick carries exactly one `borderColor`,
+so the plugin splits the bar slot instead — wallet washes the left half, structure the right,
+full width when only one is armed. The overlap is the cell a reader is hunting for, so it
+must stay visible rather than resolve to whichever layer draws last. The same split reaches
+the table: a wallet match takes the gold row background (the signal `highlightWallet` already
+owns, since "the trader you are looking at" is one question however it was picked) and a
+structure match takes a cyan right edge.
+
+**The counts on the chips come from the chart**, via `onHighlightLensMatch` — not from a
+second pass over the rows. They are bar-aligned by construction, so a chip can never quote a
+number the wash beside it disagrees with. The structure chip also reports the token's
+**unlabeled** trades: a structure lens can say nothing about a row whose `instruction_labels`
+were never captured, and `0 matches` over a pile of them means "not recorded", not "unique".
+
+**A lens is not the Vol badge, deliberately.** 6b's badge writes `volume_ix_patterns` and the
+engine acts on it; a lens writes nothing and no rule reads it. They sit one column apart on
+the same row and answer questions that differ only in wording, so the separation is the
+feature: asking *where else did this shape appear* must not change how a live rule classifies
+flow. The identity is shared, though — both match on `patternKey`, ordered and exact, so "the
+same structure" means one thing across the app.
+
+The chip strip renders even with **no candle selected**, which is the only reason the panel
+draws at all in that state: the control that disarms a lens must not hide behind the table it
+is washing.
+
 ---
 
 ## 7. Reference price lines (ATH & Migration)

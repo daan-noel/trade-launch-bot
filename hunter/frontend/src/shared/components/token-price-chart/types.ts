@@ -1,4 +1,5 @@
 import type { FlowLineVisibility } from './flowLineVisibility';
+import type { LensMatch } from './lensTint';
 import type { UTCTimestamp } from 'lightweight-charts';
 import type { PriceUnit } from 'types';
 
@@ -84,6 +85,24 @@ export interface ChartEventMarker {
    * Kept visually distinct so the two never read as the same pointer.
    */
   role?: 'fill' | 'signal';
+}
+
+/**
+ * Ephemeral "show me where this happened" targets, painted as washes behind the
+ * candles. Both are optional and independent — either, both, or neither.
+ *
+ * View-only by construction: nothing here is persisted and nothing reads it but
+ * the tint. It is deliberately NOT the same channel as `flowPatternKeys`, which is
+ * a SAVED classification the engine acts on — a reader poking at a chart must not
+ * be able to change how a live rule splits flow.
+ */
+export interface ChartHighlightLens {
+  /** Wallet whose trades wash their candles. */
+  wallet?: string | null;
+  /** `JSON.stringify(ordered instruction_labels)` — the same identity
+   *  `lib/flow/volumePatterns.patternKey` builds, so "the same structure" means
+   *  exactly one thing across the app. Ordered and exact: never a set match. */
+  structureKey?: string | null;
 }
 
 export type ChartGroupMode = 'time' | 'slot';
@@ -355,6 +374,19 @@ export interface TokenPriceChartProps {
   flowPatternKeys?: ReadonlySet<string> | null;
   /** Cumulative flow-line basis (default `cost_sol`). */
   flowBasis?: 'cost_sol' | 'token' | 'value_sol';
+  /** Ephemeral highlight lenses — see {@link ChartHighlightLens}. */
+  highlightLens?: ChartHighlightLens | null;
+  /** What each armed lens actually matched, reported back after every rebucket.
+   *  The chart owns this math (the share is over `OhlcBar.volume`), so a host
+   *  reading its counts from here can never quote a number the tint disagrees
+   *  with. Fires with empty matches when nothing is armed. */
+  onHighlightLensMatch?: (matches: ChartLensMatches) => void;
+}
+
+/** The per-lens result of one rebucket — see `lensTint.buildLensMatch`. */
+export interface ChartLensMatches {
+  wallet: LensMatch;
+  structure: LensMatch;
 }
 
 export interface ChartToolbarProps {
