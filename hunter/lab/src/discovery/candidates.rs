@@ -266,7 +266,7 @@ pub fn screen_plan(cfg: &ScreenConfig) -> ScreenPlan {
                     SeriesColumn::Flow(m.id, window, SWEEP_FLOW_FP)
                 } else {
                     match window {
-                        Some(w) => SeriesColumn::Window(m.id, w),
+                        Some(w) => SeriesColumn::window(m.id, w),
                         None => SeriesColumn::Static(m.id),
                     }
                 };
@@ -404,10 +404,14 @@ pub fn collect_percentiles(
     // the whole trade history feeds them (mirrors `build_series_with_flow`).
     let windows: Vec<f64> = columns
         .iter()
-        .filter_map(|c| match c {
-            SeriesColumn::Flow(_, Some(w), _) | SeriesColumn::Window(_, w) => Some(*w),
-            _ => None,
+        // A dynamic column can carry two axes; both need a buffer, so this flattens
+        // rather than picking one.
+        .flat_map(|c| match c {
+            SeriesColumn::Flow(_, w, _) => vec![*w],
+            SeriesColumn::Window(_, w) => vec![w.primary, w.secondary],
+            _ => vec![],
         })
+        .flatten()
         .collect();
 
     let mut res: Vec<Reservoir> = columns.iter().map(|_| Reservoir::new(cfg.sample_cap)).collect();
@@ -731,8 +735,8 @@ mod tests {
         assert_eq!(win(AxisSide::Entry, MetricId::Time), None);
         let cols = plan.columns();
         assert_eq!(cols.iter().filter(|c| **c == SeriesColumn::Static(MetricId::Time)).count(), 1);
-        assert!(cols.contains(&SeriesColumn::Window(MetricId::NetFlow, 30.0)));
-        assert!(cols.contains(&SeriesColumn::Window(MetricId::NetFlow, 10.0)));
+        assert!(cols.contains(&SeriesColumn::window(MetricId::NetFlow, 30.0)));
+        assert!(cols.contains(&SeriesColumn::window(MetricId::NetFlow, 10.0)));
     }
 
     #[test]
@@ -871,7 +875,7 @@ mod tests {
     /// hand-authored one does — including the `off` sentinel and the window.
     #[test]
     fn generated_menu_resolves_as_a_sweep_axis() {
-        let col = SeriesColumn::Window(MetricId::NetFlow, 30.0);
+        let col = SeriesColumn::window(MetricId::NetFlow, 30.0);
         let table = table_of(col, [-10.3, -6.5, -2.3, 0.1, 1.8, 4.9, 7.3, 14.0]);
         let m = ScreenMetric {
             side: AxisSide::Entry,

@@ -1,6 +1,6 @@
 //! `m_price_window` — trailing-window price extrema (dynamic metrics).
 //!
-//! Strict param `window_size_sec` (`w`): the trailing window is `(now − w, now]`
+//! Strict param `window_size_sec` (`w`): the trailing window is `[now − w, now]`
 //! and **includes the current trade**. Over the trade prices in that window:
 //! * `trail` — percent the current price sits **below the window high**:
 //!   `(win_high − price) / win_high · 100`, `>= 0`. The dip trigger — entry
@@ -19,7 +19,7 @@
 //! **deduped by `window_size_sec`**. Two monotonic deques of `(price, at)` — one
 //! decreasing (front = window max), one increasing (front = window min) — keep
 //! both the extremum read and the push O(1) amortized with no per-event allocation
-//! after warmup (`VecDeque` reuse). Reads filter deque entries to `(now − w, now]`
+//! after warmup (`VecDeque` reuse). Reads filter deque entries to `[now − w, now]`
 //! (via [`super::flow_window::in_window`]) so a regressed `block_time` on a
 //! later-processed trade cannot pull in future-dated prints from earlier slots.
 
@@ -35,7 +35,7 @@ use super::{MetricId, Ts};
 pub struct PriceWindowState {
     window_secs: f64,
     /// Precomputed window width. The reads below filter three deque walks by
-    /// `(now − w, now]`; deriving the width per **element** (what the shared
+    /// `[now − w, now]`; deriving the width per **element** (what the shared
     /// `in_window` does) put a float multiply + round inside every one of them.
     width: Duration,
     /// Monotonic **decreasing** by price (front = window max); newest at back.
@@ -95,7 +95,7 @@ impl PriceWindowState {
     }
 
     /// Drop entries older than the window as of `now` — trailing window is
-    /// `(now − w, now]`, so an entry exactly `w` old stays. Called on every trade
+    /// `[now − w, now]`, so an entry exactly `w` old stays. Called on every trade
     /// and every tick so reads always see the window as of the last event.
     ///
     /// Comparison-only (`at < cutoff`), so a regressed `block_time` (Solana's
@@ -122,7 +122,7 @@ impl PriceWindowState {
         }
     }
 
-    /// Highest price in `(now − w, now]` (`None` when empty).
+    /// Highest price in `[now − w, now]` (`None` when empty).
     fn win_high(&self, now: Ts) -> Option<f64> {
         self.max_deque
             .iter()
@@ -131,7 +131,7 @@ impl PriceWindowState {
             .max_by(|a, b| a.partial_cmp(b).unwrap())
     }
 
-    /// Lowest price in `(now − w, now]` (`None` when empty).
+    /// Lowest price in `[now − w, now]` (`None` when empty).
     fn win_low(&self, now: Ts) -> Option<f64> {
         self.min_deque
             .iter()
@@ -140,7 +140,7 @@ impl PriceWindowState {
             .min_by(|a, b| a.partial_cmp(b).unwrap())
     }
 
-    /// Most recent price in `(now − w, now]` (`None` when empty).
+    /// Most recent price in `[now − w, now]` (`None` when empty).
     fn current_price(&self, now: Ts) -> Option<f64> {
         self.max_deque
             .iter()
@@ -167,7 +167,7 @@ impl PriceWindowState {
         }
     }
 
-    /// Value of one `m_price_window` metric over `(now − w, now]`. Non price-window
+    /// Value of one `m_price_window` metric over `[now − w, now]`. Non price-window
     /// ids yield `NaN` (unreachable — `TokenTrack` routes by group).
     pub fn value(&self, id: MetricId, now: Ts) -> f64 {
         match id {

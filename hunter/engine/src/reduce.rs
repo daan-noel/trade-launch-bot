@@ -139,6 +139,11 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                 token.first_slot_settled = true;
                 token.tf.first_slot_buy_sol = Some(buy_lamports as f64 / LAMPORTS_PER_SOL_F64);
                 token.tf.first_slot_sell_sol = Some(sell_lamports as f64 / LAMPORTS_PER_SOL_F64);
+                // The metric reads the SAME number the fingerprint buckets — seeded
+                // here rather than at `TokenCreated` because this is where it exists.
+                // A rule gated on `m_snapshot.first_slot_buy` therefore reads NaN (and
+                // cannot fire) until this event, exactly like a `PendingFirstSlot` arm.
+                token.track.seed_first_slot_buy(buy_lamports as f64 / LAMPORTS_PER_SOL_F64);
                 let hits = match_all(&state.fps, &token.tf, MatchPhase::Full);
                 let pending: SmallVec<[RuleId; 4]> = token
                     .arms

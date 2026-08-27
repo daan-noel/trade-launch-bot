@@ -591,13 +591,25 @@ export const METRIC_HELP: Record<string, HelpTip> = {
   },
 };
 
-/** Append unit / =tol / monotonic facts from the live registry spec. */
+/**
+ * The tooltip body for one metric: its **registry definition** first, then the unit /
+ * `=` tolerance / monotonic facts derived from the same spec, then whatever extended
+ * prose {@link METRIC_HELP} adds.
+ *
+ * The definition comes from `spec.description` — authored once on the backend
+ * `MetricSpec`, beside the metric it defines — so a tooltip cannot say something the
+ * engine does not. `METRIC_HELP` is **extended guidance only**: worked examples, reading
+ * guides, refutations. It must never restate the definition, and a metric with no entry
+ * there is fully documented by the registry alone.
+ */
 export function metricHelpBody(
   metric: string,
-  spec?: { unit: string; eq_tolerance: number; monotonic: boolean },
+  spec?: { unit: string; eq_tolerance: number; monotonic: boolean; description?: string },
 ): string {
+  const extended = METRIC_HELP[metric]?.body;
   const base =
-    METRIC_HELP[metric]?.body ??
+    spec?.description ??
+    extended ??
     'Registry metric — type a condition in the box, or leave empty to ignore.';
   if (!spec) return base;
   // Every registry unit, named. This used to be a two-branch ternary falling through
@@ -624,12 +636,30 @@ export function metricHelpBody(
       'Monotonic: value never decreases. An entry upper bound (e.g. time < 30) that is crossed permanently disarms the arm.',
     );
   }
-  return `${base}${bits.join('\n')}`;
+  // Extended prose goes BELOW the definition and the facts, and only when it is not
+  // already the base (a registry payload with no description falls back to it).
+  const tail = extended && extended !== base ? `\n\n${extended}` : '';
+  return `${base}${bits.join('\n')}${tail}`;
 }
 
 // ── Strict params ────────────────────────────────────────────────────────────
 
 export const STRICT_PARAM_HELP: Record<string, HelpTip> = {
+  burst_size_sec: {
+    title: 'burst_size_sec — the recent slice',
+    body: [
+      "m_flow_burst's second window: the SHORT one, nested inside window_size_sec.",
+      '',
+      'trade_share = trades in the last burst_size_sec, as a percent of trades in',
+      'the last window_size_sec. It measures how CONCENTRATED the tape is in time,',
+      'independent of how busy it is: ten trades in the last 3s and ten spread over',
+      'a minute are the same trade_count and the same gross_flow, and 50 vs 10 here.',
+      '',
+      'Must be > 0 and <= window_size_sec. Reads 100 on a token younger than it —',
+      'a true reading of a short life, not a maturity signal, so gate m_snapshot.time',
+      'yourself if that is what you mean.',
+    ].join('\n'),
+  },
   window_size_sec: {
     title: 'window_size_sec — trailing lookback',
     body: [

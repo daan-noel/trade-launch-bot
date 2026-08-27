@@ -390,7 +390,7 @@ impl FlowSplitWindowState {
         }
     }
 
-    /// Totals over `(now − w, now]`, from the running totals minus the ends that
+    /// Totals over `[now − w, now]`, from the running totals minus the ends that
     /// fall outside: not-yet-evicted entries at the front, future-dated entries
     /// (regressed `block_time`) at the back. Sortedness makes the first in-window
     /// entry a valid stop for both loops.

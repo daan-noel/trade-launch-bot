@@ -90,9 +90,16 @@ pub enum FillModel {
     /// Fill at the trigger/fire trade's own spot — zero feed-reaction slippage, the
     /// optimistic bound approximating a same-slot landing.
     SignalPrice,
-    /// Entry/exit = the first qualifying trade whose `block_time` is at least `ms`
-    /// milliseconds after the signal's own — the only model keyed to a **measured**
+    /// Entry/exit = the **last** qualifying trade whose `block_time` is at or before
+    /// `ms` milliseconds after the signal's own — the only model keyed to a **measured**
     /// reaction time rather than to slot structure.
+    ///
+    /// Last, not first, and that is the whole correctness of the model: a row's price is
+    /// the pool state AFTER that trade, so the first print at or after the deadline is a
+    /// trade we could not have landed behind, and pricing from it reaches forward past
+    /// our own fill. When nothing lands inside the lag the state is still the trigger's
+    /// own, which is what a fill arriving before the next print actually executes
+    /// against.
     ///
     /// The slot-shaped models bracket reality but cannot express it: `FirstInWindow`
     /// assumes we are always the very next print (an ordering nobody outside the
@@ -339,12 +346,23 @@ pub fn find_paper_entry_at<T: TradeRow>(
         FillModel::NextSlotMedian => adverse_median_in(run, qualifies, true)
             .map(|rel| run_base + rel)
             .or_else(worst),
-        // The first qualifying buy at least `ms` after the trigger was observable.
+        // The pool state a buy landing `ms` after the trigger executes against: the
+        // LAST qualifying buy at or before that instant. A row's price is the state
+        // AFTER that trade, so the FIRST print at or after the deadline is a trade we
+        // could not have landed behind — pricing from it reaches forward past our own
+        // fill. When nothing lands inside the lag the state is still the trigger's own.
         FillModel::LagMs(ms) => {
-            let floor = trigger.block_time() + chrono::Duration::milliseconds(i64::from(ms));
-            post.iter()
-                .position(|t| qualifies(t) && t.block_time() >= floor)
-                .or_else(worst)
+            let deadline = trigger.block_time() + chrono::Duration::milliseconds(i64::from(ms));
+            match post
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| qualifies(t) && t.block_time() <= deadline)
+                .map(|(rel, _)| rel)
+                .next_back()
+            {
+                Some(rel) => Some(rel),
+                None => return Some(paper_fill_from(trades, target_idx)),
+            }
         }
         FillModel::WorstCase => worst(),
     };
@@ -404,13 +422,19 @@ pub fn find_paper_exit_at<T: TradeRow>(
                 .map(|rel| run_base + rel)
                 .or_else(worst)
                 .map(|rel| fire_idx + 1 + rel),
-            // The first priced trade at least `ms` after the fire was observable.
+            // Same rule as the entry leg: the LAST priced trade at or before
+            // `fire + ms`, never the first one after it. Pricing a sell from the next
+            // print credits us with flow that arrived after we sold — the error is
+            // largest exactly where it hurts, on a take-profit firing into a rise.
             FillModel::LagMs(ms) => {
-                let floor = fire.block_time() + chrono::Duration::milliseconds(i64::from(ms));
+                let deadline = fire.block_time() + chrono::Duration::milliseconds(i64::from(ms));
                 post.iter()
-                    .position(|t| priced(t) && t.block_time() >= floor)
-                    .or_else(worst)
+                    .enumerate()
+                    .filter(|(_, t)| priced(t) && t.block_time() <= deadline)
+                    .map(|(rel, _)| rel)
+                    .next_back()
                     .map(|rel| fire_idx + 1 + rel)
+                    .or(Some(fire_idx))
             }
             FillModel::WorstCase => worst().map(|rel| fire_idx + 1 + rel),
         }
@@ -729,25 +753,47 @@ mod tests {
         ];
         let at = |m| find_paper_entry_at(&trades, 0, false, m).unwrap();
 
-        // Zero lag is exactly "the next print" — the optimistic bound.
-        assert_eq!(at(FillModel::LagMs(0)).price, at(FillModel::FirstInWindow).price);
-        // 115ms (the measured decide->fill p50) skips the +50ms print and takes the
-        // +200ms one — still slot 100, so a delay is charged WITHOUT pretending we
-        // missed the block.
+        // Zero lag: nothing has landed yet, so the state is the trigger's own spot.
+        // NOT "the next print" — that print happens after us.
+        assert_eq!(at(FillModel::LagMs(0)).price, 1.0);
+        assert_eq!(at(FillModel::LagMs(0)).price, at(FillModel::SignalPrice).price);
+        // 115ms (the measured decide->fill p50): the +50ms print has landed, the
+        // +200ms one has not, so we execute against the +50ms state — still slot 100,
+        // so a delay is charged WITHOUT pretending we missed the block.
         let lagged = at(FillModel::LagMs(115));
-        assert_eq!(lagged.price, 1.4);
+        assert_eq!(lagged.price, 1.2);
         assert_eq!(lagged.slot, 100, "a lag inside the slot must not skip the slot");
-        // The slot-shaped models bracket it and cannot express it: first is cheaper,
-        // next-slot is dearer.
-        assert!(at(FillModel::FirstInWindow).price < lagged.price);
-        assert!(at(FillModel::NextSlotFirst).price > lagged.price);
-        // A lag past everything in the window falls back to worst-case, keeping
-        // eligibility identical across models (same rule as the `NextSlot*` pair).
+        // Waiting longer can only cost more on a rising tape — monotone in the lag,
+        // which is the property that makes a fill LADDER meaningful.
+        assert!(at(FillModel::LagMs(0)).price <= lagged.price);
+        assert!(lagged.price <= at(FillModel::LagMs(300)).price);
+        assert_eq!(at(FillModel::LagMs(300)).price, 1.4);
+        // A lag past everything in the window fills at the LAST print inside it, not
+        // the adverse one: by then every trade in the window has landed ahead of us.
         assert_eq!(
             at(FillModel::LagMs(60_000)).price,
-            at(FillModel::WorstCase).price,
-            "a lag past the window degrades to worst-case, never to no-fill"
+            1.5,
+            "a lag past the window prices at the last print, never no-fill"
         );
+    }
+
+    /// The regression this file exists to prevent: `LagMs` must never price a fill
+    /// from a trade that lands AFTER the fill. A row's price is the pool state after
+    /// that trade, so taking the first print at-or-after the deadline books flow we
+    /// were not behind — measured at +8 to +12pp per trade in our favour.
+    #[test]
+    fn the_lag_model_never_prices_from_a_trade_that_lands_after_the_fill() {
+        // Trigger at t=0, then a lone print at +900ms — well past a 115ms fill.
+        let trades = vec![
+            leg_ms(1.0, 1.0, 100, 0, 0),
+            leg_ms(9.0, 1.0, 100, 1, 900),
+        ];
+        let fill = find_paper_entry_at(&trades, 0, false, FillModel::LagMs(115)).unwrap();
+        assert_eq!(
+            fill.price, 1.0,
+            "nothing landed inside 115ms, so the fill is the trigger's own state"
+        );
+        assert_ne!(fill.price, 9.0, "the +900ms print is in our future at fill time");
     }
 
     /// The exit leg charges the same delay from the firing trade.
@@ -759,8 +805,12 @@ mod tests {
             leg_ms(0.7, 1.0, 100, 2, 200),
         ];
         let at = |m| find_paper_exit_at(&trades, 0, false, m).unwrap();
-        assert_eq!(at(FillModel::LagMs(0)).price, 0.9, "zero lag = the next print");
-        assert_eq!(at(FillModel::LagMs(115)).price, 0.7, "115ms skips the +50ms print");
+        // Zero lag: nothing has landed, so we sell into the fire trade's own state.
+        assert_eq!(at(FillModel::LagMs(0)).price, 1.0, "zero lag = the fire's own spot");
+        // 115ms: the +50ms print has landed and the +200ms one has not.
+        assert_eq!(at(FillModel::LagMs(115)).price, 0.9, "the +50ms print is the state we hit");
+        // Waiting longer costs more on a falling tape — monotone in the lag.
+        assert_eq!(at(FillModel::LagMs(300)).price, 0.7);
     }
 
     /// The lag model is a BARE STRING on the wire like every other variant. That is

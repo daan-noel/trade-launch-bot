@@ -754,19 +754,26 @@ fn validate_group_instances(
             spec.name
         ));
     }
-    // Distinct windows within a dynamic group — two clauses on the same window are
-    // ambiguous (they'd read the one buffer); combine them into one object instead.
+    // Distinct PARAMS within a dynamic group — two clauses that read the same state
+    // are ambiguous; combine them into one object instead. The comparison is over the
+    // whole strict map, not `window_size_sec` alone, because a two-window group's
+    // identity is the pair: `m_flow_burst{60, 3}` and `m_flow_burst{60, 10}` are
+    // different reads and must both be authorable.
     if spec.kind == MetricKind::Dynamic {
         for (i, a) in instances.iter().enumerate() {
             for b in &instances[i + 1..] {
-                let (wa, wb) = (a.strict_param("window_size_sec"), b.strict_param("window_size_sec"));
-                if let (Some(wa), Some(wb)) = (wa, wb) {
-                    if (wa - wb).abs() <= f64::EPSILON {
-                        return Err(format!(
-                            "{side_name}.{}: duplicate window_size_sec {wa} — combine into one clause",
-                            spec.name
-                        ));
-                    }
+                if a.strict.len() == b.strict.len()
+                    && a.strict.iter().all(|(k, va)| {
+                        b.strict.get(k).is_some_and(|vb| (va - vb).abs() <= f64::EPSILON)
+                    })
+                {
+                    let params: Vec<String> =
+                        a.strict.iter().map(|(k, v)| format!("{k} {v}")).collect();
+                    return Err(format!(
+                        "{side_name}.{}: duplicate clause ({}) — combine into one object",
+                        spec.name,
+                        params.join(", "),
+                    ));
                 }
             }
         }
@@ -820,6 +827,34 @@ fn validate_group(
     if group.metrics.is_empty() {
         return Err(format!(
             "{side_name}.{}: group has no metric conditions",
+            spec.name
+        ));
+    }
+    // A burst window must NEST inside its reference window. Outside that bound the
+    // numerator counts trades the denominator does not and the share runs past 100%,
+    // which is not a stricter gate but a different quantity. Cross-param rules cannot
+    // be spelled in `StrictParamSpec`, so they live here.
+    if let (Some(b), Some(w)) = (
+        group.strict_param(crate::metrics::flow_burst::BURST_PARAM),
+        group.strict_param("window_size_sec"),
+    ) {
+        if b > w {
+            return Err(format!(
+                "{side_name}.{}: {} {b} must nest inside window_size_sec {w}",
+                spec.name,
+                crate::metrics::flow_burst::BURST_PARAM,
+            ));
+        }
+    }
+    // A two-window group has no place in an exit REASON yet: the persisted label
+    // (`event::parse_metric_exit_label`) carries one window qualifier, so two burst
+    // clauses that differ only in the burst axis would record the same reason and an
+    // operator could not tell which read fired. Entry-side is unaffected — the readout
+    // names the whole requirement, not a one-line label. Lift this together with the
+    // label, never on its own: see `docs/roadmap/two-window-exit-labels.md`.
+    if !is_entry && group_id == MetricGroupId::FlowBurst {
+        return Err(format!(
+            "{side_name}.{}: entry side only — a two-window read has no unambiguous              exit-reason label yet",
             spec.name
         ));
     }
@@ -1159,7 +1194,17 @@ mod tests {
             ] }
         }))
         .unwrap_err();
-        assert!(e.contains("duplicate window_size_sec 30"), "{e}");
+        assert!(e.contains("duplicate clause (window_size_sec 30)"), "{e}");
+
+        // ...but a TWO-window group's identity is the PAIR: same reference window,
+        // different burst, is two different reads and must stay authorable.
+        RuleParams::parse(&json!({
+            "entry": { "m_flow_burst": [
+                { "window_size_sec": 60, "burst_size_sec": 3,  "trade_share": [{"operator": ">=", "value": 8}] },
+                { "window_size_sec": 60, "burst_size_sec": 10, "trade_share": [{"operator": "<=", "value": 60}] }
+            ] }
+        }))
+        .expect("same reference window, different burst = two distinct reads");
 
         // A static group has no window to distinguish instances — array > 1 rejected.
         let e = RuleParams::parse(&json!({

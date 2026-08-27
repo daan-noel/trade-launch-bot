@@ -20,7 +20,7 @@ use crate::metrics::position::{is_trailing, position_value, trailing_armed, Posi
 use crate::metrics::track::TokenTrack;
 use crate::metrics::{
     group_of, group_spec, is_fingerprint_scoped, metric_spec, MetricGroupId, MetricId, MetricKind,
-    MetricScope, Ts,
+    MetricScope, Ts, Windows,
 };
 use crate::rule_params::ReEntry;
 
@@ -40,7 +40,7 @@ pub enum ReqOrigin {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetricReq {
     pub metric: MetricId,
-    pub window: Option<f64>,
+    pub window: Windows,
     /// Fingerprint scope for flow metrics; `None` for token-scoped groups.
     pub fingerprint: Option<FingerprintId>,
     pub tolerance: f64,
@@ -65,7 +65,7 @@ pub struct MetricReq {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MonoBound {
     pub metric: MetricId,
-    pub window: Option<f64>,
+    pub window: Windows,
     pub threshold: f64,
     /// `true` ⇒ crossed at `value >= threshold` (from `<`); `false` ⇒ at
     /// `value > threshold` (from `<=` / `=`'s upper edge).
@@ -94,7 +94,7 @@ impl MonoBound {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MonoMetricKill {
     pub metric: MetricId,
-    pub window: Option<f64>,
+    pub window: Windows,
     pub fingerprint: Option<FingerprintId>,
     /// Per OR arm: killing upper bound, or `None` if the arm never dies.
     pub arms: SmallVec<[Option<MonoBound>; 2]>,
@@ -139,7 +139,7 @@ impl MonoMetricKill {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockedReq {
     pub metric: MetricId,
-    pub window: Option<f64>,
+    pub window: Windows,
     /// The value the fold read. `NaN` when unreadable — which, per the engine
     /// convention, satisfies nothing and is therefore itself a blocker.
     pub value: f64,
@@ -167,7 +167,7 @@ fn arm_mono_upper(
     arm: &[Condition],
     half_tol: f64,
     metric: MetricId,
-    window: Option<f64>,
+    window: Windows,
 ) -> Option<MonoBound> {
     let mut best: Option<(f64, bool)> = None;
     for c in arm {
@@ -264,7 +264,9 @@ impl ClockHorizons {
     /// [`SparseGrid::clamp_secs`]: crate::metrics::grid::SparseGrid::clamp_secs
     fn absorb_req(&mut self, r: &MetricReq) {
         use crate::metrics::grid::SparseGrid;
-        if let Some(w) = r.window {
+        // Both axes: a two-window group's horizon is its LONGEST window, and the
+        // shorter one still needs a buffer.
+        for w in [r.window.primary, r.window.secondary].into_iter().flatten() {
             self.max_window_secs = self.max_window_secs.max(SparseGrid::clamp_secs(w));
         }
         let slot = match r.metric {
@@ -410,7 +412,9 @@ impl CompiledRule {
         let mut price_windows: SmallVec<[f64; 2]> = SmallVec::new();
         let stage_reqs = scale_out.iter().flat_map(|s| s.reqs.iter());
         for r in entry_reqs.iter().chain(exit_reqs.iter()).chain(stage_reqs) {
-            if let Some(w) = r.window {
+            // Both axes: a two-window group needs a buffer for each of them, and
+            // registering only the primary would leave the second read as NaN.
+            for w in [r.window.primary, r.window.secondary].into_iter().flatten() {
                 let bucket = if group_of(r.metric).id == MetricGroupId::PriceWindow {
                     &mut price_windows
                 } else {
@@ -646,7 +650,7 @@ fn reqs_exit_fired(
                     metric: r.metric,
                     operator: c.operator,
                     value: c.value,
-                    window: r.window,
+                    window: r.window.primary,
                 },
             });
         }
@@ -687,7 +691,7 @@ fn reqs_first_fired(
 fn pnl_req(op: Operator, value: f64, origin: ReqOrigin) -> MetricReq {
     MetricReq {
         metric: MetricId::Pnl,
-        window: None,
+        window: Windows::NONE,
         fingerprint: None,
         tolerance: metric_spec(MetricId::Pnl).eq_tolerance,
         conds: vec![vec![Condition { operator: op, value }]],
@@ -712,10 +716,17 @@ fn build_reqs(
         let position_scoped = group_spec(*group_id).scope == MetricScope::Position;
         // One instance per window (static groups carry exactly one, window-less).
         for group in instances {
-            let window = if is_dynamic {
-                group.strict_param("window_size_sec")
+            // Both axes, read by param NAME rather than by group: `burst_size_sec` is
+            // absent on every group that does not declare it, so this stays one line
+            // of vocabulary instead of a per-group branch that a fourth window basis
+            // would have to be remembered into.
+            let window: Windows = if is_dynamic {
+                Windows {
+                    primary: group.strict_param("window_size_sec"),
+                    secondary: group.strict_param(crate::metrics::flow_burst::BURST_PARAM),
+                }
             } else {
-                None
+                Windows::NONE
             };
             // Attached below to this instance's trailing metrics only.
             let arm_above = group.strict_param("arm_above_pct");
@@ -948,12 +959,79 @@ mod tests {
         assert_eq!(c.entry_reqs.len(), 2);
         let gross = c.entry_reqs.iter().find(|r| r.metric == MetricId::GrossFlow).unwrap();
         let net = c.entry_reqs.iter().find(|r| r.metric == MetricId::NetFlow).unwrap();
-        assert_eq!(gross.window, Some(30.0));
-        assert_eq!(net.window, Some(2.0));
+        assert_eq!(gross.window, Windows::one(30.0));
+        assert_eq!(net.window, Windows::one(2.0));
         // Both distinct windows collected for ensure_window (order = req order).
         assert_eq!(c.flow_windows.len(), 2);
         assert!(c.flow_windows.contains(&30.0) && c.flow_windows.contains(&2.0));
         assert!(c.price_windows.is_empty());
+    }
+
+    /// A two-window group must reach the track with BOTH axes, and must register a
+    /// buffer for each. Losing the second axis here is silent: the read returns NaN,
+    /// the gate never fires, and the rule looks merely strict.
+    #[test]
+    fn a_two_window_group_carries_and_registers_both_axes() {
+        let c = CompiledRule::compile(&rule(json!({
+            "entry": { "m_flow_burst": {
+                "window_size_sec": 60, "burst_size_sec": 3,
+                "trade_share": [{"operator": ">=", "value": 7.69}]
+            } }
+        })));
+        assert_eq!(c.entry_reqs.len(), 1);
+        assert_eq!(c.entry_reqs[0].metric, MetricId::BurstTradeShare);
+        assert_eq!(c.entry_reqs[0].window, Windows::two(60.0, 3.0));
+        // One buffer per axis, both on the flow side (neither is a price window).
+        assert_eq!(c.flow_windows.len(), 2);
+        assert!(c.flow_windows.contains(&60.0) && c.flow_windows.contains(&3.0));
+        assert!(c.price_windows.is_empty());
+        // The tick horizon covers the LONGER axis — a grid that only reached 3 s
+        // would stop ticking while the 60 s reference was still draining.
+        assert!(c.clock_horizons.max_window_secs >= 60.0);
+    }
+
+    /// The whole path end to end: compile a burst rule, register its windows on a
+    /// real track, fold a tape, and read the gate. This is the property the metric
+    /// exists for — it is the only reading here that separates a clustered tape from
+    /// an evenly spread one carrying identical volume.
+    #[test]
+    fn a_burst_gate_reads_through_the_track_it_registered() {
+        use crate::metrics::track::TokenTrack;
+        use crate::metrics::{Side, TradeLite};
+        use chrono::{Duration, TimeZone, Utc};
+        let t0 = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        let at = |s: f64| t0 + Duration::milliseconds((s * 1000.0) as i64);
+
+        let c = CompiledRule::compile(&rule(json!({
+            "entry": { "m_flow_burst": {
+                "window_size_sec": 60, "burst_size_sec": 3,
+                "trade_share": [{"operator": ">=", "value": 40}]
+            } }
+        })));
+        let read = |offsets: &[f64], now: f64| {
+            let mut track = TokenTrack::new(t0);
+            for &w in &c.flow_windows {
+                track.ensure_window(w);
+            }
+            for &o in offsets {
+                track.on_trade(TradeLite {
+                    side: Side::Buy,
+                    sol: 1.0,
+                    price: 1.0,
+                    reserve_sol: 100.0,
+                    at: at(o),
+                    ..Default::default()
+                });
+            }
+            let r = &c.entry_reqs[0];
+            track.value(r.metric, r.window, r.fingerprint, at(now))
+        };
+        // Clustered: 6 of 10 trades inside the last 3 s ⇒ 60, gate holds.
+        let clustered = [10.0, 20.0, 30.0, 40.0, 57.5, 58.0, 58.5, 59.0, 59.5, 60.0];
+        assert_eq!(read(&clustered, 60.0), 60.0);
+        // Evenly spread: same count, same SOL, 1 of 10 inside ⇒ 10, gate does not.
+        let spread = [6.0, 12.0, 18.0, 24.0, 30.0, 36.0, 42.0, 48.0, 54.0, 60.0];
+        assert_eq!(read(&spread, 60.0), 10.0);
     }
 
     #[test]
@@ -1257,7 +1335,7 @@ mod tests {
         // whole way, so exactly one condition is the answer.
         assert_eq!(b.unmet.len(), 1, "only gross_flow blocked entry: {:?}", b.unmet);
         assert_eq!(b.unmet[0].metric, MetricId::GrossFlow);
-        assert_eq!(b.unmet[0].window, Some(60.0));
+        assert_eq!(b.unmet[0].window, Windows::one(60.0));
         assert_eq!(b.unmet[0].value, 20.0);
     }
 

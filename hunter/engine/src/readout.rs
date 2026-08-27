@@ -250,6 +250,11 @@ pub struct ReplayCtx<'a> {
     /// condition as unmet even where the live engine (which seeds it from its own
     /// running tally at `TokenCreated`) has it satisfied.
     pub prior_launches: Option<u32>,
+    /// Creation-slot buy SOL, for `m_snapshot.first_slot_buy`. `None` ⇒ the metric
+    /// reads `NaN`, so a readout built without it shows a `first_slot_buy` condition
+    /// as unmet even where the live engine (which seeds it at `FirstSlotSettled`) has
+    /// it satisfied. Pass `fp.first_slot_buy_sol` wherever the fingerprint is in hand.
+    pub first_slot_buy: Option<f64>,
 }
 
 /// Reconstruct a rule's readout at `at` by folding stored trades through a fresh
@@ -293,6 +298,9 @@ pub fn replay_readout(
     }
     if let Some(n) = ctx.prior_launches {
         track.seed_prior_launches(n);
+    }
+    if let Some(v) = ctx.first_slot_buy {
+        track.seed_first_slot_buy(v);
     }
 
     let mut position = ctx.entry.map(|(at, price)| PositionCtx::at_fill(price, at));
@@ -388,10 +396,14 @@ fn req_column(r: &MetricReq) -> Option<SeriesColumn> {
     if r.position_scoped {
         return None;
     }
-    Some(match (r.fingerprint, r.window) {
-        (Some(fp), w) => SeriesColumn::Flow(r.metric, w, fp),
-        (None, Some(w)) => SeriesColumn::Window(r.metric, w),
-        (None, None) => SeriesColumn::Static(r.metric),
+    // The WHOLE carrier goes through on the windowed arm: a two-window req that lost
+    // its second axis here would read NaN at every row and draw as a condition that
+    // simply never holds — a blank timeline, not an error. `m_flow_split*` is
+    // single-window by construction, so the flow arm still takes `primary`.
+    Some(match (r.fingerprint, r.window.is_windowed()) {
+        (Some(fp), _) => SeriesColumn::Flow(r.metric, r.window.primary, fp),
+        (None, true) => SeriesColumn::Window(r.metric, r.window),
+        (None, false) => SeriesColumn::Static(r.metric),
     })
 }
 
@@ -470,6 +482,9 @@ pub fn replay_series(
     }
     if let Some(n) = ctx.prior_launches {
         series.seed_prior_launches(n);
+    }
+    if let Some(v) = ctx.first_slot_buy {
+        series.seed_first_slot_buy(v);
     }
     if let Some(from) = record_from {
         series.set_record_from(from);
@@ -611,7 +626,7 @@ fn judge_req(r: &MetricReq, side: ReadSide, value: f64, disarmed: bool) -> Condi
     ConditionRead {
         side,
         metric: r.metric,
-        window: r.window,
+        window: r.window.primary,
         value,
         conds: r.conds.clone(),
         tolerance: r.tolerance,
@@ -953,7 +968,7 @@ mod tests {
             &c,
             prints.map(|(p, secs)| trade(p, secs)),
             &ReplayCtx {
-                ix_count: None, prior_launches: None,
+                ix_count: None, prior_launches: None, first_slot_buy: None,
                 created_at: ts(0),
                 entry: Some((ts(0), 1.0)),
                 stage: None,
@@ -987,7 +1002,7 @@ mod tests {
             trade(1.0, 40),
         ];
         let ctx = ReplayCtx {
-            ix_count: None, prior_launches: None,
+            ix_count: None, prior_launches: None, first_slot_buy: None,
             created_at: ts(0),
             entry: Some((ts(0), 1.0)),
             stage: None,
@@ -1019,7 +1034,7 @@ mod tests {
             &c,
             trades,
             &ReplayCtx {
-                ix_count: None, prior_launches: None,
+                ix_count: None, prior_launches: None, first_slot_buy: None,
                 created_at: ts(0),
                 entry: Some((ts(10), 1.0)),
                 stage: None,
@@ -1060,7 +1075,7 @@ mod tests {
         let prints = [(1.0, 0_i64), (2.0, 10), (1.5, 20)];
         let entry = Some((ts(0), 1.0));
         let replay_ctx = |stage| ReplayCtx {
-            ix_count: None, prior_launches: None,
+            ix_count: None, prior_launches: None, first_slot_buy: None,
             created_at: ts(0),
             entry,
             stage,
@@ -1125,8 +1140,8 @@ mod tests {
         assert_eq!(
             cols,
             vec![
-                SeriesColumn::Window(MetricId::Buy, 30.0),
-                SeriesColumn::Window(MetricId::Sell, 30.0),
+                SeriesColumn::window(MetricId::Buy, 30.0),
+                SeriesColumn::window(MetricId::Sell, 30.0),
             ],
             "m_position is not a track column",
         );
@@ -1145,7 +1160,7 @@ mod tests {
         let series = replay_series(
             &c,
             prints.map(|(p, secs)| trade(p, secs)),
-            &ReplayCtx { created_at: ts(0), entry: Some((ts(10), 2.0)), stage: None, flow: None, ix_count: None, prior_launches: None },
+            &ReplayCtx { created_at: ts(0), entry: Some((ts(10), 2.0)), stage: None, flow: None, ix_count: None, prior_launches: None, first_slot_buy: None },
             ts(20),
             None,
             None,
@@ -1181,7 +1196,7 @@ mod tests {
         let series = replay_series(
             &c,
             prints.map(|(p, secs)| trade(p, secs)),
-            &ReplayCtx { created_at: ts(0), entry: Some((ts(0), 1.0)), stage: None, flow: None, ix_count: None, prior_launches: None },
+            &ReplayCtx { created_at: ts(0), entry: Some((ts(0), 1.0)), stage: None, flow: None, ix_count: None, prior_launches: None, first_slot_buy: None },
             ts(30),
             None,
             None,
@@ -1215,7 +1230,7 @@ mod tests {
             &c,
             prints.map(|(p, secs)| trade(p, secs)),
             // The armed anchor: nothing has filled and no ladder is running.
-            &ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None, ix_count: None, prior_launches: None },
+            &ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None, ix_count: None, prior_launches: None, first_slot_buy: None },
             ts(20),
             None,
             None,
@@ -1255,7 +1270,7 @@ mod tests {
         let series = replay_series(
             &c,
             prints.map(|(p, secs)| trade(p, secs)),
-            &ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None, ix_count: None, prior_launches: None },
+            &ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None, ix_count: None, prior_launches: None, first_slot_buy: None },
             ts(600),
             Some(50),
             None,
@@ -1279,7 +1294,7 @@ mod tests {
             "exit": { "m_price_lifetime": { "stall": [{ "operator": ">=", "value": 900 }] } }
         }));
         let trades: Vec<_> = (0..600).map(|i| trade(1.0 + i as f64 * 0.001, i)).collect();
-        let ctx = ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None, ix_count: None, prior_launches: None };
+        let ctx = ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None, ix_count: None, prior_launches: None, first_slot_buy: None };
 
         let full = replay_series(&c, trades.clone(), &ctx, ts(600), None, None);
         let windowed = replay_series(&c, trades, &ctx, ts(600), None, Some(ts(300)));
@@ -1318,7 +1333,7 @@ mod tests {
             "exit": { "m_position": { "held": [{ "operator": ">=", "value": 600 }] } }
         }));
         let trades: Vec<_> = (0..3600).map(|i| trade(1.0, i)).collect();
-        let ctx = ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None, ix_count: None, prior_launches: None };
+        let ctx = ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None, ix_count: None, prior_launches: None, first_slot_buy: None };
         const CAP: usize = 1_000;
 
         let head = replay_series(&c, trades.clone(), &ctx, ts(3600), Some(CAP), None);
@@ -1364,7 +1379,7 @@ mod tests {
                 &c,
                 trades,
                 &ReplayCtx {
-                    ix_count: None, prior_launches: None,
+                    ix_count: None, prior_launches: None, first_slot_buy: None,
                     created_at: ts(0),
                     entry: Some((ts(0), 1.0)),
                     stage: None,

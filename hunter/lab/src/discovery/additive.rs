@@ -343,7 +343,7 @@ mod tests {
         let cols: Vec<_> = s.segments.iter().map(|x| x.columns().to_vec()).collect();
         assert_eq!(cols[0], cols[1], "segments must share the column union");
         assert!(cols[0].contains(&SeriesColumn::Static(MetricId::Time)));
-        assert!(cols[0].contains(&SeriesColumn::Window(MetricId::WinTrail, 45.0)));
+        assert!(cols[0].contains(&SeriesColumn::window(MetricId::WinTrail, 45.0)));
         // The union grid takes the widest horizon of either segment: segment 0 owns
         // the `time` ceiling, segment 1 the price window.
         let grids: Vec<_> = s.segments.iter().map(|x| x.grid()).collect();

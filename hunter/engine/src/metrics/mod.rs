@@ -4,7 +4,8 @@
 //!
 //! A **metric** is a named per-token quantity a rule can put `{operator, value}`
 //! conditions on. Metrics live in **groups** (one file per group):
-//! * `m_snapshot` (static) — `time`, `liquidity`
+//! * `m_snapshot` (static) — `time`, `liquidity`, `ix_count`, `prior_launches`,
+//!   `first_slot_buy`
 //! * `m_price_lifetime` (static) — `stall`, `trail`, `rise` (lifetime peak/trough)
 //! * `m_price_window` (dynamic, strict param `window_size_sec`) — `trail`, `rise`
 //!   (rolling-window extrema; the dip trigger)
@@ -12,6 +13,9 @@
 //!   (lifetime SOL totals; no classifier)
 //! * `m_flow_window` (dynamic, strict param `window_size_sec`) — same metrics
 //!   over a trailing window
+//! * `m_flow_burst` (dynamic, strict params `window_size_sec` + `burst_size_sec`)
+//!   — `trade_share`, the share of a reference window's trades that landed in a
+//!   shorter one nested inside it
 //! * `m_flow_split` (static, fingerprint-scoped) — vol/organic lifetime totals
 //! * `m_flow_split_window` (dynamic, fingerprint-scoped) — same metrics over a window
 //! * `m_position` (static, **position-scoped**, exit-only) — `retrace`, `bounce`,
@@ -24,6 +28,7 @@
 //! makes it immediately usable everywhere, with no schema change.
 
 pub mod evaluator;
+pub mod flow_burst;
 pub mod flow_lifetime;
 pub mod flow_split;
 pub mod flow_window;
@@ -168,6 +173,8 @@ pub enum MetricGroupId {
     FlowLifetime,
     /// `m_flow_window` — trailing-window flow aggregates.
     FlowWindow,
+    /// `m_flow_burst` — a ratio across two NESTED trailing windows.
+    FlowBurst,
     /// `m_flow_split` — volume/organic lifetime totals (fingerprint-scoped).
     FlowSplit,
     /// `m_flow_split_window` — volume/organic trailing-window totals (fingerprint-scoped).
@@ -217,6 +224,18 @@ pub enum MetricId {
     /// The tally is only as deep as the history the host primed it with (see
     /// [`crate::reduce`]); a run that primes nothing counts only within itself.
     PriorLaunches,
+    /// Total buy SOL that landed in the token's **creation slot** (`m_snapshot`).
+    ///
+    /// "Was the launch real?" — it separates a funded launch from a dust one, and it
+    /// is the same quantity the fingerprint buckets as `first_slot_buy_lamports`. A
+    /// fingerprint can only pin ONE bucket of it, so a rule that means a THRESHOLD
+    /// (`>= 6.41`) has to say it here.
+    ///
+    /// Static once seeded, so an entry gate on it is a token filter that can never
+    /// re-trigger. `NaN` until the creation slot settles — which is later than
+    /// `TokenCreated`, because the number is summed from that slot's trades. A rule
+    /// using it therefore cannot fire at birth; that is the fact, not a limitation.
+    FirstSlotBuy,
     /// Seconds since the price last set a **new all-time high** (`m_price_lifetime`)
     /// — NOT "since the last trade". Only a strictly higher price resets the clock,
     /// so on a token trading actively below its peak `stall` keeps climbing. Read
@@ -254,6 +273,16 @@ pub enum MetricId {
     /// people are in the token, as against `gross_flow`'s how much SOL. One wallet
     /// churning and a crowd arriving look identical in SOL and different here.
     UniqueWallets,
+    /// Trades since the token's first (`m_flow_lifetime`) — the lifetime twin of
+    /// [`TradeCount`], and the maturity counter to `LifeGrossFlow`'s volume.
+    ///
+    /// **Monotonic**, so an entry UPPER bound on it (`<= 140`) is a one-way door: once a
+    /// token crosses it the requirement can never come back, and the arm is disarmed as
+    /// unsatisfiable rather than re-checked for the rest of the token's life.
+    ///
+    /// A trade dropped by the non-finite/negative SOL guard is not counted, matching the
+    /// window sibling on the same tape.
+    LifeTradeCount,
     /// Trades over the trailing window (`m_flow_window`) — how BUSY the tape is, as
     /// against `unique_wallets`' how many people are on it. One wallet re-entering ten
     /// times reads 10 here and 1 there.
@@ -271,6 +300,30 @@ pub enum MetricId {
     /// `NaN` on an empty window — no flow, no direction to report, and a `NaN`
     /// satisfies no condition (evaluator contract).
     BuyShare,
+    /// Trades per distinct wallet over the trailing window —
+    /// `trade_count / unique_wallets` (`m_flow_window`).
+    ///
+    /// How hard each wallet is working the tape. `<= 2` is a crowd arriving; a large
+    /// value is one wallet re-entering, which `trade_count` and `gross_flow` cannot
+    /// tell apart. It is a **count ratio, never an identity**, so it survives the
+    /// wallet rotation that makes identity useless on this chain.
+    ///
+    /// `NaN` on an empty window rather than `0.0` — a `0.0` would let
+    /// `trades_per_wallet <= 2` pass on a dead tape, the exact reading it excludes.
+    TradesPerWallet,
+    // ── m_flow_burst (two nested trailing windows) ─
+    /// Percent of the reference window's trades that landed in the burst window
+    /// nested inside it — `trade_count(burst) / trade_count(window) * 100`
+    /// (`m_flow_burst`).
+    ///
+    /// How CONCENTRATED the tape is in time, independent of how busy it is. Ten
+    /// trades arriving in the last three seconds and ten spread evenly over a minute
+    /// are the same `trade_count` and the same `gross_flow`, and 50 vs 10 here.
+    ///
+    /// `NaN` on an empty reference window. Reads `100` on a token younger than the
+    /// burst window, which is a true reading and not a maturity signal — see
+    /// [`flow_burst::trade_share`].
+    BurstTradeShare,
     // ── m_flow_split (lifetime; JSON names shared with m_flow_split_window) ─
     VolBuy,
     VolSell,
@@ -338,7 +391,7 @@ impl MetricId {
     /// copied into each loader. A new wallet-keyed metric must be added here too.
     pub fn needs_wallet_identity(self) -> bool {
         is_flow_metric(self)
-            || matches!(self, MetricId::UniqueWallets)
+            || matches!(self, MetricId::UniqueWallets | MetricId::TradesPerWallet)
     }
 
     /// Whether this metric's value depends on the token's **creator identity across
@@ -441,6 +494,16 @@ impl MetricScope {
 pub struct MetricSpec {
     pub id: MetricId,
     pub name: &'static str,
+    /// **The** definition of this metric: what it measures, plus any NaN or basis rule a
+    /// rule author has to know. One or two sentences, written HERE and rendered into the
+    /// UI from this text — a metric carries one definition and it lives where the metric
+    /// is defined, so a tooltip can never say something the code does not. Unit, `=`
+    /// tolerance and monotonicity are their own registry fields and the UI appends them,
+    /// so this must not restate them.
+    ///
+    /// Longer prose — worked examples, reading guides, refutations — may still live in the
+    /// frontend's `strategyHelp.ts`, but only BELOW this and never as a second definition.
+    pub description: &'static str,
     pub unit: Unit,
     pub eq_tolerance: f64,
     pub monotonic: bool,
@@ -559,6 +622,52 @@ pub const CANDLE_UP_HUE: u16 = 170;
 /// See [`CANDLE_UP_HUE`] for the sync contract.
 pub const CANDLE_DOWN_HUE: u16 = 355;
 
+/// Which trailing window(s) a metric read is scoped to.
+///
+/// One value rather than a loose `Option<f64>` argument, for two reasons. It keeps
+/// the hot-path read signature stable as bases grow, and — the load-bearing one — it
+/// makes the window part of a requirement's **identity** automatic: blockers and
+/// monotonic kills compare reqs by `(metric, windows, fingerprint)`, so a group whose
+/// basis is two nested windows cannot collide with a sibling instance that differs
+/// only in the second one.
+///
+/// `primary` is the group's `window_size_sec`. `secondary` is `None` for every group
+/// whose basis is a single window, which is all of them but `m_flow_burst`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Windows {
+    pub primary: Option<f64>,
+    pub secondary: Option<f64>,
+}
+
+impl Windows {
+    /// A static group's read — no window on either axis.
+    pub const NONE: Self = Self { primary: None, secondary: None };
+
+    /// A single-window read (`window_size_sec` only).
+    pub fn one(secs: f64) -> Self {
+        Self { primary: Some(secs), secondary: None }
+    }
+
+    /// A two-window read: the group's own window plus its second axis.
+    pub fn two(primary: f64, secondary: f64) -> Self {
+        Self { primary: Some(primary), secondary: Some(secondary) }
+    }
+
+    /// Whether this read is scoped to a trailing window at all — i.e. it is a dynamic
+    /// group's read, not a static one. Tests BOTH axes: a two-window group is windowed
+    /// even where only its second axis is set, and a caller asking "is this a rate-1
+    /// clock?" must not answer yes to one.
+    pub fn is_windowed(self) -> bool {
+        self.primary.is_some() || self.secondary.is_some()
+    }
+}
+
+impl From<Option<f64>> for Windows {
+    fn from(primary: Option<f64>) -> Self {
+        Self { primary, secondary: None }
+    }
+}
+
 /// **The metric registry** — every group and metric the engine knows.
 /// Compile-time data; every other layer derives its vocabulary from here.
 pub const REGISTRY: &[GroupSpec] = &[
@@ -577,6 +686,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Time,
                 name: "time",
+                description: "Seconds since token creation. Monotonic, so an upper bound is a one-way door.",
                 unit: Unit::Seconds,
                 eq_tolerance: 0.5,
                 monotonic: true,
@@ -585,6 +695,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::IxCount,
                 name: "ix_count",
+                description: "How many instructions the token's CREATION transaction carried - launch tooling as one number. Static from creation; NaN when the labels are unknown.",
                 // A tally, so half an instruction: `<= 5` must not turn on float noise.
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
@@ -596,14 +707,28 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Liquidity,
                 name: "liquidity",
+                description: "REAL SOL reserves at the most recent trade (`vsol - 30` on the curve, so 0..85 up to the graduation wall). NaN before the first trade.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
                 hue: 236,
             },
             MetricSpec {
+                id: MetricId::FirstSlotBuy,
+                name: "first_slot_buy",
+                description: "Total buy SOL that landed in the token's CREATION slot - was the launch funded. Seeded when that slot settles, so it is NaN at birth and a rule using it cannot fire at launch.",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                // Static after the creation slot settles - it never moves, so no
+                // monotonic derivation.
+                monotonic: false,
+                // Between `time` (212) and `ix_count` (224), inside the snapshot family.
+                hue: 218,
+            },
+            MetricSpec {
                 id: MetricId::PriorLaunches,
                 name: "prior_launches",
+                description: "How many tokens this creator launched BEFORE this one, over a trailing 30 days. NaN when the creator is unknown, never 0.",
                 // A tally, so half a launch: `== 0` must not turn on float noise.
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
@@ -630,6 +755,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Stall,
                 name: "stall",
+                description: "Seconds since the price last set a new ALL-TIME high - not since the last trade. Only a strictly higher price resets it.",
                 unit: Unit::Seconds,
                 eq_tolerance: 0.5,
                 monotonic: false,
@@ -638,6 +764,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Trail,
                 name: "trail",
+                description: "Percent below the lifetime peak price.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -646,6 +773,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::LifeRise,
                 name: "rise",
+                description: "Percent above the lifetime trough price.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -671,6 +799,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinTrail,
                 name: "trail",
+                description: "Percent below the rolling-window high - the dip trigger.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -679,6 +808,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinRise,
                 name: "rise",
+                description: "Percent above the rolling-window low.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -703,6 +833,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::LifeGrossFlow,
                 name: "gross_flow",
+                description: "Buy + sell SOL since the token was born - total churn.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: true,
@@ -711,6 +842,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::LifeNetFlow,
                 name: "net_flow",
+                description: "Buy - sell SOL since the token was born. Equals the depth added, so it moves with `liquidity`.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -719,14 +851,29 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::LifeBuy,
                 name: "buy",
+                description: "Buy SOL since the token was born.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: true,
                 hue: CANDLE_UP_HUE,
             },
             MetricSpec {
+                id: MetricId::LifeTradeCount,
+                name: "trade_count",
+                description: "Trades since the token's first - maturity, against `gross_flow`'s volume.",
+                // A tally, so half a trade — same reasoning as the window sibling.
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                // Totals only grow, which is what makes an upper bound a one-way door.
+                monotonic: true,
+                // The window sibling's hue: one quantity, two views — same pairing as
+                // `gross_flow` at 278 in both groups.
+                hue: 294,
+            },
+            MetricSpec {
                 id: MetricId::LifeSell,
                 name: "sell",
+                description: "Sell SOL since the token was born.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: true,
@@ -749,6 +896,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::GrossFlow,
                 name: "gross_flow",
+                description: "Buy + sell SOL over the trailing window - how much is changing hands right now.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -757,6 +905,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::NetFlow,
                 name: "net_flow",
+                description: "Buy - sell SOL over the trailing window - the instantaneous direction of money.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -765,6 +914,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Buy,
                 name: "buy",
+                description: "Buy SOL over the trailing window. Satisfied BY a buy landing, so a gate on it fills behind that buy's own price impact.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -773,6 +923,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::BuyShare,
                 name: "buy_share",
+                description: "Share of the window's SOL that is buys, `buy / (buy + sell)` in percent - the tape's DIRECTION independent of its size. NaN on an empty window.",
                 // A ratio in percent: 0.5pp is below any threshold worth authoring and
                 // above float noise on a sum of f64 SOL amounts.
                 unit: Unit::Percent,
@@ -786,6 +937,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::UniqueWallets,
                 name: "unique_wallets",
+                description: "Distinct trading wallets over the trailing window - how many PEOPLE are in the token, against `gross_flow`'s how much SOL.",
                 // A tally, so the `=` tolerance is half a wallet: anything smaller
                 // would make `== 5` depend on float noise, anything larger would let
                 // it match 6.
@@ -797,6 +949,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::TradeCount,
                 name: "trade_count",
+                description: "Trades over the trailing window - how BUSY the tape is, against `unique_wallets`' how many people. Needs no wallet column.",
                 // A tally, so half a trade — same reasoning as `unique_wallets`.
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
@@ -804,14 +957,62 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 294,
             },
             MetricSpec {
+                id: MetricId::TradesPerWallet,
+                name: "trades_per_wallet",
+                description: "`trade_count / unique_wallets` over the window. Low is a crowd arriving, high is one wallet working the tape - a COUNT ratio, never an identity, so wallet rotation does not defeat it. NaN on an empty window.",
+                // A ratio of two tallies, not a tally: real thresholds sit at 1.5-3, so
+                // half a unit would swallow them. 0.05 is below anything worth
+                // authoring and far above float noise on a count/count.
+                unit: Unit::Count,
+                eq_tolerance: 0.05,
+                monotonic: false,
+                // Between `trade_count` (294) and `net_flow` (300), inside the group's
+                // violet family — it is built from the two counts either side of it.
+                hue: 296,
+            },
+            MetricSpec {
                 id: MetricId::Sell,
                 name: "sell",
+                description: "Sell SOL over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
                 hue: CANDLE_DOWN_HUE,
             },
         ],
+    },
+    GroupSpec {
+        id: MetricGroupId::FlowBurst,
+        name: "m_flow_burst",
+        kind: MetricKind::Dynamic,
+        scope: MetricScope::Token,
+        family: MetricFamily::Flow,
+        // TWO windows, and the pair is the basis: `window_size_sec` is the reference
+        // span, `burst_size_sec` the slice nested inside it. Both required — a share
+        // with one end missing is not a smaller reading, it is no reading. The
+        // `burst <= window` bound is enforced in `rule_params::validate_group`, which
+        // is where cross-param rules live (`allows_zero` cannot express it).
+        strict_params: &[
+            StrictParamSpec { name: "window_size_sec", required: true, allows_zero: false },
+            StrictParamSpec { name: flow_burst::BURST_PARAM, required: true, allows_zero: false },
+        ],
+        fingerprint_config: &[],
+        // Same violet family as m_flow_lifetime / m_flow_window — it is built from
+        // their `trade_count`, so it is a third view of aggregate flow and the
+        // cross-group hue guard exempts the trio.
+        metrics: &[MetricSpec {
+            id: MetricId::BurstTradeShare,
+            name: "trade_share",
+            description: "Percent of the reference window's trades that landed in the burst window nested inside it - how CONCENTRATED the tape is in time, independent of how busy it is. Reads 100 on a token younger than the burst window; NaN on an empty reference window.",
+            // A ratio in percent, same reasoning as `buy_share`: 0.5pp is below any
+            // threshold worth authoring and above float noise on a count/count.
+            unit: Unit::Percent,
+            eq_tolerance: 0.5,
+            monotonic: false,
+            // Above `net_flow` (300) at the top of the family, still >= 35 off the
+            // candle red at 355.
+            hue: 306,
+        }],
     },
     GroupSpec {
         id: MetricGroupId::FlowSplit,
@@ -830,6 +1031,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::VolBuy,
                 name: "vol_buy",
+                description: "Buy SOL from VOLUME-side wallets (creator tooling, contagion, the creator) since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: true,
@@ -838,6 +1040,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::VolSell,
                 name: "vol_sell",
+                description: "Sell SOL from volume-side wallets since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: true,
@@ -846,6 +1049,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::VolNet,
                 name: "vol_net",
+                description: "Volume-side buy - sell SOL since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -854,6 +1058,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::VolGross,
                 name: "vol_gross",
+                description: "Volume-side buy + sell SOL since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: true,
@@ -862,6 +1067,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::NonvolBuy,
                 name: "nonvol_buy",
+                description: "Buy SOL from ORGANIC wallets (everyone the classifier does not tag) since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: true,
@@ -870,6 +1076,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::NonvolSell,
                 name: "nonvol_sell",
+                description: "Sell SOL from organic wallets since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: true,
@@ -878,6 +1085,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::NonvolNet,
                 name: "nonvol_net",
+                description: "Organic buy - sell SOL since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -886,6 +1094,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::NonvolGross,
                 name: "nonvol_gross",
+                description: "Organic buy + sell SOL since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: true,
@@ -894,6 +1103,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::VolShare,
                 name: "vol_share",
+                description: "Share of lifetime SOL that is volume-side, in percent. Needs the fingerprint's `volume_ix_patterns`; NaN when unconfigured.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -916,6 +1126,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinVolBuy,
                 name: "vol_buy",
+                description: "Buy SOL from VOLUME-side wallets over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -924,6 +1135,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinVolSell,
                 name: "vol_sell",
+                description: "Sell SOL from volume-side wallets over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -932,6 +1144,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinVolNet,
                 name: "vol_net",
+                description: "Volume-side buy - sell SOL over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -940,6 +1153,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinVolGross,
                 name: "vol_gross",
+                description: "Volume-side buy + sell SOL over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -948,6 +1162,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinNonvolBuy,
                 name: "nonvol_buy",
+                description: "Buy SOL from ORGANIC wallets over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -956,6 +1171,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinNonvolSell,
                 name: "nonvol_sell",
+                description: "Sell SOL from organic wallets over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -964,6 +1180,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinNonvolNet,
                 name: "nonvol_net",
+                description: "Organic buy - sell SOL over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -972,6 +1189,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinNonvolGross,
                 name: "nonvol_gross",
+                description: "Organic buy + sell SOL over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -980,6 +1198,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinVolShare,
                 name: "vol_share",
+                description: "Share of the window's SOL that is volume-side, in percent. Needs the fingerprint's `volume_ix_patterns`; NaN when unconfigured.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -1014,6 +1233,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Retrace,
                 name: "retrace",
+                description: "Percent below the since-entry peak - the trailing stop. With no `arm_above_pct` the peak seeds at your fill, so it doubles as a hard stop from entry.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -1022,6 +1242,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Bounce,
                 name: "bounce",
+                description: "Percent above the since-entry trough - the bounce twin of `retrace`.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -1030,6 +1251,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Pnl,
                 name: "pnl",
+                description: "Signed percent against your entry price. Take-profit and stop-loss desugar into this.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -1038,6 +1260,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Held,
                 name: "held",
+                description: "Seconds since the entry fill - the clock exit. A clock is not adversely selected at its own fill; a barrier is.",
                 unit: Unit::Seconds,
                 eq_tolerance: 0.5,
                 monotonic: false,
@@ -1131,6 +1354,7 @@ pub fn registry_json() -> serde_json::Value {
                 .map(|m| {
                     json!({
                         "name": m.name,
+                        "description": m.description,
                         "unit": m.unit.as_str(),
                         "eq_tolerance": m.eq_tolerance,
                         "monotonic": m.monotonic,
@@ -1243,13 +1467,40 @@ mod tests {
             by_family.entry(g.family.as_str()).or_default().push(g.name);
         }
         assert_eq!(by_family["price"], vec!["m_price_lifetime", "m_price_window", "m_position"]);
-        assert_eq!(by_family["flow"], vec!["m_flow_lifetime", "m_flow_window"]);
+        assert_eq!(by_family["flow"], vec!["m_flow_lifetime", "m_flow_window", "m_flow_burst"]);
         assert_eq!(by_family["flow_split"], vec!["m_flow_split", "m_flow_split_window"]);
         assert_eq!(by_family["liquidity_age"], vec!["m_snapshot"]);
         // Nothing is unclassified today; a new group that lands in `Standalone` is
         // gridded alone (correct, just more compute) and this assert is the prompt
         // to decide whether it really belongs to an existing family.
         assert!(!by_family.contains_key("standalone"), "unclassified group: {by_family:?}");
+    }
+
+    /// A metric ships explained, and explained once. The definition lives here and the
+    /// UI renders it from this text, so an empty one is a metric whose tooltip silently
+    /// falls back to whatever the frontend happens to still say about it.
+    #[test]
+    fn every_metric_carries_its_own_definition() {
+        for g in REGISTRY {
+            for m in g.metrics {
+                let d = m.description;
+                assert!(!d.trim().is_empty(), "{}.{} has no description", g.name, m.name);
+                // A definition, not a label: anything this short is a restatement of the
+                // name and tells a rule author nothing.
+                assert!(d.len() >= 30, "{}.{}: description too thin: {d:?}", g.name, m.name);
+                assert!(d.ends_with('.'), "{}.{}: description is a sentence", g.name, m.name);
+                // Unit / tolerance / monotonicity are their own fields and the UI appends
+                // them; restating one here is the second copy the rule forbids.
+                for banned in ["eq_tolerance", "monotonic"] {
+                    assert!(
+                        !d.contains(banned),
+                        "{}.{}: {banned} is a registry FIELD, not prose",
+                        g.name,
+                        m.name,
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -1261,15 +1512,32 @@ mod tests {
         }
     }
 
+    /// The property the carrier exists for: a requirement's identity includes BOTH
+    /// axes. Blockers and monotonic kills match reqs by `(metric, windows, ...)`, so
+    /// without this two instances of a two-window group that differ only in the second
+    /// axis would collide and one would silently mask the other.
+    #[test]
+    fn windows_identity_covers_both_axes() {
+        assert_eq!(Windows::one(60.0), Windows::from(Some(60.0)));
+        assert_ne!(Windows::two(60.0, 3.0), Windows::two(60.0, 5.0), "second axis is identity");
+        assert_ne!(Windows::two(60.0, 3.0), Windows::one(60.0), "a second axis is not nothing");
+        assert_eq!(Windows::NONE, Windows::from(None));
+        // `is_windowed` answers "dynamic read?", so it must see either axis.
+        assert!(!Windows::NONE.is_windowed());
+        assert!(Windows::one(5.0).is_windowed());
+        assert!(Windows { primary: None, secondary: Some(3.0) }.is_windowed());
+    }
+
     #[test]
     fn monotonic_flags_match_contract() {
-        // Lifetime accumulators that only grow: time + m_flow_lifetime buy/sell/gross
-        // + m_flow_split vol/nonvol buy/sell/gross. Windowed / net / share /
-        // everything else: not monotonic.
+        // Lifetime accumulators that only grow: time + m_flow_lifetime
+        // buy/sell/gross/trade_count + m_flow_split vol/nonvol buy/sell/gross.
+        // Windowed / net / share / everything else: not monotonic.
         let lifetime_flow_mono = [
             MetricId::LifeBuy,
             MetricId::LifeSell,
             MetricId::LifeGrossFlow,
+            MetricId::LifeTradeCount,
             MetricId::VolBuy,
             MetricId::VolSell,
             MetricId::VolGross,
@@ -1301,6 +1569,7 @@ mod tests {
             assert_eq!(jm.len(), g.metrics.len());
             for (m_json, m) in jm.iter().zip(g.metrics) {
                 assert_eq!(m_json["name"], m.name);
+                assert_eq!(m_json["description"], m.description);
                 assert_eq!(m_json["unit"], m.unit.as_str());
                 assert_eq!(m_json["eq_tolerance"], m.eq_tolerance);
                 assert_eq!(m_json["monotonic"], m.monotonic);
@@ -1396,7 +1665,8 @@ mod tests {
     /// `m_snapshot` chip and a `m_flow_window` chip read as the same thing.
     /// **Sibling families** share a hue band on purpose and are exempt:
     /// * split flow — `m_flow_split` / `m_flow_split_window` (one classifier, two views);
-    /// * aggregate flow — `m_flow_lifetime` / `m_flow_window` (lifetime vs trailing);
+    /// * aggregate flow — `m_flow_lifetime` / `m_flow_window` / `m_flow_burst`
+    ///   (lifetime, trailing, and the share of a trailing window that is recent);
     /// * price — `m_price_lifetime` / `m_price_window` / `m_position` (lifetime
     ///   extrema, rolling extrema, and since-entry — three views of the one price path).
     #[test]
@@ -1407,7 +1677,7 @@ mod tests {
             match g {
                 FlowSplit | FlowSplitWindow => Some(0),
                 PriceLifetime | PriceWindow | Position => Some(1),
-                FlowLifetime | FlowWindow => Some(2),
+                FlowLifetime | FlowWindow | FlowBurst => Some(2),
                 _ => None,
             }
         };

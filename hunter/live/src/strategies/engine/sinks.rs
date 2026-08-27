@@ -1221,7 +1221,10 @@ fn entry_blockers_json(b: &EntryBlockers) -> serde_json::Value {
         },
         "unmet": b.unmet.iter().map(|r| serde_json::json!({
             "metric": metric_path(r.metric),
-            "window_size_sec": r.window,
+            // The group's own window. A two-window group's second axis is not on the
+            // wire yet — add a key for it rather than widening this one, so a reader
+            // can never mistake one window for the other.
+            "window_size_sec": r.window.primary,
             // Non-finite serializes `null`: an unreadable metric satisfies
             // nothing, and a `NaN` is not representable in JSON anyway.
             "value": r.value.is_finite().then_some(r.value),

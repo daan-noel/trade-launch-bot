@@ -101,7 +101,12 @@ function rowWindow(row: RuleConditionRow): number | null {
  *  different bags, hence different instances. */
 export function ruleRowInstanceKey(row: RuleConditionRow): string {
   const on = ruleRowEnabled(row) ? 'on' : 'off';
-  return `${on}|${row.side}|${row.group}|${rowWindow(row) ?? '∅'}`;
+  // A two-window group's identity is the PAIR, so the burst axis is part of the key.
+  // Without it `m_flow_burst{60,3}` and `m_flow_burst{60,10}` merge into one instance
+  // and the later row's strict bag silently wins — one of the two gates disappears.
+  const burst = row.strict?.[BURST_PARAM];
+  const b = typeof burst === 'number' ? burst : '∅';
+  return `${on}|${row.side}|${row.group}|${rowWindow(row) ?? '∅'}|${b}`;
 }
 
 /**
@@ -123,6 +128,10 @@ export function setRowInstanceStrict(
   const key = ruleRowInstanceKey(target);
   return rows.map((r) => (ruleRowInstanceKey(r) === key ? { ...r, strict: { ...strict } } : r));
 }
+
+/** The second trailing-window strict param (`m_flow_burst`). Mirrors the backend
+ *  SSOT `hunter_engine::metrics::flow_burst::BURST_PARAM`. */
+export const BURST_PARAM = 'burst_size_sec';
 
 function sameWindow(a: number | undefined, b: number | null): boolean {
   const av = typeof a === 'number' ? a : null;
@@ -149,6 +158,15 @@ export function ruleConditionRowError(
     return `${group.name} is exit-only (no value before entry) — move it to the exit column`;
   if (!row.metric || !group.metrics.some((m) => m.name === row.metric)) return 'pick a metric';
   if (group.kind === 'dynamic' && rowWindow(row) == null) return 'window (s) > 0 required';
+  // Second window axis (`m_flow_burst`): required by the registry, and it must nest
+  // inside the reference window or the share counts trades the denominator does not.
+  if (group.strict_params.some((sp) => sp.name === BURST_PARAM && sp.required)) {
+    const burst = row.strict?.[BURST_PARAM];
+    if (typeof burst !== 'number' || !Number.isFinite(burst) || burst <= 0)
+      return 'burst (s) > 0 required';
+    const w = rowWindow(row);
+    if (w != null && burst > w) return `burst (s) must nest inside window ${w}`;
+  }
   if (row.arms.length === 0) return 'add a condition (e.g. > 10)';
   const arm = row.strict?.arm_above_pct;
   if (arm != null && (!Number.isFinite(arm) || arm < 0)) return 'arm ≥ % must be a number ≥ 0';
@@ -249,7 +267,11 @@ export function rowsToSide(
     if (!row.group || !row.metric || row.arms.length === 0) continue;
     const w = rowWindow(row);
     const instances = out[row.group] ?? (out[row.group] = []);
-    let inst = instances.find((g) => sameWindow(g.strict.window_size_sec, w));
+    const burst = row.strict?.[BURST_PARAM] ?? null;
+    let inst = instances.find(
+      (g) =>
+        sameWindow(g.strict.window_size_sec, w) && sameWindow(g.strict[BURST_PARAM], burst),
+    );
     if (!inst) {
       inst = { strict: {}, metrics: {} };
       if (w != null) inst.strict.window_size_sec = w;

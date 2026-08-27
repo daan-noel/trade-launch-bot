@@ -32,6 +32,17 @@ const REG: StrategyRegistry = {
       metrics: [{ name: 'trail', unit: 'percent', eq_tolerance: 0.1, monotonic: false, hue: 45 }],
     },
     {
+      name: 'm_flow_burst',
+      kind: 'dynamic',
+      strict_params: [
+        { name: 'window_size_sec', required: true },
+        { name: 'burst_size_sec', required: true },
+      ],
+      metrics: [
+        { name: 'trade_share', unit: 'percent', eq_tolerance: 0.5, monotonic: false, hue: 306 },
+      ],
+    },
+    {
       name: 'm_position',
       kind: 'static',
       scope: 'position',
@@ -379,5 +390,56 @@ describe('non-window strict params', () => {
     );
     expect(rows[0].strict).toEqual({});
     expect(rowsToSide(rows, 'entry').m_price_window[0].strict).toEqual({ window_size_sec: 30 });
+  });
+});
+
+describe('two-window group (m_flow_burst)', () => {
+  const burstRow = (window: string, burst: number, value: number): RuleConditionRow =>
+    row({
+      group: 'm_flow_burst',
+      metric: 'trade_share',
+      window,
+      strict: { burst_size_sec: burst },
+      arms: [[{ operator: '>=' as const, value }]],
+    });
+
+  it('keeps two clauses that share a reference window but differ in the burst', () => {
+    // Both axes are the group's identity. Keying instances on `window_size_sec`
+    // alone merged these into one and the later burst silently won — one of the
+    // two gates just disappeared on save.
+    const side = rowsToSide([burstRow('60', 3, 8), burstRow('60', 10, 60)], 'entry');
+    expect(side.m_flow_burst).toHaveLength(2);
+    expect(side.m_flow_burst.map((i) => i.strict.burst_size_sec).sort((a, b) => a! - b!)).toEqual([3, 10]);
+  });
+
+  it('round-trips both axes through the row editor', () => {
+    const side = {
+      m_flow_burst: [
+        {
+          strict: { window_size_sec: 60, burst_size_sec: 3 },
+          metrics: { trade_share: [[{ operator: '>=' as const, value: 7.69 }]] },
+        },
+      ],
+    };
+    const rows = sideToRows(side, 'entry');
+    expect(rows[0].window).toBe('60');
+    expect(rows[0].strict).toEqual({ burst_size_sec: 3 });
+    expect(rowsToSide(rows, 'entry')).toEqual(side);
+  });
+
+  it('requires the burst axis and rejects one that does not nest', () => {
+    expect(
+      ruleConditionRowError(
+        row({
+          group: 'm_flow_burst',
+          metric: 'trade_share',
+          window: '60',
+          arms: [[{ operator: '>=' as const, value: 8 }]],
+        }),
+        REG,
+      ),
+    ).toMatch(/burst/);
+    expect(ruleConditionRowError(burstRow('60', 90, 8), REG)).toMatch(/nest inside window 60/);
+    expect(ruleConditionRowError(burstRow('60', 3, 8), REG)).toBeNull();
   });
 });

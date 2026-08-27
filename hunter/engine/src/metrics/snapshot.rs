@@ -10,6 +10,10 @@
 //!   Seeded once from `TokenCreated` and never moves, so it is a token property, not
 //!   a market reading. Undefined (`NaN`) when the creation fingerprint carried no
 //!   labels, which is how an unknown launch stays unmatched by any `ix_count` gate.
+//! * `first_slot_buy` — total buy SOL that landed in the token's CREATION slot.
+//!   Seeded once when the creation slot settles and never moves. Undefined (`NaN`)
+//!   until then, so a rule gated on it cannot fire on a token whose launch has not
+//!   been counted yet — which is also why it is a phase-`Full` fact, not a birth one.
 //! * `prior_launches` — how many tokens the creator launched before this one. Seeded
 //!   once from the reducer's running per-creator tally and never moves. Undefined
 //!   (`NaN`) when the creator is unknown, so an unknown creator stays unmatched
@@ -30,6 +34,9 @@ pub struct SnapshotState {
     /// Creator's launches strictly before this token, seeded from `TokenCreated`.
     /// `None` when the creator is unknown.
     prior_launches: Option<u32>,
+    /// Buy SOL in the token's creation slot, seeded when that slot settles.
+    /// `None` until then — the count does not exist yet.
+    first_slot_buy: Option<f64>,
 }
 
 impl SnapshotState {
@@ -69,6 +76,24 @@ impl SnapshotState {
         self.prior_launches.map_or(f64::NAN, f64::from)
     }
 
+    /// Seed the creation slot's buy total (human SOL). Called once, when the slot
+    /// settles — NOT at `TokenCreated`, where the number does not exist yet.
+    ///
+    /// A `0` here is a REAL value (a launch nobody bought into), same as
+    /// [`seed_prior_launches`](Self::seed_prior_launches), so absence is carried by
+    /// not calling this rather than by seeding `0`. A non-finite value is ignored:
+    /// a poisoned feed reading must leave the metric unknown, not satisfy a `<=` gate.
+    pub fn seed_first_slot_buy(&mut self, sol: f64) {
+        if sol.is_finite() && sol >= 0.0 {
+            self.first_slot_buy = Some(sol);
+        }
+    }
+
+    /// `first_slot_buy` — creation-slot buy SOL; `NaN` until the slot settles.
+    pub fn first_slot_buy(&self) -> f64 {
+        self.first_slot_buy.unwrap_or(f64::NAN)
+    }
+
     /// `time` — seconds since creation. Free function: needs no state.
     pub fn time(created_at: Ts, now: Ts) -> f64 {
         secs_between(created_at, now)
@@ -87,6 +112,7 @@ impl SnapshotState {
             MetricId::Liquidity => self.liquidity(),
             MetricId::IxCount => self.ix_count(),
             MetricId::PriorLaunches => self.prior_launches(),
+            MetricId::FirstSlotBuy => self.first_slot_buy(),
             _ => f64::NAN,
         }
     }
@@ -132,6 +158,25 @@ mod tests {
         assert_eq!(s.prior_launches(), 0.0);
         s.seed_prior_launches(137);
         assert_eq!(s.prior_launches(), 137.0);
+    }
+
+    /// The launch axis is unknown until the creation slot settles, and `0` is a real
+    /// launch (nobody bought), so the two must stay distinguishable — a `0` standing
+    /// in for "not counted yet" would let `first_slot_buy <= 1` pass on every token
+    /// the instant it is born.
+    #[test]
+    fn first_slot_buy_is_unknown_until_seeded_and_zero_is_real() {
+        let mut s = SnapshotState::default();
+        assert!(s.first_slot_buy().is_nan());
+        s.seed_first_slot_buy(0.0);
+        assert_eq!(s.first_slot_buy(), 0.0);
+        s.seed_first_slot_buy(14.25);
+        assert_eq!(s.first_slot_buy(), 14.25);
+        // A poisoned reading leaves the last good value rather than erasing it.
+        s.seed_first_slot_buy(f64::NAN);
+        assert_eq!(s.first_slot_buy(), 14.25);
+        s.seed_first_slot_buy(-1.0);
+        assert_eq!(s.first_slot_buy(), 14.25);
     }
 
     #[test]

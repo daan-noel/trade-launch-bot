@@ -23,6 +23,9 @@ registry `MetricId`s so lifetime can be monotonic while the window is not.
 | `net_flow` | `buy − sell` | SOL | 0.1 | ✗ |
 | `gross_flow` | `buy + sell` | SOL | 0.1 | ✓ |
 | `unique_wallets` | distinct trading wallets (window only) | count | 0.5 | ✗ |
+| `trade_count` | trades landed | count | 0.5 | ✓ |
+| `buy_share` | `buy / (buy + sell)`, **percent 0-100** (window only) | percent | 0.5 | ✗ |
+| `trades_per_wallet` | `trade_count / unique_wallets` (window only) | count | 0.05 | ✗ |
 
 Non-finite / negative SOL is ignored. Windowed variants are never monotonic.
 Lifetime is the maturity / critical-mass gate; window is the hot-right-now filter.
@@ -46,6 +49,88 @@ cumulative maturity and does not bind the entry instant. So when the diagnostic 
 windowed hot gate, swap it for `m_flow_lifetime.gross_flow >= 30` rather than leaving the
 rule with no liveness gate at all. The same applies to any entry whose window gate points
 *downward* (a quiet-tape gate) — there the lifetime floor is load-bearing from the start.
+
+**`buy_share` is window-only**; `trade_count` exists in **both** groups. The lifetime one is a
+monotonic accumulator like `buy`/`sell`/`gross_flow`, so an entry UPPER bound on it (`<= 140`)
+is a **one-way door**: once a token crosses it the requirement can never come back and the arm
+is disarmed as unsatisfiable rather than re-checked for the rest of the token's life. That is
+what makes it a maturity gate — "still early in its trading life" — rather than a tape reading.
+`trade_count` is how BUSY the tape is, against `unique_wallets`'
+how many people are on it: one wallet re-entering ten times reads 10 and 1. It is the only
+one of the three that needs **no wallet column**, so it survives an offline load that did not
+request wallet identity — prefer it whenever the count, not the crowd, is what the rule means.
+`buy_share` is the tape's DIRECTION independent of its size (`net_flow` conflates the two:
++5 SOL net means something different on 6 SOL of turnover than on 200) and is `NaN` on an
+empty window, which satisfies no condition.
+
+**`trades_per_wallet` is the one ratio the other two cannot express.** Six people trading once
+and one wallet trading six times are identical in `trade_count` AND in `gross_flow`, and read
+1 vs 6 here — so `<= 2` is "a crowd is arriving" and a large value is "one wallet is working
+the tape". It is a **count ratio, never an identity**, which is what makes it survive the
+wallet rotation that renders identity useless. Like `buy_share` it is `NaN` on an empty
+window, and for a sharper reason: `0.0` would let `trades_per_wallet <= 2` pass on a DEAD
+tape, which is the exact reading the gate exists to exclude.
+
+## Launch size (`m_snapshot.first_slot_buy`)
+
+Total buy SOL that landed in the token's **creation slot** — the same quantity
+`fingerprints.first_slot_buy_lamports` buckets. It exists as a metric because a
+fingerprint pins ONE bucket of it and a rule that means a threshold (`>= 6.41`) has no
+other spelling.
+
+**Seeded at `FirstSlotSettled`, not `TokenCreated`.** The number is summed from that
+slot's trades, so it does not exist at birth: it reads `NaN` until the settle, and a rule
+gated on it cannot fire at launch. That is the fact, not a limitation — the same two-phase
+split the fingerprint matcher already uses (`MatchPhase::Instant` vs `Full`).
+
+`0` is a REAL value (a launch nobody bought into), so absence is carried by not seeding
+rather than by seeding `0` — the same distinction `prior_launches` makes, and for the same
+reason: a `0` standing in for "not counted yet" would let `first_slot_buy <= N` pass on
+every token the instant it appears. Static once seeded, so an entry gate on it is a token
+filter that can never re-trigger.
+
+Offline it comes from `tokens_info.first_slot_buy_sol` (the live readout and the lab's
+metric-series both read that row), so the replayed and live values cannot disagree.
+
+## Burst (`m_flow_burst`)
+
+A ratio across two **nested** trailing windows — the one group whose basis is a window
+PAIR, and the reason `MetricReq` carries a `Windows` carrier instead of a bare
+`Option<f64>`.
+
+| group | kind | strict params | state |
+| --- | --- | --- | --- |
+| `m_flow_burst` | dynamic | `window_size_sec` (reference) + `burst_size_sec` (slice, `<= window`) | none — it reads `m_flow_window`'s two ring buffers |
+
+| metric | meaning | unit | eq-tol | monotonic |
+| --- | --- | --- | --- | --- |
+| `trade_share` | `trade_count(burst) / trade_count(window)`, **percent 0-100** | percent | 0.5 | ✗ |
+
+**How CONCENTRATED the tape is in time, independent of how busy it is.** Ten trades
+arriving in the last three seconds and ten spread evenly over a minute are the same
+`trade_count` and the same `gross_flow`, and 50 vs 10 here. It is the scale-free way to
+ask "is this accelerating against its own pace" — two absolute bounds are not a
+substitute, because they silently re-read size.
+
+It owns **no state**: both readings are `m_flow_window`'s own `trade_count` on buffers the
+track already keeps, so a rule that also gates on those two windows pays nothing extra.
+That reuse is also what makes `m_flow_burst{60,3}.trade_share` and
+`m_flow_window(3).trade_count / m_flow_window(60).trade_count` the same number by
+construction rather than by agreement.
+
+Three properties to author against:
+
+* **`NaN` on an empty reference window** — no trades, no share, and a `0.0` would let
+  `trade_share <= X` pass on a dead tape.
+* **Both windows are clipped by the token's age**, so on a token younger than
+  `burst_size_sec` every trade is inside both and it reads `100`. That is a true reading
+  of a short life, not a sentinel: a rule that means it as a *maturity* signal must bound
+  `m_snapshot.time` itself. The same clipping applies to the SQL a rule is fitted in, so
+  backtest and engine agree.
+* **Entry side only.** The persisted exit-reason label carries one window qualifier, so
+  two burst clauses differing only in the burst axis would record the same reason. The
+  save gate rejects it rather than write an ambiguous label —
+  [roadmap/two-window-exit-labels.md](../../roadmap/two-window-exit-labels.md).
 
 `unique_wallets` counts **people, not SOL**: one wallet churning and a crowd arriving are
 identical in `gross_flow` and different here. It keeps a per-wallet occurrence map beside

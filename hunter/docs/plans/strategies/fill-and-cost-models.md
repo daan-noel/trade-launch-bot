@@ -19,7 +19,7 @@ they are). Code: [`core/src/strategies/paper_fill.rs`](../../../core/src/strateg
 | Fill | `next_slot_first` | the first print at slot **S+1** | you want the earliest price a +1-slot landing can reach |
 | Fill | `next_slot_median` | the adverse median at slot **S+1** | you want the middle of the fill dispersion, not either tail |
 | Fill | `signal_price` | the signal trade's own spot | you want the zero-slippage ceiling |
-| Fill | `lag_<ms>` | the first print `<ms>` after the signal | **you want the verdict.** The only model keyed to the bot's measured reaction time |
+| Fill | `lag_<ms>` | the last print that has landed by signal + `<ms>` | **you want the verdict.** The only model keyed to the bot's measured reaction time |
 | Cost | `pumpfun_impact` | fee + tip + **our own** `B/vsol` impact | **default choice.** The only size-aware one |
 | Cost | `pumpfun_fee_only` | fee + tip | you want a zero-impact upper bound |
 | Cost | `pumpfun_default` | fee + tip + flat 1%/leg slippage | never, for a new run — legacy only |
@@ -149,8 +149,17 @@ a gap at an unknown price, so the adverse end is the defensible assumption.
 ## The wall-clock model — `lag_ms`
 
 Every model above is shaped by **slot structure**. `lag_ms` is shaped by the clock: it
-takes the first qualifying candidate whose `block_time` is at least `N` ms after the
-signal's, inside the same window.
+takes the **last** qualifying candidate whose `block_time` is at or before `signal + N` ms
+— the pool state a transaction landing `N` ms out actually executes against. When nothing
+lands inside the lag, the state is still the signal's own and the fill prices there.
+
+**It must never be the first print at or after the deadline.** A row's price is the state
+*after* that trade, so a print at-or-after `signal + N` is a trade we could not have landed
+behind; pricing from it reaches forward past our own fill. The error does not cancel across
+the legs — it overcharges entries (measured -0.53 pp/trade on one real rule set) and
+undercharges exits (+8-12 pp, concentrated on a take-profit firing into a rise, where the
+next print is usually another buy). Pinned by
+`the_lag_model_never_prices_from_a_trade_that_lands_after_the_fill`.
 
 That is the only model that can be pointed at a *measured* number. The bot's
 decide→fill is p50 **115 ms** (send path 8 ms, ACK→fill 107 ms), so `{"lag_ms": 115}`
@@ -168,11 +177,14 @@ Signal fires at t=0 in slot 100:
 | fill model | picks | price |
 | --- | --- | --- |
 | `first_in_window` | idx 1 — the next print, no delay charged | **1.2** |
-| **`lag_ms: 115`** | **idx 2 — first print ≥115 ms out, still slot 100** | **1.4** |
+| **`lag_ms: 115`** | **idx 1 — the last print that has landed by +115 ms** | **1.2** |
+| `lag_ms: 300` | idx 2 — the +200 ms print has landed too | **1.4** |
 | `next_slot_first` | idx 3 — slot 100 dropped entirely | **1.5** |
 
 This is the behaviour neither bracket has: a delay is charged **without** pretending we
-missed the block. (Exact numbers from `the_lag_model_charges_wall_clock_not_slot_structure`
+missed the block. `lag_ms: 0` prices at the signal's own spot (nothing has landed yet),
+so it coincides with `signal_price`, not with `first_in_window`; and a lag past the whole
+window prices at the window's **last** print, not its adverse one. (Exact numbers from `the_lag_model_charges_wall_clock_not_slot_structure`
 in `paper_fill.rs`.)
 
 `block_time` is the **ingest** clock — a Yellowstone transaction frame carries no chain

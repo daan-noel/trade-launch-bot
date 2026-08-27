@@ -53,6 +53,10 @@ export interface FpConfigFieldSpec {
  *  per-operator shade on top (see `metricColors.ts`). */
 export interface MetricSpec {
   name: string;
+  /** THE definition of the metric, authored on the backend `MetricSpec` and rendered
+   *  straight into the tooltip. Optional only so a pre-description registry payload
+   *  still parses; when it is present it wins over any frontend copy. */
+  description?: string;
   unit: MetricUnit;
   eq_tolerance: number;
   monotonic: boolean;

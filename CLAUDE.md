@@ -42,6 +42,26 @@ hence `[build] jobs = 4` and `[profile.dev] debug = "line-tables-only"`. All of 
   column list, search for an existing one and reuse it. Watch for the same fact defined
   twice; where decoupling makes duplication unavoidable, add a no-DB guard test asserting
   the copies stay equal.
+- **The finding sets the metric — never the reverse.** Implement a derived rule in the terms
+  it was derived in. Reuse an existing metric only when it expresses that term *exactly*; when
+  the nearest one differs in time basis (slot vs second), granularity (per-print vs per-tick),
+  or unit, **extend the metric system** rather than approximate — an approximation is a silent
+  refutation: it changes the number that validates the rule, so what ships stops replicating
+  what justifies it. Defer the extension and the rule stays unshipped, gap recorded.
+- **Extend it, don't complicate it.** One metric = one quantity, named for what it measures.
+  One group = one subject on one time basis (`m_flow_window` = flow, windowed) plus that
+  basis's params. A new metric joins the group whose subject and basis it shares; a new group
+  needs a subject or a basis that has none — never a second group for a family that exists,
+  never an unrelated quantity folded into one for convenience. Add the smallest thing that
+  carries the finding: a metric before a group, a group before a new window kind. A metric you
+  cannot state in one line — what it measures, unit, basis — is not ready to add. Extension
+  cost: [hunter/CLAUDE.md](hunter/CLAUDE.md#hot-path-landmines),
+  [metrics-reference](hunter/docs/plans/strategies/metrics-reference.md).
+- **A metric ships explained, and explained once.** Every metric carries one definition —
+  what it measures, unit, time basis, window — written at the point it is defined and
+  rendered into the UI from that same text. Adding or changing a metric updates that
+  definition in the same commit: no second copy of the formula, no UI label that says
+  something the code does not, no meaning that lives only in a doc.
 - **Backend latency first.** No blocking I/O, `.await`-on-lock, per-event alloc, redundant
   RPC/DB round-trips, or lock contention on a hot path. **Notify over poll**; sell-confirm
   stays feed-based.

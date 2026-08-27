@@ -9,7 +9,8 @@ use crate::storage::repositories::settings_repo::AppSettings;
 use crate::storage::repositories::{
     creation_stats_repo::CreationStatsRepo, fingerprint_repo::FingerprintRepo,
     raw_tx_repo::RawTxRepo,
-    settings_repo::SettingsRepo, strategy_repo::StrategyRepo, token_repo::TokenRepo,
+    settings_repo::SettingsRepo, strategy_repo::StrategyRepo,
+    token_info_repo::TokenInfoRepo, token_repo::TokenRepo,
     trade_repo::TradeRepo,
     wallet_dict_repo::WalletDictRepo,
     wallet_profile_repo::WalletProfileRepo,
@@ -119,6 +120,10 @@ impl CoreState {
 
     pub fn token_repo(&self) -> TokenRepo {
         TokenRepo::new(self.db.clone())
+    }
+
+    pub fn token_info_repo(&self) -> TokenInfoRepo {
+        TokenInfoRepo::new(self.db.clone())
     }
 
     pub fn trade_repo(&self) -> TradeRepo {

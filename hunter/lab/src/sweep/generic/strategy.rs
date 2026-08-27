@@ -696,11 +696,14 @@ pub(crate) fn build_series_with_flow(
         let windows: Vec<f64> = series
             .columns()
             .iter()
-            .filter_map(|c| match c {
-                SeriesColumn::Flow(_, Some(w), _) => Some(*w),
-                SeriesColumn::Window(_, w) => Some(*w),
-                _ => None,
+            // Both axes of a dynamic column: a two-window group needs a buffer for
+            // each, and registering only the primary leaves the second read NaN.
+            .flat_map(|c| match c {
+                SeriesColumn::Flow(_, w, _) => vec![*w],
+                SeriesColumn::Window(_, w) => vec![w.primary, w.secondary],
+                _ => vec![],
             })
+            .flatten()
             .collect();
         // Seed every fingerprint id that Flow columns read — sweep uses
         // `SWEEP_FLOW_FP` (nil); the scan≡replay guard uses the rule's real id.
@@ -822,10 +825,12 @@ pub(crate) fn sparse_grid_for(compiled: &CompiledRule) -> SparseGrid {
 }
 
 fn col_of(req: &hunter_engine::arm::MetricReq) -> SeriesColumn {
-    match (req.fingerprint, req.window) {
-        (Some(fp), ws) => SeriesColumn::Flow(req.metric, ws, fp),
-        (None, Some(w)) => SeriesColumn::Window(req.metric, w),
-        (None, None) => SeriesColumn::Static(req.metric),
+    // Mirrors `readout::req_column`: the WHOLE carrier on the windowed arm, so a
+    // two-window req keeps its second axis instead of scanning against NaN.
+    match (req.fingerprint, req.window.is_windowed()) {
+        (Some(fp), _) => SeriesColumn::Flow(req.metric, req.window.primary, fp),
+        (None, true) => SeriesColumn::Window(req.metric, req.window),
+        (None, false) => SeriesColumn::Static(req.metric),
     }
 }
 
@@ -998,7 +1003,7 @@ pub(crate) fn exit_metric_labels(
             r.conds
                 .first()
                 .and_then(|arm| arm.first())
-                .map(|c| (r.metric, c.operator, c.value, r.window, slot))
+                .map(|c| (r.metric, c.operator, c.value, r.window.primary, slot))
         })
         .collect()
 }
@@ -2127,7 +2132,7 @@ fn resolve_frozen_tail(
 ) -> Option<TokenOutcome> {
     let horizon = tail_horizon?;
     // A windowed exit metric is not a rate-1 clock — leave it to the legacy Open.
-    if b.rule.exit_reqs.iter().any(|r| r.window.is_some()) {
+    if b.rule.exit_reqs.iter().any(|r| r.window.is_windowed()) {
         return None;
     }
     let n = series.n_rows();
@@ -2201,7 +2206,7 @@ fn frozen_tail_clock_base(
     req: &MetricReq,
     row: usize,
 ) -> Option<f64> {
-    if req.window.is_some() {
+    if req.window.is_windowed() {
         return None;
     }
     match req.metric {

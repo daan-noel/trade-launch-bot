@@ -1,6 +1,6 @@
 //! `m_flow_window` — trailing-window flow aggregates (dynamic metrics).
 //!
-//! Strict param `window_size_sec` (`w`): the trailing window is `(now − w, now]`.
+//! Strict param `window_size_sec` (`w`): the trailing window is `[now − w, now]`.
 //! Over the trades in that window:
 //! * `buy` — sum of buy SOL,
 //! * `sell` — sum of sell SOL,
@@ -22,7 +22,7 @@
 //!   regressed `block_time` — legal, since canonical order is slot → tx_index → leg
 //!   — walks back from the tail, which is `O(1)` whenever times are monotone);
 //! * `buy`/`sell` are running sums over **all of `buf`**, so a read starts from them
-//!   and subtracts only the two ends that fall outside `(now − w, now]`: entries not
+//!   and subtracts only the two ends that fall outside `[now − w, now]`: entries not
 //!   yet evicted at the front, and future-dated entries at the back. Both loops are
 //!   normally zero iterations, and neither can miss an entry because the deque is
 //!   sorted.
@@ -140,7 +140,7 @@ impl WindowState {
     }
 
     /// Drop entries older than the window as of `now` — trailing window is
-    /// `(now − w, now]`, so an entry exactly `w` old stays. Called on every
+    /// `[now − w, now]`, so an entry exactly `w` old stays. Called on every
     /// trade and every tick so reads always see the window as of the last event.
     pub fn evict(&mut self, now: Ts) {
         let cutoff = now - self.width;
@@ -172,7 +172,7 @@ impl WindowState {
         }
     }
 
-    /// Value of one `m_flow_window` metric over `(now − w, now]`.
+    /// Value of one `m_flow_window` metric over `[now − w, now]`.
     ///
     /// Starts from the running sums and subtracts only what lies outside the window
     /// at `now`: entries the last [`evict`](Self::evict) has not dropped yet (front)
@@ -219,20 +219,43 @@ impl WindowState {
                 }
             }
             MetricId::UniqueWallets => self.unique_wallets(now),
-            // Trades in `(now - w, now]`. `buf` holds one entry per trade, so this is
-            // the same two-ended correction the SOL sums use, on a count instead.
-            MetricId::TradeCount => {
-                let cutoff = now - self.width;
-                let n = self.buf.len()
-                    - self.buf.iter().take_while(|&&(ts, _)| ts < cutoff).count()
-                    - self.buf.iter().rev().take_while(|&&(ts, _)| ts > now).count();
-                n as f64
+            MetricId::TradeCount => self.trade_count(now),
+            // How hard each wallet in the window is working the tape. `<= 2` is a
+            // crowd; a large value is one wallet re-entering, which `trade_count` and
+            // `gross_flow` cannot tell apart. A COUNT ratio, never an identity, so
+            // wallet rotation does not defeat it.
+            //
+            // `NaN` on an empty window rather than `0.0`: no wallets means no churn to
+            // report, and a `0.0` would let `trades_per_wallet <= 2` pass on a dead
+            // tape — the exact reading the gate exists to exclude.
+            MetricId::TradesPerWallet => {
+                let wallets = self.unique_wallets(now);
+                if wallets > 0.0 {
+                    self.trade_count(now) / wallets
+                } else {
+                    f64::NAN
+                }
             }
             _ => f64::NAN,
         }
     }
 
-    /// Distinct wallets in `(now − w, now]`.
+    /// Trades in `[now − w, now]`. `buf` holds one entry per trade, so this is the
+    /// same two-ended correction the SOL sums use, on a count instead. Shared by
+    /// `trade_count`, `trades_per_wallet`, and — across the group boundary —
+    /// [`flow_burst::trade_share`], so no two of them can disagree about what a
+    /// trade in a window is.
+    ///
+    /// [`flow_burst::trade_share`]: super::flow_burst::trade_share
+    pub(super) fn trade_count(&self, now: Ts) -> f64 {
+        let cutoff = now - self.width;
+        let n = self.buf.len()
+            - self.buf.iter().take_while(|&&(ts, _)| ts < cutoff).count()
+            - self.buf.iter().rev().take_while(|&&(ts, _)| ts > now).count();
+        n as f64
+    }
+
+    /// Distinct wallets in `[now − w, now]`.
     ///
     /// Same contract as the SOL reads: start from state maintained on push/evict and
     /// correct only the two ends. A distinct count cannot subtract the way a sum can —
@@ -275,6 +298,22 @@ mod tests {
     fn ts(secs: f64) -> Ts {
         Utc.timestamp_opt(1_700_000_000, 0).unwrap()
             + Duration::milliseconds((secs * 1000.0) as i64)
+    }
+
+    /// The window is CLOSED at both ends: an entry exactly `w` old is still in it.
+    /// Pinned because the off-by-one at this edge is invisible in aggregate and
+    /// silently shifts every threshold fitted against an external re-implementation.
+    #[test]
+    fn the_window_is_closed_at_both_ends() {
+        assert!(in_window(ts(0.0), ts(10.0), 10.0), "an entry exactly w old stays");
+        assert!(in_window(ts(10.0), ts(10.0), 10.0), "an entry exactly at now is in");
+        assert!(!in_window(ts(-0.001), ts(10.0), 10.0), "a hair older is out");
+        assert!(!in_window(ts(10.001), ts(10.0), 10.0), "the future is out");
+        // And the sums agree with the predicate at that exact edge.
+        let mut w = WindowState::new(10.0);
+        w.on_trade(Side::Buy, 7.0, ts(0.0), 1);
+        assert_eq!(w.value(MetricId::Buy, ts(10.0)), 7.0, "still summed at exactly w");
+        assert_eq!(w.value(MetricId::Buy, ts(10.001)), 0.0, "dropped a hair later");
     }
 
     #[test]
@@ -379,6 +418,40 @@ mod tests {
         assert_eq!(w.value(MetricId::UniqueWallets, ts(10.5)), 1.0);
         w.evict(ts(18.5)); // now the last one goes too
         assert_eq!(w.value(MetricId::UniqueWallets, ts(18.5)), 0.0);
+    }
+
+    /// `trades_per_wallet` is the ratio the other two cannot express: one wallet
+    /// re-entering and a crowd arriving look identical in `trade_count` and in
+    /// `gross_flow`, and differ here.
+    #[test]
+    fn trades_per_wallet_separates_a_crowd_from_one_wallet_churning() {
+        // Same trade count, same SOL, same window — only the wallet spread differs.
+        let mut crowd = WindowState::new(10.0);
+        let mut churn = WindowState::new(10.0);
+        for i in 0..6u64 {
+            crowd.on_trade(Side::Buy, 1.0, ts(i as f64), i); // six people, one trade each
+            churn.on_trade(Side::Buy, 1.0, ts(i as f64), 1); // one person, six trades
+        }
+        let now = ts(6.0);
+        assert_eq!(crowd.value(MetricId::TradeCount, now), churn.value(MetricId::TradeCount, now));
+        assert_eq!(crowd.value(MetricId::GrossFlow, now), churn.value(MetricId::GrossFlow, now));
+        assert_eq!(crowd.value(MetricId::TradesPerWallet, now), 1.0);
+        assert_eq!(churn.value(MetricId::TradesPerWallet, now), 6.0);
+    }
+
+    /// The trap the `NaN` exists for: a dead tape must not satisfy `<= 2`.
+    #[test]
+    fn trades_per_wallet_is_nan_on_an_empty_window_not_zero() {
+        let mut w = WindowState::new(5.0);
+        w.on_trade(Side::Buy, 1.0, ts(0.0), 1);
+        // Read far enough ahead that the trade has aged out of the window.
+        let empty = ts(60.0);
+        assert_eq!(w.value(MetricId::UniqueWallets, empty), 0.0);
+        assert_eq!(w.value(MetricId::TradeCount, empty), 0.0);
+        assert!(
+            w.value(MetricId::TradesPerWallet, empty).is_nan(),
+            "0.0 here would let `trades_per_wallet <= 2` pass on a dead tape"
+        );
     }
 
     /// `trade_count` counts TRADES where `unique_wallets` counts PEOPLE, and it must

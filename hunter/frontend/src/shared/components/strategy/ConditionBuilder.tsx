@@ -26,6 +26,7 @@ import {
 } from 'lib/strategy/strategyHelp';
 import {
   armAbovePctOrphanError,
+  BURST_PARAM,
   duplicateConditionRowError,
   newRuleConditionRow,
   parkedSideWarnings,
@@ -254,6 +255,12 @@ function ConditionRow({
   const group = registry.groups.find((g) => g.name === row.group);
   const metric = group?.metrics.find((m) => m.name === row.metric);
   const needsWindow = ruleRowNeedsWindow(row, registry);
+  // A second trailing-window axis (`m_flow_burst.burst_size_sec`) — asked of the
+  // registry, not hardcoded per group, so a future two-window basis gets its control
+  // for free rather than silently round-tripping with no way to edit it.
+  const needsBurst = group?.strict_params.some((sp) => sp.name === BURST_PARAM) ?? false;
+  const burstValue = row.strict?.[BURST_PARAM];
+  const burstText = burstValue == null ? '' : String(burstValue);
   const isTrailing = ruleRowIsTrailing(row);
   const armValue = row.strict?.arm_above_pct;
   const armText = armValue == null ? '' : String(armValue);
@@ -269,6 +276,16 @@ function ConditionRow({
     const v = Number(text);
     if (!Number.isFinite(v)) return;
     onPatchStrict({ ...row.strict, arm_above_pct: v });
+  };
+  const onBurst = (text: string) => {
+    if (text.trim() === '') {
+      const { [BURST_PARAM]: _drop, ...rest } = row.strict ?? {};
+      onPatchStrict(rest);
+      return;
+    }
+    const v = Number(text);
+    if (!Number.isFinite(v)) return;
+    onPatchStrict({ ...row.strict, [BURST_PARAM]: v });
   };
   // Only drives the input's unit adornment; the field is disabled until a metric is
   // chosen, so the fallback is never user-visible.
@@ -365,6 +382,22 @@ function ConditionRow({
             disabled={disabled}
             onChange={(e) => onPatch({ window: e.target.value })}
             placeholder="10"
+            className="w-16"
+          />
+        </Cell>
+      )}
+
+      {needsBurst && (
+        <Cell label="burst s" tip={STRICT_PARAM_HELP[BURST_PARAM]}>
+          <Input
+            fieldSize="sm"
+            type="number"
+            min={0.5}
+            step={0.5}
+            value={burstText}
+            disabled={disabled}
+            onChange={(e) => onBurst(e.target.value)}
+            placeholder="3"
             className="w-16"
           />
         </Cell>

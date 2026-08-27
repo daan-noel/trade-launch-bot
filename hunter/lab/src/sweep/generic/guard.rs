@@ -688,7 +688,7 @@ fn position_retrace_actually_fires_the_trailing_stop() {
     // The dip trigger IS a precomputed column; the position metric is NOT (it reads
     // the per-entry PositionCtx — a static column could only ever record NaN).
     assert!(
-        cols.contains(&hunter_engine::metrics::series::SeriesColumn::Window(MetricId::WinTrail, 30.0)),
+        cols.contains(&hunter_engine::metrics::series::SeriesColumn::window(MetricId::WinTrail, 30.0)),
         "m_price_window.trail must precompute as a windowed column: {cols:?}"
     );
     assert!(

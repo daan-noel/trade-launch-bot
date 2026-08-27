@@ -142,7 +142,7 @@ impl ResolvedAxis {
                 SeriesColumn::Flow(*metric, *window, SWEEP_FLOW_FP)
             } else {
                 match window {
-                    Some(w) => SeriesColumn::Window(*metric, *w),
+                    Some(w) => SeriesColumn::window(*metric, *w),
                     None => SeriesColumn::Static(*metric),
                 }
             }),
@@ -657,7 +657,7 @@ mod tests {
         );
         let m = AxesModel::resolve(&AxesRequest { axes: vec![axis] }).unwrap();
         assert_eq!(m.combo_count(), 3);
-        assert_eq!(m.columns(), vec![SeriesColumn::Window(MetricId::WinTrail, 30.0)]);
+        assert_eq!(m.columns(), vec![SeriesColumn::window(MetricId::WinTrail, 30.0)]);
         // The rolling high decays between trades, so it must size the sparse grid.
         assert_eq!(m.max_window_secs(), 30.0);
         RuleParams::parse(&m.combo_params(0).to_value()).unwrap();

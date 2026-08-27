@@ -242,7 +242,7 @@ fn condition_out(r: &ConditionRead) -> ConditionOut {
 fn condition_series_out(c: &ConditionSeries) -> ConditionSeriesOut {
     let r = &c.req;
     ConditionSeriesOut {
-        meta: condition_meta(c.side, r.metric, r.window, &r.conds, r.origin, r.arm_above_pct),
+        meta: condition_meta(c.side, r.metric, r.window.primary, &r.conds, r.origin, r.arm_above_pct),
         values: c.values.iter().map(|v| v.is_finite().then_some(*v)).collect(),
         ok: c.ok.clone(),
         // Only a gated trail is ever skipped, so every other condition ships an
@@ -451,6 +451,22 @@ async fn load_prior_launches(app_state: &DeployState, mint: &str) -> Option<u32>
     }
 }
 
+/// The token's creation-slot buy total, for `m_snapshot.first_slot_buy`.
+///
+/// Read from `tokens_info` — the same row the live engine's `FirstSlotSettled` seed
+/// is derived from — so the replayed readout and the engine agree on the number. `None`
+/// (metric reads `NaN`) when the slot has not been counted, which is what the engine
+/// also shows before the settle.
+async fn load_first_slot_buy(app_state: &DeployState, mint: &str) -> Option<f64> {
+    match app_state.core.token_info_repo().find_by_mint(mint).await {
+        Ok(Some(i)) => i.first_slot_buy_sol,
+        _ => {
+            tracing::warn!(mint, "readout replay: no tokens_info row - first_slot_buy unseeded");
+            None
+        }
+    }
+}
+
 async fn load_ix_count(app_state: &DeployState, mint: &str) -> Option<usize> {
     match app_state.core.token_repo().find_by_mint(mint).await {
         Ok(Some(t)) => {
@@ -561,6 +577,7 @@ async fn replay_for_position(
         load_flow_ctx(app_state, &position.mint_address, rule.fingerprint_id).await;
     let ix_count = load_ix_count(app_state, &position.mint_address).await;
     let prior_launches = load_prior_launches(app_state, &position.mint_address).await;
+    let first_slot_buy = load_first_slot_buy(app_state, &position.mint_address).await;
 
     let created_at = replay_created_at(app_state, &position.mint_address, &trades).await;
     let lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
@@ -580,7 +597,9 @@ async fn replay_for_position(
         replay_readout(
             &compiled,
             lites,
-            &ReplayCtx { created_at, entry, stage, flow, ix_count, prior_launches },
+            &ReplayCtx {
+                created_at, entry, stage, flow, ix_count, prior_launches, first_slot_buy,
+            },
             at,
         )
     })
@@ -783,6 +802,7 @@ async fn series_response(
     let (patterns, creator_wallet_hash) = load_flow_ctx(app_state, &mint, rule.fingerprint_id).await;
     let ix_count = load_ix_count(app_state, &mint).await;
     let prior_launches = load_prior_launches(app_state, &mint).await;
+    let first_slot_buy = load_first_slot_buy(app_state, &mint).await;
 
     let created_at = replay_created_at(app_state, &mint, &trades).await;
     let lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
@@ -809,7 +829,9 @@ async fn series_response(
         replay_series(
             &compiled,
             lites,
-            &ReplayCtx { created_at, entry, stage, flow, ix_count, prior_launches },
+            &ReplayCtx {
+                created_at, entry, stage, flow, ix_count, prior_launches, first_slot_buy,
+            },
             as_of,
             Some(MAX_READOUT_SERIES_ROWS),
             record_from,

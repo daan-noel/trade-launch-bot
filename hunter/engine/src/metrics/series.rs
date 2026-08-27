@@ -19,17 +19,28 @@ use crate::fingerprint::FingerprintId;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SeriesColumn {
     Static(MetricId),
-    Window(MetricId, f64),
+    /// A dynamic metric at its window(s) — carries the whole [`Windows`] rather than
+    /// one `f64` so a two-window group (`m_flow_burst`) is a column like any other.
+    /// Dropping the second axis here would not fail: it would read `NaN` for every
+    /// row, which draws as a condition that never holds.
+    ///
+    /// [`Windows`]: super::Windows
+    Window(MetricId, super::Windows),
     /// Flow metric (`m_flow_split` / `m_flow_split_window`) scoped to a fingerprint.
     Flow(MetricId, Option<f64>, FingerprintId),
 }
 
 impl SeriesColumn {
+    /// A single-window dynamic column — the shape every group but `m_flow_burst` has.
+    pub fn window(id: MetricId, window_secs: f64) -> Self {
+        SeriesColumn::Window(id, super::Windows::one(window_secs))
+    }
+
     fn eval(self, track: &TokenTrack, now: Ts) -> f64 {
         match self {
-            SeriesColumn::Static(id) => track.value(id, None, None, now),
-            SeriesColumn::Window(id, ws) => track.value(id, Some(ws), None, now),
-            SeriesColumn::Flow(id, ws, fp) => track.value(id, ws, Some(fp), now),
+            SeriesColumn::Static(id) => track.value(id, super::Windows::NONE, None, now),
+            SeriesColumn::Window(id, ws) => track.value(id, ws, None, now),
+            SeriesColumn::Flow(id, ws, fp) => track.value(id, ws.into(), Some(fp), now),
         }
     }
 }
@@ -108,7 +119,10 @@ impl MetricSeries {
         let mut track = TokenTrack::new(created_at);
         for c in &columns {
             if let SeriesColumn::Window(id, ws) = c {
-                register_window(&mut track, *id, *ws);
+                // Both axes — registering only the primary leaves a burst column NaN.
+                for w in [ws.primary, ws.secondary].into_iter().flatten() {
+                    register_window(&mut track, *id, w);
+                }
             }
         }
         let n_cols = columns.len();
@@ -185,6 +199,13 @@ impl MetricSeries {
     /// Must be called before the first fold on every path that records a series, or
     /// `ix_count` reads `NaN` for the whole token and any `ix_count <= N` entry gate is
     /// silently unsatisfiable — the token is never entered, with no error anywhere.
+    /// Seed the creation slot's buy total. Same before-the-first-fold contract as
+    /// [`seed_ix_count`](Self::seed_ix_count) — it is a token-static fact, so the
+    /// series records the same value on every row.
+    pub fn seed_first_slot_buy(&mut self, sol: f64) {
+        self.track.seed_first_slot_buy(sol);
+    }
+
     pub fn seed_ix_count(&mut self, n: usize) {
         self.track.seed_ix_count(n);
     }
@@ -325,10 +346,10 @@ mod tests {
             SeriesColumn::Static(MetricId::Trail),
             SeriesColumn::Static(MetricId::LifeGrossFlow),
             SeriesColumn::Static(MetricId::LifeBuy),
-            SeriesColumn::Window(MetricId::GrossFlow, 10.0),
-            SeriesColumn::Window(MetricId::NetFlow, 10.0),
-            SeriesColumn::Window(MetricId::Buy, 10.0),
-            SeriesColumn::Window(MetricId::Sell, 10.0),
+            SeriesColumn::window(MetricId::GrossFlow, 10.0),
+            SeriesColumn::window(MetricId::NetFlow, 10.0),
+            SeriesColumn::window(MetricId::Buy, 10.0),
+            SeriesColumn::window(MetricId::Sell, 10.0),
         ]
     }
 
@@ -338,7 +359,10 @@ mod tests {
         let mut track = TokenTrack::new(created);
         for c in cols {
             if let SeriesColumn::Window(id, ws) = c {
-                register_window(&mut track, *id, *ws);
+                // Both axes — registering only the primary leaves a burst column NaN.
+                for w in [ws.primary, ws.secondary].into_iter().flatten() {
+                    register_window(&mut track, *id, w);
+                }
             }
         }
         let mut out = Vec::new();
@@ -415,7 +439,7 @@ mod tests {
         // `ensure_price_window`; the old blanket `ensure_window` left it unregistered so
         // every price-window column read `NaN` (empty panes / dead sweep entry gate).
         let created = ts(0.0);
-        let col = SeriesColumn::Window(MetricId::WinTrail, 30.0);
+        let col = SeriesColumn::window(MetricId::WinTrail, 30.0);
         let mut s = MetricSeries::new(created, vec![col]);
         s.push_trade(trade(Side::Buy, 3.0, 2.0, 15.0, 0.0)); // rolling high = 2.0
         s.push_trade(trade(Side::Sell, 1.0, 1.5, 14.0, 1.0)); // dip to 1.5 → 25% below high

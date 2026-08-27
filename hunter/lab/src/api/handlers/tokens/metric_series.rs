@@ -50,6 +50,7 @@ use hunter_engine::metrics::{
 };
 
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
+use trading_core::storage::repositories::token_info_repo::TokenInfoRepo;
 use trading_core::storage::repositories::token_repo::TokenRepo;
 use trading_core::strategies::fingerprint_axes::fp_to_engine;
 
@@ -211,6 +212,9 @@ struct TokenFacts {
     ix_count: Option<usize>,
     /// The creator's launches strictly before this token (`m_snapshot.prior_launches`).
     prior_launches: Option<u32>,
+    /// Buy SOL in the token's creation slot (`m_snapshot.first_slot_buy`), from
+    /// `tokens_info` — the row the live engine's settle seed derives from.
+    first_slot_buy: Option<f64>,
 }
 
 /// Read the `tokens` row once and derive every static fact the fold needs.
@@ -237,10 +241,22 @@ async fn load_token_facts(state: &LocalState, mint: &str) -> TokenFacts {
     // creation transaction with no instructions.
     let n = normalize_labels(&token.instruction_labels).len();
     let ix_count = (n > 0).then_some(n);
+    let first_slot_buy = match TokenInfoRepo::new(state.core.db.clone()).find_by_mint(mint).await {
+        Ok(Some(i)) => i.first_slot_buy_sol,
+        _ => {
+            tracing::warn!(mint, "metric-series: no tokens_info row - first_slot_buy unseeded");
+            None
+        }
+    };
 
     if token.creator_wallet.is_empty() {
         tracing::warn!(mint, "metric-series: no creator wallet - flow split + prior_launches unseeded");
-        return TokenFacts { creator_wallet_hash: None, ix_count, prior_launches: None };
+        return TokenFacts {
+            creator_wallet_hash: None,
+            ix_count,
+            prior_launches: None,
+            first_slot_buy,
+        };
     }
     let prior_launches = match repo
         .count_prior_launches(&token.creator_wallet, token.created_at)
@@ -256,6 +272,7 @@ async fn load_token_facts(state: &LocalState, mint: &str) -> TokenFacts {
         creator_wallet_hash: Some(wallet_hash(&token.creator_wallet)),
         ix_count,
         prior_launches,
+        first_slot_buy,
     }
 }
 
@@ -392,8 +409,8 @@ fn build_series(
                 }
                 MetricKind::Dynamic => {
                     for &w in windows {
-                        columns.push(SeriesColumn::Window(m.id, w));
-                        labels.push((SeriesColumn::Window(m.id, w), Some(w)));
+                        columns.push(SeriesColumn::window(m.id, w));
+                        labels.push((SeriesColumn::window(m.id, w), Some(w)));
                     }
                 }
             }
@@ -407,6 +424,9 @@ fn build_series(
     // leave the early rows reading `NaN` while the late ones read a value.
     if let Some(n) = facts.ix_count {
         series.seed_ix_count(n);
+    }
+    if let Some(v) = facts.first_slot_buy {
+        series.seed_first_slot_buy(v);
     }
     if let Some(n) = facts.prior_launches {
         series.seed_prior_launches(n);
@@ -733,7 +753,7 @@ mod tests {
     fn snapshot_facts_are_seeded_on_every_row() {
         let trades = [corpus_trade(5.0, "dev", None, 0), corpus_trade(3.0, "normie", None, 1)];
         let grid = SparseGrid::for_windows(&[10.0]);
-        let facts = TokenFacts { creator_wallet_hash: None, ix_count: Some(7), prior_launches: Some(3) };
+        let facts = TokenFacts { creator_wallet_hash: None, ix_count: Some(7), prior_launches: Some(3), first_slot_buy: None };
 
         let out = build_series("mint", &trades, &[10.0], &grid, None, None, &facts);
         for (metric, want) in [("ix_count", 7.0), ("prior_launches", 3.0)] {
@@ -778,7 +798,7 @@ mod tests {
             Some(&ctx),
             // An entry context, so the position-scoped group is computed too.
             Some((ts(0), 1.0)),
-            &TokenFacts { creator_wallet_hash: None, ix_count: Some(3), prior_launches: Some(1) },
+            &TokenFacts { creator_wallet_hash: None, ix_count: Some(3), prior_launches: Some(1), first_slot_buy: None },
         );
         let cols: Vec<(String, String)> = out["series"]
             .as_array()
