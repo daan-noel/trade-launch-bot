@@ -140,7 +140,7 @@ mod tests {
         // read back off the RUN, since its form state is not the run's.
         let result = DiscoveryResult {
             groups: vec![],
-            bucket_width_sol: None,
+            plan: Default::default(),
             ix_labels_filter: Some(vec!["Pump.Fun: Create_v2".into(), "Pump.Fun: Buy".into()]),
             fingerprint_id: None,
         };
@@ -153,7 +153,7 @@ mod tests {
         // The whole point of caching the identity: exact must not come back as a
         // width, and the filter must not come back empty — either would rebuild a
         // different fingerprint than the run's groups were selected by.
-        assert_eq!(reopened.bucket_width_sol, None);
+        assert_eq!(reopened.plan, Default::default());
         assert_eq!(
             reopened.ix_labels_filter.as_deref(),
             Some(["Pump.Fun: Create_v2".to_string(), "Pump.Fun: Buy".to_string()].as_slice()),

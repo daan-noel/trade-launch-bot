@@ -26,8 +26,7 @@ const ABSORPTION: &str = r#"{
   "entry": {
     "m_snapshot": {
       "time": [{"operator": ">", "value": 5}],
-      "liquidity": [{"operator": ">=", "value": 3}, {"operator": "<=", "value": 64}],
-      "ix_count": [{"operator": "<=", "value": 5}]
+      "liquidity": [{"operator": ">=", "value": 3}, {"operator": "<=", "value": 64}]
     },
     "m_flow_lifetime": { "gross_flow": [{"operator": "<=", "value": 148}] },
     "m_flow_window": [
@@ -268,4 +267,33 @@ fn the_conjunction_carries_both_islands() {
     let mut ws: Vec<f64> = terms(&e, MetricId::WinRise).iter().map(|t| t.2.unwrap()).collect();
     ws.sort_by(|a, b| a.partial_cmp(b).unwrap());
     assert_eq!(ws, vec![30.0, 60.0], "both islands' rise terms, at 30s and 60s");
+}
+
+/// The absorption island's fourth term, on the axis that carries it: a creation
+/// transaction of at most five instructions — a plain launch, not an elaborate one.
+///
+/// It is a **fingerprint axis**, not a metric: `ix_count` is fixed at creation, so it
+/// selects WHICH tokens the rule arms on rather than when it fires. Pinned here beside
+/// the tape terms because the rule is the conjunction — a reader of the params alone
+/// would not see it.
+#[test]
+fn the_absorption_island_gates_on_a_plain_creation_transaction() {
+    use hunter_engine::fingerprint::{
+        matches, AxisId, AxisPredicate, Criteria, Fingerprint, FingerprintId, TokenFingerprint,
+    };
+
+    let fp = Fingerprint {
+        id: FingerprintId(uuid::Uuid::from_u128(1)),
+        wildcard: false,
+        criteria: Criteria::new()
+            .with(AxisId::IxCount, AxisPredicate::range(None, Some(5))),
+        metric_config: serde_json::json!({}),
+    };
+    let with_n = |n: usize| TokenFingerprint {
+        ix_labels: (0..n).map(|i| format!("ix{i}")).collect(),
+        ..Default::default()
+    };
+    assert!(matches(&fp, &with_n(3)), "a plain creation is inside the gate");
+    assert!(matches(&fp, &with_n(5)), "the bound is INCLUSIVE");
+    assert!(!matches(&fp, &with_n(6)), "an elaborate launch is outside it");
 }

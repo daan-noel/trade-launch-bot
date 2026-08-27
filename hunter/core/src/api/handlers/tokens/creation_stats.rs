@@ -4,12 +4,11 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use hunter_engine::fingerprint::configured_labels;
 
 use crate::api::table_query::TableRequest;
 use crate::state::core_state::CoreState;
 use crate::storage::repositories::creation_stats_repo::{HeatCellRow, StatsFilter, TrendPointRow};
-use crate::grouping::{GroupField, SolPrecision};
+use crate::grouping::{GroupField, GroupKey, GroupPlan, PartitionSpec};
 
 use super::tokens::TokenSummary;
 
@@ -329,30 +328,27 @@ pub struct GroupedCreationQuery {
     pub group_by: Option<String>,
     /// Number of top groups (by volume) to return. Clamped to [1, MAX_TOP_GROUPS].
     pub top: Option<i64>,
-    /// Bucket width (SOL) for the continuous SOL group fields — the same knob the
-    /// grouped sweep uses, so the dashboard groups a corpus identically to a sweep
-    /// at this width. Omitted/invalid ⇒ the default (`grouping::SOL_BUCKET_WIDTH`,
-    /// 0.1); floored server-side at `grouping::MIN_BUCKET_WIDTH_SOL`.
-    pub bucket_width: Option<f64>,
-    /// `true` ⇒ key the continuous SOL fields on their **exact** amount instead of
-    /// a bucket range (`grouping::SolPrecision::Exact`), answering "what are the
-    /// most common exact dev-buy sizes?" — which bucketing by construction cannot.
-    /// `bucket_width` is then ignored and echoed back as `null`.
+    /// How each grouped field is partitioned, as a JSON object keyed by field tag —
+    /// `{"init_buy_lamports":{"kind":"ranges","edges":["1000000000","2000000000"]}}`.
+    /// A field the caller does not name is `{"kind":"distinct"}` (one group per
+    /// value), which is also the whole default when this is omitted.
     ///
-    /// A separate named flag on purpose: a `bucket_width` of `0` would be a
-    /// division by zero *and* a sentinel folded into a measured quantity, the shape
-    /// that already caused a live `bucket_size_amount` bug (see the zero-as-unbound
-    /// rule in the product CLAUDE.md).
-    pub exact_sol: Option<bool>,
+    /// Edges are explicit integers in the axis's own unit, ascending. There is no
+    /// width and no "exact mode" flag: one group per value IS the degenerate
+    /// partition, so the two questions ("how common is each exact dev-buy size?" and
+    /// "how do binned sizes compare?") are the same request with different edges.
+    pub partition: Option<String>,
     /// Per-field value filters restricting the corpus *before* partitioning, as a
     /// JSON object `{"cu_limit":["300000"],"is_cashback_enabled":["true"]}` (keys =
     /// `GroupField` tags, values = allowed string forms matching the group key).
     /// Independent of `group_by`. Omitted/empty ⇒ no filter. `ix_labels` is handled
     /// by `ix_labels_filter` below (ordered-sequence equality, not value-in).
     ///
-    /// The five bucketed SOL fields take `SolFilter` syntax — an exact amount
-    /// (`"1.515"`) or a bucket range (`"1.5–1.6"`) — and are validated, never
-    /// silently dropped. Independent of `exact_sol`, which only affects grouping.
+    /// A numeric field takes the shared filter grammar — an exact value (`"1.515"`),
+    /// a half-open range (`"1.5-1.6"`), or a bound (`">=1.5"`) — read in that axis's
+    /// own unit (human SOL for a lamports axis, the integer otherwise), and is
+    /// validated rather than silently dropped. Independent of `partition`, which only
+    /// affects grouping.
     pub field_filters: Option<String>,
     /// Group ranking criterion: `count` (default, unchanged) | `trades` | `trades_per_token`.
     /// Whitelisted — see `normalize_rank_by`. `trades_per_token` is the one that
@@ -413,13 +409,11 @@ pub struct GroupedCreationResponse {
     pub segment: String,
     /// The grouping fields echoed back (serde tags, in selection order).
     pub group_by: Vec<String>,
-    /// The applied (clamped) bucket width (SOL) for the continuous SOL group
-    /// fields, or `null` when the run keyed them on their **exact** amount
-    /// (`exact_sol=true`). `null` is the honest "not bucketed" — it is what the
-    /// client must branch on, because an exact group key (`"1.515"`) carries no
-    /// width and so cannot be turned into a saved fingerprint, which matches by
-    /// bucket in the live engine.
-    pub bucket_width: Option<f64>,
+    /// The applied partition echoed back, keyed by field tag. A card's group key
+    /// carries its own window, so a client never needs this to interpret a key — it
+    /// is here so a drill-down request can send back exactly the partition that
+    /// produced the card.
+    pub partition: serde_json::Value,
     /// The applied per-field value filters echoed back (`{"cu_limit":["300000"]}`).
     pub field_filters: serde_json::Value,
     /// The applied exact instruction-label set filter, or `null` when none.
@@ -448,30 +442,66 @@ fn parse_group_by(raw: Option<&str>) -> Result<Vec<GroupField>, String> {
     Ok(out)
 }
 
+/// The applied plan echoed back, keyed by field tag.
+fn partition_json(plan: &GroupPlan) -> serde_json::Value {
+    let mut map = serde_json::Map::with_capacity(plan.0.len());
+    for (f, spec) in &plan.0 {
+        map.insert(f.as_str().to_string(), serde_json::to_value(spec).unwrap_or(serde_json::Value::Null));
+    }
+    serde_json::Value::Object(map)
+}
+
 /// Clamp the requested group count to `[1, MAX_TOP_GROUPS]` (default when absent).
 fn clamp_top(top: Option<i64>) -> i64 {
     top.unwrap_or(DEFAULT_TOP_GROUPS).clamp(1, MAX_TOP_GROUPS)
 }
 
-/// Resolve the request's SOL grouping precision — **the one decider**, shared by
+/// Resolve how each grouped field is partitioned — **the one decider**, shared by
 /// the stats endpoint and the drill-down so a card and its token list can never be
 /// keyed differently.
 ///
-/// `exact_sol=true` wins outright and ignores `bucket_width` entirely, so a stale
-/// or invalid width can't quietly downgrade an exact run back to bucketing.
-/// Otherwise the width is clamped as the sweep handler clamps it: non-finite or
-/// below `MIN_BUCKET_WIDTH_SOL` ⇒ the 0.1 default, never an error — a bad width is
-/// a UI slip, not a reason to fail a dashboard load.
-fn resolve_precision(exact_sol: Option<bool>, bucket_width: Option<f64>) -> SolPrecision {
-    if exact_sol == Some(true) {
-        return SolPrecision::Exact;
-    }
-    match bucket_width {
-        Some(w) if w.is_finite() && w >= crate::grouping::MIN_BUCKET_WIDTH_SOL => {
-            SolPrecision::Bucket(w)
+/// The wire form is `{"init_buy_lamports": {"kind":"ranges","edges":["1000000000","2000000000"]}}`,
+/// keyed by field tag; any field the caller does not name is
+/// [`PartitionSpec::Distinct`] (one group per value), which is also the whole
+/// default when `raw` is blank.
+///
+/// **Edges are explicit and travel with the request.** The retired form was a single
+/// SOL *width* — an infinite implicit lattice that the SQL, the engine and the
+/// frontend each had to re-derive identically, down to a boundary epsilon, and whose
+/// `0` was a division by zero. A finite ascending list means the same thing to
+/// everyone who reads it.
+fn resolve_plan(fields: &[GroupField], raw: Option<&str>) -> Result<GroupPlan, String> {
+    let raw = raw.unwrap_or("").trim();
+    let mut specs: std::collections::HashMap<GroupField, PartitionSpec> = Default::default();
+    if !raw.is_empty() {
+        let obj: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(raw).map_err(|e| format!("invalid partition JSON: {e}"))?;
+        for (tag, spec) in obj {
+            let field =
+                GroupField::from_tag(&tag).ok_or_else(|| format!("unknown field: {tag}"))?;
+            let spec: PartitionSpec = serde_json::from_value(spec)
+                .map_err(|e| format!("partition[{tag}]: {e}"))?;
+            if let PartitionSpec::Ranges { edges } = &spec {
+                if !field.is_numeric() {
+                    return Err(format!("partition[{tag}]: only a numeric field can be binned"));
+                }
+                // Ascending and distinct, or `window_for`'s binary search reads the
+                // wrong window and two edges claim the same tokens.
+                if edges.is_empty() || edges.windows(2).any(|w| w[0] >= w[1]) {
+                    return Err(format!(
+                        "partition[{tag}]: edges must be a non-empty, strictly ascending list"
+                    ));
+                }
+            }
+            specs.insert(field, spec);
         }
-        _ => SolPrecision::Bucket(crate::grouping::SOL_BUCKET_WIDTH),
     }
+    Ok(GroupPlan(
+        fields
+            .iter()
+            .map(|f| (*f, specs.remove(f).unwrap_or(PartitionSpec::Distinct)))
+            .collect(),
+    ))
 }
 
 /// Parse the `field_filters` JSON object into ordered `(field, allowed-values)`
@@ -505,18 +535,16 @@ fn parse_field_filters(raw: Option<&str>) -> Result<Vec<(GroupField, Vec<String>
             })
             .filter(|s| !s.is_empty())
             .collect();
-        // A bucketed SOL field pins an EXACT human-SOL amount (the group key is a
-        // range label, so there is nothing typeable to compare against — see
-        // `creation_stats_repo::field_filter_pred`). Reject junk here so the user
-        // gets a message instead of a silently empty dashboard, which is exactly
-        // how the old label-comparing predicate failed.
-        if field.is_bucketed() {
+        // Reject junk here so the user gets a message instead of a silently empty
+        // dashboard. The unit comes off the axis registry, so a count axis is typed
+        // as an integer and a lamports axis as human SOL — one parser, one grammar.
+        if let Some(unit) = field.unit() {
             if let Some(bad) =
-                values.iter().find(|v| crate::grouping::SolFilter::parse(v).is_none())
+                values.iter().find(|v| crate::grouping::parse_filter(v, unit).is_none())
             {
                 return Err(format!(
-                    "field_filters[{tag}]: '{bad}' is neither a SOL amount (e.g. 1.515) nor a \
-                     bucket range (e.g. 1.5–1.6)"
+                    "field_filters[{tag}]: '{bad}' is not a value, a range (1.5-1.6) or a \
+                     bound (>=1.5) on this axis"
                 ));
             }
         }
@@ -583,12 +611,16 @@ pub async fn get_grouped_creation_stats(
             to,
             segment,
             group_by: Vec::new(),
-            // The fingerprint's OWN width, never the caller's and never a
-            // substituted default — the scoped card must report the same width
-            // the engine matcher grades this fingerprint at.
-            bucket_width: fp.bucket_size_amount,
+            // A scoped card is one group over the fingerprint's own criteria, so
+            // there is nothing to partition.
+            partition: serde_json::json!({}),
             field_filters: serde_json::json!({}),
-            ix_labels_filter: configured_labels(fp.ix_labels.as_deref()).map(<[String]>::to_vec),
+            ix_labels_filter: match fp.criteria.get(hunter_engine::fingerprint::AxisId::IxLabels) {
+                Some(hunter_engine::fingerprint::AxisPredicate::Sequence { labels }) => {
+                    Some(labels.clone())
+                }
+                _ => None,
+            },
             // Accepted-but-inert: one group here, so nothing to rank — mirrors how
             // this path already ignores group_by/top/field_filters.
             rank_by: normalize_rank_by(query.rank_by.as_deref()).to_string(),
@@ -619,11 +651,6 @@ pub async fn get_grouped_creation_stats(
     }
 
     let top = clamp_top(query.top);
-    // Exact mode wins outright — no width is consulted, so an invalid one can't
-    // quietly downgrade it to bucketing. Otherwise clamp like the sweep handler:
-    // invalid/sub-floor ⇒ default, so the dashboard groups a corpus at the same
-    // width a sweep would.
-    let precision = resolve_precision(query.exact_sol, query.bucket_width);
 
     let fields = match parse_group_by(query.group_by.as_deref()) {
         Ok(f) => f,
@@ -632,6 +659,10 @@ pub async fn get_grouped_creation_stats(
                 "error": format!("unknown group_by field: {tag}")
             }));
         }
+    };
+    let plan = match resolve_plan(&fields, query.partition.as_deref()) {
+        Ok(p) => p,
+        Err(msg) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })),
     };
 
     let field_filters = match parse_field_filters(query.field_filters.as_deref()) {
@@ -660,16 +691,7 @@ pub async fn get_grouped_creation_stats(
     let rank_by = normalize_rank_by(query.rank_by.as_deref());
 
     let data = match repo
-        .grouped(
-            &fields,
-            bucket,
-            top,
-            &field_filters,
-            ix_labels_filter.as_deref(),
-            precision,
-            rank_by,
-            filter,
-        )
+        .grouped(&plan, bucket, top, &field_filters, ix_labels_filter.as_deref(), rank_by, filter)
         .await
     {
         Ok(d) => d,
@@ -699,7 +721,7 @@ pub async fn get_grouped_creation_stats(
         to,
         segment,
         group_by: fields.iter().map(|f| f.as_str().to_string()).collect(),
-        bucket_width: precision.width(),
+        partition: partition_json(&plan),
         field_filters: field_filters_json,
         ix_labels_filter,
         rank_by: rank_by.to_string(),
@@ -767,15 +789,16 @@ pub struct GroupedCreationTokensRequest {
     pub to: Option<String>,
     pub segment: Option<String>,
     pub group_by: Option<String>,
-    pub bucket_width: Option<f64>,
-    /// Mirrors `GroupedCreationQuery::exact_sol` — MUST match the stats request that
-    /// produced `group_key`, or the key here is rendered in the other mode and
-    /// selects nothing. Resolved by the same `resolve_precision`.
-    pub exact_sol: Option<bool>,
+    /// Mirrors `GroupedCreationQuery::partition` — MUST match the stats request that
+    /// produced `group_key`, or this asks for a window the card never produced and
+    /// selects nothing. Resolved by the same `resolve_plan`.
+    pub partition: Option<String>,
     pub field_filters: Option<String>,
     pub ix_labels_filter: Option<String>,
-    /// The exact group to drill into: `{"cu_limit":"200000","ix_labels":"A | B"}`
-    /// — same rendered shape as [`GroupedGroup::group_key`]. Required to carry a
+    /// The exact group to drill into — the structured
+    /// [`GroupKey`](crate::grouping::GroupKey) shape [`GroupedGroup::group_key`]
+    /// carries, e.g.
+    /// `{"cu_limit":{"kind":"window","min":"200000","max":"200000"}}`. Required to carry a
     /// value for every field named in `group_by` (a missing one is silently
     /// dropped from the match, so an incomplete key over-matches — validated below).
     pub group_key: serde_json::Value,
@@ -815,7 +838,6 @@ pub async fn get_grouped_creation_tokens(
     let segment = body.segment.clone().unwrap_or_else(|| "all".to_string());
     let (mayhem, cashback) = parse_segment(&segment);
     let (from, to) = resolve_window(body.from.as_deref(), body.to.as_deref(), now);
-    let precision = resolve_precision(body.exact_sol, body.bucket_width);
 
     // dow/hour: both-or-neither, and in-range when present.
     let cell = match (body.dow, body.hour) {
@@ -860,6 +882,10 @@ pub async fn get_grouped_creation_tokens(
                 }));
             }
         };
+        let plan = match resolve_plan(&fields, body.partition.as_deref()) {
+            Ok(p) => p,
+            Err(msg) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })),
+        };
         let field_filters = match parse_field_filters(body.field_filters.as_deref()) {
             Ok(f) => f,
             Err(msg) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })),
@@ -872,34 +898,26 @@ pub async fn get_grouped_creation_tokens(
         // `group_key` must name every selected field — else the "exact group" the
         // client thinks it's drilling into is actually broader than what it saw
         // (a silently-dropped field would match every value of that field).
-        let group_key_obj = match body.group_key.as_object() {
-            Some(o) => o,
-            None => {
-                return HttpResponse::BadRequest()
-                    .json(serde_json::json!({ "error": "group_key must be a JSON object" }));
-            }
-        };
-        let mut group_key: Vec<(GroupField, String)> = Vec::with_capacity(fields.len());
-        for field in &fields {
-            let Some(v) = group_key_obj.get(field.as_str()) else {
+        if body.group_key.as_object().is_none() {
+            return HttpResponse::BadRequest()
+                .json(serde_json::json!({ "error": "group_key must be a JSON object" }));
+        }
+        // The key carries PREDICATES, not rendered labels, so this is a parse of the
+        // same type the card was built from — no string round-trip to disagree over.
+        let group_key = GroupKey::from_json(&body.group_key);
+        for field in plan.fields() {
+            if !group_key.0.iter().any(|(f, _)| *f == field) {
                 return HttpResponse::BadRequest().json(serde_json::json!({
                     "error": format!("group_key missing value for field: {}", field.as_str())
                 }));
-            };
-            let Some(s) = v.as_str() else {
-                return HttpResponse::BadRequest().json(serde_json::json!({
-                    "error": format!("group_key[{}] must be a string", field.as_str())
-                }));
-            };
-            group_key.push((*field, s.to_string()));
+            }
         }
 
         crate::storage::repositories::creation_stats_repo::build_grouped_tokens_where(
-            &fields,
+            &plan,
             &group_key,
             &field_filters,
             ix_labels_filter.as_deref(),
-            precision,
             dow,
             hour,
             &body.table.search,

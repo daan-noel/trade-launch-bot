@@ -16,7 +16,9 @@
 
 use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
 use hunter_engine::fingerprint::{Fingerprint as EngineFingerprint, FingerprintId};
-use hunter_engine::grouping::{extract_lamports, normalize_labels, TokenFingerprint};
+use hunter_engine::fingerprint::{
+    extract_lamports, normalize_labels, sol_to_lamports, TokenFingerprint,
+};
 use hunter_engine::rule_params::RuleParams;
 
 use crate::models::{Fingerprint as ModelFingerprint, StrategyRule, Token};
@@ -26,11 +28,9 @@ use crate::models::{Fingerprint as ModelFingerprint, StrategyRule, Token};
 /// settled) and filled in from a `FirstSlotSettled` event; instant axes are always
 /// read here.
 ///
-/// * `cu_limit`/`cu_price` — exact, `u64` → `i64`.
-/// * `initial_buy_sol` — the dev-buy SOL.
-/// * `max_cost_lamports`/`spendable_lamports_in` — read from the creation
-///   instruction args (number or numeric string), lamports at rest.
-/// * `ix_labels` — the creation instruction-label sequence, exact order.
+/// Every numeric axis lands here as an INTEGER — lamports for the amounts, a tally
+/// for the counts. The `initial_buy_sol` / first-slot `f64` columns convert once,
+/// here, through the one shared `sol_to_lamports`.
 pub fn observed_axes(
     token: &Token,
     first_slot_buy_sol: Option<f64>,
@@ -38,10 +38,13 @@ pub fn observed_axes(
 ) -> TokenFingerprint {
     TokenFingerprint {
         token_program_id: token.token_program_id.clone(),
-        initial_buy_sol: token.initial_buy_sol,
-        cu_limit: token.cu_limit.map(|v| v as i64),
-        cu_price: token.cu_price.map(|v| v as i64),
-        is_cashback_enabled: false,
+        is_cashback_enabled: token.is_cashback_enabled,
+        cu_limit: token.cu_limit,
+        cu_price: token.cu_price,
+        // The ONE float -> integer seam on this path, at the repo boundary. Identity
+        // is integer from here on, so no match ever re-derives a rounding two
+        // implementations would have to agree on.
+        init_buy_lamports: token.initial_buy_sol.map(sol_to_lamports),
         max_cost_lamports: extract_lamports(
             token.initial_buy_instruction.as_ref(),
             "max_cost_lamports",
@@ -50,29 +53,22 @@ pub fn observed_axes(
             token.initial_buy_instruction.as_ref(),
             "spendable_lamports_in",
         ),
-        first_slot_buy_sol,
-        first_slot_sell_sol,
+        first_slot_buy_lamports: first_slot_buy_sol.map(sol_to_lamports),
+        first_slot_sell_lamports: first_slot_sell_sol.map(sol_to_lamports),
         ix_labels: normalize_labels(&token.instruction_labels),
+        // Not a token column: the engine stamps its own running per-creator tally
+        // onto the axes in `reduce` at `TokenCreated`, before the match reads them.
+        // A caller reconstructing one token out of band (the readout, a replay)
+        // seeds it from `TokenRepo::count_prior_launches` instead.
+        prior_launches: None,
     }
 }
 
-/// Convert a `fingerprints` row into the engine's pure matcher fingerprint (drops
-/// the label/timestamps; wraps the id). Lamports axes carry over verbatim.
+/// Convert a `fingerprints` row into the engine's pure matcher fingerprint. Thin by
+/// design — [`ModelFingerprint::to_engine`] is the one converter, so the live gate
+/// and every mirror grade the same predicates.
 pub fn fp_to_engine(fp: &ModelFingerprint) -> EngineFingerprint {
-    EngineFingerprint {
-        id: FingerprintId(fp.id),
-        cu_limit: fp.cu_limit,
-        cu_price: fp.cu_price,
-        ix_labels: fp.ix_labels.clone(),
-        init_buy_lamports: fp.init_buy_lamports,
-        max_cost_lamports: fp.max_cost_lamports,
-        spendable_lamports_in: fp.spendable_lamports_in,
-        first_slot_buy_lamports: fp.first_slot_buy_lamports,
-        first_slot_sell_lamports: fp.first_slot_sell_lamports,
-        bucket_size_amount: fp.bucket_size_amount,
-        wildcard: fp.wildcard,
-        metric_config: fp.metric_config.clone(),
-    }
+    fp.to_engine()
 }
 
 /// Convert an active `strategy_rules` row into an engine [`LoadedRule`], parsing

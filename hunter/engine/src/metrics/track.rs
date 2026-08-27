@@ -131,11 +131,6 @@ impl TokenTrack {
         }
     }
 
-    /// Seed the creation-transaction instruction count from the token's fingerprint.
-    /// Static for the token's whole life — see [`SnapshotState::seed_ix_count`].
-    pub fn seed_ix_count(&mut self, n: usize) {
-        self.snapshot.seed_ix_count(n);
-    }
 
     /// Seed the creation slot's buy total (`m_snapshot.first_slot_buy`). Called when
     /// that slot SETTLES, not at creation — see [`SnapshotState::seed_first_slot_buy`].
@@ -143,11 +138,6 @@ impl TokenTrack {
         self.snapshot.seed_first_slot_buy(sol);
     }
 
-    /// Seed the creator's prior-launch count (`m_snapshot.prior_launches`). Static
-    /// for the token's whole life — see [`SnapshotState::seed_prior_launches`].
-    pub fn seed_prior_launches(&mut self, n: u32) {
-        self.snapshot.seed_prior_launches(n);
-    }
 
     /// Fold one trade into every group.
     pub fn on_trade(&mut self, t: TradeLite) {
@@ -262,7 +252,7 @@ impl TokenTrack {
         let window = windows.primary;
         let cur = self.cursor();
         match id {
-            Time | Liquidity | IxCount | PriorLaunches | FirstSlotBuy => {
+            Time | Liquidity | FirstSlotBuy => {
                 self.snapshot.value(id, self.created_at, now)
             }
             Stall | Trail | LifeRise => self.price_lifetime.value(id, now),

@@ -798,7 +798,7 @@ async fn drive(
         fingerprint_id: target_row.id,
         fingerprint_name: target_row.name.clone(),
         family: FamilyDto {
-            varied_axis: fam.varied.map(|a| a.column().to_string()),
+            varied_axis: fam.varied.map(|a| a.key().to_string()),
             single_cohort: fam.is_single() || cohorts.len() <= 1,
             members: cohorts
                 .iter()
@@ -930,7 +930,7 @@ fn refusal_report(
         fingerprint_id: target_row.id,
         fingerprint_name: target_row.name.clone(),
         family: FamilyDto {
-            varied_axis: fam.varied.map(|a| a.column().to_string()),
+            varied_axis: fam.varied.map(|a| a.key().to_string()),
             single_cohort: fam.is_single(),
             members: scopes
                 .iter()

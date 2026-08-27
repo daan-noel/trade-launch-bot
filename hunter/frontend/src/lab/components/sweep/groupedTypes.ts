@@ -6,6 +6,7 @@
 // fingerprint-blob serializers — a new strategy is a registry entry, not a page.
 
 import type { CostModelId, FillModelId } from 'lib/strategy/types';
+import type { Criteria } from 'lib/strategy/fingerprintAxes';
 import type { FieldFilterValue } from './fingerprintFilters';
 
 import type { SweepResultRecord } from './types';
@@ -17,13 +18,15 @@ import type { SweepResultRecord } from './types';
 export const GROUP_FIELDS = [
   'cu_limit',
   'cu_price',
+  'init_buy_lamports',
   'max_cost_lamports',
   'spendable_lamports_in',
-  'initial_buy_sol',
-  'first_slot_buy_sol',
-  'first_slot_sell_sol',
-  'is_cashback_enabled',
+  'first_slot_buy_lamports',
+  'first_slot_sell_lamports',
   'ix_labels',
+  'ix_count',
+  'prior_launches',
+  'is_cashback_enabled',
 ] as const;
 
 export type GroupField = (typeof GROUP_FIELDS)[number];
@@ -32,32 +35,65 @@ export type GroupField = (typeof GROUP_FIELDS)[number];
 export const GROUP_FIELD_LABELS: Record<GroupField, string> = {
   cu_limit: 'CU limit',
   cu_price: 'CU price',
-  max_cost_lamports: 'Max SOL cost',
-  spendable_lamports_in: 'Spendable SOL in',
-  initial_buy_sol: 'Initial buy SOL',
-  first_slot_buy_sol: 'First-slot buy SOL',
-  first_slot_sell_sol: 'First-slot sell SOL',
+  init_buy_lamports: 'Initial buy',
+  max_cost_lamports: 'Max cost',
+  spendable_lamports_in: 'Spendable in',
+  first_slot_buy_lamports: 'First-slot buy',
+  first_slot_sell_lamports: 'First-slot sell',
   ix_labels: 'Instruction labels',
+  ix_count: 'Instruction count',
+  prior_launches: 'Prior launches',
   is_cashback_enabled: 'Cashback on',
 };
 
-// --- bucketed (binned) fields ----------------------------------------------
-
-/** Bucket width (SOL) the backend groups the continuous SOL-amount fields by.
- *  Mirrors `trading_core` `grouping::SOL_BUCKET_WIDTH` — keep the two in sync. */
-export const SOL_BUCKET_WIDTH = 0.1;
-
-/** Fields the backend groups into `SOL_BUCKET_WIDTH`-wide **ranges** (group chips
- *  read as `"lo–hi"`, e.g. `"1.0–1.1"`) instead of exact values — they are continuous
- *  SOL amounts. Every other field groups on its exact value. Mirrors the binned arms
- *  of `grouping::render_field` / `creation_stats_repo::group_field_sql`. */
-export const BUCKETED_GROUP_FIELDS: ReadonlySet<GroupField> = new Set<GroupField>([
-  'initial_buy_sol',
+/** Group fields whose filter values are typed in **human SOL** (the axis stores
+ *  integer lamports). Every other numeric field is typed as its own integer.
+ *
+ *  This is a UNIT distinction, not a mode: the same grammar (`1.515`, `1.5-1.6`,
+ *  `>=1.5`) applies to all of them — only what the digits mean differs. Mirrors the
+ *  `lamports` arm of the Rust `AxisUnit`. */
+export const LAMPORTS_GROUP_FIELDS: ReadonlySet<GroupField> = new Set<GroupField>([
+  'init_buy_lamports',
   'max_cost_lamports',
   'spendable_lamports_in',
-  'first_slot_buy_sol',
-  'first_slot_sell_sol',
+  'first_slot_buy_lamports',
+  'first_slot_sell_lamports',
 ]);
+
+/** Group fields a `PartitionSpec.ranges` can bin, and that take the numeric filter
+ *  grammar. `ix_labels` is a sequence and the two grouping-only fields are
+ *  discrete, so neither is here. */
+export const NUMERIC_GROUP_FIELDS: ReadonlySet<GroupField> = new Set<GroupField>([
+  ...LAMPORTS_GROUP_FIELDS,
+  'cu_limit',
+  'cu_price',
+  'ix_count',
+  'prior_launches',
+]);
+
+// --- partitioning ------------------------------------------------------------
+
+/** How one grouped field's values are collapsed into group keys. Mirrors Rust
+ *  `hunter_engine::grouping::PartitionSpec`.
+ *
+ *  **There is no width.** A width defines an infinite implicit lattice that every
+ *  consumer has to re-derive identically (and a `0` in it divides by zero);
+ *  explicit edges are a finite list that travels with the run and means the same
+ *  thing to everyone who reads it. `edges` are decimal STRINGS in the field's own
+ *  integer unit — a JS `number` is unsafe past 2^53. */
+export type PartitionSpec =
+  | { kind: 'distinct' }
+  | { kind: 'ranges'; edges: string[] };
+
+/** One group key value, as the backend serializes it. A numeric field carries the
+ *  inclusive `[min, max]` WINDOW it selected — which is exactly the predicate a
+ *  promoted fingerprint stores, so promote is a copy rather than a re-derivation. */
+export type GroupKeyValue =
+  | { kind: 'missing' }
+  | { kind: 'text'; value: string }
+  | { kind: 'flag'; value: boolean }
+  | { kind: 'labels'; labels: string[] }
+  | { kind: 'window'; min?: string; max?: string };
 
 // --- run / group / result records -------------------------------------------
 
@@ -115,6 +151,11 @@ export interface GroupedSweepRunRecord {
   label: string | null;
   /** Notional (SOL) each simulated round-trip was priced at; `null` on legacy runs. */
   buy_amount_sol: number | null;
+  /** How each grouped field was partitioned — `[[field, spec], …]` in group-by
+   *  order. Empty on a run swept before the partition replaced the bucket width:
+   *  its group keys are rendered labels no longer parsed, so it reads as
+   *  one-group-per-value. Re-run to promote. */
+  partition: [GroupField, PartitionSpec][];
   /** Bucket width (SOL) the continuous SOL group fields were binned at — the width
    *  a promoted rule's matcher must use so it matches the same bucket. `null` = the
    *  run grouped on **exact** amounts (`SolPrecision::Exact`), the same NULL-means-exact
@@ -220,15 +261,9 @@ export interface GroupSelection {
   /** Identity fields of the fingerprint Promote would find-or-create. Compare
    *  (never rebuild) to badge a group with an existing fingerprint. */
   identity?: {
-    cu_limit: number | null;
-    cu_price: number | null;
-    init_buy_lamports: number | null;
-    max_cost_lamports: number | null;
-    spendable_lamports_in: number | null;
-    first_slot_buy_lamports: number | null;
-    first_slot_sell_lamports: number | null;
-    bucket_size_amount: number | null;
-    ix_labels: string[] | null;
+    /** The axes the promoted fingerprint would carry — the same map
+     *  `IDENTITY_WHERE` compares. */
+    criteria: Criteria;
     /** Always `false` — a promoted group is a set of axis values, never "every
      *  token". Carried because `IDENTITY_WHERE` compares it, so an identity that
      *  omits it is not the identity it claims to be. */

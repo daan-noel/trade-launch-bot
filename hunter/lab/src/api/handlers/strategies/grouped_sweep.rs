@@ -29,11 +29,11 @@ use crate::sweep::aggregate::ComboMetrics;
 use crate::lake::duck::LakeSource;
 use crate::sweep::corpus::{sweep_per_mint_cap, CorpusSource, Selection};
 use crate::sweep::grouped_engine::{CoverageFloor, GroupResult, GroupSink};
-use crate::sweep::grouping::{group_key, normalize_label_vec, GroupField, SolPrecision};
+use crate::sweep::grouping::{group_key, GroupField, GroupPlan, PartitionSpec};
 use crate::sweep::registry;
 use crate::sweep::selection::GroupSelection;
 use crate::sweep::strategy::parse_method;
-use trading_core::config::constants::{sol_to_lamports, tidy_sol_decimal};
+use trading_core::config::constants::sol_to_lamports;
 use trading_core::models::Fingerprint;
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 
@@ -57,24 +57,16 @@ pub struct StartGroupedSweepBody {
     /// Fingerprint fields to group by (exact-value). Empty ⇒ one "ALL" group.
     #[serde(default)]
     pub group_by: Vec<GroupField>,
-    /// Per-run bucket width (SOL) for the **continuous** SOL grouping fields
-    /// (initial-buy, max-cost, spendable-in, first-slot buy/sell). This is the
-    /// single width the partition, the created rule's live matcher, and the
-    /// creation-stats dashboard all bucket by — so "what you swept = what you run".
-    /// Discrete fields ignore it. Omitted ⇒ [`grouping::SOL_BUCKET_WIDTH`] (0.1);
-    /// clamped to a [`grouping::MIN_BUCKET_WIDTH_SOL`] floor server-side.
-    #[serde(default = "default_bucket_width_sol")]
-    pub bucket_width_sol: f64,
-    /// `true` ⇒ group the continuous SOL fields on their **exact** amount instead
-    /// of a bucket range (`grouping::SolPrecision::Exact`); `bucket_width_sol` is
-    /// then ignored and the run row stores a `NULL` width. A promoted group carries
-    /// that straight onto the fingerprint, whose `bucket_size_amount` uses the same
-    /// `NULL`-means-exact spelling — so "what you swept = what you run" holds in
-    /// exact mode too.
+    /// How each grouped field is partitioned, keyed by field tag —
+    /// `{"init_buy_lamports": {"kind":"ranges","edges":["1000000000","2000000000"]}}`.
+    /// A field not named here is `{"kind":"distinct"}` (one group per value).
     ///
-    /// A separate named flag, never a `0` width: see `SolPrecision`.
+    /// A group's key carries the WINDOW it selected, and that window is exactly the
+    /// predicate a promoted rule matches on — so "what you swept = what you run"
+    /// holds by construction rather than by the sweep, the matcher and the dashboard
+    /// each re-deriving one width identically.
     #[serde(default)]
-    pub exact_sol: bool,
+    pub partition: std::collections::HashMap<String, PartitionSpec>,
     /// Optional exact-set instruction-label filter: when set (and non-empty),
     /// restrict the corpus to tokens whose normalized `ix_labels` set EXACTLY
     /// equals these labels, then sweep that slice. The page offers this as the
@@ -212,9 +204,7 @@ fn run_pricing(run: &GroupedSweepRun) -> crate::sweep::generic::Pricing {
 fn default_min_tokens() -> usize {
     10
 }
-fn default_bucket_width_sol() -> f64 {
-    crate::sweep::grouping::SOL_BUCKET_WIDTH
-}
+
 fn default_min_fired_abs() -> u64 {
     10
 }
@@ -662,23 +652,37 @@ async fn run_grouped_sweep_job(
 
     let token_cap = registry::clamp_token_cap(b.token_cap);
     let min_tokens = b.min_tokens.max(1);
-    // Per-run bucket width for the continuous SOL grouping fields. Mirror the rule
-    // validator (`strategies::rules::check_bucket_width`): a non-finite or sub-floor
-    // width falls back to the default rather than 400-ing, so a stray input can't
-    // block a run. Floored at MIN_BUCKET_WIDTH_SOL to keep the 1e-9 ratio-epsilon
-    // valid and edge labels from exploding in decimals.
-    // Exact mode wins outright and consults no width, so a stray one can't quietly
-    // downgrade it back to bucketing.
-    let precision = if b.exact_sol {
-        SolPrecision::Exact
-    } else {
-        let w = b.bucket_width_sol;
-        if w.is_finite() && w >= crate::sweep::grouping::MIN_BUCKET_WIDTH_SOL {
-            SolPrecision::Bucket(w)
-        } else {
-            SolPrecision::Bucket(crate::sweep::grouping::SOL_BUCKET_WIDTH)
-        }
+    // The partition travels with the run: an edge list is a finite, explicit fact,
+    // so the sweep, the promoted rule and the dashboard read the same windows
+    // without anyone re-deriving them from a width.
+    let plan = {
+        let mut specs = b.partition.clone();
+        GroupPlan(
+            b.group_by
+                .iter()
+                .map(|f| (*f, specs.remove(f.as_str()).unwrap_or(PartitionSpec::Distinct)))
+                .collect(),
+        )
     };
+    for (field, spec) in &plan.0 {
+        let PartitionSpec::Ranges { edges } = spec else { continue };
+        // Ascending and distinct, or `window_for`'s binary search reads the wrong
+        // window and two edges claim the same tokens. Numeric, or there is nothing
+        // to bin.
+        let msg = if edges.is_empty() || edges.windows(2).any(|w| w[0] >= w[1]) {
+            format!(
+                "partition[{}]: edges must be a non-empty, strictly ascending list",
+                field.as_str()
+            )
+        } else if !field.is_numeric() {
+            format!("partition[{}]: only a numeric field can be binned", field.as_str())
+        } else {
+            continue;
+        };
+        gate.error = Some(msg.clone());
+        let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })));
+        return;
+    }
     let floor = CoverageFloor {
         min_fired_abs: b.min_fired_abs,
         fire_frac: b.fire_frac.clamp(0.0, 1.0),
@@ -966,7 +970,7 @@ async fn run_grouped_sweep_job(
             .ix_labels_filter
             .as_ref()
             .filter(|f| !f.is_empty())
-            .map(|f| crate::sweep::grouping::normalize_label_vec(f.clone()))
+            .cloned()
         {
             let before = corpus.tokens.len();
             corpus.tokens.retain(|t| t.fp.ix_labels == want);
@@ -1104,7 +1108,7 @@ async fn run_grouped_sweep_job(
         buy_amount_sol: Some(b.buy_amount_sol),
         // The clamped width actually used to partition (not the raw request), so
         // re-run + promotion restore exactly what this run swept.
-        bucket_width_sol: precision.width(),
+        partition: plan.clone(),
         volume_ix_patterns: b
             .volume_ix_patterns
             .as_ref()
@@ -1259,7 +1263,7 @@ async fn run_grouped_sweep_job(
         for t in &corpus.tokens {
             // MUST use the same `bucket_width` the engine partitions by, or these
             // group-key strings won't match the engine's group keys and mints go missing.
-            let key_str = group_key(&t.fp, &b.group_by, precision).to_json().to_string();
+            let key_str = group_key(&t.fp, &plan).to_json().to_string();
             map.entry(key_str).or_default().push(t.mint.clone());
         }
         Arc::new(map)
@@ -1279,8 +1283,7 @@ async fn run_grouped_sweep_job(
         method,
         refine,
         corpus,
-        b.group_by.clone(),
-        precision,
+        plan.clone(),
         min_tokens,
         floor,
         b.max_combos,
@@ -2197,90 +2200,27 @@ fn parse_scale_out_pass2(
     Ok(Some((variants, top_k.unwrap_or(3).max(1))))
 }
 
-/// Rebuild a [`Fingerprint`] from a stored group key at bucket `width`. The group
-/// key is `{field_tag: label}` where continuous SOL fields carry the bucket's
-/// `"lo–hi"` label (lower edge = a `width`-multiple) — the representative used is
-/// that lower edge, which lies in the bucket, so the fingerprint's `same_bucket`
-/// match reproduces the group's membership exactly. Grouping-only fields
-/// (`token_program_id`, `is_cashback_enabled`) have no fingerprint axis and the
-/// `∅` "missing" label is skipped.
 /// Synthesize a saved fingerprint from a ranked group's key.
 ///
-/// `precision` must be the one the run **grouped** at, so the promoted rule arms on
-/// exactly the tokens the card counted: `Bucket(w)` stores `w` and the engine
-/// matches with `same_bucket`; `Exact` stores `NULL` and the engine matches the
-/// exact lamports. Passing a substituted width here is the whole class of bug this
-/// signature exists to prevent — it would arm on a window the card never showed.
-/// `parse_lo_lamports` reads both key shapes (a `"lo–hi"` label's lower edge, or a
-/// bare exact amount).
-pub(crate) fn fingerprint_from_group_key(
-    gk: &serde_json::Value,
-    precision: SolPrecision,
-    name: String,
-) -> Fingerprint {
+/// A **copy**, not a reconstruction: a group key carries the `[min, max]` window it
+/// selected, and that is exactly the predicate a fingerprint axis stores, so the
+/// promoted rule arms on precisely the tokens the card counted. The retired form
+/// had to re-anchor a `"lo–hi"` label onto `lower-edge + width`, and passing a
+/// substituted width there armed a rule on a window the card never showed.
+///
+/// The `∅` "missing" value and the two grouping-only fields have no fingerprint
+/// axis and are skipped — see `GroupSelection::materialize`, which refuses to
+/// promote a group that depends on one rather than silently widening it.
+pub(crate) fn fingerprint_from_group_key(gk: &serde_json::Value, name: String) -> Fingerprint {
     let now = Utc::now();
-    let mut fp = Fingerprint {
-        // A sweep fingerprint always names axes; it is never a match-all row.
-        wildcard: false,
-        id: Uuid::new_v4(),
-        name,
-        cu_limit: None,
-        cu_price: None,
-        init_buy_lamports: None,
-        max_cost_lamports: None,
-        spendable_lamports_in: None,
-        first_slot_buy_lamports: None,
-        first_slot_sell_lamports: None,
-        bucket_size_amount: precision.width().map(tidy_sol_decimal),
-        ix_labels: None,
-        metric_config: serde_json::json!({}),
-        created_at: now,
-        updated_at: now,
-    };
-    let Some(obj) = gk.as_object() else { return fp };
-    for (tag, val) in obj {
-        let Some(field) = GroupField::from_tag(tag) else { continue };
-        let Some(s) = val.as_str() else { continue };
-        if s == "∅" {
-            continue; // the grouping "missing" sentinel — not part of identity
-        }
-        match field {
-            GroupField::CuLimit => fp.cu_limit = s.parse().ok(),
-            GroupField::CuPrice => fp.cu_price = s.parse().ok(),
-            GroupField::InitialBuySol => fp.init_buy_lamports = parse_lo_lamports(s),
-            GroupField::MaxCostLamports => fp.max_cost_lamports = parse_lo_lamports(s),
-            GroupField::SpendableLamportsIn => fp.spendable_lamports_in = parse_lo_lamports(s),
-            GroupField::FirstSlotBuySol => fp.first_slot_buy_lamports = parse_lo_lamports(s),
-            GroupField::FirstSlotSellSol => fp.first_slot_sell_lamports = parse_lo_lamports(s),
-            GroupField::IxLabels => {
-                fp.ix_labels = Some(s.split(" | ").map(str::to_string).collect())
-            }
-            // Grouping-only axes with no fingerprint identity.
-            GroupField::TokenProgramId | GroupField::IsCashbackEnabled => {}
-        }
+    let mut fp = Fingerprint { name, ..Fingerprint::empty(Uuid::new_v4(), now) };
+    for (field, value) in crate::sweep::grouping::GroupKey::from_json(gk).0 {
+        let (Some(axis), Some(pred)) = (field.axis(), value.to_predicate()) else { continue };
+        fp.criteria.insert(axis, pred);
     }
     fp
 }
 
-/// Parse a `"lo–hi"` SOL bucket label's lower edge into lamports (a plain numeric
-/// label with no separator parses whole). `None` if it isn't numeric.
-///
-/// **A label naming an amount past `i64` clamps to `i64::MAX`, it does not return
-/// `None`.** That case is real — the `max_cost_lamports` / `spendable_lamports_in`
-/// group keys render pump.fun's `u64::MAX` "no slippage cap" ceiling exactly (see
-/// `hunter_engine::grouping::MAX_BUCKETABLE_LAMPORTS`) — and the two failure
-/// directions are not symmetric: a `BIGINT` axis cannot hold that value, but
-/// returning `None` would *drop the axis*, and a dropped axis matches every token.
-/// Clamping instead yields an axis no token can satisfy, so a fingerprint promoted
-/// from that group arms on nothing rather than on everything. Expressing it
-/// properly needs the axis to carry the state (a schema change), not a wider parse.
-fn parse_lo_lamports(label: &str) -> Option<i64> {
-    let lo = label.split('–').next()?.trim();
-    let sol: f64 = lo.parse().ok()?;
-    // `sol_to_lamports`' `as i64` already saturates; spelled out so the fail-closed
-    // choice above is visible at the site rather than inherited from a cast.
-    Some(if sol >= i64::MAX as f64 / 1e9 { i64::MAX } else { sol_to_lamports(sol) })
-}
 
 // ---------------------------------------------------------------------------
 // Token-results drill-in (re-simulate one combo on its group's corpus slice)
@@ -2361,24 +2301,19 @@ pub async fn list_token_results(
     // Fallback: full corpus load + attach_fingerprints (old groups without mints).
     // -----------------------------------------------------------------------
 
-    // Parse grouping fields once — needed for re-keying on the A/B/fallback paths.
-    let grouping_fields: Vec<GroupField> =
-        match serde_json::from_value(run.grouping_spec.clone()) {
-            Ok(f) => f,
-            Err(e) => {
-                tracing::error!("Bad grouping_spec in run: {e}");
-                return HttpResponse::InternalServerError()
-                    .json(serde_json::json!({"error": "invalid grouping spec"}));
-            }
-        };
+    // The grouping spec is validated on the way in, but a hand-edited row would
+    // otherwise fail far downstream as an empty re-key rather than here.
+    if serde_json::from_value::<Vec<GroupField>>(run.grouping_spec.clone()).is_err() {
+        tracing::error!("Bad grouping_spec in run {}", run.id);
+        return HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": "invalid grouping spec"}));
+    }
     let target_key = group.group_key.clone();
-    // Re-partition at the SAME precision the run swept, so the re-computed group
-    // keys match the stored `target_key` byte-for-byte. Read through the ONE
-    // `SolPrecision::from_width` reader: a NULL width means the run keyed EXACT
-    // amounts, not "legacy row, use the default width" — substituting a default
-    // here re-buckets an exact group (`"1.01"` → `"1–1.1"`), the retain below
-    // matches nothing, and the drill-in returns zero rows.
-    let run_precision = SolPrecision::from_width(run.bucket_width_sol);
+    // Re-partition under the SAME plan the run swept, read off the run row itself.
+    // Substituting a plan here re-bins the group (a distinct key `1.01` becomes a
+    // window `1–1.1`), the retain below matches nothing, and the drill-in returns
+    // zero rows — so the plan travels with the run rather than being reconstructed.
+    let run_plan = run.partition.clone();
 
     // A fingerprint-scoped run's corpus can only be reproduced through the engine
     // matcher (the manual filters are NULL on such a row), so resolve the scope
@@ -2412,7 +2347,6 @@ pub async fn list_token_results(
             .as_ref()
             .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
             .filter(|f| !f.is_empty())
-            .map(normalize_label_vec)
         {
             tokens.retain(|t| t.fp.ix_labels == want);
         }
@@ -2436,7 +2370,7 @@ pub async fn list_token_results(
                 tokens.retain(|t| matches_field_filter(&t.fp, field, allowed));
             }
         }
-        tokens.retain(|t| group_key(&t.fp, &grouping_fields, run_precision).to_json() == target_key);
+        tokens.retain(|t| group_key(&t.fp, &run_plan).to_json() == target_key);
         tokens
     };
 
@@ -2610,87 +2544,47 @@ fn bad_strategy(strategy_id: &str) -> HttpResponse {
     }))
 }
 
-/// A bucketed-SOL axis's amount as lamports, from an `f64` SOL fingerprint field.
-/// Rounds through the shared `sol_to_lamports`, which exactly recovers the integer
-/// the value was divided down from — so comparing in lamports is lossless and
-/// matches the dashboard SQL, which pins the stored `*_lamports` column directly.
-fn sol_opt_to_lamports(sol: Option<f64>) -> Option<i64> {
-    sol.filter(|v| v.is_finite()).map(hunter_engine::grouping::sol_to_lamports)
-}
-
-/// Match a typed filter value against a lamports amount, through the one shared
-/// `SolFilter` parser — human SOL, either an exact amount (`1.515`) or a half-open
-/// bucket range (`"1.5–1.6"`, the text a group chip displays).
+/// Whether the token's value for `field` satisfies any entry in `allowed`.
 ///
-/// JSON numbers are exact amounts; JSON strings go through the full parser, so the
-/// range form survives the wire (it cannot be expressed as a number). Any other
-/// JSON kind never matches.
+/// **The resident-corpus twin of `creation_stats_repo::field_filter_pred`.** Both
+/// parse through the one shared [`parse_filter`](hunter_engine::grouping::parse_filter),
+/// so a typed value means the same window in memory as it does in SQL — and, because
+/// that parser returns an [`AxisPredicate`], the same window the matcher would arm
+/// on. Before the two shared a parser they disagreed outright: this side compared a
+/// raw lamports integer while the dashboard compared a `"1.5–1.6"` bucket *label*, so
+/// a filter typed in either unit matched nothing on at least one surface.
 ///
-/// This is the in-memory twin of `creation_stats_repo::field_filter_pred`'s
-/// bucketed arm; the two must accept the same typed value for the same token, and
-/// `docs/arch/sweep.md` records why the pair exists rather than one shared
-/// implementation (SQL vs. resident-corpus retain). Before 2026-08-04 the two
-/// disagreed — this side compared the raw lamports integer while the dashboard
-/// compared the `"1.5–1.6"` bucket *label* — so a filter typed in either unit
-/// matched nothing on at least one surface.
-fn sol_filter_matches_lamports(allowed: &[serde_json::Value], lamports: Option<i64>) -> bool {
-    let Some(l) = lamports else { return false };
-    allowed.iter().any(|a| match a {
-        serde_json::Value::Number(n) => n
-            .as_f64()
-            .filter(|sol| sol.is_finite() && *sol >= 0.0)
-            .is_some_and(|sol| hunter_engine::grouping::sol_to_lamports(sol) == l),
-        serde_json::Value::String(s) => {
-            hunter_engine::grouping::SolFilter::parse(s).is_some_and(|f| f.matches(l))
-        }
-        _ => false,
-    })
-}
-
-/// Return `true` if the token's fingerprint value for `field` is in `allowed`.
-/// `IxLabels` is handled by the `ix_labels_filter` path and never reaches here.
-/// `TokenProgramId` isn't offered in the frontend filter UI.
+/// A JSON number is read as an exact value in the axis's own unit; a string goes
+/// through the full grammar (a range or a bound cannot be spelled as a number). Any
+/// other JSON kind never matches. `IxLabels` has its own ordered-sequence filter and
+/// never reaches here.
 pub(crate) fn matches_field_filter(
     fp: &crate::sweep::grouping::TokenFingerprint,
     field: crate::sweep::grouping::GroupField,
     allowed: &[serde_json::Value],
 ) -> bool {
-    use crate::sweep::grouping::GroupField::*;
-    match field {
-        CuLimit => {
-            let v = fp.cu_limit;
-            allowed.iter().any(|a| a.as_i64().map(|x| Some(x) == v).unwrap_or(false))
-        }
-        CuPrice => {
-            let v = fp.cu_price;
-            allowed.iter().any(|a| a.as_i64().map(|x| Some(x) == v).unwrap_or(false))
-        }
-        // The five bucketed SOL axes. Typed values are **human SOL** and match the
-        // exact amount — see `sol_filter_matches_lamports`.
-        // The two `u64`-domain axes: a value past `i64` (a "no slippage cap"
-        // ceiling) can never equal a filter entry, which names an `i64` amount in
-        // human SOL — so it drops out here rather than being wrapped into one.
-        MaxCostLamports => sol_filter_matches_lamports(
-            allowed,
-            fp.max_cost_lamports.and_then(hunter_engine::grouping::bucketable_lamports),
-        ),
-        SpendableLamportsIn => sol_filter_matches_lamports(
-            allowed,
-            fp.spendable_lamports_in.and_then(hunter_engine::grouping::bucketable_lamports),
-        ),
-        InitialBuySol => sol_filter_matches_lamports(allowed, sol_opt_to_lamports(fp.initial_buy_sol)),
-        FirstSlotBuySol => {
-            sol_filter_matches_lamports(allowed, sol_opt_to_lamports(fp.first_slot_buy_sol))
-        }
-        FirstSlotSellSol => {
-            sol_filter_matches_lamports(allowed, sol_opt_to_lamports(fp.first_slot_sell_sol))
-        }
-        IsCashbackEnabled => {
-            let v = fp.is_cashback_enabled;
-            allowed.iter().any(|a| a.as_bool().map(|b| b == v).unwrap_or(false))
-        }
-        TokenProgramId | IxLabels => false,
+    use crate::sweep::grouping::GroupField;
+    if field == GroupField::IsCashbackEnabled {
+        let v = fp.is_cashback_enabled;
+        return allowed.iter().any(|a| a.as_bool() == Some(v));
     }
+    if field == GroupField::TokenProgramId {
+        let Some(v) = fp.token_program_id.as_deref() else { return false };
+        return allowed.iter().any(|a| a.as_str() == Some(v));
+    }
+    let (Some(axis), Some(unit)) = (field.axis(), field.unit()) else { return false };
+    // A configured filter with no observed value fails, the same fail-closed
+    // direction the matcher takes.
+    let Some(observed) = axis.read_num(fp) else { return false };
+    allowed.iter().any(|a| {
+        let text = match a {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Number(n) => n.to_string(),
+            _ => return false,
+        };
+        hunter_engine::grouping::parse_filter(&text, unit)
+            .is_some_and(|p| p.matches_num(observed))
+    })
 }
 
 #[cfg(test)]
@@ -2702,16 +2596,15 @@ mod field_filter_tests {
     /// `max_cost_lamports: 1515000000` = **1.515 SOL**.
     fn fp() -> TokenFingerprint {
         TokenFingerprint {
-            token_program_id: Some("Tokenkeg".into()),
-            initial_buy_sol: Some(0.05),
             cu_limit: Some(200_000),
             cu_price: Some(1_000),
             is_cashback_enabled: true,
+            init_buy_lamports: Some(50_000_000),
             max_cost_lamports: Some(1_515_000_000),
             spendable_lamports_in: Some(500_000_000),
-            first_slot_buy_sol: Some(2.25),
-            first_slot_sell_sol: Some(0.75),
-            ix_labels: vec!["Pump.Fun: Create_v2".into()],
+            first_slot_buy_lamports: Some(2_250_000_000),
+            first_slot_sell_lamports: Some(750_000_000),
+            ..Default::default()
         }
     }
 
@@ -2726,9 +2619,9 @@ mod field_filter_tests {
         for (field, sol, lamports) in [
             (GroupField::MaxCostLamports, 1.515, 1_515_000_000.0),
             (GroupField::SpendableLamportsIn, 0.5, 500_000_000.0),
-            (GroupField::InitialBuySol, 0.05, 50_000_000.0),
-            (GroupField::FirstSlotBuySol, 2.25, 2_250_000_000.0),
-            (GroupField::FirstSlotSellSol, 0.75, 750_000_000.0),
+            (GroupField::InitBuyLamports, 0.05, 50_000_000.0),
+            (GroupField::FirstSlotBuyLamports, 2.25, 2_250_000_000.0),
+            (GroupField::FirstSlotSellLamports, 0.75, 750_000_000.0),
         ] {
             assert!(
                 matches_field_filter(&f, field, &[json!(sol)]),

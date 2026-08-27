@@ -1,424 +1,265 @@
 import { describe, expect, it } from 'vitest';
-import type { Fingerprint } from './types';
+
 import {
-  findFingerprintForGroupKey,
   fingerprintCompatibleWithGroupKey,
   fingerprintIdentityFromGroupKey,
   fingerprintIdentityKey,
+  fingerprintMatchesIdentity,
   fingerprintToIdentity,
+  findFingerprintForGroupKey,
   identityHasCriterion,
-  identityLamportsAreStorable,
   indexFingerprintsByIdentity,
   matchFingerprintsForGroups,
-  parseLoLamports,
+  predicatesEqual,
+  renderGroupKey,
   withIxLabelsFilter,
 } from './matchGroupFingerprint';
+import { exactPredicate, type Criteria } from './fingerprintAxes';
+import type { Fingerprint } from './types';
 
-function fp(partial: Partial<Fingerprint> & Pick<Fingerprint, 'id'>): Fingerprint {
+const SOL = 1_000_000_000n;
+const CEILING = '18446744073709551615';
+
+function fp(id: string, criteria: Criteria, wildcard = false): Fingerprint {
   return {
-    name: '',
-    cu_limit: null,
-    cu_price: null,
-    init_buy_lamports: null,
-    max_cost_lamports: null,
-    spendable_lamports_in: null,
-    first_slot_buy_lamports: null,
-    first_slot_sell_lamports: null,
-    bucket_size_amount: 0.1,
-    ix_labels: null,
-    wildcard: false,
+    id,
+    name: id,
+    wildcard,
+    criteria,
     metric_config: {},
     created_at: '',
     updated_at: '',
-    ...partial,
   };
 }
 
-describe('identityHasCriterion — must agree with backend has_any_criterion', () => {
-  const bare = {
-    cu_limit: null,
-    cu_price: null,
-    init_buy_lamports: null,
-    max_cost_lamports: null,
-    spendable_lamports_in: null,
-    first_slot_buy_lamports: null,
-    first_slot_sell_lamports: null,
-    bucket_size_amount: 0.1,
-    ix_labels: null,
-    wildcard: false,
-  };
-
-  it('counts a wildcard — the explicit "every token" criterion', () => {
-    // Mirrors the Rust `a_wildcard_is_a_criterion_and_saves` guard. Reading a
-    // wildcard as criterion-less here offers Create on a row the server accepts
-    // (and worse, describes the one match-everything row as unconfigured).
-    expect(identityHasCriterion({ ...bare, wildcard: true })).toBe(true);
-  });
-
-  it('does not count an empty label list', () => {
-    // `[]` is a second spelling of "not set" (Rust `configured_labels`). Counting
-    // it offered Create on a group the server rejects as criterion-less.
-    expect(identityHasCriterion({ ...bare, ix_labels: [] })).toBe(false);
-    expect(identityHasCriterion({ ...bare, ix_labels: ['A'] })).toBe(true);
-  });
-
-  it('counts a zero SOL axis — 0 is a real bucket, not "unset"', () => {
-    // Mirrors the Rust `a_zero_sol_axis_is_a_criterion_not_an_unset_field` guard:
-    // 0 lamports means the bucket [0, width), so it IS a configured criterion.
-    expect(identityHasCriterion({ ...bare, spendable_lamports_in: 0 })).toBe(true);
-    expect(identityHasCriterion({ ...bare, init_buy_lamports: 0 })).toBe(true);
-    expect(identityHasCriterion({ ...bare, cu_limit: 0 })).toBe(true);
-  });
-
-  it('an axis-free identity has no criterion (bucket width alone never counts)', () => {
-    expect(identityHasCriterion(bare)).toBe(false);
-    expect(identityHasCriterion({ ...bare, bucket_size_amount: 5 })).toBe(false);
-  });
-});
-
-describe('wildcard is part of identity', () => {
-  it('keys apart from an otherwise identical axis-free row', () => {
-    // The backend `IDENTITY_WHERE` compares `wildcard = $10`, so these are two
-    // different fingerprints — one matches every token, the other matches none.
-    const anyToken = fingerprintToIdentity(fp({ id: 'w', wildcard: true }));
-    const axisFree = fingerprintToIdentity(fp({ id: 'n' }));
-    expect(fingerprintIdentityKey(anyToken)).not.toBe(fingerprintIdentityKey(axisFree));
-  });
-
-  it('never badges a group card', () => {
-    // A group key always names axis VALUES, so a wildcard can never be the card's
-    // identity — and it is not a refinement of the card either: it DROPS the axes
-    // the card is made of, so badging it would claim the rule arms on that group.
-    const wildcard = fp({ id: 'w', wildcard: true });
-    expect(fingerprintCompatibleWithGroupKey(wildcard, { cu_limit: '200000' }, 0.1)).toBe(false);
-    expect(findFingerprintForGroupKey({ cu_limit: '200000' }, [wildcard], 0.1)).toBeNull();
-  });
-});
-
-describe('parseLoLamports', () => {
-  it('takes the lower edge of an en-dash bucket label', () => {
-    expect(parseLoLamports('1.0–1.1')).toBe(1_000_000_000);
-  });
-  it('parses a plain numeric label', () => {
-    expect(parseLoLamports('0.5')).toBe(500_000_000);
-  });
-});
+function window(min?: string, max?: string) {
+  return { kind: 'window', ...(min != null && { min }), ...(max != null && { max }) };
+}
 
 describe('fingerprintIdentityFromGroupKey', () => {
-  it('maps identity axes and skips ∅ / grouping-only fields', () => {
-    const id = fingerprintIdentityFromGroupKey(
-      {
-        cu_limit: '200000',
-        initial_buy_sol: '1.0–1.1',
-        ix_labels: 'buy | sell',
-        is_cashback_enabled: 'true',
-        max_cost_lamports: '∅',
-      },
-      0.1,
-    );
-    expect(id.cu_limit).toBe(200000);
-    expect(id.init_buy_lamports).toBe(1_000_000_000);
-    expect(id.ix_labels).toEqual(['buy', 'sell']);
-    expect(id.max_cost_lamports).toBeNull();
-    expect(id.bucket_size_amount).toBe(0.1);
+  // The headline property: a card's window IS the predicate a fingerprint stores,
+  // so identity is a copy — no string round-trip for a second reader to disagree with.
+  it('copies each key window into the matching axis predicate', () => {
+    const id = fingerprintIdentityFromGroupKey({
+      max_cost_lamports: window(String(SOL), String(2n * SOL - 1n)),
+      cu_limit: window('200000', '200000'),
+      ix_labels: { kind: 'labels', labels: ['A', 'B'] },
+    });
+    expect(id.criteria.max_cost_lamports).toEqual({
+      kind: 'range',
+      min: '1000000000',
+      max: '1999999999',
+    });
+    expect(id.criteria.cu_limit).toEqual({ kind: 'range', min: '200000', max: '200000' });
+    expect(id.criteria.ix_labels).toEqual({ kind: 'sequence', labels: ['A', 'B'] });
+    // A group names axis VALUES, so it can never describe "every token".
+    expect(id.wildcard).toBe(false);
+  });
+
+  it('skips values that name nothing a rule can match on', () => {
+    const id = fingerprintIdentityFromGroupKey({
+      max_cost_lamports: { kind: 'missing' },
+      token_program_id: { kind: 'text', value: 'Tokenkeg' },
+      is_cashback_enabled: { kind: 'flag', value: true },
+      ix_labels: { kind: 'labels', labels: [] },
+    });
+    expect(id.criteria).toEqual({});
+    expect(identityHasCriterion(id)).toBe(false);
+  });
+
+  // The value that could not be represented at all under the retired model: it is
+  // past 2^53, so a `Number()` round-trip silently dropped its low digits.
+  it('carries a u64::MAX ceiling through without losing a digit', () => {
+    const id = fingerprintIdentityFromGroupKey({ max_cost_lamports: window(CEILING, CEILING) });
+    expect(id.criteria.max_cost_lamports).toEqual({ kind: 'range', min: CEILING, max: CEILING });
+    expect(identityHasCriterion(id)).toBe(true);
+  });
+
+  it('reads the two new axes like any other', () => {
+    const id = fingerprintIdentityFromGroupKey({
+      ix_count: window('3', '5'),
+      prior_launches: window('0', '0'),
+    });
+    expect(id.criteria.ix_count).toEqual({ kind: 'range', min: '3', max: '5' });
+    expect(id.criteria.prior_launches).toEqual({ kind: 'range', min: '0', max: '0' });
   });
 });
 
-describe('identityLamportsAreStorable — the BIGINT-axis limit', () => {
-  const bare = {
-    cu_limit: null,
-    cu_price: null,
-    init_buy_lamports: null,
-    max_cost_lamports: null,
-    spendable_lamports_in: null,
-    first_slot_buy_lamports: null,
-    first_slot_sell_lamports: null,
-    bucket_size_amount: null,
-    ix_labels: null,
-  };
-
-  it('rejects a u64 ceiling reconstructed from an exact label', () => {
-    // pump.fun's "fill at any price" sentinel: max_sol_cost = u64::MAX. Past both
-    // 2^53 and i64::MAX, so it can never be a stored criterion.
-    const id = fingerprintIdentityFromGroupKey(
-      { max_cost_lamports: '18446744073.709551615' },
-      null,
-    );
-    expect(identityLamportsAreStorable(id)).toBe(false);
+describe('predicatesEqual', () => {
+  it('compares bounds as decimal strings, never as numbers', () => {
+    // Two amounts one lamport apart, both past 2^53: `Number()` calls them equal.
+    const a = { kind: 'range' as const, min: CEILING, max: CEILING };
+    const b = { kind: 'range' as const, min: '18446744073709551614', max: '18446744073709551614' };
+    expect(Number(CEILING) === Number('18446744073709551614')).toBe(true);
+    expect(predicatesEqual(a, b)).toBe(false);
+    expect(predicatesEqual(a, { ...a })).toBe(true);
   });
 
-  it('accepts real amounts, including 0 and an exact-mode identity', () => {
-    expect(identityLamportsAreStorable({ ...bare, init_buy_lamports: 0 })).toBe(true);
-    expect(identityLamportsAreStorable({ ...bare, init_buy_lamports: 1_515_000_000 })).toBe(true);
-    expect(identityLamportsAreStorable(bare)).toBe(true);
-  });
-});
-
-describe('fingerprintCompatibleWithGroupKey', () => {
-  it('allows a fingerprint refined with extra ix_labels when the card omitted that axis', () => {
-    const refined = fp({
-      id: 'refined',
-      first_slot_buy_lamports: 19_500_000_000,
-      first_slot_sell_lamports: 0,
-      max_cost_lamports: 0,
-      bucket_size_amount: 0.5,
-      ix_labels: ['Pump.Fun: Create_v2', 'Associated Token: CreateIdempotent', 'Pump.Fun: Buy'],
-    });
-    const gk = {
-      cu_limit: '∅',
-      cu_price: '∅',
-      first_slot_buy_sol: '19.5–20.0',
-      first_slot_sell_sol: '0.0–0.5',
-      max_cost_lamports: '0.0–0.5',
-      spendable_lamports_in: '∅',
-    };
-    expect(fingerprintCompatibleWithGroupKey(refined, gk, 0.5)).toBe(true);
-  });
-
-  it('rejects when a present ∅ axis is set on the fingerprint', () => {
-    const refined = fp({
-      id: 'x',
-      cu_limit: 200000,
-      first_slot_buy_lamports: 19_500_000_000,
-      bucket_size_amount: 0.5,
-    });
+  it('normalises leading zeros and treats an empty label list as unset', () => {
+    expect(predicatesEqual(exactPredicate('007'), exactPredicate('7'))).toBe(true);
     expect(
-      fingerprintCompatibleWithGroupKey(
-        refined,
-        { cu_limit: '∅', first_slot_buy_sol: '19.5–20.0' },
-        0.5,
-      ),
+      predicatesEqual({ kind: 'sequence', labels: [] }, { kind: 'sequence', labels: [] }),
+    ).toBe(true);
+    expect(
+      predicatesEqual({ kind: 'sequence', labels: [] }, { kind: 'sequence', labels: ['A'] }),
     ).toBe(false);
+  });
+
+  it('never equates an open bound with a closed one', () => {
+    expect(predicatesEqual({ kind: 'range', min: '1' }, { kind: 'range', min: '1', max: '1' })).toBe(
+      false,
+    );
+  });
+});
+
+describe('identity matching', () => {
+  it('matches a fingerprint whose criteria equal the card`s', () => {
+    const card = fingerprintIdentityFromGroupKey({ cu_limit: window('200000', '200000') });
+    const a = fp('a', { cu_limit: exactPredicate('200000') });
+    const b = fp('b', { cu_limit: exactPredicate('300000') });
+    expect(fingerprintMatchesIdentity(a, card)).toBe(true);
+    expect(fingerprintMatchesIdentity(b, card)).toBe(false);
+  });
+
+  // A wildcard drops every axis the card is made of, so badging with it would claim
+  // the card's group is what the rule arms on while the rule arms on everything.
+  it('never matches a wildcard to an axis-bearing card', () => {
+    const card = fingerprintIdentityFromGroupKey({ cu_limit: window('1', '1') });
+    expect(fingerprintMatchesIdentity(fp('w', {}, true), card)).toBe(false);
+    expect(fingerprintCompatibleWithGroupKey(fp('w', {}, true), { cu_limit: window('1', '1') })).toBe(
+      false,
+    );
+  });
+
+  it('keys identity so equal fingerprints collide and different ones do not', () => {
+    const a = fp('a', { cu_limit: exactPredicate('1') });
+    const b = fp('b', { cu_limit: exactPredicate('1') });
+    const c = fp('c', { cu_limit: { kind: 'range', min: '1', max: '2' } });
+    const w = fp('w', {}, true);
+    expect(fingerprintIdentityKey(fingerprintToIdentity(a))).toBe(
+      fingerprintIdentityKey(fingerprintToIdentity(b)),
+    );
+    expect(fingerprintIdentityKey(fingerprintToIdentity(a))).not.toBe(
+      fingerprintIdentityKey(fingerprintToIdentity(c)),
+    );
+    // An empty row and a wildcard match opposite token sets — never one key.
+    expect(fingerprintIdentityKey(fingerprintToIdentity(fp('e', {})))).not.toBe(
+      fingerprintIdentityKey(fingerprintToIdentity(w)),
+    );
   });
 });
 
 describe('findFingerprintForGroupKey', () => {
-  const library = [
-    fp({
-      id: 'a',
-      cu_limit: 200000,
-      init_buy_lamports: 1_000_000_000,
-      ix_labels: ['buy', 'sell'],
-      bucket_size_amount: 0.1,
-      used_by: 2,
-    }),
-    fp({
-      id: 'b',
-      cu_limit: 200000,
-      bucket_size_amount: 0.1,
-      used_by: 0,
-    }),
-  ];
+  const gk = { cu_limit: window('200000', '200000') };
 
-  it('matches full identity including null axes', () => {
-    const hit = findFingerprintForGroupKey(
-      { cu_limit: '200000', initial_buy_sol: '1.0–1.1', ix_labels: 'buy | sell' },
-      library,
-      0.1,
+  it('prefers an exact identity over a compatible refinement', () => {
+    const exact = fp('exact', { cu_limit: exactPredicate('200000') });
+    const refined = fp('refined', {
+      cu_limit: exactPredicate('200000'),
+      ix_labels: { kind: 'sequence', labels: ['A'] },
+    });
+    expect(findFingerprintForGroupKey(gk, [refined, exact])?.id).toBe('exact');
+    expect(
+      findFingerprintForGroupKey(gk, [refined, exact], {
+        byIdentity: indexFingerprintsByIdentity([refined, exact]),
+      })?.id,
+    ).toBe('exact');
+  });
+
+  it('badges a single compatible refinement, and refuses when two compete', () => {
+    const one = fp('one', {
+      cu_limit: exactPredicate('200000'),
+      ix_labels: { kind: 'sequence', labels: ['A'] },
+    });
+    const two = fp('two', {
+      cu_limit: exactPredicate('200000'),
+      ix_labels: { kind: 'sequence', labels: ['B'] },
+    });
+    expect(findFingerprintForGroupKey(gk, [one])?.id).toBe('one');
+    // Two refinements are genuinely different identities — badging either conflates them.
+    expect(findFingerprintForGroupKey(gk, [one, two])).toBeNull();
+  });
+
+  // "Absent" is not "unconstrained": a fingerprint that configures the axis matches
+  // tokens that HAVE a value, the opposite of what the card selected.
+  it('does not badge a fingerprint that configures an axis the card has none of', () => {
+    const card = { max_cost_lamports: { kind: 'missing' }, cu_limit: window('1', '1') };
+    const configured = fp('x', {
+      cu_limit: exactPredicate('1'),
+      max_cost_lamports: exactPredicate('5'),
+    });
+    expect(fingerprintCompatibleWithGroupKey(configured, card)).toBe(false);
+    expect(fingerprintCompatibleWithGroupKey(fp('y', { cu_limit: exactPredicate('1') }), card)).toBe(
+      true,
     );
-    expect(hit?.id).toBe('a');
-    expect(hit?.used_by).toBe(2);
-  });
-
-  it('does not match when an axis differs', () => {
-    const hit = findFingerprintForGroupKey(
-      { cu_limit: '200000', initial_buy_sol: '2.0–2.1', ix_labels: 'buy | sell' },
-      library,
-      0.1,
-    );
-    expect(hit).toBeNull();
-  });
-
-  it('matches a sparse group key to a sparse fingerprint when that is the only fit', () => {
-    const hit = findFingerprintForGroupKey(
-      { cu_limit: '200000' },
-      [library[1]!],
-      0.1,
-    );
-    expect(hit?.id).toBe('b');
-  });
-
-  const gkNoLabels = {
-    cu_limit: '∅',
-    cu_price: '∅',
-    first_slot_buy_sol: '19.5–20.0',
-    first_slot_sell_sol: '0.0–0.5',
-    max_cost_lamports: '0.0–0.5',
-    spendable_lamports_in: '∅',
-  };
-  const sparse = fp({
-    id: 'sparse',
-    first_slot_buy_lamports: 19_500_000_000,
-    first_slot_sell_lamports: 0,
-    max_cost_lamports: 0,
-    bucket_size_amount: 0.5,
-  });
-  const refinedA = fp({
-    id: 'refined-a',
-    first_slot_buy_lamports: 19_500_000_000,
-    first_slot_sell_lamports: 0,
-    max_cost_lamports: 0,
-    bucket_size_amount: 0.5,
-    ix_labels: ['Pump.Fun: Create_v2', 'Associated Token: CreateIdempotent', 'Pump.Fun: Buy'],
-  });
-  const refinedB = fp({
-    id: 'refined-b',
-    first_slot_buy_lamports: 19_500_000_000,
-    first_slot_sell_lamports: 0,
-    max_cost_lamports: 0,
-    bucket_size_amount: 0.5,
-    ix_labels: ['Pump.Fun: Create', 'Pump.Fun: Buy'],
-  });
-
-  it('exact identity beats a refined sibling (extra ix_labels)', () => {
-    // The card IS `sparse`'s identity — badging the labeled sibling instead
-    // would conflate two saved fingerprints that differ only in ix_labels.
-    const hit = findFingerprintForGroupKey(gkNoLabels, [refinedA, sparse], 0.5);
-    expect(hit?.id).toBe('sparse');
-  });
-
-  it('exact identity beats a refined sibling in the sparse-key case too', () => {
-    // `b` is the exact identity of the card; `a` only refines it.
-    const hit = findFingerprintForGroupKey({ cu_limit: '200000' }, library, 0.1);
-    expect(hit?.id).toBe('b');
-  });
-
-  it('badges a unique refinement when the exact identity is not saved', () => {
-    // The one deliberate superset case: the fingerprint this card was created
-    // from was later refined with manual ix_labels — keep its badge.
-    const hit = findFingerprintForGroupKey(gkNoLabels, [refinedA], 0.5);
-    expect(hit?.id).toBe('refined-a');
-  });
-
-  it('returns null when several refinements are compatible (ambiguous)', () => {
-    // Two fingerprints differ only in ix_labels the card did not group by —
-    // picking either would treat different fingerprints as the same one.
-    const hit = findFingerprintForGroupKey(gkNoLabels, [refinedA, refinedB], 0.5);
-    expect(hit).toBeNull();
-  });
-
-  it('a label-filtered run resolves by EXACT identity once the filter is re-attached', () => {
-    // The regression this pairing exists for. The run filtered the corpus to a
-    // label set but did not group by it, so `promote_group` copied the filter
-    // into the saved fingerprint while the group key omits it. Matching the raw
-    // key can only reach the ambiguous superset path; `withIxLabelsFilter`
-    // rebuilds the key the backend actually promoted from.
-    const labels = refinedA.ix_labels as string[];
-    const rawKeyHit = findFingerprintForGroupKey(gkNoLabels, [refinedA, refinedB], 0.5);
-    expect(rawKeyHit).toBeNull(); // ambiguous — two label refinements compatible
-
-    const resolved = withIxLabelsFilter(gkNoLabels, labels);
-    const hit = findFingerprintForGroupKey(resolved, [refinedA, refinedB], 0.5);
-    expect(hit?.id).toBe('refined-a');
-    // And it is the identity branch, not the single-compatible fallback: adding
-    // more unrelated fingerprints must not change the answer.
-    expect(findFingerprintForGroupKey(resolved, [sparse, refinedB, refinedA], 0.5)?.id).toBe(
-      'refined-a',
-    );
-  });
-
-  it('identity index agrees with the linear scan (exact + compatible paths)', () => {
-    const byIdentity = indexFingerprintsByIdentity([sparse, refinedA, refinedB, ...library]);
-    const cases: { gk: Record<string, string>; width: number | null }[] = [
-      { gk: { cu_limit: '200000', initial_buy_sol: '1.0–1.1', ix_labels: 'buy | sell' }, width: 0.1 },
-      { gk: { cu_limit: '200000' }, width: 0.1 },
-      { gk: gkNoLabels, width: 0.5 },
-      { gk: withIxLabelsFilter(gkNoLabels, refinedA.ix_labels as string[]), width: 0.5 },
-    ];
-    const fps = [sparse, refinedA, refinedB, ...library];
-    for (const { gk, width } of cases) {
-      expect(findFingerprintForGroupKey(gk, fps, width, { byIdentity })?.id).toBe(
-        findFingerprintForGroupKey(gk, fps, width)?.id,
-      );
-    }
-  });
-
-  it('matchFingerprintsForGroups rebuilds identity once and scopes win', () => {
-    const groups: { g: number; group_key: Record<string, string> }[] = [
-      { g: 0, group_key: { cu_limit: '200000' } },
-      { g: 1, group_key: { cu_limit: '200000', initial_buy_sol: '1.0–1.1', ix_labels: 'buy | sell' } },
-    ];
-    const map = matchFingerprintsForGroups(groups, library, 0.1, null, null);
-    expect(map.get(0)?.matched?.id).toBe('b');
-    expect(map.get(0)?.identity.cu_limit).toBe(200000);
-    expect(map.get(1)?.matched?.id).toBe('a');
-
-    const scoped = library[0]!;
-    const scopedMap = matchFingerprintsForGroups(groups, library, 0.1, null, scoped);
-    expect(scopedMap.get(0)?.matched?.id).toBe('a');
-    expect(scopedMap.get(1)?.matched?.id).toBe('a');
-  });
-
-  it('fingerprintIdentityKey is stable for row ↔ rebuilt identity', () => {
-    const row = library[0]!;
-    const fromRow = fingerprintIdentityKey(fingerprintToIdentity(row));
-    const fromGk = fingerprintIdentityKey(
-      fingerprintIdentityFromGroupKey(
-        { cu_limit: '200000', initial_buy_sol: '1.0–1.1', ix_labels: 'buy | sell' },
-        0.1,
-      ),
-    );
-    expect(fromRow).toBe(fromGk);
   });
 });
 
-describe('exact-mode identity — an exact-grouped card is a saveable fingerprint', () => {
-  // Regression: the creation-stats page used to substitute the 0.1 default for the
-  // response's `bucket_width: null`, so an exact card compared against every
-  // fingerprint at the wrong precision — no card ever badged and Create was hidden.
-  const gk = { initial_buy_sol: '1.515' };
-  const exact = fp({ id: 'e', init_buy_lamports: 1_515_000_000, bucket_size_amount: null });
-  const bucketed = fp({ id: 'b', init_buy_lamports: 1_515_000_000, bucket_size_amount: 0.1 });
-
-  it('badges the exact fingerprint an exact card would resolve to', () => {
-    expect(findFingerprintForGroupKey(gk, [exact, bucketed], null)?.id).toBe('e');
-  });
-
-  it('never crosses precision — the two arm on different token sets', () => {
-    expect(findFingerprintForGroupKey(gk, [bucketed], null)).toBeNull();
-    expect(findFingerprintForGroupKey({ initial_buy_sol: '1.5–1.6' }, [exact], 0.1)).toBeNull();
-  });
-
-  it('reconstructs a plain exact label whole, and keeps the NULL width', () => {
-    const id = fingerprintIdentityFromGroupKey(gk, null);
-    expect(id.init_buy_lamports).toBe(1_515_000_000);
-    expect(id.bucket_size_amount).toBeNull();
-    expect(identityHasCriterion(id)).toBe(true);
-    expect(identityLamportsAreStorable(id)).toBe(true);
+describe('withIxLabelsFilter', () => {
+  it('attaches the run filter only when the key omits the axis', () => {
+    expect(withIxLabelsFilter({}, ['A', 'B'])).toEqual({
+      ix_labels: { kind: 'labels', labels: ['A', 'B'] },
+    });
+    const grouped = { ix_labels: { kind: 'labels', labels: ['X'] } };
+    expect(withIxLabelsFilter(grouped, ['A'])).toBe(grouped);
+    // An empty collection is the same sentinel as absent.
+    expect(withIxLabelsFilter({}, [])).toEqual({});
+    expect(withIxLabelsFilter({}, null)).toEqual({});
   });
 });
 
-describe('withIxLabelsFilter — the group_key ⋈ run-filter join', () => {
-  it('attaches the applied filter when group_key omitted ix_labels', () => {
-    expect(
-      withIxLabelsFilter({ cu_limit: '300000' }, ['Pump.Fun: Create', 'Pump.Fun: Buy']),
-    ).toEqual({
-      cu_limit: '300000',
-      ix_labels: 'Pump.Fun: Create | Pump.Fun: Buy',
-    });
+describe('matchFingerprintsForGroups', () => {
+  it('resolves badge + create per group, and lets a scope win outright', () => {
+    const saved = fp('saved', { cu_limit: exactPredicate('1') });
+    const groups = [
+      { g: 0, group_key: { cu_limit: window('1', '1') } },
+      { g: 1, group_key: { cu_limit: window('2', '2') } },
+      { g: 2, group_key: {} },
+    ];
+    const map = matchFingerprintsForGroups(groups, [saved], null, null);
+    expect(map.get(0)?.matched?.id).toBe('saved');
+    expect(map.get(1)?.matched).toBeNull();
+    expect(map.get(1)?.canCreate).toBe(true);
+    // The ALL group names no criterion, so it cannot become a fingerprint.
+    expect(map.get(2)?.canCreate).toBe(false);
+
+    const scoped = matchFingerprintsForGroups(groups, [saved], null, saved);
+    expect([...scoped.values()].every((v) => v.matched?.id === 'saved')).toBe(true);
   });
 
-  it('never overwrites an existing ix_labels key (grouped path)', () => {
-    expect(
-      withIxLabelsFilter({ cu_limit: '300000', ix_labels: 'A | B' }, [
-        'Pump.Fun: Create',
-        'Pump.Fun: Buy',
-      ]),
-    ).toEqual({ cu_limit: '300000', ix_labels: 'A | B' });
+  // A ceiling card used to be un-creatable: no `BIGINT` axis could hold the value.
+  it('offers Create on a ceiling card', () => {
+    const map = matchFingerprintsForGroups(
+      [{ g: 0, group_key: { max_cost_lamports: window(CEILING, CEILING) } }],
+      [],
+      null,
+      null,
+    );
+    expect(map.get(0)?.canCreate).toBe(true);
   });
+});
 
-  it('is a no-op when no filter is applied', () => {
-    expect(withIxLabelsFilter({ cu_limit: '300000' }, null)).toEqual({ cu_limit: '300000' });
-    expect(withIxLabelsFilter({ cu_limit: '300000' }, [])).toEqual({ cu_limit: '300000' });
-    expect(withIxLabelsFilter({ cu_limit: '300000' }, undefined)).toEqual({
-      cu_limit: '300000',
-    });
-  });
-
-  it('joins with the same separator the backend group key uses', () => {
-    // `fingerprint_from_group_key` splits on " | " — a different separator here
-    // would produce a single bogus label instead of the set.
-    const gk = withIxLabelsFilter({}, ['A', 'B', 'C']);
-    expect(fingerprintIdentityFromGroupKey(gk, null).ix_labels).toEqual(['A', 'B', 'C']);
+describe('renderGroupKey', () => {
+  it('reads each value in its own display unit', () => {
+    const rendered = Object.fromEntries(
+      renderGroupKey({
+        max_cost_lamports: window('1515000000', '1515000000'),
+        init_buy_lamports: window(String(SOL), String(2n * SOL - 1n)),
+        ix_count: window('3'),
+        prior_launches: window(undefined, '0'),
+        ix_labels: { kind: 'labels', labels: ['A', 'B'] },
+        token_program_id: { kind: 'text', value: 'Tokenkeg' },
+        is_cashback_enabled: { kind: 'flag', value: true },
+        spendable_lamports_in: { kind: 'missing' },
+      }),
+    );
+    expect(rendered.max_cost_lamports).toBe('1.515');
+    expect(rendered.init_buy_lamports).toBe('1–1.999999999');
+    expect(rendered.ix_count).toBe('≥3');
+    expect(rendered.prior_launches).toBe('≤0');
+    expect(rendered.ix_labels).toBe('A | B');
+    expect(rendered.token_program_id).toBe('Tokenkeg');
+    expect(rendered.is_cashback_enabled).toBe('true');
+    expect(rendered.spendable_lamports_in).toBe('∅');
   });
 });

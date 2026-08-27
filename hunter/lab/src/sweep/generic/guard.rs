@@ -9,6 +9,7 @@
 //! reason, same entry/exit price, same PnL. If they ever diverge, the fast path
 //! silently lies; this test fails first.
 
+use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria};
 use std::sync::Arc;
 
 use chrono::{Duration, TimeZone, Utc};
@@ -154,18 +155,11 @@ fn token_at(mint: &str, created_secs: f64, trades: Vec<CorpusTrade>) -> (CorpusT
 
 fn fingerprint() -> Fingerprint {
     Fingerprint {
-        wildcard: false,
         id: FingerprintId(FP_ID),
-        cu_limit: Some(200_000),
-        cu_price: None,
-        ix_labels: None,
-        init_buy_lamports: None,
-        max_cost_lamports: None,
-        spendable_lamports_in: None,
-        first_slot_buy_lamports: None,
-        first_slot_sell_lamports: None,
-        bucket_size_amount: Some(0.1),
         metric_config: serde_json::json!({}),
+        wildcard: false,
+        criteria: Criteria::new()
+            .with(AxisId::CuLimit, AxisPredicate::exact(200_000)),
     }
 }
 

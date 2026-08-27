@@ -40,11 +40,11 @@ impl From<AxisName> for Axis {
         match a {
             AxisName::CuLimit => Axis::CuLimit,
             AxisName::CuPrice => Axis::CuPrice,
-            AxisName::InitBuy => Axis::InitBuy,
-            AxisName::MaxCost => Axis::MaxCost,
-            AxisName::SpendableIn => Axis::SpendableIn,
-            AxisName::FirstSlotBuy => Axis::FirstSlotBuy,
-            AxisName::FirstSlotSell => Axis::FirstSlotSell,
+            AxisName::InitBuy => Axis::InitBuyLamports,
+            AxisName::MaxCost => Axis::MaxCostLamports,
+            AxisName::SpendableIn => Axis::SpendableLamportsIn,
+            AxisName::FirstSlotBuy => Axis::FirstSlotBuyLamports,
+            AxisName::FirstSlotSell => Axis::FirstSlotSellLamports,
         }
     }
 }

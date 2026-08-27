@@ -40,7 +40,6 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use hunter_engine::fingerprint::FingerprintId;
-use hunter_engine::grouping::normalize_labels;
 use hunter_engine::metrics::flow_split::{wallet_hash, FlowPatterns};
 use hunter_engine::metrics::grid::{estimate_sparse_rows, fold_sparse, SparseGrid};
 use hunter_engine::metrics::position::PositionCtx;
@@ -199,25 +198,22 @@ pub async fn token_metric_series(
     }
 }
 
-/// The static token facts a fold must be seeded with **before its first event**, all
-/// off one `tokens` read.
+/// The static token facts a fold must be seeded with **before its first event**.
 ///
-/// Every one of them is a metric that reads `NaN` for the whole token when unseeded,
-/// and a `NaN` satisfies nothing: an `ix_count <= 5` or `prior_launches == 0` pane
-/// draws blank and the condition timeline shows the rule as never firing — the exact
-/// silent failure the seeding contract on `MetricSeries::seed_ix_count` warns about.
-/// The live engine seeds all three on `TokenCreated` (`reduce.rs`) and the rule
-/// readout replay loads them the same way, so a series without them disagrees with
-/// the decision it is drawn next to.
+/// Each is a metric that reads `NaN` for the whole token when unseeded, and a `NaN`
+/// satisfies nothing: the pane draws blank and the condition timeline shows the rule
+/// as never firing. The live engine seeds them on `TokenCreated` (`reduce.rs`) and the
+/// rule readout replay loads them the same way, so a series without them disagrees
+/// with the decision it is drawn next to.
+///
+/// `ix_count` and `prior_launches` are NOT here: they are fingerprint axes, not
+/// metrics, so they select which tokens a rule arms on rather than being folded into
+/// a series.
 #[derive(Debug, Default, Clone, Copy)]
 struct TokenFacts {
     /// FNV hash of the creator wallet — volume-side unconditionally, and the seed of
     /// the flow-split contagion set.
     creator_wallet_hash: Option<u64>,
-    /// Creation-transaction instruction count (`m_snapshot.ix_count`).
-    ix_count: Option<usize>,
-    /// The creator's launches strictly before this token (`m_snapshot.prior_launches`).
-    prior_launches: Option<u32>,
     /// Buy SOL in the token's creation slot (`m_snapshot.first_slot_buy`), from
     /// `tokens_info` — the row the live engine's settle seed derives from.
     first_slot_buy: Option<f64>,
@@ -225,28 +221,22 @@ struct TokenFacts {
 
 /// Read the `tokens` row once and derive every static fact the fold needs.
 ///
-/// One indexed PK lookup plus, when the creator is known, one counting query — the
-/// same pair the live rule readout runs (`load_ix_count` / `load_prior_launches`), so
-/// the two surfaces seed from identical values. A missing row is non-fatal and never
-/// silent: each fact stays `None`, its metric reads `NaN`, and the reason is logged.
+/// One indexed PK lookup — the same read the rule readout runs, so the two surfaces
+/// seed from identical values. A missing row is non-fatal and never silent: each fact
+/// stays `None`, its metric reads `NaN`, and the reason is logged.
 async fn load_token_facts(state: &LocalState, mint: &str) -> TokenFacts {
     let repo = TokenRepo::new(state.core.db.clone());
     let token = match repo.find_by_mint(mint).await {
         Ok(Some(t)) => t,
         Ok(None) => {
-            tracing::warn!(mint, "metric-series: no tokens row - ix_count/prior_launches unseeded");
+            tracing::warn!(mint, "metric-series: no tokens row - static facts unseeded");
             return TokenFacts::default();
         }
         Err(e) => {
-            tracing::warn!(mint, error = %e, "metric-series: token lookup failed - ix_count/prior_launches unseeded");
+            tracing::warn!(mint, error = %e, "metric-series: token lookup failed - static facts unseeded");
             return TokenFacts::default();
         }
     };
-    // Through the SSOT `normalize_labels` so both persisted shapes (bare array and
-    // `{"instructions":[...]}`) count alike; a zero count is "never stored", not a
-    // creation transaction with no instructions.
-    let n = normalize_labels(&token.instruction_labels).len();
-    let ix_count = (n > 0).then_some(n);
     let first_slot_buy = match TokenInfoRepo::new(state.core.db.clone()).find_by_mint(mint).await {
         Ok(Some(i)) => i.first_slot_buy_sol,
         _ => {
@@ -254,32 +244,11 @@ async fn load_token_facts(state: &LocalState, mint: &str) -> TokenFacts {
             None
         }
     };
-
     if token.creator_wallet.is_empty() {
-        tracing::warn!(mint, "metric-series: no creator wallet - flow split + prior_launches unseeded");
-        return TokenFacts {
-            creator_wallet_hash: None,
-            ix_count,
-            prior_launches: None,
-            first_slot_buy,
-        };
+        tracing::warn!(mint, "metric-series: no creator wallet - flow split unseeded");
+        return TokenFacts { creator_wallet_hash: None, first_slot_buy };
     }
-    let prior_launches = match repo
-        .count_prior_launches(&token.creator_wallet, token.created_at)
-        .await
-    {
-        Ok(n) => Some(n.max(0) as u32),
-        Err(e) => {
-            tracing::warn!(mint, error = %e, "metric-series: prior_launches unseeded");
-            None
-        }
-    };
-    TokenFacts {
-        creator_wallet_hash: Some(wallet_hash(&token.creator_wallet)),
-        ix_count,
-        prior_launches,
-        first_slot_buy,
-    }
+    TokenFacts { creator_wallet_hash: Some(wallet_hash(&token.creator_wallet)), first_slot_buy }
 }
 
 /// Whether any column this endpoint records outside the flow groups is wallet-keyed
@@ -447,14 +416,8 @@ fn build_series(
     // Static token facts first, in the same order the live `TokenCreated` arm seeds
     // them (`reduce.rs`), and always BEFORE the first fold — a seed after it would
     // leave the early rows reading `NaN` while the late ones read a value.
-    if let Some(n) = facts.ix_count {
-        series.seed_ix_count(n);
-    }
     if let Some(v) = facts.first_slot_buy {
         series.seed_first_slot_buy(v);
-    }
-    if let Some(n) = facts.prior_launches {
-        series.seed_prior_launches(n);
     }
     if let Some(ctx) = flow {
         // Same order as the live `TokenCreated` arm (`new_track` → `seed_creator`):
@@ -775,34 +738,6 @@ mod tests {
             .collect()
     }
 
-    /// The seeding contract for the static `m_snapshot` facts: they must be on the
-    /// track before the first fold, so EVERY row carries them — not just the rows
-    /// after some later seed. Unseeded they read `null` for the whole token, which is
-    /// what made an `ix_count <= 5` pane draw blank and its condition timeline show a
-    /// rule that fires live as never firing.
-    #[test]
-    fn snapshot_facts_are_seeded_on_every_row() {
-        let trades = [corpus_trade(5.0, "dev", None, 0), corpus_trade(3.0, "normie", None, 1)];
-        let grid = SparseGrid::for_windows(&[10.0]);
-        let facts = TokenFacts { creator_wallet_hash: None, ix_count: Some(7), prior_launches: Some(3), first_slot_buy: None };
-
-        let out = build_series("mint", &trades, &[WindowSpec::secs(10.0)], &grid, None, None, &facts);
-        for (metric, want) in [("ix_count", 7.0), ("prior_launches", 3.0)] {
-            let vals = lifetime_values(&out, metric);
-            assert!(!vals.is_empty(), "{metric} has rows");
-            assert!(vals.iter().all(|v| *v == Some(want)), "{metric} on every row: {vals:?}");
-        }
-
-        // Absent facts stay `null` — the honest reading for a token whose creation
-        // labels / creator were never stored, and never a `0` an `== 0` gate matches.
-        let out = build_series("mint", &trades, &[WindowSpec::secs(10.0)], &grid, None, None, &TokenFacts::default());
-        for metric in ["ix_count", "prior_launches"] {
-            assert!(
-                lifetime_values(&out, metric).iter().all(Option::is_none),
-                "{metric} unseeded reads null",
-            );
-        }
-    }
 
     /// The extensibility contract, as a guard: a metric added to `REGISTRY` must
     /// appear as a column here with **no** change to this file. The response is what
@@ -829,7 +764,7 @@ mod tests {
             Some(&ctx),
             // An entry context, so the position-scoped group is computed too.
             Some((ts(0), 1.0)),
-            &TokenFacts { creator_wallet_hash: None, ix_count: Some(3), prior_launches: Some(1), first_slot_buy: None },
+            &TokenFacts { creator_wallet_hash: None, first_slot_buy: None },
         );
         let cols: Vec<(String, String)> = out["series"]
             .as_array()

@@ -14,14 +14,13 @@ use crate::api::handlers::strategies::grouped_sweep::{
     fingerprint_from_group_key, matches_field_filter,
 };
 use crate::lake::duck::LakeSource;
-use crate::sweep::grouping::SolPrecision;
 use crate::models::ingest::SseEvent;
 use crate::state::local_state::{LocalState, SweepCorpusCache};
 use crate::strategies::flow_discovery::{
     score_corpus, Cancelled, DiscoveryConfig, DEFAULT_MIN_TOKENS,
 };
 use crate::sweep::corpus::{Corpus, CorpusSource, Selection};
-use crate::sweep::grouping::{normalize_label_vec, GroupField, SOL_BUCKET_WIDTH};
+use crate::sweep::grouping::{GroupField, GroupPlan, PartitionSpec};
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 use trading_core::strategies::fingerprint_axes::fp_to_engine;
 
@@ -37,12 +36,10 @@ pub struct StartFlowDiscoveryBody {
     pub curve_only: bool,
     #[serde(default)]
     pub group_by: Vec<GroupField>,
-    #[serde(default = "default_bucket_width_sol")]
-    pub bucket_width_sol: f64,
-    /// `true` => group the SOL axes on their exact amount (`SolPrecision::Exact`);
-    /// `bucket_width_sol` is ignored and a bound fingerprint stores a NULL width.
+    /// How each grouped field is partitioned, keyed by field tag. A field not named
+    /// here is `{"kind":"distinct"}` (one group per value).
     #[serde(default)]
-    pub exact_sol: bool,
+    pub partition: std::collections::HashMap<String, PartitionSpec>,
     #[serde(default)]
     pub ix_labels_filter: Option<Vec<String>>,
     #[serde(default = "default_min_tokens")]
@@ -59,9 +56,6 @@ pub struct StartFlowDiscoveryBody {
     pub fingerprint_id: Option<Uuid>,
 }
 
-fn default_bucket_width_sol() -> f64 {
-    SOL_BUCKET_WIDTH
-}
 fn default_min_tokens() -> usize {
     DEFAULT_MIN_TOKENS
 }
@@ -72,13 +66,6 @@ fn default_token_cap() -> usize {
 #[derive(serde::Deserialize)]
 pub struct BindFlowDiscoveryBody {
     pub group_key: serde_json::Value,
-    #[serde(default = "default_bucket_width_sol")]
-    pub bucket_width_sol: f64,
-    /// Must mirror the discovery run that produced `group_key` — the bound
-    /// fingerprint matches at this precision, so a mismatch arms on a different
-    /// token set than the group showed.
-    #[serde(default)]
-    pub exact_sol: bool,
     pub volume_ix_patterns: Vec<Vec<String>>,
     #[serde(default)]
     pub name: Option<String>,
@@ -151,7 +138,7 @@ pub async fn get_flow_discovery(
             "groups": result.groups,
             // The run's own identity — the page rebuilds fingerprint identity from
             // these, never from its live form state (see `DiscoveryResult`).
-            "bucket_width_sol": result.bucket_width_sol,
+            "partition": result.plan.0,
             "ix_labels_filter": result.ix_labels_filter,
             "fingerprint_id": result.fingerprint_id,
         })),
@@ -171,7 +158,7 @@ pub async fn get_last_flow_discovery(state: web::Data<Arc<LocalState>>) -> impl 
             "groups": result.groups,
             // Rehydration is exactly the case the echo exists for: this result can
             // be from a previous session, so the form is not its identity.
-            "bucket_width_sol": result.bucket_width_sol,
+            "partition": result.plan.0,
             "ix_labels_filter": result.ix_labels_filter,
             "fingerprint_id": result.fingerprint_id,
         })),
@@ -198,12 +185,10 @@ pub async fn bind_flow_discovery(
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
     }
 
-    let precision = if b.exact_sol {
-        SolPrecision::Exact
-    } else {
-        SolPrecision::from_width(Some(b.bucket_width_sol))
-    };
-    let mut draft = fingerprint_from_group_key(&b.group_key, precision, name);
+    // The key already carries the window it selected, so the draft is a copy — no
+    // precision to pass, and so no substituted precision that could arm the bound
+    // rule on a window the card never showed.
+    let mut draft = fingerprint_from_group_key(&b.group_key, name);
     draft.ensure_auto_name();
     draft.metric_config = metric_config.clone();
     if !draft.has_any_criterion() {
@@ -264,7 +249,7 @@ async fn run_flow_discovery_job(
         b.ix_labels_filter
             .as_ref()
             .filter(|f| !f.is_empty())
-            .map(|f| normalize_label_vec(f.clone()))
+            .cloned()
     };
 
     let token_cap = crate::sweep::registry::clamp_token_cap(b.token_cap);
@@ -453,7 +438,7 @@ async fn run_flow_discovery_job(
             .ix_labels_filter
             .as_ref()
             .filter(|f| !f.is_empty())
-            .map(|f| normalize_label_vec(f.clone()))
+            .cloned()
         {
             corpus.tokens.retain(|t| t.fp.ix_labels == want);
             if corpus.tokens.is_empty() {
@@ -509,8 +494,15 @@ async fn run_flow_discovery_job(
     });
 
     let cfg = DiscoveryConfig {
-        group_by: b.group_by,
-        bucket_width_sol: if b.exact_sol { None } else { Some(b.bucket_width_sol) },
+        plan: {
+            let mut specs = b.partition.clone();
+            GroupPlan(
+                b.group_by
+                    .iter()
+                    .map(|f| (*f, specs.remove(f.as_str()).unwrap_or(PartitionSpec::Distinct)))
+                    .collect(),
+            )
+        },
         min_tokens: b.min_tokens.max(1),
         ..DiscoveryConfig::default()
     };

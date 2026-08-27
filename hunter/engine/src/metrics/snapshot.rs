@@ -6,18 +6,15 @@
 //!   `reserve_sol`. Undefined (`NaN`) until the first trade — with no market
 //!   data there is no liquidity to compare, and a `NaN` satisfies no condition
 //!   (evaluator contract), so a rule can never fire on absent data.
-//! * `ix_count` — how many instructions the token's CREATION transaction carried.
-//!   Seeded once from `TokenCreated` and never moves, so it is a token property, not
-//!   a market reading. Undefined (`NaN`) when the creation fingerprint carried no
-//!   labels, which is how an unknown launch stays unmatched by any `ix_count` gate.
 //! * `first_slot_buy` — total buy SOL that landed in the token's CREATION slot.
 //!   Seeded once when the creation slot settles and never moves. Undefined (`NaN`)
 //!   until then, so a rule gated on it cannot fire on a token whose launch has not
 //!   been counted yet — which is also why it is a phase-`Full` fact, not a birth one.
-//! * `prior_launches` — how many tokens the creator launched before this one. Seeded
-//!   once from the reducer's running per-creator tally and never moves. Undefined
-//!   (`NaN`) when the creator is unknown, so an unknown creator stays unmatched
-//!   rather than reading as a first launch.
+//!
+//! `ix_count` and `prior_launches` are **fingerprint axes**, not metrics
+//! (`hunter_engine::fingerprint::axis`): both are fixed at creation, so they select
+//! WHICH tokens a rule arms on rather than WHEN it fires, and a fact belongs to one
+//! vocabulary only.
 //!
 //! Static state is shared by every rule armed on the token (computed once).
 
@@ -28,12 +25,6 @@ use super::{secs_between, MetricId, Ts};
 pub struct SnapshotState {
     /// SOL reserves at the most recent trade. `None` until the first trade.
     reserve_sol: Option<f64>,
-    /// Instruction count of the creation transaction, seeded from `TokenCreated`.
-    /// `None` when the fingerprint carried no labels.
-    ix_count: Option<u32>,
-    /// Creator's launches strictly before this token, seeded from `TokenCreated`.
-    /// `None` when the creator is unknown.
-    prior_launches: Option<u32>,
     /// Buy SOL in the token's creation slot, seeded when that slot settles.
     /// `None` until then — the count does not exist yet.
     first_slot_buy: Option<f64>,
@@ -47,41 +38,12 @@ impl SnapshotState {
         }
     }
 
-    /// Seed the creation-transaction instruction count. Called once, from
-    /// `TokenCreated`; an empty label sequence stays `None` ("unknown launch") rather
-    /// than becoming a real `0`, which would satisfy an `ix_count <= 5` gate.
-    pub fn seed_ix_count(&mut self, n: usize) {
-        if n > 0 {
-            self.ix_count = Some(n as u32);
-        }
-    }
-
-    /// `ix_count` — creation-transaction instruction count; `NaN` when unknown.
-    pub fn ix_count(&self) -> f64 {
-        self.ix_count.map_or(f64::NAN, f64::from)
-    }
-
-    /// Seed the creator's prior-launch count. Called once, from `TokenCreated`.
-    ///
-    /// Unlike [`seed_ix_count`](Self::seed_ix_count) a `0` here is a REAL value — the
-    /// creator's first launch is the whole point of the metric — so absence has to be
-    /// carried by not calling this at all, never by seeding `0`.
-    pub fn seed_prior_launches(&mut self, n: u32) {
-        self.prior_launches = Some(n);
-    }
-
-    /// `prior_launches` — the creator's launches before this token; `NaN` when the
-    /// creator is unknown.
-    pub fn prior_launches(&self) -> f64 {
-        self.prior_launches.map_or(f64::NAN, f64::from)
-    }
-
     /// Seed the creation slot's buy total (human SOL). Called once, when the slot
     /// settles — NOT at `TokenCreated`, where the number does not exist yet.
     ///
-    /// A `0` here is a REAL value (a launch nobody bought into), same as
-    /// [`seed_prior_launches`](Self::seed_prior_launches), so absence is carried by
-    /// not calling this rather than by seeding `0`. A non-finite value is ignored:
+    /// A `0` here is a REAL value (a launch nobody bought into), so absence is
+    /// carried by not calling this rather than by seeding `0`. A non-finite value is
+    /// ignored:
     /// a poisoned feed reading must leave the metric unknown, not satisfy a `<=` gate.
     pub fn seed_first_slot_buy(&mut self, sol: f64) {
         if sol.is_finite() && sol >= 0.0 {
@@ -110,8 +72,6 @@ impl SnapshotState {
         match id {
             MetricId::Time => Self::time(created_at, now),
             MetricId::Liquidity => self.liquidity(),
-            MetricId::IxCount => self.ix_count(),
-            MetricId::PriorLaunches => self.prior_launches(),
             MetricId::FirstSlotBuy => self.first_slot_buy(),
             _ => f64::NAN,
         }
@@ -145,19 +105,6 @@ mod tests {
         assert_eq!(s.liquidity(), 12.5);
         s.on_trade(9.0); // most recent wins
         assert_eq!(s.liquidity(), 9.0);
-    }
-
-    /// `0` prior launches is the metric's most useful value, so it must survive the
-    /// round-trip as `0.0` and not be swallowed as "unknown" the way `ix_count`'s
-    /// empty-label case is.
-    #[test]
-    fn prior_launches_zero_is_a_real_value_not_absence() {
-        let mut s = SnapshotState::default();
-        assert!(s.prior_launches().is_nan(), "unseeded creator is unknown, not first");
-        s.seed_prior_launches(0);
-        assert_eq!(s.prior_launches(), 0.0);
-        s.seed_prior_launches(137);
-        assert_eq!(s.prior_launches(), 137.0);
     }
 
     /// The launch axis is unknown until the creation slot settles, and `0` is a real

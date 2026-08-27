@@ -194,29 +194,14 @@ impl MetricSeries {
         self.track.seed_creator(hash);
     }
 
-    /// Seed the creation-transaction instruction count (`m_snapshot.ix_count`).
+    /// Seed the creation slot's buy total.
     ///
     /// Must be called before the first fold on every path that records a series, or
-    /// `ix_count` reads `NaN` for the whole token and any `ix_count <= N` entry gate is
-    /// silently unsatisfiable — the token is never entered, with no error anywhere.
-    /// Seed the creation slot's buy total. Same before-the-first-fold contract as
-    /// [`seed_ix_count`](Self::seed_ix_count) — it is a token-static fact, so the
-    /// series records the same value on every row.
+    /// `first_slot_buy` reads `NaN` for the whole token and any gate on it is silently
+    /// unsatisfiable — the token is never entered, with no error anywhere. It is a
+    /// token-static fact, so the series records the same value on every row.
     pub fn seed_first_slot_buy(&mut self, sol: f64) {
         self.track.seed_first_slot_buy(sol);
-    }
-
-    pub fn seed_ix_count(&mut self, n: usize) {
-        self.track.seed_ix_count(n);
-    }
-
-    /// Seed the creator's prior-launch count (`m_snapshot.prior_launches`).
-    ///
-    /// Same before-the-first-fold contract as [`seed_ix_count`](Self::seed_ix_count),
-    /// and the same silent failure when skipped: the metric reads `NaN` for the whole
-    /// token, so a `prior_launches == 0` gate never fires and nothing reports why.
-    pub fn seed_prior_launches(&mut self, n: u32) {
-        self.track.seed_prior_launches(n);
     }
 
     /// The deadness clock (newest meaningful-trade time) after every fold so far —

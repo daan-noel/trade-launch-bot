@@ -11,7 +11,7 @@ use hunter_engine::event::{
     ArmedStateTag, DisarmReason, Effect, Event, ExitReason, Fill, FillFailReason, LoadedRule, Mint,
     Portion, PositionId, PositionStatus, RuleId, TradeMode,
 };
-use hunter_engine::fingerprint::{Fingerprint, FingerprintId};
+use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria, Fingerprint, FingerprintId};
 use hunter_engine::grouping::TokenFingerprint;
 use hunter_engine::metrics::{Side, TradeLite, Ts, Windows};
 use hunter_engine::reduce::reduce;
@@ -39,17 +39,10 @@ fn fid(n: u128) -> FingerprintId {
 /// first-slot axis) — the default "this token is ours" shape for these tests.
 fn cu_fp(id: u128) -> Fingerprint {
     Fingerprint {
-        wildcard: false,
         id: fid(id),
-        cu_limit: Some(200_000),
-        cu_price: None,
-        ix_labels: None,
-        init_buy_lamports: None,
-        max_cost_lamports: None,
-        spendable_lamports_in: None,
-        first_slot_buy_lamports: None,
-        first_slot_sell_lamports: None,
-        bucket_size_amount: Some(0.1),
+        wildcard: false,
+        criteria: Criteria::new()
+            .with(AxisId::CuLimit, AxisPredicate::exact(200_000)),
         metric_config: serde_json::json!({}),
     }
 }
@@ -956,10 +949,16 @@ fn dead_outranks_stop_loss_on_open_position() {
 fn first_slot_fingerprint_arms_only_after_settlement() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
-    // A fingerprint whose identity is a first-slot buy of ~2 SOL (deferred axis).
+    // A fingerprint whose identity is a first-slot buy in [2.0, 2.1) SOL (deferred
+    // axis). The window is stated OUTRIGHT — the retired form pinned 2.0 and leaned on
+    // a row-wide 0.1 bucket width to widen it, so what the rule matched was a fact
+    // about the row's width rather than about this axis.
     let mut fp = cu_fp(1);
-    fp.cu_limit = None;
-    fp.first_slot_buy_lamports = Some(2_000_000_000);
+    fp.criteria.remove(AxisId::CuLimit);
+    fp.criteria.insert(
+        AxisId::FirstSlotBuyLamports,
+        AxisPredicate::half_open(2_000_000_000, Some(2_100_000_000)),
+    );
     reduce(&mut s, reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![fp]));
 
     // At creation the first-slot axis is unknown → pending, no buy yet.
@@ -969,7 +968,7 @@ fn first_slot_fingerprint_arms_only_after_settlement() {
     );
     assert!(buys(&fx).is_empty(), "first-slot fingerprint stays pending at creation");
 
-    // Slot settles in-bucket (2.05 SOL ∈ [2.0, 2.1)) → armed → enter-on-arm buys.
+    // Slot settles inside the window (2.05 SOL) → armed → enter-on-arm buys.
     let fx = reduce(
         &mut s,
         Event::FirstSlotSettled {
@@ -979,7 +978,7 @@ fn first_slot_fingerprint_arms_only_after_settlement() {
             at: ts(1.0),
         },
     );
-    assert_eq!(buys(&fx), vec![(rid(1), BUY)], "arms + enters once settled in-bucket");
+    assert_eq!(buys(&fx), vec![(rid(1), BUY)], "arms + enters once settled in-window");
 }
 
 #[test]
@@ -987,14 +986,17 @@ fn first_slot_mismatch_drops_the_arm() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
     let mut fp = cu_fp(1);
-    fp.cu_limit = None;
-    fp.first_slot_buy_lamports = Some(2_000_000_000);
+    fp.criteria.remove(AxisId::CuLimit);
+    fp.criteria.insert(
+        AxisId::FirstSlotBuyLamports,
+        AxisPredicate::half_open(2_000_000_000, Some(2_100_000_000)),
+    );
     reduce(&mut s, reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![fp]));
     reduce(
         &mut s,
         Event::TokenCreated { mint: m.clone(), fp: Box::new(TokenFingerprint::default()), at: ts(0.0) , creator_wallet_hash: None, identity: None},
     );
-    // Settles far out of bucket (5 SOL) → never fully matched → dropped, no buy, pruned.
+    // Settles far outside the window (5 SOL) → never fully matched → dropped, pruned.
     let fx = reduce(
         &mut s,
         Event::FirstSlotSettled {
@@ -1238,7 +1240,7 @@ fn two_fingerprints_flow_states_diverge() {
         "m_flow_split": { "volume_ix_patterns": [["a"]] }
     });
     let mut fp_b = cu_fp(2);
-    fp_b.cu_limit = Some(200_000); // same match
+    fp_b.criteria.insert(AxisId::CuLimit, AxisPredicate::exact(200_000)); // same match
     fp_b.metric_config = json!({
         "m_flow_split": { "volume_ix_patterns": [["b"]] }
     });
@@ -2041,8 +2043,6 @@ fn dupe_guard_forgets_past_the_window() {
 /// feed failed to resolve.
 #[test]
 fn prior_launches_counts_strictly_prior_and_never_guesses_zero() {
-    use hunter_engine::metrics::MetricId;
-
     let mut s = EngineState::new();
     // A rule that arms but can never enter, so every created token stays tracked and
     // its metric is readable (`reduce` drops a token with no live arm).
@@ -2062,8 +2062,12 @@ fn prior_launches_counts_strictly_prior_and_never_guesses_zero() {
     // corpus-scoped backtest reads every creator as a first-time launcher.
     s.prime_creator_launches([(77u64, 4u32)]);
 
-    let read = |s: &EngineState, mint: &str| -> f64 {
-        s.tokens[&Mint::from(mint)].track.value(MetricId::PriorLaunches, Windows::NONE, None, ts(1.0))
+    // Read the tally off the token's OBSERVED AXES — where `reduce` stamps it, and
+    // what the matcher grades a `prior_launches` fingerprint against. `None` is the
+    // honest "unknown creator", which fails a configured axis rather than reading as
+    // a first launch.
+    let read = |s: &EngineState, mint: &str| -> Option<u32> {
+        s.tokens[&Mint::from(mint)].tf.prior_launches
     };
 
     for (i, mint) in ["a", "b", "c"].iter().enumerate() {
@@ -2078,9 +2082,9 @@ fn prior_launches_counts_strictly_prior_and_never_guesses_zero() {
             },
         );
     }
-    assert_eq!(read(&s, "a"), 0.0, "a creator's first launch is 0, not 1");
-    assert_eq!(read(&s, "b"), 1.0);
-    assert_eq!(read(&s, "c"), 2.0);
+    assert_eq!(read(&s, "a"), Some(0), "a creator's first launch is 0, not 1");
+    assert_eq!(read(&s, "b"), Some(1));
+    assert_eq!(read(&s, "c"), Some(2));
 
     // Primed history is the floor the tally continues from.
     reduce(
@@ -2093,7 +2097,7 @@ fn prior_launches_counts_strictly_prior_and_never_guesses_zero() {
             identity: None,
         },
     );
-    assert_eq!(read(&s, "d"), 4.0, "primed count must not restart at 0");
+    assert_eq!(read(&s, "d"), Some(4), "primed count must not restart at 0");
 
     // Unknown creator ⇒ unknown count.
     reduce(
@@ -2106,7 +2110,7 @@ fn prior_launches_counts_strictly_prior_and_never_guesses_zero() {
             identity: None,
         },
     );
-    assert!(read(&s, "e").is_nan(), "unknown creator must not read as a first launch");
+    assert_eq!(read(&s, "e"), None, "unknown creator must not read as a first launch");
 
     // A duplicate creation is idempotent in the reducer, so it must not advance the
     // tally either — a replayed event would otherwise inflate every later token.
@@ -2130,5 +2134,5 @@ fn prior_launches_counts_strictly_prior_and_never_guesses_zero() {
             identity: None,
         },
     );
-    assert_eq!(read(&s, "f"), 3.0, "a duplicate creation must not advance the tally");
+    assert_eq!(read(&s, "f"), Some(3), "a duplicate creation must not advance the tally");
 }

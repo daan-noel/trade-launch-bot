@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+
 import {
   fingerprintAutoName,
   fingerprintNameFromGroupKey,
@@ -6,294 +7,124 @@ import {
   isLegacyAutoName,
   isStaleAutoName,
 } from './fingerprintNameFromGroupKey';
+import { AXES, exactPredicate, type Criteria } from './fingerprintAxes';
+import { WILDCARD_NAME } from './types';
 
-const buyIx = [
-  'Pump.Fun: Create_v2',
-  'Associated Token: CreateIdempotent',
-  'Pump.Fun: Buy',
-];
+const SOL = 1_000_000_000n;
+
+function named(criteria: Criteria, wildcard = false) {
+  return fingerprintAutoName({ criteria, wildcard });
+}
+
+function window(field: string, min?: string, max?: string) {
+  return {
+    [field]: { kind: 'window', ...(min != null && { min }), ...(max != null && { max }) },
+  };
+}
 
 describe('fingerprintAutoName', () => {
-  // Golden strings — keep byte-equal with Rust `auto_name_golden`.
-  it('puts ix first and uses chip tokens', () => {
+  it('emits one chip per configured axis, in registry order', () => {
     expect(
-      fingerprintAutoName({
-        wildcard: false,
-        cu_limit: null,
-        cu_price: null,
-        init_buy_lamports: null,
-        max_cost_lamports: 1_000_000_000,
-        spendable_lamports_in: null,
-        first_slot_buy_lamports: null,
-        first_slot_sell_lamports: null,
-        bucket_size_amount: 1,
-        ix_labels: buyIx,
+      named({
+        prior_launches: exactPredicate('0'),
+        cu_limit: exactPredicate('200000'),
+        max_cost_lamports: { kind: 'range', min: String(SOL), max: String(2n * SOL) },
+        ix_labels: { kind: 'sequence', labels: ['Pump.Fun: Create', 'Pump.Fun: Buy'] },
       }),
-    ).toBe('3ix:Buy · max=1 · bkt=1');
+    ).toBe('cu_limit=200K · max=1~2 · 2ix:Buy · prior=0');
   });
 
-  it('keeps axis order after ix and omits default 0.1 bucket', () => {
-    expect(
-      fingerprintAutoName({
-        wildcard: false,
-        cu_limit: null,
-        cu_price: null,
-        init_buy_lamports: null,
-        max_cost_lamports: 0,
-        spendable_lamports_in: null,
-        first_slot_buy_lamports: 19_500_000_000,
-        first_slot_sell_lamports: 0,
-        bucket_size_amount: 0.5,
-        ix_labels: buyIx,
-      }),
-    ).toBe('3ix:Buy · max=0 · fs_buy=19.5 · fs_sell=0 · bkt=0.5');
+  it('reads an exact axis, a window and an open-ended bound differently', () => {
+    expect(named({ init_buy_lamports: exactPredicate('1515000000') })).toBe('init=1.515');
+    expect(named({ init_buy_lamports: { kind: 'range', min: String(2n * SOL) } })).toBe('init=2~');
+    expect(named({ init_buy_lamports: { kind: 'range', max: String(2n * SOL) } })).toBe('init=~2');
+    expect(named({ ix_count: { kind: 'range', min: '3', max: '5' } })).toBe('ix_count=3~5');
   });
 
-  it('separates two label sets that differ only past the count', () => {
-    const axes = (last: string) =>
-      fingerprintAutoName({
-        wildcard: false,
-        cu_limit: 80_000,
-        cu_price: null,
-        init_buy_lamports: null,
-        max_cost_lamports: null,
-        spendable_lamports_in: null,
-        first_slot_buy_lamports: null,
-        first_slot_sell_lamports: null,
-        bucket_size_amount: 0.1,
-        ix_labels: [
-          'Pump.Fun: Create_v2',
-          'Associated Token: Create',
-          `Pump.Fun: ${last}`,
-        ],
-      });
-    expect(axes('Buy')).toBe('3ix:Buy · cu_limit=80K');
-    expect(axes('BuyExactSolIn')).toBe('3ix:BuyExactSolIn · cu_limit=80K');
-    expect(axes('Buy')).not.toBe(axes('BuyExactSolIn'));
-  });
-
-  it('omits bkt when width is the default 0.1', () => {
-    expect(
-      fingerprintAutoName({
-        wildcard: false,
-        cu_limit: null,
-        cu_price: null,
-        init_buy_lamports: null,
-        max_cost_lamports: null,
-        spendable_lamports_in: null,
-        first_slot_buy_lamports: 19_500_000_000,
-        first_slot_sell_lamports: null,
-        bucket_size_amount: 0.1,
-        ix_labels: ['A', 'B'],
-      }),
-    ).toBe('2ix:B · fs_buy=19.5');
-  });
-
-  it('compacts cu and drops grouping-only axes (via group-key wrapper)', () => {
-    expect(fingerprintAutoName({
-      wildcard: false,
-      cu_limit: 200_000,
-      cu_price: null,
-      init_buy_lamports: null,
-      max_cost_lamports: null,
-      spendable_lamports_in: null,
-      first_slot_buy_lamports: null,
-      first_slot_sell_lamports: null,
-      bucket_size_amount: 0.1,
-      ix_labels: null,
-    })).toBe('cu_limit=200K');
-  });
-
-  it('falls back to ALL when nothing configured', () => {
-    expect(
-      fingerprintAutoName({
-        wildcard: false,
-        cu_limit: null,
-        cu_price: null,
-        init_buy_lamports: null,
-        max_cost_lamports: null,
-        spendable_lamports_in: null,
-        first_slot_buy_lamports: null,
-        first_slot_sell_lamports: null,
-        bucket_size_amount: 0.1,
-        ix_labels: null,
-      }),
-    ).toBe('ALL');
-  });
-
-  it('names a wildcard for the token set it matches, not its inert width', () => {
-    // Golden string — keep byte-equal with Rust `a_wildcard_auto_names_all_...`.
-    // A wildcard carries no axis and never reads its bucket width, so `bkt=exact`
-    // must not leak into the name of the one row that matches everything.
-    const anyToken = {
-      wildcard: true,
-      cu_limit: null,
-      cu_price: null,
-      init_buy_lamports: null,
-      max_cost_lamports: null,
-      spendable_lamports_in: null,
-      first_slot_buy_lamports: null,
-      first_slot_sell_lamports: null,
-      ix_labels: null,
-    };
-    expect(fingerprintAutoName({ ...anyToken, bucket_size_amount: null })).toBe('ALL');
-    expect(fingerprintAutoName({ ...anyToken, bucket_size_amount: 0.5 })).toBe('ALL');
-  });
-
-  it('always shows bkt=exact', () => {
-    expect(
-      fingerprintAutoName({
-        wildcard: false,
-        cu_limit: null,
-        cu_price: null,
-        init_buy_lamports: null,
-        max_cost_lamports: 1_000_000_000,
-        spendable_lamports_in: null,
-        first_slot_buy_lamports: null,
-        first_slot_sell_lamports: null,
-        bucket_size_amount: null,
-        ix_labels: ['Pump.Fun: Buy'],
-      }),
-    ).toBe('1ix:Buy · max=1 · bkt=exact');
-  });
-});
-
-describe('fingerprintNameFromGroupKey', () => {
-  it('names from group-key lo-edges the same as identity axes', () => {
-    expect(
-      fingerprintNameFromGroupKey(
-        {
-          cu_limit: '∅',
-          cu_price: '∅',
-          first_slot_buy_sol: '19.5–20.0',
-          first_slot_sell_sol: '0.0–0.5',
-          max_cost_lamports: '0.0–0.5',
-          spendable_lamports_in: '∅',
-          ix_labels:
-            'Pump.Fun: Create_v2 | Associated Token: CreateIdempotent | Pump.Fun: Buy',
-        },
-        0.5,
-      ),
-    ).toBe('3ix:Buy · max=0 · fs_buy=19.5 · fs_sell=0 · bkt=0.5');
-  });
-
-  it('skips grouping-only axes and ∅', () => {
-    expect(
-      fingerprintNameFromGroupKey(
-        { cu_limit: '200000', is_cashback_enabled: 'true' },
-        0.1,
-      ),
-    ).toBe('cu_limit=200K');
-    expect(fingerprintNameFromGroupKey({}, 0.1)).toBe('ALL');
-    expect(fingerprintNameFromGroupKey({ cu_limit: '∅' }, 0.1)).toBe('ALL');
-  });
-
-  // Byte-equal with Rust `an_inert_bucket_width_reaches_neither_the_name_nor_storage`.
-  it('omits the width when no SOL axis can spend it', () => {
-    const labelsOnly = (bucket_size_amount: number | null) => ({
-      wildcard: false,
-      cu_limit: null,
-      cu_price: null,
-      init_buy_lamports: null,
-      max_cost_lamports: null,
-      spendable_lamports_in: null,
-      first_slot_buy_lamports: null,
-      first_slot_sell_lamports: null,
-      bucket_size_amount,
-      ix_labels: ['Pump.Fun: Create_v2', 'Pump.Fun: Buy'],
-    });
-    for (const w of [1000, 0.1, 1, null]) {
-      expect(fingerprintAutoName(labelsOnly(w))).toBe('2ix:Buy');
-    }
-    // One SOL axis and the width is load-bearing again — including `exact`.
-    expect(
-      fingerprintAutoName({ ...labelsOnly(1000), max_cost_lamports: 1_000_000_000 }),
-    ).toBe('2ix:Buy · max=1 · bkt=1000');
-    expect(
-      fingerprintAutoName({ ...labelsOnly(null), max_cost_lamports: 1_000_000_000 }),
-    ).toBe('2ix:Buy · max=1 · bkt=exact');
-  });
-
-  // Byte-equal with Rust `auto_name_renders_a_sub_milli_width_instead_of_trimming_it_to_zero`.
-  it('renders a sub-milli width instead of trimming it to zero', () => {
-    const fp = (bucket_size_amount: number) => ({
-      wildcard: false,
-      cu_limit: null,
-      cu_price: null,
-      init_buy_lamports: null,
-      max_cost_lamports: 270_000_000,
-      spendable_lamports_in: null,
-      first_slot_buy_lamports: null,
-      first_slot_sell_lamports: null,
-      bucket_size_amount,
-      ix_labels: null,
-    });
-    expect(fingerprintAutoName(fp(1e-5))).toBe('max=0.27 · bkt=0.00001');
-    expect(fingerprintAutoName(fp(1e-6))).toBe('max=0.27 · bkt=0.000001');
-  });
-});
-
-describe('isLegacyAutoName', () => {
-  it('detects retired generator shapes only', () => {
-    expect(isLegacyAutoName('')).toBe(true);
-    expect(isLegacyAutoName('  ')).toBe(true);
-    expect(isLegacyAutoName('sweep 0f53d622 · group 12')).toBe(true);
-    expect(isLegacyAutoName('c · max1 · b1')).toBe(true);
-    expect(isLegacyAutoName('f · cu200000')).toBe(true);
-    expect(isLegacyAutoName('s · ALL')).toBe(true);
-    expect(isLegacyAutoName('flow-discovery bind')).toBe(true);
-    expect(isLegacyAutoName('3ix:Buy · max=1 · bkt=1')).toBe(false);
-    expect(isLegacyAutoName('max-buy launcher')).toBe(false);
-  });
-});
-
-// Byte-equal with Rust `generated_grammar_accepts_only_auto_name_output`.
-describe('isGeneratedAutoName', () => {
-  it('accepts only fingerprintAutoName output', () => {
-    for (const generated of [
-      'ALL',
-      '3ix:Buy',
-      '3ix:Buy · max=1 · bkt=1',
-      '2ix:B · fs_buy=19.5',
-      'cu_limit=200K',
-      '5ix:BuyExactSolIn · cu_limit=301K · cu_price=75210',
-      '5ix:BuyExactSolIn · cu_limit=301K · cu_price=75.2K',
-      'max=0.27 · bkt=0.00001',
-      '1ix:Buy · max=1 · bkt=exact',
-      'init=0 · bkt=1000',
-      'fs_buy=2.5 · bkt=5',
-    ]) {
-      expect(isGeneratedAutoName(generated)).toBe(true);
-    }
-    // The real nicknames from the live table — rewriting one destroys the only
-    // record of why that fingerprint exists.
-    for (const nickname of [
-      '',
-      'max-buy launcher',
-      '8dtx · Trojan Trade',
-      '8dtx · GMGN Bot',
-      '8dtx-clone: creation bundle < 5 SOL',
-      '8dtx-clone CONTROL: any creation bundle',
-      '8dtx S1: Pump.Fun: BuyV2 + bundle<5',
-      '8dtx-derived - any token (structural classifier)',
-      'isl-ALL broad',
-      'probe group mc0.0108 (held +17.13pc 9of9)',
-      'buyv2 mc7.07 (x1.0226 tool, 1 SOL-tier sibling of g0)',
-      'cu_lmit=200K',
-      'max=1.2.3',
-      'ix:Buy',
-      'bkt=wide',
-    ]) {
-      expect(isGeneratedAutoName(nickname)).toBe(false);
-    }
-  });
-
-  it('re-derives a drifted generated name and leaves a nickname alone', () => {
-    const auto = '2ix:BuyExactSolIn · cu_limit=301K · cu_price=75.2K';
-    expect(isStaleAutoName('2ix:BuyExactSolIn · cu_limit=301K · cu_price=75210', auto)).toBe(
-      true,
+  // The value a float round-trip destroys. It is a real launch setting ("fill at
+  // any price"), so it has to name itself exactly rather than be rounded into prose.
+  it('names a u64::MAX ceiling exactly', () => {
+    expect(named({ max_cost_lamports: exactPredicate('18446744073709551615') })).toBe(
+      'max=18446744073.709551615',
     );
-    expect(isStaleAutoName(auto, auto)).toBe(false);
-    expect(isStaleAutoName('probe group mc0.0108 (held +17.13pc 9of9)', auto)).toBe(false);
+  });
+
+  it('names the token set for a wildcard and for a blank draft', () => {
+    expect(named({}, true)).toBe(WILDCARD_NAME);
+    expect(named({})).toBe(WILDCARD_NAME);
+  });
+
+  it('builds the same name from a group key as from the criteria it copies', () => {
+    const gk = {
+      ...window('max_cost_lamports', String(SOL), String(2n * SOL - 1n)),
+      ...window('cu_limit', '200000', '200000'),
+    };
+    expect(fingerprintNameFromGroupKey(gk)).toBe('cu_limit=200K · max=1~1.999999999');
+  });
+
+  it('skips a key value that names nothing a rule can match on', () => {
+    const gk = {
+      max_cost_lamports: { kind: 'missing' },
+      token_program_id: { kind: 'text', value: 'Tokenkeg' },
+      ...window('cu_limit', '1', '1'),
+    };
+    expect(fingerprintNameFromGroupKey(gk)).toBe('cu_limit=1');
+  });
+});
+
+describe('the auto-name grammar', () => {
+  // The property that lets a naming change finish: everything the generator emits,
+  // the grammar recognises — so a stored name that drifts is rewritten, and a
+  // nickname never is. Walks the whole registry, so a new axis is covered.
+  it('recognises every name it emits, for every axis', () => {
+    for (const def of AXES) {
+      const preds =
+        def.kind === 'sequence'
+          ? [{ kind: 'sequence' as const, labels: ['Pump.Fun: Create', 'System Program: Transfer'] }]
+          : [
+              exactPredicate('0'),
+              exactPredicate('1515000000'),
+              exactPredicate('18446744073709551615'),
+              { kind: 'range' as const, min: '1', max: '200000' },
+              { kind: 'range' as const, min: '3' },
+              { kind: 'range' as const, max: '3' },
+            ];
+      for (const pred of preds) {
+        const name = named({ [def.id]: pred });
+        expect(isGeneratedAutoName(name), `${def.id} emits ${name}`).toBe(true);
+        expect(isStaleAutoName(name, name), `${name} must be stable`).toBe(false);
+      }
+    }
+  });
+
+  it('treats an unrecognised part as a nickname, so a real name is never rewritten', () => {
+    expect(isGeneratedAutoName('8dtx router')).toBe(false);
+    expect(isGeneratedAutoName('cu_limit=200K · hand-written')).toBe(false);
+    expect(isStaleAutoName('8dtx router', 'cu_limit=200K')).toBe(false);
+  });
+
+  it('rewrites a generated name that no longer matches the axes', () => {
+    expect(isStaleAutoName('cu_limit=999K', 'cu_limit=200K')).toBe(true);
+  });
+
+  // The retired width chip is not in the current grammar, so a name carrying one
+  // would be frozen as a nickname forever unless it is named as retired.
+  it('heals a name carrying the retired bucket-width chip', () => {
+    expect(isLegacyAutoName('init=1 · bkt=0.5')).toBe(true);
+    expect(isLegacyAutoName('init=1 · bkt=exact')).toBe(true);
+    expect(isStaleAutoName('init=1 · bkt=0.5', 'init=1~1.999999999')).toBe(true);
+    // A nickname sitting beside a retired chip is still a nickname.
+    expect(isLegacyAutoName('8dtx · bkt=0.5')).toBe(false);
+  });
+
+  it('recognises the other retired shapes and a blank', () => {
+    for (const n of ['', '  ', 'flow-discovery bind', 'sweep 12ab · group 3', 'c · x', 'f · y', 's · z']) {
+      expect(isLegacyAutoName(n), n).toBe(true);
+    }
+    expect(isLegacyAutoName('8dtx router')).toBe(false);
+  });
+
+  it('accepts the wildcard name', () => {
+    expect(isGeneratedAutoName(WILDCARD_NAME)).toBe(true);
   });
 });

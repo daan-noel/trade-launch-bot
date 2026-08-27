@@ -376,16 +376,37 @@ and does not exist at birth, so it reads `NaN` until then and a rule using it ca
 at launch. `0` is a real value (a launch nobody bought into), carried by seeding it rather
 than by absence.
 
-## Creator history (`m_snapshot.prior_launches`)
+## Fingerprint axes (`hunter_engine::fingerprint::axis`)
 
-Launches by this token's creator before it, over a trailing 30-day window. The tally is
+A fingerprint is a `wildcard` flag or a **criteria map**: one predicate per configured
+axis. A predicate is an inclusive integer `Range { min, max }` (exact match is the
+degenerate `min == max`) or an ordered `Sequence` of instruction labels. An axis absent
+from the map is not part of identity; a configured axis whose observed value is unknown
+**fails**, so an unscreened token never arms a rule.
+
+Everything derives from the `AXES` registry — the matcher loop, the criterion guards, the
+auto-name and its grammar, validation, the dashboard's SQL mirror, the sweep partition,
+and the UI form — so **adding an axis is one `AxisDef` plus one reader arm**. The
+frontend keeps a mirror of that table, locked to it by a guard test that reads the Rust
+source directly, so the two lists cannot drift.
+
+Identity is **integer**: lamports, compute units and tallies, carried as `u128` in memory
+and as decimal strings on the wire. No `f64` reaches a match, so there is no boundary
+epsilon and no value that stops being representable past 2^53 (`max_sol_cost = u64::MAX`
+is real launch data). SOL exists only at the display edge.
+
+Two axes are not `tokens` columns. `ix_count` is derived (`ix_labels.len()`), so the two
+can never disagree about one transaction. `prior_launches` is the engine's own tally —
 `EngineState.creator_launches`, keyed by `creator_wallet_hash`, read strictly before its
-own increment at `TokenCreated` — one counter shared by live and `simulate`, primed from
-`TokenRepository::creator_launch_counts` so a fresh process does not read every creator
-as new. Unknown creator ⇒ `NaN`, never `0`. The lake corpus carries no creator column, so
-`MetricId::needs_creator_history` marks it and the sweep's axis resolver rejects it.
-Semantics + priming contract:
-[`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md).
+own increment at `TokenCreated` and stamped onto the observed axes there, before the match
+runs. It is primed from `TokenRepository::creator_launch_counts` over a trailing 30-day
+window so a fresh process does not read every creator as new; an unknown creator leaves it
+`None`, which fails a configured axis rather than reading as a first launch. The lake
+corpus carries no creator column, so a sweep leaves it `None` too. The dashboard's SQL
+mirror counts the same window off `tokens`.
+
+Design + rationale:
+[fingerprint-ranges.md](../plans/strategies/fingerprint-ranges.md).
 
 ## Volume/organic flow split (`m_flow_split` / `m_flow_split_window`)
 

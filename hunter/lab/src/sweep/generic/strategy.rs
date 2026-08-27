@@ -690,8 +690,6 @@ pub(crate) fn build_series_with_flow(
 ) -> MetricSeries {
     let created = token.created_at;
     let mut series = MetricSeries::new(created, columns);
-    // Static token facts first, exactly as the live `TokenCreated` arm orders them.
-    series.seed_ix_count(token.fp.ix_labels.len());
     if let Some(patterns) = flow_patterns {
         let windows: Vec<hunter_engine::metrics::WindowSpec> = series
             .columns()

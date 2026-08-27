@@ -77,7 +77,7 @@ struct RunDbRow {
     max_combos: Option<i32>,
     label: Option<String>,
     buy_amount_sol: Option<f64>,
-    bucket_width_sol: Option<f64>,
+    partition: sqlx::types::Json<hunter_engine::grouping::GroupPlan>,
     volume_ix_patterns: Option<sqlx::types::Json<Value>>,
     fill_model: Option<String>,
     cost_model: Option<String>,
@@ -113,7 +113,7 @@ impl From<RunDbRow> for GroupedSweepRun {
             max_combos: r.max_combos,
             label: r.label,
             buy_amount_sol: r.buy_amount_sol.map(tidy_sol_decimal),
-            bucket_width_sol: r.bucket_width_sol.map(tidy_sol_decimal),
+            partition: r.partition.0,
             volume_ix_patterns: r.volume_ix_patterns.map(|j| j.0),
             fill_model: r.fill_model,
             cost_model: r.cost_model,
@@ -280,7 +280,7 @@ impl GroupedSweepRepo {
               curve_only, grouping_spec, axes_spec, min_tokens, token_count, group_count, \
               combo_count, corpus_hash, corpus_last_trade_at, created_at, status, groups_done, \
               ix_labels_filter, field_filters, fingerprint_id, token_cap, max_combos, label, \
-              buy_amount_sol, bucket_width_sol, volume_ix_patterns, fill_model, cost_model, \
+              buy_amount_sol, partition, volume_ix_patterns, fill_model, cost_model, \
               scale_out, scale_out_top_k) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,\
                      $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)",
@@ -312,7 +312,7 @@ impl GroupedSweepRepo {
             .bind(run.max_combos)
             .bind(&run.label)
             .bind(run.buy_amount_sol.map(tidy_sol_decimal))
-            .bind(run.bucket_width_sol.map(tidy_sol_decimal))
+            .bind(sqlx::types::Json(&run.partition))
             .bind(run.volume_ix_patterns.as_ref().map(sqlx::types::Json))
             .bind(&run.fill_model)
             .bind(&run.cost_model)
@@ -568,7 +568,7 @@ impl GroupedSweepRepo {
                     curve_only, grouping_spec, axes_spec, min_tokens, token_count, group_count, \
                     combo_count, corpus_hash, created_at, status, groups_done, \
                     ix_labels_filter, field_filters, fingerprint_id, token_cap, max_combos, label, \
-                    buy_amount_sol, bucket_width_sol, volume_ix_patterns, \
+                    buy_amount_sol, partition, volume_ix_patterns, \
                     fill_model, cost_model, scale_out, scale_out_top_k, corpus_last_trade_at \
              FROM {} WHERE id = $1",
             self.tables.runs
@@ -645,7 +645,7 @@ impl GroupedSweepRepo {
                     curve_only, grouping_spec, axes_spec, min_tokens, token_count, group_count, \
                     combo_count, corpus_hash, created_at, status, groups_done, \
                     ix_labels_filter, field_filters, fingerprint_id, token_cap, max_combos, label, \
-                    buy_amount_sol, bucket_width_sol, volume_ix_patterns, \
+                    buy_amount_sol, partition, volume_ix_patterns, \
                     fill_model, cost_model, scale_out, scale_out_top_k, corpus_last_trade_at \
              FROM {} ORDER BY created_at DESC LIMIT $1",
             self.tables.runs

@@ -5,6 +5,7 @@
 //! [family-search.md]: ../../../docs/roadmap/family-search.md
 //! [rule-search-method.md]: ../../../docs/plans/strategies/rule-search-method.md
 
+use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria};
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
@@ -134,25 +135,18 @@ pub fn tp_exit(pnl_sol: f64) -> TokenOutcome {
 /// build siblings — every other axis stays put, which is what makes them siblings.
 pub fn fp_row(name: &str) -> trading_core::models::Fingerprint {
     trading_core::models::Fingerprint {
-        wildcard: false,
         id: uuid::Uuid::new_v4(),
         name: name.into(),
-        cu_limit: Some(200_000),
-        cu_price: Some(50),
-        init_buy_lamports: Some(trading_core::config::constants::sol_to_lamports(0.5)),
-        max_cost_lamports: None,
-        spendable_lamports_in: None,
-        first_slot_buy_lamports: None,
-        first_slot_sell_lamports: None,
-        // `bkt=exact` — a NULL width is an exact compare, not an unset one.
-        bucket_size_amount: None,
-        ix_labels: Some(vec![
-            "Pump.Fun: CreateIdempotent".into(),
-            "Pump.Fun: Create".into(),
-            "Pump.Fun: BuyExactSolIn".into(),
-        ]),
         metric_config: serde_json::json!({}),
         created_at: created_at(),
         updated_at: created_at(),
+        wildcard: false,
+        criteria: Criteria::new()
+            .with(AxisId::CuLimit, AxisPredicate::exact(200_000))
+            .with(AxisId::CuPrice, AxisPredicate::exact(50))
+            .with(AxisId::InitBuyLamports, AxisPredicate::exact(trading_core::config::constants::sol_to_lamports(0.5) as u128))
+            .with(AxisId::IxLabels, AxisPredicate::Sequence { labels: vec!["Pump.Fun: CreateIdempotent".into(),
+            "Pump.Fun: Create".into(),
+            "Pump.Fun: BuyExactSolIn".into(),] }),
     }
 }

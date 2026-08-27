@@ -61,9 +61,13 @@ layer rather than by convention.
 
 A sweep group's key carries `AxisPredicate`s, not rendered `"lo–hi"` labels, so
 promoting a group to a fingerprint is a copy. `PartitionSpec::Distinct` gives one
-group per value; `PartitionSpec::Ranges(edges)` bins by explicit edges (corpus
-percentiles by default). No implicit lattice, no width to reconcile across axes,
-no byte-identical-label lockstep with SQL.
+group per value; `PartitionSpec::Ranges { edges }` bins by an explicit ascending
+list — edge `i` opens `[edges[i], edges[i+1] - 1]`, open-ended below the first and
+above the last, so the edges tile the whole domain and no token is dropped.
+`PartitionSpec::quantiles` derives edges from a corpus by equal count.
+
+No implicit lattice, no width to reconcile across axes, no byte-identical-label
+lockstep with SQL.
 
 ## Match phases
 
@@ -79,3 +83,16 @@ The phase lives on the axis definition — nothing else knows which axes defer.
 * Every predicate is satisfiable: `min <= max`, a non-empty label sequence.
 * `ix_count` and `ix_labels` must agree — a count range excluding
   `labels.len()` is an unsatisfiable row that would silently arm on nothing.
+
+## What this removed
+
+`SolPrecision`, `same_bucket`, `bucket_index`, `BUCKET_EPS`, `decimals_for`,
+`bucket_sol_label`, `exact_sol_label`, `SolFilter`, `MAX_BUCKETABLE_LAMPORTS`,
+`bucketable_lamports`, `fingerprints.bucket_size_amount`,
+`grouped_sweep_runs.bucket_width_sol`, the `sol_bucket_sql` / `sol_exact_sql` /
+`SQL_MASK_INT_DIGITS` mask machinery, the `exact_sol` wire flag, and the promote
+blockers for a ceiling, an arbitrary range, and two axes wanting different widths.
+
+Three promote blockers remain, and each is a real fact about the group rather than
+a limit of the representation: an **absent** axis, a **multi-value** filter, and the
+two **grouping-only** fields the matcher has no axis for.

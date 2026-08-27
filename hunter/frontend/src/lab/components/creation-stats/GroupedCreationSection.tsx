@@ -25,7 +25,7 @@ import {
   FingerprintGroupPicker,
   type CashbackFilter,
 } from '@lab/components/sweep/FingerprintGroupPicker';
-import { SOL_BUCKET_WIDTH, BUCKETED_GROUP_FIELDS } from '@lab/components/sweep/groupedTypes';
+import { LAMPORTS_GROUP_FIELDS, type PartitionSpec } from '@lab/components/sweep/groupedTypes';
 import { formatWithCommas } from 'utils/format';
 import { ixLabelsCountTail } from 'lib/ixLabels';
 import { cn } from 'lib/cn';
@@ -39,6 +39,7 @@ import { useGetFingerprintsQuery, useCreateFingerprintMutation } from 'store/sha
 import {
   fingerprintIdentityFromGroupKey,
   matchFingerprintsForGroups,
+  renderGroupKey,
   withIxLabelsFilter,
 } from 'lib/strategy/matchGroupFingerprint';
 import { fingerprintNameFromGroupKey } from 'lib/strategy/fingerprintNameFromGroupKey';
@@ -64,9 +65,7 @@ import {
   GROUP_FIELD_LABELS,
   TOP_OPTIONS,
   RANK_BY_OPTIONS,
-  MISSING_VALUE,
   groupColor,
-  groupValueParts,
   drillTokenFilters,
   toHeatCell,
   weeklySlotLabel,
@@ -96,11 +95,13 @@ const DEFAULT_GROUP_BY: GroupField[] = ['cu_limit', 'cu_price', 'ix_labels'];
 const SCALAR_FILTER_FIELDS: GroupField[] = [
   'cu_limit',
   'cu_price',
+  'init_buy_lamports',
   'max_cost_lamports',
   'spendable_lamports_in',
-  'initial_buy_sol',
-  'first_slot_buy_sol',
-  'first_slot_sell_sol',
+  'first_slot_buy_lamports',
+  'first_slot_sell_lamports',
+  'ix_count',
+  'prior_launches',
 ];
 
 /** What the shared drill-down section is currently showing: one group card
@@ -157,12 +158,17 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   const [rankBy, setRankBy] = useStoredField<GroupRankBy>(P, 'groupedRankBy', 'trades');
   // Bucket width (SOL) for the continuous SOL group fields — the same knob the
   // grouped sweep uses, so this dashboard groups a corpus identically to a sweep.
-  const [bucketWidth, setBucketWidth] = useStoredField<number>(P, 'groupedBucketWidth', 1);
   // Exact mode: key the ◎ SOL fields on the amount itself, one group per distinct
   // value. Separate from the width (never a magic 0) — see Rust `SolPrecision`.
   // Default ON: a launch client's tell is a repeated EXACT amount, which any
   // non-zero bucket width smears across neighbours.
-  const [exactSol, setExactSol] = useStoredField<boolean>(P, 'groupedExactSol', true);
+  // How each grouped field is partitioned. Explicit edges travel with the request,
+  // so a card's window is a fact the promote path reads rather than re-derives.
+  const [partition, setPartition] = useStoredField<Record<string, PartitionSpec>>(
+    P,
+    'groupedPartition',
+    {},
+  );
   // Hour bins: a launch tool's activity is a burst, and a day bin flattens it.
   const [bucket, setBucket] = useStoredField<CreationBucket>(P, 'groupedBucket', 'hour');
   // `groupedRange` also holds the legacy bare day count, which `toCreationWindow`
@@ -249,7 +255,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
     () =>
       buildFieldFilters(fieldFiltersText, {
         fields: SCALAR_FILTER_FIELDS,
-        bucketed: BUCKETED_GROUP_FIELDS,
+        bucketed: LAMPORTS_GROUP_FIELDS,
         cashback: cashbackFilter,
         labels: GROUP_FIELD_LABELS,
       }),
@@ -284,14 +290,9 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
       segment,
       groupBy,
       top,
-      // Exact mode replaces the width outright (the backend ignores it there), so
-      // the two are never sent together — one knob, one meaning.
-      ...(exactSol
-        ? { exactSol: true }
-        : // Send only a non-default width so the 0.1 case keeps a stable cache key.
-          bucketWidth !== SOL_BUCKET_WIDTH
-          ? { bucketWidth }
-          : {}),
+      // Only a non-default partition, so the one-group-per-value case keeps a
+      // stable cache key.
+      ...(Object.keys(partition).length > 0 ? { partition } : {}),
       ...(Object.keys(fieldFilters).length > 0 ? { fieldFilters } : {}),
       // ix_labels grouping and the exact-set filter are mutually exclusive
       // (matches the sweep page): drop the filter when grouping by ix_labels.
@@ -309,8 +310,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
     segment,
     groupBy,
     top,
-    bucketWidth,
-    exactSol,
+    partition,
     scalarFilters.filters,
     cashbackFilter,
     ixFilter.labels,
@@ -352,25 +352,6 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   const groups = data?.groups ?? [];
   const drillGroup = drillTarget ? groups.find((g) => g.g === drillTarget.g) ?? null : null;
 
-  // Was the applied run keyed on exact SOL amounts? Then a card's SOL axes read
-  // "1.515", not "1.5–1.6", and the fingerprint it maps to is an **exact** one
-  // (NULL stored width ⇒ `SolPrecision::Exact` ⇒ raw-lamports equality), not a
-  // bucketed one. (Prefer the Analyze snapshot over the response echo so an
-  // in-flight refetch can't briefly flip the precision.)
-  const appliedExactSol = applied?.exactSol ?? data?.bucket_width === null;
-
-  // The precision the applied run grouped SOL axes at — the same precision the
-  // fingerprint identity match/create must use so a card maps to the fingerprint
-  // it would actually match. `null` IS the exact mode, never a substituted width:
-  // inventing 0.1 there would mint a rule that arms on a window the card never
-  // showed. Prefer the server echo (`data.bucket_width`): scoped runs ignore the
-  // draft width and use the fingerprint's own; `applied.bucketWidth` is also
-  // omitted for the default 0.1 case. Note the `??` chain only runs when the run
-  // is bucketed — in exact mode the echo is `null`, which `??` would swallow.
-  const appliedBucketWidth: number | null = appliedExactSol
-    ? null
-    : data?.bucket_width ?? applied?.bucketWidth ?? SOL_BUCKET_WIDTH;
-
   // Applied exact-set ix_labels filter. Prefer the Analyze snapshot (`applied`)
   // over the response echo so a in-flight refetch can't briefly drop the axis
   // while previous data (no filter) is still on screen. When Instruction labels
@@ -383,23 +364,17 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   // (ALL / grouping-only cards can't become a fingerprint — hide Create then).
   // When scoped by a saved fingerprint, prefer that id directly (group_key is
   // stamped from it server-side, but the scope select is the authoritative link).
-  // Exact grouping is saveable — a plain SOL label parses whole, and the identity
-  // it builds carries a `null` width, which `sameWidth` keeps distinct from every
-  // bucketed one. The single case that still isn't: an axis on a `u64` ceiling,
-  // which no `BIGINT` column can hold (`identityLamportsAreStorable`).
+  // Every card is saveable: its key carries the window each axis selected, and that
+  // window IS the predicate a fingerprint stores. The one case that used to fail —
+  // an axis on a `u64` ceiling, which no `BIGINT` column could hold — is an
+  // ordinary bound now.
   const fpByGroup = useMemo(() => {
     const scoped =
       applied?.fingerprintId != null
         ? fingerprintsById.get(applied.fingerprintId) ?? null
         : null;
-    return matchFingerprintsForGroups(
-      groups,
-      fingerprints,
-      appliedBucketWidth,
-      appliedIxLabels,
-      scoped,
-    );
-  }, [groups, fingerprints, fingerprintsById, appliedBucketWidth, applied?.fingerprintId, appliedIxLabels]);
+    return matchFingerprintsForGroups(groups, fingerprints, appliedIxLabels, scoped);
+  }, [groups, fingerprints, fingerprintsById, applied?.fingerprintId, appliedIxLabels]);
 
   // Save a group card as a fingerprint. Identity = group_key axes, plus the
   // applied ix_labels filter when that axis wasn't grouped (mutually exclusive
@@ -411,9 +386,9 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
     setFpBusyGroup(group.g);
     try {
       const gk = withIxLabelsFilter(group.group_key, appliedIxLabels);
-      const identity = fingerprintIdentityFromGroupKey(gk, appliedBucketWidth);
+      const identity = fingerprintIdentityFromGroupKey(gk);
       await createFingerprint({
-        name: fingerprintNameFromGroupKey(gk, appliedBucketWidth),
+        name: fingerprintNameFromGroupKey(gk),
         ...identity,
         metric_config: {},
       }).unwrap();
@@ -437,8 +412,9 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
       to: applied.to,
       segment: applied.segment,
       groupBy: applied.groupBy,
-      bucketWidth: applied.bucketWidth,
-      exactSol: applied.exactSol,
+      // MUST be the partition that produced the card, or the drill-down asks for a
+      // window the card never produced and returns no rows.
+      partition: applied.partition,
       fieldFilters: applied.fieldFilters,
       ixLabelsFilter: applied.ixLabelsFilter,
       fingerprintId: applied.fingerprintId,
@@ -583,10 +559,8 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
           }}
           cashbackFilter={cashbackFilter}
           onSetCashback={setCashbackFilter}
-          bucketWidthSol={bucketWidth}
-          onSetBucketWidth={setBucketWidth}
-          exactSol={exactSol}
-          onSetExactSol={setExactSol}
+          partition={partition}
+          onSetPartition={(f, spec) => setPartition({ ...partition, [f]: spec })}
           ixLabelsText={ixLabelsText}
           onSetIxLabels={setIxLabelsText}
           ixFilter={ixFilter}
@@ -666,11 +640,11 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
               const targetingThisGroup = drillTarget?.g === g.g;
               // Selected = its tokens are showing in the shared drill-down below.
               const selected = targetingThisGroup;
-              const fp = fpByGroup.get(g.g) ?? { matched: null, canCreate: false, overflow: false };
+              const fp = fpByGroup.get(g.g) ?? { matched: null, canCreate: false };
               const gk = withIxLabelsFilter(g.group_key, appliedIxLabels);
-              const hasIxLabels =
-                Object.prototype.hasOwnProperty.call(gk, 'ix_labels') &&
-                gk.ix_labels !== MISSING_VALUE;
+              // The card carries a real label sequence — not merely the key, whose
+              // `missing` value means the group's tokens have none.
+              const hasIxLabels = keyLabels(gk.ix_labels) != null;
               return (
                 <div
                   key={g.g}
@@ -722,22 +696,6 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
                           >
                             {fpBusyGroup === g.g ? 'Creating…' : 'Create fingerprint'}
                           </Button>
-                        ) : fp.overflow ? (
-                          // Say why the action is gone rather than leaving a silent
-                          // gap — the reason is a real constraint, not an oversight.
-                          <span
-                            className="text-[10px] text-text-dim/60"
-                            title={
-                              'A SOL axis on this card is an out-of-i64 "no limit" ceiling (pump.fun\n' +
-                              'passes max_sol_cost = u64::MAX to mean "fill at any price"), not an\n' +
-                              'amount anyone bid. A fingerprint axis is a BIGINT, so that value cannot\n' +
-                              'be stored as a criterion — and the live matcher fails a configured axis\n' +
-                              'against it rather than wrapping it.\n\n' +
-                              'Group by an axis that carries a real amount instead.'
-                            }
-                          >
-                            ceiling — not saveable
-                          </span>
                         ) : null}
                         <Button
                           size="sm"
@@ -862,19 +820,35 @@ function GroupKeyInline({
           {i > 0 && <span className="text-text-dim"> · </span>}
           <span className="text-text-dim">{GROUP_FIELD_LABELS[k as GroupField] ?? k}=</span>
           {k === 'ix_labels' ? (
-            // Tail, not a bare count — this legend line is how two groups in
-            // the same chart are told apart, and same-length sequences are the
-            // common case (a buy-variant swap).
-            <span className="font-mono" title={v === MISSING_VALUE ? undefined : v}>
-              {v === MISSING_VALUE ? '∅' : ixLabelsCountTail(groupValueParts(k, v))}
+            // Tail, not a bare count — this legend line is how two groups in the
+            // same chart are told apart, and same-length sequences are the common
+            // case (a buy-variant swap).
+            <span className="font-mono" title={keyLabels(v) ? undefined : keyText(k, v)}>
+              {keyLabels(v) ? ixLabelsCountTail(keyLabels(v)!) : '∅'}
             </span>
           ) : (
-            <span className="font-mono">{v}</span>
+            <span className="font-mono">{keyText(k, v)}</span>
           )}
         </Fragment>
       ))}
     </span>
   );
+}
+
+/** One group-key value as display text.
+ *
+ *  Rendering only — nothing parses this back. The key itself carries the predicate
+ *  ([`renderGroupKey`] is the shared formatter), which is why a chip is free to be
+ *  as readable as it likes without a second parser having to agree with it. */
+function keyText(field: string, value: unknown): string {
+  const [, text] = renderGroupKey({ [field]: value })[0] ?? [field, ''];
+  return text;
+}
+
+/** The label sequence a key value carries, or `null` when it is not one. */
+function keyLabels(value: unknown): string[] | null {
+  const v = value as { kind?: string; labels?: string[] } | null;
+  return v && v.kind === 'labels' && v.labels?.length ? v.labels : null;
 }
 
 /** Full group-key block for a heatmap card (label/value grid; ix_labels shown
@@ -894,17 +868,17 @@ function GroupKeyBlock({
     <div className="grid grid-cols-[auto_1fr] items-start gap-x-2 gap-y-0.5 text-left">
       {entries.map(([k, v]) => {
         const label = GROUP_FIELD_LABELS[k as GroupField] ?? k;
-        const isIx = k === 'ix_labels';
-        const parts = isIx ? (v === MISSING_VALUE ? [] : groupValueParts(k, v)) : null;
+        const text = keyText(k, v);
+        const parts = k === 'ix_labels' ? keyLabels(v) ?? [] : null;
         return (
           <Fragment key={k}>
-            <span className="text-[11px] leading-tight text-text-dim" title={`${label}: ${v}`}>
+            <span className="text-[11px] leading-tight text-text-dim" title={`${label}: ${text}`}>
               {label}:
             </span>
             {parts ? (
               <IxLabelsDisplay labels={parts} copyJson className="text-secondary" empty="∅" />
             ) : (
-              <span className="font-mono text-[11px] text-secondary">{v}</span>
+              <span className="font-mono text-[11px] text-secondary">{text}</span>
             )}
           </Fragment>
         );

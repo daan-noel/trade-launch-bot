@@ -31,7 +31,7 @@ use crate::models::ingest::SseEvent;
 use crate::state::job_progress::ProgressCell;
 use crate::state::local_state::LocalState;
 use crate::sweep::corpus::{sweep_per_mint_cap, CorpusSource, Selection};
-use crate::sweep::grouping::{normalize_label_vec, GroupField};
+use crate::sweep::grouping::GroupField;
 use crate::sweep::progress::SweepObserver;
 use hunter_engine::metrics::flow_split::FlowPatterns;
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
@@ -454,7 +454,7 @@ async fn run_job(
             .ix_labels_filter
             .as_ref()
             .filter(|f| !f.is_empty())
-            .map(|f| normalize_label_vec(f.clone()))
+            .cloned()
         {
             corpus.tokens.retain(|t| t.fp.ix_labels == want);
         }

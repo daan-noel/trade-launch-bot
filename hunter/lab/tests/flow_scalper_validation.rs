@@ -25,7 +25,7 @@ use chrono::{Datelike, DateTime, Utc};
 use uuid::Uuid;
 
 use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
-use hunter_engine::fingerprint::{Fingerprint, FingerprintId};
+use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria, Fingerprint, FingerprintId};
 use hunter_engine::grouping::TokenFingerprint;
 use hunter_engine::metrics::price_window::PriceWindowState;
 use hunter_engine::rule_params::RuleParams;
@@ -56,23 +56,17 @@ const WINDOW_SEC: u64 = 30;
 /// (the analysis doc's universe is defined by age/liquidity/flow, not creation shape).
 fn broad_fp() -> Fingerprint {
     Fingerprint {
-        wildcard: false,
         id: FingerprintId(Uuid::from_u128(FP_ID)),
-        cu_limit: Some(FP_CU),
-        cu_price: None,
-        ix_labels: None,
-        init_buy_lamports: None,
-        max_cost_lamports: None,
-        spendable_lamports_in: None,
-        first_slot_buy_lamports: None,
-        first_slot_sell_lamports: None,
-        bucket_size_amount: Some(0.1),
+        wildcard: false,
+        criteria: Criteria::new()
+            .with(AxisId::CuLimit, AxisPredicate::exact(FP_CU)),
         metric_config: serde_json::json!({}),
     }
 }
 
 fn uniform_tf() -> TokenFingerprint {
-    TokenFingerprint { cu_limit: Some(FP_CU), ..Default::default() }
+    cu_limit: Some(FP_CU),
+    ..Default::default()
 }
 
 fn rule(id: u128, params: serde_json::Value) -> LoadedRule {

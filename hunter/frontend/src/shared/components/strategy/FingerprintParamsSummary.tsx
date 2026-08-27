@@ -1,10 +1,19 @@
 // Compact at-a-glance chip cluster for a fingerprint's match axes. Shared by
 // Rules, Simulate, and the rule-editor picker — one SSOT so every surface that
-// shows a fingerprint reads the same. Null / empty axes are omitted, and so is the
-// bucket width on a row with no SOL axis to spend it on (it reaches no match).
+// shows a fingerprint reads the same.
+//
+// Chips are generated from the axis registry in its own order, so an axis added
+// there is shown, searchable and part of the sort key here without an edit. An
+// unconfigured axis is simply absent from the criteria map and so from the row.
 
 import { useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
-import { formatCompact, formatDecimalTrim } from 'utils/format';
+import {
+  axisDef,
+  configuredAxes,
+  formatPredicate,
+  type AxisId,
+  type AxisPredicate,
+} from 'lib/strategy/fingerprintAxes';
 import {
   configuredIxLabels,
   formatIxLabelsText,
@@ -24,9 +33,6 @@ import {
   fingerprintAutoName,
 } from 'lib/strategy/fingerprintNameFromGroupKey';
 import {
-  formatBucketWidth,
-  hasSolAxis,
-  lamportsToSol,
   type Fingerprint,
 } from 'lib/strategy/types';
 
@@ -194,24 +200,32 @@ export function FlowPatternsChip({ patterns }: { patterns: string[][] }) {
   );
 }
 
-function solChip(label: string, lamports: number | null): ReactNode | null {
-  const s = lamportsToSol(lamports);
-  if (s == null) return null;
-  return chip(`${label}=${formatDecimalTrim(s, 4)}◎`, { style: axisTint(label) });
+/** One axis's chip. The value reads in the axis's own display unit — SOL for a
+ *  lamports axis, the integer for a tally — through the ONE formatter, so a chip,
+ *  the auto-name and the form all show a bound the same way. */
+function axisChip(id: AxisId, pred: AxisPredicate): ReactNode | null {
+  const def = axisDef(id);
+  if (pred.kind === 'sequence') {
+    const ix = configuredIxLabels(pred.labels);
+    return ix ? <IxLabelsChip key={id} labels={ix} /> : null;
+  }
+  const unit = def.unit === 'lamports' ? '◎' : '';
+  return (
+    <span key={id}>
+      {chip(`${def.chip}=${formatPredicate(id, pred)}${unit}`, {
+        style: axisTint(def.chip),
+        // The axis's ONE definition, rendered from the registry — never a second copy.
+        title: `${def.label} — ${def.definition}`,
+      })}
+    </span>
+  );
 }
 
-function intChip(label: string, n: number | null): ReactNode | null {
-  if (n == null) return null;
-  return chip(`${label}=${formatCompact(n, 1)}`, { style: axisTint(label) });
-}
-
-/** Axis chips only (no name) — set criteria, plus the always-on bucket width and
- *  flow-pattern axes. */
+/** Axis chips only (no name) — the configured criteria plus the flow-pattern axis. */
 export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
-  const ix = configuredIxLabels(fp.ix_labels);
-  // A wildcard carries no axis and no usable bucket width, so the chip row is the
-  // one chip that says what it matches. Rendering the axis chips too (they would
-  // all be absent) would read as "unconfigured" — the opposite of what it does.
+  // A wildcard carries no axis, so the chip row is the one chip that says what it
+  // matches. Rendering the axis chips too (they would all be absent) would read as
+  // "unconfigured" — the opposite of what it does.
   if (fp.wildcard) {
     return (
       <div className="flex flex-wrap items-center gap-1 text-left">
@@ -224,25 +238,8 @@ export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
     );
   }
   const chips: ReactNode[] = [
-    intChip('cu_limit', fp.cu_limit),
-    intChip('cu_price', fp.cu_price),
-    solChip('init', fp.init_buy_lamports),
-    solChip('max', fp.max_cost_lamports),
-    solChip('spend', fp.spendable_lamports_in),
-    solChip('fs_buy', fp.first_slot_buy_lamports),
-    solChip('fs_sell', fp.first_slot_sell_lamports),
-    ix ? <IxLabelsChip key="ix" labels={ix} /> : null,
+    ...configuredAxes(fp.criteria ?? {}).map(([id, pred]) => axisChip(id, pred)),
     <FlowPatternsChip key="flow" patterns={volumeIxPatternsFromConfig(fp.metric_config)} />,
-    // The width is an axis only where a SOL axis spends it. With none configured it
-    // reaches no match, so showing it invents a criterion the engine does not apply
-    // — and made two rows that match identically read as different fingerprints.
-    // `exact` carries no unit — appending ◎ would read as a zero-width bucket.
-    hasSolAxis(fp)
-      ? chip(
-          `bkt=${formatBucketWidth(fp.bucket_size_amount)}${fp.bucket_size_amount == null ? '' : '◎'}`,
-          { style: axisTint('bkt') },
-        )
-      : null,
   ].filter(Boolean);
 
   return <div className="flex flex-wrap items-center gap-1 text-left">{chips}</div>;
@@ -264,25 +261,17 @@ export function fingerprintParamsSearchText(fp: Fingerprint | undefined, fallbac
   const parts: string[] = [fp.name || fp.id.slice(0, 8)];
   // Matches the chip text, so filtering by what is actually shown works.
   if (fp.wildcard) parts.push('ALL tokens wildcard');
-  if (fp.cu_limit != null) parts.push(`cu_limit=${fp.cu_limit}`);
-  if (fp.cu_price != null) parts.push(`cu_price=${fp.cu_price}`);
-  const pushSol = (label: string, lamports: number | null) => {
-    const s = lamportsToSol(lamports);
-    if (s != null) parts.push(`${label}=${formatDecimalTrim(s, 4)}`);
-  };
-  pushSol('init', fp.init_buy_lamports);
-  pushSol('max', fp.max_cost_lamports);
-  pushSol('spend', fp.spendable_lamports_in);
-  pushSol('fs_buy', fp.first_slot_buy_lamports);
-  pushSol('fs_sell', fp.first_slot_sell_lamports);
-  const ix = configuredIxLabels(fp.ix_labels);
-  if (ix) {
-    // Count keeps `3ix` matchable; the tail + actions make the *sequence*
-    // filterable, so two same-length sets don't both answer to one query.
-    parts.push(`${ix.length}ix`);
-    parts.push(ixLabelsCountTail(ix));
-    parts.push(ixLabelsActions(ix));
-    parts.push(formatIxLabelsText(ix));
+  for (const [id, pred] of configuredAxes(fp.criteria ?? {})) {
+    const def = axisDef(id);
+    if (pred.kind === 'sequence') {
+      const ix = configuredIxLabels(pred.labels);
+      if (!ix) continue;
+      // Count keeps `3ix` matchable; the tail + actions make the *sequence*
+      // filterable, so two same-length sets don't both answer to one query.
+      parts.push(`${ix.length}ix`, ixLabelsCountTail(ix), ixLabelsActions(ix), formatIxLabelsText(ix));
+      continue;
+    }
+    parts.push(`${def.chip}=${formatPredicate(id, pred)}`, def.label);
   }
   const patterns = volumeIxPatternsFromConfig(fp.metric_config);
   // Match the `FlowPatternsChip` text (`flow N` / `flow✗`) so filtering by what's
@@ -297,7 +286,6 @@ export function fingerprintParamsSearchText(fp: Fingerprint | undefined, fallbac
   } else {
     parts.push('flow✗');
   }
-  if (hasSolAxis(fp)) parts.push(`bkt=${formatBucketWidth(fp.bucket_size_amount)}`);
   return parts.join(' ');
 }
 
@@ -347,17 +335,15 @@ export function fingerprintIdentityKey(fp: Fingerprint | undefined, fallbackId?:
     // Identity, not decoration: a wildcard and an axis-free row would otherwise
     // sort as the same fingerprint while matching opposite token sets.
     fp.wildcard ? 'wildcard' : '',
-    fp.cu_limit ?? '',
-    fp.cu_price ?? '',
-    fp.init_buy_lamports ?? '',
-    fp.max_cost_lamports ?? '',
-    fp.spendable_lamports_in ?? '',
-    fp.first_slot_buy_lamports ?? '',
-    fp.first_slot_sell_lamports ?? '',
-    // The EFFECTIVE width: an inert one is not identity, and keying on it sorted
-    // two rows matching the same tokens apart — the tell that used to hide them.
-    hasSolAxis(fp) ? formatBucketWidth(fp.bucket_size_amount) : '',
-    (configuredIxLabels(fp.ix_labels) ?? []).join(','),
+    // Every configured axis, in registry order — so a new axis is part of the sort
+    // key without an edit here, and two rows differing only on one still sort apart.
+    configuredAxes(fp.criteria ?? {})
+      .map(([id, pred]) =>
+        pred.kind === 'sequence'
+          ? `${id}:${(configuredIxLabels(pred.labels) ?? []).join(',')}`
+          : `${id}:${pred.min ?? ''}-${pred.max ?? ''}`,
+      )
+      .join(''),
     // The pattern SEQUENCES, not their count: two fingerprints matching one
     // pattern each are the same criterion only if it is the same pattern.
     volumePatternsIdentity(volumeIxPatternsFromConfig(fp.metric_config)),

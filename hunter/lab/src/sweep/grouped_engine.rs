@@ -36,7 +36,7 @@ use serde_json::Value;
 use crate::sweep::aggregate::{ComboAgg, ComboMetrics};
 use crate::sweep::corpus::Corpus;
 use crate::sweep::engine::{combo_batch_size, run_sweep};
-use crate::sweep::grouping::{group_key, GroupField, GroupKey, SolPrecision};
+use crate::sweep::grouping::{group_key, GroupKey, GroupPlan};
 use crate::sweep::progress::SweepObserver;
 use crate::sweep::strategy::{RefineSpec, Strategy, TokenOutcome};
 
@@ -170,10 +170,10 @@ impl GroupSink for NoopSink {
 /// Partition token indices by exact-value group key at bucket `width` (the per-run
 /// partition width for the continuous SOL fields; see [`group_key`]). Pure
 /// `O(tokens)` pass.
-pub fn partition(corpus: &Corpus, fields: &[GroupField], precision: SolPrecision) -> HashMap<GroupKey, Vec<usize>> {
+pub fn partition(corpus: &Corpus, plan: &GroupPlan) -> HashMap<GroupKey, Vec<usize>> {
     let mut groups: HashMap<GroupKey, Vec<usize>> = HashMap::new();
     for (i, tt) in corpus.tokens.iter().enumerate() {
-        groups.entry(group_key(&tt.fp, fields, precision)).or_default().push(i);
+        groups.entry(group_key(&tt.fp, plan)).or_default().push(i);
     }
     groups
 }
@@ -192,8 +192,7 @@ pub fn run_grouped_sweep<S: Strategy>(
     strategy: &S,
     params: &[S::Params],
     corpus: &Corpus,
-    fields: &[GroupField],
-    precision: SolPrecision,
+    plan: &GroupPlan,
     min_tokens: usize,
     coverage: CoverageFloor,
     observer: &dyn SweepObserver,
@@ -204,7 +203,7 @@ pub fn run_grouped_sweep<S: Strategy>(
     // re-ran it O(n log n) times); sort, then drop the decoration.
     let surviving: Vec<(GroupKey, Vec<usize>)> = {
         let _stage = crate::sweep::obs::Stage::start("partition");
-        let mut surviving: Vec<(String, GroupKey, Vec<usize>)> = partition(corpus, fields, precision)
+        let mut surviving: Vec<(String, GroupKey, Vec<usize>)> = partition(corpus, plan)
             .into_iter()
             .filter(|(_, idx)| idx.len() >= floor)
             .map(|(key, idx)| (key.to_json().to_string(), key, idx))
@@ -237,7 +236,7 @@ pub fn run_grouped_sweep<S: Strategy>(
     let sweep_started = std::time::Instant::now();
     tracing::info!(
         groups = surviving.len(),
-        n_fields = fields.len(),
+        n_fields = plan.0.len(),
         min_tokens = floor,
         combos = n_combos,
         tokens = total_tokens,
@@ -401,8 +400,7 @@ pub fn run_grouped_with_refine<S: Strategy>(
     mut coarse: Vec<S::Params>,
     refine: Option<RefineSpec>,
     corpus: &Corpus,
-    fields: &[GroupField],
-    precision: SolPrecision,
+    plan: &GroupPlan,
     min_tokens: usize,
     coverage: CoverageFloor,
     cap: usize,
@@ -425,7 +423,7 @@ pub fn run_grouped_with_refine<S: Strategy>(
         // so this is the number that decides whether vectorizing the scan is worth it.
         let _stage = crate::sweep::obs::Stage::start("sweep_pass");
         let groups = run_grouped_sweep(
-            strategy, &coarse, corpus, fields, precision, min_tokens, coverage, observer, sink,
+            strategy, &coarse, corpus, plan, min_tokens, coverage, observer, sink,
         )?;
         return Ok((coarse, groups));
     };
@@ -444,8 +442,7 @@ pub fn run_grouped_with_refine<S: Strategy>(
             strategy,
             &coarse,
             corpus,
-            fields,
-            precision,
+            plan,
             min_tokens,
             coverage,
             coarse_observer,
@@ -505,7 +502,7 @@ pub fn run_grouped_with_refine<S: Strategy>(
     let groups = {
         let _stage = crate::sweep::obs::Stage::start("refine_final_pass");
         run_grouped_sweep(
-            strategy, &union, corpus, fields, precision, min_tokens, coverage, observer, sink,
+            strategy, &union, corpus, plan, min_tokens, coverage, observer, sink,
         )?
     };
     Ok((union, groups))
@@ -1082,10 +1079,11 @@ mod tests {
     const OPEN_FLOOR: CoverageFloor = CoverageFloor { min_fired_abs: 1, fire_frac: 0.0 };
     /// Default per-run bucket width for these tests (grouping fields here are all
     /// discrete, so the exact width is immaterial — it just satisfies the signature).
-    /// These grouping fields are all discrete, so the precision is immaterial here —
+    /// These grouping fields are all discrete, so the partition spec is immaterial —
     /// it just satisfies the signature.
-    const WIDTH: crate::sweep::grouping::SolPrecision =
-        crate::sweep::grouping::SolPrecision::Bucket(crate::sweep::grouping::SOL_BUCKET_WIDTH);
+    fn plan_of(fields: &[crate::sweep::grouping::GroupField]) -> GroupPlan {
+        GroupPlan::distinct(fields)
+    }
 
     #[test]
     fn groups_by_exact_field_and_picks_best_combo() {
@@ -1095,8 +1093,7 @@ mod tests {
             &Mock,
             &params,
             &corpus(),
-            &[GroupField::TokenProgramId],
-            WIDTH,
+            &plan_of(&[GroupField::TokenProgramId]),
             1,
             OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,
@@ -1173,8 +1170,7 @@ mod tests {
             &Mock,
             &params,
             &corpus,
-            &[GroupField::TokenProgramId],
-            WIDTH,
+            &plan_of(&[GroupField::TokenProgramId]),
             1,
             OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,
@@ -1275,8 +1271,7 @@ mod tests {
             &Mock,
             &params,
             &corpus(),
-            &[GroupField::TokenProgramId],
-            WIDTH,
+            &plan_of(&[GroupField::TokenProgramId]),
             2,
             OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,
@@ -1308,8 +1303,7 @@ mod tests {
             coarse,
             None,
             &corpus(),
-            &[crate::sweep::grouping::GroupField::TokenProgramId],
-            WIDTH,
+            &plan_of(&[crate::sweep::grouping::GroupField::TokenProgramId]),
             1,
             OPEN_FLOOR,
             100,
@@ -1333,8 +1327,7 @@ mod tests {
             coarse,
             Some(RefineSpec { top_k: 1 }),
             &corpus(),
-            &[],
-            WIDTH,
+            &plan_of(&[]),
             1,
             OPEN_FLOOR,
             100,
@@ -1361,8 +1354,7 @@ mod tests {
             coarse,
             Some(RefineSpec { top_k: 1 }),
             &corpus(),
-            &[],
-            WIDTH,
+            &plan_of(&[]),
             1,
             OPEN_FLOOR,
             3,
@@ -1407,8 +1399,7 @@ mod tests {
             &Mock,
             &params,
             &corpus(), // devA(2) + devB(1) → 2 surviving groups
-            &[GroupField::TokenProgramId],
-            WIDTH,
+            &plan_of(&[GroupField::TokenProgramId]),
             1,
             OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,
@@ -1442,8 +1433,7 @@ mod tests {
             coarse,
             Some(RefineSpec { top_k: 1 }),
             &corpus(),
-            &[],
-            WIDTH,
+            &plan_of(&[]),
             1,
             OPEN_FLOOR,
             100,
@@ -1468,8 +1458,7 @@ mod tests {
             &Mock,
             &params,
             &corpus(),
-            &[],
-            WIDTH,
+            &plan_of(&[]),
             1,
             OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,

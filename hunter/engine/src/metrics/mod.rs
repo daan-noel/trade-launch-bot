@@ -4,7 +4,7 @@
 //!
 //! A **metric** is a named per-token quantity a rule can put `{operator, value}`
 //! conditions on. Metrics live in **groups** (one file per group):
-//! * `m_snapshot` (static) — `time`, `liquidity`, `ix_count`, `prior_launches`,
+//! * `m_snapshot` (static) — `time`, `liquidity`,
 //!   `first_slot_buy`
 //! * `m_price_lifetime` (static) — `stall`, `trail`, `rise` (lifetime peak/trough)
 //! * `m_price_window` (dynamic, strict param `window_size_sec`) — `trail`, `rise`
@@ -499,34 +499,13 @@ pub enum MetricId {
     Time,
     /// SOL reserves (`m_snapshot`).
     Liquidity,
-    /// Instruction count of the token's CREATION transaction (`m_snapshot`).
-    ///
-    /// A launch-tooling fingerprint reduced to one number: a plain creation is a few
-    /// instructions, an elaborate one is many. Static from `TokenCreated` onward, so an
-    /// entry gate on it is a token filter, not a timing signal, and it can never
-    /// re-trigger. `NaN` when the creation labels are unknown.
-    IxCount,
-    /// How many tokens this token's creator launched **before** it (`m_snapshot`).
-    ///
-    /// A creator-history filter, not a market reading: `0` is a first-time launcher,
-    /// a large value is a serial one. Seeded once at `TokenCreated` from a running
-    /// per-creator tally and never moves, so an entry gate on it is a token filter
-    /// that can never re-trigger.
-    ///
-    /// `NaN` when the creator is unknown (no `creator_wallet_hash` on the creation
-    /// event) — an unknown creator stays unmatched by any `prior_launches` gate
-    /// rather than counting as a first launch, which is the direction that would
-    /// silently widen a `== 0` rule to everything.
-    ///
-    /// The tally is only as deep as the history the host primed it with (see
-    /// [`crate::reduce`]); a run that primes nothing counts only within itself.
-    PriorLaunches,
     /// Total buy SOL that landed in the token's **creation slot** (`m_snapshot`).
     ///
     /// "Was the launch real?" — it separates a funded launch from a dust one, and it
-    /// is the same quantity the fingerprint buckets as `first_slot_buy_lamports`. A
-    /// fingerprint can only pin ONE bucket of it, so a rule that means a THRESHOLD
-    /// (`>= 6.41`) has to say it here.
+    /// is the same quantity the fingerprint axis `first_slot_buy_lamports` ranges
+    /// over. Prefer the axis for a launch-shape THRESHOLD — it selects the token set
+    /// before any evaluation. This metric is for a condition that has to be read
+    /// alongside live tape state in the same rule.
     ///
     /// Static once seeded, so an entry gate on it is a token filter that can never
     /// re-trigger. `NaN` until the creation slot settles — which is later than
@@ -695,22 +674,6 @@ impl MetricId {
             || matches!(self, MetricId::UniqueWallets | MetricId::TradesPerWallet)
     }
 
-    /// Whether this metric's value depends on the token's **creator identity across
-    /// other tokens**, not on anything inside the token's own trade stream.
-    ///
-    /// Sibling of [`needs_wallet_identity`](Self::needs_wallet_identity), and the same
-    /// class of silent failure: the lake's tokens dimension carries no creator column,
-    /// so a corpus-driven path (the grouped sweep, rule search, family search) has
-    /// nothing to seed the value from and reads `NaN` for every token — which looks
-    /// exactly like a strict gate that never fires.
-    ///
-    /// The paths that CAN serve it read the creator off the PG `tokens` row: the live
-    /// engine (a running tally over `TokenCreated`), `simulate`, and the rule readout.
-    /// Callers on a corpus path must reject a rule that uses one of these rather than
-    /// run it blind.
-    pub fn needs_creator_history(self) -> bool {
-        matches!(self, MetricId::PriorLaunches)
-    }
 }
 
 impl fmt::Display for MetricId {
@@ -1008,18 +971,6 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 212,
             },
             MetricSpec {
-                id: MetricId::IxCount,
-                name: "ix_count",
-                description: "How many instructions the token's CREATION transaction carried - launch tooling as one number. Static from creation; NaN when the labels are unknown.",
-                // A tally, so half an instruction: `<= 5` must not turn on float noise.
-                unit: Unit::Count,
-                eq_tolerance: 0.5,
-                // Static after creation - it never moves, so no monotonic derivation.
-                monotonic: false,
-                // Between `time` (212) and `liquidity` (236) - inside the snapshot family.
-                hue: 224,
-            },
-            MetricSpec {
                 id: MetricId::Liquidity,
                 name: "liquidity",
                 description: "REAL SOL reserves at the most recent trade (`vsol - 30` on the curve, so 0..85 up to the graduation wall). NaN before the first trade.",
@@ -1037,21 +988,8 @@ pub const REGISTRY: &[GroupSpec] = &[
                 // Static after the creation slot settles - it never moves, so no
                 // monotonic derivation.
                 monotonic: false,
-                // Between `time` (212) and `ix_count` (224), inside the snapshot family.
+                // Between `time` (212) and `liquidity` (236), inside the snapshot family.
                 hue: 218,
-            },
-            MetricSpec {
-                id: MetricId::PriorLaunches,
-                name: "prior_launches",
-                description: "How many tokens this creator launched BEFORE this one, over a trailing 30 days. NaN when the creator is unknown, never 0.",
-                // A tally, so half a launch: `== 0` must not turn on float noise.
-                unit: Unit::Count,
-                eq_tolerance: 0.5,
-                // Static after creation - it never moves, so no monotonic derivation.
-                monotonic: false,
-                // Top of the snapshot family (212-246), still >= 30 off the violet
-                // flow family at 278.
-                hue: 246,
             },
         ],
     },

@@ -1,11 +1,13 @@
 // Wire types for the generic-engine fingerprint + rule HTTP surface
-// (live-bin handlers `strategies::engine`). The HTTP boundary speaks **lamports**
-// for every amount axis (the models store `BIGINT` lamports and the `*_sol()`
-// accessors are non-serialized); `bucket_size_amount` is already SOL. The UI
-// speaks SOL, so the form components convert with the helpers below.
+// (live-bin handlers `strategies::engine`).
+//
+// A fingerprint's identity is its `criteria` map — see `fingerprintAxes.ts`, the
+// TS mirror of the Rust axis registry, which owns the axis list, the predicate
+// shapes, and the only SOL <-> lamports conversion on this path. Rule amounts
+// below still speak lamports on the wire and SOL in the UI.
 
-import { formatDecimalTrim, tidySolDecimal } from 'utils/format';
 import type { WindowSpec } from 'lib/strategy/windowSpec';
+import type { Criteria } from 'lib/strategy/fingerprintAxes';
 
 /** 1 SOL in lamports — the one divisor for the fingerprint/rule amount axes. */
 export const LAMPORTS_PER_SOL = 1_000_000_000;
@@ -20,62 +22,6 @@ export function solToLamports(s: number | null | undefined): number | null {
   return s == null ? null : Math.round(s * LAMPORTS_PER_SOL);
 }
 
-/**
- * Smallest legal fingerprint bucket width (SOL) — mirrors Rust
- * `grouping::MIN_BUCKET_WIDTH_SOL`, enforced by `Fingerprint::validate` and the
- * `fingerprints_bucket_size_amount_positive` CHECK.
- *
- * A width of `0` is **invalid**, not "unset": the matcher divides by it raw, so
- * every positive amount saturates into one bucket and the fingerprint's SOL axes
- * stop discriminating. Note the contrast with the axis VALUES on the same form —
- * there `0` is a real bucket (`[0, width)`) and `null` means "not part of
- * identity". Don't fold the two conventions together.
- */
-export const MIN_BUCKET_WIDTH_SOL = 1e-6;
-
-/** Default fingerprint SOL bucket width. Mirrors `grouping::SOL_BUCKET_WIDTH`.
- *  The auto-name omits `bkt=` when the stored width equals this. */
-export const DEFAULT_BUCKET_WIDTH_SOL = 0.1;
-
-/**
- * Decimals needed to render a bucket width without loss: `1 -> 0`, `0.5 -> 1`,
- * `0.1 -> 1`, `0.05 -> 2`, `1e-5 -> 5`. Mirrors Rust `grouping::decimals_for`.
- *
- * The auto-name renders the width at THIS, never a fixed count: the legal range
- * reaches down to `MIN_BUCKET_WIDTH_SOL`, and a fixed 4 trimmed a `1e-5` width to
- * `bkt=0` — a name stating the one width the backend rejects.
- */
-export function decimalsForBucketWidth(width: number): number {
-  let d = 0;
-  let w = Math.abs(width);
-  while (d < 12 && Math.abs(w % 1) > 1e-9) {
-    w *= 10;
-    d += 1;
-  }
-  return d;
-}
-
-/**
- * Whether any bucket-matched SOL axis is set — the one reader of "is
- * `bucket_size_amount` load-bearing on this row". Mirrors Rust
- * `Fingerprint::has_sol_axis`; see `effectiveBucketSizeAmount`.
- */
-export function hasSolAxis(fp: {
-  init_buy_lamports: number | null;
-  max_cost_lamports: number | null;
-  spendable_lamports_in: number | null;
-  first_slot_buy_lamports: number | null;
-  first_slot_sell_lamports: number | null;
-}): boolean {
-  return (
-    fp.init_buy_lamports != null ||
-    fp.max_cost_lamports != null ||
-    fp.spendable_lamports_in != null ||
-    fp.first_slot_buy_lamports != null ||
-    fp.first_slot_sell_lamports != null
-  );
-}
-
 /** Auto-name of a fingerprint with nothing to name from its axes — a `wildcard`
  *  row, and the criterion-less draft the write edge rejects. Mirrors the Rust
  *  `models::fingerprint::WILDCARD_NAME`. */
@@ -84,37 +30,27 @@ export const WILDCARD_NAME = 'ALL';
 /** A `fingerprints` row (response shape). All `*_lamports` axes are lamports. */
 export interface Fingerprint {
   id: string;
+  /** Picker handle and log label. NOT identity — renaming changes nothing about
+   *  what this fingerprint matches. */
   name: string;
-  cu_limit: number | null;
-  cu_price: number | null;
-  init_buy_lamports: number | null;
-  max_cost_lamports: number | null;
-  spendable_lamports_in: number | null;
-  first_slot_buy_lamports: number | null;
-  first_slot_sell_lamports: number | null;
-  /** SOL width of the match bucket (default 0.1), or `null` to match the SOL axes
-   *  on their **exact** lamports amount (Rust `SolPrecision::Exact`).
+  /** Match EVERY token, ignoring every axis (Rust `Fingerprint::wildcard`).
    *
-   *  `null` — never `0` — is how "not bucketed" is spelled: a width is a measured
-   *  quantity, and `0` both divides by zero in `bucket_index` and would be a second
-   *  sentinel in a field that already caused one live mis-arming bug. */
-  bucket_size_amount: number | null;
-  // (see `formatBucketWidth` for the one way to display this)
-  ix_labels: string[] | null;
-  /** Match EVERY token, ignoring every other axis (Rust `Fingerprint::wildcard`).
-   *
-   *  A rule always needs a fingerprint, but a rule that decides purely on the tape
-   *  has no creation shape to name — and clearing every axis means *match nothing*,
-   *  because the matcher refuses a criterion-less row on purpose. So "any token"
-   *  is said out loud here rather than inferred from a blank form.
+   *  A rule always needs a fingerprint, but one deciding purely on the tape has no
+   *  creation shape to name — and clearing every axis means *match nothing*,
+   *  because the matcher refuses a criterion-less row on purpose. So "any token" is
+   *  said out loud here rather than inferred from a blank form.
    *
    *  Part of match identity (`IDENTITY_WHERE` compares it), and mutually exclusive
    *  with every axis — `Fingerprint::validate` and the
-   *  `fingerprints_wildcard_excludes_axes` CHECK both reject a wildcard that also
-   *  carries one. */
+   *  `fingerprints_wildcard_excludes_axes` CHECK both reject a wildcard carrying
+   *  one. */
   wildcard: boolean;
+  /** The configured axes: one predicate per axis, keyed by axis id. An axis absent
+   *  from the map is not part of identity. Bounds are decimal STRINGS over the full
+   *  `u64` domain — see `fingerprintAxes.ts`. */
+  criteria: Criteria;
   /** Per-metric-group fingerprint-side config (e.g. `m_flow_split.volume_ix_patterns`).
-   *  Absent/`{}` ⇒ flow metrics stay NaN. */
+   *  Absent/`{}` => flow metrics stay NaN. Not part of identity. */
   metric_config: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -578,18 +514,3 @@ export interface StrategyPositionUpdateEvent {
   scale_stage?: number | null;
 }
 
-/**
- * Display a fingerprint's `bucket_size_amount` — **the one place** that renders
- * it, so "exact" reads identically in the table, the chips, the search index and
- * the form summary. A `null` width means the SOL axes match exact amounts
- * (Rust `SolPrecision::Exact`); showing a bare `0`/blank there would read as a
- * degenerate bucket rather than a different mode.
- */
-export function formatBucketWidth(width: number | null, decimals?: number): string {
-  if (width == null) return 'exact';
-  const w = tidySolDecimal(width);
-  // Default to the decimals the width itself needs, never a fixed count: legal
-  // widths reach down to `MIN_BUCKET_WIDTH_SOL`, and a fixed 4 rendered a `1e-5`
-  // width as `0` — the one value the backend rejects, shown for a legal row.
-  return formatDecimalTrim(w, decimals ?? decimalsForBucketWidth(w));
-}

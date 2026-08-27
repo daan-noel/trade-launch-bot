@@ -46,6 +46,7 @@ import {
   DISCOVERY_FIELD_HELP,
   SWEEP_FIELD_HELP,
 } from 'lib/strategy/strategyHelp';
+import { configuredAxes, formatPredicate } from 'lib/strategy/fingerprintAxes';
 import { formatIxLabelsText } from 'lib/ixLabels';
 import { DraftPatternsCart } from '@lab/components/flow/DraftPatternsCart';
 import {
@@ -59,12 +60,13 @@ import { patternKeysFrom } from 'lib/flow/classifyFlow';
 import { togglePattern } from 'lib/flow/volumePatterns';
 import { FingerprintGroupPicker } from '@lab/components/sweep/FingerprintGroupPicker';
 import { parseIxLabelsFilter, buildFieldFilters } from '@lab/components/sweep/fingerprintFilters';
+import type { Fingerprint } from 'lib/strategy/types';
 import {
   GROUP_FIELD_LABELS,
-  BUCKETED_GROUP_FIELDS,
+  LAMPORTS_GROUP_FIELDS,
   GROUP_FIELDS,
-  SOL_BUCKET_WIDTH,
   type GroupField,
+  type PartitionSpec,
 } from '@lab/components/sweep/groupedTypes';
 import {
   useBackgroundJobActions,
@@ -87,8 +89,6 @@ import {
   withIxLabelsFilter,
 } from 'lib/strategy/matchGroupFingerprint';
 import { fingerprintNameFromGroupKey } from 'lib/strategy/fingerprintNameFromGroupKey';
-import { lamportsToSol, type Fingerprint } from 'lib/strategy/types';
-import { tidySolDecimal } from 'utils/format';
 
 interface DiscoveryConfig {
   createdAfter: string;
@@ -100,10 +100,13 @@ interface DiscoveryConfig {
   minTokens: number;
   tokenCap: number;
   curveOnly: boolean;
-  bucketWidthSol: number;
-  /** Group the SOL axes on their exact amount (`SolPrecision::Exact`) instead of a
-   *  `bucketWidthSol`-wide range. A promoted/bound fingerprint stores a NULL width. */
-  exactSol: boolean;
+  /** How each grouped field is partitioned, keyed by field tag. A field not named
+   *  here is `{kind:'distinct'}` — one group per value.
+   *
+   *  Explicit edges, never a width: the windows a run scored over travel WITH the
+   *  run, so the promoted rule and the dashboard read the same ones instead of
+   *  three surfaces re-deriving them from one number. */
+  partition: Record<string, PartitionSpec>;
   /** Saved fingerprint whose match axes scope discovery (engine match SSOT). */
   seedFingerprintId: string | null;
 }
@@ -118,43 +121,32 @@ const DEFAULTS: DiscoveryConfig = {
   minTokens: 3,
   tokenCap: 5000,
   curveOnly: false,
-  bucketWidthSol: SOL_BUCKET_WIDTH,
-  exactSol: false,
+  partition: {},
   seedFingerprintId: null,
 };
 
-/** Compact SOL text for filter fields (avoids `1.0000000001`). */
-function solText(lamports: number | null | undefined): string {
-  const s = lamportsToSol(lamports);
-  if (s == null) return '';
-  return String(Number(s.toPrecision(12)));
-}
 
 /** Fill group-by filters from a saved fingerprint so the picker mirrors its axes.
  *  Discovery run uses `fingerprint_id` for real engine matching (buckets included). */
 function configFromFingerprint(fp: Fingerprint): Partial<DiscoveryConfig> {
+  // Each axis's own predicate, rendered in that axis's display unit through the ONE
+  // formatter — so the filter box shows exactly the window the fingerprint matches
+  // rather than a value re-derived at some substituted precision.
   const fieldFiltersText: Record<string, string> = {};
-  if (fp.cu_limit != null) fieldFiltersText.cu_limit = String(fp.cu_limit);
-  if (fp.cu_price != null) fieldFiltersText.cu_price = String(fp.cu_price);
-  const init = solText(fp.init_buy_lamports);
-  if (init) fieldFiltersText.initial_buy_sol = init;
-  const max = solText(fp.max_cost_lamports);
-  if (max) fieldFiltersText.max_cost_lamports = max;
-  const spend = solText(fp.spendable_lamports_in);
-  if (spend) fieldFiltersText.spendable_lamports_in = spend;
-  const fsBuy = solText(fp.first_slot_buy_lamports);
-  if (fsBuy) fieldFiltersText.first_slot_buy_sol = fsBuy;
-  const fsSell = solText(fp.first_slot_sell_lamports);
-  if (fsSell) fieldFiltersText.first_slot_sell_sol = fsSell;
+  let ixLabelsFilter = '';
+  for (const [id, pred] of configuredAxes(fp.criteria ?? {})) {
+    if (pred.kind === 'sequence') {
+      ixLabelsFilter = formatIxLabelsText(pred.labels);
+      continue;
+    }
+    fieldFiltersText[id] = formatPredicate(id, pred);
+  }
   return {
     seedFingerprintId: fp.id,
     // One ALL group over tokens that match this fingerprint.
     groupBy: [],
     fieldFiltersText,
-    ixLabelsFilter: formatIxLabelsText(fp.ix_labels),
-    // A NULL width IS the exact mode — mirror it rather than substituting 0.1.
-    exactSol: fp.bucket_size_amount == null,
-    bucketWidthSol: tidySolDecimal(fp.bucket_size_amount ?? SOL_BUCKET_WIDTH),
+    ixLabelsFilter,
     minTokens: 1,
     cashbackFilter: 'all',
   };
@@ -184,11 +176,11 @@ function groupKeyLabel(gk: Record<string, string>): string {
 const GROUP_FIELD_AXIS: Partial<Record<GroupField, string>> = {
   cu_limit: 'cu_limit',
   cu_price: 'cu_price',
-  initial_buy_sol: 'init',
+  init_buy_lamports: 'init',
   max_cost_lamports: 'max',
   spendable_lamports_in: 'spend',
-  first_slot_buy_sol: 'fs_buy',
-  first_slot_sell_sol: 'fs_sell',
+  first_slot_buy_lamports: 'fs_buy',
+  first_slot_sell_lamports: 'fs_sell',
 };
 
 /** Backend sentinel for "field absent on this fingerprint" — mirrors
@@ -281,8 +273,7 @@ export function FlowDiscoveryPage() {
     minTokens,
     tokenCap,
     curveOnly,
-    bucketWidthSol,
-    exactSol,
+    partition,
     seedFingerprintId,
   } = config;
 
@@ -303,7 +294,7 @@ export function FlowDiscoveryPage() {
     () =>
       buildFieldFilters(fieldFiltersText, {
         fields: GROUP_FIELDS,
-        bucketed: BUCKETED_GROUP_FIELDS,
+        bucketed: LAMPORTS_GROUP_FIELDS,
         cashback: cashbackFilter,
         labels: GROUP_FIELD_LABELS,
       }),
@@ -367,16 +358,7 @@ export function FlowDiscoveryPage() {
   // ── The displayed result's OWN identity ───────────────────────────────────
   // Read off the run, never off the form above it. `result` can be a disk-cached
   // run from an earlier session (see the rehydrate effect), so the live config is
-  // not its identity — and precision + label filter are both part of what a group
-  // binds to. A pre-echo cached result omits these; fall back to the form, which
-  // is the best available guess and matches the old behaviour exactly.
-  /** The width the RUN grouped at — `null` means it keyed exact amounts. */
-  const runWidth: number | null = useMemo(() => {
-    if (result && result.bucket_width_sol !== undefined) {
-      return result.bucket_width_sol == null ? null : tidySolDecimal(result.bucket_width_sol);
-    }
-    return exactSol ? null : tidySolDecimal(bucketWidthSol);
-  }, [result, exactSol, bucketWidthSol]);
+  // not its identity — and the label filter is part of what a group binds to.
   /** The exact-set label filter the RUN applied, or null. */
   const runIxLabels: string[] | null = useMemo(() => {
     if (result && result.ix_labels_filter !== undefined) return result.ix_labels_filter;
@@ -396,15 +378,12 @@ export function FlowDiscoveryPage() {
    *  unrelated fingerprint that merely shares the precision. Same precedence the
    *  grouped sweep uses. */
   const resolveGroupFp = useCallback(
-    (groupKey: Record<string, string>): Fingerprint | null =>
+    (groupKey: Record<string, unknown>): Fingerprint | null =>
       runScopeFp ??
-      findFingerprintForGroupKey(
-        withIxLabelsFilter(groupKey, runIxLabels),
-        fingerprints,
-        runWidth,
-        { byIdentity: fpByIdentity },
-      ),
-    [runScopeFp, runIxLabels, fingerprints, runWidth, fpByIdentity],
+      findFingerprintForGroupKey(withIxLabelsFilter(groupKey, runIxLabels), fingerprints, {
+        byIdentity: fpByIdentity,
+      }),
+    [runScopeFp, runIxLabels, fingerprints, fpByIdentity],
   );
 
   /** Group indices whose group_key identity-matches a saved fingerprint. */
@@ -677,7 +656,7 @@ export function FlowDiscoveryPage() {
         curve_only: curveOnly,
         group_by: groupBy,
         // Exact mode replaces the width outright (backend ignores it there).
-        ...(exactSol ? { exact_sol: true } : { bucket_width_sol: bucketWidthSol }),
+        ...(Object.keys(partition).length > 0 ? { partition } : {}),
         min_tokens: minTokens,
         token_cap: tokenCap,
       };
@@ -744,18 +723,11 @@ export function FlowDiscoveryPage() {
           id: targetFp.id,
           body: {
             name: targetFp.name,
-            cu_limit: targetFp.cu_limit,
-            cu_price: targetFp.cu_price,
-            init_buy_lamports: targetFp.init_buy_lamports,
-            max_cost_lamports: targetFp.max_cost_lamports,
-            spendable_lamports_in: targetFp.spendable_lamports_in,
-            first_slot_buy_lamports: targetFp.first_slot_buy_lamports,
-            first_slot_sell_lamports: targetFp.first_slot_sell_lamports,
-            bucket_size_amount: targetFp.bucket_size_amount,
-            ix_labels: targetFp.ix_labels,
-            // Every identity axis is round-tripped verbatim — a PUT replaces the row,
-            // so an omitted `wildcard` would default to false and quietly turn a
-            // match-everything fingerprint into a criterion-less one.
+            // The whole criteria map round-trips: a PUT replaces the row, so an
+            // omitted axis would silently WIDEN what this fingerprint matches. Same
+            // reason `wildcard` is sent — omitted it defaults to false, turning a
+            // match-everything row into a criterion-less one.
+            criteria: targetFp.criteria,
             wildcard: targetFp.wildcard,
             metric_config: metricConfigWithVolumePatterns(patterns),
           },
@@ -768,14 +740,13 @@ export function FlowDiscoveryPage() {
         // drops the `ix_labels` axis and arms on every token shape. Identity, name
         // and the badge all read this one resolved key, so they cannot disagree.
         const boundKey = withIxLabelsFilter(selectedGroup.group_key, runIxLabels);
+        // The key carries the window it selected, so bind is a copy — there is no
+        // precision to pass along, and so no substituted precision that could arm the
+        // bound rule on a window the card never showed.
         const fp = await bindFp({
           group_key: boundKey,
-          // Exact mode replaces the width outright (backend ignores it there).
-          // Both come from the RUN, not the form — binding a rehydrated result at
-          // the form's precision would arm on a window the card never showed.
-          ...(runWidth == null ? { exact_sol: true } : { bucket_width_sol: runWidth }),
           volume_ix_patterns: patterns,
-          name: fingerprintNameFromGroupKey(boundKey, runWidth),
+          name: fingerprintNameFromGroupKey(boundKey),
         }).unwrap();
         setTargetFpId(fp.id);
         setApplyOk(`Bound fingerprint “${fp.name}”.`);
@@ -908,12 +879,10 @@ export function FlowDiscoveryPage() {
             }
             cashbackFilter={cashbackFilter}
             onSetCashback={(v) => setField('cashbackFilter', v)}
-            bucketWidthSol={bucketWidthSol}
-            onSetBucketWidth={(n) =>
-              setField('bucketWidthSol', n <= 0 ? SOL_BUCKET_WIDTH : n)
+            partition={partition}
+            onSetPartition={(f, spec) =>
+              setField('partition', { ...partition, [f]: spec })
             }
-            exactSol={exactSol}
-            onSetExactSol={(v) => setField('exactSol', v)}
             ixLabelsText={ixLabelsFilter}
             onSetIxLabels={(v) => setField('ixLabelsFilter', v)}
             ixFilter={ixFilter}

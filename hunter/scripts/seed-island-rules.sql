@@ -51,8 +51,19 @@ DELETE FROM fingerprints   WHERE name      LIKE 'isl-%';
 -- Universe-wide scope. A fingerprint with zero configured axes never matches
 -- (`Fingerprint::has_any_criterion`), so "match everything" is one bucket axis with a
 -- 1000 SOL bucket width.
-INSERT INTO fingerprints (name, ix_labels, init_buy_lamports, bucket_size_amount)
-VALUES ('isl-ALL broad', NULL, 0, 1000.0);
+-- Universe-wide scope. A criterion-less row matches NOTHING on purpose, so "every
+-- token" is spelled out loud rather than inferred from an unconfigured row.
+INSERT INTO fingerprints (name, wildcard, criteria)
+VALUES ('isl-ALL broad', true, '{}'::jsonb);
+
+-- Absorption's fourth term is a CREATION AXIS, not a metric: `ix_count` is fixed at
+-- creation, so it selects which tokens the rule arms on. A range is inclusive on both
+-- ends, so an open low bound and a high bound of 5 is "at most five instructions".
+INSERT INTO fingerprints (name, criteria)
+VALUES (
+  'isl-plain creation (<=5 ix)',
+  '{"ix_count": {"kind": "range", "max": "5"}}'::jsonb
+);
 
 -- REFUTED - engine -26.88 SOL / 3 days on 4,658 trades, and 0 of 165 exit policies
 --   positive once the exit leg pays the same 95 ms the entry does. Kept to re-measure.
@@ -69,8 +80,7 @@ SELECT 'isl-absorption', f.id, 'paper', false, true,
   "entry": {
     "m_snapshot": {
       "time": [{"operator": ">", "value": 5}],
-      "liquidity": [{"operator": ">=", "value": 3}, {"operator": "<=", "value": 64}],
-      "ix_count": [{"operator": "<=", "value": 5}]
+      "liquidity": [{"operator": ">=", "value": 3}, {"operator": "<=", "value": 64}]
     },
     "m_flow_lifetime": { "gross_flow": [{"operator": "<=", "value": 148}] },
     "m_flow_window": [
@@ -80,7 +90,7 @@ SELECT 'isl-absorption', f.id, 'paper', false, true,
   },
   "exit": { "m_position": { "retrace": [{"operator": ">=", "value": 20}] } }
 }$json$::jsonb
-FROM fingerprints f WHERE f.name = 'isl-ALL broad';
+FROM fingerprints f WHERE f.name = 'isl-plain creation (<=5 ix)';
 
 -- Island A - continuation: buy what has ALREADY tripled and is still being bought.
 --   The inversion of the refuted impulse island, which required rise(3) <= 9.

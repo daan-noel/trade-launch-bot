@@ -7,6 +7,7 @@ import { Link } from 'react-router-dom';
 import type { ColumnDef, SortValue } from 'components/table/types';
 import { MultiSortHeader } from 'components/table/MultiSortHeader';
 import { LinkIcon } from 'components/ui/icons';
+import { AXES } from 'lib/strategy/fingerprintAxes';
 import {
   configuredIxLabels,
   IX_LABELS_FILTER_PLACEHOLDER,
@@ -46,52 +47,31 @@ const FP_SORT_AXES: FpSortAxis[] = [
     label: 'name',
     sortValue: (fp, id) => fp?.name || id.slice(0, 8),
   },
-  {
-    key: 'fp_cu_limit',
-    label: 'cu_limit',
-    sortValue: (fp) => fp?.cu_limit ?? null,
-  },
-  {
-    key: 'fp_cu_price',
-    label: 'cu_price',
-    sortValue: (fp) => fp?.cu_price ?? null,
-  },
-  {
-    key: 'fp_init',
-    label: 'init',
-    sortValue: (fp) => fp?.init_buy_lamports ?? null,
-  },
-  {
-    key: 'fp_max',
-    label: 'max',
-    sortValue: (fp) => fp?.max_cost_lamports ?? null,
-  },
-  {
-    key: 'fp_spend',
-    label: 'spend',
-    sortValue: (fp) => fp?.spendable_lamports_in ?? null,
-  },
-  {
-    key: 'fp_fs_buy',
-    label: 'fs_buy',
-    sortValue: (fp) => fp?.first_slot_buy_lamports ?? null,
-  },
-  {
-    key: 'fp_fs_sell',
-    label: 'fs_sell',
-    sortValue: (fp) => fp?.first_slot_sell_lamports ?? null,
-  },
-  {
-    key: 'fp_ix',
-    label: 'ix',
-    sortValue: (fp) => configuredIxLabels(fp?.ix_labels)?.length ?? null,
-  },
-  {
-    key: 'fp_bkt',
-    label: 'bkt',
-    sortValue: (fp) => fp?.bucket_size_amount ?? null,
-  },
+  // One sort axis per registry axis, generated — so a new axis is sortable in the
+  // rules header without an edit. A numeric axis sorts by its LOW bound (the high
+  // one when the gate is open below): a window needs one number to order by, and
+  // its start is where a reader scanning the column expects it.
+  ...AXES.map((def) => ({
+    key: `fp_${def.id}`,
+    label: def.chip,
+    title: `${def.label} — ${def.definition}`,
+    sortValue: (fp: Fingerprint | undefined) => {
+      const p = (fp?.criteria ?? {})[def.id];
+      if (p == null) return null;
+      if (p.kind === 'sequence') return configuredIxLabels(p.labels)?.length ?? null;
+      const b = p.min ?? p.max;
+      if (b == null) return null;
+      const n = Number(b);
+      return Number.isFinite(n) ? n : null;
+    },
+  })),
 ];
+
+/** A fingerprint's configured label sequence, or `null` when the axis is unset. */
+function fpLabels(fp: Fingerprint | undefined): string[] | null {
+  const p = (fp?.criteria ?? {}).ix_labels;
+  return p?.kind === 'sequence' ? configuredIxLabels(p.labels) : null;
+}
 
 export type FingerprintRuleRow = { id: string; fingerprint_id: string };
 
@@ -135,7 +115,7 @@ export function buildFingerprintRuleColumns<R extends FingerprintRuleRow>(
     // full fingerprint search text (name / axes / pretty labels).
     filterMatch: (r, raw) => {
       if (isIxLabelJsonFilter(raw)) {
-        return ixLabelsMatchFilter(fpOf(r)?.ix_labels, raw);
+        return ixLabelsMatchFilter(fpLabels(fpOf(r)), raw);
       }
       return fingerprintParamsSearchText(fpOf(r), r.fingerprint_id)
         .toLowerCase()

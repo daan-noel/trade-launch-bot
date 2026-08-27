@@ -26,7 +26,7 @@ use crate::event::{
     Portion, PositionDelta, PositionStatus, RuleId, TradeMode,
 };
 use crate::fingerprint::{match_all, MatchPhase};
-use crate::grouping::{TokenFingerprint, LAMPORTS_PER_SOL_F64};
+use crate::grouping::{lamports_to_sol, TokenFingerprint, LAMPORTS_PER_SOL_F64};
 use crate::metrics::Ts;
 use crate::state::{EngineState, PositionRef, Settled, TokenState};
 
@@ -83,17 +83,20 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                 return fx; // duplicate creation — idempotent
             }
             let mut track = state.new_track(at);
+            let mut tf = *fp;
             if let Some(h) = creator_wallet_hash {
                 track.seed_creator(h);
-                // Strictly-prior count, and the increment happens here so the tally
-                // advances exactly once per creation — the duplicate-creation guard
-                // above has already returned, so a replayed event cannot double-count.
-                track.seed_prior_launches(state.take_prior_launches(h));
+                // Strictly-prior count, stamped onto the OBSERVED axes before the
+                // match below reads them — `prior_launches` is an engine tally, not a
+                // `tokens` column, so this is the only place it can enter identity.
+                // The increment happens here so the tally advances exactly once per
+                // creation: the duplicate-creation guard above has already returned,
+                // so a replayed event cannot double-count.
+                tf.prior_launches = Some(state.take_prior_launches(h));
             }
-            track.seed_ix_count(fp.ix_labels.len());
             let mut token = TokenState {
                 created_at: at,
-                tf: *fp,
+                tf,
                 identity,
                 track,
                 last_meaningful_at: None,
@@ -137,13 +140,14 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
             if !token.first_slot_settled {
                 token.first_slot_settled = true;
-                token.tf.first_slot_buy_sol = Some(buy_lamports as f64 / LAMPORTS_PER_SOL_F64);
-                token.tf.first_slot_sell_sol = Some(sell_lamports as f64 / LAMPORTS_PER_SOL_F64);
-                // The metric reads the SAME number the fingerprint buckets — seeded
-                // here rather than at `TokenCreated` because this is where it exists.
-                // A rule gated on `m_snapshot.first_slot_buy` therefore reads NaN (and
-                // cannot fire) until this event, exactly like a `PendingFirstSlot` arm.
-                token.track.seed_first_slot_buy(buy_lamports as f64 / LAMPORTS_PER_SOL_F64);
+                token.tf.first_slot_buy_lamports = Some(buy_lamports);
+                token.tf.first_slot_sell_lamports = Some(sell_lamports);
+                // The metric reads the SAME number the fingerprint axis ranges over —
+                // seeded here rather than at `TokenCreated` because this is where it
+                // exists. A rule gated on `m_snapshot.first_slot_buy` therefore reads
+                // NaN (and cannot fire) until this event, exactly like a
+                // `PendingFirstSlot` arm.
+                token.track.seed_first_slot_buy(lamports_to_sol(buy_lamports));
                 let hits = match_all(&state.fps, &token.tf, MatchPhase::Full);
                 let pending: SmallVec<[RuleId; 4]> = token
                     .arms

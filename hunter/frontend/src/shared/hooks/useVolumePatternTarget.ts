@@ -199,18 +199,11 @@ export function useVolumePatternTarget({
         id: target.id,
         body: {
           name: target.name,
-          cu_limit: target.cu_limit,
-          cu_price: target.cu_price,
-          init_buy_lamports: target.init_buy_lamports,
-          max_cost_lamports: target.max_cost_lamports,
-          spendable_lamports_in: target.spendable_lamports_in,
-          first_slot_buy_lamports: target.first_slot_buy_lamports,
-          first_slot_sell_lamports: target.first_slot_sell_lamports,
-          bucket_size_amount: target.bucket_size_amount,
-          ix_labels: target.ix_labels,
-          // Round-tripped with the other identity axes: a PUT replaces the row, and
-          // an omitted `wildcard` defaults to false — which the write edge then
-          // rejects as criterion-less rather than silently narrowing the match.
+          // The whole criteria map is round-tripped: a PUT replaces the row, so an
+          // omitted axis would silently WIDEN what this fingerprint matches. Same
+          // reason `wildcard` is sent — omitted it defaults to false, which the
+          // write edge then rejects as criterion-less.
+          criteria: target.criteria,
           wildcard: target.wildcard,
           metric_config: withVolumePatterns(target.metric_config, next),
         },

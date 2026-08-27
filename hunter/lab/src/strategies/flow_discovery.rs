@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::sweep::corpus::{Corpus, CorpusToken};
 use crate::sweep::grouped_engine::partition;
-use crate::sweep::grouping::{GroupField, GroupKey, SolPrecision, SOL_BUCKET_WIDTH};
+use crate::sweep::grouping::{GroupKey, GroupPlan};
 
 /// Cap ranked structures returned per group (wire + UI).
 pub const MAX_STRUCTURES_PER_GROUP: usize = 64;
@@ -27,10 +27,10 @@ pub const DEFAULT_MIN_TOKENS: usize = 3;
 
 #[derive(Clone, Debug)]
 pub struct DiscoveryConfig {
-    pub group_by: Vec<GroupField>,
-    /// Bucket width for the SOL group axes, or `None` to group on exact amounts
-    /// (`SolPrecision::Exact`). `None` -- not 0 -- is how "not bucketed" is spelled.
-    pub bucket_width_sol: Option<f64>,
+    /// Which fields the corpus is partitioned by, and how each is binned. Explicit
+    /// edges, so the windows the groups were scored over travel with the result
+    /// instead of being re-derived from a width.
+    pub plan: GroupPlan,
     pub min_tokens: usize,
     pub min_structure_sol: f64,
     pub lift_ambiguous: f64,
@@ -40,8 +40,7 @@ pub struct DiscoveryConfig {
 impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self {
-            group_by: Vec::new(),
-            bucket_width_sol: Some(SOL_BUCKET_WIDTH),
+            plan: GroupPlan::default(),
             min_tokens: DEFAULT_MIN_TOKENS,
             min_structure_sol: MIN_STRUCTURE_SOL,
             lift_ambiguous: LIFT_AMBIGUOUS,
@@ -171,7 +170,7 @@ pub struct DiscoveryGroup {
 /// their defaults and the handler stamps them before caching. They exist because
 /// the page rehydrates a disk-cached result on mount, at which point its form
 /// state is whatever the user last left it, not what the run used. Reading the
-/// precision or the label filter off the form to rebuild a fingerprint identity
+/// partition or the label filter off the form to rebuild a fingerprint identity
 /// silently attributes a card to the wrong fingerprint (or binds one that drops
 /// an axis). The grouped sweep gets this right by reading its persisted run row;
 /// this is the same contract for a run that lives only in the cache.
@@ -182,11 +181,11 @@ pub struct DiscoveryGroup {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DiscoveryResult {
     pub groups: Vec<DiscoveryGroup>,
-    /// Bucket width (SOL) the continuous SOL group axes were binned at, or `None`
-    /// when the run keyed them on their **exact** amount ([`SolPrecision::Exact`]).
-    /// `None` is the mode, never a `0` width — see [`SolPrecision`].
-    #[serde(default = "default_result_width")]
-    pub bucket_width_sol: Option<f64>,
+    /// The partition the run scored over. Echoed back because the page rehydrates a
+    /// disk-cached result on mount, when its form state is whatever the user last
+    /// left it rather than what the run used.
+    #[serde(default)]
+    pub plan: GroupPlan,
     /// The exact-set instruction-label corpus filter the run applied, or `None`.
     /// Part of what selected these groups, so it is part of the fingerprint
     /// identity a group binds to — the group key never carries it (the form
@@ -197,13 +196,6 @@ pub struct DiscoveryResult {
     /// unscoped run. Authoritative attribution for every group in the run.
     #[serde(default)]
     pub fingerprint_id: Option<uuid::Uuid>,
-}
-
-/// A pre-identity cached result predates exact mode, so it was bucketed at the
-/// default width — not exact. Spelled out because `Option::default()` is `None`,
-/// which [`SolPrecision::from_width`] reads as `Exact`: the wrong answer here.
-fn default_result_width() -> Option<f64> {
-    Some(SOL_BUCKET_WIDTH)
 }
 
 /// See [`DiscoveryGroup::lift_defined`] — a pre-field cached result is read as
@@ -230,9 +222,6 @@ pub fn score_corpus(
     cfg: &DiscoveryConfig,
     cancel: Option<&AtomicBool>,
 ) -> Result<DiscoveryResult, Cancelled> {
-    // One reader for the stored width — `None` (or a junk value) means exact.
-    let precision = SolPrecision::from_width(cfg.bucket_width_sol);
-
     // Window-wide denominators for lift (after filters, before group split).
     let mut window_gross_by_struct: HashMap<u64, f64> = HashMap::new();
     let mut window_gross_total = 0.0_f64;
@@ -254,7 +243,7 @@ pub fn score_corpus(
         }
     }
 
-    let parts = partition(corpus, &cfg.group_by, precision);
+    let parts = partition(corpus, &cfg.plan);
     let mut groups: Vec<DiscoveryGroup> = Vec::new();
 
     for (key, idxs) in parts {
@@ -285,11 +274,11 @@ pub fn score_corpus(
     groups.sort_by_key(|g| std::cmp::Reverse(g.n_tokens));
     Ok(DiscoveryResult {
         groups,
-        // Stamped from the very `cfg` that partitioned above, so the echoed
-        // precision cannot drift from the one the group keys were rendered at.
-        // The corpus-selection fields are the handler's to fill — this fn never
-        // sees the filter or the scope.
-        bucket_width_sol: cfg.bucket_width_sol,
+        // Stamped from the very `cfg` that partitioned above, so the echoed plan
+        // cannot drift from the one the group keys were rendered under. The
+        // corpus-selection fields are the handler's to fill — this fn never sees
+        // the filter or the scope.
+        plan: cfg.plan.clone(),
         ix_labels_filter: None,
         fingerprint_id: None,
     })
@@ -647,6 +636,16 @@ mod tests {
         }
     }
 
+    /// A group's `cu_limit` key as text. The key carries the WINDOW the group
+    /// selected — a distinct partition pins it, so `min` is the value.
+    fn cu_limit_of(g: &DiscoveryGroup) -> Option<String> {
+        g.group_key
+            .get("cu_limit")
+            .and_then(|v| v.get("min"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+
     fn tok(mint: &str, cu: i64, trades: Vec<CorpusTrade>) -> CorpusToken {
         CorpusToken {
             mint: mint.into(),
@@ -654,16 +653,8 @@ mod tests {
             created_at: Utc::now(),
             trades: Arc::new(trades),
             fp: TokenFingerprint {
-                token_program_id: None,
-                initial_buy_sol: None,
-                cu_limit: Some(cu),
-                cu_price: None,
-                is_cashback_enabled: false,
-                max_cost_lamports: None,
-                spendable_lamports_in: None,
-                first_slot_buy_sol: None,
-                first_slot_sell_sol: None,
-                ix_labels: vec![],
+                cu_limit: Some(cu as u64),
+                ..Default::default()
             },
             identity: None,
             peak_after: None,
@@ -727,7 +718,7 @@ mod tests {
             candidates_capped: false,
         };
         let cfg = DiscoveryConfig {
-            group_by: vec![GroupField::CuLimit],
+            plan: GroupPlan::distinct(&[crate::sweep::grouping::GroupField::CuLimit]),
             min_tokens: 3,
             ..DiscoveryConfig::default()
         };
@@ -735,7 +726,7 @@ mod tests {
         let g = result
             .groups
             .iter()
-            .find(|g| g.group_key.get("cu_limit").and_then(|v| v.as_str()) == Some("200000"))
+            .find(|g| cu_limit_of(g) == Some("200000".to_string()))
             .expect("200k group");
         assert!(g.n_tokens >= 3);
         let top = &g.structures[0];
@@ -800,7 +791,7 @@ mod tests {
         // One structure row survives ranking — the group-wide list is now blind to
         // the dust shape, exactly as the 64-row cap is blind on a real run.
         let cfg = DiscoveryConfig {
-            group_by: vec![GroupField::CuLimit],
+            plan: GroupPlan::distinct(&[crate::sweep::grouping::GroupField::CuLimit]),
             min_tokens: 3,
             max_structures_per_group: 1,
             ..DiscoveryConfig::default()
@@ -885,7 +876,7 @@ mod tests {
             candidates_capped: false,
         };
         let cfg = DiscoveryConfig {
-            group_by: vec![GroupField::CuLimit],
+            plan: GroupPlan::distinct(&[crate::sweep::grouping::GroupField::CuLimit]),
             min_tokens: 3,
             ..DiscoveryConfig::default()
         };
@@ -893,7 +884,7 @@ mod tests {
         let g = result
             .groups
             .iter()
-            .find(|g| g.group_key.get("cu_limit").and_then(|v| v.as_str()) == Some("200000"))
+            .find(|g| cu_limit_of(g) == Some("200000".to_string()))
             .expect("group");
         assert!(g.ambiguity, "lift≈1 should warn");
         let buy = g
@@ -991,7 +982,7 @@ mod tests {
             candidates_capped: false,
         };
         let cfg = DiscoveryConfig {
-            group_by: vec![GroupField::CuLimit],
+            plan: GroupPlan::distinct(&[crate::sweep::grouping::GroupField::CuLimit]),
             min_tokens: 3,
             ..DiscoveryConfig::default()
         };
@@ -1002,7 +993,7 @@ mod tests {
             let g = result
                 .groups
                 .iter()
-                .find(|g| g.group_key.get("cu_limit").and_then(|v| v.as_str()) == Some(cu))
+                .find(|g| cu_limit_of(g).as_deref() == Some(cu))
                 .unwrap_or_else(|| panic!("missing group {cu}"));
             let expect_amb = fix["expected_ambiguous"].as_bool().unwrap();
             if expect_amb {
@@ -1060,7 +1051,7 @@ mod tests {
             candidates_capped: false,
         };
         let cfg = DiscoveryConfig {
-            group_by: vec![GroupField::CuLimit],
+            plan: GroupPlan::distinct(&[crate::sweep::grouping::GroupField::CuLimit]),
             min_tokens: 3,
             ..DiscoveryConfig::default()
         };
@@ -1110,7 +1101,7 @@ mod tests {
         };
         // No group-by ⇒ one ALL group over every token — the shape a scoped run takes.
         let cfg = DiscoveryConfig {
-            group_by: vec![],
+            plan: GroupPlan::default(),
             min_tokens: 3,
             ..DiscoveryConfig::default()
         };
@@ -1135,7 +1126,7 @@ mod tests {
             }
         }
         let cfg = DiscoveryConfig {
-            group_by: vec![GroupField::CuLimit],
+            plan: GroupPlan::distinct(&[crate::sweep::grouping::GroupField::CuLimit]),
             min_tokens: 1,
             ..DiscoveryConfig::default()
         };
@@ -1223,7 +1214,7 @@ mod tests {
             candidates_capped: false,
         };
         let cfg = DiscoveryConfig {
-            group_by: vec![GroupField::CuLimit],
+            plan: GroupPlan::distinct(&[crate::sweep::grouping::GroupField::CuLimit]),
             min_tokens: 3,
             ..DiscoveryConfig::default()
         };

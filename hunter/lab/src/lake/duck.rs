@@ -799,19 +799,26 @@ const FP_COLUMN_COUNT: usize = 10;
 /// [`TokenFingerprint`].
 fn fp_from_row(row: &duckdb::Row<'_>, base: usize) -> duckdb::Result<TokenFingerprint> {
     let ix_labels_json: Option<String> = row.get(base + 9)?;
+    // The lake's SOL columns are human `f64`; identity is integer, so they convert
+    // here — the one boundary seam, exactly as `observed_axes` converts the PG ones.
+    let sol = |v: Option<f64>| v.map(hunter_engine::grouping::sol_to_lamports);
     Ok(TokenFingerprint {
         token_program_id: row.get(base)?,
-        initial_buy_sol: row.get(base + 1)?,
+        init_buy_lamports: sol(row.get(base + 1)?),
         cu_limit: row.get(base + 2)?,
         cu_price: row.get(base + 3)?,
         is_cashback_enabled: row.get::<_, Option<bool>>(base + 4)?.unwrap_or(false),
         max_cost_lamports: row.get(base + 5)?,
         spendable_lamports_in: row.get(base + 6)?,
-        first_slot_buy_sol: row.get(base + 7)?,
-        first_slot_sell_sol: row.get(base + 8)?,
+        first_slot_buy_lamports: sol(row.get(base + 7)?),
+        first_slot_sell_lamports: sol(row.get(base + 8)?),
         ix_labels: ix_labels_json
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default(),
+        // The lake's tokens dimension carries no creator column, so a corpus path
+        // cannot know this. `None` fails a configured axis closed, which is what
+        // keeps a `prior_launches` rule from being swept blind.
+        prior_launches: None,
     })
 }
 

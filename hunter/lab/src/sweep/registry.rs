@@ -19,7 +19,7 @@ use crate::models::grouped_sweep::ComboTokenResult;
 use crate::storage::repositories::grouped_sweep_repo::GroupedSweepTables;
 use crate::sweep::corpus::{Corpus, CorpusToken};
 use crate::sweep::grouped_engine::{run_grouped_with_refine, CoverageFloor, GroupResult, GroupSink};
-use crate::sweep::grouping::{GroupField, SolPrecision};
+use crate::sweep::grouping::GroupPlan;
 use crate::sweep::progress::SweepObserver;
 use crate::sweep::generic::{AxesModel, AxesRequest, GenericSweepStrategy, Pricing};
 use crate::sweep::strategy::{ExitCode, ParamSpace, RefineSpec, SweepMethod};
@@ -609,11 +609,10 @@ pub async fn run_grouped(
     method: SweepMethod,
     refine: Option<RefineSpec>,
     corpus: Corpus,
-    fields: Vec<GroupField>,
-    // Per-run bucket width (SOL) for the continuous SOL grouping fields — the same
-    // width the created rule's matcher + the creation-stats dashboard use, so
-    // "what you swept = what you run". Discrete fields ignore it.
-    precision: SolPrecision,
+    // How each grouped field is partitioned — the same plan the creation-stats
+    // dashboard runs, so "what you swept = what you run". A group's key carries the
+    // window it selected, which is exactly the predicate a promoted rule matches on.
+    group_plan: GroupPlan,
     min_tokens: usize,
     floor: CoverageFloor,
     max_combos: Option<usize>,
@@ -633,7 +632,7 @@ pub async fn run_grouped(
     match strategy_id {
         "generic" => {
             sweep_generic(
-                axes_json, method, refine, corpus, fields, precision, min_tokens, floor, max_combos,
+                axes_json, method, refine, corpus, group_plan, min_tokens, floor, max_combos,
                 pricing, volume_ix_patterns, scale_out_pass2, coarse_observer, observer, sink,
             )
             .await
@@ -674,8 +673,7 @@ async fn sweep_generic(
     method: SweepMethod,
     refine: Option<RefineSpec>,
     corpus: Corpus,
-    fields: Vec<GroupField>,
-    precision: SolPrecision,
+    group_plan: GroupPlan,
     min_tokens: usize,
     floor: CoverageFloor,
     max_combos: Option<usize>,
@@ -831,7 +829,7 @@ async fn sweep_generic(
                 .map_err(|e| anyhow!("rayon pool build failed: {e}"))?;
             pool.install(|| {
                 let (final_params, groups) = run_grouped_with_refine(
-                    &strategy, params, refine, &corpus, &fields, precision, min_tokens, floor, cap,
+                    &strategy, params, refine, &corpus, &group_plan, min_tokens, floor, cap,
                     coarse_observer.as_ref(), observer.as_ref(), sink.as_ref(),
                 )?;
                 Ok((final_params.len(), groups))

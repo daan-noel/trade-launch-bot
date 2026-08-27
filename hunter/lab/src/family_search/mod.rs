@@ -644,6 +644,7 @@ pub fn check_cancelled(observer: &dyn SweepObserver) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use hunter_engine::fingerprint::Criteria;
     use super::*;
     use crate::family_search::fixtures::pricing;
     use hunter_engine::rule_params::RuleParams;
@@ -662,18 +663,10 @@ mod tests {
 
     fn fp() -> EngineFingerprint {
         EngineFingerprint {
-            wildcard: false,
             id: FingerprintId(Uuid::nil()),
-            cu_limit: None,
-            cu_price: None,
-            ix_labels: None,
-            init_buy_lamports: None,
-            max_cost_lamports: None,
-            spendable_lamports_in: None,
-            first_slot_buy_lamports: None,
-            first_slot_sell_lamports: None,
-            bucket_size_amount: Some(0.1),
             metric_config: serde_json::json!({}),
+            wildcard: false,
+            criteria: Criteria::new(),
         }
     }
 

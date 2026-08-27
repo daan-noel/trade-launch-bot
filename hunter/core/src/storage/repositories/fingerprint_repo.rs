@@ -1,17 +1,18 @@
-//! `FingerprintRepo` — CRUD over the `fingerprints` table (0004 redesign).
+//! `FingerprintRepo` — CRUD over the `fingerprints` table.
 //!
 //! A fingerprint is a token-creation shape shared by many rules (see
-//! [`crate::models::Fingerprint`]). `find_or_create` is the sweep-promotion
-//! entry point: promoting a winning group reuses an identity-identical row
-//! instead of minting duplicates. `name` is a label (`Fingerprint::auto_name`
-//! when blank/legacy); identity ignores it. `list`/`find` rewrite retired
-//! auto-labels (`sweep {id} · group N`, `c · …`) in place.
+//! [`crate::models::Fingerprint`]). `find_or_create` is the sweep-promotion entry
+//! point: promoting a winning group reuses an identity-identical row instead of
+//! minting duplicates. `name` is a label ([`Fingerprint::auto_name`] when
+//! blank/stale); identity ignores it. `list`/`find` rewrite stale auto-labels in
+//! place.
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::config::constants::tidy_sol_decimal;
+use hunter_engine::fingerprint::Criteria;
+
 use crate::models::Fingerprint;
 
 #[derive(Clone)]
@@ -24,15 +25,7 @@ pub struct FingerprintRepo {
 struct FingerprintDbRow {
     id: Uuid,
     name: String,
-    cu_limit: Option<i64>,
-    cu_price: Option<i64>,
-    init_buy_lamports: Option<i64>,
-    max_cost_lamports: Option<i64>,
-    spendable_lamports_in: Option<i64>,
-    first_slot_buy_lamports: Option<i64>,
-    first_slot_sell_lamports: Option<i64>,
-    bucket_size_amount: Option<f64>,
-    ix_labels: Option<Vec<String>>,
+    criteria: sqlx::types::Json<Criteria>,
     wildcard: bool,
     metric_config: sqlx::types::Json<serde_json::Value>,
     created_at: DateTime<Utc>,
@@ -44,15 +37,7 @@ impl From<FingerprintDbRow> for Fingerprint {
         Self {
             id: r.id,
             name: r.name,
-            cu_limit: r.cu_limit,
-            cu_price: r.cu_price,
-            init_buy_lamports: r.init_buy_lamports,
-            max_cost_lamports: r.max_cost_lamports,
-            spendable_lamports_in: r.spendable_lamports_in,
-            first_slot_buy_lamports: r.first_slot_buy_lamports,
-            first_slot_sell_lamports: r.first_slot_sell_lamports,
-            bucket_size_amount: r.bucket_size_amount.map(tidy_sol_decimal),
-            ix_labels: r.ix_labels,
+            criteria: r.criteria.0,
             wildcard: r.wildcard,
             metric_config: r.metric_config.0,
             created_at: r.created_at,
@@ -62,30 +47,19 @@ impl From<FingerprintDbRow> for Fingerprint {
 }
 
 // Explicit column list (struct order) — not `SELECT *`.
-const FINGERPRINT_COLS: &str = "id, name, cu_limit, cu_price, init_buy_lamports, \
-    max_cost_lamports, spendable_lamports_in, first_slot_buy_lamports, \
-    first_slot_sell_lamports, bucket_size_amount, ix_labels, wildcard, metric_config, \
-    created_at, updated_at";
+const FINGERPRINT_COLS: &str =
+    "id, name, criteria, wildcard, metric_config, created_at, updated_at";
 
-/// The identity predicate for [`FingerprintRepo::find_or_create`]: every match
-/// axis equal, with `NULL` (= "not part of identity") treated as a value
-/// (`IS NOT DISTINCT FROM`). `name` is a label, not identity.
+/// The identity predicate for [`FingerprintRepo::find_or_create`]: the same
+/// criteria and the same wildcard flag. `name` and `metric_config` are labels, not
+/// identity.
 ///
-/// `bucket_size_amount` is bound as `Fingerprint::effective_bucket_size_amount`,
-/// never the raw field — a width carried by a row with no SOL axis reaches no
-/// match, so keying on it would fork identity and mint a duplicate of a row the
-/// engine already matches identically. Stored rows are canonical (the write edges
-/// below and the `0006` CHECK), so both sides of this comparison agree.
-const IDENTITY_WHERE: &str = "cu_limit IS NOT DISTINCT FROM $1 \
-    AND cu_price IS NOT DISTINCT FROM $2 \
-    AND init_buy_lamports IS NOT DISTINCT FROM $3 \
-    AND max_cost_lamports IS NOT DISTINCT FROM $4 \
-    AND spendable_lamports_in IS NOT DISTINCT FROM $5 \
-    AND first_slot_buy_lamports IS NOT DISTINCT FROM $6 \
-    AND first_slot_sell_lamports IS NOT DISTINCT FROM $7 \
-    AND bucket_size_amount IS NOT DISTINCT FROM $8 \
-    AND ix_labels IS NOT DISTINCT FROM $9 \
-    AND wildcard = $10";
+/// One `jsonb` equality replaces the per-axis column chain this used to be —
+/// Postgres normalises `jsonb` key order and numeric text, so the comparison is
+/// canonical without anyone canonicalising, and an axis added to the registry needs
+/// no edit here. The `fingerprints_identity_uniq` index enforces the same key, so a
+/// duplicate cannot be created by a racing writer either.
+const IDENTITY_WHERE: &str = "criteria = $1::jsonb AND wildcard = $2";
 
 impl FingerprintRepo {
     pub fn new(pool: PgPool) -> Self {
@@ -94,30 +68,20 @@ impl FingerprintRepo {
 
     /// Persist a new fingerprint. [`Fingerprint::validate`] runs first as the
     /// backstop for non-HTTP writers (sweep promotion via [`Self::find_or_create`]),
-    /// so a bad `bucket_size_amount` can't reach the matcher through a side door.
+    /// so an unsatisfiable or criterion-less row can't reach the matcher through a
+    /// side door.
     pub async fn insert(&self, fp: &Fingerprint) -> anyhow::Result<()> {
         fp.validate().map_err(|e| anyhow::anyhow!("invalid fingerprint: {e}"))?;
         let name = stored_name(fp);
         sqlx::query(
             r#"
-            INSERT INTO fingerprints
-                (id, name, cu_limit, cu_price, init_buy_lamports, max_cost_lamports,
-                 spendable_lamports_in, first_slot_buy_lamports, first_slot_sell_lamports,
-                 bucket_size_amount, ix_labels, wildcard, metric_config, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            INSERT INTO fingerprints (id, name, criteria, wildcard, metric_config, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             "#,
         )
         .bind(fp.id)
         .bind(&name)
-        .bind(fp.cu_limit)
-        .bind(fp.cu_price)
-        .bind(fp.init_buy_lamports)
-        .bind(fp.max_cost_lamports)
-        .bind(fp.spendable_lamports_in)
-        .bind(fp.first_slot_buy_lamports)
-        .bind(fp.first_slot_sell_lamports)
-        .bind(fp.effective_bucket_size_amount().map(tidy_sol_decimal))
-        .bind(fp.ix_labels.as_ref())
+        .bind(sqlx::types::Json(&fp.criteria))
         .bind(fp.wildcard)
         .bind(sqlx::types::Json(&fp.metric_config))
         .bind(fp.created_at)
@@ -127,9 +91,9 @@ impl FingerprintRepo {
         Ok(())
     }
 
-    /// Overwrite a fingerprint's axes. Validated exactly like [`Self::insert`] —
-    /// an edit can otherwise strip a live fingerprint to zero criteria (silently
-    /// killing every rule bound to it) or to a degenerate bucket width.
+    /// Overwrite a fingerprint's criteria. Validated exactly like [`Self::insert`]
+    /// — an edit can otherwise strip a live fingerprint to zero criteria (silently
+    /// killing every rule bound to it) or to an unsatisfiable range.
     pub async fn update(&self, fp: &Fingerprint) -> anyhow::Result<()> {
         fp.validate().map_err(|e| anyhow::anyhow!("invalid fingerprint: {e}"))?;
         let name = stored_name(fp);
@@ -137,32 +101,16 @@ impl FingerprintRepo {
             r#"
             UPDATE fingerprints SET
                 name = $2,
-                cu_limit = $3,
-                cu_price = $4,
-                init_buy_lamports = $5,
-                max_cost_lamports = $6,
-                spendable_lamports_in = $7,
-                first_slot_buy_lamports = $8,
-                first_slot_sell_lamports = $9,
-                bucket_size_amount = $10,
-                ix_labels = $11,
-                wildcard = $12,
-                metric_config = $13,
+                criteria = $3,
+                wildcard = $4,
+                metric_config = $5,
                 updated_at = now()
             WHERE id = $1
             "#,
         )
         .bind(fp.id)
         .bind(&name)
-        .bind(fp.cu_limit)
-        .bind(fp.cu_price)
-        .bind(fp.init_buy_lamports)
-        .bind(fp.max_cost_lamports)
-        .bind(fp.spendable_lamports_in)
-        .bind(fp.first_slot_buy_lamports)
-        .bind(fp.first_slot_sell_lamports)
-        .bind(fp.effective_bucket_size_amount().map(tidy_sol_decimal))
-        .bind(fp.ix_labels.as_ref())
+        .bind(sqlx::types::Json(&fp.criteria))
         .bind(fp.wildcard)
         .bind(sqlx::types::Json(&fp.metric_config))
         .execute(&self.pool)
@@ -216,15 +164,7 @@ impl FingerprintRepo {
         let existing = sqlx::query_as::<_, FingerprintDbRow>(&format!(
             "SELECT {FINGERPRINT_COLS} FROM fingerprints WHERE {IDENTITY_WHERE} LIMIT 1"
         ))
-        .bind(fp.cu_limit)
-        .bind(fp.cu_price)
-        .bind(fp.init_buy_lamports)
-        .bind(fp.max_cost_lamports)
-        .bind(fp.spendable_lamports_in)
-        .bind(fp.first_slot_buy_lamports)
-        .bind(fp.first_slot_sell_lamports)
-        .bind(fp.effective_bucket_size_amount().map(tidy_sol_decimal))
-        .bind(fp.ix_labels.as_ref())
+        .bind(sqlx::types::Json(&fp.criteria))
         .bind(fp.wildcard)
         .fetch_optional(&self.pool)
         .await?;
@@ -239,9 +179,10 @@ impl FingerprintRepo {
         Ok(fresh)
     }
 
-    /// Persist [`Fingerprint::auto_name`] over a retired auto-label. Nicknames
-    /// stay. One-shot backfill: after the first list/find, leftover `sweep … ·
-    /// group N` / `c · …` rows are gone.
+    /// Persist [`Fingerprint::auto_name`] over a stale auto-label. Nicknames stay.
+    /// One-shot, self-healing backfill: a name written in an older grammar (a
+    /// retired prefix, or a retired chip such as the bucket width) no longer parses
+    /// as generated-and-current, so the first list/find rewrites it.
     async fn persist_legacy_relabel(&self, fp: &mut Fingerprint) -> anyhow::Result<()> {
         if !fp.has_stale_auto_name() {
             return Ok(());

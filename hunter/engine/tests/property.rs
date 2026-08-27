@@ -16,7 +16,7 @@ use hunter_engine::cap::Cap;
 use hunter_engine::event::{
     Effect, Event, Fill, FillFailReason, IntentId, LoadedRule, Mint, PositionId, RuleId, TradeMode,
 };
-use hunter_engine::fingerprint::{Fingerprint, FingerprintId};
+use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria, Fingerprint, FingerprintId};
 use hunter_engine::grouping::TokenFingerprint;
 use hunter_engine::metrics::{Side, TradeLite, Ts};
 use hunter_engine::reduce::reduce;
@@ -53,17 +53,11 @@ fn rid(n: u128) -> RuleId {
 
 fn cu_fp(id: u128) -> Fingerprint {
     Fingerprint {
-        wildcard: false,
         id: fid(id),
-        cu_limit: Some(200_000),
-        cu_price: None,
-        ix_labels: None,
-        init_buy_lamports: None,
-        max_cost_lamports: None,
-        spendable_lamports_in: None,
-        first_slot_buy_lamports: Some(1_000_000_000),
-        first_slot_sell_lamports: None,
-        bucket_size_amount: Some(0.1),
+        wildcard: false,
+        criteria: Criteria::new()
+            .with(AxisId::CuLimit, AxisPredicate::exact(200_000))
+            .with(AxisId::FirstSlotBuyLamports, AxisPredicate::exact(1_000_000_000)),
         metric_config: serde_json::json!({}),
     }
 }
@@ -102,7 +96,7 @@ fn rules() -> Vec<LoadedRule> {
 
 /// A fingerprint set with both an instant-only and a first-slot fingerprint.
 fn fps() -> Vec<Fingerprint> {
-    let instant = Fingerprint { first_slot_buy_lamports: None, ..cu_fp(2) };
+    let instant = { let mut f = cu_fp(2); f.criteria.remove(AxisId::FirstSlotBuyLamports); f };
     vec![cu_fp(1), instant]
 }
 

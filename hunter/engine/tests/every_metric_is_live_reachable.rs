@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use chrono::{Duration, TimeZone, Utc};
 use hunter_engine::event::{Effect, Event, Fill, LoadedRule, Mint, RuleId, TradeMode};
-use hunter_engine::fingerprint::{Fingerprint, FingerprintId};
+use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria, Fingerprint, FingerprintId};
 use hunter_engine::grouping::TokenFingerprint;
 use hunter_engine::metrics::{
     flow_burst, flow_split, GroupSpec, MetricKind, MetricScope, MetricSpec, Side, TradeLite, Ts,
@@ -45,17 +45,9 @@ const VOL_LABELS: [&str; 1] = ["Pump.Fun: Buy"];
 /// have a classifier and do not read `NaN` for want of config.
 fn probe_fp() -> Fingerprint {
     Fingerprint {
-        wildcard: true,
         id: FingerprintId(Uuid::from_u128(FP)),
-        cu_limit: None,
-        cu_price: None,
-        ix_labels: None,
-        init_buy_lamports: None,
-        max_cost_lamports: None,
-        spendable_lamports_in: None,
-        first_slot_buy_lamports: None,
-        first_slot_sell_lamports: None,
-        bucket_size_amount: Some(0.1),
+        wildcard: true,
+        criteria: Criteria::new(),
         metric_config: json!({
             "m_flow_split": { "volume_ix_patterns": [VOL_LABELS] }
         }),
@@ -191,7 +183,6 @@ fn trade(
 fn drive(state: &mut EngineState, mint: &Mint) -> Vec<Effect> {
     let fp = Box::new(TokenFingerprint {
         cu_limit: Some(200_000),
-        ix_labels: vec!["Pump.Fun: Create".into(), "Pump.Fun: Buy".into()],
         ..Default::default()
     });
     let mut fx = reduce(

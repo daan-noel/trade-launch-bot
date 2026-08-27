@@ -14,7 +14,11 @@ use uuid::Uuid;
 
 /// One grouped-sweep invocation header: which strategy over what selection, the
 /// grouping fields, the resolved axes, and the realised population counts.
-#[derive(Debug, Clone, Serialize)]
+///
+/// `Default` exists for test fixtures only — it lets one name just the columns it
+/// varies instead of restating twenty-odd unrelated ones, which is how a fixture
+/// drifts from what the row actually means. No production path constructs one.
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct GroupedSweepRun {
     pub id: Uuid,
     pub strategy_id: String,
@@ -69,11 +73,16 @@ pub struct GroupedSweepRun {
     /// Notional (SOL) every simulated round-trip in this run was priced at.
     /// `None` on legacy rows — callers fall back to the server default (1.0 SOL).
     pub buy_amount_sol: Option<f64>,
-    /// Per-run bucket width (SOL) the continuous SOL grouping fields were binned at
-    /// — the same width the created rule's matcher + the creation-stats dashboard
-    /// use ("swept = run"). `None` on legacy rows → callers fall back to the default
-    /// (`grouping::SOL_BUCKET_WIDTH`, 0.1). Stored for display + re-run + promotion.
-    pub bucket_width_sol: Option<f64>,
+    /// How each grouped field was partitioned — `[[field, spec], …]`, in group-by
+    /// order. A group's key carries the `[min, max]` window it selected, and that
+    /// window IS the predicate a promoted rule matches on, so "swept = run" holds by
+    /// construction rather than by three surfaces re-deriving one width.
+    ///
+    /// Empty on a run swept before the partition replaced that width: its group keys
+    /// are rendered labels no longer parsed, so it reads as one-group-per-value —
+    /// the honest degradation, not an invented conversion. Re-run to promote.
+    #[serde(default)]
+    pub partition: hunter_engine::grouping::GroupPlan,
     /// Which trade in the fill window priced each leg
     /// (`worst_case` | `first_in_window` | `signal_price`). `None` on legacy rows ⇒
     /// `worst_case`, what the sweep hardcoded before the model became selectable.

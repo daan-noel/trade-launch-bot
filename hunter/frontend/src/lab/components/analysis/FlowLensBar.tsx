@@ -398,16 +398,11 @@ function PromoteToFingerprint({ patterns }: { patterns: IxPattern[] }) {
         id: target.id,
         body: {
           name: target.name,
-          cu_limit: target.cu_limit,
-          cu_price: target.cu_price,
-          init_buy_lamports: target.init_buy_lamports,
-          max_cost_lamports: target.max_cost_lamports,
-          spendable_lamports_in: target.spendable_lamports_in,
-          first_slot_buy_lamports: target.first_slot_buy_lamports,
-          first_slot_sell_lamports: target.first_slot_sell_lamports,
-          bucket_size_amount: target.bucket_size_amount,
-          ix_labels: target.ix_labels,
-          // See `useVolumePatternTarget` — identity axes round-trip verbatim.
+          // The whole criteria map round-trips: a PUT replaces the row, so an
+          // omitted axis would silently WIDEN what this fingerprint matches. Same
+          // reason `wildcard` is sent — omitted it defaults to false, turning a
+          // match-everything row into a criterion-less one.
+          criteria: target.criteria,
           wildcard: target.wildcard,
           metric_config: {
             ...rest,

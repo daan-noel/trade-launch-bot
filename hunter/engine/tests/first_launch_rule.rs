@@ -11,16 +11,27 @@
 //! Three terms, and each is negative on its own — the rule is the conjunction, not a
 //! ranking of its parts. This file pins all three, because dropping any one is not a
 //! weaker rule but a different and losing one.
+//!
+//! The creator term is now a **fingerprint axis**, not a metric: it is fixed at
+//! creation, so it selects WHICH tokens the rule arms on rather than when it fires.
+//! It is pinned here beside the two tape terms because the rule is the conjunction —
+//! the axis and the params are one rule split across two rows, and a reader of either
+//! half alone would not see it.
 
+use hunter_engine::fingerprint::{
+    matches, AxisId, AxisPredicate, Criteria, Fingerprint, FingerprintId, TokenFingerprint,
+};
 use hunter_engine::metrics::evaluator::Operator;
 use hunter_engine::metrics::MetricId;
 use hunter_engine::rule_params::{RuleParams, SideConditions};
+use uuid::Uuid;
 
 /// A first-time creator's token, up 150% in ten seconds, on one-sided flow.
 ///
 /// `prior_launches = 0` is the token filter and carries the rule (dropping it costs
-/// +0.0736 -> +0.0023/trade out of sample). `rise@10 >= 150` is the moment. `buy_share@30
-/// >= 80` is the tape's direction — note the engine's PERCENT scale, so 80 and not 0.8.
+/// +0.0736 -> +0.0023/trade out of sample) — it lives on the rule's FINGERPRINT, below.
+/// `rise@10 >= 150` is the moment. `buy_share@30 >= 80` is the tape's direction — note
+/// the engine's PERCENT scale, so 80 and not 0.8.
 ///
 /// `time > 5` and `liquidity >= 3` reproduce the study's decision-print filter: every
 /// measured decision was on a token at least 5 s old with a real pool behind it.
@@ -32,8 +43,7 @@ const FIRST_LAUNCH: &str = r#"{
   "entry": {
     "m_snapshot": {
       "time": [{"operator": ">", "value": 5}],
-      "liquidity": [{"operator": ">=", "value": 3}],
-      "prior_launches": [{"operator": "=", "value": 0}]
+      "liquidity": [{"operator": ">=", "value": 3}]
     },
     "m_flow_window": [
       { "window_size_sec": 30, "buy_share": [{"operator": ">=", "value": 80}] }
@@ -84,21 +94,41 @@ fn the_rule_parses_and_round_trips() {
     assert_eq!(once.to_value(), twice.to_value(), "params must survive a save/load cycle");
 }
 
-/// All three terms, at the exact thresholds the measurement was taken at. A rule with
-/// two of them is a different rule: `rise@10 >= 150` ALONE is -0.0049/trade, and
-/// dropping the creator term takes the out-of-sample expectancy from +0.0736 to +0.0023.
+/// The rule's fingerprint: a first-time creator, and nothing else.
+fn first_launch_fp() -> Fingerprint {
+    Fingerprint {
+        id: FingerprintId(Uuid::from_u128(1)),
+        wildcard: false,
+        criteria: Criteria::new().with(AxisId::PriorLaunches, AxisPredicate::exact(0)),
+        metric_config: serde_json::json!({}),
+    }
+}
+
+/// The two tape terms, at the exact thresholds the measurement was taken at. A rule
+/// with one of them is a different rule: `rise@10 >= 150` ALONE is -0.0049/trade.
 #[test]
-fn all_three_terms_are_present_at_their_measured_thresholds() {
+fn both_tape_terms_are_present_at_their_measured_thresholds() {
     let p = parse(FIRST_LAUNCH);
     let entry = p.entry.as_ref().expect("entry side");
-
-    assert_eq!(
-        terms(entry, MetricId::PriorLaunches),
-        vec![(Operator::Eq, 0.0)],
-        "the creator term is the one that carries the rule"
-    );
     assert_eq!(terms(entry, MetricId::BuyShare), vec![(Operator::Gte, 80.0)]);
     assert_eq!(terms(entry, MetricId::WinRise), vec![(Operator::Gte, 150.0)]);
+}
+
+/// The creator term, on the axis that now carries it. Dropping it takes the
+/// out-of-sample expectancy from +0.0736 to +0.0023, so it is the half of the rule
+/// most worth pinning.
+#[test]
+fn the_creator_term_selects_only_a_first_time_launcher() {
+    let fp = first_launch_fp();
+    let at = |prior: Option<u32>| TokenFingerprint { prior_launches: prior, ..Default::default() };
+
+    assert!(matches(&fp, &at(Some(0))), "a first-time creator is the whole cohort");
+    assert!(!matches(&fp, &at(Some(1))), "one prior launch is already outside it");
+
+    // The inversion this axis exists to avoid: an UNKNOWN creator must not read as a
+    // first launch. `0` is the value the rule selects ON, so a `None` counted as `0`
+    // would silently widen the rule to every token whose creator we failed to see.
+    assert!(!matches(&fp, &at(None)), "an unknown creator is not a first-time one");
 }
 
 /// `buy_share` is a PERCENT metric on the engine's 0-100 scale, so the threshold is 80.
@@ -134,12 +164,20 @@ fn the_exit_is_a_wide_trail_with_no_stop_loss() {
     assert!(!has(exit, MetricId::Held), "the exit is a trail, not a clock");
 }
 
-/// `prior_launches` reads the creator ACROSS other tokens, so it is unavailable on the
-/// lake-corpus paths. Pinned here because the rule is only meaningful where the metric
-/// is really seeded — live, `simulate`, and the rule readout.
+/// `prior_launches` reads the creator ACROSS other tokens, and the lake corpus carries
+/// no creator column — so a sweep leaves it unset and the axis fails closed there. The
+/// rule is only meaningful where the tally is really primed: live, `simulate`, and the
+/// rule readout. Pinned as the fail-closed direction, which is what makes running it
+/// blind produce no trades rather than every trade.
 #[test]
-fn the_creator_term_is_flagged_as_needing_token_history() {
-    assert!(MetricId::PriorLaunches.needs_creator_history());
-    assert!(!MetricId::BuyShare.needs_creator_history());
-    assert!(!MetricId::WinRise.needs_creator_history());
+fn the_creator_axis_fails_closed_where_the_tally_is_not_primed() {
+    let fp = first_launch_fp();
+    // What a lake-corpus token looks like: every other axis known, the creator not.
+    let corpus_token = TokenFingerprint {
+        cu_limit: Some(200_000),
+        init_buy_lamports: Some(1_000_000_000),
+        prior_launches: None,
+        ..Default::default()
+    };
+    assert!(!matches(&fp, &corpus_token));
 }

@@ -27,7 +27,7 @@ use std::time::Instant;
 
 use chrono::{Duration, TimeZone, Utc};
 use hunter_engine::event::{Event, LoadedRule, Mint, RuleId, TradeMode};
-use hunter_engine::fingerprint::{Fingerprint, FingerprintId};
+use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria, Fingerprint, FingerprintId};
 use hunter_engine::grouping::TokenFingerprint;
 use hunter_engine::metrics::{Side, TradeLite, Ts};
 use hunter_engine::reduce::reduce;
@@ -42,17 +42,9 @@ fn ts(secs: f64) -> Ts {
 
 fn build(dense: bool, n_tokens: usize) -> EngineState {
     let fp = Fingerprint {
-        wildcard: false,
         id: FingerprintId(Uuid::from_u128(1)),
-        cu_limit: Some(200_000),
-        cu_price: None,
-        ix_labels: None,
-        init_buy_lamports: None,
-        max_cost_lamports: None,
-        spendable_lamports_in: None,
-        first_slot_buy_lamports: None,
-        first_slot_sell_lamports: None,
-        bucket_size_amount: Some(0.1),
+        wildcard: false,
+        criteria: Criteria::new().with(AxisId::CuLimit, AxisPredicate::exact(200_000)),
         metric_config: json!({ "m_flow_split": { "volume_ix_patterns": [["Pump.Fun: Buy"]] } }),
     };
     let rule = LoadedRule {

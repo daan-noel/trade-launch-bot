@@ -107,7 +107,13 @@ pub async fn create_fingerprint(
     app_state: web::Data<Arc<LocalState>>,
     body: web::Json<serde_json::Value>,
 ) -> impl Responder {
-    let mut fp = Fingerprint::from_json(&body, Uuid::new_v4(), chrono::Utc::now());
+    // A parse failure is a 400, never a silently narrowed row: an unknown axis key
+    // or a malformed predicate would otherwise be dropped, which WIDENS what the
+    // fingerprint matches rather than failing the write.
+    let mut fp = match Fingerprint::from_json(&body, Uuid::new_v4(), chrono::Utc::now()) {
+        Ok(fp) => fp,
+        Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": e })),
+    };
     fp.ensure_auto_name();
     if let Err(e) = fp.validate() {
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
@@ -129,7 +135,10 @@ pub async fn update_fingerprint(
     path: web::Path<Uuid>,
     body: web::Json<serde_json::Value>,
 ) -> impl Responder {
-    let mut fp = Fingerprint::from_json(&body, path.into_inner(), chrono::Utc::now());
+    let mut fp = match Fingerprint::from_json(&body, path.into_inner(), chrono::Utc::now()) {
+        Ok(fp) => fp,
+        Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": e })),
+    };
     fp.ensure_auto_name();
     if let Err(e) = fp.validate() {
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));

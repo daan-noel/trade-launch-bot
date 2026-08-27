@@ -6,6 +6,7 @@
 --   hunter/engine/tests/first_launch_rule.rs  (`RuleParams::parse` - the rule-save gate)
 --
 --   TOKEN    prior_launches = 0     the creator's first launch in a 30-day window
+--                                   (a FINGERPRINT AXIS - it is fixed at creation)
 --   MOMENT   buy_share@30 >= 80     one-sided tape (PERCENT scale, not 0.8)
 --            rise@10     >= 150     up 150% in ten seconds
 --   EXIT     retrace     >= 30      a 30% trailing stop, and NO stop-loss
@@ -57,12 +58,25 @@ BEGIN;
 DELETE FROM strategy_rules WHERE rule_name LIKE 'fl-%';
 DELETE FROM fingerprints   WHERE name      LIKE 'fl-%';
 
--- Universe-wide scope: the rule's token filter is `prior_launches`, a metric, not a
--- creation axis. A fingerprint with zero configured axes never matches
--- (`Fingerprint::has_any_criterion`), so "match everything" is one bucket axis with a
--- 1000 SOL bucket width.
-INSERT INTO fingerprints (name, ix_labels, init_buy_lamports, bucket_size_amount)
-VALUES ('fl-ALL broad', NULL, 0, 1000.0);
+-- The rule's token filter IS its fingerprint: `prior_launches` is a creation axis, so
+-- it selects which tokens the rule arms on rather than when it fires. A range is
+-- inclusive on both ends, so `min = max = 0` is exactly "the creator's first launch".
+--
+-- An unknown creator leaves the axis unset on the token and therefore FAILS it — the
+-- fail-closed direction, and the whole reason this is an axis: `0` is the value the
+-- rule selects ON, so an unknown creator counted as `0` would widen it to every token
+-- whose creator the feed missed.
+INSERT INTO fingerprints (name, criteria)
+VALUES (
+  'fl-first-launch creator',
+  '{"prior_launches": {"kind": "range", "min": "0", "max": "0"}}'::jsonb
+);
+
+-- The control's scope: every token, so the same moment terms are measured without the
+-- creator filter. A criterion-less row matches NOTHING on purpose, so "every token" is
+-- spelled out loud.
+INSERT INTO fingerprints (name, wildcard, criteria)
+VALUES ('fl-ALL broad', true, '{}'::jsonb);
 
 -- A first-time creator's token, up 150% in ten seconds, on one-sided flow.
 --
@@ -78,8 +92,7 @@ SELECT 'fl-first-launch-impulse', f.id, 'paper', false, true,
   "entry": {
     "m_snapshot": {
       "time": [{"operator": ">", "value": 5}],
-      "liquidity": [{"operator": ">=", "value": 3}],
-      "prior_launches": [{"operator": "=", "value": 0}]
+      "liquidity": [{"operator": ">=", "value": 3}]
     },
     "m_flow_window": [
       { "window_size_sec": 30, "buy_share": [{"operator": ">=", "value": 80}] }
@@ -90,7 +103,7 @@ SELECT 'fl-first-launch-impulse', f.id, 'paper', false, true,
   },
   "exit": { "m_position": { "retrace": [{"operator": ">=", "value": 30}] } }
 }$json$::jsonb
-FROM fingerprints f WHERE f.name = 'fl-ALL broad';
+FROM fingerprints f WHERE f.name = 'fl-first-launch creator';
 
 -- The control: the SAME moment terms with the creator filter removed. Seeded so the
 -- claim that the token term carries the rule can be re-measured on demand rather than

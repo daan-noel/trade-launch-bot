@@ -1,11 +1,26 @@
-// Match a sweep/discovery `group_key` to a saved fingerprint using the same
+// Match a sweep/discovery `group_key` to a saved fingerprint, using the same
 // identity as promote/bind (`fingerprint_from_group_key` + `IDENTITY_WHERE`).
-// `name` / `metric_config` are labels, not identity. Grouping-only axes
-// (`is_cashback_enabled`, `token_program_id`) have no fingerprint field.
+// `name` / `metric_config` are labels, not identity.
+//
+// **A group key carries predicates, not rendered labels.** A card's window IS the
+// predicate a fingerprint stores, so identity here is a comparison of the same
+// type on both sides — the retired form parsed a `"1.5–1.6"` string back into an
+// anchor plus a row-wide width, a second lossy derivation that could not represent
+// a `u64::MAX` ceiling at all.
 
-import { solToLamports, type Fingerprint } from './types';
 import { configuredIxLabels } from 'lib/ixLabels';
-import { tidySolDecimal } from 'utils/format';
+import type { Fingerprint } from './types';
+import {
+  AXES,
+  axisDef,
+  compareBounds,
+  lamportsToSolLabel,
+  configuredAxes,
+  isAxisId,
+  type AxisId,
+  type AxisPredicate,
+  type Criteria,
+} from './fingerprintAxes';
 
 /**
  * Attach a run's applied exact-set `ix_labels` filter onto a card's `group_key`
@@ -14,376 +29,201 @@ import { tidySolDecimal } from 'utils/format';
  * **Every surface that turns a `group_key` into a fingerprint identity must call
  * this first.** The filter is part of what selected the run's corpus, but it lives
  * on the RUN, not the key — the group-by form disables the filter box when
- * `ix_labels` is grouped, so at most one of the two is ever set. The backend
- * already does the same join (`promote_group` copies `run.ix_labels_filter` into
- * the drafted fingerprint), so a caller that skips it compares a key the backend
- * would never have produced: the identity branch of
- * {@link findFingerprintForGroupKey} can't hit, matching silently degrades to the
- * ambiguous single-compatible fallback, and a create/bind saves a fingerprint that
- * dropped the label axis and therefore arms on every token shape.
- *
- * Lives here, next to the identity functions it feeds, rather than in a page's
- * display helpers — that separation is what let the sweep page omit it.
+ * `ix_labels` is grouped, so at most one of the two is ever set. The backend does
+ * the same join (`promote_group` copies `run.ix_labels_filter` into the drafted
+ * fingerprint), so a caller that skips it compares a key the backend would never
+ * have produced: the identity branch of {@link findFingerprintForGroupKey} can't
+ * hit, matching degrades to the ambiguous single-compatible fallback, and a
+ * create/bind saves a fingerprint that dropped the label axis and therefore arms on
+ * every token shape.
  *
  * Never overwrites an existing `ix_labels` key; a `null`/empty filter is a no-op
  * (the same "empty collection is the not-set sentinel" rule as
  * `configuredIxLabels`).
  */
 export function withIxLabelsFilter(
-  groupKey: Record<string, string>,
+  groupKey: Record<string, unknown>,
   ixLabelsFilter: readonly string[] | null | undefined,
-): Record<string, string> {
+): Record<string, unknown> {
   if (Object.prototype.hasOwnProperty.call(groupKey, 'ix_labels')) return groupKey;
   if (!ixLabelsFilter || ixLabelsFilter.length === 0) return groupKey;
-  return { ...groupKey, ix_labels: ixLabelsFilter.join(' | ') };
+  return { ...groupKey, ix_labels: { kind: 'labels', labels: [...ixLabelsFilter] } };
 }
 
 /** Identity axes only — what `find_or_create` compares. */
 export interface FingerprintIdentity {
-  cu_limit: number | null;
-  cu_price: number | null;
-  init_buy_lamports: number | null;
-  max_cost_lamports: number | null;
-  spendable_lamports_in: number | null;
-  first_slot_buy_lamports: number | null;
-  first_slot_sell_lamports: number | null;
-  /** SOL bucket width, or `null` when the fingerprint matches exact amounts. */
-  bucket_size_amount: number | null;
-  ix_labels: string[] | null;
+  criteria: Criteria;
   /** Matches every token, ignoring every axis. Part of identity (the backend
-   *  `IDENTITY_WHERE` compares `wildcard = $10`), and never reconstructible from a
-   *  group key — a group names axis VALUES, so
-   *  {@link fingerprintIdentityFromGroupKey} always yields `false` here. Carrying
-   *  it anyway is what stops a saved wildcard row from keying identically to an
-   *  axis-free card and badging it. */
+   *  `IDENTITY_WHERE` compares it), and never reconstructible from a group key — a
+   *  group names axis VALUES, so {@link fingerprintIdentityFromGroupKey} always
+   *  yields `false`. Carrying it anyway is what stops a saved wildcard row from
+   *  keying identically to an axis-free card and badging it. */
   wildcard: boolean;
 }
 
-/** Parse a `"lo–hi"` SOL bucket label's lower edge into lamports (plain numeric
- *  labels parse whole). Mirrors Rust `parse_lo_lamports` (en-dash separator). */
-export function parseLoLamports(label: string): number | null {
-  const lo = label.split('–')[0]?.trim();
-  if (lo == null || lo === '') return null;
-  const sol = Number(lo);
-  if (!Number.isFinite(sol)) return null;
-  return solToLamports(sol);
+/** One group-key value, as the backend serializes it. */
+type GroupValue =
+  | { kind: 'missing' }
+  | { kind: 'text'; value: string }
+  | { kind: 'flag'; value: boolean }
+  | { kind: 'labels'; labels: string[] }
+  | { kind: 'window'; min?: string; max?: string };
+
+function asGroupValue(raw: unknown): GroupValue | null {
+  if (raw == null || typeof raw !== 'object') return null;
+  const v = raw as { kind?: unknown };
+  switch (v.kind) {
+    case 'missing':
+    case 'text':
+    case 'flag':
+    case 'labels':
+    case 'window':
+      return raw as GroupValue;
+    default:
+      return null;
+  }
+}
+
+/** The fingerprint predicate a group value asserts, or `null` when it names
+ *  nothing a rule can match on (`missing`, or a grouping-only field). */
+export function predicateFromGroupValue(raw: unknown): AxisPredicate | null {
+  const v = asGroupValue(raw);
+  if (!v) return null;
+  if (v.kind === 'window') {
+    if (v.min == null && v.max == null) return null;
+    return { kind: 'range', ...(v.min != null && { min: v.min }), ...(v.max != null && { max: v.max }) };
+  }
+  if (v.kind === 'labels') {
+    return v.labels.length > 0 ? { kind: 'sequence', labels: v.labels } : null;
+  }
+  return null;
 }
 
 /**
- * Rebuild fingerprint identity from a stored group key at bucket `width`.
- * Continuous SOL fields use the bucket's lower edge; `∅` (missing) is skipped.
+ * Rebuild fingerprint identity from a stored group key — a **copy** of its
+ * predicates.
  *
- * Axes **absent** from `gk` stay `null` here — the same shape `find_or_create`
+ * Axes **absent** from `gk` stay absent here — the same shape `find_or_create`
  * stores — but {@link findFingerprintForGroupKey} treats absent keys as
  * unconstrained when falling back to compatible (superset) matching, so a
- * fingerprint later refined with extra axes (e.g. manual `ix_labels`) still
- * badges the card it was created from — but only while that refinement is
- * unambiguous (see {@link findFingerprintForGroupKey}).
+ * fingerprint later refined with extra axes still badges the card it was created
+ * from, while that refinement is unambiguous.
  */
 export function fingerprintIdentityFromGroupKey(
-  gk: Record<string, string>,
-  /** The width the card was grouped at, or `null` for an exact-grouped run — the
-   *  precision must agree for a card and a fingerprint to be the same thing. */
-  bucketWidthSol: number | null,
+  gk: Record<string, unknown>,
 ): FingerprintIdentity {
-  const id: FingerprintIdentity = {
-    cu_limit: null,
-    cu_price: null,
-    init_buy_lamports: null,
-    max_cost_lamports: null,
-    spendable_lamports_in: null,
-    first_slot_buy_lamports: null,
-    first_slot_sell_lamports: null,
-    bucket_size_amount: bucketWidthSol == null ? null : tidySolDecimal(bucketWidthSol),
-    ix_labels: null,
-    // A group key names axis VALUES, so it can never describe "every token".
-    wildcard: false,
-  };
+  const criteria: Criteria = {};
   for (const [tag, raw] of Object.entries(gk)) {
-    if (raw === '∅') continue;
-    switch (tag) {
-      case 'cu_limit': {
-        const n = Number(raw);
-        if (Number.isFinite(n)) id.cu_limit = n;
-        break;
-      }
-      case 'cu_price': {
-        const n = Number(raw);
-        if (Number.isFinite(n)) id.cu_price = n;
-        break;
-      }
-      case 'initial_buy_sol':
-        id.init_buy_lamports = parseLoLamports(raw);
-        break;
-      case 'max_cost_lamports':
-        id.max_cost_lamports = parseLoLamports(raw);
-        break;
-      case 'spendable_lamports_in':
-        id.spendable_lamports_in = parseLoLamports(raw);
-        break;
-      case 'first_slot_buy_sol':
-        id.first_slot_buy_lamports = parseLoLamports(raw);
-        break;
-      case 'first_slot_sell_sol':
-        id.first_slot_sell_lamports = parseLoLamports(raw);
-        break;
-      case 'ix_labels':
-        id.ix_labels = raw.split(' | ');
-        break;
-      // Grouping-only — no fingerprint identity.
-      case 'is_cashback_enabled':
-      case 'token_program_id':
-        break;
-      default:
-        break;
-    }
+    if (!isAxisId(tag)) continue; // grouping-only fields have no fingerprint axis
+    const pred = predicateFromGroupValue(raw);
+    if (pred) criteria[tag] = pred;
   }
-  return id;
-}
-
-/** The lamports axes of an identity — every field stored as a `BIGINT` column. */
-const LAMPORTS_AXES = [
-  'init_buy_lamports',
-  'max_cost_lamports',
-  'spendable_lamports_in',
-  'first_slot_buy_lamports',
-  'first_slot_sell_lamports',
-] as const;
-
-/**
- * True when every SOL axis of this identity can be *stored exactly*.
- *
- * A group key's SOL axes are decimal SOL text and we reconstruct lamports from
- * them with {@link parseLoLamports}, i.e. through a JS `number`. That is lossless
- * for any real amount, but a creation arg's on-chain domain is `u64` and pump.fun's
- * `max_sol_cost` uses `u64::MAX` (≈1.84e10 SOL) as the "fill at any price"
- * **sentinel** — thousands of tokens a month carry it. Such a value is past both
- * `Number.MAX_SAFE_INTEGER` and the `BIGINT` axis's `i64::MAX`, so it cannot be a
- * fingerprint criterion at all (the backend's `sol_axis` fails a configured axis
- * against an out-of-`i64` token value rather than wrapping it — see
- * `hunter_engine::fingerprint`). Bucketed runs never hit this: the backend keeps a
- * ceiling out of the bins as its own group, and its label only reaches identity
- * reconstruction under exact grouping.
- *
- * Checked with `isSafeInteger` rather than against `MAX_BUCKETABLE_LAMPORTS`: past
- * 2^53 the reconstructed number has already lost digits, so the identity would be
- * wrong even where `i64` would have held it.
- */
-export function identityLamportsAreStorable(id: FingerprintIdentity): boolean {
-  return LAMPORTS_AXES.every((k) => {
-    const v = id[k];
-    return v == null || (Number.isSafeInteger(v) && v >= 0);
-  });
+  // A group key names axis VALUES, so it can never describe "every token".
+  return { criteria, wildcard: false };
 }
 
 /** True when the identity carries at least one match criterion — mirrors the
- *  backend `Fingerprint::has_any_criterion` (`bucket_size_amount` alone doesn't
- *  count). A group with none (e.g. the ALL group, or grouping only by the
- *  grouping-only axes) can't be turned into a fingerprint — the create endpoints
- *  reject it. */
+ *  backend `Fingerprint::has_any_criterion`. A group with none (the ALL group, or
+ *  one grouped only by the grouping-only fields) cannot become a fingerprint, and
+ *  the create endpoints reject it. */
 export function identityHasCriterion(id: FingerprintIdentity): boolean {
-  return (
-    // The explicit "every token" criterion — counted here exactly as the backend
-    // counts it, or a wildcard row reads as criterion-less on this side.
-    id.wildcard ||
-    id.cu_limit != null ||
-    id.cu_price != null ||
-    id.init_buy_lamports != null ||
-    id.max_cost_lamports != null ||
-    id.spendable_lamports_in != null ||
-    id.first_slot_buy_lamports != null ||
-    id.first_slot_sell_lamports != null ||
-    // An empty label list is "not set" — same verdict the backend reaches via
-    // `configured_labels`. A bare `!= null` here would offer Create on a group
-    // the server then rejects as criterion-less.
-    configuredIxLabels(id.ix_labels) != null
-  );
+  // The explicit "every token" criterion — counted here exactly as the backend
+  // counts it, or a wildcard row reads as criterion-less on this side.
+  return id.wildcard || configuredAxes(id.criteria).length > 0;
 }
 
-/** Label-axis equality with `[]` normalized to "not set" first, so the two
- *  spellings of absent can never read as different identities. */
-function ixLabelsEqual(rawA: string[] | null, rawB: string[] | null): boolean {
-  const a = configuredIxLabels(rawA);
-  const b = configuredIxLabels(rawB);
-  if (a == null && b == null) return true;
-  if (a == null || b == null) return false;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
-
-/** Whether two bucket widths denote the same precision. `null` (exact) only ever
- *  equals `null` — an exact fingerprint and a bucketed one are different rules
- *  even when every axis value agrees, because they arm on different token sets. */
-function sameWidth(a: number | null, b: number | null): boolean {
+/** Whether two predicates name the same set. Bounds compare as decimal STRINGS —
+ *  `Number()` would round a `u64::MAX` ceiling and call two distinct amounts
+ *  equal, which is exactly how a ceiling used to be unrepresentable here. */
+export function predicatesEqual(a: AxisPredicate | undefined, b: AxisPredicate | undefined): boolean {
   if (a == null || b == null) return a == null && b == null;
-  return tidySolDecimal(a) === tidySolDecimal(b);
+  if (a.kind !== b.kind) return false;
+  if (a.kind === 'sequence' && b.kind === 'sequence') {
+    const x = configuredIxLabels(a.labels);
+    const y = configuredIxLabels(b.labels);
+    if (x == null || y == null) return x == null && y == null;
+    return x.length === y.length && x.every((v, i) => v === y[i]);
+  }
+  if (a.kind === 'range' && b.kind === 'range') {
+    const bound = (p?: string, q?: string) =>
+      p == null || q == null ? p == null && q == null : compareBounds(p, q) === 0;
+    return bound(a.min, b.min) && bound(a.max, b.max);
+  }
+  return false;
 }
 
 /**
- * True when every `IDENTITY_WHERE` axis matches (`NULL` is a value).
+ * True when every `IDENTITY_WHERE` axis matches.
  *
  * This is the compare to reach for wherever the backend hands you an identity it
  * authored — the `identity` block of a resolved `GroupSelection`
  * (`lab/src/sweep/selection.rs`), which is literally the row
  * `FingerprintRepo::find_or_create` keys on. Prefer that over
- * {@link findFingerprintForGroupKey}, which must *reconstruct* an identity from a
- * group key: a group key is a lossy view of what selected a group (the run's
- * `ix_labels_filter` / `field_filters` live on the run row and never appear in
- * it), so the reconstruction runs wide and needs an ambiguous
- * single-compatible fallback to paper over the gap.
+ * {@link findFingerprintForGroupKey}, which must reconstruct an identity from a
+ * group key: a key is a lossy view of what selected a group (the run's
+ * `ix_labels_filter` / `field_filters` live on the run row and never appear in it),
+ * so the reconstruction runs wide and needs an ambiguous single-compatible fallback
+ * to paper over the gap.
  */
 export function fingerprintMatchesIdentity(fp: Fingerprint, id: FingerprintIdentity): boolean {
-  return (
-    fp.cu_limit === id.cu_limit &&
-    fp.cu_price === id.cu_price &&
-    fp.init_buy_lamports === id.init_buy_lamports &&
-    fp.max_cost_lamports === id.max_cost_lamports &&
-    fp.spendable_lamports_in === id.spendable_lamports_in &&
-    fp.first_slot_buy_lamports === id.first_slot_buy_lamports &&
-    fp.first_slot_sell_lamports === id.first_slot_sell_lamports &&
-    sameWidth(fp.bucket_size_amount, id.bucket_size_amount) &&
-    ixLabelsEqual(fp.ix_labels, id.ix_labels) &&
-    fp.wildcard === id.wildcard
-  );
+  if (fp.wildcard !== id.wildcard) return false;
+  const a = fp.criteria ?? {};
+  const b = id.criteria ?? {};
+  return AXES.every((def) => predicatesEqual(a[def.id], b[def.id]));
 }
 
 /**
- * Compatible (superset) match for the creation-stats / sweep “already a
- * fingerprint” badge: every axis **present** in `gk` must agree with `fp`
- * (`∅` ⇒ FP axis unset; a concrete value ⇒ exact equal). Axes only on the
- * fingerprint (e.g. manual `ix_labels` after a create that didn’t group by
- * labels) do not break the match — the FP is a *candidate* refinement of the
- * card; {@link findFingerprintForGroupKey} decides whether that candidacy is
- * unambiguous enough to badge.
+ * Compatible (superset) match for the "already a fingerprint" badge: every axis
+ * **present** in `gk` must agree with `fp` (`missing` ⇒ the FP axis is unset too;
+ * a value ⇒ the same predicate). Axes only on the fingerprint (e.g. manual
+ * `ix_labels` added after a create that didn't group by labels) do not break the
+ * match — the FP is a *candidate* refinement of the card, and
+ * {@link findFingerprintForGroupKey} decides whether that candidacy is unambiguous
+ * enough to badge.
  *
- * Grouping-only keys are ignored. Bucket width must still agree.
+ * Grouping-only keys are ignored.
  */
 export function fingerprintCompatibleWithGroupKey(
   fp: Fingerprint,
-  gk: Record<string, string>,
-  /** The width the card was grouped at, or `null` for an exact-grouped run — the
-   *  precision must agree for a card and a fingerprint to be the same thing. */
-  bucketWidthSol: number | null,
+  gk: Record<string, unknown>,
 ): boolean {
   // A wildcard row is not a refinement of anything — it drops every axis the card
   // is made of, so badging a card with it would claim the card's group is what the
   // rule arms on when the rule arms on every token.
   if (fp.wildcard) return false;
-  if (!sameWidth(fp.bucket_size_amount, bucketWidthSol)) {
-    return false;
-  }
+  const criteria = fp.criteria ?? {};
   for (const [tag, raw] of Object.entries(gk)) {
-    if (tag === 'is_cashback_enabled' || tag === 'token_program_id') continue;
-    const missing = raw === '∅';
-    switch (tag) {
-      case 'cu_limit': {
-        if (missing) {
-          if (fp.cu_limit != null) return false;
-        } else {
-          const n = Number(raw);
-          if (!Number.isFinite(n) || fp.cu_limit !== n) return false;
-        }
-        break;
-      }
-      case 'cu_price': {
-        if (missing) {
-          if (fp.cu_price != null) return false;
-        } else {
-          const n = Number(raw);
-          if (!Number.isFinite(n) || fp.cu_price !== n) return false;
-        }
-        break;
-      }
-      case 'initial_buy_sol': {
-        if (missing) {
-          if (fp.init_buy_lamports != null) return false;
-        } else if (fp.init_buy_lamports !== parseLoLamports(raw)) {
-          return false;
-        }
-        break;
-      }
-      case 'max_cost_lamports': {
-        if (missing) {
-          if (fp.max_cost_lamports != null) return false;
-        } else if (fp.max_cost_lamports !== parseLoLamports(raw)) {
-          return false;
-        }
-        break;
-      }
-      case 'spendable_lamports_in': {
-        if (missing) {
-          if (fp.spendable_lamports_in != null) return false;
-        } else if (fp.spendable_lamports_in !== parseLoLamports(raw)) {
-          return false;
-        }
-        break;
-      }
-      case 'first_slot_buy_sol': {
-        if (missing) {
-          if (fp.first_slot_buy_lamports != null) return false;
-        } else if (fp.first_slot_buy_lamports !== parseLoLamports(raw)) {
-          return false;
-        }
-        break;
-      }
-      case 'first_slot_sell_sol': {
-        if (missing) {
-          if (fp.first_slot_sell_lamports != null) return false;
-        } else if (fp.first_slot_sell_lamports !== parseLoLamports(raw)) {
-          return false;
-        }
-        break;
-      }
-      case 'ix_labels': {
-        if (missing) {
-          if (configuredIxLabels(fp.ix_labels) != null) return false;
-        } else if (!ixLabelsEqual(fp.ix_labels, raw.split(' | '))) {
-          return false;
-        }
-        break;
-      }
-      default:
-        break;
+    if (!isAxisId(tag)) continue;
+    const pred = predicateFromGroupValue(raw);
+    if (pred == null) {
+      // The card's tokens have NO value on this axis. A fingerprint that configures
+      // it matches tokens that DO — the opposite population, not a refinement.
+      if (criteria[tag] != null) return false;
+      continue;
     }
+    if (!predicatesEqual(criteria[tag], pred)) return false;
   }
   return true;
 }
 
-/** Canonical `IDENTITY_WHERE` key — stable string for Map lookups. */
+/** Canonical `IDENTITY_WHERE` key — a stable string for Map lookups. */
 export function fingerprintIdentityKey(id: FingerprintIdentity): string {
-  const labels = configuredIxLabels(id.ix_labels);
-  return [
-    id.cu_limit ?? '',
-    id.cu_price ?? '',
-    id.init_buy_lamports ?? '',
-    id.max_cost_lamports ?? '',
-    id.spendable_lamports_in ?? '',
-    id.first_slot_buy_lamports ?? '',
-    id.first_slot_sell_lamports ?? '',
-    id.bucket_size_amount == null ? 'exact' : String(tidySolDecimal(id.bucket_size_amount)),
-    labels == null ? '' : labels.join('\0'),
-    id.wildcard ? 'any' : '',
-  ].join('|');
+  const parts = AXES.map((def) => {
+    const p = (id.criteria ?? {})[def.id];
+    if (p == null) return '';
+    if (p.kind === 'sequence') {
+      const labels = configuredIxLabels(p.labels);
+      return labels == null ? '' : `seq:${labels.join('\0')}`;
+    }
+    return `range:${p.min ?? ''}:${p.max ?? ''}`;
+  });
+  parts.push(id.wildcard ? 'any' : '');
+  return parts.join('|');
 }
 
-/** Identity axes from a saved fingerprint row (same shape as group-key rebuild). */
+/** Identity axes from a saved fingerprint row (same shape as the group-key rebuild). */
 export function fingerprintToIdentity(fp: Fingerprint): FingerprintIdentity {
-  return {
-    cu_limit: fp.cu_limit,
-    cu_price: fp.cu_price,
-    init_buy_lamports: fp.init_buy_lamports,
-    max_cost_lamports: fp.max_cost_lamports,
-    spendable_lamports_in: fp.spendable_lamports_in,
-    first_slot_buy_lamports: fp.first_slot_buy_lamports,
-    first_slot_sell_lamports: fp.first_slot_sell_lamports,
-    bucket_size_amount:
-      fp.bucket_size_amount == null ? null : tidySolDecimal(fp.bucket_size_amount),
-    ix_labels: fp.ix_labels,
-    wildcard: fp.wildcard,
-  };
+  return { criteria: fp.criteria ?? {}, wildcard: fp.wildcard };
 }
 
 /** Exact-identity index for O(1) group→fingerprint hits. First write wins on dupes. */
@@ -408,27 +248,24 @@ export interface FindFingerprintOptions {
  *
  * 1. **Exact `IDENTITY_WHERE` identity wins** — the same comparison
  *    `find_or_create` runs, so a card always badges the fingerprint it would
- *    resolve to on create. Prefer a {@link indexFingerprintsByIdentity} map for
+ *    resolve to on create. Prefer an {@link indexFingerprintsByIdentity} map for
  *    O(1) here when matching many groups against one library.
  * 2. No exact hit ⇒ fall back to {@link fingerprintCompatibleWithGroupKey}
- *    (superset) matching, but **only when exactly one** fingerprint is
- *    compatible — that keeps a card badging the fingerprint it was created
- *    from after a manual refinement (e.g. `ix_labels` added later).
- * 3. Two or more compatible refinements ⇒ `null`: axes the card didn’t group
- *    by (typically `ix_labels`) distinguish those fingerprints, so badging any
- *    one of them would conflate genuinely different identities. The caller
- *    then shows Create — safe, because the exact identity demonstrably isn’t
- *    saved and `find_or_create` compares exact identity (no dupe risk).
+ *    (superset) matching, but **only when exactly one** fingerprint is compatible —
+ *    that keeps a card badging the fingerprint it was created from after a manual
+ *    refinement.
+ * 3. Two or more compatible refinements ⇒ `null`: axes the card didn't group by
+ *    distinguish those fingerprints, so badging any one of them would conflate
+ *    genuinely different identities. The caller then shows Create — safe, because
+ *    the exact identity demonstrably isn't saved and `find_or_create` compares
+ *    exact identity (no dupe risk).
  */
 export function findFingerprintForGroupKey(
-  gk: Record<string, string>,
+  gk: Record<string, unknown>,
   fingerprints: readonly Fingerprint[],
-  /** The width the card was grouped at, or `null` for an exact-grouped run — the
-   *  precision must agree for a card and a fingerprint to be the same thing. */
-  bucketWidthSol: number | null,
   opts?: FindFingerprintOptions,
 ): Fingerprint | null {
-  const id = fingerprintIdentityFromGroupKey(gk, bucketWidthSol);
+  const id = fingerprintIdentityFromGroupKey(gk);
   const byIdentity = opts?.byIdentity;
   if (byIdentity) {
     const exact = byIdentity.get(fingerprintIdentityKey(id));
@@ -437,7 +274,7 @@ export function findFingerprintForGroupKey(
   let compatible: Fingerprint | null = null;
   let compatibleN = 0;
   for (const fp of fingerprints) {
-    if (!fingerprintCompatibleWithGroupKey(fp, gk, bucketWidthSol)) continue;
+    if (!fingerprintCompatibleWithGroupKey(fp, gk)) continue;
     // Without an index, exact identity still wins inside the compatible scan.
     if (!byIdentity && fingerprintMatchesIdentity(fp, id)) return fp;
     compatible ??= fp;
@@ -451,18 +288,20 @@ export interface GroupFingerprintMatch {
   matched: Fingerprint | null;
   identity: FingerprintIdentity;
   canCreate: boolean;
-  overflow: boolean;
 }
 
 /**
  * Resolve every group's fingerprint badge in one pass: build the identity index
- * once, attach run-level `ix_labels` filter, and avoid rebuilding identity twice
- * (match + canCreate).
+ * once, attach the run-level `ix_labels` filter, and avoid rebuilding identity
+ * twice (match + canCreate).
+ *
+ * There is no "overflow" verdict any more: a bound is a decimal string over the
+ * full `u64` domain, so a `max_sol_cost = u64::MAX` ceiling — which used to be
+ * unstorable, and so uncreatable from a card — is an ordinary value.
  */
 export function matchFingerprintsForGroups(
-  groups: readonly { g: number; group_key: Record<string, string> }[],
+  groups: readonly { g: number; group_key: Record<string, unknown> }[],
   fingerprints: readonly Fingerprint[],
-  bucketWidthSol: number | null,
   ixLabelsFilter: readonly string[] | null | undefined,
   /** When the whole run is scoped to one fingerprint, that id wins for every card. */
   scoped: Fingerprint | null,
@@ -471,16 +310,41 @@ export function matchFingerprintsForGroups(
   const byIdentity = scoped ? null : indexFingerprintsByIdentity(fingerprints);
   for (const g of groups) {
     const gk = withIxLabelsFilter(g.group_key, ixLabelsFilter);
-    const identity = fingerprintIdentityFromGroupKey(gk, bucketWidthSol);
+    const identity = fingerprintIdentityFromGroupKey(gk);
     const matched =
       scoped ??
-      findFingerprintForGroupKey(gk, fingerprints, bucketWidthSol, {
-        byIdentity: byIdentity ?? undefined,
-      });
-    const storable = identityLamportsAreStorable(identity);
-    const canCreate = matched == null && storable && identityHasCriterion(identity);
-    const overflow = matched == null && !storable && identityHasCriterion(identity);
-    map.set(g.g, { matched, identity, canCreate, overflow });
+      findFingerprintForGroupKey(gk, fingerprints, { byIdentity: byIdentity ?? undefined });
+    map.set(g.g, { matched, identity, canCreate: matched == null && identityHasCriterion(identity) });
   }
   return map;
+}
+
+/** A card's group key as display chips, in registry order. */
+export function renderGroupKey(gk: Record<string, unknown>): [string, string][] {
+  return Object.entries(gk).map(([tag, raw]) => {
+    const v = asGroupValue(raw);
+    if (!v) return [tag, String(raw)];
+    switch (v.kind) {
+      case 'missing':
+        return [tag, '∅'];
+      case 'text':
+        return [tag, v.value];
+      case 'flag':
+        return [tag, String(v.value)];
+      case 'labels':
+        return [tag, v.labels.join(' | ')];
+      case 'window': {
+        const unit = isAxisId(tag) ? axisDef(tag as AxisId).unit : 'count';
+        const pred = predicateFromGroupValue(raw);
+        if (!pred || pred.kind !== 'range') return [tag, 'any'];
+        const fmt = (s: string) => (unit === 'lamports' ? lamportsToSolLabel(s) : s);
+        if (pred.min != null && pred.max != null) {
+          return [tag, pred.min === pred.max ? fmt(pred.min) : `${fmt(pred.min)}–${fmt(pred.max)}`];
+        }
+        if (pred.min != null) return [tag, `≥${fmt(pred.min)}`];
+        if (pred.max != null) return [tag, `≤${fmt(pred.max)}`];
+        return [tag, 'any'];
+      }
+    }
+  });
 }

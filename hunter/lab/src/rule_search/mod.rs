@@ -166,6 +166,7 @@ pub fn run_search(
 
 #[cfg(test)]
 mod tests {
+    use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria};
     use super::*;
     use crate::discovery::fixtures;
     use crate::sweep::progress::NoopObserver;
@@ -175,18 +176,10 @@ mod tests {
 
     fn fp() -> Fingerprint {
         Fingerprint {
-            wildcard: false,
             id: FingerprintId(Uuid::nil()),
-            cu_limit: None,
-            cu_price: None,
-            ix_labels: None,
-            init_buy_lamports: None,
-            max_cost_lamports: None,
-            spendable_lamports_in: None,
-            first_slot_buy_lamports: None,
-            first_slot_sell_lamports: None,
-            bucket_size_amount: Some(0.1),
             metric_config: serde_json::json!({}),
+            wildcard: false,
+            criteria: Criteria::new(),
         }
     }
 

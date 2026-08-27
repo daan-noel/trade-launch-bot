@@ -1,3 +1,4 @@
+import type { PartitionSpec } from '@lab/components/sweep/groupedTypes';
 // Per-fingerprint creation-activity dashboard — shared types + helpers.
 // Mirrors the backend `GET /api/tokens/creation-stats/grouped` response (handler
 // `creation_stats.rs::get_grouped_creation_stats`). Count-only: each fingerprint
@@ -96,13 +97,12 @@ export interface GroupedCreationResponse {
   to: string;
   segment: string;
   group_by: GroupField[];
-  /** The applied (clamped) bucket width (SOL) for the continuous SOL group fields,
-   *  or `null` when the run keyed them on their **exact** amount (`exactSol`).
-   *  Carry the `null` through to identity match/create verbatim — it is the width a
-   *  fingerprint saved from such a card stores, and `SolPrecision::Exact` is what
-   *  the live engine then matches those axes with. Substituting a width there mints
-   *  a rule that arms on a window the card never showed. */
-  bucket_width: number | null;
+  /** The applied partition echoed back, keyed by field tag.
+   *
+   *  A card's group key carries its own window, so nothing needs this to interpret
+   *  a key — it is here so a drill-down request can send back exactly the partition
+   *  that produced the card. */
+  partition: Record<string, PartitionSpec>;
   /** The applied per-field value filters echoed back (`{cu_limit:["300000"]}`). */
   field_filters: Record<string, string[]>;
   /** The applied exact instruction-label set filter, or `null` when none. */
@@ -132,10 +132,13 @@ export interface GroupedCreationTokensArgs {
   to?: string;
   segment: CreationSegment;
   groupBy: GroupField[];
-  bucketWidth?: number;
-  /** Mirrors {@link GroupedCreationArgs.exactSol} — MUST match the stats request
-   *  that produced `groupKey`, or the key is rendered in the other mode. */
-  exactSol?: boolean;
+  /** How each grouped field is partitioned, keyed by field tag. A field not named
+   *  here is `{"kind":"distinct"}` (one group per value).
+   *
+   *  Explicit edges, never a width: a width defines an infinite implicit lattice
+   *  that the sweep, the matcher and the dashboard each had to re-derive
+   *  identically. A finite list means the same thing to everyone who reads it. */
+  partition?: Record<string, PartitionSpec>;
   fieldFilters?: Record<string, FieldFilterValue[]>;
   ixLabelsFilter?: string[];
   /** Saved-fingerprint scope — mirrors {@link GroupedCreationArgs.fingerprintId}.
@@ -203,12 +206,13 @@ export interface GroupedCreationArgs {
   /** Bucket width (SOL) for the continuous SOL group fields — the same knob the
    *  grouped sweep uses, so the dashboard groups a corpus identically to a sweep at
    *  this width. Omitted ⇒ the backend default (0.1). */
-  bucketWidth?: number;
-  /** `true` ⇒ key the continuous SOL fields on their **exact** amount instead of a
-   *  bucket range, so each distinct value forms its own group. Mutually exclusive
-   *  with `bucketWidth` (the backend ignores the width in this mode). A separate
-   *  named flag, never a magic width of 0 — see Rust `SolPrecision`. */
-  exactSol?: boolean;
+  /** How each grouped field is partitioned, keyed by field tag. A field not named
+   *  here is `{"kind":"distinct"}` (one group per value).
+   *
+   *  Explicit edges, never a width: a width defines an infinite implicit lattice
+   *  that the sweep, the matcher and the dashboard each had to re-derive
+   *  identically. A finite list means the same thing to everyone who reads it. */
+  partition?: Record<string, PartitionSpec>;
   /** Per-field value filters restricting the corpus before partitioning (keys =
    *  GroupField tags, values = allowed string forms). Independent of `groupBy`.
    *  Empty/omitted ⇒ no filter. `ix_labels` uses `ixLabelsFilter` instead. */
@@ -246,8 +250,7 @@ export function groupedCreationArgsEqual(
     a.to !== b.to ||
     a.segment !== b.segment ||
     a.top !== b.top ||
-    a.bucketWidth !== b.bucketWidth ||
-    a.exactSol !== b.exactSol ||
+    JSON.stringify(a.partition ?? {}) !== JSON.stringify(b.partition ?? {}) ||
     a.rankBy !== b.rankBy ||
     a.fingerprintId !== b.fingerprintId
   ) {

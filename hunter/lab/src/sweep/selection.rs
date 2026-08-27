@@ -1,48 +1,47 @@
 //! **The one derivation of what a grouped-sweep group actually selected.**
 //!
 //! A group's token set is `corpus-window ∧ (scope-fingerprint | manual filters) ∧
-//! group_key@precision`. Every one of those clauses is persisted on the run row or
-//! the group row, and no consumer may re-assemble them ad hoc: rebuilding a
-//! fingerprint from `group_key` alone drops `field_filters`, and a second,
-//! differently-lossy TypeScript rebuild badges the group card from the same partial
-//! input. Two readers reconstructing one fact they were never handed both fail in
-//! the **widening** direction — the promoted rule arms on a superset of the tokens
-//! the numbers came from.
+//! group_key`. Every one of those clauses is persisted on the run row or the group
+//! row, and no consumer may re-assemble them ad hoc: rebuilding a fingerprint from
+//! `group_key` alone drops `field_filters`, and a second, differently-lossy
+//! TypeScript rebuild badges the group card from the same partial input. Two
+//! readers reconstructing one fact they were never handed both fail in the
+//! **widening** direction — the promoted rule arms on a superset of the tokens the
+//! numbers came from.
 //!
 //! This module is that fact, resolved once ([`GroupSelection::resolve`]) and
 //! consumed by everything: promote materializes it into a fingerprint
 //! ([`GroupSelection::materialize`]), the groups API serializes it for display.
 //!
-//! **Fail closed.** A fingerprint axis is a scalar plus one *fingerprint-wide*
-//! bucket width, so it cannot express every clause a sweep can select on (an
-//! absent axis, a multi-value pin, a `u64` ceiling, the two axes the fingerprint
-//! has no column for, or two axes needing different widths). Where the selection
-//! doesn't fit, [`materialize`](GroupSelection::materialize) returns the blocking
-//! clauses so the caller can refuse — it never drops a clause and hands back a
-//! wider fingerprint. Widening that coverage means giving the axis its own
-//! predicate (per-axis `eq | range | in | absent`), not loosening this seam.
+//! **A group key and a fingerprint axis are the same type.** Both carry an
+//! [`AxisPredicate`], so promoting is a copy. What used to block a promote —
+//! a bucketed key that had to be re-anchored to `value + width`, two axes needing
+//! different widths, a `u64::MAX` ceiling no `BIGINT` axis could hold — is not
+//! expressible as a failure any more, because none of those concepts exist.
+//!
+//! **Fail closed** on what remains. Three clause kinds genuinely have no
+//! fingerprint expression: a multi-value filter (a predicate is one window), an
+//! absent axis (a fingerprint spells "unset" as "unconstrained", which is the
+//! opposite of what the group selected), and the two grouping-only fields the
+//! matcher has no axis for. [`materialize`](GroupSelection::materialize) returns
+//! those as blockers rather than dropping a clause and handing back a wider
+//! fingerprint.
 
 use std::fmt::Write as _;
 
+use hunter_engine::fingerprint::{AxisId, AxisPredicate, AxisUnit, Criteria};
 use hunter_engine::grouping::{
-    bucket_index, exact_sol_label, exact_sol_label_u64, normalize_labels, GroupField, SolFilter,
-    SolPrecision, BUCKET_EPS, LAMPORTS_PER_SOL_F64,
+    normalize_labels, parse_filter, sol_label, GroupField, GroupKey, GroupValue,
 };
 use serde::Serialize;
 use serde_json::Value;
-use trading_core::config::constants::tidy_sol_decimal;
 use trading_core::models::Fingerprint;
 use uuid::Uuid;
 
 use crate::models::grouped_sweep::GroupedSweepRun;
 
-/// The `∅` group-key sentinel: the token has no value for this axis. Mirrors
-/// `hunter_engine::grouping`'s private `MISSING` (it is a wire format — the key
-/// string is what the sweep persisted and the dashboard renders).
-const MISSING: &str = "∅";
-
-/// Where a clause came from. Kept on every clause so an error message can name
-/// the thing the user set ("the run's field filter", not "an axis").
+/// Where a clause came from. Kept on every clause so an error message can name the
+/// thing the user set ("the run's field filter", not "an axis").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Origin {
@@ -64,60 +63,52 @@ impl Origin {
     }
 }
 
-/// What one axis is pinned to. The SOL-amount variants carry **lamports**, the
-/// unit every fingerprint axis and every matcher compare uses.
+/// What one axis is pinned to.
 ///
 /// **Adjacently** tagged (`{"kind": …, "value": …}`), not internally tagged: an
-/// internal tag can only be merged into a variant that serializes as a *map*, so
-/// `Lamports(i64)` / `Labels(Vec<String>)` — every scalar and sequence variant
-/// here — fail at runtime with "cannot serialize tagged newtype variant …". That
-/// error surfaces nowhere near the type: it aborts `to_value(&selection)` for the
-/// WHOLE selection, so the groups response silently shipped without `selection`
-/// at all and the frontend fell back to "no fingerprint" on every card.
+/// internal tag can only be merged into a variant that serializes as a *map*, so a
+/// scalar or sequence variant fails at runtime with "cannot serialize tagged
+/// newtype variant …". That error surfaces nowhere near the type — it aborts
+/// `to_value(&selection)` for the WHOLE selection, so the groups response ships
+/// without `selection` at all and every card falls back to "no fingerprint".
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-pub enum AxisPredicate {
-    /// Exact integer (`cu_limit` / `cu_price`).
-    Int(i64),
-    /// Exact text (`token_program_id`).
+pub enum ClauseValue {
+    /// A predicate the fingerprint carries verbatim — the promotable case.
+    Axis(AxisPredicate),
+    /// Exact text (`token_program_id`). No fingerprint axis.
     Text(String),
-    /// Exact boolean (`is_cashback_enabled`).
-    Bool(bool),
-    /// Exact ordered instruction-label sequence — same semantics on both sides
-    /// (the sweep's set filter and the engine's `ix_labels` axis are both an
-    /// exact ordered sequence), so this maps across losslessly.
-    Labels(Vec<String>),
-    /// One exact lamports amount.
-    Lamports(i64),
-    /// Half-open `[lo, hi)` lamports — a bucket key, or a range filter entry.
-    LamportsRange { lo: i64, hi: i64 },
-    /// Two or more alternatives, verbatim as the filter spelled them. A
-    /// fingerprint axis holds one value, so this never materializes.
+    /// Exact boolean (`is_cashback_enabled`). No fingerprint axis.
+    Flag(bool),
+    /// Two or more alternatives, verbatim as the filter spelled them. One axis holds
+    /// one predicate, so this never materializes.
     AnyOf(Vec<String>),
-    /// An amount past `i64` — pump.fun's `u64::MAX` "no slippage cap" ceiling.
-    /// A *sentinel, not an amount*: it has no `BIGINT` axis to live in.
-    Ceiling(u64),
     /// The axis is **absent** on this group's tokens (the `∅` key). Distinct from
-    /// "unconstrained": a `None` fingerprint axis matches tokens that *have* a
+    /// "unconstrained": an unset fingerprint axis matches tokens that *have* a
     /// value, which is the opposite of what this group selected.
     Absent,
 }
 
-impl AxisPredicate {
+impl ClauseValue {
     /// Human-readable value, for the group card and for error messages.
-    pub fn display(&self) -> String {
+    pub fn display(&self, unit: Option<AxisUnit>) -> String {
+        let n = |v: &u128| match unit {
+            Some(AxisUnit::Lamports) => sol_label(*v),
+            _ => v.to_string(),
+        };
         match self {
-            AxisPredicate::Int(v) => v.to_string(),
-            AxisPredicate::Text(s) => s.clone(),
-            AxisPredicate::Bool(b) => b.to_string(),
-            AxisPredicate::Labels(l) => l.join(" | "),
-            AxisPredicate::Lamports(v) => exact_sol_label(*v),
-            AxisPredicate::LamportsRange { lo, hi } => {
-                format!("{}–{}", exact_sol_label(*lo), exact_sol_label(*hi))
-            }
-            AxisPredicate::AnyOf(vs) => format!("any of [{}]", vs.join(", ")),
-            AxisPredicate::Ceiling(v) => format!("{} (no cap)", exact_sol_label_u64(*v)),
-            AxisPredicate::Absent => "∅ (absent)".to_string(),
+            ClauseValue::Axis(AxisPredicate::Sequence { labels }) => labels.join(" | "),
+            ClauseValue::Axis(AxisPredicate::Range { min, max }) => match (min, max) {
+                (Some(a), Some(b)) if a == b => n(a),
+                (Some(a), Some(b)) => format!("{}–{}", n(a), n(b)),
+                (Some(a), None) => format!("≥{}", n(a)),
+                (None, Some(b)) => format!("≤{}", n(b)),
+                (None, None) => "any".to_string(),
+            },
+            ClauseValue::Text(s) => s.clone(),
+            ClauseValue::Flag(b) => b.to_string(),
+            ClauseValue::AnyOf(vs) => format!("any of [{}]", vs.join(", ")),
+            ClauseValue::Absent => "∅ (absent)".to_string(),
         }
     }
 }
@@ -125,12 +116,12 @@ impl AxisPredicate {
 /// One axis of the selection: what it is pinned to, and who pinned it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Clause {
-    /// Serde tag of the axis (`"max_cost_lamports"`, …) — the key the group_key,
-    /// the `field_filters` map and the frontend column labels all already use.
+    /// Serde tag of the axis (`"max_cost_lamports"`, …) — the key the group_key, the
+    /// `field_filters` map and the frontend column labels all already use.
     pub field: &'static str,
-    pub predicate: AxisPredicate,
+    pub value: ClauseValue,
     pub origin: Origin,
-    /// Pre-rendered `predicate.display()`, so the frontend never re-derives it.
+    /// Pre-rendered `value.display()`, so the frontend never re-derives it.
     pub display: String,
 }
 
@@ -140,17 +131,16 @@ pub struct GroupSelection {
     /// The saved fingerprint the run was scoped to, if any. Kept for provenance —
     /// the scope's axes are already expanded into `clauses`.
     pub scope_fingerprint_id: Option<Uuid>,
-    /// Axis clauses, in [`GroupField`] declaration order (stable for display and
-    /// for the `find_or_create` identity that follows from it).
+    /// Axis clauses, in [`GroupField`] declaration order (stable for display and for
+    /// the `find_or_create` identity that follows from it).
     pub clauses: Vec<Clause>,
-    /// Whether [`materialize`](Self::materialize) would succeed — precomputed so
-    /// the group card can gray out Promote instead of failing on click.
+    /// Whether [`materialize`](Self::materialize) would succeed — precomputed so the
+    /// group card can gray out Promote instead of failing on click.
     pub promotable: bool,
     /// Why not, when `promotable` is false. Empty otherwise.
     pub blockers: Vec<String>,
-    /// The identity fields of the fingerprint this group promotes to — exactly the
-    /// columns `FingerprintRepo::find_or_create` keys on. `None` when not
-    /// promotable.
+    /// The identity of the fingerprint this group promotes to — exactly what
+    /// `FingerprintRepo::find_or_create` keys on. `None` when not promotable.
     ///
     /// Emitted so the frontend can tell whether that fingerprint already exists by
     /// *comparing* an identity the backend authored, instead of rebuilding one from
@@ -160,32 +150,26 @@ pub struct GroupSelection {
     pub identity: Option<Value>,
 }
 
-/// Axis order for [`GroupSelection::clauses`] — the fingerprint's own field order,
-/// so a selection reads like the rule editor.
-const FIELD_ORDER: [GroupField; 10] = [
-    GroupField::IxLabels,
-    GroupField::CuLimit,
-    GroupField::CuPrice,
-    GroupField::InitialBuySol,
-    GroupField::MaxCostLamports,
-    GroupField::SpendableLamportsIn,
-    GroupField::FirstSlotBuySol,
-    GroupField::FirstSlotSellSol,
-    GroupField::TokenProgramId,
-    GroupField::IsCashbackEnabled,
-];
+/// Axis order for [`GroupSelection::clauses`] — labels first, then the registry's
+/// own order, then the two grouping-only fields, so a selection reads like the rule
+/// editor.
+fn field_rank(tag: &str) -> usize {
+    match tag {
+        "ix_labels" => 0,
+        "token_program_id" => 98,
+        "is_cashback_enabled" => 99,
+        other => AxisId::from_key(other).map(|a| a as usize + 1).unwrap_or(97),
+    }
+}
 
 impl GroupSelection {
     /// Resolve `run` + this group's `group_key` into the canonical selection.
     ///
-    /// `scope_fp` must be the run's `fingerprint_id` row when it has one (the
-    /// caller owns the fetch); its axes are expanded into clauses so a scoped run
-    /// and a filter run produce the *same* vocabulary downstream. A group-by axis
-    /// wins over a scope/filter clause on the same field: it is this group's own
-    /// slice, always at least as narrow as what selected the corpus.
-    ///
-    /// Legacy rows need no special case — every input is a persisted run column,
-    /// so a run swept before this module existed resolves identically.
+    /// `scope_fp` must be the run's `fingerprint_id` row when it has one (the caller
+    /// owns the fetch); its axes are expanded into clauses so a scoped run and a
+    /// filter run produce the *same* vocabulary downstream. A group-by axis wins over
+    /// a scope/filter clause on the same field: it is this group's own slice, always
+    /// at least as narrow as what selected the corpus.
     pub fn resolve(
         run: &GroupedSweepRun,
         scope_fp: Option<&Fingerprint>,
@@ -193,26 +177,18 @@ impl GroupSelection {
     ) -> Self {
         let mut acc: Vec<Clause> = Vec::new();
 
-        // 1. The scope fingerprint's own axes, at the fingerprint's precision (NOT
-        //    the run's — identity is the fingerprint's, and the two can differ).
+        // 1. The scope fingerprint's own axes. A straight copy — the fingerprint and
+        //    the selection speak the same predicate vocabulary, so there is no
+        //    precision to re-read and nothing that can be read differently here than
+        //    the matcher reads it.
         if let Some(fp) = scope_fp {
-            let p = SolPrecision::from_width(fp.bucket_size_amount);
-            push(&mut acc, GroupField::CuLimit, fp.cu_limit.map(AxisPredicate::Int), Origin::Scope);
-            push(&mut acc, GroupField::CuPrice, fp.cu_price.map(AxisPredicate::Int), Origin::Scope);
-            push(
-                &mut acc,
-                GroupField::IxLabels,
-                fp.ix_labels.clone().filter(|l| !l.is_empty()).map(AxisPredicate::Labels),
-                Origin::Scope,
-            );
-            for (field, v) in [
-                (GroupField::InitialBuySol, fp.init_buy_lamports),
-                (GroupField::MaxCostLamports, fp.max_cost_lamports),
-                (GroupField::SpendableLamportsIn, fp.spendable_lamports_in),
-                (GroupField::FirstSlotBuySol, fp.first_slot_buy_lamports),
-                (GroupField::FirstSlotSellSol, fp.first_slot_sell_lamports),
-            ] {
-                push(&mut acc, field, v.map(|l| lamports_at(l, p)), Origin::Scope);
+            for (axis, pred) in fp.criteria.iter() {
+                push(
+                    &mut acc,
+                    GroupField::from_axis(axis),
+                    Some(ClauseValue::Axis(pred.clone())),
+                    Origin::Scope,
+                );
             }
         }
 
@@ -224,27 +200,23 @@ impl GroupSelection {
             .as_ref()
             .map(normalize_labels)
             .filter(|l| !l.is_empty())
-            .map(AxisPredicate::Labels);
+            .map(|labels| ClauseValue::Axis(AxisPredicate::Sequence { labels }));
         push(&mut acc, GroupField::IxLabels, labels, Origin::Filter);
         if let Some(map) = run.field_filters.as_ref().and_then(Value::as_object) {
             for (tag, vals) in map {
                 let Some(field) = GroupField::from_tag(tag) else { continue };
                 let Some(vals) = vals.as_array().filter(|v| !v.is_empty()) else { continue };
-                push(&mut acc, field, Some(filter_predicate(field, vals)), Origin::Filter);
+                push(&mut acc, field, Some(filter_value(field, vals)), Origin::Filter);
             }
         }
 
-        // 3. This group's own key, at the run's grouping precision. Overrides the
-        //    above: the group is a sub-slice of whatever selected the corpus.
-        if let Some(obj) = group_key.as_object() {
-            for (tag, val) in obj {
-                let Some(field) = GroupField::from_tag(tag) else { continue };
-                let Some(s) = val.as_str() else { continue };
-                push(&mut acc, field, Some(key_predicate(field, s)), Origin::GroupBy);
-            }
+        // 3. This group's own key. Overrides the above: the group is a sub-slice of
+        //    whatever selected the corpus.
+        for (field, value) in GroupKey::from_json(group_key).0 {
+            push(&mut acc, field, Some(key_value(&value)), Origin::GroupBy);
         }
 
-        acc.sort_by_key(|c| FIELD_ORDER.iter().position(|f| f.as_str() == c.field).unwrap_or(99));
+        acc.sort_by_key(|c| field_rank(c.field));
         let mut sel = GroupSelection {
             scope_fingerprint_id: run.fingerprint_id,
             clauses: acc,
@@ -256,20 +228,12 @@ impl GroupSelection {
             Ok(fp) => {
                 sel.promotable = true;
                 sel.identity = Some(serde_json::json!({
-                    "cu_limit": fp.cu_limit,
-                    "cu_price": fp.cu_price,
-                    "init_buy_lamports": fp.init_buy_lamports,
-                    "max_cost_lamports": fp.max_cost_lamports,
-                    "spendable_lamports_in": fp.spendable_lamports_in,
-                    "first_slot_buy_lamports": fp.first_slot_buy_lamports,
-                    "first_slot_sell_lamports": fp.first_slot_sell_lamports,
-                    "bucket_size_amount": fp.bucket_size_amount,
-                    "ix_labels": fp.ix_labels,
-                    // `IDENTITY_WHERE` compares this column too. A promoted group is
-                    // always a set of axis values, so it is always `false` here — but
-                    // it has to be PRESENT, or the frontend compares an identity that
-                    // is silently missing one of the columns it claims to carry, and a
-                    // saved wildcard row would answer to a group it does not match.
+                    "criteria": fp.criteria,
+                    // `IDENTITY_WHERE` compares this too. A promoted group always names
+                    // axes, so it is always `false` — but it has to be PRESENT, or the
+                    // frontend compares an identity silently missing one of the columns
+                    // it claims to carry, and a saved wildcard row answers to a group it
+                    // does not match.
                     "wildcard": fp.wildcard,
                 }));
             }
@@ -278,117 +242,62 @@ impl GroupSelection {
         sel
     }
 
-    /// Build the fingerprint that matches **exactly** this selection, or return
-    /// every clause that has no fingerprint expression.
+    /// Build the fingerprint that matches **exactly** this selection, or return every
+    /// clause that has no fingerprint expression.
     ///
     /// The returned fingerprint carries no `metric_config` — the caller owns that
     /// (the scope fingerprint's config / the run's volume-ix patterns).
     pub fn materialize(&self, name: String) -> Result<Fingerprint, Vec<String>> {
         let mut blockers: Vec<String> = Vec::new();
-        let mut fp = Fingerprint {
-            // A selection fingerprint always names axes; never a match-all row.
-            wildcard: false,
-            id: Uuid::new_v4(),
-            name,
-            cu_limit: None,
-            cu_price: None,
-            init_buy_lamports: None,
-            max_cost_lamports: None,
-            spendable_lamports_in: None,
-            first_slot_buy_lamports: None,
-            first_slot_sell_lamports: None,
-            bucket_size_amount: None,
-            ix_labels: None,
-            metric_config: serde_json::json!({}),
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
-
-        // A fingerprint carries ONE width for every SOL axis, so the axes must agree
-        // on a precision before any of them can be written. `None` = exact mode.
-        let mut width: Option<Option<f64>> = None;
-        let mut sol: Vec<(&Clause, i64)> = Vec::new();
+        let mut criteria = Criteria::new();
 
         for c in &self.clauses {
-            let Some(field) = GroupField::from_tag(c.field) else { continue };
-            match (&c.predicate, field) {
-                (AxisPredicate::Int(v), GroupField::CuLimit) => fp.cu_limit = Some(*v),
-                (AxisPredicate::Int(v), GroupField::CuPrice) => fp.cu_price = Some(*v),
-                (AxisPredicate::Labels(l), GroupField::IxLabels) => fp.ix_labels = Some(l.clone()),
-                (AxisPredicate::Lamports(v), _) if field.is_bucketed() => {
-                    reconcile(&mut width, None, c, &mut blockers);
-                    sol.push((c, *v));
+            let field = GroupField::from_tag(c.field);
+            match (&c.value, field.and_then(GroupField::axis)) {
+                // The promotable case, and now the common one: the predicate the
+                // group selected on IS the predicate the fingerprint stores.
+                (ClauseValue::Axis(pred), Some(axis)) => {
+                    criteria.insert(axis, pred.clone());
                 }
-                (AxisPredicate::LamportsRange { lo, hi }, _) if field.is_bucketed() => {
-                    match bucket_width_of(*lo, *hi) {
-                        Some(w) => {
-                            reconcile(&mut width, Some(w), c, &mut blockers);
-                            sol.push((c, *lo));
-                        }
-                        // A range that isn't a bucket at its own width (an
-                        // arbitrary `1.5–1.7` filter, or one not aligned to a
-                        // multiple of the width) has no anchor+width spelling.
-                        None => blockers.push(blocked(
-                            c,
-                            "an arbitrary range — a fingerprint SOL axis is one value plus the \
-                             fingerprint-wide bucket width",
-                        )),
-                    }
-                }
-                (AxisPredicate::Ceiling(_), _) => blockers.push(blocked(
+                (ClauseValue::Axis(_), None) => blockers.push(blocked(
                     c,
-                    "a \"no cap\" ceiling past i64 — it is a sentinel, not an amount, and no \
-                     BIGINT axis can hold it",
+                    "a grouping-only field — the matcher has no axis for it",
                 )),
-                (AxisPredicate::Absent, _) => blockers.push(blocked(
+                (ClauseValue::Absent, _) => blockers.push(blocked(
                     c,
                     "an absent axis — a fingerprint spells \"unset\" as \"unconstrained\", which \
                      would also match tokens that HAVE a value",
                 )),
-                (AxisPredicate::AnyOf(_), _) => blockers.push(blocked(
+                (ClauseValue::AnyOf(_), _) => blockers.push(blocked(
                     c,
-                    "several alternatives — a fingerprint axis holds exactly one value",
+                    "several alternatives — one axis holds one predicate, and a range cannot \
+                     express a disjunction",
                 )),
-                (_, GroupField::TokenProgramId) => blockers.push(blocked(
-                    c,
-                    "the fingerprint has no token-program axis",
-                )),
-                (_, GroupField::IsCashbackEnabled) => blockers.push(blocked(
-                    c,
-                    "the fingerprint has no cashback axis",
-                )),
-                // A predicate that doesn't fit its own field (a hand-edited row).
-                (p, f) => blockers.push(blocked(
-                    c,
-                    &format!("{p:?} is not a valid predicate for {}", f.as_str()),
-                )),
+                (ClauseValue::Text(_), _) => {
+                    blockers.push(blocked(c, "the fingerprint has no token-program axis"))
+                }
+                (ClauseValue::Flag(_), _) => {
+                    blockers.push(blocked(c, "the fingerprint has no cashback axis"))
+                }
             }
         }
 
-        let resolved_width = width.flatten();
-        for (c, lamports) in sol {
-            let Some(field) = GroupField::from_tag(c.field) else { continue };
-            match field {
-                GroupField::InitialBuySol => fp.init_buy_lamports = Some(lamports),
-                GroupField::MaxCostLamports => fp.max_cost_lamports = Some(lamports),
-                GroupField::SpendableLamportsIn => fp.spendable_lamports_in = Some(lamports),
-                GroupField::FirstSlotBuySol => fp.first_slot_buy_lamports = Some(lamports),
-                GroupField::FirstSlotSellSol => fp.first_slot_sell_lamports = Some(lamports),
-                _ => {}
-            }
-        }
-        fp.bucket_size_amount = resolved_width.map(tidy_sol_decimal);
+        let now = chrono::Utc::now();
+        let fp = Fingerprint { name, criteria, ..Fingerprint::empty(Uuid::new_v4(), now) };
 
-        // `matches` refuses an all-`None` fingerprint (it would arm on everything),
-        // so an unexpressible-only selection must fail here rather than create a
-        // row that silently matches nothing.
-        let armed = trading_core::strategies::fingerprint_axes::fp_to_engine(&fp);
-        if blockers.is_empty() && !armed.has_any_criterion() {
-            blockers.push(
-                "this group has no fingerprint-expressible criterion — the rule would have no \
-                 entry gate at all"
-                    .to_string(),
-            );
+        // The matcher refuses a criterion-less fingerprint (it would otherwise arm on
+        // everything), so an unexpressible-only selection must fail here rather than
+        // create a row that silently matches nothing.
+        if blockers.is_empty() {
+            if let Err(e) = fp.validate() {
+                blockers.push(if fp.criteria.is_empty() {
+                    "this group has no fingerprint-expressible criterion — the rule would have \
+                     no entry gate at all"
+                        .to_string()
+                } else {
+                    e
+                });
+            }
         }
         if blockers.is_empty() {
             Ok(fp)
@@ -397,19 +306,17 @@ impl GroupSelection {
         }
     }
 
-    /// Whether every clause came from the scope fingerprint — i.e. the group is
-    /// the whole scope, with no group-by or filter narrowing on top. The promote
-    /// path reuses the saved row itself in that case instead of materializing a
-    /// match-identical twin (a bucketed axis re-anchors on its bucket's lower
-    /// edge, which matches the same tokens but is a different `find_or_create`
-    /// identity — and a duplicate fingerprint in the library is noise).
+    /// Whether every clause came from the scope fingerprint — i.e. the group is the
+    /// whole scope, with no group-by or filter narrowing on top. The promote path
+    /// reuses the saved row itself in that case rather than minting a
+    /// match-identical twin, which would be noise in the library.
     pub fn is_scope_only(&self) -> bool {
         self.scope_fingerprint_id.is_some()
             && !self.clauses.is_empty()
             && self.clauses.iter().all(|c| c.origin == Origin::Scope)
     }
 
-    /// One-line summary for logs / the run header (`"ix_labels = … · max cost = 0.324"`).
+    /// One-line summary for logs / the run header (`"ix_labels = … · max_cost_lamports = 0.324"`).
     pub fn summary(&self) -> String {
         if self.clauses.is_empty() {
             return "every token in the corpus window".to_string();
@@ -427,171 +334,65 @@ impl GroupSelection {
 
 /// Append a clause, replacing any earlier one for the same field (later stages —
 /// filter, then group-by — are narrower than earlier ones by construction).
-fn push(acc: &mut Vec<Clause>, field: GroupField, pred: Option<AxisPredicate>, origin: Origin) {
-    let Some(predicate) = pred else { return };
-    let display = predicate.display();
-    let clause = Clause { field: field.as_str(), predicate, origin, display };
+fn push(acc: &mut Vec<Clause>, field: GroupField, value: Option<ClauseValue>, origin: Origin) {
+    let Some(value) = value else { return };
+    let display = value.display(field.unit());
+    let clause = Clause { field: field.as_str(), value, origin, display };
     match acc.iter_mut().find(|c| c.field == field.as_str()) {
         Some(slot) => *slot = clause,
         None => acc.push(clause),
     }
 }
 
-/// A stored fingerprint axis → predicate, at the fingerprint's own precision.
-fn lamports_at(lamports: i64, precision: SolPrecision) -> AxisPredicate {
-    match precision {
-        SolPrecision::Exact => AxisPredicate::Lamports(lamports),
-        SolPrecision::Bucket(w) => {
-            let lo = bucket_index(lamports as f64 / LAMPORTS_PER_SOL_F64, w) as f64 * w;
-            AxisPredicate::LamportsRange {
-                lo: sol_to_lamports_round(lo),
-                hi: sol_to_lamports_round(lo + w),
-            }
-        }
-    }
-}
-
-/// A `field_filters` entry → predicate. One entry parses to an exact amount or a
-/// range through the shared [`SolFilter`] (the same parser the corpus filter used,
-/// so the selection can't disagree with what was actually swept); two or more stay
-/// verbatim as [`AxisPredicate::AnyOf`].
-fn filter_predicate(field: GroupField, vals: &[Value]) -> AxisPredicate {
+/// A `field_filters` entry → clause value. One entry parses through the shared
+/// [`parse_filter`] (the same parser the corpus filter used, so the selection cannot
+/// disagree with what was actually swept); two or more stay verbatim as
+/// [`ClauseValue::AnyOf`].
+fn filter_value(field: GroupField, vals: &[Value]) -> ClauseValue {
     let text = |v: &Value| match v {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     };
     if vals.len() > 1 {
-        return AxisPredicate::AnyOf(vals.iter().map(text).collect());
+        return ClauseValue::AnyOf(vals.iter().map(text).collect());
     }
-    let v = &vals[0];
-    if field.is_bucketed() {
-        return match SolFilter::parse(&text(v)) {
-            Some(SolFilter::Exact(l)) => AxisPredicate::Lamports(l),
-            Some(SolFilter::Range(lo, hi)) => AxisPredicate::LamportsRange { lo, hi },
-            // Unparseable: the corpus filter dropped every token, so nothing
-            // reached this group — but keep it visible rather than silently gone.
-            None => AxisPredicate::AnyOf(vec![text(v)]),
+    let raw = text(&vals[0]);
+    if let Some(unit) = field.unit() {
+        return match parse_filter(&raw, unit) {
+            Some(pred) => ClauseValue::Axis(pred),
+            // Unparseable: the corpus filter dropped every token, so nothing reached
+            // this group — but keep it visible rather than silently gone.
+            None => ClauseValue::AnyOf(vec![raw]),
         };
     }
     match field {
-        GroupField::CuLimit | GroupField::CuPrice => match v.as_i64() {
-            Some(i) => AxisPredicate::Int(i),
-            None => AxisPredicate::AnyOf(vec![text(v)]),
+        GroupField::IsCashbackEnabled => match vals[0].as_bool() {
+            Some(b) => ClauseValue::Flag(b),
+            None => ClauseValue::AnyOf(vec![raw]),
         },
-        GroupField::IsCashbackEnabled => match v.as_bool() {
-            Some(b) => AxisPredicate::Bool(b),
-            None => AxisPredicate::AnyOf(vec![text(v)]),
-        },
-        _ => AxisPredicate::Text(text(v)),
-    }
-}
-
-/// A `group_key` label → predicate. The inverse of `hunter_engine::grouping`'s
-/// `render_field`: `∅` is the absent sentinel, a bucketed axis renders `"lo–hi"`
-/// (or the exact amount in `SolPrecision::Exact`), everything else is its value.
-fn key_predicate(field: GroupField, s: &str) -> AxisPredicate {
-    if s == MISSING {
-        return AxisPredicate::Absent;
-    }
-    if field.is_bucketed() {
-        // Parse before `SolFilter` so the `u64` ceiling — which renders as exact
-        // digits in BOTH precision modes — is recognised as the sentinel it is
-        // instead of saturating into a bogus `i64::MAX` amount.
-        if let Some(c) = ceiling_lamports(s) {
-            return AxisPredicate::Ceiling(c);
-        }
-        return match SolFilter::parse(s) {
-            Some(SolFilter::Exact(l)) => AxisPredicate::Lamports(l),
-            Some(SolFilter::Range(lo, hi)) => AxisPredicate::LamportsRange { lo, hi },
-            None => AxisPredicate::Text(s.to_string()),
-        };
-    }
-    match field {
-        GroupField::CuLimit | GroupField::CuPrice => {
-            s.parse().map(AxisPredicate::Int).unwrap_or_else(|_| AxisPredicate::Text(s.to_string()))
-        }
-        GroupField::IsCashbackEnabled => {
-            s.parse().map(AxisPredicate::Bool).unwrap_or_else(|_| AxisPredicate::Text(s.to_string()))
-        }
         GroupField::IxLabels => {
-            AxisPredicate::Labels(s.split(" | ").map(str::to_string).collect())
+            ClauseValue::Axis(AxisPredicate::Sequence {
+                labels: raw.split(" | ").map(str::to_string).collect(),
+            })
         }
-        _ => AxisPredicate::Text(s.to_string()),
+        _ => ClauseValue::Text(raw),
     }
 }
 
-/// `Some(lamports)` when a group-key label names an amount past the `i64` /
-/// `BIGINT` axis domain — pump.fun's "fill at any price" ceiling.
-fn ceiling_lamports(label: &str) -> Option<u64> {
-    if label.contains('–') {
-        return None;
-    }
-    let sol: f64 = label.trim().parse().ok()?;
-    if sol < i64::MAX as f64 / LAMPORTS_PER_SOL_F64 {
-        return None;
-    }
-    // Re-read the exact digits rather than round-tripping through the f64 that
-    // just told us it is out of range (that's how `…709551615` became `…7096`).
-    let (whole, frac) = match label.trim().split_once('.') {
-        Some((w, f)) => (w, format!("{f:0<9}")),
-        None => (label.trim(), "000000000".to_string()),
-    };
-    let w: u64 = whole.parse().ok()?;
-    let f: u64 = frac.get(..9)?.parse().ok()?;
-    w.checked_mul(1_000_000_000)?.checked_add(f)
-}
-
-/// The bucket width a `[lo, hi)` key implies, if it really is a bucket at that
-/// width — i.e. `lo` is a multiple of `hi - lo`, which is what
-/// `bucket_index(lo, w) * w == lo` asserts. `None` for any other range.
-fn bucket_width_of(lo: i64, hi: i64) -> Option<f64> {
-    if hi <= lo {
-        return None;
-    }
-    let w = (hi - lo) as f64 / LAMPORTS_PER_SOL_F64;
-    let lo_sol = lo as f64 / LAMPORTS_PER_SOL_F64;
-    let edge = bucket_index(lo_sol, w) as f64 * w;
-    if (edge - lo_sol).abs() <= w * BUCKET_EPS.max(1e-9) * 10.0 {
-        Some(tidy_sol_decimal(w))
-    } else {
-        None
-    }
-}
-
-/// Fold one axis's required width into the fingerprint-wide one, recording a
-/// blocker when two axes disagree (the single `bucket_size_amount` can serve one).
-fn reconcile(
-    acc: &mut Option<Option<f64>>,
-    want: Option<f64>,
-    c: &Clause,
-    blockers: &mut Vec<String>,
-) {
-    match acc {
-        None => *acc = Some(want),
-        Some(have) if same_width(*have, want) => {}
-        Some(have) => blockers.push(blocked(
-            c,
-            &format!(
-                "precision {} — but another axis needs {}, and a fingerprint has ONE bucket width",
-                width_label(want),
-                width_label(*have)
-            ),
-        )),
-    }
-}
-
-fn same_width(a: Option<f64>, b: Option<f64>) -> bool {
-    match (a, b) {
-        (None, None) => true,
-        (Some(x), Some(y)) => (x - y).abs() < 1e-12,
-        _ => false,
-    }
-}
-
-fn width_label(w: Option<f64>) -> String {
-    match w {
-        None => "exact amounts".to_string(),
-        Some(w) => format!("{w}-SOL buckets"),
+/// A `group_key` value → clause value. A direct read: the key already carries the
+/// predicate, so unlike the retired form there is no label to parse and no `u64`
+/// ceiling that has to be recognised before a float destroys its digits.
+fn key_value(v: &GroupValue) -> ClauseValue {
+    match v {
+        GroupValue::Missing => ClauseValue::Absent,
+        GroupValue::Text { value } => ClauseValue::Text(value.clone()),
+        GroupValue::Flag { value } => ClauseValue::Flag(*value),
+        GroupValue::Labels { labels } => {
+            ClauseValue::Axis(AxisPredicate::Sequence { labels: labels.clone() })
+        }
+        GroupValue::Window { min, max } => {
+            ClauseValue::Axis(AxisPredicate::Range { min: *min, max: *max })
+        }
     }
 }
 
@@ -599,16 +400,12 @@ fn blocked(c: &Clause, why: &str) -> String {
     format!("{} = {} (from {}): {why}", c.field, c.display, c.origin.describe())
 }
 
-/// Local mirror of the engine's rounding conversion, kept here so a bucket edge
-/// derived in SOL lands on the same lamports integer the axis stores.
-fn sol_to_lamports_round(sol: f64) -> i64 {
-    (sol * LAMPORTS_PER_SOL_F64).round() as i64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    const SOL: u128 = 1_000_000_000;
 
     fn run() -> GroupedSweepRun {
         GroupedSweepRun {
@@ -618,199 +415,203 @@ mod tests {
             method: "grid".into(),
             created_after: None,
             created_before: None,
-            curve_only: false,
-            grouping_spec: json!([]),
-            axes_spec: json!({}),
-            min_tokens: 1,
-            token_count: 1,
-            group_count: 1,
-            combo_count: 1,
-            corpus_hash: None,
-            corpus_last_trade_at: None,
-            created_at: chrono::Utc::now(),
-            ix_labels_filter: None,
-            field_filters: None,
-            fingerprint_id: None,
-            token_cap: None,
-            max_combos: None,
-            label: None,
-            buy_amount_sol: Some(1.0),
-            bucket_width_sol: None,
-            fill_model: None,
-            cost_model: None,
-            volume_ix_patterns: None,
-            scale_out: None,
-            scale_out_top_k: None,
-            status: "completed".into(),
-            groups_done: 1,
+            ..Default::default()
         }
     }
 
-    /// **The bug this module exists for.** A filter run pins the labels and one
-    /// exact `max_sol_cost`, groups by nothing — and the promoted fingerprint used
-    /// to carry the labels only, arming on every max-cost value there is.
-    #[test]
-    fn field_filters_reach_the_promoted_fingerprint() {
-        let mut r = run();
-        r.ix_labels_filter = Some(json!(["Pump.Fun: Create_v2", "Pump.Fun: Buy"]));
-        r.field_filters = Some(json!({ "max_cost_lamports": ["0.324"] }));
-        let sel = GroupSelection::resolve(&r, None, &json!({}));
+    fn fp_with(criteria: Criteria) -> Fingerprint {
+        Fingerprint { criteria, ..Fingerprint::empty(Uuid::new_v4(), chrono::Utc::now()) }
+    }
 
+    fn window(min: Option<u128>, max: Option<u128>) -> Value {
+        json!({
+            "kind": "window",
+            "min": min.map(|v| v.to_string()),
+            "max": max.map(|v| v.to_string()),
+        })
+    }
+
+    /// The headline property: a group key's window IS the fingerprint's range, so
+    /// promoting copies it. Nothing is re-anchored, so the promoted rule arms on
+    /// exactly the tokens the numbers came from.
+    #[test]
+    fn a_binned_group_promotes_to_the_same_window_it_selected() {
+        let key = json!({ "max_cost_lamports": window(Some(SOL), Some(2 * SOL - 1)) });
+        let sel = GroupSelection::resolve(&run(), None, &key);
         assert!(sel.promotable, "blockers: {:?}", sel.blockers);
         let fp = sel.materialize("t".into()).unwrap();
-        assert_eq!(fp.max_cost_lamports, Some(324_000_000), "the pinned amount must survive");
-        assert_eq!(fp.ix_labels.as_deref(), Some(&["Pump.Fun: Create_v2".to_string(), "Pump.Fun: Buy".to_string()][..]));
-        assert_eq!(fp.bucket_size_amount, None, "an exact pin is exact mode, not a bucket");
-    }
-
-    /// A bucketed group key round-trips to anchor + width, so the rule arms on the
-    /// same bucket the group counted.
-    #[test]
-    fn bucketed_group_key_round_trips_to_anchor_plus_width() {
-        let mut r = run();
-        r.bucket_width_sol = Some(0.1);
-        let sel = GroupSelection::resolve(&r, None, &json!({ "max_cost_lamports": "1.5–1.6" }));
-        let fp = sel.materialize("t".into()).unwrap();
-        assert_eq!(fp.max_cost_lamports, Some(1_500_000_000));
-        assert_eq!(fp.bucket_size_amount, Some(0.1));
-    }
-
-    /// Every clause a fingerprint cannot spell must BLOCK, never silently widen.
-    /// One case per loss the old promote path had.
-    #[test]
-    fn unexpressible_clauses_block_instead_of_widening() {
-        // `∅` — the axis is absent; dropping it matches tokens that have a value.
-        let sel = GroupSelection::resolve(&run(), None, &json!({ "max_cost_lamports": "∅" }));
-        assert!(!sel.promotable);
-        assert!(sel.blockers[0].contains("absent"), "{:?}", sel.blockers);
-
-        // Axes the fingerprint has no column for.
-        for key in ["token_program_id", "is_cashback_enabled"] {
-            let gk = json!({ key: if key == "token_program_id" { json!("Tokenkeg") } else { json!("true") } });
-            let sel = GroupSelection::resolve(&run(), None, &gk);
-            assert!(!sel.promotable, "{key} must block");
-        }
-
-        // The `u64::MAX` "no cap" ceiling is a sentinel, not an amount.
-        let sel = GroupSelection::resolve(
-            &run(),
-            None,
-            &json!({ "max_cost_lamports": "18446744073.709551615" }),
+        assert_eq!(
+            fp.criteria.get(AxisId::MaxCostLamports),
+            Some(&AxisPredicate::Range { min: Some(SOL), max: Some(2 * SOL - 1) })
         );
-        assert!(!sel.promotable);
-        assert!(sel.blockers[0].contains("ceiling") || sel.blockers[0].contains("no cap"), "{:?}", sel.blockers);
+    }
 
-        // A multi-value pin: a fingerprint axis holds one value.
+    /// Two axes binned differently used to be unpromotable: one row-wide width could
+    /// serve only one of them. Per-axis predicates make the conflict impossible.
+    #[test]
+    fn two_axes_at_different_granularities_now_promote_together() {
+        let key = json!({
+            "max_cost_lamports": window(Some(SOL), Some(2 * SOL - 1)),
+            "init_buy_lamports": window(Some(1_515_000_000), Some(1_515_000_000)),
+        });
+        let sel = GroupSelection::resolve(&run(), None, &key);
+        assert!(sel.promotable, "blockers: {:?}", sel.blockers);
+        let fp = sel.materialize("t".into()).unwrap();
+        assert_eq!(fp.criteria.len(), 2);
+        assert_eq!(
+            fp.criteria.get(AxisId::InitBuyLamports).unwrap().as_exact(),
+            Some(1_515_000_000)
+        );
+    }
+
+    /// The `u64::MAX` "fill at any price" ceiling used to block a promote outright —
+    /// no `BIGINT` axis could hold it. It is an ordinary bound now.
+    #[test]
+    fn a_no_cap_ceiling_promotes_like_any_other_amount() {
+        let ceiling = u128::from(u64::MAX);
+        let key = json!({ "max_cost_lamports": window(Some(ceiling), Some(ceiling)) });
+        let sel = GroupSelection::resolve(&run(), None, &key);
+        assert!(sel.promotable, "blockers: {:?}", sel.blockers);
+        let fp = sel.materialize("t".into()).unwrap();
+        assert_eq!(fp.criteria.get(AxisId::MaxCostLamports).unwrap().as_exact(), Some(ceiling));
+    }
+
+    /// The two new axes ride the same path, with no promote-side change.
+    #[test]
+    fn the_derived_and_tallied_axes_promote_too() {
+        let key = json!({
+            "ix_count": window(Some(3), Some(5)),
+            "prior_launches": window(Some(0), Some(0)),
+        });
+        let sel = GroupSelection::resolve(&run(), None, &key);
+        assert!(sel.promotable, "blockers: {:?}", sel.blockers);
+        let fp = sel.materialize("t".into()).unwrap();
+        assert_eq!(
+            fp.criteria.get(AxisId::IxCount),
+            Some(&AxisPredicate::Range { min: Some(3), max: Some(5) })
+        );
+        assert_eq!(fp.criteria.get(AxisId::PriorLaunches).unwrap().as_exact(), Some(0));
+    }
+
+    /// An absent axis is NOT "unconstrained" — promoting it would match every token
+    /// that has a value, the opposite of what the group selected.
+    #[test]
+    fn an_absent_axis_blocks_the_promote() {
+        let key = json!({ "max_cost_lamports": { "kind": "missing" } });
+        let sel = GroupSelection::resolve(&run(), None, &key);
+        assert!(!sel.promotable);
+        assert_eq!(sel.blockers.len(), 1, "{:?}", sel.blockers);
+        assert!(sel.blockers[0].contains("absent"), "{:?}", sel.blockers);
+    }
+
+    /// A grouping-only field has no matcher axis, so a group keyed on it cannot
+    /// become a rule — and must say so rather than promote a wider fingerprint.
+    #[test]
+    fn a_grouping_only_field_blocks_the_promote() {
+        for key in [
+            json!({ "token_program_id": { "kind": "text", "value": "Tokenkeg" } }),
+            json!({ "is_cashback_enabled": { "kind": "flag", "value": true } }),
+        ] {
+            let sel = GroupSelection::resolve(&run(), None, &key);
+            assert!(!sel.promotable, "{key} promoted");
+        }
+    }
+
+    /// A multi-value filter is a disjunction; one range cannot express it.
+    #[test]
+    fn a_multi_value_filter_blocks_the_promote() {
         let mut r = run();
-        r.field_filters = Some(json!({ "max_cost_lamports": ["0.1", "0.5"] }));
+        r.field_filters = Some(json!({ "cu_limit": ["200000", "300000"] }));
         let sel = GroupSelection::resolve(&r, None, &json!({}));
         assert!(!sel.promotable);
-        assert!(sel.blockers[0].contains("one value"), "{:?}", sel.blockers);
-
-        // An exact pin on one axis + a bucketed group-by on another needs two
-        // widths, and a fingerprint has one.
-        let mut r = run();
-        r.bucket_width_sol = Some(0.1);
-        r.field_filters = Some(json!({ "max_cost_lamports": ["0.324"] }));
-        let sel = GroupSelection::resolve(&r, None, &json!({ "initial_buy_sol": "1.5–1.6" }));
-        assert!(!sel.promotable);
-        assert!(sel.blockers.iter().any(|b| b.contains("ONE bucket width")), "{:?}", sel.blockers);
+        assert!(sel.blockers[0].contains("alternatives"), "{:?}", sel.blockers);
     }
 
-    /// A selection with nothing expressible must not produce an all-`None`
-    /// fingerprint (which the matcher refuses ⇒ a rule that never fires).
+    /// A selection with nothing expressible must FAIL, never produce a
+    /// criterion-less row: the matcher reads that as "match nothing", which silently
+    /// kills the promoted rule.
     #[test]
-    fn empty_selection_is_not_promotable() {
+    fn an_empty_selection_is_not_a_fingerprint() {
         let sel = GroupSelection::resolve(&run(), None, &json!({}));
         assert!(!sel.promotable);
-        assert!(sel.blockers[0].contains("no fingerprint-expressible criterion"), "{:?}", sel.blockers);
+        assert!(sel.blockers[0].contains("no entry gate"), "{:?}", sel.blockers);
     }
 
-    /// A scoped run that ALSO grouped by an extra axis promoted the scope
-    /// fingerprint verbatim — wider than the group. Both must come through.
+    /// A group-by axis is this group's own slice, so it overrides the corpus-level
+    /// clause on the same field — and the resulting clause says so.
     #[test]
-    fn scoped_run_keeps_the_group_by_narrowing() {
-        let mut fp = Fingerprint {
-            // A selection fingerprint always names axes; never a match-all row.
-            wildcard: false,
-            id: Uuid::new_v4(),
-            name: "scope".into(),
-            cu_limit: Some(200_000),
-            cu_price: None,
-            init_buy_lamports: None,
-            max_cost_lamports: None,
-            spendable_lamports_in: None,
-            first_slot_buy_lamports: None,
-            first_slot_sell_lamports: None,
-            bucket_size_amount: None,
-            ix_labels: Some(vec!["Pump.Fun: Create_v2".into()]),
-            metric_config: json!({}),
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
-        fp.max_cost_lamports = Some(1_010_000);
+    fn a_group_by_axis_overrides_the_scope_on_the_same_field() {
+        let scope = fp_with(
+            Criteria::new()
+                .with(AxisId::MaxCostLamports, AxisPredicate::range(Some(SOL), Some(9 * SOL))),
+        );
         let mut r = run();
-        r.fingerprint_id = Some(fp.id);
-        let sel = GroupSelection::resolve(&r, Some(&fp), &json!({ "cu_price": "1000" }));
-        let out = sel.materialize("t".into()).unwrap();
-        assert_eq!(out.cu_limit, Some(200_000), "scope axis kept");
-        assert_eq!(out.max_cost_lamports, Some(1_010_000), "scope axis kept");
-        assert_eq!(out.cu_price, Some(1_000), "group-by narrowing kept");
+        r.fingerprint_id = Some(scope.id);
+        let key = json!({ "max_cost_lamports": window(Some(2 * SOL), Some(3 * SOL - 1)) });
+        let sel = GroupSelection::resolve(&r, Some(&scope), &key);
+        let c = sel.clauses.iter().find(|c| c.field == "max_cost_lamports").unwrap();
+        assert_eq!(c.origin, Origin::GroupBy);
+        assert_eq!(
+            c.value,
+            ClauseValue::Axis(AxisPredicate::Range { min: Some(2 * SOL), max: Some(3 * SOL - 1) })
+        );
+        assert!(!sel.is_scope_only());
     }
 
-    /// **Every predicate variant must survive `to_value`.** The groups handler
-    /// serializes the whole selection in one call, so a single unserializable
-    /// variant drops `selection` — and with it `identity` — from every group in
-    /// the response, leaving the card unable to badge the fingerprint promote
-    /// would resolve to. That is what an internally-tagged `AxisPredicate` did:
-    /// serde can only merge an internal tag into a map, so `Lamports(i64)` and
-    /// `Labels(Vec<String>)` failed at runtime while compiling fine.
+    /// A scope with no narrowing on top reuses the saved row rather than minting a
+    /// match-identical twin.
     #[test]
-    fn every_predicate_variant_serializes() {
-        let all = [
-            AxisPredicate::Int(200_000),
-            AxisPredicate::Text("Tokenkeg".into()),
-            AxisPredicate::Bool(true),
-            AxisPredicate::Labels(vec!["Pump.Fun: Create_v2".into()]),
-            AxisPredicate::Lamports(15_150_000_000),
-            AxisPredicate::LamportsRange { lo: 1_500_000_000, hi: 1_600_000_000 },
-            AxisPredicate::AnyOf(vec!["0.1".into(), "0.5".into()]),
-            AxisPredicate::Ceiling(u64::MAX),
-            AxisPredicate::Absent,
-        ];
-        for p in all {
-            let v = serde_json::to_value(&p)
-                .unwrap_or_else(|e| panic!("{p:?} is not serializable: {e}"));
-            assert!(v.get("kind").is_some(), "{p:?} lost its discriminant: {v}");
-        }
-    }
-
-    /// The end-to-end shape the frontend reads: a filtered run's groups must ship
-    /// `clauses` + `identity`, because the card matches that identity against the
-    /// saved fingerprints to decide between the "already defined" badge and Create.
-    #[test]
-    fn resolved_selection_serializes_with_its_identity() {
+    fn a_scope_only_group_is_recognised() {
+        let scope = fp_with(Criteria::new().with(AxisId::CuLimit, AxisPredicate::exact(200_000)));
         let mut r = run();
-        r.ix_labels_filter = Some(json!(["Pump.Fun: Create_v2", "Pump.Fun: BuyV2"]));
-        r.field_filters = Some(json!({ "max_cost_lamports": ["15.15"] }));
-        let sel = GroupSelection::resolve(&r, None, &json!({}));
+        r.fingerprint_id = Some(scope.id);
+        let sel = GroupSelection::resolve(&r, Some(&scope), &json!({}));
+        assert!(sel.is_scope_only());
+        assert!(sel.promotable);
+    }
 
+    /// The identity the frontend compares must carry every column `IDENTITY_WHERE`
+    /// keys on — a missing one lets a saved wildcard row badge a group it does not
+    /// match.
+    #[test]
+    fn the_emitted_identity_carries_every_identity_column() {
+        let key = json!({ "cu_limit": window(Some(200_000), Some(200_000)) });
+        let sel = GroupSelection::resolve(&run(), None, &key);
+        let id = sel.identity.expect("promotable");
+        assert!(id.get("criteria").is_some() && id.get("wildcard").is_some(), "{id}");
+        assert_eq!(id["wildcard"], json!(false));
+    }
+
+    /// Display reads in the axis's own unit — SOL for a lamports axis, the integer
+    /// for a tally — so a card never shows 1500000000 where a human types 1.5.
+    #[test]
+    fn clause_display_reads_in_the_axis_unit() {
+        let key = json!({
+            "max_cost_lamports": window(Some(1_515_000_000), Some(1_515_000_000)),
+            "ix_count": window(Some(3), Some(5)),
+        });
+        let sel = GroupSelection::resolve(&run(), None, &key);
+        let by = |f: &str| sel.clauses.iter().find(|c| c.field == f).unwrap().display.clone();
+        assert_eq!(by("max_cost_lamports"), "1.515");
+        assert_eq!(by("ix_count"), "3–5");
+    }
+
+    /// The selection has to survive `serde_json::to_value` — an internally tagged
+    /// enum aborts the whole serialization and the card silently loses `selection`.
+    #[test]
+    fn a_selection_serializes_with_every_clause_kind_present() {
+        let mut r = run();
+        r.field_filters = Some(json!({ "cu_price": ["1", "2"] }));
+        let key = json!({
+            "token_program_id": { "kind": "text", "value": "Tokenkeg" },
+            "is_cashback_enabled": { "kind": "flag", "value": true },
+            "max_cost_lamports": { "kind": "missing" },
+            "cu_limit": window(Some(1), Some(1)),
+            "ix_labels": { "kind": "labels", "labels": ["A", "B"] },
+        });
+        let sel = GroupSelection::resolve(&r, None, &key);
         let v = serde_json::to_value(&sel).expect("selection must serialize");
-        assert_eq!(v["promotable"], json!(true), "{v}");
-        assert_eq!(v["clauses"].as_array().map(Vec::len), Some(2), "{v}");
-        assert_eq!(v["identity"]["max_cost_lamports"], json!(15_150_000_000i64), "{v}");
-        assert_eq!(v["identity"]["bucket_size_amount"], json!(null), "{v}");
-    }
-
-    /// A group-by axis is this group's own slice, so it wins over the wider
-    /// clause that selected the corpus.
-    #[test]
-    fn group_by_overrides_the_corpus_filter_on_the_same_axis() {
-        let mut r = run();
-        r.field_filters = Some(json!({ "cu_limit": [200_000] }));
-        let sel = GroupSelection::resolve(&r, None, &json!({ "cu_limit": "90000" }));
-        let clause = sel.clauses.iter().find(|c| c.field == "cu_limit").unwrap();
-        assert_eq!(clause.predicate, AxisPredicate::Int(90_000));
-        assert_eq!(clause.origin, Origin::GroupBy);
+        // Five from the key, plus the `cu_price` multi-value run filter.
+        assert_eq!(v["clauses"].as_array().unwrap().len(), 6);
     }
 }

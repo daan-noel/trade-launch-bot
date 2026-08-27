@@ -125,7 +125,7 @@ See [lake-pg-read-paths.md](@plans/database/lake-pg-read-paths.md).
 
 One family — there are no per-strategy sweep tables, only these four:
 
-- `grouped_sweep_runs` — run metadata, status(`running`/`completed`/`cancelled`), groups_done, corpus filters, label; `buy_amount_sol` / `bucket_width_sol` are **DOUBLE PRECISION** (`lab/0007`, not REAL — f32 widen polluted `fingerprints.bucket_size_amount` on promote). Coarse SOL knobs also pass through `tidy_sol_decimal` at the repo boundary.
+- `grouped_sweep_runs` — run metadata, status(`running`/`completed`/`cancelled`), groups_done, corpus filters, label; `buy_amount_sol` is **DOUBLE PRECISION** (`lab/0007`, not REAL — an f32 widen pollutes a promoted fingerprint). `partition` (`lab/0002`) is JSONB: `[[field, spec], …]`, the explicit edges a run partitions by. A run carrying `[]` reads as one-group-per-value; re-run it to promote a group. <!-- pt-ok: `[]` is what rows written before lab/0002 hold, and the reader has to know -->
 - `grouped_sweep_groups` — one per fingerprint group; best_combo_id, best_expectancy_sol, best_score
 - `grouped_sweep_combos` — per-run combo→params (`RuleParams`) dictionary (deduped; JOINed back on read)
 - `grouped_sweep_results` — per (group, combo): score, win_rate, PnL metrics, exit-reason mix (incl. `n_exit_metrics`). Retention-filtered to ~660 rows/group max

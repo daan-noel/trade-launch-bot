@@ -417,6 +417,7 @@ fn effect_touches_mint(fx: &Effect, mint: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria};
     use super::*;
     use chrono::{Duration, TimeZone, Utc};
     use hunter_engine::event::{Fill, IntentId, Mint, RuleId, TradeMode};
@@ -435,18 +436,11 @@ mod tests {
 
     fn fp(id: u128) -> EngineFingerprint {
         EngineFingerprint {
-            wildcard: false,
             id: FingerprintId(Uuid::from_u128(id)),
-            cu_limit: Some(200_000),
-            cu_price: None,
-            ix_labels: None,
-            init_buy_lamports: None,
-            max_cost_lamports: None,
-            spendable_lamports_in: None,
-            first_slot_buy_lamports: None,
-            first_slot_sell_lamports: None,
-            bucket_size_amount: Some(0.1),
             metric_config: serde_json::json!({}),
+            wildcard: false,
+            criteria: Criteria::new()
+                .with(AxisId::CuLimit, AxisPredicate::exact(200_000)),
         }
     }
 

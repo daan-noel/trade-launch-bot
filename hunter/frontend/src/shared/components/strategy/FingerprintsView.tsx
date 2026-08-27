@@ -45,13 +45,20 @@ import { FlowPatternsChip } from './FingerprintParamsSummary';
 import { flowDiscoveryHref, rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import { fingerprintAutoName } from 'lib/strategy/fingerprintNameFromGroupKey';
 import {
-  formatBucketWidth,
   lamportsToSol,
   type Fingerprint,
   type FingerprintDraft,
   type StrategyRule,
 } from 'lib/strategy/types';
-import { tidySolDecimal } from 'utils/format';
+
+import {
+  AXES,
+  axisDef,
+  formatPredicate,
+  parseBound,
+  predicateMatches,
+  type AxisDef,
+} from 'lib/strategy/fingerprintAxes';
 
 const fingerprintRowKey = (r: Fingerprint) => r.id;
 
@@ -59,50 +66,43 @@ function dash(): ReactNode {
   return <span className="text-text-dim">—</span>;
 }
 
-function solCell(lamports: number | null): ReactNode {
-  const s = lamportsToSol(lamports);
-  if (s == null) return dash();
-  return <span className="font-mono tabular-nums">{s}◎</span>;
+/** A row's label sequence, or `null` when the axis is unset. */
+function rowLabels(r: Fingerprint): string[] | null {
+  const p = (r.criteria ?? {}).ix_labels;
+  return p?.kind === 'sequence' ? configuredIxLabels(p.labels) : null;
 }
 
-function intCell(n: number | null): ReactNode {
-  if (n == null) return dash();
-  return <span className="font-mono tabular-nums">{n}</span>;
+/** A row's predicate on one numeric axis, rendered in that axis's display unit. */
+function axisText(r: Fingerprint, def: AxisDef): string | null {
+  const p = (r.criteria ?? {})[def.id];
+  return p ? formatPredicate(def.id, p) : null;
 }
 
-function solKey(lamports: number | null): string | null {
-  const s = lamportsToSol(lamports);
-  return s == null ? null : String(s);
+/** The value a numeric axis SORTS by: its low bound, or its high bound when the
+ *  gate is open below. Sorting by a window needs one number, and the low edge is
+ *  where the window starts — the same order a reader scanning the column expects.
+ *  An unset axis sorts as `null` (last), never `0`, which would rank it as the
+ *  smallest amount instead of no criterion. */
+function axisSortValue(r: Fingerprint, def: AxisDef): number | null {
+  const p = (r.criteria ?? {})[def.id];
+  if (p?.kind !== 'range') return null;
+  const b = p.min ?? p.max;
+  if (b == null) return null;
+  const n = Number(b);
+  return Number.isFinite(n) ? (def.unit === 'lamports' ? n / 1e9 : n) : null;
 }
 
 /** Param columns that tint when ≥2 fingerprints share the same value. */
 const COLOR_COLS: {
   key: string;
   valueOf: (r: Fingerprint) => string | null;
-}[] = [
-  { key: 'cu_limit', valueOf: (r) => (r.cu_limit == null ? null : String(r.cu_limit)) },
-  { key: 'cu_price', valueOf: (r) => (r.cu_price == null ? null : String(r.cu_price)) },
-  { key: 'init_buy', valueOf: (r) => solKey(r.init_buy_lamports) },
-  { key: 'max_cost', valueOf: (r) => solKey(r.max_cost_lamports) },
-  { key: 'spendable', valueOf: (r) => solKey(r.spendable_lamports_in) },
-  { key: 'fs_buy', valueOf: (r) => solKey(r.first_slot_buy_lamports) },
-  { key: 'fs_sell', valueOf: (r) => solKey(r.first_slot_sell_lamports) },
-  {
-    key: 'ix_count',
-    valueOf: (r) => {
-      const labels = configuredIxLabels(r.ix_labels);
-      return labels ? String(labels.length) : null;
-    },
-  },
-  {
-    key: 'ix_labels',
-    valueOf: (r) => {
-      const labels = configuredIxLabels(r.ix_labels);
-      return labels ? formatIxLabelsText(labels) : null;
-    },
-  },
-  { key: 'bucket', valueOf: (r) => formatBucketWidth(r.bucket_size_amount) },
-];
+}[] = AXES.map((def) => ({
+  key: def.id,
+  valueOf: (r: Fingerprint) =>
+    def.kind === 'sequence'
+      ? (rowLabels(r) ? formatIxLabelsText(rowLabels(r)!) : null)
+      : axisText(r, def),
+}));
 
 /** Expanded row detail: rules that reference this fingerprint, with the same
  *  params summary as the Rules table so you can tell them apart at a glance.
@@ -299,112 +299,71 @@ export function FingerprintsView({
         // the name column is where it has to be findable.
         searchValue: (r) => (r.wildcard ? `${r.name} wildcard all tokens` : r.name),
       },
-      {
-        key: 'cu_limit',
-        label: 'cu_limit',
-        group: 'cu',
-        render: (r) => intCell(r.cu_limit),
-        searchValue: (r) => String(r.cu_limit ?? ''),
-        sortValue: (r) => r.cu_limit,
-        filterNumber: (r) => r.cu_limit,
+      // One column per registry axis, generated — so a new axis is a table column,
+      // searchable, sortable and filterable, with no edit here.
+      //
+      // A cell shows the axis's PREDICATE (`1.515`, `1.5–2`, `≥1.5`), not a bare
+      // value, because that is what the row matches on. The numeric filter reads
+      // the typed text through the SAME parser the form and the filter box use, so
+      // typing `1.5-2` selects the rows whose window contains that window's floor.
+      ...AXES.filter((d) => d.kind === 'numeric').map((def) => ({
+        key: def.id,
+        label: def.label,
+        group: def.id,
+        render: (r: Fingerprint) => {
+          const t = axisText(r, def);
+          if (t == null) return dash();
+          return (
+            <span className="font-mono tabular-nums" title={def.definition}>
+              {t}
+              {def.unit === 'lamports' ? '◎' : ''}
+            </span>
+          );
+        },
+        searchValue: (r: Fingerprint) => axisText(r, def) ?? '',
+        sortValue: (r: Fingerprint) => axisSortValue(r, def),
+        filterMatch: (r: Fingerprint, raw: string) => {
+          const p = (r.criteria ?? {})[def.id];
+          if (p?.kind !== 'range') return false;
+          const want = parseBound(raw, def.unit);
+          // Unparseable input matches nothing rather than everything: a dropped
+          // filter reads as "no filter", which widens the table silently.
+          if (want == null) return false;
+          return predicateMatches(p, want);
+        },
+        filterPlaceholder: def.unit === 'lamports' ? 'e.g. 1.515' : 'e.g. 3',
+        filterTitle: `${def.label} — ${def.definition}\n\nType a value; a row matches when its window contains it.`,
         sortable: true,
-        cellClassName: cellTint('cu_limit'),
-      },
+        cellClassName: cellTint(def.id),
+      })),
       {
-        key: 'cu_price',
-        label: 'cu_price',
-        group: 'cu',
-        render: (r) => intCell(r.cu_price),
-        searchValue: (r) => String(r.cu_price ?? ''),
-        sortValue: (r) => r.cu_price,
-        filterNumber: (r) => r.cu_price,
-        sortable: true,
-        cellClassName: cellTint('cu_price'),
-      },
-      {
-        key: 'init_buy',
-        label: 'init_buy',
-        group: 'init_buy',
-        render: (r) => solCell(r.init_buy_lamports),
-        searchValue: (r) => String(lamportsToSol(r.init_buy_lamports) ?? ''),
-        sortValue: (r) => r.init_buy_lamports,
-        filterNumber: (r) => lamportsToSol(r.init_buy_lamports),
-        sortable: true,
-        cellClassName: cellTint('init_buy'),
-      },
-      {
-        key: 'max_cost',
-        label: 'max_cost',
-        group: 'init_buy',
-        render: (r) => solCell(r.max_cost_lamports),
-        searchValue: (r) => String(lamportsToSol(r.max_cost_lamports) ?? ''),
-        sortValue: (r) => r.max_cost_lamports,
-        filterNumber: (r) => lamportsToSol(r.max_cost_lamports),
-        sortable: true,
-        cellClassName: cellTint('max_cost'),
-      },
-      {
-        key: 'spendable',
-        label: 'spendable',
-        group: 'init_buy',
-        render: (r) => solCell(r.spendable_lamports_in),
-        searchValue: (r) => String(lamportsToSol(r.spendable_lamports_in) ?? ''),
-        sortValue: (r) => r.spendable_lamports_in,
-        filterNumber: (r) => lamportsToSol(r.spendable_lamports_in),
-        sortable: true,
-        cellClassName: cellTint('spendable'),
-      },
-      {
-        key: 'fs_buy',
-        label: 'fs_buy',
-        group: 'fs',
-        render: (r) => solCell(r.first_slot_buy_lamports),
-        searchValue: (r) => String(lamportsToSol(r.first_slot_buy_lamports) ?? ''),
-        sortValue: (r) => r.first_slot_buy_lamports,
-        filterNumber: (r) => lamportsToSol(r.first_slot_buy_lamports),
-        sortable: true,
-        cellClassName: cellTint('fs_buy'),
-      },
-      {
-        key: 'fs_sell',
-        label: 'fs_sell',
-        group: 'fs',
-        render: (r) => solCell(r.first_slot_sell_lamports),
-        searchValue: (r) => String(lamportsToSol(r.first_slot_sell_lamports) ?? ''),
-        sortValue: (r) => r.first_slot_sell_lamports,
-        filterNumber: (r) => lamportsToSol(r.first_slot_sell_lamports),
-        sortable: true,
-        cellClassName: cellTint('fs_sell'),
-      },
-      {
-        key: 'ix_count',
-        label: 'ix count',
+        key: 'ix_count_axis',
+        label: 'ix len',
         group: 'ix',
-        render: (r) => {
-          const labels = configuredIxLabels(r.ix_labels);
+        render: (r: Fingerprint) => {
+          const labels = rowLabels(r);
           if (!labels) return dash();
           return <span className="font-mono tabular-nums">{labels.length}</span>;
         },
-        searchValue: (r) => String(configuredIxLabels(r.ix_labels)?.length ?? ''),
-        sortValue: (r) => configuredIxLabels(r.ix_labels)?.length ?? null,
-        filterNumber: (r) => configuredIxLabels(r.ix_labels)?.length ?? null,
+        searchValue: (r: Fingerprint) => String(rowLabels(r)?.length ?? ''),
+        sortValue: (r: Fingerprint) => rowLabels(r)?.length ?? null,
+        filterNumber: (r: Fingerprint) => rowLabels(r)?.length ?? null,
         sortable: true,
-        cellClassName: cellTint('ix_count'),
       },
       {
         key: 'ix_labels',
-        label: 'ix_labels',
+        label: axisDef('ix_labels').label,
         group: 'ix',
         width: '220px',
-        render: (r) => {
-          const labels = configuredIxLabels(r.ix_labels);
+        render: (r: Fingerprint) => {
+          const labels = rowLabels(r);
           return labels ? <IxLabelsDisplay labels={labels} copyJson /> : dash();
         },
-        searchValue: (r) => {
-          const labels = configuredIxLabels(r.ix_labels);
+        searchValue: (r: Fingerprint) => {
+          const labels = rowLabels(r);
           return labels ? formatIxLabelsText(labels) : '';
         },
-        filterMatch: (r, raw) => ixLabelsMatchFilter(r.ix_labels, raw),
+        filterMatch: (r: Fingerprint, raw: string) => ixLabelsMatchFilter(rowLabels(r), raw),
         filterPlaceholder: IX_LABELS_FILTER_PLACEHOLDER,
         filterTitle: IX_LABELS_FILTER_TITLE,
         cellClassName: cellTint('ix_labels'),
@@ -427,25 +386,6 @@ export function FingerprintsView({
         sortValue: (r) => volumeIxPatternsFromConfig(r.metric_config).length,
         filterNumber: (r) => volumeIxPatternsFromConfig(r.metric_config).length || null,
         sortable: true,
-      },
-      {
-        key: 'bucket',
-        label: 'Bucket',
-        group: 'bucket',
-        render: (r) => (
-          <span className="font-mono tabular-nums">
-            {formatBucketWidth(r.bucket_size_amount)}{r.bucket_size_amount == null ? "" : "◎"}
-          </span>
-        ),
-        searchValue: (r) => formatBucketWidth(r.bucket_size_amount),
-        // Exact rows have no width — sort/filter them as null rather than coercing
-        // to 0, which would rank them as the *finest* bucket instead of no bucket.
-        sortValue: (r) =>
-          r.bucket_size_amount == null ? null : tidySolDecimal(r.bucket_size_amount),
-        filterNumber: (r) =>
-          r.bucket_size_amount == null ? null : tidySolDecimal(r.bucket_size_amount),
-        sortable: true,
-        cellClassName: cellTint('bucket'),
       },
       {
         key: 'used_by',

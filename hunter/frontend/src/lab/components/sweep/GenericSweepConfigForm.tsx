@@ -17,10 +17,13 @@ import {
   type GroupField,
   type GroupedSweepRunRecord,
   type GroupedSweepStartArgs,
-  SOL_BUCKET_WIDTH,
 } from './groupedTypes';
 import { buildFieldFilters, parseIxLabelsFilter } from './fingerprintFilters';
-import { BUCKETED_GROUP_FIELDS, GROUP_FIELD_LABELS } from './groupedTypes';
+import {
+  LAMPORTS_GROUP_FIELDS,
+  GROUP_FIELD_LABELS,
+  type PartitionSpec,
+} from './groupedTypes';
 import { formatIxLabelsText } from 'lib/ixLabels';
 import { FingerprintGroupPicker } from './FingerprintGroupPicker';
 import { GenericAxisBuilder } from './GenericAxisBuilder';
@@ -164,10 +167,13 @@ interface GenericSweepConfig {
   maxCombos: number;
   curveOnly: boolean;
   buyAmountSol: number;
-  bucketWidthSol: number;
-  /** Group the SOL axes on their exact amount (`SolPrecision::Exact`) instead of a
-   *  `bucketWidthSol`-wide range. A promoted/bound fingerprint stores a NULL width. */
-  exactSol: boolean;
+  /** How each grouped field is partitioned, keyed by field tag. A field not named
+   *  here is `{kind:'distinct'}` — one group per value.
+   *
+   *  Explicit edges, never a width: the windows a run scored over travel WITH the
+   *  run, so the promoted rule and the dashboard read the same ones instead of
+   *  three surfaces re-deriving them from one number. */
+  partition: Record<string, PartitionSpec>;
   /** Host RAM (MB) left free for OS + desktop while the run sizes its peaks. */
   ramReserveMb: number;
   /** Opt into the AVX-512 vectorized exit scan (lab-only; host-gated server-side). */
@@ -212,8 +218,7 @@ function defaultConfig(): GenericSweepConfig {
     maxCombos: DEFAULT_MAX_COMBOS,
     curveOnly: false,
     buyAmountSol: 1.0,
-    bucketWidthSol: SOL_BUCKET_WIDTH,
-    exactSol: false,
+    partition: {},
     ramReserveMb: DEFAULT_RAM_RESERVE_MB,
     // Default OFF: the scalar scan is the SSOT. Flip to `true` once the workstation
     // A/B (plan §P5) confirms the speedup on your corpus — the result is identical.
@@ -305,8 +310,9 @@ function runToConfig(run: GroupedSweepRunRecord, defaults: GenericSweepConfig): 
     curveOnly: run.curve_only,
     buyAmountSol: tidySolDecimal(run.buy_amount_sol ?? defaults.buyAmountSol),
     // A NULL stored width means the run grouped on exact amounts.
-    exactSol: run.bucket_width_sol == null,
-    bucketWidthSol: tidySolDecimal(run.bucket_width_sol ?? defaults.bucketWidthSol),
+    // The run's own partition, never the form's: re-running at a different one
+    // would score windows the stored groups never showed.
+    partition: Object.fromEntries(run.partition ?? []),
     volumeIxPatterns: run.volume_ix_patterns ?? defaults.volumeIxPatterns,
     // Legacy rows (null) were computed under what the sweep hardcoded then — restore
     // THAT, not today's default, or a "re-run" would quietly reprice the comparison.
@@ -419,8 +425,7 @@ export function GenericSweepConfigForm({
     maxCombos,
     curveOnly,
     buyAmountSol,
-    bucketWidthSol,
-    exactSol,
+    partition,
     ramReserveMb,
     useAvx512,
     volumeIxPatterns,
@@ -461,10 +466,9 @@ export function GenericSweepConfigForm({
       seedFingerprintId: fp.id,
       groupBy: [],
       minTokens: 1,
-      // A NULL width IS the exact mode — mirror it so the scoped picker shows the
-      // precision the fingerprint actually matches at, not a substituted default.
-      exactSol: fp.bucket_size_amount == null,
-      bucketWidthSol: tidySolDecimal(fp.bucket_size_amount ?? SOL_BUCKET_WIDTH),
+      // One ALL group over the tokens this fingerprint matches — there is nothing
+      // to partition, and the run is scoped by `seedFingerprintId` anyway.
+      partition: {},
     }));
   }
 
@@ -520,7 +524,7 @@ export function GenericSweepConfigForm({
     () =>
       buildFieldFilters(fieldFiltersText, {
         fields: GROUP_FIELDS,
-        bucketed: BUCKETED_GROUP_FIELDS,
+        bucketed: LAMPORTS_GROUP_FIELDS,
         cashback: cashbackFilter,
         labels: GROUP_FIELD_LABELS,
       }),
@@ -558,7 +562,7 @@ export function GenericSweepConfigForm({
       curve_only: curveOnly,
       group_by: groupBy,
       // Exact mode replaces the width outright (backend ignores it there).
-      ...(exactSol ? { exact_sol: true } : { bucket_width_sol: bucketWidthSol }),
+      ...(Object.keys(partition).length > 0 ? { partition } : {}),
       fingerprint_id: seedFingerprintId ?? undefined,
       ix_labels_filter:
         !scoped && !ixLabelsGrouped && ixFilter.labels ? ixFilter.labels : undefined,
@@ -854,10 +858,10 @@ export function GenericSweepConfigForm({
             onClearFilters={clearFieldFilters}
             cashbackFilter={cashbackFilter}
             onSetCashback={(v) => setField('cashbackFilter', v)}
-            bucketWidthSol={bucketWidthSol}
-            onSetBucketWidth={(n) => setField('bucketWidthSol', n <= 0 ? SOL_BUCKET_WIDTH : n)}
-            exactSol={exactSol}
-            onSetExactSol={(v) => setField('exactSol', v)}
+            partition={partition}
+            onSetPartition={(f, spec) =>
+              setField('partition', { ...partition, [f]: spec })
+            }
             ixLabelsText={ixLabelsFilter}
             onSetIxLabels={(v) => setField('ixLabelsFilter', v)}
             ixFilter={ixFilter}

@@ -1,103 +1,94 @@
 // Compact auto-name for a fingerprint — a picker/log handle, not identity.
-// Chip-aligned tokens, ix first, default 0.1 bucket omitted, no provenance
-// prefix. Example: `3ix:Buy · max=1 · bkt=1`
+// One chip per configured axis, in registry order. Example: `3ix:Buy · max=1~2`
 //
-// Rust SSOT: `Fingerprint::auto_name`. This file is the TS mirror; golden
-// strings in the two test files stay byte-equal.
+// Rust SSOT: `Fingerprint::auto_name`. This file is the TS mirror; golden strings
+// in the two test files stay byte-equal.
 // Detail: hunter/docs/plans/strategies/fingerprint-auto-name.md
 
 import { configuredIxLabels, ixLabelsCountTail } from 'lib/ixLabels';
-import { formatCompact, formatDecimalTrim, tidySolDecimal } from 'utils/format';
+import { formatCompact } from 'utils/format';
 import { fingerprintIdentityFromGroupKey, type FingerprintIdentity } from './matchGroupFingerprint';
 import {
-  DEFAULT_BUCKET_WIDTH_SOL,
-  decimalsForBucketWidth,
-  hasSolAxis,
-  lamportsToSol,
-  WILDCARD_NAME,
-} from './types';
+  AXES,
+  axisDef,
+  configuredAxes,
+  lamportsToSolLabel,
+  type AxisId,
+  type AxisPredicate,
+  type AxisUnit,
+} from './fingerprintAxes';
+import { WILDCARD_NAME } from './types';
 
-/** Axes the auto-name reads — identity fields only (`name` is the output). */
-export type FingerprintAutoNameAxes = Pick<
-  FingerprintIdentity,
-  | 'wildcard'
-  | 'cu_limit'
-  | 'cu_price'
-  | 'init_buy_lamports'
-  | 'max_cost_lamports'
-  | 'spendable_lamports_in'
-  | 'first_slot_buy_lamports'
-  | 'first_slot_sell_lamports'
-  | 'bucket_size_amount'
-  | 'ix_labels'
->;
+/** Chip separator. Mirrors Rust `AUTO_NAME_SEP`. */
+export const AUTO_NAME_SEP = ' · ';
+
+/** Separates the two bounds of a range chip. Deliberately not `-`: an amount chip
+ *  is a decimal, so `1-2` reads as a subtraction to a human and is ambiguous
+ *  against a negative bound to the grammar checker. Mirrors Rust `RANGE_SEP`. */
+const RANGE_SEP = '~';
+
+/** Axes the auto-name reads — identity only (`name` is the output). */
+export type FingerprintAutoNameAxes = Pick<FingerprintIdentity, 'wildcard' | 'criteria'>;
 
 /**
- * Build the auto-name from stored axes (lamports + SOL width).
+ * Build the auto-name from the configured axes.
  *
- * Order: `Nix:Tail`, then `cu_limit` / `cu_price` / `init` / `max` / `spend` /
- * `fs_buy` / `fs_sell`, then `bkt=exact` or `bkt={width}` when width ≠ 0.1.
- * Unset axes skipped. Empty → `ALL`.
+ * One chip per axis in registry order, so an axis added to `AXES` is named without
+ * touching this function or its grammar. Unset axes are skipped; nothing to name →
+ * `ALL`.
  *
- * The `bkt=` part appears only when a SOL axis exists to spend the width on.
- *
- * A wildcard carries no axis and its bucket width is inert, so it names the token
- * set it matches — `ALL`.
+ * A wildcard carries no axis, so it names the token set it matches — `ALL`.
  */
 export function fingerprintAutoName(fp: FingerprintAutoNameAxes): string {
   if (fp.wildcard) return WILDCARD_NAME;
-  const parts: string[] = [];
-  const ix = configuredIxLabels(fp.ix_labels);
-  if (ix) parts.push(ixLabelsCountTail(ix));
-  if (fp.cu_limit != null) parts.push(`cu_limit=${formatCompact(fp.cu_limit, 1)}`);
-  if (fp.cu_price != null) parts.push(`cu_price=${formatCompact(fp.cu_price, 1)}`);
-  pushSol(parts, 'init', fp.init_buy_lamports);
-  pushSol(parts, 'max', fp.max_cost_lamports);
-  pushSol(parts, 'spend', fp.spendable_lamports_in);
-  pushSol(parts, 'fs_buy', fp.first_slot_buy_lamports);
-  pushSol(parts, 'fs_sell', fp.first_slot_sell_lamports);
-  // With no SOL axis there is nothing to bucket, so the width reaches no match and
-  // must reach no name — the same reason the wildcard above names none. Rust SSOT:
-  // `Fingerprint::effective_bucket_size_amount`, which is also what every write edge
-  // stores, so name and stored value stay in step.
-  if (hasSolAxis(fp)) {
-    if (fp.bucket_size_amount == null) {
-      parts.push('bkt=exact');
-    } else {
-      const width = tidySolDecimal(fp.bucket_size_amount);
-      if (width !== DEFAULT_BUCKET_WIDTH_SOL) {
-        parts.push(`bkt=${formatDecimalTrim(width, decimalsForBucketWidth(width))}`);
-      }
-    }
-  }
-  return parts.length === 0 ? WILDCARD_NAME : parts.join(' · ');
+  const parts = configuredAxes(fp.criteria ?? {})
+    .map(([id, pred]) => axisChip(id, pred))
+    .filter((p): p is string => p != null);
+  return parts.length === 0 ? WILDCARD_NAME : parts.join(AUTO_NAME_SEP);
 }
 
-function pushSol(parts: string[], label: string, lamports: number | null): void {
-  const s = lamportsToSol(lamports);
-  if (s == null) return;
-  parts.push(`${label}=${formatDecimalTrim(s, 4)}`);
+/** One axis's chip, or `null` when the axis names nothing renderable. */
+function axisChip(id: AxisId, pred: AxisPredicate): string | null {
+  const def = axisDef(id);
+  if (pred.kind === 'sequence') {
+    // The label sequence keeps its own shape: the COUNT is what makes it readable
+    // at chip size, with the trailing action as a hint of which tool.
+    if (id !== 'ix_labels') return null;
+    const ix = configuredIxLabels(pred.labels);
+    return ix ? ixLabelsCountTail(ix) : null;
+  }
+  const n = (v: string) => renderBound(v, def.unit);
+  const { min, max } = pred;
+  let body: string;
+  if (min != null && max != null) body = min === max ? n(min) : `${n(min)}${RANGE_SEP}${n(max)}`;
+  else if (min != null) body = `${n(min)}${RANGE_SEP}`;
+  else if (max != null) body = `${RANGE_SEP}${n(max)}`;
+  else return null;
+  return `${def.chip}=${body}`;
+}
+
+/** One bound in the axis's display unit. Lamports read as SOL (what the operator
+ *  typed); everything else is the integer, compacted so a 200000 CU limit does not
+ *  eat half the chip. */
+function renderBound(v: string, unit: AxisUnit): string {
+  if (unit === 'lamports') return lamportsToSolLabel(v);
+  if (unit === 'compute_units') return formatCompact(Number(v), 1);
+  return v;
 }
 
 /**
- * Auto-name from a stored group key. SOL axes use the bucket lo-edge (same
- * representative `fingerprintIdentityFromGroupKey` feeds `find_or_create`).
- *
- * @param bucketWidthSol width used for SOL axes; `null` is exact mode and
- *        appends `bkt=exact`.
+ * Auto-name from a stored group key — a copy of that key's predicates, not a
+ * re-derivation, so a card's name is the name of the fingerprint it would promote.
  */
-export function fingerprintNameFromGroupKey(
-  gk: Record<string, string>,
-  bucketWidthSol: number | null = DEFAULT_BUCKET_WIDTH_SOL,
-): string {
-  return fingerprintAutoName(fingerprintIdentityFromGroupKey(gk, bucketWidthSol));
+export function fingerprintNameFromGroupKey(gk: Record<string, unknown>): string {
+  return fingerprintAutoName(fingerprintIdentityFromGroupKey(gk));
 }
 
 /**
  * Whether `name` is written in `fingerprintAutoName`'s own chip grammar: every
- * ` · `-separated part is a chip that function emits. Such a name was generated,
- * never typed, so {@link isStaleAutoName} may rewrite it once it stops matching
- * the axes. Mirrors Rust `is_generated_auto_name`.
+ * `AUTO_NAME_SEP`-separated part is a chip that function emits. Such a name was
+ * generated, never typed, so {@link isStaleAutoName} may rewrite it once it stops
+ * matching the axes. Mirrors Rust `is_generated_auto_name`.
  *
  * Deliberately strict — an unrecognised part makes the whole name a nickname. The
  * two mistakes do not cost the same: re-deriving a name it declined to touch is
@@ -108,11 +99,13 @@ export function isGeneratedAutoName(name: string): boolean {
   const n = name.trim();
   if (n === '') return false;
   if (n === WILDCARD_NAME) return true;
-  return n.split(' · ').every(isAutoNameChip);
+  return n.split(AUTO_NAME_SEP).every(isAutoNameChip);
 }
 
-/** One chip of the {@link isGeneratedAutoName} grammar — kept beside
- *  `fingerprintAutoName` so a chip added there is added here in the same edit. */
+/** One chip of the {@link isGeneratedAutoName} grammar. **Derived from the
+ *  registry**, so an axis added there is recognised here without an edit — the
+ *  drift this used to have (a chip emitted but not recognised, so its name never
+ *  healed) is structurally impossible now. */
 function isAutoNameChip(part: string): boolean {
   // `3ix` / `3ix:BuyExactSolIn` — the count is what makes it a chip and not a word,
   // so a nickname prefix like `8dtx` is not `{digits}ix`.
@@ -121,24 +114,25 @@ function isAutoNameChip(part: string): boolean {
   if (eq < 0) return false;
   const label = part.slice(0, eq);
   const value = part.slice(eq + 1);
-  // `formatDecimalTrim` output: optional sign, digits, at most one `.`.
-  const dec = /^-?\d+(\.\d+)?$/;
-  switch (label) {
-    // `formatCompact` — a decimal with an optional K/M/G scale suffix.
-    case 'cu_limit':
-    case 'cu_price':
-      return dec.test(value.replace(/[KMG]$/, ''));
-    case 'init':
-    case 'max':
-    case 'spend':
-    case 'fs_buy':
-    case 'fs_sell':
-      return dec.test(value);
-    case 'bkt':
-      return value === 'exact' || dec.test(value);
-    default:
-      return false;
-  }
+  const def = AXES.find((a) => a.chip === label);
+  if (!def) return false;
+  const ok = (s: string) => isBound(s, def.unit);
+  const sep = value.indexOf(RANGE_SEP);
+  if (sep < 0) return ok(value);
+  const lo = value.slice(0, sep);
+  const hi = value.slice(sep + 1);
+  if (lo === '' && hi === '') return false;
+  if (lo === '') return ok(hi);
+  if (hi === '') return ok(lo);
+  return ok(lo) && ok(hi);
+}
+
+/** One rendered bound: digits, at most one `.`, and — for a compute-unit axis — an
+ *  optional K/M/G scale suffix. Never signed: identity is a non-negative integer,
+ *  so a `-` in a chip means the name was typed. */
+function isBound(s: string, unit: AxisUnit): boolean {
+  const body = unit === 'compute_units' ? s.replace(/[KMG]$/, '') : s;
+  return /^\d+(\.\d+)?$/.test(body);
 }
 
 /**
@@ -151,14 +145,32 @@ export function isStaleAutoName(name: string, autoName: string): boolean {
 }
 
 /**
- * Retired generator shapes — `sweep {id} · group N`, C3 provenance prefixes,
- * the flow-discovery fallback, and a blank. Nicknames return false.
- * Mirrors Rust `is_legacy_auto_name`.
+ * Retired generator shapes — `sweep {id} · group N`, C3 provenance prefixes, the
+ * flow-discovery fallback, a blank, and any name carrying a **retired chip**.
+ * Nicknames return false. Mirrors Rust `is_legacy_auto_name`.
+ *
+ * The last clause is what lets a chip retire. {@link isGeneratedAutoName} is
+ * deliberately strict, so a name carrying a chip that no longer exists would
+ * otherwise be frozen as a nickname and never heal.
  */
 export function isLegacyAutoName(name: string): boolean {
   const n = name.trim();
   if (n === '') return true;
   if (n.toLowerCase() === 'flow-discovery bind') return true;
   if (n.startsWith('sweep ') && n.includes(' · group ')) return true;
-  return n.startsWith('c · ') || n.startsWith('f · ') || n.startsWith('s · ');
+  if (n.startsWith('c · ') || n.startsWith('f · ') || n.startsWith('s · ')) return true;
+  const parts = n.split(AUTO_NAME_SEP);
+  return parts.some(isRetiredAutoNameChip) && parts.every((p) => isRetiredAutoNameChip(p) || isAutoNameChip(p));
+}
+
+/** A chip `fingerprintAutoName` used to emit and no longer does.
+ *
+ *  `bkt=…` was the row-wide SOL bucket width. It has no successor — a width is not
+ *  a property of a fingerprint any more, because each axis carries its own explicit
+ *  range — so a name holding one is stale by construction. */
+function isRetiredAutoNameChip(part: string): boolean {
+  const eq = part.indexOf('=');
+  if (eq < 0 || part.slice(0, eq) !== 'bkt') return false;
+  const v = part.slice(eq + 1);
+  return v === 'exact' || /^\d+(\.\d+)?$/.test(v);
 }

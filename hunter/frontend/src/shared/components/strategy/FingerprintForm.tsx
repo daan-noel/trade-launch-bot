@@ -7,24 +7,25 @@ import { Button } from 'components/ui/Button';
 import { Checkbox } from 'components/ui/Checkbox';
 import { IxLabelsInput } from 'components/ui/IxLabelsInput';
 import { configuredIxLabels, formatIxLabelsText, parseIxLabelsText } from 'lib/ixLabels';
+import { WILDCARD_NAME, type Fingerprint, type FingerprintDraft } from 'lib/strategy/types';
 import {
-  lamportsToSol,
-  solToLamports,
-  hasSolAxis,
-  MIN_BUCKET_WIDTH_SOL,
-  WILDCARD_NAME,
-  type Fingerprint,
-  type FingerprintDraft,
-} from 'lib/strategy/types';
+  AXES,
+  axisDef,
+  criteriaProblems,
+  formatBound,
+  parseBound,
+  type AxisDef,
+  type AxisId,
+  type Criteria,
+} from 'lib/strategy/fingerprintAxes';
 import {
   groupsWithFingerprintConfig,
   metricConfigWithVolumePatterns,
   useStrategyRegistry,
   volumeIxPatternsFromConfig,
 } from 'lib/strategy/registry';
-import { FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import { fingerprintAutoName, isStaleAutoName } from 'lib/strategy/fingerprintNameFromGroupKey';
-import { tidySolDecimal } from 'utils/format';
+import type { HelpTip } from 'lib/strategy/strategyHelp';
 import { LabelTip } from './LabelTip';
 import { VolumeIxPatternsEditor } from './VolumeIxPatternsEditor';
 
@@ -37,131 +38,102 @@ export interface FingerprintFormProps {
   error?: string | null;
 }
 
+/** One numeric axis's two inputs, as the operator typed them (display unit).
+ *  Kept as raw text so a half-typed `1.` is not silently rounded mid-keystroke and
+ *  so an unparseable bound can be *shown* as an error rather than dropped — a
+ *  dropped bound reads as "unbounded", which widens the match. */
+interface BoundText {
+  min: string;
+  max: string;
+}
+
 interface FormState {
   name: string;
-  cu_limit: number | null;
-  cu_price: number | null;
-  init_buy_sol: number | null;
-  max_cost_sol: number | null;
-  spendable_sol: number | null;
-  first_slot_buy_sol: number | null;
-  first_slot_sell_sol: number | null;
-  bucket_size_amount: number | null;
-  /** Exact-SOL matching: the fingerprint pins each SOL axis to its exact lamports
-   *  amount instead of a bucket. Separate from the width so "exact" is a named
-   *  mode and never a magic 0 -- the width input keeps its value while disabled. */
-  exact_sol: boolean;
+  /** Per-axis bound text, keyed by axis id. Only numeric axes appear. */
+  bounds: Partial<Record<AxisId, BoundText>>;
+  /** Textarea text — pretty JSON string array (see `parseIxLabelsText`). */
+  ix_labels: string;
   /** Match EVERY token, ignoring every axis. Mutually exclusive with the axes
    *  (backend `validate` + the `fingerprints_wildcard_excludes_axes` CHECK), so
    *  turning it on clears them rather than leaving a contradiction on screen. */
   wildcard: boolean;
-  /** Textarea text — pretty JSON string array (see `parseIxLabelsText`). */
-  ix_labels: string;
-  /** `m_flow_split.volume_ix_patterns` rows (other metric_config keys preserved on save). */
+  /** `m_flow_split.volume_ix_patterns` rows (other metric_config keys preserved). */
   volume_ix_patterns: string[][];
-  /** Original metric_config minus flow key — merged back on save. This is what
+  /** Original metric_config minus the flow key — merged back on save. This is what
    *  preserves machine-written groups across an edit. */
   metric_config_rest: Record<string, unknown>;
 }
 
+const NUMERIC_AXES: readonly AxisDef[] = AXES.filter((a) => a.kind === 'numeric');
+
 function fromFingerprint(fp?: Fingerprint): FormState {
   const cfg = fp?.metric_config ?? {};
   const { m_flow_split: _flow, ...rest } = cfg;
+  const criteria = fp?.criteria ?? {};
+  const bounds: Partial<Record<AxisId, BoundText>> = {};
+  for (const def of NUMERIC_AXES) {
+    const p = criteria[def.id];
+    bounds[def.id] = {
+      min: p?.kind === 'range' && p.min != null ? formatBound(p.min, def.unit) : '',
+      max: p?.kind === 'range' && p.max != null ? formatBound(p.max, def.unit) : '',
+    };
+  }
+  const labels = criteria.ix_labels;
   return {
     name: fp?.name ?? '',
-    cu_limit: fp?.cu_limit ?? null,
-    cu_price: fp?.cu_price ?? null,
-    init_buy_sol: lamportsToSol(fp?.init_buy_lamports),
-    max_cost_sol: lamportsToSol(fp?.max_cost_lamports),
-    spendable_sol: lamportsToSol(fp?.spendable_lamports_in),
-    first_slot_buy_sol: lamportsToSol(fp?.first_slot_buy_lamports),
-    first_slot_sell_sol: lamportsToSol(fp?.first_slot_sell_lamports),
-    bucket_size_amount: tidySolDecimal(fp?.bucket_size_amount ?? 0.1),
-    // A stored NULL width IS the exact mode (see Rust `SolPrecision::from_width`)
-    // — except on a wildcard, where it is just the inert width a wildcard saves.
-    // Reading it as exact would leave that mode latched on if the wildcard is
-    // switched back off, silently narrowing every SOL axis the operator then types.
-    exact_sol: fp != null && !fp.wildcard && fp.bucket_size_amount == null,
+    bounds,
+    ix_labels: formatIxLabelsText(labels?.kind === 'sequence' ? labels.labels : null),
     wildcard: fp?.wildcard ?? false,
-    ix_labels: formatIxLabelsText(fp?.ix_labels),
     volume_ix_patterns: volumeIxPatternsFromConfig(cfg),
     metric_config_rest: rest,
   };
 }
 
-function toDraft(s: FormState): FingerprintDraft {
-  const { labels } = parseIxLabelsText(s.ix_labels);
-  const flow = metricConfigWithVolumePatterns(s.volume_ix_patterns);
+/** The criteria the form currently configures, plus any bound that failed to parse.
+ *
+ *  An unparseable bound is reported, never dropped: dropping it leaves the axis
+ *  half-configured, which matches MORE tokens than the operator asked for — the
+ *  silent direction. */
+function toCriteria(s: FormState): { criteria: Criteria; badBounds: string[] } {
+  const criteria: Criteria = {};
+  const badBounds: string[] = [];
   // A wildcard row carries NO axis — the backend rejects one that does, and the
   // matcher would ignore it anyway. Dropping them here (rather than only disabling
-  // the inputs) means a form that was filled in first still saves as what it now
-  // reads as. `metric_config` is not an axis and survives.
-  if (s.wildcard) {
-    return {
-      name: s.name.trim(),
-      cu_limit: null,
-      cu_price: null,
-      init_buy_lamports: null,
-      max_cost_lamports: null,
-      spendable_lamports_in: null,
-      first_slot_buy_lamports: null,
-      first_slot_sell_lamports: null,
-      bucket_size_amount: null,
-      ix_labels: null,
-      wildcard: true,
-      metric_config: { ...s.metric_config_rest, ...flow },
+  // the inputs) means a form that was filled in first still saves as what it reads
+  // as now.
+  if (s.wildcard) return { criteria, badBounds };
+
+  for (const def of NUMERIC_AXES) {
+    const raw = s.bounds[def.id];
+    if (!raw) continue;
+    const parse = (text: string, which: 'low' | 'high') => {
+      if (text.trim() === '') return undefined;
+      const v = parseBound(text, def.unit);
+      if (v == null) badBounds.push(`${def.label}: "${text}" is not a ${which} bound`);
+      return v ?? undefined;
     };
+    const min = parse(raw.min, 'low');
+    const max = parse(raw.max, 'high');
+    // Both blank ⇒ the axis is not part of identity. There is exactly one spelling
+    // of that: absent from the map.
+    if (min == null && max == null) continue;
+    criteria[def.id] = { kind: 'range', min, max };
   }
-  const solAxes = {
-    init_buy_lamports: solToLamports(s.init_buy_sol),
-    max_cost_lamports: solToLamports(s.max_cost_sol),
-    spendable_lamports_in: solToLamports(s.spendable_sol),
-    first_slot_buy_lamports: solToLamports(s.first_slot_buy_sol),
-    first_slot_sell_lamports: solToLamports(s.first_slot_sell_sol),
-  };
-  return {
-    name: s.name.trim(),
-    cu_limit: s.cu_limit,
-    cu_price: s.cu_price,
-    ...solAxes,
-    // Exact wins outright and sends NULL — never a 0 width. So does "no SOL axis
-    // to bucket": the width would reach no match, and storing it forks the row's
-    // identity so `find_or_create` mints a duplicate of a fingerprint the engine
-    // already matches identically (Rust `effective_bucket_size_amount`, and the
-    // `fingerprints_bucket_width_needs_a_sol_axis` CHECK the backend would answer).
-    bucket_size_amount:
-      s.exact_sol || !hasSolAxis(solAxes) ? null : tidySolDecimal(s.bucket_size_amount ?? 0.1),
-    ix_labels: labels,
-    wildcard: false,
-    metric_config: { ...s.metric_config_rest, ...flow },
-  };
+
+  const { labels } = parseIxLabelsText(s.ix_labels);
+  const configured = configuredIxLabels(labels);
+  if (configured) criteria.ix_labels = { kind: 'sequence', labels: configured };
+  return { criteria, badBounds };
 }
 
-/**
- * How many match criteria the current form configures — must agree with the
- * backend `Fingerprint::has_any_criterion`, which rejects a criterion-less draft.
- *
- * `parsedLabels` is the *parsed* label list, never the raw textarea text: text
- * like `[]` or `,` is non-empty but parses to no labels, and the backend folds
- * an empty list to `None`. Counting the raw text enabled Create on a draft the
- * server then rejected with a 400.
- */
-function criterionCount(s: FormState, parsedLabels: string[] | null): number {
-  // The wildcard IS the one criterion, and it excludes every axis — so it is a
-  // count of exactly 1, never an addition to whatever the axis inputs still hold.
-  if (s.wildcard) return 1;
-  const axes = [
-    s.cu_limit,
-    s.cu_price,
-    s.init_buy_sol,
-    s.max_cost_sol,
-    s.spendable_sol,
-    s.first_slot_buy_sol,
-    s.first_slot_sell_sol,
-  ];
-  // `v != null`, NOT truthiness — a `0` axis is a real bucket (`[0, width)`), so
-  // it counts. Only "not set" (`null`) drops out of the fingerprint's identity.
-  return axes.filter((v) => v != null).length + (configuredIxLabels(parsedLabels) ? 1 : 0);
+function toDraft(s: FormState): FingerprintDraft {
+  const flow = metricConfigWithVolumePatterns(s.volume_ix_patterns);
+  return {
+    name: s.name.trim(),
+    wildcard: s.wildcard,
+    criteria: toCriteria(s).criteria,
+    metric_config: { ...s.metric_config_rest, ...flow },
+  };
 }
 
 /** Why every axis input greys out under the wildcard. */
@@ -169,20 +141,65 @@ const AXIS_DISABLED_TITLE =
   'A wildcard fingerprint matches every token, so it carries no axes.' +
   '\nUncheck "match every token" to narrow it by creation shape.';
 
-/** Bucket-width problem, or `null` when the width is usable. Mirrors the backend
- *  `Fingerprint::validate` so the form fails fast instead of on a 400. */
-function bucketWidthError(width: number | null): string | null {
-  if (width == null) return null; // blank ⇒ the 0.1 default is applied on save
-  if (!Number.isFinite(width) || width < MIN_BUCKET_WIDTH_SOL) {
-    return `bucket width must be at least ${MIN_BUCKET_WIDTH_SOL}◎ — 0 is not "no bucketing", it collapses every amount into one bucket`;
-  }
-  return null;
+/** How a range axis reads, spelled out once for every axis tooltip.
+ *
+ *  Both bounds are INCLUSIVE and equal bounds are an exact match — so the operator
+ *  never has to choose a "mode", and the two questions ("this exact size" / "sizes
+ *  in this band") are the same control. */
+function boundsHelp(def: AxisDef): HelpTip {
+  const unit = def.unit === 'lamports' ? '◎' : '';
+  const [lo, hi] = def.unit === 'lamports' ? ['1.5', '2'] : ['3', '5'];
+  return {
+    title: def.label,
+    // The axis's ONE definition, rendered from the registry — never a second copy
+    // that can say something the matcher does not do.
+    body: [
+      def.definition,
+      '',
+      'Both bounds are INCLUSIVE. Leave one blank for an open-ended gate.',
+      '',
+      def.phase === 'first_slot'
+        ? 'Settles only after the creation slot closes, so a rule using it cannot fire at birth.'
+        : 'Known at creation.',
+    ].join('\n'),
+    figure: [
+      `${lo}${unit} … ${lo}${unit}   exactly ${lo}${unit}`,
+      `${lo}${unit} … ${hi}${unit}   ${lo} to ${hi}, both ends in`,
+      `${lo}${unit} … (blank)  ${lo}${unit} or more`,
+      `(blank) … ${hi}${unit}  ${hi}${unit} or less`,
+    ].join('\n'),
+  };
 }
 
+const NAME_HELP: HelpTip = {
+  title: 'Name',
+  body:
+    'Picker handle and log label. NOT identity — renaming changes nothing about what this fingerprint matches.\n\n' +
+    'Left blank, or written in the generated grammar, it re-derives from the axes on every edit. A nickname you type is never overwritten: it is the only record of WHY this fingerprint exists, and the axes can always be re-read.',
+};
+
+const WILDCARD_HELP: HelpTip = {
+  title: 'Match every token',
+  body:
+    'Arms on EVERY token, ignoring every axis.\n\n' +
+    'A rule always needs a fingerprint, but one deciding purely on what the tape is doing has no creation shape to name — and clearing every axis means MATCH NOTHING, because the matcher refuses a criterion-less row on purpose. So "every token" is said out loud here rather than inferred from a blank form.\n\n' +
+    'Mutually exclusive with the axes: turning it on clears them.',
+};
+
+const VOLUME_PATTERNS_HELP: HelpTip = {
+  title: 'volume_ix_patterns (m_flow_split)',
+  body:
+    'Instruction patterns that classify a trade as `volume` for the m_flow_split metrics.\n\n' +
+    'NOT part of match identity — two fingerprints differing only here are the same fingerprint to `find_or_create`.',
+};
+
 /**
- * Create / edit a fingerprint. SOL-denominated amount inputs convert to lamports
- * at the API boundary (the wire is lamports); `bucket_size_amount` stays SOL.
- * Blocks submit until at least one match criterion is set (backend contract).
+ * Create / edit a fingerprint.
+ *
+ * Every numeric axis is a `[min, max]` pair in its own display unit — SOL for a
+ * lamports axis, the raw integer for a tally — converted to the integer identity
+ * carries only at submit. Blocks submit until the draft would pass the backend's
+ * own gate, so the form never discovers a rejection as a 400.
  */
 export function FingerprintForm({
   initial,
@@ -193,9 +210,16 @@ export function FingerprintForm({
 }: FingerprintFormProps) {
   const [s, setS] = useState<FormState>(() => fromFingerprint(initial));
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setS((p) => ({ ...p, [k]: v }));
+  const setBound = (id: AxisId, which: 'min' | 'max', v: string) =>
+    setS((p) => ({
+      ...p,
+      bounds: { ...p.bounds, [id]: { min: '', max: '', ...p.bounds[id], [which]: v } },
+    }));
+
   const { data: registry } = useStrategyRegistry();
   const fpConfigGroups = groupsWithFingerprintConfig(registry);
   const ixParsed = useMemo(() => parseIxLabelsText(s.ix_labels), [s.ix_labels]);
+  const { criteria, badBounds } = useMemo(() => toCriteria(s), [s]);
   const draft = useMemo(() => toDraft(s), [s]);
   const autoName = useMemo(() => fingerprintAutoName(draft), [draft]);
   const prevAutoRef = useRef<string | null>(null);
@@ -206,9 +230,9 @@ export function FingerprintForm({
   const autoNameIsReal = autoName !== WILDCARD_NAME || s.wildcard;
 
   // Keep the name glued to the auto-label while it is blank, still the previous
-  // auto-name, or any auto-label that no longer matches the axes (a retired shape,
-  // or a current-grammar one written before `fingerprintAutoName` changed). A typed
-  // nickname is left alone.
+  // auto-name, or any auto-label that no longer matches the axes (a retired shape —
+  // the `bkt=` width chip included — or a current-grammar one written before
+  // `fingerprintAutoName` changed). A typed nickname is left alone.
   useEffect(() => {
     setS((p) => {
       const synced =
@@ -223,32 +247,69 @@ export function FingerprintForm({
     });
   }, [autoName, autoNameIsReal]);
 
-  const criteria = criterionCount(s, ixParsed.labels);
-  const nameOk = s.name.trim().length > 0 || autoNameIsReal;
-  // In exact mode the width is unused, so a stale value must not block submit —
-  // and a wildcard ignores it outright (it is sent as NULL).
-  const widthError = s.exact_sol || s.wildcard ? null : bucketWidthError(s.bucket_size_amount);
-  const canSubmit = criteria > 0 && nameOk && !submitting && !ixParsed.error && !widthError;
-
-  const solField = (label: string, key: keyof FormState, tip: (typeof FINGERPRINT_FIELD_HELP)[keyof typeof FINGERPRINT_FIELD_HELP]) => (
-    <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-      <LabelTip tip={tip}>{label}</LabelTip>
-      <Input
-        fieldSize="sm"
-        numeric
-        unit="◎"
-        disabled={s.wildcard}
-        title={s.wildcard ? AXIS_DISABLED_TITLE : undefined}
-        numericValue={s[key] as number | null}
-        onNumericChange={(n) => set(key, n as FormState[typeof key])}
-      />
-    </label>
+  // Mirrors the backend gate, so the form fails fast instead of on a 400.
+  const criterionCount = s.wildcard ? 1 : Object.keys(criteria).length;
+  const problems = useMemo(
+    () => (s.wildcard ? [] : [...badBounds, ...criteriaProblems(criteria)]),
+    [s.wildcard, badBounds, criteria],
   );
+  const nameOk = s.name.trim().length > 0 || autoNameIsReal;
+  const canSubmit =
+    criterionCount > 0 && nameOk && !submitting && !ixParsed.error && problems.length === 0;
+
+  const axisRow = (def: AxisDef) => {
+    const b = s.bounds[def.id] ?? { min: '', max: '' };
+    const unit = def.unit === 'lamports' ? '◎' : undefined;
+    return (
+      <div key={def.id} className="flex flex-col gap-1 text-[11px] text-text-dim">
+        <LabelTip tip={boundsHelp(def)}>{def.label}</LabelTip>
+        <div className="flex items-center gap-1">
+          <Input
+            fieldSize="sm"
+            unit={unit}
+            className="min-w-0 flex-1"
+            placeholder="min"
+            disabled={s.wildcard}
+            title={s.wildcard ? AXIS_DISABLED_TITLE : undefined}
+            value={b.min}
+            onChange={(e) => setBound(def.id, 'min', e.target.value)}
+          />
+          <span className="shrink-0 text-text-dim/60">…</span>
+          <Input
+            fieldSize="sm"
+            unit={unit}
+            className="min-w-0 flex-1"
+            placeholder="max"
+            disabled={s.wildcard}
+            title={s.wildcard ? AXIS_DISABLED_TITLE : undefined}
+            value={b.max}
+            onChange={(e) => setBound(def.id, 'max', e.target.value)}
+          />
+          <IconButton
+            variant="ghost"
+            size="sm"
+            disabled={s.wildcard || (b.min === '' && b.max === '')}
+            title={`Pin ${def.label} to one exact value (copies the low bound into the high one)`}
+            aria-label={`Pin ${def.label} to one exact value`}
+            onClick={() =>
+              setS((p) => {
+                const cur = p.bounds[def.id] ?? { min: '', max: '' };
+                const v = cur.min !== '' ? cur.min : cur.max;
+                return { ...p, bounds: { ...p.bounds, [def.id]: { min: v, max: v } } };
+              })
+            }
+          >
+            =
+          </IconButton>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="flex flex-col gap-3">
       <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-        <LabelTip tip={FINGERPRINT_FIELD_HELP.name}>Name</LabelTip>
+        <LabelTip tip={NAME_HELP}>Name</LabelTip>
         <div className="flex items-center gap-1">
           <Input
             fieldSize="sm"
@@ -280,84 +341,14 @@ export function FingerprintForm({
           disabled={submitting}
           onChange={() => set('wildcard', !s.wildcard)}
         />
-        <LabelTip tip={FINGERPRINT_FIELD_HELP.wildcard}>match every token (wildcard)</LabelTip>
+        <LabelTip tip={WILDCARD_HELP}>match every token (wildcard)</LabelTip>
       </label>
 
-      <div className="grid grid-cols-2 gap-2">
-        <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          <LabelTip tip={FINGERPRINT_FIELD_HELP.cu_limit}>cu_limit (exact)</LabelTip>
-          <Input
-            fieldSize="sm"
-            numeric
-            integer
-            disabled={s.wildcard}
-            title={s.wildcard ? AXIS_DISABLED_TITLE : undefined}
-            numericValue={s.cu_limit}
-            onNumericChange={(n) => set('cu_limit', n)}
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          <LabelTip tip={FINGERPRINT_FIELD_HELP.cu_price}>cu_price (exact)</LabelTip>
-          <Input
-            fieldSize="sm"
-            numeric
-            integer
-            disabled={s.wildcard}
-            title={s.wildcard ? AXIS_DISABLED_TITLE : undefined}
-            numericValue={s.cu_price}
-            onNumericChange={(n) => set('cu_price', n)}
-          />
-        </label>
-      </div>
-
-      <div className="grid grid-cols-2 gap-2">
-        {solField('init_buy', 'init_buy_sol', FINGERPRINT_FIELD_HELP.init_buy)}
-        {solField('max_cost', 'max_cost_sol', FINGERPRINT_FIELD_HELP.max_cost)}
-        {solField('spendable_in', 'spendable_sol', FINGERPRINT_FIELD_HELP.spendable_in)}
-        {solField('first_slot_buy', 'first_slot_buy_sol', FINGERPRINT_FIELD_HELP.first_slot_buy)}
-        {solField('first_slot_sell', 'first_slot_sell_sol', FINGERPRINT_FIELD_HELP.first_slot_sell)}
-        <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          <LabelTip tip={FINGERPRINT_FIELD_HELP.bucket}>bucket width (◎)</LabelTip>
-          <Input
-            fieldSize="sm"
-            numeric
-            unit="◎"
-            disabled={s.exact_sol || s.wildcard}
-            title={
-              s.wildcard
-                ? AXIS_DISABLED_TITLE
-                : s.exact_sol
-                  ? 'Ignored while matching exact amounts'
-                  : undefined
-            }
-            className={widthError ? 'border-red/60' : undefined}
-            numericValue={s.bucket_size_amount}
-            onNumericChange={(n) => set('bucket_size_amount', n)}
-          />
-          {/* A named mode, not a `0` width — `0` divides by zero in `bucket_index`
-              and would collapse every amount into one bucket, arming on any value. */}
-          <label
-            className="flex cursor-pointer items-center gap-1.5 text-[11px] text-text-mid"
-            title={
-              'Match each SOL axis on its EXACT lamports amount instead of a bucket range.\n\n' +
-              'Bucketed (default): max_cost 1.515◎ at 0.1 arms on anything in [1.5, 1.6).\n' +
-              'Exact: arms only on exactly 1.515◎.\n\n' +
-              'Stored as a NULL bucket width. Affects the LIVE entry gate.'
-            }
-          >
-            <Checkbox
-              checked={s.exact_sol}
-              disabled={s.wildcard}
-              onChange={() => set('exact_sol', !s.exact_sol)}
-            />
-            <span className="whitespace-nowrap">exact amounts</span>
-          </label>
-        </label>
-      </div>
+      <div className="grid grid-cols-2 gap-2">{NUMERIC_AXES.map(axisRow)}</div>
 
       <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-        <LabelTip tip={FINGERPRINT_FIELD_HELP.ix_labels}>
-          ix_labels (exact ordered sequence, JSON array)
+        <LabelTip tip={{ title: axisDef('ix_labels').label, body: axisDef('ix_labels').definition }}>
+          {axisDef('ix_labels').label} (JSON array)
         </LabelTip>
         <IxLabelsInput
           value={s.ix_labels}
@@ -372,9 +363,7 @@ export function FingerprintForm({
         (g.fingerprint_config ?? []).some((f) => f.name === 'volume_ix_patterns'),
       ) && (
         <div className="flex flex-col gap-1 text-[11px] text-text-dim">
-          <LabelTip tip={FINGERPRINT_FIELD_HELP.volume_ix_patterns}>
-            volume_ix_patterns (m_flow_split)
-          </LabelTip>
+          <LabelTip tip={VOLUME_PATTERNS_HELP}>volume_ix_patterns (m_flow_split)</LabelTip>
           <VolumeIxPatternsEditor
             patterns={s.volume_ix_patterns}
             onChange={(p) => set('volume_ix_patterns', p)}
@@ -383,21 +372,19 @@ export function FingerprintForm({
         </div>
       )}
 
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] text-text-dim/80">
-          {widthError ? (
-            <span className="text-red">{widthError}</span>
-          ) : criteria === 0 ? (
+      <div className="flex items-center justify-between gap-2">
+        <span className="min-w-0 text-[11px] text-text-dim/80">
+          {problems.length > 0 ? (
+            <span className="text-red">{problems[0]}</span>
+          ) : criterionCount === 0 ? (
             <span className="text-red">needs ≥1 match criterion</span>
           ) : s.wildcard ? (
             'matches EVERY token · no creation-shape axes'
           ) : (
-            `${criteria} criterion${criteria === 1 ? '' : 'a'} · ${
-              s.exact_sol ? 'matched on exact amounts' : `matched by ${s.bucket_size_amount ?? 0.1}◎ bucket`
-            }`
+            `${criterionCount} axis${criterionCount === 1 ? '' : 'es'}`
           )}
         </span>
-        <div className="flex gap-2">
+        <div className="flex shrink-0 gap-2">
           {onCancel && (
             <Button variant="ghost" size="sm" onClick={onCancel} disabled={submitting}>
               Cancel
