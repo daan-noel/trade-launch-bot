@@ -72,6 +72,14 @@ seeded at the entry fill is a hard 10 % stop and closes at a median 11 s.
 
 ## What the gates DO earn
 
+> **SUPERSEDED the same day** by
+> [`2026-08-26-6ix-cohort-closed-at-real-latency.md`](2026-08-26-6ix-cohort-closed-at-real-latency.md).
+> The 85 pp below is an artifact of booking a token with no print in the hold
+> window at -100 %. A pump.fun price is `vsol^2 / k` and `vsol` moves only when
+> somebody trades, so silence freezes a price rather than zeroing it. Priced on
+> the curve the same four gates run -3.93 % -> -1.70 % at 115 ms: the survival
+> effect is worth about 2 pp, not 85. Everything else in this entry stands.
+
 They are extremely strong **survival** filters, which is what the cohort thesis asked for.
 First print past 60 s, one per token, 30 s hold, same fill and pricing throughout:
 

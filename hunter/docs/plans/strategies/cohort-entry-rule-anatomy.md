@@ -78,9 +78,15 @@ near its own trigger.
    search over 5 metrics x 5 windows is then 5 features wearing 25 names, and it reports the
    multi-window vocabulary as worthless when it was never populated. **Offer a rung only the
    windows `W <= its age floor`.**
-2. **Unsellable bags priced as zero.** Where a token has no print after entry, `last/entry - 1`
-   is 0 %, not a small loss. At the depth floor **46.6 %** of tokens are in that state, and
-   booking them at 0 turns the whole band positive. Book them as a total loss.
+2. **A silent token priced as anything but the curve.** Where a token has no print after
+   entry there is no observed exit, and both reflexes are wrong. Marking it at the last
+   print flatters a trail that never fired; booking it a **total loss** invents a loss the
+   curve cannot produce, because price is `vsol^2 / k` and `vsol` moves only when somebody
+   trades. Silence freezes a price. Price the exit at the last print **at or before the
+   exit instant, defaulting to the entry fill**, and the two cases collapse into one
+   expression. The -100 % convention manufactured an 85 pp result on the 6ix cohort that
+   was worth 2 pp priced on the curve
+   ([curve-honest-pricing](curve-honest-pricing.md)).
 3. **Hold-to-death as the failure exit.** Grading failures at the token's last print is the
    worst exit available and moves a surface ~20 pp. A refutation measured that way is not a
    refutation.
@@ -133,11 +139,32 @@ Running the same search at several age floors is what separates the two kinds of
 - **Nothing clears its null at any rung** -> the cohort has no drift to redistribute. A rule
   moves money between trades; it cannot create it.
 
-## Rank on the unsellable rate before ranking on money
+## Read the median against the toll before reading anything else
 
-Where most of a cohort dies, the dominant term in mean PnL is not selection among
-survivors — it is how often the position is a bag with no bid. Book those at **-100 %**
-(trap 2), then read the unsellable rate as its own column at every step of the greedy
-build. On the 6ix cohort it runs 64.7 % -> 2.0 % across four gates and moves the mean
-85 pp, which is larger than every other effect measured there put together. A gate that
-does not move it is not competing for the thing that pays.
+The round trip costs about **3 %** — 125 bps a leg plus constant-product impact — so a
+result table whose median sits on that number is saying the median token does not move,
+and no gate that fires on the median token can pay. On the 6ix cohort the median reads
+-3.12 % at *every* step of the greedy build, which is the whole verdict in one column, and
+it was visible before any mean was computed.
+
+Report the silent-fire share next to it. It is not an edge term — a gate that selects for
+activity always lowers it — but it is the diagnostic for trap 2: a mean that moves when
+that share moves is a pricing artifact rather than a finding.
+
+## Measure the terrain before searching it
+
+A gate redistributes money between trades; it cannot create it. So before any search,
+price *every* print unconditionally at the real fill and read the forward move by age
+band. If the cohort is negative in every band, there is nothing to condition on and the
+search is arithmetic on noise — 6ix was negative in every band and still absorbed a search
+over 13 features, 130 deciles and 23 gates, all of which agreed with the terrain.
+
+Then bound the exit before searching exits: sell at the best price in the window. That
+oracle is an upper bound on every exit rule that exists. Non-positive closes the cohort
+outright; strongly positive means the money is real but says nothing about reachability,
+which only a reactive fill at the real lag can answer. On 6ix the oracle is +17 % to +35 %
+and every reachable take-profit is negative, because the positions that fail to run cost
+**-24 %** against **+13 %** for the ones that do.
+
+[`cohort-scan.py`](cohort-scan.py) runs this order — toll check, terrain, deciles, oracle,
+take-profit — in about a minute per cohort.
