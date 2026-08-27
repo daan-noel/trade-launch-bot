@@ -28,15 +28,24 @@ const REG: StrategyRegistry = {
     {
       name: 'm_price_window',
       kind: 'dynamic',
-      strict_params: [{ name: 'window_size_sec', required: true }],
+      // Mirrors the Rust registry: neither size param is `required` on its own,
+      // because "exactly one of the two" is a cross-param rule.
+      strict_params: [
+        { name: 'window_size_sec', required: false },
+        { name: 'window_size_slots', required: false },
+        { name: 'window_lag', required: false, allows_zero: true },
+      ],
       metrics: [{ name: 'trail', unit: 'percent', eq_tolerance: 0.1, monotonic: false, hue: 45 }],
     },
     {
       name: 'm_flow_burst',
       kind: 'dynamic',
       strict_params: [
-        { name: 'window_size_sec', required: true },
-        { name: 'burst_size_sec', required: true },
+        { name: 'window_size_sec', required: false },
+        { name: 'window_size_slots', required: false },
+        { name: 'window_lag', required: false, allows_zero: true },
+        { name: 'burst_size_sec', required: false },
+        { name: 'burst_size_slots', required: false },
       ],
       metrics: [
         { name: 'trade_share', unit: 'percent', eq_tolerance: 0.5, monotonic: false, hue: 306 },
@@ -441,5 +450,104 @@ describe('two-window group (m_flow_burst)', () => {
     ).toMatch(/burst/);
     expect(ruleConditionRowError(burstRow('60', 90, 8), REG)).toMatch(/nest inside window 60/);
     expect(ruleConditionRowError(burstRow('60', 3, 8), REG)).toBeNull();
+  });
+});
+
+describe('slot windows and lag', () => {
+  const slotRow = (over: Partial<RuleConditionRow> = {}) =>
+    row({
+      group: 'm_price_window',
+      metric: 'trail',
+      window: '30',
+      windowUnit: 'slot',
+      arms: [[{ operator: '>=', value: 5 }]],
+      ...over,
+    });
+
+  it('writes exactly one size param, in the row unit', () => {
+    const side = rowsToSide([slotRow()], 'entry');
+    expect(side.m_price_window[0].strict).toEqual({ window_size_slots: 30 });
+  });
+
+  it('omits a zero lag so a pre-slot rule round-trips byte-identically', () => {
+    const secs = row({
+      group: 'm_price_window',
+      metric: 'trail',
+      window: '30',
+      arms: [[{ operator: '>=', value: 5 }]],
+    });
+    expect(rowsToSide([secs], 'entry').m_price_window[0].strict).toEqual({
+      window_size_sec: 30,
+    });
+  });
+
+  it('carries the lag onto the instance when there is one', () => {
+    const side = rowsToSide([slotRow({ lag: '1' })], 'entry');
+    expect(side.m_price_window[0].strict).toEqual({ window_size_slots: 30, window_lag: 1 });
+  });
+
+  it('keeps two slot windows of one metric as TWO instances', () => {
+    // The whole point of keying on the span rather than the size: before, both rows
+    // had no `window_size_sec`, collapsed onto one instance, and the later row's
+    // strict bag silently won — one of the two gates just disappeared on save.
+    const side = rowsToSide([slotRow(), slotRow({ window: '1' })], 'entry');
+    expect(side.m_price_window).toHaveLength(2);
+    expect(side.m_price_window.map((i) => i.strict.window_size_slots).sort()).toEqual([1, 30]);
+  });
+
+  it('separates a slot window from a seconds window of the same size', () => {
+    const side = rowsToSide([slotRow(), slotRow({ windowUnit: 'sec' })], 'entry');
+    expect(side.m_price_window).toHaveLength(2);
+  });
+
+  it('separates a lagged window from an unlagged one of the same size', () => {
+    const side = rowsToSide([slotRow(), slotRow({ lag: '1' })], 'entry');
+    expect(side.m_price_window).toHaveLength(2);
+  });
+
+  it('round-trips a slot rule through rows and back', () => {
+    const side = { m_price_window: [{ strict: { window_size_slots: 30, window_lag: 1 }, metrics: { trail: [[{ operator: '>=' as const, value: 5 }]] } }] };
+    const rows = sideToRows(side, 'entry');
+    expect(rows[0]).toMatchObject({ window: '30', windowUnit: 'slot', lag: '1' });
+    // Nothing the row fields own may ALSO sit in the opaque strict bag, or a stale
+    // copy would outlive an edit to the field.
+    expect(rows[0].strict).toEqual({});
+    expect(rowsToSide(rows, 'entry')).toEqual(side);
+  });
+
+  it('validates a slot row against its own unit, and accepts lag 0', () => {
+    expect(ruleConditionRowError(slotRow(), REG)).toBeNull();
+    expect(ruleConditionRowError(slotRow({ lag: '0' }), REG)).toBeNull();
+    expect(ruleConditionRowError(slotRow({ window: '' }), REG)).toBe('window (sl) > 0 required');
+    expect(ruleConditionRowError(slotRow({ lag: '-1' }), REG)).toBe(
+      'lag (sl) must be a number ≥ 0',
+    );
+  });
+
+  it('requires the burst axis in the reference unit and nested inside it', () => {
+    const burst = (over: Partial<RuleConditionRow> = {}) =>
+      row({
+        group: 'm_flow_burst',
+        metric: 'trade_share',
+        window: '30',
+        windowUnit: 'slot',
+        arms: [[{ operator: '>=', value: 50 }]],
+        ...over,
+      });
+    expect(ruleConditionRowError(burst(), REG)).toBe('burst (sl) > 0 required');
+    // A seconds burst on a slot row is not the row's burst at all - it reads as
+    // absent, which is what the backend also rejects (both axes, one unit).
+    expect(ruleConditionRowError(burst({ strict: { burst_size_sec: 3 } }), REG)).toBe(
+      'burst (sl) > 0 required',
+    );
+    expect(ruleConditionRowError(burst({ strict: { burst_size_slots: 40 } }), REG)).toBe(
+      'burst (sl) must nest inside window 30',
+    );
+    const ok = burst({ strict: { burst_size_slots: 1 } });
+    expect(ruleConditionRowError(ok, REG)).toBeNull();
+    expect(rowsToSide([ok], 'entry').m_flow_burst[0].strict).toEqual({
+      window_size_slots: 30,
+      burst_size_slots: 1,
+    });
   });
 });

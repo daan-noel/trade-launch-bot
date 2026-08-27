@@ -402,15 +402,16 @@ fn build_series(
                 MetricKind::Dynamic if is_flow_group => {
                     let fp = flow.unwrap().fp_id;
                     for &w in windows {
-                        let col = SeriesColumn::Flow(m.id, Some(w), fp);
+                        let col = SeriesColumn::Flow(m.id, Some(hunter_engine::metrics::WindowSpec::secs(w)), fp);
                         columns.push(col);
                         labels.push((col, Some(w)));
                     }
                 }
                 MetricKind::Dynamic => {
                     for &w in windows {
-                        columns.push(SeriesColumn::window(m.id, w));
-                        labels.push((SeriesColumn::window(m.id, w), Some(w)));
+                        let spec = hunter_engine::metrics::WindowSpec::secs(w);
+                        columns.push(SeriesColumn::window(m.id, spec));
+                        labels.push((SeriesColumn::window(m.id, spec), Some(w)));
                     }
                 }
             }
@@ -434,7 +435,8 @@ fn build_series(
     if let Some(ctx) = flow {
         // Same order as the live `TokenCreated` arm (`new_track` → `seed_creator`):
         // `seed_creator` back-fills every flow state already registered.
-        series.ensure_flow(ctx.fp_id, &ctx.patterns, windows);
+        let specs: Vec<hunter_engine::metrics::WindowSpec> = windows.iter().map(|&w| hunter_engine::metrics::WindowSpec::secs(w)).collect();
+        series.ensure_flow(ctx.fp_id, &ctx.patterns, &specs);
         if let Some(h) = ctx.creator_wallet_hash {
             series.seed_creator(h);
         }

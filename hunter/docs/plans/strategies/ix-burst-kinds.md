@@ -112,6 +112,6 @@ Two families that precede his fire, both gap-then-burst:
 
 One-wallet repeats and dust (`< 0.3`) are checked and are not the trigger.
 
-Door is [ix-door.md](ix-door.md): create-time exclusions (ATA, init ≥ 0.2, first-slot
-≥ 0.5), not cashback-off / 0.2–1. Permissions stay off this file. Full-tape money is
-not this measurement.
+Door is [ix-door.md](ix-door.md). Permissions at the burst: [ix-perm.md](ix-perm.md)
+(`vsol < 46` is required; 10 s gross, trail, and net/gross do not add inside the gap).
+Full-tape money: [ix-machine-money.md](ix-machine-money.md).

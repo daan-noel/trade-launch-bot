@@ -435,6 +435,7 @@ mod tests {
 
     fn fp(id: u128) -> EngineFingerprint {
         EngineFingerprint {
+            wildcard: false,
             id: FingerprintId(Uuid::from_u128(id)),
             cu_limit: Some(200_000),
             cu_price: None,

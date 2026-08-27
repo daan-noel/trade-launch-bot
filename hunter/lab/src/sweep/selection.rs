@@ -280,6 +280,8 @@ impl GroupSelection {
     pub fn materialize(&self, name: String) -> Result<Fingerprint, Vec<String>> {
         let mut blockers: Vec<String> = Vec::new();
         let mut fp = Fingerprint {
+            // A selection fingerprint always names axes; never a match-all row.
+            wildcard: false,
             id: Uuid::new_v4(),
             name,
             cu_limit: None,
@@ -723,6 +725,8 @@ mod tests {
     #[test]
     fn scoped_run_keeps_the_group_by_narrowing() {
         let mut fp = Fingerprint {
+            // A selection fingerprint always names axes; never a match-all row.
+            wildcard: false,
             id: Uuid::new_v4(),
             name: "scope".into(),
             cu_limit: Some(200_000),

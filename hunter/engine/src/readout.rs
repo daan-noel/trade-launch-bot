@@ -72,7 +72,7 @@ pub struct ConditionRead {
     pub side: ReadSide,
     pub metric: MetricId,
     /// Trailing-window size for dynamic metrics; `None` for static ones.
-    pub window: Option<f64>,
+    pub window: Option<crate::metrics::WindowSpec>,
     /// The value the fold reads at `now`. `NaN` when unreadable (an unregistered
     /// window, a flow metric with no fingerprint state, or a position metric with no
     /// position) — which, per the engine convention, satisfies nothing.
@@ -317,7 +317,8 @@ pub fn replay_readout(
             }
         }
     }
-    track.on_tick(at);
+    // See `reduce.rs` - a tick carries no slot; slot windows hold their cursor.
+    track.on_tick(at, None);
 
     RuleReadout {
         source: ReadoutSource::Replay,
@@ -640,6 +641,7 @@ fn judge_req(r: &MetricReq, side: ReadSide, value: f64, disarmed: bool) -> Condi
 
 #[cfg(test)]
 mod tests {
+    use crate::metrics::WindowSpec;
     use super::*;
     use crate::event::{ExitReason, LoadedRule, RuleId, TradeMode};
     use crate::fingerprint::FingerprintId;
@@ -961,7 +963,7 @@ mod tests {
             live.on_trade(trade(p, secs));
             ctx.fold_price(p);
         }
-        live.on_tick(ts(20));
+        live.on_tick(ts(20), None);
         let expected = read_rule(&c, &live, Some(&ctx), None, ts(20));
 
         let replayed = replay_readout(
@@ -1140,8 +1142,8 @@ mod tests {
         assert_eq!(
             cols,
             vec![
-                SeriesColumn::window(MetricId::Buy, 30.0),
-                SeriesColumn::window(MetricId::Sell, 30.0),
+                SeriesColumn::window(MetricId::Buy, WindowSpec::secs(30.0)),
+                SeriesColumn::window(MetricId::Sell, WindowSpec::secs(30.0)),
             ],
             "m_position is not a track column",
         );

@@ -5,11 +5,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use chrono::Duration;
 use serde_json::Value;
 
-use super::flow_window::{push_sorted, window_key, window_width};
-use super::{MetricId, Side, TradeLite, Ts};
+use super::flow_window::push_sorted;
+use super::{MetricId, Side, TradeLite, Ts, WindowKey, WindowSpec};
 
 use crate::grouping::normalize_labels;
 use crate::hash::{fnv1a_byte, fnv1a_bytes, HashedSet, FNV_OFFSET};
@@ -31,6 +30,87 @@ pub fn ix_hash(labels: &[impl AsRef<str>]) -> u64 {
         h = fnv1a_bytes(h, lab.as_ref().as_bytes());
     }
     h
+}
+
+// ── Structural markers ───────────────────────────────────────────────────────
+
+/// The structural markers a build can carry, one bit each.
+///
+/// A marker is a *mechanism*, not a snapshot of one. `CreateAccountWithSeed` means
+/// the transaction creates a throwaway account inline — nobody is coming back to it,
+/// so it is a disposable machine rather than a person with a wallet. That stays true
+/// for every future build, which is exactly what an exact-sequence pattern list
+/// cannot promise: on this tape 531 distinct label sequences carry the seed marker
+/// and new variants ship continuously, so a list books the unlisted ones as human.
+///
+/// **Matching is substring containment** over each label, because a label carries its
+/// program prefix (`System Program: CreateAccountWithSeed`). The vocabulary is fixed
+/// and small on purpose - a marker set that grows per rule is a pattern list again.
+///
+/// Two kinds live here, and both are mechanisms:
+///
+/// * **machinery** - what the transaction DOES (a throwaway account, a nonce, a memo);
+/// * **router** - the retail front-end a person clicked through. A named router is a
+///   human decision with a UI in front of it, which is a property of the BUILD and not
+///   of who sent it, so it belongs beside the machinery markers rather than in a wallet
+///   list. The set grows only when a new front-end carries retail order flow - never
+///   per rule.
+pub const MARKERS: [(&str, u16); 10] = [
+    ("AdvanceNonceAccount", 1 << 0),
+    ("CreateAccountWithSeed", 1 << 1),
+    ("System Program: Transfer", 1 << 2),
+    ("Pump.Fun: Create", 1 << 3),
+    ("Memo Program", 1 << 4),
+    // Routers. The label carries the program prefix, e.g. `Bloom Router: Unknown`.
+    ("Axiom Trade", 1 << 5),
+    ("Photon", 1 << 6),
+    ("Bloom Router", 1 << 7),
+    ("Trojan Trade", 1 << 8),
+    ("Terminal", 1 << 9),
+];
+
+/// Every router bit as one mask - the "a person clicked this" side of the vocabulary.
+pub const ROUTER_MARKERS: u16 = (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9);
+
+/// Structural markers present in an ordered label list. The producer's job — it is
+/// the only layer that holds the strings.
+pub fn marker_bits(labels: &[impl AsRef<str>]) -> u16 {
+    let mut bits = 0u16;
+    for lab in labels {
+        let s = lab.as_ref();
+        for (name, bit) in MARKERS {
+            if bits & bit == 0 && s.contains(name) {
+                bits |= bit;
+            }
+        }
+    }
+    bits
+}
+
+/// [`marker_bits`] over labels in their stored JSON form. Goes through
+/// [`normalize_labels`] so both persisted shapes (bare array and
+/// `{"instructions": [...]}`) read alike, for the same reason
+/// [`ix_hash_from_labels_value`] does.
+pub fn marker_bits_from_labels_value(labels: &Value) -> u16 {
+    marker_bits(&normalize_labels(labels))
+}
+
+/// Compile a configured list of marker names into a mask. Errors on an unknown
+/// name rather than ignoring it — a typo that silently matches nothing would make
+/// a cleanliness gate pass on bot traffic.
+pub fn marker_mask(names: &[impl AsRef<str>]) -> Result<u16, String> {
+    let mut mask = 0u16;
+    for n in names {
+        let n = n.as_ref();
+        match MARKERS.iter().find(|(name, _)| *name == n) {
+            Some((_, bit)) => mask |= bit,
+            None => {
+                let known: Vec<&str> = MARKERS.iter().map(|(n, _)| *n).collect();
+                return Err(format!("unknown ix marker `{n}` (known: {})", known.join(", ")));
+            }
+        }
+    }
+    Ok(mask)
 }
 
 /// `Some(ix_hash(labels))` when `labels` is non-empty; `None` when missing/empty
@@ -144,24 +224,115 @@ pub fn wallet_hash(addr: &str) -> u64 {
 
 // ── Patterns (compiled at RulesReloaded) ─────────────────────────────────────
 
-/// Compiled volume-ix pattern set for one fingerprint (`m_flow_split.volume_ix_patterns`).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Compiled classifier config for one fingerprint (`m_flow_split`).
+///
+/// Three independent ways to call a trade volume-side, each switchable:
+/// exact-sequence patterns, structural markers, and the two wallet-keyed rules
+/// (contagion + creator). The wallet rules default **on**, so every fingerprint
+/// stored before markers existed classifies exactly as it did.
+///
+/// A structural rule wants them **off**: "does this transaction carry a throwaway
+/// account" is a property of the transaction, and contagion makes it a property of
+/// the sender's history on that token instead. Leaving them on does not merely
+/// tighten such a gate, it measures a different thing — the fire set stops matching
+/// the one the rule was derived on.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlowPatterns {
     /// FNV-1a of each configured label sequence.
     hashes: BTreeSet<u64>,
+    /// Structural marker mask ([`MARKERS`]); `0` = no marker rule.
+    markers: u16,
+    /// Which SIDE the mask names. `false` (default): a marker means volume-side.
+    /// `true`: a marker means ORGANIC, so everything without one is volume-side.
+    ///
+    /// The inverse is a different claim, not a convenience. "Carries a throwaway
+    /// account" identifies machines and leaves everything else unjudged; "came
+    /// through a named router" identifies people and judges everything else machine.
+    /// On the 8dtx tape that difference is the whole edge - the two gates read +0.99
+    /// and +6.86 per trade on the same fires - so the classifier has to be able to
+    /// say which one a rule means.
+    markers_are_organic: bool,
+    /// Tag a wallet volume-side for the rest of this token once it trades that way.
+    wallet_contagion: bool,
+    /// The creator wallet is volume-side unconditionally.
+    creator_is_volume: bool,
+}
+
+impl Default for FlowPatterns {
+    fn default() -> Self {
+        Self {
+            hashes: BTreeSet::new(),
+            markers: 0,
+            markers_are_organic: false,
+            wallet_contagion: true,
+            creator_is_volume: true,
+        }
+    }
 }
 
 impl FlowPatterns {
     pub fn new(hashes: BTreeSet<u64>) -> Self {
-        Self { hashes }
+        Self { hashes, ..Self::default() }
+    }
+
+    /// A purely structural classifier: markers only, both wallet rules off. The mask
+    /// names the VOLUME side.
+    pub fn markers_only(markers: u16) -> Self {
+        Self {
+            hashes: BTreeSet::new(),
+            markers,
+            markers_are_organic: false,
+            wallet_contagion: false,
+            creator_is_volume: false,
+        }
+    }
+
+    /// A purely structural classifier whose mask names the ORGANIC side: a trade is
+    /// volume-side unless it carries one of these markers. This is how "every buy in
+    /// the burst came through a named retail router" is stated.
+    pub fn organic_markers_only(markers: u16) -> Self {
+        Self {
+            hashes: BTreeSet::new(),
+            markers,
+            markers_are_organic: true,
+            wallet_contagion: false,
+            creator_is_volume: false,
+        }
+    }
+
+    /// Whether the configured mask names the organic side.
+    pub fn markers_are_organic(&self) -> bool {
+        self.markers_are_organic
     }
 
     pub fn contains(&self, h: u64) -> bool {
         self.hashes.contains(&h)
     }
 
+    /// True when the trade's structural markers say VOLUME under the configured mask:
+    /// intersecting it when the mask names the volume side, missing it entirely when
+    /// the mask names the organic side.
+    pub fn marks(&self, bits: u16) -> bool {
+        if self.markers == 0 {
+            return false;
+        }
+        if self.markers_are_organic {
+            bits & self.markers == 0
+        } else {
+            bits & self.markers != 0
+        }
+    }
+
+    pub fn wallet_contagion(&self) -> bool {
+        self.wallet_contagion
+    }
+
+    pub fn creator_is_volume(&self) -> bool {
+        self.creator_is_volume
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.hashes.is_empty()
+        self.hashes.is_empty() && self.markers == 0
     }
 
     /// Compile an ordered list of label sequences (the sweep run's
@@ -173,7 +344,7 @@ impl FlowPatterns {
                 hashes.insert(ix_hash(p));
             }
         }
-        Self { hashes }
+        Self { hashes, ..Self::default() }
     }
 
     /// Parse `metric_config["m_flow_split"]`. `None` = key absent (unconfigured ⇒
@@ -184,14 +355,32 @@ impl FlowPatterns {
         if !obj.is_object() {
             return None;
         }
+        let mut out = Self::default();
+        if let Some(v) = obj.get("wallet_contagion") {
+            out.wallet_contagion = v.as_bool()?;
+        }
+        if let Some(v) = obj.get("creator_is_volume") {
+            out.creator_is_volume = v.as_bool()?;
+        }
+        for (key, organic) in [("volume_ix_markers", false), ("organic_ix_markers", true)] {
+            let Some(arr) = obj.get(key) else { continue };
+            let Value::Array(names) = arr else {
+                return None;
+            };
+            let mut strs: Vec<&str> = Vec::with_capacity(names.len());
+            for n in names {
+                strs.push(n.as_str()?);
+            }
+            out.markers = marker_mask(&strs).ok()?;
+            out.markers_are_organic = organic;
+        }
         let Some(arr) = obj.get("volume_ix_patterns") else {
-            // Key present but no patterns field — treat as configured empty.
-            return Some(Self::default());
+            // Key present but no patterns field — markers and switches still apply.
+            return Some(out);
         };
         let Value::Array(patterns) = arr else {
             return None;
         };
-        let mut hashes = BTreeSet::new();
         for p in patterns {
             let Value::Array(labels) = p else {
                 return None;
@@ -202,10 +391,10 @@ impl FlowPatterns {
                 strs.push(s);
             }
             if !strs.is_empty() {
-                hashes.insert(ix_hash(&strs));
+                out.hashes.insert(ix_hash(&strs));
             }
         }
-        Some(Self { hashes })
+        Some(out)
     }
 
     /// Validate fingerprint `metric_config` against the flow-split contract.
@@ -238,6 +427,42 @@ impl FlowPatterns {
                                 "m_flow_split.volume_ix_patterns[{i}][{j}] must be a string"
                             ));
                         }
+                    }
+                }
+            }
+            for key in ["volume_ix_markers", "organic_ix_markers"] {
+                let Some(markers) = flow_obj.get(key) else { continue };
+                let Some(arr) = markers.as_array() else {
+                    return Err(format!("m_flow_split.{key} must be an array"));
+                };
+                let mut names: Vec<&str> = Vec::with_capacity(arr.len());
+                for (i, m) in arr.iter().enumerate() {
+                    let Some(s) = m.as_str() else {
+                        return Err(format!("m_flow_split.{key}[{i}] must be a string"));
+                    };
+                    names.push(s);
+                }
+                // An unknown marker silently matching nothing would let a
+                // cleanliness gate pass on bot traffic, so it is an error.
+                marker_mask(&names).map_err(|e| format!("m_flow_split.{e}"))?;
+            }
+            // A mask names ONE side. Configuring both is two contradictory classifiers
+            // on one axis, and `volume_ix_patterns` is itself a volume-side statement,
+            // so none of it composes with an organic mask. Letting one silently win is
+            // how a rule stops measuring what it says.
+            if flow_obj.contains_key("organic_ix_markers") {
+                for other in ["volume_ix_markers", "volume_ix_patterns"] {
+                    if flow_obj.contains_key(other) {
+                        return Err(format!(
+                            "m_flow_split: organic_ix_markers and {other} name opposite sides                              of the same split - configure exactly one"
+                        ));
+                    }
+                }
+            }
+            for flag in ["wallet_contagion", "creator_is_volume"] {
+                if let Some(v) = flow_obj.get(flag) {
+                    if !v.is_boolean() {
+                        return Err(format!("m_flow_split.{flag} must be a boolean"));
                     }
                 }
             }
@@ -348,63 +573,57 @@ impl FlowTotals {
 /// 200 ms tick of every tracked token.
 #[derive(Debug, Clone, PartialEq)]
 struct FlowSplitWindowState {
-    window_secs: f64,
-    /// Precomputed window width — see [`window_width`].
-    width: Duration,
-    /// `(timestamp, signed SOL, is_volume)` — buy positive, sell negative; oldest
-    /// at front, kept time-sorted.
-    buf: VecDeque<(Ts, (f64, bool))>,
+    spec: WindowSpec,
+    /// `(pos, signed SOL, is_volume)` - buy positive, sell negative; oldest at
+    /// front, kept position-sorted. `pos` is already in the window's own unit, so
+    /// this one implementation serves seconds and slots alike.
+    buf: VecDeque<(i64, (f64, bool))>,
     /// Running totals over **all** of `buf`.
     totals: FlowTotals,
 }
 
 impl FlowSplitWindowState {
-    fn new(window_secs: f64) -> Self {
-        Self {
-            window_secs,
-            width: window_width(window_secs),
-            buf: VecDeque::new(),
-            totals: FlowTotals::default(),
-        }
+    fn new(spec: WindowSpec) -> Self {
+        Self { spec, buf: VecDeque::new(), totals: FlowTotals::default() }
     }
 
-    fn on_trade(&mut self, side: Side, sol: f64, is_vol: bool, at: Ts) {
+    fn on_trade(&mut self, side: Side, sol: f64, is_vol: bool, pos: i64, now_pos: i64) {
         let signed = match side {
             Side::Buy => sol,
             Side::Sell => -sol,
         };
-        push_sorted(&mut self.buf, at, (signed, is_vol));
+        push_sorted(&mut self.buf, pos, (signed, is_vol));
         self.totals.add(side, sol, is_vol);
-        self.evict(at);
+        self.evict(now_pos);
     }
 
-    fn evict(&mut self, now: Ts) {
-        let cutoff = now - self.width;
-        while let Some(&(ts, (signed, is_vol))) = self.buf.front() {
-            if ts < cutoff {
-                self.buf.pop_front();
-                self.totals.sub_signed(signed, is_vol);
-            } else {
+    fn evict(&mut self, now_pos: i64) {
+        let (lo, _) = self.spec.bounds(now_pos);
+        while let Some(&(pos, (signed, is_vol))) = self.buf.front() {
+            if pos >= lo {
                 break;
             }
+            self.buf.pop_front();
+            self.totals.sub_signed(signed, is_vol);
         }
     }
 
-    /// Totals over `[now − w, now]`, from the running totals minus the ends that
-    /// fall outside: not-yet-evicted entries at the front, future-dated entries
-    /// (regressed `block_time`) at the back. Sortedness makes the first in-window
-    /// entry a valid stop for both loops.
-    fn totals_at(&self, now: Ts) -> FlowTotals {
+    /// Totals over the window at `now_pos`, from the running totals minus the ends
+    /// that fall outside: not-yet-evicted entries at the front, and entries past the
+    /// high bound at the back - a lagged window's excluded head, or anything a
+    /// regressed `block_time` pushed in. Sortedness makes the first in-window entry
+    /// a valid stop for both loops.
+    fn totals_at(&self, now_pos: i64) -> FlowTotals {
+        let (lo, hi) = self.spec.bounds(now_pos);
         let mut out = self.totals;
-        let cutoff = now - self.width;
-        for &(ts, (signed, is_vol)) in self.buf.iter() {
-            if ts >= cutoff {
+        for &(pos, (signed, is_vol)) in self.buf.iter() {
+            if pos >= lo {
                 break;
             }
             out.sub_signed(signed, is_vol);
         }
-        for &(ts, (signed, is_vol)) in self.buf.iter().rev() {
-            if ts <= now {
+        for &(pos, (signed, is_vol)) in self.buf.iter().rev() {
+            if pos <= hi {
                 break;
             }
             out.sub_signed(signed, is_vol);
@@ -412,8 +631,8 @@ impl FlowSplitWindowState {
         out
     }
 
-    fn value(&self, id: MetricId, now: Ts) -> f64 {
-        self.totals_at(now).value(id)
+    fn value(&self, id: MetricId, now_pos: i64) -> f64 {
+        self.totals_at(now_pos).value(id)
     }
 }
 
@@ -429,7 +648,7 @@ pub struct FlowState {
     tagged_wallets: HashedSet,
     creator_wallet_hash: Option<u64>,
     lifetime: FlowTotals,
-    windows: BTreeMap<u64, FlowSplitWindowState>,
+    windows: BTreeMap<WindowKey, FlowSplitWindowState>,
 }
 
 impl FlowState {
@@ -460,14 +679,12 @@ impl FlowState {
         }
     }
 
-    pub fn ensure_window(&mut self, window_secs: f64) {
-        self.windows
-            .entry(window_key(window_secs))
-            .or_insert_with(|| FlowSplitWindowState::new(window_secs));
+    pub fn ensure_window(&mut self, spec: WindowSpec) {
+        self.windows.entry(spec.key()).or_insert_with(|| FlowSplitWindowState::new(spec));
     }
 
     /// Classify + fold one trade into lifetime and every registered window.
-    pub fn on_trade(&mut self, t: &TradeLite) {
+    pub fn on_trade(&mut self, t: &TradeLite, cur_slot: u64) {
         if !t.sol.is_finite() || t.sol < 0.0 {
             return;
         }
@@ -477,33 +694,46 @@ impl FlowState {
         }
         self.lifetime.add(t.side, t.sol, is_vol);
         for w in self.windows.values_mut() {
-            w.on_trade(t.side, t.sol, is_vol, t.at);
+            let pos = w.spec.pos(t.at, t.slot);
+            let now_pos = w.spec.now_pos(t.at, cur_slot);
+            w.on_trade(t.side, t.sol, is_vol, pos, now_pos);
         }
     }
 
-    pub fn on_tick(&mut self, now: Ts) {
+    pub fn on_tick(&mut self, now: Ts, cur_slot: u64) {
         for w in self.windows.values_mut() {
-            w.evict(now);
+            let now_pos = w.spec.now_pos(now, cur_slot);
+            w.evict(now_pos);
         }
     }
 
     /// Lifetime (`m_flow_split`) or windowed (`m_flow_split_window`) read at `now`.
-    pub fn value(&self, id: MetricId, window_secs: Option<f64>, now: Ts) -> f64 {
-        match window_secs {
+    pub fn value(&self, id: MetricId, window: Option<WindowSpec>, now: Ts, cur_slot: u64) -> f64 {
+        match window {
             None => self.lifetime.value(id),
-            Some(ws) => match self.windows.get(&window_key(ws)) {
-                Some(w) => w.value(id, now),
+            Some(spec) => match self.windows.get(&spec.key()) {
+                Some(w) => w.value(id, spec.now_pos(now, cur_slot)),
                 None => f64::NAN,
             },
         }
     }
 
-    /// Volume-side iff pattern match, wallet already tagged, or creator wallet.
+    /// Volume-side iff a structural marker matches, an exact pattern matches, or —
+    /// when the wallet rules are enabled — the wallet is already tagged or is the
+    /// creator.
+    ///
+    /// Markers are tested first because they are the only rule that reads the
+    /// transaction alone. With `wallet_contagion` and `creator_is_volume` both off
+    /// this function is a pure function of the trade, which is what a structural
+    /// gate needs and what the two wallet rules would quietly take away.
     pub fn classify(&self, t: &TradeLite) -> bool {
-        if self.creator_wallet_hash == Some(t.wallet_hash) {
+        if self.patterns.marks(t.marker_bits) {
             return true;
         }
-        if self.tagged_wallets.contains(&t.wallet_hash) {
+        if self.patterns.creator_is_volume() && self.creator_wallet_hash == Some(t.wallet_hash) {
+            return true;
+        }
+        if self.patterns.wallet_contagion() && self.tagged_wallets.contains(&t.wallet_hash) {
             return true;
         }
         if let Some(h) = t.ix_hash {
@@ -518,7 +748,8 @@ impl FlowState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{TimeZone, Utc};
+    use crate::metrics::Ts;
+    use chrono::{Duration, TimeZone, Utc};
     use serde_json::json;
 
     fn ts(secs: f64) -> Ts {
@@ -526,8 +757,15 @@ mod tests {
             + Duration::milliseconds((secs * 1000.0) as i64)
     }
 
+    /// The same instant as [`ts`], on a window's own millisecond cursor.
+    fn p(secs: f64) -> i64 {
+        ts(secs).timestamp_millis()
+    }
+
     fn trade(side: Side, sol: f64, ix: Option<u64>, wallet: u64, secs: f64) -> TradeLite {
         TradeLite {
+            slot: 0,
+            marker_bits: 0,
             side,
             sol,
             price: 1.0,
@@ -678,7 +916,7 @@ mod tests {
             1.0,
         );
         assert!(st.classify(&t));
-        st.on_trade(&t);
+        st.on_trade(&t, 0);
         assert!(st.tagged_wallets.contains(&w));
 
         // Same wallet, no ix → contagion volume.
@@ -701,45 +939,45 @@ mod tests {
     fn lifetime_totals_and_vol_share() {
         let patterns = FlowPatterns::new(BTreeSet::from([ix_hash(&["vol"])]));
         let mut st = FlowState::new(patterns);
-        st.on_trade(&trade(Side::Buy, 4.0, Some(ix_hash(&["vol"])), 1, 0.0));
-        st.on_trade(&trade(Side::Buy, 6.0, None, 2, 1.0));
-        st.on_trade(&trade(Side::Sell, 1.0, Some(ix_hash(&["vol"])), 1, 2.0));
+        st.on_trade(&trade(Side::Buy, 4.0, Some(ix_hash(&["vol"])), 1, 0.0), 0);
+        st.on_trade(&trade(Side::Buy, 6.0, None, 2, 1.0), 0);
+        st.on_trade(&trade(Side::Sell, 1.0, Some(ix_hash(&["vol"])), 1, 2.0), 0);
 
-        assert_eq!(st.value(MetricId::VolBuy, None, ts(2.0)), 4.0);
-        assert_eq!(st.value(MetricId::VolSell, None, ts(2.0)), 1.0);
-        assert_eq!(st.value(MetricId::VolGross, None, ts(2.0)), 5.0);
-        assert_eq!(st.value(MetricId::VolNet, None, ts(2.0)), 3.0);
-        assert_eq!(st.value(MetricId::NonvolBuy, None, ts(2.0)), 6.0);
-        assert_eq!(st.value(MetricId::NonvolGross, None, ts(2.0)), 6.0);
+        assert_eq!(st.value(MetricId::VolBuy, None, ts(2.0), 0), 4.0);
+        assert_eq!(st.value(MetricId::VolSell, None, ts(2.0), 0), 1.0);
+        assert_eq!(st.value(MetricId::VolGross, None, ts(2.0), 0), 5.0);
+        assert_eq!(st.value(MetricId::VolNet, None, ts(2.0), 0), 3.0);
+        assert_eq!(st.value(MetricId::NonvolBuy, None, ts(2.0), 0), 6.0);
+        assert_eq!(st.value(MetricId::NonvolGross, None, ts(2.0), 0), 6.0);
         // vol_share = 5 / 11 * 100
-        let share = st.value(MetricId::VolShare, None, ts(2.0));
+        let share = st.value(MetricId::VolShare, None, ts(2.0), 0);
         assert!((share - 500.0 / 11.0).abs() < 1e-9);
     }
 
     #[test]
     fn vol_share_nan_at_zero() {
         let st = FlowState::new(FlowPatterns::default());
-        assert!(st.value(MetricId::VolShare, None, ts(0.0)).is_nan());
+        assert!(st.value(MetricId::VolShare, None, ts(0.0), 0).is_nan());
     }
 
     #[test]
     fn window_evicts_on_tick() {
         let patterns = FlowPatterns::new(BTreeSet::from([ix_hash(&["vol"])]));
         let mut st = FlowState::new(patterns);
-        st.ensure_window(10.0);
-        st.on_trade(&trade(Side::Buy, 4.0, Some(ix_hash(&["vol"])), 1, 0.0));
-        st.on_trade(&trade(Side::Buy, 6.0, None, 2, 1.0));
-        assert_eq!(st.value(MetricId::VolBuy, Some(10.0), ts(1.0)), 4.0);
-        assert_eq!(st.value(MetricId::NonvolBuy, Some(10.0), ts(1.0)), 6.0);
+        st.ensure_window(WindowSpec::secs(10.0));
+        st.on_trade(&trade(Side::Buy, 4.0, Some(ix_hash(&["vol"])), 1, 0.0), 0);
+        st.on_trade(&trade(Side::Buy, 6.0, None, 2, 1.0), 0);
+        assert_eq!(st.value(MetricId::VolBuy, Some(WindowSpec::secs(10.0)), ts(1.0), 0), 4.0);
+        assert_eq!(st.value(MetricId::NonvolBuy, Some(WindowSpec::secs(10.0)), ts(1.0), 0), 6.0);
         // Trailing window is (now−w, now] — at t=11 the t=1 trade is still in;
         // one ms past the edge drops everything.
-        st.on_tick(ts(11.0));
-        assert_eq!(st.value(MetricId::VolBuy, Some(10.0), ts(11.0)), 0.0);
-        assert_eq!(st.value(MetricId::NonvolBuy, Some(10.0), ts(11.0)), 6.0);
-        st.on_tick(ts(11.001));
-        assert_eq!(st.value(MetricId::NonvolBuy, Some(10.0), ts(11.001)), 0.0);
+        st.on_tick(ts(11.0), 0);
+        assert_eq!(st.value(MetricId::VolBuy, Some(WindowSpec::secs(10.0)), ts(11.0), 0), 0.0);
+        assert_eq!(st.value(MetricId::NonvolBuy, Some(WindowSpec::secs(10.0)), ts(11.0), 0), 6.0);
+        st.on_tick(ts(11.001), 0);
+        assert_eq!(st.value(MetricId::NonvolBuy, Some(WindowSpec::secs(10.0)), ts(11.001), 0), 0.0);
         // Lifetime unchanged.
-        assert_eq!(st.value(MetricId::VolBuy, None, ts(11.001)), 4.0);
+        assert_eq!(st.value(MetricId::VolBuy, None, ts(11.001), 0), 4.0);
     }
 
     /// Guard on replacing the old full-buffer rescan: the running-totals read must
@@ -772,17 +1010,18 @@ mod tests {
         ];
         for window in [1.0_f64, 5.0, 10.0, 60.0] {
             let mut st = FlowState::new(FlowPatterns::new(BTreeSet::from([vol])));
-            st.ensure_window(window);
+            st.ensure_window(WindowSpec::secs(window));
             let mut wallet = 100u64;
             for &(side, sol, is_vol, at) in script {
                 wallet += 1; // fresh wallet each trade so contagion can't reclassify
-                st.on_trade(&trade(side, sol, is_vol.then_some(vol), wallet, at));
+                st.on_trade(&trade(side, sol, is_vol.then_some(vol), wallet, at), 0);
                 for probe in [-3.0, 0.0, 0.5, 3.0, 12.0] {
-                    let now = ts(at + probe);
-                    let w = &st.windows[&window_key(window)];
+                    let now_ts = ts(at + probe);
+                    let now = now_ts.timestamp_millis();
+                    let w = &st.windows[&WindowSpec::secs(window).key()];
                     let mut want = FlowTotals::default();
                     for &(t, (signed, v)) in &w.buf {
-                        if !in_window(t, now, window) {
+                        if !in_window(WindowSpec::secs(window), t, now) {
                             continue;
                         }
                         if signed >= 0.0 {
@@ -792,7 +1031,7 @@ mod tests {
                         }
                     }
                     for id in ids {
-                        let (got, exp) = (st.value(id, Some(window), now), want.value(id));
+                        let (got, exp) = (st.value(id, Some(WindowSpec::secs(window)), now_ts, 0), want.value(id));
                         assert!(
                             (got - exp).abs() < 1e-9 || (got.is_nan() && exp.is_nan()),
                             "{id:?} w={window} at={at} probe={probe}: {got} != {exp}"
@@ -851,6 +1090,8 @@ mod tests {
             }
             for (i, t) in case.trades.iter().enumerate() {
                 st.on_trade(&TradeLite {
+                    slot: 0,
+                    marker_bits: 0,
                     side: if t.side == "buy" { Side::Buy } else { Side::Sell },
                     sol: t.sol,
                     price: 1.0,
@@ -859,7 +1100,7 @@ mod tests {
                     at: ts(i as f64),
                     ix_hash: t.labels.as_deref().and_then(ix_hash_opt),
                     wallet_hash: wallet_hash(&t.wallet),
-                });
+                }, 0);
             }
             let now = ts(case.trades.len() as f64);
             for (id, want, label) in [
@@ -868,7 +1109,7 @@ mod tests {
                 (MetricId::NonvolBuy, case.expect.nonvol_buy, "nonvol_buy"),
                 (MetricId::NonvolSell, case.expect.nonvol_sell, "nonvol_sell"),
             ] {
-                let got = st.value(id, None, now);
+                let got = st.value(id, None, now, 0);
                 assert!(
                     (got - want).abs() < 1e-9,
                     "case {:?}: {label} = {got}, expected {want}",
@@ -885,4 +1126,95 @@ mod tests {
         let cfg = json!({"m_flow_split": {"volume_ix_patterns": [["Pump.Fun: Buy"]]}});
         assert!(flow_unconfigured_warning(&params, &cfg).is_none());
     }
+    /// The marker is the mechanism, and an exact-sequence list is only a snapshot of
+    /// it: a NEW bot build still creates a throwaway account, so a marker classifier
+    /// catches it where a pattern list books it as human demand. That miss is the
+    /// whole failure mode a cleanliness gate exists to prevent.
+    #[test]
+    fn a_marker_catches_a_build_the_pattern_list_has_never_seen() {
+        let seed = marker_mask(&["CreateAccountWithSeed"]).unwrap();
+        let known = ix_hash(&["System Program: CreateAccountWithSeed", "Pump.Fun: Buy"]);
+
+        // Pattern-only: the listed build is volume, an unlisted variant is not.
+        let by_pattern = FlowState::new(FlowPatterns::new(BTreeSet::from([known])));
+        let unlisted = TradeLite {
+            ix_hash: Some(ix_hash(&["Compute Budget: SetComputeUnitLimit",
+                                    "System Program: CreateAccountWithSeed",
+                                    "Pump.Fun: Buy"])),
+            marker_bits: seed,
+            ..Default::default()
+        };
+        assert!(!by_pattern.classify(&unlisted), "an unlisted variant reads as human");
+
+        // Marker-only: it is caught on the structure alone.
+        let by_marker = FlowState::new(FlowPatterns::markers_only(seed));
+        assert!(by_marker.classify(&unlisted), "the marker catches it regardless");
+    }
+
+    /// With both wallet rules off the classifier is a pure function of the TRADE.
+    /// Leaving them on does not merely tighten a structural gate - it measures a
+    /// different thing, because a person who once used a bot build stays tagged.
+    #[test]
+    fn the_wallet_rules_can_be_switched_off_for_a_structural_gate() {
+        let seed = marker_mask(&["CreateAccountWithSeed"]).unwrap();
+        let router = TradeLite { wallet_hash: 7, marker_bits: 0, ..Default::default() };
+        let bot = TradeLite { wallet_hash: 7, marker_bits: seed, sol: 1.0, ..Default::default() };
+
+        // The default keeps both wallet rules on, which is what every stored
+        // fingerprint relies on.
+        let mut with_wallets = FlowState::new(FlowPatterns::new(BTreeSet::new()));
+        with_wallets.set_creator(7);
+        assert!(with_wallets.classify(&router), "creator rule tags the trade");
+
+        let structural = FlowState::new(FlowPatterns::markers_only(seed));
+        assert!(!structural.classify(&router), "no marker, no tag - whoever sent it");
+        assert!(structural.classify(&bot), "and the marker still decides");
+    }
+
+    /// A cleanliness gate reads `vol_buy == 0`. One bot transaction in the slot has
+    /// to move it off zero, or the gate passes on a burst that contains a machine.
+    #[test]
+    fn one_marked_buy_moves_the_volume_side_off_zero() {
+        let seed = marker_mask(&["CreateAccountWithSeed"]).unwrap();
+        let mut st = FlowState::new(FlowPatterns::markers_only(seed));
+        st.ensure_window(crate::metrics::WindowSpec::slots(1.0, 0.0));
+        let at = ts(0.0);
+        let buy = |sol: f64, bits: u16, slot: u64| TradeLite {
+            side: Side::Buy, sol, at, slot, marker_bits: bits, ..Default::default()
+        };
+        st.on_trade(&buy(0.7, 0, 100), 100);
+        st.on_trade(&buy(0.5, 0, 100), 100);
+        assert_eq!(st.value(MetricId::WinVolBuy, Some(crate::metrics::WindowSpec::slots(1.0, 0.0)), at, 100), 0.0);
+        assert_eq!(st.value(MetricId::WinNonvolBuy, Some(crate::metrics::WindowSpec::slots(1.0, 0.0)), at, 100), 1.2);
+
+        st.on_trade(&buy(0.4, seed, 100), 100);
+        assert_eq!(
+            st.value(MetricId::WinVolBuy, Some(crate::metrics::WindowSpec::slots(1.0, 0.0)), at, 100),
+            0.4,
+            "the machine is on the volume side and the gate must see it"
+        );
+    }
+
+    /// An unknown marker name is an ERROR, not an empty mask: a typo that silently
+    /// matched nothing would let the gate pass on bot traffic.
+    #[test]
+    fn an_unknown_marker_name_is_rejected() {
+        assert!(marker_mask(&["CreateAccountWithSeed"]).is_ok());
+        let e = marker_mask(&["CreateAcountWithSeed"]).unwrap_err();
+        assert!(e.contains("unknown ix marker"), "{e}");
+    }
+
+    /// Both persisted label shapes must yield the same bits, for the same reason
+    /// `ix_hash_from_labels_value` is shape-complete.
+    #[test]
+    fn marker_bits_read_both_persisted_label_shapes() {
+        let bare = serde_json::json!(["System Program: CreateAccountWithSeed", "Pump.Fun: Buy"]);
+        let wrapped = serde_json::json!({
+            "instructions": ["System Program: CreateAccountWithSeed", "Pump.Fun: Buy"]
+        });
+        let seed = marker_mask(&["CreateAccountWithSeed"]).unwrap();
+        assert_eq!(marker_bits_from_labels_value(&bare), seed);
+        assert_eq!(marker_bits_from_labels_value(&wrapped), seed);
+    }
+
 }

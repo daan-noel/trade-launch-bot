@@ -33,6 +33,7 @@ struct FingerprintDbRow {
     first_slot_sell_lamports: Option<i64>,
     bucket_size_amount: Option<f64>,
     ix_labels: Option<Vec<String>>,
+    wildcard: bool,
     metric_config: sqlx::types::Json<serde_json::Value>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -52,6 +53,7 @@ impl From<FingerprintDbRow> for Fingerprint {
             first_slot_sell_lamports: r.first_slot_sell_lamports,
             bucket_size_amount: r.bucket_size_amount.map(tidy_sol_decimal),
             ix_labels: r.ix_labels,
+            wildcard: r.wildcard,
             metric_config: r.metric_config.0,
             created_at: r.created_at,
             updated_at: r.updated_at,
@@ -62,7 +64,7 @@ impl From<FingerprintDbRow> for Fingerprint {
 // Explicit column list (struct order) — not `SELECT *`.
 const FINGERPRINT_COLS: &str = "id, name, cu_limit, cu_price, init_buy_lamports, \
     max_cost_lamports, spendable_lamports_in, first_slot_buy_lamports, \
-    first_slot_sell_lamports, bucket_size_amount, ix_labels, metric_config, \
+    first_slot_sell_lamports, bucket_size_amount, ix_labels, wildcard, metric_config, \
     created_at, updated_at";
 
 /// The identity predicate for [`FingerprintRepo::find_or_create`]: every match
@@ -76,7 +78,8 @@ const IDENTITY_WHERE: &str = "cu_limit IS NOT DISTINCT FROM $1 \
     AND first_slot_buy_lamports IS NOT DISTINCT FROM $6 \
     AND first_slot_sell_lamports IS NOT DISTINCT FROM $7 \
     AND bucket_size_amount IS NOT DISTINCT FROM $8 \
-    AND ix_labels IS NOT DISTINCT FROM $9";
+    AND ix_labels IS NOT DISTINCT FROM $9 \
+    AND wildcard = $10";
 
 impl FingerprintRepo {
     pub fn new(pool: PgPool) -> Self {
@@ -94,8 +97,8 @@ impl FingerprintRepo {
             INSERT INTO fingerprints
                 (id, name, cu_limit, cu_price, init_buy_lamports, max_cost_lamports,
                  spendable_lamports_in, first_slot_buy_lamports, first_slot_sell_lamports,
-                 bucket_size_amount, ix_labels, metric_config, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                 bucket_size_amount, ix_labels, wildcard, metric_config, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             "#,
         )
         .bind(fp.id)
@@ -109,6 +112,7 @@ impl FingerprintRepo {
         .bind(fp.first_slot_sell_lamports)
         .bind(fp.bucket_size_amount.map(tidy_sol_decimal))
         .bind(fp.ix_labels.as_ref())
+        .bind(fp.wildcard)
         .bind(sqlx::types::Json(&fp.metric_config))
         .bind(fp.created_at)
         .bind(fp.updated_at)
@@ -136,7 +140,8 @@ impl FingerprintRepo {
                 first_slot_sell_lamports = $9,
                 bucket_size_amount = $10,
                 ix_labels = $11,
-                metric_config = $12,
+                wildcard = $12,
+                metric_config = $13,
                 updated_at = now()
             WHERE id = $1
             "#,
@@ -152,6 +157,7 @@ impl FingerprintRepo {
         .bind(fp.first_slot_sell_lamports)
         .bind(fp.bucket_size_amount.map(tidy_sol_decimal))
         .bind(fp.ix_labels.as_ref())
+        .bind(fp.wildcard)
         .bind(sqlx::types::Json(&fp.metric_config))
         .execute(&self.pool)
         .await?;
@@ -213,6 +219,7 @@ impl FingerprintRepo {
         .bind(fp.first_slot_sell_lamports)
         .bind(fp.bucket_size_amount.map(tidy_sol_decimal))
         .bind(fp.ix_labels.as_ref())
+        .bind(fp.wildcard)
         .fetch_optional(&self.pool)
         .await?;
         if let Some(row) = existing {

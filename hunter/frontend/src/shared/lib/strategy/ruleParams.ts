@@ -18,8 +18,9 @@ import type { StrategyRegistry } from './registry';
 /**
  * Editor-friendly form of one side's (entry/exit) groups, keyed by group name.
  *
- * Each group holds an **array of instances** — one per distinct `window_size_sec`
- * — mirroring the backend `hunter_engine::rule_params::SideConditions`
+ * Each group holds an **array of instances** — one per distinct trailing SPAN
+ * (size + lag + unit, not just a size) — mirroring the backend
+ * `hunter_engine::rule_params::SideConditions`
  * (`BTreeMap<group, Vec<GroupConditions>>`). This is what lets the same metric be
  * authored at two different trailing windows (e.g. `m_price_window.trail@5` AND
  * `@30`): two instances of the one group. A static group always has a single
@@ -31,7 +32,9 @@ export type SideConditions = Record<string, GroupConditions[]>;
 /** One group **instance**'s authored content: strict params (its window) beside
  *  per-metric condition exprs. A group may hold several — one per window. */
 export interface GroupConditions {
-  /** Strict params by name, e.g. `{ window_size_sec: 10 }`. */
+  /** Strict params by name, e.g. `{ window_size_sec: 10 }` or
+   *  `{ window_size_slots: 30, window_lag: 1 }`. Exactly one size param per
+   *  dynamic instance — both is two spans claiming one axis. */
   strict: Record<string, number>;
   /** DNF condition arms per metric name. */
   metrics: Record<string, ConditionExpr>;

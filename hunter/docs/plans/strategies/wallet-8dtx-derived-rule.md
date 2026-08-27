@@ -18,7 +18,14 @@ only if the arrivals are people rather than bots.**
 2. **Quiet** - almost nothing is bought in the last ~12 seconds.
 3. **A burst** - 2 or more buys land in one slot, totalling 1.2 to 10 SOL.
 4. **The burst is clean** - EVERY buy in it comes from a named retail router (Trojan, Photon,
-   Bloom, Terminal, Axiom). Not one carries a throwaway account.
+   Bloom, Terminal, Axiom).
+
+The fourth term is a **whitelist, not a blacklist**, and the difference is the edge.
+Excluding the obvious machinery marker instead - throwaway-account builds - reads
+**+0.99 %** where router purity reads **+6.86 %** on the same fires, because a build
+carrying no recognised marker is a machine you have not catalogued yet, not a person.
+The engine states it as `organic_ix_markers`
+([metrics-reference](metrics-reference.md#a-mask-names-one-side-and-which-side-is-the-rule)).
 
 Then hold about 8 seconds and sell. No stop. No take-profit. No trail.
 

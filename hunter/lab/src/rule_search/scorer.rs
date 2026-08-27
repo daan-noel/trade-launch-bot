@@ -284,7 +284,14 @@ fn grid_for(combos: &[GeneratedCombo], as_of: &DateTime<Utc>, tokens: &[CorpusTo
     for c in combos {
         for cl in c.entry.clauses.iter().chain(c.exit.clauses.iter()) {
             if let Some(w) = cl.window {
-                max_window = max_window.max(w);
+                // A wall clock: a slot span converts at the nominal slot time.
+                // Sizes a horizon only, never a reading.
+                max_window = max_window.max(match w.unit {
+                    hunter_engine::metrics::WindowUnit::Sec => w.size + w.lag,
+                    hunter_engine::metrics::WindowUnit::Slot => {
+                        (w.size + w.lag) * hunter_engine::metrics::NOMINAL_SLOT_SECS
+                    }
+                });
             }
             if cl.metric == MetricId::Time {
                 time_h = time_h.max(cl.threshold);

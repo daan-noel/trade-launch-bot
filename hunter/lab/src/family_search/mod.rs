@@ -70,7 +70,7 @@ use score::CohortScore;
 
 /// One authored exit req's bind-time label: `(metric, operator, value, window, slot)`.
 /// `None` for a desugared TP/SL req, which occupies no authored slot.
-pub type ExitSlotLabel = Option<(MetricId, Operator, f64, Option<f64>, u8)>;
+pub type ExitSlotLabel = Option<(MetricId, Operator, f64, Option<hunter_engine::metrics::WindowSpec>, u8)>;
 
 /// One cohort's fit-tier output: per-candidate scores, per-candidate admit rate, and
 /// the ungated control's score when it was scored alongside.
@@ -662,6 +662,7 @@ mod tests {
 
     fn fp() -> EngineFingerprint {
         EngineFingerprint {
+            wildcard: false,
             id: FingerprintId(Uuid::nil()),
             cu_limit: None,
             cu_price: None,
@@ -686,7 +687,7 @@ mod tests {
         let c = |w: f64, v: f64| Clause {
             group: MetricGroupId::FlowSplitWindow,
             metric: MetricId::WinNonvolBuy,
-            window: Some(w),
+            window: Some(hunter_engine::metrics::WindowSpec::secs(w)),
             op: Operator::Gte,
             threshold: v,
             phase: CutPhase::DumpLead,
@@ -706,7 +707,7 @@ mod tests {
 
         // The engine reports the WINDOWED term. Its slot must be the windowed one,
         // not the lifetime twin's — they share `metric.name()`.
-        let po = |window: Option<f64>, value: f64| PositionOutcome {
+        let po = |window: Option<hunter_engine::metrics::WindowSpec>, value: f64| PositionOutcome {
             mint: "m".into(),
             rule: hunter_engine::event::RuleId(Uuid::nil()),
             target_price: None,
@@ -731,11 +732,11 @@ mod tests {
             last_price: 1.2,
         };
         let cost = CostModel::pumpfun_with_impact();
-        let burst = replay_to_outcome(&po(Some(2.0), 1.6), &labels, 0.01, &cost);
-        let grind = replay_to_outcome(&po(Some(10.0), 0.9), &labels, 0.01, &cost);
+        let burst = replay_to_outcome(&po(Some(hunter_engine::metrics::WindowSpec::secs(2.0)), 1.6), &labels, 0.01, &cost);
+        let grind = replay_to_outcome(&po(Some(hunter_engine::metrics::WindowSpec::secs(10.0)), 0.9), &labels, 0.01, &cost);
         assert_eq!(burst.exit, ExitCode::Metrics);
-        assert_eq!(burst.exit_metric_window, Some(2.0));
-        assert_eq!(grind.exit_metric_window, Some(10.0));
+        assert_eq!(burst.exit_metric_window, Some(hunter_engine::metrics::WindowSpec::secs(2.0)));
+        assert_eq!(grind.exit_metric_window, Some(hunter_engine::metrics::WindowSpec::secs(10.0)));
         assert_ne!(
             burst.exit_metric_slot, grind.exit_metric_slot,
             "two windows of one metric must not share a slot"
@@ -743,7 +744,7 @@ mod tests {
         assert!(burst.exit_metric_slot.is_some() && grind.exit_metric_slot.is_some());
 
         // A non-metric close stamps no slot at all — never a fabricated bucket.
-        let mut tp = po(Some(2.0), 1.6);
+        let mut tp = po(Some(hunter_engine::metrics::WindowSpec::secs(2.0)), 1.6);
         tp.exit_reason = Some(ExitReason::TakeProfit);
         let tp = replay_to_outcome(&tp, &labels, 0.01, &cost);
         assert_eq!(tp.exit, ExitCode::TakeProfit);

@@ -309,6 +309,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::metrics::WindowSpec;
     use super::*;
     use crate::metrics::series::SeriesColumn;
     use crate::metrics::{MetricId, Side};
@@ -316,6 +317,11 @@ mod tests {
 
     fn ts(secs: f64) -> Ts {
         Utc.timestamp_opt(1_700_000_000, 0).unwrap() + Duration::milliseconds((secs * 1000.0) as i64)
+    }
+
+    /// The same instant as [`ts`], on a window's own millisecond cursor.
+    fn p(secs: f64) -> i64 {
+        ts(secs).timestamp_millis()
     }
 
     fn buy(sol: f64, secs: f64) -> TradeLite {
@@ -335,7 +341,7 @@ mod tests {
     #[test]
     fn ticks_expose_a_between_trades_window_dip_that_a_trade_only_fold_hides() {
         let created = ts(0.0);
-        let col = SeriesColumn::window(MetricId::Buy, 60.0);
+        let col = SeriesColumn::window(MetricId::Buy, WindowSpec::secs(60.0));
         // 6 SOL of buys land at t=0, then nothing until t=61 — where a fresh 6 SOL
         // buy lands. `buy@60` is 6 at t=0, decays to 0 just after t=60, and is back
         // to 6 at t=61. A `buy < 5` exit must fire in the gap.
@@ -375,7 +381,7 @@ mod tests {
     #[test]
     fn emitted_ticks_land_on_the_shared_grid() {
         let created = ts(0.0);
-        let col = SeriesColumn::window(MetricId::Buy, 5.0);
+        let col = SeriesColumn::window(MetricId::Buy, WindowSpec::secs(5.0));
         let mut series = MetricSeries::new(created, vec![col]);
         let grid = SparseGrid::for_windows(&[5.0]);
         fold_sparse(&mut series, created, [(buy(1.0, 0.4), None)], &grid, ts(2.0), None);
@@ -393,7 +399,7 @@ mod tests {
     #[test]
     fn a_long_quiet_gap_stays_sparse() {
         let created = ts(0.0);
-        let col = SeriesColumn::window(MetricId::Buy, 10.0);
+        let col = SeriesColumn::window(MetricId::Buy, WindowSpec::secs(10.0));
         let mut series = MetricSeries::new(created, vec![col]);
         let grid = SparseGrid::for_windows(&[10.0]);
         // Two trades an hour apart. Dense would be 3600/0.2 = 18_000 rows; sparse
@@ -415,7 +421,7 @@ mod tests {
     #[test]
     fn estimate_upper_bounds_the_real_row_count() {
         let created = ts(0.0);
-        let col = SeriesColumn::window(MetricId::Buy, 10.0);
+        let col = SeriesColumn::window(MetricId::Buy, WindowSpec::secs(10.0));
         let times = [0.0, 1.0, 7.5, 400.0, 900.0];
         let grid = SparseGrid::for_windows(&[10.0]);
         let mut series = MetricSeries::new(created, vec![col]);
@@ -434,7 +440,7 @@ mod tests {
     #[test]
     fn a_row_budget_truncates_and_reports() {
         let created = ts(0.0);
-        let col = SeriesColumn::window(MetricId::Buy, 60.0);
+        let col = SeriesColumn::window(MetricId::Buy, WindowSpec::secs(60.0));
         let mut series = MetricSeries::new(created, vec![col]);
         let grid = SparseGrid::for_windows(&[60.0]);
         let fold = fold_sparse(

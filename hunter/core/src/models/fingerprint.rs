@@ -60,6 +60,15 @@ pub struct Fingerprint {
     pub bucket_size_amount: Option<f64>,
     /// Exact ordered instruction-label sequence of the creation tx.
     pub ix_labels: Option<Vec<String>>,
+    /// Match EVERY token, ignoring every other axis.
+    ///
+    /// A rule always needs a fingerprint, but not every rule is about a creation
+    /// shape - one that decides purely on what the tape is doing has none to name.
+    /// Leaving all axes `NULL` means *match nothing* (the matcher refuses a
+    /// criterion-less row on purpose), so "every token" has to be said out loud or
+    /// it is indistinguishable from a half-filled form.
+    #[serde(default)]
+    pub wildcard: bool,
     /// Per-metric-group fingerprint-side config (e.g. `m_flow_split.volume_ix_patterns`).
     /// **Not** part of match identity — `find_or_create` ignores it.
     #[serde(default = "default_metric_config")]
@@ -108,6 +117,7 @@ impl Fingerprint {
             spendable_lamports_in: opt_i64(body, "spendable_lamports_in"),
             first_slot_buy_lamports: opt_i64(body, "first_slot_buy_lamports"),
             first_slot_sell_lamports: opt_i64(body, "first_slot_sell_lamports"),
+            wildcard: body.get("wildcard").and_then(|v| v.as_bool()).unwrap_or(false),
             // Present-and-numeric ⇒ a bucket width; explicit `null` ⇒ exact match;
             // **absent ⇒ the 0.1 default**, so an older client that never heard of
             // exact mode can't silently create exact-matching fingerprints. Only a
@@ -325,6 +335,7 @@ mod tests {
     fn fp_with(bucket_size_amount: Option<f64>) -> Fingerprint {
         let now = Utc::now();
         Fingerprint {
+            wildcard: false,
             id: Uuid::nil(),
             name: "t".into(),
             cu_limit: Some(200_000),

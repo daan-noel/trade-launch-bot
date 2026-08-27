@@ -39,6 +39,7 @@ fn fid(n: u128) -> FingerprintId {
 /// first-slot axis) — the default "this token is ours" shape for these tests.
 fn cu_fp(id: u128) -> Fingerprint {
     Fingerprint {
+        wildcard: false,
         id: fid(id),
         cu_limit: Some(200_000),
         cu_price: None,
@@ -81,6 +82,8 @@ fn reload(rules: Vec<LoadedRule>, fps: Vec<Fingerprint>) -> Event {
 
 fn trade(sol: f64, price: f64, reserve: f64, at: f64) -> TradeLite {
     TradeLite {
+        slot: 0,
+        marker_bits: 0,
         side: Side::Buy,
         sol,
         price,
@@ -1175,6 +1178,8 @@ fn flow_entry_on_vol_net_and_exit_when_organic_goes_quiet() {
         Event::Trade {
             mint: m.clone(),
             trade: TradeLite {
+               slot: 0,
+               marker_bits: 0,
                 side: Side::Buy,
                 sol: 1.0,
                 price: 1.0,
@@ -1194,6 +1199,8 @@ fn flow_entry_on_vol_net_and_exit_when_organic_goes_quiet() {
         Event::Trade {
             mint: m.clone(),
             trade: TradeLite {
+               slot: 0,
+               marker_bits: 0,
                 side: Side::Buy,
                 sol: 3.0,
                 price: 1.1,
@@ -1217,7 +1224,7 @@ fn flow_entry_on_vol_net_and_exit_when_organic_goes_quiet() {
             metric: hunter_engine::metrics::MetricId::WinNonvolGross,
             operator: hunter_engine::metrics::evaluator::Operator::Eq,
             value: 0.0,
-            window: Some(5.0),
+            window: Some(hunter_engine::metrics::WindowSpec::secs(5.0)),
         }]
     );
 }
@@ -1265,6 +1272,8 @@ fn two_fingerprints_flow_states_diverge() {
         Event::Trade {
             mint: m,
             trade: TradeLite {
+               slot: 0,
+               marker_bits: 0,
                 side: Side::Buy,
                 sol: 2.0,
                 price: 1.0,

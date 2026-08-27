@@ -53,6 +53,7 @@ fn rid(n: u128) -> RuleId {
 
 fn cu_fp(id: u128) -> Fingerprint {
     Fingerprint {
+        wildcard: false,
         id: fid(id),
         cu_limit: Some(200_000),
         cu_price: None,
@@ -209,6 +210,8 @@ fn random_streams_preserve_invariants_and_never_panic() {
                 2 | 3 => Event::Trade {
                     mint,
                     trade: TradeLite {
+                       slot: 0,
+                       marker_bits: 0,
                         side: if rng.frac() < 0.5 { Side::Buy } else { Side::Sell },
                         sol: rng.frac() * 2.0,
                         price: 0.5 + rng.frac() * 3.0,

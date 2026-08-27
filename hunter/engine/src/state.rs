@@ -147,10 +147,10 @@ pub struct EngineState {
     pub fps: Vec<Fingerprint>,
     /// Union of every rule's distinct **flow** `window_size_sec` (`m_flow_window` +
     /// `m_flow_split_window`) — ensured on each new track.
-    pub all_windows: Vec<f64>,
+    pub all_windows: Vec<crate::metrics::WindowSpec>,
     /// Union of every rule's distinct **price** `window_size_sec`
     /// (`m_price_window`) — ensured on each new track alongside `all_windows`.
-    pub all_price_windows: Vec<f64>,
+    pub all_price_windows: Vec<crate::metrics::WindowSpec>,
     /// Union of every loaded rule's [`ClockHorizons`] — how long *any* rule's
     /// readings can still move without a trade. Drives [`Settled`].
     pub tick_horizons: ClockHorizons,
@@ -378,8 +378,8 @@ impl EngineState {
         self.rules = rules.iter().map(|r| (r.id, CompiledRule::compile(r))).collect();
         self.fps = fps.to_vec();
 
-        let mut all_windows: Vec<f64> = Vec::new();
-        let mut all_price_windows: Vec<f64> = Vec::new();
+        let mut all_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
+        let mut all_price_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
         let mut horizons = ClockHorizons::default();
         let mut any_priority = false;
         for r in self.rules.values() {
@@ -437,8 +437,8 @@ impl EngineState {
 
     fn ensure_track_windows_and_flow(
         track: &mut TokenTrack,
-        windows: &[f64],
-        price_windows: &[f64],
+        windows: &[crate::metrics::WindowSpec],
+        price_windows: &[crate::metrics::WindowSpec],
         fps: &[Fingerprint],
     ) {
         for &w in windows {

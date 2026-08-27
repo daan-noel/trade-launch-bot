@@ -212,7 +212,10 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                 if !dense && token.tick_is_noop(epoch) {
                     return true;
                 }
-                token.track.on_tick(now);
+                // A tick is a WALL clock. Slot windows are trade-driven and hold their last
+                // cursor here on purpose: slot durations vary, so estimating one from
+                // elapsed time would be a silently wrong reading rather than a stale one.
+                token.track.on_tick(now, None);
                 evaluate_token(state, token, mint, now, &mut fx);
                 all_settled &= token.settled.is_some();
                 token.is_active()

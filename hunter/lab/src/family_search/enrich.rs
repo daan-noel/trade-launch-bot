@@ -294,7 +294,7 @@ mod tests {
     use hunter_engine::metrics::evaluator::Operator;
     use hunter_engine::metrics::{group_of, MetricId};
 
-    fn clause(metric: MetricId, op: Operator, threshold: f64, window: Option<f64>) -> Clause {
+    fn clause(metric: MetricId, op: Operator, threshold: f64, window: Option<hunter_engine::metrics::WindowSpec>) -> Clause {
         Clause { group: group_of(metric).id, metric, window, op, threshold, phase: CutPhase::DumpLead }
     }
 
@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn an_entry_idea_that_buys_win_rate_is_accepted_even_when_it_costs_a_little_return() {
         let entry_menu = [clause(MetricId::Time, Operator::Gte, 20.0, None)];
-        let exit_menu = [clause(MetricId::WinNonvolBuy, Operator::Gte, 1.6, Some(2.0))];
+        let exit_menu = [clause(MetricId::WinNonvolBuy, Operator::Gte, 1.6, Some(hunter_engine::metrics::WindowSpec::secs(2.0)))];
 
         let score = |e: &EntryFilling, x: &ExitBag| {
             let time = has(e, MetricId::Time);
@@ -372,7 +372,7 @@ mod tests {
     #[test]
     fn an_idea_that_pays_nothing_is_refused_with_its_reason() {
         let entry_menu = [clause(MetricId::Time, Operator::Gte, 20.0, None)];
-        let exit_menu = [clause(MetricId::GrossFlow, Operator::Lt, 15.0, Some(10.0))];
+        let exit_menu = [clause(MetricId::GrossFlow, Operator::Lt, 15.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0)))];
         // Flat whatever is added.
         let score = |_: &EntryFilling, _: &ExitBag| s(21.0, 48.0, 200);
 
@@ -395,8 +395,8 @@ mod tests {
     /// re-score on the growing rule catches it.
     #[test]
     fn the_second_of_two_redundant_ideas_is_refused_on_the_confirming_pass() {
-        let a = clause(MetricId::GrossFlow, Operator::Lt, 15.0, Some(10.0));
-        let b = clause(MetricId::Buy, Operator::Lt, 3.0, Some(10.0));
+        let a = clause(MetricId::GrossFlow, Operator::Lt, 15.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0)));
+        let b = clause(MetricId::Buy, Operator::Lt, 3.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0)));
         let exit_menu = [a, b];
 
         let score = move |_: &EntryFilling, x: &ExitBag| {

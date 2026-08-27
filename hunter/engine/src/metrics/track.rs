@@ -23,7 +23,7 @@ use crate::fingerprint::FingerprintId;
 
 use super::flow_lifetime::FlowLifetimeState;
 use super::flow_split::{FlowPatterns, FlowState};
-use super::flow_window::{window_key, WindowState};
+use super::flow_window::WindowState;
 use super::price_lifetime::PriceLifetimeState;
 use super::price_window::PriceWindowState;
 use super::snapshot::SnapshotState;
@@ -33,16 +33,19 @@ use super::{MetricId, TradeLite, Ts};
 #[derive(Debug, Clone)]
 pub struct TokenTrack {
     created_at: Ts,
+    /// Highest slot observed on this token - the cursor every slot-unit window
+    /// counts in. Monotonic; a tick advances it only when the producer supplies one.
+    cur_slot: u64,
     snapshot: SnapshotState,
     price_lifetime: PriceLifetimeState,
     flow_lifetime: FlowLifetimeState,
     /// Dynamic flow windows, keyed by [`window_key`] so equal sizes dedupe.
-    windows: BTreeMap<u64, WindowState>,
+    windows: BTreeMap<super::WindowKey, WindowState>,
     /// Dynamic price-extrema windows, keyed by [`window_key`]. Kept apart from
     /// `windows` so a rule using only `m_flow_window` pays for no price deque (and
     /// vice versa) — the two dynamic groups share the `window_size_sec` param name
     /// but not the buffers.
-    price_windows: BTreeMap<u64, PriceWindowState>,
+    price_windows: BTreeMap<super::WindowKey, PriceWindowState>,
     /// Flow classifier state, keyed by fingerprint (pattern sets differ).
     flow: BTreeMap<FingerprintId, FlowState>,
     /// Creator wallet hash from `TokenCreated` — applied to every FlowState.
@@ -63,6 +66,7 @@ impl TokenTrack {
             flow_lifetime: FlowLifetimeState::default(),
             windows: BTreeMap::new(),
             price_windows: BTreeMap::new(),
+            cur_slot: 0,
             priced_reserves: f64::NAN,
             flow: BTreeMap::new(),
             creator_wallet_hash: None,
@@ -72,18 +76,14 @@ impl TokenTrack {
     /// Register a trailing flow window (idempotent; deduped by `window_size_sec`).
     /// The engine calls this for every distinct `window_size_sec` its loaded
     /// rules reference before the token starts receiving trades.
-    pub fn ensure_window(&mut self, window_secs: f64) {
-        self.windows
-            .entry(window_key(window_secs))
-            .or_insert_with(|| WindowState::new(window_secs));
+    pub fn ensure_window(&mut self, spec: super::WindowSpec) {
+        self.windows.entry(spec.key()).or_insert_with(|| WindowState::new(spec));
     }
 
     /// Register a trailing price-extrema window (idempotent; deduped by
     /// `window_size_sec`). The `m_price_window` counterpart of [`ensure_window`].
-    pub fn ensure_price_window(&mut self, window_secs: f64) {
-        self.price_windows
-            .entry(window_key(window_secs))
-            .or_insert_with(|| PriceWindowState::new(window_secs));
+    pub fn ensure_price_window(&mut self, spec: super::WindowSpec) {
+        self.price_windows.entry(spec.key()).or_insert_with(|| PriceWindowState::new(spec));
     }
 
     /// Register fingerprint-scoped flow state (idempotent). `windows` are the
@@ -100,7 +100,7 @@ impl TokenTrack {
         &mut self,
         fp: FingerprintId,
         patterns: &FlowPatterns,
-        windows: &[f64],
+        windows: &[super::WindowSpec],
     ) {
         let creator = self.creator_wallet_hash;
         let state = self.flow.entry(fp).or_insert_with(|| {
@@ -146,32 +146,61 @@ impl TokenTrack {
     pub fn on_trade(&mut self, t: TradeLite) {
         self.snapshot.on_trade(t.reserve_sol);
         self.priced_reserves = t.priced_reserve_sol;
+        // The slot cursor only ever moves forward. Canonical order is
+        // slot -> tx_index -> leg, so a regressed feed row must not rewind every
+        // slot window on the token.
+        self.cur_slot = self.cur_slot.max(t.slot);
         self.price_lifetime.on_trade(t.price, t.at);
         self.flow_lifetime.on_trade(t.side, t.sol);
+        let cur_slot = self.cur_slot;
         for w in self.windows.values_mut() {
-            w.on_trade(t.side, t.sol, t.at, t.wallet_hash);
+            let spec = w.spec();
+            w.on_trade(
+                t.side,
+                t.sol,
+                spec.pos(t.at, t.slot),
+                spec.now_pos(t.at, cur_slot),
+                t.wallet_hash,
+            );
         }
         for pw in self.price_windows.values_mut() {
-            pw.on_trade(t.price, t.at);
+            let spec = pw.spec();
+            pw.on_trade(t.price, spec.pos(t.at, t.slot), spec.now_pos(t.at, cur_slot));
         }
         for flow in self.flow.values_mut() {
-            flow.on_trade(&t);
+            flow.on_trade(&t, cur_slot);
         }
     }
 
     /// Advance time to `now` without a trade — evicts stale window entries so a
     /// quiet token's flows decay (and the stall/time metrics read against `now`
     /// at the call site).
-    pub fn on_tick(&mut self, now: Ts) {
+    pub fn on_tick(&mut self, now: Ts, slot: Option<u64>) {
+        // A slot axis has no clock of its own: it advances only when something tells
+        // it a slot passed. When the producer cannot supply one, slot windows HOLD
+        // their last reading rather than guess from elapsed time - slot durations
+        // vary, and an estimated cursor is a silently wrong number.
+        if let Some(sl) = slot {
+            self.cur_slot = self.cur_slot.max(sl);
+        }
+        let cur_slot = self.cur_slot;
         for w in self.windows.values_mut() {
-            w.evict(now);
+            let now_pos = w.spec().now_pos(now, cur_slot);
+            w.evict(now_pos);
         }
         for pw in self.price_windows.values_mut() {
-            pw.evict(now);
+            let now_pos = pw.spec().now_pos(now, cur_slot);
+            pw.evict(now_pos);
         }
         for flow in self.flow.values_mut() {
-            flow.on_tick(now);
+            flow.on_tick(now, cur_slot);
         }
+    }
+
+    /// The highest slot this token has observed. `0` before the first trade, or when
+    /// no adapter supplies slots.
+    pub fn cur_slot(&self) -> u64 {
+        self.cur_slot
     }
 
     /// The most recently observed canonical price (`NaN` before the first trade).
@@ -206,7 +235,8 @@ impl TokenTrack {
         now: Ts,
     ) -> f64 {
         use MetricId::*;
-        let window_secs = windows.primary;
+        let window = windows.primary;
+        let cur_slot = self.cur_slot;
         match id {
             Time | Liquidity | IxCount | PriorLaunches | FirstSlotBuy => {
                 self.snapshot.value(id, self.created_at, now)
@@ -216,15 +246,15 @@ impl TokenTrack {
                 self.flow_lifetime.value(id)
             }
             WinTrail | WinRise => {
-                match window_secs.and_then(|ws| self.price_windows.get(&window_key(ws))) {
-                    Some(pw) => pw.value(id, now),
+                match window.and_then(|sp| self.price_windows.get(&sp.key()).map(|pw| (sp, pw))) {
+                    Some((sp, pw)) => pw.value(id, sp.now_pos(now, cur_slot)),
                     None => f64::NAN,
                 }
             }
-            GrossFlow | NetFlow | Buy | Sell | UniqueWallets | TradeCount | BuyShare
+            GrossFlow | NetFlow | Buy | Sell | UniqueWallets | TradeCount | BuyCount | BuyShare
             | TradesPerWallet => {
-                match window_secs.and_then(|ws| self.windows.get(&window_key(ws))) {
-                    Some(w) => w.value(id, now),
+                match window.and_then(|sp| self.windows.get(&sp.key()).map(|w| (sp, w))) {
+                    Some((sp, w)) => w.value(id, sp.now_pos(now, cur_slot)),
                     None => f64::NAN,
                 }
             }
@@ -234,10 +264,15 @@ impl TokenTrack {
             // axis unregistered ⇒ NaN, the same "no reading" a missing single window
             // gives, and NaN satisfies no condition.
             BurstTradeShare => {
-                let reference = windows.primary.and_then(|w| self.windows.get(&window_key(w)));
-                let burst = windows.secondary.and_then(|b| self.windows.get(&window_key(b)));
-                match (burst, reference) {
-                    (Some(b), Some(r)) => super::flow_burst::trade_share(b, r, now),
+                let reference = windows.primary.and_then(|w| self.windows.get(&w.key()));
+                let burst = windows.secondary.and_then(|b| self.windows.get(&b.key()));
+                match (burst, reference, windows.primary, windows.secondary) {
+                    (Some(b), Some(r), Some(rs), Some(bs)) => super::flow_burst::trade_share(
+                        b,
+                        r,
+                        bs.now_pos(now, cur_slot),
+                        rs.now_pos(now, cur_slot),
+                    ),
                     _ => f64::NAN,
                 }
             }
@@ -248,7 +283,7 @@ impl TokenTrack {
                     return f64::NAN;
                 };
                 match self.flow.get(&fp) {
-                    Some(f) => f.value(id, window_secs, now),
+                    Some(f) => f.value(id, window, now, cur_slot),
                     None => f64::NAN,
                 }
             }
@@ -265,7 +300,7 @@ impl TokenTrack {
     /// `out` must be at least `reqs.len()` long; extra slots are left untouched.
     pub fn values(
         &self,
-        reqs: &[(MetricId, Option<f64>, Option<FingerprintId>)],
+        reqs: &[(MetricId, Option<super::WindowSpec>, Option<FingerprintId>)],
         now: Ts,
         out: &mut [f64],
     ) {
@@ -282,6 +317,7 @@ impl TokenTrack {
 
 #[cfg(test)]
 mod tests {
+    use crate::metrics::WindowSpec;
     use super::*;
     use crate::metrics::Side;
     use chrono::{Duration, TimeZone, Utc};
@@ -290,6 +326,11 @@ mod tests {
     fn ts(secs: f64) -> Ts {
         Utc.timestamp_opt(1_700_000_000, 0).unwrap()
             + Duration::milliseconds((secs * 1000.0) as i64)
+    }
+
+    /// The same instant as [`ts`], on a window's own millisecond cursor.
+    fn p(secs: f64) -> i64 {
+        ts(secs).timestamp_millis()
     }
 
     fn buy(sol: f64, price: f64, reserve: f64, secs: f64) -> TradeLite {
@@ -322,6 +363,8 @@ mod tests {
 
         // Unconfigured: the bot buy reads as organic.
         track.on_trade(TradeLite {
+            slot: 0,
+            marker_bits: 0,
             side: Side::Buy,
             sol: 1.0,
             price: 1.0,
@@ -336,6 +379,8 @@ mod tests {
         // Operator adds the pattern; the reload re-registers the same fingerprint.
         track.ensure_flow(fp, &FlowPatterns::new(BTreeSet::from([bot])), &[]);
         track.on_trade(TradeLite {
+            slot: 0,
+            marker_bits: 0,
             side: Side::Buy,
             sol: 2.0,
             price: 1.0,
@@ -354,7 +399,7 @@ mod tests {
     fn routes_each_metric_to_its_group() {
         let created = ts(0.0);
         let mut track = TokenTrack::new(created);
-        track.ensure_window(10.0);
+        track.ensure_window(WindowSpec::secs(10.0));
         track.on_trade(buy(3.0, 2.0, 15.0, 1.0));
 
         assert_eq!(track.value(MetricId::Time, crate::metrics::Windows::NONE, None, ts(5.0)), 5.0);
@@ -362,8 +407,8 @@ mod tests {
         assert_eq!(track.value(MetricId::Stall, crate::metrics::Windows::NONE, None, ts(5.0)), 4.0); // moved at t=1
         assert_eq!(track.value(MetricId::Trail, crate::metrics::Windows::NONE, None, ts(5.0)), 0.0); // at peak
         assert_eq!(track.value(MetricId::LifeRise, crate::metrics::Windows::NONE, None, ts(5.0)), 0.0); // at trough
-        assert_eq!(track.value(MetricId::Buy, crate::metrics::Windows::one(10.0), None, ts(5.0)), 3.0);
-        assert_eq!(track.value(MetricId::GrossFlow, crate::metrics::Windows::one(10.0), None, ts(5.0)), 3.0);
+        assert_eq!(track.value(MetricId::Buy, crate::metrics::Windows::secs(10.0), None, ts(5.0)), 3.0);
+        assert_eq!(track.value(MetricId::GrossFlow, crate::metrics::Windows::secs(10.0), None, ts(5.0)), 3.0);
         // Lifetime totals ignore the window arg and do not need ensure_window.
         assert_eq!(track.value(MetricId::LifeBuy, crate::metrics::Windows::NONE, None, ts(5.0)), 3.0);
         assert_eq!(track.value(MetricId::LifeGrossFlow, crate::metrics::Windows::NONE, None, ts(5.0)), 3.0);
@@ -372,13 +417,13 @@ mod tests {
     #[test]
     fn lifetime_flow_survives_window_decay() {
         let mut track = TokenTrack::new(ts(0.0));
-        track.ensure_window(10.0);
+        track.ensure_window(WindowSpec::secs(10.0));
         track.on_trade(buy(4.0, 1.0, 20.0, 0.0));
-        assert_eq!(track.value(MetricId::Buy, crate::metrics::Windows::one(10.0), None, ts(5.0)), 4.0);
+        assert_eq!(track.value(MetricId::Buy, crate::metrics::Windows::secs(10.0), None, ts(5.0)), 4.0);
         assert_eq!(track.value(MetricId::LifeBuy, crate::metrics::Windows::NONE, None, ts(5.0)), 4.0);
         // Tick past the window edge → window decays; lifetime keeps the total.
-        track.on_tick(ts(11.0));
-        assert_eq!(track.value(MetricId::Buy, crate::metrics::Windows::one(10.0), None, ts(11.0)), 0.0);
+        track.on_tick(ts(11.0), None);
+        assert_eq!(track.value(MetricId::Buy, crate::metrics::Windows::secs(10.0), None, ts(11.0)), 0.0);
         assert_eq!(track.value(MetricId::LifeBuy, crate::metrics::Windows::NONE, None, ts(11.0)), 4.0);
         assert_eq!(track.value(MetricId::LifeGrossFlow, crate::metrics::Windows::NONE, None, ts(11.0)), 4.0);
     }
@@ -388,19 +433,19 @@ mod tests {
         let mut track = TokenTrack::new(ts(0.0));
         track.on_trade(buy(3.0, 2.0, 15.0, 1.0));
         // No window ensured → NaN.
-        assert!(track.value(MetricId::Buy, crate::metrics::Windows::one(10.0), None, ts(5.0)).is_nan());
+        assert!(track.value(MetricId::Buy, crate::metrics::Windows::secs(10.0), None, ts(5.0)).is_nan());
         // Dynamic metric with no window arg → NaN.
-        track.ensure_window(10.0);
+        track.ensure_window(WindowSpec::secs(10.0));
         assert!(track.value(MetricId::Buy, crate::metrics::Windows::NONE, None, ts(5.0)).is_nan());
     }
 
     #[test]
     fn equal_windows_dedupe_to_one_buffer() {
         let mut track = TokenTrack::new(ts(0.0));
-        track.ensure_window(10.0);
-        track.ensure_window(10.0);
+        track.ensure_window(WindowSpec::secs(10.0));
+        track.ensure_window(WindowSpec::secs(10.0));
         assert_eq!(track.windows.len(), 1);
-        track.ensure_window(5.0);
+        track.ensure_window(WindowSpec::secs(5.0));
         assert_eq!(track.windows.len(), 2);
     }
 
@@ -409,47 +454,47 @@ mod tests {
         let created = ts(0.0);
         let mut track = TokenTrack::new(created);
         // A flow window and a price window at the SAME size must be distinct buffers.
-        track.ensure_window(30.0);
-        track.ensure_price_window(30.0);
-        track.ensure_price_window(30.0); // idempotent
+        track.ensure_window(WindowSpec::secs(30.0));
+        track.ensure_price_window(WindowSpec::secs(30.0));
+        track.ensure_price_window(WindowSpec::secs(30.0)); // idempotent
         assert_eq!(track.price_windows.len(), 1);
         assert_eq!(track.windows.len(), 1);
 
         // Unregistered price window / missing window arg → NaN.
-        assert!(track.value(MetricId::WinTrail, crate::metrics::Windows::one(60.0), None, ts(1.0)).is_nan());
+        assert!(track.value(MetricId::WinTrail, crate::metrics::Windows::secs(60.0), None, ts(1.0)).is_nan());
         assert!(track.value(MetricId::WinTrail, crate::metrics::Windows::NONE, None, ts(1.0)).is_nan());
         // Before any trade → NaN.
-        assert!(track.value(MetricId::WinTrail, crate::metrics::Windows::one(30.0), None, ts(1.0)).is_nan());
+        assert!(track.value(MetricId::WinTrail, crate::metrics::Windows::secs(30.0), None, ts(1.0)).is_nan());
 
         // High at t=1 (price 2.0), dip at t=2 (price 1.5) → trail = 25%, rise = 0.
         track.on_trade(buy(1.0, 2.0, 15.0, 1.0));
         track.on_trade(buy(1.0, 1.5, 15.0, 2.0));
         assert!(
-            (track.value(MetricId::WinTrail, crate::metrics::Windows::one(30.0), None, ts(2.0)) - 25.0).abs() < 1e-9
+            (track.value(MetricId::WinTrail, crate::metrics::Windows::secs(30.0), None, ts(2.0)) - 25.0).abs() < 1e-9
         );
-        assert_eq!(track.value(MetricId::WinRise, crate::metrics::Windows::one(30.0), None, ts(2.0)), 0.0);
+        assert_eq!(track.value(MetricId::WinRise, crate::metrics::Windows::secs(30.0), None, ts(2.0)), 0.0);
     }
 
     #[test]
     fn tick_decays_quiet_flows() {
         let mut track = TokenTrack::new(ts(0.0));
-        track.ensure_window(10.0);
+        track.ensure_window(WindowSpec::secs(10.0));
         track.on_trade(buy(4.0, 1.0, 20.0, 0.0));
-        assert_eq!(track.value(MetricId::Buy, crate::metrics::Windows::one(10.0), None, ts(5.0)), 4.0);
+        assert_eq!(track.value(MetricId::Buy, crate::metrics::Windows::secs(10.0), None, ts(5.0)), 4.0);
         // Tick past the window edge → flow decays to zero even with no trade.
-        track.on_tick(ts(11.0));
-        assert_eq!(track.value(MetricId::Buy, crate::metrics::Windows::one(10.0), None, ts(11.0)), 0.0);
+        track.on_tick(ts(11.0), None);
+        assert_eq!(track.value(MetricId::Buy, crate::metrics::Windows::secs(10.0), None, ts(11.0)), 0.0);
     }
 
     #[test]
     fn values_batch_fills_caller_buffer() {
         let mut track = TokenTrack::new(ts(0.0));
-        track.ensure_window(10.0);
+        track.ensure_window(WindowSpec::secs(10.0));
         track.on_trade(buy(3.0, 2.0, 15.0, 1.0));
         let reqs = [
             (MetricId::Time, None, None),
             (MetricId::Liquidity, None, None),
-            (MetricId::Buy, Some(10.0), None),
+            (MetricId::Buy, Some(WindowSpec::secs(10.0)), None),
         ];
         let mut out = [0.0_f64; 3];
         track.values(&reqs, ts(5.0), &mut out);
@@ -469,7 +514,7 @@ mod tests {
             .is_nan());
 
         let patterns = FlowPatterns::new(BTreeSet::from([ix_hash(&["vol"])]));
-        track.ensure_flow(id, &patterns, &[10.0]);
+        track.ensure_flow(id, &patterns, &[WindowSpec::secs(10.0)]);
         track.seed_creator(99);
 
         let mut t = buy(4.0, 1.0, 20.0, 0.0);
@@ -484,7 +529,7 @@ mod tests {
         assert_eq!(track.value(MetricId::VolBuy, crate::metrics::Windows::NONE, Some(id), ts(2.0)), 4.0);
         assert_eq!(track.value(MetricId::NonvolBuy, crate::metrics::Windows::NONE, Some(id), ts(2.0)), 6.0);
         assert_eq!(
-            track.value(MetricId::WinVolBuy, crate::metrics::Windows::one(10.0), Some(id), ts(2.0)),
+            track.value(MetricId::WinVolBuy, crate::metrics::Windows::secs(10.0), Some(id), ts(2.0)),
             4.0
         );
         // Missing fingerprint arg → NaN even when state exists.
@@ -681,10 +726,12 @@ mod tests {
         for c in &cases {
             let mut track = TokenTrack::new(ts(0.0));
             for w in [3.0, 5.0, 10.0, 60.0] {
-                track.ensure_window(w);
+                track.ensure_window(WindowSpec::secs(w));
             }
             for &(at, is_buy, sol, wallet) in c.trades {
                 track.on_trade(TradeLite {
+                    slot: 0,
+                    marker_bits: 0,
                     side: if is_buy { Side::Buy } else { Side::Sell },
                     sol,
                     price: 1.0,
@@ -696,7 +743,7 @@ mod tests {
                 });
             }
             let now = ts(c.now);
-            let got = |id, w: Option<f64>| track.value(id, w.into(), None, now);
+            let got = |id, w: Option<f64>| track.value(id, w.map(WindowSpec::secs).into(), None, now);
             // Each assertion carries that metric's own `eq_tolerance`: parity means
             // "indistinguishable to a condition", not bit equality.
             let close = |a: f64, b: f64, tol: f64, what: &str| {
@@ -712,10 +759,13 @@ mod tests {
             close(got(MetricId::LifeGrossFlow, None), c.lifegross, 0.1, "m_flow_lifetime.gross_flow");
             close(got(MetricId::LifeTradeCount, None), c.lifentx, 0.5, "m_flow_lifetime.trade_count");
             // The two-window read, through the same public entry point a rule uses.
-            let share = |reference, burst| {
+            let share = |reference: f64, burst: f64| {
                 track.value(
                     MetricId::BurstTradeShare,
-                    crate::metrics::Windows::two(reference, burst),
+                    crate::metrics::Windows::two(
+                        WindowSpec::secs(reference),
+                        WindowSpec::secs(burst),
+                    ),
                     None,
                     now,
                 )

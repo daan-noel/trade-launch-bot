@@ -143,6 +143,20 @@ pub struct TradeLite {
     /// FNV-1a of the trade's wallet address.
     #[serde(default)]
     pub wallet_hash: u64,
+    /// The slot this trade landed in — the cursor every [`WindowUnit::Slot`] window
+    /// counts in.
+    ///
+    /// `0` means "not supplied" (pre-slot event-log lines, a lake load without the
+    /// column). A slot window cannot advance on those, which
+    /// [`crate::arm::CompiledRule::needs_slot`] exists to make loud rather than
+    /// silent — the same class of trap as the wallet-keyed metrics.
+    #[serde(default)]
+    pub slot: u64,
+    /// Structural markers present in the trade's `ix_labels`, one bit each
+    /// ([`crate::metrics::flow_split::MARKERS`]). Set by the producer, which is the
+    /// only layer holding the label strings; the engine compares bits.
+    #[serde(default)]
+    pub marker_bits: u16,
 }
 
 impl Default for TradeLite {
@@ -156,8 +170,140 @@ impl Default for TradeLite {
             at: DateTime::from_timestamp(0, 0).expect("unix epoch"),
             ix_hash: None,
             wallet_hash: 0,
+            slot: 0,
+            marker_bits: 0,
         }
     }
+}
+
+// ── Window spans: a size, a lag, and the unit both are counted in ────────────
+
+/// What a dynamic group's window counts in.
+///
+/// **Time is continuous, slots are discrete**, and the two spans are deliberately
+/// not the same shape:
+///
+/// * [`Sec`](Self::Sec) — `size` seconds of wall clock, a closed interval.
+/// * [`Slot`](Self::Slot) — exactly `size` slots, discrete buckets.
+///
+/// A slot is what the chain actually batches in, so a bundle is a slot fact and
+/// never a time fact: at ~400 ms a one-second window straddles two or three slots
+/// and merges bursts that landed separately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowUnit {
+    Sec,
+    Slot,
+}
+
+impl WindowUnit {
+    /// The JSON key a rule spells this unit's size with.
+    pub const fn size_param(self) -> &'static str {
+        match self {
+            Self::Sec => WINDOW_SEC_PARAM,
+            Self::Slot => WINDOW_SLOT_PARAM,
+        }
+    }
+}
+
+/// Nominal seconds per slot. Used in exactly one place - sizing the tick-grid
+/// horizon for a slot window, where the grid is a wall clock and the span is not.
+/// It never enters a metric reading: a slot window's cursor is the slot number the
+/// feed reports, never a time estimate.
+pub const NOMINAL_SLOT_SECS: f64 = 0.4;
+
+/// The size param for a wall-clock window. Unchanged from before slots existed, so
+/// every stored rule round-trips byte-identically.
+pub const WINDOW_SEC_PARAM: &str = "window_size_sec";
+/// The size param for a slot window. Mutually exclusive with [`WINDOW_SEC_PARAM`].
+pub const WINDOW_SLOT_PARAM: &str = "window_size_slots";
+/// How many units back from *now* the window ends. `0` (the default, and the only
+/// value before this param existed) means it ends at now.
+pub const WINDOW_LAG_PARAM: &str = "window_lag";
+
+/// One dynamic group's window: how wide, how far back it ends, and in what unit.
+///
+/// `lag` is what makes a window **causal in its own terms**. A gate on "the state
+/// entering this slot" must not be able to see the slot it is firing in, and
+/// `lag: 1` on a slot window is exactly that: the burst is
+/// `slots: 1, lag: 0` and the quiet tape before it is `slots: 30, lag: 1`, with no
+/// arithmetic between windows and no way for one to leak into the other.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WindowSpec {
+    pub size: f64,
+    pub lag: f64,
+    pub unit: WindowUnit,
+}
+
+impl WindowSpec {
+    /// A wall-clock window ending at now — the shape every pre-slot rule has.
+    pub fn secs(size: f64) -> Self {
+        Self { size, lag: 0.0, unit: WindowUnit::Sec }
+    }
+
+    /// A slot window of `size` slots ending `lag` slots before now.
+    pub fn slots(size: f64, lag: f64) -> Self {
+        Self { size, lag, unit: WindowUnit::Slot }
+    }
+
+    /// Dedup identity. Two rules asking for the same span share one buffer; a
+    /// 30-second and a 30-slot window are different buffers, as they must be.
+    pub fn key(&self) -> WindowKey {
+        WindowKey {
+            unit: self.unit,
+            size: quantize(self.size),
+            lag: quantize(self.lag),
+        }
+    }
+
+    /// Where a trade sits on this window's axis.
+    pub fn pos(&self, at: Ts, slot: u64) -> i64 {
+        match self.unit {
+            WindowUnit::Sec => at.timestamp_millis(),
+            WindowUnit::Slot => slot as i64,
+        }
+    }
+
+    /// Where *now* sits on this window's axis. `cur_slot` is the last slot the token
+    /// has observed — a slot axis has no clock of its own, so it holds its last
+    /// reading until a trade moves it.
+    pub fn now_pos(&self, now: Ts, cur_slot: u64) -> i64 {
+        self.pos(now, cur_slot)
+    }
+
+    /// Inclusive `[lo, hi]` bounds at `now_pos`.
+    ///
+    /// * `Sec` — `[now - lag - size, now - lag]` in milliseconds, so `lag: 0` is
+    ///   byte-for-byte the old `[now - w, now]`.
+    /// * `Slot` — `[now - lag - (size-1), now - lag]`, exactly `size` slots, so
+    ///   `size: 1, lag: 0` is the current slot alone.
+    pub fn bounds(&self, now_pos: i64) -> (i64, i64) {
+        match self.unit {
+            WindowUnit::Sec => {
+                let hi = now_pos - quantize(self.lag) as i64;
+                (hi - quantize(self.size) as i64, hi)
+            }
+            WindowUnit::Slot => {
+                let hi = now_pos - self.lag.max(0.0).round() as i64;
+                (hi - (self.size.max(1.0).round() as i64 - 1), hi)
+            }
+        }
+    }
+}
+
+/// Millisecond-resolution integer identity for a window size or lag. Sizes come
+/// from rule params (finite, `>= 0`), so rounding gives a stable key two rules
+/// requesting the same span collapse onto.
+pub fn quantize(v: f64) -> u64 {
+    (v * 1000.0).round().max(0.0) as u64
+}
+
+/// Dedup key for a [`WindowSpec`] — the map key on `TokenTrack`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WindowKey {
+    pub unit: WindowUnit,
+    pub size: u64,
+    pub lag: u64,
 }
 
 /// A metric group — one compute module, one JSON key under `entry`/`exit`.
@@ -290,6 +436,9 @@ pub enum MetricId {
     /// Unlike `unique_wallets` this needs no wallet column, so it survives an offline
     /// load that did not request wallet identity (see [`needs_wallet_identity`]).
     TradeCount,
+    /// Buys (not trades) in the window - the burst's transaction count. Distinct
+    /// from `trade_count`, which sells inflate.
+    BuyCount,
     /// Share of the trailing window's SOL that is buys — `buy / (buy + sell)`, in
     /// percent (`m_flow_window`).
     ///
@@ -635,22 +784,36 @@ pub const CANDLE_DOWN_HUE: u16 = 355;
 /// whose basis is a single window, which is all of them but `m_flow_burst`.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Windows {
-    pub primary: Option<f64>,
-    pub secondary: Option<f64>,
+    pub primary: Option<WindowSpec>,
+    pub secondary: Option<WindowSpec>,
 }
 
 impl Windows {
     /// A static group's read — no window on either axis.
     pub const NONE: Self = Self { primary: None, secondary: None };
 
-    /// A single-window read (`window_size_sec` only).
-    pub fn one(secs: f64) -> Self {
-        Self { primary: Some(secs), secondary: None }
+    /// A single-window read (the group's own span).
+    pub fn one(spec: WindowSpec) -> Self {
+        Self { primary: Some(spec), secondary: None }
+    }
+
+    /// A single wall-clock window - the shape every pre-slot caller means.
+    pub fn secs(size: f64) -> Self {
+        Self::one(WindowSpec::secs(size))
     }
 
     /// A two-window read: the group's own window plus its second axis.
-    pub fn two(primary: f64, secondary: f64) -> Self {
+    pub fn two(primary: WindowSpec, secondary: WindowSpec) -> Self {
         Self { primary: Some(primary), secondary: Some(secondary) }
+    }
+
+    /// True when either axis counts in slots - the flag a loader must respect,
+    /// since a lake read without the slot column cannot advance such a window.
+    pub fn needs_slot(self) -> bool {
+        [self.primary, self.secondary]
+            .into_iter()
+            .flatten()
+            .any(|w| w.unit == WindowUnit::Slot)
     }
 
     /// Whether this read is scoped to a trailing window at all — i.e. it is a dynamic
@@ -662,8 +825,8 @@ impl Windows {
     }
 }
 
-impl From<Option<f64>> for Windows {
-    fn from(primary: Option<f64>) -> Self {
+impl From<Option<WindowSpec>> for Windows {
+    fn from(primary: Option<WindowSpec>) -> Self {
         Self { primary, secondary: None }
     }
 }
@@ -787,7 +950,17 @@ pub const REGISTRY: &[GroupSpec] = &[
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
         family: MetricFamily::Price,
-        strict_params: &[StrictParamSpec { name: "window_size_sec", required: true, allows_zero: false }],
+        strict_params: &[
+            // EXACTLY ONE of the two size params. Neither is `required` on its own;
+            // `validate_group` enforces the choice, because "one of these two" is a
+            // cross-param rule a `StrictParamSpec` cannot spell.
+            StrictParamSpec { name: WINDOW_SEC_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: WINDOW_SLOT_PARAM, required: false, allows_zero: false },
+            // How many units back from now the window ENDS. `0` is a real value (end
+            // at now) and the only behaviour that existed before this param, so it is
+            // the default and it allows zero.
+            StrictParamSpec { name: WINDOW_LAG_PARAM, required: false, allows_zero: true },
+        ],
         fingerprint_config: &[],
         // Amber family (44–48), sharing the 40–62 price band with m_price_lifetime —
         // three views of one price path (lifetime extrema vs rolling extrema vs
@@ -887,7 +1060,17 @@ pub const REGISTRY: &[GroupSpec] = &[
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
         family: MetricFamily::Flow,
-        strict_params: &[StrictParamSpec { name: "window_size_sec", required: true, allows_zero: false }],
+        strict_params: &[
+            // EXACTLY ONE of the two size params. Neither is `required` on its own;
+            // `validate_group` enforces the choice, because "one of these two" is a
+            // cross-param rule a `StrictParamSpec` cannot spell.
+            StrictParamSpec { name: WINDOW_SEC_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: WINDOW_SLOT_PARAM, required: false, allows_zero: false },
+            // How many units back from now the window ENDS. `0` is a real value (end
+            // at now) and the only behaviour that existed before this param, so it is
+            // the default and it allows zero.
+            StrictParamSpec { name: WINDOW_LAG_PARAM, required: false, allows_zero: true },
+        ],
         fingerprint_config: &[],
         // Same violet/magenta family as m_flow_lifetime — the cross-group hue guard
         // exempts the sibling pair. `buy`/`sell` take the candle up/down hues
@@ -919,6 +1102,17 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 0.1,
                 monotonic: false,
                 hue: CANDLE_UP_HUE,
+            },
+            MetricSpec {
+                id: MetricId::BuyCount,
+                name: "buy_count",
+                description: "Number of BUYS over the trailing window. `trade_count` counts sells too, so on a one-slot window only this one answers `how many people bought into this burst`.",
+                unit: Unit::Count,
+                // A tally, so half a trade: smaller would make `== 2` depend on float
+                // noise, larger would let it match 3.
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 288,
             },
             MetricSpec {
                 id: MetricId::BuyShare,
@@ -987,14 +1181,20 @@ pub const REGISTRY: &[GroupSpec] = &[
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
         family: MetricFamily::Flow,
-        // TWO windows, and the pair is the basis: `window_size_sec` is the reference
-        // span, `burst_size_sec` the slice nested inside it. Both required — a share
-        // with one end missing is not a smaller reading, it is no reading. The
-        // `burst <= window` bound is enforced in `rule_params::validate_group`, which
-        // is where cross-param rules live (`allows_zero` cannot express it).
+        // TWO windows, and the pair is the basis: the reference span, and the burst
+        // slice nested inside it. Both axes are required — a share with one end
+        // missing is not a smaller reading, it is no reading — and both count in the
+        // SAME unit, since a burst in slots over a reference in seconds is a ratio
+        // across two clocks. Neither size param is `required` on its own because
+        // "exactly one of the pair" is a cross-param rule; `validate_group` enforces
+        // the choice, the unit agreement, and the `burst <= window` nesting bound,
+        // none of which a `StrictParamSpec` can spell.
         strict_params: &[
-            StrictParamSpec { name: "window_size_sec", required: true, allows_zero: false },
-            StrictParamSpec { name: flow_burst::BURST_PARAM, required: true, allows_zero: false },
+            StrictParamSpec { name: WINDOW_SEC_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: WINDOW_SLOT_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: WINDOW_LAG_PARAM, required: false, allows_zero: true },
+            StrictParamSpec { name: flow_burst::BURST_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: flow_burst::BURST_SLOT_PARAM, required: false, allows_zero: false },
         ],
         fingerprint_config: &[],
         // Same violet family as m_flow_lifetime / m_flow_window — it is built from
@@ -1117,7 +1317,17 @@ pub const REGISTRY: &[GroupSpec] = &[
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
         family: MetricFamily::FlowSplit,
-        strict_params: &[StrictParamSpec { name: "window_size_sec", required: true, allows_zero: false }],
+        strict_params: &[
+            // EXACTLY ONE of the two size params. Neither is `required` on its own;
+            // `validate_group` enforces the choice, because "one of these two" is a
+            // cross-param rule a `StrictParamSpec` cannot spell.
+            StrictParamSpec { name: WINDOW_SEC_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: WINDOW_SLOT_PARAM, required: false, allows_zero: false },
+            // How many units back from now the window ENDS. `0` is a real value (end
+            // at now) and the only behaviour that existed before this param, so it is
+            // the default and it allows zero.
+            StrictParamSpec { name: WINDOW_LAG_PARAM, required: false, allows_zero: true },
+        ],
         // Reads the same fingerprint key as m_flow_split (one classifier, two views).
         fingerprint_config: &[],
         // Same teal family as m_flow_split (one classifier, two views) — the
@@ -1392,6 +1602,7 @@ pub fn registry_json() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    use crate::metrics::WindowSpec;
     use super::*;
 
     /// `TradeLite::reserve_sol` uses `NaN` as its "no real reserve decoded yet"
@@ -1518,14 +1729,14 @@ mod tests {
     /// axis would collide and one would silently mask the other.
     #[test]
     fn windows_identity_covers_both_axes() {
-        assert_eq!(Windows::one(60.0), Windows::from(Some(60.0)));
-        assert_ne!(Windows::two(60.0, 3.0), Windows::two(60.0, 5.0), "second axis is identity");
-        assert_ne!(Windows::two(60.0, 3.0), Windows::one(60.0), "a second axis is not nothing");
+        assert_eq!(Windows::secs(60.0), Windows::from(Some(WindowSpec::secs(60.0))));
+        assert_ne!(Windows::two(WindowSpec::secs(60.0), WindowSpec::secs(3.0)), Windows::two(WindowSpec::secs(60.0), WindowSpec::secs(5.0)), "second axis is identity");
+        assert_ne!(Windows::two(WindowSpec::secs(60.0), WindowSpec::secs(3.0)), Windows::secs(60.0), "a second axis is not nothing");
         assert_eq!(Windows::NONE, Windows::from(None));
         // `is_windowed` answers "dynamic read?", so it must see either axis.
         assert!(!Windows::NONE.is_windowed());
-        assert!(Windows::one(5.0).is_windowed());
-        assert!(Windows { primary: None, secondary: Some(3.0) }.is_windowed());
+        assert!(Windows::secs(5.0).is_windowed());
+        assert!(Windows { primary: None, secondary: Some(WindowSpec::secs(3.0)) }.is_windowed());
     }
 
     #[test]
@@ -1576,10 +1787,18 @@ mod tests {
                 assert_eq!(m_json["hue"], m.hue);
             }
         }
-        // m_flow_window advertises its required strict param; lifetime has none.
+        // m_flow_window advertises BOTH size params plus the lag; neither size is
+        // `required` alone because exactly one of the two must be set, which is a
+        // cross-param rule `validate_group` owns.
         let tw = groups.iter().find(|g| g["name"] == "m_flow_window").unwrap();
-        assert_eq!(tw["strict_params"][0]["name"], "window_size_sec");
-        assert_eq!(tw["strict_params"][0]["required"], true);
+        let names: Vec<&str> = tw["strict_params"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec![WINDOW_SEC_PARAM, WINDOW_SLOT_PARAM, WINDOW_LAG_PARAM]);
+        assert!(tw["strict_params"].as_array().unwrap().iter().all(|p| p["required"] == false));
         let life = groups.iter().find(|g| g["name"] == "m_flow_lifetime").unwrap();
         assert!(life["strict_params"].as_array().unwrap().is_empty());
         assert_eq!(life["kind"], "static");

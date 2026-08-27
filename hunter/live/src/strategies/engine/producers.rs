@@ -345,6 +345,9 @@ fn trade_lite(ct: &CachedTrade) -> TradeLite {
         // Hashed once at cache ingest (`CachedTrade::from_trade`).
         ix_hash: ct.ix_hash,
         wallet_hash: ct.wallet_hash,
+        // The cursor every slot-unit window counts in.
+        slot: ct.slot,
+        marker_bits: ct.marker_bits,
     }
 }
 

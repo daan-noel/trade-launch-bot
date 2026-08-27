@@ -198,7 +198,7 @@ pub struct TokenOutcome {
     /// Trailing-window size of the req that fired (`None` for a static metric),
     /// mirroring `ExitReason::Metrics::window`. Without it the drill-in row labels a
     /// windowed burst as its lifetime twin — the two share every metric name.
-    pub exit_metric_window: Option<f64>,
+    pub exit_metric_window: Option<hunter_engine::metrics::WindowSpec>,
     /// 0-based position among this rule's OWN authored exit reqs (capped at
     /// `N_EXIT_METRIC_SLOTS - 1`) — the aggregate's bounded per-metric bucket
     /// index. `None` for every non-metric exit.

@@ -44,7 +44,9 @@ use hunter_engine::event::{LoadedRule, RuleId};
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::grouping::normalize_labels;
 use hunter_engine::metrics::evaluator::ConditionExpr;
-use hunter_engine::metrics::flow_split::{ix_hash_from_labels_value, wallet_hash, FlowPatterns};
+use hunter_engine::metrics::flow_split::{
+    ix_hash_from_labels_value, marker_bits_from_labels_value, wallet_hash, FlowPatterns,
+};
 use hunter_engine::metrics::{metric_spec, MetricId, Side, TradeLite};
 use hunter_engine::readout::{
     replay_readout, replay_series, ConditionRead, ConditionSeries, ReadSide, ReadoutSource,
@@ -81,6 +83,10 @@ struct ConditionMetaOut {
     unit: &'static str,
     /// Trailing-window size for a dynamic metric; `null` for static ones.
     window_size_sec: Option<f64>,
+    /// The full span - size, lag and unit. `window_size_sec` above stays for
+    /// clients that only ever knew wall-clock windows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    window: Option<hunter_engine::metrics::WindowSpec>,
     /// The authored DNF, `OR` of `AND` arms, as `{operator, value}` objects.
     conditions: serde_json::Value,
     /// `authored` | `take_profit` | `stop_loss` — a desugared ladder req keeps its
@@ -204,7 +210,7 @@ fn origin_name(origin: hunter_engine::arm::ReqOrigin) -> &'static str {
 fn condition_meta(
     side: ReadSide,
     metric: MetricId,
-    window: Option<f64>,
+    window: Option<hunter_engine::metrics::WindowSpec>,
     conds: &ConditionExpr,
     origin: hunter_engine::arm::ReqOrigin,
     arm_above_pct: Option<f64>,
@@ -221,7 +227,12 @@ fn condition_meta(
         metric: spec.name,
         group: hunter_engine::metrics::group_spec(hunter_engine::metrics::group_of(metric).id).name,
         unit: spec.unit.as_str(),
-        window_size_sec: window,
+        // Kept as the legacy key for a wall-clock window so no client breaks; a
+        // slot window reports `null` there and names itself in `window` instead.
+        window_size_sec: window
+            .filter(|w| w.unit == hunter_engine::metrics::WindowUnit::Sec)
+            .map(|w| w.size),
+        window,
         conditions: hunter_engine::metrics::evaluator::condition_expr_to_value(conds),
         origin: origin_name(origin),
         arm_above_pct,
@@ -630,6 +641,8 @@ fn trade_lite(t: &Trade) -> TradeLite {
         // that only accepts the bare array books every object-shaped row as organic,
         // silently, and the whole flow split downstream of it goes with it.
         ix_hash: ix_hash_from_labels_value(&t.instruction_labels),
+        slot: t.slot,
+        marker_bits: marker_bits_from_labels_value(&t.instruction_labels),
         wallet_hash: wallet_hash(&t.wallet_address),
     }
 }

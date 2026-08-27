@@ -225,14 +225,27 @@ impl AlarmRegret {
     }
 }
 
-/// `(metric, window-in-ms, threshold-in-µ)` — the standing-term identity, float-keyed
-/// the same way the generator keys windows so `2.0` never sorts apart from itself.
-fn skey(metric: MetricId, window: Option<f64>, value: f64) -> (MetricId, i64, i64) {
-    (
-        metric,
-        window.map(|w| (w * 1000.0).round() as i64).unwrap_or(-1),
-        (value * 1_000_000.0).round() as i64,
-    )
+/// `(metric, window identity, threshold-in-µ)` — the standing-term identity,
+/// float-keyed the same way the engine keys windows so `2.0` never sorts apart from
+/// itself. The window half carries the whole span: two terms that differ only in
+/// unit or lag read DIFFERENT tape and must not collapse onto one key.
+fn skey(
+    metric: MetricId,
+    window: Option<hunter_engine::metrics::WindowSpec>,
+    value: f64,
+) -> (MetricId, i64, i64, i64, i64) {
+    let (unit, size, lag) = match window {
+        Some(w) => (
+            match w.unit {
+                hunter_engine::metrics::WindowUnit::Sec => 0,
+                hunter_engine::metrics::WindowUnit::Slot => 1,
+            },
+            hunter_engine::metrics::quantize(w.size) as i64,
+            hunter_engine::metrics::quantize(w.lag) as i64,
+        ),
+        None => (-1, -1, -1),
+    };
+    (metric, unit, size, lag, (value * 1_000_000.0).round() as i64)
 }
 
 /// Fold one authority pass into per-alarm regret rows. Pure over outcomes in hand.
@@ -241,7 +254,7 @@ pub fn alarm_regret(
     auth: &Authority,
     pricing: &Pricing,
     band_pct: f64,
-    standing_keys: &[(MetricId, Option<f64>, f64)],
+    standing_keys: &[(MetricId, Option<hunter_engine::metrics::WindowSpec>, f64)],
 ) -> Vec<AlarmRegret> {
     #[derive(Default)]
     struct Acc {
@@ -255,7 +268,7 @@ pub fn alarm_regret(
         realized_term_sol: f64,
         terminal_sol: f64,
     }
-    let standing: HashSet<(MetricId, i64, i64)> =
+    let standing: HashSet<(MetricId, i64, i64, i64, i64)> =
         standing_keys.iter().map(|&(m, w, v)| skey(m, w, v)).collect();
     let mut by_slot: BTreeMap<u8, Acc> = BTreeMap::new();
 
@@ -404,7 +417,7 @@ pub fn diagnose(
     auth: &Authority,
     cfg: &RunConfig,
     band_pct: f64,
-    standing_keys: &[(MetricId, Option<f64>, f64)],
+    standing_keys: &[(MetricId, Option<hunter_engine::metrics::WindowSpec>, f64)],
 ) -> Diagnostics {
     let combo = &finalist.combo;
     let entry = &combo.entry.clauses;

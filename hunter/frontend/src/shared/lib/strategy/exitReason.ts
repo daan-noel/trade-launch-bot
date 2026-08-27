@@ -7,6 +7,8 @@
  * tokens visually when the spaced form is present.
  */
 
+import type { WindowSpec } from './windowSpec';
+
 export interface MetricExitParts {
   name: string;
   op: string;
@@ -14,9 +16,16 @@ export interface MetricExitParts {
   value: string;
 }
 
-/** Spaced `name op value` (e.g. `stall > 3`). */
-const METRIC_EXIT_SPACED =
-  /^([a-z][a-z0-9_]*) (>=|<=|!=|>|<|=) ([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)$/;
+/** The window qualifier a dynamic metric's name carries: `(2s)`, `(30sl)`,
+ *  `(30sl@1)`. Mirrors the Rust `event::format_metric_exit_name` — the whole span,
+ *  because two reqs differing only in unit or lag read different tape and must not
+ *  print identically. A static metric carries no qualifier at all. */
+const WINDOW_QUALIFIER = String.raw`(?:\((\d*\.?\d+)(s|sl)(?:@(\d*\.?\d+))?\))?`;
+
+/** Spaced `name[(window)] op value` (e.g. `stall > 3`, `nonvol_buy(2s) >= 0.9`). */
+const METRIC_EXIT_SPACED = new RegExp(
+  String.raw`^([a-z][a-z0-9_]*)${WINDOW_QUALIFIER} (>=|<=|!=|>|<|=) ([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)$`,
+);
 
 /** Legacy compact `{name}{op}` (e.g. `stall>`). */
 const METRIC_EXIT_COMPACT = /^([a-z][a-z0-9_]*)(>=|<=|!=|>|<|=)$/;
@@ -28,7 +37,11 @@ export function parseMetricExitParts(
   if (!reason) return null;
   const spaced = METRIC_EXIT_SPACED.exec(reason.trim());
   if (spaced) {
-    return { name: spaced[1], op: spaced[2], value: spaced[3] };
+    // The qualifier stays ON the name: it is what separates a dynamic group's read
+    // from its identically-named lifetime twin, so a badge that dropped it would
+    // show two different exits under one label.
+    const window = spaced[2] ? `(${spaced[2]}${spaced[3]}${spaced[4] ? `@${spaced[4]}` : ''})` : '';
+    return { name: `${spaced[1]}${window}`, op: spaced[5], value: spaced[6] };
   }
   const compact = METRIC_EXIT_COMPACT.exec(reason.trim());
   if (compact) {
@@ -48,17 +61,21 @@ export interface MetricExitTarget {
   metric: string;
   /** The trailing window the label qualifies itself with, `null` when it carries
    *  none — and a bare name is genuinely ambiguous whenever the rule authors both
-   *  a windowed condition and its identically-named lifetime twin. */
-  windowSec: number | null;
+   *  a windowed condition and its identically-named lifetime twin.
+   *
+   *  The WHOLE span, not a size: `(30s)` and `(30sl)` name different windows, and
+   *  so do `(30sl)` and `(30sl@1)`. */
+  window: WindowSpec | null;
 }
 
 /**
  * The condition a persisted exit reason points at, for surfaces that draw *that*
  * condition (the chart's value lane).
  *
- * Accepts every stored form: `nonvol_buy(2s) >= 0.9` (current — the window
- * qualifier is what separates a dynamic group from its lifetime twin), the bare
- * `nonvol_buy >= 0.9` still on older rows, and legacy compact `stall>`. Returns
+ * Accepts every stored form: `nonvol_buy(2s) >= 0.9` and `buy_count(30sl@1) >= 3`
+ * (current — the window qualifier is what separates a dynamic group from its
+ * lifetime twin), the bare `nonvol_buy >= 0.9` still on older rows, and legacy
+ * compact `stall>`. Returns
  * `null` for a non-metric reason (`TakeProfit`, `Dead`, …), which names no
  * condition to draw.
  */
@@ -66,9 +83,15 @@ export function parseMetricExitTarget(
   reason: string | null | undefined,
 ): MetricExitTarget | null {
   if (!reason) return null;
-  const m = /^\s*([a-z][a-z0-9_]*)(?:\((\d*\.?\d+)s\))?\s*(?:>=|<=|!=|>|<|=)/i.exec(reason);
+  const m = new RegExp(
+    String.raw`^\s*([a-z][a-z0-9_]*)${WINDOW_QUALIFIER}\s*(?:>=|<=|!=|>|<|=)`,
+    'i',
+  ).exec(reason);
   if (!m) return null;
-  return { metric: m[1], windowSec: m[2] ? Number(m[2]) : null };
+  const window: WindowSpec | null = m[2]
+    ? { size: Number(m[2]), lag: m[4] ? Number(m[4]) : 0, unit: m[3] === 'sl' ? 'slot' : 'sec' }
+    : null;
+  return { metric: m[1], window };
 }
 
 /** Format a metric fire as spaced `name op value` (frontend signal markers). */

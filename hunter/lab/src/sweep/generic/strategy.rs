@@ -693,7 +693,7 @@ pub(crate) fn build_series_with_flow(
     // Static token facts first, exactly as the live `TokenCreated` arm orders them.
     series.seed_ix_count(token.fp.ix_labels.len());
     if let Some(patterns) = flow_patterns {
-        let windows: Vec<f64> = series
+        let windows: Vec<hunter_engine::metrics::WindowSpec> = series
             .columns()
             .iter()
             // Both axes of a dynamic column: a two-window group needs a buffer for
@@ -797,6 +797,14 @@ pub(crate) fn sparse_grid_for(compiled: &CompiledRule) -> SparseGrid {
         .iter()
         .chain(compiled.price_windows.iter())
         .cloned()
+        // The grid is a WALL clock, so a slot span converts at the nominal slot time.
+        // This only sizes the horizon, never a reading.
+        .map(|w| match w.unit {
+            hunter_engine::metrics::WindowUnit::Sec => w.size + w.lag,
+            hunter_engine::metrics::WindowUnit::Slot => {
+                (w.size + w.lag) * hunter_engine::metrics::NOMINAL_SLOT_SECS
+            }
+        })
         .fold(0.0_f64, f64::max);
     // Max condition value + eq-tolerance for a monotone/static metric across both
     // sides and every scale-out stage (a remainder `held >= N` must size the grid).
@@ -927,7 +935,7 @@ pub struct BoundCombo {
     /// `N_EXIT_METRIC_SLOTS - 1` so the aggregate's per-combo counters stay a
     /// fixed size. Bind-time only — depends solely on the compiled rule, so
     /// resolving an exit looks this up instead of computing anything per token.
-    exit_metric_label: Vec<Option<(MetricId, Operator, f64, Option<f64>, u8)>>,
+    exit_metric_label: Vec<Option<(MetricId, Operator, f64, Option<hunter_engine::metrics::WindowSpec>, u8)>>,
     /// `true` ⇔ **every** exit req classified (no [`ExitClass::General`]) **and**
     /// the rule has no `scale_out` — so the index / SIMD paths can resolve the
     /// whole exit as a single full-bag close. Scale-out forces the staged scalar
@@ -990,7 +998,7 @@ impl BoundCombo {
 /// disagree with the sweep's `n_exit_metrics_by_slot` on the same rule.
 pub(crate) fn exit_metric_labels(
     exit_reqs: &[MetricReq],
-) -> Vec<Option<(MetricId, Operator, f64, Option<f64>, u8)>> {
+) -> Vec<Option<(MetricId, Operator, f64, Option<hunter_engine::metrics::WindowSpec>, u8)>> {
     let mut authored_slots: u8 = 0;
     exit_reqs
         .iter()
@@ -1975,7 +1983,7 @@ fn open_staged(
 #[allow(clippy::too_many_arguments)]
 fn closed_multi(
     exit: ExitCode,
-    label: Option<(MetricId, Operator, f64, Option<f64>, u8)>,
+    label: Option<(MetricId, Operator, f64, Option<hunter_engine::metrics::WindowSpec>, u8)>,
     entry_price: f64,
     entry_at: DateTime<Utc>,
     entry_slot: Option<u64>,
@@ -3020,7 +3028,7 @@ pub(crate) fn scan_with_horizon(
 #[allow(clippy::too_many_arguments)]
 fn closed(
     exit: ExitCode,
-    label: Option<(MetricId, Operator, f64, Option<f64>, u8)>,
+    label: Option<(MetricId, Operator, f64, Option<hunter_engine::metrics::WindowSpec>, u8)>,
     entry_price: f64,
     entry_at: DateTime<Utc>,
     entry_slot: Option<u64>,

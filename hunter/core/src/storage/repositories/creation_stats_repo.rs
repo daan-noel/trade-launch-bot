@@ -1510,6 +1510,7 @@ mod grouped_tokens_tests {
     fn group_key_from_fingerprint_includes_ix_labels_structure() {
         let now = Utc::now();
         let fp = Fingerprint {
+            wildcard: false,
             id: uuid::Uuid::nil(),
             name: "t".into(),
             cu_limit: Some(200_000),
@@ -1535,6 +1536,7 @@ mod grouped_tokens_tests {
     fn blank_fp(width: Option<f64>) -> Fingerprint {
         let now = Utc::now();
         Fingerprint {
+            wildcard: false,
             id: uuid::Uuid::nil(),
             name: "t".into(),
             cu_limit: None,

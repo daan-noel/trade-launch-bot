@@ -1224,7 +1224,16 @@ fn entry_blockers_json(b: &EntryBlockers) -> serde_json::Value {
             // The group's own window. A two-window group's second axis is not on the
             // wire yet — add a key for it rather than widening this one, so a reader
             // can never mistake one window for the other.
-            "window_size_sec": r.window.primary,
+            //
+            // `window_size_sec` is a NUMBER of seconds, as it has always been: a slot
+            // window has no seconds to report and states `null` here, naming itself in
+            // `window` instead. Writing the whole span under this key would put an
+            // object where every reader of this column expects a scalar.
+            "window_size_sec": r.window.primary
+                .filter(|w| w.unit == hunter_engine::metrics::WindowUnit::Sec)
+                .map(|w| w.size),
+            // The full span - size, lag and unit.
+            "window": r.window.primary,
             // Non-finite serializes `null`: an unreadable metric satisfies
             // nothing, and a `NaN` is not representable in JSON anyway.
             "value": r.value.is_finite().then_some(r.value),

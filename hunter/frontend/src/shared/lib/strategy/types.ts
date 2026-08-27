@@ -5,6 +5,7 @@
 // speaks SOL, so the form components convert with the helpers below.
 
 import { formatDecimalTrim, tidySolDecimal } from 'utils/format';
+import type { WindowSpec } from 'lib/strategy/windowSpec';
 
 /** 1 SOL in lamports — the one divisor for the fingerprint/rule amount axes. */
 export const LAMPORTS_PER_SOL = 1_000_000_000;
@@ -264,8 +265,12 @@ export interface StrategyArmRecord {
 export interface ArmUnmetCondition {
   /** `group.metric`, e.g. `m_flow_window.gross_flow`. */
   metric: string;
-  /** Trailing-window size for a dynamic metric; `null` for static ones. */
+  /** Legacy scalar: the SIZE of a wall-clock window, in seconds. `null` for a
+   *  static metric AND for a slot window, which names itself in `window` instead. */
   window_size_sec: number | null;
+  /** The full span: size, lag and unit. Absent on a static metric, and on rows
+   *  written before slot windows existed. */
+  window?: WindowSpec | null;
   /** The reading that failed it; `null` when the metric was unreadable. */
   value: number | null;
   /** The authored DNF, `OR` of `AND` arms, as `{operator, value}` objects — the

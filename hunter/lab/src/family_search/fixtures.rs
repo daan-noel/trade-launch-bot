@@ -103,7 +103,7 @@ pub fn metric_exit(
     metric: MetricId,
     operator: Operator,
     value: f64,
-    window: Option<f64>,
+    window: Option<hunter_engine::metrics::WindowSpec>,
     pnl_sol: f64,
 ) -> TokenOutcome {
     TokenOutcome {
@@ -134,6 +134,7 @@ pub fn tp_exit(pnl_sol: f64) -> TokenOutcome {
 /// build siblings — every other axis stays put, which is what makes them siblings.
 pub fn fp_row(name: &str) -> trading_core::models::Fingerprint {
     trading_core::models::Fingerprint {
+        wildcard: false,
         id: uuid::Uuid::new_v4(),
         name: name.into(),
         cu_limit: Some(200_000),

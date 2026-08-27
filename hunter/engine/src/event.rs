@@ -109,7 +109,7 @@ pub enum ExitReason {
         /// window the label names a monotone lifetime total when what actually fired
         /// was a burst over `window` seconds — two readings that move in opposite
         /// ways. Multi-window rules make it worse: several reqs print identically.
-        window: Option<f64>,
+        window: Option<crate::metrics::WindowSpec>,
     },
     /// The token was judged dead (liquidity gone + silent).
     Dead,
@@ -167,7 +167,7 @@ pub fn format_metric_exit_label(
     metric: MetricId,
     operator: Operator,
     value: f64,
-    window: Option<f64>,
+    window: Option<crate::metrics::WindowSpec>,
 ) -> String {
     format!(
         "{} {} {}",
@@ -180,10 +180,25 @@ pub fn format_metric_exit_label(
 /// The name half of a metric exit label: `nonvol_buy` or `nonvol_buy(2s)`.
 /// Shared with every UI that renders a condition beside its reason, so a chart
 /// legend and a persisted reason can never disagree about which req is meant.
-pub fn format_metric_exit_name(metric: MetricId, window: Option<f64>) -> String {
+pub fn format_metric_exit_name(
+    metric: MetricId,
+    window: Option<crate::metrics::WindowSpec>,
+) -> String {
     match window {
-        Some(w) if w.is_finite() && w > 0.0 => {
-            format!("{}({}s)", metric.name(), format_metric_threshold(w))
+        Some(w) if w.size.is_finite() && w.size > 0.0 => {
+            // Unit suffix `s` / `sl`, then `@lag` only when there IS one. A lagged
+            // window reads a DIFFERENT span from an unlagged one of the same size,
+            // so two reqs that differ only in lag must not print identically.
+            let unit = match w.unit {
+                crate::metrics::WindowUnit::Sec => "s",
+                crate::metrics::WindowUnit::Slot => "sl",
+            };
+            let lag = if w.lag > 0.0 {
+                format!("@{}", format_metric_threshold(w.lag))
+            } else {
+                String::new()
+            };
+            format!("{}({}{unit}{lag})", metric.name(), format_metric_threshold(w.size))
         }
         _ => metric.name().to_string(),
     }
@@ -256,7 +271,9 @@ const METRIC_OPS: &[(&str, Operator)] = &[
 /// name, bare ⇒ the `Static` one. Rows written before the qualifier existed are bare
 /// whichever group fired, so a bare name falls back to any group — the same answer
 /// this returned before, never a parse failure on a real stored reason.
-pub fn parse_metric_exit_label(s: &str) -> Option<(MetricId, Operator, f64, Option<f64>)> {
+pub fn parse_metric_exit_label(
+    s: &str,
+) -> Option<(MetricId, Operator, f64, Option<crate::metrics::WindowSpec>)> {
     let s = s.trim();
     // Spaced form: split on whitespace into [name, op, value, ...].
     let parts: Vec<&str> = s.split_whitespace().collect();
@@ -287,21 +304,38 @@ pub fn parse_metric_exit_label(s: &str) -> Option<(MetricId, Operator, f64, Opti
     None
 }
 
-/// Split `nonvol_buy(2s)` into `("nonvol_buy", Some(2.0))`. Anything that is not a
-/// well-formed `({number}s)` suffix is left on the name, so an unrecognised
-/// qualifier fails the name lookup instead of silently parsing as a bare metric.
-fn split_window_qualifier(token: &str) -> (&str, Option<f64>) {
+/// Split `nonvol_buy(2s)` into `("nonvol_buy", Some(2s))`, `buy(30sl@1)` into the
+/// 30-slot span lagged by one. Anything that is not a well-formed suffix is left on
+/// the name, so an unrecognised qualifier fails the name lookup instead of silently
+/// parsing as a bare metric. A label written before slots existed has no `sl` and no
+/// `@`, so it still parses to exactly the seconds window it always meant.
+fn split_window_qualifier(token: &str) -> (&str, Option<crate::metrics::WindowSpec>) {
+    use crate::metrics::{WindowSpec, WindowUnit};
     let Some(open) = token.find('(') else {
         return (token, None);
     };
     let Some(inner) = token[open + 1..].strip_suffix(')') else {
         return (token, None);
     };
-    let Some(secs) = inner.strip_suffix('s') else {
-        return (token, None);
+    let (inner, lag) = match inner.split_once('@') {
+        Some((head, l)) => match l.parse::<f64>() {
+            Ok(v) if v.is_finite() && v >= 0.0 => (head, v),
+            _ => return (token, None),
+        },
+        None => (inner, 0.0),
     };
-    match secs.parse::<f64>() {
-        Ok(w) if w.is_finite() && w > 0.0 => (&token[..open], Some(w)),
+    // `sl` before `s`, or the slot suffix parses as a seconds one with a stray `l`.
+    let (size_str, unit) = match inner.strip_suffix("sl") {
+        Some(rest) => (rest, WindowUnit::Slot),
+        None => match inner.strip_suffix('s') {
+            Some(rest) => (rest, WindowUnit::Sec),
+            None => return (token, None),
+        },
+    };
+    match size_str.parse::<f64>() {
+        Ok(w) if w.is_finite() && w > 0.0 => {
+            (&token[..open], Some(WindowSpec { size: w, lag, unit }))
+        }
         _ => (token, None),
     }
 }
@@ -643,7 +677,7 @@ mod exit_label_tests {
             metric: win("nonvol_buy"),
             operator: Operator::Gte,
             value: 0.9,
-            window: Some(2.0),
+            window: Some(crate::metrics::WindowSpec::secs(2.0)),
         };
         assert_eq!(windowed.label(), "nonvol_buy(2s) >= 0.9");
         assert_eq!(parse_exit_reason(&windowed.label()), Some(windowed));
@@ -664,14 +698,24 @@ mod exit_label_tests {
 
     #[test]
     fn fractional_and_large_windows_survive_the_round_trip() {
-        for w in [0.5f64, 2.0, 45.0, 300.0] {
+        use crate::metrics::WindowSpec;
+        for w in [
+            WindowSpec::secs(0.5),
+            WindowSpec::secs(2.0),
+            WindowSpec::secs(45.0),
+            WindowSpec::secs(300.0),
+            // A slot span and a lagged one must survive the same round trip, or a
+            // persisted exit reason cannot name which read fired.
+            WindowSpec::slots(1.0, 0.0),
+            WindowSpec::slots(30.0, 1.0),
+        ] {
             let r = ExitReason::Metrics {
                 metric: win("nonvol_buy"),
                 operator: Operator::Lte,
                 value: 0.2,
                 window: Some(w),
             };
-            assert_eq!(parse_exit_reason(&r.label()), Some(r), "window {w}");
+            assert_eq!(parse_exit_reason(&r.label()), Some(r), "window {w:?}");
         }
     }
 

@@ -16,7 +16,8 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use hunter_engine::metrics::flow_split::{
-    ix_hash_from_labels_json, ix_hash_from_labels_value, wallet_hash,
+    ix_hash_from_labels_json, ix_hash_from_labels_value, marker_bits_from_labels_value,
+    wallet_hash,
 };
 use hunter_engine::metrics::{Side, TradeLite};
 
@@ -91,6 +92,9 @@ pub struct CorpusTrade {
 pub struct FlowKeys {
     pub ix_hash: Option<u64>,
     pub wallet_hash: u64,
+    /// Structural markers of the row's labels - the offline twin of the live
+    /// producer's, resolved at load beside `ix_hash` so the fold does no string work.
+    pub marker_bits: u16,
 }
 
 impl FlowKeys {
@@ -102,6 +106,10 @@ impl FlowKeys {
         Self {
             ix_hash: ix_labels.and_then(ix_hash_from_labels_json),
             wallet_hash: wallet.map(wallet_hash).unwrap_or(0),
+            marker_bits: ix_labels
+                .and_then(|j| serde_json::from_str::<Value>(j).ok())
+                .map(|v| marker_bits_from_labels_value(&v))
+                .unwrap_or(0),
         }
     }
 
@@ -112,6 +120,7 @@ impl FlowKeys {
         Self {
             ix_hash: ix_hash_from_labels_value(ix_labels),
             wallet_hash: wallet.map(wallet_hash).unwrap_or(0),
+            marker_bits: marker_bits_from_labels_value(ix_labels),
         }
     }
 }
@@ -183,6 +192,8 @@ pub fn to_trade_lite(ct: &CorpusTrade) -> TradeLite {
         at: ct.block_time,
         ix_hash: ct.flow.ix_hash,
         wallet_hash: ct.flow.wallet_hash,
+        slot: ct.slot,
+        marker_bits: ct.flow.marker_bits,
     }
 }
 

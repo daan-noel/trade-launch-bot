@@ -6,6 +6,57 @@ High-level map: [`arch/strategies.md`](../../arch/strategies.md). The split's or
 (`roadmap/volume-flow-split-plan.md`) is deleted — fully shipped and superseded by
 this file.
 
+## A window is a span: size, lag, and the unit both are counted in
+
+Every dynamic group's window is a `WindowSpec { size, lag, unit }`. **There are no
+parallel slot metrics** - the unit lives on the window, so `m_flow_window`,
+`m_price_window`, `m_flow_split_window` and `m_flow_burst` all read slots for free.
+Internally each buffer entry carries a `pos` already in its own unit (milliseconds
+for `sec`, the slot number for `slot`), so the fold, the eviction and the read are
+ONE implementation over an `i64` cursor.
+
+| param | meaning |
+| --- | --- |
+| `window_size_sec` | size in seconds (a closed interval, continuous) |
+| `window_size_slots` | size in slots (exactly `size` discrete slots) |
+| `window_lag` | how many units back from now the window ENDS; default `0` |
+
+**Exactly one size param per group instance** - both is two spans claiming one axis,
+neither leaves the window undefined. `validate_group` enforces it, because "one of
+these two" is a cross-param rule a `StrictParamSpec` cannot spell. A two-window group
+(`m_flow_burst`) takes `burst_size_slots` as the twin of `burst_size_sec`, and both
+axes must use the same unit: a burst in slots over a reference in seconds is a ratio
+across two different clocks.
+
+```json
+{ "m_flow_window": [
+    { "window_size_sec":   60, "gross_flow": [{"operator": ">=", "value": 45}] },
+    { "window_size_slots": 30, "window_lag": 1, "buy": [{"operator": "<=", "value": 3}] }
+] }
+```
+
+**Why slots, not seconds.** A slot is what the chain batches in, so a bundle is a slot
+fact. At ~400 ms a one-second window straddles two or three slots: it merges bursts
+that landed separately, and one transaction sitting in a NEIGHBOURING slot poisons a
+composition read that was clean in the slot being judged.
+
+**`window_lag` is what makes a window causal in its own terms.** A gate on "the state
+entering this slot" must not be able to see the slot it fires in. The burst is
+`slots: 1, lag: 0` and the quiet tape before it is `slots: 30, lag: 1` - same group,
+same metric, no arithmetic between windows and no way for one to leak into the other.
+`lag: 0` is a real value (end at now) and the only behaviour that existed before the
+param, so it is the default and a stored rule round-trips byte-identically.
+
+**A slot window is trade-driven; a time window is tick-driven.** A tick is a wall
+clock and carries no slot, so slot windows HOLD their last cursor across ticks rather
+than estimating one from elapsed time - slot durations vary, and a guessed cursor is a
+silently wrong reading rather than a stale one. Entry decisions are taken at a trade,
+where the cursor is exact.
+
+**The loader is obliged, same as for the wallet-keyed metrics.** A lake read without
+the slot column leaves `TradeLite::slot = 0` and every slot window frozen, which looks
+like a strategy result rather than a load error.
+
 ## Aggregate flow (`m_flow_lifetime` / `m_flow_window`)
 
 Classifier-free SOL totals on the token. Same four JSON metric names; distinct
@@ -23,6 +74,10 @@ registry `MetricId`s so lifetime can be monotonic while the window is not.
 | `net_flow` | `buy − sell` | SOL | 0.1 | ✗ |
 | `gross_flow` | `buy + sell` | SOL | 0.1 | ✓ |
 | `unique_wallets` | distinct trading wallets (window only) | count | 0.5 | ✗ |
+| `buy_count` | number of BUYS in the window | count | 0.5 | ✗ |
+
+`buy_count` is not `trade_count`: sells inflate the latter, and on a one-slot window
+only `buy_count` answers "how many people bought into this burst".
 | `trade_count` | trades landed | count | 0.5 | ✓ |
 | `buy_share` | `buy / (buy + sell)`, **percent 0-100** (window only) | percent | 0.5 | ✗ |
 | `trades_per_wallet` | `trade_count / unique_wallets` (window only) | count | 0.05 | ✗ |
@@ -169,12 +224,82 @@ tick leaves entries un-evicted by design.
 
 A trade is **volume-side** iff any of:
 
-1. its ordered `ix_labels` hash ∈ the fingerprint's configured `volume_ix_patterns`
+1. the configured marker mask says so — `volume_ix_markers` when the trade's markers
+   **intersect** it, `organic_ix_markers` when they **miss** it entirely;
+2. its ordered `ix_labels` hash ∈ the configured `volume_ix_patterns`
    (exact ordered sequence — same semantics as fingerprint `ix_labels`);
-2. its wallet was previously tagged volume-side on **this token** (wallet contagion);
-3. it is the **creator wallet** (unconditionally volume-side).
+3. `wallet_contagion` is on AND its wallet was previously tagged volume-side on
+   **this token**;
+4. `creator_is_volume` is on AND it is the creator wallet.
 
 Otherwise **organic**. Contagion is per-token only (cross-token is a future toggle).
+
+### Markers: the mechanism, not a snapshot of it
+
+A marker is one bit set by the **producer** (the only layer holding the label strings)
+and compared by the engine. The vocabulary is fixed and small on purpose - a marker set
+that grows per rule is a pattern list again. Two kinds, both mechanisms:
+
+| kind | markers | what it identifies |
+| --- | --- | --- |
+| machinery | `AdvanceNonceAccount` · `CreateAccountWithSeed` · `System Program: Transfer` · `Pump.Fun: Create` · `Memo Program` | what the transaction DOES |
+| router | `Axiom Trade` · `Photon` · `Bloom Router` · `Trojan Trade` · `Terminal` | the retail front-end a person clicked through |
+
+Matching is substring containment over each label, because a label carries its program
+prefix. An unknown marker name is an **error**, never an empty mask: a typo that
+silently matched nothing would let a cleanliness gate pass on bot traffic.
+
+A router is a property of the **build**, not of who sent it, which is why it lives here
+and not in a wallet list - and it is the reason the vocabulary can hold it at all
+without becoming per-rule: the set grows when a new front-end starts carrying retail
+order flow, and at no other time.
+
+**Why a marker beats an exact-sequence list here.** `CreateAccountWithSeed` means the
+transaction creates a throwaway account inline - nobody is coming back to it, so it is
+a disposable machine rather than a person with a wallet. That stays true of every
+future build. A list cannot promise it: on the 08-01..08-21 tape **531 distinct label
+sequences** carry the seed marker and new variants ship continuously, so a list books
+the unlisted ones as human demand.
+
+### A mask names ONE side, and which side is the rule
+
+`volume_ix_markers` and `organic_ix_markers` are not two spellings of one thing, and
+configuring both is an error (so is `organic_ix_markers` alongside `volume_ix_patterns`,
+which is itself a volume-side statement). They differ on the case that decides most
+gates - **a build carrying no configured marker at all**:
+
+| mask | a marked build | an unmarked build |
+| --- | --- | --- |
+| `volume_ix_markers` | volume | **organic** - identifies machines, leaves the rest unjudged |
+| `organic_ix_markers` | organic | **volume** - identifies people, judges the rest machine |
+
+Say the one the rule means. On the 8dtx tape the same fires, same thresholds, same
+exit read **+0.99 % per trade** under `volume_ix_markers: [CreateAccountWithSeed]` and
+**+6.86 %** under `organic_ix_markers: [<routers>]`, because the 8,566 fires the first
+admits and the second rejects average **-0.68 %**.
+
+An organic mask also fails **closed**: a loader that leaves `ix_labels` empty marks
+every trade volume-side, so the gate fires nothing rather than firing on everything.
+
+### The two wallet rules are switchable, and a structural gate wants them OFF
+
+`wallet_contagion` and `creator_is_volume` both default **true**, so every fingerprint
+stored before markers existed classifies exactly as it did.
+
+A structural gate turns them off. "Did this transaction come through a named router" is
+a property of the transaction; contagion makes it a property of the sender's history on
+that token, and the creator rule adds an identity term. Leaving them on does not merely
+*tighten* such a gate - it measures a different thing, and the fire set stops matching
+the one the rule was derived on. Wallet-keyed rules are also the axis a
+[wallet-free](wallet-8dtx-derived-rule.md) derivation is not allowed to use.
+
+```json
+"m_flow_split": {
+  "organic_ix_markers": ["Axiom Trade", "Photon", "Bloom Router", "Trojan Trade", "Terminal"],
+  "wallet_contagion": false,
+  "creator_is_volume": false
+}
+```
 
 Config lives on the fingerprint (not the rule):
 

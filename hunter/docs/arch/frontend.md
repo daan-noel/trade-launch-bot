@@ -427,10 +427,15 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   chart as lanes.
   **Every condition label carries its window**, from the one `conditionMetricName`
   namer shared by markers, lanes and the value line — the lifetime and windowed
-  registry entries share every metric name. For the same reason pane verdicts and
-  threshold lines key on the **series column** (`metric` / `metric@Ns`,
-  `metricThresholdsFor`), never on the metric name: a rule may constrain both twins,
-  and the monotone one would otherwise paint the windowed pane.
+  registry entries share every metric name. The label is the WHOLE span
+  (`30s`, `30sl`, `30sl@1` — `formatWindowSpec`, the vocabulary of the Rust
+  `event::format_metric_exit_name`), because two reqs differing only in unit or lag
+  read different tape. For the same reason pane verdicts and threshold lines key on
+  the **series column** (`metric` / `metric@Ns`, `metricThresholdsFor`), never on the
+  metric name: a rule may constrain both twins, and the monotone one would otherwise
+  paint the windowed pane. `/metric-series` computes wall-clock windows only, so a
+  slot-window condition keys its own pane and finds no column — an unavailable pane,
+  never the 30-second series relabelled 30 slots.
   Values are **readout-first**: a sticky strip lists every selected metric's
   crosshair/latest number; each pane has a large value rail + sparkline min/max
   and labeled thresholds (shape is secondary). Series from
@@ -527,7 +532,18 @@ next load (no per-metric frontend work).
   that matters — parking a side's LAST condition rewrites the rule silently
   (empty entry ⇒ buys on the fingerprint alone; empty exit ⇒ TP/SL/death only).
   **Scale-out stages pass `allowToggle={false}`**: a stage's `conditions` have no
-  `disabled` bag of their own — park the whole stage instead, below),
+  `disabled` bag of their own — park the whole stage instead.
+  A dynamic row's window is a **span, not a number**: size + `unit` (sec / slot) +
+  `lag`, authored as three controls and read through `lib/strategy/windowSpec.ts`,
+  the one mirror of `hunter_engine::metrics::WindowSpec`. Both axes of a two-window
+  group share the row's unit and lag, so the burst control re-spells itself
+  (`burst_size_sec` ⇄ `burst_size_slots`) on a unit flip rather than leaving the
+  other param behind for the backend to reject. **The instance key is the whole
+  span on both axes** (`ruleRowInstanceKey`): keyed on size alone, two slot windows
+  of one metric merge into one `GroupConditions` and the later row's strict bag
+  silently wins — one of the two gates disappears at save. Exactly one size param is
+  written, and a zero lag is omitted, so a pre-slot rule round-trips
+  byte-identically),
   `ScaleOutBuilder` (ordered partial-exit ladder; each stage carries the same `⏻`
   park toggle — `enabled` on the draft, `draftsToStages(drafts, enabled)` splits the
   live ladder from `params.disabled.scale_out`, and every budget question — stage

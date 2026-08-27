@@ -12,6 +12,23 @@
 import type { ConditionExpr } from './grammar';
 import type { DisabledConditions, SideConditions } from './ruleParams';
 import type { StrategyRegistry } from './registry';
+import type { GroupConditions } from './ruleParams';
+import {
+  BURST_PARAM,
+  BURST_SLOT_PARAM,
+  burstSizeParam,
+  formatWindowSpec,
+  sizeParam,
+  unitSuffix,
+  WINDOW_LAG_PARAM,
+  WINDOW_PARAMS,
+  windowSpecFromStrict,
+  windowSpecKey,
+  type WindowSpec,
+  type WindowUnit,
+} from './windowSpec';
+
+export { BURST_PARAM, BURST_SLOT_PARAM };
 
 /** Which side a condition row applies to (the column owns it). */
 export type RuleConditionSide = 'entry' | 'exit';
@@ -29,14 +46,24 @@ export interface RuleConditionRow {
   group: string;
   /** Registry metric name (e.g. `time`), '' until picked. */
   metric: string;
-  /** Trailing window (seconds) as raw text; '' when static / unset. */
+  /** Trailing window SIZE as raw text; '' when static / unset. The unit it counts
+   *  in is {@link RuleConditionRow.windowUnit} — a bare number is not a window. */
   window: string;
+  /** What this row's windows count in. `undefined` reads as `'sec'`, so a row from
+   *  before slots existed is a wall-clock row. Both axes of a two-window group share
+   *  it: a burst in slots over a reference in seconds is a ratio across two clocks,
+   *  which the backend rejects at save. */
+  windowUnit?: WindowUnit;
+  /** How many units back from *now* the window ENDS, as raw text; '' = ends at now.
+   *  This is what makes a window causal in its own terms — a gate on "the state
+   *  entering this slot" must not be able to see the slot it fires in. */
+  lag?: string;
   /** The metric's DNF condition arms (the `ConditionInput` value). Empty = the
    *  row carries no constraint yet and is dropped on serialize. */
   arms: ConditionExpr;
-  /** Strict params of this row's group instance OTHER than `window_size_sec`
-   *  (which is the `window` field). Carried per row so the row model stays flat,
-   *  and merged back per instance on serialize.
+  /** Strict params of this row's group instance OTHER than the window params
+   *  (which the `window` / `windowUnit` / `lag` fields own). Carried per row so the
+   *  row model stays flat, and merged back per instance on serialize.
    *
    *  This exists so the editor never silently DROPS a strict param it has no
    *  dedicated control for: a rule authored with `m_position.arm_above_pct` and
@@ -56,6 +83,8 @@ export function newRuleConditionRow(side: RuleConditionSide): RuleConditionRow {
     group: '',
     metric: '',
     window: '',
+    windowUnit: 'sec',
+    lag: '',
     arms: [],
   };
 }
@@ -70,7 +99,8 @@ function rowGroup(row: RuleConditionRow, reg: StrategyRegistry | undefined) {
   return reg?.groups.find((g) => g.name === row.group);
 }
 
-/** True when a row's group needs a `window_size_sec` (dynamic group). */
+/** True when a row's group needs a trailing window at all (dynamic group). Which
+ *  size param spells it is the row's `windowUnit`. */
 export function ruleRowNeedsWindow(
   row: RuleConditionRow,
   reg: StrategyRegistry | undefined,
@@ -89,10 +119,32 @@ export function ruleRowIsTrailing(row: RuleConditionRow): boolean {
   return row.group === 'm_position' && TRAILING_METRICS.has(row.metric);
 }
 
+/** What a row's windows count in. Absent ⇒ seconds, so a row authored before slots
+ *  existed keeps its meaning. */
+export function ruleRowUnit(row: RuleConditionRow): WindowUnit {
+  return row.windowUnit ?? 'sec';
+}
+
+/** A row's lag — units back from now its windows END. Blank / unparseable ⇒ 0
+ *  (ends at now), which is the only behaviour that existed before the param. */
+function rowLag(row: RuleConditionRow): number {
+  const v = Number(row.lag ?? '');
+  return (row.lag ?? '').trim() !== '' && Number.isFinite(v) && v >= 0 ? v : 0;
+}
+
 /** The parsed, positive window a row carries, or `null` (static / unset). */
-function rowWindow(row: RuleConditionRow): number | null {
-  const w = Number(row.window);
-  return row.window.trim() !== '' && Number.isFinite(w) && w > 0 ? w : null;
+export function ruleRowWindowSpec(row: RuleConditionRow): WindowSpec | null {
+  const size = Number(row.window);
+  if (row.window.trim() === '' || !Number.isFinite(size) || size <= 0) return null;
+  return { size, lag: rowLag(row), unit: ruleRowUnit(row) };
+}
+
+/** The row's burst axis (`m_flow_burst`'s second window), or `null`. It rides the
+ *  row's unit and lag — that pair IS the group's basis — and differs only in size. */
+export function ruleRowBurstSpec(row: RuleConditionRow): WindowSpec | null {
+  const size = row.strict?.[burstSizeParam(ruleRowUnit(row))];
+  if (typeof size !== 'number' || !Number.isFinite(size) || size <= 0) return null;
+  return { size, lag: rowLag(row), unit: ruleRowUnit(row) };
 }
 
 /** Key of the `GroupConditions` instance a row folds into: rows sharing it are
@@ -101,12 +153,20 @@ function rowWindow(row: RuleConditionRow): number | null {
  *  different bags, hence different instances. */
 export function ruleRowInstanceKey(row: RuleConditionRow): string {
   const on = ruleRowEnabled(row) ? 'on' : 'off';
-  // A two-window group's identity is the PAIR, so the burst axis is part of the key.
-  // Without it `m_flow_burst{60,3}` and `m_flow_burst{60,10}` merge into one instance
-  // and the later row's strict bag silently wins — one of the two gates disappears.
-  const burst = row.strict?.[BURST_PARAM];
-  const b = typeof burst === 'number' ? burst : '∅';
-  return `${on}|${row.side}|${row.group}|${rowWindow(row) ?? '∅'}|${b}`;
+  // The WHOLE span is the identity — size, lag AND unit. A bare size would merge
+  // `30 slots` with `30 seconds`, and `30 slots lag 0` with `30 slots lag 1`, which
+  // read different tape entirely; the later row's strict bag would then silently win
+  // and one of the two gates would disappear on save.
+  //
+  // A two-window group's identity is the PAIR, so the burst axis is in the key too:
+  // without it `m_flow_burst{60,3}` and `m_flow_burst{60,10}` merge the same way.
+  return [
+    on,
+    row.side,
+    row.group,
+    windowSpecKey(ruleRowWindowSpec(row)),
+    windowSpecKey(ruleRowBurstSpec(row)),
+  ].join('|');
 }
 
 /**
@@ -129,15 +189,14 @@ export function setRowInstanceStrict(
   return rows.map((r) => (ruleRowInstanceKey(r) === key ? { ...r, strict: { ...strict } } : r));
 }
 
-/** The second trailing-window strict param (`m_flow_burst`). Mirrors the backend
- *  SSOT `hunter_engine::metrics::flow_burst::BURST_PARAM`. */
-export const BURST_PARAM = 'burst_size_sec';
-
-function sameWindow(a: number | undefined, b: number | null): boolean {
-  const av = typeof a === 'number' ? a : null;
-  if (av == null && b == null) return true;
-  if (av == null || b == null) return false;
-  return Math.abs(av - b) < 1e-9;
+/** True when a row's group declares the burst axis at all (`m_flow_burst`). Asked
+ *  of the registry rather than hardcoded per group, so a future two-window basis
+ *  gets its control and its validation for free. */
+export function ruleRowNeedsBurst(
+  row: RuleConditionRow,
+  reg: StrategyRegistry | undefined,
+): boolean {
+  return rowGroup(row, reg)?.strict_params.some((sp) => sp.name === BURST_PARAM) ?? false;
 }
 
 /**
@@ -157,15 +216,28 @@ export function ruleConditionRowError(
   if (row.side === 'entry' && group.scope === 'position')
     return `${group.name} is exit-only (no value before entry) — move it to the exit column`;
   if (!row.metric || !group.metrics.some((m) => m.name === row.metric)) return 'pick a metric';
-  if (group.kind === 'dynamic' && rowWindow(row) == null) return 'window (s) > 0 required';
-  // Second window axis (`m_flow_burst`): required by the registry, and it must nest
-  // inside the reference window or the share counts trades the denominator does not.
-  if (group.strict_params.some((sp) => sp.name === BURST_PARAM && sp.required)) {
-    const burst = row.strict?.[BURST_PARAM];
-    if (typeof burst !== 'number' || !Number.isFinite(burst) || burst <= 0)
-      return 'burst (s) > 0 required';
-    const w = rowWindow(row);
-    if (w != null && burst > w) return `burst (s) must nest inside window ${w}`;
+  const unit = ruleRowUnit(row);
+  // The short suffix, so an error names the field exactly as its label does
+  // (`window s` / `window sl`) rather than in a second vocabulary.
+  const u = unitSuffix(unit);
+  const win = ruleRowWindowSpec(row);
+  if (group.kind === 'dynamic' && win == null) return `window (${u}) > 0 required`;
+  // The lag is what makes a window causal in its own terms, and `0` is a real value
+  // of its domain (end at now) rather than "absent" — so only a negative or
+  // unparseable entry is an error.
+  const lagText = (row.lag ?? '').trim();
+  if (lagText !== '') {
+    const lag = Number(lagText);
+    if (!Number.isFinite(lag) || lag < 0) return `lag (${u}) must be a number ≥ 0`;
+  }
+  // Second window axis (`m_flow_burst`): required on the groups that declare it, in
+  // the SAME unit as the reference, and it must nest inside it or the share counts
+  // trades the denominator does not.
+  if (ruleRowNeedsBurst(row, reg)) {
+    const burst = ruleRowBurstSpec(row);
+    if (burst == null) return `burst (${u}) > 0 required`;
+    if (win != null && burst.size > win.size)
+      return `burst (${u}) must nest inside window ${win.size}`;
   }
   if (row.arms.length === 0) return 'add a condition (e.g. > 10)';
   const arm = row.strict?.arm_above_pct;
@@ -212,14 +284,14 @@ export function duplicateConditionRowError(rows: RuleConditionRow[]): string | n
   const seen = new Set<string>();
   for (const row of rows) {
     if (!row.group || !row.metric) continue;
-    const w = rowWindow(row);
+    const w = ruleRowWindowSpec(row);
     const on = ruleRowEnabled(row);
     // Keyed by the instance (so live/parked and each window are their own bag — that
     // pairing is exactly what the toggle is for: park a value, try another) plus the
     // metric, which is what actually collides inside one instance.
     const key = `${ruleRowInstanceKey(row)}|${row.metric}`;
     if (seen.has(key)) {
-      const at = w != null ? `@${w}s` : '';
+      const at = w ? `@${formatWindowSpec(w)}` : '';
       const where = on ? row.side : `disabled ${row.side}`;
       return `${where} ${row.group}.${row.metric}${at} is set twice — merge the conditions into one row`;
     }
@@ -262,25 +334,42 @@ export function rowsToSide(
   enabled = true,
 ): SideConditions {
   const out: SideConditions = {};
+  const instanceKeys = new Map<string, GroupConditions>();
   for (const row of rows) {
     if (row.side !== side || ruleRowEnabled(row) !== enabled) continue;
     if (!row.group || !row.metric || row.arms.length === 0) continue;
-    const w = rowWindow(row);
+    const w = ruleRowWindowSpec(row);
     const instances = out[row.group] ?? (out[row.group] = []);
-    const burst = row.strict?.[BURST_PARAM] ?? null;
-    let inst = instances.find(
-      (g) =>
-        sameWindow(g.strict.window_size_sec, w) && sameWindow(g.strict[BURST_PARAM], burst),
-    );
+    // Rows share an instance only when they name the SAME span on both axes — the
+    // same identity `ruleRowInstanceKey` uses, so what the editor validates as one
+    // instance is what gets written as one.
+    const key = ruleRowInstanceKey(row);
+    let inst = instanceKeys.get(key);
     if (!inst) {
       inst = { strict: {}, metrics: {} };
-      if (w != null) inst.strict.window_size_sec = w;
+      if (w != null) {
+        // Exactly ONE size param, spelled in the row's unit — writing both is what
+        // the backend rejects as "two spans claiming one axis".
+        inst.strict[sizeParam(w.unit)] = w.size;
+        // A zero lag is the default and the only behaviour that existed before the
+        // param, so it stays absent — that is what keeps a pre-slot rule
+        // byte-identical through a load-and-save.
+        if (w.lag > 0) inst.strict[WINDOW_LAG_PARAM] = w.lag;
+      }
       instances.push(inst);
+      instanceKeys.set(key, inst);
     }
     // Non-window strict params ride on the row so nothing the editor has no control
     // for is lost on re-save. Rows of one instance agree (sideToRows copies the same
     // bag onto each), so a later row merging in is a no-op rather than a conflict.
-    Object.assign(inst.strict, row.strict ?? {});
+    // The burst axis is re-spelled in the row's unit for the same reason the
+    // reference span is: a unit flip must not leave the old param behind.
+    const { [BURST_PARAM]: bSec, [BURST_SLOT_PARAM]: bSlot, ...rest } = row.strict ?? {};
+    Object.assign(inst.strict, rest);
+    const burst = ruleRowBurstSpec(row);
+    if (burst != null) inst.strict[burstSizeParam(burst.unit)] = burst.size;
+    void bSec;
+    void bSlot;
     inst.metrics[row.metric] = row.arms;
   }
   return out;
@@ -316,11 +405,17 @@ export function sideToRows(
   const rows: RuleConditionRow[] = [];
   for (const [groupName, instances] of Object.entries(side ?? {})) {
     for (const inst of instances) {
-      const w = inst.strict.window_size_sec;
-      const windowText = typeof w === 'number' && w > 0 ? String(w) : '';
-      // Everything except the window, which the `window` field already owns.
+      const spec = windowSpecFromStrict(inst.strict);
+      const windowText = spec ? String(spec.size) : '';
+      const lagText = spec && spec.lag > 0 ? String(spec.lag) : '';
+      // Everything except the reference span, which the `window` / `windowUnit` /
+      // `lag` fields own. The BURST axis stays in the bag (there is a control for
+      // it) but the reference lag does not — it is shared by both axes, so leaving a
+      // copy here would let a stale value outlive a lag edit.
       const strict = Object.fromEntries(
-        Object.entries(inst.strict).filter(([k]) => k !== 'window_size_sec'),
+        Object.entries(inst.strict).filter(
+          ([k]) => k !== WINDOW_PARAMS[0] && k !== WINDOW_PARAMS[1] && k !== WINDOW_LAG_PARAM,
+        ),
       );
       for (const [metric, arms] of Object.entries(inst.metrics)) {
         if (!arms?.length) continue;
@@ -330,6 +425,10 @@ export function sideToRows(
           group: groupName,
           metric,
           window: windowText,
+          // A group with no reference span authors no windows at all, so it keeps
+          // the default unit rather than inventing one.
+          windowUnit: spec?.unit ?? 'sec',
+          lag: lagText,
           arms,
           strict,
         });

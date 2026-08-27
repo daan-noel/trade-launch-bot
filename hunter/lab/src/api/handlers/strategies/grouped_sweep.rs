@@ -2220,6 +2220,8 @@ pub(crate) fn fingerprint_from_group_key(
 ) -> Fingerprint {
     let now = Utc::now();
     let mut fp = Fingerprint {
+        // A sweep fingerprint always names axes; it is never a match-all row.
+        wildcard: false,
         id: Uuid::new_v4(),
         name,
         cu_limit: None,

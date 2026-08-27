@@ -267,7 +267,16 @@ impl ClockHorizons {
         // Both axes: a two-window group's horizon is its LONGEST window, and the
         // shorter one still needs a buffer.
         for w in [r.window.primary, r.window.secondary].into_iter().flatten() {
-            self.max_window_secs = self.max_window_secs.max(SparseGrid::clamp_secs(w));
+            // The tick grid is a wall clock, so a slot span converts at the nominal
+            // slot time. It only sizes the horizon - never a metric reading - so an
+            // approximation here costs coverage, never correctness.
+            let secs = match w.unit {
+                crate::metrics::WindowUnit::Sec => w.size + w.lag,
+                crate::metrics::WindowUnit::Slot => {
+                    (w.size + w.lag) * crate::metrics::NOMINAL_SLOT_SECS
+                }
+            };
+            self.max_window_secs = self.max_window_secs.max(SparseGrid::clamp_secs(secs));
         }
         let slot = match r.metric {
             MetricId::Time => &mut self.time_secs,
@@ -320,11 +329,11 @@ pub struct CompiledRule {
     pub scale_out: Vec<CompiledStage>,
     /// Distinct **flow** `window_size_sec` values this rule reads across both sides
     /// (`m_flow_window` + `m_flow_split_window`) — drive `ensure_window` / `ensure_flow`.
-    pub flow_windows: SmallVec<[f64; 2]>,
+    pub flow_windows: SmallVec<[crate::metrics::WindowSpec; 2]>,
     /// Distinct **price** `window_size_sec` values (`m_price_window`) — drive
     /// `ensure_price_window`. Split from [`flow_windows`](Self::flow_windows) so a
     /// rule pays only for the deques its metrics actually read.
-    pub price_windows: SmallVec<[f64; 2]>,
+    pub price_windows: SmallVec<[crate::metrics::WindowSpec; 2]>,
     /// Per entry-metric mono kills (for derived-unsatisfiability disarm).
     pub mono_kills: SmallVec<[MonoMetricKill; 2]>,
     /// How long this rule's readings can still move without a trade — see
@@ -408,8 +417,8 @@ impl CompiledRule {
 
         // Distinct windows across both sides + every scale-out stage (dynamic
         // metrics only), split by which buffer they drive.
-        let mut flow_windows: SmallVec<[f64; 2]> = SmallVec::new();
-        let mut price_windows: SmallVec<[f64; 2]> = SmallVec::new();
+        let mut flow_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
+        let mut price_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
         let stage_reqs = scale_out.iter().flat_map(|s| s.reqs.iter());
         for r in entry_reqs.iter().chain(exit_reqs.iter()).chain(stage_reqs) {
             // Both axes: a two-window group needs a buffer for each of them, and
@@ -722,8 +731,17 @@ fn build_reqs(
             // would have to be remembered into.
             let window: Windows = if is_dynamic {
                 Windows {
-                    primary: group.strict_param("window_size_sec"),
-                    secondary: group.strict_param(crate::metrics::flow_burst::BURST_PARAM),
+                    primary: group.window_spec(
+                        crate::metrics::WINDOW_SEC_PARAM,
+                        crate::metrics::WINDOW_SLOT_PARAM,
+                    ),
+                    // The burst axis rides the SAME clock as the reference (that pair
+                    // IS the group's basis), so it takes the group's unit and lag and
+                    // differs only in size.
+                    secondary: group.window_spec(
+                        crate::metrics::flow_burst::BURST_PARAM,
+                        crate::metrics::flow_burst::BURST_SLOT_PARAM,
+                    ),
                 }
             } else {
                 Windows::NONE
@@ -874,6 +892,7 @@ impl ArmState {
 
 #[cfg(test)]
 mod tests {
+    use crate::metrics::WindowSpec;
     use super::*;
     use crate::event::RuleId;
     use crate::fingerprint::FingerprintId;
@@ -941,7 +960,7 @@ mod tests {
             "entry": { "m_flow_window": { "window_size_sec": 10, "buy": [{"operator": ">", "value": 1}] } },
             "exit":  { "m_flow_window": { "window_size_sec": 10, "sell": [{"operator": ">", "value": 1}] } }
         })));
-        assert_eq!(c.flow_windows.as_slice(), &[10.0]);
+        assert_eq!(c.flow_windows.as_slice(), &[WindowSpec::secs(10.0)]);
         assert!(c.price_windows.is_empty());
     }
 
@@ -959,11 +978,11 @@ mod tests {
         assert_eq!(c.entry_reqs.len(), 2);
         let gross = c.entry_reqs.iter().find(|r| r.metric == MetricId::GrossFlow).unwrap();
         let net = c.entry_reqs.iter().find(|r| r.metric == MetricId::NetFlow).unwrap();
-        assert_eq!(gross.window, Windows::one(30.0));
-        assert_eq!(net.window, Windows::one(2.0));
+        assert_eq!(gross.window, Windows::secs(30.0));
+        assert_eq!(net.window, Windows::secs(2.0));
         // Both distinct windows collected for ensure_window (order = req order).
         assert_eq!(c.flow_windows.len(), 2);
-        assert!(c.flow_windows.contains(&30.0) && c.flow_windows.contains(&2.0));
+        assert!(c.flow_windows.contains(&WindowSpec::secs(30.0)) && c.flow_windows.contains(&WindowSpec::secs(2.0)));
         assert!(c.price_windows.is_empty());
     }
 
@@ -980,10 +999,10 @@ mod tests {
         })));
         assert_eq!(c.entry_reqs.len(), 1);
         assert_eq!(c.entry_reqs[0].metric, MetricId::BurstTradeShare);
-        assert_eq!(c.entry_reqs[0].window, Windows::two(60.0, 3.0));
+        assert_eq!(c.entry_reqs[0].window, Windows::two(WindowSpec::secs(60.0), WindowSpec::secs(3.0)));
         // One buffer per axis, both on the flow side (neither is a price window).
         assert_eq!(c.flow_windows.len(), 2);
-        assert!(c.flow_windows.contains(&60.0) && c.flow_windows.contains(&3.0));
+        assert!(c.flow_windows.contains(&WindowSpec::secs(60.0)) && c.flow_windows.contains(&WindowSpec::secs(3.0)));
         assert!(c.price_windows.is_empty());
         // The tick horizon covers the LONGER axis — a grid that only reached 3 s
         // would stop ticking while the 60 s reference was still draining.
@@ -1335,7 +1354,7 @@ mod tests {
         // whole way, so exactly one condition is the answer.
         assert_eq!(b.unmet.len(), 1, "only gross_flow blocked entry: {:?}", b.unmet);
         assert_eq!(b.unmet[0].metric, MetricId::GrossFlow);
-        assert_eq!(b.unmet[0].window, Windows::one(60.0));
+        assert_eq!(b.unmet[0].window, Windows::secs(60.0));
         assert_eq!(b.unmet[0].value, 20.0);
     }
 
@@ -1417,7 +1436,7 @@ mod tests {
         assert_eq!(c.scale_out[0].reqs[0].origin, ReqOrigin::TakeProfit);
         assert_eq!(c.scale_out[1].sell_bps, Some(2000));
         assert_eq!(c.scale_out[2].sell_bps, None, "remainder");
-        assert!(c.flow_windows.contains(&5.0), "stage windows merge into rule");
+        assert!(c.flow_windows.contains(&WindowSpec::secs(5.0)), "stage windows merge into rule");
         assert!(c.exit_reqs.is_empty(), "global side empty — stages alone");
     }
 }

@@ -14,12 +14,31 @@ import type { StrategyRegistry } from './registry';
 import type { MetricSeriesColumn, MetricSeriesResponse, StrategyRule } from './types';
 import { ruleParamsFromJson, sideInstances } from './ruleParams';
 import { formatMetricExitLabel, parseMetricExitTarget } from './exitReason';
+import {
+  formatWindowSpec,
+  sameWindowSpec,
+  windowSpecFromStrict,
+  type WindowSpec,
+} from './windowSpec';
 
 const DEFAULT_WINDOWS = [10, 30, 60];
 
-/** Stable key for a series column (metric, optionally @window). */
-export function metricColKey(metric: string, window: number | null): string {
-  return window == null ? metric : `${metric}@${window}`;
+/**
+ * Stable key for a series column (metric, optionally `@window`).
+ *
+ * A bare number is a wall-clock window in seconds — the shape `/metric-series`
+ * returns and the shape saved pane preferences were written in, so `30` keeps
+ * producing `metric@30` byte-for-byte. A span keys by its whole identity, so a
+ * 30-slot read and a 30-second read are two panes rather than one, and a lag makes
+ * a third.
+ */
+export function metricColKey(metric: string, window: WindowSpec | number | null): string {
+  if (window == null) return metric;
+  if (typeof window === 'number') return `${metric}@${window}`;
+  const lag = window.lag > 0 ? `@${window.lag}` : '';
+  return window.unit === 'sec' && window.lag === 0
+    ? `${metric}@${window.size}`
+    : `${metric}@${window.size}${window.unit === 'slot' ? 'sl' : 's'}${lag}`;
 }
 
 export interface RuleMetricPrefs {
@@ -90,11 +109,12 @@ export function metricPrefsFromParams(
     if (!side) continue;
     for (const [groupName, group] of sideInstances(side)) {
       const kind = registry?.groups.find((g) => g.name === groupName)?.kind;
-      const w =
-        typeof group.strict.window_size_sec === 'number' && group.strict.window_size_sec > 0
-          ? group.strict.window_size_sec
-          : null;
-      if (w != null) windows.add(w);
+      const w = windowSpecFromStrict(group.strict);
+      // `/metric-series` computes wall-clock windows only, so only a seconds span
+      // can be REQUESTED. A slot span still keys its own pane (below) — it just has
+      // no column to pair with, which reads as an unavailable pane rather than as
+      // the 30-second series mislabelled 30 slots.
+      if (w != null && w.unit === 'sec' && w.lag === 0) windows.add(w.size);
       for (const [metric, arms] of Object.entries(group.metrics)) {
         if (!arms?.length) continue;
         metrics.add(metric);
@@ -164,7 +184,9 @@ interface SideMetricRow {
   metric: string;
   arms: ConditionExpr;
   dynamic: boolean;
-  window: number | null;
+  /** The WHOLE span the instance runs at (`null` for a lifetime/static group) —
+   *  size, lag and unit, since a bare size cannot tell 30 slots from 30 seconds. */
+  window: WindowSpec | null;
 }
 
 /** Collect authored (group, metric, arms) rows for one side. */
@@ -176,10 +198,7 @@ function sideMetricRows(
   const out: SideMetricRow[] = [];
   for (const [groupName, group] of sideInstances(side)) {
     const gSpec = registry?.groups.find((g) => g.name === groupName);
-    const w =
-      typeof group.strict.window_size_sec === 'number' && group.strict.window_size_sec > 0
-        ? group.strict.window_size_sec
-        : null;
+    const w = windowSpecFromStrict(group.strict);
     for (const [metric, arms] of Object.entries(group.metrics)) {
       if (!arms?.length) continue;
       out.push({
@@ -337,8 +356,8 @@ function newlyFiredRows(
 export interface MetricConditionState {
   side: 'entry' | 'exit';
   metric: string;
-  /** The trailing window the condition runs at; `null` for a lifetime/static group. */
-  window: number | null;
+  /** The trailing span the condition runs at; `null` for a lifetime/static group. */
+  window: WindowSpec | null;
   /**
    * Series-column key (`metric` or `metric@Ns`) — the identity a pane is keyed by.
    * A rule that constrains `nonvol_buy` lifetime AND `nonvol_buy` at 2 s produces two
@@ -388,7 +407,9 @@ export function metricConditionStatesAt(
 export function metricThresholdsFor(
   params: RuleParams,
   metric: string,
-  window: number | null,
+  /** A bare number is a wall-clock window in seconds — what the chart pane, whose
+   *  columns `/metric-series` computes, is keyed by. */
+  window: WindowSpec | number | null,
   registry: StrategyRegistry | undefined,
 ): Array<{ side: 'entry' | 'exit'; value: number }> {
   const key = metricColKey(metric, window);
@@ -446,8 +467,14 @@ export interface MetricConditionLanes {
  * makes the wrong reading look permanently satisfied. Matches the live position
  * modal's chips (`conditionLabel`), so a lane reads as their legend.
  */
-function conditionMetricName(row: { metric: string; dynamic: boolean; window: number | null }): string {
-  return row.dynamic && row.window != null ? `${row.metric}@${row.window}s` : row.metric;
+function conditionMetricName(row: {
+  metric: string;
+  dynamic: boolean;
+  window: WindowSpec | null;
+}): string {
+  return row.dynamic && row.window != null
+    ? `${row.metric}@${formatWindowSpec(row.window)}`
+    : row.metric;
 }
 
 /** `nonvol_buy@2s >= 0.9` — an authored condition, human-side. */
@@ -553,10 +580,11 @@ function valueLaneRow<T extends SideMetricRow & { side: 'entry' | 'exit' }>(
   if (!target) return exits[0];
   const byName = exits.filter((r) => r.metric === target.metric);
   if (byName.length === 0) return exits[0];
-  if (target.windowSec != null) {
+  if (target.window != null) {
     // Matching by NAME alone is free to pick the lifetime twin of a windowed exit —
-    // the mismatch the window qualifier exists to make impossible.
-    return byName.find((r) => r.window === target.windowSec) ?? exits[0];
+    // the mismatch the window qualifier exists to make impossible. The whole span
+    // has to agree: a 30-slot read is not the 30-second one.
+    return byName.find((r) => sameWindowSpec(r.window, target.window)) ?? exits[0];
   }
   return byName.length === 1 ? byName[0] : exits[0];
 }

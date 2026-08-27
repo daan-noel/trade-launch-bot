@@ -20,7 +20,7 @@ use super::roles::{
 pub struct Clause {
     pub group: MetricGroupId,
     pub metric: MetricId,
-    pub window: Option<f64>,
+    pub window: Option<hunter_engine::metrics::WindowSpec>,
     pub op: Operator,
     pub threshold: f64,
     pub phase: CutPhase,
@@ -427,13 +427,27 @@ fn side_from(clauses: &[Clause]) -> SideConditions {
         let instances = sc.0.entry(c.group).or_default();
         let gc = match instances
             .iter()
-            .position(|g| same_window(g.strict_param("window_size_sec"), c.window))
+            .position(|g| {
+                same_window(
+                    g.window_spec(
+                        hunter_engine::metrics::WINDOW_SEC_PARAM,
+                        hunter_engine::metrics::WINDOW_SLOT_PARAM,
+                    ),
+                    c.window,
+                )
+            })
         {
             Some(i) => &mut instances[i],
             None => {
                 let mut g = GroupConditions::default();
                 if let Some(w) = c.window {
-                    g.strict.insert("window_size_sec".to_string(), w);
+                    // Write the param that matches the unit - writing seconds for a
+                    // slot span would silently author a different rule.
+                    g.strict.insert(w.unit.size_param().to_string(), w.size);
+                    if w.lag > 0.0 {
+                        g.strict
+                            .insert(hunter_engine::metrics::WINDOW_LAG_PARAM.to_string(), w.lag);
+                    }
                 }
                 instances.push(g);
                 instances.last_mut().expect("just pushed")
@@ -466,7 +480,13 @@ pub fn clause_label(c: &Clause) -> String {
     };
     let window = c
         .window
-        .map(|w| format!("({w:.0}s)"))
+        .map(|w| match w.unit {
+            hunter_engine::metrics::WindowUnit::Sec => format!("({:.0}s)", w.size),
+            hunter_engine::metrics::WindowUnit::Slot if w.lag > 0.0 => {
+                format!("({:.0}sl@{:.0})", w.size, w.lag)
+            }
+            hunter_engine::metrics::WindowUnit::Slot => format!("({:.0}sl)", w.size),
+        })
         .unwrap_or_default();
     format!(
         "{} {}{window} {op} {} [{}]",
@@ -477,10 +497,13 @@ pub fn clause_label(c: &Clause) -> String {
     )
 }
 
-fn same_window(a: Option<f64>, b: Option<f64>) -> bool {
+fn same_window(a: Option<hunter_engine::metrics::WindowSpec>, b: Option<hunter_engine::metrics::WindowSpec>) -> bool {
     match (a, b) {
         (None, None) => true,
-        (Some(x), Some(y)) => (x - y).abs() < 1e-9,
+        // Compare the dedup identity, not the raw floats: two clauses that differ
+        // in unit or lag read different tape and must never merge into one group
+        // instance, however close their sizes look.
+        (Some(x), Some(y)) => x.key() == y.key(),
         _ => false,
     }
 }
@@ -624,7 +647,7 @@ mod tests {
                 Clause {
                     group: MetricGroupId::FlowWindow,
                     metric: MetricId::Buy,
-                    window: Some(10.0),
+                    window: Some(hunter_engine::metrics::WindowSpec::secs(10.0)),
                     op: Operator::Gte,
                     threshold: 5.0,
                     phase: CutPhase::Peak,
@@ -632,7 +655,7 @@ mod tests {
                 Clause {
                     group: MetricGroupId::FlowWindow,
                     metric: MetricId::UniqueWallets,
-                    window: Some(10.0),
+                    window: Some(hunter_engine::metrics::WindowSpec::secs(10.0)),
                     op: Operator::Gte,
                     threshold: 8.0,
                     phase: CutPhase::Peak,
@@ -658,7 +681,7 @@ mod tests {
                 Cut {
                     group: MetricGroupId::FlowWindow,
                     metric: MetricId::UniqueWallets,
-                    window: Some(5.0),
+                    window: Some(hunter_engine::metrics::WindowSpec::secs(5.0)),
                     op: Operator::Gte,
                     threshold: 8.0,
                     phase: CutPhase::Contrast,

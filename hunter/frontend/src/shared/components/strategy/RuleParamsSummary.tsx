@@ -8,6 +8,7 @@ import { formatDecimalTrim } from 'utils/format';
 import { findMetric, useStrategyRegistry, type Operator } from 'lib/strategy/registry';
 import { metricColorStyle } from 'lib/strategy/metricColors';
 import { conditionExprFromJson } from 'lib/strategy/grammar';
+import { formatWindowSpec, windowSpecFromStrict } from 'lib/strategy/windowSpec';
 
 /** Nested `params` blob as stored on `strategy_rules.params` / sweep combos. A
  *  group's value is a plain object (one window) OR an array of them (one per
@@ -60,10 +61,15 @@ function sideChips(side: Record<string, unknown> | undefined): SideChip[] {
     for (const body of instances) {
       if (!body || typeof body !== 'object' || Array.isArray(body)) continue;
       const inst = body as Record<string, unknown>;
-      const window = typeof inst.window_size_sec === 'number' ? inst.window_size_sec : null;
-      const suffix = window != null ? `(${window}s)` : '';
+      // The whole span, not just a size: two slot windows of one metric would
+      // otherwise chip identically, and a slot window would read as a lifetime one.
+      const numeric = Object.fromEntries(
+        Object.entries(inst).filter((e): e is [string, number] => typeof e[1] === 'number'),
+      );
+      const spec = windowSpecFromStrict(numeric);
+      const suffix = spec ? `(${formatWindowSpec(spec)})` : '';
       for (const [metric, raw] of Object.entries(inst)) {
-        if (metric === 'window_size_sec' || !Array.isArray(raw)) continue;
+        if (!Array.isArray(raw)) continue;
         const arms = conditionExprFromJson(raw);
         if (!arms) continue;
         for (let ai = 0; ai < arms.length; ai++) {

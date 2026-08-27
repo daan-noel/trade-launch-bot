@@ -154,6 +154,7 @@ fn token_at(mint: &str, created_secs: f64, trades: Vec<CorpusTrade>) -> (CorpusT
 
 fn fingerprint() -> Fingerprint {
     Fingerprint {
+        wildcard: false,
         id: FingerprintId(FP_ID),
         cu_limit: Some(200_000),
         cu_price: None,
@@ -688,7 +689,7 @@ fn position_retrace_actually_fires_the_trailing_stop() {
     // The dip trigger IS a precomputed column; the position metric is NOT (it reads
     // the per-entry PositionCtx — a static column could only ever record NaN).
     assert!(
-        cols.contains(&hunter_engine::metrics::series::SeriesColumn::window(MetricId::WinTrail, 30.0)),
+        cols.contains(&hunter_engine::metrics::series::SeriesColumn::window(MetricId::WinTrail, hunter_engine::metrics::WindowSpec::secs(30.0))),
         "m_price_window.trail must precompute as a windowed column: {cols:?}"
     );
     assert!(

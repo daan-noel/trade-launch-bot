@@ -70,6 +70,7 @@ pub fn fp_to_engine(fp: &ModelFingerprint) -> EngineFingerprint {
         first_slot_buy_lamports: fp.first_slot_buy_lamports,
         first_slot_sell_lamports: fp.first_slot_sell_lamports,
         bucket_size_amount: fp.bucket_size_amount,
+        wildcard: fp.wildcard,
         metric_config: fp.metric_config.clone(),
     }
 }

@@ -63,8 +63,5 @@ This is a **blacklist of launch poison**, not a small watchlist. It still leaves
 
 ## Burst on mints he already touched
 
-On `ixg.burst` (his mints only) the same kinds still rank with or without this door.
-The door does not rewrite the trigger; it changes who is in the universe. Full-tape
-burst × door is not this file.
-
-Permissions stay off this file.
+Burst on mints he already touched is in [ix-burst-kinds.md](ix-burst-kinds.md).
+Permissions at the burst: [ix-perm.md](ix-perm.md). Full-tape money is not this file.

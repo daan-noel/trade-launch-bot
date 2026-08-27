@@ -42,6 +42,7 @@ fn ts(secs: f64) -> Ts {
 
 fn build(dense: bool, n_tokens: usize) -> EngineState {
     let fp = Fingerprint {
+        wildcard: false,
         id: FingerprintId(Uuid::from_u128(1)),
         cu_limit: Some(200_000),
         cu_price: None,
@@ -96,6 +97,8 @@ fn build(dense: bool, n_tokens: usize) -> EngineState {
                 Event::Trade {
                     mint: mint.clone(),
                     trade: TradeLite {
+                       slot: 0,
+                       marker_bits: 0,
                         side: if k % 2 == 0 { Side::Buy } else { Side::Sell },
                         sol: 1.0,
                         price: 1.0 + k as f64 * 0.01,

@@ -67,6 +67,19 @@ pub struct Fingerprint {
     pub first_slot_buy_lamports: Option<i64>,
     /// Sum of sell SOL in the creation slot (first-slot axis — deferred).
     pub first_slot_sell_lamports: Option<i64>,
+    /// Match EVERY token, ignoring every other axis.
+    ///
+    /// A rule needs a fingerprint, but not every rule is about a creation shape: a
+    /// rule that decides purely on what is happening on the tape has no launch shape
+    /// to name, and leaving all axes `None` means *match nothing*, not *match
+    /// everything*. Those are the two opposite readings of an unconfigured row, so
+    /// the difference is spelled explicitly rather than inferred.
+    ///
+    /// Deliberately not a bucket width of infinity or an all-`None` row: both would
+    /// make "the operator forgot to configure this" and "the operator means every
+    /// token" the same state.
+    #[serde(default)]
+    pub wildcard: bool,
     /// SOL width every bucket-matched axis on this row uses, or `None` to match
     /// those axes on their **exact** lamports amount.
     ///
@@ -130,12 +143,14 @@ impl Fingerprint {
     /// Whether any matchable criterion is configured. The matcher requires at
     /// least one so an all-`None` fingerprint can never match everything.
     pub fn has_any_criterion(&self) -> bool {
-        self.has_instant_criterion() || self.has_first_slot_criteria()
+        self.wildcard || self.has_instant_criterion() || self.has_first_slot_criteria()
     }
 
-    /// Whether any **instant** (creation-time) axis is configured.
+    /// Whether any **instant** (creation-time) axis is configured. A wildcard row
+    /// counts: it resolves at creation and never waits on a first-slot axis.
     pub fn has_instant_criterion(&self) -> bool {
-        self.cu_limit.is_some()
+        self.wildcard
+            || self.cu_limit.is_some()
             || self.cu_price.is_some()
             || self.configured_ix_labels().is_some()
             || self.init_buy_lamports.is_some()
@@ -190,6 +205,11 @@ pub enum MatchPhase {
 pub fn matches_phase(fp: &Fingerprint, tf: &TokenFingerprint, phase: MatchPhase) -> bool {
     if !fp.has_any_criterion() {
         return false;
+    }
+    // A wildcard row short-circuits every axis, including the deferred first-slot
+    // ones - there is nothing to wait for, so it resolves in the instant phase.
+    if fp.wildcard {
+        return true;
     }
     let precision = fp.precision();
 
@@ -325,6 +345,7 @@ mod tests {
     /// they exercise.
     fn blank_fp() -> Fingerprint {
         Fingerprint {
+            wildcard: false,
             id: fp_id(1),
             cu_limit: None,
             cu_price: None,
@@ -592,4 +613,24 @@ mod tests {
         let hits = match_all(&[coarse.clone(), fine.clone()], &tf, MatchPhase::Full);
         assert_eq!(hits.as_slice(), &[coarse.id, fine.id]);
     }
+    /// A criterion-less row matches NOTHING on purpose - a half-filled form must not
+    /// arm on every token. So "every token" has to be said out loud, and the two
+    /// states stay distinguishable.
+    #[test]
+    fn a_wildcard_matches_everything_and_an_empty_row_still_matches_nothing() {
+        let empty = blank_fp();
+        let any = Fingerprint { wildcard: true, ..blank_fp() };
+        let tf = TokenFingerprint {
+            cu_limit: Some(123_456),
+            cu_price: Some(7),
+            ix_labels: vec!["Pump.Fun: Create".into()],
+            ..blank_tf()
+        };
+        assert!(!matches(&empty, &tf), "an unconfigured row arms on nothing");
+        assert!(matches(&any, &tf), "a wildcard arms on everything");
+        // And it resolves at creation - there is no first-slot axis to wait for.
+        assert!(matches_phase(&any, &tf, MatchPhase::Instant));
+        assert!(any.has_instant_criterion());
+    }
+
 }

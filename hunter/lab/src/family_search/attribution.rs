@@ -125,7 +125,7 @@ pub struct AttributionAcc {
 }
 
 /// `(metric, window, authored value)` — the standing identity.
-type StandingKey = (hunter_engine::metrics::MetricId, Option<f64>, f64);
+type StandingKey = (hunter_engine::metrics::MetricId, Option<hunter_engine::metrics::WindowSpec>, f64);
 
 #[derive(Clone, Copy, Debug, Default)]
 struct SlotAcc {
@@ -146,7 +146,7 @@ struct LabelKey {
     metric: hunter_engine::metrics::MetricId,
     operator: hunter_engine::metrics::evaluator::Operator,
     value: f64,
-    window: Option<f64>,
+    window: Option<hunter_engine::metrics::WindowSpec>,
 }
 
 impl AttributionAcc {
@@ -279,14 +279,14 @@ mod tests {
         let outs = vec![
             metric_exit(0, MetricId::Stall, Operator::Gte, 30.0, None, 0.10),
             metric_exit(0, MetricId::Stall, Operator::Gte, 30.0, None, -0.02),
-            metric_exit(1, MetricId::GrossFlow, Operator::Lt, 15.0, Some(10.0), 0.30),
+            metric_exit(1, MetricId::GrossFlow, Operator::Lt, 15.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0)), 0.30),
             // Slot beyond the fixed array — both readers clamp it to the last bucket.
             metric_exit(
                 N_EXIT_METRIC_SLOTS as u8 + 4,
                 MetricId::WinNonvolBuy,
                 Operator::Gte,
                 1.6,
-                Some(2.0),
+                Some(hunter_engine::metrics::WindowSpec::secs(2.0)),
                 0.05,
             ),
             // Not an authored-metric exit: excluded from every slot by both readers.
@@ -391,7 +391,7 @@ mod tests {
     fn same_metric_different_windows_are_distinct_labelled_slots() {
         let outs = vec![
             metric_exit(0, MetricId::NonvolBuy, Operator::Gte, 0.9, None, 0.01),
-            metric_exit(1, MetricId::WinNonvolBuy, Operator::Gte, 0.9, Some(2.0), 0.02),
+            metric_exit(1, MetricId::WinNonvolBuy, Operator::Gte, 0.9, Some(hunter_engine::metrics::WindowSpec::secs(2.0)), 0.02),
         ];
         let a = rollup(&outs, 0.01);
         assert_eq!(a.by_slot.len(), 2);
@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn a_standing_term_is_labelled_rather_than_credited() {
         let outs = vec![
-            metric_exit(0, MetricId::GrossFlow, Operator::Lt, 15.0, Some(10.0), 0.03),
+            metric_exit(0, MetricId::GrossFlow, Operator::Lt, 15.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0)), 0.03),
             metric_exit(1, MetricId::Liquidity, Operator::Gte, 85.0, None, 0.20),
         ];
         let standing = [(MetricId::Liquidity, None, 85.0)];

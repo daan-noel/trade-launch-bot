@@ -74,6 +74,10 @@ pub struct CachedTrade {
     pub ix_hash: Option<u64>,
     /// FNV-1a of the wallet address (engine `flow_split::wallet_hash`).
     pub wallet_hash: u64,
+    /// Structural markers of the ordered `instruction_labels`
+    /// (engine `flow_split::marker_bits`), computed once at ingest beside `ix_hash`
+    /// - the strategy hot path never touches the label strings.
+    pub marker_bits: u16,
 }
 
 impl CachedTrade {
@@ -90,6 +94,7 @@ impl CachedTrade {
             wallet,
             ix_hash_opt(&labels),
             wallet_hash(&t.wallet_address),
+            hunter_engine::metrics::flow_split::marker_bits(&labels),
         )
     }
 
@@ -100,6 +105,7 @@ impl CachedTrade {
         wallet: u32,
         ix_hash: Option<u64>,
         wallet_hash: u64,
+        marker_bits: u16,
     ) -> Self {
         Self {
             wallet,
@@ -119,6 +125,7 @@ impl CachedTrade {
             real_reserve_sol: t.real_reserve_sol,
             ix_hash,
             wallet_hash,
+            marker_bits,
         }
     }
 }
@@ -356,10 +363,17 @@ impl TokenState {
 
     /// Hot-path variant: hashes prepared outside the DashMap guard; only interning
     /// + aggregates + append run under the mint lock.
-    pub fn add_trade_hashed(&mut self, trade: Trade, ix_hash: Option<u64>, wallet_hash: u64) {
+    pub fn add_trade_hashed(
+        &mut self,
+        trade: Trade,
+        ix_hash: Option<u64>,
+        wallet_hash: u64,
+        marker_bits: u16,
+    ) {
         self.apply_aggregates(&trade);
         let wallet = self.interner.intern(&trade.wallet_address);
-        let cached = CachedTrade::from_trade_hashes(&trade, wallet, ix_hash, wallet_hash);
+        let cached =
+            CachedTrade::from_trade_hashes(&trade, wallet, ix_hash, wallet_hash, marker_bits);
         self.push_trade_capped(cached);
     }
 

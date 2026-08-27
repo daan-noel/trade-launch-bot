@@ -6,6 +6,7 @@ import {
   seriesIndexAsOf,
 } from 'lib/strategy/metricPanes';
 import { parseMetricExitTarget } from 'lib/strategy/exitReason';
+import { readWindow, sameWindowSpec, windowSpecKey } from 'lib/strategy/windowSpec';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
   useGetArmedMetricSeriesQuery,
@@ -269,7 +270,7 @@ function seriesToBands(
     }
     if (start >= 0) spans.push({ from: atSec[start], to: atSec[atSec.length - 1] });
     return {
-      key: `${c.side}-${c.stage ?? ''}-${c.metric}-${c.window_size_sec ?? ''}-${idx}`,
+      key: `${c.side}-${c.stage ?? ''}-${c.metric}-${windowSpecKey(readWindow(c))}-${idx}`,
       label: conditionLabel(c),
       color: CONDITION_LANE_COLOR,
       spans,
@@ -280,7 +281,7 @@ function seriesToBands(
     lanes,
     valueLane: drawn
       ? {
-          key: `value-${drawn.metric}-${drawn.window_size_sec ?? ''}`,
+          key: `value-${drawn.metric}-${windowSpecKey(readWindow(drawn))}`,
           label: conditionLabel(drawn),
           color: CONDITION_VALUE_LANE_COLOR,
           points: atSec.map((t, i) => ({ timeSec: t, value: drawn.values[i] ?? null })),
@@ -330,8 +331,8 @@ function matchExitReason(exits: RuleConditionSeries[], reason: string) {
   if (!target) return null;
   const byName = exits.filter((c) => c.metric === target.metric);
   if (byName.length === 0) return null;
-  if (target.windowSec != null) {
-    return byName.find((c) => c.window_size_sec === target.windowSec) ?? null;
+  if (target.window != null) {
+    return byName.find((c) => sameWindowSpec(readWindow(c), target.window)) ?? null;
   }
   return byName.length === 1 ? byName[0] : null;
 }

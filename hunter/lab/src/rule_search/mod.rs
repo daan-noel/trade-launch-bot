@@ -175,6 +175,7 @@ mod tests {
 
     fn fp() -> Fingerprint {
         Fingerprint {
+            wildcard: false,
             id: FingerprintId(Uuid::nil()),
             cu_limit: None,
             cu_price: None,

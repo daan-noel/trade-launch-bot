@@ -131,7 +131,8 @@ function rowGroup(row: GenericAxisRow, reg: StrategyRegistry | undefined): Group
   return reg?.groups.find((g) => g.name === row.group);
 }
 
-/** True when a metric row's group needs a `window_size_sec` (dynamic group). */
+/** True when a metric row's group needs a trailing window (dynamic group). Sweep
+ *  axes are wall-clock only — the backend `resolve_one` builds `window_size_sec`. */
 export function rowNeedsWindow(row: GenericAxisRow, reg: StrategyRegistry | undefined): boolean {
   return row.kind === 'metric' && rowGroup(row, reg)?.kind === 'dynamic';
 }

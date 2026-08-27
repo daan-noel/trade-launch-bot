@@ -56,6 +56,7 @@ const WINDOW_SEC: u64 = 30;
 /// (the analysis doc's universe is defined by age/liquidity/flow, not creation shape).
 fn broad_fp() -> Fingerprint {
     Fingerprint {
+        wildcard: false,
         id: FingerprintId(Uuid::from_u128(FP_ID)),
         cu_limit: Some(FP_CU),
         cu_price: None,
@@ -247,15 +248,16 @@ fn to_replay_tokens(tokens: &[CorpusToken]) -> Vec<ReplayToken> {
 fn entry_dip_depth(tokens: &HashMap<String, Arc<Vec<lab::sweep::projection::CorpusTrade>>>, o: &PositionOutcome) -> Option<f64> {
     let trades = tokens.get(&o.mint)?;
     let target = o.target_time?;
-    let mut pw = PriceWindowState::new(WINDOW_SEC as f64);
+    let mut pw = PriceWindowState::new(hunter_engine::metrics::WindowSpec::secs(WINDOW_SEC as f64));
     let mut last = None;
     for ct in trades.iter() {
         if ct.block_time > target {
             break;
         }
         let t = to_trade_lite(ct);
-        pw.on_trade(t.price, t.at);
-        last = Some(pw.trail(t.at));
+        let at_ms = t.at.timestamp_millis();
+        pw.on_trade(t.price, at_ms, at_ms);
+        last = Some(pw.trail(at_ms));
     }
     last.filter(|v| v.is_finite())
 }

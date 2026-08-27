@@ -116,7 +116,7 @@ impl CutPhase {
 pub struct Cut {
     pub group: MetricGroupId,
     pub metric: MetricId,
-    pub window: Option<f64>,
+    pub window: Option<hunter_engine::metrics::WindowSpec>,
     pub op: Operator,
     pub threshold: f64,
     pub phase: CutPhase,
@@ -148,10 +148,12 @@ impl CutTable {
     }
 }
 
-pub fn fill_key(metric: MetricId, window: Option<f64>) -> (MetricId, i64) {
+pub fn fill_key(metric: MetricId, window: Option<hunter_engine::metrics::WindowSpec>) -> (MetricId, i64) {
     (
         metric,
-        window.map(|w| (w * 1000.0).round() as i64).unwrap_or(-1),
+        window
+            .map(|w| hunter_engine::metrics::quantize(w.size) as i64)
+            .unwrap_or(-1),
     )
 }
 
@@ -319,7 +321,7 @@ fn admit_cuts(
     });
 }
 
-fn col_meta(col: SeriesColumn) -> (MetricGroupId, MetricId, Option<f64>) {
+fn col_meta(col: SeriesColumn) -> (MetricGroupId, MetricId, Option<hunter_engine::metrics::WindowSpec>) {
     match col {
         SeriesColumn::Static(id) => (group_of(id).id, id, None),
         SeriesColumn::Window(id, w) => (group_of(id).id, id, w.primary),
@@ -353,9 +355,9 @@ fn cut_columns(windows: &[f64], with_flow: bool, flow_fp: FingerprintId) -> Vec<
                 MetricKind::Dynamic => {
                     for &w in windows {
                         cols.push(if is_flow_metric(m.id) {
-                            SeriesColumn::Flow(m.id, Some(w), fp)
+                            SeriesColumn::Flow(m.id, Some(hunter_engine::metrics::WindowSpec::secs(w)), fp)
                         } else {
-                            SeriesColumn::window(m.id, w)
+                            SeriesColumn::window(m.id, hunter_engine::metrics::WindowSpec::secs(w))
                         });
                     }
                 }
@@ -486,7 +488,7 @@ fn sample_phases(
     } else {
         flow_fp
     };
-    let windows: Vec<f64> = columns
+    let windows: Vec<hunter_engine::metrics::WindowSpec> = columns
         .iter()
         .filter_map(|c| match c {
             SeriesColumn::Flow(_, w, _) => *w,
@@ -696,7 +698,7 @@ fn emit(
     out: &mut Vec<Cut>,
     group: MetricGroupId,
     metric: MetricId,
-    window: Option<f64>,
+    window: Option<hunter_engine::metrics::WindowSpec>,
     op: Operator,
     threshold: f64,
     phase: CutPhase,
@@ -739,7 +741,7 @@ fn emit_entry_contrast(
     ci: usize,
     group: MetricGroupId,
     metric: MetricId,
-    window: Option<f64>,
+    window: Option<hunter_engine::metrics::WindowSpec>,
     unit: Unit,
     win_b: Bucket,
     lose_b: Bucket,
@@ -787,7 +789,7 @@ fn push_entry(
     ci: usize,
     group: MetricGroupId,
     metric: MetricId,
-    window: Option<f64>,
+    window: Option<hunter_engine::metrics::WindowSpec>,
     unit: Unit,
     role: EntryRole,
     thick: bool,
@@ -900,7 +902,7 @@ fn emit_exit_rungs(
     ci: usize,
     group: MetricGroupId,
     metric: MetricId,
-    window: Option<f64>,
+    window: Option<hunter_engine::metrics::WindowSpec>,
     unit: Unit,
     bucket: Bucket,
     phase: CutPhase,
@@ -922,7 +924,7 @@ fn push_exit(
     ci: usize,
     group: MetricGroupId,
     metric: MetricId,
-    window: Option<f64>,
+    window: Option<hunter_engine::metrics::WindowSpec>,
     unit: Unit,
     lead_n: usize,
     dump_run_n: usize,

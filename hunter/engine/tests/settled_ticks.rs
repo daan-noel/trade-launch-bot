@@ -63,6 +63,7 @@ fn ts(secs: f64) -> Ts {
 
 fn cu_fp(id: u128) -> Fingerprint {
     Fingerprint {
+        wildcard: false,
         id: fid(id),
         cu_limit: Some(200_000),
         cu_price: None,
@@ -204,6 +205,8 @@ fn stream(seed: u64, n_events: usize) -> Vec<Event> {
             1..=3 => Event::Trade {
                 mint,
                 trade: TradeLite {
+                   slot: 0,
+                   marker_bits: 0,
                     side: if rng.frac() < 0.5 { Side::Buy } else { Side::Sell },
                     sol: rng.frac() * 2.0,
                     price: 0.5 + rng.frac() * 3.0,
@@ -287,6 +290,8 @@ fn an_undying_quiet_token_settles_then_still_decides_on_a_late_trade() {
     let trade = |secs: f64, price: f64| Event::Trade {
         mint: Mint::from("undying"),
         trade: TradeLite {
+           slot: 0,
+           marker_bits: 0,
             side: Side::Buy,
             sol: 1.0,
             price,
@@ -396,6 +401,8 @@ fn a_freed_cap_slot_wakes_a_settled_token() {
         Event::Trade {
             mint: Mint::from("b"),
             trade: TradeLite {
+               slot: 0,
+               marker_bits: 0,
                 side: Side::Buy,
                 sol: 1.0,
                 price: 1.0,

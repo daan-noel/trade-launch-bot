@@ -7,6 +7,7 @@ import {
   metricsExitLabel,
   normalizeExitReasonFilter,
   parseMetricExitParts,
+  parseMetricExitTarget,
 } from './exitReason';
 
 describe('exitReasonLabel', () => {
@@ -53,6 +54,45 @@ describe('parseMetricExitParts', () => {
       op: '>',
       value: '',
     });
+  });
+
+  // The engine writes the window qualifier into the persisted reason
+  // (`event::format_metric_exit_name`). A parser that does not accept it returns
+  // null, and the row stops reading as a metric exit at all.
+  it('keeps the window qualifier on the name, in every unit', () => {
+    expect(parseMetricExitParts('nonvol_buy(2s) >= 0.9')).toEqual({
+      name: 'nonvol_buy(2s)',
+      op: '>=',
+      value: '0.9',
+    });
+    expect(parseMetricExitParts('buy_count(30sl) >= 3')).toEqual({
+      name: 'buy_count(30sl)',
+      op: '>=',
+      value: '3',
+    });
+    expect(parseMetricExitParts('buy_count(30sl@1) >= 3')).toEqual({
+      name: 'buy_count(30sl@1)',
+      op: '>=',
+      value: '3',
+    });
+  });
+});
+
+describe('parseMetricExitTarget', () => {
+  it('reads the whole span, not just its size', () => {
+    expect(parseMetricExitTarget('nonvol_buy(2s) >= 0.9')).toEqual({
+      metric: 'nonvol_buy',
+      window: { size: 2, lag: 0, unit: 'sec' },
+    });
+    expect(parseMetricExitTarget('buy_count(30sl@1) >= 3')).toEqual({
+      metric: 'buy_count',
+      window: { size: 30, lag: 1, unit: 'slot' },
+    });
+  });
+
+  it('leaves a bare name unqualified, and a non-metric reason unparsed', () => {
+    expect(parseMetricExitTarget('stall > 3')).toEqual({ metric: 'stall', window: null });
+    expect(parseMetricExitTarget('TakeProfit')).toBeNull();
   });
 });
 

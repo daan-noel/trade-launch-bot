@@ -81,7 +81,8 @@ use crate::metrics::evaluator::{
 };
 use crate::metrics::position::is_trailing;
 use crate::metrics::{
-    group_by_name, group_spec, metric_spec, MetricGroupId, MetricId, MetricScope, REGISTRY,
+    group_by_name, group_spec, metric_spec, MetricGroupId, MetricId, MetricKind, MetricScope,
+    WindowSpec, WindowUnit, REGISTRY,
 };
 
 /// Hard cap on explicit (non-remainder) scale-out stages. Fee cost (~1% notional
@@ -229,6 +230,21 @@ impl GroupConditions {
     /// A strict param's value by JSON name (`None` = not set).
     pub fn strict_param(&self, name: &str) -> Option<f64> {
         self.strict.get(name).copied()
+    }
+
+    /// Resolve one window axis into a [`WindowSpec`].
+    ///
+    /// A size in slots wins over a size in seconds when both are present, but
+    /// `validate_group` rejects that combination at save, so in practice exactly one
+    /// is set. The lag is the group's, shared by both axes: a two-window group is two
+    /// spans on ONE clock.
+    pub fn window_spec(&self, sec_param: &str, slot_param: &str) -> Option<WindowSpec> {
+        let lag = self.strict_param(crate::metrics::WINDOW_LAG_PARAM).unwrap_or(0.0);
+        if let Some(size) = self.strict_param(slot_param) {
+            return Some(WindowSpec { size, lag, unit: WindowUnit::Slot });
+        }
+        self.strict_param(sec_param)
+            .map(|size| WindowSpec { size, lag, unit: WindowUnit::Sec })
     }
 }
 
@@ -800,6 +816,64 @@ fn validate_group(
             spec.name
         ));
     }
+    // EXACTLY ONE size param on a dynamic group. Both would be two different
+    // spans claiming one axis; neither would leave the window undefined. This is a
+    // cross-param rule, so it cannot live in `StrictParamSpec`.
+    if spec.kind == MetricKind::Dynamic {
+        let secs = group.strict.contains_key(crate::metrics::WINDOW_SEC_PARAM);
+        let slots = group.strict.contains_key(crate::metrics::WINDOW_SLOT_PARAM);
+        if secs && slots {
+            return Err(format!(
+                "{side_name}.{}: set exactly one of {} or {}, not both",
+                spec.name,
+                crate::metrics::WINDOW_SEC_PARAM,
+                crate::metrics::WINDOW_SLOT_PARAM,
+            ));
+        }
+        if !secs && !slots {
+            return Err(format!(
+                "{side_name}.{}: missing required param '{}'",
+                spec.name,
+                crate::metrics::WINDOW_SEC_PARAM,
+            ));
+        }
+        // Both axes of a two-window group must count in the SAME unit - a burst in
+        // slots over a reference in seconds is a ratio across two different clocks.
+        let burst_secs = group.strict.contains_key(crate::metrics::flow_burst::BURST_PARAM);
+        let burst_slots = group.strict.contains_key(crate::metrics::flow_burst::BURST_SLOT_PARAM);
+        // The burst axis takes EXACTLY ONE size too, for the same reason the
+        // reference span does — and on a group that declares the axis it is
+        // required, since a share with one end missing is no reading at all.
+        // Neither burst param can carry `required` alone, so the pair is checked
+        // here.
+        if spec.strict_param_by_name(crate::metrics::flow_burst::BURST_PARAM).is_some() {
+            if burst_secs && burst_slots {
+                return Err(format!(
+                    "{side_name}.{}: set exactly one of {} or {}, not both",
+                    spec.name,
+                    crate::metrics::flow_burst::BURST_PARAM,
+                    crate::metrics::flow_burst::BURST_SLOT_PARAM,
+                ));
+            }
+            if !burst_secs && !burst_slots {
+                return Err(format!(
+                    "{side_name}.{}: missing required param '{}'",
+                    spec.name,
+                    if slots {
+                        crate::metrics::flow_burst::BURST_SLOT_PARAM
+                    } else {
+                        crate::metrics::flow_burst::BURST_PARAM
+                    },
+                ));
+            }
+        }
+        if (burst_secs && slots) || (burst_slots && secs) {
+            return Err(format!(
+                "{side_name}.{}: both window axes must use the same unit",
+                spec.name
+            ));
+        }
+    }
     // Required strict params present; all strict values finite and > 0.
     for p in spec.strict_params {
         if p.required && !group.strict.contains_key(p.name) {
@@ -835,14 +909,25 @@ fn validate_group(
     // which is not a stricter gate but a different quantity. Cross-param rules cannot
     // be spelled in `StrictParamSpec`, so they live here.
     if let (Some(b), Some(w)) = (
-        group.strict_param(crate::metrics::flow_burst::BURST_PARAM),
-        group.strict_param("window_size_sec"),
+        group
+            .strict_param(crate::metrics::flow_burst::BURST_PARAM)
+            .or_else(|| group.strict_param(crate::metrics::flow_burst::BURST_SLOT_PARAM)),
+        group
+            .strict_param(crate::metrics::WINDOW_SEC_PARAM)
+            .or_else(|| group.strict_param(crate::metrics::WINDOW_SLOT_PARAM)),
     ) {
         if b > w {
+            // Name the params the rule actually spells, so a slot rule is not told
+            // to shrink a `window_size_sec` it never set.
+            let (burst_name, window_name) =
+                if group.strict.contains_key(crate::metrics::flow_burst::BURST_SLOT_PARAM) {
+                    (crate::metrics::flow_burst::BURST_SLOT_PARAM, crate::metrics::WINDOW_SLOT_PARAM)
+                } else {
+                    (crate::metrics::flow_burst::BURST_PARAM, crate::metrics::WINDOW_SEC_PARAM)
+                };
             return Err(format!(
-                "{side_name}.{}: {} {b} must nest inside window_size_sec {w}",
+                "{side_name}.{}: {burst_name} {b} must nest inside {window_name} {w}",
                 spec.name,
-                crate::metrics::flow_burst::BURST_PARAM,
             ));
         }
     }
@@ -1607,4 +1692,127 @@ mod tests {
             assert!(e.contains(needle), "expected '{needle}' in: {e}");
         }
     }
+    /// A dynamic group's window is EXACTLY ONE span. Both size params would be two
+    /// spans claiming one axis; neither leaves the window undefined. Cross-param, so
+    /// it cannot live in a `StrictParamSpec` and has to be pinned here.
+    #[test]
+    fn a_dynamic_group_takes_exactly_one_size_param() {
+        let both = serde_json::json!({
+            "entry": { "m_flow_window": {
+                "window_size_sec": 30, "window_size_slots": 30, "buy": [{"operator": "<=", "value": 3}]
+            }}
+        });
+        let e = RuleParams::parse(&both).unwrap_err();
+        assert!(e.contains("exactly one"), "{e}");
+
+        let neither = serde_json::json!({
+            "entry": { "m_flow_window": { "buy": [{"operator": "<=", "value": 3}] }}
+        });
+        let e = RuleParams::parse(&neither).unwrap_err();
+        assert!(e.contains("missing required param"), "{e}");
+
+        for ok in [
+            serde_json::json!({"entry": {"m_flow_window": {"window_size_sec": 30, "buy": [{"operator": "<=", "value": 3}]}}}),
+            serde_json::json!({"entry": {"m_flow_window": {"window_size_slots": 30, "buy": [{"operator": "<=", "value": 3}]}}}),
+        ] {
+            RuleParams::parse(&ok).expect("one size param parses");
+        }
+    }
+
+    /// `window_lag` is what makes a window causal in its own terms, and `0` is a
+    /// real value of its domain (end at now) rather than "absent".
+    #[test]
+    fn the_lag_defaults_to_zero_and_shifts_the_span_when_set() {
+        let p = RuleParams::parse(&serde_json::json!({
+            "entry": { "m_flow_window": {
+                "window_size_slots": 30, "window_lag": 1, "buy": [{"operator": "<=", "value": 3}]
+            }}
+        }))
+        .expect("parses");
+        let g = &p.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow][0];
+        let spec = g
+            .window_spec(crate::metrics::WINDOW_SEC_PARAM, crate::metrics::WINDOW_SLOT_PARAM)
+            .expect("a span");
+        assert_eq!(spec.unit, crate::metrics::WindowUnit::Slot);
+        assert_eq!(spec.size, 30.0);
+        assert_eq!(spec.lag, 1.0);
+        // 30 slots that stop one short of now - the burst slot is unreachable.
+        assert_eq!(spec.bounds(100), (70, 99));
+
+        let zero_lag = RuleParams::parse(&serde_json::json!({
+            "entry": { "m_flow_window": { "window_size_slots": 1, "buy": [{"operator": ">=", "value": 1.5}] }}
+        }))
+        .expect("parses");
+        let g = &zero_lag.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow][0];
+        let spec = g
+            .window_spec(crate::metrics::WINDOW_SEC_PARAM, crate::metrics::WINDOW_SLOT_PARAM)
+            .expect("a span");
+        assert_eq!(spec.bounds(100), (100, 100), "the current slot alone");
+    }
+
+    /// The burst axis has a slot twin too, and the registry has to DECLARE it or the
+    /// parse loop rejects it as an unknown param long before `validate_group` runs.
+    /// The pair takes exactly one size, and both axes count in the same unit.
+    #[test]
+    fn the_burst_axis_takes_exactly_one_size_in_the_reference_unit() {
+        let ok = serde_json::json!({
+            "entry": { "m_flow_burst": {
+                "window_size_slots": 30.0, "burst_size_slots": 1.0,
+                "trade_share": [{"operator": ">=", "value": 50.0}]
+            }}
+        });
+        let p = RuleParams::parse(&ok).expect("a slot burst is authorable");
+        let g = &p.entry.as_ref().unwrap().0[&MetricGroupId::FlowBurst][0];
+        let burst = g
+            .window_spec(
+                crate::metrics::flow_burst::BURST_PARAM,
+                crate::metrics::flow_burst::BURST_SLOT_PARAM,
+            )
+            .expect("a burst span");
+        assert_eq!(burst.unit, crate::metrics::WindowUnit::Slot);
+        assert_eq!(burst.size, 1.0);
+        assert_eq!(p.to_value(), ok, "round-trips unchanged");
+
+        for (bad, needle) in [
+            (
+                serde_json::json!({"entry": {"m_flow_burst": {"window_size_slots": 30, "burst_size_sec": 3, "trade_share": [{"operator": ">=", "value": 50}]}}}),
+                "same unit",
+            ),
+            (
+                serde_json::json!({"entry": {"m_flow_burst": {"window_size_slots": 30, "burst_size_sec": 3, "burst_size_slots": 1, "trade_share": [{"operator": ">=", "value": 50}]}}}),
+                "exactly one",
+            ),
+            (
+                serde_json::json!({"entry": {"m_flow_burst": {"window_size_slots": 30, "trade_share": [{"operator": ">=", "value": 50}]}}}),
+                "missing required param 'burst_size_slots'",
+            ),
+            (
+                serde_json::json!({"entry": {"m_flow_burst": {"window_size_sec": 60, "trade_share": [{"operator": ">=", "value": 50}]}}}),
+                "missing required param 'burst_size_sec'",
+            ),
+            (
+                serde_json::json!({"entry": {"m_flow_burst": {"window_size_slots": 1, "burst_size_slots": 30, "trade_share": [{"operator": ">=", "value": 50}]}}}),
+                "must nest inside window_size_slots",
+            ),
+        ] {
+            let e = RuleParams::parse(&bad).unwrap_err();
+            assert!(e.contains(needle), "expected '{needle}' in: {e}");
+        }
+    }
+
+    /// A rule stored before slots existed round-trips byte-identically, which is what
+    /// lets this land with no migration of `strategy_rules.params`.
+    #[test]
+    fn a_seconds_only_rule_round_trips_unchanged() {
+        let before = serde_json::json!({
+            "entry": { "m_flow_window": {
+                "window_size_sec": 60.0,
+                "gross_flow": [{"operator": ">=", "value": 45.0}]
+            }}
+        });
+        let p = RuleParams::parse(&before).expect("parses");
+        assert_eq!(p.to_value(), before, "no new key appears unless it is used");
+    }
+
 }
+

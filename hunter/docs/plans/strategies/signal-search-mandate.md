@@ -481,7 +481,14 @@ What is open now:
    bursts do not. Create templates are not in this event.
    [ix-door.md](ix-door.md): his arm list is ATA on create + init ≥ 0.2 SOL + create-slot
    buy ≥ 0.5 SOL (87.7% of him, 7.7× vs fail). Cashback-off / init 0.2–1 is 15.4% of him
-   and is not the door. Permissions next; neither file is a money book.
+   and is not the door.
+   [ix-perm.md](ix-perm.md): inside those bursts, `vsol < 46` is required (same-template
+   ≥ 46 is 0% response). Age < 180 s tightens; 10 s gross, trail, and net/gross do not
+   add on top of the 5-slot gap.
+   [ix-machine-money.md](ix-machine-money.md): on the full tape, same-work first-gap at
+   0 ms is +7.69% / 12/12 / median +3.23% with hold 0.2 s (the rest of the crossing
+   slot). Clock-20 at 0 ms is negative. First-gap at 95 ms is −0.98% **0/12**. Do not
+   fund it; the event is real and the fill is a race.
 
 **Feature-combination search is retired as a queue item.** Round 10 ran it exhaustively -
 17,744 conjunctions plus OR-portfolios over 55 predicates - and the answer is that no

@@ -100,8 +100,8 @@ fn terms(side: &SideConditions, id: MetricId) -> Vec<(Operator, f64, Windows)> {
         .flatten()
         .flat_map(|g| {
             let w = Windows {
-                primary: g.strict_param("window_size_sec"),
-                secondary: g.strict_param(BURST_PARAM),
+                primary: g.window_spec(hunter_engine::metrics::WINDOW_SEC_PARAM, hunter_engine::metrics::WINDOW_SLOT_PARAM),
+                secondary: g.window_spec(BURST_PARAM, hunter_engine::metrics::flow_burst::BURST_SLOT_PARAM),
             };
             g.metrics
                 .get(&id)
@@ -184,9 +184,9 @@ fn the_winner_keeps_all_four_measured_terms() {
 
     let buys = terms(entry, MetricId::Buy);
     assert_eq!(buys.len(), 2, "two windowed buy bounds: {buys:?}");
-    assert!(buys.contains(&(Operator::Gte, 2.94, Windows::one(5.0))), "buying NOW");
+    assert!(buys.contains(&(Operator::Gte, 2.94, Windows::secs(5.0))), "buying NOW");
     assert!(
-        buys.contains(&(Operator::Lte, 23.1, Windows::one(3.0))),
+        buys.contains(&(Operator::Lte, 23.1, Windows::secs(3.0))),
         "and no single outsized print"
     );
 
@@ -202,10 +202,10 @@ fn the_runner_up_keeps_its_terms_in_the_units_it_was_fitted_in() {
     let p = parse(RUNNER_UP);
     let entry = p.entry.as_ref().expect("entry");
 
-    assert_eq!(one(entry, MetricId::NetFlow), (Operator::Gte, 0.79, Windows::one(5.0)));
+    assert_eq!(one(entry, MetricId::NetFlow), (Operator::Gte, 0.79, Windows::secs(5.0)));
     assert_eq!(
         one(entry, MetricId::TradesPerWallet),
-        (Operator::Lte, 2.0, Windows::one(10.0)),
+        (Operator::Lte, 2.0, Windows::secs(10.0)),
         "a crowd, not one wallet churning — a COUNT ratio, never an identity"
     );
     assert_eq!(
@@ -217,7 +217,7 @@ fn the_runner_up_keeps_its_terms_in_the_units_it_was_fitted_in() {
     // unit is percent. Shipping 0.0769 here would gate on ~0.08%, i.e. on nothing.
     assert_eq!(
         one(entry, MetricId::BurstTradeShare),
-        (Operator::Gte, 7.69, Windows::two(60.0, 3.0)),
+        (Operator::Gte, 7.69, Windows::two(hunter_engine::metrics::WindowSpec::secs(60.0), hunter_engine::metrics::WindowSpec::secs(3.0))),
         "the fitted 0.0769 fraction is 7.69 percent"
     );
 }

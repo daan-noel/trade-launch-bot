@@ -26,18 +26,29 @@ import {
 } from 'lib/strategy/strategyHelp';
 import {
   armAbovePctOrphanError,
-  BURST_PARAM,
   duplicateConditionRowError,
   newRuleConditionRow,
   parkedSideWarnings,
   ruleConditionRowError,
   ruleRowEnabled,
   ruleRowIsTrailing,
+  ruleRowNeedsBurst,
   ruleRowNeedsWindow,
+  ruleRowUnit,
   setRowInstanceStrict,
   type RuleConditionRow,
   type RuleConditionSide,
 } from 'lib/strategy/ruleConditionRows';
+import {
+  BURST_PARAM,
+  BURST_SLOT_PARAM,
+  burstSizeParam,
+  sizeParam as sizeParamOf,
+  unitSuffix as windowUnitSuffix,
+  WINDOW_LAG_PARAM,
+  WINDOW_SLOT_PARAM,
+  type WindowUnit,
+} from 'lib/strategy/windowSpec';
 import { ConditionInput } from './ConditionInput';
 
 export interface ConditionBuilderProps {
@@ -255,11 +266,15 @@ function ConditionRow({
   const group = registry.groups.find((g) => g.name === row.group);
   const metric = group?.metrics.find((m) => m.name === row.metric);
   const needsWindow = ruleRowNeedsWindow(row, registry);
-  // A second trailing-window axis (`m_flow_burst.burst_size_sec`) — asked of the
-  // registry, not hardcoded per group, so a future two-window basis gets its control
-  // for free rather than silently round-tripping with no way to edit it.
-  const needsBurst = group?.strict_params.some((sp) => sp.name === BURST_PARAM) ?? false;
-  const burstValue = row.strict?.[BURST_PARAM];
+  // A second trailing-window axis (`m_flow_burst`) — asked of the registry, not
+  // hardcoded per group, so a future two-window basis gets its control for free
+  // rather than silently round-tripping with no way to edit it.
+  const needsBurst = ruleRowNeedsBurst(row, registry);
+  // Both axes count in the ONE unit the row picks: a burst in slots over a
+  // reference in seconds is a ratio across two clocks, which the backend rejects.
+  const windowUnit = ruleRowUnit(row);
+  const uSuffix = windowUnitSuffix(windowUnit);
+  const burstValue = row.strict?.[burstSizeParam(windowUnit)];
   const burstText = burstValue == null ? '' : String(burstValue);
   const isTrailing = ruleRowIsTrailing(row);
   const armValue = row.strict?.arm_above_pct;
@@ -278,14 +293,26 @@ function ConditionRow({
     onPatchStrict({ ...row.strict, arm_above_pct: v });
   };
   const onBurst = (text: string) => {
+    // Only ONE burst size param may survive, in the row's own unit — leaving the
+    // other behind is the "two spans claiming one axis" the backend rejects at save.
+    const { [BURST_PARAM]: _sec, [BURST_SLOT_PARAM]: _slot, ...rest } = row.strict ?? {};
     if (text.trim() === '') {
-      const { [BURST_PARAM]: _drop, ...rest } = row.strict ?? {};
       onPatchStrict(rest);
       return;
     }
     const v = Number(text);
     if (!Number.isFinite(v)) return;
-    onPatchStrict({ ...row.strict, [BURST_PARAM]: v });
+    onPatchStrict({ ...rest, [burstSizeParam(windowUnit)]: v });
+  };
+  // Flipping the unit RE-SPELLS the burst param rather than reinterpreting it: the
+  // number the user typed is the span they meant, and it now counts in the new unit.
+  const onUnit = (next: WindowUnit) => {
+    const { [BURST_PARAM]: sec, [BURST_SLOT_PARAM]: slot, ...rest } = row.strict ?? {};
+    const burst = sec ?? slot;
+    onPatch({
+      windowUnit: next,
+      strict: burst == null ? rest : { ...rest, [burstSizeParam(next)]: burst },
+    });
   };
   // Only drives the input's unit adornment; the field is disabled until a metric is
   // chosen, so the fallback is never user-visible.
@@ -293,8 +320,19 @@ function ConditionRow({
 
   const onGroup = (name: string) => {
     const g = registry.groups.find((gg) => gg.name === name);
-    // Auto-pick the group's first metric + reset window so a static pick drops it.
-    onPatch({ group: name, metric: g?.metrics[0]?.name ?? '', window: '', arms: [] });
+    // Auto-pick the group's first metric + reset every window field so a static pick
+    // drops them. The burst axis goes with them: carried over from the previous
+    // group it is a param the new group does not declare, which the backend rejects
+    // as unknown at save rather than ignoring.
+    const { [BURST_PARAM]: _sec, [BURST_SLOT_PARAM]: _slot, ...rest } = row.strict ?? {};
+    onPatch({
+      group: name,
+      metric: g?.metrics[0]?.name ?? '',
+      window: '',
+      lag: '',
+      arms: [],
+      strict: rest,
+    });
   };
 
   // Tint the row border from the metric hue (+ op shade) once fully picked, matching
@@ -372,33 +410,64 @@ function ConditionRow({
       </Cell>
 
       {needsWindow && (
-        <Cell label="window s" tip={STRICT_PARAM_HELP.window_size_sec}>
+        <Cell label={`window ${uSuffix}`} tip={STRICT_PARAM_HELP[sizeParamOf(windowUnit)]}>
           <Input
             fieldSize="sm"
             type="number"
-            min={0.5}
-            step={0.5}
+            min={windowUnit === 'slot' ? 1 : 0.5}
+            step={windowUnit === 'slot' ? 1 : 0.5}
             value={row.window}
             disabled={disabled}
             onChange={(e) => onPatch({ window: e.target.value })}
-            placeholder="10"
+            placeholder={windowUnit === 'slot' ? '30' : '10'}
             className="w-16"
           />
         </Cell>
       )}
 
+      {needsWindow && (
+        <Cell label="unit" tip={STRICT_PARAM_HELP[WINDOW_SLOT_PARAM]}>
+          <Select
+            fieldSize="sm"
+            value={windowUnit}
+            disabled={disabled}
+            onChange={(e) => onUnit(e.target.value as WindowUnit)}
+            className="w-16"
+          >
+            <option value="sec">sec</option>
+            <option value="slot">slot</option>
+          </Select>
+        </Cell>
+      )}
+
       {needsBurst && (
-        <Cell label="burst s" tip={STRICT_PARAM_HELP[BURST_PARAM]}>
+        <Cell label={`burst ${uSuffix}`} tip={STRICT_PARAM_HELP[burstSizeParam(windowUnit)]}>
           <Input
             fieldSize="sm"
             type="number"
-            min={0.5}
-            step={0.5}
+            min={windowUnit === 'slot' ? 1 : 0.5}
+            step={windowUnit === 'slot' ? 1 : 0.5}
             value={burstText}
             disabled={disabled}
             onChange={(e) => onBurst(e.target.value)}
-            placeholder="3"
+            placeholder={windowUnit === 'slot' ? '1' : '3'}
             className="w-16"
+          />
+        </Cell>
+      )}
+
+      {needsWindow && (
+        <Cell label={`lag ${uSuffix}`} tip={STRICT_PARAM_HELP[WINDOW_LAG_PARAM]}>
+          <Input
+            fieldSize="sm"
+            type="number"
+            min={0}
+            step={windowUnit === 'slot' ? 1 : 0.5}
+            value={row.lag ?? ''}
+            disabled={disabled}
+            onChange={(e) => onPatch({ lag: e.target.value })}
+            placeholder="0"
+            className="w-14"
           />
         </Cell>
       )}

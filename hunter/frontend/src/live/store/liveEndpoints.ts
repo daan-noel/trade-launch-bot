@@ -11,6 +11,7 @@ import type {
 } from 'types';
 import type { ArmedEntry } from 'lib/strategy/types';
 import type { HistoryRange } from 'lib/strategy/nav';
+import type { WindowSpec } from 'lib/strategy/windowSpec';
 
 /** The calendar windows the portfolio endpoints accept (the server's `range`
  *  grammar — `live::services::portfolio::range_window`). Same vocabulary as the
@@ -78,7 +79,14 @@ export interface RuleConditionMeta {
   metric: string;
   group: string;
   unit: string;
+  /** Legacy scalar: the SIZE of a wall-clock window, in seconds. `null` for a
+   *  static metric AND for a slot window, which has no seconds to report and names
+   *  itself in `window` instead — read `window` (via `readWindow`) unless you
+   *  genuinely mean seconds. */
   window_size_sec: number | null;
+  /** The full span: size, lag and unit. Absent on a static metric, and on a payload
+   *  from a backend that predates slot windows. */
+  window?: WindowSpec | null;
   /** Authored DNF: flat `[{operator,value}]` (one AND arm) or nested OR arms. */
   conditions: unknown;
   origin: 'authored' | 'take_profit' | 'stop_loss';

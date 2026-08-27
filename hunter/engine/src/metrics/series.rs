@@ -27,13 +27,13 @@ pub enum SeriesColumn {
     /// [`Windows`]: super::Windows
     Window(MetricId, super::Windows),
     /// Flow metric (`m_flow_split` / `m_flow_split_window`) scoped to a fingerprint.
-    Flow(MetricId, Option<f64>, FingerprintId),
+    Flow(MetricId, Option<super::WindowSpec>, FingerprintId),
 }
 
 impl SeriesColumn {
     /// A single-window dynamic column — the shape every group but `m_flow_burst` has.
-    pub fn window(id: MetricId, window_secs: f64) -> Self {
-        SeriesColumn::Window(id, super::Windows::one(window_secs))
+    pub fn window(id: MetricId, spec: super::WindowSpec) -> Self {
+        SeriesColumn::Window(id, super::Windows::one(spec))
     }
 
     fn eval(self, track: &TokenTrack, now: Ts) -> f64 {
@@ -103,7 +103,7 @@ pub struct MetricSeries {
 /// so registering only one — as the old blanket `ensure_window` did — left the price
 /// windows unregistered and every `m_price_window` column reading `NaN`. This mirrors
 /// the live engine's split registration in `state.rs`.
-fn register_window(track: &mut TokenTrack, id: MetricId, ws: f64) {
+fn register_window(track: &mut TokenTrack, id: MetricId, ws: super::WindowSpec) {
     if group_of(id).id == MetricGroupId::PriceWindow {
         track.ensure_price_window(ws);
     } else {
@@ -168,14 +168,14 @@ impl MetricSeries {
     /// [`ensure_flow`](Self::ensure_flow) instead. Registering the same width twice
     /// is a no-op, which is what lets a caller mirror the live track's setup
     /// verbatim rather than reasoning about which half owns which width.
-    pub fn ensure_window(&mut self, width_secs: f64) {
-        self.track.ensure_window(width_secs);
+    pub fn ensure_window(&mut self, spec: super::WindowSpec) {
+        self.track.ensure_window(spec);
     }
 
     /// Register a rolling **price-extrema** window (`m_price_window`) — the twin of
     /// [`ensure_window`](Self::ensure_window) for the other deque family.
-    pub fn ensure_price_window(&mut self, width_secs: f64) {
-        self.track.ensure_price_window(width_secs);
+    pub fn ensure_price_window(&mut self, spec: super::WindowSpec) {
+        self.track.ensure_price_window(spec);
     }
 
     /// Attach fingerprint-scoped flow state (and optional window sizes) before
@@ -184,7 +184,7 @@ impl MetricSeries {
         &mut self,
         fp: FingerprintId,
         patterns: &FlowPatterns,
-        windows: &[f64],
+        windows: &[super::WindowSpec],
     ) {
         self.track.ensure_flow(fp, patterns, windows);
     }
@@ -247,7 +247,9 @@ impl MetricSeries {
 
     /// Advance to `now` (no trade) and record a row.
     pub fn push_tick(&mut self, now: Ts) {
-        self.track.on_tick(now);
+        // A replayed series folds trades in order, so the track's own slot cursor
+        // is already at the last trade - a synthetic tick must not move it.
+        self.track.on_tick(now, None);
         self.record(now, None);
     }
 
@@ -307,6 +309,7 @@ impl MetricSeries {
 
 #[cfg(test)]
 mod tests {
+    use crate::metrics::WindowSpec;
     use super::*;
     use crate::metrics::Side;
     use chrono::{Duration, TimeZone, Utc};
@@ -314,6 +317,11 @@ mod tests {
     fn ts(secs: f64) -> Ts {
         Utc.timestamp_opt(1_700_000_000, 0).unwrap()
             + Duration::milliseconds((secs * 1000.0) as i64)
+    }
+
+    /// The same instant as [`ts`], on a window's own millisecond cursor.
+    fn p(secs: f64) -> i64 {
+        ts(secs).timestamp_millis()
     }
 
     fn trade(side: Side, sol: f64, price: f64, reserve: f64, secs: f64) -> TradeLite {
@@ -346,10 +354,10 @@ mod tests {
             SeriesColumn::Static(MetricId::Trail),
             SeriesColumn::Static(MetricId::LifeGrossFlow),
             SeriesColumn::Static(MetricId::LifeBuy),
-            SeriesColumn::window(MetricId::GrossFlow, 10.0),
-            SeriesColumn::window(MetricId::NetFlow, 10.0),
-            SeriesColumn::window(MetricId::Buy, 10.0),
-            SeriesColumn::window(MetricId::Sell, 10.0),
+            SeriesColumn::window(MetricId::GrossFlow, WindowSpec::secs(10.0)),
+            SeriesColumn::window(MetricId::NetFlow, WindowSpec::secs(10.0)),
+            SeriesColumn::window(MetricId::Buy, WindowSpec::secs(10.0)),
+            SeriesColumn::window(MetricId::Sell, WindowSpec::secs(10.0)),
         ]
     }
 
@@ -374,7 +382,7 @@ mod tests {
                     at
                 }
                 Ev::Tick(now) => {
-                    track.on_tick(*now);
+                    track.on_tick(*now, None);
                     *now
                 }
             };
@@ -439,7 +447,7 @@ mod tests {
         // `ensure_price_window`; the old blanket `ensure_window` left it unregistered so
         // every price-window column read `NaN` (empty panes / dead sweep entry gate).
         let created = ts(0.0);
-        let col = SeriesColumn::window(MetricId::WinTrail, 30.0);
+        let col = SeriesColumn::window(MetricId::WinTrail, WindowSpec::secs(30.0));
         let mut s = MetricSeries::new(created, vec![col]);
         s.push_trade(trade(Side::Buy, 3.0, 2.0, 15.0, 0.0)); // rolling high = 2.0
         s.push_trade(trade(Side::Sell, 1.0, 1.5, 14.0, 1.0)); // dip to 1.5 → 25% below high

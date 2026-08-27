@@ -2,6 +2,7 @@ import { useMemo, type ReactNode } from 'react';
 
 import { cn } from 'lib/cn';
 import { unitSuffix, useStrategyRegistry } from 'lib/strategy/registry';
+import { formatWindowSpec, readWindow, windowSpecKey } from 'lib/strategy/windowSpec';
 import type { MetricUnit } from 'lib/strategy/registry';
 import type {
   ReadoutAt,
@@ -181,7 +182,7 @@ export function RuleConditionStrip({
           </span>
           {g.items.map((c, i) => (
             <ConditionChip
-              key={`${c.side}-${c.stage ?? ''}-${c.metric}-${c.window_size_sec ?? ''}-${i}`}
+              key={`${c.side}-${c.stage ?? ''}-${c.metric}-${windowSpecKey(readWindow(c))}-${i}`}
               read={c}
               unit={unitOf.get(c.metric) ?? null}
               preEntry={preEntry}
@@ -395,8 +396,8 @@ export function conditionLabel(read: RuleConditionMeta): string {
       ? 'take profit'
       : read.origin === 'stop_loss'
         ? 'stop loss'
-        : read.window_size_sec != null
-          ? `${read.metric}@${read.window_size_sec}s`
+        : formatWindowSpec(readWindow(read))
+          ? `${read.metric}@${formatWindowSpec(readWindow(read))}`
           : read.metric;
   const expr = describeConditions(read.conditions);
   return expr ? `${name} ${expr}` : name;
@@ -408,7 +409,8 @@ function chipTitle(
   blocksEntry = false,
 ): string {
   const parts: string[] = [`${read.group}.${read.metric}`];
-  if (read.window_size_sec != null) parts.push(`${read.window_size_sec}s window`);
+  const span = formatWindowSpec(readWindow(read));
+  if (span) parts.push(`${span} window`);
   if (read.origin !== 'authored') {
     parts.push(`${describeConditions(read.conditions) || ''} (desugared ${read.origin})`.trim());
   }

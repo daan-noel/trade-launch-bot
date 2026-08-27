@@ -190,7 +190,7 @@ pub fn parse_standing_all(terms: &[String]) -> anyhow::Result<Vec<StandingTerm>>
 pub fn is_standing(
     standing: &[StandingTerm],
     metric: MetricId,
-    window: Option<f64>,
+    window: Option<hunter_engine::metrics::WindowSpec>,
     value: f64,
 ) -> bool {
     standing.iter().any(|s| {
@@ -209,7 +209,7 @@ pub struct EntryQuantity {
     /// One clause (a floor or a ceiling) or two (a band).
     pub clauses: Vec<Clause>,
     pub metric: MetricId,
-    pub window: Option<f64>,
+    pub window: Option<hunter_engine::metrics::WindowSpec>,
     /// Menu rank of the strongest signature behind it — lower is stronger.
     pub rank: u8,
     /// At most one quantity per compete slot (one trigger family, one giveback…).
@@ -239,7 +239,7 @@ pub fn entry_quantities(cuts: &CutTable) -> Vec<EntryQuantity> {
 
     // Best (lowest menu rank) cut per quantity. `Time`/`Liquidity` selectors and
     // windowed flow floors both land here; wait-only monotones never do.
-    let mut best: BTreeMap<(String, i64), Cut> = BTreeMap::new();
+    let mut best: BTreeMap<(String, (i64, i64, i64)), Cut> = BTreeMap::new();
     for c in &cuts.entry {
         if c.phase == CutPhase::WinnerCeil {
             continue;
@@ -665,8 +665,18 @@ pub fn expansion_bases(
 
 /// `Option<f64>` is not `Ord`; windows are compared as milli-second integers so a map
 /// key is stable and `2.0` never sorts apart from itself.
-fn window_key(w: Option<f64>) -> i64 {
-    w.map(|v| (v * 1000.0).round() as i64).unwrap_or(-1)
+fn window_key(w: Option<hunter_engine::metrics::WindowSpec>) -> (i64, i64, i64) {
+    match w {
+        Some(w) => (
+            match w.unit {
+                hunter_engine::metrics::WindowUnit::Sec => 0,
+                hunter_engine::metrics::WindowUnit::Slot => 1,
+            },
+            hunter_engine::metrics::quantize(w.size) as i64,
+            hunter_engine::metrics::quantize(w.lag) as i64,
+        ),
+        None => (-1, -1, -1),
+    }
 }
 
 fn filling_key(f: &EntryFilling) -> String {
@@ -756,7 +766,7 @@ mod tests {
     use hunter_engine::metrics::evaluator::Operator;
     use hunter_engine::metrics::{group_of, MetricGroupId};
 
-    fn cut(metric: MetricId, op: Operator, threshold: f64, window: Option<f64>) -> Cut {
+    fn cut(metric: MetricId, op: Operator, threshold: f64, window: Option<hunter_engine::metrics::WindowSpec>) -> Cut {
         Cut {
             group: group_of(metric).id,
             metric,
@@ -786,19 +796,19 @@ mod tests {
                 // An activity floor, no ceiling — one clause, one idea.
                 Cut {
                     phase: CutPhase::Contrast,
-                    ..cut(MetricId::GrossFlow, Operator::Gte, 55.0, Some(60.0))
+                    ..cut(MetricId::GrossFlow, Operator::Gte, 55.0, Some(hunter_engine::metrics::WindowSpec::secs(60.0)))
                 },
             ],
             exit: vec![
-                cut(MetricId::GrossFlow, Operator::Lt, 15.0, Some(10.0)),
-                cut(MetricId::GrossFlow, Operator::Lt, 25.0, Some(10.0)),
-                cut(MetricId::Buy, Operator::Lt, 3.0, Some(10.0)),
+                cut(MetricId::GrossFlow, Operator::Lt, 15.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0))),
+                cut(MetricId::GrossFlow, Operator::Lt, 25.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0))),
+                cut(MetricId::Buy, Operator::Lt, 3.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0))),
                 cut(MetricId::NonvolBuy, Operator::Gte, 1.6, None),
-                cut(MetricId::WinNonvolBuy, Operator::Gte, 1.6, Some(2.0)),
+                cut(MetricId::WinNonvolBuy, Operator::Gte, 1.6, Some(hunter_engine::metrics::WindowSpec::secs(2.0))),
                 cut(MetricId::Stall, Operator::Gte, 30.0, None),
                 cut(MetricId::Held, Operator::Gte, 120.0, None),
                 cut(MetricId::Liquidity, Operator::Lt, 12.0, None),
-                cut(MetricId::Trail, Operator::Gte, 15.0, Some(10.0)),
+                cut(MetricId::Trail, Operator::Gte, 15.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0))),
                 cut(MetricId::Retrace, Operator::Gte, 25.0, None),
             ],
             winner_fill: Vec::new(),

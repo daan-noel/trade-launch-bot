@@ -19,17 +19,20 @@
 import { conditionExprFromJson, formatConditions } from 'lib/strategy/grammar';
 import { formatDecimalTrim } from 'utils/format';
 import type { ArmEndDetail, ArmUnmetCondition } from 'lib/strategy/types';
+import { formatWindowSpec, readWindow } from 'lib/strategy/windowSpec';
 
 /** `m_flow_window.gross_flow` → `gross_flow`. The group is implied by the window
  *  and carries no information in a narrow cell; the full path stays the filter
  *  value, so sorting and grouping are unaffected by this shortening. */
 export const metricLeaf = (path: string) => path.slice(path.lastIndexOf('.') + 1);
 
-/** `gross_flow(60s)` — the window is part of a dynamic metric's identity, and two
- *  windows of one metric are two different conditions. */
+/** `gross_flow(60s)`, `gross_flow(30sl@1)` — the WHOLE span is part of a dynamic
+ *  metric's identity, and two windows of one metric are two different conditions.
+ *  Same vocabulary as the persisted exit reason, so an operator reading both sees
+ *  one name for one req. */
 export function unmetLabel(c: ArmUnmetCondition): string {
-  const w = c.window_size_sec;
-  return w != null ? `${metricLeaf(c.metric)}(${w}s)` : metricLeaf(c.metric);
+  const w = formatWindowSpec(readWindow(c));
+  return w ? `${metricLeaf(c.metric)}(${w})` : metricLeaf(c.metric);
 }
 
 /** `gross_flow(60s) 24.71 · needs >=40` — what it read, then what it needed. */
