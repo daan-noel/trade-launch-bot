@@ -48,7 +48,7 @@ def fill_idx(times, fire_ts, lag_ms, lo, n):
     return i
 
 
-def walk_one(times, slots, px, vsol, is_buy, trig, lag_ms, mode):
+def walk_one(times, slots, px, vsol, is_buy, trig, lag_ms, mode, clock_s=None):
     """trig is (idx, ts, slot). Returns (net, hold_s, reason, exit_ts) or None."""
     n = len(times)
     ti, tts, tslot = trig
@@ -60,7 +60,8 @@ def walk_one(times, slots, px, vsol, is_buy, trig, lag_ms, mode):
         return None
     ets = times[eidx]
     cap_at = tts + np.timedelta64(HOLD_CAP_S, "s")
-    clock_at = tts + np.timedelta64(CLOCK_S, "s")
+    clock_hold = CLOCK_S if clock_s is None else int(clock_s)
+    clock_at = tts + np.timedelta64(clock_hold, "s")
     gap_delay = np.timedelta64(GAP_SLOTS * SLOT_MS, "ms")
 
     last_buy_ts = tts
@@ -174,7 +175,7 @@ def index_events(tape_g, events):
     return np.array(out, dtype=np.int64)
 
 
-def run_book(tape_g, ev, lag_ms, mode, policy):
+def run_book(tape_g, ev, lag_ms, mode, policy, clock_s=None):
     """policy: 'first' | 'reentry'."""
     rows = []
     ev = ev.copy()
@@ -199,7 +200,8 @@ def run_book(tape_g, ev, lag_ms, mode, policy):
             if policy == "reentry" and last_exit is not None and ts < last_exit:
                 continue
             got = walk_one(
-                times, slots, px, vsol, is_buy, (int(idx), ts, int(rec.slot)), lag_ms, mode
+                times, slots, px, vsol, is_buy, (int(idx), ts, int(rec.slot)),
+                lag_ms, mode, clock_s=clock_s,
             )
             if got is None:
                 continue

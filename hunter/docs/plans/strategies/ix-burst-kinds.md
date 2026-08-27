@@ -112,6 +112,15 @@ Two families that precede his fire, both gap-then-burst:
 
 One-wallet repeats and dust (`< 0.3`) are checked and are not the trigger.
 
+Signal wallets first-on-this-mint vs repeat: [ix-new-wallets.md](ix-new-wallets.md).
+`all_rep` is dead; 78% of his quiet-resume fires sit on `all_new`. That cut is
+not the ATA flag and is not age. Old-on-chain vs born-this-mint:
+[ix-old-wallets.md](ix-old-wallets.md) — not a conjunct on the named burst.
+Solo as a turn (dip already true): [ix-solo-turn.md](ix-solo-turn.md).
+
 Door is [ix-door.md](ix-door.md). Permissions at the burst: [ix-perm.md](ix-perm.md)
 (`vsol < 46` is required; 10 s gross, trail, and net/gross do not add inside the gap).
-Full-tape money: [ix-machine-money.md](ix-machine-money.md).
+Full-tape money: [ix-machine-money.md](ix-machine-money.md). All live gates
+as one rule, tight packs unfillable:
+[ix-combined-machine.md](ix-combined-machine.md). Early fire + gap
+duration: [ix-early-gap.md](ix-early-gap.md).

@@ -18,14 +18,16 @@ only if the arrivals are people rather than bots.**
 2. **Quiet** - almost nothing is bought in the last ~12 seconds.
 3. **A burst** - 2 or more buys land in one slot, totalling 1.2 to 10 SOL.
 4. **The burst is clean** - EVERY buy in it comes from a named retail router (Trojan, Photon,
-   Bloom, Terminal, Axiom).
+   Bloom, Terminal, Axiom) **and carries an ATA create**, which means that buyer has never
+   held this token before.
 
-The fourth term is a **whitelist, not a blacklist**, and the difference is the edge.
-Excluding the obvious machinery marker instead - throwaway-account builds - reads
-**+0.99 %** where router purity reads **+6.86 %** on the same fires, because a build
-carrying no recognised marker is a machine you have not catalogued yet, not a person.
-The engine states it as `organic_ix_markers`
-([metrics-reference](metrics-reference.md#a-mask-names-one-side-and-which-side-is-the-rule)).
+The fourth term is a **whitelist, not a blacklist**, and it is a **conjunction**. Both
+halves are load-bearing and neither works alone: the ATA flag without a named program pays
+**+0.30 %**, the named program without the flag pays +6.68 %, and together they pay
+**+7.51 %**. Excluding the obvious machinery marker instead - throwaway-account builds -
+reads **+0.99 %**, because a build carrying no catalogued marker is a machine nobody has
+catalogued yet, not a person. Every gate measured, and how the engine states it:
+[ix-gate-metrics.md](ix-gate-metrics.md).
 
 Then hold about 8 seconds and sell. No stop. No take-profit. No trail.
 
@@ -74,10 +76,17 @@ filtering, and it loses money. Everything below is what turns it positive.
 | baseline (no filter) | 225,010 | **-2.00** | -1.43 | -2.53 | -1.85 | -2.12 | 31.9 % | - |
 | + clean burst | 21,389 | +0.58 | 0.59 | -1.65 | 0.81 | 2.74 | 36.7 % | 96.5 |
 | + quiet | 5,061 | +3.97 | 5.26 | 4.42 | 1.93 | 4.32 | 43.3 % | 156.0 |
-| **+ old enough (THE RULE)** | **3,229** | **+5.96** | 6.19 | 5.67 | 5.24 | 6.62 | **50.8 %** | **149.5** |
+| + old enough | **3,229** | **+5.96** | 6.19 | 5.67 | 5.24 | 6.62 | 50.8 % | 149.5 |
+| **+ ATA (THE RULE)** | **1,379** | **+7.51** | 7.0 | 7.1 | 10.0 | 6.5 | **52.7 %** | 80.4 |
 
-2,950 distinct mints, about 110 to 128 trades a day, weekly SOL 38.1 / 34.0 / 31.4 / 46.1 at
-a 0.777 SOL clip. Four weeks inside 1.4 points of each other.
+2,950 distinct mints at the router-only gate, about 110 to 128 trades a day, weekly SOL
+38.1 / 34.0 / 31.4 / 46.1 at a 0.777 SOL clip.
+
+The last row is measured at a 1.5 SOL burst floor against a reconstructed router-only
+control of **+6.68 %** on 2,368 fires - the same family as the +5.96 % row, which sits at
+the looser 1.2 floor. ATA costs 42 % of the fires and a third of the total SOL to buy
++0.83 pp per trade. Collapsed to one trade per mint it reads **+7.62 %** over 1,334 mints,
+52.4 % of them profitable, top 1 % holding 27.7 % of the profit.
 
 **Fill sensitivity** (exit held constant, only the entry price varies):
 
@@ -177,6 +186,11 @@ ranking reverses. `cu_price` and the launch build signature behave the same way,
 cells being builds that lose on the open tape. **The launch screen and the moment screen are
 substitutes, not complements** - the rule already selects tokens good enough to survive, go
 quiet, and still attract real routers.
+
+**First-on-mint adds almost nothing once ATA is required** - +0.36 pp, and on its own it
+is *worse* than not having it (3.95 % against 5.91 %). ATA is the structural version of the
+same idea and carries the value without per-token wallet state. Tables:
+[ix-gate-metrics.md](ix-gate-metrics.md).
 
 **The state axes are already priced in.** Inside the rule, `trail <= -15 %` reads +6.08,
 `net30 <= 0` reads +5.92 and `vsol <= 36` reads +6.61, against a base of +5.96. None is worth

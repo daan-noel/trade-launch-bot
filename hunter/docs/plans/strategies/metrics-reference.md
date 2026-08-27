@@ -9,29 +9,34 @@ this file.
 ## A window is a span: size, lag, and the unit both are counted in
 
 Every dynamic group's window is a `WindowSpec { size, lag, unit }`. **There are no
-parallel slot metrics** - the unit lives on the window, so `m_flow_window`,
-`m_price_window`, `m_flow_split_window` and `m_flow_burst` all read slots for free.
-Internally each buffer entry carries a `pos` already in its own unit (milliseconds
-for `sec`, the slot number for `slot`), so the fold, the eviction and the read are
-ONE implementation over an `i64` cursor.
+parallel per-basis metrics** - the unit lives on the window, so `m_flow_window`,
+`m_price_window`, `m_flow_split_window` and `m_flow_burst` read every basis for free.
+Internally each buffer entry carries a `pos` already in its own unit (milliseconds for
+`sec`, the slot number for `slot`, the token's print ordinal for `print`), so the fold,
+the eviction and the read are ONE implementation over an `i64` cursor. `WindowUnit::ALL`
+is the single place the bases are enumerated; a `WindowAxis` names one size param per
+unit, and every resolve, validate and label site goes through it rather than branching
+per pair.
 
 | param | meaning |
 | --- | --- |
 | `window_size_sec` | size in seconds (a closed interval, continuous) |
 | `window_size_slots` | size in slots (exactly `size` discrete slots) |
+| `window_size_prints` | size in PRINTS of this token's tape (exactly `size` trades) |
 | `window_lag` | how many units back from now the window ENDS; default `0` |
 
-**Exactly one size param per group instance** - both is two spans claiming one axis,
-neither leaves the window undefined. `validate_group` enforces it, because "one of
-these two" is a cross-param rule a `StrictParamSpec` cannot spell. A two-window group
-(`m_flow_burst`) takes `burst_size_slots` as the twin of `burst_size_sec`, and both
-axes must use the same unit: a burst in slots over a reference in seconds is a ratio
-across two different clocks.
+**Exactly one size param per group instance** - two is two spans claiming one axis,
+none leaves the window undefined. `validate_group` enforces it, because "one of these"
+is a cross-param rule a `StrictParamSpec` cannot spell. A two-window group
+(`m_flow_burst`) takes `burst_size_slots` / `burst_size_prints` as the twins of
+`burst_size_sec`, and both axes must use the same unit: a burst in slots over a
+reference in seconds is a ratio across two different clocks.
 
 ```json
 { "m_flow_window": [
-    { "window_size_sec":   60, "gross_flow": [{"operator": ">=", "value": 45}] },
-    { "window_size_slots": 30, "window_lag": 1, "buy": [{"operator": "<=", "value": 3}] }
+    { "window_size_sec":    60, "gross_flow": [{"operator": ">=", "value": 45}] },
+    { "window_size_slots":  30, "window_lag": 1, "buy": [{"operator": "<=", "value": 3}] },
+    { "window_size_prints":  1, "gross_flow": [{"operator": ">=", "value": 10}] }
 ] }
 ```
 
@@ -40,6 +45,25 @@ fact. At ~400 ms a one-second window straddles two or three slots: it merges bur
 that landed separately, and one transaction sitting in a NEIGHBOURING slot poisons a
 composition read that was clean in the slot being judged.
 
+**Why prints, not either.** A print is what the TAPE batches in, and it is the only
+basis in which a quantity is a statement about a trade. `gross_flow >= 10` over one
+second is ten one-SOL prints or one ten-SOL print, and neither a wall clock nor a slot
+can separate them; `window_size_prints: 1, window_lag: 0` is the current transaction
+alone, so the same gate on it means exactly "this tx moved 10 SOL". Pair it with a
+lagged print window - `prints: 20, lag: 1` - and the rule reads "a 10-SOL print into a
+tape whose previous twenty moved almost nothing", with no arithmetic between the two
+and no way for the trigger to leak into its own reference.
+
+A print window is also the one span silence does not move: `prints: 20` is twenty
+trades whether they landed in one slot or across an hour, so a print gate reads the
+same on a busy token and a dead one. That is the property to reach for when a
+threshold has to mean the same thing at both ends of a token's life.
+
+`m_flow_burst.trade_share` is the exception that proves it: on the print basis it is a
+count over a count, so it is the constant `100 * burst / window` on every tape and
+carries no information. Read the other `m_flow_window` metrics over a print window
+instead, where the count is the denominator and the SOL is what varies.
+
 **`window_lag` is what makes a window causal in its own terms.** A gate on "the state
 entering this slot" must not be able to see the slot it fires in. The burst is
 `slots: 1, lag: 0` and the quiet tape before it is `slots: 30, lag: 1` - same group,
@@ -47,15 +71,51 @@ same metric, no arithmetic between windows and no way for one to leak into the o
 `lag: 0` is a real value (end at now) and the only behaviour that existed before the
 param, so it is the default and a stored rule round-trips byte-identically.
 
-**A slot window is trade-driven; a time window is tick-driven.** A tick is a wall
-clock and carries no slot, so slot windows HOLD their last cursor across ticks rather
-than estimating one from elapsed time - slot durations vary, and a guessed cursor is a
-silently wrong reading rather than a stale one. Entry decisions are taken at a trade,
-where the cursor is exact.
+**A slot or print window is trade-driven; a time window is tick-driven.** A tick is a
+wall clock and carries no slot, so slot windows HOLD their last cursor across ticks
+rather than estimating one from elapsed time - slot durations vary, and a guessed
+cursor is a silently wrong reading rather than a stale one. A print cursor holds for a
+stronger reason: a tick is not a print, so no amount of silence evicts anything from a
+print window. Entry decisions are taken at a trade, where both cursors are exact.
+
+That is also why a print span contributes `0.0` to the grid horizon
+(`ClockHorizons::absorb_req`): nothing a tick does can change what a print window
+reads, and a trade emits its own row. `0.0` there is the exact horizon, not an
+under-estimate.
 
 **The loader is obliged, same as for the wallet-keyed metrics.** A lake read without
 the slot column leaves `TradeLite::slot = 0` and every slot window frozen, which looks
-like a strategy result rather than a load error.
+like a strategy result rather than a load error. The print cursor has no such
+dependency - the engine counts prints itself as it folds - but it inherits the fold
+ORDER: canonical order is slot -> tx_index -> leg, and a loader that feeds trades in a
+different order gives print windows a different span from live. With 95% of the money
+in same-slot pairs ~0.5 ms apart, ordering by timestamp will not reproduce it.
+
+<<<<<<< Updated upstream
+**Sweep axes are seconds-only.** `ResolvedAxis::Metric` still carries a bare
+`Option<f64>` of seconds, so slot and print windows are authorable in the rule editor
+and in stored rules but not sweepable. Open gap, same for both discrete bases.
+=======
+**One span, one spelling.** `WindowSpec::label` / `WindowSpec::parse` are the single
+grammar for naming a window: `30s`, `30sl@1`, `20p`. A persisted exit reason, a live
+chip, a chart legend, a `?windows=` query and a sweep axis all carry that string, so a
+span that round-trips means the same window everywhere. A **bare number is seconds**,
+which is why every pre-basis spelling still parses to exactly what it meant.
+
+Every basis is reachable end to end:
+
+| surface | how a span is spelled |
+| --- | --- |
+| rule editor / stored rule | `window_size_sec` \| `_slots` \| `_prints` + `window_lag` |
+| exit reason | `metric(30sl@1)` |
+| `/metric-series?windows=` | `10,30sl@1,20p` - the chart folds the span it is given |
+| sweep axis (`AxisSpec.window`) | a number (seconds) or a span string |
+| metric discovery (`entry_window_sec`) | same |
+
+A sweep axis assembles the size param its own unit spells, so a slot axis sweeps
+`window_size_slots`; two axes that differ only in basis open two group instances,
+because merging them on size alone would drop one of the two swept conditions.
+>>>>>>> Stashed changes
 
 ## Aggregate flow (`m_flow_lifetime` / `m_flow_window`)
 
@@ -65,7 +125,7 @@ registry `MetricId`s so lifetime can be monotonic while the window is not.
 | group | kind | strict params | state |
 | --- | --- | --- | --- |
 | `m_flow_lifetime` | static | none | two running counters on `TokenTrack` |
-| `m_flow_window` | dynamic | `window_size_sec` | ring buffer deduped by window size |
+| `m_flow_window` | dynamic | one of `window_size_sec` / `_slots` / `_prints` | ring buffer deduped by the whole span |
 
 | metric | meaning | unit | eq-tol | monotonic (lifetime only) |
 | --- | --- | --- | --- | --- |

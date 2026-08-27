@@ -56,3 +56,6 @@ It is not a live rule at this bot's fill. Sending 95 ms later buys a later print
 the same burst. Holding past the first gap gives back the slot remainder.
 
 Do not re-price the 0 ms first-gap mark as a 20 s trade. Do not fund it.
+
+All live gates as one rule, tight packs unfillable:
+[ix-combined-machine.md](ix-combined-machine.md).

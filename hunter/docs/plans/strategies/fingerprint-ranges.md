@@ -1,0 +1,81 @@
+# Fingerprint axes: an explicit registry over integer ranges
+
+A fingerprint is a token-creation shape. It names **axes**, each carrying one
+**predicate**. There is no bucket width, no match mode, and no float in identity.
+
+## The vocabulary
+
+```rust
+enum AxisPredicate {
+    /// Inclusive `[min, max]`. Either bound open. `min == max` IS exact match.
+    Range { min: Option<u128>, max: Option<u128> },
+    /// Exact ordered instruction-label sequence.
+    Sequence { labels: Vec<String> },
+}
+```
+
+* An axis absent from the map is **not part of identity**.
+* Exact is the degenerate range, so there is no second spelling of the same
+  intent and no mode flag two readers can disagree about.
+* Every numeric axis is a **non-negative integer** — lamports, compute units,
+  tallies. `u128` in Rust, a **decimal string** on the wire (a JSON number is
+  unsafe past 2^53 and `max_sol_cost = u64::MAX` is real data). SOL is a display
+  unit, converted at the UI edge only.
+* Integer lamports make `[lo, hi)` and `[lo, hi-1]` the same set, so an
+  inclusive range is exactly as expressive as the half-open bucket it replaces —
+  losslessly, with no boundary epsilon anywhere.
+
+## The registry is the extension point
+
+[`hunter_engine::fingerprint::axis`](../../../engine/src/fingerprint/axis.rs) holds one <!-- ref-ok: this doc proposes the module; the path is the target, not a citation -->
+`AxisDef` per axis: wire key, display label, kind, unit, match phase, the one-line
+definition the UI renders, and the reader that pulls the observed value off a
+`TokenFingerprint`.
+
+Everything derives from that table — the matcher loop, `has_any_criterion`,
+`has_first_slot_criteria`, `auto_name` and its grammar, JSON parsing, validation,
+the dashboard's SQL mirror, the sweep partition, and the form controls. **Adding an
+axis is one `AxisDef` plus one reader arm.** Adding a predicate shape is one enum
+variant.
+
+Axes: `cu_limit`, `cu_price`, `init_buy_lamports`, `max_cost_lamports`,
+`spendable_lamports_in`, `first_slot_buy_lamports`, `first_slot_sell_lamports`,
+`ix_labels`, `ix_count`, `prior_launches`.
+
+`ix_count` is derived (`ix_labels.len()`), so it needs no token-side field.
+`prior_launches` is the engine's own creator tally, stamped onto the observed axes
+in `reduce` at `TokenCreated` before the match runs — a stateful engine value, not
+a `tokens` column.
+
+## Storage
+
+`fingerprints.criteria JSONB` — `{axis_key: predicate}` — plus the `wildcard`
+flag. One column instead of two per axis, so a new axis needs no migration.
+
+Identity is `criteria = $1::jsonb`; Postgres normalises `jsonb` key order, so the
+comparison is canonical without a canonicalisation pass. A `UNIQUE` index on
+`(criteria, wildcard)` makes duplicate fingerprints impossible at the storage
+layer rather than by convention.
+
+## Grouping partitions by the same predicate
+
+A sweep group's key carries `AxisPredicate`s, not rendered `"lo–hi"` labels, so
+promoting a group to a fingerprint is a copy. `PartitionSpec::Distinct` gives one
+group per value; `PartitionSpec::Ranges(edges)` bins by explicit edges (corpus
+percentiles by default). No implicit lattice, no width to reconcile across axes,
+no byte-identical-label lockstep with SQL.
+
+## Match phases
+
+`first_slot_*` are trade-derived and settle only after the creation slot closes,
+so matching stays two-phase: `MatchPhase::Instant` judges the axes whose
+`AxisDef::phase` is `Instant`, `MatchPhase::Full` judges every configured axis.
+The phase lives on the axis definition — nothing else knows which axes defer.
+
+## Validation
+
+* At least one criterion (`wildcard` counts; an empty map matches **nothing**).
+* A wildcard row carries no axis.
+* Every predicate is satisfiable: `min <= max`, a non-empty label sequence.
+* `ix_count` and `ix_labels` must agree — a count range excluding
+  `labels.len()` is an unsatisfiable row that would silently arm on nothing.

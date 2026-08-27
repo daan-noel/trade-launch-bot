@@ -114,6 +114,17 @@ positive with the entire effect coming from 08-10 and 08-13. One best cell out o
 what a multiple-comparison artifact looks like. `first_slot_buy IS NULL` at +22.96% is 59
 mints with a missing fingerprint.
 
+## SUPERSEDED — the generalisation below is wrong
+
+The verdict on 6ix stands. The claim that it *generalises* does not: the live 3ix rules
+run on the same chain at the same 115 ms and pay. 6ix fails on **pass-through** — of the
+tokens reaching the entry band, only ~10% go on to graduate against a 10.6% break-even,
+where the 3ix targets run 18–75%. Entry-gap cost is survivable (the 3ix control pays a
+62.8% gap and still earns). See
+[`2026-08-27-6ix-fails-the-pass-through-bar.md`](2026-08-27-6ix-fails-the-pass-through-bar.md),
+which also records why sections 2 and 3 could not have found this rule family: they sweep
+`>=` floors over the pooled cohort, and the rules are *bands* scoped to one fingerprint.
+
 ## Why, mechanically
 
 On a bonding curve the price is a deterministic function of `vsol`, and `vsol` moves only

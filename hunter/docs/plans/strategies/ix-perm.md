@@ -41,7 +41,8 @@ mixed ~4.3–4.8%). The gap already is the quiet. A 10 s gross cap is not a seco
 band. Do not require a pre-burst sell-off or buy-share.
 
 **trail.** Inside `vsol < 46`, trail < 15 (no dip) is live — mixed 11.5%, same-tmpl
-6.3%. This event is not “buy a 5–60% dip.”
+6.3%. This event is not “buy a 5–60% dip.” Solos are the other shape:
+[ix-solo-turn.md](ix-solo-turn.md).
 
 **rise.** `rise >= 100` looks dead universe-wide because it is mostly vsol ≥ 46.
 Inside `vsol < 46` it is mild (same-tmpl 4.4% vs 7.7% at rise < 50). Not a hard cut.

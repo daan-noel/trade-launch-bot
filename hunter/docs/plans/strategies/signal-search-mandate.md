@@ -489,6 +489,56 @@ What is open now:
    0 ms is +7.69% / 12/12 / median +3.23% with hold 0.2 s (the rest of the crossing
    slot). Clock-20 at 0 ms is negative. First-gap at 95 ms is −0.98% **0/12**. Do not
    fund it; the event is real and the fill is a race.
+9. **Burst wallets first-on-this-mint.**
+   [ix-new-wallets.md](ix-new-wallets.md): on the same gap-then-burst events, wallets
+   with no prior buy on that mint (`all_new`) are the live cell; all-repeat is ~0%
+   response in every kind, age band, and vsol band. Not the ATA flag (ATA+repeat is
+   dead; no-ATA+new still lives) and not `c_fresh1h`. Mixed still precedes fires;
+   all-repeat is the exclusion. Solo's 36% share is almost all `all_new`. Thermometer
+   only - the earlier completing print (solo `all_new` = print 1) is priced in
+   the same file: `solo_new_work` first-gap at 0 ms is +3.36% / median +1.84% /
+   12/12 / hold 0.1 s, and at 95 ms is −1.35% **0/12**. Clock-20 at 0 ms is
+   negative. Repeat-only controls stay red. Do not fund it; print 1 of a 0.9–4
+   SOL buy is still a race.
+10. **Kind-gap is the old quiet.**
+    [ix-kind-gap.md](ix-kind-gap.md): silence of first-on-mint working-template
+    prints while other buys continue is **weaker** than all-buy quiet (1.62% vs
+    2.94% resp) and below the unfiltered real-print base (1.80%). Fake volume in
+    the gap is dilution, not a second family. Do not price it.
+11. **Old-on-chain vs born-this-mint is not a conjunct.**
+    [ix-old-wallets.md](ix-old-wallets.md): first-on-mint wallets already
+    predate the mint (pre_mint ≈ old; hoppers are rare). Named `all_new`
+    families do not split (multi 10.01 vs 10.40, same 5.78 vs 5.77); the
+    labeled-born mass is a tape hole, and strict same-slot born is n=27 on
+    multi. Solo old lifts (3.18 vs 0.92 strict born) and is still the
+    unfundable solo book. Do not price it.
+12. **Solo is a turn; the crowd is not. The bounce does not last past 95 ms.**
+    [ix-solo-turn.md](ix-solo-turn.md): inside first-on-mint + working +
+    tot [0.9, 4) + `vsol < 46`, a quiet-resume solo with `trail >= 15`
+    lifts the thermometer (7.22% vs 4.81% without). Named bursts still
+    need no dip. Full-tape first-gap at 0 ms is +3.43% / 12/12 (same body
+    as unfiltered `solo_new_work`); at 95 ms it is **−1.03% 0/12**. The
+    thermometer-best cells (trail 30–60 + gap sells; trail 15–30, no gap
+    sells) stay 0/12 at 95 ms. Clock-20 at 0 ms is median-negative. Do
+    not fund it; do not walk another subset of this print.
+13. **The combined machine is the same race.**
+    [ix-combined-machine.md](ix-combined-machine.md): door ∧ 5-slot gap ∧
+    `vsol < 46` ∧ not-all-repeat ∧ working completing print ∧ (crowd **or**
+    turn), with tight consecutive-`tx_index` packs marked unfillable.
+    Fillable (`separated` ∨ `one` ∨ `mixed_gap`) first-gap at 0 ms is
+    +7.44% / 12/12 / median +3.14% / hold 0.2 s; at 95 ms it is **−0.98%
+    0/12**. Re-entry at 95 ms is −0.84% **0/12**. `separated` alone is
+    −1.05% 0/12 at 95 ms. `bundle` at 0 ms is the fiction (+8.22%). Do
+    not fund it; do not walk another subset of this completing print.
+14. **Early fire and gap duration do not leave remainder past 95 ms.**
+    [ix-early-gap.md](ix-early-gap.md): first working new print after
+    the buy-gap (not the 0.9 cross), gap length as a band. 2–4 slots is
+    weaker; 10–19 is the thermometer peak on [0.3, 0.9). Starter
+    first-gap at 0 ms is +5.00% / 12/12 / median +0.72% / hold 0.1 s;
+    at 95 ms **−1.23% 0/12**. Trail and clock-4 lose median at 0 ms and
+    stay 0/12 at 95 ms. Lookahead `oracle_sep` is −1.04% **0/12** at
+    95 ms: 95 ms after print 1 fills on the rest of the same-slot crowd.
+    Do not fund it; do not walk another same-slot early print of this burst.
 
 **Feature-combination search is retired as a queue item.** Round 10 ran it exhaustively -
 17,744 conjunctions plus OR-portfolios over 55 predicates - and the answer is that no
