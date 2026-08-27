@@ -9,11 +9,12 @@
 import { configuredIxLabels, ixLabelsCountTail } from 'lib/ixLabels';
 import { formatCompact, formatDecimalTrim, tidySolDecimal } from 'utils/format';
 import { fingerprintIdentityFromGroupKey, type FingerprintIdentity } from './matchGroupFingerprint';
-import { DEFAULT_BUCKET_WIDTH_SOL, lamportsToSol } from './types';
+import { DEFAULT_BUCKET_WIDTH_SOL, lamportsToSol, WILDCARD_NAME } from './types';
 
 /** Axes the auto-name reads — identity fields only (`name` is the output). */
 export type FingerprintAutoNameAxes = Pick<
   FingerprintIdentity,
+  | 'wildcard'
   | 'cu_limit'
   | 'cu_price'
   | 'init_buy_lamports'
@@ -31,8 +32,12 @@ export type FingerprintAutoNameAxes = Pick<
  * Order: `Nix:Tail`, then `cu_limit` / `cu_price` / `init` / `max` / `spend` /
  * `fs_buy` / `fs_sell`, then `bkt=exact` or `bkt={width}` when width ≠ 0.1.
  * Unset axes skipped. Empty → `ALL`.
+ *
+ * A wildcard carries no axis and its bucket width is inert, so it names the token
+ * set it matches — `ALL`.
  */
 export function fingerprintAutoName(fp: FingerprintAutoNameAxes): string {
+  if (fp.wildcard) return WILDCARD_NAME;
   const parts: string[] = [];
   const ix = configuredIxLabels(fp.ix_labels);
   if (ix) parts.push(ixLabelsCountTail(ix));
@@ -51,7 +56,7 @@ export function fingerprintAutoName(fp: FingerprintAutoNameAxes): string {
       parts.push(`bkt=${formatDecimalTrim(width, 4)}`);
     }
   }
-  return parts.length === 0 ? 'ALL' : parts.join(' · ');
+  return parts.length === 0 ? WILDCARD_NAME : parts.join(' · ');
 }
 
 function pushSol(parts: string[], label: string, lamports: number | null): void {

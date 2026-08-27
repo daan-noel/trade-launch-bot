@@ -208,6 +208,10 @@ export function useVolumePatternTarget({
           first_slot_sell_lamports: target.first_slot_sell_lamports,
           bucket_size_amount: target.bucket_size_amount,
           ix_labels: target.ix_labels,
+          // Round-tripped with the other identity axes: a PUT replaces the row, and
+          // an omitted `wildcard` defaults to false — which the write edge then
+          // rejects as criterion-less rather than silently narrowing the match.
+          wildcard: target.wildcard,
           metric_config: withVolumePatterns(target.metric_config, next),
         },
       })

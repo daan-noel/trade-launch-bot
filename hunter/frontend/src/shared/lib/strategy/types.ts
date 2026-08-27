@@ -37,6 +37,11 @@ export const MIN_BUCKET_WIDTH_SOL = 1e-6;
  *  The auto-name omits `bkt=` when the stored width equals this. */
 export const DEFAULT_BUCKET_WIDTH_SOL = 0.1;
 
+/** Auto-name of a fingerprint with nothing to name from its axes — a `wildcard`
+ *  row, and the criterion-less draft the write edge rejects. Mirrors the Rust
+ *  `models::fingerprint::WILDCARD_NAME`. */
+export const WILDCARD_NAME = 'ALL';
+
 /** A `fingerprints` row (response shape). All `*_lamports` axes are lamports. */
 export interface Fingerprint {
   id: string;
@@ -57,6 +62,18 @@ export interface Fingerprint {
   bucket_size_amount: number | null;
   // (see `formatBucketWidth` for the one way to display this)
   ix_labels: string[] | null;
+  /** Match EVERY token, ignoring every other axis (Rust `Fingerprint::wildcard`).
+   *
+   *  A rule always needs a fingerprint, but a rule that decides purely on the tape
+   *  has no creation shape to name — and clearing every axis means *match nothing*,
+   *  because the matcher refuses a criterion-less row on purpose. So "any token"
+   *  is said out loud here rather than inferred from a blank form.
+   *
+   *  Part of match identity (`IDENTITY_WHERE` compares it), and mutually exclusive
+   *  with every axis — `Fingerprint::validate` and the
+   *  `fingerprints_wildcard_excludes_axes` CHECK both reject a wildcard that also
+   *  carries one. */
+  wildcard: boolean;
   /** Per-metric-group fingerprint-side config (e.g. `m_flow_split.volume_ix_patterns`).
    *  Absent/`{}` ⇒ flow metrics stay NaN. */
   metric_config: Record<string, unknown>;

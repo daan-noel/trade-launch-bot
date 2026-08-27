@@ -23,6 +23,13 @@ Order, unset axes skipped:
 Tokens match the axis chips (`max`, `fs_buy`, `bkt`), not a second abbreviation
 set. Empty → `ALL`. Example: `3ix:Buy · max=1 · bkt=1`.
 
+A `wildcard` row short-circuits the whole generator to `ALL`: it carries no axis
+(the `fingerprints_wildcard_excludes_axes` CHECK) and never reads its bucket
+width, so `bkt=exact` must not leak into the name of the one row that matches
+everything. `ALL` therefore names two drafts — the wildcard, and the criterion-less
+one the write edge rejects — and only the first is a usable name. The form's
+`autoNameIsReal` is the one reader that tells them apart.
+
 No provenance prefix (`c` / `f` / `s`) and no sweep run-id. Source is not part
 of the matcher.
 

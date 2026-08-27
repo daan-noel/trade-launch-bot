@@ -11,6 +11,7 @@ import {
   lamportsToSol,
   solToLamports,
   MIN_BUCKET_WIDTH_SOL,
+  WILDCARD_NAME,
   type Fingerprint,
   type FingerprintDraft,
 } from 'lib/strategy/types';
@@ -49,6 +50,10 @@ interface FormState {
    *  amount instead of a bucket. Separate from the width so "exact" is a named
    *  mode and never a magic 0 -- the width input keeps its value while disabled. */
   exact_sol: boolean;
+  /** Match EVERY token, ignoring every axis. Mutually exclusive with the axes
+   *  (backend `validate` + the `fingerprints_wildcard_excludes_axes` CHECK), so
+   *  turning it on clears them rather than leaving a contradiction on screen. */
+  wildcard: boolean;
   /** Textarea text — pretty JSON string array (see `parseIxLabelsText`). */
   ix_labels: string;
   /** `m_flow_split.volume_ix_patterns` rows (other metric_config keys preserved on save). */
@@ -71,8 +76,12 @@ function fromFingerprint(fp?: Fingerprint): FormState {
     first_slot_buy_sol: lamportsToSol(fp?.first_slot_buy_lamports),
     first_slot_sell_sol: lamportsToSol(fp?.first_slot_sell_lamports),
     bucket_size_amount: tidySolDecimal(fp?.bucket_size_amount ?? 0.1),
-    // A stored NULL width IS the exact mode (see Rust `SolPrecision::from_width`).
-    exact_sol: fp != null && fp.bucket_size_amount == null,
+    // A stored NULL width IS the exact mode (see Rust `SolPrecision::from_width`)
+    // — except on a wildcard, where it is just the inert width a wildcard saves.
+    // Reading it as exact would leave that mode latched on if the wildcard is
+    // switched back off, silently narrowing every SOL axis the operator then types.
+    exact_sol: fp != null && !fp.wildcard && fp.bucket_size_amount == null,
+    wildcard: fp?.wildcard ?? false,
     ix_labels: formatIxLabelsText(fp?.ix_labels),
     volume_ix_patterns: volumeIxPatternsFromConfig(cfg),
     metric_config_rest: rest,
@@ -82,6 +91,26 @@ function fromFingerprint(fp?: Fingerprint): FormState {
 function toDraft(s: FormState): FingerprintDraft {
   const { labels } = parseIxLabelsText(s.ix_labels);
   const flow = metricConfigWithVolumePatterns(s.volume_ix_patterns);
+  // A wildcard row carries NO axis — the backend rejects one that does, and the
+  // matcher would ignore it anyway. Dropping them here (rather than only disabling
+  // the inputs) means a form that was filled in first still saves as what it now
+  // reads as. `metric_config` is not an axis and survives.
+  if (s.wildcard) {
+    return {
+      name: s.name.trim(),
+      cu_limit: null,
+      cu_price: null,
+      init_buy_lamports: null,
+      max_cost_lamports: null,
+      spendable_lamports_in: null,
+      first_slot_buy_lamports: null,
+      first_slot_sell_lamports: null,
+      bucket_size_amount: null,
+      ix_labels: null,
+      wildcard: true,
+      metric_config: { ...s.metric_config_rest, ...flow },
+    };
+  }
   return {
     name: s.name.trim(),
     cu_limit: s.cu_limit,
@@ -94,6 +123,7 @@ function toDraft(s: FormState): FingerprintDraft {
     // Exact wins outright and sends NULL — never a 0 width.
     bucket_size_amount: s.exact_sol ? null : tidySolDecimal(s.bucket_size_amount ?? 0.1),
     ix_labels: labels,
+    wildcard: false,
     metric_config: { ...s.metric_config_rest, ...flow },
   };
 }
@@ -108,6 +138,9 @@ function toDraft(s: FormState): FingerprintDraft {
  * server then rejected with a 400.
  */
 function criterionCount(s: FormState, parsedLabels: string[] | null): number {
+  // The wildcard IS the one criterion, and it excludes every axis — so it is a
+  // count of exactly 1, never an addition to whatever the axis inputs still hold.
+  if (s.wildcard) return 1;
   const axes = [
     s.cu_limit,
     s.cu_price,
@@ -121,6 +154,11 @@ function criterionCount(s: FormState, parsedLabels: string[] | null): number {
   // it counts. Only "not set" (`null`) drops out of the fingerprint's identity.
   return axes.filter((v) => v != null).length + (configuredIxLabels(parsedLabels) ? 1 : 0);
 }
+
+/** Why every axis input greys out under the wildcard. */
+const AXIS_DISABLED_TITLE =
+  'A wildcard fingerprint matches every token, so it carries no axes.' +
+  '\nUncheck "match every token" to narrow it by creation shape.';
 
 /** Bucket-width problem, or `null` when the width is usable. Mirrors the backend
  *  `Fingerprint::validate` so the form fails fast instead of on a 400. */
@@ -153,6 +191,11 @@ export function FingerprintForm({
   const autoName = useMemo(() => fingerprintAutoName(draft), [draft]);
   const prevAutoRef = useRef<string | null>(null);
 
+  // `ALL` is the auto-name of two different drafts: a wildcard (which really is
+  // named for the token set it matches) and an axis-less one (which has nothing to
+  // name yet, and the backend refuses anyway). Only the first is a usable name.
+  const autoNameIsReal = autoName !== WILDCARD_NAME || s.wildcard;
+
   // Keep the name glued to the auto-label while it is blank, still the previous
   // auto-name, or a retired generator shape. A typed nickname is left alone.
   useEffect(() => {
@@ -164,15 +207,16 @@ export function FingerprintForm({
         isLegacyAutoName(p.name);
       if (!synced) return p;
       prevAutoRef.current = autoName;
-      if (autoName === 'ALL' || p.name === autoName) return p;
+      if (!autoNameIsReal || p.name === autoName) return p;
       return { ...p, name: autoName };
     });
-  }, [autoName]);
+  }, [autoName, autoNameIsReal]);
 
   const criteria = criterionCount(s, ixParsed.labels);
-  const nameOk = s.name.trim().length > 0 || autoName !== 'ALL';
-  // In exact mode the width is unused, so a stale value must not block submit.
-  const widthError = s.exact_sol ? null : bucketWidthError(s.bucket_size_amount);
+  const nameOk = s.name.trim().length > 0 || autoNameIsReal;
+  // In exact mode the width is unused, so a stale value must not block submit —
+  // and a wildcard ignores it outright (it is sent as NULL).
+  const widthError = s.exact_sol || s.wildcard ? null : bucketWidthError(s.bucket_size_amount);
   const canSubmit = criteria > 0 && nameOk && !submitting && !ixParsed.error && !widthError;
 
   const solField = (label: string, key: keyof FormState, tip: (typeof FINGERPRINT_FIELD_HELP)[keyof typeof FINGERPRINT_FIELD_HELP]) => (
@@ -182,6 +226,8 @@ export function FingerprintForm({
         fieldSize="sm"
         numeric
         unit="◎"
+        disabled={s.wildcard}
+        title={s.wildcard ? AXIS_DISABLED_TITLE : undefined}
         numericValue={s[key] as number | null}
         onNumericChange={(n) => set(key, n as FormState[typeof key])}
       />
@@ -198,12 +244,12 @@ export function FingerprintForm({
             className="min-w-0 flex-1"
             value={s.name}
             onChange={(e) => set('name', e.target.value)}
-            placeholder={autoName !== 'ALL' ? autoName : 'auto-filled from axes'}
+            placeholder={autoNameIsReal ? autoName : 'auto-filled from axes'}
           />
           <IconButton
             variant="ghost"
             size="sm"
-            disabled={submitting || autoName === 'ALL' || s.name === autoName}
+            disabled={submitting || !autoNameIsReal || s.name === autoName}
             onClick={() => {
               prevAutoRef.current = autoName;
               set('name', autoName);
@@ -216,6 +262,16 @@ export function FingerprintForm({
         </div>
       </label>
 
+      <label className="flex cursor-pointer items-start gap-1.5 text-[11px] text-text-mid">
+        <Checkbox
+          className="mt-0.5"
+          checked={s.wildcard}
+          disabled={submitting}
+          onChange={() => set('wildcard', !s.wildcard)}
+        />
+        <LabelTip tip={FINGERPRINT_FIELD_HELP.wildcard}>match every token (wildcard)</LabelTip>
+      </label>
+
       <div className="grid grid-cols-2 gap-2">
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
           <LabelTip tip={FINGERPRINT_FIELD_HELP.cu_limit}>cu_limit (exact)</LabelTip>
@@ -223,6 +279,8 @@ export function FingerprintForm({
             fieldSize="sm"
             numeric
             integer
+            disabled={s.wildcard}
+            title={s.wildcard ? AXIS_DISABLED_TITLE : undefined}
             numericValue={s.cu_limit}
             onNumericChange={(n) => set('cu_limit', n)}
           />
@@ -233,6 +291,8 @@ export function FingerprintForm({
             fieldSize="sm"
             numeric
             integer
+            disabled={s.wildcard}
+            title={s.wildcard ? AXIS_DISABLED_TITLE : undefined}
             numericValue={s.cu_price}
             onNumericChange={(n) => set('cu_price', n)}
           />
@@ -251,8 +311,14 @@ export function FingerprintForm({
             fieldSize="sm"
             numeric
             unit="◎"
-            disabled={s.exact_sol}
-            title={s.exact_sol ? 'Ignored while matching exact amounts' : undefined}
+            disabled={s.exact_sol || s.wildcard}
+            title={
+              s.wildcard
+                ? AXIS_DISABLED_TITLE
+                : s.exact_sol
+                  ? 'Ignored while matching exact amounts'
+                  : undefined
+            }
             className={widthError ? 'border-red/60' : undefined}
             numericValue={s.bucket_size_amount}
             onNumericChange={(n) => set('bucket_size_amount', n)}
@@ -270,6 +336,7 @@ export function FingerprintForm({
           >
             <Checkbox
               checked={s.exact_sol}
+              disabled={s.wildcard}
               onChange={() => set('exact_sol', !s.exact_sol)}
             />
             <span className="whitespace-nowrap">exact amounts</span>
@@ -284,7 +351,9 @@ export function FingerprintForm({
         <IxLabelsInput
           value={s.ix_labels}
           onValueChange={(v) => set('ix_labels', v)}
-          error={ixParsed.error}
+          disabled={s.wildcard}
+          title={s.wildcard ? AXIS_DISABLED_TITLE : undefined}
+          error={s.wildcard ? null : ixParsed.error}
         />
       </label>
 
@@ -309,6 +378,8 @@ export function FingerprintForm({
             <span className="text-red">{widthError}</span>
           ) : criteria === 0 ? (
             <span className="text-red">needs ≥1 match criterion</span>
+          ) : s.wildcard ? (
+            'matches EVERY token · no creation-shape axes'
           ) : (
             `${criteria} criterion${criteria === 1 ? '' : 'a'} · ${
               s.exact_sol ? 'matched on exact amounts' : `matched by ${s.bucket_size_amount ?? 0.1}◎ bucket`

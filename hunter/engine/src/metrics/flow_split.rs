@@ -757,11 +757,6 @@ mod tests {
             + Duration::milliseconds((secs * 1000.0) as i64)
     }
 
-    /// The same instant as [`ts`], on a window's own millisecond cursor.
-    fn p(secs: f64) -> i64 {
-        ts(secs).timestamp_millis()
-    }
-
     fn trade(side: Side, sol: f64, ix: Option<u64>, wallet: u64, secs: f64) -> TradeLite {
         TradeLite {
             slot: 0,

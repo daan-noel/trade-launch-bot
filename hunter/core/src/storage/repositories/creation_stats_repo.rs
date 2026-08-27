@@ -657,6 +657,15 @@ fn fingerprint_scope_clauses(fp: &Fingerprint, ti_alias: &str) -> Vec<String> {
     if !fp.has_any_criterion() {
         return vec!["FALSE".to_string()];
     }
+    // A wildcard row matches every token, so it constrains nothing — the mirror of
+    // the matcher's own short-circuit, at the same position and for the same
+    // reason. Spelled out rather than left to fall through the axis loop on the
+    // strength of the `fingerprints_wildcard_excludes_axes` CHECK: the two readers
+    // of `wildcard` have to reach this verdict independently, or a future axis that
+    // slips past the CHECK narrows the dashboard while the engine still arms on all.
+    if fp.wildcard {
+        return Vec::new();
+    }
     let precision = fp.precision();
     let mut out = Vec::new();
     if let Some(v) = fp.cu_limit {
@@ -1670,6 +1679,20 @@ mod grouped_tokens_tests {
             vec!["FALSE".to_string()],
             "an empty label list must never widen the scope to every token",
         );
+    }
+
+    /// The opposite verdict on the opposite row: a `wildcard` fingerprint matches
+    /// every token in the live matcher, so the dashboard must scope to every token
+    /// too — no clause at all, never the `FALSE` fence a criterion-less row gets.
+    /// The two rows look identical on the axes; only `wildcard` separates them, and
+    /// getting it wrong makes the matched-token count read 0 for the one
+    /// fingerprint that arms on everything.
+    #[test]
+    fn a_wildcard_scope_matches_every_token() {
+        let wildcard = Fingerprint { wildcard: true, ..blank_fp(Some(1.0)) };
+        assert!(fingerprint_scope_clauses(&wildcard, "ti").is_empty());
+        // …and it stays unconstrained under the drill-down's alias too.
+        assert!(fingerprint_scope_clauses(&wildcard, "i").is_empty());
     }
 
     /// The exact-mode half of the same SSOT guard: with `bucket_size_amount = NULL`

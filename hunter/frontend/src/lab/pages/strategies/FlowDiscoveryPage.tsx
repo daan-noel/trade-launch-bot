@@ -753,6 +753,10 @@ export function FlowDiscoveryPage() {
             first_slot_sell_lamports: targetFp.first_slot_sell_lamports,
             bucket_size_amount: targetFp.bucket_size_amount,
             ix_labels: targetFp.ix_labels,
+            // Every identity axis is round-tripped verbatim — a PUT replaces the row,
+            // so an omitted `wildcard` would default to false and quietly turn a
+            // match-everything fingerprint into a criterion-less one.
+            wildcard: targetFp.wildcard,
             metric_config: metricConfigWithVolumePatterns(patterns),
           },
         }).unwrap();

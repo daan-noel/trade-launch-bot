@@ -951,6 +951,24 @@ export const FINGERPRINT_FIELD_HELP = {
       'Many rules can share one fingerprint.',
     ].join('\n'),
   },
+  wildcard: {
+    title: 'Match every token (wildcard)',
+    body: [
+      'This fingerprint matches EVERY token, ignoring every axis below.',
+      '',
+      'For a rule that decides purely on the tape (flow / price / burst metrics) and has',
+      'no launch shape to name. A rule always needs a fingerprint, and clearing every axis',
+      'means match NOTHING — the matcher refuses a criterion-less row on purpose, so a',
+      'half-filled form can never arm on everything. Hence this switch: "any token" is said',
+      'out loud, never inferred from a blank form.',
+      '',
+      'Mutually exclusive with the axes — turning it on drops them (an axis alongside a',
+      'wildcard would read as a filter that never applies).',
+      '',
+      'Affects the LIVE entry gate: every rule on this fingerprint arms on every launch,',
+      'so the entry conditions are the only thing left selecting what you trade.',
+    ].join('\n'),
+  },
   cu_limit: {
     title: 'CU limit (exact)',
     body: [

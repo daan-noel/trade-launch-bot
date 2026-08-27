@@ -198,7 +198,37 @@ wallet's fire* and adds nothing to *return*.
 6. **Hold n constant** in every late-fill curve, and test every threshold week by week on
    tokens the wallet never touches.
 
-## 7. Not yet established
+## 7. The engine rule is not yet this rule
+
+The rule in local PG (`8dtx-derived - clean burst + quiet + old enough`, paper, inactive)
+does **not** reproduce the numbers above and must not be activated. The window machinery
+is verified - `lab/tests/slot_window_parity.rs` folds the real tape and the engine fires
+where the SQL says, 1285 of 1286 - so the gap is in what the rule SAYS, not in what the
+engine does with it.
+
+| gate, on one 1,500-mint sample | fires | net |
+| --- | --- | --- |
+| the rule as authored | 205 | -0.16 |
+| + 2 or more distinct build groups | 41 | +1.21 |
+| the derivation gate | 34 | **+5.10** |
+
+Engine simulate over those same mints (signal fill, real-impact costs): 350 trades,
+**-18.97 %**, 14.3 % win.
+
+**What is missing.** The `m_flow_window` group has no count of **distinct builds** in a
+window, so "2 or more distinct build groups" - a term of the baseline in section 2 - is
+unstated. `unique_wallets` is the only near-neighbour and it is the wallet axis, which
+this derivation is not allowed to use; the term needs its own metric (distinct ordered
+`ix_labels` hashes), which is a metric extension, not a re-authoring.
+
+**And a residual beyond it.** With the build term added the fire counts nearly agree
+(41 against 34) while the money does not (+1.21 against +5.10). The derivation checks
+purity at its OWN gate transaction - `allsol` is the running buy total there
+(`allsol = cum_sol` on all 225,010 rows), so `rsol >= allsol` is running router purity at
+that point - whereas the engine fires at the first instant every condition holds, which
+can be an earlier transaction in the same slot. Closing that is the next step.
+
+## 8. Not yet established
 
 - **No fresh-day forward test.** All four weeks are 08-01..08-21. The rule is stable across
   them and has never seen a day outside them.

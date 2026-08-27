@@ -229,6 +229,10 @@ export interface GroupSelection {
     first_slot_sell_lamports: number | null;
     bucket_size_amount: number | null;
     ix_labels: string[] | null;
+    /** Always `false` — a promoted group is a set of axis values, never "every
+     *  token". Carried because `IDENTITY_WHERE` compares it, so an identity that
+     *  omits it is not the identity it claims to be. */
+    wildcard: boolean;
   };
 }
 

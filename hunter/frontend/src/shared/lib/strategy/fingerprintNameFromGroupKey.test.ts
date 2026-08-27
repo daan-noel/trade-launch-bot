@@ -16,6 +16,7 @@ describe('fingerprintAutoName', () => {
   it('puts ix first and uses chip tokens', () => {
     expect(
       fingerprintAutoName({
+        wildcard: false,
         cu_limit: null,
         cu_price: null,
         init_buy_lamports: null,
@@ -32,6 +33,7 @@ describe('fingerprintAutoName', () => {
   it('keeps axis order after ix and omits default 0.1 bucket', () => {
     expect(
       fingerprintAutoName({
+        wildcard: false,
         cu_limit: null,
         cu_price: null,
         init_buy_lamports: null,
@@ -48,6 +50,7 @@ describe('fingerprintAutoName', () => {
   it('separates two label sets that differ only past the count', () => {
     const axes = (last: string) =>
       fingerprintAutoName({
+        wildcard: false,
         cu_limit: 80_000,
         cu_price: null,
         init_buy_lamports: null,
@@ -70,6 +73,7 @@ describe('fingerprintAutoName', () => {
   it('omits bkt when width is the default 0.1', () => {
     expect(
       fingerprintAutoName({
+        wildcard: false,
         cu_limit: null,
         cu_price: null,
         init_buy_lamports: null,
@@ -85,6 +89,7 @@ describe('fingerprintAutoName', () => {
 
   it('compacts cu and drops grouping-only axes (via group-key wrapper)', () => {
     expect(fingerprintAutoName({
+      wildcard: false,
       cu_limit: 200_000,
       cu_price: null,
       init_buy_lamports: null,
@@ -100,6 +105,7 @@ describe('fingerprintAutoName', () => {
   it('falls back to ALL when nothing configured', () => {
     expect(
       fingerprintAutoName({
+        wildcard: false,
         cu_limit: null,
         cu_price: null,
         init_buy_lamports: null,
@@ -113,9 +119,29 @@ describe('fingerprintAutoName', () => {
     ).toBe('ALL');
   });
 
+  it('names a wildcard for the token set it matches, not its inert width', () => {
+    // Golden string — keep byte-equal with Rust `a_wildcard_auto_names_all_...`.
+    // A wildcard carries no axis and never reads its bucket width, so `bkt=exact`
+    // must not leak into the name of the one row that matches everything.
+    const anyToken = {
+      wildcard: true,
+      cu_limit: null,
+      cu_price: null,
+      init_buy_lamports: null,
+      max_cost_lamports: null,
+      spendable_lamports_in: null,
+      first_slot_buy_lamports: null,
+      first_slot_sell_lamports: null,
+      ix_labels: null,
+    };
+    expect(fingerprintAutoName({ ...anyToken, bucket_size_amount: null })).toBe('ALL');
+    expect(fingerprintAutoName({ ...anyToken, bucket_size_amount: 0.5 })).toBe('ALL');
+  });
+
   it('always shows bkt=exact', () => {
     expect(
       fingerprintAutoName({
+        wildcard: false,
         cu_limit: null,
         cu_price: null,
         init_buy_lamports: null,

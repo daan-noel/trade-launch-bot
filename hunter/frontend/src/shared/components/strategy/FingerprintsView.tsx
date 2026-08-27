@@ -258,6 +258,17 @@ export function FingerprintsView({
         render: (r) => (
           <div className="flex items-center gap-1">
             <span className="font-medium text-text">{r.name || r.id.slice(0, 8)}</span>
+            {/* Every axis column below is a dash on a wildcard row — without this
+                the one fingerprint that arms on EVERY token is the one that looks
+                least configured. */}
+            {r.wildcard && (
+              <span
+                title="Wildcard — matches every token, ignoring every creation-shape axis"
+                className="shrink-0 rounded border border-white/10 px-1 py-px text-[10px] font-medium uppercase tracking-wide text-accent"
+              >
+                all
+              </span>
+            )}
             {linkToFlowDiscovery && (
               <Link
                 to={flowDiscoveryHref(r.id)}
@@ -271,7 +282,9 @@ export function FingerprintsView({
             )}
           </div>
         ),
-        searchValue: (r) => r.name,
+        // `wildcard` has no column of its own (it is the absence of every axis), so
+        // the name column is where it has to be findable.
+        searchValue: (r) => (r.wildcard ? `${r.name} wildcard all tokens` : r.name),
       },
       {
         key: 'cu_limit',

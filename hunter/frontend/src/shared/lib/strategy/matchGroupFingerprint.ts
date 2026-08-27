@@ -50,6 +50,13 @@ export interface FingerprintIdentity {
   /** SOL bucket width, or `null` when the fingerprint matches exact amounts. */
   bucket_size_amount: number | null;
   ix_labels: string[] | null;
+  /** Matches every token, ignoring every axis. Part of identity (the backend
+   *  `IDENTITY_WHERE` compares `wildcard = $10`), and never reconstructible from a
+   *  group key — a group names axis VALUES, so
+   *  {@link fingerprintIdentityFromGroupKey} always yields `false` here. Carrying
+   *  it anyway is what stops a saved wildcard row from keying identically to an
+   *  axis-free card and badging it. */
+  wildcard: boolean;
 }
 
 /** Parse a `"lo–hi"` SOL bucket label's lower edge into lamports (plain numeric
@@ -89,6 +96,8 @@ export function fingerprintIdentityFromGroupKey(
     first_slot_sell_lamports: null,
     bucket_size_amount: bucketWidthSol == null ? null : tidySolDecimal(bucketWidthSol),
     ix_labels: null,
+    // A group key names axis VALUES, so it can never describe "every token".
+    wildcard: false,
   };
   for (const [tag, raw] of Object.entries(gk)) {
     if (raw === '∅') continue;
@@ -174,6 +183,9 @@ export function identityLamportsAreStorable(id: FingerprintIdentity): boolean {
  *  reject it. */
 export function identityHasCriterion(id: FingerprintIdentity): boolean {
   return (
+    // The explicit "every token" criterion — counted here exactly as the backend
+    // counts it, or a wildcard row reads as criterion-less on this side.
+    id.wildcard ||
     id.cu_limit != null ||
     id.cu_price != null ||
     id.init_buy_lamports != null ||
@@ -233,7 +245,8 @@ export function fingerprintMatchesIdentity(fp: Fingerprint, id: FingerprintIdent
     fp.first_slot_buy_lamports === id.first_slot_buy_lamports &&
     fp.first_slot_sell_lamports === id.first_slot_sell_lamports &&
     sameWidth(fp.bucket_size_amount, id.bucket_size_amount) &&
-    ixLabelsEqual(fp.ix_labels, id.ix_labels)
+    ixLabelsEqual(fp.ix_labels, id.ix_labels) &&
+    fp.wildcard === id.wildcard
   );
 }
 
@@ -255,6 +268,10 @@ export function fingerprintCompatibleWithGroupKey(
    *  precision must agree for a card and a fingerprint to be the same thing. */
   bucketWidthSol: number | null,
 ): boolean {
+  // A wildcard row is not a refinement of anything — it drops every axis the card
+  // is made of, so badging a card with it would claim the card's group is what the
+  // rule arms on when the rule arms on every token.
+  if (fp.wildcard) return false;
   if (!sameWidth(fp.bucket_size_amount, bucketWidthSol)) {
     return false;
   }
@@ -348,6 +365,7 @@ export function fingerprintIdentityKey(id: FingerprintIdentity): string {
     id.first_slot_sell_lamports ?? '',
     id.bucket_size_amount == null ? 'exact' : String(tidySolDecimal(id.bucket_size_amount)),
     labels == null ? '' : labels.join('\0'),
+    id.wildcard ? 'any' : '',
   ].join('|');
 }
 
@@ -364,6 +382,7 @@ export function fingerprintToIdentity(fp: Fingerprint): FingerprintIdentity {
     bucket_size_amount:
       fp.bucket_size_amount == null ? null : tidySolDecimal(fp.bucket_size_amount),
     ix_labels: fp.ix_labels,
+    wildcard: fp.wildcard,
   };
 }
 

@@ -319,11 +319,6 @@ mod tests {
         Utc.timestamp_opt(1_700_000_000, 0).unwrap() + Duration::milliseconds((secs * 1000.0) as i64)
     }
 
-    /// The same instant as [`ts`], on a window's own millisecond cursor.
-    fn p(secs: f64) -> i64 {
-        ts(secs).timestamp_millis()
-    }
-
     fn buy(sol: f64, secs: f64) -> TradeLite {
         TradeLite {
             side: Side::Buy,

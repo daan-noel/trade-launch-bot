@@ -265,6 +265,12 @@ impl GroupSelection {
                     "first_slot_sell_lamports": fp.first_slot_sell_lamports,
                     "bucket_size_amount": fp.bucket_size_amount,
                     "ix_labels": fp.ix_labels,
+                    // `IDENTITY_WHERE` compares this column too. A promoted group is
+                    // always a set of axis values, so it is always `false` here — but
+                    // it has to be PRESENT, or the frontend compares an identity that
+                    // is silently missing one of the columns it claims to carry, and a
+                    // saved wildcard row would answer to a group it does not match.
+                    "wildcard": fp.wildcard,
                 }));
             }
             Err(b) => sel.blockers = b,

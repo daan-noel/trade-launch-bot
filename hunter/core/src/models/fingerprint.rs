@@ -150,7 +150,21 @@ impl Fingerprint {
 
     /// Whether any matchable criterion is configured. The matcher requires at
     /// least one so an all-`None` fingerprint can never match everything.
+    ///
+    /// [`Self::wildcard`] IS a criterion — the explicitly-spelled "every token"
+    /// one — and must be counted here exactly as the engine matcher counts it
+    /// (`hunter_engine::fingerprint::Fingerprint::has_any_criterion`). Omitting it
+    /// on this side makes a wildcard row unsaveable through [`Self::validate`]
+    /// while the matcher would have armed it on everything: the two readers of one
+    /// row disagreeing about whether it configures anything at all.
     pub fn has_any_criterion(&self) -> bool {
+        self.wildcard || self.has_axis_criterion()
+    }
+
+    /// Whether any **axis** is configured, ignoring [`Self::wildcard`]. Separate
+    /// from [`Self::has_any_criterion`] because the two ask opposite questions of
+    /// a wildcard row: it always *has* a criterion, and it must never carry an axis.
+    pub fn has_axis_criterion(&self) -> bool {
         self.cu_limit.is_some()
             || self.cu_price.is_some()
             || self.init_buy_lamports.is_some()
@@ -188,9 +202,21 @@ impl Fingerprint {
     ///   spelling, so the two readers of this field can't disagree. (Distinct again
     ///   from a `None` **axis**, which means "not part of identity" — a fingerprint
     ///   axis of `0` SOL is a real bucket, `[0, width)`.)
+    /// * **A wildcard row carries no axis.** `wildcard` already answers the match
+    ///   for every token, so an axis alongside it is a contradiction the matcher
+    ///   resolves silently in favour of the wildcard — the operator would read the
+    ///   axes on the row and expect them to narrow it. Mirrors the
+    ///   `fingerprints_wildcard_excludes_axes` CHECK (`0005`), rejected here so the
+    ///   write edge answers `400` instead of a DB error.
     pub fn validate(&self) -> Result<(), String> {
         if !self.has_any_criterion() {
             return Err("fingerprint must configure at least one match criterion".into());
+        }
+        if self.wildcard && self.has_axis_criterion() {
+            return Err(
+                "a wildcard fingerprint matches every token, so it cannot also carry                  match axes — clear the axes or turn the wildcard off"
+                    .into(),
+            );
         }
         if let Some(w) = self.bucket_size_amount {
             if !w.is_finite() || w < MIN_BUCKET_WIDTH_SOL {
@@ -209,6 +235,11 @@ impl Fingerprint {
     /// first, default `0.1` bucket omitted. Detail:
     /// `docs/plans/strategies/fingerprint-auto-name.md`.
     pub fn auto_name(&self) -> String {
+        // A wildcard row has no axes to name (the `0005` CHECK guarantees it) and
+        // its bucket width is inert, so it names the token set it matches.
+        if self.wildcard {
+            return WILDCARD_NAME.into();
+        }
         let mut parts: Vec<String> = Vec::new();
         if let Some(labels) = configured_labels(self.ix_labels.as_deref()) {
             parts.push(ix_labels_count_tail(labels));
@@ -234,7 +265,7 @@ impl Fingerprint {
             }
         }
         if parts.is_empty() {
-            "ALL".into()
+            WILDCARD_NAME.into()
         } else {
             parts.join(" · ")
         }
@@ -254,6 +285,13 @@ impl Fingerprint {
         }
     }
 }
+
+/// Auto-name of a fingerprint with nothing to name from its axes: a `wildcard`
+/// row (which matches every token) and — for the criterion-less draft the write
+/// edge rejects — the same word, because both describe the same token set. Callers
+/// that need "is there anything to name here" compare against this. Mirrored by
+/// the TS `WILDCARD_NAME`.
+pub const WILDCARD_NAME: &str = "ALL";
 
 /// Retired auto-name shapes. Mirrored in the TS `isLegacyAutoName` helper —
 /// the two lists stay equal (guarded by the golden-string tests on `auto_name`).
@@ -411,6 +449,44 @@ mod tests {
         // used to count it as a criterion while the engine did not.
         agree("empty-labels", &Fingerprint { ix_labels: Some(vec![]), ..bare() });
         agree("real-labels", &Fingerprint { ix_labels: Some(vec!["A".into()]), ..bare() });
+        // The second instance of the same regression: the engine matcher counts
+        // `wildcard` as the explicit "every token" criterion, so this side must too
+        // — otherwise `validate` rejects the one row the matcher arms on everything.
+        agree("wildcard", &Fingerprint { wildcard: true, ..bare() });
+    }
+
+    #[test]
+    fn a_wildcard_is_a_criterion_and_saves() {
+        let fp = Fingerprint { wildcard: true, ..bare() };
+        assert!(fp.has_any_criterion(), "a wildcard configures the every-token criterion");
+        assert!(!fp.has_axis_criterion(), "a wildcard is not an axis");
+        assert!(fp.validate().is_ok(), "a wildcard row must be saveable: {:?}", fp.validate());
+    }
+
+    #[test]
+    fn a_wildcard_may_not_carry_axes() {
+        // Mirrors the `fingerprints_wildcard_excludes_axes` CHECK: the matcher
+        // short-circuits on `wildcard`, so an axis alongside it would be a
+        // constraint the operator can read on the row but that never applies.
+        let with_axis = Fingerprint { wildcard: true, cu_limit: Some(200_000), ..bare() };
+        assert!(with_axis.validate().unwrap_err().contains("wildcard"));
+
+        let with_labels =
+            Fingerprint { wildcard: true, ix_labels: Some(vec!["A".into()]), ..bare() };
+        assert!(with_labels.validate().unwrap_err().contains("wildcard"));
+
+        // An EMPTY label list is "not set" (`configured_labels`), so it is not an
+        // axis and must not trip the guard — the same verdict the CHECK reaches.
+        let empty_labels = Fingerprint { wildcard: true, ix_labels: Some(vec![]), ..bare() };
+        assert!(empty_labels.validate().is_ok());
+    }
+
+    #[test]
+    fn a_wildcard_auto_names_all_and_ignores_the_inert_width() {
+        // The width never reaches a wildcard match, so it must not reach its name.
+        let fp = Fingerprint { wildcard: true, bucket_size_amount: None, ..bare() };
+        assert_eq!(fp.auto_name(), WILDCARD_NAME);
+        assert_eq!(Fingerprint { wildcard: true, ..bare() }.auto_name(), WILDCARD_NAME);
     }
 
     #[test]

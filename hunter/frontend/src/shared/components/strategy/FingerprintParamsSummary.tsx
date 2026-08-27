@@ -44,6 +44,8 @@ const AXIS_HUE: Record<string, number> = {
   flow: 180,
   // bucket width — rose
   bkt: 340,
+  // wildcard — its own hue: it is not an axis, it replaces all of them
+  wildcard: 20,
 };
 
 /** Muted chip style for an absent/unconfigured status flag (no tint, dimmed). */
@@ -199,6 +201,20 @@ function intChip(label: string, n: number | null): ReactNode | null {
  *  flow-pattern axes. */
 export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
   const ix = configuredIxLabels(fp.ix_labels);
+  // A wildcard carries no axis and no usable bucket width, so the chip row is the
+  // one chip that says what it matches. Rendering the axis chips too (they would
+  // all be absent) would read as "unconfigured" — the opposite of what it does.
+  if (fp.wildcard) {
+    return (
+      <div className="flex flex-wrap items-center gap-1 text-left">
+        {chip('ALL tokens', {
+          style: axisTint('wildcard'),
+          title: 'Wildcard — matches every token, ignoring every creation-shape axis',
+        })}
+        <FlowPatternsChip patterns={volumeIxPatternsFromConfig(fp.metric_config)} />
+      </div>
+    );
+  }
   const chips: ReactNode[] = [
     intChip('cu_limit', fp.cu_limit),
     intChip('cu_price', fp.cu_price),
@@ -233,6 +249,8 @@ export function FingerprintParamsById({ id }: { id: string | null }) {
 export function fingerprintParamsSearchText(fp: Fingerprint | undefined, fallbackId?: string): string {
   if (!fp) return fallbackId ?? '';
   const parts: string[] = [fp.name || fp.id.slice(0, 8)];
+  // Matches the chip text, so filtering by what is actually shown works.
+  if (fp.wildcard) parts.push('ALL tokens wildcard');
   if (fp.cu_limit != null) parts.push(`cu_limit=${fp.cu_limit}`);
   if (fp.cu_price != null) parts.push(`cu_price=${fp.cu_price}`);
   const pushSol = (label: string, lamports: number | null) => {
@@ -304,6 +322,9 @@ export function fingerprintIdentityKey(fp: Fingerprint | undefined, fallbackId?:
   if (!fp) return `~${fallbackId ?? ''}`;
   return [
     fp.name || fp.id,
+    // Identity, not decoration: a wildcard and an axis-free row would otherwise
+    // sort as the same fingerprint while matching opposite token sets.
+    fp.wildcard ? 'wildcard' : '',
     fp.cu_limit ?? '',
     fp.cu_price ?? '',
     fp.init_buy_lamports ?? '',

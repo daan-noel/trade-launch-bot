@@ -26,6 +26,7 @@ function fp(partial: Partial<Fingerprint> & Pick<Fingerprint, 'id'>): Fingerprin
     first_slot_sell_lamports: null,
     bucket_size_amount: 0.1,
     ix_labels: null,
+    wildcard: false,
     metric_config: {},
     created_at: '',
     updated_at: '',
@@ -44,7 +45,15 @@ describe('identityHasCriterion — must agree with backend has_any_criterion', (
     first_slot_sell_lamports: null,
     bucket_size_amount: 0.1,
     ix_labels: null,
+    wildcard: false,
   };
+
+  it('counts a wildcard — the explicit "every token" criterion', () => {
+    // Mirrors the Rust `a_wildcard_is_a_criterion_and_saves` guard. Reading a
+    // wildcard as criterion-less here offers Create on a row the server accepts
+    // (and worse, describes the one match-everything row as unconfigured).
+    expect(identityHasCriterion({ ...bare, wildcard: true })).toBe(true);
+  });
 
   it('does not count an empty label list', () => {
     // `[]` is a second spelling of "not set" (Rust `configured_labels`). Counting
@@ -64,6 +73,25 @@ describe('identityHasCriterion — must agree with backend has_any_criterion', (
   it('an axis-free identity has no criterion (bucket width alone never counts)', () => {
     expect(identityHasCriterion(bare)).toBe(false);
     expect(identityHasCriterion({ ...bare, bucket_size_amount: 5 })).toBe(false);
+  });
+});
+
+describe('wildcard is part of identity', () => {
+  it('keys apart from an otherwise identical axis-free row', () => {
+    // The backend `IDENTITY_WHERE` compares `wildcard = $10`, so these are two
+    // different fingerprints — one matches every token, the other matches none.
+    const anyToken = fingerprintToIdentity(fp({ id: 'w', wildcard: true }));
+    const axisFree = fingerprintToIdentity(fp({ id: 'n' }));
+    expect(fingerprintIdentityKey(anyToken)).not.toBe(fingerprintIdentityKey(axisFree));
+  });
+
+  it('never badges a group card', () => {
+    // A group key always names axis VALUES, so a wildcard can never be the card's
+    // identity — and it is not a refinement of the card either: it DROPS the axes
+    // the card is made of, so badging it would claim the rule arms on that group.
+    const wildcard = fp({ id: 'w', wildcard: true });
+    expect(fingerprintCompatibleWithGroupKey(wildcard, { cu_limit: '200000' }, 0.1)).toBe(false);
+    expect(findFingerprintForGroupKey({ cu_limit: '200000' }, [wildcard], 0.1)).toBeNull();
   });
 });
 

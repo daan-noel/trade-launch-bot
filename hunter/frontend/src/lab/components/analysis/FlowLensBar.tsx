@@ -407,6 +407,8 @@ function PromoteToFingerprint({ patterns }: { patterns: IxPattern[] }) {
           first_slot_sell_lamports: target.first_slot_sell_lamports,
           bucket_size_amount: target.bucket_size_amount,
           ix_labels: target.ix_labels,
+          // See `useVolumePatternTarget` — identity axes round-trip verbatim.
+          wildcard: target.wildcard,
           metric_config: {
             ...rest,
             ...metricConfigWithVolumePatterns(toVolumePatterns(patterns)),
