@@ -17,11 +17,20 @@ import { formatMetricExitLabel, parseMetricExitTarget } from './exitReason';
 import {
   formatWindowSpec,
   sameWindowSpec,
+  unitSuffix,
   windowSpecFromStrict,
+  windowSpecKey,
+  readWindow,
   type WindowSpec,
 } from './windowSpec';
 
-const DEFAULT_WINDOWS = [10, 30, 60];
+/** Wall-clock defaults for a caller who names no window — browsing rather than
+ *  checking a specific rule. */
+const DEFAULT_WINDOWS: WindowSpec[] = [10, 30, 60].map((size) => ({
+  size,
+  lag: 0,
+  unit: 'sec' as const,
+}));
 
 /**
  * Stable key for a series column (metric, optionally `@window`).
@@ -35,18 +44,21 @@ const DEFAULT_WINDOWS = [10, 30, 60];
 export function metricColKey(metric: string, window: WindowSpec | number | null): string {
   if (window == null) return metric;
   if (typeof window === 'number') return `${metric}@${window}`;
+  // An unlagged seconds span keeps its bare-number key, byte-for-byte, so pane
+  // preferences saved before the other bases existed still resolve.
+  if (window.unit === 'sec' && window.lag === 0) return `${metric}@${window.size}`;
   const lag = window.lag > 0 ? `@${window.lag}` : '';
-  return window.unit === 'sec' && window.lag === 0
-    ? `${metric}@${window.size}`
-    : `${metric}@${window.size}${window.unit === 'slot' ? 'sl' : 's'}${lag}`;
+  return `${metric}@${window.size}${unitSuffix(window.unit)}${lag}`;
 }
 
 export interface RuleMetricPrefs {
   fingerprintId: string;
   /** Metric names the rule constrains (entry ∪ exit). */
   metrics: string[];
-  /** Dynamic windows authored on the rule; falls back to defaults when empty. */
-  windows: number[];
+  /** Dynamic windows authored on the rule, as WHOLE spans; falls back to defaults
+   *  when empty. A bare size cannot tell 30 slots from 30 seconds, and the endpoint
+   *  computes whichever it is asked for. */
+  windows: WindowSpec[];
   /** Default pane keys to enable when the user hasn't picked any. */
   paneKeys: string[];
 }
@@ -102,7 +114,9 @@ export function metricPrefsFromParams(
   registry: StrategyRegistry | undefined,
 ): Omit<RuleMetricPrefs, 'fingerprintId'> {
   const metrics = new Set<string>();
-  const windows = new Set<number>();
+  // Keyed by the whole span, the same identity the engine dedupes buffers by, so a
+  // 30-slot and a 30-second read are two requested columns rather than one.
+  const windows = new Map<string, WindowSpec>();
   const paneKeys: string[] = [];
 
   for (const side of [params.entry, params.exit]) {
@@ -110,11 +124,9 @@ export function metricPrefsFromParams(
     for (const [groupName, group] of sideInstances(side)) {
       const kind = registry?.groups.find((g) => g.name === groupName)?.kind;
       const w = windowSpecFromStrict(group.strict);
-      // `/metric-series` computes wall-clock windows only, so only a seconds span
-      // can be REQUESTED. A slot span still keys its own pane (below) — it just has
-      // no column to pair with, which reads as an unavailable pane rather than as
-      // the 30-second series mislabelled 30 slots.
-      if (w != null && w.unit === 'sec' && w.lag === 0) windows.add(w.size);
+      // Every basis is requestable: `/metric-series` folds the span it is given, so
+      // the pane a rule opens is the reading that rule actually gates on.
+      if (w != null) windows.set(windowSpecKey(w), w);
       for (const [metric, arms] of Object.entries(group.metrics)) {
         if (!arms?.length) continue;
         metrics.add(metric);
@@ -126,7 +138,9 @@ export function metricPrefsFromParams(
 
   return {
     metrics: [...metrics],
-    windows: windows.size ? [...windows].sort((a, b) => a - b) : [...DEFAULT_WINDOWS],
+    windows: windows.size
+      ? [...windows.values()].sort((a, b) => a.size - b.size || a.lag - b.lag)
+      : [...DEFAULT_WINDOWS],
     paneKeys,
   };
 }
@@ -173,7 +187,10 @@ export function evalMetricConditions(
 
 function seriesLookup(series: MetricSeriesColumn[]): Map<string, MetricSeriesColumn> {
   const map = new Map<string, MetricSeriesColumn>();
-  for (const s of series) map.set(metricColKey(s.metric, s.window_size_sec), s);
+  // Through `readWindow`, which prefers the span object and falls back to the legacy
+  // seconds scalar — so a slot or print column keys by its own span instead of
+  // collapsing onto the metric's window-less key.
+  for (const s of series) map.set(metricColKey(s.metric, readWindow(s)), s);
   return map;
 }
 

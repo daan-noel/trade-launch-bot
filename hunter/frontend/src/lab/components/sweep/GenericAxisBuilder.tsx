@@ -18,10 +18,17 @@ import { unitSuffix, useStrategyRegistry, type StrategyRegistry } from 'lib/stra
 import { metricColorStyle } from 'lib/strategy/metricColors';
 import { isPnlAdvancedMetric } from 'lib/strategy/validate';
 import {
+  isDiscreteUnit,
+  unitSuffix as windowUnitSuffix,
+  WINDOW_UNITS,
+  type WindowUnit,
+} from 'lib/strategy/windowSpec';
+import {
   axisRowError,
   comboCount,
   newAxisRow,
   pnlAxisSugarDuplicateError,
+  axisRowUnit,
   rowNeedsWindow,
   type AxisKind,
   type GenericAxisRow,
@@ -511,6 +518,12 @@ function AxisRow({
   const metric = group?.metrics.find((m) => m.name === row.metric);
   const needsWindow = rowNeedsWindow(row, registry);
   const valueUnit = metric ? unitSuffix(metric.unit) : row.kind !== 'metric' ? '%' : '';
+  // Both window controls count in the ONE unit the row picks. A discrete axis
+  // (slots, prints) counts whole buckets, so its inputs step by 1 from 1.
+  const windowUnit = axisRowUnit(row);
+  const uSuffix = windowUnitSuffix(windowUnit);
+  const uStep = isDiscreteUnit(windowUnit) ? 1 : 0.5;
+  const windowHint = windowUnit === 'slot' ? '30' : windowUnit === 'print' ? '20' : '10';
 
   const onGroup = (name: string) => {
     const g = registry?.groups.find((gg) => gg.name === name);
@@ -629,16 +642,50 @@ function AxisRow({
             </Select>
           </Cell>
           {needsWindow && (
-            <Cell label="window s" tip={SWEEP_FIELD_HELP.axisWindow}>
+            <Cell label={`window ${uSuffix}`} tip={SWEEP_FIELD_HELP.axisWindow}>
               <Input
                 fieldSize="sm"
                 type="number"
-                min={0.5}
-                step={0.5}
+                min={uStep}
+                step={uStep}
                 value={row.window}
                 onChange={(e) => onPatch({ window: e.target.value })}
-                placeholder="10"
+                placeholder={windowHint}
                 className="w-16"
+              />
+            </Cell>
+          )}
+
+          {needsWindow && (
+            <Cell label="unit" tip={SWEEP_FIELD_HELP.axisWindowUnit}>
+              <Select
+                fieldSize="sm"
+                value={windowUnit}
+                onChange={(e) => onPatch({ windowUnit: e.target.value as WindowUnit })}
+                className="w-20"
+              >
+                {/* Straight off WINDOW_UNITS, so a new basis gets its option rather
+                    than being sweepable only by hand-editing the axes JSON. */}
+                {WINDOW_UNITS.map((u) => (
+                  <option key={u} value={u}>
+                    {u}
+                  </option>
+                ))}
+              </Select>
+            </Cell>
+          )}
+
+          {needsWindow && (
+            <Cell label={`lag ${uSuffix}`} tip={SWEEP_FIELD_HELP.axisWindowLag}>
+              <Input
+                fieldSize="sm"
+                type="number"
+                min={0}
+                step={uStep}
+                value={row.lag ?? ''}
+                onChange={(e) => onPatch({ lag: e.target.value })}
+                placeholder="0"
+                className="w-14"
               />
             </Cell>
           )}

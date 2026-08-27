@@ -11,7 +11,7 @@ use hunter_engine::metrics::group_spec;
 use hunter_engine::metrics::MetricFamily;
 use serde::Serialize;
 
-use crate::sweep::generic::axes::{AxisSide, AxisSpec};
+use crate::sweep::generic::axes::{AxisSide, AxisSpec, WindowField};
 
 use super::family::{FamilyReport, InteractionVerdict, JointResult};
 use super::screen::{MetricResponse, ScreenBaseline, ScreenReport, Verdict};
@@ -201,7 +201,7 @@ fn metric_axis(r: &MetricResponse, values: &[f64]) -> AxisSpec {
         group: Some(group_spec(r.metric.group).name.to_string()),
         metric: Some(r.metric.metric.name().to_string()),
         operator: Some(r.operator),
-        window: r.metric.window,
+        window: r.metric.window.map(|w| WindowField::Span(w.label())),
         values: std::iter::once(None)
             .chain(values.iter().copied().map(Some))
             .collect(),

@@ -41,6 +41,20 @@ pub const BURST_PARAM: &str = "burst_size_sec";
 /// in seconds is a ratio across two different axes.
 pub const BURST_SLOT_PARAM: &str = "burst_size_slots";
 
+/// The print twin of [`BURST_PARAM`] - the burst as a count of the token's own
+/// transactions. `burst_size_prints: 1` over `window_size_prints: 20` is "what share
+/// of the last twenty prints is this one", which is `5` on any tape and therefore the
+/// one shape of this metric that carries no information; the useful spans are wider.
+pub const BURST_PRINT_PARAM: &str = "burst_size_prints";
+
+/// This group's SECOND window axis, one size param per unit. The reference axis is
+/// `metrics::WINDOW_AXIS`; both must resolve to the same unit.
+pub const BURST_AXIS: super::WindowAxis = super::WindowAxis {
+    sec: BURST_PARAM,
+    slot: BURST_SLOT_PARAM,
+    print: BURST_PRINT_PARAM,
+};
+
 /// Percent of the reference window's trades that landed in the burst window.
 ///
 /// `NaN` on an empty reference window — no trades, no share to report, and a `0.0`

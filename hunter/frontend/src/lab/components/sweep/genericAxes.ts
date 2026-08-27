@@ -11,6 +11,13 @@
 
 import type { GroupSpec, Operator, StrategyRegistry } from 'lib/strategy/registry';
 import { isPnlAdvancedMetric } from 'lib/strategy/validate';
+import {
+  formatWindowSpec,
+  parseWindowSpec,
+  unitSuffix,
+  type WindowSpec,
+  type WindowUnit,
+} from 'lib/strategy/windowSpec';
 
 /** Which kind of dimension an axis sweeps. `metric` conditions a side; the TP/SL
  *  axes set the rule's take-profit / stop-loss %. */
@@ -33,8 +40,16 @@ export interface GenericAxisRow {
   metric: string;
   /** Metric axes only — the comparison operator. */
   operator: Operator;
-  /** Dynamic-metric axes only — the trailing window (seconds); '' = unset. */
+  /** Dynamic-metric axes only — the trailing window SIZE; '' = unset. The unit it
+   *  counts in is {@link GenericAxisRow.windowUnit} — a bare number is not a window. */
   window: string;
+  /** What this row's window counts in. `undefined` reads as `'sec'`, so a row from
+   *  before the other bases existed is a wall-clock row. */
+  windowUnit?: WindowUnit;
+  /** How many units back from *now* the window ENDS, as raw text; '' = ends at now.
+   *  What lets a sweep search a CAUSAL gate — the tape before the trigger, with no
+   *  way for the trigger's own slot or print to leak into it. */
+  lag?: string;
   /** Swept values: a comma list (`5, 10, 15`), ranges (`10..40 step 10`), and —
    *  on metric axes — the `off` sentinel (that combo omits the condition). */
   valuesText: string;
@@ -48,7 +63,10 @@ export interface AxisSpecWire {
   group?: string;
   metric?: string;
   operator?: Operator;
-  window?: number;
+  /** A bare number is SECONDS — what every stored sweep config holds and what this
+   *  field has always meant. A string is a full span (`"30sl@1"`, `"20p"`) in the
+   *  same grammar a chart legend and a persisted exit reason use. */
+  window?: number | string;
   values: (number | null)[];
 }
 
@@ -131,10 +149,27 @@ function rowGroup(row: GenericAxisRow, reg: StrategyRegistry | undefined): Group
   return reg?.groups.find((g) => g.name === row.group);
 }
 
-/** True when a metric row's group needs a trailing window (dynamic group). Sweep
- *  axes are wall-clock only — the backend `resolve_one` builds `window_size_sec`. */
+/** True when a metric row's group needs a trailing window (dynamic group). Every
+ *  basis is sweepable: the backend `resolve_one` resolves the row's span and
+ *  `assemble` writes the size param that span's own unit spells. */
 export function rowNeedsWindow(row: GenericAxisRow, reg: StrategyRegistry | undefined): boolean {
   return row.kind === 'metric' && rowGroup(row, reg)?.kind === 'dynamic';
+}
+
+/** What a row's window counts in. Absent ⇒ seconds, so a row authored before the
+ *  other bases existed keeps its meaning. */
+export function axisRowUnit(row: GenericAxisRow): WindowUnit {
+  return row.windowUnit ?? 'sec';
+}
+
+/** The parsed, positive span a row carries, or `null` (static / unset). */
+export function axisRowWindowSpec(row: GenericAxisRow): WindowSpec | null {
+  const size = Number(row.window);
+  if ((row.window ?? '').trim() === '' || !Number.isFinite(size) || size <= 0) return null;
+  const lagText = (row.lag ?? '').trim();
+  const lag = lagText === '' ? 0 : Number(lagText);
+  if (!Number.isFinite(lag) || lag < 0) return null;
+  return { size, lag, unit: axisRowUnit(row) };
 }
 
 /** The parsed values for one row (deduped; `off` first, then ascending). */
@@ -171,8 +206,16 @@ export function axisRowError(
   if (!row.metric || !group.metrics.some((m) => m.name === row.metric)) return 'pick a metric';
   if (!row.operator) return 'pick an operator';
   if (group.kind === 'dynamic') {
+    const u = unitSuffix(axisRowUnit(row));
     const w = Number(row.window);
-    if (!row.window || !Number.isFinite(w) || w <= 0) return 'window (s) > 0 required';
+    if (!row.window || !Number.isFinite(w) || w <= 0) return `window (${u}) > 0 required`;
+    // `0` is a real value of the lag's domain (end at now), so only a negative or
+    // unparseable entry is an error.
+    const lagText = (row.lag ?? '').trim();
+    if (lagText !== '') {
+      const lag = Number(lagText);
+      if (!Number.isFinite(lag) || lag < 0) return `lag (${u}) must be a number ≥ 0`;
+    }
   }
   return null;
 }
@@ -235,7 +278,17 @@ export function serializeAxisRows(
       operator: row.operator,
       values,
     };
-    if (rowNeedsWindow(row, reg)) spec.window = Number(row.window);
+    if (rowNeedsWindow(row, reg)) {
+      const w = axisRowWindowSpec(row);
+      // An unlagged wall-clock span stays a bare NUMBER on the wire, so a config
+      // saved before the other bases existed round-trips byte-identically.
+      spec.window =
+        w == null
+          ? undefined
+          : w.unit === 'sec' && w.lag === 0
+            ? w.size
+            : formatWindowSpec(w);
+    }
     out.push(spec);
   }
   return out;
@@ -260,7 +313,16 @@ export function axesSpecToRows(spec: { axes?: AxisSpecWire[] } | AxisSpecWire[] 
     group: a.group ?? '',
     metric: a.metric ?? '',
     operator: a.operator ?? '>',
-    window: a.window != null ? String(a.window) : '',
+    // A number is seconds; a string carries its own basis. Anything unparseable
+    // leaves the row blank rather than inventing a span the config never named.
+    ...(() => {
+      const w = a.window == null ? null : parseWindowSpec(String(a.window));
+      return {
+        window: w ? String(w.size) : '',
+        windowUnit: w?.unit ?? ('sec' as const),
+        lag: w && w.lag > 0 ? String(w.lag) : '',
+      };
+    })(),
     valuesText: (a.values ?? []).map((v) => (v == null ? 'off' : v)).join(', '),
   }));
 }
@@ -283,6 +345,8 @@ export function newAxisRow(
     metric: '',
     operator: firstOp,
     window: '',
+    windowUnit: 'sec',
+    lag: '',
     valuesText: kind === 'take_profit' ? '50, 100, 200' : kind === 'stop_loss' ? '30, 50' : '',
   };
 }

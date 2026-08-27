@@ -797,13 +797,15 @@ pub(crate) fn sparse_grid_for(compiled: &CompiledRule) -> SparseGrid {
         .iter()
         .chain(compiled.price_windows.iter())
         .cloned()
-        // The grid is a WALL clock, so a slot span converts at the nominal slot time.
-        // This only sizes the horizon, never a reading.
+        // The grid is a WALL clock, so a slot span converts at the nominal slot time
+        // and a PRINT span contributes nothing - its cursor moves only on a trade, and
+        // a trade emits its own row. This only sizes the horizon, never a reading.
         .map(|w| match w.unit {
             hunter_engine::metrics::WindowUnit::Sec => w.size + w.lag,
             hunter_engine::metrics::WindowUnit::Slot => {
                 (w.size + w.lag) * hunter_engine::metrics::NOMINAL_SLOT_SECS
             }
+            hunter_engine::metrics::WindowUnit::Print => 0.0,
         })
         .fold(0.0_f64, f64::max);
     // Max condition value + eq-tolerance for a monotone/static metric across both

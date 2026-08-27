@@ -55,6 +55,12 @@ export interface MetricResponse {
   group: string;
   metric: string;
   operator: string;
+  /** The span this metric was screened at, labelled (`30s`, `30sl@1`, `20p`).
+   *  Prefer this over {@link window_sec}. */
+  window?: string | null;
+  /** Legacy seconds scalar. Null on a slot or print span - neither has seconds to
+   *  report, so a reader that only knows this key drops the qualifier rather than
+   *  calling 30 slots 30 seconds. */
   window_sec: number | null;
   verdict: ScreenVerdict;
   baseline: number | null;
@@ -299,7 +305,9 @@ export interface MetricDiscoveryStartArgs {
   stop_loss_menu?: (number | null)[];
   min_closed?: number;
   split_fraction?: number;
-  entry_window_sec?: number;
-  exit_window_sec?: number;
+  /** A bare number is SECONDS - what this field has always meant; a string is a
+   *  full span (`"30sl@1"`, `"20p"`) in the same grammar every other span uses. */
+  entry_window_sec?: number | string;
+  exit_window_sec?: number | string;
   volume_ix_patterns?: string[][];
 }

@@ -32,6 +32,7 @@ import {
   ruleConditionRowError,
   ruleRowEnabled,
   ruleRowIsTrailing,
+  ruleRowBurstSpec,
   ruleRowNeedsBurst,
   ruleRowNeedsWindow,
   ruleRowUnit,
@@ -40,13 +41,13 @@ import {
   type RuleConditionSide,
 } from 'lib/strategy/ruleConditionRows';
 import {
-  BURST_PARAM,
-  BURST_SLOT_PARAM,
   burstSizeParam,
+  isDiscreteUnit,
   sizeParam as sizeParamOf,
   unitSuffix as windowUnitSuffix,
   WINDOW_LAG_PARAM,
-  WINDOW_SLOT_PARAM,
+  WINDOW_UNITS,
+  withoutBurstAxis,
   type WindowUnit,
 } from 'lib/strategy/windowSpec';
 import { ConditionInput } from './ConditionInput';
@@ -274,6 +275,15 @@ function ConditionRow({
   // reference in seconds is a ratio across two clocks, which the backend rejects.
   const windowUnit = ruleRowUnit(row);
   const uSuffix = windowUnitSuffix(windowUnit);
+  // A discrete axis counts whole buckets — slots and prints have no halves — so its
+  // inputs step by 1 from 1. Seconds keep the half-second grain they always had.
+  const uStep = isDiscreteUnit(windowUnit) ? 1 : 0.5;
+  const uMin = isDiscreteUnit(windowUnit) ? 1 : 0.5;
+  // Placeholders name the canonical span of each basis: 10s of tape, 30 slots, the
+  // 20 prints behind this one. The burst placeholder is the slice inside it, and on
+  // a print row `1` is this transaction alone — the span "10 SOL in one trade" needs.
+  const windowHint = windowUnit === 'slot' ? '30' : windowUnit === 'print' ? '20' : '10';
+  const burstHint = windowUnit === 'sec' ? '3' : '1';
   const burstValue = row.strict?.[burstSizeParam(windowUnit)];
   const burstText = burstValue == null ? '' : String(burstValue);
   const isTrailing = ruleRowIsTrailing(row);
@@ -293,9 +303,9 @@ function ConditionRow({
     onPatchStrict({ ...row.strict, arm_above_pct: v });
   };
   const onBurst = (text: string) => {
-    // Only ONE burst size param may survive, in the row's own unit — leaving the
-    // other behind is the "two spans claiming one axis" the backend rejects at save.
-    const { [BURST_PARAM]: _sec, [BURST_SLOT_PARAM]: _slot, ...rest } = row.strict ?? {};
+    // Only ONE burst size param may survive, in the row's own unit — leaving a
+    // sibling behind is the "two spans claiming one axis" the backend rejects at save.
+    const rest = withoutBurstAxis(row.strict);
     if (text.trim() === '') {
       onPatchStrict(rest);
       return;
@@ -307,8 +317,8 @@ function ConditionRow({
   // Flipping the unit RE-SPELLS the burst param rather than reinterpreting it: the
   // number the user typed is the span they meant, and it now counts in the new unit.
   const onUnit = (next: WindowUnit) => {
-    const { [BURST_PARAM]: sec, [BURST_SLOT_PARAM]: slot, ...rest } = row.strict ?? {};
-    const burst = sec ?? slot;
+    const burst = ruleRowBurstSpec(row)?.size;
+    const rest = withoutBurstAxis(row.strict);
     onPatch({
       windowUnit: next,
       strict: burst == null ? rest : { ...rest, [burstSizeParam(next)]: burst },
@@ -324,7 +334,7 @@ function ConditionRow({
     // drops them. The burst axis goes with them: carried over from the previous
     // group it is a param the new group does not declare, which the backend rejects
     // as unknown at save rather than ignoring.
-    const { [BURST_PARAM]: _sec, [BURST_SLOT_PARAM]: _slot, ...rest } = row.strict ?? {};
+    const rest = withoutBurstAxis(row.strict);
     onPatch({
       group: name,
       metric: g?.metrics[0]?.name ?? '',
@@ -414,28 +424,35 @@ function ConditionRow({
           <Input
             fieldSize="sm"
             type="number"
-            min={windowUnit === 'slot' ? 1 : 0.5}
-            step={windowUnit === 'slot' ? 1 : 0.5}
+            min={uMin}
+            step={uStep}
             value={row.window}
             disabled={disabled}
             onChange={(e) => onPatch({ window: e.target.value })}
-            placeholder={windowUnit === 'slot' ? '30' : '10'}
+            placeholder={windowHint}
             className="w-16"
           />
         </Cell>
       )}
 
+      {/* The unit tip follows the SELECTION: with three bases, one fixed help text
+          would explain a unit the row is not counting in. */}
       {needsWindow && (
-        <Cell label="unit" tip={STRICT_PARAM_HELP[WINDOW_SLOT_PARAM]}>
+        <Cell label="unit" tip={STRICT_PARAM_HELP[sizeParamOf(windowUnit)]}>
           <Select
             fieldSize="sm"
             value={windowUnit}
             disabled={disabled}
             onChange={(e) => onUnit(e.target.value as WindowUnit)}
-            className="w-16"
+            className="w-20"
           >
-            <option value="sec">sec</option>
-            <option value="slot">slot</option>
+            {/* Straight off WINDOW_UNITS, so a new basis gets its option rather than
+                round-tripping through the JSON view with no way to pick it. */}
+            {WINDOW_UNITS.map((u) => (
+              <option key={u} value={u}>
+                {u}
+              </option>
+            ))}
           </Select>
         </Cell>
       )}
@@ -445,12 +462,12 @@ function ConditionRow({
           <Input
             fieldSize="sm"
             type="number"
-            min={windowUnit === 'slot' ? 1 : 0.5}
-            step={windowUnit === 'slot' ? 1 : 0.5}
+            min={uMin}
+            step={uStep}
             value={burstText}
             disabled={disabled}
             onChange={(e) => onBurst(e.target.value)}
-            placeholder={windowUnit === 'slot' ? '1' : '3'}
+            placeholder={burstHint}
             className="w-16"
           />
         </Cell>
@@ -462,7 +479,7 @@ function ConditionRow({
             fieldSize="sm"
             type="number"
             min={0}
-            step={windowUnit === 'slot' ? 1 : 0.5}
+            step={uStep}
             value={row.lag ?? ''}
             disabled={disabled}
             onChange={(e) => onPatch({ lag: e.target.value })}

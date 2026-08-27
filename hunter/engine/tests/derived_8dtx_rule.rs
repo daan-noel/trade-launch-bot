@@ -99,10 +99,7 @@ fn every_window_counts_in_slots_and_the_quiet_span_excludes_the_burst() {
     for gid in [MetricGroupId::FlowWindow, MetricGroupId::FlowSplitWindow] {
         for g in &entry.0[&gid] {
             let spec = g
-                .window_spec(
-                    hunter_engine::metrics::WINDOW_SEC_PARAM,
-                    hunter_engine::metrics::WINDOW_SLOT_PARAM,
-                )
+                .window_spec(&hunter_engine::metrics::WINDOW_AXIS)
                 .expect("a dynamic group carries a span");
             assert_eq!(spec.unit, WindowUnit::Slot, "a wall clock cannot group a bundle");
             spans.push(spec);

@@ -667,11 +667,10 @@ pub fn expansion_bases(
 /// key is stable and `2.0` never sorts apart from itself.
 fn window_key(w: Option<hunter_engine::metrics::WindowSpec>) -> (i64, i64, i64) {
     match w {
+        // The unit's own discriminant, not a table restated here: a new basis must
+        // key apart from every existing one without this site being remembered into.
         Some(w) => (
-            match w.unit {
-                hunter_engine::metrics::WindowUnit::Sec => 0,
-                hunter_engine::metrics::WindowUnit::Slot => 1,
-            },
+            w.unit as i64,
             hunter_engine::metrics::quantize(w.size) as i64,
             hunter_engine::metrics::quantize(w.lag) as i64,
         ),

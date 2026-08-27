@@ -18,6 +18,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::api::handlers::strategies::grouped_sweep::matches_field_filter;
+use crate::sweep::generic::axes::WindowField;
 use crate::discovery::baseline::BaselineGrid;
 use crate::discovery::dto::PipelineDto;
 use crate::discovery::objective::DiscoveryWeights;
@@ -85,12 +86,15 @@ pub struct StartMetricDiscoveryBody {
     /// 70/30. Clamped to `[0,1]`.
     #[serde(default = "default_split_fraction")]
     pub split_fraction: f64,
-    /// Entry-side window (s) every dynamic metric is screened at.
+    /// Entry-side window every dynamic metric is screened at. A bare number is
+    /// SECONDS - what this field has always meant and what every stored request
+    /// holds; a string is a full span (`"30sl@1"`, `"20p"`) in the same
+    /// `WindowSpec::parse` grammar a chart legend and an exit reason use.
     #[serde(default = "default_entry_window")]
-    pub entry_window_sec: f64,
-    /// Exit-side window (s) every dynamic metric is screened at.
+    pub entry_window_sec: WindowField,
+    /// Exit-side window every dynamic metric is screened at. Same spellings.
     #[serde(default = "default_exit_window")]
-    pub exit_window_sec: f64,
+    pub exit_window_sec: WindowField,
     /// The run's `volume_ix_patterns` — enables the flow-split metrics (skipped
     /// without them). Absent ⇒ no flow gating.
     #[serde(default)]
@@ -115,11 +119,11 @@ fn default_min_closed() -> u64 {
 fn default_split_fraction() -> f64 {
     0.7
 }
-fn default_entry_window() -> f64 {
-    ScreenConfig::default().entry_window_sec
+fn default_entry_window() -> WindowField {
+    WindowField::Span(ScreenConfig::default().entry_window.label())
 }
-fn default_exit_window() -> f64 {
-    ScreenConfig::default().exit_window_sec
+fn default_exit_window() -> WindowField {
+    WindowField::Span(ScreenConfig::default().exit_window.label())
 }
 
 // ── Progress observer ──────────────────────────────────────────────────────
@@ -303,6 +307,21 @@ async fn run_job(
     // A bracket menu (Layer 0) supersedes the single baseline; either way the run must
     // end up with at least one bracket carrying a guard.
     let baseline = ScreenBaseline { take_profit_pct: b.take_profit_pct, stop_loss_pct: b.stop_loss_pct };
+    // Both spans, before anything expensive: a window that names no basis would
+    // otherwise screen every dynamic metric against a column that was never folded,
+    // and every one of them would score `NaN` - which reads as a finding, not an error.
+    let (entry_window, exit_window) =
+        match (b.entry_window_sec.spec(), b.exit_window_sec.spec()) {
+            (Some(e), Some(x)) => (e, x),
+            _ => {
+                let msg = "entry_window_sec / exit_window_sec: a number of seconds, or a                            span like \"30sl@1\" / \"20p\"";
+                gate.error = Some(msg.into());
+                let _ = early_tx
+                    .send(HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })));
+                return;
+            }
+        };
+
     let baseline_grid = match (&b.take_profit_menu, &b.stop_loss_menu) {
         (None, None) => None,
         (tp, sl) => Some(BaselineGrid {
@@ -484,8 +503,8 @@ async fn run_job(
 
     let cfg = PipelineConfig {
         screen: ScreenConfig {
-            entry_window_sec: b.entry_window_sec,
-            exit_window_sec: b.exit_window_sec,
+            entry_window,
+            exit_window,
             flow_patterns,
             ..ScreenConfig::default()
         },

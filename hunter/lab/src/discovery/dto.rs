@@ -236,6 +236,12 @@ pub struct MetricResponseDto {
     pub group: String,
     pub metric: String,
     pub operator: String,
+    /// The span this metric was screened at, labelled (`30s`, `30sl@1`, `20p`).
+    /// Prefer this over [`window_sec`](Self::window_sec).
+    pub window: Option<String>,
+    /// Legacy seconds scalar. `None` on a slot or print span - neither has seconds to
+    /// report, so a reader that only knows this key drops the qualifier rather than
+    /// calling 30 slots 30 seconds.
     pub window_sec: Option<f64>,
     /// One of `keep` | `drop_no_edge` | `drop_negative` | `drop_spike` | `drop_thin`
     /// | `drop_no_baseline`.
@@ -279,7 +285,10 @@ impl From<&MetricResponse> for MetricResponseDto {
             group: group_spec(r.metric.group).name.to_string(),
             metric: r.metric.metric.name().to_string(),
             operator: r.operator.symbol().to_string(),
-            window_sec: r.metric.window,
+            window: r.metric.window.map(|w| w.label()),
+            window_sec: r.metric.window.filter(|w| {
+                w.unit == hunter_engine::metrics::WindowUnit::Sec && w.lag == 0.0
+            }).map(|w| w.size),
             verdict: verdict_tag(&r.verdict).to_string(),
             baseline: r.baseline,
             lift,

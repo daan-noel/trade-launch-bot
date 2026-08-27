@@ -41,11 +41,12 @@ use hunter_engine::metrics::flow_split::FlowPatterns;
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
 use hunter_engine::metrics::{
     group_spec, is_flow_metric, MetricGroupId, MetricId, MetricKind, MetricScope, Unit, REGISTRY,
+ WindowSpec,
 };
 use trading_core::strategies::kernel::exact_quantile_f64;
 
 use crate::sweep::corpus::CorpusToken;
-use crate::sweep::generic::axes::{AxisSide, AxisSpec, SWEEP_FLOW_FP};
+use crate::sweep::generic::axes::{AxisSide, AxisSpec, WindowField, SWEEP_FLOW_FP};
 use crate::sweep::projection::to_trade_lite;
 
 /// The percentile ladder every screenable metric is measured on. Mirrors the
@@ -111,9 +112,9 @@ impl DirectionPolicy {
 pub struct ScreenConfig {
     /// `window_size_sec` every dynamic group is screened at on the **entry** side.
     /// Windows are compared across runs, not swept within one (plan §2.1).
-    pub entry_window_sec: f64,
+    pub entry_window: WindowSpec,
     /// `window_size_sec` for dynamic groups on the **exit** side.
-    pub exit_window_sec: f64,
+    pub exit_window: WindowSpec,
     /// Compiled `volume_ix_patterns` for the run. `None` ⇒ `m_flow_split*` metrics
     /// are skipped ([`SkipReason::FlowPatternsMissing`]) — their values are
     /// pattern-dependent, so a corpus-wide menu would be meaningless.
@@ -127,8 +128,8 @@ pub struct ScreenConfig {
 impl Default for ScreenConfig {
     fn default() -> Self {
         Self {
-            entry_window_sec: 30.0,
-            exit_window_sec: 10.0,
+            entry_window: WindowSpec::secs(30.0),
+            exit_window: WindowSpec::secs(10.0),
             flow_patterns: None,
             // 200k samples per metric ⇒ ~1.6 MB/column; the p10..p90 rungs the menu
             // reads are stable long before this.
@@ -156,8 +157,10 @@ pub struct ScreenMetric {
     pub side: AxisSide,
     pub group: MetricGroupId,
     pub metric: MetricId,
-    /// `Some` iff the group is [`MetricKind::Dynamic`] — the side's window.
-    pub window: Option<f64>,
+    /// `Some` iff the group is [`MetricKind::Dynamic`] — the side's window, as a
+    /// WHOLE span. A bare size cannot tell 30 slots from 30 seconds, and a screen
+    /// that reads the wrong one scores a different metric than it names.
+    pub window: Option<WindowSpec>,
     pub source: ValueSource,
 }
 
@@ -228,8 +231,8 @@ pub fn screen_plan(cfg: &ScreenConfig) -> ScreenPlan {
         for side in [AxisSide::Entry, AxisSide::Exit] {
             let window = match group.kind {
                 MetricKind::Dynamic => Some(match side {
-                    AxisSide::Entry => cfg.entry_window_sec,
-                    AxisSide::Exit => cfg.exit_window_sec,
+                    AxisSide::Entry => cfg.entry_window,
+                    AxisSide::Exit => cfg.exit_window,
                 }),
                 MetricKind::Static => None,
             };
@@ -263,10 +266,10 @@ pub fn screen_plan(cfg: &ScreenConfig) -> ScreenPlan {
                         plan.skipped.push(skip(SkipReason::FlowPatternsMissing));
                         continue;
                     }
-                    SeriesColumn::Flow(m.id, window.map(hunter_engine::metrics::WindowSpec::secs), SWEEP_FLOW_FP)
+                    SeriesColumn::Flow(m.id, window, SWEEP_FLOW_FP)
                 } else {
                     match window {
-                        Some(w) => SeriesColumn::window(m.id, hunter_engine::metrics::WindowSpec::secs(w)),
+                        Some(w) => SeriesColumn::window(m.id, w),
                         None => SeriesColumn::Static(m.id),
                     }
                 };
@@ -465,7 +468,7 @@ impl MetricCandidates {
             group: Some(group_spec(self.metric.group).name.to_string()),
             metric: Some(self.metric.metric.name().to_string()),
             operator: Some(operator),
-            window: self.metric.window,
+            window: self.metric.window.map(|w| WindowField::Span(w.label())),
             values: self.values.clone(),
         }
     }
@@ -721,7 +724,11 @@ mod tests {
 
     #[test]
     fn dynamic_groups_take_the_side_window_and_dedupe_columns() {
-        let cfg = ScreenConfig { entry_window_sec: 30.0, exit_window_sec: 10.0, ..Default::default() };
+        let cfg = ScreenConfig {
+            entry_window: WindowSpec::secs(30.0),
+            exit_window: WindowSpec::secs(10.0),
+            ..Default::default()
+        };
         let plan = screen_plan(&cfg);
         let win = |side, metric| {
             plan.metrics
@@ -729,8 +736,8 @@ mod tests {
                 .find(|m| m.side == side && m.metric == metric)
                 .and_then(|m| m.window)
         };
-        assert_eq!(win(AxisSide::Entry, MetricId::NetFlow), Some(30.0));
-        assert_eq!(win(AxisSide::Exit, MetricId::NetFlow), Some(10.0));
+        assert_eq!(win(AxisSide::Entry, MetricId::NetFlow), Some(WindowSpec::secs(30.0)));
+        assert_eq!(win(AxisSide::Exit, MetricId::NetFlow), Some(WindowSpec::secs(10.0)));
         // Static metrics carry no window and share ONE column across both sides.
         assert_eq!(win(AxisSide::Entry, MetricId::Time), None);
         let cols = plan.columns();
@@ -881,7 +888,7 @@ mod tests {
             side: AxisSide::Entry,
             group: MetricGroupId::FlowWindow,
             metric: MetricId::NetFlow,
-            window: Some(30.0),
+            window: Some(WindowSpec::secs(30.0)),
             source: ValueSource::Series(col),
         };
         let menu = candidate_menu(m, &table, &ScreenConfig::default()).unwrap();

@@ -276,7 +276,7 @@ impl Strategy for AdditiveStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sweep::generic::axes::{AxesRequest, AxisSide, AxisSpec};
+    use crate::sweep::generic::axes::{AxesRequest, AxisSide, AxisSpec, WindowField};
     use crate::sweep::progress::NoopObserver;
     use chrono::Utc;
     use hunter_engine::metrics::MetricId;
@@ -290,7 +290,7 @@ mod tests {
             group: Some(group.to_string()),
             metric: Some(metric.to_string()),
             operator: Some(hunter_engine::metrics::evaluator::Operator::Gte),
-            window,
+            window: window.map(WindowField::Secs),
             // `off` first, then the values — the with-vs-without sentinel.
             values: std::iter::once(None).chain(vals.into_iter().map(Some)).collect(),
         }

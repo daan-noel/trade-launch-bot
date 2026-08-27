@@ -100,8 +100,8 @@ fn terms(side: &SideConditions, id: MetricId) -> Vec<(Operator, f64, Windows)> {
         .flatten()
         .flat_map(|g| {
             let w = Windows {
-                primary: g.window_spec(hunter_engine::metrics::WINDOW_SEC_PARAM, hunter_engine::metrics::WINDOW_SLOT_PARAM),
-                secondary: g.window_spec(BURST_PARAM, hunter_engine::metrics::flow_burst::BURST_SLOT_PARAM),
+                primary: g.window_spec(&hunter_engine::metrics::WINDOW_AXIS),
+                secondary: g.window_spec(&hunter_engine::metrics::flow_burst::BURST_AXIS),
             };
             g.metrics
                 .get(&id)

@@ -27,7 +27,7 @@ use super::flow_window::WindowState;
 use super::price_lifetime::PriceLifetimeState;
 use super::price_window::PriceWindowState;
 use super::snapshot::SnapshotState;
-use super::{MetricId, TradeLite, Ts};
+use super::{Cursor, MetricId, TradeLite, Ts};
 
 /// All metric state for one token.
 #[derive(Debug, Clone)]
@@ -36,6 +36,12 @@ pub struct TokenTrack {
     /// Highest slot observed on this token - the cursor every slot-unit window
     /// counts in. Monotonic; a tick advances it only when the producer supplies one.
     cur_slot: u64,
+    /// How many prints this token has taken - the cursor every print-unit window
+    /// counts in. Bumped once per folded trade, BEFORE the fold, so the trade being
+    /// folded sits at the cursor and a `size: 1, lag: 0` window is that trade alone.
+    /// A tick never moves it: silence is not a print, which is exactly why a print
+    /// window reads the same tape whether the token is busy or dead.
+    n_prints: u64,
     snapshot: SnapshotState,
     price_lifetime: PriceLifetimeState,
     flow_lifetime: FlowLifetimeState,
@@ -67,6 +73,7 @@ impl TokenTrack {
             windows: BTreeMap::new(),
             price_windows: BTreeMap::new(),
             cur_slot: 0,
+            n_prints: 0,
             priced_reserves: f64::NAN,
             flow: BTreeMap::new(),
             creator_wallet_hash: None,
@@ -150,25 +157,30 @@ impl TokenTrack {
         // slot -> tx_index -> leg, so a regressed feed row must not rewind every
         // slot window on the token.
         self.cur_slot = self.cur_slot.max(t.slot);
+        // The print cursor is a fold counter, not a feed field: it advances once per
+        // trade in the order trades arrive, which is the canonical order above. Bumped
+        // BEFORE the fold so this trade sits AT the cursor.
+        self.n_prints += 1;
         self.price_lifetime.on_trade(t.price, t.at);
         self.flow_lifetime.on_trade(t.side, t.sol);
-        let cur_slot = self.cur_slot;
+        let cur = self.cursor();
+        let at = cur.at_trade(&t);
         for w in self.windows.values_mut() {
             let spec = w.spec();
             w.on_trade(
                 t.side,
                 t.sol,
-                spec.pos(t.at, t.slot),
-                spec.now_pos(t.at, cur_slot),
+                spec.pos(t.at, at),
+                spec.now_pos(t.at, cur),
                 t.wallet_hash,
             );
         }
         for pw in self.price_windows.values_mut() {
             let spec = pw.spec();
-            pw.on_trade(t.price, spec.pos(t.at, t.slot), spec.now_pos(t.at, cur_slot));
+            pw.on_trade(t.price, spec.pos(t.at, at), spec.now_pos(t.at, cur));
         }
         for flow in self.flow.values_mut() {
-            flow.on_trade(&t, cur_slot);
+            flow.on_trade(&t, cur);
         }
     }
 
@@ -183,24 +195,36 @@ impl TokenTrack {
         if let Some(sl) = slot {
             self.cur_slot = self.cur_slot.max(sl);
         }
-        let cur_slot = self.cur_slot;
+        // `n_prints` is deliberately untouched: a tick is not a print, so a print
+        // window evicts nothing here and HOLDS its whole content through any silence.
+        let cur = self.cursor();
         for w in self.windows.values_mut() {
-            let now_pos = w.spec().now_pos(now, cur_slot);
+            let now_pos = w.spec().now_pos(now, cur);
             w.evict(now_pos);
         }
         for pw in self.price_windows.values_mut() {
-            let now_pos = pw.spec().now_pos(now, cur_slot);
+            let now_pos = pw.spec().now_pos(now, cur);
             pw.evict(now_pos);
         }
         for flow in self.flow.values_mut() {
-            flow.on_tick(now, cur_slot);
+            flow.on_tick(now, cur);
         }
+    }
+
+    /// Where the token stands on every discrete window axis right now.
+    fn cursor(&self) -> Cursor {
+        Cursor { slot: self.cur_slot, print: self.n_prints }
     }
 
     /// The highest slot this token has observed. `0` before the first trade, or when
     /// no adapter supplies slots.
     pub fn cur_slot(&self) -> u64 {
         self.cur_slot
+    }
+
+    /// How many prints this token has taken. `0` before the first trade.
+    pub fn n_prints(&self) -> u64 {
+        self.n_prints
     }
 
     /// The most recently observed canonical price (`NaN` before the first trade).
@@ -236,7 +260,7 @@ impl TokenTrack {
     ) -> f64 {
         use MetricId::*;
         let window = windows.primary;
-        let cur_slot = self.cur_slot;
+        let cur = self.cursor();
         match id {
             Time | Liquidity | IxCount | PriorLaunches | FirstSlotBuy => {
                 self.snapshot.value(id, self.created_at, now)
@@ -247,14 +271,14 @@ impl TokenTrack {
             }
             WinTrail | WinRise => {
                 match window.and_then(|sp| self.price_windows.get(&sp.key()).map(|pw| (sp, pw))) {
-                    Some((sp, pw)) => pw.value(id, sp.now_pos(now, cur_slot)),
+                    Some((sp, pw)) => pw.value(id, sp.now_pos(now, cur)),
                     None => f64::NAN,
                 }
             }
             GrossFlow | NetFlow | Buy | Sell | UniqueWallets | TradeCount | BuyCount | BuyShare
             | TradesPerWallet => {
                 match window.and_then(|sp| self.windows.get(&sp.key()).map(|w| (sp, w))) {
-                    Some((sp, w)) => w.value(id, sp.now_pos(now, cur_slot)),
+                    Some((sp, w)) => w.value(id, sp.now_pos(now, cur)),
                     None => f64::NAN,
                 }
             }
@@ -270,8 +294,8 @@ impl TokenTrack {
                     (Some(b), Some(r), Some(rs), Some(bs)) => super::flow_burst::trade_share(
                         b,
                         r,
-                        bs.now_pos(now, cur_slot),
-                        rs.now_pos(now, cur_slot),
+                        bs.now_pos(now, cur),
+                        rs.now_pos(now, cur),
                     ),
                     _ => f64::NAN,
                 }
@@ -283,7 +307,7 @@ impl TokenTrack {
                     return f64::NAN;
                 };
                 match self.flow.get(&fp) {
-                    Some(f) => f.value(id, window, now, cur_slot),
+                    Some(f) => f.value(id, window, now, cur),
                     None => f64::NAN,
                 }
             }
@@ -479,6 +503,120 @@ mod tests {
         // Tick past the window edge → flow decays to zero even with no trade.
         track.on_tick(ts(11.0), None);
         assert_eq!(track.value(MetricId::Buy, crate::metrics::Windows::secs(10.0), None, ts(11.0)), 0.0);
+    }
+
+    /// The span "10 SOL in ONE trade" — the reading no clock can produce.
+    ///
+    /// Three one-SOL prints and one three-SOL print are the same `gross_flow` over any
+    /// seconds or slots window; over `prints(1, 0)` they are 1 and 3. That difference
+    /// IS the basis, so it is asserted directly rather than through a rule.
+    #[test]
+    fn a_single_print_window_reads_one_transaction() {
+        let mut spread = TokenTrack::new(ts(0.0));
+        let mut one = TokenTrack::new(ts(0.0));
+        for t in [&mut spread, &mut one] {
+            t.ensure_window(WindowSpec::prints(1.0, 0.0));
+            t.ensure_window(WindowSpec::secs(10.0));
+        }
+        for (i, sol) in [1.0, 1.0, 1.0].into_iter().enumerate() {
+            spread.on_trade(buy(sol, 1.0, 20.0, i as f64));
+        }
+        one.on_trade(buy(3.0, 1.0, 20.0, 2.0));
+
+        let prints = crate::metrics::Windows::one(WindowSpec::prints(1.0, 0.0));
+        let secs = crate::metrics::Windows::secs(10.0);
+        let now = ts(2.0);
+        // Indistinguishable on the wall clock...
+        assert_eq!(spread.value(MetricId::GrossFlow, secs, None, now), 3.0);
+        assert_eq!(one.value(MetricId::GrossFlow, secs, None, now), 3.0);
+        // ...and told apart by the print axis, which is the whole point.
+        assert_eq!(spread.value(MetricId::GrossFlow, prints, None, now), 1.0);
+        assert_eq!(one.value(MetricId::GrossFlow, prints, None, now), 3.0);
+        assert_eq!(one.value(MetricId::TradeCount, prints, None, now), 1.0);
+    }
+
+    /// A print window counts prints, so its span is the same N trades however long
+    /// they took, and a lag of 1 excludes the trade being folded — the causal shape a
+    /// gate on "the tape BEFORE this transaction" needs.
+    #[test]
+    fn a_print_window_spans_trades_not_time_and_lags_by_trades() {
+        let mut track = TokenTrack::new(ts(0.0));
+        track.ensure_window(WindowSpec::prints(3.0, 0.0));
+        track.ensure_window(WindowSpec::prints(3.0, 1.0));
+        let last3 = crate::metrics::Windows::one(WindowSpec::prints(3.0, 0.0));
+        let prior3 = crate::metrics::Windows::one(WindowSpec::prints(3.0, 1.0));
+
+        // Four prints, deliberately spread over an hour: the span is trades, so the
+        // gaps between them are not part of the reading.
+        for (sol, secs) in [(1.0, 0.0), (2.0, 900.0), (4.0, 1800.0), (8.0, 3600.0)] {
+            track.on_trade(buy(sol, 1.0, 20.0, secs));
+        }
+        let now = ts(3600.0);
+        assert_eq!(track.value(MetricId::GrossFlow, last3, None, now), 14.0, "prints 2..4");
+        assert_eq!(track.value(MetricId::GrossFlow, prior3, None, now), 7.0, "prints 1..3");
+        assert_eq!(track.value(MetricId::TradeCount, last3, None, now), 3.0);
+    }
+
+    /// Silence is not a print. A seconds window decays to nothing while the token is
+    /// quiet; a print window HOLDS every trade it has, which is what makes a print
+    /// gate read the same on a busy token and a dead one.
+    #[test]
+    fn ticks_never_decay_a_print_window() {
+        let mut track = TokenTrack::new(ts(0.0));
+        track.ensure_window(WindowSpec::prints(5.0, 0.0));
+        track.ensure_window(WindowSpec::secs(10.0));
+        track.on_trade(buy(4.0, 1.0, 20.0, 0.0));
+
+        let prints = crate::metrics::Windows::one(WindowSpec::prints(5.0, 0.0));
+        track.on_tick(ts(3600.0), Some(9_999));
+        assert_eq!(
+            track.value(MetricId::Buy, crate::metrics::Windows::secs(10.0), None, ts(3600.0)),
+            0.0,
+            "the wall clock ran out"
+        );
+        assert_eq!(
+            track.value(MetricId::Buy, prints, None, ts(3600.0)),
+            4.0,
+            "an hour of silence produced no prints, so the print window is unchanged"
+        );
+        assert_eq!(track.n_prints(), 1, "a tick is not a print");
+    }
+
+    /// Before the first trade a print window is EMPTY, not a phantom one — `0`
+    /// prints means `size: 1, lag: 0` reads nothing rather than the bounds of a trade
+    /// that has not happened.
+    #[test]
+    fn a_print_window_is_empty_before_the_first_trade() {
+        let mut track = TokenTrack::new(ts(0.0));
+        track.ensure_window(WindowSpec::prints(1.0, 0.0));
+        let prints = crate::metrics::Windows::one(WindowSpec::prints(1.0, 0.0));
+        assert_eq!(track.n_prints(), 0);
+        assert_eq!(track.value(MetricId::GrossFlow, prints, None, ts(1.0)), 0.0);
+        assert_eq!(track.value(MetricId::TradeCount, prints, None, ts(1.0)), 0.0);
+    }
+
+    /// A print window and a slot window of the same size are DIFFERENT buffers, the
+    /// same way seconds and slots are: three prints inside one slot is three on the
+    /// print axis and one bucket on the slot axis, and merging them would make one of
+    /// two authored conditions disappear.
+    #[test]
+    fn print_and_slot_windows_of_one_size_do_not_dedupe() {
+        let mut track = TokenTrack::new(ts(0.0));
+        track.ensure_window(WindowSpec::prints(1.0, 0.0));
+        track.ensure_window(WindowSpec::slots(1.0, 0.0));
+        assert_ne!(
+            WindowSpec::prints(1.0, 0.0).key(),
+            WindowSpec::slots(1.0, 0.0).key(),
+            "one size, two bases, two buffers"
+        );
+        for sol in [1.0, 2.0, 5.0] {
+            track.on_trade(TradeLite { slot: 7, ..buy(sol, 1.0, 20.0, 0.0) });
+        }
+        let now = ts(0.0);
+        let prints = crate::metrics::Windows::one(WindowSpec::prints(1.0, 0.0));
+        let slots = crate::metrics::Windows::one(WindowSpec::slots(1.0, 0.0));
+        assert_eq!(track.value(MetricId::GrossFlow, prints, None, now), 5.0, "the last print");
+        assert_eq!(track.value(MetricId::GrossFlow, slots, None, now), 8.0, "the whole slot");
     }
 
     #[test]

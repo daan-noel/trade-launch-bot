@@ -1,4 +1,5 @@
 import { baseApi, OVERRIDE_ENDPOINTS_ON_HMR } from 'store/baseApi';
+import { formatWindowSpec, type WindowSpec } from 'lib/strategy/windowSpec';
 import type { FieldFilterValue } from '@lab/components/sweep/fingerprintFilters';
 import type {
   GroupedSweepRunRecord,
@@ -97,7 +98,7 @@ export const labApi = baseApi.injectEndpoints({
       MetricSeriesResponse,
       {
         mint: string;
-        windows?: number[];
+        windows?: WindowSpec[];
         fingerprintId?: string | null;
         /** Inspected run's entry fill — supplies the `m_position` (retrace/bounce/pnl/held)
          *  columns, which are position-scoped and omitted without it. */
@@ -121,7 +122,10 @@ export const labApi = baseApi.injectEndpoints({
         stallHorizonSec,
       }) => {
         const params = new URLSearchParams();
-        if (windows && windows.length) params.set('windows', windows.join(','));
+        // Whole spans, in the `WindowSpec::parse` grammar the backend reads: `30`
+        // stays 30 seconds, `30sl@1` and `20p` mean themselves.
+        if (windows && windows.length)
+          params.set('windows', windows.map(formatWindowSpec).join(','));
         if (fingerprintId) params.set('fingerprint_id', fingerprintId);
         if (entryTime && entryPrice != null && Number.isFinite(entryPrice)) {
           params.set('entry_time', entryTime);

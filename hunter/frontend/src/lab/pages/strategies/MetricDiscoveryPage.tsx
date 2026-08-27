@@ -21,6 +21,7 @@ import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 import { solToLamports, type Fingerprint } from 'lib/strategy/types';
 import type { PromotedRuleDraft } from 'lib/strategy/types';
 import { PromoteRuleModal } from '@lab/components/sweep/PromoteRuleModal';
+import { parseWindowSpec } from 'lib/strategy/windowSpec';
 import {
   useGetLastMetricDiscoveryQuery,
   useLazyGetMetricDiscoveryQuery,
@@ -53,8 +54,11 @@ interface Config {
   minClosed: number;
   splitFraction: number;
   buyAmountSol: number;
-  entryWindowSec: number;
-  exitWindowSec: number;
+  /** Entry / exit screening spans, as text in the `formatWindowSpec` grammar:
+   *  `30` (seconds), `30sl@1`, `20p`. Text rather than a number so a basis can be
+   *  typed at all, and validated before the run is admitted. */
+  entryWindow: string;
+  exitWindow: string;
   volumeIxPatterns: string[][];
   ixLabelsFilter: string;
 }
@@ -72,8 +76,8 @@ const DEFAULTS: Config = {
   minClosed: 20,
   splitFraction: 0.7,
   buyAmountSol: 1.0,
-  entryWindowSec: 30,
-  exitWindowSec: 10,
+  entryWindow: '30',
+  exitWindow: '10',
   volumeIxPatterns: [],
   ixLabelsFilter: '',
 };
@@ -244,8 +248,8 @@ export function MetricDiscoveryPage() {
         stop_loss_menu: parseBracketMenu(config.stopLossMenu),
         min_closed: config.minClosed,
         split_fraction: config.splitFraction,
-        entry_window_sec: config.entryWindowSec,
-        exit_window_sec: config.exitWindowSec,
+        entry_window_sec: config.entryWindow,
+        exit_window_sec: config.exitWindow,
         volume_ix_patterns: config.volumeIxPatterns.length ? config.volumeIxPatterns : undefined,
       }).unwrap();
 
@@ -380,10 +384,14 @@ export function MetricDiscoveryPage() {
             />
           </div>
         </div>
-        <NumField label="Entry win s" value={config.entryWindowSec} min={1}
-          onChange={(v) => set('entryWindowSec', v)} width="w-[100px]" />
-        <NumField label="Exit win s" value={config.exitWindowSec} min={1}
-          onChange={(v) => set('exitWindowSec', v)} width="w-[100px]" />
+        <TextField label="Entry win" value={config.entryWindow}
+          onChange={(v) => set('entryWindow', v)} width="w-[100px]"
+          invalid={parseWindowSpec(config.entryWindow) == null}
+          title="Seconds, or a span: 30sl@1 (slots), 20p (prints)" />
+        <TextField label="Exit win" value={config.exitWindow}
+          onChange={(v) => set('exitWindow', v)} width="w-[100px]"
+          invalid={parseWindowSpec(config.exitWindow) == null}
+          title="Seconds, or a span: 30sl@1 (slots), 20p (prints)" />
         <Field label="Train split">
           <Input
             type="number"
@@ -932,7 +940,7 @@ function ShortlistRow({ m }: { m: MetricResponse }) {
     <tr className="border-t border-white/6">
       <Td>
         <span className="font-mono">{m.side}·{m.group}.{m.metric}</span>
-        {m.window_sec != null && <span className="text-text-dim"> @{m.window_sec}s</span>}
+        {windowLabel(m) && <span className="text-text-dim"> @{windowLabel(m)}</span>}
       </Td>
       <Td>{m.operator}</Td>
       <Td right>{fmt(m.lift)}</Td>
@@ -955,7 +963,7 @@ function DroppedRow({ m }: { m: MetricResponse }) {
     <tr className="border-t border-white/6">
       <Td>
         <span className="font-mono">{m.side}·{m.group}.{m.metric}</span>
-        {m.window_sec != null && <span className="text-text-dim"> @{m.window_sec}s</span>}
+        {windowLabel(m) && <span className="text-text-dim"> @{windowLabel(m)}</span>}
       </Td>
       <Td>{m.operator}</Td>
       <Td>
@@ -1137,6 +1145,39 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       {children}
     </div>
   );
+}
+
+/** A free-text config field. Used where the value is a SPAN rather than a number:
+ *  `30` is seconds, `30sl@1` is a lagged slot window, `20p` is twenty prints - none
+ *  of which a number input can express. `invalid` tints the field so an unparseable
+ *  span is visible before the run is admitted, not after every metric scores NaN. */
+function TextField({
+  label, value, onChange, width, invalid, title,
+}: {
+  label: string; value: string; onChange: (v: string) => void; width: string;
+  invalid?: boolean; title?: string;
+}) {
+  return (
+    <div className={`flex flex-col gap-1 ${width}`}>
+      <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80">{label}</span>
+      <Input
+        type="text"
+        value={value}
+        title={title}
+        aria-invalid={invalid || undefined}
+        className={invalid ? 'border-red/60' : undefined}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </div>
+  );
+}
+
+/** The span a screened metric was read at, labelled. Prefers the backend's `window`
+ *  string and falls back to the legacy seconds scalar, so a slot or print row names
+ *  its own basis instead of dropping the qualifier. */
+function windowLabel(m: { window?: string | null; window_sec: number | null }): string {
+  if (m.window) return m.window;
+  return m.window_sec != null ? `${m.window_sec}s` : '';
 }
 
 function NumField({

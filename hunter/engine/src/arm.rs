@@ -270,11 +270,17 @@ impl ClockHorizons {
             // The tick grid is a wall clock, so a slot span converts at the nominal
             // slot time. It only sizes the horizon - never a metric reading - so an
             // approximation here costs coverage, never correctness.
+            //
+            // A PRINT span contributes nothing: its cursor moves only on a trade, and
+            // a trade emits its own row. No tick between two prints can change what a
+            // print window reads, so `0.0` here is the exact horizon, not an
+            // under-estimate.
             let secs = match w.unit {
                 crate::metrics::WindowUnit::Sec => w.size + w.lag,
                 crate::metrics::WindowUnit::Slot => {
                     (w.size + w.lag) * crate::metrics::NOMINAL_SLOT_SECS
                 }
+                crate::metrics::WindowUnit::Print => 0.0,
             };
             self.max_window_secs = self.max_window_secs.max(SparseGrid::clamp_secs(secs));
         }
@@ -725,23 +731,17 @@ fn build_reqs(
         let position_scoped = group_spec(*group_id).scope == MetricScope::Position;
         // One instance per window (static groups carry exactly one, window-less).
         for group in instances {
-            // Both axes, read by param NAME rather than by group: `burst_size_sec` is
-            // absent on every group that does not declare it, so this stays one line
-            // of vocabulary instead of a per-group branch that a fourth window basis
-            // would have to be remembered into.
+            // Both axes, read by AXIS rather than by group: a burst param is absent
+            // on every group that does not declare it, so this stays one line of
+            // vocabulary instead of a per-group branch that a new window basis would
+            // have to be remembered into.
             let window: Windows = if is_dynamic {
                 Windows {
-                    primary: group.window_spec(
-                        crate::metrics::WINDOW_SEC_PARAM,
-                        crate::metrics::WINDOW_SLOT_PARAM,
-                    ),
+                    primary: group.window_spec(&crate::metrics::WINDOW_AXIS),
                     // The burst axis rides the SAME clock as the reference (that pair
                     // IS the group's basis), so it takes the group's unit and lag and
                     // differs only in size.
-                    secondary: group.window_spec(
-                        crate::metrics::flow_burst::BURST_PARAM,
-                        crate::metrics::flow_burst::BURST_SLOT_PARAM,
-                    ),
+                    secondary: group.window_spec(&crate::metrics::flow_burst::BURST_AXIS),
                 }
             } else {
                 Windows::NONE

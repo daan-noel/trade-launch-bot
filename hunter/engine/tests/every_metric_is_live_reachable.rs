@@ -62,13 +62,14 @@ fn probe_fp() -> Fingerprint {
     }
 }
 
-/// Which clock a dynamic group's window is authored on. Time is continuous and slots
-/// are discrete, so they are two window implementations, not one with a unit label -
-/// a metric can read on one and be `NaN` on the other.
+/// Which clock a dynamic group's window is authored on. Time is continuous while
+/// slots and prints are discrete, so these are three window implementations, not one
+/// with a unit label - a metric can read on one and be `NaN` on another.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Basis {
     Sec,
     Slot,
+    Print,
 }
 
 impl Basis {
@@ -76,6 +77,7 @@ impl Basis {
         match self {
             Basis::Sec => "seconds",
             Basis::Slot => "slots",
+            Basis::Print => "prints",
         }
     }
 }
@@ -94,16 +96,22 @@ fn strict_params(g: &GroupSpec, basis: Basis, obj: &mut Map<String, Value>) {
             // and a 4-slot burst nests inside it.
             (hunter_engine::metrics::WINDOW_SLOT_PARAM, Basis::Slot) => json!(20.0),
             (flow_burst::BURST_SLOT_PARAM, Basis::Slot) => json!(4.0),
-            // The other basis's size params, plus two optional knobs deliberately left
+            // Wide enough to hold every print the probe folds, with a burst nested
+            // inside it, so an empty window is never what a NaN would be blamed on.
+            (hunter_engine::metrics::WINDOW_PRINT_PARAM, Basis::Print) => json!(50.0),
+            (flow_burst::BURST_PRINT_PARAM, Basis::Print) => json!(4.0),
+            // The other bases' size params, plus two optional knobs deliberately left
             // unset: a lag would push the window off the probe's trades, and
             // `arm_above_pct` would report the trailing metrics as `disarmed` rather
             // than read them.
             (
                 hunter_engine::metrics::WINDOW_SEC_PARAM
                 | hunter_engine::metrics::WINDOW_SLOT_PARAM
+                | hunter_engine::metrics::WINDOW_PRINT_PARAM
                 | hunter_engine::metrics::WINDOW_LAG_PARAM
                 | flow_burst::BURST_PARAM
                 | flow_burst::BURST_SLOT_PARAM
+                | flow_burst::BURST_PRINT_PARAM
                 | "arm_above_pct",
                 _,
             ) => continue,
@@ -340,6 +348,38 @@ fn every_dynamic_metric_also_reads_on_a_slot_window() {
     assert!(
         unreadable.is_empty(),
         "{} of {checked} dynamic metrics are readable on seconds but not on slots.\n  {}",
+        unreadable.len(),
+        unreadable.join("\n  "),
+    );
+    assert!(checked > 0, "no dynamic groups walked - registry walk is broken");
+}
+
+/// The print twin of the two tests above. A print window's cursor is a fold counter
+/// the engine keeps itself rather than a field the feed supplies, so it fails in its
+/// own way: a counter never bumped, or bumped after the fold, leaves every reading
+/// empty while seconds and slots stay perfect. Every dynamic metric is authorable on
+/// this basis, so it has to be reachable on it.
+#[test]
+fn every_dynamic_metric_also_reads_on_a_print_window() {
+    let mut unreadable: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+
+    for g in REGISTRY {
+        if g.kind != MetricKind::Dynamic {
+            continue;
+        }
+        for m in g.metrics {
+            checked += 1;
+            let v = live_reading(g, m, Basis::Print);
+            if !v.is_finite() {
+                unreadable.push(format!("{}.{} reads {v} on a print window", g.name, m.name));
+            }
+        }
+    }
+
+    assert!(
+        unreadable.is_empty(),
+        "{} of {checked} dynamic metrics are readable on seconds but not on prints.\n  {}",
         unreadable.len(),
         unreadable.join("\n  "),
     );

@@ -28,11 +28,12 @@ const REG: StrategyRegistry = {
     {
       name: 'm_price_window',
       kind: 'dynamic',
-      // Mirrors the Rust registry: neither size param is `required` on its own,
-      // because "exactly one of the two" is a cross-param rule.
+      // Mirrors the Rust registry: no size param is `required` on its own, because
+      // "exactly one of the three" is a cross-param rule.
       strict_params: [
         { name: 'window_size_sec', required: false },
         { name: 'window_size_slots', required: false },
+        { name: 'window_size_prints', required: false },
         { name: 'window_lag', required: false, allows_zero: true },
       ],
       metrics: [{ name: 'trail', unit: 'percent', eq_tolerance: 0.1, monotonic: false, hue: 45 }],
@@ -43,9 +44,11 @@ const REG: StrategyRegistry = {
       strict_params: [
         { name: 'window_size_sec', required: false },
         { name: 'window_size_slots', required: false },
+        { name: 'window_size_prints', required: false },
         { name: 'window_lag', required: false, allows_zero: true },
         { name: 'burst_size_sec', required: false },
         { name: 'burst_size_slots', required: false },
+        { name: 'burst_size_prints', required: false },
       ],
       metrics: [
         { name: 'trade_share', unit: 'percent', eq_tolerance: 0.5, monotonic: false, hue: 306 },
@@ -548,6 +551,113 @@ describe('slot windows and lag', () => {
     expect(rowsToSide([ok], 'entry').m_flow_burst[0].strict).toEqual({
       window_size_slots: 30,
       burst_size_slots: 1,
+    });
+  });
+});
+
+describe('print windows', () => {
+  const printRow = (over: Partial<RuleConditionRow> = {}) =>
+    row({
+      group: 'm_price_window',
+      metric: 'trail',
+      window: '20',
+      windowUnit: 'print',
+      arms: [[{ operator: '>=', value: 5 }]],
+      ...over,
+    });
+
+  it('writes exactly one size param, in the row unit', () => {
+    const side = rowsToSide([printRow()], 'entry');
+    expect(side.m_price_window[0].strict).toEqual({ window_size_prints: 20 });
+  });
+
+  it('writes the one-transaction span', () => {
+    const side = rowsToSide([printRow({ window: '1' })], 'entry');
+    expect(side.m_price_window[0].strict).toEqual({ window_size_prints: 1 });
+  });
+
+  it('carries the lag onto the instance when there is one', () => {
+    const side = rowsToSide([printRow({ lag: '1' })], 'entry');
+    expect(side.m_price_window[0].strict).toEqual({ window_size_prints: 20, window_lag: 1 });
+  });
+
+  // Three bases at one size are three DIFFERENT reads: 20 prints, 20 slots and 20
+  // seconds cover different tape. Merging any pair would silently drop a gate.
+  it('separates a print window from a slot and a seconds window of the same size', () => {
+    const side = rowsToSide(
+      [printRow(), printRow({ windowUnit: 'slot' }), printRow({ windowUnit: 'sec' })],
+      'entry',
+    );
+    expect(side.m_price_window).toHaveLength(3);
+  });
+
+  it('round-trips a print rule through rows and back', () => {
+    const side = {
+      m_price_window: [
+        {
+          strict: { window_size_prints: 1 },
+          metrics: { trail: [[{ operator: '>=' as const, value: 5 }]] },
+        },
+      ],
+    };
+    const rows = sideToRows(side, 'entry');
+    expect(rows[0]).toMatchObject({ window: '1', windowUnit: 'print', lag: '' });
+    // Nothing the row fields own may ALSO sit in the opaque strict bag, or a stale
+    // copy would outlive an edit to the field.
+    expect(rows[0].strict).toEqual({});
+    expect(rowsToSide(rows, 'entry')).toEqual(side);
+  });
+
+  it('validates a print row against its own unit', () => {
+    expect(ruleConditionRowError(printRow(), REG)).toBeNull();
+    expect(ruleConditionRowError(printRow({ window: '' }), REG)).toBe('window (p) > 0 required');
+    expect(ruleConditionRowError(printRow({ lag: '-1' }), REG)).toBe(
+      'lag (p) must be a number ≥ 0',
+    );
+  });
+
+  it('requires the burst axis in the print unit and nested inside it', () => {
+    const burst = (over: Partial<RuleConditionRow> = {}) =>
+      row({
+        group: 'm_flow_burst',
+        metric: 'trade_share',
+        window: '20',
+        windowUnit: 'print',
+        arms: [[{ operator: '>=', value: 50 }]],
+        ...over,
+      });
+    expect(ruleConditionRowError(burst(), REG)).toBe('burst (p) > 0 required');
+    // A slot burst on a print row is not the row's burst at all - it reads as
+    // absent, which is what the backend also rejects (both axes, one unit).
+    expect(ruleConditionRowError(burst({ strict: { burst_size_slots: 4 } }), REG)).toBe(
+      'burst (p) > 0 required',
+    );
+    expect(ruleConditionRowError(burst({ strict: { burst_size_prints: 40 } }), REG)).toBe(
+      'burst (p) must nest inside window 20',
+    );
+    const ok = burst({ strict: { burst_size_prints: 4 } });
+    expect(ruleConditionRowError(ok, REG)).toBeNull();
+    expect(rowsToSide([ok], 'entry').m_flow_burst[0].strict).toEqual({
+      window_size_prints: 20,
+      burst_size_prints: 4,
+    });
+  });
+
+  // Flipping the unit RE-SPELLS the burst param. A sibling left behind is the "two
+  // spans claiming one axis" the backend rejects at save, and with three bases a
+  // per-pair destructure is exactly what would leave one.
+  it('never writes two size params on one axis after a unit flip', () => {
+    const stale = row({
+      group: 'm_flow_burst',
+      metric: 'trade_share',
+      window: '20',
+      windowUnit: 'print',
+      arms: [[{ operator: '>=', value: 50 }]],
+      strict: { burst_size_sec: 3, burst_size_slots: 1, burst_size_prints: 4 },
+    });
+    expect(rowsToSide([stale], 'entry').m_flow_burst[0].strict).toEqual({
+      window_size_prints: 20,
+      burst_size_prints: 4,
     });
   });
 });

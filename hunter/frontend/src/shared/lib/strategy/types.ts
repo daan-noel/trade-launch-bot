@@ -37,6 +37,45 @@ export const MIN_BUCKET_WIDTH_SOL = 1e-6;
  *  The auto-name omits `bkt=` when the stored width equals this. */
 export const DEFAULT_BUCKET_WIDTH_SOL = 0.1;
 
+/**
+ * Decimals needed to render a bucket width without loss: `1 -> 0`, `0.5 -> 1`,
+ * `0.1 -> 1`, `0.05 -> 2`, `1e-5 -> 5`. Mirrors Rust `grouping::decimals_for`.
+ *
+ * The auto-name renders the width at THIS, never a fixed count: the legal range
+ * reaches down to `MIN_BUCKET_WIDTH_SOL`, and a fixed 4 trimmed a `1e-5` width to
+ * `bkt=0` — a name stating the one width the backend rejects.
+ */
+export function decimalsForBucketWidth(width: number): number {
+  let d = 0;
+  let w = Math.abs(width);
+  while (d < 12 && Math.abs(w % 1) > 1e-9) {
+    w *= 10;
+    d += 1;
+  }
+  return d;
+}
+
+/**
+ * Whether any bucket-matched SOL axis is set — the one reader of "is
+ * `bucket_size_amount` load-bearing on this row". Mirrors Rust
+ * `Fingerprint::has_sol_axis`; see `effectiveBucketSizeAmount`.
+ */
+export function hasSolAxis(fp: {
+  init_buy_lamports: number | null;
+  max_cost_lamports: number | null;
+  spendable_lamports_in: number | null;
+  first_slot_buy_lamports: number | null;
+  first_slot_sell_lamports: number | null;
+}): boolean {
+  return (
+    fp.init_buy_lamports != null ||
+    fp.max_cost_lamports != null ||
+    fp.spendable_lamports_in != null ||
+    fp.first_slot_buy_lamports != null ||
+    fp.first_slot_sell_lamports != null
+  );
+}
+
 /** Auto-name of a fingerprint with nothing to name from its axes — a `wildcard`
  *  row, and the criterion-less draft the write edge rejects. Mirrors the Rust
  *  `models::fingerprint::WILDCARD_NAME`. */
@@ -336,8 +375,14 @@ export interface MetricSeriesColumn {
   metric: string;
   group: string;
   unit: string;
-  /** Present only for dynamic groups (`m_flow_window`, `m_flow_split_window`,
-   *  `m_price_window`). Null for static groups (`m_flow_lifetime`, …). */
+  /** The WHOLE span this column was computed over — size, lag and unit. Present only
+   *  for dynamic groups (`m_flow_window`, `m_flow_split_window`, `m_price_window`);
+   *  null for static ones (`m_flow_lifetime`, …). Prefer this over
+   *  {@link MetricSeriesColumn.window_size_sec}. */
+  window?: WindowSpec | null;
+  /** Legacy seconds scalar, for readers that predate `window`. Null on a slot or
+   *  print span — neither has seconds to report, so a reader that only knows this key
+   *  drops the column rather than calling 30 slots 30 seconds. */
   window_size_sec: number | null;
   /** One value per event (aligned with `at`); non-finite ⇒ `null`. */
   values: Array<number | null>;
@@ -540,6 +585,11 @@ export interface StrategyPositionUpdateEvent {
  * (Rust `SolPrecision::Exact`); showing a bare `0`/blank there would read as a
  * degenerate bucket rather than a different mode.
  */
-export function formatBucketWidth(width: number | null, decimals = 6): string {
-  return width == null ? 'exact' : formatDecimalTrim(tidySolDecimal(width), decimals);
+export function formatBucketWidth(width: number | null, decimals?: number): string {
+  if (width == null) return 'exact';
+  const w = tidySolDecimal(width);
+  // Default to the decimals the width itself needs, never a fixed count: legal
+  // widths reach down to `MIN_BUCKET_WIDTH_SOL`, and a fixed 4 rendered a `1e-5`
+  // width as `0` — the one value the backend rejects, shown for a legal row.
+  return formatDecimalTrim(w, decimals ?? decimalsForBucketWidth(w));
 }

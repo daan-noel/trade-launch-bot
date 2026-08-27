@@ -684,7 +684,7 @@ impl FlowState {
     }
 
     /// Classify + fold one trade into lifetime and every registered window.
-    pub fn on_trade(&mut self, t: &TradeLite, cur_slot: u64) {
+    pub fn on_trade(&mut self, t: &TradeLite, cur: super::Cursor) {
         if !t.sol.is_finite() || t.sol < 0.0 {
             return;
         }
@@ -694,25 +694,25 @@ impl FlowState {
         }
         self.lifetime.add(t.side, t.sol, is_vol);
         for w in self.windows.values_mut() {
-            let pos = w.spec.pos(t.at, t.slot);
-            let now_pos = w.spec.now_pos(t.at, cur_slot);
+            let pos = w.spec.pos(t.at, cur.at_trade(t));
+            let now_pos = w.spec.now_pos(t.at, cur);
             w.on_trade(t.side, t.sol, is_vol, pos, now_pos);
         }
     }
 
-    pub fn on_tick(&mut self, now: Ts, cur_slot: u64) {
+    pub fn on_tick(&mut self, now: Ts, cur: super::Cursor) {
         for w in self.windows.values_mut() {
-            let now_pos = w.spec.now_pos(now, cur_slot);
+            let now_pos = w.spec.now_pos(now, cur);
             w.evict(now_pos);
         }
     }
 
     /// Lifetime (`m_flow_split`) or windowed (`m_flow_split_window`) read at `now`.
-    pub fn value(&self, id: MetricId, window: Option<WindowSpec>, now: Ts, cur_slot: u64) -> f64 {
+    pub fn value(&self, id: MetricId, window: Option<WindowSpec>, now: Ts, cur: super::Cursor) -> f64 {
         match window {
             None => self.lifetime.value(id),
             Some(spec) => match self.windows.get(&spec.key()) {
-                Some(w) => w.value(id, spec.now_pos(now, cur_slot)),
+                Some(w) => w.value(id, spec.now_pos(now, cur)),
                 None => f64::NAN,
             },
         }
@@ -748,9 +748,15 @@ impl FlowState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metrics::Ts;
+    use crate::metrics::{Cursor, Ts};
     use chrono::{Duration, TimeZone, Utc};
     use serde_json::json;
+
+    /// A slot-only cursor. Every case here reads a seconds or slot window, where the
+    /// print ordinal is never consulted; a print-window case states its own cursor.
+    fn c(slot: u64) -> Cursor {
+        Cursor { slot, print: 0 }
+    }
 
     fn ts(secs: f64) -> Ts {
         Utc.timestamp_opt(1_700_000_000, 0).unwrap()
@@ -911,7 +917,7 @@ mod tests {
             1.0,
         );
         assert!(st.classify(&t));
-        st.on_trade(&t, 0);
+        st.on_trade(&t, c(0));
         assert!(st.tagged_wallets.contains(&w));
 
         // Same wallet, no ix → contagion volume.
@@ -934,25 +940,25 @@ mod tests {
     fn lifetime_totals_and_vol_share() {
         let patterns = FlowPatterns::new(BTreeSet::from([ix_hash(&["vol"])]));
         let mut st = FlowState::new(patterns);
-        st.on_trade(&trade(Side::Buy, 4.0, Some(ix_hash(&["vol"])), 1, 0.0), 0);
-        st.on_trade(&trade(Side::Buy, 6.0, None, 2, 1.0), 0);
-        st.on_trade(&trade(Side::Sell, 1.0, Some(ix_hash(&["vol"])), 1, 2.0), 0);
+        st.on_trade(&trade(Side::Buy, 4.0, Some(ix_hash(&["vol"])), 1, 0.0), c(0));
+        st.on_trade(&trade(Side::Buy, 6.0, None, 2, 1.0), c(0));
+        st.on_trade(&trade(Side::Sell, 1.0, Some(ix_hash(&["vol"])), 1, 2.0), c(0));
 
-        assert_eq!(st.value(MetricId::VolBuy, None, ts(2.0), 0), 4.0);
-        assert_eq!(st.value(MetricId::VolSell, None, ts(2.0), 0), 1.0);
-        assert_eq!(st.value(MetricId::VolGross, None, ts(2.0), 0), 5.0);
-        assert_eq!(st.value(MetricId::VolNet, None, ts(2.0), 0), 3.0);
-        assert_eq!(st.value(MetricId::NonvolBuy, None, ts(2.0), 0), 6.0);
-        assert_eq!(st.value(MetricId::NonvolGross, None, ts(2.0), 0), 6.0);
+        assert_eq!(st.value(MetricId::VolBuy, None, ts(2.0), c(0)), 4.0);
+        assert_eq!(st.value(MetricId::VolSell, None, ts(2.0), c(0)), 1.0);
+        assert_eq!(st.value(MetricId::VolGross, None, ts(2.0), c(0)), 5.0);
+        assert_eq!(st.value(MetricId::VolNet, None, ts(2.0), c(0)), 3.0);
+        assert_eq!(st.value(MetricId::NonvolBuy, None, ts(2.0), c(0)), 6.0);
+        assert_eq!(st.value(MetricId::NonvolGross, None, ts(2.0), c(0)), 6.0);
         // vol_share = 5 / 11 * 100
-        let share = st.value(MetricId::VolShare, None, ts(2.0), 0);
+        let share = st.value(MetricId::VolShare, None, ts(2.0), c(0));
         assert!((share - 500.0 / 11.0).abs() < 1e-9);
     }
 
     #[test]
     fn vol_share_nan_at_zero() {
         let st = FlowState::new(FlowPatterns::default());
-        assert!(st.value(MetricId::VolShare, None, ts(0.0), 0).is_nan());
+        assert!(st.value(MetricId::VolShare, None, ts(0.0), c(0)).is_nan());
     }
 
     #[test]
@@ -960,19 +966,19 @@ mod tests {
         let patterns = FlowPatterns::new(BTreeSet::from([ix_hash(&["vol"])]));
         let mut st = FlowState::new(patterns);
         st.ensure_window(WindowSpec::secs(10.0));
-        st.on_trade(&trade(Side::Buy, 4.0, Some(ix_hash(&["vol"])), 1, 0.0), 0);
-        st.on_trade(&trade(Side::Buy, 6.0, None, 2, 1.0), 0);
-        assert_eq!(st.value(MetricId::VolBuy, Some(WindowSpec::secs(10.0)), ts(1.0), 0), 4.0);
-        assert_eq!(st.value(MetricId::NonvolBuy, Some(WindowSpec::secs(10.0)), ts(1.0), 0), 6.0);
+        st.on_trade(&trade(Side::Buy, 4.0, Some(ix_hash(&["vol"])), 1, 0.0), c(0));
+        st.on_trade(&trade(Side::Buy, 6.0, None, 2, 1.0), c(0));
+        assert_eq!(st.value(MetricId::VolBuy, Some(WindowSpec::secs(10.0)), ts(1.0), c(0)), 4.0);
+        assert_eq!(st.value(MetricId::NonvolBuy, Some(WindowSpec::secs(10.0)), ts(1.0), c(0)), 6.0);
         // Trailing window is (now−w, now] — at t=11 the t=1 trade is still in;
         // one ms past the edge drops everything.
-        st.on_tick(ts(11.0), 0);
-        assert_eq!(st.value(MetricId::VolBuy, Some(WindowSpec::secs(10.0)), ts(11.0), 0), 0.0);
-        assert_eq!(st.value(MetricId::NonvolBuy, Some(WindowSpec::secs(10.0)), ts(11.0), 0), 6.0);
-        st.on_tick(ts(11.001), 0);
-        assert_eq!(st.value(MetricId::NonvolBuy, Some(WindowSpec::secs(10.0)), ts(11.001), 0), 0.0);
+        st.on_tick(ts(11.0), c(0));
+        assert_eq!(st.value(MetricId::VolBuy, Some(WindowSpec::secs(10.0)), ts(11.0), c(0)), 0.0);
+        assert_eq!(st.value(MetricId::NonvolBuy, Some(WindowSpec::secs(10.0)), ts(11.0), c(0)), 6.0);
+        st.on_tick(ts(11.001), c(0));
+        assert_eq!(st.value(MetricId::NonvolBuy, Some(WindowSpec::secs(10.0)), ts(11.001), c(0)), 0.0);
         // Lifetime unchanged.
-        assert_eq!(st.value(MetricId::VolBuy, None, ts(11.001), 0), 4.0);
+        assert_eq!(st.value(MetricId::VolBuy, None, ts(11.001), c(0)), 4.0);
     }
 
     /// Guard on replacing the old full-buffer rescan: the running-totals read must
@@ -1009,7 +1015,7 @@ mod tests {
             let mut wallet = 100u64;
             for &(side, sol, is_vol, at) in script {
                 wallet += 1; // fresh wallet each trade so contagion can't reclassify
-                st.on_trade(&trade(side, sol, is_vol.then_some(vol), wallet, at), 0);
+                st.on_trade(&trade(side, sol, is_vol.then_some(vol), wallet, at), c(0));
                 for probe in [-3.0, 0.0, 0.5, 3.0, 12.0] {
                     let now_ts = ts(at + probe);
                     let now = now_ts.timestamp_millis();
@@ -1026,7 +1032,7 @@ mod tests {
                         }
                     }
                     for id in ids {
-                        let (got, exp) = (st.value(id, Some(WindowSpec::secs(window)), now_ts, 0), want.value(id));
+                        let (got, exp) = (st.value(id, Some(WindowSpec::secs(window)), now_ts, c(0)), want.value(id));
                         assert!(
                             (got - exp).abs() < 1e-9 || (got.is_nan() && exp.is_nan()),
                             "{id:?} w={window} at={at} probe={probe}: {got} != {exp}"
@@ -1095,7 +1101,7 @@ mod tests {
                     at: ts(i as f64),
                     ix_hash: t.labels.as_deref().and_then(ix_hash_opt),
                     wallet_hash: wallet_hash(&t.wallet),
-                }, 0);
+                }, c(0));
             }
             let now = ts(case.trades.len() as f64);
             for (id, want, label) in [
@@ -1104,7 +1110,7 @@ mod tests {
                 (MetricId::NonvolBuy, case.expect.nonvol_buy, "nonvol_buy"),
                 (MetricId::NonvolSell, case.expect.nonvol_sell, "nonvol_sell"),
             ] {
-                let got = st.value(id, None, now, 0);
+                let got = st.value(id, None, now, c(0));
                 assert!(
                     (got - want).abs() < 1e-9,
                     "case {:?}: {label} = {got}, expected {want}",
@@ -1177,14 +1183,14 @@ mod tests {
         let buy = |sol: f64, bits: u16, slot: u64| TradeLite {
             side: Side::Buy, sol, at, slot, marker_bits: bits, ..Default::default()
         };
-        st.on_trade(&buy(0.7, 0, 100), 100);
-        st.on_trade(&buy(0.5, 0, 100), 100);
-        assert_eq!(st.value(MetricId::WinVolBuy, Some(crate::metrics::WindowSpec::slots(1.0, 0.0)), at, 100), 0.0);
-        assert_eq!(st.value(MetricId::WinNonvolBuy, Some(crate::metrics::WindowSpec::slots(1.0, 0.0)), at, 100), 1.2);
+        st.on_trade(&buy(0.7, 0, 100), c(100));
+        st.on_trade(&buy(0.5, 0, 100), c(100));
+        assert_eq!(st.value(MetricId::WinVolBuy, Some(crate::metrics::WindowSpec::slots(1.0, 0.0)), at, c(100)), 0.0);
+        assert_eq!(st.value(MetricId::WinNonvolBuy, Some(crate::metrics::WindowSpec::slots(1.0, 0.0)), at, c(100)), 1.2);
 
-        st.on_trade(&buy(0.4, seed, 100), 100);
+        st.on_trade(&buy(0.4, seed, 100), c(100));
         assert_eq!(
-            st.value(MetricId::WinVolBuy, Some(crate::metrics::WindowSpec::slots(1.0, 0.0)), at, 100),
+            st.value(MetricId::WinVolBuy, Some(crate::metrics::WindowSpec::slots(1.0, 0.0)), at, c(100)),
             0.4,
             "the machine is on the volume side and the gate must see it"
         );

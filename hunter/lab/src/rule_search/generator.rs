@@ -428,13 +428,7 @@ fn side_from(clauses: &[Clause]) -> SideConditions {
         let gc = match instances
             .iter()
             .position(|g| {
-                same_window(
-                    g.window_spec(
-                        hunter_engine::metrics::WINDOW_SEC_PARAM,
-                        hunter_engine::metrics::WINDOW_SLOT_PARAM,
-                    ),
-                    c.window,
-                )
+                same_window(g.window_spec(&hunter_engine::metrics::WINDOW_AXIS), c.window)
             })
         {
             Some(i) => &mut instances[i],
@@ -478,14 +472,15 @@ pub fn clause_label(c: &Clause) -> String {
         Operator::Eq => "=",
         Operator::Ne => "!=",
     };
+    // Suffix from the engine's own `WindowUnit::suffix`, so an ablation row names the
+    // same span a persisted exit reason and a live chip do. A lag prints only when
+    // there is one - a lagged window reads different tape from an unlagged one of the
+    // same size, and the two must not label identically.
     let window = c
         .window
-        .map(|w| match w.unit {
-            hunter_engine::metrics::WindowUnit::Sec => format!("({:.0}s)", w.size),
-            hunter_engine::metrics::WindowUnit::Slot if w.lag > 0.0 => {
-                format!("({:.0}sl@{:.0})", w.size, w.lag)
-            }
-            hunter_engine::metrics::WindowUnit::Slot => format!("({:.0}sl)", w.size),
+        .map(|w| match w.lag > 0.0 {
+            true => format!("({:.0}{}@{:.0})", w.size, w.unit.suffix(), w.lag),
+            false => format!("({:.0}{})", w.size, w.unit.suffix()),
         })
         .unwrap_or_default();
     format!(

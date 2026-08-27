@@ -35,7 +35,7 @@ use hunter_engine::metrics::{group_spec, MetricFamily};
 
 use crate::sweep::aggregate::ComboMetrics;
 use crate::sweep::corpus::Corpus;
-use crate::sweep::generic::axes::{AxesModel, AxesRequest, AxisSpec, ResolvedAxis};
+use crate::sweep::generic::axes::{AxesModel, AxesRequest, AxisSpec, ResolvedAxis, WindowField};
 use crate::sweep::generic::Pricing;
 use crate::sweep::progress::SweepObserver;
 
@@ -96,7 +96,7 @@ impl FamilyMember {
             group: Some(group_spec(self.metric.group).name.to_string()),
             metric: Some(self.metric.metric.name().to_string()),
             operator: Some(self.operator),
-            window: self.metric.window,
+            window: self.metric.window.map(|w| WindowField::Span(w.label())),
             values: std::iter::once(None).chain(self.values.iter().copied().map(Some)).collect(),
         }
     }
@@ -769,7 +769,7 @@ fn rescue_model(
         group: Some(group_spec(r.metric.group).name.to_string()),
         metric: Some(r.metric.metric.name().to_string()),
         operator: Some(r.operator),
-        window: r.metric.window,
+        window: r.metric.window.map(|w| WindowField::Span(w.label())),
         values: r.menu_values(),
     });
     axes.extend(baseline_axes(baseline));

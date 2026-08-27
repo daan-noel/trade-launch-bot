@@ -15,20 +15,23 @@ import type { StrategyRegistry } from './registry';
 import type { GroupConditions } from './ruleParams';
 import {
   BURST_PARAM,
+  BURST_PRINT_PARAM,
   BURST_SLOT_PARAM,
   burstSizeParam,
   formatWindowSpec,
   sizeParam,
   unitSuffix,
   WINDOW_LAG_PARAM,
-  WINDOW_PARAMS,
+  WINDOW_SIZE_PARAMS,
   windowSpecFromStrict,
   windowSpecKey,
+  withoutAxis,
+  withoutBurstAxis,
   type WindowSpec,
   type WindowUnit,
 } from './windowSpec';
 
-export { BURST_PARAM, BURST_SLOT_PARAM };
+export { BURST_PARAM, BURST_PRINT_PARAM, BURST_SLOT_PARAM };
 
 /** Which side a condition row applies to (the column owns it). */
 export type RuleConditionSide = 'entry' | 'exit';
@@ -49,10 +52,10 @@ export interface RuleConditionRow {
   /** Trailing window SIZE as raw text; '' when static / unset. The unit it counts
    *  in is {@link RuleConditionRow.windowUnit} — a bare number is not a window. */
   window: string;
-  /** What this row's windows count in. `undefined` reads as `'sec'`, so a row from
-   *  before slots existed is a wall-clock row. Both axes of a two-window group share
-   *  it: a burst in slots over a reference in seconds is a ratio across two clocks,
-   *  which the backend rejects at save. */
+  /** What this row's windows count in — `'sec'`, `'slot'` or `'print'`. `undefined`
+   *  reads as `'sec'`, so a row from before slots existed is a wall-clock row. Both
+   *  axes of a two-window group share it: a burst in slots over a reference in
+   *  seconds is a ratio across two clocks, which the backend rejects at save. */
   windowUnit?: WindowUnit;
   /** How many units back from *now* the window ENDS, as raw text; '' = ends at now.
    *  This is what makes a window causal in its own terms — a gate on "the state
@@ -364,12 +367,9 @@ export function rowsToSide(
     // bag onto each), so a later row merging in is a no-op rather than a conflict.
     // The burst axis is re-spelled in the row's unit for the same reason the
     // reference span is: a unit flip must not leave the old param behind.
-    const { [BURST_PARAM]: bSec, [BURST_SLOT_PARAM]: bSlot, ...rest } = row.strict ?? {};
-    Object.assign(inst.strict, rest);
+    Object.assign(inst.strict, withoutBurstAxis(row.strict));
     const burst = ruleRowBurstSpec(row);
     if (burst != null) inst.strict[burstSizeParam(burst.unit)] = burst.size;
-    void bSec;
-    void bSlot;
     inst.metrics[row.metric] = row.arms;
   }
   return out;
@@ -412,11 +412,7 @@ export function sideToRows(
       // `lag` fields own. The BURST axis stays in the bag (there is a control for
       // it) but the reference lag does not — it is shared by both axes, so leaving a
       // copy here would let a stale value outlive a lag edit.
-      const strict = Object.fromEntries(
-        Object.entries(inst.strict).filter(
-          ([k]) => k !== WINDOW_PARAMS[0] && k !== WINDOW_PARAMS[1] && k !== WINDOW_LAG_PARAM,
-        ),
-      );
+      const strict = withoutAxis(inst.strict, [...WINDOW_SIZE_PARAMS, WINDOW_LAG_PARAM]);
       for (const [metric, arms] of Object.entries(inst.metrics)) {
         if (!arms?.length) continue;
         rows.push({

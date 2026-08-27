@@ -180,31 +180,93 @@ impl Default for TradeLite {
 
 /// What a dynamic group's window counts in.
 ///
-/// **Time is continuous, slots are discrete**, and the two spans are deliberately
-/// not the same shape:
+/// **Time is continuous, slots and prints are discrete**, and the three spans are
+/// deliberately not the same shape:
 ///
 /// * [`Sec`](Self::Sec) — `size` seconds of wall clock, a closed interval.
 /// * [`Slot`](Self::Slot) — exactly `size` slots, discrete buckets.
+/// * [`Print`](Self::Print) — exactly `size` prints of THIS token's tape.
 ///
 /// A slot is what the chain actually batches in, so a bundle is a slot fact and
 /// never a time fact: at ~400 ms a one-second window straddles two or three slots
 /// and merges bursts that landed separately.
+///
+/// A print is what the tape itself batches in. Both clocks answer "how much SOL
+/// moved" with a number that a busy tape and a quiet one reach differently: `10`
+/// over one second is ten one-SOL prints or one ten-SOL print, and no wall-clock or
+/// slot span can tell them apart. `size: 1, lag: 0` on a print window is **one
+/// transaction**, which is the only span in which "10 SOL in one trade" is a
+/// statement about a trade rather than about an interval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowUnit {
     Sec,
     Slot,
+    Print,
 }
 
 impl WindowUnit {
-    /// The JSON key a rule spells this unit's size with.
+    /// Every unit, in resolution order. The one place a basis is enumerated: a
+    /// window axis lists its size params from this, `validate_group` counts the ones
+    /// a bag sets from this, and the frontend mirrors the same order.
+    pub const ALL: [WindowUnit; 3] = [Self::Sec, Self::Slot, Self::Print];
+
+    /// The JSON key a rule spells this unit's size on the group's OWN axis. The
+    /// second axis of a two-window group has its own names — see [`WindowAxis`].
     pub const fn size_param(self) -> &'static str {
+        WINDOW_AXIS.size_param(self)
+    }
+
+
+    /// The short suffix a window in this unit labels itself with: `30s`, `30sl`,
+    /// `30p`. The ONE spelling — persisted exit reasons, live chips, chart legends
+    /// and the search's ablation rows all render through it, so a label parsed back
+    /// by `event::split_window_qualifier` means what it printed. `sl` must stay
+    /// distinguishable from `s` by its suffix alone; the parser strips the longer
+    /// one first.
+    pub const fn suffix(self) -> &'static str {
         match self {
-            Self::Sec => WINDOW_SEC_PARAM,
-            Self::Slot => WINDOW_SLOT_PARAM,
+            Self::Sec => "s",
+            Self::Slot => "sl",
+            Self::Print => "p",
         }
     }
 }
+
+/// The size params ONE window axis spells itself with — one name per
+/// [`WindowUnit`]. A dynamic group's own span is [`WINDOW_AXIS`]; `m_flow_burst`'s
+/// second span is [`flow_burst::BURST_AXIS`].
+///
+/// Exists so "which param carries this axis" is asked once instead of branching per
+/// pair of units at every resolve, validate and label site — that branching is what
+/// made a third basis a rewrite instead of an entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowAxis {
+    pub sec: &'static str,
+    pub slot: &'static str,
+    pub print: &'static str,
+}
+
+impl WindowAxis {
+    /// This axis's size param for one unit.
+    pub const fn size_param(&self, unit: WindowUnit) -> &'static str {
+        match unit {
+            WindowUnit::Sec => self.sec,
+            WindowUnit::Slot => self.slot,
+            WindowUnit::Print => self.print,
+        }
+    }
+
+    /// Every size param of this axis, in [`WindowUnit::ALL`] order. The list a
+    /// registry declares and a validator counts set keys against.
+    pub const fn params(&self) -> [&'static str; 3] {
+        [self.sec, self.slot, self.print]
+    }
+}
+
+/// The reference axis every dynamic group carries.
+pub const WINDOW_AXIS: WindowAxis =
+    WindowAxis { sec: WINDOW_SEC_PARAM, slot: WINDOW_SLOT_PARAM, print: WINDOW_PRINT_PARAM };
 
 /// Nominal seconds per slot. Used in exactly one place - sizing the tick-grid
 /// horizon for a slot window, where the grid is a wall clock and the span is not.
@@ -217,6 +279,9 @@ pub const NOMINAL_SLOT_SECS: f64 = 0.4;
 pub const WINDOW_SEC_PARAM: &str = "window_size_sec";
 /// The size param for a slot window. Mutually exclusive with [`WINDOW_SEC_PARAM`].
 pub const WINDOW_SLOT_PARAM: &str = "window_size_slots";
+/// The size param for a print window — `size` prints of the token's own tape.
+/// Mutually exclusive with the other two.
+pub const WINDOW_PRINT_PARAM: &str = "window_size_prints";
 /// How many units back from *now* the window ends. `0` (the default, and the only
 /// value before this param existed) means it ends at now.
 pub const WINDOW_LAG_PARAM: &str = "window_lag";
@@ -246,6 +311,12 @@ impl WindowSpec {
         Self { size, lag, unit: WindowUnit::Slot }
     }
 
+    /// A print window of `size` prints ending `lag` prints before now.
+    /// `prints(1.0, 0.0)` is the current transaction alone.
+    pub fn prints(size: f64, lag: f64) -> Self {
+        Self { size, lag, unit: WindowUnit::Print }
+    }
+
     /// Dedup identity. Two rules asking for the same span share one buffer; a
     /// 30-second and a 30-slot window are different buffers, as they must be.
     pub fn key(&self) -> WindowKey {
@@ -256,38 +327,118 @@ impl WindowSpec {
         }
     }
 
-    /// Where a trade sits on this window's axis.
-    pub fn pos(&self, at: Ts, slot: u64) -> i64 {
+    /// The span, named: `30s`, `30sl`, `20p`, `30sl@1`.
+    ///
+    /// **The one spelling of a window**, and the inverse of [`parse`](Self::parse).
+    /// A persisted exit reason, a live chip, a chart legend and a `?windows=` query
+    /// all carry this string, so a span that round-trips here reads the same
+    /// everywhere. The `@lag` half appears only when there IS a lag: a lagged window
+    /// reads a DIFFERENT span from an unlagged one of the same size, and the two must
+    /// never print identically.
+    pub fn label(&self) -> String {
+        let lag = if self.lag > 0.0 {
+            format!("@{}", crate::event::format_metric_threshold(self.lag))
+        } else {
+            String::new()
+        };
+        format!(
+            "{}{}{lag}",
+            crate::event::format_metric_threshold(self.size),
+            self.unit.suffix()
+        )
+    }
+
+    /// Parse a span written by [`label`](Self::label). `None` on anything malformed —
+    /// a caller must not silently read an unrecognised qualifier as a bare number,
+    /// which is how `30sl` would become a 30-SECOND window.
+    ///
+    /// A bare number is seconds, so every span written before the other bases existed
+    /// still parses to exactly what it always meant.
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim();
+        let (head, lag) = match s.split_once('@') {
+            Some((head, l)) => (head, l.trim().parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0)?),
+            None => (s, 0.0),
+        };
+        // Longest suffix first, or `sl` parses as a seconds span with a stray `l`.
+        // A bare number falls through to `Sec`, which is the pre-basis spelling.
+        let mut unit = WindowUnit::Sec;
+        let mut size_str = head;
+        for u in [WindowUnit::Slot, WindowUnit::Print, WindowUnit::Sec] {
+            if let Some(rest) = head.strip_suffix(u.suffix()) {
+                (unit, size_str) = (u, rest);
+                break;
+            }
+        }
+        let size = size_str.trim().parse::<f64>().ok()?;
+        (size.is_finite() && size > 0.0).then_some(Self { size, lag, unit })
+    }
+
+    /// Where a point on the tape sits on this window's axis. `cur` is the cursor
+    /// read for that point: a trade's own cursor when folding it, the token's
+    /// current one when reading.
+    pub fn pos(&self, at: Ts, cur: Cursor) -> i64 {
         match self.unit {
             WindowUnit::Sec => at.timestamp_millis(),
-            WindowUnit::Slot => slot as i64,
+            WindowUnit::Slot => cur.slot as i64,
+            WindowUnit::Print => cur.print as i64,
         }
     }
 
-    /// Where *now* sits on this window's axis. `cur_slot` is the last slot the token
-    /// has observed — a slot axis has no clock of its own, so it holds its last
-    /// reading until a trade moves it.
-    pub fn now_pos(&self, now: Ts, cur_slot: u64) -> i64 {
-        self.pos(now, cur_slot)
+    /// Where *now* sits on this window's axis. `cur` is the token's current cursor —
+    /// a discrete axis has no clock of its own, so it holds its last reading until a
+    /// trade moves it.
+    pub fn now_pos(&self, now: Ts, cur: Cursor) -> i64 {
+        self.pos(now, cur)
     }
 
     /// Inclusive `[lo, hi]` bounds at `now_pos`.
     ///
     /// * `Sec` — `[now - lag - size, now - lag]` in milliseconds, so `lag: 0` is
     ///   byte-for-byte the old `[now - w, now]`.
-    /// * `Slot` — `[now - lag - (size-1), now - lag]`, exactly `size` slots, so
-    ///   `size: 1, lag: 0` is the current slot alone.
+    /// * `Slot` / `Print` — `[now - lag - (size-1), now - lag]`, exactly `size`
+    ///   buckets, so `size: 1, lag: 0` is the current slot / the current print
+    ///   alone. One arithmetic for both because a discrete cursor is a discrete
+    ///   cursor; what differs between them is what advances it, not how it is
+    ///   sliced.
     pub fn bounds(&self, now_pos: i64) -> (i64, i64) {
         match self.unit {
             WindowUnit::Sec => {
                 let hi = now_pos - quantize(self.lag) as i64;
                 (hi - quantize(self.size) as i64, hi)
             }
-            WindowUnit::Slot => {
+            WindowUnit::Slot | WindowUnit::Print => {
                 let hi = now_pos - self.lag.max(0.0).round() as i64;
                 (hi - (self.size.max(1.0).round() as i64 - 1), hi)
             }
         }
+    }
+}
+
+/// Where a token stands on every DISCRETE window axis at once — the counters a
+/// clock cannot supply.
+///
+/// One value rather than two arguments, so a call site cannot silently pass a slot
+/// where a print ordinal belongs, and so a fourth discrete basis is a field rather
+/// than a signature change at every fold and read site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Cursor {
+    /// Highest slot the token has observed. `0` before the first trade, or when no
+    /// adapter supplies slots.
+    pub slot: u64,
+    /// How many prints the token has taken, counting the one being folded. `0`
+    /// before the first trade, so `size: 1, lag: 0` reads an empty window rather
+    /// than a phantom one.
+    pub print: u64,
+}
+
+impl Cursor {
+    /// The cursor of one trade being folded into the token whose current cursor is
+    /// `self`: the trade's OWN slot (which may lag the token's on a regressed feed
+    /// row) at the token's current print ordinal — the trade being folded IS that
+    /// print, so on the print axis a trade always sits at `now`.
+    pub fn at_trade(self, t: &TradeLite) -> Self {
+        Self { slot: t.slot, print: self.print }
     }
 }
 
@@ -524,6 +675,7 @@ pub fn is_flow_metric(id: MetricId) -> bool {
 pub fn is_fingerprint_scoped(id: MetricId) -> bool {
     is_flow_metric(id)
 }
+
 
 impl MetricId {
     pub fn name(self) -> &'static str {
@@ -951,11 +1103,12 @@ pub const REGISTRY: &[GroupSpec] = &[
         scope: MetricScope::Token,
         family: MetricFamily::Price,
         strict_params: &[
-            // EXACTLY ONE of the two size params. Neither is `required` on its own;
-            // `validate_group` enforces the choice, because "one of these two" is a
+            // EXACTLY ONE of the three size params. None is `required` on its own;
+            // `validate_group` enforces the choice, because "one of these" is a
             // cross-param rule a `StrictParamSpec` cannot spell.
             StrictParamSpec { name: WINDOW_SEC_PARAM, required: false, allows_zero: false },
             StrictParamSpec { name: WINDOW_SLOT_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: WINDOW_PRINT_PARAM, required: false, allows_zero: false },
             // How many units back from now the window ENDS. `0` is a real value (end
             // at now) and the only behaviour that existed before this param, so it is
             // the default and it allows zero.
@@ -1061,11 +1214,12 @@ pub const REGISTRY: &[GroupSpec] = &[
         scope: MetricScope::Token,
         family: MetricFamily::Flow,
         strict_params: &[
-            // EXACTLY ONE of the two size params. Neither is `required` on its own;
-            // `validate_group` enforces the choice, because "one of these two" is a
+            // EXACTLY ONE of the three size params. None is `required` on its own;
+            // `validate_group` enforces the choice, because "one of these" is a
             // cross-param rule a `StrictParamSpec` cannot spell.
             StrictParamSpec { name: WINDOW_SEC_PARAM, required: false, allows_zero: false },
             StrictParamSpec { name: WINDOW_SLOT_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: WINDOW_PRINT_PARAM, required: false, allows_zero: false },
             // How many units back from now the window ENDS. `0` is a real value (end
             // at now) and the only behaviour that existed before this param, so it is
             // the default and it allows zero.
@@ -1185,16 +1339,18 @@ pub const REGISTRY: &[GroupSpec] = &[
         // slice nested inside it. Both axes are required — a share with one end
         // missing is not a smaller reading, it is no reading — and both count in the
         // SAME unit, since a burst in slots over a reference in seconds is a ratio
-        // across two clocks. Neither size param is `required` on its own because
-        // "exactly one of the pair" is a cross-param rule; `validate_group` enforces
+        // across two clocks. No size param is `required` on its own because
+        // "exactly one per axis" is a cross-param rule; `validate_group` enforces
         // the choice, the unit agreement, and the `burst <= window` nesting bound,
         // none of which a `StrictParamSpec` can spell.
         strict_params: &[
             StrictParamSpec { name: WINDOW_SEC_PARAM, required: false, allows_zero: false },
             StrictParamSpec { name: WINDOW_SLOT_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: WINDOW_PRINT_PARAM, required: false, allows_zero: false },
             StrictParamSpec { name: WINDOW_LAG_PARAM, required: false, allows_zero: true },
             StrictParamSpec { name: flow_burst::BURST_PARAM, required: false, allows_zero: false },
             StrictParamSpec { name: flow_burst::BURST_SLOT_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: flow_burst::BURST_PRINT_PARAM, required: false, allows_zero: false },
         ],
         fingerprint_config: &[],
         // Same violet family as m_flow_lifetime / m_flow_window — it is built from
@@ -1318,11 +1474,12 @@ pub const REGISTRY: &[GroupSpec] = &[
         scope: MetricScope::Token,
         family: MetricFamily::FlowSplit,
         strict_params: &[
-            // EXACTLY ONE of the two size params. Neither is `required` on its own;
-            // `validate_group` enforces the choice, because "one of these two" is a
+            // EXACTLY ONE of the three size params. None is `required` on its own;
+            // `validate_group` enforces the choice, because "one of these" is a
             // cross-param rule a `StrictParamSpec` cannot spell.
             StrictParamSpec { name: WINDOW_SEC_PARAM, required: false, allows_zero: false },
             StrictParamSpec { name: WINDOW_SLOT_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: WINDOW_PRINT_PARAM, required: false, allows_zero: false },
             // How many units back from now the window ENDS. `0` is a real value (end
             // at now) and the only behaviour that existed before this param, so it is
             // the default and it allows zero.
@@ -1787,8 +1944,8 @@ mod tests {
                 assert_eq!(m_json["hue"], m.hue);
             }
         }
-        // m_flow_window advertises BOTH size params plus the lag; neither size is
-        // `required` alone because exactly one of the two must be set, which is a
+        // m_flow_window advertises EVERY size param plus the lag; no size is
+        // `required` alone because exactly one of them must be set, which is a
         // cross-param rule `validate_group` owns.
         let tw = groups.iter().find(|g| g["name"] == "m_flow_window").unwrap();
         let names: Vec<&str> = tw["strict_params"]
@@ -1797,11 +1954,45 @@ mod tests {
             .iter()
             .map(|p| p["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, vec![WINDOW_SEC_PARAM, WINDOW_SLOT_PARAM, WINDOW_LAG_PARAM]);
+        assert_eq!(names, vec![WINDOW_SEC_PARAM, WINDOW_SLOT_PARAM, WINDOW_PRINT_PARAM, WINDOW_LAG_PARAM]);
         assert!(tw["strict_params"].as_array().unwrap().iter().all(|p| p["required"] == false));
         let life = groups.iter().find(|g| g["name"] == "m_flow_lifetime").unwrap();
         assert!(life["strict_params"].as_array().unwrap().is_empty());
         assert_eq!(life["kind"], "static");
+    }
+
+    /// `label` and `parse` are one grammar, and every surface that names a span uses
+    /// it: a persisted exit reason, a live chip, a chart legend, a `?windows=` query,
+    /// a sweep axis. A span that survives this round trip means the same window
+    /// wherever it is written.
+    #[test]
+    fn every_span_round_trips_through_its_label() {
+        for w in [
+            WindowSpec::secs(30.0),
+            WindowSpec::secs(0.5),
+            WindowSpec::secs(2.5),
+            WindowSpec::slots(1.0, 0.0),
+            WindowSpec::slots(30.0, 1.0),
+            WindowSpec::prints(1.0, 0.0),
+            WindowSpec::prints(20.0, 1.0),
+        ] {
+            let label = w.label();
+            assert_eq!(WindowSpec::parse(&label), Some(w), "{label}");
+        }
+        // One size, three bases, three labels - the property that keeps a 30-slot read
+        // from being served under a 30-second column.
+        let labels: std::collections::BTreeSet<String> = WindowUnit::ALL
+            .into_iter()
+            .map(|unit| WindowSpec { size: 1.0, lag: 0.0, unit }.label())
+            .collect();
+        assert_eq!(labels.len(), 3, "{labels:?}");
+
+        // A bare number is SECONDS: the spelling every span had before the other
+        // bases existed, and what `?windows=10,30,60` still means.
+        assert_eq!(WindowSpec::parse("60"), Some(WindowSpec::secs(60.0)));
+        for bad in ["", "abc", "0p", "-5s", "30x", "30sl@-1", "s", "@1"] {
+            assert_eq!(WindowSpec::parse(bad), None, "{bad}");
+        }
     }
 
     /// Metrics that intentionally sit outside their group's hue family because

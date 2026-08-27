@@ -185,20 +185,11 @@ pub fn format_metric_exit_name(
     window: Option<crate::metrics::WindowSpec>,
 ) -> String {
     match window {
+        // The qualifier is `WindowSpec::label` in parentheses — the SAME grammar a
+        // `?windows=` query and a chart legend use, so a reason written here parses
+        // back through `WindowSpec::parse` by construction rather than by agreement.
         Some(w) if w.size.is_finite() && w.size > 0.0 => {
-            // Unit suffix `s` / `sl`, then `@lag` only when there IS one. A lagged
-            // window reads a DIFFERENT span from an unlagged one of the same size,
-            // so two reqs that differ only in lag must not print identically.
-            let unit = match w.unit {
-                crate::metrics::WindowUnit::Sec => "s",
-                crate::metrics::WindowUnit::Slot => "sl",
-            };
-            let lag = if w.lag > 0.0 {
-                format!("@{}", format_metric_threshold(w.lag))
-            } else {
-                String::new()
-            };
-            format!("{}({}{unit}{lag})", metric.name(), format_metric_threshold(w.size))
+            format!("{}({})", metric.name(), w.label())
         }
         _ => metric.name().to_string(),
     }
@@ -305,37 +296,24 @@ pub fn parse_metric_exit_label(
 }
 
 /// Split `nonvol_buy(2s)` into `("nonvol_buy", Some(2s))`, `buy(30sl@1)` into the
-/// 30-slot span lagged by one. Anything that is not a well-formed suffix is left on
-/// the name, so an unrecognised qualifier fails the name lookup instead of silently
-/// parsing as a bare metric. A label written before slots existed has no `sl` and no
-/// `@`, so it still parses to exactly the seconds window it always meant.
+/// 30-slot span lagged by one, `buy(1p)` into the single-print span. Anything that is
+/// not a well-formed suffix is left on the name, so an unrecognised qualifier fails
+/// the name lookup instead of silently parsing as a bare metric. A label written
+/// before slots existed has no `sl`, no `p` and no `@`, so it still parses to exactly
+/// the seconds window it always meant.
 fn split_window_qualifier(token: &str) -> (&str, Option<crate::metrics::WindowSpec>) {
-    use crate::metrics::{WindowSpec, WindowUnit};
     let Some(open) = token.find('(') else {
         return (token, None);
     };
     let Some(inner) = token[open + 1..].strip_suffix(')') else {
         return (token, None);
     };
-    let (inner, lag) = match inner.split_once('@') {
-        Some((head, l)) => match l.parse::<f64>() {
-            Ok(v) if v.is_finite() && v >= 0.0 => (head, v),
-            _ => return (token, None),
-        },
-        None => (inner, 0.0),
-    };
-    // `sl` before `s`, or the slot suffix parses as a seconds one with a stray `l`.
-    let (size_str, unit) = match inner.strip_suffix("sl") {
-        Some(rest) => (rest, WindowUnit::Slot),
-        None => match inner.strip_suffix('s') {
-            Some(rest) => (rest, WindowUnit::Sec),
-            None => return (token, None),
-        },
-    };
-    match size_str.parse::<f64>() {
-        Ok(w) if w.is_finite() && w > 0.0 => {
-            (&token[..open], Some(WindowSpec { size: w, lag, unit }))
-        }
+    // A bare number inside the parens would be a legacy seconds span, which
+    // `WindowSpec::parse` accepts — but this position never held one: the qualifier
+    // has carried its `s` since it was introduced, and `nonvol_buy(2)` is exactly the
+    // malformed shape that must fail the name lookup rather than resolve.
+    match crate::metrics::WindowSpec::parse(inner) {
+        Some(w) if inner.trim().parse::<f64>().is_err() => (&token[..open], Some(w)),
         _ => (token, None),
     }
 }
@@ -696,6 +674,32 @@ mod exit_label_tests {
         assert_ne!(win("nonvol_buy"), stat("nonvol_buy"));
     }
 
+    /// One size, three bases, three labels. `1s`, `1sl` and `1p` read different tape,
+    /// so an operator reading a stored reason must be able to tell which fired.
+    #[test]
+    fn each_basis_labels_itself_apart_at_the_same_size() {
+        use crate::metrics::WindowSpec;
+        let label = |w| {
+            ExitReason::Metrics {
+                metric: win("nonvol_buy"),
+                operator: Operator::Gte,
+                value: 1.0,
+                window: Some(w),
+            }
+            .label()
+            .into_owned()
+        };
+        let (sec, slot, print) = (
+            label(WindowSpec::secs(1.0)),
+            label(WindowSpec::slots(1.0, 0.0)),
+            label(WindowSpec::prints(1.0, 0.0)),
+        );
+        assert_eq!(sec, "nonvol_buy(1s) >= 1");
+        assert_eq!(slot, "nonvol_buy(1sl) >= 1");
+        assert_eq!(print, "nonvol_buy(1p) >= 1");
+        assert_eq!(std::collections::BTreeSet::from([&sec, &slot, &print]).len(), 3);
+    }
+
     #[test]
     fn fractional_and_large_windows_survive_the_round_trip() {
         use crate::metrics::WindowSpec;
@@ -708,6 +712,11 @@ mod exit_label_tests {
             // persisted exit reason cannot name which read fired.
             WindowSpec::slots(1.0, 0.0),
             WindowSpec::slots(30.0, 1.0),
+            // Same for a print span. `1p` is the one-transaction read, and its
+            // suffix has to stay distinguishable from `1s` and `1sl` - three spans
+            // that report different tape must never label identically.
+            WindowSpec::prints(1.0, 0.0),
+            WindowSpec::prints(20.0, 1.0),
         ] {
             let r = ExitReason::Metrics {
                 metric: win("nonvol_buy"),

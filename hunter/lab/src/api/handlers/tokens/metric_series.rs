@@ -46,7 +46,7 @@ use hunter_engine::metrics::grid::{estimate_sparse_rows, fold_sparse, SparseGrid
 use hunter_engine::metrics::position::PositionCtx;
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
 use hunter_engine::metrics::{
-    group_spec, metric_spec, MetricGroupId, MetricId, MetricKind, Ts, REGISTRY,
+    group_spec, metric_spec, MetricGroupId, MetricId, MetricKind, Ts, WindowSpec, REGISTRY,
 };
 
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
@@ -111,16 +111,22 @@ struct SeriesOut {
     metric: &'static str,
     group: &'static str,
     unit: &'static str,
-    /// Present only for dynamic metrics.
+    /// The whole span this column was computed over. Present only for dynamic
+    /// metrics. Readers should prefer this over [`window_size_sec`](Self::window_size_sec).
+    window: Option<hunter_engine::metrics::WindowSpec>,
+    /// Legacy seconds scalar, kept for readers that predate `window`. `None` on a
+    /// slot or print span — neither has seconds to report, so a reader that only
+    /// knows this key drops the column rather than calling 30 slots 30 seconds.
     window_size_sec: Option<f64>,
     /// One value per event (aligned with `at`); non-finite values serialize `null`.
     values: Vec<Option<f64>>,
 }
 
-/// Default dynamic windows when the caller doesn't specify any.
+/// Default dynamic windows when the caller doesn't specify any. Wall-clock, because
+/// a caller that names none is browsing rather than checking a specific rule.
 const DEFAULT_WINDOWS: &[f64] = &[10.0, 30.0, 60.0];
 
-/// `GET /api/tokens/{mint}/metric-series?windows=10,30,60&curve_only=false` — every
+/// `GET /api/tokens/{mint}/metric-series?windows=10,30s,30sl@1,20p&curve_only=false` — every
 /// metric's value at every trade of the token, as parallel arrays (plus per-event
 /// spot `price` for chart entry/exit markers).
 pub async fn token_metric_series(
@@ -134,7 +140,7 @@ pub async fn token_metric_series(
     // move: the trailing windows (implied by `windows`) plus the two monotone clocks
     // the caller declares. Deadness is covered unconditionally by the grid itself.
     let grid = SparseGrid {
-        max_window_secs: windows.iter().cloned().fold(0.0_f64, f64::max),
+        max_window_secs: max_window_secs(&windows),
         time_horizon_secs: SparseGrid::clamp_secs(query.time_horizon_sec.unwrap_or(0.0)),
         stall_horizon_secs: SparseGrid::clamp_secs(query.stall_horizon_sec.unwrap_or(0.0)),
     };
@@ -341,19 +347,38 @@ async fn resolve_flow_ctx(
     }))
 }
 
+/// The grid is a WALL clock, so a slot span converts at the nominal slot time and a
+/// PRINT span contributes nothing - no tick can move a print cursor, and a trade emits
+/// its own row. Mirrors `ClockHorizons::absorb_req`: this only sizes the horizon,
+/// never a reading, so the slot approximation costs coverage and never correctness.
+fn max_window_secs(windows: &[WindowSpec]) -> f64 {
+    windows
+        .iter()
+        .map(|w| match w.unit {
+            hunter_engine::metrics::WindowUnit::Sec => w.size + w.lag,
+            hunter_engine::metrics::WindowUnit::Slot => {
+                (w.size + w.lag) * hunter_engine::metrics::NOMINAL_SLOT_SECS
+            }
+            hunter_engine::metrics::WindowUnit::Print => 0.0,
+        })
+        .fold(0.0_f64, f64::max)
+}
+
 /// Parse the `windows` CSV into a deduped, positive, finite list; fall back to the
 /// default set when absent/empty.
-fn parse_windows(raw: Option<&str>) -> Vec<f64> {
-    let mut ws: Vec<f64> = raw
-        .unwrap_or("")
-        .split(',')
-        .filter_map(|s| s.trim().parse::<f64>().ok())
-        .filter(|w| w.is_finite() && *w > 0.0)
-        .collect();
-    ws.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    ws.dedup();
+fn parse_windows(raw: Option<&str>) -> Vec<WindowSpec> {
+    // `WindowSpec::parse` is the same grammar a persisted exit reason and a chart
+    // legend use, and a bare number in it is seconds — so `?windows=10,30,60` means
+    // exactly what it always did while `30sl@1` and `20p` now mean themselves.
+    let mut ws: Vec<WindowSpec> =
+        raw.unwrap_or("").split(',').filter_map(WindowSpec::parse).collect();
+    // Dedup on the WHOLE span, the same identity the engine keys buffers by: a
+    // 30-second and a 30-slot column are two reads, and collapsing them would return
+    // one series under two labels.
+    ws.sort_by_key(|w| w.key());
+    ws.dedup_by_key(|w| w.key());
     if ws.is_empty() {
-        DEFAULT_WINDOWS.to_vec()
+        DEFAULT_WINDOWS.iter().copied().map(WindowSpec::secs).collect()
     } else {
         ws
     }
@@ -366,14 +391,14 @@ fn parse_windows(raw: Option<&str>) -> Vec<f64> {
 fn build_series(
     mint: &str,
     trades: &[crate::sweep::projection::CorpusTrade],
-    windows: &[f64],
+    windows: &[WindowSpec],
     grid: &SparseGrid,
     flow: Option<&FlowCtx>,
     entry: Option<(Ts, f64)>,
     facts: &TokenFacts,
 ) -> serde_json::Value {
     let mut columns: Vec<SeriesColumn> = Vec::new();
-    let mut labels: Vec<(SeriesColumn, Option<f64>)> = Vec::new();
+    let mut labels: Vec<(SeriesColumn, Option<WindowSpec>)> = Vec::new();
     for group in REGISTRY {
         // Flow groups need a fingerprint pattern context — skip when absent.
         let is_flow_group =
@@ -402,16 +427,15 @@ fn build_series(
                 MetricKind::Dynamic if is_flow_group => {
                     let fp = flow.unwrap().fp_id;
                     for &w in windows {
-                        let col = SeriesColumn::Flow(m.id, Some(hunter_engine::metrics::WindowSpec::secs(w)), fp);
+                        let col = SeriesColumn::Flow(m.id, Some(w), fp);
                         columns.push(col);
                         labels.push((col, Some(w)));
                     }
                 }
                 MetricKind::Dynamic => {
                     for &w in windows {
-                        let spec = hunter_engine::metrics::WindowSpec::secs(w);
-                        columns.push(SeriesColumn::window(m.id, spec));
-                        labels.push((SeriesColumn::window(m.id, spec), Some(w)));
+                        columns.push(SeriesColumn::window(m.id, w));
+                        labels.push((SeriesColumn::window(m.id, w), Some(w)));
                     }
                 }
             }
@@ -435,8 +459,7 @@ fn build_series(
     if let Some(ctx) = flow {
         // Same order as the live `TokenCreated` arm (`new_track` → `seed_creator`):
         // `seed_creator` back-fills every flow state already registered.
-        let specs: Vec<hunter_engine::metrics::WindowSpec> = windows.iter().map(|&w| hunter_engine::metrics::WindowSpec::secs(w)).collect();
-        series.ensure_flow(ctx.fp_id, &ctx.patterns, &specs);
+        series.ensure_flow(ctx.fp_id, &ctx.patterns, windows);
         if let Some(h) = ctx.creator_wallet_hash {
             series.seed_creator(h);
         }
@@ -466,18 +489,22 @@ fn build_series(
 
     let mut out: Vec<SeriesOut> = labels
         .iter()
-        .filter_map(|(col, window)| {
+        .filter_map(|&(col, window)| {
             let id = match col {
-                SeriesColumn::Static(id) => *id,
-                SeriesColumn::Window(id, _) => *id,
-                SeriesColumn::Flow(id, _, _) => *id,
+                SeriesColumn::Static(id) => id,
+                SeriesColumn::Window(id, _) => id,
+                SeriesColumn::Flow(id, _, _) => id,
             };
-            let values = series.column_values(*col)?;
+            let values = series.column_values(col)?;
             Some(SeriesOut {
                 metric: metric_spec(id).name,
                 group: group_for(id),
                 unit: metric_spec(id).unit.as_str(),
-                window_size_sec: *window,
+                window,
+                // Seconds only: a slot or print span has none to report.
+                window_size_sec: window
+                    .filter(|w| w.unit == hunter_engine::metrics::WindowUnit::Sec && w.lag == 0.0)
+                    .map(|w| w.size),
                 values: values.into_iter().map(|v| v.is_finite().then_some(v)).collect(),
             })
         })
@@ -564,6 +591,8 @@ fn build_position_series(series: &MetricSeries, entered_at: Ts, entry_price: f64
                 metric: m.name,
                 group: group.name,
                 unit: m.unit.as_str(),
+                // Position metrics are static: no span on either key.
+                window: None,
                 window_size_sec: None,
                 values,
             }
@@ -718,7 +747,7 @@ mod tests {
         ];
         let grid = SparseGrid::for_windows(&[10.0]);
 
-        let seeded = build_series("mint", &trades, &[10.0], &grid, Some(&ctx), None, &TokenFacts::default());
+        let seeded = build_series("mint", &trades, &[WindowSpec::secs(10.0)], &grid, Some(&ctx), None, &TokenFacts::default());
         assert_eq!(last_lifetime(&seeded, "vol_buy"), 7.0, "dev + pattern bot");
         assert_eq!(last_lifetime(&seeded, "nonvol_buy"), 3.0, "the stranger only");
         assert_eq!(last_lifetime(&seeded, "nonvol_net"), 3.0);
@@ -726,7 +755,7 @@ mod tests {
         // Unseeded (the pre-fix behavior) the dev's 5 SOL crosses into organic —
         // the exact drift this seed exists to prevent.
         let unseeded = FlowCtx { creator_wallet_hash: None, ..ctx };
-        let out = build_series("mint", &trades, &[10.0], &grid, Some(&unseeded), None, &TokenFacts::default());
+        let out = build_series("mint", &trades, &[WindowSpec::secs(10.0)], &grid, Some(&unseeded), None, &TokenFacts::default());
         assert_eq!(last_lifetime(&out, "vol_buy"), 2.0);
         assert_eq!(last_lifetime(&out, "nonvol_buy"), 8.0);
     }
@@ -757,7 +786,7 @@ mod tests {
         let grid = SparseGrid::for_windows(&[10.0]);
         let facts = TokenFacts { creator_wallet_hash: None, ix_count: Some(7), prior_launches: Some(3), first_slot_buy: None };
 
-        let out = build_series("mint", &trades, &[10.0], &grid, None, None, &facts);
+        let out = build_series("mint", &trades, &[WindowSpec::secs(10.0)], &grid, None, None, &facts);
         for (metric, want) in [("ix_count", 7.0), ("prior_launches", 3.0)] {
             let vals = lifetime_values(&out, metric);
             assert!(!vals.is_empty(), "{metric} has rows");
@@ -766,7 +795,7 @@ mod tests {
 
         // Absent facts stay `null` — the honest reading for a token whose creation
         // labels / creator were never stored, and never a `0` an `== 0` gate matches.
-        let out = build_series("mint", &trades, &[10.0], &grid, None, None, &TokenFacts::default());
+        let out = build_series("mint", &trades, &[WindowSpec::secs(10.0)], &grid, None, None, &TokenFacts::default());
         for metric in ["ix_count", "prior_launches"] {
             assert!(
                 lifetime_values(&out, metric).iter().all(Option::is_none),
@@ -795,7 +824,7 @@ mod tests {
         let out = build_series(
             "mint",
             &trades,
-            &[10.0],
+            &[WindowSpec::secs(10.0)],
             &grid,
             Some(&ctx),
             // An entry context, so the position-scoped group is computed too.

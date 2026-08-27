@@ -23,7 +23,7 @@ use hunter_engine::metrics::series::SeriesColumn;
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::{
     group_by_name, group_spec, is_flow_metric, metric_spec, MetricGroupId, MetricId, MetricKind,
-    MetricScope,
+    MetricScope, WindowSpec,
 };
 use uuid::Uuid;
 
@@ -59,9 +59,15 @@ pub struct AxisSpec {
     /// Metric axes only — the comparison operator.
     #[serde(default)]
     pub operator: Option<Operator>,
-    /// Dynamic-metric axes only — the trailing window (seconds).
+    /// Dynamic-metric axes only — the trailing window.
+    ///
+    /// A bare number is SECONDS, which is what every stored sweep config holds and
+    /// what this field has always meant; a string is a full span in the
+    /// `WindowSpec::parse` grammar (`"30s"`, `"30sl@1"`, `"20p"`). One field rather
+    /// than three, so an old config round-trips byte-identically and a new one names
+    /// its basis in the same spelling a chart legend and an exit reason use.
     #[serde(default)]
-    pub window: Option<f64>,
+    pub window: Option<WindowField>,
     /// The swept values. Must be non-empty; deduped + sorted on resolve. On a
     /// metric axis a `null` is the **off** sentinel (combo omits the condition);
     /// TP/SL axes reject it (absent TP/SL is authored by omitting the axis).
@@ -70,6 +76,28 @@ pub struct AxisSpec {
 
 fn default_kind() -> String {
     "metric".to_string()
+}
+
+/// The two spellings of [`AxisSpec::window`]. Untagged, so the wire stays a bare
+/// JSON number for a wall-clock span and gains a string only when a basis is named.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum WindowField {
+    /// Seconds — the pre-basis spelling, unchanged.
+    Secs(f64),
+    /// A full span: `"30s"`, `"30sl@1"`, `"20p"`. A bare numeric string is seconds.
+    Span(String),
+}
+
+impl WindowField {
+    /// Resolve to a span, or `None` when it names no usable window.
+    pub fn spec(&self) -> Option<WindowSpec> {
+        match self {
+            Self::Secs(v) if v.is_finite() && *v > 0.0 => Some(WindowSpec::secs(*v)),
+            Self::Secs(_) => None,
+            Self::Span(s) => WindowSpec::parse(s),
+        }
+    }
 }
 
 /// The full request body's `axes` field.
@@ -90,8 +118,10 @@ pub enum ResolvedAxis {
         group: MetricGroupId,
         metric: MetricId,
         operator: Operator,
-        /// Present iff the metric's group is dynamic (`m_flow_window`).
-        window: Option<f64>,
+        /// Present iff the metric's group is dynamic (`m_flow_window`). The WHOLE
+        /// span — a bare size cannot tell 30 slots from 30 seconds, and the two
+        /// sweep different rules.
+        window: Option<WindowSpec>,
         values: Vec<Option<f64>>,
     },
     /// Take-profit %.
@@ -139,10 +169,10 @@ impl ResolvedAxis {
                 None
             }
             ResolvedAxis::Metric { metric, window, .. } => Some(if is_flow_metric(*metric) {
-                SeriesColumn::Flow(*metric, window.map(hunter_engine::metrics::WindowSpec::secs), SWEEP_FLOW_FP)
+                SeriesColumn::Flow(*metric, *window, SWEEP_FLOW_FP)
             } else {
                 match window {
-                    Some(w) => SeriesColumn::window(*metric, hunter_engine::metrics::WindowSpec::secs(*w)),
+                    Some(w) => SeriesColumn::window(*metric, *w),
                     None => SeriesColumn::Static(*metric),
                 }
             }),
@@ -223,16 +253,27 @@ impl AxesModel {
         })
     }
 
-    /// Largest trailing window (`window_size_sec`) any metric axis reads, across both
-    /// window families (`m_flow_window`/`m_flow_split_window` and `m_price_window`) —
-    /// `0.0` if the swept rules read no windowed metrics. Sizes the sparse grid's
-    /// decay region (plan §P2): past `last_trade + this`, every window flow is 0 and
-    /// every rolling price extremum has aged out.
+    /// Largest trailing window any metric axis reads, IN SECONDS, across both window
+    /// families (`m_flow_window`/`m_flow_split_window` and `m_price_window`) — `0.0`
+    /// if the swept rules read no windowed metrics. Sizes the sparse grid's decay
+    /// region (plan §P2): past `last_trade + this`, every window flow is 0 and every
+    /// rolling price extremum has aged out.
+    ///
+    /// The grid is a WALL clock, so a slot span converts at the nominal slot time and
+    /// a print span contributes nothing — no tick can move a print cursor, and a trade
+    /// emits its own row. Mirrors `ClockHorizons::absorb_req`: this sizes a horizon,
+    /// never a reading, so the slot approximation costs coverage and not correctness.
     pub fn max_window_secs(&self) -> f64 {
         self.axes
             .iter()
             .filter_map(|a| match a {
-                ResolvedAxis::Metric { window: Some(w), .. } => Some(*w),
+                ResolvedAxis::Metric { window: Some(w), .. } => Some(match w.unit {
+                    hunter_engine::metrics::WindowUnit::Sec => w.size + w.lag,
+                    hunter_engine::metrics::WindowUnit::Slot => {
+                        (w.size + w.lag) * hunter_engine::metrics::NOMINAL_SLOT_SECS
+                    }
+                    hunter_engine::metrics::WindowUnit::Print => 0.0,
+                }),
                 _ => None,
             })
             .fold(0.0_f64, f64::max)
@@ -338,15 +379,25 @@ impl AxesModel {
                     // to a single window-less instance. Created lazily on the first
                     // metric so an all-off group leaves no window-only instance behind.
                     let instances = sc.0.entry(*group).or_default();
-                    let gc = match instances
-                        .iter()
-                        .position(|g| same_window(g.strict_param("window_size_sec"), *window))
-                    {
+                    let gc = match instances.iter().position(|g| {
+                        same_window(g.window_spec(&hunter_engine::metrics::WINDOW_AXIS), *window)
+                    }) {
                         Some(i) => &mut instances[i],
                         None => {
                             let mut g = GroupConditions::default();
                             if let Some(w) = window {
-                                g.strict.insert("window_size_sec".to_string(), *w);
+                                // The param that matches the UNIT: writing seconds for
+                                // a slot span would silently assemble a different rule
+                                // from the one the axis swept.
+                                g.strict.insert(w.unit.size_param().to_string(), w.size);
+                                // A zero lag stays absent — the default, and what keeps
+                                // a pre-basis config's assembled params byte-identical.
+                                if w.lag > 0.0 {
+                                    g.strict.insert(
+                                        hunter_engine::metrics::WINDOW_LAG_PARAM.to_string(),
+                                        w.lag,
+                                    );
+                                }
                             }
                             instances.push(g);
                             instances.last_mut().expect("just pushed")
@@ -447,14 +498,14 @@ fn resolve_one(spec: &AxisSpec) -> Result<ResolvedAxis, String> {
                 ));
             }
             let window = match group.kind {
-                MetricKind::Dynamic => Some(match spec.window {
-                    Some(w) if w.is_finite() && w > 0.0 => w,
-                    _ => {
-                        return Err(format!(
-                            "group `{group_name}` is dynamic — `window` (> 0) is required"
-                        ))
-                    }
-                }),
+                MetricKind::Dynamic => Some(
+                    spec.window.as_ref().and_then(WindowField::spec).ok_or_else(|| {
+                        format!(
+                            "group `{group_name}` is dynamic — `window` is required: a \
+                             number of seconds, or a span like \"30sl@1\" / \"20p\""
+                        )
+                    })?,
+                ),
                 MetricKind::Static => None, // a window on a static metric is ignored
             };
             // Off first (pick 0), then the numbers ascending.
@@ -476,13 +527,17 @@ fn resolve_one(spec: &AxisSpec) -> Result<ResolvedAxis, String> {
     }
 }
 
-/// Whether two group instances share a `window_size_sec` (so an axis merges into
-/// an existing instance rather than opening a new one). Static-group axes carry
-/// `None` and collapse to the single window-less instance. Matches the engine's
-/// duplicate-window rule (`(a - b).abs() <= EPSILON`).
-fn same_window(a: Option<f64>, b: Option<f64>) -> bool {
+/// Whether two group instances share a SPAN (so an axis merges into an existing
+/// instance rather than opening a new one). Static-group axes carry `None` and
+/// collapse to the single window-less instance.
+///
+/// Compared on `WindowSpec::key` — the engine's own buffer identity — so two axes
+/// that differ in unit or lag open two instances. Merging them on size alone is how
+/// a 30-slot axis would land in the 30-second instance and one of the two swept
+/// conditions would vanish from every assembled rule.
+fn same_window(a: Option<WindowSpec>, b: Option<WindowSpec>) -> bool {
     match (a, b) {
-        (Some(x), Some(y)) => (x - y).abs() <= f64::EPSILON,
+        (Some(x), Some(y)) => x.key() == y.key(),
         (None, None) => true,
         _ => false,
     }
@@ -499,8 +554,91 @@ mod tests {
             group: Some(group.to_string()),
             metric: Some(metric.to_string()),
             operator: Some(serde_json::from_str(&format!("\"{op}\"")).unwrap()),
-            window,
+            window: window.map(WindowField::Secs),
             values: vals.into_iter().map(Some).collect(),
+        }
+    }
+
+    /// A metric axis on a discrete basis must assemble the size param that basis
+    /// spells. Writing `window_size_sec` for a slot axis would sweep one rule and
+    /// score a different one - the silent kind of wrong, since every cell still
+    /// produces a number.
+    #[test]
+    fn a_discrete_axis_assembles_the_size_param_its_unit_spells() {
+        for (span, param, size) in [
+            ("30sl", "window_size_slots", 30.0),
+            ("20p", "window_size_prints", 20.0),
+            ("45s", "window_size_sec", 45.0),
+        ] {
+            let mut spec =
+                metric_axis(AxisSide::Entry, "m_flow_window", "gross_flow", ">=", None, vec![5.0]);
+            spec.window = Some(WindowField::Span(span.to_string()));
+            let model = AxesModel::resolve(&AxesRequest { axes: vec![spec] }).expect(span);
+            let rp = model.assemble(&[0]);
+            let g = &rp.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow][0];
+            assert_eq!(g.strict_param(param), Some(size), "{span}");
+            // ...and no OTHER size param rides along: two would be two spans claiming
+            // one axis, which the engine rejects at save.
+            assert_eq!(
+                hunter_engine::metrics::WINDOW_AXIS
+                    .params()
+                    .into_iter()
+                    .filter(|p| g.strict.contains_key(*p))
+                    .count(),
+                1,
+                "{span}"
+            );
+        }
+    }
+
+    /// A lagged span carries its lag through, and a zero lag stays ABSENT - which is
+    /// what keeps a sweep config saved before the other bases existed assembling
+    /// byte-identical params.
+    #[test]
+    fn a_lagged_axis_carries_its_lag_and_a_zero_lag_stays_absent() {
+        let mut spec =
+            metric_axis(AxisSide::Entry, "m_flow_window", "gross_flow", "<=", None, vec![3.0]);
+        spec.window = Some(WindowField::Span("30sl@1".to_string()));
+        let model = AxesModel::resolve(&AxesRequest { axes: vec![spec] }).expect("resolves");
+        let rp = model.assemble(&[0]);
+        let g = &rp.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow][0];
+        assert_eq!(g.strict_param("window_size_slots"), Some(30.0));
+        assert_eq!(g.strict_param("window_lag"), Some(1.0));
+
+        let plain = metric_axis(AxisSide::Entry, "m_flow_window", "gross_flow", "<=", Some(30.0), vec![3.0]);
+        let model = AxesModel::resolve(&AxesRequest { axes: vec![plain] }).expect("resolves");
+        let rp = model.assemble(&[0]);
+        let g = &rp.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow][0];
+        assert_eq!(g.strict_param("window_size_sec"), Some(30.0), "a bare number is seconds");
+        assert!(!g.strict.contains_key("window_lag"), "a zero lag stays absent");
+    }
+
+    /// Two axes on one metric that differ only in BASIS are two group instances.
+    /// Merging them on size alone is how a 30-slot axis would land in the 30-second
+    /// instance and one of the two swept conditions would vanish from every rule.
+    #[test]
+    fn one_size_on_two_bases_opens_two_instances() {
+        let mut a = metric_axis(AxisSide::Entry, "m_flow_window", "gross_flow", ">=", None, vec![5.0]);
+        a.window = Some(WindowField::Span("30s".to_string()));
+        let mut b = metric_axis(AxisSide::Entry, "m_flow_window", "buy", ">=", None, vec![2.0]);
+        b.window = Some(WindowField::Span("30sl".to_string()));
+        let model = AxesModel::resolve(&AxesRequest { axes: vec![a, b] }).expect("resolves");
+        let rp = model.assemble(&[0, 0]);
+        let instances = &rp.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow];
+        assert_eq!(instances.len(), 2, "one size, two bases, two instances");
+    }
+
+    /// A dynamic axis with an unparseable span fails at RESOLVE. Admitting it would
+    /// fold every cell against a column that was never registered, and a whole sweep
+    /// of `NaN` reads as a finding rather than as an error.
+    #[test]
+    fn an_unparseable_span_is_rejected_at_resolve() {
+        for bad in ["", "abc", "30x", "0p"] {
+            let mut spec =
+                metric_axis(AxisSide::Entry, "m_flow_window", "gross_flow", ">=", None, vec![5.0]);
+            spec.window = Some(WindowField::Span(bad.to_string()));
+            let err = AxesModel::resolve(&AxesRequest { axes: vec![spec] }).unwrap_err();
+            assert!(err.contains("window"), "{bad}: {err}");
         }
     }
 

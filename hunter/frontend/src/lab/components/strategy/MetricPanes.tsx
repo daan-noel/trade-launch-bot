@@ -35,6 +35,12 @@ import {
 import { useGetMetricSeriesQuery } from '@lab/store/labEndpoints';
 import type { ChartEventMarker, ChartVisibleTimeRange } from 'components/token-price-chart';
 import type { MetricSeriesColumn } from 'lib/strategy/types';
+import {
+  formatWindowSpec,
+  readWindow,
+  windowSpecKey,
+  type WindowSpec,
+} from 'lib/strategy/windowSpec';
 
 /** Wall-clock label for the truncation notice's `covered_until`. */
 function formatCoveredUntil(at: string | null | undefined): string {
@@ -45,7 +51,8 @@ function formatCoveredUntil(at: string | null | undefined): string {
 
 interface Prefs {
   panes: string[]; // column keys
-  windows: number[];
+  /** WHOLE spans, since a bare size cannot tell 30 slots from 30 seconds. */
+  windows: WindowSpec[];
   ruleId: string | null;
   /** When true, panes follow the selected rule's metrics (cleared on manual toggle). */
   autoPanes: boolean;
@@ -56,7 +63,7 @@ interface Prefs {
 function loadPrefs(): Prefs {
   const stored = getJSON<Partial<Prefs> | null>(STORAGE_KEYS.metricPanes, null);
   // Merge over defaults (never a versioned key) so an added field is just absent.
-  return {
+  const merged = {
     panes: [],
     windows: [...DEFAULT_WINDOWS],
     ruleId: null,
@@ -64,6 +71,12 @@ function loadPrefs(): Prefs {
     timeline: false,
     ...(stored ?? {}),
   };
+  // Prefs saved before the other bases existed hold bare seconds. Widen them rather
+  // than discard: a stored `[10, 30, 60]` meant three wall-clock spans and still does.
+  merged.windows = (merged.windows as Array<WindowSpec | number>)
+    .map((w) => (typeof w === 'number' ? { size: w, lag: 0, unit: 'sec' as const } : w))
+    .filter((w) => w != null && Number.isFinite(w.size) && w.size > 0);
+  return merged as Prefs;
 }
 
 /** Pin the pane overlay to explicit params instead of the saved-rule dropdown —
@@ -241,7 +254,7 @@ function useMetricPanesModel({
       key: string;
       metric: string;
       unit: MetricUnit;
-      window: number | null;
+      window: WindowSpec | null;
       group: string;
     }> = [];
     for (const g of registry?.groups ?? []) {
@@ -300,7 +313,9 @@ function useMetricPanesModel({
 
   const seriesByKey = useMemo(() => {
     const map = new Map<string, MetricSeriesColumn>();
-    for (const s of data?.series ?? []) map.set(metricColKey(s.metric, s.window_size_sec), s);
+    // `readWindow` prefers the span object and falls back to the legacy seconds
+    // scalar, so a slot or print column keys by its own span.
+    for (const s of data?.series ?? []) map.set(metricColKey(s.metric, readWindow(s)), s);
     return map;
   }, [data]);
 
@@ -500,7 +515,7 @@ function MetricPanesSelector() {
                 <div className={`min-w-0 flex-1 ${isDynamic ? 'flex flex-col gap-0.5' : ''}`}>
                   {windowRows.map(({ window, items }) => (
                     <div
-                      key={window ?? 'static'}
+                      key={window ? windowSpecKey(window) : 'static'}
                       className={`flex min-w-0 items-center gap-2 ${
                         isDynamic ? 'rounded px-1 py-0.5 odd:bg-white/2' : 'px-1'
                       }`}
@@ -513,7 +528,7 @@ function MetricPanesSelector() {
                         }`}
                         aria-hidden={window == null}
                       >
-                        {window != null ? `${window}s` : '0s'}
+                        {window ? formatWindowSpec(window) : '0s'}
                       </span>
                       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-0.5">
                         {items.map((c) => (
@@ -528,7 +543,7 @@ function MetricPanesSelector() {
                             />
                             <span
                               className="font-mono whitespace-nowrap"
-                              title={`${c.metric}${c.window != null ? `@${c.window}s` : ''}`}
+                              title={`${c.metric}${c.window ? `@${formatWindowSpec(c.window)}` : ''}`}
                             >
                               {c.metric}
                             </span>
@@ -634,7 +649,7 @@ function MetricPanesValues() {
             <div className={`min-w-0 flex-1 ${isDynamic ? 'flex flex-col gap-0.5' : ''}`}>
               {rows.map(({ window, items: rowItems }) => (
                 <div
-                  key={window ?? 'static'}
+                  key={window ? windowSpecKey(window) : 'static'}
                   className={`flex min-w-0 flex-wrap items-end gap-x-3 gap-y-1 px-1 ${
                     isDynamic ? 'rounded py-0.5 odd:bg-white/2' : ''
                   }`}
@@ -647,7 +662,7 @@ function MetricPanesValues() {
                     }`}
                     aria-hidden={window == null}
                   >
-                    {window != null ? `${window}s` : '0s'}
+                    {window ? formatWindowSpec(window) : '0s'}
                   </span>
                   {rowItems.map((v) => (
                     <div key={v.key} className="min-w-[4.5rem]">
@@ -736,10 +751,13 @@ function MetricPanesGraphs() {
                   {group}
                 </span>
                 {rows.map(({ window, items: rowItems }) => (
-                  <div key={window ?? 'static'} className="flex flex-col gap-1.5">
+                  <div
+                    key={window ? windowSpecKey(window) : 'static'}
+                    className="flex flex-col gap-1.5"
+                  >
                     {isDynamic && (
                       <span className="w-fit rounded bg-white/8 px-1.5 py-px font-mono text-[10px] font-semibold tabular-nums text-text">
-                        {window}s
+                        {formatWindowSpec(window)}
                       </span>
                     )}
                     {rowItems.map(({ key }) => {
@@ -823,22 +841,30 @@ export function MetricPanes(props: MetricPanesProps) {
   );
 }
 
-/** Split a group's columns into one line per time window (static/no-window cols first). */
-function colsByWindow<T extends { window: number | null }>(
+/** Split a group's columns into one line per span (static/no-window cols first).
+ *
+ *  Bucketed on the span's dedup IDENTITY, not on its size: 30 slots and 30 seconds
+ *  are two readings and must be two lines, or one line's chip would name a window the
+ *  other line's numbers were not computed over. */
+function colsByWindow<T extends { window: WindowSpec | null }>(
   cols: T[],
-): Array<{ window: number | null; items: T[] }> {
-  const buckets = new Map<number | null, T[]>();
+): Array<{ window: WindowSpec | null; items: T[] }> {
+  const buckets = new Map<string, { window: WindowSpec | null; items: T[] }>();
   for (const c of cols) {
-    const arr = buckets.get(c.window) ?? [];
-    arr.push(c);
-    buckets.set(c.window, arr);
+    const k = c.window ? windowSpecKey(c.window) : 'static';
+    const bucket = buckets.get(k) ?? { window: c.window, items: [] };
+    bucket.items.push(c);
+    buckets.set(k, bucket);
   }
-  const windowKeys = [...buckets.keys()].sort((a, b) => {
-    if (a == null) return b == null ? 0 : -1;
-    if (b == null) return 1;
-    return a - b;
+  return [...buckets.values()].sort((a, b) => {
+    if (!a.window) return b.window ? -1 : 0;
+    if (!b.window) return 1;
+    return (
+      a.window.unit.localeCompare(b.window.unit) ||
+      a.window.size - b.window.size ||
+      a.window.lag - b.window.lag
+    );
   });
-  return windowKeys.map((window) => ({ window, items: buckets.get(window)! }));
 }
 
 /** Compact metric number for the HUD / pane rail. */
