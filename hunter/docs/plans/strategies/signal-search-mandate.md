@@ -468,6 +468,20 @@ What is open now:
    result caps its use at same-token, same-day state, never a learned cross-token book, and
    buy and sell legs normally carry different ix, so a sell matching the campaign's buy
    structure is the tool itself leaving.
+7. **Ix-template gate is a discriminator, not a fill.**
+   [ix-template-gate.md](ix-template-gate.md): Axiom/Photon `CU+ATA` after quiet on the
+   cashback-off / init-buy 0.2–1 door pays at zero-lag (clock-20 +7.75%, first-gap +8.92%,
+   12/12) and does not at 95 ms on both legs (first-gap +1.14% 6/12, clock −1% OOS).
+   Re-entry at 95 ms is negative every day. Do not fund it; do not re-price the 20 s mark
+   as a rule.
+8. **Gap-then-burst kinds, then door.**
+   [ix-burst-kinds.md](ix-burst-kinds.md): after a 5-slot buy-gap (not the mint's first
+   slot), two families precede his fire — same working template / several wallets / family
+   SOL in [0.9, 4), and mixed templates / several wallets in the same tot band. One-wallet
+   bursts do not. Create templates are not in this event.
+   [ix-door.md](ix-door.md): his arm list is ATA on create + init ≥ 0.2 SOL + create-slot
+   buy ≥ 0.5 SOL (87.7% of him, 7.7× vs fail). Cashback-off / init 0.2–1 is 15.4% of him
+   and is not the door. Permissions next; neither file is a money book.
 
 **Feature-combination search is retired as a queue item.** Round 10 ran it exhaustively -
 17,744 conjunctions plus OR-portfolios over 55 predicates - and the answer is that no

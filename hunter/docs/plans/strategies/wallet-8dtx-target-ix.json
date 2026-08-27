@@ -1,0 +1,6257 @@
+[
+ {
+  "class": "target",
+  "n_buys": 393429,
+  "solo_n": 14271,
+  "avg_sol": 0.5431,
+  "program": "Axiom Trade",
+  "bundle_n": 22907,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Axiom Trade: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 1.85,
+  "bundle_lift": 1.42,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 311037,
+  "solo_n": 9428,
+  "avg_sol": 0.2423,
+  "program": "Axiom Trade",
+  "bundle_n": 13465,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Axiom Trade: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.09,
+  "bundle_lift": 0.23,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 155937,
+  "solo_n": 8546,
+  "avg_sol": 0.3093,
+  "program": "GMGN Bot",
+  "bundle_n": 7764,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "GMGN Bot: Unknown",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 1.07,
+  "bundle_lift": 1.04,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 80322,
+  "solo_n": 4051,
+  "avg_sol": 0.5028,
+  "program": "Terminal",
+  "bundle_n": 5306,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Terminal: Unknown",
+   "Associated Token: CreateIdempotent",
+   "Terminal: Unknown",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 1.26,
+  "bundle_lift": 1.21,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 78400,
+  "solo_n": 3825,
+  "avg_sol": 0.4782,
+  "program": "Terminal",
+  "bundle_n": 4706,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Terminal: Unknown",
+   "Terminal: Unknown",
+   "Terminal: Unknown",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 1.06,
+  "bundle_lift": 1.01,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 52776,
+  "solo_n": 1218,
+  "avg_sol": 0.9953,
+  "program": "Axiom Trade",
+  "bundle_n": 3540,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Axiom Trade: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 2.39,
+  "bundle_lift": 1.18,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 40846,
+  "solo_n": 799,
+  "avg_sol": 0.3223,
+  "program": "Axiom Trade",
+  "bundle_n": 2099,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Axiom Trade: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.15,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 18158,
+  "solo_n": 0,
+  "avg_sol": 0.4445,
+  "program": "(direct)",
+  "bundle_n": 7753,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: Create",
+   "Pump.Fun: Buy"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.53,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 16853,
+  "solo_n": 90,
+  "avg_sol": 0.5138,
+  "program": "(direct)",
+  "bundle_n": 10895,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.39,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 14748,
+  "solo_n": 2822,
+  "avg_sol": 0.579,
+  "program": "Trojan Trade",
+  "bundle_n": 2185,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: Create",
+   "Pump.Fun: Buy",
+   "Trojan Trade: Unknown"
+  ],
+  "solo_lift": 1.81,
+  "bundle_lift": 1.59,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 12847,
+  "solo_n": 93,
+  "avg_sol": 0.0584,
+  "program": "Axiom Trade",
+  "bundle_n": 149,
+  "ix_labels": [
+   "Axiom Trade: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.26,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 12057,
+  "solo_n": 1615,
+  "avg_sol": 0.3003,
+  "program": "Trojan Trade",
+  "bundle_n": 863,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Pump.Fun: Buy",
+   "Trojan Trade: Unknown"
+  ],
+  "solo_lift": 0.04,
+  "bundle_lift": 0.14,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 9771,
+  "solo_n": 110,
+  "avg_sol": 0.4727,
+  "program": "(direct)",
+  "bundle_n": 1368,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 1.22,
+  "bundle_lift": 1.9,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 9360,
+  "solo_n": 617,
+  "avg_sol": 0.4582,
+  "program": "Unknown (m9obQHAPyZeZ88w7XUY8Te6a8rBmhXsfKco7u8G8tnB)",
+  "bundle_n": 792,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Unknown (m9obQHAPyZeZ88w7XUY8Te6a8rBmhXsfKco7u8G8tnB)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 1.54,
+  "bundle_lift": 1.23,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 9098,
+  "solo_n": 966,
+  "avg_sol": 0.5341,
+  "program": "Trojan Trade",
+  "bundle_n": 891,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: Buy",
+   "Trojan Trade: Unknown"
+  ],
+  "solo_lift": 1.9,
+  "bundle_lift": 0.99,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 8607,
+  "solo_n": 1,
+  "avg_sol": 0.4677,
+  "program": "(direct)",
+  "bundle_n": 5179,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: Create",
+   "Pump.Fun: Buy",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.71,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 7929,
+  "solo_n": 157,
+  "avg_sol": 0.1973,
+  "program": "Axiom Trade",
+  "bundle_n": 185,
+  "ix_labels": [
+   "Associated Token: CreateIdempotent",
+   "Axiom Trade: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 1.99,
+  "bundle_lift": 0.79,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 7834,
+  "solo_n": 10,
+  "avg_sol": 0.7728,
+  "program": "(direct)",
+  "bundle_n": 45,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: Buy",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 7199,
+  "solo_n": 621,
+  "avg_sol": 0.7908,
+  "program": "Bloom Router",
+  "bundle_n": 1073,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Bloom Router: Unknown",
+   "System Program: Transfer",
+   "System Program: Transfer",
+   "Bloom Router: Unknown"
+  ],
+  "solo_lift": 2.57,
+  "bundle_lift": 1.7,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 6959,
+  "solo_n": 4,
+  "avg_sol": 0.3557,
+  "program": "(direct)",
+  "bundle_n": 586,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 1.37,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 6819,
+  "solo_n": 66,
+  "avg_sol": 0.578,
+  "program": "(direct)",
+  "bundle_n": 1836,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.9,
+  "bundle_lift": 1.89,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 6293,
+  "solo_n": 662,
+  "avg_sol": 0.6525,
+  "program": "Photon",
+  "bundle_n": 661,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Photon: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 2.78,
+  "bundle_lift": 2.05,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 5963,
+  "solo_n": 5,
+  "avg_sol": 0.4586,
+  "program": "(direct)",
+  "bundle_n": 1058,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: Buy"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 1.28,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 5945,
+  "solo_n": 1279,
+  "avg_sol": 0.6672,
+  "program": "Unknown (MaestroAAe9ge5HTc64VbBQZ6fP77pwvrhM8i1XWSAx)",
+  "bundle_n": 961,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (MaestroAAe9ge5HTc64VbBQZ6fP77pwvrhM8i1XWSAx)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 1.89,
+  "bundle_lift": 1.52,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 5167,
+  "solo_n": 407,
+  "avg_sol": 0.3744,
+  "program": "Photon",
+  "bundle_n": 371,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Photon: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.07,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4348,
+  "solo_n": 100,
+  "avg_sol": 0.2988,
+  "program": "Unknown (5kSXmrbPRwt5vSytzpakADk51QbWgpixnfA1fBcygx91)",
+  "bundle_n": 873,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (5kSXmrbPRwt5vSytzpakADk51QbWgpixnfA1fBcygx91)",
+   "Unknown (BsVa5vrkGMnpxfikW14mdtiwoBHr7Vv7SoPLVq4rT6ZG)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 1.04,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4029,
+  "solo_n": 2,
+  "avg_sol": 0.6606,
+  "program": "(direct)",
+  "bundle_n": 338,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: Create",
+   "Pump.Fun: BuyV2",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 1.38,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3991,
+  "solo_n": 775,
+  "avg_sol": 0.5983,
+  "program": "(direct)",
+  "bundle_n": 489,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "System Program: Transfer",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 1.35,
+  "bundle_lift": 1.13,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3032,
+  "solo_n": 3,
+  "avg_sol": 0.2351,
+  "program": "(direct)",
+  "bundle_n": 22,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: Buy",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 2734,
+  "solo_n": 212,
+  "avg_sol": 0.6773,
+  "program": "Axiom Trade",
+  "bundle_n": 209,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Axiom Trade: Unknown",
+   "Axiom Trade: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 2.93,
+  "bundle_lift": 1.57,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 2556,
+  "solo_n": 177,
+  "avg_sol": 0.4214,
+  "program": "(direct)",
+  "bundle_n": 72,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyV2",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.81,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 2407,
+  "solo_n": 5,
+  "avg_sol": 0.3781,
+  "program": "(direct)",
+  "bundle_n": 874,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: Buy"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 1.24,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 2137,
+  "solo_n": 0,
+  "avg_sol": 0.035,
+  "program": "(direct)",
+  "bundle_n": 110,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "System Program: Transfer",
+   "Pump.Fun: Buy"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.69,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 2046,
+  "solo_n": 31,
+  "avg_sol": 0.5558,
+  "program": "(direct)",
+  "bundle_n": 496,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 1.06,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 2044,
+  "solo_n": 159,
+  "avg_sol": 1.1484,
+  "program": "Photon",
+  "bundle_n": 252,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Photon: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 2.88,
+  "bundle_lift": 2.08,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 1777,
+  "solo_n": 104,
+  "avg_sol": 0.3417,
+  "program": "Axiom Trade",
+  "bundle_n": 100,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Axiom Trade: Unknown",
+   "Axiom Trade: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 1655,
+  "solo_n": 126,
+  "avg_sol": 0.592,
+  "program": "Photon",
+  "bundle_n": 113,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Photon: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.23,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 1640,
+  "solo_n": 4,
+  "avg_sol": 0.7045,
+  "program": "(direct)",
+  "bundle_n": 525,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: Buy"
+  ],
+  "solo_lift": 18.74,
+  "bundle_lift": 1.18,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 1610,
+  "solo_n": 42,
+  "avg_sol": 0.9017,
+  "program": "Unknown (4KRSet9YXoCKDamKQfoTc4MsnPU4w847KhPoYBcrRooY)",
+  "bundle_n": 94,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (4KRSet9YXoCKDamKQfoTc4MsnPU4w847KhPoYBcrRooY)",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 1.5,
+  "bundle_lift": 1.3,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 1610,
+  "solo_n": 254,
+  "avg_sol": 0.4828,
+  "program": "Bloom Router",
+  "bundle_n": 196,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "System Program: Transfer",
+   "System Program: Transfer",
+   "Bloom Router: Unknown"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.14,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 1362,
+  "solo_n": 19,
+  "avg_sol": 0.5197,
+  "program": "(direct)",
+  "bundle_n": 199,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 1.25,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 1328,
+  "solo_n": 6,
+  "avg_sol": 0.3596,
+  "program": "(direct)",
+  "bundle_n": 450,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: Buy"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 1.36,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 1269,
+  "solo_n": 0,
+  "avg_sol": 0.1333,
+  "program": "Unknown (BpJLs7trt5uFkgAjsvabqPNFUeJQzWANsW3TcqpBvTPz)",
+  "bundle_n": 186,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Unknown (BpJLs7trt5uFkgAjsvabqPNFUeJQzWANsW3TcqpBvTPz)",
+   "Pump.Fun: Unknown",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn",
+   "Pump.Fun: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.84,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 1268,
+  "solo_n": 5,
+  "avg_sol": 0.1279,
+  "program": "Axiom Trade",
+  "bundle_n": 73,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Axiom Trade: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 1264,
+  "solo_n": 2,
+  "avg_sol": 1.5363,
+  "program": "(direct)",
+  "bundle_n": 60,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 1.56,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 1210,
+  "solo_n": 35,
+  "avg_sol": 0.2884,
+  "program": "Unknown (5kSXmrbPRwt5vSytzpakADk51QbWgpixnfA1fBcygx91)",
+  "bundle_n": 233,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Unknown (5kSXmrbPRwt5vSytzpakADk51QbWgpixnfA1fBcygx91)",
+   "Unknown (BsVa5vrkGMnpxfikW14mdtiwoBHr7Vv7SoPLVq4rT6ZG)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 1.3,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 1095,
+  "solo_n": 98,
+  "avg_sol": 0.6969,
+  "program": "Terminal",
+  "bundle_n": 112,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Terminal: Unknown",
+   "System Program: CreateAccountWithSeed",
+   "Token Program: InitializeAccount3",
+   "Associated Token: CreateIdempotent",
+   "Terminal: Unknown",
+   "Terminal: Unknown",
+   "System Program: Transfer",
+   "Token Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 1.93,
+  "durable_nonce": false,
+  "create_account_with_seed": true
+ },
+ {
+  "class": "target",
+  "n_buys": 1084,
+  "solo_n": 82,
+  "avg_sol": 0.6832,
+  "program": "Terminal",
+  "bundle_n": 116,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Terminal: Unknown",
+   "Terminal: Unknown",
+   "Terminal: Unknown",
+   "System Program: Transfer",
+   "Token Program: Transfer"
+  ],
+  "solo_lift": 0.72,
+  "bundle_lift": 1.72,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 1075,
+  "solo_n": 88,
+  "avg_sol": 0.6871,
+  "program": "Unknown (haqqqMGN35ehCftXca3KWxJFXTBcWTWeNHNtUHLGQdh)",
+  "bundle_n": 38,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (haqqqMGN35ehCftXca3KWxJFXTBcWTWeNHNtUHLGQdh)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.62,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 972,
+  "solo_n": 3,
+  "avg_sol": 0.4231,
+  "program": "(direct)",
+  "bundle_n": 618,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.26,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 883,
+  "solo_n": 16,
+  "avg_sol": 0.4536,
+  "program": "(direct)",
+  "bundle_n": 43,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: Create",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 7.06,
+  "bundle_lift": 2.55,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 874,
+  "solo_n": 66,
+  "avg_sol": 0.6651,
+  "program": "Unknown (haqqqMGN35ehCftXca3KWxJFXTBcWTWeNHNtUHLGQdh)",
+  "bundle_n": 26,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "System Program: Transfer",
+   "Unknown (haqqqMGN35ehCftXca3KWxJFXTBcWTWeNHNtUHLGQdh)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 847,
+  "solo_n": 0,
+  "avg_sol": 0.2963,
+  "program": "(direct)",
+  "bundle_n": 59,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 1.22,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 844,
+  "solo_n": 0,
+  "avg_sol": 0.574,
+  "program": "Unknown (5BLu6Epwj2ZLYEna3eSLqqz3ipS3MHnEe6RteUHyHQNP)",
+  "bundle_n": 439,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Unknown (5BLu6Epwj2ZLYEna3eSLqqz3ipS3MHnEe6RteUHyHQNP)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 1.8,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 830,
+  "solo_n": 0,
+  "avg_sol": 0.1451,
+  "program": "(direct)",
+  "bundle_n": 60,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: Buy"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 1.16,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 773,
+  "solo_n": 0,
+  "avg_sol": 0.0766,
+  "program": "(direct)",
+  "bundle_n": 6,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 719,
+  "solo_n": 1,
+  "avg_sol": 0.6088,
+  "program": "Unknown (CUfYYhEG9eAbxEhCsXdYZCpSGiE7E3pi4XVRLw5rdspA)",
+  "bundle_n": 399,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Unknown (CUfYYhEG9eAbxEhCsXdYZCpSGiE7E3pi4XVRLw5rdspA)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 1.45,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 682,
+  "solo_n": 1,
+  "avg_sol": 0.1966,
+  "program": "(direct)",
+  "bundle_n": 6,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyV2",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 619,
+  "solo_n": 57,
+  "avg_sol": 0.5337,
+  "program": "Unknown (m9obQHAPyZeZ88w7XUY8Te6a8rBmhXsfKco7u8G8tnB)",
+  "bundle_n": 81,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Associated Token: CreateIdempotent",
+   "Unknown (m9obQHAPyZeZ88w7XUY8Te6a8rBmhXsfKco7u8G8tnB)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 6.85,
+  "bundle_lift": 2.93,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 587,
+  "solo_n": 0,
+  "avg_sol": 0.0442,
+  "program": "(direct)",
+  "bundle_n": 166,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Associated Token: CreateIdempotent",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Pump.Fun: BuyV2",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 1.14,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 576,
+  "solo_n": 18,
+  "avg_sol": 0.8901,
+  "program": "Unknown (4KRSet9YXoCKDamKQfoTc4MsnPU4w847KhPoYBcrRooY)",
+  "bundle_n": 31,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (4KRSet9YXoCKDamKQfoTc4MsnPU4w847KhPoYBcrRooY)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 557,
+  "solo_n": 0,
+  "avg_sol": 0.3497,
+  "program": "(direct)",
+  "bundle_n": 8,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "System Program: Transfer",
+   "Pump.Fun: BuyExactQuoteInV2"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 539,
+  "solo_n": 33,
+  "avg_sol": 0.5676,
+  "program": "(direct)",
+  "bundle_n": 21,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyV2",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 488,
+  "solo_n": 0,
+  "avg_sol": 0.8933,
+  "program": "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+  "bundle_n": 152,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: Create",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+   "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 1.6,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 475,
+  "solo_n": 10,
+  "avg_sol": 0.4342,
+  "program": "Axiom Trade",
+  "bundle_n": 31,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Associated Token: CreateIdempotent",
+   "Axiom Trade: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 6.02,
+  "bundle_lift": 2.85,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 454,
+  "solo_n": 6,
+  "avg_sol": 1.2595,
+  "program": "Unknown (9AakkHfUV8LWAjYZvq98CvhBLhpKRbWDSPRb52da11Zk)",
+  "bundle_n": 104,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (9AakkHfUV8LWAjYZvq98CvhBLhpKRbWDSPRb52da11Zk)",
+   "Unknown (b1oodsU6wfkFxkXKU9hTXPzHisopCbE1NKP5RFQLy7e)",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 1.35,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 412,
+  "solo_n": 117,
+  "avg_sol": 1.1404,
+  "program": "Axiom Trade",
+  "bundle_n": 48,
+  "ix_labels": [
+   "Associated Token: CreateIdempotent",
+   "Axiom Trade: Unknown",
+   "Pump.Fun: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 376,
+  "solo_n": 36,
+  "avg_sol": 0.4469,
+  "program": "Terminal",
+  "bundle_n": 34,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Terminal: Unknown",
+   "Terminal: Unknown",
+   "Associated Token: CreateIdempotent",
+   "Terminal: Unknown",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.82,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 364,
+  "solo_n": 17,
+  "avg_sol": 0.9262,
+  "program": "Axiom Trade",
+  "bundle_n": 35,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Axiom Trade: Unknown",
+   "Axiom Trade: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 7.83,
+  "bundle_lift": 1.42,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 352,
+  "solo_n": 0,
+  "avg_sol": 0.9296,
+  "program": "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+  "bundle_n": 91,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: Create",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 2.72,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 351,
+  "solo_n": 42,
+  "avg_sol": 0.5235,
+  "program": "Photon",
+  "bundle_n": 24,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Associated Token: CreateIdempotent",
+   "Photon: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.92,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 349,
+  "solo_n": 14,
+  "avg_sol": 0.5266,
+  "program": "Axiom Trade",
+  "bundle_n": 11,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Axiom Trade: Unknown"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 338,
+  "solo_n": 33,
+  "avg_sol": 0.5033,
+  "program": "Terminal",
+  "bundle_n": 25,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Terminal: Unknown",
+   "Terminal: Unknown",
+   "Terminal: Unknown",
+   "Terminal: Unknown",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.89,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 320,
+  "solo_n": 0,
+  "avg_sol": 0.4661,
+  "program": "(direct)",
+  "bundle_n": 29,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 1.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 312,
+  "solo_n": 1,
+  "avg_sol": 1.2032,
+  "program": "Unknown (9AakkHfUV8LWAjYZvq98CvhBLhpKRbWDSPRb52da11Zk)",
+  "bundle_n": 90,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (9AakkHfUV8LWAjYZvq98CvhBLhpKRbWDSPRb52da11Zk)",
+   "Unknown (b1oodsU6wfkFxkXKU9hTXPzHisopCbE1NKP5RFQLy7e)",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.59,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 308,
+  "solo_n": 9,
+  "avg_sol": 0.2295,
+  "program": "Unknown (LuteGGtejDsrjNyVDrdJZWrnzwAxysqRY9X2nN7JdPG)",
+  "bundle_n": 10,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "System Program: Transfer",
+   "Associated Token: CreateIdempotent",
+   "Unknown (LuteGGtejDsrjNyVDrdJZWrnzwAxysqRY9X2nN7JdPG)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 295,
+  "solo_n": 0,
+  "avg_sol": 0.0309,
+  "program": "Unknown (L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95)",
+  "bundle_n": 4,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95)",
+   "Associated Token: Create",
+   "Pump.Fun: Buy"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 267,
+  "solo_n": 1,
+  "avg_sol": 0.1952,
+  "program": "Unknown (HsALuNvsaNreRFCsJe4QgWvqFwjvdWWn43F1ZLxH71a1)",
+  "bundle_n": 0,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Unknown (HsALuNvsaNreRFCsJe4QgWvqFwjvdWWn43F1ZLxH71a1)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 266,
+  "solo_n": 0,
+  "avg_sol": 0.5249,
+  "program": "(direct)",
+  "bundle_n": 151,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: Create",
+   "Pump.Fun: Buy",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 2.42,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 250,
+  "solo_n": 0,
+  "avg_sol": 0.3377,
+  "program": "Unknown (6rje299DFs9BHBibc9n7D1bRdnd5v9s1nGfGZUkCWkde)",
+  "bundle_n": 114,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Unknown (6rje299DFs9BHBibc9n7D1bRdnd5v9s1nGfGZUkCWkde)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 2.49,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 236,
+  "solo_n": 8,
+  "avg_sol": 0.5182,
+  "program": "GMGN Bot",
+  "bundle_n": 25,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "GMGN Bot: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 235,
+  "solo_n": 14,
+  "avg_sol": 0.4724,
+  "program": "(direct)",
+  "bundle_n": 20,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 1.17,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 200,
+  "solo_n": 0,
+  "avg_sol": 0.334,
+  "program": "Unknown (7F2k5rXvmthLXJWCzxoCFbcuHdJx3JL1FxHFKSVxs8QB)",
+  "bundle_n": 40,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer",
+   "System Program: Transfer",
+   "Unknown (7F2k5rXvmthLXJWCzxoCFbcuHdJx3JL1FxHFKSVxs8QB)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 1.61,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 194,
+  "solo_n": 3,
+  "avg_sol": 1.6296,
+  "program": "(direct)",
+  "bundle_n": 11,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 193,
+  "solo_n": 3,
+  "avg_sol": 0.668,
+  "program": "Terminal",
+  "bundle_n": 10,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Terminal: Unknown",
+   "Terminal: Unknown",
+   "Terminal: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 3.94,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 170,
+  "solo_n": 31,
+  "avg_sol": 0.536,
+  "program": "Unknown (5jkmY8wXp6mTggtmPwa6usfhtiqTAj9cJx6s3f7SREKT)",
+  "bundle_n": 18,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (5jkmY8wXp6mTggtmPwa6usfhtiqTAj9cJx6s3f7SREKT)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 1.88,
+  "bundle_lift": 2.86,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 164,
+  "solo_n": 0,
+  "avg_sol": 0.0458,
+  "program": "(direct)",
+  "bundle_n": 55,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Associated Token: CreateIdempotent",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Pump.Fun: BuyV2"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 161,
+  "solo_n": 0,
+  "avg_sol": 0.0716,
+  "program": "(direct)",
+  "bundle_n": 2,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 151,
+  "solo_n": 3,
+  "avg_sol": 4.1929,
+  "program": "Unknown (8m2AeJsxw1dTz4BMTj8gd3NMvuJBh6mCRub5xNGSM88K)",
+  "bundle_n": 20,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (8m2AeJsxw1dTz4BMTj8gd3NMvuJBh6mCRub5xNGSM88K)",
+   "Unknown (8m2AeJsxw1dTz4BMTj8gd3NMvuJBh6mCRub5xNGSM88K)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 147,
+  "solo_n": 3,
+  "avg_sol": 0.6297,
+  "program": "(direct)",
+  "bundle_n": 8,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "Associated Token: Create",
+   "Pump.Fun: Buy"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 146,
+  "solo_n": 1,
+  "avg_sol": 0.2475,
+  "program": "Bloom Router",
+  "bundle_n": 15,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Bloom Router: Unknown",
+   "System Program: Transfer",
+   "Bloom Router: Unknown"
+  ],
+  "solo_lift": 49.14,
+  "bundle_lift": 1.08,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 146,
+  "solo_n": 30,
+  "avg_sol": 0.5453,
+  "program": "Unknown (BANANAjs7FJiPQqJTGFzkZJndT9o7UmKiYYGaJz6frGu)",
+  "bundle_n": 23,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (BANANAjs7FJiPQqJTGFzkZJndT9o7UmKiYYGaJz6frGu)"
+  ],
+  "solo_lift": 2.04,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 142,
+  "solo_n": 8,
+  "avg_sol": 1.0929,
+  "program": "Photon",
+  "bundle_n": 15,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Pump.Fun: ExtendAccount",
+   "Associated Token: CreateIdempotent",
+   "Photon: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 1.18,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 135,
+  "solo_n": 0,
+  "avg_sol": 0.0394,
+  "program": "(direct)",
+  "bundle_n": 4,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyV2"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 135,
+  "solo_n": 7,
+  "avg_sol": 0.606,
+  "program": "Unknown (9AakkHfUV8LWAjYZvq98CvhBLhpKRbWDSPRb52da11Zk)",
+  "bundle_n": 9,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (9AakkHfUV8LWAjYZvq98CvhBLhpKRbWDSPRb52da11Zk)",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 5.29,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 129,
+  "solo_n": 23,
+  "avg_sol": 4.4318,
+  "program": "(direct)",
+  "bundle_n": 28,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.74,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 116,
+  "solo_n": 0,
+  "avg_sol": 0.7825,
+  "program": "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+  "bundle_n": 22,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: Create",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+   "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 1.31,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 116,
+  "solo_n": 1,
+  "avg_sol": 0.2767,
+  "program": "Unknown (9AakkHfUV8LWAjYZvq98CvhBLhpKRbWDSPRb52da11Zk)",
+  "bundle_n": 11,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (9AakkHfUV8LWAjYZvq98CvhBLhpKRbWDSPRb52da11Zk)",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 2.31,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 113,
+  "solo_n": 3,
+  "avg_sol": 1.7811,
+  "program": "(direct)",
+  "bundle_n": 2,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 112,
+  "solo_n": 11,
+  "avg_sol": 0.2196,
+  "program": "Photon",
+  "bundle_n": 5,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Photon: Unknown"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 112,
+  "solo_n": 0,
+  "avg_sol": 1.9418,
+  "program": "Unknown (ZEPHYRrtq7Hi1kXFQDAFHyuUundHoBD6PFrkbEiDQHq)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "Unknown (ZEPHYRrtq7Hi1kXFQDAFHyuUundHoBD6PFrkbEiDQHq)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 107,
+  "solo_n": 0,
+  "avg_sol": 1.6864,
+  "program": "Unknown (pierceZ2RR7zPHoj2Kg5HVH6iksK79jBxc4AgDcAjcc)",
+  "bundle_n": 4,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Pump.Fun: BuyExactSolIn",
+   "Unknown (pierceZ2RR7zPHoj2Kg5HVH6iksK79jBxc4AgDcAjcc)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 105,
+  "solo_n": 1,
+  "avg_sol": 0.6708,
+  "program": "Axiom Trade",
+  "bundle_n": 8,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Axiom Trade: Unknown",
+   "Axiom Trade: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 103,
+  "solo_n": 0,
+  "avg_sol": 0.1506,
+  "program": "Unknown (L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95)",
+  "bundle_n": 33,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Unknown (L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95)",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: Buy",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 102,
+  "solo_n": 17,
+  "avg_sol": 1.3408,
+  "program": "Unknown (777a4rzrUCESkUmiL5N1nit1ZmopwK9vdjQm8dCBzjny)",
+  "bundle_n": 37,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "Unknown (777a4rzrUCESkUmiL5N1nit1ZmopwK9vdjQm8dCBzjny)"
+  ],
+  "solo_lift": 3.37,
+  "bundle_lift": 0.54,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 100,
+  "solo_n": 0,
+  "avg_sol": 0.4474,
+  "program": "(direct)",
+  "bundle_n": 27,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: Create",
+   "Pump.Fun: BuyExactQuoteInV2"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.57,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 99,
+  "solo_n": 3,
+  "avg_sol": 0.5248,
+  "program": "(direct)",
+  "bundle_n": 0,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 99,
+  "solo_n": 16,
+  "avg_sol": 0.6825,
+  "program": "Unknown (MaestroAAe9ge5HTc64VbBQZ6fP77pwvrhM8i1XWSAx)",
+  "bundle_n": 14,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (MaestroAAe9ge5HTc64VbBQZ6fP77pwvrhM8i1XWSAx)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 4.19,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 97,
+  "solo_n": 1,
+  "avg_sol": 0.5143,
+  "program": "Terminal",
+  "bundle_n": 3,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Terminal: Unknown",
+   "Associated Token: CreateIdempotent",
+   "Associated Token: CreateIdempotent",
+   "System Program: Transfer",
+   "Token Program: SyncNative",
+   "PumpSwap: Unknown",
+   "Token Program: CloseAccount",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 89,
+  "solo_n": 0,
+  "avg_sol": 0.4228,
+  "program": "(direct)",
+  "bundle_n": 16,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: Create",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 2.04,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 89,
+  "solo_n": 0,
+  "avg_sol": 0.5029,
+  "program": "Unknown (oPSSJwAK8Ew5KpUQuV5Bx6yb78inogWJdLFw5q2xwg2)",
+  "bundle_n": 9,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (oPSSJwAK8Ew5KpUQuV5Bx6yb78inogWJdLFw5q2xwg2)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 86,
+  "solo_n": 0,
+  "avg_sol": 0.3836,
+  "program": "Unknown (7F2k5rXvmthLXJWCzxoCFbcuHdJx3JL1FxHFKSVxs8QB)",
+  "bundle_n": 29,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer",
+   "Unknown (7F2k5rXvmthLXJWCzxoCFbcuHdJx3JL1FxHFKSVxs8QB)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 7.51,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 86,
+  "solo_n": 10,
+  "avg_sol": 1.1704,
+  "program": "Photon",
+  "bundle_n": 9,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Associated Token: CreateIdempotent",
+   "Photon: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 5.92,
+  "bundle_lift": 6.52,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 86,
+  "solo_n": 4,
+  "avg_sol": 0.4128,
+  "program": "Terminal",
+  "bundle_n": 3,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Terminal: Unknown",
+   "Associated Token: CreateIdempotent",
+   "Terminal: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 78,
+  "solo_n": 1,
+  "avg_sol": 0.9931,
+  "program": "Unknown (oPSSJwAK8Ew5KpUQuV5Bx6yb78inogWJdLFw5q2xwg2)",
+  "bundle_n": 3,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "System Program: Transfer",
+   "Unknown (oPSSJwAK8Ew5KpUQuV5Bx6yb78inogWJdLFw5q2xwg2)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 74,
+  "solo_n": 0,
+  "avg_sol": 0.997,
+  "program": "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+  "bundle_n": 20,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: Create",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.87,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 74,
+  "solo_n": 6,
+  "avg_sol": 0.4878,
+  "program": "Terminal",
+  "bundle_n": 4,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Terminal: Unknown",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 67,
+  "solo_n": 0,
+  "avg_sol": 0.3857,
+  "program": "(direct)",
+  "bundle_n": 7,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyV2"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 3.86,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 66,
+  "solo_n": 0,
+  "avg_sol": 1.9317,
+  "program": "Unknown (AURAsuSzLv3v8SX3Y7emMFzGTWiepJK3Sm4x77GB9n1G)",
+  "bundle_n": 2,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Unknown (AURAsuSzLv3v8SX3Y7emMFzGTWiepJK3Sm4x77GB9n1G)",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitPrice"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 6.99,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 66,
+  "solo_n": 1,
+  "avg_sol": 0.2078,
+  "program": "Unknown (DRAkNQsJrWKx8VLCMFcpAfNiYtsX4e7pVpjz1vgcsya3)",
+  "bundle_n": 3,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Unknown (DRAkNQsJrWKx8VLCMFcpAfNiYtsX4e7pVpjz1vgcsya3)",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 64,
+  "solo_n": 0,
+  "avg_sol": 0.4321,
+  "program": "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+  "bundle_n": 19,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: Create",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+   "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 1.48,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 63,
+  "solo_n": 0,
+  "avg_sol": 1.0482,
+  "program": "(direct)",
+  "bundle_n": 23,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "Pump.Fun: Buy"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 62,
+  "solo_n": 0,
+  "avg_sol": 0.8219,
+  "program": "Unknown (cccfyr1t3bKg7CURqb7P53oxZBGC4gxRhhuwQ715E86)",
+  "bundle_n": 8,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (cccfyr1t3bKg7CURqb7P53oxZBGC4gxRhhuwQ715E86)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 62,
+  "solo_n": 0,
+  "avg_sol": 0.2782,
+  "program": "(direct)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "System Program: Transfer",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyV2"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 62,
+  "solo_n": 8,
+  "avg_sol": 1.4067,
+  "program": "Bloom Router",
+  "bundle_n": 9,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Bloom Router: Unknown",
+   "Token Program: TransferChecked",
+   "System Program: Transfer",
+   "Bloom Router: Unknown"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 3.56,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 61,
+  "solo_n": 3,
+  "avg_sol": 4.4117,
+  "program": "Unknown (DL3a83TumePUxDEQh9hYJoynppPXjhAttdFH4AFvudeb)",
+  "bundle_n": 8,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (DL3a83TumePUxDEQh9hYJoynppPXjhAttdFH4AFvudeb)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 58,
+  "solo_n": 0,
+  "avg_sol": 0.9362,
+  "program": "GMGN Bot",
+  "bundle_n": 23,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "GMGN Bot: Unknown",
+   "System Program: Transfer",
+   "Associated Token: CreateIdempotent",
+   "GMGN Bot: Unknown",
+   "System Program: Transfer",
+   "Associated Token: CreateIdempotent",
+   "GMGN Bot: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 58,
+  "solo_n": 1,
+  "avg_sol": 4.0415,
+  "program": "Unknown (HTss6CmLogLXyi1szHXtGAmUPsDR2LB9sWoUizKLCeoK)",
+  "bundle_n": 7,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (HTss6CmLogLXyi1szHXtGAmUPsDR2LB9sWoUizKLCeoK)",
+   "Unknown (HTss6CmLogLXyi1szHXtGAmUPsDR2LB9sWoUizKLCeoK)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 57,
+  "solo_n": 0,
+  "avg_sol": 1.1642,
+  "program": "Unknown (ccct2NZ2XwjqneAPGNHwoBkNEgfwmJgSMLKACMKvjCp)",
+  "bundle_n": 11,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (ccct2NZ2XwjqneAPGNHwoBkNEgfwmJgSMLKACMKvjCp)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 1.14,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 57,
+  "solo_n": 6,
+  "avg_sol": 4.3689,
+  "program": "Unknown (BPRBGRbeD1QpbUFb2E84gW78dDZazu5bQELzogeZ8Qex)",
+  "bundle_n": 10,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (BPRBGRbeD1QpbUFb2E84gW78dDZazu5bQELzogeZ8Qex)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 56,
+  "solo_n": 7,
+  "avg_sol": 4.4138,
+  "program": "Unknown (9SEFQ1E2ocEbWezA7EeYQ9AD8QCkuxXCdvinBEuVQ6ir)",
+  "bundle_n": 8,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (9SEFQ1E2ocEbWezA7EeYQ9AD8QCkuxXCdvinBEuVQ6ir)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 55,
+  "solo_n": 0,
+  "avg_sol": 0.0269,
+  "program": "Jupiter Aggregator V6",
+  "bundle_n": 6,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Jupiter Aggregator V6: Unknown"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 54,
+  "solo_n": 1,
+  "avg_sol": 0.7624,
+  "program": "(direct)",
+  "bundle_n": 0,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 51,
+  "solo_n": 13,
+  "avg_sol": 2.1564,
+  "program": "Photon",
+  "bundle_n": 7,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: CreateAccountWithSeed",
+   "Token Program: InitializeAccount",
+   "Associated Token: CreateIdempotent",
+   "Photon: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": true
+ },
+ {
+  "class": "target",
+  "n_buys": 47,
+  "solo_n": 0,
+  "avg_sol": 0.859,
+  "program": "Axiom Trade",
+  "bundle_n": 2,
+  "ix_labels": [
+   "System Program: Transfer",
+   "Associated Token: CreateIdempotent",
+   "Axiom Trade: Unknown"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 47,
+  "solo_n": 0,
+  "avg_sol": 0.3478,
+  "program": "Bloom Router",
+  "bundle_n": 9,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Bloom Router: Unknown",
+   "Bloom Router: Unknown",
+   "System Program: Transfer",
+   "System Program: Transfer",
+   "Bloom Router: Unknown"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 2.04,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 47,
+  "solo_n": 0,
+  "avg_sol": 0.1387,
+  "program": "(direct)",
+  "bundle_n": 5,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 46,
+  "solo_n": 2,
+  "avg_sol": 1.3041,
+  "program": "Photon",
+  "bundle_n": 12,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Pump.Fun: ExtendAccount",
+   "Associated Token: CreateIdempotent",
+   "Photon: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 46,
+  "solo_n": 5,
+  "avg_sol": 0.2308,
+  "program": "Photon",
+  "bundle_n": 1,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Photon: Unknown"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 45,
+  "solo_n": 1,
+  "avg_sol": 4.1503,
+  "program": "Unknown (ATcf97HMtje1fW8DiYRqcZSZkqtoh8rbk9hv1NVR8NB)",
+  "bundle_n": 5,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (ATcf97HMtje1fW8DiYRqcZSZkqtoh8rbk9hv1NVR8NB)",
+   "Unknown (ATcf97HMtje1fW8DiYRqcZSZkqtoh8rbk9hv1NVR8NB)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 45,
+  "solo_n": 0,
+  "avg_sol": 0.5823,
+  "program": "Unknown (q2ps11PLEw7EareiJ728NYP4qf893rcFBPejfVgCdp1)",
+  "bundle_n": 2,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Unknown (q2ps11PLEw7EareiJ728NYP4qf893rcFBPejfVgCdp1)",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 44,
+  "solo_n": 0,
+  "avg_sol": 0.4036,
+  "program": "(direct)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "System Program: Transfer",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 43,
+  "solo_n": 5,
+  "avg_sol": 2.8215,
+  "program": "(direct)",
+  "bundle_n": 6,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "System Program: Transfer",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 42,
+  "solo_n": 0,
+  "avg_sol": 0.6005,
+  "program": "Unknown (DRAkNQsJrWKx8VLCMFcpAfNiYtsX4e7pVpjz1vgcsya3)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Unknown (DRAkNQsJrWKx8VLCMFcpAfNiYtsX4e7pVpjz1vgcsya3)",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 42,
+  "solo_n": 1,
+  "avg_sol": 0.9994,
+  "program": "Unknown (ZEPHYRuoTyquTiT1JHJbHyU7hqsGZNmd91SzxfXmF57)",
+  "bundle_n": 0,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (ZEPHYRuoTyquTiT1JHJbHyU7hqsGZNmd91SzxfXmF57)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 41,
+  "solo_n": 0,
+  "avg_sol": 0.7489,
+  "program": "(direct)",
+  "bundle_n": 2,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 40,
+  "solo_n": 0,
+  "avg_sol": 0.4593,
+  "program": "Trojan Trade",
+  "bundle_n": 1,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn",
+   "Trojan Trade: Unknown"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 38,
+  "solo_n": 4,
+  "avg_sol": 0.5764,
+  "program": "Unknown (BANANAjs7FJiPQqJTGFzkZJndT9o7UmKiYYGaJz6frGu)",
+  "bundle_n": 2,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (BANANAjs7FJiPQqJTGFzkZJndT9o7UmKiYYGaJz6frGu)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 37,
+  "solo_n": 3,
+  "avg_sol": 4.396,
+  "program": "Unknown (C8xSTbzYeJur99jRJQw4dT6cwBfMFvX66Pr4FeqKE2P7)",
+  "bundle_n": 7,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (C8xSTbzYeJur99jRJQw4dT6cwBfMFvX66Pr4FeqKE2P7)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 37,
+  "solo_n": 0,
+  "avg_sol": 1.0898,
+  "program": "GMGN Bot",
+  "bundle_n": 17,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "GMGN Bot: Unknown",
+   "System Program: Transfer",
+   "Associated Token: CreateIdempotent",
+   "GMGN Bot: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 37,
+  "solo_n": 0,
+  "avg_sol": 0.9351,
+  "program": "Unknown (ccct2NZ2XwjqneAPGNHwoBkNEgfwmJgSMLKACMKvjCp)",
+  "bundle_n": 4,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "Unknown (ccct2NZ2XwjqneAPGNHwoBkNEgfwmJgSMLKACMKvjCp)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 4.52,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 33,
+  "solo_n": 0,
+  "avg_sol": 0.2708,
+  "program": "Unknown (L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95)",
+  "bundle_n": 15,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Unknown (L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95)",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 2.77,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 31,
+  "solo_n": 0,
+  "avg_sol": 0.497,
+  "program": "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+  "bundle_n": 15,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+   "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 4.3,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 30,
+  "solo_n": null,
+  "avg_sol": 1.9095,
+  "program": "Unknown (ZEPHYRbbb4H6wymVkYKQNZVCPw5LcQGaNcwxCePxiR7)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "Unknown (ZEPHYRbbb4H6wymVkYKQNZVCPw5LcQGaNcwxCePxiR7)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 29,
+  "solo_n": null,
+  "avg_sol": 0.2759,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: Create",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 27,
+  "solo_n": 0,
+  "avg_sol": 1.0438,
+  "program": "Unknown (cccfyr1t3bKg7CURqb7P53oxZBGC4gxRhhuwQ715E86)",
+  "bundle_n": 2,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "Unknown (cccfyr1t3bKg7CURqb7P53oxZBGC4gxRhhuwQ715E86)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 27,
+  "solo_n": 4,
+  "avg_sol": 1.238,
+  "program": "Unknown (777a4rzrUCESkUmiL5N1nit1ZmopwK9vdjQm8dCBzjny)",
+  "bundle_n": 8,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (777a4rzrUCESkUmiL5N1nit1ZmopwK9vdjQm8dCBzjny)"
+  ],
+  "solo_lift": 13.26,
+  "bundle_lift": 2.21,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 27,
+  "solo_n": null,
+  "avg_sol": 0.9877,
+  "program": "Unknown (zzzCdT8yoVgaMUpjMdLn6heEzBmmPtAC6bnVoRp6SR2)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (zzzCdT8yoVgaMUpjMdLn6heEzBmmPtAC6bnVoRp6SR2)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 27,
+  "solo_n": 0,
+  "avg_sol": 0.1142,
+  "program": "Unknown (m9obQHAPyZeZ88w7XUY8Te6a8rBmhXsfKco7u8G8tnB)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Unknown (m9obQHAPyZeZ88w7XUY8Te6a8rBmhXsfKco7u8G8tnB)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 26,
+  "solo_n": 0,
+  "avg_sol": 1.0446,
+  "program": "Unknown (EsYiYcMeJSAZe3tPBW9iAWjo9DuswS6M7WuxvyVzKkoP)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (EsYiYcMeJSAZe3tPBW9iAWjo9DuswS6M7WuxvyVzKkoP)",
+   "Memo Program: Unknown"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 26,
+  "solo_n": 6,
+  "avg_sol": 1.2042,
+  "program": "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+  "bundle_n": 5,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: Create",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 25,
+  "solo_n": 0,
+  "avg_sol": 0.027,
+  "program": "Unknown (L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Unknown (L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95)",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 25,
+  "solo_n": 0,
+  "avg_sol": 0.0395,
+  "program": "(direct)",
+  "bundle_n": 5,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Associated Token: CreateIdempotent",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Pump.Fun: BuyExactQuoteInV2"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 25,
+  "solo_n": 0,
+  "avg_sol": 0.983,
+  "program": "Unknown (cccgoFURGyyGkfL43KhRQVzUfCgzj6NYPxXURpRbGsW)",
+  "bundle_n": 3,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (cccgoFURGyyGkfL43KhRQVzUfCgzj6NYPxXURpRbGsW)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 25,
+  "solo_n": 3,
+  "avg_sol": 3.2984,
+  "program": "(direct)",
+  "bundle_n": 0,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Pump.Fun: ExtendAccount",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 24,
+  "solo_n": 0,
+  "avg_sol": 0.001,
+  "program": "Unknown (H8fw2fT8QcxyHMC5BpGNLCFGt9Hd8ZG6NzQxXLZyVm88)",
+  "bundle_n": 6,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (H8fw2fT8QcxyHMC5BpGNLCFGt9Hd8ZG6NzQxXLZyVm88)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 24,
+  "solo_n": 0,
+  "avg_sol": 0.5724,
+  "program": "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+  "bundle_n": 6,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 23,
+  "solo_n": null,
+  "avg_sol": 0.9877,
+  "program": "Unknown (29VfhnX9jF5aL8Z1mMN4DmcW36CtyFJu4NG8ZLShpsHb)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (29VfhnX9jF5aL8Z1mMN4DmcW36CtyFJu4NG8ZLShpsHb)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 23,
+  "solo_n": 3,
+  "avg_sol": 0.3519,
+  "program": "Axiom Trade",
+  "bundle_n": 4,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Axiom Trade: Unknown",
+   "Token Program: Transfer",
+   "Axiom Trade: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 22,
+  "solo_n": 3,
+  "avg_sol": 1.4366,
+  "program": "(direct)",
+  "bundle_n": 5,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 22,
+  "solo_n": 1,
+  "avg_sol": 0.2976,
+  "program": "Axiom Trade",
+  "bundle_n": 0,
+  "ix_labels": [
+   "Associated Token: CreateIdempotent",
+   "Axiom Trade: Unknown",
+   "Axiom Trade: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": null,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 22,
+  "solo_n": 0,
+  "avg_sol": 0.6727,
+  "program": "Unknown (9fGrjStpWyGEaJbYu5ktPo2qUJYB9JyPprU6cGwPV6wu)",
+  "bundle_n": 3,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Unknown (9fGrjStpWyGEaJbYu5ktPo2qUJYB9JyPprU6cGwPV6wu)",
+   "Unknown (L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 21,
+  "solo_n": 0,
+  "avg_sol": 0.7,
+  "program": "Unknown (9fGrjStpWyGEaJbYu5ktPo2qUJYB9JyPprU6cGwPV6wu)",
+  "bundle_n": 5,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Unknown (9fGrjStpWyGEaJbYu5ktPo2qUJYB9JyPprU6cGwPV6wu)",
+   "Unknown (L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 21,
+  "solo_n": null,
+  "avg_sol": 0.0615,
+  "program": "Photon",
+  "bundle_n": null,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Photon: Unknown"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 20,
+  "solo_n": null,
+  "avg_sol": 0.0671,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "System Program: Transfer",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 20,
+  "solo_n": 0,
+  "avg_sol": 0.1017,
+  "program": "Unknown (od1NboTcsrqEhAN92nBzzJon3HYXSeTcT48fw8iXVtB)",
+  "bundle_n": 2,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Unknown (od1NboTcsrqEhAN92nBzzJon3HYXSeTcT48fw8iXVtB)",
+   "System Program: Transfer",
+   "System Program: Transfer",
+   "Unknown (7F2k5rXvmthLXJWCzxoCFbcuHdJx3JL1FxHFKSVxs8QB)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 19,
+  "solo_n": 0,
+  "avg_sol": 0.0309,
+  "program": "(direct)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyV2",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 19,
+  "solo_n": null,
+  "avg_sol": 0.0587,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 19,
+  "solo_n": 0,
+  "avg_sol": 0.4574,
+  "program": "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+  "bundle_n": 5,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+   "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 18,
+  "solo_n": 5,
+  "avg_sol": 1.3937,
+  "program": "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+  "bundle_n": 0,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: Create",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 17,
+  "solo_n": 2,
+  "avg_sol": 0.1762,
+  "program": "Photon",
+  "bundle_n": 1,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Associated Token: CreateIdempotent",
+   "Photon: Unknown"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 17,
+  "solo_n": null,
+  "avg_sol": 0.0387,
+  "program": "Photon",
+  "bundle_n": null,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Photon: Unknown"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 17,
+  "solo_n": 4,
+  "avg_sol": 0.3584,
+  "program": "Axiom Trade",
+  "bundle_n": 1,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Associated Token: CreateIdempotent",
+   "Axiom Trade: Unknown",
+   "Token Program: Transfer",
+   "Axiom Trade: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 17,
+  "solo_n": 4,
+  "avg_sol": 2.2861,
+  "program": "(direct)",
+  "bundle_n": 9,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 17,
+  "solo_n": 1,
+  "avg_sol": 4.1122,
+  "program": "Unknown (GeTWudoBTYDAA9PVJoX9S5WTQA6V5Dg9t7pCbcUr5Fro)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (GeTWudoBTYDAA9PVJoX9S5WTQA6V5Dg9t7pCbcUr5Fro)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 16,
+  "solo_n": null,
+  "avg_sol": 0.9877,
+  "program": "Unknown (EsYiYcMeJSAZe3tPBW9iAWjo9DuswS6M7WuxvyVzKkoP)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (EsYiYcMeJSAZe3tPBW9iAWjo9DuswS6M7WuxvyVzKkoP)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 16,
+  "solo_n": 0,
+  "avg_sol": 2.4815,
+  "program": "(direct)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 16,
+  "solo_n": 2,
+  "avg_sol": 0.1576,
+  "program": "Axiom Trade",
+  "bundle_n": 1,
+  "ix_labels": [
+   "Axiom Trade: Unknown",
+   "Axiom Trade: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 16,
+  "solo_n": 5,
+  "avg_sol": 0.6865,
+  "program": "(direct)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 16,
+  "solo_n": 2,
+  "avg_sol": 0.1387,
+  "program": "(direct)",
+  "bundle_n": 0,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Associated Token: Create",
+   "Pump.Fun: Buy"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 16,
+  "solo_n": null,
+  "avg_sol": 1.7806,
+  "program": "Unknown (AURAsuSzLv3v8SX3Y7emMFzGTWiepJK3Sm4x77GB9n1G)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Unknown (AURAsuSzLv3v8SX3Y7emMFzGTWiepJK3Sm4x77GB9n1G)",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitPrice"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 16,
+  "solo_n": null,
+  "avg_sol": 0.9877,
+  "program": "Unknown (AaUnppacujx2p3S3hWjjwJqtsbPj2PXPi9pRYdvRFZVZ)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (AaUnppacujx2p3S3hWjjwJqtsbPj2PXPi9pRYdvRFZVZ)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 15,
+  "solo_n": 0,
+  "avg_sol": 0.0466,
+  "program": "Unknown (AN225ksocfZpbPVEbwffiANbtUdYbySM3WJ6dbsYAqij)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Unknown (AN225ksocfZpbPVEbwffiANbtUdYbySM3WJ6dbsYAqij)",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitPrice"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 14,
+  "solo_n": 0,
+  "avg_sol": 0.3179,
+  "program": "Unknown (7ANp2gxpnPQDwaVsMEeL5Ki6KKzv7ykMzCvkxp4RVEGe)",
+  "bundle_n": 7,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: Create",
+   "Unknown (7ANp2gxpnPQDwaVsMEeL5Ki6KKzv7ykMzCvkxp4RVEGe)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 14,
+  "solo_n": null,
+  "avg_sol": 1.03,
+  "program": "Unknown (HawkGoDqx9gTnU3MPWh5HLygM3hn5LRLvnKUxzPvtjwM)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "System Program: Transfer",
+   "Associated Token: Create",
+   "Unknown (HawkGoDqx9gTnU3MPWh5HLygM3hn5LRLvnKUxzPvtjwM)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 14,
+  "solo_n": null,
+  "avg_sol": 0.0221,
+  "program": "Unknown (2A6m4MBgk3xL6a8SBMdKmAmFc85tTLh4Ds6wy7dBxBxb)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitLimit",
+   "Unknown (2A6m4MBgk3xL6a8SBMdKmAmFc85tTLh4Ds6wy7dBxBxb)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 14,
+  "solo_n": null,
+  "avg_sol": 4.5366,
+  "program": "Unknown (2tw1HVavoR6a7DsxwzhPm3P2shGBcfLmufBPcXFTfW1a)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (2tw1HVavoR6a7DsxwzhPm3P2shGBcfLmufBPcXFTfW1a)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 14,
+  "solo_n": null,
+  "avg_sol": 0.2486,
+  "program": "Terminal",
+  "bundle_n": null,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Terminal: Unknown",
+   "System Program: CreateAccountWithSeed",
+   "Token Program: InitializeAccount3",
+   "Associated Token: CreateIdempotent",
+   "Terminal: Unknown",
+   "PumpSwap: Unknown",
+   "Token Program: CloseAccount",
+   "System Program: Transfer",
+   "Token Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": false,
+  "create_account_with_seed": true
+ },
+ {
+  "class": "target",
+  "n_buys": 13,
+  "solo_n": 0,
+  "avg_sol": 0.0183,
+  "program": "Unknown (GnZr2LD3N1F7mr5mNdgN7doBMxFNAF9dKtpoNHGCkrx2)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (GnZr2LD3N1F7mr5mNdgN7doBMxFNAF9dKtpoNHGCkrx2)",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 13,
+  "solo_n": null,
+  "avg_sol": 2.4691,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitLimit",
+   "System Program: Transfer",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 12,
+  "solo_n": 0,
+  "avg_sol": 0.4549,
+  "program": "(direct)",
+  "bundle_n": 3,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 12,
+  "solo_n": 6,
+  "avg_sol": 0.5232,
+  "program": "(direct)",
+  "bundle_n": 0,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyV2",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 11.67,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 12,
+  "solo_n": 1,
+  "avg_sol": 0.1317,
+  "program": "(direct)",
+  "bundle_n": 2,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Pump.Fun: Buy"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 12,
+  "solo_n": 1,
+  "avg_sol": 4.371,
+  "program": "Unknown (7DYoV72hTq3mRr3cW6fGCTMpuY2B1dWhJNxPUwmWHcum)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (7DYoV72hTq3mRr3cW6fGCTMpuY2B1dWhJNxPUwmWHcum)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 11,
+  "solo_n": null,
+  "avg_sol": 0.0005,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: Buy",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 11,
+  "solo_n": 1,
+  "avg_sol": 1.0156,
+  "program": "(direct)",
+  "bundle_n": 3,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Pump.Fun: Buy"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 11,
+  "solo_n": 1,
+  "avg_sol": 0.1742,
+  "program": "(direct)",
+  "bundle_n": 0,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: Create",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 11,
+  "solo_n": 0,
+  "avg_sol": 0.6907,
+  "program": "Unknown (q2ps11PLEw7EareiJ728NYP4qf893rcFBPejfVgCdp1)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Unknown (q2ps11PLEw7EareiJ728NYP4qf893rcFBPejfVgCdp1)",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 11,
+  "solo_n": 0,
+  "avg_sol": 0.136,
+  "program": "(direct)",
+  "bundle_n": 2,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: Buy",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 11,
+  "solo_n": 1,
+  "avg_sol": 4.3645,
+  "program": "Unknown (5YKDN8mkV9dK2V43RYuujsUrkzpNma3xeW2Q9MmXmg44)",
+  "bundle_n": 2,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (5YKDN8mkV9dK2V43RYuujsUrkzpNma3xeW2Q9MmXmg44)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 10,
+  "solo_n": 0,
+  "avg_sol": 0.0395,
+  "program": "(direct)",
+  "bundle_n": 3,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Associated Token: CreateIdempotent",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 10,
+  "solo_n": 0,
+  "avg_sol": 0.0988,
+  "program": "(direct)",
+  "bundle_n": 2,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 10,
+  "solo_n": null,
+  "avg_sol": 1.7778,
+  "program": "Unknown (4VXz7mbrduuykm6XbmpPKrvV2FkFxb3QcQGFevEWRjWH)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Unknown (4VXz7mbrduuykm6XbmpPKrvV2FkFxb3QcQGFevEWRjWH)",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 10,
+  "solo_n": 2,
+  "avg_sol": 0.5541,
+  "program": "Unknown (Bgo4vNe3vxRv37j8mmQarJo8vbjHEKgkhJDZzxiizBid)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "Unknown (Bgo4vNe3vxRv37j8mmQarJo8vbjHEKgkhJDZzxiizBid)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 10,
+  "solo_n": null,
+  "avg_sol": 0.4938,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 10,
+  "solo_n": 2,
+  "avg_sol": 0.237,
+  "program": "Trojan Trade",
+  "bundle_n": 0,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: CreateAccountWithSeed",
+   "Token Program: InitializeAccount",
+   "PumpSwap: Buy",
+   "Token Program: CloseAccount",
+   "Trojan Trade: Unknown"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": null,
+  "durable_nonce": false,
+  "create_account_with_seed": true
+ },
+ {
+  "class": "target",
+  "n_buys": 9,
+  "solo_n": 0,
+  "avg_sol": 1.1069,
+  "program": "Unknown (cccgoFURGyyGkfL43KhRQVzUfCgzj6NYPxXURpRbGsW)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "Unknown (cccgoFURGyyGkfL43KhRQVzUfCgzj6NYPxXURpRbGsW)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 9,
+  "solo_n": 1,
+  "avg_sol": 1.1577,
+  "program": "Photon",
+  "bundle_n": 0,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: CreateAccountWithSeed",
+   "Token Program: InitializeAccount",
+   "Associated Token: CreateIdempotent",
+   "Photon: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": null,
+  "durable_nonce": false,
+  "create_account_with_seed": true
+ },
+ {
+  "class": "target",
+  "n_buys": 9,
+  "solo_n": 0,
+  "avg_sol": 0.0064,
+  "program": "Unknown (FAST4LPVW1P9qR2n6mWJQQiuZhofveVRLFNrLxpMxN4E)",
+  "bundle_n": 2,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (FAST4LPVW1P9qR2n6mWJQQiuZhofveVRLFNrLxpMxN4E)",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 9,
+  "solo_n": 0,
+  "avg_sol": 1.6028,
+  "program": "(direct)",
+  "bundle_n": 3,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 9,
+  "solo_n": null,
+  "avg_sol": 4.7367,
+  "program": "Unknown (DhdZHYU2YhZXSWd86jHF7NRCXrxMutse8TvqsN23Nk7J)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (DhdZHYU2YhZXSWd86jHF7NRCXrxMutse8TvqsN23Nk7J)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 9,
+  "solo_n": 1,
+  "avg_sol": 0.6349,
+  "program": "Photon",
+  "bundle_n": 3,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: CreateAccountWithSeed",
+   "Token Program: InitializeAccount",
+   "Photon: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": true
+ },
+ {
+  "class": "target",
+  "n_buys": 8,
+  "solo_n": null,
+  "avg_sol": 1.5432,
+  "program": "Jupiter Aggregator V6",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "Associated Token: CreateIdempotent",
+   "System Program: Transfer",
+   "Token Program: SyncNative",
+   "Associated Token: CreateIdempotent",
+   "Jupiter Aggregator V6: Unknown",
+   "Token Program: CloseAccount"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 8,
+  "solo_n": null,
+  "avg_sol": 0.0135,
+  "program": "Unknown (theovTrkQogG4GbMdQfDZGUMdZafXF8JtXvh4btu31i)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Unknown (theovTrkQogG4GbMdQfDZGUMdZafXF8JtXvh4btu31i)",
+   "Unknown (Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo)",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 8,
+  "solo_n": null,
+  "avg_sol": 0.0296,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyV2"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 8,
+  "solo_n": 0,
+  "avg_sol": 0.9136,
+  "program": "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: Create",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+   "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 8,
+  "solo_n": null,
+  "avg_sol": 0.9877,
+  "program": "Unknown (A86veF4VPSWkCTqQgG74GJTfQCZAEyNZ3iuwDBE4Qx8Q)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (A86veF4VPSWkCTqQgG74GJTfQCZAEyNZ3iuwDBE4Qx8Q)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 8,
+  "solo_n": 0,
+  "avg_sol": 0.0989,
+  "program": "Bloom Router",
+  "bundle_n": 1,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "System Program: Transfer",
+   "Bloom Router: Unknown"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 8,
+  "solo_n": null,
+  "avg_sol": 0.9877,
+  "program": "Unknown (Cwu7kQ4Us7f6KshwqKRehuJ64Yo7QiNgDUFxtJBxXPmb)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (Cwu7kQ4Us7f6KshwqKRehuJ64Yo7QiNgDUFxtJBxXPmb)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 8,
+  "solo_n": 0,
+  "avg_sol": 0.6875,
+  "program": "Unknown (9fGrjStpWyGEaJbYu5ktPo2qUJYB9JyPprU6cGwPV6wu)",
+  "bundle_n": 3,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitLimit",
+   "Unknown (9fGrjStpWyGEaJbYu5ktPo2qUJYB9JyPprU6cGwPV6wu)",
+   "Unknown (L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 8,
+  "solo_n": null,
+  "avg_sol": 0.2492,
+  "program": "Trojan Trade",
+  "bundle_n": null,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: CreateAccountWithSeed",
+   "Token Program: InitializeAccount",
+   "Associated Token: Create",
+   "PumpSwap: Buy",
+   "Token Program: CloseAccount",
+   "Trojan Trade: Unknown"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": false,
+  "create_account_with_seed": true
+ },
+ {
+  "class": "target",
+  "n_buys": 8,
+  "solo_n": null,
+  "avg_sol": 0.8713,
+  "program": "Jupiter Aggregator V6",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "System Program: Transfer",
+   "Token Program: SyncNative",
+   "Associated Token: CreateIdempotent",
+   "Jupiter Aggregator V6: Unknown",
+   "Token Program: CloseAccount",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 8,
+  "solo_n": null,
+  "avg_sol": 0.9877,
+  "program": "Unknown (EsYiYcMeJSAZe3tPBW9iAWjo9DuswS6M7WuxvyVzKkoP)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (EsYiYcMeJSAZe3tPBW9iAWjo9DuswS6M7WuxvyVzKkoP)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 7,
+  "solo_n": null,
+  "avg_sol": 0.099,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Pump.Fun: BuyV2",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 7,
+  "solo_n": 2,
+  "avg_sol": 0.9099,
+  "program": "Unknown (77735cZxRSAJwwq5aAAipWP3gf87exCtJ2p6cqkH4pBN)",
+  "bundle_n": 3,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "Unknown (77735cZxRSAJwwq5aAAipWP3gf87exCtJ2p6cqkH4pBN)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 7,
+  "solo_n": null,
+  "avg_sol": 0.4938,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "System Program: Transfer",
+   "System Program: Transfer",
+   "Associated Token: CreateIdempotent",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 7,
+  "solo_n": 0,
+  "avg_sol": 5.1704,
+  "program": "Unknown (FNehhCTfgGxwsrQLi39Kff9Jy67VZhoFtdxbxe9JqpFF)",
+  "bundle_n": 3,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (FNehhCTfgGxwsrQLi39Kff9Jy67VZhoFtdxbxe9JqpFF)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 7,
+  "solo_n": null,
+  "avg_sol": 0.0476,
+  "program": "Unknown (9i7QdbBHx7fjLAAaFfcDRgkdS4oNfKv8duzyE27a1kJ6)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Unknown (9i7QdbBHx7fjLAAaFfcDRgkdS4oNfKv8duzyE27a1kJ6)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 7,
+  "solo_n": 0,
+  "avg_sol": 0.5229,
+  "program": "(direct)",
+  "bundle_n": 3,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "Pump.Fun: BuyExactQuoteInV2"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 7,
+  "solo_n": null,
+  "avg_sol": 1.2571,
+  "program": "Photon",
+  "bundle_n": null,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Pump.Fun: ExtendAccount",
+   "Associated Token: CreateIdempotent",
+   "Associated Token: CreateIdempotent",
+   "Photon: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 7,
+  "solo_n": null,
+  "avg_sol": 0.064,
+  "program": "Trojan Trade",
+  "bundle_n": null,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: CreateAccountWithSeed",
+   "Token Program: InitializeAccount",
+   "Associated Token: CreateIdempotent",
+   "PumpSwap: Unknown",
+   "Token Program: CloseAccount",
+   "Trojan Trade: Unknown"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": false,
+  "create_account_with_seed": true
+ },
+ {
+  "class": "target",
+  "n_buys": 7,
+  "solo_n": 0,
+  "avg_sol": 2.0314,
+  "program": "Unknown (AURAsuSzLv3v8SX3Y7emMFzGTWiepJK3Sm4x77GB9n1G)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Unknown (AURAsuSzLv3v8SX3Y7emMFzGTWiepJK3Sm4x77GB9n1G)",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 7,
+  "solo_n": null,
+  "avg_sol": 0.4938,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "Associated Token: CreateIdempotent",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 7,
+  "solo_n": 0,
+  "avg_sol": 0.776,
+  "program": "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 7,
+  "solo_n": 0,
+  "avg_sol": 0.0539,
+  "program": "(direct)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyV2"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 7,
+  "solo_n": 0,
+  "avg_sol": 0.1602,
+  "program": "(direct)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: Buy",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 7,
+  "solo_n": null,
+  "avg_sol": 0.9877,
+  "program": "Unknown (29VfhnX9jF5aL8Z1mMN4DmcW36CtyFJu4NG8ZLShpsHb)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (29VfhnX9jF5aL8Z1mMN4DmcW36CtyFJu4NG8ZLShpsHb)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 6,
+  "solo_n": 0,
+  "avg_sol": 0.7852,
+  "program": "(direct)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: Buy",
+   "System Program: Transfer",
+   "System Program: Transfer",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 6,
+  "solo_n": 1,
+  "avg_sol": 4.2583,
+  "program": "Unknown (6CRMUzJS1m6zxyuNztJN9uvnT9uZKdHuU7dz3HC2UHJ5)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (6CRMUzJS1m6zxyuNztJN9uvnT9uZKdHuU7dz3HC2UHJ5)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 6,
+  "solo_n": 2,
+  "avg_sol": 6.0905,
+  "program": "Unknown (J7pourVwqP1VtRNBiFNqbdGxwkx7ta2LHAURURRRJqmd)",
+  "bundle_n": 0,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Unknown (J7pourVwqP1VtRNBiFNqbdGxwkx7ta2LHAURURRRJqmd)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 6,
+  "solo_n": 1,
+  "avg_sol": 3.4589,
+  "program": "Unknown (3zBY7YkqkbFNiMhC1mX7xSx8fAneTQ4hydLK7LLNaCtS)",
+  "bundle_n": 3,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (3zBY7YkqkbFNiMhC1mX7xSx8fAneTQ4hydLK7LLNaCtS)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 6,
+  "solo_n": null,
+  "avg_sol": 0.7534,
+  "program": "Unknown (REAPuFmLj2Him8GCYC3KSDa9G3V3mgSCPtrkJYcgoaT)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (REAPuFmLj2Him8GCYC3KSDa9G3V3mgSCPtrkJYcgoaT)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 6,
+  "solo_n": null,
+  "avg_sol": 0.1646,
+  "program": "Unknown (HwdwF7aPXkfEeBTQfha3dGYFY1ASEGFTLnhEfVqwCusJ)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (HwdwF7aPXkfEeBTQfha3dGYFY1ASEGFTLnhEfVqwCusJ)",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 6,
+  "solo_n": null,
+  "avg_sol": 0.0001,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Pump.Fun: Buy",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 6,
+  "solo_n": null,
+  "avg_sol": 2.0538,
+  "program": "Axiom Trade",
+  "bundle_n": null,
+  "ix_labels": [
+   "Associated Token: CreateIdempotent",
+   "Axiom Trade: Unknown",
+   "Axiom Trade: Unknown",
+   "PumpSwap: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 6,
+  "solo_n": null,
+  "avg_sol": 0.0694,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 6,
+  "solo_n": null,
+  "avg_sol": 4.628,
+  "program": "Unknown (CMpVP7Gt6TMjptwAS7XQyBzbSMJHbHy9DnX1VuZ5uvcg)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (CMpVP7Gt6TMjptwAS7XQyBzbSMJHbHy9DnX1VuZ5uvcg)",
+   "Unknown (CMpVP7Gt6TMjptwAS7XQyBzbSMJHbHy9DnX1VuZ5uvcg)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 6,
+  "solo_n": 0,
+  "avg_sol": 0.0521,
+  "program": "Photon",
+  "bundle_n": 1,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Photon: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 5,
+  "solo_n": 0,
+  "avg_sol": 0.0393,
+  "program": "Unknown (rexhfZLRRxRkPkw9izswgMFRPDb9U58jeinH7wqUVuw)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (rexhfZLRRxRkPkw9izswgMFRPDb9U58jeinH7wqUVuw)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 5,
+  "solo_n": 1,
+  "avg_sol": 0.134,
+  "program": "Unknown (9GCBb4NsSDRuEkkGfQkN37oppmMVPops5sXDWhAKAvQQ)",
+  "bundle_n": 0,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Unknown (9GCBb4NsSDRuEkkGfQkN37oppmMVPops5sXDWhAKAvQQ)",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitLimit",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitPrice"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 5,
+  "solo_n": 0,
+  "avg_sol": 2.963,
+  "program": "(direct)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "Associated Token: Create",
+   "Pump.Fun: BuyExactQuoteInV2"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 5,
+  "solo_n": null,
+  "avg_sol": 1.3827,
+  "program": "Jupiter Aggregator V6",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "System Program: Transfer",
+   "Token Program: SyncNative",
+   "Associated Token: CreateIdempotent",
+   "Jupiter Aggregator V6: Unknown",
+   "Token Program: CloseAccount"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 5,
+  "solo_n": null,
+  "avg_sol": 0.1108,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: Create",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 5,
+  "solo_n": null,
+  "avg_sol": 0.3684,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyV2",
+   "Compute Budget: SetComputeUnitPrice"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 5,
+  "solo_n": null,
+  "avg_sol": 0.2699,
+  "program": "Photon",
+  "bundle_n": null,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "Photon: Unknown"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 5,
+  "solo_n": null,
+  "avg_sol": 0.9877,
+  "program": "Unknown (A86veF4VPSWkCTqQgG74GJTfQCZAEyNZ3iuwDBE4Qx8Q)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (A86veF4VPSWkCTqQgG74GJTfQCZAEyNZ3iuwDBE4Qx8Q)",
+   "Memo Program: Unknown"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 5,
+  "solo_n": 1,
+  "avg_sol": 0.9468,
+  "program": "Unknown (FSpbetsTEEXh2nEzTxHjKByMB1MDGvUc27m824Zk6dBV)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (FSpbetsTEEXh2nEzTxHjKByMB1MDGvUc27m824Zk6dBV)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 5,
+  "solo_n": null,
+  "avg_sol": 1.6593,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: Create",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 5,
+  "solo_n": null,
+  "avg_sol": 0.9877,
+  "program": "Unknown (A86veF4VPSWkCTqQgG74GJTfQCZAEyNZ3iuwDBE4Qx8Q)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (A86veF4VPSWkCTqQgG74GJTfQCZAEyNZ3iuwDBE4Qx8Q)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 5,
+  "solo_n": null,
+  "avg_sol": 0.5531,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "System Program: Transfer",
+   "Associated Token: CreateIdempotent",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 5,
+  "solo_n": 0,
+  "avg_sol": 0.0229,
+  "program": "Unknown (rexhfZLRRxRkPkw9izswgMFRPDb9U58jeinH7wqUVuw)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (rexhfZLRRxRkPkw9izswgMFRPDb9U58jeinH7wqUVuw)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 5,
+  "solo_n": null,
+  "avg_sol": 0.9877,
+  "program": "Unknown (29VfhnX9jF5aL8Z1mMN4DmcW36CtyFJu4NG8ZLShpsHb)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (29VfhnX9jF5aL8Z1mMN4DmcW36CtyFJu4NG8ZLShpsHb)",
+   "Memo Program: Unknown"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": null,
+  "avg_sol": 0.5607,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "PumpSwap: Buy"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": null,
+  "avg_sol": 0.9867,
+  "program": "Jupiter Aggregator V6",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "System Program: Transfer",
+   "Token Program: SyncNative",
+   "Jupiter Aggregator V6: Unknown",
+   "Token Program: CloseAccount",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": null,
+  "avg_sol": 0.2963,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": null,
+  "avg_sol": 4.3396,
+  "program": "Unknown (EWf4upHF9PX8UF8uFRn4J2JaNP7WYaKgHaBP9cCrLvPJ)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (EWf4upHF9PX8UF8uFRn4J2JaNP7WYaKgHaBP9cCrLvPJ)",
+   "Unknown (EWf4upHF9PX8UF8uFRn4J2JaNP7WYaKgHaBP9cCrLvPJ)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": null,
+  "avg_sol": 0.0001,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Pump.Fun: Buy",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": null,
+  "avg_sol": 0.0706,
+  "program": "Unknown (AN225ksocfZpbPVEbwffiANbtUdYbySM3WJ6dbsYAqij)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Unknown (AN225ksocfZpbPVEbwffiANbtUdYbySM3WJ6dbsYAqij)",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": null,
+  "avg_sol": 0.0611,
+  "program": "Photon",
+  "bundle_n": null,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Photon: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": null,
+  "avg_sol": 0.4275,
+  "program": "Terminal",
+  "bundle_n": null,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Terminal: Unknown",
+   "Terminal: Unknown",
+   "Terminal: Unknown",
+   "Terminal: Unknown",
+   "System Program: Transfer",
+   "Token Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": null,
+  "avg_sol": 0.9877,
+  "program": "Unknown (Cwu7kQ4Us7f6KshwqKRehuJ64Yo7QiNgDUFxtJBxXPmb)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (Cwu7kQ4Us7f6KshwqKRehuJ64Yo7QiNgDUFxtJBxXPmb)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": null,
+  "avg_sol": 4.3238,
+  "program": "Unknown (4URbyhnMftf6SDAninsmB8dN9dNXyicZjKvdqmjyA69D)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (4URbyhnMftf6SDAninsmB8dN9dNXyicZjKvdqmjyA69D)",
+   "Unknown (4URbyhnMftf6SDAninsmB8dN9dNXyicZjKvdqmjyA69D)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": 1,
+  "avg_sol": 0.4946,
+  "program": "(direct)",
+  "bundle_n": 0,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Associated Token: CreateIdempotent",
+   "System Program: Transfer",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": 0,
+  "avg_sol": 1.3109,
+  "program": "Unknown (77735cZxRSAJwwq5aAAipWP3gf87exCtJ2p6cqkH4pBN)",
+  "bundle_n": 2,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (77735cZxRSAJwwq5aAAipWP3gf87exCtJ2p6cqkH4pBN)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": 0,
+  "avg_sol": 0.0081,
+  "program": "Unknown (King7ki4SKMBPb3iupnQwTyjsq294jaXsgLmJo8cb7T)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Unknown (King7ki4SKMBPb3iupnQwTyjsq294jaXsgLmJo8cb7T)",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": 0,
+  "avg_sol": 0.228,
+  "program": "(direct)",
+  "bundle_n": 2,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: Buy"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": null,
+  "avg_sol": 0.1147,
+  "program": "Unknown (L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Unknown (L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95)",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyV2",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": null,
+  "avg_sol": 3.6511,
+  "program": "Unknown (GPthAETLdm2CyHa1mEy2C35PTL1rpuujcbZMyTPKzD6G)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (GPthAETLdm2CyHa1mEy2C35PTL1rpuujcbZMyTPKzD6G)",
+   "Unknown (GPthAETLdm2CyHa1mEy2C35PTL1rpuujcbZMyTPKzD6G)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": 1,
+  "avg_sol": 1.3596,
+  "program": "Photon",
+  "bundle_n": 2,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: CreateAccountWithSeed",
+   "Token Program: InitializeAccount",
+   "Photon: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": true
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": 0,
+  "avg_sol": 0.3994,
+  "program": "Terminal",
+  "bundle_n": 1,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Terminal: Unknown",
+   "System Program: Transfer",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": null,
+  "avg_sol": 0.2965,
+  "program": "Unknown (JBQqLaTtyHUAJLAseYJoegSM413uAzs9VpMCuLiCfHb3)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (JBQqLaTtyHUAJLAseYJoegSM413uAzs9VpMCuLiCfHb3)",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": 1,
+  "avg_sol": 1.9753,
+  "program": "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "System Program: Transfer",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactQuoteInV2",
+   "Unknown (A1akazamWUPTYbXJyGPXDi27K8RqVXNAZ4g2KzYmw4hq)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": 0,
+  "avg_sol": 3.512,
+  "program": "Unknown (EG6w3ezMUCabk86dWf3WUUHvwHcLPjxunPdRqumev65M)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (EG6w3ezMUCabk86dWf3WUUHvwHcLPjxunPdRqumev65M)",
+   "Unknown (EG6w3ezMUCabk86dWf3WUUHvwHcLPjxunPdRqumev65M)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 4,
+  "solo_n": null,
+  "avg_sol": 2.2981,
+  "program": "Terminal",
+  "bundle_n": null,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Terminal: Unknown",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": false,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3,
+  "solo_n": null,
+  "avg_sol": 0.0412,
+  "program": "Unknown (2A6m4MBgk3xL6a8SBMdKmAmFc85tTLh4Ds6wy7dBxBxb)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitPrice",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitLimit",
+   "System Program: Transfer",
+   "Unknown (2A6m4MBgk3xL6a8SBMdKmAmFc85tTLh4Ds6wy7dBxBxb)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3,
+  "solo_n": null,
+  "avg_sol": 1.9678,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: Buy",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3,
+  "solo_n": null,
+  "avg_sol": 0.0125,
+  "program": "Unknown (JET9RNDGg9M6UiVfW8qV9m7pEjGdfWjxBqgeL7pgQ6a)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Associated Token: CreateIdempotent",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "Unknown (JET9RNDGg9M6UiVfW8qV9m7pEjGdfWjxBqgeL7pgQ6a)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3,
+  "solo_n": 0,
+  "avg_sol": 0.9877,
+  "program": "Unknown (Exw9h2Dt6vgSGpfEgpYPLR5jxntUtSUNAVfSyyhe4V6M)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (Exw9h2Dt6vgSGpfEgpYPLR5jxntUtSUNAVfSyyhe4V6M)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3,
+  "solo_n": 0,
+  "avg_sol": 4.9383,
+  "program": "Unknown (2kYKXmyg7VtRdih5p4U7ffdxRPkw5H7FNbq2a7X1Kgso)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (2kYKXmyg7VtRdih5p4U7ffdxRPkw5H7FNbq2a7X1Kgso)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3,
+  "solo_n": 0,
+  "avg_sol": 0.2407,
+  "program": "Terminal",
+  "bundle_n": 1,
+  "ix_labels": [
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Terminal: Unknown",
+   "Terminal: Unknown",
+   "System Program: CreateAccountWithSeed",
+   "Token Program: InitializeAccount3",
+   "Associated Token: CreateIdempotent",
+   "Terminal: Unknown",
+   "Terminal: Unknown",
+   "System Program: Transfer",
+   "Token Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": false,
+  "create_account_with_seed": true
+ },
+ {
+  "class": "target",
+  "n_buys": 3,
+  "solo_n": 0,
+  "avg_sol": 0.7901,
+  "program": "Jupiter Aggregator V6",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "System Program: Transfer",
+   "Token Program: SyncNative",
+   "Associated Token: CreateIdempotent",
+   "Jupiter Aggregator V6: Unknown",
+   "Token Program: CloseAccount",
+   "System Program: Transfer",
+   "System Program: Transfer",
+   "Unknown (7F2k5rXvmthLXJWCzxoCFbcuHdJx3JL1FxHFKSVxs8QB)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3,
+  "solo_n": 0,
+  "avg_sol": 4.9383,
+  "program": "Unknown (DYKfPTFnPggBCNe52uDzwrpScqHM9kmmUZUsHGhDh68h)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (DYKfPTFnPggBCNe52uDzwrpScqHM9kmmUZUsHGhDh68h)",
+   "Unknown (DYKfPTFnPggBCNe52uDzwrpScqHM9kmmUZUsHGhDh68h)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3,
+  "solo_n": null,
+  "avg_sol": 0.096,
+  "program": "Unknown (Cqdgmpt1xBqipZu4jr8yRyxsY5PQVUAKwyhvMpJ931H8)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "System Program: Transfer",
+   "Unknown (Cqdgmpt1xBqipZu4jr8yRyxsY5PQVUAKwyhvMpJ931H8)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3,
+  "solo_n": null,
+  "avg_sol": 2.9986,
+  "program": "Unknown (2BpmjLbo2QxhZbCW4fNMvH6chHu3GcUFB7KfckrcV8vq)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (2BpmjLbo2QxhZbCW4fNMvH6chHu3GcUFB7KfckrcV8vq)",
+   "Unknown (2BpmjLbo2QxhZbCW4fNMvH6chHu3GcUFB7KfckrcV8vq)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3,
+  "solo_n": null,
+  "avg_sol": 0.3989,
+  "program": "Unknown (F79TxMD7TkiHTpcqoAvCDtovGanLGW2KFrnLxn7TJ4wg)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (F79TxMD7TkiHTpcqoAvCDtovGanLGW2KFrnLxn7TJ4wg)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3,
+  "solo_n": null,
+  "avg_sol": 0.4566,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "PumpSwap: Buy",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3,
+  "solo_n": null,
+  "avg_sol": 0.0207,
+  "program": "Unknown (4pP8eDKACuV7T2rbFPE8CHxGKDYAzSdRsdMsGvz2k4oc)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: BuyExactSolIn",
+   "System Program: Transfer",
+   "Unknown (4pP8eDKACuV7T2rbFPE8CHxGKDYAzSdRsdMsGvz2k4oc)",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3,
+  "solo_n": 0,
+  "avg_sol": 0.1343,
+  "program": "(direct)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "System Program: Transfer",
+   "Memo Program: Unknown",
+   "Associated Token: Create",
+   "Pump.Fun: BuyExactSolIn"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3,
+  "solo_n": 0,
+  "avg_sol": 0.0243,
+  "program": "Unknown (rexhfZLRRxRkPkw9izswgMFRPDb9U58jeinH7wqUVuw)",
+  "bundle_n": 1,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetLoadedAccountsDataSizeLimit",
+   "Unknown (rexhfZLRRxRkPkw9izswgMFRPDb9U58jeinH7wqUVuw)",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": 0.0,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3,
+  "solo_n": null,
+  "avg_sol": 1.9846,
+  "program": "(direct)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Associated Token: CreateIdempotent",
+   "Pump.Fun: Buy",
+   "System Program: Transfer",
+   "System Program: Transfer",
+   "System Program: Transfer",
+   "System Program: Transfer",
+   "System Program: Transfer"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3,
+  "solo_n": null,
+  "avg_sol": 4.1108,
+  "program": "Unknown (9U5e9rr4S9teLxMtX5SqbvYmc7dLn9DeWi2GnSo9oSGt)",
+  "bundle_n": null,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (9U5e9rr4S9teLxMtX5SqbvYmc7dLn9DeWi2GnSo9oSGt)",
+   "Unknown (9U5e9rr4S9teLxMtX5SqbvYmc7dLn9DeWi2GnSo9oSGt)"
+  ],
+  "solo_lift": null,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3,
+  "solo_n": 1,
+  "avg_sol": 3.4409,
+  "program": "Unknown (H4vFikvURxQTvQC1aCDSSAa9J3CMpBYM4Pa5p7FM1sVQ)",
+  "bundle_n": 0,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (H4vFikvURxQTvQC1aCDSSAa9J3CMpBYM4Pa5p7FM1sVQ)",
+   "Unknown (H4vFikvURxQTvQC1aCDSSAa9J3CMpBYM4Pa5p7FM1sVQ)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ },
+ {
+  "class": "target",
+  "n_buys": 3,
+  "solo_n": 1,
+  "avg_sol": 3.589,
+  "program": "Unknown (BYQpMmtWdoaPuPRbVeaSBFmYfB6JTDk6T5pZnCdXEoZB)",
+  "bundle_n": 0,
+  "ix_labels": [
+   "System Program: AdvanceNonceAccount",
+   "Compute Budget: SetComputeUnitLimit",
+   "Compute Budget: SetComputeUnitPrice",
+   "Unknown (BYQpMmtWdoaPuPRbVeaSBFmYfB6JTDk6T5pZnCdXEoZB)",
+   "Unknown (BYQpMmtWdoaPuPRbVeaSBFmYfB6JTDk6T5pZnCdXEoZB)"
+  ],
+  "solo_lift": 0.0,
+  "bundle_lift": null,
+  "durable_nonce": true,
+  "create_account_with_seed": false
+ }
+]
