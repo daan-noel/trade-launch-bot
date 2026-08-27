@@ -70,6 +70,12 @@ const FINGERPRINT_COLS: &str = "id, name, cu_limit, cu_price, init_buy_lamports,
 /// The identity predicate for [`FingerprintRepo::find_or_create`]: every match
 /// axis equal, with `NULL` (= "not part of identity") treated as a value
 /// (`IS NOT DISTINCT FROM`). `name` is a label, not identity.
+///
+/// `bucket_size_amount` is bound as `Fingerprint::effective_bucket_size_amount`,
+/// never the raw field — a width carried by a row with no SOL axis reaches no
+/// match, so keying on it would fork identity and mint a duplicate of a row the
+/// engine already matches identically. Stored rows are canonical (the write edges
+/// below and the `0006` CHECK), so both sides of this comparison agree.
 const IDENTITY_WHERE: &str = "cu_limit IS NOT DISTINCT FROM $1 \
     AND cu_price IS NOT DISTINCT FROM $2 \
     AND init_buy_lamports IS NOT DISTINCT FROM $3 \
@@ -110,7 +116,7 @@ impl FingerprintRepo {
         .bind(fp.spendable_lamports_in)
         .bind(fp.first_slot_buy_lamports)
         .bind(fp.first_slot_sell_lamports)
-        .bind(fp.bucket_size_amount.map(tidy_sol_decimal))
+        .bind(fp.effective_bucket_size_amount().map(tidy_sol_decimal))
         .bind(fp.ix_labels.as_ref())
         .bind(fp.wildcard)
         .bind(sqlx::types::Json(&fp.metric_config))
@@ -155,7 +161,7 @@ impl FingerprintRepo {
         .bind(fp.spendable_lamports_in)
         .bind(fp.first_slot_buy_lamports)
         .bind(fp.first_slot_sell_lamports)
-        .bind(fp.bucket_size_amount.map(tidy_sol_decimal))
+        .bind(fp.effective_bucket_size_amount().map(tidy_sol_decimal))
         .bind(fp.ix_labels.as_ref())
         .bind(fp.wildcard)
         .bind(sqlx::types::Json(&fp.metric_config))
@@ -217,7 +223,7 @@ impl FingerprintRepo {
         .bind(fp.spendable_lamports_in)
         .bind(fp.first_slot_buy_lamports)
         .bind(fp.first_slot_sell_lamports)
-        .bind(fp.bucket_size_amount.map(tidy_sol_decimal))
+        .bind(fp.effective_bucket_size_amount().map(tidy_sol_decimal))
         .bind(fp.ix_labels.as_ref())
         .bind(fp.wildcard)
         .fetch_optional(&self.pool)
@@ -237,7 +243,7 @@ impl FingerprintRepo {
     /// stay. One-shot backfill: after the first list/find, leftover `sweep … ·
     /// group N` / `c · …` rows are gone.
     async fn persist_legacy_relabel(&self, fp: &mut Fingerprint) -> anyhow::Result<()> {
-        if !fp.has_legacy_auto_name() {
+        if !fp.has_stale_auto_name() {
             return Ok(());
         }
         let new_name = fp.auto_name();
@@ -257,7 +263,7 @@ impl FingerprintRepo {
 /// Name written on insert/update: auto-name when the submitted label is blank
 /// or a retired generator shape; otherwise the caller's nickname.
 fn stored_name(fp: &Fingerprint) -> String {
-    if fp.has_legacy_auto_name() {
+    if fp.has_stale_auto_name() {
         fp.auto_name()
     } else {
         fp.name.clone()

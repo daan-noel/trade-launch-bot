@@ -1,7 +1,7 @@
 // Compact at-a-glance chip cluster for a fingerprint's match axes. Shared by
 // Rules, Simulate, and the rule-editor picker — one SSOT so every surface that
-// shows a fingerprint reads the same. Null / empty axes are omitted; bucket is
-// always shown (every fingerprint has a width).
+// shows a fingerprint reads the same. Null / empty axes are omitted, and so is the
+// bucket width on a row with no SOL axis to spend it on (it reaches no match).
 
 import { useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
 import { formatCompact, formatDecimalTrim } from 'utils/format';
@@ -20,7 +20,15 @@ import { cn } from 'lib/cn';
 import { hashHue, metricColorStyle } from 'lib/strategy/metricColors';
 import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
 import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
-import { formatBucketWidth, lamportsToSol, type Fingerprint } from 'lib/strategy/types';
+import {
+  fingerprintAutoName,
+} from 'lib/strategy/fingerprintNameFromGroupKey';
+import {
+  formatBucketWidth,
+  hasSolAxis,
+  lamportsToSol,
+  type Fingerprint,
+} from 'lib/strategy/types';
 
 /** Stable per-axis hue so each fingerprint param reads with its own color,
  *  mirroring the metric-condition chips. Related axes share a hue family (small
@@ -225,11 +233,16 @@ export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
     solChip('fs_sell', fp.first_slot_sell_lamports),
     ix ? <IxLabelsChip key="ix" labels={ix} /> : null,
     <FlowPatternsChip key="flow" patterns={volumeIxPatternsFromConfig(fp.metric_config)} />,
+    // The width is an axis only where a SOL axis spends it. With none configured it
+    // reaches no match, so showing it invents a criterion the engine does not apply
+    // — and made two rows that match identically read as different fingerprints.
     // `exact` carries no unit — appending ◎ would read as a zero-width bucket.
-    chip(
-      `bkt=${formatBucketWidth(fp.bucket_size_amount, 4)}${fp.bucket_size_amount == null ? '' : '◎'}`,
-      { style: axisTint('bkt') },
-    ),
+    hasSolAxis(fp)
+      ? chip(
+          `bkt=${formatBucketWidth(fp.bucket_size_amount)}${fp.bucket_size_amount == null ? '' : '◎'}`,
+          { style: axisTint('bkt') },
+        )
+      : null,
   ].filter(Boolean);
 
   return <div className="flex flex-wrap items-center gap-1 text-left">{chips}</div>;
@@ -284,7 +297,7 @@ export function fingerprintParamsSearchText(fp: Fingerprint | undefined, fallbac
   } else {
     parts.push('flow✗');
   }
-  parts.push(`bkt=${formatBucketWidth(fp.bucket_size_amount, 4)}`);
+  if (hasSolAxis(fp)) parts.push(`bkt=${formatBucketWidth(fp.bucket_size_amount)}`);
   return parts.join(' ');
 }
 
@@ -302,9 +315,18 @@ export function FingerprintOptionBody({
   fp: Fingerprint;
   label: string;
 }): ReactNode {
+  const auto = fingerprintAutoName(fp);
   return (
     <div className="flex min-w-0 flex-col gap-1">
       <span className="truncate font-medium">{label}</span>
+      {fp.name.trim() !== auto && (
+        <span
+          className="truncate font-mono text-[10px] text-text-dim"
+          title={`Auto-name from the match axes.\nTwo rows showing the same one match the same tokens, whatever they are called.`}
+        >
+          {auto}
+        </span>
+      )}
       {fingerprintParamsCell(fp)}
     </div>
   );
@@ -332,7 +354,9 @@ export function fingerprintIdentityKey(fp: Fingerprint | undefined, fallbackId?:
     fp.spendable_lamports_in ?? '',
     fp.first_slot_buy_lamports ?? '',
     fp.first_slot_sell_lamports ?? '',
-    formatBucketWidth(fp.bucket_size_amount, 4),
+    // The EFFECTIVE width: an inert one is not identity, and keying on it sorted
+    // two rows matching the same tokens apart — the tell that used to hide them.
+    hasSolAxis(fp) ? formatBucketWidth(fp.bucket_size_amount) : '',
     (configuredIxLabels(fp.ix_labels) ?? []).join(','),
     // The pattern SEQUENCES, not their count: two fingerprints matching one
     // pattern each are the same criterion only if it is the same pattern.

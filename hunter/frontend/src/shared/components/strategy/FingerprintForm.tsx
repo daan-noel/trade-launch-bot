@@ -10,6 +10,7 @@ import { configuredIxLabels, formatIxLabelsText, parseIxLabelsText } from 'lib/i
 import {
   lamportsToSol,
   solToLamports,
+  hasSolAxis,
   MIN_BUCKET_WIDTH_SOL,
   WILDCARD_NAME,
   type Fingerprint,
@@ -22,7 +23,7 @@ import {
   volumeIxPatternsFromConfig,
 } from 'lib/strategy/registry';
 import { FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
-import { fingerprintAutoName, isLegacyAutoName } from 'lib/strategy/fingerprintNameFromGroupKey';
+import { fingerprintAutoName, isStaleAutoName } from 'lib/strategy/fingerprintNameFromGroupKey';
 import { tidySolDecimal } from 'utils/format';
 import { LabelTip } from './LabelTip';
 import { VolumeIxPatternsEditor } from './VolumeIxPatternsEditor';
@@ -111,17 +112,25 @@ function toDraft(s: FormState): FingerprintDraft {
       metric_config: { ...s.metric_config_rest, ...flow },
     };
   }
-  return {
-    name: s.name.trim(),
-    cu_limit: s.cu_limit,
-    cu_price: s.cu_price,
+  const solAxes = {
     init_buy_lamports: solToLamports(s.init_buy_sol),
     max_cost_lamports: solToLamports(s.max_cost_sol),
     spendable_lamports_in: solToLamports(s.spendable_sol),
     first_slot_buy_lamports: solToLamports(s.first_slot_buy_sol),
     first_slot_sell_lamports: solToLamports(s.first_slot_sell_sol),
-    // Exact wins outright and sends NULL — never a 0 width.
-    bucket_size_amount: s.exact_sol ? null : tidySolDecimal(s.bucket_size_amount ?? 0.1),
+  };
+  return {
+    name: s.name.trim(),
+    cu_limit: s.cu_limit,
+    cu_price: s.cu_price,
+    ...solAxes,
+    // Exact wins outright and sends NULL — never a 0 width. So does "no SOL axis
+    // to bucket": the width would reach no match, and storing it forks the row's
+    // identity so `find_or_create` mints a duplicate of a fingerprint the engine
+    // already matches identically (Rust `effective_bucket_size_amount`, and the
+    // `fingerprints_bucket_width_needs_a_sol_axis` CHECK the backend would answer).
+    bucket_size_amount:
+      s.exact_sol || !hasSolAxis(solAxes) ? null : tidySolDecimal(s.bucket_size_amount ?? 0.1),
     ix_labels: labels,
     wildcard: false,
     metric_config: { ...s.metric_config_rest, ...flow },
@@ -197,14 +206,16 @@ export function FingerprintForm({
   const autoNameIsReal = autoName !== WILDCARD_NAME || s.wildcard;
 
   // Keep the name glued to the auto-label while it is blank, still the previous
-  // auto-name, or a retired generator shape. A typed nickname is left alone.
+  // auto-name, or any auto-label that no longer matches the axes (a retired shape,
+  // or a current-grammar one written before `fingerprintAutoName` changed). A typed
+  // nickname is left alone.
   useEffect(() => {
     setS((p) => {
       const synced =
         p.name === '' ||
         p.name === prevAutoRef.current ||
         p.name === autoName ||
-        isLegacyAutoName(p.name);
+        isStaleAutoName(p.name, autoName);
       if (!synced) return p;
       prevAutoRef.current = autoName;
       if (!autoNameIsReal || p.name === autoName) return p;

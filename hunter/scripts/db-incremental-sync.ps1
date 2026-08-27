@@ -47,6 +47,7 @@
     trades           PK(block_time, tx_signature, leg_index)     -> DO NOTHING (append-only)
     raw_txs          PK(block_time, tx_signature)                -> DO NOTHING (append-only; opt-in)
     fingerprints         PK(id)                                  -> DO UPDATE, non-destructive (server wins; local rows kept)
+                         NOTE: server must have run core 0005-0007 first (wildcard column + the two CHECKs)
     strategy_rules       PK(id)                                  -> DO UPDATE, non-destructive (server wins; local rows kept)
     strategy_runs        PK(id)                                  -> DO UPDATE, non-destructive (server wins; local rows kept)
     strategy_run_metrics PK(run_id)                              -> DO UPDATE, non-destructive (server wins; local rows kept)
@@ -870,16 +871,29 @@ DROP TABLE IF EXISTS _ec2_sync_seen_ids;
 
 \echo '-- fingerprints'
 -- Must land before strategy_rules (FK fingerprint_id). Column list matches
--- fingerprint_repo::FINGERPRINT_COLS (post-0004 + 0006 metric_config).
+-- fingerprint_repo::FINGERPRINT_COLS (post-0004 + metric_config + 0005 wildcard).
+--
+-- ORDERING: the SERVER must have run core migrations 0005-0007 (i.e. the live bin
+-- must have been redeployed) before this sync runs. `wildcard` is read off the
+-- FOREIGN table, so an un-migrated server fails the SELECT on an unknown column;
+-- and an un-migrated server's rows would carry an inert `bucket_size_amount`, or
+-- restore an axis under a local wildcard, both of which the local
+-- `fingerprints_bucket_width_needs_a_sol_axis` (0006) and
+-- `fingerprints_wildcard_excludes_axes` (0005) CHECKs reject.
+--
+-- `wildcard` is NOT optional here. It is a match criterion, not decoration: a
+-- server row carrying it would otherwise land locally as an axis-less row with
+-- `wildcard` defaulted FALSE -- which the matcher reads as *matches nothing*,
+-- the exact opposite of the row it copied.
 INSERT INTO fingerprints (
   id, name, cu_limit, cu_price, init_buy_lamports, max_cost_lamports,
   spendable_lamports_in, first_slot_buy_lamports, first_slot_sell_lamports,
-  bucket_size_amount, ix_labels, metric_config, created_at, updated_at
+  bucket_size_amount, ix_labels, wildcard, metric_config, created_at, updated_at
 )
 SELECT
   f.id, f.name, f.cu_limit, f.cu_price, f.init_buy_lamports, f.max_cost_lamports,
   f.spendable_lamports_in, f.first_slot_buy_lamports, f.first_slot_sell_lamports,
-  f.bucket_size_amount, f.ix_labels, f.metric_config, f.created_at, f.updated_at
+  f.bucket_size_amount, f.ix_labels, f.wildcard, f.metric_config, f.created_at, f.updated_at
 FROM ec2_sync_src.fingerprints f
 ON CONFLICT (id) DO UPDATE SET
   name = EXCLUDED.name, cu_limit = EXCLUDED.cu_limit, cu_price = EXCLUDED.cu_price,
@@ -888,6 +902,7 @@ ON CONFLICT (id) DO UPDATE SET
   first_slot_buy_lamports = EXCLUDED.first_slot_buy_lamports,
   first_slot_sell_lamports = EXCLUDED.first_slot_sell_lamports,
   bucket_size_amount = EXCLUDED.bucket_size_amount, ix_labels = EXCLUDED.ix_labels,
+  wildcard = EXCLUDED.wildcard,
   metric_config = EXCLUDED.metric_config, created_at = EXCLUDED.created_at,
   updated_at = EXCLUDED.updated_at;
 

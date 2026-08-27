@@ -43,6 +43,7 @@ import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
 import { volumePatternsActions } from 'lib/flow/volumePatterns';
 import { FlowPatternsChip } from './FingerprintParamsSummary';
 import { flowDiscoveryHref, rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
+import { fingerprintAutoName } from 'lib/strategy/fingerprintNameFromGroupKey';
 import {
   formatBucketWidth,
   lamportsToSol,
@@ -258,6 +259,18 @@ export function FingerprintsView({
         render: (r) => (
           <div className="flex items-center gap-1">
             <span className="font-medium text-text">{r.name || r.id.slice(0, 8)}</span>
+            {/* The machine identity, shown whenever the stored label is not already
+                it. A nickname is the only record of WHY a fingerprint exists, so it
+                stays — but two nicknames over one auto-name are one fingerprint
+                stored twice, and nothing else on the row says so. */}
+            {r.name.trim() !== fingerprintAutoName(r) && (
+              <span
+                title={'Auto-name from the match axes.\nTwo rows showing the same one match the same tokens, whatever they are called.'}
+                className="shrink-0 truncate font-mono text-[10px] text-text-dim"
+              >
+                {fingerprintAutoName(r)}
+              </span>
+            )}
             {/* Every axis column below is a dash on a wildcard row — without this
                 the one fingerprint that arms on EVERY token is the one that looks
                 least configured. */}

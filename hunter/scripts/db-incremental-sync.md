@@ -7,6 +7,14 @@ Safe to run repeatedly. **Non-destructive for market data**: your local sweep re
 settings, `raw_txs`, and existing trades are never touched — only new rows are added
 (and a few metadata rows refreshed).
 
+> **The server must be migrated first.** `fingerprints.wildcard` is read off the
+> foreign table, so a server that has not run core `0005`-`0007` fails the sync on
+> an unknown column — and its un-migrated rows would carry an inert
+> `bucket_size_amount`, or restore an axis under a local wildcard, which the local
+> `fingerprints_bucket_width_needs_a_sol_axis` and
+> `fingerprints_wildcard_excludes_axes` CHECKs reject. Redeploy the live bin
+> (`sqlx::migrate!` runs at boot) before syncing.
+
 > **Strategy tables are mirrored (server wins), non-destructively.** `fingerprints`,
 > `strategy_rules`, `strategy_runs`, `strategy_run_metrics`, and `strategy_positions`
 > are copied **full-table each run** and upserted (`DO UPDATE`): new server rows are

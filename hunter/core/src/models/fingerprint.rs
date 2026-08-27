@@ -19,7 +19,7 @@ use uuid::Uuid;
 use hunter_engine::fingerprint::configured_labels;
 
 use crate::config::constants::{lamports_to_sol, tidy_sol_decimal};
-use crate::grouping::{MIN_BUCKET_WIDTH_SOL, SOL_BUCKET_WIDTH};
+use crate::grouping::{decimals_for, MIN_BUCKET_WIDTH_SOL, SOL_BUCKET_WIDTH};
 
 /// Read an optional integer field from an HTTP JSON body (accepts a JSON number
 /// or a numeric string). Shared SSOT for the generic-engine CRUD parse paths.
@@ -107,7 +107,7 @@ impl Fingerprint {
     /// the wire; `id` and the timestamps are caller-supplied (not read from the
     /// body). Lenient: absent/unparseable numeric fields are `None`.
     pub fn from_json(body: &serde_json::Value, id: Uuid, now: DateTime<Utc>) -> Self {
-        Fingerprint {
+        let mut fp = Fingerprint {
             id,
             name: body.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             cu_limit: opt_i64(body, "cu_limit"),
@@ -145,7 +145,13 @@ impl Fingerprint {
                 .unwrap_or_else(default_metric_config),
             created_at: now,
             updated_at: now,
-        }
+        };
+        // Collapse an inert width to the one spelling of "nothing is bucketed here",
+        // exactly as the empty label list above collapses to `None`. A client that
+        // posts the 0.1 default alongside a labels-only fingerprint otherwise stores
+        // a second identity for a match the engine makes identically.
+        fp.bucket_size_amount = fp.effective_bucket_size_amount();
+        fp
     }
 
     /// Whether any matchable criterion is configured. The matcher requires at
@@ -175,6 +181,40 @@ impl Fingerprint {
             // `Some([])` is NOT a criterion — the engine matcher's SSOT decides,
             // never a bare `is_some()`. See `configured_labels`.
             || configured_labels(self.ix_labels.as_deref()).is_some()
+    }
+
+    /// Whether any **bucket-matched SOL** axis is configured. The one reader of
+    /// "is [`Self::bucket_size_amount`] load-bearing on this row" — the width only
+    /// ever reaches the matcher through one of these five axes.
+    pub fn has_sol_axis(&self) -> bool {
+        self.init_buy_lamports.is_some()
+            || self.max_cost_lamports.is_some()
+            || self.spendable_lamports_in.is_some()
+            || self.first_slot_buy_lamports.is_some()
+            || self.first_slot_sell_lamports.is_some()
+    }
+
+    /// The width **as the matcher sees it**: `None` unless a SOL axis is configured.
+    ///
+    /// With no SOL axis there is nothing to bucket, so a stored width is inert — it
+    /// changes no match. Left uncanonicalised it becomes a second spelling of the
+    /// same fingerprint, and both readers of the field get it wrong in their own
+    /// way: `FingerprintRepo::IDENTITY_WHERE` keys on the raw width, so an inert
+    /// one forks identity and `find_or_create` mints a duplicate instead of reusing
+    /// the row; [`Self::auto_name`] prints it, so the same match carries two names.
+    /// This is the same "one spelling per state" collapse `configured_labels` makes
+    /// for `Some([])` and [`Self::auto_name`] already makes for a wildcard.
+    ///
+    /// Every write edge stores THIS, never the raw field ([`Self::from_json`] at the
+    /// HTTP boundary, `FingerprintRepo` insert/update/find_or_create for non-HTTP
+    /// writers like sweep promotion), and the
+    /// `fingerprints_bucket_width_needs_a_sol_axis` CHECK (`0006`) is the backstop.
+    pub fn effective_bucket_size_amount(&self) -> Option<f64> {
+        if self.has_sol_axis() {
+            self.bucket_size_amount
+        } else {
+            None
+        }
     }
 
     /// How this row's SOL axes match — delegated to the engine's
@@ -255,12 +295,20 @@ impl Fingerprint {
         push_sol_part(&mut parts, "spend", self.spendable_lamports_in);
         push_sol_part(&mut parts, "fs_buy", self.first_slot_buy_lamports);
         push_sol_part(&mut parts, "fs_sell", self.first_slot_sell_lamports);
-        match self.bucket_size_amount {
-            None => parts.push("bkt=exact".into()),
+        // The *effective* width, so a row with no SOL axis never names a width that
+        // reaches no match — the same reason the wildcard arm above names none. It
+        // also keeps the name in step with the stored value every write edge writes.
+        //
+        // Rendered at `decimals_for(width)`, not a fixed 4: the legal range reaches
+        // down to `MIN_BUCKET_WIDTH_SOL` (1e-6), and a fixed 4 trimmed a `1e-5` width
+        // to `bkt=0` — a name stating the one width `validate` rejects.
+        match self.effective_bucket_size_amount() {
+            None if self.has_sol_axis() => parts.push("bkt=exact".into()),
+            None => {}
             Some(w) => {
                 let width = tidy_sol_decimal(w);
                 if width != SOL_BUCKET_WIDTH {
-                    parts.push(format!("bkt={}", format_decimal_trim(width, 4)));
+                    parts.push(format!("bkt={}", format_decimal_trim(width, decimals_for(width))));
                 }
             }
         }
@@ -277,13 +325,92 @@ impl Fingerprint {
         is_legacy_auto_name(&self.name)
     }
 
-    /// Replace a blank / legacy auto-label with [`Self::auto_name`]. A nickname
+    /// True when `name` is an auto-label that no longer says what the axes say —
+    /// a retired shape, or a **current-grammar** one that has since drifted from
+    /// [`Self::auto_name`].
+    ///
+    /// The second case is what lets a naming change finish. `auto_name` is a pure
+    /// function of the axes, but its output is *stored*, so every edit to it strands
+    /// the copies already written — two rows with identical axes then read as two
+    /// fingerprints, which is the whole problem the name exists to prevent. Deciding
+    /// it by grammar ([`is_generated_auto_name`]) rather than by an ever-growing list
+    /// of retired prefixes means the next change to `auto_name` heals itself.
+    ///
+    /// A nickname is not in the grammar, so it is never touched — it is the only
+    /// record of *why* a fingerprint exists, and the axes can always be re-read.
+    pub fn has_stale_auto_name(&self) -> bool {
+        self.has_legacy_auto_name()
+            || (is_generated_auto_name(&self.name) && self.name != self.auto_name())
+    }
+
+    /// Replace a blank / stale auto-label with [`Self::auto_name`]. A nickname
     /// is left untouched.
     pub fn ensure_auto_name(&mut self) {
-        if self.has_legacy_auto_name() {
+        if self.has_stale_auto_name() {
             self.name = self.auto_name();
         }
     }
+}
+
+/// Whether `name` is written in [`Fingerprint::auto_name`]'s own chip grammar:
+/// every ` · `-separated part is a chip that function emits. Such a name was
+/// generated, never typed, so [`Fingerprint::has_stale_auto_name`] may rewrite it
+/// once it stops matching the axes.
+///
+/// Deliberately strict — an unrecognised part makes the whole name a nickname.
+/// The cost of the two mistakes is not symmetric: re-deriving a name it declined
+/// to touch is free, while rewriting a real nickname destroys the only record of
+/// why that fingerprint was created. Mirrored by the TS `isGeneratedAutoName`.
+pub fn is_generated_auto_name(name: &str) -> bool {
+    let n = name.trim();
+    if n.is_empty() {
+        return false;
+    }
+    if n == WILDCARD_NAME {
+        return true;
+    }
+    n.split(" · ").all(is_auto_name_chip)
+}
+
+/// One chip of the [`is_generated_auto_name`] grammar. Kept beside `auto_name` so
+/// a chip added there is added here in the same edit.
+fn is_auto_name_chip(part: &str) -> bool {
+    // `3ix` / `3ix:BuyExactSolIn` — the count is what makes it a chip and not a
+    // word; a nickname prefix like `8dtx` is not `{digits}ix`.
+    if let Some((count, tail)) = part.split_once("ix") {
+        let tail_ok = tail.is_empty() || tail.strip_prefix(':').is_some_and(|t| !t.is_empty());
+        if !count.is_empty() && count.bytes().all(|b| b.is_ascii_digit()) && tail_ok {
+            return true;
+        }
+    }
+    let Some((label, value)) = part.split_once('=') else { return false };
+    match label {
+        // `format_compact_int` — a decimal with an optional K/M/G scale suffix.
+        "cu_limit" | "cu_price" => {
+            is_decimal(value.strip_suffix(['K', 'M', 'G']).unwrap_or(value))
+        }
+        // `push_sol_part` — a plain trimmed decimal.
+        "init" | "max" | "spend" | "fs_buy" | "fs_sell" => is_decimal(value),
+        "bkt" => value == "exact" || is_decimal(value),
+        _ => false,
+    }
+}
+
+/// `format_decimal_trim` output: an optional sign, digits, at most one `.`, and
+/// no trailing separator.
+fn is_decimal(s: &str) -> bool {
+    let body = s.strip_prefix('-').unwrap_or(s);
+    if body.is_empty() {
+        return false;
+    }
+    let mut parts = body.split('.');
+    let int = parts.next().unwrap_or("");
+    let frac = parts.next();
+    if parts.next().is_some() {
+        return false;
+    }
+    let digits = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
+    digits(int) && frac.is_none_or(digits)
 }
 
 /// Auto-name of a fingerprint with nothing to name from its axes: a `wildcard`
@@ -594,6 +721,65 @@ mod tests {
         assert_eq!(fp.auto_name(), "1ix:Buy · max=1 · bkt=exact");
     }
 
+    /// A width with no SOL axis to spend it on changes no match, so it must not
+    /// change the name or the identity either — the two ways the same fingerprint
+    /// used to end up stored twice under two labels.
+    #[test]
+    fn an_inert_bucket_width_reaches_neither_the_name_nor_storage() {
+        let labels_only = |w: Option<f64>| Fingerprint {
+            ix_labels: Some(vec!["Pump.Fun: Create_v2".into(), "Pump.Fun: Buy".into()]),
+            bucket_size_amount: w,
+            ..bare()
+        };
+        // Same match at every width, so one name and one stored width.
+        for w in [Some(1000.0), Some(0.1), Some(1.0), None] {
+            let fp = labels_only(w);
+            assert!(!fp.has_sol_axis(), "width {w:?}: no SOL axis to bucket");
+            assert_eq!(fp.auto_name(), "2ix:Buy", "width {w:?} leaked into the name");
+            assert_eq!(fp.effective_bucket_size_amount(), None, "width {w:?} stored");
+        }
+        // One SOL axis and the width is load-bearing again — including `exact`.
+        let mut fp = labels_only(Some(1000.0));
+        fp.max_cost_lamports = Some(1_000_000_000);
+        assert!(fp.has_sol_axis());
+        assert_eq!(fp.effective_bucket_size_amount(), Some(1000.0));
+        assert_eq!(fp.auto_name(), "2ix:Buy · max=1 · bkt=1000");
+        fp.bucket_size_amount = None;
+        assert_eq!(fp.auto_name(), "2ix:Buy · max=1 · bkt=exact");
+    }
+
+    /// The inert width must be gone by the time it is stored, not merely ignored on
+    /// read — the identity predicate keys on the column.
+    #[test]
+    fn from_json_drops_a_width_with_no_sol_axis_to_spend_it_on() {
+        // The 0.1 default the form posts alongside a labels-only fingerprint.
+        let body = serde_json::json!({ "ix_labels": ["A", "B"] });
+        assert_eq!(Fingerprint::from_json(&body, Uuid::nil(), Utc::now()).bucket_size_amount, None);
+
+        let body = serde_json::json!({ "cu_limit": 80_000, "bucket_size_amount": 1000.0 });
+        assert_eq!(Fingerprint::from_json(&body, Uuid::nil(), Utc::now()).bucket_size_amount, None);
+
+        // A SOL axis keeps it.
+        let body = serde_json::json!({ "max_cost_lamports": 1, "bucket_size_amount": 1000.0 });
+        let fp = Fingerprint::from_json(&body, Uuid::nil(), Utc::now());
+        assert_eq!(fp.bucket_size_amount, Some(1000.0));
+    }
+
+    /// A width is legal down to `MIN_BUCKET_WIDTH_SOL` (1e-6). Rendering it at a
+    /// fixed 4 decimals trimmed `1e-5` to `bkt=0` — a name stating the one width
+    /// `validate` rejects, on a row whose real width is fine.
+    #[test]
+    fn auto_name_renders_a_sub_milli_width_instead_of_trimming_it_to_zero() {
+        let mut fp = bare();
+        fp.max_cost_lamports = Some(270_000_000);
+        fp.bucket_size_amount = Some(1e-5);
+        assert_eq!(fp.auto_name(), "max=0.27 · bkt=0.00001");
+        assert!(fp.validate().is_ok(), "the width itself is legal");
+
+        fp.bucket_size_amount = Some(MIN_BUCKET_WIDTH_SOL);
+        assert_eq!(fp.auto_name(), "max=0.27 · bkt=0.000001");
+    }
+
     #[test]
     fn legacy_auto_name_detects_retired_shapes_only() {
         assert!(is_legacy_auto_name(""));
@@ -605,6 +791,74 @@ mod tests {
         assert!(is_legacy_auto_name("flow-discovery bind"));
         assert!(!is_legacy_auto_name("3ix:Buy · max=1 · bkt=1"));
         assert!(!is_legacy_auto_name("max-buy launcher"));
+    }
+
+    /// The grammar decides "generated, not typed". Getting this wrong in the
+    /// permissive direction destroys a nickname, so the real names from the live
+    /// table are the fixture: every one of them must be read as a nickname.
+    #[test]
+    fn generated_grammar_accepts_only_auto_name_output() {
+        for generated in [
+            "ALL",
+            "3ix:Buy",
+            "3ix:Buy · max=1 · bkt=1",
+            "2ix:B · fs_buy=19.5",
+            "cu_limit=200K",
+            "5ix:BuyExactSolIn · cu_limit=301K · cu_price=75210",
+            "5ix:BuyExactSolIn · cu_limit=301K · cu_price=75.2K",
+            "max=0.27 · bkt=0.00001",
+            "1ix:Buy · max=1 · bkt=exact",
+            "init=0 · bkt=1000",
+            "fs_buy=2.5 · bkt=5",
+        ] {
+            assert!(is_generated_auto_name(generated), "`{generated}` is auto_name output");
+        }
+        for nickname in [
+            "",
+            "max-buy launcher",
+            "8dtx · Trojan Trade",
+            "8dtx · GMGN Bot",
+            "8dtx-clone: creation bundle < 5 SOL",
+            "8dtx-clone CONTROL: any creation bundle",
+            "8dtx S1: Pump.Fun: BuyV2 + bundle<5",
+            "8dtx-derived - any token (structural classifier)",
+            "isl-ALL broad",
+            "probe group mc0.0108 (held +17.13pc 9of9)",
+            "buyv2 mc7.07 (x1.0226 tool, 1 SOL-tier sibling of g0)",
+            // Chip-shaped but not a chip: an unknown axis, a bad number, no count.
+            "cu_lmit=200K",
+            "max=1.2.3",
+            "ix:Buy",
+            "bkt=wide",
+        ] {
+            assert!(!is_generated_auto_name(nickname), "`{nickname}` must read as a nickname");
+        }
+    }
+
+    /// `auto_name` output is *stored*, so changing that function strands the copies
+    /// already written and two identical fingerprints read as two. A grammar-shaped
+    /// name that drifted must re-derive; a nickname must not.
+    #[test]
+    fn a_drifted_generated_name_re_derives_and_a_nickname_does_not() {
+        let mut fp = bare();
+        fp.cu_limit = Some(301_000);
+        fp.cu_price = Some(75_210);
+        fp.ix_labels = Some(vec!["A".into(), "Pump.Fun: BuyExactSolIn".into()]);
+
+        // Written by an older `auto_name` that did not compact `cu_price`.
+        fp.name = "2ix:BuyExactSolIn · cu_limit=301K · cu_price=75210".into();
+        assert!(fp.has_stale_auto_name());
+        fp.ensure_auto_name();
+        assert_eq!(fp.name, "2ix:BuyExactSolIn · cu_limit=301K · cu_price=75.2K");
+
+        // Already current — no rewrite, and no churn on repeated reads.
+        assert!(!fp.has_stale_auto_name());
+
+        // The nickname states a finding the axes cannot; it survives.
+        fp.name = "probe group mc0.0108 (held +17.13pc 9of9)".into();
+        assert!(!fp.has_stale_auto_name());
+        fp.ensure_auto_name();
+        assert_eq!(fp.name, "probe group mc0.0108 (held +17.13pc 9of9)");
     }
 
     #[test]
