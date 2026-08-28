@@ -19,6 +19,7 @@ use std::sync::Arc;
 use actix_web::{web, HttpResponse, Responder};
 use chrono::Utc;
 use serde_json::{json, Value};
+use trading_core::api::handlers::strategies::rule_bundle;
 use trading_core::api::handlers::strategies::rule_positions::{
     self, ScoreScope, ScoreScopeParam,
 };
@@ -28,6 +29,12 @@ use uuid::Uuid;
 
 use super::action_progress;
 use crate::state::deploy_state::DeployState;
+
+/// `?rules=<uuid>,<uuid>` on the bundle export. Absent = every rule on this box.
+#[derive(serde::Deserialize)]
+pub struct BundleExportQuery {
+    rules: Option<String>,
+}
 
 // ── Metadata ─────────────────────────────────────────────────────────────────
 
@@ -164,6 +171,49 @@ pub async fn delete_fingerprint(
         Err(e) => HttpResponse::Conflict()
             .json(json!({"error": format!("cannot delete fingerprint (in use?): {e}")})),
     }
+}
+
+// ── Strategy bundle (cross-box rule sync) ────────────────────────
+
+/// GET /api/strategy-bundle?rules=<uuid>,<uuid> — export the selection (every rule
+/// when the param is absent) as one pasteable block. See
+/// [`trading_core::api::handlers::strategies::rule_bundle`] for what travels.
+pub async fn export_strategy_bundle(
+    app_state: web::Data<Arc<DeployState>>,
+    query: web::Query<BundleExportQuery>,
+) -> impl Responder {
+    rule_bundle::export_response(
+        &app_state.fingerprint_repo,
+        &app_state.rule_repo,
+        query.rules.as_deref(),
+        "hunter-live",
+    )
+    .await
+}
+
+/// POST /api/strategy-bundle/preview — the diff against this box. Writes nothing.
+pub async fn preview_strategy_bundle(
+    app_state: web::Data<Arc<DeployState>>,
+    body: web::Json<Value>,
+) -> impl Responder {
+    rule_bundle::preview_response(&app_state.fingerprint_repo, &app_state.rule_repo, &body).await
+}
+
+/// POST /api/strategy-bundle/apply — execute the diff.
+///
+/// Reloads the engine whenever anything was written, including on a mid-apply
+/// error: the fingerprints land before the rules, so a partial apply still changed
+/// what the live matcher must read.
+pub async fn apply_strategy_bundle(
+    app_state: web::Data<Arc<DeployState>>,
+    body: web::Json<Value>,
+) -> impl Responder {
+    let (resp, wrote) =
+        rule_bundle::apply_response(&app_state.fingerprint_repo, &app_state.rule_repo, &body).await;
+    if wrote {
+        schedule_engine_reload(&app_state);
+    }
+    resp
 }
 
 // ── Rules ────────────────────────────────────────────────────────────────────

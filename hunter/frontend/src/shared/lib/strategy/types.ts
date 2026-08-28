@@ -550,3 +550,86 @@ export interface StrategyPositionUpdateEvent {
   scale_stage?: number | null;
 }
 
+
+// ── Strategy bundle — cross-box rule sync ──────────────────────────────────
+// Mirrors `trading_core::api::handlers::strategies::rule_bundle` field-for-field.
+// The bundle carries the STRATEGY (fingerprint criteria + metric_config, rule
+// params/sizing/caps/tags). It deliberately carries no `is_active`, `is_enabled`
+// or `trade_mode`: those describe how a box RUNS a rule, and letting arming ride
+// along would let a paste from the paper lab arm a real-money rule on the server.
+
+/** What the target box would do with one bundle item. */
+export type BundleItemStatus =
+  /** Already here, identical on every travelling field. Apply skips it. */
+  | 'identical'
+  /** Here under this id, with differences. Apply updates it. */
+  | 'changed'
+  /** Not here. Apply inserts it, keeping the bundle's UUID. */
+  | 'new'
+  /** Fingerprint: an identity-identical row is already here under a different id,
+   *  so apply rebinds the bundle's rules onto it instead of inserting. */
+  | 'reuse_existing'
+  /** Rule: the same strategy is already here under a different id. Skipped. */
+  | 'duplicate'
+  /** Blocks the whole apply — nothing is written while any item is this. */
+  | 'conflict';
+
+export interface BundleFieldChange {
+  field: string;
+  /** Value on THIS box. `null` for a row that is new here. */
+  from: unknown;
+  /** Value in the pasted bundle. */
+  to: unknown;
+}
+
+interface BundleItemPlan {
+  status: BundleItemStatus;
+  changes: BundleFieldChange[];
+  local_updated_at: string | null;
+  incoming_updated_at: string;
+  /** Why it conflicts, or what a non-obvious status means. */
+  note: string | null;
+}
+
+export interface BundleFingerprintPlan extends BundleItemPlan {
+  id: string;
+  name: string;
+  /** The row on this box the item resolves to — differs from `id` only under
+   *  `reuse_existing`. */
+  target_id: string;
+}
+
+export interface BundleRulePlan extends BundleItemPlan {
+  id: string;
+  rule_name: string;
+  fingerprint_id: string;
+}
+
+/** The preview diff. `blocked` is the gate the Apply button reads. */
+export interface BundlePlan {
+  fingerprints: BundleFingerprintPlan[];
+  rules: BundleRulePlan[];
+  blocked: boolean;
+  blockers: string[];
+  /** Items apply would write (`new` + `changed`, both lists). */
+  writes: number;
+}
+
+export interface BundleApplied {
+  fingerprints_inserted: number;
+  fingerprints_updated: number;
+  rules_inserted: number;
+  rules_updated: number;
+  skipped: number;
+  plan: BundlePlan;
+}
+
+/** The clipboard payload itself. Opaque to the UI apart from the counts it shows
+ *  — every field is interpreted by the box it is pasted into. */
+export interface RuleBundle {
+  bundle_format_version: number;
+  exported_at: string;
+  source: string;
+  fingerprints: { id: string; name: string }[];
+  rules: { id: string; rule_name: string }[];
+}

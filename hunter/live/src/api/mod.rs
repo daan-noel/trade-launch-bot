@@ -47,6 +47,21 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/arms/summary",
                 web::post().to(handlers::strategies::arms::arms_summary),
             )
+            // Strategy bundle — copy rules + their fingerprints between the
+            // workstation and the server. `/preview` writes nothing; `/apply`
+            // refuses the whole bundle if any item conflicts.
+            .route(
+                "/strategy-bundle",
+                web::get().to(handlers::strategies::engine::export_strategy_bundle),
+            )
+            .route(
+                "/strategy-bundle/preview",
+                web::post().to(handlers::strategies::engine::preview_strategy_bundle),
+            )
+            .route(
+                "/strategy-bundle/apply",
+                web::post().to(handlers::strategies::engine::apply_strategy_bundle),
+            )
             // Fingerprints CRUD (shared by many rules).
             .route("/fingerprints", web::get().to(handlers::strategies::engine::list_fingerprints))
             .route("/fingerprints", web::post().to(handlers::strategies::engine::create_fingerprint))

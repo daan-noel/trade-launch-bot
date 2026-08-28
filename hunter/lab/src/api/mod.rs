@@ -124,6 +124,20 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/meta/strategy-registry",
                 web::get().to(handlers::strategies::engine_crud::strategy_registry),
             )
+            // Strategy bundle — the lab twin. Same three routes, same shared
+            // resolver; no engine here, so nothing to reload after an apply.
+            .route(
+                "/strategy-bundle",
+                web::get().to(handlers::strategies::engine_crud::export_strategy_bundle),
+            )
+            .route(
+                "/strategy-bundle/preview",
+                web::post().to(handlers::strategies::engine_crud::preview_strategy_bundle),
+            )
+            .route(
+                "/strategy-bundle/apply",
+                web::post().to(handlers::strategies::engine_crud::apply_strategy_bundle),
+            )
             .route(
                 "/fingerprints",
                 web::get().to(handlers::strategies::engine_crud::list_fingerprints),

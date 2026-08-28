@@ -15,6 +15,13 @@ settings, `raw_txs`, and existing trades are never touched — only new rows are
 > `fingerprints_wildcard_excludes_axes` CHECKs reject. Redeploy the live bin
 > (`sqlx::migrate!` runs at boot) before syncing.
 
+> **Moving ONE rule between the boxes does not need this script.** The Rules board's
+> **Sync** button copies rules + the fingerprints they use as one block of JSON, both
+> directions, with a field-level diff before anything is written -- see
+> [rule-sync-bundle.md](../docs/plans/strategies/rule-sync-bundle.md). This script stays
+> the authority on the history tables (`strategy_runs`, `strategy_positions`,
+> `strategy_run_metrics`), which a bundle never touches.
+
 > **Strategy tables are mirrored (server wins), non-destructively.** `fingerprints`,
 > `strategy_rules`, `strategy_runs`, `strategy_run_metrics`, and `strategy_positions`
 > are copied **full-table each run** and upserted (`DO UPDATE`): new server rows are

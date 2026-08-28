@@ -24,6 +24,9 @@ import type {
   CreateRuleBody,
   UpdateRuleBody,
   TradeMode,
+  RuleBundle,
+  BundlePlan,
+  BundleApplied,
 } from 'lib/strategy/types';
 
 /**
@@ -301,6 +304,32 @@ export const sharedApi = baseApi.injectEndpoints({
       query: (id) => `/api/strategy-rules/${encodeURIComponent(id)}/runs`,
       providesTags: ['StrategyRule'],
     }),
+    /**
+     * Strategy bundle — move rules + the fingerprints they need between the
+     * workstation and the server as one block of pasteable JSON.
+     *
+     * Export takes a rule-id list (omit for every rule). It is NOT tagged: the
+     * bundle is a snapshot the operator copies, not cached view state, and a stale
+     * one served from cache is the one thing that must never happen here.
+     */
+    exportStrategyBundle: builder.query<RuleBundle, string[] | undefined>({
+      query: (ruleIds) =>
+        ruleIds?.length
+          ? `/api/strategy-bundle?rules=${ruleIds.map(encodeURIComponent).join(',')}`
+          : '/api/strategy-bundle',
+      keepUnusedDataFor: 0,
+    }),
+    /** The diff against this box. Writes nothing — safe to re-run on every paste. */
+    previewStrategyBundle: builder.mutation<BundlePlan, unknown>({
+      query: (bundle) => ({ url: '/api/strategy-bundle/preview', method: 'POST', body: bundle }),
+    }),
+    /** Execute the diff. 409 + `{ plan }` when a conflict blocked it (nothing written). */
+    applyStrategyBundle: builder.mutation<BundleApplied, unknown>({
+      query: (bundle) => ({ url: '/api/strategy-bundle/apply', method: 'POST', body: bundle }),
+      // An apply can insert a fingerprint, rebind a rule, and change used-by counts
+      // in one shot, so both caches go.
+      invalidatesTags: ['StrategyRule', 'Fingerprint'],
+    }),
     createStrategyRule: builder.mutation<StrategyRule, CreateRuleBody>({
       query: (body) => ({ url: '/api/strategy-rules', method: 'POST', body }),
       // A new rule bumps its fingerprint's used-by count.
@@ -486,6 +515,9 @@ export const {
   useGetStrategyRulesQuery,
   useGetMintEpisodesQuery,
   useGetStrategyRuleRunsQuery,
+  useLazyExportStrategyBundleQuery,
+  usePreviewStrategyBundleMutation,
+  useApplyStrategyBundleMutation,
   useCreateStrategyRuleMutation,
   useUpdateStrategyRuleMutation,
   useDeleteStrategyRuleMutation,

@@ -166,11 +166,14 @@ impl FingerprintRepo {
         Ok(())
     }
 
-    /// Return the existing identity-identical fingerprint, or persist `fp` as a
-    /// new row. Sweep promotion goes through here so equal winning groups map
-    /// onto ONE fingerprint (`name` is a label and does not affect identity; see
-    /// [`IDENTITY_WHERE`] for why `metric_config` does).
-    pub async fn find_or_create(&self, fp: &Fingerprint) -> anyhow::Result<Fingerprint> {
+    /// The row that already holds `fp`'s identity, if any — a **read**, so a
+    /// caller that must not write (the bundle diff preview) resolves the same
+    /// collision the writers do without touching the table.
+    ///
+    /// Split out of [`Self::find_or_create`] rather than duplicated: a preview
+    /// that answered "no collision" off a second, drifted predicate would then
+    /// hand the operator an apply that trips `fingerprints_identity_uniq`.
+    pub async fn find_by_identity(&self, fp: &Fingerprint) -> anyhow::Result<Option<Fingerprint>> {
         let existing = sqlx::query_as::<_, FingerprintDbRow>(&format!(
             "SELECT {FINGERPRINT_COLS} FROM fingerprints WHERE {IDENTITY_WHERE} LIMIT 1"
         ))
@@ -179,8 +182,15 @@ impl FingerprintRepo {
         .bind(sqlx::types::Json(&fp.metric_config))
         .fetch_optional(&self.pool)
         .await?;
-        if let Some(row) = existing {
-            let mut existing = Fingerprint::from(row);
+        Ok(existing.map(Fingerprint::from))
+    }
+
+    /// Return the existing identity-identical fingerprint, or persist `fp` as a
+    /// new row. Sweep promotion goes through here so equal winning groups map
+    /// onto ONE fingerprint (`name` is a label and does not affect identity; see
+    /// [`IDENTITY_WHERE`] for why `metric_config` does).
+    pub async fn find_or_create(&self, fp: &Fingerprint) -> anyhow::Result<Fingerprint> {
+        if let Some(mut existing) = self.find_by_identity(fp).await? {
             self.persist_legacy_relabel(&mut existing).await?;
             return Ok(existing);
         }

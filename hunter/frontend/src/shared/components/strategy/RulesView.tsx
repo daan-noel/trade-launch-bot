@@ -11,6 +11,7 @@ import {
   DuplicateIcon,
   EditIcon,
   EnableIcon,
+  DuplicateIcon as CopyIcon,
   LinkIcon,
   PauseIcon,
   PlayIcon,
@@ -32,6 +33,7 @@ import { buildFingerprintRuleColumns } from './fingerprintRuleColumns';
 import { buildRuleParamsColumns } from './ruleParamsColumns';
 import { RuleHoverTip } from './RuleHoverTip';
 import { RuleModeFilter } from './RuleModeFilter';
+import { RuleSyncModal } from './RuleSyncModal';
 import { RuleTagFilter } from './RuleTagFilter';
 import { buildRuleTagsColumn } from './ruleTagsColumn';
 import { useRuleActions } from './useRuleActions';
@@ -162,6 +164,10 @@ export function RulesView({
   const [selectedKey, setSelectedKey] = useSelectionSearchParam(STRATEGY_PARAMS.rule);
 
   const actions = useRuleActions({ renderDryRun });
+  // Cross-box rule sync (workstation lab <-> EC2 live). Lives beside the board
+  // rather than inside the editor: a bundle is a SET of rules, and the diff it
+  // previews spans the fingerprints they share.
+  const [syncOpen, setSyncOpen] = useState(false);
 
   const [activate] = useActivateStrategyRuleMutation();
   const [enable] = useEnableStrategyRuleMutation();
@@ -982,7 +988,17 @@ export function RulesView({
               })}
 
               <IconButton
-                className='ml-8'
+                className="ml-8"
+                variant="ghost"
+                size="lg"
+                label="Sync"
+                title="Copy rules to / paste rules from the other box"
+                onClick={() => setSyncOpen(true)}
+              >
+                <CopyIcon />
+              </IconButton>
+
+              <IconButton
                 variant="success"
                 size="lg"
                 label="New rule"
@@ -1268,6 +1284,14 @@ export function RulesView({
         })
         : null}
       {actions.editorNode}
+      {syncOpen && (
+        <RuleSyncModal
+          open
+          onClose={() => setSyncOpen(false)}
+          rules={rules}
+          initialSelection={selectedKey ? [selectedKey] : undefined}
+        />
+      )}
     </div>
   );
 }

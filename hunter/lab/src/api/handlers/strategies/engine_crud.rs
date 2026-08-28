@@ -13,6 +13,7 @@ use std::sync::Arc;
 use actix_web::{web, HttpResponse, Responder};
 use uuid::Uuid;
 
+use trading_core::api::handlers::strategies::rule_bundle;
 use trading_core::api::handlers::strategies::rule_positions::{
     self, ScoreScope, ScoreScopeParam,
 };
@@ -55,6 +56,45 @@ fn rule_err(e: RuleError, ctx: &str) -> HttpResponse {
 /// GET `/api/meta/strategy-registry` (lab twin — pure, no state).
 pub async fn strategy_registry() -> impl Responder {
     HttpResponse::Ok().json(hunter_engine::metrics::registry_json())
+}
+
+/// `?rules=<uuid>,<uuid>` on the bundle export. Absent = every rule on this box.
+#[derive(serde::Deserialize)]
+pub struct BundleExportQuery {
+    rules: Option<String>,
+}
+
+/// GET `/api/strategy-bundle` — export the selection as one pasteable block.
+pub async fn export_strategy_bundle(
+    app_state: web::Data<Arc<LocalState>>,
+    query: web::Query<BundleExportQuery>,
+) -> impl Responder {
+    rule_bundle::export_response(
+        &fp_repo(&app_state),
+        &rule_repo(&app_state),
+        query.rules.as_deref(),
+        "hunter-lab",
+    )
+    .await
+}
+
+/// POST `/api/strategy-bundle/preview` — the diff against the lab DB. Writes nothing.
+pub async fn preview_strategy_bundle(
+    app_state: web::Data<Arc<LocalState>>,
+    body: web::Json<serde_json::Value>,
+) -> impl Responder {
+    rule_bundle::preview_response(&fp_repo(&app_state), &rule_repo(&app_state), &body).await
+}
+
+/// POST `/api/strategy-bundle/apply` — execute the diff. No engine here, so nothing
+/// to reload: a synced or restarted live bin picks the rows up on its next reload.
+pub async fn apply_strategy_bundle(
+    app_state: web::Data<Arc<LocalState>>,
+    body: web::Json<serde_json::Value>,
+) -> impl Responder {
+    let (resp, _wrote) =
+        rule_bundle::apply_response(&fp_repo(&app_state), &rule_repo(&app_state), &body).await;
+    resp
 }
 
 /// GET `/api/fingerprints` — with a folded-in `used_by` rule count (see live twin).

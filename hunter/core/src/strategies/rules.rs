@@ -300,7 +300,23 @@ async fn reject_duplicate(
 /// Validate, build, and persist a new generic rule. Refuses an identity-identical
 /// duplicate (promote / New / Duplicate all share this gate).
 pub async fn create(repo: &RuleRepo, draft: &RuleDraft) -> Result<StrategyRule, RuleError> {
-    let rule = build_rule(draft).map_err(RuleError::Invalid)?;
+    create_with_id(repo, draft, Uuid::new_v4()).await
+}
+
+/// [`create`] with a caller-supplied id, for the ONE writer that must not mint a
+/// fresh one: the strategy-bundle import
+/// ([`crate::api::handlers::strategies::rule_bundle`]). The UUID is the join key
+/// between the two boxes — a rule that arrives under a new id is a second copy
+/// rather than the same rule, and every later paste in either direction would fork
+/// again. Everything else (validation, inactive-on-create, the duplicate gate) is
+/// [`create`]'s.
+pub async fn create_with_id(
+    repo: &RuleRepo,
+    draft: &RuleDraft,
+    id: Uuid,
+) -> Result<StrategyRule, RuleError> {
+    let mut rule = build_rule(draft).map_err(RuleError::Invalid)?;
+    rule.id = id;
     reject_duplicate(
         repo,
         rule.fingerprint_id,
