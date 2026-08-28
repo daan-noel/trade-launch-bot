@@ -17,7 +17,8 @@ use crate::protocol::Protocol;
 
 use super::create::decode_create_events_from_logs;
 use super::instructions::{
-    classify_pump_ix, determine_instruction_type, extract_compute_budget, label_instruction,
+    classify_pump_ix, determine_instruction_type, label_instruction, system_transfer_lamports,
+    FeeBudget,
     InstructionKind,
 };
 use super::trade::{
@@ -273,13 +274,11 @@ impl Decoder {
         let instruction_type = determine_instruction_type(&kinds, &decoded_events);
 
         // Step 2: labels + compute budget.
-        let (instruction_labels, cu_limit, cu_price) = build_labels_pb(message, meta, &keys, p);
+        let (instruction_labels, fee_budget) = build_labels_pb(message, meta, &keys, p);
 
         // Step 3: build IngestEvents.
         let mut events: Vec<IngestEvent> = Vec::new();
         let has_create = kinds.iter().any(|k| matches!(k, InstructionKind::Create));
-        // Charged once for the whole tx; stamped on every leg it produced.
-        let fee_lamports = fee_lamports_opt(meta.fee);
 
         // 3a: one Trade per decoded TradeEvent.
         for (leg_index, ev) in decoded_events.iter().enumerate() {
@@ -296,7 +295,10 @@ impl Decoder {
                 sol_lamports: ev.sol_amount_lamports,
                 tokens: ev.token_amount,
                 price,
-                fee_lamports,
+                fee_lamports: fee_budget.fee_lamports,
+                cu_limit: fee_budget.cu_limit,
+                cu_price: fee_budget.cu_price,
+                tip_lamports: fee_budget.tip_lamports,
                 signature: signature.clone(),
                 tx_index: info.index as u32,
                 leg_index: leg_index as u32,
@@ -334,7 +336,7 @@ impl Decoder {
                         &meta.pre_balances, &meta.post_balances,
                         &meta.pre_token_balances, &meta.post_token_balances,
                         instruction_labels.clone(),
-                        fee_lamports,
+                        fee_budget,
                     ) {
                         events.push(ev);
                     }
@@ -355,7 +357,7 @@ impl Decoder {
                     create_ix.data, &ix_accounts, &all_keys,
                     &decoded_events, &decoded_create_events,
                     &instruction_type, instruction_labels.clone(),
-                    cu_limit, cu_price, &pump_ix_datas,
+                    fee_budget.cu_limit, fee_budget.cu_price, &pump_ix_datas,
                 ));
             }
         }
@@ -434,9 +436,8 @@ impl Decoder {
         }
 
         let signature = bs58::encode(&info.signature).into_string();
-        let (labels, _, _) = build_labels_pb(message, meta, &keys, p);
+        let (labels, fee_budget) = build_labels_pb(message, meta, &keys, p);
         // Charged once for the whole tx; stamped on every leg it produced.
-        let fee_lamports = fee_lamports_opt(meta.fee);
 
         // Passive account-list harvest for the executor's zero-RPC pool warmup:
         // resolve the full (ALT-included) account list of each TOP-LEVEL
@@ -483,7 +484,7 @@ impl Decoder {
                 .map(|(_, list)| Box::new(std::mem::take(list)));
             events.push(IngestEvent::Trade(build_amm_trade(
                 ev, mint, &signature, slot, received_at, received_at,
-                labels.clone(), info.index as u32, i as u32, accounts, fee_lamports,
+                labels.clone(), info.index as u32, i as u32, accounts, fee_budget,
             )));
         }
 
@@ -537,7 +538,7 @@ impl Decoder {
         pre_token_balances: &[scb::TokenBalance],
         post_token_balances: &[scb::TokenBalance],
         instruction_labels: Vec<String>,
-        fee_lamports: Option<u64>,
+        fee_budget: FeeBudget,
     ) -> Option<IngestEvent> {
         let p = &self.protocol;
         let mint = pump_accounts.get(2).filter(|s| !s.is_empty())?.to_string();
@@ -574,7 +575,10 @@ impl Decoder {
             // where `sol` is the program-emitted swap amount. The fee is still
             // reported as its own value; don't subtract it from `sol` here or the
             // two paths would price the same trade differently.
-            fee_lamports,
+            fee_lamports: fee_budget.fee_lamports,
+            cu_limit: fee_budget.cu_limit,
+            cu_price: fee_budget.cu_price,
+            tip_lamports: fee_budget.tip_lamports,
             signature: signature.to_string(),
             tx_index,
             leg_index: 0,
@@ -695,28 +699,44 @@ fn collect_kinds_pb(
     kinds
 }
 
+/// Label every top-level instruction and read the transaction's fee budget off the
+/// same single walk.
+///
+/// **Top-level only, for the tip as well as the labels.** An inner (CPI) transfer is
+/// the venue moving its own protocol fee, not the sender buying priority, so widening
+/// this walk would book the curve's rake as urgency. It also keeps the tip on exactly
+/// the instruction list `ix_labels` already exposes, so a `System Program: Transfer`
+/// label and a `tip_lamports` value always describe the same instructions.
 fn build_labels_pb(
     message: &scb::Message,
-    _meta: &scb::TransactionStatusMeta,
+    meta: &scb::TransactionStatusMeta,
     keys: &LazyKeys,
     p: &Protocol,
-) -> (Vec<String>, Option<u64>, Option<u64>) {
-    let mut cu_limit: Option<u64> = None;
-    let mut cu_price: Option<u64> = None;
+) -> (Vec<String>, FeeBudget) {
+    // Charged once for the whole tx; stamped on every leg it produced.
+    let mut budget = FeeBudget { fee_lamports: fee_lamports_opt(meta.fee), ..Default::default() };
     let cb_bytes = p.programs.compute_budget.bytes.as_ref();
+    let sys_bytes = p.programs.system.bytes.as_ref();
 
     let labels = message
         .instructions
         .iter()
         .map(|ix| {
+            let raw_pid = keys.raw(ix.program_id_index as usize);
+            budget.note_compute_budget(raw_pid == Some(cb_bytes), Some(&ix.data));
+            if let Some(lamports) =
+                system_transfer_lamports(raw_pid == Some(sys_bytes), Some(&ix.data))
+            {
+                // Transfer accounts are [from, to]; the tip is where it LANDS.
+                let dest = ix.accounts.get(1).and_then(|&i| keys.raw(i as usize));
+                budget.note_transfer(lamports, dest.is_some_and(|d| p.is_tip_account(d)));
+            }
             let pid = keys.get(ix.program_id_index as usize);
-            let is_cb = keys.raw(ix.program_id_index as usize) == Some(cb_bytes);
-            extract_compute_budget(is_cb, Some(&ix.data), &mut cu_limit, &mut cu_price);
             label_instruction(pid, None, Some(&ix.data), p)
         })
         .collect();
 
-    (labels, cu_limit, cu_price)
+    (labels, budget)
 }
 
 fn resolve_pump_accounts_pb(ix: &PbIx, keys: &LazyKeys) -> Vec<String> {

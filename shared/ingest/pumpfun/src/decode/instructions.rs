@@ -84,23 +84,82 @@ enum ComputeBudgetIx {
     SetLoadedAccountsDataSizeLimit(u32),
 }
 
-pub(super) fn extract_compute_budget(
-    is_compute_budget: bool,
-    data: Option<&[u8]>,
-    cu_limit: &mut Option<u64>,
-    cu_price: &mut Option<u64>,
-) {
-    if !is_compute_budget {
-        return;
-    }
-    if let Some(b) = data {
-        let mut buf: &[u8] = b;
-        match ComputeBudgetIx::deserialize(&mut buf) {
-            Ok(ComputeBudgetIx::SetComputeUnitLimit(u)) => *cu_limit = Some(u as u64),
-            Ok(ComputeBudgetIx::SetComputeUnitPrice(p)) => *cu_price = Some(p),
-            _ => {}
+/// The three fee facts one transaction carries, accumulated while its instruction
+/// list is walked once.
+///
+/// Kept together because they are one decision read off three places: an operator
+/// sets a *priority spend*, and the chain lets them pay it on the compute rail
+/// (`cu_limit x cu_price`), on a tip rail (a transfer), or on both. Reading one
+/// without the others reads a fraction of the number the sender chose.
+///
+/// Every field is `Option` and every `None` means **not present in this
+/// transaction**, never zero — the same convention `Trade::fee_lamports` uses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct FeeBudget {
+    /// `TransactionStatusMeta.fee` — base signature fee plus the compute rail's
+    /// priority fee, as the chain charged it. Read from meta rather than recomputed
+    /// from the two `cu_*` fields: those are what the sender ASKED for, this is what
+    /// was taken.
+    pub fee_lamports: Option<u64>,
+    /// `SetComputeUnitLimit` argument, in compute units.
+    pub cu_limit: Option<u64>,
+    /// `SetComputeUnitPrice` argument, in MICRO-lamports per compute unit. Not a
+    /// lamport count: the compute-rail spend is `cu_limit * cu_price / 1e6`.
+    pub cu_price: Option<u64>,
+    /// Lamports transferred to a known tip account.
+    ///
+    /// `None` = the transaction carries no system transfer at all. `Some(0)` = it
+    /// carries transfers but none reached an account in
+    /// [`Protocol::is_tip_account`](crate::protocol::Protocol::is_tip_account) —
+    /// either pure router rake, or a tip rail that list does not know yet. The two
+    /// are deliberately distinguishable so the second can be counted and the list
+    /// grown from evidence.
+    pub tip_lamports: Option<u64>,
+}
+
+impl FeeBudget {
+    /// Read a compute-budget instruction, if this is one.
+    pub(super) fn note_compute_budget(&mut self, is_compute_budget: bool, data: Option<&[u8]>) {
+        if !is_compute_budget {
+            return;
+        }
+        if let Some(b) = data {
+            let mut buf: &[u8] = b;
+            match ComputeBudgetIx::deserialize(&mut buf) {
+                Ok(ComputeBudgetIx::SetComputeUnitLimit(u)) => self.cu_limit = Some(u as u64),
+                Ok(ComputeBudgetIx::SetComputeUnitPrice(p)) => self.cu_price = Some(p),
+                _ => {}
+            }
         }
     }
+
+    /// Record a system transfer of `lamports`, `is_tip` iff its destination is a
+    /// known tip account. Seeing the transfer at all is what lifts `tip_lamports`
+    /// out of `None`; a non-tip transfer lifts it to `Some(0)` and adds nothing.
+    pub(super) fn note_transfer(&mut self, lamports: u64, is_tip: bool) {
+        let acc = self.tip_lamports.get_or_insert(0);
+        if is_tip {
+            *acc = acc.saturating_add(lamports);
+        }
+    }
+}
+
+/// Lamports moved by a `System Program: Transfer`, or `None` for any other
+/// instruction.
+///
+/// Layout is bincode: a 4-byte little-endian variant tag (`2` = `Transfer`) then
+/// the `u64` lamports. The tag is checked in full rather than by its low byte —
+/// `system_ix_name` can afford the short read because it only names the thing,
+/// while a wrong hit here would book some other instruction's bytes as money.
+pub(super) fn system_transfer_lamports(is_system: bool, data: Option<&[u8]>) -> Option<u64> {
+    if !is_system {
+        return None;
+    }
+    let b = data?;
+    if b.len() < 12 || b[..4] != [2, 0, 0, 0] {
+        return None;
+    }
+    Some(u64::from_le_bytes(b[4..12].try_into().ok()?))
 }
 
 /// Produce a human-readable label for one instruction.

@@ -156,6 +156,25 @@ protobuf's ambiguous zero to `None` at the source rather than letting each decod
 invent its own rule. It excludes the Jito tip (a transfer instruction, not a fee) and
 the venue's protocol/LP fee (already inside `sol`).
 
+**`Trade.cu_limit` / `cu_price` / `tip_lamports`** — the fee BUDGET, beside that charged
+fee. `build_labels_pb` already walks every top-level instruction to label it, so all
+three come off that one walk into a `FeeBudget` and cost nothing extra: the two compute
+values were being decoded and discarded (only `TokenCreated` kept them), and the tip adds
+one system-transfer decode plus a 20-key destination check. Zero RPC, zero Helius credits.
+
+Read them as one quantity — `ceil(cu_limit * cu_price / 1e6) + tip_lamports` is the
+lamports the sender spent to land early, and `cu_price` alone is not comparable between
+transactions because it is priced per compute unit. `tip_lamports` distinguishes three
+states: `None` (no top-level transfer at all), `Some(0)` (transfers, none to an account
+in `Protocol::is_tip_account`), and `Some(n)`. Only **top-level** transfers count — an
+inner CPI transfer is the venue moving its own protocol fee, not priority being bought —
+which also keeps the tip on exactly the instruction list `ix_labels` exposes.
+
+`TIP_ACCOUNT_IDS` in `protocol.rs` is the READ list and is a superset of what the
+executor sends to; `hunter/live/tests/tip_account_registry_ssot.rs` guards the one
+relation that must hold — every account we pay is one we recognise, or our own tips
+decode as `tip_lamports = 0`.
+
 **`TokenCreated.uri`** — the token's off-chain metadata pointer, read from whichever of
 the `create` instruction args or the `CreateEvent` log is present (log first, matching
 `name`/`symbol`). Like `fee_lamports` it comes from bytes the decoder already holds, so

@@ -31,6 +31,30 @@ pub struct Trade {
     /// `None` on every trade ingested before migration 0005 — unbackfillable, and
     /// distinct from a zero fee, which cannot occur on a landed transaction.
     pub fee_sol: Option<f64>,
+    /// Compute-unit limit this trade's **transaction** requested
+    /// (`SetComputeUnitLimit`), in compute units. `None` when it set none and took
+    /// the runtime default.
+    ///
+    /// Per-transaction like [`fee_sol`](Self::fee_sol) — same collapse-by-signature
+    /// rule before any aggregate.
+    pub cu_limit: Option<u64>,
+    /// Compute-unit price the transaction requested (`SetComputeUnitPrice`), in
+    /// **micro-lamports per compute unit**.
+    ///
+    /// Do not read this alone: it is priced per unit, so the same spend at half the
+    /// limit reads as double the price. The comparable quantity is the compute rail's
+    /// share of the priority spend, `ceil(cu_limit * cu_price / 1e6)` lamports.
+    pub cu_price: Option<u64>,
+    /// Lamports the transaction tipped to a known tip account — the priority rail
+    /// [`fee_sol`](Self::fee_sol) structurally cannot see, because a tip is a
+    /// transfer instruction rather than a fee.
+    ///
+    /// Exact lamports, not human SOL: the priority-spend sum is integer arithmetic,
+    /// and a tip is small enough that an `f64` SOL round-trip is pure loss.
+    ///
+    /// `None` = no top-level system transfer in the tx. `Some(0)` = transfers, none
+    /// to a recognised tip account. See migration `0013_trade_fee_budget.sql`.
+    pub tip_lamports: Option<u64>,
     pub tx_signature: String,
     /// Position of this trade's transaction within its block. Real on the live
     /// LaserStream feed and on LaserStream-replay backfill. On the RPC backfill path
@@ -115,6 +139,9 @@ impl Trade {
             token_amount,
             price_per_token,
             fee_sol: None,
+            cu_limit: None,
+            cu_price: None,
+            tip_lamports: None,
             tx_signature,
             tx_index: 0,
             leg_index: 0,

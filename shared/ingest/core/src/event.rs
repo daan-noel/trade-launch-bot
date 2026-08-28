@@ -52,6 +52,29 @@ pub struct Trade {
     /// the field). Never `Some(0)`: a landed transaction always pays at least
     /// the base fee, so a zero is "unknown", not "free".
     pub fee_lamports: Option<u64>,
+    /// `SetComputeUnitLimit` argument for this trade's transaction, in compute
+    /// units. `None` when the tx sets no limit (the runtime then applies its
+    /// default) — never 0.
+    ///
+    /// Per-TRANSACTION like [`fee_lamports`](Self::fee_lamports): stamped on every
+    /// leg the tx produced, so collapse by `signature` before aggregating.
+    pub cu_limit: Option<u64>,
+    /// `SetComputeUnitPrice` argument, in **micro-lamports per compute unit** —
+    /// not a lamport count. The compute-rail priority spend is
+    /// `ceil(cu_limit * cu_price / 1_000_000)` lamports; `cu_price` alone is not
+    /// comparable across transactions, because the same spend at half the limit
+    /// doubles the price. Per-transaction, same collapse rule.
+    pub cu_price: Option<u64>,
+    /// Lamports this transaction transferred to a known tip account — the OTHER
+    /// rail the same priority spend can be paid on, and one that never appears in
+    /// [`fee_lamports`](Self::fee_lamports) because a tip is a transfer, not a fee.
+    ///
+    /// `None` = the tx carries no top-level system transfer. `Some(0)` = it carries
+    /// one but none to a recognised tip account (router rake, or a rail the
+    /// decoder's list does not know yet). Per-transaction, and unlike the compute
+    /// fields genuinely paid ONCE even when the tx sells four wallets' bags — so
+    /// the collapse-by-signature rule is not optional here.
+    pub tip_lamports: Option<u64>,
     pub signature: String,
     /// Position of this trade's transaction within its block (`info.index` from
     /// the LaserStream update). 0 on the RPC backfill path, which has no block

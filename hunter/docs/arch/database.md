@@ -82,7 +82,7 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 ### Core trading
 
 - `tokens` — mint_address UNIQUE, creator_wallet, name/symbol, bonding_curve_address, initial_buy_lamports(BIGINT), cu_limit/price, is_mayhem_mode, ix_labels(JSONB), initial_buy_instruction(JSONB; keys `max_cost_lamports`/`spendable_lamports_in`), creation_slot(BIGINT), created_at
-- `trades` *(TimescaleDB hypertable on block_time, ~1mo retention)* — mint, wallet, trade_type, amount_lamports(BIGINT) / token_amount(BIGINT raw units), reserve_lamports/reserve_token(BIGINT venue-neutral pair), tx_signature(BYTEA), slot, block_time, venue(`curve`/`amm`), **`ix_labels`(JSONB, migration 0002, forward-only)**, **`fee_lamports`(BIGINT NULL, migration 0005, forward-only)**; price derived in `trades_priced` view (`price_per_token` = SOL/token). PK `(block_time, tx_signature, leg_index)`. **This table = the LaserStream feed.**
+- `trades` *(TimescaleDB hypertable on block_time, ~1mo retention)* — mint, wallet, trade_type, amount_lamports(BIGINT) / token_amount(BIGINT raw units), reserve_lamports/reserve_token(BIGINT venue-neutral pair), tx_signature(BYTEA), slot, block_time, venue(`curve`/`amm`), **`ix_labels`(JSONB, migration 0002, forward-only)**, **`fee_lamports`(BIGINT NULL, migration 0005, forward-only)**, **`cu_limit`/`cu_price`/`tip_lamports`(BIGINT NULL, migration 0013, forward-only)**; price derived in `trades_priced` view (`price_per_token` = SOL/token). PK `(block_time, tx_signature, leg_index)`. **This table = the LaserStream feed.**
   - **`fee_lamports` is per-TRANSACTION, the table is per-LEG.** It is the on-chain
     `meta.fee` (base signature fee + priority fee) read straight off the feed at decode
     — no RPC, no Helius credits — and denormalized onto every leg of its tx, so a bare
@@ -98,6 +98,24 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
     reader that folds the protobuf's ambiguous `0` back to NULL at the source.
   - **Excludes** the Jito tip (a transfer instruction — absent from `meta.fee`) and the
     venue's own protocol/LP fee (already inside `amount_lamports`).
+  - **`cu_limit` / `cu_price` / `tip_lamports` are the fee BUDGET the sender chose**,
+    beside the fee the chain took. A sender picks one thing — how much to spend to land
+    early — and pays it on either of two rails, so the quantity is the SUM and the
+    columns are its parts:
+    `priority_lamports = ceil(cu_limit * cu_price / 1e6) + tip_lamports`.
+    `cu_price` is priced per compute unit, so it is **not** comparable across rows on
+    its own: the same spend at half the limit reads as double the price. Group by the
+    sum, never by a part. All three carry the same per-TRANSACTION-on-a-per-LEG
+    attribution as `fee_lamports` — and the tip makes it sharper, since one tx selling
+    four wallets' bags emits four legs and pays ONE tip.
+  - **`tip_lamports` has three states and `0` is not NULL.** NULL = the tx carries no
+    top-level system transfer; `0` = it carries one but none reached a recognised tip
+    account (a router paying its own rake, or a tip rail the decoder's list does not
+    know yet); `> 0` = tipped. The `0` bucket is the coverage meter for
+    `TIP_ACCOUNT_IDS` in `shared/ingest/pumpfun/src/protocol.rs` — when it grows
+    against the other two, that list is behind the market. Only top-level transfers
+    count: an inner CPI transfer is the venue moving its own protocol fee, not the
+    sender buying priority.
 - `raw_txs` *(TimescaleDB hypertable on block_time; compress 2d, retain 7d)* — tx_signature(BYTEA), slot, block_time, tx_index, payload(BYTEA = verbatim protobuf wire bytes, parse in Rust), source(SMALLINT: 0=live 1=sync). PK `(block_time, tx_signature)`. Source-of-truth feed; `trades` is a typed projection. Written by `RawTxRepo` from both the live ingest db_writer and the token_sync backfill.
 
 ### Token analysis

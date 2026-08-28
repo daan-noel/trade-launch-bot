@@ -12,6 +12,7 @@ use tracing::warn;
 #[cfg(test)]
 use borsh::BorshSerialize;
 
+use super::instructions::FeeBudget;
 use crate::event::{Reserves, Side, Trade, Venue};
 use crate::protocol::Protocol;
 
@@ -311,7 +312,7 @@ pub(super) fn build_amm_trade(
     tx_index: u32,
     leg_index: u32,
     amm_swap_accounts: Option<Box<Vec<String>>>,
-    fee_lamports: Option<u64>,
+    fee_budget: FeeBudget,
 ) -> Trade {
     let side = if ev.is_buy { Side::Buy } else { Side::Sell };
     let price = if ev.base_amount > 0 {
@@ -327,7 +328,10 @@ pub(super) fn build_amm_trade(
         sol_lamports: ev.quote_amount_lamports,
         tokens: ev.base_amount,
         price,
-        fee_lamports,
+        fee_lamports: fee_budget.fee_lamports,
+        cu_limit: fee_budget.cu_limit,
+        cu_price: fee_budget.cu_price,
+        tip_lamports: fee_budget.tip_lamports,
         signature: signature.to_string(),
         tx_index,
         leg_index,

@@ -1446,6 +1446,11 @@ pub(crate) fn trade_from_ingest_event(e: &ingest_pumpfun::event::Trade) -> Trade
         fee_sol: e
             .fee_lamports
             .map(|l| trading_core::config::constants::lamports_to_sol(l as i64)),
+        // The fee BUDGET beside the fee charged — see `Trade::cu_limit`. Exact
+        // integers: only `fee_sol` is human SOL, because its column is.
+        cu_limit: e.cu_limit,
+        cu_price: e.cu_price,
+        tip_lamports: e.tip_lamports,
         tx_signature: e.signature.clone(),
         tx_index: e.tx_index,
         leg_index: e.leg_index,

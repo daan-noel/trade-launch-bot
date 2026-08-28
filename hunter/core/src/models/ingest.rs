@@ -46,6 +46,19 @@ pub enum SseEvent {
         /// without it the newest rows in the trade table would read "—" until the
         /// next full fetch. `None` when the feed carried no fee.
         fee_sol: Option<f64>,
+        /// The fee BUDGET this trade's transaction chose, beside the fee it was
+        /// charged (see `Trade::cu_limit` / `cu_price` / `tip_lamports`). Carried on
+        /// the live lane for the same reason `fee_sol` is: an SSE-appended row must
+        /// show what a refetch would, or the newest rows in the trade table read
+        /// "-" until the next full fetch.
+        ///
+        /// Exact integers - compute units, micro-lamports per unit, and lamports.
+        /// Only `fee_sol` is human SOL, and that is its column's legacy.
+        cu_limit: Option<u64>,
+        cu_price: Option<u64>,
+        /// `None` = no top-level system transfer; `Some(0)` = one that reached no
+        /// recognised tip account. Zero is a state, not a missing value.
+        tip_lamports: Option<u64>,
         tx_signature: String,
         /// Intra-slot order keys — same canonical `(slot, tx_index, leg_index)` the
         /// REST trade history and chart aggregators use. Required so live SSE

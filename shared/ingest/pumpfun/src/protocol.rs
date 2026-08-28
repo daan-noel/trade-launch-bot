@@ -92,6 +92,20 @@ pub struct Protocol {
     pub lamports_per_sol: f64,
     /// Dust filter: trades below this SOL value are dropped.
     pub min_trade_sol: f64,
+    /// Tip-account keys, decoded once — see [`TIP_ACCOUNT_IDS`]. Read through
+    /// [`Protocol::is_tip_account`], never scanned directly.
+    pub tip_accounts: Vec<[u8; 32]>,
+}
+
+impl Protocol {
+    /// Is this account key one of the tip rails' collection accounts?
+    ///
+    /// Linear scan over 20 keys, and only reached for an instruction already known
+    /// to be a system transfer (one or two per transaction), so it costs nothing
+    /// worth indexing away.
+    pub fn is_tip_account(&self, key: &[u8]) -> bool {
+        self.tip_accounts.iter().any(|k| k == key)
+    }
 }
 
 // ── Literal constants (pump.fun mainnet, June 2025) ──────────────────────────
@@ -106,6 +120,51 @@ pub(crate) const ASSOCIATED_TOKEN_PROGRAM_ID: &str = "ATokenGPvbdGVxr1b2hvZbsiqW
 pub(crate) const SYSTEM_PROGRAM_ID: &str = "11111111111111111111111111111111";
 pub(crate) const COMPUTE_BUDGET_PROGRAM_ID: &str = "ComputeBudget111111111111111111111111111111";
 const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
+
+/// Tip accounts this decoder RECOGNISES when it reads somebody else's transaction.
+///
+/// A tip is a plain `System Program: Transfer` — indistinguishable from a router's
+/// own rake by amount, shape, or position. The destination is the only thing that
+/// separates them, so this list IS the definition of "tip" for
+/// [`Protocol::is_tip_account`].
+///
+/// **This is the READ list and it is a superset of what we SEND to.** The executor
+/// picks one account to pay (`executor-pumpfun::protocol`); a decoder reading the
+/// whole tape meets every rail every other trader uses. The two lists are separate
+/// because they answer different questions, and `hunter/live/tests/
+/// protocol_constants_ssot.rs` guards the one relation that must hold: everything we
+/// send to, we recognise.
+///
+/// **Incomplete by construction.** Only rails whose accounts are verified against the
+/// operator's own docs are listed; an unverified address is worse than a missing one
+/// because it matches something. Rails not yet listed read as `tip_lamports = 0` on a
+/// tx that does carry transfers, which is exactly the bucket to count when deciding
+/// whether this list needs to grow — see the `tip_lamports` column note in
+/// `hunter/core/migrations/0013_trade_fee_budget.sql`.
+const TIP_ACCOUNT_IDS: [&str; 20] = [
+    // Jito block engine (`getTipAccounts`), verified 2026-07-10.
+    "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
+    "HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe",
+    "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
+    "ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49",
+    "DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh",
+    "ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt",
+    "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL",
+    "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT",
+    // Helius Sender, verified 2026-07-14 against the sender's own rejection payload.
+    "4ACfpUFoaSD9bfPdeu6DBt89gB6ENTeHBXCAi87NhDEE",
+    "4vieeGHPYPG2MmyPRcYjdiDmmhN3ww7hsFNap8pVN3Ey",
+    "D1Mc6j9xQWgR1o1Z7yU5nVVXFQiAYx7FG9AW1aVfwrUM",
+    "3KCKozbAaF75qEU33jtzozcJ29yJuaLJTy2jFdzUY8bT",
+    "wyvPkWjVZz1M8fHQnMMCDTQDbkManefNNhweYk5WkcF",
+    "5VY91ws6B2hMmBFRsXkoAAdsPHBJwRfBht4DXox3xkwn",
+    "9bnz4RShgq1hAnLnZbP8kbgBg1kEmcJBYQq3gQbmnSta",
+    "D2L6yPZ2FmmmTKPgzaMKdhu6EWZcTpLy1Vhx8uvZe7NZ",
+    "2nyhqdwKcJZR2vcqCyrYsaPVdAnFoJjiksCXJ7hfEYgD",
+    "4TQLFNWK8AovT1gFvda5jfw2oJeRMKEmw7aH6MGBJ3or",
+    "2q5pghRs6arqVjRvT5gfgWfWcHWmw1ZuCzphgd5KfWGJ",
+    "tKq5esiQyvgRyfFa4JEz4uAUmppKyKB1PiQD9JhyGJY",
+];
 
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 const MIN_TRADE_LAMPORTS: u64 = 10_000;
@@ -161,6 +220,7 @@ impl Protocol {
             },
             lamports_per_sol: LAMPORTS_PER_SOL,
             min_trade_sol: MIN_TRADE_LAMPORTS as f64 / LAMPORTS_PER_SOL,
+            tip_accounts: TIP_ACCOUNT_IDS.iter().map(|s| p(s).bytes).collect(),
         }
     }
 }

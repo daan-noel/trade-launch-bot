@@ -970,6 +970,12 @@ export interface LiveTrade {
   /** Per-transaction network fee in SOL — see `TradeRecord.fee_sol`. Absent on
    *  frames from a bin predating the field. */
   fee_sol?: number | null;
+  /** Fee BUDGET the sender chose — see `TradeRecord.cu_limit` / `cu_price` /
+   *  `tip_lamports`. Carried on the live lane so an SSE-appended row shows what a
+   *  refetch would. Absent on frames from a bin predating the fields. */
+  cu_limit?: number | null;
+  cu_price?: number | null;
+  tip_lamports?: number | null;
   tx_signature: string;
   /** Canonical intra-slot order — must match `TradeRecord` / chart sort. */
   tx_index: number;
@@ -1027,6 +1033,28 @@ export interface TradeRecord {
    *  existed — unbackfillable, and distinct from a zero fee, which a landed
    *  transaction never pays. */
   fee_sol?: number | null;
+  /** Compute-unit limit this trade's TRANSACTION requested
+   *  (`SetComputeUnitLimit`), in compute units. Null when it set none and took the
+   *  runtime default, or when the trade predates the column (unbackfillable).
+   *  Per-tx like `fee_sol`: every leg of a multi-leg tx repeats it. */
+  cu_limit?: number | null;
+  /** Compute-unit price requested (`SetComputeUnitPrice`), in MICRO-LAMPORTS PER
+   *  COMPUTE UNIT — not a lamport count.
+   *
+   *  Do not read this alone. It is priced per unit, so the same spend at half the
+   *  limit reads as double the price: 3,333,333 is what "0.001 SOL at a 300k limit"
+   *  looks like from this side. Use `tradePriorityLamports` for the comparable
+   *  number. */
+  cu_price?: number | null;
+  /** Lamports tipped to a known tip account — the priority rail `fee_sol`
+   *  structurally cannot see, because a tip is a transfer instruction rather than a
+   *  fee.
+   *
+   *  Three states, and 0 is not null: `null` = the tx carries no top-level system
+   *  transfer; `0` = it carries one but none reached a recognised tip account
+   *  (router rake, or a rail the decoder's list does not know yet); `> 0` = tipped.
+   *  Exact lamports, not SOL. */
+  tip_lamports?: number | null;
   tx_signature: string;
   /** Position of this trade's transaction within its block — the real intra-slot
    *  ordering key. Part of the canonical trade order `slot → tx_index → leg_index`. */

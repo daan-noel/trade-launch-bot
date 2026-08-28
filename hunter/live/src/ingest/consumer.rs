@@ -287,6 +287,8 @@ impl IngestConsumer {
         // Captured before `core_trade` moves into the cache — the SSE frame below
         // needs it so a live-appended row shows the same fee a refetch would.
         let fee_sol = core_trade.fee_sol;
+        let (cu_limit, cu_price, tip_lamports) =
+            (core_trade.cu_limit, core_trade.cu_price, core_trade.tip_lamports);
         let db_trade = {
             let mut t = core_trade.clone();
             t.instruction_labels = labels_json;
@@ -395,6 +397,9 @@ impl IngestConsumer {
             token_amount,
             price_per_token,
             fee_sol,
+            cu_limit,
+            cu_price,
+            tip_lamports,
             tx_signature: e.signature,
             tx_index: e.tx_index,
             leg_index: e.leg_index,
@@ -669,6 +674,13 @@ fn trade_from_event(e: &IlTrade) -> Trade {
         fee_sol: e
             .fee_lamports
             .map(|l| trading_core::config::constants::lamports_to_sol(l as i64)),
+        // The fee BUDGET the sender chose, alongside the fee the chain took: the
+        // compute rail (`cu_limit` x `cu_price`) and the tip rail. Lamports and
+        // compute units stay exact integers — only `fee_sol` is human SOL, and
+        // that is a legacy of its column, not a unit to copy.
+        cu_limit: e.cu_limit,
+        cu_price: e.cu_price,
+        tip_lamports: e.tip_lamports,
         tx_signature: e.signature.clone(),
         tx_index: e.tx_index,
         leg_index: e.leg_index,

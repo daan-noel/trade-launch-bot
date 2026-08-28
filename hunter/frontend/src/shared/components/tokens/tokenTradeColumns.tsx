@@ -2,13 +2,14 @@ import type { ColumnDef } from 'components/table/types';
 import type { FlowReason } from 'lib/flow/classifyFlow';
 import type { TradeRecord } from 'types';
 import { DateCell } from 'components/table/DateCell';
-import { formatDecimal } from 'utils/format';
+import { formatDecimal, formatWithCommas } from 'utils/format';
 import { AmountCell, FeeCell, PriceCell } from 'components/tokens/priceCells';
 import { cn } from 'lib/cn';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { formatIxLabelsText } from 'lib/ixLabels';
+import { tradePriorityLamports, tradePrioritySol, tradeTipSol } from 'lib/tradeFees';
 import { patternKey } from 'lib/flow/volumePatterns';
 // Deep import: `constants` is type-only w.r.t. lightweight-charts, so the wash
 // colors come along without dragging the charting library into this chunk.
@@ -447,6 +448,85 @@ export function tokenTradeColumns(
       sortValue: (t) => t.fee_sol ?? -1,
       searchValue: (t) => (t.fee_sol != null ? String(t.fee_sol) : ''),
       filterNumber: (t) => t.fee_sol ?? null,
+    },
+    {
+      key: 'priority',
+      label: 'Priority',
+      tooltip:
+        'What the sender spent to land EARLY, across both rails: the compute rail ' +
+        '(CU limit × CU price ÷ 1e6) plus any tip. This is the comparable number — ' +
+        'the raw parts are not, because CU price is charged per compute unit, so the ' +
+        'same spend at half the limit reads as double the price. “—” = neither rail ' +
+        'captured (trades ingested before the columns existed; unbackfillable).',
+      render: (t) => (
+        <span className="text-text-dim">
+          <FeeCell sol={tradePrioritySol(t)} />
+        </span>
+      ),
+      // Same convention as Fee: unknown sorts below every real spend rather than
+      // tying with a genuine zero.
+      sortValue: (t) => tradePrioritySol(t) ?? -1,
+      searchValue: (t) => {
+        const v = tradePriorityLamports(t);
+        return v != null ? String(v) : '';
+      },
+      filterNumber: (t) => tradePrioritySol(t),
+    },
+    {
+      key: 'tip',
+      label: 'Tip',
+      tooltip:
+        'Lamports transferred to a known tip account (Jito block engine, Helius ' +
+        'Sender) — the priority rail the Fee column structurally cannot see, because ' +
+        'a tip is a transfer instruction, not a fee. Paid ONCE per transaction even ' +
+        'when it sells four wallets’ bags. “—” = the tx carries no top-level ' +
+        'transfer; “◎0” = it carries one but none reached a recognised tip account ' +
+        '(a router paying its own rake, or a tip rail the decoder does not know yet).',
+      render: (t) => (
+        <span className="text-text-dim">
+          <FeeCell sol={tradeTipSol(t)} />
+        </span>
+      ),
+      // `?? -1` for unknown only — a real 0 keeps its own rank, because "transfers,
+      // none to a tip account" is a reading and belongs beside the other readings.
+      sortValue: (t) => tradeTipSol(t) ?? -1,
+      searchValue: (t) => (t.tip_lamports != null ? String(t.tip_lamports) : ''),
+      filterNumber: (t) => tradeTipSol(t),
+    },
+    {
+      key: 'cu_limit',
+      label: 'CU Limit',
+      tooltip:
+        'Compute units this transaction requested (SetComputeUnitLimit). “—” = it ' +
+        'set none and took the runtime default. Heavily modal — 300k / 400k / 500k ' +
+        'are hardcoded client presets — with a long simulation-derived tail, which ' +
+        'makes it a property of the sender’s SOFTWARE rather than of the moment.',
+      render: (t) => (
+        <span className="text-text-dim tabular-nums">
+          {t.cu_limit != null ? formatWithCommas(t.cu_limit) : '—'}
+        </span>
+      ),
+      sortValue: (t) => t.cu_limit ?? -1,
+      searchValue: (t) => (t.cu_limit != null ? String(t.cu_limit) : ''),
+      filterNumber: (t) => t.cu_limit ?? null,
+    },
+    {
+      key: 'cu_price',
+      label: 'CU Price',
+      tooltip:
+        'SetComputeUnitPrice, in MICRO-LAMPORTS PER COMPUTE UNIT — not a lamport ' +
+        'amount, and not a number anyone picks directly: 3,333,333 is what “0.001 ' +
+        'SOL at a 300k limit” looks like from this side. Rank and compare on the ' +
+        'Priority column instead; this one is here to explain it, not to sort by. ' +
+        '“—” = no price set, i.e. no compute-rail priority fee at all.',
+      render: (t) => (
+        <span className="text-text-dim tabular-nums">
+          {t.cu_price != null ? formatWithCommas(t.cu_price) : '—'}
+        </span>
+      ),
+      sortValue: (t) => t.cu_price ?? -1,
+      searchValue: (t) => (t.cu_price != null ? String(t.cu_price) : ''),
+      filterNumber: (t) => t.cu_price ?? null,
     },
     {
       key: 'signature',

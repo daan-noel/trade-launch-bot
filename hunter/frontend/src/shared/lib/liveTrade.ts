@@ -23,6 +23,14 @@ export function liveTradeToTradeRecord(t: LiveTrade): TradeRecord {
     // `?? null` (not `?? 0`): a frame from a bin predating the field carries no
     // fee, and the Fee column must render that as "—", never as a free trade.
     fee_sol: t.fee_sol ?? null,
+    // Same `?? null` reasoning as `fee_sol`, with one extra trap: for
+    // `tip_lamports` a real 0 means "transfers, none to a recognised tip account"
+    // and must survive. `??` keeps it (only null/undefined fall through); `||`
+    // would collapse it to null and erase the one state that measures how far
+    // behind the decoder's tip-account list has fallen.
+    cu_limit: t.cu_limit ?? null,
+    cu_price: t.cu_price ?? null,
+    tip_lamports: t.tip_lamports ?? null,
     tx_signature: t.tx_signature,
     tx_index: t.tx_index ?? 0,
     leg_index: t.leg_index ?? 0,
