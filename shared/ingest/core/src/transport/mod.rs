@@ -585,6 +585,42 @@ fn resolve_from_slot(
 ///
 /// The whole switch mechanism reduces to this: when NATS carries the curve, the
 /// gRPC subscription drops the venue program id and keeps only tracked pools.
+/// How long this connection has been silent for idle-guard purposes, and what
+/// kind of silence it is — or `None` when silence is not evidence of a fault.
+///
+/// The guard's premise is "this subscription is never legitimately quiet", and
+/// that is a property of the ROLE, not of the transport.
+///
+/// [`SubscriptionRole::All`] carries the venue program id, so it is a firehose:
+/// a transaction gap means the stream died even though block metas keep
+/// arriving, which is exactly the silent death the transaction-only clock exists
+/// to catch. Judge it by transactions.
+///
+/// [`SubscriptionRole::AmmOnly`] carries tracked pool PDAs and nothing else —
+/// 0-14 accounts that go minutes without a trade, and **zero** accounts right
+/// after a boot. Judging that by transactions force-reconnects a perfectly
+/// healthy stream every `idle_reconnect_timeout` forever, which churns the
+/// provider connection, drops the block-meta stream, and burns the replay anchor
+/// on attempts that can never make progress. Block metas are the liveness signal
+/// there: they arrive ~2.5/s on any live connection, so their absence still
+/// catches a dead stream while quiet pools no longer look like one.
+///
+/// With no block-meta subscription there is no such signal, and silence on a
+/// narrow filter proves nothing at all — so the guard stands down and the socket
+/// is left to HTTP/2 and TCP keepalive.
+fn idle_for(
+    role: SubscriptionRole,
+    blocks_meta: bool,
+    last_update: Instant,
+    last_frame: Instant,
+) -> Option<(Duration, &'static str)> {
+    match role {
+        SubscriptionRole::All => Some((last_update.elapsed(), "transaction update")),
+        SubscriptionRole::AmmOnly if blocks_meta => Some((last_frame.elapsed(), "stream frame")),
+        SubscriptionRole::AmmOnly => None,
+    }
+}
+
 fn role_for(source: CurveSource) -> SubscriptionRole {
     match source {
         CurveSource::Grpc => SubscriptionRole::All,
@@ -664,7 +700,11 @@ async fn run_once<V: IngestVenue>(
         venue.subscription_accounts(role).len()
     );
 
+    // Two clocks, because what counts as evidence of a fault depends on the role
+    // — see `idle_for`. `last_update` is transactions only; `last_frame` is any
+    // frame at all.
     let mut last_update = tokio::time::Instant::now();
+    let mut last_frame = last_update;
     let mut idle_check = tokio::time::interval(cfg.idle_check_interval);
     idle_check.tick().await; // consume the immediate first tick
 
@@ -673,6 +713,7 @@ async fn run_once<V: IngestVenue>(
             msg = stream.message() => {
                 match msg {
                     Ok(Some(update)) => {
+                        last_frame = tokio::time::Instant::now();
                         match update.update_oneof {
                         // Push feeds (cheap host callbacks; see `PushHooks`).
                         // Deliberately do NOT touch `last_update`: the idle
@@ -826,10 +867,13 @@ async fn run_once<V: IngestVenue>(
             }
 
             _ = idle_check.tick() => {
-                let idle = last_update.elapsed();
-                if idle >= cfg.idle_reconnect_timeout {
-                    warn!("LaserStream: no transaction update for {idle:?} — forcing reconnect");
-                    done!(DisconnectReason::IdleTimeout);
+                if let Some((idle, what)) =
+                    idle_for(role, push.wants_blocks_meta(), last_update, last_frame)
+                {
+                    if idle >= cfg.idle_reconnect_timeout {
+                        warn!(?role, "LaserStream: no {what} for {idle:?} — forcing reconnect");
+                        done!(DisconnectReason::IdleTimeout);
+                    }
                 }
             }
         }
@@ -839,6 +883,41 @@ async fn run_once<V: IngestVenue>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The firehose is judged by transactions: block metas still flowing is
+    /// exactly the case where a dead transaction stream must still be caught.
+    #[test]
+    fn the_firehose_is_judged_by_transactions() {
+        let now = Instant::now();
+        let stale = now - Duration::from_secs(30);
+        let (idle, what) = idle_for(SubscriptionRole::All, true, stale, now).unwrap();
+        assert!(idle >= Duration::from_secs(30));
+        assert_eq!(what, "transaction update");
+    }
+
+    /// A pool filter goes minutes without a trade, so transactions cannot judge
+    /// it — the block-meta stream can. Without this the guard force-reconnects a
+    /// healthy stream every `idle_reconnect_timeout` forever.
+    #[test]
+    fn a_quiet_pool_filter_is_judged_by_frames_not_transactions() {
+        let now = Instant::now();
+        let stale = now - Duration::from_secs(30);
+        let (idle, what) = idle_for(SubscriptionRole::AmmOnly, true, stale, now).unwrap();
+        assert!(idle < Duration::from_secs(1), "quiet pools must not read as idle");
+        assert_eq!(what, "stream frame");
+
+        // A genuinely dead stream still trips it: no frames of any kind.
+        let (idle, _) = idle_for(SubscriptionRole::AmmOnly, true, stale, stale).unwrap();
+        assert!(idle >= Duration::from_secs(30));
+    }
+
+    /// No block metas subscribed ⇒ no liveness signal on a narrow filter, so
+    /// silence proves nothing and the guard stands down rather than guessing.
+    #[test]
+    fn a_pool_filter_with_no_block_metas_has_no_idle_verdict() {
+        let stale = Instant::now() - Duration::from_secs(300);
+        assert!(idle_for(SubscriptionRole::AmmOnly, false, stale, stale).is_none());
+    }
 
     #[test]
     fn reason_labels_are_distinct() {

@@ -101,8 +101,26 @@ a_fresh_anchor_resumes_one_slot_past_the_last_one_seen, no_anchor_means_live}`.
 
 ### Two distinct idle paths
 
-- **Stream silent** (no tx updates): triggers at ≤ `IDLE_TIMEOUT` + up to 1 `CHECK_INTERVAL` = worst **~12s**
+- **Stream silent**: triggers at ≤ `IDLE_TIMEOUT` + up to 1 `CHECK_INTERVAL` = worst **~12s**
 - **Pipeline full** (downstream stall): triggers at exactly `PIPELINE_SEND_TIMEOUT` = **10s** — only fires on a relevant tx; a silent stream hits the idle path first
+
+### What counts as silence depends on the role (`idle_for`)
+
+The idle guard's premise is "this subscription is never legitimately quiet" — a
+property of the **role**, not of the transport.
+
+| Role | Judged by | Why |
+| --- | --- | --- |
+| `All` | last **transaction** | A firehose carrying the venue program id. A tx gap means the stream died while block metas kept arriving — the silent death the tx-only clock exists to catch. |
+| `AmmOnly` + block metas | last **frame of any kind** | Tracked pool PDAs only: 0-14 accounts that go minutes without a trade, and zero right after a boot. Block metas arrive ~2.5/s on any live connection, so their absence still catches a dead stream while quiet pools do not read as one. |
+| `AmmOnly`, no block metas | nothing — guard stands down | No liveness signal exists on a narrow filter; silence proves nothing. HTTP/2 + TCP keepalive police the socket. |
+
+Judging `AmmOnly` by transactions force-reconnects a healthy stream every
+`IDLE_TIMEOUT` forever. It churns the provider connection, drops the block-meta
+stream (which then shows up as a `feed_lag` stale-slot spike), and spends the
+replay anchor on attempts that cannot make progress — after `MAX_REPLAY_ATTEMPTS`
+the anchor is dropped, leaving the next real AMM gap with nothing to replay from.
+Raising the timeout does not fix it: with zero tracked pools no timeout is right.
 
 ---
 
