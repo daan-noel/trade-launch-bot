@@ -7,15 +7,20 @@ transport; it feeds pump.fun trades / token-creates / raw-txs into Postgres
 **Not a crate.** Ingest is the `forge/live/src/ingest/` **module** inside the
 `forge-live` bin (folded in from the former `ingest-host` crate — the CLAUDE.md /
 README crate table is stale on this point). It is a **host adapter** that bridges
-the two standalone read-stack crates onto forge's schema:
+the standalone read-stack onto forge's schema. Four crates on three axes:
 
-- `shared/ingest/core` (`ingest-core`) — venue-agnostic engine: gRPC transport +
-  reconnect, the `IngestVenue` seam, the generic `Ingest<V>` / `IngestHandle<V>`
-  session, the neutral `IngestEvent` contract, `IngestConfig`, slot-anchor,
-  raw-tx / rpc-backfill adapters. **No pump.fun coupling.**
-- `shared/ingest/pumpfun` (`ingest-pumpfun`, dep-aliased `ingest_laserstream`) —
-  the pump.fun `PumpFunVenue` (classify + decode + pool derivation) plus a
-  back-compat façade (`Ingest::builder()…`) so callers compile unchanged.
+- `shared/ingest/core` (`ingest-core`) — the **engine**: the `Feed` transport seam,
+  the one reconnect/route supervisor, the `IngestVenue` seam, the generic
+  `Ingest<V>` / `IngestHandle<V>` session, the neutral `IngestEvent` contract,
+  `IngestConfig`, slot-anchor, the single JSON→protobuf adapter, raw-tx /
+  rpc-backfill. **No wire, no venue, no env.**
+- `shared/ingest/laserstream` (`ingest-laserstream`) — one **wire**: Yellowstone
+  gRPC. Carries `tonic` so nothing that never streams has to.
+- `shared/ingest/nats` (`ingest-nats`) — one **wire**: the broadcast relay. Not
+  linked by forge (`nats` feature off).
+- `shared/ingest/pumpfun` (`ingest-pumpfun`) — the **venue**: pump.fun classify +
+  decode + pool derivation, plus `assembly.rs`, the only module that names a wire.
+  The `Ingest::builder()…` façade is unchanged.
 
 Ingest ships to the LIVE box only; it must never appear in `forge-lab`'s dep graph.
 
@@ -26,9 +31,9 @@ Helius LaserStream (Yellowstone gRPC)
         │  SubscribeUpdateTransaction (protobuf)
         ▼
 ┌──────────────────────────────  shared/ingest/core + /pumpfun  ──────────────────────────────┐
-│  transport::run<V>            (core/transport/mod.rs — one OS-independent tokio task)          │
-│    • connect + Subscribe (x-token auth), exponential-backoff reconnect, idle-reconnect guard  │
-│    • V::classify() pre-filter (log scan): Curve | Amm | ignore                                 │
+│  supervisor::run<V, F>        (core/supervisor.rs — one tokio task PER FEED)                   │
+│    • F::connect() + Subscription, exponential-backoff reconnect, idle-reconnect guard           │
+│    • V::classify() pre-filter (account-key scan): Curve | Amm | ignore                          │
 │    • forward (Arc<update>, relevance, received_at)                                             │
 │         └─ send_timeout(pipeline_send_timeout) ── Timeout ⇒ drop conn, reconnect (shed)        │
 │        ▼  update_channel_cap = 4096                                                            │
@@ -68,7 +73,7 @@ main.rs (always-on, feed-based — NO RPC poll):
 
 | File | Responsibility |
 | --- | --- |
-| `mod.rs` | Module root + re-exports (`spawn_ingest`, `IngestHandle` from `ingest_laserstream`, `IngestMetrics`). Documents the pumpfun/map/consumer/db_writer/watchdog split. |
+| `mod.rs` | Module root + re-exports (`spawn_ingest`, `IngestHandle` from `ingest_pumpfun`, `IngestMetrics`). Documents the pumpfun/map/consumer/db_writer/watchdog split. |
 | `consumer.rs` | `spawn_ingest` (builds the borrowed transport paused, wires consumer→writer channel, spawns DbWriter + watchdog) and `run_consumer` — the hot recv loop. **No DB I/O.** Owns only the per-tx "did this tx produce a semantic event?" flag that gates `RawTx` persistence. Forwards durable work with `tx.send(op).await` (blocking backpressure). |
 | `db_writer.rs` | `DbWriter` task: the sole DB-I/O owner. Drains the `DbWriteOp` channel (`CHANNEL_CAPACITY=16_384`), batches (`FLUSH_EVERY=256` / `FLUSH_INTERVAL=500ms`), maps via `map::*`, interns wallets (memoized `wallet_cache`), and bulk-inserts via `TokenRepo`/`MarketRepo`/`TradeRepo`/`RawTxRepo`. Stamps the heartbeat, bumps the events counter, fires `trades_notify` + SSE per flush. Bulk-insert failure falls back to per-row. |
 | `map.rs` | Pure `IngestEvent` → platform-core row mappers (no DB/network, unit-testable). `trade_to_row` / `token_created_to_row` / `raw_tx_to_row`. Takes amounts from EXACT raw-`u64` lamport fields (`sol_lamports`, `virtual_sol_lamports`) — no f64 round-trip; decodes base58 sig → BYTEA. `PUMP_TOKEN_DECIMALS = 6`. |
@@ -83,11 +88,14 @@ main.rs (always-on, feed-based — NO RPC poll):
 | --- | --- |
 | `pumpfun/src/lib.rs` | Back-compat façade. `Ingest`/`IngestBuilder` are thin newtypes over `ingest_core::Ingest<PumpFunVenue>` so `Ingest::builder().endpoint().api_key().protocol().config().build().start(live)` resolves unchanged; `.protocol(Protocol::pump_fun())` selects the venue, `.api_key()` becomes `Auth::XToken`. Re-exports `config/event/proto/…` at their original paths. |
 | `pumpfun/src/venue.rs` | `PumpFunVenue` — the `IngestVenue` impl. Owns one shared `PoolIndex` + `pools_changed` `Notify` that its `Decoder` and the transport both hold (auto-discovered pool ⇒ subscription account with no cross-task hand-off). `classify` = log scan for pump_fun vs pump_swap program id → `TxRelevance::{Curve,Amm}`; `decode` → `Decoder::decode_relevant_pb`; `derive_pool` = pool PDA; `track_amm` gates AMM attribution. |
-| `pumpfun/src/decode/*`, `protocol.rs`, `pool.rs`, `transport/mod.rs` | pump.fun protobuf decoder (`grpc.rs`, `trade.rs`, `create.rs`, `instructions.rs`), program-id protocol constants, pool PDA derivation. `transport/mod.rs` here is a re-export shim; the real transport lives in core. |
-| `core/src/venue.rs` | The `IngestVenue` trait (the seam) + `DecodeOutput` + `PoolIndex` type. Static dispatch (`Ingest<V>`, `transport::run<V>`) — no `Box<dyn>` on the hot path. Venue supplies: `filter_key`, `subscription_accounts`, `classify`, `decode`, `derive_pool`, `pool_index`, `pools_changed`. |
-| `core/src/session.rs` | Generic `Ingest<V>` / `IngestHandle<V>`. `start(live)` spawns the transport task + the decode task and returns `(mpsc::Receiver<IngestEvent>, IngestHandle<V>)`. Owns the two internal channels (update + event), the live-mode `watch`, gap-replay `watch`, and the decode-side `try_send`→retry→`DROPPED_EVENTS` backpressure. Handle: `set_live`, `is_live`, `track_pools`/`untrack_pools`, `set_gap_replay`. |
-| `core/src/transport/mod.rs` | `transport::run<V>` — the gRPC task. Connect (`x-token` interceptor, TLS), `Subscribe`, exponential-backoff reconnect w/ jitter, idle-reconnect guard, debounced resubscribe on `pools_changed`, optional gap-replay `from_slot`. Per update: `venue.classify()` then `send_timeout(pipeline_send_timeout)` to the decode task — a timeout forces a reconnect (sheds backpressure, avoids self-reinforcing billing storms on credit exhaustion). |
-| `core/src/{config,event,error,slot_anchor,raw_tx,backfill}.rs`, `generated/` | `IngestConfig` (all tunables, no env reads) + `Auth`/`Commitment`; the neutral `IngestEvent` enum; error types; slot→time estimation; `raw-tx` passthrough builder (feature-gated) + `rpc-backfill` (feature-gated); generated Yellowstone/geyser protobuf. |
+| `pumpfun/src/decode/*`, `protocol.rs`, `pool.rs` | pump.fun protobuf decoder (`protobuf.rs`, `trade.rs`, `create.rs`, `instructions.rs`), program-id protocol constants, pool PDA derivation. `protobuf.rs` is named for the format, not a wire: a relay frame converts to the same protobuf before it gets there. |
+| `pumpfun/src/assembly.rs` | `FeedKind`, `scope_for`, `spawn_feeds`, the widen-before-narrow curve hand-over. The ONE module that knows which wires exist. |
+| `core/src/venue.rs` | The `IngestVenue` trait (the venue seam) + `DecodeOutput` + `PoolIndex` type. Static dispatch (`Ingest<V>`, `supervisor::run<V, F>`) — no `Box<dyn>` on the hot path. Venue supplies: `filter_key`, `subscription_accounts(StreamScope)`, `classify`, `decode`, `derive_pool`, `pool_index`, `pools_changed`. |
+| `core/src/feed.rs` | The `Feed` / `FeedConn` traits (the transport seam) + `FeedCaps`, `StreamScope`, `Subscription`, `FeedUpdate`, `FeedError`. A new wire implements this and nothing else. |
+| `core/src/session.rs` | Generic `Ingest<V>` / `IngestHandle<V>` / `FeedLanes<V>`. `start(live, feeds)` spawns the decode lanes and returns `(mpsc::Receiver<IngestEvent>, IngestHandle<V>, FeedLanes<V>)` — it spawns **no** transport; the assembly root runs one supervisor per feed against those lanes. Owns the internal channels, the live-mode `watch`, gap-replay `watch`, the cross-feed dedupe ring (armed only when `feeds > 1`), and the decode-side `try_send`→retry→`DROPPED_EVENTS` backpressure. Handle: `set_live`, `is_live`, `track_pools`/`untrack_pools`, `set_gap_replay`. |
+| `core/src/supervisor.rs` | `supervisor::run<V, F>` — one task per feed, wire-neutral. Exponential-backoff reconnect w/ jitter, replay anchor, idle-reconnect guard, debounced resubscribe on `pools_changed`, optional gap-replay resume. Per update: dedupe → `venue.classify()` → `send_timeout(pipeline_send_timeout)` to a decode lane. A timeout forces a reconnect **only on a wire that can replay** (`FeedCaps::reconnect_on_backpressure`); one that cannot sheds and stays up, since a reconnect would lose the same frames and cost a resubscribe. |
+| `laserstream/src/{lib,subscribe,client}.rs` | The gRPC wire: `GrpcFeed`/`GrpcConn`, `GrpcConfig`, `Auth`, the `Subscription` → `SubscribeRequest` translation, and the generated tonic `geyser_client`. |
+| `core/src/{config,event,error,push,slot_anchor,convert,dedupe,raw_tx,backfill}.rs`, `generated/` | `IngestConfig` (**wire-neutral** tunables only, no env reads) + `Commitment`; the neutral `IngestEvent` enum; error types; `PushHooks`; slot→time estimation; the ONE JSON→protobuf adapter; the cross-feed dedupe ring; `raw-tx` passthrough builder (feature-gated) + `rpc-backfill` (feature-gated); generated Yellowstone/geyser protobuf **messages** (the gRPC client lives in `laserstream/`). |
 
 **`IngestEvent` variants** (core/event.rs): `TokenCreated`, `Trade`, `TokenMigrated`,
 `Liquidity`, `CreatorActivity`, `RawTx`. Forge's consumer projects only

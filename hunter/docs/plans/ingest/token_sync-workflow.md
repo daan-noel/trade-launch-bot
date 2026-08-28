@@ -17,8 +17,8 @@ See also: [laserstream-workflow.md](./laserstream-workflow.md).
 | `trading_core/src/services/laserstream_replay.rs` | gRPC replay path for free incremental syncs |
 | `trading_core/src/storage/repositories/token_info_repo.rs` | Sync watermarks, `upsert_metrics`, migration status |
 | `trading_core/src/storage/repositories/trade_repo.rs` | Trade inserts, `saved_signatures()`, `ON CONFLICT DO UPDATE` |
-| `ingest-laserstream/src/decoder/mod.rs` | **Shared** `HeliusDecoder` |
-| `ingest-laserstream/src/db_writer.rs` | **Shared** `TokenMetricsWrite` struct |
+| `shared/ingest/pumpfun/src/decode/mod.rs` | **Shared** `Decoder` (alias `HeliusDecoder`) |
+| `live/src/ingest/db_writer.rs` | **Shared** `TokenMetricsWrite` struct |
 
 ## Two modes
 

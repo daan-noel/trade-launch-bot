@@ -30,30 +30,35 @@ configuration, which is also what keeps an open position's feed alive across a s
                     │  live: PUT /api/system/curve-source     │
                     └────────────────────┬───────────────────┘
                                          │ watch<AppSettings>
-                                         │   -> IngestHandle::set_curve_source
+                                         │   -> IngestHandle::set_curve_feed
                                          ▼
-                              watch<CurveSource>          no restart, no rebuild
+                  assembly.rs   watch<FeedKind>       no restart, no rebuild
+                    scope_for(feed, curve, caps.server_filter)
                     ┌────────────────────┴───────────────────┐
-               role │ CURVE                             role │ AMM
+        StreamScope │ CURVE                       StreamScope │ POOLS
                     ▼                                        ▼
   ┌──────────────────────────────────┐   ┌──────────────────────────────────┐
-  │  ingest-core::nats               │   │  ingest-core::transport (gRPC)   │
+  │  ingest-nats                     │   │  ingest-laserstream (gRPC)       │
   │  SUB helius.raw.bondingcurve     │   │  account_include =               │
-  │                                  │   │    SubscriptionRole::All         │
-  │  reader task: socket -> queue    │   │      pump program + pool PDAs     │
-  │    shed on full (never blocks)   │   │    SubscriptionRole::AmmOnly     │
-  │  parser task: JSON -> protobuf   │   │      pool PDAs only               │
+  │                                  │   │    scope.program                 │
+  │  reader task: socket -> queue    │   │      -> pump program id          │
+  │    shed on full (never blocks)   │   │    scope.pools                   │
+  │  frame.rs: JSON -> protobuf      │   │      -> tracked pool PDAs        │
   │                                  │   │                                  │
-  │  credits FREE · replay NO         │   │  credits PAID · replay from_slot │
-  │  filter: publisher's              │   │  filter: ours                    │
+  │  CAPS replay:false               │   │  CAPS replay:true                │
+  │       server_filter:false        │   │       server_filter:true         │
+  │       in_place_resubscribe:false │   │       in_place_resubscribe:true  │
+  │  credits FREE                    │   │  credits PAID                    │
   └────────────────┬─────────────────┘   └────────────────┬─────────────────┘
                    │ ingest-core::convert                 │ already protobuf
                    │ json_tx_to_protobuf()                │
                    └───────────────┬──────────────────────┘
                                    ▼
-                    SubscribeUpdateTransaction        one currency, one shape
+                    FeedUpdate::Transaction           one currency, one shape
                                    ▼
-                     dedupe::SignatureDedupe          absorbs switch overlap
+                 ingest-core::supervisor::run<V, F>   ONE loop, per feed
+                                   ▼
+                     dedupe::SignatureDedupe          absorbs the hand-over
                                    ▼                  and migration double-match
                         venue.classify()
                           ┌────────┴────────┐
@@ -70,22 +75,32 @@ configuration, which is also what keeps an open position's feed alive across a s
 
 ## Switching
 
-`IngestHandle::set_curve_source` re-points the feed with no restart:
+`IngestHandle::set_curve_feed` re-points the curve with no restart. It is a
+**hand-over, not a cut-over** — widen first, narrow last:
 
-1. The NATS task is spawned whenever `NATS_URL` is set, *regardless of the selection*.
-   When it is not the selected source it idles fully disconnected, so the subject costs
-   no bandwidth and reselecting it is a connect, not a process restart.
-2. On a switch the newly selected feed connects while the old one drains. The dedupe
-   ring drops the overlap, so nothing is double-booked and nothing is lost.
-3. The gRPC transport swaps `SubscriptionRole` and **resubscribes on the open stream**.
-   The connection is never dropped, so the AMM side sees no gap.
-4. Selecting `nats` with no `NATS_URL` configured is persisted but not applied: the feed
-   stays on gRPC and logs a warning. A curve feed pointed at a transport that cannot run
-   is silently dead ingest, which is the worst failure this path has.
+1. The relay feed is spawned whenever `NATS_URL` is set, *regardless of the selection*.
+   When its scope is empty it idles fully disconnected, so the subject costs no
+   bandwidth and reselecting it is a connect, not a process restart.
+2. `assembly.rs` gives the feed **gaining** the curve its `program` scope immediately,
+   and starts a `HANDOVER` timer.
+3. Both wires carry the curve for that window. The dedupe ring drops the copies, so
+   nothing is double-booked.
+4. Only then does the feed **losing** the curve narrow. Narrowing first cost 7-10 slots
+   of trades in each direction, measured on mainnet: a relay connect + subscribe runs
+   ~2.2 s, and the old owner had already dropped the program id.
+5. gRPC applies its new scope by **resubscribing on the open stream** (`CAPS
+   .in_place_resubscribe`). The connection is never dropped, so the AMM side sees no gap
+   at any point.
+6. Selecting `nats` with no `NATS_URL` configured is persisted but not applied: the curve
+   stays on gRPC and logs a warning. A curve pointed at a wire that cannot run is
+   silently dead ingest, which is the worst failure this path has.
+
+`HANDOVER` (5 s) must stay inside `IngestConfig::dedupe_window` (30 s) — the ring is what
+makes the overlap free. A unit test pins the two together.
 
 ## Format conversion
 
-`ingest-core::convert` is the single adapter for every JSON transaction source — the RPC
+`ingest_core::convert` is the single adapter for every JSON transaction source — the RPC
 backfill, this relay, and any future WebSocket transport. It auto-detects the encoding
 from the JSON itself.
 
@@ -252,7 +267,7 @@ publishes; the dedupe ring drops the copies, but only after they cross the netwo
 | `ingest.curve_source` | `app_settings` | The live selection; overrides the env default once written |
 
 `PUT /api/system/curve-source {"curve_source":"nats"}` persists the key and publishes the
-settings snapshot, which the ingest adapter turns into `set_curve_source`.
+settings snapshot, which the ingest adapter turns into `set_curve_feed`.
 
 ## Verifying a relay
 

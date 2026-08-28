@@ -16,11 +16,10 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use ingest_core::config::IngestConfig;
 use ingest_core::convert;
-use ingest_core::nats::NatsConn;
 use ingest_core::venue::{DecodeOutput, IngestVenue};
-use ingest_laserstream::{protocol::Protocol, venue::PumpFunVenue};
+use ingest_pumpfun::nats::NatsConn;
+use ingest_pumpfun::{config::IngestConfig, protocol::Protocol, venue::PumpFunVenue};
 
 #[tokio::main]
 async fn main() {

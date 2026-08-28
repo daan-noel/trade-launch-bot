@@ -23,7 +23,7 @@ One product folder inside the **`Bot/` monorepo** (single Cargo workspace at
 Bot/                          monorepo root: [workspace] + Cargo.lock
 ├── shared/                   standalone drop-ins used by BOTH products
 │   ├── executor/{core,pumpfun}   write stack (dep key pump-trader)
-│   ├── ingest/{core,pumpfun}     read stack (dep key ingest-laserstream)
+│   ├── ingest/{core,laserstream,nats,pumpfun}   read stack: engine, wires, venue
 │   └── http-auth                 fail-closed bearer gate
 ├── hunter/                   sibling product
 └── forge/
@@ -47,7 +47,7 @@ wired yet).
 | Crate (dep key) | Role | Used by |
 | --- | --- | --- |
 | `pump-trader` (`executor-pumpfun`) | execution: build/sign/submit/confirm | `forge-launcher` |
-| `ingest-laserstream` (`ingest-pumpfun`) | Helius gRPC transport + decode | `forge-live` ingest host |
+| `ingest-pumpfun` (+ `ingest-core`, `ingest-laserstream`) | pump.fun decode over the wire-neutral engine | `forge-live` ingest host |
 | `http-auth` | bearer gate on mutating routes | `forge-live` / `forge-lab` |
 
 `trading_core` is **not** reused — it encodes the SOL/pump domain being redesigned.
@@ -59,14 +59,14 @@ Canonical pump.fun IDLs: `shared/executor/pumpfun/idl/`.
 
 | Piece | `forge-live` | `forge-lab` |
 | --- | --- | --- |
-| ingest host + `ingest-laserstream` | ✓ | ✗ |
+| ingest host + the `ingest-*` stack | ✓ | ✗ |
 | launcher + `pump-trader` | ✓ | ✗ |
 | lake analytics (DuckDB/arrow/parquet) | ✗ | scaffold only (no those deps yet) |
 | `forge-core` / `http-auth` | ✓ | ✓ |
 
 ```sh
 cargo tree -p forge-live   # must show NO duckdb / arrow / parquet
-cargo tree -p forge-lab    # must show NO pump-trader / ingest-laserstream / tonic
+cargo tree -p forge-lab    # must show NO pump-trader / ingest-* / tonic
 ```
 
 ## Dev loop

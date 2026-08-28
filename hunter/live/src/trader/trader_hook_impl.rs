@@ -1,4 +1,4 @@
-//! [`ingest_laserstream::TraderHook`] bridge for [`PumpFunTrader`].
+//! [`ingest_pumpfun::TraderHook`] bridge for [`PumpFunTrader`].
 //!
 //! Rust's orphan rule forbids implementing an external trait (`TraderHook` from
 //! `ingest-laserstream`) for an external type (`PumpFunTrader` from `pump-trader`)

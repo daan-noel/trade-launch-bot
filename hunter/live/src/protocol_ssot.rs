@@ -6,7 +6,7 @@
 
 #[cfg(test)]
 mod tests {
-    use ingest_laserstream::Protocol;
+    use ingest_pumpfun::Protocol;
     use pump_trader::protocol as exec;
     use solana_sdk::pubkey::Pubkey;
 

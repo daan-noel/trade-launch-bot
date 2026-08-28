@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use dashmap::DashSet;
-use ingest_laserstream::IngestHandle;
+use ingest_pumpfun::IngestHandle;
 use tokio::sync::watch;
 use tracing::info;
 

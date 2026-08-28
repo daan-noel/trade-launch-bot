@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use actix_web::{web, HttpResponse, Responder};
 use futures_util::stream;
-use ingest_laserstream::event::{TokenCreated as IlTokenCreated, Trade as IlTrade};
+use ingest_pumpfun::event::{TokenCreated as IlTokenCreated, Trade as IlTrade};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::broadcast;

@@ -1,0 +1,24 @@
+[package]
+name = "ingest-nats"
+version = "0.1.0"
+edition = "2021"
+description = "The NATS relay ingest feed: a broadcast bonding-curve wire that costs no provider credits. Hand-rolled NATS core client, shed-on-full reader, and the envelope unwrap - no filter, no replay. Implements `ingest_core::feed::Feed`."
+
+[lib]
+name = "ingest_nats"
+path = "src/lib.rs"
+
+[dependencies]
+# The engine: the Feed seam it implements, and `convert` - the ONE
+# JSON-transaction -> protobuf adapter, shared with the RPC backfill so a frame
+# decodes identically no matter which source delivered it.
+ingest-core = { path = "../core", features = ["json-tx"] }
+
+# The wire. The NATS client is implemented directly on tokio TCP (see
+# `client.rs`): NATS core is a small line protocol, and every off-the-shelf crate
+# pulls an ed25519/curve25519 stack for nkey auth that cannot co-exist with the
+# curve25519-dalek 3.x that solana 1.17 pins across this workspace.
+tokio = { version = "1", features = ["rt", "sync", "time", "net", "io-util"] }
+serde_json = "1"
+tracing = "0.1"
+thiserror = "1"

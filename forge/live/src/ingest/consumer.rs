@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use ingest_laserstream::{Ingest, IngestConfig, IngestEvent, IngestHandle, Protocol};
+use ingest_pumpfun::{Ingest, IngestConfig, IngestEvent, IngestHandle, Protocol};
 use sqlx::PgPool;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::Notify;

@@ -39,7 +39,7 @@ pub enum DbWriteOp {
     Migration { mint: String },
 }
 
-/// Pre-built raw-tx record (from [`ingest_laserstream::event::RawTx`]). Carries
+/// Pre-built raw-tx record (from [`ingest_pumpfun::event::RawTx`]). Carries
 /// the verbatim protobuf wire bytes — the consumer does no decode/re-encode.
 #[derive(Debug)]
 pub struct RawBlobJob {

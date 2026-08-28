@@ -1086,9 +1086,11 @@ async fn run() -> anyhow::Result<()> {
                 // (plus the shared `trading_core` lib) or the process runs silently and
                 // looks idle.
                 //
-                // `ingest_core` + `ingest_laserstream` are the **transport** — the sole
-                // live feed. Omitting them made every connect / stream error / idle
-                // reconnect / pipeline-backpressure line invisible in production, so
+                // The whole ingest read-stack must be named: `ingest_core` is the
+                // supervisor that logs every connect / stream error / idle reconnect
+                // / backpressure verdict, and `ingest_laserstream` / `ingest_nats` are
+                // the wires under it. **A new feed crate joins this list**, or that
+                // wire runs silently. Omitting them made those lines invisible, so
                 // seven watchdog process kills (2026-08-05) each landed with zero
                 // evidence of why the feed had stopped: the log showed a healthy
                 // process, then a kill. Each of those lines is per-connection, never
@@ -1098,7 +1100,8 @@ async fn run() -> anyhow::Result<()> {
                 // underneath it were not.
                 .unwrap_or_else(|_| {
                     "hunter_live=info,live=info,trading_core=info,\
-                     ingest_core=info,ingest_laserstream=info,sqlx=error"
+                     ingest_core=info,ingest_pumpfun=info,\
+                     ingest_laserstream=info,ingest_nats=info,sqlx=error"
                         .into()
                 }),
         )
@@ -1319,7 +1322,7 @@ async fn run() -> anyhow::Result<()> {
         let mut watch_accounts: Vec<String> =
             nonce_accounts.iter().map(|pk| pk.to_string()).collect();
         watch_accounts.push(watched_wallet.clone());
-        ingest_laserstream::PushHooks {
+        ingest_pumpfun::PushHooks {
             watch_accounts,
             on_block_meta: Some(Box::new(move |slot, blockhash, block_time| {
                 if let Ok(hash) = blockhash.parse::<solana_sdk::hash::Hash>() {
@@ -1540,7 +1543,7 @@ async fn run() -> anyhow::Result<()> {
                         use chrono::TimeZone;
                         if let Some(time) = chrono::Utc.timestamp_opt(unix_ts, 0).single() {
                             let anchor =
-                                ingest_laserstream::slot_anchor::SlotAnchor::new(slot, time);
+                                ingest_pumpfun::slot_anchor::SlotAnchor::new(slot, time);
                             ds.set_slot_anchor(anchor).await;
                             info!(slot, tip, "SlotAnchor pinned for replay block_time estimation");
                             return;

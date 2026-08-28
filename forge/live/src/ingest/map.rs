@@ -8,7 +8,7 @@
 //! venue-neutral `virtual_*` pair (the decoder copies AMM pool reserves into it),
 //! matching the single `reserve_quote/base`.
 
-use ingest_laserstream::event::{
+use ingest_pumpfun::event::{
     RawTx as IlRawTx, Side, TokenCreated as IlTokenCreated, Trade as IlTrade, Venue,
 };
 use serde_json::json;

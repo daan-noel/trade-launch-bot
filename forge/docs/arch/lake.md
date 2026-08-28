@@ -31,7 +31,7 @@ implemented, so today every `forge-lab` HTTP read goes straight to the local PG
 mirror via `platform-core` repos.
 
 The load-bearing invariant is the **dep partition**: `forge-lab` must not link
-`pump-trader`/`ingest-laserstream`/`tonic`/solana; the lake stack
+`pump-trader`/`ingest-*`/`tonic`/solana; the lake stack
 (`duckdb`/`arrow`/`parquet`/`rayon`) must live only here and never reach the
 2vCPU/4GB EC2 box (where `forge-live` runs and must not pull `duckdb`/`arrow`/
 `parquet`).
@@ -62,7 +62,7 @@ launchpad/quote asset is a data row, never a new column.
   `rayon`) is confined to `forge-lab`. `forge-live` must never pull it (verify
   `cargo tree -p forge-live` shows no `duckdb`).
 - **Dep partition both ways.** `forge-lab` must not link
-  `pump-trader`/`ingest-laserstream`/`tonic`/solana (verify `cargo tree -p
+  `pump-trader`/`ingest-*`/`tonic`/solana (verify `cargo tree -p
   forge-lab`). Today `forge-lab` deps are only `platform-core`, tokio, actix,
   sqlx, http-auth, tracing.
 - **Column SSOT.** All Parquet column names come from `lake::schema::trades`; the

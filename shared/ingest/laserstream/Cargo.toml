@@ -1,0 +1,25 @@
+[package]
+name = "ingest-laserstream"
+version = "0.1.0"
+edition = "2021"
+description = "The Yellowstone/LaserStream gRPC ingest feed: connect, subscribe, resubscribe in place, replay from a slot. One wire and nothing else - the reconnect policy, decode lanes and venue knowledge all live elsewhere. Implements `ingest_core::feed::Feed`."
+
+[lib]
+name = "ingest_laserstream"
+path = "src/lib.rs"
+
+[dependencies]
+# The engine: the Feed seam it implements, the neutral Subscription/FeedUpdate
+# currency, and the protobuf MESSAGE types (the generated gRPC *client* lives
+# here, in src/client.rs).
+ingest-core = { path = "../core" }
+
+# The wire itself. This is the whole reason the crate exists: tonic + its TLS
+# stack stay out of every consumer that does not stream.
+tonic = { version = "0.10", features = ["tls", "tls-webpki-roots"] }
+prost = "0.12"
+tokio = { version = "1", features = ["rt", "sync"] }
+tokio-stream = "0.1"
+
+# Account pubkeys arrive as raw bytes on the push-feed updates.
+bs58 = "0.5"

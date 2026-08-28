@@ -31,16 +31,19 @@ The completed/out-of-scope ledger and the audit's own status narrative are in
   still shows a two-field struct), and the constants `PIPELINE_SEND_TIMEOUT` /
   `RECONNECT_INTERVAL`, which have no definition anywhere
   (`reconnect-restart-flow.md` tabulates both with values). Verify each against
-  `live/src/ingest/watchdog.rs` + `shared/ingest/core/src/transport/mod.rs` before trusting
+  `live/src/ingest/watchdog.rs` + `shared/ingest/core/src/supervisor.rs` before trusting
   a number in those three docs.
-- [ ] **Façade `use`-name rename (dedicated cleanup commit)** — `pump_trader`→`executor_pumpfun`
-  (38 files) and `ingest_laserstream`→`ingest_pumpfun` (21 files). Crates/packages already moved to
-  `shared/executor/pumpfun` + `shared/ingest/pumpfun`; only the cosmetic `use`-name remains. Rename
-  the lib targets (`shared/executor/pumpfun/src/lib.rs`, `shared/ingest/pumpfun/src/lib.rs`) + every
-  call site, update the dep-key mapping notes in `hunter/CLAUDE.md` and `forge/CLAUDE.md`, in one
-  isolated commit (no logic change). Until then `pump-trader` / `ingest-laserstream` are the
-  **current** Cargo dep keys, not stale paths — do not "fix" them as such (the "false premise"
-  entry in
+- [x] **Ingest façade `use`-name freed** — lib target and dep key are both
+  `ingest-pumpfun` / `ingest_pumpfun`, and `ingest-laserstream` now names the gRPC
+  wire crate it always claimed to. Landed with the read-stack split; see
+  [../hunter/docs/arch/ingest.md](../hunter/docs/arch/ingest.md).
+- [ ] **Executor façade `use`-name rename (dedicated cleanup commit)** —
+  `pump_trader`→`executor_pumpfun` (38 files). The crate already moved to
+  `shared/executor/pumpfun`; only the cosmetic `use`-name remains. Rename the lib target
+  (`shared/executor/pumpfun/src/lib.rs`) + every call site and update the dep-key mapping
+  notes in `hunter/CLAUDE.md` and `forge/CLAUDE.md`, in one isolated commit (no logic
+  change). Until then `pump-trader` is the **current** Cargo dep key, not a stale path —
+  do not "fix" it as such (the "false premise" entry in
   [../hunter/docs/roadmap/venue-quote-portability.md](../hunter/docs/roadmap/venue-quote-portability.md)).
 
 ---

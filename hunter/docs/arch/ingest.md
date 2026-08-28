@@ -1,28 +1,54 @@
-# Ingest — LaserStream + the NATS relay
+# Ingest — the read-stack: engine, wires, venue
 
-File-level map of `ingest-laserstream/` (standalone crate) and `live/src/ingest/` (host adapter).
+File-level map of `shared/ingest/` (four crates) and `live/src/ingest/` (host adapter).
 
-**Two transports, two roles.** Helius LaserStream (Yellowstone gRPC) always carries AMM
-pool traffic, because its filter is keyed on *this bot's* tracked pool PDAs. Bonding-curve
-traffic rides whichever source `ingest.curve_source` selects — LaserStream or a
-third-party NATS relay — switchable at runtime with no restart. Both converge on
-`SubscribeUpdateTransaction` before anything decodes, so everything below the transport
-is source-agnostic.
+**Four crates on three axes.** One folder per concern, so which part is which is
+readable off the tree:
+
+| Crate | Axis | Owns |
+| --- | --- | --- |
+| `ingest-core` | the **engine** | the `Feed` seam, the one reconnect/route supervisor, the `IngestVenue` seam, the session + decode lanes, `IngestEvent`, the single JSON→protobuf adapter, proto **messages** |
+| `ingest-laserstream` | a **wire** | Yellowstone gRPC: connect, subscribe, resubscribe in place, replay from a slot |
+| `ingest-nats` | a **wire** | the broadcast relay: NATS core client, shed-on-full reader, envelope unwrap |
+| `ingest-pumpfun` | the **venue** | pump.fun classify + decode + pool PDAs, **and** `assembly.rs` — the only module that knows which wires exist |
+
+`ingest-core` carries no `tonic` and no wire; each feed crate carries exactly one and
+knows no venue; the venue crate knows every wire but no policy. **Adding a transport is
+a fifth crate implementing `Feed` plus one arm in `assembly.rs`** — nothing in the
+engine or the venue moves.
+
+**Scope, not mode.** Each feed runs its own supervisor against its own `StreamScope`
+(`program` = bonding curve, `pools` = tracked AMM PDAs). AMM pools always ride gRPC,
+because you cannot subscribe to one pool PDA on a broadcast subject. The curve rides
+whichever feed `ingest.curve_source` selects, switchable at runtime with no restart.
+Both wires converge on `SubscribeUpdateTransaction` before anything decodes, so
+everything below the feed is source-agnostic.
 
 Logic explainers: `@plans/ingest/laserstream-workflow.md`, `@plans/ingest/nats-relay-transport.md`, `@plans/ingest/token_sync-workflow.md`, `@plans/ingest/backpressure-watchdog.md`, `@plans/ingest/reconnect-restart-flow.md`.
 
 ## Architecture
 
-`ingest-laserstream` is a **standalone drop-in crate** — no workspace deps. It emits decoded `IngestEvent`s out a bounded mpsc channel; the host (`live`) owns all sinks.
+The read-stack has **no workspace deps** — it emits decoded `IngestEvent`s out a bounded
+mpsc channel and the host (`live`) owns all sinks.
 
 ```text
-Ingest::builder().build()?.start(live)
+ingest-pumpfun: Ingest::builder()...build()?.start(live)
   -> (Receiver<IngestEvent>, IngestHandle)
 
-Internal crate topology:
-  nats::run()       (relay, role CURVE)     -- convert::json_tx_to_protobuf -->  transport::run()  (gRPC, role ALL|AmmOnly) ---------------------------------> dedupe
-                                                                                  |
-                                                                              classify
+  assembly.rs                    picks the wires, owns watch<FeedKind>, hands each
+                                 feed a watch<StreamScope>
+        |                                   |
+        v                                   v
+  ingest-laserstream               ingest-nats
+  GrpcFeed  (scope ALL | POOLS)    NatsFeed  (scope CURVE | NONE)
+  replay - server filter -         no replay - no filter -
+  in-place resubscribe             frame.rs -> ingest_core::convert -> protobuf
+        |                                   |
+        +-------------> FeedUpdate <--------+
+                            |
+  ingest-core: supervisor::run<V, F>  (ONE loop, per feed)
+      reconnect ramp - ReplayAnchor - idle guard - dedupe - classify - lane pick
+                            |
     --create lane-->  decode task (Create)
     --normal lane-->  decode task (Curve/Amm)
     --IngestEvent-->  host event channel (both lanes merge)
@@ -33,6 +59,25 @@ Host adapter (live/src/ingest/):
   db_writer.rs  (batch persistence) --> Postgres --> TradeSignals.notify
   watchdog.rs  (OS thread, DbHeartbeat)
 ```
+
+**`FeedCaps` is what keeps the supervisor wire-blind.** Three flags — `replay`,
+`server_filter`, `in_place_resubscribe` — and every decision that differs per wire reads
+one of them instead of naming a transport:
+
+| Decision | Reads |
+| --- | --- |
+| Send a `from_slot`, keep a `ReplayAnchor` | `replay` |
+| Stalled pipeline: reconnect, or shed and stay up | `replay` (a reconnect only helps if it can re-request what the stall cost) |
+| An empty account set means "idle", not "watch the chain" | `server_filter` |
+| A pool-set change: resubscribe, or reconnect | `in_place_resubscribe` |
+| What silence is judged by (`idle_basis`) | `server_filter` + the scope |
+
+**Switching the curve is a hand-over, not a cut-over.** `assembly.rs` widens the feed
+*gaining* the curve first, holds both for `HANDOVER` (5 s), then narrows the one losing
+it. Cutting over on the spot cost 7-10 slots of trades in each direction, measured on
+mainnet: a relay connect + subscribe runs ~2.2 s, and the old owner had already dropped
+the program id. The window must stay inside `IngestConfig::dedupe_window` (30 s) — the
+ring is what makes the overlap free — which a unit test pins.
 
 Channels: create update cap `max(64, update_cap/8)` · normal update cap 4096 ·
 `event_rx` 4096 · `db_tx` 16384 · `create_tx` 256 · `strategy_tx` 512 · `sse_tx` broadcast.
@@ -79,11 +124,22 @@ See `@plans/ingest/backpressure-watchdog.md`.
 
 **It only polices the steady state (`BootGate`).** The watchdog is armed by `boot_gate.mark_ready()`, latched by the strategy decision loop immediately before it starts consuming; while unset the heartbeat is stamped each check. Startup work competes with `DbWriter` on 2 vCPU, so a slow boot otherwise reads as a wedged pipeline — and killing a *booting* process turns a slow boot into an unbreakable crash loop rather than a recovery (see `@arch/strategies.md` "Boot recovery is bounded at both ends"). A boot that genuinely hangs surfaces as a stuck process — check for the absence of `strategy engine loop running`.
 
-## `ingest-laserstream/src/` — crate modules
+## `shared/ingest/*/src/` — crate modules
 
 | File | Responsibility |
 | --- | --- |
-| `lib.rs` | `Ingest` builder + `IngestHandle`; spawns transport + decode tasks; `start(live)` → `(Receiver<IngestEvent>, IngestHandle)` |
+| **pumpfun** `lib.rs` | `Ingest` builder + `IngestHandle` façade; `start(live)` → `(Receiver<IngestEvent>, IngestHandle)` |
+| **pumpfun** `assembly.rs` | `FeedKind`, `scope_for` (the whole selection rule), `spawn_feeds`, the widen-before-narrow hand-over. The ONE module that names a wire |
+| **core** `feed.rs` | The seam: `Feed`, `FeedConn`, `FeedCaps`, `StreamScope`, `Subscription`, `FeedUpdate`, `FeedError` |
+| **core** `supervisor.rs` | `run<V, F>` — the one reconnect/route loop: live gate, scope gate, `resolve_from_slot`, `idle_basis`, dedupe → classify → lane pick; `FeedPolicy` |
+| **core** `session.rs` | `Ingest<V>`, `IngestHandle<V>`, `FeedLanes<V>`, the two decode lanes |
+| **core** `push.rs` | `PushHooks` — block-meta + watched-account callbacks |
+| **laserstream** `lib.rs` | `GrpcFeed`/`GrpcConn`, `GrpcConfig`, `Auth`, `connect`, `CAPS`. TLS auth; `ResourceExhausted` maps to `FeedError::Exhausted`, the one reason that forbids a replay |
+| **laserstream** `subscribe.rs` | `Subscription` → `SubscribeRequest`. An empty account set omits the filter entirely — Yellowstone reads an empty `account_include` as *every* transaction on chain |
+| **laserstream** `client.rs` | The generated tonic `geyser_client`, split from core's messages-only `geyser.rs` |
+| **nats** `lib.rs` | `NatsFeed`/`RelayConn`, `NatsConfig`, `CAPS`, the shed-on-full reader, wire stats |
+| **nats** `frame.rs` | One relay frame → one `FeedUpdate`: envelope unwrap, failure screen, delegate to core's converter |
+| **nats** `client.rs` | Hand-rolled NATS core client (connect / SUB / MSG / PING) on tokio TCP. No crate dependency: every NATS crate hard-depends on `nkeys`, whose dalek 4.x `zeroize` bound conflicts with the curve25519-dalek 3.2.1 solana 1.17.27 pins |
 | `event.rs` | Crate-owned output types: `IngestEvent`, `Trade`, `TokenCreated`, `TokenMigrated`, `LiquidityEvent`, `CreatorActivityEvent`, `BuyInstructionArgs`, `Side`, `Venue`, `Reserves`; `RawTx` under `raw-json` feature. Also `fee_lamports_opt` — the ONE reader of the `meta.fee` sentinel (see below) |
 
 **`Trade.fee_lamports`** — the transaction's on-chain network fee (base signature fee
@@ -109,22 +165,20 @@ only place it appears on the wire and `raw_txs` drops after 3 days, so a uri not
 live is gone; the host persists it into `tokens.meta` — see
 [@plans/database/token-storage.md](../plans/database/token-storage.md).
 | `protocol.rs` | `Protocol` descriptor: pre-decoded program IDs (`ProgramId` w/ bytes + base58) + discriminators decoded once at build time |
-| `config.rs` | `IngestConfig` (all tunables, no env reads), `Commitment` enum |
-| `error.rs` | `IngestError`, `Result<T>` alias |
+| `config.rs` (core) | `IngestConfig` — **wire-neutral tunables only**, no env reads; `Commitment`. A dial timeout, an HTTP/2 keepalive or a subject name belongs to its own feed crate's config, so a new transport cannot grow this struct |
+| `error.rs` (core) | `IngestError`, `Result<T>` alias. Carries no provider error type — a wire reports `FeedError` instead |
 | `pool.rs` | PDA derivation (`derive_pool`), `register_pool`, `pool_for_mint`; `PoolIndex = Arc<DashMap<String, String>>` |
-| `transport/mod.rs` | gRPC producer, scoped by `SubscriptionRole` (`All` = pump program + pool PDAs; `AmmOnly` = pool PDAs only, when the relay carries the curve). An empty account set idles instead of subscribing — an empty `account_include` matches every transaction on chain. A source switch resubscribes **on the open stream**, so AMM sees no gap. TLS auth, reconnect w/ backoff, gap replay from a retained `ReplayAnchor` (`resolve_from_slot` is the ONE decider — the anchor OUTLIVES a no-progress attempt, bounded by `MAX_REPLAY_ATTEMPTS`; resume is `slot + 1` because nothing dedups by signature before the strategy fold), idle-reconnect timer, backpressure guard; `connect`, `build_subscribe_request`, `TransportConfig`. Rules: `@plans/ingest/reconnect-restart-flow.md` |
-| `nats/mod.rs` (ingest-core) | Relay producer for the CURVE role: subscribe, shed-on-full reader, JSON parse, failure screen, dedupe, classify. Idles disconnected unless selected — **`nats` feature**. Rules: `@plans/ingest/nats-relay-transport.md` |
-| `nats/client.rs` (ingest-core) | Hand-rolled NATS core client (connect / SUB / MSG / PING) on tokio TCP. No crate dependency: every NATS crate hard-depends on `nkeys`, whose dalek 4.x `zeroize` bound conflicts with the curve25519-dalek 3.2.1 solana 1.17.27 pins |
+| `venue.rs` | `PumpFunVenue`: `subscription_accounts(StreamScope)`, classify, decode, `derive_pool` |
 | `convert.rs` (ingest-core) | `json_tx_to_protobuf` — the ONE JSON→protobuf adapter, shared by the RPC backfill and every JSON live feed. Auto-detects `base64` vs `jsonParsed`; splits jsonParsed's inlined ALT keys back into `account_keys` + `loaded_*` so both sources produce identically-shaped updates — **`json-tx` feature** |
-| `dedupe.rs` (ingest-core) | `SignatureDedupe` — lock-free fixed ring over signature prefixes. Absorbs the switch overlap and the migration tx that matches both transports. Built only when a relay is configured |
+| `dedupe.rs` (ingest-core) | `SignatureDedupe` — lock-free fixed ring over signature prefixes. Absorbs the hand-over overlap and the migration tx that matches both feeds. Armed only when more than one feed runs (`Ingest::start(live, feeds)`) |
 | `decode/mod.rs` | `Decoder` (+ `HeliusDecoder` back-compat alias), `TxRelevance`, `DecodeOutput` |
-| `decode/grpc.rs` | `decode_protobuf` (self-classify), `decode_relevant_pb` (hot path), `decode_amm_protobuf` (backfill); `LazyKeys`. **Curve TradeEvents: read "Program data:" logs first, but the validator truncates logs past a byte limit, so a multi-buy bundle can lose trailing legs — when logs are empty OR carry "Log truncated", re-decode from the complete inner-instruction self-CPI events and take the larger set. AMM path is still log-only (latent same risk).** |
+| `decode/protobuf.rs` | `decode_protobuf` (self-classify), `decode_relevant_pb` (hot path), `decode_amm_protobuf` (backfill); `LazyKeys`. **Curve TradeEvents: read "Program data:" logs first, but the validator truncates logs past a byte limit, so a multi-buy bundle can lose trailing legs — when logs are empty OR carry "Log truncated", re-decode from the complete inner-instruction self-CPI events and take the larger set. AMM path is still log-only (latent same risk).** |
 | `decode/trade.rs` | Borsh `RawTradeEvent`, trade helpers |
 | `decode/instructions.rs` | `InstructionKind`, `label_instruction` (per-ix human label) |
 | `decode/program_registry.rs` | `program_friendly_name` — program-id → name table (SSOT for naming), backed by a `OnceLock<HashMap>`. Grow via the `unknown-programs` harvest |
 | `decode/create.rs` | `decode_create_events_from_logs` |
 | `raw_tx.rs` (ingest-core) | `encode_payload` (protobuf wire bytes), `build_raw_tx_event` — **`raw-tx` feature** |
-| `backfill.rs` | `rpc_to_protobuf` (RPC result → protobuf) — **`rpc-backfill` feature** |
+| `backfill.rs` (ingest-core) | `rpc_to_protobuf` (RPC result → protobuf) + the JSON-RPC pager — **`rpc-backfill` feature** |
 
 ### Feature gates
 
@@ -133,11 +187,15 @@ live is gone; the host persists it into `tokens.meta` — see
 | `raw-tx` | `IngestEvent::RawTx` (carries protobuf `payload` bytes), `raw_tx::encode_payload` |
 | `json-tx` | `serde_json` dep, `convert::json_tx_to_protobuf` — implied by both feature gates below |
 | `rpc-backfill` | `backfill::rpc_to_protobuf` (a thin wrapper over `convert`) + the JSON-RPC pager |
-| `nats` | `nats::run` relay transport + its client (`tokio/net`, `tokio/io-util`) |
+| `nats` | links the `ingest-nats` crate (`NatsFeed`, `NatsConfig`, its client) |
 
-`hunter-live` enables all four; `forge-live` takes `rpc-backfill` only and never links the relay. `IngestHandle` exposes `set_live`, `set_curve_source`, `curve_source`, `set_gap_replay`, `track_pools`, `untrack_pools`, `pool_index`, `pools_changed`. (Liveness is tracked host-side by `live`'s own `DbHeartbeat`, not an ingest health channel.)
+`hunter-live` enables all four; `forge-live` takes `rpc-backfill` only and **never links
+the relay crate at all** — the feature now gates a dependency, not a module. `IngestHandle`
+exposes `set_live`, `is_live`, `set_curve_feed`, `curve_feed`, `set_gap_replay`,
+`track_pools`, `untrack_pools`, `pool_index`, `pools_changed`. (Liveness is tracked
+host-side by `live`'s own `DbHeartbeat`, not an ingest health channel.)
 
-**Push hooks (`ingest_core::PushHooks`, optional):** the same subscription can carry a `blocks_meta` filter and an `accounts` filter for host-chosen pubkeys; the two callbacks run on the transport task (cheap parse + store only). Hunter's `main.rs` bridges block metas → `Engine::set_cached_blockhash` (blockhash cache, 0 steady-state `getLatestBlockhash`) + `ingest::feed_lag::FeedLagGauge` (below), and nonce-account updates → `Engine::on_nonce_account_update` (durable-nonce push re-arm). Hosts that don't opt in (forge) get a byte-identical subscription. Push updates don't feed the idle watchdog under `SubscriptionRole::All` — there it guards the *transaction* stream, which a firehose never leaves quiet. Under `AmmOnly` they are the only liveness signal there is, so `idle_for` judges that role by any frame instead; see `@plans/ingest/reconnect-restart-flow.md`.
+**Push hooks (`ingest_core::PushHooks`, optional):** the same subscription can carry a `blocks_meta` filter and an `accounts` filter for host-chosen pubkeys; the two callbacks run on the supervisor task (cheap parse + store only). Hunter's `main.rs` bridges block metas → `Engine::set_cached_blockhash` (blockhash cache, 0 steady-state `getLatestBlockhash`) + `ingest::feed_lag::FeedLagGauge` (below), and nonce-account updates → `Engine::on_nonce_account_update` (durable-nonce push re-arm). Hosts that don't opt in (forge) get a byte-identical subscription. Push updates do not feed the idle watchdog on a scope that carries the program — there it guards the *transaction* stream, which a firehose never leaves quiet. On a pools-only scope they are the only liveness signal there is, so `idle_basis` judges by any frame instead; see `@plans/ingest/reconnect-restart-flow.md`.
 
 **Chain time lives on block metas only.** A transaction frame carries an exact slot but **no block time**, so `decode_relevant_pb` stamps `block_time: received_at` — the `trades.block_time` column is this bot's receive clock, and `received_at - block_time` is identically zero everywhere downstream. `on_block_meta`'s third argument (`block_time_unix_secs`) is therefore the ONE chain-clock reference on the stream, and `FeedLagGauge` is the one consumer of it: it accumulates `now - block_time` and logs a windowed `feed_lag` line (mean / max / stale-slot count) every ~150 slots, at WARN once any slot in the window is ≥2 s behind. Resolution is whole seconds, so a sample bounds lag rather than timing it — it separates a healthy feed from a backlogged or replaying one, which no other counter shows. Sub-second stage timing belongs to the `snipe_latency` / `exit_latency` lines instead ([trade-execution.md](trade-execution.md)).
 
@@ -183,15 +241,18 @@ It aggregates `trades.ix_labels`, ranks the still-`Unknown (<id>)` programs by f
 
 - `trades` table = this feed. TPSL exit loop confirms fills from this feed (not a separate RPC).
 - No blocking I/O / `.await`-on-lock / unbounded alloc per event on the ingest hot path; DB+SSE go through channels.
-- `ingest-laserstream` has **zero workspace deps** — standalone drop-in crate.
-- **The transport must be in the log filter.** `ingest_core` + `ingest_laserstream` are
-  named explicitly in `live/main.rs`'s default `EnvFilter`, and the box sets no
-  `RUST_LOG` — without them, every `LaserStream: connecting` / `stream error` /
-  `no transaction update … forcing reconnect` / `pipeline backpressured` line is
-  dropped and the sole live transport runs invisibly in production. `live::ingest`
-  (host adapter + watchdog) is covered by `live=info`, but the crates *underneath* it
-  are the layer that knows why a feed died. Every one of those lines is
-  per-connection, never per-message, so there is no hot-path cost to keeping them on.
+- The read-stack has **zero workspace deps** — standalone drop-in crates.
+- **A new wire is a fifth crate, not a branch.** Implement `Feed` + `FeedConn`, declare
+  its `CAPS`, add one arm to `assembly.rs`. If it needs an arm in `supervisor.rs` or
+  `venue.rs`, the capability it needs is missing from `FeedCaps` — add it there rather
+  than naming the wire downstream.
+- **Every feed crate must be in the log filter.** `ingest_core`, `ingest_pumpfun`,
+  `ingest_laserstream` and `ingest_nats` are named explicitly in `live/main.rs`'s default
+  `EnvFilter`, and the box sets no `RUST_LOG` — without them, every connect / stream
+  error / idle reconnect / backpressure line is dropped and that wire runs invisibly in
+  production. `live::ingest` (host adapter + watchdog) is covered by `live=info`, but the
+  crates *underneath* it are the layer that knows why a feed died. Every one of those
+  lines is per-connection, never per-message, so there is no hot-path cost.
 
 **A watchdog kill means a real feed outage** — verified against `trades` row counts, not
 assumed. Two consequences are still open (a kill loses 1–2 min of feed permanently, and

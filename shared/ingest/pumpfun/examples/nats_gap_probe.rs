@@ -21,11 +21,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
-use ingest_core::config::IngestConfig;
 use ingest_core::convert;
-use ingest_core::nats::NatsConn;
 use ingest_core::venue::IngestVenue;
-use ingest_laserstream::{protocol::Protocol, venue::PumpFunVenue};
+use ingest_pumpfun::nats::NatsConn;
+use ingest_pumpfun::{config::IngestConfig, protocol::Protocol, venue::PumpFunVenue};
 use tokio::sync::mpsc;
 
 /// Same default the live `NatsConfig` uses.

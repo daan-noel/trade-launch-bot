@@ -1,7 +1,7 @@
 //! One-shot LaserStream (Yellowstone gRPC) replay fetch for incremental syncs.
 //!
-//! The live ingest (`ingest_laserstream::client`) holds a *forever* subscription;
-//! this is its short-lived sibling: open a fresh `Subscribe` stream filtered to a
+//! The live ingest session holds a *forever* subscription; this is its
+//! short-lived sibling: open a fresh `Subscribe` stream filtered to a
 //! single account (a token's bonding curve or its PumpSwap pool), replay from the
 //! sync watermark's slot, drain the replayed transactions, and disconnect. Each
 //! transaction is returned as its native `SubscribeUpdateTransaction` protobuf —
@@ -27,9 +27,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::info;
 
 use trading_core::config::constants::PUMP_SWAP_PROGRAM_ID;
-use ingest_laserstream::proto::geyser::subscribe_update::UpdateOneof;
-use ingest_laserstream::proto::geyser::{CommitmentLevel, SubscribeRequest, SubscribeUpdateTransaction};
-use ingest_laserstream::transport::{build_subscribe_request, connect, TransportConfig};
+use ingest_laserstream::{build_subscribe_request, connect, Auth, GrpcConfig};
+use ingest_pumpfun::proto::geyser::subscribe_update::UpdateOneof;
+use ingest_pumpfun::proto::geyser::{CommitmentLevel, SubscribeRequest, SubscribeUpdateTransaction};
 
 /// Outbound request queue depth (just the single initial subscribe).
 const REQUEST_QUEUE_CAP: usize = 4;
@@ -71,13 +71,24 @@ pub async fn replay_account_from_slot(
     from_slot: u64,
     pump_program_id: &str,
 ) -> anyhow::Result<Vec<ReplayedTx>> {
-    let cfg = TransportConfig::default();
-    let mut client = connect(laserstream_url, api_key, &cfg)
+    let cfg = GrpcConfig {
+        endpoint: laserstream_url.to_string(),
+        auth: Auth::XToken(api_key.to_string()),
+        ..GrpcConfig::default()
+    };
+    let mut client = connect(&cfg)
         .await
         .context("laserstream replay: connect failed")?;
 
     let (req_tx, req_rx) = mpsc::channel::<SubscribeRequest>(REQUEST_QUEUE_CAP);
-    let initial = build_subscribe_request(vec![account.to_string()], Some(from_slot), CommitmentLevel::Confirmed);
+    let initial = build_subscribe_request(
+        "pumpfun",
+        vec![account.to_string()],
+        Some(from_slot),
+        CommitmentLevel::Confirmed,
+        false,
+        Vec::new(),
+    );
     req_tx
         .send(initial)
         .await

@@ -2,33 +2,33 @@
 name = "ingest-pumpfun"
 version = "0.1.0"
 edition = "2021"
-description = "Pump.fun ingest venue — decoders + protocol descriptor + gRPC transport over the venue-agnostic `ingest-core` engine. Lib name stays `ingest_laserstream` so consumers compile unchanged (back-compat façade)."
+description = "Pump.fun ingest VENUE: protocol descriptor, classify + protobuf decode, pool PDA derivation - plus the assembly root, the only module that knows which transports exist and which one carries the bonding curve."
 
 [lib]
-# Lib target name kept from the pre-split crate so the `ingest_laserstream::`
-# use paths in hunter/live + forge/live need zero edits. The façade in lib.rs
-# re-exports every module `ingest-core` now owns.
-name = "ingest_laserstream"
+name = "ingest_pumpfun"
 path = "src/lib.rs"
 
 [features]
 default = []
-# Forward to ingest-core so the moved raw_tx module + IngestEvent::RawTx variant
-# (and the backfill module) exist when a consumer requests the feature.
+# Forward to ingest-core so the raw_tx module + IngestEvent::RawTx variant (and
+# the backfill module) exist when a consumer requests the feature.
 raw-tx = ["ingest-core/raw-tx"]
 rpc-backfill = ["ingest-core/rpc-backfill"]
-# NATS relay curve transport. Opt-in per consumer: hunter-live enables it, and
-# bins that only speak gRPC skip the async-nats dependency entirely.
-nats = ["ingest-core/nats"]
+# The NATS relay curve feed. Opt-in per consumer: hunter-live enables it, and a
+# bin that only speaks gRPC never links the relay crate at all.
+nats = ["dep:ingest-nats"]
 
 [dependencies]
-# Venue-agnostic engine: gRPC transport + reconnect, IngestVenue seam, generic
-# Ingest<V> session, proto wire types, IngestEvent, config, slot_anchor, raw_tx
-# (feat), backfill (feat). The transport/prost/tonic/tokio-stream stack moved
-# here in Phase H, so this crate no longer depends on them directly.
+# The engine: IngestVenue seam this crate implements, the generic Ingest<V>
+# session, proto wire types, IngestEvent, config, slot_anchor, raw_tx (feat),
+# backfill (feat).
 ingest-core = { path = "../core" }
+# One wire each. gRPC is unconditional - it is the only transport that can filter
+# for a pool PDA, so AMM traffic has nowhere else to go.
+ingest-laserstream = { path = "../laserstream" }
+ingest-nats = { path = "../nats", optional = true }
 
-# Runtime + utils (Notify for the pool-changed signal; mpsc in the façade).
+# Runtime + utils (Notify for the pool-changed signal; mpsc/watch in the façade).
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 
@@ -50,3 +50,6 @@ solana-sdk = "1.17.27"
 # The `nats_probe` example unwraps the relay envelope before handing the result
 # to `ingest_core::convert`.
 serde_json = "1"
+# `feed_parity` prints the supervisor's own reconnect/scope log while it runs -
+# the switch is only convincing if you can see both feeds react to it.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

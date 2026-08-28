@@ -11,7 +11,9 @@ discipline). This file is hunter-specific only.
 | `trading_core` | lib | config, models, storage, core services/state (`CoreState`), api framework + auth + SSE bridge, strategy domain, **ingest contract** (`trading_core::ingest`) |
 | `hunter-engine` | lib | the pure decision fold (`reduce`) — no clock, no I/O |
 | `pump-trader` (pkg `executor-pumpfun`) | lib | buy/sell executor; standalone drop-in in `shared/`, signs via `Arc<dyn Signer>` |
-| `ingest-laserstream` (pkg `ingest-pumpfun`) | lib | Helius LaserStream gRPC transport + watchdog; standalone drop-in, bridged onto `trading_core::ingest` by `live`'s host adapter |
+| `ingest-pumpfun` | lib | pump.fun ingest **venue** (classify/decode/pool PDAs) + the assembly root that picks the wires; bridged onto `trading_core::ingest` by `live`'s host adapter |
+| `ingest-core` | lib | ingest **engine**: the `Feed` transport seam, the one reconnect/route supervisor, the session + decode lanes. Knows no wire, no venue, no env |
+| `ingest-laserstream` · `ingest-nats` | lib | one **wire** each (Yellowstone gRPC · NATS relay). A new transport is a fifth crate + one arm in `ingest-pumpfun`'s `assembly.rs` |
 | `live` | **bin** | LIVE box: strategies, trader, `DeployState`, `probe`. Ships to EC2 |
 | `lab` | **bin** | ANALYSIS box: sweep/backtest, replay/simulate, `LocalState`. NO keys / NO gRPC; never depends on the executor |
 

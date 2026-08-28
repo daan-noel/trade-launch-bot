@@ -4,19 +4,21 @@ LaserStream / Yellowstone gRPC is the **sole** live ingest transport — there i
 WebSocket path. This doc describes how a transaction goes from the gRPC stream
 to persisted trades, token metrics, and strategy pings.
 
-Code lives in `ingest-laserstream/src/`. Token-sync service lives in `trading_core/src/services/token_sync.rs`.
+Code lives in `shared/ingest/` (engine `core`, wire `laserstream`, venue `pumpfun`). Token-sync service lives in `trading_core/src/services/token_sync.rs`.
 
 ## Module layout
 
 | File | Purpose |
 | ------ | --------- |
-| `shared/ingest/core/src/transport/mod.rs` | gRPC connect, TLS + `x-token` auth (`XTokenInterceptor`), `build_subscribe_request`, reconnect backoff, pool resubscribe; forwards the typed `Arc<SubscribeUpdateTransaction>` (no `Value` build) |
+| `shared/ingest/laserstream/src/lib.rs` | gRPC connect, TLS + `x-token` auth (`XTokenInterceptor`), the `Feed`/`FeedConn` impl; yields `FeedUpdate::Transaction` (no `Value` build) |
+| `shared/ingest/laserstream/src/subscribe.rs` | `Subscription` -> `SubscribeRequest` (`build_subscribe_request`), pure + unit-tested |
+| `shared/ingest/core/src/supervisor.rs` | reconnect backoff, replay anchor, idle guard, pool resubscribe, lane routing - shared by every wire |
 | `shared/ingest/core/src/raw_tx.rs` | Protobuf `SubscribeUpdateTransaction` → the persisted raw blob (built off-thread in DbWriter for real-time `source='live'`, inline in token_sync for backfill `source='sync'`) |
 | `hunter/core/src/services/helius_rpc.rs` | **Inverse**: base64 RPC result → `SubscribeUpdateTransaction` (`rpc_to_protobuf`), so token_sync runs `decode_protobuf` like the live path |
 | `hunter/live/src/ingest/consumer.rs` | Main event loop: decode dispatch, cache updates, strategy pings, pool refresh |
 | `hunter/live/src/ingest/db_writer.rs` | Batch queue, partition-by-type, dedup-keep-last, bulk inserts, signal notify; builds the persisted raw blob off the hot path |
 | `shared/ingest/pumpfun/src/decode/mod.rs` | Decoder API + `DecodeOutput`; module wiring |
-| `ingest-laserstream/src/decoder/grpc/` | **The decoder** — protobuf-native `decode_protobuf` (+ `grpc/trade.rs`), reads the Yellowstone structs directly, no `Value`. Serves both live ingest and token_sync |
+| `shared/ingest/pumpfun/src/decode/` | **The decoder** — protobuf-native `decode_protobuf` (`protobuf.rs` + `trade.rs`), reads the wire structs directly, no `Value`. Named for the format, not the wire: a relay frame converts to the same protobuf first, so this serves live ingest, the relay, and token_sync alike |
 | `shared/ingest/pumpfun/src/decode/trade.rs` | Shared: bonding-curve `TradeEvent` + PumpSwap `BuyEvent`/`SellEvent` Borsh decode |
 | `shared/ingest/pumpfun/src/decode/create.rs` | Shared: `Create`/`Create_v2` instruction + creator resolution (byte-source-agnostic) |
 | `shared/ingest/pumpfun/src/decode/instructions.rs` | Shared: instruction kinds/labels + compute-unit extraction (plain byte slices) |
@@ -38,7 +40,7 @@ LaserStream gRPC  ──Arc<protobuf>──▶  IngestPipeline  ──┬─DbWr
 ### 1. Stream (client + adapter)
 
 - `connect(endpoint, api_key)` — TLS endpoint, `x-token` auth via `XTokenInterceptor`,
-  64 MiB max message, 30 s HTTP/2 + TCP keepalive. (`shared/ingest/core/src/transport/mod.rs`)
+  64 MiB max message, 30 s HTTP/2 + TCP keepalive. (`shared/ingest/laserstream/src/lib.rs`, `GrpcConfig`)
 - `build_subscribe_request(account_include, from_slot)` — subscribes to the **Pump.fun program**
   plus currently-tracked **PumpSwap pool accounts**. Commitment = `processed`. On reconnect it
   replays from `from_slot` when recent enough, else falls back to a live subscription.

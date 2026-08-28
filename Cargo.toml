@@ -24,8 +24,10 @@ members = [
     # executor write-stack: venue-agnostic engine + pump.fun venue (was pump-trader)
     "shared/executor/core",
     "shared/executor/pumpfun",
-    # ingest read-stack: venue-agnostic engine + pump.fun venue (was ingest-laserstream)
+    # ingest read-stack on three axes: engine, one crate per wire, venue
     "shared/ingest/core",
+    "shared/ingest/laserstream",
+    "shared/ingest/nats",
     "shared/ingest/pumpfun",
     # shared HTTP bearer-auth middleware (fail-closed gate for real-money bins)
     "shared/http-auth",
@@ -68,11 +70,13 @@ version = "0.1.0"
 # consumers compile unchanged through the façade; only the path/package changed.
 pump-trader        = { package = "executor-pumpfun", path = "shared/executor/pumpfun" }
 executor-core      = { path = "shared/executor/core" }
-# Ingest read-stack split into engine/venue. The dependency KEY stays
-# `ingest-laserstream` (+ `package = "ingest-pumpfun"`, lib name still
-# `ingest_laserstream`) so both `*-live` consumers compile unchanged through the
-# façade; only the path/package changed.
-ingest-laserstream = { package = "ingest-pumpfun", path = "shared/ingest/pumpfun", features = ["raw-tx"] }
+# Ingest read-stack, four crates on three axes. `ingest-pumpfun` is the venue +
+# assembly root and the only one a host normally names; `ingest-laserstream` is
+# additionally named by the one-shot gRPC replay service, which opens its own
+# short-lived stream outside the session.
+ingest-pumpfun     = { path = "shared/ingest/pumpfun", features = ["raw-tx"] }
+ingest-laserstream = { path = "shared/ingest/laserstream" }
+ingest-nats        = { path = "shared/ingest/nats" }
 ingest-core        = { path = "shared/ingest/core" }
 # Shared bearer-auth middleware (`ApiAuth` + `require_bearer_auth`), consumed by
 # every real-money HTTP bin so the fail-closed auth decision lives in ONE place.

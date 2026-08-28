@@ -1,10 +1,14 @@
 //! The venue-generic ingest session: [`Ingest<V>`] + [`IngestHandle<V>`].
 //!
-//! `Ingest<V>` owns the transport + decode task wiring; a venue-specific builder
-//! (e.g. the pump.fun façade's `IngestBuilder`) assembles the `V` and constructs
-//! the session via [`Ingest::new`]. `start()` spawns the transport task
-//! (`transport::run<V>`) and **two** decode tasks (create lane + normal lane),
-//! returning the host event receiver + a control handle.
+//! `Ingest<V>` owns everything below the wire — the two decode lanes, the host
+//! event channel, the live gate, the gap-replay setting, and the cross-feed
+//! dedupe ring. It spawns **no** transport: [`Ingest::start`] hands back a
+//! [`FeedLanes`] carrying exactly what a feed supervisor needs, and the venue's
+//! assembly root spawns one [`crate::supervisor::run`] per configured feed.
+//!
+//! That is the seam that makes feeds peers. Every feed writes to the same lanes,
+//! so nothing from the decoders down can tell which wire delivered a transaction
+//! — or notice when the assembly root moves traffic between them.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -18,59 +22,100 @@ use tracing::warn;
 /// real drop so sustained loss is visible instead of silent.
 static DROPPED_EVENTS: AtomicU64 = AtomicU64::new(0);
 
-use crate::config::{Auth, Commitment, CurveSource, IngestConfig};
+use crate::config::IngestConfig;
 use crate::dedupe::SignatureDedupe;
 use crate::event::IngestEvent;
-use crate::proto::geyser::{CommitmentLevel, SubscribeUpdateTransaction};
-use crate::transport::{self, PushHooks, TransportConfig};
+use crate::proto::geyser::SubscribeUpdateTransaction;
+use crate::push::PushHooks;
 use crate::venue::{DecodeOutput, IngestVenue, PoolIndex};
 
-/// Validated, ready-to-start ingest session, generic over the venue.
+/// One message on a feed→decode lane.
+pub type UpdateMsg<V> = (
+    Arc<SubscribeUpdateTransaction>,
+    <V as IngestVenue>::Relevance,
+    chrono::DateTime<chrono::Utc>,
+);
+
+/// Everything a feed supervisor needs from the session, and nothing about a wire.
+///
+/// Cloned once per feed. The lane senders, the live gate, the gap-replay setting
+/// and the dedupe ring are shared; that sharing is what makes two feeds
+/// interchangeable upstream of one pipeline.
+pub struct FeedLanes<V: IngestVenue> {
+    /// Create fast lane — `V::is_create_lane` traffic only.
+    pub create_tx: mpsc::Sender<UpdateMsg<V>>,
+    /// Everything else.
+    pub normal_tx: mpsc::Sender<UpdateMsg<V>>,
+    /// Live gate: `false` pauses every feed.
+    pub live_rx: watch::Receiver<bool>,
+    /// `(gap_replay_on_reconnect, gap_replay_max_window_secs)`. A feed that
+    /// cannot replay warns once and ignores it.
+    pub gap_replay_rx: watch::Receiver<(bool, u64)>,
+    /// Cross-feed signature window. `None` when a single feed is running — one
+    /// wire cannot deliver the same signature twice, so it skips the check.
+    pub dedupe: Option<Arc<SignatureDedupe>>,
+    /// Optional push feeds carried on the same subscription.
+    pub push: Arc<PushHooks>,
+}
+
+impl<V: IngestVenue> Clone for FeedLanes<V> {
+    fn clone(&self) -> Self {
+        Self {
+            create_tx: self.create_tx.clone(),
+            normal_tx: self.normal_tx.clone(),
+            live_rx: self.live_rx.clone(),
+            gap_replay_rx: self.gap_replay_rx.clone(),
+            dedupe: self.dedupe.clone(),
+            push: self.push.clone(),
+        }
+    }
+}
+
+/// The pipeline below the wire, ready to start.
 pub struct Ingest<V: IngestVenue> {
-    endpoint: String,
-    auth: Auth,
     venue: Arc<V>,
     config: IngestConfig,
     push: Arc<PushHooks>,
 }
 
 impl<V: IngestVenue> Ingest<V> {
-    /// Assemble a session. Venue-specific builders own provider/endpoint/config
-    /// validation and the construction of `venue`.
-    pub fn new(endpoint: String, auth: Auth, venue: Arc<V>, config: IngestConfig) -> Self {
+    pub fn new(venue: Arc<V>, config: IngestConfig) -> Self {
         Self {
-            endpoint,
-            auth,
             venue,
             config,
             push: Arc::new(PushHooks::default()),
         }
     }
 
-    /// Attach optional push-feed hooks (`blocks_meta` / watched-account updates
-    /// on the same subscription). See [`PushHooks`]. Default: none — the
-    /// subscription is unchanged for hosts that don't opt in.
+    /// Attach optional push-feed hooks. See [`PushHooks`]. Default: none — a
+    /// host that doesn't opt in gets a subscription with no extra filters.
     pub fn with_push_hooks(mut self, push: PushHooks) -> Self {
         self.push = Arc::new(push);
         self
     }
 
-    /// Spawn the transport + decode tasks and return the event receiver + handle.
+    /// Spawn the decode lanes and return the host event receiver, the control
+    /// handle, and the wiring for `feeds` feed supervisors.
     ///
-    /// `live` — initial live-mode state (pass `true` to start streaming
-    ///   immediately; `false` pauses until `handle.set_live(true)` is called).
+    /// `live` — initial live-mode state (`true` streams immediately; `false`
+    ///   pauses every feed until `handle.set_live(true)`).
+    /// `feeds` — how many feeds the caller is about to spawn. More than one arms
+    ///   the cross-feed dedupe ring; exactly one skips it entirely, because a
+    ///   single wire cannot deliver the same signature twice.
     ///
-    /// Two transport→decode lanes share one host `event_tx`: creates
-    /// (`V::is_create_lane`) never queue behind AMM/curve swap decode work.
-    pub fn start(self, live: bool) -> (mpsc::Receiver<IngestEvent>, IngestHandle<V>) {
+    /// Two lanes share one host `event_tx`: creates (`V::is_create_lane`) never
+    /// queue behind AMM/curve swap decode work.
+    pub fn start(
+        self,
+        live: bool,
+        feeds: usize,
+    ) -> (
+        mpsc::Receiver<IngestEvent>,
+        IngestHandle<V>,
+        FeedLanes<V>,
+    ) {
         let cfg = &self.config;
         let venue = self.venue.clone();
-
-        type UpdateMsg<V> = (
-            Arc<SubscribeUpdateTransaction>,
-            <V as IngestVenue>::Relevance,
-            chrono::DateTime<chrono::Utc>,
-        );
 
         // Create lane stays shallow: creates are rare vs swaps, and a deep
         // create backlog would only mean the host is already wedged.
@@ -84,72 +129,22 @@ impl<V: IngestVenue> Ingest<V> {
         // Live-mode gate.
         let (live_tx, live_rx) = watch::channel(live);
 
-        // Which transport carries bonding-curve traffic. Switchable at runtime via
-        // `IngestHandle::set_curve_source`; the gRPC transport re-scopes its
-        // subscription and the NATS task connects/disconnects off this one signal.
-        let curve_source = resolve_curve_source(cfg);
-        let (source_tx, source_rx) = watch::channel(curve_source);
-
-        // Only meaningful when two transports run at once — a single transport
-        // cannot deliver the same signature twice, so it skips the check entirely.
-        let dedupe = cfg
-            .nats
-            .as_ref()
-            .map(|_| Arc::new(SignatureDedupe::for_window(cfg.dedupe_window)));
-
-        // Transport config (extracted from IngestConfig).
-        let transport_cfg = Arc::new(TransportConfig {
-            connect_timeout: cfg.connect_timeout,
-            reconnect_base: cfg.reconnect_base,
-            reconnect_max_backoff: cfg.reconnect_max_backoff,
-            idle_reconnect_timeout: cfg.idle_reconnect_timeout,
-            idle_check_interval: cfg.idle_check_interval,
-            http2_keepalive: cfg.http2_keepalive,
-            tcp_keepalive: cfg.tcp_keepalive,
-            max_decoding_message_size: cfg.max_decoding_message_size,
-            pipeline_send_timeout: cfg.pipeline_send_timeout,
-            resubscribe_debounce: cfg.resubscribe_debounce,
-            commitment: commitment_level(cfg.commitment),
-        });
-
         // Gap-replay config channel: host sends (gap_replay_on_reconnect,
         // gap_replay_max_window_secs) whenever the operator changes the settings.
-        // Default: off (false, 300 s). The sender is exposed via IngestHandle so
-        // the host can push updates without restarting ingest.
+        // Default: off (false, 300 s).
         let (gap_replay_tx, gap_replay_rx) = watch::channel::<(bool, u64)>((false, 300));
 
-        // The NATS curve feed. Spawned whenever it is *configured*, not only when
-        // it is selected: it idles (fully disconnected) until `source_rx` says
-        // Nats, which is what makes the switch instant and restart-free.
-        #[cfg(feature = "nats")]
-        if let Some(nats_cfg) = cfg.nats.clone() {
-            tokio::spawn(crate::nats::run(
-                nats_cfg,
-                venue.clone(),
-                create_tx.clone(),
-                normal_tx.clone(),
-                live_tx.subscribe(),
-                source_rx.clone(),
-                transport_cfg.clone(),
-                dedupe
-                    .clone()
-                    .expect("dedupe is built whenever nats is configured"),
-            ));
-        }
+        let dedupe =
+            (feeds > 1).then(|| Arc::new(SignatureDedupe::for_window(cfg.dedupe_window)));
 
-        tokio::spawn(transport::run(
-            self.endpoint.clone(),
-            self.auth.clone(),
-            venue.clone(),
+        let lanes = FeedLanes {
             create_tx,
             normal_tx,
             live_rx,
-            transport_cfg,
             gap_replay_rx,
-            self.push.clone(),
-            source_rx,
             dedupe,
-        ));
+            push: self.push.clone(),
+        };
 
         spawn_decode_lane(venue.clone(), create_rx, event_tx.clone());
         spawn_decode_lane(venue.clone(), normal_rx, event_tx);
@@ -157,25 +152,20 @@ impl<V: IngestVenue> Ingest<V> {
         let handle = IngestHandle {
             live_tx,
             gap_replay_tx,
-            source_tx,
             pool_index: venue.pool_index(),
             pools_changed: venue.pools_changed(),
             venue,
         };
 
-        (event_rx, handle)
+        (event_rx, handle, lanes)
     }
 }
 
-/// One decode task for one transport→decode lane. Both lanes merge onto the
-/// same host `event_tx` — the split only isolates decode/queue latency.
+/// One decode task for one feed→decode lane. Both lanes merge onto the same host
+/// `event_tx` — the split only isolates decode/queue latency.
 fn spawn_decode_lane<V: IngestVenue>(
     venue: Arc<V>,
-    mut update_rx: mpsc::Receiver<(
-        Arc<SubscribeUpdateTransaction>,
-        V::Relevance,
-        chrono::DateTime<chrono::Utc>,
-    )>,
+    mut update_rx: mpsc::Receiver<UpdateMsg<V>>,
     event_tx: mpsc::Sender<IngestEvent>,
 ) {
     tokio::spawn(async move {
@@ -230,24 +220,22 @@ fn spawn_decode_lane<V: IngestVenue>(
 
 // ── IngestHandle ──────────────────────────────────────────────────────────────
 
-/// Control handle returned by [`Ingest::start`]. All methods are lock-free
+/// Control handle for everything below the wire. All methods are lock-free
 /// (atomic writes or channel sends).
+///
+/// Which feed carries what is **not** here: that is the assembly root's, because
+/// naming a wire is the one thing this crate refuses to do. A venue façade wraps
+/// this handle and adds its own feed-selection method.
 pub struct IngestHandle<V: IngestVenue> {
     live_tx: watch::Sender<bool>,
-    /// Gap-replay settings: (gap_replay_on_reconnect, gap_replay_max_window_secs).
-    /// Push a new value whenever the operator changes the settings; the transport
-    /// picks it up on the next reconnect.
     gap_replay_tx: watch::Sender<(bool, u64)>,
-    /// Which transport carries bonding-curve traffic. Both transport tasks watch
-    /// this, so one send re-points the feed with no restart.
-    source_tx: watch::Sender<CurveSource>,
     pool_index: PoolIndex,
     pools_changed: Arc<Notify>,
     venue: Arc<V>,
 }
 
 impl<V: IngestVenue> IngestHandle<V> {
-    /// Pause (`false`) or resume (`true`) the transport stream.
+    /// Pause (`false`) or resume (`true`) every feed.
     pub fn set_live(&self, live: bool) {
         let _ = self.live_tx.send(live);
     }
@@ -257,31 +245,13 @@ impl<V: IngestVenue> IngestHandle<V> {
         *self.live_tx.borrow()
     }
 
-    /// Push updated gap-replay settings to the transport. Takes effect on the
-    /// next reconnect; no-op if the transport task has already stopped.
+    /// Push updated gap-replay settings. Takes effect on the next reconnect of
+    /// any feed that can replay; a feed that cannot warns once and ignores it.
     pub fn set_gap_replay(&self, on: bool, max_window_secs: u64) {
         let _ = self.gap_replay_tx.send((on, max_window_secs));
     }
 
-    /// Switch which transport carries bonding-curve traffic.
-    ///
-    /// Takes effect immediately and without a restart: the newly-selected feed
-    /// connects while the old one is still draining, the dedupe ring absorbs the
-    /// overlap, and the gRPC subscription re-scopes in place (keeping AMM pools
-    /// subscribed throughout, so open positions never lose their feed).
-    ///
-    /// Switching to [`CurveSource::Nats`] is a no-op if no `NatsConfig` was
-    /// supplied at build time — there would be nothing to connect to.
-    pub fn set_curve_source(&self, source: CurveSource) {
-        let _ = self.source_tx.send(source);
-    }
-
-    /// Which transport is currently carrying bonding-curve traffic.
-    pub fn curve_source(&self) -> CurveSource {
-        *self.source_tx.borrow()
-    }
-
-    /// Register pool PDAs for the given mints and signal the transport to
+    /// Register pool PDAs for the given mints and signal the feeds to
     /// resubscribe. Idempotent — already-registered mints are skipped.
     pub fn track_pools(&self, mints: &[String]) {
         let mut added = false;
@@ -321,40 +291,5 @@ impl<V: IngestVenue> IngestHandle<V> {
     /// Notify handle — fires when a pool is added/removed (auto or manual).
     pub fn pools_changed(&self) -> Arc<Notify> {
         self.pools_changed.clone()
-    }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Validate the requested curve source against what was actually built.
-///
-/// Selecting NATS without a relay to talk to would leave the curve feed silently
-/// dead — the worst possible failure for an ingest path — so fall back to gRPC
-/// loudly instead.
-fn resolve_curve_source(cfg: &IngestConfig) -> CurveSource {
-    if cfg.curve_source != CurveSource::Nats {
-        return cfg.curve_source;
-    }
-    if cfg.nats.is_none() {
-        warn!("ingest: curve_source=Nats but no NatsConfig was supplied — using gRPC");
-        return CurveSource::Grpc;
-    }
-    #[cfg(not(feature = "nats"))]
-    {
-        warn!("ingest: curve_source=Nats but the `nats` feature is not compiled in — using gRPC");
-        CurveSource::Grpc
-    }
-    #[cfg(feature = "nats")]
-    {
-        tracing::info!("ingest: bonding curve on the NATS relay; AMM pools stay on gRPC");
-        CurveSource::Nats
-    }
-}
-
-fn commitment_level(c: Commitment) -> CommitmentLevel {
-    match c {
-        Commitment::Processed => CommitmentLevel::Processed,
-        Commitment::Confirmed => CommitmentLevel::Confirmed,
-        Commitment::Finalized => CommitmentLevel::Finalized,
     }
 }

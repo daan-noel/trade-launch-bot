@@ -1,4 +1,9 @@
-//! Protobuf-native decode of LaserStream `SubscribeUpdateTransaction` updates.
+//! Protobuf-native decode of `SubscribeUpdateTransaction` updates.
+//!
+//! Source-agnostic on purpose, and named for the format rather than the wire
+//! that first carried it: a JSON feed converts to this same protobuf in
+//! `ingest-core::convert` before it gets here, so gRPC frames, relay frames and
+//! RPC backfill results all decode through this one file.
 
 use std::cell::OnceCell;
 
@@ -45,7 +50,7 @@ struct LazyKeys<'a> {
 ///
 /// Duplicated (not shared) on purpose: [`LazyKeys`] must collect, because it
 /// carries a parallel `OnceCell` per key for the base58 memoisation, and the
-/// pre-filter runs on **every** delivered tx on the single transport task, where
+/// pre-filter runs on **every** delivered tx on the feed supervisor task, where
 /// a per-tx `Vec` of 40+ fat pointers is exactly the per-event alloc the hot-path
 /// rule forbids. `key_at_matches_lazykeys_ordering` guards the two against drift.
 fn key_at<'a>(
@@ -146,7 +151,7 @@ impl Decoder {
     /// 44-char base58 program id ([`Decoder::classify_logs`]). That scan
     /// re-derived what the subscription had already proven: `account_include` is
     /// set to the pump program + tracked pool PDAs, so a delivered tx names one
-    /// of them by construction. The scan ran on the single transport task that
+    /// of them by construction. The scan ran on the single feed supervisor task that
     /// gates every create's arrival, ahead of everything else.
     ///
     /// Two behaviours to know:
@@ -499,7 +504,7 @@ impl Decoder {
         // Auto-register the pool in the shared index so future AMM swaps resolve.
         if let Some(index) = &self.pool_index {
             if register_pool(index, &mint, &self.protocol) {
-                // Newly registered — signal the transport task to resubscribe.
+                // Newly registered — signal the feed supervisor to resubscribe.
                 if let Some(notify) = &self.pools_changed {
                     notify.notify_one();
                 }

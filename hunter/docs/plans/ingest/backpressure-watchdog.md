@@ -1,6 +1,6 @@
 # Ingest — Backpressure, Watchdog & Decoder Detail
 
-Deep-dive on `ingest-laserstream/src/` internal mechanics. See [@arch/ingest.md](@arch/ingest.md) for the file-level map and channel caps.
+Deep-dive on the `shared/ingest/` internal mechanics. See [@arch/ingest.md](@arch/ingest.md) for the file-level map and channel caps.
 
 ## Backpressure — `pipeline.rs`
 
@@ -102,7 +102,7 @@ pub enum TxRelevance {
 }
 ```
 
-The transport (`shared/ingest/core/src/transport/mod.rs`) pre-filters by account key set (no full decode for irrelevant txs); the consumer (`live/src/ingest/consumer.rs`) matches on `TxRelevance` to route to the correct handler.
+The feed supervisor (`shared/ingest/core/src/supervisor.rs`) pre-filters by account key set (no full decode for irrelevant txs); the consumer (`live/src/ingest/consumer.rs`) matches on `TxRelevance` to route to the correct handler.
 
 ### Trade decode path
 

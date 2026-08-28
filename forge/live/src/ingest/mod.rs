@@ -26,5 +26,5 @@ pub mod watchdog;
 mod roundtrip_test;
 
 pub use consumer::spawn_ingest;
-pub use ingest_laserstream::IngestHandle;
+pub use ingest_pumpfun::IngestHandle;
 pub use metrics::IngestMetrics;

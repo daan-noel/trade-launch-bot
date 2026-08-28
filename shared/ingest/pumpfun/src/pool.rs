@@ -1,7 +1,7 @@
 //! Self-contained pool→mint index + PumpSwap pool PDA derivation.
 //!
-//! The decode task and the host both update the index via [`PoolIndex`]; the
-//! transport task reads it to build per-pool gRPC subscriptions.
+//! The decode task and the host both update the index via [`PoolIndex`]; a
+//! server-filtered feed reads it to build its per-pool subscription.
 
 use std::str::FromStr;
 
@@ -13,13 +13,13 @@ use crate::protocol::Protocol;
 /// Shared pool address → base mint address index.
 ///
 /// The type is owned by `ingest-core` (the venue seam's neutral `PoolIndex`) and
-/// re-exported here so the historical `ingest_laserstream::pool::PoolIndex` /
-/// `ingest_laserstream::PoolIndex` paths resolve unchanged.
+/// re-exported here so `ingest_pumpfun::pool::PoolIndex` /
+/// `ingest_pumpfun::PoolIndex` both resolve.
 ///
 /// - The decode task inserts on every `TokenMigrated` (auto-discovery).
 /// - The host inserts known-active pools at warm-restart via
 ///   `IngestHandle::track_pools`.
-/// - The transport task reads it to build gRPC account_include filters.
+/// - A server-filtered feed reads it to build its account_include filter.
 pub use ingest_core::venue::PoolIndex;
 
 /// Derive the canonical PumpSwap pool PDA for a migrated pump.fun token.

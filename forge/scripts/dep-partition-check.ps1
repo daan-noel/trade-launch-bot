@@ -12,9 +12,9 @@ if ($liveTree -match 'duckdb|arrow|parquet') {
   Write-Error "FAIL: forge-live dep partition violated (lake stack leaked into forge-live)"
 }
 
-Write-Host "==> forge-lab must NOT pull pump-trader / ingest-laserstream / tonic"
+Write-Host "==> forge-lab must NOT pull pump-trader / any ingest crate / tonic"
 $labTree = cargo tree -p forge-lab 2>$null
-if ($labTree -match 'pump-trader|ingest-laserstream|tonic') {
+if ($labTree -match 'pump-trader|ingest-|tonic') {
   Write-Error "FAIL: forge-lab dep partition violated (live stack leaked into forge-lab)"
 }
 

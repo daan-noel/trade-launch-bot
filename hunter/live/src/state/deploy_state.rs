@@ -14,7 +14,7 @@ use crate::ingest::HeldPoolGate;
 use crate::strategies::engine::{ArmedRegistry, EngineHandle, InFlightGuards, PositionRegistry};
 use crate::trader::PumpFunTrader;
 
-use ingest_laserstream::slot_anchor::SlotAnchor;
+use ingest_pumpfun::slot_anchor::SlotAnchor;
 
 use super::core_state::CoreState;
 use super::trade_signals::TradeSignals;

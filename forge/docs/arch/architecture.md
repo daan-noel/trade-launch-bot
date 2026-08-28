@@ -18,12 +18,12 @@ Deep-dive detail: [../decisions.md](../decisions.md), [../roadmap-plan.md](../ro
 | `forge-core` | `forge/core/` | lib `platform_core` | lib | Data layer: `config` (DB pools), `units`, `models`, `storage` (postgres + repos + timescale), `venue` trait. **solana-free** — addresses are TEXT/String | both |
 | `forge-orchestrator` | `forge/orchestrator/` | lib `orchestrator` | lib | **The brain:** `plan` (Operation/Plan model), `provider` (catalog-gated validation), `macros` / `personas` / `disguise` / `audit` / `rng`. Zero-SOL. **forge-only, LIVE-only** | forge-live |
 | `forge-launcher` | `forge/launcher/` | lib `launcher` | lib | Launch/fund/manage orchestration: create + dev-buy + bundle + confirm + wallet-pool + funding + management, all through the plan gate. **LIVE-only** | forge-live |
-| `forge-live` | `forge/live/` | bin `forge-live` | **bin** | LIVE composition root: `ingest/` (host adapter) + `sse` + `sol_price` + `http` → EC2. Links launcher + orchestrator + ingest-laserstream | — (→ EC2) |
+| `forge-live` | `forge/live/` | bin `forge-live` | **bin** | LIVE composition root: `ingest/` (host adapter) + `sse` + `sol_price` + `http` → EC2. Links launcher + orchestrator + ingest-pumpfun | — (→ EC2) |
 | `forge-lab` | `forge/lab/` | bin `forge-lab` | **bin** | ANALYSIS composition root: `lake/` (cold columnar tier) + thin read `http` → workstation. NO keys / NO gRPC | — (→ workstation) |
 | `executor-core` | `shared/executor/core/` | — | shared lib | Venue-agnostic write stack; neutral `VenueId` seam | both products |
 | `executor-pumpfun` | `shared/executor/pumpfun/` | lib `pump_trader` (dep key `pump-trader`) | shared lib | pump.fun venue adapter: ix builders, catalog, `PumpFunTrader`, Jito. Canonical pump IDLs at `idl/` | both products |
 | `ingest-core` | `shared/ingest/core/` | — | shared lib | Venue-agnostic read stack | both products |
-| `ingest-pumpfun` | `shared/ingest/pumpfun/` | lib `ingest_laserstream` (dep key `ingest-laserstream`) | shared lib | Helius LaserStream gRPC transport + pump.fun decode; raw `Ingest`/`IngestHandle`/`IngestEvent` API | both products |
+| `ingest-pumpfun` | `shared/ingest/pumpfun/` | lib `ingest_pumpfun` | shared lib | pump.fun ingest venue + the assembly root over `ingest-core` / `ingest-laserstream` / `ingest-nats`; raw `Ingest`/`IngestHandle`/`IngestEvent` API | both products |
 | `http-auth` | `shared/http-auth/` | — | shared lib | `ApiAuth` + `require_bearer_auth` fail-closed bearer gate | both products |
 
 **In-crate modules, not crates:** `lake` → `forge/lab/src/lake/`; `ingest-host` →
@@ -33,7 +33,7 @@ not crates. `forge/frontend/` is the React SPA (React-Router + RTK-Query + Tailw
 **Dep edges:** `orchestrator` → `executor-core` + `pump-trader` (+ `solana-sdk` for address
 parsing at the provider boundary). `launcher` → `platform-core` + `orchestrator` +
 `pump-trader` + `executor-core`. `forge-live` → `platform-core` + `launcher` +
-`ingest-laserstream` + `http-auth` (pulls `orchestrator`/`pump-trader` transitively via
+`ingest-pumpfun` + `http-auth` (pulls `orchestrator`/`pump-trader` transitively via
 `launcher`). `forge-lab` → `platform-core` + `http-auth` **only**.
 
 ## Architecture — process topology
@@ -41,13 +41,13 @@ parsing at the provider boundary). `launcher` → `platform-core` + `orchestrato
 ```text
                        ┌──────────────────── shared/ (both products) ─────────────────────┐
                        │  executor/core  executor/pumpfun(pump_trader)                     │
-                       │  ingest/core    ingest/pumpfun(ingest_laserstream)    http-auth   │
+                       │  ingest/{core,laserstream,nats,pumpfun}              http-auth   │
                        └───────────────────────────────────────────────────────────────────┘
                                     ▲                     ▲                      ▲
       forge-live (EC2) ────────────┼─────────────────────┼──────────────────────┘
       ┌───────────────────────────────────────────────────────────────────────────────┐
       │ main.rs  tokio::select! over long-lived tasks:                                 │
-      │   • ingest/ (host adapter) ── ingest_laserstream::Ingest ──► DbWriter ─► PG    │
+      │   • ingest/ (host adapter) ── ingest_pumpfun::Ingest ─────► DbWriter ─► PG    │
       │   • bundle-confirm watcher   • wallet-lifecycle   • ladder   • volume          │
       │   • SOL/USD poller           • actix HTTP (:8230, bearer-gated) + SSE hub      │
       │                                                                                │
@@ -179,8 +179,8 @@ full `/api/...` paths and sit behind the bearer gate.
   `orchestrator::Plan`, passes `launcher::plan_pipeline::gate` (validate against
   `pump_trader::catalog` → disguise → audit), then `plan_exec` builds the real txs through an
   initialized `PumpFunTrader`. The pump.fun IDLs live once at `shared/executor/pumpfun/idl/`.
-- **Read path:** `forge-live` depends on `ingest-laserstream` (dep key; package
-  `ingest-pumpfun`, lib `ingest_laserstream`, `raw-tx` feature). The standalone transport emits
+- **Read path:** `forge-live` depends on `ingest-pumpfun` (`raw-tx` feature; the
+  `nats` feature stays off, so the relay crate is never linked). The read-stack emits
   raw `IngestEvent`s; `forge/live/src/ingest/` is the host adapter that bridges them onto
   `platform_core`'s `raw_txs`/`trades`/`tokens` via the pump.fun/SOL venue adapter.
 - **Auth:** both bins depend on `http-auth` for the one fail-closed `require_bearer_auth` gate.
@@ -193,7 +193,7 @@ full `/api/...` paths and sit behind the bearer gate.
 - **Dep partition (load-bearing — enforce from the scaffold):**
   - `forge-live` must NOT pull `duckdb`/`arrow`/`parquet` (the lake stack). `lake` is
     deliberately absent from its `Cargo.toml`. Verify: `cargo tree -p forge-live`.
-  - `forge-lab` must NOT pull `pump-trader`/`ingest-laserstream`/`launcher`/`orchestrator`/
+  - `forge-lab` must NOT pull `pump-trader`/any `ingest-*`/`launcher`/`orchestrator`/
     `tonic`/solana. It depends on `platform-core` + `http-auth` only. Verify:
     `cargo tree -p forge-lab`.
 - **`platform-core` is solana-free** — addresses are TEXT/String; on-chain types live behind

@@ -2,7 +2,7 @@
 name = "forge-live"
 version.workspace = true
 edition.workspace = true
-description = "LIVE box (ships to EC2): ingest + launcher + trading + thin HTTP. The ingest host-adapter is now the in-crate `src/ingest/` module (was the ingest-host crate); links launcher (+ pump-trader + ingest-laserstream). MUST NOT link lake / duckdb / arrow / parquet."
+description = "LIVE box (ships to EC2): ingest + launcher + trading + thin HTTP. The ingest host-adapter is now the in-crate `src/ingest/` module (was the ingest-host crate); links launcher (+ pump-trader + ingest-pumpfun). MUST NOT link lake / duckdb / arrow / parquet."
 
 [[bin]]
 name = "forge-live"
@@ -12,10 +12,10 @@ path = "src/main.rs"
 platform-core = { path = "../core", package = "forge-core" }
 launcher      = { path = "../launcher", package = "forge-launcher" }
 # Ingest host-adapter (src/ingest/) — folded in from the former ingest-host crate;
-# it bridges the borrowed ingest-laserstream transport onto platform-core rows.
+# it bridges the ingest read-stack onto platform-core rows.
 # `rpc-backfill` adds the getSignaturesForAddress/getTransaction pager +
 # rpc_to_protobuf that the keystore-restore backfill (src/restore/) drives.
-ingest-laserstream = { workspace = true, features = ["rpc-backfill"] }
+ingest-pumpfun = { workspace = true, features = ["rpc-backfill"] }
 # Shared fail-closed bearer-auth middleware — same gate hunter's real-money bins
 # use; forge-live moves treasury SOL so its mutating routes get it too.
 http-auth.workspace = true

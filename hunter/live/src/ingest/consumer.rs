@@ -13,7 +13,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use ingest_laserstream::{
+use ingest_pumpfun::{
     IngestHandle,
     event::{BuyInstructionArgs, CreatorActivityEvent, IngestEvent, LiquidityEvent, Side, TokenCreated, TokenMigrated, Trade as IlTrade, Venue},
 };

@@ -18,7 +18,7 @@ pub use trading_core::services::pda::derive_pump_swap_pool;
 
 use std::sync::Arc as StdArc;
 
-use ingest_laserstream::{
+use ingest_pumpfun::{
     backfill::rpc_to_protobuf,
     decode::{DecodeOutput, HeliusDecoder},
     event::{IngestEvent, Side, Venue},
@@ -1428,7 +1428,7 @@ async fn write_metrics(
 
 // ── IngestEvent → trading_core type translators ───────────────────────────────
 
-pub(crate) fn trade_from_ingest_event(e: &ingest_laserstream::event::Trade) -> Trade {
+pub(crate) fn trade_from_ingest_event(e: &ingest_pumpfun::event::Trade) -> Trade {
     use uuid::Uuid;
     Trade {
         id: Uuid::new_v4(),
@@ -1462,7 +1462,7 @@ pub(crate) fn trade_from_ingest_event(e: &ingest_laserstream::event::Trade) -> T
     }
 }
 
-fn token_from_ingest_event(e: ingest_laserstream::event::TokenCreated) -> Token {
+fn token_from_ingest_event(e: ingest_pumpfun::event::TokenCreated) -> Token {
     use uuid::Uuid;
     Token {
         id: Uuid::new_v4(),
@@ -1497,7 +1497,7 @@ mod amm_verification {
     //!   HELIUS_RPC_URL="<url>" cargo test -p backend amm_pool_derivation -- --ignored --nocapture
     use super::*;
     use trading_core::config::constants::{PUMP_FUN_PROGRAM_ID, PUMP_SWAP_PROGRAM_ID, WSOL_MINT};
-    use ingest_laserstream::decode::HeliusDecoder;
+    use ingest_pumpfun::decode::HeliusDecoder;
     use crate::services::helius_rpc::wrap_transaction_result;
     use serde_json::{json, Value};
 
@@ -1620,7 +1620,7 @@ mod amm_verification {
             idx.insert(derived.clone(), base_mint.clone());
             let amm_decoder =
                 HeliusDecoder::new(StdArc::new(Protocol::pump_fun())).with_pool_index(idx);
-            let update = ingest_laserstream::backfill::rpc_to_protobuf(
+            let update = ingest_pumpfun::backfill::rpc_to_protobuf(
                 &wrap_transaction_result(sig, &tx_b64),
             )
             .expect("canonical swap must lower to protobuf");
@@ -1818,7 +1818,7 @@ mod amm_verification {
     #[tokio::test]
     #[ignore = "requires HELIUS_RPC_URL with the archival API + network"]
     async fn gtfa_base64_decodes_via_protobuf() {
-        use ingest_laserstream::backfill::rpc_to_protobuf;
+        use ingest_pumpfun::backfill::rpc_to_protobuf;
         use base64::{engine::general_purpose::STANDARD, Engine};
         use solana_sdk::{message::VersionedMessage, transaction::VersionedTransaction};
 

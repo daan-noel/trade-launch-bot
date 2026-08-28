@@ -9,7 +9,7 @@
 
 use chrono::Utc;
 
-use ingest_laserstream::event::{RawTx as IlRawTx, Reserves, Side, TokenCreated, Trade, Venue};
+use ingest_pumpfun::event::{RawTx as IlRawTx, Reserves, Side, TokenCreated, Trade, Venue};
 
 use super::map;
 use super::pumpfun::PumpFunAdapter;

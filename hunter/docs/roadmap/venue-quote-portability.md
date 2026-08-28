@@ -65,7 +65,7 @@ longer exist, replaced wholesale by the generic sweep/Console UI (see
   redesign deleted wholesale rather than merged (`lab/src/sweep/registry.rs` itself notes
   "the tpsl/swing retirement (Phase 7) — exactly one arm, `generic`"). There is no code
   left for this rationale to apply to.
-- **"Doc hygiene: rename `trading_core`/`pump-trader`/`ingest-laserstream`"** — based on a
+- **"Doc hygiene: rename `trading_core`/`pump-trader`"** — based on a
   false premise. These are the **current, intentional Cargo dep-key names** (the package
   rename only changed the underlying pkg/lib names — `pump-trader` is deliberately kept
   as the dep-key alias for pkg `executor-pumpfun`, etc.), not stale pre-restructure

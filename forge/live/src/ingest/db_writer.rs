@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ingest_laserstream::event::{RawTx as IlRawTx, TokenCreated as IlTokenCreated, Trade as IlTrade};
+use ingest_pumpfun::event::{RawTx as IlRawTx, TokenCreated as IlTokenCreated, Trade as IlTrade};
 use sqlx::PgPool;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::Notify;

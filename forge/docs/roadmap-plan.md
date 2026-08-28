@@ -31,7 +31,7 @@ flowchart LR
 
 ## Phase 1 — Foundation ✅
 
-- [x] Cargo workspace + path deps on `pump-trader` / `ingest-laserstream`
+- [x] Cargo workspace + path deps on `pump-trader` / `ingest-pumpfun`
 - [x] Two bins (`live`, `lab`) from commit 1 with dep-partition enforced
 - [x] `docker-compose.yml` (Postgres + TimescaleDB, port 5556)
 - [x] Migration `0001_init.sql` — Domains A–C + seeds + hypertables
@@ -97,9 +97,9 @@ planned sniper bundle → Jito submit.
 - [x] **Launch + bundle E2E** — template → execute launch → auto-bundle → confirm
   sniper legs appear in ingest feed for our mint
 - [x] **Dep partition CI guard** — `cargo tree -p forge-live` (no duckdb/arrow/parquet);
-  `cargo tree -p forge-lab` (no pump-trader/ingest-laserstream/tonic) — `scripts/dep-partition-check.*` + `.github/workflows/ci.yml`
+  `cargo tree -p forge-lab` (no pump-trader/ingest-*/tonic) — `scripts/dep-partition-check.*` + `.github/workflows/ci.yml`
 - [ ] **Pin borrowed crates** — path dep → pinned `git` rev on `pump-trader` /
-  `ingest-laserstream` once stable
+  `ingest-pumpfun` once stable
 
 See also the verification-status table in [`decisions.md`](decisions.md).
 
@@ -174,14 +174,14 @@ Recorded so they are not forgotten; no schedule.
   Backed by a new `GET /api/launches` (paged, enriched `LaunchListRow`). Single app
   for now (live-only); the two-entry `live`/`lab` split waits on Phase 4.
 - [ ] AWS KMS KEK backend (replace env passphrase for keystore)
-- [ ] Promote `pump-trader` + `ingest-laserstream` to shared git repo if third consumer appears
+- [ ] Promote `pump-trader` + the `ingest-*` stack to a shared git repo if a third consumer appears
 
 ---
 
 ## Immediate next (suggested order)
 
 1. Phase 3 — trading executor + feed-based sell-confirm (Domain E migration first)
-2. Pin borrowed crates to git rev once pump-trader/ingest-laserstream stabilize
+2. Pin borrowed crates to git rev once pump-trader/ingest-* stabilize
 3. Phase 4 — `lake-export` implementation
 
 ---

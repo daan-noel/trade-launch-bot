@@ -11,10 +11,10 @@ libs, and two binaries (`live` = live trading, `lab` = analysis). Deep-dive deta
 | --- | --- | --- | --- |
 | `trading_core` | lib | Everything shared by both bins: `config` (incl. protocol/CU constants), `models`, `storage` (pools + repos), core `services`, core `state`, the actix api framework + auth + SSE bridge, **core handlers**, the trading-free **strategy domain** (`strategies/` = fingerprint matching + metric series + the shared cost/summary kernel; the pure fold lives in `hunter-engine`), and the **ingest contract** (`ingest`). Exposes `configure_core_routes`. | `hunter-engine` (NOT `pump-trader`) |
 | `pump-trader` | lib | Trade execution (`PumpFunTrader`, sims, cashback). Owns protocol/tuning constants in-crate (`constants`, folded in from the former `pump-constants`). See [@arch/trade-execution.md](@arch/trade-execution.md) | — |
-| `ingest-laserstream` | lib | Helius LaserStream gRPC live transport: client→pipeline→db_writer + heartbeat/watchdog (partition maintenance removed — Timescale policies). Exposes its own raw transport API (`Ingest`/`IngestHandle`/`IngestEvent`/`Protocol`); `live/src/ingest/` bridges it onto the `trading_core::ingest` contract. See [@arch/ingest.md](@arch/ingest.md) | **standalone — no workspace deps** (tonic/prost/tokio-stream/solana-sdk/borsh; NOT `trading_core`, NOT `pump-trader`) |
+| `ingest-pumpfun` (+ `ingest-core`, `ingest-laserstream`, `ingest-nats`) | lib | The live read-stack, four crates on three axes: engine · one crate per wire · venue. Exposes `Ingest`/`IngestHandle`/`IngestEvent`/`Protocol`; `live/src/ingest/` bridges it onto the `trading_core::ingest` contract. See [@arch/ingest.md](@arch/ingest.md) | **standalone — no workspace deps** (tonic/prost/tokio-stream/solana-sdk/borsh; NOT `trading_core`, NOT `pump-trader`) |
 | `hunter-engine` | lib | The **pure** strategy fold: `reduce(state, event) -> effects` (no clock/IO/rand, purity-guarded). Metric registry, fingerprint matching, deadness verdict, cost/summary kernel, the on-disk event-log format. Consumed by `trading_core`, `live`, and `lab`. See [@arch/strategies.md](@arch/strategies.md) | **pure — serde/smallvec/chrono-no-clock/uuid only** |
-| `live` | **bin** | Live-trading box: `strategies/engine/` (the live adapters around the fold — decision loop, producers, exec, sinks, event-log recorder), `trader/` (pump-trader shim), deploy services/state/handlers, the `probe` subcommand, deploy `main.rs`. Serves core + deploy routes. | `trading_core` + `hunter-engine` + `ingest-laserstream` + `pump-trader` |
-| `lab` | **bin** | Analysis box (no trading keys, no gRPC): `sweep/` engine, `analyzers/`, local state/handlers, backtest harness, local `main.rs`. Serves core + local routes. See [@arch/sweep.md](@arch/sweep.md) | `trading_core` + rayon/arrow/parquet (NOT `pump-trader`, NOT `ingest-laserstream`) |
+| `live` | **bin** | Live-trading box: `strategies/engine/` (the live adapters around the fold — decision loop, producers, exec, sinks, event-log recorder), `trader/` (pump-trader shim), deploy services/state/handlers, the `probe` subcommand, deploy `main.rs`. Serves core + deploy routes. | `trading_core` + `hunter-engine` + `ingest-pumpfun` + `pump-trader` |
+| `lab` | **bin** | Analysis box (no trading keys, no gRPC): `sweep/` engine, `analyzers/`, local state/handlers, backtest harness, local `main.rs`. Serves core + local routes. See [@arch/sweep.md](@arch/sweep.md) | `trading_core` + rayon/arrow/parquet (NOT `pump-trader`, NOT any `ingest-*` crate) |
 
 **Deliberately-duplicated protocol constants** (program IDs, mints, `LAMPORTS_PER_SOL`)
 live in both `trading_core::config::constants` and `pump_trader::protocol` so the trader
@@ -35,7 +35,7 @@ the bearer-auth middleware (fail-closed on mutating requests) + CORS.
 
 Builds trader → DB pools → caches → `CoreState` → `DeployState`. Long-lived tasks:
 
-- **ingest** (host adapter `live::ingest::spawn_ingest`, which drives `ingest_laserstream::Ingest`): gRPC producer · pipeline · DbWriter
+- **ingest** (host adapter `live::ingest::spawn_ingest`, which drives `ingest_pumpfun::Ingest`): one feed supervisor per wire · decode lanes · DbWriter
 - **the generic engine** (`strategies::engine::spawn_engine`) — the one serialized decision loop, driven by the ingest create + trade ping lanes + tick + confirmed fills; plus its PG recovery reaper
 - **SOL price poller**
 - optional **HTTP server** (core + deploy routes)
@@ -103,7 +103,7 @@ meta index + one-row working set in RAM; kept until re-sim / rule-config change,
 The transport-agnostic contract lives in `trading_core::ingest`: `IngestHandles`, the
 `TraderHook` trait (IoC, keeps transport crates free of `pump-trader`), and re-exports of
 `StrategyPing` / `TradeSignals`. Each ingest crate depends on `trading_core` and exposes one
-`spawn(...)` of this shape; `ingest-laserstream` is the live transport. The deploy `main.rs`
+`spawn(...)` of this shape; the `ingest-*` read-stack is the live feed. The deploy `main.rs`
 is the only caller.
 
 ```text

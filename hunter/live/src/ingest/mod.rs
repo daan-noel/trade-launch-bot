@@ -1,4 +1,4 @@
-//! Host adapter for the `ingest-laserstream` crate.
+//! Host adapter for the `ingest-pumpfun` read-stack.
 //!
 //! Builds the [`Ingest`] session, starts it, spawns the consumer + DB-writer
 //! tasks, and starts the watchdog OS thread. The composition root (`main.rs`)
@@ -19,8 +19,8 @@ use sqlx::PgPool;
 use tokio::sync::{broadcast, mpsc, watch, Notify};
 use tokio::task::JoinHandle;
 
-use ingest_laserstream::{
-    CurveSource, Ingest, IngestConfig, IngestHandle, NatsConfig, PoolIndex, Protocol, PushHooks,
+use ingest_pumpfun::{
+    FeedKind, Ingest, IngestConfig, IngestHandle, NatsConfig, PoolIndex, Protocol, PushHooks,
 };
 
 use trading_core::{
@@ -40,23 +40,23 @@ use watchdog::{DbHeartbeat, spawn_watchdog};
 
 pub use watchdog::BootGate;
 
-/// Map the operator's `ingest.curve_source` string onto the transport enum.
+/// Map the operator's `ingest.curve_source` string onto a feed.
 ///
 /// An unknown value, or `"nats"` with no relay configured, falls back to gRPC —
-/// the curve feed must never end up pointed at a transport that cannot run.
-fn curve_source_of(settings: &AppSettings, has_nats: bool) -> CurveSource {
+/// the curve must never end up pointed at a feed that cannot run.
+fn curve_feed_of(settings: &AppSettings, has_nats: bool) -> FeedKind {
     match settings.curve_source.trim().to_ascii_lowercase().as_str() {
-        "nats" if has_nats => CurveSource::Nats,
+        "nats" if has_nats => FeedKind::Nats,
         "nats" => {
             tracing::warn!(
                 "ingest: curve_source=nats but NATS_URL is unset - staying on LaserStream"
             );
-            CurveSource::Grpc
+            FeedKind::Grpc
         }
-        "grpc" | "" => CurveSource::Grpc,
+        "grpc" | "" => FeedKind::Grpc,
         other => {
             tracing::warn!("ingest: unknown curve_source {other:?} - using grpc");
-            CurveSource::Grpc
+            FeedKind::Grpc
         }
     }
 }
@@ -108,27 +108,23 @@ pub async fn spawn_ingest(
 
     let live = *live_rx.borrow();
 
-    // The NATS transport is built whenever a relay is configured, even when the
+    // The NATS feed is built whenever a relay is configured, even when the
     // operator has the curve on gRPC: it then idles disconnected, which is what
-    // makes `set_curve_source` an instant switch instead of a restart.
+    // makes `set_curve_feed` an instant switch instead of a restart.
     let nats = (!nats_url.trim().is_empty()).then(|| NatsConfig {
         url: nats_url.trim().to_string(),
         subject: nats_subject.trim().to_string(),
         ..NatsConfig::default()
     });
-    let initial_source = curve_source_of(&settings_rx.borrow(), nats.is_some());
-
-    let ingest_config = IngestConfig {
-        curve_source: initial_source,
-        nats,
-        ..IngestConfig::default()
-    };
+    let initial_curve = curve_feed_of(&settings_rx.borrow(), nats.is_some());
 
     let (event_rx, handle) = Ingest::builder()
         .endpoint(endpoint)
         .api_key(api_key)
+        .nats(nats)
+        .curve_feed(initial_curve)
         .protocol(Protocol::pump_fun())
-        .config(ingest_config)
+        .config(IngestConfig::default())
         .push_hooks(push_hooks)
         .build()
         .expect("ingest builder failed")
@@ -190,9 +186,9 @@ pub async fn spawn_ingest(
                 {
                     let s = s_rx.borrow_and_update();
                     h.set_gap_replay(s.gap_replay_on_reconnect, s.gap_replay_max_window_secs);
-                    // Same channel carries the curve-source switch, so flipping it
-                    // on the Settings page re-points the feed with no restart.
-                    h.set_curve_source(curve_source_of(&s, has_nats));
+                    // The same watch carries the curve-feed switch, so flipping
+                    // it on the Settings page re-points the curve with no restart.
+                    h.set_curve_feed(curve_feed_of(&s, has_nats));
                 }
                 if s_rx.changed().await.is_err() {
                     break;

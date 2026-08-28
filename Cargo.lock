@@ -3056,6 +3056,7 @@ dependencies = [
  "http-auth",
  "hunter-core",
  "hunter-engine",
+ "ingest-laserstream",
  "ingest-pumpfun",
  "reqwest",
  "serde",
@@ -3347,8 +3348,29 @@ dependencies = [
  "solana-sdk",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "ingest-laserstream"
+version = "0.1.0"
+dependencies = [
+ "bs58 0.5.1",
+ "ingest-core",
+ "prost",
+ "tokio",
  "tokio-stream",
  "tonic",
+]
+
+[[package]]
+name = "ingest-nats"
+version = "0.1.0"
+dependencies = [
+ "ingest-core",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
  "tracing",
 ]
 
@@ -3362,10 +3384,13 @@ dependencies = [
  "chrono",
  "dashmap 4.0.2",
  "ingest-core",
+ "ingest-laserstream",
+ "ingest-nats",
  "serde_json",
  "solana-sdk",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

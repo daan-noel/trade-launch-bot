@@ -4,7 +4,7 @@
 //! pool→mint index. It exposes two entry points:
 //! - [`Decoder::decode_protobuf`] — self-classifies then dispatches (used by
 //!   backfill / token-sync paths).
-//! - [`Decoder::decode_relevant_pb`] — the hot-path entry; the transport task
+//! - [`Decoder::decode_relevant_pb`] — the hot-path entry; the feed supervisor
 //!   pre-classified the tx so the log scan is not repeated here.
 
 use std::sync::Arc;
@@ -20,22 +20,22 @@ use crate::protocol::Protocol;
 pub use ingest_core::venue::DecodeOutput;
 
 mod create;
-mod grpc;
 mod instructions;
 mod program_registry;
+mod protobuf;
 mod trade;
 
 pub use program_registry::program_friendly_name;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
-/// Which program family a tx matched (computed once, in the transport task).
+/// Which program family a tx matched (computed once, on the feed supervisor).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TxRelevance {
     /// Bonding-curve tx that **creates** a token (`create` / `create_v2`).
     ///
     /// Decodes exactly like [`TxRelevance::Curve`] — the tag drives the create
-    /// fast lane (`IngestVenue::is_create_lane` → dedicated transport→decode
+    /// fast lane (`IngestVenue::is_create_lane` → dedicated feed→decode
     /// channel). A create that is missed here (and so arrives tagged `Curve`)
     /// costs a routing hint, never a decoded event: both arms run the same decode.
     Create,
@@ -68,7 +68,7 @@ pub struct Decoder {
     /// explicit pool argument (backfill), set on the live path.
     pub(crate) pool_index: Option<PoolIndex>,
     /// Fires whenever a new pool is auto-registered (via `TokenMigrated`) so
-    /// the transport task resubscribes with the updated pool set. `None` on
+    /// the feed supervisor resubscribes with the updated pool set. `None` on
     /// backfill paths.
     pub(crate) pools_changed: Option<Arc<Notify>>,
 }
@@ -88,15 +88,15 @@ impl Decoder {
         self
     }
 
-    /// Attach the Notify used to signal pool-set changes to the transport task.
+    /// Attach the Notify used to signal pool-set changes to the feed supervisor.
     pub fn with_pools_changed(mut self, notify: Arc<Notify>) -> Self {
         self.pools_changed = Some(notify);
         self
     }
 
-    /// Classify a tx by log messages. **Backfill only** — the live transport
-    /// pre-filter is [`Decoder::classify_accounts`], which reads the message
-    /// instead of substring-scanning every log line. Kept for the backfill path
+    /// Classify a tx by log messages. **Backfill only** — the live pre-filter is
+    /// [`Decoder::classify_accounts`], which reads the message instead of
+    /// substring-scanning every log line. Kept for the backfill path
     /// (and as the parity reference the guard test measures the new classify
     /// against). Returns `None` when the tx is not relevant to any tracked
     /// program.

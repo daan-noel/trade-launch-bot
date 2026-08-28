@@ -4,9 +4,9 @@ Two separate mechanisms handle failures at different layers.
 
 ---
 
-## Mechanism 1 — gRPC Stream Reconnect (`shared/ingest/core/src/transport/mod.rs`)
+## Mechanism 1 — Stream Reconnect (`shared/ingest/core/src/supervisor.rs`)
 
-Runs inside the transport tokio task (was the transport (`shared/ingest/core/src/transport/mod.rs`) before the ingest crate split).
+Runs inside the per-feed supervisor task. The loop is wire-neutral and shared by every feed; where the wires genuinely differ it reads `FeedCaps` (a feed with `replay: false` never sends a resume point, and sheds under back-pressure instead of reconnecting).
 **Never restarts the process** — drops and re-opens the gRPC subscription only.
 
 ### Flow

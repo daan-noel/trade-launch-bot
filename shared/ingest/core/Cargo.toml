@@ -2,7 +2,7 @@
 name = "ingest-core"
 version = "0.1.0"
 edition = "2021"
-description = "Venue-agnostic ingest engine: Yellowstone/LaserStream gRPC transport + reconnect, the `IngestVenue` trait seam, generic `Ingest<V>` session, neutral IngestEvent, config (incl. provider Auth), slot-anchor, and RPC-backfill. No pump.fun coupling."
+description = "Venue-agnostic ingest ENGINE: the `Feed` transport seam, the one reconnect/route supervisor, the `IngestVenue` seam, the generic `Ingest<V>` session, neutral IngestEvent, proto MESSAGES (no gRPC client), the single JSON->protobuf adapter, slot-anchor, and RPC-backfill. Knows no wire, no venue, and no env."
 
 [lib]
 name = "ingest_core"
@@ -15,27 +15,21 @@ default = []
 raw-tx = []
 # Enables `convert` - the ONE JSON-transaction -> SubscribeUpdateTransaction
 # adapter, shared by the RPC backfill and every JSON live feed (NATS, WebSocket).
-# Both `rpc-backfill` and `nats` turn it on; it is not useful alone.
+# `rpc-backfill` turns it on, and so does `ingest-nats`; it is not useful alone.
 json-tx = ["dep:serde_json"]
 # Enables rpc_to_protobuf (backfill: RPC base64 -> SubscribeUpdateTransaction)
 # AND the getSignaturesForAddress / batched-getTransaction JSON-RPC pager. Parses
 # RPC JSON (serde_json) and issues the JSON-RPC calls (reqwest + anyhow).
 rpc-backfill = ["json-tx", "dep:reqwest", "dep:anyhow"]
-# Enables the NATS relay curve transport (`nats`). The client is implemented
-# directly on tokio TCP (see `nats::client`): NATS core is a small line protocol,
-# and every off-the-shelf crate pulls an ed25519/curve25519 stack for nkey auth
-# that cannot co-exist with solana 1.17's pinned curve25519-dalek 3.x.
-nats = ["json-tx", "tokio/net", "tokio/io-util"]
 
 [dependencies]
-# gRPC wire types + transport (generated geyser client uses tonic; prost for
-# the messages; tokio-stream drives the outbound Subscribe request stream).
-tonic = { version = "0.10", features = ["tls", "tls-webpki-roots"] }
+# Wire MESSAGE types only. The generated Yellowstone gRPC *client* lives in
+# `ingest-laserstream` with the rest of that wire, which is what lets this crate
+# carry no tonic and no TLS stack into a consumer that never streams.
 prost = "0.12"
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
-tokio-stream = "0.1"
 
-# Shared session state: pool index (transport ↔ decode ↔ handle) + resubscribe
+# Shared session state: pool index (feed <-> decode <-> handle) + resubscribe
 # signal.
 dashmap = "4.0"
 
@@ -44,15 +38,15 @@ tracing = "0.1"
 thiserror = "1"
 chrono = { version = "0.4", features = ["serde"] }
 
-# Base58 / Base64 (backfill decode)
+# Base58 / Base64 (JSON -> protobuf conversion, backfill decode)
 bs58 = "0.5"
 base64 = "0.22"
 
-# Solana SDK: VersionedTransaction decode in backfill.rs
+# Solana SDK: VersionedTransaction decode in convert.rs
 solana-sdk = "1.17.27"
 bincode = "1.3"
 
-# serde_json: only for the rpc-backfill feature (RPC JSON parsing)
+# serde_json: the json-tx adapter (NATS / WS / RPC backfill JSON parsing)
 serde_json = { version = "1", optional = true }
 # reqwest + anyhow: only for the rpc-backfill feature (the JSON-RPC pager that
 # fetches signatures + transactions). The pure `rpc_to_protobuf` JSON adapter

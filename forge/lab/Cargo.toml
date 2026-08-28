@@ -2,7 +2,7 @@
 name = "forge-lab"
 version.workspace = true
 edition.workspace = true
-description = "ANALYSIS box (workstation only): lake export + sweeps + backtests + wallet analytics + thin HTTP. The Parquet/DuckDB cold tier is now the in-crate `src/lake/` module (was the lake crate). MUST NOT link pump-trader / ingest-laserstream / launcher."
+description = "ANALYSIS box (workstation only): lake export + sweeps + backtests + wallet analytics + thin HTTP. The Parquet/DuckDB cold tier is now the in-crate `src/lake/` module (was the lake crate). MUST NOT link pump-trader / any ingest crate / launcher."
 
 [[bin]]
 name = "forge-lab"
@@ -20,6 +20,6 @@ serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 http-auth.workspace = true
-# NOTE: no ingest-host / launcher / pump-trader / ingest-laserstream. Verify with
+# NOTE: no ingest-host / launcher / pump-trader / ingest-*. Verify with
 # `cargo tree -p forge-lab` (no pump-trader / ingest-laserstream / tonic). lab runs with
 # NO signing keys and NO gRPC.

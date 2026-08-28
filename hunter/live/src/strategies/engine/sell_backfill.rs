@@ -27,7 +27,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use tracing::{info, warn};
 
-use ingest_laserstream::{
+use ingest_pumpfun::{
     backfill::{get_transactions_batch, rpc_to_protobuf, wrap_transaction_result},
     decode::{DecodeOutput, HeliusDecoder},
     event::{IngestEvent, Side},
@@ -122,11 +122,11 @@ pub async fn heal_missing_sell_legs(
 /// neither; `decode_protobuf` self-classifies and routes.
 fn decoder_for(trader: &Arc<PumpFunTrader>, mint: &str) -> HeliusDecoder {
     let protocol = Arc::new(Protocol::pump_fun());
-    let index: ingest_laserstream::PoolIndex = Arc::new(dashmap::DashMap::new());
+    let index: ingest_pumpfun::PoolIndex = Arc::new(dashmap::DashMap::new());
     if let Some(facts) = trader.amm_pool_facts_snapshot(mint) {
         index.insert(facts.pool, mint.to_string());
     }
-    if let Some(pool) = ingest_laserstream::pool::derive_pool(mint, &protocol) {
+    if let Some(pool) = ingest_pumpfun::pool::derive_pool(mint, &protocol) {
         index.insert(pool, mint.to_string());
     }
     HeliusDecoder::new(protocol).with_pool_index(index)

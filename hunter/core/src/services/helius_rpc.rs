@@ -257,7 +257,7 @@ impl HeliusRpc {
     /// Fetch a confirmed transaction (`encoding="base64"`); returns `None` if
     /// missing or failed on-chain. Base64 (not `jsonParsed`) so token_sync can
     /// lower it to protobuf via
-    /// [`crate::ingest_laserstream::adapter_rpc::rpc_to_protobuf`] without losing
+    /// [`crate::ingest_pumpfun::adapter_rpc::rpc_to_protobuf`] without losing
     /// the raw instruction `data` jsonParsed pre-parses away. `meta` stays JSON
     /// regardless of encoding, so the on-chain-error check below is unaffected.
     pub async fn get_transaction(&self, signature: &str) -> anyhow::Result<Option<Value>> {
@@ -385,7 +385,7 @@ impl HeliusRpc {
     /// one cursor-paginated call. `params` is positional: `[address, {options}]`.
     ///
     /// token_sync passes `encoding="base64"` so each item lowers to protobuf via
-    /// [`crate::ingest_laserstream::adapter_rpc::rpc_to_protobuf`] without losing
+    /// [`crate::ingest_pumpfun::adapter_rpc::rpc_to_protobuf`] without losing
     /// the raw instruction `data` jsonParsed pre-parses away. That the endpoint
     /// honors base64 (incl. `meta.loadedAddresses` for versioned txs) is confirmed
     /// by the `--ignored` `gtfa_base64_matches_jsonparsed_decode` harness.
