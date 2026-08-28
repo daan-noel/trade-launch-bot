@@ -1713,13 +1713,13 @@ pub const REGISTRY: &[GroupSpec] = &[
         scope: MetricScope::Token,
         family: MetricFamily::FlowIx,
         strict_params: &[],
-        // Its OWN list, not `m_flow_ix`'s: the two name different things and a build
-        // may sit in exactly one of them (`DumpPatterns::validate_metric_config`).
+        // Its OWN list, not `m_flow_ix`'s: the two name different things. A build may
+        // sit on BOTH, and normally does - see the `dump_ix` module header.
         fingerprint_config: &[FpConfigFieldSpec {
             name: "ix_patterns",
             value_type: "string[][]",
             required: true,
-            description: "Exact ordered instruction-label sequences whose SELLS this                           group counts. Its own list, separate from `m_flow_ix`: a                           build belongs to exactly one of the two, or one sell would                           be counted by both groups. Absent ⇒ both metrics read NaN,                           never 0.",
+            description: "Exact ordered instruction-label sequences whose SELLS this                           group counts. Its own list, separate from `m_flow_ix` and                           free to overlap it: the two ask different questions of one                           transaction, so a sell can be tagged flow AND a dump.                           Absent ⇒ both metrics read NaN, never 0.",
             default_json: None,
             conflicts_with: &[],
         }],
@@ -1730,7 +1730,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::DumpSell,
                 name: "dump_sell",
-                description: "SOL sold since birth through a build on this fingerprint's `m_dump_ix.ix_patterns` - every LEG of every matching transaction, because every leg moves SOL out of the curve.",
+                description: "SOL sold since birth through a build on this fingerprint's `m_dump_ix.ix_patterns` - every LEG of every matching transaction, because every leg moves SOL out of the curve. Independent of the flow split: a build on both lists makes the same sell count here AND in `tagged_sell`, so read the two as separate answers, never as parts of a whole.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: true,
@@ -1765,7 +1765,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinDumpSell,
                 name: "dump_sell",
-                description: "SOL sold through a listed build over the trailing window - every LEG.",
+                description: "SOL sold through a listed build over the trailing window - every LEG. Independent of the flow split, exactly as `m_dump_ix.dump_sell` is.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,

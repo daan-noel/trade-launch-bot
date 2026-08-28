@@ -723,6 +723,40 @@ mod tests {
         assert!(track.value(MetricId::TaggedBuy, crate::metrics::Windows::NONE, None, ts(2.0)).is_nan());
     }
 
+    /// A build on BOTH `m_flow_ix.ix_patterns` and `m_dump_ix.ix_patterns` is counted
+    /// by both groups, and that is the intended reading, not a double count: the flow
+    /// split says the sell is part of the family's trade history, the dump group says
+    /// it carries the dev's dump shape, and the two states are independent. Pinned
+    /// here because the guard that used to forbid the overlap made the only way to
+    /// configure a dump build a deletion from the flow list - which moves those sells
+    /// to untagged and changes what every `tagged_sell` rule measures.
+    #[test]
+    fn one_sell_on_both_lists_counts_in_both_groups() {
+        use crate::metrics::flow_ix::ix_hash;
+        use std::collections::BTreeSet;
+
+        let shared = ix_hash(&["Pump.Fun: Sell", "Token Program: CloseAccount"]);
+        let mut track = TokenTrack::new(ts(0.0));
+        let id = fp(1);
+        track.ensure_flow(id, &FlowPatterns::new(BTreeSet::from([shared])), &[]);
+        track.ensure_dump(id, &DumpPatterns::new(BTreeSet::from([shared])), &[]);
+        track.seed_creator(99);
+
+        let mut t = buy(3.0, 1.0, 20.0, 0.0);
+        t.side = Side::Sell;
+        t.ix_hash = Some(shared);
+        t.wallet_hash = 7;
+        track.on_trade(t);
+
+        let none = crate::metrics::Windows::NONE;
+        let v = |id_m| track.value(id_m, none, Some(id), ts(1.0));
+        assert_eq!(v(MetricId::TaggedSell), 3.0, "the flow split still tags the sell");
+        assert_eq!(v(MetricId::DumpSell), 3.0, "and the dump group still counts it");
+        assert_eq!(v(MetricId::UntaggedSell), 0.0, "neither group steals it from the other");
+        assert_eq!(v(MetricId::TaggedSellCount), 1.0);
+        assert_eq!(v(MetricId::DumpSellCount), 1.0);
+    }
+
     /// **Cross-implementation parity.** Three real token tapes from the lake, replayed
     /// through `TokenTrack`, asserted against the values an independent SQL
     /// implementation computed for the same instant. The rule these metrics carry was

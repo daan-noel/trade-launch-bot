@@ -18,9 +18,9 @@ import { ToggleGroup } from 'components/ui/ToggleGroup';
 
 /** The two lists the cart can stage into. `tagged` is `m_flow_ix.ix_patterns` (which
  *  trades the flow split calls volume-side); `dump` is `m_dump_ix.ix_patterns` (the
- *  builds whose SELLS `dump_sell_count` counts). A build may sit in exactly one, so
- *  the cart states which list it is about to write rather than leaving Apply
- *  ambiguous. */
+ *  builds whose SELLS `dump_sell_count` counts). A build may sit on BOTH, so the cart
+ *  states which list it is about to write rather than leaving Apply ambiguous - the
+ *  risk is writing the RIGHT build into the WRONG list, not an illegal overlap. */
 const STAGE_LISTS: { value: IxPatternList; label: string; title: string }[] = [
   { value: 'tagged', label: 'tagged', title: 'Stage into m_flow_ix.ix_patterns' },
   { value: 'dump', label: 'dump', title: 'Stage into m_dump_ix.ix_patterns' },

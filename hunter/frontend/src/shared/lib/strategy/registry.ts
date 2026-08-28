@@ -313,8 +313,9 @@ export function metricConfigWithDumpPatterns(
  *  `tagged` is `m_flow_ix.ix_patterns` - which trades the flow split calls
  *  volume-side. `dump` is `m_dump_ix.ix_patterns` - the builds whose SELLS
  *  `dump_sell` / `dump_sell_count` count. Two questions about the same ix structure,
- *  and the backend rejects a build present in both, so every staging surface has to
- *  say which one it means rather than leaving a click ambiguous. */
+ *  and a build may answer yes to both, so every staging surface has to say which one
+ *  it means rather than leaving a click ambiguous - a click that lands in the wrong
+ *  list is the real risk, since the overlap itself is legal. */
 export type IxPatternList = 'tagged' | 'dump';
 
 /** Read one list off a `metric_config`. */

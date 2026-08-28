@@ -8,6 +8,16 @@
 //! different subject, its own list, and no state at all on a trade that does not
 //! match.
 //!
+//! **The two lists overlap, by design.** A build on `m_dump_ix.ix_patterns` may sit
+//! on `m_flow_ix.ix_patterns` too, and normally does: a dev's dump shape is a sell
+//! build of a family whose whole trade history the flow split already tags. The
+//! lists answer different questions about one transaction — is this trade part of
+//! the family's flow, and is this sell the dump shape — so a build that answers yes
+//! to both belongs on both. Nothing sums across the groups: [`TokenTrack`](super::track::TokenTrack) reads
+//! them from separate state, so one sell landing in `tagged_sell` AND in `dump_sell`
+//! is two classifiers agreeing, not one event counted twice. Read them as two
+//! answers, never as parts of a whole.
+//!
 //! **No wallet rules.** `m_flow_ix` can tag by contagion or by creator identity;
 //! this cannot, and deliberately has no such knob. A build is a property of the
 //! transaction. Contagion would make every later sell from a wallet that once sold
@@ -94,12 +104,9 @@ impl DumpPatterns {
         Some(Self { hashes })
     }
 
-    /// Shape errors in `metric_config["m_dump_ix"]`, plus the one cross-group rule.
-    ///
-    /// A build present in BOTH this list and `m_flow_ix.ix_patterns` is rejected. It
-    /// is legal arithmetic and always a mistake: the same sell would increment
-    /// `tagged_sell_count` and `dump_sell_count`, so a rule reading both counts one
-    /// event twice and neither number means what its description says.
+    /// Shape errors in `metric_config["m_dump_ix"]`. Shape only — there is no
+    /// cross-group rule, because the two lists overlap by design (see the module
+    /// header).
     pub fn validate_metric_config(cfg: &Value) -> Result<(), String> {
         let Some(obj) = cfg.get(CONFIG_KEY) else {
             return Ok(());
@@ -113,40 +120,13 @@ impl DumpPatterns {
         let Some(rows) = arr.as_array() else {
             return Err(format!("{CONFIG_KEY}.ix_patterns must be an array of label arrays"));
         };
-        let mut mine = BTreeSet::new();
         for row in rows {
             let Some(labels) = row.as_array() else {
                 return Err(format!("{CONFIG_KEY}.ix_patterns row must be an array of strings"));
             };
-            let mut seq: Vec<&str> = Vec::with_capacity(labels.len());
             for l in labels {
-                let Some(s) = l.as_str() else {
+                if !l.is_string() {
                     return Err(format!("{CONFIG_KEY}.ix_patterns label must be a string"));
-                };
-                seq.push(s);
-            }
-            if !seq.is_empty() {
-                mine.insert(ix_hash(&seq));
-            }
-        }
-        if let Some(flow) = cfg
-            .get(super::flow_ix::CONFIG_KEY)
-            .and_then(|f| f.get("ix_patterns"))
-            .and_then(|p| p.as_array())
-        {
-            for row in flow {
-                let Some(labels) = row.as_array() else { continue };
-                let mut seq: Vec<&str> = Vec::with_capacity(labels.len());
-                for l in labels {
-                    let Some(s) = l.as_str() else { continue };
-                    seq.push(s);
-                }
-                if !seq.is_empty() && mine.contains(&ix_hash(&seq)) {
-                    return Err(format!(
-                        "the build {seq:?} is in both m_flow_ix.ix_patterns and \
-                         {CONFIG_KEY}.ix_patterns - one sell would be counted by both \
-                         groups. Put each build in exactly one list."
-                    ));
                 }
             }
         }
@@ -427,23 +407,22 @@ mod tests {
         assert_eq!(st.value(MetricId::DumpSellCount, None, ts(), c(100)), 1.0);
     }
 
-    /// One build may not sit in both lists — the same sell would be counted by
-    /// `tagged_sell_count` and by `dump_sell_count`.
+    /// One build in BOTH lists is legal and is the normal case — the dev's dump
+    /// shape is a sell build of a family the flow split already tags. Rejecting it
+    /// would force the only fix to be deleting the build from `m_flow_ix`, which
+    /// silently moves those sells to untagged.
     #[test]
-    fn a_build_in_both_lists_is_rejected() {
+    fn a_build_may_sit_in_both_lists() {
         let shared = json!(["Pump.Fun: Sell", "Token Program: CloseAccount"]);
         let cfg = json!({
             "m_flow_ix": {"ix_patterns": [shared]},
             "m_dump_ix": {"ix_patterns": [shared]},
         });
-        let e = DumpPatterns::validate_metric_config(&cfg).unwrap_err();
-        assert!(e.contains("both"), "{e}");
-
-        let ok = json!({
-            "m_flow_ix": {"ix_patterns": [["Pump.Fun: Buy"]]},
-            "m_dump_ix": {"ix_patterns": [shared]},
-        });
-        assert!(DumpPatterns::validate_metric_config(&ok).is_ok());
+        assert!(DumpPatterns::validate_metric_config(&cfg).is_ok());
+        // And it compiles into this group's list unchanged: the overlap is not
+        // quietly dropped on the way in either.
+        let p = DumpPatterns::from_metric_config(&cfg).expect("configured");
+        assert!(p.matches(&sell(1.0, Some(ix_hash(DUMP)), 100, 0)));
     }
 
     #[test]

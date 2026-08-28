@@ -339,6 +339,17 @@ describe('dump patterns', () => {
     expect(patternsForList(cfg, 'dump')).toEqual(dump);
   });
 
+  // A dev's dump shape is a sell build of a family the flow split already tags, so
+  // the same sequence on both lists is the normal configuration, not a conflict.
+  // Neither writer may quietly evict it from the other list to "resolve" that.
+  it('keeps one build on BOTH lists', () => {
+    let cfg: Record<string, unknown> = {};
+    cfg = metricConfigWithList(cfg, dump, 'tagged');
+    cfg = metricConfigWithList(cfg, dump, 'dump');
+    expect(patternsForList(cfg, 'tagged')).toEqual(dump);
+    expect(patternsForList(cfg, 'dump')).toEqual(dump);
+  });
+
   it('drops the group when the last pattern goes, so the metrics read NaN not 0', () => {
     const out = metricConfigWithDumpPatterns({ m_dump_ix: { ix_patterns: dump } }, []);
     expect('m_dump_ix' in out).toBe(false);

@@ -89,8 +89,9 @@ export interface IxPatternTarget {
   setList: (list: IxPatternList) => void;
   /** The ACTIVE list's patterns — what the badge classifies against. */
   patterns: string[][];
-  /** Keys of the list a toggle is NOT writing into, so a row can show that it is
-   *  already claimed by the other one. A build may sit in exactly one. */
+  /** Keys of the list a toggle is NOT writing into, so a row can show that the
+   *  other one also counts it. A build may sit on both - the mark is information,
+   *  not a conflict. */
   otherKeys: ReadonlySet<string> | null;
   /** {@link patterns} as `flowPatternKeys`. Falls back to the host's own keys
    *  when nothing is targeted, so a read-only panel classifies as before. */
@@ -184,8 +185,8 @@ export function useIxPatternTarget({
     [target, savedPatterns, list],
   );
 
-  // The other list, for the "already in dump" / "already tagged" marker. Empty
-  // without a target: with nothing to write to there is no second list to be in.
+  // The other list, for the "also dump" / "also tagged" marker. Empty without a
+  // target: with nothing to write to there is no second list to be in.
   const otherKeys = useMemo(
     () =>
       target

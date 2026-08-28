@@ -4,8 +4,8 @@ import { ToggleGroup } from 'components/ui/ToggleGroup';
 import type { IxPatternList, IxPatternTarget } from 'hooks/useIxPatternTarget';
 
 /** The two lists a badge click can write into. They answer different questions
- *  about the same ix structure, and a build may sit in exactly one, so the strip
- *  states which one is live rather than leaving the click ambiguous. */
+ *  about the same ix structure - and a build may sit on BOTH - so the strip states
+ *  which one is live rather than leaving the click ambiguous. */
 const LISTS: { value: IxPatternList; label: string; title: string }[] = [
   {
     value: 'tagged',
