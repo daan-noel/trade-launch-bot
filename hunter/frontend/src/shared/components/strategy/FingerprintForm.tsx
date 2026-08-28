@@ -19,14 +19,17 @@ import {
 import { axisPredicateText } from 'lib/strategy/fingerprintGrammar';
 import {
   findGroup,
+  dumpPatternsFromConfig,
   flowClassifierFromConfig,
   ixMarkers,
+  metricConfigWithDumpPatterns,
   metricConfigWithFlowClassifier,
   useStrategyRegistry,
   type FlowClassifier,
   type FpConfigFieldSpec,
   type MarkerSide,
   type StrategyRegistry,
+  DUMP_GROUP,
 } from 'lib/strategy/registry';
 import { fingerprintAutoName, isStaleAutoName } from 'lib/strategy/fingerprintNameFromGroupKey';
 import { FINGERPRINT_FIELD_HELP, type HelpTip } from 'lib/strategy/strategyHelp';
@@ -66,6 +69,10 @@ interface FormState {
    *  as a whole: a save that rebuilds it from a subset lands as a full write and drops
    *  the rest, which is how the marker masks used to be deleted on every edit. */
   flow: FlowClassifier;
+  /** `m_dump_ix.ix_patterns` — the builds whose SELLS `dump_sell` / `dump_sell_count`
+   *  count. A separate list from the classifier's, and separately optional: a
+   *  fingerprint may configure either group, both, or neither. */
+  dump_patterns: string[][];
   /** The ORIGINAL metric_config, whole. The save merges into this rather than
    *  rebuilding from the fields above, so every key the form does not render — other
    *  groups, and any `m_flow_ix` key added later — survives an edit. */
@@ -89,6 +96,7 @@ function fromFingerprint(fp?: Fingerprint, reg?: StrategyRegistry): FormState {
     ix_labels: formatIxLabelsText(labels?.kind === 'sequence' ? labels.labels : null),
     wildcard: fp?.wildcard ?? false,
     flow: flowClassifierFromConfig(cfg, reg),
+    dump_patterns: dumpPatternsFromConfig(cfg),
     metric_config_prev: cfg,
   };
 }
@@ -133,7 +141,12 @@ function toDraft(s: FormState): FingerprintDraft {
     name: s.name.trim(),
     wildcard: s.wildcard,
     criteria: toCriteria(s).criteria,
-    metric_config: metricConfigWithFlowClassifier(s.metric_config_prev, s.flow),
+    // Each group through its own writer, chained so both land in one config and
+    // neither drops what the other owns.
+    metric_config: metricConfigWithDumpPatterns(
+      metricConfigWithFlowClassifier(s.metric_config_prev, s.flow),
+      s.dump_patterns,
+    ),
   };
 }
 
@@ -355,6 +368,19 @@ export function FingerprintForm({
   // The `m_flow_ix` editor is generated from the group's declared fields, so a field
   // added to the registry gets its control and its tooltip with no change here.
   const flowFields = findGroup(registry, 'm_flow_ix')?.fingerprint_config ?? [];
+  // The dump list is one declared field, so it needs no generated editor — but it is
+  // still read from the registry, so a group that stops declaring it stops rendering.
+  const dumpField = findGroup(registry, DUMP_GROUP)?.fingerprint_config?.find(
+    (f) => f.name === 'ix_patterns',
+  );
+  const dumpTip: HelpTip = {
+    title: `${DUMP_GROUP}.ix_patterns — the builds counted as dumps`,
+    body: dumpField?.description
+      ? `${dumpField.description}
+
+${FINGERPRINT_FIELD_HELP.dump_ix_patterns.body}`
+      : FINGERPRINT_FIELD_HELP.dump_ix_patterns.body,
+  };
   const setFlow = (patch: Partial<FlowClassifier>) =>
     setS((p) => ({ ...p, flow: { ...p.flow, ...patch, configured: true } }));
   const ixParsed = useMemo(() => parseIxLabelsText(s.ix_labels), [s.ix_labels]);
@@ -472,6 +498,17 @@ export function FingerprintForm({
           disabled={submitting}
           onChange={setFlow}
         />
+      )}
+
+      {dumpField && (
+        <div className="flex flex-col gap-1 rounded border border-white/10 p-2 text-[11px] text-text-dim">
+          <LabelTip tip={dumpTip}>{DUMP_GROUP} · dump builds</LabelTip>
+          <IxPatternsEditor
+            patterns={s.dump_patterns}
+            onChange={(p) => set('dump_patterns', p)}
+            disabled={submitting}
+          />
+        </div>
       )}
 
       <div className="flex items-center justify-between gap-2">

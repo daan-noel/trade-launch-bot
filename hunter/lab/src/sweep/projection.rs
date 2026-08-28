@@ -194,6 +194,11 @@ pub fn to_trade_lite(ct: &CorpusTrade) -> TradeLite {
         wallet_hash: ct.flow.wallet_hash,
         slot: ct.slot,
         marker_bits: ct.flow.marker_bits,
+        // Which instruction of its transaction this is. A bundle selling several
+        // wallets' bags emits one trade per leg, all carrying the same `ix_labels`,
+        // so `m_dump_ix`'s transaction count reads leg 0 only. Saturates: the byte is
+        // only ever compared against 0, and a tx never carries 255 legs.
+        leg_index: ct.leg_index.min(u8::MAX as u32) as u8,
     }
 }
 

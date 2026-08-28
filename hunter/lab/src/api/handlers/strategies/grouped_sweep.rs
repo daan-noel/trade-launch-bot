@@ -2030,11 +2030,9 @@ pub async fn promote_group(
             draft_fp.metric_config = serde_json::json!({
                 "m_flow_ix": { "ix_patterns": patterns }
             });
-            if let Err(e) =
-                hunter_engine::metrics::flow_ix::FlowPatterns::validate_metric_config(
-                    &draft_fp.metric_config,
-                )
-            {
+            if let Err(e) = hunter_engine::metrics::validate_fingerprint_metric_config(
+                &draft_fp.metric_config,
+            ) {
                 return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
             }
         }
@@ -2062,7 +2060,7 @@ pub async fn promote_group(
         });
         if fp.metric_config != want {
             if let Err(e) =
-                hunter_engine::metrics::flow_ix::FlowPatterns::validate_metric_config(&want)
+                hunter_engine::metrics::validate_fingerprint_metric_config(&want)
             {
                 return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
             }

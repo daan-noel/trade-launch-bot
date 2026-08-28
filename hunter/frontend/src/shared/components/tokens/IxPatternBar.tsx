@@ -1,6 +1,23 @@
 import { Badge } from 'components/ui/Badge';
 import { Select } from 'components/ui/Select';
-import type { IxPatternTarget } from 'hooks/useIxPatternTarget';
+import { ToggleGroup } from 'components/ui/ToggleGroup';
+import type { IxPatternList, IxPatternTarget } from 'hooks/useIxPatternTarget';
+
+/** The two lists a badge click can write into. They answer different questions
+ *  about the same ix structure, and a build may sit in exactly one, so the strip
+ *  states which one is live rather than leaving the click ambiguous. */
+const LISTS: { value: IxPatternList; label: string; title: string }[] = [
+  {
+    value: 'tagged',
+    label: 'tagged',
+    title: 'm_flow_ix.ix_patterns — which trades the flow split calls volume-side',
+  },
+  {
+    value: 'dump',
+    label: 'dump',
+    title: 'm_dump_ix.ix_patterns — the builds whose SELLS dump_sell_count counts',
+  },
+];
 
 /**
  * The strip above a chart's trades table: which fingerprint's
@@ -40,6 +57,8 @@ export function IxPatternBar({
     fingerprints,
     targetId,
     setTargetId,
+    list,
+    setList,
     patterns,
     activeRuleCount,
     inferred,
@@ -51,9 +70,17 @@ export function IxPatternBar({
 
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
-      <Badge variant="info" size="sm">
-        Tagged patterns
+      <Badge variant={list === 'dump' ? 'warning' : 'info'} size="sm">
+        {list === 'dump' ? 'Dump builds' : 'Tagged patterns'}
       </Badge>
+      <ToggleGroup
+        size="sm"
+        tone="neutral"
+        aria-label="Which pattern list a badge click writes into"
+        value={list}
+        onChange={setList}
+        options={LISTS}
+      />
       <span className="font-mono text-[11px] text-text-dim">
         {count} pattern{count === 1 ? '' : 's'}
       </span>
@@ -62,7 +89,7 @@ export function IxPatternBar({
         fieldSize="sm"
         value={targetId ?? ''}
         onChange={(e) => setTargetId(e.target.value || null)}
-        title="Fingerprint the Tagged badges write to"
+        title="Fingerprint the badges write to"
         className="max-w-[16rem]"
       >
         <option value="">Edit patterns of…</option>
@@ -76,7 +103,7 @@ export function IxPatternBar({
       {saving && <span className="text-[11px] text-text-dim">Saving…</span>}
       {!targetId && (
         <span className="text-[11px] text-text-dim">
-          Pick a fingerprint to make the Tagged badges editable.
+          Pick a fingerprint to make the badges editable.
         </span>
       )}
       {/* A guessed target is never presented as a known one: this host had no
@@ -94,14 +121,14 @@ export function IxPatternBar({
           answer for a different row than the chart's own lines. */}
       {offHost && (
         <span className="text-[11px] text-warning">
-          Not this chart&rsquo;s fingerprint — the Tagged badges follow the picked one, the chart
+          Not this chart&rsquo;s fingerprint — the badges follow the picked one, the chart
           lines do not.
         </span>
       )}
       {activeRuleCount > 0 && (
         <span className="text-[11px] text-warning">
           {activeRuleCount} active rule{activeRuleCount === 1 ? '' : 's'} use this fingerprint —
-          editing changes how they classify flow.
+          editing changes what they read.
         </span>
       )}
       {error && <span className="text-[11px] text-red">{error}</span>}

@@ -357,6 +357,13 @@ pub struct CompiledRule {
     /// every `m_flow_window` span in the whole rule set, folded on every trade, read
     /// by nothing.
     pub ix_windows: SmallVec<[crate::metrics::WindowSpec; 2]>,
+    /// Distinct `m_dump_ix_window` spans — drive
+    /// [`TokenTrack::ensure_dump`](crate::metrics::track::TokenTrack::ensure_dump),
+    /// which opens one deque per fingerprint on its OWN build list. Separate from
+    /// [`ix_windows`](Self::ix_windows) for the same reason that bucket is separate
+    /// from `flow_windows`: the two groups read different lists into different
+    /// buffers, and a rule reading one must not open the other.
+    pub dump_windows: SmallVec<[crate::metrics::WindowSpec; 2]>,
     /// Per entry-metric mono kills (for derived-unsatisfiability disarm).
     pub mono_kills: SmallVec<[MonoMetricKill; 2]>,
     /// How long this rule's readings can still move without a trade — see
@@ -446,12 +453,14 @@ impl CompiledRule {
         let mut crowd_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
         let mut price_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
         let mut ix_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
+        let mut dump_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
         let stage_reqs = scale_out.iter().flat_map(|s| s.reqs.iter());
         for r in entry_reqs.iter().chain(exit_reqs.iter()).chain(stage_reqs) {
             let bucket = match group_of(r.metric).id {
                 MetricGroupId::PriceWindow => &mut price_windows,
                 MetricGroupId::CrowdWindow => &mut crowd_windows,
                 MetricGroupId::FlowIxWindow => &mut ix_windows,
+                MetricGroupId::DumpIxWindow => &mut dump_windows,
                 _ => &mut flow_windows,
             };
             // Both axes: a two-window group needs a buffer for each of them, and
@@ -519,6 +528,7 @@ impl CompiledRule {
             crowd_windows,
             price_windows,
             ix_windows,
+            dump_windows,
             mono_kills,
             clock_horizons,
             reentry: rule.params.reentry,

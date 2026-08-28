@@ -580,6 +580,11 @@ fn trade_lite(t: &Trade) -> TradeLite {
         slot: t.slot,
         marker_bits: marker_bits_from_labels_value(&t.instruction_labels),
         wallet_hash: wallet_hash(&t.wallet_address),
+        // Which instruction of its transaction this is. A bundle selling several
+        // wallets' bags emits one trade per leg, all carrying the same `ix_labels`,
+        // so `m_dump_ix`'s transaction count reads leg 0 only. Saturates: the byte is
+        // only ever compared against 0, and a tx never carries 255 legs.
+        leg_index: t.leg_index.min(u8::MAX as u32) as u8,
     }
 }
 

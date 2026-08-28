@@ -39,9 +39,10 @@ import {
 } from 'store/sharedEndpoints';
 import { fingerprintsHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
-  metricConfigWithIxPatterns,
-  ixPatternsFromConfig,
   flowWalletRules,
+  metricConfigWithList,
+  patternsForList,
+  type IxPatternList,
   withFlowWalletRules,
 } from 'lib/strategy/registry';
 import {
@@ -349,6 +350,10 @@ export function FlowDiscoveryPage() {
   /** `m_flow_ix`'s two wallet rules, seeded from the target fingerprint. Both default
    *  true, matching the backend, so a bind-created fingerprint reads the same here. */
   const [walletRules, setWalletRules] = useState(() => flowWalletRules(null));
+  /** Which list Apply writes the draft into. Switching it reseeds the draft from
+   *  that list, so the cart always shows the list it is about to overwrite —
+   *  applying a tagged draft onto the dump key would be a silent list swap. */
+  const [stageInto, setStageInto] = useState<IxPatternList>('tagged');
   const [applyError, setApplyError] = useState<string | null>(null);
   const [applyOk, setApplyOk] = useState<string | null>(null);
   const [selectedTokenMint, setSelectedTokenMint] = useState<string | null>(null);
@@ -647,7 +652,7 @@ export function FlowDiscoveryPage() {
   const autoMatchedFp = selectedGroup ? resolveGroupFp(selectedGroup.group_key) : null;
   const targetFp: Fingerprint | null =
     (targetFpId && fingerprints.find((f) => f.id === targetFpId)) || null;
-  const currentPatterns = ixPatternsFromConfig(targetFp?.metric_config ?? {});
+  const currentPatterns = patternsForList(targetFp?.metric_config ?? {}, stageInto);
   const savedWalletRules = flowWalletRules(targetFp?.metric_config);
 
   /** Point the apply target at a fingerprint and load its SAVED patterns into the
@@ -661,11 +666,22 @@ export function FlowDiscoveryPage() {
     (id: string | null) => {
       setTargetFpId(id);
       const fp = id ? fingerprints.find((f) => f.id === id) : null;
-      setDraftPatterns(fp ? ixPatternsFromConfig(fp.metric_config) : []);
+      setDraftPatterns(fp ? patternsForList(fp.metric_config, stageInto) : []);
       setWalletRules(flowWalletRules(fp?.metric_config));
       setApplyOk(null);
     },
-    [fingerprints],
+    [fingerprints, stageInto],
+  );
+
+  /** Point staging at the other list and reseed from it. */
+  const changeStageInto = useCallback(
+    (list: IxPatternList) => {
+      setStageInto(list);
+      const fp = targetFpId ? fingerprints.find((f) => f.id === targetFpId) : null;
+      setDraftPatterns(fp ? patternsForList(fp.metric_config, list) : []);
+      setApplyOk(null);
+    },
+    [fingerprints, targetFpId],
   );
 
   /** The seed ran before the fingerprint list had loaded, so its "no fingerprint"
@@ -808,8 +824,10 @@ export function FlowDiscoveryPage() {
             wildcard: targetFp.wildcard,
             // Into the existing config, never over it: the PUT replaces the row, so
             // the other groups and the classifier's own flags have to be carried.
+            // Into the list being staged, through that group's own writer. The
+            // wallet rules ride along only on the tagged list — `m_dump_ix` has none.
             metric_config: withFlowWalletRules(
-              metricConfigWithIxPatterns(patterns, targetFp.metric_config),
+              metricConfigWithList(targetFp.metric_config ?? {}, patterns, stageInto),
               walletRules,
             ),
           },
@@ -1175,6 +1193,8 @@ export function FlowDiscoveryPage() {
                 onChange={setDraftPatterns}
                 currentPatterns={currentPatterns}
                 targetFp={targetFp}
+                stageInto={stageInto}
+                onStageIntoChange={changeStageInto}
                 walletRules={walletRules}
                 savedWalletRules={savedWalletRules}
                 onWalletRulesChange={setWalletRules}

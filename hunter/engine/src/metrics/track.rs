@@ -23,6 +23,7 @@ use crate::fingerprint::FingerprintId;
 
 use super::crowd_window::CrowdWindowState;
 use super::flow_lifetime::FlowLifetimeState;
+use super::dump_ix::{DumpPatterns, DumpState};
 use super::flow_ix::{FlowPatterns, FlowState};
 use super::flow_window::WindowState;
 use super::price_lifetime::PriceLifetimeState;
@@ -60,6 +61,11 @@ pub struct TokenTrack {
     crowd_windows: BTreeMap<super::WindowKey, CrowdWindowState>,
     /// Flow classifier state, keyed by fingerprint (pattern sets differ).
     flow: BTreeMap<FingerprintId, FlowState>,
+    /// `m_dump_ix` state, keyed by fingerprint. Apart from `flow` for the reason
+    /// `crowd_windows` is apart from `windows`: it reads a DIFFERENT list and stores
+    /// nothing at all for a trade that does not match one, so a rule reading no dump
+    /// metric must not pay a deque push per trade to carry it.
+    dump: BTreeMap<FingerprintId, DumpState>,
     /// Creator wallet hash from `TokenCreated` — applied to every FlowState.
     creator_wallet_hash: Option<u64>,
     /// Last observed *priced* SOL depth (`vsol`), for price impact only. Not a
@@ -83,6 +89,7 @@ impl TokenTrack {
             n_prints: 0,
             priced_reserves: f64::NAN,
             flow: BTreeMap::new(),
+            dump: BTreeMap::new(),
             creator_wallet_hash: None,
         }
     }
@@ -137,6 +144,23 @@ impl TokenTrack {
         }
     }
 
+    /// Register fingerprint-scoped dump state (idempotent). Same adopt-on-reload
+    /// contract as [`ensure_flow`](Self::ensure_flow): an edited build list moves a
+    /// live token's future, never its past. No creator seed — this group has no
+    /// wallet rule to seed.
+    pub fn ensure_dump(
+        &mut self,
+        fp: FingerprintId,
+        patterns: &DumpPatterns,
+        windows: &[super::WindowSpec],
+    ) {
+        let state = self.dump.entry(fp).or_insert_with(|| DumpState::new(patterns.clone()));
+        state.set_patterns(patterns);
+        for &w in windows {
+            state.ensure_window(w);
+        }
+    }
+
     /// Seed the creator wallet (volume-side unconditionally) on every flow state.
     pub fn seed_creator(&mut self, hash: u64) {
         self.creator_wallet_hash = Some(hash);
@@ -177,6 +201,9 @@ impl TokenTrack {
         }
         for flow in self.flow.values_mut() {
             flow.on_trade(&t, cur);
+        }
+        for dump in self.dump.values_mut() {
+            dump.on_trade(&t, cur);
         }
     }
 
@@ -326,6 +353,15 @@ impl TokenTrack {
                     None => f64::NAN,
                 }
             }
+            DumpSell | DumpSellCount | WinDumpSell | WinDumpSellCount => {
+                let Some(fp) = fingerprint else {
+                    return f64::NAN;
+                };
+                match self.dump.get(&fp) {
+                    Some(d) => d.value(id, window, now, cur),
+                    None => f64::NAN,
+                }
+            }
             // Position-scoped metrics have no token state — they read from a
             // `PositionCtx` (see `metrics::position`), never the track. Before entry
             // (the only place `TokenTrack::value` reaches them, via the `can_enter`
@@ -407,6 +443,7 @@ mod tests {
             at: ts(1.0),
             ix_hash: Some(bot),
             wallet_hash: 11,
+            leg_index: 0,
         });
         assert_eq!(track.value(MetricId::UntaggedBuy, crate::metrics::Windows::NONE, Some(fp), ts(1.0)), 1.0);
 
@@ -423,6 +460,7 @@ mod tests {
             at: ts(2.0),
             ix_hash: Some(bot),
             wallet_hash: 12,
+            leg_index: 0,
         });
         // The new trade classifies volume-side; the already-folded one keeps its past.
         assert_eq!(track.value(MetricId::TaggedBuy, crate::metrics::Windows::NONE, Some(fp), ts(2.0)), 2.0);
@@ -891,6 +929,7 @@ mod tests {
                     at: ts(at),
                     ix_hash: None,
                     wallet_hash: wallet,
+                    leg_index: 0,
                 });
             }
             let now = ts(c.now);

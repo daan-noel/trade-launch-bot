@@ -9,7 +9,22 @@ import { EmptyState } from 'components/ui/EmptyState';
 import { IconButton } from 'components/ui/IconButton';
 import { CheckIcon, CloseIcon, EditIcon, LinkIcon, SpinnerIcon, TrashIcon } from 'components/ui/icons';
 import { DISCOVERY_FIELD_HELP, FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
-import { metricConfigWithIxPatterns, withFlowWalletRules } from 'lib/strategy/registry';
+import {
+  metricConfigWithList,
+  withFlowWalletRules,
+  type IxPatternList,
+} from 'lib/strategy/registry';
+import { ToggleGroup } from 'components/ui/ToggleGroup';
+
+/** The two lists the cart can stage into. `tagged` is `m_flow_ix.ix_patterns` (which
+ *  trades the flow split calls volume-side); `dump` is `m_dump_ix.ix_patterns` (the
+ *  builds whose SELLS `dump_sell_count` counts). A build may sit in exactly one, so
+ *  the cart states which list it is about to write rather than leaving Apply
+ *  ambiguous. */
+const STAGE_LISTS: { value: IxPatternList; label: string; title: string }[] = [
+  { value: 'tagged', label: 'tagged', title: 'Stage into m_flow_ix.ix_patterns' },
+  { value: 'dump', label: 'dump', title: 'Stage into m_dump_ix.ix_patterns' },
+];
 import type { Fingerprint } from 'lib/strategy/types';
 
 /** Staging "cart" for the ix_patterns being assembled: an accent-elevated
@@ -26,6 +41,8 @@ export function DraftPatternsCart({
   onChange,
   currentPatterns,
   targetFp,
+  stageInto,
+  onStageIntoChange,
   walletRules,
   savedWalletRules,
   onWalletRulesChange,
@@ -36,6 +53,10 @@ export function DraftPatternsCart({
   onChange: (patterns: string[][]) => void;
   currentPatterns: string[][];
   targetFp: Fingerprint | null;
+  /** Which list Apply writes the draft into. */
+  stageInto: IxPatternList;
+  /** Switching reseeds the draft from the other list — the page owns that. */
+  onStageIntoChange: (list: IxPatternList) => void;
   /** `m_flow_ix`'s two wallet rules as staged — Apply writes these. */
   walletRules: FlowWalletRules;
   /** The same pair as SAVED on the target, so the panel can mark them unsaved. */
@@ -57,6 +78,7 @@ export function DraftPatternsCart({
   // bound fingerprint takes the backend defaults and is edited after.
   const rulesDirty =
     targetFp != null &&
+    stageInto === 'tagged' &&
     (walletRules.wallet_contagion !== savedWalletRules.wallet_contagion ||
       walletRules.creator_is_tagged !== savedWalletRules.creator_is_tagged);
 
@@ -76,6 +98,14 @@ export function DraftPatternsCart({
           >
             Draft ix_patterns
           </LabelTip>
+          <ToggleGroup
+            size="sm"
+            tone="neutral"
+            aria-label="Which list Apply writes the draft into"
+            value={stageInto}
+            onChange={onStageIntoChange}
+            options={STAGE_LISTS}
+          />
           <Badge variant={stagedCount > 0 ? 'accent' : 'neutral'} size="sm" pill>
             {stagedCount} staged
           </Badge>
@@ -179,7 +209,14 @@ export function DraftPatternsCart({
         </ul>
       )}
 
-      {stagedCount > 0 && (
+      {stagedCount > 0 && stageInto === 'dump' && (
+        <div className="mt-2 rounded border border-white/8 bg-white/3 px-2 py-1.5 text-[10px] text-text-dim/80">
+          m_dump_ix has no wallet rules: a build is a property of the TRANSACTION, so
+          every sell is judged on its own ix_labels.
+        </div>
+      )}
+
+      {stagedCount > 0 && stageInto === 'tagged' && (
         <div className="mt-2 flex flex-col gap-1 rounded border border-white/8 bg-white/3 px-2 py-1.5 text-[11px]">
           <span className="text-[10px] font-semibold uppercase tracking-wide text-text-dim/70">
             classifier
@@ -252,7 +289,7 @@ export function DraftPatternsCart({
           <pre className="mt-1 overflow-x-auto rounded bg-black/20 p-2 font-mono">
             {JSON.stringify(
               withFlowWalletRules(
-                metricConfigWithIxPatterns(currentPatterns, targetFp.metric_config),
+                metricConfigWithList(targetFp.metric_config ?? {}, currentPatterns, stageInto),
                 savedWalletRules,
               ),
               null,

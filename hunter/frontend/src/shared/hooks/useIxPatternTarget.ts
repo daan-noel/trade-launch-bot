@@ -2,7 +2,12 @@ import { useCallback, useMemo, useState } from 'react';
 
 import { flowPatternKeysOf } from 'lib/flow/flowPatternKeys';
 import { patternKey, patternsFromKeys, togglePattern } from 'lib/flow/volumePatterns';
-import { metricConfigWithIxPatterns, ixPatternsFromConfig } from 'lib/strategy/registry';
+import {
+  ixPatternsFromConfig,
+  metricConfigWithList,
+  patternsForList,
+  type IxPatternList,
+} from 'lib/strategy/registry';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
   useGetFingerprintsQuery,
@@ -63,16 +68,14 @@ export function resolveIxPatternTarget(input: {
   };
 }
 
-/** `metric_config` with only the flow key replaced — every other group's config on
- *  the row survives the write. Dropping the last pattern removes the key entirely,
- *  which is how a fingerprint returns to "flow unconfigured" (metrics read `NaN`). */
-function withVolumePatterns(
-  cfg: Record<string, unknown> | null | undefined,
-  patterns: string[][],
-): Record<string, unknown> {
-  const { m_flow_ix: _flow, ...rest } = cfg ?? {};
-  return { ...rest, ...metricConfigWithIxPatterns(patterns) };
-}
+export type { IxPatternList };
+
+/** The write used to rebuild `m_flow_ix` from the pattern rows alone, which deleted
+ *  the marker masks and reverted `wallet_contagion` / `creator_is_tagged` to their
+ *  `true` backend defaults — a different classifier, not a tighter one — on every
+ *  badge toggle. `metricConfigWithList` routes through each group's own writer, which
+ *  preserves what this surface does not render. */
+const patternsOf = patternsForList;
 
 export interface IxPatternTarget {
   /** Fingerprint a toggle writes to; `null` ⇒ the badge is read-only. */
@@ -81,8 +84,14 @@ export interface IxPatternTarget {
   fingerprints: Fingerprint[];
   targetId: string | null;
   setTargetId: (id: string | null) => void;
-  /** The target's current patterns — what the badge classifies against. */
+  /** Which list a toggle writes into. */
+  list: IxPatternList;
+  setList: (list: IxPatternList) => void;
+  /** The ACTIVE list's patterns — what the badge classifies against. */
   patterns: string[][];
+  /** Keys of the list a toggle is NOT writing into, so a row can show that it is
+   *  already claimed by the other one. A build may sit in exactly one. */
+  otherKeys: ReadonlySet<string> | null;
   /** {@link patterns} as `flowPatternKeys`. Falls back to the host's own keys
    *  when nothing is targeted, so a read-only panel classifies as before. */
   keys: ReadonlySet<string> | null;
@@ -141,6 +150,7 @@ export function useIxPatternTarget({
   const [updateFingerprint, { isLoading: saving }] = useUpdateFingerprintMutation();
 
   const [pickedId, setPickedId] = useState<string | null>(null);
+  const [list, setList] = useState<IxPatternList>('tagged');
   const [error, setError] = useState<string | null>(null);
 
   const savedPatterns = useMemo(() => patternsFromKeys(savedKeys), [savedKeys]);
@@ -170,8 +180,18 @@ export function useIxPatternTarget({
   );
 
   const patterns = useMemo(
-    () => (target ? ixPatternsFromConfig(target.metric_config) : savedPatterns),
-    [target, savedPatterns],
+    () => (target ? patternsOf(target.metric_config, list) : savedPatterns),
+    [target, savedPatterns, list],
+  );
+
+  // The other list, for the "already in dump" / "already tagged" marker. Empty
+  // without a target: with nothing to write to there is no second list to be in.
+  const otherKeys = useMemo(
+    () =>
+      target
+        ? flowPatternKeysOf(patternsOf(target.metric_config, list === 'dump' ? 'tagged' : 'dump'))
+        : null,
+    [target, list],
   );
 
   // The badge classifies against the row it writes to, or it reports a state its
@@ -190,7 +210,7 @@ export function useIxPatternTarget({
   const toggle = useCallback(
     (labels: readonly string[]) => {
       if (!target || labels.length === 0) return;
-      const next = togglePattern(ixPatternsFromConfig(target.metric_config), labels);
+      const next = togglePattern(patternsOf(target.metric_config, list), labels);
       setError(null);
       // Fire-and-report: the mutation invalidates `Fingerprint`, which re-derives the
       // chart's keys AND refetches the metric series, so both redraw from the row
@@ -205,13 +225,15 @@ export function useIxPatternTarget({
           // write edge then rejects as criterion-less.
           criteria: target.criteria,
           wildcard: target.wildcard,
-          metric_config: withVolumePatterns(target.metric_config, next),
+          metric_config: metricConfigWithList(target.metric_config ?? {}, next, list),
         },
       })
         .unwrap()
-        .catch((e) => setError(apiErrorMessage(e as never, 'Failed to save tagged patterns')));
+        .catch((e) =>
+          setError(apiErrorMessage(e as never, `Failed to save ${list} patterns`)),
+        );
     },
-    [target, updateFingerprint],
+    [target, updateFingerprint, list],
   );
 
   return {
@@ -219,7 +241,10 @@ export function useIxPatternTarget({
     fingerprints,
     targetId,
     setTargetId: setPickedId,
+    list,
+    setList,
     patterns,
+    otherKeys,
     keys,
     activeRuleCount,
     toggle: target ? toggle : null,

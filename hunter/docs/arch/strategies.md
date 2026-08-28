@@ -420,6 +420,17 @@ only. Flow state keys by `FingerprintId` on `TokenTrack`. Unconfigured fingerpri
 ⇒ NaN. Full formulas / NaN rules / discovery scoring:
 [`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md).
 
+## Dump builds (`m_dump_ix` / `m_dump_ix_window`)
+
+A second fingerprint-scoped ix-structure group on its own key, its own list and no
+wallet rules: `dump_sell` (SOL, every leg) and `dump_sell_count` (transactions, leg 0
+only) over sells whose ordered `ix_labels` match `m_dump_ix.ix_patterns`. State is
+`TokenTrack::dump`, keyed by `FingerprintId` beside `flow` rather than inside it —
+nothing is stored for a trade that does not match, so a rule reading no dump metric
+pays one hash-set lookup per sell. `TradeLite::leg_index` is what makes the
+transaction count possible; every adapter fills it from its source's own column.
+Full contract: [`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md).
+
 Lab authoring: `POST /api/strategies/flow-discovery` scores ix-structures per
 sweep `GroupKey`; the Flow discovery page toggles patterns into `metric_config`, and
 its draft cart carries the same two wallet-rule checkboxes as the fingerprint form

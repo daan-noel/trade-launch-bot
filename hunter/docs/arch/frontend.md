@@ -570,7 +570,9 @@ next load (no per-metric frontend work).
   a subset of its fields lands as a full write. Clearing the pattern rows drops the
   group **unless the row is a marker classifier**, which legitimately carries no
   patterns — dropping it there deleted the whole classifier on every save from a
-  pattern-only surface). Each numeric axis is ONE
+  pattern-only surface. A second `IxPatternsEditor` below it edits
+  `m_dump_ix.ix_patterns`, the separate build list `dump_sell` / `dump_sell_count`
+  read, through that group's own writer). Each numeric axis is ONE
   `AxisConditionInput` — a condition expression (`3`, `1..5`, `>=2`, `!=3`,
   `<=2 | >=7`) read through `fingerprintGrammar`, the TS mirror of the Rust
   grammar, echoed as the predicate it parsed to and snapped to the canonical
@@ -634,6 +636,16 @@ next load (no per-metric frontend work).
   count — the tooltip carries the sequences and a click copies them as JSON. An
   unconfigured pattern set stays visible as a dimmed `flow✗`, because an empty set is
   the verdict "every trade classifies organic", not a dropped criterion.
+**Two pattern lists, one vocabulary.** `registry.ts` owns `IxPatternList` (`tagged` =
+`m_flow_ix.ix_patterns`, `dump` = `m_dump_ix.ix_patterns`) with `patternsForList` /
+`metricConfigWithList` over it, so every staging surface says which list a click
+means: the fingerprint form renders the second editor, the flow-discovery cart carries
+a `staging into [tagged|dump]` toggle that reseeds the draft from the list it is about
+to overwrite, and the trades-table badge strip (`IxPatternBar` over
+`useIxPatternTarget`) carries the same toggle — it writes immediately, so it has to
+name its target. Each group is written by its OWN writer, and a build may sit in
+exactly one list (the backend rejects the overlap).
+
 - Lab **Flow discovery** (`/strategies/flow-discovery`, `FlowDiscoveryPage`) — corpus
   window + optional **Scope by saved fingerprint** (sends `fingerprint_id`; engine
   match SSOT fills the corpus) or manual `FingerprintGroupPicker` → ranked

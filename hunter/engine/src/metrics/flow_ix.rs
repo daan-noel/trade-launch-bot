@@ -22,11 +22,6 @@ use crate::hash::{fnv1a_byte, fnv1a_bytes, HashedSet, FNV_OFFSET};
 /// The config key this group reads, inside `fingerprints.metric_config`.
 pub const CONFIG_KEY: &str = "m_flow_ix";
 
-/// [`flow_window::push_sorted`] re-exported for the sibling ix-structure group, so
-/// the position-sorted insert has ONE implementation rather than a second copy that
-/// is free to disagree about where a regressed `block_time` lands.
-pub use super::flow_window::push_sorted as push_sorted_pub;
-
 pub fn ix_hash(labels: &[impl AsRef<str>]) -> u64 {
     let mut h = FNV_OFFSET;
     let mut first = true;
@@ -808,6 +803,7 @@ mod tests {
             at: ts(secs),
             ix_hash: ix,
             wallet_hash: wallet,
+            leg_index: 0,
         }
     }
 
@@ -1138,6 +1134,7 @@ mod tests {
                     at: ts(i as f64),
                     ix_hash: t.labels.as_deref().and_then(ix_hash_opt),
                     wallet_hash: wallet_hash(&t.wallet),
+                    leg_index: 0,
                 }, c(0));
             }
             let now = ts(case.trades.len() as f64);

@@ -146,6 +146,8 @@ struct WindowSets<'a> {
     price: &'a [crate::metrics::WindowSpec],
     /// `m_flow_ix_window` — opened per fingerprint.
     ix: &'a [crate::metrics::WindowSpec],
+    /// `m_dump_ix_window` — opened per fingerprint, on its own buffer.
+    dump: &'a [crate::metrics::WindowSpec],
 }
 
 /// The engine's whole world. Construct with [`EngineState::new`], feed it events
@@ -176,6 +178,9 @@ pub struct EngineState {
     /// Union of every rule's `m_flow_ix_window` spans — the only ones `ensure_flow`
     /// opens per fingerprint.
     pub all_ix_windows: Vec<crate::metrics::WindowSpec>,
+    /// Union of every rule's `m_dump_ix_window` spans — the only ones `ensure_dump`
+    /// opens per fingerprint.
+    pub all_dump_windows: Vec<crate::metrics::WindowSpec>,
     /// Union of every loaded rule's [`ClockHorizons`] — how long *any* rule's
     /// readings can still move without a trade. Drives [`Settled`].
     pub tick_horizons: ClockHorizons,
@@ -407,6 +412,7 @@ impl EngineState {
         let mut all_crowd_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
         let mut all_price_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
         let mut all_ix_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
+        let mut all_dump_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
         let mut horizons = ClockHorizons::default();
         let mut any_priority = false;
         for r in self.rules.values() {
@@ -417,6 +423,7 @@ impl EngineState {
                 (&r.crowd_windows, &mut all_crowd_windows),
                 (&r.price_windows, &mut all_price_windows),
                 (&r.ix_windows, &mut all_ix_windows),
+                (&r.dump_windows, &mut all_dump_windows),
             ] {
                 for &w in src {
                     if !dst.contains(&w) {
@@ -428,6 +435,7 @@ impl EngineState {
         self.all_windows = all_windows;
         self.all_crowd_windows = all_crowd_windows;
         self.all_price_windows = all_price_windows;
+        self.all_dump_windows = all_dump_windows;
         self.all_ix_windows = all_ix_windows;
         self.tick_horizons = horizons;
         self.any_priority = any_priority;
@@ -442,6 +450,7 @@ impl EngineState {
                 crowd: &self.all_crowd_windows,
                 price: &self.all_price_windows,
                 ix: &self.all_ix_windows,
+                dump: &self.all_dump_windows,
             },
             &self.fps,
         );
@@ -479,6 +488,7 @@ impl EngineState {
             crowd: &self.all_crowd_windows,
             price: &self.all_price_windows,
             ix: &self.all_ix_windows,
+            dump: &self.all_dump_windows,
         }
     }
 
@@ -497,6 +507,13 @@ impl EngineState {
             track.ensure_price_window(w);
         }
         for fp in fps {
+            // Each group opens its own buffers off its own list, so a fingerprint
+            // configured for one and not the other pays for one and not the other.
+            if let Some(patterns) =
+                crate::metrics::dump_ix::DumpPatterns::from_metric_config(&fp.metric_config)
+            {
+                track.ensure_dump(fp.id, &patterns, windows.dump);
+            }
             if let Some(patterns) = FlowPatterns::from_metric_config(&fp.metric_config) {
                 // Only the `m_flow_ix_window` spans: this call opens a deque PER
                 // FINGERPRINT, so handing it the aggregate-flow union multiplied the

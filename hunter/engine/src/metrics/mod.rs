@@ -716,6 +716,19 @@ pub fn is_two_window(id: MetricId) -> bool {
 /// a *flow* series column offline. `m_dump_ix` is the case that separated them — it
 /// is fingerprint-scoped but is not a flow split, so it belongs here and NOT there;
 /// conflating them would route its reads at a flow column.
+/// Validate a fingerprint's WHOLE `metric_config` — every group that declares
+/// fingerprint-side config, through one call.
+///
+/// The entry point is single on purpose. Each group owns its own shape rules, but a
+/// caller cannot be expected to know how many groups exist: the two CRUD handlers
+/// checked `m_flow_ix` alone, so a group added later would have shipped unvalidated
+/// and its errors would have surfaced as engine `NaN` instead of a 400.
+pub fn validate_fingerprint_metric_config(cfg: &serde_json::Value) -> Result<(), String> {
+    flow_ix::FlowPatterns::validate_metric_config(cfg)?;
+    dump_ix::DumpPatterns::validate_metric_config(cfg)?;
+    Ok(())
+}
+
 pub fn is_fingerprint_scoped(id: MetricId) -> bool {
     is_flow_metric(id)
         || matches!(
@@ -1553,7 +1566,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::TaggedBuyCount,
                 name: "tagged_buy_count",
-                description: "Number of BUY TRANSACTIONS from tagged wallets since birth - `tagged_buy` tallied instead of summed. Two 0.1 SOL buys and one 0.2 SOL buy are the same SOL and a different count.",
+                description: "Number of tagged BUY trade events since birth - `tagged_buy` tallied instead of summed. Two 0.1 SOL buys and one 0.2 SOL buy are the same SOL and a different count. Counts LEGS: a transaction carrying several buy instructions counts once per leg, unlike `m_dump_ix.dump_sell_count`, which counts transactions.",
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
                 monotonic: true,
@@ -1562,7 +1575,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::TaggedSellCount,
                 name: "tagged_sell_count",
-                description: "Number of SELL TRANSACTIONS from tagged wallets since birth - `tagged_sell` tallied instead of summed.",
+                description: "Number of tagged SELL trade events since birth - `tagged_sell` tallied instead of summed. Counts LEGS, not transactions.",
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
                 monotonic: true,
@@ -1677,7 +1690,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinTaggedBuyCount,
                 name: "tagged_buy_count",
-                description: "Number of BUY TRANSACTIONS from tagged wallets over the trailing window - `tagged_buy` tallied instead of summed.",
+                description: "Number of tagged BUY trade events over the trailing window - `tagged_buy` tallied instead of summed. Counts LEGS, not transactions.",
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
                 monotonic: false,
@@ -1686,7 +1699,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinTaggedSellCount,
                 name: "tagged_sell_count",
-                description: "Number of SELL TRANSACTIONS from tagged wallets over the trailing window. On a ONE-SLOT window this is how many tagged sells landed at once - the reading a dump signature needs, which `tagged_sell` cannot state because one large sell and several small ones are the same SOL.",
+                description: "Number of tagged SELL trade events over the trailing window. On a ONE-SLOT window this is how many tagged sells landed at once, which `tagged_sell` cannot state because one large sell and several small ones are the same SOL. Counts LEGS: a bundled sell of several wallets' bags counts once per leg. For a count of TRANSACTIONS, read `m_dump_ix_window.dump_sell_count`.",
                 unit: Unit::Count,
                 eq_tolerance: 0.5,
                 monotonic: false,
@@ -1707,6 +1720,9 @@ pub const REGISTRY: &[GroupSpec] = &[
             name: "ix_patterns",
             value_type: "string[][]",
             required: true,
+            description: "Exact ordered instruction-label sequences whose SELLS this                           group counts. Its own list, separate from `m_flow_ix`: a                           build belongs to exactly one of the two, or one sell would                           be counted by both groups. Absent ⇒ both metrics read NaN,                           never 0.",
+            default_json: None,
+            conflicts_with: &[],
         }],
         // Teal, continuing the ix-structure family — `m_flow_ix` and this group read
         // the same `ix_labels` vocabulary through different lists, and the
@@ -2040,7 +2056,7 @@ mod tests {
     /// Families mirror the hue families the registry already keeps — that is the
     /// intuition they were promoted from, and the discovery pipeline's Layer-2 grid
     /// is only meaningful if the two stay aligned. Sibling groups that deliberately
-    /// share a hue band (`m_price_*`/`m_position`, `m_flow_*`, `m_flow_ix*`) must
+    /// share a hue band (`m_price_*`/`m_position`, `m_flow_*`, `m_flow_ix*`/`m_dump_ix*`) must
     /// therefore also share a family, and a group in `Standalone` must be alone.
     #[test]
     fn families_group_the_registry_the_way_hues_do() {
@@ -2054,7 +2070,12 @@ mod tests {
             by_family["flow"],
             vec!["m_flow_lifetime", "m_flow_window", "m_crowd_window"]
         );
-        assert_eq!(by_family["flow_ix"], vec!["m_flow_ix", "m_flow_ix_window"]);
+        // `m_dump_ix` reads the same `ix_labels` vocabulary through its own build
+        // list, so it grids with the flow-split pair rather than alone.
+        assert_eq!(
+            by_family["flow_ix"],
+            vec!["m_flow_ix", "m_flow_ix_window", "m_dump_ix", "m_dump_ix_window"]
+        );
         assert_eq!(by_family["state"], vec!["m_state"]);
         // Nothing is unclassified today; a new group that lands in `Standalone` is
         // gridded alone (correct, just more compute) and this assert is the prompt

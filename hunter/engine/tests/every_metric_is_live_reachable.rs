@@ -41,15 +41,22 @@ fn ts(secs: f64) -> Ts {
 /// The volume-side label sequence the probe's "volume" trades carry.
 const VOL_LABELS: [&str; 1] = ["Pump.Fun: Buy"];
 
-/// A wildcard fingerprint configured for `m_flow_ix`, so the flow-split groups
-/// have a classifier and do not read `NaN` for want of config.
+/// The sequence every NON-volume trade carries, and therefore the build
+/// `m_dump_ix` counts the sells of. Disjoint from [`VOL_LABELS`] because a build
+/// may sit in exactly one of the two lists.
+const NONVOL_LABELS: [&str; 1] = ["Pump.Fun: Sell"];
+
+/// A wildcard fingerprint configured for BOTH ix-structure groups, so neither reads
+/// `NaN` for want of config. Each has its own list: `m_flow_ix` tags the volume
+/// side, `m_dump_ix` counts sells built the other way.
 fn probe_fp() -> Fingerprint {
     Fingerprint {
         id: FingerprintId(Uuid::from_u128(FP)),
         wildcard: true,
         criteria: Criteria::new(),
         metric_config: json!({
-            "m_flow_ix": { "ix_patterns": [VOL_LABELS] }
+            "m_flow_ix": { "ix_patterns": [VOL_LABELS] },
+            "m_dump_ix": { "ix_patterns": [NONVOL_LABELS] }
         }),
     }
 }
@@ -176,11 +183,12 @@ fn trade(
         ix_hash: Some(if vol {
             flow_ix::ix_hash(&VOL_LABELS)
         } else {
-            flow_ix::ix_hash(&["Pump.Fun: Sell"])
+            flow_ix::ix_hash(&NONVOL_LABELS)
         }),
         wallet_hash: wallet,
         slot,
         marker_bits: 0,
+        leg_index: 0,
     }
 }
 

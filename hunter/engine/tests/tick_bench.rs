@@ -99,6 +99,7 @@ fn build(dense: bool, n_tokens: usize) -> EngineState {
                         at: ts(k as f64 * 0.5),
                         ix_hash: None,
                         wallet_hash: k as u64,
+                        leg_index: 0,
                     },
                 },
             );

@@ -114,9 +114,9 @@ pub async fn create_fingerprint(
     if let Err(e) = fp.validate() {
         return HttpResponse::BadRequest().json(json!({ "error": e }));
     }
-    if let Err(e) = hunter_engine::metrics::flow_ix::FlowPatterns::validate_metric_config(
-        &fp.metric_config,
-    ) {
+    if let Err(e) =
+        hunter_engine::metrics::validate_fingerprint_metric_config(&fp.metric_config)
+    {
         return HttpResponse::BadRequest().json(json!({ "error": e }));
     }
     match app_state.fingerprint_repo.insert(&fp).await {
@@ -140,9 +140,9 @@ pub async fn update_fingerprint(
     if let Err(e) = fp.validate() {
         return HttpResponse::BadRequest().json(json!({ "error": e }));
     }
-    if let Err(e) = hunter_engine::metrics::flow_ix::FlowPatterns::validate_metric_config(
-        &fp.metric_config,
-    ) {
+    if let Err(e) =
+        hunter_engine::metrics::validate_fingerprint_metric_config(&fp.metric_config)
+    {
         return HttpResponse::BadRequest().json(json!({ "error": e }));
     }
     match app_state.fingerprint_repo.update(&fp).await {

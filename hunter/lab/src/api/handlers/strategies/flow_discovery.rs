@@ -179,9 +179,7 @@ pub async fn bind_flow_discovery(
     let metric_config = serde_json::json!({
         "m_flow_ix": { "ix_patterns": b.ix_patterns }
     });
-    if let Err(e) =
-        hunter_engine::metrics::flow_ix::FlowPatterns::validate_metric_config(&metric_config)
-    {
+    if let Err(e) = hunter_engine::metrics::validate_fingerprint_metric_config(&metric_config) {
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
     }
 

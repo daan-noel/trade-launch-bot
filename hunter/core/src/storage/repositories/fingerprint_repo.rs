@@ -12,7 +12,6 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use hunter_engine::fingerprint::Criteria;
-use hunter_engine::metrics::flow_ix::FlowPatterns;
 
 use crate::models::Fingerprint;
 
@@ -216,14 +215,14 @@ impl FingerprintRepo {
 /// Every gate a stored row must pass, in ONE place.
 ///
 /// Both halves, not just the criteria half. `metric_config` selects no token, so it
-/// reads like a label — but it compiles into the fingerprint's live `m_flow_ix`
-/// classifier, and an unknown marker name or a malformed pattern list degrades that to
-/// "unconfigured", which reads every flow metric as `NaN`: a rule that silently never
-/// fires rather than an error. The HTTP edge checks both for a 400; a non-HTTP writer
-/// (sweep promotion) reaches the table through here.
+/// reads like a label — but it compiles into the fingerprint's live `m_flow_ix` and
+/// `m_dump_ix` classifiers, and an unknown marker name or a malformed pattern list
+/// degrades one to "unconfigured", which reads its metrics as `NaN`: a rule that
+/// silently never fires rather than an error. The HTTP edge checks both for a 400; a
+/// non-HTTP writer (sweep promotion) reaches the table through here.
 fn validate_row(fp: &Fingerprint) -> anyhow::Result<()> {
     fp.validate().map_err(|e| anyhow::anyhow!("invalid fingerprint: {e}"))?;
-    FlowPatterns::validate_metric_config(&fp.metric_config)
+    hunter_engine::metrics::validate_fingerprint_metric_config(&fp.metric_config)
         .map_err(|e| anyhow::anyhow!("invalid fingerprint metric_config: {e}"))?;
     Ok(())
 }

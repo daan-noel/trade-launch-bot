@@ -210,6 +210,7 @@ fn stream(seed: u64, n_events: usize) -> Vec<Event> {
                     ix_hash: (rng.frac() < 0.4)
                         .then(|| hunter_engine::metrics::flow_ix::ix_hash(&["Pump.Fun: Buy"])),
                     wallet_hash: rng.below(6),
+                    leg_index: 0,
                 },
             },
             8 => {

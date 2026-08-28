@@ -571,6 +571,8 @@ construction. See hunter/CLAUDE.md Gotchas.
 | --- | --- | --- | --- |
 | `m_flow_ix` | static (fingerprint-scoped) | none | `ix_patterns: string[][]` (required when key present) |
 | `m_flow_ix_window` | dynamic | `window_size_sec` | none (reads `m_flow_ix`) |
+| `m_dump_ix` | static (fingerprint-scoped) | none | `ix_patterns: string[][]` — its OWN list |
+| `m_dump_ix_window` | dynamic | `window_size_sec` | none (reads `m_dump_ix`) |
 
 **Multi-window per group** (any dynamic group — `m_flow_window`, `m_price_window`,
 `m_flow_ix_window`): a group appears under a side as a single object (one window — the
@@ -596,17 +598,70 @@ buy = +, sell = − for `*_net`.
 | `untagged_net` | `untagged_buy − untagged_sell` | SOL | 0.1 | ✗ |
 | `untagged_gross` | `untagged_buy + untagged_sell` | SOL | 0.1 | ✓ |
 | `tagged_share` | `tagged_gross / (tagged_gross + untagged_gross)` ×100; NaN when total 0 | % | 1.0 | ✗ |
-| `tagged_buy_count` | tagged BUY transactions | count | 0.5 | ✓ |
-| `tagged_sell_count` | tagged SELL transactions | count | 0.5 | ✓ |
+| `tagged_buy_count` | tagged BUY trade events (LEGS) | count | 0.5 | ✓ |
+| `tagged_sell_count` | tagged SELL trade events (LEGS) | count | 0.5 | ✓ |
 
 Windowed variants are never monotonic. Lifetime monotonic ✓ metrics participate in
 derived-unsatisfiability disarm (`arm.rs` reads the registry flag).
+
+## Dump builds (`m_dump_ix` / `m_dump_ix_window`)
+
+A second ix-structure group, and **not a second classifier axis**. `m_flow_ix`
+partitions every trade into tagged and untagged; this partitions nothing. It answers
+one question about one side: *how many sells carrying one of these builds landed, and
+for how much SOL*.
+
+Its own key, its own list, and a build may sit in exactly one of the two —
+`DumpPatterns::validate_metric_config` rejects a build present in both, because the
+same sell would then increment `tagged_sell_count` and `dump_sell_count` and a rule
+reading both counts one event twice.
+
+```json
+{
+  "m_flow_ix": { "ix_patterns": [ ... ], "wallet_contagion": false },
+  "m_dump_ix": { "ix_patterns": [ ...dump sell builds, all variants... ] }
+}
+```
+
+**No wallet rules.** A build is a property of the transaction, so contagion and the
+creator rule do not apply and the group deliberately has no knob for them. Contagion
+would make every later sell from a wallet that once sold with a listed build count as
+a dump, which is the opposite of reading the build.
+
+**One list can do both jobs.** Matching is on the transaction's own ordered labels and
+the side split happens after, so a buy build can never match a sell. That is why the
+volume-making buy builds live in `m_flow_ix` while only the dump sell builds live
+here — `dump_sell_count` counts the dump builds alone, whatever else is tagged.
+
+| metric | meaning | unit | eq-tol | monotonic (lifetime only) |
+| --- | --- | --- | --- | --- |
+| `dump_sell` | SOL sold through a listed build — every LEG | SOL | 0.1 | ✓ |
+| `dump_sell_count` | sell TRANSACTIONS built from a listed build — leg 0 only | count | 0.5 | ✓ |
+
+### The two metrics count different things on purpose
+
+One Solana transaction can carry several `Pump.Fun: Sell` instructions — a bundle
+selling several wallets' bags at once is a real and common shape, and every leg of a
+transaction carries the **same** `ix_labels`, so a build matches all of a
+transaction's legs or none.
+
+* `dump_sell` sums **every leg**, because every leg moves SOL out of the curve and
+  moves the price.
+* `dump_sell_count` counts **leg 0 only**, so it is a count of transactions.
+
+`dump_sell / dump_sell_count` is therefore SOL per *transaction*, not per sell. The
+`m_flow_ix` counts do not make this distinction — `tagged_sell_count` counts trade
+events, so a bundled sell reads once per leg there and once per transaction here.
+
+The exit this group exists for is `dump_sell_count(1sl) >= 2`: two dump-built
+transactions in the same slot.
 
 ## NaN rules
 
 | situation | flow metrics |
 | --- | --- |
 | Fingerprint has no `m_flow_ix` key | all NaN |
+| Fingerprint has no `m_dump_ix` key | `dump_*` NaN — never `0`, or a `<= 0` bound would fire on every unconfigured row |
 | Pre-first-trade (no classifier state yet) | NaN (existing convention) |
 | Trade `ix_hash = None`, wallet not tagged, not creator | counts as organic |
 | Token row missing / no `creator_wallet` | creator unseeded (logged `warn`); creator trades classify by pattern/contagion only |

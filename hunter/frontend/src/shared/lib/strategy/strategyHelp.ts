@@ -1058,6 +1058,30 @@ export const FINGERPRINT_FIELD_HELP = {
       'saved pattern is untagged.',
     ].join('\n'),
   },
+  dump_ix_patterns: {
+    title: 'm_dump_ix.ix_patterns — the builds counted as dumps',
+    body: [
+      'Ordered instruction-label sequences whose SELLS m_dump_ix counts. Its own list,',
+      'separate from m_flow_ix: a build belongs to exactly one of the two, and the',
+      'backend rejects a build present in both (one sell would be counted twice).',
+      '',
+      'No wallet rules here. A build is a property of the TRANSACTION, so contagion and',
+      'the creator rule do not apply — every sell is judged on its own ix_labels.',
+      '',
+      'Metrics: dump_sell (SOL, every LEG) and dump_sell_count (TRANSACTIONS, leg 0',
+      'only). One tx selling the bags of four wallets is 1 count and 4 legs of SOL, so',
+      'dump_sell / dump_sell_count is SOL per transaction.',
+      '',
+      'Typical exit: dump_sell_count(1sl) >= 2 — two dump-built transactions in one slot.',
+      '',
+      'A list carries VARIANTS or it carries nothing: matching hashes the whole ordered',
+      'label list, so the same tool with and without a trailing tip Transfer, or with',
+      'CloseAccount on a full exit, is several sequences for one behaviour.',
+      '',
+      'Empty / missing m_dump_ix key ⇒ both metrics read NaN (never 0, so a `<=` bound',
+      'cannot fire on an unconfigured fingerprint).',
+    ].join('\n'),
+  },
 } as const satisfies Record<string, HelpTip>;
 
 // ── Execution models (fill + cost) ───────────────────────────────────────────

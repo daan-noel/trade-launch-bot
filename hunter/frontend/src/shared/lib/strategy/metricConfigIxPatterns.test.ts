@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  dumpPatternsFromConfig,
   flowClassifierFromConfig,
   flowWalletRules,
+  metricConfigWithDumpPatterns,
+  metricConfigWithList,
+  patternsForList,
   ixPatternsFromConfig,
   metricConfigWithFlowClassifier,
   metricConfigWithIxPatterns,
@@ -293,5 +297,59 @@ describe('withFlowWalletRules', () => {
   it('round-trips through the reader', () => {
     const cfg = withFlowWalletRules(metricConfigWithIxPatterns([['A']]), rules);
     expect(flowWalletRules(cfg)).toEqual(rules);
+  });
+});
+
+/** `m_dump_ix` is its own group with its own list. The two are written by different
+ *  functions on purpose: a PUT replaces the row, so a writer that rebuilt one key
+ *  from its pattern rows alone would land as a full write and drop the other. */
+describe('dump patterns', () => {
+  const dump = [['Pump.Fun: Sell', 'Token Program: CloseAccount']];
+  const tagged = [['Pump.Fun: Buy']];
+
+  it('reads an absent group as an empty list', () => {
+    for (const cfg of [null, undefined, {}, { m_flow_ix: { ix_patterns: tagged } }]) {
+      expect(dumpPatternsFromConfig(cfg)).toEqual([]);
+    }
+  });
+
+  it('writes the dump list without touching the flow classifier', () => {
+    const prev = {
+      m_flow_ix: { ix_patterns: tagged, wallet_contagion: false, creator_is_tagged: false },
+      m_state: { x: 1 },
+    };
+    const out = metricConfigWithDumpPatterns(prev, dump);
+    expect(out.m_dump_ix).toEqual({ ix_patterns: dump });
+    expect(out.m_flow_ix).toEqual(prev.m_flow_ix);
+    expect(out.m_state).toEqual({ x: 1 });
+  });
+
+  it('writes the flow list without touching the dump list', () => {
+    const prev = { m_dump_ix: { ix_patterns: dump } };
+    const out = metricConfigWithIxPatterns(tagged, prev);
+    expect(out.m_dump_ix).toEqual({ ix_patterns: dump });
+    expect(dumpPatternsFromConfig(out)).toEqual(dump);
+  });
+
+  it('keeps the two lists independent through a round trip', () => {
+    let cfg: Record<string, unknown> = {};
+    cfg = metricConfigWithList(cfg, tagged, 'tagged');
+    cfg = metricConfigWithList(cfg, dump, 'dump');
+    expect(patternsForList(cfg, 'tagged')).toEqual(tagged);
+    expect(patternsForList(cfg, 'dump')).toEqual(dump);
+  });
+
+  it('drops the group when the last pattern goes, so the metrics read NaN not 0', () => {
+    const out = metricConfigWithDumpPatterns({ m_dump_ix: { ix_patterns: dump } }, []);
+    expect('m_dump_ix' in out).toBe(false);
+  });
+
+  it('trims and ignores a malformed group', () => {
+    expect(metricConfigWithDumpPatterns({}, [['  A  ', ''], []]).m_dump_ix).toEqual({
+      ix_patterns: [['A']],
+    });
+    for (const bad of [null, 'x', 42, [['a']]]) {
+      expect(dumpPatternsFromConfig({ m_dump_ix: bad })).toEqual([]);
+    }
   });
 });

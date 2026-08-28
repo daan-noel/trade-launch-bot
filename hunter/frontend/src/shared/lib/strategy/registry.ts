@@ -262,6 +262,82 @@ export function metricConfigWithFlowClassifier(
   return { ...otherGroups, m_flow_ix: flow };
 }
 
+/** The key `m_dump_ix` stores its build list under. Same field name as `m_flow_ix`'s,
+ *  a DIFFERENT list: `m_flow_ix.ix_patterns` says which trades are tagged, and this
+ *  says whose SELLS `dump_sell` / `dump_sell_count` count. The backend rejects a build
+ *  present in both, so the two are disjoint by construction. */
+export const DUMP_GROUP = 'm_dump_ix';
+
+/** Read `m_dump_ix.ix_patterns` from a fingerprint's `metric_config`. */
+export function dumpPatternsFromConfig(
+  cfg: Record<string, unknown> | null | undefined,
+): string[][] {
+  const obj = cfg?.[DUMP_GROUP];
+  const pats =
+    obj && typeof obj === 'object' && !Array.isArray(obj)
+      ? (obj as Record<string, unknown>).ix_patterns
+      : undefined;
+  if (!Array.isArray(pats)) return [];
+  return pats.filter(
+    (p): p is string[] => Array.isArray(p) && p.every((x) => typeof x === 'string'),
+  );
+}
+
+/** **The one writer** of `fingerprints.metric_config.m_dump_ix`.
+ *
+ *  Same contract as {@link metricConfigWithFlowClassifier}: a PUT replaces the row, so
+ *  `prev` is the base and every other group survives. This group has ONE field and no
+ *  wallet rules - a build is a property of the transaction - so an empty list has no
+ *  marker-classifier case to protect and simply drops the group, which is the only
+ *  spelling of "no dump list" (both dump metrics then read NaN, never 0). */
+export function metricConfigWithDumpPatterns(
+  prev: Record<string, unknown>,
+  patterns: string[][],
+): Record<string, unknown> {
+  const { [DUMP_GROUP]: prevDump, ...otherGroups } = prev;
+  const cleaned = patterns
+    .map((p) => p.map((x) => x.trim()).filter(Boolean))
+    .filter((p) => p.length > 0);
+  if (cleaned.length === 0) return otherGroups;
+  const keep: Record<string, unknown> = {};
+  if (prevDump && typeof prevDump === 'object' && !Array.isArray(prevDump)) {
+    for (const [k, v] of Object.entries(prevDump as Record<string, unknown>)) {
+      if (k !== 'ix_patterns') keep[k] = v;
+    }
+  }
+  return { ...otherGroups, [DUMP_GROUP]: { ...keep, ix_patterns: cleaned } };
+}
+
+/** Which of the two ix-structure lists a surface is reading or writing.
+ *
+ *  `tagged` is `m_flow_ix.ix_patterns` - which trades the flow split calls
+ *  volume-side. `dump` is `m_dump_ix.ix_patterns` - the builds whose SELLS
+ *  `dump_sell` / `dump_sell_count` count. Two questions about the same ix structure,
+ *  and the backend rejects a build present in both, so every staging surface has to
+ *  say which one it means rather than leaving a click ambiguous. */
+export type IxPatternList = 'tagged' | 'dump';
+
+/** Read one list off a `metric_config`. */
+export function patternsForList(
+  cfg: Record<string, unknown> | null | undefined,
+  list: IxPatternList,
+): string[][] {
+  return list === 'dump' ? dumpPatternsFromConfig(cfg) : ixPatternsFromConfig(cfg);
+}
+
+/** Write one list into `prev`, through that group's OWN writer, and return the whole
+ *  config. Never rebuild either key from its pattern rows alone: a PUT replaces the
+ *  row, so a partial write lands as a full one. */
+export function metricConfigWithList(
+  prev: Record<string, unknown>,
+  patterns: string[][],
+  list: IxPatternList,
+): Record<string, unknown> {
+  return list === 'dump'
+    ? metricConfigWithDumpPatterns(prev, patterns)
+    : metricConfigWithIxPatterns(patterns, prev);
+}
+
 /** Write flow patterns into `prev`, an existing `metric_config`, and return the WHOLE
  *  config - everything else preserved, through {@link metricConfigWithFlowClassifier}.
  *
