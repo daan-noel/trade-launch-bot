@@ -533,6 +533,58 @@ pub type TokenCache = DashMap<String, TokenState>;
 // Runtime eviction
 // ---------------------------------------------------------------------------
 
+/// One dead token's final metrics, copied out of the cache so the DB write that
+/// persists them runs with **no shard guard held**.
+///
+/// This type exists for one reason: `TokenCache` is a `DashMap`, and a
+/// `DashMap` guard must never be alive across an `.await`. Its shard lock is an
+/// unbounded spinlock (`dashmap::lock::RwLock::write` is
+/// `loop { try_write() else cpu_relax() }` — it never parks and never yields),
+/// so holding a guard across a round trip lets the worker thread pick up an
+/// ingest trade on the same shard, spin at 100% CPU inside a non-async loop, and
+/// never return to the scheduler to poll the future that would release the
+/// guard. Both worker threads wedge, every task on the runtime stops, and only
+/// the watchdog — on its own OS thread — ends it, ~90 s later. Every field is
+/// `Copy`, so the snapshot costs nothing next to that.
+#[derive(Clone, Copy)]
+struct DeadFlush {
+    ath_price: Option<f64>,
+    ath_timestamp: Option<DateTime<Utc>>,
+    age_secs: i64,
+    volume_sol_total: f64,
+    market_cap: Option<f64>,
+    trade_count: i64,
+    last_trade_at: Option<DateTime<Utc>>,
+    current_price: Option<f64>,
+    is_migrated: bool,
+    lifetime_secs: Option<i64>,
+    first_slot_buy_sol: f64,
+    first_slot_sell_sol: f64,
+}
+
+impl DeadFlush {
+    /// Take the snapshot. `now` is the sweep's single clock read, so the
+    /// `is_dead` verdict and `lifetime_secs` agree.
+    fn of(state: &TokenState, now: DateTime<Utc>) -> Self {
+        Self {
+            ath_price: state.ath_price,
+            ath_timestamp: state.ath_timestamp,
+            age_secs: now
+                .signed_duration_since(state.token.created_at)
+                .num_seconds(),
+            volume_sol_total: state.volume_sol_total,
+            market_cap: state.market_cap,
+            trade_count: state.trade_count as i64,
+            last_trade_at: state.last_trade_at,
+            current_price: state.current_price,
+            is_migrated: state.is_migrated,
+            lifetime_secs: state.lifetime_secs(now),
+            first_slot_buy_sol: state.first_slot_buy_sol,
+            first_slot_sell_sol: state.first_slot_sell_sol,
+        }
+    }
+}
+
 /// Eviction predicate: a token held by an open position is **never** evictable;
 /// otherwise it is evictable when **either**
 ///   - it is **dead** (`TokenState::is_dead` — reserves depleted + silent for
@@ -577,7 +629,8 @@ fn token_is_evictable(state: &TokenState, now: DateTime<Utc>, idle_secs: i64, he
 ///
 /// Off the hot path: a coarse interval; collect-then-remove so no shard guard is
 /// held across the removals and the map is never mutated mid-iteration (mirrors
-/// `evict_mayhem_tokens`).
+/// `evict_mayhem_tokens`). The dead-token flush snapshots into [`DeadFlush`] for
+/// the same reason — see that type for why a guard must never reach an `.await`.
 pub async fn run_token_cache_eviction<F>(
     token_cache: Arc<TokenCache>,
     is_held: F,
@@ -612,33 +665,34 @@ where
         // is_dead=false (quiet period not yet elapsed), so without this flush the
         // DB would never see the authoritative dead verdict.
         for mint in &stale {
-            if let Some(state) = token_cache.get(mint) {
-                if state.is_dead(now) {
-                    let age = now
-                        .signed_duration_since(state.token.created_at)
-                        .num_seconds();
-                    let lifetime = state.lifetime_secs(now);
-                    if let Err(e) = info_repo
-                        .upsert_metrics(
-                            mint,
-                            state.ath_price,
-                            state.ath_timestamp,
-                            Some(age),
-                            state.volume_sol_total,
-                            state.market_cap,
-                            state.trade_count as i64,
-                            state.last_trade_at,
-                            state.current_price,
-                            true,
-                            state.is_migrated,
-                            lifetime,
-                            state.first_slot_buy_sol,
-                            state.first_slot_sell_sol,
-                        )
-                        .await
-                    {
-                        warn!("TokenCache eviction: metrics flush for {mint}: {e}");
-                    }
+            // The guard `get` returns is released by the end of this statement,
+            // BEFORE the round trip below. See `DeadFlush`.
+            let flush = token_cache
+                .get(mint)
+                .filter(|state| state.is_dead(now))
+                .map(|state| DeadFlush::of(&state, now));
+
+            if let Some(f) = flush {
+                if let Err(e) = info_repo
+                    .upsert_metrics(
+                        mint,
+                        f.ath_price,
+                        f.ath_timestamp,
+                        Some(f.age_secs),
+                        f.volume_sol_total,
+                        f.market_cap,
+                        f.trade_count,
+                        f.last_trade_at,
+                        f.current_price,
+                        true,
+                        f.is_migrated,
+                        f.lifetime_secs,
+                        f.first_slot_buy_sol,
+                        f.first_slot_sell_sol,
+                    )
+                    .await
+                {
+                    warn!("TokenCache eviction: metrics flush for {mint}: {e}");
                 }
             }
             token_cache.remove(mint);

@@ -1,0 +1,18 @@
+name: guards
+
+# Source-shape gates that a compiler cannot express and a diff does not reveal.
+# Same backstop role as the docs workflow: this does not depend on a local clone
+# having `core.hooksPath` set, so a commit made with no hook installed — or with
+# `--no-verify` — is still checked here.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  async-guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No DashMap guard held across an .await
+        run: sh scripts/check-async-guards.sh

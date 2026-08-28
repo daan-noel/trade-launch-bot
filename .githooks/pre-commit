@@ -2,6 +2,11 @@
 # Repo-tracked hooks, optional. `core.hooksPath` is untracked local config, so a fresh
 # clone runs without this until someone opts in:
 #     git config core.hooksPath .githooks
-# It only narrows the loop — it checks STAGED files, and `--no-verify` skips it. CI runs
-# the whole-tree sweep on every push regardless (.github/workflows/docs.yml).
-exec "$(git rev-parse --show-toplevel)/scripts/check-docs.sh"
+# It only narrows the loop — `check-docs.sh` checks STAGED files, and `--no-verify` skips
+# both. CI runs the whole-tree sweeps on every push regardless
+# (.github/workflows/docs.yml, .github/workflows/guards.yml).
+ROOT="$(git rev-parse --show-toplevel)"
+"$ROOT/scripts/check-docs.sh" || exit 1
+# Whole-tree, but fast: a DashMap guard that reaches an `.await` wedges the whole
+# runtime in production and is invisible in a diff, so it is worth the seconds.
+exec "$ROOT/scripts/check-async-guards.sh"
