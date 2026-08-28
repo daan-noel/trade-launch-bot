@@ -135,6 +135,8 @@ export const ACCORDION_IDS = {
   sweepDetailsGeneric: 'sweep.detailsOpen.generic',
   /** Family search: the execution/scope knobs behind the two required fields. */
   familySearchAdvanced: 'familySearch.advanced',
+  /** Flow discovery: the group list beside the selected group's detail. */
+  flowDiscoveryGroups: 'flowDiscovery.groups',
 } as const;
 
 /** App-wide show/hide switches, stored together under `mt:ui.toggles`. */

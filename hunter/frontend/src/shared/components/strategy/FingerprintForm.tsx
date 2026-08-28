@@ -22,6 +22,8 @@ import {
   metricConfigWithIxPatterns,
   useStrategyRegistry,
   ixPatternsFromConfig,
+  flowWalletRules,
+  withFlowWalletRules,
 } from 'lib/strategy/registry';
 import { fingerprintAutoName, isStaleAutoName } from 'lib/strategy/fingerprintNameFromGroupKey';
 import { FINGERPRINT_FIELD_HELP, type HelpTip } from 'lib/strategy/strategyHelp';
@@ -56,18 +58,25 @@ interface FormState {
    *  (backend `validate` + the `fingerprints_wildcard_excludes_axes` CHECK), so
    *  turning it on clears them rather than leaving a contradiction on screen. */
   wildcard: boolean;
-  /** `m_flow_ix.ix_patterns` rows (other metric_config keys preserved). */
+  /** `m_flow_ix.ix_patterns` rows. */
   ix_patterns: string[][];
-  /** Original metric_config minus the flow key — merged back on save. This is what
-   *  preserves machine-written groups across an edit. */
-  metric_config_rest: Record<string, unknown>;
+  /** `m_flow_ix.wallet_contagion` — tag a wallet for the rest of the token once it
+   *  trades tagged. Backend default TRUE, so absent reads as on. */
+  wallet_contagion: boolean;
+  /** `m_flow_ix.creator_is_tagged` — the creator is tagged whatever he sends.
+   *  Backend default TRUE, so absent reads as on. */
+  creator_is_tagged: boolean;
+  /** The ORIGINAL metric_config, whole. The save merges into this rather than
+   *  rebuilding from the fields above, so every key the form does not render — other
+   *  groups, and `m_flow_ix`'s marker masks — survives an edit. */
+  metric_config_prev: Record<string, unknown>;
 }
+
 
 const NUMERIC_AXES: readonly AxisDef[] = AXES.filter((a) => a.kind === 'numeric');
 
 function fromFingerprint(fp?: Fingerprint): FormState {
   const cfg = fp?.metric_config ?? {};
-  const { m_flow_ix: _flow, ...rest } = cfg;
   const criteria = fp?.criteria ?? {};
   const conditions: Partial<Record<AxisId, string>> = {};
   for (const def of NUMERIC_AXES) {
@@ -80,7 +89,8 @@ function fromFingerprint(fp?: Fingerprint): FormState {
     ix_labels: formatIxLabelsText(labels?.kind === 'sequence' ? labels.labels : null),
     wildcard: fp?.wildcard ?? false,
     ix_patterns: ixPatternsFromConfig(cfg),
-    metric_config_rest: rest,
+    ...flowWalletRules(cfg),
+    metric_config_prev: cfg,
   };
 }
 
@@ -120,12 +130,14 @@ function toCriteria(s: FormState): { criteria: Criteria; badAxes: string[] } {
 }
 
 function toDraft(s: FormState): FingerprintDraft {
-  const flow = metricConfigWithIxPatterns(s.ix_patterns);
   return {
     name: s.name.trim(),
     wildcard: s.wildcard,
     criteria: toCriteria(s).criteria,
-    metric_config: { ...s.metric_config_rest, ...flow },
+    metric_config: withFlowWalletRules(
+      metricConfigWithIxPatterns(s.ix_patterns, s.metric_config_prev),
+      { wallet_contagion: s.wallet_contagion, creator_is_tagged: s.creator_is_tagged },
+    ),
   };
 }
 
@@ -323,6 +335,36 @@ export function FingerprintForm({
             onChange={(p) => set('ix_patterns', p)}
             disabled={submitting}
           />
+          {s.ix_patterns.length > 0 && (
+            <div className="flex flex-col gap-1 pl-1">
+              <label className="flex cursor-pointer items-start gap-1.5 text-text-mid">
+                <Checkbox
+                  boxSize="sm"
+                  className="mt-0.5"
+                  checked={s.wallet_contagion}
+                  disabled={submitting}
+                  onChange={() => set('wallet_contagion', !s.wallet_contagion)}
+                />
+                <LabelTip tip={FINGERPRINT_FIELD_HELP.wallet_contagion}>wallet contagion</LabelTip>
+              </label>
+              <label className="flex cursor-pointer items-start gap-1.5 text-text-mid">
+                <Checkbox
+                  boxSize="sm"
+                  className="mt-0.5"
+                  checked={s.creator_is_tagged}
+                  disabled={submitting}
+                  onChange={() => set('creator_is_tagged', !s.creator_is_tagged)}
+                />
+                <LabelTip tip={FINGERPRINT_FIELD_HELP.creator_is_tagged}>creator is tagged</LabelTip>
+              </label>
+              {(s.wallet_contagion || s.creator_is_tagged) && (
+                <span className="text-text-dim/80">
+                  a tag is a property of the WALLET here — untick both for a purely
+                  structural gate
+                </span>
+              )}
+            </div>
+          )}
         </div>
       )}
 

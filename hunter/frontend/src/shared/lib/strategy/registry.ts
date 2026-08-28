@@ -102,11 +102,72 @@ export function ixPatternsFromConfig(
   );
 }
 
-/** Build `metric_config` for flow patterns. Empty ⇒ `{}` (unconfigured). */
-export function metricConfigWithIxPatterns(patterns: string[][]): Record<string, unknown> {
+/** The `m_flow_ix` wallet rules, as booleans, defaulting the way the BACKEND defaults
+ *  them: absent means `true` (`FlowPatterns::default`).
+ *
+ *  Reading absent as `false` shows a control saying the opposite of what the engine
+ *  does — and these two decide what the classifier measures, not how tightly.
+ */
+export function flowWalletRules(cfg: Record<string, unknown> | null | undefined): {
+  wallet_contagion: boolean;
+  creator_is_tagged: boolean;
+} {
+  const flow = cfg?.m_flow_ix;
+  const obj =
+    flow && typeof flow === 'object' && !Array.isArray(flow)
+      ? (flow as Record<string, unknown>)
+      : {};
+  const read = (k: string) => (typeof obj[k] === 'boolean' ? (obj[k] as boolean) : true);
+  return { wallet_contagion: read('wallet_contagion'), creator_is_tagged: read('creator_is_tagged') };
+}
+
+/** Write the two wallet rules into a config produced by {@link metricConfigWithIxPatterns}.
+ *
+ *  Always EXPLICIT, never left to the backend default: a row that omits them says
+ *  nothing about which classifier it meant, which is how they came to be reverted
+ *  unnoticed. No `m_flow_ix` group (no patterns) ⇒ nothing to attach them to.
+ */
+export function withFlowWalletRules(
+  cfg: Record<string, unknown>,
+  rules: { wallet_contagion: boolean; creator_is_tagged: boolean },
+): Record<string, unknown> {
+  const flow = cfg.m_flow_ix as Record<string, unknown> | undefined;
+  return flow ? { ...cfg, m_flow_ix: { ...flow, ...rules } } : cfg;
+}
+
+/** Write flow patterns into `prev`, an existing `metric_config`, and return the WHOLE
+ *  config — everything else preserved.
+ *
+ *  A PUT replaces the row, so this is the only safe way to write the key. Two levels
+ *  have to survive and both used to be lost:
+ *
+ *  * the other GROUPS — `prev` is the base rather than the result;
+ *  * the other `m_flow_ix` KEYS — `wallet_contagion`, `creator_is_tagged`, and the
+ *    marker masks are carried across one level down.
+ *
+ *  Rebuilding `m_flow_ix` from patterns alone reads as a partial write and lands as a
+ *  full one: it reverted both wallet rules to their `true` defaults, silently, on any
+ *  save that touched the fingerprint at all. Those defaults are a DIFFERENT
+ *  classifier — contagion makes a tag a property of the sender's history instead of
+ *  the transaction — so the fingerprint stopped measuring what its rule was derived on.
+ *
+ *  No patterns ⇒ the `m_flow_ix` group is dropped (unconfigured ⇒ every flow metric
+ *  reads NaN), which is what an empty editor means.
+ */
+export function metricConfigWithIxPatterns(
+  patterns: string[][],
+  prev: Record<string, unknown> = {},
+): Record<string, unknown> {
   const cleaned = patterns.map((p) => p.map((s) => s.trim()).filter(Boolean)).filter((p) => p.length > 0);
-  if (cleaned.length === 0) return {};
-  return { m_flow_ix: { ix_patterns: cleaned } };
+  const { m_flow_ix: prevFlow, ...otherGroups } = prev;
+  if (cleaned.length === 0) return otherGroups;
+  const keep: Record<string, unknown> = {};
+  if (prevFlow && typeof prevFlow === 'object' && !Array.isArray(prevFlow)) {
+    for (const [k, v] of Object.entries(prevFlow as Record<string, unknown>)) {
+      if (k !== 'ix_patterns') keep[k] = v;
+    }
+  }
+  return { ...otherGroups, m_flow_ix: { ...keep, ix_patterns: cleaned } };
 }
 
 /** The whole registry payload. */

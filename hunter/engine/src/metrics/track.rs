@@ -291,8 +291,10 @@ impl TokenTrack {
                 }
             }
             TaggedBuy | TaggedSell | TaggedNet | TaggedGross | UntaggedBuy | UntaggedSell | UntaggedNet
-            | UntaggedGross | TaggedShare | WinTaggedBuy | WinTaggedSell | WinTaggedNet | WinTaggedGross
-            | WinUntaggedBuy | WinUntaggedSell | WinUntaggedNet | WinUntaggedGross | WinTaggedShare => {
+            | UntaggedGross | TaggedShare | TaggedBuyCount | TaggedSellCount | WinTaggedBuy
+            | WinTaggedSell | WinTaggedNet | WinTaggedGross | WinUntaggedBuy | WinUntaggedSell
+            | WinUntaggedNet | WinUntaggedGross | WinTaggedShare | WinTaggedBuyCount
+            | WinTaggedSellCount => {
                 let Some(fp) = fingerprint else {
                     return f64::NAN;
                 };

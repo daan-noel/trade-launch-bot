@@ -28,7 +28,8 @@ import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeCon
 import { useFingerprintMatches } from '@lab/components/strategy/useFingerprintMatches';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { useLocalStorage } from 'hooks/useLocalStorage';
-import { STORAGE_KEYS } from 'lib/storage';
+import { useAccordionOpen } from 'hooks/useUiPrefs';
+import { ACCORDION_IDS, STORAGE_KEYS } from 'lib/storage';
 import { apiErrorMessage } from 'store/baseApi';
 import {
   useGetFingerprintsQuery,
@@ -40,6 +41,8 @@ import { fingerprintsHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
   metricConfigWithIxPatterns,
   ixPatternsFromConfig,
+  flowWalletRules,
+  withFlowWalletRules,
 } from 'lib/strategy/registry';
 import {
   DISCOVERY_COL_HELP,
@@ -82,6 +85,7 @@ import {
 import type {
   FlowDiscoveryGroup,
   FlowDiscoveryResult,
+  FlowDiscoveryStructure,
 } from 'types';
 import {
   findFingerprintForGroupKey,
@@ -256,6 +260,8 @@ export function FlowDiscoveryPage() {
     DEFAULTS,
     { debounceMs: 400 },
   );
+  // Collapsing the group list hands its column back to the selected group's detail.
+  const [groupsOpen, setGroupsOpen] = useAccordionOpen(ACCORDION_IDS.flowDiscoveryGroups, true);
   const config: DiscoveryConfig = {
     ...DEFAULTS,
     ...stored,
@@ -340,6 +346,9 @@ export function FlowDiscoveryPage() {
   /** Apply target — null ⇒ promote-style create/bind from the group key. */
   const [targetFpId, setTargetFpId] = useState<string | null>(seedFingerprintId);
   const [draftPatterns, setDraftPatterns] = useState<string[][]>([]);
+  /** `m_flow_ix`'s two wallet rules, seeded from the target fingerprint. Both default
+   *  true, matching the backend, so a bind-created fingerprint reads the same here. */
+  const [walletRules, setWalletRules] = useState(() => flowWalletRules(null));
   const [applyError, setApplyError] = useState<string | null>(null);
   const [applyOk, setApplyOk] = useState<string | null>(null);
   const [selectedTokenMint, setSelectedTokenMint] = useState<string | null>(null);
@@ -539,6 +548,55 @@ export function FlowDiscoveryPage() {
   /** The run predates the per-token field — the list is *unknown*, not empty. */
   const tokenLaunchUnscored = !!selectedTokenRow && selectedTokenRow.first_slot_ix_labels == null;
 
+  // ── the filtered set ──────────────────────────────────────────────────────
+  // What the table currently shows, after its search + per-column filters. The
+  // three buttons above read the GROUP (and the per-token one reads the token's
+  // own bundle); this pair reads the table instead, so any slice you can express
+  // in the filter row — side, launch presence, `Lift >3`, still-open — is also a
+  // thing you can stage in one click.
+  const [emittedFiltered, setEmittedFiltered] = useState<FlowDiscoveryStructure[]>([]);
+  const handleFilteredStructures = useCallback((rows: FlowDiscoveryStructure[]) => {
+    setEmittedFiltered(rows);
+  }, []);
+  /** The emitted set narrowed to rows that are actually in the selected group.
+   *
+   *  Switching groups swaps the table's whole row set, and the emit that carries
+   *  the new one arrives via an effect — a child effect, so it lands BEFORE any
+   *  parent effect could clear the old value, which makes clearing on the switch
+   *  a race that wipes the fresh set. Intersecting instead is order-independent:
+   *  a leftover row from the previous group can never be counted, whichever
+   *  render this is read on. */
+  const filteredStructures = useMemo(() => {
+    if (!selectedGroup) return [] as FlowDiscoveryStructure[];
+    const groupKeys = new Set(selectedGroup.structures.map((s) => JSON.stringify(s.ix_labels)));
+    return emittedFiltered.filter((s) => groupKeys.has(JSON.stringify(s.ix_labels)));
+  }, [emittedFiltered, selectedGroup]);
+
+  /** Filtered rows the stage button would add (staged ones are already there). */
+  const filteredUnstaged = useMemo(() => {
+    const draftKeys = new Set(draftPatterns.map((p) => JSON.stringify(p)));
+    return filteredStructures
+      .filter((s) => !draftKeys.has(JSON.stringify(s.ix_labels)))
+      .map((s) => s.ix_labels);
+  }, [filteredStructures, draftPatterns]);
+  /** Filtered rows the unstage button would remove. */
+  const filteredStaged = useMemo(() => {
+    const draftKeys = new Set(draftPatterns.map((p) => JSON.stringify(p)));
+    return filteredStructures
+      .filter((s) => draftKeys.has(JSON.stringify(s.ix_labels)))
+      .map((s) => s.ix_labels);
+  }, [filteredStructures, draftPatterns]);
+  /** Every row on screen — what both buttons outline on hover, so the pair marks
+   *  the same set whichever one you are about to press. */
+  const filteredAll = useMemo(
+    () => filteredStructures.map((s) => s.ix_labels),
+    [filteredStructures],
+  );
+  /** The table is filtered down from the group — worth saying, since pagination is
+   *  off and there is no pager footer to read a count off. */
+  const filteredIsNarrowed =
+    !!selectedGroup && filteredStructures.length < selectedGroup.structures.length;
+
   function autoSelectSuggested() {
     if (suggestedUnchecked.length === 0) return;
     setDraftPatterns((prev) => [...prev, ...suggestedUnchecked]);
@@ -554,6 +612,19 @@ export function FlowDiscoveryPage() {
   function autoSelectTokenLaunch() {
     if (tokenLaunchUnchecked.length === 0) return;
     setDraftPatterns((prev) => [...prev, ...tokenLaunchUnchecked]);
+    setApplyOk(null);
+  }
+
+  function stageFiltered() {
+    if (filteredUnstaged.length === 0) return;
+    setDraftPatterns((prev) => [...prev, ...filteredUnstaged]);
+    setApplyOk(null);
+  }
+
+  function unstageFiltered() {
+    if (filteredStaged.length === 0) return;
+    const drop = new Set(filteredStaged.map((labels) => JSON.stringify(labels)));
+    setDraftPatterns((prev) => prev.filter((p) => !drop.has(JSON.stringify(p))));
     setApplyOk(null);
   }
 
@@ -577,15 +648,21 @@ export function FlowDiscoveryPage() {
   const targetFp: Fingerprint | null =
     (targetFpId && fingerprints.find((f) => f.id === targetFpId)) || null;
   const currentPatterns = ixPatternsFromConfig(targetFp?.metric_config ?? {});
+  const savedWalletRules = flowWalletRules(targetFp?.metric_config);
 
   /** Point the apply target at a fingerprint and load its SAVED patterns into the
    *  draft — the ONE seeding path, so every trigger (group change, late list load,
-   *  manual pick) stages the same thing. `null` ⇒ promote-style bind, empty draft. */
+   *  manual pick) stages the same thing. `null` ⇒ promote-style bind, empty draft.
+   *
+   *  The two wallet rules seed here too. Apply PUTs the whole row, so a stale pair
+   *  held over from the previously selected fingerprint would be written onto this
+   *  one — the classifier changing as a side effect of picking a target. */
   const seedFromFingerprint = useCallback(
     (id: string | null) => {
       setTargetFpId(id);
       const fp = id ? fingerprints.find((f) => f.id === id) : null;
       setDraftPatterns(fp ? ixPatternsFromConfig(fp.metric_config) : []);
+      setWalletRules(flowWalletRules(fp?.metric_config));
       setApplyOk(null);
     },
     [fingerprints],
@@ -729,7 +806,12 @@ export function FlowDiscoveryPage() {
             // match-everything row into a criterion-less one.
             criteria: targetFp.criteria,
             wildcard: targetFp.wildcard,
-            metric_config: metricConfigWithIxPatterns(patterns),
+            // Into the existing config, never over it: the PUT replaces the row, so
+            // the other groups and the classifier's own flags have to be carried.
+            metric_config: withFlowWalletRules(
+              metricConfigWithIxPatterns(patterns, targetFp.metric_config),
+              walletRules,
+            ),
           },
         }).unwrap();
         setApplyOk(`Updated fingerprint “${targetFp.name}”.`);
@@ -904,11 +986,26 @@ export function FlowDiscoveryPage() {
       {applyOk && <InlineAlert variant="success">{applyOk}</InlineAlert>}
 
       {result && (
-        <div className="flex flex-col gap-3 lg:flex-row">
-          <div className="lg:w-72 shrink-0 flex flex-col gap-1">
-            <h2 className="text-xs font-semibold uppercase tracking-wide text-text-dim mb-1">
-              Groups ({result.groups.length})
-            </h2>
+        <div className={`flex flex-col gap-3 ${groupsOpen ? 'lg:flex-row' : ''}`}>
+          <Accordion
+            className={`shrink-0 ${groupsOpen ? 'lg:w-72' : ''}`}
+            bordered={false}
+            padding="none"
+            open={groupsOpen}
+            onOpenChange={setGroupsOpen}
+            title={
+              <span className="text-xs font-semibold uppercase tracking-wide text-text-dim">
+                Groups ({result.groups.length})
+              </span>
+            }
+            badge={
+              !groupsOpen && selectedGroup ? (
+                <span className="max-w-[32ch] truncate font-mono text-[11px] text-text-mid">
+                  {groupKeyLabel(selectedGroup.group_key)}
+                </span>
+              ) : undefined
+            }
+          >
             {result.groups.length === 0 ? (
               <p className="text-xs text-text-dim">No groups survived min_tokens.</p>
             ) : (
@@ -940,7 +1037,7 @@ export function FlowDiscoveryPage() {
                 })}
               </div>
             )}
-          </div>
+          </Accordion>
 
           {selectedGroup && (
             <div className="min-w-0 flex-1 flex flex-col gap-3">
@@ -1078,6 +1175,9 @@ export function FlowDiscoveryPage() {
                 onChange={setDraftPatterns}
                 currentPatterns={currentPatterns}
                 targetFp={targetFp}
+                walletRules={walletRules}
+                savedWalletRules={savedWalletRules}
+                onWalletRulesChange={setWalletRules}
                 applying={applying}
                 onApply={handleApply}
               />
@@ -1097,6 +1197,15 @@ export function FlowDiscoveryPage() {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="inline-flex flex-wrap items-center gap-2 text-xs font-semibold text-text-mid">
                     <LabelTip tip={DISCOVERY_COL_HELP.suggested}>Ranked ix structures</LabelTip>
+                    {filteredIsNarrowed && (
+                      <Badge
+                        variant="neutral"
+                        size="sm"
+                        title="The table filters are hiding rows — the two filtered buttons act on the shown ones only, the three group buttons still read the whole group"
+                      >
+                        {filteredStructures.length} of {selectedGroup.structures.length} shown
+                      </Badge>
+                    )}
                     {suggestedUnchecked.length > 0 && (
                       <Badge variant="warning" size="sm">
                         {suggestedUnchecked.length} suggested
@@ -1180,6 +1289,40 @@ export function FlowDiscoveryPage() {
                       <CheckIcon className="h-3.5 w-3.5" />
                       Auto-select suggested
                     </button>
+                    <span className="mx-0.5 h-4 w-px bg-border" aria-hidden />
+                    <button
+                      type="button"
+                      disabled={filteredUnstaged.length === 0}
+                      onClick={stageFiltered}
+                      {...previewProps(filteredAll)}
+                      className="inline-flex items-center gap-1 rounded border border-accent/40 px-2 py-1 text-[11px] font-semibold text-accent transition hover:bg-accent/10 disabled:cursor-not-allowed disabled:opacity-40"
+                      title={
+                        filteredStructures.length === 0
+                          ? 'No row matches the table filters'
+                          : filteredUnstaged.length === 0
+                            ? `All ${filteredStructures.length} filtered row(s) are already staged (hover outlines them)`
+                            : `Stage the ${filteredUnstaged.length} not-yet-staged row(s) of the ${filteredStructures.length} the table filters currently show. Reads the TABLE, not the group — so it stages exactly the slice you can see, and nothing the server-side row cap left out.`
+                      }
+                    >
+                      <CheckIcon className="h-3.5 w-3.5" />
+                      Stage filtered
+                      {filteredUnstaged.length > 0 ? ` · ${filteredUnstaged.length}` : ''}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={filteredStaged.length === 0}
+                      onClick={unstageFiltered}
+                      {...previewProps(filteredAll)}
+                      className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] font-semibold text-text-dim transition hover:bg-white/5 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+                      title={
+                        filteredStaged.length === 0
+                          ? 'No filtered row is staged'
+                          : `Unstage the ${filteredStaged.length} staged row(s) of the ${filteredStructures.length} the table filters currently show. Only reaches rows that HAVE a row here: the draft is re-seeded from the target fingerprint's saved patterns, so a staged pattern absent from this group is untouched — remove that one in the cart below.`
+                      }
+                    >
+                      Unstage filtered
+                      {filteredStaged.length > 0 ? ` · ${filteredStaged.length}` : ''}
+                    </button>
                   </div>
                 </div>
                 <StructureTable
@@ -1190,6 +1333,7 @@ export function FlowDiscoveryPage() {
                   liftDefined={liftDefined}
                   previewKeys={previewKeys}
                   onToggle={toggleStructure}
+                  onFilteredRowsChange={handleFilteredStructures}
                 />
               </div>
             </div>

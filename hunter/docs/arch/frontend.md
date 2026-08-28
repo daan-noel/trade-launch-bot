@@ -554,9 +554,18 @@ next load (no per-metric frontend work).
   parked stage there would vanish on reload), `RuleEditor` (builder + JSON tab + a
   `renderDryRun` slot; edit mode locks `trade_mode` behind a padlock unlock),
   `FingerprintPicker`/`FingerprintForm` (registry-driven
-  `metric_config` section + `VolumeIxPatternsEditor` for `m_flow_ix.ix_patterns`
-  — add-row / remove-row / **Delete all** footer, the last confirming via the shared
-  `clearPrompt` also used by the flow-discovery cart). Each numeric axis is ONE
+  `metric_config` section + `IxPatternsEditor` for `m_flow_ix.ix_patterns` — **one
+  line per pattern**, the sequence rendered short (`AdvanceNonceAccount ›
+  SetComputeUnitLimit › …`, program halves dropped) and truncated, with **one row
+  open at a time**; a capped scrolling list, a label filter past 6 rows, and a
+  **Delete all** confirming via the shared `clearPrompt` the flow-discovery cart also
+  uses. Rows stay mounted while collapsed or filtered out, because a row holds the
+  draft text that has not parsed yet. Below the rows sit `m_flow_ix`'s two wallet
+  rules — `wallet_contagion` and `creator_is_tagged` — as checkboxes; the whole
+  `m_flow_ix` object round-trips through `metricConfigWithIxPatterns`, so a save that
+  touches only the name preserves the marker masks and both flags, and
+  `withFlowWalletRules` writes the pair explicitly rather than leaving it to the
+  backend default). Each numeric axis is ONE
   `AxisConditionInput` — a condition expression (`3`, `1..5`, `>=2`, `!=3`,
   `<=2 | >=7`) read through `fingerprintGrammar`, the TS mirror of the Rust
   grammar, echoed as the predicate it parsed to and snapped to the canonical
@@ -632,7 +641,22 @@ next load (no per-metric frontend work).
   *Launch shapes · this token* (only while a token is picked in `TokenPreviewPanel` —
   applies that token's own `first_slot_ix_labels`, which bypasses the table entirely:
   uncapped, unfloored, per token). See `plans/strategies/metrics-reference.md` for why
-  the group answer cannot stand in for the per-token one.   Job kind `discovery` in `BackgroundJobsContext`
+  the group answer cannot stand in for the per-token one.
+  `StructureTable` runs the shared `DataTable` with its search, per-column filter row,
+  Columns panel and pins on (`tableId` `flow-structures`), opening sorted by `Auto`;
+  the backend's `MAX_STRUCTURES_PER_GROUP` truncation keeps a group to one page, so
+  pagination stays off and "filtered" and "on screen" are the same set. Four columns
+  filter on *state* rather than a number — `Vol` (staged / not staged), `Auto`
+  (suggested / eligible / gated), `Side` and `Launch%` (the keywords `launch` / `none`
+  for creation-slot **presence**, any other text delegated to the shared numeric
+  parser for the purity %) — and `Structure` reuses `ixLabelsMatchFilter`, the same
+  grammar the fingerprint table's `ix_labels` column takes, so a shape copied from one
+  table selects its row in the other. A fifth and sixth action, *Stage filtered* /
+  *Unstage filtered*, read that filtered set (via `onFilteredRowsChange`) instead of
+  the group, which is what makes any expressible slice a one-click stage; unstaging
+  reaches only rows the group HAS, since the draft is re-seeded from the target
+  fingerprint's saved patterns and a staged pattern with no row here is the cart's to
+  remove. Job kind `discovery` in `BackgroundJobsContext`
   (SSE `flow_discovery_*`, mutual exclusion with sweeps).
 - Lab **Rule search** (`/strategies/rule-search`, `RuleSearchPage`) — one required
   fingerprint + datetime range + buy/fill/cost/copycat (default ON) + optional

@@ -72,7 +72,9 @@ hold, an armed trail, and a stay-on-wave / leave-on-dump exit all lose
 at 95 ms, every day. His-mint clock-20 at the same fill is a harvest
 and is lookahead (the mint list). Event-level `he1` is also a harvest
 and is lookahead (his send). Live concentration of this print:
-[ix-concentrate.md](ix-concentrate.md).
+[ix-concentrate.md](ix-concentrate.md). On that cell the after-move
+is present (r20 median +1.49%) and the matching exit is
+`arm_death 8`: [ix-cell-exit.md](ix-cell-exit.md).
 
 Do not fund a harvest exit on the unconcentrated event. Do not treat
 his-mint clock-20 as a live rule.

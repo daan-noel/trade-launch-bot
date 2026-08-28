@@ -71,6 +71,7 @@ def _bind_path_one(fill_idx):
         t_arm = None
         t_run50 = None
         t_run100 = None
+        t_first_sell = None
         arm_lvl = epx * 1.10
         run50_lvl = epx * 1.50
         run100_lvl = epx * 2.00
@@ -125,6 +126,8 @@ def _bind_path_one(fill_idx):
                 else:
                     buy_sol_pre += s_sol
             else:
+                if t_first_sell is None:
+                    t_first_sell = dt_s
                 if gap_fired:
                     n_sell_post += 1
                     sell_sol_post += s_sol
@@ -177,6 +180,12 @@ def _bind_path_one(fill_idx):
             "t_arm": t_arm,
             "t_run50": t_run50,
             "t_run100": t_run100,
+            "t_first_sell": t_first_sell,
+            "first_gap_s": (
+                float((first_gap_ts - ets) / np.timedelta64(1, "s"))
+                if first_gap_ts is not None
+                else None
+            ),
             "n_buy_post": n_buy_post,
             "n_sell_post": n_sell_post,
             "buy_sol_post": buy_sol_post,

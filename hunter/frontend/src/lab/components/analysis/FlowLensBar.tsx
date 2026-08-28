@@ -392,7 +392,6 @@ function PromoteToFingerprint({ patterns }: { patterns: IxPattern[] }) {
   const copy = async () => {
     if (!target) return;
     setStatus(null);
-    const { m_flow_ix: _flow, ...rest } = target.metric_config ?? {};
     try {
       await updateFingerprint({
         id: target.id,
@@ -404,10 +403,10 @@ function PromoteToFingerprint({ patterns }: { patterns: IxPattern[] }) {
           // match-everything row into a criterion-less one.
           criteria: target.criteria,
           wildcard: target.wildcard,
-          metric_config: {
-            ...rest,
-            ...metricConfigWithIxPatterns(toIxPatterns(patterns)),
-          },
+          metric_config: metricConfigWithIxPatterns(
+            toIxPatterns(patterns),
+            target.metric_config ?? {},
+          ),
         },
       }).unwrap();
       setStatus(`Copied ${patterns.length} pattern${patterns.length === 1 ? '' : 's'} to ${target.name}`);

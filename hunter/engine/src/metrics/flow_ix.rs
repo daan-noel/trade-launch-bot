@@ -501,34 +501,57 @@ pub fn flow_unconfigured_warning(params: &Value, metric_config: &Value) -> Optio
 
 // ── Totals ───────────────────────────────────────────────────────────────────
 
-/// Running vol/organic SOL totals (buy/sell absolute; net/gross/share derived).
+/// Running vol/organic SOL totals (buy/sell absolute; net/gross/share derived),
+/// plus the tagged TRANSACTION tallies the SOL sums cannot express.
+///
+/// The counts are tagged-side only because that is the side a pattern list names:
+/// `ix_patterns` says which builds are volume-side, so "how many of them landed" is a
+/// statement about the tagged set. The untagged remainder is everyone the classifier
+/// declined to judge, and a tally of it counts strangers, not a machine.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct FlowTotals {
     pub tagged_buy: f64,
     pub tagged_sell: f64,
     pub untagged_buy: f64,
     pub untagged_sell: f64,
+    pub tagged_buy_n: u32,
+    pub tagged_sell_n: u32,
 }
 
 impl FlowTotals {
     fn add(&mut self, side: Side, sol: f64, is_tagged: bool) {
         match (is_tagged, side) {
-            (true, Side::Buy) => self.tagged_buy += sol,
-            (true, Side::Sell) => self.tagged_sell += sol,
+            (true, Side::Buy) => {
+                self.tagged_buy += sol;
+                self.tagged_buy_n += 1;
+            }
+            (true, Side::Sell) => {
+                self.tagged_sell += sol;
+                self.tagged_sell_n += 1;
+            }
             (false, Side::Buy) => self.untagged_buy += sol,
             (false, Side::Sell) => self.untagged_sell += sol,
         }
     }
 
+    /// Remove one entry - the exact inverse of [`add`](Self::add).
+    ///
+    /// The side is the sign BIT, not `signed >= 0.0`. A zero-SOL sell is stored as
+    /// `-0.0`, which compares `>= 0.0` and takes the buy arm; the SOL sums never
+    /// noticed, because subtracting zero from the wrong one changes nothing. A COUNT
+    /// notices - it decrements the buy tally for a sell and stays wrong for the rest
+    /// of the token. `is_sign_negative` reads the bit, so `-0.0` is the sell it is.
     fn sub_signed(&mut self, signed: f64, is_tagged: bool) {
-        if signed >= 0.0 {
+        if !signed.is_sign_negative() {
             if is_tagged {
                 self.tagged_buy -= signed;
+                self.tagged_buy_n = self.tagged_buy_n.saturating_sub(1);
             } else {
                 self.untagged_buy -= signed;
             }
         } else if is_tagged {
             self.tagged_sell += signed; // signed < 0
+            self.tagged_sell_n = self.tagged_sell_n.saturating_sub(1);
         } else {
             self.untagged_sell += signed;
         }
@@ -545,6 +568,8 @@ impl FlowTotals {
             UntaggedSell | WinUntaggedSell => self.untagged_sell,
             UntaggedNet | WinUntaggedNet => self.untagged_buy - self.untagged_sell,
             UntaggedGross | WinUntaggedGross => self.untagged_buy + self.untagged_sell,
+            TaggedBuyCount | WinTaggedBuyCount => f64::from(self.tagged_buy_n),
+            TaggedSellCount | WinTaggedSellCount => f64::from(self.tagged_sell_n),
             TaggedShare | WinTaggedShare => {
                 let vg = self.tagged_buy + self.tagged_sell;
                 let ng = self.untagged_buy + self.untagged_sell;
@@ -996,6 +1021,7 @@ mod tests {
             (Side::Buy, 5.0, false, 7.0), // regressed
             (Side::Sell, 4.0, true, 12.0),
             (Side::Buy, 1.5, false, 11.0), // regressed
+            (Side::Sell, 0.0, true, 13.0), // zero-SOL sell: `-0.0`, the sign-bit case
             (Side::Sell, 0.5, true, 25.0),
         ];
         let ids = [
@@ -1008,6 +1034,8 @@ mod tests {
             MetricId::WinUntaggedNet,
             MetricId::WinUntaggedGross,
             MetricId::WinTaggedShare,
+            MetricId::WinTaggedBuyCount,
+            MetricId::WinTaggedSellCount,
         ];
         for window in [1.0_f64, 5.0, 10.0, 60.0] {
             let mut st = FlowState::new(FlowPatterns::new(BTreeSet::from([vol])));
@@ -1025,7 +1053,8 @@ mod tests {
                         if !in_window(WindowSpec::secs(window), t, now) {
                             continue;
                         }
-                        if signed >= 0.0 {
+                        // Sign BIT, matching `sub_signed` - a zero-SOL sell is `-0.0`.
+                        if !signed.is_sign_negative() {
                             want.add(Side::Buy, signed, v);
                         } else {
                             want.add(Side::Sell, -signed, v);
@@ -1194,6 +1223,88 @@ mod tests {
             0.4,
             "the machine is on the volume side and the gate must see it"
         );
+    }
+
+    /// The rule `tagged_sell_count(1sl) >= 2` — "two sells carrying the dump build
+    /// landed in the same slot".
+    ///
+    /// This is the reading `tagged_sell` cannot give: the two sells below total the
+    /// same SOL as the single sell that precedes them, so a SOL threshold either
+    /// fires on both or on neither. The count separates them, and it must fall back
+    /// when the slot rolls — a latched counter would exit every later token.
+    #[test]
+    fn two_tagged_sells_in_one_slot_are_a_count_of_two() {
+        let dump = ix_hash(&["Pump.Fun: Sell", "Token Program: CloseAccount"]);
+        let w = crate::metrics::WindowSpec::slots(1.0, 0.0);
+        let mut st = FlowState::new(FlowPatterns::new(BTreeSet::from([dump])));
+        st.ensure_window(w);
+        let at = ts(0.0);
+        let sell = |sol: f64, ix: Option<u64>, wallet: u64, slot: u64| TradeLite {
+            side: Side::Sell, sol, at, slot, ix_hash: ix, wallet_hash: wallet,
+            ..Default::default()
+        };
+        let n = |st: &FlowState, slot: u64| st.value(MetricId::WinTaggedSellCount, Some(w), at, c(slot));
+
+        // One dump-build sell of 2.0 SOL.
+        st.on_trade(&sell(2.0, Some(dump), 1, 100), c(100));
+        assert_eq!(n(&st, 100), 1.0);
+        // Read the SOL sum NOW: a later slot evicts this one, so the two readings
+        // have to be taken as the engine takes them, each at its own slot.
+        let sol_one_big = st.value(MetricId::WinTaggedSell, Some(w), at, c(100));
+
+        // Next slot: two dump-build sells of 1.0 each — same SOL, different count.
+        st.on_trade(&sell(1.0, Some(dump), 2, 101), c(101));
+        st.on_trade(&sell(1.0, Some(dump), 3, 101), c(101));
+        assert_eq!(n(&st, 101), 2.0, "two sells at once is the fire");
+        assert_eq!(
+            st.value(MetricId::WinTaggedSell, Some(w), at, c(101)),
+            sol_one_big,
+            "and the SOL sum reads the same on both slots, which is why it cannot say it",
+        );
+
+        // A sell on some other build does not count, however big.
+        st.on_trade(&sell(9.0, Some(ix_hash(&["Pump.Fun: Sell"])), 4, 102), c(102));
+        assert_eq!(n(&st, 102), 0.0, "only the saved builds are counted");
+
+        // And the window releases: an empty slot reads zero, not a latch.
+        assert_eq!(n(&st, 103), 0.0);
+    }
+
+    /// A zero-SOL tagged sell must not be booked as a buy.
+    ///
+    /// It is stored as `-0.0`, and `-0.0 >= 0.0` is TRUE, so a magnitude test puts it
+    /// on the buy side. The SOL sums cannot tell (zero subtracts the same either way)
+    /// — the counts can, and a single one of these would leave `tagged_buy_count`
+    /// permanently one short for the rest of the token.
+    #[test]
+    fn a_zero_sol_tagged_sell_is_a_sell_on_both_sides_of_the_window() {
+        let dump = ix_hash(&["Pump.Fun: Sell"]);
+        let w = crate::metrics::WindowSpec::slots(1.0, 0.0);
+        let mut st = FlowState::new(FlowPatterns::new(BTreeSet::from([dump])));
+        st.ensure_window(w);
+        let at = ts(0.0);
+        let t = |side: Side, sol: f64, wallet: u64, slot: u64| TradeLite {
+            side, sol, at, slot, ix_hash: Some(dump), wallet_hash: wallet,
+            ..Default::default()
+        };
+        st.on_trade(&t(Side::Buy, 1.0, 1, 100), c(100));
+        st.on_trade(&t(Side::Sell, 0.0, 2, 100), c(100));
+        assert_eq!(st.value(MetricId::WinTaggedBuyCount, Some(w), at, c(100)), 1.0);
+        assert_eq!(st.value(MetricId::WinTaggedSellCount, Some(w), at, c(100)), 1.0);
+
+        // Roll past the window so both entries are evicted, then re-read: eviction
+        // is where the sign is consulted a second time, and the arm it takes there
+        // must match the one `add` took.
+        st.on_trade(&t(Side::Buy, 1.0, 3, 200), c(200));
+        assert_eq!(
+            st.value(MetricId::WinTaggedBuyCount, Some(w), at, c(200)),
+            1.0,
+            "the evicted zero-SOL SELL must not have decremented the BUY tally",
+        );
+        assert_eq!(st.value(MetricId::WinTaggedSellCount, Some(w), at, c(200)), 0.0);
+        // Lifetime keeps every one of them.
+        assert_eq!(st.value(MetricId::TaggedBuyCount, None, at, c(200)), 2.0);
+        assert_eq!(st.value(MetricId::TaggedSellCount, None, at, c(200)), 1.0);
     }
 
     /// An unknown marker name is an ERROR, not an empty mask: a typo that silently

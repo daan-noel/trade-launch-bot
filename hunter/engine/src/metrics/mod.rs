@@ -620,6 +620,10 @@ pub enum MetricId {
     UntaggedNet,
     UntaggedGross,
     TaggedShare,
+    /// Tagged BUY transactions since birth - `TaggedBuy` counted instead of summed.
+    TaggedBuyCount,
+    /// Tagged SELL transactions since birth - `TaggedSell` counted instead of summed.
+    TaggedSellCount,
     // ── m_flow_ix_window (trailing; distinct ids so monotonic flags can differ) ─
     WinTaggedBuy,
     WinTaggedSell,
@@ -630,6 +634,11 @@ pub enum MetricId {
     WinUntaggedNet,
     WinUntaggedGross,
     WinTaggedShare,
+    /// Tagged BUY transactions over the trailing window.
+    WinTaggedBuyCount,
+    /// Tagged SELL transactions over the trailing window - the metric a dump
+    /// signature is read with, on a window narrow enough to mean "at once".
+    WinTaggedSellCount,
     // ── m_position (position-scoped; anchored on the entry fill; exit-only) ──
     /// Percent below the since-entry peak — the trailing stop.
     Retrace,
@@ -1438,6 +1447,24 @@ pub const REGISTRY: &[GroupSpec] = &[
                 monotonic: false,
                 hue: 109,
             },
+            MetricSpec {
+                id: MetricId::TaggedBuyCount,
+                name: "tagged_buy_count",
+                description: "Number of BUY TRANSACTIONS from tagged wallets since birth - `tagged_buy` tallied instead of summed. Two 0.1 SOL buys and one 0.2 SOL buy are the same SOL and a different count.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: true,
+                hue: 111,
+            },
+            MetricSpec {
+                id: MetricId::TaggedSellCount,
+                name: "tagged_sell_count",
+                description: "Number of SELL TRANSACTIONS from tagged wallets since birth - `tagged_sell` tallied instead of summed.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: true,
+                hue: 113,
+            },
         ],
     },
     GroupSpec {
@@ -1543,6 +1570,24 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 1.0,
                 monotonic: false,
                 hue: 109,
+            },
+            MetricSpec {
+                id: MetricId::WinTaggedBuyCount,
+                name: "tagged_buy_count",
+                description: "Number of BUY TRANSACTIONS from tagged wallets over the trailing window - `tagged_buy` tallied instead of summed.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 111,
+            },
+            MetricSpec {
+                id: MetricId::WinTaggedSellCount,
+                name: "tagged_sell_count",
+                description: "Number of SELL TRANSACTIONS from tagged wallets over the trailing window. On a ONE-SLOT window this is how many tagged sells landed at once - the reading a dump signature needs, which `tagged_sell` cannot state because one large sell and several small ones are the same SOL.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 113,
             },
         ],
     },
@@ -1880,7 +1925,8 @@ mod tests {
     #[test]
     fn monotonic_flags_match_contract() {
         // Lifetime accumulators that only grow: time + m_flow_lifetime
-        // buy/sell/gross/trade_count + m_flow_ix vol/nonvol buy/sell/gross.
+        // buy/sell/gross/trade_count + m_flow_ix vol/nonvol buy/sell/gross and the
+        // two tagged tallies.
         // Windowed / net / share / everything else: not monotonic.
         let lifetime_flow_mono = [
             MetricId::LifeBuy,
@@ -1893,6 +1939,8 @@ mod tests {
             MetricId::UntaggedBuy,
             MetricId::UntaggedSell,
             MetricId::UntaggedGross,
+            MetricId::TaggedBuyCount,
+            MetricId::TaggedSellCount,
         ];
         for g in REGISTRY {
             for m in g.metrics {

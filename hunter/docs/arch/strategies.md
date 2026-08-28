@@ -421,7 +421,10 @@ only. Flow state keys by `FingerprintId` on `TokenTrack`. Unconfigured fingerpri
 [`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md).
 
 Lab authoring: `POST /api/strategies/flow-discovery` scores ix-structures per
-sweep `GroupKey`; the Flow discovery page toggles patterns into `metric_config`.
+sweep `GroupKey`; the Flow discovery page toggles patterns into `metric_config`, and
+its draft cart carries the same two wallet-rule checkboxes as the fingerprint form
+(seeded from the target, since Apply PUTs the whole row). Bind posts `ix_patterns`
+alone, so a newly bound fingerprint takes the backend defaults.
 `POST /api/strategies/rule-search` fills registry roles for one fingerprint and
 datetime range and boards a champion `RuleParams` (Promote → inactive paper).
 Method: [`rule-search-method.md`](../plans/strategies/rule-search-method.md).

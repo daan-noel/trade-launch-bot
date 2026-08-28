@@ -1,11 +1,17 @@
 import { useCallback, useMemo } from 'react';
 
 import { DataTable } from 'components/table/DataTable';
+import { parseNumericPredicate } from 'components/table/numericFilter';
 import type { ColumnDef } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
 import { Checkbox } from 'components/ui/Checkbox';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
-import { formatIxLabelsText } from 'lib/ixLabels';
+import {
+  formatIxLabelsText,
+  ixLabelsMatchFilter,
+  IX_LABELS_FILTER_PLACEHOLDER,
+  IX_LABELS_FILTER_TITLE,
+} from 'lib/ixLabels';
 import { signalGradeClass } from 'lib/signedTone';
 import { DISCOVERY_COL_HELP, type HelpTip } from 'lib/strategy/strategyHelp';
 import type { FlowDiscoveryStructure } from 'types';
@@ -25,6 +31,9 @@ import {
 /** Stable structure identity — same key the draft/preview sets use. */
 const structureRowKey = (s: FlowDiscoveryStructure) => JSON.stringify(s.ix_labels);
 
+/** Column visibility + sort/page-size prefs and pins persist under this id. */
+const TABLE_ID = 'flow-structures';
+
 function fmt(n: number, digits = 1): string {
   if (!Number.isFinite(n)) return '—';
   return n.toFixed(digits);
@@ -35,6 +44,15 @@ function fmt(n: number, digits = 1): string {
  *  generic sweep table's column tooltips. */
 function helpText(tip: HelpTip): string {
   return `${tip.title}\n\n${tip.body}`;
+}
+
+/** A row's auto verdict as an exclusive filter value. Mirrors the three states the
+ *  `Auto` cell renders (badge / bare % / gated dash); a row the run never scored
+ *  has no value and matches no choice. */
+function suggestOptionValue(sug: StructureSuggestion | undefined): string {
+  if (!sug) return '';
+  if (sug.gated) return 'gated';
+  return sug.suggested ? 'suggested' : 'eligible';
 }
 
 /** Ranking-table columns for the ix-structure DataTable. `draftPatterns`/
@@ -62,6 +80,17 @@ function buildStructureColumns(opts: {
           onChange={() => onToggle(s.ix_labels)}
         />
       ),
+      // Draft state is a slice of the table, not only a click target: filter to the
+      // open rows to work through what is left, or to the staged ones to review
+      // what a bulk button just added.
+      filterOptions: [
+        { value: 'staged', label: 'staged' },
+        { value: 'open', label: 'not staged' },
+      ],
+      filterOptionValue: (s) => (draftKeys.has(JSON.stringify(s.ix_labels)) ? 'staged' : 'open'),
+      filterTitle:
+        'Show only the rows already in the draft ix_patterns, or only the ones still open',
+      sortValue: (s) => (draftKeys.has(JSON.stringify(s.ix_labels)) ? 1 : 0),
       searchValue: () => '',
     },
     {
@@ -105,6 +134,18 @@ function buildStructureColumns(opts: {
         const band = sug.suggested ? 2 : sug.gated ? 0 : 1;
         return band + sug.score;
       },
+      // The same three bands as an exclusive choice. `eligible` is the one worth a
+      // filter of its own: those rows carry evidence but fell under the badge bar,
+      // and they are invisible in a table sorted by anything else.
+      filterOptions: [
+        { value: 'suggested', label: 'suggested' },
+        { value: 'eligible', label: 'eligible' },
+        { value: 'gated', label: 'gated' },
+      ],
+      filterOptionValue: (s) =>
+        suggestOptionValue(suggestionByStructure.get(JSON.stringify(s.ix_labels))),
+      filterTitle:
+        'suggested = badged (cleared the gates and scored over the bar); eligible = scored but under it; gated = excluded before any evidence was weighed',
       searchValue: () => '',
     },
     {
@@ -113,6 +154,12 @@ function buildStructureColumns(opts: {
       tooltip: helpText(DISCOVERY_COL_HELP.structure),
       render: (s) => <IxLabelsDisplay labels={s.ix_labels} copyJson />,
       searchValue: (s) => formatIxLabelsText(s.ix_labels),
+      // The SAME grammar the fingerprint table's ix_labels column filters with, so
+      // a shape copied out of one table selects its row in the other: a JSON array
+      // is an ordered-exact match, plain text a substring-any over the labels.
+      filterMatch: (s, raw) => ixLabelsMatchFilter(s.ix_labels, raw),
+      filterPlaceholder: IX_LABELS_FILTER_PLACEHOLDER,
+      filterTitle: IX_LABELS_FILTER_TITLE,
     },
     {
       key: 'side',
@@ -125,6 +172,16 @@ function buildStructureColumns(opts: {
         return <Badge variant="neutral" size="sm">both sides</Badge>;
       },
       sortValue: (s) => sideOf(s),
+      // Exclusive, not substring: `both` contains `b` and so does `buy`, so a text
+      // filter here answers a question nobody asked.
+      filterOptions: [
+        { value: 'buy', label: 'buy-only' },
+        { value: 'sell', label: 'sell-only' },
+        { value: 'both', label: 'both sides' },
+      ],
+      filterOptionValue: (s) => sideOf(s),
+      filterTitle:
+        'A one-sided shape only ever buys or only ever sells; a two-sided one round-trips (read Wash next to it)',
       searchValue: (s) => sideOf(s),
     },
     {
@@ -166,6 +223,23 @@ function buildStructureColumns(opts: {
         const purity = firstSlotPurity(s);
         return purity == null ? null : purity * 100;
       },
+      // Two questions share this column and only one of them is the number: what
+      // the launch buttons act on is PRESENCE (`first_slot_trades > 0`), while the
+      // % beside it is the purity. So the box takes either — the two keywords, or
+      // the ordinary numeric grammar, delegated to the shared parser rather than
+      // re-implemented here.
+      filterMatch: (s, raw) => {
+        const text = raw.trim().toLowerCase();
+        if (text === 'launch') return isFirstSlotPresent(s);
+        if (text === 'none') return !isFirstSlotPresent(s);
+        const numeric = parseNumericPredicate(text);
+        if (!numeric) return false;
+        const purity = firstSlotPurity(s);
+        return purity != null && numeric(purity * 100);
+      },
+      filterPlaceholder: 'launch  none  >50',
+      filterTitle:
+        'launch = traded in some matched token creation slot (exactly what the launch buttons stage); none = did not. Anything else reads as the % of this shape gross that landed in a creation slot: >  >=  <  <=  =  != or a range like 20..80.',
       searchValue: () => '',
     },
     {
@@ -283,6 +357,9 @@ function buildStructureColumns(opts: {
         return <span className={pctGrade(c)}>{fmt(c)}</span>;
       },
       sortValue: (s) => contagionByStructure.get(JSON.stringify(s.ix_labels)) ?? null,
+      // Defined against the CURRENT draft, so this filter moves as you stage rows —
+      // which is the point: `>50` reads as "whose wallets I have already tagged".
+      filterNumber: (s) => contagionByStructure.get(JSON.stringify(s.ix_labels)) ?? null,
       searchValue: () => '',
     },
   ];
@@ -298,6 +375,7 @@ export function StructureTable({
   liftDefined,
   previewKeys,
   onToggle,
+  onFilteredRowsChange,
 }: {
   structures: FlowDiscoveryStructure[];
   draftPatterns: string[][];
@@ -310,6 +388,11 @@ export function StructureTable({
    *  outlined so the button's effect is visible BEFORE it's pressed. */
   previewKeys?: ReadonlySet<string>;
   onToggle: (labels: string[]) => void;
+  /** Every row surviving the search + column filters. Pagination is off, so this
+   *  is exactly what is on screen — which is what lets the page's stage/unstage
+   *  buttons act on "what you are looking at". Pass a stable (useCallback)
+   *  handler. */
+  onFilteredRowsChange?: (rows: FlowDiscoveryStructure[]) => void;
 }) {
   const draftKeysSig = draftPatterns.map((p) => JSON.stringify(p)).join('|');
   const columns = useMemo(
@@ -339,11 +422,23 @@ export function StructureTable({
       rows={structures}
       rowKey={structureRowKey}
       rowClassName={rowClassName}
-      searchable={false}
-      colFilters={false}
-      colToggle={false}
+      tableId={TABLE_ID}
+      searchable
+      searchPlaceholder="Search structures…"
+      colFilters
+      colToggle
+      pinnable
+      // Open on the check-me rows (Auto's band-then-score order). Cycling that
+      // header past `desc` drops the key and restores the order `structures`
+      // arrives in, which is the server's own rank.
+      defaultSort={{ col: 'suggested', dir: 'desc' }}
       selectable={false}
+      // The backend truncates each group to MAX_STRUCTURES_PER_GROUP, so the whole
+      // group fits on one page — which is what lets "filtered" and "on screen" be
+      // the same set for the stage/unstage-filtered buttons.
       paginate={false}
+      emptyMessage="No structure matches these filters."
+      onFilteredRowsChange={onFilteredRowsChange}
     />
   );
 }

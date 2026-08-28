@@ -407,6 +407,13 @@ that token, and the creator rule adds an identity term. Leaving them on does not
 the one the rule was derived on. Wallet-keyed rules are also the axis a
 [wallet-free](wallet-8dtx-derived-rule.md) derivation is not allowed to use.
 
+Both are checkboxes on the fingerprint form, under the pattern rows. The form writes
+them **explicitly** on every save rather than leaving them to the backend default: a row
+that omits them says nothing about which classifier it meant, and the whole `m_flow_ix`
+object round-trips through `metricConfigWithIxPatterns`, so a save that touches only the
+name still preserves the marker masks and both flags. Write the key from any other
+caller the same way - the PUT replaces the row, so a partial write lands as a full one.
+
 ```json
 "m_flow_ix": {
   "untagged_ix_markers": ["Axiom Trade", "Photon", "Bloom Router", "Trojan Trade", "Terminal"],
@@ -427,6 +434,24 @@ Config lives on the fingerprint (not the rule):
   }
 }
 ```
+
+### The counts are the tagged set tallied, and only the tagged set
+
+`tagged_buy_count` / `tagged_sell_count` are `tagged_buy` / `tagged_sell` counted instead
+of summed. They exist because a SOL sum cannot state *how many*: one 2 SOL sell and two
+1 SOL sells are the same `tagged_sell`, and "**two** dump-shaped sells landed at once" is
+a rule about the second. On a one-slot window the count is exactly that reading.
+
+Only the tagged side is tallied. A pattern list names the volume side, so "how many of
+them landed" is a statement about the tagged set; the untagged remainder is everyone the
+classifier declined to judge, and counting it counts strangers rather than a machine.
+
+The two sides do not mix, and that is what lets one list do both jobs: matching is on the
+transaction's own ordered labels, and the side split happens after. A **buy** pattern can
+never match a sell, so a list holding the volume-making buy shapes *and* the dump sell
+shape leaves `tagged_sell_count` counting the dump shapes alone — provided
+`wallet_contagion` is **off**, which is the one rule that would let a wallet's tagged buy
+make its later sells count.
 
 `m_flow_ix_window` reads the **same** `m_flow_ix` key (one classifier, two views).
 Unconfigured fingerprint (no `m_flow_ix` key) ⇒ every flow metric is **NaN**
@@ -504,8 +529,8 @@ a 2s `net_flow` exhaustion gate on entry). Each window is an independent clause 
 form round-trips byte-identically (no DB migration). SSOT for the shape + validation:
 `hunter_engine::rule_params` module docs.
 
-Both flow groups expose the same nine JSON metric names; registry `MetricId`s are distinct so
-lifetime monotonic flags can differ. All SOL values use absolute trade notional;
+Both flow groups expose the same eleven JSON metric names; registry `MetricId`s are distinct
+so lifetime monotonic flags can differ. All SOL values use absolute trade notional;
 buy = +, sell = − for `*_net`.
 
 | metric | meaning | unit | eq-tol | monotonic (lifetime only) |
@@ -519,6 +544,8 @@ buy = +, sell = − for `*_net`.
 | `untagged_net` | `untagged_buy − untagged_sell` | SOL | 0.1 | ✗ |
 | `untagged_gross` | `untagged_buy + untagged_sell` | SOL | 0.1 | ✓ |
 | `tagged_share` | `tagged_gross / (tagged_gross + untagged_gross)` ×100; NaN when total 0 | % | 1.0 | ✗ |
+| `tagged_buy_count` | tagged BUY transactions | count | 0.5 | ✓ |
+| `tagged_sell_count` | tagged SELL transactions | count | 0.5 | ✓ |
 
 Windowed variants are never monotonic. Lifetime monotonic ✓ metrics participate in
 derived-unsatisfiability disarm (`arm.rs` reads the registry flag).

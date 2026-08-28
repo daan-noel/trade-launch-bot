@@ -125,4 +125,5 @@ as one rule, tight packs unfillable:
 [ix-combined-machine.md](ix-combined-machine.md). Early fire + gap
 duration: [ix-early-gap.md](ix-early-gap.md). Harvest path after the
 95 ms fill: [ix-harvest-path.md](ix-harvest-path.md). Live concentration
-of that harvest: [ix-concentrate.md](ix-concentrate.md).
+of that harvest: [ix-concentrate.md](ix-concentrate.md). Path and
+exit on the concentrated cell: [ix-cell-exit.md](ix-cell-exit.md).

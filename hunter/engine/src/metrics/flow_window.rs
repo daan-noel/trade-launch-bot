@@ -142,12 +142,11 @@ impl WindowState {
                 break;
             }
             self.buf.pop_front();
-            if signed >= 0.0 {
-                self.buy -= signed;
-                self.buy_n = self.buy_n.saturating_sub(1);
-            } else {
-                self.sell += signed; // signed < 0 => subtracts from the sell sum
-            }
+            // Through `drop_entry`, never a second copy of it: `value` corrects the
+            // window ends with that function, so an inline twin here is the same
+            // decision written twice and free to drift from it. It did - the sign
+            // test was fixed in one and not the other.
+            drop_entry(signed, &mut self.buy, &mut self.sell, &mut self.buy_n);
         }
         while let Some(&(pos, wallet)) = self.wallet_buf.front() {
             if pos >= lo {
@@ -282,7 +281,12 @@ impl WindowState {
 
 /// Remove one buffer entry's contribution from a read's running triple.
 fn drop_entry(signed: f64, buy: &mut f64, sell: &mut f64, buy_n: &mut u32) {
-    if signed >= 0.0 {
+    // Sign BIT, not `signed >= 0.0`: `on_trade` pushes a sell as `-sol`, so a zero-SOL
+    // sell is `-0.0`, which compares `>= 0.0` and took the buy arm. The sums did not
+    // notice (zero subtracts the same from either), `buy_n` did - it was decremented
+    // for a trade that never incremented it, and `sell_count` is `trade_count - buy_n`,
+    // so BOTH counts drifted for the rest of the window.
+    if !signed.is_sign_negative() {
         *buy -= signed;
         *buy_n = buy_n.saturating_sub(1);
     } else {
@@ -292,6 +296,32 @@ fn drop_entry(signed: f64, buy: &mut f64, sell: &mut f64, buy_n: &mut u32) {
 
 #[cfg(test)]
 mod tests {
+
+    /// A zero-SOL sell is a SELL, across eviction too.
+    ///
+    /// `on_trade` pushes a sell as `-sol`, so a zero-SOL one is stored as `-0.0` —
+    /// and `-0.0 >= 0.0` is TRUE, which put `drop_entry` on the buy arm. It
+    /// decremented `buy_n` for a trade that never incremented it, so `buy_count` read
+    /// one low and `sell_count` (`trade_count - buy_n`) one high for the rest of the
+    /// window. The SOL sums never showed it, because zero subtracts the same from
+    /// either side — only the counts carry the sign.
+    #[test]
+    fn a_zero_sol_sell_does_not_decrement_the_buy_count_when_it_leaves() {
+        let mut w = WindowState::new(WindowSpec::secs(10.0));
+        w.on_trade(Side::Buy, 1.0, p(0.0), p(0.0), 1);
+        w.on_trade(Side::Sell, 0.0, p(1.0), p(1.0), 2);
+        assert_eq!(w.value(MetricId::BuyCount, p(1.0)), 1.0);
+        assert_eq!(w.value(MetricId::SellCount, p(1.0)), 1.0);
+
+        // Push both out of the window; the eviction is where the sign is read again.
+        w.on_trade(Side::Buy, 1.0, p(30.0), p(30.0), 3);
+        assert_eq!(w.value(MetricId::BuyCount, p(30.0)), 1.0);
+        assert_eq!(w.value(MetricId::SellCount, p(30.0)), 0.0);
+        assert_eq!(
+            w.value(MetricId::BuyCount, p(30.0)) + w.value(MetricId::SellCount, p(30.0)),
+            w.value(MetricId::TradeCount, p(30.0)),
+        );
+    }
 
     /// `buy_count + sell_count == trade_count`, on every window, always.
     ///

@@ -80,6 +80,12 @@ on the same entries is red: this is a harvest, not a scalp of the
 crossing slot. `harvest_clock` (leave on dump/death, stay on a second
 wave) cuts the hold to 0.8 s and most of the edge.
 
+Path and the tape exit on this cell:
+[ix-cell-exit.md](ix-cell-exit.md). r20 median is **+1.49%** (the
+unconcentrated body is −8.43%). Peak is after the first 0.8 s pause.
+`arm_death 8` (trail 10/18 once armed; unarmed leaves on 8 s of buy
+silence) is **+2.94% / 12/12 / OOS +2.04%** at the same fill.
+
 Habit check, not the score: this cell is 4,882 events / 3,917 mints,
 he1 1.72% (84 hits, 7/day) against fillable 1.19% and fillable
 first-per-mint 0.85%. It covers 84 / 965 of his fillable-event fires
@@ -94,7 +100,7 @@ unconcentrated body in [ix-harvest-path.md](ix-harvest-path.md) dumps
 because `age < 20` and no-dip crowds dominate it. Perm `age < 180` is
 the wrong direction on the full tape.
 
-Do not add `he1` or his mint list to the rule. Do not swap clock-20
-for first-gap on this cell. Do not fold solos back in. Twelve days,
-negative median, one fat day. Paper it forward; do not stack another
-filter on this print.
+Do not add `he1` or his mint list to the rule. Do not swap the
+harvest for first-gap. Do not fold solos back in. Do not stack
+another filter on this print. Paper the conjunction with
+`arm_death 8` ([ix-cell-exit.md](ix-cell-exit.md)).

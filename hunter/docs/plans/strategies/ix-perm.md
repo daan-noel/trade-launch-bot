@@ -54,6 +54,7 @@ vs 4.3%; mixed 11.4% vs 6.1%) and keeps 1,619 / 2,775 hits (58%). He still fires
 on older deep tokens. Do not treat “too old” like “failed the create door.”
 On the full-tape harvest that cut is the wrong direction: `age < 20` is the
 dump and `age < 180` keeps it ([ix-concentrate.md](ix-concentrate.md)).
+Exit on that cell: [ix-cell-exit.md](ix-cell-exit.md).
 
 ## Conjunction that is actually true at the fire
 

@@ -147,7 +147,113 @@ def walk_harvest(times, slots, px, vsol, is_buy, eidx, ets, epx, ev, last_buy_ts
     return close_at(fire, last_buy_i, "gap")
 
 
-def walk_one(times, slots, px, vsol, is_buy, trig, lag_ms, mode, clock_s=None):
+def _close_at(times, px, vsol, epx, ev, ets, lag_ms, n, fire_ts, lo, reason):
+    xidx = fill_idx(times, fire_ts, lag_ms, lo, n)
+    r = net_ret(epx, ev, px[xidx], vsol[xidx])
+    if r is None:
+        return None
+    hold_s = (times[xidx] - ets) / np.timedelta64(1, "s")
+    return (r, float(hold_s), reason, times[xidx])
+
+
+def walk_trail_hold(times, px, vsol, eidx, ets, epx, ev, lag_ms, cap_at):
+    """Armed trail; unarmed holds to cap. No first-gap fallback."""
+    n = len(times)
+    arm_lvl = epx * (1.0 + ARM_PCT / 100.0)
+    trail_keep = 1.0 - TRAIL_PCT / 100.0
+    peak = epx
+    armed = False
+    for k in range(eidx + 1, n):
+        t = times[k]
+        if t >= cap_at:
+            return _close_at(times, px, vsol, epx, ev, ets, lag_ms, n, cap_at, k, "cap")
+        p = px[k]
+        if p > 0:
+            if not armed:
+                if p >= arm_lvl:
+                    armed = True
+                    peak = p
+            else:
+                if p > peak:
+                    peak = p
+                elif p <= peak * trail_keep:
+                    return _close_at(
+                        times, px, vsol, epx, ev, ets, lag_ms, n, t, k, "trail"
+                    )
+    return _close_at(times, px, vsol, epx, ev, ets, lag_ms, n, cap_at, eidx, "cap")
+
+
+def walk_death(times, px, vsol, is_buy, eidx, ets, epx, ev, last_buy_ts, last_buy_i, lag_ms, cap_at, death_s):
+    """Exit on death_s seconds of buy silence. Stay while buys keep printing."""
+    n = len(times)
+    death_delay = np.timedelta64(int(death_s), "s")
+    for k in range(eidx + 1, n):
+        t = times[k]
+        if t >= cap_at:
+            return _close_at(times, px, vsol, epx, ev, ets, lag_ms, n, cap_at, k, "cap")
+        death_at = last_buy_ts + death_delay
+        if t > death_at:
+            fire = death_at if death_at <= cap_at else cap_at
+            return _close_at(
+                times, px, vsol, epx, ev, ets, lag_ms, n, fire, last_buy_i, "death"
+            )
+        if is_buy[k]:
+            last_buy_ts = t
+            last_buy_i = k
+    death_at = last_buy_ts + death_delay
+    fire = death_at if death_at <= cap_at else cap_at
+    reason = "death" if death_at <= cap_at else "cap"
+    return _close_at(
+        times, px, vsol, epx, ev, ets, lag_ms, n, fire, last_buy_i, reason
+    )
+
+
+def walk_arm_death(times, px, vsol, is_buy, eidx, ets, epx, ev, last_buy_ts, last_buy_i, lag_ms, cap_at, death_s):
+    """Armed trail; unarmed dies on death_s buy silence. Pause after arm is not death."""
+    n = len(times)
+    death_delay = np.timedelta64(int(death_s), "s")
+    arm_lvl = epx * (1.0 + ARM_PCT / 100.0)
+    trail_keep = 1.0 - TRAIL_PCT / 100.0
+    peak = epx
+    armed = False
+    for k in range(eidx + 1, n):
+        t = times[k]
+        if t >= cap_at:
+            return _close_at(times, px, vsol, epx, ev, ets, lag_ms, n, cap_at, k, "cap")
+        p = px[k]
+        if p > 0:
+            if not armed:
+                if p >= arm_lvl:
+                    armed = True
+                    peak = p
+            else:
+                if p > peak:
+                    peak = p
+                elif p <= peak * trail_keep:
+                    return _close_at(
+                        times, px, vsol, epx, ev, ets, lag_ms, n, t, k, "trail"
+                    )
+        if not armed:
+            death_at = last_buy_ts + death_delay
+            if t > death_at:
+                fire = death_at if death_at <= cap_at else cap_at
+                return _close_at(
+                    times, px, vsol, epx, ev, ets, lag_ms, n, fire, last_buy_i, "death"
+                )
+        if is_buy[k]:
+            last_buy_ts = t
+            last_buy_i = k
+    if armed:
+        return _close_at(times, px, vsol, epx, ev, ets, lag_ms, n, cap_at, last_buy_i, "cap")
+    death_at = last_buy_ts + death_delay
+    fire = death_at if death_at <= cap_at else cap_at
+    reason = "death" if death_at <= cap_at else "cap"
+    return _close_at(
+        times, px, vsol, epx, ev, ets, lag_ms, n, fire, last_buy_i, reason
+    )
+
+
+def walk_one(times, slots, px, vsol, is_buy, trig, lag_ms, mode, clock_s=None, death_s=None):
     """trig is (idx, ts, slot). Returns (net, hold_s, reason, exit_ts) or None."""
     n = len(times)
     ti, tts, tslot = trig
@@ -173,6 +279,27 @@ def walk_one(times, slots, px, vsol, is_buy, trig, lag_ms, mode, clock_s=None):
             times, slots, px, vsol, is_buy,
             eidx, ets, epx, ev, last_buy_ts, last_buy_i,
             lag_ms, hold, cap_at,
+        )
+    last_buy_ts = tts
+    last_buy_i = ti
+    if is_buy[eidx]:
+        last_buy_ts = times[eidx]
+        last_buy_i = eidx
+    if mode == "trail_hold":
+        return walk_trail_hold(times, px, vsol, eidx, ets, epx, ev, lag_ms, cap_at)
+    if mode == "death":
+        ds = 8 if death_s is None else int(death_s)
+        return walk_death(
+            times, px, vsol, is_buy,
+            eidx, ets, epx, ev, last_buy_ts, last_buy_i,
+            lag_ms, cap_at, ds,
+        )
+    if mode == "arm_death":
+        ds = 8 if death_s is None else int(death_s)
+        return walk_arm_death(
+            times, px, vsol, is_buy,
+            eidx, ets, epx, ev, last_buy_ts, last_buy_i,
+            lag_ms, cap_at, ds,
         )
 
     last_buy_ts = tts
@@ -286,7 +413,7 @@ def index_events(tape_g, events):
     return np.array(out, dtype=np.int64)
 
 
-def run_book(tape_g, ev, lag_ms, mode, policy, clock_s=None):
+def run_book(tape_g, ev, lag_ms, mode, policy, clock_s=None, death_s=None):
     """policy: 'first' | 'reentry'."""
     rows = []
     ev = ev.copy()
@@ -312,7 +439,7 @@ def run_book(tape_g, ev, lag_ms, mode, policy, clock_s=None):
                 continue
             got = walk_one(
                 times, slots, px, vsol, is_buy, (int(idx), ts, int(rec.slot)),
-                lag_ms, mode, clock_s=clock_s,
+                lag_ms, mode, clock_s=clock_s, death_s=death_s,
             )
             if got is None:
                 continue
