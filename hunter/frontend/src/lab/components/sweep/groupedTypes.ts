@@ -168,8 +168,9 @@ export interface GroupedSweepRunRecord {
    *  comparable, so this is shown next to the run's PnL. */
   fill_model: FillModelId | null;
   /** Which cost model priced the round-trips. `null` on legacy runs ⇒
-   *  the deleted `pumpfun_default` on an old row. Read it through
-   *  `storedCostModel()`, which resolves anything unrecognized to `pumpfun_impact`. */
+   *  `null` on a row written before the column existed. Read it through
+   *  `storedCostModel()`: typed as a bare string because the wire is not this build's
+   *  to guarantee, even though every stored run now names a live model. */
   cost_model: string | null;
   /** The candidate scale-out ladder(s) searched in Pass 2 — `ExitStage[][]`
    *  (backend keeps the grid-shaped wire contract for forward compat), but the

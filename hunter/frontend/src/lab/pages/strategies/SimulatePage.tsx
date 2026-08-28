@@ -262,7 +262,10 @@ export function SimulatePage() {
     STORAGE_KEYS.simulateRunPrefs,
     DEFAULT_RUN_PREFS,
   );
-  const { fillModel, costModel, since, until } = runPrefs;
+  const { fillModel, since, until } = runPrefs;
+  // Sanitized, not read raw: these prefs come back from `localStorage`, which
+  // survives a deploy that removes a cost model. See `storedCostModel`.
+  const costModel = storedCostModel(runPrefs.costModel);
   const patchRunPrefs = useCallback(
     (patch: Partial<SimulateRunPrefs>) => setRunPrefs((prev) => ({ ...prev, ...patch })),
     [setRunPrefs],

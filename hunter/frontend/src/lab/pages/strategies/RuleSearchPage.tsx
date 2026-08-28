@@ -23,6 +23,7 @@ import { connectRuleSearchFinished, connectSimulationFinished, onSseReopen } fro
 import { useGetFingerprintsQuery, useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import {
   COST_MODELS,
+  storedCostModel,
   FILL_MODELS,
   solToLamports,
   type CostModelId,
@@ -199,7 +200,13 @@ const TIPS = {
  */
 export function RuleSearchPage() {
   const [stored, setConfig] = useLocalStorage<Config>(STORAGE_KEYS.ruleSearchConfig, DEFAULTS);
-  const config: Config = { ...DEFAULTS, ...stored };
+  // `costModel` is sanitized rather than spread through: `localStorage` outlives a
+  // deploy, so a browser can still be holding a cost model this build deleted.
+  const config: Config = {
+    ...DEFAULTS,
+    ...stored,
+    costModel: storedCostModel(stored?.costModel),
+  };
   const set = <K extends keyof Config>(key: K, value: Config[K]) =>
     setConfig((prev) => ({ ...DEFAULTS, ...prev, [key]: value }));
 

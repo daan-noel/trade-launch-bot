@@ -303,8 +303,9 @@ field it set — the section below is why.
 ## One round trip, priced three ways — and why one of them is gone
 
 The `pumpfun_default` row below is the **deleted** flat-slippage model. It is kept
-here as the evidence that removed it, not as an option: read it as what a run
-priced before the retirement was actually charged.
+here as the evidence that removed it — the numbers are why it went, and they are
+the reason to reach for `pumpfun_impact` rather than assume a flat haircut is
+close enough.
 
 **0.1 SOL buy · price rises 20% · pool depth 70 SOL** (the measured median):
 
@@ -334,9 +335,10 @@ size does not shift the board, it **reshuffles** it — and a grid exists to ran
 It also double-counted. A `FillModel` chooses *which market print we transact
 against*; a flat `slippage_bps` is a stand-in for that same quantity, so charging
 both charged execution slippage twice. Two independent reasons, one conclusion: the
-kind and the `CostModel::slippage_bps` field are **deleted**, not deprecated. The
-name survives as a serde alias onto `pumpfun_impact` for one reason only — so an old
-row still loads instead of failing on an unknown variant.
+kind, the `CostModel::slippage_bps` field and the wire name are **deleted**, not
+deprecated. `pumpfun_default` does not decode — an unrecognized cost model is a hard
+error, because a run reporting a model it was not priced under is worse than one
+that fails to load.
 
 `pumpfun_fee_only` never charges impact, so it is a clean **upper bound**: 3.3 pp too
 generous at 1 SOL, only 0.34 pp too generous at 0.1 SOL. That is a bound you can
@@ -395,13 +397,16 @@ which `worst_case` very much is not.
 
 - Both models are persisted per run and rendered on the run header and in the
   Simulate history columns.
-- **A run stored with no cost model, or with `pumpfun_default`, is not what it says
-  it is.** It was computed under `worst_case` + a flat-slippage model that no longer
-  exists, so it double-counted execution cost. Both the backend decoder and the
-  frontend's `storedCostModel()` resolve it to `pumpfun_impact` — the run is
-  **repriced, not reproduced**. Its stored top-line numbers therefore will not match
-  a fresh drill-in or a re-run of the same config, and the fresh number is the one to
-  believe. Treat any pre-retirement ranking as unranked.
+- **Every stored run names a live cost model.** Runs priced under the deleted
+  flat-slippage model are deleted rather than migrated: relabelling one would have
+  it report pricing it was never computed under, and its numbers double-counted
+  execution cost, so there was nothing worth relabelling. A `cost_model` naming a
+  model that no longer exists is a decode error, not a fallback.
+- **`localStorage` outlives a deploy.** Saved Simulate / sweep / rule-search /
+  family-search configs can still name a removed model, so each reads its cost model
+  through `storedCostModel()` rather than spreading it into a request. Without that,
+  the backend's strict decode is a 400 on every run from a value the user cannot see
+  or clear.
 - Runs from **before 2026-07-28** additionally used a 100 bps fee (the real one is
   125) and charged no impact at all. They understate cost by up to ~3 pp per round
   trip and are not comparable to anything newer. The constants are not stored per

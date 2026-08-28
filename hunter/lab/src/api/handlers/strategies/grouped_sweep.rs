@@ -187,7 +187,7 @@ pub struct StartGroupedSweepBody {
 ///
 /// The persisted columns are the serde tags; a `NULL` (legacy row, written before the
 /// models were selectable) or an unparseable value falls back to what the sweep
-/// hardcoded then — worst-case fills + a flat-slippage cost model since retired — so an old run re-simulates
+/// hardcoded then — worst-case fills + a flat-slippage cost model since deleted — so an old run re-simulates
 /// as it originally scored rather than under today's defaults.
 fn run_pricing(run: &GroupedSweepRun) -> crate::sweep::generic::Pricing {
     fn tag<T: serde::de::DeserializeOwned + Default>(v: &Option<String>) -> T {
@@ -198,10 +198,8 @@ fn run_pricing(run: &GroupedSweepRun) -> crate::sweep::generic::Pricing {
     crate::sweep::generic::Pricing {
         buy_amount_sol: run.buy_amount_sol.unwrap_or(registry::SWEEP_DEFAULT_BUY_AMOUNT_SOL),
         fill_model: tag(&run.fill_model),
-        // A blank or retired cost column resolves to `pumpfun_impact`. Old rows say
-        // `pumpfun_default`, a model that no longer exists — so a drill-in reprices
-        // them honestly rather than reproducing a number that double-counted cost.
-        // Their stored top-line figures are the ones that will not match.
+        // A blank cost column ⇒ `pumpfun_impact`. No stored row names anything else:
+        // runs priced under the retired flat-slippage model are deleted, not migrated.
         cost: tag::<trading_core::strategies::kernel::CostModelKind>(&run.cost_model).model(),
     }
 }
@@ -2443,7 +2441,7 @@ pub async fn list_token_results(
     // The run's OWN pricing, not today's defaults — same reason as `as_of` below: a
     // drill-in that repriced under a different fill/cost model would disagree with the
     // combo row it was opened from. Legacy rows (NULL) read back as what the sweep
-    // hardcoded then: worst-case fills + a flat-slippage cost model since retired.
+    // hardcoded then: worst-case fills + a flat-slippage cost model since deleted.
     let pricing = run_pricing(&run);
     // The run's own instant, NOT wall-clock now — a drill-in must reproduce the row
     // it drills into, and deadness is judged against this (parity plan B7).

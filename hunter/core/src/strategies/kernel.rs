@@ -212,8 +212,11 @@ impl CostModel {
 /// model is the other half). Two runs priced under different kinds are not
 /// comparable, so a request that carries this must persist and display it.
 ///
-/// An omitted or unrecognized value ⇒ [`PumpfunImpact`](Self::PumpfunImpact), the
-/// only kind that charges our own size.
+/// An omitted value ⇒ [`PumpfunImpact`](Self::PumpfunImpact), the only kind that
+/// charges our own size. A **present but unrecognized** value is a hard error, not a
+/// fallback: silently substituting a model would report a run as priced under
+/// something it was not, and the whole reason a run stores its cost model is that two
+/// runs priced differently are not comparable.
 ///
 /// Serde: canonical `snake_case` names, plus short aliases matching the
 /// fill-sensitivity analysis doc's column labels.
@@ -228,16 +231,8 @@ pub enum CostModelKind {
     /// it no impact is charged and this degrades to [`PumpfunFeeOnly`](Self::PumpfunFeeOnly), silently
     /// and by design (a guessed depth would be a fabricated number).
     ///
-    /// `pumpfun_default` is an alias, not a kind. It names the retired flat-slippage
-    /// model, and rows written under it are **repriced here rather than reproduced**:
-    /// that model double-counted what the fill model already priced, and its error
-    /// changed sign with buy size, so its stored numbers were not worth preserving.
-    /// The alias exists so an old row still *loads* — without it, serde would reject
-    /// the whole record on an unknown variant rather than falling back. A run priced
-    /// that way therefore reports a cost model it was not computed under; the numbers
-    /// stored beside it are the ones to distrust, not this label.
     #[default]
-    #[serde(alias = "impact", alias = "pumpfun_default", alias = "default")]
+    #[serde(alias = "impact")]
     PumpfunImpact,
     /// [`CostModel::pumpfun_fee_only`] — no size term; a zero-impact upper bound.
     #[serde(alias = "fee_only")]
@@ -1256,19 +1251,18 @@ mod tests {
             // Short aliases, so a request can name the model the way the analysis does.
             ("impact", CostModelKind::PumpfunImpact),
             ("fee_only", CostModelKind::PumpfunFeeOnly),
-            // The retired flat-slippage names still LOAD, so an old row or meta does
-            // not fail to deserialize — they reprice under impact, they do not come
-            // back as themselves.
-            ("pumpfun_default", CostModelKind::PumpfunImpact),
-            ("default", CostModelKind::PumpfunImpact),
         ] {
             let got: CostModelKind = serde_json::from_value(json!(name)).unwrap();
             assert_eq!(got, want, "'{name}'");
         }
-        // Nothing serializes back to the retired name: it is readable, not writable.
-        for kind in [CostModelKind::PumpfunImpact, CostModelKind::PumpfunFeeOnly] {
-            let wire = serde_json::to_value(kind).unwrap();
-            assert_ne!(wire, json!("pumpfun_default"), "{kind:?}");
+        // The retired flat-slippage names are GONE, not aliased. A payload naming one
+        // fails loudly: quietly repricing it would report a run as computed under a
+        // model it never saw, and no stored record names one any more.
+        for retired in ["pumpfun_default", "default", "pumpfun_legacy_slippage"] {
+            assert!(
+                serde_json::from_value::<CostModelKind>(json!(retired)).is_err(),
+                "'{retired}' must not decode"
+            );
         }
         assert_eq!(
             serde_json::to_value(CostModelKind::PumpfunFeeOnly).unwrap(),

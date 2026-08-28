@@ -416,6 +416,10 @@ export function GenericSweepConfigForm({
     axisRows: stored.axisRows ?? DEFAULTS.axisRows,
     // Sanitize stale localStorage / pre-clamp values (backend max is 100k).
     tokenCap: Math.min(MAX_TOKEN_CAP, Math.max(1, stored.tokenCap ?? DEFAULTS.tokenCap)),
+    // Same reason, different failure: `localStorage` outlives a deploy, so a saved grid
+    // can still name a cost model this build deleted. The backend rejects an unknown one
+    // outright, so an unsanitized value is a 400 the user cannot see or clear.
+    costModel: storedCostModel(stored.costModel),
   };
   const {
     createdAfter,

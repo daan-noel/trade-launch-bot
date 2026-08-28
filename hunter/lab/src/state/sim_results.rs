@@ -90,10 +90,10 @@ pub struct SimMeta {
     /// Which execution-cost model priced this run's round-trips — surfaced as the
     /// Simulate table's Cost column, mirroring `fill_model` above.
     ///
-    /// `#[serde(default)]` ⇒ `pumpfun_impact`. A meta written before this field
-    /// existed was hardcoded to a flat-slippage model that no longer exists, so it
-    /// loads under today's model rather than failing: the label is repriced, and the
-    /// numbers stored beside it are the ones not to trust.
+    /// `#[serde(default)]` ⇒ `pumpfun_impact`, for a meta written before this field
+    /// existed. A meta *naming* the deleted flat-slippage model fails to load rather
+    /// than being repriced onto a label it was never computed under — none remain on
+    /// disk, and a stale one is better surfaced than silently reinterpreted.
     #[serde(default)]
     pub cost_model: CostModelKind,
     /// The copycat guard this run was booked under: `Some(window_hours)` = the

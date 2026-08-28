@@ -90,11 +90,10 @@ pub struct GroupedSweepRun {
     /// comparable, so the UI must show it next to the PnL.
     pub fill_model: Option<String>,
     /// Which execution-cost model priced the round-trips (`pumpfun_impact` |
-    /// `pumpfun_fee_only`). `None`, or the retired `pumpfun_default` on an old row,
-    /// ⇒ `pumpfun_impact`: the flat-slippage model is deleted, so such a run is
-    /// **repriced, not reproduced** — its stored top-line numbers came from a model
-    /// that double-counted cost and will not match a fresh drill-in. See
-    /// `CostModelKind`.
+    /// `pumpfun_fee_only`). `None` ⇒ `pumpfun_impact` for a row written before the
+    /// column existed. Nothing else appears here: runs priced under the deleted
+    /// flat-slippage model are deleted too, rather than migrated onto a label they
+    /// were never computed under. See `CostModelKind`.
     pub cost_model: Option<String>,
     /// Optional volume-ix pattern set for flow-metric sweeps (`string[][]`).
     /// Compiled corpus-wide into `FlowPatterns`; Promote copies into the

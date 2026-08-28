@@ -350,9 +350,10 @@ export interface SimulatedSummary extends RunSummary {
    *  default (worst-case) label. */
   fill_model?: FillModelId | null;
   /** Which execution-cost model priced this run's round-trips — rendered as the
-   *  Simulate table's Cost column. Absent/null, or the deleted `pumpfun_default` on an
-   *  old payload, reads as `pumpfun_impact` via `storedCostModel()`. Typed as a bare
-   *  string because the wire may still carry a model that no longer exists. */
+   *  Simulate table's Cost column. Absent/null reads as `pumpfun_impact` via
+   *  `storedCostModel()`. Typed as a bare string, not `CostModelId`: the wire is not
+   *  this build's to guarantee, so a model this frontend does not know must render as
+   *  something rather than crash a table cell. */
   cost_model?: string | null;
 }
 

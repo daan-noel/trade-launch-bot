@@ -452,9 +452,9 @@ export function fillModelLabel(id: string | null | undefined): string {
  *  There used to be a third, `pumpfun_default`, charging a flat 1%/leg on top of the
  *  fill price — which already prices slippage — so it double-counted; and being
  *  size-blind its error changed SIGN with buy size, reordering a grid rather than
- *  shifting it. It is deleted. A run stored under it reads as `pumpfun_impact`,
- *  because it is repriced rather than reproduced: the numbers stored beside that
- *  label are the ones not to trust. */
+ *  shifting it. It is deleted, and so are the runs priced under it: the backend
+ *  rejects the name outright rather than repricing a run onto a label it was never
+ *  computed under. */
 export type CostModelId = 'pumpfun_impact' | 'pumpfun_fee_only';
 
 /** Selectable cost models. `pumpfun_impact` is the only one whose cost varies with
@@ -474,11 +474,17 @@ export const COST_MODELS: ReadonlyArray<{ id: CostModelId; label: string; hint: 
   },
 ];
 
-/** Read a persisted `cost_model`. Anything unrecognized — null, or the deleted
- *  `pumpfun_default` on an old row — resolves to `pumpfun_impact`, matching how the
- *  backend decodes the same column. */
+/** Sanitize a cost model id that came from **outside this build** — a nullable DB
+ *  column, a saved API payload, or a `localStorage` config written by an older
+ *  frontend. Anything not a live id resolves to `pumpfun_impact`.
+ *
+ *  Persisted config must be read through this, not spread straight into a request.
+ *  `localStorage` outlives a deploy: a browser still holding the deleted
+ *  `pumpfun_default` would otherwise post it, and the backend rejects an unknown
+ *  cost model outright rather than guessing — a 400 on every run, from a value the
+ *  user cannot see or clear from the UI. */
 export function storedCostModel(id: string | null | undefined): CostModelId {
-  return id === 'pumpfun_fee_only' ? id : 'pumpfun_impact';
+  return id === 'pumpfun_fee_only' || id === 'pumpfun_impact' ? id : 'pumpfun_impact';
 }
 
 /** Display label for any cost model id. */
