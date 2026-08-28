@@ -59,7 +59,12 @@ pub struct Produced {
 pub struct Producer {
     token_cache: Arc<TokenCache>,
     /// Absolute count of trades already turned into `Trade` events, per mint.
-    trade_cursor: HashMap<String, u64>,
+    ///
+    /// Keyed by [`Mint`], not `String`, so it doubles as the mint interner: every
+    /// event this producer emits clones the key (an `Arc` refcount bump) instead of
+    /// allocating and copying the 44-byte address again. A trade ping can carry a
+    /// burst of trades, and each one used to pay that allocation.
+    trade_cursor: HashMap<Mint, u64>,
     /// Mints whose first-slot settlement has been emitted (one-shot).
     first_slot_emitted: HashSet<String>,
     /// Highest slot seen on any drained trade — the proof a creation slot has
@@ -211,14 +216,20 @@ impl Producer {
         drop(entry);
 
         let total = trades_base + trades.len() as u64;
-        let cursor = self.trade_cursor.get(mint).copied().unwrap_or(trades_base);
+        // The cursor map is also the interner: take the key back when it exists, so
+        // this mint is turned into a `Mint` once for the life of the process rather
+        // than once per event.
+        let (key, cursor) = match self.trade_cursor.get_key_value(mint) {
+            Some((k, &c)) => (k.clone(), c),
+            None => (Mint::from(mint), trades_base),
+        };
         let start = cursor.saturating_sub(trades_base).min(trades.len() as u64) as usize;
         let mut out = Produced::default();
         for ct in &trades[start..] {
             self.slot_watermark = self.slot_watermark.max(ct.slot);
-            self.split_trade(mint, ct, &mut out);
+            self.split_trade(&key, ct, &mut out);
         }
-        self.trade_cursor.insert(mint.to_string(), total);
+        self.trade_cursor.insert(key, total);
         Some(out)
     }
 
@@ -232,12 +243,12 @@ impl Producer {
     /// never re-decide a token's past. Chain-time skew of a few seconds only ever
     /// misroutes a trade *into* history, where the next tick re-decides it against
     /// the same track — never the other way.
-    fn split_trade(&self, mint: &str, ct: &CachedTrade, out: &mut Produced) {
+    fn split_trade(&self, mint: &Mint, ct: &CachedTrade, out: &mut Produced) {
         let trade = trade_lite(ct);
         if ct.block_time < self.started_at {
-            out.prime.push((Mint::from(mint), trade));
+            out.prime.push((mint.clone(), trade));
         } else {
-            out.events.push(Event::Trade { mint: Mint::from(mint), trade });
+            out.events.push(Event::Trade { mint: mint.clone(), trade });
         }
     }
 
@@ -321,7 +332,7 @@ impl Producer {
     /// loop with the engine's live mints), so a token that traded once and was
     /// pruned doesn't leak a cursor for the process lifetime.
     pub fn retain<F: Fn(&str) -> bool>(&mut self, keep: F) {
-        self.trade_cursor.retain(|m, _| keep(m));
+        self.trade_cursor.retain(|m, _| keep(m.as_str()));
         self.first_slot_emitted.retain(|m| keep(m));
         self.migrated_emitted.retain(|m| keep(m));
     }

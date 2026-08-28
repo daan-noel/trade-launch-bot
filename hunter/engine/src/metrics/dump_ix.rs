@@ -276,6 +276,15 @@ impl DumpState {
         }
     }
 
+    /// How many matched sells one window still retains. Test-only: reads are
+    /// corrected at both window ends, so an un-evicted deque returns the RIGHT number
+    /// while it grows — the retention is the only thing that can show a tick never
+    /// reached this group.
+    #[cfg(test)]
+    pub(crate) fn window_len(&self, spec: WindowSpec) -> Option<usize> {
+        self.windows.get(&spec.key()).map(|w| w.buf.len())
+    }
+
     /// Evict on a tick, so a quiet token's windows decay without a trade.
     pub fn on_tick(&mut self, now: Ts, cur: Cursor) {
         for w in self.windows.values_mut() {

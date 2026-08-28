@@ -42,6 +42,19 @@ impl From<&str> for Mint {
     }
 }
 
+/// Look a `Mint` up by its address without minting one.
+///
+/// `From<&str>` allocates and copies the 44-byte base58 address every time, so a
+/// producer that built one per event paid a heap allocation per trade for a value
+/// it already held. Keying a map by `Mint` and borrowing the key back is what turns
+/// that into an `Arc` refcount bump. Sound because `Hash`/`Eq`/`Ord` are derived
+/// over `Arc<str>`, which delegates to `str` — the borrowed and owned forms agree.
+impl std::borrow::Borrow<str> for Mint {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
 impl From<String> for Mint {
     fn from(s: String) -> Self {
         Mint(Arc::from(s.as_str()))
@@ -349,7 +362,10 @@ pub enum FillFailReason {
 }
 
 /// A confirmed fill (entry or exit). `sol` is the SOL spent (entry) or received
-/// (exit); `price` is the canonical curve-spot at the fill.
+/// (exit); `price` is what the fill actually paid — the leg's `price_per_token`,
+/// i.e. the EXECUTION price, the same basis
+/// [`TradeLite::price`](crate::metrics::TradeLite::price) carries, so `m_position`
+/// marks an entry and the tape it is marked against in one series.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Fill {
     pub price: f64,

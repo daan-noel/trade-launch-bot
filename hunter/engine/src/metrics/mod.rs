@@ -107,8 +107,18 @@ pub enum Side {
 
 /// The minimal per-trade fact the metrics need — the engine's `Trade` event
 /// carries one of these. `sol` is the trade's absolute SOL notional (`>= 0`);
-/// direction lives in `side`. `price` is the canonical curve-spot price and
-/// `reserve_sol` the SOL reserves after the trade (liquidity).
+/// direction lives in `side`. `reserve_sol` is the SOL reserves after the trade
+/// (liquidity).
+///
+/// **`price` is the trade's EXECUTION price** (`amount_sol / token_amount`), the
+/// average paid along the curve — every adapter feeds `price_per_token` here
+/// (live `producers`, the lab's `to_trade_lite`, the readout). It is deliberately
+/// NOT `TradeRow::chart_spot_price`, the reserve-pair spot the chart and the ATH
+/// plot: a buy fills between the pre- and post-trade spot, so the two series
+/// differ by the trade's own impact. Every price metric — `m_price_lifetime`,
+/// `m_price_window`, `m_position` — is therefore read on the execution series,
+/// which is what a rule can actually transact at. Do not mix the two: a gate
+/// derived against chart spot does not price the same here.
 ///
 /// `ix_hash` / `wallet_hash` feed the volume-flow classifier (V1+); adapters hash
 /// via [`flow_ix`]. Missing fields on old event-log lines default via serde
@@ -153,9 +163,11 @@ pub struct TradeLite {
     /// counts in.
     ///
     /// `0` means "not supplied" (pre-slot event-log lines, a lake load without the
-    /// column). A slot window cannot advance on those, which
-    /// [`crate::arm::CompiledRule::needs_slot`] exists to make loud rather than
-    /// silent — the same class of trap as the wallet-keyed metrics.
+    /// column). A slot window cannot advance on those: its cursor never moves, so it
+    /// holds its opening content for the whole run and reads exactly like a strict
+    /// gate that never fires — the same class of silent trap as the wallet-keyed
+    /// metrics. [`CompiledRule::needs_slot`](crate::arm::CompiledRule::needs_slot) is
+    /// the precomputed answer a loader checks its source against so that stays loud.
     #[serde(default)]
     pub slot: u64,
     /// Structural markers present in the trade's `ix_labels`, one bit each
@@ -737,6 +749,42 @@ pub fn validate_fingerprint_metric_config(cfg: &serde_json::Value) -> Result<(),
     Ok(())
 }
 
+/// Every fingerprint-scoped group's config for ONE fingerprint, compiled off its
+/// `metric_config`. The compile twin of [`validate_fingerprint_metric_config`], and
+/// single for the same reason: a caller cannot be expected to know how many groups
+/// declare fingerprint-side config, so adding a group teaches this one function and
+/// every consumer picks it up.
+///
+/// **Compiled once, at rule reload.** Each `from_metric_config` walks the JSON and
+/// re-hashes every configured label sequence, so deriving these where they are
+/// *used* — once per token, per fingerprint — pays that walk for the life of the
+/// process. A fingerprint's config only changes on a reload, which is exactly where
+/// this is built.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FingerprintPatterns {
+    /// `m_flow_ix` / `m_flow_ix_window`. `None` ⇒ the group is unconfigured and its
+    /// metrics read `NaN`.
+    pub flow: Option<flow_ix::FlowPatterns>,
+    /// `m_dump_ix` / `m_dump_ix_window`. `None` as above.
+    pub dump: Option<dump_ix::DumpPatterns>,
+}
+
+impl FingerprintPatterns {
+    /// Compile a fingerprint's whole `metric_config`.
+    pub fn compile(cfg: &serde_json::Value) -> Self {
+        Self {
+            flow: flow_ix::FlowPatterns::from_metric_config(cfg),
+            dump: dump_ix::DumpPatterns::from_metric_config(cfg),
+        }
+    }
+
+    /// Whether this fingerprint configures no fingerprint-scoped group at all — the
+    /// case that must open no per-fingerprint state on a track.
+    pub fn is_empty(&self) -> bool {
+        self.flow.is_none() && self.dump.is_none()
+    }
+}
+
 impl MetricId {
     pub fn name(self) -> &'static str {
         metric_spec(self).name
@@ -1102,7 +1150,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Stall,
                 name: "stall",
-                description: "Seconds since the price last set a new ALL-TIME high - not since the last trade. Only a strictly higher price resets it.",
+                description: "Seconds since the price last set a new ALL-TIME high - not since the last trade. Only a strictly higher price resets it. Prices are EXECUTION prices (SOL paid / tokens moved), not the chart's reserve-pair spot.",
                 unit: Unit::Seconds,
                 eq_tolerance: 0.5,
                 monotonic: false,
@@ -1111,7 +1159,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Trail,
                 name: "trail",
-                description: "Percent below the lifetime peak price.",
+                description: "Percent below the lifetime peak price. Prices are EXECUTION prices (SOL paid / tokens moved), not the chart's reserve-pair spot.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -1120,7 +1168,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::LifeRise,
                 name: "rise",
-                description: "Percent above the lifetime trough price.",
+                description: "Percent above the lifetime trough price. Prices are EXECUTION prices (SOL paid / tokens moved), not the chart's reserve-pair spot.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -1157,7 +1205,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinTrail,
                 name: "trail",
-                description: "Percent below the rolling-window high - the dip trigger.",
+                description: "Percent below the rolling-window high - the dip trigger. Prices are EXECUTION prices (SOL paid / tokens moved), not the chart's reserve-pair spot.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -1166,7 +1214,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinRise,
                 name: "rise",
-                description: "Percent above the rolling-window low.",
+                description: "Percent above the rolling-window low. Prices are EXECUTION prices (SOL paid / tokens moved), not the chart's reserve-pair spot.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -1809,7 +1857,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Retrace,
                 name: "retrace",
-                description: "Percent below the since-entry peak - the trailing stop. With no `arm_above_pct` the peak seeds at your fill, so it doubles as a hard stop from entry.",
+                description: "Percent below the since-entry peak - the trailing stop. With no `arm_above_pct` the peak seeds at your fill, so it doubles as a hard stop from entry. Prices are EXECUTION prices (SOL paid / tokens moved), not the chart's reserve-pair spot.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -1818,7 +1866,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Bounce,
                 name: "bounce",
-                description: "Percent above the since-entry trough - the bounce twin of `retrace`.",
+                description: "Percent above the since-entry trough - the bounce twin of `retrace`. Prices are EXECUTION prices (SOL paid / tokens moved), not the chart's reserve-pair spot.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -1827,7 +1875,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::Pnl,
                 name: "pnl",
-                description: "Signed percent against your entry price. Take-profit and stop-loss desugar into this.",
+                description: "Signed percent against your entry fill price, marked at the last print. Take-profit and stop-loss desugar into this. Prices are EXECUTION prices (SOL paid / tokens moved), not the chart's reserve-pair spot.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,

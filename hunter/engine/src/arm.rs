@@ -364,6 +364,17 @@ pub struct CompiledRule {
     /// from `flow_windows`: the two groups read different lists into different
     /// buffers, and a rule reading one must not open the other.
     pub dump_windows: SmallVec<[crate::metrics::WindowSpec; 2]>,
+    /// Whether any condition on this rule reads a window counted in SLOTS.
+    ///
+    /// A slot window advances only on [`TradeLite::slot`](crate::metrics::TradeLite::slot),
+    /// and that field defaults to `0` ("not supplied") on any source that predates
+    /// it — an event-log line written before the field existed replays with every
+    /// trade in slot `0`, so the cursor never moves and the window holds its opening
+    /// content forever. That failure is silent and reads exactly like a strict gate
+    /// that simply never fires, which is why the answer is precomputed here for a
+    /// loader to check its source against rather than left for each caller to
+    /// rediscover.
+    pub needs_slot: bool,
     /// Per entry-metric mono kills (for derived-unsatisfiability disarm).
     pub mono_kills: SmallVec<[MonoMetricKill; 2]>,
     /// How long this rule's readings can still move without a trade — see
@@ -454,6 +465,7 @@ impl CompiledRule {
         let mut price_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
         let mut ix_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
         let mut dump_windows: SmallVec<[crate::metrics::WindowSpec; 2]> = SmallVec::new();
+        let mut needs_slot = false;
         let stage_reqs = scale_out.iter().flat_map(|s| s.reqs.iter());
         for r in entry_reqs.iter().chain(exit_reqs.iter()).chain(stage_reqs) {
             let bucket = match group_of(r.metric).id {
@@ -470,6 +482,7 @@ impl CompiledRule {
                     bucket.push(w);
                 }
             }
+            needs_slot |= r.window.needs_slot();
         }
 
         // Tick horizons — every clock this rule reads, on EVERY side (entry, exit,
@@ -529,6 +542,7 @@ impl CompiledRule {
             price_windows,
             ix_windows,
             dump_windows,
+            needs_slot,
             mono_kills,
             clock_horizons,
             reentry: rule.params.reentry,
@@ -950,6 +964,32 @@ mod tests {
             params: RuleParams::parse(&params).unwrap(),
             entry_enabled: true,
         }
+    }
+
+    /// The slot flag must answer for EVERY side a condition can sit on, and stay
+    /// `false` for the two other window bases — a loader that read it as "any window"
+    /// would refuse a perfectly loadable seconds/prints rule.
+    #[test]
+    fn needs_slot_is_true_for_a_slot_window_on_any_side() {
+        let seconds = CompiledRule::compile(&rule(json!({
+            "entry": { "m_flow_window": { "net_flow": [{ "operator": ">=", "value": 1 }], "window_size_sec": 30 } }
+        })));
+        assert!(!seconds.needs_slot, "a seconds window advances on the clock");
+
+        let prints = CompiledRule::compile(&rule(json!({
+            "entry": { "m_flow_window": { "net_flow": [{ "operator": ">=", "value": 1 }], "window_size_prints": 5 } }
+        })));
+        assert!(!prints.needs_slot, "a print window advances on the fold counter");
+
+        let on_entry = CompiledRule::compile(&rule(json!({
+            "entry": { "m_flow_window": { "net_flow": [{ "operator": ">=", "value": 1 }], "window_size_slots": 3 } }
+        })));
+        assert!(on_entry.needs_slot);
+
+        let on_exit = CompiledRule::compile(&rule(json!({
+            "exit": { "m_price_window": { "trail": [{ "operator": ">=", "value": 5 }], "window_size_slots": 3 } }
+        })));
+        assert!(on_exit.needs_slot, "an exit-only slot window still needs the column");
     }
 
     #[test]

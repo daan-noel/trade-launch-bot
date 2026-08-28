@@ -236,6 +236,20 @@ impl TokenTrack {
         for flow in self.flow.values_mut() {
             flow.on_tick(now, cur);
         }
+        for dump in self.dump.values_mut() {
+            dump.on_tick(now, cur);
+        }
+    }
+
+    /// How many matched sells one fingerprint's dump window retains — see
+    /// [`DumpState::window_len`].
+    #[cfg(test)]
+    pub(crate) fn dump_window_len(
+        &self,
+        fp: FingerprintId,
+        spec: super::WindowSpec,
+    ) -> Option<usize> {
+        self.dump.get(&fp).and_then(|d| d.window_len(spec))
     }
 
     /// Where the token stands on every discrete window axis right now.
@@ -416,6 +430,42 @@ mod tests {
 
     fn fp(n: u128) -> FingerprintId {
         FingerprintId(Uuid::from_u128(n))
+    }
+
+    /// A quiet token's dump window must DECAY, exactly as its `m_flow_ix` sibling
+    /// does. `DumpState::on_tick` existed but `TokenTrack::on_tick` never called it,
+    /// so the buffer was only ever trimmed by the next matching sell — on a token
+    /// nobody dumps on again, that is never.
+    #[test]
+    fn a_dump_window_decays_on_a_tick_like_its_flow_sibling() {
+        use crate::metrics::flow_ix::ix_hash;
+        use std::collections::BTreeSet;
+        let id = fp(1);
+        let build = ix_hash(&["Pump.Fun: Sell", "Token Program: CloseAccount"]);
+        let w = crate::metrics::WindowSpec::secs(10.0);
+        let mut track = TokenTrack::new(ts(0.0));
+        track.ensure_dump(id, &DumpPatterns::new(BTreeSet::from([build])), &[w]);
+
+        track.on_trade(TradeLite {
+            side: crate::metrics::Side::Sell,
+            sol: 2.0,
+            price: 1.0,
+            at: ts(1.0),
+            ix_hash: Some(build),
+            ..Default::default()
+        });
+        let read = |t: &TokenTrack, at: f64| {
+            t.value(MetricId::WinDumpSell, crate::metrics::Windows::secs(10.0), Some(id), ts(at))
+        };
+        assert_eq!(read(&track, 2.0), 2.0, "inside the window");
+        assert_eq!(track.dump_window_len(id, w), Some(1));
+
+        // Ticking past the span must leave nothing behind. The READ was always
+        // right (both window ends are corrected on read), so the retained deque is
+        // the only thing that shows whether the tick reached this group at all.
+        track.on_tick(ts(20.0), None);
+        assert_eq!(read(&track, 20.0), 0.0, "the window released");
+        assert_eq!(track.dump_window_len(id, w), Some(0), "and the tick evicted it");
     }
 
     /// A pattern edit must reach a token the engine is ALREADY tracking. Before this,

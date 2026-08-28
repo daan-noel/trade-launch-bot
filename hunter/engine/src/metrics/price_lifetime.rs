@@ -13,8 +13,10 @@
 //!   (`(current − trough) / trough · 100`), the climb-from-ATL twin of `trail`.
 //!   Undefined (`NaN`) until the first trade — no trough, nothing to rise from.
 //!
-//! Price is the canonical curve-spot price (same value the exit ladder folds).
-//! Peak/trough/last-price are tracked incrementally — O(1) per trade, no history.
+//! Price is the trade's EXECUTION price, the one series every metric group folds
+//! (see [`TradeLite::price`](super::TradeLite::price)) — not the reserve-pair spot
+//! the chart plots. Peak/trough/last-price are tracked incrementally — O(1) per
+//! trade, no history.
 
 use super::{secs_between, MetricId, Ts};
 

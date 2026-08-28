@@ -75,13 +75,20 @@ Clippy `too_many_arguments` is `#[allow]`-ed on trade-path fns by design.
   `config::constants::{sol_to_lamports,lamports_to_sol}`, the lake `schema.rs` column
   names, `token_enrichment::ENRICH_SELECT`, the TS `TokenEnrichmentFields` base. The
   executor, ingest and `lake/` crates keep their own decoupled `mint` vocabulary.
-- **What a trade is worth comes from `TradeRow::chart_spot_price`** — reserve-pair spot,
-  execution price only as the last rung. The raw `price_per_token` column is the
+- **What a trade is DISPLAYED at comes from `TradeRow::chart_spot_price`** — reserve-pair
+  spot, execution price only as the last rung. The raw `price_per_token` column is the
   *execution* price and is NOT that: for a buy it is the average along the curve, below
-  the post-trade spot the chart plots, so anything derived from it (ATH, current price,
-  market cap) silently disagrees with every bar. `price_per_token` is right only where
-  the question really is "what did this fill cost" — a `Fill::price`, a cost basis.
-  The frontend twin is `tradeSpotPriceSol` (`chartBars.ts`).
+  the post-trade spot the chart plots, so anything shown next to a bar and derived from
+  it (ATH, current price, market cap) silently disagrees with that bar. The frontend twin
+  is `tradeSpotPriceSol` (`chartBars.ts`).
+- **What a trade is TRADED at is `price_per_token`, and that is what every metric folds.**
+  `TradeLite::price` and `Fill::price` are execution prices on all three adapters (live
+  `producers`, the lab's `to_trade_lite`, the readout), so `m_price_lifetime`,
+  `m_price_window` and `m_position` read one series — the one a rule can actually
+  transact at, and the one a position is marked against. The two series differ by the
+  trade's own impact (`B/vsol`), so **never mix them**: a gate derived against chart spot
+  does not price the same in the engine, and vice versa. Deriving offline:
+  [island-search.md](docs/plans/strategies/island-search.md).
 - **Every SOL amount names its unit.** `_lamports` = exact integer (`BIGINT`/`i64`/`u64`),
   `_sol` = human `f64`; same base name across layers, converted only at the repo boundary
   through the one shared pair. Ratios keep `_price`/`_pct`. Rules + rationale:
@@ -158,7 +165,8 @@ The rule is here; the linked doc carries the mechanism. Read the doc before edit
 | A leaked slot is permanent | Every exit from the buy path MUST emit `FillConfirmed`/`FillFailed` — a bare `return` strands the arm in `EntryPending`, boot re-adopts it, and the concurrency slot is lost across restarts. Keep the send bounded. A retry is a NEW decision: re-check `entry_enabled && can_enter` before re-firing. [lifecycle](docs/arch/position-lifecycle.md) |
 | Copycat guard | `skip_duplicate_identity` blocks a *different* mint sharing a normalized `(name, symbol)`. Global, records at the entry **attempt**, exempts the recording mint, separate paper/real memories, and `app_settings` is **per database**. [engine](docs/arch/strategies.md) |
 | A tick may skip a token, never a decision | `reduce` skips `Settled` tokens (~180x on a multi-day simulate). New tick-moving metric ⇒ a `ClockHorizons` field; new cross-token input ⇒ bump `cross_epoch`; mutating a tracked token outside the sweep ⇒ `unsettle()`/`touch_token`. [ticks](docs/plans/strategies/tick-cost-and-settled-tokens.md) |
-| Trailing windows are O(1) | Never rescan the buffer inside a `value()`, and never assume the caller evicted at `now`. Flow classification hashes come from the ONE `flow_ix` hasher set, applied at load offline. [metrics](docs/plans/strategies/metrics-reference.md) |
+| Trailing windows are O(1) | Never rescan the buffer inside a `value()`, and never assume the caller evicted at `now` — and give every windowed group an arm in **both** `TokenTrack::on_trade` and `TokenTrack::on_tick`, or its buffers only ever shrink on their own next match. Reads are corrected at both window ends, so a missing tick arm is invisible in the numbers and shows only as retained state. Flow classification hashes come from the ONE `flow_ix` hasher set, applied at load offline. [metrics](docs/plans/strategies/metrics-reference.md) |
+| A loaded fingerprint is a cost on EVERY token | Anything `TokenTrack` keys by `FingerprintId` (`flow`, `dump`) is opened once per loaded fingerprint per token and folded on every trade of that token, so the working set — not the `fingerprints` table — is what may reach `EngineState`. `reload` narrows `fps` to the ids the rules name and compiles each `metric_config` ONCE into `metrics::FingerprintPatterns`; deriving patterns where they are *used* re-walks the JSON and re-hashes every label sequence on the create fast lane, which is the serialized decision loop. Measured at 115 rows / 59 configured: 461 us per `TokenCreated`, of which 415 us was paid with **zero active rules**. |
 | A registered metric with no compute arm is always-false | `TokenTrack::value` routes by group and is exhaustive, but each group's own `value(id)` ends in `_ => f64::NAN`, and `NaN` satisfies nothing — so a metric in `REGISTRY` whose group arm was never written is a gate that silently never fires. `engine/tests/every_metric_is_live_reachable.rs` walks `REGISTRY` and reads every metric through `reduce` + `read_state` on EVERY window basis (seconds, slots, prints); a new metric is covered without touching it, and a new **required** strict param fails it until taught a value. |
 | A DashMap guard at an `.await` wedges the process | dashmap 4's shard lock is an **unbounded spinlock**, so a guard alive across `.await` lets the worker pick up another task, hit the same shard, and spin at 100% CPU in a non-async loop — it never returns to the scheduler to poll the future that would release the guard. Both workers wedge, every task stops, the watchdog force-exits at 90 s, and the hole in `trades` is never replayed. Copy the fields out, drop the guard, then await (`DeadFlush` in `token_cache.rs`). `scripts/check-async-guards.sh` gates it. [history](docs/history/2026-08-28-token-cache-eviction-spinlock.md) |
 | A silent shed hides an outage | A wedged engine sheds 100% of pings while ingest keeps writing, so every external signal looks healthy while no rule is evaluated. Any `try_send`-and-drop on a trade-deciding path must be **loud**. [backpressure](docs/plans/ingest/backpressure-watchdog.md) |

@@ -35,6 +35,7 @@ use hunter_engine::event::{
     Effect, Event, ExitReason, Fill, IntentId, LoadedRule, PositionId, PositionStatus, RuleId,
 };
 use hunter_engine::event::{ArmedStateTag, PositionDelta};
+use hunter_engine::arm::CompiledRule;
 use hunter_engine::event_log::{parse_log_file_name, LogFileName, LoggedEvent};
 use hunter_engine::fingerprint::Fingerprint as EngineFingerprint;
 use hunter_engine::metrics::Ts;
@@ -387,9 +388,43 @@ pub fn inspect(
     events: Vec<LoggedEvent>,
     cfg: &InspectConfig,
 ) -> InspectRun {
+    warn_if_the_log_carries_no_slots(rules, &events);
     let mut driver = Inspector::new(rules, fps, cfg);
     driver.run(events);
     driver.finish(rules.len(), fps.len())
+}
+
+/// Say so when a rule reads a SLOT window but the log has no slots to advance it.
+///
+/// `TradeLite::slot` is `#[serde(default)]`, so a log line written before the field
+/// existed replays with every trade in slot `0`. The cursor then never moves: a slot
+/// window holds its opening content for the whole run and the condition reads like a
+/// strict gate that simply never fires. This is the one production reader whose
+/// source can be that old — the lake writes `slot` non-nullable and the live producer
+/// takes it off the feed — so the check belongs here, on the way in, rather than as a
+/// silent difference in the replayed decisions.
+fn warn_if_the_log_carries_no_slots(rules: &[LoadedRule], events: &[LoggedEvent]) {
+    let wanted = rules.iter().filter(|r| CompiledRule::compile(r).needs_slot).count();
+    if wanted == 0 {
+        return;
+    }
+    let mut trades = 0usize;
+    let mut slotted = 0usize;
+    for le in events {
+        if let LoggedEvent::Trade { trade, .. } = le {
+            trades += 1;
+            if trade.slot != 0 {
+                slotted += 1;
+            }
+        }
+    }
+    if trades > 0 && slotted == 0 {
+        tracing::warn!(
+            trades,
+            rules = wanted,
+            "replay-inspect: this log carries NO slots, so every slot window holds its              opening content for the whole run - the rules reading one decide on a frozen              cursor here, not on the tape"
+        );
+    }
 }
 
 /// Whether a logged event references `mint` (directly, or via a fill/close intent).

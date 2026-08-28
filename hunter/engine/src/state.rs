@@ -6,7 +6,7 @@
 //! fingerprints, per-token metric tracks + arm states, per-rule cap counters, and
 //! the two monotonic id generators (intents, positions). No clock, no I/O.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::arm::{ArmState, ClockHorizons, CompiledRule};
 use crate::dupe_guard::DupeGuard;
@@ -14,8 +14,8 @@ use crate::event::{IntentId, LoadedRule, ManualExit, Mint, PositionId, RuleId, T
 use crate::fingerprint::{Fingerprint, FingerprintId};
 use crate::identity::IdentityHash;
 use crate::grouping::TokenFingerprint;
-use crate::metrics::flow_ix::FlowPatterns;
 use crate::metrics::track::TokenTrack;
+use crate::metrics::FingerprintPatterns;
 use crate::metrics::Ts;
 
 /// Per-rule live counters, backing the concurrency + lifetime caps. `open` counts
@@ -163,7 +163,19 @@ pub struct EngineState {
     /// finds no rule and makes no decision — no TP/SL, no Dead-exit.
     pub manual_rules: BTreeMap<PositionId, CompiledRule>,
     /// Loaded fingerprints (input order preserved for multi-match).
+    ///
+    /// **Only those a loaded rule names.** The two readers are [`crate::fingerprint::match_all`]
+    /// (whose hits are then tested against a compiled rule's `fingerprint_id`) and
+    /// the per-track registration below, so a fingerprint no rule points at can only
+    /// produce a hit nobody reads — while still costing a match per creation and a
+    /// classifier deque per token. The live edge hands over every `fingerprints` row;
+    /// [`reload`](Self::reload) is where that narrows to the working set.
     pub fps: Vec<Fingerprint>,
+    /// Each loaded fingerprint's compiled `metric_config`, keyed by id — built once
+    /// per reload rather than re-walked per token. Only fingerprints that configure
+    /// a fingerprint-scoped group appear, so a track opens exactly the classifier
+    /// state some rule can read.
+    pub(crate) fp_patterns: BTreeMap<FingerprintId, FingerprintPatterns>,
     /// Union of every rule's `m_flow_window` spans — ensured on each new track.
     ///
     /// One union per BUFFER, mirroring [`CompiledRule`]'s buckets: a span registered
@@ -404,9 +416,24 @@ impl EngineState {
     /// distinct-window union and ensures any newly-referenced window / flow state
     /// exists on every already-tracked token (going forward — past history is not
     /// re-folded).
+    ///
+    /// **Narrows `fps` to the fingerprints the rules name**, and compiles each one's
+    /// `metric_config` here rather than per token — see [`fps`](Self::fps) and
+    /// [`fp_patterns`](Self::fp_patterns). Decision-neutral: a dropped fingerprint has
+    /// no rule to arm, so its match answer was never read.
     pub fn reload(&mut self, rules: &[LoadedRule], fps: &[Fingerprint]) {
         self.rules = rules.iter().map(|r| (r.id, CompiledRule::compile(r))).collect();
-        self.fps = fps.to_vec();
+        let named: BTreeSet<FingerprintId> =
+            self.rules.values().map(|c| c.fingerprint_id).collect();
+        self.fps = fps.iter().filter(|f| named.contains(&f.id)).cloned().collect();
+        self.fp_patterns = self
+            .fps
+            .iter()
+            .filter_map(|f| {
+                let p = FingerprintPatterns::compile(&f.metric_config);
+                (!p.is_empty()).then_some((f.id, p))
+            })
+            .collect();
 
         let mut all_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
         let mut all_crowd_windows: Vec<crate::metrics::WindowSpec> = Vec::new();
@@ -444,7 +471,7 @@ impl EngineState {
         self.bump_cross_epoch();
         // Borrowed out before the loop: `window_sets` reads `self`, which the
         // `values_mut` iteration has mutably borrowed.
-        let (sets, fps) = (
+        let (sets, patterns) = (
             WindowSets {
                 flow: &self.all_windows,
                 crowd: &self.all_crowd_windows,
@@ -452,10 +479,10 @@ impl EngineState {
                 ix: &self.all_ix_windows,
                 dump: &self.all_dump_windows,
             },
-            &self.fps,
+            &self.fp_patterns,
         );
         for token in self.tokens.values_mut() {
-            Self::ensure_track_windows_and_flow(&mut token.track, sets, fps);
+            Self::ensure_track_windows_and_flow(&mut token.track, sets, patterns);
         }
     }
 
@@ -463,7 +490,7 @@ impl EngineState {
     /// window (flow + price) and every configured flow fingerprint.
     pub fn new_track(&self, at: Ts) -> TokenTrack {
         let mut track = TokenTrack::new(at);
-        Self::ensure_track_windows_and_flow(&mut track, self.window_sets(), &self.fps);
+        Self::ensure_track_windows_and_flow(&mut track, self.window_sets(), &self.fp_patterns);
         track
     }
 
@@ -495,7 +522,7 @@ impl EngineState {
     fn ensure_track_windows_and_flow(
         track: &mut TokenTrack,
         windows: WindowSets<'_>,
-        fps: &[Fingerprint],
+        patterns: &BTreeMap<FingerprintId, FingerprintPatterns>,
     ) {
         for &w in windows.flow {
             track.ensure_window(w);
@@ -506,19 +533,17 @@ impl EngineState {
         for &w in windows.price {
             track.ensure_price_window(w);
         }
-        for fp in fps {
+        for (&fp, p) in patterns {
             // Each group opens its own buffers off its own list, so a fingerprint
             // configured for one and not the other pays for one and not the other.
-            if let Some(patterns) =
-                crate::metrics::dump_ix::DumpPatterns::from_metric_config(&fp.metric_config)
-            {
-                track.ensure_dump(fp.id, &patterns, windows.dump);
+            if let Some(dump) = &p.dump {
+                track.ensure_dump(fp, dump, windows.dump);
             }
-            if let Some(patterns) = FlowPatterns::from_metric_config(&fp.metric_config) {
+            if let Some(flow) = &p.flow {
                 // Only the `m_flow_ix_window` spans: this call opens a deque PER
                 // FINGERPRINT, so handing it the aggregate-flow union multiplied the
                 // fold by the number of configured fingerprints for nothing.
-                track.ensure_flow(fp.id, &patterns, windows.ix);
+                track.ensure_flow(fp, flow, windows.ix);
             }
         }
     }
@@ -556,4 +581,113 @@ fn compile_manual_exit_rule(rule: RuleId, exit: &ManualExit) -> CompiledRule {
         entry_enabled: true,
     };
     CompiledRule::compile(&loaded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::TradeMode;
+    use crate::fingerprint::{AxisId, AxisPredicate, Criteria};
+    use crate::metrics::{MetricId, Side, TradeLite, Windows};
+    use crate::rule_params::RuleParams;
+    use chrono::{TimeZone, Utc};
+    use serde_json::json;
+    use uuid::Uuid;
+
+    fn ts() -> Ts {
+        Utc.timestamp_opt(1_700_000_000, 0).unwrap()
+    }
+
+    fn fp_id(n: u128) -> FingerprintId {
+        FingerprintId(Uuid::from_u128(n))
+    }
+
+    /// A fingerprint that tags one build into `m_flow_ix`.
+    fn fp(n: u128) -> Fingerprint {
+        Fingerprint {
+            id: fp_id(n),
+            wildcard: false,
+            criteria: Criteria::new().with(AxisId::CuLimit, AxisPredicate::exact(200_000 + n)),
+            metric_config: json!({ "m_flow_ix": { "ix_patterns": [["Pump.Fun: Buy"]] } }),
+        }
+    }
+
+    fn rule_on(fp: FingerprintId) -> LoadedRule {
+        LoadedRule {
+            id: RuleId(Uuid::from_u128(1)),
+            fingerprint_id: fp,
+            trade_mode: TradeMode::Paper,
+            buy_amount_lamports: 100_000_000,
+            max_concurrent_tokens: 1,
+            max_total_tokens: 0,
+            params: RuleParams::parse(&json!({
+                "entry": { "m_state": { "time": [{ "operator": ">=", "value": 1.0 }] } },
+                "exit": { "m_position": { "held": [{ "operator": ">=", "value": 30.0 }] } }
+            }))
+            .expect("params"),
+            entry_enabled: true,
+        }
+    }
+
+    /// The live edge hands the engine every `fingerprints` row, but only the ones a
+    /// rule names can decide anything. Keeping the rest cost a classifier deque per
+    /// unnamed-but-configured fingerprint on EVERY token, folded on every trade and
+    /// read by nobody.
+    #[test]
+    fn reload_keeps_only_the_fingerprints_the_rules_name() {
+        let (named, unnamed, bare) = (fp(1), fp(2), Fingerprint::empty(fp_id(3)));
+        let mut state = EngineState::new();
+        state.reload(&[rule_on(named.id)], &[named.clone(), unnamed.clone(), bare]);
+
+        assert_eq!(state.fps.iter().map(|f| f.id).collect::<Vec<_>>(), vec![named.id]);
+        // And only the kept one compiles a pattern set to open state from.
+        assert_eq!(state.fp_patterns.keys().copied().collect::<Vec<_>>(), vec![named.id]);
+
+        // On a real track that is the difference between one classifier and two.
+        let mut track = state.new_track(ts());
+        track.ensure_flow(named.id, state.fp_patterns[&named.id].flow.as_ref().unwrap(), &[]);
+        track.on_trade(TradeLite { side: Side::Buy, sol: 1.0, price: 1.0, at: ts(), ..Default::default() });
+        assert_eq!(track.value(MetricId::UntaggedBuy, Windows::NONE, Some(named.id), ts()), 1.0);
+        assert!(
+            track.value(MetricId::UntaggedBuy, Windows::NONE, Some(unnamed.id), ts()).is_nan(),
+            "an unnamed fingerprint opens no state, so its metrics read NaN - not 0"
+        );
+    }
+
+    /// A fingerprint that configures no fingerprint-scoped group at all must not get
+    /// an entry either: `Some(empty patterns)` would still open a deque per token.
+    #[test]
+    fn a_fingerprint_with_no_group_config_compiles_to_nothing() {
+        let mut plain = fp(1);
+        plain.metric_config = json!({});
+        let mut state = EngineState::new();
+        state.reload(&[rule_on(plain.id)], &[plain.clone()]);
+        assert_eq!(state.fps.len(), 1, "it still matches - identity is unaffected");
+        assert!(state.fp_patterns.is_empty(), "but it opens no classifier state");
+    }
+
+    /// Narrowing must not change a decision: the dropped rows had no rule to arm, so
+    /// the arming answer is the same set of rules either way.
+    #[test]
+    fn narrowing_is_decision_neutral() {
+        let named = fp(1);
+        let noise: Vec<Fingerprint> = (10..40).map(fp).collect();
+        let mut all = vec![named.clone()];
+        all.extend(noise);
+
+        let mut wide = EngineState::new();
+        wide.reload(&[rule_on(named.id)], &all);
+        let mut narrow = EngineState::new();
+        narrow.reload(&[rule_on(named.id)], &[named.clone()]);
+
+        let tf = TokenFingerprint { cu_limit: Some(200_001), ..Default::default() };
+        let hits = |st: &EngineState| {
+            crate::fingerprint::match_all(&st.fps, &tf, crate::fingerprint::MatchPhase::Full)
+                .into_iter()
+                .filter(|id| st.rules.values().any(|c| c.fingerprint_id == *id))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(hits(&wide), hits(&narrow));
+        assert_eq!(hits(&narrow), vec![named.id]);
+    }
 }
