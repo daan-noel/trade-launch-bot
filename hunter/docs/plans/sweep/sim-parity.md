@@ -213,7 +213,7 @@ Both were mistaken for the D0 bug during its investigation, so they are recorded
   model except `frictionless` charges `fixed_cost_sol_per_leg` = `JITO_MIN_TIP_SOL` +
   avg CU priority fee ≈ 0.001025 SOL/leg ≈ 0.00205 per round trip — **0.2 % of notional
   at 1.0 SOL, 20.5 % at 0.01**. Breakeven gross move goes from ~+2.2 % to ~+22.6 %, which
-  alone flips win% and PnL sign. No selectable cost model charges `slippage_bps` any
+  alone flips win% and PnL sign. No cost model charges a flat per-leg slippage any
   more, and none of them ever drops the fixed cost. Sweep at the notional you intend
   to trade (this is residual 4b above) — doubly so under `pumpfun_impact`, whose
   impact term moves with that same notional.

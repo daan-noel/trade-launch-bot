@@ -5,7 +5,7 @@
 // (`genericAxes.ts`). There are no per-strategy static axis grids or
 // fingerprint-blob serializers — a new strategy is a registry entry, not a page.
 
-import type { CostModelId, FillModelId, StoredCostModelId } from 'lib/strategy/types';
+import type { CostModelId, FillModelId } from 'lib/strategy/types';
 import type { Criteria } from 'lib/strategy/fingerprintAxes';
 import type { FieldFilterValue } from './fingerprintFilters';
 
@@ -168,9 +168,9 @@ export interface GroupedSweepRunRecord {
    *  comparable, so this is shown next to the run's PnL. */
   fill_model: FillModelId | null;
   /** Which cost model priced the round-trips. `null` on legacy runs ⇒
-   *  the retired `pumpfun_default`, which charges slippage on top of the fill
-   *  price. Read it through `storedCostModel()`, never as a selectable id. */
-  cost_model: StoredCostModelId | null;
+   *  the deleted `pumpfun_default` on an old row. Read it through
+   *  `storedCostModel()`, which resolves anything unrecognized to `pumpfun_impact`. */
+  cost_model: string | null;
   /** The candidate scale-out ladder(s) searched in Pass 2 — `ExitStage[][]`
    *  (backend keeps the grid-shaped wire contract for forward compat), but the
    *  FE authors exactly ONE user ladder via `ScaleOutBuilder` and sends it as

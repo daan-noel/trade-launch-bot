@@ -14,7 +14,6 @@ import {
   costModelLabel,
   FILL_MODELS,
   fillModelLabel,
-  isLegacyCostModel,
   storedCostModel,
 } from 'lib/strategy/types';
 import {
@@ -159,9 +158,9 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
   const costLabel = costModelLabel(costModel);
   const fillHint = fill?.hint;
   const costHint = costModelHint(costModel);
-  // The pairing this whole selector exists to make visible: an explicit fill model
-  // already prices execution slippage, so the retired model charges it a second time.
-  const doubleCounted = isLegacyCostModel(costModel);
+  // Every surviving cost model composes correctly with every fill model — impact is
+  // our own footprint, orthogonal to which print we transact against — so there is no
+  // longer an incoherent pair to flag here.
   // How fresh the corpus was. A sweep reads the sealed Parquet lake ONLY; Simulate
   // splices the fresh PG tail on top. So an un-exported lake doesn't just make the run
   // "a bit old" — it freezes positions as `Open (est)` at prices a simulate of the same
@@ -280,13 +279,11 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
             <Badge variant={fillModel === 'worst_case' ? 'warning' : 'info'} title={fillHint}>
               fill · {fillLabel}
             </Badge>
-            <Badge variant={doubleCounted ? 'danger' : 'info'} title={costHint}>
+            <Badge variant="info" title={costHint}>
               cost · {costLabel}
             </Badge>
             <span className="text-[10px] text-text-dim/60">
-              {doubleCounted
-                ? 'slippage charged twice — also priced into the fill'
-                : 'not comparable with a run under different models'}
+              not comparable with a run under different models
             </span>
           </span>
         </Row>

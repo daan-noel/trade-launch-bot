@@ -160,10 +160,10 @@ pub struct StartGroupedSweepBody {
     pub fill_model: trading_core::strategies::paper_fill::FillModel,
     /// Which execution-cost model prices the round-trips. Omitted ⇒
     /// `pumpfun_impact`, the only kind whose cost responds to `buy_amount_sol` — so a
-    /// scan that omits it still ranks combos under their real sizing cost. The flat
-    /// `slippage_bps` model is not selectable: the fill price already prices execution
-    /// slippage, so charging it again double-counts, and because the fixed cost is
-    /// per-leg that haircut is **not** rank-preserving across combos.
+    /// scan that omits it still ranks combos under their real sizing cost. There is no
+    /// flat per-leg slippage model: the fill price already prices execution slippage, so
+    /// charging it again double-counts, and because the fixed cost is per-leg that
+    /// haircut is **not** rank-preserving across combos.
     #[serde(default)]
     pub cost_model: trading_core::strategies::kernel::CostModelKind,
     /// Candidate scale-out ladder **grid** for Pass 2: `ExitStage[][]` — one array
@@ -187,7 +187,7 @@ pub struct StartGroupedSweepBody {
 ///
 /// The persisted columns are the serde tags; a `NULL` (legacy row, written before the
 /// models were selectable) or an unparseable value falls back to what the sweep
-/// hardcoded then — worst-case fills + `pumpfun_default` — so an old run re-simulates
+/// hardcoded then — worst-case fills + a flat-slippage cost model since retired — so an old run re-simulates
 /// as it originally scored rather than under today's defaults.
 fn run_pricing(run: &GroupedSweepRun) -> crate::sweep::generic::Pricing {
     fn tag<T: serde::de::DeserializeOwned + Default>(v: &Option<String>) -> T {
@@ -198,14 +198,11 @@ fn run_pricing(run: &GroupedSweepRun) -> crate::sweep::generic::Pricing {
     crate::sweep::generic::Pricing {
         buy_amount_sol: run.buy_amount_sol.unwrap_or(registry::SWEEP_DEFAULT_BUY_AMOUNT_SOL),
         fill_model: tag(&run.fill_model),
-        // NOT `tag` / `Default`: a blank cost column means the row predates the
-        // selector and really was priced with flat slippage, whereas a blank
-        // *request* field means today's honest model. `from_stored` is the half of
-        // that split which belongs to stored rows.
-        cost: trading_core::strategies::kernel::CostModelKind::from_stored(
-            run.cost_model.as_deref(),
-        )
-        .model(),
+        // A blank or retired cost column resolves to `pumpfun_impact`. Old rows say
+        // `pumpfun_default`, a model that no longer exists — so a drill-in reprices
+        // them honestly rather than reproducing a number that double-counted cost.
+        // Their stored top-line figures are the ones that will not match.
+        cost: tag::<trading_core::strategies::kernel::CostModelKind>(&run.cost_model).model(),
     }
 }
 
@@ -2446,7 +2443,7 @@ pub async fn list_token_results(
     // The run's OWN pricing, not today's defaults — same reason as `as_of` below: a
     // drill-in that repriced under a different fill/cost model would disagree with the
     // combo row it was opened from. Legacy rows (NULL) read back as what the sweep
-    // hardcoded then: worst-case fills + `pumpfun_default`.
+    // hardcoded then: worst-case fills + a flat-slippage cost model since retired.
     let pricing = run_pricing(&run);
     // The run's own instant, NOT wall-clock now — a drill-in must reproduce the row
     // it drills into, and deadness is judged against this (parity plan B7).

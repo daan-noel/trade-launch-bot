@@ -93,12 +93,10 @@ import {
   costModelHint,
   costModelLabel,
   storedCostModel,
-  LEGACY_COST_MODEL,
   FILL_MODELS,
   fillModelLabel,
   fillModelLagMs,
   type CostModelId,
-  type StoredCostModelId,
   type Fingerprint,
   type FillModelId,
   type StrategyRule,
@@ -204,13 +202,9 @@ function fillModelVariant(id: string): BadgeVariant {
       return 'info';
   }
 }
-/** The retired flat-slippage model double-counts against any fill model, so a run
- *  still carrying it reads as the cautionary color; `pumpfun_impact` is the honest
- *  pairing and `pumpfun_fee_only` the size-blind upper bound. Keyed by
- *  `StoredCostModelId`, not `CostModelId` — an old run can still show the legacy
- *  badge even though nothing can select it any more. */
-const COST_MODEL_VARIANT: Record<StoredCostModelId, BadgeVariant> = {
-  [LEGACY_COST_MODEL]: 'danger',
+/** `pumpfun_impact` is the honest model and `pumpfun_fee_only` the size-blind upper
+ *  bound, so the latter reads as informational rather than affirmative. */
+const COST_MODEL_VARIANT: Record<CostModelId, BadgeVariant> = {
   pumpfun_fee_only: 'info',
   pumpfun_impact: 'success',
 };
@@ -1312,7 +1306,7 @@ function buildColumns(
       label: 'Cost',
       group: 'sim',
       tooltip:
-        'Which execution-cost model priced this result’s round-trips — a run still showing "Fee + slippage (legacy)" charges slippage twice, once in the fill price and again as slippage_bps',
+        'Which execution-cost model priced this result’s round-trips — "Fee + real impact" charges our own buy_amount/reserve_sol footprint, "Fee only" is the zero-impact bound',
       sortable: true,
       render: (r) => {
         const run = runOf(r);

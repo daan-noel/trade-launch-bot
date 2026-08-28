@@ -41,7 +41,7 @@ import { FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import { LabelTip } from 'components/strategy/LabelTip';
 import {
   COST_MODELS,
-  selectableCostModel,
+  storedCostModel,
   FILL_MODELS,
   type CostModelId,
   type FillModelId,
@@ -321,13 +321,11 @@ function runToConfig(run: GroupedSweepRunRecord, defaults: GenericSweepConfig): 
     // restore THAT, not today's default, or a "re-run" would quietly reprice the
     // comparison.
     fillModel: run.fill_model ?? 'worst_case',
-    // The cost half cannot be restored the same way, and should not be: a run priced
-    // under the retired flat-slippage model is double-counting execution cost, which
-    // is the reason someone re-runs it. Reproducing that pricing would hand back the
-    // same untrustworthy ranking under a fresh run id — so `selectableCostModel` maps
-    // it to the honest model, and the run header still labels the original as legacy
-    // so the two never blur.
-    costModel: selectableCostModel(run.cost_model),
+    // The cost half cannot be restored the same way: a run written under the deleted
+    // flat-slippage model has no model to restore, so it comes back under
+    // `pumpfun_impact`. That is also what you want — double-counted execution cost is
+    // the reason to re-run it, not something to reproduce.
+    costModel: storedCostModel(run.cost_model),
     // Restore the scope so a re-run sweeps the SAME matched slice — the manual
     // filters are NULL on a scoped run, so without this the re-run would silently
     // widen to the whole selection window.

@@ -61,9 +61,9 @@ fn pricing() -> Pricing {
 /// the half a parity guard has to cover.
 ///
 /// It is held at `pumpfun_fee_only` specifically because that model is **size- and
-/// depth-blind**: the parity corpus supplies no pool depth, so the honest
-/// `pumpfun_impact` would degrade to exactly this anyway, and pinning it here says so
-/// rather than leaving a reader to work it out.
+/// depth-blind**: the parity corpus supplies no pool depth, so `pumpfun_impact` would
+/// degrade to exactly this anyway, and pinning it here says so rather than leaving a
+/// reader to work it out.
 fn pricing_for(fill_model: FillModel) -> Pricing {
     Pricing { buy_amount_sol: BUY_SOL, fill_model, cost: CostModel::pumpfun_fee_only() }
 }

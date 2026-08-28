@@ -101,7 +101,11 @@ notional — divergence D8 in [../sweep/sim-parity.md](../sweep/sim-parity.md).
 | --- | --- | --- |
 | `pumpfun_impact` | fee + fixed + **real `B/vsol` impact** | **default.** The honest pairing with any `FillModel` |
 | `pumpfun_fee_only` | fee + fixed | size-blind; a zero-impact upper bound. The "is there any edge at all?" screen |
-| ~~`pumpfun_default`~~ | fee + fixed + flat `slippage_bps` | **retired — not selectable.** Double-counts against any fill model, and its error changes sign with buy size so it does not preserve ranking. Decodes only, so stored runs keep repricing as computed |
+
+A third, `pumpfun_default`, charged a flat `slippage_bps` per leg. It is **deleted** —
+it double-counted what the fill model already priced, and being size-blind its error
+changed sign with buy size, reordering a grid rather than shifting it. A stored run
+naming it decodes to `pumpfun_impact`: repriced, not reproduced.
 
 Impact is **orthogonal to the fill model** and composes with it without
 double-counting: a `FillModel` chooses *which market print we transact against*,

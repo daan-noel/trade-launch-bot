@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use hunter_engine::event::{ExitReason, LoadedRule};
 use hunter_engine::fingerprint::Fingerprint as EngineFingerprint;
 use hunter_engine::rule_params::RuleParams;
-use trading_core::strategies::kernel::{CostModel, ExitCode};
+use trading_core::strategies::kernel::{round_trip_with_costs, CostModel, ExitCode};
 use trading_core::strategies::paper_fill::FillModel;
 
 use crate::strategies::replay::{run_replay, PositionOutcome, ReplayConfig, ReplayToken};
@@ -151,7 +151,9 @@ pub fn build_report(
     let mut diagnostics = Vec::new();
     let ranked = rank_archive(archive);
     let fast_best = ranked.first().copied();
-    let floor = expectancy_floor_sol(opts.buy_sol, &opts.cost);
+    // `None` depth: the board has no cohort median to price impact against, so this
+    // is the zero-impact floor. Under `pumpfun_impact` the true bar is higher.
+    let floor = expectancy_floor_sol(opts.buy_sol, &opts.cost, None);
 
     // Report columns are `run_replay`. Replay the whole board (not a shorter
     // prefix) so a lower-ranked fast row cannot show a series-walk SOL the
@@ -410,12 +412,25 @@ fn rank_archive(archive: &[ArchiveRow]) -> Vec<usize> {
     idx
 }
 
-/// 2× the round-trip cost of one trade at this buy size — the least a mean
-/// trade must clear for total SOL to mean edge rather than trade count.
-fn expectancy_floor_sol(buy_sol: f64, cost: &CostModel) -> f64 {
-    let per_leg = buy_sol * (cost.fee_bps_per_leg + cost.slippage_bps) / 10_000.0
-        + cost.fixed_cost_sol_per_leg;
-    EXPECTANCY_FLOOR_MULT * 2.0 * per_leg
+/// `EXPECTANCY_FLOOR_MULT` × the round-trip cost of one trade at this buy size — the
+/// least a mean trade must clear for total SOL to mean edge rather than trade count.
+///
+/// Priced by **replaying a flat round trip through the kernel** rather than summing
+/// the model's fields by hand. The hand-rolled version was a second copy of "what one
+/// round trip costs" and silently omitted whatever term it had not been taught about:
+/// it added `fee + slippage` and so missed `price_impact` entirely, which is the one
+/// term that moves with `buy_sol`. A 1.0 → 1.0 round trip nets exactly minus its own
+/// cost, so the kernel answers the question directly and can never drift from what a
+/// real trade is charged.
+///
+/// `depth_sol` is the cohort's SOL-side pool depth for the impact term; `None` charges
+/// no impact and yields the zero-impact floor, which **understates** the bar for a
+/// size-aware model. The rule-search caller has no cohort depth to hand yet, so it
+/// passes `None` — see `execution_band_pct`, which does the same job in percent and
+/// already takes depth.
+fn expectancy_floor_sol(buy_sol: f64, cost: &CostModel, depth_sol: Option<f64>) -> f64 {
+    let (pnl_sol, _) = round_trip_with_costs(1.0, 1.0, buy_sol, depth_sol, cost);
+    EXPECTANCY_FLOOR_MULT * -pnl_sol
 }
 
 fn sign_agrees(auth: f64, opti: f64) -> bool {
@@ -869,12 +884,17 @@ mod tests {
     fn expectancy_floor_scales_with_buy_and_cost() {
         let cost = CostModel {
             fee_bps_per_leg: 125.0,
-            slippage_bps: 0.0,
             fixed_cost_sol_per_leg: 0.000225,
             price_impact: true,
         };
         // 2 × round-trip: 2 × 2 × (0.1 × 0.0125 + 0.000225) = 0.0059.
-        let f = expectancy_floor_sol(0.1, &cost);
+        let f = expectancy_floor_sol(0.1, &cost, None);
         assert!((f - 0.0059).abs() < 1e-9, "{f}");
+
+        // Depth is not decoration: once it is known, our own footprint raises the bar
+        // a mean trade has to clear. A floor computed without it lets through rules
+        // that only pay at a size they are not being traded at.
+        let with_depth = expectancy_floor_sol(0.1, &cost, Some(70.0));
+        assert!(with_depth > f, "impact must raise the floor: {with_depth} vs {f}");
     }
 }

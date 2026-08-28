@@ -70,13 +70,12 @@ pub struct GenericCombo {
 ///
 /// **This is part of a run's identity, not a tuning knob.** Two runs under
 /// different pricing are not comparable, and the pair must be chosen coherently:
-/// a [`FillModel`] already prices execution slippage, so charging a flat
-/// `slippage_bps` on top double-counts it — which is why the model that did
-/// ([`CostModel::pumpfun_legacy_slippage`]) is no longer selectable and survives only
-/// to reprice stored runs. [`CostModel::pumpfun_with_impact`] is the honest partner
-/// to any fill model: impact is our own footprint on the curve, orthogonal to which
-/// print we transact against, and a live trade pays both. Carried as one struct so a
-/// scan fn can never be handed the fill model without the cost model.
+/// a [`FillModel`] already prices execution slippage, so a flat per-leg slippage
+/// charge on top would double-count it — which is why no such cost model exists.
+/// [`CostModel::pumpfun_with_impact`] is the honest partner to any fill model: impact
+/// is our own footprint on the curve, orthogonal to which print we transact against,
+/// and a live trade pays both. Carried as one struct so a scan fn can never be handed
+/// the fill model without the cost model.
 #[derive(Clone, Copy, Debug)]
 pub struct Pricing {
     /// Notional (SOL) every round-trip is sized at.

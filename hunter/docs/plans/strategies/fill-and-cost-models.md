@@ -22,7 +22,6 @@ they are). Code: [`core/src/strategies/paper_fill.rs`](../../../core/src/strateg
 | Fill | `lag_<ms>` | the last print that has landed by signal + `<ms>` | **you want the verdict.** The only model keyed to the bot's measured reaction time |
 | Cost | `pumpfun_impact` | fee + tip + **our own** `B/vsol` impact | **the default, and the answer.** The only size-aware one |
 | Cost | `pumpfun_fee_only` | fee + tip | you want a zero-impact upper bound — the "any edge at all?" screen |
-| Cost | ~~`pumpfun_default`~~ | fee + tip + flat 1%/leg slippage | **retired.** Not selectable; decodes for stored runs only |
 
 `lag_<ms>` is a **bare string** on the wire like every other model — `lag_115`, not
 `{"lag_ms": 115}`. That is what lets it live in the sweep's `TEXT` column, a request DTO
@@ -288,21 +287,24 @@ Per leg (a round trip is 1 entry + N exit legs):
 | pump.fun protocol fee | **125 bps** of the leg's SOL | measured, `FEE_BPS_PER_LEG` |
 | Jito tip + priority fee | **0.000225 SOL**, fixed | `FeeTuning`: `JITO_MIN_TIP_SOL` (0.0002) + avg CU priority fee (0.000025) |
 | our own price impact | `leg_notional / reserve_sol` | `pumpfun_impact` only |
-| ~~flat slippage~~ | ~~100 bps~~ | retired `pumpfun_default` only — no new run charges it |
 
 The fixed term is **read from `.env`**, so it moves when you change
 `JITO_MIN_TIP_SOL` / `CU_PRICE_MICRO_LAMPORTS`. It was 0.001025 SOL/leg when
 [execution-costs.md](execution-costs.md) was measured (tip 0.001); at today's 0.0002
 tip it is 0.000225. Restart the lab bin after editing those keys.
 
-Only `pumpfun_impact` cares about **buy size**. The other two are size-blind: a 0.1
-SOL buy and a 10 SOL buy are charged the same percentage.
+Only `pumpfun_impact` cares about **buy size**. `pumpfun_fee_only` is size-blind: a
+0.1 SOL buy and a 10 SOL buy are charged the same percentage.
 
-**Two selectable models, not three.** `pumpfun_default` is retired — the section
-below is why. It survives as a decodable value so runs already stored under it keep
-repricing the way they were computed; nothing can select it for new work.
+**There is no flat slippage term, and there must not be one.** A third model,
+`pumpfun_default`, charged 100 bps/leg. It is deleted, along with the `slippage_bps`
+field it set — the section below is why.
 
-## One round trip, priced three ways
+## One round trip, priced three ways — and why one of them is gone
+
+The `pumpfun_default` row below is the **deleted** flat-slippage model. It is kept
+here as the evidence that removed it, not as an option: read it as what a run
+priced before the retirement was actually charged.
 
 **0.1 SOL buy · price rises 20% · pool depth 70 SOL** (the measured median):
 
@@ -310,7 +312,7 @@ repricing the way they were computed; nothing can select it for new work.
 | --- | --- | --- | --- |
 | `pumpfun_impact` | 0.119658 ◎ (impact 0.143%/leg) | 0.003196 ◎ | **+16.46%** |
 | `pumpfun_fee_only` | 0.120000 ◎ | 0.003200 ◎ | **+16.80%** |
-| `pumpfun_default` | 0.117624 ◎ (flat 1%/leg) | 0.003170 ◎ | **+14.45%** |
+| ~~`pumpfun_default`~~ (deleted) | 0.117624 ◎ (flat 1%/leg) | 0.003170 ◎ | **+14.45%** |
 
 The same trade at **1.0 SOL** into the same 70 SOL pool:
 
@@ -318,21 +320,29 @@ The same trade at **1.0 SOL** into the same 70 SOL pool:
 | --- | --- | --- |
 | `pumpfun_impact` | 1.43% | **+13.87%** |
 | `pumpfun_fee_only` | 0% | **+17.21%** |
-| `pumpfun_default` | flat 1% | **+14.86%** |
+| ~~`pumpfun_default`~~ (deleted) | flat 1% | **+14.86%** |
 
 **Read those two tables together.** At 0.1 SOL the flat 1% is *harsher* than reality
 (14.45% vs 16.46%); at 1.0 SOL it is *kinder* than reality (14.86% vs 13.87%). That
-is the whole case against `pumpfun_default` in one number — it is wrong in both
-directions, and the error **flips sign** somewhere in the middle.
+is the whole case against it in one number — it is wrong in both directions, and the
+error **flips sign** somewhere in the middle.
 
 A cost model that is merely too harsh is survivable: it shifts every candidate down
 by roughly the same amount and the ranking holds. One whose error changes sign with
-size does not shift the board, it **reshuffles** it — and a grid exists to rank. That
-is what took it out of the dropdown rather than leaving it there with a warning
-label. It is now `CostModelKind::PumpfunLegacySlippage`, decode-only.
+size does not shift the board, it **reshuffles** it — and a grid exists to rank.
+
+It also double-counted. A `FillModel` chooses *which market print we transact
+against*; a flat `slippage_bps` is a stand-in for that same quantity, so charging
+both charged execution slippage twice. Two independent reasons, one conclusion: the
+kind and the `CostModel::slippage_bps` field are **deleted**, not deprecated. The
+name survives as a serde alias onto `pumpfun_impact` for one reason only — so an old
+row still loads instead of failing on an unknown variant.
 
 `pumpfun_fee_only` never charges impact, so it is a clean **upper bound**: 3.3 pp too
-generous at 1 SOL, only 0.34 pp too generous at 0.1 SOL.
+generous at 1 SOL, only 0.34 pp too generous at 0.1 SOL. That is a bound you can
+reason with — it errs one way, and it errs more as size grows. It is the reason the
+size-blind model that survived is the one that charges *nothing* rather than the one
+that guessed.
 
 ## Depth is optional, and missing depth silently downgrades the model
 
@@ -353,16 +363,11 @@ whenever the pool grew during the hold, i.e. it errs pessimistic on winners.
 | `lag_<ms>` | **the verdict** | the verdict's upper bound |
 | `signal_price` | ceiling, size-aware | absolute ceiling |
 
-**Every cell is valid** — which is the point of retiring the third column. A
+**Every cell is valid**, which is the point of deleting the third column. A
 `FillModel` chooses *which market print we transact against*; impact is *how far our
 own order moves the curve*. Those are orthogonal, and a live trade pays both, so
-`fill model + impact` is always the correct pairing and there is no incoherent pair
-left to warn about.
-
-The retired `pumpfun_default` was the exception: `slippage_bps` is a flat stand-in for
-*the same quantity the fill model already priced*, so every one of its cells
-double-counted. That is why it went rather than staying behind a warning — the only
-correct advice about it was "never pick this".
+`fill model + impact` is always the correct pairing. There is no incoherent pair left
+to warn about, and no surface warns about one.
 
 ## The bar a strategy has to clear
 
@@ -389,18 +394,14 @@ which `worst_case` very much is not.
 # Part 3 — Reading a stored run
 
 - Both models are persisted per run and rendered on the run header and in the
-  Simulate history columns. A run with **no** stored cost model was computed under
-  `worst_case` + `pumpfun_default` — i.e. it double-counts slippage, and its ranking
-  is not trustworthy. It reads as **Fee + slippage (legacy)**.
-- That fallback belongs to *stored columns only*. `CostModelKind::from_stored`
-  (blank ⇒ legacy) is a different question from `CostModelKind::default()` (blank ⇒
-  `pumpfun_impact`), and conflating them is the bug this split exists to prevent: an
-  omitted request field must get today's honest model, while an old row must keep the
-  meaning it was computed under. The frontend mirrors the pair as `storedCostModel()`
-  and the `COST_MODELS` dropdown default.
-- **Re-running a legacy run does not reproduce it.** `selectableCostModel()` maps it
-  to `pumpfun_impact`, because double-counted cost is the reason you are re-running.
-  The original keeps its legacy label, so the two never blur.
+  Simulate history columns.
+- **A run stored with no cost model, or with `pumpfun_default`, is not what it says
+  it is.** It was computed under `worst_case` + a flat-slippage model that no longer
+  exists, so it double-counted execution cost. Both the backend decoder and the
+  frontend's `storedCostModel()` resolve it to `pumpfun_impact` — the run is
+  **repriced, not reproduced**. Its stored top-line numbers therefore will not match
+  a fresh drill-in or a re-run of the same config, and the fresh number is the one to
+  believe. Treat any pre-retirement ranking as unranked.
 - Runs from **before 2026-07-28** additionally used a 100 bps fee (the real one is
   125) and charged no impact at all. They understate cost by up to ~3 pp per round
   trip and are not comparable to anything newer. The constants are not stored per

@@ -96,7 +96,7 @@ start until a second launchpad is actually on the roadmap — until then it only
   `hunter/live/src/ingest/consumer.rs:513-516` + `token_sync.rs:1456`. Bundle pump economics into a
   per-venue `CurveEconomics` and **lift `CostModel` out of the strategy kernel**
   (`hunter/core/src/strategies/kernel.rs`). The flat-slippage half of this is already
-  done — `pumpfun_default` is retired and no call site defaults to it; what remains is
+  done — `pumpfun_default` and the `slippage_bps` field are deleted; what remains is
   that pump's fee/tip/impact terms are still hardcoded there rather than reached
   through a per-venue economics trait.
 - [ ] **E2-ingest event payloads:** the top-level `IngestEvent` is generic now

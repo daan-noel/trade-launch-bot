@@ -90,13 +90,11 @@ pub struct SimMeta {
     /// Which execution-cost model priced this run's round-trips — surfaced as the
     /// Simulate table's Cost column, mirroring `fill_model` above.
     ///
-    /// `#[serde(default = "legacy_cost_model")]`, **not** a bare `#[serde(default)]`:
-    /// a meta written before this field existed was hardcoded to the flat-slippage
-    /// model, and the derived `Default` is today's honest one. Reading an old meta
-    /// through the derived default would relabel its numbers as computed under a
-    /// model they never saw — the same split `CostModelKind::from_stored` draws for
-    /// the sweep's stored column.
-    #[serde(default = "legacy_cost_model")]
+    /// `#[serde(default)]` ⇒ `pumpfun_impact`. A meta written before this field
+    /// existed was hardcoded to a flat-slippage model that no longer exists, so it
+    /// loads under today's model rather than failing: the label is repriced, and the
+    /// numbers stored beside it are the ones not to trust.
+    #[serde(default)]
     pub cost_model: CostModelKind,
     /// The copycat guard this run was booked under: `Some(window_hours)` = the
     /// duplicate-identity gate was on with that memory horizon, `None` = off.
@@ -465,13 +463,6 @@ pub fn summary_wire(meta: &SimMeta) -> Value {
     body
 }
 
-/// Serde default for a stored meta's `cost_model` — the flat-slippage model those
-/// runs were hardcoded to before the field existed. Deliberately not the derived
-/// `Default`, which is today's honest model: see `SimMeta::cost_model`.
-fn legacy_cost_model() -> CostModelKind {
-    CostModelKind::PumpfunLegacySlippage
-}
-
 fn count_migrated(rows: &[Value]) -> u64 {
     rows.iter()
         .filter(|r| {
@@ -540,7 +531,7 @@ mod tests {
             None,
             None,
             FillModel::WorstCase,
-            CostModelKind::PumpfunLegacySlippage,
+            CostModelKind::PumpfunImpact,
             None,
             SimOutcome::Done(rows.clone()),
             true,
@@ -581,7 +572,7 @@ mod tests {
             None,
             None,
             FillModel::WorstCase,
-            CostModelKind::PumpfunLegacySlippage,
+            CostModelKind::PumpfunImpact,
             None,
             SimOutcome::Done(Arc::new(vec![serde_json::json!({"fired": false})])),
             false,
@@ -605,7 +596,7 @@ mod tests {
             None,
             None,
             FillModel::WorstCase,
-            CostModelKind::PumpfunLegacySlippage,
+            CostModelKind::PumpfunImpact,
             None,
             SimOutcome::Done(Arc::new(vec![])),
             true,

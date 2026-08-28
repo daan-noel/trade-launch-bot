@@ -1290,7 +1290,8 @@ mod tests {
 /// / `symbol` come from the token metadata; `buy_amount_sol` sizes the round-trip;
 /// `cost_model` is the caller's chosen [`CostModelKind`](trading_core::strategies::kernel::CostModelKind)
 /// (request-selectable — see `EngineSimRequest::cost_model`; never hardcode
-/// the retired `pumpfun_default`, which double-counts slippage against any fill model).
+/// a flat-slippage model, which double-counts against any fill model — the reason
+/// no such kind exists any more).
 ///
 /// Scale-out positions price through [`round_trip_multi_leg`](trading_core::strategies::kernel::round_trip_multi_leg)
 /// over every confirmed exit leg (plus a mark-to-last-price remainder when still open).
