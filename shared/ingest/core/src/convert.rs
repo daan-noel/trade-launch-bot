@@ -43,6 +43,8 @@
 //!   pubkey->index remapping and no rebuild. This module exists so either works.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::Value;
@@ -386,10 +388,78 @@ fn compiled_parts(ix: &Value, index: &KeyIndex<'_>) -> Option<(u32, Vec<u8>, Vec
     // [`data_from_parsed`].
     let data = match ix.get("data").and_then(Value::as_str) {
         Some(d) => bs58::decode(d).into_vec().ok()?,
-        None => data_from_parsed(ix).unwrap_or_default(),
+        None => match data_from_parsed(ix) {
+            Some(bytes) => bytes,
+            None => {
+                note_unrebuilt_parsed_ix(ix);
+                Vec::new()
+            }
+        },
     };
 
     Some((program_id_index, accounts, data))
+}
+
+// -- unrebuilt-instruction alarm ----------------------------------------------
+
+/// jsonParsed instructions whose raw bytes could not be rebuilt, since boot.
+static UNREBUILT_PARSED_IX: AtomicU64 = AtomicU64::new(0);
+/// Unix second of the last warning, so a sustained failure logs once per
+/// [`UNREBUILT_WARN_EVERY_S`] instead of once per instruction.
+static UNREBUILT_LAST_WARN_S: AtomicU64 = AtomicU64::new(0);
+const UNREBUILT_WARN_EVERY_S: u64 = 30;
+
+/// Count — and periodically shout about — a `{program, parsed}` instruction that
+/// arrived with no `data` and could not be re-encoded.
+///
+/// This is the failure that has to be loud. An unrebuilt instruction keeps EMPTY
+/// data, so the labeler renders it `Unknown` — and for the ATA family, whose
+/// empty encoding is a legal `Create`, as a plain `Create`, which is a *wrong*
+/// label rather than a missing one. Either way the structural markers
+/// (`CreateAccountWithSeed`, `AdvanceNonceAccount`, `System Program: Transfer`)
+/// vanish from `ix_labels`, so every build in the affected window reads as clean
+/// organic flow to `m_flow_ix`. That is not a decode gap that shows up as noise;
+/// it is a silent, one-directional bias in the tape, and the tape cannot be
+/// re-labelled after the fact because `raw_txs` is not persisted.
+/// See `docs/history/2026-08-25-ix-label-blackout.md`.
+fn note_unrebuilt_parsed_ix(ix: &Value) {
+    let total = UNREBUILT_PARSED_IX.fetch_add(1, Ordering::Relaxed) + 1;
+
+    let now_s = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let last = UNREBUILT_LAST_WARN_S.load(Ordering::Relaxed);
+    if now_s.saturating_sub(last) < UNREBUILT_WARN_EVERY_S {
+        return;
+    }
+    if UNREBUILT_LAST_WARN_S
+        .compare_exchange(last, now_s, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+
+    // NOTE: `Value::as_str` cannot be named inside `warn!` — the macro brings
+    // `tracing::Value` into scope and it wins the path. Use closures.
+    let program = ix.get("program").and_then(|v| v.as_str()).unwrap_or("?");
+    let parsed_type = ix
+        .get("parsed")
+        .and_then(|p| p.get("type"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    tracing::warn!(
+        program,
+        parsed_type,
+        total,
+        "jsonParsed instruction data could not be rebuilt - ix_labels are losing          structural markers for as long as this continues",
+    );
+}
+
+/// Instructions this process has failed to rebuild. Exposed so a test can assert
+/// the alarm fires without depending on the log sink.
+pub fn unrebuilt_parsed_ix_count() -> u64 {
+    UNREBUILT_PARSED_IX.load(Ordering::Relaxed)
 }
 
 
@@ -1087,6 +1157,38 @@ mod tests {
         // Still converts — the caller decides whether to drop it.
         let u = json_tx_to_protobuf(&f).unwrap();
         assert!(u.transaction.unwrap().meta.unwrap().err.is_some());
+    }
+
+    /// A parsed instruction the rebuild cannot cover keeps EMPTY data — that is
+    /// the pre-existing, deliberate behaviour. What must NOT be silent is that it
+    /// happened: on 2026-08-25 four hours of it zeroed every machinery marker on
+    /// the tape and nothing said so.
+    #[test]
+    fn an_unrebuildable_parsed_instruction_raises_the_alarm() {
+        let before = unrebuilt_parsed_ix_count();
+
+        let mut f = parsed_frame();
+        // A parsed type `token_data` does not cover: the node consumed the bytes
+        // and we cannot put them back.
+        f["transaction"]["transaction"]["message"]["instructions"][1]["parsed"] =
+            json!({"type": "someUncoveredIx", "info": {"source": key(1)}});
+
+        let u = json_tx_to_protobuf(&f).unwrap();
+        let m = u
+            .transaction
+            .as_ref()
+            .unwrap()
+            .transaction
+            .as_ref()
+            .unwrap()
+            .message
+            .as_ref()
+            .unwrap();
+        assert!(m.instructions[1].data.is_empty(), "unrebuilt data stays empty");
+        assert!(
+            unrebuilt_parsed_ix_count() > before,
+            "the unrebuilt-instruction counter must move",
+        );
     }
 
     #[test]

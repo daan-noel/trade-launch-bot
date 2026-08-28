@@ -4,7 +4,7 @@ use borsh::BorshDeserialize;
 
 use crate::protocol::Protocol;
 
-use super::program_registry::{program_friendly_name, program_instruction_name};
+use super::program_registry::{program_friendly_name, program_instruction_label, MEMO_PROGRAM_ID};
 
 use super::trade::DecodedTradeEvent;
 
@@ -36,7 +36,7 @@ pub(super) fn classify_pump_ix(
         || bytes.starts_with(&d.buy_exact_quote_in_v2)
     {
         InstructionKind::Buy
-    } else if bytes.starts_with(&d.sell) {
+    } else if bytes.starts_with(&d.sell) || bytes.starts_with(&d.sell_v2) {
         InstructionKind::Sell
     } else if bytes.starts_with(&d.create_ix) || bytes.starts_with(&d.create_v2_ix) {
         InstructionKind::Create
@@ -110,9 +110,6 @@ pub(super) fn label_instruction(
     data_bytes: Option<&[u8]>,
     p: &Protocol,
 ) -> String {
-    let d = &p.discriminators;
-    let pump_id = &p.programs.pump_fun.base58;
-    let swap_id = &p.programs.pump_swap.base58;
     let cb_id = &p.programs.compute_budget.base58;
     let sys_id = &p.programs.system.base58;
     let tok_id = &p.programs.token.base58;
@@ -133,44 +130,6 @@ pub(super) fn label_instruction(
             return format!("Compute Budget: {}", capitalize_first(t));
         }
         return "Compute Budget: Unknown".to_owned();
-    }
-
-    if program_id == pump_id.as_str() {
-        if let Some(b) = data_bytes.filter(|b| b.len() >= 8) {
-            let disc = &b[..8];
-            if disc == d.buy { return "Pump.Fun: Buy".to_owned(); }
-            if disc == d.buy_exact_sol_in { return "Pump.Fun: BuyExactSolIn".to_owned(); }
-            if disc == d.buy_exact_quote_in { return "Pump.Fun: BuyExactQuoteIn".to_owned(); }
-            if disc == d.buy_v2 { return "Pump.Fun: BuyV2".to_owned(); }
-            if disc == d.buy_exact_quote_in_v2 { return "Pump.Fun: BuyExactQuoteInV2".to_owned(); }
-            if disc == d.sell { return "Pump.Fun: Sell".to_owned(); }
-            if disc == d.create_ix { return "Pump.Fun: Create".to_owned(); }
-            if disc == d.create_v2_ix { return "Pump.Fun: Create_v2".to_owned(); }
-            if disc == d.migrate_ix { return "Pump.Fun: Migrate".to_owned(); }
-            if disc == d.migrate_v2_ix { return "Pump.Fun: Migrate_v2".to_owned(); }
-            if disc == d.initialize { return "Pump.Fun: Initialize".to_owned(); }
-            if disc == d.set_params { return "Pump.Fun: SetParams".to_owned(); }
-            if disc == d.withdraw { return "Pump.Fun: Withdraw".to_owned(); }
-            if disc == d.extend_account { return "Pump.Fun: ExtendAccount".to_owned(); }
-            if disc == d.collect_creator_fee { return "Pump.Fun: CollectCreatorFee".to_owned(); }
-        }
-        return "Pump.Fun: Unknown".to_owned();
-    }
-
-    if program_id == swap_id.as_str() {
-        if let Some(b) = data_bytes.filter(|b| b.len() >= 8) {
-            let disc = &b[..8];
-            if disc == d.buy { return "PumpSwap: Buy".to_owned(); }
-            if disc == d.sell { return "PumpSwap: Sell".to_owned(); }
-            if disc == d.pump_swap_create_pool { return "PumpSwap: CreatePool".to_owned(); }
-            if disc == d.pump_swap_deposit { return "PumpSwap: Deposit".to_owned(); }
-            if disc == d.withdraw { return "PumpSwap: Withdraw".to_owned(); }
-            if disc == d.initialize { return "PumpSwap: Initialize".to_owned(); }
-            if disc == d.pump_swap_disable { return "PumpSwap: Disable".to_owned(); }
-            if disc == d.pump_swap_update_admin { return "PumpSwap: UpdateAdmin".to_owned(); }
-            if disc == d.pump_swap_update_fee_config { return "PumpSwap: UpdateFeeConfig".to_owned(); }
-        }
-        return "PumpSwap: Unknown".to_owned();
     }
 
     if program_id == sys_id.as_str() {
@@ -195,20 +154,36 @@ pub(super) fn label_instruction(
         return label_from_parsed_or_unknown("Associated Token", parsed_type);
     }
 
-    if let Some(name) = program_friendly_name(program_id) {
-        // Name the instruction within known open (Anchor) programs
-        // (`Jupiter Aggregator V6: Route`); unknown/closed ones stay `: Unknown`.
-        let ix = program_instruction_name(program_id, data_bytes).unwrap_or("Unknown");
-        return format!("{name}: {ix}");
+    if program_id == MEMO_PROGRAM_ID {
+        // A memo's instruction data IS its text, and that text is deliberately
+        // NOT put in the label: memo payloads are per-transaction unique, so a
+        // text label would make `ix_hash` unique per trade and dissolve every
+        // fingerprint grouping built on it. The memo's PRESENCE is the signal
+        // (it is a `m_flow_ix` marker); its content belongs to `decode-harvest`,
+        // which reports the frequent payloads without persisting them per row.
+        return match data_bytes {
+            Some(b) if !b.is_empty() => "Memo Program: Memo".to_owned(),
+            _ => "Memo Program: Unknown".to_owned(),
+        };
     }
 
-    // Carry the FULL program id (not a truncated suffix) so unknown programs are
-    // self-identifying in the persisted `trades.ix_labels` — that column is the
-    // only durable record of what ran (this deployment does not persist raw_txs),
-    // and the `unknown-programs` harvest ranks these to grow `program_registry`.
-    // Label arrays stay low-cardinality (ids repeat), so columnar compression is
-    // unaffected.
-    format!("Unknown ({program_id})")
+    // Name the instruction where the registry can prove a name, else carry its
+    // stable key (`ix#…`) so two different instructions of one program stay two
+    // different labels. `Unknown` survives only when the feed delivered no data.
+    let ix = program_instruction_label(program_id, data_bytes);
+
+    match program_friendly_name(program_id) {
+        Some(name) => format!("{name}: {ix}"),
+        // Carry the FULL program id (not a truncated suffix) so unknown programs
+        // are self-identifying in the persisted `trades.ix_labels` — that column
+        // is the only durable record of what ran (this deployment does not
+        // persist raw_txs), and `unknown-programs` ranks these to grow the
+        // registry. The instruction half is still named where we can name it:
+        // knowing a program did `SellBondingCurvePercentage` does not require
+        // knowing who owns it. Label arrays stay low-cardinality (ids repeat),
+        // so columnar compression is unaffected.
+        None => format!("Unknown ({program_id}): {ix}"),
+    }
 }
 
 fn label_from_parsed_or_unknown(friendly: &str, parsed_type: Option<&str>) -> String {
@@ -262,5 +237,131 @@ fn capitalize_first(s: &str) -> String {
     match chars.next() {
         None => String::new(),
         Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::decode::program_registry::MEMO_PROGRAM_ID;
+
+    fn disc(name: &str) -> [u8; 8] {
+        let d = solana_sdk::hash::hash(format!("global:{name}").as_bytes());
+        let mut out = [0u8; 8];
+        out.copy_from_slice(&d.to_bytes()[..8]);
+        out
+    }
+
+    #[test]
+    fn a_label_names_the_program_and_the_instruction_independently() {
+        let p = Protocol::pump_fun();
+        // Our own venue, through the same computed table as everyone else.
+        assert_eq!(
+            label_instruction(&p.programs.pump_fun.base58, None, Some(&disc("sell_v2")), &p),
+            "Pump.Fun: SellV2",
+        );
+        // A named router.
+        assert_eq!(
+            label_instruction(
+                "term9YPb9mzAsABaqN71A4xdbxHmpBNZavpBiQKZzN3",
+                None,
+                Some(&disc("route_open")),
+                &p,
+            ),
+            "Terminal: RouteOpen",
+        );
+        // An UNNAMED program whose instruction we can still name — the whole
+        // point of resolving the two halves separately.
+        assert_eq!(
+            label_instruction(
+                "6Vo3245eszAb5wuqEMw8mGdbfRUdKbHhDHP5LcaGuTAB",
+                None,
+                Some(&disc("pump_swap_v3")),
+                &p,
+            ),
+            "Unknown (6Vo3245eszAb5wuqEMw8mGdbfRUdKbHhDHP5LcaGuTAB): PumpSwapV3",
+        );
+    }
+
+    /// `forge/launcher/src/service.rs` writes `"Pump.Fun: Create_v2"` and
+    /// `"Pump.Fun: Create"` as literals when it stamps a launch it made itself.
+    /// The two products must agree on the spelling or a forge-launched token
+    /// stops matching hunter's creation fingerprints — this is the guard on the
+    /// copy that cannot import this table.
+    #[test]
+    fn create_labels_match_the_strings_forge_writes() {
+        let p = Protocol::pump_fun();
+        let pump = &p.programs.pump_fun.base58;
+        assert_eq!(
+            label_instruction(pump, None, Some(&disc("create_v2")), &p),
+            "Pump.Fun: Create_v2",
+        );
+        assert_eq!(
+            label_instruction(pump, None, Some(&disc("create")), &p),
+            "Pump.Fun: Create",
+        );
+    }
+
+    #[test]
+    fn an_unnameable_instruction_keeps_a_stable_identity() {
+        let p = Protocol::pump_fun();
+        // Axiom logs no instruction names; its two dispatch tags must still be
+        // two different labels, or its buys and sells collapse into one string.
+        let buyish = [0x00, 0xc0, 0x19, 0x81, 0x1d, 0, 0, 0, 0, 0];
+        let sellish = [0x01, 0xc0, 0x19, 0x81, 0x1d, 0, 0, 0, 0, 0];
+        assert_eq!(
+            label_instruction("FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9", None, Some(&buyish), &p),
+            "Axiom Trade: ix#00",
+        );
+        assert_ne!(
+            label_instruction("FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9", None, Some(&sellish), &p),
+            label_instruction("FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9", None, Some(&buyish), &p),
+        );
+        // The same payload read eight bytes wide would fork on the amount.
+        let other_amount = [0x00, 0x2d, 0x31, 0x01, 0, 0, 0, 0, 0, 0];
+        assert_eq!(
+            label_instruction("FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9", None, Some(&other_amount), &p),
+            "Axiom Trade: ix#00",
+        );
+    }
+
+    #[test]
+    fn unknown_means_the_feed_lost_the_data_and_nothing_else() {
+        let p = Protocol::pump_fun();
+        // This is the signal the 2026-08-25 blackout produced for four hours; it
+        // must stay distinguishable from "we cannot name this instruction".
+        assert_eq!(
+            label_instruction(&p.programs.system.base58, None, None, &p),
+            "System Program: Unknown",
+        );
+        assert_eq!(
+            label_instruction("term9YPb9mzAsABaqN71A4xdbxHmpBNZavpBiQKZzN3", None, None, &p),
+            "Terminal: Unknown",
+        );
+    }
+
+    #[test]
+    fn a_memo_is_named_but_its_text_never_reaches_the_label() {
+        let p = Protocol::pump_fun();
+        // Two different memos must produce the SAME label: memo payloads are
+        // per-transaction unique, and `ix_hash` is built from these strings.
+        let a = label_instruction(MEMO_PROGRAM_ID, None, Some(b"ref:abc123"), &p);
+        let b = label_instruction(MEMO_PROGRAM_ID, None, Some(b"totally different"), &p);
+        assert_eq!(a, "Memo Program: Memo");
+        assert_eq!(a, b);
+        assert_eq!(label_instruction(MEMO_PROGRAM_ID, None, None, &p), "Memo Program: Unknown");
+    }
+
+    #[test]
+    fn sell_v2_classifies_as_a_sell() {
+        let p = Protocol::pump_fun();
+        assert_eq!(
+            classify_pump_ix(true, Some(&disc("sell_v2")), &p),
+            Some(InstructionKind::Sell),
+        );
+        assert_eq!(
+            determine_instruction_type(&[InstructionKind::Sell], &[]),
+            "Sell",
+        );
     }
 }

@@ -3,7 +3,7 @@
 //! deploy HTTP surface (core routes + deploy routes). Mirrors the old
 //! `backend/src/main.rs` minus all sweep/backtest/local-only wiring.
 
-use live::{api, ingest, seed, services, state, strategies, trader};
+use live::{api, diagnostics, ingest, seed, services, state, strategies, trader};
 
 use trading_core::{config, models};
 use config::constants;
@@ -942,99 +942,6 @@ fn print_sim_outcome(o: &pump_trader::SimOutcome) {
     }
 }
 
-/// `unknown-programs [--days N] [--top N]` — offline diagnostic.
-///
-/// Ranks the program IDs the labeler still can't name — the ones that land as
-/// `Unknown (<program id>)` in the persisted `trades.ix_labels` — by how often
-/// they appear, and prints each with a Solscan link. `trades.ix_labels` is the
-/// source (raw_txs is not persisted in this deployment), so this reflects real
-/// labelled traffic. Look the top offenders up once and add the good ones to
-/// `shared/ingest/pumpfun/src/decode/program_registry.rs`.
-///
-/// NOTE: full program IDs only appear for trades labelled *after* the full-id
-/// labeler ships; rows written before then still carry the old `Unknown (...suffix)`
-/// form (grouped separately under "legacy 8-char suffixes").
-///
-///   --days N   look back N days over trades (default 3)
-///   --top N    print the top N programs (default 40)
-async fn run_unknown_programs(
-    settings: &config::Settings,
-    args: Vec<String>,
-) -> anyhow::Result<()> {
-    let arg_val = |flag: &str| -> Option<String> {
-        args.iter()
-            .position(|a| a == flag)
-            .and_then(|i| args.get(i + 1).cloned())
-    };
-    let days: i32 = arg_val("--days").and_then(|s| s.parse().ok()).unwrap_or(3);
-    let top: i64 = arg_val("--top").and_then(|s| s.parse().ok()).unwrap_or(40);
-
-    let pools = trading_core::storage::postgres::connect(settings).await?;
-    info!(days, top, "unknown-programs: aggregating trades.ix_labels");
-
-    // Unnest the JSONB label arrays, keep only the `Unknown (...)` labels, group.
-    // The full-id form (`Unknown (<44-char id>)`) and the legacy suffix form
-    // (`Unknown (...abcd1234)`) are separated by length so the actionable full IDs
-    // aren't buried among un-lookup-able suffixes.
-    let rows: Vec<(String, i64)> = sqlx::query_as::<_, (String, i64)>(
-        "SELECT label, count(*) AS n \
-         FROM trades t, LATERAL jsonb_array_elements_text(t.ix_labels) AS label \
-         WHERE t.ix_labels IS NOT NULL \
-           AND t.block_time >= now() - make_interval(days => $1) \
-           AND label LIKE 'Unknown (%' \
-         GROUP BY label \
-         ORDER BY n DESC \
-         LIMIT $2",
-    )
-    .bind(days)
-    .bind(top)
-    .fetch_all(&pools.api)
-    .await?;
-
-    // Split full IDs from legacy suffixes and strip the `Unknown ( … )` wrapper.
-    let unwrap = |label: &str| -> String {
-        label
-            .strip_prefix("Unknown (")
-            .and_then(|s| s.strip_suffix(')'))
-            .unwrap_or(label)
-            .to_string()
-    };
-    let (full, legacy): (Vec<_>, Vec<_>) = rows
-        .into_iter()
-        .map(|(label, n)| (unwrap(&label), n))
-        .partition(|(id, _)| !id.starts_with("..."));
-
-    println!();
-    if full.is_empty() && legacy.is_empty() {
-        println!("No `Unknown (...)` labels in the last {days} day(s) — every program is named.");
-        return Ok(());
-    }
-
-    if full.is_empty() {
-        println!(
-            "No full-id unknowns yet (only legacy suffixes below) — deploy the full-id\n\
-             labeler and let new trades flow, then re-run to get lookup-able program IDs.\n"
-        );
-    } else {
-        println!("Unnamed programs (full id — add the good ones to program_registry.rs):\n");
-        println!("{:>10}  {:<44}  solscan", "count", "program_id");
-        for (id, n) in &full {
-            println!("{n:>10}  {id:<44}  https://solscan.io/account/{id}");
-        }
-    }
-
-    if !legacy.is_empty() {
-        println!("\nLegacy 8-char suffixes (pre-full-id rows — not directly lookup-able):");
-        for (suffix, n) in &legacy {
-            println!("{n:>10}  {suffix}");
-        }
-    }
-    println!(
-        "\nVerify each on Solscan before adding — a wrong label is worse than Unknown."
-    );
-    Ok(())
-}
-
 /// Build the runtime, then run [`run`].
 ///
 /// Was `#[tokio::main(worker_threads = 4)]` — a hardcoded 4 on the **2-vCPU**
@@ -1126,13 +1033,26 @@ async fn run() -> anyhow::Result<()> {
         .context("Failed to load trader fee/tip tuning")?;
     fee_tuning.clone().install();
 
-    // `unknown-programs` — offline diagnostic. Scans stored `raw_txs` and ranks the
-    // top-level program IDs the labeler still can't name (they render as
-    // `Unknown (...)`), so the highest-impact ones can be added to the ingest
-    // `program_registry`. DB-only: needs no trading keys / Helius endpoints, so it
-    // runs before those are required. Exits when done.
-    if std::env::args().nth(1).as_deref() == Some("unknown-programs") {
-        return run_unknown_programs(&settings, std::env::args().skip(2).collect()).await;
+    // Offline decoder diagnostics (see `live::diagnostics`). `unknown-programs`
+    // ranks the program IDs the labeler cannot name; `decode-harvest` reads those
+    // programs off chain and works out what their instructions are called. Both
+    // run before trading keys are required, and exit when done.
+    match std::env::args().nth(1).as_deref() {
+        Some("unknown-programs") => {
+            return diagnostics::run_unknown_programs(
+                &settings,
+                std::env::args().skip(2).collect(),
+            )
+            .await;
+        }
+        Some("decode-harvest") => {
+            return diagnostics::run_decode_harvest(
+                &settings,
+                std::env::args().skip(2).collect(),
+            )
+            .await;
+        }
+        _ => {}
     }
 
     settings

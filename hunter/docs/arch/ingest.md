@@ -175,6 +175,7 @@ live is gone; the host persists it into `tokens.meta` — see
 | `decode/protobuf.rs` | `decode_protobuf` (self-classify), `decode_relevant_pb` (hot path), `decode_amm_protobuf` (backfill); `LazyKeys`. **Curve TradeEvents: read "Program data:" logs first, but the validator truncates logs past a byte limit, so a multi-buy bundle can lose trailing legs — when logs are empty OR carry "Log truncated", re-decode from the complete inner-instruction self-CPI events and take the larger set. AMM path is still log-only (latent same risk).** |
 | `decode/trade.rs` | Borsh `RawTradeEvent`, trade helpers |
 | `decode/instructions.rs` | `InstructionKind`, `label_instruction` (per-ix human label) |
+| `decode/program_registry.rs` | program names, `ANCHOR_IX`/`EXPLICIT_IX`, `IxKey` widths |
 | `decode/program_registry.rs` | `program_friendly_name` — program-id → name table (SSOT for naming), backed by a `OnceLock<HashMap>`. Grow via the `unknown-programs` harvest |
 | `decode/create.rs` | `decode_create_events_from_logs` |
 | `raw_tx.rs` (ingest-core) | `encode_payload` (protobuf wire bytes), `build_raw_tx_event` — **`raw-tx` feature** |
@@ -225,17 +226,59 @@ Pool→mint index (`PoolIndex`) is shared: the decode task auto-registers pools 
 
 Codegen: committed prost/tonic bindings in `generated/`; `.proto` sources in `proto/`. Regen only when `.proto` changes.
 
-**Instruction labeling (`ix_labels`, one string per top-level ix).** `label_instruction` names each ix by a ladder: known program + known discriminator → `"Pump.Fun: Buy"`; known program, unknown disc → `"Pump.Fun: Unknown"`; program in the `program_registry` table → its instruction is decoded too when the program is a covered open (Anchor) one (`"Jupiter Aggregator V6: Route"`), else `"Axiom Trade: Unknown"`; nothing matches → `"Unknown (<full program id>)"`. The unknown fallback carries the **full** program id (not a truncated suffix) so unknowns are self-identifying in the persisted `trades.ix_labels` — the durable label record, since **this deployment does not persist `raw_txs`** (migration 0002 promoted `ix_labels` onto `trades` for exactly this reason). Only *top-level* instructions are labeled (inner CPIs are used for trade recovery, not labels).
+**Instruction labeling (`ix_labels`, one string per top-level ix).** Every label is
+`"<program>: <instruction>"`, and each half is resolved independently — knowing a
+program did `SellBondingCurvePercentage` does not require knowing who owns it.
+The program half comes from `program_registry::REGISTRY`, falling back to
+`"Unknown (<full program id>)"`. The instruction half comes from
+`program_instruction_label`, which returns a **name** when the registry can prove
+one, otherwise the instruction's **stable key** (`ix#af051981a0d8389d`,
+`ix#01`), and only says `Unknown` when the feed delivered no instruction data at
+all. The unknown-program fallback carries the **full** program id (not a
+truncated suffix) so unknowns are self-identifying in the persisted
+`trades.ix_labels` — the durable label record, since **this deployment does not
+persist `raw_txs`** (migration 0002 promoted `ix_labels` onto `trades` for
+exactly this reason). Only *top-level* instructions are labeled (inner CPIs are
+used for trade recovery, not labels).
 
-*Instruction-level decode (Phase 4)* lives in `program_registry.rs` (`ANCHOR_IX` table + `program_instruction_name`). Anchor discriminators are **computed** from the instruction name (`sha256("global:<snake_name>")[..8]` via `solana_sdk::hash`), never hard-coded — so a wrong name is fail-safe (no match → `: Unknown`, never a wrong label). The mechanism is pinned against pump.fun's known discriminators in a unit test. Non-Anchor programs (Raydium AMM v4's 1-byte tag) and closed bots are intentionally left at `: Unknown`.
+A key is not a name and does not pretend to be one; it is an identity. Before it
+existed, every Axiom instruction collapsed to one string and a router's buy was
+indistinguishable from its sell. The key width per program is a **cardinality**
+decision, held in `IxKey`: eight bytes for a dispatch value that carries no
+arguments, one byte for a tag followed by a `u64` amount. Reading eight bytes off
+a tag program would fork one instruction into thousands of labels, which would
+make `ix_hash` unique per trade and dissolve every fingerprint grouping built on
+it.
 
-To shrink the `Unknown (...)` tail, run the harvest and add the top program IDs to `program_registry.rs`:
+Memo is the one program whose data is deliberately *not* read into the label:
+a memo's bytes are its text, and that text is per-transaction unique often enough
+to do exactly that damage. Memos label as `"Memo Program: Memo"`; the payloads
+are reported in aggregate by `decode-harvest` instead.
+
+*Where names come from* is documented in
+[plans/ingest/instruction-decoding.md](../plans/ingest/instruction-decoding.md).
+Two tables in `program_registry.rs`: `ANCHOR_IX` stores the instruction NAME and
+**computes** the discriminator (`sha256("global:<snake_name>")[..8]` via
+`solana_sdk::hash`), so a wrong name is fail-safe — it matches nothing and the
+label degrades to a key, never to a wrong name. `EXPLICIT_IX` holds the few
+programs that log a name but do not hash it that way; there the key bytes are
+transcribed, so that table stays short and reviewed.
+
+Two commands close the loop, neither on the trading path:
 
 ```powershell
 cargo run -p hunter-live -- unknown-programs [--days N] [--top N]
+cargo run -p hunter-live -- decode-harvest   [--days N] [--top N] [--txs N] [--program ID]
 ```
 
-It aggregates `trades.ix_labels`, ranks the still-`Unknown (<id>)` programs by frequency, and prints each with a Solscan link (full-id and legacy-suffix rows shown separately). DB-only (no keys/Helius). Prefer *no* registry entry over a guessed one — a wrong label is worse than `Unknown`.
+`unknown-programs` aggregates `trades.ix_labels` and ranks the programs the
+labeler cannot name (DB-only, no keys/Helius). `decode-harvest` takes those
+programs back to the chain: it pairs each `Program log: Instruction: <Name>` line
+with the discriminator of the instruction that produced it and **verifies** the
+pair by recomputing the hash, then prints paste-ready rows. One
+`getTransactionsForAddress` per program, not one per transaction. A pair that
+does not verify is reported, never emitted — prefer *no* entry over a guessed
+one, because a wrong label is worse than a key.
 
 ## Key rules
 

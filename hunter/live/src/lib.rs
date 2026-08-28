@@ -6,6 +6,8 @@
 
 pub mod api;
 pub mod config;
+/// Offline decoder diagnostics (`unknown-programs`, `decode-harvest`).
+pub mod diagnostics;
 pub mod ingest;
 pub mod protocol_ssot;
 pub mod seed;

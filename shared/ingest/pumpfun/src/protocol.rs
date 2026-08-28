@@ -48,6 +48,10 @@ pub struct Discriminators {
     // ── bonding-curve instructions ───────────────────────────────────────────
     pub buy: [u8; 8],
     pub sell: [u8; 8],
+    /// `sell_v2` — the second-generation sell. Shipped after `sell` and carries
+    /// real volume: without it a sell renders as an unnamed instruction and
+    /// `classify_pump_ix` does not see a Sell at all.
+    pub sell_v2: [u8; 8],
     pub buy_exact_sol_in: [u8; 8],
     pub buy_exact_quote_in: [u8; 8],
     pub buy_v2: [u8; 8],
@@ -130,6 +134,7 @@ impl Protocol {
             discriminators: Discriminators {
                 buy: [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea],
                 sell: [0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad],
+                sell_v2: [0x5d, 0xf6, 0x82, 0x3c, 0xe7, 0xe9, 0x40, 0xb2],
                 buy_exact_sol_in: [0x38, 0xfc, 0x74, 0x08, 0x9e, 0xdf, 0xcd, 0x5f],
                 buy_exact_quote_in: [0xc6, 0x2e, 0x15, 0x52, 0xb4, 0xd9, 0xe8, 0x70],
                 buy_v2: [0xb8, 0x17, 0xee, 0x61, 0x67, 0xc5, 0xd3, 0x3d],
