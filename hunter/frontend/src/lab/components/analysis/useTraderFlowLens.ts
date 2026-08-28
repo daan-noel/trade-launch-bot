@@ -81,10 +81,10 @@ export interface TraderFlowLens {
 /**
  * The Trader Analysis flow lens: which analysis-owned pattern set the page's
  * charts classify vol/non-vol with, how they classify, and the write-through a
- * Vol-badge click performs.
+ * Tagged-badge click performs.
  *
  * Everything persists to `ix_pattern_sets` immediately — same no-staging rule the
- * fingerprint Vol badge follows, for the same reason: two copies of "what counts
+ * fingerprint Tagged badge follows, for the same reason: two copies of "what counts
  * as volume" on screen at once, both looking authoritative. The difference is
  * blast radius — a lens is analysis-only, so no rule changes meaning when it does.
  *

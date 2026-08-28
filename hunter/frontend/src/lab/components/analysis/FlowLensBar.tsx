@@ -33,7 +33,7 @@ const shortAddr = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
  * `ix_patterns` is empty and the vol/non-vol overlay never draws. This
  * bar supplies the same fact from `ix_pattern_sets` instead — paste the ordered
  * `ix_labels` sequences you derived for a trader, and every card's overlay plus
- * the Vol column in each candle's trades table answer against them.
+ * the Tagged column in each candle's trades table answer against them.
  *
  * Nothing here can reach a rule: a set is analysis-only, and the one path into
  * the engine is the explicit copy-to-fingerprint below.

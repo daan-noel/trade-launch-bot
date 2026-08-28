@@ -4,7 +4,7 @@ import type { IxPatternTarget } from 'hooks/useIxPatternTarget';
 
 /**
  * The strip above a chart's trades table: which fingerprint's
- * `ix_patterns` the Vol badges edit, and what a click there costs.
+ * `ix_patterns` the Tagged badges edit, and what a click there costs.
  *
  * There is no staging step. `metric_config` is not part of fingerprint identity,
  * so a write lands on the same row and every rule bound to it starts classifying
@@ -52,7 +52,7 @@ export function IxPatternBar({
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
       <Badge variant="info" size="sm">
-        Volume patterns
+        Tagged patterns
       </Badge>
       <span className="font-mono text-[11px] text-text-dim">
         {count} pattern{count === 1 ? '' : 's'}
@@ -62,7 +62,7 @@ export function IxPatternBar({
         fieldSize="sm"
         value={targetId ?? ''}
         onChange={(e) => setTargetId(e.target.value || null)}
-        title="Fingerprint the Vol badges write to"
+        title="Fingerprint the Tagged badges write to"
         className="max-w-[16rem]"
       >
         <option value="">Edit patterns of…</option>
@@ -76,7 +76,7 @@ export function IxPatternBar({
       {saving && <span className="text-[11px] text-text-dim">Saving…</span>}
       {!targetId && (
         <span className="text-[11px] text-text-dim">
-          Pick a fingerprint to make the Vol badges editable.
+          Pick a fingerprint to make the Tagged badges editable.
         </span>
       )}
       {/* A guessed target is never presented as a known one: this host had no
@@ -94,7 +94,7 @@ export function IxPatternBar({
           answer for a different row than the chart's own lines. */}
       {offHost && (
         <span className="text-[11px] text-warning">
-          Not this chart&rsquo;s fingerprint — the Vol badges follow the picked one, the chart
+          Not this chart&rsquo;s fingerprint — the Tagged badges follow the picked one, the chart
           lines do not.
         </span>
       )}

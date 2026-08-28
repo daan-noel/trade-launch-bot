@@ -133,7 +133,7 @@ server compare. Percent columns that render `×100` (Win %, Open %) use a local
   classify — fingerprint `ix_patterns` **or** just the token's creator wallet. With
   patterns the split is the engine's volume-maker vs organic; without, it degrades to
   creator + wallets they traded with vs the rest, and the toolbar tooltip says so. Only a
-  token with neither disables the toggle. The per-trade **Vol badge keeps the stricter
+  token with neither disables the toggle. The per-trade **Tagged badge keeps the stricter
   gate** (non-empty patterns) — it asserts a structural match, not a cohort.
   Resolve through `hooks/useFlowPatternKeys` — `useFlowPatternSource` /
   `useFlowPatternSourceForRule` / `useResolvedFlowPatternSource` (or
@@ -144,7 +144,7 @@ server compare. Percent columns that render `×100` (Win %, Open %) use a local
   questions — "classify with what" and "edit which row" — so pass `flowPatternKeys` and
   `flowFingerprintId` together down the whole chain (host → `TokenTradeChart` /
   `TokenChartsGrid` → `BarTradesPanel`). Dropping the id does not degrade gracefully: the
-  Vol badge's write target then has to be guessed from the pattern set, and an unconfigured
+  Tagged badge's write target then has to be guessed from the pattern set, and an unconfigured
   fingerprint's set is empty, which matches every other unconfigured row. The badge goes
   dead when several match and edits an unrelated rule's fingerprint when one does.
 - **Pointer x -> chart coordinate goes through `paneCoords`.** lightweight-charts lays the

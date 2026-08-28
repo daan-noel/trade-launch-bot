@@ -288,7 +288,7 @@ number the wash beside it disagrees with. The structure chip also reports the to
 **unlabeled** trades: a structure lens can say nothing about a row whose `instruction_labels`
 were never captured, and `0 matches` over a pile of them means "not recorded", not "unique".
 
-**A lens is not the Vol badge, deliberately.** 6b's badge writes `ix_patterns` and the
+**A lens is not the Tagged badge, deliberately.** 6b's badge writes `ix_patterns` and the
 engine acts on it; a lens writes nothing and no rule reads it. They sit one column apart on
 the same row and answer questions that differ only in wording, so the separation is the
 feature: asking *where else did this shape appear* must not change how a live rule classifies

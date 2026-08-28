@@ -17,7 +17,7 @@ import { CHART_COLORS } from 'components/token-price-chart/constants';
 export interface TokenTradeColumnsOpts {
   /**
    * `ix_patterns` keys (`JSON.stringify(labels)`) to test each row's
-   * structure against. When non-empty, prepends the Vol/Non-vol badge column.
+   * structure against. When non-empty, prepends the Tagged/Untagged badge column.
    * Omit or empty → column hidden, unless {@link onTogglePattern} is set.
    */
   flowPatternKeys?: ReadonlySet<string> | null;
@@ -38,7 +38,7 @@ export interface TokenTradeColumnsOpts {
   /**
    * Effective (contagion-aware) classification per trade id — what the chart's
    * lines actually did with the row. The badge tests structure alone, so without
-   * this a row reading "Non-vol" whose SOL sits on the vol line looks like a bug.
+   * this a row reading "Untagged" whose SOL sits on the tagged line looks like a bug.
    */
   flowReasons?: ReadonlyMap<string, FlowReason> | null;
   /**
@@ -133,7 +133,7 @@ export function isIxPattern(
 /** Stable empty set so an unconfigured column doesn't allocate per render. */
 const EMPTY_PATTERN_KEYS: ReadonlySet<string> = new Set<string>();
 
-/** Why the chart counted a row as volume when its own structure didn't. */
+/** Why the chart counted a row as tagged when its own structure didn't. */
 const CONTAGION_NOTE: Record<Exclude<FlowReason, 'structural'>, string> = {
   creator: 'via creator',
   wallet: 'via wallet',
@@ -165,15 +165,15 @@ export function tokenTradeColumns(
 
   if (showTagged) {
     leading.push({
-      key: 'is_volume_ix_pattern',
-      label: 'Vol',
+      key: 'is_tagged_ix_pattern',
+      label: 'Tagged',
       tooltip: onToggle
-        ? `Structural volume ix-pattern match. Clicking SAVES this trade’s ordered ` +
-          `instruction_labels to ${targetLabel} as a volume_ix_pattern — there is no staging ` +
+        ? `Structural tagged ix-pattern match. Clicking SAVES this trade’s ordered ` +
+          `instruction_labels to ${targetLabel} as an ix_pattern — there is no staging ` +
           `step, and every active rule bound to it classifies flow differently from the ` +
           `engine’s next rules reload on. “via creator/wallet” = the lines already count this ` +
           `row through contagion, whatever its own structure is.`
-        : 'Structural volume ix-pattern match — this trade’s ordered instruction_labels ' +
+        : 'Structural tagged ix-pattern match — this trade’s ordered instruction_labels ' +
           'exact-match a ix_patterns row (no creator/wallet contagion).',
       render: (t) => {
         const labels = t.instruction_labels;
@@ -189,7 +189,7 @@ export function tokenTradeColumns(
             size="sm"
             className={onToggle ? 'cursor-pointer' : undefined}
           >
-            {isTagged ? 'Vol' : 'Non-vol'}
+            {isTagged ? 'Tagged' : 'Untagged'}
           </Badge>
         );
         const cell = (
@@ -200,8 +200,8 @@ export function tokenTradeColumns(
                 aria-pressed={isTagged}
                 title={
                   isTagged
-                    ? `Saved as a volume_ix_pattern on ${targetLabel} — click to remove it`
-                    : `Click to save this structure as a volume_ix_pattern on ${targetLabel}`
+                    ? `Saved as an ix_pattern on ${targetLabel} — click to remove it`
+                    : `Click to save this structure as an ix_pattern on ${targetLabel}`
                 }
                 onClick={(e) => {
                   // The row itself is selectable on several hosts; an edit click
@@ -237,7 +237,7 @@ export function tokenTradeColumns(
         const structural = isIxPattern(t.instruction_labels, keys);
         const reason = reasons?.get(t.id) ?? null;
         const note = reason && reason !== 'structural' ? CONTAGION_NOTE[reason] : '';
-        return `${structural ? 'vol' : 'non-vol'}${note ? ` ${note}` : ''}`;
+        return `${structural ? 'tagged' : 'untagged'}${note ? ` ${note}` : ''}`;
       },
     });
   }
@@ -249,7 +249,7 @@ export function tokenTradeColumns(
       'Ordered instruction-label structure of this trade — the flow-split matching key. ' +
       (onLensStructure
         ? 'Click the target to wash every candle this exact ordered structure appeared in. ' +
-          'View-only: unlike the Vol badge, it saves nothing and no rule reads it.'
+          'View-only: unlike the Tagged badge, it saves nothing and no rule reads it.'
         : ''),
     render: (t) => {
       const labels = t.instruction_labels ?? [];

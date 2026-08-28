@@ -34,7 +34,7 @@ export function MintBarTradesPanel({
   tableId?: string;
   eventMarkers?: ChartEventMarker[] | null;
   flowPatternKeys?: ReadonlySet<string> | null;
-  /** Fingerprint the keys came from — the Vol badge's write target
+  /** Fingerprint the keys came from — the Tagged badge's write target
    *  (see {@link BarTradesPanel}). */
   flowFingerprintId?: string | null;
   /** A stored run's frozen patterns — display only (see {@link BarTradesPanel}). */

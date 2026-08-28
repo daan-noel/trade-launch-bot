@@ -1104,7 +1104,7 @@ function ComboTokenResults({
         flowPatternKeys={flowPatternKeys}
         // A finished run's numbers were computed under the run's OWN stored
         // ix_patterns, which are a snapshot rather than a live fingerprint
-        // row — so they are readable here but not editable, or a Vol-badge click
+        // row — so they are readable here but not editable, or a Tagged-badge click
         // would silently retarget some unrelated fingerprint.
         flowReadOnly
         useRowOverlay={comboRowOverlay}

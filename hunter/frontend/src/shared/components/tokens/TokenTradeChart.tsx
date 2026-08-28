@@ -73,10 +73,10 @@ interface TokenTradeChartProps {
   /**
    * Fingerprint `ix_patterns` keys for the vol/non-vol overlay + Vol
    * badge. Omit/empty still draws the overlay (creator-vs-rest split); it only
-   * hides the per-trade Vol badge, which is a structural match by definition.
+   * hides the per-trade Tagged badge, which is a structural match by definition.
    */
   flowPatternKeys?: ReadonlySet<string> | null;
-  /** Fingerprint {@link flowPatternKeys} came from — the trades table's Vol-badge
+  /** Fingerprint {@link flowPatternKeys} came from — the trades table's Tagged-badge
    *  write target (see `BarTradesPanel`). Pass it wherever the host knows one. */
   flowFingerprintId?: string | null;
   /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */

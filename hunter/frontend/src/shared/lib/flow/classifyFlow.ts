@@ -64,7 +64,7 @@ export interface FlowClassifyOptions {
 }
 
 /**
- * WHY a trade counts as volume-side. The per-trade Vol badge tests structure
+ * WHY a trade counts as volume-side. The per-trade Tagged badge tests structure
  * alone, but the chart's lines apply contagion on top — so a row can read
  * "Non-vol" while its SOL sits on the vol line. Naming the mechanism is the only
  * way a pattern edit and the line it moves stay legible to each other.

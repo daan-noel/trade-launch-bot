@@ -380,7 +380,7 @@ export interface TokenPriceChartProps {
    * vol/non-vol overlay. Omit/empty is NOT a blank chart — the structural test
    * simply never fires and the split degrades to creator-vs-rest, which the
    * toolbar tooltip names. Only a token with neither patterns nor a creator
-   * wallet disables the toggle. (The trades-table Vol badge keeps the stricter
+   * wallet disables the toggle. (The trades-table Tagged badge keeps the stricter
    * gate: it marks a per-trade STRUCTURAL match, which needs patterns.)
    */
   flowPatternKeys?: ReadonlySet<string> | null;

@@ -81,7 +81,7 @@ const waitingRowKey = (r: LiveArmedRow) => r.key;
 /** Each chart card classifies vol/non-vol against ITS OWN rule's
  *  `ix_patterns` — both cockpit lanes mix rules, so one grid-wide set
  *  would misclassify every card that isn't from that rule. Resolves the SOURCE so
- *  a card's trades table also knows which fingerprint a Vol-badge edit writes to.
+ *  a card's trades table also knows which fingerprint a Tagged-badge edit writes to.
  *  Called once per card as a hook (see `FlowPatternSourceHook`); hoisted so the
  *  grid doesn't remount. */
 const useOpenRowFlowPatternSource = (r: LiveOpenRow) => useFlowPatternSourceForRule(r.ruleId);

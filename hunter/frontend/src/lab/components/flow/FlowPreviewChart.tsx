@@ -1165,7 +1165,7 @@ export function FlowPreviewChart({
   const readUntagged = flowCrosshair?.untagged ?? alignedLines.untagged.at(-1)?.value ?? null;
   const moreActive = showMore || showAthLine || showMigrationLine || rangeSelectMode;
 
-  // Shared columns already include ix_labels (+ optional Vol badge). Flow
+  // Shared columns already include ix_labels (+ optional Tagged badge). Flow
   // discovery prepends only the interactive draft-pattern checkbox — never a
   // second ix column. Pass no flowPatternKeys so the read-only badge stays
   // hidden here (checkbox is the draft-edit control).

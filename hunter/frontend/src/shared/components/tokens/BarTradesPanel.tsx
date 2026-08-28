@@ -53,11 +53,11 @@ export interface BarTradesPanelProps {
    *  same signal the chart's oversized gold marker carries — and counted in the
    *  heading, so the wallet under study is findable without reading addresses. */
   highlightWallet?: string | null;
-  /** The host's saved `ix_patterns` keys — adds the Vol/Non-vol column.
+  /** The host's saved `ix_patterns` keys — adds the Tagged/Untagged column.
    *  This is the set the chart lines, the metric panes and the engine all use, so
    *  the badge and the overlay can never report different classifications. */
   flowPatternKeys?: ReadonlySet<string> | null;
-  /** The fingerprint {@link flowPatternKeys} came from — the row a Vol-badge edit
+  /** The fingerprint {@link flowPatternKeys} came from — the row a Tagged-badge edit
    *  writes to. Pass it wherever the host knows one (`hooks/useFlowPatternKeys`
    *  resolves both together): without it the panel can only guess its write
    *  target from the pattern set, and an empty set matches every unconfigured
@@ -423,7 +423,7 @@ Every candle carrying this EXACT ordered structure is ` +
 }
 
 /**
- * The lens twin of {@link IxPatternBar}: what a Vol-badge click writes to
+ * The lens twin of {@link IxPatternBar}: what a Tagged-badge click writes to
  * when the page owns the pattern set instead of a fingerprint. No picker — the
  * set is chosen on the page, above every chart — and no active-rule warning,
  * because a lens is analysis-only and no rule can be bound to it.
@@ -451,7 +451,7 @@ function FlowLensStrip({
         {patternCount}/{total} pattern{total === 1 ? '' : 's'}
       </span>
       <span className="text-[11px] text-text-dim">
-        Vol badges add/remove here
+        Tagged badges add/remove here
         {target.activeGroup ? ` (group "${target.activeGroup}")` : ''} — analysis only, no
         rule reads it.
       </span>

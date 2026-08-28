@@ -115,7 +115,7 @@ interface TokenChartCardProps<R> {
    *  card. `undefined` ⇒ use the hook; `null`/array ⇒ override. */
   eventMarkersOverride?: ChartEventMarker[] | null;
   flowPatternKeys?: ReadonlySet<string> | null;
-  /** Grid-wide fingerprint for {@link flowPatternKeys} — the Vol-badge write
+  /** Grid-wide fingerprint for {@link flowPatternKeys} — the Tagged-badge write
    *  target when every card shares one (see `BarTradesPanel`). */
   flowFingerprintId?: string | null;
   /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */
@@ -266,7 +266,7 @@ export interface TokenChartsGridProps<R> {
    *  Use when one set is right for the whole grid (a rule-scoped cohort); when the
    *  rows span fingerprints, pass {@link useRowFlowPatternKeys} instead. */
   flowPatternKeys?: ReadonlySet<string> | null;
-  /** Fingerprint {@link flowPatternKeys} came from — the Vol-badge write target
+  /** Fingerprint {@link flowPatternKeys} came from — the Tagged-badge write target
    *  for every card (see `BarTradesPanel`). */
   flowFingerprintId?: string | null;
   /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */

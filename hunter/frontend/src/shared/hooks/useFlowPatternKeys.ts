@@ -11,7 +11,7 @@ import { useGetFingerprintsQuery, useGetStrategyRulesQuery } from 'store/sharedE
  * any number of fingerprints may carry the same patterns — and every unconfigured
  * one carries the same empty set, which is exactly the state authoring starts
  * from. A surface handed keys alone has to guess its write target, and both
- * outcomes are wrong: refuse (the Vol badge goes dead) or guess (the write lands
+ * outcomes are wrong: refuse (the Tagged badge goes dead) or guess (the write lands
  * on an unrelated rule's fingerprint).
  *
  * Prefer these hooks over the keys-only wrappers below wherever the surface can
@@ -39,7 +39,7 @@ export function useFlowPatternSource(
     if (!fingerprintId) return NO_FLOW_PATTERN_SOURCE;
     const fp = fingerprints.find((f) => f.id === fingerprintId);
     // The id stands even when the row carries no patterns yet — "unconfigured"
-    // is precisely the state a Vol-badge edit exists to leave.
+    // is precisely the state a Tagged-badge edit exists to leave.
     return {
       fingerprintId,
       keys: fp ? flowPatternKeysFromMetricConfig(fp.metric_config) : null,

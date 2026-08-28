@@ -13,10 +13,10 @@ import type { IxPattern } from 'lib/flow/ixPatternSets';
  * and provides it here. The KEYS still travel as props — that path already
  * exists and every card reads it. What cannot travel as props without threading
  * five component layers is the rest of the lens: the classifier options and the
- * write target a Vol badge click lands on. Those come through this context.
+ * write target a Tagged badge click lands on. Those come through this context.
  *
  * Absent (every other page) ⇒ the chart stack behaves exactly as before: engine
- * contagion on, no exclusions, Vol badges writing to a fingerprint.
+ * contagion on, no exclusions, Tagged badges writing to a fingerprint.
  */
 export interface FlowLensTarget {
   /** Set name, for the strip above the trades table. */

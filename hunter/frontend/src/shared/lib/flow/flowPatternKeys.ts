@@ -3,7 +3,7 @@ import { ixPatternsFromConfig } from 'lib/strategy/registry';
 
 /**
  * Non-empty `JSON.stringify(labels)` key set for the chart vol/non-vol overlay,
- * or `null` when unconfigured (same gate as `TokenPriceChart` / trades Vol badge).
+ * or `null` when unconfigured (same gate as `TokenPriceChart` / trades Tagged badge).
  */
 export function flowPatternKeysOf(
   patterns: readonly (readonly string[])[] | null | undefined,

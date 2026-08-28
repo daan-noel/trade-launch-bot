@@ -53,7 +53,7 @@ export function LabTokenInspect({
   /** The run's exit reason — picks the condition the timeline draws as a value line. */
   exitReason?: string | null;
   flowPatternKeys?: ReadonlySet<string> | null;
-  /** Fingerprint the keys came from — the Vol-badge write target. Like
+  /** Fingerprint the keys came from — the Tagged-badge write target. Like
    *  {@link flowPatternKeys}, falls back to `ruleOverride.fingerprintId`. */
   flowFingerprintId?: string | null;
   /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */
@@ -70,7 +70,7 @@ export function LabTokenInspect({
   const [conditionBands, setConditionBands] = useState<MetricConditionLanes | null>(null);
 
   // Resolve the SOURCE, not just the keys: the inspected run's fingerprint is the
-  // row a Vol-badge edit writes to, and every inspect host (sim, sweep promote,
+  // row a Tagged-badge edit writes to, and every inspect host (sim, sweep promote,
   // dry-run, rule analyze) already knows it — so no reader has to re-pick it.
   // Resolved even when the caller passed explicit keys: "classify with what" and
   // "edit which row" are different questions, and the run this inspect belongs to

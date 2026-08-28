@@ -32,7 +32,7 @@ export interface IxPatternTargetChoice {
 }
 
 /**
- * Which fingerprint a Vol-badge edit lands on, as a pure function of its inputs —
+ * Which fingerprint a Tagged-badge edit lands on, as a pure function of its inputs —
  * the whole precedence rule in one testable place, since this repo's tests run on
  * `node` and the hook around it needs a React tree.
  *
@@ -102,7 +102,7 @@ export interface IxPatternTarget {
 }
 
 /**
- * Which fingerprint a Vol-badge toggle edits, and the write itself.
+ * Which fingerprint a Tagged-badge toggle edits, and the write itself.
  *
  * `ix_patterns` lives on exactly one row — the fingerprint — and that row is
  * what the chart lines, the metric panes and the running engine all classify from.
@@ -209,7 +209,7 @@ export function useIxPatternTarget({
         },
       })
         .unwrap()
-        .catch((e) => setError(apiErrorMessage(e as never, 'Failed to save volume patterns')));
+        .catch((e) => setError(apiErrorMessage(e as never, 'Failed to save tagged patterns')));
     },
     [target, updateFingerprint],
   );

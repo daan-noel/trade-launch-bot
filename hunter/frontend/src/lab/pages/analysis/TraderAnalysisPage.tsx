@@ -300,7 +300,7 @@ export function TraderAnalysisPage() {
   // read) — a picker to fill the wallet input from a saved profile wallet.
   // The page-wide flow lens: an analysis-owned ix_labels pattern set standing in
   // for the fingerprint these tokens don't have, so every chart can draw its
-  // vol/non-vol split and every candle's trades table gets its Vol column.
+  // vol/non-vol split and every candle's trades table gets its Tagged column.
   // Follows the COMMITTED wallet, not the input box — the exclusion it applies
   // must match the wallet the rows on screen belong to.
   const lens = useTraderFlowLens(query?.wallet ?? null);
@@ -823,7 +823,7 @@ Not queried: a wallet cannot compare against itself, and the read takes the firs
           titleSuffix="Token inspect"
           // Same lens the grid's cards draw under. Without it the modal has no
           // fingerprint to fall back on (`ruleOverride` is null here), so its
-          // chart and Vol column classify with nothing.
+          // chart and Tagged column classify with nothing.
           flowPatternKeys={lens.keys}
           onClose={() => setInspected(null)}
         />

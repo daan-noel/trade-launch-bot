@@ -42,7 +42,7 @@ export const armRowKey = (r: StrategyArmRecord) =>
 /** Each card classifies vol/non-vol against ITS OWN rule's `ix_patterns`
  *  — the Arms table spans rules, so one grid-wide set would misclassify every
  *  card that isn't from that rule. Called once per card as a hook, and carries
- *  the fingerprint id so the card's Vol badge edits its own rule's row. */
+ *  the fingerprint id so the card's Tagged badge edits its own rule's row. */
 const useArmRowFlowPatternSource = (r: StrategyArmRecord) =>
   useFlowPatternSourceForRule(r.rule_id);
 

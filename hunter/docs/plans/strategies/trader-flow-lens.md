@@ -9,7 +9,7 @@ classification, so the set lives on the row rules are bound to.
 
 Trader Analysis studies a wallet, and the tokens it traded belong to no cohort.
 With no fingerprint there are no patterns, so the overlay never draws and the
-per-candle trades table has no Vol column — precisely on the page where the
+per-candle trades table has no Tagged column — precisely on the page where the
 question is *which structures surround this trader's entries and exits*.
 
 ## The shape
@@ -62,12 +62,12 @@ magnitudes.
 
 Keys travel the existing prop path (`TokenTable` → `TokenChartsGrid` →
 `TokenTradeChart` → `TokenPriceChart` / `BarTradesPanel`). The rest of the lens —
-classifier options and the Vol-badge write target — travels through
+classifier options and the Tagged-badge write target — travels through
 `context/FlowLensContext`, provided once by the page: threading two more props
 through five layers to serve one page is the worse trade. Absent, every chart
 behaves exactly as before.
 
-A Vol badge under a lens writes to `ix_pattern_sets`, never to a fingerprint.
+A Tagged badge under a lens writes to `ix_pattern_sets`, never to a fingerprint.
 Patterns are filed under the lens' active group, which is the single enabled
 group when narrowed to one, else ungrouped.
 

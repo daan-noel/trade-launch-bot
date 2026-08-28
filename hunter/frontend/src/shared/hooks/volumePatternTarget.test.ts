@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { resolveIxPatternTarget } from './useIxPatternTarget';
 
 /**
- * The precedence rule behind every Vol-badge write. The cases that matter are the
+ * The precedence rule behind every Tagged-badge write. The cases that matter are the
  * ones where a pattern-set match is available AND wrong — an id the host already
  * resolved has to win, or the badge either goes dead or edits someone else's row.
  */

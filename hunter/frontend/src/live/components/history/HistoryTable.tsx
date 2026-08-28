@@ -72,7 +72,7 @@ const historyChartCardExtra = (r: RulePositionRecord) => (
  *  misclassify every card that isn't from that rule. Resolved through the same
  *  hook the row's inspect modal uses, so a card and its modal always agree.
  *  Called once per card as a hook (see `FlowPatternSourceHook`). Carries the
- *  fingerprint id too, so a card's Vol badge edits its own rule's row. */
+ *  fingerprint id too, so a card's Tagged badge edits its own rule's row. */
 const useHistoryRowFlowPatternSource = (r: RulePositionRecord) =>
   useFlowPatternSourceForRule(r.rule_id);
 

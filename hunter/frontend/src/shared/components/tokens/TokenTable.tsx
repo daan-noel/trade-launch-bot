@@ -111,7 +111,7 @@ interface TokenTableCommon<R> {
    *  one set for the whole grid. Use {@link useRowChartFlowPatternSource} instead
    *  when the rows span fingerprints. */
   flowPatternKeys?: ReadonlySet<string> | null;
-  /** Fingerprint {@link flowPatternKeys} came from — the Vol-badge write target on
+  /** Fingerprint {@link flowPatternKeys} came from — the Tagged-badge write target on
    *  every card (see `BarTradesPanel`). Pass it whenever the cohort has one. */
   flowFingerprintId?: string | null;
   /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */

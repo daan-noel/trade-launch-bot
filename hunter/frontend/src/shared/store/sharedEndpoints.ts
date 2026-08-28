@@ -182,7 +182,7 @@ export const sharedApi = baseApi.injectEndpoints({
       // `{instructions:[…]}`) and `get_trades` ships the column verbatim, so the wire
       // rows do not yet satisfy the declared `string[]`. Normalizing at this one REST
       // entry point (SSE's twin is `liveTradeToTradeRecord`) makes the type true for
-      // every downstream reader — chart lines, Vol badge, pattern toggle — instead of
+      // every downstream reader — chart lines, Tagged badge, pattern toggle — instead of
       // asking each to unwrap. Skipping it is silent: an object-shaped row looks like
       // a trade with no labels, so it classifies organic and stages an empty pattern.
       transformResponse: (rows: TradeRecord[]) =>

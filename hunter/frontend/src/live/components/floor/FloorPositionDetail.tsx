@@ -71,7 +71,7 @@ export interface FloorDetailFacts {
   episodeMarkers?: ChartEventMarker[] | null;
   /** Fingerprint `ix_patterns` keys for the chart vol/non-vol overlay. */
   flowPatternKeys?: ReadonlySet<string> | null;
-  /** Fingerprint those keys came from — the trades table's Vol-badge write target
+  /** Fingerprint those keys came from — the trades table's Tagged-badge write target
    *  (see `BarTradesPanel`). Resolve it with {@link flowPatternKeys} from one
    *  `hooks/useFlowPatternKeys` source, never as a second lookup. */
   flowFingerprintId?: string | null;
