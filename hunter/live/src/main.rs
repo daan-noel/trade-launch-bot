@@ -12,7 +12,7 @@ use anyhow::Context;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use actix_cors::Cors;
 use actix_web::middleware::from_fn;
@@ -1512,21 +1512,49 @@ async fn run() -> anyhow::Result<()> {
         );
         let ds = deploy_state.clone();
         tokio::spawn(async move {
-            match rpc.get_slot().await {
-                Ok(slot) => match rpc.get_block_time(slot).await {
+            /// Slots to step back from the tip when asking for a block time.
+            ///
+            /// `getBlockTime` on the tip routinely fails with `-32004 Block not
+            /// available`: the slot exists but the node has not finished it. The
+            /// anchor only needs *a* (slot, time) pair to interpolate from, so
+            /// step back to one that is reliably complete — ~13 s of history
+            /// costs the estimate nothing (`SlotAnchor` interpolates at 400
+            /// ms/slot either way) and turns a coin-flip into a pin.
+            const TIP_MARGIN_SLOTS: u64 = 32;
+            /// A skipped slot has no block and no time, so one miss is not a
+            /// failure — step back further and ask again.
+            const ATTEMPTS: u64 = 3;
+
+            let tip = match rpc.get_slot().await {
+                Ok(slot) => slot,
+                Err(e) => {
+                    warn!("getSlot failed — replay block_time will use now(): {e}");
+                    return;
+                }
+            };
+
+            for attempt in 0..ATTEMPTS {
+                let slot = tip.saturating_sub(TIP_MARGIN_SLOTS * (attempt + 1));
+                match rpc.get_block_time(slot).await {
                     Ok(Some(unix_ts)) => {
                         use chrono::TimeZone;
                         if let Some(time) = chrono::Utc.timestamp_opt(unix_ts, 0).single() {
-                            let anchor = ingest_laserstream::slot_anchor::SlotAnchor::new(slot, time);
+                            let anchor =
+                                ingest_laserstream::slot_anchor::SlotAnchor::new(slot, time);
                             ds.set_slot_anchor(anchor).await;
-                            info!(slot, "SlotAnchor pinned for replay block_time estimation");
+                            info!(slot, tip, "SlotAnchor pinned for replay block_time estimation");
+                            return;
                         }
                     }
-                    Ok(None) => warn!("getBlockTime returned null for slot {slot} — anchor not pinned"),
-                    Err(e) => warn!("getBlockTime failed — replay block_time will use now(): {e}"),
-                },
-                Err(e) => warn!("getSlot failed — replay block_time will use now(): {e}"),
+                    // Skipped slot, or not finished yet — both worth one step back.
+                    Ok(None) => debug!("getBlockTime returned null for slot {slot} — stepping back"),
+                    Err(e) => debug!("getBlockTime failed for slot {slot} — stepping back: {e}"),
+                }
             }
+            warn!(
+                tip,
+                "SlotAnchor not pinned after {ATTEMPTS} attempts — replay block_time will use now()"
+            );
         });
     }
 
