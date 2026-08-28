@@ -9,6 +9,9 @@ A fingerprint is a token-creation shape. It names **axes**, each carrying one
 enum AxisPredicate {
     /// Inclusive `[min, max]`. Either bound open. `min == max` IS exact match.
     Range { min: Option<u128>, max: Option<u128> },
+    /// Two or more disjoint, ascending, non-touching spans — what `!=` and `|`
+    /// produce. Canonical by construction (see below).
+    Spans { spans: Vec<Span> },
     /// Exact ordered instruction-label sequence.
     Sequence { labels: Vec<String> },
 }
@@ -17,6 +20,9 @@ enum AxisPredicate {
 * An axis absent from the map is **not part of identity**.
 * Exact is the degenerate range, so there is no second spelling of the same
   intent and no mode flag two readers can disagree about.
+* A numeric predicate is a **set of spans**. Over the integers a union or a
+  complement of windows is just more windows, so `!=` and `|` need no new
+  matching rule — only the second variant.
 * Every numeric axis is a **non-negative integer** — lamports, compute units,
   tallies. `u128` in Rust, a **decimal string** on the wire (a JSON number is
   unsafe past 2^53 and `max_sol_cost = u64::MAX` is real data). SOL is a display
@@ -25,12 +31,73 @@ enum AxisPredicate {
   inclusive range is exactly as expressive as the half-open bucket it replaces —
   losslessly, with no boundary epsilon anywhere.
 
+## One set, one stored spelling
+
+`<=2 | >=4` and `!=3` select the same tokens, so they must be the same
+fingerprint row — `criteria` IS identity, and two spellings of one set would key
+as two rows for one gate. Every builder therefore routes through `SpanSet`, which
+sorts, merges what overlaps or touches, and collapses a one-span set back to
+`Range`. `Spans` with fewer than two spans, or with spans out of order or
+touching, is **refused** at the write edge rather than normalised on read:
+normalising quietly admits the second spelling that the canonical form exists to
+prevent.
+
+Adjacency counts as touching. The domain is integer, so `[0,2]` and `[3,5]` cover
+exactly `[0,5]`.
+
+One ambiguity survives and predates this: a bottom edge of zero can be spelled
+open (`{max: 2}`) or closed (`{min: 0, max: 2}`), and both name the same set on a
+non-negative axis. Neither is rewritten, because rewriting would change the
+identity of rows that already carry one — an exact `0 … 0` gate included. `<=`,
+`<` and every complement emit the OPEN form, which is what stored rows already
+use, so the operator spellings agree with each other; only a hand-typed bare `0`
+lower edge differs.
+
+## The condition grammar
+
+One text ⇄ predicate translation
+([`fingerprint::grammar`](../../../engine/src/fingerprint/grammar.rs), mirrored by
+`frontend/src/shared/lib/strategy/fingerprintGrammar.ts`), shared by the axis
+form, the dashboard filter boxes and every chip pasted back into either.
+
+```text
+expr    := arm ( '|' arm )*          OR   — union of the arms
+arm     := atom ( ',' atom )*        AND  — intersection of the atoms
+atom    := op? operand
+op      := '>=' | '<=' | '>' | '<' | '=' | '==' | '!='
+operand := n | n '..' n | n '-' n | n '–' n
+```
+
+* **`..` is inclusive, `-` is half-open.** `1..2` is `[1, 2]`; `1-2` is `[1, 2)`,
+  which is what a group chip spans, so a chip's own text pasted into a filter box
+  selects exactly that chip's tokens. The parse is always echoed back inclusive,
+  so which was typed is never hidden.
+* **`>` and `<` are exact.** The domain is integer, so `>1.5◎` is
+  `>= 1500000001` lamports — the same set, named in the storage vocabulary.
+* **Amounts parse as decimal text, never a float.** `max_sol_cost = u64::MAX` is
+  real launch data above 2^53.
+* Strict: any malformed fragment fails the whole parse. A dropped fragment would
+  read as "no constraint", which *widens* a match instead of failing the write.
+* An expression that constrains nothing (`>=0`, `<=2 | >=3`) or nothing at all
+  (`<=2, >=7`) is refused rather than stored — one reads as narrowed while
+  matching every token, the other is a gate that can never fire.
+
+The form is **one field per axis**, not a min/max pair: exact, band, open end,
+gap and alternatives are all the same question, and a pair of boxes can only ask
+two of the five.
+
 ## The registry is the extension point
 
 [`hunter_engine::fingerprint::axis`](../../../engine/src/fingerprint/axis.rs) holds one <!-- ref-ok: this doc proposes the module; the path is the target, not a citation -->
 `AxisDef` per axis: wire key, display label, kind, unit, match phase, the one-line
 definition the UI renders, and the reader that pulls the observed value off a
 `TokenFingerprint`.
+
+Both numeric shapes are read through `AxisPredicate::spans`, so the matcher, the
+SQL mirror, the auto-name and the group key each write ONE loop and gained
+`!=`/`|` without an edit. The matcher routes by `AxisKind`, never by variant — a
+shape the loop had not heard of would otherwise fall through to "matches nothing"
+while the row still read as a numeric gate.
 
 Everything derives from that table — the matcher loop, `has_any_criterion`,
 `has_first_slot_criteria`, `auto_name` and its grammar, JSON parsing, validation,
@@ -105,7 +172,10 @@ The phase lives on the axis definition — nothing else knows which axes defer.
 
 * At least one criterion (`wildcard` counts; an empty map matches **nothing**).
 * A wildcard row carries no axis.
-* Every predicate is satisfiable: `min <= max`, a non-empty label sequence.
+* Every predicate is satisfiable: `min <= max`, a non-empty span list, a
+  non-empty label sequence.
+* A `Spans` list is canonical: two or more spans, ascending, disjoint and not
+  touching.
 * `ix_count` and `ix_labels` must agree — a count range excluding
   `labels.len()` is an unsatisfiable row that would silently arm on nothing.
 

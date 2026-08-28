@@ -430,22 +430,6 @@ async fn load_flow_ctx(
     (patterns, creator_wallet_hash)
 }
 
-/// The token's creation-slot buy total, for `m_state.first_slot_buy`.
-///
-/// Read from `tokens_info` — the same row the live engine's `FirstSlotSettled` seed
-/// is derived from — so the replayed readout and the engine agree on the number. `None`
-/// (metric reads `NaN`) when the slot has not been counted, which is what the engine
-/// also shows before the settle.
-async fn load_first_slot_buy(app_state: &DeployState, mint: &str) -> Option<f64> {
-    match app_state.core.token_info_repo().find_by_mint(mint).await {
-        Ok(Some(i)) => i.first_slot_buy_sol,
-        _ => {
-            tracing::warn!(mint, "readout replay: no tokens_info row - first_slot_buy unseeded");
-            None
-        }
-    }
-}
-
 /// The token's stored trades up to `until`, as the engine's `TradeLite`.
 ///
 /// Bounded in SQL: a memecoin that keeps trading for hours past a position's exit
@@ -541,7 +525,6 @@ async fn replay_for_position(
     let trades = load_trades(app_state, &position.mint_address, at).await?;
     let (patterns, creator_wallet_hash) =
         load_flow_ctx(app_state, &position.mint_address, rule.fingerprint_id).await;
-    let first_slot_buy = load_first_slot_buy(app_state, &position.mint_address).await;
 
     let created_at = replay_created_at(app_state, &position.mint_address, &trades).await;
     let lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
@@ -562,7 +545,7 @@ async fn replay_for_position(
             &compiled,
             lites,
             &ReplayCtx {
-                created_at, entry, stage, flow, first_slot_buy,
+                created_at, entry, stage, flow,
             },
             at,
         )
@@ -766,7 +749,6 @@ async fn series_response(
         Err(resp) => return resp,
     };
     let (patterns, creator_wallet_hash) = load_flow_ctx(app_state, &mint, rule.fingerprint_id).await;
-    let first_slot_buy = load_first_slot_buy(app_state, &mint).await;
 
     let created_at = replay_created_at(app_state, &mint, &trades).await;
     let lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
@@ -794,7 +776,7 @@ async fn series_response(
             &compiled,
             lites,
             &ReplayCtx {
-                created_at, entry, stage, flow, first_slot_buy,
+                created_at, entry, stage, flow,
             },
             as_of,
             Some(MAX_READOUT_SERIES_ROWS),

@@ -13,9 +13,12 @@ import {
   axisDef,
   configuredAxes,
   lamportsToSolLabel,
+  predicateSpans,
+  spanSetComplement,
   type AxisId,
   type AxisPredicate,
   type AxisUnit,
+  type Span,
 } from './fingerprintAxes';
 import { WILDCARD_NAME } from './types';
 
@@ -26,6 +29,15 @@ export const AUTO_NAME_SEP = ' · ';
  *  is a decimal, so `1-2` reads as a subtraction to a human and is ambiguous
  *  against a negative bound to the grammar checker. Mirrors Rust `RANGE_SEP`. */
 const RANGE_SEP = '~';
+
+/** Separates the spans of a multi-window chip (`1~2|7~8`) — the same `|` the
+ *  condition grammar uses for OR, so a chip reads the way it was typed. Mirrors
+ *  Rust `SPAN_SEP`. */
+const SPAN_SEP = '|';
+
+/** Marks a chip that names what it EXCLUDES (`ix_count=!3`). Mirrors Rust
+ *  `NOT_PREFIX`. */
+const NOT_PREFIX = '!';
 
 /** Axes the auto-name reads — identity only (`name` is the output). */
 export type FingerprintAutoNameAxes = Pick<FingerprintIdentity, 'wildcard' | 'criteria'>;
@@ -57,14 +69,41 @@ function axisChip(id: AxisId, pred: AxisPredicate): string | null {
     const ix = configuredIxLabels(pred.labels);
     return ix ? ixLabelsCountTail(ix) : null;
   }
-  const n = (v: string) => renderBound(v, def.unit);
-  const { min, max } = pred;
-  let body: string;
-  if (min != null && max != null) body = min === max ? n(min) : `${n(min)}${RANGE_SEP}${n(max)}`;
-  else if (min != null) body = `${n(min)}${RANGE_SEP}`;
-  else if (max != null) body = `${RANGE_SEP}${n(max)}`;
-  else return null;
-  return `${def.chip}=${body}`;
+  // Both numeric shapes read through `predicateSpans`, so a `!=` / `|` axis is
+  // named by the same code that names a plain range.
+  const spans = predicateSpans(pred);
+  // A gap set is named for the hole it excludes, not the two half-lines around it:
+  // `ix_count=!3` rather than `ix_count=~2|4~`. Derived from the span list, so one
+  // token set still has exactly one name.
+  const hole = holeOf(spans);
+  if (hole) {
+    const body = spanBody(hole, def.unit);
+    return body == null ? null : `${def.chip}=${NOT_PREFIX}${body}`;
+  }
+  const parts = spans.map((s) => spanBody(s, def.unit)).filter((p): p is string => p != null);
+  return parts.length === 0 ? null : `${def.chip}=${parts.join(SPAN_SEP)}`;
+}
+
+/** The single window a span list excludes, when it excludes exactly one — the `!=`
+ *  case. `null` for anything else, including a list bounding only one end (which
+ *  already reads fine as a plain range). Mirrors Rust `hole_of`. */
+function holeOf(spans: Span[]): Span | null {
+  if (spans.length < 2) return null;
+  const holes = spanSetComplement(spans);
+  const [only] = holes;
+  return holes.length === 1 && only.min != null && only.max != null ? only : null;
+}
+
+/** One span as chip text (`1.5`, `1.5~2`, `1.5~`, `~2`). `null` for the all-open
+ *  span, which names nothing. Mirrors Rust `span_body`. */
+function spanBody(s: Span, unit: AxisUnit): string | null {
+  const n = (v: string) => renderBound(v, unit);
+  if (s.min != null && s.max != null) {
+    return s.min === s.max ? n(s.min) : `${n(s.min)}${RANGE_SEP}${n(s.max)}`;
+  }
+  if (s.min != null) return `${n(s.min)}${RANGE_SEP}`;
+  if (s.max != null) return `${RANGE_SEP}${n(s.max)}`;
+  return null;
 }
 
 /** One bound in the axis's display unit. Lamports read as SOL (what the operator
@@ -113,18 +152,26 @@ function isAutoNameChip(part: string): boolean {
   const eq = part.indexOf('=');
   if (eq < 0) return false;
   const label = part.slice(0, eq);
-  const value = part.slice(eq + 1);
   const def = AXES.find((a) => a.chip === label);
   if (!def) return false;
   const ok = (s: string) => isBound(s, def.unit);
-  const sep = value.indexOf(RANGE_SEP);
-  if (sep < 0) return ok(value);
-  const lo = value.slice(0, sep);
-  const hi = value.slice(sep + 1);
-  if (lo === '' && hi === '') return false;
-  if (lo === '') return ok(hi);
-  if (hi === '') return ok(lo);
-  return ok(lo) && ok(hi);
+  // `!` names the hole a `!=` axis excludes; a nickname does not start a value
+  // with it, so stripping it here costs nothing.
+  const raw = part.slice(eq + 1);
+  const value = raw.startsWith(NOT_PREFIX) ? raw.slice(NOT_PREFIX.length) : raw;
+  if (value === '') return false;
+  // A multi-window chip is `|`-joined spans — each part is a span the single-window
+  // grammar already describes, so this is one more split, not a second grammar.
+  return value.split(SPAN_SEP).every((span) => {
+    const sep = span.indexOf(RANGE_SEP);
+    if (sep < 0) return ok(span);
+    const lo = span.slice(0, sep);
+    const hi = span.slice(sep + 1);
+    if (lo === '' && hi === '') return false;
+    if (lo === '') return ok(hi);
+    if (hi === '') return ok(lo);
+    return ok(lo) && ok(hi);
+  });
 }
 
 /** One rendered bound: digits, at most one `.`, and — for a compute-unit axis — an

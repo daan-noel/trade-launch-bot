@@ -67,11 +67,12 @@ negative.
 
 ## What this is
 
-This trigger family has no harvest after-move on the tokens it
-selects. A 20 s hold, an armed trail, and a stay-on-wave / leave-on-dump
-exit all lose at 95 ms, every day. The after-move that 8dtx harvests
-sits on **his token list**, not on the burst.
+The unconcentrated fillable body has no harvest after-move. A 20 s
+hold, an armed trail, and a stay-on-wave / leave-on-dump exit all lose
+at 95 ms, every day. His-mint clock-20 at the same fill is a harvest
+and is lookahead (the mint list). Event-level `he1` is also a harvest
+and is lookahead (his send). Live concentration of this print:
+[ix-concentrate.md](ix-concentrate.md).
 
-Do not fund a harvest exit on this event. Do not treat his-mint
-clock-20 as a live rule. First-gap at 95 ms remains the least-bad
-book on this print and is still 0/12.
+Do not fund a harvest exit on the unconcentrated event. Do not treat
+his-mint clock-20 as a live rule.

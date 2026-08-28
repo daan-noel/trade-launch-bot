@@ -72,9 +72,10 @@ his list is not a body at this fill.
 ## What this is
 
 The live conjunction is a discriminator at the completing print. Dropping tight
-packs does not change the fill: the honest book is the same race as
-[ix-machine-money.md](ix-machine-money.md). A filter on this print cannot
-create remainder past 95 ms. A longer hold cannot either: the body after
-this fill dumps ([ix-harvest-path.md](ix-harvest-path.md)).
+packs does not change the fill: the honest unconcentrated book is the same race
+as [ix-machine-money.md](ix-machine-money.md). The unconcentrated body after
+this fill dumps ([ix-harvest-path.md](ix-harvest-path.md)). Concentration on
+the same print: [ix-concentrate.md](ix-concentrate.md).
 
-Do not fund it. Do not re-price the 0 ms first-gap mark as a 20 s trade.
+Do not fund the unconcentrated book. Do not re-price the 0 ms first-gap mark
+as a 20 s trade.

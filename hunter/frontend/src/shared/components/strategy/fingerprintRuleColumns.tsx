@@ -7,7 +7,7 @@ import { Link } from 'react-router-dom';
 import type { ColumnDef, SortValue } from 'components/table/types';
 import { MultiSortHeader } from 'components/table/MultiSortHeader';
 import { LinkIcon } from 'components/ui/icons';
-import { AXES } from 'lib/strategy/fingerprintAxes';
+import { AXES, predicateSpans } from 'lib/strategy/fingerprintAxes';
 import {
   configuredIxLabels,
   IX_LABELS_FILTER_PLACEHOLDER,
@@ -59,7 +59,11 @@ const FP_SORT_AXES: FpSortAxis[] = [
       const p = (fp?.criteria ?? {})[def.id];
       if (p == null) return null;
       if (p.kind === 'sequence') return configuredIxLabels(p.labels)?.length ?? null;
-      const b = p.min ?? p.max;
+      // The FIRST span's start (its end when the gate is open below): a column
+      // orders on one number, and where the accepted set begins is where a reader
+      // scanning it expects that number to be.
+      const [first] = predicateSpans(p);
+      const b = first?.min ?? first?.max;
       if (b == null) return null;
       const n = Number(b);
       return Number.isFinite(n) ? n : null;

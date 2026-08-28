@@ -240,11 +240,6 @@ pub struct ReplayCtx<'a> {
     pub stage: Option<u8>,
     /// Absent ⇒ `m_flow_ix*` metrics read `NaN` (no pattern context).
     pub flow: Option<ReplayFlow<'a>>,
-    /// Creation-slot buy SOL, for `m_state.first_slot_buy`. `None` ⇒ the metric
-    /// reads `NaN`, so a readout built without it shows a `first_slot_buy` condition
-    /// as unmet even where the live engine (which seeds it at `FirstSlotSettled`) has
-    /// it satisfied. Pass `fp.first_slot_buy_lamports` wherever the fingerprint is in hand.
-    pub first_slot_buy: Option<f64>,
 }
 
 /// Reconstruct a rule's readout at `at` by folding stored trades through a fresh
@@ -282,9 +277,6 @@ pub fn replay_readout(
         if let Some(h) = f.creator_wallet_hash {
             track.seed_creator(h);
         }
-    }
-    if let Some(v) = ctx.first_slot_buy {
-        track.seed_first_slot_buy(v);
     }
 
     let mut position = ctx.entry.map(|(at, price)| PositionCtx::at_fill(price, at));
@@ -461,9 +453,6 @@ pub fn replay_series(
         if let Some(h) = f.creator_wallet_hash {
             series.seed_creator(h);
         }
-    }
-    if let Some(v) = ctx.first_slot_buy {
-        series.seed_first_slot_buy(v);
     }
     if let Some(from) = record_from {
         series.set_record_from(from);
@@ -948,7 +937,6 @@ mod tests {
             &c,
             prints.map(|(p, secs)| trade(p, secs)),
             &ReplayCtx {
-                first_slot_buy: None,
                 created_at: ts(0),
                 entry: Some((ts(0), 1.0)),
                 stage: None,
@@ -982,7 +970,6 @@ mod tests {
             trade(1.0, 40),
         ];
         let ctx = ReplayCtx {
-            first_slot_buy: None,
             created_at: ts(0),
             entry: Some((ts(0), 1.0)),
             stage: None,
@@ -1014,7 +1001,6 @@ mod tests {
             &c,
             trades,
             &ReplayCtx {
-                first_slot_buy: None,
                 created_at: ts(0),
                 entry: Some((ts(10), 1.0)),
                 stage: None,
@@ -1055,7 +1041,6 @@ mod tests {
         let prints = [(1.0, 0_i64), (2.0, 10), (1.5, 20)];
         let entry = Some((ts(0), 1.0));
         let replay_ctx = |stage| ReplayCtx {
-            first_slot_buy: None,
             created_at: ts(0),
             entry,
             stage,
@@ -1140,7 +1125,7 @@ mod tests {
         let series = replay_series(
             &c,
             prints.map(|(p, secs)| trade(p, secs)),
-            &ReplayCtx { created_at: ts(0), entry: Some((ts(10), 2.0)), stage: None, flow: None, first_slot_buy: None },
+            &ReplayCtx { created_at: ts(0), entry: Some((ts(10), 2.0)), stage: None, flow: None },
             ts(20),
             None,
             None,
@@ -1176,7 +1161,7 @@ mod tests {
         let series = replay_series(
             &c,
             prints.map(|(p, secs)| trade(p, secs)),
-            &ReplayCtx { created_at: ts(0), entry: Some((ts(0), 1.0)), stage: None, flow: None, first_slot_buy: None },
+            &ReplayCtx { created_at: ts(0), entry: Some((ts(0), 1.0)), stage: None, flow: None },
             ts(30),
             None,
             None,
@@ -1210,7 +1195,7 @@ mod tests {
             &c,
             prints.map(|(p, secs)| trade(p, secs)),
             // The armed anchor: nothing has filled and no ladder is running.
-            &ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None, first_slot_buy: None },
+            &ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None },
             ts(20),
             None,
             None,
@@ -1250,7 +1235,7 @@ mod tests {
         let series = replay_series(
             &c,
             prints.map(|(p, secs)| trade(p, secs)),
-            &ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None, first_slot_buy: None },
+            &ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None },
             ts(600),
             Some(50),
             None,
@@ -1274,7 +1259,7 @@ mod tests {
             "exit": { "m_price_lifetime": { "stall": [{ "operator": ">=", "value": 900 }] } }
         }));
         let trades: Vec<_> = (0..600).map(|i| trade(1.0 + i as f64 * 0.001, i)).collect();
-        let ctx = ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None, first_slot_buy: None };
+        let ctx = ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None };
 
         let full = replay_series(&c, trades.clone(), &ctx, ts(600), None, None);
         let windowed = replay_series(&c, trades, &ctx, ts(600), None, Some(ts(300)));
@@ -1313,7 +1298,7 @@ mod tests {
             "exit": { "m_position": { "held": [{ "operator": ">=", "value": 600 }] } }
         }));
         let trades: Vec<_> = (0..3600).map(|i| trade(1.0, i)).collect();
-        let ctx = ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None, first_slot_buy: None };
+        let ctx = ReplayCtx { created_at: ts(0), entry: None, stage: None, flow: None };
         const CAP: usize = 1_000;
 
         let head = replay_series(&c, trades.clone(), &ctx, ts(3600), Some(CAP), None);
@@ -1359,7 +1344,6 @@ mod tests {
                 &c,
                 trades,
                 &ReplayCtx {
-                    first_slot_buy: None,
                     created_at: ts(0),
                     entry: Some((ts(0), 1.0)),
                     stage: None,

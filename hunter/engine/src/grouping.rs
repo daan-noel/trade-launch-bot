@@ -24,7 +24,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::fingerprint::{AxisId, AxisKind, AxisPredicate, AxisUnit};
+use crate::fingerprint::{AxisId, AxisKind, AxisPredicate, AxisUnit, Span, SpanSet};
 
 // `TokenFingerprint` and its decode seams live with the matcher (they are the
 // matcher's input); re-exported here because every grouping caller reads them.
@@ -220,17 +220,20 @@ impl PartitionSpec {
         }
     }
 
-    /// The window containing `v`, as the inclusive predicate the group key stores.
-    fn window_for(&self, v: u128) -> AxisPredicate {
+    /// The window containing `v`. A partition tiles the domain, so every value
+    /// lands in exactly ONE inclusive [`Span`] — a partition can never produce the
+    /// multi-span shape `!=`/`|` do, and saying so in the type keeps the group-key
+    /// builder free of an arm that cannot happen.
+    fn window_for(&self, v: u128) -> Span {
         match self {
-            PartitionSpec::Distinct => AxisPredicate::exact(v),
+            PartitionSpec::Distinct => Span::exact(v),
             PartitionSpec::Ranges { edges } => {
                 // `partition_point` gives how many edges are <= v: that index is the
                 // window, with `edges[i-1]` its floor and `edges[i]` the next floor.
                 let i = edges.partition_point(|e| *e <= v);
                 let min = if i == 0 { None } else { Some(edges[i - 1]) };
                 let max = edges.get(i).map(|e| e - 1);
-                AxisPredicate::Range { min, max }
+                Span::new(min, max)
             }
         }
     }
@@ -293,6 +296,11 @@ pub enum GroupValue {
     Flag { value: bool },
     /// An exact ordered label sequence.
     Labels { labels: Vec<String> },
+    /// Two or more disjoint numeric windows — what a `!=` or `|` fingerprint axis
+    /// asserts. A partition never produces one (it tiles the domain into single
+    /// windows); this exists so a SAVED fingerprint can be shown as a group key
+    /// without dropping the axis, which would read as "unconstrained".
+    Windows { spans: Vec<Span> },
     /// An inclusive numeric window. `min == max` is one exact value.
     Window {
         #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::fingerprint::axis::u128_wire")]
@@ -308,6 +316,9 @@ impl GroupValue {
     pub fn to_predicate(&self) -> Option<AxisPredicate> {
         match self {
             GroupValue::Window { min, max } => Some(AxisPredicate::Range { min: *min, max: *max }),
+            GroupValue::Windows { spans } => {
+                Some(SpanSet::from_spans(spans.iter().copied()).into_predicate())
+            }
             GroupValue::Labels { labels } => {
                 Some(AxisPredicate::Sequence { labels: labels.clone() })
             }
@@ -327,14 +338,23 @@ impl GroupValue {
             GroupValue::Text { value } => value.clone(),
             GroupValue::Flag { value } => value.to_string(),
             GroupValue::Labels { labels } => labels.join(" | "),
-            GroupValue::Window { min, max } => match (min, max) {
-                (Some(a), Some(b)) if a == b => n(*a),
-                (Some(a), Some(b)) => format!("{}–{}", n(*a), n(*b)),
-                (Some(a), None) => format!("≥{}", n(*a)),
-                (None, Some(b)) => format!("≤{}", n(*b)),
-                (None, None) => "any".to_string(),
-            },
+            GroupValue::Window { min, max } => render_window(*min, *max, &n),
+            GroupValue::Windows { spans } => {
+                spans.iter().map(|s| render_window(s.min, s.max, &n)).collect::<Vec<_>>().join(" | ")
+            }
         }
+    }
+}
+
+/// One window, in the caller's display unit. Shared by the single- and multi-window
+/// values so both read the same way — display only; nothing parses this back.
+fn render_window(min: Option<u128>, max: Option<u128>, n: &dyn Fn(u128) -> String) -> String {
+    match (min, max) {
+        (Some(a), Some(b)) if a == b => n(a),
+        (Some(a), Some(b)) => format!("{}–{}", n(a), n(b)),
+        (Some(a), None) => format!("≥{}", n(a)),
+        (None, Some(b)) => format!("≤{}", n(b)),
+        (None, None) => "any".to_string(),
     }
 }
 
@@ -403,10 +423,10 @@ fn field_value(tf: &TokenFingerprint, f: GroupField, spec: &PartitionSpec) -> Gr
             let axis = other.axis().expect("non-axis fields handled above");
             match axis.read_num(tf) {
                 None => GroupValue::Missing,
-                Some(v) => match spec.window_for(v) {
-                    AxisPredicate::Range { min, max } => GroupValue::Window { min, max },
-                    AxisPredicate::Sequence { .. } => GroupValue::Missing,
-                },
+                Some(v) => {
+                    let w = spec.window_for(v);
+                    GroupValue::Window { min: w.min, max: w.max }
+                }
             }
         }
     }
@@ -419,59 +439,15 @@ fn field_value(tf: &TokenFingerprint, f: GroupField, spec: &PartitionSpec) -> Gr
 /// Parse a typed value filter into the **same predicate a fingerprint stores**, so
 /// the filter box, the group key and the match all speak one vocabulary.
 ///
-/// Accepted forms, read in the field's own [`AxisUnit`] (SOL for a lamports axis,
-/// the raw integer otherwise):
+/// A thin alias for [`crate::fingerprint::grammar::parse_predicate`] — there is one
+/// text ⇄ predicate translation, and a filter box that had its own would let a chip
+/// mean two things depending on which field it was pasted into. The forms, the
+/// `..`-vs-`-` distinction and the strictness all live in that module's docs.
 ///
-/// * `"1.515"` → that amount and nothing else.
-/// * `"1.5-1.6"` / `"1.5–1.6"` → the **half-open** `[lo, hi)` window, i.e. exactly
-///   what a group chip spans, so a chip's own text pasted into the box selects that
-///   chip's tokens.
-/// * `">=2"` / `"<=2"` → an open-ended bound.
-///
-/// `None` on anything else — a dropped filter reads as "no filter", which silently
-/// widens a query instead of failing it.
+/// `None` on anything malformed — a dropped filter reads as "no filter", which
+/// silently widens a query instead of failing it.
 pub fn parse_filter(text: &str, unit: AxisUnit) -> Option<AxisPredicate> {
-    let t = text.trim();
-    if t.is_empty() {
-        return None;
-    }
-    if let Some(rest) = t.strip_prefix(">=") {
-        return Some(AxisPredicate::range(Some(parse_amount(rest, unit)?), None));
-    }
-    if let Some(rest) = t.strip_prefix("<=") {
-        return Some(AxisPredicate::range(None, Some(parse_amount(rest, unit)?)));
-    }
-    for sep in ['–', '-'] {
-        if let Some((lo, hi)) = t.split_once(sep) {
-            let (lo, hi) = (lo.trim(), hi.trim());
-            if lo.is_empty() || hi.is_empty() {
-                continue;
-            }
-            let (lo, hi) = (parse_amount(lo, unit)?, parse_amount(hi, unit)?);
-            if hi <= lo {
-                return None;
-            }
-            return Some(AxisPredicate::half_open(lo, Some(hi)));
-        }
-    }
-    Some(AxisPredicate::exact(parse_amount(t, unit)?))
-}
-
-/// One amount in a field's display unit → the integer identity carries.
-fn parse_amount(s: &str, unit: AxisUnit) -> Option<u128> {
-    let t = s.trim();
-    match unit {
-        AxisUnit::Lamports => {
-            let sol: f64 = t.parse().ok()?;
-            if !sol.is_finite() || sol < 0.0 {
-                return None;
-            }
-            Some(u128::from(sol_to_lamports(sol)))
-        }
-        AxisUnit::Labels => None,
-        // A tally or a compute-unit setting is typed as the integer it is.
-        AxisUnit::Count | AxisUnit::ComputeUnits => t.parse().ok(),
-    }
+    crate::fingerprint::grammar::parse_predicate(text, unit)
 }
 
 /// Render lamports as human SOL, exactly. Integer arithmetic: `lamports as f64 / 1e9`
@@ -554,16 +530,16 @@ mod tests {
     fn range_edges_tile_the_domain_without_gaps_or_overlap() {
         let spec = PartitionSpec::Ranges { edges: vec![10, 20, 30] };
         let win = |v: u128| spec.window_for(v);
-        assert_eq!(win(0), AxisPredicate::Range { min: None, max: Some(9) });
-        assert_eq!(win(9), AxisPredicate::Range { min: None, max: Some(9) });
-        assert_eq!(win(10), AxisPredicate::Range { min: Some(10), max: Some(19) });
-        assert_eq!(win(19), AxisPredicate::Range { min: Some(10), max: Some(19) });
-        assert_eq!(win(20), AxisPredicate::Range { min: Some(20), max: Some(29) });
-        assert_eq!(win(30), AxisPredicate::Range { min: Some(30), max: None });
-        assert_eq!(win(u128::MAX), AxisPredicate::Range { min: Some(30), max: None });
+        assert_eq!(win(0), Span::new(None, Some(9)));
+        assert_eq!(win(9), Span::new(None, Some(9)));
+        assert_eq!(win(10), Span::new(Some(10), Some(19)));
+        assert_eq!(win(19), Span::new(Some(10), Some(19)));
+        assert_eq!(win(20), Span::new(Some(20), Some(29)));
+        assert_eq!(win(30), Span::new(Some(30), None));
+        assert_eq!(win(u128::MAX), Span::new(Some(30), None));
         // Every value lands in exactly one window, and that window contains it.
         for v in [0u128, 9, 10, 19, 20, 29, 30, 1_000] {
-            assert!(win(v).matches_num(v), "{v} fell outside its own window");
+            assert!(win(v).contains(v), "{v} fell outside its own window");
         }
     }
 
@@ -644,9 +620,10 @@ mod tests {
     fn a_chip_label_round_trips_as_a_filter_over_the_same_window() {
         let spec = PartitionSpec::Ranges { edges: vec![SOL, 2 * SOL, 5 * SOL] };
         for v in [0u128, SOL, SOL + 1, 2 * SOL, 4 * SOL, 9 * SOL] {
-            let window = spec.window_for(v);
-            let AxisPredicate::Range { min, max } = window.clone() else { unreachable!() };
-            let text = GroupValue::Window { min, max }.render(Some(AxisUnit::Lamports));
+            let span = spec.window_for(v);
+            let window = AxisPredicate::Range { min: span.min, max: span.max };
+            let text = GroupValue::Window { min: span.min, max: span.max }
+                .render(Some(AxisUnit::Lamports));
             let Some(parsed) = parse_filter(&text, AxisUnit::Lamports) else {
                 continue; // an open-ended chip renders "≥…", covered below
             };

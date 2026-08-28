@@ -539,14 +539,23 @@ What is open now:
     stay 0/12 at 95 ms. Lookahead `oracle_sep` is −1.04% **0/12** at
     95 ms: 95 ms after print 1 fills on the rest of the same-slot crowd.
     Do not fund it; do not walk another same-slot early print of this burst.
-15. **This trigger has no harvest after-move on the tokens it selects.**
+15. **The unconcentrated trigger has no harvest after-move.**
     [ix-harvest-path.md](ix-harvest-path.md): after the fillable
     combined-machine fill at 95 ms, gross median is 0 at 1–4 s and
     **−8.43% at 20 s** (8dtx's hold). 86% dump; 14% second-wave (lookahead).
     Clock-20 is **−7.28% 0/12**. Stay-on-wave / leave-on-dump
     (`harvest_clock`) is **−2.36% 0/12**. His-mint clock-20 at the same
     fill is +6.15% / 12/12 / median +0.19% — that list is lookahead, not
-    a live gate. Do not fund a harvest exit on this event.
+    a live gate. Do not fund a harvest exit on the unconcentrated event.
+16. **Separated crowd, already off peak, not brand-new, harvests at 95 ms.**
+    [ix-concentrate.md](ix-concentrate.md): on the same fillable events,
+    `age < 20` is the dump (he1 0.28%, clock-20 **−10.93% 0/12**, 2,138/day)
+    and perm `age < 180` keeps it. Event-level `he1` clock-20 is +2.91%
+    10/12 (lookahead ceiling). Live conjunction `separated ∧ trail ≥ 15
+    ∧ age ≥ 20`, clock-20 at 95 ms: **+2.38% / 11/12 / OOS +1.90% /
+    n=3,917 / 327/day / median −1.42%**. First-gap on that cell is red.
+    Solos stay out. Do not add `he1` or his mint list. Do not stack
+    another filter on this print; paper it forward.
 
 **Feature-combination search is retired as a queue item.** Round 10 ran it exhaustively -
 17,744 conjunctions plus OR-portfolios over 55 predicates - and the answer is that no

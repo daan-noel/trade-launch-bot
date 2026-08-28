@@ -366,15 +366,15 @@ Semantics + the young-token reading:
 
 [`Windows`]: ../../engine/src/metrics/mod.rs
 
-## Launch size (`m_state.first_slot_buy`)
+## Launch size is an axis
 
-Total buy SOL in the token's creation slot — the same quantity `fingerprints`
-buckets as `first_slot_buy_lamports`, exposed as a metric because a fingerprint pins ONE
-bucket and a rule that means a THRESHOLD (`>= 6.41`) has no other spelling. Seeded at
-`FirstSlotSettled`, **not** `TokenCreated`: the number is summed from that slot's trades
-and does not exist at birth, so it reads `NaN` until then and a rule using it cannot fire
-at launch. `0` is a real value (a launch nobody bought into), carried by seeding it rather
-than by absence.
+Total buy SOL in the token's creation slot is the fingerprint axis
+`first_slot_buy_lamports`, and only that — no `m_state` metric mirrors it. A fact fixed
+by the creation slot selects WHICH tokens arm, never when a rule fires, so it belongs to
+one vocabulary; a threshold like `>= 6.41 SOL` is the open range
+`{"kind": "range", "min": "6410000000"}`. The axis is deferred: the arm waits at
+`PendingFirstSlot` until `FirstSlotSettled`, because the number is summed from that
+slot's trades and does not exist at birth.
 
 ## Fingerprint axes (`hunter_engine::fingerprint::axis`)
 

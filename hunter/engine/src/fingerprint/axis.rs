@@ -22,10 +22,19 @@
 //!   expressive as a half-open `[lo, hi)` window — `hi` and `max + 1` name the same
 //!   set — which is what makes the conversion from the retired bucket widths
 //!   lossless.
+//! * **A numeric predicate is a set of spans, stored canonically.** `!=` and `|`
+//!   are unions and complements of inclusive windows, which over the integers are
+//!   just more windows — so they need no new matching rule, only
+//!   [`AxisPredicate::Spans`]. Every builder routes through [`SpanSet`], which
+//!   sorts, merges and collapses a one-span set back to
+//!   [`AxisPredicate::Range`]. One set therefore has exactly ONE stored spelling,
+//!   which is what keeps `criteria` usable as identity: `<=2 | >=4` and `!=3`
+//!   select the same tokens, so they must be the same fingerprint row.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 
 use super::token::TokenFingerprint;
 
@@ -63,7 +72,8 @@ pub enum AxisId {
 /// The value shape an axis carries — which [`AxisPredicate`] variant is legal on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AxisKind {
-    /// A non-negative integer, matched by [`AxisPredicate::Range`].
+    /// A non-negative integer, matched by [`AxisPredicate::Range`] or
+    /// [`AxisPredicate::Spans`].
     Numeric,
     /// An ordered string sequence, matched by [`AxisPredicate::Sequence`].
     Sequence,
@@ -229,9 +239,10 @@ pub static AXES: &[AxisDef] = &[
         kind: AxisKind::Numeric,
         unit: AxisUnit::Count,
         phase: AxisPhase::Instant,
-        definition: "How many tokens this creator launched BEFORE this one. A strictly-prior \
-                     tally, so a first-time creator reads 0; unknown when the creator wallet \
-                     is not on the creation event.",
+        definition: "How many tokens this creator launched BEFORE this one, over a \
+                     trailing 30-day window. A strictly-prior tally, so a first-time \
+                     creator reads 0; unknown when the creator wallet is not on the \
+                     creation event.",
     },
 ];
 
@@ -331,8 +342,78 @@ pub enum AxisPredicate {
         #[serde(default, skip_serializing_if = "Option::is_none", with = "u128_wire")]
         max: Option<u128>,
     },
+    /// Two or more **disjoint, ascending, non-adjacent** inclusive spans — the
+    /// shape `!=` and `|` produce (`!=3` is `[…2] ∪ [4…]`).
+    ///
+    /// Canonical by construction: every builder routes through
+    /// [`SpanSet::into_predicate`], which sorts, merges and collapses a one-span
+    /// set back to [`AxisPredicate::Range`]. That is what keeps identity intact —
+    /// `<=2 | >=4` and `!=3` name one token set, so they must produce one stored
+    /// value, or `find_or_create` forks a second row for the same fingerprint.
+    Spans { spans: Vec<Span> },
     /// Exact ordered sequence — same length, same string at every position.
     Sequence { labels: Vec<String> },
+}
+
+/// One inclusive `[min, max]` interval; either bound `None` is open. The element
+/// of a [`AxisPredicate::Spans`] list and the whole of a
+/// [`AxisPredicate::Range`], so the two variants are one vocabulary — see
+/// [`AxisPredicate::spans`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Span {
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "u128_wire")]
+    pub min: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "u128_wire")]
+    pub max: Option<u128>,
+}
+
+impl Span {
+    pub fn new(min: Option<u128>, max: Option<u128>) -> Self {
+        Span { min, max }
+    }
+
+    /// Match one amount and nothing else.
+    pub fn exact(v: u128) -> Self {
+        Span { min: Some(v), max: Some(v) }
+    }
+
+    /// The whole axis domain — the span that configures nothing.
+    pub fn all() -> Self {
+        Span { min: None, max: None }
+    }
+
+    /// Low edge as a number. Identity is a **non-negative** integer, so "unbounded
+    /// below" and "from 0" are the same set; this is the one place that fact is
+    /// used, and only for ordering and overlap — never to rewrite a stored `None`
+    /// into a `Some(0)`, which would fork the identity of every `<=` row already
+    /// written.
+    fn lo(self) -> u128 {
+        self.min.unwrap_or(0)
+    }
+
+    /// Whether an observed integer falls in this span.
+    pub fn contains(self, v: u128) -> bool {
+        self.min.is_none_or(|lo| v >= lo) && self.max.is_none_or(|hi| v <= hi)
+    }
+
+    /// Whether any value can fall in this span.
+    pub fn is_satisfiable(self) -> bool {
+        match (self.min, self.max) {
+            (Some(a), Some(b)) => a <= b,
+            _ => true,
+        }
+    }
+
+    /// Whether `other` starts at or before this span's first uncovered value, so
+    /// the two are one interval. Adjacency counts: the domain is integer, so
+    /// `[0,2]` and `[3,5]` cover exactly `[0,5]` and storing them apart would be a
+    /// second spelling of one set.
+    fn touches(self, other: Span) -> bool {
+        match self.max {
+            None => true,
+            Some(hi) => other.lo() <= hi.saturating_add(1),
+        }
+    }
 }
 
 impl AxisPredicate {
@@ -355,11 +436,36 @@ impl AxisPredicate {
         AxisPredicate::Range { min: Some(lo), max: hi.map(|h| h.saturating_sub(1)) }
     }
 
+    /// Match everything **except** the inclusive window `[min, max]` — the `!=`
+    /// atom. The complement of one span over the non-negative integers is at most
+    /// two spans, so this needs no shape the storage layer does not already have.
+    pub fn not_range(min: Option<u128>, max: Option<u128>) -> Self {
+        SpanSet::one(Span::new(min, max)).complement().into_predicate()
+    }
+
     /// Which axis kind this predicate can be applied to.
     pub fn kind(&self) -> AxisKind {
         match self {
-            AxisPredicate::Range { .. } => AxisKind::Numeric,
+            AxisPredicate::Range { .. } | AxisPredicate::Spans { .. } => AxisKind::Numeric,
             AxisPredicate::Sequence { .. } => AxisKind::Sequence,
+        }
+    }
+
+    /// The inclusive spans this predicate accepts, ascending — **the one reader**
+    /// of a numeric predicate's shape. A [`AxisPredicate::Range`] is the one-span
+    /// case, so every consumer (the SQL mirror, the auto-name, the group key)
+    /// writes one loop and gains `!=`/`|` for free.
+    ///
+    /// Inline for the one- and two-span cases, so reading a predicate this way
+    /// never allocates; [`Self::matches_num`] still reads the variant directly and
+    /// touches none of this.
+    pub fn spans(&self) -> SmallVec<[Span; 2]> {
+        match self {
+            AxisPredicate::Range { min, max } => {
+                SmallVec::from_buf_and_len([Span::new(*min, *max), Span::all()], 1)
+            }
+            AxisPredicate::Spans { spans } => SmallVec::from_slice(spans),
+            AxisPredicate::Sequence { .. } => SmallVec::new(),
         }
     }
 
@@ -379,8 +485,37 @@ impl AxisPredicate {
         match self {
             AxisPredicate::Range { min: Some(a), max: Some(b) } => a <= b,
             AxisPredicate::Range { .. } => true,
+            // An empty list is how "no value at all" arrives here — `a > b | c > d`
+            // with both arms empty, or a `!=` of an open range.
+            AxisPredicate::Spans { spans } => {
+                !spans.is_empty() && spans.iter().all(|s| s.is_satisfiable())
+            }
             AxisPredicate::Sequence { labels } => !labels.is_empty(),
         }
+    }
+
+    /// Every way this predicate is malformed *as stored*, beyond being empty.
+    ///
+    /// A `Spans` list is only ever produced canonical, so a non-canonical one
+    /// reached the row by hand or by a writer that skipped [`SpanSet`]. It has to
+    /// be refused rather than normalised on read: two spellings of one token set
+    /// key as two fingerprints, which is the duplicate-row class the identity index
+    /// exists to make impossible.
+    fn shape_problem(&self) -> Option<&'static str> {
+        let AxisPredicate::Spans { spans } = self else { return None };
+        if spans.len() < 2 {
+            return Some(
+                "a multi-span predicate needs two or more spans — one span is spelled as a \
+                 plain range",
+            );
+        }
+        if spans.windows(2).any(|w| !w[0].is_satisfiable() || w[0].touches(w[1])) {
+            return Some(
+                "spans must be disjoint and ascending — overlapping or touching spans are two \
+                 spellings of one window",
+            );
+        }
+        None
     }
 
     /// Whether an observed integer satisfies this predicate.
@@ -388,6 +523,11 @@ impl AxisPredicate {
         match self {
             AxisPredicate::Range { min, max } => {
                 min.is_none_or(|lo| v >= lo) && max.is_none_or(|hi| v <= hi)
+            }
+            // Ascending and disjoint, so the first span that starts above `v` ends
+            // the search — a `!=` gate costs one comparison more than a range.
+            AxisPredicate::Spans { spans } => {
+                spans.iter().take_while(|s| s.lo() <= v).any(|s| s.contains(v))
             }
             AxisPredicate::Sequence { .. } => false,
         }
@@ -397,8 +537,163 @@ impl AxisPredicate {
     pub fn matches_seq(&self, obs: &[String]) -> bool {
         match self {
             AxisPredicate::Sequence { labels } => labels.len() == obs.len() && labels == obs,
-            AxisPredicate::Range { .. } => false,
+            AxisPredicate::Range { .. } | AxisPredicate::Spans { .. } => false,
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Span algebra
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A set of values on one axis, as a **canonical** ascending list of disjoint,
+/// non-touching spans. The working form the condition grammar evaluates in: a
+/// comma-AND is [`Self::intersect`], a `|` is [`Self::union`], a `!=` is
+/// [`Self::complement`].
+///
+/// Canonical means *one list per set*. That is the whole point — a fingerprint's
+/// identity is its stored `criteria` JSON, so if `<=2 | >=4` and `!=3` serialised
+/// differently they would key as two fingerprints matching the same tokens, and
+/// `find_or_create` would hand two rules two different rows.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SpanSet(Vec<Span>);
+
+impl SpanSet {
+    /// The empty set — matches nothing. Refused at every write edge.
+    pub fn none() -> Self {
+        SpanSet(Vec::new())
+    }
+
+    /// Every value on the axis.
+    pub fn all() -> Self {
+        SpanSet(vec![Span::all()])
+    }
+
+    /// One span, canonicalised (an unsatisfiable one yields the empty set).
+    pub fn one(span: Span) -> Self {
+        Self::from_spans([span])
+    }
+
+    /// Canonicalise an arbitrary span list: drop the unsatisfiable, sort, merge
+    /// everything that overlaps or touches.
+    pub fn from_spans(spans: impl IntoIterator<Item = Span>) -> Self {
+        let mut v: Vec<Span> = spans.into_iter().filter(|s| s.is_satisfiable()).collect();
+        // By low edge, then by high edge with an open end last — an open end
+        // absorbs everything after it, so it must not sort before a span it covers.
+        v.sort_by(|a, b| a.lo().cmp(&b.lo()).then(cmp_hi(a.max, b.max)));
+        let mut out: Vec<Span> = Vec::with_capacity(v.len());
+        for s in v {
+            match out.last_mut() {
+                Some(prev) if prev.touches(s) => {
+                    if prev.max.is_some() && (s.max.is_none() || s.max > prev.max) {
+                        prev.max = s.max;
+                    }
+                }
+                _ => out.push(s),
+            }
+        }
+        SpanSet(out)
+    }
+
+    /// The predicate that stores this set: one span is a plain
+    /// [`AxisPredicate::Range`], so the shape already in every row stays the
+    /// spelling for everything `!=`/`|` did not widen.
+    pub fn into_predicate(self) -> AxisPredicate {
+        let mut spans = self.0;
+        match spans.len() {
+            1 => {
+                let s = spans.pop().expect("len checked");
+                AxisPredicate::Range { min: s.min, max: s.max }
+            }
+            _ => AxisPredicate::Spans { spans },
+        }
+    }
+
+    /// The set a stored predicate accepts. Round-trips with
+    /// [`Self::into_predicate`] for anything the write edge accepted.
+    pub fn from_predicate(pred: &AxisPredicate) -> Self {
+        Self::from_spans(pred.spans())
+    }
+
+    pub fn spans(&self) -> &[Span] {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Whether this set is the whole axis — the state that configures nothing, and
+    /// therefore the one a write edge clears rather than stores.
+    ///
+    /// `>= 0` counts: identity is a non-negative integer, so a floor of zero
+    /// excludes nothing. Read here rather than rewritten into the span, because
+    /// rewriting a bottom edge would change the stored identity of every row that
+    /// already spells one — and a `0 … 0` exact match is a real, different gate.
+    pub fn is_all(&self) -> bool {
+        matches!(self.0.as_slice(), [s] if s.max.is_none() && s.lo() == 0)
+    }
+
+    /// Everything in either set (`|`).
+    pub fn union(self, other: SpanSet) -> Self {
+        Self::from_spans(self.0.into_iter().chain(other.0))
+    }
+
+    /// Everything in both sets (`,`). Pairwise, because both sides are already
+    /// disjoint and ascending, so no pair can produce more than one span.
+    pub fn intersect(self, other: SpanSet) -> Self {
+        let mut out = Vec::new();
+        for a in &self.0 {
+            for b in &other.0 {
+                let min = match (a.min, b.min) {
+                    (None, m) | (m, None) => m,
+                    (Some(x), Some(y)) => Some(x.max(y)),
+                };
+                let max = match (a.max, b.max) {
+                    (None, m) | (m, None) => m,
+                    (Some(x), Some(y)) => Some(x.min(y)),
+                };
+                let s = Span { min, max };
+                if s.is_satisfiable() {
+                    out.push(s);
+                }
+            }
+        }
+        Self::from_spans(out)
+    }
+
+    /// Everything this set excludes (`!`). Over the non-negative integers, so the
+    /// gap below the first span is open-ended `None` — the same spelling `<=` has
+    /// always stored.
+    pub fn complement(self) -> Self {
+        let mut out = Vec::new();
+        // `None` = "from the bottom of the domain", which is what the first gap
+        // starts at; afterwards it is the value one past the previous span.
+        let mut cursor: Option<u128> = None;
+        for s in &self.0 {
+            // Only the first span of a canonical set can be open below, and a `lo`
+            // of 0 leaves no room beneath it — both are "no gap here", not a span.
+            if let Some(lo) = s.min.filter(|lo| *lo > 0) {
+                out.push(Span { min: cursor, max: Some(lo - 1) });
+            }
+            // An open top, or one at the ceiling of the domain, leaves nothing above.
+            match s.max.and_then(|hi| hi.checked_add(1)) {
+                None => return Self::from_spans(out),
+                Some(next) => cursor = Some(next),
+            }
+        }
+        out.push(Span { min: cursor, max: None });
+        Self::from_spans(out)
+    }
+}
+
+/// Order two high edges with an open end (`None` = unbounded) last.
+fn cmp_hi(a: Option<u128>, b: Option<u128>) -> std::cmp::Ordering {
+    match (a, b) {
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (Some(x), Some(y)) => x.cmp(&y),
     }
 }
 
@@ -536,10 +831,17 @@ impl Criteria {
                         min.map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
                         max.map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
                     ),
+                    AxisPredicate::Spans { .. } => {
+                        format!("{}: no value can satisfy those spans together", def.key)
+                    }
                     AxisPredicate::Sequence { .. } => {
                         format!("{}: an empty label sequence configures nothing", def.key)
                     }
                 });
+                continue;
+            }
+            if let Some(why) = pred.shape_problem() {
+                out.push(format!("{}: {why}", def.key));
             }
         }
         // `ix_count` is `ix_labels.len()`, so a row carrying both must agree with

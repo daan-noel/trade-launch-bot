@@ -146,7 +146,7 @@ pub const SEED_ACTIVITY_WINDOW_DAYS: i64 = 7;
 /// How far back a the `prior_launches` fingerprint axis tally is primed — the trailing window
 /// a creator's launch count is counted over.
 ///
-/// The metric is a creator-history filter, and history has to be bounded somewhere:
+/// The axis is a creator-history filter, and history has to be bounded somewhere:
 /// unbounded would make the count depend on how long the `tokens` table has existed,
 /// so the same creator would read differently in a backtest than live. A trailing
 /// window makes it one definition on both sides. Widening it is a rule change, not a

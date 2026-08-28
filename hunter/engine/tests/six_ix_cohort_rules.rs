@@ -16,6 +16,7 @@
 //! These are the same JSON documents inserted into `strategy_rules`; the DB rows and
 //! this file are one text, so a change to either without the other fails here.
 
+use hunter_engine::fingerprint::axis::{AxisId, AxisPredicate, Criteria};
 use hunter_engine::metrics::evaluator::Operator;
 use hunter_engine::metrics::flow_slice::SLICE_PARAM;
 use hunter_engine::metrics::{MetricId, Windows};
@@ -56,15 +57,15 @@ const WINNER: &str = r#"{
 ///
 /// It is the cleaner statement of the six transferable questions: money going in now
 /// (`net_flow(5)`), accelerating against its own pace (`trade_share`), a real launch
-/// (`first_slot_buy`), and a crowd rather than one wallet churning (`trades_per_wallet`).
+/// (the `first_slot_buy_lamports` axis in [`RUNNER_UP_CRITERIA`], NOT a condition), and
+/// a crowd rather than one wallet churning (`trades_per_wallet`).
 ///
 /// 17.2/day: mean +5.22%, OOS +5.59, ex-top-5 +2.33, migration 22.9% against a 6.26%
 /// pool baseline, latency-flat.
 const RUNNER_UP: &str = r#"{
   "entry": {
     "m_state": {
-      "time":           [{"operator": ">=", "value": 60}],
-      "first_slot_buy": [{"operator": ">=", "value": 6.41}]
+      "time": [{"operator": ">=", "value": 60}]
     },
     "m_flow_window": [
       { "window_size_sec": 5, "net_flow": [{"operator": ">=", "value": 0.79}] },
@@ -203,6 +204,20 @@ fn the_winner_keeps_all_four_measured_terms() {
     assert_eq!(one(entry, MetricId::LifeGrossFlow), (Operator::Gte, 43.6, Windows::NONE));
 }
 
+/// The runner-up's launch-size term, in the vocabulary that owns it.
+///
+/// `first_slot_buy >= 6.41` was an `m_state` METRIC when the rule was fitted, back when
+/// a fingerprint pinned one bucket width and a threshold had no axis spelling. An axis
+/// predicate is an inclusive range with either bound open, so the same term is one
+/// criterion — and it belongs there, because it is fixed by the creation slot and
+/// selects WHICH tokens arm rather than WHEN the rule fires.
+///
+/// Pinned because dropping a term WIDENS a rule: without this the runner-up arms on
+/// every launch size, which is not the rule that was measured.
+const RUNNER_UP_CRITERIA: &str = r#"{
+  "first_slot_buy_lamports": { "kind": "range", "min": "6410000000" }
+}"#;
+
 /// The runner-up's four terms, and the two unit conversions a hand edit gets wrong.
 #[test]
 fn the_runner_up_keeps_its_terms_in_the_units_it_was_fitted_in() {
@@ -215,10 +230,12 @@ fn the_runner_up_keeps_its_terms_in_the_units_it_was_fitted_in() {
         (Operator::Lte, 2.0, Windows::secs(10.0)),
         "a crowd, not one wallet churning — a COUNT ratio, never an identity"
     );
+    let criteria: Criteria =
+        serde_json::from_str(RUNNER_UP_CRITERIA).expect("runner-up criteria parse");
     assert_eq!(
-        one(entry, MetricId::FirstSlotBuy),
-        (Operator::Gte, 6.41, Windows::NONE),
-        "a THRESHOLD, which a fingerprint bucket cannot express"
+        criteria.get(AxisId::FirstSlotBuyLamports),
+        Some(&AxisPredicate::Range { min: Some(6_410_000_000), max: None }),
+        "the launch term is an axis: 6.41 SOL in LAMPORTS, open above"
     );
     // The fitted `trade_count(3)/trade_count(60) >= 0.0769` is a FRACTION; the metric
     // unit is percent. Shipping 0.0769 here would gate on ~0.08%, i.e. on nothing.

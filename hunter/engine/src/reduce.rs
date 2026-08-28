@@ -26,7 +26,7 @@ use crate::event::{
     Portion, PositionDelta, PositionStatus, RuleId, TradeMode,
 };
 use crate::fingerprint::{match_all, MatchPhase};
-use crate::grouping::{lamports_to_sol, TokenFingerprint, LAMPORTS_PER_SOL_F64};
+use crate::grouping::{TokenFingerprint, LAMPORTS_PER_SOL_F64};
 use crate::metrics::Ts;
 use crate::state::{EngineState, PositionRef, Settled, TokenState};
 
@@ -142,12 +142,6 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                 token.first_slot_settled = true;
                 token.tf.first_slot_buy_lamports = Some(buy_lamports);
                 token.tf.first_slot_sell_lamports = Some(sell_lamports);
-                // The metric reads the SAME number the fingerprint axis ranges over —
-                // seeded here rather than at `TokenCreated` because this is where it
-                // exists. A rule gated on `m_state.first_slot_buy` therefore reads
-                // NaN (and cannot fire) until this event, exactly like a
-                // `PendingFirstSlot` arm.
-                token.track.seed_first_slot_buy(lamports_to_sol(buy_lamports));
                 let hits = match_all(&state.fps, &token.tf, MatchPhase::Full);
                 let pending: SmallVec<[RuleId; 4]> = token
                     .arms

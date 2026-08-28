@@ -52,6 +52,8 @@ Inside `vsol < 46` it is mild (same-tmpl 4.4% vs 7.7% at rise < 50). Not a hard 
 Peak resp is 20–60 s. `age < 180` inside `vsol < 46` doubles resp (same-tmpl 8.4%
 vs 4.3%; mixed 11.4% vs 6.1%) and keeps 1,619 / 2,775 hits (58%). He still fires
 on older deep tokens. Do not treat “too old” like “failed the create door.”
+On the full-tape harvest that cut is the wrong direction: `age < 20` is the
+dump and `age < 180` keeps it ([ix-concentrate.md](ix-concentrate.md)).
 
 ## Conjunction that is actually true at the fire
 

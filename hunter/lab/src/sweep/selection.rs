@@ -29,7 +29,7 @@
 
 use std::fmt::Write as _;
 
-use hunter_engine::fingerprint::{AxisId, AxisPredicate, AxisUnit, Criteria};
+use hunter_engine::fingerprint::{AxisId, AxisPredicate, AxisUnit, Criteria, SpanSet};
 use hunter_engine::grouping::{
     normalize_labels, parse_filter, sol_label, GroupField, GroupKey, GroupValue,
 };
@@ -96,15 +96,22 @@ impl ClauseValue {
             Some(AxisUnit::Lamports) => sol_label(*v),
             _ => v.to_string(),
         };
+        let window = |min: &Option<u128>, max: &Option<u128>| match (min, max) {
+            (Some(a), Some(b)) if a == b => n(a),
+            (Some(a), Some(b)) => format!("{}–{}", n(a), n(b)),
+            (Some(a), None) => format!("≥{}", n(a)),
+            (None, Some(b)) => format!("≤{}", n(b)),
+            (None, None) => "any".to_string(),
+        };
         match self {
             ClauseValue::Axis(AxisPredicate::Sequence { labels }) => labels.join(" | "),
-            ClauseValue::Axis(AxisPredicate::Range { min, max }) => match (min, max) {
-                (Some(a), Some(b)) if a == b => n(a),
-                (Some(a), Some(b)) => format!("{}–{}", n(a), n(b)),
-                (Some(a), None) => format!("≥{}", n(a)),
-                (None, Some(b)) => format!("≤{}", n(b)),
-                (None, None) => "any".to_string(),
-            },
+            ClauseValue::Axis(AxisPredicate::Range { min, max }) => window(min, max),
+            // A `!=` / `|` axis reads as the alternatives it accepts, in the same
+            // window vocabulary — one span per alternative, so nothing about the
+            // pinned set is hidden behind a summary.
+            ClauseValue::Axis(AxisPredicate::Spans { spans }) => {
+                spans.iter().map(|s| window(&s.min, &s.max)).collect::<Vec<_>>().join(" | ")
+            }
             ClauseValue::Text(s) => s.clone(),
             ClauseValue::Flag(b) => b.to_string(),
             ClauseValue::AnyOf(vs) => format!("any of [{}]", vs.join(", ")),
@@ -392,6 +399,9 @@ fn key_value(v: &GroupValue) -> ClauseValue {
         }
         GroupValue::Window { min, max } => {
             ClauseValue::Axis(AxisPredicate::Range { min: *min, max: *max })
+        }
+        GroupValue::Windows { spans } => {
+            ClauseValue::Axis(SpanSet::from_spans(spans.iter().copied()).into_predicate())
         }
     }
 }

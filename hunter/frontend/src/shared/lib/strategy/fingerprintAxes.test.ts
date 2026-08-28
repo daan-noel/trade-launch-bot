@@ -6,6 +6,10 @@ import {
   compareBounds,
   criteriaProblems,
   exactPredicate,
+  notRangePredicate,
+  predicateFromSpans,
+  predicatesOverlap,
+  spanSetFrom,
   formatBound,
   formatPredicate,
   isAxisId,
@@ -172,5 +176,59 @@ describe('criteriaProblems', () => {
       [],
     );
     expect(criteriaProblems({ ix_labels: labels, ix_count: exactPredicate('5') })).toHaveLength(1);
+  });
+});
+
+describe('the span algebra', () => {
+  // The invariant the whole design rests on: two spellings of one token set are ONE
+  // stored value, so `find_or_create` cannot fork a second row for a fingerprint
+  // that already exists. Mirrors the Rust
+  // `two_spellings_of_one_token_set_store_identically`.
+  it('stores two spellings of one token set identically', () => {
+    expect(notRangePredicate('3', '3')).toEqual(predicateFromSpans([{ max: '2' }, { min: '4' }]));
+    // Adjacent and overlapping windows are one window, never two spans.
+    expect(predicateFromSpans([{ min: '1', max: '3' }, { min: '4', max: '6' }])).toEqual({
+      kind: 'range',
+      min: '1',
+      max: '6',
+    });
+    expect(predicateFromSpans([{ min: '7', max: '8' }, { min: '1', max: '2' }])).toEqual({
+      kind: 'spans',
+      spans: [{ min: '1', max: '2' }, { min: '7', max: '8' }],
+    });
+  });
+
+  it('compares bounds as decimal strings, so a ceiling stays its own amount', () => {
+    const nearCeiling = '18446744073709551614';
+    expect(spanSetFrom([{ min: CEILING, max: CEILING }, { min: nearCeiling, max: nearCeiling }])).toEqual([
+      { min: nearCeiling, max: CEILING },
+    ]);
+  });
+
+  it('matches and overlaps across every span of a gap predicate', () => {
+    const gate = notRangePredicate('3', '5');
+    expect(predicateMatches(gate, '2')).toBe(true);
+    expect(predicateMatches(gate, '4')).toBe(false);
+    expect(predicateMatches(gate, '6')).toBe(true);
+    // A filter box asks "could this row match anything I typed" — containment for a
+    // bare value, so this only widens what the box can ask.
+    expect(predicatesOverlap(gate, exactPredicate('6'))).toBe(true);
+    expect(predicatesOverlap(gate, exactPredicate('4'))).toBe(false);
+    expect(predicatesOverlap(gate, { kind: 'range', min: '4', max: '9' })).toBe(true);
+  });
+
+  // A multi-span row is only ever written canonical, so a hand-written one that is
+  // not must be REFUSED rather than normalised on read — normalising would let two
+  // rows describe one token set. Mirrors the Rust
+  // `a_non_canonical_span_list_is_refused_at_the_write_edge`.
+  it('refuses a non-canonical span list at the write edge', () => {
+    const bad = (spans: { min?: string; max?: string }[]) =>
+      criteriaProblems({ ix_count: { kind: 'spans', spans } });
+    expect(bad([{ min: '1', max: '2' }])).toHaveLength(1); // one span is a plain range
+    expect(bad([])).toHaveLength(1); // no span matches nothing
+    expect(bad([{ min: '4', max: '9' }, { min: '1', max: '2' }])).toHaveLength(1); // descending
+    expect(bad([{ min: '1', max: '4' }, { min: '3', max: '9' }])).toHaveLength(1); // overlapping
+    expect(bad([{ min: '1', max: '2' }, { min: '3', max: '9' }])).toHaveLength(1); // touching
+    expect(bad([{ min: '1', max: '2' }, { min: '7', max: '8' }])).toHaveLength(0);
   });
 });

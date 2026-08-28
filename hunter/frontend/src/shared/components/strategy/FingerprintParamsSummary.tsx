@@ -11,6 +11,7 @@ import {
   axisDef,
   configuredAxes,
   formatPredicate,
+  predicateSpans,
   type AxisId,
   type AxisPredicate,
 } from 'lib/strategy/fingerprintAxes';
@@ -341,7 +342,11 @@ export function fingerprintIdentityKey(fp: Fingerprint | undefined, fallbackId?:
       .map(([id, pred]) =>
         pred.kind === 'sequence'
           ? `${id}:${(configuredIxLabels(pred.labels) ?? []).join(',')}`
-          : `${id}:${pred.min ?? ''}-${pred.max ?? ''}`,
+          // Every span, so a `!=` / `|` axis sorts on the whole set it accepts
+          // rather than on its first window.
+          : `${id}:${predicateSpans(pred)
+              .map((sp) => `${sp.min ?? ''}-${sp.max ?? ''}`)
+              .join('+')}`,
       )
       .join(''),
     // The pattern SEQUENCES, not their count: two fingerprints matching one

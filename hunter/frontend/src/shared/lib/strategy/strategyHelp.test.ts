@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { GROUP_HELP, METRIC_HELP, metricHelpBody, STRICT_PARAM_HELP } from './strategyHelp';
+import {
+  FINGERPRINT_FIELD_HELP,
+  GROUP_HELP,
+  METRIC_HELP,
+  metricHelpBody,
+  STRICT_PARAM_HELP,
+} from './strategyHelp';
 
 const SPEC = { unit: 'sol', eq_tolerance: 0.1, monotonic: false };
 
@@ -88,7 +94,7 @@ describe('the help text speaks the registry vocabulary', () => {
   );
 
   const bodies = (): [string, string][] =>
-    [GROUP_HELP, METRIC_HELP, STRICT_PARAM_HELP].flatMap((table) =>
+    [GROUP_HELP, METRIC_HELP, STRICT_PARAM_HELP, FINGERPRINT_FIELD_HELP].flatMap((table) =>
       Object.entries(table).flatMap(([key, tip]): [string, string][] => [
         [key, tip.title],
         [key, tip.body],
@@ -108,6 +114,19 @@ describe('the help text speaks the registry vocabulary', () => {
           name,
         );
       }
+    }
+  });
+
+  it('documents no metric the registry does not declare', () => {
+    // The retired-name regex below is a list a human maintains; this is not. A metric
+    // deleted from the registry leaves its METRIC_HELP entry unreachable
+    // (`METRIC_HELP[row.metric]` only ever sees registry rows) and silently stale —
+    // which is how `first_slot_buy`, `ix_count` and `prior_launches` outlived their
+    // move to the fingerprint axes. Keys here are metric names and nothing else:
+    // a strict param belongs in STRICT_PARAM_HELP.
+    for (const key of Object.keys(METRIC_HELP)) {
+      expect(metrics, `METRIC_HELP documents ${key}, which is not a registry metric`)
+        .toContain(key);
     }
   });
 

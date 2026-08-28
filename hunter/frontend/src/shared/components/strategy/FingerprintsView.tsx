@@ -55,10 +55,11 @@ import {
   AXES,
   axisDef,
   formatPredicate,
-  parseBound,
-  predicateMatches,
+  predicateSpans,
+  predicatesOverlap,
   type AxisDef,
 } from 'lib/strategy/fingerprintAxes';
+import { parseAxisPredicate } from 'lib/strategy/fingerprintGrammar';
 
 const fingerprintRowKey = (r: Fingerprint) => r.id;
 
@@ -85,8 +86,11 @@ function axisText(r: Fingerprint, def: AxisDef): string | null {
  *  smallest amount instead of no criterion. */
 function axisSortValue(r: Fingerprint, def: AxisDef): number | null {
   const p = (r.criteria ?? {})[def.id];
-  if (p?.kind !== 'range') return null;
-  const b = p.min ?? p.max;
+  if (p == null || p.kind === 'sequence') return null;
+  // The FIRST span's edge: a column orders on one number, and where the accepted
+  // set begins is where a reader scanning it expects that number to be.
+  const [first] = predicateSpans(p);
+  const b = first?.min ?? first?.max;
   if (b == null) return null;
   const n = Number(b);
   return Number.isFinite(n) ? (def.unit === 'lamports' ? n / 1e9 : n) : null;
@@ -324,15 +328,20 @@ export function FingerprintsView({
         sortValue: (r: Fingerprint) => axisSortValue(r, def),
         filterMatch: (r: Fingerprint, raw: string) => {
           const p = (r.criteria ?? {})[def.id];
-          if (p?.kind !== 'range') return false;
-          const want = parseBound(raw, def.unit);
-          // Unparseable input matches nothing rather than everything: a dropped
-          // filter reads as "no filter", which widens the table silently.
+          if (p == null || p.kind === 'sequence') return false;
+          // Read through the SAME grammar the axis form saves with, so a condition
+          // pasted from a row selects that row. Unparseable input matches nothing
+          // rather than everything: a dropped filter reads as "no filter", which
+          // widens the table silently.
+          const want = parseAxisPredicate(raw, def.unit);
           if (want == null) return false;
-          return predicateMatches(p, want);
+          // Overlap, not containment — "could this row match anything I typed". For
+          // a bare value the two are the same, so this only widens what the box can
+          // ask, never what a plain amount answers.
+          return predicatesOverlap(p, want);
         },
         filterPlaceholder: def.unit === 'lamports' ? 'e.g. 1.515' : 'e.g. 3',
-        filterTitle: `${def.label} — ${def.definition}\n\nType a value; a row matches when its window contains it.`,
+        filterTitle: `${def.label} — ${def.definition}\n\nType a value or a condition (1..5, >=2, !=3, <=2 | >=7); a row matches when its own condition can accept something you typed.`,
         sortable: true,
         cellClassName: cellTint(def.id),
       })),

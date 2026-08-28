@@ -27,6 +27,29 @@ Order, unset axes skipped:
 Tokens match the axis chips (`max`, `fs_buy`, `bkt`), not a second abbreviation
 set. Empty → `ALL`. Example: `3ix:Buy · max=1 · bkt=1`.
 
+### A numeric chip names the whole set the axis accepts
+
+Both numeric predicate shapes render through `AxisPredicate::spans`, so one span
+list is one chip body:
+
+| Predicate | Chip body |
+| --- | --- |
+| `1.5 … 1.5` | `1.5` |
+| `1.5 … 2` | `1.5~2` |
+| open above / below | `1.5~` / `~2` |
+| the complement of ONE window | `!3`, `!3~5` |
+| anything else multi-span | `1~2\|7~8` |
+
+A gap set is named for the hole it excludes rather than the two half-lines around
+it, because `ix_count=!3` says what the operator asked for and `ix_count=~2|4~`
+does not. It is still a pure function of the span list, so one token set has
+exactly one name.
+
+`is_auto_name_chip` strips a leading `!` and splits the body on `|`; each part is
+a span the single-window grammar already describes. So the recogniser gained the
+two new shapes as one more split, not a second grammar — and a name carrying one
+still heals when the axes drift.
+
 A `wildcard` row short-circuits the whole generator to `ALL`: it carries no axis
 (the `fingerprints_wildcard_excludes_axes` CHECK) and never reads its bucket
 width, so `bkt=exact` must not leak into the name of the one row that matches

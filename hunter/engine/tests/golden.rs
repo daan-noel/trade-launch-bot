@@ -13,7 +13,7 @@ use hunter_engine::event::{
 };
 use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria, Fingerprint, FingerprintId};
 use hunter_engine::grouping::TokenFingerprint;
-use hunter_engine::metrics::{Side, TradeLite, Ts, Windows};
+use hunter_engine::metrics::{Side, TradeLite, Ts};
 use hunter_engine::reduce::reduce;
 use hunter_engine::rule_params::RuleParams;
 use hunter_engine::EngineState;
@@ -1008,74 +1008,6 @@ fn first_slot_mismatch_drops_the_arm() {
     );
     assert!(buys(&fx).is_empty());
     assert!(!s.tokens.contains_key(&m), "no active arm → token pruned");
-}
-
-/// `m_state.first_slot_buy` is a **settle-time** fact, not a birth-time one — the
-/// creation slot's buy total is summed from that slot's trades, so it does not exist
-/// at `TokenCreated`. It must read `NaN` until the settle and the real number after,
-/// and `0` (a launch nobody bought into) must be a value, never a stand-in for
-/// "not counted yet": a `0` at birth would let `first_slot_buy <= N` pass on every
-/// token the instant it appears.
-#[test]
-fn first_slot_buy_is_nan_until_the_slot_settles() {
-    use hunter_engine::metrics::MetricId;
-
-    let mut s = EngineState::new();
-    // A rule that arms but can never enter, so the token stays tracked and readable.
-    reduce(
-        &mut s,
-        reload(
-            vec![rule(
-                1,
-                1,
-                json!({ "entry": { "m_state": {
-                    "time": [{ "operator": ">=", "value": 1e9 }] } } }),
-            )],
-            vec![cu_fp(1)],
-        ),
-    );
-    let read = |s: &EngineState, mint: &str| -> f64 {
-        s.tokens[&Mint::from(mint)]
-            .track
-            .value(MetricId::FirstSlotBuy, Windows::NONE, None, ts(1.0))
-    };
-
-    for mint in ["funded", "dust"] {
-        reduce(
-            &mut s,
-            Event::TokenCreated {
-                mint: Mint::from(mint),
-                fp: cu_token(),
-                at: ts(0.0),
-                creator_wallet_hash: None,
-                identity: None,
-            },
-        );
-        assert!(read(&s, mint).is_nan(), "{mint}: unknown until the slot settles");
-    }
-
-    reduce(
-        &mut s,
-        Event::FirstSlotSettled {
-            mint: Mint::from("funded"),
-            buy_lamports: 6_410_000_000,
-            sell_lamports: 0,
-            at: ts(1.0),
-        },
-    );
-    assert!((read(&s, "funded") - 6.41).abs() < 1e-9, "seeded in human SOL");
-
-    // A launch nobody bought into settles at a REAL zero.
-    reduce(
-        &mut s,
-        Event::FirstSlotSettled {
-            mint: Mint::from("dust"),
-            buy_lamports: 0,
-            sell_lamports: 0,
-            at: ts(1.0),
-        },
-    );
-    assert_eq!(read(&s, "dust"), 0.0, "0 SOL bought is a value, not absence");
 }
 
 #[test]

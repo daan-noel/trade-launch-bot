@@ -124,4 +124,5 @@ Full-tape money: [ix-machine-money.md](ix-machine-money.md). All live gates
 as one rule, tight packs unfillable:
 [ix-combined-machine.md](ix-combined-machine.md). Early fire + gap
 duration: [ix-early-gap.md](ix-early-gap.md). Harvest path after the
-95 ms fill: [ix-harvest-path.md](ix-harvest-path.md).
+95 ms fill: [ix-harvest-path.md](ix-harvest-path.md). Live concentration
+of that harvest: [ix-concentrate.md](ix-concentrate.md).

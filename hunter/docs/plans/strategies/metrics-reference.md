@@ -216,26 +216,27 @@ wallet rotation that renders identity useless. Like `buy_share` it is `NaN` on a
 window, and for a sharper reason: `0.0` would let `trades_per_wallet <= 2` pass on a DEAD
 tape, which is the exact reading the gate exists to exclude.
 
-## Launch size (`m_state.first_slot_buy`)
+## Launch size is an AXIS, not a metric
 
-Total buy SOL that landed in the token's **creation slot** — the same quantity
-`fingerprints.first_slot_buy_lamports` buckets. It exists as a metric because a
-fingerprint pins ONE bucket of it and a rule that means a threshold (`>= 6.41`) has no
-other spelling.
+Total buy SOL in the token's creation slot is `first_slot_buy_lamports`, a **fingerprint
+axis**. It is not in `m_state` and there is no metric spelling of it.
 
-**Seeded at `FirstSlotSettled`, not `TokenCreated`.** The number is summed from that
-slot's trades, so it does not exist at birth: it reads `NaN` until the settle, and a rule
-gated on it cannot fire at launch. That is the fact, not a limitation — the same two-phase
-split the fingerprint matcher already uses (`MatchPhase::Instant` vs `Full`).
+The test a fact has to pass to be a metric is WHEN it can change. `time` moves every
+tick; `liquidity` moves on every trade. The creation-slot total is fixed by the creation
+slot: it selects WHICH tokens a rule arms on, never when it fires, which is what a
+fingerprint is for — the same reading that puts `ix_count` and `prior_launches` on the axes.
 
-`0` is a REAL value (a launch nobody bought into), so absence is carried by not seeding
-rather than by seeding `0` — the same distinction `prior_launches` makes, and for the same
-reason: a `0` standing in for "not counted yet" would let `first_slot_buy <= N` pass on
-every token the instant it appears. Static once seeded, so an entry gate on it is a token
-filter that can never re-trigger.
+It was briefly both, on one argument: a fingerprint pinned a bucket `floor(v/width)`, so
+a threshold like `>= 6.41` had no axis spelling. Ranges retired the bucket. An
+[`AxisPredicate`](../../../engine/src/fingerprint/axis.rs) is an inclusive `[min, max]`
+with either bound open, plus `Spans` for `!=` and `|`, so `>= 6.41 SOL` is
+`{"first_slot_buy_lamports": {"kind": "range", "min": "6410000000"}}` — and the axis
+expresses strictly more than a condition list could.
 
-Offline it comes from `tokens_info.first_slot_buy_sol` (the live readout and the lab's
-metric-series both read that row), so the replayed and live values cannot disagree.
+The axis is **deferred**: it is summed from the creation slot's trades, so it does not
+exist at `TokenCreated`. A fingerprint configuring it holds the arm at
+`PendingFirstSlot` until `FirstSlotSettled`, and an unknown value FAILS a configured
+axis, so an unscreened token never arms.
 
 ## The nested slice (`m_flow_window.trade_share` / `.sol_share`)
 

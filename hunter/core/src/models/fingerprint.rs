@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use hunter_engine::fingerprint::{
     AxisId, AxisKind, AxisPredicate, AxisUnit, Criteria, Fingerprint as EngineFingerprint,
-    FingerprintId,
+    FingerprintId, Span, SpanSet,
 };
 use hunter_engine::grouping::sol_label;
 
@@ -98,8 +98,9 @@ impl Fingerprint {
     ///
     /// * the canonical `{"max_cost_lamports": {"kind":"range","min":"1","max":"2"}}`
     /// * a bare `{"max_cost_lamports": {"min":"1","max":"2"}}` — the form a hand
-    ///   -written script or a form POST produces, defaulted to a range because every
-    ///   numeric axis has exactly one predicate shape today.
+    ///   -written script or a form POST produces. The tag is inferred from the keys
+    ///   present, never guessed: a `spans` array is the multi-window shape, anything
+    ///   else on a numeric axis is a range.
     ///
     /// An **unknown axis key or an unparseable predicate is an error**, never a
     /// silent drop: a dropped axis reads as "not part of identity", which *widens*
@@ -248,6 +249,9 @@ fn parse_predicate(axis: AxisId, value: &serde_json::Value) -> Result<AxisPredic
         // Shorthand: infer the tag from the axis's own kind, so a caller writing
         // `{"min": 1}` cannot accidentally name a predicate the axis cannot carry.
         let kind = match axis.def().kind {
+            // `spans` is the only key that distinguishes the two numeric shapes, so
+            // it IS the tag when no explicit one was written.
+            AxisKind::Numeric if v.get("spans").is_some() => "spans",
             AxisKind::Numeric => "range",
             AxisKind::Sequence => "sequence",
         };
@@ -282,6 +286,15 @@ pub const WILDCARD_NAME: &str = "ALL";
 /// against a negative bound to the grammar checker.
 const RANGE_SEP: char = '~';
 
+/// Separates the spans of a multi-window chip (`1~2|7~8`) — the same `|` the
+/// condition grammar uses for OR, so a chip reads the way it was typed. Mirrored
+/// by the TS `SPAN_SEP`.
+const SPAN_SEP: &str = "|";
+
+/// Marks a chip that names what it EXCLUDES (`ix_count=!3`). Mirrored by the TS
+/// `NOT_PREFIX`.
+const NOT_PREFIX: char = '!';
+
 /// One axis's chip, or `None` when the axis names nothing renderable.
 fn axis_chip(id: AxisId, pred: &AxisPredicate) -> Option<String> {
     match pred {
@@ -291,19 +304,57 @@ fn axis_chip(id: AxisId, pred: &AxisPredicate) -> Option<String> {
             Some(ix_labels_count_tail(labels))
         }
         AxisPredicate::Sequence { .. } => None,
-        AxisPredicate::Range { min, max } => {
+        // Both numeric shapes read through `spans`, so a `!=` / `|` axis is named
+        // by the same code that names a plain range — the drift this file used to
+        // have (a shape emitted but not recognised, so its name never healed) stays
+        // structurally impossible.
+        AxisPredicate::Range { .. } | AxisPredicate::Spans { .. } => {
             let unit = id.def().unit;
-            let n = |v: &u128| render_bound(*v, unit);
-            let body = match (min, max) {
-                (Some(a), Some(b)) if a == b => n(a),
-                (Some(a), Some(b)) => format!("{}{RANGE_SEP}{}", n(a), n(b)),
-                (Some(a), None) => format!("{}{RANGE_SEP}", n(a)),
-                (None, Some(b)) => format!("{RANGE_SEP}{}", n(b)),
-                (None, None) => return None,
+            let spans = pred.spans();
+            // A gap set is named for the hole it excludes, not the two half-lines
+            // around it: `ix_count=!3` rather than `ix_count=~2|4~`. Derived from
+            // the span list, so one token set still has exactly one name.
+            let body = match hole_of(&spans) {
+                Some(hole) => format!("{NOT_PREFIX}{}", span_body(hole, unit)?),
+                None => {
+                    let parts: Vec<String> =
+                        spans.iter().filter_map(|s| span_body(*s, unit)).collect();
+                    if parts.is_empty() {
+                        return None;
+                    }
+                    parts.join(SPAN_SEP)
+                }
             };
             Some(format!("{}={body}", id.def().chip))
         }
     }
+}
+
+/// The single window a span list excludes, when it excludes exactly one — the
+/// `!=` case. `None` for anything else, including a list that bounds only one end
+/// (which already reads fine as a plain range).
+fn hole_of(spans: &[Span]) -> Option<Span> {
+    if spans.len() < 2 {
+        return None;
+    }
+    let holes = SpanSet::from_spans(spans.iter().copied()).complement();
+    match holes.spans() {
+        [hole] if hole.min.is_some() && hole.max.is_some() => Some(*hole),
+        _ => None,
+    }
+}
+
+/// One span as chip text (`1.5`, `1.5~2`, `1.5~`, `~2`). `None` for the
+/// all-open span, which names nothing.
+fn span_body(span: Span, unit: AxisUnit) -> Option<String> {
+    let n = |v: u128| render_bound(v, unit);
+    Some(match (span.min, span.max) {
+        (Some(a), Some(b)) if a == b => n(a),
+        (Some(a), Some(b)) => format!("{}{RANGE_SEP}{}", n(a), n(b)),
+        (Some(a), None) => format!("{}{RANGE_SEP}", n(a)),
+        (None, Some(b)) => format!("{RANGE_SEP}{}", n(b)),
+        (None, None) => return None,
+    })
 }
 
 /// One bound, in the axis's display unit. Lamports read as SOL (what the operator
@@ -355,16 +406,23 @@ fn is_auto_name_chip(part: &str) -> bool {
         return false;
     };
     let bound_ok = |s: &str| is_bound(s, axis.def().unit);
-    match value.split_once(RANGE_SEP) {
-        // `1.5~2`, `1.5~`, `~2` — at least one side present.
-        Some((lo, hi)) => match (lo.is_empty(), hi.is_empty()) {
-            (true, true) => false,
-            (true, false) => bound_ok(hi),
-            (false, true) => bound_ok(lo),
-            (false, false) => bound_ok(lo) && bound_ok(hi),
-        },
-        None => bound_ok(value),
-    }
+    // `!` names the hole a `!=` axis excludes; a nickname does not start a value
+    // with it, so stripping it here costs nothing.
+    let value = value.strip_prefix(NOT_PREFIX).unwrap_or(value);
+    // A multi-window chip is `|`-joined spans — each part is a span the
+    // single-window grammar already describes, so this is one more split, not a
+    // second grammar.
+    !value.is_empty()
+        && value.split(SPAN_SEP).all(|part| match part.split_once(RANGE_SEP) {
+            // `1.5~2`, `1.5~`, `~2` — at least one side present.
+            Some((lo, hi)) => match (lo.is_empty(), hi.is_empty()) {
+                (true, true) => false,
+                (true, false) => bound_ok(hi),
+                (false, true) => bound_ok(lo),
+                (false, false) => bound_ok(lo) && bound_ok(hi),
+            },
+            None => bound_ok(part),
+        })
 }
 
 /// One rendered bound: digits, at most one `.`, and — for a compute-unit axis — an
@@ -616,6 +674,77 @@ mod tests {
         );
     }
 
+    /// A `!=` axis is named for the hole it excludes, and a genuine multi-window
+    /// one lists its windows — both in the same chip grammar, so neither freezes as
+    /// an unrecognised nickname.
+    #[test]
+    fn gap_and_multi_window_chips_read_as_what_they_match() {
+        assert_eq!(
+            one(AxisId::IxCount, AxisPredicate::not_range(Some(3), Some(3))).auto_name(),
+            "ix_count=!3"
+        );
+        assert_eq!(
+            one(AxisId::IxCount, AxisPredicate::not_range(Some(3), Some(5))).auto_name(),
+            "ix_count=!3~5"
+        );
+        assert_eq!(
+            one(
+                AxisId::IxCount,
+                SpanSet::from_spans([Span::new(Some(1), Some(2)), Span::new(Some(7), Some(8))])
+                    .into_predicate()
+            )
+            .auto_name(),
+            "ix_count=1~2|7~8"
+        );
+    }
+
+    /// The invariant the whole span design rests on: two spellings of one token set
+    /// are ONE stored value, so `find_or_create` cannot fork a second row for a
+    /// fingerprint that already exists.
+    #[test]
+    fn two_spellings_of_one_token_set_store_identically() {
+        let not_three = AxisPredicate::not_range(Some(3), Some(3));
+        let or_arms = SpanSet::from_spans([Span::new(None, Some(2)), Span::new(Some(4), None)])
+            .into_predicate();
+        assert_eq!(not_three, or_arms);
+        // ...and therefore key identically, which is what the identity index compares.
+        assert_eq!(
+            serde_json::to_value(one(AxisId::IxCount, not_three).criteria).unwrap(),
+            serde_json::to_value(one(AxisId::IxCount, or_arms).criteria).unwrap()
+        );
+        // Adjacent and overlapping windows are one window, never two spans.
+        assert_eq!(
+            SpanSet::from_spans([Span::new(Some(1), Some(3)), Span::new(Some(4), Some(6))])
+                .into_predicate(),
+            AxisPredicate::range(Some(1), Some(6))
+        );
+    }
+
+    /// A multi-span row is only ever written canonical, so a hand-written one that
+    /// is not must be refused rather than normalised on read — normalising would let
+    /// two rows describe one token set.
+    #[test]
+    fn a_non_canonical_span_list_is_refused_at_the_write_edge() {
+        let bad = |spans: Vec<Span>| {
+            fp(Criteria::new().with(AxisId::IxCount, AxisPredicate::Spans { spans })).validate()
+        };
+        assert!(bad(vec![Span::new(Some(1), Some(2))]).is_err(), "one span is a plain range");
+        assert!(bad(vec![]).is_err(), "no span matches nothing");
+        assert!(
+            bad(vec![Span::new(Some(4), Some(9)), Span::new(Some(1), Some(2))]).is_err(),
+            "descending"
+        );
+        assert!(
+            bad(vec![Span::new(Some(1), Some(4)), Span::new(Some(3), Some(9))]).is_err(),
+            "overlapping"
+        );
+        assert!(
+            bad(vec![Span::new(Some(1), Some(2)), Span::new(Some(3), Some(9))]).is_err(),
+            "touching spans are one window"
+        );
+        assert!(bad(vec![Span::new(Some(1), Some(2)), Span::new(Some(7), Some(8))]).is_ok());
+    }
+
     #[test]
     fn a_wildcard_and_a_blank_row_both_name_the_token_set_they_describe() {
         let mut w = fp(Criteria::new());
@@ -641,6 +770,10 @@ mod tests {
                     AxisPredicate::range(Some(1), Some(200_000)),
                     AxisPredicate::range(Some(3), None),
                     AxisPredicate::range(None, Some(3)),
+                    AxisPredicate::not_range(Some(3), Some(3)),
+                    AxisPredicate::not_range(Some(3), Some(5)),
+                    SpanSet::from_spans([Span::new(Some(1), Some(2)), Span::new(Some(7), Some(8))])
+                        .into_predicate(),
                 ],
             };
             for pred in preds {

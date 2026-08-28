@@ -63,8 +63,9 @@ correct measurements of what they name, with a parity harness against real lake 
 * `m_flow_window(W).trades_per_wallet` — a crowd vs one wallet churning, as a **count
   ratio, never an identity**, so wallet rotation does not defeat it.
 * `m_flow_window{W, b}.trade_share` — how concentrated the tape is in time, scale-free.
-* `m_state.first_slot_buy` — the launch size as a **threshold** (a fingerprint pins one
-  bucket and cannot express `>= 6.41`).
+* The `first_slot_buy_lamports` **fingerprint axis** — the launch size as a threshold.
+  It is an axis and not a condition: the number is fixed by the creation slot, so it
+  selects which tokens arm. `>= 6.41 SOL` is the open range `{"min": "6410000000"}`.
 
 Definitions: [metrics-reference.md](metrics-reference.md). How to read a cohort rule and
 re-derive one: [cohort-entry-rule-anatomy.md](cohort-entry-rule-anatomy.md).

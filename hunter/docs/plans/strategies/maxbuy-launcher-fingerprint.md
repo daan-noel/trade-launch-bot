@@ -338,7 +338,7 @@ cuts plus one interaction are tested.
 ## Habit axes only, with a volume floor: the constraint set is nearly empty
 
 A launcher's *habit* axes are the values its software chooses and that are known at creation:
-`max_cost`, `spendable_in`, `init_buy`, `cu_limit`, `cu_price`. `first_slot_buy` is neither --
+`max_cost`, `spendable_in`, `init_buy`, `cu_limit`, `cu_price`. `first_slot_buy_lamports` is neither --
 it mixes the launcher's own bundle with outsiders joining, and it settles only after the
 creation slot closes. Re-running the screen on habit axes alone (1,088 deduped cells, singles
 and cu-pairs) with a tokens/day floor:

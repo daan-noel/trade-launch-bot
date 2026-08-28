@@ -4,8 +4,7 @@
 //!
 //! A **metric** is a named per-token quantity a rule can put `{operator, value}`
 //! conditions on. Metrics live in **groups** (one file per group):
-//! * `m_state` (static) — `time`, `liquidity`,
-//!   `first_slot_buy`
+//! * `m_state` (static) — `time`, `liquidity`
 //! * `m_price_lifetime` (static) — `stall`, `trail`, `rise` (lifetime peak/trough)
 //! * `m_price_window` (dynamic, strict param `window_size_sec`) — `trail`, `rise`
 //!   (rolling-window extrema; the dip trigger)
@@ -500,19 +499,6 @@ pub enum MetricId {
     Time,
     /// SOL reserves (`m_state`).
     Liquidity,
-    /// Total buy SOL that landed in the token's **creation slot** (`m_state`).
-    ///
-    /// "Was the launch real?" — it separates a funded launch from a dust one, and it
-    /// is the same quantity the fingerprint axis `first_slot_buy_lamports` ranges
-    /// over. Prefer the axis for a launch-shape THRESHOLD — it selects the token set
-    /// before any evaluation. This metric is for a condition that has to be read
-    /// alongside live tape state in the same rule.
-    ///
-    /// Static once seeded, so an entry gate on it is a token filter that can never
-    /// re-trigger. `NaN` until the creation slot settles — which is later than
-    /// `TokenCreated`, because the number is summed from that slot's trades. A rule
-    /// using it therefore cannot fire at birth; that is the fact, not a limitation.
-    FirstSlotBuy,
     /// Seconds since the price last set a **new all-time high** (`m_price_lifetime`)
     /// — NOT "since the last trade". Only a strictly higher price resets the clock,
     /// so on a token trading actively below its peak `stall` keeps climbing. Read
@@ -1015,18 +1001,6 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 0.1,
                 monotonic: false,
                 hue: 236,
-            },
-            MetricSpec {
-                id: MetricId::FirstSlotBuy,
-                name: "first_slot_buy",
-                description: "Total buy SOL that landed in the token's CREATION slot - was the launch funded. Seeded when that slot settles, so it is NaN at birth and a rule using it cannot fire at launch.",
-                unit: Unit::Sol,
-                eq_tolerance: 0.1,
-                // Static after the creation slot settles - it never moves, so no
-                // monotonic derivation.
-                monotonic: false,
-                // Between `time` (212) and `liquidity` (236), inside the snapshot family.
-                hue: 218,
             },
         ],
     },

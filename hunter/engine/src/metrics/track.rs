@@ -132,12 +132,6 @@ impl TokenTrack {
     }
 
 
-    /// Seed the creation slot's buy total (`m_state.first_slot_buy`). Called when
-    /// that slot SETTLES, not at creation — see [`StateMetrics::seed_first_slot_buy`].
-    pub fn seed_first_slot_buy(&mut self, sol: f64) {
-        self.state.seed_first_slot_buy(sol);
-    }
-
 
     /// Fold one trade into every group.
     pub fn on_trade(&mut self, t: TradeLite) {
@@ -252,9 +246,7 @@ impl TokenTrack {
         let window = windows.primary;
         let cur = self.cursor();
         match id {
-            Time | Liquidity | FirstSlotBuy => {
-                self.state.value(id, self.created_at, now)
-            }
+            Time | Liquidity => self.state.value(id, self.created_at, now),
             Stall | Trail | LifeRise => self.price_lifetime.value(id, now),
             LifeGrossFlow | LifeNetFlow | LifeBuy | LifeSell | LifeTradeCount => {
                 self.flow_lifetime.value(id)

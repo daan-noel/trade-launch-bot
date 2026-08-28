@@ -194,16 +194,6 @@ impl MetricSeries {
         self.track.seed_creator(hash);
     }
 
-    /// Seed the creation slot's buy total.
-    ///
-    /// Must be called before the first fold on every path that records a series, or
-    /// `first_slot_buy` reads `NaN` for the whole token and any gate on it is silently
-    /// unsatisfiable — the token is never entered, with no error anywhere. It is a
-    /// token-static fact, so the series records the same value on every row.
-    pub fn seed_first_slot_buy(&mut self, sol: f64) {
-        self.track.seed_first_slot_buy(sol);
-    }
-
     /// The deadness clock (newest meaningful-trade time) after every fold so far —
     /// the sparse-grid builder reads it to place the dead-flip tick (plan §P2).
     pub fn last_meaningful_at(&self) -> Ts {

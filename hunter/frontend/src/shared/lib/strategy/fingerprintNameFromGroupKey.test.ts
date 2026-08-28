@@ -7,7 +7,13 @@ import {
   isLegacyAutoName,
   isStaleAutoName,
 } from './fingerprintNameFromGroupKey';
-import { AXES, exactPredicate, type Criteria } from './fingerprintAxes';
+import {
+  AXES,
+  exactPredicate,
+  notRangePredicate,
+  predicateFromSpans,
+  type Criteria,
+} from './fingerprintAxes';
 import { WILDCARD_NAME } from './types';
 
 const SOL = 1_000_000_000n;
@@ -49,6 +55,16 @@ describe('fingerprintAutoName', () => {
     );
   });
 
+  // Golden strings, byte-equal with the Rust `gap_and_multi_window_chips_read_as_
+  // what_they_match`.
+  it('names a gap for the hole it excludes and a multi-window axis for its windows', () => {
+    expect(named({ ix_count: notRangePredicate('3', '3') })).toBe('ix_count=!3');
+    expect(named({ ix_count: notRangePredicate('3', '5') })).toBe('ix_count=!3~5');
+    expect(
+      named({ ix_count: predicateFromSpans([{ min: '1', max: '2' }, { min: '7', max: '8' }]) }),
+    ).toBe('ix_count=1~2|7~8');
+  });
+
   it('names the token set for a wildcard and for a blank draft', () => {
     expect(named({}, true)).toBe(WILDCARD_NAME);
     expect(named({})).toBe(WILDCARD_NAME);
@@ -88,6 +104,9 @@ describe('the auto-name grammar', () => {
               { kind: 'range' as const, min: '1', max: '200000' },
               { kind: 'range' as const, min: '3' },
               { kind: 'range' as const, max: '3' },
+              notRangePredicate('3', '3'),
+              notRangePredicate('3', '5'),
+              predicateFromSpans([{ min: '1', max: '2' }, { min: '7', max: '8' }]),
             ];
       for (const pred of preds) {
         const name = named({ [def.id]: pred });

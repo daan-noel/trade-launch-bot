@@ -556,9 +556,13 @@ next load (no per-metric frontend work).
   `FingerprintPicker`/`FingerprintForm` (registry-driven
   `metric_config` section + `VolumeIxPatternsEditor` for `m_flow_ix.ix_patterns`
   — add-row / remove-row / **Delete all** footer, the last confirming via the shared
-  `clearPrompt` also used by the flow-discovery cart). The form auto-fills
-  `Fingerprint::auto_name` from the axes (`3ix:Buy · max=1 · bkt=1`) and keeps a
-  typed nickname; pickers search axis text and show the chip row in the dropdown.
+  `clearPrompt` also used by the flow-discovery cart). Each numeric axis is ONE
+  `AxisConditionInput` — a condition expression (`3`, `1..5`, `>=2`, `!=3`,
+  `<=2 | >=7`) read through `fingerprintGrammar`, the TS mirror of the Rust
+  grammar, echoed as the predicate it parsed to and snapped to the canonical
+  spelling on blur. The form auto-fills `Fingerprint::auto_name` from the axes
+  (`3ix:Buy · max=1 · bkt=1`) and keeps a typed nickname; pickers search axis text
+  and show the chip row in the dropdown.
   `RulesView`/`FingerprintsView` (shared list+editor, mounted by both apps'
   `RulesPage`/`FingerprintsPage`; the lab page passes `onViewMatches`, which puts a
   chart row-action on every fingerprint opening its **matched tokens** dashboard —

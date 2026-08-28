@@ -27,9 +27,13 @@
 //! nothing here enumerates them.
 
 pub mod axis;
+pub mod grammar;
 pub mod token;
 
-pub use axis::{AxisDef, AxisId, AxisKind, AxisPhase, AxisPredicate, AxisUnit, Criteria, AXES};
+pub use axis::{
+    AxisDef, AxisId, AxisKind, AxisPhase, AxisPredicate, AxisUnit, Criteria, Span, SpanSet, AXES,
+};
+pub use grammar::{format_predicate, parse_predicate, parse_span_set, sol_text_to_lamports};
 pub use token::{extract_lamports, lamports_to_sol, normalize_labels, sol_to_lamports, TokenFingerprint};
 
 use serde::{Deserialize, Serialize};
@@ -176,9 +180,13 @@ pub fn matches_phase(fp: &Fingerprint, tf: &TokenFingerprint, phase: MatchPhase)
 /// the fail-closed direction, and it is the only one that cannot arm a rule on a
 /// token nobody screened.
 fn axis_matches(id: AxisId, pred: &AxisPredicate, tf: &TokenFingerprint) -> bool {
-    match pred {
-        AxisPredicate::Range { .. } => id.read_num(tf).is_some_and(|v| pred.matches_num(v)),
-        AxisPredicate::Sequence { .. } => id.read_seq(tf).is_some_and(|s| pred.matches_seq(s)),
+    // Routed by the predicate's AXIS KIND, not its variant, so a new numeric shape
+    // (`Spans` for `!=` / `|`) reads the same value through the same reader — a
+    // variant this loop had never heard of would otherwise fall through to
+    // "matches nothing" while the row still read as a numeric gate.
+    match pred.kind() {
+        AxisKind::Numeric => id.read_num(tf).is_some_and(|v| pred.matches_num(v)),
+        AxisKind::Sequence => id.read_seq(tf).is_some_and(|s| pred.matches_seq(s)),
     }
 }
 
@@ -369,6 +377,25 @@ mod tests {
         assert!(!matches_phase(&fp, &tf, MatchPhase::Instant), "we do not wait to reject");
         tf.cu_limit = Some(200_000);
         assert!(matches_phase(&fp, &tf, MatchPhase::Instant), "pending pass");
+    }
+
+    /// A `!=` / `|` axis is judged by the SAME loop a plain range is — routed by
+    /// axis kind, so the reader and the fail-closed rule are unchanged and only the
+    /// set of accepted values is wider.
+    #[test]
+    fn a_gap_axis_is_matched_like_any_other_numeric_axis() {
+        let fp = with(AxisId::IxCount, AxisPredicate::not_range(Some(3), Some(3)));
+        for (len, want) in [(2usize, true), (3, false), (4, true)] {
+            let tf = TokenFingerprint {
+                ix_labels: vec!["ix".to_string(); len],
+                ..Default::default()
+            };
+            assert_eq!(matches(&fp, &tf), want, "ix_count {len}");
+        }
+        // A configured axis with no observed value still FAILS closed, exactly as a
+        // range does — the gap shape widens what passes, never what is knowable.
+        let fp = with(AxisId::PriorLaunches, AxisPredicate::not_range(Some(0), Some(0)));
+        assert!(!matches(&fp, &TokenFingerprint { prior_launches: None, ..Default::default() }));
     }
 
     #[test]

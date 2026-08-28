@@ -204,7 +204,8 @@ fn drive(state: &mut EngineState, mint: &Mint) -> Vec<Effect> {
             identity: None,
         },
     );
-    // Seeds `first_slot_buy`, which does not exist until the creation slot closes.
+    // Settles the deferred fingerprint axes, which do not exist until the creation
+    // slot closes.
     fx.extend(reduce(
         state,
         Event::FirstSlotSettled {

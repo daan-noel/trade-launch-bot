@@ -277,47 +277,6 @@ export const METRIC_HELP: Record<string, HelpTip> = {
       'Common on exit for “rug thin” or “overheated depth” signals.',
     ].join('\n'),
   },
-  ix_count: {
-    title: 'ix_count — instructions in the creation transaction',
-    body: [
-      'How many instructions the token’s CREATE transaction carried — a launch-tooling',
-      'fingerprint reduced to one number. A plain launch is a handful; a bundled one,',
-      'or one built by a launcher bot, is many.',
-      '',
-      'Static from birth: it never moves, so a gate on it is a TOKEN FILTER, not a',
-      'timing signal, and an arm it disarms can never re-arm.',
-      '',
-      'Examples:',
-      '  <=5      plain creations only — screen out elaborate tooling',
-      '  >=12     only the heavily-bundled launches',
-      '',
-      'NaN when the creation labels are unknown, and NaN satisfies nothing — so an',
-      'unknown launch is excluded by any ix_count gate rather than assumed simple.',
-    ].join('\n'),
-  },
-  prior_launches: {
-    title: 'prior_launches — the creator’s launches before this token',
-    body: [
-      'How many tokens this token’s creator launched BEFORE it. 0 = a first-time',
-      'launcher; a large number = a serial one running a factory.',
-      '',
-      'Counted over a trailing window (30 days), not all of history — so the same',
-      'creator reads the same number live and in a backtest. Static from birth: a',
-      'token filter, never a timing signal.',
-      '',
-      'Examples:',
-      '  =0        the creator’s first launch in the window',
-      '  <=5       new-ish creators only',
-      '  >=100     only factory output (usually the side to AVOID)',
-      '',
-      'NaN when the creator is unknown, so an unresolved launch is excluded rather',
-      'than counted as a first one — which would quietly widen "=0" to everything.',
-      '',
-      'Reads the creator across OTHER tokens, so it needs the tokens table: available',
-      'live and in Simulate, rejected by a grouped sweep (the lake corpus has no',
-      'creator column and every cell would score on zero trades).',
-    ].join('\n'),
-  },
   buy_share: {
     title: 'buy_share — share of window SOL that is buys (percent)',
     body: [
@@ -433,19 +392,6 @@ export const METRIC_HELP: Record<string, HelpTip> = {
       'pnl; after a dip+recovery it measures the bounce from the worst since-entry print.',
       '',
       'Example:  >=15   sell once price has bounced 15% off the since-entry low.',
-    ].join('\n'),
-  },
-  arm_above_pct: {
-    title: 'arm ≥ % — disarm the trail until you\'re this far in profit',
-    body: [
-      'retrace/bounce measure from the since-entry peak/trough, which starts AT your',
-      'entry fill. Unarmed, that makes retrace a hard stop from entry — it fires on the',
-      'normal dip you bought into, before any real run-up.',
-      '',
-      'Setting arm ≥ N%  disables retrace/bounce until pnl has reached N% — only then',
-      'does the trail start watching for a pullback off the real peak. 0 = arm at',
-      'break-even. Leave blank = unarmed (today\'s default, usually wrong for a dip-buy',
-      'entry).',
     ].join('\n'),
   },
   pnl: {
@@ -690,6 +636,20 @@ export function metricHelpBody(
 // ── Strict params ────────────────────────────────────────────────────────────
 
 export const STRICT_PARAM_HELP: Record<string, HelpTip> = {
+  arm_above_pct: {
+    title: 'arm ≥ % — disarm the trail until you\'re this far in profit',
+    body: [
+      'retrace/bounce measure from the since-entry peak/trough, which starts AT your',
+      'entry fill. Unarmed, that makes retrace a hard stop from entry — it fires on the',
+      'normal dip you bought into, before any real run-up.',
+      '',
+      'Setting arm ≥ N%  disables retrace/bounce until pnl has reached N% — only then',
+      'does the trail start watching for a pullback off the real peak. 0 = arm at',
+      'break-even. Leave blank = unarmed (today\'s default, usually wrong for a dip-buy',
+      'entry).',
+    ].join('\n'),
+  },
+
   slice_size_sec: {
     title: 'slice_size_sec — the recent slice',
     body: [
@@ -1017,118 +977,8 @@ export const RULE_FIELD_HELP = {
 // ── Fingerprint fields ───────────────────────────────────────────────────────
 
 export const FINGERPRINT_FIELD_HELP = {
-  name: {
-    title: 'Fingerprint name',
-    body: [
-      'Human label for this matcher. Rules pick a fingerprint by id; the name is for you.',
-      '',
-      'Create/promote auto-fills a compact label from the axes (`3ix:Buy · max=1 · bkt=1`).',
-      'Edit it to a nickname any time — identity stays on the axes, not the name.',
-      '',
-      'Many rules can share one fingerprint.',
-    ].join('\n'),
-  },
-  wildcard: {
-    title: 'Match every token (wildcard)',
-    body: [
-      'This fingerprint matches EVERY token, ignoring every axis below.',
-      '',
-      'For a rule that decides purely on the tape (flow / price / burst metrics) and has',
-      'no launch shape to name. A rule always needs a fingerprint, and clearing every axis',
-      'means match NOTHING — the matcher refuses a criterion-less row on purpose, so a',
-      'half-filled form can never arm on everything. Hence this switch: "any token" is said',
-      'out loud, never inferred from a blank form.',
-      '',
-      'Mutually exclusive with the axes — turning it on drops them (an axis alongside a',
-      'wildcard would read as a filter that never applies).',
-      '',
-      'Affects the LIVE entry gate: every rule on this fingerprint arms on every launch,',
-      'so the entry conditions are the only thing left selecting what you trade.',
-    ].join('\n'),
-  },
-  cu_limit: {
-    title: 'CU limit (exact)',
-    body: [
-      'Compute-unit limit on the token’s creation transaction — how much compute the launch tx requested.',
-      '',
-      'Matched exactly (not bucketed). Useful fingerprint of a particular launch bot/tool.',
-      'Leave blank to ignore.',
-    ].join('\n'),
-  },
-  cu_price: {
-    title: 'CU price (exact)',
-    body: [
-      'Compute-unit price on the creation tx (priority fee per CU, micro-lamports).',
-      '',
-      'Matched exactly. Higher often means a more aggressive launch sniper.',
-      'Leave blank to ignore.',
-    ].join('\n'),
-  },
-  init_buy: {
-    title: 'Initial buy (SOL, bucketed)',
-    body: [
-      'SOL spent on the creator’s very first buy at launch.',
-      '',
-      'Matched by bucket width: token matches if its first buy falls in the same [lo, hi) bin as this value.',
-      'Example: value 1.0 with bucket 0.1 → matches first buys in [1.0, 1.1).',
-      'Leave blank to ignore.',
-    ].join('\n'),
-  },
-  max_cost: {
-    title: 'Max SOL cost (bucketed)',
-    body: [
-      'Max SOL the creator set on the launch buy instruction (slippage / max cost field).',
-      '',
-      'Read from the creation tx; matched by the same bucket width as other SOL axes.',
-      'Leave blank to ignore.',
-    ].join('\n'),
-  },
-  spendable_in: {
-    title: 'Spendable SOL in (bucketed)',
-    body: [
-      'Spendable SOL recorded on the launch instruction — rough fingerprint of creator wallet funds at launch.',
-      '',
-      'Bucket-matched like initial buy. Leave blank to ignore.',
-    ].join('\n'),
-  },
-  first_slot_buy: {
-    title: 'First-slot buy (SOL, bucketed)',
-    body: [
-      'Total buy SOL in the creation slot (all buys that slot, not only the creator).',
-      '',
-      'Settles only after the creation slot closes — matching may wait (deferred first-slot axes).',
-      'Bucket-matched. Leave blank to ignore.',
-    ].join('\n'),
-  },
-  first_slot_sell: {
-    title: 'First-slot sell (SOL, bucketed)',
-    body: [
-      'Total sell SOL in the creation slot.',
-      '',
-      'Same deferred settlement as first-slot buy. Bucket-matched. Leave blank to ignore.',
-    ].join('\n'),
-  },
-  bucket: {
-    title: 'Bucket width (SOL)',
-    body: [
-      'Width of each [lo, hi) bin for continuous SOL fingerprint axes (init buy, max cost, spendable, first-slot buy/sell).',
-      '',
-      'Must match the width used in grouped sweep / creation-stats if you want “what I grouped = what I run”.',
-      'Default 0.1◎. Exact axes (cu_limit, cu_price, ix_labels) ignore this.',
-    ].join('\n'),
-  },
-  ix_labels: {
-    title: 'Instruction labels (exact sequence)',
-    body: [
-      'JSON array of instruction labels on the creation transaction, in order.',
-      '',
-      'Example: ["Pump.Fun: Create","Pump.Fun: Buy"]',
-      '',
-      'Matched as an exact ordered sequence. Leave empty to skip this filter.',
-    ].join('\n'),
-  },
   ix_patterns: {
-    title: 'Volume-side ix patterns',
+    title: 'ix_patterns — what the fingerprint TAGS',
     body: [
       'Ordered instruction-label sequences that TAG a trade for',
       'm_flow_ix / m_flow_ix_window. Exact ordered match — same vocabulary as fingerprint ix_labels.',

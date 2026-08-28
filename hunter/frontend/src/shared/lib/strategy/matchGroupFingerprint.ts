@@ -14,12 +14,16 @@ import {
   AXES,
   axisDef,
   compareBounds,
-  lamportsToSolLabel,
+  formatPredicateInUnit,
   configuredAxes,
   isAxisId,
+  predicateFromSpans,
+  predicateKind,
+  predicateSpans,
   type AxisId,
   type AxisPredicate,
   type Criteria,
+  type Span,
 } from './fingerprintAxes';
 
 /**
@@ -77,7 +81,8 @@ type GroupValue =
   | { kind: 'text'; value: string }
   | { kind: 'flag'; value: boolean }
   | { kind: 'labels'; labels: string[] }
-  | { kind: 'window'; min?: string; max?: string };
+  | { kind: 'window'; min?: string; max?: string }
+  | { kind: 'windows'; spans: Span[] };
 
 function asGroupValue(raw: unknown): GroupValue | null {
   if (raw == null || typeof raw !== 'object') return null;
@@ -88,6 +93,7 @@ function asGroupValue(raw: unknown): GroupValue | null {
     case 'flag':
     case 'labels':
     case 'window':
+    case 'windows':
       return raw as GroupValue;
     default:
       return null;
@@ -102,6 +108,11 @@ export function predicateFromGroupValue(raw: unknown): AxisPredicate | null {
   if (v.kind === 'window') {
     if (v.min == null && v.max == null) return null;
     return { kind: 'range', ...(v.min != null && { min: v.min }), ...(v.max != null && { max: v.max }) };
+  }
+  // A `!=` / `|` axis on a saved fingerprint rendered as a group key. Rebuilt
+  // through the canonicaliser, so it keys onto the row it came from.
+  if (v.kind === 'windows') {
+    return v.spans.length > 0 ? predicateFromSpans(v.spans) : null;
   }
   if (v.kind === 'labels') {
     return v.labels.length > 0 ? { kind: 'sequence', labels: v.labels } : null;
@@ -148,19 +159,27 @@ export function identityHasCriterion(id: FingerprintIdentity): boolean {
  *  equal, which is exactly how a ceiling used to be unrepresentable here. */
 export function predicatesEqual(a: AxisPredicate | undefined, b: AxisPredicate | undefined): boolean {
   if (a == null || b == null) return a == null && b == null;
-  if (a.kind !== b.kind) return false;
+  // A sequence and a number never name the same set; the two NUMERIC shapes might,
+  // so they fall through to one span comparison rather than being split by tag.
+  if (predicateKind(a) !== predicateKind(b)) return false;
   if (a.kind === 'sequence' && b.kind === 'sequence') {
     const x = configuredIxLabels(a.labels);
     const y = configuredIxLabels(b.labels);
     if (x == null || y == null) return x == null && y == null;
     return x.length === y.length && x.every((v, i) => v === y[i]);
   }
-  if (a.kind === 'range' && b.kind === 'range') {
-    const bound = (p?: string, q?: string) =>
-      p == null || q == null ? p == null && q == null : compareBounds(p, q) === 0;
-    return bound(a.min, b.min) && bound(a.max, b.max);
-  }
-  return false;
+  // Both numeric shapes compare span by span, so `range` and `spans` are one
+  // comparison — a one-span `spans` row (which the write edge refuses) would still
+  // read as equal to the plain range naming the same window, rather than silently
+  // as a different fingerprint.
+  const x = predicateSpans(a);
+  const y = predicateSpans(b);
+  const bound = (p?: string, q?: string) =>
+    p == null || q == null ? p == null && q == null : compareBounds(p, q) === 0;
+  return (
+    x.length === y.length &&
+    x.every((s, i) => bound(s.min, y[i].min) && bound(s.max, y[i].max))
+  );
 }
 
 /**
@@ -230,7 +249,11 @@ export function fingerprintIdentityKey(id: FingerprintIdentity): string {
       const labels = configuredIxLabels(p.labels);
       return labels == null ? '' : `seq:${labels.join('\0')}`;
     }
-    return `range:${p.min ?? ''}:${p.max ?? ''}`;
+    // Every span, so a `!=` / `|` axis keys on the whole set it accepts — keying on
+    // the first window alone would collapse two different gates onto one row.
+    return `range:${predicateSpans(p)
+      .map((s) => `${s.min ?? ''}:${s.max ?? ''}`)
+      .join(',')}`;
   });
   parts.push(id.wildcard ? 'any' : '');
   parts.push(canonicalJson(id.metric_config ?? {}));
@@ -365,17 +388,14 @@ export function renderGroupKey(gk: Record<string, unknown>): [string, string][] 
         return [tag, String(v.value)];
       case 'labels':
         return [tag, v.labels.join(' | ')];
-      case 'window': {
+      case 'window':
+      case 'windows': {
         const unit = isAxisId(tag) ? axisDef(tag as AxisId).unit : 'count';
         const pred = predicateFromGroupValue(raw);
-        if (!pred || pred.kind !== 'range') return [tag, 'any'];
-        const fmt = (s: string) => (unit === 'lamports' ? lamportsToSolLabel(s) : s);
-        if (pred.min != null && pred.max != null) {
-          return [tag, pred.min === pred.max ? fmt(pred.min) : `${fmt(pred.min)}–${fmt(pred.max)}`];
-        }
-        if (pred.min != null) return [tag, `≥${fmt(pred.min)}`];
-        if (pred.max != null) return [tag, `≤${fmt(pred.max)}`];
-        return [tag, 'any'];
+        // The SAME renderer the fingerprint table uses, so a card and a saved row
+        // read identically — and a `!=` / `|` axis shows the whole set rather than
+        // reading as its first window.
+        return [tag, pred ? formatPredicateInUnit(pred, unit) : 'any'];
       }
     }
   });

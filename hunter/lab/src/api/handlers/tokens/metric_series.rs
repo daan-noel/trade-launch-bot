@@ -49,7 +49,6 @@ use hunter_engine::metrics::{
 };
 
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
-use trading_core::storage::repositories::token_info_repo::TokenInfoRepo;
 use trading_core::storage::repositories::token_repo::TokenRepo;
 use trading_core::strategies::fingerprint_axes::fp_to_engine;
 
@@ -150,9 +149,8 @@ pub async fn token_metric_series(
         _ => None,
     };
 
-    // The static token facts every recorded series must be seeded with, read once
-    // (see `TokenFacts`). The flow context borrows the creator hash from it rather
-    // than repeating the lookup.
+    // The static token fact every recorded series must be seeded with, read once
+    // (see `TokenFacts`). The flow context carries it into the fold.
     let facts = load_token_facts(&state, &mint).await;
     let flow_ctx = match resolve_flow_ctx(&state, query.fingerprint_id.as_deref(), &facts).await {
         Ok(c) => c,
@@ -185,7 +183,7 @@ pub async fn token_metric_series(
     }
 
     let result = web::block(move || {
-        build_series(&mint, &trades, &windows, &grid, flow_ctx.as_ref(), entry, &facts)
+        build_series(&mint, &trades, &windows, &grid, flow_ctx.as_ref(), entry)
     })
     .await;
     match result {
@@ -206,23 +204,20 @@ pub async fn token_metric_series(
 /// rule readout replay loads them the same way, so a series without them disagrees
 /// with the decision it is drawn next to.
 ///
-/// `ix_count` and `prior_launches` are NOT here: they are fingerprint axes, not
-/// metrics, so they select which tokens a rule arms on rather than being folded into
-/// a series.
+/// `ix_count`, `prior_launches` and `first_slot_buy_lamports` are NOT here: they are
+/// fingerprint axes, not metrics, so they select which tokens a rule arms on rather
+/// than being folded into a series.
 #[derive(Debug, Default, Clone, Copy)]
 struct TokenFacts {
-    /// FNV hash of the creator wallet — volume-side unconditionally, and the seed of
-    /// the flow-split contagion set.
+    /// FNV hash of the creator wallet — tagged unconditionally, and the seed of
+    /// the ix-split contagion set.
     creator_wallet_hash: Option<u64>,
-    /// Buy SOL in the token's creation slot (`m_state.first_slot_buy`), from
-    /// `tokens_info` — the row the live engine's settle seed derives from.
-    first_slot_buy: Option<f64>,
 }
 
 /// Read the `tokens` row once and derive every static fact the fold needs.
 ///
 /// One indexed PK lookup — the same read the rule readout runs, so the two surfaces
-/// seed from identical values. A missing row is non-fatal and never silent: each fact
+/// seed from identical values. A missing row is non-fatal and never silent: the fact
 /// stays `None`, its metric reads `NaN`, and the reason is logged.
 async fn load_token_facts(state: &LocalState, mint: &str) -> TokenFacts {
     let repo = TokenRepo::new(state.core.db.clone());
@@ -237,18 +232,11 @@ async fn load_token_facts(state: &LocalState, mint: &str) -> TokenFacts {
             return TokenFacts::default();
         }
     };
-    let first_slot_buy = match TokenInfoRepo::new(state.core.db.clone()).find_by_mint(mint).await {
-        Ok(Some(i)) => i.first_slot_buy_sol,
-        _ => {
-            tracing::warn!(mint, "metric-series: no tokens_info row - first_slot_buy unseeded");
-            None
-        }
-    };
     if token.creator_wallet.is_empty() {
         tracing::warn!(mint, "metric-series: no creator wallet - flow split unseeded");
-        return TokenFacts { creator_wallet_hash: None, first_slot_buy };
+        return TokenFacts { creator_wallet_hash: None };
     }
-    TokenFacts { creator_wallet_hash: Some(wallet_hash(&token.creator_wallet)), first_slot_buy }
+    TokenFacts { creator_wallet_hash: Some(wallet_hash(&token.creator_wallet)) }
 }
 
 /// Whether any column this endpoint records outside the flow groups is wallet-keyed
@@ -364,7 +352,6 @@ fn build_series(
     grid: &SparseGrid,
     flow: Option<&FlowCtx>,
     entry: Option<(Ts, f64)>,
-    facts: &TokenFacts,
 ) -> serde_json::Value {
     let mut columns: Vec<SeriesColumn> = Vec::new();
     let mut labels: Vec<(SeriesColumn, Option<WindowSpec>)> = Vec::new();
@@ -413,12 +400,8 @@ fn build_series(
 
     let created_at = trades[0].block_time;
     let mut series = MetricSeries::new(created_at, columns);
-    // Static token facts first, in the same order the live `TokenCreated` arm seeds
-    // them (`reduce.rs`), and always BEFORE the first fold — a seed after it would
-    // leave the early rows reading `NaN` while the late ones read a value.
-    if let Some(v) = facts.first_slot_buy {
-        series.seed_first_slot_buy(v);
-    }
+    // The static token fact, BEFORE the first fold — a seed after it would leave the
+    // early rows reading `NaN` while the late ones read a value.
     if let Some(ctx) = flow {
         // Same order as the live `TokenCreated` arm (`new_track` → `seed_creator`):
         // `seed_creator` back-fills every flow state already registered.
@@ -710,7 +693,7 @@ mod tests {
         ];
         let grid = SparseGrid::for_windows(&[10.0]);
 
-        let seeded = build_series("mint", &trades, &[WindowSpec::secs(10.0)], &grid, Some(&ctx), None, &TokenFacts::default());
+        let seeded = build_series("mint", &trades, &[WindowSpec::secs(10.0)], &grid, Some(&ctx), None);
         assert_eq!(last_lifetime(&seeded, "tagged_buy"), 7.0, "dev + pattern bot");
         assert_eq!(last_lifetime(&seeded, "untagged_buy"), 3.0, "the stranger only");
         assert_eq!(last_lifetime(&seeded, "untagged_net"), 3.0);
@@ -718,7 +701,7 @@ mod tests {
         // Unseeded (the pre-fix behavior) the dev's 5 SOL crosses into organic —
         // the exact drift this seed exists to prevent.
         let unseeded = FlowCtx { creator_wallet_hash: None, ..ctx };
-        let out = build_series("mint", &trades, &[WindowSpec::secs(10.0)], &grid, Some(&unseeded), None, &TokenFacts::default());
+        let out = build_series("mint", &trades, &[WindowSpec::secs(10.0)], &grid, Some(&unseeded), None);
         assert_eq!(last_lifetime(&out, "tagged_buy"), 2.0);
         assert_eq!(last_lifetime(&out, "untagged_buy"), 8.0);
     }
@@ -748,7 +731,6 @@ mod tests {
             Some(&ctx),
             // An entry context, so the position-scoped group is computed too.
             Some((ts(0), 1.0)),
-            &TokenFacts { creator_wallet_hash: None, first_slot_buy: None },
         );
         let cols: Vec<(String, String)> = out["series"]
             .as_array()

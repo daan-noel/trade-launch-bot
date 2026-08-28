@@ -418,6 +418,10 @@ pub fn group_key_from_fingerprint(fp: &Fingerprint) -> JsonValue {
     for (axis, pred) in fp.criteria.iter() {
         let value = match pred {
             AxisPredicate::Range { min, max } => GroupValue::Window { min: *min, max: *max },
+            // A `!=` / `|` axis has no single window, so it keeps every span rather
+            // than being dropped — an omitted axis reads as unconstrained, which
+            // would show the card as a wider corpus than the fingerprint matches.
+            AxisPredicate::Spans { spans } => GroupValue::Windows { spans: spans.clone() },
             AxisPredicate::Sequence { labels } => GroupValue::Labels { labels: labels.clone() },
         };
         map.insert(axis.key().to_string(), json!(value));
@@ -454,21 +458,49 @@ fn fingerprint_scope_clauses(fp: &Fingerprint, ti_alias: &str) -> Vec<String> {
     }
     let mut out = Vec::new();
     for (axis, pred) in fp.criteria.iter() {
-        let AxisPredicate::Range { min, max } = pred else { continue };
         let Some(expr) = axis_num_sql(axis, ti_alias) else { continue };
-        // A configured axis with no observed value FAILS, the same fail-closed
-        // direction the matcher takes. `NULL BETWEEN a AND b` is NULL, which a
-        // `WHERE` drops — the behaviour we want — but it is stated here rather than
-        // relied on, because a caller that wraps these in a `NOT` would flip it.
-        out.push(match (min, max) {
-            (Some(a), Some(b)) if a == b => format!("({expr}) = {a}"),
-            (Some(a), Some(b)) => format!("({expr}) BETWEEN {a} AND {b}"),
-            (Some(a), None) => format!("({expr}) >= {a}"),
-            (None, Some(b)) => format!("({expr}) <= {b}"),
-            (None, None) => continue,
-        });
+        if let Some(clause) = predicate_sql(&expr, pred) {
+            out.push(clause);
+        }
     }
     out
+}
+
+/// One numeric predicate against one SQL expression — **the mirror of
+/// [`AxisPredicate::matches_num`]**, and the only place a predicate becomes SQL.
+///
+/// Read through [`AxisPredicate::spans`], so a `!=` / `|` axis lowers to the same
+/// `OR` of window clauses the matcher walks, and a shape added to the predicate is
+/// mirrored here without an edit.
+///
+/// A configured axis with no observed value FAILS, the same fail-closed direction
+/// the matcher takes. `NULL BETWEEN a AND b` is NULL, which a `WHERE` drops — the
+/// behaviour we want — but it is stated here rather than relied on, because a
+/// caller that wraps these in a `NOT` would flip it.
+///
+/// Bounds are interpolated as literals — injection-safe by construction, since a
+/// bound is a parsed `u128` and never user text.
+fn predicate_sql(expr: &str, pred: &AxisPredicate) -> Option<String> {
+    let terms: Vec<String> = pred
+        .spans()
+        .iter()
+        .filter_map(|s| match (s.min, s.max) {
+            (Some(a), Some(b)) if a == b => Some(format!("({expr}) = {a}")),
+            (Some(a), Some(b)) => Some(format!("({expr}) BETWEEN {a} AND {b}")),
+            (Some(a), None) => Some(format!("({expr}) >= {a}")),
+            (None, Some(b)) => Some(format!("({expr}) <= {b}")),
+            // An all-open span constrains nothing; a whole predicate of them is no
+            // clause at all, which is what `None` below says.
+            (None, None) => None,
+        })
+        .collect();
+    match terms.len() {
+        0 => None,
+        1 => terms.into_iter().next(),
+        // The NULL argument above holds under OR too: every term is NULL on a NULL
+        // observation, and `NULL OR NULL` is NULL, which a `WHERE` still drops.
+        _ => Some(format!("({})", terms.join(" OR "))),
+    }
 }
 
 /// Fold an ordered label sequence into a `group_key` object using the SAME
@@ -529,22 +561,15 @@ fn field_filter_pred(
         return (format!("{expr} = ANY({bind_placeholder})"), Some(values.to_vec()));
     };
     let Some(expr) = axis_num_sql(axis, ti_alias) else { return ("FALSE".to_string(), None) };
-    let mut terms: Vec<String> = Vec::new();
-    for pred in values.iter().filter_map(|v| parse_filter(v, unit)) {
-        let AxisPredicate::Range { min, max } = pred else { continue };
-        terms.push(match (min, max) {
-            (Some(a), Some(b)) if a == b => format!("({expr}) = {a}"),
-            (Some(a), Some(b)) => format!("(({expr}) BETWEEN {a} AND {b})"),
-            (Some(a), None) => format!("({expr}) >= {a}"),
-            (None, Some(b)) => format!("({expr}) <= {b}"),
-            (None, None) => continue,
-        });
-    }
+    let mut terms: Vec<String> = values
+        .iter()
+        .filter_map(|v| parse_filter(v, unit))
+        .filter_map(|pred| predicate_sql(&expr, &pred))
+        .collect();
     match terms.len() {
         0 => ("FALSE".to_string(), None),
-        1 => (terms.pop().unwrap(), None),
-        _ => (format!("({})", terms.join(" OR "))
-            , None),
+        1 => (terms.pop().expect("len checked"), None),
+        _ => (format!("({})", terms.join(" OR ")), None),
     }
 }
 
@@ -1127,6 +1152,59 @@ mod grouped_tokens_tests {
             .contains("BETWEEN 1000000000 AND 2000000000"));
         assert!(clause(AxisPredicate::range(Some(SOL), None)).contains(">= 1000000000"));
         assert!(clause(AxisPredicate::range(None, Some(SOL))).contains("<= 1000000000"));
+        // A `!=` / `|` axis lowers to an OR of the same window clauses — the mirror
+        // of the matcher walking the same spans.
+        let gap = clause(AxisPredicate::not_range(Some(SOL), Some(SOL)));
+        assert!(gap.contains("<= 999999999"), "{gap}");
+        assert!(gap.contains(">= 1000000001"), "{gap}");
+        assert!(gap.contains(" OR "), "{gap}");
+    }
+
+    /// The mirror agrees with the matcher on every value, on every shape — the
+    /// property that stops the dashboard from showing a corpus the engine would not
+    /// arm on. Compares the two by evaluating the clause's own comparisons.
+    #[test]
+    fn the_mirror_and_the_matcher_agree_on_every_span_shape() {
+        let preds = [
+            AxisPredicate::exact(5),
+            AxisPredicate::range(Some(3), Some(7)),
+            AxisPredicate::range(Some(3), None),
+            AxisPredicate::range(None, Some(7)),
+            AxisPredicate::not_range(Some(5), Some(5)),
+            AxisPredicate::not_range(Some(3), Some(7)),
+        ];
+        for pred in preds {
+            let sql = predicate_sql("v", &pred).expect("every shape lowers");
+            for v in 0u128..12 {
+                // Evaluate the lowered SQL by hand: it is only `=`, `BETWEEN`, `>=`,
+                // `<=` joined by OR, so reading it back is exact, not a re-derivation.
+                let want = pred.matches_num(v);
+                let got = sql.split(" OR ").any(|term| eval_term(term, v));
+                assert_eq!(got, want, "{sql:?} disagrees with the matcher on {v}");
+            }
+        }
+    }
+
+    /// Evaluate one lowered comparison — the test's own reader of the SQL the
+    /// mirror emits, so a clause that stops meaning what it says fails here.
+    fn eval_term(term: &str, v: u128) -> bool {
+        let t = term.replace("(v)", "v");
+        let t = t.trim().trim_start_matches('(').trim_end_matches(')').trim();
+        let num = |s: &str| s.trim().parse::<u128>().expect("a bound is an integer literal");
+        if let Some(rest) = t.strip_prefix("v BETWEEN ") {
+            let (a, b) = rest.split_once(" AND ").expect("BETWEEN has two bounds");
+            return v >= num(a) && v <= num(b);
+        }
+        for (op, f) in [
+            (">= ", (|a, b| a >= b) as fn(u128, u128) -> bool),
+            ("<= ", |a, b| a <= b),
+            ("= ", |a, b| a == b),
+        ] {
+            if let Some(rest) = t.strip_prefix(&format!("v {op}")) {
+                return f(v, num(rest));
+            }
+        }
+        panic!("unrecognised lowered term {term:?}");
     }
 
     /// The `u64::MAX` ceiling must survive into the SQL as itself. Under the retired
