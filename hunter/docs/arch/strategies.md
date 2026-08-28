@@ -429,7 +429,20 @@ only) over sells whose ordered `ix_labels` match `m_dump_ix.ix_patterns`. State 
 nothing is stored for a trade that does not match, so a rule reading no dump metric
 pays one hash-set lookup per sell. `TradeLite::leg_index` is what makes the
 transaction count possible; every adapter fills it from its source's own column.
+
+**Every driver that folds a track registers BOTH lists off the one row.** `m_flow_ix`
+and `m_dump_ix` are separate state on the same fingerprint, so a driver that reads only
+the tagged list returns NaN for a condition the live engine evaluates — a post-mortem
+that says "never held" about the term that fired. The drivers are `EngineState`
+(live + simulate), `replay_readout` / `replay_series` (`ReplayFlow` carries both lists,
+each independently optional), and the lab's `/metric-series`. A group whose own list is
+unconfigured is **omitted**, not drawn as a column of NaN. Offline series columns are
+`SeriesColumn::Fingerprint` for either group — the metric id routes the read, so the
+variant is named for the scope and not for one of its groups.
+
 Full contract: [`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md).
+Offline search cannot reach the group yet:
+[`../roadmap/dump-ix-offline-reach.md`](../roadmap/dump-ix-offline-reach.md).
 
 Lab authoring: `POST /api/strategies/flow-discovery` scores ix-structures per
 sweep `GroupKey`; the Flow discovery page toggles patterns into `metric_config`, and

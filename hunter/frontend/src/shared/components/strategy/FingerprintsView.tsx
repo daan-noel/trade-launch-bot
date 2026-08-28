@@ -39,9 +39,9 @@ import {
   ixLabelsMatchFilter,
 } from 'lib/ixLabels';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
-import { ixPatternsFromConfig } from 'lib/strategy/registry';
+import { dumpPatternsFromConfig, ixPatternsFromConfig } from 'lib/strategy/registry';
 import { ixPatternsActions } from 'lib/flow/volumePatterns';
-import { FlowPatternsChip } from './FingerprintParamsSummary';
+import { DumpPatternsChip, FlowPatternsChip } from './FingerprintParamsSummary';
 import { flowDiscoveryHref, rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import { fingerprintAutoName } from 'lib/strategy/fingerprintNameFromGroupKey';
 import {
@@ -394,6 +394,25 @@ export function FingerprintsView({
         },
         sortValue: (r) => ixPatternsFromConfig(r.metric_config).length,
         filterNumber: (r) => ixPatternsFromConfig(r.metric_config).length || null,
+        sortable: true,
+      },
+      {
+        key: 'dump_patterns',
+        label: 'dump builds',
+        group: 'ix',
+        render: (r) => {
+          const patterns = dumpPatternsFromConfig(r.metric_config);
+          // Same chip engine as `flow patterns` — the count sorts, the ribbon and
+          // tooltip carry which builds, since two rows reading `2` are different
+          // criteria when the sequences differ.
+          return patterns.length === 0 ? dash() : <DumpPatternsChip patterns={patterns} />;
+        },
+        searchValue: (r) => {
+          const patterns = dumpPatternsFromConfig(r.metric_config);
+          return `${patterns.length} ${ixPatternsActions(patterns)}`;
+        },
+        sortValue: (r) => dumpPatternsFromConfig(r.metric_config).length,
+        filterNumber: (r) => dumpPatternsFromConfig(r.metric_config).length || null,
         sortable: true,
       },
       {

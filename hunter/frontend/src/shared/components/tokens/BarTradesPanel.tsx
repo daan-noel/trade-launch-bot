@@ -168,6 +168,10 @@ export function BarTradesPanel({
         onTogglePattern,
         toggleTargetName,
         flowReasons,
+        // A lens only ever edits the tagged set, so the column follows the target's
+        // list exclusively on the fingerprint path.
+        patternList: lensTarget ? 'tagged' : patternTarget.list,
+        otherListKeys: lensTarget ? null : patternTarget.otherKeys,
       }),
     [
       price.unitLabel,
@@ -175,6 +179,9 @@ export function BarTradesPanel({
       toggleTargetName,
       onTogglePattern,
       flowReasons,
+      lensTarget,
+      patternTarget.list,
+      patternTarget.otherKeys,
       onLensWallet,
       onLensStructure,
       armedLensWallet,

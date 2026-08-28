@@ -28,7 +28,7 @@ import {
 } from 'lib/flow/volumePatterns';
 import { cn } from 'lib/cn';
 import { hashHue, metricColorStyle } from 'lib/strategy/metricColors';
-import { ixPatternsFromConfig } from 'lib/strategy/registry';
+import { dumpPatternsFromConfig, ixPatternsFromConfig } from 'lib/strategy/registry';
 import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 import {
   fingerprintAutoName,
@@ -55,8 +55,11 @@ const AXIS_HUE: Record<string, number> = {
   fs_sell: 284,
   // instructions — amber family (labels + count share the tone)
   ix: 45,
-  // flow-split volume ix patterns — cyan
+  // flow-split tagged ix patterns — cyan
   flow: 180,
+  // dump builds — the `m_dump_ix` group's own registry hue, so the chip and the
+  // metric line on a chart are the same colour for the same list.
+  dump: 115,
   // bucket width — rose
   bkt: 340,
   // wildcard — its own hue: it is not an axis, it replaces all of them
@@ -201,6 +204,30 @@ export function FlowPatternsChip({ patterns }: { patterns: string[][] }) {
   );
 }
 
+/**
+ * The `dump N` chip — the `m_dump_ix.ix_patterns` twin of {@link FlowPatternsChip}.
+ *
+ * Absent when the list is empty, where the flow chip stays visible as `flow✗`. The
+ * asymmetry is the two lists' meanings: an empty flow list re-points `untagged_*` at
+ * every trade, so it is a verdict worth stating on every row, while an empty dump
+ * list leaves `dump_*` reading `NaN` — a metric no rule can be gating on, and a chip
+ * on all 100-odd fingerprints saying so is noise. The fingerprints table gives it a
+ * COLUMN, where an empty cell is a dash like any other.
+ */
+export function DumpPatternsChip({ patterns }: { patterns: string[][] }) {
+  const n = patterns.length;
+  if (n === 0) return null;
+  return (
+    <ContentsChip
+      text={`dump ${n}`}
+      identity={ixPatternsIdentity(patterns)}
+      title={`${n} dump ix build${n === 1 ? '' : 's'} — their SELLS are what dump_sell / dump_sell_count count\n${ixPatternsActions(patterns)}`}
+      copyText={formatVolumePatternsText(patterns)}
+      tint={axisTint('dump')}
+    />
+  );
+}
+
 /** One axis's chip. The value reads in the axis's own display unit — SOL for a
  *  lamports axis, the integer for a tally — through the ONE formatter, so a chip,
  *  the auto-name and the form all show a bound the same way. */
@@ -235,12 +262,14 @@ export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
           title: 'Wildcard — matches every token, ignoring every creation-shape axis',
         })}
         <FlowPatternsChip patterns={ixPatternsFromConfig(fp.metric_config)} />
+        <DumpPatternsChip patterns={dumpPatternsFromConfig(fp.metric_config)} />
       </div>
     );
   }
   const chips: ReactNode[] = [
     ...configuredAxes(fp.criteria ?? {}).map(([id, pred]) => axisChip(id, pred)),
     <FlowPatternsChip key="flow" patterns={ixPatternsFromConfig(fp.metric_config)} />,
+    <DumpPatternsChip key="dump" patterns={dumpPatternsFromConfig(fp.metric_config)} />,
   ].filter(Boolean);
 
   return <div className="flex flex-wrap items-center gap-1 text-left">{chips}</div>;
@@ -286,6 +315,14 @@ export function fingerprintParamsSearchText(fp: Fingerprint | undefined, fallbac
     parts.push(formatVolumePatternsText(patterns));
   } else {
     parts.push('flow✗');
+  }
+  // Same reason, for the other list: a search for the build that dumps must find
+  // the fingerprints whose SELLS it counts, not only the ones that tag it.
+  const dump = dumpPatternsFromConfig(fp.metric_config);
+  if (dump.length > 0) {
+    parts.push(`dump ${dump.length} dump=${dump.length}`);
+    parts.push(ixPatternsActions(dump));
+    parts.push(formatVolumePatternsText(dump));
   }
   return parts.join(' ');
 }
@@ -352,5 +389,8 @@ export function fingerprintIdentityKey(fp: Fingerprint | undefined, fallbackId?:
     // The pattern SEQUENCES, not their count: two fingerprints matching one
     // pattern each are the same criterion only if it is the same pattern.
     ixPatternsIdentity(ixPatternsFromConfig(fp.metric_config)),
+    // The dump list is part of the same row's `metric_config`, so two rows that
+    // differ only there are different rows and must not collapse into one sort key.
+    ixPatternsIdentity(dumpPatternsFromConfig(fp.metric_config)),
   ].join('\u0001');
 }

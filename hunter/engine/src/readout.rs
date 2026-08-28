@@ -32,6 +32,7 @@ use crate::arm::{CompiledRule, MetricReq, ReqOrigin};
 use crate::event::{Mint, RuleId};
 use crate::fingerprint::FingerprintId;
 use crate::metrics::evaluator::{eval, first_satisfied_cond, Condition, ConditionExpr};
+use crate::metrics::dump_ix::DumpPatterns;
 use crate::metrics::flow_ix::FlowPatterns;
 use crate::metrics::grid::{fold_sparse, SparseGrid};
 use crate::metrics::position::{position_value, trailing_armed, PositionCtx};
@@ -223,7 +224,14 @@ pub fn read_state(
 /// condition reads against a different classification than the one that decided.
 pub struct ReplayFlow<'a> {
     pub fingerprint: FingerprintId,
-    pub patterns: &'a FlowPatterns,
+    /// `m_flow_ix.ix_patterns`; `None` ⇒ that group alone reads `NaN`.
+    pub patterns: Option<&'a FlowPatterns>,
+    /// `m_dump_ix.ix_patterns`. Independently optional, because the two lists are
+    /// separate groups on one row: a fingerprint may carry either, and gating the
+    /// dump registration on the flow list would leave a dump-only rule's conditions
+    /// blank in the readout while the live engine evaluates them.
+    pub dump: Option<&'a DumpPatterns>,
+    /// Seeds the flow contagion set only — `m_dump_ix` has no wallet rule.
     pub creator_wallet_hash: Option<u64>,
 }
 
@@ -238,7 +246,7 @@ pub struct ReplayCtx<'a> {
     pub entry: Option<(Ts, f64)>,
     /// The position's scale-out stage at the read instant.
     pub stage: Option<u8>,
-    /// Absent ⇒ `m_flow_ix*` metrics read `NaN` (no pattern context).
+    /// Absent ⇒ `m_flow_ix*` and `m_dump_ix*` metrics read `NaN` (no pattern context).
     pub flow: Option<ReplayFlow<'a>>,
 }
 
@@ -279,7 +287,12 @@ pub fn replay_readout(
     if let Some(f) = &ctx.flow {
         // Same order as the live `TokenCreated` arm (`new_track` → `seed_creator`):
         // the seed back-fills every flow state already registered.
-        track.ensure_flow(f.fingerprint, f.patterns, &rule.ix_windows);
+        if let Some(p) = f.patterns {
+            track.ensure_flow(f.fingerprint, p, &rule.ix_windows);
+        }
+        if let Some(d) = f.dump {
+            track.ensure_dump(f.fingerprint, d, &rule.dump_windows);
+        }
         if let Some(h) = f.creator_wallet_hash {
             track.seed_creator(h);
         }
@@ -384,7 +397,7 @@ fn req_column(r: &MetricReq) -> Option<SeriesColumn> {
     // simply never holds — a blank timeline, not an error. `m_flow_ix*` is
     // single-window by construction, so the flow arm still takes `primary`.
     Some(match (r.fingerprint, r.window.is_windowed()) {
-        (Some(fp), _) => SeriesColumn::Flow(r.metric, r.window.primary, fp),
+        (Some(fp), _) => SeriesColumn::Fingerprint(r.metric, r.window.primary, fp),
         (None, true) => SeriesColumn::Window(r.metric, r.window),
         (None, false) => SeriesColumn::Static(r.metric),
     })
@@ -458,7 +471,12 @@ pub fn replay_series(
         series.ensure_price_window(w);
     }
     if let Some(f) = &ctx.flow {
-        series.ensure_flow(f.fingerprint, f.patterns, &rule.ix_windows);
+        if let Some(p) = f.patterns {
+            series.ensure_flow(f.fingerprint, p, &rule.ix_windows);
+        }
+        if let Some(d) = f.dump {
+            series.ensure_dump(f.fingerprint, d, &rule.dump_windows);
+        }
         if let Some(h) = f.creator_wallet_hash {
             series.seed_creator(h);
         }
@@ -622,6 +640,8 @@ mod tests {
     use crate::event::{ExitReason, LoadedRule, RuleId, TradeMode};
     use crate::fingerprint::FingerprintId;
     use crate::metrics::evaluator::Operator;
+    use crate::metrics::dump_ix::DumpPatterns;
+    use crate::metrics::flow_ix::ix_hash;
     use crate::metrics::{Side, TradeLite};
     use crate::rule_params::RuleParams;
     use chrono::{Duration, TimeZone, Utc};
@@ -961,6 +981,63 @@ mod tests {
         let read = find(&replayed.reads, ReadSide::Exit, MetricId::Retrace);
         assert!(read.ok);
         assert!((read.value - 25.0).abs() < 1e-9);
+    }
+
+    /// **A readout must register every fingerprint-scoped group the rule reads, not
+    /// just the flow one.** `m_dump_ix` lives on the same row as `m_flow_ix` but in
+    /// its own state, so a driver that registers only flow returns `NaN` for a
+    /// condition the live engine evaluates — a post-mortem that says "never held"
+    /// about the term that fired.
+    #[test]
+    fn replay_registers_the_dump_group_the_rule_reads() {
+        let c = rule(serde_json::json!({
+            "exit": {
+                "m_dump_ix": { "dump_sell_count": [{ "operator": ">=", "value": 2 }] }
+            }
+        }));
+        let build = ix_hash(&["Pump.Fun: Sell"]);
+        let dump = DumpPatterns::new(std::collections::BTreeSet::from([build]));
+        let sell = |secs: i64| TradeLite {
+            side: Side::Sell,
+            sol: 1.0,
+            price: 1.0,
+            reserve_sol: 30.0,
+            at: ts(secs),
+            ix_hash: Some(build),
+            ..Default::default()
+        };
+
+        let ctx = ReplayCtx {
+            created_at: ts(0),
+            entry: Some((ts(0), 1.0)),
+            stage: None,
+            flow: Some(ReplayFlow {
+                fingerprint: FingerprintId(Uuid::nil()),
+                // The dump-ONLY case: no tagged list on the row at all, which is the
+                // shape that gated the whole context off and blanked the condition.
+                patterns: None,
+                dump: Some(&dump),
+                creator_wallet_hash: None,
+            }),
+        };
+
+        let one = replay_readout(&c, [sell(1)], &ctx, ts(5));
+        let read = find(&one.reads, ReadSide::Exit, MetricId::DumpSellCount);
+        assert_eq!(read.value, 1.0, "one listed sell counts one");
+        assert!(!read.ok);
+
+        let two = replay_readout(&c, [sell(1), sell(2)], &ctx, ts(5));
+        assert!(find(&two.reads, ReadSide::Exit, MetricId::DumpSellCount).ok);
+
+        // Without the context the metric has no state to read — NaN, never 0, so the
+        // difference between "no dump" and "not configured" stays visible.
+        let blind = replay_readout(
+            &c,
+            [sell(1), sell(2)],
+            &ReplayCtx { created_at: ts(0), entry: Some((ts(0), 1.0)), stage: None, flow: None },
+            ts(5),
+        );
+        assert!(find(&blind.reads, ReadSide::Exit, MetricId::DumpSellCount).value.is_nan());
     }
 
     /// Reading at the exit instant must not see the future. A token that kept

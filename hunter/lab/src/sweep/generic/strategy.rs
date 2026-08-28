@@ -680,7 +680,7 @@ fn encode_picks(picks: &[usize], lens: &[usize]) -> usize {
 /// `at` sort is stable and block_time tracks slot), so the two never diverge.
 ///
 /// When `flow_patterns` is set, seeds fingerprint-scoped flow state for every
-/// [`SeriesColumn::Flow`] fingerprint in `columns` (V2.2).
+/// [`SeriesColumn::Fingerprint`] fingerprint in `columns` (V2.2).
 pub(crate) fn build_series_with_flow(
     token: &CorpusToken,
     columns: Vec<SeriesColumn>,
@@ -697,7 +697,7 @@ pub(crate) fn build_series_with_flow(
             // Both axes of a dynamic column: a two-window group needs a buffer for
             // each, and registering only the primary leaves the second read NaN.
             .flat_map(|c| match c {
-                SeriesColumn::Flow(_, w, _) => vec![*w],
+                SeriesColumn::Fingerprint(_, w, _) => vec![*w],
                 SeriesColumn::Window(_, w) => vec![w.primary, w.secondary],
                 _ => vec![],
             })
@@ -709,7 +709,7 @@ pub(crate) fn build_series_with_flow(
             .columns()
             .iter()
             .filter_map(|c| match c {
-                SeriesColumn::Flow(_, _, fp) => Some(*fp),
+                SeriesColumn::Fingerprint(_, _, fp) => Some(*fp),
                 _ => None,
             })
             .collect();
@@ -839,7 +839,7 @@ fn col_of(req: &hunter_engine::arm::MetricReq) -> SeriesColumn {
     // Mirrors `readout::req_column`: the WHOLE carrier on the windowed arm, so a
     // two-window req keeps its second axis instead of scanning against NaN.
     match (req.fingerprint, req.window.is_windowed()) {
-        (Some(fp), _) => SeriesColumn::Flow(req.metric, req.window.primary, fp),
+        (Some(fp), _) => SeriesColumn::Fingerprint(req.metric, req.window.primary, fp),
         (None, true) => SeriesColumn::Window(req.metric, req.window),
         (None, false) => SeriesColumn::Static(req.metric),
     }

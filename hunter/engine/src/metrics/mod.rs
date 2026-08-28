@@ -716,6 +716,14 @@ pub fn is_two_window(id: MetricId) -> bool {
 /// a *flow* series column offline. `m_dump_ix` is the case that separated them — it
 /// is fingerprint-scoped but is not a flow split, so it belongs here and NOT there;
 /// conflating them would route its reads at a flow column.
+pub fn is_fingerprint_scoped(id: MetricId) -> bool {
+    is_flow_metric(id)
+        || matches!(
+            group_of(id).id,
+            MetricGroupId::DumpIx | MetricGroupId::DumpIxWindow
+        )
+}
+
 /// Validate a fingerprint's WHOLE `metric_config` — every group that declares
 /// fingerprint-side config, through one call.
 ///
@@ -728,15 +736,6 @@ pub fn validate_fingerprint_metric_config(cfg: &serde_json::Value) -> Result<(),
     dump_ix::DumpPatterns::validate_metric_config(cfg)?;
     Ok(())
 }
-
-pub fn is_fingerprint_scoped(id: MetricId) -> bool {
-    is_flow_metric(id)
-        || matches!(
-            group_of(id).id,
-            MetricGroupId::DumpIx | MetricGroupId::DumpIxWindow
-        )
-}
-
 
 impl MetricId {
     pub fn name(self) -> &'static str {

@@ -57,6 +57,26 @@ export interface TokenTradeColumnsOpts {
   onLensStructure?: ((labels: readonly string[]) => void) | null;
   /** `patternKey` of the armed structure, so matching rows render the button lit. */
   lensStructureKey?: string | null;
+  /**
+   * WHICH list {@link flowPatternKeys} is and {@link onTogglePattern} writes into.
+   * `'tagged'` (the default) is `m_flow_ix.ix_patterns`; `'dump'` is
+   * `m_dump_ix.ix_patterns`.
+   *
+   * The column is otherwise identical and that is the danger: a badge reading
+   * "Tagged" while the click files the build under `m_dump_ix` names the wrong
+   * metric for the row, so the label, the tone and the tooltip all follow this.
+   * Contagion notes are suppressed under `'dump'` - the reasons map is the flow
+   * split's verdict, and `m_dump_ix` has no wallet rule to spread one.
+   */
+  patternList?: 'tagged' | 'dump';
+  /**
+   * Keys of the list this column is NOT writing into. A build may sit on BOTH -
+   * that is the normal case and nothing rejects it - so the mark is INFORMATION,
+   * not a conflict: it says this sell is already counted by the other group's
+   * metrics, which is what a reader comparing `tagged_sell` and `dump_sell` needs
+   * to know before treating them as disjoint.
+   */
+  otherListKeys?: ReadonlySet<string> | null;
 }
 
 /** Target glyph for a highlight-lens toggle — reads as "find this everywhere". */
@@ -160,36 +180,50 @@ export function tokenTradeColumns(
   const onLensStructure = opts?.onLensStructure ?? null;
   const lensStructureKey = opts?.lensStructureKey ?? null;
   const targetLabel = opts?.toggleTargetName ? `“${opts.toggleTargetName}”` : 'the fingerprint';
+  const list = opts?.patternList ?? 'tagged';
+  const isDump = list === 'dump';
+  const otherKeys = opts?.otherListKeys ?? null;
+  const listField = isDump ? 'm_dump_ix.ix_patterns' : 'm_flow_ix.ix_patterns';
+  const inWord = isDump ? 'Dump' : 'Tagged';
+  const outWord = isDump ? 'Not dump' : 'Untagged';
 
   const leading: ColumnDef<TradeRecord>[] = [];
 
   if (showTagged) {
     leading.push({
       key: 'is_tagged_ix_pattern',
-      label: 'Tagged',
+      label: inWord,
       tooltip: onToggle
-        ? `Structural tagged ix-pattern match. Clicking SAVES this trade’s ordered ` +
-          `instruction_labels to ${targetLabel} as an ix_pattern — there is no staging ` +
-          `step, and every active rule bound to it classifies flow differently from the ` +
-          `engine’s next rules reload on. “via creator/wallet” = the lines already count this ` +
-          `row through contagion, whatever its own structure is.`
-        : 'Structural tagged ix-pattern match — this trade’s ordered instruction_labels ' +
-          'exact-match a ix_patterns row (no creator/wallet contagion).',
+        ? `Structural ${listField} match. Clicking SAVES this trade’s ordered ` +
+          `instruction_labels to ${targetLabel} under ${listField} — there is no staging ` +
+          `step, and every active rule bound to it changes meaning from the ` +
+          `engine’s next rules reload on.` +
+          (isDump
+            ? ` The same build may also sit under m_flow_ix - the two groups ask` +
+              ` different questions, so a sell can be tagged flow AND a dump.`
+            : ` “via creator/wallet” = the lines already count this row through` +
+              ` contagion, whatever its own structure is.`)
+        : `Structural ${listField} match — this trade’s ordered instruction_labels ` +
+          `exact-match a row of that list` +
+          (isDump ? '.' : ' (no creator/wallet contagion).'),
       render: (t) => {
         const labels = t.instruction_labels;
         if (!labels || labels.length === 0) {
           return <span className="text-text-dim/40">—</span>;
         }
         const isTagged = isIxPattern(labels, keys);
-        const reason = reasons?.get(t.id) ?? null;
+        // The reasons map is the FLOW split's verdict (structure + contagion), so it
+        // says nothing about a dump build and must not decorate one.
+        const reason = isDump ? null : (reasons?.get(t.id) ?? null);
         const note = reason && reason !== 'structural' ? CONTAGION_NOTE[reason] : null;
+        const inOther = !isTagged && otherKeys != null && isIxPattern(labels, otherKeys);
         const badge = (
           <Badge
-            variant={isTagged ? 'danger' : 'neutral'}
+            variant={isTagged ? (isDump ? 'warning' : 'danger') : 'neutral'}
             size="sm"
             className={onToggle ? 'cursor-pointer' : undefined}
           >
-            {isTagged ? 'Tagged' : 'Untagged'}
+            {isTagged ? inWord : outWord}
           </Badge>
         );
         const cell = (
@@ -200,8 +234,8 @@ export function tokenTradeColumns(
                 aria-pressed={isTagged}
                 title={
                   isTagged
-                    ? `Saved as an ix_pattern on ${targetLabel} — click to remove it`
-                    : `Click to save this structure as an ix_pattern on ${targetLabel}`
+                    ? `Saved under ${listField} on ${targetLabel} — click to remove it`
+                    : `Click to save this structure under ${listField} on ${targetLabel}`
                 }
                 onClick={(e) => {
                   // The row itself is selectable on several hosts; an edit click
@@ -221,6 +255,14 @@ export function tokenTradeColumns(
                 {note}
               </span>
             )}
+            {inOther && (
+              <span
+                className="text-[9px] uppercase tracking-wide text-text-dim/70"
+                title={`This build is also in the ${isDump ? 'tagged' : 'dump'} list, which is allowed. The same sell is counted by ${isDump ? 'm_flow_ix' : 'm_dump_ix'} too - two independent answers, so do not read the two groups' numbers as parts of a whole.`}
+              >
+                also {isDump ? 'tagged' : 'dump'}
+              </span>
+            )}
           </span>
         );
         return cell;
@@ -230,14 +272,15 @@ export function tokenTradeColumns(
       sortValue: (t) =>
         isIxPattern(t.instruction_labels, keys)
           ? 2
-          : reasons?.get(t.id)
+          : !isDump && reasons?.get(t.id)
             ? 1
             : 0,
       searchValue: (t) => {
         const structural = isIxPattern(t.instruction_labels, keys);
-        const reason = reasons?.get(t.id) ?? null;
+        const reason = isDump ? null : (reasons?.get(t.id) ?? null);
         const note = reason && reason !== 'structural' ? CONTAGION_NOTE[reason] : '';
-        return `${structural ? 'tagged' : 'untagged'}${note ? ` ${note}` : ''}`;
+        const word = structural ? list : isDump ? 'not dump' : 'untagged';
+        return `${word}${note ? ` ${note}` : ''}`;
       },
     });
   }

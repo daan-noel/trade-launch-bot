@@ -122,6 +122,10 @@ async fn the_engine_fires_where_the_sql_derivation_fires() {
                 ix_hash: hunter_engine::metrics::flow_ix::ix_hash_from_labels_value(&labels),
                 wallet_hash: 0,
                 slot: slot as u64,
+                // The query takes `leg_index = 0` only, so every row here IS a first
+                // leg. Named rather than defaulted: this literal is exhaustive on
+                // purpose, so a new fact on the trade has to be answered here.
+                leg_index: 0,
                 marker_bits: hunter_engine::metrics::flow_ix::marker_bits_from_labels_value(
                     &labels,
                 ),

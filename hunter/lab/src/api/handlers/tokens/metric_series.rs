@@ -40,6 +40,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use hunter_engine::fingerprint::FingerprintId;
+use hunter_engine::metrics::dump_ix::DumpPatterns;
 use hunter_engine::metrics::flow_ix::{wallet_hash, FlowPatterns};
 use hunter_engine::metrics::grid::{estimate_sparse_rows, fold_sparse, SparseGrid};
 use hunter_engine::metrics::position::PositionCtx;
@@ -264,7 +265,13 @@ fn records_wallet_keyed_metric() -> bool {
 
 struct FlowCtx {
     fp_id: FingerprintId,
-    patterns: FlowPatterns,
+    /// `m_flow_ix.ix_patterns`; `None` ⇒ the flow groups are omitted from the series.
+    patterns: Option<FlowPatterns>,
+    /// `m_dump_ix.ix_patterns`. Independently optional — the two lists are separate
+    /// groups on one row, and requiring the flow one made a dump-only fingerprint
+    /// resolve to no context at all, which built `m_dump_ix` columns unscoped: a
+    /// line that reads `NaN` on every row rather than one that is absent.
+    dump: Option<DumpPatterns>,
     /// FNV hash of the token's creator wallet — volume-side unconditionally, and the
     /// seed of the contagion set. `None` only when the `tokens` row is missing or
     /// carries no creator. **Load-bearing for parity**: the live engine seeds it on
@@ -296,10 +303,13 @@ async fn resolve_flow_ctx(
             .json(serde_json::json!({ "error": "fingerprint not found" })));
     };
     let engine_fp = fp_to_engine(&fp);
-    let Some(patterns) = FlowPatterns::from_metric_config(&engine_fp.metric_config) else {
-        // Fingerprint present but unconfigured — omit flow columns (same as no id).
+    let patterns = FlowPatterns::from_metric_config(&engine_fp.metric_config);
+    let dump = DumpPatterns::from_metric_config(&engine_fp.metric_config);
+    if patterns.is_none() && dump.is_none() {
+        // Fingerprint present but unconfigured for either list — omit the
+        // fingerprint-scoped columns entirely (same as no id).
         return Ok(None);
-    };
+    }
     // The creator comes off the one `tokens` read every series already does
     // ([`load_token_facts`]). A missing row is non-fatal: the series still folds, it
     // just can't seed the creator (logged there, never silent — an unseeded fold
@@ -307,6 +317,7 @@ async fn resolve_flow_ctx(
     Ok(Some(FlowCtx {
         fp_id: engine_fp.id,
         patterns,
+        dump,
         creator_wallet_hash: facts.creator_wallet_hash,
     }))
 }
@@ -390,10 +401,27 @@ fn build_series(
     let mut labels: Vec<(SeriesColumn, Option<WindowSpec>, Option<WindowSpec>)> = Vec::new();
     let nested = nested_pairs(windows);
     for group in REGISTRY {
-        // Flow groups need a fingerprint pattern context — skip when absent.
-        let is_flow_group =
-            matches!(group.id, MetricGroupId::FlowIx | MetricGroupId::FlowIxWindow);
-        if is_flow_group && flow.is_none() {
+        // A fingerprint-scoped group needs ITS OWN list off the row, not merely a
+        // fingerprint: `m_flow_ix` reads the tagged patterns, `m_dump_ix` the dump
+        // builds, and a group whose list is unconfigured is omitted rather than
+        // drawn as an all-`NaN` line.
+        let fp_id = match group.id {
+            MetricGroupId::FlowIx | MetricGroupId::FlowIxWindow => {
+                flow.filter(|c| c.patterns.is_some()).map(|c| c.fp_id)
+            }
+            MetricGroupId::DumpIx | MetricGroupId::DumpIxWindow => {
+                flow.filter(|c| c.dump.is_some()).map(|c| c.fp_id)
+            }
+            _ => None,
+        };
+        let is_flow_group = matches!(
+            group.id,
+            MetricGroupId::FlowIx
+                | MetricGroupId::FlowIxWindow
+                | MetricGroupId::DumpIx
+                | MetricGroupId::DumpIxWindow
+        );
+        if is_flow_group && fp_id.is_none() {
             continue;
         }
         // Position-scoped metrics anchor on the caller's entry fill, not the token
@@ -405,8 +433,8 @@ fn build_series(
         for m in group.metrics {
             match group.kind {
                 MetricKind::Static if is_flow_group => {
-                    let fp = flow.unwrap().fp_id;
-                    let col = SeriesColumn::Flow(m.id, None, fp);
+                    let fp = fp_id.unwrap();
+                    let col = SeriesColumn::Fingerprint(m.id, None, fp);
                     columns.push(col);
                     labels.push((col, None, None));
                 }
@@ -415,9 +443,9 @@ fn build_series(
                     labels.push((SeriesColumn::Static(m.id), None, None));
                 }
                 MetricKind::Dynamic if is_flow_group => {
-                    let fp = flow.unwrap().fp_id;
+                    let fp = fp_id.unwrap();
                     for &w in windows {
-                        let col = SeriesColumn::Flow(m.id, Some(w), fp);
+                        let col = SeriesColumn::Fingerprint(m.id, Some(w), fp);
                         columns.push(col);
                         labels.push((col, Some(w), None));
                     }
@@ -450,7 +478,12 @@ fn build_series(
     if let Some(ctx) = flow {
         // Same order as the live `TokenCreated` arm (`new_track` → `seed_creator`):
         // `seed_creator` back-fills every flow state already registered.
-        series.ensure_flow(ctx.fp_id, &ctx.patterns, windows);
+        if let Some(p) = &ctx.patterns {
+            series.ensure_flow(ctx.fp_id, p, windows);
+        }
+        if let Some(d) = &ctx.dump {
+            series.ensure_dump(ctx.fp_id, d, windows);
+        }
         if let Some(h) = ctx.creator_wallet_hash {
             series.seed_creator(h);
         }
@@ -484,7 +517,7 @@ fn build_series(
             let id = match col {
                 SeriesColumn::Static(id) => id,
                 SeriesColumn::Window(id, _) => id,
-                SeriesColumn::Flow(id, _, _) => id,
+                SeriesColumn::Fingerprint(id, _, _) => id,
             };
             let values = series.column_values(col)?;
             Some(SeriesOut {
@@ -761,7 +794,9 @@ mod tests {
         ])]));
         let ctx = FlowCtx {
             fp_id: FingerprintId(Uuid::new_v4()),
-            patterns,
+            patterns: Some(patterns),
+            // This one is about the FLOW seed; `m_dump_ix` has no wallet rule to seed.
+            dump: None,
             creator_wallet_hash: Some(wallet_hash("dev")),
         };
         // Dev buys 5 (no labels ⇒ classified only by the creator seed), a stranger
@@ -796,9 +831,15 @@ mod tests {
         let patterns = FlowPatterns::new(std::collections::BTreeSet::from([ix_hash(&[
             "Pump.Fun: Buy",
         ])]));
+        // BOTH lists: a fingerprint-scoped group is omitted when its own list is
+        // unconfigured, so a fixture carrying only the tagged one would assert
+        // nothing about `m_dump_ix` while still passing.
         let ctx = FlowCtx {
             fp_id: FingerprintId(Uuid::new_v4()),
-            patterns,
+            patterns: Some(patterns),
+            dump: Some(DumpPatterns::new(std::collections::BTreeSet::from([ix_hash(&[
+                "Pump.Fun: Sell",
+            ])]))),
             creator_wallet_hash: Some(wallet_hash("dev")),
         };
         let trades = [corpus_trade(5.0, "dev", None, 0), corpus_trade(3.0, "normie", None, 1)];

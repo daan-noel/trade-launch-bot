@@ -255,7 +255,7 @@ fn columns_for(combos: &[GeneratedCombo], flow_fp: FingerprintId, with_flow: boo
             return;
         }
         let col = if is_flow_metric(c.metric) {
-            SeriesColumn::Flow(c.metric, c.window, fp)
+            SeriesColumn::Fingerprint(c.metric, c.window, fp)
         } else {
             match (g.kind, c.window) {
                 (MetricKind::Dynamic, Some(w)) => SeriesColumn::window(c.metric, w),

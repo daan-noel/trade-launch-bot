@@ -611,10 +611,14 @@ partitions every trade into tagged and untagged; this partitions nothing. It ans
 one question about one side: *how many sells carrying one of these builds landed, and
 for how much SOL*.
 
-Its own key, its own list, and a build may sit in exactly one of the two —
-`DumpPatterns::validate_metric_config` rejects a build present in both, because the
-same sell would then increment `tagged_sell_count` and `dump_sell_count` and a rule
-reading both counts one event twice.
+Its own key, its own list, and a build may sit on **both** — normally does, since a
+dev's dump shape is a sell build of a family whose whole trade history the flow split
+already tags. `DumpPatterns::validate_metric_config` checks shape only. One sell
+landing in `tagged_sell` AND in `dump_sell` is two classifiers agreeing on one
+transaction, not one event counted twice: nothing sums across the groups, so read them
+as two answers and never as parts of a whole. Forbidding the overlap would make the
+only way to configure a dump build a deletion from the tagged list, which moves those
+sells to `untagged_*` and changes what every `tagged_sell` rule measures.
 
 ```json
 {

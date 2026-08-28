@@ -43,6 +43,7 @@ use hunter_engine::arm::CompiledRule;
 use hunter_engine::event::{LoadedRule, RuleId};
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::evaluator::ConditionExpr;
+use hunter_engine::metrics::dump_ix::DumpPatterns;
 use hunter_engine::metrics::flow_ix::{
     ix_hash_from_labels_value, marker_bits_from_labels_value, wallet_hash, FlowPatterns,
 };
@@ -406,19 +407,28 @@ async fn load_flow_ctx(
     app_state: &DeployState,
     mint: &str,
     fingerprint_id: FingerprintId,
-) -> (Option<FlowPatterns>, Option<u64>) {
-    let patterns = match app_state.fingerprint_repo.find(fingerprint_id.0).await {
-        Ok(Some(fp)) => FlowPatterns::from_metric_config(&fp_to_engine(&fp).metric_config),
-        Ok(None) => None,
+) -> (Option<FlowPatterns>, Option<DumpPatterns>, Option<u64>) {
+    // Both lists come off the ONE row, in one read: they are separate groups on the
+    // same fingerprint, so a rule may carry either and reading only the flow list
+    // left every `m_dump_ix` condition blank here while the engine evaluated it.
+    let (patterns, dump) = match app_state.fingerprint_repo.find(fingerprint_id.0).await {
+        Ok(Some(fp)) => {
+            let cfg = fp_to_engine(&fp).metric_config;
+            (
+                FlowPatterns::from_metric_config(&cfg),
+                DumpPatterns::from_metric_config(&cfg),
+            )
+        }
+        Ok(None) => (None, None),
         Err(e) => {
             tracing::warn!(fp = %fingerprint_id.0, "readout replay: fingerprint load failed: {e}");
-            None
+            (None, None)
         }
     };
-    // Only pay for the creator lookup on the flow path — a rule with no flow
-    // conditions never needs it.
+    // Only pay for the creator lookup on the flow path — the creator seeds the flow
+    // contagion set and nothing else, so a dump-only rule never needs it.
     if patterns.is_none() {
-        return (None, None);
+        return (None, dump, None);
     }
     let creator_wallet_hash = match app_state.core.token_repo().find_by_mint(mint).await {
         Ok(Some(t)) if !t.creator_wallet.is_empty() => Some(wallet_hash(&t.creator_wallet)),
@@ -427,7 +437,7 @@ async fn load_flow_ctx(
             None
         }
     };
-    (patterns, creator_wallet_hash)
+    (patterns, dump, creator_wallet_hash)
 }
 
 /// The token's stored trades up to `until`, as the engine's `TradeLite`.
@@ -523,7 +533,7 @@ async fn replay_for_position(
     };
 
     let trades = load_trades(app_state, &position.mint_address, at).await?;
-    let (patterns, creator_wallet_hash) =
+    let (patterns, dump, creator_wallet_hash) =
         load_flow_ctx(app_state, &position.mint_address, rule.fingerprint_id).await;
 
     let created_at = replay_created_at(app_state, &position.mint_address, &trades).await;
@@ -536,9 +546,12 @@ async fn replay_for_position(
     // busy token is tens of thousands of folds. Small next to the lab's full series,
     // still not something to run on an async worker of a 2vCPU box.
     let out = web::block(move || {
-        let flow = patterns.as_ref().map(|p| ReplayFlow {
+        // Either list configured is enough to need the context — gating on the flow
+        // list alone would leave a dump-only rule reading `NaN`.
+        let flow = (patterns.is_some() || dump.is_some()).then_some(ReplayFlow {
             fingerprint: fingerprint_id,
-            patterns: p,
+            patterns: patterns.as_ref(),
+            dump: dump.as_ref(),
             creator_wallet_hash,
         });
         replay_readout(
@@ -753,7 +766,8 @@ async fn series_response(
         Ok(t) => t,
         Err(resp) => return resp,
     };
-    let (patterns, creator_wallet_hash) = load_flow_ctx(app_state, &mint, rule.fingerprint_id).await;
+    let (patterns, dump, creator_wallet_hash) =
+        load_flow_ctx(app_state, &mint, rule.fingerprint_id).await;
 
     let created_at = replay_created_at(app_state, &mint, &trades).await;
     let lites: Vec<TradeLite> = trades.iter().map(trade_lite).collect();
@@ -772,9 +786,12 @@ async fn series_response(
     // Off the reactor, for the same reason the point replay is — more so: this folds
     // the token's whole retained history and evaluates every condition at every row.
     let out = web::block(move || {
-        let flow = patterns.as_ref().map(|p| ReplayFlow {
+        // Either list configured is enough to need the context — gating on the flow
+        // list alone would leave a dump-only rule reading `NaN`.
+        let flow = (patterns.is_some() || dump.is_some()).then_some(ReplayFlow {
             fingerprint: fingerprint_id,
-            patterns: p,
+            patterns: patterns.as_ref(),
+            dump: dump.as_ref(),
             creator_wallet_hash,
         });
         replay_series(

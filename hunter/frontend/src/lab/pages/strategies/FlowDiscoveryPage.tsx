@@ -1133,10 +1133,11 @@ export function FlowDiscoveryPage() {
                         tip={DISCOVERY_FIELD_HELP.volumeSplit}
                         className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80"
                       >
-                        Flow split · checked structures
+                        {stageInto === 'dump' ? 'Dump cover' : 'Flow split'} · checked structures
                       </LabelTip>
                       <span className="font-mono text-[11px] text-text-dim">
-                        {fmt(flowIx.volumePct)}% volume of {fmt(flowIx.totalGross)}◎ scored
+                        {fmt(flowIx.volumePct)}% {stageInto === 'dump' ? 'dump' : 'volume'} of{' '}
+                        {fmt(flowIx.totalGross)}◎ scored
                       </span>
                     </div>
                     <div className="flex h-2 w-full overflow-hidden rounded-full bg-white/6">
@@ -1158,11 +1159,13 @@ export function FlowDiscoveryPage() {
                     </div>
                     <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[10px] text-text-dim">
                       <span className="inline-flex items-center gap-1">
-                        <span className="size-2 rounded-full bg-warning" /> Volume (checked):{' '}
+                        <span className="size-2 rounded-full bg-warning" />{' '}
+                        {stageInto === 'dump' ? 'Dump builds' : 'Volume'} (checked):{' '}
                         {fmt(flowIx.volumeGross)}◎
                       </span>
                       <span className="inline-flex items-center gap-1">
-                        <span className="size-2 rounded-full bg-white/30" /> Organic (unchecked):{' '}
+                        <span className="size-2 rounded-full bg-white/30" />{' '}
+                        {stageInto === 'dump' ? 'Everything else' : 'Organic'} (unchecked):{' '}
                         {fmt(flowIx.organicGross)}◎
                       </span>
                     </div>

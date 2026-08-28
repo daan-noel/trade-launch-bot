@@ -42,8 +42,9 @@ fn ts(secs: f64) -> Ts {
 const VOL_LABELS: [&str; 1] = ["Pump.Fun: Buy"];
 
 /// The sequence every NON-volume trade carries, and therefore the build
-/// `m_dump_ix` counts the sells of. Disjoint from [`VOL_LABELS`] because a build
-/// may sit in exactly one of the two lists.
+/// `m_dump_ix` counts the sells of. Disjoint from [`VOL_LABELS`] so this probe reads
+/// each group's own state: the two lists MAY overlap, and a shared build would leave
+/// a flow bug looking like a passing dump assertion.
 const NONVOL_LABELS: [&str; 1] = ["Pump.Fun: Sell"];
 
 /// A wildcard fingerprint configured for BOTH ix-structure groups, so neither reads

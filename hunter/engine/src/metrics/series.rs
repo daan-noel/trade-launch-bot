@@ -8,6 +8,7 @@
 //! track values, sampled after each fold. That shared compute is what the
 //! Phase-1.8 determinism test locks down (track ≡ series, byte-for-byte).
 
+use super::dump_ix::DumpPatterns;
 use super::flow_ix::FlowPatterns;
 use super::track::TokenTrack;
 use super::{group_of, MetricGroupId, MetricId, TradeLite, Ts};
@@ -26,8 +27,14 @@ pub enum SeriesColumn {
     ///
     /// [`Windows`]: super::Windows
     Window(MetricId, super::Windows),
-    /// Flow metric (`m_flow_ix` / `m_flow_ix_window`) scoped to a fingerprint.
-    Flow(MetricId, Option<super::WindowSpec>, FingerprintId),
+    /// A fingerprint-scoped metric (`m_flow_ix*`, `m_dump_ix*`) — the groups whose
+    /// state is keyed by fingerprint ([`is_fingerprint_scoped`]). The id is what
+    /// routes the read, so one variant serves every such group; naming it after one
+    /// of them is how a dump column came to be built as a bare `Static` and read
+    /// `NaN` on every row.
+    ///
+    /// [`is_fingerprint_scoped`]: super::is_fingerprint_scoped
+    Fingerprint(MetricId, Option<super::WindowSpec>, FingerprintId),
 }
 
 impl SeriesColumn {
@@ -40,7 +47,7 @@ impl SeriesColumn {
         match self {
             SeriesColumn::Static(id) => track.value(id, super::Windows::NONE, None, now),
             SeriesColumn::Window(id, ws) => track.value(id, ws, None, now),
-            SeriesColumn::Flow(id, ws, fp) => track.value(id, ws.into(), Some(fp), now),
+            SeriesColumn::Fingerprint(id, ws, fp) => track.value(id, ws.into(), Some(fp), now),
         }
     }
 }
@@ -182,7 +189,7 @@ impl MetricSeries {
     }
 
     /// Attach fingerprint-scoped flow state (and optional window sizes) before
-    /// folding trades. Required for [`SeriesColumn::Flow`] columns to leave `NaN`.
+    /// folding trades. Required for [`SeriesColumn::Fingerprint`] columns to leave `NaN`.
     pub fn ensure_flow(
         &mut self,
         fp: FingerprintId,
@@ -190,6 +197,18 @@ impl MetricSeries {
         windows: &[super::WindowSpec],
     ) {
         self.track.ensure_flow(fp, patterns, windows);
+    }
+
+    /// Attach fingerprint-scoped dump state (and optional window sizes) before
+    /// folding trades. The twin of [`ensure_flow`](Self::ensure_flow) for the other
+    /// list on the same row: a `m_dump_ix*` column reads `NaN` without it.
+    pub fn ensure_dump(
+        &mut self,
+        fp: FingerprintId,
+        patterns: &DumpPatterns,
+        windows: &[super::WindowSpec],
+    ) {
+        self.track.ensure_dump(fp, patterns, windows);
     }
 
     /// Seed the creator wallet hash (volume-side unconditionally).

@@ -325,7 +325,7 @@ fn col_meta(col: SeriesColumn) -> (MetricGroupId, MetricId, Option<hunter_engine
     match col {
         SeriesColumn::Static(id) => (group_of(id).id, id, None),
         SeriesColumn::Window(id, w) => (group_of(id).id, id, w.primary),
-        SeriesColumn::Flow(id, w, _) => (group_of(id).id, id, w),
+        SeriesColumn::Fingerprint(id, w, _) => (group_of(id).id, id, w),
     }
 }
 
@@ -347,7 +347,7 @@ fn cut_columns(windows: &[f64], with_flow: bool, flow_fp: FingerprintId) -> Vec<
             match g.kind {
                 MetricKind::Static => {
                     cols.push(if is_flow_metric(m.id) {
-                        SeriesColumn::Flow(m.id, None, fp)
+                        SeriesColumn::Fingerprint(m.id, None, fp)
                     } else {
                         SeriesColumn::Static(m.id)
                     });
@@ -355,7 +355,7 @@ fn cut_columns(windows: &[f64], with_flow: bool, flow_fp: FingerprintId) -> Vec<
                 MetricKind::Dynamic => {
                     for &w in windows {
                         cols.push(if is_flow_metric(m.id) {
-                            SeriesColumn::Flow(m.id, Some(hunter_engine::metrics::WindowSpec::secs(w)), fp)
+                            SeriesColumn::Fingerprint(m.id, Some(hunter_engine::metrics::WindowSpec::secs(w)), fp)
                         } else {
                             SeriesColumn::window(m.id, hunter_engine::metrics::WindowSpec::secs(w))
                         });
@@ -491,7 +491,7 @@ fn sample_phases(
     let windows: Vec<hunter_engine::metrics::WindowSpec> = columns
         .iter()
         .filter_map(|c| match c {
-            SeriesColumn::Flow(_, w, _) => *w,
+            SeriesColumn::Fingerprint(_, w, _) => *w,
             // Single-window by construction here: `cut_columns` only builds
             // `SeriesColumn::window`. A second axis would need its own buffer.
             SeriesColumn::Window(_, w) => w.primary,

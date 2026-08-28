@@ -294,7 +294,7 @@ pub fn screen_plan(cfg: &ScreenConfig) -> ScreenPlan {
                         plan.skipped.push(skip(SkipReason::FlowPatternsMissing));
                         continue;
                     }
-                    SeriesColumn::Flow(m.id, window, SWEEP_FLOW_FP)
+                    SeriesColumn::Fingerprint(m.id, window, SWEEP_FLOW_FP)
                 } else {
                     match (window, slice) {
                         (Some(w), Some(b)) => {
@@ -442,7 +442,7 @@ pub fn collect_percentiles(
         // A dynamic column can carry two axes; both need a buffer, so this flattens
         // rather than picking one.
         .flat_map(|c| match c {
-            SeriesColumn::Flow(_, w, _) => vec![*w],
+            SeriesColumn::Fingerprint(_, w, _) => vec![*w],
             SeriesColumn::Window(_, w) => vec![w.primary, w.secondary],
             _ => vec![],
         })
@@ -710,7 +710,7 @@ mod tests {
             .metrics
             .iter()
             .filter(|m| is_flow_metric(m.metric))
-            .all(|m| matches!(m.column(), Some(SeriesColumn::Flow(_, _, fp)) if fp == SWEEP_FLOW_FP)));
+            .all(|m| matches!(m.column(), Some(SeriesColumn::Fingerprint(_, _, fp)) if fp == SWEEP_FLOW_FP)));
     }
 
     #[test]

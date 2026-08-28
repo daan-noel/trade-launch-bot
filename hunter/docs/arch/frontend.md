@@ -643,8 +643,22 @@ means: the fingerprint form renders the second editor, the flow-discovery cart c
 a `staging into [tagged|dump]` toggle that reseeds the draft from the list it is about
 to overwrite, and the trades-table badge strip (`IxPatternBar` over
 `useIxPatternTarget`) carries the same toggle — it writes immediately, so it has to
-name its target. Each group is written by its OWN writer, and a build may sit in
-exactly one list (the backend rejects the overlap).
+name its target. Each group is written by its OWN writer, and a build may sit on
+BOTH lists — the normal configuration, since the two answer different questions about
+one transaction.
+
+The list a surface is on renames what it shows, because the two columns are otherwise
+identical: the trades-table badge reads `Tagged`/`Untagged` on the tagged list and
+`Dump`/`Not dump` on the dump one (`patternList` on `tokenTradeColumns`), contagion
+notes are suppressed under `dump` (the reasons map is the flow split's verdict, and
+`m_dump_ix` has no wallet rule to spread one), and a row the OTHER list also counts is
+marked `also tagged` / `also dump` from `otherListKeys` — information, not a conflict,
+and the one place a reader learns the two groups' numbers are not disjoint.
+Flow discovery's split bar renames the same way. `FingerprintsView` gives the dump list
+its own **dump builds** column beside `flow patterns`, and `DumpPatternsChip` is the
+`FlowPatternsChip` twin — absent when the list is empty, where the flow chip stays
+visible as `flow✗`, since an empty dump list leaves `dump_*` reading NaN rather than
+re-pointing another metric.
 
 - Lab **Flow discovery** (`/strategies/flow-discovery`, `FlowDiscoveryPage`) — corpus
   window + optional **Scope by saved fingerprint** (sends `fingerprint_id`; engine

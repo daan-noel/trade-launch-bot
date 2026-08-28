@@ -27,7 +27,7 @@ use hunter_engine::metrics::{
 };
 use uuid::Uuid;
 
-/// Run-scoped fingerprint id for sweep flow state (compile_combo + SeriesColumn::Flow
+/// Run-scoped fingerprint id for sweep flow state (compile_combo + SeriesColumn::Fingerprint
 /// share this so BoundCombo column indices line up). Promote materializes a real FP.
 pub const SWEEP_FLOW_FP: FingerprintId = FingerprintId(Uuid::nil());
 use hunter_engine::rule_params::{GroupConditions, RuleParams, SideConditions};
@@ -183,7 +183,7 @@ impl ResolvedAxis {
                 None
             }
             ResolvedAxis::Metric { metric, window, .. } => Some(if is_flow_metric(*metric) {
-                SeriesColumn::Flow(*metric, *window, SWEEP_FLOW_FP)
+                SeriesColumn::Fingerprint(*metric, *window, SWEEP_FLOW_FP)
             } else {
                 match window {
                     Some(w) => SeriesColumn::window(*metric, *w),
