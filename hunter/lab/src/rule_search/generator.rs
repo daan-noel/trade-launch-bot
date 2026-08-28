@@ -416,7 +416,7 @@ pub(crate) fn assemble(entry: &EntryFilling, exit: &ExitBag) -> RuleParams {
         rp.entry = Some(side_from(&entry.clauses));
     }
     if !exit.clauses.is_empty() {
-        rp.exit = Some(side_from(&exit.clauses));
+        rp.exit = Some(side_from(&exit.clauses).into());
     }
     rp
 }

@@ -335,6 +335,14 @@ fn axis_num_sql(axis: AxisId, ti_alias: &str) -> Option<String> {
               AND p.created_at < t.created_at \
               AND p.created_at >= t.created_at - INTERVAL '{PRIOR_LAUNCH_WINDOW_DAYS} days')::numeric"
         ),
+        AxisId::CreateAta => {
+            let arr = crate::storage::ix_labels_sql::ix_labels_array_sql("t.ix_labels");
+            let elems = crate::storage::ix_labels_sql::ix_labels_elements_sql("t.ix_labels");
+            format!(
+                "(CASE WHEN jsonb_array_length({arr}) = 0 THEN NULL \
+                 ELSE (EXISTS (SELECT 1 FROM {elems} e WHERE e LIKE 'Associated Token:%'))::int::numeric END)"
+            )
+        }
         AxisId::IxLabels => return None,
     })
 }

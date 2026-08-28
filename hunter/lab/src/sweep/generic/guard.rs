@@ -112,6 +112,7 @@ fn ct_flow(
         real_reserve_sol: Some(reserve),
         real_token_reserves: Some(1.0),
         slot: secs as u64,
+        tx_index: 0,
         leg_index: 0,
         is_buy,
         tx_signature: None,
@@ -182,7 +183,7 @@ fn exit_metric(group: MetricGroupId, metric: MetricId, op: Operator, value: f64)
     gc.metrics.insert(metric, vec![vec![Condition { operator: op, value }]]);
     let mut side = SideConditions::default();
     side.0.insert(group, vec![gc]);
-    RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(side), ..RuleParams::default() }
+    RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(side.into()), ..RuleParams::default() }
 }
 
 /// One side's conditions for a single windowed (dynamic-group) metric — e.g. the
@@ -554,7 +555,7 @@ fn scan_matches_replay_position_retrace_exit() {
             take_profit: None,
             stop_loss: None,
             entry: None,
-            exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0)),
+            exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0).into()),
             ..RuleParams::default()
         },
         &corpus(),
@@ -566,7 +567,7 @@ fn scan_matches_replay_position_retrace_exit() {
             take_profit: None,
             stop_loss: None,
             entry: None,
-            exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0)),
+            exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0).into()),
             ..RuleParams::default()
         },
         &gappy_corpus(),
@@ -604,7 +605,7 @@ fn scan_matches_replay_armed_trailing_exit() {
             take_profit: None,
             stop_loss: Some(20.0),
             entry: None,
-            exit: Some(side),
+            exit: Some(side.into()),
             ..RuleParams::default()
         };
         assert_parity(&format!("armed_trailing_gate_{gate}"), params.clone(), &corpus(), at(1000.0));
@@ -645,7 +646,7 @@ fn scan_matches_replay_tp_sl_plus_authored_metric() {
         take_profit: Some(50.0),
         stop_loss: Some(30.0),
         entry: None,
-        exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0)),
+        exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0).into()),
         ..RuleParams::default()
     };
     assert_parity("tp_sl_plus_retrace", params, &corpus(), at(1000.0));
@@ -676,7 +677,7 @@ fn position_retrace_actually_fires_the_trailing_stop() {
             Operator::Gte,
             12.0,
         )),
-        exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0)),
+        exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0).into()),
         ..RuleParams::default()
     }));
     let cols = columns_for(&compiled);
@@ -726,7 +727,7 @@ fn scan_matches_replay_minimal_flow_scalper_core() {
     let entry = window_metric_side(MetricGroupId::PriceWindow, MetricId::WinTrail, 30.0, Operator::Gte, 12.0);
     let exit = static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0);
     let params =
-        RuleParams { take_profit: None, stop_loss: None, entry: Some(entry), exit: Some(exit), ..RuleParams::default() };
+        RuleParams { take_profit: None, stop_loss: None, entry: Some(entry), exit: Some(exit.into()), ..RuleParams::default() };
     assert_parity("flow_scalper_core", params, &pw_dip_corpus(), at(1000.0));
 }
 
@@ -865,7 +866,7 @@ fn scan_matches_replay_window_flow_across_gap() {
     let mut exit = SideConditions::default();
     exit.0.insert(MetricGroupId::FlowWindow, vec![gc]);
     let params =
-        RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(exit), ..RuleParams::default() };
+        RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(exit.into()), ..RuleParams::default() };
     assert_parity("flow_decay_gap", params, &gappy_corpus(), at(100_000.0));
 }
 
@@ -918,7 +919,7 @@ fn scan_matches_replay_flow_ix_entry_and_window_exit() {
         take_profit: None,
         stop_loss: None,
         entry: Some(entry),
-        exit: Some(exit),
+        exit: Some(exit.into()),
         ..RuleParams::default()
     };
     let patterns = vec![vec!["vol".to_string()]];
@@ -1156,7 +1157,7 @@ fn index_exit_scan_matches_scalar_across_paths() {
                 MetricId::Retrace,
                 Operator::Gte,
                 3.0,
-            )),
+            ).into()),
             ..RuleParams::default()
         },
     ];
@@ -1254,6 +1255,7 @@ fn index_exit_scan_matches_scalar_on_randomized_walks() {
                 real_reserve_sol: Some(50.0),
                 real_token_reserves: Some(1.0),
                 slot,
+                tx_index: 0,
                 leg_index: 0,
                 is_buy,
                 tx_signature: None,

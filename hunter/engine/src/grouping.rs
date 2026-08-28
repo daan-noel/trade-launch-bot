@@ -72,11 +72,12 @@ pub enum GroupField {
     IxLabels,
     IxCount,
     PriorLaunches,
+    CreateAta,
 }
 
 impl GroupField {
     /// Every field, for exhaustive iteration in guards and request validation.
-    pub const ALL: [GroupField; 12] = [
+    pub const ALL: [GroupField; 13] = [
         GroupField::TokenProgramId,
         GroupField::IsCashbackEnabled,
         GroupField::CuLimit,
@@ -89,6 +90,7 @@ impl GroupField {
         GroupField::IxLabels,
         GroupField::IxCount,
         GroupField::PriorLaunches,
+        GroupField::CreateAta,
     ];
 
     /// The fingerprint axis this field groups on, or `None` for a grouping-only
@@ -106,6 +108,7 @@ impl GroupField {
             GroupField::IxLabels => AxisId::IxLabels,
             GroupField::IxCount => AxisId::IxCount,
             GroupField::PriorLaunches => AxisId::PriorLaunches,
+            GroupField::CreateAta => AxisId::CreateAta,
         })
     }
 

@@ -127,3 +127,6 @@ duration: [ix-early-gap.md](ix-early-gap.md). Harvest path after the
 95 ms fill: [ix-harvest-path.md](ix-harvest-path.md). Live concentration
 of that harvest: [ix-concentrate.md](ix-concentrate.md). Path and
 exit on the concentrated cell: [ix-cell-exit.md](ix-cell-exit.md).
+Every crowd spelling of that island (same-client or mixed, hole or
+tight pack): [ix-crowd-island.md](ix-crowd-island.md).
+Live engine mapping: [ix-live-rule.md](ix-live-rule.md).

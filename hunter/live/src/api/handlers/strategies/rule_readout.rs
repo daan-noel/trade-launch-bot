@@ -43,10 +43,12 @@ use hunter_engine::arm::CompiledRule;
 use hunter_engine::event::{LoadedRule, RuleId};
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::evaluator::ConditionExpr;
+use hunter_engine::metrics::burst_slot::BurstPatterns;
 use hunter_engine::metrics::dump_ix::DumpPatterns;
 use hunter_engine::metrics::flow_ix::{
     ix_hash_from_labels_value, marker_bits_from_labels_value, wallet_hash, FlowPatterns,
 };
+use hunter_engine::metrics::template_grain::grain_hash_from_labels_value;
 use hunter_engine::metrics::{metric_spec, MetricId, Side, TradeLite};
 use hunter_engine::readout::{
     replay_readout, replay_series, ConditionRead, ConditionSeries, ReadSide, ReadoutSource,
@@ -407,28 +409,28 @@ async fn load_flow_ctx(
     app_state: &DeployState,
     mint: &str,
     fingerprint_id: FingerprintId,
-) -> (Option<FlowPatterns>, Option<DumpPatterns>, Option<u64>) {
-    // Both lists come off the ONE row, in one read: they are separate groups on the
-    // same fingerprint, so a rule may carry either and reading only the flow list
-    // left every `m_dump_ix` condition blank here while the engine evaluated it.
-    let (patterns, dump) = match app_state.fingerprint_repo.find(fingerprint_id.0).await {
+) -> (Option<FlowPatterns>, Option<DumpPatterns>, Option<BurstPatterns>, Option<u64>) {
+    // All three lists come off the ONE row, in one read: they are separate groups on
+    // the same fingerprint, so a rule may carry any of them.
+    let (patterns, dump, burst) = match app_state.fingerprint_repo.find(fingerprint_id.0).await {
         Ok(Some(fp)) => {
             let cfg = fp_to_engine(&fp).metric_config;
             (
                 FlowPatterns::from_metric_config(&cfg),
                 DumpPatterns::from_metric_config(&cfg),
+                BurstPatterns::from_metric_config(&cfg),
             )
         }
-        Ok(None) => (None, None),
+        Ok(None) => (None, None, None),
         Err(e) => {
             tracing::warn!(fp = %fingerprint_id.0, "readout replay: fingerprint load failed: {e}");
-            (None, None)
+            (None, None, None)
         }
     };
     // Only pay for the creator lookup on the flow path — the creator seeds the flow
-    // contagion set and nothing else, so a dump-only rule never needs it.
+    // contagion set and nothing else, so a dump-only / burst-only rule never needs it.
     if patterns.is_none() {
-        return (None, dump, None);
+        return (None, dump, burst, None);
     }
     let creator_wallet_hash = match app_state.core.token_repo().find_by_mint(mint).await {
         Ok(Some(t)) if !t.creator_wallet.is_empty() => Some(wallet_hash(&t.creator_wallet)),
@@ -437,7 +439,7 @@ async fn load_flow_ctx(
             None
         }
     };
-    (patterns, dump, creator_wallet_hash)
+    (patterns, dump, burst, creator_wallet_hash)
 }
 
 /// The token's stored trades up to `until`, as the engine's `TradeLite`.
@@ -533,7 +535,7 @@ async fn replay_for_position(
     };
 
     let trades = load_trades(app_state, &position.mint_address, at).await?;
-    let (patterns, dump, creator_wallet_hash) =
+    let (patterns, dump, burst, creator_wallet_hash) =
         load_flow_ctx(app_state, &position.mint_address, rule.fingerprint_id).await;
 
     let created_at = replay_created_at(app_state, &position.mint_address, &trades).await;
@@ -548,10 +550,11 @@ async fn replay_for_position(
     let out = web::block(move || {
         // Either list configured is enough to need the context — gating on the flow
         // list alone would leave a dump-only rule reading `NaN`.
-        let flow = (patterns.is_some() || dump.is_some()).then_some(ReplayFlow {
+        let flow = (patterns.is_some() || dump.is_some() || burst.is_some()).then_some(ReplayFlow {
             fingerprint: fingerprint_id,
             patterns: patterns.as_ref(),
             dump: dump.as_ref(),
+            burst: burst.as_ref(),
             creator_wallet_hash,
         });
         replay_readout(
@@ -598,6 +601,8 @@ fn trade_lite(t: &Trade) -> TradeLite {
         // so `m_dump_ix`'s transaction count reads leg 0 only. Saturates: the byte is
         // only ever compared against 0, and a tx never carries 255 legs.
         leg_index: t.leg_index.min(u8::MAX as u32) as u8,
+        tx_index: Some(t.tx_index as u32),
+        template_hash: grain_hash_from_labels_value(&t.instruction_labels),
     }
 }
 
@@ -766,7 +771,7 @@ async fn series_response(
         Ok(t) => t,
         Err(resp) => return resp,
     };
-    let (patterns, dump, creator_wallet_hash) =
+    let (patterns, dump, burst, creator_wallet_hash) =
         load_flow_ctx(app_state, &mint, rule.fingerprint_id).await;
 
     let created_at = replay_created_at(app_state, &mint, &trades).await;
@@ -788,10 +793,11 @@ async fn series_response(
     let out = web::block(move || {
         // Either list configured is enough to need the context — gating on the flow
         // list alone would leave a dump-only rule reading `NaN`.
-        let flow = (patterns.is_some() || dump.is_some()).then_some(ReplayFlow {
+        let flow = (patterns.is_some() || dump.is_some() || burst.is_some()).then_some(ReplayFlow {
             fingerprint: fingerprint_id,
             patterns: patterns.as_ref(),
             dump: dump.as_ref(),
+            burst: burst.as_ref(),
             creator_wallet_hash,
         });
         replay_series(

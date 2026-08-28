@@ -33,7 +33,8 @@ export type AxisId =
   | 'first_slot_sell_lamports'
   | 'ix_labels'
   | 'ix_count'
-  | 'prior_launches';
+  | 'prior_launches'
+  | 'create_ata';
 
 /** What an axis's numbers *are* — drives how a bound is shown and parsed. */
 export type AxisUnit = 'lamports' | 'compute_units' | 'count' | 'labels';
@@ -153,6 +154,16 @@ export const AXES: readonly AxisDef[] = [
     phase: 'instant',
     definition:
       'How many tokens this creator launched BEFORE this one, over a trailing 30-day window. A strictly-prior tally, so a first-time creator reads 0; unknown when the creator wallet is not on the creation event.',
+  },
+  {
+    id: 'create_ata',
+    label: 'Create ATA',
+    chip: 'ata',
+    kind: 'numeric',
+    unit: 'count',
+    phase: 'instant',
+    definition:
+      '1 when the creation transaction carries an Associated Token instruction, 0 when it does not. Unknown (fails closed) when the creation labels are empty.',
   },
 ] as const;
 

@@ -38,20 +38,35 @@ pub struct PositionCtx {
     pub trough_price: f64,
     /// The entry fill time (`held` reference).
     pub entered_at: Ts,
+    /// Trail latch: `true` once `pnl` has reached `trail_arm_pct`. When
+    /// `trail_arm_pct` is `None`, [`position_value`] reports `armed` as 1.
+    pub armed: bool,
+    /// Threshold that latches [`armed`](Self::armed). `None` ⇒ the metric reads 1.
+    pub trail_arm_pct: Option<f64>,
 }
 
 impl PositionCtx {
     /// Fresh context at the entry fill — peak and trough both seed to the fill.
+    /// No trail latch (`armed` reads 1).
     pub fn at_fill(entry_price: f64, entered_at: Ts) -> Self {
+        Self::at_fill_with_arm(entry_price, entered_at, None)
+    }
+
+    /// Fresh context at the entry fill, with the `arm_above_pct` latch threshold.
+    /// `None` ⇒ `armed` starts (and stays) 1.
+    pub fn at_fill_with_arm(entry_price: f64, entered_at: Ts, trail_arm_pct: Option<f64>) -> Self {
         Self {
             entry_price,
             peak_price: entry_price,
             trough_price: entry_price,
             entered_at,
+            armed: trail_arm_pct.is_none(),
+            trail_arm_pct,
         }
     }
 
-    /// Ratchet peak up / trough down for one finite price (no-op on non-finite).
+    /// Ratchet peak up / trough down for one finite price, and latch `armed`
+    /// once `pnl` reaches `trail_arm_pct`. No-op on non-finite price.
     pub fn fold_price(&mut self, price: f64) {
         if !price.is_finite() {
             return;
@@ -61,6 +76,13 @@ impl PositionCtx {
         }
         if price < self.trough_price {
             self.trough_price = price;
+        }
+        if !self.armed {
+            if let Some(gate) = self.trail_arm_pct {
+                if self.pnl(price) >= gate {
+                    self.armed = true;
+                }
+            }
         }
     }
 
@@ -134,6 +156,10 @@ pub fn position_value(id: MetricId, ctx: &PositionCtx, price: f64, now: Ts) -> f
         MetricId::Bounce => ctx.bounce(price),
         MetricId::Pnl => ctx.pnl(price),
         MetricId::Held => ctx.held(now),
+        MetricId::Armed => {
+            // No gate authored ⇒ latch is vacuously on. Otherwise the 0/1 flip.
+            f64::from(u8::from(ctx.trail_arm_pct.is_none() || ctx.armed))
+        }
         _ => f64::NAN,
     }
 }
@@ -154,6 +180,8 @@ mod tests {
             peak_price: peak,
             trough_price: trough,
             entered_at: ts(entered),
+            armed: true,
+            trail_arm_pct: None,
         }
     }
 

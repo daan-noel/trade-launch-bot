@@ -77,4 +77,6 @@ is present (r20 median +1.49%) and the matching exit is
 `arm_death 8`: [ix-cell-exit.md](ix-cell-exit.md).
 
 Do not fund a harvest exit on the unconcentrated event. Do not treat
-his-mint clock-20 as a live rule.
+his-mint clock-20 as a live rule. A 0 ms fill inside a tight pack is
+still fiction; a 95 ms fill after that pack on the concentrated crowd
+is [ix-crowd-island.md](ix-crowd-island.md).

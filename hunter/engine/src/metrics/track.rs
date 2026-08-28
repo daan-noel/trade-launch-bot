@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 
 use crate::fingerprint::FingerprintId;
 
+use super::burst_slot::{BurstPatterns, BurstSlotState};
 use super::crowd_window::CrowdWindowState;
 use super::flow_lifetime::FlowLifetimeState;
 use super::dump_ix::{DumpPatterns, DumpState};
@@ -66,6 +67,11 @@ pub struct TokenTrack {
     /// nothing at all for a trade that does not match one, so a rule reading no dump
     /// metric must not pay a deque push per trade to carry it.
     dump: BTreeMap<FingerprintId, DumpState>,
+    /// `m_burst_slot` working lists, keyed by fingerprint. The slot prefix itself
+    /// is one buffer on the token ([`burst`](Self::burst)); only the 0/1 working
+    /// match differs per list.
+    burst_patterns: BTreeMap<FingerprintId, BurstPatterns>,
+    burst: BurstSlotState,
     /// Creator wallet hash from `TokenCreated` — applied to every FlowState.
     creator_wallet_hash: Option<u64>,
     /// Last observed *priced* SOL depth (`vsol`), for price impact only. Not a
@@ -90,6 +96,8 @@ impl TokenTrack {
             priced_reserves: f64::NAN,
             flow: BTreeMap::new(),
             dump: BTreeMap::new(),
+            burst_patterns: BTreeMap::new(),
+            burst: BurstSlotState::default(),
             creator_wallet_hash: None,
         }
     }
@@ -161,6 +169,14 @@ impl TokenTrack {
         }
     }
 
+    /// Register fingerprint-scoped burst patterns (idempotent). Same adopt-on-reload
+    /// contract as [`ensure_dump`](Self::ensure_dump): an edited working list moves
+    /// a live token's future, never its past. The slot prefix is token-level and
+    /// does not reset on reload.
+    pub fn ensure_burst(&mut self, fp: FingerprintId, patterns: &BurstPatterns) {
+        self.burst_patterns.insert(fp, patterns.clone());
+    }
+
     /// Seed the creator wallet (volume-side unconditionally) on every flow state.
     pub fn seed_creator(&mut self, hash: u64) {
         self.creator_wallet_hash = Some(hash);
@@ -173,6 +189,12 @@ impl TokenTrack {
 
     /// Fold one trade into every group.
     pub fn on_trade(&mut self, t: TradeLite) {
+        // Burst reads trail and previous-slot liquidity BEFORE this print is folded.
+        let pre_trail = self.price_lifetime.trail();
+        let prev_liq = self.state.liquidity();
+        if !self.burst_patterns.is_empty() {
+            self.burst.on_trade(&t, pre_trail, prev_liq);
+        }
         self.state.on_trade(t.reserve_sol);
         self.priced_reserves = t.priced_reserve_sol;
         // The slot cursor only ever moves forward. Canonical order is
@@ -376,11 +398,19 @@ impl TokenTrack {
                     None => f64::NAN,
                 }
             }
+            WorkingTemplate | TemplateBuyCount | TemplateBuySol | TemplateWalletCount
+            | SlotBuyCount | SlotBuySol | SlotWalletCount | SlotTemplateCount
+            | NewOnMintWallets | Packed | PreSlotLiquidity | PrePrintTrail => {
+                let Some(fp) = fingerprint else {
+                    return f64::NAN;
+                };
+                self.burst.value(id, self.burst_patterns.get(&fp))
+            }
             // Position-scoped metrics have no token state — they read from a
             // `PositionCtx` (see `metrics::position`), never the track. Before entry
             // (the only place `TokenTrack::value` reaches them, via the `can_enter`
             // exit-gate) they read NaN, so a position exit metric never blocks entry.
-            Retrace | Bounce | Pnl | Held => f64::NAN,
+            Retrace | Bounce | Pnl | Held | Armed => f64::NAN,
         }
     }
 
@@ -494,6 +524,7 @@ mod tests {
             ix_hash: Some(bot),
             wallet_hash: 11,
             leg_index: 0,
+            ..Default::default()
         });
         assert_eq!(track.value(MetricId::UntaggedBuy, crate::metrics::Windows::NONE, Some(fp), ts(1.0)), 1.0);
 
@@ -511,6 +542,7 @@ mod tests {
             ix_hash: Some(bot),
             wallet_hash: 12,
             leg_index: 0,
+            ..Default::default()
         });
         // The new trade classifies volume-side; the already-folded one keeps its past.
         assert_eq!(track.value(MetricId::TaggedBuy, crate::metrics::Windows::NONE, Some(fp), ts(2.0)), 2.0);
@@ -1014,6 +1046,7 @@ mod tests {
                     ix_hash: None,
                     wallet_hash: wallet,
                     leg_index: 0,
+                    ..Default::default()
                 });
             }
             let now = ts(c.now);

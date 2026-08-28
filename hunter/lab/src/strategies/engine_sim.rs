@@ -597,14 +597,20 @@ fn history_cache_key(
 /// be the only thing in the rule referencing a flow metric.
 fn rule_needs_flow(loaded: &LoadedRule) -> bool {
     let stages = loaded.params.scale_out.iter().flatten().map(|s| &s.conditions);
-    [loaded.params.entry.as_ref(), loaded.params.exit.as_ref()]
+    let entry = loaded.params.entry.as_ref().into_iter();
+    let exit = loaded
+        .params
+        .exit
+        .as_ref()
         .into_iter()
-        .flatten()
+        .flat_map(|e| e.clauses());
+    entry
+        .chain(exit)
         .chain(stages)
         .flat_map(|side| side.0.values())
         .flat_map(|instances| instances.iter())
         .flat_map(|g| g.metrics.keys())
-        .any(|m| m.needs_wallet_identity())
+        .any(|m| m.needs_wallet_identity() || m.needs_ix_labels())
 }
 
 /// Scan (or reuse) the fingerprint's **matched** candidate set: every token whose

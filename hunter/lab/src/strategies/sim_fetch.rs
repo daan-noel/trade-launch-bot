@@ -242,6 +242,7 @@ mod tests {
             real_reserve_sol: None,
             real_token_reserves: None,
             slot,
+            tx_index: 0,
             leg_index: 0,
             is_buy: true,
             tx_signature: None,

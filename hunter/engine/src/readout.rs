@@ -231,6 +231,8 @@ pub struct ReplayFlow<'a> {
     /// dump registration on the flow list would leave a dump-only rule's conditions
     /// blank in the readout while the live engine evaluates them.
     pub dump: Option<&'a DumpPatterns>,
+    /// `m_burst_slot.working_templates`. Independently optional.
+    pub burst: Option<&'a crate::metrics::burst_slot::BurstPatterns>,
     /// Seeds the flow contagion set only — `m_dump_ix` has no wallet rule.
     pub creator_wallet_hash: Option<u64>,
 }
@@ -292,6 +294,9 @@ pub fn replay_readout(
         }
         if let Some(d) = f.dump {
             track.ensure_dump(f.fingerprint, d, &rule.dump_windows);
+        }
+        if let Some(b) = f.burst {
+            track.ensure_burst(f.fingerprint, b);
         }
         if let Some(h) = f.creator_wallet_hash {
             track.seed_creator(h);
@@ -476,6 +481,9 @@ pub fn replay_series(
         }
         if let Some(d) = f.dump {
             series.ensure_dump(f.fingerprint, d, &rule.dump_windows);
+        }
+        if let Some(b) = f.burst {
+            series.ensure_burst(f.fingerprint, b);
         }
         if let Some(h) = f.creator_wallet_hash {
             series.seed_creator(h);
@@ -864,7 +872,7 @@ mod tests {
     fn read_state_resolves_a_manual_episodes_rule_through_its_position() {
         let rule_id = RuleId(Uuid::from_u128(7));
         let position = crate::event::PositionId(42);
-        let held = crate::arm::EnteredCtx::at_fill(position, 1.0, ts(0));
+        let held = crate::arm::EnteredCtx::at_fill(position, 1.0, ts(0), None);
         let (mut state, mint) =
             state_with(rule_id, track_at(1.5, 10), crate::arm::ArmState::Entered(held));
 
@@ -1017,6 +1025,7 @@ mod tests {
                 // shape that gated the whole context off and blanked the condition.
                 patterns: None,
                 dump: Some(&dump),
+                burst: None,
                 creator_wallet_hash: None,
             }),
         };

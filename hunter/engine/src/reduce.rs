@@ -236,9 +236,17 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                     // Peak/trough start at the fill: before any run-up
                     // `retrace` measures the drop from entry (a soft stop);
                     // before any dip `bounce` equals `pnl`.
+                    let trail_arm_pct = state
+                        .rule_for(rule_id, Some(position))
+                        .and_then(|c| c.trail_arm_pct);
                     token.arms.insert(
                         rule_id,
-                        ArmState::Entered(EnteredCtx::at_fill(position, fill.price, fill.at)),
+                        ArmState::Entered(EnteredCtx::at_fill(
+                            position,
+                            fill.price,
+                            fill.at,
+                            trail_arm_pct,
+                        )),
                     );
                     fx.push(Effect::PositionUpdate(PositionDelta {
                         position,
@@ -778,12 +786,11 @@ fn fold_entered_extremes(token: &mut TokenState, at: Ts) {
             if at < ctx.entered_at {
                 continue;
             }
-            if cur_price > ctx.peak_price {
-                ctx.peak_price = cur_price;
-            }
-            if cur_price < ctx.trough_price {
-                ctx.trough_price = cur_price;
-            }
+            let mut p = ctx.position_ctx();
+            p.fold_price(cur_price);
+            ctx.peak_price = p.peak_price;
+            ctx.trough_price = p.trough_price;
+            ctx.armed = p.armed;
         }
     }
 }

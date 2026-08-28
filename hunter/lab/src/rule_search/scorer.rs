@@ -17,7 +17,7 @@ use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::grid::SparseGrid;
 use hunter_engine::metrics::series::SeriesColumn;
-use hunter_engine::metrics::{group_spec, is_flow_metric, MetricId, MetricKind, MetricScope};
+use hunter_engine::metrics::{group_spec, MetricId, MetricKind, MetricScope};
 use trading_core::config::constants::sol_to_lamports;
 
 use crate::sweep::aggregate::ComboAgg;
@@ -251,10 +251,10 @@ fn columns_for(combos: &[GeneratedCombo], flow_fp: FingerprintId, with_flow: boo
         if g.scope == MetricScope::Position {
             return;
         }
-        if !with_flow && is_flow_metric(c.metric) {
+        if !with_flow && hunter_engine::metrics::is_fingerprint_scoped(c.metric) {
             return;
         }
-        let col = if is_flow_metric(c.metric) {
+        let col = if hunter_engine::metrics::is_fingerprint_scoped(c.metric) {
             SeriesColumn::Fingerprint(c.metric, c.window, fp)
         } else {
             match (g.kind, c.window) {

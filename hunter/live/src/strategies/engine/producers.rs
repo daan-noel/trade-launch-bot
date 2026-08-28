@@ -364,6 +364,8 @@ fn trade_lite(ct: &CachedTrade) -> TradeLite {
         // so `m_dump_ix`'s transaction count reads leg 0 only. Saturates: the byte is
         // only ever compared against 0, and a tx never carries 255 legs.
         leg_index: ct.leg_index.min(u8::MAX as u32) as u8,
+        tx_index: Some(ct.tx_index),
+        template_hash: ct.template_hash,
     }
 }
 

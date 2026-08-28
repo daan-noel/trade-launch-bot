@@ -211,6 +211,16 @@ impl MetricSeries {
         self.track.ensure_dump(fp, patterns, windows);
     }
 
+    /// Attach fingerprint-scoped burst state before folding trades. Twin of
+    /// [`ensure_dump`](Self::ensure_dump) for `m_burst_slot`.
+    pub fn ensure_burst(
+        &mut self,
+        fp: crate::fingerprint::FingerprintId,
+        patterns: &crate::metrics::burst_slot::BurstPatterns,
+    ) {
+        self.track.ensure_burst(fp, patterns);
+    }
+
     /// Seed the creator wallet hash (volume-side unconditionally).
     pub fn seed_creator(&mut self, hash: u64) {
         self.track.seed_creator(hash);

@@ -86,6 +86,14 @@ unconcentrated body is −8.43%). Peak is after the first 0.8 s pause.
 `arm_death 8` (trail 10/18 once armed; unarmed leaves on 8 s of buy
 silence) is **+2.94% / 12/12 / OOS +2.04%** at the same fill.
 
+The same cut on every crowd spelling (same-client or mixed, hole or
+tight pack): [ix-crowd-island.md](ix-crowd-island.md). Union first
+per mint n=6,002, clock-20 **+2.31% / 12/12 / OOS +2.19%**. First-gap
+stays red. Solos stay out.
+
+Live engine mapping (two exclusive rules, `m_burst_slot`, exit DNF):
+[ix-live-rule.md](ix-live-rule.md).
+
 Habit check, not the score: this cell is 4,882 events / 3,917 mints,
 he1 1.72% (84 hits, 7/day) against fillable 1.19% and fillable
 first-per-mint 0.85%. It covers 84 / 965 of his fillable-event fires
@@ -102,5 +110,6 @@ the wrong direction on the full tape.
 
 Do not add `he1` or his mint list to the rule. Do not swap the
 harvest for first-gap. Do not fold solos back in. Do not stack
-another filter on this print. Paper the conjunction with
-`arm_death 8` ([ix-cell-exit.md](ix-cell-exit.md)).
+another filter on this print. Paper the four-shape crowd island
+([ix-crowd-island.md](ix-crowd-island.md)); separated-only with
+`arm_death 8` is the original cell ([ix-cell-exit.md](ix-cell-exit.md)).

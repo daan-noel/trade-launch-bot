@@ -254,7 +254,7 @@ fn the_runner_up_keeps_its_terms_in_the_units_it_was_fitted_in() {
 fn the_shared_exit_is_give_back_or_clock_or_arrival() {
     for (name, json) in RULES {
         let p = parse(json);
-        let exit = p.exit.as_ref().expect("exit");
+        let exit = p.exit.as_ref().expect("exit").as_object().expect("object-form");
         assert_eq!(one(exit, MetricId::Retrace), (Operator::Gte, 10.0, Windows::NONE));
         assert_eq!(one(exit, MetricId::Held), (Operator::Gte, 60.0, Windows::NONE));
         // `liquidity` is REAL reserves = `vsol - PUMP_INITIAL_VIRTUAL_SOL` (30), and the

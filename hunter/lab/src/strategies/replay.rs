@@ -1036,6 +1036,7 @@ mod tests {
             real_reserve_sol: Some(real_reserve),
             real_token_reserves: None,
             slot: (secs as u64) + 1,
+            tx_index: 0,
             leg_index: 0,
             is_buy,
             tx_signature: Some(format!("sig{secs}").into_boxed_str()),

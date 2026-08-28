@@ -38,6 +38,7 @@ pub fn trade(secs: i64, price: f64, reserve: f64, is_buy: bool) -> CorpusTrade {
         real_reserve_sol: Some(reserve),
         real_token_reserves: None,
         slot: secs as u64,
+        tx_index: 0,
         leg_index: 0,
         is_buy,
         tx_signature: None,

@@ -294,12 +294,14 @@ impl IngestConsumer {
         };
         // Hash from the event labels before nulling the cache projection — keeps
         // flow-split metrics correct while avoiding hash work under DashMap.
-        let (ix_hash, wallet_hash, marker_bits) = {
+        let (ix_hash, wallet_hash, marker_bits, template_hash) = {
             use hunter_engine::metrics::flow_ix::{ix_hash_opt, marker_bits, wallet_hash};
+            use hunter_engine::metrics::template_grain::grain_hash;
             (
                 ix_hash_opt(&e.instruction_labels),
                 wallet_hash(&wallet),
                 marker_bits(&e.instruction_labels),
+                grain_hash(&e.instruction_labels),
             )
         };
         core_trade.instruction_labels = Value::Null;
@@ -316,7 +318,13 @@ impl IngestConsumer {
         // Keep the DashMap mut guard short: precomputed hashes + AMM observe outside.
         let (metrics, amm_token_program) = match self.token_cache.get_mut(&mint) {
             Some(mut token_state) => {
-                token_state.add_trade_hashed(core_trade, ix_hash, wallet_hash, marker_bits);
+                token_state.add_trade_hashed(
+                    core_trade,
+                    ix_hash,
+                    wallet_hash,
+                    marker_bits,
+                    template_hash,
+                );
                 let tp = if is_amm && !token_state.amm_pool_prewarmed {
                     token_state.token.token_program_id.clone()
                 } else {

@@ -1123,6 +1123,7 @@ fn flow_entry_on_tagged_net_and_exit_when_organic_goes_quiet() {
                 ix_hash: None,
                 wallet_hash: 7,
                 leg_index: 0,
+                ..Default::default()
             },
         },
     );
@@ -1145,6 +1146,7 @@ fn flow_entry_on_tagged_net_and_exit_when_organic_goes_quiet() {
                 ix_hash: Some(ix_hash(&["vol"])),
                 wallet_hash: 8,
                 leg_index: 0,
+                ..Default::default()
             },
         },
     );
@@ -1219,6 +1221,7 @@ fn two_fingerprints_flow_states_diverge() {
                 ix_hash: Some(ix_hash(&["a"])),
                 wallet_hash: 1,
                 leg_index: 0,
+                ..Default::default()
             },
         },
     );

@@ -80,4 +80,9 @@ fallback is first-gap on this cell (3,464 / 3,917 gap).
 
 Do not sweep trail width or death seconds on this print. Do not
 fold solos in. Clock-20 is the probe that selected the cell and
-still clears; `arm_death 8` is the tape exit that matches the path.
+still clears; `arm_death 8` is the tape exit that matches the path
+on separated. Every crowd spelling of the same island:
+[ix-crowd-island.md](ix-crowd-island.md).
+
+Live engine mapping (two exclusive rules, `m_burst_slot`, exit DNF):
+[ix-live-rule.md](ix-live-rule.md).

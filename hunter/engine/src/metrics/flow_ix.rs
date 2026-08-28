@@ -804,6 +804,7 @@ mod tests {
             ix_hash: ix,
             wallet_hash: wallet,
             leg_index: 0,
+            ..Default::default()
         }
     }
 
@@ -1135,6 +1136,7 @@ mod tests {
                     ix_hash: t.labels.as_deref().and_then(ix_hash_opt),
                     wallet_hash: wallet_hash(&t.wallet),
                     leg_index: 0,
+                    ..Default::default()
                 }, c(0));
             }
             let now = ts(case.trades.len() as f64);

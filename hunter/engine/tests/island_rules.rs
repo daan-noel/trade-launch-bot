@@ -170,7 +170,7 @@ fn every_island_rule_parses_and_validates() {
             p.take_profit, None,
             "{name}: a static take-profit caps the right tail the book is paid by"
         );
-        let exit = p.exit.as_ref().expect("exit present");
+        let exit = p.exit.as_ref().expect("exit present").as_object().expect("object-form");
         assert!(
             has(exit, MetricId::Retrace) || has(exit, MetricId::Held),
             "{name}: the exit is either the wide trail or the clock"
@@ -198,7 +198,7 @@ fn every_island_rule_round_trips() {
 fn the_confirmed_island_exits_on_a_clock_with_a_wide_stop() {
     let p = parse(CONTINUATION);
     assert_eq!(p.stop_loss, Some(20.0), "the stop is a disaster brake, not a working part");
-    let exit = p.exit.as_ref().expect("exit");
+    let exit = p.exit.as_ref().expect("exit").as_object().expect("object-form");
     assert!(has(exit, MetricId::Held), "the clock IS the exit");
     assert!(
         !has(exit, MetricId::Retrace),

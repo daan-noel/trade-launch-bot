@@ -51,6 +51,7 @@ pub fn priced_trade(secs: i64, price: f64) -> CorpusTrade {
         real_reserve_sol: Some(40.0),
         real_token_reserves: None,
         slot: secs as u64,
+        tx_index: 0,
         leg_index: 0,
         is_buy: true,
         tx_signature: None,

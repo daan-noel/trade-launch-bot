@@ -621,7 +621,7 @@ fn load_corpus_tokens(
     // The one projection both shapes below emit — the exact column order the row
     // reader decodes by ordinal.
     let projection = format!(
-        "mint, is_buy, sol_amount, token_amount, price, slot, block_time, leg_index, \
+        "mint, is_buy, sol_amount, token_amount, price, slot, tx_index, block_time, leg_index, \
          vsol, vtok, venue{sig_col}{flow_cols}"
     );
     // Restores execution order so a token's legs arrive contiguous + chronological
@@ -677,14 +677,15 @@ fn load_corpus_tokens(
         let token_amount: f64 = row.get(3)?;
         let price: f64 = row.get(4)?;
         let slot: i64 = row.get(5)?;
-        let block_time: i64 = row.get(6)?;
-        let leg_index: i32 = row.get(7)?;
-        let vsol: Option<f64> = row.get(8)?;
-        let vtok: Option<f64> = row.get(9)?;
-        let venue: String = row.get(10)?;
+        let tx_index: i32 = row.get(6)?;
+        let block_time: i64 = row.get(7)?;
+        let leg_index: i32 = row.get(8)?;
+        let vsol: Option<f64> = row.get(9)?;
+        let vtok: Option<f64> = row.get(10)?;
+        let venue: String = row.get(11)?;
         // Optional trailing columns: signature then flow — ordinal advances only
         // when the matching Selection flag requested them.
-        let mut col = 11usize;
+        let mut col = 12usize;
         let tx_signature: Option<Box<str>> = if sel.with_signatures {
             let v = row.get::<_, Option<String>>(col)?.map(String::into_boxed_str);
             col += 1;
@@ -733,6 +734,7 @@ fn load_corpus_tokens(
             real_reserve_sol: vsol.map(|s| approx_real_sol_reserves(s, &venue)),
             real_token_reserves: None,
             slot: slot as u64,
+            tx_index: tx_index as u32,
             leg_index: leg_index as u32,
             is_buy,
             tx_signature,

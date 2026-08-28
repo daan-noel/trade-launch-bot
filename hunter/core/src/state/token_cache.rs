@@ -78,6 +78,12 @@ pub struct CachedTrade {
     /// (engine `flow_ix::marker_bits`), computed once at ingest beside `ix_hash`
     /// - the strategy hot path never touches the label strings.
     pub marker_bits: u16,
+    /// Intra-slot index. `0` is a valid first-in-block trade — missing is not
+    /// represented (the live feed always has a block position).
+    pub tx_index: u32,
+    /// FNV-1a of the build-template grain (`program|CU|ATA|N|S|F`); `None` when
+    /// labels are empty/missing.
+    pub template_hash: Option<u64>,
 }
 
 impl CachedTrade {
@@ -95,6 +101,7 @@ impl CachedTrade {
             ix_hash_opt(&labels),
             wallet_hash(&t.wallet_address),
             hunter_engine::metrics::flow_ix::marker_bits(&labels),
+            hunter_engine::metrics::template_grain::grain_hash(&labels),
         )
     }
 
@@ -106,6 +113,7 @@ impl CachedTrade {
         ix_hash: Option<u64>,
         wallet_hash: u64,
         marker_bits: u16,
+        template_hash: Option<u64>,
     ) -> Self {
         Self {
             wallet,
@@ -126,6 +134,8 @@ impl CachedTrade {
             ix_hash,
             wallet_hash,
             marker_bits,
+            tx_index: t.tx_index,
+            template_hash,
         }
     }
 }
@@ -147,6 +157,9 @@ impl TradeRow for CachedTrade {
     }
     fn slot(&self) -> u64 {
         self.slot
+    }
+    fn tx_index(&self) -> u32 {
+        self.tx_index
     }
     fn leg_index(&self) -> u32 {
         self.leg_index
@@ -369,11 +382,19 @@ impl TokenState {
         ix_hash: Option<u64>,
         wallet_hash: u64,
         marker_bits: u16,
+        template_hash: Option<u64>,
     ) {
         self.apply_aggregates(&trade);
         let wallet = self.interner.intern(&trade.wallet_address);
         let cached =
-            CachedTrade::from_trade_hashes(&trade, wallet, ix_hash, wallet_hash, marker_bits);
+            CachedTrade::from_trade_hashes(
+                &trade,
+                wallet,
+                ix_hash,
+                wallet_hash,
+                marker_bits,
+                template_hash,
+            );
         self.push_trade_capped(cached);
     }
 

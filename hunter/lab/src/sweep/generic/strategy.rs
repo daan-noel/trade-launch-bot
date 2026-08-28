@@ -1163,17 +1163,31 @@ fn reqs_satisfied(
         .all(|(r, &col)| eval(&r.conds, value_at_col(series, col, row), r.tolerance))
 }
 
-/// Exit combinator: OR across metrics (mirror of `arm::reqs_any_satisfied`). Any
-/// one satisfied exit metric fires; a single metric's own cond list still ANDs.
-fn reqs_any_satisfied(
+/// Exit combinator: OR of AND-clauses (mirror of `arm::clauses_exit_fired` without
+/// trailing skip — pre-entry, position metrics are NaN). Object-form is one
+/// singleton clause per req, so this equals today's flat OR.
+fn clauses_any_satisfied(
     series: &MetricSeries,
-    reqs: &[hunter_engine::arm::MetricReq],
+    clauses: &[Vec<MetricReq>],
     cols: &[usize],
     row: usize,
 ) -> bool {
-    reqs.iter()
-        .zip(cols)
-        .any(|(r, &col)| eval(&r.conds, value_at_col(series, col, row), r.tolerance))
+    let mut offset = 0;
+    for clause in clauses {
+        let n = clause.len();
+        if n == 0 {
+            continue;
+        }
+        let all = clause
+            .iter()
+            .zip(&cols[offset..offset + n])
+            .all(|(r, &col)| eval(&r.conds, value_at_col(series, col, row), r.tolerance));
+        if all {
+            return true;
+        }
+        offset += n;
+    }
+    false
 }
 
 /// The exit label a fired req carries — mirror of `CompiledRule::exit_fired`'s
@@ -1200,9 +1214,18 @@ fn exit_req_fires(
     row: usize,
     ctx: &PositionCtx,
 ) -> bool {
-    // Mirrors `CompiledRule::exit_fired`: a trailing req held off until the position
-    // is `arm_above_pct` in profit does not fire at all while disarmed.
-    if !trailing_armed(req.arm_above_pct, ctx, series.price[row]) {
+    exit_req_holds(series, req, col, row, ctx, true)
+}
+
+fn exit_req_holds(
+    series: &MetricSeries,
+    req: &MetricReq,
+    col: usize,
+    row: usize,
+    ctx: &PositionCtx,
+    skip_trailing: bool,
+) -> bool {
+    if skip_trailing && !trailing_armed(req.arm_above_pct, ctx, series.price[row]) {
         return false;
     }
     let reading = if req.position_scoped {
@@ -1222,6 +1245,44 @@ fn exit_req_fires(
 /// Returns the winning `ExitCode` **and** its index into `reqs` — the caller
 /// looks the index up against `BoundCombo::exit_metric_label` to stamp a
 /// `ExitCode::Metrics` outcome with its authored metric/operator/value/slot.
+/// Held-side exit combinator — the scan's mirror of `CompiledRule::exit_fired`.
+/// Walks `exit_clauses` (OR of AND). Trailing skip only on a singleton trailing
+/// clause. Returns the winning `ExitCode` **and** the flattened index of the
+/// clause's first req (for `exit_metric_label`).
+fn first_exit_clause_fired(
+    series: &MetricSeries,
+    clauses: &[Vec<MetricReq>],
+    cols: &[usize],
+    row: usize,
+    ctx: &PositionCtx,
+) -> Option<(ExitCode, usize)> {
+    let mut offset = 0;
+    for clause in clauses {
+        let n = clause.len();
+        if n == 0 {
+            offset += n;
+            continue;
+        }
+        let singleton_trail = n == 1 && clause[0].arm_above_pct.is_some();
+        if singleton_trail && !trailing_armed(clause[0].arm_above_pct, ctx, series.price[row]) {
+            offset += n;
+            continue;
+        }
+        let mut all = true;
+        for (i, r) in clause.iter().enumerate() {
+            if !exit_req_holds(series, r, cols[offset + i], row, ctx, false) {
+                all = false;
+                break;
+            }
+        }
+        if all {
+            return Some((exit_code_of(clause[0].origin), offset));
+        }
+        offset += n;
+    }
+    None
+}
+
 fn first_exit_req_fired(
     series: &MetricSeries,
     reqs: &[MetricReq],
@@ -1276,7 +1337,7 @@ pub(crate) fn resolve_entry(
         }
         if enter_on_arm || reqs_satisfied(series, &c.entry_reqs, entry_cols, i) {
             // Mirror `CompiledRule::can_enter`: never buy while exit metrics already hold.
-            if has_exit_metrics && reqs_any_satisfied(series, &c.exit_reqs, exit_cols, i) {
+            if has_exit_metrics && clauses_any_satisfied(series, &c.exit_clauses, exit_cols, i) {
                 continue;
             }
             return entry_fill_at(trades, series, i, pricing);
@@ -1449,7 +1510,7 @@ pub(crate) fn entry_candidates(series: &MetricSeries, b: &BoundCombo, out: &mut 
 /// * vacuous veto (pure TP/SL — position-scoped reqs read `NaN` before entry and can
 ///   never fire): the class's first candidate + a memo hit, i.e. O(1) after the first
 ///   combo. This is the 1M-combo shape, and it must stay untaxed.
-/// * token-scoped exit axes: one `reqs_any_satisfied` per vetoed candidate, plus
+/// * token-scoped exit axes: one `clauses_any_satisfied` per vetoed candidate, plus
 ///   whatever the shared walk still has to advance — work the old code did per combo
 ///   too, only now it is shared and it lands on the *right* combo.
 pub(crate) fn resolve_entry_from(
@@ -1464,7 +1525,7 @@ pub(crate) fn resolve_entry_from(
     let resolved = loop {
         let Some(row) = cands.nth(k, series, b) else { break EntryResolution::NoEntry };
         // Mirror `CompiledRule::can_enter`: never buy while exit metrics already hold.
-        if b.entry_veto_possible && reqs_any_satisfied(series, &b.rule.exit_reqs, &b.exit_cols, row)
+        if b.entry_veto_possible && clauses_any_satisfied(series, &b.rule.exit_clauses, &b.exit_cols, row)
         {
             k += 1;
             continue;
@@ -1648,7 +1709,7 @@ pub(crate) fn resolve_exit(
     // (`retrace`/`bounce`/`pnl`). Seeded to the fill price — exactly as `reduce.rs`
     // seeds `ArmState::Entered` — and folded forward each event BEFORE that event's
     // exit decision, mirroring `evaluate_token`'s per-event extrema fold.
-    let mut ctx = PositionCtx::at_fill(entry_price, entry_at);
+    let mut ctx = PositionCtx::at_fill_with_arm(entry_price, entry_at, c.trail_arm_pct);
     for j in (fill_row + 1)..n {
         if series.dead[j] {
             return close_at_fire(
@@ -1667,7 +1728,7 @@ pub(crate) fn resolve_exit(
         }
         ctx.fold_price(series.price[j]);
         if has_exit_reqs {
-            if let Some((exit, idx)) = first_exit_req_fired(series, &c.exit_reqs, exit_cols, j, &ctx) {
+            if let Some((exit, idx)) = first_exit_clause_fired(series, &c.exit_clauses, exit_cols, j, &ctx) {
                 return close_at_fire(
                     trades,
                     series,
@@ -1730,7 +1791,7 @@ fn resolve_exit_staged(
     let entry_reserve = entry_depth(series, fill_row);
     let n = series.n_rows();
     let has_exit_reqs = c.has_exit_metrics();
-    let mut ctx = PositionCtx::at_fill(entry_price, entry_at);
+    let mut ctx = PositionCtx::at_fill_with_arm(entry_price, entry_at, c.trail_arm_pct);
     let mut stage: usize = 0;
     let mut sold_bps: u16 = 0;
     let mut legs: Vec<ExitLeg> = Vec::new();
@@ -1758,7 +1819,7 @@ fn resolve_exit_staged(
         // Global side first — catastrophe path (SL / authored exit / desugared TP).
         if has_exit_reqs {
             if let Some((exit, idx)) =
-                first_exit_req_fired(series, &c.exit_reqs, &b.exit_cols, j, &ctx)
+                first_exit_clause_fired(series, &c.exit_clauses, &b.exit_cols, j, &ctx)
             {
                 return close_staged(
                     trades,
@@ -2499,7 +2560,7 @@ pub(crate) fn resolve_exit_simd(
             (ExitCode::Dead, None)
         } else {
             let ctx = PositionCtx::at_fill(entry_price, entry_at);
-            match first_exit_req_fired(series, &b.rule.exit_reqs, &b.exit_cols, j, &ctx) {
+            match first_exit_clause_fired(series, &b.rule.exit_clauses, &b.exit_cols, j, &ctx) {
                 Some((exit, i)) => (exit, Some(i)),
                 // Should not happen (the vector scan only lands on `j` because some
                 // req fires there) — preserved as a safety fallback; the label is
@@ -2858,6 +2919,8 @@ unsafe fn first_trailing_row_avx512(
         peak_price: carry,
         trough_price: entry_price,
         entered_at: DateTime::UNIX_EPOCH,
+        armed: true,
+        trail_arm_pct: None,
     };
     for (k, &p) in price.iter().enumerate().take(n).skip(j) {
         ctx.fold_price(p);

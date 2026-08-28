@@ -57,7 +57,8 @@ fn probe_fp() -> Fingerprint {
         criteria: Criteria::new(),
         metric_config: json!({
             "m_flow_ix": { "ix_patterns": [VOL_LABELS] },
-            "m_dump_ix": { "ix_patterns": [NONVOL_LABELS] }
+            "m_dump_ix": { "ix_patterns": [NONVOL_LABELS] },
+            "m_burst_slot": { "working_templates": ["Pump.Fun"] }
         }),
     }
 }
@@ -190,6 +191,12 @@ fn trade(
         slot,
         marker_bits: 0,
         leg_index: 0,
+        tx_index: Some(slot as u32),
+        template_hash: Some(if vol {
+            hunter_engine::metrics::template_grain::grain_hash(&VOL_LABELS).unwrap()
+        } else {
+            hunter_engine::metrics::template_grain::grain_hash(&NONVOL_LABELS).unwrap()
+        }),
     }
 }
 

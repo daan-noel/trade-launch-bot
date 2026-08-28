@@ -100,6 +100,7 @@ async fn the_engine_fires_where_the_sql_derivation_fires() {
 
         for r in &rows {
             let slot: i64 = r.get("slot");
+            let tx_index: i32 = r.get("tx_index");
             let sol = r.get::<i64, _>("amount_lamports") as f64 / 1e9;
             let vsol = r
                 .try_get::<Option<i64>, _>("reserve_lamports")
@@ -127,6 +128,10 @@ async fn the_engine_fires_where_the_sql_derivation_fires() {
                 // purpose, so a new fact on the trade has to be answered here.
                 leg_index: 0,
                 marker_bits: hunter_engine::metrics::flow_ix::marker_bits_from_labels_value(
+                    &labels,
+                ),
+                tx_index: Some(tx_index as u32),
+                template_hash: hunter_engine::metrics::template_grain::grain_hash_from_labels_value(
                     &labels,
                 ),
             });

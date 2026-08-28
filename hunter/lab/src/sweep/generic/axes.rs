@@ -22,7 +22,7 @@ use hunter_engine::metrics::evaluator::{coalesce_contributions, Condition, Opera
 use hunter_engine::metrics::series::SeriesColumn;
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::{
-    group_by_name, group_spec, is_flow_metric, metric_spec, MetricGroupId, MetricId, MetricKind,
+    group_by_name, group_spec, is_fingerprint_scoped, metric_spec, MetricGroupId, MetricId, MetricKind,
     MetricScope, WindowSpec,
 };
 use uuid::Uuid;
@@ -30,7 +30,7 @@ use uuid::Uuid;
 /// Run-scoped fingerprint id for sweep flow state (compile_combo + SeriesColumn::Fingerprint
 /// share this so BoundCombo column indices line up). Promote materializes a real FP.
 pub const SWEEP_FLOW_FP: FingerprintId = FingerprintId(Uuid::nil());
-use hunter_engine::rule_params::{GroupConditions, RuleParams, SideConditions};
+use hunter_engine::rule_params::{ExitSide, GroupConditions, RuleParams, SideConditions};
 use serde::{Deserialize, Serialize};
 
 /// Which side of the rule an axis conditions.
@@ -182,7 +182,7 @@ impl ResolvedAxis {
             {
                 None
             }
-            ResolvedAxis::Metric { metric, window, .. } => Some(if is_flow_metric(*metric) {
+            ResolvedAxis::Metric { metric, window, .. } => Some(if is_fingerprint_scoped(*metric) {
                 SeriesColumn::Fingerprint(*metric, *window, SWEEP_FLOW_FP)
             } else {
                 match window {
@@ -386,11 +386,14 @@ impl AxesModel {
                     // The off pick: no condition, no group entry, no window —
                     // this combo behaves as if the axis were never authored.
                     let Some(val) = values[pick] else { continue };
-                    let side_slot = match side {
-                        AxisSide::Entry => &mut rp.entry,
-                        AxisSide::Exit => &mut rp.exit,
+                    let sc = match side {
+                        AxisSide::Entry => rp.entry.get_or_insert_with(SideConditions::default),
+                        AxisSide::Exit => rp
+                            .exit
+                            .get_or_insert_with(|| ExitSide::Any(SideConditions::default()))
+                            .as_object_mut()
+                            .expect("sweep authors object-form exit"),
                     };
-                    let sc = side_slot.get_or_insert_with(SideConditions::default);
                     // One `GroupConditions` instance per distinct `window_size_sec`,
                     // mirroring the engine's multi-window-per-group model
                     // (`hunter_engine::rule_params`): axes sharing a window merge into
@@ -452,8 +455,12 @@ impl AxesModel {
                 }
             }
         }
-        coalesce_side(&mut rp.entry);
-        coalesce_side(&mut rp.exit);
+        if let Some(entry) = rp.entry.as_mut() {
+            coalesce_side(entry);
+        }
+        if let Some(exit) = rp.exit.as_mut().and_then(ExitSide::as_object_mut) {
+            coalesce_side(exit);
+        }
         rp
     }
 }
@@ -462,8 +469,7 @@ impl AxesModel {
 /// and exit): AND when satisfiable, else OR. That makes both orientations work:
 /// * `> lows × < highs` → ranges when `a < b`, outside OR when crossed
 /// * `< lows × > highs` → outside OR when crossed, ranges when the pair forms an interval
-fn coalesce_side(side: &mut Option<SideConditions>) {
-    let Some(side) = side else { return };
+fn coalesce_side(side: &mut SideConditions) {
     for instances in side.0.values_mut() {
         for group in instances.iter_mut() {
             for (metric_id, arms) in group.metrics.iter_mut() {
@@ -932,7 +938,7 @@ mod tests {
         assert!(m.columns().is_empty(), "position metrics must not become series columns");
         // The assembled params must survive the canonical parse (promotable to a rule).
         let p = m.combo_params(0);
-        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::Position][0].metrics[&MetricId::Retrace];
+        let arms = &p.exit.as_ref().unwrap().as_object().unwrap().0[&MetricGroupId::Position][0].metrics[&MetricId::Retrace];
         assert_eq!(arms[0][0].value, 1.5);
         RuleParams::parse(&p.to_value()).unwrap();
     }
@@ -971,7 +977,7 @@ mod tests {
         };
         let m = AxesModel::resolve(&req).expect("distinct windows on one group must resolve");
         let p = m.combo_params(0);
-        let insts = &p.exit.as_ref().unwrap().0[&MetricGroupId::FlowWindow];
+        let insts = &p.exit.as_ref().unwrap().as_object().unwrap().0[&MetricGroupId::FlowWindow];
         assert_eq!(insts.len(), 2, "one instance per distinct window");
         // Sorted ascending by window when serialized; assert both windows present.
         let windows: Vec<f64> =
@@ -1063,7 +1069,7 @@ mod tests {
         for i in 0..m.combo_count() {
             let p = m.combo_params(i);
             let arms =
-                &p.exit.as_ref().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Liquidity];
+                &p.exit.as_ref().unwrap().as_object().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Liquidity];
             assert_eq!(arms.len(), 1, "combo {i}: feasible opposing bounds must AND");
             assert_eq!(arms[0].len(), 2);
             RuleParams::parse(&p.to_value()).unwrap();
@@ -1081,7 +1087,7 @@ mod tests {
         };
         let m = AxesModel::resolve(&req).unwrap();
         let p = m.combo_params(0);
-        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Liquidity];
+        let arms = &p.exit.as_ref().unwrap().as_object().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Liquidity];
         assert_eq!(arms.len(), 2);
         assert_eq!(arms[0][0].operator, Operator::Lt);
         assert_eq!(arms[1][0].operator, Operator::Gt);
@@ -1099,7 +1105,7 @@ mod tests {
         };
         let m = AxesModel::resolve(&req).unwrap();
         let p = m.combo_params(0);
-        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Liquidity];
+        let arms = &p.exit.as_ref().unwrap().as_object().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Liquidity];
         assert_eq!(arms.len(), 1);
         assert_eq!(arms[0].len(), 2);
     }

@@ -40,7 +40,7 @@ use hunter_engine::metrics::evaluator::Operator;
 use hunter_engine::metrics::flow_ix::FlowPatterns;
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
 use hunter_engine::metrics::{
-    group_spec, is_flow_metric, MetricGroupId, MetricId, MetricKind, MetricScope, Unit, REGISTRY,
+    group_spec, is_fingerprint_scoped, MetricGroupId, MetricId, MetricKind, MetricScope, Unit, REGISTRY,
  WindowSpec,
 };
 use trading_core::strategies::kernel::exact_quantile_f64;
@@ -289,7 +289,7 @@ pub fn screen_plan(cfg: &ScreenConfig) -> ScreenPlan {
                     continue;
                 }
                 // Fingerprint-scoped flow needs the run's compiled patterns.
-                let column = if is_flow_metric(m.id) {
+                let column = if is_fingerprint_scoped(m.id) {
                     if cfg.flow_patterns.is_none() {
                         plan.skipped.push(skip(SkipReason::FlowPatternsMissing));
                         continue;
@@ -701,7 +701,7 @@ mod tests {
                 && s.reason == SkipReason::FlowPatternsMissing),
             "flow-split must be skipped (with a reason) when no patterns are supplied",
         );
-        assert!(!bare.metrics.iter().any(|m| is_flow_metric(m.metric)));
+        assert!(!bare.metrics.iter().any(|m| is_fingerprint_scoped(m.metric)));
 
         let with = screen_plan(&cfg_with_patterns());
         assert!(with.metrics.iter().any(|m| m.group == MetricGroupId::FlowIx));
@@ -709,7 +709,7 @@ mod tests {
         assert!(with
             .metrics
             .iter()
-            .filter(|m| is_flow_metric(m.metric))
+            .filter(|m| is_fingerprint_scoped(m.metric))
             .all(|m| matches!(m.column(), Some(SeriesColumn::Fingerprint(_, _, fp)) if fp == SWEEP_FLOW_FP)));
     }
 
@@ -951,6 +951,7 @@ mod tests {
             real_reserve_sol: Some(reserve),
             real_token_reserves: None,
             slot: secs as u64,
+            tx_index: 0,
             leg_index: 0,
             is_buy,
             tx_signature: None,

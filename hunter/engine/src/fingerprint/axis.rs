@@ -67,6 +67,9 @@ pub enum AxisId {
     IxCount,
     /// How many tokens this creator launched before this one.
     PriorLaunches,
+    /// 1 when the creation tx carries an Associated Token instruction, 0 when it
+    /// does not. Unknown (fails closed) when creation labels are empty.
+    CreateAta,
 }
 
 /// The value shape an axis carries — which [`AxisPredicate`] variant is legal on it.
@@ -244,11 +247,23 @@ pub static AXES: &[AxisDef] = &[
                      creator reads 0; unknown when the creator wallet is not on the \
                      creation event.",
     },
+    AxisDef {
+        id: AxisId::CreateAta,
+        key: "create_ata",
+        label: "Create ATA",
+        chip: "ata",
+        kind: AxisKind::Numeric,
+        unit: AxisUnit::Count,
+        phase: AxisPhase::Instant,
+        definition: "1 when the creation transaction carries an Associated Token \
+                     instruction, 0 when it does not. Unknown (fails closed) when \
+                     the creation labels are empty.",
+    },
 ];
 
 impl AxisId {
     /// Every axis, for exhaustive iteration in guards, forms and SQL builders.
-    pub const ALL: [AxisId; 10] = [
+    pub const ALL: [AxisId; 11] = [
         AxisId::CuLimit,
         AxisId::CuPrice,
         AxisId::InitBuyLamports,
@@ -259,6 +274,7 @@ impl AxisId {
         AxisId::IxLabels,
         AxisId::IxCount,
         AxisId::PriorLaunches,
+        AxisId::CreateAta,
     ];
 
     /// This axis's registry row.
@@ -304,6 +320,7 @@ impl AxisId {
             // two axes can never disagree about the same transaction.
             AxisId::IxCount => tf.ix_labels.len() as u128,
             AxisId::PriorLaunches => u128::from(tf.prior_launches?),
+            AxisId::CreateAta => crate::metrics::template_grain::create_ata_present(&tf.ix_labels)?,
             AxisId::IxLabels => return None,
         };
         Some(v)

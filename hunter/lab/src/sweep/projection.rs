@@ -19,6 +19,9 @@ use hunter_engine::metrics::flow_ix::{
     ix_hash_from_labels_json, ix_hash_from_labels_value, marker_bits_from_labels_value,
     wallet_hash,
 };
+use hunter_engine::metrics::template_grain::{
+    grain_hash_from_labels_json, grain_hash_from_labels_value,
+};
 use hunter_engine::metrics::{Side, TradeLite};
 
 use trading_core::config::constants::approx_real_sol_reserves;
@@ -57,6 +60,8 @@ pub struct CorpusTrade {
     /// [`chart_spot_price`](TradeRow::chart_spot_price). ~+8 B/row.
     pub real_token_reserves: Option<f64>,
     pub slot: u64,
+    /// Intra-slot index. `0` is a valid first-in-block trade.
+    pub tx_index: u32,
     pub leg_index: u32,
     pub is_buy: bool,
     /// Base58 signature — `None` on the sweep read (slim), `Some` on the simulate read
@@ -95,6 +100,8 @@ pub struct FlowKeys {
     /// Structural markers of the row's labels - the offline twin of the live
     /// producer's, resolved at load beside `ix_hash` so the fold does no string work.
     pub marker_bits: u16,
+    /// FNV-1a of the build-template grain; `None` when labels are missing.
+    pub template_hash: Option<u64>,
 }
 
 impl FlowKeys {
@@ -110,6 +117,7 @@ impl FlowKeys {
                 .and_then(|j| serde_json::from_str::<Value>(j).ok())
                 .map(|v| marker_bits_from_labels_value(&v))
                 .unwrap_or(0),
+            template_hash: ix_labels.and_then(grain_hash_from_labels_json),
         }
     }
 
@@ -121,6 +129,7 @@ impl FlowKeys {
             ix_hash: ix_hash_from_labels_value(ix_labels),
             wallet_hash: wallet.map(wallet_hash).unwrap_or(0),
             marker_bits: marker_bits_from_labels_value(ix_labels),
+            template_hash: grain_hash_from_labels_value(ix_labels),
         }
     }
 }
@@ -144,6 +153,9 @@ impl TradeRow for CorpusTrade {
     }
     fn slot(&self) -> u64 {
         self.slot
+    }
+    fn tx_index(&self) -> u32 {
+        self.tx_index
     }
     fn leg_index(&self) -> u32 {
         self.leg_index
@@ -199,6 +211,8 @@ pub fn to_trade_lite(ct: &CorpusTrade) -> TradeLite {
         // so `m_dump_ix`'s transaction count reads leg 0 only. Saturates: the byte is
         // only ever compared against 0, and a tx never carries 255 legs.
         leg_index: ct.leg_index.min(u8::MAX as u32) as u8,
+        tx_index: Some(ct.tx_index),
+        template_hash: ct.flow.template_hash,
     }
 }
 
@@ -264,6 +278,7 @@ pub fn project_trades<T: TradeRow<Wallet = String>>(trades: &[T]) -> Vec<CorpusT
             real_reserve_sol: t.real_reserve_sol(),
             real_token_reserves: t.real_token_reserves(),
             slot: t.slot(),
+            tx_index: t.tx_index(),
             leg_index: t.leg_index(),
             is_buy: t.is_buy(),
             tx_signature: None,
@@ -312,6 +327,7 @@ pub fn project_pg_tail(trades: &[Trade], with_flow: bool) -> Vec<CorpusTrade> {
             real_reserve_sol: pg_real_reserve_sol(t),
             real_token_reserves: t.real_token_reserves(),
             slot: t.slot(),
+            tx_index: t.tx_index(),
             leg_index: t.leg_index(),
             is_buy: t.is_buy(),
             tx_signature: None,

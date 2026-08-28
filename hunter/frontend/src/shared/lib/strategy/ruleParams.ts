@@ -111,8 +111,11 @@ export interface RuleParams {
   stop_loss: number | null;
   /** Entry side. `undefined`/empty ⇒ enter on arm (fingerprint alone). */
   entry?: SideConditions;
-  /** Exit side. `undefined`/empty ⇒ TP/SL/death only. */
+  /** Exit side (object-form). `undefined`/empty ⇒ TP/SL/death only. */
   exit?: SideConditions;
+  /** Array-form DNF exit. When set, serializes as `"exit": [clause, …]` and
+   *  object-form `exit` is ignored. */
+  exitClauses?: SideConditions[];
   /** Ordered partial-exit ladder. `null`/empty ⇒ legacy full close only. */
   scale_out?: ExitStage[] | null;
   /** Re-entry lifecycle. `null`/absent ⇒ one-shot. */
@@ -155,8 +158,13 @@ export function ruleParamsToJson(p: RuleParams): Record<string, unknown> {
   if (p.stop_loss != null) root.stop_loss = p.stop_loss;
   const entry = sideToJson(p.entry);
   if (entry) root.entry = entry;
-  const exit = sideToJson(p.exit);
-  if (exit) root.exit = exit;
+  if (p.exitClauses && p.exitClauses.length > 0) {
+    const clauses = p.exitClauses.map((c) => sideToJson(c)).filter((c) => c != null);
+    if (clauses.length) root.exit = clauses;
+  } else {
+    const exit = sideToJson(p.exit);
+    if (exit) root.exit = exit;
+  }
   const scaleOut = scaleOutToJson(p.scale_out);
   if (scaleOut) root.scale_out = scaleOut;
   // Re-entry rides along only when fully specified (both a cooldown and an episode
@@ -229,7 +237,14 @@ export function ruleParamsFromJson(json: unknown, reg: StrategyRegistry | undefi
     take_profit: numOrNull(obj.take_profit),
     stop_loss: numOrNull(obj.stop_loss),
     entry: sideFromJson(obj.entry, reg) ?? {},
-    exit: sideFromJson(obj.exit, reg) ?? {},
+    ...(Array.isArray(obj.exit)
+      ? {
+          exit: {},
+          exitClauses: obj.exit
+            .map((c) => sideFromJson(c, reg) ?? {})
+            .filter((c) => Object.keys(c).length > 0),
+        }
+      : { exit: sideFromJson(obj.exit, reg) ?? {} }),
     scale_out: scaleOutFromJson(obj.scale_out, reg),
     reentry: reentryFromJson(obj.reentry),
     buy_pct_of_vsol:
@@ -251,11 +266,13 @@ function disabledFromJson(
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
   const entry = sideFromJson(o.entry, reg);
-  const exit = sideFromJson(o.exit, reg);
+  const parkedExit = Array.isArray(o.exit)
+    ? undefined
+    : sideFromJson(o.exit, reg);
   const scale_out = scaleOutFromJson(o.scale_out, reg);
   const has = (s: SideConditions | undefined) => s != null && Object.keys(s).length > 0;
-  if (!has(entry) && !has(exit) && !scale_out?.length) return null;
-  return { entry, exit, scale_out };
+  if (!has(entry) && !has(parkedExit) && !scale_out?.length) return null;
+  return { entry, exit: parkedExit, scale_out };
 }
 
 /** Empty array folds to `null` (same sentinel as backend `configured_labels`). */

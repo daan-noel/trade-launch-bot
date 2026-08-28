@@ -18,7 +18,10 @@ Two engine facts combine into a trap:
 2. **Exit conditions OR across metrics** (`CompiledRule::exit_fired` returns the
    first req that holds; entry is the AND side). Within one metric the expr is DNF,
    so `pnl` can AND with itself — but `retrace >= 3 AND pnl >= 2` spans two metrics
-   and cannot be authored at all.
+   and cannot be authored at all. The harvest mapping authors a DNF of *clauses*
+   (AND inside a clause, OR across clauses) plus a latch metric
+   `m_position.armed`: [ix-live-rule.md](ix-live-rule.md). Object-form `exit`
+   (no array) stays this flat OR, so stored rules do not change.
 
 So "trail out, but only once the trade has cleared the fee" was inexpressible, and
 the closest authorable thing silently doubled as a tight stop from entry.

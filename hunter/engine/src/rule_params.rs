@@ -14,6 +14,11 @@
 //! }
 //! ```
 //!
+//! **Exit combinator.** Object-form `exit` is a flat OR of metrics (every stored
+//! rule). Array-form `exit` is DNF: a list of clause objects, clauses OR, metrics
+//! inside a clause AND. Entry stays a single object (AND). `scale_out` stages
+//! stay object-form. See `docs/plans/strategies/ix-live-rule.md`.
+//!
 //! Group objects mix **strict params** (e.g. `window_size_sec`) with **metric
 //! condition lists** at the same level, so parsing is a registry-guided walk
 //! rather than a plain derive: every group / strict-param / metric / operator
@@ -103,6 +108,52 @@ pub const MAX_SCALE_SELL_BPS: u16 = 9900;
 /// is `buy / vsol` exactly — 10% is already a 10% self-inflicted move.
 pub const MAX_BUY_PCT_OF_VSOL: f64 = 10.0;
 
+/// Authored exit combinator. Object-form JSON is today's flat OR of metrics;
+/// array-form is OR of AND-clauses (DNF). Entry stays a single object (AND).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExitSide {
+    /// `"exit": { ... }` — each metric is its own OR term (today's stored rules).
+    Any(SideConditions),
+    /// `"exit": [ {clause}, {clause} ]` — clauses OR, metrics inside a clause AND.
+    Dnf(Vec<SideConditions>),
+}
+
+impl ExitSide {
+    /// Object-form only. `None` for DNF.
+    pub fn as_object(&self) -> Option<&SideConditions> {
+        match self {
+            Self::Any(s) => Some(s),
+            Self::Dnf(_) => None,
+        }
+    }
+
+    /// Object-form only. `None` for DNF.
+    pub fn as_object_mut(&mut self) -> Option<&mut SideConditions> {
+        match self {
+            Self::Any(s) => Some(s),
+            Self::Dnf(_) => None,
+        }
+    }
+
+    /// One slice of clauses: a single object is a 1-element view.
+    pub fn clauses(&self) -> &[SideConditions] {
+        match self {
+            Self::Any(s) => std::slice::from_ref(s),
+            Self::Dnf(cs) => cs.as_slice(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.clauses().iter().all(SideConditions::is_empty)
+    }
+}
+
+impl From<SideConditions> for ExitSide {
+    fn from(s: SideConditions) -> Self {
+        Self::Any(s)
+    }
+}
+
 /// Typed, registry-checked `params`. See module docs for the JSON shape.
 /// `default()` is the legal empty rule (fingerprint-only, no TP/SL/conditions).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -113,8 +164,10 @@ pub struct RuleParams {
     pub stop_loss: Option<f64>,
     /// Entry conditions. `None` = enter on arm (the fingerprint alone decides).
     pub entry: Option<SideConditions>,
-    /// Exit conditions. `None` = TP/SL/death only.
-    pub exit: Option<SideConditions>,
+    /// Exit conditions. `None` = TP/SL/death only. Object-form is today's flat
+    /// OR of metrics ([`ExitSide::Any`]); array-form is OR of AND-clauses
+    /// ([`ExitSide::Dnf`]).
+    pub exit: Option<ExitSide>,
     /// Ordered partial-exit ladder. `None` / empty = no scale-out (legacy full
     /// close only). See [`ExitStage`] and `docs/plans/strategies/partial-exits.md`.
     pub scale_out: Option<Vec<ExitStage>>,
@@ -155,8 +208,9 @@ pub struct RuleParams {
 pub struct DisabledConditions {
     /// Parked entry-side conditions (`None`/empty = none parked).
     pub entry: Option<SideConditions>,
-    /// Parked exit-side conditions (`None`/empty = none parked).
-    pub exit: Option<SideConditions>,
+    /// Parked exit-side conditions (`None`/empty = none parked). Same object-or-array
+    /// grammar as the live [`RuleParams::exit`].
+    pub exit: Option<ExitSide>,
     /// Parked scale-out stages (`None`/empty = none parked). Order is the authoring
     /// order the editor showed them in; it carries no execution meaning here — only
     /// the live [`RuleParams::scale_out`] ladder is ordered.
@@ -167,9 +221,10 @@ impl DisabledConditions {
     /// Whether anything at all is parked (an empty bag ≡ absent, and never reaches
     /// storage — [`RuleParams::to_value`] omits it).
     pub fn is_empty(&self) -> bool {
-        let empty = |s: &Option<SideConditions>| s.as_ref().is_none_or(SideConditions::is_empty);
-        empty(&self.entry)
-            && empty(&self.exit)
+        let empty_entry = |s: &Option<SideConditions>| s.as_ref().is_none_or(SideConditions::is_empty);
+        let empty_exit = |s: &Option<ExitSide>| s.as_ref().is_none_or(ExitSide::is_empty);
+        empty_entry(&self.entry)
+            && empty_exit(&self.exit)
             && self.scale_out.as_ref().is_none_or(Vec::is_empty)
     }
 }
@@ -275,7 +330,7 @@ impl RuleParams {
 
     /// `exit` absent/empty ⇒ only TP / SL / death close the position.
     pub fn exit_is_tp_sl_only(&self) -> bool {
-        self.exit.as_ref().is_none_or(SideConditions::is_empty)
+        self.exit.as_ref().is_none_or(ExitSide::is_empty)
     }
 
     /// Parse **and validate** stored/authored params JSON. This is the one
@@ -299,8 +354,8 @@ impl RuleParams {
         if let Some(side) = &self.entry {
             root.insert("entry".into(), side_to_value(side));
         }
-        if let Some(side) = &self.exit {
-            root.insert("exit".into(), side_to_value(side));
+        if let Some(exit) = &self.exit {
+            root.insert("exit".into(), exit_to_value(exit));
         }
         if let Some(stages) = &self.scale_out {
             if !stages.is_empty() {
@@ -322,10 +377,13 @@ impl RuleParams {
         // An empty parked bag is the same as none — never store the ambiguous state.
         if let Some(d) = self.disabled.as_ref().filter(|d| !d.is_empty()) {
             let mut o = Map::new();
-            for (key, side) in [("entry", &d.entry), ("exit", &d.exit)] {
+            for (key, side) in [("entry", &d.entry)] {
                 if let Some(side) = side.as_ref().filter(|s| !s.is_empty()) {
                     o.insert(key.into(), side_to_value(side));
                 }
+            }
+            if let Some(exit) = d.exit.as_ref().filter(|s| !s.is_empty()) {
+                o.insert("exit".into(), exit_to_value(exit));
             }
             if let Some(stages) = d.scale_out.as_ref().filter(|s| !s.is_empty()) {
                 o.insert(
@@ -373,7 +431,7 @@ impl RuleParams {
             take_profit: parse_opt_number(obj.get("take_profit"), "take_profit")?,
             stop_loss: parse_opt_number(obj.get("stop_loss"), "stop_loss")?,
             entry: parse_opt_side(obj.get("entry"), "entry")?,
-            exit: parse_opt_side(obj.get("exit"), "exit")?,
+            exit: parse_opt_exit(obj.get("exit"), "exit")?,
             scale_out: parse_opt_scale_out(obj.get("scale_out"), "scale_out")?,
             reentry: parse_opt_reentry(obj.get("reentry"))?,
             exclusive: parse_opt_bool(obj.get("exclusive"), "exclusive")?,
@@ -413,13 +471,27 @@ impl RuleParams {
         let d = self.disabled.as_ref();
         for (label, is_entry, side) in [
             ("entry", true, self.entry.as_ref()),
-            ("exit", false, self.exit.as_ref()),
             ("disabled.entry", true, d.and_then(|d| d.entry.as_ref())),
-            ("disabled.exit", false, d.and_then(|d| d.exit.as_ref())),
         ] {
             let Some(side) = side else { continue };
             for (group_id, instances) in &side.0 {
                 validate_group_instances(label, is_entry, *group_id, instances)?;
+            }
+        }
+        for (label, exit) in [
+            ("exit", self.exit.as_ref()),
+            ("disabled.exit", d.and_then(|d| d.exit.as_ref())),
+        ] {
+            let Some(exit) = exit else { continue };
+            for (i, side) in exit.clauses().iter().enumerate() {
+                let clause_label = if matches!(exit, ExitSide::Dnf(_)) {
+                    format!("{label}[{i}]")
+                } else {
+                    label.to_string()
+                };
+                for (group_id, instances) in &side.0 {
+                    validate_group_instances(&clause_label, false, *group_id, instances)?;
+                }
             }
         }
         if let Some(stages) = &self.scale_out {
@@ -449,7 +521,7 @@ fn parse_opt_disabled(v: Option<&Value>) -> Result<Option<DisabledConditions>, S
             }
             let d = DisabledConditions {
                 entry: parse_opt_side(o.get("entry"), "disabled.entry")?,
-                exit: parse_opt_side(o.get("exit"), "disabled.exit")?,
+                exit: parse_opt_exit(o.get("exit"), "disabled.exit")?,
                 scale_out: parse_opt_scale_out(o.get("scale_out"), "disabled.scale_out")?,
             };
             Ok(if d.is_empty() { None } else { Some(d) })
@@ -658,6 +730,31 @@ fn parse_opt_number(v: Option<&Value>, name: &str) -> Result<Option<f64>, String
             n.as_f64().map(Some).ok_or_else(|| format!("{name} is not a valid number"))
         }
         Some(_) => Err(format!("{name} must be a number")),
+    }
+}
+
+fn parse_opt_exit(v: Option<&Value>, side_name: &str) -> Result<Option<ExitSide>, String> {
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(arr)) => {
+            if arr.is_empty() {
+                return Ok(None);
+            }
+            let mut clauses = Vec::with_capacity(arr.len());
+            for (i, item) in arr.iter().enumerate() {
+                let label = format!("{side_name}[{i}]");
+                let side = parse_opt_side(Some(item), &label)?
+                    .ok_or_else(|| format!("{label} must be an object"))?;
+                if side.is_empty() {
+                    return Err(format!(
+                        "{label} is empty — a DNF clause with no metrics is always true"
+                    ));
+                }
+                clauses.push(side);
+            }
+            Ok(Some(ExitSide::Dnf(clauses)))
+        }
+        other => Ok(parse_opt_side(other, side_name)?.map(ExitSide::Any)),
     }
 }
 
@@ -1034,6 +1131,13 @@ fn validate_group(
     Ok(())
 }
 
+fn exit_to_value(exit: &ExitSide) -> Value {
+    match exit {
+        ExitSide::Any(s) => side_to_value(s),
+        ExitSide::Dnf(cs) => Value::Array(cs.iter().map(side_to_value).collect()),
+    }
+}
+
 fn side_to_value(side: &SideConditions) -> Value {
     let mut groups = Map::new();
     for (group_id, instances) in &side.0 {
@@ -1193,7 +1297,7 @@ mod tests {
             } }
         }))
         .expect("armed trailing stop is valid");
-        let g = &p.exit.as_ref().unwrap().0[&MetricGroupId::Position][0];
+        let g = &p.exit.as_ref().unwrap().as_object().unwrap().0[&MetricGroupId::Position][0];
         assert_eq!(g.strict_param("arm_above_pct"), Some(2.0));
         assert_eq!(RuleParams::parse(&p.to_value()).unwrap(), p);
 
@@ -1374,7 +1478,7 @@ mod tests {
             {"operator": ">=", "value": 70}
         ]}}}))
         .unwrap();
-        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::State][0].metrics
+        let arms = &p.exit.as_ref().unwrap().as_object().unwrap().0[&MetricGroupId::State][0].metrics
             [&MetricId::Liquidity];
         assert_eq!(arms.len(), 2);
 
@@ -1493,7 +1597,7 @@ mod tests {
                 [&MetricId::WinTrail],
             vec![vec![Condition { operator: Operator::Gte, value: 12.0 }]]
         );
-        assert!(d.exit.as_ref().unwrap().0.contains_key(&MetricGroupId::Position));
+        assert!(d.exit.as_ref().unwrap().as_object().unwrap().0.contains_key(&MetricGroupId::Position));
         assert_eq!(RuleParams::parse(&p.to_value()).unwrap(), p);
 
         // The live sides — the only thing the engine compiles — are untouched by it.

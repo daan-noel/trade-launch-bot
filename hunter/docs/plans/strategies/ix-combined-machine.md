@@ -75,7 +75,9 @@ The live conjunction is a discriminator at the completing print. Dropping tight
 packs does not change the fill: the honest unconcentrated book is the same race
 as [ix-machine-money.md](ix-machine-money.md). The unconcentrated body after
 this fill dumps ([ix-harvest-path.md](ix-harvest-path.md)). Concentration on
-the same print: [ix-concentrate.md](ix-concentrate.md).
+the same print: [ix-concentrate.md](ix-concentrate.md). A 0 ms first-gap
+fill inside a tight pack is fiction. The same harvest cut after the
+completing print, including tight packs: [ix-crowd-island.md](ix-crowd-island.md).
 
 Do not fund the unconcentrated book. Do not re-price the 0 ms first-gap mark
 as a 20 s trade.

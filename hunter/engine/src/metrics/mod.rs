@@ -31,6 +31,7 @@
 //! all read it — adding a metric here (plus its compute logic in the group file)
 //! makes it immediately usable everywhere, with no schema change.
 
+pub mod burst_slot;
 pub mod crowd_window;
 pub mod evaluator;
 pub mod flow_slice;
@@ -44,6 +45,7 @@ pub mod price_lifetime;
 pub mod price_window;
 pub mod series;
 pub mod state;
+pub mod template_grain;
 pub mod track;
 
 use std::fmt;
@@ -187,6 +189,17 @@ pub struct TradeLite {
     /// transaction" — the behaviour that existed before the field.
     #[serde(default)]
     pub leg_index: u8,
+    /// Position of this trade's transaction within its block. `0` is the first
+    /// transaction in the block — a real and common index — so missing is
+    /// [`None`], never `0`. Packed (`m_burst_slot.packed`) is `NaN` when any buy
+    /// in the current-slot prefix arrives without one.
+    #[serde(default)]
+    pub tx_index: Option<u32>,
+    /// FNV-1a of this trade's build-template grain (`program|CU|ATA|N|S|F`).
+    /// `None` when labels are absent. Distinct from [`ix_hash`](Self::ix_hash)
+    /// (full ordered sequence) and from [`marker_bits`](Self::marker_bits).
+    #[serde(default)]
+    pub template_hash: Option<u64>,
 }
 
 impl Default for TradeLite {
@@ -203,6 +216,8 @@ impl Default for TradeLite {
             slot: 0,
             marker_bits: 0,
             leg_index: 0,
+            tx_index: None,
+            template_hash: None,
         }
     }
 }
@@ -512,6 +527,9 @@ pub enum MetricGroupId {
     DumpIx,
     /// `m_dump_ix_window` — the same over a trailing window (fingerprint-scoped).
     DumpIxWindow,
+    /// `m_burst_slot` — this token, this slot so far, this print's build template
+    /// (fingerprint-scoped working list; static).
+    BurstSlot,
     /// `m_position` — metrics anchored on YOUR entry fill (position-scoped, exit-only).
     Position,
 }
@@ -695,6 +713,38 @@ pub enum MetricId {
     Pnl,
     /// Seconds since the entry fill.
     Held,
+    /// 0/1 latch: flips to 1 when `pnl` first reaches `arm_above_pct` and never
+    /// un-latches for the hold. Absent `arm_above_pct` reads 1 (legacy: always
+    /// armed). A trail that has armed stays armed after price falls back under
+    /// the threshold — `pnl >= 10 AND retrace >= 18` is not that.
+    Armed,
+    // ── m_burst_slot (this token, this slot so far, this print's template) ──
+    /// 0/1: this print's template grain is on the fingerprint working list.
+    WorkingTemplate,
+    /// Buys this slot with this print's template.
+    TemplateBuyCount,
+    /// Their SOL.
+    TemplateBuySol,
+    /// Distinct wallets among those buys.
+    TemplateWalletCount,
+    /// All buy prints this slot so far.
+    SlotBuyCount,
+    /// Their SOL (mixed size).
+    SlotBuySol,
+    /// Distinct wallets among those buys.
+    SlotWalletCount,
+    /// Distinct templates among those buys.
+    SlotTemplateCount,
+    /// Of this print's template buys, wallets whose first curve-buy on this mint
+    /// is this slot.
+    NewOnMintWallets,
+    /// 0/1: the slot's buy prefix occupies consecutive `tx_index`. NaN if any
+    /// buy in the prefix is missing `tx_index`.
+    Packed,
+    /// Real reserve at the last print with `slot < S`.
+    PreSlotLiquidity,
+    /// Lifetime trail before folding this print, in percent.
+    PrePrintTrail,
 }
 
 /// True for metrics whose state is keyed by fingerprint (flow split / window).
@@ -732,7 +782,7 @@ pub fn is_fingerprint_scoped(id: MetricId) -> bool {
     is_flow_metric(id)
         || matches!(
             group_of(id).id,
-            MetricGroupId::DumpIx | MetricGroupId::DumpIxWindow
+            MetricGroupId::DumpIx | MetricGroupId::DumpIxWindow | MetricGroupId::BurstSlot
         )
 }
 
@@ -746,6 +796,7 @@ pub fn is_fingerprint_scoped(id: MetricId) -> bool {
 pub fn validate_fingerprint_metric_config(cfg: &serde_json::Value) -> Result<(), String> {
     flow_ix::FlowPatterns::validate_metric_config(cfg)?;
     dump_ix::DumpPatterns::validate_metric_config(cfg)?;
+    burst_slot::BurstPatterns::validate_metric_config(cfg)?;
     Ok(())
 }
 
@@ -767,6 +818,8 @@ pub struct FingerprintPatterns {
     pub flow: Option<flow_ix::FlowPatterns>,
     /// `m_dump_ix` / `m_dump_ix_window`. `None` as above.
     pub dump: Option<dump_ix::DumpPatterns>,
+    /// `m_burst_slot`. `None` as above.
+    pub burst: Option<burst_slot::BurstPatterns>,
 }
 
 impl FingerprintPatterns {
@@ -775,13 +828,14 @@ impl FingerprintPatterns {
         Self {
             flow: flow_ix::FlowPatterns::from_metric_config(cfg),
             dump: dump_ix::DumpPatterns::from_metric_config(cfg),
+            burst: burst_slot::BurstPatterns::from_metric_config(cfg),
         }
     }
 
     /// Whether this fingerprint configures no fingerprint-scoped group at all — the
     /// case that must open no per-fingerprint state on a track.
     pub fn is_empty(&self) -> bool {
-        self.flow.is_none() && self.dump.is_none()
+        self.flow.is_none() && self.dump.is_none() && self.burst.is_none()
     }
 }
 
@@ -800,7 +854,21 @@ impl MetricId {
     /// copied into each loader. A new wallet-keyed metric must be added here too.
     pub fn needs_wallet_identity(self) -> bool {
         is_flow_metric(self)
-            || matches!(self, MetricId::UniqueWallets | MetricId::TradesPerWallet)
+            || matches!(
+                self,
+                MetricId::UniqueWallets
+                    | MetricId::TradesPerWallet
+                    | MetricId::TemplateWalletCount
+                    | MetricId::SlotWalletCount
+                    | MetricId::NewOnMintWallets
+            )
+    }
+
+    /// Whether this metric's value depends on the trade's instruction labels
+    /// (full hash, markers, or the template grain). Offline that is a load-time
+    /// question: the lake leaves `ix_labels` out unless a run asks for them.
+    pub fn needs_ix_labels(self) -> bool {
+        is_fingerprint_scoped(self)
     }
 
 }
@@ -1831,18 +1899,141 @@ pub const REGISTRY: &[GroupSpec] = &[
         ],
     },
     GroupSpec {
+        id: MetricGroupId::BurstSlot,
+        name: "m_burst_slot",
+        kind: MetricKind::Static,
+        scope: MetricScope::Token,
+        family: MetricFamily::Standalone,
+        strict_params: &[],
+        fingerprint_config: &[FpConfigFieldSpec {
+            name: "working_templates",
+            value_type: "string[]",
+            required: true,
+            description: "Build-template grain ids (`program|CU|ATA|N|S|F`) whose prints this group treats as working. Not full `ix_labels` sequences. Absent ⇒ every metric reads NaN, never 0.",
+            default_json: None,
+            conflicts_with: &[],
+        }],
+        metrics: &[
+            MetricSpec {
+                id: MetricId::WorkingTemplate,
+                name: "working_template",
+                description: "1 when this print's template grain is on this fingerprint's working-templates list, else 0. Missing labels read 0.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 118,
+            },
+            MetricSpec {
+                id: MetricId::TemplateBuyCount,
+                name: "template_buy_count",
+                description: "Buy prints this slot so far that share this print's template grain.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 120,
+            },
+            MetricSpec {
+                id: MetricId::TemplateBuySol,
+                name: "template_buy_sol",
+                description: "SOL bought this slot so far by prints that share this print's template grain.",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: false,
+                hue: 122,
+            },
+            MetricSpec {
+                id: MetricId::TemplateWalletCount,
+                name: "template_wallet_count",
+                description: "Distinct wallets among this slot's buys that share this print's template grain.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 124,
+            },
+            MetricSpec {
+                id: MetricId::SlotBuyCount,
+                name: "slot_buy_count",
+                description: "Buy prints this slot so far, every template.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 126,
+            },
+            MetricSpec {
+                id: MetricId::SlotBuySol,
+                name: "slot_buy_sol",
+                description: "SOL bought this slot so far, every template.",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: false,
+                hue: 128,
+            },
+            MetricSpec {
+                id: MetricId::SlotWalletCount,
+                name: "slot_wallet_count",
+                description: "Distinct wallets among this slot's buys, every template.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 130,
+            },
+            MetricSpec {
+                id: MetricId::SlotTemplateCount,
+                name: "slot_template_count",
+                description: "Distinct template grains among this slot's buys so far.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 132,
+            },
+            MetricSpec {
+                id: MetricId::NewOnMintWallets,
+                name: "new_on_mint_wallets",
+                description: "Of this print's template buys this slot, how many wallets are making their first curve-buy on this mint in this slot.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 134,
+            },
+            MetricSpec {
+                id: MetricId::Packed,
+                name: "packed",
+                description: "1 when this slot's buy prefix occupies consecutive tx_index (this minus first plus one equals count), 0 when a hole sits between them. NaN when any buy in the prefix is missing tx_index - 0 is a valid first-in-block index, never a missing sentinel.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 136,
+            },
+            MetricSpec {
+                id: MetricId::PreSlotLiquidity,
+                name: "pre_slot_liquidity",
+                description: "Real SOL reserve at the last print whose slot is strictly before this one. The depth gate for a burst that has not yet folded this slot's buys. NaN until a previous-slot print exists.",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: false,
+                hue: 138,
+            },
+            MetricSpec {
+                id: MetricId::PrePrintTrail,
+                name: "pre_print_trail",
+                description: "Lifetime trail percent before folding this print. m_price_lifetime.trail includes this print; the dip gate is the previous print's trail.",
+                unit: Unit::Percent,
+                eq_tolerance: 1.0,
+                monotonic: false,
+                hue: 140,
+            },
+        ],
+    },
+    GroupSpec {
         id: MetricGroupId::Position,
         name: "m_position",
         kind: MetricKind::Static,
         scope: MetricScope::Position,
         family: MetricFamily::Price,
-        // `arm_above_pct` gates the TRAILING metrics (`retrace`/`bounce`) on the
-        // position being at least this far in profit — see
-        // [`position::is_trailing`]. It exists because the exit combinator ORs
-        // across metrics, so "trail out, but only once the trade has cleared the
-        // fee" (`retrace >= 3 AND pnl >= 2`) is otherwise unauthorable. Absent ⇒
-        // today's behaviour (the peak seeds at the entry fill, so an unarmed
-        // `retrace` doubles as a hard stop from entry).
+        // `arm_above_pct` is the threshold that latches `m_position.armed`. Object-form
+        // exit also skips trailing reqs until the position is this far in profit (the
+        // combinator is OR, so `retrace AND pnl` is otherwise unauthorable). Array-form
+        // DNF ANDs `armed` explicitly and does not skip. Absent ⇒ `armed` reads 1.
         strict_params: &[StrictParamSpec {
             name: "arm_above_pct",
             required: false,
@@ -1889,6 +2080,15 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 0.5,
                 monotonic: false,
                 hue: 58,
+            },
+            MetricSpec {
+                id: MetricId::Armed,
+                name: "armed",
+                description: "0/1 latch: 1 once pnl has reached arm_above_pct, and it stays 1 after price falls back under that threshold. Absent arm_above_pct reads 1. Put it in a DNF clause; do not AND live pnl with retrace.",
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 60,
             },
         ],
     },
@@ -2124,10 +2324,9 @@ mod tests {
             vec!["m_flow_ix", "m_flow_ix_window", "m_dump_ix", "m_dump_ix_window"]
         );
         assert_eq!(by_family["state"], vec!["m_state"]);
-        // Nothing is unclassified today; a new group that lands in `Standalone` is
-        // gridded alone (correct, just more compute) and this assert is the prompt
-        // to decide whether it really belongs to an existing family.
-        assert!(!by_family.contains_key("standalone"), "unclassified group: {by_family:?}");
+        // `m_burst_slot` is its own subject (this slot's buy prefix × this print's
+        // template grain) and grids alone.
+        assert_eq!(by_family["standalone"], vec!["m_burst_slot"]);
     }
 
     /// A metric ships explained, and explained once. The definition lives here and the
@@ -2554,7 +2753,7 @@ mod tests {
         // Which family a group belongs to (`None` = its own group, never exempt).
         let family = |g: MetricGroupId| -> Option<u8> {
             match g {
-                FlowIx | FlowIxWindow | DumpIx | DumpIxWindow => Some(0),
+                FlowIx | FlowIxWindow | DumpIx | DumpIxWindow | BurstSlot => Some(0),
                 PriceLifetime | PriceWindow | Position => Some(1),
                 FlowLifetime | FlowWindow | CrowdWindow => Some(2),
                 _ => None,

@@ -100,6 +100,7 @@ fn build(dense: bool, n_tokens: usize) -> EngineState {
                         ix_hash: None,
                         wallet_hash: k as u64,
                         leg_index: 0,
+                        ..Default::default()
                     },
                 },
             );

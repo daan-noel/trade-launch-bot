@@ -551,7 +551,7 @@ What is open now:
     [ix-concentrate.md](ix-concentrate.md): on the same fillable events,
     `age < 20` is the dump (he1 0.28%, clock-20 **−10.93% 0/12**, 2,138/day)
     and perm `age < 180` keeps it. Event-level `he1` clock-20 is +2.91%
-    10/12 (lookahead ceiling).     Live conjunction `separated ∧ trail ≥ 15
+    10/12 (lookahead ceiling). Live conjunction `separated ∧ trail ≥ 15
     ∧ age ≥ 20`, clock-20 at 95 ms: **+2.38% / 11/12 / OOS +1.90% /
     n=3,917 / 327/day / median −1.42%**. On that cell r20 median is
     **+1.49%** (unconcentrated fillable is −8.43%); the peak is after
@@ -560,6 +560,12 @@ What is open now:
     OOS +2.04%**. First-gap on that cell is red. Solos stay out. Do
     not add `he1` or his mint list. Do not stack another filter on
     this print. Path and exit: [ix-cell-exit.md](ix-cell-exit.md).
+    Same cut on every crowd spelling (bundle, mixed_gap, mixed_tight):
+    [ix-crowd-island.md](ix-crowd-island.md) — union n=6,002, clock-20
+    **+2.31% / 12/12 / OOS +2.19%**. First-gap on that union is red.
+    Solos stay out.
+    Live engine mapping: [ix-live-rule.md](ix-live-rule.md)
+    (two exclusive rules, `m_burst_slot`, exit DNF + `m_position.armed`).
 
 **Feature-combination search is retired as a queue item.** Round 10 ran it exhaustively -
 17,744 conjunctions plus OR-portfolios over 55 predicates - and the answer is that no

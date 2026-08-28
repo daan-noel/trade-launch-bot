@@ -159,7 +159,7 @@ fn the_exit_is_a_wide_trail_with_no_stop_loss() {
     let p = parse(FIRST_LAUNCH);
     assert!(p.stop_loss.is_none(), "a stop-loss inside this gate is a measured loss");
     assert!(p.take_profit.is_none(), "the trail is the exit; a TP truncates the tail it lives on");
-    let exit = p.exit.as_ref().expect("exit side");
+    let exit = p.exit.as_ref().expect("exit side").as_object().expect("object-form");
     assert_eq!(terms(exit, MetricId::Retrace), vec![(Operator::Gte, 30.0)]);
     assert!(!has(exit, MetricId::Held), "the exit is a trail, not a clock");
 }

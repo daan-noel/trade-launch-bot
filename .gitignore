@@ -9,6 +9,7 @@
 # --- Rust build output ---
 target/
 target-check/
+target-check*/
 **/*.rs.bk
 
 # --- Node / frontend ---

@@ -15,7 +15,7 @@ use hunter_engine::metrics::evaluator::Operator;
 use hunter_engine::metrics::flow_ix::FlowPatterns;
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
 use hunter_engine::metrics::{
-    group_of, is_flow_metric, metric_spec, MetricGroupId, MetricId, MetricKind, MetricScope,
+    group_of, is_fingerprint_scoped, metric_spec, MetricGroupId, MetricId, MetricKind, MetricScope,
     Unit, REGISTRY,
 };
 use trading_core::strategies::kernel::exact_quantile_f64;
@@ -346,7 +346,7 @@ fn cut_columns(windows: &[f64], with_flow: bool, flow_fp: FingerprintId) -> Vec<
         for m in g.metrics {
             match g.kind {
                 MetricKind::Static => {
-                    cols.push(if is_flow_metric(m.id) {
+                    cols.push(if is_fingerprint_scoped(m.id) {
                         SeriesColumn::Fingerprint(m.id, None, fp)
                     } else {
                         SeriesColumn::Static(m.id)
@@ -354,7 +354,7 @@ fn cut_columns(windows: &[f64], with_flow: bool, flow_fp: FingerprintId) -> Vec<
                 }
                 MetricKind::Dynamic => {
                     for &w in windows {
-                        cols.push(if is_flow_metric(m.id) {
+                        cols.push(if is_fingerprint_scoped(m.id) {
                             SeriesColumn::Fingerprint(m.id, Some(hunter_engine::metrics::WindowSpec::secs(w)), fp)
                         } else {
                             SeriesColumn::window(m.id, hunter_engine::metrics::WindowSpec::secs(w))

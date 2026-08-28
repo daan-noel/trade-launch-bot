@@ -539,6 +539,9 @@ impl EngineState {
             if let Some(dump) = &p.dump {
                 track.ensure_dump(fp, dump, windows.dump);
             }
+            if let Some(burst) = &p.burst {
+                track.ensure_burst(fp, burst);
+            }
             if let Some(flow) = &p.flow {
                 // Only the `m_flow_ix_window` spans: this call opens a deque PER
                 // FINGERPRINT, so handing it the aggregate-flow union multiplied the

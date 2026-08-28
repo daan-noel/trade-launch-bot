@@ -326,10 +326,16 @@ pub struct CompiledRule {
     pub stop_loss: Option<f64>,
     /// Empty ⇒ enter on arm (the fingerprint alone is the entry signal).
     pub entry_reqs: Vec<MetricReq>,
-    /// The held-side exit conditions the fold evaluates via [`exit_fired`](Self::exit_fired):
-    /// desugared TP/SL (`pnl`, prepended) followed by authored exit metrics
-    /// (token- or position-scoped). Empty ⇒ only a dead-token verdict closes.
+    /// Flattened exit reqs (desugared TP/SL then authored) — window collection,
+    /// readout listing, sweep columns. The **combinator** is [`exit_clauses`].
     pub exit_reqs: Vec<MetricReq>,
+    /// Exit combinator: OR of AND-clauses. Object-form `exit` compiles to one
+    /// singleton clause per req (today's flat OR). Array-form compiles one clause
+    /// per element. TP/SL prepend as singleton clauses.
+    pub exit_clauses: Vec<Vec<MetricReq>>,
+    /// `m_position.arm_above_pct` from the exit side, if authored. Latches
+    /// [`EnteredCtx::armed`]. `None` ⇒ `armed` reads 1.
+    pub trail_arm_pct: Option<f64>,
     /// Ordered scale-out stages (empty = legacy full-close only). Evaluated via
     /// [`stage_fired`](Self::stage_fired) only when no global exit fired.
     pub scale_out: Vec<CompiledStage>,
@@ -406,34 +412,32 @@ impl CompiledRule {
             .as_ref()
             .map(|s| build_reqs(s, rule.fingerprint_id))
             .unwrap_or_default();
-        let mut exit_reqs = rule
-            .params
-            .exit
-            .as_ref()
-            .map(|s| build_reqs(s, rule.fingerprint_id))
-            .unwrap_or_default();
+        let authored_clauses: Vec<Vec<MetricReq>> = match &rule.params.exit {
+            None => Vec::new(),
+            Some(crate::rule_params::ExitSide::Any(s)) => {
+                build_reqs(s, rule.fingerprint_id).into_iter().map(|r| vec![r]).collect()
+            }
+            Some(crate::rule_params::ExitSide::Dnf(clauses)) => clauses
+                .iter()
+                .map(|s| build_reqs(s, rule.fingerprint_id))
+                .collect(),
+        };
 
         // DESUGAR the `take_profit` / `stop_loss` sugar into position-scoped `pnl`
-        // exit reqs — one exit-evaluation path (`pnl >= tp` / `pnl <= -sl`) shared
-        // with authored `m_position.pnl` conditions, so the two can never drift. The
-        // top-level fields stay (the sweep + FE + stored rules read them, and this is
-        // outcome-identical to the old `entry_price * (1 ± x/100)` branch), but the
-        // fold now decides every price-based exit through the one `exit_fired` loop.
-        // PREPENDED so a catastrophe stop still ranks above softer metric exits
-        // (preserving the old `Dead > StopLoss > TakeProfit > Metrics` order:
-        // SL then TP then authored). Origin-tagged so the persisted reason still reads
-        // `TakeProfit` / `StopLoss`, not `pnl <op> value`.
-        let mut desugared: Vec<MetricReq> = Vec::new();
+        // exit clauses — one exit-evaluation path (`pnl >= tp` / `pnl <= -sl`) shared
+        // with authored `m_position.pnl` conditions. PREPENDED as singleton clauses
+        // so a catastrophe stop still ranks above softer metric exits.
+        let mut exit_clauses: Vec<Vec<MetricReq>> = Vec::new();
         if let Some(sl) = rule.params.stop_loss {
-            desugared.push(pnl_req(Operator::Lte, -sl, ReqOrigin::StopLoss));
+            exit_clauses.push(vec![pnl_req(Operator::Lte, -sl, ReqOrigin::StopLoss)]);
         }
         if let Some(tp) = rule.params.take_profit {
-            desugared.push(pnl_req(Operator::Gte, tp, ReqOrigin::TakeProfit));
+            exit_clauses.push(vec![pnl_req(Operator::Gte, tp, ReqOrigin::TakeProfit)]);
         }
-        if !desugared.is_empty() {
-            desugared.append(&mut exit_reqs);
-            exit_reqs = desugared;
-        }
+        exit_clauses.extend(authored_clauses);
+        let exit_reqs: Vec<MetricReq> = exit_clauses.iter().flatten().cloned().collect();
+
+        let trail_arm_pct = rule.params.exit.as_ref().and_then(extract_trail_arm_pct);
 
         // Scale-out stages: same TP desugar + build_reqs per stage.
         let scale_out: Vec<CompiledStage> = rule
@@ -483,6 +487,7 @@ impl CompiledRule {
                 }
             }
             needs_slot |= r.window.needs_slot();
+            needs_slot |= group_of(r.metric).id == MetricGroupId::BurstSlot;
         }
 
         // Tick horizons — every clock this rule reads, on EVERY side (entry, exit,
@@ -536,6 +541,8 @@ impl CompiledRule {
             stop_loss: rule.params.stop_loss,
             entry_reqs,
             exit_reqs,
+            exit_clauses,
+            trail_arm_pct,
             scale_out,
             flow_windows,
             crowd_windows,
@@ -568,11 +575,11 @@ impl CompiledRule {
         !self.exit_reqs.is_empty()
     }
 
-    /// Whether the exit fires at `now`. Exit metrics **OR** across metrics (any one
-    /// authored reason to bail fires the sell) — asymmetric with entry's AND, and
-    /// consistent with TP/SL/dead, which already OR alongside this. Within a single
-    /// metric its condition expr is DNF (`,` AND / `|` OR). `false` when the rule
-    /// authored no exit metrics — the caller falls back to TP/SL/dead only.
+    /// Whether the exit fires at `now`. Exit is OR of AND-clauses ([`exit_clauses`]):
+    /// object-form compiles to one singleton clause per req (today's flat OR);
+    /// array-form compiles one clause per element. Within a metric the expr is DNF
+    /// (`,` AND / `|` OR). `false` when the rule authored no exit metrics — the
+    /// caller falls back to death only (TP/SL already live as prepended clauses).
     pub fn exit_metrics_satisfied(&self, track: &TokenTrack, now: Ts) -> bool {
         self.exit_metrics_fired(track, now).is_some()
     }
@@ -593,22 +600,21 @@ impl CompiledRule {
         if !self.has_exit_metrics() {
             return None;
         }
-        reqs_first_fired(&self.exit_reqs, track, now)
+        clauses_first_fired(&self.exit_clauses, track, now)
     }
 
-    /// The **held-side** exit decision: the first exit req that fires at `now`, as a
-    /// labelled [`ExitReason`]. The one exit-evaluation path (Dead is decided before
-    /// this by the fold) — it walks `exit_reqs` in order (desugared TP/SL prepended),
-    /// reading position-scoped reqs from `ctx` and token-scoped reqs from the track,
-    /// and maps a fired req's [`ReqOrigin`] to its reason (TP/SL keep their labels;
-    /// authored metrics stamp [`ExitReason::Metrics`]).
+    /// The **held-side** exit decision: the first exit *clause* that fires at `now`,
+    /// as a labelled [`ExitReason`]. Walks [`exit_clauses`] in order (desugared TP/SL
+    /// prepended as singleton clauses). Inside a clause every req must hold (AND);
+    /// clauses OR. Trailing skip applies only to a **singleton** trailing clause
+    /// (object-form); a DNF trail that ANDs `armed` explicitly is not skipped.
     pub fn exit_fired(
         &self,
         track: &TokenTrack,
         ctx: &PositionCtx,
         now: Ts,
     ) -> Option<ExitReason> {
-        reqs_exit_fired(&self.exit_reqs, track, ctx, now)
+        clauses_exit_fired(&self.exit_clauses, track, ctx, now)
     }
 
     /// Whether the current scale-out stage fires at `now`. Only the stage at
@@ -700,22 +706,73 @@ fn reqs_exit_fired(
         if !trailing_armed(r.arm_above_pct, ctx, price) {
             continue;
         }
-        let reading = if r.position_scoped {
-            position_value(r.metric, ctx, price, now)
-        } else {
-            track.value(r.metric, r.window, r.fingerprint, now)
-        };
-        if let Some(c) = first_satisfied_cond(&r.conds, reading, r.tolerance) {
-            return Some(match r.origin {
-                ReqOrigin::TakeProfit => ExitReason::TakeProfit,
-                ReqOrigin::StopLoss => ExitReason::StopLoss,
-                ReqOrigin::Authored => ExitReason::Metrics {
-                    metric: r.metric,
-                    operator: c.operator,
-                    value: c.value,
-                    window: r.window.primary,
-                },
-            });
+        if let Some(reason) = req_exit_reason(r, track, ctx, now, price) {
+            return Some(reason);
+        }
+    }
+    None
+}
+
+/// One req's held-side reason if it fires. Does **not** apply the trailing skip —
+/// the clause walker decides that (singleton-only).
+fn req_exit_reason(
+    r: &MetricReq,
+    track: &TokenTrack,
+    ctx: &PositionCtx,
+    now: Ts,
+    price: f64,
+) -> Option<ExitReason> {
+    let reading = if r.position_scoped {
+        position_value(r.metric, ctx, price, now)
+    } else {
+        track.value(r.metric, r.window, r.fingerprint, now)
+    };
+    let c = first_satisfied_cond(&r.conds, reading, r.tolerance)?;
+    Some(match r.origin {
+        ReqOrigin::TakeProfit => ExitReason::TakeProfit,
+        ReqOrigin::StopLoss => ExitReason::StopLoss,
+        ReqOrigin::Authored => ExitReason::Metrics {
+            metric: r.metric,
+            operator: c.operator,
+            value: c.value,
+            window: r.window.primary,
+        },
+    })
+}
+
+/// DNF exit: OR of AND-clauses. Trailing skip only on a singleton trailing clause.
+fn clauses_exit_fired(
+    clauses: &[Vec<MetricReq>],
+    track: &TokenTrack,
+    ctx: &PositionCtx,
+    now: Ts,
+) -> Option<ExitReason> {
+    let price = track.current_price();
+    for clause in clauses {
+        if clause.is_empty() {
+            continue;
+        }
+        let singleton_trail = clause.len() == 1 && clause[0].arm_above_pct.is_some();
+        if singleton_trail && !trailing_armed(clause[0].arm_above_pct, ctx, price) {
+            continue;
+        }
+        let mut first = None;
+        let mut all = true;
+        for r in clause {
+            match req_exit_reason(r, track, ctx, now, price) {
+                Some(reason) => {
+                    if first.is_none() {
+                        first = Some(reason);
+                    }
+                }
+                None => {
+                    all = false;
+                    break;
+                }
+            }
+        }
+        if all {
+            return first;
         }
     }
     None
@@ -733,17 +790,51 @@ fn reqs_satisfied(reqs: &[MetricReq], track: &TokenTrack, now: Ts) -> bool {
     })
 }
 
-/// OR across metric reads in `reqs` at `now` (the **exit** combinator — any one
-/// satisfied metric fires). Returns that metric + first satisfied condition.
-fn reqs_first_fired(
-    reqs: &[MetricReq],
+/// Pre-entry exit veto: a clause fires (blocks entry) only when every req in it
+/// fires. Position-scoped reqs read `NaN` off the track, so a DNF trail/death
+/// clause that ANDs `m_position` does not block entry. Object-form singleton
+/// token-scoped exits still do.
+fn clauses_first_fired(
+    clauses: &[Vec<MetricReq>],
     track: &TokenTrack,
     now: Ts,
 ) -> Option<(MetricId, Operator, f64)> {
-    for r in reqs {
-        let reading = track.value(r.metric, r.window, r.fingerprint, now);
-        if let Some(c) = first_satisfied_cond(&r.conds, reading, r.tolerance) {
-            return Some((r.metric, c.operator, c.value));
+    for clause in clauses {
+        if clause.is_empty() {
+            continue;
+        }
+        let mut first = None;
+        let mut all = true;
+        for r in clause {
+            let reading = track.value(r.metric, r.window, r.fingerprint, now);
+            match first_satisfied_cond(&r.conds, reading, r.tolerance) {
+                Some(c) => {
+                    if first.is_none() {
+                        first = Some((r.metric, c.operator, c.value));
+                    }
+                }
+                None => {
+                    all = false;
+                    break;
+                }
+            }
+        }
+        if all {
+            return first;
+        }
+    }
+    None
+}
+
+/// `m_position.arm_above_pct` from the authored exit, first clause that names it.
+fn extract_trail_arm_pct(exit: &crate::rule_params::ExitSide) -> Option<f64> {
+    for side in exit.clauses() {
+        if let Some(instances) = side.0.get(&MetricGroupId::Position) {
+            for g in instances {
+                if let Some(v) = g.strict_param("arm_above_pct") {
+                    return Some(v);
+                }
+            }
         }
     }
     None
@@ -832,12 +923,15 @@ pub struct EnteredCtx {
     pub stage: u8,
     /// Cumulative bps of the initial bag already sold via scale-out legs.
     pub sold_bps: u16,
+    /// Trail latch — see [`PositionCtx::armed`](crate::metrics::position::PositionCtx::armed).
+    pub armed: bool,
+    pub trail_arm_pct: Option<f64>,
 }
 
 impl EnteredCtx {
     /// Seed a fresh entry fill: peak/trough start at the fill price; stage ladder
     /// at 0.
-    pub fn at_fill(position: PositionId, fill_price: f64, at: Ts) -> Self {
+    pub fn at_fill(position: PositionId, fill_price: f64, at: Ts, trail_arm_pct: Option<f64>) -> Self {
         Self {
             position,
             entry_price: fill_price,
@@ -846,6 +940,8 @@ impl EnteredCtx {
             trough_price: fill_price,
             stage: 0,
             sold_bps: 0,
+            armed: trail_arm_pct.is_none(),
+            trail_arm_pct,
         }
     }
 
@@ -856,6 +952,8 @@ impl EnteredCtx {
             peak_price: self.peak_price,
             trough_price: self.trough_price,
             entered_at: self.entered_at,
+            armed: self.armed,
+            trail_arm_pct: self.trail_arm_pct,
         }
     }
 }
@@ -1338,6 +1436,7 @@ mod tests {
         // and pnl +5% clears the gate → both rules sell.
         let ctx = PositionCtx {
             entry_price: 1.0, peak_price: 1.10, trough_price: 1.0, entered_at: created,
+            armed: true, trail_arm_pct: None,
         };
         track.on_trade(TradeLite {
             side: Side::Sell, sol: 1.0, price: 1.05, reserve_sol: 60.0, at: now,
@@ -1351,6 +1450,7 @@ mod tests {
         // the position to the stop-loss.
         let sunk = PositionCtx {
             entry_price: 1.0, peak_price: 1.0, trough_price: 0.96, entered_at: created,
+            armed: true, trail_arm_pct: None,
         };
         let mut down = TokenTrack::new(created);
         down.on_trade(TradeLite {
@@ -1366,6 +1466,7 @@ mod tests {
         // ...and the stop-loss still fires through the gate at −20%.
         let blown = PositionCtx {
             entry_price: 1.0, peak_price: 1.0, trough_price: 0.75, entered_at: created,
+            armed: true, trail_arm_pct: None,
         };
         let mut crash = TokenTrack::new(created);
         crash.on_trade(TradeLite {
@@ -1373,6 +1474,53 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(armed.exit_fired(&crash, &blown, now), Some(ExitReason::StopLoss));
+    }
+
+    /// Array-form DNF ANDs `armed` with `retrace` and does **not** skip the trail
+    /// when PnL has fallen back under the gate. Object-form singleton retrace still
+    /// skips — that is the load-bearing difference: the latch must outlive +10%.
+    #[test]
+    fn dnf_armed_retrace_fires_after_pnl_falls_under_the_gate() {
+        use crate::metrics::{Side, TradeLite};
+        use chrono::{Duration, TimeZone, Utc};
+
+        let object = CompiledRule::compile(&rule(json!({
+            "exit": { "m_position": {
+                "retrace": [{"operator": ">=", "value": 18}],
+                "arm_above_pct": 10
+            } }
+        })));
+        let dnf = CompiledRule::compile(&rule(json!({
+            "exit": [{ "m_position": {
+                "armed": [{"operator": "=", "value": 1}],
+                "retrace": [{"operator": ">=", "value": 18}],
+                "arm_above_pct": 10
+            } }]
+        })));
+        assert_eq!(object.exit_clauses.len(), 1);
+        assert_eq!(object.exit_clauses[0].len(), 1);
+        assert_eq!(dnf.exit_clauses.len(), 1);
+        assert_eq!(dnf.exit_clauses[0].len(), 2);
+        assert_eq!(dnf.trail_arm_pct, Some(10.0));
+
+        let created = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        let now = created + Duration::seconds(10);
+        // Entered 1.0, peaked 1.20 (latch), now 0.984 → retrace 18%, pnl −1.6%.
+        let ctx = PositionCtx {
+            entry_price: 1.0,
+            peak_price: 1.20,
+            trough_price: 0.984,
+            entered_at: created,
+            armed: true,
+            trail_arm_pct: Some(10.0),
+        };
+        let mut track = TokenTrack::new(created);
+        track.on_trade(TradeLite {
+            side: Side::Sell, sol: 1.0, price: 0.984, reserve_sol: 60.0, at: now,
+            ..Default::default()
+        });
+        assert_eq!(object.exit_fired(&track, &ctx, now), None, "object-form skips while pnl < gate");
+        assert!(matches!(dnf.exit_fired(&track, &ctx, now), Some(ExitReason::Metrics { .. })));
     }
 
     /// `arm_above_pct: 0` means "arm at break-even", NOT "off" — the two must stay

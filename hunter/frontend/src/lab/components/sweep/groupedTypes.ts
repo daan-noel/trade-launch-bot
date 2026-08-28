@@ -26,6 +26,7 @@ export const GROUP_FIELDS = [
   'ix_labels',
   'ix_count',
   'prior_launches',
+  'create_ata',
   'is_cashback_enabled',
 ] as const;
 
@@ -43,6 +44,7 @@ export const GROUP_FIELD_LABELS: Record<GroupField, string> = {
   ix_labels: 'Instruction labels',
   ix_count: 'Instruction count',
   prior_launches: 'Prior launches',
+  create_ata: 'Create ATA',
   is_cashback_enabled: 'Cashback on',
 };
 
@@ -69,6 +71,7 @@ export const NUMERIC_GROUP_FIELDS: ReadonlySet<GroupField> = new Set<GroupField>
   'cu_price',
   'ix_count',
   'prior_launches',
+  'create_ata',
 ]);
 
 // --- partitioning ------------------------------------------------------------

@@ -573,6 +573,7 @@ construction. See hunter/CLAUDE.md Gotchas.
 | `m_flow_ix_window` | dynamic | `window_size_sec` | none (reads `m_flow_ix`) |
 | `m_dump_ix` | static (fingerprint-scoped) | none | `ix_patterns: string[][]` — its OWN list |
 | `m_dump_ix_window` | dynamic | `window_size_sec` | none (reads `m_dump_ix`) |
+| `m_burst_slot` | static (fingerprint-scoped) | none | `working_templates: string[]` — template grain ids. Mapping: [ix-live-rule.md](ix-live-rule.md) |
 
 **Multi-window per group** (any dynamic group — `m_flow_window`, `m_price_window`,
 `m_flow_ix_window`): a group appears under a side as a single object (one window — the
@@ -711,8 +712,11 @@ registry, and each has cost a search run.
 | **`m_flow_window.buy_share` is PERCENT 0-100, not a 0-1 ratio** | An analysis carrying it as a ratio and authoring `>= 0.8` writes a gate every token passes, which reads as a working rule that took every trade in the universe. |
 | **`take_profit` / `stop_loss` axes reject `null`** | To test "no take-profit", omit the axis or pass an unreachable value (`1000` TP, `100` SL). |
 
-Combination semantics: **entry conditions AND together, exit conditions OR together.** Adding
-an exit condition can only make exits fire earlier or as early, never later.
+Combination semantics: **entry conditions AND together, exit conditions OR together**
+(object-form). Adding an exit condition can only make exits fire earlier or as early,
+never later. The harvest mapping authors a DNF of exit *clauses* (AND inside a clause,
+OR across clauses) plus `m_position.armed`: [ix-live-rule.md](ix-live-rule.md).
+Object-form `exit` stays this flat OR.
 
 ## Discovery scoring (lab authoring aid)
 
