@@ -119,7 +119,8 @@ Both need the real lake, not a unit test — run once, then delete this section:
 
 - **Item A:** a `first`-fill sweep over the eval cohort should reproduce the
   `flow_scalper_fill_sensitivity` sign (+, not −) for the anchor combo; and
-  `pumpfun_fee_only` + a fill model should equal the harness's `realFee`. (The
+  `pumpfun_fee_only` + a fill model should equal the harness's `realFee` — the
+  depth-free column, so impact does not enter. (The
   *wiring* half of the latter is already locked by
   `sweep_cost_selector_matches_the_realfee_column`.)
 - **Item B:** benchmark `resolve_exit` before/after the classification change on a

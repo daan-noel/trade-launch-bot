@@ -120,19 +120,14 @@ pub async fn get_positions_summary_by_rule(
 ) -> impl Responder {
     let (_strategy, rule_id) = path.into_inner();
     let token_cache = app_state.token_cache.clone();
-    let price_of = |mint: &str| -> Option<f64> {
-        token_cache
-            .get(mint)
-            .and_then(|e| e.value().current_price)
-            .filter(|p| p.is_finite() && *p > 0.0)
-    };
+    let mark_of = |mint: &str| trading_core::state::token_cache::mark_quote(&token_cache, mint);
     rule_positions::rule_positions_summary(
         repo(&app_state),
         &app_state.rule_repo,
         rule_id,
         scope.into_inner(),
         body.into_inner(),
-        price_of,
+        mark_of,
     )
     .await
 }

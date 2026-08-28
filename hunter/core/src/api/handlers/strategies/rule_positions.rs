@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::api::table_query::TableRequest;
-use crate::models::{PositionsSummary, StrategyPosition};
+use crate::models::{MarkQuote, PositionsSummary, StrategyPosition};
 use crate::storage::repositories::{
     rule_repo::RuleRepo,
     strategy_repo::{PositionQuery, StrategyRepo},
@@ -527,20 +527,22 @@ pub async fn portfolio_positions_page(
 /// filtered population [`rule_positions_page`] pages (pagination/sort ignored), with
 /// the same win/closed/open semantics as the per-rule runtime counters.
 ///
-/// `price_of` marks the still-open positions to market for `open_pnl_sol`. The live
-/// bin passes its in-memory token cache (no DB or RPC round-trip); the lab bin passes
-/// its own seeded cache. `None` for a token with no price leaves that position out of
-/// the mark rather than inventing one.
+/// `mark_of` marks the still-open positions to market for `open_pnl_sol` — price
+/// **and** pool depth, so the mark is priced through the same size-aware cost model a
+/// backtest uses. The live bin passes its in-memory token cache (no DB or RPC
+/// round-trip); the lab bin passes its own seeded cache. Both build it with
+/// [`mark_quote`](crate::state::token_cache::mark_quote). `None` for a token with no
+/// price leaves that position out of the mark rather than inventing one.
 pub async fn rule_positions_summary<F>(
     strategy_repo: &StrategyRepo,
     rule_repo: &RuleRepo,
     rule_id: Uuid,
     params: ScopeParam,
     body: TableRequest,
-    price_of: F,
+    mark_of: F,
 ) -> HttpResponse
 where
-    F: Fn(&str) -> Option<f64> + Copy,
+    F: Fn(&str) -> Option<MarkQuote> + Copy,
 {
     let repo = strategy_repo;
     let pq = PositionQuery::from(body);
@@ -555,39 +557,39 @@ where
     // aggregates exactly the population its table pages.
     let result = match params.scope {
         Some(PositionScope::Current) => match repo.latest_run(rule_id, &rule.trade_mode).await {
-            Ok(Some(run)) => repo.positions_summary_by_run(run.id, &pq, price_of).await,
+            Ok(Some(run)) => repo.positions_summary_by_run(run.id, &pq, mark_of).await,
             Ok(None) => Ok(PositionsSummary::default()),
             Err(e) => return list_error("load current run", e),
         },
         Some(PositionScope::History) => match repo.latest_run(rule_id, &rule.trade_mode).await {
             // Exclude the current run; a lone run yields an empty (tokens=0) summary.
             Ok(Some(run)) => {
-                repo.positions_summary_by_rule_excluding_run(rule_id, run.id, &pq, price_of).await
+                repo.positions_summary_by_rule_excluding_run(rule_id, run.id, &pq, mark_of).await
             }
             // No run in the rule's own mode ⇒ no current run to exclude ⇒ every run
             // it recorded is history. Mirrors the page, which is the whole point of
             // this match existing.
-            Ok(None) => repo.positions_summary_by_rule(rule_id, &pq, price_of).await,
+            Ok(None) => repo.positions_summary_by_rule(rule_id, &pq, mark_of).await,
             Err(e) => return list_error("load current run", e),
         },
-        Some(PositionScope::All) => repo.positions_summary_by_rule(rule_id, &pq, price_of).await,
+        Some(PositionScope::All) => repo.positions_summary_by_rule(rule_id, &pq, mark_of).await,
         Some(PositionScope::Run) => {
             let Some(seq) = params.run_seq else {
                 return HttpResponse::BadRequest()
                     .json(serde_json::json!({"error": "scope=run requires run_seq"}));
             };
             match repo.find_run_by_seq(rule_id, params.run_mode(&rule.trade_mode), seq).await {
-                Ok(Some(run)) => repo.positions_summary_by_run(run.id, &pq, price_of).await,
+                Ok(Some(run)) => repo.positions_summary_by_run(run.id, &pq, mark_of).await,
                 Ok(None) => Ok(PositionsSummary::default()),
                 Err(e) => return list_error("load run by seq", e),
             }
         }
         None if rule.trade_mode == "paper" => match repo.latest_run(rule_id, "paper").await {
-            Ok(Some(run)) => repo.positions_summary_by_run(run.id, &pq, price_of).await,
+            Ok(Some(run)) => repo.positions_summary_by_run(run.id, &pq, mark_of).await,
             Ok(None) => Ok(PositionsSummary::default()),
             Err(e) => return list_error("load paper run", e),
         },
-        None => repo.positions_summary_by_rule(rule_id, &pq, price_of).await,
+        None => repo.positions_summary_by_rule(rule_id, &pq, mark_of).await,
     };
 
     match result {
@@ -605,18 +607,18 @@ where
 /// strip stay exact past the page size — the table shows 25 of n, and a summary
 /// computed from those 25 would silently re-state itself on every page turn.
 ///
-/// `price_of` marks the still-open positions for `open_pnl_sol` — see
+/// `mark_of` marks the still-open positions for `open_pnl_sol` — see
 /// [`rule_positions_summary`].
 pub async fn portfolio_positions_summary<F>(
     strategy_repo: &StrategyRepo,
     body: TableRequest,
-    price_of: F,
+    mark_of: F,
 ) -> HttpResponse
 where
-    F: Fn(&str) -> Option<f64> + Copy,
+    F: Fn(&str) -> Option<MarkQuote> + Copy,
 {
     let pq = PositionQuery::from(body);
-    match strategy_repo.positions_summary_all(&pq, price_of).await {
+    match strategy_repo.positions_summary_all(&pq, mark_of).await {
         Ok(summary) => HttpResponse::Ok().json(summary),
         Err(e) => list_error("load portfolio positions summary", e),
     }

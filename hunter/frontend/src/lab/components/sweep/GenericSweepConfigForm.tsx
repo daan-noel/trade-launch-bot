@@ -41,6 +41,7 @@ import { FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import { LabelTip } from 'components/strategy/LabelTip';
 import {
   COST_MODELS,
+  selectableCostModel,
   FILL_MODELS,
   type CostModelId,
   type FillModelId,
@@ -226,12 +227,14 @@ function defaultConfig(): GenericSweepConfig {
     ixPatterns: [],
     // New runs default to the pair the fill-sensitivity analysis was measured under:
     // the next print after the signal, with slippage charged ONCE (in the fill price,
-    // not again in the cost model). The old worst-case + fee+slippage pair is still
-    // selectable, and stays the wire default so stored runs keep their meaning — but
-    // it is the regime this strategy loses money in, so it is not what a fresh grid
-    // should rank inside.
+    // not again in the cost model — the model that did that is retired).
+    //
+    // Cost is `pumpfun_impact` because a GRID is exactly where size-blindness hurts:
+    // the fixed per-leg tip and our own footprint pull in opposite directions with
+    // buy size, so a size-blind model does not merely shift every combo's PnL down,
+    // it re-orders combos that fire at different rates.
     fillModel: 'first_in_window',
-    costModel: 'pumpfun_fee_only',
+    costModel: 'pumpfun_impact',
     seedFingerprintId: null,
     scaleOutStages: [],
     scaleOutTopK: 3,
@@ -314,10 +317,17 @@ function runToConfig(run: GroupedSweepRunRecord, defaults: GenericSweepConfig): 
     // would score windows the stored groups never showed.
     partition: Object.fromEntries(run.partition ?? []),
     ixPatterns: run.ix_patterns ?? defaults.ixPatterns,
-    // Legacy rows (null) were computed under what the sweep hardcoded then — restore
-    // THAT, not today's default, or a "re-run" would quietly reprice the comparison.
+    // Legacy rows (null fill) were computed under what the sweep hardcoded then —
+    // restore THAT, not today's default, or a "re-run" would quietly reprice the
+    // comparison.
     fillModel: run.fill_model ?? 'worst_case',
-    costModel: run.cost_model ?? 'pumpfun_default',
+    // The cost half cannot be restored the same way, and should not be: a run priced
+    // under the retired flat-slippage model is double-counting execution cost, which
+    // is the reason someone re-runs it. Reproducing that pricing would hand back the
+    // same untrustworthy ranking under a fresh run id — so `selectableCostModel` maps
+    // it to the honest model, and the run header still labels the original as legacy
+    // so the two never blur.
+    costModel: selectableCostModel(run.cost_model),
     // Restore the scope so a re-run sweeps the SAME matched slice — the manual
     // filters are NULL on a scoped run, so without this the re-run would silently
     // widen to the whole selection window.

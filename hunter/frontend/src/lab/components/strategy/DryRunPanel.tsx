@@ -43,7 +43,7 @@ export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; 
   const [err, setErr] = useState<string | null>(null);
   const [windowHours, setWindowHours] = useState(24);
   const [fillModel, setFillModel] = useState<FillModelId>('worst_case');
-  const [costModel, setCostModel] = useState<CostModelId>('pumpfun_default');
+  const [costModel, setCostModel] = useState<CostModelId>('pumpfun_impact');
   const handleRef = useRef<{ close: () => void } | null>(null);
   const runIdRef = useRef<string | null>(null);
 

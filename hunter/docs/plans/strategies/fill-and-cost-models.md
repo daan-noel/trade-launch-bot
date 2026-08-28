@@ -20,9 +20,9 @@ they are). Code: [`core/src/strategies/paper_fill.rs`](../../../core/src/strateg
 | Fill | `next_slot_median` | the adverse median at slot **S+1** | you want the middle of the fill dispersion, not either tail |
 | Fill | `signal_price` | the signal trade's own spot | you want the zero-slippage ceiling |
 | Fill | `lag_<ms>` | the last print that has landed by signal + `<ms>` | **you want the verdict.** The only model keyed to the bot's measured reaction time |
-| Cost | `pumpfun_impact` | fee + tip + **our own** `B/vsol` impact | **default choice.** The only size-aware one |
-| Cost | `pumpfun_fee_only` | fee + tip | you want a zero-impact upper bound |
-| Cost | `pumpfun_default` | fee + tip + flat 1%/leg slippage | never, for a new run — legacy only |
+| Cost | `pumpfun_impact` | fee + tip + **our own** `B/vsol` impact | **the default, and the answer.** The only size-aware one |
+| Cost | `pumpfun_fee_only` | fee + tip | you want a zero-impact upper bound — the "any edge at all?" screen |
+| Cost | ~~`pumpfun_default`~~ | fee + tip + flat 1%/leg slippage | **retired.** Not selectable; decodes for stored runs only |
 
 `lag_<ms>` is a **bare string** on the wire like every other model — `lag_115`, not
 `{"lag_ms": 115}`. That is what lets it live in the sweep's `TEXT` column, a request DTO
@@ -288,7 +288,7 @@ Per leg (a round trip is 1 entry + N exit legs):
 | pump.fun protocol fee | **125 bps** of the leg's SOL | measured, `FEE_BPS_PER_LEG` |
 | Jito tip + priority fee | **0.000225 SOL**, fixed | `FeeTuning`: `JITO_MIN_TIP_SOL` (0.0002) + avg CU priority fee (0.000025) |
 | our own price impact | `leg_notional / reserve_sol` | `pumpfun_impact` only |
-| flat slippage | 100 bps | `pumpfun_default` only (legacy) |
+| ~~flat slippage~~ | ~~100 bps~~ | retired `pumpfun_default` only — no new run charges it |
 
 The fixed term is **read from `.env`**, so it moves when you change
 `JITO_MIN_TIP_SOL` / `CU_PRICE_MICRO_LAMPORTS`. It was 0.001025 SOL/leg when
@@ -297,6 +297,10 @@ tip it is 0.000225. Restart the lab bin after editing those keys.
 
 Only `pumpfun_impact` cares about **buy size**. The other two are size-blind: a 0.1
 SOL buy and a 10 SOL buy are charged the same percentage.
+
+**Two selectable models, not three.** `pumpfun_default` is retired — the section
+below is why. It survives as a decodable value so runs already stored under it keep
+repricing the way they were computed; nothing can select it for new work.
 
 ## One round trip, priced three ways
 
@@ -316,11 +320,16 @@ The same trade at **1.0 SOL** into the same 70 SOL pool:
 | `pumpfun_fee_only` | 0% | **+17.21%** |
 | `pumpfun_default` | flat 1% | **+14.86%** |
 
-**Read those two tables together.** At 0.1 SOL the legacy flat 1% is *harsher* than
-reality (14.45% vs 16.46%); at 1.0 SOL it is *kinder* than reality (14.86% vs
-13.87%). That is the whole case against `pumpfun_default` in one number — it is wrong
-in both directions, and it flips sign somewhere in the middle, so it doesn't even
-preserve ranking between two combos of different size.
+**Read those two tables together.** At 0.1 SOL the flat 1% is *harsher* than reality
+(14.45% vs 16.46%); at 1.0 SOL it is *kinder* than reality (14.86% vs 13.87%). That
+is the whole case against `pumpfun_default` in one number — it is wrong in both
+directions, and the error **flips sign** somewhere in the middle.
+
+A cost model that is merely too harsh is survivable: it shifts every candidate down
+by roughly the same amount and the ranking holds. One whose error changes sign with
+size does not shift the board, it **reshuffles** it — and a grid exists to rank. That
+is what took it out of the dropdown rather than leaving it there with a warning
+label. It is now `CostModelKind::PumpfunLegacySlippage`, decode-only.
 
 `pumpfun_fee_only` never charges impact, so it is a clean **upper bound**: 3.3 pp too
 generous at 1 SOL, only 0.34 pp too generous at 0.1 SOL.
@@ -335,22 +344,25 @@ whenever the pool grew during the hold, i.e. it errs pessimistic on winners.
 
 ## Pairing the two dropdowns
 
-|  | `pumpfun_impact` | `pumpfun_fee_only` | `pumpfun_default` |
-| --- | --- | --- | --- |
-| `worst_case` | **honest floor** | floor, no size cost | ✗ double-counts |
-| `first_in_window` | loose central case | central, no size cost | ✗ double-counts |
-| `next_slot_first` | reachable, optimistic edge | same, no size cost | ✗ double-counts |
-| `next_slot_median` | **honest central case** | central, no size cost | ✗ double-counts |
-| `signal_price` | ceiling, size-aware | absolute ceiling | ✗ double-counts |
+|  | `pumpfun_impact` | `pumpfun_fee_only` |
+| --- | --- | --- |
+| `worst_case` | **honest floor** | floor, no size cost |
+| `first_in_window` | loose central case | central, no size cost |
+| `next_slot_first` | reachable, optimistic edge | same, no size cost |
+| `next_slot_median` | **honest central case** | central, no size cost |
+| `lag_<ms>` | **the verdict** | the verdict's upper bound |
+| `signal_price` | ceiling, size-aware | absolute ceiling |
 
-The ✗ column: a `FillModel` chooses **which market print we transact against**;
-`slippage_bps` is a flat stand-in for *the same thing*. Charging both counts execution
-slippage twice. `pumpfun_default` remains the wire default only so stored runs keep
-the meaning they were computed under — **never pick it for a new run.**
+**Every cell is valid** — which is the point of retiring the third column. A
+`FillModel` chooses *which market print we transact against*; impact is *how far our
+own order moves the curve*. Those are orthogonal, and a live trade pays both, so
+`fill model + impact` is always the correct pairing and there is no incoherent pair
+left to warn about.
 
-Impact is *not* in that trap: it is our own footprint on the curve, orthogonal to
-which print we hit. A live trade pays both, so `fill model + impact` is the correct
-pairing.
+The retired `pumpfun_default` was the exception: `slippage_bps` is a flat stand-in for
+*the same quantity the fill model already priced*, so every one of its cells
+double-counted. That is why it went rather than staying behind a warning — the only
+correct advice about it was "never pick this".
 
 ## The bar a strategy has to clear
 
@@ -377,8 +389,18 @@ which `worst_case` very much is not.
 # Part 3 — Reading a stored run
 
 - Both models are persisted per run and rendered on the run header and in the
-  Simulate history columns. A run with **no** stored model was computed under the
-  wire defaults — `worst_case` + `pumpfun_default` — i.e. it double-counts slippage.
+  Simulate history columns. A run with **no** stored cost model was computed under
+  `worst_case` + `pumpfun_default` — i.e. it double-counts slippage, and its ranking
+  is not trustworthy. It reads as **Fee + slippage (legacy)**.
+- That fallback belongs to *stored columns only*. `CostModelKind::from_stored`
+  (blank ⇒ legacy) is a different question from `CostModelKind::default()` (blank ⇒
+  `pumpfun_impact`), and conflating them is the bug this split exists to prevent: an
+  omitted request field must get today's honest model, while an old row must keep the
+  meaning it was computed under. The frontend mirrors the pair as `storedCostModel()`
+  and the `COST_MODELS` dropdown default.
+- **Re-running a legacy run does not reproduce it.** `selectableCostModel()` maps it
+  to `pumpfun_impact`, because double-counted cost is the reason you are re-running.
+  The original keeps its legacy label, so the two never blur.
 - Runs from **before 2026-07-28** additionally used a 100 bps fee (the real one is
   125) and charged no impact at all. They understate cost by up to ~3 pp per round
   trip and are not comparable to anything newer. The constants are not stored per
@@ -388,6 +410,14 @@ which `worst_case` very much is not.
   model). **Live paper is the exception: it always books `worst_case`** — it has no
   choice, since it fills forward off the live feed. That is what makes `worst_case`
   the only setting with sweep↔paper parity.
+- **A live rule's open positions** are marked through `pumpfun_impact` too, off the
+  mint's live cache price and depth (`MarkQuote`), so the unrealized figure on the
+  positions panel is comparable to a backtest's `open_pnl_sol` rather than a raw price
+  delta. One caveat it is worth knowing: it charges impact at **current** depth, while
+  a backtest charges an open position's at **entry** depth. Neither is exact — one
+  reserve cannot price two legs struck at different times — but the entry leg's impact
+  is already sunk, so the leg the number is actually deciding is priced at the depth it
+  would execute into. No cached depth ⇒ no impact charged, never a guess.
 - Per the root rule, a sweep result is a *ranking screener*, not a backtest — re-run a
   promoted combo through simulate before believing its PnL, at the same fill and cost
   models.

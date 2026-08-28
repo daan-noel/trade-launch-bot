@@ -90,10 +90,15 @@ import {
   ruleRowClass,
   lamportsToSol,
   COST_MODELS,
+  costModelHint,
+  costModelLabel,
+  storedCostModel,
+  LEGACY_COST_MODEL,
   FILL_MODELS,
   fillModelLabel,
   fillModelLagMs,
   type CostModelId,
+  type StoredCostModelId,
   type Fingerprint,
   type FillModelId,
   type StrategyRule,
@@ -176,7 +181,7 @@ interface SimulateRunPrefs {
 }
 const DEFAULT_RUN_PREFS: SimulateRunPrefs = {
   fillModel: 'worst_case',
-  costModel: 'pumpfun_default',
+  costModel: 'pumpfun_impact',
   since: '',
   until: '',
 };
@@ -199,11 +204,13 @@ function fillModelVariant(id: string): BadgeVariant {
       return 'info';
   }
 }
-/** `pumpfun_default` double-counts slippage against an explicit fill model (see
- *  `COST_MODELS`), so it reads as the cautionary color; `pumpfun_impact` is the
- *  honest pairing and `pumpfun_fee_only` the size-blind middle ground. */
-const COST_MODEL_VARIANT: Record<CostModelId, BadgeVariant> = {
-  pumpfun_default: 'danger',
+/** The retired flat-slippage model double-counts against any fill model, so a run
+ *  still carrying it reads as the cautionary color; `pumpfun_impact` is the honest
+ *  pairing and `pumpfun_fee_only` the size-blind upper bound. Keyed by
+ *  `StoredCostModelId`, not `CostModelId` — an old run can still show the legacy
+ *  badge even though nothing can select it any more. */
+const COST_MODEL_VARIANT: Record<StoredCostModelId, BadgeVariant> = {
+  [LEGACY_COST_MODEL]: 'danger',
   pumpfun_fee_only: 'info',
   pumpfun_impact: 'success',
 };
@@ -1305,23 +1312,22 @@ function buildColumns(
       label: 'Cost',
       group: 'sim',
       tooltip:
-        'Which execution-cost model priced this result’s round-trips — pairing "Fee + slippage" with a non-default Fill double-counts slippage',
+        'Which execution-cost model priced this result’s round-trips — a run still showing "Fee + slippage (legacy)" charges slippage twice, once in the fill price and again as slippage_bps',
       sortable: true,
       render: (r) => {
         const run = runOf(r);
         if (!run || run.running || run.error || !run.summary) return DASH;
-        const id = run.summary.cost_model ?? 'pumpfun_default';
-        const model = COST_MODELS.find((m) => m.id === id);
+        const id = storedCostModel(run.summary.cost_model);
         return (
-          <Badge variant={COST_MODEL_VARIANT[id]} size="sm" title={model?.hint}>
-            {model?.label ?? id}
+          <Badge variant={COST_MODEL_VARIANT[id]} size="sm" title={costModelHint(id)}>
+            {costModelLabel(id)}
           </Badge>
         );
       },
       sortValue: (r) => summaryOf(r)?.cost_model ?? null,
       searchValue: (r) => {
         const id = summaryOf(r)?.cost_model;
-        return id ? (COST_MODELS.find((m) => m.id === id)?.label ?? id) : '';
+        return id ? costModelLabel(id) : '';
       },
     },
     // Mirrors the grouped-sweep combo table's stat columns (same metrics, same

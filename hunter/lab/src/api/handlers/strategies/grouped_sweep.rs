@@ -159,10 +159,11 @@ pub struct StartGroupedSweepBody {
     #[serde(default)]
     pub fill_model: trading_core::strategies::paper_fill::FillModel,
     /// Which execution-cost model prices the round-trips. Omitted ⇒
-    /// `pumpfun_default` (legacy meaning). Pick `pumpfun_fee_only` alongside any
-    /// explicit `fill_model`: the fill price already prices execution slippage, so
-    /// charging `slippage_bps` again double-counts it — and because the fixed cost is
-    /// per-leg, that haircut is **not** rank-preserving across combos.
+    /// `pumpfun_impact`, the only kind whose cost responds to `buy_amount_sol` — so a
+    /// scan that omits it still ranks combos under their real sizing cost. The flat
+    /// `slippage_bps` model is not selectable: the fill price already prices execution
+    /// slippage, so charging it again double-counts, and because the fixed cost is
+    /// per-leg that haircut is **not** rank-preserving across combos.
     #[serde(default)]
     pub cost_model: trading_core::strategies::kernel::CostModelKind,
     /// Candidate scale-out ladder **grid** for Pass 2: `ExitStage[][]` — one array
@@ -197,7 +198,14 @@ fn run_pricing(run: &GroupedSweepRun) -> crate::sweep::generic::Pricing {
     crate::sweep::generic::Pricing {
         buy_amount_sol: run.buy_amount_sol.unwrap_or(registry::SWEEP_DEFAULT_BUY_AMOUNT_SOL),
         fill_model: tag(&run.fill_model),
-        cost: tag::<trading_core::strategies::kernel::CostModelKind>(&run.cost_model).model(),
+        // NOT `tag` / `Default`: a blank cost column means the row predates the
+        // selector and really was priced with flat slippage, whereas a blank
+        // *request* field means today's honest model. `from_stored` is the half of
+        // that split which belongs to stored rows.
+        cost: trading_core::strategies::kernel::CostModelKind::from_stored(
+            run.cost_model.as_deref(),
+        )
+        .model(),
     }
 }
 

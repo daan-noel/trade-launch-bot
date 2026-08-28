@@ -11,6 +11,7 @@ use crate::config::constants::{
     TOKEN_CACHE_EVICT_INTERVAL_SECONDS,
 };
 use crate::storage::repositories::token_info_repo::TokenInfoRepo;
+use crate::models::strategy::MarkQuote;
 use crate::models::token::Token;
 use crate::models::trade::{Trade, TradeRow, TradeType};
 use crate::wallet_interner::WalletInterner;
@@ -549,6 +550,26 @@ impl TokenState {
 /// Concurrent in-memory map: mint_address → TokenState.
 /// A token present here means it is actively tracked.
 pub type TokenCache = DashMap<String, TokenState>;
+
+/// The live mark for one mint — current spot plus the pool depth behind it — or
+/// `None` when the cache has no usable price yet (just-created token, no post-entry
+/// trade), which leaves that position out of the mark rather than inventing one.
+///
+/// **The one definition of "what the live cache says a mint is worth".** Every
+/// open-position mark goes through here: the live bin's per-rule and portfolio
+/// summaries and the lab bin's live-positions twin all resolve the same pair the
+/// same way, so an unrealized figure cannot mean three things depending on which
+/// page asked for it. A price with no depth is still a valid mark — the cost model
+/// simply charges no impact.
+pub fn mark_quote(cache: &TokenCache, mint: &str) -> Option<MarkQuote> {
+    let entry = cache.get(mint)?;
+    let state = entry.value();
+    let price = state.current_price.filter(|p| p.is_finite() && *p > 0.0)?;
+    Some(MarkQuote {
+        price,
+        reserve_sol: state.current_reserve_sol.filter(|r| r.is_finite() && *r > 0.0),
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Runtime eviction

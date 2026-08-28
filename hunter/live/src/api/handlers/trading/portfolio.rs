@@ -391,16 +391,11 @@ pub async fn query_portfolio_positions_summary(
     body: web::Json<TableRequest>,
 ) -> impl Responder {
     let token_cache = app_state.token_cache.clone();
-    let price_of = |mint: &str| -> Option<f64> {
-        token_cache
-            .get(mint)
-            .and_then(|e| e.value().current_price)
-            .filter(|p| p.is_finite() && *p > 0.0)
-    };
+    let mark_of = |mint: &str| trading_core::state::token_cache::mark_quote(&token_cache, mint);
     trading_core::api::handlers::strategies::rule_positions::portfolio_positions_summary(
         &app_state.strategy_repo,
         body.into_inner(),
-        price_of,
+        mark_of,
     )
     .await
 }

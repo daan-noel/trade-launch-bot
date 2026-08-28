@@ -89,10 +89,12 @@ pub struct GroupedSweepRun {
     /// Part of the run's **identity**: two runs under different fill models are not
     /// comparable, so the UI must show it next to the PnL.
     pub fill_model: Option<String>,
-    /// Which execution-cost model priced the round-trips (`pumpfun_default` |
-    /// `pumpfun_fee_only`). `None` on legacy rows ⇒ `pumpfun_default`. Pairing
-    /// `pumpfun_default` with an explicit fill model double-counts slippage — see
-    /// `CostModelKind`.
+    /// Which execution-cost model priced the round-trips (`pumpfun_impact` |
+    /// `pumpfun_fee_only`, or the retired `pumpfun_default` on an old row). `None`
+    /// ⇒ `pumpfun_default`, which is why this column is read through
+    /// `CostModelKind::from_stored` and never through `Default`: the flat-slippage
+    /// model is no longer selectable, but a row already priced under it has to keep
+    /// repricing that way. See `CostModelKind`.
     pub cost_model: Option<String>,
     /// Optional volume-ix pattern set for flow-metric sweeps (`string[][]`).
     /// Compiled corpus-wide into `FlowPatterns`; Promote copies into the

@@ -124,10 +124,14 @@ impl TokenOutcome {
 /// every backtest run before that date is optimistic by that much. The constant is
 /// not persisted per run, so re-run anything whose margin was inside 0.5 pp.
 const FEE_BPS_PER_LEG: f64 = 125.0;
-/// Flat per-leg stand-in for execution slippage. Superseded by
-/// [`CostModel::price_impact`] wherever pool depth is available — see
-/// [`CostModelKind::PumpfunImpact`].
-const SLIPPAGE_BPS_PER_LEG: f64 = 100.0;
+/// Flat per-leg stand-in for execution slippage. **Legacy — never charged by a new
+/// run.** A [`FillModel`](crate::strategies::paper_fill::FillModel) already prices
+/// which market print we transact against, so charging this on top counts execution
+/// slippage twice; [`CostModel::price_impact`] measures the one thing it was a guess
+/// at. It survives only so a run stored under
+/// [`CostModelKind::PumpfunLegacySlippage`] reprices to the number it was computed
+/// with — see [`CostModelKind::from_stored`].
+const LEGACY_SLIPPAGE_BPS_PER_LEG: f64 = 100.0;
 
 /// Execution-cost model the kernel prices every round-trip with, so simulated
 /// PnL reflects the frictions the live trader pays. All knobs apply to **both**
@@ -159,64 +163,80 @@ pub struct CostModel {
 }
 
 impl CostModel {
-    /// Default model: ~1%/leg fee + ~1%/leg slippage + [`FeeTuning::current`]'s
-    /// tip floor and CU priority fee.
-    pub fn pumpfun_default() -> Self {
-        Self::pumpfun_default_with(&FeeTuning::current())
-    }
-
-    /// Like [`pumpfun_default`](Self::pumpfun_default) but with an explicit
-    /// [`FeeTuning`] (tests / one-off repricing without touching process state).
-    pub fn pumpfun_default_with(tuning: &FeeTuning) -> Self {
-        Self {
-            fee_bps_per_leg: FEE_BPS_PER_LEG,
-            slippage_bps: SLIPPAGE_BPS_PER_LEG,
-            fixed_cost_sol_per_leg: tuning.fixed_cost_sol_per_leg(),
-            price_impact: false,
-        }
-    }
-
-    /// Fee + fixed per-leg cost + **real** constant-product price impact
-    /// (`notional_sol / reserve_sol` per leg), with **no** flat `slippage_bps`.
+    /// **The model.** Fee + fixed per-leg cost + **real** constant-product price
+    /// impact (`notional_sol / reserve_sol` per leg), and no flat `slippage_bps`.
     ///
     /// This is the honest pairing with an explicit
     /// [`FillModel`](crate::strategies::paper_fill::FillModel): the fill model
-    /// prices the market print, this prices our own footprint in the pool, and
-    /// nothing is counted twice. Prefer it over
-    /// [`pumpfun_default`](Self::pumpfun_default) whenever pool depth is available
-    /// — the flat `SLIPPAGE_BPS_PER_LEG` is only a guess at this quantity, and it
-    /// is wrong in **both** directions: it over-charges a small order in a deep
-    /// pool and under-charges a large one in a shallow pool.
+    /// prices *which market print we transact against*, this prices *how far our
+    /// own order moves the curve*, and nothing is counted twice. It is also the
+    /// only constructor whose cost responds to buy size, which is what makes a
+    /// sizing decision measurable rather than assumed.
     ///
-    /// Measured on the 2026-07 corpus (median depth ~70 SOL): a 0.1 SOL buy really
-    /// costs 0.14%/leg and a 1.0 SOL buy 1.42%/leg, against the flat 1.00% this
-    /// replaces. See `docs/plans/strategies/execution-costs.md`.
+    /// Measured on the 2026-07 corpus (median depth ~70 SOL): a 0.1 SOL buy costs
+    /// 0.14%/leg and a 1.0 SOL buy 1.42%/leg, against the flat 1.00% that
+    /// [`pumpfun_legacy_slippage_with`](Self::pumpfun_legacy_slippage_with)
+    /// guesses. See `docs/plans/strategies/execution-costs.md`.
     pub fn pumpfun_with_impact() -> Self {
         Self::pumpfun_with_impact_with(&FeeTuning::current())
     }
 
-    /// Impact variant of [`pumpfun_default_with`](Self::pumpfun_default_with).
+    /// Like [`pumpfun_with_impact`](Self::pumpfun_with_impact) but with an explicit
+    /// [`FeeTuning`] (tests / one-off repricing without touching process state).
     pub fn pumpfun_with_impact_with(tuning: &FeeTuning) -> Self {
         Self {
+            fee_bps_per_leg: FEE_BPS_PER_LEG,
             slippage_bps: 0.0,
+            fixed_cost_sol_per_leg: tuning.fixed_cost_sol_per_leg(),
             price_impact: true,
-            ..Self::pumpfun_default_with(tuning)
         }
     }
 
-    /// Like [`pumpfun_default`](Self::pumpfun_default) but with **no `slippage_bps`**
-    /// — fee + Jito tip + priority only. Use this when the *fill price already prices
-    /// execution slippage* (an explicit paper-fill model — see
-    /// `trading_core::strategies::paper_fill::FillModel`); charging `slippage_bps` on
-    /// top would double-count it. The `slippage_bps` knob is for callers that price at
-    /// a signal spot without a granular fill model (e.g. quick analytic baselines).
+    /// Fee + Jito tip + priority only — **no** size term at all. A deliberate
+    /// zero-impact **upper bound**: use it to ask "is there any edge here before
+    /// sizing costs?", never to price a run you intend to believe. It is 0.34 pp
+    /// too generous on a 0.1 SOL buy and 3.3 pp too generous on a 1.0 SOL buy,
+    /// into the measured median 70 SOL pool.
+    ///
+    /// This is also what [`pumpfun_with_impact`](Self::pumpfun_with_impact)
+    /// silently degrades to when the caller supplies no pool depth — see
+    /// [`CostModelKind::PumpfunImpact`].
     pub fn pumpfun_fee_only() -> Self {
         Self::pumpfun_fee_only_with(&FeeTuning::current())
     }
 
-    /// Fee-only variant of [`pumpfun_default_with`](Self::pumpfun_default_with).
+    /// Fee-only variant of
+    /// [`pumpfun_with_impact_with`](Self::pumpfun_with_impact_with).
     pub fn pumpfun_fee_only_with(tuning: &FeeTuning) -> Self {
-        Self { slippage_bps: 0.0, ..Self::pumpfun_default_with(tuning) }
+        Self { price_impact: false, ..Self::pumpfun_with_impact_with(tuning) }
+    }
+
+    /// **Legacy — for repricing stored runs only. Never construct this for new
+    /// work.** Fee + fixed + a flat `LEGACY_SLIPPAGE_BPS_PER_LEG` per leg.
+    ///
+    /// The flat term is a guess at the quantity
+    /// [`pumpfun_with_impact`](Self::pumpfun_with_impact) measures, and it is wrong
+    /// in **both** directions — it over-charges a small order in a deep pool
+    /// (14.45% vs the real 16.46% at 0.1 SOL) and under-charges a large one in a
+    /// shallow pool (14.86% vs 13.87% at 1.0 SOL). Because the error changes sign
+    /// with size it does not even preserve ranking between two combos that differ
+    /// in buy amount. Charged alongside a fill model it double-counts execution
+    /// slippage on top of that.
+    ///
+    /// It exists so a row already stored under
+    /// [`CostModelKind::PumpfunLegacySlippage`] reprices to the number it was
+    /// computed with, instead of being relabelled as something it never was.
+    pub fn pumpfun_legacy_slippage() -> Self {
+        Self::pumpfun_legacy_slippage_with(&FeeTuning::current())
+    }
+
+    /// Legacy variant with an explicit [`FeeTuning`]. See
+    /// [`pumpfun_legacy_slippage`](Self::pumpfun_legacy_slippage) — same warning.
+    pub fn pumpfun_legacy_slippage_with(tuning: &FeeTuning) -> Self {
+        Self {
+            slippage_bps: LEGACY_SLIPPAGE_BPS_PER_LEG,
+            ..Self::pumpfun_fee_only_with(tuning)
+        }
     }
 
     /// A frictionless model (no fees/slippage/fixed cost) — pure price-to-price,
@@ -235,37 +255,46 @@ impl CostModel {
 /// model is the other half). Two runs priced under different kinds are not
 /// comparable, so a request that carries this must persist and display it.
 ///
-/// The choice is not a cosmetic knob: `pumpfun_default` charges `slippage_bps` on
-/// top of whatever the fill model already priced, so pairing it with an explicit
-/// [`FillModel`](crate::strategies::paper_fill::FillModel) **double-counts**
-/// execution slippage. Worse for a sweep, `fixed_cost_sol_per_leg` is per-leg, so
-/// the haircut scales with how often a combo fires — it is not rank-preserving
-/// across combos.
+/// An omitted field ⇒ [`PumpfunImpact`](Self::PumpfunImpact), the only kind that
+/// charges our own size. A **stored** column is a different question — absent there
+/// means the row predates the selector and really was priced with flat slippage, so
+/// read it through [`from_stored`](Self::from_stored) rather than [`Default`].
 ///
 /// Serde: canonical `snake_case` names, plus short aliases matching the
-/// fill-sensitivity analysis doc's column labels. Absent ⇒ `PumpfunDefault`, so
-/// every stored/replayed run keeps the meaning it was computed under.
+/// fill-sensitivity analysis doc's column labels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CostModelKind {
-    /// [`CostModel::pumpfun_default`] — fee + slippage + fixed per-leg cost.
-    #[default]
-    #[serde(alias = "default")]
-    PumpfunDefault,
-    /// [`CostModel::pumpfun_fee_only`] — no `slippage_bps`; the correct pairing
-    /// for any run whose fill price already prices execution slippage.
-    #[serde(alias = "fee_only")]
-    PumpfunFeeOnly,
     /// [`CostModel::pumpfun_with_impact`] — fee + fixed + **real** constant-product
-    /// impact from pool depth, no flat `slippage_bps`.
+    /// impact from pool depth. The default, and the only kind whose cost varies
+    /// with `buy_amount_sol`.
     ///
-    /// The most faithful of the three, and the only one whose cost varies with
-    /// `buy_amount_sol`: the other two are size-blind, so a run under them is a
-    /// zero-impact upper bound. Requires the caller to supply depth to
-    /// [`round_trip_with_costs`] — without it no impact is charged and this
-    /// degrades to [`PumpfunFeeOnly`].
+    /// Requires the caller to supply depth to [`round_trip_with_costs`] — without
+    /// it no impact is charged and this degrades to [`PumpfunFeeOnly`], silently
+    /// and by design (a guessed depth would be a fabricated number).
+    #[default]
     #[serde(alias = "impact")]
     PumpfunImpact,
+    /// [`CostModel::pumpfun_fee_only`] — no size term; a zero-impact upper bound.
+    #[serde(alias = "fee_only")]
+    PumpfunFeeOnly,
+    /// [`CostModel::pumpfun_legacy_slippage_with`] — fee + fixed + a flat
+    /// `slippage_bps`. **Legacy: not selectable, reachable only by decoding a
+    /// stored run.**
+    ///
+    /// It charges `slippage_bps` on top of whatever the fill model already priced,
+    /// so it **double-counts** execution slippage; and because
+    /// `fixed_cost_sol_per_leg` is per-leg, the haircut scales with how often a
+    /// combo fires — it is not rank-preserving across combos either. The wire name
+    /// stays `pumpfun_default` because that is the string already written into
+    /// stored rows; only the Rust name is corrected, since "default" is precisely
+    /// what it must never be again.
+    #[serde(
+        rename = "pumpfun_default",
+        alias = "default",
+        alias = "pumpfun_legacy_slippage"
+    )]
+    PumpfunLegacySlippage,
 }
 
 impl CostModelKind {
@@ -277,10 +306,31 @@ impl CostModelKind {
     /// Like [`model`](Self::model) with an explicit [`FeeTuning`].
     pub fn model_with(self, tuning: &FeeTuning) -> CostModel {
         match self {
-            CostModelKind::PumpfunDefault => CostModel::pumpfun_default_with(tuning),
-            CostModelKind::PumpfunFeeOnly => CostModel::pumpfun_fee_only_with(tuning),
             CostModelKind::PumpfunImpact => CostModel::pumpfun_with_impact_with(tuning),
+            CostModelKind::PumpfunFeeOnly => CostModel::pumpfun_fee_only_with(tuning),
+            CostModelKind::PumpfunLegacySlippage => {
+                CostModel::pumpfun_legacy_slippage_with(tuning)
+            }
         }
+    }
+
+    /// **The one decoder for a persisted `cost_model` column.** An unset or
+    /// unparseable column belongs to a run written before the selector existed,
+    /// which really was priced with flat slippage — so it resolves to
+    /// [`PumpfunLegacySlippage`], *not* to [`Default`]. Keeping the two fallbacks
+    /// apart is the whole point: a new request that omits the field must get
+    /// today's honest model, and a stored row must keep the meaning it was
+    /// computed under.
+    pub fn from_stored(stored: Option<&str>) -> Self {
+        stored
+            .and_then(|s| serde_json::from_value(serde_json::Value::String(s.to_string())).ok())
+            .unwrap_or(CostModelKind::PumpfunLegacySlippage)
+    }
+
+    /// Whether this kind is legacy — decode-only, never offered for a new run.
+    /// Surfaces drive their "this run double-counts slippage" warning off this.
+    pub fn is_legacy(self) -> bool {
+        matches!(self, CostModelKind::PumpfunLegacySlippage)
     }
 }
 
@@ -1149,7 +1199,8 @@ mod tests {
 
     #[test]
     fn costs_reduce_pnl_below_frictionless() {
-        let friction = round_trip_with_costs(1.0, 2.0, 1.0, None, &CostModel::pumpfun_default()).0;
+        let costs = CostModel::pumpfun_with_impact();
+        let friction = round_trip_with_costs(1.0, 2.0, 1.0, Some(70.0), &costs).0;
         let free = round_trip_with_costs(1.0, 2.0, 1.0, None, &CostModel::frictionless()).0;
         assert!(friction < free, "costs must drag PnL down");
     }
@@ -1258,11 +1309,16 @@ mod tests {
         assert!((none - zero).abs() < 1e-12 && (none - neg).abs() < 1e-12);
         assert!(none.is_finite());
 
-        // The legacy kinds ignore depth entirely, so stored runs reprice identically.
-        for legacy in [CostModel::pumpfun_default(), CostModel::pumpfun_fee_only()] {
-            let a = round_trip_with_costs(1.0, 1.10, 1.0, None, &legacy).1;
-            let b = round_trip_with_costs(1.0, 1.10, 1.0, Some(70.0), &legacy).1;
-            assert!((a - b).abs() < 1e-12, "legacy model must be depth-blind");
+        // The size-blind kinds ignore depth entirely, so stored runs reprice
+        // identically whether or not a caller happens to have depth in hand.
+        let blind = [
+            CostModel::pumpfun_fee_only(),
+            CostModel::pumpfun_legacy_slippage_with(&FeeTuning::current()),
+        ];
+        for m in blind {
+            let a = round_trip_with_costs(1.0, 1.10, 1.0, None, &m).1;
+            let b = round_trip_with_costs(1.0, 1.10, 1.0, Some(70.0), &m).1;
+            assert!((a - b).abs() < 1e-12, "size-blind model must be depth-blind");
         }
     }
 
@@ -1271,37 +1327,82 @@ mod tests {
         let m = CostModel::pumpfun_with_impact();
         assert_eq!(m.slippage_bps, 0.0, "flat slippage is the thing impact replaces");
         assert!(m.price_impact);
-        assert_eq!(m.fee_bps_per_leg, CostModel::pumpfun_default().fee_bps_per_leg);
+        assert_eq!(m.fee_bps_per_leg, CostModel::pumpfun_fee_only().fee_bps_per_leg);
     }
 
     #[test]
     fn cost_model_kind_serde_names_and_default() {
         use serde_json::json;
         for (name, want) in [
-            ("pumpfun_default", CostModelKind::PumpfunDefault),
-            ("pumpfun_fee_only", CostModelKind::PumpfunFeeOnly),
             ("pumpfun_impact", CostModelKind::PumpfunImpact),
+            ("pumpfun_fee_only", CostModelKind::PumpfunFeeOnly),
+            // The legacy kind keeps the wire string already written into stored rows.
+            ("pumpfun_default", CostModelKind::PumpfunLegacySlippage),
+            ("pumpfun_legacy_slippage", CostModelKind::PumpfunLegacySlippage),
             // Short aliases, so a request can name the model the way the analysis does.
-            ("default", CostModelKind::PumpfunDefault),
-            ("fee_only", CostModelKind::PumpfunFeeOnly),
             ("impact", CostModelKind::PumpfunImpact),
+            ("fee_only", CostModelKind::PumpfunFeeOnly),
+            ("default", CostModelKind::PumpfunLegacySlippage),
         ] {
             let got: CostModelKind = serde_json::from_value(json!(name)).unwrap();
             assert_eq!(got, want, "'{name}'");
         }
-        // Absent ⇒ the legacy model, so a stored run without the field keeps meaning.
-        assert_eq!(CostModelKind::default(), CostModelKind::PumpfunDefault);
+        // A stored legacy row must round-trip to the SAME string it was written as,
+        // or the next read of that column stops meaning what the run was priced under.
+        assert_eq!(
+            serde_json::to_value(CostModelKind::PumpfunLegacySlippage).unwrap(),
+            json!("pumpfun_default")
+        );
         assert_eq!(
             serde_json::to_value(CostModelKind::PumpfunFeeOnly).unwrap(),
             json!("pumpfun_fee_only")
         );
     }
 
+    /// The two fallbacks are different questions and must not share an answer: an
+    /// omitted **request** field takes today's honest model, an absent **stored**
+    /// column takes the model that row was actually computed under.
+    #[test]
+    fn request_default_is_honest_while_a_stored_blank_stays_legacy() {
+        assert_eq!(CostModelKind::default(), CostModelKind::PumpfunImpact);
+        assert!(!CostModelKind::default().is_legacy());
+
+        assert_eq!(CostModelKind::from_stored(None), CostModelKind::PumpfunLegacySlippage);
+        assert_eq!(
+            CostModelKind::from_stored(Some("not_a_model")),
+            CostModelKind::PumpfunLegacySlippage
+        );
+        assert!(CostModelKind::from_stored(None).is_legacy());
+        // …but a column that names a model is read as that model, not as the fallback.
+        for (stored, want) in [
+            ("pumpfun_impact", CostModelKind::PumpfunImpact),
+            ("pumpfun_fee_only", CostModelKind::PumpfunFeeOnly),
+            ("pumpfun_default", CostModelKind::PumpfunLegacySlippage),
+        ] {
+            assert_eq!(CostModelKind::from_stored(Some(stored)), want, "'{stored}'");
+        }
+    }
+
+    /// The legacy kind is decode-only: no selectable kind may charge flat slippage,
+    /// because a fill model has already priced exactly that.
+    #[test]
+    fn no_selectable_kind_charges_flat_slippage() {
+        for kind in [CostModelKind::PumpfunImpact, CostModelKind::PumpfunFeeOnly] {
+            assert!(!kind.is_legacy());
+            assert_eq!(
+                kind.model().slippage_bps,
+                0.0,
+                "{kind:?} would double-count what the fill model already prices"
+            );
+        }
+        assert!(CostModelKind::PumpfunLegacySlippage.model().slippage_bps > 0.0);
+    }
+
     #[test]
     fn fee_only_drops_slippage_and_nothing_else() {
         // The whole point of the selector: pairing an explicit fill model (which
-        // already prices slippage) with `pumpfun_default` charges it twice.
-        let d = CostModelKind::PumpfunDefault.model();
+        // already prices slippage) with the legacy kind charges it twice.
+        let d = CostModelKind::PumpfunLegacySlippage.model();
         let f = CostModelKind::PumpfunFeeOnly.model();
         assert_eq!(f.slippage_bps, 0.0);
         assert!(d.slippage_bps > 0.0);
@@ -1325,8 +1426,8 @@ mod tests {
             jito_min_tip_sol: 0.001,
             ..FeeTuning::defaults()
         };
-        let c = CostModel::pumpfun_default_with(&cheap);
-        let d = CostModel::pumpfun_default_with(&dear);
+        let c = CostModel::pumpfun_with_impact_with(&cheap);
+        let d = CostModel::pumpfun_with_impact_with(&dear);
         assert!((c.fixed_cost_sol_per_leg - cheap.fixed_cost_sol_per_leg()).abs() < 1e-15);
         assert!(d.fixed_cost_sol_per_leg > c.fixed_cost_sol_per_leg);
     }

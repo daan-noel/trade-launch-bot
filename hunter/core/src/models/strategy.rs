@@ -129,6 +129,24 @@ pub struct StrategyRunMetrics {
     pub n_exit_open: i32,
 }
 
+/// What a mark resolver returns for one mint: the current spot **and** the SOL-side
+/// pool depth behind it, so a still-open position can be marked to market through
+/// the same size-aware cost model a backtest prices with.
+///
+/// The two travel together on purpose. They come from one live-cache entry
+/// (`TokenState::current_price` / `current_reserve_sol`), so fetching them as a pair
+/// costs one lookup and keeps them consistent — a price read at one instant charged
+/// against a depth read at another prices a pool that never existed.
+///
+/// `reserve_sol` is `None` when the cache holds no depth for the mint yet; the cost
+/// model then charges no impact rather than a guessed one, exactly as
+/// `CostModel::pumpfun_with_impact` degrades everywhere else.
+#[derive(Debug, Clone, Copy)]
+pub struct MarkQuote {
+    pub price: f64,
+    pub reserve_sol: Option<f64>,
+}
+
 /// Run-wide (or rule-wide) position aggregates for the strategy page's
 /// **Positions Summary** panel. Computed server-side in SQL over the *entire*
 /// population (never a page), using the same win/closed/open semantics as the

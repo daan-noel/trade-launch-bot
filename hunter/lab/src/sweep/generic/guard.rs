@@ -48,19 +48,24 @@ const FP_ID: uuid::Uuid = uuid::Uuid::from_u128(0x1234);
 /// unchanged. Single-exit parity is ratio-based and needs no scaling.
 const RAW_PX: f64 = 1e-6;
 
-/// The sweep's legacy pricing — worst-case fills + `pumpfun_default`. The default
+/// The parity harness's pricing — worst-case fills + `pumpfun_fee_only`. The default
 /// for tests that aren't about the fill model; [`pricing_for`] varies it.
 fn pricing() -> Pricing {
     pricing_for(FillModel::WorstCase)
 }
 
-/// Legacy pricing repriced under `fill_model`. The cost model is deliberately held
-/// at `pumpfun_default` here: these tests lock scan ≡ replay, and replay prices with
-/// the same `CostModel` the assertion computes with, so varying it would only test
-/// the arithmetic — the fill model is the half that changes *which trade* each leg
-/// fills against, and so the half a parity guard has to cover.
+/// Parity pricing repriced under `fill_model`. The cost model is deliberately held
+/// fixed: these tests lock scan ≡ replay, and replay prices with the same `CostModel`
+/// the assertion computes with, so varying it would only test the arithmetic — the
+/// fill model is the half that changes *which trade* each leg fills against, and so
+/// the half a parity guard has to cover.
+///
+/// It is held at `pumpfun_fee_only` specifically because that model is **size- and
+/// depth-blind**: the parity corpus supplies no pool depth, so the honest
+/// `pumpfun_impact` would degrade to exactly this anyway, and pinning it here says so
+/// rather than leaving a reader to work it out.
 fn pricing_for(fill_model: FillModel) -> Pricing {
-    Pricing { buy_amount_sol: BUY_SOL, fill_model, cost: CostModel::pumpfun_default() }
+    Pricing { buy_amount_sol: BUY_SOL, fill_model, cost: CostModel::pumpfun_fee_only() }
 }
 
 /// Every selectable fill model — parity must hold under each, never under one

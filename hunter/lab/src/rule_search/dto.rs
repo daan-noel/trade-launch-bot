@@ -20,7 +20,7 @@ pub struct StartRuleSearchBody {
     pub buy_amount_sol: f64,
     #[serde(default)]
     pub fill_model: FillModel,
-    #[serde(default = "default_cost")]
+    #[serde(default)]
     pub cost_model: CostModelKind,
     /// Absent ⇒ ON (this job's default). Simulate inherits app_settings when absent;
     /// the form sends an explicit bool.
@@ -34,9 +34,6 @@ pub struct StartRuleSearchBody {
 
 fn default_buy() -> f64 {
     SWEEP_DEFAULT_BUY_AMOUNT_SOL
-}
-fn default_cost() -> CostModelKind {
-    CostModelKind::PumpfunImpact
 }
 fn default_copycat_on() -> bool {
     true

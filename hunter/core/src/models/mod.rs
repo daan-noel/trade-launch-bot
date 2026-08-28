@@ -20,8 +20,8 @@ pub use portfolio::{unrealized_pnl, ManagedMint, UnrealizedPnl};
 pub use raw_tx::RawTx;
 pub use fingerprint::Fingerprint;
 pub use strategy::{
-    bps_of_bag, ExitFillLeg, PositionFill, PositionsSummary, StrategyPosition, StrategyRule,
-    StrategyRun, StrategyRunMetrics,
+    bps_of_bag, ExitFillLeg, MarkQuote, PositionFill, PositionsSummary, StrategyPosition,
+    StrategyRule, StrategyRun, StrategyRunMetrics,
 };
 pub use strategy_arm::{
     ArmBlockedBy, ArmFunnel, ArmLedgerWrite, ArmSummary, StrategyArm, ARM_END_REASONS,

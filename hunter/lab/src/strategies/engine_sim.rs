@@ -76,11 +76,12 @@ pub struct EngineSimRequest {
     #[serde(default)]
     pub fill_model: FillModel,
     /// Which execution-cost model prices the round-trips. Defaults to
-    /// [`CostModelKind::PumpfunDefault`] (fee + slippage), which pairs correctly
-    /// with the default `fill_model` (`WorstCase`) but **double-counts** slippage
-    /// against an explicit `first_in_window`/`signal_price` fill — those already
-    /// price it into the fill itself. Pass `pumpfun_fee_only` alongside a non-default
-    /// fill model to avoid that (mirrors the grouped-sweep's `cost_model`).
+    /// [`CostModelKind::PumpfunImpact`] — fee + tip + our own `buy_amount/reserve_sol`
+    /// footprint, and the only kind whose cost responds to buy size. It pairs
+    /// correctly with **every** `fill_model`, because impact and the fill price are
+    /// orthogonal: the fill model picks which market print we transact against, impact
+    /// measures how far our own order moves the curve, and a live trade pays both.
+    /// Pass `pumpfun_fee_only` only to read the zero-impact upper bound.
     #[serde(default)]
     pub cost_model: CostModelKind,
     /// When set (non-empty), restrict the backtest to these mint addresses only.
@@ -398,6 +399,7 @@ async fn run_engine_backtest(
             history_cache_key(&fp, since, until, with_flow),
             &tokens,
             with_flow,
+            since,
         )
         .await
         .map_err(|e| anyhow!("lake trade fetch failed: {e}"))?

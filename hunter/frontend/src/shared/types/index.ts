@@ -1,5 +1,5 @@
 import type { RunSummary } from 'lib/strategy/runSummary';
-import type { CostModelId, FillModelId } from 'lib/strategy/types';
+import type { FillModelId, StoredCostModelId } from 'lib/strategy/types';
 import type { U64Wire } from 'lib/u64Wire';
 
 export type { RunMetrics, RunSummary } from 'lib/strategy/runSummary';
@@ -350,9 +350,12 @@ export interface SimulatedSummary extends RunSummary {
    *  default (worst-case) label. */
   fill_model?: FillModelId | null;
   /** Which execution-cost model priced this run's round-trips — rendered as the
-   *  Simulate table's Cost column. Absent/null on legacy payloads → falls back to
-   *  the default (`pumpfun_default`) label. */
-  cost_model?: CostModelId | null;
+   *  Simulate table's Cost column. Absent/null on legacy payloads → the retired
+   *  flat-slippage model, which is what those runs were actually priced under; read
+   *  it through `storedCostModel()` rather than treating a blank as today's default.
+   *  Typed as storable, not selectable: an old run can carry a model nothing can
+   *  choose any more. */
+  cost_model?: StoredCostModelId | null;
 }
 
 /** Hold + wall-clock bins for the Temporal summary band — mirrors lab

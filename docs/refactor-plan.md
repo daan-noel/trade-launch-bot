@@ -94,9 +94,11 @@ start until a second launchpad is actually on the roadmap — until then it only
   binary curve/amm still pervades — `is_amm: bool` in the `TraderHook` contract
   (`hunter/core/src/ingest.rs:58`) and the `"curve"/"amm"` string mapping in
   `hunter/live/src/ingest/consumer.rs:513-516` + `token_sync.rs:1456`. Bundle pump economics into a
-  per-venue `CurveEconomics` and **lift `CostModel::pumpfun_default` out of the strategy kernel**
-  (`hunter/core/src/strategies/kernel.rs:108,117`) — the generic engine still defaults to it in ≥6
-  call sites (`hunter/lab/src/sweep/generic/*`, `strategy_repo.rs:1316`).
+  per-venue `CurveEconomics` and **lift `CostModel` out of the strategy kernel**
+  (`hunter/core/src/strategies/kernel.rs`). The flat-slippage half of this is already
+  done — `pumpfun_default` is retired and no call site defaults to it; what remains is
+  that pump's fee/tip/impact terms are still hardcoded there rather than reached
+  through a per-venue economics trait.
 - [ ] **E2-ingest event payloads:** the top-level `IngestEvent` is generic now
   (`shared/ingest/core/src/event.rs:9`) but payloads are still pump-shaped — `Venue{Curve,Amm}` (`:64`),
   bonding-curve `Reserves` (`:69-80`), `TokenCreated.bonding_curve`/`is_mayhem_mode` (`:91,97`),

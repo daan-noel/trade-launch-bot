@@ -10,7 +10,7 @@
 //!
 //! Lake path + cost model are the same the live `engine_sim` uses, so these numbers
 //! are what a saved-rule simulate would report. Costs ARE modelled (this corrects
-//! the plan's "no fee knob" premise): `CostModel::pumpfun_default()` already charges
+//! the plan's "no fee knob" premise): `CostModel::pumpfun_legacy_slippage()` already charges
 //! ~1%/leg fee + ~1%/leg slippage + tip + priority fee (~4%/round — more conservative
 //! than the plan's 2%/round), applied to realized PnL at close by `round_trip_with_costs`.
 //! CAUTION (2026-07-28): the fee constant used here is 100 bps/leg and this cost model
@@ -324,7 +324,10 @@ fn run_with_fill(
     let trade_map: HashMap<String, Arc<Vec<lab::sweep::projection::CorpusTrade>>> =
         tokens.iter().map(|t| (t.mint.clone(), Arc::clone(&t.trades))).collect();
 
-    let costed = CostModel::pumpfun_default();
+    // The `realA` column reproduces the historical flat-slippage pricing on purpose
+    // — this harness's published numbers were computed under it. It is the one
+    // legitimate reason to construct the legacy model.
+    let costed = CostModel::pumpfun_legacy_slippage();
     // `realFee` — the honest column, and the one the sweep's `cost_model` selector
     // must reproduce. `sweep_cost_selector_matches_the_realfee_column` locks the two
     // to the same `CostModel` so a sweep run under `pumpfun_fee_only` + a fill model
@@ -481,12 +484,13 @@ fn sweep_cost_selector_matches_the_realfee_column() {
     assert_eq!(selected.fee_bps_per_leg, harness.fee_bps_per_leg);
     assert_eq!(selected.fixed_cost_sol_per_leg, harness.fixed_cost_sol_per_leg);
     assert_eq!(selected.slippage_bps, 0.0, "the fill model already prices slippage");
-    // The legacy default is `realA` — slippage charged ON TOP of the fill model.
-    assert_eq!(
-        CostModelKind::default().model().slippage_bps,
-        CostModel::pumpfun_default().slippage_bps,
-        "an omitted cost_model must keep every stored run's original meaning"
-    );
+    // An omitted REQUEST field takes today's honest model — never the legacy `realA`
+    // shape, which charges slippage ON TOP of what the fill model already priced.
+    assert_eq!(CostModelKind::default(), CostModelKind::PumpfunImpact);
+    assert_eq!(CostModelKind::default().model().slippage_bps, 0.0);
+    // A blank STORED column is the other question, and keeps its original meaning.
+    assert!(CostModelKind::from_stored(None).is_legacy());
+    assert!(CostModelKind::from_stored(None).model().slippage_bps > 0.0);
 }
 
 #[test]

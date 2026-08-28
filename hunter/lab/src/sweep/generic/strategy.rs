@@ -70,10 +70,13 @@ pub struct GenericCombo {
 ///
 /// **This is part of a run's identity, not a tuning knob.** Two runs under
 /// different pricing are not comparable, and the pair must be chosen coherently:
-/// a [`FillModel`] already prices execution slippage, so pairing one with
-/// [`CostModel::pumpfun_default`] (which charges `slippage_bps` again) double-counts
-/// it — [`CostModel::pumpfun_fee_only`] is the honest partner. Carried as one struct
-/// so a scan fn can never be handed the fill model without the cost model.
+/// a [`FillModel`] already prices execution slippage, so charging a flat
+/// `slippage_bps` on top double-counts it — which is why the model that did
+/// ([`CostModel::pumpfun_legacy_slippage`]) is no longer selectable and survives only
+/// to reprice stored runs. [`CostModel::pumpfun_with_impact`] is the honest partner
+/// to any fill model: impact is our own footprint on the curve, orthogonal to which
+/// print we transact against, and a live trade pays both. Carried as one struct so a
+/// scan fn can never be handed the fill model without the cost model.
 #[derive(Clone, Copy, Debug)]
 pub struct Pricing {
     /// Notional (SOL) every round-trip is sized at.
@@ -84,9 +87,10 @@ pub struct Pricing {
     pub cost: CostModel,
 }
 
-// Deliberately NO `Default` impl: the only sensible default would be the legacy
-// worst-case + `pumpfun_default` pair, and that is exactly the silent, unlabelled
-// pricing this type exists to make impossible. Callers name both halves.
+// Deliberately NO `Default` impl. `CostModelKind` carries one (for an omitted
+// request field) and `FillModel` carries one, but a *pair* assembled from two
+// independent defaults is exactly the silent, unlabelled pricing this type exists to
+// make impossible — the pair is the run's identity, so callers name both halves.
 
 /// The generic engine as a sweep [`Strategy`]. Holds the resolved axes model, the
 /// run's [`Pricing`], and the deadness "now".

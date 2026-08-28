@@ -213,15 +213,17 @@ Both were mistaken for the D0 bug during its investigation, so they are recorded
   model except `frictionless` charges `fixed_cost_sol_per_leg` = `JITO_MIN_TIP_SOL` +
   avg CU priority fee ≈ 0.001025 SOL/leg ≈ 0.00205 per round trip — **0.2 % of notional
   at 1.0 SOL, 20.5 % at 0.01**. Breakeven gross move goes from ~+2.2 % to ~+22.6 %, which
-  alone flips win% and PnL sign. `pumpfun_fee_only` drops `slippage_bps`, never the fixed
-  cost. Sweep at the notional you intend to trade (this is residual 4b above).
+  alone flips win% and PnL sign. No selectable cost model charges `slippage_bps` any
+  more, and none of them ever drops the fixed cost. Sweep at the notional you intend
+  to trade (this is residual 4b above) — doubly so under `pumpfun_impact`, whose
+  impact term moves with that same notional.
 - **Different corpus / different pricing.** The sweep is LakeSource-only; `simulate`
   splices the fresh PG tail (`sim_fetch::pg_tail_beyond_lake`), so a stale export leaves
   the sweep holding `Open (est)` rows at hours-old prices that the sim watches die.
   Re-export the lake before sweeping. `SimulatePage` also resets to
-  `worst_case` + `pumpfun_default` on every page load, so a rule simulated right after
-  promote can silently run under different fill/cost than the run that crowned it — check
-  the chips. **Surfaced (2026-07-26):** a run now stores its corpus-wide max
+  `worst_case` + `pumpfun_impact` on every page load, so a rule simulated right after
+  promote can silently run under a different fill model than the run that crowned it —
+  check the chips. **Surfaced (2026-07-26):** a run now stores its corpus-wide max
   `block_time` (`corpus_last_trade_at`, lab migration `0011`, from the SSOT
   `Corpus::last_trade_at` the frozen-tail horizon also reads) and the run panel shows a
   **Data through** row — warning when the lake was ≥1 h behind the run's start — with the

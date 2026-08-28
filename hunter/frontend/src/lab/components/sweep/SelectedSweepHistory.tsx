@@ -9,7 +9,14 @@ import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { useRenameGroupedSweepRunMutation } from '@lab/store/labEndpoints';
 import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 import { fingerprintsHref } from 'lib/strategy/nav';
-import { COST_MODELS, FILL_MODELS, fillModelLabel } from 'lib/strategy/types';
+import {
+  costModelHint,
+  costModelLabel,
+  FILL_MODELS,
+  fillModelLabel,
+  isLegacyCostModel,
+  storedCostModel,
+} from 'lib/strategy/types';
 import {
   GROUP_FIELD_LABELS,
   type GroupField,
@@ -146,16 +153,15 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
   // NULL = a legacy run, written before either model was selectable — it was
   // computed under what the sweep hardcoded then, so that is what we report.
   const fillModel = run.fill_model ?? 'worst_case';
-  const costModel = run.cost_model ?? 'pumpfun_default';
+  const costModel = storedCostModel(run.cost_model);
   const fill = FILL_MODELS.find((m) => m.id === fillModel);
-  const cost = COST_MODELS.find((m) => m.id === costModel);
   const fillLabel = fillModelLabel(fillModel);
-  const costLabel = cost?.label ?? costModel;
+  const costLabel = costModelLabel(costModel);
   const fillHint = fill?.hint;
-  const costHint = cost?.hint;
+  const costHint = costModelHint(costModel);
   // The pairing this whole selector exists to make visible: an explicit fill model
-  // already prices execution slippage, so `pumpfun_default` charges it a second time.
-  const doubleCounted = costModel === 'pumpfun_default';
+  // already prices execution slippage, so the retired model charges it a second time.
+  const doubleCounted = isLegacyCostModel(costModel);
   // How fresh the corpus was. A sweep reads the sealed Parquet lake ONLY; Simulate
   // splices the fresh PG tail on top. So an un-exported lake doesn't just make the run
   // "a bit old" — it freezes positions as `Open (est)` at prices a simulate of the same

@@ -63,7 +63,7 @@ pub struct StartFamilySearchBody {
     pub buy_amount_sol: f64,
     #[serde(default)]
     pub fill_model: FillModel,
-    #[serde(default = "default_cost")]
+    #[serde(default)]
     pub cost_model: CostModelKind,
     /// Absent ⇒ ON (this job's default).
     #[serde(default = "default_copycat_on")]
@@ -120,9 +120,6 @@ pub const DEFAULT_MIN_CLOSED: u64 = 8;
 
 fn default_buy() -> f64 {
     SWEEP_DEFAULT_BUY_AMOUNT_SOL
-}
-fn default_cost() -> CostModelKind {
-    CostModelKind::PumpfunImpact
 }
 fn default_copycat_on() -> bool {
     true

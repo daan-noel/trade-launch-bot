@@ -69,6 +69,7 @@ import type {
   GroupedSweepStartArgs,
 } from '@lab/components/sweep/groupedTypes';
 import { fingerprintMatchesIdentity } from 'lib/strategy/matchGroupFingerprint';
+import { isLegacyCostModel } from 'lib/strategy/types';
 import type { Fingerprint, PromotedRuleDraft, StrategyRule } from 'lib/strategy/types';
 
 const sweepGroupRowKey = (g: GroupedSweepGroupRecord) => g.id;
@@ -726,12 +727,12 @@ export function GenericSweepView() {
               per leg, that haircut scales with how often a combo fires — so it does
               not just shift every PnL down, it re-orders the ranking. Say so where
               the ranking is read, not only on the run header. */}
-          {activeRun && (activeRun.cost_model ?? 'pumpfun_default') === 'pumpfun_default' && (
+          {activeRun && isLegacyCostModel(activeRun.cost_model) && (
             <InlineAlert variant="warning">
-              Priced with the legacy cost model (fee + slippage) on top of{' '}
+              Priced with the retired cost model (fee + slippage) on top of{' '}
               {activeRun.fill_model ?? 'worst_case'} fills, which already price slippage — so
               execution cost is counted twice, and not evenly across combos. Re-run with
-              “Fee only” before acting on this ranking.
+              “Fee + real impact” before acting on this ranking.
             </InlineAlert>
           )}
 

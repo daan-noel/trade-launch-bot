@@ -446,20 +446,26 @@ export function fillModelLabel(id: string | null | undefined): string {
   return lag != null ? `Lag ${lag} ms` : String(id);
 }
 
-/** Which execution-cost model prices a simulated round-trip (backend
- *  `trading_core::strategies::kernel::CostModelKind`). */
-export type CostModelId = 'pumpfun_default' | 'pumpfun_fee_only' | 'pumpfun_impact';
+/** The retired flat-slippage model. NOT selectable — it charges `slippage_bps` on
+ *  top of the fill price, which already prices slippage, so it DOUBLE-COUNTS
+ *  execution cost; and because the fixed cost is per-leg the haircut scales with how
+ *  often a combo fires, so it does not even preserve ranking. It survives as a value
+ *  only because runs already stored under it must keep repricing the way they were
+ *  computed. Mirrors `CostModelKind::PumpfunLegacySlippage` on the backend. */
+export const LEGACY_COST_MODEL = 'pumpfun_default';
 
-/** Selectable cost models. `pumpfun_default` charges `slippage_bps` on top of the
- *  fill price — which already prices slippage — so it DOUBLE-COUNTS execution cost
- *  whenever a fill model is chosen explicitly. It stays the default only so stored
- *  runs keep the meaning they were computed under; `pumpfun_fee_only` is the honest
- *  partner for any fill model, and the one the fill-sensitivity analysis reported.
- *
- *  `pumpfun_impact` is the only one whose cost varies with `buy_amount_sol`: the
- *  other two are size-blind, so a run under them is a ZERO-IMPACT upper bound. On
- *  the measured median pool (~70 SOL) a 1 SOL buy really costs 1.42%/leg against
- *  the flat 1% the legacy model guesses. See docs/plans/strategies/execution-costs.md. */
+/** Which execution-cost model a NEW run can be priced under (backend
+ *  `trading_core::strategies::kernel::CostModelKind`, minus the retired kind). */
+export type CostModelId = 'pumpfun_impact' | 'pumpfun_fee_only';
+
+/** Any cost model a STORED run may carry — the selectable ones plus the retired one.
+ *  Read a persisted `cost_model` column as this, never as `CostModelId`. */
+export type StoredCostModelId = CostModelId | typeof LEGACY_COST_MODEL;
+
+/** Selectable cost models. `pumpfun_impact` is the only one whose cost varies with
+ *  `buy_amount_sol` — `pumpfun_fee_only` is size-blind, so a run under it is a
+ *  ZERO-IMPACT upper bound. On the measured median pool (~70 SOL) a 1 SOL buy really
+ *  costs 1.42%/leg. See docs/plans/strategies/fill-and-cost-models.md. */
 export const COST_MODELS: ReadonlyArray<{ id: CostModelId; label: string; hint: string }> = [
   {
     id: 'pumpfun_impact',
@@ -471,18 +477,59 @@ export const COST_MODELS: ReadonlyArray<{ id: CostModelId; label: string; hint: 
     label: 'Fee only',
     hint: 'Fee + tip + priority — no size impact, so an optimistic bound for large buys',
   },
-  {
-    id: 'pumpfun_default',
-    label: 'Fee + slippage',
-    hint: 'Legacy: also charges slippage_bps, double-counting what the fill already priced',
-  },
 ];
+
+/** How the retired model reads wherever a stored run still carries it. Kept out of
+ *  `COST_MODELS` so it cannot be picked, but every display path needs it. */
+const LEGACY_COST_MODEL_META = {
+  label: 'Fee + slippage (legacy)',
+  hint: 'Retired: also charges slippage_bps, double-counting what the fill already priced',
+} as const;
+
+/** THE decoder for a persisted `cost_model`. Null/absent means the run predates the
+ *  selector and really was priced with flat slippage, so it resolves to the legacy
+ *  model — NOT to today's default, which would relabel old numbers as computed under
+ *  a model they never saw. Mirrors `CostModelKind::from_stored` on the backend. */
+export function storedCostModel(id: string | null | undefined): StoredCostModelId {
+  return id === 'pumpfun_impact' || id === 'pumpfun_fee_only' ? id : LEGACY_COST_MODEL;
+}
+
+/** True when a stored run was priced under the retired double-counting model — the
+ *  one condition every "this ranking is not trustworthy" warning keys off. */
+export function isLegacyCostModel(id: string | null | undefined): boolean {
+  return storedCostModel(id) === LEGACY_COST_MODEL;
+}
+
+/** The model a stored run maps to when it has to become a SELECTABLE choice again —
+ *  re-running a sweep, seeding a form. A run priced under the retired model cannot
+ *  reproduce that pricing, and should not: double-counted execution cost is the
+ *  reason it is being re-run, so it comes back under the honest model. Every other
+ *  stored id maps to itself. */
+export function selectableCostModel(id: string | null | undefined): CostModelId {
+  const stored = storedCostModel(id);
+  return stored === LEGACY_COST_MODEL ? 'pumpfun_impact' : stored;
+}
+
+/** Display label for ANY cost model id, selectable or retired. */
+export function costModelLabel(id: string | null | undefined): string {
+  const stored = storedCostModel(id);
+  if (stored === LEGACY_COST_MODEL) return LEGACY_COST_MODEL_META.label;
+  return COST_MODELS.find((m) => m.id === stored)?.label ?? stored;
+}
+
+/** Tooltip body for ANY cost model id, selectable or retired. */
+export function costModelHint(id: string | null | undefined): string {
+  const stored = storedCostModel(id);
+  if (stored === LEGACY_COST_MODEL) return LEGACY_COST_MODEL_META.hint;
+  return COST_MODELS.find((m) => m.id === stored)?.hint ?? '';
+}
 
 /** `POST /api/strategies/simulate` body — a saved rule (`rule_id`) or an inline
  *  `draft` (ignored if `rule_id` is set), over an optional creation window.
  *  `fill_model` (top-level, default `worst_case`) and `cost_model` (default
- *  `pumpfun_default`) together decide what the round-trip PnL means — pairing an
- *  explicit fill model with `pumpfun_default` double-counts slippage (see
+ *  `pumpfun_impact`) together decide what the round-trip PnL means. Impact is
+ *  orthogonal to the fill model — one prices which market print we hit, the other how
+ *  far our own order moves the curve — so the pair never double-counts (see
  *  `COST_MODELS`). */
 export interface EngineSimRequest {
   rule_id?: string;
