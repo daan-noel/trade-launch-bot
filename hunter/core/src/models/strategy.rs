@@ -53,6 +53,11 @@ impl StrategyRule {
 /// One execution of a rule (real or paper). Backs the `strategy_runs` table.
 /// `run_seq` is monotonic per `(rule_id, mode)`; `params_snapshot` freezes the
 /// rule params at launch so later rule edits don't rewrite history.
+///
+/// A rule edited while active keeps its run — the engine reloads and decides on the
+/// new config from that moment. [`config_hash`](Self::config_hash) +
+/// [`config_edits`](Self::config_edits) are what say so, since `params_snapshot`
+/// describes only the config the run started with and carries no fingerprint at all.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StrategyRun {
     pub id: Uuid,
@@ -68,6 +73,17 @@ pub struct StrategyRun {
     /// Frozen copy of the rule params at launch.
     pub params_snapshot: Value,
     pub max_total_tokens: Option<i64>,
+    /// Digest of the config this run is running under **now** — rule params, buy
+    /// size, caps, and the fingerprint's criteria + `metric_config`. `None` on a
+    /// run whose config was never observed (pre-0012 history), which the engine
+    /// adopts as a baseline rather than reading as a change.
+    #[serde(default)]
+    pub config_hash: Option<String>,
+    /// Append-only log of config changes that landed while this run was `Running`:
+    /// `[{"at": <rfc3339>, "changed": ["ix structure", …]}]`. Non-empty means the
+    /// run's numbers span more than one config. Always an array.
+    #[serde(default)]
+    pub config_edits: Value,
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
 }

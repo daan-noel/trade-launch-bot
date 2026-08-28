@@ -596,7 +596,8 @@ These surfaces are strategy-agnostic and unchanged by the retirement:
    and not a live A/B knob: a live rule's conditions are frozen, because its
    run's `params_snapshot` has to keep matching the positions it produced.
    Toggling a condition off is a rule edit like any other — park, simulate,
-   compare, then promote.
+   compare, then promote. What the UI does not lock — sizing, caps, the fingerprint
+   behind the rule — still lands mid-run, and the run is stamped for it (below).
 
 ## Run lifecycle (what "current run" vs "history" actually splits on)
 
@@ -610,6 +611,7 @@ carried onto `LoadedRule::entry_enabled`, the same flag the arm gate reads, so
 | Rule becomes active (reload) | `warm_runs` → `ensure_run` reuses the latest still-`Running` run (restart continuity) else mints `run_seq + 1` |
 | Rule stops being active (reload) | `close_stale_runs` evicts the cache entry and backgrounds `StrategyRepo::finalize_run` → metrics rollup + `status='Stopped'` |
 | Rule's `trade_mode` is edited | same path — a run belongs to exactly one mode (`run_seq` is monotonic per `(rule, mode)`), so the old-mode run ends and the new mode opens its own |
+| Any OTHER edit lands while active | the run is **kept and stamped**: `ensure_run` diffs the new [`RunConfigSig`](#a-run-says-what-config-it-is-running-under) against the cached one and appends `{at, changed[]}` to `strategy_runs.config_edits` |
 | The activation caught nothing | the empty run is **deleted**, not kept — no empty "Run #N" in front of the real bag, and the `run_seq` is freed |
 | A straggler of a finalized run settles | `reroll_draining_run` re-rolls that run's metrics (a run closed mid-drain has provisional numbers) |
 | Boot | `close_orphan_runs` finalizes runs left `Running` by a deactivation this process never witnessed; `load_draining_runs` rebuilds the re-roll set |
@@ -644,6 +646,50 @@ Consequences worth knowing:
   not landed; and a run is never deleted while the engine still holds positions for
   it, because a `BuySubmitted` insert naming that `run_id` may still be in flight and
   would fail its FK.
+
+### A run says what config it is running under
+
+A rule edit does **not** restart the run. `schedule_engine_reload` → `reload_rules`
+folds `RulesReloaded`, the fold decides on the new config from that instant, and the
+open positions stay where they are — rotating the run mid-flight would split one
+rule's bags across two of them, which is a worse lie than one run spanning two
+configs. So the run is **stamped** instead, and every surface that shows its numbers
+can say so.
+
+`live::strategies::engine::run_config::RunConfigSig` is the diffable digest: one FNV
+hash per part — `params`, `buy size`, `caps`, `identity`, `ix structure` — so the
+stamp names *what* moved, not just that something did. `Sink::set_rules` computes it
+per rule on every reload; `ensure_run` compares it against `CachedRun::config` (or,
+adopting across a restart, against the row's own `config_hash`, which is the parts
+concatenated so it still diffs part-wise) and writes through
+`StrategyRepo::record_run_config`. A failed write warns and the cache still advances:
+the marker is display, and losing one entry must not retry on the buy path.
+
+Two things make this the only trace of the edit that matters most:
+
+- **`params_snapshot` cannot say it.** It is written once at launch and describes the
+  config the run *started* with — which stops being true the moment the rule is
+  edited, without anything on the row changing.
+- **A fingerprint edit touches no rule row at all.** `m_flow_ix.ix_patterns` and the
+  identity axes live on `fingerprints`, and one fingerprint is shared by every rule
+  pointing at it — so an ix-structure edit re-defines several live rules at once and
+  never appears in any `params_snapshot`. `RunConfigSig` hashes the fingerprint, so
+  each of those runs is stamped.
+
+What is deliberately **not** a config change: `rule_name` and `tags` (labels the
+kernel never reads — a rename that cried wolf would teach the operator to ignore the
+mark), and `trade_mode`, which already mints its own run one row above.
+
+Reading it: `strategy_runs.config_edits` rides on the run navigator rows
+(`RuleRunListRow`) and on the Rules board via `running_run_config_edits`, which only
+reports **`Running`** runs with a non-empty log — a finished run cannot answer "is
+this still scoring under the config it started with", and an unedited one answers by
+absence. The log keeps the newest `MAX_RUN_CONFIG_EDITS`; it is a marker, not an
+audit trail.
+
+**A pre-0012 run has no baseline.** Its `config_hash` is NULL, so the first reload
+after deploy *observes* the live config onto the row without dating an edit —
+inventing one would report a change that may never have happened.
 
 Rollup arithmetic is not re-derived: `strategies::run_rollup` maps a PG position
 onto the kernel's `TokenOutcome` and folds through the same `exact_run_metrics` the

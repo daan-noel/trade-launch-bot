@@ -110,6 +110,34 @@ export interface StrategyRule {
    *  capital; weighting the per-rule percents by trade count instead lets a rule
    *  buying 0.05 SOL outvote one buying 1.0 SOL. */
   closed_entry_sol?: number;
+  /** Config changes that landed while this rule's CURRENT run was scoring — only
+   *  present while that run is still `Running` and something was edited. The board's
+   *  "edited while running" marker; absent is the normal case. */
+  config_edits?: RunConfigEdit[];
+}
+
+/** One config change that landed while a run was still scoring (`strategy_runs.
+ *  config_edits`, mig 0012).
+ *
+ *  A rule edited while active KEEPS its run — the engine reloads and decides on the
+ *  new config from that instant, and rotating the run mid-flight would split its
+ *  open positions across two of them. So the run is stamped instead, and every
+ *  surface showing its numbers can say they span more than one config. */
+export interface RunConfigEdit {
+  /** RFC3339 instant the edit was folded into the engine. */
+  at: string;
+  /** Which parts moved, in the operator's words: `params`, `buy size`, `caps`,
+   *  `identity`, `ix structure`. */
+  changed: string[];
+}
+
+/** A one-line summary of a run's config edits, or `null` when it has none. */
+export function configEditSummary(edits: RunConfigEdit[] | null | undefined): string | null {
+  if (!edits || edits.length === 0) return null;
+  const last = edits[edits.length - 1];
+  const what = last.changed.join(', ') || 'config';
+  const n = edits.length > 1 ? ` (${edits.length} edits)` : '';
+  return `${what} changed ${new Date(last.at).toLocaleTimeString()}${n} - these numbers span more than one config`;
 }
 
 /** One activation session of a rule — Evidence run navigator wire shape. */
@@ -132,6 +160,9 @@ export interface StrategyRuleRun {
   n_exit_stall?: number | null;
   n_exit_time?: number | null;
   n_exit_liquidity?: number | null;
+  /** Config changes that landed while this run was `Running`, oldest first.
+   *  Non-empty = the row's numbers span more than one config. */
+  config_edits?: RunConfigEdit[] | null;
 }
 
 /** DataTable `rowClassName` for soft-archived rules (Rules + Simulate). */

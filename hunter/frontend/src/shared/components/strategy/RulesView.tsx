@@ -73,6 +73,7 @@ import {
 import { simulateHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import { weightedReturnPct } from 'lib/strategy/runSummary';
 import {
+  configEditSummary,
   lamportsToSol,
   ruleRowClass,
   type StrategyRule,
@@ -112,6 +113,29 @@ export interface RulesViewProps {
     rule: StrategyRule;
     clear: () => void;
   }) => ReactNode;
+}
+
+/** "This rule was edited while its current run was still scoring."
+ *
+ *  A rule edit does NOT restart the run — the engine reloads and decides on the new
+ *  config from that instant, and the run keeps its open positions. So the row's
+ *  score can span two configs, and this is the only thing that says so. Absent is
+ *  the normal case; the title names what moved and when.
+ *
+ *  Editing a FINGERPRINT (identity axes, `m_flow_ix.ix_patterns`) marks every rule
+ *  pointing at it, which is exactly right: one edit re-defines all of them. */
+function RuleConfigEditedMark({ rule }: { rule: StrategyRule }) {
+  const note = configEditSummary(rule.config_edits);
+  if (!note) return null;
+  return (
+    <span
+      className="shrink-0 text-warning"
+      title={`Edited while running - ${note}`}
+      aria-label={`Edited while running: ${note}`}
+    >
+      &#9998;
+    </span>
+  );
 }
 
 /**
@@ -498,6 +522,7 @@ export function RulesView({
         <RuleHoverTip rule={r} fingerprint={fpById.get(r.fingerprint_id)}>
           <div className="flex items-center justify-center gap-1">
             <span className="cursor-default font-medium text-text">{r.rule_name}</span>
+            <RuleConfigEditedMark rule={r} />
             {linkToSimulate && (
               <Link
                 to={simulateHref(r.id)}

@@ -16,6 +16,8 @@
 //!   confirmed from the trades feed + a confirmation watchdog (plan 4.3).
 //! * [`exec_paper`] — worst-case paper fill model → `FillConfirmed` (plan 4.4).
 //! * [`sinks`] — `PositionUpdate` → PG writer, `ArmedChanged` → SSE (plan 4.5).
+//! * [`run_config`] — the diffable digest of what a run is running under, so a rule
+//!   edited mid-run is stamped on the run instead of silently re-defining it.
 //! * [`arm_ledger`] — `ArmedChanged` → batched `strategy_arms` rows, off the hot
 //!   path (`docs/plans/strategies/arm-ledger.md`).
 //! * [`event_log`] — event recorder + boot-recovery replay (plan 4.6).
@@ -32,6 +34,7 @@ pub mod orphan_exit;
 pub mod producers;
 pub mod reapers;
 pub mod reload_scheduler;
+pub mod run_config;
 pub mod sell_backfill;
 pub mod sinks;
 

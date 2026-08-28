@@ -47,7 +47,8 @@ import { useTimezone } from 'context/TimezoneContext';
 import type { TableQuery } from 'components/table/types';
 import type { FilterSpec } from 'components/table/numericFilter';
 import type { PositionsSummary, RulePositionRecord } from 'types';
-import type { StrategyRule, StrategyRuleRun } from 'lib/strategy/types';
+import type { RunConfigEdit, StrategyRule, StrategyRuleRun } from 'lib/strategy/types';
+import { configEditSummary } from 'lib/strategy/types';
 import type { TemporalRow } from 'lib/strategy/temporalSummary';
 import { signedToneClass } from 'lib/signedTone';
 
@@ -175,7 +176,10 @@ function formatWinRate(v: number | null | undefined): string {
 
 /** A one-line description of a run's outcome for the chip/bar hover title. */
 function runTitle(run: StrategyRuleRun): string {
-  if (!run.has_metrics) return `Run #${run.run_seq} · ${run.status}`;
+  if (!run.has_metrics) {
+    const edited = configEditSummary(run.config_edits);
+    return `Run #${run.run_seq} · ${run.status}${edited ? ` · ${edited}` : ''}`;
+  }
   const parts = [`Run #${run.run_seq}`, `PnL ${formatRunPnl(run)}`];
   if (run.win_rate != null) parts.push(`Win ${formatWinRate(run.win_rate)}`);
   if (run.expectancy_sol != null) {
@@ -185,6 +189,8 @@ function runTitle(run: StrategyRuleRun): string {
   if (run.n_closed != null) {
     parts.push(`${run.n_closed} closed${run.n_open ? ` · ${run.n_open} open` : ''}`);
   }
+  const edited = configEditSummary(run.config_edits);
+  if (edited) parts.push(edited);
   return parts.join(' · ');
 }
 
@@ -694,6 +700,7 @@ export function RuleAnalyzePanel({
             tone={currentRun?.total_pnl_sol}
             win={currentRun?.has_metrics ? currentRun.win_rate : undefined}
             n={currentRun?.has_metrics ? currentRun.n_closed : undefined}
+            edits={currentRun?.config_edits}
           />
           {priorRuns.slice(0, 12).map((r) => (
             <ScopeChip
@@ -708,6 +715,7 @@ export function RuleAnalyzePanel({
               tone={r.total_pnl_sol}
               win={r.has_metrics ? r.win_rate : undefined}
               n={r.has_metrics ? r.n_closed : undefined}
+              edits={r.config_edits}
             />
           ))}
           {/* Runs from the mode the rule is no longer in. Badged, because `#2` here
@@ -727,6 +735,7 @@ export function RuleAnalyzePanel({
               tone={r.total_pnl_sol}
               win={r.has_metrics ? r.win_rate : undefined}
               n={r.has_metrics ? r.n_closed : undefined}
+              edits={r.config_edits}
             />
           ))}
           <ScopeChip
@@ -823,6 +832,7 @@ function ScopeChip({
   tone,
   win,
   n,
+  edits,
   title,
 }: {
   active: boolean;
@@ -837,9 +847,13 @@ function ScopeChip({
   win?: number | null;
   /** Closed-position count for the stat line. */
   n?: number | null;
+  /** Config changes that landed while this run was scoring — marks the chip so the
+   *  numbers under it are not read as one config's. */
+  edits?: RunConfigEdit[] | null;
   title?: string;
 }) {
   const hasStats = win != null && Number.isFinite(win);
+  const editNote = configEditSummary(edits);
   return (
     <button
       type="button"
@@ -854,6 +868,11 @@ function ScopeChip({
       <span className="flex items-center gap-1 leading-tight">
         {label}
         {(badge === 'paper' || badge === 'real') && <ModeBadge mode={badge} size="sm" />}
+        {editNote && (
+          <span className="text-warning" title={editNote} aria-label={editNote}>
+            &#9998;
+          </span>
+        )}
       </span>
       {sub && (
         <span

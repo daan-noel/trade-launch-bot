@@ -46,6 +46,8 @@ struct StrategyRunDbRow {
     status: String,
     params_snapshot: Json<Value>,
     max_total_tokens: Option<i64>,
+    config_hash: Option<String>,
+    config_edits: Json<Value>,
     started_at: DateTime<Utc>,
     finished_at: Option<DateTime<Utc>>,
 }
@@ -61,6 +63,8 @@ impl From<StrategyRunDbRow> for StrategyRun {
             status: r.status,
             params_snapshot: r.params_snapshot.0,
             max_total_tokens: r.max_total_tokens,
+            config_hash: r.config_hash,
+            config_edits: r.config_edits.0,
             started_at: r.started_at,
             finished_at: r.finished_at,
         }
@@ -87,6 +91,7 @@ struct RuleRunListDbRow {
     mode: String,
     started_at: DateTime<Utc>,
     finished_at: Option<DateTime<Utc>>,
+    config_edits: Json<Value>,
     n_closed: Option<i32>,
     n_open: Option<i32>,
     win_rate: Option<f32>,
@@ -109,6 +114,10 @@ pub struct RuleRunListRow {
     pub mode: String,
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
+    /// Config changes that landed while this run was `Running` (mig 0012), oldest
+    /// first: `[{"at", "changed": [...]}]`. Non-empty = the row's numbers span more
+    /// than one config, and the run navigator says so on the chip.
+    pub config_edits: Value,
     /// True when a `strategy_run_metrics` row exists (typically finished runs).
     pub has_metrics: bool,
     pub n_closed: Option<i32>,
@@ -134,6 +143,7 @@ impl From<RuleRunListDbRow> for RuleRunListRow {
             mode: r.mode,
             started_at: r.started_at,
             finished_at: r.finished_at,
+            config_edits: r.config_edits.0,
             has_metrics,
             n_closed: r.n_closed,
             n_open: r.n_open,
@@ -576,7 +586,12 @@ struct OpenMark {
 // ---------------------------------------------------------------------------
 
 const RUN_COLS: &str = "id, strategy_id, rule_id, mode, run_seq, status, params_snapshot, \
-    max_total_tokens, started_at, finished_at";
+    max_total_tokens, config_hash, config_edits, started_at, finished_at";
+
+/// Cap on a run's `config_edits` log (mig 0012). A run edited more times than this
+/// keeps the newest entries; the column is a "these numbers span N configs" marker,
+/// not an audit trail.
+const MAX_RUN_CONFIG_EDITS: i32 = 50;
 
 /// Cap on `last_entry_error` (mig 0017). A `TradeError` can stringify an entire
 /// RPC error payload; the column is a diagnostic, not a log sink.
@@ -1083,8 +1098,8 @@ impl StrategyRepo {
             r#"
             INSERT INTO strategy_runs
                 (id, strategy_id, rule_id, mode, run_seq, status, params_snapshot,
-                 max_total_tokens, started_at, finished_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                 max_total_tokens, config_hash, config_edits, started_at, finished_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             "#,
         )
         .bind(run.id)
@@ -1095,6 +1110,8 @@ impl StrategyRepo {
         .bind(&run.status)
         .bind(Json(&run.params_snapshot))
         .bind(run.max_total_tokens)
+        .bind(&run.config_hash)
+        .bind(Json(&run.config_edits))
         .bind(run.started_at)
         .bind(run.finished_at)
         .execute(&self.pool)
@@ -1238,6 +1255,7 @@ impl StrategyRepo {
         let rows = sqlx::query_as::<_, RuleRunListDbRow>(
             r#"
             SELECT r.id, r.run_seq, r.status, r.mode, r.started_at, r.finished_at,
+                   r.config_edits,
                    m.n_closed, m.n_open, m.win_rate, m.total_pnl_sol, m.expectancy_sol,
                    m.n_exit_take_profit, m.n_exit_stop_loss, m.n_exit_trailing,
                    m.n_exit_stall, m.n_exit_time, m.n_exit_liquidity
@@ -1252,6 +1270,55 @@ impl StrategyRepo {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(RuleRunListRow::from).collect())
+    }
+
+    /// Stamp the config a run is running under, optionally appending one edit to
+    /// its `config_edits` log (mig 0012).
+    ///
+    /// `edit` is `None` when the hash is merely being *observed* for the first time
+    /// — a run that started before 0012, or one adopted across a restart with no
+    /// stored hash to diff against. There is nothing to date in that case, and
+    /// inventing an entry would report a change that may never have happened.
+    ///
+    /// The run is never rotated on an edit: splitting a rule's open positions across
+    /// two runs mid-flight is a bigger lie than one run spanning two configs, which
+    /// is exactly what this column set exists to say out loud.
+    pub async fn record_run_config(
+        &self,
+        run_id: Uuid,
+        config_hash: &str,
+        edit: Option<&Value>,
+    ) -> anyhow::Result<()> {
+        let Some(edit) = edit else {
+            sqlx::query("UPDATE strategy_runs SET config_hash = $2 WHERE id = $1")
+                .bind(run_id)
+                .bind(config_hash)
+                .execute(&self.pool)
+                .await?;
+            return Ok(());
+        };
+        // Oldest-first eviction at the cap keeps the newest `MAX_RUN_CONFIG_EDITS`
+        // — `jsonb - 0` drops element 0. A log that grew without bound would put an
+        // unbounded value on a row every run read selects.
+        sqlx::query(
+            r#"
+            UPDATE strategy_runs
+               SET config_hash  = $2,
+                   config_edits = CASE
+                       WHEN jsonb_array_length(config_edits) >= $4
+                           THEN (config_edits - 0) || $3::jsonb
+                       ELSE config_edits || $3::jsonb
+                   END
+             WHERE id = $1
+            "#,
+        )
+        .bind(run_id)
+        .bind(config_hash)
+        .bind(Json(serde_json::json!([edit])))
+        .bind(MAX_RUN_CONFIG_EDITS)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn set_run_status(
@@ -1626,6 +1693,9 @@ impl StrategyRepo {
             status: "Running".to_string(),
             params_snapshot: serde_json::json!({}),
             max_total_tokens: None,
+            // A manual position has no rule and therefore no config to change.
+            config_hash: None,
+            config_edits: serde_json::json!([]),
             started_at: Utc::now(),
             finished_at: None,
         };
@@ -2554,6 +2624,28 @@ impl StrategyRepo {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(m,)| m).collect())
+    }
+
+    /// Per `(rule_id, mode)`, the `config_edits` log of that rule's currently
+    /// **`Running`** run, for the runs that have one (mig 0012). Backs the Rules
+    /// board's "edited while running" marker.
+    ///
+    /// Only `Running` runs, and only non-empty logs: the board asks "is the rule
+    /// I am looking at still scoring under the config it started with", which a
+    /// finished run cannot answer and an unedited one answers by absence. Keyed by
+    /// mode because a rule flipped between paper and real can leave one `Running`
+    /// run on each side, and the board scores it in exactly one of them.
+    pub async fn running_run_config_edits(
+        &self,
+        strategy_id: &str,
+    ) -> anyhow::Result<HashMap<(Uuid, String), Value>> {
+        let rows: Vec<(Uuid, String, Json<Value>)> = sqlx::query_as(
+            "SELECT rule_id, mode, config_edits FROM strategy_runs              WHERE strategy_id = $1 AND status = 'Running' AND rule_id IS NOT NULL                AND jsonb_array_length(config_edits) > 0",
+        )
+        .bind(strategy_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(id, mode, e)| ((id, mode), e.0)).collect())
     }
 
     /// The latest run per rule for a given `mode` (one row per `rule_id`, highest

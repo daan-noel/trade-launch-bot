@@ -691,6 +691,14 @@ pub async fn rules_with_counters(
         Ok(v) => v,
         Err(e) => return list_error("list rules", e),
     };
+    // Config changes that landed while a rule's current run was scoring (mig 0012).
+    // A rule edited while active keeps its run, so without this the board shows one
+    // set of numbers for two configs and says nothing about it. Degrades to "no
+    // marker" like the counters do — a missing badge beats a blank Rules page.
+    let config_edits = strategy_repo
+        .running_run_config_edits("generic")
+        .await
+        .unwrap_or_default();
     // One map when a mode is pinned (every rule reads from it), two when each rule
     // is scored in its own mode. `All` + a pinned mode is all-time on BOTH sides —
     // the paper/latest-run asymmetry below is the legacy default board's, and
@@ -770,6 +778,11 @@ pub async fn rules_with_counters(
                     "score_mode".into(),
                     serde_json::json!(score_mode.map(ScoreMode::as_str)),
                 );
+                // Keyed by the rule's OWN mode, never the scored one: the marker is
+                // about the run that is live right now, which exists in one mode.
+                if let Some(edits) = config_edits.get(&(r.id, r.trade_mode.clone())) {
+                    map.insert("config_edits".into(), edits.clone());
+                }
             }
             v
         })

@@ -933,7 +933,7 @@ async fn reload_rules(
         .collect();
     let engine_fps: Vec<EngineFingerprint> = fps.iter().map(convert::fp_to_engine).collect();
 
-    sink.set_rules(&loaded, &names);
+    sink.set_rules(&loaded, &names, &engine_fps);
     // End the runs of rules that just stopped being active, THEN warm the ones
     // that are — order matters, `warm_runs` would otherwise re-mint what this just
     // closed. Both are cheap on the loop (RAM); the rollup writes are spawned.

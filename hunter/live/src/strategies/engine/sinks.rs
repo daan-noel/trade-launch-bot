@@ -50,6 +50,7 @@ use hunter_engine::event::{
     ArmedDelta, ArmedStateTag, DisarmReason, LoadedRule, PositionDelta, PositionStatus, RuleId,
     TradeMode,
 };
+use hunter_engine::fingerprint::Fingerprint as EngineFingerprint;
 use hunter_engine::metrics::evaluator::condition_expr_to_value;
 use hunter_engine::metrics::{group_of, group_spec, metric_spec, MetricId};
 
@@ -63,6 +64,7 @@ use crate::ingest::HeldPoolGate;
 use crate::trader::PumpFunTrader;
 
 use super::arm_ledger::ArmLedger;
+use super::run_config::RunConfigSig;
 use super::{ArmedRegistry, FillSigStore, PositionMeta, PositionRegistry};
 
 /// Per-rule facts the sink needs when it materializes a position/run (mode, the
@@ -74,6 +76,9 @@ struct RuleInfo {
     name: String,
     max_total: Option<i64>,
     params: serde_json::Value,
+    /// What the rule + its fingerprint currently say, as a diffable digest. The run
+    /// carries the same value, so a reload can tell an edit from a no-op reload.
+    config: RunConfigSig,
 }
 
 /// The run a rule is currently writing into, **with the mode it was opened for**.
@@ -89,6 +94,10 @@ struct RuleInfo {
 struct CachedRun {
     mode: TradeMode,
     id: uuid::Uuid,
+    /// The config this run is recorded as running under (`strategy_runs.config_hash`).
+    /// Advanced in lockstep with the row, so an edit is written exactly once however
+    /// many reloads follow it.
+    config: RunConfigSig,
 }
 
 /// The `strategy_id` the generic engine stamps on every run/position (the column
@@ -244,7 +253,12 @@ impl Sink {
     /// off `LoadedRule::entry_enabled` — the same flag the engine's arm gate reads,
     /// so "may own a run" and "may take an entry" can never disagree. A rule that
     /// may not enter may not own a run: see [`Self::close_stale_runs`].
-    pub fn set_rules(&mut self, rules: &[LoadedRule], names: &[(RuleId, String)]) {
+    pub fn set_rules(
+        &mut self,
+        rules: &[LoadedRule],
+        names: &[(RuleId, String)],
+        fps: &[EngineFingerprint],
+    ) {
         self.active = rules.iter().filter(|r| r.entry_enabled).map(|r| r.id).collect();
         let name_by_id: HashMap<RuleId, &str> = names
             .iter()
@@ -253,6 +267,10 @@ impl Sink {
         self.rules = rules
             .iter()
             .map(|r| {
+                let params = r.params.to_value();
+                // The digest reads the SAME rendered params the run row freezes, so
+                // the snapshot and the signature can never describe different params.
+                let config = RunConfigSig::compute(r, &params, fps);
                 (
                     r.id,
                     RuleInfo {
@@ -264,7 +282,8 @@ impl Sink {
                         // `None` = unlimited, decoded through the ONE reader (`Cap`)
                         // rather than an ad-hoc `!= 0` here.
                         max_total: r.total_cap().bounded().map(i64::from),
-                        params: r.params.to_value(),
+                        params,
+                        config,
                     },
                 )
             })
@@ -529,6 +548,7 @@ impl Sink {
                 name: MANUAL_STRATEGY_ID.to_string(),
                 max_total: None,
                 params: serde_json::json!({}),
+                config: RunConfigSig::absent(),
             },
             (None, None) => {
                 warn!(rule = %delta.rule.0, "engine sink: BuySubmitted for unknown rule — skipping");
@@ -1025,8 +1045,18 @@ impl Sink {
         // normally evicts it on the reload that changed the mode — this is the
         // hot-path guarantee that a buy racing that reload cannot file itself into
         // the wrong mode's run.
-        if let Some(cached) = self.run_cache.get(&rule) {
+        if let Some(cached) = self.run_cache.get(&rule).copied() {
             if cached.mode == info.mode {
+                // The rule was edited while this run was scoring. The run is NOT
+                // rotated — splitting its open positions across two runs mid-flight
+                // is worse than one run spanning two configs — so it is stamped
+                // instead, and every surface that shows the run's numbers can say
+                // which part of the config moved and when.
+                let changed = info.config.changed_since(&cached.config);
+                if !changed.is_empty() {
+                    self.stamp_run_config(cached.id, &info.config, &changed).await;
+                    self.run_cache.insert(rule, CachedRun { config: info.config, ..cached });
+                }
                 return Ok(cached.id);
             }
             self.run_cache.remove(&rule);
@@ -1060,7 +1090,22 @@ impl Sink {
         // lifecycle exists to fix.
         if let Some(existing) = self.repo.latest_run(rule.0, mode).await? {
             if existing.status == "Running" && !self.closed_runs.contains(&existing.id) {
-                self.run_cache.insert(rule, CachedRun { mode: info.mode, id: existing.id });
+                // Adopting across a restart, so the diff base is the row rather than
+                // this process's cache: an edit made while the bin was down is still
+                // an edit this run's numbers span. A row with no stored hash (started
+                // before mig 0012) has nothing to diff against — its config is
+                // observed as the baseline, never dated as a change.
+                let changed = existing
+                    .config_hash
+                    .as_deref()
+                    .and_then(RunConfigSig::from_hash_hex)
+                    .map(|prev| info.config.changed_since(&prev))
+                    .unwrap_or_default();
+                self.stamp_run_config(existing.id, &info.config, &changed).await;
+                self.run_cache.insert(
+                    rule,
+                    CachedRun { mode: info.mode, id: existing.id, config: info.config },
+                );
                 return Ok(existing.id);
             }
         }
@@ -1074,12 +1119,44 @@ impl Sink {
             status: "Running".to_string(),
             params_snapshot: info.params.clone(),
             max_total_tokens: info.max_total,
+            config_hash: Some(info.config.hash_hex()),
+            config_edits: serde_json::json!([]),
             started_at: Utc::now(),
             finished_at: None,
         };
         self.repo.insert_run(&run).await?;
-        self.run_cache.insert(rule, CachedRun { mode: info.mode, id: run.id });
+        self.run_cache.insert(
+            rule,
+            CachedRun { mode: info.mode, id: run.id, config: info.config },
+        );
         Ok(run.id)
+    }
+
+    /// Write the config a run is running under, appending one `config_edits` entry
+    /// when `changed` names parts that moved (empty = first observation, hash only).
+    ///
+    /// Never returns an error and never blocks the caller's outcome: this is the
+    /// marker that explains a run's numbers, and losing it must not fail the buy
+    /// that was waiting on `ensure_run`. The cache advances either way, so a failed
+    /// write costs one missing entry rather than a retry on every later entry.
+    async fn stamp_run_config(
+        &self,
+        run_id: uuid::Uuid,
+        config: &RunConfigSig,
+        changed: &[&str],
+    ) {
+        let edit = (!changed.is_empty()).then(|| {
+            serde_json::json!({ "at": Utc::now().to_rfc3339(), "changed": changed })
+        });
+        if let Err(e) = self
+            .repo
+            .record_run_config(run_id, &config.hash_hex(), edit.as_ref())
+            .await
+        {
+            warn!(run = %run_id, "engine sink: record run config failed: {e}");
+        } else if !changed.is_empty() {
+            info!(run = %run_id, changed = ?changed, "engine sink: rule config edited mid-run");
+        }
     }
 
     fn emit_position_sse(&self, delta: &PositionDelta) {

@@ -7,22 +7,30 @@
 //! deliberately stable: changing the algorithm invalidates every persisted hash.
 
 /// FNV-1a offset basis (64-bit).
-pub(crate) const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+pub const FNV_OFFSET: u64 = 0xcbf29ce484222325;
 /// FNV-1a prime (64-bit).
 const FNV_PRIME: u64 = 0x100000001b3;
 
 #[inline]
-pub(crate) fn fnv1a_byte(mut h: u64, b: u8) -> u64 {
+pub fn fnv1a_byte(mut h: u64, b: u8) -> u64 {
     h ^= u64::from(b);
     h.wrapping_mul(FNV_PRIME)
 }
 
 #[inline]
-pub(crate) fn fnv1a_bytes(mut h: u64, bytes: &[u8]) -> u64 {
+pub fn fnv1a_bytes(mut h: u64, bytes: &[u8]) -> u64 {
     for &b in bytes {
         h = fnv1a_byte(h, b);
     }
     h
+}
+
+/// One-shot digest of a byte slice. The whole hasher for a caller that has the
+/// bytes in hand and no running state to fold into — reaching for it is what keeps
+/// a second FNV implementation from appearing outside this module.
+#[inline]
+pub fn fnv1a(bytes: &[u8]) -> u64 {
+    fnv1a_bytes(FNV_OFFSET, bytes)
 }
 
 /// A `Hasher` that passes a `u64` key straight through.

@@ -31,7 +31,7 @@ pub mod event;
 pub mod event_log;
 pub mod fingerprint;
 pub mod grouping;
-mod hash;
+pub mod hash;
 pub mod identity;
 pub mod metrics;
 pub mod readout;
