@@ -671,8 +671,8 @@ mod tests {
         let table = CutTable {
             windows: vec![],
             entry: vec![
-                cut(MetricGroupId::Snapshot, MetricId::Time, Operator::Lt, 40.0),
-                cut(MetricGroupId::Snapshot, MetricId::Liquidity, Operator::Gte, 20.0),
+                cut(MetricGroupId::State, MetricId::Time, Operator::Lt, 40.0),
+                cut(MetricGroupId::State, MetricId::Liquidity, Operator::Gte, 20.0),
                 Cut {
                     group: MetricGroupId::FlowWindow,
                     metric: MetricId::UniqueWallets,
@@ -760,7 +760,7 @@ mod tests {
             ..CutTable::empty()
         };
         let time = Clause {
-            group: MetricGroupId::Snapshot,
+            group: MetricGroupId::State,
             metric: MetricId::Time,
             window: None,
             op: Operator::Lt,
@@ -768,7 +768,7 @@ mod tests {
             phase: CutPhase::FillMoment,
         };
         let liq = Clause {
-            group: MetricGroupId::Snapshot,
+            group: MetricGroupId::State,
             metric: MetricId::Liquidity,
             window: None,
             op: Operator::Gte,
@@ -777,7 +777,7 @@ mod tests {
         };
         assert!(!pair_cooccurs(&time, &liq, &table));
         let time_ok = Clause {
-            group: MetricGroupId::Snapshot,
+            group: MetricGroupId::State,
             metric: MetricId::Time,
             window: None,
             op: Operator::Lt,
@@ -785,8 +785,8 @@ mod tests {
             phase: CutPhase::FillMoment,
         };
         assert!(pair_cooccurs(&time_ok, &liq, &table));
-        let peak_time = clause(MetricGroupId::Snapshot, MetricId::Time, Operator::Lt, 5.0);
-        let peak_liq = clause(MetricGroupId::Snapshot, MetricId::Liquidity, Operator::Gte, 20.0);
+        let peak_time = clause(MetricGroupId::State, MetricId::Time, Operator::Lt, 5.0);
+        let peak_liq = clause(MetricGroupId::State, MetricId::Liquidity, Operator::Gte, 20.0);
         assert!(pair_cooccurs(&peak_time, &peak_liq, &table));
     }
 
@@ -796,7 +796,7 @@ mod tests {
             windows: vec![],
             entry: vec![
                 Cut {
-                    group: MetricGroupId::Snapshot,
+                    group: MetricGroupId::State,
                     metric: MetricId::Liquidity,
                     window: None,
                     op: Operator::Gte,
@@ -804,14 +804,14 @@ mod tests {
                     phase: CutPhase::FillMoment,
                 },
                 Cut {
-                    group: MetricGroupId::Snapshot,
+                    group: MetricGroupId::State,
                     metric: MetricId::Liquidity,
                     window: None,
                     op: Operator::Gte,
                     threshold: 47.0,
                     phase: CutPhase::Contrast,
                 },
-                cut(MetricGroupId::Snapshot, MetricId::Time, Operator::Lt, 40.0),
+                cut(MetricGroupId::State, MetricId::Time, Operator::Lt, 40.0),
             ],
             exit: vec![],
             winner_fill: vec![],
@@ -845,7 +845,7 @@ mod tests {
             windows: vec![],
             entry: vec![
                 Cut {
-                    group: MetricGroupId::Snapshot,
+                    group: MetricGroupId::State,
                     metric: MetricId::Time,
                     window: None,
                     op: Operator::Lt,
@@ -853,7 +853,7 @@ mod tests {
                     phase: CutPhase::Contrast,
                 },
                 Cut {
-                    group: MetricGroupId::Snapshot,
+                    group: MetricGroupId::State,
                     metric: MetricId::Time,
                     window: None,
                     op: Operator::Lt,
@@ -861,7 +861,7 @@ mod tests {
                     phase: CutPhase::RunLead,
                 },
                 Cut {
-                    group: MetricGroupId::Snapshot,
+                    group: MetricGroupId::State,
                     metric: MetricId::Liquidity,
                     window: None,
                     op: Operator::Gte,
@@ -894,7 +894,7 @@ mod tests {
             windows: vec![],
             entry: vec![
                 Cut {
-                    group: MetricGroupId::Snapshot,
+                    group: MetricGroupId::State,
                     metric: MetricId::Liquidity,
                     window: None,
                     op: Operator::Gte,
@@ -902,14 +902,14 @@ mod tests {
                     phase: CutPhase::WinnerFloor,
                 },
                 Cut {
-                    group: MetricGroupId::Snapshot,
+                    group: MetricGroupId::State,
                     metric: MetricId::Liquidity,
                     window: None,
                     op: Operator::Lte,
                     threshold: 70.0,
                     phase: CutPhase::WinnerCeil,
                 },
-                cut(MetricGroupId::Snapshot, MetricId::Time, Operator::Lt, 40.0),
+                cut(MetricGroupId::State, MetricId::Time, Operator::Lt, 40.0),
             ],
             exit: vec![],
             winner_fill: vec![],
@@ -933,7 +933,7 @@ mod tests {
         // DNF: the band must assemble as ONE AND-arm, not floor OR ceil.
         let rp = assemble(band, &ExitBag { clauses: vec![] });
         let side = rp.entry.expect("entry");
-        let inst = &side.0[&MetricGroupId::Snapshot];
+        let inst = &side.0[&MetricGroupId::State];
         let arms = &inst[0].metrics[&MetricId::Liquidity];
         assert_eq!(arms.len(), 1, "one OR-arm");
         assert_eq!(arms[0].len(), 2, "floor AND ceil in that arm");
@@ -942,7 +942,7 @@ mod tests {
     #[test]
     fn band_pair_is_not_a_compete_clash() {
         let floor = Clause {
-            group: MetricGroupId::Snapshot,
+            group: MetricGroupId::State,
             metric: MetricId::Liquidity,
             window: None,
             op: Operator::Gte,
@@ -970,7 +970,7 @@ mod tests {
         let base = GeneratedCombo {
             entry: EntryFilling {
                 clauses: vec![Clause {
-                    group: MetricGroupId::Snapshot,
+                    group: MetricGroupId::State,
                     metric: MetricId::Liquidity,
                     window: None,
                     op: Operator::Gte,
@@ -985,7 +985,7 @@ mod tests {
             windows: vec![],
             entry: vec![
                 Cut {
-                    group: MetricGroupId::Snapshot,
+                    group: MetricGroupId::State,
                     metric: MetricId::Liquidity,
                     window: None,
                     op: Operator::Gte,
@@ -993,7 +993,7 @@ mod tests {
                     phase: CutPhase::Contrast,
                 },
                 Cut {
-                    group: MetricGroupId::Snapshot,
+                    group: MetricGroupId::State,
                     metric: MetricId::Liquidity,
                     window: None,
                     op: Operator::Gte,
@@ -1001,7 +1001,7 @@ mod tests {
                     phase: CutPhase::Contrast,
                 },
                 Cut {
-                    group: MetricGroupId::Snapshot,
+                    group: MetricGroupId::State,
                     metric: MetricId::Liquidity,
                     window: None,
                     op: Operator::Gte,

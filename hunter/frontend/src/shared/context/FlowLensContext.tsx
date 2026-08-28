@@ -8,7 +8,7 @@ import type { IxPattern } from 'lib/flow/ixPatternSets';
  * classifies vol/non-vol, and how.
  *
  * The chart stack normally classifies with a fingerprint's saved
- * `volume_ix_patterns`, handed down as `flowPatternKeys` props. A wallet study
+ * `ix_patterns`, handed down as `flowPatternKeys` props. A wallet study
  * has no fingerprint, so Trader Analysis owns its set instead (`ix_pattern_sets`)
  * and provides it here. The KEYS still travel as props — that path already
  * exists and every card reads it. What cannot travel as props without threading

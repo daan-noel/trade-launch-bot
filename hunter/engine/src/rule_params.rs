@@ -7,7 +7,7 @@
 //!   "take_profit": 100,
 //!   "stop_loss": 30,
 //!   "entry": {
-//!     "m_snapshot":   { "time": [{"operator": ">", "value": 10}], ... },
+//!     "m_state":   { "time": [{"operator": ">", "value": 10}], ... },
 //!     "m_flow_window": { "window_size_sec": 10, "gross_flow": [ ... ] }
 //!   },
 //!   "exit": { ... }
@@ -21,7 +21,7 @@
 //! save instead of silently never matching.
 //!
 //! **Multi-window per group.** A dynamic group (`m_flow_window`, `m_price_window`,
-//! `m_flow_split_window`) may appear once as a plain object (one window — the legacy,
+//! `m_flow_ix_window`) may appear once as a plain object (one window — the legacy,
 //! backward-compatible shape every stored rule uses) OR as a JSON **array** of
 //! objects, each with its own `window_size_sec`, to place gates on the same group
 //! at several window sizes simultaneously (e.g. a 30 s `gross_flow` hot gate AND a
@@ -49,7 +49,7 @@
 //!
 //! ```json
 //! "disabled": {
-//!   "entry": { "m_snapshot": { "liquidity": [{"operator": ">", "value": 30}] } },
+//!   "entry": { "m_state": { "liquidity": [{"operator": ">", "value": 30}] } },
 //!   "scale_out": [{ "sell_bps": 5000, "take_profit": 40 }]
 //! }
 //! ```
@@ -785,7 +785,7 @@ fn validate_group_instances(
     // Distinct PARAMS within a dynamic group — two clauses that read the same state
     // are ambiguous; combine them into one object instead. The comparison is over the
     // whole strict map, not `window_size_sec` alone, because a two-window group's
-    // identity is the pair: `m_flow_burst{60, 3}` and `m_flow_burst{60, 10}` are
+    // identity is the pair: `m_flow_window{60, 3}` and `m_flow_window{60, 10}` are
     // different reads and must both be authorable.
     if spec.kind == MetricKind::Dynamic {
         for (i, a) in instances.iter().enumerate() {
@@ -812,6 +812,18 @@ fn validate_group_instances(
     Ok(())
 }
 
+/// The metrics that read the slice axis, for the message that rejects a slice
+/// nothing reads. Derived from the registry so it cannot go stale behind a new one.
+fn two_window_metric_names() -> String {
+    let names: Vec<&str> = crate::metrics::REGISTRY
+        .iter()
+        .flat_map(|g| g.metrics.iter())
+        .filter(|m| crate::metrics::is_two_window(m.id))
+        .map(|m| m.name)
+        .collect();
+    names.join(" / ")
+}
+
 fn validate_group(
     side_name: &str,
     is_entry: bool,
@@ -833,7 +845,7 @@ fn validate_group(
     // is a cross-param rule, so it cannot live in `StrictParamSpec`.
     if spec.kind == MetricKind::Dynamic {
         let window_axis = &crate::metrics::WINDOW_AXIS;
-        let burst_axis = &crate::metrics::flow_burst::BURST_AXIS;
+        let slice_axis = &crate::metrics::flow_slice::SLICE_AXIS;
         let set = |axis: &crate::metrics::WindowAxis| -> usize {
             axis.params().into_iter().filter(|n| group.strict.contains_key(*n)).count()
         };
@@ -854,38 +866,52 @@ fn validate_group(
                 ))
             }
         }
-        // The burst axis takes EXACTLY ONE size too, for the same reason the
-        // reference span does — and on a group that declares the axis it is
-        // required, since a share with one end missing is no reading at all. No
-        // burst param can carry `required` alone, so the axis is counted here.
-        if spec.strict_param_by_name(crate::metrics::flow_burst::BURST_PARAM).is_some() {
-            match set(burst_axis) {
+        // The slice axis takes EXACTLY ONE size too, for the same reason the
+        // reference span does — and it is required exactly when the instance reads
+        // it. `m_flow_window` declares the axis for every instance because the
+        // two-window metrics live there, so "declared" cannot be the test: an
+        // instance gating only on `gross_flow` would be told to invent a slice
+        // nothing reads. The metrics present decide.
+        let reads_slice = group.metrics.keys().copied().any(crate::metrics::is_two_window);
+        if reads_slice {
+            match set(slice_axis) {
                 1 => {}
                 0 => {
                     // Name the param the row would spell in the unit it already
-                    // chose, so a print rule is not told to set a `burst_size_sec`.
+                    // chose, so a print rule is not told to set a `slice_size_sec`.
                     let unit = group.window_unit(window_axis).unwrap_or(WindowUnit::Sec);
                     return Err(format!(
                         "{side_name}.{}: missing required param '{}'",
                         spec.name,
-                        burst_axis.size_param(unit),
+                        slice_axis.size_param(unit),
                     ));
                 }
                 _ => {
                     return Err(format!(
                         "{side_name}.{}: set exactly one of {}, not more",
                         spec.name,
-                        one_of(burst_axis),
+                        one_of(slice_axis),
                     ))
                 }
             }
         }
-        // Both axes of a two-window group must count in the SAME unit - a burst in
+        // A slice nothing reads is a silent no-op: it changes no value and no
+        // requirement identity, so it would sit in the params reading like a gate.
+        // Same principle as an `arm_above_pct` with no trailing metric — fail the save.
+        if !reads_slice && set(slice_axis) > 0 {
+            return Err(format!(
+                "{side_name}.{}: {} is read only by {}, and this group has neither",
+                spec.name,
+                one_of(slice_axis),
+                two_window_metric_names(),
+            ));
+        }
+        // Both axes of a two-window read must count in the SAME unit - a burst in
         // slots over a reference in seconds is a ratio across two different clocks,
         // and a burst in prints over a reference in seconds is a count over an
         // interval, which is not a share of anything.
         if let (Some(w), Some(b)) =
-            (group.window_unit(window_axis), group.window_unit(burst_axis))
+            (group.window_unit(window_axis), group.window_unit(slice_axis))
         {
             if w != b {
                 return Err(format!(
@@ -930,32 +956,38 @@ fn validate_group(
     // which is not a stricter gate but a different quantity. Cross-param rules cannot
     // be spelled in `StrictParamSpec`, so they live here.
     if let (Some(burst), Some(window)) = (
-        group.window_spec(&crate::metrics::flow_burst::BURST_AXIS),
+        group.window_spec(&crate::metrics::flow_slice::SLICE_AXIS),
         group.window_spec(&crate::metrics::WINDOW_AXIS),
     ) {
         if burst.size > window.size {
             // Name the params the rule actually spells, so a print rule is not told
             // to shrink a `window_size_sec` it never set. Both axes agree on the unit
             // by the check above, so either one names it.
-            let burst_name = crate::metrics::flow_burst::BURST_AXIS.size_param(burst.unit);
+            let slice_name = crate::metrics::flow_slice::SLICE_AXIS.size_param(burst.unit);
             let window_name = crate::metrics::WINDOW_AXIS.size_param(window.unit);
             return Err(format!(
-                "{side_name}.{}: {burst_name} {} must nest inside {window_name} {}",
+                "{side_name}.{}: {slice_name} {} must nest inside {window_name} {}",
                 spec.name, burst.size, window.size,
             ));
         }
     }
-    // A two-window group has no place in an exit REASON yet: the persisted label
-    // (`event::parse_metric_exit_label`) carries one window qualifier, so two burst
-    // clauses that differ only in the burst axis would record the same reason and an
-    // operator could not tell which read fired. Entry-side is unaffected — the readout
-    // names the whole requirement, not a one-line label. Lift this together with the
-    // label, never on its own: see `docs/roadmap/two-window-exit-labels.md`.
-    if !is_entry && group_id == MetricGroupId::FlowBurst {
-        return Err(format!(
-            "{side_name}.{}: entry side only — a two-window read has no unambiguous              exit-reason label yet",
-            spec.name
-        ));
+    // A two-window read has no place in an exit REASON yet: the persisted label
+    // (`event::parse_metric_exit_label`) carries one window qualifier, so two clauses
+    // that differ only in the slice axis would record the same reason and an operator
+    // could not tell which read fired. Entry-side is unaffected — the readout names
+    // the whole requirement, not a one-line label. Lift this together with the label,
+    // never on its own: see `docs/roadmap/two-window-exit-labels.md`.
+    //
+    // Per-METRIC, because the two live on `m_flow_window` beside single-window metrics
+    // that are perfectly good exits: rejecting the whole group would take `gross_flow`
+    // off the exit side with them.
+    if !is_entry {
+        if let Some(m) = group.metrics.keys().copied().find(|&m| crate::metrics::is_two_window(m)) {
+            return Err(format!(
+                "{side_name}.{}.{m}: entry side only — a two-window read has no unambiguous exit-reason label yet",
+                spec.name
+            ));
+        }
     }
     // `arm_above_pct` gates only the trailing metrics; authored without one it is a
     // silent no-op. Same principle as an unknown metric name: fail the save.
@@ -1042,7 +1074,7 @@ mod tests {
     /// above, pinned here so a serde change that breaks it fails a test.
     fn docs_example() -> Value {
         let side = json!({
-            "m_snapshot": {
+            "m_state": {
                 "time": [
                     {"operator": ">", "value": 10},
                     {"operator": "<", "value": 30}
@@ -1108,17 +1140,17 @@ mod tests {
         let e = RuleParams::parse(&json!({"take_profits": 1})).unwrap_err();
         assert!(e.contains("unknown params key"), "{e}");
         // Unknown group.
-        let e = RuleParams::parse(&json!({"entry": {"m_snapshots": {}}})).unwrap_err();
+        let e = RuleParams::parse(&json!({"entry": {"m_states": {}}})).unwrap_err();
         assert!(e.contains("unknown metric group"), "{e}");
         // Unknown metric within a known group.
         let e = RuleParams::parse(
-            &json!({"entry": {"m_snapshot": {"tyme": [{"operator": ">", "value": 1}]}}}),
+            &json!({"entry": {"m_state": {"tyme": [{"operator": ">", "value": 1}]}}}),
         )
         .unwrap_err();
         assert!(e.contains("unknown metric or param 'tyme'"), "{e}");
         // Unknown operator.
         let e = RuleParams::parse(
-            &json!({"entry": {"m_snapshot": {"time": [{"operator": "=>", "value": 1}]}}}),
+            &json!({"entry": {"m_state": {"time": [{"operator": "=>", "value": 1}]}}}),
         )
         .unwrap_err();
         assert!(e.contains("invalid condition list"), "{e}");
@@ -1127,7 +1159,7 @@ mod tests {
     #[test]
     fn metric_under_wrong_group_names_the_right_one() {
         let e = RuleParams::parse(
-            &json!({"exit": {"m_snapshot": {"stall": [{"operator": "<", "value": 10}]}}}),
+            &json!({"exit": {"m_state": {"stall": [{"operator": "<", "value": 10}]}}}),
         )
         .unwrap_err();
         assert!(e.contains("belongs to group 'm_price_lifetime'"), "{e}");
@@ -1298,16 +1330,16 @@ mod tests {
         // ...but a TWO-window group's identity is the PAIR: same reference window,
         // different burst, is two different reads and must stay authorable.
         RuleParams::parse(&json!({
-            "entry": { "m_flow_burst": [
-                { "window_size_sec": 60, "burst_size_sec": 3,  "trade_share": [{"operator": ">=", "value": 8}] },
-                { "window_size_sec": 60, "burst_size_sec": 10, "trade_share": [{"operator": "<=", "value": 60}] }
+            "entry": { "m_flow_window": [
+                { "window_size_sec": 60, "slice_size_sec": 3,  "trade_share": [{"operator": ">=", "value": 8}] },
+                { "window_size_sec": 60, "slice_size_sec": 10, "trade_share": [{"operator": "<=", "value": 60}] }
             ] }
         }))
         .expect("same reference window, different burst = two distinct reads");
 
         // A static group has no window to distinguish instances — array > 1 rejected.
         let e = RuleParams::parse(&json!({
-            "entry": { "m_snapshot": [
+            "entry": { "m_state": [
                 { "time": [{"operator": ">=", "value": 10}] },
                 { "liquidity": [{"operator": ">=", "value": 5}] }
             ] }
@@ -1321,7 +1353,7 @@ mod tests {
 
         // A static group authored as a 1-element array is fine (degenerate array form).
         assert!(RuleParams::parse(&json!({
-            "entry": { "m_snapshot": [{ "time": [{"operator": ">=", "value": 10}] }] }
+            "entry": { "m_state": [{ "time": [{"operator": ">=", "value": 10}] }] }
         }))
         .is_ok());
     }
@@ -1337,23 +1369,23 @@ mod tests {
     #[test]
     fn same_metric_unsat_and_normalizes_to_or() {
         // Flat `< 30, >= 70` (legacy AND) → OR arms, promotable / savable.
-        let p = RuleParams::parse(&json!({"exit": {"m_snapshot": {"liquidity": [
+        let p = RuleParams::parse(&json!({"exit": {"m_state": {"liquidity": [
             {"operator": "<", "value": 30},
             {"operator": ">=", "value": 70}
         ]}}}))
         .unwrap();
-        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::Snapshot][0].metrics
+        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::State][0].metrics
             [&MetricId::Liquidity];
         assert_eq!(arms.len(), 2);
 
         // Crossed time bounds similarly become OR (not rejected).
-        let p = RuleParams::parse(&json!({"entry": {"m_snapshot": {"time": [
+        let p = RuleParams::parse(&json!({"entry": {"m_state": {"time": [
             {"operator": ">", "value": 30},
             {"operator": "<", "value": 10}
         ]}}}))
         .unwrap();
         assert_eq!(
-            p.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Time].len(),
+            p.entry.as_ref().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Time].len(),
             2
         );
     }
@@ -1361,7 +1393,7 @@ mod tests {
     #[test]
     fn same_metric_feasible_and_stays_and() {
         // > 10 AND >= 10 AND < 30 is fine (redundant, not contradictory).
-        assert!(RuleParams::parse(&json!({"entry": {"m_snapshot": {"time": [
+        assert!(RuleParams::parse(&json!({"entry": {"m_state": {"time": [
             {"operator": ">", "value": 10},
             {"operator": ">=", "value": 10},
             {"operator": "<", "value": 30}
@@ -1369,18 +1401,18 @@ mod tests {
         .is_ok());
 
         // >= 10 AND <= 10 is the single point 10 — satisfiable AND.
-        let p = RuleParams::parse(&json!({"entry": {"m_snapshot": {"time": [
+        let p = RuleParams::parse(&json!({"entry": {"m_state": {"time": [
             {"operator": ">=", "value": 10},
             {"operator": "<=", "value": 10}
         ]}}}))
         .unwrap();
         assert_eq!(
-            p.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Time].len(),
+            p.entry.as_ref().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Time].len(),
             1
         );
 
         // Explicit nested OR arms left as authored.
-        assert!(RuleParams::parse(&json!({"exit": {"m_snapshot": {"liquidity": [
+        assert!(RuleParams::parse(&json!({"exit": {"m_state": {"liquidity": [
             [{"operator": "<", "value": 30}],
             [{"operator": ">=", "value": 70}]
         ]}}}))
@@ -1391,7 +1423,7 @@ mod tests {
     fn multi_arm_all_unsat_still_rejected() {
         // Explicit `|` of two unsatisfiable AND arms — normalize does not expand
         // multi-arm exprs, so the whole metric stays contradictory.
-        let e = RuleParams::parse(&json!({"entry": {"m_snapshot": {"time": [
+        let e = RuleParams::parse(&json!({"entry": {"m_state": {"time": [
             [{"operator": ">", "value": 30}, {"operator": "<", "value": 10}],
             [{"operator": ">", "value": 50}, {"operator": "<", "value": 20}]
         ]}}}))
@@ -1401,7 +1433,7 @@ mod tests {
 
     #[test]
     fn empty_lists_and_no_op_groups_rejected() {
-        let e = RuleParams::parse(&json!({"entry": {"m_snapshot": {"time": []}}}))
+        let e = RuleParams::parse(&json!({"entry": {"m_state": {"time": []}}}))
             .unwrap_err();
         assert!(e.contains("empty condition list"), "{e}");
 
@@ -1425,7 +1457,7 @@ mod tests {
             }]],
         );
         let mut side = SideConditions::default();
-        side.0.insert(MetricGroupId::Snapshot, vec![group]);
+        side.0.insert(MetricGroupId::State, vec![group]);
         let p = RuleParams {
             take_profit: None,
             stop_loss: None,
@@ -1471,7 +1503,7 @@ mod tests {
         // Parking every entry condition really does mean enter-on-arm. The engine
         // reads that straight off the live side; nothing consults the bag.
         let all_parked = RuleParams::parse(&json!({
-            "disabled": { "entry": { "m_snapshot": { "time": [{"operator": ">", "value": 10}] } } }
+            "disabled": { "entry": { "m_state": { "time": [{"operator": ">", "value": 10}] } } }
         }))
         .unwrap();
         assert!(all_parked.enter_on_arm());
@@ -1559,7 +1591,7 @@ mod tests {
         // ...and the ordinary per-group rules (unknown names, no-op groups,
         // contradictions, required strict params) all still fire under the bag.
         for (bad, needle) in [
-            (json!({ "disabled": { "exit": { "m_snapshots": {} } } }), "unknown metric group"),
+            (json!({ "disabled": { "exit": { "m_states": {} } } }), "unknown metric group"),
             (
                 json!({ "disabled": { "entry": { "m_flow_window": { "window_size_sec": 10 } } } }),
                 "no metric conditions",
@@ -1571,7 +1603,7 @@ mod tests {
             (
                 // Two explicit OR arms, both unsatisfiable (normalize does not expand
                 // multi-arm exprs, so the metric stays contradictory).
-                json!({ "disabled": { "entry": { "m_snapshot": { "time": [
+                json!({ "disabled": { "entry": { "m_state": { "time": [
                     [{"operator": ">", "value": 30}, {"operator": "<", "value": 10}],
                     [{"operator": ">", "value": 50}, {"operator": "<", "value": 20}]
                 ] } } } }),
@@ -1813,70 +1845,152 @@ mod tests {
     /// The burst axis has a twin per basis, and the registry has to DECLARE each or
     /// the parse loop rejects it as an unknown param long before `validate_group`
     /// runs. The axis takes exactly one size, and both axes count in the same unit.
+    /// The slice axis is required by the METRICS that read it, not by the group that
+    /// declares it — the contract that lets `trade_share` live on `m_flow_window`
+    /// beside `gross_flow` instead of in a group of its own.
+    ///
+    /// Both directions are errors, and both are silent without this gate: a slice on
+    /// a single-window instance changes no value and no requirement identity, so it
+    /// would sit in the params reading like a gate that does nothing; a missing slice
+    /// on a share leaves the metric reading `NaN` forever, which is indistinguishable
+    /// from a strict threshold.
     #[test]
-    fn the_burst_axis_takes_exactly_one_size_in_the_reference_unit() {
+    fn the_slice_axis_is_required_by_metric_not_by_group() {
+        // A single-window metric alone: NO slice, and the instance saves.
+        let plain = serde_json::json!({
+            "entry": { "m_flow_window": {
+                "window_size_sec": 60,
+                "gross_flow": [{"operator": ">=", "value": 5}]
+            }}
+        });
+        RuleParams::parse(&plain).expect("a single-window instance needs no slice");
+
+        // The same instance with a slice nothing reads.
+        let no_op = serde_json::json!({
+            "entry": { "m_flow_window": {
+                "window_size_sec": 60,
+                "slice_size_sec": 3,
+                "gross_flow": [{"operator": ">=", "value": 5}]
+            }}
+        });
+        let err = RuleParams::parse(&no_op).unwrap_err();
+        assert!(err.contains("trade_share"), "{err}");
+
+        // A share with no slice at all.
+        let missing = serde_json::json!({
+            "entry": { "m_flow_window": {
+                "window_size_sec": 60,
+                "trade_share": [{"operator": ">=", "value": 8}]
+            }}
+        });
+        let err = RuleParams::parse(&missing).unwrap_err();
+        assert!(err.contains("slice_size_sec"), "{err}");
+
+        // Both metrics in ONE instance: the slice is read by one of them, which is
+        // enough, and the single-window sibling rides the same reference span.
+        let mixed = serde_json::json!({
+            "entry": { "m_flow_window": {
+                "window_size_sec": 60,
+                "slice_size_sec": 3,
+                "gross_flow":  [{"operator": ">=", "value": 5}],
+                "trade_share": [{"operator": ">=", "value": 8}],
+                "sol_share":   [{"operator": ">=", "value": 20}]
+            }}
+        });
+        RuleParams::parse(&mixed).expect("one instance can carry both kinds of read");
+    }
+
+    /// A single-window metric stays authorable on the EXIT side while its two-window
+    /// siblings do not — the reason that restriction moved from the group to the
+    /// metric. Rejecting the group would have taken `gross_flow` off the exit side
+    /// with the shares.
+    #[test]
+    fn only_the_two_window_metrics_are_barred_from_the_exit_side() {
         let ok = serde_json::json!({
-            "entry": { "m_flow_burst": {
-                "window_size_slots": 30.0, "burst_size_slots": 1.0,
+            "exit": { "m_flow_window": {
+                "window_size_sec": 30,
+                "gross_flow": [{"operator": "<=", "value": 1}]
+            }}
+        });
+        RuleParams::parse(&ok).expect("a single-window flow exit is fine");
+
+        for metric in ["trade_share", "sol_share"] {
+            let barred = serde_json::json!({
+                "exit": { "m_flow_window": {
+                    "window_size_sec": 60,
+                    "slice_size_sec": 3,
+                    metric: [{"operator": ">=", "value": 8}]
+                }}
+            });
+            let err = RuleParams::parse(&barred).unwrap_err();
+            assert!(err.contains("entry side only"), "{metric}: {err}");
+        }
+    }
+
+    #[test]
+    fn the_slice_axis_takes_exactly_one_size_in_the_reference_unit() {
+        let ok = serde_json::json!({
+            "entry": { "m_flow_window": {
+                "window_size_slots": 30.0, "slice_size_slots": 1.0,
                 "trade_share": [{"operator": ">=", "value": 50.0}]
             }}
         });
         let p = RuleParams::parse(&ok).expect("a slot burst is authorable");
-        let g = &p.entry.as_ref().unwrap().0[&MetricGroupId::FlowBurst][0];
+        let g = &p.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow][0];
         let burst = g
-            .window_spec(&crate::metrics::flow_burst::BURST_AXIS)
+            .window_spec(&crate::metrics::flow_slice::SLICE_AXIS)
             .expect("a burst span");
         assert_eq!(burst.unit, crate::metrics::WindowUnit::Slot);
         assert_eq!(burst.size, 1.0);
         assert_eq!(p.to_value(), ok, "round-trips unchanged");
 
         let printed = serde_json::json!({
-            "entry": { "m_flow_burst": {
-                "window_size_prints": 20.0, "burst_size_prints": 4.0,
+            "entry": { "m_flow_window": {
+                "window_size_prints": 20.0, "slice_size_prints": 4.0,
                 "trade_share": [{"operator": ">=", "value": 50.0}]
             }}
         });
         let p = RuleParams::parse(&printed).expect("a print burst is authorable");
-        let g = &p.entry.as_ref().unwrap().0[&MetricGroupId::FlowBurst][0];
+        let g = &p.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow][0];
         let burst = g
-            .window_spec(&crate::metrics::flow_burst::BURST_AXIS)
+            .window_spec(&crate::metrics::flow_slice::SLICE_AXIS)
             .expect("a burst span");
         assert_eq!(burst.unit, crate::metrics::WindowUnit::Print);
         assert_eq!(p.to_value(), printed, "round-trips unchanged");
 
         for (bad, needle) in [
             (
-                serde_json::json!({"entry": {"m_flow_burst": {"window_size_slots": 30, "burst_size_sec": 3, "trade_share": [{"operator": ">=", "value": 50}]}}}),
+                serde_json::json!({"entry": {"m_flow_window": {"window_size_slots": 30, "slice_size_sec": 3, "trade_share": [{"operator": ">=", "value": 50}]}}}),
                 "same unit",
             ),
             (
-                serde_json::json!({"entry": {"m_flow_burst": {"window_size_slots": 30, "burst_size_sec": 3, "burst_size_slots": 1, "trade_share": [{"operator": ">=", "value": 50}]}}}),
+                serde_json::json!({"entry": {"m_flow_window": {"window_size_slots": 30, "slice_size_sec": 3, "slice_size_slots": 1, "trade_share": [{"operator": ">=", "value": 50}]}}}),
                 "exactly one",
             ),
             (
-                serde_json::json!({"entry": {"m_flow_burst": {"window_size_slots": 30, "trade_share": [{"operator": ">=", "value": 50}]}}}),
-                "missing required param 'burst_size_slots'",
+                serde_json::json!({"entry": {"m_flow_window": {"window_size_slots": 30, "trade_share": [{"operator": ">=", "value": 50}]}}}),
+                "missing required param 'slice_size_slots'",
             ),
             (
-                serde_json::json!({"entry": {"m_flow_burst": {"window_size_sec": 60, "trade_share": [{"operator": ">=", "value": 50}]}}}),
-                "missing required param 'burst_size_sec'",
+                serde_json::json!({"entry": {"m_flow_window": {"window_size_sec": 60, "trade_share": [{"operator": ">=", "value": 50}]}}}),
+                "missing required param 'slice_size_sec'",
             ),
             (
-                serde_json::json!({"entry": {"m_flow_burst": {"window_size_slots": 1, "burst_size_slots": 30, "trade_share": [{"operator": ">=", "value": 50}]}}}),
+                serde_json::json!({"entry": {"m_flow_window": {"window_size_slots": 1, "slice_size_slots": 30, "trade_share": [{"operator": ">=", "value": 50}]}}}),
                 "must nest inside window_size_slots",
             ),
             // The print twin obeys the same three rules, and the "missing" message
             // names the param the row would spell in the unit it already chose.
             (
-                serde_json::json!({"entry": {"m_flow_burst": {"window_size_prints": 20, "burst_size_slots": 1, "trade_share": [{"operator": ">=", "value": 50}]}}}),
+                serde_json::json!({"entry": {"m_flow_window": {"window_size_prints": 20, "slice_size_slots": 1, "trade_share": [{"operator": ">=", "value": 50}]}}}),
                 "same unit",
             ),
             (
-                serde_json::json!({"entry": {"m_flow_burst": {"window_size_prints": 20, "trade_share": [{"operator": ">=", "value": 50}]}}}),
-                "missing required param 'burst_size_prints'",
+                serde_json::json!({"entry": {"m_flow_window": {"window_size_prints": 20, "trade_share": [{"operator": ">=", "value": 50}]}}}),
+                "missing required param 'slice_size_prints'",
             ),
             (
-                serde_json::json!({"entry": {"m_flow_burst": {"window_size_prints": 5, "burst_size_prints": 20, "trade_share": [{"operator": ">=", "value": 50}]}}}),
+                serde_json::json!({"entry": {"m_flow_window": {"window_size_prints": 5, "slice_size_prints": 20, "trade_share": [{"operator": ">=", "value": 50}]}}}),
                 "must nest inside window_size_prints",
             ),
         ] {

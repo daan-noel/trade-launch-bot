@@ -50,7 +50,7 @@ pub struct AxisSpec {
     /// Metric axes only — which side the condition applies to.
     #[serde(default)]
     pub side: Option<AxisSide>,
-    /// Metric axes only — the registry group name (e.g. `"m_snapshot"`).
+    /// Metric axes only — the registry group name (e.g. `"m_state"`).
     #[serde(default)]
     pub group: Option<String>,
     /// Metric axes only — the registry metric name (e.g. `"time"`).
@@ -246,7 +246,7 @@ impl AxesModel {
             matches!(
                 a,
                 ResolvedAxis::Metric {
-                    group: MetricGroupId::FlowSplit | MetricGroupId::FlowSplitWindow,
+                    group: MetricGroupId::FlowIx | MetricGroupId::FlowIxWindow,
                     ..
                 }
             )
@@ -254,7 +254,7 @@ impl AxesModel {
     }
 
     /// Largest trailing window any metric axis reads, IN SECONDS, across both window
-    /// families (`m_flow_window`/`m_flow_split_window` and `m_price_window`) — `0.0`
+    /// families (`m_flow_window`/`m_flow_ix_window` and `m_price_window`) — `0.0`
     /// if the swept rules read no windowed metrics. Sizes the sparse grid's decay
     /// region (plan §P2): past `last_trade + this`, every window flow is 0 and every
     /// rolling price extremum has aged out.
@@ -650,7 +650,7 @@ mod tests {
     fn combo_count_is_product_and_columns_dedup() {
         let req = AxesRequest {
             axes: vec![
-                metric_axis(AxisSide::Entry, "m_snapshot", "time", ">", None, vec![5.0, 10.0, 15.0]),
+                metric_axis(AxisSide::Entry, "m_state", "time", ">", None, vec![5.0, 10.0, 15.0]),
                 metric_axis(AxisSide::Entry, "m_flow_window", "net_flow", ">", Some(10.0), vec![0.0, 2.5]),
                 tp(vec![50.0, 100.0, 200.0]),
             ],
@@ -665,7 +665,7 @@ mod tests {
     fn combo_params_assembles_conditions_tp_sl() {
         let req = AxesRequest {
             axes: vec![
-                metric_axis(AxisSide::Entry, "m_snapshot", "time", ">", None, vec![5.0, 10.0]),
+                metric_axis(AxisSide::Entry, "m_state", "time", ">", None, vec![5.0, 10.0]),
                 tp(vec![100.0]),
             ],
         };
@@ -675,10 +675,10 @@ mod tests {
         let p1 = m.combo_params(1);
         assert_eq!(p0.take_profit, Some(100.0));
         let entry0 = p0.entry.as_ref().unwrap();
-        let conds0 = &entry0.0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Time];
+        let conds0 = &entry0.0[&MetricGroupId::State][0].metrics[&MetricId::Time];
         assert_eq!(conds0[0][0].value, 5.0);
         let entry1 = p1.entry.as_ref().unwrap();
-        let conds1 = &entry1.0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Time];
+        let conds1 = &entry1.0[&MetricGroupId::State][0].metrics[&MetricId::Time];
         assert_eq!(conds1[0][0].value, 10.0);
         // The assembled params must survive the canonical parse (promotable).
         RuleParams::parse(&p0.to_value()).unwrap();
@@ -686,7 +686,7 @@ mod tests {
 
     #[test]
     fn off_pick_omits_the_condition() {
-        let mut spec = metric_axis(AxisSide::Entry, "m_snapshot", "time", ">", None, vec![5.0]);
+        let mut spec = metric_axis(AxisSide::Entry, "m_state", "time", ">", None, vec![5.0]);
         spec.values.push(None); // off — must sort to pick 0
         let req = AxesRequest { axes: vec![spec, tp(vec![100.0])] };
         let m = AxesModel::resolve(&req).unwrap();
@@ -698,7 +698,7 @@ mod tests {
         assert_eq!(p0.take_profit, Some(100.0));
         // Combo 1 = time > 5 as usual.
         let p1 = m.combo_params(1);
-        let conds = &p1.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Time];
+        let conds = &p1.entry.as_ref().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Time];
         assert_eq!(conds[0][0].value, 5.0);
         // Both survive the canonical parse (promotable).
         RuleParams::parse(&p0.to_value()).unwrap();
@@ -722,7 +722,7 @@ mod tests {
 
     #[test]
     fn all_off_axis_rejected() {
-        let mut spec = metric_axis(AxisSide::Entry, "m_snapshot", "time", ">", None, vec![]);
+        let mut spec = metric_axis(AxisSide::Entry, "m_state", "time", ">", None, vec![]);
         spec.values.push(None);
         let e = AxesModel::resolve(&AxesRequest { axes: vec![spec] }).unwrap_err();
         assert!(e.contains("besides `off`"), "{e}");
@@ -878,7 +878,7 @@ mod tests {
         let req = AxesRequest {
             axes: vec![
                 tp(vec![100.0, 200.0]),
-                metric_axis(AxisSide::Entry, "m_snapshot", "time", ">", None, vec![5.0, 10.0]),
+                metric_axis(AxisSide::Entry, "m_state", "time", ">", None, vec![5.0, 10.0]),
             ],
         };
         let m = AxesModel::resolve(&req).unwrap();
@@ -890,8 +890,8 @@ mod tests {
         // `> lows × < highs` — the range orientation: AND when a < b.
         let req = AxesRequest {
             axes: vec![
-                metric_axis(AxisSide::Exit, "m_snapshot", "liquidity", ">", None, vec![0.0, 5.0]),
-                metric_axis(AxisSide::Exit, "m_snapshot", "liquidity", "<", None, vec![40.0, 70.0]),
+                metric_axis(AxisSide::Exit, "m_state", "liquidity", ">", None, vec![0.0, 5.0]),
+                metric_axis(AxisSide::Exit, "m_state", "liquidity", "<", None, vec![40.0, 70.0]),
             ],
         };
         let m = AxesModel::resolve(&req).unwrap();
@@ -899,7 +899,7 @@ mod tests {
         for i in 0..m.combo_count() {
             let p = m.combo_params(i);
             let arms =
-                &p.exit.as_ref().unwrap().0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Liquidity];
+                &p.exit.as_ref().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Liquidity];
             assert_eq!(arms.len(), 1, "combo {i}: feasible opposing bounds must AND");
             assert_eq!(arms[0].len(), 2);
             RuleParams::parse(&p.to_value()).unwrap();
@@ -911,13 +911,13 @@ mod tests {
         // `< low × > high` with crossed values → OR outside band.
         let req = AxesRequest {
             axes: vec![
-                metric_axis(AxisSide::Exit, "m_snapshot", "liquidity", "<", None, vec![30.0]),
-                metric_axis(AxisSide::Exit, "m_snapshot", "liquidity", ">", None, vec![70.0]),
+                metric_axis(AxisSide::Exit, "m_state", "liquidity", "<", None, vec![30.0]),
+                metric_axis(AxisSide::Exit, "m_state", "liquidity", ">", None, vec![70.0]),
             ],
         };
         let m = AxesModel::resolve(&req).unwrap();
         let p = m.combo_params(0);
-        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Liquidity];
+        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Liquidity];
         assert_eq!(arms.len(), 2);
         assert_eq!(arms[0][0].operator, Operator::Lt);
         assert_eq!(arms[1][0].operator, Operator::Gt);
@@ -929,13 +929,13 @@ mod tests {
         // `< 10 × > 0` is a satisfiable interval, not an outside band.
         let req = AxesRequest {
             axes: vec![
-                metric_axis(AxisSide::Exit, "m_snapshot", "liquidity", "<", None, vec![10.0]),
-                metric_axis(AxisSide::Exit, "m_snapshot", "liquidity", ">", None, vec![0.0]),
+                metric_axis(AxisSide::Exit, "m_state", "liquidity", "<", None, vec![10.0]),
+                metric_axis(AxisSide::Exit, "m_state", "liquidity", ">", None, vec![0.0]),
             ],
         };
         let m = AxesModel::resolve(&req).unwrap();
         let p = m.combo_params(0);
-        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Liquidity];
+        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Liquidity];
         assert_eq!(arms.len(), 1);
         assert_eq!(arms[0].len(), 2);
     }
@@ -944,13 +944,13 @@ mod tests {
     fn entry_same_metric_compatible_axes_stay_and() {
         let req = AxesRequest {
             axes: vec![
-                metric_axis(AxisSide::Entry, "m_snapshot", "time", ">", None, vec![10.0]),
-                metric_axis(AxisSide::Entry, "m_snapshot", "time", "<", None, vec![50.0]),
+                metric_axis(AxisSide::Entry, "m_state", "time", ">", None, vec![10.0]),
+                metric_axis(AxisSide::Entry, "m_state", "time", "<", None, vec![50.0]),
             ],
         };
         let m = AxesModel::resolve(&req).unwrap();
         let p = m.combo_params(0);
-        let arms = &p.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Time];
+        let arms = &p.entry.as_ref().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Time];
         assert_eq!(arms.len(), 1);
         assert_eq!(arms[0].len(), 2);
         RuleParams::parse(&p.to_value()).unwrap();
@@ -960,13 +960,13 @@ mod tests {
     fn entry_same_metric_crossed_bounds_become_or() {
         let req = AxesRequest {
             axes: vec![
-                metric_axis(AxisSide::Entry, "m_snapshot", "time", ">", None, vec![50.0]),
-                metric_axis(AxisSide::Entry, "m_snapshot", "time", "<", None, vec![10.0]),
+                metric_axis(AxisSide::Entry, "m_state", "time", ">", None, vec![50.0]),
+                metric_axis(AxisSide::Entry, "m_state", "time", "<", None, vec![10.0]),
             ],
         };
         let m = AxesModel::resolve(&req).unwrap();
         let p = m.combo_params(0);
-        let arms = &p.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Time];
+        let arms = &p.entry.as_ref().unwrap().0[&MetricGroupId::State][0].metrics[&MetricId::Time];
         assert_eq!(arms.len(), 2);
         RuleParams::parse(&p.to_value()).unwrap();
     }

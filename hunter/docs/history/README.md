@@ -80,7 +80,7 @@ Surviving conclusions live in
 
 | Entry | One-line |
 | --- | --- |
-| [2026-08-13 unexplainable `nonvol_buy` exit](2026-08-13-nonvol-buy-exit-unexplainable.md) | A pattern list missing one tip-transfer variant booked bot buys as organic demand; three UI surfaces then hid it |
+| [2026-08-13 unexplainable `untagged_buy` exit](2026-08-13-nonvol-buy-exit-unexplainable.md) | A pattern list missing one tip-transfer variant booked bot buys as organic demand; three UI surfaces then hid it |
 | [2026-08-11 scoped sweeps truncated](2026-08-11-scoped-sweep-token-cap-truncation.md) | Fingerprint-scoped grouped sweeps silently cut short by `token_cap` |
 | [2026-08-05 seven watchdog kills](2026-08-05-watchdog-kills-are-real-outages.md) | Real ingest outages, not a watchdog bug - the transport was mute |
 | [2026-08-05 paper `ExitStuck` backlog](2026-08-05-paper-exitstuck-backlog.md) | 45% of paper positions stranded open; the bias was one-directional, so paper PnL read high |

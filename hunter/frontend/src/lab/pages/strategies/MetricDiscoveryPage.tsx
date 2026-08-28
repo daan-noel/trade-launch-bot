@@ -10,7 +10,7 @@ import { Input } from 'components/ui/Input';
 import { InlineAlert } from 'components/ui/Modal';
 import { LabelTip } from 'components/strategy/LabelTip';
 import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeControl';
-import { VolumeIxPatternsEditor } from 'components/strategy/VolumeIxPatternsEditor';
+import { IxPatternsEditor } from 'components/strategy/IxPatternsEditor';
 import { useFingerprintMatches } from '@lab/components/strategy/useFingerprintMatches';
 import { PageHeader } from 'components/ui/PageHeader';
 import { useLocalStorage } from 'hooks/useLocalStorage';
@@ -59,7 +59,7 @@ interface Config {
    *  typed at all, and validated before the run is admitted. */
   entryWindow: string;
   exitWindow: string;
-  volumeIxPatterns: string[][];
+  ixPatterns: string[][];
   ixLabelsFilter: string;
 }
 
@@ -78,7 +78,7 @@ const DEFAULTS: Config = {
   buyAmountSol: 1.0,
   entryWindow: '30',
   exitWindow: '10',
-  volumeIxPatterns: [],
+  ixPatterns: [],
   ixLabelsFilter: '',
 };
 
@@ -250,7 +250,7 @@ export function MetricDiscoveryPage() {
         split_fraction: config.splitFraction,
         entry_window_sec: config.entryWindow,
         exit_window_sec: config.exitWindow,
-        volume_ix_patterns: config.volumeIxPatterns.length ? config.volumeIxPatterns : undefined,
+        ix_patterns: config.ixPatterns.length ? config.ixPatterns : undefined,
       }).unwrap();
 
       for (let i = 0; i < 600; i++) {
@@ -306,7 +306,7 @@ export function MetricDiscoveryPage() {
       tokenCap: config.tokenCap,
       fingerprintId: config.fingerprintId,
       buyAmountSol: config.buyAmountSol,
-      volumeIxPatterns: config.volumeIxPatterns,
+      ixPatterns: config.ixPatterns,
       ixLabelsFilter: config.ixLabelsFilter,
     };
     try {
@@ -462,9 +462,9 @@ export function MetricDiscoveryPage() {
             </span>
           </LabelTip>
           <div className="mt-1">
-            <VolumeIxPatternsEditor
-              patterns={config.volumeIxPatterns}
-              onChange={(v) => set('volumeIxPatterns', v)}
+            <IxPatternsEditor
+              patterns={config.ixPatterns}
+              onChange={(v) => set('ixPatterns', v)}
             />
           </div>
         </div>

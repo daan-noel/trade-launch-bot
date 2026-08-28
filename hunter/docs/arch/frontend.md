@@ -340,7 +340,7 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   where the line sits. The line stops at the last recorded point instead of carrying
   it rightward: a flat tail past coverage is the same "metric frozen at its final
   value" the chips refuse to show. On the entry side the drawn condition skips
-  `m_snapshot.time`, which sorts first on most rules and is a ramp of the x axis. An open position's hover carries the replay caption too:
+  `m_state.time`, which sorts first on most rules and is a ramp of the x axis. An open position's hover carries the replay caption too:
   the engine keeps one instant of state, not a history, so a past instant can only
   be reconstructed. A capped series says `· past coverage` rather than repeating its
   last row silently. The strip's **timeline** toggle draws the same payload as
@@ -354,7 +354,7 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   at each end, so a span reads about two bars narrower than the truth and a brief
   satisfaction disappears. Spans are painted edge to edge off `barSpacing`.
   Every number in the detail reports an engine decision taken under the
-  fingerprint's saved `volume_ix_patterns`, and that saved row is the only set any
+  fingerprint's saved `ix_patterns`, and that saved row is the only set any
   surface classifies from — so the vol / non-vol split a reader sums by hand and the
   exit beside it can never be classified differently. Editing from the trades table's
   Vol badge stays available (it is how a misclassified bot tx gets found) and writes
@@ -415,7 +415,7 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   `onVisibleTimeRangeChange`); selecting a rule auto-loads its metrics/windows,
   overlays thresholds, and paints first metric entry/exit fires as `eventMarkers`
   with `role: 'signal'` and spaced `name[@Ns] op value` labels (e.g.
-  `vol_buy@2s >= 0.85`) — visually distinct from backend fill markers
+  `tagged_buy@2s >= 0.85`) — visually distinct from backend fill markers
   (`role: 'fill'`, green/red arrows + price lines). Entry fire skips rows where exit
   metrics already hold — same `can_enter` gate as the engine.
   **The entry marker names the condition(s) that FLIPPED at that instant**, joined by
@@ -537,7 +537,7 @@ next load (no per-metric frontend work).
   `lag`, authored as three controls and read through `lib/strategy/windowSpec.ts`,
   the one mirror of `hunter_engine::metrics::WindowSpec`. Both axes of a two-window
   group share the row's unit and lag, so the burst control re-spells itself
-  (`burst_size_sec` ⇄ `burst_size_slots`) on a unit flip rather than leaving the
+  (`slice_size_sec` ⇄ `slice_size_slots`) on a unit flip rather than leaving the
   other param behind for the backend to reject. **The instance key is the whole
   span on both axes** (`ruleRowInstanceKey`): keyed on size alone, two slot windows
   of one metric merge into one `GroupConditions` and the later row's strict bag
@@ -554,7 +554,7 @@ next load (no per-metric frontend work).
   parked stage there would vanish on reload), `RuleEditor` (builder + JSON tab + a
   `renderDryRun` slot; edit mode locks `trade_mode` behind a padlock unlock),
   `FingerprintPicker`/`FingerprintForm` (registry-driven
-  `metric_config` section + `VolumeIxPatternsEditor` for `m_flow_split.volume_ix_patterns`
+  `metric_config` section + `VolumeIxPatternsEditor` for `m_flow_ix.ix_patterns`
   — add-row / remove-row / **Delete all** footer, the last confirming via the shared
   `clearPrompt` also used by the flow-discovery cart). The form auto-fills
   `Fingerprint::auto_name` from the axes (`3ix:Buy · max=1 · bkt=1`) and keeps a
@@ -723,12 +723,12 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   cross-row window-conflict check. Unit-tested.
 - `sweep/GenericAxisBuilder.tsx` — axis-row UI + projected-combo badge; `GenericSweepConfigForm`
   wraps it with corpus/method/caps + `FingerprintGroupPicker`, emitting `{axes:[...]}`.
-  When axes reference `m_flow_*`, the form requires `volume_ix_patterns` (corpus-wide
+  When axes reference `m_flow_*`, the form requires `ix_patterns` (corpus-wide
   for the run) and sends them on start.
 - `sweep/genericSweepColumns.tsx` — combo/group columns; the swept `params` is a
   `RuleParams` blob rendered via shared `ruleParamsCell` (not one flat column per knob).
 - `[Promote…]` on any group/combo → `POST …/promote` (fingerprint find-or-created;
-  copies run `volume_ix_patterns` into `metric_config`) →
+  copies run `ix_patterns` into `metric_config`) →
   `PromoteRuleModal` opens the shared `RuleEditor` pre-filled (id-less draft → create)
   with the lab dry-run panel. Save is refused when an identity-identical rule already
   exists (`matchRuleIdentity` FE pre-check + backend `RuleError::Duplicate` 409 — same
@@ -790,7 +790,7 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
     `@live/components/floor/openPositionStatus`, shared with the Console's open-row modal.
     Vol/non-vol overlay SSOT: `hooks/useFlowPatternKeys` (`useFlowPatternSource` /
     `useFlowPatternSourceForRule` / `useResolvedFlowPatternSource`) and
-    `lib/flow/flowPatternKeys` resolve a fingerprint's `volume_ix_patterns` into a
+    `lib/flow/flowPatternKeys` resolve a fingerprint's `ix_patterns` into a
     `FlowPatternSource` — `{ fingerprintId, keys }`. **Both halves travel together**: the keys
     say what to classify with, the id says which row an edit writes to, and a key set alone
     cannot be traced back to one (`metric_config` is not part of fingerprint identity, and
@@ -999,7 +999,7 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   comment on `kernel::wallet_mint_pnl`).
 - **Trader Analysis flow lens (`lab/components/analysis/FlowLensBar.tsx` +
   `useTraderFlowLens.ts`).** The page's tokens belong to no cohort, so there is no fingerprint to read
-  `volume_ix_patterns` off and the charts' vol/non-vol overlay has nothing to classify with. The lens is
+  `ix_patterns` off and the charts' vol/non-vol overlay has nothing to classify with. The lens is
   the second owner of that same fact: a named `ix_pattern_sets` row (lab-only table, CRUD at
   `/api/ix-pattern-sets`) holding `[{ group, ix_labels }]`, picked once above the grid and applied to
   every card. Keys ride the existing `flowPatternKeys` prop path; the classifier options and the

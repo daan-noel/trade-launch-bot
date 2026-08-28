@@ -15,26 +15,26 @@ import type { MetricSeriesResponse } from './types';
  * trailing windows crossed — the more so when it is a monotone lifetime metric that
  * shares its name with a windowed twin.
  *
- * Shaped after `rule-search · champion 2`: `nonvol_buy` (lifetime, monotone) crosses
- * 5.5 long before `vol_buy` at 2 s and `unique_wallets` at 3 s land together.
+ * Shaped after `rule-search · champion 2`: `untagged_buy` (lifetime, monotone) crosses
+ * 5.5 long before `tagged_buy` at 2 s and `unique_wallets` at 3 s land together.
  */
 
 const REGISTRY: StrategyRegistry = {
   operators: ['>', '>=', '<', '<=', '=', '!='],
   groups: [
     {
-      name: 'm_flow_split',
+      name: 'm_flow_ix',
       kind: 'static',
       strict_params: [],
-      metrics: [{ name: 'nonvol_buy', unit: 'sol', eq_tolerance: 0, monotonic: true, hue: 200 }],
+      metrics: [{ name: 'untagged_buy', unit: 'sol', eq_tolerance: 0, monotonic: true, hue: 200 }],
     },
     {
-      name: 'm_flow_split_window',
+      name: 'm_flow_ix_window',
       kind: 'dynamic',
       strict_params: [],
       metrics: [
-        { name: 'vol_buy', unit: 'sol', eq_tolerance: 0, monotonic: false, hue: 210 },
-        { name: 'nonvol_buy', unit: 'sol', eq_tolerance: 0, monotonic: false, hue: 200 },
+        { name: 'tagged_buy', unit: 'sol', eq_tolerance: 0, monotonic: false, hue: 210 },
+        { name: 'untagged_buy', unit: 'sol', eq_tolerance: 0, monotonic: false, hue: 200 },
       ],
     },
     {
@@ -46,7 +46,7 @@ const REGISTRY: StrategyRegistry = {
       ],
     },
     {
-      name: 'm_snapshot',
+      name: 'm_state',
       kind: 'static',
       strict_params: [],
       metrics: [{ name: 'liquidity', unit: 'sol', eq_tolerance: 0, monotonic: false, hue: 90 }],
@@ -56,9 +56,9 @@ const REGISTRY: StrategyRegistry = {
 
 const PARAMS: RuleParams = {
   entry: {
-    m_flow_split: [{ strict: {}, metrics: { nonvol_buy: [[{ operator: '>=', value: 5.5 }]] } }],
-    m_flow_split_window: [
-      { strict: { window_size_sec: 2 }, metrics: { vol_buy: [[{ operator: '>=', value: 0.85 }]] } },
+    m_flow_ix: [{ strict: {}, metrics: { untagged_buy: [[{ operator: '>=', value: 5.5 }]] } }],
+    m_flow_ix_window: [
+      { strict: { window_size_sec: 2 }, metrics: { tagged_buy: [[{ operator: '>=', value: 0.85 }]] } },
     ],
     m_flow_window: [
       {
@@ -68,7 +68,7 @@ const PARAMS: RuleParams = {
     ],
   },
   exit: {
-    m_snapshot: [{ strict: {}, metrics: { liquidity: [[{ operator: '>=', value: 40 }]] } }],
+    m_state: [{ strict: {}, metrics: { liquidity: [[{ operator: '>=', value: 40 }]] } }],
   },
 } as unknown as RuleParams;
 
@@ -82,15 +82,15 @@ const DATA: MetricSeriesResponse = {
   price: [1, 1.1, 1.2, 1.3, 1.4],
   series: [
     {
-      metric: 'nonvol_buy',
-      group: 'm_flow_split',
+      metric: 'untagged_buy',
+      group: 'm_flow_ix',
       unit: 'sol',
       window_size_sec: null,
       values: [1.0, 6.1, 9.1, 9.1, 9.1],
     },
     {
-      metric: 'vol_buy',
-      group: 'm_flow_split_window',
+      metric: 'tagged_buy',
+      group: 'm_flow_ix_window',
       unit: 'sol',
       window_size_sec: 2,
       values: [0, 0, 0.74, 0.95, 0.2],
@@ -104,7 +104,7 @@ const DATA: MetricSeriesResponse = {
     },
     {
       metric: 'liquidity',
-      group: 'm_snapshot',
+      group: 'm_state',
       unit: 'sol',
       window_size_sec: null,
       values: [30, 31, 32, 33, 41],
@@ -121,22 +121,22 @@ describe('findRuleFireMarkers — entry', () => {
 
   it('labels the conditions that FLIPPED, never the one already holding', () => {
     const entry = findRuleFireMarkers(PARAMS, DATA, REGISTRY).find((m) => m.kind === 'entry')!;
-    // `nonvol_buy >= 5.5` was true from row 1 and is monotone — it decided nothing
+    // `untagged_buy >= 5.5` was true from row 1 and is monotone — it decided nothing
     // about the timing, and naming it sends the reader to a line that crossed two
     // rows earlier.
-    expect(entry.label).not.toContain('nonvol_buy');
-    expect(entry.label).toBe('vol_buy@2s >= 0.85 + unique_wallets@3s >= 3');
+    expect(entry.label).not.toContain('untagged_buy');
+    expect(entry.label).toBe('tagged_buy@2s >= 0.85 + unique_wallets@3s >= 3');
   });
 
   it('qualifies a windowed metric so it cannot read as its lifetime twin', () => {
     const twins = {
       ...PARAMS,
       entry: {
-        m_flow_split: PARAMS.entry!.m_flow_split,
-        m_flow_split_window: [
+        m_flow_ix: PARAMS.entry!.m_flow_ix,
+        m_flow_ix_window: [
           {
             strict: { window_size_sec: 2 },
-            metrics: { nonvol_buy: [[{ operator: '>=', value: 0.9 }]] },
+            metrics: { untagged_buy: [[{ operator: '>=', value: 0.9 }]] },
           },
         ],
       },
@@ -146,8 +146,8 @@ describe('findRuleFireMarkers — entry', () => {
       series: [
         DATA.series[0],
         {
-          metric: 'nonvol_buy',
-          group: 'm_flow_split_window',
+          metric: 'untagged_buy',
+          group: 'm_flow_ix_window',
           unit: 'sol',
           window_size_sec: 2,
           values: [0, 0, 0, 1.2, 1.2],
@@ -156,7 +156,7 @@ describe('findRuleFireMarkers — entry', () => {
       ],
     } as unknown as MetricSeriesResponse;
     const entry = findRuleFireMarkers(twins, data, REGISTRY).find((m) => m.kind === 'entry')!;
-    expect(entry.label).toBe('nonvol_buy@2s >= 0.9');
+    expect(entry.label).toBe('untagged_buy@2s >= 0.9');
   });
 
   it('names the whole conjunction when the exit veto — not a condition — cleared', () => {
@@ -173,7 +173,7 @@ describe('findRuleFireMarkers — entry', () => {
     } as unknown as MetricSeriesResponse;
     const entry = findRuleFireMarkers(PARAMS, vetoed, REGISTRY).find((m) => m.kind === 'entry')!;
     expect(entry.time).toBe(at(2));
-    expect(entry.label).toBe('nonvol_buy >= 5.5 + vol_buy@2s >= 0.85 +1');
+    expect(entry.label).toBe('untagged_buy >= 5.5 + tagged_buy@2s >= 0.85 +1');
   });
 
   it('refuses entry while an exit metric already holds', () => {
@@ -199,11 +199,11 @@ describe('metricConditionStatesAt', () => {
   it('keys a lifetime metric apart from its windowed twin', () => {
     const twins = {
       entry: {
-        m_flow_split: PARAMS.entry!.m_flow_split,
-        m_flow_split_window: [
+        m_flow_ix: PARAMS.entry!.m_flow_ix,
+        m_flow_ix_window: [
           {
             strict: { window_size_sec: 2 },
-            metrics: { nonvol_buy: [[{ operator: '>=', value: 0.9 }]] },
+            metrics: { untagged_buy: [[{ operator: '>=', value: 0.9 }]] },
           },
         ],
       },
@@ -213,8 +213,8 @@ describe('metricConditionStatesAt', () => {
       series: [
         DATA.series[0],
         {
-          metric: 'nonvol_buy',
-          group: 'm_flow_split_window',
+          metric: 'untagged_buy',
+          group: 'm_flow_ix_window',
           unit: 'sol',
           window_size_sec: 2,
           values: [0, 0, 0, 0, 0],
@@ -222,26 +222,26 @@ describe('metricConditionStatesAt', () => {
       ],
     } as unknown as MetricSeriesResponse;
     // Row 2: lifetime 9.1 (satisfied), windowed 0 (not). One key each, one verdict
-    // each — collapsing them onto `nonvol_buy` paints the windowed pane green.
+    // each — collapsing them onto `untagged_buy` paints the windowed pane green.
     const states = metricConditionStatesAt(twins, 2, data, REGISTRY);
     expect(states.map((s) => [s.key, s.ok])).toEqual([
-      ['nonvol_buy', true],
-      ['nonvol_buy@2', false],
+      ['untagged_buy', true],
+      ['untagged_buy@2', false],
     ]);
   });
 });
 
 describe('metricThresholdsFor', () => {
   it('scopes a threshold to the column the rule authored it on', () => {
-    expect(metricThresholdsFor(PARAMS, 'vol_buy', 2, REGISTRY)).toEqual([
+    expect(metricThresholdsFor(PARAMS, 'tagged_buy', 2, REGISTRY)).toEqual([
       { side: 'entry', value: 0.85 },
     ]);
     // The same metric at a window the rule never authored draws nothing.
-    expect(metricThresholdsFor(PARAMS, 'vol_buy', 10, REGISTRY)).toEqual([]);
+    expect(metricThresholdsFor(PARAMS, 'tagged_buy', 10, REGISTRY)).toEqual([]);
     // A lifetime condition never leaks onto a windowed pane.
-    expect(metricThresholdsFor(PARAMS, 'nonvol_buy', null, REGISTRY)).toEqual([
+    expect(metricThresholdsFor(PARAMS, 'untagged_buy', null, REGISTRY)).toEqual([
       { side: 'entry', value: 5.5 },
     ]);
-    expect(metricThresholdsFor(PARAMS, 'nonvol_buy', 2, REGISTRY)).toEqual([]);
+    expect(metricThresholdsFor(PARAMS, 'untagged_buy', 2, REGISTRY)).toEqual([]);
   });
 });

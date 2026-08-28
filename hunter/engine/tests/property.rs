@@ -85,7 +85,7 @@ fn rules() -> Vec<LoadedRule> {
             max_total_tokens: 0,
             params: RuleParams::parse(&json!({
                 "stop_loss": 40,
-                "entry": { "m_snapshot": { "time": [{ "operator": "<", "value": 60 }] } },
+                "entry": { "m_state": { "time": [{ "operator": "<", "value": 60 }] } },
                 "exit":  { "m_price_lifetime": { "stall": [{ "operator": ">", "value": 8 }] } }
             }))
             .unwrap(),

@@ -35,7 +35,7 @@ export function FloorMintChart({
   height = 220,
   tableId = 'floor-mint-chart',
   chrome = 'full',
-  /** Fingerprint `volume_ix_patterns` keys — enables the vol/non-vol overlay. */
+  /** Fingerprint `ix_patterns` keys — enables the vol/non-vol overlay. */
   flowPatternKeys = null,
   selectedBar = null,
   onBarClick,

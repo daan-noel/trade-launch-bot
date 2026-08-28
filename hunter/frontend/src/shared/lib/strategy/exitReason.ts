@@ -22,7 +22,7 @@ export interface MetricExitParts {
  *  print identically. A static metric carries no qualifier at all. */
 const WINDOW_QUALIFIER = String.raw`(?:\((\d*\.?\d+)(s|sl)(?:@(\d*\.?\d+))?\))?`;
 
-/** Spaced `name[(window)] op value` (e.g. `stall > 3`, `nonvol_buy(2s) >= 0.9`). */
+/** Spaced `name[(window)] op value` (e.g. `stall > 3`, `untagged_buy(2s) >= 0.9`). */
 const METRIC_EXIT_SPACED = new RegExp(
   String.raw`^([a-z][a-z0-9_]*)${WINDOW_QUALIFIER} (>=|<=|!=|>|<|=) ([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)$`,
 );
@@ -72,9 +72,9 @@ export interface MetricExitTarget {
  * The condition a persisted exit reason points at, for surfaces that draw *that*
  * condition (the chart's value lane).
  *
- * Accepts every stored form: `nonvol_buy(2s) >= 0.9` and `buy_count(30sl@1) >= 3`
+ * Accepts every stored form: `untagged_buy(2s) >= 0.9` and `buy_count(30sl@1) >= 3`
  * (current — the window qualifier is what separates a dynamic group from its
- * lifetime twin), the bare `nonvol_buy >= 0.9` still on older rows, and legacy
+ * lifetime twin), the bare `untagged_buy >= 0.9` still on older rows, and legacy
  * compact `stall>`. Returns
  * `null` for a non-metric reason (`TakeProfit`, `Dead`, …), which names no
  * condition to draw.

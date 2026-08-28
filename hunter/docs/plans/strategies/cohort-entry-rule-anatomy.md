@@ -12,7 +12,7 @@ Worked example throughout: the 6ix `Buy`+fee launch cohort's 60-second rule
 
 ```
 fire once per token, on the first print where ALL hold:
-  m_snapshot.time                     >= 60 s      (1) past the death window
+  m_state.time                     >= 60 s      (1) past the death window
   m_flow_window(60).gross_flow        >= 15 SOL    (2) alive at all
   m_flow_window(60).trade_count       >= 10
   m_flow_window(5).net_flow           >= 0.38 SOL  (3) money going in NOW
@@ -20,7 +20,7 @@ fire once per token, on the first print where ALL hold:
   fp_first_slot_buy_sol               >= 6.31 SOL  (5) the launch was real
   trade_count(10) / unique_wallets(10) <= 2        (6) a crowd, not one wallet
 
-exit on the first of:  retrace 10 %  |  held 60 s  |  m_snapshot.liquidity >= 75
+exit on the first of:  retrace 10 %  |  held 60 s  |  m_state.liquidity >= 75
 ```
 
 In one sentence: **a token that survived its first minute, is being bought right now, faster
@@ -32,7 +32,7 @@ Each term answers one question. A new cohort keeps the questions and re-fits the
 
 | # | question | metric family | why it is there |
 | --- | --- | --- | --- |
-| 1 | is it past the death window? | `m_snapshot.time` | most tokens die in the first minute; an age floor buys survival, and survival is the cheapest edge on the board |
+| 1 | is it past the death window? | `m_state.time` | most tokens die in the first minute; an age floor buys survival, and survival is the cheapest edge on the board |
 | 2 | is it alive at all? | windowed `gross_flow` + `trade_count` | a liveness floor is what holds the stuck-bag rate down — a bag you cannot sell is a total loss, not a small one |
 | 3 | is money going in *now*? | short-window `net_flow` | the instantaneous direction. Depth change **is** net flow, so this needs no price metric |
 | 4 | is it accelerating against itself? | short/long `trade_count` ratio | a **ratio is scale-free**, so it does not silently re-read size. Two absolute bounds are not a substitute |

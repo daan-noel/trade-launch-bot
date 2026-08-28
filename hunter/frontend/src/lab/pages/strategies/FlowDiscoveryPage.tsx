@@ -38,8 +38,8 @@ import {
 } from 'store/sharedEndpoints';
 import { fingerprintsHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
-  metricConfigWithVolumePatterns,
-  volumeIxPatternsFromConfig,
+  metricConfigWithIxPatterns,
+  ixPatternsFromConfig,
 } from 'lib/strategy/registry';
 import {
   DISCOVERY_COL_HELP,
@@ -395,7 +395,7 @@ export function FlowDiscoveryPage() {
     });
     return set;
   }, [result, fingerprints, resolveGroupFp]);
-  const flowSplit = useMemo(() => {
+  const flowIx = useMemo(() => {
     if (!selectedGroup) return null;
     const draftKeys = new Set(draftPatterns.map((p) => JSON.stringify(p)));
     let volumeGross = 0;
@@ -409,7 +409,7 @@ export function FlowDiscoveryPage() {
     return { volumeGross, organicGross, totalGross, volumePct };
   }, [selectedGroup, draftPatterns]);
   /** % of each UNCHECKED row's gross SOL that comes from wallets already tagged
-   *  by a CHECKED row — previews live's wallet-contagion classifier (flow_split.rs
+   *  by a CHECKED row — previews live's wallet-contagion classifier (flow_ix.rs
    *  FlowState::classify), which sweeps a tagged wallet's later trades into
    *  "volume" on ANY structure, not just the one that matched. Null = checked
    *  already, or nothing checked yet to compare against. */
@@ -576,7 +576,7 @@ export function FlowDiscoveryPage() {
   const autoMatchedFp = selectedGroup ? resolveGroupFp(selectedGroup.group_key) : null;
   const targetFp: Fingerprint | null =
     (targetFpId && fingerprints.find((f) => f.id === targetFpId)) || null;
-  const currentPatterns = volumeIxPatternsFromConfig(targetFp?.metric_config ?? {});
+  const currentPatterns = ixPatternsFromConfig(targetFp?.metric_config ?? {});
 
   /** Point the apply target at a fingerprint and load its SAVED patterns into the
    *  draft — the ONE seeding path, so every trigger (group change, late list load,
@@ -585,7 +585,7 @@ export function FlowDiscoveryPage() {
     (id: string | null) => {
       setTargetFpId(id);
       const fp = id ? fingerprints.find((f) => f.id === id) : null;
-      setDraftPatterns(fp ? volumeIxPatternsFromConfig(fp.metric_config) : []);
+      setDraftPatterns(fp ? ixPatternsFromConfig(fp.metric_config) : []);
       setApplyOk(null);
     },
     [fingerprints],
@@ -729,7 +729,7 @@ export function FlowDiscoveryPage() {
             // match-everything row into a criterion-less one.
             criteria: targetFp.criteria,
             wildcard: targetFp.wildcard,
-            metric_config: metricConfigWithVolumePatterns(patterns),
+            metric_config: metricConfigWithIxPatterns(patterns),
           },
         }).unwrap();
         setApplyOk(`Updated fingerprint “${targetFp.name}”.`);
@@ -745,7 +745,7 @@ export function FlowDiscoveryPage() {
         // bound rule on a window the card never showed.
         const fp = await bindFp({
           group_key: boundKey,
-          volume_ix_patterns: patterns,
+          ix_patterns: patterns,
           name: fingerprintNameFromGroupKey(boundKey),
         }).unwrap();
         setTargetFpId(fp.id);
@@ -842,8 +842,8 @@ export function FlowDiscoveryPage() {
             value={seedFingerprintId}
             onChange={selectSeedFingerprint}
             tip={DISCOVERY_FIELD_HELP.seedFingerprint}
-            scopedDescription="Discovery scores only tokens that match this fingerprint, then Apply writes volume_ix_patterns back to it."
-            manualHint="Pick a fingerprint to detect its volume_ix_patterns — or leave empty and use the manual group-by / filters."
+            scopedDescription="Discovery scores only tokens that match this fingerprint, then Apply writes ix_patterns back to it."
+            manualHint="Pick a fingerprint to detect its ix_patterns — or leave empty and use the manual group-by / filters."
             matchedCount={fpMatches.count}
             matchedCountLoading={fpMatches.countLoading}
             onViewMatches={fpMatches.openMatches}
@@ -1011,7 +1011,7 @@ export function FlowDiscoveryPage() {
                   )}
                 </div>
 
-                {flowSplit && flowSplit.totalGross > 0 && (
+                {flowIx && flowIx.totalGross > 0 && (
                   <div className="rounded border border-white/8 p-3">
                     <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
                       <LabelTip
@@ -1021,34 +1021,34 @@ export function FlowDiscoveryPage() {
                         Flow split · checked structures
                       </LabelTip>
                       <span className="font-mono text-[11px] text-text-dim">
-                        {fmt(flowSplit.volumePct)}% volume of {fmt(flowSplit.totalGross)}◎ scored
+                        {fmt(flowIx.volumePct)}% volume of {fmt(flowIx.totalGross)}◎ scored
                       </span>
                     </div>
                     <div className="flex h-2 w-full overflow-hidden rounded-full bg-white/6">
-                      {flowSplit.volumeGross > 0 && (
+                      {flowIx.volumeGross > 0 && (
                         <div
                           className="h-full rounded-full bg-warning"
                           style={{
-                            width: `${flowSplit.volumePct}%`,
-                            marginRight: flowSplit.organicGross > 0 ? 2 : 0,
+                            width: `${flowIx.volumePct}%`,
+                            marginRight: flowIx.organicGross > 0 ? 2 : 0,
                           }}
                         />
                       )}
-                      {flowSplit.organicGross > 0 && (
+                      {flowIx.organicGross > 0 && (
                         <div
                           className="h-full rounded-full bg-white/20"
-                          style={{ width: `${100 - flowSplit.volumePct}%` }}
+                          style={{ width: `${100 - flowIx.volumePct}%` }}
                         />
                       )}
                     </div>
                     <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[10px] text-text-dim">
                       <span className="inline-flex items-center gap-1">
                         <span className="size-2 rounded-full bg-warning" /> Volume (checked):{' '}
-                        {fmt(flowSplit.volumeGross)}◎
+                        {fmt(flowIx.volumeGross)}◎
                       </span>
                       <span className="inline-flex items-center gap-1">
                         <span className="size-2 rounded-full bg-white/30" /> Organic (unchecked):{' '}
-                        {fmt(flowSplit.organicGross)}◎
+                        {fmt(flowIx.organicGross)}◎
                       </span>
                     </div>
                   </div>
@@ -1163,7 +1163,7 @@ export function FlowDiscoveryPage() {
                             : "No structure in this group traded in a matched token's creation slot"
                           : firstSlotUnchecked.length === 0
                             ? `All ${firstSlotAll.length} launch shapes are already staged (hover outlines them) — the draft is re-seeded from the target fingerprint's saved patterns on every run`
-                            : `Add the ${firstSlotUnchecked.length} not-yet-staged structure(s) that appear in ANY matched token's creation slot — the launch bundle, create instruction included — to the draft volume_ix_patterns. Group-wide and read off the ranked table above, so it can miss a shape that fell outside the server-side row cap; for one token's exact bundle, pick it in the preview and use the per-token button.`
+                            : `Add the ${firstSlotUnchecked.length} not-yet-staged structure(s) that appear in ANY matched token's creation slot — the launch bundle, create instruction included — to the draft ix_patterns. Group-wide and read off the ranked table above, so it can miss a shape that fell outside the server-side row cap; for one token's exact bundle, pick it in the preview and use the per-token button.`
                       }
                     >
                       <CheckIcon className="h-3.5 w-3.5" />
@@ -1175,7 +1175,7 @@ export function FlowDiscoveryPage() {
                       onClick={autoSelectSuggested}
                       {...previewProps(suggestedUnchecked)}
                       className="inline-flex items-center gap-1 rounded border border-warning/40 px-2 py-1 text-[11px] font-semibold text-warning transition hover:bg-warning/10 disabled:cursor-not-allowed disabled:opacity-40"
-                      title="Add every auto-suggested structure to the draft volume_ix_patterns"
+                      title="Add every auto-suggested structure to the draft ix_patterns"
                     >
                       <CheckIcon className="h-3.5 w-3.5" />
                       Auto-select suggested

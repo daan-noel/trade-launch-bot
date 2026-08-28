@@ -35,7 +35,7 @@ DEMS-D's entry, the shape everything else varies from:
 
 ```json
 "entry": {
-  "m_snapshot":     { "time": [{">=", 30}], "liquidity": [{">", 30}, {"<", 50}] },
+  "m_state":     { "time": [{">=", 30}], "liquidity": [{">", 30}, {"<", 50}] },
   "m_flow_window":  { "net_flow": [{">=", 0}], "window_size_sec": 2.0 },
   "m_price_window": [
     { "trail": [{">=", 25}], "window_size_sec": 30.0 },

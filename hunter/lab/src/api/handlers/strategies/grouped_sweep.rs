@@ -144,10 +144,10 @@ pub struct StartGroupedSweepBody {
     #[serde(default)]
     pub use_avx512: Option<bool>,
     /// Corpus-wide volume-ix patterns for flow-metric axes (`string[][]`).
-    /// Required when `axes` reference `m_flow_split` / `m_flow_split_window`; Promote
+    /// Required when `axes` reference `m_flow_ix` / `m_flow_ix_window`; Promote
     /// writes them into the fingerprint's `metric_config`.
     #[serde(default)]
-    pub volume_ix_patterns: Option<Vec<Vec<String>>>,
+    pub ix_patterns: Option<Vec<Vec<String>>>,
     /// Which trade in the fill window prices each simulated leg — mirrors
     /// `EngineSimRequest.fill_model`, and threads the same `FillModel` the sweep's
     /// scan and `run_replay` both take. Omitted ⇒ `worst_case`, which is what the
@@ -699,8 +699,8 @@ async fn run_grouped_sweep_job(
 
     // Peek axes for flow groups before load so the lake projects ix_labels/wallet.
     let with_flow = axes_json_references_flow(&b.axes);
-    if with_flow && b.volume_ix_patterns.is_none() {
-        let msg = "axes reference m_flow_split/m_flow_split_window but volume_ix_patterns is missing";
+    if with_flow && b.ix_patterns.is_none() {
+        let msg = "axes reference m_flow_ix/m_flow_ix_window but ix_patterns is missing";
         gate.error = Some(msg.into());
         let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })));
         return;
@@ -1109,8 +1109,8 @@ async fn run_grouped_sweep_job(
         // The clamped width actually used to partition (not the raw request), so
         // re-run + promotion restore exactly what this run swept.
         partition: plan.clone(),
-        volume_ix_patterns: b
-            .volume_ix_patterns
+        ix_patterns: b
+            .ix_patterns
             .as_ref()
             .and_then(|p| serde_json::to_value(p).ok()),
         scale_out: scale_out_pass2
@@ -1292,7 +1292,7 @@ async fn run_grouped_sweep_job(
             fill_model: b.fill_model,
             cost: b.cost_model.model(),
         },
-        b.volume_ix_patterns.clone(),
+        b.ix_patterns.clone(),
         scale_out_pass2.clone(),
         coarse_observer,
         observer,
@@ -2026,12 +2026,12 @@ pub async fn promote_group(
         }
         // V2.2: Promote copies the run's volume-ix patterns into metric_config so
         // the live/sim rule classifies with the same set the sweep scored.
-        if let Some(patterns) = &run.volume_ix_patterns {
+        if let Some(patterns) = &run.ix_patterns {
             draft_fp.metric_config = serde_json::json!({
-                "m_flow_split": { "volume_ix_patterns": patterns }
+                "m_flow_ix": { "ix_patterns": patterns }
             });
             if let Err(e) =
-                hunter_engine::metrics::flow_split::FlowPatterns::validate_metric_config(
+                hunter_engine::metrics::flow_ix::FlowPatterns::validate_metric_config(
                     &draft_fp.metric_config,
                 )
             {
@@ -2048,19 +2048,21 @@ pub async fn promote_group(
             }
         }
     };
-    // find_or_create ignores metric_config for identity — update if the run has
-    // patterns and the stored row differs (width-parity precedent for config). On a
-    // scoped run this writes onto the *saved* fingerprint on purpose: the promoted
-    // rule must classify flow with the exact pattern set that produced these results,
-    // and a fingerprint whose patterns disagree with the sweep would silently score
-    // differently live. Validate before touching a row the user owns.
-    if let Some(patterns) = &run.volume_ix_patterns {
+    // Write the run's patterns onto the fingerprint when they differ. This is reachable
+    // only on the `is_scope_only` branch, and it writes onto the *saved* fingerprint on
+    // purpose: the promoted rule must classify flow with the exact pattern set that
+    // produced these results, and a fingerprint whose patterns disagree with the sweep
+    // would silently score differently live. Validate before touching a row the user owns.
+    //
+    // The draft branch above cannot reach the write: `metric_config` is part of
+    // `find_or_create` identity, so the row it returns already carries these patterns.
+    if let Some(patterns) = &run.ix_patterns {
         let want = serde_json::json!({
-            "m_flow_split": { "volume_ix_patterns": patterns }
+            "m_flow_ix": { "ix_patterns": patterns }
         });
         if fp.metric_config != want {
             if let Err(e) =
-                hunter_engine::metrics::flow_split::FlowPatterns::validate_metric_config(&want)
+                hunter_engine::metrics::flow_ix::FlowPatterns::validate_metric_config(&want)
             {
                 return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
             }
@@ -2114,8 +2116,8 @@ fn axes_json_references_flow(axes: &serde_json::Value) -> bool {
     };
     arr.iter().any(|a| {
         let group = a.get("group").and_then(|g| g.as_str()).unwrap_or_default();
-        if group == group_spec(MetricGroupId::FlowSplit).name
-            || group == group_spec(MetricGroupId::FlowSplitWindow).name
+        if group == group_spec(MetricGroupId::FlowIx).name
+            || group == group_spec(MetricGroupId::FlowIxWindow).name
         {
             return true;
         }
@@ -2408,7 +2410,7 @@ pub async fn list_token_results(
             window: crate::sweep::corpus::TradeWindow::LaunchWindow,
             per_mint_cap: sweep_per_mint_cap(),
             with_signatures: false,
-            with_flow: run.volume_ix_patterns.is_some(),
+            with_flow: run.ix_patterns.is_some(),
             // Hash-resolved flow keys only — no consumer here reads label text.
             with_flow_text: false,
             // Only family search reads the oracle curve; every other run pays zero.
@@ -2442,8 +2444,8 @@ pub async fn list_token_results(
     // The run's own instant, NOT wall-clock now — a drill-in must reproduce the row
     // it drills into, and deadness is judged against this (parity plan B7).
     let run_as_of = run.created_at;
-    let volume_ix_patterns: Option<Vec<Vec<String>>> = run
-        .volume_ix_patterns
+    let ix_patterns: Option<Vec<Vec<String>>> = run
+        .ix_patterns
         .as_ref()
         .and_then(|v| serde_json::from_value(v.clone()).ok());
     let result = tokio::task::spawn_blocking(move || {
@@ -2453,7 +2455,7 @@ pub async fn list_token_results(
             &params_json,
             pricing,
             run_as_of,
-            volume_ix_patterns.as_deref(),
+            ix_patterns.as_deref(),
         )
     })
     .await;
@@ -2736,7 +2738,7 @@ mod scale_out_pass2_tests {
     #[test]
     fn rejects_token_scoped_stage_metric_in_any_variant() {
         let raw = json!([
-            [{ "sell_bps": 7000, "conditions": { "m_snapshot": { "time": [{ "operator": ">=", "value": 10 }] } } }]
+            [{ "sell_bps": 7000, "conditions": { "m_state": { "time": [{ "operator": ">=", "value": 10 }] } } }]
         ]);
         let err = parse_scale_out_pass2(Some(&raw), None).unwrap_err();
         assert!(err.contains("m_position"), "{err}");

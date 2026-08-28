@@ -571,7 +571,7 @@ mod tests {
         let full = sw(0.31, 1.0, 100, 62);
         let dropped = vec![
             // Exit alarm: worth 10 points of return.
-            ("nonvol_buy(2s) >= 1.6".to_string(), false, sw(0.21, 1.0, 120, 60)),
+            ("untagged_buy(2s) >= 1.6".to_string(), false, sw(0.21, 1.0, 120, 60)),
             // Entry idea: costs a little return but buys 14 points of win rate —
             // exactly the trade the operator is making, and it must read as a keeper.
             ("liquidity > 30".to_string(), true, sw(0.46, 1.4, 140, 67)),
@@ -588,7 +588,7 @@ mod tests {
         assert!(rows[0].earns_its_place(), "safety is the entry side's currency");
 
         // Exit rows follow, ranked by money.
-        assert!(!rows[1].is_entry && rows[1].label == "nonvol_buy(2s) >= 1.6");
+        assert!(!rows[1].is_entry && rows[1].label == "untagged_buy(2s) >= 1.6");
         assert!((rows[1].delta_pct() - 10.0).abs() < 1e-9);
         assert!(rows[1].earns_its_place());
 

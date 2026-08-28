@@ -1,5 +1,5 @@
 /**
- * Edits to a `m_flow_split.volume_ix_patterns` set — the ONE toggler behind
+ * Edits to a `m_flow_ix.ix_patterns` set — the ONE toggler behind
  * every surface that stages patterns (the chart trades table, Flow Discovery's
  * structure checkboxes).
  *
@@ -38,7 +38,7 @@ export function formatVolumePatternsText(patterns: readonly VolumePattern[]): st
  * classifying different trades as volume, so any surface collapsing a set to a
  * bare count renders two distinct fingerprints identically.
  */
-export function volumePatternsActions(patterns: readonly VolumePattern[]): string {
+export function ixPatternsActions(patterns: readonly VolumePattern[]): string {
   return patterns
     .filter((p) => p.length > 0)
     .map((p) => ixLabelsActions([...p]))
@@ -51,7 +51,7 @@ export function volumePatternsActions(patterns: readonly VolumePattern[]): strin
  * at the end) — two fingerprints matching the same structures in a different
  * order are the same match criterion and must key the same.
  */
-export function volumePatternsIdentity(patterns: readonly VolumePattern[]): string {
+export function ixPatternsIdentity(patterns: readonly VolumePattern[]): string {
   return patterns
     .filter((p) => p.length > 0)
     .map(patternKey)
@@ -99,6 +99,6 @@ export function patternsFromKeys(
   return out;
 }
 
-// Blank-label / empty-pattern sanitizing lives in `metricConfigWithVolumePatterns`
+// Blank-label / empty-pattern sanitizing lives in `metricConfigWithIxPatterns`
 // (lib/strategy/registry), the one function that builds the persisted shape — a
 // second copy here would be the same rule written twice, free to drift.

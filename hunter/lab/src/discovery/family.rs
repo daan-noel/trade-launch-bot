@@ -951,7 +951,7 @@ mod tests {
         }
     }
 
-    /// Families come off the registry, not a lab-side map — `m_snapshot` and
+    /// Families come off the registry, not a lab-side map — `m_state` and
     /// `m_price_*` must land in different grids without this module naming them.
     #[test]
     fn shortlist_is_grouped_by_registry_family() {
@@ -963,7 +963,7 @@ mod tests {
         let plan = plan_families(&r, FamilyLimits::default());
         assert_eq!(plan.len(), 2, "snapshot and price are distinct families");
         let liq_age = plan.iter().find(|f| f.family == MetricFamily::LiquidityAge).unwrap();
-        assert_eq!(liq_age.members.len(), 2, "time + liquidity share m_snapshot");
+        assert_eq!(liq_age.members.len(), 2, "time + liquidity share m_state");
         // Axis order is lift-descending, so a cap drops the weakest member.
         assert!(liq_age.members[0].lift >= liq_age.members[1].lift);
         let price = plan.iter().find(|f| f.family == MetricFamily::Price).unwrap();
@@ -1023,7 +1023,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(out.cohort_tokens, 12);
-        assert_eq!(out.families.len(), 2, "m_snapshot and m_price_lifetime are two families");
+        assert_eq!(out.families.len(), 2, "m_state and m_price_lifetime are two families");
         // Every gridded family is one of the registry's, and its combo count is the
         // additive product of its own members only.
         for f in &out.families {
@@ -1196,7 +1196,7 @@ mod tests {
         let interactions = vec![
             mk(MetricFamily::Price, MetricFamily::Flow, InteractionVerdict::Interacting),
             mk(MetricFamily::Flow, MetricFamily::Price, InteractionVerdict::Interacting),
-            mk(MetricFamily::Flow, MetricFamily::FlowSplit, InteractionVerdict::Interacting),
+            mk(MetricFamily::Flow, MetricFamily::FlowIx, InteractionVerdict::Interacting),
             mk(
                 MetricFamily::LiquidityAge,
                 MetricFamily::Price,
@@ -1207,7 +1207,7 @@ mod tests {
         assert_eq!(comps.len(), 1);
         assert_eq!(
             comps[0],
-            vec![MetricFamily::Flow, MetricFamily::FlowSplit, MetricFamily::Price]
+            vec![MetricFamily::Flow, MetricFamily::FlowIx, MetricFamily::Price]
         );
     }
 

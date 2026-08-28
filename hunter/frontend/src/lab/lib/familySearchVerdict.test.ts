@@ -110,7 +110,7 @@ function base(): FamilySearchReport {
     // surviving the reprice. The tiers below flip one of these at a time.
     threshold_ladders: [
       {
-        clause: 'nonvol_buy(2s) >= 1.6',
+        clause: 'untagged_buy(2s) >= 1.6',
         is_entry: false,
         verdict: 'plateau',
         points: [
@@ -150,7 +150,7 @@ function base(): FamilySearchReport {
     ],
     fill_sensitivity: [
       {
-        clause: 'nonvol_buy(2s) >= 1.6',
+        clause: 'untagged_buy(2s) >= 1.6',
         is_entry: false,
         delta_authority: 6.0,
         delta_optimistic: 5.4,
@@ -288,9 +288,9 @@ describe('familyVerdict', () => {
     const v = familyVerdict(r);
 
     expect(v.label).toBe('Fragile draft');
-    expect(v.robustness.fragile).toEqual(['nonvol_buy(2s) >= 1.6']);
+    expect(v.robustness.fragile).toEqual(['untagged_buy(2s) >= 1.6']);
     expect(v.robustness.premature).toEqual(['stall >= 30']);
-    expect(v.robustness.fillDependent).toEqual(['nonvol_buy(2s) >= 1.6']);
+    expect(v.robustness.fillDependent).toEqual(['untagged_buy(2s) >= 1.6']);
     expect(v.robustness.redundant).toEqual(['liquidity > 30']);
     expect(v.robustness.winWithinNoise).toBe(true);
     // Repricing leads: whether the number is real outranks what it says.
@@ -319,7 +319,7 @@ describe('familyVerdict', () => {
     const v = familyVerdict(r);
     expect(v.label).toBe('Priced on fill luck');
     // ...and the per-clause findings still ride along for the board to render.
-    expect(v.robustness.fragile).toEqual(['nonvol_buy(2s) >= 1.6']);
+    expect(v.robustness.fragile).toEqual(['untagged_buy(2s) >= 1.6']);
   });
 
   it('does not claim clauses held up when nothing measured them', () => {

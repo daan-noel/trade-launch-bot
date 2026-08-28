@@ -307,7 +307,7 @@ fn primed_history_before_entry_never_inflates_the_peak() {
 fn metrics_exit_on_time_condition() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
-    let params = json!({ "exit": { "m_snapshot": { "time": [{ "operator": ">", "value": 5 }] } } });
+    let params = json!({ "exit": { "m_state": { "time": [{ "operator": ">", "value": 5 }] } } });
     reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
     let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
     let entry = buy_intent(&fx);
@@ -437,8 +437,8 @@ fn overlapping_entry_exit_metrics_do_not_enter() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
     let params = json!({
-        "entry": { "m_snapshot": { "liquidity": [{ "operator": ">", "value": 50 }] } },
-        "exit":  { "m_snapshot": { "liquidity": [{ "operator": ">", "value": 40 }] } },
+        "entry": { "m_state": { "liquidity": [{ "operator": ">", "value": 50 }] } },
+        "exit":  { "m_state": { "liquidity": [{ "operator": ">", "value": 40 }] } },
         "take_profit": 100
     });
     reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
@@ -454,8 +454,8 @@ fn enters_once_exit_metrics_clear_while_entry_still_holds() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
     let params = json!({
-        "entry": { "m_snapshot": { "liquidity": [{ "operator": ">", "value": 10 }] } },
-        "exit":  { "m_snapshot": { "liquidity": [{ "operator": ">", "value": 40 }] } },
+        "entry": { "m_state": { "liquidity": [{ "operator": ">", "value": 10 }] } },
+        "exit":  { "m_state": { "liquidity": [{ "operator": ">", "value": 40 }] } },
         "take_profit": 100
     });
     reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
@@ -500,7 +500,7 @@ fn derived_unsatisfiable_disarms_before_entry() {
     let m = Mint::from("tokA");
     // Enter only if within 3 s AND liquidity > 100 (never true) → never enters, but the
     // `time < 3` upper bound lets the arm disarm itself once the clock passes 3 s.
-    let params = json!({ "entry": { "m_snapshot": {
+    let params = json!({ "entry": { "m_state": {
         "time": [{ "operator": "<", "value": 3 }],
         "liquidity": [{ "operator": ">", "value": 100 }]
     } } });
@@ -518,7 +518,7 @@ fn dead_token_disarms_armed_rule() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
     // Entry never satisfied (liquidity > 100) so the token stays armed until death.
-    let params = json!({ "entry": { "m_snapshot": { "liquidity": [{ "operator": ">", "value": 100 }] } } });
+    let params = json!({ "entry": { "m_state": { "liquidity": [{ "operator": ">", "value": 100 }] } } });
     reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
     reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
     // One meaningful trade with depleted reserves at t=10.
@@ -532,7 +532,7 @@ fn dead_token_disarms_armed_rule() {
 fn migration_disarms_armed_rule() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
-    let params = json!({ "entry": { "m_snapshot": { "liquidity": [{ "operator": ">", "value": 100 }] } } });
+    let params = json!({ "entry": { "m_state": { "liquidity": [{ "operator": ">", "value": 100 }] } } });
     reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
     reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None, identity: None});
     let fx = reduce(&mut s, Event::Migrated { mint: m.clone(), at: ts(5.0) });
@@ -732,7 +732,7 @@ fn entry_retry_requalifies_against_entry_conditions() {
                 1,
                 1,
                 json!({
-                    "entry": { "m_snapshot": { "liquidity": [{"operator": ">", "value": 10}] } },
+                    "entry": { "m_state": { "liquidity": [{"operator": ">", "value": 10}] } },
                     "take_profit": 100
                 })),
             ],
@@ -807,7 +807,7 @@ fn entry_retry_resubmits_while_conditions_still_hold() {
                 1,
                 1,
                 json!({
-                    "entry": { "m_snapshot": { "liquidity": [{"operator": ">", "value": 10}] } },
+                    "entry": { "m_state": { "liquidity": [{"operator": ">", "value": 10}] } },
                     "take_profit": 100
                 })),
             ],
@@ -835,7 +835,7 @@ fn entry_retry_refuses_once_the_rule_is_stopped() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
     let params = json!({
-        "entry": { "m_snapshot": { "liquidity": [{"operator": ">", "value": 10}] } },
+        "entry": { "m_state": { "liquidity": [{"operator": ">", "value": 10}] } },
         "take_profit": 100
     });
     reduce(&mut s, reload(vec![rule(1, 1, params.clone())], vec![cu_fp(1)]));
@@ -1010,7 +1010,7 @@ fn first_slot_mismatch_drops_the_arm() {
     assert!(!s.tokens.contains_key(&m), "no active arm → token pruned");
 }
 
-/// `m_snapshot.first_slot_buy` is a **settle-time** fact, not a birth-time one — the
+/// `m_state.first_slot_buy` is a **settle-time** fact, not a birth-time one — the
 /// creation slot's buy total is summed from that slot's trades, so it does not exist
 /// at `TokenCreated`. It must read `NaN` until the settle and the real number after,
 /// and `0` (a launch nobody bought into) must be a value, never a stand-in for
@@ -1028,7 +1028,7 @@ fn first_slot_buy_is_nan_until_the_slot_settles() {
             vec![rule(
                 1,
                 1,
-                json!({ "entry": { "m_snapshot": {
+                json!({ "entry": { "m_state": {
                     "time": [{ "operator": ">=", "value": 1e9 }] } } }),
             )],
             vec![cu_fp(1)],
@@ -1146,19 +1146,19 @@ fn compiled_rule_is_public() {
 }
 
 #[test]
-fn flow_entry_on_vol_net_and_exit_when_organic_goes_quiet() {
-    use hunter_engine::metrics::flow_split::ix_hash;
+fn flow_entry_on_tagged_net_and_exit_when_organic_goes_quiet() {
+    use hunter_engine::metrics::flow_ix::ix_hash;
 
     let mut fp = cu_fp(1);
     fp.metric_config = json!({
-        "m_flow_split": { "volume_ix_patterns": [["vol"]] }
+        "m_flow_ix": { "ix_patterns": [["vol"]] }
     });
     let params = json!({
-        "entry": { "m_flow_split": { "vol_net": [{"operator": ">", "value": 2}] } },
+        "entry": { "m_flow_ix": { "tagged_net": [{"operator": ">", "value": 2}] } },
         "exit": {
-            "m_flow_split_window": {
+            "m_flow_ix_window": {
                 "window_size_sec": 5,
-                "nonvol_gross": [{"operator": "=", "value": 0}]
+                "untagged_gross": [{"operator": "=", "value": 0}]
             }
         }
     });
@@ -1174,7 +1174,7 @@ fn flow_entry_on_vol_net_and_exit_when_organic_goes_quiet() {
             creator_wallet_hash: Some(99), identity: None,
         },
     );
-    // Organic buy first — not enough vol_net to enter.
+    // Organic buy first — not enough tagged_net to enter.
     let fx = reduce(
         &mut s,
         Event::Trade {
@@ -1195,7 +1195,7 @@ fn flow_entry_on_vol_net_and_exit_when_organic_goes_quiet() {
     );
     assert!(buys(&fx).is_empty());
 
-    // Volume-side buy → vol_net=3 → entry.
+    // Volume-side buy → tagged_net=3 → entry.
     let fx = reduce(
         &mut s,
         Event::Trade {
@@ -1218,12 +1218,12 @@ fn flow_entry_on_vol_net_and_exit_when_organic_goes_quiet() {
     let entry = buy_intent(&fx);
     reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.1, 2.0) });
 
-    // Tick past the organic trade's window → nonvol_gross(5s)=0 → exit.
+    // Tick past the organic trade's window → untagged_gross(5s)=0 → exit.
     let fx = reduce(&mut s, Event::Tick { now: ts(7.0) });
     assert_eq!(
         sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
         vec![ExitReason::Metrics {
-            metric: hunter_engine::metrics::MetricId::WinNonvolGross,
+            metric: hunter_engine::metrics::MetricId::WinUntaggedGross,
             operator: hunter_engine::metrics::evaluator::Operator::Eq,
             value: 0.0,
             window: Some(hunter_engine::metrics::WindowSpec::secs(5.0)),
@@ -1233,23 +1233,23 @@ fn flow_entry_on_vol_net_and_exit_when_organic_goes_quiet() {
 
 #[test]
 fn two_fingerprints_flow_states_diverge() {
-    use hunter_engine::metrics::flow_split::ix_hash;
+    use hunter_engine::metrics::flow_ix::ix_hash;
 
     let mut fp_a = cu_fp(1);
     fp_a.metric_config = json!({
-        "m_flow_split": { "volume_ix_patterns": [["a"]] }
+        "m_flow_ix": { "ix_patterns": [["a"]] }
     });
     let mut fp_b = cu_fp(2);
     fp_b.criteria.insert(AxisId::CuLimit, AxisPredicate::exact(200_000)); // same match
     fp_b.metric_config = json!({
-        "m_flow_split": { "volume_ix_patterns": [["b"]] }
+        "m_flow_ix": { "ix_patterns": [["b"]] }
     });
-    // Rule A enters on vol_buy>0 for pattern A; rule B would need pattern B.
+    // Rule A enters on tagged_buy>0 for pattern A; rule B would need pattern B.
     let params_a = json!({
-        "entry": { "m_flow_split": { "vol_buy": [{"operator": ">", "value": 0}] } }
+        "entry": { "m_flow_ix": { "tagged_buy": [{"operator": ">", "value": 0}] } }
     });
     let params_b = json!({
-        "entry": { "m_flow_split": { "vol_buy": [{"operator": ">", "value": 0}] } }
+        "entry": { "m_flow_ix": { "tagged_buy": [{"operator": ">", "value": 0}] } }
     });
     let mut s = EngineState::new();
     let m = Mint::from("tokMulti");
@@ -2034,7 +2034,7 @@ fn dupe_guard_forgets_past_the_window() {
     assert_eq!(buys(&fx), vec![(rid(1), BUY)], "past the window it is tradeable again");
 }
 
-/// `m_snapshot.prior_launches` counts a creator's launches STRICTLY BEFORE each
+/// the `prior_launches` fingerprint axis counts a creator's launches STRICTLY BEFORE each
 /// token, so their first reads `0` — the value a first-launch rule selects on.
 ///
 /// The unknown-creator case is the one that matters: a `TokenCreated` with no
@@ -2052,7 +2052,7 @@ fn prior_launches_counts_strictly_prior_and_never_guesses_zero() {
             vec![rule(
                 1,
                 1,
-                json!({ "entry": { "m_snapshot": {
+                json!({ "entry": { "m_state": {
                     "time": [{ "operator": ">=", "value": 1e9 }] } } }),
             )],
             vec![cu_fp(1)],

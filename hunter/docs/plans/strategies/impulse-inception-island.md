@@ -23,7 +23,7 @@ its quiet gate and its dip band.
 ```
 ENTRY   m_flow_window(0.4).net_flow  >= 0.5      # a live buy impulse, one slot wide
   AND   m_price_window(3).rise       <= 9        # the move has not happened yet
-  AND   m_snapshot.time > 5, liquidity >= 3      # matches the measured population
+  AND   m_state.time > 5, liquidity >= 3      # matches the measured population
   AND   creation ix count <= 5                   # a simple launch transaction
 EXIT    stop_loss 3   OR   m_position.retrace >= 20
 ```

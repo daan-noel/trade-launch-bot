@@ -152,9 +152,9 @@ export interface ChartCrosshairInfo {
   outflow: number;
   liquiditySol: number | null;
   /** Cumulative volume-maker cohort at this bar (null when flow overlay has no point). */
-  flowVol: number | null;
+  flowTagged: number | null;
   /** Cumulative non-volume cohort at this bar (null when flow overlay has no point). */
-  flowNonVol: number | null;
+  flowUntagged: number | null;
 }
 
 export interface ChartBarSelection {
@@ -292,8 +292,8 @@ export interface ChartBarTooltipState {
   inflow: number;
   outflow: number;
   liquiditySol: number | null;
-  flowVol: number | null;
-  flowNonVol: number | null;
+  flowTagged: number | null;
+  flowUntagged: number | null;
   barTime: UTCTimestamp;
   /** Age of the bar's earliest trade since token creation (seconds); null when unknown. */
   ageSec: number | null;
@@ -376,7 +376,7 @@ export interface TokenPriceChartProps {
   /** Strategy entry/exit points to overlay as arrows + dashed price lines. */
   eventMarkers?: ChartEventMarker[] | null;
   /**
-   * `JSON.stringify(labels)` keys of fingerprint `volume_ix_patterns` for the
+   * `JSON.stringify(labels)` keys of fingerprint `ix_patterns` for the
    * vol/non-vol overlay. Omit/empty is NOT a blank chart — the structural test
    * simply never fires and the split degrades to creator-vs-rest, which the
    * toolbar tooltip names. Only a token with neither patterns nor a creator
@@ -436,7 +436,7 @@ export interface ChartToolbarProps {
   /** False only when nothing can classify (no patterns AND no creator wallet)
    *  — toggle disabled. */
   flowLinesAvailable: boolean;
-  /** True when the split comes from fingerprint `volume_ix_patterns`; false ⇒ the
+  /** True when the split comes from fingerprint `ix_patterns`; false ⇒ the
    *  lines are the creator-vs-rest degradation (labelled as such in the tooltip). */
   flowPatternsConfigured: boolean;
   /** Range-select (drag-to-highlight) mode is active. */

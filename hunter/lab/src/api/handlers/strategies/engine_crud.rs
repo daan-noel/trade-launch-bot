@@ -118,7 +118,7 @@ pub async fn create_fingerprint(
     if let Err(e) = fp.validate() {
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
     }
-    if let Err(e) = hunter_engine::metrics::flow_split::FlowPatterns::validate_metric_config(
+    if let Err(e) = hunter_engine::metrics::flow_ix::FlowPatterns::validate_metric_config(
         &fp.metric_config,
     ) {
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
@@ -143,7 +143,7 @@ pub async fn update_fingerprint(
     if let Err(e) = fp.validate() {
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
     }
-    if let Err(e) = hunter_engine::metrics::flow_split::FlowPatterns::validate_metric_config(
+    if let Err(e) = hunter_engine::metrics::flow_ix::FlowPatterns::validate_metric_config(
         &fp.metric_config,
     ) {
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));

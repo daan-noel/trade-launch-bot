@@ -69,7 +69,7 @@ export interface FloorDetailFacts {
    * just the row that was clicked. Omit where there is no position to widen from.
    */
   episodeMarkers?: ChartEventMarker[] | null;
-  /** Fingerprint `volume_ix_patterns` keys for the chart vol/non-vol overlay. */
+  /** Fingerprint `ix_patterns` keys for the chart vol/non-vol overlay. */
   flowPatternKeys?: ReadonlySet<string> | null;
   /** Fingerprint those keys came from — the trades table's Vol-badge write target
    *  (see `BarTradesPanel`). Resolve it with {@link flowPatternKeys} from one
@@ -383,7 +383,7 @@ export function FloorPositionDetail({
   //
   // Nothing scopes the flow classification here any more: every number in this view
   // is a report of an engine decision taken under the fingerprint's saved
-  // `volume_ix_patterns`, and that saved set is now the only one any surface draws
+  // `ix_patterns`, and that saved set is now the only one any surface draws
   // from. Editing a pattern from the trades table writes it straight to the
   // fingerprint, so the split a reader sums by hand and the exit beside it can never
   // be classified under different sets.

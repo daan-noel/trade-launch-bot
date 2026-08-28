@@ -45,15 +45,15 @@ describe('ruleParamsJsonEqual', () => {
   it('compares nested entry conditions', () => {
     const a = {
       take_profit: 50,
-      entry: { m_snapshot: { time: [{ operator: '>', value: 10 }] } },
+      entry: { m_state: { time: [{ operator: '>', value: 10 }] } },
     };
     const b = {
       take_profit: 50,
-      entry: { m_snapshot: { time: [{ operator: '>', value: 10 }] } },
+      entry: { m_state: { time: [{ operator: '>', value: 10 }] } },
     };
     const c = {
       take_profit: 50,
-      entry: { m_snapshot: { time: [{ operator: '>', value: 20 }] } },
+      entry: { m_state: { time: [{ operator: '>', value: 20 }] } },
     };
     expect(ruleParamsJsonEqual(a, b)).toBe(true);
     expect(ruleParamsJsonEqual(a, c)).toBe(false);
@@ -84,8 +84,8 @@ describe('ruleParamsJsonEqual', () => {
   });
 
   it('ignores the order of AND atoms within one metric', () => {
-    const a = { entry: { m_snapshot: { time: [{ operator: '>', value: 10 }, { operator: '<', value: 45 }] } } };
-    const b = { entry: { m_snapshot: { time: [{ operator: '<', value: 45 }, { operator: '>', value: 10 }] } } };
+    const a = { entry: { m_state: { time: [{ operator: '>', value: 10 }, { operator: '<', value: 45 }] } } };
+    const b = { entry: { m_state: { time: [{ operator: '<', value: 45 }, { operator: '>', value: 10 }] } } };
     expect(ruleParamsJsonEqual(a, b)).toBe(true);
   });
 

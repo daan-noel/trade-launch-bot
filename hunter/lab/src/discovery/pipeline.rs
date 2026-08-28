@@ -67,7 +67,7 @@ pub struct PipelineConfig {
     pub split: SplitPolicy,
     /// Retention thresholds for the Layer-3 verdict.
     pub validation_thresholds: ValidationThresholds,
-    /// The run's raw `volume_ix_patterns` (label sequences), if any. Kept beside the
+    /// The run's raw `ix_patterns` (label sequences), if any. Kept beside the
     /// compiled `cfg.screen.flow_patterns` because the compiled set is a one-way hash
     /// with no reverse, and Layer 3's `simulate_one_combo` re-derives the classifier
     /// from these sequences. `None` ⇒ no flow gating, exactly like the screen.

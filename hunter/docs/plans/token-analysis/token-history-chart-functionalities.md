@@ -208,9 +208,9 @@ A host outside `token-price-chart` must deep-import (`components/token-price-cha
 statically-mounted host must not pull `lightweight-charts` into its chunk (see
 [`@arch/frontend.md`](../../arch/frontend.md) chart code-split).
 
-### 6b. Editing `volume_ix_patterns` from the trades table
+### 6b. Editing `ix_patterns` from the trades table
 
-The panel's **Vol** badge is the editing control for `m_flow_split.volume_ix_patterns`:
+The panel's **Vol** badge is the editing control for `m_flow_ix.ix_patterns`:
 clicking it adds/removes that row's ordered `instruction_labels` on the target fingerprint
 and **saves immediately**. There is no staging step — a draft copy would be a second answer
 to "what counts as volume", and the surfaces reading the two copies then disagree on screen
@@ -245,7 +245,7 @@ Three further rules the surface exists to enforce:
   BOTH lines on the transition to classifiable. Turning them back off stays the user's call.
 - **A run snapshot is not editable.** `flowReadOnly` marks a subtree whose patterns are a
   stored fact — the grouped-sweep drill-in, whose numbers were computed under the run's own
-  `volume_ix_patterns`. It shows `run snapshot` instead of the edit control and skips the
+  `ix_patterns`. It shows `run snapshot` instead of the edit control and skips the
   fingerprint/rule fetches entirely.
 
 `VolumePatternBar` states the target and how many **active** rules use it before any click.
@@ -288,7 +288,7 @@ number the wash beside it disagrees with. The structure chip also reports the to
 **unlabeled** trades: a structure lens can say nothing about a row whose `instruction_labels`
 were never captured, and `0 matches` over a pile of them means "not recorded", not "unique".
 
-**A lens is not the Vol badge, deliberately.** 6b's badge writes `volume_ix_patterns` and the
+**A lens is not the Vol badge, deliberately.** 6b's badge writes `ix_patterns` and the
 engine acts on it; a lens writes nothing and no rule reads it. They sit one column apart on
 the same row and answer questions that differ only in wording, so the separation is the
 feature: asking *where else did this shape appear* must not change how a live rule classifies

@@ -2,7 +2,7 @@
  * Analysis-owned `ix_labels` pattern sets — the wire types of `ix_pattern_sets`
  * plus the paste parser that fills one.
  *
- * A fingerprint's `volume_ix_patterns` is what the ENGINE classifies flow with;
+ * A fingerprint's `ix_patterns` is what the ENGINE classifies flow with;
  * a pattern set is the same fact owned by a study surface, for tokens that
  * belong to no cohort (Trader Analysis). Both feed the ONE classifier
  * (`lib/flow/classifyFlow`), so a pattern means exactly the same thing in each:
@@ -236,8 +236,8 @@ export function formatPatternsJson(patterns: readonly IxPattern[]): string {
   );
 }
 
-/** Bare label arrays — the shape a fingerprint's `volume_ix_patterns` stores,
+/** Bare label arrays — the shape a fingerprint's `ix_patterns` stores,
  *  for promoting a lens into one. Group labels have no home there and drop. */
-export function toVolumePatterns(patterns: readonly IxPattern[]): string[][] {
+export function toIxPatterns(patterns: readonly IxPattern[]): string[][] {
   return patterns.map((p) => [...p.ix_labels]);
 }

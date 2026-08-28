@@ -22,12 +22,12 @@ import {
 } from 'lib/ixLabels';
 import {
   formatVolumePatternsText,
-  volumePatternsActions,
-  volumePatternsIdentity,
+  ixPatternsActions,
+  ixPatternsIdentity,
 } from 'lib/flow/volumePatterns';
 import { cn } from 'lib/cn';
 import { hashHue, metricColorStyle } from 'lib/strategy/metricColors';
-import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
+import { ixPatternsFromConfig } from 'lib/strategy/registry';
 import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 import {
   fingerprintAutoName,
@@ -112,7 +112,7 @@ export function chip(
  * rule-tag chips use (no second hash) and makes the difference visible without
  * widening the chip. It is a *hint*: two contents can land on neighboring hues,
  * so identity stays in the tooltip and, on text-only surfaces, in
- * `ixLabelsCountTail` / `volumePatternsActions`.
+ * `ixLabelsCountTail` / `ixPatternsActions`.
  */
 function ContentsChip({
   text,
@@ -192,8 +192,8 @@ export function FlowPatternsChip({ patterns }: { patterns: string[][] }) {
   return (
     <ContentsChip
       text={`flow ${n}`}
-      identity={volumePatternsIdentity(patterns)}
-      title={`${n} volume ix pattern${n === 1 ? '' : 's'}\n${volumePatternsActions(patterns)}`}
+      identity={ixPatternsIdentity(patterns)}
+      title={`${n} volume ix pattern${n === 1 ? '' : 's'}\n${ixPatternsActions(patterns)}`}
       copyText={formatVolumePatternsText(patterns)}
       tint={axisTint('flow')}
     />
@@ -233,13 +233,13 @@ export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
           style: axisTint('wildcard'),
           title: 'Wildcard — matches every token, ignoring every creation-shape axis',
         })}
-        <FlowPatternsChip patterns={volumeIxPatternsFromConfig(fp.metric_config)} />
+        <FlowPatternsChip patterns={ixPatternsFromConfig(fp.metric_config)} />
       </div>
     );
   }
   const chips: ReactNode[] = [
     ...configuredAxes(fp.criteria ?? {}).map(([id, pred]) => axisChip(id, pred)),
-    <FlowPatternsChip key="flow" patterns={volumeIxPatternsFromConfig(fp.metric_config)} />,
+    <FlowPatternsChip key="flow" patterns={ixPatternsFromConfig(fp.metric_config)} />,
   ].filter(Boolean);
 
   return <div className="flex flex-wrap items-center gap-1 text-left">{chips}</div>;
@@ -273,7 +273,7 @@ export function fingerprintParamsSearchText(fp: Fingerprint | undefined, fallbac
     }
     parts.push(`${def.chip}=${formatPredicate(id, pred)}`, def.label);
   }
-  const patterns = volumeIxPatternsFromConfig(fp.metric_config);
+  const patterns = ixPatternsFromConfig(fp.metric_config);
   // Match the `FlowPatternsChip` text (`flow N` / `flow✗`) so filtering by what's
   // actually shown works; the `flow=N` form stays matchable too. The action
   // sequences go in for the same reason `ixLabelsActions` does — searching
@@ -281,7 +281,7 @@ export function fingerprintParamsSearchText(fp: Fingerprint | undefined, fallbac
   // count alone can never answer.
   if (patterns.length > 0) {
     parts.push(`flow ${patterns.length} flow=${patterns.length}`);
-    parts.push(volumePatternsActions(patterns));
+    parts.push(ixPatternsActions(patterns));
     parts.push(formatVolumePatternsText(patterns));
   } else {
     parts.push('flow✗');
@@ -346,6 +346,6 @@ export function fingerprintIdentityKey(fp: Fingerprint | undefined, fallbackId?:
       .join(''),
     // The pattern SEQUENCES, not their count: two fingerprints matching one
     // pattern each are the same criterion only if it is the same pattern.
-    volumePatternsIdentity(volumeIxPatternsFromConfig(fp.metric_config)),
+    ixPatternsIdentity(ixPatternsFromConfig(fp.metric_config)),
   ].join('\u0001');
 }

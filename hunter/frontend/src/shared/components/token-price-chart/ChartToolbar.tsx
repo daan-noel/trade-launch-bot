@@ -99,12 +99,12 @@ function FlowLineIcon({ color, active, low }: { color: string; active?: boolean;
 }
 
 /** Cumulative volume-maker curve (red). */
-export function FlowVolLineIcon({ active }: { active?: boolean }) {
+export function FlowTaggedLineIcon({ active }: { active?: boolean }) {
   return <FlowLineIcon color={FLOW_VOL_LINE_COLOR} active={active} />;
 }
 
 /** Cumulative non-volume curve (gold). */
-export function FlowNonVolLineIcon({ active }: { active?: boolean }) {
+export function FlowUntaggedLineIcon({ active }: { active?: boolean }) {
   return <FlowLineIcon color={FLOW_NON_VOL_LINE_COLOR} active={active} low />;
 }
 
@@ -124,16 +124,16 @@ export function FlowLineToggles({
 }: {
   visibility: FlowLineVisibility;
   available: boolean;
-  /** True when the split comes from fingerprint `volume_ix_patterns`; false =>
+  /** True when the split comes from fingerprint `ix_patterns`; false =>
    *  the creator + contagion fallback. Only changes the tooltip wording. */
   patternsConfigured?: boolean;
   onChange: (next: FlowLineVisibility) => void;
 }) {
   const basis = !available
-    ? 'Needs a creator wallet or volume_ix_patterns to classify against'
+    ? 'Needs a creator wallet or ix_patterns to classify against'
     : patternsConfigured === false
-      ? 'No fingerprint volume_ix_patterns — showing creator + wallets they traded with (red) vs the rest (gold). Configure patterns for the true volume-maker split.'
-      : 'Classified via the fingerprint’s saved volume_ix_patterns + creator/wallet contagion, the same set the engine decides on';
+      ? 'No fingerprint ix_patterns — showing creator + wallets they traded with (red) vs the rest (gold). Configure patterns for the true volume-maker split.'
+      : 'Classified via the fingerprint’s saved ix_patterns + creator/wallet contagion, the same set the engine decides on';
   const scaleNote =
     ' Both curves share the left price scale, so hiding one rescales the axis to the other.';
   return (
@@ -145,24 +145,24 @@ export function FlowLineToggles({
       style={{ border: `1px solid ${CHART_COLORS.border}` }}
     >
       <IconToggleButton
-        active={available && visibility.vol}
-        onClick={() => onChange({ ...visibility, vol: !visibility.vol })}
+        active={available && visibility.tagged}
+        onClick={() => onChange({ ...visibility, tagged: !visibility.tagged })}
         disabled={!available}
         label="Toggle the cumulative volume-maker flow line"
         tooltip={`Cumulative volume-maker (red) line. ${basis}.${scaleNote}`}
         activeColor={FLOW_VOL_LINE_COLOR}
       >
-        <FlowVolLineIcon active={available && visibility.vol} />
+        <FlowTaggedLineIcon active={available && visibility.tagged} />
       </IconToggleButton>
       <IconToggleButton
-        active={available && visibility.nonVol}
-        onClick={() => onChange({ ...visibility, nonVol: !visibility.nonVol })}
+        active={available && visibility.untagged}
+        onClick={() => onChange({ ...visibility, untagged: !visibility.untagged })}
         disabled={!available}
         label="Toggle the cumulative non-volume flow line"
         tooltip={`Cumulative non-volume (gold) line. ${basis}.${scaleNote}`}
         activeColor={FLOW_NON_VOL_LINE_COLOR}
       >
-        <FlowNonVolLineIcon active={available && visibility.nonVol} />
+        <FlowUntaggedLineIcon active={available && visibility.untagged} />
       </IconToggleButton>
     </div>
   );
@@ -450,13 +450,13 @@ export function ChartToolbar({
         // number costs nothing, and losing it on toggle-off is the annoying part.
         // A hidden curve's value is dimmed so the readout still matches the chart.
         <div>
-          <span style={{ color: FLOW_VOL_LINE_COLOR, opacity: flowLines.vol ? 1 : 0.45 }}>
+          <span style={{ color: FLOW_VOL_LINE_COLOR, opacity: flowLines.tagged ? 1 : 0.45 }}>
             <span className="font-semibold">VolMk</span>{' '}
-            {crosshair.flowVol != null ? formatFlow(crosshair.flowVol) : '—'}
+            {crosshair.flowTagged != null ? formatFlow(crosshair.flowTagged) : '—'}
           </span>{' '}
-          <span style={{ color: FLOW_NON_VOL_LINE_COLOR, opacity: flowLines.nonVol ? 1 : 0.45 }}>
+          <span style={{ color: FLOW_NON_VOL_LINE_COLOR, opacity: flowLines.untagged ? 1 : 0.45 }}>
             <span className="font-semibold">NonVol</span>{' '}
-            {crosshair.flowNonVol != null ? formatFlow(crosshair.flowNonVol) : '—'}
+            {crosshair.flowUntagged != null ? formatFlow(crosshair.flowUntagged) : '—'}
           </span>
         </div>
       )}

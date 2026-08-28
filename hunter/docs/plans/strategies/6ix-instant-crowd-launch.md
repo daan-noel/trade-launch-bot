@@ -18,7 +18,7 @@ The cohort's base rate is brutal. Take the first print past 60 s on every token,
 
 | gate | fires/day | mean @30 s | unsellable |
 | --- | ---: | ---: | ---: |
-| `m_snapshot.time >= 60` alone | 2,145 | -65.33 % | 64.7 % |
+| `m_state.time >= 60` alone | 2,145 | -65.33 % | 64.7 % |
 | `+ m_flow_lifetime.gross_flow >= 43.6` | 841 | -32.03 % | 31.3 % |
 | `+ m_flow_lifetime.trade_count <= 140` | 473 | -47.45 % | 48.6 % |
 | `+ m_flow_window(5).buy >= 2.94` | 84 | +19.72 % | 2.0 % |
@@ -62,8 +62,8 @@ correct measurements of what they name, with a parity harness against real lake 
 * `m_flow_lifetime.trade_count` — maturity; monotonic, so an upper bound is a one-way door.
 * `m_flow_window(W).trades_per_wallet` — a crowd vs one wallet churning, as a **count
   ratio, never an identity**, so wallet rotation does not defeat it.
-* `m_flow_burst{W, b}.trade_share` — how concentrated the tape is in time, scale-free.
-* `m_snapshot.first_slot_buy` — the launch size as a **threshold** (a fingerprint pins one
+* `m_flow_window{W, b}.trade_share` — how concentrated the tape is in time, scale-free.
+* `m_state.first_slot_buy` — the launch size as a **threshold** (a fingerprint pins one
   bucket and cannot express `>= 6.41`).
 
 Definitions: [metrics-reference.md](metrics-reference.md). How to read a cohort rule and

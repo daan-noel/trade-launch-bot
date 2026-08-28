@@ -33,7 +33,7 @@ use crate::sweep::progress::SweepObserver;
 use crate::sweep::projection::CorpusTrade;
 use crate::sweep::strategy::{ParamSpace, Strategy, SweepMethod, TokenOutcome};
 
-use hunter_engine::metrics::flow_split::FlowPatterns;
+use hunter_engine::metrics::flow_ix::FlowPatterns;
 use hunter_engine::metrics::series::SeriesColumn;
 use hunter_engine::metrics::Ts;
 
@@ -315,8 +315,8 @@ mod tests {
     fn two_segment() -> AdditiveStrategy {
         AdditiveStrategy::new(
             vec![
-                model(vec![metric_axis("m_snapshot", "time", None, vec![5.0, 30.0, 60.0]), tp(30.0)]),
-                model(vec![metric_axis("m_snapshot", "liquidity", None, vec![40.0, 50.0]), tp(30.0)]),
+                model(vec![metric_axis("m_state", "time", None, vec![5.0, 30.0, 60.0]), tp(30.0)]),
+                model(vec![metric_axis("m_state", "liquidity", None, vec![40.0, 50.0]), tp(30.0)]),
             ],
             pricing(),
             Utc::now(),
@@ -330,7 +330,7 @@ mod tests {
     fn segments_share_one_precompute() {
         let s = AdditiveStrategy::new(
             vec![
-                model(vec![metric_axis("m_snapshot", "time", None, vec![5.0, 30.0]), tp(30.0)]),
+                model(vec![metric_axis("m_state", "time", None, vec![5.0, 30.0]), tp(30.0)]),
                 model(vec![
                     metric_axis("m_price_window", "trail", Some(45.0), vec![10.0]),
                     tp(30.0),

@@ -205,7 +205,7 @@ before the burst - carries tape silence on its own.
 
 Metric windows are time-keyed (`window_size_sec`), so the same-slot term is not expressible
 today. Trades already carry `slot` and canonical order is slot -> tx_index -> leg, so a
-`window_slots` param alongside `window_size_sec` in `flow_window`/`flow_split` closes it.
+`window_slots` param alongside `window_size_sec` in `flow_window`/`flow_ix` closes it.
 
 ## Multi-tool same-slot does not survive its own fill
 

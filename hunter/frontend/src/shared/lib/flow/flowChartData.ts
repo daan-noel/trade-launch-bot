@@ -24,8 +24,8 @@ export interface FlowLinePoint {
 }
 
 export interface FlowLines {
-  vol: FlowLinePoint[];
-  nonVol: FlowLinePoint[];
+  tagged: FlowLinePoint[];
+  untagged: FlowLinePoint[];
 }
 
 /** Per-trade signed magnitude: buys add, sells subtract. */
@@ -35,14 +35,14 @@ function signedAmount(trade: ChartTrade, field: 'amount_sol' | 'token_amount'): 
 }
 
 interface FlowBucket {
-  volSol: number;
-  volTok: number;
-  nonVolSol: number;
-  nonVolTok: number;
+  taggedSol: number;
+  taggedTok: number;
+  untaggedSol: number;
+  untaggedTok: number;
   spot: number | null;
 }
 
-/** Cumulative vol/non-vol series over one token's trades. */
+/** Cumulative tagged/non-tagged series over one token's trades. */
 export function buildFlowLines(
   trades: readonly ChartTrade[],
   groupMode: ChartGroupMode,
@@ -71,55 +71,55 @@ export function buildFlowLines(
     const k = key as number;
     let bucket = buckets.get(k);
     if (!bucket) {
-      bucket = { volSol: 0, volTok: 0, nonVolSol: 0, nonVolTok: 0, spot: null };
+      bucket = { taggedSol: 0, taggedTok: 0, untaggedSol: 0, untaggedTok: 0, spot: null };
       buckets.set(k, bucket);
     }
     const solDelta = signedAmount(raw, 'amount_sol');
     const tokDelta = signedAmount(raw, 'token_amount');
-    if (t.isVol) {
-      bucket.volSol += solDelta;
-      bucket.volTok += tokDelta;
+    if (t.isTagged) {
+      bucket.taggedSol += solDelta;
+      bucket.taggedTok += tokDelta;
     } else {
-      bucket.nonVolSol += solDelta;
-      bucket.nonVolTok += tokDelta;
+      bucket.untaggedSol += solDelta;
+      bucket.untaggedTok += tokDelta;
     }
     const spot = tradeSpotPriceSol(raw);
     if (spot != null) bucket.spot = spot;
   }
 
   const keys = [...buckets.keys()].sort((a, b) => a - b);
-  const vol: FlowLinePoint[] = [];
-  const nonVol: FlowLinePoint[] = [];
-  let volSol = 0;
-  let volTok = 0;
-  let nonVolSol = 0;
-  let nonVolTok = 0;
+  const tagged: FlowLinePoint[] = [];
+  const untagged: FlowLinePoint[] = [];
+  let taggedSol = 0;
+  let taggedTok = 0;
+  let untaggedSol = 0;
+  let untaggedTok = 0;
   let lastSpot: number | null = null;
   for (const k of keys) {
     const bucket = buckets.get(k)!;
-    volSol += bucket.volSol;
-    volTok += bucket.volTok;
-    nonVolSol += bucket.nonVolSol;
-    nonVolTok += bucket.nonVolTok;
+    taggedSol += bucket.taggedSol;
+    taggedTok += bucket.taggedTok;
+    untaggedSol += bucket.untaggedSol;
+    untaggedTok += bucket.untaggedTok;
     if (bucket.spot != null) lastSpot = bucket.spot;
 
-    let volVal: number;
-    let nonVolVal: number;
+    let taggedVal: number;
+    let untaggedVal: number;
     if (basis === 'token') {
-      volVal = volTok;
-      nonVolVal = nonVolTok;
+      taggedVal = taggedTok;
+      untaggedVal = untaggedTok;
     } else if (basis === 'value_sol') {
       const spot = lastSpot ?? 0;
-      volVal = volTok * spot;
-      nonVolVal = nonVolTok * spot;
+      taggedVal = taggedTok * spot;
+      untaggedVal = untaggedTok * spot;
     } else {
-      volVal = volSol;
-      nonVolVal = nonVolSol;
+      taggedVal = taggedSol;
+      untaggedVal = untaggedSol;
     }
-    vol.push({ time: k as UTCTimestamp, value: volVal });
-    nonVol.push({ time: k as UTCTimestamp, value: nonVolVal });
+    tagged.push({ time: k as UTCTimestamp, value: taggedVal });
+    untagged.push({ time: k as UTCTimestamp, value: untaggedVal });
   }
-  return { vol, nonVol };
+  return { tagged, untagged };
 }
 
 /**
@@ -130,26 +130,26 @@ export function alignFlowToBars(
   lines: FlowLines,
   bars: readonly OhlcBar[],
 ): FlowLines {
-  if (bars.length === 0) return { vol: [], nonVol: [] };
-  const vol: FlowLinePoint[] = [];
-  const nonVol: FlowLinePoint[] = [];
+  if (bars.length === 0) return { tagged: [], untagged: [] };
+  const tagged: FlowLinePoint[] = [];
+  const untagged: FlowLinePoint[] = [];
   let i = 0;
-  let lastVol = 0;
+  let lastTagged = 0;
   let lastNon = 0;
   for (const bar of bars) {
     const t = bar.time as number;
-    while (i < lines.vol.length && (lines.vol[i].time as number) <= t) {
-      lastVol = lines.vol[i].value;
-      lastNon = lines.nonVol[i].value;
+    while (i < lines.tagged.length && (lines.tagged[i].time as number) <= t) {
+      lastTagged = lines.tagged[i].value;
+      lastNon = lines.untagged[i].value;
       i += 1;
     }
-    vol.push({ time: bar.time, value: lastVol });
-    nonVol.push({ time: bar.time, value: lastNon });
+    tagged.push({ time: bar.time, value: lastTagged });
+    untagged.push({ time: bar.time, value: lastNon });
   }
-  return { vol, nonVol };
+  return { tagged, untagged };
 }
 
-/** Vol/non-vol overlay line colors (match Flow Discovery preview). */
+/** Vol/non-tagged overlay line colors (match Flow Discovery preview). */
 export const FLOW_VOL_LINE_COLOR = '#EF5350';
 export const FLOW_NON_VOL_LINE_COLOR = '#F5C542';
 
@@ -160,15 +160,15 @@ export function flowSeriesScale(basis: FlowBasis): number {
   return basis === 'token' ? TOKEN_FLOW_SERIES_SCALE : 1;
 }
 
-/** Find the vol/non-vol point matching a bar's time key (both arrays share
+/** Find the tagged/non-tagged point matching a bar's time key (both arrays share
  *  the exact same time sequence — see {@link buildFlowLines} / {@link alignFlowToBars}). */
 export function flowAt(
   lines: FlowLines,
   time: Time,
-): { vol: number | null; nonVol: number | null } {
-  const idx = lines.vol.findIndex((p) => p.time === time);
-  if (idx === -1) return { vol: null, nonVol: null };
-  return { vol: lines.vol[idx].value, nonVol: lines.nonVol[idx].value };
+): { tagged: number | null; untagged: number | null } {
+  const idx = lines.tagged.findIndex((p) => p.time === time);
+  if (idx === -1) return { tagged: null, untagged: null };
+  return { tagged: lines.tagged[idx].value, untagged: lines.untagged[idx].value };
 }
 
 /** Compact token count with a trillions tier — {@link formatCompact} caps at G,

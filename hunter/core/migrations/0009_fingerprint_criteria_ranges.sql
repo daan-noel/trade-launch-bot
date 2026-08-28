@@ -1,5 +1,5 @@
 -- ===========================================================================
--- 0008  fingerprint criteria: explicit integer RANGES, one JSONB column
+-- 0009  fingerprint criteria: explicit integer RANGES, one JSONB column
 -- ===========================================================================
 -- A fingerprint stops being "nine value columns plus a row-wide bucket width"
 -- and becomes one `criteria` map of axis -> predicate:
@@ -29,6 +29,11 @@
 -- width 5, 1000 at width 1000) and filed near-edge values into the next bucket. The
 -- integer ranges below have no epsilon to be wrong by.
 -- Detail: docs/history/2026-08-27-bucket-epsilon-scaled-with-width.md
+--
+-- Runs AFTER `0008_pin_the_all_wildcard.sql`, which is written against the columns
+-- this migration drops and which collapses the duplicate plain wildcards a box may
+-- hold. Reversing the two leaves those duplicates to collide on the identity index
+-- below.
 -- ===========================================================================
 
 ALTER TABLE fingerprints ADD COLUMN IF NOT EXISTS criteria JSONB NOT NULL DEFAULT '{}'::jsonb;
@@ -123,6 +128,11 @@ END $$;
 -- asked for it. The gate is dropped from `params` instead and the rule is renamed
 -- to say so -- dropping a gate WIDENS a rule, so leaving it unmarked would be the
 -- dangerous direction. Re-express it as a fingerprint axis before re-activating.
+--
+-- The group is `m_snapshot` here and only here: `0010` renames it to `m_state`, and
+-- this migration runs before it. Naming it `m_state` matches nothing, so the gate
+-- survives the drop and `0010` carries it into `m_state` -- where no metric answers
+-- to it and no guard in either migration reports it.
 UPDATE strategy_rules SET
     rule_name = rule_name || ' [ix_count/prior_launches gate dropped - re-add as a fingerprint axis]',
     params = jsonb_set(
@@ -175,9 +185,46 @@ ALTER TABLE fingerprints ADD CONSTRAINT fingerprints_has_a_criterion
 ALTER TABLE fingerprints ADD CONSTRAINT fingerprints_criteria_is_an_object
     CHECK (jsonb_typeof(criteria) = 'object');
 
--- Identity is the criteria plus the wildcard flag. A UNIQUE index makes the
--- duplicate-fingerprint class impossible at the storage layer instead of relying on
--- every writer routing through `find_or_create` -- `jsonb` equality is canonical
--- (Postgres normalises key order), so two rows naming the same axes collide here.
+-- A collision here is a real finding, not a migration accident: two rows that were
+-- distinct under the old per-axis columns describe the SAME token set under ranges
+-- (bucket mode filed several raw amounts into one window). Name them rather than let
+-- `CREATE UNIQUE INDEX` fail with an opaque "could not create unique index".
+DO $$
+DECLARE dupes text;
+BEGIN
+    SELECT string_agg(row_names, ' ; ') INTO dupes FROM (
+        SELECT string_agg(name || ' (' || id || ')', ' = ' ORDER BY name) AS row_names
+        FROM fingerprints GROUP BY criteria, wildcard, metric_config HAVING count(*) > 1
+    ) x;
+    IF dupes IS NOT NULL THEN
+        RAISE EXCEPTION 'these fingerprint rows collapse onto one identity under ranges: %', dupes
+        USING HINT = 'merge them and retarget their rules first, the way 0006-0008 do';
+    END IF;
+END $$;
+
+-- ROW identity is the criteria, the wildcard flag AND `metric_config`. A UNIQUE
+-- index makes the duplicate-fingerprint class impossible at the storage layer instead
+-- of relying on every writer routing through `find_or_create` -- `jsonb` equality is
+-- canonical (Postgres normalises key order), so two rows naming the same axes and the
+-- same config collide here.
+--
+-- `metric_config` is in the key even though it is NOT match identity, because it is
+-- LIVE per-row behaviour: `EngineState` compiles it into that fingerprint's
+-- `m_flow_split` patterns keyed by `fp.id` at reload. Two rows selecting the same
+-- tokens with different patterns classify flow differently, so they are different
+-- fingerprints and must both exist -- which is exactly what `0006`-`0008` preserved
+-- for the ten `8dtx - <router>` carriers and the `8dtx-derived` classifier. Keying
+-- without it would have merged those eleven rows into the plain `ALL` wildcard and
+-- silently rewritten the flow classification of every rule bound to them.
+--
+-- Indexed as DIGESTS, not raw values: a btree row is capped at ~2704 bytes and the
+-- `8dtx` carriers' `volume_ix_patterns` are several KB on their own, so the plain
+-- three-column index cannot be built at all. `jsonb` is stored decomposed and its
+-- text output is deterministic, so equal `jsonb` always yields equal `md5` -- the
+-- constraint is exactly as strict, and a digest collision could only REJECT a write,
+-- never admit a duplicate.
+--
+-- `IDENTITY_WHERE` deliberately keeps comparing the values themselves. Reads stay
+-- exact; only the write-side constraint is conservative.
 CREATE UNIQUE INDEX IF NOT EXISTS fingerprints_identity_uniq
-    ON fingerprints (criteria, wildcard);
+    ON fingerprints (md5(criteria::text), wildcard, md5(metric_config::text));

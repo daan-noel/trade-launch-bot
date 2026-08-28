@@ -68,7 +68,7 @@ describe('liveTradeToTradeRecord', () => {
       [{ wallet_address: row.wallet_address, sol: row.amount_sol, ix_labels: row.instruction_labels }],
       { patternKeys: keys },
     );
-    expect(classified.isVol).toBe(true);
+    expect(classified.isTagged).toBe(true);
   });
 
   it('a frame without labels carries no labels, never an empty match', () => {
@@ -82,7 +82,7 @@ describe('liveTradeToTradeRecord', () => {
       [{ wallet_address: row.wallet_address, sol: row.amount_sol, ix_labels: row.instruction_labels }],
       { patternKeys: patternKeysFrom([[]]) },
     );
-    expect(classified.isVol).toBe(false);
+    expect(classified.isTagged).toBe(false);
   });
 
   it('normalizes the object-wrapper ix_labels shape, so it classifies like the bare array', () => {
@@ -100,7 +100,7 @@ describe('liveTradeToTradeRecord', () => {
       [{ wallet_address: row.wallet_address, sol: row.amount_sol, ix_labels: row.instruction_labels }],
       { patternKeys: patternKeysFrom([sample.instruction_labels!]) },
     );
-    expect(classified.isVol).toBe(true);
+    expect(classified.isTagged).toBe(true);
   });
 });
 

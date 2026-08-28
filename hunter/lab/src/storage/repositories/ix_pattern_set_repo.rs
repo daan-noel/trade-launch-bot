@@ -1,7 +1,7 @@
 //! Persistence for **analysis-owned** `ix_labels` pattern sets (`ix_pattern_sets`).
 //!
-//! The engine classifies flow from a fingerprint's `metric_config.m_flow_split.
-//! volume_ix_patterns`; a trader study has no fingerprint, so its charts have
+//! The engine classifies flow from a fingerprint's `metric_config.m_flow_ix.
+//! ix_patterns`; a trader study has no fingerprint, so its charts have
 //! nothing to classify with. A pattern set is the same fact — ordered label
 //! sequences — owned by the study surface instead (Trader Analysis' flow lens).
 //! Lab-only: `live` neither reads nor writes this table.

@@ -14,7 +14,7 @@ pub mod scorer;
 
 use chrono::{DateTime, Utc};
 use hunter_engine::fingerprint::Fingerprint as EngineFingerprint;
-use hunter_engine::metrics::flow_split::FlowPatterns;
+use hunter_engine::metrics::flow_ix::FlowPatterns;
 use hunter_engine::rule_params::RuleParams;
 
 use crate::sweep::corpus::Corpus;
@@ -166,7 +166,7 @@ pub fn run_search(
 
 #[cfg(test)]
 mod tests {
-    use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria};
+    use hunter_engine::fingerprint::Criteria;
     use super::*;
     use crate::discovery::fixtures;
     use crate::sweep::progress::NoopObserver;

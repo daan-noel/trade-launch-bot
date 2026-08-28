@@ -96,9 +96,9 @@ pub struct GroupedSweepRun {
     pub cost_model: Option<String>,
     /// Optional volume-ix pattern set for flow-metric sweeps (`string[][]`).
     /// Compiled corpus-wide into `FlowPatterns`; Promote copies into the
-    /// fingerprint's `metric_config.m_flow_split.volume_ix_patterns`. `None` =
+    /// fingerprint's `metric_config.m_flow_ix.ix_patterns`. `None` =
     /// non-flow run / legacy row.
-    pub volume_ix_patterns: Option<Value>,
+    pub ix_patterns: Option<Value>,
     /// The candidate scale-out ladder **grid** searched in Pass 2 (`ExitStage[][]`
     /// — one array per candidate ladder). `None` = no Pass 2 (legacy / overlay
     /// off). This is the config that was searched, NOT necessarily what any one

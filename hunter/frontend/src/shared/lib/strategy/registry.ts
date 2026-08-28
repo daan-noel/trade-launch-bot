@@ -27,7 +27,7 @@ export type MetricScope = 'token' | 'position';
  *  metric-combo discovery pipeline grids over (backend `MetricFamily`). Mirrors the
  *  hue families the registry already keeps, so it also reads as "these chips are
  *  siblings". `standalone` = a group belonging to no established family. */
-export type MetricFamily = 'price' | 'flow' | 'flow_split' | 'liquidity_age' | 'standalone';
+export type MetricFamily = 'price' | 'flow' | 'flow_ix' | 'liquidity_age' | 'standalone';
 
 /** A group's strict (non-condition) parameter, e.g. `window_size_sec`. */
 export interface StrictParamSpec {
@@ -40,7 +40,7 @@ export interface StrictParamSpec {
   allows_zero?: boolean;
 }
 
-/** Fingerprint-side config field for a group (e.g. `volume_ix_patterns`). */
+/** Fingerprint-side config field for a group (e.g. `ix_patterns`). */
 export interface FpConfigFieldSpec {
   name: string;
   /** Wire type hint — currently `"string[][]"` for volume-ix patterns. */
@@ -59,6 +59,11 @@ export interface MetricSpec {
   description?: string;
   unit: MetricUnit;
   eq_tolerance: number;
+  /** Whether this metric reads its group's SECOND window axis (`slice_size_*`).
+   *  `m_flow_window` declares that axis for every instance but only these metrics may
+   *  set it, so the editor asks per METRIC and never by group name. Optional so a
+   *  registry payload from before the axis moved still parses; absent reads false. */
+  two_window?: boolean;
   monotonic: boolean;
   /** HSL hue `[0, 359]` — group siblings share a nearby family. */
   hue: number;
@@ -84,13 +89,13 @@ export function groupsWithFingerprintConfig(reg: StrategyRegistry | undefined): 
   return (reg?.groups ?? []).filter((g) => (g.fingerprint_config?.length ?? 0) > 0);
 }
 
-/** Read `m_flow_split.volume_ix_patterns` from a fingerprint's `metric_config`. */
-export function volumeIxPatternsFromConfig(
+/** Read `m_flow_ix.ix_patterns` from a fingerprint's `metric_config`. */
+export function ixPatternsFromConfig(
   cfg: Record<string, unknown> | null | undefined,
 ): string[][] {
-  const flow = cfg?.m_flow_split;
+  const flow = cfg?.m_flow_ix;
   if (!flow || typeof flow !== 'object') return [];
-  const pats = (flow as { volume_ix_patterns?: unknown }).volume_ix_patterns;
+  const pats = (flow as { ix_patterns?: unknown }).ix_patterns;
   if (!Array.isArray(pats)) return [];
   return pats.filter(
     (p): p is string[] => Array.isArray(p) && p.every((x) => typeof x === 'string'),
@@ -98,10 +103,10 @@ export function volumeIxPatternsFromConfig(
 }
 
 /** Build `metric_config` for flow patterns. Empty ⇒ `{}` (unconfigured). */
-export function metricConfigWithVolumePatterns(patterns: string[][]): Record<string, unknown> {
+export function metricConfigWithIxPatterns(patterns: string[][]): Record<string, unknown> {
   const cleaned = patterns.map((p) => p.map((s) => s.trim()).filter(Boolean)).filter((p) => p.length > 0);
   if (cleaned.length === 0) return {};
-  return { m_flow_split: { volume_ix_patterns: cleaned } };
+  return { m_flow_ix: { ix_patterns: cleaned } };
 }
 
 /** The whole registry payload. */

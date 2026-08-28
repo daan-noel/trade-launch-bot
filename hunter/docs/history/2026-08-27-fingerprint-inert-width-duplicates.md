@@ -69,7 +69,7 @@ because every pair that became match-identical carries a different
 
 Ten `8dtx · <router>` rows are match-identical and carry ten
 different `metric_config` payloads (804–27,641 bytes of
-`m_flow_split.volume_ix_patterns`). `find_or_create` ignores `metric_config` for
+`m_flow_ix.ix_patterns`). `find_or_create` ignores `metric_config` for
 identity but the engine does not, so merging them would have erased the router
 split. The migration merges only within groups whose `metric_config` is identical.
 

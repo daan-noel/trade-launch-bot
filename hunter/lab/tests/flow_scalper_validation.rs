@@ -46,7 +46,7 @@ fn lake_root() -> String {
 }
 
 const BUY_SOL: f64 = 1.0;
-const FP_CU: i64 = 200_000;
+const FP_CU: u64 = 200_000;
 const FP_ID: u128 = 0xF10A_5CA1;
 const WINDOW_SEC: u64 = 30;
 
@@ -59,14 +59,13 @@ fn broad_fp() -> Fingerprint {
         id: FingerprintId(Uuid::from_u128(FP_ID)),
         wildcard: false,
         criteria: Criteria::new()
-            .with(AxisId::CuLimit, AxisPredicate::exact(FP_CU)),
+            .with(AxisId::CuLimit, AxisPredicate::exact(u128::from(FP_CU))),
         metric_config: serde_json::json!({}),
     }
 }
 
 fn uniform_tf() -> TokenFingerprint {
-    cu_limit: Some(FP_CU),
-    ..Default::default()
+    TokenFingerprint { cu_limit: Some(FP_CU), ..Default::default() }
 }
 
 fn rule(id: u128, params: serde_json::Value) -> LoadedRule {
@@ -99,7 +98,7 @@ fn gated(dip: f64, win: u64, retrace: f64) -> serde_json::Value {
     serde_json::json!({
         "stop_loss": 25,
         "entry": {
-            "m_snapshot": {
+            "m_state": {
                 "time": [{"operator": ">=", "value": 120}],
                 "liquidity": [{"operator": ">=", "value": 45}, {"operator": "<=", "value": 110}]
             },
@@ -126,7 +125,7 @@ fn gated_exhaustion(dip: f64, win: u64, retrace: f64, netflow_floor: f64) -> ser
     serde_json::json!({
         "stop_loss": 25,
         "entry": {
-            "m_snapshot": {
+            "m_state": {
                 "time": [{"operator": ">=", "value": 120}],
                 "liquidity": [{"operator": ">=", "value": 45}, {"operator": "<=", "value": 110}]
             },
@@ -149,7 +148,7 @@ fn gated_combined(dip: f64, win: u64, retrace: f64, netflow_floor: f64) -> serde
     serde_json::json!({
         "stop_loss": 25,
         "entry": {
-            "m_snapshot": {
+            "m_state": {
                 "time": [{"operator": ">=", "value": 120}],
                 "liquidity": [{"operator": ">=", "value": 45}, {"operator": "<=", "value": 110}]
             },
@@ -181,7 +180,7 @@ fn gated_stall(dip: f64, win: u64, retrace: f64, stall_sec: Option<f64>) -> serd
     serde_json::json!({
         "stop_loss": 25,
         "entry": {
-            "m_snapshot": {
+            "m_state": {
                 "time": [{"operator": ">=", "value": 120}],
                 "liquidity": [{"operator": ">=", "value": 45}, {"operator": "<=", "value": 110}]
             },

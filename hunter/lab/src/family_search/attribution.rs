@@ -283,7 +283,7 @@ mod tests {
             // Slot beyond the fixed array — both readers clamp it to the last bucket.
             metric_exit(
                 N_EXIT_METRIC_SLOTS as u8 + 4,
-                MetricId::WinNonvolBuy,
+                MetricId::WinUntaggedBuy,
                 Operator::Gte,
                 1.6,
                 Some(hunter_engine::metrics::WindowSpec::secs(2.0)),
@@ -390,13 +390,13 @@ mod tests {
     #[test]
     fn same_metric_different_windows_are_distinct_labelled_slots() {
         let outs = vec![
-            metric_exit(0, MetricId::NonvolBuy, Operator::Gte, 0.9, None, 0.01),
-            metric_exit(1, MetricId::WinNonvolBuy, Operator::Gte, 0.9, Some(hunter_engine::metrics::WindowSpec::secs(2.0)), 0.02),
+            metric_exit(0, MetricId::UntaggedBuy, Operator::Gte, 0.9, None, 0.01),
+            metric_exit(1, MetricId::WinUntaggedBuy, Operator::Gte, 0.9, Some(hunter_engine::metrics::WindowSpec::secs(2.0)), 0.02),
         ];
         let a = rollup(&outs, 0.01);
         assert_eq!(a.by_slot.len(), 2);
-        assert_eq!(a.by_slot[0].label.as_deref(), Some("nonvol_buy >= 0.9"));
-        assert_eq!(a.by_slot[1].label.as_deref(), Some("nonvol_buy(2s) >= 0.9"));
+        assert_eq!(a.by_slot[0].label.as_deref(), Some("untagged_buy >= 0.9"));
+        assert_eq!(a.by_slot[1].label.as_deref(), Some("untagged_buy(2s) >= 0.9"));
         assert_ne!(a.by_slot[0].label, a.by_slot[1].label);
     }
 

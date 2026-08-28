@@ -32,9 +32,9 @@ describe('buildFlowLines', () => {
       trade({ slot: 2, block_time: '2026-07-21T01:01:00Z', amount_sol: 4, trade_type: 'sell' }),
     ];
     const lines = buildFlowLines(trades, 'time', 60, 'cost_sol', NO_PATTERNS);
-    expect(lines.nonVol[0].value).toBeCloseTo(10, 6);
+    expect(lines.untagged[0].value).toBeCloseTo(10, 6);
     // A sell pulls the running net BACK down — impossible under the old gross flow.
-    expect(lines.nonVol.at(-1)!.value).toBeCloseTo(6, 6);
+    expect(lines.untagged.at(-1)!.value).toBeCloseTo(6, 6);
   });
 
   it('attributes each trade to its own time bucket regardless of processing order', () => {
@@ -45,8 +45,8 @@ describe('buildFlowLines', () => {
     const early = trade({ slot: 1, tx_index: 0, block_time: '2026-07-21T01:00:00Z', amount_sol: 5 });
     const late = trade({ slot: 2, tx_index: 0, block_time: '2026-07-21T01:05:00Z', amount_sol: 7 });
     const lines = buildFlowLines([late, early], 'time', 60, 'cost_sol', NO_PATTERNS);
-    expect(lines.nonVol[0].value).toBeCloseTo(5, 6);
-    expect(lines.nonVol.at(-1)!.value).toBeCloseTo(12, 6);
+    expect(lines.untagged[0].value).toBeCloseTo(5, 6);
+    expect(lines.untagged.at(-1)!.value).toBeCloseTo(12, 6);
   });
 
   it('token basis tracks the net token balance', () => {
@@ -55,8 +55,8 @@ describe('buildFlowLines', () => {
       trade({ slot: 2, block_time: '2026-07-21T01:01:00Z', token_amount: 400, trade_type: 'sell' }),
     ];
     const lines = buildFlowLines(trades, 'time', 60, 'token', NO_PATTERNS);
-    expect(lines.nonVol[0].value).toBeCloseTo(1000, 6);
-    expect(lines.nonVol.at(-1)!.value).toBeCloseTo(600, 6);
+    expect(lines.untagged[0].value).toBeCloseTo(1000, 6);
+    expect(lines.untagged.at(-1)!.value).toBeCloseTo(600, 6);
   });
 
   it('value_sol marks the net token bag to the candle-close canonical spot, carrying it forward', () => {
@@ -91,8 +91,8 @@ describe('buildFlowLines', () => {
       }),
     ];
     const lines = buildFlowLines(trades, 'time', 60, 'value_sol', NO_PATTERNS);
-    expect(lines.nonVol[0].value).toBeCloseTo(20, 6);
-    expect(lines.nonVol[1].value).toBeCloseTo(44, 6);
-    expect(lines.nonVol.at(-1)!.value).toBeCloseTo(48, 6);
+    expect(lines.untagged[0].value).toBeCloseTo(20, 6);
+    expect(lines.untagged[1].value).toBeCloseTo(44, 6);
+    expect(lines.untagged.at(-1)!.value).toBeCloseTo(48, 6);
   });
 });

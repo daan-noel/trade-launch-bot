@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { classifyFlowTrades, flowReasonsById, patternKeysFrom } from './classifyFlow';
 
-/** Fixture mirrors `hunter_engine::metrics::flow_split` tests (Rust SSOT:
- *  hunter/engine/src/metrics/flow_split.rs) — the decision order and
+/** Fixture mirrors `hunter_engine::metrics::flow_ix` tests (Rust SSOT:
+ *  hunter/engine/src/metrics/flow_ix.rs) — the decision order and
  *  forward-tagging behavior asserted here must stay in lockstep with
  *  `FlowState::classify`/`on_trade`. A change to one side without the other
  *  is the SSOT drift this test exists to catch. */
@@ -17,8 +17,8 @@ describe('classifyFlowTrades', () => {
       { wallet_address: 'w2', sol: 2, ix_labels: B },
     ];
     const out = classifyFlowTrades(trades, { patternKeys });
-    expect(out[0]).toMatchObject({ isVol: true, volSol: 1, nonVolSol: 0 });
-    expect(out[1]).toMatchObject({ isVol: false, volSol: 0, nonVolSol: 2 });
+    expect(out[0]).toMatchObject({ isTagged: true, taggedSol: 1, untaggedSol: 0 });
+    expect(out[1]).toMatchObject({ isTagged: false, taggedSol: 0, untaggedSol: 2 });
   });
 
   it('forward-tags a wallet after its first volume trade — later non-matching trades from the same wallet still count as volume', () => {
@@ -27,8 +27,8 @@ describe('classifyFlowTrades', () => {
       { wallet_address: 'w1', sol: 3, ix_labels: B },
     ];
     const out = classifyFlowTrades(trades, { patternKeys });
-    expect(out[0].isVol).toBe(true);
-    expect(out[1]).toMatchObject({ isVol: true, volSol: 3, nonVolSol: 0 });
+    expect(out[0].isTagged).toBe(true);
+    expect(out[1]).toMatchObject({ isTagged: true, taggedSol: 3, untaggedSol: 0 });
   });
 
   it('never retroactively reclassifies an earlier trade (forward-only contagion)', () => {
@@ -37,25 +37,25 @@ describe('classifyFlowTrades', () => {
       { wallet_address: 'w1', sol: 1, ix_labels: A },
     ];
     const out = classifyFlowTrades(trades, { patternKeys });
-    expect(out[0]).toMatchObject({ isVol: false, nonVolSol: 5 });
-    expect(out[1]).toMatchObject({ isVol: true, volSol: 1 });
+    expect(out[0]).toMatchObject({ isTagged: false, untaggedSol: 5 });
+    expect(out[1]).toMatchObject({ isTagged: true, taggedSol: 1 });
   });
 
   it('creator wallet is always volume and seeds contagion', () => {
     const trades = [{ wallet_address: 'creator', sol: 4, ix_labels: B }];
     const out = classifyFlowTrades(trades, { patternKeys, creatorWallet: 'creator' });
-    expect(out[0]).toMatchObject({ isVol: true, volSol: 4 });
+    expect(out[0]).toMatchObject({ isTagged: true, taggedSol: 4 });
   });
 
   it('missing/empty ix_labels never structurally match — organic unless wallet already tagged', () => {
     const trades = [{ wallet_address: 'w9', sol: 2, ix_labels: null }];
     const out = classifyFlowTrades(trades, { patternKeys });
-    expect(out[0]).toMatchObject({ isVol: false, nonVolSol: 2 });
+    expect(out[0]).toMatchObject({ isTagged: false, untaggedSol: 2 });
   });
 });
 
 /** The badge in the trades table tests structure alone; these reasons are how a
- *  row that the LINES count as volume explains itself. `isVol` must stay exactly
+ *  row that the LINES count as volume explains itself. `isTagged` must stay exactly
  *  what it was — the reason is additive. */
 describe('classifyFlowTrades reasons', () => {
   const A = ['Compute Budget: SetComputeUnitLimit', 'Pump.Fun: Buy'];
@@ -96,7 +96,7 @@ describe('classifyFlowTrades reasons', () => {
       { wallet_address: 'w2', sol: 2, ix_labels: B },
     ];
     for (const t of classifyFlowTrades(trades, { patternKeys })) {
-      expect(t.reason == null).toBe(!t.isVol);
+      expect(t.reason == null).toBe(!t.isTagged);
     }
   });
 });

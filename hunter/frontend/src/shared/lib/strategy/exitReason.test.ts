@@ -25,7 +25,7 @@ describe('exitReasonLabel', () => {
   it('shows spaced metric detail forms as stored', () => {
     expect(exitReasonLabel('stall > 3')).toBe('stall > 3');
     expect(exitReasonLabel('trail >= 20', 1)).toBe('trail >= 20');
-    expect(exitReasonLabel('nonvol_gross = 0')).toBe('nonvol_gross = 0');
+    expect(exitReasonLabel('untagged_gross = 0')).toBe('untagged_gross = 0');
   });
 
   it('splits legacy Metrics by realized PnL sign', () => {
@@ -60,8 +60,8 @@ describe('parseMetricExitParts', () => {
   // (`event::format_metric_exit_name`). A parser that does not accept it returns
   // null, and the row stops reading as a metric exit at all.
   it('keeps the window qualifier on the name, in every unit', () => {
-    expect(parseMetricExitParts('nonvol_buy(2s) >= 0.9')).toEqual({
-      name: 'nonvol_buy(2s)',
+    expect(parseMetricExitParts('untagged_buy(2s) >= 0.9')).toEqual({
+      name: 'untagged_buy(2s)',
       op: '>=',
       value: '0.9',
     });
@@ -80,8 +80,8 @@ describe('parseMetricExitParts', () => {
 
 describe('parseMetricExitTarget', () => {
   it('reads the whole span, not just its size', () => {
-    expect(parseMetricExitTarget('nonvol_buy(2s) >= 0.9')).toEqual({
-      metric: 'nonvol_buy',
+    expect(parseMetricExitTarget('untagged_buy(2s) >= 0.9')).toEqual({
+      metric: 'untagged_buy',
       window: { size: 2, lag: 0, unit: 'sec' },
     });
     expect(parseMetricExitTarget('buy_count(30sl@1) >= 3')).toEqual({
@@ -99,7 +99,7 @@ describe('parseMetricExitTarget', () => {
 describe('formatMetricExitLabel', () => {
   it('uses spaced name op value', () => {
     expect(formatMetricExitLabel('stall', '>', 3)).toBe('stall > 3');
-    expect(formatMetricExitLabel('nonvol_gross', '=', 0)).toBe('nonvol_gross = 0');
+    expect(formatMetricExitLabel('untagged_gross', '=', 0)).toBe('untagged_gross = 0');
   });
 });
 

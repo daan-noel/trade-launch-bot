@@ -150,7 +150,7 @@ differs by ≥ 15%, operator toward the ran side.
 | --- | --- | --- |
 | Clock (always) | `time` | band `(t_lo, t_hi)` — not from a contrast test |
 | State | `liquidity` | band: p10 ran at climb ≥, p90 ran at climb ≤ |
-| Start event (one family) | windowed `gross_flow` / `buy`; organic `nonvol_buy` / `nonvol_net`; dip `trail`; rise `rise` | floor at a rung of ran in climb, window from §1 — **or a band**, when the ran distribution is non-monotone in outcome (its top decile scores worse than its middle). A floor cannot express "enough crowd, but not bot-flood"; without the band that habit is invisible rather than absent. Prefer organic or flow over rise. A rise-only thesis carries a latency-risk flag. |
+| Start event (one family) | windowed `gross_flow` / `buy`; organic `untagged_buy` / `untagged_net`; dip `trail`; rise `rise` | floor at a rung of ran in climb, window from §1 — **or a band**, when the ran distribution is non-monotone in outcome (its top decile scores worse than its middle). A floor cannot express "enough crowd, but not bot-flood"; without the band that habit is invisible rather than absent. Prefer organic or flow over rise. A rise-only thesis carries a latency-risk flag. |
 | End event | dump-lead or giveback of flow / organic / `trail`; `held` | p25 / p50 / p75 of that event set (`>=`) |
 
 One start family per thesis (dip XOR rise XOR accumulation XOR organic). Giveback

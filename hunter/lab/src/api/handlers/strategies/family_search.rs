@@ -39,7 +39,7 @@ use crate::sweep::generic::Pricing;
 use crate::sweep::progress::SweepObserver;
 use crate::sweep::registry::clamp_token_cap;
 use hunter_engine::fingerprint::Fingerprint as EngineFingerprint;
-use hunter_engine::metrics::flow_split::FlowPatterns;
+use hunter_engine::metrics::flow_ix::FlowPatterns;
 use hunter_engine::rule_params::RuleParams;
 use trading_core::models::Fingerprint;
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;

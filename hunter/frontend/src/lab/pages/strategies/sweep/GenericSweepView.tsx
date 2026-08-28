@@ -822,7 +822,7 @@ export function GenericSweepView() {
                     groupId={activeGroupId}
                     comboId={activeComboId}
                     comboParams={activeCombo?.params ?? null}
-                    volumeIxPatterns={activeRun?.volume_ix_patterns ?? null}
+                    ixPatterns={activeRun?.ix_patterns ?? null}
                     inspectFingerprintId={
                       promotedFp?.groupId === activeGroupId ? promotedFp.fingerprintId : null
                     }
@@ -850,7 +850,7 @@ function ComboTokenResults({
   groupId,
   comboId,
   comboParams,
-  volumeIxPatterns,
+  ixPatterns,
   inspectFingerprintId,
   onClose,
 }: {
@@ -862,15 +862,15 @@ function ComboTokenResults({
    *  exact params that produced these rows. Null when the row paged out of view. */
   comboParams: Record<string, unknown> | null;
   /** Corpus-wide run patterns — chart overlay before Promote creates a fingerprint. */
-  volumeIxPatterns: string[][] | null;
+  ixPatterns: string[][] | null;
   /** Promoted fingerprint for this group — enables flow metric-series panes. */
   inspectFingerprintId: string | null;
   onClose: () => void;
 }) {
   const { timezone } = useTimezone();
   const flowPatternKeys = useMemo(
-    () => flowPatternKeysOf(volumeIxPatterns),
-    [volumeIxPatterns],
+    () => flowPatternKeysOf(ixPatterns),
+    [ixPatterns],
   );
   const query = useGetComboTokenResultsQuery({ strategyId, runId, groupId, comboId });
   // Stable identities: RTK keeps `query.data` referentially equal across renders, so
@@ -1103,7 +1103,7 @@ function ComboTokenResults({
         chartsDefaultOn
         flowPatternKeys={flowPatternKeys}
         // A finished run's numbers were computed under the run's OWN stored
-        // volume_ix_patterns, which are a snapshot rather than a live fingerprint
+        // ix_patterns, which are a snapshot rather than a live fingerprint
         // row — so they are readable here but not editable, or a Vol-badge click
         // would silently retarget some unrelated fingerprint.
         flowReadOnly

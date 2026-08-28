@@ -111,7 +111,7 @@ const DEFAULTS: Config = {
  * Standing exit terms, one per line — mechanics that ride into every candidate and
  * the ungated control but are never searched, ablated or credited. Written exactly as
  * the attribution table prints them, so a term can be copied straight back out of a
- * result: `liquidity >= 85`, `nonvol_buy(2s) >= 0.9`.
+ * result: `liquidity >= 85`, `untagged_buy(2s) >= 0.9`.
  */
 function standingTerms(raw: string): string[] {
   return raw
@@ -173,7 +173,7 @@ const TIPS = {
   },
   standing: {
     title: 'Standing exit terms',
-    body: 'Mechanical alarms you always want, one per line, written exactly as the attribution table prints them: `liquidity >= 85` (sell at migration), `nonvol_buy(2s) >= 0.9`. Each rides into every candidate AND the ungated control, so the numbers describe a rule you would really run — and none of them is searched, ablated or credited with the edge. A term that does not parse fails the run rather than being silently dropped.',
+    body: 'Mechanical alarms you always want, one per line, written exactly as the attribution table prints them: `liquidity >= 85` (sell at migration), `untagged_buy(2s) >= 0.9`. Each rides into every candidate AND the ungated control, so the numbers describe a rule you would really run — and none of them is searched, ablated or credited with the edge. A term that does not parse fails the run rather than being silently dropped.',
   },
   incumbent: {
     title: 'Incumbent (display only)',

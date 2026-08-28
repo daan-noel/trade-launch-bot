@@ -49,7 +49,7 @@ describe('metricHelpBody', () => {
   });
 
   it('documents the second window axis, so a burst row is not a mystery field', () => {
-    const tip = STRICT_PARAM_HELP.burst_size_sec;
+    const tip = STRICT_PARAM_HELP.slice_size_sec;
     expect(tip).toBeTruthy();
     expect(tip.body).toContain('window_size_sec');
     expect(tip.body).toContain('trade_share');

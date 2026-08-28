@@ -88,9 +88,9 @@ function axisSpecLines(axesSpec: unknown): string[] {
   });
 }
 
-/** `volume_ix_patterns` (`string[][]`) as one line per pattern — the corpus-wide
+/** `ix_patterns` (`string[][]`) as one line per pattern — the corpus-wide
  *  ix-name sequences a flow-axis run classified volume by. */
-function volumeIxPatternLines(patterns: string[][] | null): string[] {
+function ixPatternLines(patterns: string[][] | null): string[] {
   if (!patterns || patterns.length === 0) return [];
   return patterns.map((p) => p.join(' → '));
 }
@@ -137,7 +137,7 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
       : 'any';
   const fieldLines = run.field_filters ? fieldFilterLines(run.field_filters) : [];
   const axisLines = axisSpecLines(run.axes_spec);
-  const flowLines = volumeIxPatternLines(run.volume_ix_patterns);
+  const flowLines = ixPatternLines(run.ix_patterns);
   // Name the scope fingerprint when it still exists; a deleted one keeps the run
   // honest by falling back to its id (the run row deliberately has no FK).
   const scopeFp = run.fingerprint_id
@@ -255,11 +255,14 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
         <Row label="Caps / gates">
           min {run.min_tokens} tok/grp · token cap {run.token_cap ?? '—'} · max combos{' '}
           {run.max_combos ?? 'default'} · buy {tidySolDecimal(run.buy_amount_sol ?? 1)} SOL ·{' '}
-          {/* A NULL width IS the exact mode (Rust `SolPrecision::from_width`) — substituting
-              the default here reported a 0.1 bucket on runs that grouped exact amounts. */}
-          {run.bucket_width_sol == null
-            ? 'exact SOL amounts'
-            : `bucket ${tidySolDecimal(run.bucket_width_sol)} SOL`}
+          {/* The partition IS what the run grouped on, and it travels with the run —
+              so a promoted rule matches the window a group actually selected. An
+              EMPTY partition is a run swept before it replaced the bucket width;
+              those group keys are rendered labels that no longer parse, so the run
+              reads as one-group-per-value and has to be re-run to promote. */}
+          {run.partition.length === 0
+            ? 'exact SOL amounts (pre-partition run)'
+            : `partitioned on ${run.partition.map(([field]) => field).join(', ')}`}
           {run.curve_only ? ' · curve-only' : ''}
         </Row>
         {/* Pricing is part of this run's IDENTITY, not a display preference: every

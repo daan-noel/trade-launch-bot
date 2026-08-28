@@ -159,7 +159,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   // Bucket width (SOL) for the continuous SOL group fields — the same knob the
   // grouped sweep uses, so this dashboard groups a corpus identically to a sweep.
   // Exact mode: key the ◎ SOL fields on the amount itself, one group per distinct
-  // value. Separate from the width (never a magic 0) — see Rust `SolPrecision`.
+  // value. Separate from the width, and never a magic 0.
   // Default ON: a launch client's tell is a repeated EXACT amount, which any
   // non-zero bucket width smears across neighbours.
   // How each grouped field is partitioned. Explicit edges travel with the request,
@@ -444,7 +444,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   const drillTotal = drillArgs ? drillData?.total ?? 0 : 0;
   // The drilled card's OWN fingerprint drives the vol/non-vol overlay on its
   // charts / inspect modal, so a manual group-by that lands on a saved
-  // fingerprint classifies with that row's `volume_ix_patterns` — the same set
+  // fingerprint classifies with that row's `ix_patterns` — the same set
   // the engine decides on — instead of degrading to creator-vs-rest. The scoped
   // id is the fallback (under a fingerprint scope `fpByGroup` already resolves
   // to it, so this only matters before the groups arrive); a card that matches

@@ -28,7 +28,7 @@ use smallvec::SmallVec;
 
 use hunter_engine::event::{Event, Mint};
 use hunter_engine::grouping::LAMPORTS_PER_SOL_F64;
-use hunter_engine::metrics::flow_split::wallet_hash;
+use hunter_engine::metrics::flow_ix::wallet_hash;
 use hunter_engine::token_identity_hash;
 use hunter_engine::metrics::{Side, TradeLite};
 

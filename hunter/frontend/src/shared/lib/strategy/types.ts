@@ -49,7 +49,7 @@ export interface Fingerprint {
    *  from the map is not part of identity. Bounds are decimal STRINGS over the full
    *  `u64` domain — see `fingerprintAxes.ts`. */
   criteria: Criteria;
-  /** Per-metric-group fingerprint-side config (e.g. `m_flow_split.volume_ix_patterns`).
+  /** Per-metric-group fingerprint-side config (e.g. `m_flow_ix.ix_patterns`).
    *  Absent/`{}` => flow metrics stay NaN. Not part of identity. */
   metric_config: Record<string, unknown>;
   created_at: string;
@@ -312,7 +312,7 @@ export interface MetricSeriesColumn {
   group: string;
   unit: string;
   /** The WHOLE span this column was computed over — size, lag and unit. Present only
-   *  for dynamic groups (`m_flow_window`, `m_flow_split_window`, `m_price_window`);
+   *  for dynamic groups (`m_flow_window`, `m_flow_ix_window`, `m_price_window`);
    *  null for static ones (`m_flow_lifetime`, …). Prefer this over
    *  {@link MetricSeriesColumn.window_size_sec}. */
   window?: WindowSpec | null;

@@ -146,7 +146,7 @@ export const labApi = baseApi.injectEndpoints({
         return `/api/tokens/${encodeURIComponent(mint)}/metric-series${q ? `?${q}` : ''}`;
       },
       // The flow columns are folded server-side from the fingerprint's saved
-      // `volume_ix_patterns`, so a pattern edit changes these numbers. Without the
+      // `ix_patterns`, so a pattern edit changes these numbers. Without the
       // tag the pane keeps serving the pre-edit series while the chart — which
       // re-derives its keys from the same invalidated fingerprint — already moved,
       // and the two disagree for the rest of the cache window.
@@ -458,7 +458,7 @@ export const labApi = baseApi.injectEndpoints({
         /// a copy — there is no precision to pass, and so no substituted precision
         /// that could arm the bound rule on a window the card never showed.
         group_key: Record<string, unknown>;
-        volume_ix_patterns: string[][];
+        ix_patterns: string[][];
         name?: string;
       }
     >({
@@ -529,7 +529,7 @@ export const labApi = baseApi.injectEndpoints({
       query: () => '/api/strategies/family-search/last',
     }),
     // ── Flow lens: analysis-owned ix_labels pattern sets ─────────────────────
-    // The study twin of a fingerprint's `volume_ix_patterns` — same classifier,
+    // The study twin of a fingerprint's `ix_patterns` — same classifier,
     // different owner, so a wallet study can split vol/non-vol on tokens that
     // belong to no cohort. Lab-only table; nothing the engine reads.
     getIxPatternSets: builder.query<IxPatternSet[], void>({

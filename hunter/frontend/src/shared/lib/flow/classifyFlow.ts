@@ -1,5 +1,5 @@
-/** Client-side PREVIEW of `hunter_engine::metrics::flow_split::FlowState`
- *  (Rust SSOT: hunter/engine/src/metrics/flow_split.rs:305-386) — used by
+/** Client-side PREVIEW of `hunter_engine::metrics::flow_ix::FlowState`
+ *  (Rust SSOT: hunter/engine/src/metrics/flow_ix.rs:305-386) — used by
  *  token charts (Flow Discovery, Simulate, inspect) to redraw vol/non-vol
  *  lines without a backend round-trip. Visualization only — never wired to
  *  live trading decisions. Equivalence classes match via `JSON.stringify`
@@ -26,7 +26,7 @@ export interface FlowTradeLite {
 export type FlowSide = 'buy' | 'sell';
 
 export interface FlowClassifyOptions {
-  /** `JSON.stringify(labels)` keys of the checked volume_ix_patterns. */
+  /** `JSON.stringify(labels)` keys of the checked ix_patterns. */
   patternKeys: ReadonlySet<string>;
   /** Token creator wallet address — always classified as volume-side, and
    *  seeds the contagion set (mirrors `FlowState::set_creator`). */
@@ -77,11 +77,11 @@ export interface FlowClassifyOptions {
 export type FlowReason = 'structural' | 'creator' | 'wallet';
 
 export interface FlowClassified {
-  isVol: boolean;
-  /** `null` ⇔ `isVol === false`. */
+  isTagged: boolean;
+  /** `null` ⇔ `isTagged === false`. */
   reason: FlowReason | null;
-  volSol: number;
-  nonVolSol: number;
+  taggedSol: number;
+  untaggedSol: number;
 }
 
 /** Classify `trades` (must already be in canonical order — slot -> tx_index
@@ -105,7 +105,7 @@ export function classifyFlowTrades<T extends FlowTradeLite>(
     // a trade the lens is not asking about must not seed contagion either.
     if (excluded?.has(t.wallet_address) || (side !== null && t.side !== side)) {
       const mag = Math.abs(t.sol);
-      out.push({ ...t, isVol: false, reason: null, volSol: 0, nonVolSol: mag });
+      out.push({ ...t, isTagged: false, reason: null, taggedSol: 0, untaggedSol: mag });
       continue;
     }
     const structuralMatch =
@@ -117,7 +117,7 @@ export function classifyFlowTrades<T extends FlowTradeLite>(
     // `wallet` — otherwise every trade of a tagged wallet looks like contagion
     // and nothing points back at the pattern that started it.
     const wasTagged = contagion && taggedWallets.has(t.wallet_address);
-    const isVol = wasTagged || structuralMatch;
+    const isTagged = wasTagged || structuralMatch;
     const reason: FlowReason | null = wasTagged
       ? t.wallet_address === opts.creatorWallet
         ? 'creator'
@@ -125,9 +125,9 @@ export function classifyFlowTrades<T extends FlowTradeLite>(
       : structuralMatch
         ? 'structural'
         : null;
-    if (contagion && isVol) taggedWallets.add(t.wallet_address);
+    if (contagion && isTagged) taggedWallets.add(t.wallet_address);
     const g = Math.abs(t.sol);
-    out.push({ ...t, isVol, reason, volSol: isVol ? g : 0, nonVolSol: isVol ? 0 : g });
+    out.push({ ...t, isTagged, reason, taggedSol: isTagged ? g : 0, untaggedSol: isTagged ? 0 : g });
   }
   return out;
 }

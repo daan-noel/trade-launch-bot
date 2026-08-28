@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use hunter_engine::metrics::flow_split::ix_hash;
+use hunter_engine::metrics::flow_ix::ix_hash;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -372,7 +372,7 @@ fn score_group(
             let signed = if t.is_buy { g } else { -g };
             *acc.net_by_token.entry(ti).or_insert(0.0) += signed;
             if let Some(w) = t.wallet.as_deref() {
-                let wh = hunter_engine::metrics::flow_split::wallet_hash(w);
+                let wh = hunter_engine::metrics::flow_ix::wallet_hash(w);
                 acc.wallets.insert(wh);
                 acc.wallets_by_token.entry(ti).or_default().insert(wh);
                 *acc.gross_by_wallet.entry(wh).or_insert(0.0) += g;

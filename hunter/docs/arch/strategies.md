@@ -59,7 +59,7 @@ fold; live, sweep, and the replay debugger all drive it.
 | `cap.rs` | `Cap` — a governance limit with its `0 = unlimited` storage encoding already decoded. `Cap::zero_unlimited` is the ONE reader of that sentinel for **both** caps (`max_total_tokens`, `max_concurrent_tokens` — a blank field in the rule editor stores `0` on either); `CompiledRule` carries both already decoded so the fold just asks `allows(count)`. `UNLIMITED = u32::MAX`, so the hot path is a single `<` with no branch |
 | `fingerprint.rs` | `Fingerprint` (criteria; lamports at rest) + `match_all` / `MatchPhase` (Instant vs Full — the two-phase first-slot split). `wildcard` matches EVERY token and short-circuits every axis: a criterion-less row matches *nothing* on purpose (a half-filled form must not arm on everything), so a rule that decides purely on the tape has to say "any token" out loud or the two states are indistinguishable. A DB CHECK refuses a wildcard row that also carries axes, `Fingerprint::validate` refuses one at the write edge (a 400, not a DB error), and `wildcard` is part of match identity (`IDENTITY_WHERE` compares it) so a wildcard row never dedupes against an axis row. Every reader of the flag agrees on the same verdict: the matcher short-circuits to *matches all*, `has_any_criterion` counts it as the one criterion on both the model and engine sides, and the creation-stats SQL mirror (`fingerprint_scope_clauses`) emits **no** clause — never the `FALSE` fence a criterion-less row gets, which would show 0 matched tokens for the one fingerprint that arms on every launch. UI: a `match every token` checkbox on `FingerprintForm` that greys out and drops every axis, an `ALL tokens` chip in place of the axis chips, and an `all` badge in the fingerprints table (where the axis columns are all dashes) |
 | `metrics/` | the metric registry + `TokenTrack` (in-memory per-token metric state) + `MetricSeries` (sweep precompute) + `evaluator` (Operator/Condition/eval). Aggregate flow: `metrics/flow_lifetime.rs` (`m_flow_lifetime` — lifetime `buy`/`sell`/`net_flow`/`gross_flow`/`trade_count`) + `metrics/flow_window.rs` (`m_flow_window` — those five over a trailing window **plus
-`unique_wallets` / `buy_share` / `trades_per_wallet`, which are window-only**) + `metrics/flow_burst.rs` (`m_flow_burst` — `trade_share` across a NESTED window pair; owns no state, reads `flow_window`'s two ring buffers). Classified flow (`m_flow_split` / `m_flow_split_window`) lives in `metrics/flow_split.rs` — fingerprint-scoped classifier state + SSOT `ix_hash`/`wallet_hash`. Price groups: `metrics/price_lifetime.rs` (lifetime extrema — `stall`/`trail`/`rise`), `metrics/price_window.rs` (`m_price_window` — rolling-window `trail`/`rise` via monotonic deques; the dip trigger), and `metrics/position.rs` (`m_position` — **position-scoped** `retrace`/`bounce`/`pnl`/`held`, exit-only, read from a `PositionCtx` on `ArmState::Entered`; TP/SL desugar into `pnl`; strict param `arm_above_pct` holds the **trailing** metrics (`retrace`/`bounce`, per the one reader `position::is_trailing`) off until the position is that far in profit — the peak seeds at the entry fill, so an unarmed `retrace` doubles as a hard stop from entry, and the exit combinator ORs across metrics so `retrace >= 3 AND pnl >= 2` is otherwise unauthorable. Absent ⇒ prior behavior; `0` is a real value (arm at break-even), which is why `StrictParamSpec` carries `allows_zero`. Design + the measurement behind it: [../plans/strategies/armed-trailing-stop.md](../plans/strategies/armed-trailing-stop.md)). Dynamic windows split flow vs price on `TokenTrack` (`ensure_window` / `ensure_price_window`) so a rule pays only for the buffers it reads. `GroupSpec.scope` (Token/Position) gates the entry side |
+`buy_share` / `buy_count` / `sell_count`, which are window-only**) + `metrics/flow_slice.rs` (the `m_flow_window` two-window reads `trade_share` / `sol_share` across a NESTED slice; owns no state, reads `flow_window`'s two ring buffers, and the slice axis is required PER METRIC via `metrics::is_two_window` so an instance that reads no share never carries one) + `m_crowd_window` (`unique_wallets` / `trades_per_wallet` — the wallet-keyed pair, its own group because it is the only one that needs the wallet column loaded). Classified flow (`m_flow_ix` / `m_flow_ix_window`) lives in `metrics/flow_ix.rs` — fingerprint-scoped classifier state + SSOT `ix_hash`/`wallet_hash`. Price groups: `metrics/price_lifetime.rs` (lifetime extrema — `stall`/`trail`/`rise`), `metrics/price_window.rs` (`m_price_window` — rolling-window `trail`/`rise` via monotonic deques; the dip trigger), and `metrics/position.rs` (`m_position` — **position-scoped** `retrace`/`bounce`/`pnl`/`held`, exit-only, read from a `PositionCtx` on `ArmState::Entered`; TP/SL desugar into `pnl`; strict param `arm_above_pct` holds the **trailing** metrics (`retrace`/`bounce`, per the one reader `position::is_trailing`) off until the position is that far in profit — the peak seeds at the entry fill, so an unarmed `retrace` doubles as a hard stop from entry, and the exit combinator ORs across metrics so `retrace >= 3 AND pnl >= 2` is otherwise unauthorable. Absent ⇒ prior behavior; `0` is a real value (arm at break-even), which is why `StrictParamSpec` carries `allows_zero`. Design + the measurement behind it: [../plans/strategies/armed-trailing-stop.md](../plans/strategies/armed-trailing-stop.md)). Dynamic windows split flow vs price on `TokenTrack` (`ensure_window` / `ensure_price_window`) so a rule pays only for the buffers it reads. `GroupSpec.scope` (Token/Position) gates the entry side |
 | `rule_params.rs` | `RuleParams` registry-guided parse → canonical `to_value` + validation (incl. `scale_out: Vec<ExitStage>` — ordered partial-exit ladder; see `docs/plans/strategies/partial-exits.md`). Also `disabled: Option<DisabledConditions>` — **parked** entry/exit conditions AND scale-out stages the author toggled off in the editor: same `SideConditions` / `ExitStage` shapes, parsed and validated identically (so re-enabling one can never produce an unsavable rule), but read by **nothing** — `CompiledRule::compile` sees `entry`/`exit`/`scale_out` only, so the engine, sweep, and simulate are untouched and the hot path pays zero. Absent by default ⇒ stored rules round-trip byte-identically, no migration. A parked condition MAY duplicate a live one on the same (group, window, metric) — that is the feature (park `trail >= 12` while trying `trail >= 20`), and separate bags keep them from overwriting each other. Parked **stages** are the one deliberate asymmetry: `validate_stage` (per stage — can it fire, is its `sell_bps`/TP legal, are its conditions valid) applies to the bag, `validate_scale_out` (remainder last, stage count, bps sum) does not, because those describe a *ladder* and the bag is a shelf of spares — summing them would make parking a stage useless |
 | `grouping.rs` | bucket matching (`same_bucket`) for the SOL fingerprint axes |
 | `deadness.rs` | `is_dead_verdict` + `DEAD_*` consts — the ONE deadness SSOT (core + live + sweep re-export it) |
@@ -345,16 +345,16 @@ Classifier-free SOL totals: `buy` / `sell` / `net_flow` / `gross_flow`. Lifetime
 static (two running counters on `TokenTrack`); window is dynamic (`window_size_sec`,
 ring buffer). Use lifetime for maturity / critical-mass gates; window for
 hot-right-now. The window adds three that lifetime has no analogue for: `buy_share`
-(direction, PERCENT 0-100), `unique_wallets` (how many people) and `trade_count` (how
+(direction, PERCENT 0-100), `m_crowd_window.unique_wallets` (how many people) and `trade_count` (how
 many trades — the same tape read without needing a wallet column). Formulas + monotonic
 flags:
 [`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md).
 
-## Burst (`m_flow_burst`)
+## Burst (`m_flow_window`)
 
 `trade_share` — the share of a reference window's trades that landed in a shorter window
 nested inside it, PERCENT 0-100. The one group whose basis is a window **pair**
-(`window_size_sec` + `burst_size_sec`, nesting enforced at save), which is why
+(`window_size_sec` + `slice_size_sec`, nesting enforced at save), which is why
 `MetricReq.window` carries a [`Windows`] carrier rather than a bare `Option<f64>`: a
 requirement's identity includes both axes, so two instances differing only in the burst
 cannot collide in the blocker / monotonic-kill maps. It owns **no state** — both readings
@@ -366,7 +366,7 @@ Semantics + the young-token reading:
 
 [`Windows`]: ../../engine/src/metrics/mod.rs
 
-## Launch size (`m_snapshot.first_slot_buy`)
+## Launch size (`m_state.first_slot_buy`)
 
 Total buy SOL in the token's creation slot — the same quantity `fingerprints`
 buckets as `first_slot_buy_lamports`, exposed as a metric because a fingerprint pins ONE
@@ -408,11 +408,11 @@ mirror counts the same window off `tokens`.
 Design + rationale:
 [fingerprint-ranges.md](../plans/strategies/fingerprint-ranges.md).
 
-## Volume/organic flow split (`m_flow_split` / `m_flow_split_window`)
+## Volume/organic flow split (`m_flow_ix` / `m_flow_ix_window`)
 
 Split every trade's SOL into **volume-side** (creator tooling + contagion + creator
 wallet) vs **organic**, exposed as ordinary registry metrics. Patterns live on
-`fingerprints.metric_config.m_flow_split.volume_ix_patterns` (not on the rule).
+`fingerprints.metric_config.m_flow_ix.ix_patterns` (not on the rule).
 `TradeLite` carries `ix_hash` / `wallet_hash`; adapters call the engine SSOT hashers
 only. Flow state keys by `FingerprintId` on `TokenTrack`. Unconfigured fingerprint
 ⇒ NaN. Full formulas / NaN rules / discovery scoring:
@@ -476,7 +476,7 @@ trade**, so simulate and live resolve at the same point.
   fingerprint `metric_config`.
 - **`strategies/flow_discovery.rs`** + **`api/handlers/strategies/flow_discovery.rs`** —
   lab-only job: score trade ix-structures per fingerprint group → toggle
-  `volume_ix_patterns` (mutual `409` with sweep / metric-discovery / rule-search).
+  `ix_patterns` (mutual `409` with sweep / metric-discovery / rule-search).
 - **`sweep/generic/`** — the precompute-then-scan grouped sweep. `GenericSweepStrategy`
   implements the existing `sweep::strategy::Strategy` trait (so partition / two-phase
   pool / `GroupSink` persistence / refine / `ComboAgg` and the whole

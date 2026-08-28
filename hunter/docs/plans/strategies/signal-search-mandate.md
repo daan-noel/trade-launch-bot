@@ -539,6 +539,14 @@ What is open now:
     stay 0/12 at 95 ms. Lookahead `oracle_sep` is −1.04% **0/12** at
     95 ms: 95 ms after print 1 fills on the rest of the same-slot crowd.
     Do not fund it; do not walk another same-slot early print of this burst.
+15. **This trigger has no harvest after-move on the tokens it selects.**
+    [ix-harvest-path.md](ix-harvest-path.md): after the fillable
+    combined-machine fill at 95 ms, gross median is 0 at 1–4 s and
+    **−8.43% at 20 s** (8dtx's hold). 86% dump; 14% second-wave (lookahead).
+    Clock-20 is **−7.28% 0/12**. Stay-on-wave / leave-on-dump
+    (`harvest_clock`) is **−2.36% 0/12**. His-mint clock-20 at the same
+    fill is +6.15% / 12/12 / median +0.19% — that list is lookahead, not
+    a live gate. Do not fund a harvest exit on this event.
 
 **Feature-combination search is retired as a queue item.** Round 10 ran it exhaustively -
 17,744 conjunctions plus OR-portfolios over 55 predicates - and the answer is that no

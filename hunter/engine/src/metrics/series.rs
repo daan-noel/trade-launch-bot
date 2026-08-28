@@ -8,7 +8,7 @@
 //! track values, sampled after each fold. That shared compute is what the
 //! Phase-1.8 determinism test locks down (track ≡ series, byte-for-byte).
 
-use super::flow_split::FlowPatterns;
+use super::flow_ix::FlowPatterns;
 use super::track::TokenTrack;
 use super::{group_of, MetricGroupId, MetricId, TradeLite, Ts};
 use crate::deadness::{is_dead_verdict, DEAD_MEANINGFUL_TRADE_SOL};
@@ -20,18 +20,18 @@ use crate::fingerprint::FingerprintId;
 pub enum SeriesColumn {
     Static(MetricId),
     /// A dynamic metric at its window(s) — carries the whole [`Windows`] rather than
-    /// one `f64` so a two-window group (`m_flow_burst`) is a column like any other.
+    /// one `f64` so a two-window group (`m_flow_window`) is a column like any other.
     /// Dropping the second axis here would not fail: it would read `NaN` for every
     /// row, which draws as a condition that never holds.
     ///
     /// [`Windows`]: super::Windows
     Window(MetricId, super::Windows),
-    /// Flow metric (`m_flow_split` / `m_flow_split_window`) scoped to a fingerprint.
+    /// Flow metric (`m_flow_ix` / `m_flow_ix_window`) scoped to a fingerprint.
     Flow(MetricId, Option<super::WindowSpec>, FingerprintId),
 }
 
 impl SeriesColumn {
-    /// A single-window dynamic column — the shape every group but `m_flow_burst` has.
+    /// A single-window dynamic column — the shape every group but `m_flow_window` has.
     pub fn window(id: MetricId, spec: super::WindowSpec) -> Self {
         SeriesColumn::Window(id, super::Windows::one(spec))
     }
@@ -163,7 +163,7 @@ impl MetricSeries {
     ///
     /// [`new`](Self::new) already registers whatever a [`SeriesColumn::Window`]
     /// needs, so this is for a caller that registers off a *rule* rather than off
-    /// its column set — `CompiledRule::flow_windows` covers `m_flow_split_window`
+    /// its column set — `CompiledRule::flow_windows` covers `m_flow_ix_window`
     /// too, whose columns are [`SeriesColumn::Flow`] and so are registered by
     /// [`ensure_flow`](Self::ensure_flow) instead. Registering the same width twice
     /// is a no-op, which is what lets a caller mirror the live track's setup

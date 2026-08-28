@@ -31,7 +31,7 @@ Re-checked on the live box (code + logs + Postgres — not the old plan alone).
 | `ingest.persist_raw` | **true** (`raw_txs` ≈ 12.8M rows) |
 | Real rule positions (7d) slot_delta | n=192, **p50=42**, p90=126, min=1, max=640 |
 | Empty-entry (pure snipe) real rules | **none** — every active real rule has metric entry gates |
-| Active real rules | all require `m_snapshot.time > 10` (and usually liquidity / flow) |
+| Active real rules | all require `m_state.time > 10` (and usually liquidity / flow) |
 
 **Read of the slot_delta numbers:** they are **not** pipeline latency for today's book.
 Active rules refuse entry until token age ≥ 10 s (~25 slots), so a p50 of 22–42 is the

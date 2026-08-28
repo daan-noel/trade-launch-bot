@@ -85,7 +85,7 @@ SELECT
   jsonb_strip_nulls(jsonb_build_object(
     'stop_loss', 12.0,
     'entry', jsonb_build_object(
-      'm_snapshot', jsonb_build_object(
+      'm_state', jsonb_build_object(
         'time',      jsonb_build_array(jsonb_build_object('operator','>=','value',45)),
         'liquidity', jsonb_build_array(
                        jsonb_build_object('operator','>=','value',40),

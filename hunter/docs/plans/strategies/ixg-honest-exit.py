@@ -48,6 +48,105 @@ def fill_idx(times, fire_ts, lag_ms, lo, n):
     return i
 
 
+def walk_harvest(times, slots, px, vsol, is_buy, eidx, ets, epx, ev, last_buy_ts, last_buy_i, lag_ms, hold, cap_at):
+    """Leave on dump/death after the first buy-gap; stay on a second buy wave.
+
+    After fill, wait for 2-slot buy silence. Then WATCH: a sell or a second
+    silence is dump/death (exit). Two post-gap buys confirm a wave and HOLD
+    with `hold` = 'clock' (20 s from fill) or 'trail' (arm 10 / trail 18;
+    unarmed falls back to the next buy-gap).
+    """
+    n = len(times)
+    gap_delay = np.timedelta64(GAP_SLOTS * SLOT_MS, "ms")
+    clock_at = ets + np.timedelta64(CLOCK_S, "s")
+    arm_lvl = epx * (1.0 + ARM_PCT / 100.0)
+    trail_keep = 1.0 - TRAIL_PCT / 100.0
+    peak = epx
+    armed = False
+    state = "run"
+    watch_buys = 0
+    watch_until = None
+
+    def close_at(fire_ts, lo, reason):
+        xidx = fill_idx(times, fire_ts, lag_ms, lo, n)
+        r = net_ret(epx, ev, px[xidx], vsol[xidx])
+        if r is None:
+            return None
+        hold_s = (times[xidx] - ets) / np.timedelta64(1, "s")
+        return (r, float(hold_s), reason, times[xidx])
+
+    for k in range(eidx + 1, n):
+        t = times[k]
+        if t >= cap_at:
+            return close_at(cap_at, k, "cap")
+
+        if state == "run":
+            gap_at = last_buy_ts + gap_delay
+            if t > gap_at:
+                state = "watch"
+                watch_until = gap_at + gap_delay
+                watch_buys = 0
+            else:
+                if is_buy[k]:
+                    last_buy_ts = t
+                    last_buy_i = k
+                continue
+
+        if state == "watch":
+            if watch_until is not None and t > watch_until and watch_buys < 2:
+                return close_at(watch_until, last_buy_i, "death")
+            if is_buy[k]:
+                watch_buys += 1
+                last_buy_ts = t
+                last_buy_i = k
+                if watch_buys >= 2:
+                    state = "hold"
+                else:
+                    watch_until = t + gap_delay
+                continue
+            return close_at(t, k, "dump")
+
+        # hold
+        if hold == "clock":
+            if t > clock_at:
+                return close_at(clock_at, max(eidx, last_buy_i), "clock")
+        else:
+            p = px[k]
+            if p > 0:
+                if not armed:
+                    if p >= arm_lvl:
+                        armed = True
+                        peak = p
+                else:
+                    if p > peak:
+                        peak = p
+                    elif p <= peak * trail_keep:
+                        return close_at(t, k, "trail")
+            if not armed:
+                gap_at = last_buy_ts + gap_delay
+                if t > gap_at:
+                    return close_at(gap_at, last_buy_i, "gap")
+        if is_buy[k]:
+            last_buy_ts = t
+            last_buy_i = k
+
+    if state != "hold":
+        reason = "death" if state == "watch" else "gap"
+        gap_at = last_buy_ts + gap_delay
+        fire = gap_at if gap_at <= cap_at else cap_at
+        if state == "watch" and watch_until is not None:
+            fire = watch_until if watch_until <= cap_at else cap_at
+        return close_at(fire, last_buy_i, reason)
+    if hold == "clock":
+        fire = clock_at if clock_at <= cap_at else cap_at
+        return close_at(fire, last_buy_i, "clock")
+    if armed:
+        return close_at(cap_at, last_buy_i, "cap")
+    gap_at = last_buy_ts + gap_delay
+    fire = gap_at if gap_at <= cap_at else cap_at
+    return close_at(fire, last_buy_i, "gap")
+
+
 def walk_one(times, slots, px, vsol, is_buy, trig, lag_ms, mode, clock_s=None):
     """trig is (idx, ts, slot). Returns (net, hold_s, reason, exit_ts) or None."""
     n = len(times)
@@ -63,6 +162,18 @@ def walk_one(times, slots, px, vsol, is_buy, trig, lag_ms, mode, clock_s=None):
     clock_hold = CLOCK_S if clock_s is None else int(clock_s)
     clock_at = tts + np.timedelta64(clock_hold, "s")
     gap_delay = np.timedelta64(GAP_SLOTS * SLOT_MS, "ms")
+    if mode in ("harvest_clock", "harvest_trail"):
+        last_buy_ts = tts
+        last_buy_i = ti
+        if is_buy[eidx]:
+            last_buy_ts = times[eidx]
+            last_buy_i = eidx
+        hold = "clock" if mode == "harvest_clock" else "trail"
+        return walk_harvest(
+            times, slots, px, vsol, is_buy,
+            eidx, ets, epx, ev, last_buy_ts, last_buy_i,
+            lag_ms, hold, cap_at,
+        )
 
     last_buy_ts = tts
     last_buy_i = ti

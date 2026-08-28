@@ -1,5 +1,5 @@
 //! Volume/organic flow split — SSOT hashes, classifier, and per-fingerprint state
-//! for `m_flow_split` (lifetime) + `m_flow_split_window` (trailing window).
+//! for `m_flow_ix` (lifetime) + `m_flow_ix_window` (trailing window).
 //!
 //! See `hunter/docs/plans/strategies/metrics-reference.md`.
 
@@ -224,7 +224,7 @@ pub fn wallet_hash(addr: &str) -> u64 {
 
 // ── Patterns (compiled at RulesReloaded) ─────────────────────────────────────
 
-/// Compiled classifier config for one fingerprint (`m_flow_split`).
+/// Compiled classifier config for one fingerprint (`m_flow_ix`).
 ///
 /// Three independent ways to call a trade volume-side, each switchable:
 /// exact-sequence patterns, structural markers, and the two wallet-keyed rules
@@ -255,7 +255,7 @@ pub struct FlowPatterns {
     /// Tag a wallet volume-side for the rest of this token once it trades that way.
     wallet_contagion: bool,
     /// The creator wallet is volume-side unconditionally.
-    creator_is_volume: bool,
+    creator_is_tagged: bool,
 }
 
 impl Default for FlowPatterns {
@@ -265,7 +265,7 @@ impl Default for FlowPatterns {
             markers: 0,
             markers_are_organic: false,
             wallet_contagion: true,
-            creator_is_volume: true,
+            creator_is_tagged: true,
         }
     }
 }
@@ -283,7 +283,7 @@ impl FlowPatterns {
             markers,
             markers_are_organic: false,
             wallet_contagion: false,
-            creator_is_volume: false,
+            creator_is_tagged: false,
         }
     }
 
@@ -296,7 +296,7 @@ impl FlowPatterns {
             markers,
             markers_are_organic: true,
             wallet_contagion: false,
-            creator_is_volume: false,
+            creator_is_tagged: false,
         }
     }
 
@@ -327,8 +327,8 @@ impl FlowPatterns {
         self.wallet_contagion
     }
 
-    pub fn creator_is_volume(&self) -> bool {
-        self.creator_is_volume
+    pub fn creator_is_tagged(&self) -> bool {
+        self.creator_is_tagged
     }
 
     pub fn is_empty(&self) -> bool {
@@ -336,7 +336,7 @@ impl FlowPatterns {
     }
 
     /// Compile an ordered list of label sequences (the sweep run's
-    /// `volume_ix_patterns` / fingerprint config array).
+    /// `ix_patterns` / fingerprint config array).
     pub fn from_label_sequences(patterns: &[Vec<String>]) -> Self {
         let mut hashes = BTreeSet::new();
         for p in patterns {
@@ -347,11 +347,11 @@ impl FlowPatterns {
         Self { hashes, ..Self::default() }
     }
 
-    /// Parse `metric_config["m_flow_split"]`. `None` = key absent (unconfigured ⇒
+    /// Parse `metric_config["m_flow_ix"]`. `None` = key absent (unconfigured ⇒
     /// flow metrics stay `NaN`). `Some` = configured (patterns may be empty —
     /// only contagion + creator classify as volume).
     pub fn from_metric_config(cfg: &Value) -> Option<Self> {
-        let obj = cfg.get("m_flow_split")?;
+        let obj = cfg.get("m_flow_ix")?;
         if !obj.is_object() {
             return None;
         }
@@ -359,10 +359,10 @@ impl FlowPatterns {
         if let Some(v) = obj.get("wallet_contagion") {
             out.wallet_contagion = v.as_bool()?;
         }
-        if let Some(v) = obj.get("creator_is_volume") {
-            out.creator_is_volume = v.as_bool()?;
+        if let Some(v) = obj.get("creator_is_tagged") {
+            out.creator_is_tagged = v.as_bool()?;
         }
-        for (key, organic) in [("volume_ix_markers", false), ("organic_ix_markers", true)] {
+        for (key, organic) in [("tagged_ix_markers", false), ("untagged_ix_markers", true)] {
             let Some(arr) = obj.get(key) else { continue };
             let Value::Array(names) = arr else {
                 return None;
@@ -374,7 +374,7 @@ impl FlowPatterns {
             out.markers = marker_mask(&strs).ok()?;
             out.markers_are_organic = organic;
         }
-        let Some(arr) = obj.get("volume_ix_patterns") else {
+        let Some(arr) = obj.get("ix_patterns") else {
             // Key present but no patterns field — markers and switches still apply.
             return Some(out);
         };
@@ -407,62 +407,62 @@ impl FlowPatterns {
         let Some(obj) = cfg.as_object() else {
             return Err("metric_config must be a JSON object".into());
         };
-        if let Some(flow) = obj.get("m_flow_split") {
+        if let Some(flow) = obj.get("m_flow_ix") {
             let Some(flow_obj) = flow.as_object() else {
-                return Err("m_flow_split must be an object".into());
+                return Err("m_flow_ix must be an object".into());
             };
-            if let Some(patterns) = flow_obj.get("volume_ix_patterns") {
+            if let Some(patterns) = flow_obj.get("ix_patterns") {
                 let Some(arr) = patterns.as_array() else {
-                    return Err("m_flow_split.volume_ix_patterns must be an array".into());
+                    return Err("m_flow_ix.ix_patterns must be an array".into());
                 };
                 for (i, p) in arr.iter().enumerate() {
                     let Some(labels) = p.as_array() else {
                         return Err(format!(
-                            "m_flow_split.volume_ix_patterns[{i}] must be an array of strings"
+                            "m_flow_ix.ix_patterns[{i}] must be an array of strings"
                         ));
                     };
                     for (j, lab) in labels.iter().enumerate() {
                         if !lab.is_string() {
                             return Err(format!(
-                                "m_flow_split.volume_ix_patterns[{i}][{j}] must be a string"
+                                "m_flow_ix.ix_patterns[{i}][{j}] must be a string"
                             ));
                         }
                     }
                 }
             }
-            for key in ["volume_ix_markers", "organic_ix_markers"] {
+            for key in ["tagged_ix_markers", "untagged_ix_markers"] {
                 let Some(markers) = flow_obj.get(key) else { continue };
                 let Some(arr) = markers.as_array() else {
-                    return Err(format!("m_flow_split.{key} must be an array"));
+                    return Err(format!("m_flow_ix.{key} must be an array"));
                 };
                 let mut names: Vec<&str> = Vec::with_capacity(arr.len());
                 for (i, m) in arr.iter().enumerate() {
                     let Some(s) = m.as_str() else {
-                        return Err(format!("m_flow_split.{key}[{i}] must be a string"));
+                        return Err(format!("m_flow_ix.{key}[{i}] must be a string"));
                     };
                     names.push(s);
                 }
                 // An unknown marker silently matching nothing would let a
                 // cleanliness gate pass on bot traffic, so it is an error.
-                marker_mask(&names).map_err(|e| format!("m_flow_split.{e}"))?;
+                marker_mask(&names).map_err(|e| format!("m_flow_ix.{e}"))?;
             }
             // A mask names ONE side. Configuring both is two contradictory classifiers
-            // on one axis, and `volume_ix_patterns` is itself a volume-side statement,
+            // on one axis, and `ix_patterns` is itself a volume-side statement,
             // so none of it composes with an organic mask. Letting one silently win is
             // how a rule stops measuring what it says.
-            if flow_obj.contains_key("organic_ix_markers") {
-                for other in ["volume_ix_markers", "volume_ix_patterns"] {
+            if flow_obj.contains_key("untagged_ix_markers") {
+                for other in ["tagged_ix_markers", "ix_patterns"] {
                     if flow_obj.contains_key(other) {
                         return Err(format!(
-                            "m_flow_split: organic_ix_markers and {other} name opposite sides                              of the same split - configure exactly one"
+                            "m_flow_ix: untagged_ix_markers and {other} name opposite sides                              of the same split - configure exactly one"
                         ));
                     }
                 }
             }
-            for flag in ["wallet_contagion", "creator_is_volume"] {
+            for flag in ["wallet_contagion", "creator_is_tagged"] {
                 if let Some(v) = flow_obj.get(flag) {
                     if !v.is_boolean() {
-                        return Err(format!("m_flow_split.{flag} must be a boolean"));
+                        return Err(format!("m_flow_ix.{flag} must be a boolean"));
                     }
                 }
             }
@@ -475,7 +475,7 @@ impl FlowPatterns {
 pub fn params_reference_flow(params: &Value) -> bool {
     for side in ["entry", "exit"] {
         if let Some(obj) = params.get(side).and_then(|v| v.as_object()) {
-            if obj.contains_key("m_flow_split") || obj.contains_key("m_flow_split_window") {
+            if obj.contains_key("m_flow_ix") || obj.contains_key("m_flow_ix_window") {
                 return true;
             }
         }
@@ -484,7 +484,7 @@ pub fn params_reference_flow(params: &Value) -> bool {
 }
 
 /// Warning text when a rule uses flow groups but the fingerprint has no
-/// `m_flow_split` key (metrics will read `NaN`).
+/// `m_flow_ix` key (metrics will read `NaN`).
 pub fn flow_unconfigured_warning(params: &Value, metric_config: &Value) -> Option<String> {
     if !params_reference_flow(params) {
         return None;
@@ -493,8 +493,8 @@ pub fn flow_unconfigured_warning(params: &Value, metric_config: &Value) -> Optio
         return None;
     }
     Some(
-        "rule references m_flow_split/m_flow_split_window but the fingerprint has no \
-         m_flow_split.volume_ix_patterns config — flow metrics will be NaN"
+        "rule references m_flow_ix/m_flow_ix_window but the fingerprint has no \
+         m_flow_ix.ix_patterns config — flow metrics will be NaN"
             .into(),
     )
 }
@@ -504,50 +504,50 @@ pub fn flow_unconfigured_warning(params: &Value, metric_config: &Value) -> Optio
 /// Running vol/organic SOL totals (buy/sell absolute; net/gross/share derived).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct FlowTotals {
-    pub vol_buy: f64,
-    pub vol_sell: f64,
-    pub nonvol_buy: f64,
-    pub nonvol_sell: f64,
+    pub tagged_buy: f64,
+    pub tagged_sell: f64,
+    pub untagged_buy: f64,
+    pub untagged_sell: f64,
 }
 
 impl FlowTotals {
-    fn add(&mut self, side: Side, sol: f64, is_vol: bool) {
-        match (is_vol, side) {
-            (true, Side::Buy) => self.vol_buy += sol,
-            (true, Side::Sell) => self.vol_sell += sol,
-            (false, Side::Buy) => self.nonvol_buy += sol,
-            (false, Side::Sell) => self.nonvol_sell += sol,
+    fn add(&mut self, side: Side, sol: f64, is_tagged: bool) {
+        match (is_tagged, side) {
+            (true, Side::Buy) => self.tagged_buy += sol,
+            (true, Side::Sell) => self.tagged_sell += sol,
+            (false, Side::Buy) => self.untagged_buy += sol,
+            (false, Side::Sell) => self.untagged_sell += sol,
         }
     }
 
-    fn sub_signed(&mut self, signed: f64, is_vol: bool) {
+    fn sub_signed(&mut self, signed: f64, is_tagged: bool) {
         if signed >= 0.0 {
-            if is_vol {
-                self.vol_buy -= signed;
+            if is_tagged {
+                self.tagged_buy -= signed;
             } else {
-                self.nonvol_buy -= signed;
+                self.untagged_buy -= signed;
             }
-        } else if is_vol {
-            self.vol_sell += signed; // signed < 0
+        } else if is_tagged {
+            self.tagged_sell += signed; // signed < 0
         } else {
-            self.nonvol_sell += signed;
+            self.untagged_sell += signed;
         }
     }
 
     pub fn value(self, id: MetricId) -> f64 {
         use MetricId::*;
         match id {
-            VolBuy | WinVolBuy => self.vol_buy,
-            VolSell | WinVolSell => self.vol_sell,
-            VolNet | WinVolNet => self.vol_buy - self.vol_sell,
-            VolGross | WinVolGross => self.vol_buy + self.vol_sell,
-            NonvolBuy | WinNonvolBuy => self.nonvol_buy,
-            NonvolSell | WinNonvolSell => self.nonvol_sell,
-            NonvolNet | WinNonvolNet => self.nonvol_buy - self.nonvol_sell,
-            NonvolGross | WinNonvolGross => self.nonvol_buy + self.nonvol_sell,
-            VolShare | WinVolShare => {
-                let vg = self.vol_buy + self.vol_sell;
-                let ng = self.nonvol_buy + self.nonvol_sell;
+            TaggedBuy | WinTaggedBuy => self.tagged_buy,
+            TaggedSell | WinTaggedSell => self.tagged_sell,
+            TaggedNet | WinTaggedNet => self.tagged_buy - self.tagged_sell,
+            TaggedGross | WinTaggedGross => self.tagged_buy + self.tagged_sell,
+            UntaggedBuy | WinUntaggedBuy => self.untagged_buy,
+            UntaggedSell | WinUntaggedSell => self.untagged_sell,
+            UntaggedNet | WinUntaggedNet => self.untagged_buy - self.untagged_sell,
+            UntaggedGross | WinUntaggedGross => self.untagged_buy + self.untagged_sell,
+            TaggedShare | WinTaggedShare => {
+                let vg = self.tagged_buy + self.tagged_sell;
+                let ng = self.untagged_buy + self.untagged_sell;
                 let total = vg + ng;
                 if total > 0.0 {
                     100.0 * vg / total
@@ -569,10 +569,10 @@ impl FlowTotals {
 /// [`totals_at`](Self::totals_at) corrects the two out-of-window ends instead of
 /// rebuilding the totals from a full scan. This one matters most: `value` is called
 /// once **per flow metric per rule per event**, so a full scan per call costs a rule
-/// with three `m_flow_split_window` conditions three whole-window walks on every
+/// with three `m_flow_ix_window` conditions three whole-window walks on every
 /// 200 ms tick of every tracked token.
 #[derive(Debug, Clone, PartialEq)]
-struct FlowSplitWindowState {
+struct FlowIxWindowState {
     spec: WindowSpec,
     /// `(pos, signed SOL, is_volume)` - buy positive, sell negative; oldest at
     /// front, kept position-sorted. `pos` is already in the window's own unit, so
@@ -582,29 +582,29 @@ struct FlowSplitWindowState {
     totals: FlowTotals,
 }
 
-impl FlowSplitWindowState {
+impl FlowIxWindowState {
     fn new(spec: WindowSpec) -> Self {
         Self { spec, buf: VecDeque::new(), totals: FlowTotals::default() }
     }
 
-    fn on_trade(&mut self, side: Side, sol: f64, is_vol: bool, pos: i64, now_pos: i64) {
+    fn on_trade(&mut self, side: Side, sol: f64, is_tagged: bool, pos: i64, now_pos: i64) {
         let signed = match side {
             Side::Buy => sol,
             Side::Sell => -sol,
         };
-        push_sorted(&mut self.buf, pos, (signed, is_vol));
-        self.totals.add(side, sol, is_vol);
+        push_sorted(&mut self.buf, pos, (signed, is_tagged));
+        self.totals.add(side, sol, is_tagged);
         self.evict(now_pos);
     }
 
     fn evict(&mut self, now_pos: i64) {
         let (lo, _) = self.spec.bounds(now_pos);
-        while let Some(&(pos, (signed, is_vol))) = self.buf.front() {
+        while let Some(&(pos, (signed, is_tagged))) = self.buf.front() {
             if pos >= lo {
                 break;
             }
             self.buf.pop_front();
-            self.totals.sub_signed(signed, is_vol);
+            self.totals.sub_signed(signed, is_tagged);
         }
     }
 
@@ -616,17 +616,17 @@ impl FlowSplitWindowState {
     fn totals_at(&self, now_pos: i64) -> FlowTotals {
         let (lo, hi) = self.spec.bounds(now_pos);
         let mut out = self.totals;
-        for &(pos, (signed, is_vol)) in self.buf.iter() {
+        for &(pos, (signed, is_tagged)) in self.buf.iter() {
             if pos >= lo {
                 break;
             }
-            out.sub_signed(signed, is_vol);
+            out.sub_signed(signed, is_tagged);
         }
-        for &(pos, (signed, is_vol)) in self.buf.iter().rev() {
+        for &(pos, (signed, is_tagged)) in self.buf.iter().rev() {
             if pos <= hi {
                 break;
             }
-            out.sub_signed(signed, is_vol);
+            out.sub_signed(signed, is_tagged);
         }
         out
     }
@@ -648,7 +648,7 @@ pub struct FlowState {
     tagged_wallets: HashedSet,
     creator_wallet_hash: Option<u64>,
     lifetime: FlowTotals,
-    windows: BTreeMap<WindowKey, FlowSplitWindowState>,
+    windows: BTreeMap<WindowKey, FlowIxWindowState>,
 }
 
 impl FlowState {
@@ -680,7 +680,7 @@ impl FlowState {
     }
 
     pub fn ensure_window(&mut self, spec: WindowSpec) {
-        self.windows.entry(spec.key()).or_insert_with(|| FlowSplitWindowState::new(spec));
+        self.windows.entry(spec.key()).or_insert_with(|| FlowIxWindowState::new(spec));
     }
 
     /// Classify + fold one trade into lifetime and every registered window.
@@ -688,15 +688,15 @@ impl FlowState {
         if !t.sol.is_finite() || t.sol < 0.0 {
             return;
         }
-        let is_vol = self.classify(t);
-        if is_vol {
+        let is_tagged = self.classify(t);
+        if is_tagged {
             self.tagged_wallets.insert(t.wallet_hash);
         }
-        self.lifetime.add(t.side, t.sol, is_vol);
+        self.lifetime.add(t.side, t.sol, is_tagged);
         for w in self.windows.values_mut() {
             let pos = w.spec.pos(t.at, cur.at_trade(t));
             let now_pos = w.spec.now_pos(t.at, cur);
-            w.on_trade(t.side, t.sol, is_vol, pos, now_pos);
+            w.on_trade(t.side, t.sol, is_tagged, pos, now_pos);
         }
     }
 
@@ -707,7 +707,7 @@ impl FlowState {
         }
     }
 
-    /// Lifetime (`m_flow_split`) or windowed (`m_flow_split_window`) read at `now`.
+    /// Lifetime (`m_flow_ix`) or windowed (`m_flow_ix_window`) read at `now`.
     pub fn value(&self, id: MetricId, window: Option<WindowSpec>, now: Ts, cur: super::Cursor) -> f64 {
         match window {
             None => self.lifetime.value(id),
@@ -723,14 +723,14 @@ impl FlowState {
     /// creator.
     ///
     /// Markers are tested first because they are the only rule that reads the
-    /// transaction alone. With `wallet_contagion` and `creator_is_volume` both off
+    /// transaction alone. With `wallet_contagion` and `creator_is_tagged` both off
     /// this function is a pure function of the trade, which is what a structural
     /// gate needs and what the two wallet rules would quietly take away.
     pub fn classify(&self, t: &TradeLite) -> bool {
         if self.patterns.marks(t.marker_bits) {
             return true;
         }
-        if self.patterns.creator_is_volume() && self.creator_wallet_hash == Some(t.wallet_hash) {
+        if self.patterns.creator_is_tagged() && self.creator_wallet_hash == Some(t.wallet_hash) {
             return true;
         }
         if self.patterns.wallet_contagion() && self.tagged_wallets.contains(&t.wallet_hash) {
@@ -884,8 +884,8 @@ mod tests {
     fn patterns_from_metric_config() {
         assert!(FlowPatterns::from_metric_config(&json!({})).is_none());
         let p = FlowPatterns::from_metric_config(&json!({
-            "m_flow_split": {
-                "volume_ix_patterns": [
+            "m_flow_ix": {
+                "ix_patterns": [
                     ["Pump.Fun: Create", "Pump.Fun: Buy"],
                     ["Pump.Fun: Buy"]
                 ]
@@ -937,28 +937,28 @@ mod tests {
     }
 
     #[test]
-    fn lifetime_totals_and_vol_share() {
+    fn lifetime_totals_and_tagged_share() {
         let patterns = FlowPatterns::new(BTreeSet::from([ix_hash(&["vol"])]));
         let mut st = FlowState::new(patterns);
         st.on_trade(&trade(Side::Buy, 4.0, Some(ix_hash(&["vol"])), 1, 0.0), c(0));
         st.on_trade(&trade(Side::Buy, 6.0, None, 2, 1.0), c(0));
         st.on_trade(&trade(Side::Sell, 1.0, Some(ix_hash(&["vol"])), 1, 2.0), c(0));
 
-        assert_eq!(st.value(MetricId::VolBuy, None, ts(2.0), c(0)), 4.0);
-        assert_eq!(st.value(MetricId::VolSell, None, ts(2.0), c(0)), 1.0);
-        assert_eq!(st.value(MetricId::VolGross, None, ts(2.0), c(0)), 5.0);
-        assert_eq!(st.value(MetricId::VolNet, None, ts(2.0), c(0)), 3.0);
-        assert_eq!(st.value(MetricId::NonvolBuy, None, ts(2.0), c(0)), 6.0);
-        assert_eq!(st.value(MetricId::NonvolGross, None, ts(2.0), c(0)), 6.0);
-        // vol_share = 5 / 11 * 100
-        let share = st.value(MetricId::VolShare, None, ts(2.0), c(0));
+        assert_eq!(st.value(MetricId::TaggedBuy, None, ts(2.0), c(0)), 4.0);
+        assert_eq!(st.value(MetricId::TaggedSell, None, ts(2.0), c(0)), 1.0);
+        assert_eq!(st.value(MetricId::TaggedGross, None, ts(2.0), c(0)), 5.0);
+        assert_eq!(st.value(MetricId::TaggedNet, None, ts(2.0), c(0)), 3.0);
+        assert_eq!(st.value(MetricId::UntaggedBuy, None, ts(2.0), c(0)), 6.0);
+        assert_eq!(st.value(MetricId::UntaggedGross, None, ts(2.0), c(0)), 6.0);
+        // tagged_share = 5 / 11 * 100
+        let share = st.value(MetricId::TaggedShare, None, ts(2.0), c(0));
         assert!((share - 500.0 / 11.0).abs() < 1e-9);
     }
 
     #[test]
-    fn vol_share_nan_at_zero() {
+    fn tagged_share_nan_at_zero() {
         let st = FlowState::new(FlowPatterns::default());
-        assert!(st.value(MetricId::VolShare, None, ts(0.0), c(0)).is_nan());
+        assert!(st.value(MetricId::TaggedShare, None, ts(0.0), c(0)).is_nan());
     }
 
     #[test]
@@ -968,17 +968,17 @@ mod tests {
         st.ensure_window(WindowSpec::secs(10.0));
         st.on_trade(&trade(Side::Buy, 4.0, Some(ix_hash(&["vol"])), 1, 0.0), c(0));
         st.on_trade(&trade(Side::Buy, 6.0, None, 2, 1.0), c(0));
-        assert_eq!(st.value(MetricId::VolBuy, Some(WindowSpec::secs(10.0)), ts(1.0), c(0)), 4.0);
-        assert_eq!(st.value(MetricId::NonvolBuy, Some(WindowSpec::secs(10.0)), ts(1.0), c(0)), 6.0);
+        assert_eq!(st.value(MetricId::TaggedBuy, Some(WindowSpec::secs(10.0)), ts(1.0), c(0)), 4.0);
+        assert_eq!(st.value(MetricId::UntaggedBuy, Some(WindowSpec::secs(10.0)), ts(1.0), c(0)), 6.0);
         // Trailing window is (now−w, now] — at t=11 the t=1 trade is still in;
         // one ms past the edge drops everything.
         st.on_tick(ts(11.0), c(0));
-        assert_eq!(st.value(MetricId::VolBuy, Some(WindowSpec::secs(10.0)), ts(11.0), c(0)), 0.0);
-        assert_eq!(st.value(MetricId::NonvolBuy, Some(WindowSpec::secs(10.0)), ts(11.0), c(0)), 6.0);
+        assert_eq!(st.value(MetricId::TaggedBuy, Some(WindowSpec::secs(10.0)), ts(11.0), c(0)), 0.0);
+        assert_eq!(st.value(MetricId::UntaggedBuy, Some(WindowSpec::secs(10.0)), ts(11.0), c(0)), 6.0);
         st.on_tick(ts(11.001), c(0));
-        assert_eq!(st.value(MetricId::NonvolBuy, Some(WindowSpec::secs(10.0)), ts(11.001), c(0)), 0.0);
+        assert_eq!(st.value(MetricId::UntaggedBuy, Some(WindowSpec::secs(10.0)), ts(11.001), c(0)), 0.0);
         // Lifetime unchanged.
-        assert_eq!(st.value(MetricId::VolBuy, None, ts(11.001), c(0)), 4.0);
+        assert_eq!(st.value(MetricId::TaggedBuy, None, ts(11.001), c(0)), 4.0);
     }
 
     /// Guard on replacing the old full-buffer rescan: the running-totals read must
@@ -999,23 +999,23 @@ mod tests {
             (Side::Sell, 0.5, true, 25.0),
         ];
         let ids = [
-            MetricId::WinVolBuy,
-            MetricId::WinVolSell,
-            MetricId::WinVolNet,
-            MetricId::WinVolGross,
-            MetricId::WinNonvolBuy,
-            MetricId::WinNonvolSell,
-            MetricId::WinNonvolNet,
-            MetricId::WinNonvolGross,
-            MetricId::WinVolShare,
+            MetricId::WinTaggedBuy,
+            MetricId::WinTaggedSell,
+            MetricId::WinTaggedNet,
+            MetricId::WinTaggedGross,
+            MetricId::WinUntaggedBuy,
+            MetricId::WinUntaggedSell,
+            MetricId::WinUntaggedNet,
+            MetricId::WinUntaggedGross,
+            MetricId::WinTaggedShare,
         ];
         for window in [1.0_f64, 5.0, 10.0, 60.0] {
             let mut st = FlowState::new(FlowPatterns::new(BTreeSet::from([vol])));
             st.ensure_window(WindowSpec::secs(window));
             let mut wallet = 100u64;
-            for &(side, sol, is_vol, at) in script {
+            for &(side, sol, is_tagged, at) in script {
                 wallet += 1; // fresh wallet each trade so contagion can't reclassify
-                st.on_trade(&trade(side, sol, is_vol.then_some(vol), wallet, at), c(0));
+                st.on_trade(&trade(side, sol, is_tagged.then_some(vol), wallet, at), c(0));
                 for probe in [-3.0, 0.0, 0.5, 3.0, 12.0] {
                     let now_ts = ts(at + probe);
                     let now = now_ts.timestamp_millis();
@@ -1052,7 +1052,7 @@ mod tests {
     /// plausible split, so it surfaces as "the chart and the metric pane disagree"
     /// long after the change that caused it.
     #[test]
-    fn flow_split_matches_the_shared_parity_fixture() {
+    fn flow_ix_matches_the_shared_parity_fixture() {
         #[derive(serde::Deserialize)]
         struct Case {
             name: String,
@@ -1070,17 +1070,17 @@ mod tests {
         }
         #[derive(serde::Deserialize)]
         struct Expect {
-            vol_buy: f64,
-            vol_sell: f64,
-            nonvol_buy: f64,
-            nonvol_sell: f64,
+            tagged_buy: f64,
+            tagged_sell: f64,
+            untagged_buy: f64,
+            untagged_sell: f64,
         }
         #[derive(serde::Deserialize)]
         struct Fixture {
             cases: Vec<Case>,
         }
 
-        let raw = include_str!("../../fixtures/flow_split_parity.json");
+        let raw = include_str!("../../fixtures/flow_ix_parity.json");
         let fixture: Fixture = serde_json::from_str(raw).expect("parity fixture parses");
         assert!(!fixture.cases.is_empty(), "fixture must carry cases");
 
@@ -1105,10 +1105,10 @@ mod tests {
             }
             let now = ts(case.trades.len() as f64);
             for (id, want, label) in [
-                (MetricId::VolBuy, case.expect.vol_buy, "vol_buy"),
-                (MetricId::VolSell, case.expect.vol_sell, "vol_sell"),
-                (MetricId::NonvolBuy, case.expect.nonvol_buy, "nonvol_buy"),
-                (MetricId::NonvolSell, case.expect.nonvol_sell, "nonvol_sell"),
+                (MetricId::TaggedBuy, case.expect.tagged_buy, "tagged_buy"),
+                (MetricId::TaggedSell, case.expect.tagged_sell, "tagged_sell"),
+                (MetricId::UntaggedBuy, case.expect.untagged_buy, "untagged_buy"),
+                (MetricId::UntaggedSell, case.expect.untagged_sell, "untagged_sell"),
             ] {
                 let got = st.value(id, None, now, c(0));
                 assert!(
@@ -1122,9 +1122,9 @@ mod tests {
 
     #[test]
     fn flow_unconfigured_warning_fires() {
-        let params = json!({"entry": {"m_flow_split": {"vol_buy": [{"operator": ">", "value": 1}]}}});
+        let params = json!({"entry": {"m_flow_ix": {"tagged_buy": [{"operator": ">", "value": 1}]}}});
         assert!(flow_unconfigured_warning(&params, &json!({})).is_some());
-        let cfg = json!({"m_flow_split": {"volume_ix_patterns": [["Pump.Fun: Buy"]]}});
+        let cfg = json!({"m_flow_ix": {"ix_patterns": [["Pump.Fun: Buy"]]}});
         assert!(flow_unconfigured_warning(&params, &cfg).is_none());
     }
     /// The marker is the mechanism, and an exact-sequence list is only a snapshot of
@@ -1172,7 +1172,7 @@ mod tests {
         assert!(structural.classify(&bot), "and the marker still decides");
     }
 
-    /// A cleanliness gate reads `vol_buy == 0`. One bot transaction in the slot has
+    /// A cleanliness gate reads `tagged_buy == 0`. One bot transaction in the slot has
     /// to move it off zero, or the gate passes on a burst that contains a machine.
     #[test]
     fn one_marked_buy_moves_the_volume_side_off_zero() {
@@ -1185,12 +1185,12 @@ mod tests {
         };
         st.on_trade(&buy(0.7, 0, 100), c(100));
         st.on_trade(&buy(0.5, 0, 100), c(100));
-        assert_eq!(st.value(MetricId::WinVolBuy, Some(crate::metrics::WindowSpec::slots(1.0, 0.0)), at, c(100)), 0.0);
-        assert_eq!(st.value(MetricId::WinNonvolBuy, Some(crate::metrics::WindowSpec::slots(1.0, 0.0)), at, c(100)), 1.2);
+        assert_eq!(st.value(MetricId::WinTaggedBuy, Some(crate::metrics::WindowSpec::slots(1.0, 0.0)), at, c(100)), 0.0);
+        assert_eq!(st.value(MetricId::WinUntaggedBuy, Some(crate::metrics::WindowSpec::slots(1.0, 0.0)), at, c(100)), 1.2);
 
         st.on_trade(&buy(0.4, seed, 100), c(100));
         assert_eq!(
-            st.value(MetricId::WinVolBuy, Some(crate::metrics::WindowSpec::slots(1.0, 0.0)), at, c(100)),
+            st.value(MetricId::WinTaggedBuy, Some(crate::metrics::WindowSpec::slots(1.0, 0.0)), at, c(100)),
             0.4,
             "the machine is on the volume side and the gate must see it"
         );

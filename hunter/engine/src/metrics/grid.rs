@@ -4,8 +4,8 @@
 //!
 //! Every consumer of a `MetricSeries` must drive it through here. A trade-only
 //! fold is not a coarser view of the same series — it is a *different* series, and
-//! silently so: the time-decaying metrics (`m_flow_window` / `m_flow_split_window`
-//! decay, `m_price_window` rolling extrema, `m_snapshot.stall`/`.time`, and the
+//! silently so: the time-decaying metrics (`m_flow_window` / `m_flow_ix_window`
+//! decay, `m_price_window` rolling extrema, `m_state.stall`/`.time`, and the
 //! dead verdict) only advance inside [`TokenTrack::on_tick`], so with no ticks they
 //! are sampled solely at trade instants — exactly where a fresh trade has just been
 //! folded back in. A window that dips below a threshold between two trades is then
@@ -51,7 +51,7 @@ const MAX_TICKS_PER_GAP: usize = 2 * 24 * 3600 * 2;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SparseGrid {
     /// Largest registered trailing window (secs) across BOTH window families —
-    /// `m_flow_window`/`m_flow_split_window` and `m_price_window`; `0` if the caller
+    /// `m_flow_window`/`m_flow_ix_window` and `m_price_window`; `0` if the caller
     /// reads neither. A trade keeps changing windowed metrics until `trade + this`
     /// (flows decay to 0; a rolling price high/low drops as the print ages out),
     /// after which every windowed read is settled for that gap.

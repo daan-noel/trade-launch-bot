@@ -2,7 +2,7 @@
 //!
 //! Sibling of [`super::flow_window`] with the same JSON metric names
 //! (`buy` / `sell` / `gross_flow` / `net_flow` / `trade_count`) but no trailing
-//! window — totals only grow. No fingerprint config (unlike `m_flow_split`).
+//! window — totals only grow. No fingerprint config (unlike `m_flow_ix`).
 //!
 //! * `buy` — sum of buy SOL,
 //! * `sell` — sum of sell SOL,

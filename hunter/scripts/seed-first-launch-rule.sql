@@ -90,7 +90,7 @@ SELECT 'fl-first-launch-impulse', f.id, 'paper', false, true,
        750000000, 0, 0, ARRAY['fam:first-launch','stage:candidate'],
        $json${
   "entry": {
-    "m_snapshot": {
+    "m_state": {
       "time": [{"operator": ">", "value": 5}],
       "liquidity": [{"operator": ">=", "value": 3}]
     },
@@ -116,7 +116,7 @@ SELECT 'fl-control-no-creator-term', f.id, 'paper', false, true,
        750000000, 0, 0, ARRAY['fam:first-launch','stage:control'],
        $json${
   "entry": {
-    "m_snapshot": {
+    "m_state": {
       "time": [{"operator": ">", "value": 5}],
       "liquidity": [{"operator": ">=", "value": 3}]
     },

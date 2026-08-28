@@ -10,7 +10,7 @@
 //! assertions exist to catch - a one-second window is 2.5 slots, and an unlagged
 //! quiet gate reads the very burst it is supposed to precede.
 
-use hunter_engine::metrics::flow_split::{marker_mask, FlowPatterns, MARKERS, ROUTER_MARKERS};
+use hunter_engine::metrics::flow_ix::{marker_mask, FlowPatterns, MARKERS, ROUTER_MARKERS};
 use hunter_engine::metrics::{MetricGroupId, WindowUnit};
 use hunter_engine::rule_params::RuleParams;
 use serde_json::json;
@@ -34,18 +34,18 @@ fn params() -> serde_json::Value {
                     "buy": [{"operator": "<=", "value": 3.0}]
                 }
             ],
-            "m_flow_split_window": {
+            "m_flow_ix_window": {
                 "window_size_slots": 1.0,
                 // Router flow in the burst.
-                "nonvol_buy": [{"operator": ">=", "value": 1.5}],
+                "untagged_buy": [{"operator": ">=", "value": 1.5}],
                 // And NOTHING ELSE in it. Not `== 0`: the running sums correct at the
                 // window ends, so an emptied side lands on dust. A floor an order of
                 // magnitude under any real transaction says the same thing without
                 // resting on float equality.
-                "vol_buy": [{"operator": "<=", "value": 0.01}]
+                "tagged_buy": [{"operator": "<=", "value": 0.01}]
             },
             // Old enough to have gone quiet on its own - 75 slots at ~400ms.
-            "m_snapshot": {
+            "m_state": {
                 "time": [{"operator": ">=", "value": 30.0}],
                 // vsol <= 42; `liquidity` is the REAL reserve, vsol - 30.
                 "liquidity": [{"operator": "<=", "value": 12.0}]
@@ -70,15 +70,15 @@ fn params() -> serde_json::Value {
 /// and router-purity rejects average -0.68.
 fn metric_config() -> serde_json::Value {
     json!({
-        "m_flow_split": {
-            "organic_ix_markers":
+        "m_flow_ix": {
+            "untagged_ix_markers":
                 ["Axiom Trade", "Photon", "Bloom Router", "Trojan Trade", "Terminal"],
             // Both OFF. Contagion makes "did this transaction come through a router"
             // a property of the sender's history instead of the transaction, and the
             // creator rule adds an identity term. Either one measures something the
             // derivation did not.
             "wallet_contagion": false,
-            "creator_is_volume": false
+            "creator_is_tagged": false
         }
     })
 }
@@ -96,7 +96,7 @@ fn every_window_counts_in_slots_and_the_quiet_span_excludes_the_burst() {
     let entry = p.entry.as_ref().expect("entry side");
 
     let mut spans = Vec::new();
-    for gid in [MetricGroupId::FlowWindow, MetricGroupId::FlowSplitWindow] {
+    for gid in [MetricGroupId::FlowWindow, MetricGroupId::FlowIxWindow] {
         for g in &entry.0[&gid] {
             let spec = g
                 .window_spec(&hunter_engine::metrics::WINDOW_AXIS)
@@ -128,7 +128,7 @@ fn every_window_counts_in_slots_and_the_quiet_span_excludes_the_burst() {
 #[test]
 fn the_markers_are_known_and_a_typo_is_rejected() {
     let cfg = metric_config();
-    let names: Vec<&str> = cfg["m_flow_split"]["organic_ix_markers"]
+    let names: Vec<&str> = cfg["m_flow_ix"]["untagged_ix_markers"]
         .as_array()
         .unwrap()
         .iter()
@@ -139,7 +139,7 @@ fn the_markers_are_known_and_a_typo_is_rejected() {
     }
     assert_eq!(marker_mask(&names).unwrap(), ROUTER_MARKERS, "the rule masks every router");
 
-    let typo = json!({"m_flow_split": {"organic_ix_markers": ["Bloom Rooter"]}});
+    let typo = json!({"m_flow_ix": {"untagged_ix_markers": ["Bloom Rooter"]}});
     let e = FlowPatterns::validate_metric_config(&typo).unwrap_err();
     assert!(e.contains("unknown ix marker"), "{e}");
 }
@@ -150,13 +150,13 @@ fn the_markers_are_known_and_a_typo_is_rejected() {
 #[test]
 fn naming_both_sides_of_the_split_is_rejected() {
     for cfg in [
-        json!({"m_flow_split": {
-            "organic_ix_markers": ["Photon"],
-            "volume_ix_markers": ["CreateAccountWithSeed"]
+        json!({"m_flow_ix": {
+            "untagged_ix_markers": ["Photon"],
+            "tagged_ix_markers": ["CreateAccountWithSeed"]
         }}),
-        json!({"m_flow_split": {
-            "organic_ix_markers": ["Photon"],
-            "volume_ix_patterns": [["Pump.Fun: Buy"]]
+        json!({"m_flow_ix": {
+            "untagged_ix_markers": ["Photon"],
+            "ix_patterns": [["Pump.Fun: Buy"]]
         }}),
     ] {
         let e = FlowPatterns::validate_metric_config(&cfg).unwrap_err();
@@ -170,7 +170,7 @@ fn naming_both_sides_of_the_split_is_rejected() {
 fn the_declared_classifier_is_structural() {
     let p = FlowPatterns::from_metric_config(&metric_config()).expect("configured");
     assert!(!p.wallet_contagion());
-    assert!(!p.creator_is_volume());
+    assert!(!p.creator_is_tagged());
     assert!(p.markers_are_organic());
 }
 
@@ -204,10 +204,10 @@ fn only_a_router_build_counts_as_a_person() {
 fn the_organic_mask_is_not_the_volume_mask_inverted() {
     let organic = FlowPatterns::from_metric_config(&metric_config()).expect("configured");
     let volume = FlowPatterns::from_metric_config(&json!({
-        "m_flow_split": {
-            "volume_ix_markers": ["CreateAccountWithSeed"],
+        "m_flow_ix": {
+            "tagged_ix_markers": ["CreateAccountWithSeed"],
             "wallet_contagion": false,
-            "creator_is_volume": false
+            "creator_is_tagged": false
         }
     }))
     .expect("configured");

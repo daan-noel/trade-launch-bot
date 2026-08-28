@@ -111,7 +111,7 @@ Each was measured and each separates cleanly, at a fill the engine cannot delive
 Everything above comes from a standalone path simulator. Run through
 `hunter-engine::reduce` (rule `6b1d2c3e`, fingerprint `5c9a4e10` =
 `first_slot_buy_lamports 8_940_000_000` + `bkt=exact`, 0.25 SOL, TP +10 / SL −12 /
-`m_position.held >= 4`, entry `m_snapshot.time <= 3` + `m_flow_window.unique_wallets
+`m_position.held >= 4`, entry `m_state.time <= 3` + `m_flow_window.unique_wallets
 <= 4 @2s`), the same rule reads:
 
 | fill model | cost model | trades | mean | median | win | PF | total |
@@ -137,7 +137,7 @@ bound on what the engine books.
   gate that helps a TP rule. Single-metric exits — `retrace`, `stall`, `trail`, `gross_flow`
   decay, `net_flow < 0`, `sell`, `liquidity` — land between −2.3% and −7.6%, all worse than
   a plain take-profit. Without a runner tail there is nothing for a trailing exit to catch.
-* **Selling into the first organic buy.** `nonvol_buy >= 0.3 @2s` as an OR-exit costs
+* **Selling into the first organic buy.** `untagged_buy >= 0.3 @2s` as an OR-exit costs
   −2.7 pp. Organic arrival is what a take-profit is *paid by* here, not a reason to leave.
 * **Buy the dev dump.** Entering 1/2/3/5 slots after the dev's first sell: −8% to −18% per
   trade at every exit. There is no bounce.
@@ -159,8 +159,8 @@ closely enough to reproduce the slot-exact share at r = 0.999), or a creation-sl
 that needs no settle at all. Absent one of those, this fingerprint is a **negative
 screen** — the 8.51 preset loses −1.32% per trade over 642 launches — and nothing more.
 
-A `m_flow_split`-based gate additionally depends on the fingerprint's configured
-`volume_ix_patterns`: the same gate scores +5.05% when only the launcher's own
+A `m_flow_ix`-based gate additionally depends on the fingerprint's configured
+`ix_patterns`: the same gate scores +5.05% when only the launcher's own
 `Unknown (HQ2UU…)` legs are volume-side and −1.16% when the durable-nonce snipers are added
 to the list. The stored 56-pattern config on this fingerprint is the latter kind, so a split
 metric here does not mean what an author who has not read the list assumes.

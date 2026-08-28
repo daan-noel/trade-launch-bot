@@ -52,7 +52,7 @@ VALUES ('fs2-ALL broad', NULL, 0, 1000.0);
 -- Rules. Each row changes ONE knob vs `fs2-00 base` (marked in the comment).
 --
 --   dip      m_price_window(30).trail >=   entry dip off the 30 s rolling high
---   liq_lo/hi m_snapshot.liquidity band    vsol at entry
+--   liq_lo/hi m_state.liquidity band    vsol at entry
 --   gross60  m_flow_window(60).gross_flow  hotness floor
 --   retrace  m_position.retrace >=         trailing stop off since-entry peak
 --   arm      m_position.arm_above_pct      profit % before the trail arms (NULL = unarmed)
@@ -70,7 +70,7 @@ SELECT
   jsonb_strip_nulls(jsonb_build_object(
     'stop_loss', v.sl,
     'entry', jsonb_build_object(
-      'm_snapshot', jsonb_build_object(
+      'm_state', jsonb_build_object(
         'time',      jsonb_build_array(jsonb_build_object('operator','>=','value',30)),
         'liquidity', jsonb_build_array(
                        jsonb_build_object('operator','>=','value',v.liq_lo),
@@ -127,7 +127,7 @@ COMMIT;
 SELECT r.rule_name,
        r.buy_amount_lamports/1e9 AS buy_sol,
        r.params->'entry'->'m_price_window'->'trail'->0->>'value'   AS dip,
-       r.params->'entry'->'m_snapshot'->'liquidity'                AS liq_band,
+       r.params->'entry'->'m_state'->'liquidity'                AS liq_band,
        r.params->'exit'->'m_position'->'retrace'->0->>'value'      AS trail,
        r.params->'exit'->'m_position'->>'arm_above_pct'            AS arm,
        r.params->'exit'->'m_position'->'held'->0->>'value'         AS held_cap,

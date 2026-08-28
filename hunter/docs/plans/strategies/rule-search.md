@@ -73,7 +73,7 @@ sweep / flow-discovery / metric-discovery.
 `as_of` freezes at session open so every combo shares one deadness "now".
 
 Load histories with flow columns when the fingerprint has split config;
-otherwise every `m_flow_split` clause is silent.
+otherwise every `m_flow_ix` clause is silent.
 
 Generator, scorer, and report live in `hunter-lab`. The page starts the job and
 renders the archive when `rule_search_finished` lands.

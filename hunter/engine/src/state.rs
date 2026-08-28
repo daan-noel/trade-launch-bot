@@ -14,7 +14,7 @@ use crate::event::{IntentId, LoadedRule, ManualExit, Mint, PositionId, RuleId, T
 use crate::fingerprint::{Fingerprint, FingerprintId};
 use crate::identity::IdentityHash;
 use crate::grouping::TokenFingerprint;
-use crate::metrics::flow_split::FlowPatterns;
+use crate::metrics::flow_ix::FlowPatterns;
 use crate::metrics::track::TokenTrack;
 use crate::metrics::Ts;
 
@@ -146,7 +146,7 @@ pub struct EngineState {
     /// Loaded fingerprints (input order preserved for multi-match).
     pub fps: Vec<Fingerprint>,
     /// Union of every rule's distinct **flow** `window_size_sec` (`m_flow_window` +
-    /// `m_flow_split_window`) — ensured on each new track.
+    /// `m_flow_ix_window`) — ensured on each new track.
     pub all_windows: Vec<crate::metrics::WindowSpec>,
     /// Union of every rule's distinct **price** `window_size_sec`
     /// (`m_price_window`) — ensured on each new track alongside `all_windows`.
@@ -197,7 +197,7 @@ pub struct EngineState {
     /// Open positions' owners, for manual-close targeting.
     pub positions: BTreeMap<PositionId, PositionRef>,
     /// Launches seen per creator wallet hash — the tally behind
-    /// `m_snapshot.prior_launches`. Incremented on every `TokenCreated`, read
+    /// the `prior_launches` fingerprint axis. Incremented on every `TokenCreated`, read
     /// (strictly before the increment) to seed the new token's metric.
     ///
     /// A live process starts empty, which would read every creator as a first-time

@@ -8,48 +8,48 @@ import {
 describe('flowLineVisibilityFromPrefs', () => {
   it('seeds both curves from a legacy single showFlowLines flag', () => {
     expect(flowLineVisibilityFromPrefs({ showFlowLines: false })).toEqual({
-      vol: false,
-      nonVol: false,
+      tagged: false,
+      untagged: false,
     });
     expect(flowLineVisibilityFromPrefs({ showFlowLines: true })).toEqual({
-      vol: true,
-      nonVol: true,
+      tagged: true,
+      untagged: true,
     });
   });
 
   it('prefers the split keys over the legacy flag', () => {
     expect(
-      flowLineVisibilityFromPrefs({ showFlowLines: false, showFlowVol: true, showFlowNonVol: false }),
-    ).toEqual({ vol: true, nonVol: false });
+      flowLineVisibilityFromPrefs({ showFlowLines: false, showFlowTagged: true, showFlowUntagged: false }),
+    ).toEqual({ tagged: true, untagged: false });
   });
 
   it('defaults both on for a blob written before either key existed', () => {
-    expect(flowLineVisibilityFromPrefs({})).toEqual({ vol: true, nonVol: true });
+    expect(flowLineVisibilityFromPrefs({})).toEqual({ tagged: true, untagged: true });
   });
 
   it('fills only the missing half from the legacy flag', () => {
-    expect(flowLineVisibilityFromPrefs({ showFlowLines: false, showFlowNonVol: true })).toEqual({
-      vol: false,
-      nonVol: true,
+    expect(flowLineVisibilityFromPrefs({ showFlowLines: false, showFlowUntagged: true })).toEqual({
+      tagged: false,
+      untagged: true,
     });
   });
 });
 
 describe('anyFlowLineVisible', () => {
   it('is the left price scale visibility — false only when both curves are off', () => {
-    expect(anyFlowLineVisible({ vol: false, nonVol: false })).toBe(false);
-    expect(anyFlowLineVisible({ vol: true, nonVol: false })).toBe(true);
-    expect(anyFlowLineVisible({ vol: false, nonVol: true })).toBe(true);
+    expect(anyFlowLineVisible({ tagged: false, untagged: false })).toBe(false);
+    expect(anyFlowLineVisible({ tagged: true, untagged: false })).toBe(true);
+    expect(anyFlowLineVisible({ tagged: false, untagged: true })).toBe(true);
   });
 });
 
 describe('flowLineVisibilityKey', () => {
   it('distinguishes which curve is hidden — the shared axis rescales either way', () => {
     const keys = new Set([
-      flowLineVisibilityKey({ vol: true, nonVol: false }),
-      flowLineVisibilityKey({ vol: false, nonVol: true }),
-      flowLineVisibilityKey({ vol: true, nonVol: true }),
-      flowLineVisibilityKey({ vol: false, nonVol: false }),
+      flowLineVisibilityKey({ tagged: true, untagged: false }),
+      flowLineVisibilityKey({ tagged: false, untagged: true }),
+      flowLineVisibilityKey({ tagged: true, untagged: true }),
+      flowLineVisibilityKey({ tagged: false, untagged: false }),
     ]);
     expect(keys.size).toBe(4);
   });

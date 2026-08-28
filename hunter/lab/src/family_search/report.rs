@@ -1255,7 +1255,7 @@ mod tests {
             win_within_noise: true,
         });
         r.threshold_ladders = vec![ThresholdLadderDto {
-            clause: "nonvol_buy(2s) >= 1.6".into(),
+            clause: "untagged_buy(2s) >= 1.6".into(),
             is_entry: false,
             verdict: "fragile".into(),
             points: Vec::new(),
@@ -1296,7 +1296,7 @@ mod tests {
         let noise = prose.iter().find(|s| s.contains("lower bound is 41%")).expect("noise line");
         assert!(noise.contains("unproven"), "{noise}");
         let frag = prose.iter().find(|s| s.contains("spike rather than a plateau")).unwrap();
-        assert!(frag.contains("nonvol_buy(2s) >= 1.6"));
+        assert!(frag.contains("untagged_buy(2s) >= 1.6"));
         let early = prose.iter().find(|s| s.contains("fires early")).expect("regret line");
         assert!(early.contains("stall >= 30") && early.contains("+20.0pp"), "{early}");
         let fill = prose.iter().find(|s| s.contains("fill luck rather than signal")).unwrap();

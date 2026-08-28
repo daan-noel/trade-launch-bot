@@ -128,7 +128,7 @@ reaches it.
 
 **Admission gate.** A cut joins the table only if it is false on at least 10%
 of the cohort's sampled rows — a threshold at the metric's floor or ceiling
-(`nonvol_buy >= 0`) selects nothing and is dropped before any combo is scored.
+(`untagged_buy >= 0`) selects nothing and is dropped before any combo is scored.
 Cuts with no sampled column (position-scoped, declared menus) are kept; a
 winner ceil rides its floor's gate (a ceiling above every row is rare-tail
 insurance inside a band, not a selector).
@@ -168,7 +168,7 @@ Can-fail is selector and extra pooled. Three can-fail ANDs are not a filling.
 trigger family on entry.
 
 **Stack** (may OR, subject to the 0–2 cap): two different metrics that are not a
-compete pair. `buy(window)` and `nonvol_net` are two metrics.
+compete pair. `buy(window)` and `untagged_net` are two metrics.
 
 Same quantity, different thesis by side: `trail` as a dip trigger is not `trail`
 as a dump sell. Generate both from the cut table.

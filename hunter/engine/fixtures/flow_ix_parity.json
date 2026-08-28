@@ -1,7 +1,7 @@
 {
   "_comment": [
-    "Shared vol/non-vol classification vectors, asserted by BOTH implementations:",
-    "  Rust  hunter/engine/src/metrics/flow_split.rs  (the SSOT the engine decides on)",
+    "Shared tagged/untagged classification vectors, asserted by BOTH implementations:",
+    "  Rust  hunter/engine/src/metrics/flow_ix.rs  (the SSOT the engine decides on)",
     "  TS    hunter/frontend/src/shared/lib/flow/classifyFlow.ts  (the chart's port)",
     "",
     "The two are separate code because the chart must redraw without a round trip.",
@@ -23,7 +23,7 @@
         { "wallet": "w1", "side": "buy", "sol": 2.0, "labels": ["Pump.Fun: Create", "Pump.Fun: Buy"] },
         { "wallet": "w2", "side": "buy", "sol": 3.0, "labels": ["Pump.Fun: Buy"] }
       ],
-      "expect": { "vol_buy": 2.0, "vol_sell": 0.0, "nonvol_buy": 3.0, "nonvol_sell": 0.0 }
+      "expect": { "tagged_buy": 2.0, "tagged_sell": 0.0, "untagged_buy": 3.0, "untagged_sell": 0.0 }
     },
     {
       "name": "contagion: a tagged wallet stays volume whatever its later structure",
@@ -34,7 +34,7 @@
         { "wallet": "w1", "side": "sell", "sol": 1.5, "labels": ["Pump.Fun: Sell"] },
         { "wallet": "w1", "side": "buy", "sol": 0.5, "labels": null }
       ],
-      "expect": { "vol_buy": 2.5, "vol_sell": 1.5, "nonvol_buy": 0.0, "nonvol_sell": 0.0 }
+      "expect": { "tagged_buy": 2.5, "tagged_sell": 1.5, "untagged_buy": 0.0, "untagged_sell": 0.0 }
     },
     {
       "name": "contagion is FORWARD-only: trades before the tagging match stay organic",
@@ -45,7 +45,7 @@
         { "wallet": "w1", "side": "buy", "sol": 1.0, "labels": ["Pump.Fun: Create", "Pump.Fun: Buy"] },
         { "wallet": "w1", "side": "sell", "sol": 2.0, "labels": ["Pump.Fun: Sell"] }
       ],
-      "expect": { "vol_buy": 1.0, "vol_sell": 2.0, "nonvol_buy": 4.0, "nonvol_sell": 0.0 }
+      "expect": { "tagged_buy": 1.0, "tagged_sell": 2.0, "untagged_buy": 4.0, "untagged_sell": 0.0 }
     },
     {
       "name": "creator is volume-side with no pattern configured at all",
@@ -55,7 +55,7 @@
         { "wallet": "dev", "side": "buy", "sol": 5.0, "labels": null },
         { "wallet": "w1", "side": "buy", "sol": 1.0, "labels": ["Pump.Fun: Buy"] }
       ],
-      "expect": { "vol_buy": 5.0, "vol_sell": 0.0, "nonvol_buy": 1.0, "nonvol_sell": 0.0 }
+      "expect": { "tagged_buy": 5.0, "tagged_sell": 0.0, "untagged_buy": 1.0, "untagged_sell": 0.0 }
     },
     {
       "name": "creator seeds contagion — the dev dump is volume too",
@@ -65,7 +65,7 @@
         { "wallet": "dev", "side": "buy", "sol": 5.0, "labels": null },
         { "wallet": "dev", "side": "sell", "sol": 4.0, "labels": null }
       ],
-      "expect": { "vol_buy": 5.0, "vol_sell": 4.0, "nonvol_buy": 0.0, "nonvol_sell": 0.0 }
+      "expect": { "tagged_buy": 5.0, "tagged_sell": 4.0, "untagged_buy": 0.0, "untagged_sell": 0.0 }
     },
     {
       "name": "exact ORDER matters — a reordered sequence is a different pattern",
@@ -74,7 +74,7 @@
       "trades": [
         { "wallet": "w1", "side": "buy", "sol": 1.0, "labels": ["Pump.Fun: Buy", "Pump.Fun: Create"] }
       ],
-      "expect": { "vol_buy": 0.0, "vol_sell": 0.0, "nonvol_buy": 1.0, "nonvol_sell": 0.0 }
+      "expect": { "tagged_buy": 0.0, "tagged_sell": 0.0, "untagged_buy": 1.0, "untagged_sell": 0.0 }
     },
     {
       "name": "a trailing extra label is a MISS, not a prefix match",
@@ -88,7 +88,7 @@
           "labels": ["Pump.Fun: CreateIdempotent", "Pump.Fun: Buy", "System Program: Transfer"]
         }
       ],
-      "expect": { "vol_buy": 0.0, "vol_sell": 0.0, "nonvol_buy": 1.0, "nonvol_sell": 0.0 }
+      "expect": { "tagged_buy": 0.0, "tagged_sell": 0.0, "untagged_buy": 1.0, "untagged_sell": 0.0 }
     },
     {
       "name": "duplicate labels are kept — count is part of the identity",
@@ -103,7 +103,7 @@
         },
         { "wallet": "w2", "side": "buy", "sol": 3.0, "labels": ["System Program: Transfer", "Pump.Fun: Buy"] }
       ],
-      "expect": { "vol_buy": 2.0, "vol_sell": 0.0, "nonvol_buy": 3.0, "nonvol_sell": 0.0 }
+      "expect": { "tagged_buy": 2.0, "tagged_sell": 0.0, "untagged_buy": 3.0, "untagged_sell": 0.0 }
     },
     {
       "name": "missing labels never match, not even an empty configured pattern",
@@ -113,7 +113,7 @@
         { "wallet": "w1", "side": "buy", "sol": 1.0, "labels": null },
         { "wallet": "w2", "side": "buy", "sol": 2.0, "labels": [] }
       ],
-      "expect": { "vol_buy": 0.0, "vol_sell": 0.0, "nonvol_buy": 3.0, "nonvol_sell": 0.0 }
+      "expect": { "tagged_buy": 0.0, "tagged_sell": 0.0, "untagged_buy": 3.0, "untagged_sell": 0.0 }
     },
     {
       "name": "nothing configured and no creator — everything is organic",
@@ -123,7 +123,7 @@
         { "wallet": "w1", "side": "buy", "sol": 1.0, "labels": ["Pump.Fun: Buy"] },
         { "wallet": "w2", "side": "sell", "sol": 2.0, "labels": ["Pump.Fun: Sell"] }
       ],
-      "expect": { "vol_buy": 0.0, "vol_sell": 0.0, "nonvol_buy": 1.0, "nonvol_sell": 2.0 }
+      "expect": { "tagged_buy": 0.0, "tagged_sell": 0.0, "untagged_buy": 1.0, "untagged_sell": 2.0 }
     }
   ]
 }

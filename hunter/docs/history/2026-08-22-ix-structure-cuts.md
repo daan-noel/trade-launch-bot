@@ -90,8 +90,8 @@ cheapest shape found: `ix_create` is a token-static fact available on `TokenCrea
 (`TokenFingerprint::ix_labels`), so it costs nothing per trade; `ix_dp` reads the current
 `TradeLite::ix_hash`; the window term is a filtered running sum in the shape
 `m_flow_window` already uses. The pattern set belongs in the fingerprint's `metric_config`
-under its own key, compiled once at `RulesReloaded` via `flow_split::ix_hash` — reusing the
-hash, not the classifier, and never `volume_ix_patterns`.
+under its own key, compiled once at `RulesReloaded` via `flow_ix::ix_hash` — reusing the
+hash, not the classifier, and never `ix_patterns`.
 
 Any such metric must also answer a `needs_ix_identity` predicate that both lab loaders
 consult, or the lake omits `ix_labels`, every `ix_hash` is `None`, and the gate silently

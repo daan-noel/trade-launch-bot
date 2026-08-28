@@ -1,4 +1,4 @@
-//! `m_snapshot` — instantaneous, rule-independent token state (static metrics).
+//! `m_state` — instantaneous, rule-independent token state (static metrics).
 //!
 //! * `time` — seconds since token creation. **Monotonic** (drives derived
 //!   unsatisfiability); always defined (needs only the two instants).
@@ -20,9 +20,9 @@
 
 use super::{secs_between, MetricId, Ts};
 
-/// Incremental `m_snapshot` state: just the last observed reserves.
+/// Incremental `m_state` state: just the last observed reserves.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct SnapshotState {
+pub struct StateMetrics {
     /// SOL reserves at the most recent trade. `None` until the first trade.
     reserve_sol: Option<f64>,
     /// Buy SOL in the token's creation slot, seeded when that slot settles.
@@ -30,7 +30,7 @@ pub struct SnapshotState {
     first_slot_buy: Option<f64>,
 }
 
-impl SnapshotState {
+impl StateMetrics {
     /// Fold one trade's reserves into the snapshot (ignores non-finite values).
     pub fn on_trade(&mut self, reserve_sol: f64) {
         if reserve_sol.is_finite() {
@@ -66,7 +66,7 @@ impl SnapshotState {
         self.reserve_sol.unwrap_or(f64::NAN)
     }
 
-    /// Value of one `m_snapshot` metric. Non-snapshot ids yield `NaN`
+    /// Value of one `m_state` metric. Non-snapshot ids yield `NaN`
     /// (unreachable — `TokenTrack` routes by group).
     pub fn value(&self, id: MetricId, created_at: Ts, now: Ts) -> f64 {
         match id {
@@ -90,16 +90,16 @@ mod tests {
     #[test]
     fn time_is_seconds_since_creation() {
         let created = ts(0);
-        assert_eq!(SnapshotState::time(created, ts(0)), 0.0);
-        assert_eq!(SnapshotState::time(created, ts(30)), 30.0);
+        assert_eq!(StateMetrics::time(created, ts(0)), 0.0);
+        assert_eq!(StateMetrics::time(created, ts(30)), 30.0);
         // Sub-second precision to the millisecond (500 ms ticks).
         let half = created + Duration::milliseconds(500);
-        assert_eq!(SnapshotState::time(created, half), 0.5);
+        assert_eq!(StateMetrics::time(created, half), 0.5);
     }
 
     #[test]
     fn liquidity_is_nan_until_first_trade_then_last_reserves() {
-        let mut s = SnapshotState::default();
+        let mut s = StateMetrics::default();
         assert!(s.liquidity().is_nan());
         s.on_trade(12.5);
         assert_eq!(s.liquidity(), 12.5);
@@ -113,7 +113,7 @@ mod tests {
     /// the instant it is born.
     #[test]
     fn first_slot_buy_is_unknown_until_seeded_and_zero_is_real() {
-        let mut s = SnapshotState::default();
+        let mut s = StateMetrics::default();
         assert!(s.first_slot_buy().is_nan());
         s.seed_first_slot_buy(0.0);
         assert_eq!(s.first_slot_buy(), 0.0);
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn non_finite_reserves_ignored() {
-        let mut s = SnapshotState::default();
+        let mut s = StateMetrics::default();
         s.on_trade(5.0);
         s.on_trade(f64::NAN);
         s.on_trade(f64::INFINITY);

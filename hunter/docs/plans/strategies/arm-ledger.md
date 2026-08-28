@@ -55,7 +55,7 @@ the clock ran out — the thing a rule gets tuned on — is nowhere in the word.
 
 ```json
 { "blocked_by": "m_flow_window.gross_flow",
-  "killed_by":  { "metric": "m_snapshot.time", "threshold": 50.0, "operator": "<" },
+  "killed_by":  { "metric": "m_state.time", "threshold": 50.0, "operator": "<" },
   "unmet": [{ "metric": "m_flow_window.gross_flow", "window_size_sec": 60.0,
               "value": 24.71, "conditions": [{ "operator": ">=", "value": 40.0 }] }] }
 ```

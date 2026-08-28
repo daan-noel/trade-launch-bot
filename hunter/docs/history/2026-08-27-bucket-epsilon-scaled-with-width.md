@@ -1,7 +1,7 @@
 # 2026-08-27 — the retired bucket epsilon scaled with the width
 
 Found while diffing the matched-token set across the fingerprint range migration
-(`core/migrations/0008_fingerprint_criteria_ranges.sql`). It is recorded because it
+(`core/migrations/0009_fingerprint_criteria_ranges.sql`). It is recorded because it
 changes how to read every result measured through a **wide** bucket before this date.
 
 ## What was wrong

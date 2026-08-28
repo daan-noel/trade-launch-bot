@@ -33,7 +33,7 @@ use crate::state::local_state::LocalState;
 use crate::sweep::corpus::{sweep_per_mint_cap, CorpusSource, Selection};
 use crate::sweep::grouping::GroupField;
 use crate::sweep::progress::SweepObserver;
-use hunter_engine::metrics::flow_split::FlowPatterns;
+use hunter_engine::metrics::flow_ix::FlowPatterns;
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 use trading_core::strategies::fingerprint_axes::fp_to_engine;
 
@@ -95,10 +95,10 @@ pub struct StartMetricDiscoveryBody {
     /// Exit-side window every dynamic metric is screened at. Same spellings.
     #[serde(default = "default_exit_window")]
     pub exit_window_sec: WindowField,
-    /// The run's `volume_ix_patterns` — enables the flow-split metrics (skipped
+    /// The run's `ix_patterns` — enables the flow-split metrics (skipped
     /// without them). Absent ⇒ no flow gating.
     #[serde(default)]
-    pub volume_ix_patterns: Option<Vec<Vec<String>>>,
+    pub ix_patterns: Option<Vec<Vec<String>>>,
 }
 
 fn default_token_cap() -> usize {
@@ -344,7 +344,7 @@ async fn run_job(
         .map_or(baseline, |g| g.brackets()[0]);
 
     let flow_patterns = b
-        .volume_ix_patterns
+        .ix_patterns
         .as_ref()
         .map(|p| FlowPatterns::from_label_sequences(p));
 
@@ -513,7 +513,7 @@ async fn run_job(
         weights: DiscoveryWeights { min_closed: b.min_closed, ..DiscoveryWeights::default() },
         split: SplitPolicy::AgeFraction(b.split_fraction.clamp(0.0, 1.0)),
         validation_thresholds: ValidationThresholds::default(),
-        flow_label_sequences: b.volume_ix_patterns.clone(),
+        flow_label_sequences: b.ix_patterns.clone(),
         ..PipelineConfig::default()
     };
 

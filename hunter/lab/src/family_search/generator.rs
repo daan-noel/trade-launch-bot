@@ -117,7 +117,7 @@ pub fn end_family(metric: MetricId) -> EndFamily {
         | MetricId::WinRise
         | MetricId::Pnl => EndFamily::PriceTrail,
         _ => match group_of(metric).family {
-            MetricFamily::FlowSplit => EndFamily::Organic,
+            MetricFamily::FlowIx => EndFamily::Organic,
             MetricFamily::Flow => EndFamily::Flow,
             // A registry row with no family of its own reads as a price-path term
             // rather than silently inflating one of the two flow buckets.
@@ -158,7 +158,7 @@ pub struct StandingTerm {
     pub label: String,
 }
 
-/// Parse `metric[(Ws)] op value` (`liquidity >= 85`, `nonvol_buy(2s) >= 0.9`) through
+/// Parse `metric[(Ws)] op value` (`liquidity >= 85`, `untagged_buy(2s) >= 0.9`) through
 /// [`parse_metric_exit_label`] — the same parser the persisted exit reason uses, so a
 /// standing term is written exactly as the board prints one.
 pub fn parse_standing(s: &str) -> anyhow::Result<StandingTerm> {
@@ -802,8 +802,8 @@ mod tests {
                 cut(MetricId::GrossFlow, Operator::Lt, 15.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0))),
                 cut(MetricId::GrossFlow, Operator::Lt, 25.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0))),
                 cut(MetricId::Buy, Operator::Lt, 3.0, Some(hunter_engine::metrics::WindowSpec::secs(10.0))),
-                cut(MetricId::NonvolBuy, Operator::Gte, 1.6, None),
-                cut(MetricId::WinNonvolBuy, Operator::Gte, 1.6, Some(hunter_engine::metrics::WindowSpec::secs(2.0))),
+                cut(MetricId::UntaggedBuy, Operator::Gte, 1.6, None),
+                cut(MetricId::WinUntaggedBuy, Operator::Gte, 1.6, Some(hunter_engine::metrics::WindowSpec::secs(2.0))),
                 cut(MetricId::Stall, Operator::Gte, 30.0, None),
                 cut(MetricId::Held, Operator::Gte, 120.0, None),
                 cut(MetricId::Liquidity, Operator::Lt, 12.0, None),
@@ -820,8 +820,8 @@ mod tests {
     fn end_families_partition_the_exit_menu() {
         assert_eq!(end_family(MetricId::GrossFlow), EndFamily::Flow);
         assert_eq!(end_family(MetricId::Buy), EndFamily::Flow);
-        assert_eq!(end_family(MetricId::NonvolBuy), EndFamily::Organic);
-        assert_eq!(end_family(MetricId::WinNonvolBuy), EndFamily::Organic);
+        assert_eq!(end_family(MetricId::UntaggedBuy), EndFamily::Organic);
+        assert_eq!(end_family(MetricId::WinUntaggedBuy), EndFamily::Organic);
         assert_eq!(end_family(MetricId::Stall), EndFamily::StallClock);
         assert_eq!(end_family(MetricId::Held), EndFamily::StallClock);
         assert_eq!(end_family(MetricId::Liquidity), EndFamily::LiquidityCeiling);
@@ -829,7 +829,7 @@ mod tests {
         assert_eq!(end_family(MetricId::Retrace), EndFamily::PriceTrail);
         // Group membership is what decides flow vs organic — a new registry row
         // joins by its family, never by being listed here.
-        assert_eq!(group_of(MetricId::NonvolBuy).id, MetricGroupId::FlowSplit);
+        assert_eq!(group_of(MetricId::UntaggedBuy).id, MetricGroupId::FlowIx);
     }
 
     /// The whole "5 entry metrics are really 3" correction, on one assertion.
@@ -994,7 +994,7 @@ mod tests {
     #[test]
     fn a_malformed_standing_term_fails_the_run_rather_than_being_dropped() {
         assert!(parse_standing("liquidity >= 85").is_ok());
-        assert!(parse_standing("nonvol_buy(2s) >= 0.9").is_ok());
+        assert!(parse_standing("untagged_buy(2s) >= 0.9").is_ok());
         assert!(parse_standing_all(&["liquidity >= 85".into(), "nonsense".into()]).is_err());
     }
 

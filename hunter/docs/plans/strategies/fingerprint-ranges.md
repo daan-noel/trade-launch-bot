@@ -53,9 +53,34 @@ a `tokens` column.
 flag. One column instead of two per axis, so a new axis needs no migration.
 
 Identity is `criteria = $1::jsonb`; Postgres normalises `jsonb` key order, so the
-comparison is canonical without a canonicalisation pass. A `UNIQUE` index on
-`(criteria, wildcard)` makes duplicate fingerprints impossible at the storage
-layer rather than by convention.
+comparison is canonical without a canonicalisation pass.
+
+### Row identity is wider than match identity
+
+Two rows are the same **row** when `criteria`, `wildcard` AND `metric_config`
+agree. `metric_config` selects no token, so it is not *match* identity — but it
+compiles into that row's live `m_flow_ix` patterns at reload, keyed by
+`fingerprint_id`. Two rows selecting the same tokens with different patterns
+classify flow differently, so they are different fingerprints and both must
+exist: eleven `8dtx · <router>` carriers share `{}` + `wildcard` and differ only
+here.
+
+Leave it out and `find_or_create` returns an **arbitrary** one of the eleven
+(`LIMIT 1`, no ordering) — promoting a wildcard group could bind the rule to the
+`GMGN Bot` carrier and then overwrite that carrier's patterns with the sweep's,
+silently reclassifying flow for every rule already bound to it.
+
+A `UNIQUE` index on the same three makes duplicates impossible at the storage
+layer rather than by convention. It indexes the two `jsonb` columns as `md5(…)`
+digests: a btree row is capped at ~2704 bytes and the carriers' pattern sets
+alone exceed it. Equal `jsonb` always yields equal `md5`, so the constraint is
+exactly as strict, and a digest collision could only reject a write, never admit
+a duplicate. Reads keep comparing the values themselves.
+
+`fingerprint_repo`'s test module reads the migration and asserts the predicate
+and the index name the same columns — the one no-DB guard on a fact stored twice,
+because the two drifting apart fails either in a migration against live data or,
+silently, as that arbitrary row.
 
 ## Grouping partitions by the same predicate
 

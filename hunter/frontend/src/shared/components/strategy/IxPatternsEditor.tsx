@@ -5,7 +5,7 @@ import { CloseIcon, PlusIcon, TrashIcon } from 'components/ui/icons';
 import { IxLabelsInput } from 'components/ui/IxLabelsInput';
 import { formatIxLabelsText, parseIxLabelsText } from 'lib/ixLabels';
 
-export interface VolumeIxPatternsEditorProps {
+export interface IxPatternsEditorProps {
   /** Ordered label sequences — one row per volume-side ix structure. */
   patterns: string[][];
   onChange: (patterns: string[][]) => void;
@@ -19,15 +19,15 @@ export function clearPrompt(patterns: string[][]): string {
 }
 
 /**
- * Registry-driven editor for `m_flow_split.volume_ix_patterns` (`string[][]`):
+ * Registry-driven editor for `m_flow_ix.ix_patterns` (`string[][]`):
  * each row is an exact ordered ix-label sequence (same vocabulary as fingerprint
  * `ix_labels`). Empty list ⇒ fingerprint unconfigured for flow (metrics stay NaN).
  */
-export function VolumeIxPatternsEditor({
+export function IxPatternsEditor({
   patterns,
   onChange,
   disabled,
-}: VolumeIxPatternsEditorProps) {
+}: IxPatternsEditorProps) {
   return (
     <div className="flex flex-col gap-2">
       {patterns.length === 0 && (

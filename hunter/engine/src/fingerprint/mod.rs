@@ -58,9 +58,9 @@ pub struct Fingerprint {
     /// The configured axes. Empty (without `wildcard`) matches nothing.
     #[serde(default)]
     pub criteria: Criteria,
-    /// Per-metric-group fingerprint-side config (e.g. `m_flow_split`). **Not** part
+    /// Per-metric-group fingerprint-side config (e.g. `m_flow_ix`). **Not** part
     /// of match identity — compiled into
-    /// [`crate::metrics::flow_split::FlowPatterns`] at reload.
+    /// [`crate::metrics::flow_ix::FlowPatterns`] at reload.
     #[serde(default = "default_metric_config")]
     pub metric_config: serde_json::Value,
 }

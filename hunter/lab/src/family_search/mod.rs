@@ -48,7 +48,7 @@ use hunter_engine::arm::CompiledRule;
 use hunter_engine::event::{ExitReason, LoadedRule};
 use hunter_engine::fingerprint::{Fingerprint as EngineFingerprint, FingerprintId};
 use hunter_engine::metrics::evaluator::Operator;
-use hunter_engine::metrics::flow_split::FlowPatterns;
+use hunter_engine::metrics::flow_ix::FlowPatterns;
 use hunter_engine::metrics::MetricId;
 use hunter_engine::rule_params::RuleParams;
 use trading_core::strategies::kernel::{CostModel, ExitCode};
@@ -130,7 +130,7 @@ impl RunConfig {
             skip_duplicate_identity: self.skip_duplicate_identity,
             duplicate_identity_window_hours: self.duplicate_identity_window_hours,
             fill_delay_ms: 0,
-            // The lake corpus carries no creator wallet, so `m_snapshot.prior_launches`
+            // The lake corpus carries no creator wallet, so the `prior_launches` fingerprint axis
             // cannot be primed here and reads `NaN` (see `LAKE_BLIND_METRICS`).
             creator_launches: Default::default(),
         }
@@ -671,15 +671,15 @@ mod tests {
     }
 
     /// A rule with two authored exit terms on the SAME metric at different windows —
-    /// the shape a slot lookup must not collapse. Both print as `nonvol_buy`, both
-    /// carry `MetricId::WinNonvolBuy`, and only the window tells them apart.
+    /// the shape a slot lookup must not collapse. Both print as `untagged_buy`, both
+    /// carry `MetricId::WinUntaggedBuy`, and only the window tells them apart.
     fn two_window_rule() -> RuleParams {
         use crate::rule_search::cuts::CutPhase;
         use crate::rule_search::generator::{assemble, Clause, EntryFilling, ExitBag};
         use hunter_engine::metrics::MetricGroupId;
         let c = |w: f64, v: f64| Clause {
-            group: MetricGroupId::FlowSplitWindow,
-            metric: MetricId::WinNonvolBuy,
+            group: MetricGroupId::FlowIxWindow,
+            metric: MetricId::WinUntaggedBuy,
             window: Some(hunter_engine::metrics::WindowSpec::secs(w)),
             op: Operator::Gte,
             threshold: v,
@@ -716,7 +716,7 @@ mod tests {
             exit_time: Some(Utc::now()),
             exit_tx: None,
             exit_reason: Some(ExitReason::Metrics {
-                metric: MetricId::WinNonvolBuy,
+                metric: MetricId::WinUntaggedBuy,
                 operator: Operator::Gte,
                 value,
                 window,

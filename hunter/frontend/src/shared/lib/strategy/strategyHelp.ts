@@ -97,8 +97,8 @@ export const SIDE_HELP = {
 // ── Metric groups ────────────────────────────────────────────────────────────
 
 export const GROUP_HELP: Record<string, HelpTip> = {
-  m_snapshot: {
-    title: 'm_snapshot — point-in-time facts',
+  m_state: {
+    title: 'm_state — point-in-time facts',
     body: [
       'Always-on metrics that do not need a trailing window.',
       '',
@@ -166,36 +166,67 @@ export const GROUP_HELP: Record<string, HelpTip> = {
       '• buy / sell — one side only, SOL',
       '• buy_share — buy / (buy + sell) in PERCENT 0-100, not 0-1: direction',
       '  independent of size. NaN on an empty window, so it never fires on silence.',
-      '• unique_wallets — how many distinct people traded (a count)',
-      '• buy_count — how many BUYS landed (a count). trade_count counts sells too, so',
-      '  on a one-slot window only this one answers "how many people bought the burst".',
       '• trade_count — how many trades landed (a count). One wallet re-entering ten',
-      '  times reads 10 here and 1 in unique_wallets.',
+      '  times reads 10 here and 1 in m_crowd_window.unique_wallets.',
+      '• buy_count / sell_count — how many BUYS, how many SELLS. trade_count counts',
+      '  both, so on a one-slot window only these answer "who bought the burst". The',
+      '  two always add up to trade_count; a condition cannot subtract, which is why',
+      '  sell_count exists at all.',
+      '• trade_share / sol_share — what fraction of the window landed in a SLICE',
+      '  nested inside it (set slice_size_sec). trade_share counts trades, sol_share',
+      '  counts SOL, and they are not the same reading: ten prints of 0.1 SOL and one',
+      '  print of 10 are identical in the first and far apart in the second. On a',
+      '  PRINT window only sol_share still varies. Entry side only, for now.',
       '',
       'If you use any metric here you must set EXACTLY ONE size — window_size_sec',
       '(e.g. 10), window_size_slots (e.g. 30) or window_size_prints (e.g. 20) — plus',
-      'an optional window_lag.',
+      'an optional window_lag. slice_size_* is required by trade_share / sol_share and',
+      'REJECTED on a row without them: a slice nothing reads is a gate that does nothing.',
       'Kind: dynamic.',
     ].join('\n'),
   },
-  m_flow_split: {
-    title: 'm_flow_split — volume vs organic (lifetime)',
+  m_crowd_window: {
+    title: 'm_crowd_window — who is trading, over a window',
+    body: [
+      'The two readings about PEOPLE rather than money, over the same trailing window',
+      'm_flow_window uses.',
+      '',
+      'Metrics:',
+      '• unique_wallets — how many distinct wallets traded (a count). One wallet',
+      '  churning and a crowd arriving are identical in gross_flow and far apart here.',
+      '• trades_per_wallet — trade_count / unique_wallets. Low is a crowd arriving,',
+      '  high is one wallet working the tape. A COUNT ratio, never an identity, so',
+      '  wallet rotation does not defeat it. NaN on an empty window, never 0 — a 0',
+      '  would let "trades_per_wallet <= 2" pass on a dead tape.',
+      '',
+      'Why its own group rather than part of m_flow_window: these two are the only',
+      'metrics that need the WALLET column loaded. An offline read without it folds',
+      'every trade as one anonymous wallet, so unique_wallets reads 1 forever and the',
+      'gate looks strict instead of broken. One group, one load obligation.',
+      '',
+      'To gate on flow AND crowd over one window, author both groups at the same',
+      'window_size_sec. They are ANDed, and they share one buffer.',
+      'Kind: dynamic.',
+    ].join('\n'),
+  },
+  m_flow_ix: {
+    title: 'm_flow_ix — volume vs organic (lifetime)',
     body: [
       'Splits every trade into volume-side (creator tooling) vs organic, using the',
-      'fingerprint\'s volume_ix_patterns + wallet contagion + creator wallet.',
+      'fingerprint\'s ix_patterns + wallet contagion + creator wallet.',
       '',
-      'Metrics (SOL unless noted): vol_buy/sell/net/gross, nonvol_*, vol_share (%).',
+      'Metrics (SOL unless noted): tagged_buy/sell/net/gross, nonvol_*, tagged_share (%).',
       'Unconfigured fingerprint ⇒ all NaN (conditions never fire). Kind: static.',
     ].join('\n'),
   },
-  m_flow_split_window: {
-    title: 'm_flow_split_window — volume vs organic (trailing)',
+  m_flow_ix_window: {
+    title: 'm_flow_ix_window — volume vs organic (trailing)',
     body: [
-      'Same split as m_flow_split, but over a trailing window (window_size_sec,',
+      'Same split as m_flow_ix, but over a trailing window (window_size_sec,',
       'window_size_slots or window_size_prints).',
-      'Reads the same volume_ix_patterns from the fingerprint (no duplicate config).',
+      'Reads the same ix_patterns from the fingerprint (no duplicate config).',
       '',
-      'Metric names mirror m_flow_split (vol_*, nonvol_*, vol_share). Kind: dynamic.',
+      'Metric names mirror m_flow_ix (vol_*, nonvol_*, tagged_share). Kind: dynamic.',
     ].join('\n'),
   },
   m_position: {
@@ -312,7 +343,7 @@ export const METRIC_HELP: Record<string, HelpTip> = {
       '',
       'One wallet churning and a crowd arriving look identical in SOL and different',
       'here. Pair the two to tell a real crowd from one bot: high gross_flow with low',
-      'unique_wallets is wash volume.',
+      'unique_wallets is wash volume. Both live in m_crowd_window.',
       '',
       'Examples:',
       '  >=10     a real crowd, not one bot',
@@ -327,10 +358,10 @@ export const METRIC_HELP: Record<string, HelpTip> = {
     title: 'trade_count — trades in the window (count)',
     body: [
       'How many trades landed over the last N seconds — how BUSY the tape is, as',
-      'against unique_wallets’ how many people are on it.',
+      'against m_crowd_window.unique_wallets’ how many people are on it.',
       '',
       'One wallet re-entering ten times reads 10 here and 1 there. Unlike',
-      'unique_wallets this needs no wallet column, so it survives an offline load that',
+      'm_crowd_window.unique_wallets this needs no wallet column, so it survives a load that',
       'did not ask for wallet identity.',
       '',
       'Examples:',
@@ -490,27 +521,27 @@ export const METRIC_HELP: Record<string, HelpTip> = {
     ].join('\n'),
   },
 
-  // m_flow_split / m_flow_split_window — same JSON names; registry appends unit/tol/monotonic.
-  vol_buy: {
-    title: 'vol_buy — volume-side buys (SOL)',
+  // m_flow_ix / m_flow_ix_window — same JSON names; registry appends unit/tol/monotonic.
+  tagged_buy: {
+    title: 'tagged_buy — volume-side buys (SOL)',
     body: [
       'SOL spent on buys classified as volume-side (creator tooling / wash).',
       '',
-      'A trade is volume-side if: its ix_labels match a volume_ix_patterns row,',
+      'A trade is volume-side if: its ix_labels match a ix_patterns row,',
       'OR its wallet was already tagged volume on this token, OR it is the creator.',
       '',
       'Examples:',
       '  >2     heavy volume-side buying (lifetime or window)',
       '  <0.5   little tooling buy pressure',
       '',
-      'Needs fingerprint m_flow_split.volume_ix_patterns; else NaN (never fires).',
-      'Windowed form also needs window_size_sec on m_flow_split_window.',
+      'Needs fingerprint m_flow_ix.ix_patterns; else NaN (never fires).',
+      'Windowed form also needs window_size_sec on m_flow_ix_window.',
     ].join('\n'),
   },
-  vol_sell: {
-    title: 'vol_sell — volume-side sells (SOL)',
+  tagged_sell: {
+    title: 'tagged_sell — volume-side sells (SOL)',
     body: [
-      'SOL from sells classified as volume-side (same classifier as vol_buy).',
+      'SOL from sells classified as volume-side (same classifier as tagged_buy).',
       '',
       'Examples:',
       '  >1     volume wallets dumping',
@@ -519,10 +550,10 @@ export const METRIC_HELP: Record<string, HelpTip> = {
       'Unconfigured fingerprint ⇒ NaN. Windowed form needs window_size_sec.',
     ].join('\n'),
   },
-  vol_net: {
-    title: 'vol_net — volume-side net (SOL)',
+  tagged_net: {
+    title: 'tagged_net — volume-side net (SOL)',
     body: [
-      'vol_buy − vol_sell. Positive = net volume-side buying; negative = net dumping.',
+      'tagged_buy − tagged_sell. Positive = net volume-side buying; negative = net dumping.',
       '',
       'Examples:',
       '  >1     tooling still accumulating',
@@ -531,18 +562,18 @@ export const METRIC_HELP: Record<string, HelpTip> = {
       'Not monotonic. Unconfigured fingerprint ⇒ NaN.',
     ].join('\n'),
   },
-  vol_gross: {
-    title: 'vol_gross — volume-side activity (SOL)',
+  tagged_gross: {
+    title: 'tagged_gross — volume-side activity (SOL)',
     body: [
-      'vol_buy + vol_sell — how much volume-side tape traded (direction ignored).',
+      'tagged_buy + tagged_sell — how much volume-side tape traded (direction ignored).',
       '',
       'Example: >5 → at least 5◎ of volume-side flow (buys+sells).',
       '',
-      'Useful with vol_share to require both activity and dominance.',
+      'Useful with tagged_share to require both activity and dominance.',
     ].join('\n'),
   },
-  nonvol_buy: {
-    title: 'nonvol_buy — organic buys (SOL)',
+  untagged_buy: {
+    title: 'untagged_buy — organic buys (SOL)',
     body: [
       'SOL spent on buys that are NOT volume-side (organic / retail tape).',
       '',
@@ -552,8 +583,8 @@ export const METRIC_HELP: Record<string, HelpTip> = {
       'Unconfigured fingerprint ⇒ NaN.',
     ].join('\n'),
   },
-  nonvol_sell: {
-    title: 'nonvol_sell — organic sells (SOL)',
+  untagged_sell: {
+    title: 'untagged_sell — organic sells (SOL)',
     body: [
       'SOL from organic (non–volume-side) sells.',
       '',
@@ -562,10 +593,10 @@ export const METRIC_HELP: Record<string, HelpTip> = {
       'Unconfigured fingerprint ⇒ NaN.',
     ].join('\n'),
   },
-  nonvol_net: {
-    title: 'nonvol_net — organic net (SOL)',
+  untagged_net: {
+    title: 'untagged_net — organic net (SOL)',
     body: [
-      'nonvol_buy − nonvol_sell. Positive = organic accumulation; negative = organic exit.',
+      'untagged_buy − untagged_sell. Positive = organic accumulation; negative = organic exit.',
       '',
       'Examples:',
       '  >1     organic net buying',
@@ -574,18 +605,18 @@ export const METRIC_HELP: Record<string, HelpTip> = {
       'Not monotonic. Unconfigured fingerprint ⇒ NaN.',
     ].join('\n'),
   },
-  nonvol_gross: {
-    title: 'nonvol_gross — organic activity (SOL)',
+  untagged_gross: {
+    title: 'untagged_gross — organic activity (SOL)',
     body: [
-      'nonvol_buy + nonvol_sell — total organic tape (direction ignored).',
+      'untagged_buy + untagged_sell — total organic tape (direction ignored).',
       '',
       'Example: >3 → meaningful organic churn alongside (or instead of) volume-side flow.',
     ].join('\n'),
   },
-  vol_share: {
-    title: 'vol_share — volume share of tape (%)',
+  tagged_share: {
+    title: 'tagged_share — volume share of tape (%)',
     body: [
-      'vol_gross / (vol_gross + nonvol_gross) × 100. How much of total flow is volume-side.',
+      'tagged_gross / (tagged_gross + untagged_gross) × 100. How much of total flow is volume-side.',
       'NaN when total gross is 0 (no scored flow yet).',
       '',
       'Examples:',
@@ -652,28 +683,28 @@ export function metricHelpBody(
 // ── Strict params ────────────────────────────────────────────────────────────
 
 export const STRICT_PARAM_HELP: Record<string, HelpTip> = {
-  burst_size_sec: {
-    title: 'burst_size_sec — the recent slice',
+  slice_size_sec: {
+    title: 'slice_size_sec — the recent slice',
     body: [
-      "m_flow_burst's second window: the SHORT one, nested inside the reference span.",
-      'On a slot row the twin param burst_size_slots takes its place — both axes of',
+      "m_flow_window's second window: the SHORT one, nested inside the reference span.",
+      'On a slot row the twin param slice_size_slots takes its place — both axes of',
       'the group count in the same unit.',
       '',
-      'trade_share = trades in the last burst_size_sec, as a percent of trades in',
+      'trade_share = trades in the last slice_size_sec, as a percent of trades in',
       'the last window_size_sec. It measures how CONCENTRATED the tape is in time,',
       'independent of how busy it is: ten trades in the last 3s and ten spread over',
       'a minute are the same trade_count and the same gross_flow, and 50 vs 10 here.',
       '',
       'Must be > 0 and <= window_size_sec. Reads 100 on a token younger than it —',
-      'a true reading of a short life, not a maturity signal, so gate m_snapshot.time',
+      'a true reading of a short life, not a maturity signal, so gate m_state.time',
       'yourself if that is what you mean.',
     ].join('\n'),
   },
-  burst_size_slots: {
-    title: 'burst_size_slots — the recent slice, in slots',
+  slice_size_slots: {
+    title: 'slice_size_slots — the recent slice, in slots',
     body: [
-      "m_flow_burst's second window when the row counts in slots. Same quantity as",
-      'burst_size_sec — trades in the slice as a percent of trades in the reference',
+      "m_flow_window's second window when the row counts in slots. Same quantity as",
+      'slice_size_sec — trades in the slice as a percent of trades in the reference',
       'window — measured in the discrete buckets the chain actually batches in.',
       '',
       'Both axes of the group must use the SAME unit: a burst in slots over a',
@@ -684,11 +715,11 @@ export const STRICT_PARAM_HELP: Record<string, HelpTip> = {
       'half-minute of tape behind it.',
     ].join('\n'),
   },
-  burst_size_prints: {
-    title: 'burst_size_prints — the recent slice, in prints',
+  slice_size_prints: {
+    title: 'slice_size_prints — the recent slice, in prints',
     body: [
-      "m_flow_burst's second window when the row counts in prints. Same quantity as",
-      'burst_size_sec — trades in the slice as a percent of trades in the reference',
+      "m_flow_window's second window when the row counts in prints. Same quantity as",
+      'slice_size_sec — trades in the slice as a percent of trades in the reference',
       'window — measured in the token\u2019s own transactions.',
       '',
       'Note what that makes trade_share on this basis: a count over a count, so it is',
@@ -706,7 +737,7 @@ export const STRICT_PARAM_HELP: Record<string, HelpTip> = {
       'How many seconds of recent trades to include for dynamic groups:',
       '  • m_flow_window — gross_flow, net_flow, buy, sell, buy_count, buy_share,',
       '    unique_wallets, trade_count',
-      '  • m_flow_split_window — vol_*, nonvol_*, vol_share (same split as lifetime)',
+      '  • m_flow_ix_window — vol_*, nonvol_*, tagged_share (same split as lifetime)',
       '  • m_price_window — trail, rise',
       '',
       'Every dynamic group needs EXACTLY ONE size — this, window_size_slots or',
@@ -716,7 +747,7 @@ export const STRICT_PARAM_HELP: Record<string, HelpTip> = {
       'Each dynamic group instance has its own window: you can author the same',
       'group at several windows (e.g. m_flow_window at 30s and 60s); each',
       'distinct window becomes its own clause. Static groups (m_flow_lifetime,',
-      'm_flow_split, m_price_lifetime) take no window at all.',
+      'm_flow_ix, m_price_lifetime) take no window at all.',
     ].join('\n'),
   },
   window_size_slots: {
@@ -758,7 +789,7 @@ export const STRICT_PARAM_HELP: Record<string, HelpTip> = {
       '',
       'A token younger than the window holds fewer prints than you asked for; the',
       'reading is over what exists, which is a true reading of a short life, so gate',
-      'm_snapshot.time yourself if you mean maturity.',
+      'm_state.time yourself if you mean maturity.',
     ].join('\n'),
   },
   window_lag: {
@@ -1089,11 +1120,11 @@ export const FINGERPRINT_FIELD_HELP = {
       'Matched as an exact ordered sequence. Leave empty to skip this filter.',
     ].join('\n'),
   },
-  volume_ix_patterns: {
+  ix_patterns: {
     title: 'Volume-side ix patterns',
     body: [
       'Ordered instruction-label sequences that mark a trade as volume-side for',
-      'm_flow_split / m_flow_split_window. Exact ordered match — same vocabulary as fingerprint ix_labels.',
+      'm_flow_ix / m_flow_ix_window. Exact ordered match — same vocabulary as fingerprint ix_labels.',
       '',
       'Classifier (any one is enough):',
       '  1) trade ix_labels hash ∈ one of these pattern rows',
@@ -1103,7 +1134,7 @@ export const FINGERPRINT_FIELD_HELP = {
       '',
       'Example row: ["Pump.Fun: Buy","Token Program: CloseAccount"]',
       '',
-      'Empty / missing m_flow_split key ⇒ m_flow_split / m_flow_split_window metrics',
+      'Empty / missing m_flow_ix key ⇒ m_flow_ix / m_flow_ix_window metrics',
       'are NaN (never fire). Aggregate flow (m_flow_lifetime / m_flow_window) does not',
       'use this config.',
       'Discover candidates on Lab → Flow discovery, then Apply back here.',
@@ -1340,14 +1371,14 @@ export const SWEEP_FIELD_HELP = {
     title: 'Window size',
     body: [
       'Trailing window for dynamic metrics on this axis (same as the size param on',
-      'a rule): m_flow_window, m_flow_split_window, m_price_window.',
+      'a rule): m_flow_window, m_flow_ix_window, m_price_window.',
       '',
       'Counted in the unit beside it — seconds, slots or prints. The axis assembles',
       'the size param that unit spells, so a slot axis sweeps window_size_slots and',
       'a print axis sweeps window_size_prints.',
       '',
       'You can sweep the same group at several windows (each becomes its own',
-      'clause). Lifetime / static metrics (m_flow_lifetime, m_flow_split) ignore this',
+      'clause). Lifetime / static metrics (m_flow_lifetime, m_flow_ix) ignore this',
     ].join('\n'),
   },
   axisWindowUnit: {
@@ -1413,28 +1444,28 @@ export const DISCOVERY_FIELD_HELP = {
       'When set, discovery scores only tokens that MATCH this fingerprint',
       '(engine match SSOT — same buckets / axes as live).',
       '',
-      'UI then uses one “ALL” group; Apply writes volume_ix_patterns back to this fingerprint.',
+      'UI then uses one “ALL” group; Apply writes ix_patterns back to this fingerprint.',
       'Leave empty to partition manually with group-by / filters below.',
     ].join('\n'),
   },
   applyFingerprint: {
     title: 'Apply to fingerprint',
     body: [
-      'Target fingerprint that receives the draft volume_ix_patterns on Apply.',
+      'Target fingerprint that receives the draft ix_patterns on Apply.',
       '',
-      '• Pick an existing row → PUT metric_config.m_flow_split on that fingerprint.',
+      '• Pick an existing row → PUT metric_config.m_flow_ix on that fingerprint.',
       '• Empty → create / bind a fingerprint from the selected group key, then write patterns.',
       '',
       'Auto-match highlights a saved fingerprint whose axes already equal this group.',
     ].join('\n'),
   },
   draftPatterns: {
-    title: 'Draft volume_ix_patterns',
+    title: 'Draft ix_patterns',
     body: [
       'Checked structures from the table become pattern rows (exact ix_labels sequences).',
-      'Edit freely, then Apply to write m_flow_split.volume_ix_patterns on the target fingerprint.',
+      'Edit freely, then Apply to write m_flow_ix.ix_patterns on the target fingerprint.',
       '',
-      'Those patterns drive vol_* / nonvol_* / vol_share on rules that use this fingerprint.',
+      'Those patterns drive vol_* / nonvol_* / tagged_share on rules that use this fingerprint.',
       'Empty draft cannot Apply — toggle at least one structure (or add a row in the editor).',
     ].join('\n'),
   },
@@ -1442,7 +1473,7 @@ export const DISCOVERY_FIELD_HELP = {
     title: 'Flow split — checked structures',
     body: [
       'Live preview of the group’s scored SOL split into two buckets based on the checkboxes',
-      'below: "Volume" = every row you’ve checked (would-be volume_ix_patterns); "Organic" =',
+      'below: "Volume" = every row you’ve checked (would-be ix_patterns); "Organic" =',
       'every unchecked row. Nothing here is saved — it’s just a preview of what Apply would',
       'flag as volume once you toggle rows, computed client-side from each row’s Gross◎.',
       '',
@@ -1477,7 +1508,7 @@ export const DISCOVERY_COL_HELP = {
     title: 'Vol — include in draft',
     body: [
       'Check this box to add the row’s exact ix_labels sequence to the draft',
-      'volume_ix_patterns list below the table. Unchecked rows are ignored on Apply —',
+      'ix_patterns list below the table. Unchecked rows are ignored on Apply —',
       'only checked structures get written to the fingerprint.',
       '',
       'Example: check the top-ranked ["Pump.Fun: Create","Pump.Fun: Buy"] row to mark',

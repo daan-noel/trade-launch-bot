@@ -126,8 +126,8 @@ function loadPrefs(): ChartPrefs {
       return {
         ...DEFAULT_CHART_PREFS,
         ...parsed,
-        showFlowVol: flow.vol,
-        showFlowNonVol: flow.nonVol,
+        showFlowTagged: flow.tagged,
+        showFlowUntagged: flow.untagged,
       };
     }
   } catch {
@@ -603,8 +603,8 @@ export function TokenPriceChart({
   const applyingExternalCrosshairRef = useRef(false);
   const prevExternalCrosshairRef = useRef<number | null>(null);
   const seriesRef = useRef<ISeriesApi<'Line' | 'Candlestick'> | null>(null);
-  const volSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
-  const nonVolSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const taggedSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const untaggedSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const sortedTradesRef = useRef<ChartTrade[]>([]);
   const markersPluginRef = useRef<MarkersPlugin | null>(null);
   const walletMarkersPrimRef = useRef<WalletMarkersPlugin | null>(null);
@@ -612,7 +612,7 @@ export function TokenPriceChart({
   const timeBandsPrimRef = useRef<TimeBandsPlugin | null>(null);
   const barTintPrimRef = useRef<BarTintPlugin | null>(null);
   const barsRef = useRef<OhlcBar[]>([]);
-  const alignedFlowLinesRef = useRef<FlowLines>({ vol: [], nonVol: [] });
+  const alignedFlowLinesRef = useRef<FlowLines>({ tagged: [], untagged: [] });
   const valueLaneSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   /** One price line per authored threshold — a band draws both of its edges. */
   const valueLaneLinesRef = useRef<IPriceLine[]>([]);
@@ -643,8 +643,8 @@ export function TokenPriceChart({
   );
   const [showEventMarkers, setShowEventMarkers] = useState(initialPrefs.showEventMarkers);
   const [flowLineVis, setFlowLineVis] = useState<FlowLineVisibility>({
-    vol: initialPrefs.showFlowVol,
-    nonVol: initialPrefs.showFlowNonVol,
+    tagged: initialPrefs.showFlowTagged,
+    untagged: initialPrefs.showFlowUntagged,
   });
   // A page-wide flow lens (Trader Analysis) overrides HOW the split is computed:
   // structural-only reads and excluded wallets. Absent everywhere else, where the
@@ -653,7 +653,7 @@ export function TokenPriceChart({
   const flowContagion = lens?.contagion ?? true;
   const flowExcludeWallets = lens?.excludeWallets ?? null;
   const flowSide = lens?.side ?? null;
-  /** True once `volume_ix_patterns` are supplied — the split is then the engine's
+  /** True once `ix_patterns` are supplied — the split is then the engine's
    *  own volume-maker vs organic classification. */
   const flowPatternsConfigured = flowPatternKeys != null && flowPatternKeys.size > 0;
   // Adding the first pattern is only feedback if the lines are on screen. The
@@ -664,7 +664,7 @@ export function TokenPriceChart({
   useEffect(() => {
     const was = wasFlowPatternsConfigured.current;
     wasFlowPatternsConfigured.current = flowPatternsConfigured;
-    if (!was && flowPatternsConfigured) setFlowLineVis({ vol: true, nonVol: true });
+    if (!was && flowPatternsConfigured) setFlowLineVis({ tagged: true, untagged: true });
   }, [flowPatternsConfigured]);
   /** Draw the overlay whenever SOMETHING can classify: patterns, or just the
    *  creator wallet (which alone splits creator + everyone they traded with off
@@ -935,7 +935,7 @@ export function TokenPriceChart({
 
   const handleFlowLinesChange = useCallback((next: FlowLineVisibility) => {
     setFlowLineVis(next);
-    savePrefs({ showFlowVol: next.vol, showFlowNonVol: next.nonVol });
+    savePrefs({ showFlowTagged: next.tagged, showFlowUntagged: next.untagged });
   }, []);
 
   const handleSliderChange = useCallback((from: number, to: number) => {
@@ -1018,7 +1018,7 @@ export function TokenPriceChart({
     );
     chartRef.current = chart;
 
-    const volSeries = chart.addSeries(LineSeries, {
+    const taggedSeries = chart.addSeries(LineSeries, {
       color: FLOW_VOL_LINE_COLOR,
       lineWidth: 2,
       priceScaleId: 'left',
@@ -1027,18 +1027,18 @@ export function TokenPriceChart({
       priceLineVisible: false,
       visible: false,
     });
-    const nonVolSeries = chart.addSeries(LineSeries, {
+    const untaggedSeries = chart.addSeries(LineSeries, {
       color: FLOW_NON_VOL_LINE_COLOR,
       lineWidth: 2,
       priceScaleId: 'left',
-      title: 'Non-vol (∑net)',
+      title: 'Non-tagged (∑net)',
       lastValueVisible: true,
       priceLineVisible: false,
       visible: false,
     });
     chart.priceScale('left').applyOptions({ visible: false });
-    volSeriesRef.current = volSeries;
-    nonVolSeriesRef.current = nonVolSeries;
+    taggedSeriesRef.current = taggedSeries;
+    untaggedSeriesRef.current = untaggedSeries;
 
     const scaleSync = attachDualPriceScaleSync(chart, el, {
       isPaused: () => rangeSelectModeRef.current,
@@ -1142,7 +1142,7 @@ export function TokenPriceChart({
       }
       const flow = flowLinesAvailableRef.current
         ? flowAt(alignedFlowLinesRef.current, param.time)
-        : { vol: null, nonVol: null };
+        : { tagged: null, untagged: null };
       const info: ChartCrosshairInfo = {
         open: bar.open,
         high: bar.high,
@@ -1152,8 +1152,8 @@ export function TokenPriceChart({
         inflow: bar.inflow,
         outflow: bar.outflow,
         liquiditySol: bar.liquiditySol,
-        flowVol: flow.vol,
-        flowNonVol: flow.nonVol,
+        flowTagged: flow.tagged,
+        flowUntagged: flow.untagged,
       };
       setCrosshair(info);
       // Resolve wall-clock seconds for sibling panes (metric series): the instant
@@ -1270,8 +1270,8 @@ export function TokenPriceChart({
       barTintPrimRef.current = null;
       rangeSelectPrimRef.current = null;
       seriesRef.current = null;
-      volSeriesRef.current = null;
-      nonVolSeriesRef.current = null;
+      taggedSeriesRef.current = null;
+      untaggedSeriesRef.current = null;
       chart.remove();
       chartRef.current = null;
       setCrosshair(null);
@@ -1417,12 +1417,12 @@ export function TokenPriceChart({
     }
   }, [bars, style, showChart, groupingKey, priceUnit, highlightBarKey, snapshotVisibleViewport]);
 
-  // Vol/non-vol cumulative overlay (left price scale). With no configured
+  // Vol/non-tagged cumulative overlay (left price scale). With no configured
   // patterns the structural test never fires and the split degrades to
   // creator-vs-rest — still drawn, and labelled as such by the toolbar.
   const flowLines = useMemo(() => {
     if (!flowLinesAvailable) {
-      return { vol: [], nonVol: [] } satisfies FlowLines;
+      return { tagged: [], untagged: [] } satisfies FlowLines;
     }
     return buildFlowLines(sortedTrades, groupMode, intervalSec, flowBasis as FlowBasis, {
       patternKeys: flowPatternKeys ?? EMPTY_FLOW_PATTERN_KEYS,
@@ -1473,8 +1473,8 @@ export function TokenPriceChart({
         value:
           flowBasis === 'token' ? p.value / tokenScale : toValue(p.value),
       }));
-    volSeriesRef.current?.applyOptions({ priceFormat });
-    nonVolSeriesRef.current?.applyOptions({ priceFormat });
+    taggedSeriesRef.current?.applyOptions({ priceFormat });
+    untaggedSeriesRef.current?.applyOptions({ priceFormat });
     const chart = chartRef.current;
     if (chart) {
       // Re-fit only when what an axis MEANS changed (overlay toggled, unit/basis
@@ -1491,14 +1491,14 @@ export function TokenPriceChart({
       }
     }
     applyFlowLineVisibility({
-      volSeries: volSeriesRef.current,
-      nonVolSeries: nonVolSeriesRef.current,
+      taggedSeries: taggedSeriesRef.current,
+      untaggedSeries: untaggedSeriesRef.current,
       chart,
       visibility: flowLineVis,
       available: flowLinesAvailable,
     });
-    volSeriesRef.current?.setData(toData(alignedFlowLines.vol));
-    nonVolSeriesRef.current?.setData(toData(alignedFlowLines.nonVol));
+    taggedSeriesRef.current?.setData(toData(alignedFlowLines.tagged));
+    untaggedSeriesRef.current?.setData(toData(alignedFlowLines.untagged));
   }, [
     alignedFlowLines,
     flowBasis,

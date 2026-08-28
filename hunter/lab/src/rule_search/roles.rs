@@ -86,14 +86,14 @@ pub fn entry_role(id: MetricId) -> Option<EntryRole> {
     match id {
         MetricId::Time | MetricId::Liquidity | MetricId::Stall => Some(EntryRole::Selector),
         MetricId::UniqueWallets => Some(EntryRole::Extra),
-        MetricId::NonvolBuy
-        | MetricId::NonvolNet
-        | MetricId::NonvolGross
-        | MetricId::WinNonvolBuy
-        | MetricId::WinNonvolNet
-        | MetricId::WinNonvolGross => Some(EntryRole::Trigger(TriggerFamily::Organic)),
+        MetricId::UntaggedBuy
+        | MetricId::UntaggedNet
+        | MetricId::UntaggedGross
+        | MetricId::WinUntaggedBuy
+        | MetricId::WinUntaggedNet
+        | MetricId::WinUntaggedGross => Some(EntryRole::Trigger(TriggerFamily::Organic)),
         _ => match (g.family, g.kind, g.scope, metric_is_monotonic(id)) {
-            (MetricFamily::FlowSplit, MetricKind::Dynamic, _, _) => Some(EntryRole::Extra),
+            (MetricFamily::FlowIx, MetricKind::Dynamic, _, _) => Some(EntryRole::Extra),
             (MetricFamily::Flow, MetricKind::Dynamic, _, _) => {
                 if matches!(
                     id,
@@ -108,7 +108,7 @@ pub fn entry_role(id: MetricId) -> Option<EntryRole> {
             (MetricFamily::Standalone, _, _, _) => {
                 Some(EntryRole::Trigger(TriggerFamily::Standalone))
             }
-            (MetricFamily::FlowSplit, MetricKind::Static, _, true) => Some(EntryRole::WaitOnly),
+            (MetricFamily::FlowIx, MetricKind::Static, _, true) => Some(EntryRole::WaitOnly),
             (MetricFamily::Flow, MetricKind::Static, _, true) => Some(EntryRole::WaitOnly),
             _ => Some(EntryRole::Selector),
         },
@@ -127,7 +127,7 @@ pub fn exit_role(id: MetricId) -> ExitRole {
         return ExitRole::Progress;
     }
     match group_of(id).family {
-        MetricFamily::Flow | MetricFamily::FlowSplit => ExitRole::Flow,
+        MetricFamily::Flow | MetricFamily::FlowIx => ExitRole::Flow,
         _ => ExitRole::Progress,
     }
 }
@@ -232,6 +232,6 @@ mod tests {
         );
         assert_eq!(entry_role(MetricId::UniqueWallets), Some(EntryRole::Extra));
         assert_eq!(exit_role(MetricId::Buy), ExitRole::Flow);
-        assert_eq!(exit_role(MetricId::NonvolNet), ExitRole::Flow);
+        assert_eq!(exit_role(MetricId::UntaggedNet), ExitRole::Flow);
     }
 }

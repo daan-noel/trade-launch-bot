@@ -45,12 +45,12 @@ function FlowField({
  * The two flow fields are labelled `∑net` because that is exactly what they are:
  * the overlay is a RUNNING NET (buy − sell) since token creation, not a per-bar
  * amount and not a buys-only total. Unlabelled, they read as a rule metric — and a
- * reader who compares `NonVol` against an `m_flow_split_window.nonvol_buy` threshold
+ * reader who compares `NonVol` against an `m_flow_ix_window.untagged_buy` threshold
  * is comparing a lifetime net against a trailing-window buy sum. Different span,
  * different direction, no relationship.
  */
 export function BarFlowFields({ crosshair, formatVol, formatFlow, layout }: BarFlowFieldsProps) {
-  const { open, close, inflow, outflow, flowVol, flowNonVol } = crosshair;
+  const { open, close, inflow, outflow, flowTagged, flowUntagged } = crosshair;
   const net = inflow - outflow;
   const deltaPct = open !== 0 ? ((close - open) / open) * 100 : null;
 
@@ -65,18 +65,18 @@ export function BarFlowFields({ crosshair, formatVol, formatFlow, layout }: BarF
       : `${deltaPct >= 0 ? '+' : ''}${formatDecimalTrim(deltaPct, 2)}%`;
 
   const flowFields =
-    flowVol != null || flowNonVol != null ? (
+    flowTagged != null || flowUntagged != null ? (
       <>
         <FlowField
           label="VolMk∑net"
-          value={flowVol != null ? formatFlow(flowVol) : '—'}
+          value={flowTagged != null ? formatFlow(flowTagged) : '—'}
           color={FLOW_VOL_LINE_COLOR}
           layout={layout}
         />
         {layout === 'inline' ? ' ' : null}
         <FlowField
           label="NonVol∑net"
-          value={flowNonVol != null ? formatFlow(flowNonVol) : '—'}
+          value={flowUntagged != null ? formatFlow(flowUntagged) : '—'}
           color={FLOW_NON_VOL_LINE_COLOR}
           layout={layout}
         />

@@ -92,9 +92,9 @@ with-vs-without). Windows ARE sweepable within one run: two axes on the same
 
 | side | axis | operator | candidates (full menu) | anchors |
 | --- | --- | --- | --- | --- |
-| entry | `m_snapshot.time` | `>` | off, 30, 60, 120, 300, 600 | p25..p90 of trade age; blueprint gate 120, omego med entry 780 |
-| entry | `m_snapshot.liquidity` | `>` | off, 35, 45, 55, 70 | p10/p25/p50/p75; 35 ~ "any traction" |
-| entry | `m_snapshot.liquidity` | `<` | off, 90, 100, 110 | p90/p95/p99 - pre-migration cap |
+| entry | `m_state.time` | `>` | off, 30, 60, 120, 300, 600 | p25..p90 of trade age; blueprint gate 120, omego med entry 780 |
+| entry | `m_state.liquidity` | `>` | off, 35, 45, 55, 70 | p10/p25/p50/p75; 35 ~ "any traction" |
+| entry | `m_state.liquidity` | `<` | off, 90, 100, 110 | p90/p95/p99 - pre-migration cap |
 | entry | `m_price_lifetime.trail` | `>` | off, 5, 8, 15, 25, 40 | HOT p25..p75; blueprint dip depth 8-25 |
 | entry | `m_price_lifetime.trail` | `<` | off, 35, 60 | cap vs dead-dump (HOT p75/p90) |
 | entry | `m_price_lifetime.stall` | `<` | off, 5, 15, 60 | momentum variant only (recent new high) |
@@ -169,9 +169,9 @@ Notes:
   directly off the ranked table (combo with vs without).
 - A deep entry `trail >` pick combined with a low exit `trail >` pick yields
   instant exits (~0 PnL rows) - expected; the ranking discards them.
-- `m_flow_split` / `m_flow_split_window` axes need `volume_ix_patterns` configured
+- `m_flow_ix` / `m_flow_ix_window` axes need `ix_patterns` configured
   per run; corpus-wide percentiles are pattern-dependent, so no fixed menu.
-  Principled `vol_share` cutpoints: `<` {25, 50, 75}. The 07-20/21 ix-structure
+  Principled `tagged_share` cutpoints: `<` {25, 50, 75}. The 07-20/21 ix-structure
   scan flags nonce-pumped spam shapes (e.g. AdvanceNonceAccount sell structures
   with 92 wallets / 3.5K trades) as natural volume-side patterns; the top
   routers by gross are Axiom (~37% across its shapes), Terminal, GMGN, direct

@@ -302,7 +302,7 @@ function seriesToBands(
  * "whichever is currently failing", which would swap lines as the token moves.
  *
  * `time` is skipped while anything else is authored. Conditions arrive in the fold's
- * order, which sorts `m_snapshot.time` first on most rules, so taking the head
+ * order, which sorts `m_state.time` first on most rules, so taking the head
  * blindly spends the chart's one value pane on a straight ramp of the x axis —
  * a quantity the reader already has, drawn against the price of a pane.
  */

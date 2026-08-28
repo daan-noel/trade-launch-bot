@@ -1,5 +1,5 @@
 import { patternKeysFrom } from 'lib/flow/classifyFlow';
-import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
+import { ixPatternsFromConfig } from 'lib/strategy/registry';
 
 /**
  * Non-empty `JSON.stringify(labels)` key set for the chart vol/non-vol overlay,
@@ -17,5 +17,5 @@ export function flowPatternKeysOf(
 export function flowPatternKeysFromMetricConfig(
   cfg: Record<string, unknown> | null | undefined,
 ): ReadonlySet<string> | null {
-  return flowPatternKeysOf(volumeIxPatternsFromConfig(cfg));
+  return flowPatternKeysOf(ixPatternsFromConfig(cfg));
 }

@@ -24,7 +24,7 @@ describe('classifyFlowTrades contagion', () => {
       creatorWallet: 'creator',
       contagion: false,
     });
-    expect(out.map((t) => t.isVol)).toEqual([true, false, false]);
+    expect(out.map((t) => t.isTagged)).toEqual([true, false, false]);
     expect(out.map((t) => t.reason)).toEqual(['structural', null, null]);
   });
 
@@ -34,8 +34,8 @@ describe('classifyFlowTrades contagion', () => {
       excludeWallets: new Set(['w1']),
       contagion: false,
     });
-    expect(out.map((t) => t.isVol)).toEqual([false, false, false]);
-    expect(out[0].nonVolSol).toBe(1);
+    expect(out.map((t) => t.isTagged)).toEqual([false, false, false]);
+    expect(out[0].untaggedSol).toBe(1);
   });
 
   it('an excluded wallet cannot seed contagion either', () => {
@@ -43,7 +43,7 @@ describe('classifyFlowTrades contagion', () => {
       [...trades, { wallet_address: 'w2', sol: 4, ix_labels: ['Z'] }],
       { patternKeys: keys, excludeWallets: new Set(['w1']) },
     );
-    expect(out.map((t) => t.isVol)).toEqual([false, false, false, false]);
+    expect(out.map((t) => t.isTagged)).toEqual([false, false, false, false]);
   });
 });
 
@@ -58,7 +58,7 @@ const bothLegs = [
 describe('classifyFlowTrades side narrowing', () => {
   it('counts both legs of one pattern when unnarrowed', () => {
     const out = classifyFlowTrades(bothLegs, { patternKeys: keys, contagion: false });
-    expect(out.map((t) => t.isVol)).toEqual([true, true, false]);
+    expect(out.map((t) => t.isTagged)).toEqual([true, true, false]);
   });
 
   it('keeps only the asked leg, and books the other as non-volume', () => {
@@ -67,15 +67,15 @@ describe('classifyFlowTrades side narrowing', () => {
       contagion: false,
       side: 'buy',
     });
-    expect(buys.map((t) => t.isVol)).toEqual([true, false, false]);
-    expect(buys[1].nonVolSol).toBe(2);
+    expect(buys.map((t) => t.isTagged)).toEqual([true, false, false]);
+    expect(buys[1].untaggedSol).toBe(2);
 
     const sells = classifyFlowTrades(bothLegs, {
       patternKeys: keys,
       contagion: false,
       side: 'sell',
     });
-    expect(sells.map((t) => t.isVol)).toEqual([false, true, false]);
+    expect(sells.map((t) => t.isTagged)).toEqual([false, true, false]);
   });
 
   it('an off-side trade cannot seed contagion', () => {
@@ -85,7 +85,7 @@ describe('classifyFlowTrades side narrowing', () => {
     );
     // w2's only match is its SELL, which the lens is not asking about — so its
     // later buy stays organic.
-    expect(out.map((t) => t.isVol)).toEqual([true, false, false, false]);
+    expect(out.map((t) => t.isTagged)).toEqual([true, false, false, false]);
   });
 
   it('a trade with no side is off-side under any narrowing', () => {
@@ -93,6 +93,6 @@ describe('classifyFlowTrades side narrowing', () => {
       patternKeys: keys,
       side: 'buy',
     });
-    expect(out[0].isVol).toBe(false);
+    expect(out[0].isTagged).toBe(false);
   });
 });

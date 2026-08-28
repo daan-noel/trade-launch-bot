@@ -1,7 +1,8 @@
 # Metrics reference — flow groups
 
-Deep-dive for aggregate flow (`m_flow_lifetime` / `m_flow_window`) and the
-volume/organic split (`m_flow_split` / `m_flow_split_window`) — the wallet-keyed groups.
+Deep-dive for aggregate flow (`m_flow_lifetime` / `m_flow_window`), the crowd counts
+(`m_crowd_window`) and the instruction-structure split (`m_flow_ix` /
+`m_flow_ix_window`) — the wallet-keyed groups.
 High-level map: [`arch/strategies.md`](../../arch/strategies.md). The split's origin roadmap
 (`roadmap/volume-flow-split-plan.md`) is deleted — fully shipped and superseded by
 this file.
@@ -10,7 +11,7 @@ this file.
 
 Every dynamic group's window is a `WindowSpec { size, lag, unit }`. **There are no
 parallel per-basis metrics** - the unit lives on the window, so `m_flow_window`,
-`m_price_window`, `m_flow_split_window` and `m_flow_burst` read every basis for free.
+`m_crowd_window`, `m_price_window` and `m_flow_ix_window` read every basis for free.
 Internally each buffer entry carries a `pos` already in its own unit (milliseconds for
 `sec`, the slot number for `slot`, the token's print ordinal for `print`), so the fold,
 the eviction and the read are ONE implementation over an `i64` cursor. `WindowUnit::ALL`
@@ -27,10 +28,11 @@ per pair.
 
 **Exactly one size param per group instance** - two is two spans claiming one axis,
 none leaves the window undefined. `validate_group` enforces it, because "one of these"
-is a cross-param rule a `StrictParamSpec` cannot spell. A two-window group
-(`m_flow_burst`) takes `burst_size_slots` / `burst_size_prints` as the twins of
-`burst_size_sec`, and both axes must use the same unit: a burst in slots over a
-reference in seconds is a ratio across two different clocks.
+is a cross-param rule a `StrictParamSpec` cannot spell. The two-window metrics
+(`m_flow_window.trade_share` / `.sol_share`) take a nested `slice_size_sec` — with
+`slice_size_slots` / `slice_size_prints` as its twins — and both axes must use the
+same unit: a slice in slots over a reference in seconds is a ratio across two
+different clocks.
 
 ```json
 { "m_flow_window": [
@@ -59,10 +61,10 @@ trades whether they landed in one slot or across an hour, so a print gate reads 
 same on a busy token and a dead one. That is the property to reach for when a
 threshold has to mean the same thing at both ends of a token's life.
 
-`m_flow_burst.trade_share` is the exception that proves it: on the print basis it is a
-count over a count, so it is the constant `100 * burst / window` on every tape and
-carries no information. Read the other `m_flow_window` metrics over a print window
-instead, where the count is the denominator and the SOL is what varies.
+`m_flow_window.trade_share` is the exception that proves it: on the print basis it is a
+count over a count, so it is the constant `100 * slice / window` on every tape and
+carries no information. Its SOL twin `sol_share` is the reading that survives there —
+same two spans, but the numerator is money, which still varies when the counts cannot.
 
 **`window_lag` is what makes a window causal in its own terms.** A gate on "the state
 entering this slot" must not be able to see the slot it fires in. The burst is
@@ -91,11 +93,6 @@ ORDER: canonical order is slot -> tx_index -> leg, and a loader that feeds trade
 different order gives print windows a different span from live. With 95% of the money
 in same-slot pairs ~0.5 ms apart, ordering by timestamp will not reproduce it.
 
-<<<<<<< Updated upstream
-**Sweep axes are seconds-only.** `ResolvedAxis::Metric` still carries a bare
-`Option<f64>` of seconds, so slot and print windows are authorable in the rule editor
-and in stored rules but not sweepable. Open gap, same for both discrete bases.
-=======
 **One span, one spelling.** `WindowSpec::label` / `WindowSpec::parse` are the single
 grammar for naming a window: `30s`, `30sl@1`, `20p`. A persisted exit reason, a live
 chip, a chart legend, a `?windows=` query and a sweep axis all carry that string, so a
@@ -115,7 +112,6 @@ Every basis is reachable end to end:
 A sweep axis assembles the size param its own unit spells, so a slot axis sweeps
 `window_size_slots`; two axes that differ only in basis open two group instances,
 because merging them on size alone would drop one of the two swept conditions.
->>>>>>> Stashed changes
 
 ## Aggregate flow (`m_flow_lifetime` / `m_flow_window`)
 
@@ -125,7 +121,7 @@ registry `MetricId`s so lifetime can be monotonic while the window is not.
 | group | kind | strict params | state |
 | --- | --- | --- | --- |
 | `m_flow_lifetime` | static | none | two running counters on `TokenTrack` |
-| `m_flow_window` | dynamic | one of `window_size_sec` / `_slots` / `_prints` | ring buffer deduped by the whole span |
+| `m_flow_window` | dynamic | one of `window_size_sec` / `_slots` / `_prints`, plus a nested `slice_size_*` for the two-window metrics | ring buffer deduped by the whole span |
 
 | metric | meaning | unit | eq-tol | monotonic (lifetime only) |
 | --- | --- | --- | --- | --- |
@@ -133,18 +129,52 @@ registry `MetricId`s so lifetime can be monotonic while the window is not.
 | `sell` | sell SOL | SOL | 0.1 | ✓ |
 | `net_flow` | `buy − sell` | SOL | 0.1 | ✗ |
 | `gross_flow` | `buy + sell` | SOL | 0.1 | ✓ |
-| `unique_wallets` | distinct trading wallets (window only) | count | 0.5 | ✗ |
+| `trade_count` | trades landed | count | 0.5 | ✓ |
 | `buy_count` | number of BUYS in the window | count | 0.5 | ✗ |
+| `sell_count` | number of SELLS in the window | count | 0.5 | ✗ |
+| `buy_share` | `buy / (buy + sell)`, **percent 0-100** (window only) | percent | 0.5 | ✗ |
+| `trade_share` | trades in the nested slice, percent of the window's (window only) | percent | 0.5 | ✗ |
+| `sol_share` | gross SOL in the nested slice, percent of the window's (window only) | percent | 0.5 | ✗ |
 
 `buy_count` is not `trade_count`: sells inflate the latter, and on a one-slot window
-only `buy_count` answers "how many people bought into this burst".
-| `trade_count` | trades landed | count | 0.5 | ✓ |
-| `buy_share` | `buy / (buy + sell)`, **percent 0-100** (window only) | percent | 0.5 | ✗ |
-| `trades_per_wallet` | `trade_count / unique_wallets` (window only) | count | 0.05 | ✗ |
+only `buy_count` answers "how many people bought into this burst". `sell_count` is its
+twin, registered rather than left to arithmetic because a condition cannot subtract —
+`trade_count - buy_count` has no spelling, so without it "at most two sells" cannot be
+authored at all. The three always add up, on every window, which
+`buys_and_sells_add_up_to_the_trade_count` pins.
 
 Non-finite / negative SOL is ignored. Windowed variants are never monotonic.
 Lifetime is the maturity / critical-mass gate; window is the hot-right-now filter.
-No fingerprint config — unlike the split groups below.
+No fingerprint config — unlike the ix-split groups below.
+
+## Crowd (`m_crowd_window`)
+
+| group | kind | strict params | state |
+| --- | --- | --- | --- |
+| `m_crowd_window` | dynamic | one of `window_size_sec` / `_slots` / `_prints` | the same ring buffer, plus a per-wallet occurrence map |
+
+| metric | meaning | unit | eq-tol |
+| --- | --- | --- | --- |
+| `unique_wallets` | distinct trading wallets in the window | count | 0.5 |
+| `trades_per_wallet` | `m_flow_window.trade_count / unique_wallets` | count | 0.05 |
+
+**Its own group because its subject is WHO traded, not how much** — and that
+difference is a load obligation rather than a taste. These two are the only metrics
+`MetricId::needs_wallet_identity` returns true for, and an offline read that did not
+request the wallet column folds every trade as one anonymous wallet: `unique_wallets`
+reads `1` forever and the gate looks strict instead of broken. One group, one
+obligation, so a loader answers the question by group instead of by metric list.
+
+A rule wanting both flow and crowd gates over one window authors two instances at the
+same `window_size_sec`. They are ANDed like any two groups, and they share the buffer —
+`TokenTrack` dedupes by the whole span, so the second instance costs nothing.
+
+`unique_wallets` counts **people, not SOL**: one wallet churning and a crowd arriving are
+identical in `gross_flow` and different here. It keeps a per-wallet occurrence map beside
+the SOL deque, so a wallet leaves the count only when its **last** entry leaves the window
+— eviction that `remove()`s on the first drops a wallet that is still trading. Its `=`
+tolerance is half a wallet: a tally has no sub-unit, and anything wider would make `== 5`
+also match 6.
 
 **A windowed `gross_flow` floor subsumes the lifetime one.** The window is a sub-interval
 of the token's life and both metrics are the same `buy + sell` SOL, so
@@ -186,7 +216,7 @@ wallet rotation that renders identity useless. Like `buy_share` it is `NaN` on a
 window, and for a sharper reason: `0.0` would let `trades_per_wallet <= 2` pass on a DEAD
 tape, which is the exact reading the gate exists to exclude.
 
-## Launch size (`m_snapshot.first_slot_buy`)
+## Launch size (`m_state.first_slot_buy`)
 
 Total buy SOL that landed in the token's **creation slot** — the same quantity
 `fingerprints.first_slot_buy_lamports` buckets. It exists as a metric because a
@@ -207,30 +237,52 @@ filter that can never re-trigger.
 Offline it comes from `tokens_info.first_slot_buy_sol` (the live readout and the lab's
 metric-series both read that row), so the replayed and live values cannot disagree.
 
-## Burst (`m_flow_burst`)
+## The nested slice (`m_flow_window.trade_share` / `.sol_share`)
 
-A ratio across two **nested** trailing windows — the one group whose basis is a window
-PAIR, and the reason `MetricReq` carries a `Windows` carrier instead of a bare
+Two ratios across a **nested pair** of trailing windows — the reads whose basis is a
+window PAIR, and the reason `MetricReq` carries a `Windows` carrier instead of a bare
 `Option<f64>`.
-
-| group | kind | strict params | state |
-| --- | --- | --- | --- |
-| `m_flow_burst` | dynamic | `window_size_sec` (reference) + `burst_size_sec` (slice, `<= window`) | none — it reads `m_flow_window`'s two ring buffers |
 
 | metric | meaning | unit | eq-tol | monotonic |
 | --- | --- | --- | --- | --- |
-| `trade_share` | `trade_count(burst) / trade_count(window)`, **percent 0-100** | percent | 0.5 | ✗ |
+| `trade_share` | `trade_count(slice) / trade_count(window)`, **percent 0-100** | percent | 0.5 | ✗ |
+| `sol_share` | `gross_flow(slice) / gross_flow(window)`, **percent 0-100** | percent | 0.5 | ✗ |
 
-**How CONCENTRATED the tape is in time, independent of how busy it is.** Ten trades
-arriving in the last three seconds and ten spread evenly over a minute are the same
-`trade_count` and the same `gross_flow`, and 50 vs 10 here. It is the scale-free way to
-ask "is this accelerating against its own pace" — two absolute bounds are not a
-substitute, because they silently re-read size.
+**How CONCENTRATED the tape is, independent of how busy it is.** Ten trades arriving in
+the last three seconds and ten spread evenly over a minute are the same `trade_count`
+and the same `gross_flow`, and 50 vs 10 here. It is the scale-free way to ask "is this
+accelerating against its own pace" — two absolute bounds are not a substitute,
+because they silently re-read size.
 
-It owns **no state**: both readings are `m_flow_window`'s own `trade_count` on buffers the
-track already keeps, so a rule that also gates on those two windows pays nothing extra.
-That reuse is also what makes `m_flow_burst{60,3}.trade_share` and
-`m_flow_window(3).trade_count / m_flow_window(60).trade_count` the same number by
+**The two are not restatements of each other.** Ten prints carrying a tenth of a SOL
+each and one print carrying ten are the same `trade_share` and far apart in `sol_share`.
+On a PRINT window only `sol_share` survives at all: a fixed count of transactions inside
+a fixed count of transactions makes `trade_share` the constant `slice / window`.
+
+### Why these are metrics of `m_flow_window` and not a group
+
+The slice is one more span over the same tape, so a group of its own would be a second
+name for one subject — and `m_flow_window`'s basis would still be a single window
+while its sibling's was a pair.
+
+What keeps the axis honest is that it is required **per metric**, not per group:
+
+* `m_flow_window` declares `slice_size_*` for every instance, all three units, none
+  `required` on its own.
+* `metrics::is_two_window` names the metrics that read it. `validate_group` requires a
+  slice exactly when one of them is present, and REJECTS one when neither is — a
+  slice nothing reads changes no value and no requirement identity, so it would sit in
+  the params looking like a gate. Same principle as an `arm_above_pct` with no trailing
+  metric.
+* `arm::build_reqs` attaches `Windows::secondary` to those metrics alone. Attaching it
+  to the instance would give a `gross_flow(30s)` requirement a different IDENTITY
+  depending on whether a sibling clause happened to read a slice — and two rules on
+  the same window would stop sharing one buffer.
+
+It owns **no state**: both readings come off `m_flow_window`'s own `trade_count` and
+`gross_flow` on buffers the track already keeps, so a rule that also gates on those two
+windows pays nothing extra. That reuse is what makes `m_flow_window{60,3}.trade_share`
+and `m_flow_window(3).trade_count / m_flow_window(60).trade_count` the same number by
 construction rather than by agreement.
 
 Three properties to author against:
@@ -238,21 +290,17 @@ Three properties to author against:
 * **`NaN` on an empty reference window** — no trades, no share, and a `0.0` would let
   `trade_share <= X` pass on a dead tape.
 * **Both windows are clipped by the token's age**, so on a token younger than
-  `burst_size_sec` every trade is inside both and it reads `100`. That is a true reading
+  `slice_size_sec` every trade is inside both and both read `100`. That is a true reading
   of a short life, not a sentinel: a rule that means it as a *maturity* signal must bound
-  `m_snapshot.time` itself. The same clipping applies to the SQL a rule is fitted in, so
+  `m_state.time` itself. The same clipping applies to the SQL a rule is fitted in, so
   backtest and engine agree.
-* **Entry side only.** The persisted exit-reason label carries one window qualifier, so
-  two burst clauses differing only in the burst axis would record the same reason. The
-  save gate rejects it rather than write an ambiguous label —
+* **Entry side only — these two metrics, not the group.** The persisted exit-reason
+  label carries one window qualifier, so two clauses differing only in the slice would
+  record the same reason. The save gate rejects the metric rather than write an
+  ambiguous label; its single-window siblings stay perfectly good exits —
   [roadmap/two-window-exit-labels.md](../../roadmap/two-window-exit-labels.md).
 
-`unique_wallets` counts **people, not SOL**: one wallet churning and a crowd arriving are
-identical in `gross_flow` and different here. It keeps a per-wallet occurrence map beside
-the SOL deque, so a wallet leaves the count only when its **last** entry leaves the window
-— eviction that `remove()`s on the first drops a wallet that is still trading. Its `=`
-tolerance is half a wallet: a tally has no sub-unit, and anything wider would make `== 5`
-also match 6.
+
 
 > **Measured and refuted as an entry gate** (2026-08-10, OOS 07-29..08-09 on `fs3-00`):
 > tightening it *anti-selects*, monotonically — `>= 20` replacing `gross_flow >= 45` scores
@@ -273,7 +321,7 @@ group list misses. **A new wallet-keyed metric must be added there.**
 
 ### A trailing-window read is O(1) — keep it that way
 
-`flow_window` / `flow_split` maintain running sums over a **time-sorted** deque and correct
+`flow_window` / `flow_ix` maintain running sums over a **time-sorted** deque and correct
 only the two out-of-window ends on read. A flow-split rule pays that read once per metric
 per rule per event, so a full-buffer rescan — or re-deriving the window width per element —
 is a hot-path regression. Never reintroduce one inside a `value()`, and never assume the
@@ -284,13 +332,13 @@ tick leaves entries un-evicted by design.
 
 A trade is **volume-side** iff any of:
 
-1. the configured marker mask says so — `volume_ix_markers` when the trade's markers
-   **intersect** it, `organic_ix_markers` when they **miss** it entirely;
-2. its ordered `ix_labels` hash ∈ the configured `volume_ix_patterns`
+1. the configured marker mask says so — `tagged_ix_markers` when the trade's markers
+   **intersect** it, `untagged_ix_markers` when they **miss** it entirely;
+2. its ordered `ix_labels` hash ∈ the configured `ix_patterns`
    (exact ordered sequence — same semantics as fingerprint `ix_labels`);
 3. `wallet_contagion` is on AND its wallet was previously tagged volume-side on
    **this token**;
-4. `creator_is_volume` is on AND it is the creator wallet.
+4. `creator_is_tagged` is on AND it is the creator wallet.
 
 Otherwise **organic**. Contagion is per-token only (cross-token is a future toggle).
 
@@ -323,19 +371,19 @@ the unlisted ones as human demand.
 
 ### A mask names ONE side, and which side is the rule
 
-`volume_ix_markers` and `organic_ix_markers` are not two spellings of one thing, and
-configuring both is an error (so is `organic_ix_markers` alongside `volume_ix_patterns`,
+`tagged_ix_markers` and `untagged_ix_markers` are not two spellings of one thing, and
+configuring both is an error (so is `untagged_ix_markers` alongside `ix_patterns`,
 which is itself a volume-side statement). They differ on the case that decides most
 gates - **a build carrying no configured marker at all**:
 
 | mask | a marked build | an unmarked build |
 | --- | --- | --- |
-| `volume_ix_markers` | volume | **organic** - identifies machines, leaves the rest unjudged |
-| `organic_ix_markers` | organic | **volume** - identifies people, judges the rest machine |
+| `tagged_ix_markers` | volume | **organic** - identifies machines, leaves the rest unjudged |
+| `untagged_ix_markers` | organic | **volume** - identifies people, judges the rest machine |
 
 Say the one the rule means. On the 8dtx tape the same fires, same thresholds, same
-exit read **+0.99 % per trade** under `volume_ix_markers: [CreateAccountWithSeed]` and
-**+6.86 %** under `organic_ix_markers: [<routers>]`, because the 8,566 fires the first
+exit read **+0.99 % per trade** under `tagged_ix_markers: [CreateAccountWithSeed]` and
+**+6.86 %** under `untagged_ix_markers: [<routers>]`, because the 8,566 fires the first
 admits and the second rejects average **-0.68 %**.
 
 An organic mask also fails **closed**: a loader that leaves `ix_labels` empty marks
@@ -343,7 +391,7 @@ every trade volume-side, so the gate fires nothing rather than firing on everyth
 
 ### The two wallet rules are switchable, and a structural gate wants them OFF
 
-`wallet_contagion` and `creator_is_volume` both default **true**, so every fingerprint
+`wallet_contagion` and `creator_is_tagged` both default **true**, so every fingerprint
 stored before markers existed classifies exactly as it did.
 
 A structural gate turns them off. "Did this transaction come through a named router" is
@@ -354,10 +402,10 @@ the one the rule was derived on. Wallet-keyed rules are also the axis a
 [wallet-free](wallet-8dtx-derived-rule.md) derivation is not allowed to use.
 
 ```json
-"m_flow_split": {
-  "organic_ix_markers": ["Axiom Trade", "Photon", "Bloom Router", "Trojan Trade", "Terminal"],
+"m_flow_ix": {
+  "untagged_ix_markers": ["Axiom Trade", "Photon", "Bloom Router", "Trojan Trade", "Terminal"],
   "wallet_contagion": false,
-  "creator_is_volume": false
+  "creator_is_tagged": false
 }
 ```
 
@@ -365,8 +413,8 @@ Config lives on the fingerprint (not the rule):
 
 ```json
 {
-  "m_flow_split": {
-    "volume_ix_patterns": [
+  "m_flow_ix": {
+    "ix_patterns": [
       ["Pump.Fun: Create", "Pump.Fun: Buy"],
       ["Pump.Fun: Buy", "Token Program: CloseAccount"]
     ]
@@ -374,8 +422,8 @@ Config lives on the fingerprint (not the rule):
 }
 ```
 
-`m_flow_split_window` reads the **same** `m_flow_split` key (one classifier, two views).
-Unconfigured fingerprint (no `m_flow_split` key) ⇒ every flow metric is **NaN**
+`m_flow_ix_window` reads the **same** `m_flow_ix` key (one classifier, two views).
+Unconfigured fingerprint (no `m_flow_ix` key) ⇒ every flow metric is **NaN**
 (satisfies nothing). `ix_hash = None` (pre-0002 / missing lake labels) ⇒ organic
 unless wallet-tagged/creator.
 
@@ -401,7 +449,7 @@ edit moves a live token's future, never its past.
 `ensure_flow` alone is not a complete flow context. The creator seed is rule 3 of the
 classifier *and* the contagion set's origin, so a fold that skips `seed_creator` books
 the dev buy + dev dump — a token's two largest single flows — as **organic**, and its
-`vol_*`/`nonvol_*` are a different classification from the one the engine decides on.
+`tagged_*`/`untagged_*` are a different classification from the one the engine decides on.
 Both calls, on every path that folds flow:
 
 | consumer | seeds at |
@@ -411,7 +459,7 @@ Both calls, on every path that folds flow:
 | metric-series (`/metric-series`) | `metric_series.rs` — `resolve_flow_ctx` loads the creator; `build_series` seeds after `ensure_flow` |
 | chart overlay (browser preview) | `classifyFlow.ts` — `FlowClassifyOptions.creatorWallet`, passed by `TokenTradeChart` |
 
-`/metric-series` shipped without the seed and drew a `nonvol_net` that disagreed with
+`/metric-series` shipped without the seed and drew a `untagged_net` that disagreed with
 both the chart overlay and the live engine; locked by
 `the_creator_wallet_is_volume_side_even_without_a_pattern_match`. Order is free —
 `ensure_flow` copies an already-set creator, `seed_creator` back-fills existing states —
@@ -420,7 +468,7 @@ but one of the two alone is a silent misclassification, never an error.
 **The browser overlay is a preview, not the metric.** `classifyFlow.ts` mirrors the Rust
 classifier but folds a *different corpus* (PG-only `/api/tokens/:mint/trades`, vs the
 sealed lake + PG tail the endpoint reads) and renders in the chart's display unit and
-flow basis. Compare it to `m_flow_split.nonvol_net` only in SOL on the `cost_sol` basis,
+flow basis. Compare it to `m_flow_ix.untagged_net` only in SOL on the `cost_sol` basis,
 and expect drift wherever the two corpora differ (PG retention has dropped a token's
 early trades; pre-V0 lake days null-fill `ix_labels`/`wallet`). With **no** configured
 patterns the overlay still draws, but the structural test never fires and the two lines
@@ -429,7 +477,7 @@ toolbar names which of the two is on screen.
 
 ## Hash SSOT
 
-`hunter_engine::metrics::flow_split::{ix_hash, wallet_hash, ix_hash_opt}` are the
+`hunter_engine::metrics::flow_ix::{ix_hash, wallet_hash, ix_hash_opt}` are the
 **only** hashers. Every adapter (live producer, lake replay, event-log) calls them;
 patterns compile to a hash set at `RulesReloaded`. No interner ⇒ replay parity by
 construction. See hunter/CLAUDE.md Gotchas.
@@ -438,11 +486,11 @@ construction. See hunter/CLAUDE.md Gotchas.
 
 | group | kind | strict params | fingerprint config |
 | --- | --- | --- | --- |
-| `m_flow_split` | static (fingerprint-scoped) | none | `volume_ix_patterns: string[][]` (required when key present) |
-| `m_flow_split_window` | dynamic | `window_size_sec` | none (reads `m_flow_split`) |
+| `m_flow_ix` | static (fingerprint-scoped) | none | `ix_patterns: string[][]` (required when key present) |
+| `m_flow_ix_window` | dynamic | `window_size_sec` | none (reads `m_flow_ix`) |
 
 **Multi-window per group** (any dynamic group — `m_flow_window`, `m_price_window`,
-`m_flow_split_window`): a group appears under a side as a single object (one window — the
+`m_flow_ix_window`): a group appears under a side as a single object (one window — the
 legacy shape) OR a JSON **array** of objects, each with its own `window_size_sec`, to
 gate the same group at several window sizes at once (e.g. a 30s `gross_flow` hot gate AND
 a 2s `net_flow` exhaustion gate on entry). Each window is an independent clause (entry-AND
@@ -456,15 +504,15 @@ buy = +, sell = − for `*_net`.
 
 | metric | meaning | unit | eq-tol | monotonic (lifetime only) |
 | --- | --- | --- | --- | --- |
-| `vol_buy` | volume-side buy SOL | SOL | 0.1 | ✓ |
-| `vol_sell` | volume-side sell SOL | SOL | 0.1 | ✓ |
-| `vol_net` | `vol_buy − vol_sell` | SOL | 0.1 | ✗ |
-| `vol_gross` | `vol_buy + vol_sell` | SOL | 0.1 | ✓ |
-| `nonvol_buy` | organic buy SOL | SOL | 0.1 | ✓ |
-| `nonvol_sell` | organic sell SOL | SOL | 0.1 | ✓ |
-| `nonvol_net` | `nonvol_buy − nonvol_sell` | SOL | 0.1 | ✗ |
-| `nonvol_gross` | `nonvol_buy + nonvol_sell` | SOL | 0.1 | ✓ |
-| `vol_share` | `vol_gross / (vol_gross + nonvol_gross)` ×100; NaN when total 0 | % | 1.0 | ✗ |
+| `tagged_buy` | volume-side buy SOL | SOL | 0.1 | ✓ |
+| `tagged_sell` | volume-side sell SOL | SOL | 0.1 | ✓ |
+| `tagged_net` | `tagged_buy − tagged_sell` | SOL | 0.1 | ✗ |
+| `tagged_gross` | `tagged_buy + tagged_sell` | SOL | 0.1 | ✓ |
+| `untagged_buy` | organic buy SOL | SOL | 0.1 | ✓ |
+| `untagged_sell` | organic sell SOL | SOL | 0.1 | ✓ |
+| `untagged_net` | `untagged_buy − untagged_sell` | SOL | 0.1 | ✗ |
+| `untagged_gross` | `untagged_buy + untagged_sell` | SOL | 0.1 | ✓ |
+| `tagged_share` | `tagged_gross / (tagged_gross + untagged_gross)` ×100; NaN when total 0 | % | 1.0 | ✗ |
 
 Windowed variants are never monotonic. Lifetime monotonic ✓ metrics participate in
 derived-unsatisfiability disarm (`arm.rs` reads the registry flag).
@@ -473,7 +521,7 @@ derived-unsatisfiability disarm (`arm.rs` reads the registry flag).
 
 | situation | flow metrics |
 | --- | --- |
-| Fingerprint has no `m_flow_split` key | all NaN |
+| Fingerprint has no `m_flow_ix` key | all NaN |
 | Pre-first-trade (no classifier state yet) | NaN (existing convention) |
 | Trade `ix_hash = None`, wallet not tagged, not creator | counts as organic |
 | Token row missing / no `creator_wallet` | creator unseeded (logged `warn`); creator trades classify by pattern/contagion only |
@@ -482,7 +530,7 @@ derived-unsatisfiability disarm (`arm.rs` reads the registry flag).
 Rule save **warns** (does not reject) when params reference flow groups but the
 fingerprint is unconfigured.
 
-## Creator history (`m_snapshot.prior_launches`)
+## Creator history (the `prior_launches` fingerprint axis)
 
 How many tokens the token's creator launched **before** it, counted over a trailing
 `PRIOR_LAUNCH_WINDOW_DAYS` (30) window. A creator-history filter: `0` is a first-time
@@ -511,8 +559,8 @@ registry, and each has cost a search run.
 
 | fact | what goes wrong without it |
 | --- | --- |
-| **`m_flow_split*` is all `NaN` without `volume_ix_patterns`** — on the request *and* in the fingerprint's `metric_config` | `NaN` satisfies nothing, so the conditions read as present and never fire. Rule save warns; the sweep does not. |
-| **`m_snapshot.liquidity` is the REAL SOL reserve** — `TradeLite::reserve_sol` from `real_reserve_sol`, which is `vsol - 30` on the curve. Floors at **0** (empty curve), tops near **85** (migration). | A gate written against the virtual 30/115 scale sits ~30 too high. `liquidity >= 85` fires only on tokens that actually migrate. |
+| **`m_flow_ix*` is all `NaN` without `ix_patterns`** — on the request *and* in the fingerprint's `metric_config` | `NaN` satisfies nothing, so the conditions read as present and never fire. Rule save warns; the sweep does not. |
+| **`m_state.liquidity` is the REAL SOL reserve** — `TradeLite::reserve_sol` from `real_reserve_sol`, which is `vsol - 30` on the curve. Floors at **0** (empty curve), tops near **85** (migration). | A gate written against the virtual 30/115 scale sits ~30 too high. `liquidity >= 85` fires only on tokens that actually migrate. |
 | **`m_price_lifetime.stall` is seconds since the last ALL-TIME HIGH**, not since the last trade | An exit below ~60 fires on ordinary chop. It caps every hold, so it doubles as an entry filter. `m_position.held` is the time stop. |
 | **`m_position.retrace` without `arm_above_pct` is a hard stop from entry** — the peak seeds at entry | Reads as a trailing stop, behaves as a fixed stop. |
 | **`m_position` is exit-only** | It reads `NaN` before a fill, so it could never fire on entry. The sweep rejects it there. |
@@ -619,7 +667,7 @@ that happens to be ambient across the whole window.
 
 The cost of presence-over-purity is real and is what `Launch%` is *for*: **live
 classifies volume by `ix_hash` alone — there is no slot predicate**
-(`flow_split.rs`). A checked shape that carries launch *and* organic flow tags the
+(`flow_ix.rs`). A checked shape that carries launch *and* organic flow tags the
 organic tail too, and wallet contagion then sweeps those wallets' other trades in
 as well. So the button is a bulk *proposal* — read `Launch%` on the rows it
 checked and uncheck the mixed ones before Apply.
@@ -631,7 +679,7 @@ nothing rather than guessing (re-run discovery to fill it).
 `firstSlotAll.length === 0` — "this group has no launch shapes at all" — while the
 click adds only `firstSlotUnchecked`, the ones not already staged. They must not be
 the same test: the draft is re-seeded from the target fingerprint's *saved*
-`volume_ix_patterns` on every run (`seedFromFingerprint`, keyed on `result.run_id`),
+`ix_patterns` on every run (`seedFromFingerprint`, keyed on `result.run_id`),
 so once a launch set has been applied, re-running over a new time window re-stages it
 and the diff is empty even though the new corpus is full of launch shapes. Gating on
 the diff collapsed three distinct facts — *no launch shapes here*, *already saved*,
@@ -718,10 +766,10 @@ resolve against. The echoed fields are its equivalent.
   fingerprint (size-capped, log-replayable). Powerful; risky (one false tag poisons a
   whole group) — build only after v1 data shows rotation defeats per-token contagion.
 - **Baselines / since-entry variants**: anchor metrics to lifecycle moments (creator
-  first sell, entry fill). New metrics inside `flow_split.rs`, no structural change.
+  first sell, entry fill). New metrics inside `flow_ix.rs`, no structural change.
 - **Transfer ingestion**: direct wallet-linking via SOL/token transfers — a separate,
   expensive ingest feature; only if the proxy demonstrably fails.
 - **Discovery auto-promote**: above a score threshold (likely `group_lift` +
-  `cross_token_recurrence` gates), write `volume_ix_patterns` without a toggle pass.
+  `cross_token_recurrence` gates), write `ix_patterns` without a toggle pass.
   **Blocked on V4.4 hand-label kit.** Even then, default remains review-then-apply;
   auto-promote is an opt-in mode on the discovery page, never a silent background job.

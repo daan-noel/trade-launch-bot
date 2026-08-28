@@ -10,8 +10,8 @@ export function formatDecimalTrim(value: number, decimals: number): string {
 }
 
 /**
- * Collapse f32/REAL round-trip noise on coarse SOL knobs (`bucket_size_amount`,
- * `bucket_width_sol`). Mirrors Rust `tidy_sol_decimal`: `0.10000000149011612` → `0.1`.
+ * Collapse f32/REAL round-trip noise on coarse SOL knobs (a partition edge, a
+ * display width). Mirrors Rust `tidy_sol_decimal`: `0.10000000149011612` → `0.1`.
  * ~7 significant digits ≈ IEEE-754 binary32.
  */
 export function tidySolDecimal(sol: number): number {

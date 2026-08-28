@@ -392,7 +392,7 @@ impl TokenRepo {
     }
 
     /// How many tokens this creator launched **strictly before** `before` — the
-    /// `m_snapshot.prior_launches` value for a single token.
+    /// the `prior_launches` fingerprint axis value for a single token.
     ///
     /// Point lookup for the readout/replay paths, which reconstruct one token at a
     /// time and have no running tally. The live engine does NOT use this: it counts

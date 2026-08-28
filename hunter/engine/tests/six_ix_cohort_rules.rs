@@ -17,7 +17,7 @@
 //! this file are one text, so a change to either without the other fails here.
 
 use hunter_engine::metrics::evaluator::Operator;
-use hunter_engine::metrics::flow_burst::BURST_PARAM;
+use hunter_engine::metrics::flow_slice::SLICE_PARAM;
 use hunter_engine::metrics::{MetricId, Windows};
 use hunter_engine::rule_params::{RuleParams, SideConditions};
 
@@ -31,7 +31,7 @@ use hunter_engine::rule_params::{RuleParams, SideConditions};
 /// (115 ms +4.56 -> 2000 ms +3.73) — a signal, not a race.
 const WINNER: &str = r#"{
   "entry": {
-    "m_snapshot": { "time": [{"operator": ">=", "value": 60}] },
+    "m_state": { "time": [{"operator": ">=", "value": 60}] },
     "m_flow_window": [
       { "window_size_sec": 5, "buy": [{"operator": ">=", "value": 2.94}] },
       { "window_size_sec": 3, "buy": [{"operator": "<=", "value": 23.1}] }
@@ -46,7 +46,7 @@ const WINNER: &str = r#"{
       "retrace": [{"operator": ">=", "value": 10}],
       "held":    [{"operator": ">=", "value": 60}]
     },
-    "m_snapshot": { "liquidity": [{"operator": ">=", "value": 75}] }
+    "m_state": { "liquidity": [{"operator": ">=", "value": 75}] }
   }
 }"#;
 
@@ -62,18 +62,21 @@ const WINNER: &str = r#"{
 /// pool baseline, latency-flat.
 const RUNNER_UP: &str = r#"{
   "entry": {
-    "m_snapshot": {
+    "m_state": {
       "time":           [{"operator": ">=", "value": 60}],
       "first_slot_buy": [{"operator": ">=", "value": 6.41}]
     },
     "m_flow_window": [
-      { "window_size_sec": 5,  "net_flow":          [{"operator": ">=", "value": 0.79}] },
-      { "window_size_sec": 10, "trades_per_wallet": [{"operator": "<=", "value": 2}] }
+      { "window_size_sec": 5, "net_flow": [{"operator": ">=", "value": 0.79}] },
+      {
+        "window_size_sec": 60,
+        "slice_size_sec": 3,
+        "trade_share": [{"operator": ">=", "value": 7.69}]
+      }
     ],
-    "m_flow_burst": {
-      "window_size_sec": 60,
-      "burst_size_sec": 3,
-      "trade_share": [{"operator": ">=", "value": 7.69}]
+    "m_crowd_window": {
+      "window_size_sec": 10,
+      "trades_per_wallet": [{"operator": "<=", "value": 2}]
     }
   },
   "exit": {
@@ -81,7 +84,7 @@ const RUNNER_UP: &str = r#"{
       "retrace": [{"operator": ">=", "value": 10}],
       "held":    [{"operator": ">=", "value": 60}]
     },
-    "m_snapshot": { "liquidity": [{"operator": ">=", "value": 75}] }
+    "m_state": { "liquidity": [{"operator": ">=", "value": 75}] }
   }
 }"#;
 
@@ -99,9 +102,13 @@ fn terms(side: &SideConditions, id: MetricId) -> Vec<(Operator, f64, Windows)> {
         .values()
         .flatten()
         .flat_map(|g| {
+            // Mirrors `arm::build_reqs`: the slice axis belongs to the metrics that
+            // READ it, so a single-window term's windows must not carry one.
+            let primary = g.window_spec(&hunter_engine::metrics::WINDOW_AXIS);
+            let slice = g.window_spec(&hunter_engine::metrics::flow_slice::SLICE_AXIS);
             let w = Windows {
-                primary: g.window_spec(&hunter_engine::metrics::WINDOW_AXIS),
-                secondary: g.window_spec(&hunter_engine::metrics::flow_burst::BURST_AXIS),
+                primary,
+                secondary: hunter_engine::metrics::is_two_window(id).then_some(slice).flatten(),
             };
             g.metrics
                 .get(&id)
@@ -165,7 +172,7 @@ fn both_rules_fire_past_the_window_degeneracy_age() {
 
         // Every window the rule reads must be populated at that floor.
         for g in entry.0.values().flatten() {
-            for w in [g.strict_param("window_size_sec"), g.strict_param(BURST_PARAM)]
+            for w in [g.strict_param("window_size_sec"), g.strict_param(SLICE_PARAM)]
                 .into_iter()
                 .flatten()
             {
@@ -216,7 +223,7 @@ fn the_runner_up_keeps_its_terms_in_the_units_it_was_fitted_in() {
     // The fitted `trade_count(3)/trade_count(60) >= 0.0769` is a FRACTION; the metric
     // unit is percent. Shipping 0.0769 here would gate on ~0.08%, i.e. on nothing.
     assert_eq!(
-        one(entry, MetricId::BurstTradeShare),
+        one(entry, MetricId::SliceTradeShare),
         (Operator::Gte, 7.69, Windows::two(hunter_engine::metrics::WindowSpec::secs(60.0), hunter_engine::metrics::WindowSpec::secs(3.0))),
         "the fitted 0.0769 fraction is 7.69 percent"
     );

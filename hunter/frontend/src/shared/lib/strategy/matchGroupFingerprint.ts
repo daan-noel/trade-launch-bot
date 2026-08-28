@@ -1,6 +1,6 @@
 // Match a sweep/discovery `group_key` to a saved fingerprint, using the same
 // identity as promote/bind (`fingerprint_from_group_key` + `IDENTITY_WHERE`).
-// `name` / `metric_config` are labels, not identity.
+// `name` is a label, not identity; `metric_config` is (see `FingerprintIdentity`).
 //
 // **A group key carries predicates, not rendered labels.** A card's window IS the
 // predicate a fingerprint stores, so identity here is a comparison of the same
@@ -59,6 +59,16 @@ export interface FingerprintIdentity {
    *  yields `false`. Carrying it anyway is what stops a saved wildcard row from
    *  keying identically to an axis-free card and badging it. */
   wildcard: boolean;
+  /** Per-fingerprint metric config. Selects no token, so it is not MATCH identity —
+   *  but it IS ROW identity, because it compiles into that row's live `m_flow_ix`
+   *  patterns. Eleven `8dtx · <router>` rows share `{}` + `wildcard` and differ only
+   *  here; without it {@link fingerprintIdentityKey} would badge an arbitrary one of
+   *  them while `find_or_create` resolved to another.
+   *
+   *  **Optional, and absent means `{}`** — which is what a card creates with, so a
+   *  group key and the backend's match-identity DTO both leave it unset and still key
+   *  onto the right row. Only {@link fingerprintToIdentity} fills it in. */
+  metric_config?: Record<string, unknown>;
 }
 
 /** One group-key value, as the backend serializes it. */
@@ -118,7 +128,8 @@ export function fingerprintIdentityFromGroupKey(
     const pred = predicateFromGroupValue(raw);
     if (pred) criteria[tag] = pred;
   }
-  // A group key names axis VALUES, so it can never describe "every token".
+  // A group key names axis VALUES, so it can never describe "every token", and a
+  // card is created with no metric config (absent = `{}`).
   return { criteria, wildcard: false };
 }
 
@@ -153,7 +164,11 @@ export function predicatesEqual(a: AxisPredicate | undefined, b: AxisPredicate |
 }
 
 /**
- * True when every `IDENTITY_WHERE` axis matches.
+ * True when every match axis agrees — the same token set.
+ *
+ * MATCH identity only: two rows differing solely in `metric_config` both return
+ * true. For the row `find_or_create` resolves to, key with
+ * {@link fingerprintIdentityKey}.
  *
  * This is the compare to reach for wherever the backend hands you an identity it
  * authored — the `identity` block of a resolved `GroupSelection`
@@ -218,12 +233,29 @@ export function fingerprintIdentityKey(id: FingerprintIdentity): string {
     return `range:${p.min ?? ''}:${p.max ?? ''}`;
   });
   parts.push(id.wildcard ? 'any' : '');
+  parts.push(canonicalJson(id.metric_config ?? {}));
   return parts.join('|');
 }
 
-/** Identity axes from a saved fingerprint row (same shape as the group-key rebuild). */
+/** Stable JSON with object keys sorted, so two configs that Postgres `jsonb` calls
+ *  equal (it normalises key order) produce ONE string here. `JSON.stringify` alone
+ *  keeps insertion order, which would fork the key on a re-serialized row. */
+function canonicalJson(v: unknown): string {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null';
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
+  const entries = Object.entries(v as Record<string, unknown>)
+    .filter(([, val]) => val !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, val]) => `${JSON.stringify(k)}:${canonicalJson(val)}`).join(',')}}`;
+}
+
+/** Identity from a saved fingerprint row (same shape as the group-key rebuild). */
 export function fingerprintToIdentity(fp: Fingerprint): FingerprintIdentity {
-  return { criteria: fp.criteria ?? {}, wildcard: fp.wildcard };
+  return {
+    criteria: fp.criteria ?? {},
+    wildcard: fp.wildcard,
+    metric_config: fp.metric_config ?? {},
+  };
 }
 
 /** Exact-identity index for O(1) group→fingerprint hits. First write wins on dupes. */

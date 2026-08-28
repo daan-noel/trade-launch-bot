@@ -26,7 +26,7 @@ export function LabTokenInspectModal({
   /** Modal heading suffix, e.g. "Sweep inspect". */
   titleSuffix?: string;
   ruleOverride?: MetricPanesRuleOverride | null;
-  /** Explicit overlay keys (e.g. sweep run `volume_ix_patterns`); when omitted,
+  /** Explicit overlay keys (e.g. sweep run `ix_patterns`); when omitted,
    *  resolved from `ruleOverride.fingerprintId` inside LabTokenInspect. */
   flowPatternKeys?: ReadonlySet<string> | null;
   /** A stored run's frozen patterns — display only (see `BarTradesPanel`). */

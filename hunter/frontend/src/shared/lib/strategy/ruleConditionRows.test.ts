@@ -8,6 +8,7 @@ import {
   ruleConditionRowError,
   ruleRowEnabled,
   ruleRowIsTrailing,
+  ruleRowNeedsSlice,
   rowsToSide,
   rowsToSides,
   setRowInstanceStrict,
@@ -20,7 +21,7 @@ const REG: StrategyRegistry = {
   operators: ['>', '>=', '<', '<=', '=', '!='],
   groups: [
     {
-      name: 'm_snapshot',
+      name: 'm_state',
       kind: 'static',
       strict_params: [],
       metrics: [{ name: 'time', unit: 'seconds', eq_tolerance: 0.5, monotonic: true, hue: 200 }],
@@ -39,19 +40,29 @@ const REG: StrategyRegistry = {
       metrics: [{ name: 'trail', unit: 'percent', eq_tolerance: 0.1, monotonic: false, hue: 45 }],
     },
     {
-      name: 'm_flow_burst',
+      name: 'm_flow_window',
       kind: 'dynamic',
       strict_params: [
         { name: 'window_size_sec', required: false },
         { name: 'window_size_slots', required: false },
         { name: 'window_size_prints', required: false },
         { name: 'window_lag', required: false, allows_zero: true },
-        { name: 'burst_size_sec', required: false },
-        { name: 'burst_size_slots', required: false },
-        { name: 'burst_size_prints', required: false },
+        { name: 'slice_size_sec', required: false },
+        { name: 'slice_size_slots', required: false },
+        { name: 'slice_size_prints', required: false },
       ],
       metrics: [
-        { name: 'trade_share', unit: 'percent', eq_tolerance: 0.5, monotonic: false, hue: 306 },
+        {
+          name: 'trade_share',
+          unit: 'percent',
+          eq_tolerance: 0.5,
+          monotonic: false,
+          hue: 306,
+          two_window: true,
+        },
+        // A single-window sibling in the SAME group - the shape that makes the slice
+        // axis per-metric rather than per-group.
+        { name: 'gross_flow', unit: 'sol', eq_tolerance: 0.1, monotonic: false, hue: 278 },
       ],
     },
     {
@@ -94,23 +105,23 @@ describe('rowsToSide', () => {
   it('drops half-authored and empty-condition rows', () => {
     const rows: RuleConditionRow[] = [
       row({ group: '', metric: '', arms: [] }),
-      row({ group: 'm_snapshot', metric: 'time', arms: [] }),
-      row({ group: 'm_snapshot', metric: 'time', arms: [[{ operator: '>', value: 10 }]] }),
+      row({ group: 'm_state', metric: 'time', arms: [] }),
+      row({ group: 'm_state', metric: 'time', arms: [[{ operator: '>', value: 10 }]] }),
     ];
     const side = rowsToSide(rows, 'entry');
-    expect(Object.keys(side)).toEqual(['m_snapshot']);
-    expect(side.m_snapshot).toHaveLength(1);
+    expect(Object.keys(side)).toEqual(['m_state']);
+    expect(side.m_state).toHaveLength(1);
   });
 
   it('only folds rows of the requested side', () => {
     const rows: RuleConditionRow[] = [
-      row({ side: 'entry', group: 'm_snapshot', metric: 'time', arms: [[{ operator: '>', value: 10 }]] }),
-      row({ side: 'exit', group: 'm_snapshot', metric: 'time', arms: [[{ operator: '>', value: 60 }]] }),
+      row({ side: 'entry', group: 'm_state', metric: 'time', arms: [[{ operator: '>', value: 10 }]] }),
+      row({ side: 'exit', group: 'm_state', metric: 'time', arms: [[{ operator: '>', value: 60 }]] }),
     ];
-    expect(Object.keys(rowsToSide(rows, 'entry'))).toEqual(['m_snapshot']);
-    expect(Object.keys(rowsToSide(rows, 'exit'))).toEqual(['m_snapshot']);
-    expect(rowsToSide(rows, 'entry').m_snapshot[0].metrics.time[0][0].value).toBe(10);
-    expect(rowsToSide(rows, 'exit').m_snapshot[0].metrics.time[0][0].value).toBe(60);
+    expect(Object.keys(rowsToSide(rows, 'entry'))).toEqual(['m_state']);
+    expect(Object.keys(rowsToSide(rows, 'exit'))).toEqual(['m_state']);
+    expect(rowsToSide(rows, 'entry').m_state[0].metrics.time[0][0].value).toBe(10);
+    expect(rowsToSide(rows, 'exit').m_state[0].metrics.time[0][0].value).toBe(60);
   });
 });
 
@@ -129,11 +140,11 @@ describe('sideToRows / round-trip', () => {
 
   it('sidesToRows loads both sides', () => {
     const entry = rowsToSide(
-      [row({ group: 'm_snapshot', metric: 'time', arms: [[{ operator: '>', value: 10 }]] })],
+      [row({ group: 'm_state', metric: 'time', arms: [[{ operator: '>', value: 10 }]] })],
       'entry',
     );
     const exit = rowsToSide(
-      [row({ side: 'exit', group: 'm_snapshot', metric: 'time', arms: [[{ operator: '>', value: 60 }]] })],
+      [row({ side: 'exit', group: 'm_state', metric: 'time', arms: [[{ operator: '>', value: 60 }]] })],
       'exit',
     );
     const rows = sidesToRows(entry, exit);
@@ -263,7 +274,7 @@ describe('parked (disabled) rows', () => {
   });
 
   it('treats a missing `enabled` as live (rows predate the toggle)', () => {
-    const legacy = { ...row({ group: 'm_snapshot', metric: 'time' }), enabled: undefined };
+    const legacy = { ...row({ group: 'm_state', metric: 'time' }), enabled: undefined };
     expect(ruleRowEnabled(legacy)).toBe(true);
     expect(ruleRowEnabled(parked)).toBe(false);
   });
@@ -405,54 +416,81 @@ describe('non-window strict params', () => {
   });
 });
 
-describe('two-window group (m_flow_burst)', () => {
-  const burstRow = (window: string, burst: number, value: number): RuleConditionRow =>
+describe('two-window group (m_flow_window)', () => {
+  const sliceRow = (window: string, burst: number, value: number): RuleConditionRow =>
     row({
-      group: 'm_flow_burst',
+      group: 'm_flow_window',
       metric: 'trade_share',
       window,
-      strict: { burst_size_sec: burst },
+      strict: { slice_size_sec: burst },
       arms: [[{ operator: '>=' as const, value }]],
     });
 
-  it('keeps two clauses that share a reference window but differ in the burst', () => {
+  it('keeps two clauses that share a reference window but differ in the slice', () => {
     // Both axes are the group's identity. Keying instances on `window_size_sec`
     // alone merged these into one and the later burst silently won — one of the
     // two gates just disappeared on save.
-    const side = rowsToSide([burstRow('60', 3, 8), burstRow('60', 10, 60)], 'entry');
-    expect(side.m_flow_burst).toHaveLength(2);
-    expect(side.m_flow_burst.map((i) => i.strict.burst_size_sec).sort((a, b) => a! - b!)).toEqual([3, 10]);
+    const side = rowsToSide([sliceRow('60', 3, 8), sliceRow('60', 10, 60)], 'entry');
+    expect(side.m_flow_window).toHaveLength(2);
+    expect(side.m_flow_window.map((i) => i.strict.slice_size_sec).sort((a, b) => a! - b!)).toEqual([3, 10]);
   });
 
   it('round-trips both axes through the row editor', () => {
     const side = {
-      m_flow_burst: [
+      m_flow_window: [
         {
-          strict: { window_size_sec: 60, burst_size_sec: 3 },
+          strict: { window_size_sec: 60, slice_size_sec: 3 },
           metrics: { trade_share: [[{ operator: '>=' as const, value: 7.69 }]] },
         },
       ],
     };
     const rows = sideToRows(side, 'entry');
     expect(rows[0].window).toBe('60');
-    expect(rows[0].strict).toEqual({ burst_size_sec: 3 });
+    expect(rows[0].strict).toEqual({ slice_size_sec: 3 });
     expect(rowsToSide(rows, 'entry')).toEqual(side);
   });
 
-  it('requires the burst axis and rejects one that does not nest', () => {
+  it('asks the METRIC, not the group, whether a slice belongs', () => {
+    // `m_flow_window` declares `slice_size_*` for every instance, so a group-level
+    // test would put a slice control on `gross_flow` and the backend would then
+    // reject the save as a span nothing reads. Both directions are pinned here.
+    const grossRow = (strict: Record<string, number>): RuleConditionRow =>
+      row({
+        group: 'm_flow_window',
+        metric: 'gross_flow',
+        window: '60',
+        strict,
+        arms: [[{ operator: '>=', value: 5 }]],
+      });
+    expect(ruleRowNeedsSlice(grossRow({}), REG)).toBe(false);
+    expect(ruleConditionRowError(grossRow({}), REG)).toBeNull();
+    expect(ruleConditionRowError(grossRow({ slice_size_sec: 3 }), REG)).toMatch(/slice/);
+
+    const shareRow = row({
+      group: 'm_flow_window',
+      metric: 'trade_share',
+      window: '60',
+      strict: { slice_size_sec: 3 },
+      arms: [[{ operator: '>=', value: 8 }]],
+    });
+    expect(ruleRowNeedsSlice(shareRow, REG)).toBe(true);
+    expect(ruleConditionRowError(shareRow, REG)).toBeNull();
+  });
+
+  it('requires the slice axis and rejects one that does not nest', () => {
     expect(
       ruleConditionRowError(
         row({
-          group: 'm_flow_burst',
+          group: 'm_flow_window',
           metric: 'trade_share',
           window: '60',
           arms: [[{ operator: '>=' as const, value: 8 }]],
         }),
         REG,
       ),
-    ).toMatch(/burst/);
-    expect(ruleConditionRowError(burstRow('60', 90, 8), REG)).toMatch(/nest inside window 60/);
-    expect(ruleConditionRowError(burstRow('60', 3, 8), REG)).toBeNull();
+    ).toMatch(/slice/);
+    expect(ruleConditionRowError(sliceRow('60', 90, 8), REG)).toMatch(/nest inside window 60/);
+    expect(ruleConditionRowError(sliceRow('60', 3, 8), REG)).toBeNull();
   });
 });
 
@@ -527,30 +565,30 @@ describe('slot windows and lag', () => {
     );
   });
 
-  it('requires the burst axis in the reference unit and nested inside it', () => {
+  it('requires the slice axis in the reference unit and nested inside it', () => {
     const burst = (over: Partial<RuleConditionRow> = {}) =>
       row({
-        group: 'm_flow_burst',
+        group: 'm_flow_window',
         metric: 'trade_share',
         window: '30',
         windowUnit: 'slot',
         arms: [[{ operator: '>=', value: 50 }]],
         ...over,
       });
-    expect(ruleConditionRowError(burst(), REG)).toBe('burst (sl) > 0 required');
+    expect(ruleConditionRowError(burst(), REG)).toBe('slice (sl) > 0 required');
     // A seconds burst on a slot row is not the row's burst at all - it reads as
     // absent, which is what the backend also rejects (both axes, one unit).
-    expect(ruleConditionRowError(burst({ strict: { burst_size_sec: 3 } }), REG)).toBe(
-      'burst (sl) > 0 required',
+    expect(ruleConditionRowError(burst({ strict: { slice_size_sec: 3 } }), REG)).toBe(
+      'slice (sl) > 0 required',
     );
-    expect(ruleConditionRowError(burst({ strict: { burst_size_slots: 40 } }), REG)).toBe(
-      'burst (sl) must nest inside window 30',
+    expect(ruleConditionRowError(burst({ strict: { slice_size_slots: 40 } }), REG)).toBe(
+      'slice (sl) must nest inside window 30',
     );
-    const ok = burst({ strict: { burst_size_slots: 1 } });
+    const ok = burst({ strict: { slice_size_slots: 1 } });
     expect(ruleConditionRowError(ok, REG)).toBeNull();
-    expect(rowsToSide([ok], 'entry').m_flow_burst[0].strict).toEqual({
+    expect(rowsToSide([ok], 'entry').m_flow_window[0].strict).toEqual({
       window_size_slots: 30,
-      burst_size_slots: 1,
+      slice_size_slots: 1,
     });
   });
 });
@@ -616,30 +654,30 @@ describe('print windows', () => {
     );
   });
 
-  it('requires the burst axis in the print unit and nested inside it', () => {
+  it('requires the slice axis in the print unit and nested inside it', () => {
     const burst = (over: Partial<RuleConditionRow> = {}) =>
       row({
-        group: 'm_flow_burst',
+        group: 'm_flow_window',
         metric: 'trade_share',
         window: '20',
         windowUnit: 'print',
         arms: [[{ operator: '>=', value: 50 }]],
         ...over,
       });
-    expect(ruleConditionRowError(burst(), REG)).toBe('burst (p) > 0 required');
+    expect(ruleConditionRowError(burst(), REG)).toBe('slice (p) > 0 required');
     // A slot burst on a print row is not the row's burst at all - it reads as
     // absent, which is what the backend also rejects (both axes, one unit).
-    expect(ruleConditionRowError(burst({ strict: { burst_size_slots: 4 } }), REG)).toBe(
-      'burst (p) > 0 required',
+    expect(ruleConditionRowError(burst({ strict: { slice_size_slots: 4 } }), REG)).toBe(
+      'slice (p) > 0 required',
     );
-    expect(ruleConditionRowError(burst({ strict: { burst_size_prints: 40 } }), REG)).toBe(
-      'burst (p) must nest inside window 20',
+    expect(ruleConditionRowError(burst({ strict: { slice_size_prints: 40 } }), REG)).toBe(
+      'slice (p) must nest inside window 20',
     );
-    const ok = burst({ strict: { burst_size_prints: 4 } });
+    const ok = burst({ strict: { slice_size_prints: 4 } });
     expect(ruleConditionRowError(ok, REG)).toBeNull();
-    expect(rowsToSide([ok], 'entry').m_flow_burst[0].strict).toEqual({
+    expect(rowsToSide([ok], 'entry').m_flow_window[0].strict).toEqual({
       window_size_prints: 20,
-      burst_size_prints: 4,
+      slice_size_prints: 4,
     });
   });
 
@@ -648,16 +686,16 @@ describe('print windows', () => {
   // per-pair destructure is exactly what would leave one.
   it('never writes two size params on one axis after a unit flip', () => {
     const stale = row({
-      group: 'm_flow_burst',
+      group: 'm_flow_window',
       metric: 'trade_share',
       window: '20',
       windowUnit: 'print',
       arms: [[{ operator: '>=', value: 50 }]],
-      strict: { burst_size_sec: 3, burst_size_slots: 1, burst_size_prints: 4 },
+      strict: { slice_size_sec: 3, slice_size_slots: 1, slice_size_prints: 4 },
     });
-    expect(rowsToSide([stale], 'entry').m_flow_burst[0].strict).toEqual({
+    expect(rowsToSide([stale], 'entry').m_flow_window[0].strict).toEqual({
       window_size_prints: 20,
-      burst_size_prints: 4,
+      slice_size_prints: 4,
     });
   });
 });

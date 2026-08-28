@@ -20,14 +20,14 @@ import {
 } from 'lib/strategy/fingerprintAxes';
 import {
   groupsWithFingerprintConfig,
-  metricConfigWithVolumePatterns,
+  metricConfigWithIxPatterns,
   useStrategyRegistry,
-  volumeIxPatternsFromConfig,
+  ixPatternsFromConfig,
 } from 'lib/strategy/registry';
 import { fingerprintAutoName, isStaleAutoName } from 'lib/strategy/fingerprintNameFromGroupKey';
 import type { HelpTip } from 'lib/strategy/strategyHelp';
 import { LabelTip } from './LabelTip';
-import { VolumeIxPatternsEditor } from './VolumeIxPatternsEditor';
+import { IxPatternsEditor } from './IxPatternsEditor';
 
 export interface FingerprintFormProps {
   /** Existing fingerprint to edit; omit to create. */
@@ -57,8 +57,8 @@ interface FormState {
    *  (backend `validate` + the `fingerprints_wildcard_excludes_axes` CHECK), so
    *  turning it on clears them rather than leaving a contradiction on screen. */
   wildcard: boolean;
-  /** `m_flow_split.volume_ix_patterns` rows (other metric_config keys preserved). */
-  volume_ix_patterns: string[][];
+  /** `m_flow_ix.ix_patterns` rows (other metric_config keys preserved). */
+  ix_patterns: string[][];
   /** Original metric_config minus the flow key — merged back on save. This is what
    *  preserves machine-written groups across an edit. */
   metric_config_rest: Record<string, unknown>;
@@ -68,7 +68,7 @@ const NUMERIC_AXES: readonly AxisDef[] = AXES.filter((a) => a.kind === 'numeric'
 
 function fromFingerprint(fp?: Fingerprint): FormState {
   const cfg = fp?.metric_config ?? {};
-  const { m_flow_split: _flow, ...rest } = cfg;
+  const { m_flow_ix: _flow, ...rest } = cfg;
   const criteria = fp?.criteria ?? {};
   const bounds: Partial<Record<AxisId, BoundText>> = {};
   for (const def of NUMERIC_AXES) {
@@ -84,7 +84,7 @@ function fromFingerprint(fp?: Fingerprint): FormState {
     bounds,
     ix_labels: formatIxLabelsText(labels?.kind === 'sequence' ? labels.labels : null),
     wildcard: fp?.wildcard ?? false,
-    volume_ix_patterns: volumeIxPatternsFromConfig(cfg),
+    ix_patterns: ixPatternsFromConfig(cfg),
     metric_config_rest: rest,
   };
 }
@@ -127,7 +127,7 @@ function toCriteria(s: FormState): { criteria: Criteria; badBounds: string[] } {
 }
 
 function toDraft(s: FormState): FingerprintDraft {
-  const flow = metricConfigWithVolumePatterns(s.volume_ix_patterns);
+  const flow = metricConfigWithIxPatterns(s.ix_patterns);
   return {
     name: s.name.trim(),
     wildcard: s.wildcard,
@@ -187,9 +187,9 @@ const WILDCARD_HELP: HelpTip = {
 };
 
 const VOLUME_PATTERNS_HELP: HelpTip = {
-  title: 'volume_ix_patterns (m_flow_split)',
+  title: 'ix_patterns (m_flow_ix)',
   body:
-    'Instruction patterns that classify a trade as `volume` for the m_flow_split metrics.\n\n' +
+    'Instruction patterns that classify a trade as `volume` for the m_flow_ix metrics.\n\n' +
     'NOT part of match identity — two fingerprints differing only here are the same fingerprint to `find_or_create`.',
 };
 
@@ -360,13 +360,13 @@ export function FingerprintForm({
       </label>
 
       {fpConfigGroups.some((g) =>
-        (g.fingerprint_config ?? []).some((f) => f.name === 'volume_ix_patterns'),
+        (g.fingerprint_config ?? []).some((f) => f.name === 'ix_patterns'),
       ) && (
         <div className="flex flex-col gap-1 text-[11px] text-text-dim">
-          <LabelTip tip={VOLUME_PATTERNS_HELP}>volume_ix_patterns (m_flow_split)</LabelTip>
-          <VolumeIxPatternsEditor
-            patterns={s.volume_ix_patterns}
-            onChange={(p) => set('volume_ix_patterns', p)}
+          <LabelTip tip={VOLUME_PATTERNS_HELP}>ix_patterns (m_flow_ix)</LabelTip>
+          <IxPatternsEditor
+            patterns={s.ix_patterns}
+            onChange={(p) => set('ix_patterns', p)}
             disabled={submitting}
           />
         </div>

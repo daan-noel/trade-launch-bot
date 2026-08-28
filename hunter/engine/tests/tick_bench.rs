@@ -45,7 +45,7 @@ fn build(dense: bool, n_tokens: usize) -> EngineState {
         id: FingerprintId(Uuid::from_u128(1)),
         wildcard: false,
         criteria: Criteria::new().with(AxisId::CuLimit, AxisPredicate::exact(200_000)),
-        metric_config: json!({ "m_flow_split": { "volume_ix_patterns": [["Pump.Fun: Buy"]] } }),
+        metric_config: json!({ "m_flow_ix": { "ix_patterns": [["Pump.Fun: Buy"]] } }),
     };
     let rule = LoadedRule {
         id: RuleId(Uuid::from_u128(1)),
@@ -59,9 +59,9 @@ fn build(dense: bool, n_tokens: usize) -> EngineState {
         params: RuleParams::parse(&json!({
             "entry": {
                 "m_flow_window": { "window_size_sec": 30, "gross_flow": [{"operator": ">", "value": 500.0}] },
-                "m_flow_split_window": { "window_size_sec": 30, "vol_share": [{"operator": "<", "value": 5.0}] }
+                "m_flow_ix_window": { "window_size_sec": 30, "tagged_share": [{"operator": "<", "value": 5.0}] }
             },
-            "exit": { "m_flow_split": { "nonvol_net": [{"operator": "<", "value": -999.0}] } }
+            "exit": { "m_flow_ix": { "untagged_net": [{"operator": "<", "value": -999.0}] } }
         }))
         .unwrap(),
         entry_enabled: true,

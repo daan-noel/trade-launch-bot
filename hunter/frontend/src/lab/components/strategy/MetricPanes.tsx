@@ -330,7 +330,7 @@ function useMetricPanesModel({
   }, [crosshairIdx, ruleParams, data, registry]);
 
   // Keyed by SERIES COLUMN (`metric` / `metric@Ns`), never by metric name: a rule is
-  // free to constrain `nonvol_buy` lifetime and `nonvol_buy` at 2 s at once, and those
+  // free to constrain `untagged_buy` lifetime and `untagged_buy` at 2 s at once, and those
   // are different readings with different verdicts. Keying by name paints both panes
   // with whichever condition wrote last — and since the lifetime twin is monotone,
   // that is a green pane under a windowed metric sitting at zero.

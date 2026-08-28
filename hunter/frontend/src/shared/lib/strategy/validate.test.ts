@@ -10,7 +10,7 @@ describe('isPnlAdvancedMetric', () => {
   it('flags only m_position.pnl', () => {
     expect(isPnlAdvancedMetric('m_position', 'pnl')).toBe(true);
     expect(isPnlAdvancedMetric('m_position', 'retrace')).toBe(false);
-    expect(isPnlAdvancedMetric('m_snapshot', 'pnl')).toBe(false);
+    expect(isPnlAdvancedMetric('m_state', 'pnl')).toBe(false);
   });
 });
 

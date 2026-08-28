@@ -129,7 +129,7 @@ interface FlowPreviewChartPrefs {
   interval: ChartInterval;
   basis: FlowBasis;
   trimEmptyBars: boolean;
-  seedCreatorAsVol: boolean;
+  seedCreatorAsTagged: boolean;
   showTradeMarkers: boolean;
   showWalletMarkers: boolean;
   showDevMarkers: boolean;
@@ -137,10 +137,10 @@ interface FlowPreviewChartPrefs {
   showAthLine: boolean;
   showMigrationLine: boolean;
   highlightVolumeBars: boolean;
-  /** Per-curve visibility of the vol/non-vol overlay. Split because the two share
+  /** Per-curve visibility of the tagged/non-tagged overlay. Split because the two share
    *  the left price scale — hiding one rescales the axis to the other. */
-  showFlowVol: boolean;
-  showFlowNonVol: boolean;
+  showFlowTagged: boolean;
+  showFlowUntagged: boolean;
 }
 
 const DEFAULT_FLOW_CHART_PREFS: FlowPreviewChartPrefs = {
@@ -149,10 +149,10 @@ const DEFAULT_FLOW_CHART_PREFS: FlowPreviewChartPrefs = {
   interval: '1s',
   basis: 'cost_sol',
   trimEmptyBars: true,
-  // Live ALWAYS classifies the creator wallet as volume (flow_split.rs
+  // Live ALWAYS classifies the creator wallet as volume (flow_ix.rs
   // FlowState::classify), so default ON to mirror live. Turn OFF only to
   // isolate what the checked ix-patterns alone would catch.
-  seedCreatorAsVol: true,
+  seedCreatorAsTagged: true,
   showTradeMarkers: false,
   showWalletMarkers: false,
   showDevMarkers: false,
@@ -164,8 +164,8 @@ const DEFAULT_FLOW_CHART_PREFS: FlowPreviewChartPrefs = {
   // Default ON: this chart exists to separate manufactured volume from organic
   // flow, and the bar highlight is what makes that split visible at a glance.
   highlightVolumeBars: true,
-  showFlowVol: true,
-  showFlowNonVol: true,
+  showFlowTagged: true,
+  showFlowUntagged: true,
 };
 
 /** Toolbar toggles persist across sessions (mirrors `TokenPriceChart`'s
@@ -182,8 +182,8 @@ function loadFlowChartPrefs(): FlowPreviewChartPrefs {
       // A pre-split blob holds one `showFlowLines` for both curves — seed both
       // per-curve flags from it instead of resetting the saved state.
       const flow = flowLineVisibilityFromPrefs(parsed);
-      merged.showFlowVol = flow.vol;
-      merged.showFlowNonVol = flow.nonVol;
+      merged.showFlowTagged = flow.tagged;
+      merged.showFlowUntagged = flow.untagged;
       // Guard the basis against a stale persisted value — earlier builds stored
       // 'sol' (two-way toggle) and later 'net_sol'/'real_sol', none of which
       // exist now (basis is cost_sol/token/value_sol). Fall back to the default.
@@ -202,7 +202,7 @@ function saveFlowChartPrefs(prefs: FlowPreviewChartPrefs) {
   setString(STORAGE_KEYS.flowPreviewChartPrefs, JSON.stringify(prefs));
 }
 
-/** Vol/non-vol overlay line colors, by what each side represents:
+/** Vol/non-tagged overlay line colors, by what each side represents:
  *  - VOL is dev-generated volume → red (`#EF5350`).
  *  - NON_VOL is real trader volume → gold (`#F5C542`).
  *  Both are high-luminance so they read at a glance over the candle field. */
@@ -255,13 +255,13 @@ function DevMarkersIcon() {
  *  out — body + border + wick all get the shallow translucent dark, sacrificing
  *  this bar's up/down color to read it as "dev-generated volume, not a real
  *  move". A bar is ghosted only if EVERY trade in it is volume
- *  (`pureVolumeBarTimes`); bars with any organic trade keep their normal color. */
+ *  (`pureTaggedBarTimes`); bars with any organic trade keep their normal color. */
 function outlineVolumeCandles(
   data: ReturnType<typeof barsToCandleData>,
-  pureVolumeBarTimes: ReadonlySet<number>,
+  pureTaggedBarTimes: ReadonlySet<number>,
 ) {
   return data.map((c) => {
-    if (!pureVolumeBarTimes.has(c.time as number)) return c;
+    if (!pureTaggedBarTimes.has(c.time as number)) return c;
     return {
       ...c,
       color: VOL_GHOST_COLOR,
@@ -364,10 +364,10 @@ function StylePillGroup({
 
 export interface FlowPreviewChartProps {
   trades: TradeRecord[];
-  /** `JSON.stringify(labels)` keys of the checked volume_ix_patterns rows —
+  /** `JSON.stringify(labels)` keys of the checked ix_patterns rows —
    *  redraws the two overlay lines whenever this set changes. */
   patternKeys: ReadonlySet<string>;
-  /** Toggle a trade's ix-structure in/out of the draft volume_ix_patterns —
+  /** Toggle a trade's ix-structure in/out of the draft ix_patterns —
    *  wired to the same `draftPatterns` the ranked structure table mutates, so
    *  the Bar-Trades table can flag a shape in-context. Omit to hide the Vol
    *  checkbox (ix_labels stays read-only). */
@@ -416,10 +416,10 @@ export function FlowPreviewChart({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const mainSeriesRef = useRef<ISeriesApi<'Candlestick'> | ISeriesApi<'Line'> | null>(null);
-  const volSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
-  const nonVolSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const taggedSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const untaggedSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const barsRef = useRef<OhlcBar[]>([]);
-  const linesRef = useRef<{ vol: FlowLinePoint[]; nonVol: FlowLinePoint[] }>({ vol: [], nonVol: [] });
+  const linesRef = useRef<{ tagged: FlowLinePoint[]; untagged: FlowLinePoint[] }>({ tagged: [], untagged: [] });
   const athLineRef = useRef<IPriceLine | null>(null);
   const migrationLineRef = useRef<IPriceLine | null>(null);
   const markersPluginRef = useRef<MarkersPlugin | null>(null);
@@ -447,7 +447,7 @@ export function FlowPreviewChart({
   const [interval, setInterval] = useState<ChartInterval>(initialPrefs.interval);
   const [basis, setBasis] = useState<FlowBasis>(initialPrefs.basis);
   const [trimEmptyBars, setTrimEmptyBars] = useState(initialPrefs.trimEmptyBars);
-  const [seedCreatorAsVol, setSeedCreatorAsVol] = useState(initialPrefs.seedCreatorAsVol);
+  const [seedCreatorAsTagged, setSeedCreatorAsTagged] = useState(initialPrefs.seedCreatorAsTagged);
   const [showTradeMarkers, setShowTradeMarkers] = useState(initialPrefs.showTradeMarkers);
   const [showWalletMarkers, setShowWalletMarkers] = useState(initialPrefs.showWalletMarkers);
   const [showDevMarkers, setShowDevMarkers] = useState(initialPrefs.showDevMarkers);
@@ -458,8 +458,8 @@ export function FlowPreviewChart({
   const [showMigrationLine, setShowMigrationLine] = useState(initialPrefs.showMigrationLine);
   const [highlightVolumeBars, setHighlightVolumeBars] = useState(initialPrefs.highlightVolumeBars);
   const [flowLineVis, setFlowLineVis] = useState<FlowLineVisibility>({
-    vol: initialPrefs.showFlowVol,
-    nonVol: initialPrefs.showFlowNonVol,
+    tagged: initialPrefs.showFlowTagged,
+    untagged: initialPrefs.showFlowUntagged,
   });
   const [rangeSelectMode, setRangeSelectMode] = useState(false);
   const [showMore, setShowMore] = useState(false);
@@ -467,7 +467,7 @@ export function FlowPreviewChart({
   const [selectedBar, setSelectedBar] = useState<ChartBarSelection | null>(null);
 
   const [crosshair, setCrosshair] = useState<ChartCrosshairInfo | null>(null);
-  const [flowCrosshair, setFlowCrosshair] = useState<{ vol: number | null; nonVol: number | null } | null>(
+  const [flowCrosshair, setFlowCrosshair] = useState<{ tagged: number | null; untagged: number | null } | null>(
     null,
   );
   const [barTooltip, setBarTooltip] = useState<ChartBarTooltipState | null>(null);
@@ -502,8 +502,8 @@ export function FlowPreviewChart({
   }, [sortedTrades, groupMode, intervalSec, trimEmptyBars, toValue]);
 
   const classifyOpts = useMemo(
-    () => ({ patternKeys, creatorWallet: seedCreatorAsVol ? creatorWallet : null }),
-    [patternKeys, creatorWallet, seedCreatorAsVol],
+    () => ({ patternKeys, creatorWallet: seedCreatorAsTagged ? creatorWallet : null }),
+    [patternKeys, creatorWallet, seedCreatorAsTagged],
   );
 
   const lines = useMemo(
@@ -549,7 +549,7 @@ export function FlowPreviewChart({
       interval,
       basis,
       trimEmptyBars,
-      seedCreatorAsVol,
+      seedCreatorAsTagged,
       showTradeMarkers,
       showWalletMarkers,
       showDevMarkers,
@@ -557,8 +557,8 @@ export function FlowPreviewChart({
       showAthLine,
       showMigrationLine,
       highlightVolumeBars,
-      showFlowVol: flowLineVis.vol,
-      showFlowNonVol: flowLineVis.nonVol,
+      showFlowTagged: flowLineVis.tagged,
+      showFlowUntagged: flowLineVis.untagged,
     });
   }, [
     style,
@@ -566,7 +566,7 @@ export function FlowPreviewChart({
     interval,
     basis,
     trimEmptyBars,
-    seedCreatorAsVol,
+    seedCreatorAsTagged,
     showTradeMarkers,
     showWalletMarkers,
     showDevMarkers,
@@ -581,7 +581,7 @@ export function FlowPreviewChart({
   // creator seed + forward contagion — the same classifier the overlay lines
   // use). A bar with even one organic trade is excluded. Drives the "highlight
   // volume bars" spotlight. Empty (cheap) while the toggle is off.
-  const pureVolumeBarTimes = useMemo(() => {
+  const pureTaggedBarTimes = useMemo(() => {
     const set = new Set<number>();
     if (!highlightVolumeBars) return set;
     const classified = classifyFlowTrades(
@@ -597,16 +597,16 @@ export function FlowPreviewChart({
     );
     // Per bar, tally total vs volume trades; keep only the bars where they match.
     const total = new Map<number, number>();
-    const volCount = new Map<number, number>();
+    const taggedCount = new Map<number, number>();
     for (const c of classified) {
       const key = groupMode === 'slot' ? tradeBarSlot(c) : tradeBarTime(c.block_time, intervalSec);
       if (key == null) continue;
       const k = key as number;
       total.set(k, (total.get(k) ?? 0) + 1);
-      if (c.isVol) volCount.set(k, (volCount.get(k) ?? 0) + 1);
+      if (c.isTagged) taggedCount.set(k, (taggedCount.get(k) ?? 0) + 1);
     }
     for (const [k, t] of total) {
-      if ((volCount.get(k) ?? 0) === t) set.add(k);
+      if ((taggedCount.get(k) ?? 0) === t) set.add(k);
     }
     return set;
   }, [highlightVolumeBars, sortedTrades, classifyOpts, groupMode, intervalSec]);
@@ -669,7 +669,7 @@ export function FlowPreviewChart({
     mainSeries.attachPrimitive(asRangePrimitive(rangePrim));
     rangeSelectPrimRef.current = rangePrim;
 
-    const volSeries = chart.addSeries(LineSeries, {
+    const taggedSeries = chart.addSeries(LineSeries, {
       color: VOL_LINE_COLOR,
       lineWidth: 2,
       priceScaleId: 'left',
@@ -677,17 +677,17 @@ export function FlowPreviewChart({
       lastValueVisible: true,
       priceLineVisible: false,
     });
-    volSeriesRef.current = volSeries;
+    taggedSeriesRef.current = taggedSeries;
 
-    const nonVolSeries = chart.addSeries(LineSeries, {
+    const untaggedSeries = chart.addSeries(LineSeries, {
       color: NON_VOL_COLOR,
       lineWidth: 2,
       priceScaleId: 'left',
-      title: 'Non-vol',
+      title: 'Non-tagged',
       lastValueVisible: true,
       priceLineVisible: false,
     });
-    nonVolSeriesRef.current = nonVolSeries;
+    untaggedSeriesRef.current = untaggedSeries;
 
     const handleCrosshairMove = (param: MouseEventParams) => {
       const onRangeLabel =
@@ -728,8 +728,8 @@ export function FlowPreviewChart({
         inflow: bar.inflow,
         outflow: bar.outflow,
         liquiditySol: bar.liquiditySol,
-        flowVol: flow.vol,
-        flowNonVol: flow.nonVol,
+        flowTagged: flow.tagged,
+        flowUntagged: flow.untagged,
       };
       setCrosshair(info);
       setFlowCrosshair(flow);
@@ -812,8 +812,8 @@ export function FlowPreviewChart({
       chart.remove();
       chartRef.current = null;
       mainSeriesRef.current = null;
-      volSeriesRef.current = null;
-      nonVolSeriesRef.current = null;
+      taggedSeriesRef.current = null;
+      untaggedSeriesRef.current = null;
       athLineRef.current = null;
       migrationLineRef.current = null;
       markersPluginRef.current = null;
@@ -844,8 +844,8 @@ export function FlowPreviewChart({
       // background so the organic candles stand out. Only when there's such a
       // bar. Line mode can't per-point recolor, so it uses markers instead.
       const finalData =
-        highlightVolumeBars && pureVolumeBarTimes.size > 0
-          ? outlineVolumeCandles(data, pureVolumeBarTimes)
+        highlightVolumeBars && pureTaggedBarTimes.size > 0
+          ? outlineVolumeCandles(data, pureTaggedBarTimes)
           : data;
       (mainSeriesRef.current as ISeriesApi<'Candlestick'> | null)?.setData(finalData);
     } else {
@@ -853,7 +853,7 @@ export function FlowPreviewChart({
     }
     // Data-driven refit only — a hand-set price zoom survives it.
     scaleSyncRef.current?.rearm();
-  }, [bars, style, selectedBar, highlightVolumeBars, pureVolumeBarTimes]);
+  }, [bars, style, selectedBar, highlightVolumeBars, pureTaggedBarTimes]);
 
   // The token basis is a cumulative whole-token count that runs past
   // lightweight-charts' ±9.007e13 series-value ceiling, so it's charted divided
@@ -881,8 +881,8 @@ export function FlowPreviewChart({
         time: p.time,
         value: (p.value / tokenScale) * displayScale,
       }));
-    volSeriesRef.current?.applyOptions({ priceFormat });
-    nonVolSeriesRef.current?.applyOptions({ priceFormat });
+    taggedSeriesRef.current?.applyOptions({ priceFormat });
+    untaggedSeriesRef.current?.applyOptions({ priceFormat });
     // Only a basis/unit switch changes what the left axis means; `alignedLines`
     // churning is a data update and must not drop a hand-set Y zoom.
     const resetKey = `${basis}|${priceUnit}|${solUnitScale}`;
@@ -890,8 +890,8 @@ export function FlowPreviewChart({
       flowScaleResetKeyRef.current = resetKey;
       scaleSyncRef.current?.reset();
     }
-    volSeriesRef.current?.setData(toData(alignedLines.vol));
-    nonVolSeriesRef.current?.setData(toData(alignedLines.nonVol));
+    taggedSeriesRef.current?.setData(toData(alignedLines.tagged));
+    untaggedSeriesRef.current?.setData(toData(alignedLines.untagged));
   }, [alignedLines, basis, priceUnit, solUnitScale]);
 
   // Show/hide each flow-split overlay line and their shared left price scale.
@@ -899,8 +899,8 @@ export function FlowPreviewChart({
   // survive a style/group/interval change.
   useEffect(() => {
     applyFlowLineVisibility({
-      volSeries: volSeriesRef.current,
-      nonVolSeries: nonVolSeriesRef.current,
+      taggedSeries: taggedSeriesRef.current,
+      untaggedSeries: untaggedSeriesRef.current,
       chart: chartRef.current,
       visibility: flowLineVis,
     });
@@ -914,12 +914,12 @@ export function FlowPreviewChart({
     const markers: SeriesMarker<UTCTimestamp>[] = showTradeMarkers
       ? buildTradeMarkers(sortedTrades, groupMode, intervalSec)
       : [];
-    if (highlightVolumeBars && style === 'line' && pureVolumeBarTimes.size > 0) {
+    if (highlightVolumeBars && style === 'line' && pureTaggedBarTimes.size > 0) {
       // Mark the pure-volume points — every trade in them is volume. Line mode
       // can't per-point recolor, so a below-bar grey square IS the highlight;
       // candle mode instead repaints the whole bar grey (setData effect above).
       for (const bar of bars) {
-        if (!pureVolumeBarTimes.has(bar.time as number)) continue;
+        if (!pureTaggedBarTimes.has(bar.time as number)) continue;
         markers.push({
           time: bar.time,
           position: 'belowBar',
@@ -948,7 +948,7 @@ export function FlowPreviewChart({
     style,
     selectedBar,
     highlightVolumeBars,
-    pureVolumeBarTimes,
+    pureTaggedBarTimes,
   ]);
 
   // The token's dev/creator as a synthetic tracked wallet, so the existing
@@ -1161,8 +1161,8 @@ export function FlowPreviewChart({
   // scaled series above.
   const formatFlow = (v: number) =>
     basis === 'token' ? formatFlowTokenCount(v) : formatPrice(toValue(v));
-  const readVol = flowCrosshair?.vol ?? alignedLines.vol.at(-1)?.value ?? null;
-  const readNonVol = flowCrosshair?.nonVol ?? alignedLines.nonVol.at(-1)?.value ?? null;
+  const readTagged = flowCrosshair?.tagged ?? alignedLines.tagged.at(-1)?.value ?? null;
+  const readUntagged = flowCrosshair?.untagged ?? alignedLines.untagged.at(-1)?.value ?? null;
   const moreActive = showMore || showAthLine || showMigrationLine || rangeSelectMode;
 
   // Shared columns already include ix_labels (+ optional Vol badge). Flow
@@ -1172,12 +1172,12 @@ export function FlowPreviewChart({
   const baseTradeColumns = useMemo(() => tokenTradeColumns('SOL'), []);
   const tradeColumns = useMemo<ColumnDef<TradeRecord>[]>(() => {
     if (!onTogglePattern) return baseTradeColumns;
-    const volToggle: ColumnDef<TradeRecord> = {
+    const taggedToggle: ColumnDef<TradeRecord> = {
       key: 'vol_pattern',
       label: 'Vol',
       tooltip:
         'Flag this trade’s ix-structure as manufactured volume — adds it to the draft ' +
-        'volume_ix_patterns (applies to EVERY trade with this exact shape, not just this row).',
+        'ix_patterns (applies to EVERY trade with this exact shape, not just this row).',
       render: (t) => {
         const labels = t.instruction_labels;
         if (!labels || labels.length === 0) {
@@ -1192,7 +1192,7 @@ export function FlowPreviewChart({
       },
       searchValue: () => '',
     };
-    return [volToggle, ...baseTradeColumns];
+    return [taggedToggle, ...baseTradeColumns];
   }, [baseTradeColumns, patternKeys, onTogglePattern]);
   const selectionLabel = selectedBar
     ? selectedBar.groupMode === 'slot'
@@ -1389,11 +1389,11 @@ export function FlowPreviewChart({
           >
             <Checkbox
               boxSize="sm"
-              checked={seedCreatorAsVol}
+              checked={seedCreatorAsTagged}
               disabled={!creatorWallet}
-              onChange={(e) => setSeedCreatorAsVol(e.target.checked)}
+              onChange={(e) => setSeedCreatorAsTagged(e.target.checked)}
             />
-            Seed creator as vol
+            Seed creator as tagged
           </label>
         </div>
       )}
@@ -1413,11 +1413,11 @@ export function FlowPreviewChart({
         )}
         <span style={{ color: VOL_LINE_COLOR }}>
           <span className="font-semibold">VolMk</span>{' '}
-          {readVol != null ? formatFlow(readVol) : '—'}
+          {readTagged != null ? formatFlow(readTagged) : '—'}
         </span>
         <span style={{ color: NON_VOL_COLOR }}>
           <span className="font-semibold">NonVol</span>{' '}
-          {readNonVol != null ? formatFlow(readNonVol) : '—'}
+          {readUntagged != null ? formatFlow(readUntagged) : '—'}
         </span>
       </div>
 

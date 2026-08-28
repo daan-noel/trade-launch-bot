@@ -19,8 +19,8 @@ use crate::metrics::evaluator::{eval, first_satisfied_cond, Condition, Condition
 use crate::metrics::position::{is_trailing, position_value, trailing_armed, PositionCtx};
 use crate::metrics::track::TokenTrack;
 use crate::metrics::{
-    group_of, group_spec, is_fingerprint_scoped, metric_spec, MetricGroupId, MetricId, MetricKind,
-    MetricScope, Ts, Windows,
+    group_of, group_spec, is_fingerprint_scoped, is_two_window, metric_spec, MetricGroupId,
+    MetricId, MetricKind, MetricScope, Ts, Windows,
 };
 use crate::rule_params::ReEntry;
 
@@ -231,10 +231,10 @@ pub struct CompiledStage {
 /// fold instead of to a precompute.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ClockHorizons {
-    /// Widest trailing window read, across `m_flow_window`, `m_flow_split_window`
+    /// Widest trailing window read, across `m_flow_window`, `m_flow_ix_window`
     /// and `m_price_window`.
     pub max_window_secs: f64,
-    /// Largest `m_snapshot.time` threshold (+ its `=`-tolerance), from creation.
+    /// Largest `m_state.time` threshold (+ its `=`-tolerance), from creation.
     pub time_secs: f64,
     /// Largest `m_price_lifetime.stall` threshold (+ tolerance), from the last trade.
     pub stall_secs: f64,
@@ -334,7 +334,7 @@ pub struct CompiledRule {
     /// [`stage_fired`](Self::stage_fired) only when no global exit fired.
     pub scale_out: Vec<CompiledStage>,
     /// Distinct **flow** `window_size_sec` values this rule reads across both sides
-    /// (`m_flow_window` + `m_flow_split_window`) — drive `ensure_window` / `ensure_flow`.
+    /// (`m_flow_window` + `m_flow_ix_window`) — drive `ensure_window` / `ensure_flow`.
     pub flow_windows: SmallVec<[crate::metrics::WindowSpec; 2]>,
     /// Distinct **price** `window_size_sec` values (`m_price_window`) — drive
     /// `ensure_price_window`. Split from [`flow_windows`](Self::flow_windows) so a
@@ -735,23 +735,28 @@ fn build_reqs(
             // on every group that does not declare it, so this stays one line of
             // vocabulary instead of a per-group branch that a new window basis would
             // have to be remembered into.
-            let window: Windows = if is_dynamic {
-                Windows {
-                    primary: group.window_spec(&crate::metrics::WINDOW_AXIS),
-                    // The burst axis rides the SAME clock as the reference (that pair
-                    // IS the group's basis), so it takes the group's unit and lag and
-                    // differs only in size.
-                    secondary: group.window_spec(&crate::metrics::flow_burst::BURST_AXIS),
-                }
-            } else {
-                Windows::NONE
-            };
+            let primary =
+                is_dynamic.then(|| group.window_spec(&crate::metrics::WINDOW_AXIS)).flatten();
+            // The slice axis rides the SAME clock as the reference (that pair IS the
+            // two-window basis), so it takes the group's unit and lag and differs only
+            // in size. Attached PER METRIC below, never to the instance: it sits on
+            // `m_flow_window` beside the single-window metrics, and a `gross_flow`
+            // requirement carrying a span it never reads would be a different
+            // requirement IDENTITY for the same read — two rules gating on
+            // `gross_flow(30s)` would stop sharing one buffer because one of them also
+            // happens to gate on `trade_share`.
+            let slice = is_dynamic
+                .then(|| group.window_spec(&crate::metrics::flow_slice::SLICE_AXIS))
+                .flatten();
             // Attached below to this instance's trailing metrics only.
             let arm_above = group.strict_param("arm_above_pct");
             for (metric_id, conds) in &group.metrics {
                 out.push(MetricReq {
                     metric: *metric_id,
-                    window,
+                    window: Windows {
+                        primary,
+                        secondary: is_two_window(*metric_id).then_some(slice).flatten(),
+                    },
                     fingerprint: is_fingerprint_scoped(*metric_id).then_some(fingerprint_id),
                     tolerance: metric_spec(*metric_id).eq_tolerance,
                     conds: conds.clone(),
@@ -992,13 +997,13 @@ mod tests {
     #[test]
     fn a_two_window_group_carries_and_registers_both_axes() {
         let c = CompiledRule::compile(&rule(json!({
-            "entry": { "m_flow_burst": {
-                "window_size_sec": 60, "burst_size_sec": 3,
+            "entry": { "m_flow_window": {
+                "window_size_sec": 60, "slice_size_sec": 3,
                 "trade_share": [{"operator": ">=", "value": 7.69}]
             } }
         })));
         assert_eq!(c.entry_reqs.len(), 1);
-        assert_eq!(c.entry_reqs[0].metric, MetricId::BurstTradeShare);
+        assert_eq!(c.entry_reqs[0].metric, MetricId::SliceTradeShare);
         assert_eq!(c.entry_reqs[0].window, Windows::two(WindowSpec::secs(60.0), WindowSpec::secs(3.0)));
         // One buffer per axis, both on the flow side (neither is a price window).
         assert_eq!(c.flow_windows.len(), 2);
@@ -1022,8 +1027,8 @@ mod tests {
         let at = |s: f64| t0 + Duration::milliseconds((s * 1000.0) as i64);
 
         let c = CompiledRule::compile(&rule(json!({
-            "entry": { "m_flow_burst": {
-                "window_size_sec": 60, "burst_size_sec": 3,
+            "entry": { "m_flow_window": {
+                "window_size_sec": 60, "slice_size_sec": 3,
                 "trade_share": [{"operator": ">=", "value": 40}]
             } }
         })));
@@ -1056,7 +1061,7 @@ mod tests {
     #[test]
     fn time_upper_bound_becomes_mono_kill() {
         let c = CompiledRule::compile(&rule(json!({
-            "entry": { "m_snapshot": { "time": [{"operator": "<", "value": 30}] } }
+            "entry": { "m_state": { "time": [{"operator": "<", "value": 30}] } }
         })));
         assert_eq!(c.mono_kills.len(), 1);
         let k = &c.mono_kills[0];
@@ -1073,7 +1078,7 @@ mod tests {
     fn or_with_open_arm_never_mono_kills() {
         // `time < 30 | time >= 70` — after 30 the first arm dies but the second lives.
         let c = CompiledRule::compile(&rule(json!({
-            "entry": { "m_snapshot": { "time": [
+            "entry": { "m_state": { "time": [
                 [{"operator": "<", "value": 30}],
                 [{"operator": ">=", "value": 70}]
             ] } }
@@ -1090,7 +1095,7 @@ mod tests {
     #[test]
     fn or_of_two_upper_bounds_kills_when_both_crossed() {
         let c = CompiledRule::compile(&rule(json!({
-            "entry": { "m_snapshot": { "time": [
+            "entry": { "m_state": { "time": [
                 [{"operator": "<", "value": 30}],
                 [{"operator": "<", "value": 50}]
             ] } }
@@ -1103,7 +1108,7 @@ mod tests {
     #[test]
     fn lower_bound_on_monotonic_metric_is_not_a_mono_bound() {
         let c = CompiledRule::compile(&rule(json!({
-            "entry": { "m_snapshot": { "time": [{"operator": ">", "value": 10}] } }
+            "entry": { "m_state": { "time": [{"operator": ">", "value": 10}] } }
         })));
         assert!(c.mono_kills.is_empty());
     }
@@ -1111,7 +1116,7 @@ mod tests {
     #[test]
     fn non_monotonic_metric_never_produces_a_mono_bound() {
         let c = CompiledRule::compile(&rule(json!({
-            "entry": { "m_snapshot": { "liquidity": [{"operator": "<", "value": 5}] } }
+            "entry": { "m_state": { "liquidity": [{"operator": "<", "value": 5}] } }
         })));
         assert!(c.mono_kills.is_empty());
     }
@@ -1122,7 +1127,7 @@ mod tests {
         use chrono::{Duration, TimeZone, Utc};
 
         let conds = json!({
-            "m_snapshot": {
+            "m_state": {
                 "time":      [{"operator": ">", "value": 1000}],
                 "liquidity": [{"operator": ">", "value": 999}]
             }
@@ -1251,8 +1256,8 @@ mod tests {
         // Overlapping bands: entry liquidity > 50, exit liquidity > 40 — both true
         // at reserve 60. Buying would immediately qualify for a metrics exit.
         let compiled = CompiledRule::compile(&rule(json!({
-            "entry": { "m_snapshot": { "liquidity": [{"operator": ">", "value": 50}] } },
-            "exit":  { "m_snapshot": { "liquidity": [{"operator": ">", "value": 40}] } },
+            "entry": { "m_state": { "liquidity": [{"operator": ">", "value": 50}] } },
+            "exit":  { "m_state": { "liquidity": [{"operator": ">", "value": 40}] } },
             "take_profit": 100
         })));
 
@@ -1293,8 +1298,8 @@ mod tests {
 
         // Entry liquidity > 50; exit liquidity < 20 — disjoint.
         let compiled = CompiledRule::compile(&rule(json!({
-            "entry": { "m_snapshot": { "liquidity": [{"operator": ">", "value": 50}] } },
-            "exit":  { "m_snapshot": { "liquidity": [{"operator": "<", "value": 20}] } },
+            "entry": { "m_state": { "liquidity": [{"operator": ">", "value": 50}] } },
+            "exit":  { "m_state": { "liquidity": [{"operator": "<", "value": 20}] } },
             "take_profit": 100
         })));
 
@@ -1318,7 +1323,7 @@ mod tests {
 
         let c = CompiledRule::compile(&rule(json!({
             "entry": {
-                "m_snapshot": {
+                "m_state": {
                     "time": [{"operator": ">", "value": 10}, {"operator": "<", "value": 50}],
                     "liquidity": [{"operator": ">", "value": 10}, {"operator": "<", "value": 45}]
                 },
@@ -1368,7 +1373,7 @@ mod tests {
 
         let c = CompiledRule::compile(&rule(json!({
             "entry": {
-                "m_snapshot": {
+                "m_state": {
                     "time": [{"operator": "<", "value": 50}],
                     "liquidity": [{"operator": ">", "value": 10}]
                 }
@@ -1391,7 +1396,7 @@ mod tests {
     #[test]
     fn binding_bound_is_the_last_to_cross() {
         let c = CompiledRule::compile(&rule(json!({
-            "entry": { "m_snapshot": { "time": [
+            "entry": { "m_state": { "time": [
                 [{"operator": "<", "value": 20}],
                 [{"operator": "<", "value": 40}]
             ] } }
@@ -1404,7 +1409,7 @@ mod tests {
     #[test]
     fn eq_on_time_bounds_at_upper_edge() {
         let c = CompiledRule::compile(&rule(json!({
-            "entry": { "m_snapshot": { "time": [{"operator": "=", "value": 20}] } }
+            "entry": { "m_state": { "time": [{"operator": "=", "value": 20}] } }
         })));
         let b = c.mono_kills[0].arms[0].unwrap();
         assert_eq!(b.threshold, 20.25);

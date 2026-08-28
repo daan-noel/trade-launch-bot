@@ -14,7 +14,7 @@
 
 use std::collections::BTreeSet;
 
-use hunter_engine::metrics::flow_split::{marker_mask, FlowPatterns, ROUTER_MARKERS};
+use hunter_engine::metrics::flow_ix::{marker_mask, FlowPatterns, ROUTER_MARKERS};
 use hunter_engine::metrics::{
     MetricId, Side, TradeLite, WindowSpec, Windows,
 };
@@ -119,10 +119,10 @@ async fn the_engine_fires_where_the_sql_derivation_fires() {
                 reserve_sol: vsol.map(|v| (v - 30.0).max(0.0)).unwrap_or(f64::NAN),
                 priced_reserve_sol: vsol.unwrap_or(f64::NAN),
                 at,
-                ix_hash: hunter_engine::metrics::flow_split::ix_hash_from_labels_value(&labels),
+                ix_hash: hunter_engine::metrics::flow_ix::ix_hash_from_labels_value(&labels),
                 wallet_hash: 0,
                 slot: slot as u64,
-                marker_bits: hunter_engine::metrics::flow_split::marker_bits_from_labels_value(
+                marker_bits: hunter_engine::metrics::flow_ix::marker_bits_from_labels_value(
                     &labels,
                 ),
             });
@@ -130,8 +130,8 @@ async fn the_engine_fires_where_the_sql_derivation_fires() {
             // Evaluate the entry gate exactly where the fold would: after each trade.
             let burst_w: Windows = Windows::one(BURST);
             let quiet_w: Windows = Windows::one(QUIET);
-            let vol = track.value(MetricId::WinVolBuy, burst_w, Some(fp), at);
-            let nonvol = track.value(MetricId::WinNonvolBuy, burst_w, Some(fp), at);
+            let vol = track.value(MetricId::WinTaggedBuy, burst_w, Some(fp), at);
+            let nonvol = track.value(MetricId::WinUntaggedBuy, burst_w, Some(fp), at);
             let buys = track.value(MetricId::BuyCount, burst_w, None, at);
             let quiet = track.value(MetricId::Buy, quiet_w, None, at);
             let fires = vol <= NO_BOT_FLOW_SOL

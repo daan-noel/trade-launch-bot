@@ -68,7 +68,7 @@ const historyChartCardExtra = (r: RulePositionRecord) => (
 );
 
 /** Each card's vol/non-vol overlay classifies against ITS OWN rule's
- *  `volume_ix_patterns` — a History page spans rules, so one grid-wide set would
+ *  `ix_patterns` — a History page spans rules, so one grid-wide set would
  *  misclassify every card that isn't from that rule. Resolved through the same
  *  hook the row's inspect modal uses, so a card and its modal always agree.
  *  Called once per card as a hook (see `FlowPatternSourceHook`). Carries the

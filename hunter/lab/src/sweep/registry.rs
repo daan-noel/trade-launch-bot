@@ -620,7 +620,7 @@ pub async fn run_grouped(
     // knobs: two runs priced differently are not comparable (see `Pricing`).
     pricing: Pricing,
     // Corpus-wide volume-ix patterns for flow-metric axes (`None` = non-flow).
-    volume_ix_patterns: Option<Vec<Vec<String>>>,
+    ix_patterns: Option<Vec<Vec<String>>>,
     // Pass-2 candidate scale_out ladder grid + top_k (`None` = no Pass 2). Each
     // top-K combo per group is independently re-scored against every ladder here
     // plus its own baseline — see `GenericSweepStrategy::post_group_rescore`.
@@ -633,7 +633,7 @@ pub async fn run_grouped(
         "generic" => {
             sweep_generic(
                 axes_json, method, refine, corpus, group_plan, min_tokens, floor, max_combos,
-                pricing, volume_ix_patterns, scale_out_pass2, coarse_observer, observer, sink,
+                pricing, ix_patterns, scale_out_pass2, coarse_observer, observer, sink,
             )
             .await
         }
@@ -678,7 +678,7 @@ async fn sweep_generic(
     floor: CoverageFloor,
     max_combos: Option<usize>,
     pricing: Pricing,
-    volume_ix_patterns: Option<Vec<Vec<String>>>,
+    ix_patterns: Option<Vec<Vec<String>>>,
     scale_out_pass2: Option<(Vec<Vec<hunter_engine::rule_params::ExitStage>>, usize)>,
     coarse_observer: Arc<dyn SweepObserver + Send>,
     observer: Arc<dyn SweepObserver + Send>,
@@ -692,14 +692,14 @@ async fn sweep_generic(
         .context("invalid generic axes request")?;
     let model = AxesModel::resolve(&req).map_err(|e| anyhow!("axes: {e}"))?;
 
-    if model.references_flow() && volume_ix_patterns.is_none() {
+    if model.references_flow() && ix_patterns.is_none() {
         bail!(
-            "axes reference m_flow_split/m_flow_split_window but volume_ix_patterns is missing — \
-             supply volume_ix_patterns (string[][]) or drop the flow axes"
+            "axes reference m_flow_ix/m_flow_ix_window but ix_patterns is missing — \
+             supply ix_patterns (string[][]) or drop the flow axes"
         );
     }
-    let flow_patterns = volume_ix_patterns.as_ref().map(|p| {
-        hunter_engine::metrics::flow_split::FlowPatterns::from_label_sequences(p)
+    let flow_patterns = ix_patterns.as_ref().map(|p| {
+        hunter_engine::metrics::flow_ix::FlowPatterns::from_label_sequences(p)
     });
 
     // Grid guard: reject an explosive full grid before doing any sweep work. A full
@@ -862,7 +862,7 @@ pub fn simulate_one_combo(
     params_json: &Value,
     pricing: Pricing,
     as_of: chrono::DateTime<chrono::Utc>,
-    volume_ix_patterns: Option<&[Vec<String>]>,
+    ix_patterns: Option<&[Vec<String>]>,
 ) -> Result<Vec<ComboTokenResult>> {
     match strategy_id {
         "generic" => simulate_generic_one_combo(
@@ -870,7 +870,7 @@ pub fn simulate_one_combo(
             params_json,
             pricing,
             as_of,
-            volume_ix_patterns,
+            ix_patterns,
         ),
         other => bail!(
             "strategy '{other}' has no single-combo simulation (supported: {:?})",
@@ -936,7 +936,7 @@ fn simulate_generic_one_combo(
     params_json: &Value,
     pricing: Pricing,
     as_of: chrono::DateTime<chrono::Utc>,
-    volume_ix_patterns: Option<&[Vec<String>]>,
+    ix_patterns: Option<&[Vec<String>]>,
 ) -> Result<Vec<ComboTokenResult>> {
     use hunter_engine::arm::CompiledRule;
     use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
@@ -965,8 +965,8 @@ fn simulate_generic_one_combo(
     let compiled = CompiledRule::compile(&loaded);
     let columns = columns_for(&compiled);
     let grid = sparse_grid_for(&compiled);
-    let flow_patterns = volume_ix_patterns.map(|p| {
-        hunter_engine::metrics::flow_split::FlowPatterns::from_label_sequences(p)
+    let flow_patterns = ix_patterns.map(|p| {
+        hunter_engine::metrics::flow_ix::FlowPatterns::from_label_sequences(p)
     });
     // The frozen-tail resolve (D1) anchored on THIS drill-in's token set, so a row's
     // exit matches the sweep aggregate the user clicked (parity plan Task 1 / B7).

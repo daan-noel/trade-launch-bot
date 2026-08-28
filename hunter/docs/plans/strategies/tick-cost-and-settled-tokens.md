@@ -42,7 +42,7 @@ set at reload) bounds each:
 | Moves on a tick | Anchor | Horizon field |
 | --- | --- | --- |
 | trailing windows decay | newest trade | `max_window_secs` |
-| `m_snapshot.time` | token creation | `time_secs` |
+| `m_state.time` | token creation | `time_secs` |
 | `m_price_lifetime.stall` | newest trade (upper bound on the last high) | `stall_secs` |
 | `m_position.held` | the entry fill | `held_secs` |
 
@@ -120,14 +120,14 @@ at pre-optimization cost.
 
 ## 2. Window reads claimed O(1) and delivered O(n)
 
-`flow_window::WindowState` and `flow_split::FlowSplitWindowState` both maintained
+`flow_window::WindowState` and `flow_ix::FlowSplitWindowState` both maintained
 running sums on push/evict — and then **threw them away**, rescanning the whole deque
 on every read. Worse, the filter called the shared `in_window`, which re-derived the
 window width (a float multiply + a round) **per element**.
 
-This is paid per metric, per rule, per event. `m_flow_split` was the worst: `value()`
+This is paid per metric, per rule, per event. `m_flow_ix` was the worst: `value()`
 went through `totals_at()`, which rebuilt a whole `FlowTotals` from scratch, so a rule
-with three `m_flow_split_window` conditions did three full scans on every tick of
+with three `m_flow_ix_window` conditions did three full scans on every tick of
 every tracked token. That is why "a rule with flow-split metrics" felt distinctly
 slower than one without.
 
@@ -162,7 +162,7 @@ millions of rows — purely to feed `ix_hash`.
 
 Now:
 
-* `flow_split::ix_hash_from_labels_json` walks the stored JSON array in place. It
+* `flow_ix::ix_hash_from_labels_json` walks the stored JSON array in place. It
   handles only the shape the writers emit (a flat array of unescaped strings) and
   **falls back to `serde_json`** on any escape or anything unexpected, so its result
   is by construction whatever `ix_hash_opt(&parsed)` would have returned — including

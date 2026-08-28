@@ -32,7 +32,7 @@ use crate::arm::{CompiledRule, MetricReq, ReqOrigin};
 use crate::event::{Mint, RuleId};
 use crate::fingerprint::FingerprintId;
 use crate::metrics::evaluator::{eval, first_satisfied_cond, Condition, ConditionExpr};
-use crate::metrics::flow_split::FlowPatterns;
+use crate::metrics::flow_ix::FlowPatterns;
 use crate::metrics::grid::{fold_sparse, SparseGrid};
 use crate::metrics::position::{position_value, trailing_armed, PositionCtx};
 use crate::metrics::series::{MetricSeries, SeriesColumn};
@@ -219,7 +219,7 @@ pub fn read_state(
 ///
 /// The creator is not optional garnish: it is volume-side unconditionally and seeds
 /// the contagion set, so a replay folded without it books the dev buy and dev dump —
-/// usually a token's two largest single flows — as organic, and every `m_flow_split`
+/// usually a token's two largest single flows — as organic, and every `m_flow_ix`
 /// condition reads against a different classification than the one that decided.
 pub struct ReplayFlow<'a> {
     pub fingerprint: FingerprintId,
@@ -229,7 +229,7 @@ pub struct ReplayFlow<'a> {
 
 /// Everything a replay needs besides the rule, the trades, and the instant.
 pub struct ReplayCtx<'a> {
-    /// Token creation instant — what `m_snapshot.time` and the lifetime extrema
+    /// Token creation instant — what `m_state.time` and the lifetime extrema
     /// anchor on. Pass the first trade's `block_time`, which is what the replay
     /// driver and the lab's metric-series both use (the dev-buy slot).
     pub created_at: Ts,
@@ -238,9 +238,9 @@ pub struct ReplayCtx<'a> {
     pub entry: Option<(Ts, f64)>,
     /// The position's scale-out stage at the read instant.
     pub stage: Option<u8>,
-    /// Absent ⇒ `m_flow_split*` metrics read `NaN` (no pattern context).
+    /// Absent ⇒ `m_flow_ix*` metrics read `NaN` (no pattern context).
     pub flow: Option<ReplayFlow<'a>>,
-    /// Creation-slot buy SOL, for `m_snapshot.first_slot_buy`. `None` ⇒ the metric
+    /// Creation-slot buy SOL, for `m_state.first_slot_buy`. `None` ⇒ the metric
     /// reads `NaN`, so a readout built without it shows a `first_slot_buy` condition
     /// as unmet even where the live engine (which seeds it at `FirstSlotSettled`) has
     /// it satisfied. Pass `fp.first_slot_buy_lamports` wherever the fingerprint is in hand.
@@ -383,7 +383,7 @@ fn req_column(r: &MetricReq) -> Option<SeriesColumn> {
     }
     // The WHOLE carrier goes through on the windowed arm: a two-window req that lost
     // its second axis here would read NaN at every row and draw as a condition that
-    // simply never holds — a blank timeline, not an error. `m_flow_split*` is
+    // simply never holds — a blank timeline, not an error. `m_flow_ix*` is
     // single-window by construction, so the flow arm still takes `primary`.
     Some(match (r.fingerprint, r.window.is_windowed()) {
         (Some(fp), _) => SeriesColumn::Flow(r.metric, r.window.primary, fp),
@@ -745,7 +745,7 @@ mod tests {
     #[test]
     fn each_side_reads_through_its_own_combinator() {
         let c = rule(serde_json::json!({
-            "entry": { "m_snapshot": { "liquidity": [{ "operator": ">", "value": 10 }] } },
+            "entry": { "m_state": { "liquidity": [{ "operator": ">", "value": 10 }] } },
             "exit":  { "m_price_lifetime": { "stall": [{ "operator": ">", "value": 60 }] } }
         }));
         let track = track_at(1.0, 5);
@@ -883,7 +883,7 @@ mod tests {
         state.rules.insert(
             rule_id,
             rule(serde_json::json!({
-                "entry": { "m_snapshot": { "liquidity": [{ "operator": ">", "value": 10 }] } }
+                "entry": { "m_state": { "liquidity": [{ "operator": ">", "value": 10 }] } }
             })),
         );
 
@@ -1041,7 +1041,7 @@ mod tests {
     #[test]
     fn a_series_row_equals_the_point_replay_at_that_instant() {
         let c = rule(serde_json::json!({
-            "entry": { "m_snapshot": { "liquidity": [{ "operator": ">", "value": 10 }] } },
+            "entry": { "m_state": { "liquidity": [{ "operator": ">", "value": 10 }] } },
             "exit": {
                 "m_position": { "retrace": [{ "operator": ">=", "value": 20 }] },
                 "m_price_lifetime": { "stall": [{ "operator": ">", "value": 15 }] },
@@ -1202,7 +1202,7 @@ mod tests {
     #[test]
     fn an_armed_series_reads_entry_conditions_and_blanks_position_ones() {
         let c = rule(serde_json::json!({
-            "entry": { "m_snapshot": { "liquidity": [{ "operator": ">=", "value": 20 }] } },
+            "entry": { "m_state": { "liquidity": [{ "operator": ">=", "value": 20 }] } },
             "exit": { "m_position": { "pnl": [{ "operator": ">=", "value": 40 }] } }
         }));
         let prints = [(1.0, 0_i64), (2.0, 10), (3.0, 20)];

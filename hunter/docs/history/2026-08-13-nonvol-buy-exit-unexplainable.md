@@ -1,15 +1,15 @@
-# A correct `nonvol_buy` exit that nothing on screen could explain (2026-08-13)
+# A correct `untagged_buy` exit that nothing on screen could explain (2026-08-13)
 
 **Symptom.** Four positions across `8NsSEHLwfyiJDgt5UbXiNApvNwbbVmaEaUHbmkkUpump` and
 `HX9PCYbAUKR6AYaRT6AWRrHEhEqu84c5WoD8uBxBpump` (rule `-- promoted g3 c145802`,
-fingerprint `d5b5c6f3`) closed 0.1–2.2 s after entry on `nonvol_buy >= 0.9`. Summing the
+fingerprint `d5b5c6f3`) closed 0.1–2.2 s after entry on `untagged_buy >= 0.9`. Summing the
 non-volume trades off the position modal's chart gave ~**0.39 SOL**, and the modal's
 chips read **1.6449775** on every empty candle — the same number, candle after candle.
 Every value the engine produced was correct.
 
 **Cause — one classification gap, three surfaces that hid it.**
 
-The fired req is `m_flow_split_window.nonvol_buy >= 0.9` at `window_size_sec = 2`. At the
+The fired req is `m_flow_ix_window.untagged_buy >= 0.9` at `window_size_sec = 2`. At the
 real position's exit (`11:59:55.675854`) the window held two organic buys — 0.7491 SOL at
 `11:59:53.723` and 0.8959 SOL at `11:59:55.589`, summing to **1.644977**, matching the
 engine's readout to seven digits. Both carry
@@ -25,8 +25,8 @@ Nothing on screen could show that:
    trades: saved set → NonVol 1.8861, the UI → 0.3880. `useEffectiveFlowPatternKeys`
    layered an app-wide draft over the saved keys with nothing marking it, so a hand-sum
    could not reach the engine's number.
-2. **The exit label named a metric that did not fire.** `nonvol_buy` is the registry name
-   of BOTH `m_flow_split.nonvol_buy` (lifetime, monotone) and its windowed twin;
+2. **The exit label named a metric that did not fire.** `untagged_buy` is the registry name
+   of BOTH `m_flow_ix.untagged_buy` (lifetime, monotone) and its windowed twin;
    `format_metric_exit_label` emitted the bare name, and `parse_metric_exit_label`
    resolved it back to the *lifetime* id.
 3. **The crosshair could not resolve an empty slot bar**, so the strip's `?? data`
@@ -34,7 +34,7 @@ Nothing on screen could show that:
    And the only line drawn, `NonVol`, is a cumulative NET since creation, not a
    trailing-window buy sum.
 
-**Fix.** Exit labels carry the window (`nonvol_buy(2s) >= 0.9`) and the qualifier selects
+**Fix.** Exit labels carry the window (`untagged_buy(2s) >= 0.9`) and the qualifier selects
 the `MetricId` on parse, legacy forms still reading; the sweep carries
 `exit_metric_window` so drill-in prints the same label. `TokenTrack::ensure_flow` adopts
 an edited pattern set on already-tracked tokens instead of keeping the first-seen one.

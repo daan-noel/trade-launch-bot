@@ -16,14 +16,14 @@ import { CHART_COLORS } from 'components/token-price-chart/constants';
 
 export interface TokenTradeColumnsOpts {
   /**
-   * `volume_ix_patterns` keys (`JSON.stringify(labels)`) to test each row's
+   * `ix_patterns` keys (`JSON.stringify(labels)`) to test each row's
    * structure against. When non-empty, prepends the Vol/Non-vol badge column.
    * Omit or empty → column hidden, unless {@link onTogglePattern} is set.
    */
   flowPatternKeys?: ReadonlySet<string> | null;
   /**
    * Makes the badge an edit control: adds/removes that row's ordered
-   * `instruction_labels` in the target fingerprint's saved `volume_ix_patterns`.
+   * `instruction_labels` in the target fingerprint's saved `ix_patterns`.
    * Set ⇒ the column always renders, because authoring starts from an EMPTY set
    * and the rows you click into it are the whole point.
    *
@@ -122,8 +122,8 @@ function LensButton({
   );
 }
 
-/** True when ordered `instruction_labels` exact-match a volume_ix_patterns row. */
-export function isVolumeIxPattern(
+/** True when ordered `instruction_labels` exact-match a ix_patterns row. */
+export function isIxPattern(
   labels: readonly string[] | null | undefined,
   patternKeys: ReadonlySet<string>,
 ): boolean {
@@ -154,7 +154,7 @@ export function tokenTradeColumns(
   const keys = opts?.flowPatternKeys ?? EMPTY_PATTERN_KEYS;
   const onToggle = opts?.onTogglePattern ?? null;
   const reasons = opts?.flowReasons ?? null;
-  const showVol = keys.size > 0 || onToggle != null;
+  const showTagged = keys.size > 0 || onToggle != null;
   const onLensWallet = opts?.onLensWallet ?? null;
   const lensWallet = opts?.lensWallet ?? null;
   const onLensStructure = opts?.onLensStructure ?? null;
@@ -163,7 +163,7 @@ export function tokenTradeColumns(
 
   const leading: ColumnDef<TradeRecord>[] = [];
 
-  if (showVol) {
+  if (showTagged) {
     leading.push({
       key: 'is_volume_ix_pattern',
       label: 'Vol',
@@ -174,22 +174,22 @@ export function tokenTradeColumns(
           `engine’s next rules reload on. “via creator/wallet” = the lines already count this ` +
           `row through contagion, whatever its own structure is.`
         : 'Structural volume ix-pattern match — this trade’s ordered instruction_labels ' +
-          'exact-match a volume_ix_patterns row (no creator/wallet contagion).',
+          'exact-match a ix_patterns row (no creator/wallet contagion).',
       render: (t) => {
         const labels = t.instruction_labels;
         if (!labels || labels.length === 0) {
           return <span className="text-text-dim/40">—</span>;
         }
-        const isVol = isVolumeIxPattern(labels, keys);
+        const isTagged = isIxPattern(labels, keys);
         const reason = reasons?.get(t.id) ?? null;
         const note = reason && reason !== 'structural' ? CONTAGION_NOTE[reason] : null;
         const badge = (
           <Badge
-            variant={isVol ? 'danger' : 'neutral'}
+            variant={isTagged ? 'danger' : 'neutral'}
             size="sm"
             className={onToggle ? 'cursor-pointer' : undefined}
           >
-            {isVol ? 'Vol' : 'Non-vol'}
+            {isTagged ? 'Vol' : 'Non-vol'}
           </Badge>
         );
         const cell = (
@@ -197,9 +197,9 @@ export function tokenTradeColumns(
             {onToggle ? (
               <button
                 type="button"
-                aria-pressed={isVol}
+                aria-pressed={isTagged}
                 title={
-                  isVol
+                  isTagged
                     ? `Saved as a volume_ix_pattern on ${targetLabel} — click to remove it`
                     : `Click to save this structure as a volume_ix_pattern on ${targetLabel}`
                 }
@@ -228,13 +228,13 @@ export function tokenTradeColumns(
       // Structure outranks contagion: sorting this column is for finding the rows
       // whose pattern you can actually toggle.
       sortValue: (t) =>
-        isVolumeIxPattern(t.instruction_labels, keys)
+        isIxPattern(t.instruction_labels, keys)
           ? 2
           : reasons?.get(t.id)
             ? 1
             : 0,
       searchValue: (t) => {
-        const structural = isVolumeIxPattern(t.instruction_labels, keys);
+        const structural = isIxPattern(t.instruction_labels, keys);
         const reason = reasons?.get(t.id) ?? null;
         const note = reason && reason !== 'structural' ? CONTAGION_NOTE[reason] : '';
         return `${structural ? 'vol' : 'non-vol'}${note ? ` ${note}` : ''}`;

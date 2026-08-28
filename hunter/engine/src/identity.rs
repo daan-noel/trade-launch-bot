@@ -10,7 +10,7 @@
 //! off-chain round trip that has no business on the decision path. Name + symbol
 //! is what the create event already hands us, for free.
 //!
-//! **ONE hasher**, like [`crate::metrics::flow_split::wallet_hash`]: the live
+//! **ONE hasher**, like [`crate::metrics::flow_ix::wallet_hash`]: the live
 //! producer, the lake exporter, and the replay driver all call
 //! [`token_identity_hash`], so a lake row and a live event can never disagree
 //! about what a token's identity is. A private re-implementation on either side

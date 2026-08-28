@@ -1,5 +1,5 @@
 //! Flow-discovery job — score trade ix-structures per fingerprint group so the
-//! user can toggle `volume_ix_patterns` on a fingerprint.
+//! user can toggle `ix_patterns` on a fingerprint.
 //!
 //! See `hunter/docs/plans/strategies/metrics-reference.md` "Discovery scoring".
 
@@ -66,7 +66,7 @@ fn default_token_cap() -> usize {
 #[derive(serde::Deserialize)]
 pub struct BindFlowDiscoveryBody {
     pub group_key: serde_json::Value,
-    pub volume_ix_patterns: Vec<Vec<String>>,
+    pub ix_patterns: Vec<Vec<String>>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -177,10 +177,10 @@ pub async fn bind_flow_discovery(
     let b = body.into_inner();
     let name = b.name.filter(|s| !s.trim().is_empty()).unwrap_or_default();
     let metric_config = serde_json::json!({
-        "m_flow_split": { "volume_ix_patterns": b.volume_ix_patterns }
+        "m_flow_ix": { "ix_patterns": b.ix_patterns }
     });
     if let Err(e) =
-        hunter_engine::metrics::flow_split::FlowPatterns::validate_metric_config(&metric_config)
+        hunter_engine::metrics::flow_ix::FlowPatterns::validate_metric_config(&metric_config)
     {
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
     }

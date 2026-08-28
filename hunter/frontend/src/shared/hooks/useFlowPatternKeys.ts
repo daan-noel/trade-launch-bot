@@ -20,7 +20,7 @@ import { useGetFingerprintsQuery, useGetStrategyRulesQuery } from 'store/sharedE
 export interface FlowPatternSource {
   /** Fingerprint the keys were read from — the row an edit writes to. */
   fingerprintId: string | null;
-  /** Its `volume_ix_patterns` keys; `null` when the row has none configured. */
+  /** Its `ix_patterns` keys; `null` when the row has none configured. */
   keys: ReadonlySet<string> | null;
 }
 

@@ -12,8 +12,8 @@ const CROSSHAIR: ChartCrosshairInfo = {
   inflow: 6,
   outflow: 4,
   liquiditySol: 20,
-  flowVol: null,
-  flowNonVol: null,
+  flowTagged: null,
+  flowUntagged: null,
 };
 
 /** Count the top-level `<div>` rows the inline layout actually renders. */

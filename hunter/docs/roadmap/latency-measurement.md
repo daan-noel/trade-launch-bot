@@ -119,7 +119,7 @@ Strategy wait is **bimodal**, never in between:
 | >30 s | 5 |
 
 Half of entries fire the instant the rule arms; the other half wait 5–48 s for a
-metric gate (`m_snapshot.time > 10` and similar). That split is a strategy choice.
+metric gate (`m_state.time > 10` and similar). That split is a strategy choice.
 
 Historical cross-check (Postgres, 395 real positions): decision → own fill observed
 p50 97 ms, against the instrumented 47–92 ms (`decide_to_ack` + `ack_to_fill`). The

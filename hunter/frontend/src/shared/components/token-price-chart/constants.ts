@@ -247,8 +247,8 @@ export const DEFAULT_CHART_PREFS = {
   // Split per curve: the two share the left price scale, so hiding one rescales
   // the axis to the other (see `flowLineVisibility`). A pre-split blob stored one
   // `showFlowLines` boolean; `loadPrefs` seeds BOTH of these from it.
-  showFlowVol: true,
-  showFlowNonVol: true,
+  showFlowTagged: true,
+  showFlowUntagged: true,
 };
 
 /** Responsive chart height. The chart width fills its container (fluid), so on a

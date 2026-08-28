@@ -11,7 +11,7 @@ import type { TradeRecord } from 'types';
  * Classifies the host's FULL trade history: contagion is forward-only, so
  * running it over one candle's rows would miss the earlier trade that tagged the
  * wallet. Classifies with the fingerprint's SAVED patterns — the same row the
- * chart lines and the backend's `m_flow_split` fold read, so the table's reason
+ * chart lines and the backend's `m_flow_ix` fold read, so the table's reason
  * and the overlay can never disagree.
  *
  * `null` when nothing can classify — the badge then falls back to structure only.

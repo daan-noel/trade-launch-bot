@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use chrono::{DateTime, Duration, Utc};
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::evaluator::Operator;
-use hunter_engine::metrics::flow_split::FlowPatterns;
+use hunter_engine::metrics::flow_ix::FlowPatterns;
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
 use hunter_engine::metrics::{
     group_of, is_flow_metric, metric_spec, MetricGroupId, MetricId, MetricKind, MetricScope,
@@ -36,7 +36,7 @@ pub(crate) const MIN_SPLIT: usize = 8;
 const DUMP_FRAC: f64 = 0.85;
 const MIN_ATH_MULT: f64 = 1.5;
 /// Admission gate: a clause must be false on at least this share of the
-/// cohort's sampled rows, or it selects nothing (`nonvol_buy >= 0`) and is
+/// cohort's sampled rows, or it selects nothing (`untagged_buy >= 0`) and is
 /// dropped before any combo is scored.
 const MIN_REJECT_SHARE: f64 = 0.10;
 
@@ -340,7 +340,7 @@ fn cut_columns(windows: &[f64], with_flow: bool, flow_fp: FingerprintId) -> Vec<
         if g.scope == MetricScope::Position {
             continue;
         }
-        if matches!(g.family, hunter_engine::metrics::MetricFamily::FlowSplit) && !with_flow {
+        if matches!(g.family, hunter_engine::metrics::MetricFamily::FlowIx) && !with_flow {
             continue;
         }
         for m in g.metrics {

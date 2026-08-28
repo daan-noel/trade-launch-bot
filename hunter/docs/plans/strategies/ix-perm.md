@@ -8,7 +8,7 @@ prints are out of the windows. Reproduce with `ixg-perm.sql`. Scratch: `ixg.perm
 
 | Permission | Engine | At `t0` |
 | --- | --- | --- |
-| depth | `m_snapshot.liquidity` = vsol − 30 | last print before the burst |
+| depth | `m_state.liquidity` = vsol − 30 | last print before the burst |
 | SOL-quiet | `m_flow_window(10).gross_flow` | `[t0−10s, t0)` |
 | net/gross | `m_flow_window(10).buy` / `sell` | same window |
 | trail / rise | `m_price_lifetime.trail` / `rise` | peak/trough before `t0` |

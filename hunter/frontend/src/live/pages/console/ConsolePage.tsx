@@ -79,7 +79,7 @@ const openPositionRowKey = (r: LiveOpenRow) => r.positionId;
 const waitingRowKey = (r: LiveArmedRow) => r.key;
 
 /** Each chart card classifies vol/non-vol against ITS OWN rule's
- *  `volume_ix_patterns` — both cockpit lanes mix rules, so one grid-wide set
+ *  `ix_patterns` — both cockpit lanes mix rules, so one grid-wide set
  *  would misclassify every card that isn't from that rule. Resolves the SOURCE so
  *  a card's trades table also knows which fingerprint a Vol-badge edit writes to.
  *  Called once per card as a hook (see `FlowPatternSourceHook`); hoisted so the

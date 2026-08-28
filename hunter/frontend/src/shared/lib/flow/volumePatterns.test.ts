@@ -4,8 +4,8 @@ import {
   formatVolumePatternsText,
   patternsFromKeys,
   togglePattern,
-  volumePatternsActions,
-  volumePatternsIdentity,
+  ixPatternsActions,
+  ixPatternsIdentity,
 } from './volumePatterns';
 
 const A = ['Compute Budget: SetComputeUnitLimit', 'Pump.Fun: Buy'];
@@ -46,15 +46,15 @@ describe('togglePattern', () => {
   });
 });
 
-describe('volumePatternsActions / formatVolumePatternsText', () => {
+describe('ixPatternsActions / formatVolumePatternsText', () => {
   it('reads each pattern as its action sequence, one per line', () => {
-    expect(volumePatternsActions([A, B])).toBe(
+    expect(ixPatternsActions([A, B])).toBe(
       'SetComputeUnitLimit > Buy\nSetComputeUnitLimit > Sell',
     );
   });
 
   it('is empty for an unconfigured set', () => {
-    expect(volumePatternsActions([])).toBe('');
+    expect(ixPatternsActions([])).toBe('');
     expect(formatVolumePatternsText([])).toBe('');
     expect(formatVolumePatternsText([[]])).toBe('');
   });
@@ -64,23 +64,23 @@ describe('volumePatternsActions / formatVolumePatternsText', () => {
   });
 });
 
-describe('volumePatternsIdentity', () => {
+describe('ixPatternsIdentity', () => {
   it('is order-insensitive — the set is matched by membership', () => {
-    expect(volumePatternsIdentity([A, B])).toBe(volumePatternsIdentity([B, A]));
+    expect(ixPatternsIdentity([A, B])).toBe(ixPatternsIdentity([B, A]));
   });
 
   it('splits sets that differ only in a sequence, not in size', () => {
     const near = ['Compute Budget: SetComputeUnitLimit', 'Pump.Fun: BuyExactSolIn'];
-    expect(volumePatternsIdentity([A])).not.toBe(volumePatternsIdentity([near]));
+    expect(ixPatternsIdentity([A])).not.toBe(ixPatternsIdentity([near]));
   });
 
   it('splits a re-ordered sequence — ix_labels are ordered', () => {
-    expect(volumePatternsIdentity([A])).not.toBe(volumePatternsIdentity([[...A].reverse()]));
+    expect(ixPatternsIdentity([A])).not.toBe(ixPatternsIdentity([[...A].reverse()]));
   });
 
   it('treats an empty pattern as absent', () => {
-    expect(volumePatternsIdentity([[], A])).toBe(volumePatternsIdentity([A]));
-    expect(volumePatternsIdentity([])).toBe('');
+    expect(ixPatternsIdentity([[], A])).toBe(ixPatternsIdentity([A]));
+    expect(ixPatternsIdentity([])).toBe('');
   });
 });
 

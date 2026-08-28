@@ -66,7 +66,7 @@ fn cu_fp(id: u128) -> Fingerprint {
         id: fid(id),
         wildcard: false,
         criteria: Criteria::new().with(AxisId::CuLimit, AxisPredicate::exact(200_000)),
-        metric_config: json!({ "m_flow_split": { "volume_ix_patterns": [["Pump.Fun: Buy"]] } }),
+        metric_config: json!({ "m_flow_ix": { "ix_patterns": [["Pump.Fun: Buy"]] } }),
     }
 }
 
@@ -88,7 +88,7 @@ fn rules() -> Vec<LoadedRule> {
                 "take_profit": 80,
                 "stop_loss": 40,
                 "entry": {
-                    "m_snapshot": { "time": [{ "operator": "<", "value": 45 }] },
+                    "m_state": { "time": [{ "operator": "<", "value": 45 }] },
                     "m_flow_window": {
                         "window_size_sec": 20,
                         "gross_flow": [{ "operator": ">", "value": 0.4 }]
@@ -116,13 +116,13 @@ fn rules() -> Vec<LoadedRule> {
                         "window_size_sec": 35,
                         "trail": [{ "operator": ">=", "value": 10 }]
                     },
-                    "m_flow_split_window": {
+                    "m_flow_ix_window": {
                         "window_size_sec": 15,
-                        "vol_share": [{ "operator": "<", "value": 70 }]
+                        "tagged_share": [{ "operator": "<", "value": 70 }]
                     }
                 },
                 "scale_out": [{ "sell_bps": 5000, "take_profit": 25 }],
-                "exit": { "m_flow_split": { "nonvol_net": [{ "operator": "<", "value": -3 }] } }
+                "exit": { "m_flow_ix": { "untagged_net": [{ "operator": "<", "value": -3 }] } }
             }))
             .unwrap(),
             entry_enabled: true,
@@ -208,7 +208,7 @@ fn stream(seed: u64, n_events: usize) -> Vec<Event> {
                     priced_reserve_sol: rng.frac() * 60.0,
                     at: ts(now),
                     ix_hash: (rng.frac() < 0.4)
-                        .then(|| hunter_engine::metrics::flow_split::ix_hash(&["Pump.Fun: Buy"])),
+                        .then(|| hunter_engine::metrics::flow_ix::ix_hash(&["Pump.Fun: Buy"])),
                     wallet_hash: rng.below(6),
                 },
             },

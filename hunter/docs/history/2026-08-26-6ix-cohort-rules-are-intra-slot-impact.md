@@ -11,7 +11,7 @@ Rules as shipped (`hunter/engine/tests/six_ix_cohort_rules.rs` pins the exact JS
 * **winner** `8f5d56ab` — `time >= 60 AND buy(5) >= 2.94 AND trade_count <= 140 AND
   gross_flow >= 43.6 AND buy(3) <= 23.1`
 * **runner-up** `1c5e0789` — `time >= 60 AND net_flow(5) >= 0.79 AND
-  m_flow_burst{60,3}.trade_share >= 7.69 AND first_slot_buy >= 6.41 AND
+  m_flow_window{60,3}.trade_share >= 7.69 AND first_slot_buy >= 6.41 AND
   trades_per_wallet(10) <= 2`
 
 ## Two independent errors, found in that order
@@ -113,7 +113,7 @@ drop-one-keep-the-rest ablation only because the ablation ran on the truncated s
 * **A latency ladder starting at 115 ms cannot see this.** The collapse is between 0 and
   25 ms. Ladders start at 0 and step in single-digit milliseconds through the first slot.
 * The three metrics built for these rules (`m_flow_lifetime.trade_count`,
-  `m_flow_window.trades_per_wallet`, `m_flow_burst.trade_share`,
-  `m_snapshot.first_slot_buy`) are unaffected — they are correct measurements of what they
+  `m_flow_window.trades_per_wallet`, `m_flow_window.trade_share`,
+  `m_state.first_slot_buy`) are unaffected — they are correct measurements of what they
   name, verified against the lake in `track.rs`'s parity harness. A refuted rule does not
   refute its vocabulary.

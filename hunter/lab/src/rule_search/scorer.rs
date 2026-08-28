@@ -31,7 +31,7 @@ use crate::sweep::progress::SweepObserver;
 use crate::sweep::strategy::TokenOutcome;
 
 use super::generator::{Clause, GeneratedCombo};
-use hunter_engine::metrics::flow_split::FlowPatterns;
+use hunter_engine::metrics::flow_ix::FlowPatterns;
 
 /// Time blocks a range is split into for the robust (trimmed) rank and the
 /// per-quartile PnL row.

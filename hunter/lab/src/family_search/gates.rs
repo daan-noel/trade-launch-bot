@@ -499,7 +499,7 @@ mod tests {
     fn a_clause_independent_of_the_axis_stands() {
         // Admits scattered against the axis — a real filter, not a second reading.
         let admit = [0.55, 0.30, 0.61, 0.28, 0.58, 0.33];
-        let d = axis_duplication("nonvol_buy >= 1.6", &admit, &SPEND);
+        let d = axis_duplication("untagged_buy >= 1.6", &admit, &SPEND);
         assert!(!d.duplicates(), "rho {:?}", d.rho);
         assert_eq!(d.refuse_reason(), None);
     }

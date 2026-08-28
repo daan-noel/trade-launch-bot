@@ -60,7 +60,7 @@ npm test                               # tsc -p tsconfig.test.json + vitest — 
 ```
 
 `tsconfig.json` (what `build:*` runs) **excludes every test file**: the UI image's build context is
-`hunter/frontend/` alone, so a test reading a sibling crate's fixture — the `flow_split_parity.json`
+`hunter/frontend/` alone, so a test reading a sibling crate's fixture — the `flow_ix_parity.json`
 the Rust suite shares — cannot resolve on the server. Tests typecheck via `tsconfig.test.json`,
 which `vitest.config.ts` also feeds to `vite-tsconfig-paths` for the `@shared`/`components` aliases.
 
@@ -158,7 +158,7 @@ The rule is here; the linked doc carries the mechanism. Read the doc before edit
 | A leaked slot is permanent | Every exit from the buy path MUST emit `FillConfirmed`/`FillFailed` — a bare `return` strands the arm in `EntryPending`, boot re-adopts it, and the concurrency slot is lost across restarts. Keep the send bounded. A retry is a NEW decision: re-check `entry_enabled && can_enter` before re-firing. [lifecycle](docs/arch/position-lifecycle.md) |
 | Copycat guard | `skip_duplicate_identity` blocks a *different* mint sharing a normalized `(name, symbol)`. Global, records at the entry **attempt**, exempts the recording mint, separate paper/real memories, and `app_settings` is **per database**. [engine](docs/arch/strategies.md) |
 | A tick may skip a token, never a decision | `reduce` skips `Settled` tokens (~180x on a multi-day simulate). New tick-moving metric ⇒ a `ClockHorizons` field; new cross-token input ⇒ bump `cross_epoch`; mutating a tracked token outside the sweep ⇒ `unsettle()`/`touch_token`. [ticks](docs/plans/strategies/tick-cost-and-settled-tokens.md) |
-| Trailing windows are O(1) | Never rescan the buffer inside a `value()`, and never assume the caller evicted at `now`. Flow classification hashes come from the ONE `flow_split` hasher set, applied at load offline. [metrics](docs/plans/strategies/metrics-reference.md) |
+| Trailing windows are O(1) | Never rescan the buffer inside a `value()`, and never assume the caller evicted at `now`. Flow classification hashes come from the ONE `flow_ix` hasher set, applied at load offline. [metrics](docs/plans/strategies/metrics-reference.md) |
 | A registered metric with no compute arm is always-false | `TokenTrack::value` routes by group and is exhaustive, but each group's own `value(id)` ends in `_ => f64::NAN`, and `NaN` satisfies nothing — so a metric in `REGISTRY` whose group arm was never written is a gate that silently never fires. `engine/tests/every_metric_is_live_reachable.rs` walks `REGISTRY` and reads every metric through `reduce` + `read_state` on EVERY window basis (seconds, slots, prints); a new metric is covered without touching it, and a new **required** strict param fails it until taught a value. |
 | A silent shed hides an outage | A wedged engine sheds 100% of pings while ingest keeps writing, so every external signal looks healthy while no rule is evaluated. Any `try_send`-and-drop on a trade-deciding path must be **loud**. [backpressure](docs/plans/ingest/backpressure-watchdog.md) |
 | Boot must be bounded | An unbounded recovery scan starves the runtime and the watchdog then kills a booting process. Diagnostic: **`strategy engine loop running` absent from the log = the engine never started**, however healthy ingest looks. [engine](docs/arch/strategies.md) |

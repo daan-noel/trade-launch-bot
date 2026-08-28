@@ -86,7 +86,7 @@ pub enum TradeMode {
 
 /// Why a position closed. Persisted as a short string label ([`ExitReason::label`]):
 /// `TakeProfit | StopLoss | Dead | Manual | Migrated | {name}[({w}s)] {op} {value}`
-/// (e.g. `stall > 3`, `trail >= 20`, `nonvol_buy(2s) >= 0.9`). Legacy rows may still
+/// (e.g. `stall > 3`, `trail >= 20`, `untagged_buy(2s) >= 0.9`). Legacy rows may still
 /// store bare `Metrics`, the brief `{name}{op}` form (`stall>`), or a windowed exit
 /// with no `({w}s)` — see [`parse_metric_exit_label`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -104,8 +104,8 @@ pub enum ExitReason {
         /// Trailing-window size of the req that fired, `None` for a static metric.
         ///
         /// Load-bearing, not decoration: a dynamic group and its lifetime twin share
-        /// every metric *name* (`m_flow_split.nonvol_buy` and
-        /// `m_flow_split_window.nonvol_buy` are both `"nonvol_buy"`), so without the
+        /// every metric *name* (`m_flow_ix.untagged_buy` and
+        /// `m_flow_ix_window.untagged_buy` are both `"untagged_buy"`), so without the
         /// window the label names a monotone lifetime total when what actually fired
         /// was a burst over `window` seconds — two readings that move in opposite
         /// ways. Multi-window rules make it worse: several reqs print identically.
@@ -121,7 +121,7 @@ pub enum ExitReason {
 
 impl ExitReason {
     /// Persisted / displayed label. Ladder reasons keep PascalCase; metric exits
-    /// are spaced `name[({w}s)] op value` (`stall > 3`, `nonvol_buy(2s) >= 0.9`).
+    /// are spaced `name[({w}s)] op value` (`stall > 3`, `untagged_buy(2s) >= 0.9`).
     pub fn label(self) -> Cow<'static, str> {
         match self {
             Self::TakeProfit => Cow::Borrowed("TakeProfit"),
@@ -177,7 +177,7 @@ pub fn format_metric_exit_label(
     )
 }
 
-/// The name half of a metric exit label: `nonvol_buy` or `nonvol_buy(2s)`.
+/// The name half of a metric exit label: `untagged_buy` or `untagged_buy(2s)`.
 /// Shared with every UI that renders a condition beside its reason, so a chart
 /// legend and a persisted reason can never disagree about which req is meant.
 pub fn format_metric_exit_name(
@@ -253,7 +253,7 @@ const METRIC_OPS: &[(&str, Operator)] = &[
     ("=", Operator::Eq),
 ];
 
-/// Parse `name[({w}s)] op value` (`stall > 3`, `nonvol_buy(2s) >= 0.9`) or legacy
+/// Parse `name[({w}s)] op value` (`stall > 3`, `untagged_buy(2s) >= 0.9`) or legacy
 /// compact `name{op}` (`stall>`). Compact forms return `value = 0.0` as a
 /// placeholder (rollup detection only).
 ///
@@ -295,7 +295,7 @@ pub fn parse_metric_exit_label(
     None
 }
 
-/// Split `nonvol_buy(2s)` into `("nonvol_buy", Some(2s))`, `buy(30sl@1)` into the
+/// Split `untagged_buy(2s)` into `("untagged_buy", Some(2s))`, `buy(30sl@1)` into the
 /// 30-slot span lagged by one, `buy(1p)` into the single-print span. Anything that is
 /// not a well-formed suffix is left on the name, so an unrecognised qualifier fails
 /// the name lookup instead of silently parsing as a bare metric. A label written
@@ -310,7 +310,7 @@ fn split_window_qualifier(token: &str) -> (&str, Option<crate::metrics::WindowSp
     };
     // A bare number inside the parens would be a legacy seconds span, which
     // `WindowSpec::parse` accepts — but this position never held one: the qualifier
-    // has carried its `s` since it was introduced, and `nonvol_buy(2)` is exactly the
+    // has carried its `s` since it was introduced, and `untagged_buy(2)` is exactly the
     // malformed shape that must fail the name lookup rather than resolve.
     match crate::metrics::WindowSpec::parse(inner) {
         Some(w) if inner.trim().parse::<f64>().is_err() => (&token[..open], Some(w)),
@@ -646,32 +646,32 @@ mod exit_label_tests {
         metric_id_by_name_kind(name, MetricKind::Static).expect("static metric")
     }
 
-    /// The whole point of the qualifier: `m_flow_split.nonvol_buy` and
-    /// `m_flow_split_window.nonvol_buy` share a name, so a label without the window
+    /// The whole point of the qualifier: `m_flow_ix.untagged_buy` and
+    /// `m_flow_ix_window.untagged_buy` share a name, so a label without the window
     /// names a monotone lifetime total when a 2 s burst is what fired.
     #[test]
     fn window_qualifier_round_trips_and_selects_the_right_metric() {
         let windowed = ExitReason::Metrics {
-            metric: win("nonvol_buy"),
+            metric: win("untagged_buy"),
             operator: Operator::Gte,
             value: 0.9,
             window: Some(crate::metrics::WindowSpec::secs(2.0)),
         };
-        assert_eq!(windowed.label(), "nonvol_buy(2s) >= 0.9");
+        assert_eq!(windowed.label(), "untagged_buy(2s) >= 0.9");
         assert_eq!(parse_exit_reason(&windowed.label()), Some(windowed));
 
         let lifetime = ExitReason::Metrics {
-            metric: stat("nonvol_buy"),
+            metric: stat("untagged_buy"),
             operator: Operator::Gte,
             value: 0.9,
             window: None,
         };
-        assert_eq!(lifetime.label(), "nonvol_buy >= 0.9");
+        assert_eq!(lifetime.label(), "untagged_buy >= 0.9");
         assert_eq!(parse_exit_reason(&lifetime.label()), Some(lifetime));
 
         // The two must not collapse onto each other.
         assert_ne!(windowed.label(), lifetime.label());
-        assert_ne!(win("nonvol_buy"), stat("nonvol_buy"));
+        assert_ne!(win("untagged_buy"), stat("untagged_buy"));
     }
 
     /// One size, three bases, three labels. `1s`, `1sl` and `1p` read different tape,
@@ -681,7 +681,7 @@ mod exit_label_tests {
         use crate::metrics::WindowSpec;
         let label = |w| {
             ExitReason::Metrics {
-                metric: win("nonvol_buy"),
+                metric: win("untagged_buy"),
                 operator: Operator::Gte,
                 value: 1.0,
                 window: Some(w),
@@ -694,9 +694,9 @@ mod exit_label_tests {
             label(WindowSpec::slots(1.0, 0.0)),
             label(WindowSpec::prints(1.0, 0.0)),
         );
-        assert_eq!(sec, "nonvol_buy(1s) >= 1");
-        assert_eq!(slot, "nonvol_buy(1sl) >= 1");
-        assert_eq!(print, "nonvol_buy(1p) >= 1");
+        assert_eq!(sec, "untagged_buy(1s) >= 1");
+        assert_eq!(slot, "untagged_buy(1sl) >= 1");
+        assert_eq!(print, "untagged_buy(1p) >= 1");
         assert_eq!(std::collections::BTreeSet::from([&sec, &slot, &print]).len(), 3);
     }
 
@@ -719,7 +719,7 @@ mod exit_label_tests {
             WindowSpec::prints(20.0, 1.0),
         ] {
             let r = ExitReason::Metrics {
-                metric: win("nonvol_buy"),
+                metric: win("untagged_buy"),
                 operator: Operator::Lte,
                 value: 0.2,
                 window: Some(w),
@@ -734,11 +734,11 @@ mod exit_label_tests {
     #[test]
     fn legacy_labels_still_parse() {
         assert!(matches!(parse_exit_reason("stall > 3"), Some(ExitReason::Metrics { .. })));
-        assert!(matches!(parse_exit_reason("nonvol_buy >= 0.9"), Some(ExitReason::Metrics { .. })));
+        assert!(matches!(parse_exit_reason("untagged_buy >= 0.9"), Some(ExitReason::Metrics { .. })));
         assert!(matches!(parse_exit_reason("stall>"), Some(ExitReason::Metrics { .. })));
         assert_eq!(parse_exit_reason("TakeProfit"), Some(ExitReason::TakeProfit));
         assert!(is_metric_exit_label("Metrics"));
-        assert!(is_metric_exit_label("nonvol_buy(2s) >= 0.9"));
+        assert!(is_metric_exit_label("untagged_buy(2s) >= 0.9"));
         assert!(!is_metric_exit_label("Dead"));
     }
 
@@ -746,7 +746,7 @@ mod exit_label_tests {
     /// lookup instead of silently parsing as the bare metric.
     #[test]
     fn malformed_qualifiers_do_not_degrade_to_the_lifetime_metric() {
-        for s in ["nonvol_buy(2) >= 0.9", "nonvol_buy(xs) >= 0.9", "nonvol_buy(2s >= 0.9"] {
+        for s in ["untagged_buy(2) >= 0.9", "untagged_buy(xs) >= 0.9", "untagged_buy(2s >= 0.9"] {
             assert_eq!(parse_exit_reason(s), None, "{s}");
         }
     }

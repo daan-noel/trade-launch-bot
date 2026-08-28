@@ -1,11 +1,11 @@
 //! `TokenTrack` — the per-token metric state the engine folds trades and ticks
 //! into. It composes the group states:
-//! * static [`SnapshotState`] + [`PriceLifetimeState`] + [`FlowLifetimeState`] —
+//! * static [`StateMetrics`] + [`PriceLifetimeState`] + [`FlowLifetimeState`] —
 //!   one copy each, shared by every rule armed on the token;
 //! * dynamic [`WindowState`]s — **deduped by `window_size_sec`**, so rules that
 //!   share a window share one buffer;
 //! * fingerprint-scoped [`FlowState`]s — one classifier + totals per fingerprint
-//!   that has `m_flow_split` configured (volume-flow-split plan).
+//!   that has `m_flow_ix` configured (volume-flow-split plan).
 //!
 //! Two fold entry points, matching the engine's events: [`on_trade`] and
 //! [`on_tick`]. Reads go through [`value`], which routes a `MetricId` (+ an
@@ -22,11 +22,11 @@ use std::collections::BTreeMap;
 use crate::fingerprint::FingerprintId;
 
 use super::flow_lifetime::FlowLifetimeState;
-use super::flow_split::{FlowPatterns, FlowState};
+use super::flow_ix::{FlowPatterns, FlowState};
 use super::flow_window::WindowState;
 use super::price_lifetime::PriceLifetimeState;
 use super::price_window::PriceWindowState;
-use super::snapshot::SnapshotState;
+use super::state::StateMetrics;
 use super::{Cursor, MetricId, TradeLite, Ts};
 
 /// All metric state for one token.
@@ -42,7 +42,7 @@ pub struct TokenTrack {
     /// A tick never moves it: silence is not a print, which is exactly why a print
     /// window reads the same tape whether the token is busy or dead.
     n_prints: u64,
-    snapshot: SnapshotState,
+    state: StateMetrics,
     price_lifetime: PriceLifetimeState,
     flow_lifetime: FlowLifetimeState,
     /// Dynamic flow windows, keyed by [`window_key`] so equal sizes dedupe.
@@ -67,7 +67,7 @@ impl TokenTrack {
     pub fn new(created_at: Ts) -> Self {
         Self {
             created_at,
-            snapshot: SnapshotState::default(),
+            state: StateMetrics::default(),
             price_lifetime: PriceLifetimeState::new(created_at),
             flow_lifetime: FlowLifetimeState::default(),
             windows: BTreeMap::new(),
@@ -94,9 +94,9 @@ impl TokenTrack {
     }
 
     /// Register fingerprint-scoped flow state (idempotent). `windows` are the
-    /// distinct `m_flow_split_window` sizes to track under this fingerprint.
+    /// distinct `m_flow_ix_window` sizes to track under this fingerprint.
     /// Re-registering an existing fingerprint **adopts the new pattern set**. A
-    /// reload happens because the operator edited `volume_ix_patterns`, and keeping
+    /// reload happens because the operator edited `ix_patterns`, and keeping
     /// the compiled-at-first-sight set would leave every token the engine is already
     /// tracking classifying against the pre-edit list for the rest of its life — an
     /// edit that visibly takes effect on new tokens and silently does nothing on the
@@ -132,16 +132,16 @@ impl TokenTrack {
     }
 
 
-    /// Seed the creation slot's buy total (`m_snapshot.first_slot_buy`). Called when
-    /// that slot SETTLES, not at creation — see [`SnapshotState::seed_first_slot_buy`].
+    /// Seed the creation slot's buy total (`m_state.first_slot_buy`). Called when
+    /// that slot SETTLES, not at creation — see [`StateMetrics::seed_first_slot_buy`].
     pub fn seed_first_slot_buy(&mut self, sol: f64) {
-        self.snapshot.seed_first_slot_buy(sol);
+        self.state.seed_first_slot_buy(sol);
     }
 
 
     /// Fold one trade into every group.
     pub fn on_trade(&mut self, t: TradeLite) {
-        self.snapshot.on_trade(t.reserve_sol);
+        self.state.on_trade(t.reserve_sol);
         self.priced_reserves = t.priced_reserve_sol;
         // The slot cursor only ever moves forward. Canonical order is
         // slot -> tx_index -> leg, so a regressed feed row must not rewind every
@@ -253,7 +253,7 @@ impl TokenTrack {
         let cur = self.cursor();
         match id {
             Time | Liquidity | FirstSlotBuy => {
-                self.snapshot.value(id, self.created_at, now)
+                self.state.value(id, self.created_at, now)
             }
             Stall | Trail | LifeRise => self.price_lifetime.value(id, now),
             LifeGrossFlow | LifeNetFlow | LifeBuy | LifeSell | LifeTradeCount => {
@@ -265,34 +265,42 @@ impl TokenTrack {
                     None => f64::NAN,
                 }
             }
-            GrossFlow | NetFlow | Buy | Sell | UniqueWallets | TradeCount | BuyCount | BuyShare
-            | TradesPerWallet => {
+            GrossFlow | NetFlow | Buy | Sell | UniqueWallets | TradeCount | BuyCount | SellCount
+            | BuyShare | TradesPerWallet => {
                 match window.and_then(|sp| self.windows.get(&sp.key()).map(|w| (sp, w))) {
                     Some((sp, w)) => w.value(id, sp.now_pos(now, cur)),
                     None => f64::NAN,
                 }
             }
-            // The one two-window read: `primary` is the reference span, `secondary`
-            // the burst nested inside it. Both buffers are `m_flow_window`'s own —
+            // The TWO-window reads: `primary` is the reference span, `secondary` the
+            // slice nested inside it. Both buffers are `m_flow_window`'s own —
             // `CompiledRule` registers each axis, so this allocates nothing. Either
             // axis unregistered ⇒ NaN, the same "no reading" a missing single window
             // gives, and NaN satisfies no condition.
-            BurstTradeShare => {
+            //
+            // `build_reqs` sets `secondary` only for the metrics [`is_two_window`]
+            // selects, so a single-window read can never arrive here with a slice
+            // attached, nor one of these without one.
+            //
+            // [`is_two_window`]: super::is_two_window
+            SliceTradeShare | SliceSolShare => {
                 let reference = windows.primary.and_then(|w| self.windows.get(&w.key()));
-                let burst = windows.secondary.and_then(|b| self.windows.get(&b.key()));
-                match (burst, reference, windows.primary, windows.secondary) {
-                    (Some(b), Some(r), Some(rs), Some(bs)) => super::flow_burst::trade_share(
-                        b,
-                        r,
-                        bs.now_pos(now, cur),
-                        rs.now_pos(now, cur),
-                    ),
+                let slice = windows.secondary.and_then(|b| self.windows.get(&b.key()));
+                match (slice, reference, windows.primary, windows.secondary) {
+                    (Some(b), Some(r), Some(rs), Some(bs)) => {
+                        let (bn, rn) = (bs.now_pos(now, cur), rs.now_pos(now, cur));
+                        if id == SliceTradeShare {
+                            super::flow_slice::trade_share(b, r, bn, rn)
+                        } else {
+                            super::flow_slice::sol_share(b, r, bn, rn)
+                        }
+                    }
                     _ => f64::NAN,
                 }
             }
-            VolBuy | VolSell | VolNet | VolGross | NonvolBuy | NonvolSell | NonvolNet
-            | NonvolGross | VolShare | WinVolBuy | WinVolSell | WinVolNet | WinVolGross
-            | WinNonvolBuy | WinNonvolSell | WinNonvolNet | WinNonvolGross | WinVolShare => {
+            TaggedBuy | TaggedSell | TaggedNet | TaggedGross | UntaggedBuy | UntaggedSell | UntaggedNet
+            | UntaggedGross | TaggedShare | WinTaggedBuy | WinTaggedSell | WinTaggedNet | WinTaggedGross
+            | WinUntaggedBuy | WinUntaggedSell | WinUntaggedNet | WinUntaggedGross | WinTaggedShare => {
                 let Some(fp) = fingerprint else {
                     return f64::NAN;
                 };
@@ -363,7 +371,7 @@ mod tests {
     /// ones — the exact shape that makes an exit look unexplainable.
     #[test]
     fn reload_adopts_an_edited_pattern_set_on_a_live_token() {
-        use crate::metrics::flow_split::ix_hash;
+        use crate::metrics::flow_ix::ix_hash;
         use std::collections::BTreeSet;
         let fp = FingerprintId(Uuid::nil());
         let bot = ix_hash(&["bot", "buy"]);
@@ -383,7 +391,7 @@ mod tests {
             ix_hash: Some(bot),
             wallet_hash: 11,
         });
-        assert_eq!(track.value(MetricId::NonvolBuy, crate::metrics::Windows::NONE, Some(fp), ts(1.0)), 1.0);
+        assert_eq!(track.value(MetricId::UntaggedBuy, crate::metrics::Windows::NONE, Some(fp), ts(1.0)), 1.0);
 
         // Operator adds the pattern; the reload re-registers the same fingerprint.
         track.ensure_flow(fp, &FlowPatterns::new(BTreeSet::from([bot])), &[]);
@@ -400,8 +408,8 @@ mod tests {
             wallet_hash: 12,
         });
         // The new trade classifies volume-side; the already-folded one keeps its past.
-        assert_eq!(track.value(MetricId::VolBuy, crate::metrics::Windows::NONE, Some(fp), ts(2.0)), 2.0);
-        assert_eq!(track.value(MetricId::NonvolBuy, crate::metrics::Windows::NONE, Some(fp), ts(2.0)), 1.0);
+        assert_eq!(track.value(MetricId::TaggedBuy, crate::metrics::Windows::NONE, Some(fp), ts(2.0)), 2.0);
+        assert_eq!(track.value(MetricId::UntaggedBuy, crate::metrics::Windows::NONE, Some(fp), ts(2.0)), 1.0);
     }
 
     #[test]
@@ -626,14 +634,14 @@ mod tests {
 
     #[test]
     fn flow_unconfigured_is_nan_configured_splits() {
-        use crate::metrics::flow_split::ix_hash;
+        use crate::metrics::flow_ix::ix_hash;
         use std::collections::BTreeSet;
 
         let mut track = TokenTrack::new(ts(0.0));
         let id = fp(1);
         // No ensure_flow → NaN.
         assert!(track
-            .value(MetricId::VolBuy, crate::metrics::Windows::NONE, Some(id), ts(1.0))
+            .value(MetricId::TaggedBuy, crate::metrics::Windows::NONE, Some(id), ts(1.0))
             .is_nan());
 
         let patterns = FlowPatterns::new(BTreeSet::from([ix_hash(&["vol"])]));
@@ -649,15 +657,15 @@ mod tests {
         t2.wallet_hash = 2;
         track.on_trade(t2);
 
-        assert_eq!(track.value(MetricId::VolBuy, crate::metrics::Windows::NONE, Some(id), ts(2.0)), 4.0);
-        assert_eq!(track.value(MetricId::NonvolBuy, crate::metrics::Windows::NONE, Some(id), ts(2.0)), 6.0);
+        assert_eq!(track.value(MetricId::TaggedBuy, crate::metrics::Windows::NONE, Some(id), ts(2.0)), 4.0);
+        assert_eq!(track.value(MetricId::UntaggedBuy, crate::metrics::Windows::NONE, Some(id), ts(2.0)), 6.0);
         assert_eq!(
-            track.value(MetricId::WinVolBuy, crate::metrics::Windows::secs(10.0), Some(id), ts(2.0)),
+            track.value(MetricId::WinTaggedBuy, crate::metrics::Windows::secs(10.0), Some(id), ts(2.0)),
             4.0
         );
         // Missing fingerprint arg → NaN even when state exists.
-        assert!(crate::metrics::is_flow_metric(MetricId::VolBuy));
-        assert!(track.value(MetricId::VolBuy, crate::metrics::Windows::NONE, None, ts(2.0)).is_nan());
+        assert!(crate::metrics::is_flow_metric(MetricId::TaggedBuy));
+        assert!(track.value(MetricId::TaggedBuy, crate::metrics::Windows::NONE, None, ts(2.0)).is_nan());
     }
 
     /// **Cross-implementation parity.** Three real token tapes from the lake, replayed
@@ -683,7 +691,7 @@ mod tests {
             lifegross: f64,
             lifentx: f64,
             buyshare10: f64,
-            /// `m_flow_burst{window_size_sec: 60, burst_size_sec: 3}.trade_share`
+            /// `m_flow_window{window_size_sec: 60, slice_size_sec: 3}.trade_share`
             share60_3: f64,
             /// Same reference window, a wider burst — the pair that proves the
             /// second axis is read and not ignored.
@@ -884,7 +892,7 @@ mod tests {
             // The two-window read, through the same public entry point a rule uses.
             let share = |reference: f64, burst: f64| {
                 track.value(
-                    MetricId::BurstTradeShare,
+                    MetricId::SliceTradeShare,
                     crate::metrics::Windows::two(
                         WindowSpec::secs(reference),
                         WindowSpec::secs(burst),
@@ -893,8 +901,8 @@ mod tests {
                     now,
                 )
             };
-            close(share(60.0, 3.0), c.share60_3, 0.5, "m_flow_burst{60,3}.trade_share");
-            close(share(60.0, 10.0), c.share60_10, 0.5, "m_flow_burst{60,10}.trade_share");
+            close(share(60.0, 3.0), c.share60_3, 0.5, "m_flow_window{60,3}.trade_share");
+            close(share(60.0, 10.0), c.share60_10, 0.5, "m_flow_window{60,10}.trade_share");
             // An unregistered axis reads NaN, never a silently narrower window.
             assert!(share(60.0, 7.0).is_nan(), "{}: unregistered burst axis must be NaN", c.mint);
         }

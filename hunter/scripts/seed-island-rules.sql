@@ -78,7 +78,7 @@ SELECT 'isl-absorption', f.id, 'paper', false, true,
        $json${
   "stop_loss": 5,
   "entry": {
-    "m_snapshot": {
+    "m_state": {
       "time": [{"operator": ">", "value": 5}],
       "liquidity": [{"operator": ">=", "value": 3}, {"operator": "<=", "value": 64}]
     },
@@ -104,7 +104,7 @@ SELECT 'isl-a-continuation', f.id, 'paper', false, true,
        $json${
   "stop_loss": 20,
   "entry": {
-    "m_snapshot": {
+    "m_state": {
       "time": [{"operator": ">", "value": 5}],
       "liquidity": [{"operator": ">=", "value": 3}]
     },
@@ -132,7 +132,7 @@ SELECT 'isl-b-quiet-pause', f.id, 'paper', false, true,
        $json${
   "stop_loss": 5,
   "entry": {
-    "m_snapshot": {
+    "m_state": {
       "time": [{"operator": ">", "value": 5}],
       "liquidity": [{"operator": ">=", "value": 3}]
     },
@@ -158,7 +158,7 @@ SELECT 'isl-ab-confirmed', f.id, 'paper', false, true,
        $json${
   "stop_loss": 5,
   "entry": {
-    "m_snapshot": {
+    "m_state": {
       "time": [{"operator": ">", "value": 5}],
       "liquidity": [{"operator": ">=", "value": 3}]
     },

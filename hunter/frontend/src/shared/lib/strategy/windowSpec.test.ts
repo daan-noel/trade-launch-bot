@@ -3,13 +3,13 @@ import { describe, expect, it } from 'vitest';
 // Imported straight from the Rust crates - ONE copy of each name, so the two sides
 // cannot drift into a UI that spells a param the backend rejects as unknown.
 import metricsSrc from '../../../../../engine/src/metrics/mod.rs?raw';
-import flowBurstSrc from '../../../../../engine/src/metrics/flow_burst.rs?raw';
+import flowSliceSrc from '../../../../../engine/src/metrics/flow_slice.rs?raw';
 import eventSrc from '../../../../../engine/src/event.rs?raw';
 import {
-  BURST_PARAM,
-  BURST_PRINT_PARAM,
-  BURST_SLOT_PARAM,
-  burstSpecFromStrict,
+  SLICE_PARAM,
+  SLICE_PRINT_PARAM,
+  SLICE_SLOT_PARAM,
+  sliceSpecFromStrict,
   formatWindowSpec,
   parseWindowSpec,
   readWindow,
@@ -40,11 +40,11 @@ describe('param names match the engine', () => {
     }
   });
 
-  it('mirrors hunter_engine::metrics::flow_burst burst params', () => {
-    const src = flowBurstSrc;
-    expect(src).toContain(`pub const BURST_PARAM: &str = "${BURST_PARAM}";`);
-    expect(src).toContain(`pub const BURST_SLOT_PARAM: &str = "${BURST_SLOT_PARAM}";`);
-    expect(src).toContain(`pub const BURST_PRINT_PARAM: &str = "${BURST_PRINT_PARAM}";`);
+  it('mirrors hunter_engine::metrics::flow_slice burst params', () => {
+    const src = flowSliceSrc;
+    expect(src).toContain(`pub const SLICE_PARAM: &str = "${SLICE_PARAM}";`);
+    expect(src).toContain(`pub const SLICE_SLOT_PARAM: &str = "${SLICE_SLOT_PARAM}";`);
+    expect(src).toContain(`pub const SLICE_PRINT_PARAM: &str = "${SLICE_PRINT_PARAM}";`);
   });
 
   // A basis with no option in the picker round-trips through the JSON view with no
@@ -161,11 +161,11 @@ describe('windowSpecFromStrict', () => {
   });
 
   it('gives the burst axis the group lag and its own size', () => {
-    expect(burstSpecFromStrict({ window_size_slots: 30, window_lag: 1, burst_size_slots: 1 }))
+    expect(sliceSpecFromStrict({ window_size_slots: 30, window_lag: 1, slice_size_slots: 1 }))
       .toEqual({ size: 1, lag: 1, unit: 'slot' });
-    expect(burstSpecFromStrict({ window_size_prints: 20, burst_size_prints: 4 }))
+    expect(sliceSpecFromStrict({ window_size_prints: 20, slice_size_prints: 4 }))
       .toEqual({ size: 4, lag: 0, unit: 'print' });
-    expect(burstSpecFromStrict({ window_size_sec: 60 })).toBeNull();
+    expect(sliceSpecFromStrict({ window_size_sec: 60 })).toBeNull();
   });
 });
 

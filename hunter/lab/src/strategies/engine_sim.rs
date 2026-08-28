@@ -411,7 +411,7 @@ async fn run_engine_backtest(
         .filter_map(|t| {
             let trades = histories.get(&t.mint_address)?.clone();
             let creator_wallet_hash = (!t.creator_wallet.is_empty())
-                .then(|| hunter_engine::metrics::flow_split::wallet_hash(&t.creator_wallet));
+                .then(|| hunter_engine::metrics::flow_ix::wallet_hash(&t.creator_wallet));
             Some(ReplayToken {
                 mint: t.mint_address.clone(),
                 symbol: t.symbol.clone(),
@@ -425,7 +425,7 @@ async fn run_engine_backtest(
             })
         })
         .collect();
-    // Prime `m_snapshot.prior_launches` with the history BEFORE this corpus. The
+    // Prime the `prior_launches` fingerprint axis with the history BEFORE this corpus. The
     // replay tallies creations as it folds them, but the corpus is one fingerprint
     // over one window, so without this a serial launcher reads as a first-timer —
     // and `prior_launches == 0` is exactly the value a rule selects on.
@@ -449,7 +449,7 @@ async fn run_engine_backtest(
             Ok(rows) => rows
                 .into_iter()
                 .map(|(w, n)| {
-                    (hunter_engine::metrics::flow_split::wallet_hash(&w), n.max(0) as u32)
+                    (hunter_engine::metrics::flow_ix::wallet_hash(&w), n.max(0) as u32)
                 })
                 .collect::<Vec<_>>(),
             Err(e) => {
@@ -786,7 +786,7 @@ mod flow_column_needs {
     #[test]
     fn unique_wallets_forces_the_flow_columns() {
         let uw = rule_with(serde_json::json!({
-            "entry": { "m_flow_window": {
+            "entry": { "m_crowd_window": {
                 "window_size_sec": 60,
                 "unique_wallets": [{ "operator": ">=", "value": 20 }]
             } }
@@ -809,7 +809,7 @@ mod flow_column_needs {
         let staged = rule_with(serde_json::json!({
             "scale_out": [{
                 "sell_bps": 5000,
-                "conditions": { "m_flow_window": {
+                "conditions": { "m_crowd_window": {
                     "window_size_sec": 30,
                     "unique_wallets": [{ "operator": "<=", "value": 3 }]
                 } }

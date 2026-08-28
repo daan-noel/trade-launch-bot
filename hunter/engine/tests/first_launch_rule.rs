@@ -41,7 +41,7 @@ use uuid::Uuid;
 /// tested costs money inside this gate.
 const FIRST_LAUNCH: &str = r#"{
   "entry": {
-    "m_snapshot": {
+    "m_state": {
       "time": [{"operator": ">", "value": 5}],
       "liquidity": [{"operator": ">=", "value": 3}]
     },

@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 
 import { flowPatternKeysOf } from 'lib/flow/flowPatternKeys';
 import { patternKey, patternsFromKeys, togglePattern } from 'lib/flow/volumePatterns';
-import { metricConfigWithVolumePatterns, volumeIxPatternsFromConfig } from 'lib/strategy/registry';
+import { metricConfigWithIxPatterns, ixPatternsFromConfig } from 'lib/strategy/registry';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
   useGetFingerprintsQuery,
@@ -25,7 +25,7 @@ function samePatternSet(
 /** Stable empty result for the skipped match pass. */
 const NO_MATCHES: Fingerprint[] = [];
 
-export interface VolumePatternTargetChoice {
+export interface IxPatternTargetChoice {
   targetId: string | null;
   inferred: boolean;
   offHost: boolean;
@@ -46,11 +46,11 @@ export interface VolumePatternTargetChoice {
  * @param matchIds fingerprints carrying the host's set; a match is taken only when
  *                 there is exactly one, and is always reported as `inferred`
  */
-export function resolveVolumePatternTarget(input: {
+export function resolveIxPatternTarget(input: {
   pickedId: string | null;
   hostFingerprintId: string | null;
   matchIds: readonly string[];
-}): VolumePatternTargetChoice {
+}): IxPatternTargetChoice {
   const { pickedId, hostFingerprintId, matchIds } = input;
   // Only consulted when nothing better exists — a guess must never displace a fact.
   const inferredId =
@@ -70,11 +70,11 @@ function withVolumePatterns(
   cfg: Record<string, unknown> | null | undefined,
   patterns: string[][],
 ): Record<string, unknown> {
-  const { m_flow_split: _flow, ...rest } = cfg ?? {};
-  return { ...rest, ...metricConfigWithVolumePatterns(patterns) };
+  const { m_flow_ix: _flow, ...rest } = cfg ?? {};
+  return { ...rest, ...metricConfigWithIxPatterns(patterns) };
 }
 
-export interface VolumePatternTarget {
+export interface IxPatternTarget {
   /** Fingerprint a toggle writes to; `null` ⇒ the badge is read-only. */
   target: Fingerprint | null;
   /** Every fingerprint, for the target picker. */
@@ -104,7 +104,7 @@ export interface VolumePatternTarget {
 /**
  * Which fingerprint a Vol-badge toggle edits, and the write itself.
  *
- * `volume_ix_patterns` lives on exactly one row — the fingerprint — and that row is
+ * `ix_patterns` lives on exactly one row — the fingerprint — and that row is
  * what the chart lines, the metric panes and the running engine all classify from.
  * So a toggle edits it directly: a staging copy would be a second answer to "what
  * counts as volume", and the surfaces reading the two copies then disagree on
@@ -116,7 +116,7 @@ export interface VolumePatternTarget {
  * the reader to re-pick a row the app already resolved is both friction and a
  * chance to pick wrong. Only a host with no fingerprint at all (plain token detail,
  * flow preview) falls back to matching by pattern set, and that match is a guess:
- * it is reported as {@link VolumePatternTarget.inferred} and taken only when
+ * it is reported as {@link IxPatternTarget.inferred} and taken only when
  * exactly one row carries the set. Otherwise the target stays `null` and the caller
  * picks, because a write changes flow classification for every active rule bound to
  * that fingerprint.
@@ -127,7 +127,7 @@ export interface VolumePatternTarget {
  * @param enabled       `false` on a read-only host (a stored run's frozen snapshot),
  *                      which skips the fingerprint/rule fetches entirely
  */
-export function useVolumePatternTarget({
+export function useIxPatternTarget({
   fingerprintId = null,
   savedKeys = null,
   enabled = true,
@@ -135,7 +135,7 @@ export function useVolumePatternTarget({
   fingerprintId?: string | null;
   savedKeys?: ReadonlySet<string> | null;
   enabled?: boolean;
-} = {}): VolumePatternTarget {
+} = {}): IxPatternTarget {
   const { data: fingerprints = [] } = useGetFingerprintsQuery(undefined, { skip: !enabled });
   const { data: rules = [] } = useGetStrategyRulesQuery(undefined, { skip: !enabled });
   const [updateFingerprint, { isLoading: saving }] = useUpdateFingerprintMutation();
@@ -153,13 +153,13 @@ export function useVolumePatternTarget({
     () =>
       needsMatch
         ? fingerprints.filter((f) =>
-            samePatternSet(volumeIxPatternsFromConfig(f.metric_config), savedPatterns),
+            samePatternSet(ixPatternsFromConfig(f.metric_config), savedPatterns),
           )
         : NO_MATCHES,
     [needsMatch, fingerprints, savedPatterns],
   );
 
-  const { targetId, inferred, offHost } = resolveVolumePatternTarget({
+  const { targetId, inferred, offHost } = resolveIxPatternTarget({
     pickedId,
     hostFingerprintId: fingerprintId,
     matchIds: matches.map((f) => f.id),
@@ -170,7 +170,7 @@ export function useVolumePatternTarget({
   );
 
   const patterns = useMemo(
-    () => (target ? volumeIxPatternsFromConfig(target.metric_config) : savedPatterns),
+    () => (target ? ixPatternsFromConfig(target.metric_config) : savedPatterns),
     [target, savedPatterns],
   );
 
@@ -190,7 +190,7 @@ export function useVolumePatternTarget({
   const toggle = useCallback(
     (labels: readonly string[]) => {
       if (!target || labels.length === 0) return;
-      const next = togglePattern(volumeIxPatternsFromConfig(target.metric_config), labels);
+      const next = togglePattern(ixPatternsFromConfig(target.metric_config), labels);
       setError(null);
       // Fire-and-report: the mutation invalidates `Fingerprint`, which re-derives the
       // chart's keys AND refetches the metric series, so both redraw from the row

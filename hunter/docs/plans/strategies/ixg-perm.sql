@@ -1,7 +1,7 @@
 -- Permissions at the burst, looking only backward.
 -- Inside door-passed named families only. Metrics match the engine:
 --   m_flow_window(10/30).buy/sell/gross_flow/net_flow
---   m_snapshot.liquidity = vsol - 30
+--   m_state.liquidity = vsol - 30
 --   m_price_lifetime.trail / rise
 --   age from tokens.created_at
 -- Quiet window is [t0-W, t0): the burst's own prints are out.

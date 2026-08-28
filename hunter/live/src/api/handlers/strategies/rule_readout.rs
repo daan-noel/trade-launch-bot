@@ -43,7 +43,7 @@ use hunter_engine::arm::CompiledRule;
 use hunter_engine::event::{LoadedRule, RuleId};
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::evaluator::ConditionExpr;
-use hunter_engine::metrics::flow_split::{
+use hunter_engine::metrics::flow_ix::{
     ix_hash_from_labels_value, marker_bits_from_labels_value, wallet_hash, FlowPatterns,
 };
 use hunter_engine::metrics::{metric_spec, MetricId, Side, TradeLite};
@@ -397,7 +397,7 @@ async fn resolve_rule(
 /// The flow context a replay classifies volume vs organic with — the rule's
 /// fingerprint patterns and the token's creator wallet.
 ///
-/// Without it every `m_flow_split` condition reads `NaN` and — worse — the creator's
+/// Without it every `m_flow_ix` condition reads `NaN` and — worse — the creator's
 /// dev buy and dev dump, usually a token's two largest single flows, classify as
 /// organic. Neither half is fatal on its own: an unconfigured fingerprint just omits
 /// the flow columns, and a missing creator is logged rather than silently folded.
@@ -430,7 +430,7 @@ async fn load_flow_ctx(
     (patterns, creator_wallet_hash)
 }
 
-/// The token's creation-slot buy total, for `m_snapshot.first_slot_buy`.
+/// The token's creation-slot buy total, for `m_state.first_slot_buy`.
 ///
 /// Read from `tokens_info` — the same row the live engine's `FirstSlotSettled` seed
 /// is derived from — so the replayed readout and the engine agree on the number. `None`

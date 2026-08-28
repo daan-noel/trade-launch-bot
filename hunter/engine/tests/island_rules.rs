@@ -24,7 +24,7 @@ use hunter_engine::rule_params::{RuleParams, SideConditions};
 const ABSORPTION: &str = r#"{
   "stop_loss": 5,
   "entry": {
-    "m_snapshot": {
+    "m_state": {
       "time": [{"operator": ">", "value": 5}],
       "liquidity": [{"operator": ">=", "value": 3}, {"operator": "<=", "value": 64}]
     },
@@ -54,7 +54,7 @@ const ABSORPTION: &str = r#"{
 const CONTINUATION: &str = r#"{
   "stop_loss": 20,
   "entry": {
-    "m_snapshot": {
+    "m_state": {
       "time": [{"operator": ">", "value": 5}],
       "liquidity": [{"operator": ">=", "value": 3}]
     },
@@ -78,7 +78,7 @@ const CONTINUATION: &str = r#"{
 const QUIET_PAUSE: &str = r#"{
   "stop_loss": 5,
   "entry": {
-    "m_snapshot": {
+    "m_state": {
       "time": [{"operator": ">", "value": 5}],
       "liquidity": [{"operator": ">=", "value": 3}]
     },
@@ -95,7 +95,7 @@ const QUIET_PAUSE: &str = r#"{
 const A_AND_B: &str = r#"{
   "stop_loss": 5,
   "entry": {
-    "m_snapshot": {
+    "m_state": {
       "time": [{"operator": ">", "value": 5}],
       "liquidity": [{"operator": ">=", "value": 3}]
     },

@@ -170,7 +170,7 @@ async fn run_loop(
     let buy_journal = super::SubmittedBuyJournal::new();
 
     let mut state = EngineState::new();
-    // `m_snapshot.prior_launches` is a running tally over `TokenCreated`, so a fresh
+    // the `prior_launches` fingerprint axis is a running tally over `TokenCreated`, so a fresh
     // process would read EVERY creator as a first-time launcher until it had seen them
     // launch again — which does not weaken a `prior_launches = 0` rule, it inverts it
     // into "match everything". One query at boot is what makes a restart safe.
@@ -186,7 +186,7 @@ async fn run_loop(
             Ok(rows) => {
                 let n = rows.len();
                 state.prime_creator_launches(rows.into_iter().map(|(w, c)| {
-                    (hunter_engine::metrics::flow_split::wallet_hash(w.as_str()), c.max(0) as u32)
+                    (hunter_engine::metrics::flow_ix::wallet_hash(w.as_str()), c.max(0) as u32)
                 }));
                 tracing::info!(creators = n, "prior_launches primed");
             }

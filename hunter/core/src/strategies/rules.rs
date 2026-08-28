@@ -20,7 +20,7 @@ use crate::storage::repositories::rule_repo::RuleRepo;
 
 use super::rule_params::RuleParams;
 
-pub use hunter_engine::metrics::flow_split::flow_unconfigured_warning;
+pub use hunter_engine::metrics::flow_ix::flow_unconfigured_warning;
 
 /// Outcome of a rule CRUD write, mapped to an HTTP status by the calling edge.
 #[derive(Debug)]
@@ -317,7 +317,7 @@ pub async fn create(repo: &RuleRepo, draft: &RuleDraft) -> Result<StrategyRule, 
 }
 
 /// [`create`] plus a soft warning when the rule references flow metrics but the
-/// fingerprint has no `m_flow_split` config (metrics will be `NaN` until set).
+/// fingerprint has no `m_flow_ix` config (metrics will be `NaN` until set).
 pub async fn create_with_fp_check(
     repo: &RuleRepo,
     fp_repo: &FingerprintRepo,
@@ -411,7 +411,7 @@ mod generic_tests {
             "take_profit": 100,
             "stop_loss": 30,
             "entry": {
-                "m_snapshot": {
+                "m_state": {
                     "time": [
                         {"operator": ">", "value": 10},
                         {"operator": "<", "value": 30}
@@ -479,7 +479,7 @@ mod generic_tests {
     fn generic_params_registry_checked() {
         // A typo'd metric can't silently no-op — it fails the save.
         let d = generic_draft(json!({
-            "entry": {"m_snapshot": {"tyme": [{"operator": ">", "value": 1}]}}
+            "entry": {"m_state": {"tyme": [{"operator": ">", "value": 1}]}}
         }));
         assert!(matches!(build_rule(&d), Err(e) if e.contains("tyme")));
 
@@ -489,7 +489,7 @@ mod generic_tests {
         // explicit OR arm is itself unsatisfiable — the multi-arm form the engine keeps
         // as authored (`multi_arm_all_unsat_still_rejected`).
         let d = generic_draft(json!({
-            "entry": {"m_snapshot": {"time": [
+            "entry": {"m_state": {"time": [
                 [{"operator": ">", "value": 30}, {"operator": "<", "value": 10}],
                 [{"operator": ">", "value": 50}, {"operator": "<", "value": 20}]
             ]}}

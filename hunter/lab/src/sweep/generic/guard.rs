@@ -19,7 +19,7 @@ use hunter_engine::event::{ExitReason, LoadedRule, RuleId, TradeMode};
 use hunter_engine::fingerprint::{Fingerprint, FingerprintId};
 use hunter_engine::grouping::TokenFingerprint;
 use hunter_engine::metrics::evaluator::{Condition, Operator};
-use hunter_engine::metrics::flow_split::FlowPatterns;
+use hunter_engine::metrics::flow_ix::FlowPatterns;
 use hunter_engine::metrics::{MetricGroupId, MetricId, Ts};
 use hunter_engine::rule_params::{ExitStage, GroupConditions, RuleParams, SideConditions};
 
@@ -250,13 +250,13 @@ fn assert_parity(label: &str, params: RuleParams, tokens: &[(CorpusToken, Replay
 }
 
 /// Like [`assert_parity`], but configures fingerprint `metric_config` + seeds the
-/// scan's flow state from the same `volume_ix_patterns` (V2.3 drift lock).
+/// scan's flow state from the same `ix_patterns` (V2.3 drift lock).
 fn assert_parity_with_flow(
     label: &str,
     params: RuleParams,
     tokens: &[(CorpusToken, ReplayToken)],
     as_of: Ts,
-    volume_ix_patterns: Option<Vec<Vec<String>>>,
+    ix_patterns: Option<Vec<Vec<String>>>,
 ) {
     for fm in FILL_MODELS {
         assert_parity_under(
@@ -264,7 +264,7 @@ fn assert_parity_with_flow(
             params.clone(),
             tokens,
             as_of,
-            volume_ix_patterns.clone(),
+            ix_patterns.clone(),
             fm,
         );
     }
@@ -277,17 +277,17 @@ fn assert_parity_under(
     params: RuleParams,
     tokens: &[(CorpusToken, ReplayToken)],
     as_of: Ts,
-    volume_ix_patterns: Option<Vec<Vec<String>>>,
+    ix_patterns: Option<Vec<Vec<String>>>,
     fill_model: FillModel,
 ) {
     let rule = loaded(params);
     let mut fp = fingerprint();
-    if let Some(patterns) = &volume_ix_patterns {
+    if let Some(patterns) = &ix_patterns {
         fp.metric_config = serde_json::json!({
-            "m_flow_split": { "volume_ix_patterns": patterns }
+            "m_flow_ix": { "ix_patterns": patterns }
         });
     }
-    let flow_patterns = volume_ix_patterns
+    let flow_patterns = ix_patterns
         .as_ref()
         .map(|p| FlowPatterns::from_label_sequences(p));
     let pricing = pricing_for(fill_model);
@@ -426,7 +426,7 @@ fn scan_matches_replay_entry_gated_rule() {
     let mut gc = GroupConditions::default();
     gc.metrics.insert(MetricId::Time, vec![vec![Condition { operator: Operator::Gt, value: 2.0 }]]);
     let mut entry = SideConditions::default();
-    entry.0.insert(MetricGroupId::Snapshot, vec![gc]);
+    entry.0.insert(MetricGroupId::State, vec![gc]);
     let params =
         RuleParams { take_profit: Some(20.0), stop_loss: None, entry: Some(entry), exit: None, ..RuleParams::default() };
     assert_parity("entry_gate", params, &corpus(), at(1000.0));
@@ -784,7 +784,7 @@ fn scan_matches_replay_time_gate_across_gap() {
     let mut gc = GroupConditions::default();
     gc.metrics.insert(MetricId::Time, vec![vec![Condition { operator: Operator::Gt, value: 3600.0 }]]);
     let mut entry = SideConditions::default();
-    entry.0.insert(MetricGroupId::Snapshot, vec![gc]);
+    entry.0.insert(MetricGroupId::State, vec![gc]);
     let params =
         RuleParams { take_profit: Some(5.0), stop_loss: None, entry: Some(entry), exit: None, ..RuleParams::default() };
     assert_parity("time_gate_gap", params, &gappy_corpus(), at(100_000.0));
@@ -872,13 +872,13 @@ fn scan_matches_replay_window_flow_across_gap() {
 /// Corpus for volume/organic flow split — labeled trades + configured patterns.
 fn flow_corpus() -> Vec<(CorpusToken, ReplayToken)> {
     vec![
-        // Enters on volume-side buy (vol_net≥3), exits when organic window goes quiet.
+        // Enters on volume-side buy (tagged_net≥3), exits when organic window goes quiet.
         token(
             "vol_entry",
             vec![
-                // Organic first — not enough vol_net to enter.
+                // Organic first — not enough tagged_net to enter.
                 ct_flow(1.0, true, 1.0, 1.0, 100.0, None, Some("org1")),
-                // Volume-side pattern match → vol_net=3 → entry.
+                // Volume-side pattern match → tagged_net=3 → entry.
                 ct_flow(2.0, true, 3.0, 1.1, 103.0, Some(&["vol"]), Some("vol1")),
             ],
         ),
@@ -894,25 +894,25 @@ fn flow_corpus() -> Vec<(CorpusToken, ReplayToken)> {
 }
 
 #[test]
-fn scan_matches_replay_flow_split_entry_and_window_exit() {
-    // Mirror the engine golden: enter on vol_net > 2, exit when trailing
-    // nonvol_gross (5 s) ≈ 0. Patterns + scan FP id must stay aligned with replay.
+fn scan_matches_replay_flow_ix_entry_and_window_exit() {
+    // Mirror the engine golden: enter on tagged_net > 2, exit when trailing
+    // untagged_gross (5 s) ≈ 0. Patterns + scan FP id must stay aligned with replay.
     let mut entry_gc = GroupConditions::default();
     entry_gc.metrics.insert(
-        MetricId::VolNet,
+        MetricId::TaggedNet,
         vec![vec![Condition { operator: Operator::Gt, value: 2.0 }]],
     );
     let mut entry = SideConditions::default();
-    entry.0.insert(MetricGroupId::FlowSplit, vec![entry_gc]);
+    entry.0.insert(MetricGroupId::FlowIx, vec![entry_gc]);
 
     let mut exit_gc = GroupConditions::default();
     exit_gc.strict.insert("window_size_sec".to_string(), 5.0);
     exit_gc.metrics.insert(
-        MetricId::WinNonvolGross,
+        MetricId::WinUntaggedGross,
         vec![vec![Condition { operator: Operator::Eq, value: 0.0 }]],
     );
     let mut exit = SideConditions::default();
-    exit.0.insert(MetricGroupId::FlowSplitWindow, vec![exit_gc]);
+    exit.0.insert(MetricGroupId::FlowIxWindow, vec![exit_gc]);
 
     let params = RuleParams {
         take_profit: None,
@@ -923,7 +923,7 @@ fn scan_matches_replay_flow_split_entry_and_window_exit() {
     };
     let patterns = vec![vec!["vol".to_string()]];
     assert_parity_with_flow(
-        "flow_split",
+        "flow_ix",
         params,
         &flow_corpus(),
         at(1000.0),
@@ -995,7 +995,7 @@ fn simd_exit_scan_matches_scalar_across_paths() {
         let mut gc = GroupConditions::default();
         gc.metrics.insert(MetricId::Time, vec![vec![Condition { operator: Operator::Gt, value: 2.0 }]]);
         let mut entry = SideConditions::default();
-        entry.0.insert(MetricGroupId::Snapshot, vec![gc]);
+        entry.0.insert(MetricGroupId::State, vec![gc]);
         RuleParams { take_profit: Some(20.0), stop_loss: Some(60.0), entry: Some(entry), exit: None, ..RuleParams::default() }
     };
 
@@ -1121,7 +1121,7 @@ fn index_exit_scan_matches_scalar_across_paths() {
             vec![vec![Condition { operator: Operator::Gt, value: 2.0 }]],
         );
         let mut entry = SideConditions::default();
-        entry.0.insert(MetricGroupId::Snapshot, vec![gc]);
+        entry.0.insert(MetricGroupId::State, vec![gc]);
         RuleParams {
             take_profit: Some(20.0),
             stop_loss: Some(60.0),
@@ -1398,7 +1398,7 @@ fn scan_matches_replay_multi_token_frozen_tail() {
     // path, and grid-horizon-aware so no mid-history tick is dropped). The `held` clock
     // is locked separately in `held_frozen_tail_matches_across_exit_paths` (its position
     // scope needs a tail crossing, not a mid-gap one).
-    let params = exit_metric(MetricGroupId::Snapshot, MetricId::Time, Operator::Gt, 1000.0);
+    let params = exit_metric(MetricGroupId::State, MetricId::Time, Operator::Gt, 1000.0);
 
     for fm in FILL_MODELS {
         let pricing = pricing_for(fm);
@@ -1544,10 +1544,10 @@ fn fold_gives_each_exit_variant_its_own_entry() {
     // all) — so the class spans every shape the shared walk has to serve.
     let model = AxesModel::resolve(&AxesRequest {
         axes: vec![
-            metric_axis(AxisSide::Entry, "m_snapshot", "time", Operator::Gte, vec![Some(1.0)]),
+            metric_axis(AxisSide::Entry, "m_state", "time", Operator::Gte, vec![Some(1.0)]),
             metric_axis(
                 AxisSide::Exit,
-                "m_snapshot",
+                "m_state",
                 "liquidity",
                 Operator::Lt,
                 vec![Some(40.0), Some(100.0), Some(200.0)],

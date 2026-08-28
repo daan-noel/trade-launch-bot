@@ -1,10 +1,10 @@
 import { Badge } from 'components/ui/Badge';
 import { Select } from 'components/ui/Select';
-import type { VolumePatternTarget } from 'hooks/useVolumePatternTarget';
+import type { IxPatternTarget } from 'hooks/useIxPatternTarget';
 
 /**
  * The strip above a chart's trades table: which fingerprint's
- * `volume_ix_patterns` the Vol badges edit, and what a click there costs.
+ * `ix_patterns` the Vol badges edit, and what a click there costs.
  *
  * There is no staging step. `metric_config` is not part of fingerprint identity,
  * so a write lands on the same row and every rule bound to it starts classifying
@@ -16,11 +16,11 @@ import type { VolumePatternTarget } from 'hooks/useVolumePatternTarget';
  * away from the host — are both called out, because from the badge alone they are
  * indistinguishable from editing the row you are looking at.
  */
-export function VolumePatternBar({
+export function IxPatternBar({
   target,
   readOnly = false,
 }: {
-  target: VolumePatternTarget;
+  target: IxPatternTarget;
   /** A stored run's frozen snapshot — its numbers were computed under those
    *  patterns, so they are not this chart's to change. */
   readOnly?: boolean;
@@ -29,7 +29,7 @@ export function VolumePatternBar({
     return (
       <span
         className="text-[10px] uppercase tracking-wide text-text-dim/60"
-        title="This chart shows a stored run's own volume_ix_patterns — the numbers were computed under them, so they are not editable here."
+        title="This chart shows a stored run's own ix_patterns — the numbers were computed under them, so they are not editable here."
       >
         run snapshot
       </span>

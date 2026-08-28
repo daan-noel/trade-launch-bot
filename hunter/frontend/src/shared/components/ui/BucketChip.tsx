@@ -27,7 +27,7 @@ export function BucketChip({
   className,
 }: {
   width?: number;
-  /** Exact-amount precision (`SolPrecision::Exact` / NULL width) — overrides `width`. */
+  /** Exact-amount precision (a partition edge pinning one value) — overrides `width`. */
   exact?: boolean;
   /** Tooltip override; defaults to the shared match explanation for the mode. */
   title?: string;

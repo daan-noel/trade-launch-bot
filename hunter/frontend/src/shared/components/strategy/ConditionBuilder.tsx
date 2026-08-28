@@ -32,8 +32,8 @@ import {
   ruleConditionRowError,
   ruleRowEnabled,
   ruleRowIsTrailing,
-  ruleRowBurstSpec,
-  ruleRowNeedsBurst,
+  ruleRowSliceSpec,
+  ruleRowNeedsSlice,
   ruleRowNeedsWindow,
   ruleRowUnit,
   setRowInstanceStrict,
@@ -41,13 +41,13 @@ import {
   type RuleConditionSide,
 } from 'lib/strategy/ruleConditionRows';
 import {
-  burstSizeParam,
+  sliceSizeParam,
   isDiscreteUnit,
   sizeParam as sizeParamOf,
   unitSuffix as windowUnitSuffix,
   WINDOW_LAG_PARAM,
   WINDOW_UNITS,
-  withoutBurstAxis,
+  withoutSliceAxis,
   type WindowUnit,
 } from 'lib/strategy/windowSpec';
 import { ConditionInput } from './ConditionInput';
@@ -267,10 +267,10 @@ function ConditionRow({
   const group = registry.groups.find((g) => g.name === row.group);
   const metric = group?.metrics.find((m) => m.name === row.metric);
   const needsWindow = ruleRowNeedsWindow(row, registry);
-  // A second trailing-window axis (`m_flow_burst`) — asked of the registry, not
+  // A second trailing-window axis (`m_flow_window`) — asked of the registry, not
   // hardcoded per group, so a future two-window basis gets its control for free
   // rather than silently round-tripping with no way to edit it.
-  const needsBurst = ruleRowNeedsBurst(row, registry);
+  const needsSlice = ruleRowNeedsSlice(row, registry);
   // Both axes count in the ONE unit the row picks: a burst in slots over a
   // reference in seconds is a ratio across two clocks, which the backend rejects.
   const windowUnit = ruleRowUnit(row);
@@ -283,9 +283,9 @@ function ConditionRow({
   // 20 prints behind this one. The burst placeholder is the slice inside it, and on
   // a print row `1` is this transaction alone — the span "10 SOL in one trade" needs.
   const windowHint = windowUnit === 'slot' ? '30' : windowUnit === 'print' ? '20' : '10';
-  const burstHint = windowUnit === 'sec' ? '3' : '1';
-  const burstValue = row.strict?.[burstSizeParam(windowUnit)];
-  const burstText = burstValue == null ? '' : String(burstValue);
+  const sliceHint = windowUnit === 'sec' ? '3' : '1';
+  const sliceValue = row.strict?.[sliceSizeParam(windowUnit)];
+  const sliceText = sliceValue == null ? '' : String(sliceValue);
   const isTrailing = ruleRowIsTrailing(row);
   const armValue = row.strict?.arm_above_pct;
   const armText = armValue == null ? '' : String(armValue);
@@ -302,26 +302,26 @@ function ConditionRow({
     if (!Number.isFinite(v)) return;
     onPatchStrict({ ...row.strict, arm_above_pct: v });
   };
-  const onBurst = (text: string) => {
+  const onSlice = (text: string) => {
     // Only ONE burst size param may survive, in the row's own unit — leaving a
     // sibling behind is the "two spans claiming one axis" the backend rejects at save.
-    const rest = withoutBurstAxis(row.strict);
+    const rest = withoutSliceAxis(row.strict);
     if (text.trim() === '') {
       onPatchStrict(rest);
       return;
     }
     const v = Number(text);
     if (!Number.isFinite(v)) return;
-    onPatchStrict({ ...rest, [burstSizeParam(windowUnit)]: v });
+    onPatchStrict({ ...rest, [sliceSizeParam(windowUnit)]: v });
   };
   // Flipping the unit RE-SPELLS the burst param rather than reinterpreting it: the
   // number the user typed is the span they meant, and it now counts in the new unit.
   const onUnit = (next: WindowUnit) => {
-    const burst = ruleRowBurstSpec(row)?.size;
-    const rest = withoutBurstAxis(row.strict);
+    const burst = ruleRowSliceSpec(row)?.size;
+    const rest = withoutSliceAxis(row.strict);
     onPatch({
       windowUnit: next,
-      strict: burst == null ? rest : { ...rest, [burstSizeParam(next)]: burst },
+      strict: burst == null ? rest : { ...rest, [sliceSizeParam(next)]: burst },
     });
   };
   // Only drives the input's unit adornment; the field is disabled until a metric is
@@ -334,7 +334,7 @@ function ConditionRow({
     // drops them. The burst axis goes with them: carried over from the previous
     // group it is a param the new group does not declare, which the backend rejects
     // as unknown at save rather than ignoring.
-    const rest = withoutBurstAxis(row.strict);
+    const rest = withoutSliceAxis(row.strict);
     onPatch({
       group: name,
       metric: g?.metrics[0]?.name ?? '',
@@ -457,17 +457,17 @@ function ConditionRow({
         </Cell>
       )}
 
-      {needsBurst && (
-        <Cell label={`burst ${uSuffix}`} tip={STRICT_PARAM_HELP[burstSizeParam(windowUnit)]}>
+      {needsSlice && (
+        <Cell label={`burst ${uSuffix}`} tip={STRICT_PARAM_HELP[sliceSizeParam(windowUnit)]}>
           <Input
             fieldSize="sm"
             type="number"
             min={uMin}
             step={uStep}
-            value={burstText}
+            value={sliceText}
             disabled={disabled}
-            onChange={(e) => onBurst(e.target.value)}
-            placeholder={burstHint}
+            onChange={(e) => onSlice(e.target.value)}
+            placeholder={sliceHint}
             className="w-16"
           />
         </Cell>

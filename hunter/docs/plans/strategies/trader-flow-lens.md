@@ -3,7 +3,7 @@
 ## The gap
 
 The chart stack splits trade flow into **vol / non-vol** from a fingerprint's
-`metric_config.m_flow_split.volume_ix_patterns`: an exact ordered `ix_labels`
+`metric_config.m_flow_ix.ix_patterns`: an exact ordered `ix_labels`
 sequence is "volume", everything else is organic. That is the engine's own
 classification, so the set lives on the row rules are bound to.
 
@@ -25,7 +25,7 @@ One classifier, **two owners** of the pattern set.
 `group` labels a subset (a launch client / aggregator name) so a lens narrows to
 one of them without re-pasting. The classifier never sees it: a pattern's
 identity is its ordered `ix_labels` array, `JSON.stringify`d — the same key
-`lib/flow/classifyFlow.ts` and `hunter_engine::metrics::flow_split` match on.
+`lib/flow/classifyFlow.ts` and `hunter_engine::metrics::flow_ix` match on.
 
 Crossing from study to engine is one explicit copy (**Copy to fingerprint**),
 never a side effect of editing a lens.

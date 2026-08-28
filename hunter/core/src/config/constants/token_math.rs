@@ -92,7 +92,7 @@ pub fn lamports_to_sol(lamports: i64) -> f64 {
 /// Postgres `REAL` / Rust `f32` round-trips turn `0.1` into
 /// `0.10000000149011612` when widened back to `f64`. Formatting as `f32` and
 /// re-parsing recovers the shortest decimal (`0.1`). Use for knobs like
-/// `bucket_size_amount` / `bucket_width_sol` — **not** for prices or PnL that
+/// a partition edge or a display width — **not** for prices or PnL that
 /// need the full `f64` mantissa.
 pub fn tidy_sol_decimal(sol: f64) -> f64 {
     if !sol.is_finite() {

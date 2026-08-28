@@ -25,7 +25,7 @@ export interface WindowSpec {
   unit: WindowUnit;
 }
 
-// ── Param names (SSOT: `hunter_engine::metrics` / `metrics::flow_burst`) ──────
+// ── Param names (SSOT: `hunter_engine::metrics` / `metrics::flow_slice`) ──────
 
 /** Size of a wall-clock window. */
 export const WINDOW_SEC_PARAM = 'window_size_sec';
@@ -36,12 +36,12 @@ export const WINDOW_SLOT_PARAM = 'window_size_slots';
 export const WINDOW_PRINT_PARAM = 'window_size_prints';
 /** Units back from now the window ends. Shared by both axes of a two-window group. */
 export const WINDOW_LAG_PARAM = 'window_lag';
-/** `m_flow_burst`'s second axis, in seconds. */
-export const BURST_PARAM = 'burst_size_sec';
-/** `m_flow_burst`'s second axis, in slots. Mutually exclusive with {@link BURST_PARAM}. */
-export const BURST_SLOT_PARAM = 'burst_size_slots';
-/** `m_flow_burst`'s second axis, in prints. Mutually exclusive with the other two. */
-export const BURST_PRINT_PARAM = 'burst_size_prints';
+/** `m_flow_window`'s second axis, in seconds. */
+export const SLICE_PARAM = 'slice_size_sec';
+/** `m_flow_window`'s second axis, in slots. Mutually exclusive with {@link SLICE_PARAM}. */
+export const SLICE_SLOT_PARAM = 'slice_size_slots';
+/** `m_flow_window`'s second axis, in prints. Mutually exclusive with the other two. */
+export const SLICE_PRINT_PARAM = 'slice_size_prints';
 
 /** The reference axis's size params — one per unit, in {@link WINDOW_UNITS} order.
  *  Exactly one of these is set on a dynamic group instance. */
@@ -51,16 +51,16 @@ export const WINDOW_SIZE_PARAMS = [
   WINDOW_PRINT_PARAM,
 ] as const;
 
-/** `m_flow_burst`'s second-axis size params — one per unit, same order and same
+/** `m_flow_window`'s second-axis size params — one per unit, same order and same
  *  "exactly one" rule, and it must resolve to the SAME unit as the reference. */
-export const BURST_SIZE_PARAMS = [BURST_PARAM, BURST_SLOT_PARAM, BURST_PRINT_PARAM] as const;
+export const SLICE_SIZE_PARAMS = [SLICE_PARAM, SLICE_SLOT_PARAM, SLICE_PRINT_PARAM] as const;
 
 /** Every window param — the keys a strict bag owns that are NOT a metric and NOT
  *  something the editor carries opaquely. */
 export const WINDOW_PARAMS = [
   ...WINDOW_SIZE_PARAMS,
   WINDOW_LAG_PARAM,
-  ...BURST_SIZE_PARAMS,
+  ...SLICE_SIZE_PARAMS,
 ] as const;
 
 /** The size param a unit spells itself on the reference axis. */
@@ -73,8 +73,8 @@ export function sizeParam(unit: WindowUnit): string {
 }
 
 /** The burst-axis size param for a unit. */
-export function burstSizeParam(unit: WindowUnit): string {
-  return unit === 'slot' ? BURST_SLOT_PARAM : unit === 'print' ? BURST_PRINT_PARAM : BURST_PARAM;
+export function sliceSizeParam(unit: WindowUnit): string {
+  return unit === 'slot' ? SLICE_SLOT_PARAM : unit === 'print' ? SLICE_PRINT_PARAM : SLICE_PARAM;
 }
 
 /** Short unit suffix — `s` / `sl` / `p`. Must stay identical to the Rust
@@ -100,7 +100,7 @@ export function isDiscreteUnit(unit: WindowUnit): boolean {
  *  Exactly ONE may survive a write — the row's unit picks it — so a caller that
  *  re-spells an axis must clear the whole axis first: a sibling left behind is the
  *  "two spans claiming one axis" the backend rejects at save. Written against
- *  {@link WINDOW_SIZE_PARAMS} / {@link BURST_SIZE_PARAMS} rather than a destructure
+ *  {@link WINDOW_SIZE_PARAMS} / {@link SLICE_SIZE_PARAMS} rather than a destructure
  *  per unit, so a new basis cannot be forgotten at one of these sites. */
 export function withoutAxis(
   strict: Record<string, number> | undefined,
@@ -111,11 +111,11 @@ export function withoutAxis(
   return out;
 }
 
-/** A strict bag with `m_flow_burst`'s whole second axis removed. */
-export function withoutBurstAxis(
+/** A strict bag with `m_flow_window`'s whole second axis removed. */
+export function withoutSliceAxis(
   strict: Record<string, number> | undefined,
 ): Record<string, number> {
-  return withoutAxis(strict, BURST_SIZE_PARAMS);
+  return withoutAxis(strict, SLICE_SIZE_PARAMS);
 }
 
 /**
@@ -127,7 +127,7 @@ export function withoutBurstAxis(
  * lag is the group's — a two-window group is two spans on ONE clock.
  *
  * `axis` maps a unit to that axis's size param: {@link sizeParam} for the reference
- * span, {@link burstSizeParam} for `m_flow_burst`'s second one.
+ * span, {@link sliceSizeParam} for `m_flow_window`'s second one.
  */
 export function windowSpecFromStrict(
   strict: Record<string, number> | undefined,
@@ -143,10 +143,10 @@ export function windowSpecFromStrict(
 }
 
 /** The burst axis of a group instance, if it authors one. */
-export function burstSpecFromStrict(
+export function sliceSpecFromStrict(
   strict: Record<string, number> | undefined,
 ): WindowSpec | null {
-  return windowSpecFromStrict(strict, burstSizeParam);
+  return windowSpecFromStrict(strict, sliceSizeParam);
 }
 
 /**

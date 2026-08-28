@@ -71,7 +71,7 @@ interface TokenTradeChartProps {
   /** Visible wall-clock window for sibling panes (time-grouping mode only). */
   onVisibleTimeRangeChange?: (range: { from: number; to: number } | null) => void;
   /**
-   * Fingerprint `volume_ix_patterns` keys for the vol/non-vol overlay + Vol
+   * Fingerprint `ix_patterns` keys for the vol/non-vol overlay + Vol
    * badge. Omit/empty still draws the overlay (creator-vs-rest split); it only
    * hides the per-trade Vol badge, which is a structural match by definition.
    */

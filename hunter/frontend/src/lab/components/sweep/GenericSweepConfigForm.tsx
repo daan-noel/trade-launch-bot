@@ -27,7 +27,7 @@ import {
 import { formatIxLabelsText } from 'lib/ixLabels';
 import { FingerprintGroupPicker } from './FingerprintGroupPicker';
 import { GenericAxisBuilder } from './GenericAxisBuilder';
-import { VolumeIxPatternsEditor } from 'components/strategy/VolumeIxPatternsEditor';
+import { IxPatternsEditor } from 'components/strategy/IxPatternsEditor';
 import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeControl';
 import {
   ScaleOutBuilder,
@@ -178,9 +178,9 @@ interface GenericSweepConfig {
   ramReserveMb: number;
   /** Opt into the AVX-512 vectorized exit scan (lab-only; host-gated server-side). */
   useAvx512: boolean;
-  /** Corpus-wide volume-ix patterns when axes reference m_flow_split /
-   *  m_flow_split_window (not m_flow_lifetime / m_flow_window). */
-  volumeIxPatterns: string[][];
+  /** Corpus-wide volume-ix patterns when axes reference m_flow_ix /
+   *  m_flow_ix_window (not m_flow_lifetime / m_flow_window). */
+  ixPatterns: string[][];
   /** Which trade in the fill window prices each leg. Unlike the RAM/AVX knobs this
    *  changes the RESULT, so it is persisted on the run and shown on its header. */
   fillModel: FillModelId;
@@ -206,7 +206,7 @@ function defaultConfig(): GenericSweepConfig {
     fieldFiltersText: {},
     // A sensible starter grid: TP × SL, plus a time-since-creation entry gate.
     axisRows: [
-      { ...newAxisRow('metric'), side: 'entry', group: 'm_snapshot', metric: 'time', operator: '>', valuesText: '5, 10' },
+      { ...newAxisRow('metric'), side: 'entry', group: 'm_state', metric: 'time', operator: '>', valuesText: '5, 10' },
       newAxisRow('take_profit'),
       newAxisRow('stop_loss'),
     ],
@@ -223,7 +223,7 @@ function defaultConfig(): GenericSweepConfig {
     // Default OFF: the scalar scan is the SSOT. Flip to `true` once the workstation
     // A/B (plan §P5) confirms the speedup on your corpus — the result is identical.
     useAvx512: false,
-    volumeIxPatterns: [],
+    ixPatterns: [],
     // New runs default to the pair the fill-sensitivity analysis was measured under:
     // the next print after the signal, with slippage charged ONCE (in the fill price,
     // not again in the cost model). The old worst-case + fee+slippage pair is still
@@ -239,7 +239,7 @@ function defaultConfig(): GenericSweepConfig {
 }
 
 function axesReferenceFlow(rows: GenericAxisRow[]): boolean {
-  return rows.some((r) => r.kind === 'metric' && (r.group === 'm_flow_split' || r.group === 'm_flow_split_window'));
+  return rows.some((r) => r.kind === 'metric' && (r.group === 'm_flow_ix' || r.group === 'm_flow_ix_window'));
 }
 
 function isoToLocalInput(iso: string | null): string {
@@ -313,7 +313,7 @@ function runToConfig(run: GroupedSweepRunRecord, defaults: GenericSweepConfig): 
     // The run's own partition, never the form's: re-running at a different one
     // would score windows the stored groups never showed.
     partition: Object.fromEntries(run.partition ?? []),
-    volumeIxPatterns: run.volume_ix_patterns ?? defaults.volumeIxPatterns,
+    ixPatterns: run.ix_patterns ?? defaults.ixPatterns,
     // Legacy rows (null) were computed under what the sweep hardcoded then — restore
     // THAT, not today's default, or a "re-run" would quietly reprice the comparison.
     fillModel: run.fill_model ?? 'worst_case',
@@ -385,9 +385,9 @@ export function GenericSweepConfigForm({
           Math.max(1, handoff.tokenCap || prev.tokenCap || DEFAULTS.tokenCap),
         ),
         buyAmountSol: tidySolDecimal(handoff.buyAmountSol || prev.buyAmountSol || DEFAULTS.buyAmountSol),
-        volumeIxPatterns: handoff.volumeIxPatterns?.length
-          ? handoff.volumeIxPatterns
-          : prev.volumeIxPatterns,
+        ixPatterns: handoff.ixPatterns?.length
+          ? handoff.ixPatterns
+          : prev.ixPatterns,
         ixLabelsFilter: handoff.ixLabelsFilter || prev.ixLabelsFilter || '',
         seedFingerprintId: handoff.fingerprintId ?? prev.seedFingerprintId,
         groupBy: handoff.fingerprintId ? [] : prev.groupBy ?? DEFAULTS.groupBy,
@@ -428,7 +428,7 @@ export function GenericSweepConfigForm({
     partition,
     ramReserveMb,
     useAvx512,
-    volumeIxPatterns,
+    ixPatterns,
     fillModel,
     costModel,
     seedFingerprintId,
@@ -510,7 +510,7 @@ export function GenericSweepConfigForm({
   const needsFlowPatterns = axesReferenceFlow(axisRows);
   const flowPatternsOk =
     !needsFlowPatterns ||
-    volumeIxPatterns.some((p) => p.some((s) => s.trim().length > 0));
+    ixPatterns.some((p) => p.some((s) => s.trim().length > 0));
 
   const projected = useMemo(() => {
     if (methodKind !== 'grid') return Math.max(1, randomN);
@@ -587,8 +587,8 @@ export function GenericSweepConfigForm({
       ram_reserve_mb: ramReserveMb !== DEFAULT_RAM_RESERVE_MB ? ramReserveMb : undefined,
       // Omit-when-default (same shape as ram_reserve_mb): only send when opted in.
       use_avx512: useAvx512 ? true : undefined,
-      volume_ix_patterns: needsFlowPatterns
-        ? volumeIxPatterns
+      ix_patterns: needsFlowPatterns
+        ? ixPatterns
             .map((p) => p.map((s) => s.trim()).filter(Boolean))
             .filter((p) => p.length > 0)
         : undefined,
@@ -608,7 +608,7 @@ export function GenericSweepConfigForm({
         : fieldFilterError
           ? `Fix the value filter — ${fieldFilterError}`
           : !flowPatternsOk
-            ? 'Flow axes require at least one volume_ix_patterns row'
+            ? 'Flow axes require at least one ix_patterns row'
             : 'Run the grouped sweep';
 
   return (
@@ -887,15 +887,15 @@ export function GenericSweepConfigForm({
           <Accordion title="Volume-ix patterns (flow axes)" defaultOpen>
             <div className="flex flex-col gap-2">
               <span className="text-[11px] text-text-dim">
-                <LabelTip tip={FINGERPRINT_FIELD_HELP.volume_ix_patterns}>
+                <LabelTip tip={FINGERPRINT_FIELD_HELP.ix_patterns}>
                   Corpus-wide patterns for this run
                 </LabelTip>
-                {' — '}required when axes use m_flow_split / m_flow_split_window. Promote copies
+                {' — '}required when axes use m_flow_ix / m_flow_ix_window. Promote copies
                 them into the fingerprint.
               </span>
-              <VolumeIxPatternsEditor
-                patterns={volumeIxPatterns}
-                onChange={(p) => setField('volumeIxPatterns', p)}
+              <IxPatternsEditor
+                patterns={ixPatterns}
+                onChange={(p) => setField('ixPatterns', p)}
                 disabled={running}
               />
               {!flowPatternsOk && (

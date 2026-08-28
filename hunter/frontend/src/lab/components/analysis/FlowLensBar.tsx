@@ -10,11 +10,11 @@ import {
   formatPatternsJson,
   parsePastedPatterns,
   patternGroups,
-  toVolumePatterns,
+  toIxPatterns,
   UNGROUPED,
   type IxPattern,
 } from 'lib/flow/ixPatternSets';
-import { metricConfigWithVolumePatterns } from 'lib/strategy/registry';
+import { metricConfigWithIxPatterns } from 'lib/strategy/registry';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
   useGetFingerprintsQuery,
@@ -30,7 +30,7 @@ const shortAddr = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
  * set every chart on the page classifies vol/non-vol with, and how.
  *
  * A wallet study has no fingerprint, so the chart stack's usual source for
- * `volume_ix_patterns` is empty and the vol/non-vol overlay never draws. This
+ * `ix_patterns` is empty and the vol/non-vol overlay never draws. This
  * bar supplies the same fact from `ix_pattern_sets` instead — paste the ordered
  * `ix_labels` sequences you derived for a trader, and every card's overlay plus
  * the Vol column in each candle's trades table answer against them.
@@ -374,7 +374,7 @@ function RenameControl({ lens }: { lens: TraderFlowLens }) {
 
 /**
  * The one path from study to something the engine reads: copy the lens' patterns
- * into a fingerprint's `volume_ix_patterns`.
+ * into a fingerprint's `ix_patterns`.
  *
  * Deliberately explicit and one-directional. A lens is a guess under
  * examination; a fingerprint's patterns are what live rules classify flow with,
@@ -392,7 +392,7 @@ function PromoteToFingerprint({ patterns }: { patterns: IxPattern[] }) {
   const copy = async () => {
     if (!target) return;
     setStatus(null);
-    const { m_flow_split: _flow, ...rest } = target.metric_config ?? {};
+    const { m_flow_ix: _flow, ...rest } = target.metric_config ?? {};
     try {
       await updateFingerprint({
         id: target.id,
@@ -406,7 +406,7 @@ function PromoteToFingerprint({ patterns }: { patterns: IxPattern[] }) {
           wildcard: target.wildcard,
           metric_config: {
             ...rest,
-            ...metricConfigWithVolumePatterns(toVolumePatterns(patterns)),
+            ...metricConfigWithIxPatterns(toIxPatterns(patterns)),
           },
         },
       }).unwrap();
@@ -442,12 +442,12 @@ function PromoteToFingerprint({ patterns }: { patterns: IxPattern[] }) {
         variant="ghost"
         disabled={!target || isLoading}
         onClick={() => void copy()}
-        title="Replace that fingerprint's volume_ix_patterns with this lens' patterns. Every active rule bound to it classifies flow differently from the engine's next reload on."
+        title="Replace that fingerprint's ix_patterns with this lens' patterns. Every active rule bound to it classifies flow differently from the engine's next reload on."
       >
         Copy patterns
       </Button>
       <span className="text-[11px] text-warning">
-        Replaces its volume_ix_patterns — every rule bound to it changes meaning.
+        Replaces its ix_patterns — every rule bound to it changes meaning.
       </span>
       {status && <span className="text-[11px] text-text-dim">{status}</span>}
     </div>

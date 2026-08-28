@@ -255,7 +255,7 @@ near-free inside the fold and nothing held out is spent.
 
 ## 5. What the measurements say
 
-Conditions for every number: buy 0.01 SOL, entry `m_snapshot.liquidity > 20`,
+Conditions for every number: buy 0.01 SOL, entry `m_state.liquidity > 20`,
 `pumpfun_impact`, `WorstCase` fill, copycat on, range 08-01 → lake end.
 <!-- pt-ok: the range is a data cutoff to re-check against, not a timeline -->
 
@@ -266,8 +266,8 @@ Conditions for every number: buy 0.01 SOL, entry `m_snapshot.liquidity > 20`,
 | **Exit logic is portable** | the same exit improves **6 of 6** cohorts, losers included | Fit the exit broad. |
 | **Rank transfers, level does not** | pooled fit rank → held-out rank at **ρ = 0.833**, while every candidate is negative on the fit set (best −1.24%) and the winner pays +31% on the holdout | Ordering from the fit, number from the target. |
 | **An entry clause can re-read a fingerprint axis** | `liquidity > 20` admits 84% / 66% of spend=4 / 5 but 36–44% of spend=1 / 1.5 / 2 / 3 — a larger initial buy mechanically creates the liquidity | Refuse an entry clause whose admit rate tracks the varied axis. |
-| **A broad fit is blind to a cohort-specific term** | dropping `nonvol_buy >= 1.6 @2s` leaves spend=1.5 and spend=4 byte-identical and costs 10 points on spend=5 | Re-check narrow (D11) and enrich narrow (D12). |
-| **The exit OR is the edge** | OR +30.97 / +31.66; `stall>=30` alone +14.21 / +21.02; `gross_flow<15@10s` alone +8.69 / +27.63; `nonvol_buy>=1.6@2s` alone −1.87 / +10.22; `retrace>=36` alone −39.50 / −44.20 (15d / 7d) | Exit is the primary search axis. An unarmed `retrace` is a hard stop from entry. |
+| **A broad fit is blind to a cohort-specific term** | dropping `untagged_buy >= 1.6 @2s` leaves spend=1.5 and spend=4 byte-identical and costs 10 points on spend=5 | Re-check narrow (D11) and enrich narrow (D12). |
+| **The exit OR is the edge** | OR +30.97 / +31.66; `stall>=30` alone +14.21 / +21.02; `gross_flow<15@10s` alone +8.69 / +27.63; `untagged_buy>=1.6@2s` alone −1.87 / +10.22; `retrace>=36` alone −39.50 / −44.20 (15d / 7d) | Exit is the primary search axis. An unarmed `retrace` is a hard stop from entry. |
 | **A price trail destroys a working exit** | adding `trail>=15@10s`: spend=5 +30.7 → −15.3, spend=4 +40.8 → −14.1, spend=1.5 −13.8 → −14.2 | Kept in the library, flagged — a library that cannot express a refuted term cannot re-refute it. |
 | **Execution can be the entire loss** | a dump-scalp family: the same taken set repriced worst-fill+impact vs first-fill+fee-only differs by **6.93 pp/trade** (n=5,872) while the signal is near-breakeven (PF 0.95 optimistic) — [history](../history/2026-08-16-dump-scalp-execution-gap.md) | D8, and the spread column. |
 | **A stop does not stop on sparse prints** | authored `pnl <= -8` realizes a **−19.4%** mean (worst −102%) — price gaps straight past the level | Attribution prints realized level beside authored. |

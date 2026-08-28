@@ -1,28 +1,28 @@
 import type { IChartApi, ISeriesApi } from 'lightweight-charts';
 
 /**
- * Per-series visibility for the cumulative vol / non-vol flow overlay.
+ * Per-series visibility for the cumulative tagged / non-tagged flow overlay.
  *
- * The two curves share the LEFT price scale, and vol normally dwarfs non-vol —
- * so with both drawn the non-vol curve is pinned to the axis floor and its shape
+ * The two curves share the LEFT price scale, and tagged normally dwarfs non-tagged —
+ * so with both drawn the non-tagged curve is pinned to the axis floor and its shape
  * is unreadable. Hiding one lets the left scale autoscale to the other, which is
  * the point of splitting the toolbar toggle in two.
  */
 export type FlowLineVisibility = {
-  vol: boolean;
-  nonVol: boolean;
+  tagged: boolean;
+  untagged: boolean;
 };
 
-export const DEFAULT_FLOW_LINE_VISIBILITY: FlowLineVisibility = { vol: true, nonVol: true };
+export const DEFAULT_FLOW_LINE_VISIBILITY: FlowLineVisibility = { tagged: true, untagged: true };
 
 /** True when at least one curve is drawn — the left price scale's visibility. */
 export function anyFlowLineVisible(v: FlowLineVisibility): boolean {
-  return v.vol || v.nonVol;
+  return v.tagged || v.untagged;
 }
 
 /** Stable key of what an axis MEANS, for the autoscale-reset guard. */
 export function flowLineVisibilityKey(v: FlowLineVisibility): string {
-  return `${v.vol}|${v.nonVol}`;
+  return `${v.tagged}|${v.untagged}`;
 }
 
 /**
@@ -31,14 +31,14 @@ export function flowLineVisibilityKey(v: FlowLineVisibility): string {
  * saved state carries over instead of silently resetting.
  */
 export function flowLineVisibilityFromPrefs(prefs: {
-  showFlowVol?: boolean;
-  showFlowNonVol?: boolean;
+  showFlowTagged?: boolean;
+  showFlowUntagged?: boolean;
   showFlowLines?: boolean;
 }): FlowLineVisibility {
-  const legacy = prefs.showFlowLines ?? DEFAULT_FLOW_LINE_VISIBILITY.vol;
+  const legacy = prefs.showFlowLines ?? DEFAULT_FLOW_LINE_VISIBILITY.tagged;
   return {
-    vol: prefs.showFlowVol ?? legacy,
-    nonVol: prefs.showFlowNonVol ?? legacy,
+    tagged: prefs.showFlowTagged ?? legacy,
+    untagged: prefs.showFlowUntagged ?? legacy,
   };
 }
 
@@ -47,20 +47,20 @@ export function flowLineVisibilityFromPrefs(prefs: {
  * an effect that also depends on the structural series deps (style / grouping /
  * interval), so the toggles survive a series recreation.
  *
- * `available` is the classification gate (creator wallet or `volume_ix_patterns`)
+ * `available` is the classification gate (creator wallet or `ix_patterns`)
  * — it is per-chart, never per-series, so it forces both curves off together.
  */
 export function applyFlowLineVisibility(args: {
-  volSeries: ISeriesApi<'Line'> | null;
-  nonVolSeries: ISeriesApi<'Line'> | null;
+  taggedSeries: ISeriesApi<'Line'> | null;
+  untaggedSeries: ISeriesApi<'Line'> | null;
   chart: IChartApi | null;
   visibility: FlowLineVisibility;
   available?: boolean;
 }): void {
-  const { volSeries, nonVolSeries, chart, visibility, available = true } = args;
-  const vol = available && visibility.vol;
-  const nonVol = available && visibility.nonVol;
-  volSeries?.applyOptions({ visible: vol });
-  nonVolSeries?.applyOptions({ visible: nonVol });
-  chart?.priceScale('left').applyOptions({ visible: vol || nonVol });
+  const { taggedSeries, untaggedSeries, chart, visibility, available = true } = args;
+  const tagged = available && visibility.tagged;
+  const untagged = available && visibility.untagged;
+  taggedSeries?.applyOptions({ visible: tagged });
+  untaggedSeries?.applyOptions({ visible: untagged });
+  chart?.priceScale('left').applyOptions({ visible: tagged || untagged });
 }

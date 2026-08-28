@@ -325,9 +325,9 @@ function sidePassesAt(
   return firedRowsAt(rows, idx, byKey, registry, combinator) != null;
 }
 
-/** `nonvol_buy@2s >= 0.85` — one satisfied condition in the lanes' vocabulary, so a
+/** `untagged_buy@2s >= 0.85` — one satisfied condition in the lanes' vocabulary, so a
  *  marker reads as the legend of the lane it fired on. The window qualifier is not
- *  decoration: `nonvol_buy` names both a lifetime metric and its windowed twin, and
+ *  decoration: `untagged_buy` names both a lifetime metric and its windowed twin, and
  *  a bare name sends the reader to whichever line is on screen. */
 function firedConditionLabel({ row, cond }: FiredCondition): string {
   return formatMetricExitLabel(conditionMetricName(row), cond.operator, cond.value);
@@ -377,7 +377,7 @@ export interface MetricConditionState {
   window: WindowSpec | null;
   /**
    * Series-column key (`metric` or `metric@Ns`) — the identity a pane is keyed by.
-   * A rule that constrains `nonvol_buy` lifetime AND `nonvol_buy` at 2 s produces two
+   * A rule that constrains `untagged_buy` lifetime AND `untagged_buy` at 2 s produces two
    * states with the same `metric`, and keying a readout by the name alone paints the
    * windowed pane with the lifetime verdict.
    */
@@ -416,8 +416,8 @@ export function metricConditionStatesAt(
  * Entry/exit threshold values a rule places on ONE series column — the lines a pane
  * draws under its sparkline.
  *
- * Scoped by window, not by metric name: `m_flow_split.nonvol_buy >= 5.5` and
- * `m_flow_split_window.nonvol_buy >= 0.9` are different conditions on different
+ * Scoped by window, not by metric name: `m_flow_ix.untagged_buy >= 5.5` and
+ * `m_flow_ix_window.untagged_buy >= 0.9` are different conditions on different
  * readings, and drawing both on both panes puts a line on a chart the rule never
  * placed there.
  */
@@ -475,7 +475,7 @@ export interface MetricConditionLanes {
 }
 
 /**
- * `nonvol_buy` / `nonvol_buy@2s` — the name half of every condition label the lab
+ * `untagged_buy` / `untagged_buy@2s` — the name half of every condition label the lab
  * draws: lanes, the value line, and the metric-fire markers.
  *
  * ONE namer for all three, and it always carries the window. The lifetime and windowed
@@ -494,7 +494,7 @@ function conditionMetricName(row: {
     : row.metric;
 }
 
-/** `nonvol_buy@2s >= 0.9` — an authored condition, human-side. */
+/** `untagged_buy@2s >= 0.9` — an authored condition, human-side. */
 function conditionLaneLabel(row: SideMetricRow): string {
   const name = conditionMetricName(row);
   const expr = formatConditions(row.arms);
@@ -624,13 +624,13 @@ function conditionThresholds(arms: ConditionExpr): number[] {
  * mirrors `CompiledRule::can_enter`); then first later exit.
  *
  * Markers are `role: 'signal'` with spaced `name[@Ns] op value` labels (e.g.
- * `vol_buy@2s >= 0.85`) — the frontend condition-fire estimate, never the backend
+ * `tagged_buy@2s >= 0.85`) — the frontend condition-fire estimate, never the backend
  * fill pointers.
  *
  * **The entry label names what fired, not what was authored first.** Entry is a
  * conjunction, so the marker carries the condition(s) that flipped true *at* the
  * marker's instant; a condition already holding did not decide the timing, and
- * labelling the fire with one is how the monotone `m_flow_split.nonvol_buy` came to
+ * labelling the fire with one is how the monotone `m_flow_ix.untagged_buy` came to
  * explain entries produced by two trailing windows. The rest of the conjunction is
  * still on the chart — as lanes ({@link metricConditionBands}).
  */

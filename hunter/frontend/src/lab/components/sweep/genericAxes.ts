@@ -34,7 +34,7 @@ export interface GenericAxisRow {
   kind: AxisKind;
   /** Metric axes only — the side its condition applies to. */
   side: MetricAxisSide;
-  /** Metric axes only — the registry group name (e.g. `m_snapshot`). */
+  /** Metric axes only — the registry group name (e.g. `m_state`). */
   group: string;
   /** Metric axes only — the registry metric name (e.g. `time`). */
   metric: string;

@@ -123,4 +123,5 @@ Door is [ix-door.md](ix-door.md). Permissions at the burst: [ix-perm.md](ix-perm
 Full-tape money: [ix-machine-money.md](ix-machine-money.md). All live gates
 as one rule, tight packs unfillable:
 [ix-combined-machine.md](ix-combined-machine.md). Early fire + gap
-duration: [ix-early-gap.md](ix-early-gap.md).
+duration: [ix-early-gap.md](ix-early-gap.md). Harvest path after the
+95 ms fill: [ix-harvest-path.md](ix-harvest-path.md).

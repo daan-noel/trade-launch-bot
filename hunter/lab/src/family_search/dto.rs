@@ -92,7 +92,7 @@ pub struct StartFamilySearchBody {
     pub cost_clearance_margin: f64,
     /// **Standing exit terms** (D10): mechanical alarms the operator always wants,
     /// written as the board prints them — `"liquidity >= 85"` (sell at migration),
-    /// `"nonvol_buy(2s) >= 0.9"`. Each rides into every candidate **and** the ungated
+    /// `"untagged_buy(2s) >= 0.9"`. Each rides into every candidate **and** the ungated
     /// control, so the numbers describe a rule someone would actually run; none is
     /// searched, ablated, or credited with the rule's edge. A term that does not parse
     /// fails the run rather than being dropped.

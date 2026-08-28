@@ -61,7 +61,7 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             )
             // ── Analysis-owned ix_labels pattern sets (Trader Analysis flow
             //    lens): the same vol/non-vol classification a fingerprint's
-            //    volume_ix_patterns drives, for tokens that belong to no cohort.
+            //    ix_patterns drives, for tokens that belong to no cohort.
             .route(
                 "/ix-pattern-sets",
                 web::get().to(handlers::ix_pattern_sets::list_sets),

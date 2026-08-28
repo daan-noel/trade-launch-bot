@@ -15,7 +15,7 @@
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-use hunter_engine::metrics::flow_split::{
+use hunter_engine::metrics::flow_ix::{
     ix_hash_from_labels_json, ix_hash_from_labels_value, marker_bits_from_labels_value,
     wallet_hash,
 };
@@ -474,7 +474,7 @@ mod tests {
     #[test]
     fn pg_tail_hashes_both_ix_label_shapes_alike() {
         let labels = ["Pump.Fun: Create", "Pump.Fun: Buy"];
-        let want = hunter_engine::metrics::flow_split::ix_hash(&labels);
+        let want = hunter_engine::metrics::flow_ix::ix_hash(&labels);
 
         let mut bare = curve_trade(1.0, 1_000_000, 44.89, 900_000);
         bare.instruction_labels = serde_json::json!(labels);

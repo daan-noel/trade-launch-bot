@@ -3,7 +3,7 @@
 //! Every other stage of this job can only *remove*. The broad fit ranks whole
 //! candidates, the ablation drops one term at a time, and the quota turns candidates
 //! away. Nothing adds one. Combined with a measured fact — a broad fit is **blind** to
-//! a term only one cohort needs (dropping `nonvol_buy >= 1.6 @2s` left two sibling
+//! a term only one cohort needs (dropping `untagged_buy >= 1.6 @2s` left two sibling
 //! cohorts byte-identical and cost 10 points on the target) — the pipeline converges
 //! on the sparse portable core by construction, and every cohort-specific idea is
 //! washed out broad and never earned back.
@@ -331,11 +331,11 @@ mod tests {
     #[test]
     fn an_entry_idea_that_buys_win_rate_is_accepted_even_when_it_costs_a_little_return() {
         let entry_menu = [clause(MetricId::Time, Operator::Gte, 20.0, None)];
-        let exit_menu = [clause(MetricId::WinNonvolBuy, Operator::Gte, 1.6, Some(hunter_engine::metrics::WindowSpec::secs(2.0)))];
+        let exit_menu = [clause(MetricId::WinUntaggedBuy, Operator::Gte, 1.6, Some(hunter_engine::metrics::WindowSpec::secs(2.0)))];
 
         let score = |e: &EntryFilling, x: &ExitBag| {
             let time = has(e, MetricId::Time);
-            let organic = bag_has(x, MetricId::WinNonvolBuy, 1.6);
+            let organic = bag_has(x, MetricId::WinUntaggedBuy, 1.6);
             match (time, organic) {
                 (false, false) => s(21.0, 48.0, 200),
                 // +14pp of win rate for −1pp of return: exactly the trade an entry
@@ -352,7 +352,7 @@ mod tests {
         let combo = out.combo.expect("an enriched rule");
         assert!(has(&combo.entry, MetricId::Liquidity) && has(&combo.entry, MetricId::Time));
         assert!(bag_has(&combo.exit, MetricId::Stall, 30.0));
-        assert!(bag_has(&combo.exit, MetricId::WinNonvolBuy, 1.6));
+        assert!(bag_has(&combo.exit, MetricId::WinUntaggedBuy, 1.6));
 
         // The standing term survives, still last, still exactly once.
         assert_eq!(

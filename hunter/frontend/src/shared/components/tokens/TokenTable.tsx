@@ -107,7 +107,7 @@ interface TokenTableCommon<R> {
   /** Wallets compared against {@link highlightWallet} on every chart, in
    *  comparison-slot order — see `TokenTradeChart`'s `compareWallets`. */
   compareWallets?: readonly string[] | null;
-  /** Fingerprint volume_ix_patterns keys for the charts-grid vol/non-vol overlay —
+  /** Fingerprint ix_patterns keys for the charts-grid vol/non-vol overlay —
    *  one set for the whole grid. Use {@link useRowChartFlowPatternSource} instead
    *  when the rows span fingerprints. */
   flowPatternKeys?: ReadonlySet<string> | null;

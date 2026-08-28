@@ -130,7 +130,7 @@ server compare. Percent columns that render `×100` (Win %, Open %) use a local
   `TokenTable`'s `LazyTokenChartsGrid` (Charts toggle). Creation-stats trend charts
   are lazy inside the page/section so the control shell paints first.
 - **Vol/non-vol overlay gate:** `TokenPriceChart` draws the lines whenever *something* can
-  classify — fingerprint `volume_ix_patterns` **or** just the token's creator wallet. With
+  classify — fingerprint `ix_patterns` **or** just the token's creator wallet. With
   patterns the split is the engine's volume-maker vs organic; without, it degrades to
   creator + wallets they traded with vs the rest, and the toolbar tooltip says so. Only a
   token with neither disables the toggle. The per-trade **Vol badge keeps the stricter

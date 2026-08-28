@@ -19,9 +19,9 @@ describe('flowPatternKeysOf', () => {
 });
 
 describe('flowPatternKeysFromMetricConfig', () => {
-  it('reads m_flow_split.volume_ix_patterns', () => {
+  it('reads m_flow_ix.ix_patterns', () => {
     const keys = flowPatternKeysFromMetricConfig({
-      m_flow_split: { volume_ix_patterns: [['x', 'y']] },
+      m_flow_ix: { ix_patterns: [['x', 'y']] },
     });
     expect(keys?.has(JSON.stringify(['x', 'y']))).toBe(true);
   });

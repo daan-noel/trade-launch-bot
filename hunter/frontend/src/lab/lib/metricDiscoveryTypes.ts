@@ -256,7 +256,7 @@ export interface DiscoverySweepHandoff {
   tokenCap: number;
   fingerprintId: string | null;
   buyAmountSol: number;
-  volumeIxPatterns: string[][];
+  ixPatterns: string[][];
   ixLabelsFilter: string;
 }
 
@@ -309,5 +309,5 @@ export interface MetricDiscoveryStartArgs {
    *  full span (`"30sl@1"`, `"20p"`) in the same grammar every other span uses. */
   entry_window_sec?: number | string;
   exit_window_sec?: number | string;
-  volume_ix_patterns?: string[][];
+  ix_patterns?: string[][];
 }

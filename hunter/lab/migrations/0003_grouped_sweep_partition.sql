@@ -1,5 +1,5 @@
 -- ===========================================================================
--- 0002  grouped sweep runs: an explicit PARTITION replaces the bucket width
+-- 0003  grouped sweep runs: an explicit PARTITION replaces the bucket width
 -- ===========================================================================
 -- A run stored one `bucket_width_sol` for every continuous SOL grouping field —
 -- an infinite implicit lattice (`floor(v/width)`) that the sweep, the promoted

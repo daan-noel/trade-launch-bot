@@ -13,7 +13,7 @@
 //! Sibling of the lifetime [`PriceLifetimeState`](super::price_lifetime::PriceLifetimeState):
 //! `m_price_lifetime.trail` anchors on the **lifetime** peak, this on a **rolling**
 //! one, which is why the two share the metric name `trail` across distinct groups
-//! (the `m_flow_split` / `m_flow_split_window` precedent).
+//! (the `m_flow_ix` / `m_flow_ix_window` precedent).
 //!
 //! **Dynamic** = the value depends on a per-rule strict param, so state is
 //! **deduped by `window_size_sec`**. Two monotonic deques of `(price, at)` — one

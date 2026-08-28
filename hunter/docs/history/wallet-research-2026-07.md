@@ -144,7 +144,7 @@ Implication for the sweep: dip depth {8,15,25}%, trail {1.5,3,5,10}%, size
 
 ### Engine fit (hunter-engine) - what exists vs what is missing
 Exists already: m_flow_window {buy, sell, net_flow, gross_flow} with window_size_sec;
-liquidity + time (m_snapshot); stall; TP/SL; deadness; the generic replay/sweep
+liquidity + time (m_state); stall; TP/SL; deadness; the generic replay/sweep
 backtester inherits any fold change for free.
 Missing (the actual work):
 1. **Windowed-high drawdown metric** (entry): `trail` is % off the LIFETIME peak; the
@@ -901,8 +901,8 @@ carries no signal once hotness is known - the fingerprint-axis section above) x 
 rules, each moving exactly ONE knob off `fs2-00 base`, so every comparison is clean.
 
 ```
-entry (AND)   m_snapshot.time        >= 30      his p25 first-buy age is 30 s
-              m_snapshot.liquidity   36 .. 70   his first-buy vsol p25-p75
+entry (AND)   m_state.time        >= 30      his p25 first-buy age is 30 s
+              m_state.liquidity   36 .. 70   his first-buy vsol p25-p75
               m_price_window(30).trail >= 18    dip off the 30 s high; his >-8% bucket is
                                                 his ONLY losing cohort (-0.81%/ep)
               m_flow_window(60).gross_flow >= 45  his p25 gross60 = 45.6 SOL

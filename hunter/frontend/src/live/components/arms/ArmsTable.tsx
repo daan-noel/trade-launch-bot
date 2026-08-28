@@ -39,7 +39,7 @@ import { ArmDetailModal } from './ArmDetailModal';
 export const armRowKey = (r: StrategyArmRecord) =>
   `${r.rule_id}|${r.mint_address}|${r.armed_at}`;
 
-/** Each card classifies vol/non-vol against ITS OWN rule's `volume_ix_patterns`
+/** Each card classifies vol/non-vol against ITS OWN rule's `ix_patterns`
  *  — the Arms table spans rules, so one grid-wide set would misclassify every
  *  card that isn't from that rule. Called once per card as a hook, and carries
  *  the fingerprint id so the card's Vol badge edits its own rule's row. */

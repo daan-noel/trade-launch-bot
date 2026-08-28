@@ -156,14 +156,9 @@ export interface GroupedSweepRunRecord {
    *  its group keys are rendered labels no longer parsed, so it reads as
    *  one-group-per-value. Re-run to promote. */
   partition: [GroupField, PartitionSpec][];
-  /** Bucket width (SOL) the continuous SOL group fields were binned at — the width
-   *  a promoted rule's matcher must use so it matches the same bucket. `null` = the
-   *  run grouped on **exact** amounts (`SolPrecision::Exact`), the same NULL-means-exact
-   *  spelling `Fingerprint.bucket_size_amount` uses; never substitute a default for it. */
-  bucket_width_sol: number | null;
   /** Corpus-wide volume-ix patterns used when the run swept flow axes. `null` =
    *  non-flow run / legacy. Promote copies these into the fingerprint. */
-  volume_ix_patterns: string[][] | null;
+  ix_patterns: string[][] | null;
   /** Which trade in the fill window priced each leg. `null` on legacy runs ⇒
    *  `worst_case`, what the sweep hardcoded before the model became selectable.
    *  Part of the run's IDENTITY — two runs under different fill models are not
@@ -342,11 +337,6 @@ export interface GroupedSweepStartArgs {
   max_combos?: number;
   /** Notional (SOL) to price every simulated round-trip at. Omitted ⇒ 1.0 SOL. */
   buy_amount_sol?: number;
-  /** Bucket width (SOL) for the continuous SOL group fields. Omitted ⇒ 0.1. */
-  bucket_width_sol?: number;
-  /** `true` => group SOL axes on exact amounts; `bucket_width_sol` is then ignored
-   *  and the run row stores a NULL width. Never a 0 width — see `SolPrecision`. */
-  exact_sol?: boolean;
   /** Host RAM (MB) the run leaves free for OS + desktop; every sizing ceiling is
    *  `host free − this`. A preference, not a limit — a run that does not fit
    *  degrades (fewer threads / smaller batches) rather than being refused.
@@ -358,10 +348,10 @@ export interface GroupedSweepStartArgs {
    *  *how the box computed*, not the analysis, so it isn't persisted on the run row.
    *  Omitted ⇒ scalar. */
   use_avx512?: boolean;
-  /** Corpus-wide volume-ix patterns when axes reference `m_flow_split` /
-   *  `m_flow_split_window` (not aggregate `m_flow_lifetime` / `m_flow_window`).
+  /** Corpus-wide volume-ix patterns when axes reference `m_flow_ix` /
+   *  `m_flow_ix_window` (not aggregate `m_flow_lifetime` / `m_flow_window`).
    *  Required by the backend for those runs; omitted otherwise. */
-  volume_ix_patterns?: string[][];
+  ix_patterns?: string[][];
   /** Which trade in the fill window prices each simulated leg. Omitted ⇒
    *  `worst_case` (what the sweep hardcoded before this was selectable), so stored
    *  and replayed runs keep their meaning. Unlike `use_avx512` this changes the

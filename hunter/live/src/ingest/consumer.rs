@@ -295,7 +295,7 @@ impl IngestConsumer {
         // Hash from the event labels before nulling the cache projection — keeps
         // flow-split metrics correct while avoiding hash work under DashMap.
         let (ix_hash, wallet_hash, marker_bits) = {
-            use hunter_engine::metrics::flow_split::{ix_hash_opt, marker_bits, wallet_hash};
+            use hunter_engine::metrics::flow_ix::{ix_hash_opt, marker_bits, wallet_hash};
             (
                 ix_hash_opt(&e.instruction_labels),
                 wallet_hash(&wallet),

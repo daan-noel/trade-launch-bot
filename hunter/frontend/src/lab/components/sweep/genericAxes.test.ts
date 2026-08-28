@@ -17,7 +17,7 @@ const REG: StrategyRegistry = {
   operators: ['>', '>=', '<', '<=', '=', '!='],
   groups: [
     {
-      name: 'm_snapshot',
+      name: 'm_state',
       kind: 'static',
       strict_params: [],
       metrics: [
@@ -99,13 +99,13 @@ describe('invalidValueFragments', () => {
 
 describe('axisRowError', () => {
   it('flags an empty value list', () => {
-    expect(axisRowError(metricRow({ group: 'm_snapshot', metric: 'time', valuesText: '' }), REG)).toBe(
+    expect(axisRowError(metricRow({ group: 'm_state', metric: 'time', valuesText: '' }), REG)).toBe(
       'add at least one value',
     );
   });
   it('flags a missing group/metric/operator', () => {
     expect(axisRowError(metricRow({ valuesText: '5' }), REG)).toBe('pick a metric group');
-    expect(axisRowError(metricRow({ group: 'm_snapshot', valuesText: '5' }), REG)).toBe('pick a metric');
+    expect(axisRowError(metricRow({ group: 'm_state', valuesText: '5' }), REG)).toBe('pick a metric');
   });
   it('requires a window on a dynamic group', () => {
     const row = metricRow({ group: 'm_flow_window', metric: 'net_flow', window: '', valuesText: '1' });
@@ -124,7 +124,7 @@ describe('axisRowError', () => {
   });
   it('accepts a valid static metric row', () => {
     expect(
-      axisRowError(metricRow({ group: 'm_snapshot', metric: 'time', operator: '>', valuesText: '5, 10' }), REG),
+      axisRowError(metricRow({ group: 'm_state', metric: 'time', operator: '>', valuesText: '5, 10' }), REG),
     ).toBeNull();
   });
   it('rejects a position-scoped group on entry but accepts it on exit', () => {
@@ -140,23 +140,23 @@ describe('axisRowError', () => {
   });
   it('accepts off on a metric row, rejects it on TP/SL and alone', () => {
     expect(
-      axisRowError(metricRow({ group: 'm_snapshot', metric: 'time', operator: '>', valuesText: 'off, 5' }), REG),
+      axisRowError(metricRow({ group: 'm_state', metric: 'time', operator: '>', valuesText: 'off, 5' }), REG),
     ).toBeNull();
     expect(axisRowError({ ...newAxisRow('take_profit'), valuesText: 'off, 100' }, REG)).toMatch(/only applies to metric axes/);
     expect(
-      axisRowError(metricRow({ group: 'm_snapshot', metric: 'time', operator: '>', valuesText: 'off' }), REG),
+      axisRowError(metricRow({ group: 'm_state', metric: 'time', operator: '>', valuesText: 'off' }), REG),
     ).toBe("add at least one number besides 'off'");
   });
   it('flags unrecognized fragments instead of silently dropping them', () => {
     expect(
-      axisRowError(metricRow({ group: 'm_snapshot', metric: 'time', operator: '>', valuesText: '5, of' }), REG),
+      axisRowError(metricRow({ group: 'm_state', metric: 'time', operator: '>', valuesText: '5, of' }), REG),
     ).toBe('unrecognized value: of');
   });
 });
 
 describe('serializeAxisRows + comboCount', () => {
   const rows: GenericAxisRow[] = [
-    metricRow({ group: 'm_snapshot', metric: 'time', operator: '>', valuesText: '5, 10, 15' }),
+    metricRow({ group: 'm_state', metric: 'time', operator: '>', valuesText: '5, 10, 15' }),
     metricRow({ side: 'entry', group: 'm_flow_window', metric: 'net_flow', operator: '>', window: '10', valuesText: '0, 2.5' }),
     { ...newAxisRow('take_profit'), valuesText: '50, 100, 200' },
   ];
@@ -174,7 +174,7 @@ describe('serializeAxisRows + comboCount', () => {
       }),
     ];
     const specs = serializeAxisRows(withLifetime, REG);
-    expect(specs[0]).toMatchObject({ kind: 'metric', group: 'm_snapshot', metric: 'time', values: [5, 10, 15] });
+    expect(specs[0]).toMatchObject({ kind: 'metric', group: 'm_state', metric: 'time', values: [5, 10, 15] });
     expect(specs[0].window).toBeUndefined();
     expect(specs[1]).toMatchObject({ group: 'm_flow_window', window: 10, values: [0, 2.5] });
     expect(specs[2]).toEqual({ kind: 'take_profit', values: [50, 100, 200] });
@@ -187,11 +187,11 @@ describe('serializeAxisRows + comboCount', () => {
   });
 
   it('combo count is 0 when an axis has no values', () => {
-    expect(comboCount([metricRow({ group: 'm_snapshot', metric: 'time', valuesText: '' })], REG)).toBe(0);
+    expect(comboCount([metricRow({ group: 'm_state', metric: 'time', valuesText: '' })], REG)).toBe(0);
   });
 
   it('serializes off as null and counts it as a grid point', () => {
-    const withOff = [metricRow({ group: 'm_snapshot', metric: 'time', operator: '>', valuesText: 'off, 5, 10' })];
+    const withOff = [metricRow({ group: 'm_state', metric: 'time', operator: '>', valuesText: 'off, 5, 10' })];
     expect(serializeAxisRows(withOff, REG)[0].values).toEqual([null, 5, 10]);
     expect(comboCount(withOff, REG)).toBe(3);
   });
@@ -270,7 +270,7 @@ describe('pnlAxisSugarDuplicateError', () => {
       {
         kind: 'metric',
         side: 'entry',
-        group: 'm_snapshot',
+        group: 'm_state',
         metric: 'time',
         operator: '>=',
         values: [null, 5, 30],

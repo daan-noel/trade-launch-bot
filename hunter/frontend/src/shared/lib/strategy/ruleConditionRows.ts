@@ -14,10 +14,10 @@ import type { DisabledConditions, SideConditions } from './ruleParams';
 import type { StrategyRegistry } from './registry';
 import type { GroupConditions } from './ruleParams';
 import {
-  BURST_PARAM,
-  BURST_PRINT_PARAM,
-  BURST_SLOT_PARAM,
-  burstSizeParam,
+  SLICE_PARAM,
+  SLICE_PRINT_PARAM,
+  SLICE_SLOT_PARAM,
+  sliceSizeParam,
   formatWindowSpec,
   sizeParam,
   unitSuffix,
@@ -26,12 +26,12 @@ import {
   windowSpecFromStrict,
   windowSpecKey,
   withoutAxis,
-  withoutBurstAxis,
+  withoutSliceAxis,
   type WindowSpec,
   type WindowUnit,
 } from './windowSpec';
 
-export { BURST_PARAM, BURST_PRINT_PARAM, BURST_SLOT_PARAM };
+export { SLICE_PARAM, SLICE_PRINT_PARAM, SLICE_SLOT_PARAM };
 
 /** Which side a condition row applies to (the column owns it). */
 export type RuleConditionSide = 'entry' | 'exit';
@@ -45,7 +45,7 @@ export interface RuleConditionRow {
    *  `disabled` bag instead of the live side, so the engine never compiles it.
    *  `undefined` reads as enabled — a row from before this field existed is live. */
   enabled?: boolean;
-  /** Registry group name (e.g. `m_snapshot`), '' until picked. */
+  /** Registry group name (e.g. `m_state`), '' until picked. */
   group: string;
   /** Registry metric name (e.g. `time`), '' until picked. */
   metric: string;
@@ -142,10 +142,10 @@ export function ruleRowWindowSpec(row: RuleConditionRow): WindowSpec | null {
   return { size, lag: rowLag(row), unit: ruleRowUnit(row) };
 }
 
-/** The row's burst axis (`m_flow_burst`'s second window), or `null`. It rides the
- *  row's unit and lag — that pair IS the group's basis — and differs only in size. */
-export function ruleRowBurstSpec(row: RuleConditionRow): WindowSpec | null {
-  const size = row.strict?.[burstSizeParam(ruleRowUnit(row))];
+/** The row's slice axis (`m_flow_window`'s second window), or `null`. It rides the
+ *  row's unit and lag — that pair IS the two-window basis — and differs only in size. */
+export function ruleRowSliceSpec(row: RuleConditionRow): WindowSpec | null {
+  const size = row.strict?.[sliceSizeParam(ruleRowUnit(row))];
   if (typeof size !== 'number' || !Number.isFinite(size) || size <= 0) return null;
   return { size, lag: rowLag(row), unit: ruleRowUnit(row) };
 }
@@ -161,14 +161,14 @@ export function ruleRowInstanceKey(row: RuleConditionRow): string {
   // read different tape entirely; the later row's strict bag would then silently win
   // and one of the two gates would disappear on save.
   //
-  // A two-window group's identity is the PAIR, so the burst axis is in the key too:
-  // without it `m_flow_burst{60,3}` and `m_flow_burst{60,10}` merge the same way.
+  // A two-window read's identity is the PAIR, so the slice axis is in the key too:
+  // without it `m_flow_window{60,3}` and `m_flow_window{60,10}` merge the same way.
   return [
     on,
     row.side,
     row.group,
     windowSpecKey(ruleRowWindowSpec(row)),
-    windowSpecKey(ruleRowBurstSpec(row)),
+    windowSpecKey(ruleRowSliceSpec(row)),
   ].join('|');
 }
 
@@ -192,14 +192,21 @@ export function setRowInstanceStrict(
   return rows.map((r) => (ruleRowInstanceKey(r) === key ? { ...r, strict: { ...strict } } : r));
 }
 
-/** True when a row's group declares the burst axis at all (`m_flow_burst`). Asked
- *  of the registry rather than hardcoded per group, so a future two-window basis
- *  gets its control and its validation for free. */
-export function ruleRowNeedsBurst(
+/** True when this row's METRIC reads the slice axis — the frontend mirror of the
+ *  backend `is_two_window`.
+ *
+ *  Per-metric, not per-group, because `m_flow_window` declares `slice_size_*` for
+ *  every instance while only `trade_share` / `sol_share` read it. Asking the group
+ *  would put a slice control on a `gross_flow` row and the save would then be
+ *  rejected as a span nothing reads. Both facts come off the registry payload, so a
+ *  future two-window metric gets its control and its validation for free. */
+export function ruleRowNeedsSlice(
   row: RuleConditionRow,
   reg: StrategyRegistry | undefined,
 ): boolean {
-  return rowGroup(row, reg)?.strict_params.some((sp) => sp.name === BURST_PARAM) ?? false;
+  const group = rowGroup(row, reg);
+  if (!group?.strict_params.some((sp) => sp.name === SLICE_PARAM)) return false;
+  return group.metrics.find((m) => m.name === row.metric)?.two_window ?? false;
 }
 
 /**
@@ -233,14 +240,17 @@ export function ruleConditionRowError(
     const lag = Number(lagText);
     if (!Number.isFinite(lag) || lag < 0) return `lag (${u}) must be a number ≥ 0`;
   }
-  // Second window axis (`m_flow_burst`): required on the groups that declare it, in
-  // the SAME unit as the reference, and it must nest inside it or the share counts
-  // trades the denominator does not.
-  if (ruleRowNeedsBurst(row, reg)) {
-    const burst = ruleRowBurstSpec(row);
-    if (burst == null) return `burst (${u}) > 0 required`;
-    if (win != null && burst.size > win.size)
-      return `burst (${u}) must nest inside window ${win.size}`;
+  // Second window axis: required by the METRICS that read it, in the SAME unit as
+  // the reference, and it must nest inside it or the share counts trades the
+  // denominator does not. A row whose metric does not read it must not carry one —
+  // the backend rejects that as a span nothing reads.
+  const slice = ruleRowSliceSpec(row);
+  if (ruleRowNeedsSlice(row, reg)) {
+    if (slice == null) return `slice (${u}) > 0 required`;
+    if (win != null && slice.size > win.size)
+      return `slice (${u}) must nest inside window ${win.size}`;
+  } else if (slice != null) {
+    return `slice (${u}) is read only by trade_share / sol_share`;
   }
   if (row.arms.length === 0) return 'add a condition (e.g. > 10)';
   const arm = row.strict?.arm_above_pct;
@@ -367,9 +377,9 @@ export function rowsToSide(
     // bag onto each), so a later row merging in is a no-op rather than a conflict.
     // The burst axis is re-spelled in the row's unit for the same reason the
     // reference span is: a unit flip must not leave the old param behind.
-    Object.assign(inst.strict, withoutBurstAxis(row.strict));
-    const burst = ruleRowBurstSpec(row);
-    if (burst != null) inst.strict[burstSizeParam(burst.unit)] = burst.size;
+    Object.assign(inst.strict, withoutSliceAxis(row.strict));
+    const burst = ruleRowSliceSpec(row);
+    if (burst != null) inst.strict[sliceSizeParam(burst.unit)] = burst.size;
     inst.metrics[row.metric] = row.arms;
   }
   return out;

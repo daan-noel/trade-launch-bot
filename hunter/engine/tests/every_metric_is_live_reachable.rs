@@ -18,11 +18,11 @@ use std::sync::Arc;
 
 use chrono::{Duration, TimeZone, Utc};
 use hunter_engine::event::{Effect, Event, Fill, LoadedRule, Mint, RuleId, TradeMode};
-use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria, Fingerprint, FingerprintId};
+use hunter_engine::fingerprint::{Criteria, Fingerprint, FingerprintId};
 use hunter_engine::grouping::TokenFingerprint;
 use hunter_engine::metrics::{
-    flow_burst, flow_split, GroupSpec, MetricKind, MetricScope, MetricSpec, Side, TradeLite, Ts,
-    REGISTRY,
+    flow_ix, flow_slice, is_two_window, GroupSpec, MetricKind, MetricScope, MetricSpec, Side,
+    TradeLite, Ts, REGISTRY,
 };
 use hunter_engine::readout::read_state;
 use hunter_engine::reduce::reduce;
@@ -41,7 +41,7 @@ fn ts(secs: f64) -> Ts {
 /// The volume-side label sequence the probe's "volume" trades carry.
 const VOL_LABELS: [&str; 1] = ["Pump.Fun: Buy"];
 
-/// A wildcard fingerprint configured for `m_flow_split`, so the flow-split groups
+/// A wildcard fingerprint configured for `m_flow_ix`, so the flow-split groups
 /// have a classifier and do not read `NaN` for want of config.
 fn probe_fp() -> Fingerprint {
     Fingerprint {
@@ -49,7 +49,7 @@ fn probe_fp() -> Fingerprint {
         wildcard: true,
         criteria: Criteria::new(),
         metric_config: json!({
-            "m_flow_split": { "volume_ix_patterns": [VOL_LABELS] }
+            "m_flow_ix": { "ix_patterns": [VOL_LABELS] }
         }),
     }
 }
@@ -79,19 +79,27 @@ impl Basis {
 /// Driven off the registry's own param names: an unrecognised **required** param is
 /// a hard failure telling the author to teach the probe, never a silent skip that
 /// would let a new group's metrics go unchecked.
-fn strict_params(g: &GroupSpec, basis: Basis, obj: &mut Map<String, Value>) {
+fn strict_params(g: &GroupSpec, m: &MetricSpec, basis: Basis, obj: &mut Map<String, Value>) {
+    // The slice axis is declared by `m_flow_window` for every instance but read only
+    // by the metrics `is_two_window` names. Setting it for the others is rejected at
+    // save as a no-op, so the probe follows the same per-metric rule the engine does -
+    // which is what makes this test cover the contract rather than work around it.
+    let reads_slice = is_two_window(m.id);
     for p in g.strict_params {
+        if !reads_slice && flow_slice::SLICE_AXIS.params().contains(&p.name) {
+            continue;
+        }
         let v = match (p.name, basis) {
             (hunter_engine::metrics::WINDOW_SEC_PARAM, Basis::Sec) => json!(10.0),
-            (flow_burst::BURST_PARAM, Basis::Sec) => json!(2.0),
+            (flow_slice::SLICE_PARAM, Basis::Sec) => json!(2.0),
             // The probe's trades span slots 100..110, so a 20-slot window covers them
             // and a 4-slot burst nests inside it.
             (hunter_engine::metrics::WINDOW_SLOT_PARAM, Basis::Slot) => json!(20.0),
-            (flow_burst::BURST_SLOT_PARAM, Basis::Slot) => json!(4.0),
+            (flow_slice::SLICE_SLOT_PARAM, Basis::Slot) => json!(4.0),
             // Wide enough to hold every print the probe folds, with a burst nested
             // inside it, so an empty window is never what a NaN would be blamed on.
             (hunter_engine::metrics::WINDOW_PRINT_PARAM, Basis::Print) => json!(50.0),
-            (flow_burst::BURST_PRINT_PARAM, Basis::Print) => json!(4.0),
+            (flow_slice::SLICE_PRINT_PARAM, Basis::Print) => json!(4.0),
             // The other bases' size params, plus two optional knobs deliberately left
             // unset: a lag would push the window off the probe's trades, and
             // `arm_above_pct` would report the trailing metrics as `disarmed` rather
@@ -101,9 +109,9 @@ fn strict_params(g: &GroupSpec, basis: Basis, obj: &mut Map<String, Value>) {
                 | hunter_engine::metrics::WINDOW_SLOT_PARAM
                 | hunter_engine::metrics::WINDOW_PRINT_PARAM
                 | hunter_engine::metrics::WINDOW_LAG_PARAM
-                | flow_burst::BURST_PARAM
-                | flow_burst::BURST_SLOT_PARAM
-                | flow_burst::BURST_PRINT_PARAM
+                | flow_slice::SLICE_PARAM
+                | flow_slice::SLICE_SLOT_PARAM
+                | flow_slice::SLICE_PRINT_PARAM
                 | "arm_above_pct",
                 _,
             ) => continue,
@@ -125,7 +133,7 @@ fn strict_params(g: &GroupSpec, basis: Basis, obj: &mut Map<String, Value>) {
 /// condition. The condition is never the point - the reading is.
 fn params_for(g: &GroupSpec, m: &MetricSpec, basis: Basis) -> Value {
     let mut group_obj = Map::new();
-    strict_params(g, basis, &mut group_obj);
+    strict_params(g, m, basis, &mut group_obj);
     group_obj.insert(m.name.to_string(), json!([{ "operator": ">=", "value": -1.0e9 }]));
     let side = if g.scope == MetricScope::Position { "exit" } else { "entry" };
     json!({ side: { g.name: Value::Object(group_obj) } })
@@ -145,7 +153,7 @@ fn loaded_rule(params: Value, g: &GroupSpec, m: &MetricSpec) -> LoadedRule {
     }
 }
 
-/// One trade. `vol` picks the volume-side label sequence (so `m_flow_split` books it
+/// One trade. `vol` picks the volume-side label sequence (so `m_flow_ix` books it
 /// as volume); the wallet varies so `unique_wallets` / `trades_per_wallet` are real.
 #[allow(clippy::too_many_arguments)]
 fn trade(
@@ -166,9 +174,9 @@ fn trade(
         priced_reserve_sol: reserve + 30.0,
         at: ts(at),
         ix_hash: Some(if vol {
-            flow_split::ix_hash(&VOL_LABELS)
+            flow_ix::ix_hash(&VOL_LABELS)
         } else {
-            flow_split::ix_hash(&["Pump.Fun: Sell"])
+            flow_ix::ix_hash(&["Pump.Fun: Sell"])
         }),
         wallet_hash: wallet,
         slot,
@@ -192,7 +200,7 @@ fn drive(state: &mut EngineState, mint: &Mint) -> Vec<Effect> {
             fp,
             at: ts(0.0),
             // Seeds `prior_launches`; without a creator it stays NaN by design.
-            creator_wallet_hash: Some(flow_split::wallet_hash("creator-wallet")),
+            creator_wallet_hash: Some(flow_ix::wallet_hash("creator-wallet")),
             identity: None,
         },
     );

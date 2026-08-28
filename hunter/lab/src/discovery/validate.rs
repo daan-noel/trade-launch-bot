@@ -298,7 +298,7 @@ pub fn validate_candidates(
     as_of: DateTime<Utc>,
     weights: DiscoveryWeights,
     thresholds: ValidationThresholds,
-    volume_ix_patterns: Option<&[Vec<String>]>,
+    ix_patterns: Option<&[Vec<String>]>,
     policy: SplitPolicy,
     observer: &dyn SweepObserver,
 ) -> Result<ValidationReport> {
@@ -342,7 +342,7 @@ pub fn validate_candidates(
                 &candidates[i].params_json,
                 pricing,
                 as_of,
-                volume_ix_patterns,
+                ix_patterns,
             )?;
             let metrics = ComboMetrics::exact_from_rows(i as u32, &rows);
             let outcome =
@@ -542,7 +542,7 @@ mod tests {
         let split = split_tokens(&c.tokens, SplitPolicy::AgeFraction(0.7));
         let params = serde_json::json!({
             "take_profit": 30.0, "stop_loss": 15.0,
-            "entry": { "m_snapshot": { "time": [{ "operator": ">=", "value": 5.0 }] } }
+            "entry": { "m_state": { "time": [{ "operator": ">=", "value": 5.0 }] } }
         });
         hunter_engine::rule_params::RuleParams::parse(&params).expect("valid params");
         let cands = vec![Candidate { label: "test".into(), params_json: params }];

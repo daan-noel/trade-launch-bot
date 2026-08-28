@@ -107,7 +107,7 @@ pub struct GenericSweepStrategy {
     /// (plan §P2). Built once; the same grid serves every token.
     grid: SparseGrid,
     /// Corpus-wide volume-ix patterns (compiled). `None` ⇒ no flow state / NaN.
-    flow_patterns: Option<hunter_engine::metrics::flow_split::FlowPatterns>,
+    flow_patterns: Option<hunter_engine::metrics::flow_ix::FlowPatterns>,
     /// When set, [`compile_combo`](Self::compile_combo) merges this ladder into every
     /// combo's `RuleParams` (Pass-2 overlay scan only). Leave `None` on the main
     /// Pass-1 strategy so the axes grid keeps `fast_exit`. One overlay clone exists
@@ -133,14 +133,14 @@ pub struct ScaleOutPass2 {
 impl GenericSweepStrategy {
     /// Build the strategy from a resolved axes model. `as_of` is the run-time now
     /// the deadness clock advances toward (matches `run_replay`'s `ReplayConfig`).
-    /// `flow_patterns` is the run's optional `volume_ix_patterns` (corpus-wide).
+    /// `flow_patterns` is the run's optional `ix_patterns` (corpus-wide).
     /// `pricing` carries the run's notional + fill model + cost model — see
     /// [`Pricing`] for why the last two travel together.
     pub fn new(
         model: AxesModel,
         pricing: Pricing,
         as_of: Ts,
-        flow_patterns: Option<hunter_engine::metrics::flow_split::FlowPatterns>,
+        flow_patterns: Option<hunter_engine::metrics::flow_ix::FlowPatterns>,
     ) -> Self {
         let columns = model.columns();
         let grid = SparseGrid {
@@ -686,7 +686,7 @@ pub(crate) fn build_series_with_flow(
     columns: Vec<SeriesColumn>,
     grid: &SparseGrid,
     as_of: Ts,
-    flow_patterns: Option<&hunter_engine::metrics::flow_split::FlowPatterns>,
+    flow_patterns: Option<&hunter_engine::metrics::flow_ix::FlowPatterns>,
 ) -> MetricSeries {
     let created = token.created_at;
     let mut series = MetricSeries::new(created, columns);

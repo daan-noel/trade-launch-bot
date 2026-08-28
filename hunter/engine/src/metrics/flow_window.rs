@@ -194,6 +194,9 @@ impl WindowState {
             MetricId::GrossFlow => buy + sell,
             MetricId::NetFlow => buy - sell,
             MetricId::BuyCount => buy_n as f64,
+            // Both ends are corrected on the SAME bounds as `trade_count`, so the two
+            // counts and `buy_count` always add up — a sell is a trade that is not a buy.
+            MetricId::SellCount => self.trade_count(now_pos) - buy_n as f64,
             // Direction of the window's flow, independent of its size. Undefined on an
             // empty window: with no SOL either way there is no share to report, and a
             // `0.0` would read as "all sells" to a `buy_share <= X` condition.
@@ -229,11 +232,11 @@ impl WindowState {
 
     /// Trades in the window at `now_pos`. `buf` holds one entry per trade, so this is
     /// the same two-ended correction the SOL sums use, on a count instead. Shared by
-    /// `trade_count`, `trades_per_wallet`, and - across the group boundary -
-    /// [`flow_burst::trade_share`], so no two of them can disagree about what a
-    /// trade in a window is.
+    /// `trade_count`, `sell_count`, `m_crowd_window`'s `trades_per_wallet`, and
+    /// [`flow_slice::trade_share`], so no two of them can disagree about what a trade
+    /// in a window is.
     ///
-    /// [`flow_burst::trade_share`]: super::flow_burst::trade_share
+    /// [`flow_slice::trade_share`]: super::flow_slice::trade_share
     pub(super) fn trade_count(&self, now_pos: i64) -> f64 {
         let (lo, hi) = self.spec.bounds(now_pos);
         let n = self.buf.len()
@@ -289,6 +292,54 @@ fn drop_entry(signed: f64, buy: &mut f64, sell: &mut f64, buy_n: &mut u32) {
 
 #[cfg(test)]
 mod tests {
+
+    /// `buy_count + sell_count == trade_count`, on every window, always.
+    ///
+    /// The point of registering `sell_count` at all: a condition cannot subtract, so
+    /// `trade_count - buy_count` has no spelling. That makes the identity a contract
+    /// rather than an observation — if the two counts ever stopped adding up, a rule
+    /// authored as "at most two sells" would quietly bound something else.
+    #[test]
+    fn buys_and_sells_add_up_to_the_trade_count() {
+        let mut w = WindowState::new(WindowSpec::secs(10.0));
+        let script = [
+            (Side::Buy, 1.0, 0.0),
+            (Side::Sell, 2.0, 1.0),
+            (Side::Buy, 3.0, 2.0),
+            (Side::Sell, 4.0, 3.0),
+            (Side::Sell, 5.0, 4.0),
+        ];
+        for (i, &(side, sol, at)) in script.iter().enumerate() {
+            w.on_trade(side, sol, p(at), p(at), i as u64);
+        }
+        let now = p(4.0);
+        assert_eq!(w.value(MetricId::BuyCount, now), 2.0);
+        assert_eq!(w.value(MetricId::SellCount, now), 3.0);
+        assert_eq!(
+            w.value(MetricId::BuyCount, now) + w.value(MetricId::SellCount, now),
+            w.value(MetricId::TradeCount, now),
+        );
+
+        // ...and it still holds once the window has evicted part of the tape, which is
+        // where a separately-maintained counter would drift from the count.
+        let later = p(13.0);
+        w.evict(later);
+        assert_eq!(w.value(MetricId::SellCount, later), 2.0, "only the 3.0 and 4.0 sells remain");
+        assert_eq!(
+            w.value(MetricId::BuyCount, later) + w.value(MetricId::SellCount, later),
+            w.value(MetricId::TradeCount, later),
+        );
+    }
+
+    /// An empty window has no trades of either side, so both counts are `0` — NOT the
+    /// `NaN` the RATIO metrics use. A count of nothing is a real zero; a share of
+    /// nothing is undefined.
+    #[test]
+    fn an_empty_window_counts_zero_sells_rather_than_nan() {
+        let w = WindowState::new(WindowSpec::secs(10.0));
+        assert_eq!(w.value(MetricId::SellCount, p(0.0)), 0.0);
+        assert_eq!(w.value(MetricId::BuyCount, p(0.0)), 0.0);
+    }
     use super::*;
     use crate::metrics::Ts;
     use chrono::{Duration, TimeZone, Utc};

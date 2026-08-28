@@ -142,15 +142,15 @@ one template.
 
 ```
 FINGERPRINT.metric_config
-  m_flow_split:
+  m_flow_ix:
     organic_ix_templates: [ {all: [Axiom Trade,  ATA]},
                             {all: [Photon,       ATA]},
                             {all: [Bloom Router, ATA]},
                             {all: [Trojan Trade, ATA]},
                             {all: [Terminal,     ATA]} ]
     wallet_contagion:  false
-    creator_is_volume: false
-  volume_ix_patterns:  ABSENT
+    creator_is_tagged: false
+  ix_patterns:  ABSENT
 ```
 
 ```
@@ -173,10 +173,10 @@ ENGINE      window = 1 slot
   13    PHOTON|ATA|CU      organic    0.9
   14    (no marker)        volume     0.4
         ----------------------------------------
-        nonvol_buy     1.7      vol_buy  0.4
-        vol_buy_share  19.0 %        ->  the gate FAILS
+        untagged_buy     1.7      tagged_buy  0.4
+        tagged_buy_share  19.0 %        ->  the gate FAILS
 
-  without tx 14:  vol_buy_share 0.0 %  ->  the gate PASSES
+  without tx 14:  tagged_buy_share 0.0 %  ->  the gate PASSES
 ```
 
 ```
@@ -184,7 +184,7 @@ WORKFLOW    trade  ->  marker word  ->  classify  ->  window sums  ->  metric  -
                        (producer)      (engine)      (per window)     (read)     (rule)
 ```
 
-**There is no second list, and no duplication.** `volume_ix_patterns` is the older
+**There is no second list, and no duplication.** `ix_patterns` is the older
 hash-list mechanism and this gate does not use it - it stays absent. Naming both a
 template set and a pattern list is a **validation error**, because a mask and a hash list
 are two contradictory classifiers on one axis and silently letting one win is how a rule
@@ -201,14 +201,14 @@ fixed vocabulary, no hashes.
 | piece | state |
 | --- | --- |
 | marker word, `u16`, router + machinery markers | built |
-| `organic_ix_markers`, a single ANY-mask | built |
+| `untagged_ix_markers`, a single ANY-mask | built |
 | **ATA marker** | **to build** - one vocabulary entry |
 | **template test, `all` + `none`** | **to build** - `marks()` is ANY today |
-| **`vol_buy_share`** | **to build** - zero new state, the sums already accumulate |
+| **`tagged_buy_share`** | **to build** - zero new state, the sums already accumulate |
 | `buy_tools` (distinct builds among buys) | **deferred** - see section 3 |
 | first-on-mint, `unique_wallets`, CU marker | not building, measured |
 
-`organic_ix_markers` stays valid as sugar for a single-entry template, so nothing already
+`untagged_ix_markers` stays valid as sugar for a single-entry template, so nothing already
 stored changes meaning.
 
 `buy_tools` is deferred on purpose: it has no money ranking, and the tighter composition

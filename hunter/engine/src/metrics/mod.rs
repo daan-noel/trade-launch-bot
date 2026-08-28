@@ -4,7 +4,7 @@
 //!
 //! A **metric** is a named per-token quantity a rule can put `{operator, value}`
 //! conditions on. Metrics live in **groups** (one file per group):
-//! * `m_snapshot` (static) — `time`, `liquidity`,
+//! * `m_state` (static) — `time`, `liquidity`,
 //!   `first_slot_buy`
 //! * `m_price_lifetime` (static) — `stall`, `trail`, `rise` (lifetime peak/trough)
 //! * `m_price_window` (dynamic, strict param `window_size_sec`) — `trail`, `rise`
@@ -12,12 +12,13 @@
 //! * `m_flow_lifetime` (static) — `gross_flow`, `net_flow`, `buy`, `sell`
 //!   (lifetime SOL totals; no classifier)
 //! * `m_flow_window` (dynamic, strict param `window_size_sec`) — same metrics
-//!   over a trailing window
-//! * `m_flow_burst` (dynamic, strict params `window_size_sec` + `burst_size_sec`)
-//!   — `trade_share`, the share of a reference window's trades that landed in a
-//!   shorter one nested inside it
-//! * `m_flow_split` (static, fingerprint-scoped) — vol/organic lifetime totals
-//! * `m_flow_split_window` (dynamic, fingerprint-scoped) — same metrics over a window
+//!   over a trailing window, plus `buy_count` / `sell_count` / `buy_share`, plus
+//!   the two-window `trade_share` / `sol_share` (a `slice_size_sec` nested inside
+//!   the window; see [`is_two_window`])
+//! * `m_crowd_window` (dynamic, strict param `window_size_sec`) — `unique_wallets`,
+//!   `trades_per_wallet` — the metrics that need the WALLET column
+//! * `m_flow_ix` (static, fingerprint-scoped) — vol/organic lifetime totals
+//! * `m_flow_ix_window` (dynamic, fingerprint-scoped) — same metrics over a window
 //! * `m_position` (static, **position-scoped**, exit-only) — `retrace`, `bounce`,
 //!   `pnl`, `held` (anchored on your entry fill; TP/SL desugar into `pnl` — see `arm.rs`)
 //!
@@ -28,16 +29,16 @@
 //! makes it immediately usable everywhere, with no schema change.
 
 pub mod evaluator;
-pub mod flow_burst;
+pub mod flow_slice;
 pub mod flow_lifetime;
-pub mod flow_split;
+pub mod flow_ix;
 pub mod flow_window;
 pub mod grid;
 pub mod position;
 pub mod price_lifetime;
 pub mod price_window;
 pub mod series;
-pub mod snapshot;
+pub mod state;
 pub mod track;
 
 use std::fmt;
@@ -51,7 +52,7 @@ use serde::{Deserialize, Serialize};
 /// `null` (e.g. `serde_json`'s writer does this silently), but the matching
 /// derived `Deserialize` for a bare (non-`Option`) `f64` then rejects that same
 /// `null` — a write-only asymmetry. [`TradeLite::reserve_sol`] uses `NaN` as its
-/// "no real reserve decoded yet" sentinel (see [`crate::metrics::snapshot`]), so
+/// "no real reserve decoded yet" sentinel (see [`crate::metrics::state`]), so
 /// any event-log `Trade` line logged with that sentinel became permanently
 /// unparseable (`invalid type: null, expected f64`) on replay/recovery. This
 /// module makes the round trip explicit instead of widening the field to
@@ -105,7 +106,7 @@ pub enum Side {
 /// `reserve_sol` the SOL reserves after the trade (liquidity).
 ///
 /// `ix_hash` / `wallet_hash` feed the volume-flow classifier (V1+); adapters hash
-/// via [`flow_split`]. Missing fields on old event-log lines default via serde
+/// via [`flow_ix`]. Missing fields on old event-log lines default via serde
 /// (`ix_hash: None`, `wallet_hash: 0`) ⇒ organic unless tagged/creator.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TradeLite {
@@ -153,7 +154,7 @@ pub struct TradeLite {
     #[serde(default)]
     pub slot: u64,
     /// Structural markers present in the trade's `ix_labels`, one bit each
-    /// ([`crate::metrics::flow_split::MARKERS`]). Set by the producer, which is the
+    /// ([`crate::metrics::flow_ix::MARKERS`]). Set by the producer, which is the
     /// only layer holding the label strings; the engine compares bits.
     #[serde(default)]
     pub marker_bits: u16,
@@ -234,8 +235,8 @@ impl WindowUnit {
 }
 
 /// The size params ONE window axis spells itself with — one name per
-/// [`WindowUnit`]. A dynamic group's own span is [`WINDOW_AXIS`]; `m_flow_burst`'s
-/// second span is [`flow_burst::BURST_AXIS`].
+/// [`WindowUnit`]. A dynamic group's own span is [`WINDOW_AXIS`]; the nested slice
+/// the two-window metrics read is [`flow_slice::SLICE_AXIS`].
 ///
 /// Exists so "which param carries this axis" is asked once instead of branching per
 /// pair of units at every resolve, validate and label site — that branching is what
@@ -460,8 +461,8 @@ pub struct WindowKey {
 /// A metric group — one compute module, one JSON key under `entry`/`exit`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MetricGroupId {
-    /// `m_snapshot` — instantaneous token state.
-    Snapshot,
+    /// `m_state` — instantaneous token state.
+    State,
     /// `m_price_lifetime` — incremental price-path state (lifetime peak).
     PriceLifetime,
     /// `m_price_window` — trailing-window price extrema (rolling high/low).
@@ -470,12 +471,12 @@ pub enum MetricGroupId {
     FlowLifetime,
     /// `m_flow_window` — trailing-window flow aggregates.
     FlowWindow,
-    /// `m_flow_burst` — a ratio across two NESTED trailing windows.
-    FlowBurst,
-    /// `m_flow_split` — volume/organic lifetime totals (fingerprint-scoped).
-    FlowSplit,
-    /// `m_flow_split_window` — volume/organic trailing-window totals (fingerprint-scoped).
-    FlowSplitWindow,
+    /// `m_crowd_window` — trailing-window wallet counts.
+    CrowdWindow,
+    /// `m_flow_ix` — volume/organic lifetime totals (fingerprint-scoped).
+    FlowIx,
+    /// `m_flow_ix_window` — volume/organic trailing-window totals (fingerprint-scoped).
+    FlowIxWindow,
     /// `m_position` — metrics anchored on YOUR entry fill (position-scoped, exit-only).
     Position,
 }
@@ -495,11 +496,11 @@ impl fmt::Display for MetricGroupId {
 /// One metric within a group — a JSON key holding `{operator, value}` lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MetricId {
-    /// Seconds since token creation (`m_snapshot`).
+    /// Seconds since token creation (`m_state`).
     Time,
-    /// SOL reserves (`m_snapshot`).
+    /// SOL reserves (`m_state`).
     Liquidity,
-    /// Total buy SOL that landed in the token's **creation slot** (`m_snapshot`).
+    /// Total buy SOL that landed in the token's **creation slot** (`m_state`).
     ///
     /// "Was the launch real?" — it separates a funded launch from a dust one, and it
     /// is the same quantity the fingerprint axis `first_slot_buy_lamports` ranges
@@ -566,9 +567,15 @@ pub enum MetricId {
     /// Unlike `unique_wallets` this needs no wallet column, so it survives an offline
     /// load that did not request wallet identity (see [`needs_wallet_identity`]).
     TradeCount,
-    /// Buys (not trades) in the window - the burst's transaction count. Distinct
+    /// Buys (not trades) in the window - the slice's transaction count. Distinct
     /// from `trade_count`, which sells inflate.
     BuyCount,
+    /// Sells (not trades) in the window (`m_flow_window`) — `buy_count`'s twin.
+    ///
+    /// Registered rather than left to arithmetic because a condition cannot do any:
+    /// `trade_count - buy_count` is not expressible, so without this metric "at most
+    /// two sells" has no spelling at all.
+    SellCount,
     /// Share of the trailing window's SOL that is buys — `buy / (buy + sell)`, in
     /// percent (`m_flow_window`).
     ///
@@ -590,10 +597,10 @@ pub enum MetricId {
     /// `NaN` on an empty window rather than `0.0` — a `0.0` would let
     /// `trades_per_wallet <= 2` pass on a dead tape, the exact reading it excludes.
     TradesPerWallet,
-    // ── m_flow_burst (two nested trailing windows) ─
-    /// Percent of the reference window's trades that landed in the burst window
-    /// nested inside it — `trade_count(burst) / trade_count(window) * 100`
-    /// (`m_flow_burst`).
+    // ── m_flow_window, TWO-window reads (a slice nested in the window) ─
+    /// Percent of the reference window's trades that landed in the slice window
+    /// nested inside it — `trade_count(slice) / trade_count(window) * 100`
+    /// (`m_flow_window`).
     ///
     /// How CONCENTRATED the tape is in time, independent of how busy it is. Ten
     /// trades arriving in the last three seconds and ten spread evenly over a minute
@@ -601,28 +608,42 @@ pub enum MetricId {
     ///
     /// `NaN` on an empty reference window. Reads `100` on a token younger than the
     /// burst window, which is a true reading and not a maturity signal — see
-    /// [`flow_burst::trade_share`].
-    BurstTradeShare,
-    // ── m_flow_split (lifetime; JSON names shared with m_flow_split_window) ─
-    VolBuy,
-    VolSell,
-    VolNet,
-    VolGross,
-    NonvolBuy,
-    NonvolSell,
-    NonvolNet,
-    NonvolGross,
-    VolShare,
-    // ── m_flow_split_window (trailing; distinct ids so monotonic flags can differ) ─
-    WinVolBuy,
-    WinVolSell,
-    WinVolNet,
-    WinVolGross,
-    WinNonvolBuy,
-    WinNonvolSell,
-    WinNonvolNet,
-    WinNonvolGross,
-    WinVolShare,
+    /// [`flow_slice::trade_share`].
+    SliceTradeShare,
+    /// Percent of the reference window's SOL that moved in the slice nested inside
+    /// it — `gross_flow(slice) / gross_flow(window) * 100` (`m_flow_window`).
+    ///
+    /// The SOL twin of [`SliceTradeShare`], and not a restatement of it: ten prints
+    /// carrying a tenth of a SOL each and one print carrying ten are the same
+    /// `trade_share` and far apart here.
+    ///
+    /// It is also the reading that survives a PRINT basis. On a print window the
+    /// slice is a fixed count of transactions, so `trade_share` is `slice / window`
+    /// on every token and carries nothing; `sol_share` is the only one of the pair
+    /// that still varies.
+    ///
+    /// `NaN` on an empty reference window, same contract as [`SliceTradeShare`].
+    SliceSolShare,
+    // ── m_flow_ix (lifetime; JSON names shared with m_flow_ix_window) ─
+    TaggedBuy,
+    TaggedSell,
+    TaggedNet,
+    TaggedGross,
+    UntaggedBuy,
+    UntaggedSell,
+    UntaggedNet,
+    UntaggedGross,
+    TaggedShare,
+    // ── m_flow_ix_window (trailing; distinct ids so monotonic flags can differ) ─
+    WinTaggedBuy,
+    WinTaggedSell,
+    WinTaggedNet,
+    WinTaggedGross,
+    WinUntaggedBuy,
+    WinUntaggedSell,
+    WinUntaggedNet,
+    WinUntaggedGross,
+    WinTaggedShare,
     // ── m_position (position-scoped; anchored on the entry fill; exit-only) ──
     /// Percent below the since-entry peak — the trailing stop.
     Retrace,
@@ -638,8 +659,23 @@ pub enum MetricId {
 pub fn is_flow_metric(id: MetricId) -> bool {
     matches!(
         group_of(id).id,
-        MetricGroupId::FlowSplit | MetricGroupId::FlowSplitWindow
+        MetricGroupId::FlowIx | MetricGroupId::FlowIxWindow
     )
+}
+
+/// True for the metrics whose basis is TWO nested windows — a slice inside the
+/// group's own window — rather than one.
+///
+/// Per-METRIC, not per-group, and that is the whole point of it. The slice axis
+/// lives on `m_flow_window` beside the single-window metrics, so an instance that
+/// gates only on `gross_flow` must not be made to carry a span nothing reads, and an
+/// instance that gates on `trade_share` must not be allowed to omit it. `validate_group`
+/// reads this to decide which of those two errors to raise, and `arm::build_reqs`
+/// reads it to attach [`Windows::secondary`] to these metrics alone — so a
+/// requirement's identity carries the second span exactly when the second span is
+/// what it reads.
+pub fn is_two_window(id: MetricId) -> bool {
+    matches!(id, MetricId::SliceTradeShare | MetricId::SliceSolShare)
 }
 
 /// True for metrics whose **state** is keyed by fingerprint, and which therefore
@@ -747,7 +783,7 @@ impl MetricScope {
 /// Registry entry for one metric: name, unit, `=`-tolerance, monotonicity, UI hue.
 ///
 /// `eq_tolerance` is the metric's own bucket-equality width for `=`/`!=`
-/// (deliberately independent of any fingerprint's `bucket_size_amount`).
+/// (deliberately independent of any fingerprint criterion's range).
 /// `monotonic` (non-decreasing over a token's life) powers derived
 /// unsatisfiability disarm — an entry upper bound on a monotonic metric that is
 /// permanently crossed can never re-satisfy.
@@ -825,7 +861,7 @@ pub enum MetricFamily {
     /// Unclassified SOL flow — lifetime and trailing-window aggregates.
     Flow,
     /// Flow split by a **wallet classifier** — volume vs organic, lifetime and windowed.
-    FlowSplit,
+    FlowIx,
     /// Token state that is neither price nor flow: age and liquidity.
     LiquidityAge,
     /// Default for a group that belongs to no established family.
@@ -838,7 +874,7 @@ impl MetricFamily {
         match self {
             MetricFamily::Price => "price",
             MetricFamily::Flow => "flow",
-            MetricFamily::FlowSplit => "flow_split",
+            MetricFamily::FlowIx => "flow_ix",
             MetricFamily::LiquidityAge => "liquidity_age",
             MetricFamily::Standalone => "standalone",
         }
@@ -896,7 +932,8 @@ pub const CANDLE_DOWN_HUE: u16 = 355;
 /// only in the second one.
 ///
 /// `primary` is the group's `window_size_sec`. `secondary` is `None` for every group
-/// whose basis is a single window, which is all of them but `m_flow_burst`.
+/// whose basis is a single window — every read but the two-window metrics
+/// [`is_two_window`] selects.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Windows {
     pub primary: Option<WindowSpec>,
@@ -950,8 +987,8 @@ impl From<Option<WindowSpec>> for Windows {
 /// Compile-time data; every other layer derives its vocabulary from here.
 pub const REGISTRY: &[GroupSpec] = &[
     GroupSpec {
-        id: MetricGroupId::Snapshot,
-        name: "m_snapshot",
+        id: MetricGroupId::State,
+        name: "m_state",
         kind: MetricKind::Static,
         scope: MetricScope::Token,
         family: MetricFamily::LiquidityAge,
@@ -1056,7 +1093,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         // Amber family (44–48), sharing the 40–62 price band with m_price_lifetime —
         // three views of one price path (lifetime extrema vs rolling extrema vs
         // since-entry), the same "one classifier, sibling groups" rationale as
-        // m_flow_split / m_flow_split_window. The cross-group hue guard exempts the
+        // m_flow_ix / m_flow_ix_window. The cross-group hue guard exempts the
         // price family; do NOT widen the gap constants (the wheel is full — see
         // the guard test).
         metrics: &[
@@ -1162,6 +1199,16 @@ pub const REGISTRY: &[GroupSpec] = &[
             // at now) and the only behaviour that existed before this param, so it is
             // the default and it allows zero.
             StrictParamSpec { name: WINDOW_LAG_PARAM, required: false, allows_zero: true },
+            // The SECOND axis - a slice NESTED in the window above, and the basis of
+            // the `*_share` metrics alone. Optional at the group level and required
+            // per-metric ([`is_two_window`]): a group instance that reads no share
+            // must not be made to carry a span nothing reads, which is the silent
+            // no-op `arm_above_pct` is guarded against. `validate_group` enforces
+            // exactly one size, agreement with the reference unit, and the nesting
+            // bound - none of which a `StrictParamSpec` can spell.
+            StrictParamSpec { name: flow_slice::SLICE_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: flow_slice::SLICE_SLOT_PARAM, required: false, allows_zero: false },
+            StrictParamSpec { name: flow_slice::SLICE_PRINT_PARAM, required: false, allows_zero: false },
         ],
         fingerprint_config: &[],
         // Same violet/magenta family as m_flow_lifetime — the cross-group hue guard
@@ -1221,18 +1268,6 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 284,
             },
             MetricSpec {
-                id: MetricId::UniqueWallets,
-                name: "unique_wallets",
-                description: "Distinct trading wallets over the trailing window - how many PEOPLE are in the token, against `gross_flow`'s how much SOL.",
-                // A tally, so the `=` tolerance is half a wallet: anything smaller
-                // would make `== 5` depend on float noise, anything larger would let
-                // it match 6.
-                unit: Unit::Count,
-                eq_tolerance: 0.5,
-                monotonic: false,
-                hue: 290,
-            },
-            MetricSpec {
                 id: MetricId::TradeCount,
                 name: "trade_count",
                 description: "Trades over the trailing window - how BUSY the tape is, against `unique_wallets`' how many people. Needs no wallet column.",
@@ -1243,20 +1278,6 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 294,
             },
             MetricSpec {
-                id: MetricId::TradesPerWallet,
-                name: "trades_per_wallet",
-                description: "`trade_count / unique_wallets` over the window. Low is a crowd arriving, high is one wallet working the tape - a COUNT ratio, never an identity, so wallet rotation does not defeat it. NaN on an empty window.",
-                // A ratio of two tallies, not a tally: real thresholds sit at 1.5-3, so
-                // half a unit would swallow them. 0.05 is below anything worth
-                // authoring and far above float noise on a count/count.
-                unit: Unit::Count,
-                eq_tolerance: 0.05,
-                monotonic: false,
-                // Between `trade_count` (294) and `net_flow` (300), inside the group's
-                // violet family — it is built from the two counts either side of it.
-                hue: 296,
-            },
-            MetricSpec {
                 id: MetricId::Sell,
                 name: "sell",
                 description: "Sell SOL over the trailing window.",
@@ -1265,66 +1286,106 @@ pub const REGISTRY: &[GroupSpec] = &[
                 monotonic: false,
                 hue: CANDLE_DOWN_HUE,
             },
+            MetricSpec {
+                id: MetricId::SellCount,
+                name: "sell_count",
+                description: "Number of SELLS over the trailing window - `buy_count`'s twin. A condition cannot subtract, so `trade_count - buy_count` has no spelling and this is the only way to bound sells.",
+                unit: Unit::Count,
+                // A tally, so half a trade - same reasoning as `buy_count`.
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 292,
+            },
+            MetricSpec {
+                id: MetricId::SliceTradeShare,
+                name: "trade_share",
+                description: "Percent of the window's trades that landed in the `slice_size_*` span nested inside it - how CONCENTRATED the tape is in time, independent of how busy it is. Reads 100 on a token younger than the slice; NaN on an empty window.",
+                // A ratio in percent, same reasoning as `buy_share`: 0.5pp is below any
+                // threshold worth authoring and above float noise on a count/count.
+                unit: Unit::Percent,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                // Above `net_flow` (300) at the top of the family, still >= 35 off the
+                // candle red at 355.
+                hue: 306,
+            },
+            MetricSpec {
+                id: MetricId::SliceSolShare,
+                name: "sol_share",
+                description: "Percent of the window's SOL that moved in the `slice_size_*` span nested inside it. The SOL twin of `trade_share`, and the only one of the pair that still varies on a PRINT window. NaN on an empty window.",
+                unit: Unit::Percent,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 308,
+            },
         ],
     },
     GroupSpec {
-        id: MetricGroupId::FlowBurst,
-        name: "m_flow_burst",
+        id: MetricGroupId::CrowdWindow,
+        name: "m_crowd_window",
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
         family: MetricFamily::Flow,
-        // TWO windows, and the pair is the basis: the reference span, and the burst
-        // slice nested inside it. Both axes are required — a share with one end
-        // missing is not a smaller reading, it is no reading — and both count in the
-        // SAME unit, since a burst in slots over a reference in seconds is a ratio
-        // across two clocks. No size param is `required` on its own because
-        // "exactly one per axis" is a cross-param rule; `validate_group` enforces
-        // the choice, the unit agreement, and the `burst <= window` nesting bound,
-        // none of which a `StrictParamSpec` can spell.
         strict_params: &[
             StrictParamSpec { name: WINDOW_SEC_PARAM, required: false, allows_zero: false },
             StrictParamSpec { name: WINDOW_SLOT_PARAM, required: false, allows_zero: false },
             StrictParamSpec { name: WINDOW_PRINT_PARAM, required: false, allows_zero: false },
             StrictParamSpec { name: WINDOW_LAG_PARAM, required: false, allows_zero: true },
-            StrictParamSpec { name: flow_burst::BURST_PARAM, required: false, allows_zero: false },
-            StrictParamSpec { name: flow_burst::BURST_SLOT_PARAM, required: false, allows_zero: false },
-            StrictParamSpec { name: flow_burst::BURST_PRINT_PARAM, required: false, allows_zero: false },
         ],
         fingerprint_config: &[],
-        // Same violet family as m_flow_lifetime / m_flow_window — it is built from
-        // their `trade_count`, so it is a third view of aggregate flow and the
-        // cross-group hue guard exempts the trio.
-        metrics: &[MetricSpec {
-            id: MetricId::BurstTradeShare,
-            name: "trade_share",
-            description: "Percent of the reference window's trades that landed in the burst window nested inside it - how CONCENTRATED the tape is in time, independent of how busy it is. Reads 100 on a token younger than the burst window; NaN on an empty reference window.",
-            // A ratio in percent, same reasoning as `buy_share`: 0.5pp is below any
-            // threshold worth authoring and above float noise on a count/count.
-            unit: Unit::Percent,
-            eq_tolerance: 0.5,
-            monotonic: false,
-            // Above `net_flow` (300) at the top of the family, still >= 35 off the
-            // candle red at 355.
-            hue: 306,
-        }],
+        // Its own group because its subject is WHO traded, not how much - and that
+        // difference is a load obligation, not a taste: these two are the only metrics
+        // that need the wallet column ([`MetricId::needs_wallet_identity`]), and an
+        // offline read without it sees one anonymous wallet and makes every condition
+        // here silently false. One group, one obligation, so a loader answers the
+        // question by group instead of by metric list.
+        //
+        // Same violet family as the flow groups, whose tape it reads; the cross-group
+        // hue guard exempts the set.
+        metrics: &[
+            MetricSpec {
+                id: MetricId::UniqueWallets,
+                name: "unique_wallets",
+                description: "Distinct trading wallets over the trailing window - how many PEOPLE are in the token, against `m_flow_window.gross_flow`'s how much SOL.",
+                // A tally, so the `=` tolerance is half a wallet: anything smaller
+                // would make `== 5` depend on float noise, anything larger would let
+                // it match 6.
+                unit: Unit::Count,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 290,
+            },
+            MetricSpec {
+                id: MetricId::TradesPerWallet,
+                name: "trades_per_wallet",
+                description: "`m_flow_window.trade_count / unique_wallets` over the same window. Low is a crowd arriving, high is one wallet working the tape - a COUNT ratio, never an identity, so wallet rotation does not defeat it. NaN on an empty window.",
+                // A ratio of two tallies, not a tally: real thresholds sit at 1.5-3, so
+                // half a unit would swallow them. 0.05 is below anything worth
+                // authoring and far above float noise on a count/count.
+                unit: Unit::Count,
+                eq_tolerance: 0.05,
+                monotonic: false,
+                hue: 296,
+            },
+        ],
     },
     GroupSpec {
-        id: MetricGroupId::FlowSplit,
-        name: "m_flow_split",
+        id: MetricGroupId::FlowIx,
+        name: "m_flow_ix",
         kind: MetricKind::Static,
         scope: MetricScope::Token,
-        family: MetricFamily::FlowSplit,
+        family: MetricFamily::FlowIx,
         strict_params: &[],
         fingerprint_config: &[FpConfigFieldSpec {
-            name: "volume_ix_patterns",
+            name: "ix_patterns",
             value_type: "string[][]",
             required: true,
         }],
         // Teal family (~93–109) — clear of price-path (≤62) and candle green (170).
         metrics: &[
             MetricSpec {
-                id: MetricId::VolBuy,
-                name: "vol_buy",
+                id: MetricId::TaggedBuy,
+                name: "tagged_buy",
                 description: "Buy SOL from VOLUME-side wallets (creator tooling, contagion, the creator) since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
@@ -1332,8 +1393,8 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 93,
             },
             MetricSpec {
-                id: MetricId::VolSell,
-                name: "vol_sell",
+                id: MetricId::TaggedSell,
+                name: "tagged_sell",
                 description: "Sell SOL from volume-side wallets since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
@@ -1341,8 +1402,8 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 95,
             },
             MetricSpec {
-                id: MetricId::VolNet,
-                name: "vol_net",
+                id: MetricId::TaggedNet,
+                name: "tagged_net",
                 description: "Volume-side buy - sell SOL since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
@@ -1350,8 +1411,8 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 97,
             },
             MetricSpec {
-                id: MetricId::VolGross,
-                name: "vol_gross",
+                id: MetricId::TaggedGross,
+                name: "tagged_gross",
                 description: "Volume-side buy + sell SOL since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
@@ -1359,8 +1420,8 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 99,
             },
             MetricSpec {
-                id: MetricId::NonvolBuy,
-                name: "nonvol_buy",
+                id: MetricId::UntaggedBuy,
+                name: "untagged_buy",
                 description: "Buy SOL from ORGANIC wallets (everyone the classifier does not tag) since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
@@ -1368,8 +1429,8 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 101,
             },
             MetricSpec {
-                id: MetricId::NonvolSell,
-                name: "nonvol_sell",
+                id: MetricId::UntaggedSell,
+                name: "untagged_sell",
                 description: "Sell SOL from organic wallets since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
@@ -1377,8 +1438,8 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 103,
             },
             MetricSpec {
-                id: MetricId::NonvolNet,
-                name: "nonvol_net",
+                id: MetricId::UntaggedNet,
+                name: "untagged_net",
                 description: "Organic buy - sell SOL since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
@@ -1386,8 +1447,8 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 105,
             },
             MetricSpec {
-                id: MetricId::NonvolGross,
-                name: "nonvol_gross",
+                id: MetricId::UntaggedGross,
+                name: "untagged_gross",
                 description: "Organic buy + sell SOL since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
@@ -1395,9 +1456,9 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 107,
             },
             MetricSpec {
-                id: MetricId::VolShare,
-                name: "vol_share",
-                description: "Share of lifetime SOL that is volume-side, in percent. Needs the fingerprint's `volume_ix_patterns`; NaN when unconfigured.",
+                id: MetricId::TaggedShare,
+                name: "tagged_share",
+                description: "Share of lifetime SOL that is volume-side, in percent. Needs the fingerprint's `ix_patterns`; NaN when unconfigured.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -1406,11 +1467,11 @@ pub const REGISTRY: &[GroupSpec] = &[
         ],
     },
     GroupSpec {
-        id: MetricGroupId::FlowSplitWindow,
-        name: "m_flow_split_window",
+        id: MetricGroupId::FlowIxWindow,
+        name: "m_flow_ix_window",
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
-        family: MetricFamily::FlowSplit,
+        family: MetricFamily::FlowIx,
         strict_params: &[
             // EXACTLY ONE of the three size params. None is `required` on its own;
             // `validate_group` enforces the choice, because "one of these" is a
@@ -1423,14 +1484,14 @@ pub const REGISTRY: &[GroupSpec] = &[
             // the default and it allows zero.
             StrictParamSpec { name: WINDOW_LAG_PARAM, required: false, allows_zero: true },
         ],
-        // Reads the same fingerprint key as m_flow_split (one classifier, two views).
+        // Reads the same fingerprint key as m_flow_ix (one classifier, two views).
         fingerprint_config: &[],
-        // Same teal family as m_flow_split (one classifier, two views) — the
+        // Same teal family as m_flow_ix (one classifier, two views) — the
         // cross-group hue guard exempts this sibling pair.
         metrics: &[
             MetricSpec {
-                id: MetricId::WinVolBuy,
-                name: "vol_buy",
+                id: MetricId::WinTaggedBuy,
+                name: "tagged_buy",
                 description: "Buy SOL from VOLUME-side wallets over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
@@ -1438,8 +1499,8 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 93,
             },
             MetricSpec {
-                id: MetricId::WinVolSell,
-                name: "vol_sell",
+                id: MetricId::WinTaggedSell,
+                name: "tagged_sell",
                 description: "Sell SOL from volume-side wallets over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
@@ -1447,8 +1508,8 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 95,
             },
             MetricSpec {
-                id: MetricId::WinVolNet,
-                name: "vol_net",
+                id: MetricId::WinTaggedNet,
+                name: "tagged_net",
                 description: "Volume-side buy - sell SOL over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
@@ -1456,8 +1517,8 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 97,
             },
             MetricSpec {
-                id: MetricId::WinVolGross,
-                name: "vol_gross",
+                id: MetricId::WinTaggedGross,
+                name: "tagged_gross",
                 description: "Volume-side buy + sell SOL over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
@@ -1465,8 +1526,8 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 99,
             },
             MetricSpec {
-                id: MetricId::WinNonvolBuy,
-                name: "nonvol_buy",
+                id: MetricId::WinUntaggedBuy,
+                name: "untagged_buy",
                 description: "Buy SOL from ORGANIC wallets over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
@@ -1474,8 +1535,8 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 101,
             },
             MetricSpec {
-                id: MetricId::WinNonvolSell,
-                name: "nonvol_sell",
+                id: MetricId::WinUntaggedSell,
+                name: "untagged_sell",
                 description: "Sell SOL from organic wallets over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
@@ -1483,8 +1544,8 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 103,
             },
             MetricSpec {
-                id: MetricId::WinNonvolNet,
-                name: "nonvol_net",
+                id: MetricId::WinUntaggedNet,
+                name: "untagged_net",
                 description: "Organic buy - sell SOL over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
@@ -1492,8 +1553,8 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 105,
             },
             MetricSpec {
-                id: MetricId::WinNonvolGross,
-                name: "nonvol_gross",
+                id: MetricId::WinUntaggedGross,
+                name: "untagged_gross",
                 description: "Organic buy + sell SOL over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
@@ -1501,9 +1562,9 @@ pub const REGISTRY: &[GroupSpec] = &[
                 hue: 107,
             },
             MetricSpec {
-                id: MetricId::WinVolShare,
-                name: "vol_share",
-                description: "Share of the window's SOL that is volume-side, in percent. Needs the fingerprint's `volume_ix_patterns`; NaN when unconfigured.",
+                id: MetricId::WinTaggedShare,
+                name: "tagged_share",
+                description: "Share of the window's SOL that is volume-side, in percent. Needs the fingerprint's `ix_patterns`; NaN when unconfigured.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -1583,7 +1644,7 @@ pub fn group_spec(id: MetricGroupId) -> &'static GroupSpec {
         .expect("every MetricGroupId has a REGISTRY entry")
 }
 
-/// Resolve a group by its JSON name (`m_snapshot`, …). `None` = unknown group.
+/// Resolve a group by its JSON name (`m_state`, …). `None` = unknown group.
 pub fn group_by_name(name: &str) -> Option<&'static GroupSpec> {
     REGISTRY.iter().find(|g| g.name == name)
 }
@@ -1597,7 +1658,7 @@ pub fn metric_spec(id: MetricId) -> &'static MetricSpec {
         .expect("every MetricId has a REGISTRY entry")
 }
 
-/// Resolve a metric by its JSON name (`time`, `stall`, `vol_buy`, …). When the
+/// Resolve a metric by its JSON name (`time`, `stall`, `tagged_buy`, …). When the
 /// same name appears in more than one group (flow split vs window), the first
 /// registry hit wins — enough for exit-reason label parse/display.
 pub fn metric_id_by_name(name: &str) -> Option<MetricId> {
@@ -1611,7 +1672,7 @@ pub fn metric_id_by_name(name: &str) -> Option<MetricId> {
 /// Resolve a metric name **within one group kind**.
 ///
 /// A dynamic group and its lifetime twin deliberately share every metric name
-/// (`m_flow_split.nonvol_buy` / `m_flow_split_window.nonvol_buy`), so
+/// (`m_flow_ix.untagged_buy` / `m_flow_ix_window.untagged_buy`), so
 /// [`metric_id_by_name`] alone cannot answer which one a persisted exit label meant.
 /// The window qualifier on the label is the discriminator, and this is how it is
 /// applied. See `event::parse_metric_exit_label`.
@@ -1664,6 +1725,11 @@ pub fn registry_json() -> serde_json::Value {
                         "eq_tolerance": m.eq_tolerance,
                         "monotonic": m.monotonic,
                         "hue": m.hue,
+                        // Whether this metric reads the group's SECOND window axis.
+                        // Mirrored so the editor asks the registry rather than
+                        // hardcoding a group name: `m_flow_window` declares the slice
+                        // axis for every instance, and only these metrics may set it.
+                        "two_window": is_two_window(m.id),
                     })
                 })
                 .collect();
@@ -1743,7 +1809,7 @@ mod tests {
 
         // Metric names are unique within a group. The same name may appear in
         // sibling groups (m_flow_lifetime / m_flow_window share buy/sell/net/gross;
-        // m_flow_split / m_flow_split_window share vol_*).
+        // m_flow_ix / m_flow_ix_window share vol_*).
         for g in REGISTRY {
             let mut names: Vec<_> = g.metrics.iter().map(|m| m.name).collect();
             let total = names.len();
@@ -1763,7 +1829,7 @@ mod tests {
     /// Families mirror the hue families the registry already keeps — that is the
     /// intuition they were promoted from, and the discovery pipeline's Layer-2 grid
     /// is only meaningful if the two stay aligned. Sibling groups that deliberately
-    /// share a hue band (`m_price_*`/`m_position`, `m_flow_*`, `m_flow_split*`) must
+    /// share a hue band (`m_price_*`/`m_position`, `m_flow_*`, `m_flow_ix*`) must
     /// therefore also share a family, and a group in `Standalone` must be alone.
     #[test]
     fn families_group_the_registry_the_way_hues_do() {
@@ -1773,9 +1839,12 @@ mod tests {
             by_family.entry(g.family.as_str()).or_default().push(g.name);
         }
         assert_eq!(by_family["price"], vec!["m_price_lifetime", "m_price_window", "m_position"]);
-        assert_eq!(by_family["flow"], vec!["m_flow_lifetime", "m_flow_window", "m_flow_burst"]);
-        assert_eq!(by_family["flow_split"], vec!["m_flow_split", "m_flow_split_window"]);
-        assert_eq!(by_family["liquidity_age"], vec!["m_snapshot"]);
+        assert_eq!(
+            by_family["flow"],
+            vec!["m_flow_lifetime", "m_flow_window", "m_crowd_window"]
+        );
+        assert_eq!(by_family["flow_ix"], vec!["m_flow_ix", "m_flow_ix_window"]);
+        assert_eq!(by_family["liquidity_age"], vec!["m_state"]);
         // Nothing is unclassified today; a new group that lands in `Standalone` is
         // gridded alone (correct, just more compute) and this assert is the prompt
         // to decide whether it really belongs to an existing family.
@@ -1837,19 +1906,19 @@ mod tests {
     #[test]
     fn monotonic_flags_match_contract() {
         // Lifetime accumulators that only grow: time + m_flow_lifetime
-        // buy/sell/gross/trade_count + m_flow_split vol/nonvol buy/sell/gross.
+        // buy/sell/gross/trade_count + m_flow_ix vol/nonvol buy/sell/gross.
         // Windowed / net / share / everything else: not monotonic.
         let lifetime_flow_mono = [
             MetricId::LifeBuy,
             MetricId::LifeSell,
             MetricId::LifeGrossFlow,
             MetricId::LifeTradeCount,
-            MetricId::VolBuy,
-            MetricId::VolSell,
-            MetricId::VolGross,
-            MetricId::NonvolBuy,
-            MetricId::NonvolSell,
-            MetricId::NonvolGross,
+            MetricId::TaggedBuy,
+            MetricId::TaggedSell,
+            MetricId::TaggedGross,
+            MetricId::UntaggedBuy,
+            MetricId::UntaggedSell,
+            MetricId::UntaggedGross,
         ];
         for g in REGISTRY {
             for m in g.metrics {
@@ -1892,7 +1961,20 @@ mod tests {
             .iter()
             .map(|p| p["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, vec![WINDOW_SEC_PARAM, WINDOW_SLOT_PARAM, WINDOW_PRINT_PARAM, WINDOW_LAG_PARAM]);
+        assert_eq!(
+            names,
+            vec![
+                WINDOW_SEC_PARAM,
+                WINDOW_SLOT_PARAM,
+                WINDOW_PRINT_PARAM,
+                WINDOW_LAG_PARAM,
+                // The nested slice, declared for every instance and required only of
+                // the instances whose metrics read it (`is_two_window`).
+                flow_slice::SLICE_PARAM,
+                flow_slice::SLICE_SLOT_PARAM,
+                flow_slice::SLICE_PRINT_PARAM,
+            ]
+        );
         assert!(tw["strict_params"].as_array().unwrap().iter().all(|p| p["required"] == false));
         let life = groups.iter().find(|g| g["name"] == "m_flow_lifetime").unwrap();
         assert!(life["strict_params"].as_array().unwrap().is_empty());
@@ -2010,10 +2092,10 @@ mod tests {
     }
 
     /// Metrics from different groups must not collide either — otherwise a
-    /// `m_snapshot` chip and a `m_flow_window` chip read as the same thing.
+    /// `m_state` chip and a `m_flow_window` chip read as the same thing.
     /// **Sibling families** share a hue band on purpose and are exempt:
-    /// * split flow — `m_flow_split` / `m_flow_split_window` (one classifier, two views);
-    /// * aggregate flow — `m_flow_lifetime` / `m_flow_window` / `m_flow_burst`
+    /// * split flow — `m_flow_ix` / `m_flow_ix_window` (one classifier, two views);
+    /// * aggregate flow — `m_flow_lifetime` / `m_flow_window` / `m_flow_window`
     ///   (lifetime, trailing, and the share of a trailing window that is recent);
     /// * price — `m_price_lifetime` / `m_price_window` / `m_position` (lifetime
     ///   extrema, rolling extrema, and since-entry — three views of the one price path).
@@ -2023,9 +2105,9 @@ mod tests {
         // Which family a group belongs to (`None` = its own group, never exempt).
         let family = |g: MetricGroupId| -> Option<u8> {
             match g {
-                FlowSplit | FlowSplitWindow => Some(0),
+                FlowIx | FlowIxWindow => Some(0),
                 PriceLifetime | PriceWindow | Position => Some(1),
-                FlowLifetime | FlowWindow | FlowBurst => Some(2),
+                FlowLifetime | FlowWindow | CrowdWindow => Some(2),
                 _ => None,
             }
         };

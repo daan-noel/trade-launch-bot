@@ -48,8 +48,12 @@ pub struct Fingerprint {
     /// migration.
     #[serde(default)]
     pub criteria: Criteria,
-    /// Per-metric-group fingerprint-side config (e.g. `m_flow_split.volume_ix_patterns`).
-    /// **Not** part of match identity — `find_or_create` ignores it.
+    /// Per-metric-group fingerprint-side config (e.g. `m_flow_ix.ix_patterns`).
+    /// **Not** part of match identity — it selects no token — but it IS part of ROW
+    /// identity: it compiles into this fingerprint's live `m_flow_ix` patterns, so
+    /// two rows matching the same tokens with different config are different
+    /// fingerprints. `find_or_create` and the `fingerprints_identity_uniq` index both
+    /// key on it.
     #[serde(default = "default_metric_config")]
     pub metric_config: serde_json::Value,
     pub created_at: DateTime<Utc>,

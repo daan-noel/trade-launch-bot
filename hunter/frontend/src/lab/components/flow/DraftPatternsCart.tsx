@@ -1,6 +1,6 @@
 import { Fragment, useState } from 'react';
 
-import { clearPrompt, VolumeIxPatternsEditor } from 'components/strategy/VolumeIxPatternsEditor';
+import { clearPrompt, IxPatternsEditor } from 'components/strategy/IxPatternsEditor';
 import { LabelTip } from 'components/strategy/LabelTip';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
@@ -8,10 +8,10 @@ import { EmptyState } from 'components/ui/EmptyState';
 import { IconButton } from 'components/ui/IconButton';
 import { CheckIcon, CloseIcon, EditIcon, LinkIcon, SpinnerIcon, TrashIcon } from 'components/ui/icons';
 import { DISCOVERY_FIELD_HELP } from 'lib/strategy/strategyHelp';
-import { metricConfigWithVolumePatterns } from 'lib/strategy/registry';
+import { metricConfigWithIxPatterns } from 'lib/strategy/registry';
 import type { Fingerprint } from 'lib/strategy/types';
 
-/** Staging "cart" for the volume_ix_patterns being assembled: an accent-elevated
+/** Staging "cart" for the ix_patterns being assembled: an accent-elevated
  *  panel that reads as the page's deliverable, not just another box. Checked rows
  *  from the ranked table land here as chips; the primary Apply CTA writes them back
  *  to the fingerprint. Raw JSON editing is one toggle away. */
@@ -53,7 +53,7 @@ export function DraftPatternsCart({
             tip={DISCOVERY_FIELD_HELP.draftPatterns}
             className="text-xs font-semibold text-text"
           >
-            Draft volume_ix_patterns
+            Draft ix_patterns
           </LabelTip>
           <Badge variant={stagedCount > 0 ? 'accent' : 'neutral'} size="sm" pill>
             {stagedCount} staged
@@ -95,7 +95,7 @@ export function DraftPatternsCart({
 
       {rawEdit ? (
         <div className="max-h-72 overflow-y-auto pr-1">
-          <VolumeIxPatternsEditor patterns={draftPatterns} onChange={onChange} />
+          <IxPatternsEditor patterns={draftPatterns} onChange={onChange} />
         </div>
       ) : stagedCount === 0 ? (
         <EmptyState
@@ -181,7 +181,7 @@ export function DraftPatternsCart({
         <details className="mt-2 text-[10px] text-text-dim">
           <summary className="cursor-pointer">Saved config</summary>
           <pre className="mt-1 overflow-x-auto rounded bg-black/20 p-2 font-mono">
-            {JSON.stringify(metricConfigWithVolumePatterns(currentPatterns), null, 2)}
+            {JSON.stringify(metricConfigWithIxPatterns(currentPatterns), null, 2)}
           </pre>
         </details>
       )}

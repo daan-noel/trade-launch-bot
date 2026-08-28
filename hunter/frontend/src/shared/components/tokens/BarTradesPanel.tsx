@@ -1,11 +1,11 @@
 import { useMemo } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { tokenTradeColumns } from 'components/tokens/tokenTradeColumns';
-import { VolumePatternBar } from 'components/tokens/VolumePatternBar';
+import { IxPatternBar } from 'components/tokens/IxPatternBar';
 import { Badge } from 'components/ui/Badge';
 import { useTimezone } from 'context/TimezoneContext';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
-import { useVolumePatternTarget } from 'hooks/useVolumePatternTarget';
+import { useIxPatternTarget } from 'hooks/useIxPatternTarget';
 import { useFlowLensContext, type FlowLensTarget } from 'context/FlowLensContext';
 import { formatTimestampMs } from 'utils/date';
 import type { FlowReason } from 'lib/flow/classifyFlow';
@@ -53,7 +53,7 @@ export interface BarTradesPanelProps {
    *  same signal the chart's oversized gold marker carries — and counted in the
    *  heading, so the wallet under study is findable without reading addresses. */
   highlightWallet?: string | null;
-  /** The host's saved `volume_ix_patterns` keys — adds the Vol/Non-vol column.
+  /** The host's saved `ix_patterns` keys — adds the Vol/Non-vol column.
    *  This is the set the chart lines, the metric panes and the engine all use, so
    *  the badge and the overlay can never report different classifications. */
   flowPatternKeys?: ReadonlySet<string> | null;
@@ -130,7 +130,7 @@ export function BarTradesPanel({
 
   // Without a lens, a toggle edits the fingerprint's saved patterns directly, so
   // the badge, the chart lines and the engine are always reading the same row.
-  const patternTarget = useVolumePatternTarget({
+  const patternTarget = useIxPatternTarget({
     fingerprintId: flowFingerprintId,
     savedKeys: flowPatternKeys,
     enabled: !flowReadOnly && !lensTarget,
@@ -163,7 +163,7 @@ export function BarTradesPanel({
         // The target's keys, not the prop: a badge must report the row its own
         // click writes to. They are the same set in the normal case, and differ
         // only when the reader deliberately picks another fingerprint — which
-        // `VolumePatternBar` flags rather than letting the two drift silently.
+        // `IxPatternBar` flags rather than letting the two drift silently.
         flowPatternKeys: badgeKeys,
         onTogglePattern,
         toggleTargetName,
@@ -302,7 +302,7 @@ export function BarTradesPanel({
         {lensTarget ? (
           <FlowLensStrip target={lensTarget} patternCount={badgeKeys?.size ?? 0} />
         ) : (
-          <VolumePatternBar target={patternTarget} readOnly={flowReadOnly} />
+          <IxPatternBar target={patternTarget} readOnly={flowReadOnly} />
         )}
       </div>
       {highlight && lensActive && <LensChips highlight={highlight} />}
@@ -423,7 +423,7 @@ Every candle carrying this EXACT ordered structure is ` +
 }
 
 /**
- * The lens twin of {@link VolumePatternBar}: what a Vol-badge click writes to
+ * The lens twin of {@link IxPatternBar}: what a Vol-badge click writes to
  * when the page owns the pattern set instead of a fingerprint. No picker — the
  * set is chosen on the page, above every chart — and no active-rule warning,
  * because a lens is analysis-only and no rule can be bound to it.

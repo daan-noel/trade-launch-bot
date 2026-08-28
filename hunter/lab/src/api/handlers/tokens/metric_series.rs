@@ -9,8 +9,8 @@
 //! ([`hunter_engine::metrics::grid`]) — the same driver the sweep precompute and
 //! `run_replay` use — so rows land on the engine's `TICK_MS` decision grid, not
 //! only at trade instants. This is load-bearing, not a nicety: every time-decaying
-//! metric (`m_flow_window`/`m_flow_split_window` decay, `m_price_window` rolling
-//! extrema, `m_snapshot.stall`/`.time`, the dead verdict) advances *only* inside a
+//! metric (`m_flow_window`/`m_flow_ix_window` decay, `m_price_window` rolling
+//! extrema, `m_state.stall`/`.time`, the dead verdict) advances *only* inside a
 //! tick, so a trade-only fold samples them exactly where a fresh trade has just
 //! been folded back in and never sees a between-trades crossing. That shipped: an
 //! `m_flow_window.buy < 5` exit drew 70 s after the one simulate booked, because
@@ -40,7 +40,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use hunter_engine::fingerprint::FingerprintId;
-use hunter_engine::metrics::flow_split::{wallet_hash, FlowPatterns};
+use hunter_engine::metrics::flow_ix::{wallet_hash, FlowPatterns};
 use hunter_engine::metrics::grid::{estimate_sparse_rows, fold_sparse, SparseGrid};
 use hunter_engine::metrics::position::PositionCtx;
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
@@ -83,7 +83,7 @@ pub struct MetricSeriesQuery {
     /// `entry_time`; ignored unless both are present and the price is positive.
     #[serde(default)]
     pub entry_price: Option<f64>,
-    /// Largest `m_snapshot.time` condition value (+ `=`-tolerance) the caller will
+    /// Largest `m_state.time` condition value (+ `=`-tolerance) the caller will
     /// evaluate over this series, in seconds. Sizes the sparse tick grid so the
     /// monotone `time` clock is sampled densely up to the last instant it could
     /// still cross. Omitted/`0` ⇒ `time` is assumed not to be evaluated.
@@ -214,7 +214,7 @@ struct TokenFacts {
     /// FNV hash of the creator wallet — volume-side unconditionally, and the seed of
     /// the flow-split contagion set.
     creator_wallet_hash: Option<u64>,
-    /// Buy SOL in the token's creation slot (`m_snapshot.first_slot_buy`), from
+    /// Buy SOL in the token's creation slot (`m_state.first_slot_buy`), from
     /// `tokens_info` — the row the live engine's settle seed derives from.
     first_slot_buy: Option<f64>,
 }
@@ -260,7 +260,7 @@ fn records_wallet_keyed_metric() -> bool {
         .filter(|g| {
             !matches!(
                 g.id,
-                MetricGroupId::FlowSplit | MetricGroupId::FlowSplitWindow | MetricGroupId::Position
+                MetricGroupId::FlowIx | MetricGroupId::FlowIxWindow | MetricGroupId::Position
             )
         })
         .flat_map(|g| g.metrics.iter())
@@ -371,7 +371,7 @@ fn build_series(
     for group in REGISTRY {
         // Flow groups need a fingerprint pattern context — skip when absent.
         let is_flow_group =
-            matches!(group.id, MetricGroupId::FlowSplit | MetricGroupId::FlowSplitWindow);
+            matches!(group.id, MetricGroupId::FlowIx | MetricGroupId::FlowIxWindow);
         if is_flow_group && flow.is_none() {
             continue;
         }
@@ -573,7 +573,7 @@ fn finite(v: f64) -> Option<f64> {
 mod tests {
     use super::*;
     use chrono::TimeZone;
-    use hunter_engine::metrics::flow_split::ix_hash;
+    use hunter_engine::metrics::flow_ix::ix_hash;
     use hunter_engine::metrics::{Side, TradeLite};
 
     fn ts(secs: i64) -> Ts {
@@ -711,33 +711,17 @@ mod tests {
         let grid = SparseGrid::for_windows(&[10.0]);
 
         let seeded = build_series("mint", &trades, &[WindowSpec::secs(10.0)], &grid, Some(&ctx), None, &TokenFacts::default());
-        assert_eq!(last_lifetime(&seeded, "vol_buy"), 7.0, "dev + pattern bot");
-        assert_eq!(last_lifetime(&seeded, "nonvol_buy"), 3.0, "the stranger only");
-        assert_eq!(last_lifetime(&seeded, "nonvol_net"), 3.0);
+        assert_eq!(last_lifetime(&seeded, "tagged_buy"), 7.0, "dev + pattern bot");
+        assert_eq!(last_lifetime(&seeded, "untagged_buy"), 3.0, "the stranger only");
+        assert_eq!(last_lifetime(&seeded, "untagged_net"), 3.0);
 
         // Unseeded (the pre-fix behavior) the dev's 5 SOL crosses into organic —
         // the exact drift this seed exists to prevent.
         let unseeded = FlowCtx { creator_wallet_hash: None, ..ctx };
         let out = build_series("mint", &trades, &[WindowSpec::secs(10.0)], &grid, Some(&unseeded), None, &TokenFacts::default());
-        assert_eq!(last_lifetime(&out, "vol_buy"), 2.0);
-        assert_eq!(last_lifetime(&out, "nonvol_buy"), 8.0);
+        assert_eq!(last_lifetime(&out, "tagged_buy"), 2.0);
+        assert_eq!(last_lifetime(&out, "untagged_buy"), 8.0);
     }
-
-    /// Every value of a lifetime column, `None` where the metric read non-finite.
-    fn lifetime_values(resp: &serde_json::Value, metric: &str) -> Vec<Option<f64>> {
-        resp["series"]
-            .as_array()
-            .expect("series array")
-            .iter()
-            .find(|s| s["metric"] == metric && s["window_size_sec"].is_null())
-            .unwrap_or_else(|| panic!("{metric} lifetime column present"))["values"]
-            .as_array()
-            .expect("values array")
-            .iter()
-            .map(serde_json::Value::as_f64)
-            .collect()
-    }
-
 
     /// The extensibility contract, as a guard: a metric added to `REGISTRY` must
     /// appear as a column here with **no** change to this file. The response is what

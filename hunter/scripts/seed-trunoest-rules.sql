@@ -63,7 +63,7 @@ SELECT
   v.buy, 2, 0,
   jsonb_build_object(
     'entry', jsonb_build_object(
-      'm_snapshot', jsonb_build_object(
+      'm_state', jsonb_build_object(
         'time',      jsonb_build_array(
                        jsonb_build_object('operator','>=','value',10),
                        jsonb_build_object('operator','<=','value',600)),
@@ -102,8 +102,8 @@ COMMIT;
 SELECT r.rule_name,
        r.buy_amount_lamports/1e9 AS buy_sol,
        r.max_concurrent_tokens   AS conc,
-       r.params->'entry'->'m_snapshot'->'time'                          AS age_band,
-       r.params->'entry'->'m_snapshot'->'liquidity'                     AS liq_band,
+       r.params->'entry'->'m_state'->'time'                          AS age_band,
+       r.params->'entry'->'m_state'->'liquidity'                     AS liq_band,
        r.params->'entry'->'m_price_window'->'trail'->0->>'value'        AS dip,
        r.params->'entry'->'m_flow_window'                               AS entry_flow,
        r.params->'exit'->'m_position'->'retrace'->0->>'value'           AS trail,

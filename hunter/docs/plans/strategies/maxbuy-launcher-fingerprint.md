@@ -363,7 +363,7 @@ Whole shape, no amount axis, 43.7 launches/day, blind entry + 60 s hold at 0.126
 **+5.3%/trade, IS +5.35 / OOS +5.23, win 34%, median -19.3**. A positive mean on a losing
 typical token — the cohort to fix.
 
-Sweeping one entry gate at a time (47 candidates, exit held at 60 s), the `m_snapshot.liquidity`
+Sweeping one entry gate at a time (47 candidates, exit held at 60 s), the `m_state.liquidity`
 band is the only lever that moves the median, and it moves it on a smooth ridge:
 
 | gate | /day | mean | IS | OOS | win | median |
@@ -396,7 +396,7 @@ book `worst_case`, so rank on it.
 
 ### The rule
 
-**`5ix:BuyExactSolIn` · entry `m_snapshot.liquidity > 12` · exit `m_position.held >= 60`**
+**`5ix:BuyExactSolIn` · entry `m_state.liquidity > 12` · exit `m_position.held >= 60`**
 — 703 trades, **27.0/day**, +14.3%/trade at `next_slot_median` and **+9.6% at `worst_case`**,
 IS +16.7 / OOS +10.0, 95% lower bound +8.0, win 51.9%, median **+8.4**, every week positive,
 +12.7 SOL at 0.126. `liquidity > 15` is the conservative sibling (25.3/day, worst +8.2,

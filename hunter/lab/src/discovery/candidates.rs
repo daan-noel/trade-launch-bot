@@ -37,7 +37,7 @@
 //! [`REGISTRY`]: hunter_engine::metrics::REGISTRY
 
 use hunter_engine::metrics::evaluator::Operator;
-use hunter_engine::metrics::flow_split::FlowPatterns;
+use hunter_engine::metrics::flow_ix::FlowPatterns;
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
 use hunter_engine::metrics::{
     group_spec, is_flow_metric, MetricGroupId, MetricId, MetricKind, MetricScope, Unit, REGISTRY,
@@ -115,7 +115,7 @@ pub struct ScreenConfig {
     pub entry_window: WindowSpec,
     /// `window_size_sec` for dynamic groups on the **exit** side.
     pub exit_window: WindowSpec,
-    /// Compiled `volume_ix_patterns` for the run. `None` ⇒ `m_flow_split*` metrics
+    /// Compiled `ix_patterns` for the run. `None` ⇒ `m_flow_ix*` metrics
     /// are skipped ([`SkipReason::FlowPatternsMissing`]) — their values are
     /// pattern-dependent, so a corpus-wide menu would be meaningless.
     pub flow_patterns: Option<FlowPatterns>,
@@ -178,7 +178,7 @@ impl ScreenMetric {
 /// dropped (the no-silent-caps rule).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SkipReason {
-    /// `m_flow_split*` without `volume_ix_patterns` — values are pattern-dependent.
+    /// `m_flow_ix*` without `ix_patterns` — values are pattern-dependent.
     FlowPatternsMissing,
     /// Position-scoped groups have no value before entry (`axes.rs` rejects the
     /// entry axis outright).
@@ -661,17 +661,17 @@ mod tests {
     }
 
     #[test]
-    fn flow_split_needs_patterns() {
+    fn flow_ix_needs_patterns() {
         let bare = screen_plan(&ScreenConfig::default());
         assert!(
-            bare.skipped.iter().any(|s| s.group == MetricGroupId::FlowSplit
+            bare.skipped.iter().any(|s| s.group == MetricGroupId::FlowIx
                 && s.reason == SkipReason::FlowPatternsMissing),
             "flow-split must be skipped (with a reason) when no patterns are supplied",
         );
         assert!(!bare.metrics.iter().any(|m| is_flow_metric(m.metric)));
 
         let with = screen_plan(&cfg_with_patterns());
-        assert!(with.metrics.iter().any(|m| m.group == MetricGroupId::FlowSplit));
+        assert!(with.metrics.iter().any(|m| m.group == MetricGroupId::FlowIx));
         // Fingerprint-scoped columns carry the run's sweep fingerprint.
         assert!(with
             .metrics
@@ -837,7 +837,7 @@ mod tests {
         let col = SeriesColumn::Static(MetricId::Liquidity);
         let m = ScreenMetric {
             side: AxisSide::Entry,
-            group: MetricGroupId::Snapshot,
+            group: MetricGroupId::State,
             metric: MetricId::Liquidity,
             window: None,
             source: ValueSource::Series(col),

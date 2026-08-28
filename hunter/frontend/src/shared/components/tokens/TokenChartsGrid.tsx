@@ -31,7 +31,7 @@ export type ChartOverlayHook<R> = (row: R, mint: string) => RowChartOverlay;
 export type MintGroupOverlayHook<R> = (mint: string, rows: R[]) => RowChartOverlay;
 
 /**
- * Resolve ONE row's saved `volume_ix_patterns` keys, for a grid whose rows span
+ * Resolve ONE row's saved `ix_patterns` keys, for a grid whose rows span
  * different fingerprints (Console History lists positions from many rules), where
  * a single grid-wide set would misclassify most cards. Called once per card as a
  * **hook** — same rules-of-hooks contract as {@link ChartOverlayHook}. Under
@@ -262,7 +262,7 @@ export interface TokenChartsGridProps<R> {
   /** Hook-based alternative to {@link mintGroupOverlay} — see
    *  {@link MintGroupOverlayHook}. Takes precedence when both are supplied. */
   useMintGroupOverlay?: MintGroupOverlayHook<R>;
-  /** Fingerprint volume_ix_patterns keys for the vol/non-vol overlay on every card.
+  /** Fingerprint ix_patterns keys for the vol/non-vol overlay on every card.
    *  Use when one set is right for the whole grid (a rule-scoped cohort); when the
    *  rows span fingerprints, pass {@link useRowFlowPatternKeys} instead. */
   flowPatternKeys?: ReadonlySet<string> | null;

@@ -163,7 +163,7 @@ pub struct ReplayConfig {
     /// window is empty books `FillFailed` (nothing printed to fill against); an
     /// exit falls back to the last-spot mark, same as an empty undelayed window.
     pub fill_delay_ms: i64,
-    /// Launch history to prime `m_snapshot.prior_launches` with, as
+    /// Launch history to prime the `prior_launches` fingerprint axis with, as
     /// `(creator_wallet_hash, launches strictly before the run window)`.
     ///
     /// The replay tallies creations as it folds them, but its corpus is a FILTERED
