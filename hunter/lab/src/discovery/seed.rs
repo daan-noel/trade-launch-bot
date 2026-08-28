@@ -588,7 +588,7 @@ mod tests {
         };
         family.families = vec![
             FamilyResult {
-                family: MetricFamily::LiquidityAge,
+                family: MetricFamily::State,
                 members: vec![liq.clone()],
                 dropped: vec![],
                 combos: 2,
@@ -605,7 +605,7 @@ mod tests {
             },
         ];
         family.interactions = vec![Interaction {
-            pinned: MetricFamily::LiquidityAge,
+            pinned: MetricFamily::State,
             swept: MetricFamily::Price,
             alone: vec![Some(10.0)],
             given: vec![Some(5.0)],
@@ -614,7 +614,7 @@ mod tests {
             verdict: InteractionVerdict::Interacting,
         }];
         family.joints = vec![super::super::family::JointResult {
-            families: vec![MetricFamily::LiquidityAge, MetricFamily::Price],
+            families: vec![MetricFamily::State, MetricFamily::Price],
             members: vec![liq, price],
             dropped: vec![],
             combos: 4,

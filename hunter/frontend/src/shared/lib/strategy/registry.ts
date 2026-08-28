@@ -27,7 +27,7 @@ export type MetricScope = 'token' | 'position';
  *  metric-combo discovery pipeline grids over (backend `MetricFamily`). Mirrors the
  *  hue families the registry already keeps, so it also reads as "these chips are
  *  siblings". `standalone` = a group belonging to no established family. */
-export type MetricFamily = 'price' | 'flow' | 'flow_ix' | 'liquidity_age' | 'standalone';
+export type MetricFamily = 'price' | 'flow' | 'flow_ix' | 'state' | 'standalone';
 
 /** A group's strict (non-condition) parameter, e.g. `window_size_sec`. */
 export interface StrictParamSpec {

@@ -29,7 +29,7 @@
 
 use super::flow_window::WindowState;
 
-/// The group's second strict param — the burst (numerator) window, in seconds.
+/// The group's second strict param — the slice (numerator) window, in seconds.
 ///
 /// Named once here because three layers spell it: the registry declares it,
 /// `arm::build_reqs` reads it into [`Windows::secondary`], and
@@ -39,11 +39,11 @@ use super::flow_window::WindowState;
 pub const SLICE_PARAM: &str = "slice_size_sec";
 
 /// The slot twin of [`SLICE_PARAM`]. Mutually exclusive with it, and it must agree
-/// with the group's own unit - a burst measured in slots inside a reference measured
+/// with the group's own unit - a slice measured in slots inside a reference measured
 /// in seconds is a ratio across two different axes.
 pub const SLICE_SLOT_PARAM: &str = "slice_size_slots";
 
-/// The print twin of [`SLICE_PARAM`] - the burst as a count of the token's own
+/// The print twin of [`SLICE_PARAM`] - the slice as a count of the token's own
 /// transactions. `slice_size_prints: 1` over `window_size_prints: 20` is "what share
 /// of the last twenty prints is this one", which is `5` on any tape and therefore the
 /// one shape of this metric that carries no information; the useful spans are wider.
@@ -57,26 +57,26 @@ pub const SLICE_AXIS: super::WindowAxis = super::WindowAxis {
     print: SLICE_PRINT_PARAM,
 };
 
-/// Percent of the reference window's trades that landed in the burst window.
+/// Percent of the reference window's trades that landed in the slice window.
 ///
 /// `NaN` on an empty reference window — no trades, no share to report, and a `0.0`
 /// would let a `trade_share <= X` condition pass on a dead tape.
 ///
-/// **Both windows are clipped by the token's age.** On a token younger than `b` every
+/// **Both windows are clipped by the token's age.** On a token younger than the slice every
 /// trade is inside both and this reads `100`. That is a true reading of a young token,
 /// not a sentinel: the share of a two-second life that happened in the last three
 /// seconds really is all of it. A rule that means the metric as a *maturity* signal
 /// must bound `m_state.time` itself — this metric will not do it, and the same
 /// clipping applies to the SQL a rule is fitted in, so backtest and engine agree.
 pub fn trade_share(
-    burst: &WindowState,
+    slice: &WindowState,
     reference: &WindowState,
-    burst_now: i64,
+    slice_now: i64,
     reference_now: i64,
 ) -> f64 {
     let denom = reference.trade_count(reference_now);
     if denom > 0.0 {
-        burst.trade_count(burst_now) / denom * 100.0
+        slice.trade_count(slice_now) / denom * 100.0
     } else {
         f64::NAN
     }
@@ -142,9 +142,9 @@ mod tests {
     #[test]
     fn a_burst_and_an_even_drip_carry_the_same_volume_and_read_differently() {
         // 10 trades, all in the last 3s of a 60s reference.
-        let (burst_a, ref_a) = tape([3.0, 60.0], &[52.0, 53.0, 54.0, 55.0, 56.0, 57.0, 58.0, 59.0, 59.5, 60.0]);
+        let (slice_a, ref_a) = tape([3.0, 60.0], &[52.0, 53.0, 54.0, 55.0, 56.0, 57.0, 58.0, 59.0, 59.5, 60.0]);
         // 10 trades, one every 6s across the same 60s.
-        let (burst_b, ref_b) =
+        let (slice_b, ref_b) =
             tape([3.0, 60.0], &[6.0, 12.0, 18.0, 24.0, 30.0, 36.0, 42.0, 48.0, 54.0, 60.0]);
 
         let now = p(60.0);
@@ -153,9 +153,9 @@ mod tests {
         assert_eq!(ref_a.value(MetricId::GrossFlow, now), ref_b.value(MetricId::GrossFlow, now));
 
         // 5 of 10 land in `[57, 60]` — 57.0 counts, the closed lower bound.
-        assert_eq!(trade_share(&burst_a, &ref_a, now, now), 50.0);
+        assert_eq!(trade_share(&slice_a, &ref_a, now, now), 50.0);
         // Only the 60.0 print is inside 3s.
-        assert_eq!(trade_share(&burst_b, &ref_b, now, now), 10.0);
+        assert_eq!(trade_share(&slice_b, &ref_b, now, now), 10.0);
     }
 
     /// The reading `trade_share` cannot give: same trade counts, different SOL.
@@ -220,28 +220,28 @@ mod tests {
     /// `NaN`, not `0.0`, so `trade_share <= X` cannot pass on a tape with no trades.
     #[test]
     fn an_empty_reference_window_is_nan_not_zero() {
-        let (burst, reference) = tape([3.0, 60.0], &[1.0]);
+        let (slice, reference) = tape([3.0, 60.0], &[1.0]);
         // `now` is 200s later — the single trade is out of both windows.
-        assert!(trade_share(&burst, &reference, p(201.0), p(201.0)).is_nan());
+        assert!(trade_share(&slice, &reference, p(201.0), p(201.0)).is_nan());
     }
 
     /// The documented young-token reading. A rule that wants maturity must say so
     /// with `m_state.time`; this metric reports the truth about a short life.
     #[test]
-    fn a_token_younger_than_the_burst_window_reads_one_hundred() {
-        let (burst, reference) = tape([3.0, 60.0], &[0.1, 0.4, 0.9]);
-        assert_eq!(trade_share(&burst, &reference, p(1.0), p(1.0)), 100.0);
+    fn a_token_younger_than_the_slice_window_reads_one_hundred() {
+        let (slice, reference) = tape([3.0, 60.0], &[0.1, 0.4, 0.9]);
+        assert_eq!(trade_share(&slice, &reference, p(1.0), p(1.0)), 100.0);
     }
 
     /// Both axes are read at the SAME instant, and a tick that advances `now` past
-    /// the burst window drains the numerator while the reference still holds the
+    /// the slice window drains the numerator while the reference still holds the
     /// trades — the share decays on silence instead of freezing at its last print.
     #[test]
-    fn the_share_decays_on_a_tick_that_outruns_the_burst_window() {
-        let (burst, reference) = tape([3.0, 60.0], &[10.0, 20.0, 30.0]);
-        // At the last print: the burst holds only the 30.0 trade, the reference three.
-        assert!((trade_share(&burst, &reference, p(30.0), p(30.0)) - 100.0 / 3.0).abs() < 1e-9);
-        // 15s of silence later the burst is empty; the reference still holds all three.
-        assert_eq!(trade_share(&burst, &reference, p(45.0), p(45.0)), 0.0);
+    fn the_share_decays_on_a_tick_that_outruns_the_slice_window() {
+        let (slice, reference) = tape([3.0, 60.0], &[10.0, 20.0, 30.0]);
+        // At the last print: the slice holds only the 30.0 trade, the reference three.
+        assert!((trade_share(&slice, &reference, p(30.0), p(30.0)) - 100.0 / 3.0).abs() < 1e-9);
+        // 15s of silence later the slice is empty; the reference still holds all three.
+        assert_eq!(trade_share(&slice, &reference, p(45.0), p(45.0)), 0.0);
     }
 }

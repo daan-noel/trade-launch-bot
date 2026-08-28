@@ -54,7 +54,7 @@ export interface RuleConditionRow {
   window: string;
   /** What this row's windows count in — `'sec'`, `'slot'` or `'print'`. `undefined`
    *  reads as `'sec'`, so a row from before slots existed is a wall-clock row. Both
-   *  axes of a two-window group share it: a burst in slots over a reference in
+   *  axes of a two-window group share it: a slice in slots over a reference in
    *  seconds is a ratio across two clocks, which the backend rejects at save. */
   windowUnit?: WindowUnit;
   /** How many units back from *now* the window ENDS, as raw text; '' = ends at now.
@@ -375,11 +375,11 @@ export function rowsToSide(
     // Non-window strict params ride on the row so nothing the editor has no control
     // for is lost on re-save. Rows of one instance agree (sideToRows copies the same
     // bag onto each), so a later row merging in is a no-op rather than a conflict.
-    // The burst axis is re-spelled in the row's unit for the same reason the
+    // The slice axis is re-spelled in the row's unit for the same reason the
     // reference span is: a unit flip must not leave the old param behind.
     Object.assign(inst.strict, withoutSliceAxis(row.strict));
-    const burst = ruleRowSliceSpec(row);
-    if (burst != null) inst.strict[sliceSizeParam(burst.unit)] = burst.size;
+    const slice = ruleRowSliceSpec(row);
+    if (slice != null) inst.strict[sliceSizeParam(slice.unit)] = slice.size;
     inst.metrics[row.metric] = row.arms;
   }
   return out;

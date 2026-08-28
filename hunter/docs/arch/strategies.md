@@ -356,7 +356,7 @@ flags:
 nested inside it, PERCENT 0-100. The one group whose basis is a window **pair**
 (`window_size_sec` + `slice_size_sec`, nesting enforced at save), which is why
 `MetricReq.window` carries a [`Windows`] carrier rather than a bare `Option<f64>`: a
-requirement's identity includes both axes, so two instances differing only in the burst
+requirement's identity includes both axes, so two instances differing only in the slice
 cannot collide in the blocker / monotonic-kill maps. It owns **no state** — both readings
 are `m_flow_window`'s own `trade_count` on buffers `CompiledRule` already registers for
 each axis. **Entry side only**: the persisted exit-reason label carries one window
@@ -408,10 +408,12 @@ mirror counts the same window off `tokens`.
 Design + rationale:
 [fingerprint-ranges.md](../plans/strategies/fingerprint-ranges.md).
 
-## Volume/organic flow split (`m_flow_ix` / `m_flow_ix_window`)
+## Ix-structure flow split (`m_flow_ix` / `m_flow_ix_window`)
 
-Split every trade's SOL into **volume-side** (creator tooling + contagion + creator
-wallet) vs **organic**, exposed as ordinary registry metrics. Patterns live on
+Split every trade's SOL by whether the classifier **tags** it (an `ix_patterns` /
+marker match, contagion, or the creator) or does not, exposed as ordinary registry
+metrics. Tagged usually reads as creator tooling and untagged as organic retail; the
+metrics are named for the tag, which is the part the engine knows. Patterns live on
 `fingerprints.metric_config.m_flow_ix.ix_patterns` (not on the rule).
 `TradeLite` carries `ix_hash` / `wallet_hash`; adapters call the engine SSOT hashers
 only. Flow state keys by `FingerprintId` on `TokenTrack`. Unconfigured fingerprint

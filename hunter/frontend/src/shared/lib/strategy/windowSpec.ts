@@ -72,7 +72,7 @@ export function sizeParam(unit: WindowUnit): string {
       : WINDOW_SEC_PARAM;
 }
 
-/** The burst-axis size param for a unit. */
+/** The slice-axis size param for a unit. */
 export function sliceSizeParam(unit: WindowUnit): string {
   return unit === 'slot' ? SLICE_SLOT_PARAM : unit === 'print' ? SLICE_PRINT_PARAM : SLICE_PARAM;
 }
@@ -142,7 +142,7 @@ export function windowSpecFromStrict(
   return null;
 }
 
-/** The burst axis of a group instance, if it authors one. */
+/** The slice axis of a group instance, if it authors one. */
 export function sliceSpecFromStrict(
   strict: Record<string, number> | undefined,
 ): WindowSpec | null {

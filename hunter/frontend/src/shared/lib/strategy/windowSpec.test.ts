@@ -40,7 +40,7 @@ describe('param names match the engine', () => {
     }
   });
 
-  it('mirrors hunter_engine::metrics::flow_slice burst params', () => {
+  it('mirrors hunter_engine::metrics::flow_slice slice params', () => {
     const src = flowSliceSrc;
     expect(src).toContain(`pub const SLICE_PARAM: &str = "${SLICE_PARAM}";`);
     expect(src).toContain(`pub const SLICE_SLOT_PARAM: &str = "${SLICE_SLOT_PARAM}";`);
@@ -160,7 +160,7 @@ describe('windowSpecFromStrict', () => {
     expect(windowSpecFromStrict({})).toBeNull();
   });
 
-  it('gives the burst axis the group lag and its own size', () => {
+  it('gives the slice axis the group lag and its own size', () => {
     expect(sliceSpecFromStrict({ window_size_slots: 30, window_lag: 1, slice_size_slots: 1 }))
       .toEqual({ size: 1, lag: 1, unit: 'slot' });
     expect(sliceSpecFromStrict({ window_size_prints: 20, slice_size_prints: 4 }))

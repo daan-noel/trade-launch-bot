@@ -465,11 +465,11 @@ mod tests {
     /// `trades.ix_labels` holds **either** persisted shape (see
     /// `trading_core::storage::ix_labels_sql`), and the PG tail reads the column
     /// decoded rather than through the lake export's `normalize_labels`. Both shapes
-    /// must therefore resolve to the same volume-pattern hash here.
+    /// must therefore resolve to the same ix-pattern hash here.
     ///
     /// The failure this guards is silent, not loud: an object-shaped row that hashes
     /// to `None` is indistinguishable from a row that genuinely has no labels, so it
-    /// is simply booked organic — deflating `vol_*`, inflating `nonvol_*`, and making
+    /// is simply booked untagged — deflating `tagged_*`, inflating `untagged_*`, and making
     /// the metric pane disagree with a chart that classified the same trade correctly.
     #[test]
     fn pg_tail_hashes_both_ix_label_shapes_alike() {

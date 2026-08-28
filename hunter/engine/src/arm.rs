@@ -731,7 +731,7 @@ fn build_reqs(
         let position_scoped = group_spec(*group_id).scope == MetricScope::Position;
         // One instance per window (static groups carry exactly one, window-less).
         for group in instances {
-            // Both axes, read by AXIS rather than by group: a burst param is absent
+            // Both axes, read by AXIS rather than by group: a slice param is absent
             // on every group that does not declare it, so this stays one line of
             // vocabulary instead of a per-group branch that a new window basis would
             // have to be remembered into.
@@ -1014,12 +1014,12 @@ mod tests {
         assert!(c.clock_horizons.max_window_secs >= 60.0);
     }
 
-    /// The whole path end to end: compile a burst rule, register its windows on a
+    /// The whole path end to end: compile a slice rule, register its windows on a
     /// real track, fold a tape, and read the gate. This is the property the metric
     /// exists for — it is the only reading here that separates a clustered tape from
     /// an evenly spread one carrying identical volume.
     #[test]
-    fn a_burst_gate_reads_through_the_track_it_registered() {
+    fn a_slice_gate_reads_through_the_track_it_registered() {
         use crate::metrics::track::TokenTrack;
         use crate::metrics::{Side, TradeLite};
         use chrono::{Duration, TimeZone, Utc};

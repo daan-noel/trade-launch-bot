@@ -906,9 +906,9 @@ fn validate_group(
                 two_window_metric_names(),
             ));
         }
-        // Both axes of a two-window read must count in the SAME unit - a burst in
+        // Both axes of a two-window read must count in the SAME unit - a slice in
         // slots over a reference in seconds is a ratio across two different clocks,
-        // and a burst in prints over a reference in seconds is a count over an
+        // and a slice in prints over a reference in seconds is a count over an
         // interval, which is not a share of anything.
         if let (Some(w), Some(b)) =
             (group.window_unit(window_axis), group.window_unit(slice_axis))
@@ -951,23 +951,23 @@ fn validate_group(
             spec.name
         ));
     }
-    // A burst window must NEST inside its reference window. Outside that bound the
+    // A slice window must NEST inside its reference window. Outside that bound the
     // numerator counts trades the denominator does not and the share runs past 100%,
     // which is not a stricter gate but a different quantity. Cross-param rules cannot
     // be spelled in `StrictParamSpec`, so they live here.
-    if let (Some(burst), Some(window)) = (
+    if let (Some(slice), Some(window)) = (
         group.window_spec(&crate::metrics::flow_slice::SLICE_AXIS),
         group.window_spec(&crate::metrics::WINDOW_AXIS),
     ) {
-        if burst.size > window.size {
+        if slice.size > window.size {
             // Name the params the rule actually spells, so a print rule is not told
             // to shrink a `window_size_sec` it never set. Both axes agree on the unit
             // by the check above, so either one names it.
-            let slice_name = crate::metrics::flow_slice::SLICE_AXIS.size_param(burst.unit);
+            let slice_name = crate::metrics::flow_slice::SLICE_AXIS.size_param(slice.unit);
             let window_name = crate::metrics::WINDOW_AXIS.size_param(window.unit);
             return Err(format!(
                 "{side_name}.{}: {slice_name} {} must nest inside {window_name} {}",
-                spec.name, burst.size, window.size,
+                spec.name, slice.size, window.size,
             ));
         }
     }
@@ -1328,14 +1328,14 @@ mod tests {
         assert!(e.contains("duplicate clause (window_size_sec 30)"), "{e}");
 
         // ...but a TWO-window group's identity is the PAIR: same reference window,
-        // different burst, is two different reads and must stay authorable.
+        // different slice, is two different reads and must stay authorable.
         RuleParams::parse(&json!({
             "entry": { "m_flow_window": [
                 { "window_size_sec": 60, "slice_size_sec": 3,  "trade_share": [{"operator": ">=", "value": 8}] },
                 { "window_size_sec": 60, "slice_size_sec": 10, "trade_share": [{"operator": "<=", "value": 60}] }
             ] }
         }))
-        .expect("same reference window, different burst = two distinct reads");
+        .expect("same reference window, different slice = two distinct reads");
 
         // A static group has no window to distinguish instances — array > 1 rejected.
         let e = RuleParams::parse(&json!({
@@ -1828,7 +1828,7 @@ mod tests {
         assert_eq!(spec.unit, crate::metrics::WindowUnit::Slot);
         assert_eq!(spec.size, 30.0);
         assert_eq!(spec.lag, 1.0);
-        // 30 slots that stop one short of now - the burst slot is unreachable.
+        // 30 slots that stop one short of now - the current slot is unreachable.
         assert_eq!(spec.bounds(100), (70, 99));
 
         let zero_lag = RuleParams::parse(&serde_json::json!({
@@ -1842,7 +1842,7 @@ mod tests {
         assert_eq!(spec.bounds(100), (100, 100), "the current slot alone");
     }
 
-    /// The burst axis has a twin per basis, and the registry has to DECLARE each or
+    /// The slice axis has a twin per basis, and the registry has to DECLARE each or
     /// the parse loop rejects it as an unknown param long before `validate_group`
     /// runs. The axis takes exactly one size, and both axes count in the same unit.
     /// The slice axis is required by the METRICS that read it, not by the group that
@@ -1935,13 +1935,13 @@ mod tests {
                 "trade_share": [{"operator": ">=", "value": 50.0}]
             }}
         });
-        let p = RuleParams::parse(&ok).expect("a slot burst is authorable");
+        let p = RuleParams::parse(&ok).expect("a slot slice is authorable");
         let g = &p.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow][0];
-        let burst = g
+        let slice = g
             .window_spec(&crate::metrics::flow_slice::SLICE_AXIS)
-            .expect("a burst span");
-        assert_eq!(burst.unit, crate::metrics::WindowUnit::Slot);
-        assert_eq!(burst.size, 1.0);
+            .expect("a slice span");
+        assert_eq!(slice.unit, crate::metrics::WindowUnit::Slot);
+        assert_eq!(slice.size, 1.0);
         assert_eq!(p.to_value(), ok, "round-trips unchanged");
 
         let printed = serde_json::json!({
@@ -1950,12 +1950,12 @@ mod tests {
                 "trade_share": [{"operator": ">=", "value": 50.0}]
             }}
         });
-        let p = RuleParams::parse(&printed).expect("a print burst is authorable");
+        let p = RuleParams::parse(&printed).expect("a print slice is authorable");
         let g = &p.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow][0];
-        let burst = g
+        let slice = g
             .window_spec(&crate::metrics::flow_slice::SLICE_AXIS)
-            .expect("a burst span");
-        assert_eq!(burst.unit, crate::metrics::WindowUnit::Print);
+            .expect("a slice span");
+        assert_eq!(slice.unit, crate::metrics::WindowUnit::Print);
         assert_eq!(p.to_value(), printed, "round-trips unchanged");
 
         for (bad, needle) in [

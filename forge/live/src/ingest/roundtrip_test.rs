@@ -76,6 +76,10 @@ async fn pump_fun_events_project_onto_the_schema() {
         sol_lamports: 1_500_000_000,    // exact quote lamports (what forge persists)
         tokens: 1_000_000,              // raw base units
         price: 1.5e-6,
+        // A landed tx always pays at least the base fee, so the realistic value is
+        // `Some`, never `Some(0)`. Nothing below asserts on it: forge keeps no fee
+        // column, so `map` drops it on the floor.
+        fee_lamports: Some(5_000),
         signature: sig_b58,
         tx_index: 3,
         leg_index: 0,

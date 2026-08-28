@@ -536,7 +536,7 @@ next load (no per-metric frontend work).
   A dynamic row's window is a **span, not a number**: size + `unit` (sec / slot) +
   `lag`, authored as three controls and read through `lib/strategy/windowSpec.ts`,
   the one mirror of `hunter_engine::metrics::WindowSpec`. Both axes of a two-window
-  group share the row's unit and lag, so the burst control re-spells itself
+  group share the row's unit and lag, so the slice control re-spells itself
   (`slice_size_sec` ⇄ `slice_size_slots`) on a unit flip rather than leaving the
   other param behind for the backend to reject. **The instance key is the whole
   span on both axes** (`ruleRowInstanceKey`): keyed on size alone, two slot windows

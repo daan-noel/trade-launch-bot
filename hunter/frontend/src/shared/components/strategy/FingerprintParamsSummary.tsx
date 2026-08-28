@@ -180,14 +180,14 @@ export function IxLabelsChip({ labels }: { labels: string[] }) {
  * and a click copies the whole set as JSON.
  *
  * Unlike every other axis, the unconfigured state stays VISIBLE as a dimmed
- * `flow✗`: an empty set is not a dropped criterion, it is the verdict "every
- * trade on this fingerprint classifies organic", which silently changes what
- * `nonvol_*` reads. A missing chip among nine reads as "didn't look".
+ * `flow✗`: an empty set is not a dropped criterion, it is the verdict "no trade
+ * on this fingerprint is tagged", which silently changes what `untagged_*` reads.
+ * A missing chip among nine reads as "didn't look".
  */
 export function FlowPatternsChip({ patterns }: { patterns: string[][] }) {
   const n = patterns.length;
   if (n === 0) {
-    return <>{chip('flow✗', { title: 'no volume ix patterns', style: OFF_TINT })}</>;
+    return <>{chip('flow✗', { title: 'no ix patterns — nothing is tagged', style: OFF_TINT })}</>;
   }
   return (
     <ContentsChip

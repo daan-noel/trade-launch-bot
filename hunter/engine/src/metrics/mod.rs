@@ -17,7 +17,7 @@
 //!   the window; see [`is_two_window`])
 //! * `m_crowd_window` (dynamic, strict param `window_size_sec`) — `unique_wallets`,
 //!   `trades_per_wallet` — the metrics that need the WALLET column
-//! * `m_flow_ix` (static, fingerprint-scoped) — vol/organic lifetime totals
+//! * `m_flow_ix` (static, fingerprint-scoped) — tagged/untagged lifetime totals
 //! * `m_flow_ix_window` (dynamic, fingerprint-scoped) — same metrics over a window
 //! * `m_position` (static, **position-scoped**, exit-only) — `retrace`, `bounce`,
 //!   `pnl`, `held` (anchored on your entry fill; TP/SL desugar into `pnl` — see `arm.rs`)
@@ -107,7 +107,7 @@ pub enum Side {
 ///
 /// `ix_hash` / `wallet_hash` feed the volume-flow classifier (V1+); adapters hash
 /// via [`flow_ix`]. Missing fields on old event-log lines default via serde
-/// (`ix_hash: None`, `wallet_hash: 0`) ⇒ organic unless tagged/creator.
+/// (`ix_hash: None`, `wallet_hash: 0`) ⇒ untagged unless contagious/creator.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TradeLite {
     pub side: Side,
@@ -291,7 +291,7 @@ pub const WINDOW_LAG_PARAM: &str = "window_lag";
 ///
 /// `lag` is what makes a window **causal in its own terms**. A gate on "the state
 /// entering this slot" must not be able to see the slot it is firing in, and
-/// `lag: 1` on a slot window is exactly that: the burst is
+/// `lag: 1` on a slot window is exactly that: the slice is
 /// `slots: 1, lag: 0` and the quiet tape before it is `slots: 30, lag: 1`, with no
 /// arithmetic between windows and no way for one to leak into the other.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -473,9 +473,9 @@ pub enum MetricGroupId {
     FlowWindow,
     /// `m_crowd_window` — trailing-window wallet counts.
     CrowdWindow,
-    /// `m_flow_ix` — volume/organic lifetime totals (fingerprint-scoped).
+    /// `m_flow_ix` — tagged/untagged lifetime totals (fingerprint-scoped).
     FlowIx,
-    /// `m_flow_ix_window` — volume/organic trailing-window totals (fingerprint-scoped).
+    /// `m_flow_ix_window` — tagged/untagged trailing-window totals (fingerprint-scoped).
     FlowIxWindow,
     /// `m_position` — metrics anchored on YOUR entry fill (position-scoped, exit-only).
     Position,
@@ -607,7 +607,7 @@ pub enum MetricId {
     /// are the same `trade_count` and the same `gross_flow`, and 50 vs 10 here.
     ///
     /// `NaN` on an empty reference window. Reads `100` on a token younger than the
-    /// burst window, which is a true reading and not a maturity signal — see
+    /// slice window, which is a true reading and not a maturity signal — see
     /// [`flow_slice::trade_share`].
     SliceTradeShare,
     /// Percent of the reference window's SOL that moved in the slice nested inside
@@ -860,10 +860,10 @@ pub enum MetricFamily {
     Price,
     /// Unclassified SOL flow — lifetime and trailing-window aggregates.
     Flow,
-    /// Flow split by a **wallet classifier** — volume vs organic, lifetime and windowed.
+    /// Flow split by a **wallet classifier** — tagged vs untagged, lifetime and windowed.
     FlowIx,
-    /// Token state that is neither price nor flow: age and liquidity.
-    LiquidityAge,
+    /// Token state that is neither price nor flow — `m_state`.
+    State,
     /// Default for a group that belongs to no established family.
     Standalone,
 }
@@ -875,7 +875,7 @@ impl MetricFamily {
             MetricFamily::Price => "price",
             MetricFamily::Flow => "flow",
             MetricFamily::FlowIx => "flow_ix",
-            MetricFamily::LiquidityAge => "liquidity_age",
+            MetricFamily::State => "state",
             MetricFamily::Standalone => "standalone",
         }
     }
@@ -991,7 +991,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_state",
         kind: MetricKind::Static,
         scope: MetricScope::Token,
-        family: MetricFamily::LiquidityAge,
+        family: MetricFamily::State,
         strict_params: &[],
         fingerprint_config: &[],
         // Blue/indigo family (~212–236). Deliberately clear of the green at 170:
@@ -1386,7 +1386,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::TaggedBuy,
                 name: "tagged_buy",
-                description: "Buy SOL from VOLUME-side wallets (creator tooling, contagion, the creator) since birth.",
+                description: "Buy SOL from wallets the fingerprint TAGS — an `ix_patterns` match, contagion, or the creator — since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: true,
@@ -1395,7 +1395,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::TaggedSell,
                 name: "tagged_sell",
-                description: "Sell SOL from volume-side wallets since birth.",
+                description: "Sell SOL from tagged wallets since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: true,
@@ -1404,7 +1404,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::TaggedNet,
                 name: "tagged_net",
-                description: "Volume-side buy - sell SOL since birth.",
+                description: "Tagged buy - sell SOL since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -1413,7 +1413,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::TaggedGross,
                 name: "tagged_gross",
-                description: "Volume-side buy + sell SOL since birth.",
+                description: "Tagged buy + sell SOL since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: true,
@@ -1422,7 +1422,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::UntaggedBuy,
                 name: "untagged_buy",
-                description: "Buy SOL from ORGANIC wallets (everyone the classifier does not tag) since birth.",
+                description: "Buy SOL from UNTAGGED wallets — everyone the classifier does not tag — since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: true,
@@ -1431,7 +1431,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::UntaggedSell,
                 name: "untagged_sell",
-                description: "Sell SOL from organic wallets since birth.",
+                description: "Sell SOL from untagged wallets since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: true,
@@ -1440,7 +1440,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::UntaggedNet,
                 name: "untagged_net",
-                description: "Organic buy - sell SOL since birth.",
+                description: "Untagged buy - sell SOL since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -1449,7 +1449,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::UntaggedGross,
                 name: "untagged_gross",
-                description: "Organic buy + sell SOL since birth.",
+                description: "Untagged buy + sell SOL since birth.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: true,
@@ -1458,7 +1458,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::TaggedShare,
                 name: "tagged_share",
-                description: "Share of lifetime SOL that is volume-side, in percent. Needs the fingerprint's `ix_patterns`; NaN when unconfigured.",
+                description: "Share of lifetime SOL that is tagged, in percent. Needs the fingerprint's `ix_patterns`; NaN when unconfigured.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -1492,7 +1492,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinTaggedBuy,
                 name: "tagged_buy",
-                description: "Buy SOL from VOLUME-side wallets over the trailing window.",
+                description: "Buy SOL from wallets the fingerprint TAGS, over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -1501,7 +1501,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinTaggedSell,
                 name: "tagged_sell",
-                description: "Sell SOL from volume-side wallets over the trailing window.",
+                description: "Sell SOL from tagged wallets over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -1510,7 +1510,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinTaggedNet,
                 name: "tagged_net",
-                description: "Volume-side buy - sell SOL over the trailing window.",
+                description: "Tagged buy - sell SOL over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -1519,7 +1519,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinTaggedGross,
                 name: "tagged_gross",
-                description: "Volume-side buy + sell SOL over the trailing window.",
+                description: "Tagged buy + sell SOL over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -1528,7 +1528,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinUntaggedBuy,
                 name: "untagged_buy",
-                description: "Buy SOL from ORGANIC wallets over the trailing window.",
+                description: "Buy SOL from UNTAGGED wallets over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -1537,7 +1537,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinUntaggedSell,
                 name: "untagged_sell",
-                description: "Sell SOL from organic wallets over the trailing window.",
+                description: "Sell SOL from untagged wallets over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -1546,7 +1546,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinUntaggedNet,
                 name: "untagged_net",
-                description: "Organic buy - sell SOL over the trailing window.",
+                description: "Untagged buy - sell SOL over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -1555,7 +1555,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinUntaggedGross,
                 name: "untagged_gross",
-                description: "Organic buy + sell SOL over the trailing window.",
+                description: "Untagged buy + sell SOL over the trailing window.",
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
@@ -1564,7 +1564,7 @@ pub const REGISTRY: &[GroupSpec] = &[
             MetricSpec {
                 id: MetricId::WinTaggedShare,
                 name: "tagged_share",
-                description: "Share of the window's SOL that is volume-side, in percent. Needs the fingerprint's `ix_patterns`; NaN when unconfigured.",
+                description: "Share of the window's SOL that is tagged, in percent. Needs the fingerprint's `ix_patterns`; NaN when unconfigured.",
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
@@ -1844,7 +1844,7 @@ mod tests {
             vec!["m_flow_lifetime", "m_flow_window", "m_crowd_window"]
         );
         assert_eq!(by_family["flow_ix"], vec!["m_flow_ix", "m_flow_ix_window"]);
-        assert_eq!(by_family["liquidity_age"], vec!["m_state"]);
+        assert_eq!(by_family["state"], vec!["m_state"]);
         // Nothing is unclassified today; a new group that lands in `Standalone` is
         // gridded alone (correct, just more compute) and this assert is the prompt
         // to decide whether it really belongs to an existing family.

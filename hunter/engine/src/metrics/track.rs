@@ -693,7 +693,7 @@ mod tests {
             buyshare10: f64,
             /// `m_flow_window{window_size_sec: 60, slice_size_sec: 3}.trade_share`
             share60_3: f64,
-            /// Same reference window, a wider burst — the pair that proves the
+            /// Same reference window, a wider slice — the pair that proves the
             /// second axis is read and not ignored.
             share60_10: f64,
         }
@@ -811,7 +811,7 @@ mod tests {
                 share60_3: 100.0,
                 share60_10: 100.0,
             },
-            // A 6ix-cohort tape read mid-life, where the two burst axes DIVERGE:
+            // A 6ix-cohort tape read mid-life, where the two slice axes DIVERGE:
             // 4 of the last 20 trades landed in the last 3s, 17 in the last 10s. The
             // three cases above all read 100 on both (their whole 60s reference is
             // one cluster), so without this one the second axis could be dropped and
@@ -890,12 +890,12 @@ mod tests {
             close(got(MetricId::LifeGrossFlow, None), c.lifegross, 0.1, "m_flow_lifetime.gross_flow");
             close(got(MetricId::LifeTradeCount, None), c.lifentx, 0.5, "m_flow_lifetime.trade_count");
             // The two-window read, through the same public entry point a rule uses.
-            let share = |reference: f64, burst: f64| {
+            let share = |reference: f64, slice: f64| {
                 track.value(
                     MetricId::SliceTradeShare,
                     crate::metrics::Windows::two(
                         WindowSpec::secs(reference),
-                        WindowSpec::secs(burst),
+                        WindowSpec::secs(slice),
                     ),
                     None,
                     now,
@@ -904,7 +904,7 @@ mod tests {
             close(share(60.0, 3.0), c.share60_3, 0.5, "m_flow_window{60,3}.trade_share");
             close(share(60.0, 10.0), c.share60_10, 0.5, "m_flow_window{60,10}.trade_share");
             // An unregistered axis reads NaN, never a silently narrower window.
-            assert!(share(60.0, 7.0).is_nan(), "{}: unregistered burst axis must be NaN", c.mint);
+            assert!(share(60.0, 7.0).is_nan(), "{}: unregistered slice axis must be NaN", c.mint);
         }
     }
 

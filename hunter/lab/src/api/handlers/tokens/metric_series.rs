@@ -686,12 +686,12 @@ mod tests {
             .unwrap_or_else(|| panic!("{metric} has a finite value"))
     }
 
-    /// The parity guard for the creator seed: the dev buy is volume-side even with
+    /// The parity guard for the creator seed: the dev buy is TAGGED even with
     /// no matching `ix_labels`, exactly as the live engine folds it (`reduce.rs`
     /// seeds `TokenCreated`) and simulate folds it (`engine_sim.rs`). Unseeded, the
-    /// creator's SOL lands in `nonvol_*` and the pane disagrees with every decision.
+    /// creator's SOL lands in `untagged_*` and the pane disagrees with every decision.
     #[test]
-    fn the_creator_wallet_is_volume_side_even_without_a_pattern_match() {
+    fn the_creator_wallet_is_tagged_even_without_a_pattern_match() {
         let patterns = FlowPatterns::new(std::collections::BTreeSet::from([ix_hash(&[
             "Pump.Fun: Create",
             "Pump.Fun: Buy",

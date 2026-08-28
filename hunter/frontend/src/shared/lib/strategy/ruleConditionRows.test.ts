@@ -417,18 +417,18 @@ describe('non-window strict params', () => {
 });
 
 describe('two-window group (m_flow_window)', () => {
-  const sliceRow = (window: string, burst: number, value: number): RuleConditionRow =>
+  const sliceRow = (window: string, slice: number, value: number): RuleConditionRow =>
     row({
       group: 'm_flow_window',
       metric: 'trade_share',
       window,
-      strict: { slice_size_sec: burst },
+      strict: { slice_size_sec: slice },
       arms: [[{ operator: '>=' as const, value }]],
     });
 
   it('keeps two clauses that share a reference window but differ in the slice', () => {
     // Both axes are the group's identity. Keying instances on `window_size_sec`
-    // alone merged these into one and the later burst silently won — one of the
+    // alone merged these into one and the later slice silently won — one of the
     // two gates just disappeared on save.
     const side = rowsToSide([sliceRow('60', 3, 8), sliceRow('60', 10, 60)], 'entry');
     expect(side.m_flow_window).toHaveLength(2);
@@ -566,7 +566,7 @@ describe('slot windows and lag', () => {
   });
 
   it('requires the slice axis in the reference unit and nested inside it', () => {
-    const burst = (over: Partial<RuleConditionRow> = {}) =>
+    const sliceRowOf = (over: Partial<RuleConditionRow> = {}) =>
       row({
         group: 'm_flow_window',
         metric: 'trade_share',
@@ -575,16 +575,16 @@ describe('slot windows and lag', () => {
         arms: [[{ operator: '>=', value: 50 }]],
         ...over,
       });
-    expect(ruleConditionRowError(burst(), REG)).toBe('slice (sl) > 0 required');
-    // A seconds burst on a slot row is not the row's burst at all - it reads as
+    expect(ruleConditionRowError(sliceRowOf(), REG)).toBe('slice (sl) > 0 required');
+    // A seconds slice on a slot row is not the row's slice at all - it reads as
     // absent, which is what the backend also rejects (both axes, one unit).
-    expect(ruleConditionRowError(burst({ strict: { slice_size_sec: 3 } }), REG)).toBe(
+    expect(ruleConditionRowError(sliceRowOf({ strict: { slice_size_sec: 3 } }), REG)).toBe(
       'slice (sl) > 0 required',
     );
-    expect(ruleConditionRowError(burst({ strict: { slice_size_slots: 40 } }), REG)).toBe(
+    expect(ruleConditionRowError(sliceRowOf({ strict: { slice_size_slots: 40 } }), REG)).toBe(
       'slice (sl) must nest inside window 30',
     );
-    const ok = burst({ strict: { slice_size_slots: 1 } });
+    const ok = sliceRowOf({ strict: { slice_size_slots: 1 } });
     expect(ruleConditionRowError(ok, REG)).toBeNull();
     expect(rowsToSide([ok], 'entry').m_flow_window[0].strict).toEqual({
       window_size_slots: 30,
@@ -655,7 +655,7 @@ describe('print windows', () => {
   });
 
   it('requires the slice axis in the print unit and nested inside it', () => {
-    const burst = (over: Partial<RuleConditionRow> = {}) =>
+    const sliceRowOf = (over: Partial<RuleConditionRow> = {}) =>
       row({
         group: 'm_flow_window',
         metric: 'trade_share',
@@ -664,16 +664,16 @@ describe('print windows', () => {
         arms: [[{ operator: '>=', value: 50 }]],
         ...over,
       });
-    expect(ruleConditionRowError(burst(), REG)).toBe('slice (p) > 0 required');
-    // A slot burst on a print row is not the row's burst at all - it reads as
+    expect(ruleConditionRowError(sliceRowOf(), REG)).toBe('slice (p) > 0 required');
+    // A slot slice on a print row is not the row's slice at all - it reads as
     // absent, which is what the backend also rejects (both axes, one unit).
-    expect(ruleConditionRowError(burst({ strict: { slice_size_slots: 4 } }), REG)).toBe(
+    expect(ruleConditionRowError(sliceRowOf({ strict: { slice_size_slots: 4 } }), REG)).toBe(
       'slice (p) > 0 required',
     );
-    expect(ruleConditionRowError(burst({ strict: { slice_size_prints: 40 } }), REG)).toBe(
+    expect(ruleConditionRowError(sliceRowOf({ strict: { slice_size_prints: 40 } }), REG)).toBe(
       'slice (p) must nest inside window 20',
     );
-    const ok = burst({ strict: { slice_size_prints: 4 } });
+    const ok = sliceRowOf({ strict: { slice_size_prints: 4 } });
     expect(ruleConditionRowError(ok, REG)).toBeNull();
     expect(rowsToSide([ok], 'entry').m_flow_window[0].strict).toEqual({
       window_size_prints: 20,
@@ -681,7 +681,7 @@ describe('print windows', () => {
     });
   });
 
-  // Flipping the unit RE-SPELLS the burst param. A sibling left behind is the "two
+  // Flipping the unit RE-SPELLS the slice param. A sibling left behind is the "two
   // spans claiming one axis" the backend rejects at save, and with three bases a
   // per-pair destructure is exactly what would leave one.
   it('never writes two size params on one axis after a unit flip', () => {

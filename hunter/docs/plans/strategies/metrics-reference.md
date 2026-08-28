@@ -67,7 +67,7 @@ carries no information. Its SOL twin `sol_share` is the reading that survives th
 same two spans, but the numerator is money, which still varies when the counts cannot.
 
 **`window_lag` is what makes a window causal in its own terms.** A gate on "the state
-entering this slot" must not be able to see the slot it fires in. The burst is
+entering this slot" must not be able to see the slot it fires in. The slice is
 `slots: 1, lag: 0` and the quiet tape before it is `slots: 30, lag: 1` - same group,
 same metric, no arithmetic between windows and no way for one to leak into the other.
 `lag: 0` is a real value (end at now) and the only behaviour that existed before the
@@ -330,17 +330,21 @@ tick leaves entries un-evicted by design.
 
 ## Classifier (per trade × fingerprint)
 
-A trade is **volume-side** iff any of:
+A trade is **tagged** iff any of:
 
 1. the configured marker mask says so — `tagged_ix_markers` when the trade's markers
    **intersect** it, `untagged_ix_markers` when they **miss** it entirely;
 2. its ordered `ix_labels` hash ∈ the configured `ix_patterns`
    (exact ordered sequence — same semantics as fingerprint `ix_labels`);
-3. `wallet_contagion` is on AND its wallet was previously tagged volume-side on
+3. `wallet_contagion` is on AND its wallet was previously tagged on
    **this token**;
 4. `creator_is_tagged` is on AND it is the creator wallet.
 
-Otherwise **organic**. Contagion is per-token only (cross-token is a future toggle).
+Otherwise **untagged**. Contagion is per-token only (cross-token is a future toggle).
+
+Tagged usually reads as creator tooling and untagged as organic retail, and the
+sections below argue in those terms. The metric names do not: they say which side of
+the classifier a trade fell on, which is the only thing the engine knows.
 
 ### Markers: the mechanism, not a snapshot of it
 
@@ -373,21 +377,22 @@ the unlisted ones as human demand.
 
 `tagged_ix_markers` and `untagged_ix_markers` are not two spellings of one thing, and
 configuring both is an error (so is `untagged_ix_markers` alongside `ix_patterns`,
-which is itself a volume-side statement). They differ on the case that decides most
+which is itself a tagging statement). They differ on the case that decides most
 gates - **a build carrying no configured marker at all**:
 
 | mask | a marked build | an unmarked build |
 | --- | --- | --- |
-| `tagged_ix_markers` | volume | **organic** - identifies machines, leaves the rest unjudged |
-| `untagged_ix_markers` | organic | **volume** - identifies people, judges the rest machine |
+| `tagged_ix_markers` | tagged | **untagged** - identifies machines, leaves the rest unjudged |
+| `untagged_ix_markers` | untagged | **tagged** - identifies people, judges the rest machine |
 
 Say the one the rule means. On the 8dtx tape the same fires, same thresholds, same
 exit read **+0.99 % per trade** under `tagged_ix_markers: [CreateAccountWithSeed]` and
 **+6.86 %** under `untagged_ix_markers: [<routers>]`, because the 8,566 fires the first
 admits and the second rejects average **-0.68 %**.
 
-An organic mask also fails **closed**: a loader that leaves `ix_labels` empty marks
-every trade volume-side, so the gate fires nothing rather than firing on everything.
+An `untagged_ix_markers` mask also fails **closed**: a loader that leaves `ix_labels`
+empty marks every trade tagged, so the gate fires nothing rather than firing on
+everything.
 
 ### The two wallet rules are switchable, and a structural gate wants them OFF
 
@@ -504,12 +509,12 @@ buy = +, sell = − for `*_net`.
 
 | metric | meaning | unit | eq-tol | monotonic (lifetime only) |
 | --- | --- | --- | --- | --- |
-| `tagged_buy` | volume-side buy SOL | SOL | 0.1 | ✓ |
-| `tagged_sell` | volume-side sell SOL | SOL | 0.1 | ✓ |
+| `tagged_buy` | buy SOL from tagged wallets | SOL | 0.1 | ✓ |
+| `tagged_sell` | sell SOL from tagged wallets | SOL | 0.1 | ✓ |
 | `tagged_net` | `tagged_buy − tagged_sell` | SOL | 0.1 | ✗ |
 | `tagged_gross` | `tagged_buy + tagged_sell` | SOL | 0.1 | ✓ |
-| `untagged_buy` | organic buy SOL | SOL | 0.1 | ✓ |
-| `untagged_sell` | organic sell SOL | SOL | 0.1 | ✓ |
+| `untagged_buy` | buy SOL from untagged wallets | SOL | 0.1 | ✓ |
+| `untagged_sell` | sell SOL from untagged wallets | SOL | 0.1 | ✓ |
 | `untagged_net` | `untagged_buy − untagged_sell` | SOL | 0.1 | ✗ |
 | `untagged_gross` | `untagged_buy + untagged_sell` | SOL | 0.1 | ✓ |
 | `tagged_share` | `tagged_gross / (tagged_gross + untagged_gross)` ×100; NaN when total 0 | % | 1.0 | ✗ |
@@ -734,8 +739,8 @@ point.
 
 ### The result carries its own corpus identity
 
-`DiscoveryResult` echoes `bucket_width_sol` (`null` = `SolPrecision::Exact`),
-`ix_labels_filter` and `fingerprint_id` alongside `groups`, and both GET endpoints
+`DiscoveryResult` echoes the `plan` it partitioned by, `ix_labels_filter` and
+`fingerprint_id` alongside `groups`, and both GET endpoints
 serialize them. **The page must rebuild fingerprint identity from these, never from
 its own form state**, for two reasons:
 

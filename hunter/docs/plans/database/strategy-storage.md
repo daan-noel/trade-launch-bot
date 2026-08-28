@@ -278,9 +278,5 @@ view filtered by `run_id` / `rule_id` / `strategy_id`.
 
 ## Open design questions
 
-- **`bucket_width_sol`** (formerly `tolerance_pct`) — stays in `params` (strategy-specific,
-  not orchestrator-needed). It is the fingerprint bucket width (SOL) the matcher, the
-  grouped sweep, and the creation-stats dashboard all bucket by; migration
-  `0003_bucket_width_sol.sql` renamed the key and reset every rule to the 0.1 default.
 - **`exit_reason` vocabulary** — free TEXT (extensible) vs CHECK set. Leaning free
   TEXT so a new strategy's exit reason needs no DDL.

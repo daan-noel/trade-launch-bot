@@ -119,7 +119,7 @@ impl MetricSeries {
         let mut track = TokenTrack::new(created_at);
         for c in &columns {
             if let SeriesColumn::Window(id, ws) = c {
-                // Both axes — registering only the primary leaves a burst column NaN.
+                // Both axes — registering only the primary leaves a slice column NaN.
                 for w in [ws.primary, ws.secondary].into_iter().flatten() {
                     register_window(&mut track, *id, w);
                 }
@@ -347,7 +347,7 @@ mod tests {
         let mut track = TokenTrack::new(created);
         for c in cols {
             if let SeriesColumn::Window(id, ws) = c {
-                // Both axes — registering only the primary leaves a burst column NaN.
+                // Both axes — registering only the primary leaves a slice column NaN.
                 for w in [ws.primary, ws.secondary].into_iter().flatten() {
                     register_window(&mut track, *id, w);
                 }

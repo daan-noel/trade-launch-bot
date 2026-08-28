@@ -271,7 +271,7 @@ function ConditionRow({
   // hardcoded per group, so a future two-window basis gets its control for free
   // rather than silently round-tripping with no way to edit it.
   const needsSlice = ruleRowNeedsSlice(row, registry);
-  // Both axes count in the ONE unit the row picks: a burst in slots over a
+  // Both axes count in the ONE unit the row picks: a slice in slots over a
   // reference in seconds is a ratio across two clocks, which the backend rejects.
   const windowUnit = ruleRowUnit(row);
   const uSuffix = windowUnitSuffix(windowUnit);
@@ -280,7 +280,7 @@ function ConditionRow({
   const uStep = isDiscreteUnit(windowUnit) ? 1 : 0.5;
   const uMin = isDiscreteUnit(windowUnit) ? 1 : 0.5;
   // Placeholders name the canonical span of each basis: 10s of tape, 30 slots, the
-  // 20 prints behind this one. The burst placeholder is the slice inside it, and on
+  // 20 prints behind this one. The slice placeholder is the span inside it, and on
   // a print row `1` is this transaction alone — the span "10 SOL in one trade" needs.
   const windowHint = windowUnit === 'slot' ? '30' : windowUnit === 'print' ? '20' : '10';
   const sliceHint = windowUnit === 'sec' ? '3' : '1';
@@ -303,7 +303,7 @@ function ConditionRow({
     onPatchStrict({ ...row.strict, arm_above_pct: v });
   };
   const onSlice = (text: string) => {
-    // Only ONE burst size param may survive, in the row's own unit — leaving a
+    // Only ONE slice size param may survive, in the row's own unit — leaving a
     // sibling behind is the "two spans claiming one axis" the backend rejects at save.
     const rest = withoutSliceAxis(row.strict);
     if (text.trim() === '') {
@@ -314,14 +314,14 @@ function ConditionRow({
     if (!Number.isFinite(v)) return;
     onPatchStrict({ ...rest, [sliceSizeParam(windowUnit)]: v });
   };
-  // Flipping the unit RE-SPELLS the burst param rather than reinterpreting it: the
+  // Flipping the unit RE-SPELLS the slice param rather than reinterpreting it: the
   // number the user typed is the span they meant, and it now counts in the new unit.
   const onUnit = (next: WindowUnit) => {
-    const burst = ruleRowSliceSpec(row)?.size;
+    const slice = ruleRowSliceSpec(row)?.size;
     const rest = withoutSliceAxis(row.strict);
     onPatch({
       windowUnit: next,
-      strict: burst == null ? rest : { ...rest, [sliceSizeParam(next)]: burst },
+      strict: slice == null ? rest : { ...rest, [sliceSizeParam(next)]: slice },
     });
   };
   // Only drives the input's unit adornment; the field is disabled until a metric is
@@ -331,7 +331,7 @@ function ConditionRow({
   const onGroup = (name: string) => {
     const g = registry.groups.find((gg) => gg.name === name);
     // Auto-pick the group's first metric + reset every window field so a static pick
-    // drops them. The burst axis goes with them: carried over from the previous
+    // drops them. The slice axis goes with them: carried over from the previous
     // group it is a param the new group does not declare, which the backend rejects
     // as unknown at save rather than ignoring.
     const rest = withoutSliceAxis(row.strict);
@@ -458,7 +458,7 @@ function ConditionRow({
       )}
 
       {needsSlice && (
-        <Cell label={`burst ${uSuffix}`} tip={STRICT_PARAM_HELP[sliceSizeParam(windowUnit)]}>
+        <Cell label={`slice ${uSuffix}`} tip={STRICT_PARAM_HELP[sliceSizeParam(windowUnit)]}>
           <Input
             fieldSize="sm"
             type="number"

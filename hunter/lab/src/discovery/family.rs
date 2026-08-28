@@ -962,7 +962,7 @@ mod tests {
         ]);
         let plan = plan_families(&r, FamilyLimits::default());
         assert_eq!(plan.len(), 2, "snapshot and price are distinct families");
-        let liq_age = plan.iter().find(|f| f.family == MetricFamily::LiquidityAge).unwrap();
+        let liq_age = plan.iter().find(|f| f.family == MetricFamily::State).unwrap();
         assert_eq!(liq_age.members.len(), 2, "time + liquidity share m_state");
         // Axis order is lift-descending, so a cap drops the weakest member.
         assert!(liq_age.members[0].lift >= liq_age.members[1].lift);
@@ -1198,7 +1198,7 @@ mod tests {
             mk(MetricFamily::Flow, MetricFamily::Price, InteractionVerdict::Interacting),
             mk(MetricFamily::Flow, MetricFamily::FlowIx, InteractionVerdict::Interacting),
             mk(
-                MetricFamily::LiquidityAge,
+                MetricFamily::State,
                 MetricFamily::Price,
                 InteractionVerdict::Independent,
             ),
@@ -1229,7 +1229,7 @@ mod tests {
         }];
         let families = vec![
             FamilyResult {
-                family: MetricFamily::LiquidityAge,
+                family: MetricFamily::State,
                 members: members_a,
                 dropped: vec![],
                 combos: 3,
@@ -1247,7 +1247,7 @@ mod tests {
         ];
         let joint = plan_joint(
             &families,
-            &[MetricFamily::LiquidityAge, MetricFamily::Price],
+            &[MetricFamily::State, MetricFamily::Price],
             FamilyLimits { max_axes: 1, max_combos: 1_024, rescue_cap: 0 },
         );
         assert_eq!(joint.members.len(), 1);
